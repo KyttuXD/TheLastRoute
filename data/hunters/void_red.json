@@ -1,0 +1,17 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "void_red",
+	"name": "Red",
+	"tier": "void",
+	"category": "void",
+	"speed": 1.02,
+	"chase": 4.9,
+	"prog": 0.3,
+	"sight": 9.3,
+	"hearing": 1.3,
+	"spawn": 14,
+	"model": "res://assets/hunters_blocky/void_red/void_red.glb",
+	"chase_style": "reach2",
+	"taser_immune": true,
+	"melee_immune": false
+}

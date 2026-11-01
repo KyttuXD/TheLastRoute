@@ -1,0 +1,17 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "void_brown",
+	"name": "Brown",
+	"tier": "void",
+	"category": "void",
+	"speed": 0.96,
+	"chase": 4.62,
+	"prog": 0.23,
+	"sight": 9.0,
+	"hearing": 1.3,
+	"spawn": 14,
+	"model": "res://assets/hunters_blocky/void_brown/void_brown.glb",
+	"chase_style": "lope",
+	"taser_immune": true,
+	"melee_immune": false
+}

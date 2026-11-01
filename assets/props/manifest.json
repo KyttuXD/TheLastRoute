@@ -1,0 +1,4916 @@
+{
+  "woodenChair": {
+    "file": "woodenChair.bbmodel",
+    "source": "assets/props/blocky/woodenChair_0.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.25,
+      0.9375,
+      0.25
+    ]
+  },
+  "woodenChairCushion": {
+    "file": "woodenChairCushion.bbmodel",
+    "source": "assets/props/blocky/woodenChairCushion_0.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.25,
+      0.9375,
+      0.25
+    ]
+  },
+  "diningChair": {
+    "file": "diningChair.bbmodel",
+    "source": "assets/props/blocky/diningChair_0.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.25,
+      0.9375,
+      0.1875
+    ]
+  },
+  "diningChairCushion": {
+    "file": "diningChairCushion.bbmodel",
+    "source": "assets/props/blocky/diningChairCushion_0.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.25,
+      0.9375,
+      0.1875
+    ]
+  },
+  "woodenTable": {
+    "file": "woodenTable.bbmodel",
+    "source": "assets/props/blocky/woodenTable_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.625,
+      0.75,
+      0.375
+    ]
+  },
+  "diningTable": {
+    "file": "diningTable.bbmodel",
+    "source": "assets/props/blocky/diningTable_0.glb",
+    "min": [
+      -1.125,
+      0.0,
+      -0.4375
+    ],
+    "max": [
+      1.125,
+      0.75,
+      0.4375
+    ]
+  },
+  "restaurantPartyTable": {
+    "file": "restaurantPartyTable.bbmodel",
+    "source": "assets/props/blocky/restaurantPartyTable.glb",
+    "min": [
+      -1.3125,
+      0.0,
+      -0.5
+    ],
+    "max": [
+      1.3125,
+      2.25,
+      0.5
+    ]
+  },
+  "singleBed": {
+    "file": "singleBed.bbmodel",
+    "source": "assets/props/blocky/singleBed_0.glb",
+    "min": [
+      -0.5625,
+      0.0,
+      -1.125
+    ],
+    "max": [
+      0.5625,
+      1.0625,
+      1.125
+    ]
+  },
+  "doubleBed": {
+    "file": "doubleBed.bbmodel",
+    "source": "assets/props/blocky/doubleBed_0.glb",
+    "min": [
+      -0.9375,
+      0.0,
+      -1.125
+    ],
+    "max": [
+      0.9375,
+      1.0625,
+      1.125
+    ]
+  },
+  "bedroomNightstand": {
+    "file": "bedroomNightstand.bbmodel",
+    "source": "assets/props/blocky/bedroomNightstand_0.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.3125,
+      0.6875,
+      0.25
+    ]
+  },
+  "bedroomDresser": {
+    "file": "bedroomDresser.bbmodel",
+    "source": "assets/props/blocky/bedroomDresser_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.625,
+      1.0625,
+      0.25
+    ]
+  },
+  "woodenDresserSideboard": {
+    "file": "woodenDresserSideboard.bbmodel",
+    "source": "assets/props/blocky/woodenDresserSideboard_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.625,
+      0.9375,
+      0.3125
+    ]
+  },
+  "gothicDresser": {
+    "file": "gothicDresser.bbmodel",
+    "source": "assets/props/blocky/gothicDresser_0.glb",
+    "min": [
+      -0.6875,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.6875,
+      1.125,
+      0.3125
+    ]
+  },
+  "gothicNightstand": {
+    "file": "gothicNightstand.bbmodel",
+    "source": "assets/props/blocky/gothicNightstand_0.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.3125,
+      0.8125,
+      0.3125
+    ]
+  },
+  "diningSideboard": {
+    "file": "diningSideboard.bbmodel",
+    "source": "assets/props/blocky/diningSideboard_0.glb",
+    "min": [
+      -0.75,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.75,
+      1.0625,
+      0.375
+    ]
+  },
+  "mansionConsoleTable": {
+    "file": "mansionConsoleTable.bbmodel",
+    "source": "assets/props/blocky/mansionConsoleTable_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.625,
+      0.875,
+      0.25
+    ]
+  },
+  "normalTvConsole": {
+    "file": "normalTvConsole.bbmodel",
+    "source": "assets/props/blocky/normalTvConsole_0.glb",
+    "min": [
+      -0.6875,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.6875,
+      1.5,
+      0.25
+    ]
+  },
+  "bedroomWardrobe": {
+    "file": "bedroomWardrobe.bbmodel",
+    "source": "assets/props/blocky/bedroomWardrobe_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.625,
+      2.125,
+      0.3125
+    ]
+  },
+  "gothicWardrobe": {
+    "file": "gothicWardrobe.bbmodel",
+    "source": "assets/props/blocky/gothicWardrobe_0.glb",
+    "min": [
+      -0.6875,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.6875,
+      2.5,
+      0.375
+    ]
+  },
+  "normalBookcase": {
+    "file": "normalBookcase.bbmodel",
+    "source": "assets/props/blocky/normalBookcase_0.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.5,
+      1.8125,
+      0.25
+    ]
+  },
+  "mansionBookshelf": {
+    "file": "mansionBookshelf.bbmodel",
+    "source": "assets/props/blocky/mansionBookshelf_0.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.4375,
+      2.0625,
+      0.3125
+    ]
+  },
+  "gothicBookcase": {
+    "file": "gothicBookcase.bbmodel",
+    "source": "assets/props/blocky/gothicBookcase_0.glb",
+    "min": [
+      -0.6875,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.6875,
+      2.4375,
+      0.25
+    ]
+  },
+  "loungeCouch": {
+    "file": "loungeCouch.bbmodel",
+    "source": "assets/props/blocky/loungeCouch_0.glb",
+    "min": [
+      -0.875,
+      0.0,
+      -0.5
+    ],
+    "max": [
+      0.875,
+      0.8847,
+      0.4375
+    ]
+  },
+  "loungeCouchWide": {
+    "file": "loungeCouchWide.bbmodel",
+    "source": "assets/props/blocky/loungeCouchWide_0.glb",
+    "min": [
+      -1.1875,
+      0.0,
+      -0.5
+    ],
+    "max": [
+      1.25,
+      0.886,
+      0.5
+    ]
+  },
+  "officeDesk": {
+    "file": "officeDesk.bbmodel",
+    "source": "assets/props/blocky/officeDesk_0.glb",
+    "min": [
+      -0.8125,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.8125,
+      0.75,
+      0.375
+    ]
+  },
+  "officeChair": {
+    "file": "officeChair.bbmodel",
+    "source": "assets/props/blocky/officeChair_0.glb",
+    "min": [
+      -0.3125,
+      0.0625,
+      -0.3125
+    ],
+    "max": [
+      0.3125,
+      1.375,
+      0.3125
+    ]
+  },
+  "retroComputerDesktop": {
+    "file": "retroComputerDesktop.bbmodel",
+    "source": "assets/props/blocky/retroComputerDesktop_0.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.625,
+      0.8125,
+      0.5625
+    ]
+  },
+  "retroComputerCompact": {
+    "file": "retroComputerCompact.bbmodel",
+    "source": "assets/props/blocky/retroComputerCompact_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.625,
+      0.8125,
+      0.5625
+    ]
+  },
+  "retroComputerTower": {
+    "file": "retroComputerTower.bbmodel",
+    "source": "assets/props/blocky/retroComputerTower_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.625,
+      0.75,
+      0.5625
+    ]
+  },
+  "retroComputerTerminal": {
+    "file": "retroComputerTerminal.bbmodel",
+    "source": "assets/props/blocky/retroComputerTerminal_0.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.5,
+      0.8125,
+      0.4375
+    ]
+  },
+  "officeCrtSecurityConsole": {
+    "file": "officeCrtSecurityConsole.bbmodel",
+    "source": "assets/props/blocky/officeCrtSecurityConsole_0.glb",
+    "min": [
+      -0.8125,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.8125,
+      1.25,
+      0.375
+    ]
+  },
+  "filingCabinet": {
+    "file": "filingCabinet.bbmodel",
+    "source": "assets/props/blocky/filingCabinet_0.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.3125,
+      1.25,
+      0.375
+    ]
+  },
+  "locker": {
+    "file": "locker.bbmodel",
+    "source": "assets/props/blocky/locker_0.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.3125,
+      2.0,
+      0.375
+    ]
+  },
+  "vendingMachine": {
+    "file": "vendingMachine.bbmodel",
+    "source": "assets/props/blocky/vendingMachine_0.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.3125,
+      1.8125,
+      0.4375
+    ]
+  },
+  "arcadeCabinet": {
+    "file": "arcadeCabinet.bbmodel",
+    "source": "assets/props/blocky/arcadeCabinet_0.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.3125,
+      1.8125,
+      0.4375
+    ]
+  },
+  "arcadeCabinetCyanMagenta": {
+    "file": "arcadeCabinetCyanMagenta.bbmodel",
+    "source": "assets/props/blocky/arcadeCabinetCyanMagenta_0.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.3125,
+      1.8125,
+      0.4375
+    ]
+  },
+  "serverRack": {
+    "file": "serverRack.bbmodel",
+    "source": "assets/props/blocky/serverRack_0.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.3125,
+      1.9375,
+      0.4375
+    ]
+  },
+  "breakerCabinet": {
+    "file": "breakerCabinet.bbmodel",
+    "source": "assets/props/blocky/breakerCabinet_0.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.4375,
+      1.625,
+      0.375
+    ]
+  },
+  "tableLamp": {
+    "file": "tableLamp.bbmodel",
+    "source": "assets/props/blocky/tableLamp_0.glb",
+    "min": [
+      -0.1875,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.1875,
+      0.6875,
+      0.1875
+    ]
+  },
+  "bedsideLamp": {
+    "file": "bedsideLamp.bbmodel",
+    "source": "assets/props/blocky/bedsideLamp_0.glb",
+    "min": [
+      -0.125,
+      0.0,
+      -0.125
+    ],
+    "max": [
+      0.125,
+      0.6875,
+      0.125
+    ]
+  },
+  "floorLamp": {
+    "file": "floorLamp.bbmodel",
+    "source": "assets/props/blocky/floorLamp_0.glb",
+    "min": [
+      -0.1875,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.1875,
+      1.75,
+      0.1875
+    ]
+  },
+  "ceilingLight": {
+    "file": "ceilingLight.bbmodel",
+    "source": "assets/props/blocky/ceilingLight.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.3125,
+      0.3125,
+      0.3125
+    ]
+  },
+  "wallSconce": {
+    "file": "wallSconce.bbmodel",
+    "source": "assets/props/blocky/wallSconce.glb",
+    "min": [
+      -0.0625,
+      1.1875,
+      -0.125
+    ],
+    "max": [
+      0.0625,
+      1.875,
+      0.1875
+    ]
+  },
+  "tableCandelabra": {
+    "file": "tableCandelabra.bbmodel",
+    "source": "assets/props/blocky/tableCandelabra.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.0625
+    ],
+    "max": [
+      0.25,
+      0.8125,
+      0.0625
+    ]
+  },
+  "supplyCrates": {
+    "file": "supplyCrates.bbmodel",
+    "source": "assets/props/blocky/supplyCrates_0.glb",
+    "min": [
+      -0.375,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.375,
+      0.9375,
+      0.3125
+    ]
+  },
+  "charredSupplyCrate": {
+    "file": "charredSupplyCrate.bbmodel",
+    "source": "assets/props/blocky/charredSupplyCrate.glb",
+    "min": [
+      -0.375,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.375,
+      0.625,
+      0.3125
+    ]
+  },
+  "trashBin": {
+    "file": "trashBin.bbmodel",
+    "source": "assets/props/blocky/trashBin_0.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.2653
+    ],
+    "max": [
+      0.25,
+      0.7634,
+      0.3125
+    ]
+  },
+  "normalKitchenCounter": {
+    "file": "normalKitchenCounter.bbmodel",
+    "source": "assets/props/blocky/normalKitchenCounter_0.glb",
+    "min": [
+      -0.75,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.75,
+      0.875,
+      0.375
+    ]
+  },
+  "luxuryKitchenCounter": {
+    "file": "luxuryKitchenCounter.bbmodel",
+    "source": "assets/props/blocky/luxuryKitchenCounter_0.glb",
+    "min": [
+      -0.75,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.75,
+      0.875,
+      0.375
+    ]
+  },
+  "gothicKitchenCounter": {
+    "file": "gothicKitchenCounter.bbmodel",
+    "source": "assets/props/blocky/gothicKitchenCounter_0.glb",
+    "min": [
+      -0.75,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.75,
+      0.875,
+      0.375
+    ]
+  },
+  "normalKitchenIsland": {
+    "file": "normalKitchenIsland.bbmodel",
+    "source": "assets/props/blocky/normalKitchenIsland_0.glb",
+    "min": [
+      -0.8125,
+      0.0,
+      -0.4375
+    ],
+    "max": [
+      0.8125,
+      0.9375,
+      0.4375
+    ]
+  },
+  "luxuryKitchenIsland": {
+    "file": "luxuryKitchenIsland.bbmodel",
+    "source": "assets/props/blocky/luxuryKitchenIsland_0.glb",
+    "min": [
+      -0.8125,
+      0.0,
+      -0.4375
+    ],
+    "max": [
+      0.8125,
+      1.0,
+      0.4375
+    ]
+  },
+  "gothicKitchenIsland": {
+    "file": "gothicKitchenIsland.bbmodel",
+    "source": "assets/props/blocky/gothicKitchenIsland_0.glb",
+    "min": [
+      -0.8125,
+      0.0,
+      -0.4375
+    ],
+    "max": [
+      0.8125,
+      0.9375,
+      0.4375
+    ]
+  },
+  "normalKitchenFridge": {
+    "file": "normalKitchenFridge.bbmodel",
+    "source": "assets/props/blocky/normalKitchenFridge_0.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.4375,
+      1.9375,
+      0.4375
+    ]
+  },
+  "luxuryKitchenFridge": {
+    "file": "luxuryKitchenFridge.bbmodel",
+    "source": "assets/props/blocky/luxuryKitchenFridge_0.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.4375,
+      1.9375,
+      0.4375
+    ]
+  },
+  "gothicKitchenFridge": {
+    "file": "gothicKitchenFridge.bbmodel",
+    "source": "assets/props/blocky/gothicKitchenFridge_0.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.4375,
+      1.9375,
+      0.4375
+    ]
+  },
+  "normalKitchenStove": {
+    "file": "normalKitchenStove.bbmodel",
+    "source": "assets/props/blocky/normalKitchenStove_0.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.4375,
+      0.9375,
+      0.375
+    ]
+  },
+  "luxuryKitchenStove": {
+    "file": "luxuryKitchenStove.bbmodel",
+    "source": "assets/props/blocky/luxuryKitchenStove_0.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.4375,
+      0.9375,
+      0.375
+    ]
+  },
+  "gothicKitchenStove": {
+    "file": "gothicKitchenStove.bbmodel",
+    "source": "assets/props/blocky/gothicKitchenStove_0.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.4375,
+      0.9375,
+      0.375
+    ]
+  },
+  "houseToilet": {
+    "file": "houseToilet.bbmodel",
+    "source": "assets/props/blocky/houseToilet_0.glb",
+    "min": [
+      -0.1875,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.1875,
+      0.8125,
+      0.375
+    ]
+  },
+  "publicRestroomToilet": {
+    "file": "publicRestroomToilet.bbmodel",
+    "source": "assets/props/blocky/publicRestroomToilet_0.glb",
+    "min": [
+      -0.1875,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.1875,
+      0.8125,
+      0.375
+    ]
+  },
+  "bathroomSink": {
+    "file": "bathroomSink.bbmodel",
+    "source": "assets/props/blocky/bathroomSink_0.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.3125,
+      1.0,
+      0.1875
+    ]
+  },
+  "houseBathtub": {
+    "file": "houseBathtub.bbmodel",
+    "source": "assets/props/blocky/houseBathtub_0.glb",
+    "min": [
+      -0.875,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.875,
+      0.8125,
+      0.375
+    ]
+  },
+  "apartmentCarpet": {
+    "file": "apartmentCarpet.bbmodel",
+    "source": "assets/props/blocky/apartmentCarpet_0.glb",
+    "min": [
+      -1.0,
+      0.0,
+      -0.75
+    ],
+    "max": [
+      1.0,
+      0.0625,
+      0.75
+    ]
+  },
+  "bedroomRug": {
+    "file": "bedroomRug.bbmodel",
+    "source": "assets/props/blocky/bedroomRug_0.glb",
+    "min": [
+      -0.875,
+      0.0,
+      -0.5625
+    ],
+    "max": [
+      0.875,
+      0.0625,
+      0.5625
+    ]
+  },
+  "gothicBedroomRug": {
+    "file": "gothicBedroomRug.bbmodel",
+    "source": "assets/props/blocky/gothicBedroomRug_0.glb",
+    "min": [
+      -1.125,
+      0.0,
+      -0.6875
+    ],
+    "max": [
+      1.125,
+      0.0625,
+      0.6875
+    ]
+  },
+  "hotelCarpet": {
+    "file": "hotelCarpet.bbmodel",
+    "source": "assets/props/blocky/hotelCarpet_0.glb",
+    "min": [
+      -1.125,
+      0.0,
+      -0.6875
+    ],
+    "max": [
+      1.125,
+      0.0625,
+      0.6875
+    ]
+  },
+  "mansionAreaRug": {
+    "file": "mansionAreaRug.bbmodel",
+    "source": "assets/props/blocky/mansionAreaRug_0.glb",
+    "min": [
+      -1.3125,
+      0.0,
+      -0.8125
+    ],
+    "max": [
+      1.3125,
+      0.0625,
+      0.8125
+    ]
+  },
+  "corridorCarpet": {
+    "file": "corridorCarpet.bbmodel",
+    "source": "assets/props/blocky/corridorCarpet_0.glb",
+    "min": [
+      -1.1875,
+      0.0,
+      -1.6875
+    ],
+    "max": [
+      1.1875,
+      0.0625,
+      1.6875
+    ]
+  },
+  "arcadeCarpetRunner": {
+    "file": "arcadeCarpetRunner.bbmodel",
+    "source": "assets/props/blocky/arcadeCarpetRunner_0.glb",
+    "min": [
+      -0.5625,
+      0.0,
+      -1.625
+    ],
+    "max": [
+      0.5625,
+      0.0625,
+      1.625
+    ]
+  },
+  "arcadeCarpetCircle": {
+    "file": "arcadeCarpetCircle.bbmodel",
+    "source": "assets/props/blocky/arcadeCarpetCircle_0.glb",
+    "min": [
+      -0.9375,
+      0.0,
+      -0.9375
+    ],
+    "max": [
+      0.9375,
+      0.0625,
+      0.9375
+    ]
+  },
+  "houseBathMat": {
+    "file": "houseBathMat.bbmodel",
+    "source": "assets/props/blocky/houseBathMat_0.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.4375,
+      0.0625,
+      0.3125
+    ]
+  },
+  "beachMat": {
+    "file": "beachMat.bbmodel",
+    "source": "assets/props/blocky/beachMat.glb",
+    "min": [
+      -0.6875,
+      0.0,
+      -0.4375
+    ],
+    "max": [
+      0.6875,
+      0.0625,
+      0.4375
+    ]
+  },
+  "normalPaintingFrameEmpty": {
+    "file": "normalPaintingFrameEmpty.bbmodel",
+    "source": "assets/props/blocky/normalPaintingFrameEmpty_0.glb",
+    "min": [
+      -0.625,
+      0.625,
+      -0.0625
+    ],
+    "max": [
+      0.625,
+      2.1875,
+      0.0625
+    ]
+  },
+  "normalPictureFrameEmpty": {
+    "file": "normalPictureFrameEmpty.bbmodel",
+    "source": "assets/props/blocky/normalPictureFrameEmpty_0.glb",
+    "min": [
+      -0.375,
+      0.9375,
+      -0.0625
+    ],
+    "max": [
+      0.375,
+      1.875,
+      0.0625
+    ]
+  },
+  "luxuryPaintingFrameEmpty": {
+    "file": "luxuryPaintingFrameEmpty.bbmodel",
+    "source": "assets/props/blocky/luxuryPaintingFrameEmpty_0.glb",
+    "min": [
+      -0.75,
+      0.5625,
+      -0.0625
+    ],
+    "max": [
+      0.75,
+      2.25,
+      0.125
+    ]
+  },
+  "luxuryPictureFrameEmpty": {
+    "file": "luxuryPictureFrameEmpty.bbmodel",
+    "source": "assets/props/blocky/luxuryPictureFrameEmpty_0.glb",
+    "min": [
+      -0.5,
+      0.875,
+      -0.0625
+    ],
+    "max": [
+      0.5,
+      1.9375,
+      0.125
+    ]
+  },
+  "gothicPaintingFrameEmpty": {
+    "file": "gothicPaintingFrameEmpty.bbmodel",
+    "source": "assets/props/blocky/gothicPaintingFrameEmpty_0.glb",
+    "min": [
+      -0.625,
+      0.625,
+      -0.0625
+    ],
+    "max": [
+      0.625,
+      2.5,
+      0.0625
+    ]
+  },
+  "gothicPictureFrameEmpty": {
+    "file": "gothicPictureFrameEmpty.bbmodel",
+    "source": "assets/props/blocky/gothicPictureFrameEmpty_0.glb",
+    "min": [
+      -0.375,
+      0.9375,
+      -0.0625
+    ],
+    "max": [
+      0.375,
+      2.0,
+      0.0625
+    ]
+  },
+  "framedWallPortrait": {
+    "file": "framedWallPortrait.bbmodel",
+    "source": "assets/props/blocky/framedWallPortrait_0.glb",
+    "min": [
+      -0.4375,
+      0.6875,
+      -0.0625
+    ],
+    "max": [
+      0.4375,
+      1.875,
+      0.125
+    ]
+  },
+  "bathroomMirror": {
+    "file": "bathroomMirror.bbmodel",
+    "source": "assets/props/blocky/bathroomMirror.glb",
+    "min": [
+      -0.375,
+      0.625,
+      -0.0625
+    ],
+    "max": [
+      0.375,
+      1.8125,
+      0.125
+    ]
+  },
+  "bedroomWallClock": {
+    "file": "bedroomWallClock.bbmodel",
+    "source": "assets/props/blocky/bedroomWallClock.glb",
+    "min": [
+      -0.1875,
+      0.875,
+      -0.0625
+    ],
+    "max": [
+      0.1875,
+      1.6875,
+      0.0625
+    ]
+  },
+  "heavyMansionDrapes": {
+    "file": "heavyMansionDrapes.bbmodel",
+    "source": "assets/props/blocky/heavyMansionDrapes_0.glb",
+    "min": [
+      -0.75,
+      0.125,
+      -0.0625
+    ],
+    "max": [
+      0.75,
+      2.1875,
+      0.0625
+    ]
+  },
+  "privacyCurtain": {
+    "file": "privacyCurtain.bbmodel",
+    "source": "assets/props/blocky/privacyCurtain.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.0625
+    ],
+    "max": [
+      0.5,
+      2.375,
+      0.0625
+    ]
+  },
+  "publicMensRoomSign": {
+    "file": "publicMensRoomSign.bbmodel",
+    "source": "assets/props/blocky/publicMensRoomSign.glb",
+    "min": [
+      -0.25,
+      1.1875,
+      -0.0625
+    ],
+    "max": [
+      0.25,
+      1.9375,
+      0.0625
+    ]
+  },
+  "publicWomensRoomSign": {
+    "file": "publicWomensRoomSign.bbmodel",
+    "source": "assets/props/blocky/publicWomensRoomSign.glb",
+    "min": [
+      -0.25,
+      1.1875,
+      -0.0625
+    ],
+    "max": [
+      0.25,
+      1.9375,
+      0.0625
+    ]
+  },
+  "bathroomStall": {
+    "file": "bathroomStall.bbmodel",
+    "source": "assets/props/blocky/bathroomStall_0.glb",
+    "min": [
+      -0.375,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.375,
+      1.9375,
+      0.3125
+    ]
+  },
+  "bathroomVanity": {
+    "file": "bathroomVanity.bbmodel",
+    "source": "assets/props/blocky/bathroomVanity_0.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.4375,
+      1.6875,
+      0.25
+    ]
+  },
+  "houseBathroomShelf": {
+    "file": "houseBathroomShelf.bbmodel",
+    "source": "assets/props/blocky/houseBathroomShelf_0.glb",
+    "min": [
+      -0.4375,
+      1.0,
+      0.0
+    ],
+    "max": [
+      0.4375,
+      2.0,
+      0.125
+    ]
+  },
+  "houseMedicineCabinet": {
+    "file": "houseMedicineCabinet.bbmodel",
+    "source": "assets/props/blocky/houseMedicineCabinet_0.glb",
+    "min": [
+      -0.3125,
+      1.125,
+      -0.125
+    ],
+    "max": [
+      0.3125,
+      1.8125,
+      0.1875
+    ]
+  },
+  "houseTowelRack": {
+    "file": "houseTowelRack.bbmodel",
+    "source": "assets/props/blocky/houseTowelRack_0.glb",
+    "min": [
+      -0.4375,
+      0.875,
+      -0.0625
+    ],
+    "max": [
+      0.4375,
+      1.375,
+      0.125
+    ]
+  },
+  "houseShowerEnclosure": {
+    "file": "houseShowerEnclosure.bbmodel",
+    "source": "assets/props/blocky/houseShowerEnclosure.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.5
+    ],
+    "max": [
+      0.5,
+      2.1875,
+      0.5
+    ]
+  },
+  "publicMensShowerStall": {
+    "file": "publicMensShowerStall.bbmodel",
+    "source": "assets/props/blocky/publicMensShowerStall.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.4375
+    ],
+    "max": [
+      0.4375,
+      2.1875,
+      0.5
+    ]
+  },
+  "publicWomensShowerStall": {
+    "file": "publicWomensShowerStall.bbmodel",
+    "source": "assets/props/blocky/publicWomensShowerStall.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.4375
+    ],
+    "max": [
+      0.4375,
+      2.1875,
+      0.5
+    ]
+  },
+  "publicMensUrinal": {
+    "file": "publicMensUrinal.bbmodel",
+    "source": "assets/props/blocky/publicMensUrinal.glb",
+    "min": [
+      -0.1875,
+      0.5625,
+      -0.1875
+    ],
+    "max": [
+      0.1875,
+      1.4375,
+      0.1875
+    ]
+  },
+  "publicSinkBank": {
+    "file": "publicSinkBank.bbmodel",
+    "source": "assets/props/blocky/publicSinkBank_0.glb",
+    "min": [
+      -0.8125,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.8125,
+      1.3125,
+      0.25
+    ]
+  },
+  "publicBabyChangeStation": {
+    "file": "publicBabyChangeStation.bbmodel",
+    "source": "assets/props/blocky/publicBabyChangeStation_0.glb",
+    "min": [
+      -0.4375,
+      1.125,
+      -0.125
+    ],
+    "max": [
+      0.4375,
+      1.5,
+      0.5625
+    ]
+  },
+  "publicHandDryer": {
+    "file": "publicHandDryer.bbmodel",
+    "source": "assets/props/blocky/publicHandDryer.glb",
+    "min": [
+      -0.1875,
+      1.125,
+      -0.125
+    ],
+    "max": [
+      0.1875,
+      1.5,
+      0.0625
+    ]
+  },
+  "publicPaperTowelDispenser": {
+    "file": "publicPaperTowelDispenser.bbmodel",
+    "source": "assets/props/blocky/publicPaperTowelDispenser.glb",
+    "min": [
+      -0.1875,
+      1.0,
+      -0.125
+    ],
+    "max": [
+      0.1875,
+      1.625,
+      0.125
+    ]
+  },
+  "publicSanitaryBin": {
+    "file": "publicSanitaryBin.bbmodel",
+    "source": "assets/props/blocky/publicSanitaryBin.glb",
+    "min": [
+      -0.125,
+      0.0,
+      -0.125
+    ],
+    "max": [
+      0.125,
+      0.6875,
+      0.1875
+    ]
+  },
+  "publicSoapDispenser": {
+    "file": "publicSoapDispenser.bbmodel",
+    "source": "assets/props/blocky/publicSoapDispenser.glb",
+    "min": [
+      -0.0625,
+      1.0,
+      -0.0625
+    ],
+    "max": [
+      0.0625,
+      1.375,
+      0.125
+    ]
+  },
+  "publicShowerBench": {
+    "file": "publicShowerBench.bbmodel",
+    "source": "assets/props/blocky/publicShowerBench_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.625,
+      0.375,
+      0.1875
+    ]
+  },
+  "laundryHamper": {
+    "file": "laundryHamper.bbmodel",
+    "source": "assets/props/blocky/laundryHamper_0.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.25,
+      0.6875,
+      0.25
+    ]
+  },
+  "bedroomBench": {
+    "file": "bedroomBench.bbmodel",
+    "source": "assets/props/blocky/bedroomBench_0.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.5,
+      0.5,
+      0.1875
+    ]
+  },
+  "gothicBedroomBench": {
+    "file": "gothicBedroomBench.bbmodel",
+    "source": "assets/props/blocky/gothicBedroomBench_0.glb",
+    "min": [
+      -0.5625,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.5625,
+      0.5,
+      0.1875
+    ]
+  },
+  "bedroomVanity": {
+    "file": "bedroomVanity.bbmodel",
+    "source": "assets/props/blocky/bedroomVanity_0.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.5,
+      1.8125,
+      0.25
+    ]
+  },
+  "gothicVanity": {
+    "file": "gothicVanity.bbmodel",
+    "source": "assets/props/blocky/gothicVanity_0.glb",
+    "min": [
+      -0.5625,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.5625,
+      2.125,
+      0.25
+    ]
+  },
+  "vanityStool": {
+    "file": "vanityStool.bbmodel",
+    "source": "assets/props/blocky/vanityStool_0.glb",
+    "min": [
+      -0.1875,
+      -0.0019,
+      -0.1875
+    ],
+    "max": [
+      0.1875,
+      0.4375,
+      0.1875
+    ]
+  },
+  "gothicVanityStool": {
+    "file": "gothicVanityStool.bbmodel",
+    "source": "assets/props/blocky/gothicVanityStool_0.glb",
+    "min": [
+      -0.1875,
+      -0.0019,
+      -0.1875
+    ],
+    "max": [
+      0.1875,
+      0.4375,
+      0.1875
+    ]
+  },
+  "bunkBed": {
+    "file": "bunkBed.bbmodel",
+    "source": "assets/props/blocky/bunkBed_0.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -1.0
+    ],
+    "max": [
+      0.5625,
+      1.875,
+      1.0
+    ]
+  },
+  "prisonBunk": {
+    "file": "prisonBunk.bbmodel",
+    "source": "assets/props/blocky/prisonBunk_0.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.9375
+    ],
+    "max": [
+      0.5,
+      1.6875,
+      1.0
+    ]
+  },
+  "gothicDoubleBed": {
+    "file": "gothicDoubleBed.bbmodel",
+    "source": "assets/props/blocky/gothicDoubleBed_0.glb",
+    "min": [
+      -1.0,
+      0.0,
+      -1.125
+    ],
+    "max": [
+      1.0,
+      2.375,
+      1.1875
+    ]
+  },
+  "gothicCoffinChest": {
+    "file": "gothicCoffinChest.bbmodel",
+    "source": "assets/props/blocky/gothicCoffinChest_0.glb",
+    "min": [
+      -0.5,
+      0.0625,
+      -0.25
+    ],
+    "max": [
+      0.5,
+      0.6875,
+      0.3125
+    ]
+  },
+  "toyChest": {
+    "file": "toyChest.bbmodel",
+    "source": "assets/props/blocky/toyChest_0.glb",
+    "min": [
+      -0.4375,
+      0.0625,
+      -0.25
+    ],
+    "max": [
+      0.4375,
+      0.625,
+      0.3125
+    ]
+  },
+  "normalCoffeeTable": {
+    "file": "normalCoffeeTable.bbmodel",
+    "source": "assets/props/blocky/normalCoffeeTable_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.625,
+      0.5,
+      0.375
+    ]
+  },
+  "normalEntryBench": {
+    "file": "normalEntryBench.bbmodel",
+    "source": "assets/props/blocky/normalEntryBench_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.625,
+      0.9375,
+      0.1875
+    ]
+  },
+  "magazineRack": {
+    "file": "magazineRack.bbmodel",
+    "source": "assets/props/blocky/magazineRack_0.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.3125,
+      1.0625,
+      0.25
+    ]
+  },
+  "mansionChaiseLounge": {
+    "file": "mansionChaiseLounge.bbmodel",
+    "source": "assets/props/blocky/mansionChaiseLounge_0.glb",
+    "min": [
+      -0.875,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.875,
+      1.0625,
+      0.375
+    ]
+  },
+  "mansionRockingChair": {
+    "file": "mansionRockingChair.bbmodel",
+    "source": "assets/props/blocky/mansionRockingChair_0.glb",
+    "min": [
+      -0.25,
+      -0.0031,
+      -0.4423
+    ],
+    "max": [
+      0.25,
+      0.9957,
+      0.4423
+    ]
+  },
+  "mansionTeaCart": {
+    "file": "mansionTeaCart.bbmodel",
+    "source": "assets/props/blocky/mansionTeaCart_0.glb",
+    "min": [
+      -0.5625,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.5625,
+      1.0625,
+      0.25
+    ]
+  },
+  "mansionUprightPiano": {
+    "file": "mansionUprightPiano.bbmodel",
+    "source": "assets/props/blocky/mansionUprightPiano_0.glb",
+    "min": [
+      -0.75,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.75,
+      1.625,
+      0.5625
+    ]
+  },
+  "mansionGrandfatherClock": {
+    "file": "mansionGrandfatherClock.bbmodel",
+    "source": "assets/props/blocky/mansionGrandfatherClock_0.glb",
+    "min": [
+      -0.375,
+      0.0625,
+      -0.25
+    ],
+    "max": [
+      0.375,
+      2.125,
+      0.25
+    ]
+  },
+  "mansionFireplace": {
+    "file": "mansionFireplace.bbmodel",
+    "source": "assets/props/blocky/mansionFireplace.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.5,
+      1.5,
+      0.375
+    ]
+  },
+  "mansionDisplayCabinet": {
+    "file": "mansionDisplayCabinet.bbmodel",
+    "source": "assets/props/blocky/mansionDisplayCabinet_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.625,
+      2.25,
+      0.1875
+    ]
+  },
+  "mansionCoatRack": {
+    "file": "mansionCoatRack.bbmodel",
+    "source": "assets/props/blocky/mansionCoatRack_0.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.25,
+      1.8125,
+      0.25
+    ]
+  },
+  "mansionBustPedestal": {
+    "file": "mansionBustPedestal.bbmodel",
+    "source": "assets/props/blocky/mansionBustPedestal.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.25,
+      2.0,
+      0.25
+    ]
+  },
+  "mansionRoomDivider": {
+    "file": "mansionRoomDivider.bbmodel",
+    "source": "assets/props/blocky/mansionRoomDivider_0.glb",
+    "min": [
+      -0.9375,
+      0.0625,
+      -0.0625
+    ],
+    "max": [
+      0.9375,
+      2.0,
+      0.125
+    ]
+  },
+  "gothicHighbackChair": {
+    "file": "gothicHighbackChair.bbmodel",
+    "source": "assets/props/blocky/gothicHighbackChair_0.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.3717
+    ],
+    "max": [
+      0.25,
+      1.3118,
+      0.25
+    ]
+  },
+  "gothicPedestalTable": {
+    "file": "gothicPedestalTable.bbmodel",
+    "source": "assets/props/blocky/gothicPedestalTable_0.glb",
+    "min": [
+      -0.375,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.375,
+      0.75,
+      0.375
+    ]
+  },
+  "gothicWritingDesk": {
+    "file": "gothicWritingDesk.bbmodel",
+    "source": "assets/props/blocky/gothicWritingDesk_0.glb",
+    "min": [
+      -0.6875,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.6875,
+      0.875,
+      0.3125
+    ]
+  },
+  "gothicBedsideCandelabra": {
+    "file": "gothicBedsideCandelabra.bbmodel",
+    "source": "assets/props/blocky/gothicBedsideCandelabra.glb",
+    "min": [
+      -0.1875,
+      0.0,
+      -0.0625
+    ],
+    "max": [
+      0.1875,
+      0.8125,
+      0.0625
+    ]
+  },
+  "gothicFloorCandelabra": {
+    "file": "gothicFloorCandelabra.bbmodel",
+    "source": "assets/props/blocky/gothicFloorCandelabra.glb",
+    "min": [
+      -0.375,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.375,
+      1.8125,
+      0.1875
+    ]
+  },
+  "diningChandelier": {
+    "file": "diningChandelier.bbmodel",
+    "source": "assets/props/blocky/diningChandelier.glb",
+    "min": [
+      -0.375,
+      0.3125,
+      -0.375
+    ],
+    "max": [
+      0.375,
+      0.875,
+      0.375
+    ]
+  },
+  "ceilingFan": {
+    "file": "ceilingFan.bbmodel",
+    "source": "assets/props/blocky/ceilingFan.glb",
+    "min": [
+      -0.875,
+      0.25,
+      -1.0
+    ],
+    "max": [
+      1.0,
+      0.5625,
+      1.0
+    ]
+  },
+  "backstageRepairStand": {
+    "file": "backstageRepairStand.bbmodel",
+    "source": "assets/props/blocky/backstageRepairStand.glb",
+    "min": [
+      -0.625,
+      0.125,
+      -0.375
+    ],
+    "max": [
+      0.625,
+      1.25,
+      0.375
+    ]
+  },
+  "utilityCart": {
+    "file": "utilityCart.bbmodel",
+    "source": "assets/props/blocky/utilityCart_0.glb",
+    "min": [
+      -0.625,
+      0.125,
+      -0.375
+    ],
+    "max": [
+      0.625,
+      1.25,
+      0.375
+    ]
+  },
+  "maintenanceCleaningCart": {
+    "file": "maintenanceCleaningCart.bbmodel",
+    "source": "assets/props/blocky/maintenanceCleaningCart_0.glb",
+    "min": [
+      -0.625,
+      0.125,
+      -0.375
+    ],
+    "max": [
+      0.625,
+      1.9375,
+      0.375
+    ]
+  },
+  "maintenanceToolCabinet": {
+    "file": "maintenanceToolCabinet.bbmodel",
+    "source": "assets/props/blocky/maintenanceToolCabinet_0.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.4375,
+      1.625,
+      0.375
+    ]
+  },
+  "officeCornerWorkstation": {
+    "file": "officeCornerWorkstation.bbmodel",
+    "source": "assets/props/blocky/officeCornerWorkstation_0.glb",
+    "min": [
+      -1.0,
+      0.0,
+      -1.0625
+    ],
+    "max": [
+      0.875,
+      0.875,
+      0.375
+    ]
+  },
+  "officeCubiclePartition": {
+    "file": "officeCubiclePartition.bbmodel",
+    "source": "assets/props/blocky/officeCubiclePartition_0.glb",
+    "min": [
+      -1.0625,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      1.0625,
+      1.75,
+      0.1875
+    ]
+  },
+  "officeFileBoxes": {
+    "file": "officeFileBoxes.bbmodel",
+    "source": "assets/props/blocky/officeFileBoxes_0.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.5625,
+      0.875,
+      0.0625
+    ]
+  },
+  "officePhotocopier": {
+    "file": "officePhotocopier.bbmodel",
+    "source": "assets/props/blocky/officePhotocopier_0.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.5625,
+      1.125,
+      0.5625
+    ]
+  },
+  "officePrinter": {
+    "file": "officePrinter.bbmodel",
+    "source": "assets/props/blocky/officePrinter_0.glb",
+    "min": [
+      -0.375,
+      0.0625,
+      -0.3125
+    ],
+    "max": [
+      0.375,
+      0.5625,
+      0.5625
+    ]
+  },
+  "officeShredder": {
+    "file": "officeShredder.bbmodel",
+    "source": "assets/props/blocky/officeShredder_0.glb",
+    "min": [
+      -0.25,
+      0.0625,
+      -0.25
+    ],
+    "max": [
+      0.25,
+      1.4375,
+      0.25
+    ]
+  },
+  "officeWaterCooler": {
+    "file": "officeWaterCooler.bbmodel",
+    "source": "assets/props/blocky/officeWaterCooler_0.glb",
+    "min": [
+      -0.25,
+      0.0625,
+      -0.1875
+    ],
+    "max": [
+      0.25,
+      1.6875,
+      0.375
+    ]
+  },
+  "normalKitchenSink": {
+    "file": "normalKitchenSink.bbmodel",
+    "source": "assets/props/blocky/normalKitchenSink_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.625,
+      1.125,
+      0.375
+    ]
+  },
+  "luxuryKitchenSink": {
+    "file": "luxuryKitchenSink.bbmodel",
+    "source": "assets/props/blocky/luxuryKitchenSink_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.625,
+      1.125,
+      0.375
+    ]
+  },
+  "gothicKitchenSink": {
+    "file": "gothicKitchenSink.bbmodel",
+    "source": "assets/props/blocky/gothicKitchenSink_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.625,
+      1.125,
+      0.375
+    ]
+  },
+  "normalKitchenWallCabinet": {
+    "file": "normalKitchenWallCabinet.bbmodel",
+    "source": "assets/props/blocky/normalKitchenWallCabinet_0.glb",
+    "min": [
+      -0.625,
+      1.25,
+      -0.1875
+    ],
+    "max": [
+      0.625,
+      2.125,
+      0.25
+    ]
+  },
+  "luxuryKitchenWallCabinet": {
+    "file": "luxuryKitchenWallCabinet.bbmodel",
+    "source": "assets/props/blocky/luxuryKitchenWallCabinet_0.glb",
+    "min": [
+      -0.625,
+      1.25,
+      -0.1875
+    ],
+    "max": [
+      0.625,
+      2.125,
+      0.25
+    ]
+  },
+  "gothicKitchenWallCabinet": {
+    "file": "gothicKitchenWallCabinet.bbmodel",
+    "source": "assets/props/blocky/gothicKitchenWallCabinet_0.glb",
+    "min": [
+      -0.625,
+      1.25,
+      -0.1875
+    ],
+    "max": [
+      0.625,
+      2.125,
+      0.25
+    ]
+  },
+  "prisonKitchenRack": {
+    "file": "prisonKitchenRack.bbmodel",
+    "source": "assets/props/blocky/prisonKitchenRack_0.glb",
+    "min": [
+      -0.6875,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.6875,
+      1.8125,
+      0.3125
+    ]
+  },
+  "prisonServingCounter": {
+    "file": "prisonServingCounter.bbmodel",
+    "source": "assets/props/blocky/prisonServingCounter_0.glb",
+    "min": [
+      -1.25,
+      0.0,
+      -0.4375
+    ],
+    "max": [
+      1.25,
+      1.75,
+      0.5625
+    ]
+  },
+  "prisonCafeteriaTable": {
+    "file": "prisonCafeteriaTable.bbmodel",
+    "source": "assets/props/blocky/prisonCafeteriaTable_0.glb",
+    "min": [
+      -1.3125,
+      0.0,
+      -0.875
+    ],
+    "max": [
+      1.3125,
+      0.75,
+      0.875
+    ]
+  },
+  "prisonTrayReturn": {
+    "file": "prisonTrayReturn.bbmodel",
+    "source": "assets/props/blocky/prisonTrayReturn_0.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.5,
+      1.3125,
+      0.625
+    ]
+  },
+  "prisonCellGate": {
+    "file": "prisonCellGate.bbmodel",
+    "source": "assets/props/blocky/prisonCellGate.glb",
+    "min": [
+      -1.5,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      1.5,
+      2.8125,
+      0.25
+    ]
+  },
+  "dungeonCage": {
+    "file": "dungeonCage.bbmodel",
+    "source": "assets/props/blocky/dungeonCage.glb",
+    "min": [
+      -1.25,
+      0.0,
+      -1.25
+    ],
+    "max": [
+      1.25,
+      2.5,
+      1.3125
+    ]
+  },
+  "restraintChair": {
+    "file": "restraintChair.bbmodel",
+    "source": "assets/props/blocky/restraintChair_0.glb",
+    "min": [
+      -0.375,
+      0.0,
+      -0.4661
+    ],
+    "max": [
+      0.375,
+      1.3754,
+      0.375
+    ]
+  },
+  "arcadeBasketballHoop": {
+    "file": "arcadeBasketballHoop.bbmodel",
+    "source": "assets/props/blocky/arcadeBasketballHoop_0.glb",
+    "min": [
+      -0.5625,
+      0.25,
+      -1.125
+    ],
+    "max": [
+      0.5625,
+      2.3125,
+      0.625
+    ]
+  },
+  "arcadeTokenChanger": {
+    "file": "arcadeTokenChanger.bbmodel",
+    "source": "assets/props/blocky/arcadeTokenChanger_0.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.4375,
+      1.875,
+      0.4375
+    ]
+  },
+  "prizeClawMachine": {
+    "file": "prizeClawMachine.bbmodel",
+    "source": "assets/props/blocky/prizeClawMachine_0.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.4375,
+      1.875,
+      0.4375
+    ]
+  },
+  "prizeCounter": {
+    "file": "prizeCounter.bbmodel",
+    "source": "assets/props/blocky/prizeCounter_0.glb",
+    "min": [
+      -0.5625,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.5625,
+      1.875,
+      0.4375
+    ]
+  },
+  "snackKiosk": {
+    "file": "snackKiosk.bbmodel",
+    "source": "assets/props/blocky/snackKiosk_0.glb",
+    "min": [
+      -0.5625,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.5625,
+      1.875,
+      0.4375
+    ]
+  },
+  "carnivalTicketBooth": {
+    "file": "carnivalTicketBooth.bbmodel",
+    "source": "assets/props/blocky/carnivalTicketBooth.glb",
+    "min": [
+      -0.875,
+      0.0,
+      -0.5625
+    ],
+    "max": [
+      0.875,
+      2.3125,
+      0.6875
+    ]
+  },
+  "ringTossStall": {
+    "file": "ringTossStall.bbmodel",
+    "source": "assets/props/blocky/ringTossStall_0.glb",
+    "min": [
+      -1.25,
+      0.0,
+      -0.75
+    ],
+    "max": [
+      1.25,
+      2.625,
+      0.9375
+    ]
+  },
+  "popcornCart": {
+    "file": "popcornCart.bbmodel",
+    "source": "assets/props/blocky/popcornCart.glb",
+    "min": [
+      -0.6875,
+      0.0625,
+      -0.3125
+    ],
+    "max": [
+      1.0625,
+      1.875,
+      0.375
+    ]
+  },
+  "strengthTester": {
+    "file": "strengthTester.bbmodel",
+    "source": "assets/props/blocky/strengthTester.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.4375
+    ],
+    "max": [
+      0.875,
+      2.875,
+      0.375
+    ]
+  },
+  "circusPedestal": {
+    "file": "circusPedestal.bbmodel",
+    "source": "assets/props/blocky/circusPedestal.glb",
+    "min": [
+      -0.8125,
+      0.0,
+      -0.8125
+    ],
+    "max": [
+      0.8125,
+      0.75,
+      0.8125
+    ]
+  },
+  "stagePlatform": {
+    "file": "stagePlatform.bbmodel",
+    "source": "assets/props/blocky/stagePlatform.glb",
+    "min": [
+      -1.4375,
+      0.0,
+      -1.125
+    ],
+    "max": [
+      1.4375,
+      0.75,
+      1.125
+    ]
+  },
+  "stageSpeaker": {
+    "file": "stageSpeaker.bbmodel",
+    "source": "assets/props/blocky/stageSpeaker.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.4375,
+      1.5625,
+      0.5625
+    ]
+  },
+  "mascotStatue": {
+    "file": "mascotStatue.bbmodel",
+    "source": "assets/props/blocky/mascotStatue_0.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.5
+    ],
+    "max": [
+      0.5,
+      1.9375,
+      0.5
+    ]
+  },
+  "carnivalCarousel": {
+    "file": "carnivalCarousel.bbmodel",
+    "source": "assets/props/blocky/carnivalCarousel.glb",
+    "min": [
+      -2.25,
+      0.0,
+      -2.25
+    ],
+    "max": [
+      2.25,
+      3.625,
+      2.25
+    ]
+  },
+  "carouselCenterpiece": {
+    "file": "carouselCenterpiece.bbmodel",
+    "source": "assets/props/blocky/carouselCenterpiece.glb",
+    "min": [
+      -2.75,
+      0.0,
+      -2.75
+    ],
+    "max": [
+      2.75,
+      6.4375,
+      2.75
+    ]
+  },
+  "beachChair": {
+    "file": "beachChair.bbmodel",
+    "source": "assets/props/blocky/beachChair_0.glb",
+    "min": [
+      -0.3125,
+      -0.0159,
+      -0.4957
+    ],
+    "max": [
+      0.3125,
+      0.735,
+      0.5
+    ]
+  },
+  "beachUmbrella": {
+    "file": "beachUmbrella.bbmodel",
+    "source": "assets/props/blocky/beachUmbrella_0.glb",
+    "min": [
+      -0.9375,
+      0.0,
+      -0.9375
+    ],
+    "max": [
+      0.9375,
+      2.625,
+      0.9375
+    ]
+  },
+  "surfboardRack": {
+    "file": "surfboardRack.bbmodel",
+    "source": "assets/props/blocky/surfboardRack_0.glb",
+    "min": [
+      -0.6875,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.6875,
+      1.625,
+      0.3125
+    ]
+  },
+  "sandCastle": {
+    "file": "sandCastle.bbmodel",
+    "source": "assets/props/blocky/sandCastle.glb",
+    "min": [
+      -0.375,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.4375,
+      0.875,
+      0.375
+    ]
+  },
+  "tikiBar": {
+    "file": "tikiBar.bbmodel",
+    "source": "assets/props/blocky/tikiBar.glb",
+    "min": [
+      -0.75,
+      0.0625,
+      -0.5
+    ],
+    "max": [
+      0.75,
+      2.375,
+      0.4375
+    ]
+  },
+  "frozenBeachHut": {
+    "file": "frozenBeachHut.bbmodel",
+    "source": "assets/props/blocky/frozenBeachHut.glb",
+    "min": [
+      -1.0625,
+      0.0,
+      -0.875
+    ],
+    "max": [
+      1.0625,
+      2.8125,
+      0.9375
+    ]
+  },
+  "frozenTidelinePool": {
+    "file": "frozenTidelinePool.bbmodel",
+    "source": "assets/props/blocky/frozenTidelinePool.glb",
+    "min": [
+      -3.25,
+      0.0,
+      -2.625
+    ],
+    "max": [
+      3.25,
+      0.25,
+      2.625
+    ]
+  },
+  "gardenPlanterBench": {
+    "file": "gardenPlanterBench.bbmodel",
+    "source": "assets/props/blocky/gardenPlanterBench_0.glb",
+    "min": [
+      -1.0625,
+      0.0,
+      -0.6875
+    ],
+    "max": [
+      1.0625,
+      0.875,
+      0.8125
+    ]
+  },
+  "giantTree": {
+    "file": "giantTree.bbmodel",
+    "source": "assets/props/blocky/giantTree.glb",
+    "min": [
+      -1.1875,
+      0.0,
+      -1.125
+    ],
+    "max": [
+      1.1875,
+      3.9375,
+      1.125
+    ]
+  },
+  "palmTree": {
+    "file": "palmTree.bbmodel",
+    "source": "assets/props/blocky/palmTree.glb",
+    "min": [
+      -1.1875,
+      0.0,
+      -1.1875
+    ],
+    "max": [
+      1.1875,
+      3.6875,
+      1.1875
+    ]
+  },
+  "grassFern": {
+    "file": "grassFern.bbmodel",
+    "source": "assets/props/blocky/grassFern.glb",
+    "min": [
+      -0.4375,
+      0.25,
+      -0.375
+    ],
+    "max": [
+      0.4375,
+      0.4375,
+      0.375
+    ]
+  },
+  "flowerBlue": {
+    "file": "flowerBlue.bbmodel",
+    "source": "assets/props/blocky/flowerBlue.glb",
+    "min": [
+      -0.1875,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.1875,
+      0.75,
+      0.1875
+    ]
+  },
+  "flowerRose": {
+    "file": "flowerRose.bbmodel",
+    "source": "assets/props/blocky/flowerRose.glb",
+    "min": [
+      -0.1875,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.1875,
+      0.75,
+      0.1875
+    ]
+  },
+  "flowerSun": {
+    "file": "flowerSun.bbmodel",
+    "source": "assets/props/blocky/flowerSun.glb",
+    "min": [
+      -0.1875,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.1875,
+      0.75,
+      0.1875
+    ]
+  },
+  "flowerViolet": {
+    "file": "flowerViolet.bbmodel",
+    "source": "assets/props/blocky/flowerViolet.glb",
+    "min": [
+      -0.1875,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.1875,
+      0.75,
+      0.1875
+    ]
+  },
+  "flowerCenterpiece": {
+    "file": "flowerCenterpiece.bbmodel",
+    "source": "assets/props/blocky/flowerCenterpiece.glb",
+    "min": [
+      -0.1875,
+      0.0,
+      -0.125
+    ],
+    "max": [
+      0.1875,
+      0.9375,
+      0.125
+    ]
+  },
+  "basaltPillar": {
+    "file": "basaltPillar.bbmodel",
+    "source": "assets/props/blocky/basaltPillar.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.25,
+      1.875,
+      0.25
+    ]
+  },
+  "basaltRubble": {
+    "file": "basaltRubble.bbmodel",
+    "source": "assets/props/blocky/basaltRubble.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.5625
+    ],
+    "max": [
+      0.5,
+      0.375,
+      0.5625
+    ]
+  },
+  "brokenAquarium": {
+    "file": "brokenAquarium.bbmodel",
+    "source": "assets/props/blocky/brokenAquarium_0.glb",
+    "min": [
+      -0.6875,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.6875,
+      1.625,
+      0.375
+    ]
+  },
+  "emberBrazier": {
+    "file": "emberBrazier.bbmodel",
+    "source": "assets/props/blocky/emberBrazier.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.25,
+      0.875,
+      0.25
+    ]
+  },
+  "infernoAltar": {
+    "file": "infernoAltar.bbmodel",
+    "source": "assets/props/blocky/infernoAltar.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.4375
+    ],
+    "max": [
+      0.625,
+      1.3125,
+      0.4375
+    ]
+  },
+  "infernoChainLantern": {
+    "file": "infernoChainLantern.bbmodel",
+    "source": "assets/props/blocky/infernoChainLantern.glb",
+    "min": [
+      -0.125,
+      0.25,
+      -0.125
+    ],
+    "max": [
+      0.125,
+      1.5625,
+      0.125
+    ]
+  },
+  "lavaPipeManifold": {
+    "file": "lavaPipeManifold.bbmodel",
+    "source": "assets/props/blocky/lavaPipeManifold.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.625,
+      1.125,
+      0.3125
+    ]
+  },
+  "lavaVent": {
+    "file": "lavaVent.bbmodel",
+    "source": "assets/props/blocky/lavaVent.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.3125,
+      0.375,
+      0.3125
+    ]
+  },
+  "magmaCrystalCluster": {
+    "file": "magmaCrystalCluster.bbmodel",
+    "source": "assets/props/blocky/magmaCrystalCluster.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.25,
+      1.0625,
+      0.25
+    ]
+  },
+  "ivStand": {
+    "file": "ivStand.bbmodel",
+    "source": "assets/props/blocky/ivStand.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.25,
+      1.8125,
+      0.25
+    ]
+  },
+  "medicalCart": {
+    "file": "medicalCart.bbmodel",
+    "source": "assets/props/blocky/medicalCart.glb",
+    "min": [
+      -0.375,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.375,
+      1.0,
+      0.25
+    ]
+  },
+  "readingTable": {
+    "file": "readingTable.bbmodel",
+    "source": "assets/props/blocky/readingTable_0.glb",
+    "min": [
+      -0.75,
+      0.0,
+      -0.4375
+    ],
+    "max": [
+      0.75,
+      0.75,
+      0.4375
+    ]
+  },
+  "libraryGlobe": {
+    "file": "libraryGlobe.bbmodel",
+    "source": "assets/props/blocky/libraryGlobe_0.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.3125,
+      1.0,
+      0.25
+    ]
+  },
+  "storageBarrel": {
+    "file": "storageBarrel.bbmodel",
+    "source": "assets/props/blocky/storageBarrel_0.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.3125,
+      0.9375,
+      0.3125
+    ]
+  },
+  "storageShelving": {
+    "file": "storageShelving.bbmodel",
+    "source": "assets/props/blocky/storageShelving.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.625,
+      1.9375,
+      0.25
+    ]
+  },
+  "receptionDesk": {
+    "file": "receptionDesk.bbmodel",
+    "source": "assets/props/blocky/receptionDesk_0.glb",
+    "min": [
+      -1.0,
+      0.0,
+      -0.4375
+    ],
+    "max": [
+      1.0,
+      1.125,
+      0.375
+    ]
+  },
+  "pottedPlant": {
+    "file": "pottedPlant.bbmodel",
+    "source": "assets/props/blocky/pottedPlant_0.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.25,
+      1.25,
+      0.25
+    ]
+  },
+  "standingMirror": {
+    "file": "standingMirror.bbmodel",
+    "source": "assets/props/blocky/standingMirror_0.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.3125,
+      1.75,
+      0.1875
+    ]
+  },
+  "hospitalBed": {
+    "file": "hospitalBed.bbmodel",
+    "source": "assets/props/blocky/hospitalBed_0.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -1.0625
+    ],
+    "max": [
+      0.5,
+      1.0625,
+      1.0625
+    ]
+  },
+  "hospitalCurtain": {
+    "file": "hospitalCurtain.bbmodel",
+    "source": "assets/props/blocky/hospitalCurtain_0.glb",
+    "min": [
+      -1.0,
+      0.0,
+      -0.0625
+    ],
+    "max": [
+      1.0,
+      2.375,
+      0.0625
+    ]
+  },
+  "ivDripStand": {
+    "file": "ivDripStand.bbmodel",
+    "source": "assets/props/blocky/ivDripStand.glb",
+    "min": [
+      -0.1875,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.1875,
+      1.875,
+      0.1875
+    ]
+  },
+  "vitalsMonitor": {
+    "file": "vitalsMonitor.bbmodel",
+    "source": "assets/props/blocky/vitalsMonitor.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.25,
+      1.625,
+      0.25
+    ]
+  },
+  "nursesStation": {
+    "file": "nursesStation.bbmodel",
+    "source": "assets/props/blocky/nursesStation_0.glb",
+    "min": [
+      -1.1875,
+      0.0,
+      -0.5
+    ],
+    "max": [
+      1.1875,
+      1.3125,
+      0.5
+    ]
+  },
+  "waitingChairs": {
+    "file": "waitingChairs.bbmodel",
+    "source": "assets/props/blocky/waitingChairs_0.glb",
+    "min": [
+      -1.0,
+      0.0,
+      -0.3236
+    ],
+    "max": [
+      1.0,
+      0.8777,
+      0.25
+    ]
+  },
+  "operatingTable": {
+    "file": "operatingTable.bbmodel",
+    "source": "assets/props/blocky/operatingTable.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.9375
+    ],
+    "max": [
+      0.3125,
+      1.0,
+      0.875
+    ]
+  },
+  "surgicalLight": {
+    "file": "surgicalLight.bbmodel",
+    "source": "assets/props/blocky/surgicalLight.glb",
+    "min": [
+      -0.625,
+      0.4375,
+      -0.1875
+    ],
+    "max": [
+      0.625,
+      1.0625,
+      0.1875
+    ]
+  },
+  "instrumentTrolley": {
+    "file": "instrumentTrolley.bbmodel",
+    "source": "assets/props/blocky/instrumentTrolley.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.4375,
+      1.0,
+      0.25
+    ]
+  },
+  "morgueCabinet": {
+    "file": "morgueCabinet.bbmodel",
+    "source": "assets/props/blocky/morgueCabinet.glb",
+    "min": [
+      -1.0,
+      0.0,
+      -0.5
+    ],
+    "max": [
+      1.0,
+      2.125,
+      0.5
+    ]
+  },
+  "autopsyTable": {
+    "file": "autopsyTable.bbmodel",
+    "source": "assets/props/blocky/autopsyTable.glb",
+    "min": [
+      -0.375,
+      0.0,
+      -0.9375
+    ],
+    "max": [
+      0.375,
+      0.9375,
+      0.9375
+    ]
+  },
+  "pharmacyShelf": {
+    "file": "pharmacyShelf.bbmodel",
+    "source": "assets/props/blocky/pharmacyShelf.glb",
+    "min": [
+      -0.8125,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.8125,
+      2.0,
+      0.25
+    ]
+  },
+  "xrayMachine": {
+    "file": "xrayMachine.bbmodel",
+    "source": "assets/props/blocky/xrayMachine.glb",
+    "min": [
+      -0.8125,
+      0.0,
+      -0.6875
+    ],
+    "max": [
+      0.8125,
+      2.1875,
+      0.5625
+    ]
+  },
+  "xrayLightbox": {
+    "file": "xrayLightbox.bbmodel",
+    "source": "assets/props/blocky/xrayLightbox.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.0625
+    ],
+    "max": [
+      0.625,
+      0.875,
+      0.0
+    ]
+  },
+  "medicalSupplyRack": {
+    "file": "medicalSupplyRack.bbmodel",
+    "source": "assets/props/blocky/medicalSupplyRack.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.625,
+      1.875,
+      0.25
+    ]
+  },
+  "wheelchair": {
+    "file": "wheelchair.bbmodel",
+    "source": "assets/props/blocky/wheelchair_0.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.4353
+    ],
+    "max": [
+      0.375,
+      0.9423,
+      0.5
+    ]
+  },
+  "hospitalWardSign": {
+    "file": "hospitalWardSign.bbmodel",
+    "source": "assets/props/blocky/hospitalWardSign_0.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.0625
+    ],
+    "max": [
+      0.5,
+      0.375,
+      0.0
+    ]
+  },
+  "labBench": {
+    "file": "labBench.bbmodel",
+    "source": "assets/props/blocky/labBench.glb",
+    "min": [
+      -1.0,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      1.0,
+      1.4375,
+      0.375
+    ]
+  },
+  "fumeHood": {
+    "file": "fumeHood.bbmodel",
+    "source": "assets/props/blocky/fumeHood.glb",
+    "min": [
+      -0.75,
+      0.0,
+      -0.4375
+    ],
+    "max": [
+      0.75,
+      2.375,
+      0.4375
+    ]
+  },
+  "specimenTank": {
+    "file": "specimenTank.bbmodel",
+    "source": "assets/props/blocky/specimenTank_0.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.5
+    ],
+    "max": [
+      0.5,
+      2.3125,
+      0.5
+    ]
+  },
+  "containmentCell": {
+    "file": "containmentCell.bbmodel",
+    "source": "assets/props/blocky/containmentCell.glb",
+    "min": [
+      -1.125,
+      0.0,
+      -0.875
+    ],
+    "max": [
+      1.125,
+      2.625,
+      0.875
+    ]
+  },
+  "labCoolingUnit": {
+    "file": "labCoolingUnit.bbmodel",
+    "source": "assets/props/blocky/labCoolingUnit.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.4375
+    ],
+    "max": [
+      0.5,
+      2.125,
+      0.4375
+    ]
+  },
+  "controlConsole": {
+    "file": "controlConsole.bbmodel",
+    "source": "assets/props/blocky/controlConsole.glb",
+    "min": [
+      -1.1875,
+      0.0,
+      -0.5
+    ],
+    "max": [
+      1.1875,
+      1.375,
+      0.5
+    ]
+  },
+  "monitorWall": {
+    "file": "monitorWall.bbmodel",
+    "source": "assets/props/blocky/monitorWall.glb",
+    "min": [
+      -1.1875,
+      0.0,
+      -0.0625
+    ],
+    "max": [
+      1.1875,
+      1.375,
+      0.0
+    ]
+  },
+  "deconShower": {
+    "file": "deconShower.bbmodel",
+    "source": "assets/props/blocky/deconShower.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.6875
+    ],
+    "max": [
+      0.6875,
+      2.5,
+      0.625
+    ]
+  },
+  "coldStorageUnit": {
+    "file": "coldStorageUnit.bbmodel",
+    "source": "assets/props/blocky/coldStorageUnit.glb",
+    "min": [
+      -0.6875,
+      0.0,
+      -0.4375
+    ],
+    "max": [
+      0.6875,
+      2.125,
+      0.4375
+    ]
+  },
+  "labWhiteboard": {
+    "file": "labWhiteboard.bbmodel",
+    "source": "assets/props/blocky/labWhiteboard.glb",
+    "min": [
+      -0.875,
+      0.0,
+      -0.0625
+    ],
+    "max": [
+      0.875,
+      1.125,
+      0.0625
+    ]
+  },
+  "hazardSign": {
+    "file": "hazardSign.bbmodel",
+    "source": "assets/props/blocky/hazardSign_0.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.0625
+    ],
+    "max": [
+      0.3125,
+      0.625,
+      0.0
+    ]
+  },
+  "labGlassPartition": {
+    "file": "labGlassPartition.bbmodel",
+    "source": "assets/props/blocky/labGlassPartition.glb",
+    "min": [
+      -1.0,
+      0.0,
+      -0.0625
+    ],
+    "max": [
+      1.0,
+      2.5,
+      0.0625
+    ]
+  },
+  "labStool": {
+    "file": "labStool.bbmodel",
+    "source": "assets/props/blocky/labStool_0.glb",
+    "min": [
+      -0.1875,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.1875,
+      0.75,
+      0.1875
+    ]
+  },
+  "labMicroscope": {
+    "file": "labMicroscope.bbmodel",
+    "source": "assets/props/blocky/labMicroscope.glb",
+    "min": [
+      -0.125,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.125,
+      0.4489,
+      0.125
+    ]
+  },
+  "gasCylinderRack": {
+    "file": "gasCylinderRack.bbmodel",
+    "source": "assets/props/blocky/gasCylinderRack.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.5,
+      1.625,
+      0.25
+    ]
+  },
+  "biohazardBin": {
+    "file": "biohazardBin.bbmodel",
+    "source": "assets/props/blocky/biohazardBin.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.25,
+      0.875,
+      0.25
+    ]
+  },
+  "raisedPlanter": {
+    "file": "raisedPlanter.bbmodel",
+    "source": "assets/props/blocky/raisedPlanter_0.glb",
+    "min": [
+      -1.0,
+      0.0,
+      -0.4375
+    ],
+    "max": [
+      1.0,
+      1.0625,
+      0.4375
+    ]
+  },
+  "pottingBench": {
+    "file": "pottingBench.bbmodel",
+    "source": "assets/props/blocky/pottingBench_0.glb",
+    "min": [
+      -0.8125,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.8125,
+      1.4375,
+      0.375
+    ]
+  },
+  "pottedPalm": {
+    "file": "pottedPalm.bbmodel",
+    "source": "assets/props/blocky/pottedPalm_0.glb",
+    "min": [
+      -0.6808,
+      0.0,
+      -0.6782
+    ],
+    "max": [
+      0.6808,
+      2.749,
+      0.6755
+    ]
+  },
+  "bananaPlant": {
+    "file": "bananaPlant.bbmodel",
+    "source": "assets/props/blocky/bananaPlant_0.glb",
+    "min": [
+      -0.55,
+      0.0,
+      -0.4859
+    ],
+    "max": [
+      0.55,
+      1.8125,
+      0.451
+    ]
+  },
+  "saguaroCactus": {
+    "file": "saguaroCactus.bbmodel",
+    "source": "assets/props/blocky/saguaroCactus.glb",
+    "min": [
+      -0.375,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.375,
+      2.1875,
+      0.3125
+    ]
+  },
+  "cactusCluster": {
+    "file": "cactusCluster.bbmodel",
+    "source": "assets/props/blocky/cactusCluster.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.5
+    ],
+    "max": [
+      0.5,
+      1.0,
+      0.5
+    ]
+  },
+  "seedlingRack": {
+    "file": "seedlingRack.bbmodel",
+    "source": "assets/props/blocky/seedlingRack.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.625,
+      1.9375,
+      0.25
+    ]
+  },
+  "irrigationManifold": {
+    "file": "irrigationManifold.bbmodel",
+    "source": "assets/props/blocky/irrigationManifold_0.glb",
+    "min": [
+      -0.6875,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.75,
+      1.75,
+      0.25
+    ]
+  },
+  "mistingPost": {
+    "file": "mistingPost.bbmodel",
+    "source": "assets/props/blocky/mistingPost.glb",
+    "min": [
+      -0.125,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.1875,
+      2.5,
+      0.1875
+    ]
+  },
+  "overgrowthPatch": {
+    "file": "overgrowthPatch.bbmodel",
+    "source": "assets/props/blocky/overgrowthPatch.glb",
+    "min": [
+      -0.8125,
+      0.0,
+      -0.625
+    ],
+    "max": [
+      0.8125,
+      0.375,
+      0.625
+    ]
+  },
+  "hangingVines": {
+    "file": "hangingVines.bbmodel",
+    "source": "assets/props/blocky/hangingVines_0.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.3125,
+      1.25,
+      0.3125
+    ]
+  },
+  "domeFountain": {
+    "file": "domeFountain.bbmodel",
+    "source": "assets/props/blocky/domeFountain.glb",
+    "min": [
+      -1.25,
+      0.0,
+      -1.25
+    ],
+    "max": [
+      1.25,
+      1.625,
+      1.25
+    ]
+  },
+  "wateringCart": {
+    "file": "wateringCart.bbmodel",
+    "source": "assets/props/blocky/wateringCart.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.5,
+      0.9375,
+      0.3125
+    ]
+  },
+  "greenhouseBench": {
+    "file": "greenhouseBench.bbmodel",
+    "source": "assets/props/blocky/greenhouseBench_0.glb",
+    "min": [
+      -0.8125,
+      0.0,
+      -0.3286
+    ],
+    "max": [
+      0.8125,
+      0.8737,
+      0.25
+    ]
+  },
+  "compostBins": {
+    "file": "compostBins.bbmodel",
+    "source": "assets/props/blocky/compostBins_0.glb",
+    "min": [
+      -0.6875,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.6875,
+      1.0,
+      0.375
+    ]
+  },
+  "bathroomVanityMansion": {
+    "file": "bathroomVanityMansion.bbmodel",
+    "source": "assets/props/blocky/bathroomVanityMansion_0.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.4375,
+      1.6875,
+      0.25
+    ]
+  },
+  "bedroomBenchMansion": {
+    "file": "bedroomBenchMansion.bbmodel",
+    "source": "assets/props/blocky/bedroomBenchMansion_0.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.5,
+      0.5,
+      0.1875
+    ]
+  },
+  "bedroomDresserMansion": {
+    "file": "bedroomDresserMansion.bbmodel",
+    "source": "assets/props/blocky/bedroomDresserMansion_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.625,
+      1.0625,
+      0.25
+    ]
+  },
+  "bedroomNightstandMansion": {
+    "file": "bedroomNightstandMansion.bbmodel",
+    "source": "assets/props/blocky/bedroomNightstandMansion_0.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.3125,
+      0.6875,
+      0.25
+    ]
+  },
+  "bedroomRugMansion": {
+    "file": "bedroomRugMansion.bbmodel",
+    "source": "assets/props/blocky/bedroomRugMansion_0.glb",
+    "min": [
+      -0.875,
+      0.0,
+      -0.5625
+    ],
+    "max": [
+      0.875,
+      0.0625,
+      0.5625
+    ]
+  },
+  "bedroomVanityMansion": {
+    "file": "bedroomVanityMansion.bbmodel",
+    "source": "assets/props/blocky/bedroomVanityMansion_0.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.5,
+      1.8125,
+      0.25
+    ]
+  },
+  "bedroomWardrobeMansion": {
+    "file": "bedroomWardrobeMansion.bbmodel",
+    "source": "assets/props/blocky/bedroomWardrobeMansion_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.625,
+      2.125,
+      0.3125
+    ]
+  },
+  "diningChairMansion": {
+    "file": "diningChairMansion.bbmodel",
+    "source": "assets/props/blocky/diningChairMansion_0.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.25,
+      0.9375,
+      0.1875
+    ]
+  },
+  "diningChairCushionMansion": {
+    "file": "diningChairCushionMansion.bbmodel",
+    "source": "assets/props/blocky/diningChairCushionMansion_0.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.25,
+      0.9375,
+      0.1875
+    ]
+  },
+  "diningChandelierMansion": {
+    "file": "diningChandelierMansion.bbmodel",
+    "source": "assets/props/blocky/diningChandelierMansion_0.glb",
+    "min": [
+      -0.375,
+      0.3125,
+      -0.375
+    ],
+    "max": [
+      0.375,
+      0.875,
+      0.375
+    ]
+  },
+  "diningSideboardMansion": {
+    "file": "diningSideboardMansion.bbmodel",
+    "source": "assets/props/blocky/diningSideboardMansion_0.glb",
+    "min": [
+      -0.75,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.75,
+      1.0625,
+      0.375
+    ]
+  },
+  "diningTableMansion": {
+    "file": "diningTableMansion.bbmodel",
+    "source": "assets/props/blocky/diningTableMansion_0.glb",
+    "min": [
+      -1.125,
+      0.0,
+      -0.4375
+    ],
+    "max": [
+      1.125,
+      0.75,
+      0.4375
+    ]
+  },
+  "doubleBedMansion": {
+    "file": "doubleBedMansion.bbmodel",
+    "source": "assets/props/blocky/doubleBedMansion_0.glb",
+    "min": [
+      -0.9375,
+      0.0,
+      -1.125
+    ],
+    "max": [
+      0.9375,
+      1.0625,
+      1.125
+    ]
+  },
+  "floorLampMansion": {
+    "file": "floorLampMansion.bbmodel",
+    "source": "assets/props/blocky/floorLampMansion_0.glb",
+    "min": [
+      -0.1875,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.1875,
+      1.75,
+      0.1875
+    ]
+  },
+  "gothicPedestalTableMansion": {
+    "file": "gothicPedestalTableMansion.bbmodel",
+    "source": "assets/props/blocky/gothicPedestalTableMansion_0.glb",
+    "min": [
+      -0.375,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.375,
+      0.75,
+      0.375
+    ]
+  },
+  "loungeCouchMansion": {
+    "file": "loungeCouchMansion.bbmodel",
+    "source": "assets/props/blocky/loungeCouchMansion_0.glb",
+    "min": [
+      -0.875,
+      0.0,
+      -0.5
+    ],
+    "max": [
+      0.875,
+      0.8847,
+      0.4375
+    ]
+  },
+  "loungeCouchWideMansion": {
+    "file": "loungeCouchWideMansion.bbmodel",
+    "source": "assets/props/blocky/loungeCouchWideMansion_0.glb",
+    "min": [
+      -1.1875,
+      0.0,
+      -0.5
+    ],
+    "max": [
+      1.25,
+      0.886,
+      0.5
+    ]
+  },
+  "mansionAreaRugMansion": {
+    "file": "mansionAreaRugMansion.bbmodel",
+    "source": "assets/props/blocky/mansionAreaRugMansion_0.glb",
+    "min": [
+      -1.3125,
+      0.0,
+      -0.8125
+    ],
+    "max": [
+      1.3125,
+      0.0625,
+      0.8125
+    ]
+  },
+  "mansionBookshelfMansion": {
+    "file": "mansionBookshelfMansion.bbmodel",
+    "source": "assets/props/blocky/mansionBookshelfMansion_0.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.4375,
+      2.0625,
+      0.3125
+    ]
+  },
+  "mansionChaiseLoungeMansion": {
+    "file": "mansionChaiseLoungeMansion.bbmodel",
+    "source": "assets/props/blocky/mansionChaiseLoungeMansion_0.glb",
+    "min": [
+      -0.875,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.875,
+      1.0625,
+      0.375
+    ]
+  },
+  "mansionConsoleTableMansion": {
+    "file": "mansionConsoleTableMansion.bbmodel",
+    "source": "assets/props/blocky/mansionConsoleTableMansion_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.625,
+      0.875,
+      0.25
+    ]
+  },
+  "mansionDisplayCabinetMansion": {
+    "file": "mansionDisplayCabinetMansion.bbmodel",
+    "source": "assets/props/blocky/mansionDisplayCabinetMansion_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.625,
+      2.25,
+      0.1875
+    ]
+  },
+  "mansionTeaCartMansion": {
+    "file": "mansionTeaCartMansion.bbmodel",
+    "source": "assets/props/blocky/mansionTeaCartMansion_0.glb",
+    "min": [
+      -0.5625,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.5625,
+      1.0625,
+      0.25
+    ]
+  },
+  "normalBookcaseMansion": {
+    "file": "normalBookcaseMansion.bbmodel",
+    "source": "assets/props/blocky/normalBookcaseMansion_0.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.5,
+      1.8125,
+      0.25
+    ]
+  },
+  "normalCoffeeTableMansion": {
+    "file": "normalCoffeeTableMansion.bbmodel",
+    "source": "assets/props/blocky/normalCoffeeTableMansion_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.625,
+      0.5,
+      0.375
+    ]
+  },
+  "normalTvConsoleMansion": {
+    "file": "normalTvConsoleMansion.bbmodel",
+    "source": "assets/props/blocky/normalTvConsoleMansion_0.glb",
+    "min": [
+      -0.6875,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.6875,
+      1.5,
+      0.25
+    ]
+  },
+  "singleBedMansion": {
+    "file": "singleBedMansion.bbmodel",
+    "source": "assets/props/blocky/singleBedMansion_0.glb",
+    "min": [
+      -0.5625,
+      0.0,
+      -1.125
+    ],
+    "max": [
+      0.5625,
+      1.0625,
+      1.125
+    ]
+  },
+  "tableLampMansion": {
+    "file": "tableLampMansion.bbmodel",
+    "source": "assets/props/blocky/tableLampMansion_0.glb",
+    "min": [
+      -0.1875,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.1875,
+      0.6875,
+      0.1875
+    ]
+  },
+  "vanityStoolMansion": {
+    "file": "vanityStoolMansion.bbmodel",
+    "source": "assets/props/blocky/vanityStoolMansion_0.glb",
+    "min": [
+      -0.1875,
+      -0.0019,
+      -0.1875
+    ],
+    "max": [
+      0.1875,
+      0.4375,
+      0.1875
+    ]
+  },
+  "woodenChairMansion": {
+    "file": "woodenChairMansion.bbmodel",
+    "source": "assets/props/blocky/woodenChairMansion_0.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.25,
+      0.9375,
+      0.25
+    ]
+  },
+  "woodenChairCushionMansion": {
+    "file": "woodenChairCushionMansion.bbmodel",
+    "source": "assets/props/blocky/woodenChairCushionMansion_0.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.25,
+      0.9375,
+      0.25
+    ]
+  },
+  "woodenDresserSideboardMansion": {
+    "file": "woodenDresserSideboardMansion.bbmodel",
+    "source": "assets/props/blocky/woodenDresserSideboardMansion_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.625,
+      0.9375,
+      0.3125
+    ]
+  },
+  "woodenTableMansion": {
+    "file": "woodenTableMansion.bbmodel",
+    "source": "assets/props/blocky/woodenTableMansion_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.625,
+      0.75,
+      0.375
+    ]
+  },
+  "mansionMarbleColumn": {
+    "file": "mansionMarbleColumn.bbmodel",
+    "source": "assets/props/blocky/mansionMarbleColumn.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.25,
+      2.25,
+      0.25
+    ]
+  },
+  "mansionPorcelainVase": {
+    "file": "mansionPorcelainVase.bbmodel",
+    "source": "assets/props/blocky/mansionPorcelainVase_0.glb",
+    "min": [
+      -0.1875,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.1875,
+      0.9375,
+      0.25
+    ]
+  },
+  "normalRoomDoor": {
+    "file": "normalRoomDoor.bbmodel",
+    "source": "assets/props/blocky/normalRoomDoor.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.8347
+    ],
+    "max": [
+      0.625,
+      2.625,
+      0.125
+    ]
+  },
+  "normalDoubleRoomDoor": {
+    "file": "normalDoubleRoomDoor.bbmodel",
+    "source": "assets/props/blocky/normalDoubleRoomDoor.glb",
+    "min": [
+      -1.125,
+      0.0,
+      -0.8926
+    ],
+    "max": [
+      1.125,
+      2.625,
+      0.125
+    ]
+  },
+  "luxuryRoomDoor": {
+    "file": "luxuryRoomDoor.bbmodel",
+    "source": "assets/props/blocky/luxuryRoomDoor.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.8347
+    ],
+    "max": [
+      0.625,
+      2.75,
+      0.125
+    ]
+  },
+  "luxuryDoubleRoomDoor": {
+    "file": "luxuryDoubleRoomDoor.bbmodel",
+    "source": "assets/props/blocky/luxuryDoubleRoomDoor.glb",
+    "min": [
+      -1.125,
+      0.0,
+      -0.8926
+    ],
+    "max": [
+      1.125,
+      2.75,
+      0.125
+    ]
+  },
+  "gothicRoomDoor": {
+    "file": "gothicRoomDoor.bbmodel",
+    "source": "assets/props/blocky/gothicRoomDoor.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.8581
+    ],
+    "max": [
+      0.625,
+      2.875,
+      0.125
+    ]
+  },
+  "gothicDoubleRoomDoor": {
+    "file": "gothicDoubleRoomDoor.bbmodel",
+    "source": "assets/props/blocky/gothicDoubleRoomDoor.glb",
+    "min": [
+      -1.125,
+      0.0,
+      -0.9161
+    ],
+    "max": [
+      1.125,
+      2.875,
+      0.125
+    ]
+  },
+  "shopShelf": {
+    "file": "shopShelf.bbmodel",
+    "source": "assets/props/blocky/shopShelf_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.625,
+      1.875,
+      0.25
+    ]
+  },
+  "shopFridge": {
+    "file": "shopFridge.bbmodel",
+    "source": "assets/props/blocky/shopFridge_0.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.5,
+      2.125,
+      0.375
+    ]
+  },
+  "checkoutCounter": {
+    "file": "checkoutCounter.bbmodel",
+    "source": "assets/props/blocky/checkoutCounter_0.glb",
+    "min": [
+      -0.875,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.875,
+      1.3125,
+      0.375
+    ]
+  },
+  "displayCase": {
+    "file": "displayCase.bbmodel",
+    "source": "assets/props/blocky/displayCase_0.glb",
+    "min": [
+      -0.6875,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.75,
+      1.25,
+      0.375
+    ]
+  },
+  "coffeeStation": {
+    "file": "coffeeStation.bbmodel",
+    "source": "assets/props/blocky/coffeeStation_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.625,
+      1.5625,
+      0.3125
+    ]
+  },
+  "donutFryer": {
+    "file": "donutFryer.bbmodel",
+    "source": "assets/props/blocky/donutFryer.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.625,
+      1.25,
+      0.375
+    ]
+  },
+  "bakeryRack": {
+    "file": "bakeryRack.bbmodel",
+    "source": "assets/props/blocky/bakeryRack_0.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.5,
+      1.875,
+      0.25
+    ]
+  },
+  "dinerStool": {
+    "file": "dinerStool.bbmodel",
+    "source": "assets/props/blocky/dinerStool_0.glb",
+    "min": [
+      -0.1875,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.1875,
+      0.8125,
+      0.1875
+    ]
+  },
+  "dinerBooth": {
+    "file": "dinerBooth.bbmodel",
+    "source": "assets/props/blocky/dinerBooth_0.glb",
+    "min": [
+      -0.8125,
+      0.0,
+      -0.75
+    ],
+    "max": [
+      0.8125,
+      1.125,
+      0.75
+    ]
+  },
+  "menuBoard": {
+    "file": "menuBoard.bbmodel",
+    "source": "assets/props/blocky/menuBoard_0.glb",
+    "min": [
+      -0.75,
+      0.0,
+      -0.0625
+    ],
+    "max": [
+      0.75,
+      0.875,
+      0.0
+    ]
+  },
+  "donutSign": {
+    "file": "donutSign.bbmodel",
+    "source": "assets/props/blocky/donutSign_0.glb",
+    "min": [
+      -0.6875,
+      0.0,
+      -0.125
+    ],
+    "max": [
+      0.5625,
+      1.25,
+      0.1875
+    ]
+  },
+  "washingMachine": {
+    "file": "washingMachine.bbmodel",
+    "source": "assets/props/blocky/washingMachine_0.glb",
+    "min": [
+      -0.375,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.375,
+      1.125,
+      0.375
+    ]
+  },
+  "dryerStack": {
+    "file": "dryerStack.bbmodel",
+    "source": "assets/props/blocky/dryerStack_0.glb",
+    "min": [
+      -0.375,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.375,
+      2.0,
+      0.375
+    ]
+  },
+  "flowerStand": {
+    "file": "flowerStand.bbmodel",
+    "source": "assets/props/blocky/flowerStand_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.625,
+      1.1875,
+      0.3125
+    ]
+  },
+  "barberChair": {
+    "file": "barberChair.bbmodel",
+    "source": "assets/props/blocky/barberChair_0.glb",
+    "min": [
+      -0.375,
+      0.0,
+      -0.5171
+    ],
+    "max": [
+      0.375,
+      1.2354,
+      0.5
+    ]
+  },
+  "barberStation": {
+    "file": "barberStation.bbmodel",
+    "source": "assets/props/blocky/barberStation_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.625,
+      1.875,
+      0.25
+    ]
+  },
+  "clothesRack": {
+    "file": "clothesRack.bbmodel",
+    "source": "assets/props/blocky/clothesRack_0.glb",
+    "min": [
+      -0.75,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.75,
+      1.625,
+      0.1875
+    ]
+  },
+  "tvWall": {
+    "file": "tvWall.bbmodel",
+    "source": "assets/props/blocky/tvWall_0.glb",
+    "min": [
+      -0.8125,
+      0.0,
+      -0.25
+    ],
+    "max": [
+      0.8125,
+      1.875,
+      0.25
+    ]
+  },
+  "cinemaSeats": {
+    "file": "cinemaSeats.bbmodel",
+    "source": "assets/props/blocky/cinemaSeats_0.glb",
+    "min": [
+      -1.1875,
+      0.0,
+      -0.4154
+    ],
+    "max": [
+      1.1875,
+      1.0091,
+      0.375
+    ]
+  },
+  "cinemaScreen": {
+    "file": "cinemaScreen.bbmodel",
+    "source": "assets/props/blocky/cinemaScreen_0.glb",
+    "min": [
+      -2.125,
+      0.0,
+      -0.0625
+    ],
+    "max": [
+      2.125,
+      2.1875,
+      0.0625
+    ]
+  },
+  "ticketBooth": {
+    "file": "ticketBooth.bbmodel",
+    "source": "assets/props/blocky/ticketBooth_0.glb",
+    "min": [
+      -0.875,
+      0.0,
+      -0.625
+    ],
+    "max": [
+      0.875,
+      2.375,
+      0.625
+    ]
+  },
+  "concessionCounter": {
+    "file": "concessionCounter.bbmodel",
+    "source": "assets/props/blocky/concessionCounter_0.glb",
+    "min": [
+      -1.125,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      1.125,
+      1.6875,
+      0.375
+    ]
+  },
+  "foodCourtTable": {
+    "file": "foodCourtTable.bbmodel",
+    "source": "assets/props/blocky/foodCourtTable_0.glb",
+    "min": [
+      -0.75,
+      0.0,
+      -0.75
+    ],
+    "max": [
+      0.75,
+      0.8125,
+      0.75
+    ]
+  },
+  "mallPlanter": {
+    "file": "mallPlanter.bbmodel",
+    "source": "assets/props/blocky/mallPlanter_0.glb",
+    "min": [
+      -0.625,
+      0.0,
+      -0.625
+    ],
+    "max": [
+      0.625,
+      2.375,
+      0.625
+    ]
+  },
+  "mallBench": {
+    "file": "mallBench.bbmodel",
+    "source": "assets/props/blocky/mallBench_0.glb",
+    "min": [
+      -0.875,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.875,
+      0.5625,
+      0.3125
+    ]
+  },
+  "divePod": {
+    "file": "divePod.bbmodel",
+    "source": "assets/props/blocky/divePod.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -1.125
+    ],
+    "max": [
+      0.4375,
+      1.7823,
+      1.0625
+    ]
+  },
+  "divePodFilm": {
+    "file": "divePodFilm.bbmodel",
+    "source": "assets/props/blocky/divePodFilm.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -1.125
+    ],
+    "max": [
+      0.4375,
+      1.7823,
+      1.0625
+    ]
+  },
+  "divePodLit": {
+    "file": "divePodLit.bbmodel",
+    "source": "assets/props/blocky/divePodLit.glb",
+    "min": [
+      -0.4375,
+      0.0,
+      -1.125
+    ],
+    "max": [
+      0.4375,
+      1.7823,
+      1.0625
+    ]
+  },
+  "diveHeadsetStand": {
+    "file": "diveHeadsetStand.bbmodel",
+    "source": "assets/props/blocky/diveHeadsetStand.glb",
+    "min": [
+      -0.125,
+      0.0,
+      -0.125
+    ],
+    "max": [
+      0.125,
+      1.1875,
+      0.125
+    ]
+  },
+  "diveHeadsetShelf": {
+    "file": "diveHeadsetShelf.bbmodel",
+    "source": "assets/props/blocky/diveHeadsetShelf.glb",
+    "min": [
+      -0.9375,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.9375,
+      0.375,
+      0.1875
+    ]
+  },
+  "diveConsole": {
+    "file": "diveConsole.bbmodel",
+    "source": "assets/props/blocky/diveConsole.glb",
+    "min": [
+      -1.0,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      1.0,
+      1.25,
+      0.375
+    ]
+  },
+  "micStand": {
+    "file": "micStand.bbmodel",
+    "source": "assets/props/blocky/micStand.glb",
+    "min": [
+      -0.1875,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.1875,
+      1.7,
+      0.2434
+    ]
+  },
+  "podiumMic": {
+    "file": "podiumMic.bbmodel",
+    "source": "assets/props/blocky/podiumMic_0.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.2523
+    ],
+    "max": [
+      0.3125,
+      1.1875,
+      0.25
+    ]
+  },
+  "deskMic": {
+    "file": "deskMic.bbmodel",
+    "source": "assets/props/blocky/deskMic.glb",
+    "min": [
+      -0.0625,
+      0.0,
+      -0.0625
+    ],
+    "max": [
+      0.0625,
+      0.25,
+      0.0625
+    ]
+  },
+  "drumKit": {
+    "file": "drumKit.bbmodel",
+    "source": "assets/props/blocky/drumKit_0.glb",
+    "min": [
+      -0.875,
+      0.0,
+      -0.625
+    ],
+    "max": [
+      0.8125,
+      1.2183,
+      0.7533
+    ]
+  },
+  "electricGuitarStand": {
+    "file": "electricGuitarStand.bbmodel",
+    "source": "assets/props/blocky/electricGuitarStand_0.glb",
+    "min": [
+      -0.1875,
+      0.0,
+      -0.2477
+    ],
+    "max": [
+      0.1875,
+      0.9751,
+      0.125
+    ]
+  },
+  "acousticGuitarStand": {
+    "file": "acousticGuitarStand.bbmodel",
+    "source": "assets/props/blocky/acousticGuitarStand_0.glb",
+    "min": [
+      -0.1875,
+      0.0,
+      -0.2607
+    ],
+    "max": [
+      0.1875,
+      1.0363,
+      0.125
+    ]
+  },
+  "bassGuitarStand": {
+    "file": "bassGuitarStand.bbmodel",
+    "source": "assets/props/blocky/bassGuitarStand_0.glb",
+    "min": [
+      -0.1875,
+      0.0,
+      -0.2607
+    ],
+    "max": [
+      0.1875,
+      1.0363,
+      0.125
+    ]
+  },
+  "keyboardStand": {
+    "file": "keyboardStand.bbmodel",
+    "source": "assets/props/blocky/keyboardStand_0.glb",
+    "min": [
+      -0.6502,
+      0.0163,
+      -0.1875
+    ],
+    "max": [
+      0.7054,
+      1.0,
+      0.1875
+    ]
+  },
+  "uprightPianoMusic": {
+    "file": "uprightPianoMusic.bbmodel",
+    "source": "assets/props/blocky/uprightPianoMusic_0.glb",
+    "min": [
+      -0.75,
+      0.0,
+      -0.5
+    ],
+    "max": [
+      0.75,
+      1.25,
+      0.5
+    ]
+  },
+  "ampStack": {
+    "file": "ampStack.bbmodel",
+    "source": "assets/props/blocky/ampStack_0.glb",
+    "min": [
+      -0.375,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.375,
+      1.0625,
+      0.1875
+    ]
+  },
+  "comboAmp": {
+    "file": "comboAmp.bbmodel",
+    "source": "assets/props/blocky/comboAmp_0.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.125
+    ],
+    "max": [
+      0.3125,
+      0.5,
+      0.125
+    ]
+  },
+  "stageMonitor": {
+    "file": "stageMonitor.bbmodel",
+    "source": "assets/props/blocky/stageMonitor.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.25,
+      0.375,
+      0.197
+    ]
+  },
+  "paSpeakerPole": {
+    "file": "paSpeakerPole.bbmodel",
+    "source": "assets/props/blocky/paSpeakerPole.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.125
+    ],
+    "max": [
+      0.25,
+      2.0,
+      0.25
+    ]
+  },
+  "mixingDesk": {
+    "file": "mixingDesk.bbmodel",
+    "source": "assets/props/blocky/mixingDesk.glb",
+    "min": [
+      -0.75,
+      0.0,
+      -0.375
+    ],
+    "max": [
+      0.75,
+      0.9375,
+      0.375
+    ]
+  },
+  "studioMonitors": {
+    "file": "studioMonitors.bbmodel",
+    "source": "assets/props/blocky/studioMonitors_0.glb",
+    "min": [
+      -0.375,
+      0.0,
+      -0.125
+    ],
+    "max": [
+      0.375,
+      0.375,
+      0.125
+    ]
+  },
+  "rackGear": {
+    "file": "rackGear.bbmodel",
+    "source": "assets/props/blocky/rackGear.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.3125,
+      1.1875,
+      0.3125
+    ]
+  },
+  "musicStand": {
+    "file": "musicStand.bbmodel",
+    "source": "assets/props/blocky/musicStand.glb",
+    "min": [
+      -0.25,
+      0.0,
+      -0.1822
+    ],
+    "max": [
+      0.25,
+      1.1794,
+      0.1875
+    ]
+  },
+  "cableCoil": {
+    "file": "cableCoil.bbmodel",
+    "source": "assets/props/blocky/cableCoil.glb",
+    "min": [
+      -0.1875,
+      0.0,
+      -0.1875
+    ],
+    "max": [
+      0.1875,
+      0.0625,
+      0.1875
+    ]
+  },
+  "cableRun": {
+    "file": "cableRun.bbmodel",
+    "source": "assets/props/blocky/cableRun.glb",
+    "min": [
+      -0.6875,
+      0.0,
+      -0.0625
+    ],
+    "max": [
+      0.6875,
+      0.0625,
+      0.0625
+    ]
+  },
+  "stageLightRig": {
+    "file": "stageLightRig.bbmodel",
+    "source": "assets/props/blocky/stageLightRig.glb",
+    "min": [
+      -1.5625,
+      0.0,
+      -0.0625
+    ],
+    "max": [
+      1.5625,
+      2.375,
+      0.1875
+    ]
+  },
+  "acousticPanel": {
+    "file": "acousticPanel.bbmodel",
+    "source": "assets/props/blocky/acousticPanel_0.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.0625
+    ],
+    "max": [
+      0.5,
+      1.0,
+      0.0625
+    ]
+  },
+  "guitarWallHanger": {
+    "file": "guitarWallHanger.bbmodel",
+    "source": "assets/props/blocky/guitarWallHanger_0.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.125
+    ],
+    "max": [
+      0.5,
+      0.75,
+      0.0
+    ]
+  },
+  "instrumentCases": {
+    "file": "instrumentCases.bbmodel",
+    "source": "assets/props/blocky/instrumentCases_0.glb",
+    "min": [
+      -0.5,
+      0.0,
+      -0.3125
+    ],
+    "max": [
+      0.5,
+      0.8125,
+      0.3125
+    ]
+  },
+  "onAirSign": {
+    "file": "onAirSign.bbmodel",
+    "source": "assets/props/blocky/onAirSign.glb",
+    "min": [
+      -0.3125,
+      0.0,
+      -0.0625
+    ],
+    "max": [
+      0.3125,
+      0.25,
+      0.0625
+    ]
+  }
+}

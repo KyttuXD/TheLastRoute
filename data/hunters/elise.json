@@ -1,0 +1,15 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "elise",
+	"name": "Elise",
+	"tier": "difficult",
+	"speed": 0.82,
+	"chase": 3.58,
+	"prog": 0.18,
+	"sight": 8.1,
+	"hearing": 1.05,
+	"spawn": 12,
+	"chase_style": "pump:fast",
+	"taser_immune": true,
+	"melee_immune": false
+}

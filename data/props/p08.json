@@ -1,0 +1,126 @@
+{
+	"schema": "lr.prop/1",
+	"family": "p08",
+	"props": [
+		{
+			"id": "mansionGrandfatherClock",
+			"models": [
+				"res://assets/props/mansion/mansion_grandfather_clock.glb"
+			]
+		},
+		{
+			"id": "mansionCoatRack",
+			"models": [
+				"res://assets/props/mansion/mansion_coat_rack.glb"
+			]
+		},
+		{
+			"id": "mansionTeaCart",
+			"models": [
+				"res://assets/props/mansion/mansion_tea_cart.glb"
+			]
+		},
+		{
+			"id": "mansionRockingChair",
+			"models": [
+				"res://assets/props/mansion/mansion_rocking_chair.glb"
+			]
+		},
+		{
+			"id": "mansionRoomDivider",
+			"models": [
+				"res://assets/props/mansion/mansion_room_divider.glb"
+			]
+		},
+		{
+			"id": "gothicWritingDesk",
+			"models": [
+				"res://assets/props/mansion/gothic_writing_desk.glb"
+			]
+		},
+		{
+			"id": "gothicBookcase",
+			"models": [
+				"res://assets/props/mansion/gothic_bookcase.glb"
+			]
+		},
+		{
+			"id": "gothicPedestalTable",
+			"models": [
+				"res://assets/props/mansion/gothic_pedestal_table.glb"
+			]
+		},
+		{
+			"id": "gothicFloorCandelabra",
+			"models": [
+				"res://assets/props/mansion/gothic_floor_candelabra.glb"
+			]
+		},
+		{
+			"id": "gothicCoffinChest",
+			"models": [
+				"res://assets/props/mansion/gothic_coffin_chest.glb"
+			]
+		},
+		{
+			"id": "normalKitchenCounter",
+			"models": [
+				"res://assets/props/mansion/normal_kitchen_counter.glb"
+			]
+		},
+		{
+			"id": "normalKitchenSink",
+			"models": [
+				"res://assets/props/mansion/normal_kitchen_sink.glb"
+			]
+		},
+		{
+			"id": "normalKitchenStove",
+			"models": [
+				"res://assets/props/mansion/normal_kitchen_stove.glb"
+			]
+		},
+		{
+			"id": "normalKitchenFridge",
+			"models": [
+				"res://assets/props/mansion/normal_kitchen_fridge.glb"
+			]
+		},
+		{
+			"id": "normalKitchenWallCabinet",
+			"models": [
+				"res://assets/props/mansion/normal_kitchen_wall_cabinet.glb"
+			]
+		},
+		{
+			"id": "normalKitchenIsland",
+			"models": [
+				"res://assets/props/mansion/normal_kitchen_island.glb"
+			]
+		},
+		{
+			"id": "luxuryKitchenCounter",
+			"models": [
+				"res://assets/props/mansion/luxury_kitchen_counter.glb"
+			]
+		},
+		{
+			"id": "luxuryKitchenSink",
+			"models": [
+				"res://assets/props/mansion/luxury_kitchen_sink.glb"
+			]
+		},
+		{
+			"id": "luxuryKitchenStove",
+			"models": [
+				"res://assets/props/mansion/luxury_kitchen_stove.glb"
+			]
+		},
+		{
+			"id": "luxuryKitchenFridge",
+			"models": [
+				"res://assets/props/mansion/luxury_kitchen_fridge.glb"
+			]
+		}
+	]
+}

@@ -1,0 +1,15 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "solyth",
+	"name": "Solyth",
+	"tier": "special",
+	"speed": 0.8,
+	"chase": 3.0,
+	"prog": 0.17,
+	"sight": 7.6,
+	"hearing": 0.95,
+	"spawn": 12,
+	"chase_style": "pump:fists",
+	"taser_immune": true,
+	"melee_immune": false
+}

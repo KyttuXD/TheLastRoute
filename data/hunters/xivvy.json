@@ -1,0 +1,15 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "xivvy",
+	"name": "Xivvy",
+	"tier": "intermediate",
+	"speed": 0.97,
+	"chase": 4.35,
+	"prog": 0.12,
+	"sight": 6.72,
+	"hearing": 0.84,
+	"spawn": 13,
+	"chase_style": "pump:wings",
+	"taser_immune": true,
+	"melee_immune": false
+}

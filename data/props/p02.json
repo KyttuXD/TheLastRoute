@@ -1,0 +1,138 @@
+{
+	"schema": "lr.prop/1",
+	"family": "p02",
+	"props": [
+		{
+			"id": "brokenAquarium",
+			"models": [
+				"res://assets/props/maze/broken_aquarium.glb"
+			]
+		},
+		{
+			"id": "carnivalCarousel",
+			"models": [
+				"res://assets/props/maze/carnival_carousel.glb"
+			]
+		},
+		{
+			"id": "flowerBlue",
+			"models": [
+				"res://assets/props/maze/flower_blue.glb"
+			]
+		},
+		{
+			"id": "flowerRose",
+			"models": [
+				"res://assets/props/maze/flower_rose.glb"
+			]
+		},
+		{
+			"id": "flowerSun",
+			"models": [
+				"res://assets/props/maze/flower_sun.glb"
+			]
+		},
+		{
+			"id": "flowerViolet",
+			"models": [
+				"res://assets/props/maze/flower_violet.glb"
+			]
+		},
+		{
+			"id": "gardenPlanterBench",
+			"models": [
+				"res://assets/props/maze/garden_planter_bench.glb"
+			]
+		},
+		{
+			"id": "giantTree",
+			"models": [
+				"res://assets/props/maze/giant_tree.glb"
+			]
+		},
+		{
+			"id": "grassFern",
+			"models": [
+				"res://assets/props/maze/grass_fern.glb"
+			]
+		},
+		{
+			"id": "locker",
+			"models": [
+				"res://assets/props/maze/locker.glb"
+			]
+		},
+		{
+			"id": "maintenanceCleaningCart",
+			"models": [
+				"res://assets/props/maze/maintenance_cleaning_cart.glb"
+			]
+		},
+		{
+			"id": "maintenanceToolCabinet",
+			"models": [
+				"res://assets/props/maze/maintenance_tool_cabinet.glb"
+			]
+		},
+		{
+			"id": "mascotStatue",
+			"models": [
+				"res://assets/props/maze/mascot_statue.glb"
+			]
+		},
+		{
+			"id": "prizeClawMachine",
+			"models": [
+				"res://assets/props/maze/prize_claw_machine.glb"
+			]
+		},
+		{
+			"id": "prizeCounter",
+			"models": [
+				"res://assets/props/maze/prize_counter.glb"
+			]
+		},
+		{
+			"id": "snackKiosk",
+			"models": [
+				"res://assets/props/maze/snack_kiosk.glb"
+			]
+		},
+		{
+			"id": "stagePlatform",
+			"models": [
+				"res://assets/props/maze/stage_platform.glb"
+			]
+		},
+		{
+			"id": "stageSpeaker",
+			"models": [
+				"res://assets/props/maze/stage_speaker.glb"
+			]
+		},
+		{
+			"id": "utilityCart",
+			"models": [
+				"res://assets/props/maze/utility_cart.glb"
+			]
+		},
+		{
+			"id": "floorLamp",
+			"models": [
+				"res://assets/props/maze/floor_lamp.glb",
+				"res://assets/props/mansion/floor_lamp_teal.glb",
+				"res://assets/props/mansion/floor_lamp_ivory.glb"
+			],
+			"light": {
+				"color": "ffe1a3",
+				"energy": 0.52,
+				"range": 4.0,
+				"offset": [
+					0,
+					1.52,
+					0
+				]
+			}
+		}
+	]
+}

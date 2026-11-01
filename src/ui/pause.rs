@@ -1,0 +1,376 @@
+//! The pause overlay (pause_menu.gd): the scrim, a 380x236 panel with SIGNAL SUSPENDED, PAUSED
+//! and the PAUSE / STATISTICS / PLAYERS tabs; RETURN, HUNTER DOSSIER, SETTINGS and ABANDON
+//! ROUTE (a two-step question), the run statistics with the route-signal block, and the player
+//! list. SETTINGS opens the shared settings overlay without SKIN and MODS.
+
+use super::menus::{self, PlayerRow, Ui};
+use super::settings_panel;
+use super::style::*;
+use crate::app::assets::Assets;
+use crate::app::settings::Settings;
+use crate::content::Content;
+use crate::game::Game;
+use macroquad::prelude::*;
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Sub {
+    None,
+    Settings,
+    Dossier,
+    Confirm,
+}
+
+pub struct Pause {
+    pub open: bool,
+    pub tab: usize,
+    pub focus: usize,
+    pub sub: Sub,
+    pub copied: String,
+}
+
+impl Default for Pause {
+    fn default() -> Self {
+        Pause {
+            open: false,
+            tab: 0,
+            focus: 0,
+            sub: Sub::None,
+            copied: String::new(),
+        }
+    }
+}
+
+pub enum Out {
+    None,
+    Resume,
+    Abandon,
+}
+
+impl Pause {
+    pub fn show(&mut self) {
+        *self = Pause {
+            open: true,
+            ..Default::default()
+        };
+    }
+}
+
+/// ESC handling: backs out of the settings, dossier or question first, then closes the menu.
+pub fn escape(pz: &mut Pause) -> Out {
+    match pz.sub {
+        Sub::None => {
+            pz.open = false;
+            Out::Resume
+        }
+        _ => {
+            pz.sub = Sub::None;
+            Out::None
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_pause(
+    a: &Assets,
+    pz: &mut Pause,
+    ui: &mut Ui,
+    st: &mut Settings,
+    content: &Content,
+    g: &Game,
+    username: &str,
+    route_code: &str,
+) -> Out {
+    let p = pal();
+    let v = view();
+    fill(Rect::new(0.0, 0.0, v.x, v.y), p.scrim);
+    match pz.sub {
+        Sub::Settings => {
+            if settings_panel::draw_settings(a, ui, st, content, true) {
+                pz.sub = Sub::None;
+                pz.focus = 2;
+            }
+            return Out::None;
+        }
+        Sub::Dossier => {
+            if menus::draw_dossier(a, ui, content, username) {
+                pz.sub = Sub::None;
+            }
+            return Out::None;
+        }
+        Sub::Confirm => return draw_confirm(a, pz),
+        Sub::None => {}
+    }
+    let panel = centered(380.0, 236.0);
+    panel_box(panel, p.panel, p.panel_edge);
+    let inner = Rect::new(
+        panel.x + 16.0,
+        panel.y + 16.0,
+        panel.w - 32.0,
+        panel.h - 32.0,
+    );
+    let cx = inner.x + inner.w * 0.5;
+    let mut y = inner.y;
+    label_c(a, F::Body, &track("SIGNAL SUSPENDED"), cx, y, 7.0, p.amber);
+    y += lh(F::Body, 7.0) + 8.0;
+    label_c(a, F::Title, "PAUSED", cx, y, 22.0, p.ink);
+    y += lh(F::Title, 22.0) + 8.0;
+    // tabs: 80x18 each, separation 4, the open page's tab is the primary slab
+    let tab_h = 18.0;
+    let tx = cx - (80.0 * 3.0 + 8.0) * 0.5;
+    for (i, t) in ["PAUSE", "STATISTICS", "PLAYERS"].iter().enumerate() {
+        let kind = if i == pz.tab {
+            Kind::Primary
+        } else {
+            Kind::Secondary
+        };
+        if button(
+            a,
+            Rect::new(tx + i as f32 * 84.0, y, 80.0, tab_h),
+            t,
+            8.0,
+            kind,
+            plain(),
+        ) {
+            pz.tab = i;
+            pz.focus = 0;
+        }
+    }
+    if is_key_pressed(KeyCode::Tab) {
+        pz.tab = (pz.tab + 1) % 3;
+        pz.focus = 0;
+    }
+    y += tab_h + 8.0;
+    let view_r = Rect::new(inner.x, y, inner.w, inner.y + inner.h - y);
+    let mut out = Out::None;
+    match pz.tab {
+        0 => {
+            // RETURN (74x18 primary), HUNTER DOSSIER and SETTINGS (112x18), ABANDON ROUTE (88x14)
+            let bh8 = button_min(a, "X", 8.0, false).y.max(18.0);
+            let items: [(&str, f32, f32, Kind); 4] = [
+                ("RETURN", 74.0, 18.0, Kind::Primary),
+                ("HUNTER DOSSIER", 112.0, 18.0, Kind::Secondary),
+                ("SETTINGS", 112.0, 18.0, Kind::Secondary),
+                ("ABANDON ROUTE", 88.0, 14.0, Kind::Secondary),
+            ];
+            let sizes: Vec<Vec2> = items
+                .iter()
+                .map(|(t, w, h, _)| {
+                    let m = button_min(a, t, 8.0, false);
+                    vec2(m.x.max(*w), m.y.max(*h).min(bh8))
+                })
+                .collect();
+            let total: f32 = sizes.iter().map(|s| s.y).sum::<f32>() + 8.0 * 3.0;
+            let mut by = view_r.y + (view_r.h - total) * 0.5;
+            let enter = nav(&mut pz.focus, 4, true);
+            for (i, (t, _, _, k)) in items.iter().enumerate() {
+                let r = Rect::new(cx - sizes[i].x * 0.5, by, sizes[i].x, sizes[i].y);
+                let hit = button(a, r, t, 8.0, *k, state(pz.focus == i));
+                if hit {
+                    pz.focus = i;
+                }
+                if hit || (enter && pz.focus == i) {
+                    match i {
+                        0 => {
+                            pz.open = false;
+                            out = Out::Resume;
+                        }
+                        1 => {
+                            pz.sub = Sub::Dossier;
+                            ui.dossier_scroll = 0.0;
+                        }
+                        2 => {
+                            pz.sub = Sub::Settings;
+                            ui.settings_tab = 0;
+                            ui.scroll = 0.0;
+                        }
+                        _ => {
+                            pz.sub = Sub::Confirm;
+                            pz.focus = 1;
+                        }
+                    }
+                }
+                by += sizes[i].y + 8.0;
+            }
+        }
+        1 => draw_statistics(a, pz, view_r, g, route_code),
+        _ => {
+            let floor = if g.is_infinite() {
+                format!("{:+}", -(g.depth - 1))
+            } else {
+                format!("+{}", g.depth - 1)
+            };
+            let me = PlayerRow {
+                name: if username.is_empty() {
+                    "RUNNER".into()
+                } else {
+                    username.to_uppercase()
+                },
+                host: true,
+                you: true,
+                ping: "0 MS".into(),
+                status: "ALIVE".into(),
+                floor,
+                colour: menus::COOP_BLUE,
+            };
+            menus::player_list(a, view_r, &[me]);
+        }
+    }
+    out
+}
+
+fn draw_statistics(a: &Assets, pz: &mut Pause, r: Rect, g: &Game, route_code: &str) {
+    let p = pal();
+    let x = r.x;
+    let w = r.w - 9.0;
+    let mut y = r.y;
+    // the page scrolls in the original (a slim scrollbar on the right)
+    fill(Rect::new(r.x + r.w - 6.0, r.y, 6.0, r.h), p.inset);
+    border(Rect::new(r.x + r.w - 6.0, r.y, 6.0, r.h), 1.0, p.panel_edge);
+    fill(
+        Rect::new(r.x + r.w - 5.0, r.y + 1.0, 4.0, r.h * 0.55),
+        p.accent,
+    );
+    label_c(
+        a,
+        F::Body,
+        &track("CURRENT RUN"),
+        x + w * 0.5,
+        y,
+        8.0,
+        p.amber,
+    );
+    y += lh(F::Body, 8.0) + 6.0;
+    let seed_text = format!("ROOM-{route_code}-{:08X}", g.run_seed);
+    let bh = button_min(a, "X", 7.0, false).y.max(16.0);
+    let sh = 12.0 + lh(F::Body, 6.0) + 2.0 + lh(F::Body, 9.0) + 2.0 + lh(F::Body, 8.0) + 2.0 + bh;
+    panel_box(Rect::new(x, y, w, sh), p.inset, p.accent_deep);
+    let mut sy = y + 6.0;
+    label(
+        a,
+        F::Body,
+        &track("ROUTE SIGNAL"),
+        x + 6.0,
+        sy,
+        6.0,
+        p.amber,
+    );
+    sy += lh(F::Body, 6.0) + 2.0;
+    label(
+        a,
+        F::Body,
+        &format!("ROOM {route_code}"),
+        x + 6.0,
+        sy,
+        9.0,
+        p.accent,
+    );
+    sy += lh(F::Body, 9.0) + 2.0;
+    label(a, F::Body, &seed_text, x + 6.0, sy, 8.0, p.ink);
+    sy += lh(F::Body, 8.0) + 2.0;
+    let cw = button_min(a, "COPY ROUTE", 7.0, false).x.max(88.0);
+    if button(
+        a,
+        Rect::new(x + 6.0, sy, cw, bh),
+        "COPY ROUTE",
+        7.0,
+        Kind::Primary,
+        plain(),
+    ) {
+        let text = format!("ROOM {route_code} // SEED {seed_text}");
+        let _ = &text;
+        pz.copied = "COPIED TO CLIPBOARD".into();
+        macroquad::miniquad::window::clipboard_set(&text);
+    }
+    label_vc(
+        a,
+        F::Body,
+        &pz.copied,
+        x + 6.0 + cw + 6.0,
+        sy,
+        bh,
+        7.0,
+        p.stable,
+    );
+    y += sh + 6.0;
+    let t = g.time as i32;
+    let rows = [
+        ("DEPTH", format!("{:02}", g.depth)),
+        (
+            "FLOOR RELAYS",
+            format!("{} / {}", g.relays_collected, g.fac.relays.len()),
+        ),
+        ("SCORE", format!("{}", g.score)),
+        ("COINS", format!("{}", g.coins)),
+        (
+            "TIME ON ROUTE",
+            format!("{:02}:{:02}:{:02}", t / 3600, (t / 60) % 60, t % 60),
+        ),
+        ("DIFFICULTY", g.difficulty.name().to_string()),
+    ];
+    for (k, val) in rows {
+        if y + lh(F::Body, 8.0) > r.y + r.h {
+            break;
+        }
+        label(a, F::Body, k, x, y, 8.0, p.muted);
+        label_r(a, F::Body, &val, x + w, y, 8.0, p.ink);
+        y += lh(F::Body, 8.0) + 5.0;
+    }
+}
+
+/// ABANDON ROUTE? (the confirm panel, 236x88): the warning and ABANDON ROUTE | CANCEL.
+fn draw_confirm(a: &Assets, pz: &mut Pause) -> Out {
+    let p = pal();
+    let panel = centered(236.0, 88.0);
+    panel_box(panel, p.panel, p.accent_deep);
+    let x = panel.x + 14.0;
+    let mut y = panel.y + 14.0;
+    label(a, F::Body, &track("SIGNAL SUSPENDED"), x, y, 7.0, p.amber);
+    y += lh(F::Body, 7.0) + 5.0;
+    label(a, F::Title, "ABANDON ROUTE?", x, y, 16.0, p.ink);
+    y += lh(F::Title, 16.0) + 5.0;
+    for l in wrap(
+        a,
+        F::Body,
+        "This ends the run and returns to the main menu.",
+        208.0,
+        8.0,
+    ) {
+        label(a, F::Body, &l, x, y, 8.0, p.body);
+        y += lh(F::Body, 8.0);
+    }
+    y += 5.0;
+    let bh = button_min(a, "X", 8.0, false).y.max(14.0);
+    let w1 = button_min(a, "ABANDON ROUTE", 8.0, false).x;
+    let w2 = button_min(a, "CANCEL", 8.0, false).x;
+    let enter = nav(&mut pz.focus, 2, false);
+    let r1 = Rect::new(x, y, w1, bh);
+    let yes = button(
+        a,
+        r1,
+        "ABANDON ROUTE",
+        8.0,
+        Kind::Secondary,
+        state(pz.focus == 0),
+    );
+    if pz.focus != 0 && !hovered(r1) {
+        border(r1, 1.0, p.accent_deep);
+    }
+    let no = button(
+        a,
+        Rect::new(x + w1 + 6.0, y, w2, bh),
+        "CANCEL",
+        8.0,
+        Kind::Secondary,
+        state(pz.focus == 1),
+    );
+    if yes || (enter && pz.focus == 0) {
+        pz.open = false;
+        pz.sub = Sub::None;
+        return Out::Abandon;
+    }
+    if no || (enter && pz.focus == 1) {
+        pz.sub = Sub::None;
+        pz.focus = 3;
+    }
+    Out::None
+}

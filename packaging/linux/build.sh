@@ -1,0 +1,21 @@
+#!/bin/sh
+# Builds the Linux version and a folder you can unpack anywhere, with a desktop entry and icon.
+# Run on Linux from the app/ folder:  sh packaging/linux/build.sh
+# Needs (Debian/Ubuntu names): build-essential pkg-config libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev
+# Fonts: the original uses Courier New Bold and Impact; install ttf-mscorefonts-installer for them,
+# otherwise Liberation Mono/Sans Bold are used.
+set -e
+cd "$(dirname "$0")/../.."
+cargo build --release
+cargo build --manifest-path server/Cargo.toml --release
+
+OUT=dist/last-route-linux
+rm -rf "$OUT"
+mkdir -p "$OUT/share/applications" "$OUT/share/icons/hicolor/256x256/apps" "$OUT/bin"
+cp target/release/last_route "$OUT/bin/last_route"
+cp server/target/release/lr_server "$OUT/bin/lr_server"
+cp packaging/linux/last-route.desktop "$OUT/share/applications/"
+cp assets/branding/logo_256.png "$OUT/share/icons/hicolor/256x256/apps/last-route.png"
+tar -C dist -czf dist/last-route-linux-x86_64.tar.gz last-route-linux
+echo "built $OUT and dist/last-route-linux-x86_64.tar.gz"
+echo "install for this user: cp -r $OUT/* ~/.local/ (puts last_route on ~/.local/bin)"

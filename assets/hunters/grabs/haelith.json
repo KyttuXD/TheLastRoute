@@ -1,0 +1,9 @@
+{
+	"schema": "lr.grab/1",
+	"id": "haelith",
+	"pool": {
+		"tackle": 6,
+		"shoulder_grab": 2,
+		"wall_pin": 2
+	}
+}

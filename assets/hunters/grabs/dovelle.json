@@ -1,0 +1,9 @@
+{
+	"schema": "lr.grab/1",
+	"id": "dovelle",
+	"pool": {
+		"shoulder_grab": 6,
+		"wall_pin": 2,
+		"tackle": 2
+	}
+}

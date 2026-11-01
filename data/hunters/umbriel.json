@@ -1,0 +1,15 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "umbriel",
+	"name": "Umbriel",
+	"tier": "difficult",
+	"speed": 0.82,
+	"chase": 3.46,
+	"prog": 0.18,
+	"sight": 8.5,
+	"hearing": 0.86,
+	"spawn": 12,
+	"chase_style": "lope",
+	"taser_immune": true,
+	"melee_immune": false
+}

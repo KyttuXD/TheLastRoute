@@ -1,0 +1,17 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "void_white",
+	"name": "White",
+	"tier": "void",
+	"category": "void",
+	"speed": 0.9,
+	"chase": 4.45,
+	"prog": 0.24,
+	"sight": 8.8,
+	"hearing": 1.38,
+	"spawn": 17,
+	"model": "res://assets/hunters_blocky/void_white/void_white.glb",
+	"chase_style": "glide",
+	"taser_immune": true,
+	"melee_immune": false
+}

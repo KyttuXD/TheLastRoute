@@ -1,0 +1,8 @@
+{
+	"schema": "lr.grab/1",
+	"id": "kathy",
+	"pool": {
+		"neck_lift": 6,
+		"shoulder_carry": 3
+	}
+}

@@ -1,0 +1,9 @@
+{
+	"schema": "lr.grab/1",
+	"id": "glyra",
+	"pool": {
+		"wrap": 6,
+		"shoulder_carry": 3,
+		"upside_down": 2
+	}
+}

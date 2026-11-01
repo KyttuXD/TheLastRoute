@@ -1,0 +1,38 @@
+# Builds the port for Windows, Linux and macOS (one universal Apple Silicon + Intel app).
+# Artifacts only; nothing is published. Use it from a private repository (see README: the
+# build contains the original game's files and must not be shared).
+name: build
+on: [push, workflow_dispatch]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --release
+      - run: cargo build --manifest-path server/Cargo.toml --release
+      - run: cargo run --release -- --self-test self-test.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: last_route-windows
+          path: |
+            target/release/last_route.exe
+            server/target/release/lr_server.exe
+
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev
+      - run: sh packaging/linux/build.sh
+      - uses: actions/upload-artifact@v4
+        with: { name: last_route-linux-x86_64, path: dist/last-route-linux-x86_64.tar.gz }
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh packaging/macos/build_app.sh
+      - run: cd dist && zip -qry last_route-macos-universal.zip "Kyttu's Lab.app"
+      - uses: actions/upload-artifact@v4
+        with: { name: last_route-macos-universal, path: dist/last_route-macos-universal.zip }

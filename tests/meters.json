@@ -1,0 +1,91 @@
+{
+  "suite": "meters",
+  "description": "Stamina, exhaustion, the flashlight battery, ambient warming, item stacks, batteries, the stim pack and the safe zone.",
+  "ported_from": "tests/validate_stamina_regen.gd, validate_flashlight_empty.gd, validate_item_stacks.gd, validate_stim.gd, validate_rest_and_sleep.gd",
+  "defaults": { "seed": 12345, "difficulty": "standard", "mode": "finite", "no_target": true },
+  "tests": [
+    {
+      "name": "sprinting drains stamina, resting refills it",
+      "steps": [
+        { "cmd": "step", "frames": 60, "act": { "move": [0, 1], "hold": { "sprint": true } }, "observe": false },
+        { "expect": [ { "path": "player.stamina", "op": "<", "value": 75 } ] },
+        { "cmd": "act", "act": { "move": [0, 0], "hold": { "sprint": false } } },
+        { "cmd": "step_until", "expect": [ { "path": "player.stamina", "op": ">=", "value": 100 } ], "max_frames": 600 }
+      ]
+    },
+    {
+      "name": "an empty tank exhausts the runner",
+      "steps": [
+        { "cmd": "admin", "name": "set", "stamina": 2 },
+        { "cmd": "step", "frames": 20, "act": { "move": [0, 1], "hold": { "sprint": true } }, "observe": false },
+        { "expect": [ { "path": "player.exhausted", "value": true }, { "path": "player.sprinting", "value": false } ] }
+      ]
+    },
+    {
+      "name": "the flashlight drains its battery and dies at zero",
+      "steps": [
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 120, "observe": false },
+        { "expect": [ { "path": "player.flashlight_on", "value": true }, { "path": "player.lamp", "op": "<", "value": 100 }, { "path": "player.lamp", "op": ">", "value": 97 } ] },
+        { "cmd": "admin", "name": "set", "lamp": 0.05 },
+        { "cmd": "step", "frames": 30, "observe": false },
+        { "expect": [
+          { "path": "player.flashlight_on", "value": false }, { "path": "player.lamp", "value": 0 },
+          { "any": "events", "where": [ { "path": "type", "value": "message" }, { "path": "text", "value": "FLASHLIGHT DEAD" } ] } ] },
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 2, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": false } ] }
+      ]
+    },
+    {
+      "name": "the facility warms over time; the body follows the room's climate",
+      "steps": [
+        { "cmd": "step", "frames": 1500, "observe": false },
+        { "expect": [ { "path": "meters.ambient", "op": ">", "value": 63 }, { "path": "meters.heat_locked", "value": false } ] },
+        { "cmd": "teleport", "to": "relay", "index": 0 },
+        { "cmd": "step", "frames": 300, "observe": false },
+        { "expect": [ { "path": "player.local_climate", "op": "<", "value": -10 }, { "path": "meters.temperature", "op": "<", "value": 55 } ] }
+      ]
+    },
+    {
+      "name": "batteries stack to five and recharge the lamp by 25",
+      "steps": [
+        { "cmd": "admin", "name": "give", "item": "battery", "count": 6, "expect": [ { "path": "last.given", "value": 6 } ] },
+        { "expect": [ { "path": "hotbar.slots.1.item", "value": "battery" }, { "path": "hotbar.slots.1.count", "value": 5 }, { "path": "hotbar.slots.2.count", "value": 1 } ] },
+        { "cmd": "admin", "name": "set", "lamp": 50 },
+        { "cmd": "act", "act": { "pulse": ["slot_2"] } },
+        { "cmd": "step", "frames": 1, "observe": false },
+        { "cmd": "act", "act": { "pulse": ["tool_use"] } },
+        { "cmd": "step", "frames": 1, "observe": false },
+        { "expect": [ { "path": "player.lamp", "approx": true, "op": "approx", "value": 75, "tol": 0.5 }, { "path": "hotbar.slots.1.count", "value": 4 } ] },
+        { "cmd": "admin", "name": "set", "lamp": 100 },
+        { "cmd": "act", "act": { "pulse": ["tool_use"] } },
+        { "cmd": "step", "frames": 1, "observe": false },
+        { "expect": [ { "path": "hotbar.slots.1.count", "value": 4 }, { "any": "events", "where": { "path": "text", "value": "FLASHLIGHT ALREADY FULL" } } ] }
+      ]
+    },
+    {
+      "name": "the stim pack refills stamina, boosts, then crashes",
+      "steps": [
+        { "cmd": "admin", "name": "give", "item": "stim" },
+        { "cmd": "admin", "name": "set", "stamina": 10 },
+        { "cmd": "act", "act": { "pulse": ["slot_2"] } },
+        { "cmd": "step", "frames": 1, "observe": false },
+        { "cmd": "act", "act": { "pulse": ["tool_use"] } },
+        { "cmd": "step", "frames": 60, "observe": false },
+        { "expect": [ { "path": "player.stamina", "value": 100 }, { "path": "player.stim.boost", "op": ">", "value": 5 }, { "path": "hotbar.slots.1", "op": "missing" } ] },
+        { "cmd": "step", "frames": 400, "observe": false },
+        { "expect": [ { "path": "player.stim.boost", "value": 0 }, { "path": "player.stim.crash", "op": ">", "value": 8 } ] }
+      ]
+    },
+    {
+      "name": "the safe zone restores lamp and stamina",
+      "steps": [
+        { "cmd": "admin", "name": "set", "lamp": 20, "stamina": 30 },
+        { "cmd": "teleport", "x": 23.6, "z": 22.5 },
+        { "cmd": "look", "at": [22.5, 22.5], "height": 0.7 },
+        { "cmd": "interact", "kind": "SAFE_ZONE" },
+        { "expect": [ { "path": "player.lamp", "value": 100 }, { "path": "player.stamina", "op": ">=", "value": 99 }, { "path": "player.in_safe_zone", "value": true } ] }
+      ]
+    }
+  ]
+}

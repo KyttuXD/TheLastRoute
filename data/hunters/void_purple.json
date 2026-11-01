@@ -1,0 +1,17 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "void_purple",
+	"name": "Purple",
+	"tier": "void",
+	"category": "void",
+	"speed": 0.98,
+	"chase": 4.75,
+	"prog": 0.29,
+	"sight": 9.5,
+	"hearing": 1.15,
+	"spawn": 16,
+	"model": "res://assets/hunters_blocky/void_purple/void_purple.glb",
+	"chase_style": "lope",
+	"taser_immune": true,
+	"melee_immune": false
+}

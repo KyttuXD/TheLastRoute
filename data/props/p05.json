@@ -1,0 +1,144 @@
+{
+	"schema": "lr.prop/1",
+	"family": "p05",
+	"props": [
+		{
+			"id": "corridorCarpet",
+			"models": [
+				"res://assets/props/mansion/corridor_carpet_teal.glb",
+				"res://assets/props/mansion/corridor_carpet_burgundy.glb"
+			]
+		},
+		{
+			"id": "hotelCarpet",
+			"models": [
+				"res://assets/props/mansion/hotel_carpet_burgundy.glb",
+				"res://assets/props/mansion/hotel_carpet_navy.glb",
+				"res://assets/props/mansion/hotel_carpet_ivory.glb"
+			]
+		},
+		{
+			"id": "apartmentCarpet",
+			"models": [
+				"res://assets/props/mansion/apartment_carpet_olive.glb",
+				"res://assets/props/mansion/apartment_carpet_charcoal.glb",
+				"res://assets/props/mansion/apartment_carpet_rust.glb"
+			]
+		},
+		{
+			"id": "beachMat",
+			"models": [
+				"res://assets/props/mansion/beach_mat_teal.glb",
+				"res://assets/props/mansion/beach_mat_sun.glb"
+			]
+		},
+		{
+			"id": "mansionBookshelf",
+			"models": [
+				"res://assets/props/mansion/mansion_bookshelf.glb"
+			]
+		},
+		{
+			"id": "mansionFireplace",
+			"models": [
+				"res://assets/props/mansion/mansion_fireplace.glb"
+			]
+		},
+		{
+			"id": "magazineRack",
+			"models": [
+				"res://assets/props/mansion/magazine_rack.glb"
+			]
+		},
+		{
+			"id": "tableCandelabra",
+			"models": [
+				"res://assets/props/mansion/table_candelabra.glb"
+			]
+		},
+		{
+			"id": "wallSconce",
+			"models": [
+				"res://assets/props/mansion/wall_sconce.glb",
+				"res://assets/props/mansion/wall_sconce_cool.glb",
+				"res://assets/props/mansion/wall_sconce_gothic.glb"
+			],
+			"light": {
+				"color": "ffd292",
+				"energy": 0.36,
+				"range": 3.2,
+				"offset": [
+					0,
+					1.62,
+					0
+				]
+			}
+		},
+		{
+			"id": "bathroomStall",
+			"models": [
+				"res://assets/props/mansion/bathroom_stall.glb"
+			]
+		},
+		{
+			"id": "bathroomSink",
+			"models": [
+				"res://assets/props/mansion/bathroom_sink.glb"
+			]
+		},
+		{
+			"id": "bathroomMirror",
+			"models": [
+				"res://assets/props/mansion/bathroom_mirror.glb"
+			]
+		},
+		{
+			"id": "bathroomVanity",
+			"models": [
+				"res://assets/props/mansion/bathroom_vanity.glb"
+			]
+		},
+		{
+			"id": "publicRestroomToilet",
+			"models": [
+				"res://assets/props/mansion/public_restroom_toilet.glb"
+			]
+		},
+		{
+			"id": "publicMensUrinal",
+			"models": [
+				"res://assets/props/mansion/public_mens_urinal.glb"
+			]
+		},
+		{
+			"id": "publicSinkBank",
+			"models": [
+				"res://assets/props/mansion/public_sink_bank.glb"
+			]
+		},
+		{
+			"id": "publicHandDryer",
+			"models": [
+				"res://assets/props/mansion/public_hand_dryer.glb"
+			]
+		},
+		{
+			"id": "publicSoapDispenser",
+			"models": [
+				"res://assets/props/mansion/public_soap_dispenser.glb"
+			]
+		},
+		{
+			"id": "publicPaperTowelDispenser",
+			"models": [
+				"res://assets/props/mansion/public_paper_towel_dispenser.glb"
+			]
+		},
+		{
+			"id": "publicBabyChangeStation",
+			"models": [
+				"res://assets/props/mansion/public_baby_change_station.glb"
+			]
+		}
+	]
+}

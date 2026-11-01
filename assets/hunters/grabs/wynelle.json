@@ -1,0 +1,9 @@
+{
+	"schema": "lr.grab/1",
+	"id": "wynelle",
+	"pool": {
+		"neck_lift": 6,
+		"wall_pin": 2,
+		"upside_down": 2
+	}
+}

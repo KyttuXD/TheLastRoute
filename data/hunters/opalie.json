@@ -1,0 +1,15 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "opalie",
+	"name": "Opalie",
+	"tier": "easy",
+	"speed": 0.83,
+	"chase": 3.47,
+	"prog": 0.18,
+	"sight": 7.7,
+	"hearing": 1.1,
+	"spawn": 13,
+	"chase_style": "reach2",
+	"taser_immune": true,
+	"melee_immune": false
+}

@@ -1,0 +1,173 @@
+{
+	"schema": "lr.prop/1",
+	"family": "music",
+	"props": [
+		{
+			"id": "micStand",
+			"models": [
+				"res://assets/props/blocky/micStand.glb"
+			]
+		},
+		{
+			"id": "podiumMic",
+			"models": [
+				"res://assets/props/blocky/podiumMic_0.glb",
+				"res://assets/props/blocky/podiumMic_1.glb"
+			]
+		},
+		{
+			"id": "deskMic",
+			"models": [
+				"res://assets/props/blocky/deskMic.glb"
+			]
+		},
+		{
+			"id": "drumKit",
+			"models": [
+				"res://assets/props/blocky/drumKit_0.glb",
+				"res://assets/props/blocky/drumKit_1.glb",
+				"res://assets/props/blocky/drumKit_2.glb"
+			]
+		},
+		{
+			"id": "electricGuitarStand",
+			"models": [
+				"res://assets/props/blocky/electricGuitarStand_0.glb",
+				"res://assets/props/blocky/electricGuitarStand_1.glb",
+				"res://assets/props/blocky/electricGuitarStand_2.glb",
+				"res://assets/props/blocky/electricGuitarStand_3.glb"
+			]
+		},
+		{
+			"id": "acousticGuitarStand",
+			"models": [
+				"res://assets/props/blocky/acousticGuitarStand_0.glb",
+				"res://assets/props/blocky/acousticGuitarStand_1.glb",
+				"res://assets/props/blocky/acousticGuitarStand_2.glb"
+			]
+		},
+		{
+			"id": "bassGuitarStand",
+			"models": [
+				"res://assets/props/blocky/bassGuitarStand_0.glb",
+				"res://assets/props/blocky/bassGuitarStand_1.glb",
+				"res://assets/props/blocky/bassGuitarStand_2.glb"
+			]
+		},
+		{
+			"id": "keyboardStand",
+			"models": [
+				"res://assets/props/blocky/keyboardStand_0.glb",
+				"res://assets/props/blocky/keyboardStand_1.glb",
+				"res://assets/props/blocky/keyboardStand_2.glb"
+			]
+		},
+		{
+			"id": "uprightPianoMusic",
+			"models": [
+				"res://assets/props/blocky/uprightPianoMusic_0.glb",
+				"res://assets/props/blocky/uprightPianoMusic_1.glb",
+				"res://assets/props/blocky/uprightPianoMusic_2.glb"
+			]
+		},
+		{
+			"id": "ampStack",
+			"models": [
+				"res://assets/props/blocky/ampStack_0.glb",
+				"res://assets/props/blocky/ampStack_1.glb"
+			]
+		},
+		{
+			"id": "comboAmp",
+			"models": [
+				"res://assets/props/blocky/comboAmp_0.glb",
+				"res://assets/props/blocky/comboAmp_1.glb",
+				"res://assets/props/blocky/comboAmp_2.glb"
+			]
+		},
+		{
+			"id": "stageMonitor",
+			"models": [
+				"res://assets/props/blocky/stageMonitor.glb"
+			]
+		},
+		{
+			"id": "paSpeakerPole",
+			"models": [
+				"res://assets/props/blocky/paSpeakerPole.glb"
+			]
+		},
+		{
+			"id": "mixingDesk",
+			"models": [
+				"res://assets/props/blocky/mixingDesk.glb"
+			]
+		},
+		{
+			"id": "studioMonitors",
+			"models": [
+				"res://assets/props/blocky/studioMonitors_0.glb",
+				"res://assets/props/blocky/studioMonitors_1.glb"
+			]
+		},
+		{
+			"id": "rackGear",
+			"models": [
+				"res://assets/props/blocky/rackGear.glb"
+			]
+		},
+		{
+			"id": "musicStand",
+			"models": [
+				"res://assets/props/blocky/musicStand.glb"
+			]
+		},
+		{
+			"id": "cableCoil",
+			"models": [
+				"res://assets/props/blocky/cableCoil.glb"
+			]
+		},
+		{
+			"id": "cableRun",
+			"models": [
+				"res://assets/props/blocky/cableRun.glb"
+			]
+		},
+		{
+			"id": "stageLightRig",
+			"models": [
+				"res://assets/props/blocky/stageLightRig.glb"
+			]
+		},
+		{
+			"id": "acousticPanel",
+			"models": [
+				"res://assets/props/blocky/acousticPanel_0.glb",
+				"res://assets/props/blocky/acousticPanel_1.glb",
+				"res://assets/props/blocky/acousticPanel_2.glb"
+			]
+		},
+		{
+			"id": "guitarWallHanger",
+			"models": [
+				"res://assets/props/blocky/guitarWallHanger_0.glb",
+				"res://assets/props/blocky/guitarWallHanger_1.glb"
+			]
+		},
+		{
+			"id": "instrumentCases",
+			"models": [
+				"res://assets/props/blocky/instrumentCases_0.glb",
+				"res://assets/props/blocky/instrumentCases_1.glb",
+				"res://assets/props/blocky/instrumentCases_2.glb"
+			]
+		},
+		{
+			"id": "onAirSign",
+			"models": [
+				"res://assets/props/blocky/onAirSign.glb"
+			]
+		}
+	]
+}

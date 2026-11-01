@@ -1,0 +1,22 @@
+{
+	"schema": "lr.loot/1",
+	"id": "route",
+	"base": ["battery"],
+	"rolls": [
+		{"kind": "tool", "chance": 0.72},
+		{"kind": "battery", "chance": 0.38},
+		{"kind": "coin", "chance": 0.30},
+		{"kind": "backpack", "chance": 0.16}
+	],
+	"tools": [
+		{"item": "taser", "weight": 0.3},
+		{"item": "lockpick", "weight": 0.3},
+		{"item": "crowbar", "weight": 0.3},
+		{"item": "rescue_axe", "weight": 0.1}
+	],
+	"backpacks": ["backpack_small", "backpack_medium", "backpack_large"],
+	"aid": [
+		{"item": "stim_pack", "chance": 0.18},
+		{"item": "revive_kit", "chance": 0.03, "chance_coop": 0.06}
+	]
+}

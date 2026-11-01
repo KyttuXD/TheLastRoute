@@ -1,0 +1,143 @@
+{
+	"schema": "lr.prop/1",
+	"family": "p01",
+	"props": [
+		{
+			"id": "mansionMarbleColumn",
+			"models": [
+				"res://assets/props/blocky/mansionMarbleColumn.glb"
+			]
+		},
+		{
+			"id": "mansionPorcelainVase",
+			"models": [
+				"res://assets/props/blocky/mansionPorcelainVase_0.glb",
+				"res://assets/props/blocky/mansionPorcelainVase_1.glb",
+				"res://assets/props/blocky/mansionPorcelainVase_2.glb"
+			]
+		},
+		{
+			"id": "ivStand",
+			"models": [
+				"res://assets/props/blocky/ivStand.glb"
+			]
+		},
+		{
+			"id": "medicalCart",
+			"models": [
+				"res://assets/props/blocky/medicalCart.glb"
+			]
+		},
+		{
+			"id": "readingTable",
+			"models": [
+				"res://assets/props/blocky/readingTable_0.glb",
+				"res://assets/props/blocky/readingTable_1.glb",
+				"res://assets/props/blocky/readingTable_2.glb"
+			]
+		},
+		{
+			"id": "libraryGlobe",
+			"models": [
+				"res://assets/props/blocky/libraryGlobe_0.glb",
+				"res://assets/props/blocky/libraryGlobe_1.glb"
+			]
+		},
+		{
+			"id": "storageBarrel",
+			"models": [
+				"res://assets/props/blocky/storageBarrel_0.glb",
+				"res://assets/props/blocky/storageBarrel_1.glb",
+				"res://assets/props/blocky/storageBarrel_2.glb"
+			]
+		},
+		{
+			"id": "storageShelving",
+			"models": [
+				"res://assets/props/blocky/storageShelving.glb"
+			]
+		},
+		{
+			"id": "receptionDesk",
+			"models": [
+				"res://assets/props/blocky/receptionDesk_0.glb",
+				"res://assets/props/blocky/receptionDesk_1.glb",
+				"res://assets/props/blocky/receptionDesk_2.glb"
+			]
+		},
+		{
+			"id": "pottedPlant",
+			"models": [
+				"res://assets/props/blocky/pottedPlant_0.glb",
+				"res://assets/props/blocky/pottedPlant_1.glb",
+				"res://assets/props/blocky/pottedPlant_2.glb"
+			]
+		},
+		{
+			"id": "standingMirror",
+			"models": [
+				"res://assets/props/blocky/standingMirror_0.glb",
+				"res://assets/props/blocky/standingMirror_1.glb",
+				"res://assets/props/blocky/standingMirror_2.glb"
+			]
+		},
+		{
+			"id": "arcadeCabinet",
+			"models": [
+				"res://assets/props/maze/arcade_cabinet_default.glb",
+				"res://assets/props/maze/arcade_cabinet_amber.glb",
+				"res://assets/props/maze/arcade_cabinet_burgundy.glb",
+				"res://assets/props/maze/arcade_cabinet_teal.glb",
+				"res://assets/props/maze/arcade_cabinet_ultraviolet.glb"
+			]
+		},
+		{
+			"id": "arcadeCabinetCyanMagenta",
+			"models": [
+				"res://assets/props/maze/arcade_cabinet_cyan_magenta.glb"
+			]
+		},
+		{
+			"id": "filingCabinet",
+			"models": [
+				"res://assets/props/maze/filing_cabinet.glb"
+			]
+		},
+		{
+			"id": "arcadeBasketballHoop",
+			"models": [
+				"res://assets/props/maze/arcade_basketball_hoop.glb"
+			]
+		},
+		{
+			"id": "arcadeCarpetCircle",
+			"models": [
+				"res://assets/props/maze/arcade_carpet_circle.glb"
+			]
+		},
+		{
+			"id": "arcadeCarpetRunner",
+			"models": [
+				"res://assets/props/maze/arcade_carpet_runner.glb"
+			]
+		},
+		{
+			"id": "arcadeTokenChanger",
+			"models": [
+				"res://assets/props/maze/arcade_token_changer.glb"
+			]
+		},
+		{
+			"id": "backstageRepairStand",
+			"models": [
+				"res://assets/props/maze/backstage_repair_stand.glb"
+			]
+		},
+		{
+			"id": "breakerCabinet",
+			"models": [
+				"res://assets/props/maze/breaker_cabinet.glb"
+			]
+		}
+	]
+}

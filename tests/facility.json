@@ -1,0 +1,35 @@
+{
+  "suite": "facility",
+  "description": "Seeded floors keep their invariants: nine rooms (lobby first), five relays, a safe zone, lockers, and every relay, battery, locker and the lift reachable from the start.",
+  "ported_from": "tests/validate_facility.gd, validate_pickup_reach.gd, validate_room.gd",
+  "defaults": { "difficulty": "standard", "mode": "finite" },
+  "tests": [
+    { "name": "seed 1", "start_run": { "seed": 1 }, "steps": [ { "expect": [
+      { "path": "nav.relays_reachable", "value": 5 }, { "path": "nav.batteries_reachable", "op": ">=", "value": 1 },
+      { "path": "nav.exit_reachable", "value": true }, { "path": "nav.unreachable.len", "value": 0 },
+      { "path": "rooms.len", "value": 9 }, { "path": "rooms.0.type", "value": "lobby" },
+      { "path": "objects.safe_zone", "op": "exists" }, { "path": "objects.lockers.len", "op": ">=", "value": 1 },
+      { "path": "objects.has_lift", "value": true } ] } ] },
+    { "name": "seed 12345", "start_run": { "seed": 12345 }, "steps": [ { "expect": [
+      { "path": "nav.relays_reachable", "value": 5 }, { "path": "nav.unreachable.len", "value": 0 }, { "path": "nav.exit_reachable", "value": true },
+      { "path": "nav.lockers_reachable", "op": ">=", "value": 1 }, { "path": "rooms.len", "value": 9 }, { "path": "objects.relays.len", "value": 5 } ] } ] },
+    { "name": "seed 777 relaxed", "start_run": { "seed": 777, "difficulty": "relaxed" }, "steps": [ { "expect": [
+      { "path": "nav.relays_reachable", "value": 5 }, { "path": "nav.unreachable.len", "value": 0 }, { "path": "nav.exit_reachable", "value": true }, { "path": "rooms.len", "value": 9 } ] } ] },
+    { "name": "seed 99999 hard", "start_run": { "seed": 99999, "difficulty": "hard" }, "steps": [ { "expect": [
+      { "path": "nav.relays_reachable", "value": 5 }, { "path": "nav.unreachable.len", "value": 0 }, { "path": "nav.exit_reachable", "value": true }, { "path": "rooms.len", "value": 9 } ] } ] },
+    { "name": "seed 20261101 depth 3", "start_run": { "seed": 20261101, "depth": 3 }, "steps": [ { "expect": [
+      { "path": "run.depth", "value": 3 }, { "path": "run.level_seed", "value": "20261101-D3" },
+      { "path": "nav.relays_reachable", "value": 5 }, { "path": "nav.unreachable.len", "value": 0 }, { "path": "nav.exit_reachable", "value": true } ] } ] },
+    {
+      "name": "same seed, same floor; another seed, another floor",
+      "start_run": { "seed": 31337 },
+      "steps": [
+        { "cmd": "objects", "save_as": "a" },
+        { "cmd": "start_run", "seed": 31337, "difficulty": "standard", "mode": "finite" },
+        { "cmd": "objects", "expect": [ { "path": "last.objects.relays", "var": "a.objects.relays" }, { "path": "last.objects.lockers", "var": "a.objects.lockers" } ] },
+        { "cmd": "start_run", "seed": 31338, "difficulty": "standard", "mode": "finite" },
+        { "cmd": "objects", "expect": [ { "path": "last.objects.relays", "op": "!=", "var": "a.objects.relays" } ] }
+      ]
+    }
+  ]
+}

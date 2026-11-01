@@ -1,0 +1,8 @@
+{
+	"schema": "lr.grab/1",
+	"id": "verrine",
+	"pool": {
+		"tackle": 6,
+		"leg_grab": 2
+	}
+}

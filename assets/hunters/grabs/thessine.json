@@ -1,0 +1,8 @@
+{
+	"schema": "lr.grab/1",
+	"id": "thessine",
+	"pool": {
+		"shoulder_grab": 6,
+		"wrap": 2
+	}
+}

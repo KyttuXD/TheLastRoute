@@ -1,0 +1,126 @@
+{
+	"schema": "lr.prop/1",
+	"family": "p10",
+	"props": [
+		{
+			"id": "surfboardRack",
+			"models": [
+				"res://assets/props/beach/surfboard_rack.glb"
+			]
+		},
+		{
+			"id": "palmTree",
+			"models": [
+				"res://assets/props/beach/palm_tree.glb"
+			]
+		},
+		{
+			"id": "frozenBeachHut",
+			"models": [
+				"res://assets/props/beach/frozen_beach_hut.glb"
+			]
+		},
+		{
+			"id": "frozenTidelinePool",
+			"models": [
+				"res://assets/props/beach/frozen_tideline_pool.glb"
+			]
+		},
+		{
+			"id": "carnivalTicketBooth",
+			"models": [
+				"res://assets/props/carnival/carnival_ticket_booth.glb"
+			]
+		},
+		{
+			"id": "popcornCart",
+			"models": [
+				"res://assets/props/carnival/popcorn_cart.glb"
+			]
+		},
+		{
+			"id": "ringTossStall",
+			"models": [
+				"res://assets/props/carnival/ring_toss_stall.glb"
+			]
+		},
+		{
+			"id": "strengthTester",
+			"models": [
+				"res://assets/props/carnival/strength_tester.glb"
+			]
+		},
+		{
+			"id": "circusPedestal",
+			"models": [
+				"res://assets/props/carnival/circus_pedestal.glb"
+			]
+		},
+		{
+			"id": "shootingGallery",
+			"models": [
+				"res://assets/props/carnival/ring_toss_stall.glb"
+			]
+		},
+		{
+			"id": "whackAMole",
+			"models": [
+				"res://assets/props/carnival/ring_toss_stall.glb"
+			]
+		},
+		{
+			"id": "duckPond",
+			"models": [
+				"res://assets/props/carnival/circus_pedestal.glb"
+			]
+		},
+		{
+			"id": "carouselCenterpiece",
+			"models": [
+				"res://assets/props/carnival/carousel_centerpiece.glb"
+			]
+		},
+		{
+			"id": "lavaVent",
+			"models": [
+				"res://assets/props/nether/lava_vent.glb"
+			]
+		},
+		{
+			"id": "emberBrazier",
+			"models": [
+				"res://assets/props/nether/ember_brazier.glb"
+			]
+		},
+		{
+			"id": "basaltPillar",
+			"models": [
+				"res://assets/props/nether/basalt_pillar.glb"
+			]
+		},
+		{
+			"id": "basaltRubble",
+			"models": [
+				"res://assets/props/nether/basalt_rubble.glb"
+			]
+		},
+		{
+			"id": "magmaCrystalCluster",
+			"models": [
+				"res://assets/props/nether/magma_crystal_cluster.glb"
+			]
+		},
+		{
+			"id": "infernoAltar",
+			"models": [
+				"res://assets/props/nether/inferno_altar.glb"
+			]
+		},
+		{
+			"id": "infernoChainLantern",
+			"models": [
+				"res://assets/props/nether/inferno_chain_lantern.glb"
+			]
+		}
+	]
+}

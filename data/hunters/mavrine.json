@@ -1,0 +1,15 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "mavrine",
+	"name": "Mavrine",
+	"tier": "intermediate",
+	"speed": 0.8,
+	"chase": 3.5,
+	"prog": 0.17,
+	"sight": 8.2,
+	"hearing": 0.95,
+	"spawn": 12,
+	"chase_style": "glide",
+	"taser_immune": true,
+	"melee_immune": false
+}

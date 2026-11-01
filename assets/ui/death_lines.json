@@ -1,0 +1,376 @@
+{
+  "schema": "kyttu-death-lines/v1",
+  "game": "last-route",
+  "hunters": {
+    "aki": {
+      "lines": [
+        "Oh.. um.. hello, and goodbye, I think.",
+        "I'll mark your page, so you can find your place again.",
+        "Please don't be scared, it's only the end of the chapter.",
+        "I didn't mean to look up right then.. sorry."
+      ],
+      "loreLine": "Sorry about earlier.. and about this."
+    },
+    "briselle": {
+      "lines": [
+        "Welcome, welcome.. and do mind the exit on your way out.",
+        "Applause, please, for a lovely little run.",
+        "Take a bow, guest, you've earned it.",
+        "Gently now, darling.. there we are."
+      ],
+      "loreLine": "I'll count to ten, darling, I always count to ten."
+    },
+    "ceryth": {
+      "lines": [
+        "By definition you're an intruder, and I didn't say a nice definition.",
+        "I don't think, I read, and you read as caught.",
+        "Your light didn't match the locker, I did notice.",
+        "One more for the count, and I'll say it out loud."
+      ],
+      "loreLine": {
+        "text": "Her lens whirs, and she writes something down.",
+        "style": "caption"
+      }
+    },
+    "dovelle": {
+      "lines": [
+        "Nothing personal, I just patrol, and you were in it.",
+        "Steady, sensible, and right behind you.",
+        "Deal's done, cut the deck and try again.",
+        "Don't worry, it's the boring ending."
+      ],
+      "loreLine": "Good game, guest.. nobody's winning tonight."
+    },
+    "elise": {
+      "lines": [
+        "You ran so much I couldn't lose you.",
+        "Rematch any time, I'll be faster.",
+        "Fastest catch on the floor, somebody write it down!"
+      ],
+      "loreLine": "That wasn't a race at all, was it.."
+    },
+    "ferryn": {
+      "lines": [
+        "Eek.. oh no, I caught you, I'm so sorry!",
+        "I didn't scream this time, did you notice?",
+        "Please don't look at me, I'm very bad at being looked at.",
+        "You hid so well I almost walked right past you."
+      ],
+      "loreLine": "Sorry, sorry, I'm sorry.. hi, and bye."
+    },
+    "glyra": {
+      "lines": [
+        "Hm hm hmm.. oh, you're still here?",
+        "The music stopped, and so did you.",
+        "Wind it next time, I get cranky without my song.",
+        "Shh, this is my favourite bit."
+      ],
+      "loreLine": "You stopped listening before the good part."
+    },
+    "haelith": {
+      "lines": [
+        "Fetched you, can I keep the relay too?",
+        "I heard you pull it from three halls away.",
+        "Good catch, right, did I do good?",
+        "Your relay smelled like you, so I followed."
+      ],
+      "loreLine": "Found you, and I was gentle, wasn't I?"
+    },
+    "ilyra": {
+      "lines": [
+        "I was here the whole time, obviously.",
+        "Don't look so surprised, it's my corner.",
+        "Mm, you stopped watching, so I stopped waiting.",
+        "I wasn't chasing you, I was just already there."
+      ],
+      "loreLine": "I could see you better from up here."
+    },
+    "javelle": {
+      "lines": [
+        "Told you, nobody ever listens when I say it.",
+        "Eight seconds outside your locker is plenty, thank you.",
+        "Up, out, done, no arguing.",
+        "Hiding is fine until somebody waits outside."
+      ],
+      "loreLine": "Come out, I know you're in there.. oh, you did."
+    },
+    "kathy": {
+      "lines": []
+    },
+    "loxelle": {
+      "lines": [
+        "Ugh, fine, you're caught, happy now?",
+        "That locker was rubbish anyway, you're welcome.",
+        "Don't look at me like that, I'm being helpful.",
+        "You hid under my stuff, which is rude."
+      ],
+      "loreLine": "Oh, great, was it something I said?"
+    },
+    "mavrine": {
+      "lines": [
+        "Guest stepped on scanner; guest departed; noted.",
+        "Protocol was followed, by me, at least.",
+        "Incident logged, cause: you."
+      ],
+      "loreLine": "For the record, I have three times for this and none agree."
+    },
+    "nyxie": {
+      "lines": [
+        "Question: why would anyone let the light die?",
+        "The dim parts are mine, and you wandered in.",
+        "Dim, quiet, and all mine.. thanks for the invite.",
+        "Shh, I'm not rude like the light."
+      ],
+      "loreLine": "Oh, good, you turned it off."
+    },
+    "opalie": {
+      "lines": [
+        "Should I tell everyone, I'm telling everyone!",
+        "You were by my relay, so I announced you.",
+        "Found you, found you, FOUND YOU!",
+        "You were so loud that everybody heard."
+      ],
+      "loreLine": "Everyone, I caught one, now it's official!"
+    },
+    "porcelle": {
+      "lines": [
+        "I was right beside you, nobody ever looks.",
+        "Shh.. I'll close the door behind you.",
+        "You looked straight through me, it happens.",
+        "Softly now, it's over."
+      ],
+      "loreLine": "It's all right, most people don't see me the first time."
+    },
+    "quenelle": {
+      "lines": [
+        "Your light was on too long, so I locked on.",
+        "Don't flatter yourself, I was going this way.",
+        "Stay still, I'm warming up to you.",
+        "Wrong turn, guest, I was always on yours."
+      ],
+      "loreLine": "Got you, and I'm not letting go."
+    },
+    "ravelle": {
+      "lines": [
+        "Surprise, that tile was mine!",
+        "You found the real door eventually.. it was me.",
+        "Didn't see that one coming, did you?",
+        "That door was fake, and I'm very proud of it."
+      ],
+      "loreLine": "Exits are just traps that let you go, guest."
+    },
+    "solyth": {
+      "lines": [
+        "Too hot to run, and I'm still warming up!",
+        "Did you think the heat was just weather?",
+        "Ugh, don't thank me, just get out of my hall.",
+        "Told you it was getting warm in here!"
+      ],
+      "loreLine": "You're in my hall.. well, you were."
+    },
+    "thessine": {
+      "lines": [
+        "Correction: that footstep was me, not her.",
+        "Wrong hunter, right voice, and I audit everything.",
+        "You followed the sound, sloppy but understandable.",
+        "Your echo was mine the whole time."
+      ],
+      "loreLine": "Say something, I'll tell you if it sounds like you."
+    },
+    "umbriel": {
+      "lines": [
+        "Sorry, habit, I looked like a friend.",
+        "Which runner was me, did you check the nametag?",
+        "I borrowed your walk, I'll give it back.",
+        "You trusted the nametag, and that's on me, sorry."
+      ],
+      "loreLine": "Sorry.. I just wanted to feel like I knew what to do."
+    },
+    "verrine": {
+      "lines": [
+        "You came into the vents, and that's my house.",
+        "Told you, nothing in here but dust and me.",
+        "You can go now, I'm bored.",
+        "You should've watched the walls, I live in them."
+      ],
+      "loreLine": "Guests always think the back is safe."
+    },
+    "voidblack": {
+      "style": "caption",
+      "lines": [
+        "It was nearer than where you left it.",
+        "Watched, it waits; unwatched, it arrives.",
+        "It never ran, and you never saw it move."
+      ],
+      "loreLine": "You looked away for one second."
+    },
+    "voidblue": {
+      "style": "caption",
+      "lines": [
+        "Your beam missed it by a step.",
+        "Invisible was never the same as absent.",
+        "It was waiting for the flash."
+      ],
+      "loreLine": "Even the hunters say they didn't see it there."
+    },
+    "voidbrown": {
+      "style": "caption",
+      "lines": [
+        "The locker was sealed before you reached it.",
+        "No hiding spot near it stays a hiding spot.",
+        "Every door you tried was already shut."
+      ],
+      "loreLine": "It stands where it wasn't yesterday, facing the hall."
+    },
+    "voidcyan": {
+      "style": "caption",
+      "lines": [
+        "It held its sightline, and the others came.",
+        "It saw you long enough to share.",
+        "Every hunter knew where you were.",
+        "Two and a half seconds was plenty."
+      ]
+    },
+    "voidgray": {
+      "style": "caption",
+      "lines": [
+        "You stood still too long.",
+        "The grace ran out before you moved.",
+        "It found you standing still."
+      ],
+      "loreLine": "Gray: stairwell four, then wherever you stood still."
+    },
+    "voidgreen": {
+      "style": "caption",
+      "lines": [
+        "It came out of the vent nine steps closer.",
+        "The grille rattled once, and then it was here.",
+        "The vents connect, and so did it."
+      ],
+      "loreLine": "Something in the vents kept going, exactly as fast as before."
+    },
+    "voidorange": {
+      "style": "caption",
+      "lines": [
+        "The flashlight died at the worst possible second.",
+        "Radar down, climate down, you down.",
+        "Nine seconds without a light is a long time."
+      ],
+      "loreLine": "Nobody asked it to stand there, and nobody asks it to leave."
+    },
+    "voidpink": {
+      "style": "caption",
+      "lines": [
+        "Those footsteps were never real, but this is.",
+        "The breathing came from the wrong side.",
+        "The radar lied, politely."
+      ],
+      "loreLine": "You spoke to it; none of them ever answers."
+    },
+    "voidpurple": {
+      "style": "caption",
+      "lines": [
+        "The radar showed nothing where it stood.",
+        "Static, then black, then nothing on the radar.",
+        "You read the noise as quiet.",
+        "Eleven seconds blind was enough."
+      ]
+    },
+    "voidred": {
+      "style": "caption",
+      "lines": [
+        "The hall was long, and it was faster.",
+        "It was faster in the corridor than you.",
+        "Rooms slow it and halls don't, and you chose the hall."
+      ],
+      "loreLine": "Up and down the straight hall, never stopping, then you."
+    },
+    "voidwhite": {
+      "style": "caption",
+      "lines": [
+        "It stood frozen in the beam, then the beam moved.",
+        "The beam slipped off it for one moment.",
+        "It moved the moment the light did.",
+        "Your beam was somewhere else."
+      ]
+    },
+    "voidyellow": {
+      "style": "caption",
+      "lines": [
+        "It grew faster while the map was open.",
+        "You read the map one second too long.",
+        "Every glance at the map made it faster.",
+        "The map stayed open, and it kept coming."
+      ]
+    },
+    "wynelle": {
+      "lines": [
+        "You let it get cold, so I got here.",
+        "Shh.. warm up somewhere else.",
+        "I'd say sorry, but it would come out cold."
+      ],
+      "loreLine": "Someone has to, and I'm already cold."
+    },
+    "xivvy": {
+      "lines": [
+        "WHEE, did you see that, I cut the corner!",
+        "Faster, faster.. oh, that's you, hi!",
+        "Officially, that's a catch!",
+        "Again, again, let's go again!"
+      ],
+      "loreLine": "Two seconds, one and a half, caught you!"
+    },
+    "ysolde": {
+      "lines": [
+        "Your battery's mine now, I'll look after it.",
+        "Sit still, I just want to remember this.",
+        "Everyone drops something, so I'll keep yours."
+      ],
+      "loreLine": "You ran, so I'll put that on your tag."
+    },
+    "zellia": {
+      "lines": [
+        "Every deal has a price, and you just paid it.",
+        "No refunds, sorry, house rules.",
+        "Bad luck, guest, that was the expensive one.",
+        "Don't tell anyone, but the tea was free."
+      ],
+      "loreLine": "The first one's always free, guest; this wasn't the first."
+    }
+  },
+  "causes": {
+    "nyxie": [
+      {
+        "text": "The light gave out before you did.",
+        "style": "caption"
+      }
+    ],
+    "darkness": [
+      {
+        "text": "Dark halls keep whatever wanders into them.",
+        "style": "caption"
+      }
+    ],
+    "deal": [
+      {
+        "text": "Some deals cost more than coins.",
+        "style": "caption"
+      },
+      {
+        "text": "The trade went through, and so did you.",
+        "style": "caption"
+      }
+    ],
+    "cold": [
+      {
+        "text": "The cold got there before the heater did.",
+        "style": "caption"
+      },
+      {
+        "text": "Too cold to run, too late to warm up.",
+        "style": "caption"
+      }
+    ]
+  },
+  "fallback": "A hunter intercepted your signal on depth {depth}."
+}

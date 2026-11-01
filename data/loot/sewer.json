@@ -1,0 +1,14 @@
+{
+	"schema": "lr.loot/1",
+	"id": "sewer",
+	"base": ["battery"],
+	"rolls": [
+		{"kind": "tool", "chance": 0.45}
+	],
+	"tools": [
+		{"item": "taser", "weight": 0.3},
+		{"item": "lockpick", "weight": 0.3},
+		{"item": "crowbar", "weight": 0.3},
+		{"item": "rescue_axe", "weight": 0.1}
+	]
+}

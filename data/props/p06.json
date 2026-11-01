@@ -1,0 +1,185 @@
+{
+	"schema": "lr.prop/1",
+	"family": "p06",
+	"props": [
+		{
+			"id": "publicSanitaryBin",
+			"models": [
+				"res://assets/props/mansion/public_sanitary_bin.glb"
+			]
+		},
+		{
+			"id": "publicMensRoomSign",
+			"models": [
+				"res://assets/props/mansion/public_mens_room_sign.glb"
+			]
+		},
+		{
+			"id": "publicWomensRoomSign",
+			"models": [
+				"res://assets/props/mansion/public_womens_room_sign.glb"
+			]
+		},
+		{
+			"id": "publicMensShowerStall",
+			"models": [
+				"res://assets/props/mansion/public_mens_shower_stall.glb"
+			]
+		},
+		{
+			"id": "publicWomensShowerStall",
+			"models": [
+				"res://assets/props/mansion/public_womens_shower_stall.glb"
+			]
+		},
+		{
+			"id": "publicShowerBench",
+			"models": [
+				"res://assets/props/mansion/public_shower_bench.glb"
+			]
+		},
+		{
+			"id": "houseBathtub",
+			"models": [
+				"res://assets/props/mansion/house_bathtub.glb"
+			]
+		},
+		{
+			"id": "houseToilet",
+			"models": [
+				"res://assets/props/mansion/house_toilet.glb"
+			]
+		},
+		{
+			"id": "houseShowerEnclosure",
+			"models": [
+				"res://assets/props/mansion/house_shower_enclosure.glb"
+			]
+		},
+		{
+			"id": "houseMedicineCabinet",
+			"models": [
+				"res://assets/props/mansion/house_medicine_cabinet.glb"
+			]
+		},
+		{
+			"id": "houseTowelRack",
+			"models": [
+				"res://assets/props/mansion/house_towel_rack.glb"
+			]
+		},
+		{
+			"id": "houseBathMat",
+			"models": [
+				"res://assets/props/mansion/house_bath_mat.glb"
+			]
+		},
+		{
+			"id": "houseBathroomShelf",
+			"models": [
+				"res://assets/props/mansion/house_bathroom_shelf.glb"
+			]
+		},
+		{
+			"id": "grandStaircase",
+			"models": [
+				"res://assets/props/mansion/grand_staircase.glb"
+			]
+		},
+		{
+			"id": "grandFoyerStaircase",
+			"models": [
+				"res://assets/props/mansion/grand_foyer_staircase.glb"
+			]
+		},
+		{
+			"id": "singleBed",
+			"models": [
+				"res://assets/props/mansion/single_bed_burgundy.glb",
+				"res://assets/props/mansion/single_bed_navy.glb",
+				"res://assets/props/mansion/single_bed_violet.glb",
+				"res://assets/props/mansion/single_bed_olive.glb",
+				"res://assets/props/mansion/single_bed_ivory.glb",
+				"res://assets/props/mansion/single_bed_charcoal.glb"
+			],
+			"themes": [
+				"burgundy",
+				"navy",
+				"violet",
+				"olive",
+				"ivory",
+				"charcoal"
+			],
+			"coordinated": true
+		},
+		{
+			"id": "doubleBed",
+			"models": [
+				"res://assets/props/mansion/double_bed_burgundy.glb",
+				"res://assets/props/mansion/double_bed_navy.glb",
+				"res://assets/props/mansion/double_bed_violet.glb",
+				"res://assets/props/mansion/double_bed_olive.glb",
+				"res://assets/props/mansion/double_bed_ivory.glb",
+				"res://assets/props/mansion/double_bed_charcoal.glb"
+			],
+			"themes": [
+				"burgundy",
+				"navy",
+				"violet",
+				"olive",
+				"ivory",
+				"charcoal"
+			],
+			"coordinated": true
+		},
+		{
+			"id": "bunkBed",
+			"models": [
+				"res://assets/props/prison/bunk_bed_metal.glb",
+				"res://assets/props/prison/bunk_bed_wood.glb",
+				"res://assets/props/prison/bunk_bed_loft.glb"
+			]
+		},
+		{
+			"id": "bedroomNightstand",
+			"models": [
+				"res://assets/props/mansion/bedroom_nightstand.glb",
+				"res://assets/props/mansion/bedroom_nightstand_navy.glb",
+				"res://assets/props/mansion/bedroom_nightstand_violet.glb",
+				"res://assets/props/mansion/bedroom_nightstand_olive.glb",
+				"res://assets/props/mansion/bedroom_nightstand_ivory.glb",
+				"res://assets/props/mansion/bedroom_nightstand_charcoal.glb"
+			],
+			"themes": [
+				"burgundy",
+				"navy",
+				"violet",
+				"olive",
+				"ivory",
+				"charcoal"
+			],
+			"coordinated": true
+		},
+		{
+			"id": "bedroomWardrobe",
+			"hide_capacity": 2,
+			"models": [
+				"res://assets/props/mansion/bedroom_wardrobe.glb",
+				"res://assets/props/mansion/bedroom_wardrobe_navy.glb",
+				"res://assets/props/mansion/bedroom_wardrobe_violet.glb",
+				"res://assets/props/mansion/bedroom_wardrobe_olive.glb",
+				"res://assets/props/mansion/bedroom_wardrobe_ivory.glb",
+				"res://assets/props/mansion/bedroom_wardrobe_charcoal.glb"
+			],
+			"themes": [
+				"burgundy",
+				"navy",
+				"violet",
+				"olive",
+				"ivory",
+				"charcoal"
+			],
+			"coordinated": true
+		}
+	]
+}

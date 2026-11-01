@@ -1,0 +1,15 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "ferryn",
+	"name": "Ferryn",
+	"tier": "intermediate",
+	"speed": 0.8,
+	"chase": 2.75,
+	"prog": 0.17,
+	"sight": 8.3,
+	"hearing": 0.92,
+	"spawn": 12,
+	"chase_style": "stopstart",
+	"taser_immune": true,
+	"melee_immune": false
+}

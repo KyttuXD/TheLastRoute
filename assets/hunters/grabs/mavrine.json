@@ -1,0 +1,8 @@
+{
+	"schema": "lr.grab/1",
+	"id": "mavrine",
+	"pool": {
+		"wrist_yank": 6,
+		"wall_pin": 2
+	}
+}

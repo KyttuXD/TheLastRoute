@@ -1,0 +1,176 @@
+{
+	"schema": "lr.prop/1",
+	"family": "p15",
+	"props": [
+		{
+			"id": "donutFryer",
+			"models": [
+				"res://assets/props/blocky/donutFryer.glb"
+			]
+		},
+		{
+			"id": "bakeryRack",
+			"models": [
+				"res://assets/props/blocky/bakeryRack_0.glb",
+				"res://assets/props/blocky/bakeryRack_1.glb",
+				"res://assets/props/blocky/bakeryRack_2.glb"
+			]
+		},
+		{
+			"id": "dinerStool",
+			"models": [
+				"res://assets/props/blocky/dinerStool_0.glb",
+				"res://assets/props/blocky/dinerStool_1.glb",
+				"res://assets/props/blocky/dinerStool_2.glb"
+			]
+		},
+		{
+			"id": "dinerBooth",
+			"models": [
+				"res://assets/props/blocky/dinerBooth_0.glb",
+				"res://assets/props/blocky/dinerBooth_1.glb",
+				"res://assets/props/blocky/dinerBooth_2.glb"
+			]
+		},
+		{
+			"id": "menuBoard",
+			"models": [
+				"res://assets/props/blocky/menuBoard_0.glb",
+				"res://assets/props/blocky/menuBoard_1.glb",
+				"res://assets/props/blocky/menuBoard_2.glb"
+			],
+			"light": {
+				"color": "ffe0b0",
+				"energy": 0.24,
+				"range": 2.4,
+				"offset": [
+					0,
+					0.45,
+					0
+				]
+			}
+		},
+		{
+			"id": "donutSign",
+			"models": [
+				"res://assets/props/blocky/donutSign_0.glb",
+				"res://assets/props/blocky/donutSign_1.glb"
+			],
+			"light": {
+				"color": "ff8fc8",
+				"energy": 0.38,
+				"range": 3.0,
+				"offset": [
+					0,
+					0.7,
+					0
+				]
+			}
+		},
+		{
+			"id": "washingMachine",
+			"models": [
+				"res://assets/props/blocky/washingMachine_0.glb",
+				"res://assets/props/blocky/washingMachine_1.glb",
+				"res://assets/props/blocky/washingMachine_2.glb"
+			]
+		},
+		{
+			"id": "dryerStack",
+			"models": [
+				"res://assets/props/blocky/dryerStack_0.glb",
+				"res://assets/props/blocky/dryerStack_1.glb"
+			]
+		},
+		{
+			"id": "flowerStand",
+			"models": [
+				"res://assets/props/blocky/flowerStand_0.glb",
+				"res://assets/props/blocky/flowerStand_1.glb"
+			]
+		},
+		{
+			"id": "barberChair",
+			"models": [
+				"res://assets/props/blocky/barberChair_0.glb",
+				"res://assets/props/blocky/barberChair_1.glb",
+				"res://assets/props/blocky/barberChair_2.glb"
+			]
+		},
+		{
+			"id": "barberStation",
+			"models": [
+				"res://assets/props/blocky/barberStation_0.glb",
+				"res://assets/props/blocky/barberStation_1.glb"
+			]
+		},
+		{
+			"id": "clothesRack",
+			"models": [
+				"res://assets/props/blocky/clothesRack_0.glb",
+				"res://assets/props/blocky/clothesRack_1.glb",
+				"res://assets/props/blocky/clothesRack_2.glb"
+			]
+		},
+		{
+			"id": "tvWall",
+			"models": [
+				"res://assets/props/blocky/tvWall_0.glb",
+				"res://assets/props/blocky/tvWall_1.glb",
+				"res://assets/props/blocky/tvWall_2.glb"
+			]
+		},
+		{
+			"id": "cinemaSeats",
+			"models": [
+				"res://assets/props/blocky/cinemaSeats_0.glb",
+				"res://assets/props/blocky/cinemaSeats_1.glb"
+			]
+		},
+		{
+			"id": "cinemaScreen",
+			"models": [
+				"res://assets/props/blocky/cinemaScreen_0.glb",
+				"res://assets/props/blocky/cinemaScreen_1.glb"
+			]
+		},
+		{
+			"id": "ticketBooth",
+			"models": [
+				"res://assets/props/blocky/ticketBooth_0.glb",
+				"res://assets/props/blocky/ticketBooth_1.glb",
+				"res://assets/props/blocky/ticketBooth_2.glb"
+			]
+		},
+		{
+			"id": "concessionCounter",
+			"models": [
+				"res://assets/props/blocky/concessionCounter_0.glb",
+				"res://assets/props/blocky/concessionCounter_1.glb"
+			]
+		},
+		{
+			"id": "foodCourtTable",
+			"models": [
+				"res://assets/props/blocky/foodCourtTable_0.glb",
+				"res://assets/props/blocky/foodCourtTable_1.glb",
+				"res://assets/props/blocky/foodCourtTable_2.glb"
+			]
+		},
+		{
+			"id": "mallPlanter",
+			"models": [
+				"res://assets/props/blocky/mallPlanter_0.glb",
+				"res://assets/props/blocky/mallPlanter_1.glb",
+				"res://assets/props/blocky/mallPlanter_2.glb"
+			]
+		},
+		{
+			"id": "mallBench",
+			"models": [
+				"res://assets/props/blocky/mallBench_0.glb",
+				"res://assets/props/blocky/mallBench_1.glb"
+			]
+		}
+	]
+}

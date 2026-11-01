@@ -1,0 +1,71 @@
+{
+  "suite": "interactables",
+  "description": "What [E] does: room light switches, the heater station, lockers, tool pickups, coins, vents and the music box.",
+  "ported_from": "tests/validate_light_switches.gd, validate_hiding_props.gd, validate_vents.gd, validate_glyra_music.gd, route_interactable_3d.gd",
+  "defaults": { "seed": 12345, "difficulty": "standard", "mode": "finite", "no_target": true },
+  "tests": [
+    {
+      "name": "a light switch toggles its room light",
+      "steps": [
+        { "cmd": "teleport", "to": "light_switch", "index": 0 },
+        { "cmd": "interact", "kind": "LIGHT_SWITCH" },
+        { "expect": [ { "path": "objects.light_switches.0.on", "value": false }, { "any": "events", "where": { "path": "text", "value": "ROOM LIGHT OFF" } } ] },
+        { "cmd": "interact", "kind": "LIGHT_SWITCH" },
+        { "expect": [ { "path": "objects.light_switches.0.on", "value": true } ] }
+      ]
+    },
+    {
+      "name": "the heater thaws, powers and powers down",
+      "steps": [
+        { "cmd": "teleport", "to": "heater" },
+        { "cmd": "interact", "kind": "HEATER_STATION", "expect": [ { "path": "run.heater", "value": "thawed" } ] },
+        { "cmd": "interact", "kind": "HEATER_STATION", "expect": [ { "path": "run.heater", "value": "powered" } ] },
+        { "cmd": "step", "frames": 120, "observe": false },
+        { "expect": [ { "path": "meters.ambient", "op": ">", "value": 65 } ] },
+        { "cmd": "interact", "kind": "HEATER_STATION", "expect": [ { "path": "run.heater", "value": "thawed" } ] }
+      ]
+    },
+    {
+      "name": "a locker hides the runner and lets them out",
+      "steps": [
+        { "cmd": "teleport", "to": "locker", "index": 0 },
+        { "cmd": "interact", "kind": "HIDING_SPOT" },
+        { "expect": [ { "path": "player.hidden", "value": 0 }, { "path": "obs.player.mode", "value": "hidden" }, { "any": "events", "where": { "path": "type", "value": "hid" } } ] },
+        { "cmd": "step", "frames": 30, "observe": false },
+        { "cmd": "interact" },
+        { "expect": [ { "path": "player.hidden", "op": "missing" }, { "any": "events", "where": { "path": "type", "value": "left_hiding" } } ] }
+      ]
+    },
+    {
+      "name": "tool pickups and coins",
+      "steps": [
+        { "cmd": "objects", "save_as": "o" },
+        { "cmd": "teleport", "to": "pickup", "index": 0 },
+        { "cmd": "interact", "kind": "TOOL_PICKUP" },
+        { "expect": [ { "path": "hotbar.slots.1.item", "var": "o.objects.pickups.0.item" }, { "path": "objects.pickups.0.taken", "value": true } ] },
+        { "cmd": "teleport", "to": "coin", "index": 0 },
+        { "cmd": "interact", "kind": "COIN" },
+        { "expect": [ { "path": "run.coins", "value": 2 }, { "count": "objects.coins", "where": { "path": "taken", "value": true }, "op": "==", "value": 1 } ] }
+      ]
+    },
+    {
+      "name": "a vent grate moves the runner along the ring",
+      "steps": [
+        { "cmd": "teleport", "to": "vent", "index": 0 },
+        { "cmd": "player", "save_as": "before" },
+        { "cmd": "interact", "kind": "VENT" },
+        { "expect": [ { "path": "player.in_vent", "value": true }, { "path": "player.pos", "op": "!=", "var": "before.player.pos" }, { "any": "events", "where": { "path": "text", "value": "VENT TRANSIT // VENT-2" } } ] }
+      ]
+    },
+    {
+      "name": "holding [E] winds the music box",
+      "steps": [
+        { "cmd": "step", "frames": 600, "observe": false },
+        { "expect": [ { "path": "run.music_box_left", "op": "<", "value": 36 } ] },
+        { "cmd": "teleport", "to": "music_box" },
+        { "cmd": "interact", "kind": "MUSIC_BOX", "hold_frames": 100 },
+        { "expect": [ { "path": "run.music_box_left", "op": ">", "value": 44 }, { "any": "events", "where": { "path": "text", "value": "Music box wound. The room settles." } } ] }
+      ]
+    }
+  ]
+}

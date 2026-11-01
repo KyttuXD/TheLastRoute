@@ -1,0 +1,106 @@
+{
+  "suite": "run_flow",
+  "description": "Relays wake the route hunter at each difficulty's threshold, the service lift needs every relay, a capture starts the escape struggle (6 presses in 3.2 s) and a failed one ends the run with a report.",
+  "ported_from": "tests/validate_run_report.gd, validate_hunters.gd (activation), validate_saves.gd (floor boundary), GameConfig HUNTER_ACTIVATION_RELAYS",
+  "defaults": { "seed": 12345, "difficulty": "standard", "mode": "finite" },
+  "tests": [
+    {
+      "name": "recovering a relay scores 100 and wakes the hunter (standard: 1 relay)",
+      "steps": [
+        { "expect": [ { "path": "hunters.0.active", "value": false }, { "path": "run.relays_collected", "value": 0 } ] },
+        { "cmd": "teleport", "to": "relay", "index": 0, "expect": [ { "path": "last.focus.kind", "value": "relay" } ] },
+        { "cmd": "interact", "kind": "RELAY" },
+        { "expect": [
+          { "path": "run.relays_collected", "value": 1 }, { "path": "run.score", "value": 100 },
+          { "path": "relays.0.taken", "value": true }, { "path": "hunters.0.active", "value": true },
+          { "any": "events", "where": { "path": "type", "value": "relay_collected" } },
+          { "any": "events", "where": { "path": "type", "value": "hunter_activated" } } ] }
+      ]
+    },
+    {
+      "name": "relaxed needs three relays",
+      "start_run": { "difficulty": "relaxed", "no_target": true },
+      "steps": [
+        { "cmd": "teleport", "to": "relay", "index": 0 }, { "cmd": "interact", "kind": "RELAY" },
+        { "expect": [ { "path": "hunters.0.active", "value": false } ] },
+        { "cmd": "teleport", "to": "relay", "index": 1 }, { "cmd": "interact", "kind": "RELAY" },
+        { "expect": [ { "path": "hunters.0.active", "value": false } ] },
+        { "cmd": "teleport", "to": "relay", "index": 2 }, { "cmd": "interact", "kind": "RELAY" },
+        { "expect": [ { "path": "hunters.0.active", "value": true }, { "path": "run.relays_collected", "value": 3 } ] }
+      ]
+    },
+    {
+      "name": "hard wakes the hunter at once",
+      "start_run": { "difficulty": "hard" },
+      "steps": [ { "expect": [ { "path": "hunters.0.active", "value": true } ] } ]
+    },
+    {
+      "name": "the lift refuses without every relay, then descends",
+      "start_run": { "god": true, "no_target": true },
+      "steps": [
+        { "cmd": "teleport", "to": "lift" },
+        { "cmd": "interact", "kind": "LIFT" },
+        { "expect": [ { "path": "run.depth", "value": 1 }, { "any": "events", "where": { "path": "text", "value": "The service lift has no route signal." } } ] },
+        { "cmd": "teleport", "to": "relay", "index": 0 }, { "cmd": "interact", "kind": "RELAY" },
+        { "cmd": "teleport", "to": "relay", "index": 1 }, { "cmd": "interact", "kind": "RELAY" },
+        { "cmd": "teleport", "to": "relay", "index": 2 }, { "cmd": "interact", "kind": "RELAY" },
+        { "cmd": "teleport", "to": "relay", "index": 3 }, { "cmd": "interact", "kind": "RELAY" },
+        { "cmd": "teleport", "to": "relay", "index": 4 }, { "cmd": "interact", "kind": "RELAY" },
+        { "expect": [ { "path": "run.relays_collected", "value": 5 }, { "path": "run.lift_ready", "value": true }, { "path": "run.score", "value": 500 } ] },
+        { "cmd": "teleport", "to": "lift" },
+        { "cmd": "interact", "kind": "LIFT" },
+        { "expect": [
+          { "path": "run.depth", "value": 2 }, { "path": "run.relays_collected", "value": 0 }, { "path": "run.score", "value": 500 },
+          { "path": "run.level_seed", "value": "12345-D2" },
+          { "any": "events", "where": [ { "path": "type", "value": "floor_changed" }, { "path": "depth", "value": 2 } ] },
+          { "path": "director.stats.shares", "value": 0 }, { "path": "director.stats.scatters", "value": 0 } ] }
+      ]
+    },
+    {
+      "name": "a capture starts the struggle; six presses break free",
+      "start_run": { "seed": 1 },
+      "steps": [
+        { "cmd": "teleport", "to": "relay", "index": 0 },
+        { "cmd": "admin", "name": "wake", "index": 0 },
+        { "cmd": "admin", "name": "hunter_to", "index": 0, "near": 1.2 },
+        { "cmd": "step_until", "expect": [ { "path": "run.escape", "op": "exists" } ], "max_frames": 240 },
+        { "expect": [ { "path": "run.escape.needed", "value": 6 }, { "path": "player.flashlight_on", "value": false }, { "any": "events", "where": { "path": "type", "value": "captured" } } ] },
+        { "cmd": "step", "frames": 2, "act": { "pulse": ["interact"] }, "observe": false, "repeat": 6 },
+        { "expect": [ { "path": "run.escape", "op": "missing" }, { "path": "run.ended", "value": false }, { "any": "events", "where": { "path": "type", "value": "escaped" } } ] }
+      ]
+    },
+    {
+      "name": "a capture without a struggle ends the run with a report",
+      "start_run": { "seed": 1 },
+      "steps": [
+        { "cmd": "teleport", "to": "relay", "index": 0 },
+        { "cmd": "admin", "name": "wake", "index": 0 },
+        { "cmd": "admin", "name": "hunter_to", "index": 0, "near": 1.2 },
+        { "cmd": "step_until", "expect": [ { "path": "run.escape", "op": "exists" } ], "max_frames": 240 },
+        { "cmd": "step", "frames": 300, "observe": false },
+        { "expect": [
+          { "path": "run.ended", "value": true }, { "path": "report.ended", "value": true },
+          { "path": "report.cause", "value": "contact" }, { "path": "report.hunter", "value": "kathy" },
+          { "path": "report.seed", "value": 1 }, { "path": "report.depth", "value": 1 },
+          { "any": "events", "where": { "path": "type", "value": "run_ended" } } ] },
+        { "cmd": "step", "frames": 10, "expect": [ { "path": "last.frames", "value": 0 }, { "path": "last.obs.run.over", "value": true }, { "path": "last.obs.run.death.hunter_id", "value": "kathy" } ] }
+      ]
+    },
+    {
+      "name": "admin god and no_target keep the runner safe",
+      "start_run": { "seed": 1, "god": true },
+      "steps": [
+        { "cmd": "teleport", "to": "relay", "index": 0 },
+        { "cmd": "admin", "name": "wake", "index": 0 },
+        { "cmd": "admin", "name": "hunter_to", "index": 0, "near": 1.2 },
+        { "cmd": "step", "frames": 300, "observe": false },
+        { "expect": [ { "path": "run.escape", "op": "missing" }, { "path": "run.ended", "value": false } ] },
+        { "cmd": "admin", "name": "god", "on": false },
+        { "cmd": "admin", "name": "no_target", "on": true },
+        { "cmd": "admin", "name": "hunter_to", "index": 0, "near": 1.0 },
+        { "cmd": "step", "frames": 300, "observe": false },
+        { "expect": [ { "path": "run.escape", "op": "missing" }, { "path": "run.ended", "value": false } ] }
+      ]
+    }
+  ]
+}

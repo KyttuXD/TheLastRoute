@@ -1,0 +1,40 @@
+{
+  "suite": "bot",
+  "description": "The bot (last_route_bot.gd port) plays: collects a floor's relays, rides the lift, explores the Infinite route without soft locks, and goto walks to a target.",
+  "ported_from": "dev/playtest/playtest_scenarios.gd (collect_relays, reach_depth, explore_coverage, goto_check) and dev/playtest/bots/last_route_bot.gd",
+  "defaults": { "seed": 12345, "difficulty": "standard", "mode": "finite" },
+  "tests": [
+    {
+      "name": "collect_relays: all five relays on a finite floor",
+      "steps": [
+        { "cmd": "step_until", "bot": true, "expect": [ { "path": "run.relays_collected", "value": 5 } ], "max_frames": 7200 },
+        { "expect": [ { "path": "bot.soft_locks", "value": 0 }, { "path": "bot.unreachable_goals", "op": "<=", "value": 6 }, { "path": "bot.relays", "value": 5 } ] }
+      ]
+    },
+    {
+      "name": "reach_depth: down the lift to depth 3",
+      "start_run": { "seed": 777 },
+      "steps": [
+        { "cmd": "step_until", "bot": true, "expect": [ { "path": "run.depth", "op": ">=", "value": 3 } ], "max_frames": 21600, "check_every": 30 },
+        { "expect": [ { "path": "bot.soft_locks", "value": 0 }, { "path": "bot.max_depth", "op": ">=", "value": 3 } ] }
+      ]
+    },
+    {
+      "name": "explore_coverage: the Infinite route, 3 minutes",
+      "start_run": { "seed": "ALPHA", "mode": "infinite", "god": true },
+      "steps": [
+        { "cmd": "step_until", "bot": true, "expect": [ { "path": "run.chunks_visited", "op": ">=", "value": 15 } ], "max_frames": 10800, "check_every": 60 },
+        { "expect": [ { "path": "bot.soft_locks", "value": 0 }, { "path": "bot.stuck_events", "op": "<=", "value": 3 }, { "path": "bot.idle_max_s", "op": "<", "value": 90 } ] }
+      ]
+    },
+    {
+      "name": "goto walks to a relay and faces it",
+      "start_run": { "no_target": true },
+      "steps": [
+        { "cmd": "goto", "to": "relay", "index": 2, "expect": [ { "path": "last.arrived", "value": true }, { "path": "last.focus.kind", "value": "relay" } ] },
+        { "cmd": "interact", "kind": "RELAY" },
+        { "expect": [ { "path": "run.relays_collected", "value": 1 } ] }
+      ]
+    }
+  ]
+}

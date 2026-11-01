@@ -1,0 +1,47 @@
+{
+  "suite": "infinite",
+  "description": "The Infinite route: a 135x135 live window with no lift, stairwells between levels, the window recentring as the runner walks, and the hunter population growing with relays.",
+  "ported_from": "tests/validate_streamed_world.gd, validate_level_links.gd, validate_connectivity.gd; GameConfig.streamed_hunter_population",
+  "defaults": { "seed": 12345, "difficulty": "standard", "mode": "infinite" },
+  "tests": [
+    {
+      "name": "the live window",
+      "steps": [ { "expect": [
+        { "path": "obs.world.size", "value": [135, 135] }, { "path": "objects.has_lift", "value": false },
+        { "path": "run.level", "value": 0 }, { "path": "run.depth", "value": 1 }, { "path": "run.chunks_visited", "value": 9 },
+        { "path": "run.window_center", "value": [0, 0] }, { "path": "objects.stairs.len", "op": ">=", "value": 1 },
+        { "path": "run.level_seed", "value": "12345:L0" } ] } ]
+    },
+    {
+      "name": "stairs down to level -1",
+      "start_run": { "no_target": true },
+      "steps": [
+        { "cmd": "teleport", "to": "stairs_down", "expect": [ { "path": "last.focus.kind", "value": "stairs" } ] },
+        { "cmd": "interact", "kind": "STAIRS" },
+        { "expect": [
+          { "path": "run.level", "value": -1 }, { "path": "run.depth", "value": 2 }, { "path": "run.level_seed", "value": "12345:L-1" },
+          { "any": "events", "where": [ { "path": "type", "value": "floor_changed" }, { "path": "level", "value": -1 } ] },
+          { "path": "director.stats.rushes", "value": 0 } ] }
+      ]
+    },
+    {
+      "name": "the window recentres when the runner leaves the middle chunk",
+      "start_run": { "no_target": true },
+      "steps": [
+        { "cmd": "teleport", "x": 96.5, "z": 67.5 },
+        { "cmd": "step", "frames": 2, "observe": false },
+        { "expect": [ { "path": "run.window_center", "value": [1, 0] }, { "path": "run.chunks_visited", "value": 12 }, { "path": "player.pos.0", "op": "<", "value": 90 } ] }
+      ]
+    },
+    {
+      "name": "the streamed population grows with relays",
+      "start_run": { "no_target": true },
+      "steps": [
+        { "expect": [ { "path": "hunters.len", "value": 2 }, { "path": "hunters.0.id", "value": "nyxie" } ] },
+        { "cmd": "teleport", "to": "relay", "index": 0 },
+        { "cmd": "interact", "kind": "RELAY" },
+        { "expect": [ { "path": "run.relays_collected", "value": 1 }, { "path": "hunters.len", "value": 3 }, { "path": "hunters.2.active", "value": true } ] }
+      ]
+    }
+  ]
+}

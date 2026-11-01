@@ -1,0 +1,15 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "quenelle",
+	"name": "Quenelle",
+	"tier": "easy",
+	"speed": 0.81,
+	"chase": 3.5,
+	"prog": 0.17,
+	"sight": 8.1,
+	"hearing": 0.85,
+	"spawn": 12,
+	"chase_style": "reach2",
+	"taser_immune": true,
+	"melee_immune": false
+}

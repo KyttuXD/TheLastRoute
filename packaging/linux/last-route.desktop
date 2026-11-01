@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Kyttu's Lab
+Comment=KYTTU: The Last Route (Rust port)
+Exec=last_route
+Icon=last-route
+Terminal=false
+Categories=Game;

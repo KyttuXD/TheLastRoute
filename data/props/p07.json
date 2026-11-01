@@ -1,0 +1,313 @@
+{
+	"schema": "lr.prop/1",
+	"family": "p07",
+	"props": [
+		{
+			"id": "bedroomDresser",
+			"models": [
+				"res://assets/props/mansion/bedroom_dresser.glb",
+				"res://assets/props/mansion/bedroom_dresser_navy.glb",
+				"res://assets/props/mansion/bedroom_dresser_violet.glb",
+				"res://assets/props/mansion/bedroom_dresser_olive.glb",
+				"res://assets/props/mansion/bedroom_dresser_ivory.glb",
+				"res://assets/props/mansion/bedroom_dresser_charcoal.glb"
+			],
+			"themes": [
+				"burgundy",
+				"navy",
+				"violet",
+				"olive",
+				"ivory",
+				"charcoal"
+			],
+			"coordinated": true
+		},
+		{
+			"id": "bedroomVanity",
+			"models": [
+				"res://assets/props/mansion/bedroom_vanity.glb",
+				"res://assets/props/mansion/bedroom_vanity_navy.glb",
+				"res://assets/props/mansion/bedroom_vanity_violet.glb",
+				"res://assets/props/mansion/bedroom_vanity_olive.glb",
+				"res://assets/props/mansion/bedroom_vanity_ivory.glb",
+				"res://assets/props/mansion/bedroom_vanity_charcoal.glb"
+			],
+			"themes": [
+				"burgundy",
+				"navy",
+				"violet",
+				"olive",
+				"ivory",
+				"charcoal"
+			],
+			"coordinated": true
+		},
+		{
+			"id": "vanityStool",
+			"models": [
+				"res://assets/props/mansion/vanity_stool.glb",
+				"res://assets/props/mansion/vanity_stool_navy.glb",
+				"res://assets/props/mansion/vanity_stool_violet.glb",
+				"res://assets/props/mansion/vanity_stool_olive.glb",
+				"res://assets/props/mansion/vanity_stool_ivory.glb",
+				"res://assets/props/mansion/vanity_stool_charcoal.glb"
+			],
+			"themes": [
+				"burgundy",
+				"navy",
+				"violet",
+				"olive",
+				"ivory",
+				"charcoal"
+			],
+			"coordinated": true
+		},
+		{
+			"id": "bedsideLamp",
+			"models": [
+				"res://assets/props/mansion/bedside_lamp.glb",
+				"res://assets/props/mansion/bedside_lamp_navy.glb",
+				"res://assets/props/mansion/bedside_lamp_violet.glb",
+				"res://assets/props/mansion/bedside_lamp_olive.glb",
+				"res://assets/props/mansion/bedside_lamp_ivory.glb",
+				"res://assets/props/mansion/bedside_lamp_charcoal.glb"
+			],
+			"themes": [
+				"burgundy",
+				"navy",
+				"violet",
+				"olive",
+				"ivory",
+				"charcoal"
+			],
+			"coordinated": true,
+			"light": {
+				"color": "ffd5a0",
+				"energy": 0.32,
+				"range": 2.6,
+				"offset": [
+					0,
+					0.54,
+					0
+				]
+			}
+		},
+		{
+			"id": "toyChest",
+			"models": [
+				"res://assets/props/mansion/toy_chest.glb",
+				"res://assets/props/mansion/toy_chest_navy.glb",
+				"res://assets/props/mansion/toy_chest_violet.glb",
+				"res://assets/props/mansion/toy_chest_olive.glb",
+				"res://assets/props/mansion/toy_chest_ivory.glb",
+				"res://assets/props/mansion/toy_chest_charcoal.glb"
+			],
+			"themes": [
+				"burgundy",
+				"navy",
+				"violet",
+				"olive",
+				"ivory",
+				"charcoal"
+			],
+			"coordinated": true
+		},
+		{
+			"id": "laundryHamper",
+			"models": [
+				"res://assets/props/mansion/laundry_hamper.glb",
+				"res://assets/props/mansion/laundry_hamper_navy.glb",
+				"res://assets/props/mansion/laundry_hamper_violet.glb",
+				"res://assets/props/mansion/laundry_hamper_olive.glb",
+				"res://assets/props/mansion/laundry_hamper_ivory.glb",
+				"res://assets/props/mansion/laundry_hamper_charcoal.glb"
+			],
+			"themes": [
+				"burgundy",
+				"navy",
+				"violet",
+				"olive",
+				"ivory",
+				"charcoal"
+			],
+			"coordinated": true
+		},
+		{
+			"id": "bedroomRug",
+			"models": [
+				"res://assets/props/mansion/bedroom_rug.glb",
+				"res://assets/props/mansion/bedroom_rug_navy.glb",
+				"res://assets/props/mansion/bedroom_rug_violet.glb",
+				"res://assets/props/mansion/bedroom_rug_olive.glb",
+				"res://assets/props/mansion/bedroom_rug_ivory.glb",
+				"res://assets/props/mansion/bedroom_rug_charcoal.glb"
+			],
+			"themes": [
+				"burgundy",
+				"navy",
+				"violet",
+				"olive",
+				"ivory",
+				"charcoal"
+			],
+			"coordinated": true
+		},
+		{
+			"id": "bedroomWallClock",
+			"models": [
+				"res://assets/props/mansion/bedroom_wall_clock.glb",
+				"res://assets/props/mansion/bedroom_wall_clock_navy.glb",
+				"res://assets/props/mansion/bedroom_wall_clock_violet.glb",
+				"res://assets/props/mansion/bedroom_wall_clock_olive.glb",
+				"res://assets/props/mansion/bedroom_wall_clock_ivory.glb",
+				"res://assets/props/mansion/bedroom_wall_clock_charcoal.glb"
+			],
+			"themes": [
+				"burgundy",
+				"navy",
+				"violet",
+				"olive",
+				"ivory",
+				"charcoal"
+			],
+			"coordinated": true
+		},
+		{
+			"id": "bedroomBench",
+			"models": [
+				"res://assets/props/mansion/bedroom_bench.glb",
+				"res://assets/props/mansion/bedroom_bench_navy.glb",
+				"res://assets/props/mansion/bedroom_bench_violet.glb",
+				"res://assets/props/mansion/bedroom_bench_olive.glb",
+				"res://assets/props/mansion/bedroom_bench_ivory.glb",
+				"res://assets/props/mansion/bedroom_bench_charcoal.glb"
+			],
+			"themes": [
+				"burgundy",
+				"navy",
+				"violet",
+				"olive",
+				"ivory",
+				"charcoal"
+			],
+			"coordinated": true
+		},
+		{
+			"id": "gothicDoubleBed",
+			"models": [
+				"res://assets/props/mansion/gothic_double_bed_crimson.glb",
+				"res://assets/props/mansion/gothic_double_bed_violet.glb",
+				"res://assets/props/mansion/gothic_double_bed_midnight.glb",
+				"res://assets/props/mansion/gothic_double_bed_forest.glb",
+				"res://assets/props/mansion/gothic_double_bed_ivory.glb"
+			],
+			"coordinated": true
+		},
+		{
+			"id": "gothicNightstand",
+			"models": [
+				"res://assets/props/mansion/gothic_nightstand_crimson.glb",
+				"res://assets/props/mansion/gothic_nightstand_violet.glb",
+				"res://assets/props/mansion/gothic_nightstand_midnight.glb",
+				"res://assets/props/mansion/gothic_nightstand_forest.glb",
+				"res://assets/props/mansion/gothic_nightstand_ivory.glb"
+			],
+			"coordinated": true
+		},
+		{
+			"id": "gothicWardrobe",
+			"hide_capacity": 2,
+			"models": [
+				"res://assets/props/mansion/gothic_wardrobe_crimson.glb",
+				"res://assets/props/mansion/gothic_wardrobe_violet.glb",
+				"res://assets/props/mansion/gothic_wardrobe_midnight.glb",
+				"res://assets/props/mansion/gothic_wardrobe_forest.glb",
+				"res://assets/props/mansion/gothic_wardrobe_ivory.glb"
+			],
+			"coordinated": true
+		},
+		{
+			"id": "gothicDresser",
+			"models": [
+				"res://assets/props/mansion/gothic_dresser_crimson.glb",
+				"res://assets/props/mansion/gothic_dresser_violet.glb",
+				"res://assets/props/mansion/gothic_dresser_midnight.glb",
+				"res://assets/props/mansion/gothic_dresser_forest.glb",
+				"res://assets/props/mansion/gothic_dresser_ivory.glb"
+			],
+			"coordinated": true
+		},
+		{
+			"id": "gothicVanity",
+			"models": [
+				"res://assets/props/mansion/gothic_vanity_crimson.glb",
+				"res://assets/props/mansion/gothic_vanity_violet.glb",
+				"res://assets/props/mansion/gothic_vanity_midnight.glb",
+				"res://assets/props/mansion/gothic_vanity_forest.glb",
+				"res://assets/props/mansion/gothic_vanity_ivory.glb"
+			],
+			"coordinated": true
+		},
+		{
+			"id": "gothicVanityStool",
+			"models": [
+				"res://assets/props/mansion/gothic_vanity_stool_crimson.glb",
+				"res://assets/props/mansion/gothic_vanity_stool_violet.glb",
+				"res://assets/props/mansion/gothic_vanity_stool_midnight.glb",
+				"res://assets/props/mansion/gothic_vanity_stool_forest.glb",
+				"res://assets/props/mansion/gothic_vanity_stool_ivory.glb"
+			],
+			"coordinated": true
+		},
+		{
+			"id": "gothicBedroomBench",
+			"models": [
+				"res://assets/props/mansion/gothic_bedroom_bench_crimson.glb",
+				"res://assets/props/mansion/gothic_bedroom_bench_violet.glb",
+				"res://assets/props/mansion/gothic_bedroom_bench_midnight.glb",
+				"res://assets/props/mansion/gothic_bedroom_bench_forest.glb",
+				"res://assets/props/mansion/gothic_bedroom_bench_ivory.glb"
+			],
+			"coordinated": true
+		},
+		{
+			"id": "gothicBedroomRug",
+			"models": [
+				"res://assets/props/mansion/gothic_bedroom_rug_crimson.glb",
+				"res://assets/props/mansion/gothic_bedroom_rug_violet.glb",
+				"res://assets/props/mansion/gothic_bedroom_rug_midnight.glb",
+				"res://assets/props/mansion/gothic_bedroom_rug_forest.glb",
+				"res://assets/props/mansion/gothic_bedroom_rug_ivory.glb"
+			],
+			"coordinated": true
+		},
+		{
+			"id": "gothicBedsideCandelabra",
+			"models": [
+				"res://assets/props/mansion/gothic_bedside_candelabra_crimson.glb",
+				"res://assets/props/mansion/gothic_bedside_candelabra_violet.glb",
+				"res://assets/props/mansion/gothic_bedside_candelabra_midnight.glb",
+				"res://assets/props/mansion/gothic_bedside_candelabra_forest.glb",
+				"res://assets/props/mansion/gothic_bedside_candelabra_ivory.glb"
+			],
+			"coordinated": true
+		},
+		{
+			"id": "gothicHighbackChair",
+			"models": [
+				"res://assets/props/mansion/gothic_highback_chair_crimson.glb",
+				"res://assets/props/mansion/gothic_highback_chair_violet.glb",
+				"res://assets/props/mansion/gothic_highback_chair_midnight.glb",
+				"res://assets/props/mansion/gothic_highback_chair_forest.glb",
+				"res://assets/props/mansion/gothic_highback_chair_ivory.glb"
+			],
+			"coordinated": true
+		},
+		{
+			"id": "mansionConsoleTable",
+			"models": [
+				"res://assets/props/mansion/mansion_console_table.glb"
+			]
+		}
+	]
+}

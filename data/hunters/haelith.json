@@ -1,0 +1,15 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "haelith",
+	"name": "Haelith",
+	"tier": "easy",
+	"speed": 0.83,
+	"chase": 3.6,
+	"prog": 0.18,
+	"sight": 7.8,
+	"hearing": 1.18,
+	"spawn": 12,
+	"chase_style": "pump:big",
+	"taser_immune": true,
+	"melee_immune": false
+}

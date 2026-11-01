@@ -1,0 +1,47 @@
+{
+  "suite": "determinism",
+  "description": "Same seed + same inputs = same state hash (fixed 60 Hz step), for scripted input, the bot and the Infinite route; a different seed differs.",
+  "ported_from": "docs/PLAYTEST.md determinism (--fixed-fps 60, PlaytestObserver.state_hash, tools/build/playtest_check.sh)",
+  "defaults": { "seed": 4242, "difficulty": "standard", "mode": "finite" },
+  "tests": [
+    {
+      "name": "scripted input replays exactly",
+      "steps": [
+        { "cmd": "step", "frames": 120, "act": { "move": [0.3, 1], "look": [0.4, 0] }, "observe": false },
+        { "cmd": "step", "frames": 240, "act": { "move": [-1, 0.5], "look": [-0.2, 0.1], "hold": { "sprint": true } }, "observe": false },
+        { "cmd": "hash", "save_as": "a" },
+        { "cmd": "start_run", "seed": 4242, "difficulty": "standard", "mode": "finite" },
+        { "cmd": "step", "frames": 120, "act": { "move": [0.3, 1], "look": [0.4, 0] }, "observe": false },
+        { "cmd": "step", "frames": 240, "act": { "move": [-1, 0.5], "look": [-0.2, 0.1], "hold": { "sprint": true } }, "observe": false },
+        { "cmd": "hash", "expect": [ { "path": "last.hash", "var": "a.hash" }, { "path": "last.frame", "value": 360 } ] },
+        { "cmd": "start_run", "seed": 4243, "difficulty": "standard", "mode": "finite" },
+        { "cmd": "step", "frames": 120, "act": { "move": [0.3, 1], "look": [0.4, 0] }, "observe": false },
+        { "cmd": "step", "frames": 240, "act": { "move": [-1, 0.5], "look": [-0.2, 0.1], "hold": { "sprint": true } }, "observe": false },
+        { "cmd": "hash", "expect": [ { "path": "last.hash", "op": "!=", "var": "a.hash" } ] }
+      ]
+    },
+    {
+      "name": "the bot replays exactly (finite, hunters awake)",
+      "steps": [
+        { "cmd": "bot", "frames": 1800, "observe": false },
+        { "cmd": "hash", "save_as": "a" },
+        { "cmd": "report", "save_as": "ra" },
+        { "cmd": "start_run", "seed": 4242, "difficulty": "standard", "mode": "finite" },
+        { "cmd": "bot", "frames": 1800, "observe": false },
+        { "cmd": "hash", "expect": [ { "path": "last.hash", "var": "a.hash" } ] },
+        { "cmd": "report", "expect": [ { "path": "last.report.score", "var": "ra.report.score" }, { "path": "last.report.walked", "var": "ra.report.walked" } ] }
+      ]
+    },
+    {
+      "name": "the Infinite route replays exactly",
+      "start_run": { "mode": "infinite", "seed": 20261101 },
+      "steps": [
+        { "cmd": "bot", "frames": 2400, "observe": false },
+        { "cmd": "hash", "save_as": "a" },
+        { "cmd": "start_run", "seed": 20261101, "difficulty": "standard", "mode": "infinite" },
+        { "cmd": "bot", "frames": 2400, "observe": false },
+        { "cmd": "hash", "expect": [ { "path": "last.hash", "var": "a.hash" } ] }
+      ]
+    }
+  ]
+}

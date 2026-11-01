@@ -1,0 +1,9 @@
+{
+	"schema": "lr.grab/1",
+	"id": "ravelle",
+	"pool": {
+		"neck_lift": 6,
+		"leg_grab": 3,
+		"upside_down": 2
+	}
+}

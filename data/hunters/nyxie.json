@@ -1,0 +1,15 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "nyxie",
+	"name": "Nyxie",
+	"tier": "special",
+	"speed": 0.9,
+	"chase": 3.9,
+	"prog": 0.15,
+	"sight": 8.4,
+	"hearing": 0.0,
+	"spawn": 10,
+	"chase_style": "stalk",
+	"taser_immune": true,
+	"melee_immune": false
+}

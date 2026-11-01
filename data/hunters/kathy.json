@@ -1,0 +1,15 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "kathy",
+	"name": "Kathy",
+	"tier": "difficult",
+	"speed": 0.82,
+	"chase": 4.15,
+	"prog": 0.2,
+	"sight": 8.2,
+	"hearing": 1.0,
+	"spawn": 16,
+	"chase_style": "reach1",
+	"taser_immune": true,
+	"melee_immune": false
+}

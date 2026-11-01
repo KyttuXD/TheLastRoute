@@ -1,0 +1,5860 @@
+{
+  "source": "game/config/room_catalog.gd (+ PropModelCatalog.HUNTER_SCALE from game/config/prop_model_catalog.gd for surface_height)",
+  "notes": "All data is const in GDScript; RoomCatalog never consults ContentRegistry, so there is no mod-pack resolution. Vector2 footprint components are float32 in Godot (single-precision build): parse x/y as f32 and widen to f64 when doing arithmetic. See NOTES.md.",
+  "types": [
+    {
+      "index": 0,
+      "id": "stage",
+      "label": "ANIMATRONIC STAGE",
+      "region": "arcade",
+      "special": 1,
+      "large_only": false,
+      "streamed_only": false,
+      "landmark": true,
+      "props": [
+        "stagePlatform",
+        "stagePlatform",
+        "stageSpeaker",
+        "stageSpeaker",
+        "privacyCurtain",
+        "backstageRepairStand"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "special",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "stagePlatform",
+        "stagePlatform",
+        "backstageRepairStand",
+        "stageSpeaker",
+        "stageSpeaker",
+        "privacyCurtain"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 1,
+      "id": "arcade",
+      "label": "ARCADE FLOOR",
+      "region": "arcade",
+      "special": 2,
+      "large_only": false,
+      "streamed_only": false,
+      "landmark": true,
+      "props": [
+        "arcadeCabinet",
+        "arcadeCabinet",
+        "arcadeCabinetCyanMagenta",
+        "arcadeCabinet",
+        "arcadeBasketballHoop",
+        "arcadeCarpetCircle",
+        "arcadeCarpetRunner",
+        "prizeCounter",
+        "vendingMachine",
+        "arcadeTokenChanger",
+        "snackKiosk",
+        "privacyCurtain"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "special",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "arcadeCarpetCircle",
+        "arcadeBasketballHoop",
+        "snackKiosk",
+        "prizeCounter",
+        "vendingMachine",
+        "arcadeTokenChanger",
+        "arcadeCarpetRunner",
+        "arcadeCabinet",
+        "arcadeCabinet",
+        "arcadeCabinetCyanMagenta",
+        "arcadeCabinet",
+        "privacyCurtain"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 2,
+      "id": "serviceBay",
+      "label": "ANIMATRONIC SERVICE BAY",
+      "region": "maintenance",
+      "special": 5,
+      "large_only": false,
+      "streamed_only": false,
+      "landmark": true,
+      "props": [
+        "privacyCurtain",
+        "privacyCurtain",
+        "utilityCart",
+        "breakerCabinet",
+        "maintenanceToolCabinet",
+        "maintenanceCleaningCart",
+        "backstageRepairStand",
+        "locker",
+        "supplyCrates",
+        "serverRack"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "special",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "backstageRepairStand",
+        "serverRack",
+        "maintenanceToolCabinet",
+        "utilityCart",
+        "maintenanceCleaningCart",
+        "locker",
+        "supplyCrates",
+        "breakerCabinet",
+        "privacyCurtain",
+        "privacyCurtain"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 3,
+      "id": "prizeGallery",
+      "label": "PRIZE GALLERY",
+      "region": "arcade",
+      "special": 6,
+      "large_only": false,
+      "streamed_only": false,
+      "landmark": true,
+      "props": [
+        "prizeCounter",
+        "prizeCounter",
+        "arcadeCabinet",
+        "arcadeCabinet",
+        "arcadeCarpetCircle",
+        "vendingMachine",
+        "prizeClawMachine",
+        "arcadeTokenChanger",
+        "mascotStatue",
+        "loungeCouch",
+        "brokenAquarium"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "special",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "loungeCouch",
+        "arcadeCarpetCircle",
+        "brokenAquarium",
+        "prizeClawMachine",
+        "mascotStatue",
+        "prizeCounter",
+        "prizeCounter",
+        "vendingMachine",
+        "arcadeTokenChanger",
+        "arcadeCabinet",
+        "arcadeCabinet"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 4,
+      "id": "arcadeHallway",
+      "label": "ARCADE HALLWAY",
+      "region": "arcade",
+      "special": 8,
+      "large_only": false,
+      "streamed_only": false,
+      "landmark": true,
+      "props": [
+        "arcadeCabinet",
+        "arcadeCabinetCyanMagenta",
+        "arcadeCarpetRunner",
+        "arcadeCarpetRunner",
+        "stageSpeaker",
+        "privacyCurtain"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "special",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "stageSpeaker",
+        "arcadeCarpetRunner",
+        "arcadeCarpetRunner",
+        "arcadeCabinet",
+        "arcadeCabinetCyanMagenta",
+        "privacyCurtain"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 5,
+      "id": "relayControl",
+      "label": "RELAY CONTROL",
+      "region": "office",
+      "special": 10,
+      "large_only": false,
+      "streamed_only": false,
+      "landmark": true,
+      "props": [
+        "serverRack",
+        "serverRack",
+        "breakerCabinet",
+        "breakerCabinet",
+        "officeDesk",
+        "officeChair",
+        "officeCrtSecurityConsole",
+        "retroComputerDesktop",
+        "filingCabinet"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "special",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "retroComputerDesktop",
+        "officeCrtSecurityConsole",
+        "serverRack",
+        "serverRack",
+        "officeDesk",
+        "breakerCabinet",
+        "breakerCabinet",
+        "filingCabinet",
+        "officeChair"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 6,
+      "id": "grandStairHall",
+      "label": "GRAND STAIR HALL",
+      "region": "mansion",
+      "special": 9,
+      "large_only": false,
+      "streamed_only": false,
+      "landmark": true,
+      "props": [
+        "grandFoyerStaircase"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "special",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "grandFoyerStaircase"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 7,
+      "id": "diningRoom",
+      "label": "GRAND DINING ROOM",
+      "region": "mansion",
+      "special": 10,
+      "large_only": false,
+      "streamed_only": false,
+      "landmark": true,
+      "props": [
+        "diningTable",
+        "diningChair",
+        "diningChair",
+        "diningChairCushion",
+        "diningChairCushion",
+        "diningChair",
+        "diningChair",
+        "diningChandelier",
+        "diningSideboard",
+        "trashBin",
+        "flowerCenterpiece",
+        "tableCandelabra",
+        "framedWallPortrait",
+        "luxuryPictureFrameEmpty",
+        "luxuryPaintingFrameEmpty",
+        "wallSconce"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "special",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "diningTable",
+        "diningSideboard",
+        "diningChandelier",
+        "diningChair",
+        "diningChair",
+        "diningChairCushion",
+        "diningChairCushion",
+        "diningChair",
+        "diningChair",
+        "trashBin",
+        "luxuryPaintingFrameEmpty",
+        "framedWallPortrait",
+        "tableCandelabra",
+        "flowerCenterpiece",
+        "luxuryPictureFrameEmpty",
+        "wallSconce"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 8,
+      "id": "kitchen",
+      "label": "HOUSE KITCHEN",
+      "region": "mansion",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": false,
+      "landmark": false,
+      "props": [
+        "normalKitchenCounter",
+        "normalKitchenCounter",
+        "normalKitchenSink",
+        "normalKitchenStove",
+        "normalKitchenFridge",
+        "normalKitchenWallCabinet",
+        "normalKitchenWallCabinet",
+        "normalKitchenIsland",
+        "normalEntryBench",
+        "ceilingLight",
+        "normalPictureFrameEmpty"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "normalKitchenIsland",
+        "normalKitchenCounter",
+        "normalKitchenCounter",
+        "normalKitchenSink",
+        "normalKitchenFridge",
+        "ceilingLight",
+        "normalKitchenStove",
+        "normalEntryBench",
+        "normalKitchenWallCabinet",
+        "normalKitchenWallCabinet",
+        "normalPictureFrameEmpty"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 9,
+      "id": "luxuryKitchen",
+      "label": "MANSION KITCHEN",
+      "region": "mansion",
+      "special": 0,
+      "large_only": true,
+      "streamed_only": false,
+      "landmark": false,
+      "props": [
+        "luxuryKitchenCounter",
+        "luxuryKitchenCounter",
+        "luxuryKitchenSink",
+        "luxuryKitchenStove",
+        "luxuryKitchenFridge",
+        "luxuryKitchenWallCabinet",
+        "luxuryKitchenWallCabinet",
+        "luxuryKitchenIsland",
+        "mansionDisplayCabinet",
+        "mansionTeaCart",
+        "ceilingFan",
+        "luxuryPictureFrameEmpty"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "large_only",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "ceilingFan",
+        "luxuryKitchenIsland",
+        "luxuryKitchenCounter",
+        "luxuryKitchenCounter",
+        "luxuryKitchenSink",
+        "luxuryKitchenFridge",
+        "mansionDisplayCabinet",
+        "luxuryKitchenStove",
+        "mansionTeaCart",
+        "luxuryKitchenWallCabinet",
+        "luxuryKitchenWallCabinet",
+        "luxuryPictureFrameEmpty"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 10,
+      "id": "gothicKitchen",
+      "label": "GOTHIC KITCHEN",
+      "region": "mansion",
+      "special": 0,
+      "large_only": true,
+      "streamed_only": false,
+      "landmark": false,
+      "props": [
+        "gothicKitchenCounter",
+        "gothicKitchenCounter",
+        "gothicKitchenSink",
+        "gothicKitchenStove",
+        "gothicKitchenFridge",
+        "gothicKitchenWallCabinet",
+        "gothicKitchenWallCabinet",
+        "gothicKitchenIsland",
+        "gothicFloorCandelabra",
+        "ceilingLight",
+        "gothicCoffinChest",
+        "gothicPictureFrameEmpty"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "large_only",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "gothicKitchenIsland",
+        "gothicKitchenCounter",
+        "gothicKitchenCounter",
+        "gothicKitchenSink",
+        "gothicCoffinChest",
+        "gothicKitchenFridge",
+        "ceilingLight",
+        "gothicKitchenStove",
+        "gothicKitchenWallCabinet",
+        "gothicKitchenWallCabinet",
+        "gothicFloorCandelabra",
+        "gothicPictureFrameEmpty"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 11,
+      "id": "bathroomMale",
+      "label": "MANSION BATHROOM // MEN",
+      "region": "mansion",
+      "special": 11,
+      "large_only": false,
+      "streamed_only": false,
+      "landmark": true,
+      "props": [
+        "bathroomStall",
+        "bathroomStall",
+        "publicRestroomToilet",
+        "publicRestroomToilet",
+        "publicMensUrinal",
+        "publicMensUrinal",
+        "publicMensUrinal",
+        "publicSinkBank",
+        "bathroomMirror",
+        "publicHandDryer",
+        "publicSoapDispenser",
+        "publicPaperTowelDispenser",
+        "publicMensRoomSign",
+        "trashBin",
+        "ceilingLight"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "special",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "publicSinkBank",
+        "ceilingLight",
+        "bathroomStall",
+        "bathroomStall",
+        "publicRestroomToilet",
+        "publicRestroomToilet",
+        "trashBin",
+        "publicMensUrinal",
+        "publicMensUrinal",
+        "publicMensUrinal",
+        "bathroomMirror",
+        "publicHandDryer",
+        "publicPaperTowelDispenser",
+        "publicMensRoomSign",
+        "publicSoapDispenser"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 12,
+      "id": "bathroomFemale",
+      "label": "MANSION BATHROOM // WOMEN",
+      "region": "mansion",
+      "special": 12,
+      "large_only": false,
+      "streamed_only": false,
+      "landmark": true,
+      "props": [
+        "bathroomStall",
+        "bathroomStall",
+        "bathroomStall",
+        "publicRestroomToilet",
+        "publicRestroomToilet",
+        "publicRestroomToilet",
+        "publicSinkBank",
+        "bathroomMirror",
+        "publicHandDryer",
+        "publicSoapDispenser",
+        "publicPaperTowelDispenser",
+        "publicSanitaryBin",
+        "publicSanitaryBin",
+        "publicBabyChangeStation",
+        "publicWomensRoomSign",
+        "trashBin",
+        "ceilingLight"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "special",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "publicBabyChangeStation",
+        "publicSinkBank",
+        "ceilingLight",
+        "bathroomStall",
+        "bathroomStall",
+        "bathroomStall",
+        "publicRestroomToilet",
+        "publicRestroomToilet",
+        "publicRestroomToilet",
+        "trashBin",
+        "bathroomMirror",
+        "publicSanitaryBin",
+        "publicSanitaryBin",
+        "publicHandDryer",
+        "publicPaperTowelDispenser",
+        "publicWomensRoomSign",
+        "publicSoapDispenser"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 13,
+      "id": "publicShowersMale",
+      "label": "PUBLIC SHOWERS // MEN",
+      "region": "mansion",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": false,
+      "landmark": false,
+      "props": [
+        "publicMensShowerStall",
+        "publicMensShowerStall",
+        "publicMensShowerStall",
+        "publicShowerBench",
+        "publicSoapDispenser",
+        "publicSoapDispenser",
+        "houseTowelRack",
+        "publicMensRoomSign",
+        "houseBathMat"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "publicMensShowerStall",
+        "publicMensShowerStall",
+        "publicMensShowerStall",
+        "houseBathMat",
+        "publicShowerBench",
+        "houseTowelRack",
+        "publicMensRoomSign",
+        "publicSoapDispenser",
+        "publicSoapDispenser"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 14,
+      "id": "publicShowersFemale",
+      "label": "PUBLIC SHOWERS // WOMEN",
+      "region": "mansion",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": false,
+      "landmark": false,
+      "props": [
+        "publicWomensShowerStall",
+        "publicWomensShowerStall",
+        "publicWomensShowerStall",
+        "publicShowerBench",
+        "publicSoapDispenser",
+        "publicSoapDispenser",
+        "houseTowelRack",
+        "publicWomensRoomSign",
+        "houseBathMat"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "publicWomensShowerStall",
+        "publicWomensShowerStall",
+        "publicWomensShowerStall",
+        "houseBathMat",
+        "publicShowerBench",
+        "houseTowelRack",
+        "publicWomensRoomSign",
+        "publicSoapDispenser",
+        "publicSoapDispenser"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 15,
+      "id": "houseBathroom",
+      "label": "HOUSE BATHROOM",
+      "region": "mansion",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": false,
+      "landmark": false,
+      "props": [
+        "houseBathtub",
+        "houseToilet",
+        "houseShowerEnclosure",
+        "bathroomVanity",
+        "houseMedicineCabinet",
+        "houseTowelRack",
+        "houseBathMat",
+        "houseBathroomShelf",
+        "laundryHamper",
+        "trashBin",
+        "ceilingLight"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "houseBathtub",
+        "houseShowerEnclosure",
+        "ceilingLight",
+        "houseBathMat",
+        "bathroomVanity",
+        "houseToilet",
+        "laundryHamper",
+        "trashBin",
+        "houseBathroomShelf",
+        "houseTowelRack",
+        "houseMedicineCabinet"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 16,
+      "id": "netherChamber",
+      "label": "THERMAL INFERNO",
+      "region": "nether",
+      "special": 13,
+      "large_only": true,
+      "streamed_only": false,
+      "landmark": true,
+      "props": [
+        "lavaVent",
+        "lavaVent",
+        "emberBrazier",
+        "emberBrazier",
+        "basaltPillar",
+        "basaltPillar",
+        "basaltPillar",
+        "basaltRubble",
+        "magmaCrystalCluster",
+        "infernoAltar",
+        "infernoChainLantern",
+        "lavaPipeManifold",
+        "charredSupplyCrate"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "special",
+        "large_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "basaltRubble",
+        "infernoAltar",
+        "lavaPipeManifold",
+        "charredSupplyCrate",
+        "magmaCrystalCluster",
+        "basaltPillar",
+        "basaltPillar",
+        "basaltPillar",
+        "lavaVent",
+        "lavaVent",
+        "emberBrazier",
+        "emberBrazier",
+        "infernoChainLantern"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 17,
+      "id": "prisonCellBlock",
+      "label": "LOWER CELL BLOCK",
+      "region": "prison",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": true,
+      "landmark": true,
+      "props": [
+        "prisonCellGate",
+        "prisonCellGate",
+        "prisonBunk",
+        "prisonBunk",
+        "dungeonCage",
+        "restraintChair",
+        "supplyCrates",
+        "infernoChainLantern"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "streamed_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "dungeonCage",
+        "prisonBunk",
+        "prisonBunk",
+        "restraintChair",
+        "prisonCellGate",
+        "prisonCellGate",
+        "supplyCrates",
+        "infernoChainLantern"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 18,
+      "id": "prisonCafeteria",
+      "label": "PRISON CAFETERIA",
+      "region": "prison",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": true,
+      "landmark": true,
+      "props": [
+        "prisonServingCounter",
+        "prisonServingCounter",
+        "prisonCafeteriaTable",
+        "prisonCafeteriaTable",
+        "prisonTrayReturn",
+        "prisonKitchenRack",
+        "normalKitchenFridge",
+        "normalKitchenStove",
+        "normalPictureFrameEmpty",
+        "ceilingLight",
+        "ceilingLight"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "streamed_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "prisonCafeteriaTable",
+        "prisonCafeteriaTable",
+        "prisonServingCounter",
+        "prisonServingCounter",
+        "prisonKitchenRack",
+        "prisonTrayReturn",
+        "normalKitchenFridge",
+        "ceilingLight",
+        "ceilingLight",
+        "normalKitchenStove",
+        "normalPictureFrameEmpty"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 19,
+      "id": "beachCove",
+      "label": "FROZEN TIDELINE",
+      "region": "beach",
+      "special": 13,
+      "large_only": true,
+      "streamed_only": false,
+      "landmark": true,
+      "props": [
+        "tikiBar",
+        "beachUmbrella",
+        "beachUmbrella",
+        "sandCastle",
+        "sandCastle",
+        "beachChair",
+        "beachChair",
+        "surfboardRack",
+        "palmTree",
+        "palmTree",
+        "frozenBeachHut"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "special",
+        "large_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "beachUmbrella",
+        "beachUmbrella",
+        "frozenBeachHut",
+        "tikiBar",
+        "palmTree",
+        "palmTree",
+        "surfboardRack",
+        "beachChair",
+        "beachChair",
+        "sandCastle",
+        "sandCastle"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 20,
+      "id": "cargoDepot",
+      "label": "CARGO DEPOT",
+      "region": "maintenance",
+      "special": 14,
+      "large_only": true,
+      "streamed_only": false,
+      "landmark": true,
+      "props": [
+        "supplyCrates",
+        "supplyCrates",
+        "supplyCrates",
+        "utilityCart",
+        "utilityCart",
+        "locker",
+        "breakerCabinet"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "special",
+        "large_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "utilityCart",
+        "utilityCart",
+        "locker",
+        "supplyCrates",
+        "supplyCrates",
+        "supplyCrates",
+        "breakerCabinet"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 21,
+      "id": "ballroom",
+      "label": "MANSION BALLROOM",
+      "region": "mansion",
+      "special": 15,
+      "large_only": true,
+      "streamed_only": false,
+      "landmark": true,
+      "props": [
+        "diningTable",
+        "diningTable",
+        "diningChair",
+        "diningChair",
+        "diningChairCushion",
+        "diningChairCushion",
+        "diningChairCushion",
+        "diningChairCushion",
+        "diningChandelier",
+        "floorLamp",
+        "mansionAreaRug",
+        "loungeCouchWide",
+        "heavyMansionDrapes",
+        "wallSconce",
+        "framedWallPortrait",
+        "flowerCenterpiece",
+        "luxuryPaintingFrameEmpty",
+        "tableCandelabra",
+        "mansionUprightPiano",
+        "mansionBustPedestal",
+        "mansionChaiseLounge"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "special",
+        "large_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "mansionAreaRug",
+        "loungeCouchWide",
+        "diningTable",
+        "diningTable",
+        "mansionUprightPiano",
+        "mansionChaiseLounge",
+        "diningChandelier",
+        "heavyMansionDrapes",
+        "mansionBustPedestal",
+        "diningChairCushion",
+        "diningChairCushion",
+        "diningChairCushion",
+        "diningChairCushion",
+        "diningChair",
+        "diningChair",
+        "luxuryPaintingFrameEmpty",
+        "framedWallPortrait",
+        "tableCandelabra",
+        "flowerCenterpiece",
+        "floorLamp",
+        "wallSconce"
+      ],
+      "godot_sort_differs_from_stable_sort": true
+    },
+    {
+      "index": 22,
+      "id": "garden",
+      "label": "INDOOR GARDEN",
+      "region": "garden",
+      "special": 16,
+      "large_only": true,
+      "streamed_only": false,
+      "landmark": true,
+      "props": [
+        "giantTree",
+        "gardenPlanterBench",
+        "gardenPlanterBench",
+        "grassFern",
+        "grassFern",
+        "grassFern",
+        "grassFern",
+        "flowerRose",
+        "flowerSun",
+        "flowerBlue",
+        "flowerViolet",
+        "flowerRose",
+        "flowerSun",
+        "flowerBlue",
+        "flowerViolet"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "special",
+        "large_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "giantTree",
+        "gardenPlanterBench",
+        "gardenPlanterBench",
+        "grassFern",
+        "grassFern",
+        "grassFern",
+        "grassFern",
+        "flowerRose",
+        "flowerSun",
+        "flowerBlue",
+        "flowerViolet",
+        "flowerRose",
+        "flowerSun",
+        "flowerBlue",
+        "flowerViolet"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 23,
+      "id": "library",
+      "label": "MANSION LIBRARY",
+      "region": "mansion",
+      "special": 17,
+      "large_only": true,
+      "streamed_only": false,
+      "landmark": true,
+      "props": [
+        "mansionBookshelf",
+        "mansionBookshelf",
+        "magazineRack",
+        "woodenTable",
+        "woodenChair",
+        "woodenChairCushion",
+        "floorLamp",
+        "mansionFireplace",
+        "loungeCouchWide",
+        "mansionAreaRug",
+        "framedWallPortrait",
+        "wallSconce",
+        "heavyMansionDrapes",
+        "luxuryPictureFrameEmpty",
+        "luxuryPaintingFrameEmpty",
+        "mansionDisplayCabinet",
+        "mansionBustPedestal"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "special",
+        "large_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "mansionAreaRug",
+        "loungeCouchWide",
+        "woodenTable",
+        "mansionFireplace",
+        "mansionDisplayCabinet",
+        "mansionBookshelf",
+        "mansionBookshelf",
+        "heavyMansionDrapes",
+        "magazineRack",
+        "mansionBustPedestal",
+        "woodenChairCushion",
+        "woodenChair",
+        "luxuryPaintingFrameEmpty",
+        "framedWallPortrait",
+        "floorLamp",
+        "luxuryPictureFrameEmpty",
+        "wallSconce"
+      ],
+      "godot_sort_differs_from_stable_sort": true
+    },
+    {
+      "index": 24,
+      "id": "circusTent",
+      "label": "CIRCUS TENT",
+      "region": "circus",
+      "special": 18,
+      "large_only": true,
+      "streamed_only": false,
+      "landmark": true,
+      "props": [
+        "carnivalCarousel",
+        "arcadeCarpetCircle",
+        "privacyCurtain",
+        "privacyCurtain",
+        "stageSpeaker"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "special",
+        "large_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "carnivalCarousel",
+        "arcadeCarpetCircle",
+        "stageSpeaker",
+        "privacyCurtain",
+        "privacyCurtain"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 25,
+      "id": "masterBedroom",
+      "label": "MANSION MASTER BEDROOM",
+      "region": "mansion",
+      "special": 19,
+      "large_only": true,
+      "streamed_only": false,
+      "landmark": true,
+      "props": [
+        "doubleBed",
+        "bedroomNightstand",
+        "bedroomNightstand",
+        "bedsideLamp",
+        "tableLamp",
+        "ceilingFan",
+        "bedroomWardrobe",
+        "bedroomDresser",
+        "bedroomVanity",
+        "vanityStool",
+        "bedroomBench",
+        "bedroomRug",
+        "laundryHamper",
+        "toyChest",
+        "bedroomWallClock",
+        "wallSconce",
+        "mansionConsoleTable",
+        "mansionRockingChair",
+        "mansionRoomDivider",
+        "bunkBed"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "special",
+        "large_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "doubleBed",
+        "ceilingFan",
+        "bedroomRug",
+        "bedroomWardrobe",
+        "bedroomDresser",
+        "mansionRockingChair",
+        "mansionConsoleTable",
+        "bedroomVanity",
+        "mansionRoomDivider",
+        "toyChest",
+        "bunkBed",
+        "bedroomBench",
+        "bedroomNightstand",
+        "bedroomNightstand",
+        "laundryHamper",
+        "tableLamp",
+        "vanityStool",
+        "bedsideLamp",
+        "wallSconce",
+        "bedroomWallClock"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 26,
+      "id": "gothicBedroom",
+      "label": "GOTHIC MASTER BEDROOM",
+      "region": "mansion",
+      "special": 20,
+      "large_only": true,
+      "streamed_only": false,
+      "landmark": true,
+      "props": [
+        "gothicDoubleBed",
+        "gothicNightstand",
+        "gothicNightstand",
+        "gothicBedsideCandelabra",
+        "gothicWardrobe",
+        "gothicDresser",
+        "gothicVanity",
+        "gothicVanityStool",
+        "gothicBedroomBench",
+        "gothicBedroomRug",
+        "gothicHighbackChair",
+        "gothicWritingDesk",
+        "gothicBookcase",
+        "gothicPedestalTable",
+        "gothicFloorCandelabra",
+        "gothicCoffinChest",
+        "gothicPictureFrameEmpty",
+        "gothicPaintingFrameEmpty"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "special",
+        "large_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "gothicDoubleBed",
+        "gothicBedroomRug",
+        "gothicWardrobe",
+        "gothicWritingDesk",
+        "gothicDresser",
+        "gothicBookcase",
+        "gothicCoffinChest",
+        "gothicPedestalTable",
+        "gothicVanity",
+        "gothicBedroomBench",
+        "gothicHighbackChair",
+        "gothicNightstand",
+        "gothicNightstand",
+        "gothicFloorCandelabra",
+        "gothicPaintingFrameEmpty",
+        "gothicVanityStool",
+        "gothicPictureFrameEmpty",
+        "gothicBedsideCandelabra"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 27,
+      "id": "bedroom",
+      "label": "MANSION BEDROOM",
+      "region": "mansion",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": false,
+      "landmark": false,
+      "props": [
+        "singleBed",
+        "bedroomNightstand",
+        "bedsideLamp",
+        "tableLamp",
+        "ceilingFan",
+        "bedroomWardrobe",
+        "bedroomDresser",
+        "bedroomVanity",
+        "vanityStool",
+        "bedroomBench",
+        "bedroomRug",
+        "laundryHamper",
+        "toyChest",
+        "bedroomWallClock",
+        "mansionCoatRack",
+        "bunkBed",
+        "mansionRockingChair",
+        "normalBookcase",
+        "normalEntryBench",
+        "normalPictureFrameEmpty",
+        "normalPaintingFrameEmpty"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "singleBed",
+        "ceilingFan",
+        "bedroomRug",
+        "bedroomWardrobe",
+        "bedroomDresser",
+        "mansionRockingChair",
+        "normalEntryBench",
+        "bedroomVanity",
+        "toyChest",
+        "bunkBed",
+        "bedroomBench",
+        "normalBookcase",
+        "bedroomNightstand",
+        "mansionCoatRack",
+        "laundryHamper",
+        "normalPaintingFrameEmpty",
+        "tableLamp",
+        "vanityStool",
+        "bedsideLamp",
+        "normalPictureFrameEmpty",
+        "bedroomWallClock"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 28,
+      "id": "office",
+      "label": "OFFICE WING",
+      "region": "office",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": false,
+      "landmark": false,
+      "props": [
+        "officeDesk",
+        "officeChair",
+        "officeDesk",
+        "officeChair",
+        "officeCrtSecurityConsole",
+        "retroComputerCompact",
+        "retroComputerTower",
+        "retroComputerDesktop",
+        "retroComputerTerminal",
+        "filingCabinet",
+        "filingCabinet",
+        "officeCubiclePartition",
+        "officeCubiclePartition",
+        "officePrinter",
+        "officePhotocopier",
+        "officeShredder",
+        "officeFileBoxes",
+        "officeCornerWorkstation",
+        "officeWaterCooler",
+        "tableLamp",
+        "ceilingLight",
+        "normalTvConsole"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "officeCornerWorkstation",
+        "retroComputerTower",
+        "officePhotocopier",
+        "retroComputerCompact",
+        "retroComputerDesktop",
+        "retroComputerTerminal",
+        "normalTvConsole",
+        "officeFileBoxes",
+        "ceilingLight",
+        "officeCrtSecurityConsole",
+        "officeDesk",
+        "officeDesk",
+        "officeCubiclePartition",
+        "officeCubiclePartition",
+        "officePrinter",
+        "filingCabinet",
+        "filingCabinet",
+        "officeWaterCooler",
+        "officeShredder",
+        "tableLamp",
+        "officeChair",
+        "officeChair"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 29,
+      "id": "maintenance",
+      "label": "MAINTENANCE",
+      "region": "maintenance",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": false,
+      "landmark": false,
+      "props": [
+        "locker",
+        "serverRack",
+        "supplyCrates",
+        "utilityCart",
+        "breakerCabinet",
+        "maintenanceToolCabinet",
+        "maintenanceCleaningCart",
+        "backstageRepairStand"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "backstageRepairStand",
+        "serverRack",
+        "maintenanceToolCabinet",
+        "utilityCart",
+        "maintenanceCleaningCart",
+        "locker",
+        "supplyCrates",
+        "breakerCabinet"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 30,
+      "id": "storage",
+      "label": "STORAGE",
+      "region": "maintenance",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": false,
+      "landmark": false,
+      "props": [
+        "supplyCrates",
+        "filingCabinet",
+        "locker",
+        "utilityCart"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "utilityCart",
+        "locker",
+        "supplyCrates",
+        "filingCabinet"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 31,
+      "id": "server",
+      "label": "SERVER ROOM",
+      "region": "maintenance",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": false,
+      "landmark": false,
+      "props": [
+        "serverRack",
+        "serverRack",
+        "locker",
+        "breakerCabinet"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "serverRack",
+        "serverRack",
+        "locker",
+        "breakerCabinet"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 32,
+      "id": "breakroom",
+      "label": "STAFF BREAKROOM",
+      "region": "mansion",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": false,
+      "landmark": false,
+      "props": [
+        "loungeCouchWide",
+        "officeDesk",
+        "woodenTable",
+        "woodenChair",
+        "woodenChairCushion",
+        "floorLamp",
+        "trashBin",
+        "privacyCurtain",
+        "normalTvConsole",
+        "normalCoffeeTable",
+        "ceilingFan",
+        "tableLamp"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "loungeCouchWide",
+        "ceilingFan",
+        "woodenTable",
+        "normalCoffeeTable",
+        "normalTvConsole",
+        "officeDesk",
+        "privacyCurtain",
+        "woodenChair",
+        "woodenChairCushion",
+        "trashBin",
+        "floorLamp",
+        "tableLamp"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 33,
+      "id": "lounge",
+      "label": "STAFF LOUNGE",
+      "region": "mansion",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": false,
+      "landmark": false,
+      "props": [
+        "loungeCouchWide",
+        "officeDesk",
+        "woodenChair",
+        "woodenChairCushion",
+        "woodenTable",
+        "floorLamp",
+        "magazineRack",
+        "privacyCurtain",
+        "mansionAreaRug",
+        "mansionGrandfatherClock",
+        "mansionTeaCart",
+        "mansionConsoleTable",
+        "normalBookcase",
+        "normalTvConsole",
+        "normalCoffeeTable",
+        "normalEntryBench",
+        "mansionChaiseLounge",
+        "mansionUprightPiano",
+        "ceilingFan",
+        "tableLamp"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "mansionAreaRug",
+        "loungeCouchWide",
+        "ceilingFan",
+        "mansionUprightPiano",
+        "mansionChaiseLounge",
+        "woodenTable",
+        "normalCoffeeTable",
+        "normalTvConsole",
+        "mansionConsoleTable",
+        "mansionTeaCart",
+        "normalEntryBench",
+        "officeDesk",
+        "normalBookcase",
+        "mansionGrandfatherClock",
+        "magazineRack",
+        "privacyCurtain",
+        "woodenChairCushion",
+        "woodenChair",
+        "floorLamp",
+        "tableLamp"
+      ],
+      "godot_sort_differs_from_stable_sort": true
+    },
+    {
+      "index": 34,
+      "id": "hospitalWard",
+      "label": "HOSPITAL WARD",
+      "region": "hospital",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": true,
+      "landmark": true,
+      "props": [
+        "hospitalBed",
+        "hospitalBed",
+        "hospitalBed",
+        "hospitalCurtain",
+        "hospitalCurtain",
+        "ivDripStand",
+        "vitalsMonitor",
+        "nursesStation",
+        "wheelchair",
+        "hospitalWardSign",
+        "ceilingLight"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "streamed_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "nursesStation",
+        "hospitalBed",
+        "hospitalBed",
+        "hospitalBed",
+        "ceilingLight",
+        "wheelchair",
+        "hospitalCurtain",
+        "hospitalCurtain",
+        "vitalsMonitor",
+        "ivDripStand",
+        "hospitalWardSign"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 35,
+      "id": "operatingTheatre",
+      "label": "OPERATING THEATRE",
+      "region": "hospital",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": true,
+      "landmark": true,
+      "props": [
+        "operatingTable",
+        "surgicalLight",
+        "instrumentTrolley",
+        "vitalsMonitor",
+        "ivDripStand",
+        "medicalSupplyRack",
+        "biohazardBin",
+        "xrayLightbox"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "streamed_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "surgicalLight",
+        "operatingTable",
+        "medicalSupplyRack",
+        "instrumentTrolley",
+        "vitalsMonitor",
+        "biohazardBin",
+        "ivDripStand",
+        "xrayLightbox"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 36,
+      "id": "hospitalMorgue",
+      "label": "MORGUE",
+      "region": "hospital",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": true,
+      "landmark": true,
+      "props": [
+        "morgueCabinet",
+        "morgueCabinet",
+        "autopsyTable",
+        "instrumentTrolley",
+        "biohazardBin",
+        "hazardSign",
+        "ceilingLight"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "streamed_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "morgueCabinet",
+        "morgueCabinet",
+        "autopsyTable",
+        "ceilingLight",
+        "instrumentTrolley",
+        "biohazardBin",
+        "hazardSign"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 37,
+      "id": "hospitalPharmacy",
+      "label": "PHARMACY",
+      "region": "hospital",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": true,
+      "landmark": false,
+      "props": [
+        "pharmacyShelf",
+        "pharmacyShelf",
+        "pharmacyShelf",
+        "nursesStation",
+        "medicalSupplyRack",
+        "filingCabinet"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "streamed_only",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "nursesStation",
+        "pharmacyShelf",
+        "pharmacyShelf",
+        "pharmacyShelf",
+        "medicalSupplyRack",
+        "filingCabinet"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 38,
+      "id": "hospitalImaging",
+      "label": "X-RAY / IMAGING",
+      "region": "hospital",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": true,
+      "landmark": false,
+      "props": [
+        "xrayMachine",
+        "xrayLightbox",
+        "hazardSign",
+        "officeDesk",
+        "retroComputerDesktop",
+        "wheelchair"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "streamed_only",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "xrayMachine",
+        "retroComputerDesktop",
+        "wheelchair",
+        "officeDesk",
+        "xrayLightbox",
+        "hazardSign"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 39,
+      "id": "labContainment",
+      "label": "CONTAINMENT WING",
+      "region": "lab",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": true,
+      "landmark": true,
+      "props": [
+        "containmentCell",
+        "containmentCell",
+        "specimenTank",
+        "specimenTank",
+        "controlConsole",
+        "hazardSign",
+        "biohazardBin"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "streamed_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "containmentCell",
+        "containmentCell",
+        "controlConsole",
+        "specimenTank",
+        "specimenTank",
+        "biohazardBin",
+        "hazardSign"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 40,
+      "id": "labServerHall",
+      "label": "SERVER HALL",
+      "region": "lab",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": true,
+      "landmark": true,
+      "props": [
+        "serverRack",
+        "serverRack",
+        "serverRack",
+        "serverRack",
+        "labCoolingUnit",
+        "labCoolingUnit",
+        "hazardSign"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "streamed_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "labCoolingUnit",
+        "labCoolingUnit",
+        "serverRack",
+        "serverRack",
+        "serverRack",
+        "serverRack",
+        "hazardSign"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 41,
+      "id": "labControlRoom",
+      "label": "CONTROL ROOM",
+      "region": "lab",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": true,
+      "landmark": true,
+      "props": [
+        "monitorWall",
+        "controlConsole",
+        "officeChair",
+        "serverRack",
+        "labWhiteboard",
+        "filingCabinet"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "streamed_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "controlConsole",
+        "serverRack",
+        "filingCabinet",
+        "monitorWall",
+        "officeChair",
+        "labWhiteboard"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 42,
+      "id": "labCleanRoom",
+      "label": "CLEAN ROOM",
+      "region": "lab",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": true,
+      "landmark": false,
+      "props": [
+        "labGlassPartition",
+        "labGlassPartition",
+        "labBench",
+        "labBench",
+        "labMicroscope",
+        "labStool",
+        "specimenTank",
+        "deconShower"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "streamed_only",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "deconShower",
+        "labBench",
+        "labBench",
+        "specimenTank",
+        "labGlassPartition",
+        "labGlassPartition",
+        "labStool",
+        "labMicroscope"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 43,
+      "id": "labChemistry",
+      "label": "CHEMISTRY LAB",
+      "region": "lab",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": true,
+      "landmark": false,
+      "props": [
+        "fumeHood",
+        "labBench",
+        "labBench",
+        "gasCylinderRack",
+        "labStool",
+        "labMicroscope",
+        "biohazardBin",
+        "coldStorageUnit"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "streamed_only",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "labBench",
+        "labBench",
+        "fumeHood",
+        "coldStorageUnit",
+        "gasCylinderRack",
+        "biohazardBin",
+        "labStool",
+        "labMicroscope"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 44,
+      "id": "domeAtrium",
+      "label": "DOME ATRIUM",
+      "region": "greenhouse",
+      "special": 0,
+      "large_only": true,
+      "streamed_only": true,
+      "landmark": true,
+      "props": [
+        "domeFountain",
+        "pottedPalm",
+        "pottedPalm",
+        "greenhouseBench",
+        "greenhouseBench",
+        "raisedPlanter",
+        "mistingPost",
+        "hangingVines",
+        "overgrowthPatch"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "streamed_only",
+        "large_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "domeFountain",
+        "pottedPalm",
+        "pottedPalm",
+        "overgrowthPatch",
+        "raisedPlanter",
+        "hangingVines",
+        "greenhouseBench",
+        "greenhouseBench",
+        "mistingPost"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 45,
+      "id": "palmHouse",
+      "label": "PALM HOUSE",
+      "region": "greenhouse",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": true,
+      "landmark": true,
+      "props": [
+        "pottedPalm",
+        "pottedPalm",
+        "bananaPlant",
+        "mistingPost",
+        "greenhouseBench",
+        "hangingVines",
+        "overgrowthPatch"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "streamed_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "pottedPalm",
+        "pottedPalm",
+        "overgrowthPatch",
+        "hangingVines",
+        "bananaPlant",
+        "greenhouseBench",
+        "mistingPost"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 46,
+      "id": "cactusHouse",
+      "label": "DESERT HOUSE",
+      "region": "greenhouse",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": true,
+      "landmark": false,
+      "props": [
+        "saguaroCactus",
+        "saguaroCactus",
+        "cactusCluster",
+        "cactusCluster",
+        "greenhouseBench"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "streamed_only",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "greenhouseBench",
+        "cactusCluster",
+        "cactusCluster",
+        "saguaroCactus",
+        "saguaroCactus"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 47,
+      "id": "pottingShed",
+      "label": "POTTING SHED",
+      "region": "greenhouse",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": true,
+      "landmark": false,
+      "props": [
+        "pottingBench",
+        "pottingBench",
+        "seedlingRack",
+        "compostBins",
+        "wateringCart",
+        "irrigationManifold"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "streamed_only",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "pottingBench",
+        "pottingBench",
+        "compostBins",
+        "irrigationManifold",
+        "wateringCart",
+        "seedlingRack"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 48,
+      "id": "donutShop",
+      "label": "DONUT COUNTER",
+      "region": "mall",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": true,
+      "landmark": true,
+      "props": [
+        "displayCase",
+        "checkoutCounter",
+        "coffeeStation",
+        "donutFryer",
+        "bakeryRack",
+        "dinerBooth",
+        "dinerStool",
+        "menuBoard",
+        "donutSign"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "streamed_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "dinerBooth",
+        "checkoutCounter",
+        "donutFryer",
+        "displayCase",
+        "coffeeStation",
+        "bakeryRack",
+        "donutSign",
+        "dinerStool",
+        "menuBoard"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 49,
+      "id": "mallCinema",
+      "label": "CINEMA",
+      "region": "mall",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": true,
+      "landmark": true,
+      "props": [
+        "cinemaScreen",
+        "cinemaSeats",
+        "cinemaSeats",
+        "ticketBooth",
+        "concessionCounter",
+        "privacyCurtain"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "streamed_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "ticketBooth",
+        "cinemaSeats",
+        "cinemaSeats",
+        "concessionCounter",
+        "cinemaScreen",
+        "privacyCurtain"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 50,
+      "id": "foodCourt",
+      "label": "FOOD COURT",
+      "region": "mall",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": true,
+      "landmark": true,
+      "props": [
+        "foodCourtTable",
+        "foodCourtTable",
+        "displayCase",
+        "coffeeStation",
+        "concessionCounter",
+        "menuBoard",
+        "mallPlanter"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "streamed_only",
+        "landmark",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "foodCourtTable",
+        "foodCourtTable",
+        "concessionCounter",
+        "mallPlanter",
+        "displayCase",
+        "coffeeStation",
+        "menuBoard"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    },
+    {
+      "index": 51,
+      "id": "laundromat",
+      "label": "LAUNDROMAT",
+      "region": "mall",
+      "special": 0,
+      "large_only": false,
+      "streamed_only": true,
+      "landmark": false,
+      "props": [
+        "washingMachine",
+        "washingMachine",
+        "dryerStack",
+        "mallBench"
+      ],
+      "explicit_keys": [
+        "id",
+        "label",
+        "region",
+        "streamed_only",
+        "props"
+      ],
+      "props_sorted_for_populate": [
+        "mallBench",
+        "washingMachine",
+        "washingMachine",
+        "dryerStack"
+      ],
+      "godot_sort_differs_from_stable_sort": false
+    }
+  ],
+  "footprint_default": {
+    "x": 0.32,
+    "y": 0.32
+  },
+  "footprint_rule": "footprint(type, rotation): v = FOOTPRINTS.get(type, Vector2(.32, .32)); return Vector2(v.y, v.x) if abs(rotation) % 2 == 1 else v. I.e. rotations 1 and 3 (and -1, -3) swap x/y; 0 and 2 return (x, y) unchanged. Values are f32 (Godot Vector2). Unknown types (not in FOOTPRINTS) use (0.32, 0.32).",
+  "footprints": {
+    "stagePlatform": {
+      "x": 0.46,
+      "y": 0.38,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.17480000097751613
+    },
+    "stageSpeaker": {
+      "x": 0.33,
+      "y": 0.37,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.12210000642538077
+    },
+    "privacyCurtain": {
+      "x": 0.4,
+      "y": 0.18,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.0720000039339066
+    },
+    "backstageRepairStand": {
+      "x": 0.42,
+      "y": 0.36,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.15120000128746014
+    },
+    "arcadeCabinet": {
+      "x": 0.27,
+      "y": 0.3,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.08100000643730176
+    },
+    "arcadeCabinetCyanMagenta": {
+      "x": 0.27,
+      "y": 0.3,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.08100000643730176
+    },
+    "arcadeBasketballHoop": {
+      "x": 0.42,
+      "y": 0.5,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.20999999344348907
+    },
+    "arcadeCarpetCircle": {
+      "x": 0.48,
+      "y": 0.48,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.2303999897003175
+    },
+    "arcadeCarpetRunner": {
+      "x": 0.42,
+      "y": 0.2,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.08399999862909313
+    },
+    "prizeCounter": {
+      "x": 0.44,
+      "y": 0.27,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.11880000407695768
+    },
+    "vendingMachine": {
+      "x": 0.31,
+      "y": 0.37,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.11470000236034394
+    },
+    "arcadeTokenChanger": {
+      "x": 0.3,
+      "y": 0.35,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.10500000238418572
+    },
+    "snackKiosk": {
+      "x": 0.48,
+      "y": 0.3,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.14400000250339495
+    },
+    "utilityCart": {
+      "x": 0.4,
+      "y": 0.28,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.11200000214576722
+    },
+    "breakerCabinet": {
+      "x": 0.29,
+      "y": 0.36,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.10440000114440906
+    },
+    "maintenanceToolCabinet": {
+      "x": 0.31,
+      "y": 0.37,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.11470000236034394
+    },
+    "maintenanceCleaningCart": {
+      "x": 0.4,
+      "y": 0.28,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.11200000214576722
+    },
+    "locker": {
+      "x": 0.3,
+      "y": 0.36,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.10800000858306902
+    },
+    "supplyCrates": {
+      "x": 0.37,
+      "y": 0.29,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.10729999829530712
+    },
+    "serverRack": {
+      "x": 0.32,
+      "y": 0.37,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.11839999887943264
+    },
+    "prizeClawMachine": {
+      "x": 0.34,
+      "y": 0.36,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.12240000615119939
+    },
+    "mascotStatue": {
+      "x": 0.34,
+      "y": 0.36,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.12240000615119939
+    },
+    "loungeCouch": {
+      "x": 0.85,
+      "y": 0.48,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.4080000023245809
+    },
+    "brokenAquarium": {
+      "x": 0.46,
+      "y": 0.32,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.14719999938011163
+    },
+    "officeDesk": {
+      "x": 0.42,
+      "y": 0.28,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.11759999682903288
+    },
+    "officeChair": {
+      "x": 0.21,
+      "y": 0.21,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.044099997246265454
+    },
+    "officeCrtSecurityConsole": {
+      "x": 0.43,
+      "y": 0.3,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.12900000727176675
+    },
+    "retroComputerDesktop": {
+      "x": 0.55,
+      "y": 0.33,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.18150001114606873
+    },
+    "filingCabinet": {
+      "x": 0.29,
+      "y": 0.33,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.09570000104904164
+    },
+    "grandFoyerStaircase": {
+      "x": 2.35,
+      "y": 3.35,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 7.872499456405649
+    },
+    "diningTable": {
+      "x": 1.1,
+      "y": 0.42,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.461999995589256
+    },
+    "diningChair": {
+      "x": 0.25,
+      "y": 0.25,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.0625
+    },
+    "diningChairCushion": {
+      "x": 0.25,
+      "y": 0.25,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.0625
+    },
+    "diningChandelier": {
+      "x": 0.47,
+      "y": 0.47,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.22089999887943268
+    },
+    "diningSideboard": {
+      "x": 0.72,
+      "y": 0.35,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.25200000572204573
+    },
+    "trashBin": {
+      "x": 0.25,
+      "y": 0.25,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.0625
+    },
+    "flowerCenterpiece": {
+      "x": 0.25,
+      "y": 0.2,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.05000000074505806
+    },
+    "tableCandelabra": {
+      "x": 0.32,
+      "y": 0.16,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.051199997711181666
+    },
+    "framedWallPortrait": {
+      "x": 0.44,
+      "y": 0.12,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.052799998533725745
+    },
+    "luxuryPictureFrameEmpty": {
+      "x": 0.4,
+      "y": 0.09,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.0360000019669533
+    },
+    "luxuryPaintingFrameEmpty": {
+      "x": 0.66,
+      "y": 0.09,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.05940000472068796
+    },
+    "wallSconce": {
+      "x": 0.12,
+      "y": 0.18,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.021600000375509243
+    },
+    "normalKitchenCounter": {
+      "x": 0.73,
+      "y": 0.33,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.2409000158667567
+    },
+    "normalKitchenSink": {
+      "x": 0.61,
+      "y": 0.33,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.20130001271963138
+    },
+    "normalKitchenStove": {
+      "x": 0.41,
+      "y": 0.33,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.13530000419616695
+    },
+    "normalKitchenFridge": {
+      "x": 0.41,
+      "y": 0.35,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.14349999630451205
+    },
+    "normalKitchenWallCabinet": {
+      "x": 0.6,
+      "y": 0.21,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.12600000107288345
+    },
+    "normalKitchenIsland": {
+      "x": 0.81,
+      "y": 0.44,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.35639999911785125
+    },
+    "normalEntryBench": {
+      "x": 0.6,
+      "y": 0.22,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.13200000452995297
+    },
+    "ceilingLight": {
+      "x": 0.37,
+      "y": 0.37,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.136900003528595
+    },
+    "normalPictureFrameEmpty": {
+      "x": 0.36,
+      "y": 0.08,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.02880000050067899
+    },
+    "luxuryKitchenCounter": {
+      "x": 0.73,
+      "y": 0.33,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.2409000158667567
+    },
+    "luxuryKitchenSink": {
+      "x": 0.61,
+      "y": 0.33,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.20130001271963138
+    },
+    "luxuryKitchenStove": {
+      "x": 0.41,
+      "y": 0.33,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.13530000419616695
+    },
+    "luxuryKitchenFridge": {
+      "x": 0.41,
+      "y": 0.35,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.14349999630451205
+    },
+    "luxuryKitchenWallCabinet": {
+      "x": 0.6,
+      "y": 0.21,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.12600000107288345
+    },
+    "luxuryKitchenIsland": {
+      "x": 0.81,
+      "y": 0.44,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.35639999911785125
+    },
+    "mansionDisplayCabinet": {
+      "x": 0.61,
+      "y": 0.23,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.14030000583529478
+    },
+    "mansionTeaCart": {
+      "x": 0.53,
+      "y": 0.25,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.13249999284744263
+    },
+    "ceilingFan": {
+      "x": 0.74,
+      "y": 0.74,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.54760001411438
+    },
+    "gothicKitchenCounter": {
+      "x": 0.73,
+      "y": 0.33,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.2409000158667567
+    },
+    "gothicKitchenSink": {
+      "x": 0.61,
+      "y": 0.33,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.20130001271963138
+    },
+    "gothicKitchenStove": {
+      "x": 0.41,
+      "y": 0.33,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.13530000419616695
+    },
+    "gothicKitchenFridge": {
+      "x": 0.41,
+      "y": 0.35,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.14349999630451205
+    },
+    "gothicKitchenWallCabinet": {
+      "x": 0.6,
+      "y": 0.21,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.12600000107288345
+    },
+    "gothicKitchenIsland": {
+      "x": 0.81,
+      "y": 0.44,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.35639999911785125
+    },
+    "gothicFloorCandelabra": {
+      "x": 0.27,
+      "y": 0.23,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.062100003594160125
+    },
+    "gothicCoffinChest": {
+      "x": 0.52,
+      "y": 0.28,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.1455999952793121
+    },
+    "gothicPictureFrameEmpty": {
+      "x": 0.4,
+      "y": 0.09,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.0360000019669533
+    },
+    "bathroomStall": {
+      "x": 0.34,
+      "y": 0.28,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.09520000140666962
+    },
+    "publicRestroomToilet": {
+      "x": 0.25,
+      "y": 0.38,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.0949999988079071
+    },
+    "publicMensUrinal": {
+      "x": 0.25,
+      "y": 0.24,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.05999999865889549
+    },
+    "publicSinkBank": {
+      "x": 0.83,
+      "y": 0.24,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.199199991542101
+    },
+    "bathroomMirror": {
+      "x": 0.35,
+      "y": 0.16,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.055999997794628165
+    },
+    "publicHandDryer": {
+      "x": 0.2,
+      "y": 0.13,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.02599999943375586
+    },
+    "publicSoapDispenser": {
+      "x": 0.11,
+      "y": 0.13,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.01429999939799309
+    },
+    "publicPaperTowelDispenser": {
+      "x": 0.2,
+      "y": 0.13,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.02599999943375586
+    },
+    "publicMensRoomSign": {
+      "x": 0.26,
+      "y": 0.06,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.015599999079108251
+    },
+    "publicSanitaryBin": {
+      "x": 0.18,
+      "y": 0.2,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.0360000019669533
+    },
+    "publicBabyChangeStation": {
+      "x": 0.46,
+      "y": 0.52,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.23919999556541427
+    },
+    "publicWomensRoomSign": {
+      "x": 0.26,
+      "y": 0.06,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.015599999079108251
+    },
+    "publicMensShowerStall": {
+      "x": 0.43,
+      "y": 0.43,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.1849000061511994
+    },
+    "publicShowerBench": {
+      "x": 0.61,
+      "y": 0.18,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.10980000693798075
+    },
+    "houseTowelRack": {
+      "x": 0.39,
+      "y": 0.13,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.050699996280670234
+    },
+    "houseBathMat": {
+      "x": 0.46,
+      "y": 0.29,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.13339999858140938
+    },
+    "publicWomensShowerStall": {
+      "x": 0.43,
+      "y": 0.43,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.1849000061511994
+    },
+    "houseBathtub": {
+      "x": 0.89,
+      "y": 0.4,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.3559999995827674
+    },
+    "houseToilet": {
+      "x": 0.25,
+      "y": 0.38,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.0949999988079071
+    },
+    "houseShowerEnclosure": {
+      "x": 0.47,
+      "y": 0.47,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.22089999887943268
+    },
+    "bathroomVanity": {
+      "x": 0.41,
+      "y": 0.25,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.10249999910593033
+    },
+    "houseMedicineCabinet": {
+      "x": 0.35,
+      "y": 0.12,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.041999998345971123
+    },
+    "houseBathroomShelf": {
+      "x": 0.43,
+      "y": 0.13,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.055899998879432644
+    },
+    "laundryHamper": {
+      "x": 0.27,
+      "y": 0.25,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.06750000268220901
+    },
+    "lavaVent": {
+      "x": 0.34,
+      "y": 0.3,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.1020000051259995
+    },
+    "emberBrazier": {
+      "x": 0.25,
+      "y": 0.25,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.0625
+    },
+    "basaltPillar": {
+      "x": 0.32,
+      "y": 0.32,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.10239999542236333
+    },
+    "basaltRubble": {
+      "x": 0.61,
+      "y": 0.58,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.353799998116493
+    },
+    "magmaCrystalCluster": {
+      "x": 0.34,
+      "y": 0.34,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.11560000243186952
+    },
+    "infernoAltar": {
+      "x": 0.6,
+      "y": 0.41,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.24600000762939445
+    },
+    "infernoChainLantern": {
+      "x": 0.21,
+      "y": 0.21,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.044099997246265454
+    },
+    "lavaPipeManifold": {
+      "x": 0.6,
+      "y": 0.32,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.19200000333785994
+    },
+    "charredSupplyCrate": {
+      "x": 0.37,
+      "y": 0.34,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.12580000294446947
+    },
+    "prisonCellGate": {
+      "x": 1.48,
+      "y": 0.18,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.2664000140190126
+    },
+    "prisonBunk": {
+      "x": 0.55,
+      "y": 0.98,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.5390000221729281
+    },
+    "dungeonCage": {
+      "x": 1.25,
+      "y": 1.25,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 1.5625
+    },
+    "restraintChair": {
+      "x": 0.55,
+      "y": 0.55,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.302500013113022
+    },
+    "prisonServingCounter": {
+      "x": 1.23,
+      "y": 0.44,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.5412000054597854
+    },
+    "prisonCafeteriaTable": {
+      "x": 1.33,
+      "y": 0.89,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 1.1837000191688531
+    },
+    "prisonTrayReturn": {
+      "x": 0.5,
+      "y": 0.36,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.18000000715255737
+    },
+    "prisonKitchenRack": {
+      "x": 0.68,
+      "y": 0.32,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.2175999974250793
+    },
+    "tikiBar": {
+      "x": 0.77,
+      "y": 0.52,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.400399975395203
+    },
+    "beachUmbrella": {
+      "x": 1.15,
+      "y": 1.15,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 1.3224999451637274
+    },
+    "sandCastle": {
+      "x": 0.4,
+      "y": 0.34,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.13600000345706942
+    },
+    "beachChair": {
+      "x": 0.34,
+      "y": 0.54,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.1836000092267991
+    },
+    "surfboardRack": {
+      "x": 0.68,
+      "y": 0.3,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.204000010251999
+    },
+    "palmTree": {
+      "x": 0.52,
+      "y": 0.52,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.2703999801635746
+    },
+    "frozenBeachHut": {
+      "x": 1.1,
+      "y": 0.92,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 1.0120000402927403
+    },
+    "floorLamp": {
+      "x": 0.22,
+      "y": 0.22,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.04839999947547913
+    },
+    "mansionAreaRug": {
+      "x": 1.3,
+      "y": 0.8,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 1.0399999773502344
+    },
+    "loungeCouchWide": {
+      "x": 1.35,
+      "y": 0.5,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.675000011920929
+    },
+    "heavyMansionDrapes": {
+      "x": 0.78,
+      "y": 0.11,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.08579999638795854
+    },
+    "mansionUprightPiano": {
+      "x": 0.77,
+      "y": 0.45,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.3464999822378161
+    },
+    "mansionBustPedestal": {
+      "x": 0.27,
+      "y": 0.27,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.07290000579357159
+    },
+    "mansionChaiseLounge": {
+      "x": 0.88,
+      "y": 0.35,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.30799999308586123
+    },
+    "giantTree": {
+      "x": 1.25,
+      "y": 1.25,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 1.5625
+    },
+    "gardenPlanterBench": {
+      "x": 0.58,
+      "y": 0.3,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.17400000190734843
+    },
+    "grassFern": {
+      "x": 0.22,
+      "y": 0.22,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.04839999947547913
+    },
+    "flowerRose": {
+      "x": 0.16,
+      "y": 0.16,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.025599998855590833
+    },
+    "flowerSun": {
+      "x": 0.16,
+      "y": 0.16,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.025599998855590833
+    },
+    "flowerBlue": {
+      "x": 0.16,
+      "y": 0.16,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.025599998855590833
+    },
+    "flowerViolet": {
+      "x": 0.16,
+      "y": 0.16,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.025599998855590833
+    },
+    "mansionBookshelf": {
+      "x": 0.39,
+      "y": 0.31,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.12089999649524685
+    },
+    "magazineRack": {
+      "x": 0.3,
+      "y": 0.25,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.07500000298023224
+    },
+    "woodenTable": {
+      "x": 0.6,
+      "y": 0.38,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.22800000619888294
+    },
+    "woodenChair": {
+      "x": 0.25,
+      "y": 0.25,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.0625
+    },
+    "woodenChairCushion": {
+      "x": 0.25,
+      "y": 0.25,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.0625
+    },
+    "mansionFireplace": {
+      "x": 0.51,
+      "y": 0.36,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.18360000386238085
+    },
+    "carnivalCarousel": {
+      "x": 2.2,
+      "y": 1.8,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 3.9599999809265114
+    },
+    "doubleBed": {
+      "x": 0.91,
+      "y": 1.33,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 1.2103000739336025
+    },
+    "bedroomNightstand": {
+      "x": 0.29,
+      "y": 0.25,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.07249999791383743
+    },
+    "bedsideLamp": {
+      "x": 0.18,
+      "y": 0.16,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.02880000050067899
+    },
+    "tableLamp": {
+      "x": 0.25,
+      "y": 0.18,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.04500000178813934
+    },
+    "bedroomWardrobe": {
+      "x": 0.6,
+      "y": 0.31,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.18600000882148748
+    },
+    "bedroomDresser": {
+      "x": 0.62,
+      "y": 0.28,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.17360000207424164
+    },
+    "bedroomVanity": {
+      "x": 0.51,
+      "y": 0.24,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.1223999949753285
+    },
+    "vanityStool": {
+      "x": 0.2,
+      "y": 0.18,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.0360000019669533
+    },
+    "bedroomBench": {
+      "x": 0.51,
+      "y": 0.19,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.09689999697208407
+    },
+    "bedroomRug": {
+      "x": 0.86,
+      "y": 0.59,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.5073999858856197
+    },
+    "toyChest": {
+      "x": 0.41,
+      "y": 0.26,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.10659999516010288
+    },
+    "bedroomWallClock": {
+      "x": 0.26,
+      "y": 0.08,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.020799998772144335
+    },
+    "mansionConsoleTable": {
+      "x": 0.61,
+      "y": 0.22,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.13420000241994856
+    },
+    "mansionRockingChair": {
+      "x": 0.34,
+      "y": 0.47,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.1598000012755394
+    },
+    "mansionRoomDivider": {
+      "x": 0.82,
+      "y": 0.14,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.11479999948740005
+    },
+    "bunkBed": {
+      "x": 0.32,
+      "y": 0.32,
+      "from_table": false,
+      "area_sort_key_f64_of_f32": 0.10239999542236333
+    },
+    "gothicDoubleBed": {
+      "x": 1.0,
+      "y": 1.4,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 1.399999976158142
+    },
+    "gothicNightstand": {
+      "x": 0.33,
+      "y": 0.27,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.08910000708103194
+    },
+    "gothicBedsideCandelabra": {
+      "x": 0.2,
+      "y": 0.15,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.03000000163912775
+    },
+    "gothicWardrobe": {
+      "x": 0.66,
+      "y": 0.33,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.2178000173091892
+    },
+    "gothicDresser": {
+      "x": 0.68,
+      "y": 0.31,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.21080000383853914
+    },
+    "gothicVanity": {
+      "x": 0.55,
+      "y": 0.25,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.13750000298023224
+    },
+    "gothicVanityStool": {
+      "x": 0.22,
+      "y": 0.19,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.04179999924898148
+    },
+    "gothicBedroomBench": {
+      "x": 0.55,
+      "y": 0.21,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.115499998897314
+    },
+    "gothicBedroomRug": {
+      "x": 1.1,
+      "y": 0.71,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.7809999933242793
+    },
+    "gothicHighbackChair": {
+      "x": 0.35,
+      "y": 0.31,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.10849999898672102
+    },
+    "gothicWritingDesk": {
+      "x": 0.69,
+      "y": 0.31,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.2139000009059906
+    },
+    "gothicBookcase": {
+      "x": 0.61,
+      "y": 0.27,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.16470001040697113
+    },
+    "gothicPedestalTable": {
+      "x": 0.38,
+      "y": 0.38,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.14439999637603762
+    },
+    "gothicPaintingFrameEmpty": {
+      "x": 0.66,
+      "y": 0.09,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.05940000472068796
+    },
+    "singleBed": {
+      "x": 0.54,
+      "y": 1.33,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.7182000517129907
+    },
+    "mansionCoatRack": {
+      "x": 0.26,
+      "y": 0.26,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.06759999504089365
+    },
+    "normalBookcase": {
+      "x": 0.48,
+      "y": 0.19,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.091199996817112
+    },
+    "normalPaintingFrameEmpty": {
+      "x": 0.61,
+      "y": 0.08,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.048800000053644155
+    },
+    "retroComputerCompact": {
+      "x": 0.55,
+      "y": 0.33,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.18150001114606873
+    },
+    "retroComputerTower": {
+      "x": 0.62,
+      "y": 0.33,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.20460000970363623
+    },
+    "retroComputerTerminal": {
+      "x": 0.55,
+      "y": 0.33,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.18150001114606873
+    },
+    "officeCubiclePartition": {
+      "x": 0.9,
+      "y": 0.12,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.107999994724989
+    },
+    "officePrinter": {
+      "x": 0.36,
+      "y": 0.29,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.10440000114440906
+    },
+    "officePhotocopier": {
+      "x": 0.46,
+      "y": 0.4,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.18400000607967382
+    },
+    "officeShredder": {
+      "x": 0.27,
+      "y": 0.22,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.05940000203847884
+    },
+    "officeFileBoxes": {
+      "x": 0.45,
+      "y": 0.31,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.1394999973773956
+    },
+    "officeCornerWorkstation": {
+      "x": 0.78,
+      "y": 0.6,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.4680000014305108
+    },
+    "officeWaterCooler": {
+      "x": 0.28,
+      "y": 0.25,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.07000000029802322
+    },
+    "normalTvConsole": {
+      "x": 0.7,
+      "y": 0.24,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.1679999933838845
+    },
+    "normalCoffeeTable": {
+      "x": 0.61,
+      "y": 0.35,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.21350000137090674
+    },
+    "mansionGrandfatherClock": {
+      "x": 0.35,
+      "y": 0.23,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.08050000008940694
+    },
+    "hospitalBed": {
+      "x": 0.45,
+      "y": 1.03,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.46349997484684025
+    },
+    "hospitalCurtain": {
+      "x": 0.93,
+      "y": 0.08,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.07439999890923499
+    },
+    "ivDripStand": {
+      "x": 0.21,
+      "y": 0.21,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.044099997246265454
+    },
+    "vitalsMonitor": {
+      "x": 0.28,
+      "y": 0.26,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.07279999763965606
+    },
+    "nursesStation": {
+      "x": 1.18,
+      "y": 0.45,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.5309999623298651
+    },
+    "wheelchair": {
+      "x": 0.3,
+      "y": 0.45,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.1350000017881392
+    },
+    "hospitalWardSign": {
+      "x": 0.45,
+      "y": 0.03,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.013499999340623625
+    },
+    "operatingTable": {
+      "x": 0.35,
+      "y": 0.98,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.3430000008344649
+    },
+    "surgicalLight": {
+      "x": 0.73,
+      "y": 0.73,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.5329000278472904
+    },
+    "instrumentTrolley": {
+      "x": 0.43,
+      "y": 0.26,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.11179999775886529
+    },
+    "medicalSupplyRack": {
+      "x": 0.58,
+      "y": 0.23,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.13339999858140938
+    },
+    "biohazardBin": {
+      "x": 0.23,
+      "y": 0.23,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.05290000191926958
+    },
+    "xrayLightbox": {
+      "x": 0.63,
+      "y": 0.04,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.025199999246001248
+    },
+    "morgueCabinet": {
+      "x": 0.98,
+      "y": 0.45,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.44099999690055824
+    },
+    "autopsyTable": {
+      "x": 0.4,
+      "y": 0.98,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.39200001347064983
+    },
+    "hazardSign": {
+      "x": 0.28,
+      "y": 0.03,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.008399999848008155
+    },
+    "pharmacyShelf": {
+      "x": 0.78,
+      "y": 0.21,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.16379998887777347
+    },
+    "xrayMachine": {
+      "x": 0.78,
+      "y": 0.73,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.5693999939918513
+    },
+    "containmentCell": {
+      "x": 1.08,
+      "y": 0.83,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.8964000175952904
+    },
+    "specimenTank": {
+      "x": 0.45,
+      "y": 0.45,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.20249998927116408
+    },
+    "controlConsole": {
+      "x": 1.18,
+      "y": 0.48,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.5663999621629721
+    },
+    "labCoolingUnit": {
+      "x": 0.48,
+      "y": 0.4,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.19199999856948846
+    },
+    "monitorWall": {
+      "x": 1.18,
+      "y": 0.05,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.0589999982565641
+    },
+    "labWhiteboard": {
+      "x": 0.88,
+      "y": 0.04,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.03519999902248383
+    },
+    "labGlassPartition": {
+      "x": 0.95,
+      "y": 0.07,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.06649999944865703
+    },
+    "labBench": {
+      "x": 0.98,
+      "y": 0.38,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.37240000257492056
+    },
+    "labMicroscope": {
+      "x": 0.15,
+      "y": 0.16,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.024000000417232492
+    },
+    "labStool": {
+      "x": 0.19,
+      "y": 0.19,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.036099999094009405
+    },
+    "deconShower": {
+      "x": 0.63,
+      "y": 0.63,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.39689999399185183
+    },
+    "fumeHood": {
+      "x": 0.73,
+      "y": 0.43,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.31390001342296614
+    },
+    "gasCylinderRack": {
+      "x": 0.45,
+      "y": 0.21,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.09449999454617508
+    },
+    "coldStorageUnit": {
+      "x": 0.68,
+      "y": 0.4,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.27200000691413884
+    },
+    "domeFountain": {
+      "x": 1.28,
+      "y": 1.28,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 1.6383999267578133
+    },
+    "pottedPalm": {
+      "x": 0.73,
+      "y": 0.73,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.5329000278472904
+    },
+    "greenhouseBench": {
+      "x": 0.78,
+      "y": 0.28,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.21839999291896817
+    },
+    "raisedPlanter": {
+      "x": 0.98,
+      "y": 0.43,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.4214000152111055
+    },
+    "mistingPost": {
+      "x": 0.18,
+      "y": 0.18,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.032400002574920705
+    },
+    "hangingVines": {
+      "x": 0.58,
+      "y": 0.58,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.33639998064041166
+    },
+    "overgrowthPatch": {
+      "x": 0.78,
+      "y": 0.63,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.4913999782562257
+    },
+    "bananaPlant": {
+      "x": 0.53,
+      "y": 0.53,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.28089996967315756
+    },
+    "saguaroCactus": {
+      "x": 0.38,
+      "y": 0.28,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.10639999911785125
+    },
+    "cactusCluster": {
+      "x": 0.45,
+      "y": 0.45,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.20249998927116408
+    },
+    "pottingBench": {
+      "x": 0.78,
+      "y": 0.33,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.25740000078678094
+    },
+    "seedlingRack": {
+      "x": 0.58,
+      "y": 0.23,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.13339999858140938
+    },
+    "compostBins": {
+      "x": 0.68,
+      "y": 0.35,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.2379999984502792
+    },
+    "wateringCart": {
+      "x": 0.48,
+      "y": 0.28,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.13439999756813048
+    },
+    "irrigationManifold": {
+      "x": 0.73,
+      "y": 0.28,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.204400006210804
+    },
+    "displayCase": {
+      "x": 0.68,
+      "y": 0.35,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.2379999984502792
+    },
+    "checkoutCounter": {
+      "x": 0.88,
+      "y": 0.35,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.30799999308586123
+    },
+    "coffeeStation": {
+      "x": 0.63,
+      "y": 0.3,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.1890000060796737
+    },
+    "donutFryer": {
+      "x": 0.63,
+      "y": 0.38,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.23939999518394472
+    },
+    "bakeryRack": {
+      "x": 0.48,
+      "y": 0.28,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.13439999756813048
+    },
+    "dinerBooth": {
+      "x": 0.78,
+      "y": 0.73,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.5693999939918513
+    },
+    "dinerStool": {
+      "x": 0.19,
+      "y": 0.19,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.036099999094009405
+    },
+    "menuBoard": {
+      "x": 0.73,
+      "y": 0.03,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.021900000082701432
+    },
+    "donutSign": {
+      "x": 0.63,
+      "y": 0.13,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.08189999637603762
+    },
+    "cinemaScreen": {
+      "x": 2.08,
+      "y": 0.04,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.08319999508857734
+    },
+    "cinemaSeats": {
+      "x": 1.18,
+      "y": 0.38,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.44839997444152857
+    },
+    "ticketBooth": {
+      "x": 0.83,
+      "y": 0.58,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.4813999764680865
+    },
+    "concessionCounter": {
+      "x": 1.08,
+      "y": 0.38,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.4104000111579893
+    },
+    "foodCourtTable": {
+      "x": 0.83,
+      "y": 0.83,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.6888999722957614
+    },
+    "mallPlanter": {
+      "x": 0.63,
+      "y": 0.63,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.39689999399185183
+    },
+    "washingMachine": {
+      "x": 0.35,
+      "y": 0.34,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.1189999992251396
+    },
+    "dryerStack": {
+      "x": 0.35,
+      "y": 0.34,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.1189999992251396
+    },
+    "mallBench": {
+      "x": 0.88,
+      "y": 0.28,
+      "from_table": true,
+      "area_sort_key_f64_of_f32": 0.2463999997138977
+    }
+  },
+  "footprint_table_full": {
+    "arcadeCabinet": {
+      "x": 0.27,
+      "y": 0.3
+    },
+    "arcadeCabinetCyanMagenta": {
+      "x": 0.27,
+      "y": 0.3
+    },
+    "arcadeBasketballHoop": {
+      "x": 0.42,
+      "y": 0.5
+    },
+    "arcadeCarpetCircle": {
+      "x": 0.48,
+      "y": 0.48
+    },
+    "arcadeCarpetRunner": {
+      "x": 0.42,
+      "y": 0.2
+    },
+    "loungeCouch": {
+      "x": 0.85,
+      "y": 0.48
+    },
+    "loungeCouchWide": {
+      "x": 1.35,
+      "y": 0.5
+    },
+    "locker": {
+      "x": 0.3,
+      "y": 0.36
+    },
+    "officeDesk": {
+      "x": 0.42,
+      "y": 0.28
+    },
+    "securityDesk": {
+      "x": 0.54,
+      "y": 0.34
+    },
+    "officeChair": {
+      "x": 0.21,
+      "y": 0.21
+    },
+    "officeCameraConsole": {
+      "x": 0.4,
+      "y": 0.3
+    },
+    "officeSignalScanner": {
+      "x": 0.28,
+      "y": 0.32
+    },
+    "mascotStatue": {
+      "x": 0.34,
+      "y": 0.36
+    },
+    "snackKiosk": {
+      "x": 0.48,
+      "y": 0.3
+    },
+    "filingCabinet": {
+      "x": 0.29,
+      "y": 0.33
+    },
+    "supplyCrates": {
+      "x": 0.37,
+      "y": 0.29
+    },
+    "serverRack": {
+      "x": 0.32,
+      "y": 0.37
+    },
+    "privacyCurtain": {
+      "x": 0.4,
+      "y": 0.18
+    },
+    "stagePlatform": {
+      "x": 0.46,
+      "y": 0.38
+    },
+    "stageSpeaker": {
+      "x": 0.33,
+      "y": 0.37
+    },
+    "prizeCounter": {
+      "x": 0.44,
+      "y": 0.27
+    },
+    "vendingMachine": {
+      "x": 0.31,
+      "y": 0.37
+    },
+    "utilityCart": {
+      "x": 0.4,
+      "y": 0.28
+    },
+    "breakerCabinet": {
+      "x": 0.29,
+      "y": 0.36
+    },
+    "maintenanceToolCabinet": {
+      "x": 0.31,
+      "y": 0.37
+    },
+    "arcadeTokenChanger": {
+      "x": 0.3,
+      "y": 0.35
+    },
+    "officeCrtSecurityConsole": {
+      "x": 0.43,
+      "y": 0.3
+    },
+    "prizeClawMachine": {
+      "x": 0.34,
+      "y": 0.36
+    },
+    "maintenanceCleaningCart": {
+      "x": 0.4,
+      "y": 0.28
+    },
+    "backstageRepairStand": {
+      "x": 0.42,
+      "y": 0.36
+    },
+    "brokenAquarium": {
+      "x": 0.46,
+      "y": 0.32
+    },
+    "carnivalCarousel": {
+      "x": 2.2,
+      "y": 1.8
+    },
+    "woodenChair": {
+      "x": 0.25,
+      "y": 0.25
+    },
+    "woodenChairCushion": {
+      "x": 0.25,
+      "y": 0.25
+    },
+    "woodenTable": {
+      "x": 0.6,
+      "y": 0.38
+    },
+    "diningTable": {
+      "x": 1.1,
+      "y": 0.42
+    },
+    "restaurantPartyTable": {
+      "x": 1.31,
+      "y": 0.45
+    },
+    "diningChair": {
+      "x": 0.25,
+      "y": 0.25
+    },
+    "diningChairCushion": {
+      "x": 0.25,
+      "y": 0.25
+    },
+    "diningChandelier": {
+      "x": 0.47,
+      "y": 0.47
+    },
+    "diningSideboard": {
+      "x": 0.72,
+      "y": 0.35
+    },
+    "flowerCenterpiece": {
+      "x": 0.25,
+      "y": 0.2
+    },
+    "tableCandelabra": {
+      "x": 0.32,
+      "y": 0.16
+    },
+    "framedWallPortrait": {
+      "x": 0.44,
+      "y": 0.12
+    },
+    "wallSconce": {
+      "x": 0.12,
+      "y": 0.18
+    },
+    "ceilingLight": {
+      "x": 0.37,
+      "y": 0.37
+    },
+    "ceilingFan": {
+      "x": 0.74,
+      "y": 0.74
+    },
+    "tableLamp": {
+      "x": 0.25,
+      "y": 0.18
+    },
+    "retroComputerCompact": {
+      "x": 0.55,
+      "y": 0.33
+    },
+    "retroComputerTower": {
+      "x": 0.62,
+      "y": 0.33
+    },
+    "retroComputerDesktop": {
+      "x": 0.55,
+      "y": 0.33
+    },
+    "retroComputerTerminal": {
+      "x": 0.55,
+      "y": 0.33
+    },
+    "officeCubiclePartition": {
+      "x": 0.9,
+      "y": 0.12
+    },
+    "officePrinter": {
+      "x": 0.36,
+      "y": 0.29
+    },
+    "officeWaterCooler": {
+      "x": 0.28,
+      "y": 0.25
+    },
+    "officePhotocopier": {
+      "x": 0.46,
+      "y": 0.4
+    },
+    "officeShredder": {
+      "x": 0.27,
+      "y": 0.22
+    },
+    "officeFileBoxes": {
+      "x": 0.45,
+      "y": 0.31
+    },
+    "officeCornerWorkstation": {
+      "x": 0.78,
+      "y": 0.6
+    },
+    "prisonCafeteriaTable": {
+      "x": 1.33,
+      "y": 0.89
+    },
+    "prisonServingCounter": {
+      "x": 1.23,
+      "y": 0.44
+    },
+    "prisonTrayReturn": {
+      "x": 0.5,
+      "y": 0.36
+    },
+    "prisonKitchenRack": {
+      "x": 0.68,
+      "y": 0.32
+    },
+    "normalPictureFrameEmpty": {
+      "x": 0.36,
+      "y": 0.08
+    },
+    "normalPaintingFrameEmpty": {
+      "x": 0.61,
+      "y": 0.08
+    },
+    "luxuryPictureFrameEmpty": {
+      "x": 0.4,
+      "y": 0.09
+    },
+    "luxuryPaintingFrameEmpty": {
+      "x": 0.66,
+      "y": 0.09
+    },
+    "gothicPictureFrameEmpty": {
+      "x": 0.4,
+      "y": 0.09
+    },
+    "gothicPaintingFrameEmpty": {
+      "x": 0.66,
+      "y": 0.09
+    },
+    "heavyMansionDrapes": {
+      "x": 0.78,
+      "y": 0.11
+    },
+    "mansionAreaRug": {
+      "x": 1.3,
+      "y": 0.8
+    },
+    "floorLamp": {
+      "x": 0.22,
+      "y": 0.22
+    },
+    "magazineRack": {
+      "x": 0.3,
+      "y": 0.25
+    },
+    "trashBin": {
+      "x": 0.25,
+      "y": 0.25
+    },
+    "giantTree": {
+      "x": 1.25,
+      "y": 1.25
+    },
+    "gardenPlanterBench": {
+      "x": 0.58,
+      "y": 0.3
+    },
+    "mansionBookshelf": {
+      "x": 0.39,
+      "y": 0.31
+    },
+    "grassFern": {
+      "x": 0.22,
+      "y": 0.22
+    },
+    "flowerRose": {
+      "x": 0.16,
+      "y": 0.16
+    },
+    "flowerSun": {
+      "x": 0.16,
+      "y": 0.16
+    },
+    "flowerBlue": {
+      "x": 0.16,
+      "y": 0.16
+    },
+    "flowerViolet": {
+      "x": 0.16,
+      "y": 0.16
+    },
+    "bathroomStall": {
+      "x": 0.34,
+      "y": 0.28
+    },
+    "bathroomSink": {
+      "x": 0.4,
+      "y": 0.22
+    },
+    "bathroomMirror": {
+      "x": 0.35,
+      "y": 0.16
+    },
+    "bathroomVanity": {
+      "x": 0.41,
+      "y": 0.25
+    },
+    "mansionFireplace": {
+      "x": 0.51,
+      "y": 0.36
+    },
+    "publicRestroomToilet": {
+      "x": 0.25,
+      "y": 0.38
+    },
+    "publicMensUrinal": {
+      "x": 0.25,
+      "y": 0.24
+    },
+    "publicSinkBank": {
+      "x": 0.83,
+      "y": 0.24
+    },
+    "publicHandDryer": {
+      "x": 0.2,
+      "y": 0.13
+    },
+    "publicSoapDispenser": {
+      "x": 0.11,
+      "y": 0.13
+    },
+    "publicPaperTowelDispenser": {
+      "x": 0.2,
+      "y": 0.13
+    },
+    "publicBabyChangeStation": {
+      "x": 0.46,
+      "y": 0.52
+    },
+    "publicSanitaryBin": {
+      "x": 0.18,
+      "y": 0.2
+    },
+    "publicMensRoomSign": {
+      "x": 0.26,
+      "y": 0.06
+    },
+    "publicWomensRoomSign": {
+      "x": 0.26,
+      "y": 0.06
+    },
+    "publicMensShowerStall": {
+      "x": 0.43,
+      "y": 0.43
+    },
+    "publicWomensShowerStall": {
+      "x": 0.43,
+      "y": 0.43
+    },
+    "publicShowerBench": {
+      "x": 0.61,
+      "y": 0.18
+    },
+    "houseBathtub": {
+      "x": 0.89,
+      "y": 0.4
+    },
+    "houseToilet": {
+      "x": 0.25,
+      "y": 0.38
+    },
+    "houseShowerEnclosure": {
+      "x": 0.47,
+      "y": 0.47
+    },
+    "houseMedicineCabinet": {
+      "x": 0.35,
+      "y": 0.12
+    },
+    "houseTowelRack": {
+      "x": 0.39,
+      "y": 0.13
+    },
+    "houseBathMat": {
+      "x": 0.46,
+      "y": 0.29
+    },
+    "corridorCarpet": {
+      "x": 1.2,
+      "y": 1.7
+    },
+    "hotelCarpet": {
+      "x": 1.1,
+      "y": 0.7
+    },
+    "apartmentCarpet": {
+      "x": 1.0,
+      "y": 0.77
+    },
+    "beachMat": {
+      "x": 0.7,
+      "y": 0.43
+    },
+    "houseBathroomShelf": {
+      "x": 0.43,
+      "y": 0.13
+    },
+    "grandStaircase": {
+      "x": 0.9,
+      "y": 3.25
+    },
+    "grandFoyerStaircase": {
+      "x": 2.35,
+      "y": 3.35
+    },
+    "lavaVent": {
+      "x": 0.34,
+      "y": 0.3
+    },
+    "emberBrazier": {
+      "x": 0.25,
+      "y": 0.25
+    },
+    "basaltPillar": {
+      "x": 0.32,
+      "y": 0.32
+    },
+    "sandCastle": {
+      "x": 0.4,
+      "y": 0.34
+    },
+    "basaltRubble": {
+      "x": 0.61,
+      "y": 0.58
+    },
+    "magmaCrystalCluster": {
+      "x": 0.34,
+      "y": 0.34
+    },
+    "infernoAltar": {
+      "x": 0.6,
+      "y": 0.41
+    },
+    "infernoChainLantern": {
+      "x": 0.21,
+      "y": 0.21
+    },
+    "lavaPipeManifold": {
+      "x": 0.6,
+      "y": 0.32
+    },
+    "charredSupplyCrate": {
+      "x": 0.37,
+      "y": 0.34
+    },
+    "beachUmbrella": {
+      "x": 1.15,
+      "y": 1.15
+    },
+    "tikiBar": {
+      "x": 0.77,
+      "y": 0.52
+    },
+    "beachChair": {
+      "x": 0.34,
+      "y": 0.54
+    },
+    "surfboardRack": {
+      "x": 0.68,
+      "y": 0.3
+    },
+    "palmTree": {
+      "x": 0.52,
+      "y": 0.52
+    },
+    "frozenBeachHut": {
+      "x": 1.1,
+      "y": 0.92
+    },
+    "singleBed": {
+      "x": 0.54,
+      "y": 1.33
+    },
+    "doubleBed": {
+      "x": 0.91,
+      "y": 1.33
+    },
+    "bedroomNightstand": {
+      "x": 0.29,
+      "y": 0.25
+    },
+    "bedroomWardrobe": {
+      "x": 0.6,
+      "y": 0.31
+    },
+    "bedroomDresser": {
+      "x": 0.62,
+      "y": 0.28
+    },
+    "bedroomVanity": {
+      "x": 0.51,
+      "y": 0.24
+    },
+    "vanityStool": {
+      "x": 0.2,
+      "y": 0.18
+    },
+    "bedsideLamp": {
+      "x": 0.18,
+      "y": 0.16
+    },
+    "toyChest": {
+      "x": 0.41,
+      "y": 0.26
+    },
+    "laundryHamper": {
+      "x": 0.27,
+      "y": 0.25
+    },
+    "bedroomRug": {
+      "x": 0.86,
+      "y": 0.59
+    },
+    "bedroomWallClock": {
+      "x": 0.26,
+      "y": 0.08
+    },
+    "bedroomBench": {
+      "x": 0.51,
+      "y": 0.19
+    },
+    "mansionConsoleTable": {
+      "x": 0.61,
+      "y": 0.22
+    },
+    "mansionGrandfatherClock": {
+      "x": 0.35,
+      "y": 0.23
+    },
+    "mansionCoatRack": {
+      "x": 0.26,
+      "y": 0.26
+    },
+    "mansionTeaCart": {
+      "x": 0.53,
+      "y": 0.25
+    },
+    "mansionRockingChair": {
+      "x": 0.34,
+      "y": 0.47
+    },
+    "mansionRoomDivider": {
+      "x": 0.82,
+      "y": 0.14
+    },
+    "gothicDoubleBed": {
+      "x": 1.0,
+      "y": 1.4
+    },
+    "gothicNightstand": {
+      "x": 0.33,
+      "y": 0.27
+    },
+    "gothicWardrobe": {
+      "x": 0.66,
+      "y": 0.33
+    },
+    "gothicDresser": {
+      "x": 0.68,
+      "y": 0.31
+    },
+    "gothicVanity": {
+      "x": 0.55,
+      "y": 0.25
+    },
+    "gothicVanityStool": {
+      "x": 0.22,
+      "y": 0.19
+    },
+    "gothicBedroomBench": {
+      "x": 0.55,
+      "y": 0.21
+    },
+    "gothicBedroomRug": {
+      "x": 1.1,
+      "y": 0.71
+    },
+    "gothicBedsideCandelabra": {
+      "x": 0.2,
+      "y": 0.15
+    },
+    "gothicHighbackChair": {
+      "x": 0.35,
+      "y": 0.31
+    },
+    "gothicWritingDesk": {
+      "x": 0.69,
+      "y": 0.31
+    },
+    "gothicBookcase": {
+      "x": 0.61,
+      "y": 0.27
+    },
+    "gothicPedestalTable": {
+      "x": 0.38,
+      "y": 0.38
+    },
+    "gothicFloorCandelabra": {
+      "x": 0.27,
+      "y": 0.23
+    },
+    "gothicCoffinChest": {
+      "x": 0.52,
+      "y": 0.28
+    },
+    "normalKitchenCounter": {
+      "x": 0.73,
+      "y": 0.33
+    },
+    "normalKitchenSink": {
+      "x": 0.61,
+      "y": 0.33
+    },
+    "normalKitchenStove": {
+      "x": 0.41,
+      "y": 0.33
+    },
+    "normalKitchenFridge": {
+      "x": 0.41,
+      "y": 0.35
+    },
+    "normalKitchenWallCabinet": {
+      "x": 0.6,
+      "y": 0.21
+    },
+    "normalKitchenIsland": {
+      "x": 0.81,
+      "y": 0.44
+    },
+    "luxuryKitchenCounter": {
+      "x": 0.73,
+      "y": 0.33
+    },
+    "luxuryKitchenSink": {
+      "x": 0.61,
+      "y": 0.33
+    },
+    "luxuryKitchenStove": {
+      "x": 0.41,
+      "y": 0.33
+    },
+    "luxuryKitchenFridge": {
+      "x": 0.41,
+      "y": 0.35
+    },
+    "luxuryKitchenWallCabinet": {
+      "x": 0.6,
+      "y": 0.21
+    },
+    "luxuryKitchenIsland": {
+      "x": 0.81,
+      "y": 0.44
+    },
+    "gothicKitchenCounter": {
+      "x": 0.73,
+      "y": 0.33
+    },
+    "gothicKitchenSink": {
+      "x": 0.61,
+      "y": 0.33
+    },
+    "gothicKitchenStove": {
+      "x": 0.41,
+      "y": 0.33
+    },
+    "gothicKitchenFridge": {
+      "x": 0.41,
+      "y": 0.35
+    },
+    "gothicKitchenWallCabinet": {
+      "x": 0.6,
+      "y": 0.21
+    },
+    "gothicKitchenIsland": {
+      "x": 0.81,
+      "y": 0.44
+    },
+    "normalBookcase": {
+      "x": 0.48,
+      "y": 0.19
+    },
+    "normalCoffeeTable": {
+      "x": 0.61,
+      "y": 0.35
+    },
+    "normalTvConsole": {
+      "x": 0.7,
+      "y": 0.24
+    },
+    "normalEntryBench": {
+      "x": 0.6,
+      "y": 0.22
+    },
+    "mansionDisplayCabinet": {
+      "x": 0.61,
+      "y": 0.23
+    },
+    "mansionChaiseLounge": {
+      "x": 0.88,
+      "y": 0.35
+    },
+    "mansionUprightPiano": {
+      "x": 0.77,
+      "y": 0.45
+    },
+    "mansionBustPedestal": {
+      "x": 0.27,
+      "y": 0.27
+    },
+    "prisonCellGate": {
+      "x": 1.48,
+      "y": 0.18
+    },
+    "prisonBunk": {
+      "x": 0.55,
+      "y": 0.98
+    },
+    "dungeonCage": {
+      "x": 1.25,
+      "y": 1.25
+    },
+    "restraintChair": {
+      "x": 0.55,
+      "y": 0.55
+    },
+    "hospitalBed": {
+      "x": 0.45,
+      "y": 1.03
+    },
+    "hospitalCurtain": {
+      "x": 0.93,
+      "y": 0.08
+    },
+    "ivDripStand": {
+      "x": 0.21,
+      "y": 0.21
+    },
+    "vitalsMonitor": {
+      "x": 0.28,
+      "y": 0.26
+    },
+    "nursesStation": {
+      "x": 1.18,
+      "y": 0.45
+    },
+    "waitingChairs": {
+      "x": 0.98,
+      "y": 0.29
+    },
+    "operatingTable": {
+      "x": 0.35,
+      "y": 0.98
+    },
+    "surgicalLight": {
+      "x": 0.73,
+      "y": 0.73
+    },
+    "instrumentTrolley": {
+      "x": 0.43,
+      "y": 0.26
+    },
+    "morgueCabinet": {
+      "x": 0.98,
+      "y": 0.45
+    },
+    "autopsyTable": {
+      "x": 0.4,
+      "y": 0.98
+    },
+    "pharmacyShelf": {
+      "x": 0.78,
+      "y": 0.21
+    },
+    "xrayMachine": {
+      "x": 0.78,
+      "y": 0.73
+    },
+    "xrayLightbox": {
+      "x": 0.63,
+      "y": 0.04
+    },
+    "medicalSupplyRack": {
+      "x": 0.58,
+      "y": 0.23
+    },
+    "wheelchair": {
+      "x": 0.3,
+      "y": 0.45
+    },
+    "hospitalWardSign": {
+      "x": 0.45,
+      "y": 0.03
+    },
+    "labBench": {
+      "x": 0.98,
+      "y": 0.38
+    },
+    "fumeHood": {
+      "x": 0.73,
+      "y": 0.43
+    },
+    "specimenTank": {
+      "x": 0.45,
+      "y": 0.45
+    },
+    "containmentCell": {
+      "x": 1.08,
+      "y": 0.83
+    },
+    "labCoolingUnit": {
+      "x": 0.48,
+      "y": 0.4
+    },
+    "controlConsole": {
+      "x": 1.18,
+      "y": 0.48
+    },
+    "divePod": {
+      "x": 0.5,
+      "y": 1.1
+    },
+    "divePodFilm": {
+      "x": 0.5,
+      "y": 1.1
+    },
+    "divePodLit": {
+      "x": 0.5,
+      "y": 1.1
+    },
+    "diveHeadsetStand": {
+      "x": 0.16,
+      "y": 0.16
+    },
+    "diveHeadsetShelf": {
+      "x": 0.95,
+      "y": 0.16
+    },
+    "diveConsole": {
+      "x": 0.98,
+      "y": 0.4
+    },
+    "monitorWall": {
+      "x": 1.18,
+      "y": 0.05
+    },
+    "deconShower": {
+      "x": 0.63,
+      "y": 0.63
+    },
+    "coldStorageUnit": {
+      "x": 0.68,
+      "y": 0.4
+    },
+    "labWhiteboard": {
+      "x": 0.88,
+      "y": 0.04
+    },
+    "hazardSign": {
+      "x": 0.28,
+      "y": 0.03
+    },
+    "labGlassPartition": {
+      "x": 0.95,
+      "y": 0.07
+    },
+    "labStool": {
+      "x": 0.19,
+      "y": 0.19
+    },
+    "labMicroscope": {
+      "x": 0.15,
+      "y": 0.16
+    },
+    "gasCylinderRack": {
+      "x": 0.45,
+      "y": 0.21
+    },
+    "biohazardBin": {
+      "x": 0.23,
+      "y": 0.23
+    },
+    "raisedPlanter": {
+      "x": 0.98,
+      "y": 0.43
+    },
+    "pottingBench": {
+      "x": 0.78,
+      "y": 0.33
+    },
+    "pottedPalm": {
+      "x": 0.73,
+      "y": 0.73
+    },
+    "bananaPlant": {
+      "x": 0.53,
+      "y": 0.53
+    },
+    "saguaroCactus": {
+      "x": 0.38,
+      "y": 0.28
+    },
+    "cactusCluster": {
+      "x": 0.45,
+      "y": 0.45
+    },
+    "seedlingRack": {
+      "x": 0.58,
+      "y": 0.23
+    },
+    "irrigationManifold": {
+      "x": 0.73,
+      "y": 0.28
+    },
+    "mistingPost": {
+      "x": 0.18,
+      "y": 0.18
+    },
+    "overgrowthPatch": {
+      "x": 0.78,
+      "y": 0.63
+    },
+    "hangingVines": {
+      "x": 0.58,
+      "y": 0.58
+    },
+    "domeFountain": {
+      "x": 1.28,
+      "y": 1.28
+    },
+    "wateringCart": {
+      "x": 0.48,
+      "y": 0.28
+    },
+    "greenhouseBench": {
+      "x": 0.78,
+      "y": 0.28
+    },
+    "compostBins": {
+      "x": 0.68,
+      "y": 0.35
+    },
+    "shopShelf": {
+      "x": 0.58,
+      "y": 0.23
+    },
+    "shopFridge": {
+      "x": 0.48,
+      "y": 0.35
+    },
+    "checkoutCounter": {
+      "x": 0.88,
+      "y": 0.35
+    },
+    "displayCase": {
+      "x": 0.68,
+      "y": 0.35
+    },
+    "coffeeStation": {
+      "x": 0.63,
+      "y": 0.3
+    },
+    "donutFryer": {
+      "x": 0.63,
+      "y": 0.38
+    },
+    "bakeryRack": {
+      "x": 0.48,
+      "y": 0.28
+    },
+    "dinerStool": {
+      "x": 0.19,
+      "y": 0.19
+    },
+    "dinerBooth": {
+      "x": 0.78,
+      "y": 0.73
+    },
+    "menuBoard": {
+      "x": 0.73,
+      "y": 0.03
+    },
+    "donutSign": {
+      "x": 0.63,
+      "y": 0.13
+    },
+    "washingMachine": {
+      "x": 0.35,
+      "y": 0.34
+    },
+    "dryerStack": {
+      "x": 0.35,
+      "y": 0.34
+    },
+    "flowerStand": {
+      "x": 0.63,
+      "y": 0.3
+    },
+    "barberChair": {
+      "x": 0.33,
+      "y": 0.45
+    },
+    "barberStation": {
+      "x": 0.58,
+      "y": 0.21
+    },
+    "clothesRack": {
+      "x": 0.68,
+      "y": 0.26
+    },
+    "tvWall": {
+      "x": 0.78,
+      "y": 0.23
+    },
+    "cinemaSeats": {
+      "x": 1.18,
+      "y": 0.38
+    },
+    "cinemaScreen": {
+      "x": 2.08,
+      "y": 0.04
+    },
+    "ticketBooth": {
+      "x": 0.83,
+      "y": 0.58
+    },
+    "concessionCounter": {
+      "x": 1.08,
+      "y": 0.38
+    },
+    "foodCourtTable": {
+      "x": 0.83,
+      "y": 0.83
+    },
+    "mallPlanter": {
+      "x": 0.63,
+      "y": 0.63
+    },
+    "mallBench": {
+      "x": 0.88,
+      "y": 0.28
+    },
+    "micStand": {
+      "x": 0.25,
+      "y": 0.25
+    },
+    "podiumMic": {
+      "x": 0.3,
+      "y": 0.25
+    },
+    "deskMic": {
+      "x": 0.07,
+      "y": 0.07
+    },
+    "drumKit": {
+      "x": 0.9,
+      "y": 0.75
+    },
+    "electricGuitarStand": {
+      "x": 0.2,
+      "y": 0.17
+    },
+    "acousticGuitarStand": {
+      "x": 0.23,
+      "y": 0.17
+    },
+    "bassGuitarStand": {
+      "x": 0.2,
+      "y": 0.17
+    },
+    "keyboardStand": {
+      "x": 0.65,
+      "y": 0.2
+    },
+    "uprightPianoMusic": {
+      "x": 0.75,
+      "y": 0.47
+    },
+    "ampStack": {
+      "x": 0.38,
+      "y": 0.2
+    },
+    "comboAmp": {
+      "x": 0.3,
+      "y": 0.15
+    },
+    "stageMonitor": {
+      "x": 0.28,
+      "y": 0.2
+    },
+    "paSpeakerPole": {
+      "x": 0.25,
+      "y": 0.25
+    },
+    "mixingDesk": {
+      "x": 0.75,
+      "y": 0.4
+    },
+    "studioMonitors": {
+      "x": 0.4,
+      "y": 0.12
+    },
+    "rackGear": {
+      "x": 0.3,
+      "y": 0.3
+    },
+    "musicStand": {
+      "x": 0.23,
+      "y": 0.2
+    },
+    "cableCoil": {
+      "x": 0.2,
+      "y": 0.2
+    },
+    "cableRun": {
+      "x": 0.7,
+      "y": 0.07
+    },
+    "stageLightRig": {
+      "x": 1.5,
+      "y": 0.2
+    },
+    "acousticPanel": {
+      "x": 0.5,
+      "y": 0.04
+    },
+    "guitarWallHanger": {
+      "x": 0.5,
+      "y": 0.1
+    },
+    "instrumentCases": {
+      "x": 0.5,
+      "y": 0.3
+    },
+    "onAirSign": {
+      "x": 0.3,
+      "y": 0.05
+    }
+  },
+  "solid": {
+    "stagePlatform": true,
+    "stageSpeaker": true,
+    "privacyCurtain": true,
+    "backstageRepairStand": true,
+    "arcadeCabinet": true,
+    "arcadeCabinetCyanMagenta": true,
+    "arcadeBasketballHoop": true,
+    "arcadeCarpetCircle": false,
+    "arcadeCarpetRunner": false,
+    "prizeCounter": true,
+    "vendingMachine": true,
+    "arcadeTokenChanger": true,
+    "snackKiosk": true,
+    "utilityCart": true,
+    "breakerCabinet": true,
+    "maintenanceToolCabinet": true,
+    "maintenanceCleaningCart": true,
+    "locker": true,
+    "supplyCrates": true,
+    "serverRack": true,
+    "prizeClawMachine": true,
+    "mascotStatue": true,
+    "loungeCouch": true,
+    "brokenAquarium": true,
+    "officeDesk": true,
+    "officeChair": true,
+    "officeCrtSecurityConsole": true,
+    "retroComputerDesktop": false,
+    "filingCabinet": true,
+    "grandFoyerStaircase": false,
+    "diningTable": true,
+    "diningChair": true,
+    "diningChairCushion": true,
+    "diningChandelier": false,
+    "diningSideboard": true,
+    "trashBin": true,
+    "flowerCenterpiece": false,
+    "tableCandelabra": false,
+    "framedWallPortrait": false,
+    "luxuryPictureFrameEmpty": false,
+    "luxuryPaintingFrameEmpty": false,
+    "wallSconce": false,
+    "normalKitchenCounter": true,
+    "normalKitchenSink": true,
+    "normalKitchenStove": true,
+    "normalKitchenFridge": true,
+    "normalKitchenWallCabinet": true,
+    "normalKitchenIsland": true,
+    "normalEntryBench": true,
+    "ceilingLight": false,
+    "normalPictureFrameEmpty": false,
+    "luxuryKitchenCounter": true,
+    "luxuryKitchenSink": true,
+    "luxuryKitchenStove": true,
+    "luxuryKitchenFridge": true,
+    "luxuryKitchenWallCabinet": true,
+    "luxuryKitchenIsland": true,
+    "mansionDisplayCabinet": true,
+    "mansionTeaCart": true,
+    "ceilingFan": false,
+    "gothicKitchenCounter": true,
+    "gothicKitchenSink": true,
+    "gothicKitchenStove": true,
+    "gothicKitchenFridge": true,
+    "gothicKitchenWallCabinet": true,
+    "gothicKitchenIsland": true,
+    "gothicFloorCandelabra": true,
+    "gothicCoffinChest": true,
+    "gothicPictureFrameEmpty": false,
+    "bathroomStall": true,
+    "publicRestroomToilet": true,
+    "publicMensUrinal": true,
+    "publicSinkBank": true,
+    "bathroomMirror": false,
+    "publicHandDryer": false,
+    "publicSoapDispenser": false,
+    "publicPaperTowelDispenser": false,
+    "publicMensRoomSign": false,
+    "publicSanitaryBin": true,
+    "publicBabyChangeStation": true,
+    "publicWomensRoomSign": false,
+    "publicMensShowerStall": true,
+    "publicShowerBench": true,
+    "houseTowelRack": false,
+    "houseBathMat": false,
+    "publicWomensShowerStall": true,
+    "houseBathtub": true,
+    "houseToilet": true,
+    "houseShowerEnclosure": true,
+    "bathroomVanity": true,
+    "houseMedicineCabinet": false,
+    "houseBathroomShelf": false,
+    "laundryHamper": true,
+    "lavaVent": true,
+    "emberBrazier": true,
+    "basaltPillar": true,
+    "basaltRubble": true,
+    "magmaCrystalCluster": true,
+    "infernoAltar": true,
+    "infernoChainLantern": false,
+    "lavaPipeManifold": true,
+    "charredSupplyCrate": true,
+    "prisonCellGate": true,
+    "prisonBunk": true,
+    "dungeonCage": true,
+    "restraintChair": true,
+    "prisonServingCounter": true,
+    "prisonCafeteriaTable": true,
+    "prisonTrayReturn": true,
+    "prisonKitchenRack": true,
+    "tikiBar": true,
+    "beachUmbrella": true,
+    "sandCastle": true,
+    "beachChair": true,
+    "surfboardRack": true,
+    "palmTree": true,
+    "frozenBeachHut": true,
+    "floorLamp": true,
+    "mansionAreaRug": false,
+    "loungeCouchWide": true,
+    "heavyMansionDrapes": false,
+    "mansionUprightPiano": true,
+    "mansionBustPedestal": true,
+    "mansionChaiseLounge": true,
+    "giantTree": true,
+    "gardenPlanterBench": true,
+    "grassFern": true,
+    "flowerRose": true,
+    "flowerSun": true,
+    "flowerBlue": true,
+    "flowerViolet": true,
+    "mansionBookshelf": true,
+    "magazineRack": true,
+    "woodenTable": true,
+    "woodenChair": true,
+    "woodenChairCushion": true,
+    "mansionFireplace": true,
+    "carnivalCarousel": true,
+    "doubleBed": true,
+    "bedroomNightstand": true,
+    "bedsideLamp": false,
+    "tableLamp": false,
+    "bedroomWardrobe": true,
+    "bedroomDresser": true,
+    "bedroomVanity": true,
+    "vanityStool": true,
+    "bedroomBench": true,
+    "bedroomRug": false,
+    "toyChest": true,
+    "bedroomWallClock": false,
+    "mansionConsoleTable": true,
+    "mansionRockingChair": true,
+    "mansionRoomDivider": true,
+    "bunkBed": true,
+    "gothicDoubleBed": true,
+    "gothicNightstand": true,
+    "gothicBedsideCandelabra": false,
+    "gothicWardrobe": true,
+    "gothicDresser": true,
+    "gothicVanity": true,
+    "gothicVanityStool": true,
+    "gothicBedroomBench": true,
+    "gothicBedroomRug": false,
+    "gothicHighbackChair": true,
+    "gothicWritingDesk": true,
+    "gothicBookcase": true,
+    "gothicPedestalTable": true,
+    "gothicPaintingFrameEmpty": false,
+    "singleBed": true,
+    "mansionCoatRack": true,
+    "normalBookcase": true,
+    "normalPaintingFrameEmpty": false,
+    "retroComputerCompact": false,
+    "retroComputerTower": false,
+    "retroComputerTerminal": false,
+    "officeCubiclePartition": true,
+    "officePrinter": false,
+    "officePhotocopier": true,
+    "officeShredder": true,
+    "officeFileBoxes": true,
+    "officeCornerWorkstation": true,
+    "officeWaterCooler": true,
+    "normalTvConsole": true,
+    "normalCoffeeTable": true,
+    "mansionGrandfatherClock": true,
+    "hospitalBed": true,
+    "hospitalCurtain": true,
+    "ivDripStand": true,
+    "vitalsMonitor": true,
+    "nursesStation": true,
+    "wheelchair": true,
+    "hospitalWardSign": false,
+    "operatingTable": true,
+    "surgicalLight": false,
+    "instrumentTrolley": true,
+    "medicalSupplyRack": true,
+    "biohazardBin": true,
+    "xrayLightbox": false,
+    "morgueCabinet": true,
+    "autopsyTable": true,
+    "hazardSign": false,
+    "pharmacyShelf": true,
+    "xrayMachine": true,
+    "containmentCell": true,
+    "specimenTank": true,
+    "controlConsole": true,
+    "labCoolingUnit": true,
+    "monitorWall": false,
+    "labWhiteboard": false,
+    "labGlassPartition": true,
+    "labBench": true,
+    "labMicroscope": false,
+    "labStool": true,
+    "deconShower": true,
+    "fumeHood": true,
+    "gasCylinderRack": true,
+    "coldStorageUnit": true,
+    "domeFountain": true,
+    "pottedPalm": true,
+    "greenhouseBench": true,
+    "raisedPlanter": true,
+    "mistingPost": true,
+    "hangingVines": false,
+    "overgrowthPatch": false,
+    "bananaPlant": true,
+    "saguaroCactus": true,
+    "cactusCluster": true,
+    "pottingBench": true,
+    "seedlingRack": true,
+    "compostBins": true,
+    "wateringCart": true,
+    "irrigationManifold": true,
+    "displayCase": true,
+    "checkoutCounter": true,
+    "coffeeStation": true,
+    "donutFryer": true,
+    "bakeryRack": true,
+    "dinerBooth": true,
+    "dinerStool": true,
+    "menuBoard": false,
+    "donutSign": false,
+    "cinemaScreen": false,
+    "cinemaSeats": true,
+    "ticketBooth": true,
+    "concessionCounter": true,
+    "foodCourtTable": true,
+    "mallPlanter": true,
+    "washingMachine": true,
+    "dryerStack": true,
+    "mallBench": true
+  },
+  "solid_rule": "is_solid(type) = type NOT IN non_solid_types. Any type not listed (including unknown ones) is solid.",
+  "non_solid_types": [
+    "arcadeCarpetCircle",
+    "arcadeCarpetRunner",
+    "diningChandelier",
+    "ceilingLight",
+    "ceilingFan",
+    "infernoChainLantern",
+    "bathroomMirror",
+    "mansionAreaRug",
+    "framedWallPortrait",
+    "normalPictureFrameEmpty",
+    "normalPaintingFrameEmpty",
+    "luxuryPictureFrameEmpty",
+    "luxuryPaintingFrameEmpty",
+    "gothicPictureFrameEmpty",
+    "gothicPaintingFrameEmpty",
+    "wallSconce",
+    "heavyMansionDrapes",
+    "flowerCenterpiece",
+    "tableCandelabra",
+    "bedroomRug",
+    "bedroomWallClock",
+    "bedsideLamp",
+    "tableLamp",
+    "retroComputerCompact",
+    "retroComputerTower",
+    "retroComputerDesktop",
+    "retroComputerTerminal",
+    "officePrinter",
+    "gothicBedroomRug",
+    "gothicBedsideCandelabra",
+    "publicHandDryer",
+    "publicSoapDispenser",
+    "publicPaperTowelDispenser",
+    "publicMensRoomSign",
+    "publicWomensRoomSign",
+    "houseMedicineCabinet",
+    "houseTowelRack",
+    "houseBathMat",
+    "houseBathroomShelf",
+    "grandStaircase",
+    "grandFoyerStaircase",
+    "surgicalLight",
+    "hangingVines",
+    "overgrowthPatch",
+    "labMicroscope",
+    "xrayLightbox",
+    "hospitalWardSign",
+    "monitorWall",
+    "labWhiteboard",
+    "diveHeadsetShelf",
+    "hazardSign",
+    "menuBoard",
+    "donutSign",
+    "cinemaScreen",
+    "deskMic",
+    "studioMonitors",
+    "cableCoil",
+    "cableRun",
+    "acousticPanel",
+    "guitarWallHanger",
+    "onAirSign"
+  ],
+  "surface_props": {
+    "flowerCenterpiece": [
+      "diningTable",
+      "woodenTable"
+    ],
+    "tableCandelabra": [
+      "diningTable",
+      "woodenTable"
+    ],
+    "bedsideLamp": [
+      "bedroomNightstand",
+      "bedroomDresser"
+    ],
+    "tableLamp": [
+      "bedroomNightstand",
+      "bedroomDresser",
+      "woodenTable",
+      "diningSideboard",
+      "officeDesk",
+      "officeCornerWorkstation",
+      "normalCoffeeTable",
+      "gothicNightstand",
+      "gothicDresser",
+      "gothicPedestalTable"
+    ],
+    "retroComputerCompact": [
+      "officeDesk",
+      "woodenTable",
+      "officeCornerWorkstation"
+    ],
+    "retroComputerTower": [
+      "officeDesk",
+      "woodenTable",
+      "officeCornerWorkstation"
+    ],
+    "retroComputerDesktop": [
+      "officeDesk",
+      "woodenTable",
+      "officeCornerWorkstation"
+    ],
+    "retroComputerTerminal": [
+      "officeDesk",
+      "woodenTable",
+      "officeCornerWorkstation"
+    ],
+    "officePrinter": [
+      "officeDesk",
+      "woodenTable",
+      "officeCornerWorkstation"
+    ],
+    "gothicBedsideCandelabra": [
+      "gothicNightstand",
+      "gothicDresser",
+      "gothicPedestalTable"
+    ],
+    "labMicroscope": [
+      "labBench"
+    ],
+    "deskMic": [
+      "mixingDesk",
+      "woodenTable",
+      "officeDesk"
+    ],
+    "studioMonitors": [
+      "mixingDesk"
+    ]
+  },
+  "surface_heights": {
+    "diningTable": {
+      "base": 0.75,
+      "base_from_table": true,
+      "hunter_scale": 1.5,
+      "value": 1.125
+    },
+    "woodenTable": {
+      "base": 0.75,
+      "base_from_table": true,
+      "hunter_scale": 1.5,
+      "value": 1.125
+    },
+    "bedroomNightstand": {
+      "base": 0.71,
+      "base_from_table": true,
+      "hunter_scale": 1.5,
+      "value": 1.065
+    },
+    "bedroomDresser": {
+      "base": 1.04,
+      "base_from_table": true,
+      "hunter_scale": 1.5,
+      "value": 1.56
+    },
+    "diningSideboard": {
+      "base": 1.02,
+      "base_from_table": true,
+      "hunter_scale": 1.5,
+      "value": 1.53
+    },
+    "officeDesk": {
+      "base": 0.75,
+      "base_from_table": true,
+      "hunter_scale": 1.5,
+      "value": 1.125
+    },
+    "officeCornerWorkstation": {
+      "base": 0.78,
+      "base_from_table": true,
+      "hunter_scale": 1.5,
+      "value": 1.17
+    },
+    "normalCoffeeTable": {
+      "base": 0.49,
+      "base_from_table": true,
+      "hunter_scale": 1.5,
+      "value": 0.735
+    },
+    "gothicNightstand": {
+      "base": 0.79,
+      "base_from_table": true,
+      "hunter_scale": 1.0,
+      "value": 0.79
+    },
+    "gothicDresser": {
+      "base": 1.1,
+      "base_from_table": true,
+      "hunter_scale": 1.5,
+      "value": 1.6500000000000001
+    },
+    "gothicPedestalTable": {
+      "base": 0.75,
+      "base_from_table": true,
+      "hunter_scale": 1.5,
+      "value": 1.125
+    },
+    "labBench": {
+      "base": 0.92,
+      "base_from_table": true,
+      "hunter_scale": 1.0,
+      "value": 0.92
+    },
+    "mixingDesk": {
+      "base": 0.82,
+      "base_from_table": true,
+      "hunter_scale": 1.5,
+      "value": 1.23
+    }
+  },
+  "surface_height_rule": "surface_height(parent) = float(SURFACE_HEIGHTS.get(parent, 0.8)) * PropModelCatalog.hunter_scale(parent) where hunter_scale = float(HUNTER_SCALE.get(parent, 1.0)); f64 arithmetic.",
+  "surface_heights_table_raw": {
+    "mixingDesk": 0.82,
+    "diningTable": 0.75,
+    "woodenTable": 0.75,
+    "bedroomNightstand": 0.71,
+    "bedroomDresser": 1.04,
+    "gothicNightstand": 0.79,
+    "gothicDresser": 1.1,
+    "gothicPedestalTable": 0.75,
+    "diningSideboard": 1.02,
+    "officeDesk": 0.75,
+    "officeCornerWorkstation": 0.78,
+    "normalCoffeeTable": 0.49,
+    "labBench": 0.92
+  },
+  "hunter_scale_for_surface_parents": {
+    "diningTable": 1.5,
+    "woodenTable": 1.5,
+    "bedroomNightstand": 1.5,
+    "bedroomDresser": 1.5,
+    "diningSideboard": 1.5,
+    "officeDesk": 1.5,
+    "officeCornerWorkstation": 1.5,
+    "normalCoffeeTable": 1.5,
+    "gothicNightstand": 1.0,
+    "gothicDresser": 1.5,
+    "gothicPedestalTable": 1.5,
+    "labBench": 1.0,
+    "mixingDesk": 1.5
+  },
+  "wall_backed": [
+    "uprightPianoMusic",
+    "rackGear",
+    "acousticPanel",
+    "guitarWallHanger",
+    "onAirSign",
+    "instrumentCases",
+    "arcadeCabinet",
+    "arcadeCabinetCyanMagenta",
+    "vendingMachine",
+    "filingCabinet",
+    "serverRack",
+    "privacyCurtain",
+    "loungeCouch",
+    "loungeCouchWide",
+    "diningSideboard",
+    "mansionBookshelf",
+    "mansionFireplace",
+    "bathroomStall",
+    "bathroomSink",
+    "bathroomMirror",
+    "bathroomVanity",
+    "grandStaircase",
+    "surfboardRack",
+    "heavyMansionDrapes",
+    "publicRestroomToilet",
+    "publicMensUrinal",
+    "publicSinkBank",
+    "publicHandDryer",
+    "publicSoapDispenser",
+    "publicPaperTowelDispenser",
+    "publicBabyChangeStation",
+    "publicMensRoomSign",
+    "publicWomensRoomSign",
+    "publicMensShowerStall",
+    "publicWomensShowerStall",
+    "houseBathtub",
+    "houseToilet",
+    "houseShowerEnclosure",
+    "houseMedicineCabinet",
+    "houseTowelRack",
+    "houseBathroomShelf",
+    "framedWallPortrait",
+    "normalPictureFrameEmpty",
+    "normalPaintingFrameEmpty",
+    "luxuryPictureFrameEmpty",
+    "luxuryPaintingFrameEmpty",
+    "gothicPictureFrameEmpty",
+    "gothicPaintingFrameEmpty",
+    "wallSconce",
+    "lavaPipeManifold",
+    "singleBed",
+    "doubleBed",
+    "bedroomNightstand",
+    "bedroomWardrobe",
+    "bedroomDresser",
+    "bedroomVanity",
+    "bedroomWallClock",
+    "mansionConsoleTable",
+    "mansionGrandfatherClock",
+    "mansionRoomDivider",
+    "gothicDoubleBed",
+    "gothicNightstand",
+    "gothicWardrobe",
+    "gothicDresser",
+    "gothicVanity",
+    "gothicWritingDesk",
+    "gothicBookcase",
+    "normalKitchenCounter",
+    "normalKitchenSink",
+    "normalKitchenStove",
+    "normalKitchenFridge",
+    "normalKitchenWallCabinet",
+    "luxuryKitchenCounter",
+    "luxuryKitchenSink",
+    "luxuryKitchenStove",
+    "luxuryKitchenFridge",
+    "luxuryKitchenWallCabinet",
+    "gothicKitchenCounter",
+    "gothicKitchenSink",
+    "gothicKitchenStove",
+    "gothicKitchenFridge",
+    "gothicKitchenWallCabinet",
+    "normalBookcase",
+    "normalTvConsole",
+    "normalEntryBench",
+    "mansionDisplayCabinet",
+    "mansionChaiseLounge",
+    "mansionUprightPiano",
+    "prisonCellGate",
+    "prisonBunk",
+    "officePhotocopier",
+    "officeShredder",
+    "officeFileBoxes",
+    "officeWaterCooler",
+    "prisonServingCounter",
+    "prisonKitchenRack",
+    "prisonTrayReturn",
+    "hospitalBed",
+    "nursesStation",
+    "waitingChairs",
+    "morgueCabinet",
+    "pharmacyShelf",
+    "xrayLightbox",
+    "medicalSupplyRack",
+    "hospitalWardSign",
+    "labBench",
+    "fumeHood",
+    "containmentCell",
+    "labCoolingUnit",
+    "monitorWall",
+    "divePod",
+    "divePodFilm",
+    "divePodLit",
+    "diveConsole",
+    "diveHeadsetShelf",
+    "deconShower",
+    "coldStorageUnit",
+    "labWhiteboard",
+    "hazardSign",
+    "gasCylinderRack",
+    "raisedPlanter",
+    "pottingBench",
+    "seedlingRack",
+    "irrigationManifold",
+    "shopShelf",
+    "shopFridge",
+    "coffeeStation",
+    "donutFryer",
+    "dinerBooth",
+    "menuBoard",
+    "donutSign",
+    "washingMachine",
+    "dryerStack",
+    "flowerStand",
+    "barberStation",
+    "tvWall",
+    "cinemaScreen"
+  ],
+  "walkable_structures": [
+    "grandStaircase",
+    "grandFoyerStaircase"
+  ],
+  "centerpiece_types": [
+    "circusTent",
+    "garden",
+    "diningRoom",
+    "ballroom",
+    "beachCove",
+    "netherChamber",
+    "grandStairHall"
+  ],
+  "room_types_with_walkable_structure": [
+    "grandStairHall"
+  ],
+  "region_default_type": {
+    "office": "office",
+    "maintenance": "maintenance",
+    "arcade": "arcade",
+    "circus": "circusTent",
+    "nether": "netherChamber",
+    "beach": "beachCove",
+    "mansion": "diningRoom",
+    "bedroom": "bedroom",
+    "garden": "garden",
+    "prison": "prisonCellBlock",
+    "hospital": "hospitalWard",
+    "lab": "labContainment",
+    "greenhouse": "palmHouse",
+    "mall": "foodCourt"
+  },
+  "prop_types_in_rooms": [
+    "stagePlatform",
+    "stageSpeaker",
+    "privacyCurtain",
+    "backstageRepairStand",
+    "arcadeCabinet",
+    "arcadeCabinetCyanMagenta",
+    "arcadeBasketballHoop",
+    "arcadeCarpetCircle",
+    "arcadeCarpetRunner",
+    "prizeCounter",
+    "vendingMachine",
+    "arcadeTokenChanger",
+    "snackKiosk",
+    "utilityCart",
+    "breakerCabinet",
+    "maintenanceToolCabinet",
+    "maintenanceCleaningCart",
+    "locker",
+    "supplyCrates",
+    "serverRack",
+    "prizeClawMachine",
+    "mascotStatue",
+    "loungeCouch",
+    "brokenAquarium",
+    "officeDesk",
+    "officeChair",
+    "officeCrtSecurityConsole",
+    "retroComputerDesktop",
+    "filingCabinet",
+    "grandFoyerStaircase",
+    "diningTable",
+    "diningChair",
+    "diningChairCushion",
+    "diningChandelier",
+    "diningSideboard",
+    "trashBin",
+    "flowerCenterpiece",
+    "tableCandelabra",
+    "framedWallPortrait",
+    "luxuryPictureFrameEmpty",
+    "luxuryPaintingFrameEmpty",
+    "wallSconce",
+    "normalKitchenCounter",
+    "normalKitchenSink",
+    "normalKitchenStove",
+    "normalKitchenFridge",
+    "normalKitchenWallCabinet",
+    "normalKitchenIsland",
+    "normalEntryBench",
+    "ceilingLight",
+    "normalPictureFrameEmpty",
+    "luxuryKitchenCounter",
+    "luxuryKitchenSink",
+    "luxuryKitchenStove",
+    "luxuryKitchenFridge",
+    "luxuryKitchenWallCabinet",
+    "luxuryKitchenIsland",
+    "mansionDisplayCabinet",
+    "mansionTeaCart",
+    "ceilingFan",
+    "gothicKitchenCounter",
+    "gothicKitchenSink",
+    "gothicKitchenStove",
+    "gothicKitchenFridge",
+    "gothicKitchenWallCabinet",
+    "gothicKitchenIsland",
+    "gothicFloorCandelabra",
+    "gothicCoffinChest",
+    "gothicPictureFrameEmpty",
+    "bathroomStall",
+    "publicRestroomToilet",
+    "publicMensUrinal",
+    "publicSinkBank",
+    "bathroomMirror",
+    "publicHandDryer",
+    "publicSoapDispenser",
+    "publicPaperTowelDispenser",
+    "publicMensRoomSign",
+    "publicSanitaryBin",
+    "publicBabyChangeStation",
+    "publicWomensRoomSign",
+    "publicMensShowerStall",
+    "publicShowerBench",
+    "houseTowelRack",
+    "houseBathMat",
+    "publicWomensShowerStall",
+    "houseBathtub",
+    "houseToilet",
+    "houseShowerEnclosure",
+    "bathroomVanity",
+    "houseMedicineCabinet",
+    "houseBathroomShelf",
+    "laundryHamper",
+    "lavaVent",
+    "emberBrazier",
+    "basaltPillar",
+    "basaltRubble",
+    "magmaCrystalCluster",
+    "infernoAltar",
+    "infernoChainLantern",
+    "lavaPipeManifold",
+    "charredSupplyCrate",
+    "prisonCellGate",
+    "prisonBunk",
+    "dungeonCage",
+    "restraintChair",
+    "prisonServingCounter",
+    "prisonCafeteriaTable",
+    "prisonTrayReturn",
+    "prisonKitchenRack",
+    "tikiBar",
+    "beachUmbrella",
+    "sandCastle",
+    "beachChair",
+    "surfboardRack",
+    "palmTree",
+    "frozenBeachHut",
+    "floorLamp",
+    "mansionAreaRug",
+    "loungeCouchWide",
+    "heavyMansionDrapes",
+    "mansionUprightPiano",
+    "mansionBustPedestal",
+    "mansionChaiseLounge",
+    "giantTree",
+    "gardenPlanterBench",
+    "grassFern",
+    "flowerRose",
+    "flowerSun",
+    "flowerBlue",
+    "flowerViolet",
+    "mansionBookshelf",
+    "magazineRack",
+    "woodenTable",
+    "woodenChair",
+    "woodenChairCushion",
+    "mansionFireplace",
+    "carnivalCarousel",
+    "doubleBed",
+    "bedroomNightstand",
+    "bedsideLamp",
+    "tableLamp",
+    "bedroomWardrobe",
+    "bedroomDresser",
+    "bedroomVanity",
+    "vanityStool",
+    "bedroomBench",
+    "bedroomRug",
+    "toyChest",
+    "bedroomWallClock",
+    "mansionConsoleTable",
+    "mansionRockingChair",
+    "mansionRoomDivider",
+    "bunkBed",
+    "gothicDoubleBed",
+    "gothicNightstand",
+    "gothicBedsideCandelabra",
+    "gothicWardrobe",
+    "gothicDresser",
+    "gothicVanity",
+    "gothicVanityStool",
+    "gothicBedroomBench",
+    "gothicBedroomRug",
+    "gothicHighbackChair",
+    "gothicWritingDesk",
+    "gothicBookcase",
+    "gothicPedestalTable",
+    "gothicPaintingFrameEmpty",
+    "singleBed",
+    "mansionCoatRack",
+    "normalBookcase",
+    "normalPaintingFrameEmpty",
+    "retroComputerCompact",
+    "retroComputerTower",
+    "retroComputerTerminal",
+    "officeCubiclePartition",
+    "officePrinter",
+    "officePhotocopier",
+    "officeShredder",
+    "officeFileBoxes",
+    "officeCornerWorkstation",
+    "officeWaterCooler",
+    "normalTvConsole",
+    "normalCoffeeTable",
+    "mansionGrandfatherClock",
+    "hospitalBed",
+    "hospitalCurtain",
+    "ivDripStand",
+    "vitalsMonitor",
+    "nursesStation",
+    "wheelchair",
+    "hospitalWardSign",
+    "operatingTable",
+    "surgicalLight",
+    "instrumentTrolley",
+    "medicalSupplyRack",
+    "biohazardBin",
+    "xrayLightbox",
+    "morgueCabinet",
+    "autopsyTable",
+    "hazardSign",
+    "pharmacyShelf",
+    "xrayMachine",
+    "containmentCell",
+    "specimenTank",
+    "controlConsole",
+    "labCoolingUnit",
+    "monitorWall",
+    "labWhiteboard",
+    "labGlassPartition",
+    "labBench",
+    "labMicroscope",
+    "labStool",
+    "deconShower",
+    "fumeHood",
+    "gasCylinderRack",
+    "coldStorageUnit",
+    "domeFountain",
+    "pottedPalm",
+    "greenhouseBench",
+    "raisedPlanter",
+    "mistingPost",
+    "hangingVines",
+    "overgrowthPatch",
+    "bananaPlant",
+    "saguaroCactus",
+    "cactusCluster",
+    "pottingBench",
+    "seedlingRack",
+    "compostBins",
+    "wateringCart",
+    "irrigationManifold",
+    "displayCase",
+    "checkoutCounter",
+    "coffeeStation",
+    "donutFryer",
+    "bakeryRack",
+    "dinerBooth",
+    "dinerStool",
+    "menuBoard",
+    "donutSign",
+    "cinemaScreen",
+    "cinemaSeats",
+    "ticketBooth",
+    "concessionCounter",
+    "foodCourtTable",
+    "mallPlanter",
+    "washingMachine",
+    "dryerStack",
+    "mallBench"
+  ],
+  "prop_types_missing_from_footprint_table": [
+    "bunkBed"
+  ]
+}

@@ -1,0 +1,86 @@
+{
+  "suite": "protocol",
+  "description": "The agent protocol answers like the Godot playtest bridge: hello, errors, act/step, observe shape, events cursor.",
+  "ported_from": "tests/validate_playtest.gd (protocol answers, input round-trip)",
+  "defaults": { "seed": 12345, "difficulty": "standard", "mode": "finite" },
+  "tests": [
+    {
+      "name": "hello and errors without a run",
+      "start_run": false,
+      "steps": [
+        { "cmd": "hello", "expect": [
+          { "path": "last.protocol", "value": 1 },
+          { "path": "last.game", "value": "last_route" },
+          { "path": "last.commands", "op": "contains", "value": "step" } ] },
+        { "cmd": "nope", "expect_ok": false, "expect": [ { "path": "last.error", "value": "unknown command 'nope'" } ] },
+        { "cmd": "step", "frames": 5, "expect_ok": false, "expect": [ { "path": "last.error", "value": "no active game" } ] },
+        { "cmd": "screenshot", "expect_ok": false, "expect": [ { "path": "last.error", "op": "matches", "value": "no rendered image" } ] },
+        { "cmd": "start_run", "difficulty": "nightmare", "expect_ok": false },
+        { "cmd": "start_run", "game": "night_watch", "expect_ok": false, "expect": [ { "path": "last.error", "value": "no playtest adapter for 'night_watch'" } ] },
+        { "cmd": "observe", "expect": [ { "path": "last.obs.run.active", "value": false } ] }
+      ]
+    },
+    {
+      "name": "start_run returns an observation",
+      "start_run": false,
+      "steps": [
+        { "cmd": "start_run", "seed": "ALPHA", "difficulty": "hard", "mode": "finite", "expect": [
+          { "path": "last.seed_text", "value": "ALPHA" },
+          { "path": "last.difficulty", "value": "hard" },
+          { "path": "last.obs.run.active", "value": true },
+          { "path": "last.obs.run.depth", "value": 1 },
+          { "path": "last.obs.player.pos.len", "value": 3 },
+          { "path": "last.obs.player.cell.len", "value": 2 },
+          { "path": "last.obs.world.relays.len", "op": ">=", "value": 1 },
+          { "any": "last.obs.interactables", "where": { "path": "kind", "value": "RELAY" } },
+          { "path": "last.obs.hotbar.slots.0.item", "value": "flashlight" } ] }
+      ]
+    },
+    {
+      "name": "act holds until changed, pulses last one frame",
+      "steps": [
+        { "cmd": "act", "act": { "move": [0, 1], "hold": { "sprint": true } } },
+        { "cmd": "step", "frames": 60, "observe": false },
+        { "expect": [
+          { "path": "player.moving", "value": true },
+          { "path": "player.sprinting", "value": true },
+          { "path": "player.walked", "op": ">", "value": 3 },
+          { "path": "player.stamina", "op": "<", "value": 100 } ] },
+        { "cmd": "act", "act": { "move": [0, 0], "hold": { "sprint": false } } },
+        { "cmd": "step", "frames": 10, "observe": false, "expect": [ { "path": "player.moving", "value": false } ] },
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 2, "expect": [ { "path": "last.obs.player.flashlight", "value": true } ] },
+        { "cmd": "step", "frames": 2, "expect": [ { "path": "last.obs.player.flashlight", "value": true } ] },
+        { "cmd": "act", "act": { "pulse": ["warp_drive"] }, "expect_ok": false },
+        { "cmd": "act", "act": { "look": [1, 0] } },
+        { "cmd": "player", "save_as": "before" },
+        { "cmd": "step", "frames": 30, "observe": false },
+        { "expect": [ { "path": "player.yaw", "op": "!=", "var": "before.player.yaw" } ] }
+      ]
+    },
+    {
+      "name": "events cursor and log",
+      "steps": [
+        { "cmd": "events", "expect": [ { "path": "last.events.0.type", "value": "run_started" } ] },
+        { "cmd": "events", "expect": [ { "path": "last.events.len", "value": 0 } ] },
+        { "cmd": "events", "since": 0, "expect": [ { "path": "last.events.len", "op": ">=", "value": 1 } ] },
+        { "cmd": "log", "expect": [ { "path": "last.errors", "value": 0 } ] },
+        { "cmd": "admin", "name": "warp", "expect_ok": false, "expect": [ { "path": "last.error", "op": "matches", "value": "unknown admin helper" } ] },
+        { "cmd": "ui", "expect": [ { "path": "last.scene", "value": "main_3d" } ] },
+        { "cmd": "hash", "expect": [ { "path": "last.hash.len", "value": 16 } ] }
+      ]
+    },
+    {
+      "name": "state sections and map",
+      "steps": [
+        { "cmd": "state", "expect": [
+          { "path": "last.state.run.relays_total", "value": 5 },
+          { "path": "last.state.meters.temperature", "value": 60 },
+          { "path": "last.state.hunters.len", "value": 3 } ] },
+        { "cmd": "map", "radius": 5, "expect": [ { "path": "last.map.rows_text.len", "value": 11 }, { "path": "last.map.rows_text.5", "op": "matches", "value": "P" } ] },
+        { "cmd": "discovered", "expect": [ { "path": "last.discovered.count", "op": ">", "value": 20 } ] },
+        { "cmd": "rooms", "expect": [ { "path": "last.rooms.0.type", "value": "lobby" } ] }
+      ]
+    }
+  ]
+}

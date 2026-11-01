@@ -1,0 +1,17 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "void_gray",
+	"name": "Gray",
+	"tier": "void",
+	"category": "void",
+	"speed": 0.91,
+	"chase": 4.42,
+	"prog": 0.27,
+	"sight": 10.0,
+	"hearing": 1.12,
+	"spawn": 17,
+	"model": "res://assets/hunters_blocky/void_gray/void_gray.glb",
+	"chase_style": "glide",
+	"taser_immune": true,
+	"melee_immune": false
+}

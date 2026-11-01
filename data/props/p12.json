@@ -1,0 +1,157 @@
+{
+	"schema": "lr.prop/1",
+	"family": "p12",
+	"props": [
+		{
+			"id": "restraintChair",
+			"models": [
+				"res://assets/props/prison/restraint_chair.glb"
+			]
+		},
+		{
+			"id": "hospitalBed",
+			"models": [
+				"res://assets/props/blocky/hospitalBed_0.glb",
+				"res://assets/props/blocky/hospitalBed_1.glb",
+				"res://assets/props/blocky/hospitalBed_2.glb"
+			]
+		},
+		{
+			"id": "hospitalCurtain",
+			"models": [
+				"res://assets/props/blocky/hospitalCurtain_0.glb",
+				"res://assets/props/blocky/hospitalCurtain_1.glb",
+				"res://assets/props/blocky/hospitalCurtain_2.glb"
+			]
+		},
+		{
+			"id": "ivDripStand",
+			"models": [
+				"res://assets/props/blocky/ivDripStand.glb"
+			]
+		},
+		{
+			"id": "vitalsMonitor",
+			"models": [
+				"res://assets/props/blocky/vitalsMonitor.glb"
+			]
+		},
+		{
+			"id": "nursesStation",
+			"models": [
+				"res://assets/props/blocky/nursesStation_0.glb",
+				"res://assets/props/blocky/nursesStation_1.glb"
+			]
+		},
+		{
+			"id": "waitingChairs",
+			"models": [
+				"res://assets/props/blocky/waitingChairs_0.glb",
+				"res://assets/props/blocky/waitingChairs_1.glb",
+				"res://assets/props/blocky/waitingChairs_2.glb"
+			]
+		},
+		{
+			"id": "operatingTable",
+			"models": [
+				"res://assets/props/blocky/operatingTable.glb"
+			]
+		},
+		{
+			"id": "surgicalLight",
+			"models": [
+				"res://assets/props/blocky/surgicalLight.glb"
+			],
+			"light": {
+				"color": "f4fbff",
+				"energy": 0.85,
+				"range": 4.6,
+				"offset": [
+					0,
+					0.2,
+					0
+				]
+			}
+		},
+		{
+			"id": "instrumentTrolley",
+			"models": [
+				"res://assets/props/blocky/instrumentTrolley.glb"
+			]
+		},
+		{
+			"id": "morgueCabinet",
+			"models": [
+				"res://assets/props/blocky/morgueCabinet.glb"
+			]
+		},
+		{
+			"id": "autopsyTable",
+			"models": [
+				"res://assets/props/blocky/autopsyTable.glb"
+			]
+		},
+		{
+			"id": "pharmacyShelf",
+			"models": [
+				"res://assets/props/blocky/pharmacyShelf.glb"
+			]
+		},
+		{
+			"id": "xrayMachine",
+			"models": [
+				"res://assets/props/blocky/xrayMachine.glb"
+			]
+		},
+		{
+			"id": "xrayLightbox",
+			"models": [
+				"res://assets/props/blocky/xrayLightbox.glb"
+			],
+			"light": {
+				"color": "e8f4ff",
+				"energy": 0.26,
+				"range": 2.4,
+				"offset": [
+					0,
+					1.5,
+					0
+				]
+			}
+		},
+		{
+			"id": "medicalSupplyRack",
+			"models": [
+				"res://assets/props/blocky/medicalSupplyRack.glb"
+			]
+		},
+		{
+			"id": "wheelchair",
+			"models": [
+				"res://assets/props/blocky/wheelchair_0.glb",
+				"res://assets/props/blocky/wheelchair_1.glb",
+				"res://assets/props/blocky/wheelchair_2.glb"
+			]
+		},
+		{
+			"id": "hospitalWardSign",
+			"models": [
+				"res://assets/props/blocky/hospitalWardSign_0.glb",
+				"res://assets/props/blocky/hospitalWardSign_1.glb",
+				"res://assets/props/blocky/hospitalWardSign_2.glb"
+			]
+		},
+		{
+			"id": "labBench",
+			"models": [
+				"res://assets/props/blocky/labBench.glb"
+			]
+		},
+		{
+			"id": "fumeHood",
+			"models": [
+				"res://assets/props/blocky/fumeHood.glb"
+			]
+		}
+	]
+}

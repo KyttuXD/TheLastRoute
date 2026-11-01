@@ -1,0 +1,8 @@
+{
+	"schema": "lr.grab/1",
+	"id": "ysolde",
+	"pool": {
+		"shoulder_grab": 6,
+		"wrist_yank": 2
+	}
+}

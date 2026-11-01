@@ -1,0 +1,735 @@
+//! Port of `backend/server.mjs`: the HTTP API router, the ENet room-code directory, admin tickets, rate limits,
+//! update manifests, static files, and the glue to the UDP gameplay relay (`enet_relay.rs`).
+//!
+//! [`LastRouteServer::handle`] turns a [`Request`] into a [`Response`] (used directly by the tests);
+//! [`LastRouteServer::serve`] runs it on a tiny_http listener. One mutex guards the whole state, and the relay
+//! thread locks the same mutex, so relay callbacks (`roomByCode`, `promoteRoomHost`, `onRoomClosed`) see exactly
+//! the directory the HTTP routes see.
+//!
+//! Not ported: skins (`/api/skins/*`, `/api/v1/skins/*` answer `503 SKINS_UNAVAILABLE` after the same size and
+//! moderation checks), city maps (`/api/city-maps/*`, a different game: 404 `CITY_MAPS_UNAVAILABLE`) and the
+//! browser WebSocket relay (`ws_relay.mjs`; `transport: "ws"` rooms still register/resolve; health reports
+//! `wsRelay.enabled: false`).
+
+pub mod support;
+mod routes;
+#[cfg(test)]
+mod tests;
+
+pub use support::*;
+
+use crate::account_service::{AccountService, AccountServiceOptions};
+use crate::crash_reports::{CrashReports, CrashReportsOptions};
+use crate::enet_relay::{self, EnetRelay, EnetRelayOptions, RelayDriver, RelayEvent, RelayRoom, RelayRooms};
+use crate::game_saves::{GameSaves, GameSavesOptions};
+use crate::guest_names::{GuestNames, GuestNamesOptions};
+use crate::mod_packs::{ModPacks, ModPacksOptions};
+use crate::moderation::{Moderation, ModerationHost, ModerationOptions};
+use crate::public_route::{PublicRoute, PublicRouteOptions, PUBLIC_CODES};
+use crate::regions::{Regions, RegionsOptions};
+use crate::reserved_rooms::{ReservedRooms, ReservedRoomsOptions};
+use crate::room_service::{RoomService, RoomServiceOptions};
+use crate::util::{base64url, log_error, log_info, num, random_bytes, safe_equal, system_clock, Clock, SessionLookup};
+use indexmap::IndexMap;
+use regex::Regex;
+use serde_json::{json, Map, Value};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+pub const MAX_BODY_BYTES: usize = 64 * 1024;
+pub const MOD_REGISTER_MAX_BODY_BYTES: usize = 256 * 1024;
+/// Raw bodies are never read past this (the Node server destroys the request at 1 MB).
+pub const RAW_BODY_HARD_CAP: usize = 1024 * 1024;
+pub const DEFAULT_ADMIN_TICKET_TTL_MS: i64 = 5 * 60 * 1000;
+pub const DEFAULT_RATE_LIMIT_WINDOW_MS: i64 = 60 * 1000;
+pub const DEFAULT_DEV_TOKEN_TTL_MS: i64 = 12 * 60 * 60 * 1000;
+pub const PUBLIC_ENET_TTL_MS: i64 = 15_000;
+pub const RESERVED_TAKEOVER_MS: i64 = 30_000;
+pub const WS_PATH: &str = "/api/ws";
+pub const SKIN_MAX_BYTES: usize = 65_536;
+pub const ACCOUNT_RATE_LIMIT_PATHS: [&str; 17] = [
+    "/api/guest/name",
+    "/api/account/register",
+    "/api/account/login",
+    "/api/account/session",
+    "/api/account/password",
+    "/api/account/rename",
+    "/api/admin/roster",
+    "/api/admin/roster/set",
+    "/api/admin/roster/remove",
+    "/api/dev/login",
+    "/api/dev/reload",
+    "/api/enet/admin-tickets/issue",
+    "/api/moderation/integrity",
+    "/api/admin/flags",
+    "/api/admin/flags/set",
+    "/api/admin/builds/add",
+    "/api/admin/builds/remove",
+];
+
+pub fn public_code(game: &str) -> &'static str {
+    PUBLIC_CODES.iter().find(|(g, _)| *g == game).map(|(_, c)| *c).unwrap_or(PUBLIC_CODES[0].1)
+}
+
+pub fn is_public_code(code: &str) -> bool {
+    PUBLIC_CODES.iter().any(|(_, c)| *c == code)
+}
+
+/// `publicGameId(value)`: "last_route" unless the value names another public route.
+pub fn public_game_id(value: Option<&str>) -> String {
+    let game = value.unwrap_or("").trim().to_lowercase();
+    if PUBLIC_CODES.iter().any(|(g, _)| *g == game) {
+        game
+    } else {
+        "last_route".into()
+    }
+}
+
+/// One registered ENet room (the Node `enetRooms` value).
+#[derive(Debug, Clone)]
+pub struct EnetRoom {
+    pub code: String,
+    pub token: String,
+    pub address: String,
+    pub port: i64,
+    pub transport: String,
+    pub host_user: String,
+    pub instance: String,
+    pub players: f64,
+    pub session_active: bool,
+    pub daytime: bool,
+    pub game: String,
+    pub expires_at: i64,
+    pub last_seen: i64,
+    pub protocol: String,
+    pub dedicated: bool,
+    pub region: String,
+    pub reserved: bool,
+}
+
+/// `publicEnetRoom(room, timestamp, relayAddress, relayPort)`.
+pub fn public_enet_room(room: &EnetRoom, timestamp: i64, relay_address: &str, relay_port: u16) -> Value {
+    let expires_in = (((room.expires_at - timestamp) as f64) / 1000.0).ceil().max(0.0);
+    let mut out = Map::new();
+    out.insert("code".into(), json!(room.code));
+    out.insert("game".into(), json!(if room.game.is_empty() { "last_route" } else { room.game.as_str() }));
+    out.insert("players".into(), num(room.players));
+    out.insert("sessionActive".into(), json!(room.session_active));
+    out.insert("daytime".into(), json!(room.daytime));
+    out.insert("protocol".into(), json!(room.protocol));
+    out.insert("dedicated".into(), json!(room.dedicated));
+    out.insert("region".into(), json!(room.region));
+    out.insert("expiresIn".into(), num(expires_in));
+    if room.transport == "ws" {
+        out.insert("transport".into(), json!("ws"));
+        out.insert("address".into(), json!(""));
+        out.insert("port".into(), json!(0));
+        out.insert("wsPath".into(), json!(WS_PATH));
+        return Value::Object(out);
+    }
+    let relayed = !relay_address.is_empty() && relay_port != 0;
+    out.insert("transport".into(), json!(if relayed { "relay" } else { "direct" }));
+    out.insert("address".into(), json!(if relayed { relay_address.to_string() } else { room.address.clone() }));
+    out.insert("port".into(), if relayed { json!(relay_port) } else { json!(room.port) });
+    Value::Object(out)
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AdminTicket {
+    pub code: String,
+    pub host_token: String,
+    pub expires_at: i64,
+    pub username: String,
+    pub permissions: Vec<Value>,
+    pub owner: bool,
+}
+
+/// The part of the state the relay calls back into.
+pub struct Directory {
+    pub(crate) now: Clock,
+    pub(crate) enet_room_ttl_ms: i64,
+    pub enet_rooms: IndexMap<String, EnetRoom>,
+    pub(crate) admin_tickets: IndexMap<String, AdminTicket>,
+    pub(crate) public_routes: Vec<(String, PublicRoute)>,
+    pub(crate) reserved: Option<ReservedRooms>,
+}
+
+impl Directory {
+    /// `pruneEnetRooms()`.
+    pub fn prune(&mut self) {
+        let timestamp = (self.now)();
+        for (game, route) in self.public_routes.iter_mut() {
+            if route.authority_stale() {
+                self.enet_rooms.shift_remove(public_code(game));
+                route.reset_authority();
+            }
+        }
+        self.enet_rooms.retain(|_, room| room.expires_at > timestamp);
+        let rooms = &self.enet_rooms;
+        self.admin_tickets.retain(|_, proof| proof.expires_at > timestamp && rooms.contains_key(&proof.code));
+    }
+
+    /// `forgetEnetRoom(code)`.
+    pub fn forget(&mut self, code: &str) {
+        let Some(room) = self.enet_rooms.shift_remove(code) else { return };
+        self.admin_tickets.retain(|_, proof| !(proof.code == code && safe_equal(&proof.host_token, &room.token)));
+    }
+
+    /// `promoteEnetRoomHost(code)`.
+    pub fn promote(&mut self, code: &str) -> Option<String> {
+        let now = (self.now)();
+        let ttl = self.enet_room_ttl_ms;
+        let room = self.enet_rooms.get_mut(code)?;
+        let old = std::mem::replace(&mut room.token, base64url(&random_bytes(24)));
+        room.players = (room.players - 1.0).max(1.0);
+        room.expires_at = now + ttl;
+        let token = room.token.clone();
+        self.admin_tickets.retain(|_, proof| !(proof.code == code && safe_equal(&proof.host_token, &old)));
+        Some(token)
+    }
+
+    pub(crate) fn route_mut(&mut self, game: &str) -> &mut PublicRoute {
+        let index = self.public_routes.iter().position(|(g, _)| g == game).unwrap_or(0);
+        &mut self.public_routes[index].1
+    }
+}
+
+impl RelayRooms for Directory {
+    fn room_by_code(&mut self, code: &str) -> Option<RelayRoom> {
+        self.prune();
+        self.enet_rooms.get(code).map(|room| RelayRoom { token: room.token.clone(), gated: room.reserved })
+    }
+    fn promote_room_host(&mut self, code: &str) -> Option<String> {
+        self.promote(code)
+    }
+    fn on_room_closed(&mut self, code: &str, _reason: &str) {
+        self.forget(code);
+    }
+    fn admit_guest(&mut self, code: &str, nonce: &[u8]) -> bool {
+        self.reserved.as_ref().map(|r| r.ticket_valid(code, nonce)).unwrap_or(false)
+    }
+}
+
+pub(crate) struct ModCtx<'a> {
+    pub accounts: &'a AccountService,
+    pub updates: Value,
+}
+
+impl ModerationHost for ModCtx<'_> {
+    fn is_owner(&self, name: &str) -> bool {
+        self.accounts.is_admin_owner(name)
+    }
+    fn account_exists(&self, name: &str) -> bool {
+        self.accounts.account_exists(name)
+    }
+    fn updates(&self) -> Value {
+        self.updates.clone()
+    }
+}
+
+pub type UpdatesProvider = Arc<dyn Fn() -> Result<Value, String> + Send + Sync>;
+
+/// `createLastRouteServer({...})` options (same defaults as the Node server).
+pub struct ServerOptions {
+    pub enet_room_ttl_ms: i64,
+    pub admin_ticket_ttl_ms: i64,
+    pub room_ttl_ms: i64,
+    pub player_ttl_ms: i64,
+    pub account_store_path: Option<PathBuf>,
+    pub moderation_store_path: Option<PathBuf>,
+    pub moderation_salt: String,
+    pub public_directory: Option<PathBuf>,
+    pub custom_map_directory: Option<PathBuf>,
+    pub save_directory: Option<PathBuf>,
+    pub update_directory: Option<PathBuf>,
+    pub admin_password: String,
+    pub updates: Value,
+    pub updates_provider: Option<UpdatesProvider>,
+    pub trust_proxy: bool,
+    pub relay_address: String,
+    pub relay_port: u16,
+    pub public_route_store_path: Option<PathBuf>,
+    pub public_route_seed: String,
+    pub public_item_respawn_ms: Option<i64>,
+    pub mod_pack_store_path: Option<PathBuf>,
+    pub crash_report_directory: Option<PathBuf>,
+    pub reserved_room_store_path: Option<PathBuf>,
+    pub reserved_room_codes: Vec<String>,
+    pub agent_tokens: HashMap<String, String>,
+    pub mod_download_base: String,
+    pub rate_limit_window_ms: i64,
+    pub api_rate_limit_max: u32,
+    pub mod_rate_limit_max: u32,
+    pub account_rate_limit_max: u32,
+    pub dev_token_ttl_ms: i64,
+    /// `LASTROUTE_INSTANCE` (shown in /api/health).
+    pub instance: String,
+    pub now: Clock,
+}
+
+impl Default for ServerOptions {
+    fn default() -> Self {
+        ServerOptions {
+            enet_room_ttl_ms: 60_000,
+            admin_ticket_ttl_ms: DEFAULT_ADMIN_TICKET_TTL_MS,
+            room_ttl_ms: 300_000,
+            player_ttl_ms: 120_000,
+            account_store_path: None,
+            moderation_store_path: None,
+            moderation_salt: String::new(),
+            public_directory: None,
+            custom_map_directory: None,
+            save_directory: None,
+            update_directory: None,
+            admin_password: String::new(),
+            updates: json!({}),
+            updates_provider: None,
+            trust_proxy: false,
+            relay_address: String::new(),
+            relay_port: 0,
+            public_route_store_path: None,
+            public_route_seed: "PUBLIC-ROUTE".into(),
+            public_item_respawn_ms: None,
+            mod_pack_store_path: None,
+            crash_report_directory: None,
+            reserved_room_store_path: None,
+            reserved_room_codes: Vec::new(),
+            agent_tokens: HashMap::new(),
+            mod_download_base: String::new(),
+            rate_limit_window_ms: DEFAULT_RATE_LIMIT_WINDOW_MS,
+            api_rate_limit_max: 600,
+            mod_rate_limit_max: 120,
+            account_rate_limit_max: 30,
+            dev_token_ttl_ms: DEFAULT_DEV_TOKEN_TTL_MS,
+            instance: "production".into(),
+            now: system_clock(),
+        }
+    }
+}
+
+pub(crate) struct Config {
+    pub enet_room_ttl_ms: i64,
+    pub admin_ticket_ttl_ms: i64,
+    pub player_ttl_ms: i64,
+    pub public_directory: Option<PathBuf>,
+    pub custom_map_directory: Option<PathBuf>,
+    pub update_directory: Option<PathBuf>,
+    pub admin_password: String,
+    pub updates: Value,
+    pub updates_provider: Option<UpdatesProvider>,
+    pub trust_proxy: bool,
+    pub relay_address: String,
+    pub relay_port: u16,
+    pub rate_limit_window_ms: i64,
+    pub api_rate_limit_max: u32,
+    pub mod_rate_limit_max: u32,
+    pub account_rate_limit_max: u32,
+    pub dev_token_ttl_ms: i64,
+    pub instance: String,
+}
+
+pub struct State {
+    pub dir: Directory,
+    pub relay: Option<EnetRelay>,
+    pub(crate) room_service: RoomService,
+    pub(crate) accounts: AccountService,
+    pub(crate) guest_names: GuestNames,
+    pub(crate) moderation: Moderation,
+    pub(crate) crash_reports: Option<CrashReports>,
+    pub(crate) regions: Regions,
+    pub(crate) spawn_tickets: HashMap<String, (String, i64)>,
+    pub(crate) mod_packs: ModPacks,
+    pub(crate) game_saves: GameSaves,
+    pub(crate) dev_tokens: HashMap<String, i64>,
+    pub(crate) request_rates: HashMap<String, (u32, i64)>,
+    pub(crate) reload_id: i64,
+}
+
+pub struct LastRouteServer {
+    pub(crate) now: Clock,
+    pub(crate) config: Config,
+    pub(crate) state: Arc<Mutex<State>>,
+    relay_driver: Mutex<Option<RelayDriver>>,
+}
+
+impl LastRouteServer {
+    pub fn new(opts: ServerOptions) -> LastRouteServer {
+        let now = opts.now.clone();
+        let city_store = opts.public_route_store_path.as_ref().map(|p| {
+            let text = p.to_string_lossy().to_string();
+            let re = Regex::new(r"(\.[^./\\]+)?$").unwrap();
+            PathBuf::from(re.replace(&text, "_city$1").to_string())
+        });
+        let mut public_routes = Vec::new();
+        for (game, code) in PUBLIC_CODES {
+            let (store, seed) = if game == "last_route" {
+                (opts.public_route_store_path.clone(), opts.public_route_seed.clone())
+            } else {
+                (city_store.clone(), format!("{}-CITY", opts.public_route_seed))
+            };
+            let mut route_opts =
+                PublicRouteOptions { now: now.clone(), store_path: store, initial_seed: seed, code: code.into(), ..PublicRouteOptions::default() };
+            if let Some(ms) = opts.public_item_respawn_ms {
+                route_opts.item_respawn_ms = ms;
+            }
+            let mut route = PublicRoute::new(route_opts);
+            route.load();
+            public_routes.push((game.to_string(), route));
+        }
+        let accounts =
+            AccountService::new(AccountServiceOptions { store_path: opts.account_store_path.clone(), now: now.clone(), ..Default::default() });
+        let guest_names = GuestNames::new(GuestNamesOptions {
+            store_path: opts.account_store_path.as_ref().map(|p| p.parent().unwrap_or(Path::new(".")).join("guest_names.json")),
+            now: now.clone(),
+            ..Default::default()
+        });
+        let moderation =
+            Moderation::new(ModerationOptions { store_path: opts.moderation_store_path.clone(), salt: opts.moderation_salt.clone(), now: now.clone() });
+        let crash_reports =
+            opts.crash_report_directory.clone().map(|directory| CrashReports::new(CrashReportsOptions { directory, now: now.clone() }));
+        let reserved = opts.reserved_room_store_path.clone().map(|store_path| {
+            ReservedRooms::new(ReservedRoomsOptions { store_path, codes: opts.reserved_room_codes.clone(), now: now.clone() })
+        });
+        let state = State {
+            dir: Directory {
+                now: now.clone(),
+                enet_room_ttl_ms: opts.enet_room_ttl_ms,
+                enet_rooms: IndexMap::new(),
+                admin_tickets: IndexMap::new(),
+                public_routes,
+                reserved,
+            },
+            relay: None,
+            room_service: RoomService::new(RoomServiceOptions {
+                now: now.clone(),
+                room_ttl_ms: opts.room_ttl_ms,
+                player_ttl_ms: opts.player_ttl_ms,
+            }),
+            accounts,
+            guest_names,
+            moderation,
+            crash_reports,
+            regions: Regions::new(RegionsOptions { tokens: opts.agent_tokens.clone(), now: now.clone() }),
+            spawn_tickets: HashMap::new(),
+            mod_packs: ModPacks::new(ModPacksOptions {
+                store_path: opts.mod_pack_store_path.clone(),
+                download_base: opts.mod_download_base.clone(),
+                now: now.clone(),
+                ..Default::default()
+            }),
+            game_saves: GameSaves::new(GameSavesOptions { directory: opts.save_directory.clone(), now: now.clone(), ..Default::default() }),
+            dev_tokens: HashMap::new(),
+            request_rates: HashMap::new(),
+            reload_id: 0,
+        };
+        let instance: String =
+            opts.instance.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-').take(32).collect();
+        LastRouteServer {
+            now,
+            config: Config {
+                enet_room_ttl_ms: opts.enet_room_ttl_ms,
+                admin_ticket_ttl_ms: opts.admin_ticket_ttl_ms,
+                player_ttl_ms: opts.player_ttl_ms,
+                public_directory: opts.public_directory,
+                custom_map_directory: opts.custom_map_directory,
+                update_directory: opts.update_directory,
+                admin_password: opts.admin_password,
+                updates: opts.updates,
+                updates_provider: opts.updates_provider,
+                trust_proxy: opts.trust_proxy,
+                relay_address: opts.relay_address,
+                relay_port: opts.relay_port,
+                rate_limit_window_ms: opts.rate_limit_window_ms,
+                api_rate_limit_max: opts.api_rate_limit_max,
+                mod_rate_limit_max: opts.mod_rate_limit_max,
+                account_rate_limit_max: opts.account_rate_limit_max,
+                dev_token_ttl_ms: opts.dev_token_ttl_ms,
+                instance: if instance.is_empty() { "production".into() } else { instance },
+            },
+            state: Arc::new(Mutex::new(state)),
+            relay_driver: Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn now(&self) -> i64 {
+        (self.now)()
+    }
+
+    pub(crate) fn current_updates(&self) -> Value {
+        match &self.config.updates_provider {
+            None => self.config.updates.clone(),
+            Some(provider) => match provider() {
+                Ok(value) if value.is_object() => value,
+                Ok(_) => self.config.updates.clone(),
+                Err(error) => {
+                    log_error(&format!("Could not reload update manifest: {error}"));
+                    self.config.updates.clone()
+                }
+            },
+        }
+    }
+
+    /// `server.startEnetRelay({host, port})`: binds the UDP relay and starts its thread. Returns the bound port.
+    pub fn start_enet_relay(&self, host: &str, port: u16) -> std::io::Result<u16> {
+        let mut slot = self.relay_driver.lock().unwrap();
+        if let Some(driver) = slot.as_ref() {
+            return Ok(driver.local_port());
+        }
+        let options = EnetRelayOptions { now: self.now.clone(), ..EnetRelayOptions::default() };
+        let (socket, buffers) = enet_relay::bind_relay_socket(host, port, options.socket_buffer_bytes)?;
+        let bound = socket.local_addr()?.port();
+        let mut relay = EnetRelay::new(options);
+        relay.set_listening(bound, buffers);
+        let tick = relay.prune_interval();
+        self.state.lock().unwrap().relay = Some(relay);
+        log_info(&format!("ENet gameplay relay: UDP {bound}"));
+        let state = self.state.clone();
+        let driver = RelayDriver::spawn(socket, tick, move |event| {
+            let mut guard = state.lock().unwrap();
+            let s = &mut *guard;
+            let Some(relay) = s.relay.as_mut() else { return Vec::new() };
+            match event {
+                RelayEvent::Datagram(from, data) => relay.handle_datagram(from, data, &mut s.dir),
+                RelayEvent::Tick => relay.prune(&mut s.dir),
+                RelayEvent::SendError => relay.note_send_error(),
+            }
+            relay.take_outbox()
+        })?;
+        *slot = Some(driver);
+        Ok(bound)
+    }
+
+    fn flush_relay(&self, outgoing: Vec<enet_relay::Outgoing>) {
+        if outgoing.is_empty() {
+            return;
+        }
+        let failed = match self.relay_driver.lock().unwrap().as_ref() {
+            Some(driver) => enet_relay::send_outgoing(driver.sender(), outgoing),
+            None => 0,
+        };
+        if failed > 0 {
+            if let Some(relay) = self.state.lock().unwrap().relay.as_mut() {
+                for _ in 0..failed {
+                    relay.note_send_error();
+                }
+            }
+        }
+    }
+
+    /// Stops the relay thread and flushes the public routes (the Node server "close").
+    pub fn close(&self) {
+        if let Some(mut driver) = self.relay_driver.lock().unwrap().take() {
+            driver.stop();
+        }
+        let mut state = self.state.lock().unwrap();
+        if let Some(relay) = state.relay.as_mut() {
+            relay.close();
+        }
+        for (_, route) in state.dir.public_routes.iter_mut() {
+            route.flush();
+        }
+    }
+
+    /// The Node maintenance interval: prune rooms, clean web rooms, expire rate buckets (plus public-route ticks).
+    pub fn maintenance(&self) {
+        let timestamp = self.now();
+        let mut state = self.state.lock().unwrap();
+        state.dir.prune();
+        state.room_service.cleanup();
+        state.request_rates.retain(|_, (_, reset)| timestamp < *reset);
+        for (_, route) in state.dir.public_routes.iter_mut() {
+            route.tick();
+        }
+    }
+
+    pub fn maintenance_interval_ms(&self) -> i64 {
+        self.config.enet_room_ttl_ms.min(self.config.player_ttl_ms).min(15_000).max(1000)
+    }
+
+    /// Handles one HTTP request (the body of the Node `createServer` callback).
+    pub fn handle(&self, request: &Request) -> Response {
+        let mut guard = self.state.lock().unwrap();
+        let response = self.route(&mut guard, request);
+        let outgoing = guard.relay.as_mut().map(|r| r.take_outbox()).unwrap_or_default();
+        drop(guard);
+        self.flush_relay(outgoing);
+        response
+    }
+
+    /// Serves HTTP until `stop` is set: `workers` threads take requests; one more runs the maintenance timer.
+    pub fn serve(self: &Arc<Self>, server: Arc<tiny_http::Server>, workers: usize, stop: Arc<AtomicBool>) -> Vec<std::thread::JoinHandle<()>> {
+        let mut threads = Vec::new();
+        for _ in 0..workers.max(1) {
+            let (server, this, stop) = (server.clone(), self.clone(), stop.clone());
+            let local_port = server.server_addr().to_ip().map(|a| a.port()).unwrap_or(0);
+            threads.push(std::thread::spawn(move || {
+                while !stop.load(Ordering::SeqCst) {
+                    match server.recv_timeout(std::time::Duration::from_millis(200)) {
+                        Ok(Some(request)) => this.serve_one(request, local_port),
+                        Ok(None) => {}
+                        Err(_) => break,
+                    }
+                }
+            }));
+        }
+        let (this, stop) = (self.clone(), stop.clone());
+        threads.push(std::thread::spawn(move || {
+            let interval = std::time::Duration::from_millis(this.maintenance_interval_ms() as u64);
+            let mut last = std::time::Instant::now();
+            while !stop.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                if last.elapsed() >= interval.min(std::time::Duration::from_secs(1)) {
+                    last = std::time::Instant::now();
+                    this.maintenance();
+                }
+            }
+        }));
+        threads
+    }
+
+    fn serve_one(&self, mut raw: tiny_http::Request, local_port: u16) {
+        use std::io::Read;
+        let (path, query) = split_target(raw.url());
+        let mut request = Request {
+            method: raw.method().as_str().to_uppercase(),
+            path,
+            query,
+            remote: raw.remote_addr().map(|a| a.ip().to_string()).unwrap_or_default(),
+            local_port,
+            ..Request::default()
+        };
+        for header in raw.headers() {
+            request.headers.insert(header.field.as_str().as_str().to_ascii_lowercase(), header.value.as_str().to_string());
+        }
+        let mut body = Vec::new();
+        let _ = raw.as_reader().take(RAW_BODY_HARD_CAP as u64 + 1).read_to_end(&mut body);
+        if body.len() > RAW_BODY_HARD_CAP {
+            request.body_overflow = true;
+            body.truncate(RAW_BODY_HARD_CAP);
+        }
+        request.body = body;
+        let response = self.handle(&request);
+        let head_only = request.method == "HEAD";
+        let length = response.header("content-length").map(str::to_string);
+        let mut out = tiny_http::Response::from_data(if head_only { Vec::new() } else { response.body.clone() })
+            .with_status_code(response.status);
+        for (key, value) in &response.headers {
+            if key == "content-length" {
+                continue;
+            }
+            if let Ok(header) = tiny_http::Header::from_bytes(key.as_bytes(), value.as_bytes()) {
+                out.add_header(header);
+            }
+        }
+        let _ = length;
+        let _ = raw.respond(out);
+    }
+}
+
+impl SessionLookup for LastRouteServer {
+    fn session_username(&self, token: &str) -> Option<String> {
+        self.state.lock().unwrap().accounts.session_username(token)
+    }
+}
+
+/// What `startLastRouteServerFromEnvironment()` derives from the environment (same variable names).
+pub struct EnvironmentConfig {
+    pub options: ServerOptions,
+    pub host: String,
+    pub http_port: u16,
+    pub relay_port: u16,
+    pub relay_enabled: bool,
+    pub account_store_path: PathBuf,
+}
+
+pub fn options_from_environment(env: &HashMap<String, String>, cwd: &Path) -> EnvironmentConfig {
+    let get = |name: &str| env.get(name).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let path_of = |name: &str| get(name).map(|v| cwd.join(v));
+    let (http_port, relay_port) = deployment_ports(env);
+    let host = env.get("HOST").cloned().filter(|h| !h.is_empty()).unwrap_or_else(|| "0.0.0.0".into());
+    let relay_enabled = !Regex::new(r"(?i)^(0|false|no|off)$")
+        .unwrap()
+        .is_match(env.get("LASTROUTE_RELAY_ENABLED").filter(|v| !v.is_empty()).map(String::as_str).unwrap_or("true"));
+    let relay_address = get("LASTROUTE_RELAY_HOST").unwrap_or_else(|| "lastroute.kyttuslab.org".into());
+    let data = path_of("LASTROUTE_DATA_DIR").or_else(|| path_of("KYTTU_DATA_DIR")).unwrap_or_else(|| cwd.join(".data"));
+    let accounts = path_of("LASTROUTE_ACCOUNT_STORE")
+        .or_else(|| path_of("KYTTU_ACCOUNT_STORE_PATH"))
+        .unwrap_or_else(|| data.join("accounts.json"));
+    let custom = path_of("LASTROUTE_CUSTOM_MAP_DIR").or_else(|| Some(cwd.join("assets/custom_maps")).filter(|p| p.exists()));
+    let manifest = path_of("LASTROUTE_UPDATE_MANIFEST");
+    let mut updates = json!({});
+    if let Some(m) = manifest.as_ref().filter(|m| m.exists()) {
+        match std::fs::read_to_string(m).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string())) {
+            Ok(value) => updates = value,
+            Err(error) => log_error(&format!("Could not read update manifest {}: {error}", m.display())),
+        }
+    }
+    let number = |name: &str, fallback: f64| -> f64 {
+        let n = crate::util::js_number_from_str(env.get(name).map(String::as_str).unwrap_or("x"));
+        if n == 0.0 || n.is_nan() {
+            fallback
+        } else {
+            n
+        }
+    };
+    let fallback_updates = updates.clone();
+    let provider: Option<UpdatesProvider> = manifest.clone().map(|m| {
+        Arc::new(move || -> Result<Value, String> {
+            if !m.exists() {
+                return Ok(fallback_updates.clone());
+            }
+            let text = std::fs::read_to_string(&m).map_err(|e| e.to_string())?;
+            serde_json::from_str(&text).map_err(|e| e.to_string())
+        }) as UpdatesProvider
+    });
+    let existing = |p: Option<PathBuf>| p.filter(|p| p.exists());
+    let options = ServerOptions {
+        enet_room_ttl_ms: (number("ENET_ROOM_TTL_SECONDS", 60.0).max(15.0) * 1000.0) as i64,
+        account_store_path: Some(accounts.clone()),
+        moderation_store_path: Some(
+            path_of("LASTROUTE_MODERATION_STORE").unwrap_or_else(|| accounts.parent().unwrap_or(&data).join("moderation.json")),
+        ),
+        moderation_salt: env.get("LASTROUTE_MODERATION_SALT").cloned().unwrap_or_default(),
+        save_directory: Some(path_of("LASTROUTE_SAVES_DIR").unwrap_or_else(|| data.join("saves"))),
+        mod_pack_store_path: Some(path_of("LASTROUTE_MOD_INDEX_STORE").unwrap_or_else(|| data.join("mod_packs.json"))),
+        crash_report_directory: Some(path_of("LASTROUTE_CRASH_REPORTS_DIR").unwrap_or_else(|| data.join("crash-reports"))),
+        reserved_room_store_path: Some(path_of("LASTROUTE_RESERVED_ROOMS_STORE").unwrap_or_else(|| data.join("reserved_rooms.json"))),
+        agent_tokens: crate::regions::parse_agent_tokens(env.get("LASTROUTE_AGENT_TOKENS").map(String::as_str).unwrap_or("")),
+        reserved_room_codes: env
+            .get("LASTROUTE_RESERVED_ROOMS")
+            .cloned()
+            .unwrap_or_else(|| "KATHY,AKIRI".into())
+            .split(',')
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty())
+            .collect(),
+        mod_download_base: get("LASTROUTE_MOD_DOWNLOAD_BASE").unwrap_or_default(),
+        public_directory: existing(path_of("LASTROUTE_PUBLIC_DIR")),
+        custom_map_directory: existing(custom),
+        update_directory: existing(path_of("LASTROUTE_UPDATE_DIR")),
+        updates,
+        updates_provider: provider,
+        admin_password: env
+            .get("LASTROUTE_ADMIN_PASSWORD")
+            .filter(|v| !v.is_empty())
+            .or_else(|| env.get("KYTTU_DEV_PASSWORD"))
+            .cloned()
+            .unwrap_or_default(),
+        trust_proxy: Regex::new(r"(?i)^(1|true|yes|on)$").unwrap().is_match(env.get("TRUST_PROXY").map(String::as_str).unwrap_or("")),
+        relay_address: if relay_enabled { relay_address } else { String::new() },
+        relay_port: if relay_enabled { relay_port } else { 0 },
+        public_route_store_path: Some(
+            path_of("LASTROUTE_PUBLIC_ROUTE_STORE").unwrap_or_else(|| data.join("lastroute").join("godot_publicroom.json")),
+        ),
+        public_route_seed: env.get("LASTROUTE_PUBLIC_ROUTE_SEED").cloned().unwrap_or_else(|| "PUBLIC-ROUTE".into()).chars().take(64).collect(),
+        rate_limit_window_ms: (number("LASTROUTE_RATE_LIMIT_WINDOW_SECONDS", 60.0).max(1.0) * 1000.0) as i64,
+        api_rate_limit_max: number("LASTROUTE_API_RATE_LIMIT", 600.0).max(1.0) as u32,
+        account_rate_limit_max: number("LASTROUTE_ACCOUNT_RATE_LIMIT", 30.0).max(1.0) as u32,
+        mod_rate_limit_max: number("LASTROUTE_MOD_RATE_LIMIT", 120.0).max(1.0) as u32,
+        instance: env.get("LASTROUTE_INSTANCE").cloned().unwrap_or_else(|| "production".into()),
+        ..ServerOptions::default()
+    };
+    EnvironmentConfig { options, host, http_port, relay_port, relay_enabled, account_store_path: accounts }
+}

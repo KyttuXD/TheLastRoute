@@ -1,0 +1,15 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "glyra",
+	"name": "Glyra",
+	"tier": "easy",
+	"speed": 0.81,
+	"chase": 3.52,
+	"prog": 0.18,
+	"sight": 7.9,
+	"hearing": 1.12,
+	"spawn": 12,
+	"chase_style": "stalk",
+	"taser_immune": true,
+	"melee_immune": false
+}

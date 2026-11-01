@@ -1,0 +1,15 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "ysolde",
+	"name": "Ysolde",
+	"tier": "easy",
+	"speed": 0.8,
+	"chase": 3.54,
+	"prog": 0.18,
+	"sight": 8.1,
+	"hearing": 1.0,
+	"spawn": 12,
+	"chase_style": "reach1",
+	"taser_immune": true,
+	"melee_immune": false
+}

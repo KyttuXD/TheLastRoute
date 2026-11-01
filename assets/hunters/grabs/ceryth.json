@@ -1,0 +1,9 @@
+{
+	"schema": "lr.grab/1",
+	"id": "ceryth",
+	"pool": {
+		"leg_grab": 6,
+		"collar_drag": 3,
+		"wrist_yank": 2
+	}
+}

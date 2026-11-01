@@ -1,0 +1,8 @@
+{
+	"schema": "lr.grab/1",
+	"id": "ferryn",
+	"pool": {
+		"wrap": 6,
+		"wrist_yank": 2
+	}
+}

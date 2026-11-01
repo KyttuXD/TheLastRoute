@@ -1,0 +1,148 @@
+{
+	"schema": "lr.prop/1",
+	"family": "p11",
+	"props": [
+		{
+			"id": "lavaPipeManifold",
+			"models": [
+				"res://assets/props/nether/lava_pipe_manifold.glb"
+			]
+		},
+		{
+			"id": "charredSupplyCrate",
+			"models": [
+				"res://assets/props/nether/charred_supply_crate.glb"
+			]
+		},
+		{
+			"id": "prisonCellGate",
+			"models": [
+				"res://assets/props/prison/prison_cell_gate.glb"
+			]
+		},
+		{
+			"id": "sewerLadder",
+			"models": [
+				"res://assets/props/sewer/sewer_ladder.glb"
+			]
+		},
+		{
+			"id": "sewerLadderTop",
+			"models": [
+				"res://assets/props/sewer/sewer_ladder_top.glb"
+			]
+		},
+		{
+			"id": "sewerManhole",
+			"models": [
+				"res://assets/props/sewer/manhole_frame.glb"
+			]
+		},
+		{
+			"id": "sewerFloorGrate",
+			"models": [
+				"res://assets/props/sewer/sewer_floor_grate.glb"
+			]
+		},
+		{
+			"id": "sewerValveWheel",
+			"models": [
+				"res://assets/props/sewer/sewer_valve_wheel.glb"
+			]
+		},
+		{
+			"id": "sewerPump",
+			"models": [
+				"res://assets/props/sewer/sewer_pump.glb"
+			]
+		},
+		{
+			"id": "sewerPipeRun",
+			"models": [
+				"res://assets/props/sewer/sewer_pipe_run.glb"
+			]
+		},
+		{
+			"id": "sewerOutflowPipe",
+			"models": [
+				"res://assets/props/sewer/sewer_outflow_pipe.glb"
+			]
+		},
+		{
+			"id": "sewerSluiceGate",
+			"models": [
+				"res://assets/props/sewer/sewer_sluice_gate.glb"
+			]
+		},
+		{
+			"id": "sewerOverflowGrate",
+			"models": [
+				"res://assets/props/sewer/sewer_overflow_grate.glb"
+			]
+		},
+		{
+			"id": "sewerLamp",
+			"models": [
+				"res://assets/props/sewer/sewer_lamp.glb"
+			],
+			"light": {
+				"color": "ffa24a",
+				"energy": 0.42,
+				"range": 5.0,
+				"offset": [
+					0,
+					0.0,
+					0
+				]
+			}
+		},
+		{
+			"id": "sewerBridge",
+			"models": [
+				"res://assets/props/sewer/sewer_bridge.glb"
+			]
+		},
+		{
+			"id": "sewerGrateDeck",
+			"models": [
+				"res://assets/props/sewer/sewer_grate_deck.glb"
+			]
+		},
+		{
+			"id": "prisonBunk",
+			"models": [
+				"res://assets/props/prison/prison_bunk.glb"
+			]
+		},
+		{
+			"id": "prisonCafeteriaTable",
+			"models": [
+				"res://assets/props/prison/prison_cafeteria_table.glb"
+			]
+		},
+		{
+			"id": "prisonServingCounter",
+			"models": [
+				"res://assets/props/prison/prison_serving_counter.glb"
+			]
+		},
+		{
+			"id": "prisonTrayReturn",
+			"models": [
+				"res://assets/props/prison/prison_tray_return.glb"
+			]
+		},
+		{
+			"id": "prisonKitchenRack",
+			"models": [
+				"res://assets/props/prison/prison_kitchen_rack.glb"
+			]
+		},
+		{
+			"id": "dungeonCage",
+			"models": [
+				"res://assets/props/prison/dungeon_cage.glb"
+			]
+		}
+	]
+}

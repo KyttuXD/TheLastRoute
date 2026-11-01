@@ -1,0 +1,85 @@
+{
+  "suite": "hunters",
+  "description": "The hunter director runs every frame (relay count mirrored, relay rush after 7 relays + 45 s, rebuilt with each hunter lineup); the taser slows a taser-immune hunter; the crowbar stuns and wears down; admin noclip and run speed move the body.",
+  "ported_from": "tests/validate_hunter_director.gd, validate_melee_stun.gd, validate_hunter_immunity.gd, game/admin/admin_menu.gd",
+  "defaults": { "seed": 1, "difficulty": "standard", "mode": "finite" },
+  "tests": [
+    {
+      "name": "the director starts per difficulty with relay rush on",
+      "start_run": { "difficulty": "hard" },
+      "steps": [ { "expect": [
+        { "path": "director.mode", "value": "hard" }, { "path": "director.relay_rush_enabled", "value": true },
+        { "path": "director.relay_rush_active", "value": false }, { "path": "director.stats.shares", "value": 0 } ] } ]
+    },
+    {
+      "name": "the director tracks recovered relays",
+      "start_run": { "no_target": true },
+      "steps": [
+        { "cmd": "teleport", "to": "relay", "index": 0 },
+        { "cmd": "interact", "kind": "RELAY" },
+        { "cmd": "step", "frames": 1, "observe": false },
+        { "expect": [ { "path": "director.relays_collected", "value": 1 }, { "path": "director.relay_rush_active", "value": false } ] }
+      ]
+    },
+    {
+      "name": "relay rush and team calls move in a long Infinite run",
+      "start_run": { "seed": "ALPHA", "mode": "infinite", "god": true },
+      "steps": [
+        { "cmd": "step_until", "bot": true, "expect": [ { "path": "director.stats.rushes", "op": ">=", "value": 1 } ], "max_frames": 54000, "check_every": 60 },
+        { "expect": [
+          { "path": "director.relays_collected", "op": ">=", "value": 7 }, { "path": "director.relay_rush_active", "value": true },
+          { "path": "run.relays_collected", "op": ">=", "value": 7 } ] }
+      ]
+    },
+    {
+      "name": "the taser slows a taser-immune hunter without stunning her",
+      "start_run": { "god": true },
+      "steps": [
+        { "cmd": "teleport", "to": "relay", "index": 0 },
+        { "cmd": "admin", "name": "give", "item": "taser" },
+        { "cmd": "admin", "name": "wake", "index": 0 },
+        { "cmd": "admin", "name": "hunter_to", "index": 0, "near": 2.0 },
+        { "expect": [ { "path": "hunters.0.taser_immune", "value": true } ] },
+        { "cmd": "act", "act": { "pulse": ["taser"] } },
+        { "cmd": "step", "frames": 1, "observe": false },
+        { "expect": [ { "path": "hunters.0.slow", "op": ">", "value": 2 }, { "path": "hunters.0.stun", "value": 0 },
+          { "path": "hotbar.taser_cooldown", "op": ">", "value": 8 }, { "path": "hotbar.selected", "value": 1 } ] }
+      ]
+    },
+    {
+      "name": "the crowbar stuns and loses durability",
+      "start_run": { "god": true },
+      "steps": [
+        { "cmd": "teleport", "to": "relay", "index": 0 },
+        { "cmd": "admin", "name": "give", "item": "crowbar", "expect": [ { "path": "last.given", "value": 1 } ] },
+        { "cmd": "admin", "name": "wake", "index": 0 },
+        { "cmd": "admin", "name": "hunter_to", "index": 0, "near": 1.0 },
+        { "cmd": "act", "act": { "pulse": ["slot_2"] } },
+        { "cmd": "step", "frames": 1, "observe": false },
+        { "cmd": "act", "act": { "pulse": ["tool_use"] } },
+        { "cmd": "step", "frames": 1, "observe": false },
+        { "expect": [ { "path": "hunters.0.stun", "op": ">", "value": 3 }, { "path": "hotbar.slots.1.item", "value": "crowbar" }, { "path": "hotbar.slots.1.count", "value": 39 } ] }
+      ]
+    },
+    {
+      "name": "admin noclip passes walls; run speed scales movement",
+      "start_run": { "no_target": true },
+      "steps": [
+        { "cmd": "look", "face": "north" },
+        { "cmd": "step", "frames": 300, "act": { "move": [0, 1] }, "observe": false },
+        { "cmd": "player", "save_as": "blocked" },
+        { "cmd": "admin", "name": "noclip" },
+        { "cmd": "step", "frames": 60, "act": { "move": [0, 1] }, "observe": false },
+        { "expect": [ { "path": "player.pos.1", "op": "<", "var": "blocked.player.pos.1" } ] },
+        { "cmd": "admin", "name": "noclip", "on": false },
+        { "cmd": "start_run", "seed": 1, "difficulty": "standard", "mode": "finite", "no_target": true },
+        { "cmd": "step", "frames": 30, "act": { "move": [0, 1] }, "observe": false },
+        { "cmd": "player", "save_as": "slow" },
+        { "cmd": "start_run", "seed": 1, "difficulty": "standard", "mode": "finite", "no_target": true },
+        { "cmd": "admin", "name": "speed", "scale": 2 },
+        { "cmd": "step", "frames": 30, "act": { "move": [0, 1] }, "observe": false },
+        { "expect": [ { "path": "player.walked", "op": ">", "var": "slow.player.walked" } ] }
+      ]
+    }
+  ]
+}

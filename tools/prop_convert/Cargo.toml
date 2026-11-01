@@ -1,0 +1,15 @@
+[package]
+name = "prop_convert"
+version = "0.1.0"
+edition = "2021"
+description = "Converts the Godot project's blocky prop GLBs into Blockbench .bbmodel files"
+publish = false
+
+# Standalone tool: not part of the app's build.
+[workspace]
+
+[dependencies]
+gltf = { version = "1.4", default-features = false, features = ["import", "utils", "names"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+base64 = "0.22"
+uuid = { version = "1", features = ["v5"] }

@@ -1,0 +1,15 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "loxelle",
+	"name": "Loxelle",
+	"tier": "easy",
+	"speed": 0.8,
+	"chase": 3.555,
+	"prog": 0.18,
+	"sight": 7.9,
+	"hearing": 1.12,
+	"spawn": 13,
+	"chase_style": "lope",
+	"taser_immune": true,
+	"melee_immune": false
+}

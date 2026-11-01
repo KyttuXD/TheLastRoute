@@ -1,0 +1,151 @@
+{
+	"schema": "lr.prop/1",
+	"family": "p13",
+	"props": [
+		{
+			"id": "specimenTank",
+			"models": [
+				"res://assets/props/blocky/specimenTank_0.glb",
+				"res://assets/props/blocky/specimenTank_1.glb",
+				"res://assets/props/blocky/specimenTank_2.glb"
+			],
+			"light": {
+				"color": "5fe8d8",
+				"energy": 0.42,
+				"range": 3.0,
+				"offset": [
+					0,
+					1.2,
+					0
+				]
+			}
+		},
+		{
+			"id": "containmentCell",
+			"models": [
+				"res://assets/props/blocky/containmentCell.glb"
+			]
+		},
+		{
+			"id": "labCoolingUnit",
+			"models": [
+				"res://assets/props/blocky/labCoolingUnit.glb"
+			]
+		},
+		{
+			"id": "controlConsole",
+			"models": [
+				"res://assets/props/blocky/controlConsole.glb"
+			]
+		},
+		{
+			"id": "monitorWall",
+			"models": [
+				"res://assets/props/blocky/monitorWall.glb"
+			]
+		},
+		{
+			"id": "divePod",
+			"models": [
+				"res://assets/props/blocky/divePod.glb"
+			]
+		},
+		{
+			"id": "divePodFilm",
+			"models": [
+				"res://assets/props/blocky/divePodFilm.glb"
+			]
+		},
+		{
+			"id": "divePodLit",
+			"models": [
+				"res://assets/props/blocky/divePodLit.glb"
+			],
+			"light": {
+				"color": "8fe6f0",
+				"energy": 0.18,
+				"range": 2.2,
+				"offset": [
+					0,
+					0.6,
+					0
+				]
+			}
+		},
+		{
+			"id": "diveHeadsetStand",
+			"models": [
+				"res://assets/props/blocky/diveHeadsetStand.glb"
+			]
+		},
+		{
+			"id": "diveHeadsetShelf",
+			"models": [
+				"res://assets/props/blocky/diveHeadsetShelf.glb"
+			]
+		},
+		{
+			"id": "diveConsole",
+			"models": [
+				"res://assets/props/blocky/diveConsole.glb"
+			]
+		},
+		{
+			"id": "deconShower",
+			"models": [
+				"res://assets/props/blocky/deconShower.glb"
+			]
+		},
+		{
+			"id": "coldStorageUnit",
+			"models": [
+				"res://assets/props/blocky/coldStorageUnit.glb"
+			]
+		},
+		{
+			"id": "labWhiteboard",
+			"models": [
+				"res://assets/props/blocky/labWhiteboard.glb"
+			]
+		},
+		{
+			"id": "hazardSign",
+			"models": [
+				"res://assets/props/blocky/hazardSign_0.glb",
+				"res://assets/props/blocky/hazardSign_1.glb"
+			]
+		},
+		{
+			"id": "labGlassPartition",
+			"models": [
+				"res://assets/props/blocky/labGlassPartition.glb"
+			]
+		},
+		{
+			"id": "labStool",
+			"models": [
+				"res://assets/props/blocky/labStool_0.glb",
+				"res://assets/props/blocky/labStool_1.glb",
+				"res://assets/props/blocky/labStool_2.glb"
+			]
+		},
+		{
+			"id": "labMicroscope",
+			"models": [
+				"res://assets/props/blocky/labMicroscope.glb"
+			]
+		},
+		{
+			"id": "gasCylinderRack",
+			"models": [
+				"res://assets/props/blocky/gasCylinderRack.glb"
+			]
+		},
+		{
+			"id": "biohazardBin",
+			"models": [
+				"res://assets/props/blocky/biohazardBin.glb"
+			]
+		}
+	]
+}

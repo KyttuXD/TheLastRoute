@@ -1,0 +1,761 @@
+//! The request routing of `server.mjs` (the `createServer` callback), in the same order as the original.
+
+use super::*;
+use crate::crash_reports::CRASH_MAX_BODY_BYTES;
+use crate::game_saves::{match_save_path, SAVE_MAX_BYTES};
+use crate::lr_regex as regex;
+use crate::moderation::Who;
+use crate::public_route::JoinOptions;
+use crate::util::{hex, iso_time, js_number, str_nullish, str_or_empty, truthy, Reply};
+
+fn not_owner() -> Response {
+    json_response(403, &json!({ "ok": false, "code": "ADMIN_OWNER_REQUIRED", "error": "Full admin account required" }), &[])
+}
+
+fn skins_unavailable() -> Response {
+    json_response(503, &json!({ "ok": false, "code": "SKINS_UNAVAILABLE", "error": "Skins are not available on this server" }), &[])
+}
+
+fn unknown_endpoint() -> Reply {
+    (404, json!({ "ok": false, "code": "UNKNOWN_ENDPOINT", "error": "Unknown endpoint" }))
+}
+
+fn or_default(text: String, fallback: &str) -> String {
+    if text.is_empty() {
+        fallback.to_string()
+    } else {
+        text
+    }
+}
+
+fn owner_of(state: &State, body: &Value) -> Option<String> {
+    let owner = state.accounts.session_username(&str_or_empty(body.get("sessionToken")))?;
+    state.accounts.is_admin_owner(&owner).then_some(owner)
+}
+
+/// `body.sessionToken ? accountService.sessionUsername(body.sessionToken) || "" : ""`.
+fn session_user(state: &State, body: &Value) -> String {
+    if truthy(body.get("sessionToken")) {
+        state.accounts.session_username(&str_or_empty(body.get("sessionToken"))).unwrap_or_default()
+    } else {
+        String::new()
+    }
+}
+
+impl LastRouteServer {
+    fn rate_limit(&self, state: &mut State, request: &Request, pathname: &str) -> i64 {
+        let sensitive = ACCOUNT_RATE_LIMIT_PATHS.contains(&pathname);
+        let mods = !sensitive && pathname.starts_with("/api/mods/");
+        let maximum = if sensitive {
+            self.config.account_rate_limit_max
+        } else if mods {
+            self.config.mod_rate_limit_max
+        } else {
+            self.config.api_rate_limit_max
+        }
+        .max(1);
+        let window = self.config.rate_limit_window_ms.max(1000);
+        let timestamp = self.now();
+        let address = or_default(requester_address(request, self.config.trust_proxy), "unknown");
+        let key = format!("{}|{address}", if sensitive { "account" } else if mods { "mods" } else { "api" });
+        let rate = state.request_rates.entry(key).or_insert((0, timestamp + window));
+        if timestamp >= rate.1 {
+            *rate = (0, timestamp + window);
+        }
+        rate.0 += 1;
+        if rate.0 <= maximum {
+            0
+        } else {
+            (((rate.1 - timestamp) as f64) / 1000.0).ceil().max(1.0) as i64
+        }
+    }
+
+    /// `developerRequest(body)`: a live dev token, the setup password as `adminProof`, or an owner session.
+    fn developer_request(&self, state: &mut State, body: &Value) -> bool {
+        if truthy(body.get("devToken")) {
+            let key = str_or_empty(body.get("devToken"));
+            if let Some(expires) = state.dev_tokens.get(&key).copied() {
+                if expires > self.now() {
+                    return true;
+                }
+                state.dev_tokens.remove(&key);
+            }
+        }
+        if !self.config.admin_password.is_empty() && safe_equal(&str_or_empty(body.get("adminProof")), &self.config.admin_password) {
+            return true;
+        }
+        state
+            .accounts
+            .session_admin_identity(&str_or_empty(body.get("sessionToken")))
+            .map(|identity| identity.get("adminOwner") == Some(&Value::Bool(true)))
+            .unwrap_or(false)
+    }
+
+    fn issue_dev_token(&self, state: &mut State) -> String {
+        let token = hex(&random_bytes(24));
+        let timestamp = self.now();
+        state.dev_tokens.retain(|_, expires| *expires > timestamp);
+        let ttl = if self.config.dev_token_ttl_ms > 0 { self.config.dev_token_ttl_ms } else { DEFAULT_DEV_TOKEN_TTL_MS };
+        state.dev_tokens.insert(token.clone(), timestamp + ttl.max(1000));
+        token
+    }
+
+    pub(crate) fn route(&self, state: &mut State, request: &Request) -> Response {
+        let method = request.method.as_str();
+        if method == "OPTIONS" {
+            return json_response(204, &json!({}), &[]);
+        }
+        state.dir.prune();
+        let path = request.path.as_str();
+        let retry_after = self.rate_limit(state, request, path);
+        if retry_after > 0 {
+            return json_response(
+                429,
+                &json!({ "ok": false, "code": "RATE_LIMITED", "error": "Too many requests; try again shortly" }),
+                &[("retry-after", retry_after.to_string())],
+            );
+        }
+        if let Some(response) = self.route_reads(state, request) {
+            return response;
+        }
+        if method != "POST" {
+            if let Some(found) = try_static_file(method, self.config.public_directory.as_deref(), path) {
+                return found;
+            }
+            if method == "GET" && path == "/" {
+                return json_response(200, &json!({ "ok": true, "service": "Last Route backend", "health": "/api/health",
+                    "staticFiles": self.config.public_directory.is_some() }), &[]);
+            }
+            return json_response(404, &json!({ "ok": false, "code": "NOT_FOUND", "error": "Not found" }), &[]);
+        }
+        if path == "/api/skins/upload" {
+            return self.skin_put_checks(state, request).unwrap_or_else(skins_unavailable);
+        }
+        if path == "/api/regions/report" {
+            let raw = String::from_utf8_lossy(&request.body).to_string();
+            let region = state.regions.verify(&request.headers, &raw);
+            if region.is_empty() {
+                return json_response(403, &json!({ "ok": false, "code": "BAD_AGENT_SIGNATURE", "error": "Unknown region or bad signature" }), &[]);
+            }
+            let Ok(report) = serde_json::from_str::<Value>(&raw) else {
+                return json_response(400, &json!({ "ok": false, "error": "INVALID JSON" }), &[]);
+            };
+            return json_response(200, &json!({ "ok": true, "actions": state.regions.report(&region, &report) }), &[]);
+        }
+        // readJson(request, maxBytes)
+        let max = match path {
+            "/api/admin/mods/register" => MOD_REGISTER_MAX_BODY_BYTES,
+            "/api/v1/crash-reports" => CRASH_MAX_BODY_BYTES,
+            _ => MAX_BODY_BYTES,
+        };
+        if request.body_overflow || request.body.len() > max {
+            return json_response(413, &json!({ "ok": false, "error": "REQUEST BODY TOO LARGE" }), &[]);
+        }
+        let body: Value = if request.body.is_empty() {
+            json!({})
+        } else {
+            match std::str::from_utf8(&request.body).ok().and_then(|t| serde_json::from_str::<Value>(t).ok()) {
+                Some(v @ Value::Object(_)) => v,
+                _ => return json_response(400, &json!({ "ok": false, "error": "INVALID JSON BODY" }), &[]),
+            }
+        };
+        if let Some(response) = self.route_posts(state, request, &body) {
+            return response;
+        }
+        reply(self.route_accounts(state, &body, path))
+    }
+
+    /// The size and moderation checks a skin upload passes before the (unported) skin store.
+    fn skin_put_checks(&self, state: &State, request: &Request) -> Option<Response> {
+        if request.body_overflow || request.body.len() > SKIN_MAX_BYTES {
+            return Some(json_response(413, &json!({ "ok": false, "code": "BAD_SKIN", "error": "Skin refused: the file is too large" }), &[]));
+        }
+        let user = state.accounts.session_username(&request.header(SKIN_TOKEN_HEADER)).unwrap_or_default();
+        state.moderation.check_skin_upload(&user).map(reply)
+    }
+
+    /// GET/HEAD/PUT routes that come before the POST-only section.
+    fn route_reads(&self, state: &mut State, request: &Request) -> Option<Response> {
+        let method = request.method.as_str();
+        let path = request.path.as_str();
+        let now = self.now();
+        let (relay_address, relay_port) = (self.config.relay_address.as_str(), self.config.relay_port);
+        let get_or_head = method == "GET" || method == "HEAD";
+
+        if method == "GET" && path == "/api/health" {
+            let relay = state.relay.as_ref().map(|r| r.relay_status()).unwrap_or(json!({ "enabled": false }));
+            return Some(json_response(200, &json!({
+                "ok": true, "runtime": "rust", "service": "last-route-backend", "instance": self.config.instance,
+                "port": request.local_port, "rooms": state.dir.enet_rooms.len(), "relay": relay,
+                "wsRelay": { "enabled": false, "path": WS_PATH, "rooms": 0, "guests": 0, "packets": 0, "bytes": 0 },
+                "webRooms": state.room_service.rooms_len(), "reloadId": state.reload_id,
+                "updates": public_update_status(&self.current_updates()), "now": iso_time(now),
+            }), &[]));
+        }
+        if get_or_head && path.starts_with("/api/city-maps/files/") {
+            return Some(json_response(404, &json!({ "ok": false, "code": "CITY_MAPS_UNAVAILABLE", "error": "City maps are not part of this server" }), &[]));
+        }
+        if get_or_head && path.starts_with("/api/skins/files/") {
+            return Some(skins_unavailable());
+        }
+        if method == "GET" && path == "/api/mods/packs" {
+            let result = state.mod_packs.list();
+            return Some(json_response(result.0, &result.1, &[("cache-control", "public, max-age=60".into())]));
+        }
+        if method == "GET" {
+            if let Some(caps) = regex!(r"^/api/mods/packs/([a-z0-9][a-z0-9_]{2,31})$").captures(path) {
+                let result = state.mod_packs.get(&caps[1], request.query_param("version").as_deref());
+                return Some(json_response(result.0, &result.1, &[("cache-control", "public, max-age=60".into())]));
+            }
+        }
+        if (method == "GET" || method == "PUT") && regex!(r"^/api/v1/skins/([A-Za-z0-9_]{1,32})$").is_match(path) {
+            if method == "PUT" {
+                if let Some(refused) = self.skin_put_checks(state, request) {
+                    return Some(refused);
+                }
+            }
+            return Some(skins_unavailable());
+        }
+        if method == "GET" || method == "PUT" {
+            if let Some((game_id, slot)) = match_save_path(path) {
+                let token = request.header("x-session-token");
+                if method == "GET" {
+                    return Some(reply(state.game_saves.get(&state.accounts, &token, &game_id, &slot)));
+                }
+                if request.body_overflow || request.body.len() > SAVE_MAX_BYTES {
+                    return Some(json_response(413, &json!({ "ok": false, "code": "SAVE_TOO_LARGE",
+                        "error": format!("A save is at most {} KB", SAVE_MAX_BYTES / 1024) }), &[]));
+                }
+                let Ok(body) = serde_json::from_slice::<Value>(&request.body) else {
+                    return Some(json_response(400, &json!({ "ok": false, "code": "BAD_SAVE", "error": "INVALID JSON BODY" }), &[]));
+                };
+                let State { game_saves, accounts, .. } = state;
+                return Some(reply(game_saves.put(&*accounts, &token, &game_id, &slot, &body)));
+            }
+        }
+        if get_or_head {
+            if let Some(caps) = regex!(r"(?i)^/api/custom-maps/([A-Za-z0-9][A-Za-z0-9._-]{0,180}\.png)$").captures(path) {
+                let found = try_static_file(method, self.config.custom_map_directory.as_deref(), &format!("/{}", &caps[1]));
+                return Some(found.unwrap_or_else(|| json_response(404, &json!({ "ok": false, "error": "CUSTOM MAP NOT FOUND" }), &[])));
+            }
+        }
+        if method == "GET" {
+            if let Some(caps) = regex!(r"^/api/updates/(debug|release)/(linux|windows|windows_legacy|macos|web|steamvr|quest|phone)$").captures(path) {
+                return Some(match public_update_manifest(&self.current_updates(), &caps[1], &caps[2]) {
+                    None => json_response(404, &json!({ "ok": false, "error": "NO UPDATE PUBLISHED" }), &[]),
+                    Some(update) => json_response(200, &json!({ "ok": true, "channel": &caps[1], "platform": &caps[2], "update": update }), &[]),
+                });
+            }
+        }
+        if get_or_head {
+            if let Some(caps) = regex!(r"^/api/updates/files/([^/]+)$").captures(path) {
+                let asset = published_update_path(&self.current_updates(), &caps[1]);
+                let found = if asset.is_empty() { None } else { try_static_file(method, self.config.update_directory.as_deref(), &asset) };
+                return Some(found.unwrap_or_else(|| json_response(404, &json!({ "ok": false, "error": "UPDATE FILE NOT FOUND" }), &[])));
+            }
+        }
+        if method == "GET" {
+            if let Some(caps) = regex!(r"^/api/enet/rooms/([^/]+)$").captures(path) {
+                let code = code_of(&percent_decode(&caps[1]).unwrap_or_default());
+                if state.dir.reserved.as_ref().map(|r| r.is_reserved(&code)).unwrap_or(false) {
+                    return Some(json_response(403, &json!({ "ok": false, "code": "ROOM_RESERVED", "reserved": true,
+                        "error": "PRIVATE ROOM // SIGN IN WITH AN INVITE OR ENTER THE ROOM PASSWORD" }), &[]));
+                }
+                return Some(match state.dir.enet_rooms.get(&code).filter(|_| !code.is_empty()) {
+                    Some(room) => json_response(200, &json!({ "ok": true, "room": public_enet_room(room, now, relay_address, relay_port) }), &[]),
+                    None => json_response(404, &json!({ "ok": false, "error": "ROOM NOT FOUND" }), &[]),
+                });
+            }
+            if path == "/api/regions" {
+                return Some(json_response(200, &json!({ "ok": true, "regions": state.regions.public_list() }), &[]));
+            }
+            if path == "/api/public/status" {
+                let game = public_game_id(request.query_param("game").as_deref());
+                return Some(json_response(200, &state.dir.route_mut(&game).status(), &[]));
+            }
+        }
+        None
+    }
+
+    /// POST routes with a parsed JSON body, up to the account section.
+    fn route_posts(&self, state: &mut State, request: &Request, body: &Value) -> Option<Response> {
+        let path = request.path.as_str();
+        let now = self.now();
+        let (relay_address, relay_port) = (self.config.relay_address.as_str(), self.config.relay_port);
+        let address = requester_address(request, self.config.trust_proxy);
+
+        if path == "/api/v1/crash-reports" {
+            let Some(crash) = state.crash_reports.as_mut() else { return Some(reply(unknown_endpoint())) };
+            let device: String = str_or_empty(body.get("device_id")).chars().take(64).collect();
+            let client = format!("{}|{device}", or_default(address.clone(), "unknown"));
+            return Some(reply(crash.submit(body, &client)));
+        }
+        if path == "/api/admin/crash-reports" {
+            if owner_of(state, body).is_none() {
+                return Some(not_owner());
+            }
+            return Some(match state.crash_reports.as_ref() {
+                None => json_response(200, &json!({ "ok": true, "reports": [], "total": 0 }), &[]),
+                Some(crash) => reply(crash.list(body.get("since"), body.get("limit"))),
+            });
+        }
+
+        if path == "/api/public/join" || path == "/api/public/state" || path == "/api/public/leave" {
+            let game = public_game_id(Some(&str_nullish(body.get("game"))));
+            let code = public_code(&game);
+            let (listed, host_token_valid) = match state.dir.enet_rooms.get_mut(code) {
+                Some(room) => {
+                    let valid = truthy(body.get("hostToken")) && safe_equal(&str_or_empty(body.get("hostToken")), &room.token);
+                    if valid {
+                        room.expires_at = now + PUBLIC_ENET_TTL_MS;
+                    }
+                    (true, valid)
+                }
+                None => (false, false),
+            };
+            if path == "/api/public/join" {
+                let username = state.accounts.session_username(&str_or_empty(body.get("sessionToken"))).unwrap_or_default();
+                let who = Who { username, device_id: body.get("deviceId").cloned(), address: address.clone() };
+                if let Some(refused) = state.moderation.check_public_join(&who) {
+                    return Some(reply(refused));
+                }
+            }
+            let route = state.dir.route_mut(&game);
+            let result = match path {
+                "/api/public/join" => route.join(body, JoinOptions { address: address.clone(), host_token_valid, enet_listed: listed }),
+                "/api/public/state" => route.post(body, host_token_valid),
+                _ => route.leave(body),
+            };
+            return Some(reply(result.to_reply()));
+        }
+
+        if path == "/api/rooms/reserved/resolve" {
+            let code = normalize_enet_code(body.get("code"));
+            if code.is_empty() || !state.dir.reserved.as_ref().map(|r| r.is_reserved(&code)).unwrap_or(false) {
+                return Some(json_response(404, &json!({ "ok": false, "error": "ROOM NOT FOUND" }), &[]));
+            }
+            let username = session_user(state, body);
+            let owner = !username.is_empty() && state.accounts.is_admin_owner(&username);
+            let password = str_or_empty(body.get("password"));
+            let live = state.dir.enet_rooms.get(&code).cloned();
+            let reserved = state.dir.reserved.as_mut().unwrap();
+            if !reserved.has_access(&code, &username, &password, owner) {
+                return Some(json_response(403, &json!({ "ok": false, "code": "ROOM_ACCESS_DENIED", "reserved": true,
+                    "error": "NOT ON THIS ROOM'S INVITE LIST // WRONG ROOM PASSWORD" }), &[]));
+            }
+            let stale = live.as_ref().map(|l| now - l.last_seen > RESERVED_TAKEOVER_MS).unwrap_or(true);
+            let room = match (&live, stale) {
+                (Some(l), false) => public_enet_room(l, now, relay_address, relay_port),
+                _ => Value::Null,
+            };
+            let ticket = if stale { String::new() } else { reserved.issue_ticket(&code) };
+            return Some(json_response(200, &json!({ "ok": true, "reserved": true, "live": !stale, "room": room,
+                "joinTicket": ticket, "canHost": stale, "settings": reserved.settings(&code) }), &[]));
+        }
+
+        if path == "/api/admin/regions" {
+            if owner_of(state, body).is_none() {
+                return Some(not_owner());
+            }
+            let action = or_default(str_or_empty(body.get("action")), "list");
+            let region = str_or_empty(body.get("region"));
+            let code = normalize_enet_code(body.get("code"));
+            return Some(match action.as_str() {
+                "list" => json_response(200, &json!({ "ok": true, "regions": state.regions.owner_list() }), &[]),
+                "stop" => reply(state.regions.request_stop(&region, &code)),
+                "spawn" => {
+                    if code.is_empty() {
+                        return Some(json_response(400, &json!({ "ok": false, "error": "INVALID ROOM CODE" }), &[]));
+                    }
+                    if state.dir.enet_rooms.get(&code).map(|l| now - l.last_seen <= RESERVED_TAKEOVER_MS).unwrap_or(false) {
+                        return Some(json_response(409, &json!({ "ok": false, "code": "ROOM_ALREADY_HOSTED", "error": "Someone is hosting that code" }), &[]));
+                    }
+                    let ticket = base64url(&random_bytes(18));
+                    state.spawn_tickets.insert(code.clone(), (ticket.clone(), now + 5 * 60_000));
+                    let options = json!({ "seed": body.get("seed"), "difficulty": body.get("difficulty"),
+                        "idleMinutes": body.get("idleMinutes"), "spawnTicket": ticket });
+                    let result = state.regions.request_spawn(&region, &code, &options);
+                    if result.0 != 202 {
+                        state.spawn_tickets.remove(&code);
+                    }
+                    reply(result)
+                }
+                _ => json_response(400, &json!({ "ok": false, "code": "INVALID_ACTION", "error": "Actions: list, spawn, stop" }), &[]),
+            });
+        }
+
+        if path == "/api/admin/reserved-rooms" {
+            let Some(owner) = owner_of(state, body) else { return Some(not_owner()) };
+            if state.dir.reserved.is_none() {
+                return Some(reply(unknown_endpoint()));
+            }
+            if body.get("action").and_then(Value::as_str) == Some("command") {
+                let live = state.dir.enet_rooms.get(&normalize_enet_code(body.get("code")));
+                if live.map(|l| now - l.last_seen > RESERVED_TAKEOVER_MS).unwrap_or(true) {
+                    return Some(json_response(409, &json!({ "ok": false, "code": "ROOM_NOT_LIVE", "error": "Nobody is hosting that room right now" }), &[]));
+                }
+            }
+            let mut result = state.dir.reserved.as_mut().unwrap().admin(body, &owner);
+            if let Some(Value::Array(rooms)) = result.1.get_mut("rooms") {
+                for room in rooms.iter_mut() {
+                    let code = str_nullish(room.get("code"));
+                    let live = state.dir.enet_rooms.get(&code).filter(|l| now - l.last_seen <= RESERVED_TAKEOVER_MS);
+                    if let Value::Object(map) = room {
+                        map.insert("live".into(), json!(live.is_some()));
+                        map.insert("players".into(), live.map(|l| num(l.players)).unwrap_or(json!(0)));
+                        map.insert("sessionActive".into(), json!(live.map(|l| l.session_active).unwrap_or(false)));
+                    }
+                }
+            }
+            return Some(reply(result));
+        }
+
+        if path == "/api/enet/rooms/register" {
+            return Some(self.register_room(state, request, body, &address));
+        }
+        if path.starts_with("/api/enet/") {
+            if let Some(response) = self.route_enet(state, body, path) {
+                return Some(response);
+            }
+        }
+
+        if path == "/api/moderation/report" || path == "/api/moderation/peers" {
+            let code = normalize_enet_code(body.get("code"));
+            let room = state.dir.enet_rooms.get(&code).cloned();
+            let Some(room) = room.filter(|r| safe_equal(&str_or_empty(body.get("hostToken")), &r.token)) else {
+                return Some(json_response(403, &json!({ "ok": false, "code": "INVALID_HOST_TOKEN", "error": "INVALID HOST TOKEN" }), &[]));
+            };
+            if path == "/api/moderation/peers" {
+                return Some(reply(state.moderation.peers(body)));
+            }
+            let host = if room.host_user.is_empty() { format!("room:{}", room.instance) } else { format!("user:{}", room.host_user) };
+            let ctx = ModCtx { accounts: &state.accounts, updates: self.current_updates() };
+            return Some(reply(state.moderation.report_kick(&ctx, body, &code, &host)));
+        }
+        if path == "/api/moderation/integrity" {
+            let username = session_user(state, body);
+            let ctx = ModCtx { accounts: &state.accounts, updates: self.current_updates() };
+            return Some(reply(state.moderation.integrity(&ctx, body, &username, &address)));
+        }
+        if path == "/api/moderation/status" {
+            let who = Who { username: session_user(state, body), device_id: body.get("deviceId").cloned(), address: address.clone() };
+            return Some(json_response(200, &json!({ "ok": true, "status": state.moderation.status(&who) }), &[]));
+        }
+        if path.starts_with("/api/admin/mods/") {
+            let Some(owner) = owner_of(state, body) else { return Some(not_owner()) };
+            return Some(reply(match path {
+                "/api/admin/mods/register" => state.mod_packs.register(body, &owner),
+                "/api/admin/mods/block" => state.mod_packs.block(body, &owner),
+                "/api/admin/mods/unblock" => state.mod_packs.unblock(body, &owner),
+                _ => unknown_endpoint(),
+            }));
+        }
+        if path.starts_with("/api/admin/flags") || path.starts_with("/api/admin/builds/") {
+            let Some(owner) = owner_of(state, body) else { return Some(not_owner()) };
+            let ctx = ModCtx { accounts: &state.accounts, updates: self.current_updates() };
+            return Some(reply(match path {
+                "/api/admin/flags" => state.moderation.admin_list(),
+                "/api/admin/flags/set" => state.moderation.admin_set(&ctx, body, &owner),
+                "/api/admin/builds/add" => state.moderation.add_build(body, &owner),
+                "/api/admin/builds/remove" => state.moderation.remove_build(body),
+                _ => unknown_endpoint(),
+            }));
+        }
+        if path == "/api/dev/login" {
+            if self.config.admin_password.is_empty() {
+                return Some(json_response(503, &json!({ "ok": false, "code": "DEV_LOGIN_DISABLED", "error": "Developer login is not configured" }), &[]));
+            }
+            if !safe_equal(&str_or_empty(body.get("password")), &self.config.admin_password) {
+                return Some(json_response(401, &json!({ "ok": false, "code": "INVALID_DEV_PASSWORD", "error": "Invalid developer password" }), &[]));
+            }
+            let token = self.issue_dev_token(state);
+            return Some(json_response(200, &json!({ "ok": true, "developer": true, "admin": true, "devToken": token }), &[]));
+        }
+        if path == "/api/dev/reload" {
+            if !self.developer_request(state, body) {
+                return Some(json_response(401, &json!({ "ok": false, "code": "NOT_AUTHORIZED", "error": "Developer proof required" }), &[]));
+            }
+            state.reload_id += 1;
+            return Some(json_response(200, &json!({ "ok": true, "reloadId": state.reload_id }), &[]));
+        }
+        None
+    }
+
+    /// heartbeat, unregister, release-host and the admin tickets.
+    fn route_enet(&self, state: &mut State, body: &Value, path: &str) -> Option<Response> {
+        let now = self.now();
+        let (relay_address, relay_port) = (self.config.relay_address.as_str(), self.config.relay_port);
+        let code = normalize_enet_code(body.get("code"));
+        let token_ok = |room: &EnetRoom, key: &str| safe_equal(&str_or_empty(body.get(key)), &room.token);
+        match path {
+            "/api/enet/rooms/heartbeat" => {
+                let ttl = self.config.enet_room_ttl_ms;
+                let Some(room) = state.dir.enet_rooms.get_mut(&code) else {
+                    return Some(json_response(404, &json!({ "ok": false, "error": "ROOM NOT FOUND" }), &[]));
+                };
+                if !token_ok(room, "token") {
+                    return Some(json_response(403, &json!({ "ok": false, "error": "INVALID HOST TOKEN" }), &[]));
+                }
+                room.players = finite_players(body.get("players"), room.players).trunc();
+                room.session_active = truthy(body.get("sessionActive"));
+                room.daytime = truthy(body.get("daytime"));
+                room.expires_at = now + if is_public_code(&room.code) { PUBLIC_ENET_TTL_MS } else { ttl };
+                room.last_seen = now;
+                let room = room.clone();
+                let mut out = Map::new();
+                out.insert("ok".into(), json!(true));
+                out.insert("room".into(), public_enet_room(&room, now, relay_address, relay_port));
+                if room.reserved {
+                    let view = state.dir.reserved.as_mut().and_then(|r| r.host_view(&room.code, body.get("commandSince"), body.get("commandAck")));
+                    if let Some(view) = view {
+                        out.insert("reserved".into(), view);
+                    }
+                }
+                Some(json_response(200, &Value::Object(out), &[]))
+            }
+            "/api/enet/rooms/unregister" => {
+                let Some(room) = state.dir.enet_rooms.get(&code) else {
+                    return Some(json_response(200, &json!({ "ok": true, "removed": false }), &[]));
+                };
+                if !token_ok(room, "token") {
+                    return Some(json_response(403, &json!({ "ok": false, "error": "INVALID HOST TOKEN" }), &[]));
+                }
+                // an explicit quit: guests are told now and the code stops resolving now
+                let State { relay, dir, .. } = state;
+                if let Some(relay) = relay.as_mut() {
+                    relay.close_room(&code, None, dir);
+                }
+                dir.forget(&code);
+                Some(json_response(200, &json!({ "ok": true, "removed": true }), &[]))
+            }
+            "/api/enet/rooms/release-host" => {
+                let Some(room) = state.dir.enet_rooms.get(&code) else {
+                    return Some(json_response(200, &json!({ "ok": true, "migrating": false }), &[]));
+                };
+                if !token_ok(room, "token") {
+                    return Some(json_response(403, &json!({ "ok": false, "error": "INVALID HOST TOKEN" }), &[]));
+                }
+                let ws = room.transport == "ws";
+                let State { relay, dir, .. } = state;
+                if let Some(handoff @ Value::Object(_)) = body.get("handoff") {
+                    let Some(relay) = relay.as_mut().filter(|_| !ws) else {
+                        return Some(json_response(200, &json!({ "ok": true, "migrating": false, "unsupported": true,
+                            "error": "HOST TRANSFER IS NOT SUPPORTED FOR THIS ROOM" }), &[]));
+                    };
+                    let result = relay.request_host_handoff(&code, handoff.get("candidateSession"), handoff.get("epoch"), dir);
+                    let mut out = Map::new();
+                    out.insert("ok".into(), json!(true));
+                    out.insert("migrating".into(), json!(result.migrating));
+                    if let Some(error) = result.error {
+                        out.insert("error".into(), json!(error));
+                    }
+                    return Some(json_response(200, &Value::Object(out), &[]));
+                }
+                let migrating = !ws && relay.as_mut().map(|r| r.request_host_migration(&code, dir)).unwrap_or(false);
+                if !migrating {
+                    dir.enet_rooms.shift_remove(&code);
+                }
+                Some(json_response(200, &json!({ "ok": true, "migrating": migrating }), &[]))
+            }
+            "/api/enet/admin-tickets/issue" => {
+                let Some(room) = state.dir.enet_rooms.get(&code).cloned() else {
+                    return Some(json_response(404, &json!({ "ok": false, "error": "ROOM NOT FOUND" }), &[]));
+                };
+                let identity = state.accounts.session_admin_identity(&str_or_empty(body.get("sessionToken"))).unwrap_or(Value::Null);
+                let permissions: Vec<Value> = identity.get("adminPermissions").and_then(Value::as_array).cloned().unwrap_or_default();
+                if !truthy(identity.get("admin")) || permissions.is_empty() {
+                    return Some(json_response(403, &json!({ "ok": false, "error": "ADMIN ACCOUNT REQUIRED" }), &[]));
+                }
+                let ticket = base64url(&random_bytes(32));
+                let configured = if self.config.admin_ticket_ttl_ms > 0 { self.config.admin_ticket_ttl_ms } else { DEFAULT_ADMIN_TICKET_TTL_MS };
+                let ttl = configured.min(DEFAULT_ADMIN_TICKET_TTL_MS).max(5_000);
+                state.dir.admin_tickets.insert(ticket.clone(), AdminTicket {
+                    code: code.clone(),
+                    host_token: room.token.clone(),
+                    expires_at: now + ttl,
+                    username: str_nullish(identity.get("username")),
+                    permissions: permissions.clone(),
+                    owner: identity.get("adminOwner") == Some(&Value::Bool(true)),
+                });
+                Some(json_response(201, &json!({ "ok": true, "ticket": ticket, "room": code, "permissions": permissions,
+                    "expiresIn": ((ttl as f64) / 1000.0).ceil().max(1.0) as i64 }), &[]))
+            }
+            "/api/enet/admin-tickets/verify" => {
+                let Some(room) = state.dir.enet_rooms.get(&code).cloned() else {
+                    return Some(json_response(404, &json!({ "ok": false, "error": "ROOM NOT FOUND" }), &[]));
+                };
+                if !token_ok(&room, "hostToken") {
+                    return Some(json_response(403, &json!({ "ok": false, "error": "INVALID HOST TOKEN" }), &[]));
+                }
+                let ticket = str_or_empty(body.get("ticket"));
+                let proof = state.dir.admin_tickets.get(&ticket).cloned()
+                    .filter(|p| p.expires_at > now && p.code == code && safe_equal(&p.host_token, &room.token));
+                let Some(proof) = proof else {
+                    state.dir.admin_tickets.shift_remove(&ticket);
+                    return Some(json_response(403, &json!({ "ok": false, "authorized": false, "error": "INVALID OR EXPIRED ADMIN TICKET" }), &[]));
+                };
+                Some(json_response(200, &json!({ "ok": true, "authorized": true, "room": code, "permissions": proof.permissions,
+                    "owner": proof.owner, "expiresIn": (((proof.expires_at - now) as f64) / 1000.0).ceil().max(1.0) as i64 }), &[]))
+            }
+            _ => None,
+        }
+    }
+
+    /// The final dispatch table of server.mjs (legacy rooms, guest names, accounts, roster).
+    fn route_accounts(&self, state: &mut State, body: &Value, path: &str) -> Reply {
+        let mut result: Reply = match path {
+            "/api/rooms/join" => state.room_service.join_room(body),
+            "/api/rooms/state" => state.room_service.update_room(body),
+            "/api/rooms/settings" => state.room_service.update_room_settings(body),
+            "/api/rooms/start" => state.room_service.start_room_round(body),
+            "/api/rooms/default-start" => state.room_service.start_default_route(body),
+            "/api/rooms/abandon" => state.room_service.abandon_route(body),
+            "/api/rooms/custom-map" => state.room_service.set_custom_map(body),
+            "/api/rooms/dialog-start" => state.room_service.start_dialog(body),
+            "/api/rooms/dialog-advance" => state.room_service.advance_dialog(body),
+            "/api/skins/mine" | "/api/skins/clear" | "/api/skins/remove" => {
+                (503, json!({ "ok": false, "code": "SKINS_UNAVAILABLE", "error": "Skins are not available on this server" }))
+            }
+            "/api/city-maps/list" | "/api/city-maps/ticket" => {
+                (404, json!({ "ok": false, "code": "CITY_MAPS_UNAVAILABLE", "error": "City maps are not part of this server" }))
+            }
+            "/api/rooms/leave" => state.room_service.leave_room(body),
+            "/api/guest/name" => state.guest_names.issue(body),
+            "/api/account/register" | "/api/account/login" => {
+                let mut r = if path == "/api/account/register" {
+                    let allow = self.developer_request(state, body);
+                    state.accounts.register(body, allow)
+                } else {
+                    state.accounts.login(body)
+                };
+                if r.1.get("ok") == Some(&json!(true)) && truthy(r.1.get("adminOwner")) {
+                    r.1["devToken"] = json!(self.issue_dev_token(state));
+                }
+                r
+            }
+            "/api/account/session" => state.accounts.current_session(body),
+            "/api/account/password" => state.accounts.change_password(body),
+            "/api/account/rename" => {
+                let previous = state.accounts.session_username(&str_or_empty(body.get("sessionToken")));
+                let allow = self.developer_request(state, body);
+                let r = state.accounts.rename(body, allow);
+                if let (Some(true), Some(previous)) = (r.1.get("ok").and_then(Value::as_bool), previous) {
+                    state.moderation.rename_account(&previous, &str_nullish(r.1.get("username")));
+                }
+                r
+            }
+            "/api/account/save" => state.accounts.save(body),
+            "/api/account/load" => state.accounts.load_progress(body),
+            "/api/account/logout" => state.accounts.logout(body),
+            "/api/admin/roster" => state.accounts.list_admin_roster(body),
+            "/api/admin/roster/set" | "/api/admin/roster/remove" => {
+                let r = if path == "/api/admin/roster/set" {
+                    state.accounts.set_admin_roster(body)
+                } else {
+                    state.accounts.remove_admin_roster(body)
+                };
+                if r.1.get("ok") == Some(&json!(true)) {
+                    let name = if path == "/api/admin/roster/set" { r.1.get("entry").and_then(|e| e.get("username")) } else { r.1.get("username") };
+                    let name = name.map(|n| str_nullish(Some(n)));
+                    state.dir.admin_tickets.retain(|_, proof| Some(&proof.username) != name.as_ref());
+                }
+                r
+            }
+            _ => unknown_endpoint(),
+        };
+        if let Value::Object(map) = &mut result.1 {
+            if truthy(map.get("room")) && !map.contains_key("ok") {
+                map.insert("reloadId".into(), json!(state.reload_id));
+            }
+        }
+        result
+    }
+
+    fn register_room(&self, state: &mut State, request: &Request, body: &Value, address: &str) -> Response {
+        let now = self.now();
+        let code = normalize_enet_code(body.get("code"));
+        let web_room = body.get("transport").and_then(Value::as_str) == Some("ws");
+        let port = if web_room { 0.0 } else { js_number(body.get("port")) };
+        if code.is_empty() {
+            return json_response(400, &json!({ "ok": false, "error": "INVALID ROOM CODE" }), &[]);
+        }
+        if !web_room && !(port.is_finite() && port.fract() == 0.0 && (1.0..=65_535.0).contains(&port)) {
+            return json_response(400, &json!({ "ok": false, "error": "INVALID ENET PORT" }), &[]);
+        }
+        let host_user = session_user(state, body);
+        let reserved = state.dir.reserved.as_ref().map(|r| r.is_reserved(&code)).unwrap_or(false);
+        let spawned = state.spawn_tickets.get(&code).map(|(ticket, expires)| {
+            *expires > now && truthy(body.get("spawnTicket")) && safe_equal(&str_or_empty(body.get("spawnTicket")), ticket)
+        }) == Some(true);
+        if spawned {
+            state.spawn_tickets.remove(&code);
+        }
+        if !reserved && !regex!(r"^[A-HJ-NP-Z2-9]{5}$").is_match(&code) {
+            return json_response(400, &json!({ "ok": false, "error": "INVALID ROOM CODE" }), &[]);
+        }
+        if reserved && !spawned {
+            let owner = !host_user.is_empty() && state.accounts.is_admin_owner(&host_user);
+            let password = str_or_empty(body.get("roomPassword"));
+            if !state.dir.reserved.as_ref().unwrap().has_access(&code, &host_user, &password, owner) {
+                return json_response(403, &json!({ "ok": false, "code": "ROOM_RESERVED", "reserved": true,
+                    "error": "THAT ROOM CODE IS RESERVED // INVITE OR ROOM PASSWORD REQUIRED" }), &[]);
+            }
+        }
+        if let Some(live) = state.dir.enet_rooms.get(&code) {
+            // a reserved room's crashed host is replaced by the next invited player once its heartbeat has gone quiet
+            if !(reserved && now - live.last_seen > RESERVED_TAKEOVER_MS) {
+                return json_response(409, &json!({ "ok": false, "error": "ROOM CODE ALREADY REGISTERED" }), &[]);
+            }
+        }
+        let public = is_public_code(&code);
+        if public {
+            let who = Who { username: host_user.clone(), device_id: body.get("deviceId").cloned(), address: address.to_string() };
+            if let Some(refused) = state.moderation.check_host_public(&who) {
+                return reply(refused);
+            }
+        }
+        let token = base64url(&random_bytes(24));
+        let protocol = str_or_empty(body.get("protocol"));
+        let region = if spawned {
+            or_default(state.regions.region_of(&code), &str_or_empty(body.get("region")).chars().take(24).collect::<String>())
+        } else {
+            String::new()
+        };
+        let room = EnetRoom {
+            code: code.clone(),
+            token: token.clone(),
+            address: requester_address(request, self.config.trust_proxy),
+            port: port as i64,
+            transport: if web_room { "ws".into() } else { "enet".into() },
+            host_user,
+            instance: base64url(&random_bytes(9)),
+            players: finite_players(body.get("players"), 1.0).trunc(),
+            session_active: truthy(body.get("sessionActive")),
+            daytime: truthy(body.get("daytime")),
+            game: if public {
+                PUBLIC_CODES.iter().find(|(_, c)| *c == code).map(|(g, _)| g.to_string()).unwrap_or_default()
+            } else {
+                clean_game(body.get("game"))
+            },
+            expires_at: now + if public { PUBLIC_ENET_TTL_MS } else { self.config.enet_room_ttl_ms },
+            last_seen: now,
+            protocol: if regex!(r"^[a-f0-9]{8}$").is_match(&protocol) { protocol } else { String::new() },
+            dedicated: spawned,
+            region,
+            reserved,
+        };
+        let view = public_enet_room(&room, now, &self.config.relay_address, self.config.relay_port);
+        state.dir.enet_rooms.insert(code.clone(), room);
+        let mut out = Map::new();
+        out.insert("ok".into(), json!(true));
+        out.insert("token".into(), json!(token));
+        out.insert("room".into(), view);
+        if reserved {
+            // a new host starts clean: commands meant for the previous one are dropped
+            if let Some(view) = state.dir.reserved.as_mut().unwrap().host_view(&code, None, Some(&json!(9_007_199_254_740_991i64))) {
+                out.insert("reserved".into(), view);
+            }
+        }
+        json_response(201, &Value::Object(out), &[])
+    }
+}

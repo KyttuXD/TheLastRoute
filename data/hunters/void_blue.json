@@ -1,0 +1,17 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "void_blue",
+	"name": "Blue",
+	"tier": "void",
+	"category": "void",
+	"speed": 0.92,
+	"chase": 4.48,
+	"prog": 0.25,
+	"sight": 9.6,
+	"hearing": 1.18,
+	"spawn": 15,
+	"model": "res://assets/hunters_blocky/void_blue/void_blue.glb",
+	"chase_style": "glide",
+	"taser_immune": true,
+	"melee_immune": false
+}

@@ -1,0 +1,126 @@
+{
+	"schema": "lr.prop/1",
+	"family": "p09",
+	"props": [
+		{
+			"id": "luxuryKitchenWallCabinet",
+			"models": [
+				"res://assets/props/mansion/luxury_kitchen_wall_cabinet.glb"
+			]
+		},
+		{
+			"id": "luxuryKitchenIsland",
+			"models": [
+				"res://assets/props/mansion/luxury_kitchen_island.glb"
+			]
+		},
+		{
+			"id": "gothicKitchenCounter",
+			"models": [
+				"res://assets/props/mansion/gothic_kitchen_counter.glb"
+			]
+		},
+		{
+			"id": "gothicKitchenSink",
+			"models": [
+				"res://assets/props/mansion/gothic_kitchen_sink.glb"
+			]
+		},
+		{
+			"id": "gothicKitchenStove",
+			"models": [
+				"res://assets/props/mansion/gothic_kitchen_stove.glb"
+			]
+		},
+		{
+			"id": "gothicKitchenFridge",
+			"models": [
+				"res://assets/props/mansion/gothic_kitchen_fridge.glb"
+			]
+		},
+		{
+			"id": "gothicKitchenWallCabinet",
+			"models": [
+				"res://assets/props/mansion/gothic_kitchen_wall_cabinet.glb"
+			]
+		},
+		{
+			"id": "gothicKitchenIsland",
+			"models": [
+				"res://assets/props/mansion/gothic_kitchen_island.glb"
+			]
+		},
+		{
+			"id": "normalBookcase",
+			"models": [
+				"res://assets/props/mansion/normal_bookcase.glb"
+			]
+		},
+		{
+			"id": "normalCoffeeTable",
+			"models": [
+				"res://assets/props/mansion/normal_coffee_table.glb"
+			]
+		},
+		{
+			"id": "normalTvConsole",
+			"models": [
+				"res://assets/props/mansion/normal_tv_console.glb"
+			]
+		},
+		{
+			"id": "normalEntryBench",
+			"models": [
+				"res://assets/props/mansion/normal_entry_bench.glb"
+			]
+		},
+		{
+			"id": "mansionDisplayCabinet",
+			"models": [
+				"res://assets/props/mansion/mansion_display_cabinet.glb"
+			]
+		},
+		{
+			"id": "mansionChaiseLounge",
+			"models": [
+				"res://assets/props/mansion/mansion_chaise_lounge.glb"
+			]
+		},
+		{
+			"id": "mansionUprightPiano",
+			"models": [
+				"res://assets/props/mansion/mansion_upright_piano.glb"
+			]
+		},
+		{
+			"id": "mansionBustPedestal",
+			"models": [
+				"res://assets/props/mansion/mansion_bust_pedestal.glb"
+			]
+		},
+		{
+			"id": "sandCastle",
+			"models": [
+				"res://assets/props/beach/sand_castle.glb"
+			]
+		},
+		{
+			"id": "beachUmbrella",
+			"models": [
+				"res://assets/props/beach/beach_umbrella.glb"
+			]
+		},
+		{
+			"id": "tikiBar",
+			"models": [
+				"res://assets/props/beach/tiki_bar.glb"
+			]
+		},
+		{
+			"id": "beachChair",
+			"models": [
+				"res://assets/props/beach/beach_chair.glb"
+			]
+		}
+	]
+}

@@ -1,0 +1,17 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "void_green",
+	"name": "Green",
+	"tier": "void",
+	"category": "void",
+	"speed": 0.97,
+	"chase": 4.68,
+	"prog": 0.25,
+	"sight": 9.1,
+	"hearing": 1.28,
+	"spawn": 14,
+	"model": "res://assets/hunters_blocky/void_green/void_green.glb",
+	"chase_style": "lope",
+	"taser_immune": true,
+	"melee_immune": false
+}

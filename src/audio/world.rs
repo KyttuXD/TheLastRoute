@@ -1,0 +1,161 @@
+//! Per-frame world sound: main_3d.gd `_update_local_audio` (1682-1735) and the hunter views' footfall clocks and
+//! Glyra's hum (hunter_view_3d.gd 1565-1588, 1676-1686). Call `update` once per game frame, ALSO while the runner is
+//! hidden or struggling (the original runs it every frame; the heartbeat keeps going in a locker).
+
+#![allow(dead_code)]
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+use super::cues::positional::HUM;
+use super::cues::rules::{self, HunterStepClock};
+use super::cues::stride::{preferred_clip, HunterGait};
+use super::engine::with;
+
+/// The runner as the sound sees them.
+#[derive(Clone, Copy, Debug)]
+pub struct Listener {
+    /// Grid position (cells = metres) and the 2D facing (x, z): `p.pos`, `forward2()`.
+    pub pos: (f32, f32),
+    pub facing: (f32, f32),
+    /// The camera (the original's listener): eye position and basis, from `eye()` / `camera_basis()`.
+    pub eye: [f32; 3],
+    pub right: [f32; 3],
+    pub up: [f32; 3],
+    pub forward: [f32; 3],
+    pub hidden: bool,
+    pub in_safe_zone: bool,
+}
+
+/// One hunter as the sound sees her.
+#[derive(Clone, Copy, Debug)]
+pub struct HunterAudio<'a> {
+    /// HunterDef id ("glyra", "nyxie", ...): picks her stride table and her special cues.
+    pub id: &'a str,
+    pub pos: (f32, f32),
+    pub active: bool,
+    /// brain state: CHASE / WANDER-INVESTIGATE-SEARCH / IDLE.
+    pub chasing: bool,
+    pub idle: bool,
+    pub direct_visible: bool,
+    pub winded: bool,
+    /// stun > 0, in the vents or climbing: no footfalls (and a stunned chaser is no pursuit cue).
+    pub stunned: bool,
+    pub in_vent: bool,
+    /// Nyxie: woken by the empty flashlight (else the timer). Ignored for the others.
+    pub nyxie_empty_wake: bool,
+    /// Glyra: her box is PLAYING (`Glyra::playing()`). Ignored for the others.
+    pub glyra_humming: bool,
+}
+
+#[derive(Default)]
+struct WorldState {
+    gaits: Vec<HunterGait>,
+    was_active: HashMap<String, bool>,
+    was_pursued: bool,
+    clock: HunterStepClock,
+}
+
+thread_local! {
+    static WORLD: RefCell<WorldState> = RefCell::new(WorldState::default());
+}
+
+/// Forget the floor's hunters (call when a floor starts or a run ends): their gait clocks, wake edges, the pursuit
+/// edge, and stop the loops and queued cues.
+pub fn reset() {
+    WORLD.with(|w| *w.borrow_mut() = WorldState::default());
+    super::stop_all();
+}
+
+/// CHASE_CUE_RANGE (hunter_brain.gd 520): a chaser this close is a pursuit cue even out of sight.
+const CHASE_CUE_RANGE: f32 = 18.0;
+
+pub fn update(dt: f32, l: &Listener, hunters: &[HunterAudio]) {
+    WORLD.with(|w| {
+        let w = &mut *w.borrow_mut();
+        if w.gaits.len() != hunters.len() {
+            w.gaits = vec![HunterGait::new(); hunters.len()];
+        }
+        with(|e| {
+            if !e.ready {
+                return;
+            }
+            e.pump();
+            let now = e.now_usec();
+            let mut nearest = f32::INFINITY;
+            let mut stepping: Option<(usize, f32)> = None;
+            let mut pursued = false;
+            for (i, h) in hunters.iter().enumerate() {
+                let d = ((h.pos.0 - l.pos.0).powi(2) + (h.pos.1 - l.pos.1).powi(2)).sqrt();
+                let was = w.was_active.get(h.id).copied().unwrap_or(false);
+                if h.active {
+                    nearest = nearest.min(d);
+                    if !h.idle && stepping.map(|s| d < s.1).unwrap_or(true) {
+                        stepping = Some((i, d));
+                    }
+                    if h.chasing && !h.stunned && (h.direct_visible || d <= CHASE_CUE_RANGE) {
+                        pursued = true;
+                    }
+                    if h.id == "nyxie" && !was {
+                        e.play(&if h.nyxie_empty_wake {
+                            rules::nyxie_empty_wake()
+                        } else {
+                            rules::nyxie_timer_wake()
+                        });
+                    }
+                }
+                w.was_active.insert(h.id.to_string(), h.active);
+                // every view runs its gait (so the eased speed is right when she becomes the stepping one)
+                let clip =
+                    preferred_clip(h.chasing, !h.chasing && !h.idle, h.direct_visible, h.winded);
+                w.gaits[i].update(h.id, h.pos, dt, clip, h.active && !h.stunned && !h.in_vent);
+                // Glyra's hum: positional loop on Master while she is active and her box plays
+                if h.id == "glyra" {
+                    let gains = (h.active && h.glyra_humming).then(|| {
+                        let (gl, gr) = HUM.gains_from(
+                            [h.pos.0, 0.0, h.pos.1],
+                            l.eye,
+                            l.right,
+                            l.up,
+                            l.forward,
+                        );
+                        (gl * e.master, gr * e.master)
+                    });
+                    e.set_loop("glyra_hum", gains, super::cues::music_box::glyra_hum);
+                }
+            }
+            if !hunters.iter().any(|h| h.id == "glyra") {
+                e.set_loop("glyra_hum", None, Vec::new);
+            }
+            if pursued && !w.was_pursued {
+                e.play(&rules::chase_start());
+            }
+            w.was_pursued = pursued;
+            let danger = rules::heartbeat_danger(
+                nearest.is_finite().then_some(nearest as f64),
+                pursued,
+                l.in_safe_zone,
+            );
+            if let Some(p) = e.front.heartbeat(danger, now) {
+                e.play(&p);
+            }
+            let rate = stepping
+                .map(|(i, _)| w.gaits[i].footfall_rate)
+                .unwrap_or(0.0);
+            if !w
+                .clock
+                .tick(dt as f64, rate as f64, stepping.is_some() && !l.hidden)
+            {
+                return;
+            }
+            let (i, _) = stepping.unwrap();
+            let h = &hunters[i];
+            let offset = ((h.pos.0 - l.pos.0) as f64, (h.pos.1 - l.pos.1) as f64);
+            if let Some((pan, volume)) =
+                rules::hunter_step_pan_volume(offset, (l.facing.0 as f64, l.facing.1 as f64))
+            {
+                let p = e.front.hunter_footstep(pan, volume, "");
+                e.play(&p);
+            }
+        });
+    });
+}

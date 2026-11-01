@@ -1,0 +1,17 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "void_black",
+	"name": "Black",
+	"tier": "void",
+	"category": "void",
+	"speed": 0.94,
+	"chase": 4.55,
+	"prog": 0.24,
+	"sight": 9.4,
+	"hearing": 1.22,
+	"spawn": 15,
+	"model": "res://assets/hunters_blocky/void_black/void_black.glb",
+	"chase_style": "lope",
+	"taser_immune": true,
+	"melee_immune": false
+}

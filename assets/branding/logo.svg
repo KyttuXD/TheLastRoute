@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Kyttu's Lab: the lab octagon around the signal rings (flat shapes so it stays crisp at 16 px). -->
+  <path d="M19 3H45L61 19V45L45 61H19L3 45V19Z" fill="#1a0c24" stroke="#c084fc" stroke-width="4" stroke-linejoin="round"/>
+  <circle cx="32" cy="32" r="18" fill="none" stroke="#ef4444" stroke-width="5"/>
+  <circle cx="32" cy="32" r="8.5" fill="#facc15"/>
+</svg>

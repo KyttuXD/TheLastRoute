@@ -1,0 +1,96 @@
+//! The content registry: the base game's JSON (data/, compiled in) with mod packs layered on
+//! top, after game/config/content_registry.gd. Packs add new ids or override existing ones.
+
+pub mod embedded;
+pub mod hunters;
+pub mod loot;
+pub mod packs;
+pub mod props;
+
+use hunters::HunterDef;
+use loot::Loot;
+use packs::Pack;
+use props::PropDef;
+use std::collections::HashMap;
+
+pub struct Content {
+    pub hunters: Vec<HunterDef>,
+    pub props: HashMap<String, PropDef>,
+    pub loot: Loot,
+    pub packs: Vec<Pack>,
+    /// Problems found while loading (shown on the MODS settings tab).
+    pub warnings: Vec<String>,
+}
+
+impl Content {
+    pub fn load() -> Content {
+        let mut c = Content {
+            hunters: vec![],
+            props: HashMap::new(),
+            loot: Loot::default(),
+            packs: vec![],
+            warnings: vec![],
+        };
+        for (path, text) in embedded::data_under("props/") {
+            match serde_json::from_str::<serde_json::Value>(text) {
+                Ok(v) => {
+                    for p in props::parse_file(&v) {
+                        c.props.insert(p.id.clone(), p);
+                    }
+                }
+                Err(e) => c.warnings.push(format!("{path}: {e}")),
+            }
+        }
+        for (path, text) in embedded::data_under("hunters/") {
+            match serde_json::from_str::<serde_json::Value>(text)
+                .map_err(|e| e.to_string())
+                .and_then(|v| hunters::parse(&v, None, ""))
+            {
+                Ok(mut h) => {
+                    h.model
+                        .get_or_insert_with(|| format!("hunters/{}.bbmodel", h.id));
+                    h.atlas
+                        .get_or_insert_with(|| format!("hunters/{}_atlas.png", h.id));
+                    h.portrait
+                        .get_or_insert_with(|| format!("portraits/{}.png", h.id));
+                    c.hunters.push(h);
+                }
+                Err(e) => c.warnings.push(format!("{path}: {e}")),
+            }
+        }
+        if let Some((_, text)) = embedded::data_under("loot/route.json").next() {
+            if let Ok(v) = serde_json::from_str(text) {
+                c.loot = Loot::parse(&v);
+            }
+        }
+        packs::load_all(&mut c);
+        c
+    }
+
+    pub fn hunter(&self, id: &str) -> Option<&HunterDef> {
+        self.hunters.iter().find(|h| h.id == id)
+    }
+
+    pub fn hunter_index(&self, id: &str) -> Option<usize> {
+        self.hunters.iter().position(|h| h.id == id)
+    }
+
+    /// DRAW_IDS: IMPLEMENTED_IDS plus hunters added by loaded packs, in that order.
+    pub fn draw_pool(&self) -> Vec<usize> {
+        let mut out: Vec<usize> = hunters::IMPLEMENTED_IDS
+            .iter()
+            .filter_map(|id| self.hunter_index(id))
+            .collect();
+        for (i, h) in self.hunters.iter().enumerate() {
+            if !h.pack.is_empty()
+                && !hunters::IMPLEMENTED_IDS.contains(&h.id.as_str())
+                && !hunters::SPECIAL_IDS.contains(&h.id.as_str())
+                && h.category == "az"
+                && !out.contains(&i)
+            {
+                out.push(i);
+            }
+        }
+        out
+    }
+}

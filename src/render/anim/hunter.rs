@@ -1,0 +1,1041 @@
+//! A hunter's presentation, ported from the original's view layer (all paths under game/hunters/view/ unless noted):
+//!
+//! * clip choice: hunter_view_3d.gd `_update_animation` (1708-1829) -- dormant hold (stun at 0.15), the one-shot
+//!   stun_recover after a stun and on waking, flight / charge, sprint while she sees the runner and has breath, chase,
+//!   walk for wander/investigate/search, idle; the gait hysteresis (GAIT_ENTER_SPEED / STILL_CLIP_AFTER); travel clips
+//!   played by `_play_travel` (0.15 s blend, stride phase kept) at the stride-matched speed of hunter_stride.gd `choose`.
+//! * motion sampling: `sync_from_brain` (1361-1418) -- smoothed move speed, teleport guard, still time.
+//! * body yaw and head look: hunter_facing.gd (track / steer / update_head) via `_update_body_yaw` (1142) and
+//!   `_update_head_look` (1006) / `_head_mode` (1042).
+//! * hunter_chase_style.gd: the per-hunter upper-body chase layer (reach2 reach1 pump lope glide skitter stalk stopstart).
+//! * `_update_heavy_stun_pose` (1835): the crowbar/axe reel on the model root.
+//! * faces: `_desired_expression` / `_update_expression` (1859-1910) on player/blocky_face.gd's cells; stars (1914).
+
+use super::clip::{key_quat, Rig};
+use super::player::{AnimPlayer, Local};
+use crate::hunters::brain::State;
+use macroquad::prelude::*;
+use std::f32::consts::{PI, TAU};
+use std::rc::Rc;
+
+/// HunterRoster.MODEL_SCALE: humanoid hunters are drawn 1.5x their authored glb size.
+pub const MODEL_SCALE: f32 = 1.5;
+/// Xivvy's flight height as the port already drew it (xivvy_flight.gd's altitude / bank / pitch are not ported).
+const XIVVY_LIFT: f32 = 0.48;
+
+const STILL_CLIP_AFTER: f32 = 0.35;
+const STILL_SPEED: f32 = 0.15;
+const TELEPORT_DISTANCE: f32 = 4.0;
+const GAIT_ENTER_SPEED: f32 = 0.35;
+const TRAVEL_BLEND: f32 = 0.15;
+const DORMANT_SPEED: f32 = 0.15;
+const SCREAM_DISTANCE: f32 = 2.6;
+const FACE_HOLD: f32 = 0.45;
+const HEAVY_STUN_LEAN: f32 = 0.32;
+const HEAVY_STUN_SWAY: f32 = 0.09;
+const HEAVY_STUN_SWAY_RATE: f32 = 0.0042;
+const HEAVY_STUN_EASE: f32 = 9.0;
+
+// hunter_stride.gd
+const MIN_RATIO: f32 = 0.55;
+const MAX_RATIO: f32 = 1.9;
+const HARD_MIN: f32 = 0.2;
+const HARD_MAX: f32 = 2.6;
+const TRAVEL_CLIPS: [&str; 3] = ["walk", "chase", "sprint"];
+
+/// What the view reads from the brain each frame (all replicated / public state in the original too).
+pub struct Input<'a> {
+    pub pos: (f32, f32),
+    pub brain_facing: (f32, f32),
+    pub active: bool,
+    pub stun: f32,
+    pub heavy_stun: bool,
+    pub state: State,
+    pub direct_visible: bool,
+    pub winded: bool,
+    /// Xivvy airborne
+    pub airborne: bool,
+    /// Loxelle's charge (windup + charge)
+    pub charging: bool,
+    /// brain.presentation_look_target(): last_known while chasing/investigating, the search point while searching
+    pub look_target: Option<(f32, f32)>,
+    /// brain.path_look_ahead(d), when the brain exposes its route (else the travel direction is used, as on guests)
+    pub path_ahead: Option<&'a dyn Fn(f32) -> Option<(f32, f32)>>,
+    pub chase_style: &'a str,
+    /// The runner, for the scream face (look_target_position in the original is the same last-known point).
+    pub camera: Vec3,
+    /// A grab has hold of her this frame (chase layer and head look off, pinned).
+    pub grabbing: bool,
+}
+
+/// The posed model for this frame.
+pub struct Output {
+    /// Model-space (bbmodel units) transform of every rig bone.
+    pub bones: Vec<Mat4>,
+    /// World from model space: view (position, yaw) x model (heavy-stun lean, MODEL_SCALE / unit).
+    pub root: Mat4,
+    /// BlockyFace cell on the face quad.
+    pub face_cell: u32,
+    pub yaw: f32,
+}
+
+/// godot String::hash (djb2) as GDScript's hash() returns it.
+pub fn gd_hash(s: &str) -> u32 {
+    let mut h: u32 = 5381;
+    for c in s.chars() {
+        h = h.wrapping_mul(33).wrapping_add(c as u32);
+    }
+    h
+}
+
+fn wrapf(v: f32, lo: f32, hi: f32) -> f32 {
+    let r = hi - lo;
+    lo + (v - lo).rem_euclid(r)
+}
+
+fn move_toward(a: f32, b: f32, d: f32) -> f32 {
+    if (b - a).abs() <= d {
+        b
+    } else {
+        a + (b - a).signum() * d
+    }
+}
+
+fn smoothstep01(w: f32) -> f32 {
+    w * w * (3.0 - 2.0 * w)
+}
+
+fn v2len(v: (f32, f32)) -> f32 {
+    (v.0 * v.0 + v.1 * v.1).sqrt()
+}
+
+// ------------------------------------------------------------------------------------------------- HunterFacing
+
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    None,
+    Ahead,
+    Scan,
+    Lock,
+    Sweep,
+}
+
+#[derive(Default)]
+struct Facing {
+    move_dir: (f32, f32),
+    speed: f32,
+    head_yaw: f32,
+    head_pitch: f32,
+    weight: f32,
+    phase: f32,
+    last: (f32, f32),
+    has_last: bool,
+    still_time: f32,
+}
+
+impl Facing {
+    const WALK_TURN: f32 = 420.0 * PI / 180.0;
+    const RUN_TURN: f32 = 600.0 * PI / 180.0;
+    const TURN_GAIN: f32 = 12.0;
+    const MIN_HEADING_SPEED: f32 = 0.45;
+    const TELEPORT_STEP: f32 = 3.0;
+    const MOVING_HOLD: f32 = 0.25;
+    const YAW_LIMIT: f32 = 70.0 * PI / 180.0;
+    const PITCH_LIMIT: f32 = 35.0 * PI / 180.0;
+    const HEAD_DAMP: f32 = 9.0;
+    const FADE_SPEED: f32 = 4.0;
+    const AHEAD_SWAY: f32 = 5.0 * PI / 180.0;
+    const SCAN_SWING: f32 = 9.0 * PI / 180.0;
+    const SCAN_RATE: f32 = 0.45;
+    const SWEEP_SWING: f32 = 14.0 * PI / 180.0;
+    const NOD: f32 = 2.0 * PI / 180.0;
+
+    fn moving(&self) -> bool {
+        self.still_time < Self::MOVING_HOLD
+            && (self.move_dir.0 * self.move_dir.0 + self.move_dir.1 * self.move_dir.1) > 0.0001
+    }
+
+    fn track(&mut self, p: (f32, f32), delta: f32) {
+        let frame = delta.clamp(1.0 / 240.0, 0.1);
+        if !self.has_last {
+            self.has_last = true;
+            self.last = p;
+            return;
+        }
+        let step = (p.0 - self.last.0, p.1 - self.last.1);
+        self.last = p;
+        let d = v2len(step);
+        if d > Self::TELEPORT_STEP {
+            self.speed = 0.0;
+            self.move_dir = (0.0, 0.0);
+            self.still_time = Self::MOVING_HOLD;
+            return;
+        }
+        self.speed += (d / frame - self.speed) * 0.3;
+        if d / frame > Self::MIN_HEADING_SPEED {
+            self.still_time = 0.0;
+            let dir = (step.0 / d, step.1 / d);
+            let k = (frame * 18.0).clamp(0.0, 1.0);
+            self.move_dir = if v2len(self.move_dir).powi(2) < 0.01 {
+                dir
+            } else {
+                (
+                    self.move_dir.0 + (dir.0 - self.move_dir.0) * k,
+                    self.move_dir.1 + (dir.1 - self.move_dir.1) * k,
+                )
+            };
+        } else {
+            self.still_time += frame;
+        }
+    }
+
+    fn steer(&self, current: f32, dir: (f32, f32), running: bool, delta: f32) -> f32 {
+        if dir.0 * dir.0 + dir.1 * dir.1 < 0.0001 {
+            return current;
+        }
+        let frame = delta.clamp(1.0 / 240.0, 0.1);
+        let limit = if running {
+            Self::RUN_TURN
+        } else {
+            Self::WALK_TURN
+        } * frame;
+        let error = wrapf((-dir.0).atan2(-dir.1) - current, -PI, PI);
+        let turn = (error * (frame * Self::TURN_GAIN).clamp(0.0, 1.0)).clamp(-limit, limit);
+        current + turn
+    }
+
+    fn look_ahead_distance(&self) -> f32 {
+        (2.0 + self.speed * 0.35).clamp(2.0, 4.0)
+    }
+
+    fn update_head(
+        &mut self,
+        delta: f32,
+        mode: Mode,
+        body_yaw: f32,
+        origin: (f32, f32),
+        target: (f32, f32),
+        seconds: f32,
+    ) {
+        let frame = delta.clamp(1.0 / 240.0, 0.1);
+        self.weight = move_toward(
+            self.weight,
+            if mode == Mode::None { 0.0 } else { 1.0 },
+            frame * Self::FADE_SPEED,
+        );
+        let mut yaw = 0.0;
+        let mut pitch = 0.0;
+        if mode != Mode::None {
+            if mode != Mode::Scan {
+                let off = (target.0 - origin.0, target.1 - origin.1);
+                if off.0 * off.0 + off.1 * off.1 > 0.04 {
+                    yaw = wrapf((-off.0).atan2(-off.1) - body_yaw, -PI, PI);
+                }
+            }
+            match mode {
+                Mode::Ahead => yaw += (seconds * 0.6 + self.phase).sin() * Self::AHEAD_SWAY,
+                Mode::Sweep => yaw += (seconds * 1.1 + self.phase).sin() * Self::SWEEP_SWING,
+                Mode::Scan => {
+                    yaw = (seconds * Self::SCAN_RATE + self.phase).sin() * Self::SCAN_SWING
+                }
+                _ => {}
+            }
+            if mode != Mode::Lock {
+                pitch = (seconds * 0.5 + self.phase * 1.3).sin() * Self::NOD;
+            }
+        }
+        yaw = yaw.clamp(-Self::YAW_LIMIT, Self::YAW_LIMIT);
+        pitch = pitch.clamp(-Self::PITCH_LIMIT, Self::PITCH_LIMIT);
+        let blend = 1.0 - (-Self::HEAD_DAMP * frame).exp();
+        self.head_yaw += (yaw - self.head_yaw) * blend;
+        self.head_pitch += (pitch - self.head_pitch) * blend;
+    }
+}
+
+// ------------------------------------------------------------------------------------------------- HunterChaseStyle
+
+#[derive(Default)]
+struct ChaseStyle {
+    weight: f32,
+    chase_time: f32,
+    stride: f32,
+}
+
+const KEEP_ELBOW: f32 = 0.65;
+const REACH_KEEP_SWING: f32 = 0.25;
+const AIM_LIMIT: f32 = 35.0 * PI / 180.0;
+const CHASE_BLEND_SPEED: f32 = 3.0;
+const CHASE_STYLES: [&str; 8] = [
+    "reach2",
+    "reach1",
+    "pump",
+    "lope",
+    "glide",
+    "skitter",
+    "stalk",
+    "stopstart",
+];
+
+fn style_base(style: &str) -> &str {
+    let name = style.split(':').next().unwrap_or("");
+    if CHASE_STYLES.contains(&name) {
+        name
+    } else {
+        "pump"
+    }
+}
+
+/// Bone access by name on the frame's local pose, with the bind-time rest rotations.
+struct Bones<'a> {
+    rig: &'a Rig,
+    pose: &'a mut [Local],
+}
+
+impl Bones<'_> {
+    fn now(&self, b: &str) -> Quat {
+        self.rig
+            .bone(b)
+            .map(|i| self.pose[i].r)
+            .unwrap_or(Quat::IDENTITY)
+    }
+    fn rest(&self, b: &str) -> Quat {
+        self.rig
+            .bone(b)
+            .map(|i| self.rig.bones[i].rest_r)
+            .unwrap_or(Quat::IDENTITY)
+    }
+    fn put(&mut self, b: &str, q: Quat) {
+        if let Some(i) = self.rig.bone(b) {
+            self.pose[i].r = q;
+        }
+    }
+    /// HunterChaseStyle._swing: scales how far the clip has swung a bone from its rest.
+    fn swing(&self, b: &str, scale: f32) -> Quat {
+        let rest = self.rest(b);
+        let now = self.now(b);
+        let mut delta = now * rest.inverse();
+        if delta.w < 0.0 {
+            delta = -delta;
+        }
+        let angle = 2.0 * delta.w.clamp(-1.0, 1.0).acos();
+        if angle < 0.0001 {
+            return now;
+        }
+        // Quaternion.get_axis
+        let axis = if delta.w.abs() > 1.0 - 0.00001 {
+            vec3(delta.x, delta.y, delta.z)
+        } else {
+            vec3(delta.x, delta.y, delta.z) / (1.0 - delta.w * delta.w).sqrt()
+        };
+        Quat::from_axis_angle(axis.normalize(), angle * scale) * rest
+    }
+}
+
+impl ChaseStyle {
+    fn apply(
+        &mut self,
+        b: &mut Bones,
+        style: &str,
+        chasing: bool,
+        delta: f32,
+        aim: f32,
+        clock: f32,
+    ) {
+        use super::clip::gd_slerp as slerp;
+        self.weight = move_toward(
+            self.weight,
+            if chasing { 1.0 } else { 0.0 },
+            delta * CHASE_BLEND_SPEED,
+        );
+        self.chase_time = if chasing {
+            self.chase_time + delta
+        } else {
+            0.0
+        };
+        if self.weight <= 0.001 {
+            return;
+        }
+        let w = smoothstep01(self.weight);
+        let extra = if style.contains(':') {
+            style.split(':').nth(1).unwrap_or("")
+        } else {
+            ""
+        };
+        let q = |x: f32, y: f32, z: f32| key_quat(vec3(x, y, z) * w);
+        match style_base(style) {
+            kind @ ("reach2" | "reach1") => {
+                let arms: &[&str] = if kind == "reach2" {
+                    &["L-Arm", "R-Arm"]
+                } else {
+                    &["R-Arm"]
+                };
+                for &arm in arms {
+                    let phase = if arm == "L-Arm" { 0.0 } else { 1.7 };
+                    let wobble = (clock * 7.0 + phase).sin() * 4.0 * self.stride;
+                    let reach =
+                        Quat::from_axis_angle(Vec3::Y, aim * w) * q(80.0 + wobble, 0.0, 0.0);
+                    let v = reach
+                        * slerp(
+                            b.rest(arm),
+                            b.now(arm),
+                            1.0 - w * (1.0 - REACH_KEEP_SWING * self.stride),
+                        );
+                    b.put(arm, v);
+                    let fore = arm.replace("Arm", "Forearm");
+                    let clutch = 1.0 + (KEEP_ELBOW - 1.0) * w;
+                    let v = b.swing(&fore, clutch);
+                    b.put(&fore, v);
+                }
+            }
+            "pump" => match extra {
+                "fast" | "big" => {
+                    let amount = if extra == "fast" { 1.35 } else { 1.55 };
+                    for arm in ["L-Arm", "R-Arm", "L-Forearm", "R-Forearm"] {
+                        let v = slerp(b.now(arm), b.swing(arm, amount), w);
+                        b.put(arm, v);
+                    }
+                }
+                "fists" => {
+                    for fore in ["L-Forearm", "R-Forearm"] {
+                        let v = q(38.0, 0.0, 0.0) * b.now(fore);
+                        b.put(fore, v);
+                    }
+                }
+                "wings" => {
+                    for arm in ["L-Arm", "R-Arm"] {
+                        let side = if arm == "L-Arm" { -1.0 } else { 1.0 };
+                        let flap = (clock * 9.0).sin() * 8.0;
+                        let v = q(10.0, 0.0, (70.0 + flap) * side)
+                            * slerp(b.rest(arm), b.now(arm), 1.0 - w);
+                        b.put(arm, v);
+                    }
+                }
+                _ => {}
+            },
+            "lope" => {
+                let v = q(-14.0, 0.0, 0.0) * b.now("Chest");
+                b.put("Chest", v);
+                let v = q(-10.0, 0.0, 0.0) * b.now("Belly");
+                b.put("Belly", v);
+                let v = q(18.0, 0.0, 0.0) * b.now("Head");
+                b.put("Head", v);
+                for arm in ["L-Arm", "R-Arm"] {
+                    let v = q(15.0, 0.0, 0.0) * slerp(b.now(arm), b.rest(arm), 0.3 * w);
+                    b.put(arm, v);
+                }
+            }
+            "glide" => {
+                for bone in ["Chest", "Belly"] {
+                    let v = slerp(b.now(bone), b.rest(bone), 0.85 * w);
+                    b.put(bone, v);
+                }
+                for arm in ["L-Arm", "R-Arm"] {
+                    let v = slerp(b.now(arm), b.rest(arm), 0.55 * w);
+                    b.put(arm, v);
+                }
+                for fore in ["L-Forearm", "R-Forearm"] {
+                    let v = slerp(b.now(fore), b.rest(fore), (1.0 - KEEP_ELBOW) * w);
+                    b.put(fore, v);
+                }
+            }
+            "skitter" => {
+                let v = q(-24.0, 0.0, 0.0) * b.now("Belly");
+                b.put("Belly", v);
+                let v = q(-18.0, 0.0, 0.0) * b.now("Chest");
+                b.put("Chest", v);
+                let v = q(32.0, 0.0, 0.0) * b.now("Head");
+                b.put("Head", v);
+                for arm in ["L-Arm", "R-Arm"] {
+                    let fore = arm.replace("Arm", "Forearm");
+                    let v = q(40.0, 0.0, 0.0) * slerp(b.now(arm), b.rest(arm), 0.4 * w);
+                    b.put(arm, v);
+                    let v = q(42.0, 0.0, 0.0) * b.now(&fore);
+                    b.put(&fore, v);
+                }
+            }
+            "stalk" => {
+                let urge = (self.chase_time / 4.0).clamp(0.0, 1.0);
+                let v = q(6.0, 0.0, 18.0 + (6.0 - 18.0) * urge) * b.now("Head");
+                b.put("Head", v);
+                let v = q(-4.0 + (-16.0 + 4.0) * urge, 0.0, 0.0) * b.now("Chest");
+                b.put("Chest", v);
+                for arm in ["L-Arm", "R-Arm"] {
+                    let v = q(5.0 + 25.0 * urge, 0.0, 0.0)
+                        * slerp(b.now(arm), b.rest(arm), (1.0 - urge) * 0.35 * w);
+                    b.put(arm, v);
+                }
+            }
+            "stopstart" => {
+                let cycle = (clock + (gd_hash(style) % 100) as f32 * 0.01) % 2.1;
+                if cycle < 0.5 {
+                    let lock = (cycle / 0.5 * PI).sin();
+                    for arm in ["L-Arm", "R-Arm"] {
+                        let v = slerp(
+                            b.now(arm),
+                            key_quat(vec3(28.0, 0.0, 0.0)) * b.rest(arm),
+                            lock * w,
+                        );
+                        b.put(arm, v);
+                    }
+                    let v = key_quat(
+                        vec3(0.0, (clock * 47.0).sin() * 9.0, (clock * 31.0).sin() * 6.0)
+                            * lock
+                            * w,
+                    ) * b.now("Head");
+                    b.put("Head", v);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+// ------------------------------------------------------------------------------------------------- the view
+
+/// player/blocky_face.gd CELLS and the derp loop.
+fn face_cell(expression: &str, clock: f32) -> u32 {
+    match expression {
+        "blink" => 1,
+        "stun" => 2,
+        "chase" => 3,
+        "scream" => 4,
+        "happy" => 5,
+        "blank" => 10,
+        "derp" => [6, 7, 8, 9][((clock / 0.16).floor() as i64).rem_euclid(4) as usize],
+        _ => 0,
+    }
+}
+
+pub struct HunterView {
+    pub shown_id: String,
+    rig: Rc<Rig>,
+    player: AnimPlayer,
+    facing: Facing,
+    chase: ChaseStyle,
+    pub yaw: f32,
+    heading_initialized: bool,
+    move_speed: f32,
+    still_time: f32,
+    speed_primed: bool,
+    last_pos: (f32, f32),
+    gait_moving: bool,
+    stride_scale: f32,
+    was_dormant: bool,
+    was_stunned: bool,
+    recover_left: f32,
+    heavy_lean: f32,
+    expression: String,
+    blink_timer: f32,
+    blink_left: f32,
+    face_hold: f32,
+    scream_latched: bool,
+    derp_started: f32,
+    blink_rng: u32,
+}
+
+impl HunterView {
+    pub fn new(shown_id: &str, rig: Rc<Rig>) -> HunterView {
+        let phase = (gd_hash(shown_id) % 628) as f32 / 100.0;
+        HunterView {
+            shown_id: shown_id.to_string(),
+            rig,
+            player: AnimPlayer::default(),
+            facing: Facing {
+                phase,
+                ..Default::default()
+            },
+            chase: ChaseStyle {
+                stride: 1.0,
+                ..Default::default()
+            },
+            yaw: 0.0,
+            heading_initialized: false,
+            move_speed: 0.0,
+            still_time: 0.0,
+            speed_primed: false,
+            last_pos: (0.0, 0.0),
+            gait_moving: false,
+            stride_scale: 1.0,
+            was_dormant: false,
+            was_stunned: false,
+            recover_left: 0.0,
+            heavy_lean: 0.0,
+            expression: String::new(),
+            blink_timer: 2.0,
+            blink_left: 0.0,
+            face_hold: 0.0,
+            scream_latched: false,
+            derp_started: 0.0,
+            blink_rng: gd_hash(shown_id) | 1,
+        }
+    }
+
+    pub fn rig(&self) -> &Rig {
+        &self.rig
+    }
+
+    fn randf(&mut self) -> f32 {
+        // xorshift: the blink interval is randf_range(2.2, 5.0) in the original (unseeded)
+        let mut x = self.blink_rng;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.blink_rng = x;
+        (x >> 8) as f32 / (1u32 << 24) as f32
+    }
+
+    /// HunterStride.ref_speed: the measured reference at authored size, x MODEL_SCALE.
+    fn ref_speed(&self, clip: &str) -> f32 {
+        let fallback = match clip {
+            "walk" | "scythe_walk" => 1.4,
+            "chase" => 3.0,
+            "sprint" => 4.2,
+            _ => 1.5,
+        };
+        self.rig
+            .stride
+            .get(clip)
+            .map(|s| s.0)
+            .unwrap_or(fallback)
+            .max(0.3)
+            * MODEL_SCALE
+    }
+
+    /// HunterStride.choose
+    fn choose(&self, preferred: &str, speed: f32) -> (String, f32) {
+        let mut clip = preferred.to_string();
+        let ratio = speed / self.ref_speed(preferred);
+        if (!(MIN_RATIO..=MAX_RATIO).contains(&ratio)) && TRAVEL_CLIPS.contains(&preferred) {
+            let mut best = f32::INFINITY;
+            for c in TRAVEL_CLIPS {
+                if !self.rig.stride.contains_key(c) {
+                    continue;
+                }
+                let gap = (speed.max(0.05) / self.ref_speed(c)).ln().abs();
+                if gap < best {
+                    best = gap;
+                    clip = c.to_string();
+                }
+            }
+        }
+        let mut scale = (speed / self.ref_speed(&clip)).clamp(HARD_MIN, HARD_MAX);
+        if self.rig.stride.get(&clip).map(|s| s.1).unwrap_or(false) {
+            scale = -scale;
+        }
+        (clip, scale)
+    }
+
+    /// ModelSlot.play_if_available
+    fn play_if_available(&mut self, name: &str) {
+        if !self.rig.has_clip(name) {
+            return;
+        }
+        if self.player.current_animation() != name || !self.player.playing {
+            let rig = self.rig.clone();
+            self.player.play(&rig, name, -1.0);
+        }
+    }
+
+    /// `_play_travel`: blend 0.15 s and keep the stride phase.
+    fn play_travel(&mut self, clip: &str) {
+        if !self.rig.has_clip(clip) || (self.player.assigned == clip && self.player.playing) {
+            return;
+        }
+        let mut phase = 0.0;
+        if self.player.playing
+            && ["walk", "chase", "sprint", "scythe_walk"].contains(&self.player.assigned.as_str())
+        {
+            phase = self.player.position() / self.rig.length(&self.player.assigned).max(0.01);
+        }
+        let rig = self.rig.clone();
+        self.player.play(&rig, clip, TRAVEL_BLEND);
+        if phase > 0.0 {
+            self.player.seek(phase * self.rig.length(clip));
+        }
+    }
+
+    fn update_animation(&mut self, i: &Input, delta: f32) {
+        let mut clip = "idle".to_string();
+        if !i.active {
+            self.was_dormant = true;
+            let hold = if self.rig.has_clip("stun") {
+                "stun"
+            } else {
+                "idle"
+            };
+            self.play_if_available(hold);
+            self.player.speed_scale = DORMANT_SPEED;
+            return;
+        }
+        if self.was_dormant {
+            self.was_dormant = false;
+            if self.rig.has_clip("stun_recover") {
+                self.recover_left = self.rig.length("stun_recover") - 0.03;
+            }
+        }
+        if i.stun > 0.0 {
+            clip = "stun".into();
+            self.was_stunned = true;
+            self.recover_left = 0.0;
+        } else if self.was_stunned {
+            self.was_stunned = false;
+            if self.rig.has_clip("stun_recover") {
+                self.recover_left = self.rig.length("stun_recover") - 0.03;
+            }
+        }
+        if clip != "stun" && self.recover_left > 0.0 {
+            self.recover_left -= delta;
+            clip = "stun_recover".into();
+        } else if i.stun > 0.0 {
+        } else if i.airborne {
+            clip = "flight".into();
+        } else if i.charging {
+            clip = "charge".into();
+        } else {
+            match i.state {
+                State::Chase => {
+                    clip = if i.direct_visible && !i.winded {
+                        "sprint"
+                    } else {
+                        "chase"
+                    }
+                    .into()
+                }
+                State::Wander | State::Investigate | State::Search => clip = "walk".into(),
+                State::Idle => {}
+            }
+        }
+        if TRAVEL_CLIPS.contains(&clip.as_str()) {
+            if self.gait_moving && self.still_time > STILL_CLIP_AFTER {
+                self.gait_moving = false;
+            } else if !self.gait_moving && self.move_speed > GAIT_ENTER_SPEED {
+                self.gait_moving = true;
+            }
+            if !self.gait_moving {
+                clip = "idle".into();
+            }
+        }
+        if clip == "sprint" && !self.rig.has_clip("sprint") {
+            clip = "chase".into();
+        }
+        let mut speed = 1.0;
+        if clip == "flight" {
+            speed = (0.85 + self.move_speed * 0.22).clamp(0.85, 2.3); // XivvyFlight.flight_clip_speed
+        }
+        let travelling = TRAVEL_CLIPS.contains(&clip.as_str());
+        if travelling {
+            let (pick, scale) = self.choose(&clip, self.move_speed);
+            if self.rig.has_clip(&pick) {
+                clip = pick;
+            }
+            self.stride_scale += (scale - self.stride_scale) * (1.0 - (-10.0 * delta).exp());
+            speed = self.stride_scale;
+        }
+        if travelling {
+            self.play_travel(&clip);
+        } else {
+            self.play_if_available(&clip);
+        }
+        self.player.speed_scale = speed;
+    }
+
+    fn desired_expression(&mut self, i: &Input) -> String {
+        if !i.active {
+            return "neutral".into();
+        }
+        if i.stun > 0.0 {
+            return "stun".into();
+        }
+        if self.recover_left > 0.0 {
+            return "blank".into();
+        }
+        match i.state {
+            State::Chase => {
+                let gap = i
+                    .look_target
+                    .map(|t| v2len((i.pos.0 - t.0, i.pos.1 - t.1)))
+                    .unwrap_or(f32::INFINITY);
+                self.scream_latched =
+                    gap < SCREAM_DISTANCE || (self.scream_latched && gap < SCREAM_DISTANCE * 1.4);
+                if self.scream_latched {
+                    "scream"
+                } else {
+                    "chase"
+                }
+                .into()
+            }
+            State::Search => "derp".into(),
+            _ => "neutral".into(),
+        }
+    }
+
+    fn update_expression(&mut self, i: &Input, delta: f32, clock: f32) {
+        let mut wanted = self.desired_expression(i);
+        if wanted == "neutral" {
+            self.blink_left = (self.blink_left - delta).max(0.0);
+            self.blink_timer -= delta;
+            if self.blink_timer <= 0.0 {
+                self.blink_timer = 2.2 + self.randf() * 2.8;
+                self.blink_left = 0.13;
+            }
+            if self.blink_left > 0.0 {
+                wanted = "blink".into();
+            }
+        }
+        self.face_hold = (self.face_hold - delta).max(0.0);
+        if wanted == self.expression {
+            return;
+        }
+        let quick = ["blink", "stun", "blank"].contains(&wanted.as_str())
+            || ["blink", "stun", "blank", ""].contains(&self.expression.as_str());
+        if !quick && self.face_hold > 0.0 {
+            return;
+        }
+        self.face_hold = FACE_HOLD;
+        if wanted == "derp" {
+            self.derp_started = clock;
+        }
+        self.expression = wanted;
+    }
+
+    /// One frame: motion sampling, clip choice, the AnimationPlayer step, then the view's own layers (head look, chase
+    /// style, heavy stun lean) in the original's order, and the model-space bone transforms.
+    pub fn update(&mut self, i: &Input, delta: f32, clock: f32) -> (Vec<Local>, Output) {
+        let frame = delta.max(1.0 / 120.0);
+        // sync_from_brain: smoothed move speed, teleport guard, still time
+        let step = v2len((i.pos.0 - self.last_pos.0, i.pos.1 - self.last_pos.1));
+        if !self.speed_primed || step > TELEPORT_DISTANCE {
+            self.move_speed = 0.0;
+            if !self.speed_primed {
+                self.still_time = STILL_CLIP_AFTER + 0.01;
+            }
+        } else {
+            self.move_speed += (step / frame - self.move_speed) * 0.3;
+        }
+        self.speed_primed = true;
+        self.last_pos = i.pos;
+        self.still_time = if self.move_speed < STILL_SPEED {
+            self.still_time + frame
+        } else {
+            0.0
+        };
+        if !i.grabbing {
+            self.facing.track(i.pos, delta);
+            self.update_body_yaw(i, delta);
+        }
+        self.update_animation(i, delta);
+        let rig = self.rig.clone();
+        self.player.advance(&rig, delta);
+        let mut pose = self.player.pose(&rig);
+
+        // _process: head look, then the chase layer
+        let live = i.active && i.stun <= 0.0 && self.recover_left <= 0.0 && !i.grabbing;
+        let mut mode = Mode::None;
+        let mut target = (0.0, 0.0);
+        if live {
+            mode = match i.state {
+                State::Chase if i.look_target.is_some() => Mode::Lock,
+                State::Investigate | State::Search if i.look_target.is_some() => Mode::Sweep,
+                _ => {
+                    if self.facing.moving() {
+                        Mode::Ahead
+                    } else {
+                        Mode::Scan
+                    }
+                }
+            };
+            if mode == Mode::Lock || mode == Mode::Sweep {
+                target = i.look_target.unwrap_or_default();
+            } else if mode == Mode::Ahead {
+                let d = self.facing.look_ahead_distance();
+                let straight = i.airborne || i.charging;
+                let ahead = if straight {
+                    None
+                } else {
+                    i.path_ahead.and_then(|f| f(d))
+                };
+                match ahead {
+                    Some(p) => target = p,
+                    None if self.facing.moving() => {
+                        let m = self.facing.move_dir;
+                        let l = v2len(m).max(1e-6);
+                        target = (i.pos.0 + m.0 / l * d, i.pos.1 + m.1 / l * d);
+                    }
+                    None => mode = Mode::Scan,
+                }
+            }
+        }
+        let body = vec3(i.pos.0, 0.0, i.pos.1);
+        if (i.camera - body).length_squared() > 40.0 * 40.0 {
+            self.facing.weight = 0.0;
+        } else {
+            self.facing
+                .update_head(delta, mode, self.yaw, i.pos, target, clock);
+            if let Some(h) = rig.bone("Head") {
+                let w = self.facing.weight;
+                let look = Quat::from_axis_angle(Vec3::Y, self.facing.head_yaw * w)
+                    * Quat::from_axis_angle(Vec3::X, self.facing.head_pitch * w);
+                pose[h].r = look * pose[h].r;
+            }
+        }
+        let chasing = i.active
+            && i.state == State::Chase
+            && i.stun <= 0.0
+            && self.recover_left <= 0.0
+            && !i.airborne
+            && !i.grabbing;
+        let mut aim = 0.0;
+        if let Some(t) = i
+            .look_target
+            .filter(|_| matches!(style_base(i.chase_style), "reach2" | "reach1"))
+        {
+            let fwd = (-self.yaw.sin(), -self.yaw.cos());
+            let to = (t.0 - i.pos.0, t.1 - i.pos.1);
+            let l = v2len(to);
+            if l > 0.1 {
+                let to = (to.0 / l, to.1 / l);
+                // Vector2.angle_to
+                aim = (fwd.0 * to.1 - fwd.1 * to.0)
+                    .atan2(fwd.0 * to.0 + fwd.1 * to.1)
+                    .clamp(-AIM_LIMIT, AIM_LIMIT);
+            }
+        }
+        self.chase.stride = move_toward(
+            self.chase.stride,
+            if self.gait_moving { 1.0 } else { 0.0 },
+            delta * CHASE_BLEND_SPEED,
+        );
+        self.chase.apply(
+            &mut Bones {
+                rig: &rig,
+                pose: &mut pose,
+            },
+            i.chase_style,
+            chasing,
+            delta,
+            -aim,
+            clock,
+        );
+        self.update_expression(i, delta, clock);
+
+        // _update_heavy_stun_pose (model root pitch)
+        let reeling = i.heavy_stun && i.stun > 0.0 && i.active && !i.airborne && !i.grabbing;
+        let goal = if reeling {
+            HEAVY_STUN_LEAN + (clock * 1000.0 * HEAVY_STUN_SWAY_RATE).sin() * HEAVY_STUN_SWAY
+        } else {
+            0.0
+        };
+        self.heavy_lean += (goal - self.heavy_lean) * (1.0 - (-HEAVY_STUN_EASE * delta).exp());
+        if !reeling && self.heavy_lean.abs() <= 0.0005 {
+            self.heavy_lean = 0.0;
+        }
+        let at = vec3(i.pos.0, if i.airborne { XIVVY_LIFT } else { 0.0 }, i.pos.1);
+        (pose.clone(), self.finish(pose, at, clock))
+    }
+
+    /// Model-space bones and the root for a (possibly further edited) local pose.
+    pub fn finish(&self, pose: Vec<Local>, at: Vec3, clock: f32) -> Output {
+        let root = Mat4::from_translation(at)
+            * Mat4::from_rotation_y(self.yaw)
+            * Mat4::from_rotation_x(self.heavy_lean)
+            * Mat4::from_scale(Vec3::splat(MODEL_SCALE / self.rig.unit));
+        self.finish_with_root(pose, root, clock, &[])
+    }
+
+    pub fn finish_with_root(
+        &self,
+        pose: Vec<Local>,
+        root: Mat4,
+        clock: f32,
+        stretch: &[f32],
+    ) -> Output {
+        let bones = model_space_stretched(&self.rig, &pose, stretch);
+        let face = face_cell(&self.expression, clock - self.derp_started);
+        Output {
+            bones,
+            root,
+            face_cell: face,
+            yaw: self.yaw,
+        }
+    }
+
+    /// `_update_body_yaw`: the way she travels, else (chasing, standing) toward the runner, else the brain's heading.
+    fn update_body_yaw(&mut self, i: &Input, delta: f32) {
+        let mut dir = (0.0, 0.0);
+        if self.facing.moving() {
+            dir = self.facing.move_dir;
+        } else if let Some(t) = i
+            .look_target
+            .filter(|_| i.active && i.stun <= 0.0 && i.state == State::Chase)
+        {
+            dir = (t.0 - i.pos.0, t.1 - i.pos.1);
+        }
+        if dir.0 * dir.0 + dir.1 * dir.1 < 0.0001 {
+            dir = i.brain_facing;
+        }
+        if dir.0 * dir.0 + dir.1 * dir.1 < 0.0001 {
+            return;
+        }
+        if !self.heading_initialized {
+            self.yaw = (-dir.0).atan2(-dir.1);
+            self.heading_initialized = true;
+            return;
+        }
+        let running = i.state == State::Chase || self.facing.speed > 4.5;
+        self.yaw = self.facing.steer(self.yaw, dir, running, delta);
+    }
+
+    /// The three stun stars (`_update_stars`): world centre of each star and its rotation, while stunned.
+    pub fn stars(&self, i: &Input, out: &Output, clock: f32) -> Vec<(Vec3, Mat3)> {
+        if !(i.active && i.stun > 0.0) {
+            return vec![];
+        }
+        let Some(h) = self.rig.bone("Head") else {
+            return vec![];
+        };
+        let head = out
+            .root
+            .transform_point3(out.bones[h].transform_point3(Vec3::ZERO));
+        let top = head.y + 0.5;
+        let phase = clock * 1000.0 * 0.004;
+        let yaw = Mat3::from_rotation_y(out.yaw);
+        (0..3)
+            .map(|k| {
+                let a = phase + TAU * k as f32 / 3.0;
+                let local = vec3(a.cos(), (a * 2.0).sin() * 0.04, a.sin()) * 0.34;
+                let rot = yaw * Mat3::from_euler(EulerRot::YXZ, a * 1.3, a, 0.0);
+                (vec3(i.pos.0, top, i.pos.1) + yaw * local, rot)
+            })
+            .collect()
+    }
+
+    pub fn heavy(&self, i: &Input) -> bool {
+        i.heavy_stun && i.stun > 0.0
+    }
+}
+
+/// Model-space transform of every bone from local TRS (parents come first in the rig), with bones lengthened along their own Y (`stretch[bone]`, 1 = none): HunterGrab.stretch_arms. A bone
+/// under a stretched parent that is not stretched itself (the hand) keeps its own size: the parent's lengthening is taken
+/// off its basis (its position still moves out with the longer forearm).
+pub fn model_space_stretched(rig: &Rig, pose: &[Local], stretch: &[f32]) -> Vec<Mat4> {
+    let sy = |k: usize| stretch.get(k).copied().unwrap_or(1.0);
+    let mut out: Vec<Mat4> = Vec::with_capacity(rig.bones.len());
+    for (k, b) in rig.bones.iter().enumerate() {
+        let own = sy(k);
+        let parent_sy = b.parent.map(sy).unwrap_or(1.0);
+        let mut local = Mat4::from_translation(pose[k].t);
+        if own == 1.0 && parent_sy != 1.0 {
+            local *= Mat4::from_scale(vec3(1.0, 1.0 / parent_sy, 1.0));
+        }
+        local *= Mat4::from_quat(pose[k].r);
+        if own != 1.0 {
+            local *= Mat4::from_scale(vec3(1.0, own, 1.0));
+        }
+        let m = match b.parent {
+            Some(p) if p < out.len() => out[p] * local,
+            _ => local,
+        };
+        out.push(m);
+    }
+    out
+}
