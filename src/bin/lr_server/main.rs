@@ -18,6 +18,7 @@
 //! exits 0 when the folder is clean and 1 when it has errors.
 
 
+mod upstream;
 mod util;
 
 mod account_service;
@@ -88,14 +89,24 @@ fn main() {
         }
     }
     let env: HashMap<String, String> = std::env::vars().collect();
-    let config = options_from_environment(&env, &cwd);
+    let config = match options_from_environment(&env, &cwd) {
+        Ok(config) => config,
+        Err(error) => {
+            util::log_error(&format!("Configuration error: {error}"));
+            std::process::exit(1);
+        }
+    };
     let check_only = std::env::args().any(|a| a == "--check");
     let updates = config.options.updates.clone();
     let relay_enabled = config.relay_enabled;
+    let upstream = config.options.account_upstream.as_ref().map(|upstream| upstream.authority().to_string());
     let server = Arc::new(LastRouteServer::new(config.options));
     let address = format!("{}:{}", config.host, config.http_port);
     util::log_info(&format!("Last Route backend (rust) listening on http://{address}"));
-    util::log_info(&format!("Account data: {}", config.account_store_path.display()));
+    match upstream {
+        Some(authority) => util::log_info(&format!("Accounts and saves: forwarded to {authority} (accounts.json is not used)")),
+        None => util::log_info(&format!("Account data: {}", config.account_store_path.display())),
+    }
     if let Some(status) = public_update_status(&updates).as_object() {
         for (channel, s) in status {
             util::log_info(&format!("Published {channel} update: {} @ {}", s["version"], s["revision"]));

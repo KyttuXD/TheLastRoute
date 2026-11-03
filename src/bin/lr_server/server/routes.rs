@@ -6,7 +6,7 @@ use crate::game_saves::{match_save_path, SAVE_MAX_BYTES};
 use crate::lr_regex as regex;
 use crate::moderation::Who;
 use crate::public_route::JoinOptions;
-use crate::util::{hex, iso_time, js_number, str_nullish, str_or_empty, timing_safe_equal, truthy, Reply};
+use crate::util::{hex, iso_time, js_number, log_info, log_warn, str_nullish, str_or_empty, timing_safe_equal, truthy, Reply};
 
 fn not_owner() -> Response {
     json_response(403, &json!({ "ok": false, "code": "ADMIN_OWNER_REQUIRED", "error": "Full admin account required" }), &[])
@@ -25,6 +25,35 @@ fn or_default(text: String, fallback: &str) -> String {
         fallback.to_string()
     } else {
         text
+    }
+}
+
+/// One line per account event: the time, the event, the account name, the outcome and the source address. The body and
+/// the tokens are never logged.
+fn log_account_event(now: i64, path: &str, body: &Value, result: &Reply, address: &str) {
+    let event = match path {
+        "/api/account/register" => "register",
+        "/api/account/login" => "login",
+        "/api/account/session" => "session",
+        "/api/account/logout" => "logout",
+        "/api/account/password" => "password",
+        "/api/account/rename" => "rename",
+        _ => return,
+    };
+    let ok = result.1.get("ok") == Some(&json!(true));
+    let name = if ok { str_or_empty(result.1.get("username")) } else { str_or_empty(body.get("username")) };
+    let name: String = name.trim().to_uppercase().chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(24).collect();
+    let name = if name.is_empty() { "-".to_string() } else { name };
+    let outcome = match result.1.get("code").and_then(Value::as_str) {
+        _ if ok => "ok".to_string(),
+        Some(code) => code.to_string(),
+        None => format!("HTTP {}", result.0),
+    };
+    let line = format!("account {event} at {} user={name} outcome={outcome} from={address}", iso_time(now));
+    if ok {
+        log_info(&line);
+    } else {
+        log_warn(&line);
     }
 }
 
@@ -162,7 +191,9 @@ impl LastRouteServer {
         if let Some(response) = self.route_posts(state, request, &body) {
             return response;
         }
-        reply(self.route_accounts(state, &body, path))
+        let result = self.route_accounts(state, &body, path);
+        log_account_event(self.now(), path, &body, &result, &requester_address(request, self.config.trust_proxy));
+        reply(result)
     }
 
     /// The size and moderation checks a skin upload passes before the (unported) skin store.
@@ -633,12 +664,14 @@ impl LastRouteServer {
                 } else {
                     state.accounts.login(body)
                 };
-                if r.1.get("ok") == Some(&json!(true)) && truthy(r.1.get("adminOwner")) {
+                // The website mints its own devToken for an owner, so a forwarded reply keeps it.
+                if !state.accounts.is_upstream() && r.1.get("ok") == Some(&json!(true)) && truthy(r.1.get("adminOwner")) {
                     r.1["devToken"] = json!(self.issue_dev_token(state));
                 }
                 r
             }
             "/api/account/session" => state.accounts.current_session(body),
+            "/api/account/guest" => state.accounts.forward(path, body).unwrap_or_else(unknown_endpoint),
             "/api/account/password" => state.accounts.change_password(body),
             "/api/account/rename" => {
                 let previous = state.accounts.session_username(&str_or_empty(body.get("sessionToken")));

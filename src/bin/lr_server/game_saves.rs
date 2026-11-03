@@ -13,7 +13,8 @@
 //! so a stale offline copy can never overwrite a newer run. Bodies are capped (SAVE_MAX_BYTES, enforced by the router
 //! before parsing) and writes rate-limited per account.
 
-use crate::util::{self, js_number, num, stringify, truthy, Clock, Reply, SessionLookup};
+use crate::upstream::Upstream;
+use crate::util::{self, js_number, num, sha256_hex, stringify, truthy, Clock, Reply, SessionLookup};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -48,6 +49,8 @@ pub struct GameSavesOptions {
     pub allowed: Vec<(String, Vec<String>)>,
     pub write_limit: usize,
     pub write_window_ms: i64,
+    /// `LASTROUTE_ACCOUNT_UPSTREAM`: when set, the saves live on the website and `directory` is not used.
+    pub upstream: Option<Upstream>,
 }
 
 impl Default for GameSavesOptions {
@@ -60,6 +63,7 @@ impl Default for GameSavesOptions {
                 .map(|(game, slots)| (game.to_string(), slots.iter().map(|s| s.to_string()).collect()))
                 .collect(),
             write_limit: 30,
+            upstream: None,
             write_window_ms: 60_000,
         }
     }
@@ -72,8 +76,53 @@ pub struct GameSaves {
     allowed: Vec<(String, Vec<String>)>,
     write_limit: usize,
     write_window_ms: i64,
+    upstream: Option<Upstream>,
     /// username -> recent write times
     writes: HashMap<String, Vec<i64>>,
+}
+
+fn unknown_save() -> Reply {
+    (404, json!({ "ok": false, "code": "UNKNOWN_SAVE", "error": "No such save" }))
+}
+
+fn bad_save() -> Reply {
+    (400, json!({ "ok": false, "code": "BAD_SAVE", "error": "A save is {data: object|null, updatedAt}" }))
+}
+
+fn save_rate_limited() -> Reply {
+    (429, json!({ "ok": false, "code": "SAVE_RATE_LIMIT", "error": "Too many saves; try again shortly" }))
+}
+
+/// A well-formed save body: `data` is an object or null.
+fn well_formed_save(body: &Value) -> bool {
+    match body {
+        Value::Object(map) => matches!(map.get("data"), Some(Value::Null) | Some(Value::Object(_))),
+        _ => false,
+    }
+}
+
+/// `updatedAt` of a PUT in unix seconds; a missing or unusable time is the server's clock.
+fn updated_at_of(body: &Value, now: i64) -> f64 {
+    let requested = js_number(body.get("updatedAt"));
+    if requested.is_finite() && requested > 0.0 {
+        requested.floor()
+    } else {
+        (now as f64 / 1000.0).floor()
+    }
+}
+
+/// The website's `savedAt` (Date.now() milliseconds) in the game's unit, unix seconds.
+fn saved_seconds(saved_at: Option<&Value>) -> f64 {
+    (util::number_or(saved_at, 0.0) / 1000.0).floor()
+}
+
+/// The game's shape for a slot the website returned from `/api/v1/saves/load`.
+fn loaded_save(game_id: &str, slot: &str, website: &Value) -> Value {
+    json!({
+        "ok": true, "gameId": game_id, "slot": slot,
+        "data": website.get("data").cloned().unwrap_or(Value::Null),
+        "updatedAt": num(saved_seconds(website.get("savedAt"))),
+    })
 }
 
 fn off() -> Reply {
@@ -100,6 +149,7 @@ impl GameSaves {
             allowed: opts.allowed,
             write_limit: opts.write_limit,
             write_window_ms: opts.write_window_ms,
+            upstream: opts.upstream,
             writes: HashMap::new(),
         }
     }
@@ -147,12 +197,17 @@ impl GameSaves {
         util::write_atomic(&self.path(username), stringify(record).as_bytes())
     }
 
+    /// The write times of `key` still inside the rate window.
+    fn recent_writes(&self, key: &str, now: i64) -> Vec<i64> {
+        self.writes.get(key).map(|w| w.iter().copied().filter(|at| now - at < self.write_window_ms).collect()).unwrap_or_default()
+    }
+
     fn guard(&self, accounts: &dyn SessionLookup, token: &str, game_id: &str, slot: &str) -> Result<String, Reply> {
         if !self.enabled {
             return Err(off());
         }
         if !self.slot_allowed(game_id, slot) {
-            return Err((404, json!({ "ok": false, "code": "UNKNOWN_SAVE", "error": "No such save" })));
+            return Err(unknown_save());
         }
         let username = self.who(accounts, token);
         if username.is_empty() {
@@ -167,6 +222,17 @@ impl GameSaves {
 
     /// GET /api/v1/saves/:gameId/:slot. `token` = the `x-session-token` header (`String(header || "")`).
     pub fn get(&self, accounts: &dyn SessionLookup, token: &str, game_id: &str, slot: &str) -> Reply {
+        if let Some(upstream) = &self.upstream {
+            if !self.slot_allowed(game_id, slot) {
+                return unknown_save();
+            }
+            let (status, website) =
+                upstream.call("/api/v1/saves/load", &json!({ "sessionToken": token, "gameId": game_id, "slotId": slot }));
+            if status != 200 || website.get("ok") != Some(&json!(true)) {
+                return (status, website);
+            }
+            return (200, loaded_save(game_id, slot, &website));
+        }
         let username = match self.guard(accounts, token, game_id, slot) {
             Ok(username) => username,
             Err(refused) => return refused,
@@ -178,33 +244,62 @@ impl GameSaves {
         (200, json!({ "ok": true, "gameId": game_id, "slot": slot, "data": data, "updatedAt": num(updated_at) }))
     }
 
+    /// A PUT through the website. The stored `savedAt` is read first: an upload older than it is answered 200 with the
+    /// stored time and not written (newest wins), because the website stamps its own time on every save.
+    fn put_upstream(&mut self, upstream: &Upstream, token: &str, game_id: &str, slot: &str, body: &Value) -> Reply {
+        if !self.slot_allowed(game_id, slot) {
+            return unknown_save();
+        }
+        if !well_formed_save(body) {
+            return bad_save();
+        }
+        let now = self.now();
+        let key = sha256_hex(token.as_bytes());
+        let mut recent = self.recent_writes(&key, now);
+        if recent.len() >= self.write_limit {
+            return save_rate_limited();
+        }
+        let requested = updated_at_of(body, now);
+        let (status, stored) =
+            upstream.call("/api/v1/saves/load", &json!({ "sessionToken": token, "gameId": game_id, "slotId": slot }));
+        if status != 200 || stored.get("ok") != Some(&json!(true)) {
+            return (status, stored);
+        }
+        let stored_at = saved_seconds(stored.get("savedAt"));
+        if stored_at > requested {
+            return (200, json!({ "ok": true, "gameId": game_id, "slot": slot, "updatedAt": num(stored_at) }));
+        }
+        recent.push(now);
+        self.writes.insert(key, recent);
+        let data = body.get("data").cloned().unwrap_or(Value::Null);
+        let (status, saved) = upstream
+            .call("/api/v1/saves/save", &json!({ "sessionToken": token, "gameId": game_id, "slotId": slot, "data": data }));
+        if status != 200 || saved.get("ok") != Some(&json!(true)) {
+            return (status, saved);
+        }
+        let updated_at = if saved.get("savedAt").is_some() { saved_seconds(saved.get("savedAt")) } else { requested };
+        (200, json!({ "ok": true, "gameId": game_id, "slot": slot, "updatedAt": num(updated_at) }))
+    }
+
     /// PUT /api/v1/saves/:gameId/:slot. `body` = the parsed JSON body `{data, updatedAt}` (the router answers 413 for
     /// bodies over SAVE_MAX_BYTES and 400 BAD_SAVE "INVALID JSON BODY" for unparsable ones before calling this).
     pub fn put(&mut self, accounts: &dyn SessionLookup, token: &str, game_id: &str, slot: &str, body: &Value) -> Reply {
+        if let Some(upstream) = self.upstream.clone() {
+            return self.put_upstream(&upstream, token, game_id, slot, body);
+        }
         let username = match self.guard(accounts, token, game_id, slot) {
             Ok(username) => username,
             Err(refused) => return refused,
         };
-        let well_formed = match body {
-            Value::Object(map) => matches!(map.get("data"), Some(Value::Null) | Some(Value::Object(_))),
-            _ => false,
-        };
-        if !well_formed {
-            return (400, json!({ "ok": false, "code": "BAD_SAVE", "error": "A save is {data: object|null, updatedAt}" }));
+        if !well_formed_save(body) {
+            return bad_save();
         }
         let now = self.now();
-        let window = self.write_window_ms;
-        let mut recent: Vec<i64> =
-            self.writes.get(&username).map(|w| w.iter().copied().filter(|at| now - at < window).collect()).unwrap_or_default();
+        let mut recent = self.recent_writes(&username, now);
         if recent.len() >= self.write_limit {
-            return (429, json!({ "ok": false, "code": "SAVE_RATE_LIMIT", "error": "Too many saves; try again shortly" }));
+            return save_rate_limited();
         }
-        let requested = js_number(body.get("updatedAt"));
-        let updated_at = if requested.is_finite() && requested > 0.0 {
-            requested.floor()
-        } else {
-            (now as f64 / 1000.0).floor()
-        };
+        let updated_at = updated_at_of(body, now);
         let mut record = self.read(&username);
         if let Some(stored) = Self::stored(&record, game_id, slot).filter(|s| truthy(Some(s))) {
             let stored_at = js_number(stored.get("updatedAt"));
@@ -398,6 +493,30 @@ mod tests {
         assert_eq!(limited.0, 429);
         assert_eq!(limited.1["code"], "SAVE_RATE_LIMIT");
         assert_eq!(server.get(PATH, &kt).0, 200, "reads are not write-limited");
+    }
+
+    #[test]
+    fn with_an_upstream_saves_go_to_the_website_and_an_unreachable_one_answers_503() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let upstream = crate::upstream::Upstream::parse(&format!("http://127.0.0.1:{port}")).unwrap();
+        let mut saves = GameSaves::new(GameSavesOptions { upstream: Some(upstream), ..Default::default() });
+        let accounts = AccountService::new(AccountServiceOptions::default());
+        let (status, body) = saves.get(&accounts, "token", "last-route-rust", "run");
+        assert_eq!((status, body["code"].clone()), (503, json!("UPSTREAM_UNAVAILABLE")));
+        assert_eq!(saves.get(&accounts, "token", "last-route-rust", "slot2").0, 404);
+        assert_eq!(saves.put(&accounts, "token", "last-route-rust", "run", &json!({ "updatedAt": 1 })).0, 400);
+        assert_eq!(saves.put(&accounts, "token", "last-route-rust", "run", &json!({ "data": run(-1), "updatedAt": 100 })).0, 503);
+    }
+
+    #[test]
+    fn the_website_save_maps_to_the_game_shape_in_unix_seconds() {
+        assert_eq!(saved_seconds(Some(&json!(1_700_000_123_456i64))), 1_700_000_123.0);
+        assert_eq!(saved_seconds(None), 0.0);
+        assert_eq!(updated_at_of(&json!({ "updatedAt": 400 }), 9_000), 400.0);
+        assert_eq!(updated_at_of(&json!({}), 9_999), 9.0);
+        let loaded = loaded_save("last-route-rust", "run", &json!({ "ok": true, "data": null, "savedAt": 2_000 }));
+        assert_eq!(loaded["updatedAt"].as_f64(), Some(2.0));
+        assert_eq!((loaded["gameId"].clone(), loaded["slot"].clone(), loaded["data"].clone()), (json!("last-route-rust"), json!("run"), Value::Null));
     }
 
     #[test]

@@ -29,6 +29,7 @@ use crate::public_route::{PublicRoute, PublicRouteOptions, PUBLIC_CODES};
 use crate::regions::{Regions, RegionsOptions};
 use crate::reserved_rooms::{ReservedRooms, ReservedRoomsOptions};
 use crate::room_service::{RoomService, RoomServiceOptions};
+use crate::upstream::Upstream;
 use crate::util::{base64url, log_error, log_info, num, random_bytes, safe_equal, system_clock, Clock, SessionLookup};
 use indexmap::IndexMap;
 use regex::Regex;
@@ -238,6 +239,8 @@ pub struct ServerOptions {
     pub room_ttl_ms: i64,
     pub player_ttl_ms: i64,
     pub account_store_path: Option<PathBuf>,
+    /// `LASTROUTE_ACCOUNT_UPSTREAM`: the website that owns the accounts and saves. When set, the local store is unused.
+    pub account_upstream: Option<Upstream>,
     pub moderation_store_path: Option<PathBuf>,
     pub moderation_salt: String,
     pub public_directory: Option<PathBuf>,
@@ -279,6 +282,7 @@ impl Default for ServerOptions {
             room_ttl_ms: 300_000,
             player_ttl_ms: 120_000,
             account_store_path: None,
+            account_upstream: None,
             moderation_store_path: None,
             moderation_salt: String::new(),
             public_directory: None,
@@ -384,7 +388,12 @@ impl LastRouteServer {
             public_routes.push((game.to_string(), route));
         }
         let accounts =
-            AccountService::new(AccountServiceOptions { store_path: opts.account_store_path.clone(), now: now.clone(), ..Default::default() });
+            AccountService::new(AccountServiceOptions {
+                store_path: opts.account_store_path.clone(),
+                now: now.clone(),
+                upstream: opts.account_upstream.clone(),
+                ..Default::default()
+            });
         let guest_names = GuestNames::new(GuestNamesOptions {
             store_path: opts.account_store_path.as_ref().map(|p| p.parent().unwrap_or(Path::new(".")).join("guest_names.json")),
             now: now.clone(),
@@ -424,7 +433,12 @@ impl LastRouteServer {
                 now: now.clone(),
                 ..Default::default()
             }),
-            game_saves: GameSaves::new(GameSavesOptions { directory: opts.save_directory.clone(), now: now.clone(), ..Default::default() }),
+            game_saves: GameSaves::new(GameSavesOptions {
+                directory: opts.save_directory.clone(),
+                now: now.clone(),
+                upstream: opts.account_upstream.clone(),
+                ..Default::default()
+            }),
             dev_tokens: HashMap::new(),
             request_rates: HashMap::new(),
             reload_id: 0,
@@ -650,8 +664,11 @@ pub struct EnvironmentConfig {
     pub account_store_path: PathBuf,
 }
 
-pub fn options_from_environment(env: &HashMap<String, String>, cwd: &Path) -> EnvironmentConfig {
+pub fn options_from_environment(env: &HashMap<String, String>, cwd: &Path) -> Result<EnvironmentConfig, String> {
     let get = |name: &str| env.get(name).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let account_upstream = get("LASTROUTE_ACCOUNT_UPSTREAM")
+        .map(|url| Upstream::parse(&url).map_err(|error| format!("LASTROUTE_ACCOUNT_UPSTREAM {error}")))
+        .transpose()?;
     let path_of = |name: &str| get(name).map(|v| cwd.join(v));
     let (http_port, relay_port) = deployment_ports(env);
     let host = env.get("HOST").cloned().filter(|h| !h.is_empty()).unwrap_or_else(|| "0.0.0.0".into());
@@ -694,6 +711,7 @@ pub fn options_from_environment(env: &HashMap<String, String>, cwd: &Path) -> En
     let options = ServerOptions {
         enet_room_ttl_ms: (number("ENET_ROOM_TTL_SECONDS", 60.0).max(15.0) * 1000.0) as i64,
         account_store_path: Some(accounts.clone()),
+        account_upstream,
         moderation_store_path: Some(
             path_of("LASTROUTE_MODERATION_STORE").unwrap_or_else(|| accounts.parent().unwrap_or(&data).join("moderation.json")),
         ),
@@ -738,5 +756,5 @@ pub fn options_from_environment(env: &HashMap<String, String>, cwd: &Path) -> En
         instance: env.get("LASTROUTE_INSTANCE").cloned().unwrap_or_else(|| "production".into()),
         ..ServerOptions::default()
     };
-    EnvironmentConfig { options, host, http_port, relay_port, relay_enabled, account_store_path: accounts }
+    Ok(EnvironmentConfig { options, host, http_port, relay_port, relay_enabled, account_store_path: accounts })
 }

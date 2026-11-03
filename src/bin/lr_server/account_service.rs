@@ -12,6 +12,7 @@ use crate::util::{
     self, field, from_hex, hex, js_len, js_slice, js_string_of, js_trim, num, random_bytes, scrypt_derive, sha256_hex,
     str_or_empty, stringify, timing_safe_equal, truthy, Clock, Reply, SessionLookup,
 };
+use crate::upstream::Upstream;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -202,11 +203,13 @@ pub struct AccountServiceOptions {
     pub store_path: Option<PathBuf>,
     pub now: Clock,
     pub session_ttl_ms: i64,
+    /// `LASTROUTE_ACCOUNT_UPSTREAM`: the website that owns the accounts. When set, `store_path` is neither read nor written.
+    pub upstream: Option<Upstream>,
 }
 
 impl Default for AccountServiceOptions {
     fn default() -> Self {
-        AccountServiceOptions { store_path: None, now: util::system_clock(), session_ttl_ms: DEFAULT_SESSION_TTL_MS }
+        AccountServiceOptions { store_path: None, now: util::system_clock(), session_ttl_ms: DEFAULT_SESSION_TTL_MS, upstream: None }
     }
 }
 
@@ -228,6 +231,7 @@ pub struct AccountService {
     store_path: Option<PathBuf>,
     now: Clock,
     session_ttl_ms: i64,
+    upstream: Option<Upstream>,
     state: Mutex<State>,
     #[cfg(test)]
     load_warning: Option<String>,
@@ -235,9 +239,11 @@ pub struct AccountService {
 
 impl AccountService {
     pub fn new(opts: AccountServiceOptions) -> AccountService {
+        // With an upstream the website owns the accounts, so the local file is neither read nor written.
+        let store_path = if opts.upstream.is_some() { None } else { opts.store_path };
         let mut state = State::default();
         let mut load_warning = None;
-        if let Some(path) = &opts.store_path {
+        if let Some(path) = &store_path {
             match std::fs::read_to_string(path) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => load_warning = Some(format!("Account store was not loaded: {error}")),
@@ -251,9 +257,10 @@ impl AccountService {
             util::log_warn(message);
         }
         AccountService {
-            store_path: opts.store_path,
+            store_path,
             now: opts.now,
             session_ttl_ms: opts.session_ttl_ms,
+            upstream: opts.upstream,
             state: Mutex::new(state),
             #[cfg(test)]
             load_warning,
@@ -299,6 +306,25 @@ impl AccountService {
 
     fn now(&self) -> i64 {
         (self.now)()
+    }
+
+    /// The website's answer to `path` when the upstream is set; None when the accounts are local.
+    pub(crate) fn forward(&self, path: &str, body: &Value) -> Option<Reply> {
+        self.upstream.as_ref().map(|upstream| upstream.call(path, body))
+    }
+
+    /// Whether the website owns the accounts (`LASTROUTE_ACCOUNT_UPSTREAM` is set).
+    pub(crate) fn is_upstream(&self) -> bool {
+        self.upstream.is_some()
+    }
+
+    /// The website's session reply for a token (`POST /api/account/session`); None when the token is not live.
+    fn upstream_session(upstream: &Upstream, token: &str) -> Option<Value> {
+        if token.is_empty() {
+            return None;
+        }
+        let (status, reply) = upstream.call("/api/account/session", &json!({ "sessionToken": token }));
+        (status == 200 && reply.get("ok") == Some(&json!(true))).then_some(reply)
     }
 
     fn persist(&self, state: &State) {
@@ -393,6 +419,9 @@ impl AccountService {
 
     /// POST /api/account/register. `allow_developer_names` = server.mjs `developerRequest(body)`.
     pub fn register(&self, body: &Value, allow_developer_names: bool) -> Reply {
+        if let Some(reply) = self.forward("/api/account/register", body) {
+            return reply;
+        }
         let username = username_of(field(body, "username"));
         if !valid_username(&username) {
             return invalid_username();
@@ -428,6 +457,9 @@ impl AccountService {
 
     /// POST /api/account/login.
     pub fn login(&self, body: &Value) -> Reply {
+        if let Some(reply) = self.forward("/api/account/login", body) {
+            return reply;
+        }
         let username = username_of(field(body, "username"));
         let password = js_string_any(field(body, "password"));
         let account = self.lock().accounts.get(&username).cloned();
@@ -452,12 +484,18 @@ impl AccountService {
     /// `sessionUsername(token)`: the canonical username of a live session (expired sessions are dropped).
     /// `token` is `String(token || "")` of whatever the caller received.
     pub fn session_username(&self, token: &str) -> Option<String> {
+        if let Some(upstream) = &self.upstream {
+            return Self::upstream_session(upstream, token)?.get("username").and_then(Value::as_str).map(str::to_string);
+        }
         let mut state = self.lock();
         self.session_user(&mut state, token)
     }
 
     /// POST /api/account/session.
     pub fn current_session(&self, body: &Value) -> Reply {
+        if let Some(reply) = self.forward("/api/account/session", body) {
+            return reply;
+        }
         let token = str_or_empty(field(body, "sessionToken"));
         let mut state = self.lock();
         let Some(username) = self.session_user(&mut state, &token) else {
@@ -471,6 +509,9 @@ impl AccountService {
     /// POST /api/account/save. (`JSON.stringify` of a parsed JSON value cannot throw, so the original's 400
     /// INVALID_PROGRESS branch for cyclic/BigInt values has no Rust equivalent.)
     pub fn save(&self, body: &Value) -> Reply {
+        if let Some(reply) = self.forward("/api/account/save", body) {
+            return reply;
+        }
         let token = str_or_empty(field(body, "sessionToken"));
         let mut state = self.lock();
         let Some(username) = self.session_user(&mut state, &token) else {
@@ -492,6 +533,9 @@ impl AccountService {
 
     /// POST /api/account/load.
     pub fn load_progress(&self, body: &Value) -> Reply {
+        if let Some(reply) = self.forward("/api/account/load", body) {
+            return reply;
+        }
         let token = str_or_empty(field(body, "sessionToken"));
         let mut state = self.lock();
         let Some(username) = self.session_user(&mut state, &token) else {
@@ -507,6 +551,9 @@ impl AccountService {
 
     /// POST /api/account/logout.
     pub fn logout(&self, body: &Value) -> Reply {
+        if let Some(reply) = self.forward("/api/account/logout", body) {
+            return reply;
+        }
         let key = session_hash(&str_or_empty(field(body, "sessionToken")));
         let mut state = self.lock();
         if state.sessions.remove(&key).is_some() {
@@ -517,6 +564,9 @@ impl AccountService {
 
     /// POST /api/account/password. Drops every other session of the account, keeps the one that asked.
     pub fn change_password(&self, body: &Value) -> Reply {
+        if let Some(reply) = self.forward("/api/account/password", body) {
+            return reply;
+        }
         let token = str_or_empty(field(body, "sessionToken"));
         let current_session_hash = session_hash(&token);
         let Some(username) = self.session_username(&token) else {
@@ -542,6 +592,9 @@ impl AccountService {
 
     /// POST /api/account/rename. `allow_developer_names` = server.mjs `developerRequest(body)`.
     pub fn rename(&self, body: &Value, allow_developer_names: bool) -> Reply {
+        if let Some(reply) = self.forward("/api/account/rename", body) {
+            return reply;
+        }
         let token = str_or_empty(field(body, "sessionToken"));
         let mut state = self.lock();
         let Some(current_username) = self.session_user(&mut state, &token) else {
@@ -578,6 +631,15 @@ impl AccountService {
 
     /// `sessionAdminIdentity(token)`: `{username, admin, adminOwner, adminPermissions}` or None.
     pub fn session_admin_identity(&self, token: &str) -> Option<Value> {
+        if let Some(upstream) = &self.upstream {
+            let session = Self::upstream_session(upstream, token)?;
+            let mut out = Map::new();
+            out.insert("username".into(), session.get("username").cloned().unwrap_or(Value::Null));
+            out.insert("admin".into(), json!(session.get("admin") == Some(&json!(true))));
+            out.insert("adminOwner".into(), json!(session.get("adminOwner") == Some(&json!(true))));
+            out.insert("adminPermissions".into(), session.get("adminPermissions").cloned().unwrap_or(json!([])));
+            return Some(Value::Object(out));
+        }
         let mut state = self.lock();
         let username = self.session_user(&mut state, token)?;
         Some(Self::roster_entry(&state, &username))
@@ -585,6 +647,9 @@ impl AccountService {
 
     /// POST /api/admin/roster.
     pub fn list_admin_roster(&self, body: &Value) -> Reply {
+        if let Some(reply) = self.forward("/api/admin/roster", body) {
+            return reply;
+        }
         let token = str_or_empty(field(body, "sessionToken"));
         let mut state = self.lock();
         let requester = self.session_user(&mut state, &token).unwrap_or_default();
@@ -613,6 +678,9 @@ impl AccountService {
 
     /// POST /api/admin/roster/set.
     pub fn set_admin_roster(&self, body: &Value) -> Reply {
+        if let Some(reply) = self.forward("/api/admin/roster/set", body) {
+            return reply;
+        }
         let token = str_or_empty(field(body, "sessionToken"));
         let mut state = self.lock();
         let requester = self.session_user(&mut state, &token).unwrap_or_default();
@@ -639,6 +707,9 @@ impl AccountService {
 
     /// POST /api/admin/roster/remove.
     pub fn remove_admin_roster(&self, body: &Value) -> Reply {
+        if let Some(reply) = self.forward("/api/admin/roster/remove", body) {
+            return reply;
+        }
         let token = str_or_empty(field(body, "sessionToken"));
         let mut state = self.lock();
         let requester = self.session_user(&mut state, &token).unwrap_or_default();
@@ -664,6 +735,11 @@ impl AccountService {
 
     /// `accountExists(name)`.
     pub fn account_exists(&self, name: &str) -> bool {
+        // The website has no route that answers this, and the local store is empty: report no account rather than
+        // guess one.
+        if self.is_upstream() {
+            return false;
+        }
         self.lock().accounts.contains_key(&username_of_str(name))
     }
 }
@@ -949,6 +1025,28 @@ mod tests {
         let logged = util::log_line(&broken.load_warning().expect("a truncated store is logged"));
         assert!(logged.contains("not loaded"), "{logged}");
         assert!(!logged.contains(PASSWORD) && !logged.contains(&session), "{logged}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn with_an_upstream_the_local_store_is_never_touched_and_an_unreachable_website_answers_503() {
+        let root = temp_root("accounts-upstream-");
+        let store_path = root.join("accounts.json");
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let upstream = crate::upstream::Upstream::parse(&format!("http://127.0.0.1:{port}")).unwrap();
+        let accounts = AccountService::new(AccountServiceOptions {
+            store_path: Some(store_path.clone()),
+            upstream: Some(upstream),
+            ..Default::default()
+        });
+        let (status, body) = accounts.register(&json!({ "username": "ada", "password": PASSWORD }), false);
+        assert_eq!((status, body["code"].clone()), (503, json!("UPSTREAM_UNAVAILABLE")));
+        let (status, body) = accounts.login(&json!({ "username": "ada", "password": PASSWORD }));
+        assert_eq!((status, body["code"].clone()), (503, json!("UPSTREAM_UNAVAILABLE")));
+        assert_eq!(accounts.session_username("any-token"), None);
+        assert!(accounts.session_admin_identity("any-token").is_none());
+        assert!(!accounts.account_exists("ada"));
+        assert!(!store_path.exists(), "accounts.json was written while the upstream is set");
         let _ = std::fs::remove_dir_all(&root);
     }
 

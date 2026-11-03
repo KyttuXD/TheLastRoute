@@ -57,6 +57,8 @@ pub struct Backend {
     /// The signed-in account (empty username = guest).
     pub account: StoredSession,
     pub account_info: Option<AccountReply>,
+    /// The signed-in account's admin flag, from the server's reply (never from the local name).
+    pub admin: bool,
     pub guest_name: String,
     guest_token: String,
     hosted: Option<HostedRoom>,
@@ -77,6 +79,7 @@ impl Backend {
             guests,
             account,
             account_info: None,
+            admin: false,
             guest_name,
             guest_token,
             hosted: None,
@@ -104,6 +107,11 @@ impl Backend {
 
     pub fn busy(&self) -> bool {
         !self.ops.is_empty()
+    }
+
+    /// A sign in, account creation or title session check is in flight.
+    pub fn account_pending(&self) -> bool {
+        self.ops.iter().any(|op| matches!(op, Op::Account(..)))
     }
 
     /// Account requests are only allowed on the primary origin and loopback (backend_client.gd's rule).
@@ -158,6 +166,7 @@ impl Backend {
         let token = std::mem::take(&mut self.account.session_token);
         self.account = StoredSession::default();
         self.account_info = None;
+        self.admin = false;
         self.accounts.clear(&self.config);
         let cfg = self.config.clone();
         self.ops.push(Op::Logout(if token.is_empty() || cfg.offline {
@@ -327,6 +336,7 @@ impl Backend {
                 }
                 self.account.username = reply.username.clone();
                 self.accounts.save(&self.config, &self.account);
+                self.admin = reply.admin;
                 self.account_info = Some(reply.clone());
                 events.push(BackendEvent::SignedIn(reply));
             }
@@ -334,6 +344,7 @@ impl Backend {
                 if restore && e.status().map(|s| config::SESSION_REJECTED_CODES.contains(&s)).unwrap_or(false) {
                     self.account = StoredSession::default();
                     self.account_info = None;
+                    self.admin = false;
                     self.accounts.clear(&self.config);
                     events.push(BackendEvent::SignedOut);
                 } else {

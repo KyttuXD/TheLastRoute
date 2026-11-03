@@ -39,6 +39,12 @@ pub enum Action {
     HostRoom,
     /// The code the JOIN ROOM dialog submitted (already checked by `world_sync::parse_join_code`).
     JoinCode(String),
+    /// SIGN IN with the typed name and password; the app sends them to the server.
+    SignIn { name: String, password: String },
+    /// CREATE ACCOUNT with the typed name and password; the app sends them to the server.
+    CreateAccount { name: String, password: String },
+    /// SIGN OUT: the app revokes the session and clears the profile name.
+    SignOut,
 }
 
 /// Which room the lobby is showing: the solo room of CREATE ROOM, a room this player hosts, or one it joined.
@@ -123,6 +129,8 @@ pub struct Ui {
     pub acct_pass: String,
     pub acct_field: usize,
     pub acct_status: String,
+    /// A sign in or account creation is waiting on the server (the form shows SIGNING IN).
+    pub acct_busy: bool,
     pub confirm_clear: bool,
     pub dossier_sel: usize,
     pub dossier_scroll: f32,
@@ -155,6 +163,7 @@ impl Default for Ui {
             acct_pass: String::new(),
             acct_field: 0,
             acct_status: String::new(),
+            acct_busy: false,
             confirm_clear: false,
             dossier_sel: 0,
             dossier_scroll: 0.0,
@@ -695,8 +704,8 @@ pub fn save_summary(save: Option<&Checkpoint>) -> Option<String> {
 }
 
 /// The account panel. Signed in (a profile name is set) it is the account card with the SAVES
-/// rows; signed out it is the sign-in form. This build has no account server: the profile is
-/// local, so signing in takes the name alone and passwords are not checked.
+/// rows; signed out it is the sign-in form. SIGN IN and CREATE ACCOUNT return an action: the app
+/// sends the credentials to the server, and the profile name is set only once the server confirms.
 pub fn draw_account(
     a: &Assets,
     ui: &mut Ui,
@@ -719,7 +728,9 @@ pub fn draw_account(
         } else {
             take_text(&mut ui.acct_pass, 200, false);
         }
-        let status = if ui.acct_status.is_empty() {
+        let status = if ui.acct_busy {
+            "SIGNING IN".to_string()
+        } else if ui.acct_status.is_empty() {
             "NOT SIGNED IN // PLAY WITHOUT AN ACCOUNT OR SIGN IN TO SAVE ACROSS DEVICES".to_string()
         } else {
             ui.acct_status.clone()
@@ -790,12 +801,17 @@ pub fn draw_account(
             Kind::Secondary,
             plain(),
         );
-        if sign || make || is_key_pressed(KeyCode::Enter) {
+        if (sign || make || is_key_pressed(KeyCode::Enter)) && !ui.acct_busy {
             if valid_name(&ui.acct_user) {
-                *username = ui.acct_user.clone();
-                ui.acct_user.clear();
-                ui.acct_pass.clear();
+                // the password leaves the form here and is not kept; the app sets the name once the server confirms
+                let name = ui.acct_user.clone();
+                let password = std::mem::take(&mut ui.acct_pass);
                 ui.acct_status.clear();
+                out = if make {
+                    Action::CreateAccount { name, password }
+                } else {
+                    Action::SignIn { name, password }
+                };
             } else {
                 ui.acct_status = "USERNAME MUST BE 3-24 CHARACTERS: A-Z 0-9 _".into();
             }
@@ -1005,9 +1021,9 @@ pub fn draw_account(
         Kind::Secondary,
         plain(),
     ) {
-        username.clear();
         ui.acct_field = 0;
         ui.acct_status.clear();
+        out = Action::SignOut;
     }
     if m.close || is_key_pressed(KeyCode::Escape) {
         ui.confirm_clear = false;

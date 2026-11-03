@@ -1,0 +1,240 @@
+//! Blocking HTTP/1.1 client for the account website, set with `LASTROUTE_ACCOUNT_UPSTREAM` (for example
+//! `http://127.0.0.1:80`).
+//!
+//! When the upstream is set, the account routes, the admin roster, the session lookups and the game saves are answered
+//! by the website, and the local accounts.json is neither read nor written, so accounts live in one store. Plain `http`
+//! only (std has no TLS), one request per connection (`Connection: close`), a 5 second timeout and a 1 MB reply cap.
+
+use crate::util::{log_warn, stringify, Reply};
+use serde_json::{json, Value};
+use std::io::{ErrorKind, Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
+use std::time::Duration;
+
+pub const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(5);
+pub const UPSTREAM_REPLY_MAX_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Upstream {
+    /// `host:port`: the TCP target and the Host header.
+    authority: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum UpstreamError {
+    /// No connection, a timeout, or the connection closed early.
+    Unavailable(String),
+    /// Not one HTTP/1.x reply with a JSON body, or over the size cap.
+    BadReply(String),
+}
+
+impl Upstream {
+    /// Reads `http://host[:port]` (an optional trailing slash). `https` is refused: this client speaks plain HTTP only.
+    pub fn parse(url: &str) -> Result<Upstream, String> {
+        let rest = url.trim().strip_prefix("http://").ok_or("must start with http:// (https is not supported)")?;
+        let authority = rest.trim_end_matches('/');
+        if authority.is_empty() || authority.contains(|c: char| matches!(c, '/' | '@' | '?' | '#') || c.is_whitespace()) {
+            return Err("must be http://host[:port] with no path".into());
+        }
+        let has_port = match authority.rfind(']') {
+            Some(bracket) => authority[bracket..].contains(':'),
+            None => authority.contains(':'),
+        };
+        let authority = if has_port { authority.to_string() } else { format!("{authority}:80") };
+        Ok(Upstream { authority })
+    }
+
+    pub fn authority(&self) -> &str {
+        &self.authority
+    }
+
+    /// POSTs `body` as JSON to `path` and answers with the upstream's status and JSON body, unchanged. A connection
+    /// failure answers 503 UPSTREAM_UNAVAILABLE and a bad reply 502 UPSTREAM_BAD_REPLY; the caller never falls back to a
+    /// local store.
+    pub fn call(&self, path: &str, body: &Value) -> Reply {
+        match self.post_json(path, body) {
+            Ok(reply) => reply,
+            Err(UpstreamError::Unavailable(detail)) => {
+                log_warn(&format!("account upstream {} unavailable for {path}: {detail}", self.authority));
+                (503, json!({ "ok": false, "code": "UPSTREAM_UNAVAILABLE", "error": "Accounts are unavailable right now; try again shortly" }))
+            }
+            Err(UpstreamError::BadReply(detail)) => {
+                log_warn(&format!("account upstream {} sent a bad reply for {path}: {detail}", self.authority));
+                (502, json!({ "ok": false, "code": "UPSTREAM_BAD_REPLY", "error": "The account service sent an unusable reply" }))
+            }
+        }
+    }
+
+    pub fn post_json(&self, path: &str, body: &Value) -> Result<(u16, Value), UpstreamError> {
+        let payload = stringify(body);
+        let request = request_bytes(&self.authority, path, &payload);
+        let raw = self.exchange(&request)?;
+        parse_reply(&raw)
+    }
+
+    fn exchange(&self, request: &[u8]) -> Result<Vec<u8>, UpstreamError> {
+        let unavailable = |error: std::io::Error| UpstreamError::Unavailable(error.to_string());
+        let mut stream = self.connect().map_err(unavailable)?;
+        stream.set_read_timeout(Some(UPSTREAM_TIMEOUT)).map_err(unavailable)?;
+        stream.set_write_timeout(Some(UPSTREAM_TIMEOUT)).map_err(unavailable)?;
+        stream.write_all(request).map_err(unavailable)?;
+        let mut raw = Vec::new();
+        (&mut stream).take(UPSTREAM_REPLY_MAX_BYTES as u64 + 1).read_to_end(&mut raw).map_err(unavailable)?;
+        Ok(raw)
+    }
+
+    fn connect(&self) -> std::io::Result<TcpStream> {
+        let mut last = std::io::Error::new(ErrorKind::NotFound, "no address for the account upstream");
+        for address in self.authority.as_str().to_socket_addrs()? {
+            match TcpStream::connect_timeout(&address, UPSTREAM_TIMEOUT) {
+                Ok(stream) => return Ok(stream),
+                Err(error) => last = error,
+            }
+        }
+        Err(last)
+    }
+}
+
+fn request_bytes(authority: &str, path: &str, payload: &str) -> Vec<u8> {
+    format!(
+        "POST {path} HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+        payload.len()
+    )
+    .into_bytes()
+}
+
+/// Parses one HTTP/1.x reply into its status and JSON body. The body is read by Content-Length, by chunked
+/// transfer-coding, or to the end of the reply.
+pub fn parse_reply(raw: &[u8]) -> Result<(u16, Value), UpstreamError> {
+    let bad = |detail: &str| UpstreamError::BadReply(detail.to_string());
+    if raw.len() > UPSTREAM_REPLY_MAX_BYTES {
+        return Err(bad("the reply is over 1 MB"));
+    }
+    let split = find(raw, b"\r\n\r\n").ok_or_else(|| bad("no end of headers"))?;
+    let head = std::str::from_utf8(&raw[..split]).map_err(|_| bad("the headers are not text"))?;
+    let mut lines = head.split("\r\n");
+    let status = parse_status(lines.next().unwrap_or(""))?;
+    let (mut length, mut chunked) = (None, false);
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else { continue };
+        let value = value.trim();
+        match name.trim().to_ascii_lowercase().as_str() {
+            "content-length" => length = Some(value.parse::<usize>().map_err(|_| bad("bad Content-Length"))?),
+            "transfer-encoding" => chunked = value.to_ascii_lowercase().contains("chunked"),
+            _ => {}
+        }
+    }
+    let body = &raw[split + 4..];
+    let payload = if chunked {
+        dechunk(body)?
+    } else {
+        match length {
+            Some(n) if n <= body.len() => body[..n].to_vec(),
+            Some(_) => return Err(bad("the body is shorter than Content-Length")),
+            None => body.to_vec(),
+        }
+    };
+    let value: Value = serde_json::from_slice(&payload).map_err(|_| bad("the body is not JSON"))?;
+    Ok((status, value))
+}
+
+fn parse_status(line: &str) -> Result<u16, UpstreamError> {
+    let mut parts = line.splitn(3, ' ');
+    let version = parts.next().unwrap_or("");
+    let code = parts.next().and_then(|code| code.parse::<u16>().ok()).filter(|code| (100..=599).contains(code));
+    match code {
+        Some(code) if version.starts_with("HTTP/1.") => Ok(code),
+        _ => Err(UpstreamError::BadReply("the status line is not HTTP/1.x".into())),
+    }
+}
+
+fn dechunk(mut rest: &[u8]) -> Result<Vec<u8>, UpstreamError> {
+    let bad = || UpstreamError::BadReply("the chunked body is malformed".into());
+    let mut out = Vec::new();
+    loop {
+        let line_end = find(rest, b"\r\n").ok_or_else(bad)?;
+        let size_text = std::str::from_utf8(&rest[..line_end]).map_err(|_| bad())?;
+        let size = usize::from_str_radix(size_text.split(';').next().unwrap_or("").trim(), 16).map_err(|_| bad())?;
+        rest = &rest[line_end + 2..];
+        if size == 0 {
+            return Ok(out);
+        }
+        if rest.len() < size + 2 {
+            return Err(bad());
+        }
+        out.extend_from_slice(&rest[..size]);
+        rest = &rest[size + 2..];
+    }
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|window| window == needle)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server::{LastRouteServer, Request, ServerOptions};
+    use std::net::TcpListener;
+
+    fn reply_bytes(head: &str, body: &str) -> Vec<u8> {
+        format!("{head}\r\n\r\n{body}").into_bytes()
+    }
+
+    #[test]
+    fn parse_reply_reads_the_status_and_the_json_body_by_content_length() {
+        let body = r#"{"ok":false,"code":"INVALID_CREDENTIALS"}"#;
+        let head = format!("HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close", body.len());
+        assert_eq!(parse_reply(&reply_bytes(&head, body)), Ok((401, json!({ "ok": false, "code": "INVALID_CREDENTIALS" }))));
+    }
+
+    #[test]
+    fn parse_reply_reads_to_the_close_without_a_length_and_decodes_chunked_bodies() {
+        let plain = reply_bytes("HTTP/1.1 200 OK\r\nContent-Type: application/json", r#"{"ok":true}"#);
+        assert_eq!(parse_reply(&plain), Ok((200, json!({ "ok": true }))));
+        let chunked = reply_bytes("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked", "6\r\n{\"ok\":\r\n5\r\ntrue}\r\n0\r\n\r\n");
+        assert_eq!(parse_reply(&chunked), Ok((200, json!({ "ok": true }))));
+    }
+
+    #[test]
+    fn parse_reply_refuses_a_body_that_is_not_json_a_reply_that_is_not_http_or_one_over_a_megabyte() {
+        let not_json = reply_bytes("HTTP/1.1 200 OK", "<html>");
+        assert!(matches!(parse_reply(&not_json), Err(UpstreamError::BadReply(_))));
+        let not_http = reply_bytes("SMTP 220 ready", "{}");
+        assert!(matches!(parse_reply(&not_http), Err(UpstreamError::BadReply(_))));
+        let short = reply_bytes("HTTP/1.1 200 OK\r\nContent-Length: 50", "{}");
+        assert!(matches!(parse_reply(&short), Err(UpstreamError::BadReply(_))));
+        let huge = vec![b'x'; UPSTREAM_REPLY_MAX_BYTES + 1];
+        assert!(matches!(parse_reply(&huge), Err(UpstreamError::BadReply(_))));
+    }
+
+    #[test]
+    fn upstream_urls_accept_plain_http_default_the_port_and_refuse_https_or_a_path() {
+        assert_eq!(Upstream::parse("http://127.0.0.1:80").unwrap().authority(), "127.0.0.1:80");
+        assert_eq!(Upstream::parse(" http://127.0.0.1/ ").unwrap().authority(), "127.0.0.1:80");
+        assert_eq!(Upstream::parse("http://accounts.local:8080/").unwrap().authority(), "accounts.local:8080");
+        assert_eq!(Upstream::parse("http://[::1]").unwrap().authority(), "[::1]:80");
+        assert_eq!(Upstream::parse("http://[::1]:8105").unwrap().authority(), "[::1]:8105");
+        for bad in ["https://accounts.example", "http://", "http://127.0.0.1/api", "127.0.0.1:80"] {
+            assert!(Upstream::parse(bad).is_err(), "{bad} was accepted");
+        }
+    }
+
+    #[test]
+    fn a_request_posts_the_json_body_with_its_length_and_closes_the_connection() {
+        let raw = String::from_utf8(request_bytes("127.0.0.1:80", "/api/account/login", r#"{"username":"ADA"}"#)).unwrap();
+        assert!(raw.starts_with("POST /api/account/login HTTP/1.1\r\nHost: 127.0.0.1:80\r\n"), "{raw}");
+        assert!(raw.ends_with("Content-Length: 18\r\nConnection: close\r\n\r\n{\"username\":\"ADA\"}"), "{raw}");
+    }
+
+    #[test]
+    fn a_forwarded_login_with_the_upstream_unreachable_answers_503_upstream_unavailable() {
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let upstream = Upstream::parse(&format!("http://127.0.0.1:{port}")).unwrap();
+        let server = LastRouteServer::new(ServerOptions { account_upstream: Some(upstream), ..Default::default() });
+        let request = Request::json("POST", "/api/account/login", &json!({ "username": "ada", "password": "correct horse battery" }));
+        let response = server.handle(&request);
+        assert_eq!(response.status, 503);
+        assert_eq!(response.json_body()["code"], "UPSTREAM_UNAVAILABLE");
+    }
+}

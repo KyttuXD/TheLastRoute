@@ -33,7 +33,7 @@ use crate::ui::menus::{self, Action, Screen, Ui};
 use crate::ui::pause::{self, Pause, Sub};
 use crate::ui::{hud, map, report, settings_panel, style};
 use crate::net::world_sync::{self, NetEvent, NetSession, RemoteView};
-use crate::net::{BackendConfig, Pending};
+use crate::net::{Backend, BackendConfig, BackendEvent, Pending};
 use crate::world::catalog::Catalog;
 use crate::world::route;
 use assets::Assets;
@@ -471,6 +471,14 @@ pub async fn run(screenshot: Option<String>) {
     // the room: the open session (host or guest), the request still in flight, and the directory it talks to
     // (`--backend=` applies here like to the menus; release builds use the primary server)
     let net_cfg: BackendConfig = BackendConfig::from_args(std::env::args().skip(1), cfg!(debug_assertions)).0;
+    // the account session: the title start checks the saved one once, and each frame takes the answers below
+    let mut backend = Backend::new(net_cfg.clone(), &crate::net::store::default_dir());
+    if backend.account.session_token.is_empty() && !settings.username.is_empty() {
+        // a name with no saved session was never confirmed by the server: the title shows it signed out
+        settings.username.clear();
+        settings.save();
+    }
+    backend.restore_session();
     let mut net: Option<NetSession> = None;
     let mut net_pending: Option<(NetIntent, Pending<NetSession>)> = None;
     if screenshot.is_some() {
@@ -528,6 +536,29 @@ pub async fn run(screenshot: Option<String>) {
         // read now, saved at the end of the frame, after everything is drawn
         let shot_key = is_key_pressed(KeyCode::F2);
         let s = style::ui_scale();
+
+        // the account answers: the profile name is set only when the server confirms it
+        for event in backend.update() {
+            match event {
+                BackendEvent::SignedIn(reply) => {
+                    settings.username = reply.username;
+                    settings.save();
+                    ui.acct_user.clear();
+                    ui.acct_pass.clear();
+                    ui.acct_status.clear();
+                }
+                BackendEvent::SignedOut => {
+                    // a sign out, or a saved session the server refused: a sign in that came since keeps its name
+                    if !backend.signed_in() {
+                        settings.username.clear();
+                        settings.save();
+                    }
+                }
+                BackendEvent::AccountError(text) => ui.acct_status = text,
+                _ => {}
+            }
+        }
+        ui.acct_busy = backend.account_pending();
 
         // a host or join request that has answered: adopt the session and show its lobby
         let answered = net_pending.as_mut().and_then(|(intent, p)| p.poll().map(|r| (*intent, r)));
@@ -665,7 +696,8 @@ pub async fn run(screenshot: Option<String>) {
         } else if let Some(g) = playing.as_mut() {
             let in_report = g.report.is_some();
             let remotes = net.as_ref().map(|n| n.remotes_at(g.depth, g.window_origin())).unwrap_or_default();
-            admin.enabled = settings.username == "KYTTU";
+            // the admin tools follow the server's admin flag for the signed-in account, never the local name
+            admin.enabled = backend.admin;
             let admin_esc = if in_report || pz.open {
                 false
             } else {
@@ -1080,6 +1112,13 @@ pub async fn run(screenshot: Option<String>) {
                 Action::ClearSave => {
                     checkpoint::clear();
                     save = None;
+                }
+                Action::SignIn { name, password } => backend.sign_in(&name, &password),
+                Action::CreateAccount { name, password } => backend.create_account(&name, &password, ""),
+                Action::SignOut => {
+                    backend.sign_out();
+                    settings.username.clear();
+                    settings.save();
                 }
                 Action::Quit => {
                     settings.save();
