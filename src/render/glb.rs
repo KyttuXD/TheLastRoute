@@ -136,27 +136,46 @@ impl GlbModel {
         let mut max = Vec3::splat(f32::MIN);
         let scene = g.default_scene().or_else(|| g.scenes().next())?;
         let mut measure = DoorMeasure::default();
-        // (node, parent transform, under a door hinge)
-        let mut stack: Vec<(gltf::Node, Mat4, bool)> =
-            scene.nodes().map(|n| (n, Mat4::IDENTITY, false)).collect();
-        while let Some((node, parent, under_hinge)) = stack.pop() {
+        // (node, parent transform, the hinge it hangs from and its transform in that hinge's frame)
+        type Stacked<'a> = (gltf::Node<'a>, Mat4, Option<(usize, Mat4)>);
+        let mut stack: Vec<Stacked> = scene.nodes().map(|n| (n, Mat4::IDENTITY, None)).collect();
+        while let Some((node, parent, in_hinge)) = stack.pop() {
             let name = node.name().unwrap_or("");
-            let mut local = Mat4::from_cols_array_2d(&node.transform().matrix());
-            // a door's hinges are drawn closed, as Godot leaves them by default (door.rs)
-            let hinge = door::closed_hinge_deg(name);
-            if let Some(deg) = hinge {
-                local = door::closed_hinge_local(local, deg);
+            let authored = Mat4::from_cols_array_2d(&node.transform().matrix());
+            let mut local = authored;
+            // a door's hinges are drawn closed, as Godot leaves them by default (door.rs); the static batch holds
+            // them shut, while the leaf geometry is kept in the hinge's frame so `draw_hinges` can turn it
+            let mut rel = in_hinge.map(|(i, r)| (i, r * authored));
+            if let (Some(deg), None) = (door::closed_hinge_deg(name), in_hinge) {
+                local = door::closed_hinge_local(authored, deg);
                 measure.hinge();
+                hinges.push(Hinge {
+                    name: name.to_string(),
+                    base: parent,
+                    local: authored,
+                    parts: vec![],
+                });
+                hinge_geo.push(HashMap::new());
+                rel = Some((hinges.len() - 1, Mat4::IDENTITY));
             }
             let m = parent * local;
-            let under = under_hinge || hinge.is_some();
             for child in node.children() {
-                stack.push((child, m, under));
+                stack.push((child, m, rel));
             }
             let Some(mesh) = node.mesh() else { continue };
             let header = name == "DoorFrameTop";
             let jamb = name == "DoorFrameL" || name == "DoorFrameR";
-            let nm = Mat3::from_mat4(m).inverse().transpose();
+            let under = rel.is_some();
+            let (dest, store) = match (rel, locker_pivot) {
+                (Some((i, r)), _) => (Dest::Hinge(i), r),
+                (None, Some(_)) if locker_door_part(name) => (Dest::Leaf, m),
+                _ => (Dest::Body, m),
+            };
+            let origin = match dest {
+                Dest::Leaf => locker_pivot.unwrap_or(Vec3::ZERO),
+                _ => Vec3::ZERO,
+            };
+            let nm = Mat3::from_mat4(store).inverse().transpose();
             for prim in mesh.primitives() {
                 if prim.mode() != gltf::mesh::Mode::Triangles {
                     continue;
@@ -185,7 +204,12 @@ impl GlbModel {
                     .base_color_texture()
                     .map(|t| t.texture().source().index())
                     .filter(|i| textures.get(*i).map(|t| t.is_some()).unwrap_or(false));
-                let entry = by_tex.entry(tex_index).or_default();
+                let geo = match dest {
+                    Dest::Body => &mut by_tex,
+                    Dest::Hinge(i) => &mut hinge_geo[i],
+                    Dest::Leaf => &mut leaf_geo,
+                };
+                let entry = geo.entry(tex_index).or_default();
                 let base = entry.0.len() as u32;
                 for i in 0..pos.len() {
                     let p = m.transform_point3(Vec3::from(pos[i]));
@@ -208,7 +232,7 @@ impl GlbModel {
                         (factor[3] * cols[i][3] * 255.0).clamp(0.0, 255.0) as u8,
                     ];
                     entry.0.push(Vertex {
-                        position: p,
+                        position: store.transform_point3(Vec3::from(pos[i])) - origin,
                         uv: Vec2::from(uvs[i]),
                         color: c,
                         normal: vec4(n.x, n.y, n.z, 1.0),
@@ -223,19 +247,35 @@ impl GlbModel {
         if by_tex.is_empty() {
             return None;
         }
-        let parts = by_tex
-            .into_iter()
-            .map(|(t, (verts, idx))| Part {
-                verts,
-                idx,
-                tex: t
-                    .and_then(|i| textures[i].clone())
-                    .unwrap_or_else(|| white.clone()),
-                key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
-            })
-            .collect();
+        let into_parts = |geo: Geometry| -> Vec<Part> {
+            geo.into_iter()
+                .map(|(t, (verts, idx))| Part {
+                    verts,
+                    idx,
+                    tex: t
+                        .and_then(|i| textures[i].clone())
+                        .unwrap_or_else(|| white.clone()),
+                    key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
+                })
+                .collect()
+        };
+        for (h, geo) in hinges.iter_mut().zip(hinge_geo) {
+            h.parts = into_parts(geo);
+        }
+        let locker_door = locker_pivot.map(|pivot| LockerDoor {
+            pivot,
+            parts: into_parts(leaf_geo),
+        });
+        let parts = into_parts(by_tex);
         let door = measure.finish(max.y);
-        Some(GlbModel { parts, min, max, door })
+        Some(GlbModel {
+            parts,
+            min,
+            max,
+            door,
+            hinges,
+            locker_door,
+        })
     }
 
     pub fn height(&self) -> f32 {
@@ -244,32 +284,23 @@ impl GlbModel {
 
     /// Adds the model, placed by `xf`, to per-texture builders (static world batching).
     pub fn add_to(&self, builders: &mut HashMap<usize, Builder>, xf: Mat4, tint: Color) {
-        let nm = Mat3::from_mat4(xf).inverse().transpose();
-        for p in &self.parts {
-            let b = builders
-                .entry(p.key)
-                .or_insert_with(|| Builder::new(Some(p.tex.clone())));
-            for chunk in p.idx.chunks(3 * 6000) {
-                b.reserve(chunk.len());
-                let base = b.verts.len() as u16;
-                for (k, &i) in chunk.iter().enumerate() {
-                    let v = p.verts[i as usize];
-                    let n = (nm * v.normal.truncate()).normalize_or_zero();
-                    let c = [
-                        (v.color[0] as f32 * tint.r) as u8,
-                        (v.color[1] as f32 * tint.g) as u8,
-                        (v.color[2] as f32 * tint.b) as u8,
-                        v.color[3],
-                    ];
-                    b.verts.push(Vertex {
-                        position: xf.transform_point3(v.position),
-                        uv: v.uv,
-                        color: c,
-                        normal: vec4(n.x, n.y, n.z, v.normal.w),
-                    });
-                    b.idx.push(base + k as u16);
-                }
-            }
+        add_parts(&self.parts, builders, xf, tint);
+    }
+
+    /// Adds a room door's hinge leaves to `builders`, the door placed by `xf` and swung to `open` (0 shut, 1 open):
+    /// each leaf turns about its hinge to `door::hinge_deg`, from the same hinge frame the static batch closes.
+    pub fn add_hinges(&self, builders: &mut HashMap<usize, Builder>, xf: Mat4, tint: Color, open: f32) {
+        for h in &self.hinges {
+            let deg = door::hinge_deg(&h.name, open).unwrap_or(0.0);
+            add_parts(&h.parts, builders, xf * h.base * door::closed_hinge_local(h.local, deg), tint);
+        }
+    }
+
+    /// Adds a hiding spot's door to `builders`, swung `angle` radians open about its hinge line (toward the front).
+    pub fn add_locker_door(&self, builders: &mut HashMap<usize, Builder>, xf: Mat4, tint: Color, angle: f32) {
+        if let Some(d) = &self.locker_door {
+            let swing = xf * Mat4::from_translation(d.pivot) * Mat4::from_rotation_y(-angle);
+            add_parts(&d.parts, builders, swing, tint);
         }
     }
 
@@ -277,8 +308,43 @@ impl GlbModel {
     pub fn draw(&self, xf: Mat4, tint: Color) {
         let mut builders = HashMap::new();
         self.add_to(&mut builders, xf, tint);
-        for (_, mut b) in builders {
-            b.draw_and_clear();
+        draw_builders(builders);
+    }
+}
+
+fn add_parts(parts: &[Part], builders: &mut HashMap<usize, Builder>, xf: Mat4, tint: Color) {
+    let nm = Mat3::from_mat4(xf).inverse().transpose();
+    for p in parts {
+        let b = builders
+            .entry(p.key)
+            .or_insert_with(|| Builder::new(Some(p.tex.clone())));
+        for chunk in p.idx.chunks(3 * 6000) {
+            b.reserve(chunk.len());
+            let base = b.verts.len() as u16;
+            for (k, &i) in chunk.iter().enumerate() {
+                let v = p.verts[i as usize];
+                let n = (nm * v.normal.truncate()).normalize_or_zero();
+                let c = [
+                    (v.color[0] as f32 * tint.r) as u8,
+                    (v.color[1] as f32 * tint.g) as u8,
+                    (v.color[2] as f32 * tint.b) as u8,
+                    v.color[3],
+                ];
+                b.verts.push(Vertex {
+                    position: xf.transform_point3(v.position),
+                    uv: v.uv,
+                    color: c,
+                    normal: vec4(n.x, n.y, n.z, v.normal.w),
+                });
+                b.idx.push(base + k as u16);
+            }
         }
+    }
+}
+
+/// Draws the builders' triangles now, one call per texture.
+pub fn draw_builders(builders: HashMap<usize, Builder>) {
+    for (_, mut b) in builders {
+        b.draw_and_clear();
     }
 }

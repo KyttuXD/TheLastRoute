@@ -4,11 +4,11 @@
 //! and the hunters in their Blockbench bodies. Simple shapes stand in if a model is missing.
 
 use super::anim::{
-    self, grab,
+    self, grab, hide,
     hunter::{HunterView, Input},
 };
 use super::builder::Builder;
-use super::glb::GlbModel;
+use super::glb::{draw_builders, GlbModel};
 use super::shader::{self, Lamp, Lighting};
 use crate::shared::assets::Assets;
 use crate::config::*;
@@ -16,7 +16,10 @@ use crate::game::{Game, Heater, Item};
 use crate::hunters::brain::State;
 use crate::hunters::gimmicks::Gimmick;
 use macroquad::prelude::*;
+use std::collections::HashMap;
 
+/// How far the fog reaches, metres.
+const FOG_RANGE: f32 = 24.0;
 pub const FOG: Vec3 = Vec3::new(0.012, 0.008, 0.014);
 pub const RELAY: Color = Color::new(0.26, 0.88, 0.92, 1.0);
 pub const BATTERY: Color = Color::new(0.95, 0.82, 0.25, 1.0);
@@ -25,9 +28,24 @@ const LIFT: Color = Color::new(0.76, 0.55, 0.96, 1.0);
 const LOCKER: Color = Color::new(0.45, 0.60, 0.70, 1.0);
 const TOOL: Color = Color::new(0.64, 0.84, 0.96, 1.0);
 
-pub fn camera(g: &Game, rt: &RenderTarget) -> Camera3D {
+/// The runner's eye and view basis (forward, right, up): the player's own, with the hiding crouch and slide
+/// (`hide::player_now`) applied, so the eye drops, slides back along the view and looks down a little.
+pub fn view(g: &Game) -> (Vec3, Vec3, Vec3, Vec3) {
     let eye = g.eye();
-    let (fwd, _, _) = g.camera_basis();
+    let (fwd, right, up) = g.camera_basis();
+    let h = hide::player_now();
+    if h.weight <= 0.0 {
+        return (eye, fwd, right, up);
+    }
+    let (fx, fz) = g.forward2();
+    let pitch = (g.p.pitch + h.pitch).clamp(-1.45, 1.45);
+    let fwd = vec3(fx * pitch.cos(), pitch.sin(), fz * pitch.cos()).normalize();
+    let up = right.cross(fwd).normalize();
+    (eye - vec3(0.0, h.drop, 0.0) - fwd * h.slide_back, fwd, right, up)
+}
+
+pub fn camera(g: &Game, rt: &RenderTarget) -> Camera3D {
+    let (eye, fwd, _, _) = view(g);
     // held by a hunter: the view rides the grabbed body's eyes and looks at her face (HunterGrab._solve_camera)
     let (position, target, up) = match (g.escape.as_ref(), grab::camera()) {
         (Some(_), Some(c)) => c,
@@ -47,8 +65,7 @@ pub fn camera(g: &Game, rt: &RenderTarget) -> Camera3D {
 }
 
 pub fn lighting(g: &Game) -> Lighting {
-    let eye = g.eye();
-    let (fwd, right, up) = g.camera_basis();
+    let (eye, fwd, right, up) = view(g);
     Lighting {
         eye,
         flashlight_pos: eye + right * 0.08 - up * 0.05 + fwd * 0.12,
@@ -57,7 +74,7 @@ pub fn lighting(g: &Game) -> Lighting {
         // rooms are dark unless something lights them: Godot's RefLook ambient (shader::AMBIENT_COLOR x AMBIENT_ENERGY)
         ambient: shader::AMBIENT_COLOR * shader::AMBIENT_ENERGY,
         fog: FOG,
-        fog_far: 24.0,
+        fog_far: FOG_RANGE,
     }
 }
 
@@ -106,6 +123,7 @@ fn at(x: f32, y: f32, z: f32, yaw: f32) -> Mat4 {
 }
 
 pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
+    hide::tick(g.p.hidden, g.time);
     set_camera(&camera(g, rt));
     clear_background(Color::new(FOG.x, FOG.y, FOG.z, 1.0));
     gl_use_material(mat);
@@ -122,6 +140,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     for m in &g.world.meshes {
         draw_mesh(m);
     }
+    draw_doors(g, a);
     let mut b = Builder::new(Some(a.white.clone()));
     let t = g.time;
     let f = &g.fac;
@@ -235,22 +254,27 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         }
     }
     for (i, l) in f.hiding.iter().enumerate() {
-        if g.p.hidden == Some(i) {
+        let swing = hide::door_for(i, t);
+        if g.p.hidden == Some(i) && swing == 0.0 {
             continue;
         }
         let (cx, cy) = f.locker_center(l);
         let yaw = (l.facing.0 as f32).atan2(l.facing.1 as f32);
         let burnt = g.hiding_disabled[i];
         match item_model(a, "hiding_spot") {
-            Some(m) => m.draw(
-                at(cx, 0.0, cy, yaw),
-                if burnt {
+            Some(m) => {
+                let xf = at(cx, 0.0, cy, yaw);
+                let tint = if burnt {
                     Color::new(0.25, 0.2, 0.18, 1.0)
                 } else {
                     WHITE
-                },
-            ),
-            None => locker_shape(&mut b, vec3(cx, 0.0, cy), yaw, burnt),
+                };
+                let mut parts = HashMap::new();
+                m.add_to(&mut parts, xf, tint);
+                m.add_locker_door(&mut parts, xf, tint, swing);
+                draw_builders(parts);
+            }
+            None => locker_shape(&mut b, vec3(cx, 0.0, cy), yaw, burnt, swing),
         }
     }
     for (i, l) in f.room_lights.iter().enumerate() {
@@ -596,6 +620,23 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     gl_use_default_material();
 }
 
+/// The room doors, each swung to its open amount (the world meshes hold them shut): the hinge leaves of every door near
+/// enough to be seen, batched by texture.
+fn draw_doors(g: &Game, a: &Assets) {
+    let eye = g.eye();
+    let mut parts = HashMap::new();
+    for d in &g.world.doors {
+        let reach = FOG_RANGE + 6.0;
+        if (d.xf.w_axis.truncate() - eye).length_squared() > reach * reach {
+            continue;
+        }
+        if let Some(m) = a.glb.get(&d.model) {
+            m.add_hinges(&mut parts, d.xf, WHITE, g.fac.door_open_amount(d.cell));
+        }
+    }
+    draw_builders(parts);
+}
+
 pub fn battery_shape(b: &mut Builder, p: Vec3, spin: f32) {
     b.cube(
         p + vec3(0.0, 0.14, 0.0),
@@ -626,7 +667,7 @@ fn pickup_shape(b: &mut Builder, item: Item, p: Vec3, spin: f32) {
     }
 }
 
-fn locker_shape(b: &mut Builder, p: Vec3, yaw: f32, burnt: bool) {
+fn locker_shape(b: &mut Builder, p: Vec3, yaw: f32, burnt: bool, swing: f32) {
     let body = if burnt {
         Color::new(0.16, 0.13, 0.12, 1.0)
     } else {
@@ -636,6 +677,16 @@ fn locker_shape(b: &mut Builder, p: Vec3, yaw: f32, burnt: bool) {
         p + vec3(0.0, 1.0, 0.0),
         vec3(0.78, 2.0, 0.56),
         yaw,
+        body,
+        0.0,
+    );
+    let front = vec3(0.0, 1.0, 0.3);
+    let hinge = vec3(-0.35, 1.0, 0.3);
+    let panel = hinge + Mat3::from_rotation_y(-swing) * (front - hinge);
+    b.cube(
+        p + Mat3::from_rotation_y(yaw) * panel,
+        vec3(0.7, 1.9, 0.04),
+        yaw - swing,
         body,
         0.0,
     );

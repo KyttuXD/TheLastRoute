@@ -15,7 +15,7 @@ use crate::config::WALL_HEIGHT;
 use crate::content::props::{stable_index, visual_y};
 use crate::content::regions::{RegionDef, RegionSafeLight};
 use crate::content::Content;
-use crate::world::facility::{stair_well_cells, Cell, STAIR_FLIGHT};
+use crate::world::facility::{stair_well_cells, Cell, DoorDraw, Prop, STAIR_FLIGHT};
 use crate::world::infinite::{CHUNK, WINDOW};
 use crate::world::{region_texture, Facility, TEXTURE_SETS};
 use macroquad::prelude::*;
@@ -25,11 +25,21 @@ use std::collections::HashMap;
 pub struct WorldMeshes {
     pub meshes: Vec<Mesh>,
     pub lamps: Vec<Lamp>,
+    /// The room doors of the floor, drawn each frame apart from `meshes` (which hold them shut) so their leaves swing.
+    pub doors: Vec<DoorInstance>,
     /// The Infinite window's geometry by chunk part, kept while a part's chunk stays in (or just left) the window.
     parts: HashMap<PartKey, Part>,
     /// The part each of `meshes` was taken from (None for the safe pad, built fresh each time).
     drawn: Vec<Option<PartKey>>,
     builds: u64,
+}
+
+/// A room door to draw each frame: its threshold cell (the key of `Facility::door_open_amount`), the glb it uses and
+/// where it stands.
+pub struct DoorInstance {
+    pub cell: Cell,
+    pub model: String,
+    pub xf: Mat4,
 }
 
 /// Where the Infinite route's 3x3 window stands: its level and its centre chunk.
@@ -190,6 +200,7 @@ impl WorldMeshes {
         content: &Content,
     ) {
         self.lamps = lamps(f, lights_on, content);
+        self.doors = door_instances(f, assets, content);
         for (m, key) in std::mem::take(&mut self.meshes).into_iter().zip(std::mem::take(&mut self.drawn)) {
             if let Some(p) = key.and_then(|k| self.parts.get_mut(&k)) {
                 p.meshes.push(m);
@@ -484,6 +495,44 @@ fn variant_key(f: &Facility, room: usize) -> String {
     }
 }
 
+/// The authored model a prop is drawn with, if its type has originals: the variant its room picks, else the first one
+/// that is loaded.
+fn prop_original<'c>(f: &Facility, p: &Prop, assets: &Assets, content: &'c Content) -> Option<&'c String> {
+    let originals = content.props.get(&p.ptype).map(|d| d.originals()).filter(|o| !o.is_empty())?;
+    let picked = &originals[stable_index(&variant_key(f, p.room), originals.len())];
+    if assets.glb.contains_key(picked) {
+        Some(picked)
+    } else {
+        originals.iter().find(|m| assets.glb.contains_key(*m))
+    }
+}
+
+/// Where a room door stands: raised to the hunter's opening and widened to its doorway, on its doorway's centre.
+fn door_xf(p: &Prop, d: DoorDraw, dims: door::DoorDims, h: f32) -> Mat4 {
+    let (x, z) = p.cell.center();
+    let y = visual_y(&p.ptype, h, p.mount_y.unwrap_or(0.0) as f32);
+    let yaw = p.rotation as f32 * std::f32::consts::FRAC_PI_2;
+    let (sx, sy) = door::door_scale(dims, &p.ptype, d.span);
+    door::door_transform(vec3(x + d.offset[0], y, z + d.offset[1]), yaw, sx, sy, prop_scale::draw_scale(&p.ptype))
+}
+
+/// Every room door of `f` that has an authored model, for the per-frame leaf draw.
+fn door_instances(f: &Facility, assets: &Assets, content: &Content) -> Vec<DoorInstance> {
+    f.props
+        .iter()
+        .filter_map(|p| {
+            let d = p.door?;
+            let key = prop_original(f, p, assets, content)?;
+            let dims = assets.glb.get(key)?.door?;
+            Some(DoorInstance {
+                cell: p.cell,
+                model: key.clone(),
+                xf: door_xf(p, d, dims, WALL_HEIGHT),
+            })
+        })
+        .collect()
+}
+
 fn build_meshes(
     f: &Facility,
     pick: &Pick,
@@ -616,18 +665,7 @@ fn build_meshes(
         let yaw = p.rotation as f32 * std::f32::consts::FRAC_PI_2;
         // the model's drawn turn: a room door keeps the gameplay yaw, every other prop gets the half turn
         let visual_yaw = prop_visual_yaw(yaw, p.door.is_some());
-        let original = content
-            .props
-            .get(&p.ptype)
-            .map(|d| d.originals())
-            .filter(|o| !o.is_empty())
-            .and_then(|o| {
-                let room_id = variant_key(f, p.room);
-                assets
-                    .glb
-                    .get(&o[stable_index(&room_id, o.len())])
-                    .or_else(|| o.iter().find_map(|m| assets.glb.get(m)))
-            });
+        let original = prop_original(f, p, assets, content).and_then(|k| assets.glb.get(k));
         // Godot's per-type hunter scale (PropModelCatalog.HUNTER_SCALE, data/render/prop_draw_scale.json).
         let scale = prop_scale::draw_scale(&p.ptype);
         if let Some(model) = original {
@@ -641,7 +679,7 @@ fn build_meshes(
             // RouteInteractable3D raise); every other prop is the uniform draw scale
             let xf = match p.door.zip(model.door) {
                 Some((d, dims)) => {
-                    let (sx, sy) = door::door_scale(dims, &p.ptype, d.span);
+                    let sy = door::door_scale(dims, &p.ptype, d.span).1;
                     // the wall over the opening, from the raised frame's top up to the ceiling (Godot's door header)
                     let bottom = door::header_bottom(dims, sy, h);
                     if bottom < h {
@@ -650,7 +688,7 @@ fn build_meshes(
                         let fallback = assets.wall(room_set(f, p.cell.x, p.cell.y));
                         door_header(&mut surf, wall, fallback, vec3(x, 0.0, z), yaw, d.span as f32, bottom, h, tiers);
                     }
-                    door::door_transform(vec3(x, y, z), yaw, sx, sy, scale)
+                    door_xf(p, d, dims, h)
                 }
                 None => Mat4::from_translation(vec3(x, y, z))
                     * Mat4::from_rotation_y(visual_yaw)

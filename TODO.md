@@ -817,7 +817,7 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [ ] Windows laptop: run the stress test on this PC and compare it with the Intel Macs
 
 ### Models
-- [ ] bbmodel is the standard: GLB-to-bbmodel converter, the five Godot models the port lacks (door_frame, floor_tile, wall_block, kathy_scythe, sewer_outflow_pipe_broken), the Godot _0/_1/_2 variants, and the 430 GLBs the port still ships
+- [ ] bbmodel is the standard: GLB-to-bbmodel converter, the five Godot models the port lacks (door_frame, floor_tile, wall_block, kathy_scythe, sewer_outflow_pipe_broken), the Godot _0/_1/_2 variants, and the 430 GLBs the port still ships. Done so far: converter and 430 bbmodels beside their GLBs. Still open, in order: (1) catwalk fixes first, (2) copy the 220 Godot-only GLBs that prop data references and convert them, (3) switch the prop loader in shared/assets.rs to bbmodel with GLB fallback, (4) move door panels in render/door.rs to bbmodel
 - [ ] Make the draw path pick a variant per prop instead of one model for all variants
 
 ### Updates and builds

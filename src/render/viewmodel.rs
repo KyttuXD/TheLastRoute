@@ -3,8 +3,9 @@
 //! the taser kick, the torch click) and slid back from walls, drawn into their own layer so walls never cut through them.
 
 use super::anim::held::{self, HeldId, HeldState, Motion};
+use super::anim::hide;
 use super::builder::Builder;
-use super::scene::{camera, item_file, item_model, lighting, BATTERY};
+use super::scene::{camera, item_file, item_model, lighting, view, BATTERY};
 use super::shader;
 use crate::shared::assets::Assets;
 use crate::config::WALL_HEIGHT;
@@ -98,7 +99,7 @@ fn motion_now(g: &Game, item: Item, eye: Vec3, fwd: Vec3) -> (Option<(HeldId, Mo
 pub fn draw_viewmodel(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     set_camera(&camera(g, rt));
     clear_background(Color::new(0.0, 0.0, 0.0, 0.0));
-    if g.p.hidden.is_some() || g.report.is_some() || g.escape.is_some() {
+    if hide::player_now().weight >= 1.0 || g.report.is_some() || g.escape.is_some() {
         return;
     }
     let Some(item) = g.selected_item() else {
@@ -106,8 +107,7 @@ pub fn draw_viewmodel(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     };
     gl_use_material(mat);
     shader::apply(mat, &lighting(g), &g.world.lamps);
-    let eye = g.eye();
-    let (fwd, right, up) = g.camera_basis();
+    let (eye, fwd, right, up) = view(g);
     let (motion, push) = motion_now(g, item, eye, fwd);
     // the taser kick shows the taser whatever was held (_animate_taser_fire makes its view visible)
     let shown = match motion {
