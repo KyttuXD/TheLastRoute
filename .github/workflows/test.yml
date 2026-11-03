@@ -4,7 +4,13 @@
 name: test
 on:
   push:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
   workflow_dispatch:
 
 permissions:
@@ -37,6 +43,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: test-${{ matrix.os }}
 
       - name: cargo test --lib
         run: cargo test --locked --lib

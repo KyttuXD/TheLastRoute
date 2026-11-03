@@ -157,7 +157,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lr_net_saves_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let saves = CloudSaves::new(&dir.join("run.json"), 1);
-        assert_eq!(saves.cloud_path, "/api/v1/saves/last-route-godot/run-world-1");
+        assert_eq!(saves.cloud_path, "/api/v1/saves/last-route-rust/run-world-1");
         assert_eq!(saves.pending(), Owed::None);
         saves.mark(Owed::Push);
         assert_eq!(saves.pending(), Owed::Push);

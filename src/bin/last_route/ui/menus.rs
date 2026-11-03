@@ -650,7 +650,10 @@ pub fn draw_quit(a: &Assets, ui: &mut Ui, username: &str) -> Action {
     if y_hit || (enter && ui.focus == 0) {
         return Action::Quit;
     }
-    let outside = is_mouse_button_pressed(MouseButton::Left) && !hovered(panel);
+    let pressed = [MouseButton::Left, MouseButton::Right, MouseButton::Middle]
+        .into_iter()
+        .any(is_mouse_button_pressed);
+    let outside = pressed && !hovered(panel);
     if n_hit || (enter && ui.focus == 1) || is_key_pressed(KeyCode::Escape) || outside {
         return Action::Go(Screen::Title);
     }

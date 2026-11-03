@@ -20,7 +20,10 @@ use std::path::PathBuf;
 
 pub const SAVE_MAX_BYTES: usize = 64 * 1024;
 /// Keep the pre-revision slot intact; beta world revisions use distinct slots.
-pub const ALLOWED_SAVES: &[(&str, &[&str])] = &[("last-route-godot", &["run", "run-world-1"])];
+pub const ALLOWED_SAVES: &[(&str, &[&str])] = &[
+    ("last-route-godot", &["run", "run-world-1"]),
+    ("last-route-rust", &["run", "run-world-1"]),
+];
 
 /// `SAVE_PATH.exec(pathname)` -> `(gameId, slot)` (raw, never decoded).
 pub fn match_save_path(pathname: &str) -> Option<(String, String)> {

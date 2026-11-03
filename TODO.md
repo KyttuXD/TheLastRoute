@@ -709,15 +709,15 @@ Tabs today (src/bin/last_route/ui/admin/mod.rs TABS): STATUS, GENERAL, PLAYER, H
 
 ### More admin menu fixes and parts
 
-- [ ] Admin tab order and keyboard navigation: Tab and arrows move between tabs and fields
+- [x] Admin tab order and keyboard navigation: Tab and arrows move between tabs and fields
 - [ ] Every admin field shows its current value and its allowed range before it is edited
 - [ ] Reset button per field and a reset-all on each tab
-- [ ] Admin actions write one line to the debug log so a run can be audited afterwards
+- [x] Admin actions write one line to the debug log so a run can be audited afterwards
 - [ ] Admin panel closes cleanly on ESC without leaving the mouse locked or the pause menu open
 - [ ] DEBUG VIEW tab: toggles for the collider, path and navigation overlays, each saved between runs
 - [ ] FIELDS tab: list every tunable value with its file and key (config, region data and hunter data)
 - [ ] NPCS tab: per-NPC commands (teleport, remove, follow) instead of only spawn and remove all
-- [ ] WORLD tab: regenerate the current floor from its seed and show the seed on screen
+- [~] WORLD tab: regenerate the current floor from its seed and show the seed on screen
 - [ ] STORY tab: jump to a story beat by its id, and show which beats have already fired
 - [ ] Admin tools only enable for the signed-in KYTTU account (see the login reset), with a clear message when they are off
 - [ ] Admin menu screenshot checks at 1280x720 for every tab, so layout bugs show up in review
@@ -725,9 +725,9 @@ Tabs today (src/bin/last_route/ui/admin/mod.rs TABS): STATUS, GENERAL, PLAYER, H
 ### CI and build speed
 
 - [ ] CI speedup: cut the four separate cargo test invocations in test.yml to one run where the crate graph is shared
-- [ ] CI speedup: cache the Windows target directory across runs in build.yml and test.yml (rust-cache keys per job)
-- [ ] CI speedup: run the Linux and macOS build jobs in parallel with the Windows build instead of one after another
-- [ ] CI speedup: skip the release build in test.yml when only docs or TODO.md changed (paths-ignore)
+- [x] CI speedup: cache the Windows target directory across runs in build.yml and test.yml (rust-cache keys per job)
+- [x] CI speedup: run the Linux and macOS build jobs in parallel with the Windows build instead of one after another
+- [x] CI speedup: skip the release build in test.yml when only docs or TODO.md changed (paths-ignore)
 - [ ] CI speedup: use prebuilt tools (cargo-binstall) rather than building any CLI tool in CI
 - [ ] Faster GitHub compilations: a dev-profile setting for CI that trims debug info (debug = "line-tables-only")
 - [ ] Faster compilations on this PC: measure a cold build with opt-level 1 for dependencies, record the time, then decide
@@ -739,16 +739,16 @@ Tabs today (src/bin/last_route/ui/admin/mod.rs TABS): STATUS, GENERAL, PLAYER, H
 New items from a read-only comparison of the Godot game folders with TODO.md. Effort as marked.
 
 - [ ] Port Porcelle's hunter radar ping on the minimap: a slow ping about every 8 s, an eased ring, and a steady dim dot under reduced motion (effort S; game/hud/radar_ping.gd)
-- [ ] Port the centre reticle, shown only while the view is aimed (hidden with the cursor free, at the desk, under the tablet or in the pause menu) (effort S; game/hud/crosshair.gd)
+- [x] Port the centre reticle, shown only while the view is aimed (hidden with the cursor free, at the desk, under the tablet or in the pause menu) (effort S; game/hud/crosshair.gd)
 - [ ] Port world-space teammate markers: name and distance at each teammate, edge markers off screen, floor offset, dimming when stale, DOWN and CAUGHT labels (effort M; game/hud/teammate_waypoints.gd)
 - [ ] Port quick-chat map pings: a room-chat ping shows on the minimap and full map on the floor where it was posted (effort S; game/hud/hud.gd)
-- [ ] Port the QUIT TO DESKTOP confirmation: YES on the left, NO focused by default, Esc or click outside closes; YES saves and closes a hosted room (effort S; game/ui_common/quit_confirm.gd)
+- [x] Port the QUIT TO DESKTOP confirmation: YES on the left, NO focused by default, Esc or click outside closes; YES saves and closes a hosted room (effort S; game/ui_common/quit_confirm.gd)
 - [ ] Port the top-centre update badge: downloading percentage, then RESTART NOW or LATER, with the status-bar text during a run (effort S; game/menus/update_badge.gd)
 - [ ] Port the games hub ADMIN panel: build info, server health, updates per platform, public route status, notices, debug toggles, skin removal (no tokens shown) (effort M; game/admin/hub_admin_panel.gd)
 - [ ] Port the public route daily lineup: a stable UTC-day featured pair, weighted draw (easy 50%, intermediate 40%, difficult 10%), one extra hunter per two players, capped at 8 (effort M; game/config/public_roster.gd)
 - [ ] Port the admin find-player marker: a beam and two rings through walls at the target for about 6 s, following the live position (effort S; game/admin/admin_pulse.gd)
 - [ ] Port troll-mode advertisements for a chosen player: gentle and annoying profiles, a per-window cap, never shown while caught or in menus (effort M; game/admin/troll_ads.gd)
-- [ ] Port the F2 screenshot: saves the whole game window to a dated PNG from any screen (effort S; game/autoload/screenshot.gd)
+- [x] Port the F2 screenshot: saves the whole game window to a dated PNG from any screen (effort S; game/autoload/screenshot.gd)
 - [ ] Port the single cursor owner: menus register named claims, and any claim frees the cursor so the camera cannot re-grab it under a menu (effort S; game/autoload/mouse_lock.gd)
 - [ ] Port phone touch controls: on-screen D-pad, drag-to-look, touch buttons, and the phone and low-memory budgets with --touch and --lowmem (effort L; game/hud/touch_controls.gd)
 - [ ] Port XR (OpenXR headset) mode: comfort and fade, gaze pointer, hand tracking, and the route and menu panels in 3D (effort L; game/xr/xr_comfort.gd)
@@ -759,7 +759,7 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [ ] Dossier: the mouse wheel scroll jumps back to the top. Not reproduced from the code; needs the tab and steps from the person testing it
 - [ ] Door headers above doors (added in the 3D map pass) are not checked in a run, and may overlap archway lintels
 - [ ] Safe zone checkpoint light and the 0.35 ambient are checked in one screenshot only; confirm in a safe zone and in a dark corridor
-- [ ] Release build fails while last_route.exe is running (file lock). Close the game first, or build to a copy
+- [x] Release build fails while last_route.exe is running (file lock). Close the game first, or build to a copy
 - [ ] Windows CI: the server test step compiles slowly on the runner and was cancelled once; confirm it finishes on a normal run
 - [ ] Windows CI: the self-test runs locally only (hosted runners have no OpenGL pixel format)
 - [ ] Account screen kicker still reads "KYTTU'S LAB // ACCOUNT"; change it to "KYTTU: THE LAST ROUTE"
@@ -767,7 +767,7 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [ ] Ambient is 0.35 here against Godot's 0.035, a deliberate change; decide whether to keep it or match Godot
 - [ ] Mouse look speed is unchecked against Godot with the same swipe (OPEN_QUESTIONS 20)
 - [ ] Two-window multiplayer room test still needs a person at the screen (KT-MBA)
-- [ ] lr_server: some helpers are only used by tests and are gated with cfg(test); delete the ones nothing needs
+- [x] lr_server: some helpers are only used by tests and are gated with cfg(test); delete the ones nothing needs
 
 ## Performance and FPS
 

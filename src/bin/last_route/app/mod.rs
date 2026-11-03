@@ -19,6 +19,7 @@ pub mod pacing;
 pub mod perf;
 pub mod platform;
 pub mod profile;
+pub mod screenshot;
 pub mod selftest;
 pub mod settings;
 pub mod updater;
@@ -37,6 +38,7 @@ use crate::world::catalog::Catalog;
 use crate::world::route;
 use assets::Assets;
 use macroquad::prelude::*;
+use screenshot::Screenshots;
 use settings::Settings;
 
 pub struct Targets {
@@ -446,6 +448,7 @@ pub async fn run(screenshot: Option<String>) {
     // the fullscreen map's pan, zoom and double click (ui/map.rs); recentred each time it opens
     let mut map_view = map::FullView::default();
     let mut hud_hidden = false;
+    let mut shots = Screenshots::default();
     let mut death: Option<Death> = None;
     let mut last_save: Option<checkpoint::Checkpoint> = None;
     let mut save_poll = 0.0f32;
@@ -522,6 +525,8 @@ pub async fn run(screenshot: Option<String>) {
             set_fullscreen(settings.fullscreen);
             settings.save();
         }
+        // read now, saved at the end of the frame, after everything is drawn
+        let shot_key = is_key_pressed(KeyCode::F2);
         let s = style::ui_scale();
 
         // a host or join request that has answered: adopt the session and show its lobby
@@ -854,6 +859,9 @@ pub async fn run(screenshot: Option<String>) {
                         let _t = perf::section("hud");
                         hud::draw_hud(g, &w.assets, fps, s);
                     }
+                    if !hud_hidden {
+                        hud::draw_crosshair(g, grabbed);
+                    }
                     if map_open {
                         map::draw_full_map(g, &w.assets, &map_view);
                     }
@@ -1069,7 +1077,10 @@ pub async fn run(screenshot: Option<String>) {
                     checkpoint::clear();
                     save = None;
                 }
-                Action::Quit => break,
+                Action::Quit => {
+                    settings.save();
+                    break;
+                }
                 Action::None => {}
             }
         }
@@ -1138,6 +1149,10 @@ pub async fn run(screenshot: Option<String>) {
         }
         boot.draw_frame();
         perf::draw_overlay(w.assets.font.as_ref(), &[]);
+        if shot_key {
+            shots.capture();
+        }
+        shots.draw(&w.assets, dt);
         pacer.wait(settings.frame_cap_fps());
         next_frame().await;
     }

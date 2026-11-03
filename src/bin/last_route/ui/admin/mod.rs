@@ -293,11 +293,51 @@ impl Admin {
             }
             return true;
         }
+        if self.open {
+            self.keyboard_nav();
+        }
         if !typing && (is_key_pressed(KeyCode::Key0) || is_key_pressed(KeyCode::Kp0)) {
             let next = !self.open;
             self.set_open(next);
         }
         false
+    }
+
+    /// Tab and Right move to the next tab, Shift+Tab and Left to the previous one (as a click
+    /// does, this drops an open list and the field focus). On FIELDS, Up and Down move between
+    /// the line edits while one has focus.
+    fn keyboard_nav(&mut self) {
+        let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+        let step: isize = if is_key_pressed(KeyCode::Tab) {
+            if shift {
+                -1
+            } else {
+                1
+            }
+        } else if is_key_pressed(KeyCode::Right) {
+            1
+        } else if is_key_pressed(KeyCode::Left) {
+            -1
+        } else {
+            0
+        };
+        if step != 0 {
+            let next = (self.tab as isize + step).clamp(0, TABS.len() as isize - 1) as usize;
+            if next != self.tab {
+                self.tab = next;
+                self.popup = None;
+                self.field_focus = None;
+            }
+        }
+        if self.tab == 9 {
+            if let Some(i) = self.field_focus {
+                if is_key_pressed(KeyCode::Up) {
+                    self.field_focus = Some(i.saturating_sub(1));
+                } else if is_key_pressed(KeyCode::Down) {
+                    self.field_focus = Some((i + 1).min(self.fields.len() - 1));
+                }
+            }
+        }
     }
 
     /// Engine.time_scale for the run: PAUSE, 0.25x .. 4x, and STEP 1 FRAME (one 60 Hz frame,

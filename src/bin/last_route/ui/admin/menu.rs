@@ -474,6 +474,50 @@ impl Admin {
             }
             4 => self.npc_panel(&mut ui, &mut col, &mut cmds),
             5 => {
+                let seeds = format!("RUN SEED {}  FLOOR SEED {}", g.run_seed, g.level_seed());
+                for line in wrap(&ui, &seeds, 7.0, page.w) {
+                    let r = col.take(line_h(7.0), 2.0);
+                    if ui.visible(r) {
+                        ui.text(&line, r.x, r.y, 7.0, INK);
+                    }
+                }
+                if g.inf.is_none() {
+                    let r = col.take(17.0, 4.0);
+                    let w = ui.tw("REGENERATE FLOOR", 7.0) + 20.0 * u;
+                    let focus = self.focus.as_deref() == Some("regen_floor");
+                    if ui.button(
+                        Rect::new(r.x, r.y, w, r.h),
+                        "REGENERATE FLOOR",
+                        7.0,
+                        false,
+                        focus,
+                    ) {
+                        self.focus = Some("regen_floor".into());
+                        self.regen_floor(g, a, content);
+                    }
+                    let r = col.take(line_h(6.0), 4.0);
+                    if ui.visible(r) {
+                        ui.text(
+                            "REBUILDS THIS FLOOR FROM ITS SEED",
+                            r.x,
+                            r.y,
+                            6.0,
+                            MUTED,
+                        );
+                    }
+                } else {
+                    for line in wrap(
+                        &ui,
+                        "FLOOR REGEN IS NOT AVAILABLE ON THE INFINITE ROUTE",
+                        6.0,
+                        page.w,
+                    ) {
+                        let r = col.take(line_h(6.0), 2.0);
+                        if ui.visible(r) {
+                            ui.text(&line, r.x, r.y, 6.0, MUTED);
+                        }
+                    }
+                }
                 self.dd_row(
                     &mut ui,
                     &mut col,
@@ -802,6 +846,16 @@ impl Admin {
                 x += widths[c] + 4.0 * u;
             }
         }
+    }
+
+    /// Rebuilds the current floor from its seed (the same layout, the runner back at its start)
+    /// and forgets the hunters summoned on the old one.
+    fn regen_floor(&mut self, g: &mut Game, a: &Assets, content: &Content) {
+        let catalog = crate::world::catalog::Catalog::load();
+        g.start_floor(content, &catalog, a);
+        self.summoned.clear();
+        self.mark_debug();
+        g.say("ADMIN // FLOOR REGENERATED FROM ITS SEED");
     }
 
     fn fields_page(&mut self, ui: &mut Ui, col: &mut Col, cmds: &mut Vec<Cmd>) {

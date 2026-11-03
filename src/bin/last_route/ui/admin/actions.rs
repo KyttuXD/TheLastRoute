@@ -160,6 +160,17 @@ impl Admin {
         content: &Content,
         hunters: &[(String, String)],
     ) {
+        let line = match &cmd {
+            Cmd::Toggle(id) => format!("admin: toggle {id} to {}", !self.state_of(id)),
+            Cmd::Run(key, i) => format!("admin: run {key} index {i}"),
+            Cmd::Hunter(h, op, emote) => {
+                let id = hunters.get(*h).map_or("?", |(id, _)| id.as_str());
+                format!("admin: hunter {id} op {op} emote {emote}")
+            }
+            Cmd::Npc(op) => format!("admin: npc {op}"),
+            Cmd::Field(i) => format!("admin: field {i}"),
+        };
+        crate::lr_info!("{line}");
         match cmd {
             Cmd::Toggle(id) => self.toggle(id, g, Some(content)),
             Cmd::Run(key, i) => self.run_row(key, i, g, content),

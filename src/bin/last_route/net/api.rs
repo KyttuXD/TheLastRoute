@@ -719,11 +719,12 @@ pub fn admin_ticket_verify(cfg: &BackendConfig, code: &str, ticket: &str, host_t
 
 // ---- cloud saves ---------------------------------------------------------------------------------------
 
-/// run_saves.gd: `CLOUD_GAME_ID`, `CLOUD_SLOT`, and the world revision suffix.
-pub const CLOUD_GAME_ID: &str = "last-route-godot";
+/// This game's own cloud save id on the website. The Godot game keeps `last-route-godot`. `CLOUD_SLOT` and the
+/// world revision suffix match run_saves.gd.
+pub const CLOUD_GAME_ID: &str = "last-route-rust";
 pub const CLOUD_SLOT: &str = "run";
 
-/// `_cloud_path()`: `/api/v1/saves/last-route-godot/run-world-<REVISION>`.
+/// `_cloud_path()`: `/api/v1/saves/last-route-rust/run-world-<REVISION>`.
 pub fn cloud_path(world_revision: i64) -> String {
     format!("/api/v1/saves/{CLOUD_GAME_ID}/{CLOUD_SLOT}-world-{world_revision}")
 }
@@ -811,7 +812,7 @@ mod tests {
         assert_eq!(v["players"], 16);
         assert_eq!(v["port"], 8421);
         assert!(v.get("transport").is_none());
-        assert_eq!(cloud_path(1), "/api/v1/saves/last-route-godot/run-world-1");
+        assert_eq!(cloud_path(1), "/api/v1/saves/last-route-rust/run-world-1");
     }
 
     #[test]

@@ -211,18 +211,6 @@ pub fn draw_hud_with_runners(
 
     let c = (v * 0.5).round();
     if g.p.hidden.is_none() && g.escape.is_none() {
-        // the crosshair: four 3-unit arms around a 2-unit gap, a dark pass one unit down-right
-        for (dx, dy) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
-            let d = vec2(dx, dy);
-            line(
-                c + d * 2.0 + vec2(1.0, 1.0),
-                c + d * 5.0 + vec2(1.0, 1.0),
-                1.0,
-                rgba(0.0, 0.0, 0.0, 0.55),
-            );
-            line(c + d * 2.0, c + d * 5.0, 1.0, p.ink);
-        }
-        fill(Rect::new(c.x - 0.5, c.y - 0.5, 1.0, 1.0), p.ink);
         if let Some(pr) = g.focus_prompt() {
             let size = fs(10.0);
             let x = c.x - tw(a, F::Body, &pr, size) * 0.5;
@@ -473,6 +461,29 @@ pub fn draw_hud_with_runners(
         );
     }
     drawn
+}
+
+/// The centre reticle (crosshair.gd), drawn only while the view is aimed: `aimed` is whether the cursor
+/// is captured, so the pause menu, the map and the other free-cursor screens show none. A hidden player
+/// or a struggle to break free keeps the screen's own marks instead.
+pub fn draw_crosshair(g: &Game, aimed: bool) {
+    if !aimed || g.p.hidden.is_some() || g.escape.is_some() {
+        return;
+    }
+    let p = pal();
+    let c = (view() * 0.5).round();
+    // four 3-unit arms around a 2-unit gap, a dark pass one unit down-right
+    for (dx, dy) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+        let d = vec2(dx, dy);
+        line(
+            c + d * 2.0 + vec2(1.0, 1.0),
+            c + d * 5.0 + vec2(1.0, 1.0),
+            1.0,
+            rgba(0.0, 0.0, 0.0, 0.55),
+        );
+        line(c + d * 2.0, c + d * 5.0, 1.0, p.ink);
+    }
+    fill(Rect::new(c.x - 0.5, c.y - 0.5, 1.0, 1.0), p.ink);
 }
 
 fn edge(v: Vec2, e: f32, col: Color) {
