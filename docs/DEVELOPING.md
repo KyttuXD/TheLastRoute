@@ -26,7 +26,7 @@ The protocol keeps the original playtest bridge's commands and JSON shapes (`hel
 [AGENT_CLI.md](AGENT_CLI.md). The simulation runs thousands of times faster than real time
 headless.
 
-Tests: `cargo test --lib`, `cargo test --bin last_route`, `cargo test --bin lr_server`. The
+Tests: `cargo test --locked --lib --bin last_route --bin lr_server --features server`. The
 golden tests that compare against the reference output need `PARITY_DIR` set and are ignored by
 default.
 

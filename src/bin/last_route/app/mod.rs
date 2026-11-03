@@ -817,6 +817,9 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
             }
             g.fov_deg = settings.fov;
             let gdt = admin.game_dt(dt);
+            if stress_on {
+                stress::fly(g);
+            }
             admin.before_update(g);
             if !pz.open {
                 let _t = perf::section("update");
@@ -854,15 +857,13 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
             }
             let seed_text = g.room_text.clone();
             let mut leave = false;
-            // a caught stress run starts again on the same seed, with no death screens
+            // a caught stress run ends here: the summary covers the run up to the catch
             if stress_on && g.report.is_some() {
-                loading = Some(Loading::new(
-                    g.difficulty,
-                    g.run_seed,
-                    g.room_text.clone(),
-                    g.inf.as_ref().map(|_| 0),
-                ));
-                leave = true;
+                if let Some(st) = stress_run.as_mut() {
+                    st.finish();
+                }
+                log::flush();
+                std::process::exit(0);
             }
             if g.report.is_some() {
                 if death.is_none() {

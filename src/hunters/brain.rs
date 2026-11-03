@@ -9,6 +9,10 @@ use crate::content::hunters::HunterDef;
 use crate::world::rng::Rng;
 use crate::world::{Cell, Facility};
 
+#[cfg(test)]
+#[path = "bench.rs"]
+mod bench;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum State {
     Idle,

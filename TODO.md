@@ -718,10 +718,10 @@ Tabs today (src/bin/last_route/ui/admin/mod.rs TABS): STATUS, GENERAL, PLAYER, H
 - [x] Admin actions write one line to the debug log so a run can be audited afterwards
 - [ ] Admin panel closes cleanly on ESC without leaving the mouse locked or the pause menu open
 - [ ] DEBUG VIEW tab: toggles for the collider, path and navigation overlays, each saved between runs
-- [ ] FIELDS tab: list every tunable value with its file and key (config, region data and hunter data)
+- [x] FIELDS tab: list every tunable value with its file and key (config, region data and hunter data)
 - [~] NPCS tab: per-NPC commands (teleport, remove, follow) instead of only spawn and remove all. Teleport and remove are in; follow is a status line until npc.rs has a per-NPC follow flag, and remove should go through an npc.rs helper
 - [~] WORLD tab: regenerate the current floor from its seed and show the seed on screen
-- [ ] STORY tab: jump to a story beat by its id, and show which beats have already fired
+- [ ] STORY tab: jump to a story beat by its id, and show which beats have already fired. Blocked: the game has no story beat table or fired-beat state yet (see the pacing director item)
 - [ ] Admin tools only enable for the signed-in KYTTU account (see the login reset), with a clear message when they are off
 - [ ] Admin menu screenshot checks at 1280x720 for every tab, so layout bugs show up in review
 
@@ -777,12 +777,12 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [ ] Window recentre hitch of about 80 ms per recentre: about 55 ms is the full world mesh rebuild (build_world on every floor change in sync_world); build the mesh per chunk instead
 - [ ] Chunk window load of about 23 to 28 ms per recentre (infinite::window generation, residency, sync_in); move it off the frame or build the next window ahead
 - [ ] No quality governor or frame budget. Godot has quality_governor.gd (40/50/60 fps targets, tiers for shadows, prop range and lamp count); add the same tiers
-- [ ] Hunter cost is untested at high counts. Godot measured brain.update at 31.8 ms with 38 hunters; bench the Rust brains at 38
+- [~] Hunter cost is untested at high counts (bench added: cargo test --release hunter_brain_step_cost -- --ignored --nocapture; not yet run). Godot measured brain.update at 31.8 ms with 38 hunters; bench the Rust brains at 38
 - [ ] Light sight cost is unknown; MAX_LAMPS is capped at 16 in the shader, so lamp pools can pop in and out
 - [ ] Steady-state render cost is not measured because vsync caps frames at 60; add a capture with vsync off
 - [ ] Startup: assets take about 195 to 208 ms and sounds about 249 to 266 ms. Load in slices behind the boot card, as Godot's STARTUP_BUDGET_MS does
-- [ ] Draw calls per frame are not counted in a run; use the F7 counters and log the totals
-- [ ] The F7 overlay averages are not collected over runs; log spikes with a cause, as Godot's PerfLog does
+- [x] Draw calls per frame are not counted in a run; use the F7 counters and log the totals
+- [x] The F7 overlay averages are not collected over runs; log spikes with a cause, as Godot's PerfLog does
 - [ ] Clean build time: profile.dev sets opt-level 2 for the game and 3 for dependencies. Measure opt-level 1 for dependencies on a cold build
 - [ ] CI builds: confirm the rust-cache hits in build.yml after the first run
 - [ ] Reach 144+ FPS on this laptop (AMD Ryzen AI 5 340, integrated Radeon 840M, 1280x720) with vsync off: run the --stress route, record the average and the 1% low, then fix the top cost in each frame section until the 1% low reaches 144

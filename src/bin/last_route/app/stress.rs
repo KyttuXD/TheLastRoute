@@ -2,39 +2,48 @@
 //! defaults to 60, PATH to `stress.csv`).
 //!
 //! A solo run on the fixed seed `SEED` = 20261101 (room text `route::room_text(SEED)`, the same seed
-//! the screenshot runs use), the Infinite route from the top level (the start CREATE ROOM gives). It skips the title and the boot card, forces vsync off (swap interval 0) and does
-//! not apply the FPS LIMIT, so the frame times are the game's own. The saved settings file is
-//! never written. The menus, the pause menu and the admin tools take no input in this mode, and a
-//! run that is caught starts again on the same seed.
+//! the screenshot runs use), the Infinite route from the top level (the start CREATE ROOM gives). It
+//! skips the title and the boot card, forces vsync off (swap interval 0) and does not apply the FPS
+//! LIMIT, so the frame times are the game's own. The saved settings file is never written. The
+//! menus, the pause menu and the admin tools take no input in this mode, and a run that is caught
+//! ends there, with the summary covering the run up to the catch.
 //!
-//! The synthetic input is a `Controls` fed to `Game::update` the way `read_controls` feeds the
-//! keyboard and mouse, so it walks the same movement code: forward all the time, sprint on the odd
-//! seconds, and a quarter turn at each 4 s mark. The turn direction comes from a fixed-seed
-//! sequence, so the route covers new ground and repeats only by chance.
+//! The run flies, as the Godot flythrough does: admin noclip is on and the run speed is `FLY_SPEED`
+//! (`fly`), so walls do not stop the runner and it covers ground fast. The synthetic input is a
+//! `Controls` fed to `Game::update` the way `read_controls` feeds the keyboard and mouse: forward all
+//! the time, no sprint, and a turn of `TURN_DEGREES` at each `LEG_SECONDS` boundary. The route is a
+//! pure function of the elapsed time, and each turn's direction comes from the fixed seed, so the
+//! run is repeatable and keeps reaching new ground.
 //!
 //! The log is CSV: a header, one row per whole second (`second` counts from 0), then a
 //! `# summary` line once SECONDS have passed. Each row is flushed as it is written, so a crash
 //! leaves the rows so far. The columns are `second, fps (frames that second), ms_avg, ms_p99`
-//! (the 99th percentile frame time), then `update_ms, render_ms, hud_ms`, `hunters` (active) and
-//! `depth`. The three section times are the perf sections' smoothed values, sampled once a frame
-//! and averaged over the second.
+//! (the 99th percentile frame time), then `update_ms, render_ms, hud_ms`, `hunters` (active),
+//! `depth` and `travelled_m` (metres the runner has flown in the run so far, 1 cell = 1 m, counted
+//! from its absolute cell so it keeps counting when the window moves). The three section times
+//! are the perf sections' smoothed values, sampled once a frame and averaged over the second.
 
 use super::{perf, World};
 use crate::config::Difficulty;
 use crate::game::{Controls, Game};
 use crate::world::route;
 use macroquad::prelude::Vec2;
-use std::f32::consts::FRAC_PI_2;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::time::Instant;
 
 /// The run's seed. The screenshot runs start on the same seed.
 const SEED: u32 = 20261101;
-/// A turn starts at each mark this many seconds apart and swings round over `TURN_SECONDS`.
-const TURN_EVERY: f32 = 4.0;
+/// The run speed (the admin RUN SPEED multiplier) while the runner flies.
+const FLY_SPEED: f32 = 4.0;
+/// Seconds of straight flight between turns: the route turns at each multiple of this after the start.
+const LEG_SECONDS: f32 = 20.0;
+/// The size of each turn, to the left or the right by the seed's sign (`turn_sign`).
+const TURN_DEGREES: f32 = 110.0;
+/// Seconds over which a turn swings round, from its leg boundary.
 const TURN_SECONDS: f32 = 0.25;
-const HEADER: &str = "second,fps,ms_avg,ms_p99,update_ms,render_ms,hud_ms,hunters,depth";
+const HEADER: &str =
+    "second,fps,ms_avg,ms_p99,update_ms,render_ms,hud_ms,hunters,depth,travelled_m";
 
 /// What `--stress` asked for.
 pub struct Config {
@@ -56,6 +65,7 @@ pub struct Stress {
     /// The hunters and depth at the last frame, written into each row.
     hunters: usize,
     depth: i32,
+    travel: Travel,
 }
 
 /// The frames of one second: their times and the sum of each section's samples.
@@ -65,6 +75,24 @@ struct Row {
     update_ms: f32,
     render_ms: f32,
     hud_ms: f32,
+}
+
+/// The metres the runner has flown, summed from its steps between frames in absolute cells.
+#[derive(Default)]
+struct Travel {
+    last: Option<(f32, f32)>,
+    metres: f32,
+}
+
+impl Travel {
+    /// Adds the step from the last frame's cell to `cell`. A frame with no game clears the last cell,
+    /// so the first cell of the next game starts a new path and adds nothing.
+    fn add(&mut self, cell: Option<(f32, f32)>) {
+        if let (Some(last), Some(cell)) = (self.last, cell) {
+            self.metres += (cell.0 - last.0).hypot(cell.1 - last.1);
+        }
+        self.last = cell;
+    }
 }
 
 impl Stress {
@@ -88,6 +116,7 @@ impl Stress {
             frame_ms: Vec::new(),
             hunters: 0,
             depth: 0,
+            travel: Travel::default(),
         })
     }
 
@@ -114,6 +143,11 @@ impl Stress {
         });
         self.hunters = hunters;
         self.depth = depth;
+        let cell = g.map(|g| {
+            let (ox, oy) = g.window_origin();
+            (g.p.pos.0 + ox as f32, g.p.pos.1 + oy as f32)
+        });
+        self.travel.add(cell);
         t >= self.seconds
     }
 
@@ -122,7 +156,6 @@ impl Stress {
         let t = self.start.map_or(0.0, |s| s.elapsed().as_secs_f32());
         Controls {
             fwd: 1.0,
-            sprint: (t as u32) % 2 == 1,
             look: Vec2::new(turn_look(t, dt), 0.0),
             ..Default::default()
         }
@@ -152,7 +185,7 @@ impl Stress {
         let mean = |sum: f32| if frames == 0 { 0.0 } else { sum / frames as f32 };
         let ms_avg = mean(row.frame_ms.iter().sum::<f32>());
         let line = format!(
-            "{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{},{}",
+            "{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{},{},{:.2}",
             self.second,
             frames,
             ms_avg,
@@ -162,6 +195,7 @@ impl Stress {
             mean(row.hud_ms),
             self.hunters,
             self.depth,
+            self.travel.metres,
         );
         self.emit(&line);
         self.second += 1;
@@ -188,10 +222,19 @@ pub fn start_game(w: &World) -> Game {
     )
 }
 
-/// The sign of the turn at mark `turn` (the first mark is 0): a fixed multiplicative hash, so the
-/// direction sequence is the same on every run.
-fn turn_sign(turn: u32) -> f32 {
-    let h = turn.wrapping_mul(2_654_435_761).wrapping_add(SEED);
+/// Turns the flight on for `g`: admin noclip and the `FLY_SPEED` run speed, set on the game's own
+/// admin switches (the playtest bridge's `noclip` and `speed` helpers), which `admin_flags` merges
+/// with the admin menu's. The saved admin preferences are never written. Called each frame before the
+/// update, so a game that starts after a level change keeps the flight.
+pub fn fly(g: &mut Game) {
+    g.admin.noclip = true;
+    g.admin.run_speed = FLY_SPEED;
+}
+
+/// The sign of the turn at leg boundary `k` (the first boundary is 1): a fixed multiplicative hash, so
+/// the direction sequence is the same on every run.
+fn turn_sign(k: u32) -> f32 {
+    let h = k.wrapping_mul(2_654_435_761).wrapping_add(SEED);
     if h >> 31 == 0 {
         1.0
     } else {
@@ -199,14 +242,23 @@ fn turn_sign(turn: u32) -> f32 {
     }
 }
 
-/// The look for a frame at `t` seconds from the start: a quarter turn spread over the first
-/// `TURN_SECONDS` after each mark. Positive look turns right (`Player::look` subtracts it from yaw).
-fn turn_look(t: f32, dt: f32) -> f32 {
-    if t % TURN_EVERY >= TURN_SECONDS {
+/// The route's heading in radians at `t` seconds from the start. There is no turn before the first
+/// leg boundary; each boundary after it turns the heading by `TURN_DEGREES` in its `turn_sign`
+/// direction, swung over `TURN_SECONDS`. Positive turns right (`Player::look` subtracts it from yaw).
+fn heading(t: f32) -> f32 {
+    let t = t.max(0.0);
+    let leg = (t / LEG_SECONDS) as u32;
+    if leg == 0 {
         return 0.0;
     }
-    let mark = (t / TURN_EVERY) as u32;
-    turn_sign(mark) * FRAC_PI_2 / TURN_SECONDS * dt
+    let done: f32 = (1..leg).map(turn_sign).sum();
+    let swing = ((t - leg as f32 * LEG_SECONDS) / TURN_SECONDS).clamp(0.0, 1.0);
+    (done + turn_sign(leg) * swing) * TURN_DEGREES.to_radians()
+}
+
+/// The look for a frame at `t` seconds from the start: the heading turned over the frame's `dt`.
+fn turn_look(t: f32, dt: f32) -> f32 {
+    heading(t) - heading(t - dt)
 }
 
 /// The `p`th percentile (0 to 100) of frame times in ms, by nearest rank; 0 when there are none.
@@ -250,5 +302,45 @@ mod tests {
         frames[90] = 50.0;
         assert!((one_percent_low_fps(&frames) - 20.0).abs() < 1e-3);
         assert!((one_percent_low_fps(&[10.0f32; 50]) - 100.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn route_turns_at_each_leg_boundary_and_holds_between() {
+        let turn = TURN_DEGREES.to_radians();
+        assert_eq!(heading(0.0), 0.0);
+        assert_eq!(heading(LEG_SECONDS - 0.5), 0.0);
+        for k in 1..=12u32 {
+            let boundary = k as f32 * LEG_SECONDS;
+            let before = heading(boundary - 0.001);
+            let after = heading(boundary + TURN_SECONDS + 0.001);
+            assert!((after - before - turn_sign(k) * turn).abs() < 1e-3, "boundary {k}");
+            let next_boundary = heading(boundary + LEG_SECONDS - 0.001);
+            assert!((next_boundary - after).abs() < 1e-3, "leg after boundary {k}");
+        }
+    }
+
+    #[test]
+    fn heading_is_a_pure_function_of_time_with_both_turn_directions() {
+        let t = 137.3;
+        assert_eq!(heading(t), heading(t));
+        assert_eq!(turn_look(t, 1.0 / 60.0), turn_look(t, 1.0 / 60.0));
+        let signs: Vec<f32> = (1..=16u32).map(turn_sign).collect();
+        assert!(signs.contains(&1.0) && signs.contains(&-1.0));
+    }
+
+    #[test]
+    fn travelled_metres_carry_across_a_window_move() {
+        // 3 m east and 4 m north in the first window (5 m), then the window moves 10 cells east and
+        // the runner goes 4 m north: its window x goes from 3 to -7 and its absolute x stays 3
+        let mut travel = Travel::default();
+        let abs = |origin: (f32, f32), local: (f32, f32)| (origin.0 + local.0, origin.1 + local.1);
+        travel.add(Some(abs((0.0, 0.0), (0.0, 0.0))));
+        travel.add(Some(abs((0.0, 0.0), (3.0, 4.0))));
+        travel.add(Some(abs((10.0, 0.0), (-7.0, 8.0))));
+        assert!((travel.metres - 9.0).abs() < 1e-4);
+        // a frame with no game, then a new game far away: nothing is added
+        travel.add(None);
+        travel.add(Some((50.0, 50.0)));
+        assert!((travel.metres - 9.0).abs() < 1e-4);
     }
 }

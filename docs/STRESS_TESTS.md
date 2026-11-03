@@ -1,6 +1,6 @@
 # Stress tests
 
-The stress mode plays a fixed-length run with a fixed seed and writes the frame timing to CSV. Because the seed is fixed, two runs on the same machine walk the same sequence, so the numbers can be compared.
+The stress mode plays a fixed-length run with a fixed seed and writes the frame timing to CSV. Because the seed is fixed, two runs on the same machine fly the same route, so the numbers can be compared.
 
 ## Running the mode
 
@@ -11,6 +11,14 @@ The stress mode plays a fixed-length run with a fixed seed and writes the frame 
 - `--stress <seconds>` sets the run length. The Intel Mac check uses 60.
 - `--stress-log <path>` sets the CSV file. The header row names the columns; that row is the reference for them.
 - Vsync is off for the run, so the frame rate is not capped at the display refresh rate.
+
+## The flight
+
+The run flies the way the Godot flythrough does. The runner has admin noclip on, so walls do not stop it, and the run speed is 4x (`FLY_SPEED` in `app/stress.rs`). The admin preferences file is not written, and sprint stays off.
+
+The route goes straight for 20 s (`LEG_SECONDS`), then turns 110 degrees (`TURN_DEGREES`) at each leg boundary. Each turn's direction comes from the fixed seed. The route is a function of the elapsed time, so the same seed gives the same flight. A run that a hunter catches ends there, and the summary covers the run up to the catch.
+
+The CSV's last column, `travelled_m`, is the metres the runner has flown so far in the run (1 cell = 1 m). It is counted from the runner's absolute cell, so it keeps counting when the infinite route moves the window.
 
 ## Running on KT-MBA
 

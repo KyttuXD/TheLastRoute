@@ -577,7 +577,7 @@ impl Admin {
                 self.toggle_row(&mut ui, &mut col, &mut cmds, "fullbright", "FULLBRIGHT");
                 self.toggle_row(&mut ui, &mut col, &mut cmds, "wireframe", "WIREFRAME");
             }
-            _ => self.fields_page(&mut ui, &mut col, &mut cmds),
+            _ => self.fields_page(&mut ui, &mut col, &mut cmds, content),
         }
         self.content_h[tab] = (col.y - top - 4.0 * u).max(0.0);
         unsafe {
@@ -860,7 +860,13 @@ impl Admin {
         g.say("ADMIN // WINDOW REGENERATED FROM ITS SEED");
     }
 
-    fn fields_page(&mut self, ui: &mut Ui, col: &mut Col, cmds: &mut Vec<Cmd>) {
+    fn fields_page(
+        &mut self,
+        ui: &mut Ui,
+        col: &mut Col,
+        cmds: &mut Vec<Cmd>,
+        content: &Content,
+    ) {
         if let Some(i) = self.field_focus {
             while let Some(ch) = get_char_pressed() {
                 if !ch.is_control() && self.fields[i].chars().count() < 120 {
@@ -890,7 +896,274 @@ impl Admin {
                 self.field_focus = Some(i);
             }
         }
+
+        let c = col.take(line_h(7.0), 6.0);
+        if ui.visible(c) {
+            ui.text("TUNABLES // READ ONLY", c.x, c.y, 7.0, MUTED);
+        }
+        let mut group = String::new();
+        for (path, key, value) in tunable_rows(content, &self.prefs) {
+            if path != group {
+                if !group.is_empty() {
+                    col.y += 4.0 * col.u;
+                }
+                let c = col.take(line_h(7.0), 2.0);
+                if ui.visible(c) {
+                    ui.text(&path, c.x, c.y, 7.0, AMBER);
+                }
+                group = path;
+            }
+            let r = col.take(line_h(6.0), 1.0);
+            if ui.visible(r) {
+                ui.text(&format!("{key} = {value}"), r.x, r.y, 6.0, BODY);
+            }
+        }
     }
+}
+
+/// One `config_rows!` entry per named constant of src/config/mod.rs: its file, name and value.
+macro_rules! config_rows {
+    ($rows:ident, $file:expr, $($name:ident),* $(,)?) => {
+        $(
+            $rows.push((
+                $file.to_string(),
+                stringify!($name).to_string(),
+                format!("{}", crate::config::$name),
+            ));
+        )*
+    };
+}
+
+/// Every tunable the run reads, as (file, key, value): the config constants, each difficulty
+/// profile, hunter data, region data and the admin preferences (the FIELDS list, read-only).
+fn tunable_rows(content: &Content, prefs: &super::prefs::Prefs) -> Vec<(String, String, String)> {
+    const CONFIG: &str = "src/config/mod.rs";
+    const DIFFICULTY: &str = "src/config/difficulty.rs";
+    let mut rows = vec![];
+
+    config_rows!(
+        rows,
+        CONFIG,
+        // player movement
+        TILE_SIZE,
+        PLAYER_WALK_SPEED,
+        PLAYER_SPRINT_SPEED,
+        PLAYER_CROUCH_SPEED,
+        PLAYER_GRAVITY,
+        PLAYER_JUMP_VELOCITY,
+        PLAYER_RADIUS,
+        PLAYER_HEIGHT,
+        PLAYER_MODEL_SCALE,
+        CAMERA_HEIGHT,
+        CROUCH_EYE_RATIO,
+        CAMERA_BOB_WALK,
+        CAMERA_BOB_SPRINT,
+        CAMERA_BOB_CROUCH,
+        FIELD_OF_VIEW_DEG,
+        MOUSE_SENSITIVITY,
+        MOUSE_LOOK_DISPLAY_SCALE,
+        MOUSE_LOOK_GODOT_WINDOW_SCALE,
+        MOUSE_LOOK_MULTIPLIER,
+        FOV_MIN_DEG,
+        FOV_MAX_DEG,
+        SENSITIVITY_MIN,
+        SENSITIVITY_MAX,
+        KEY_LOOK_RADIANS_PER_SECOND,
+        // stamina
+        MAX_STAMINA,
+        STAMINA_SPRINT_DRAIN,
+        STAMINA_RECOVERY,
+        STAMINA_EXHAUSTED_RECOVERY,
+        STIM_INJECT_SECONDS,
+        STIM_BOOST_SECONDS,
+        STIM_SPEED_SCALE,
+        STIM_DRAIN_SCALE,
+        STIM_CRASH_SECONDS,
+        STIM_CRASH_REGEN_SCALE,
+        // flashlight
+        MAX_LAMP_CHARGE,
+        LAMP_IDLE_DRAIN,
+        LAMP_SPRINT_DRAIN,
+        BATTERY_RECHARGE,
+        // noise and meters
+        NOISE_CROUCH,
+        NOISE_WALK,
+        NOISE_SPRINT,
+        HEARING_OUTER_SCALE,
+        HEARING_OPEN_AIR_SCALE,
+        // tools
+        TASER_RANGE,
+        TASER_HALF_ANGLE,
+        TASER_SLOW_FACTOR,
+        TASER_SLOW_SECONDS,
+        MELEE_STRIKE_RANGE,
+        MELEE_STRIKE_HALF_ANGLE,
+        MELEE_STRIKE_COOLDOWN,
+        CROWBAR_DURABILITY,
+        AXE_DURABILITY,
+        CROWBAR_SWING_COST,
+        AXE_SWING_COST,
+        AXE_NOISE,
+        AXE_NOISE_SECONDS,
+        BATTERY_STACK_MAX,
+        STIM_STACK_MAX,
+        HOTBAR_SIZE,
+        INTERACT_REACH,
+        LOCKER_REACH,
+        // hunters
+        HUNTER_RADIUS,
+        HUNTER_GRAB_REACH,
+        HUNTER_REPATH_CHASE,
+        HUNTER_REPATH_WANDER,
+        HUNTER_STAMINA_MAX,
+        HUNTER_STAMINA_REGEN,
+        HUNTER_STAMINA_RECOVER,
+        HUNTER_WINDED_SPEED_SCALE,
+        HUNTER_SENSE_INTERVAL,
+        HUNTER_VISIBLE_CHASE_SPEED_SCALE,
+        UNLIT_SIGHT_SCALE,
+        FLASHLIGHT_SIGHT_SCALE,
+        FLASHLIGHT_SIGHT_MIN,
+        HUNTER_RELAY_SPEED_BONUS,
+        HUNTER_DEPTH_SPEED_BONUS_PER_LEVEL,
+        HUNTER_DEPTH_SPEED_BONUS_MAX,
+        HUNTER_ARRIVAL_DISTANCE,
+        HUNTER_WAYPOINT_DISTANCE,
+        UNREACHABLE_GIVE_UP,
+        HIDE_CHECK_REACH,
+        CAMP_RADIUS,
+        CAMP_COOLDOWN,
+        CAMP_LEAVE_DISTANCE,
+        HUNTER_HEIGHT,
+        // capture and escape
+        ESCAPE_DURATION,
+        ESCAPE_PRESSES,
+        ESCAPE_COOLDOWN,
+        ESCAPE_GRACE,
+        ESCAPE_KNOCKBACK,
+        // facility
+        FACILITY_COLS,
+        FACILITY_ROWS,
+        FACILITY_RELAY_COUNT,
+        FACILITY_BATTERY_COUNT,
+        FACILITY_ROOM_COUNT,
+        HIDING_SPOT_COUNT,
+        HALL_WIDTH,
+        LOBBY_SIZE,
+        SECTOR_GAP,
+        SECTOR_MARGIN,
+        MIN_AUTHORED_ROOM_SIZE,
+        ROOM_SECTOR_FILL,
+        WALL_HEIGHT,
+        SAFE_ZONE_RADIUS,
+        SAFE_ZONE_BLOCK_RADIUS,
+        RELAY_SCORE,
+    );
+
+    for d in crate::config::difficulty::ALL {
+        let p = d.profile();
+        let values = [
+            ("player_speed", p.player_speed.to_string()),
+            ("crouch_speed", p.crouch_speed.to_string()),
+            ("sprint_speed", p.sprint_speed.to_string()),
+            ("lamp_drain", p.lamp_drain.to_string()),
+            ("sprint_drain", p.sprint_drain.to_string()),
+            ("hunter_speed", p.hunter_speed.to_string()),
+            ("hunter_sight", p.hunter_sight.to_string()),
+            ("hunter_hearing", p.hunter_hearing.to_string()),
+            ("capture_distance", p.capture_distance.to_string()),
+            ("search_time", p.search_time.to_string()),
+            ("lost_sight_grace", p.lost_sight_grace.to_string()),
+            ("stamina_drain", p.stamina_drain.to_string()),
+            ("hide_tell", p.hide_tell.to_string()),
+            ("hide_trail", p.hide_trail.to_string()),
+            ("hide_cooldown", p.hide_cooldown.to_string()),
+            ("hide_random", p.hide_random.to_string()),
+            ("taser_slow_factor", p.taser_slow_factor.to_string()),
+            ("taser_slow_seconds", p.taser_slow_seconds.to_string()),
+            ("taser_cooldown", p.taser_cooldown.to_string()),
+            ("escape_stun", p.escape_stun.to_string()),
+            ("crowbar_stun", p.crowbar_stun.to_string()),
+            ("axe_stun", p.axe_stun.to_string()),
+            ("relay_alert_radius", p.relay_alert_radius.to_string()),
+            ("relay_alert_chance", p.relay_alert_chance.to_string()),
+            ("camp_limit", p.camp_limit.to_string()),
+            ("activation_relays", p.activation_relays.to_string()),
+            ("tier_weights", format!("{:?}", d.tier_weights())),
+            ("safe_zone_limit", d.safe_zone_limit().to_string()),
+        ];
+        for (key, value) in values {
+            rows.push((DIFFICULTY.to_string(), format!("{}.{key}", d.name()), value));
+        }
+    }
+
+    for h in &content.hunters {
+        let file = if h.pack.is_empty() {
+            format!("data/hunters/{}.json", h.id)
+        } else {
+            format!("pack {}", h.pack)
+        };
+        let tier = ["easy", "intermediate", "difficult"][h.tier.min(2)];
+        let values = [
+            ("tier", tier.to_string()),
+            ("speed", h.speed.to_string()),
+            ("chase", h.chase.to_string()),
+            ("prog", h.prog.to_string()),
+            ("sight", h.sight.to_string()),
+            ("hearing", h.hearing.to_string()),
+            ("spawn", h.spawn.to_string()),
+            ("chase_style", h.chase_style.clone()),
+            ("taser_immune", h.taser_immune.to_string()),
+            ("melee_immune", h.melee_immune.to_string()),
+        ];
+        for (key, value) in values {
+            rows.push((file.clone(), key.to_string(), value));
+        }
+    }
+
+    for r in &content.regions.defs {
+        let file = if r.source == crate::content::regions::BUILTIN {
+            format!("data/regions/{}.json", r.id)
+        } else {
+            format!("pack {}", r.source)
+        };
+        let geo_note = if r.geometry.is_some() { "" } else { " (game default)" };
+        let geo = r.geometry.unwrap_or_default();
+        let light_note = if r.safe_light.is_some() { "" } else { " (game default)" };
+        let light = r.safe_light.unwrap_or_default();
+        let mut values: Vec<(String, String)> = vec![
+            ("hall_runner".into(), r.hall_runner.to_string()),
+            ("hall_floor".into(), r.hall_floor.join(", ")),
+            ("room_default_floor".into(), r.room_default_floor.join(", ")),
+            ("room_roles".into(), r.room_roles.join(", ")),
+            ("room_door".into(), r.room_door.clone().unwrap_or_else(|| "-".into())),
+            (
+                "double_room_door".into(),
+                r.double_room_door.clone().unwrap_or_else(|| "-".into()),
+            ),
+            ("geometry.wall_height".into(), format!("{}{geo_note}", geo.wall_height)),
+            ("geometry.room_min".into(), format!("{}{geo_note}", geo.room_min)),
+            ("geometry.room_max".into(), format!("{}{geo_note}", geo.room_max)),
+            ("safe_light.color".into(), format!("{:?}{light_note}", light.color)),
+            ("safe_light.energy".into(), format!("{}{light_note}", light.energy)),
+        ];
+        for p in &r.prop_set {
+            values.push((format!("prop_set.{}.size", p.prop_type), format!("{:?}", p.size)));
+            values.push((format!("prop_set.{}.solid", p.prop_type), p.solid.to_string()));
+        }
+        for (key, value) in values {
+            rows.push((file.clone(), key, value));
+        }
+    }
+
+    for (key, _) in super::prefs::KEYS {
+        rows.push((
+            "admin.cfg (user folder)".to_string(),
+            key.to_string(),
+            prefs.get(key).to_string(),
+        ));
+    }
+    rows
 }
 
 /// The list's screen rect (below the button, pushed up to stay on screen, as tall as the

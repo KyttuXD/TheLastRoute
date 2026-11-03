@@ -2,17 +2,22 @@
 //! (frame-time graph, average / 1% low / worst, per-section CPU times, spike count, scene
 //! counts). Sections are timed with `let _t = perf::section("hud");` (ends when dropped).
 //! Spikes (frames over 2x the average and over 25 ms) are written to the debug log. Every frame
-//! over 33.3 ms also goes into a rolling log of the last 20 (frame time and slowest section).
+//! over 33.3 ms also goes into a rolling log of the last 20 (frame time and slowest section), and
+//! into the game log with the sections over 2 ms, at most 5 lines a second.
 
 use macroquad::prelude::*;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const HISTORY: usize = 240;
 /// Frames over this many milliseconds are logged as spikes.
 const SPIKE_MS: f32 = 33.3;
 const SPIKE_LOG_LEN: usize = 20;
+/// Spike lines written to the game log per second; the rest are counted in the next second's line.
+const SPIKE_LINES_PER_SEC: u32 = 5;
+/// Sections over this many milliseconds are named on a spike's game log line.
+const SPIKE_SECTION_MS: f32 = 2.0;
 
 /// One logged spike: the frame time and the section that took longest in that frame.
 #[derive(Clone, Copy)]
@@ -29,6 +34,19 @@ struct SpikeLog {
     entries: Vec<Spike>,
     head: usize,
     total: u32,
+    window: SpikeWindow,
+}
+
+/// The current one-second window of the game log: spikes seen, spike lines written, and the draw
+/// calls over the frames of the window.
+#[derive(Default)]
+struct SpikeWindow {
+    start: Option<Instant>,
+    spikes: u32,
+    logged: u32,
+    frames: u32,
+    draws: u64,
+    draws_max: u32,
 }
 
 impl SpikeLog {
@@ -45,6 +63,53 @@ impl SpikeLog {
     /// The most recent spike, if any.
     fn latest(&self) -> Option<&Spike> {
         self.entries.get((self.head + SPIKE_LOG_LEN - 1) % SPIKE_LOG_LEN)
+    }
+
+    /// Counts a frame and its draw calls in the window. When the window ends, the spikes and draw
+    /// calls of the second that just ended go to the game log.
+    fn tick(&mut self, now: Instant, draws: u32) {
+        let w = &mut self.window;
+        let start = *w.start.get_or_insert(now);
+        if now.duration_since(start) >= Duration::from_secs(1) {
+            if w.spikes > 0 {
+                crate::lr_info!(
+                    "frame spikes last second: {} total, {} suppressed; draw calls per frame avg {:.0}, max {}",
+                    w.spikes,
+                    w.spikes - w.logged,
+                    w.draws as f64 / w.frames.max(1) as f64,
+                    w.draws_max
+                );
+            }
+            *w = SpikeWindow {
+                start: Some(now),
+                ..SpikeWindow::default()
+            };
+        }
+        w.frames += 1;
+        w.draws += u64::from(draws);
+        w.draws_max = w.draws_max.max(draws);
+    }
+
+    /// Writes a spike to the game log with its sections over `SPIKE_SECTION_MS`, or only counts it
+    /// once this second has `SPIKE_LINES_PER_SEC` lines.
+    fn log_spike(&mut self, ms: f32, sections: &[(&'static str, f32)]) {
+        let w = &mut self.window;
+        w.spikes += 1;
+        if w.logged >= SPIKE_LINES_PER_SEC {
+            return;
+        }
+        w.logged += 1;
+        let slow: Vec<String> = sections
+            .iter()
+            .filter(|(_, t)| *t > SPIKE_SECTION_MS)
+            .map(|(name, t)| format!("{name} {t:.1} ms"))
+            .collect();
+        let cause = if slow.is_empty() {
+            format!("no section over {SPIKE_SECTION_MS} ms")
+        } else {
+            slow.join(", ")
+        };
+        crate::lr_info!("frame spike {:.1} ms; {}", ms, cause);
     }
 }
 
@@ -66,15 +131,18 @@ thread_local! {
     static S: RefCell<State> = RefCell::new(State::default());
 }
 
-/// Records one frame's duration in seconds.
+/// Records one frame's duration in seconds and the draw calls it made.
 pub fn frame(dt: f32) {
+    let draws = crate::render::builder::take_draw_count();
     S.with(|s| {
         let mut s = s.borrow_mut();
+        let s = &mut *s;
         let avg = if s.frames.is_empty() {
             dt
         } else {
             s.frames.iter().sum::<f32>() / s.frames.len() as f32
         };
+        s.spikes.tick(Instant::now(), draws);
         if dt * 1000.0 > SPIKE_MS {
             let (section, section_ms) = s
                 .frame_secs
@@ -87,6 +155,7 @@ pub fn frame(dt: f32) {
                 section,
                 section_ms,
             });
+            s.spikes.log_spike(dt * 1000.0, &s.frame_secs);
         }
         if s.frames.len() >= 30 && dt > avg * 2.0 && dt > 0.025 {
             let worst = s
@@ -110,6 +179,7 @@ pub fn frame(dt: f32) {
         }
         s.head = (s.head + 1) % HISTORY;
     });
+    counter("draws", f64::from(draws));
 }
 
 pub struct Section(&'static str);

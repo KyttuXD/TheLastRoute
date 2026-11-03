@@ -2,6 +2,7 @@
 //! textured quads and boxes.
 
 use macroquad::prelude::*;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 pub struct Builder {
     pub verts: Vec<Vertex>,
@@ -11,6 +12,19 @@ pub struct Builder {
 }
 
 const UV: [Vec2; 4] = [vec2(0., 0.), vec2(1., 0.), vec2(1., 1.), vec2(0., 1.)];
+
+/// Draw calls issued by `draw_and_clear` since the last `take_draw_count`.
+static DRAWS: AtomicU32 = AtomicU32::new(0);
+
+/// Returns the draw calls made since the last call and starts the count again.
+pub fn take_draw_count() -> u32 {
+    DRAWS.swap(0, Ordering::Relaxed)
+}
+
+fn submit(m: &Mesh) {
+    DRAWS.fetch_add(1, Ordering::Relaxed);
+    draw_mesh(m);
+}
 
 impl Builder {
     pub fn new(tex: Option<Texture2D>) -> Builder {
@@ -134,7 +148,7 @@ impl Builder {
     /// Draws what was collected and empties the builder (for per-frame batches).
     pub fn draw_and_clear(&mut self) {
         for m in std::mem::take(&mut self.done) {
-            draw_mesh(&m);
+            submit(&m);
         }
         if !self.verts.is_empty() {
             let m = Mesh {
@@ -142,7 +156,7 @@ impl Builder {
                 indices: std::mem::take(&mut self.idx),
                 texture: self.tex.clone(),
             };
-            draw_mesh(&m);
+            submit(&m);
         }
     }
 }
