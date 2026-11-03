@@ -842,6 +842,13 @@ The "Movies / cutscenes and a scene maker" item above is done on the Godot side 
 - [ ] Movie capture: write each frame to PNG at a fixed fps, then assemble with ffmpeg (report the exact command used)
 - [ ] Trailer shot list: a data file that names the shots in order, so a trailer is reproducible from the seed
 
+## Source layout (deferred until the current work is done)
+
+See docs/SOURCE_LAYOUT.md for the inventory.
+
+- [ ] Move last-route-only modules (audio, config, game, hunters, render, shared, world) into src/bin/last_route. Blocked today: lr_server uses content, and content depends on all of them. Options: (a) split content so the server only needs the pack and region types it uses, then move the rest; (b) give the server its own copy of content's pack check; (c) keep the shared core in lib and only move the front end.
+- [ ] Night Watch has no library dependency and its src/night_watch module has no users; move it into src/bin/night_watch or delete it after checking.
+
 ## Moddability
 
 - [~] Region geometry block (lr.region/1, optional): wall_height, room_min and room_max are parsed and tested. The 3D walls and the route room sizes do not read them yet

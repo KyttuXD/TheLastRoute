@@ -16,7 +16,8 @@ use crate::content::props::{stable_index, visual_y};
 use crate::content::regions::{RegionDef, RegionSafeLight};
 use crate::content::Content;
 use crate::world::facility::{stair_well_cells, Cell, DoorDraw, Prop, STAIR_FLIGHT};
-use crate::world::infinite::{CHUNK, WINDOW};
+use crate::world::inferno::Inferno;
+use crate::world::infinite::{ChunkKey, CHUNK, INFERNO_LEVEL, WINDOW};
 use crate::world::{region_texture, Facility, TEXTURE_SETS};
 use macroquad::prelude::*;
 use std::collections::HashMap;
@@ -533,6 +534,40 @@ fn door_instances(f: &Facility, assets: &Assets, content: &Content) -> Vec<DoorI
         .collect()
 }
 
+/// The level -3 floor heights of a window: each chunk's carve, made once, read per corner.
+struct InfernoFloor {
+    seed: String,
+    origin: (i32, i32),
+    chunks: HashMap<(i32, i32), Inferno>,
+}
+
+impl InfernoFloor {
+    /// The window floor's heights, or None when `f` is not a level -3 window (its text is `<seed>:L<level>`).
+    fn of(f: &Facility) -> Option<InfernoFloor> {
+        let (seed, level) = f.seed_text.rsplit_once(":L")?;
+        (level.parse::<i32>().ok()? == INFERNO_LEVEL).then(|| InfernoFloor {
+            seed: seed.to_string(),
+            origin: f.origin,
+            chunks: HashMap::new(),
+        })
+    }
+
+    fn cell(&mut self, x: i32, y: i32) -> f32 {
+        let (gx, gy) = (x + self.origin.0, y + self.origin.1);
+        let key = (gx.div_euclid(CHUNK), gy.div_euclid(CHUNK));
+        let seed = &self.seed;
+        self.chunks
+            .entry(key)
+            .or_insert_with(|| Inferno::carve(seed, ChunkKey { cx: key.0, cy: key.1, level: INFERNO_LEVEL }))
+            .height_at(Cell::new(gx.rem_euclid(CHUNK), gy.rem_euclid(CHUNK)))
+    }
+
+    /// The height of the grid corner (`i`, `j`): the mean of the four cells that share it.
+    fn corner(&mut self, i: i32, j: i32) -> f32 {
+        (self.cell(i - 1, j - 1) + self.cell(i, j - 1) + self.cell(i - 1, j) + self.cell(i, j)) / 4.0
+    }
+}
+
 fn build_meshes(
     f: &Facility,
     pick: &Pick,
@@ -548,6 +583,7 @@ fn build_meshes(
     let steps = stair_steps(f);
     let step_col = Color::from_rgba(92, 78, 82, 255);
     let rise = h / (STAIR_FLIGHT + 1) as f32;
+    let mut inferno = InfernoFloor::of(f);
     // one painted storey stretched floor to ceiling, cornice at the top (RefSurfaceMesh.add_wall)
     let tiers = textures::wall_tiers(h) as f32;
     for &c in &pick.cells {
@@ -584,18 +620,22 @@ fn build_meshes(
                     0.0,
                 );
             }
-            None => painted(&mut surf, floor_kind, assets.floor(set)).quad(
-                [
-                    vec3(x, 0., z),
-                    vec3(x + 1., 0., z),
-                    vec3(x + 1., 0., z + 1.),
-                    vec3(x, 0., z + 1.),
-                ],
-                UV1,
-                up,
-                WHITE,
-                0.0,
-            ),
+            None => {
+                let (i, j) = (c.x, c.y);
+                let drop = |inf: &mut Option<InfernoFloor>, i: i32, j: i32| inf.as_mut().map_or(0.0, |s| s.corner(i, j));
+                painted(&mut surf, floor_kind, assets.floor(set)).quad(
+                    [
+                        vec3(x, drop(&mut inferno, i, j), z),
+                        vec3(x + 1., drop(&mut inferno, i + 1, j), z),
+                        vec3(x + 1., drop(&mut inferno, i + 1, j + 1), z + 1.),
+                        vec3(x, drop(&mut inferno, i, j + 1), z + 1.),
+                    ],
+                    UV1,
+                    up,
+                    WHITE,
+                    0.0,
+                )
+            }
         }
         if !matches!(step, Some((_, d)) if d > 0) {
             let corners = [
@@ -637,6 +677,13 @@ fn build_meshes(
             if !f.is_wall_cell(c.x + dx, c.y + dz) {
                 continue;
             }
+            let (a, b) = match inferno.as_mut() {
+                Some(s) => (
+                    vec3(a.x, s.corner(a.x as i32, a.z as i32), a.z),
+                    vec3(b.x, s.corner(b.x as i32, b.z as i32), b.z),
+                ),
+                None => (a, b),
+            };
             // the painted wall carries its own cornice, chair rail and skirting
             painted(&mut surf, wall_kind, assets.wall(set)).quad(
                 [a + up * wall_h, b + up * wall_h, b, a],

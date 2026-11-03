@@ -1048,8 +1048,22 @@ impl Facility {
     }
 
     pub fn body_fits(&self, x: f32, y: f32, r: f32) -> bool {
+        self.body_fits_at(x, y, r, 0.0)
+    }
+
+    /// `body_fits` for a body standing at walk height `height`: every cell the body touches must have a
+    /// walk surface at that same height, so a body on the floor cannot enter a deck and a body on a deck
+    /// cannot step onto the floor.
+    pub fn body_fits_at(&self, x: f32, y: f32, r: f32, height: f32) -> bool {
         if !self.can_occupy(x as f64, y as f64, r as f64) {
             return false;
+        }
+        if !self.walk_surface.is_empty() || height != 0.0 {
+            for (sx, sy) in [(x - r, y - r), (x + r, y - r), (x - r, y + r), (x + r, y + r)] {
+                if (self.height_at(Cell::new(sx.floor() as i32, sy.floor() as i32)) - height).abs() > 0.01 {
+                    return false;
+                }
+            }
         }
         for (sx, sy) in [
             (x - r, y - r),
@@ -1945,5 +1959,45 @@ mod tests {
         }
         f.set_walk_surface(deck, DeckKind::Floor, 0.0);
         assert_eq!(f.walk_surface_at(deck), WalkSurface::default());
+    }
+
+    fn deck_fixture() -> (Facility, Cell, Cell) {
+        let cat = Catalog::load();
+        let mut f = Facility::generate("DECK-2", &Options::default(), &cat);
+        let cells = f.floor_cells();
+        let deck = cells
+            .iter()
+            .copied()
+            .find(|&c| {
+                let (x, y) = c.center();
+                f.body_fits(x, y, 0.2)
+            })
+            .expect("a free floor cell");
+        let floor = cells
+            .iter()
+            .copied()
+            .find(|&c| c != deck && f.body_fits(c.center().0, c.center().1, 0.2))
+            .expect("a second free floor cell");
+        f.set_walk_surface(deck, DeckKind::Catwalk, 4.0);
+        (f, deck, floor)
+    }
+
+    #[test]
+    fn a_body_on_the_floor_is_blocked_by_a_deck_cell() {
+        let (f, deck, floor) = deck_fixture();
+        assert!(!f.body_fits_at(deck.center().0, deck.center().1, 0.2, 0.0));
+        assert!(f.body_fits_at(floor.center().0, floor.center().1, 0.2, 0.0));
+    }
+
+    #[test]
+    fn a_body_on_the_deck_is_not_blocked_by_deck_cells() {
+        let (f, deck, _) = deck_fixture();
+        assert!(f.body_fits_at(deck.center().0, deck.center().1, 0.2, 4.0));
+    }
+
+    #[test]
+    fn a_body_on_the_deck_is_blocked_by_a_floor_cell_at_zero() {
+        let (f, _, floor) = deck_fixture();
+        assert!(!f.body_fits_at(floor.center().0, floor.center().1, 0.2, 4.0));
     }
 }

@@ -47,6 +47,8 @@ pub struct Player {
     pub walked: f32,
     /// Admin noclip: the body ignores walls and props (admin_menu.gd).
     pub noclip: bool,
+    /// Walk height of the surface the body stands on: 0.0 on the floor, a deck's height on a catwalk.
+    pub height: f32,
     /// Admin run speed: multiplies every movement speed (admin_menu.gd).
     pub speed_scale: f32,
     /// Eye height change during a stair or ladder climb (game/transition.rs), in metres: negative going down.
@@ -92,6 +94,7 @@ impl Player {
             pesticide: 0.0,
             walked: 0.0,
             noclip: false,
+            height: 0.0,
             speed_scale: 1.0,
             climb_lift: 0.0,
             flicker_remaining: 0.0,
@@ -225,11 +228,11 @@ impl Player {
         let start = self.pos;
         for _ in 0..steps {
             let nx = self.pos.0 + dx / steps as f32;
-            if self.noclip || fac.body_fits(nx, self.pos.1, PLAYER_RADIUS) {
+            if self.noclip || fac.body_fits_at(nx, self.pos.1, PLAYER_RADIUS, self.height) {
                 self.pos.0 = nx;
             }
             let ny = self.pos.1 + dy / steps as f32;
-            if self.noclip || fac.body_fits(self.pos.0, ny, PLAYER_RADIUS) {
+            if self.noclip || fac.body_fits_at(self.pos.0, ny, PLAYER_RADIUS, self.height) {
                 self.pos.1 = ny;
             }
         }
