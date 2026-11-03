@@ -720,7 +720,7 @@ Tabs today (src/bin/last_route/ui/admin/mod.rs TABS): STATUS, GENERAL, PLAYER, H
 - [ ] DEBUG VIEW tab: toggles for the collider, path and navigation overlays, each saved between runs
 - [x] FIELDS tab: list every tunable value with its file and key (config, region data and hunter data)
 - [~] NPCS tab: per-NPC commands (teleport, remove, follow) instead of only spawn and remove all. Teleport and remove are in; follow is a status line until npc.rs has a per-NPC follow flag, and remove should go through an npc.rs helper
-- [~] WORLD tab: regenerate the current floor from its seed and show the seed on screen
+- [x] WORLD tab: regenerate the current floor from its seed and show the seed on screen
 - [ ] STORY tab: jump to a story beat by its id, and show which beats have already fired. Blocked: the game has no story beat table or fired-beat state yet (see the pacing director item)
 - [ ] Admin tools only enable for the signed-in KYTTU account (see the login reset), with a clear message when they are off
 - [ ] Admin menu screenshot checks at 1280x720 for every tab, so layout bugs show up in review
@@ -787,6 +787,49 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [ ] CI builds: confirm the rust-cache hits in build.yml after the first run
 - [ ] Reach 144+ FPS on this laptop (AMD Ryzen AI 5 340, integrated Radeon 840M, 1280x720) with vsync off: run the --stress route, record the average and the 1% low, then fix the top cost in each frame section until the 1% low reaches 144
 - [ ] Godot vs Rust performance comparison: the same seed, route and hardware for both builds (KT-MBA and this PC). Record frame time (average, 1% low), startup, memory, hunter cost at 38 and draw calls, from the Rust --stress CSV and the Godot F7 overlay. Keep both tables in docs/PERF_COMPARISON.md and tick each number when measured.
+
+## Follow-ups and fixes found 2026-11-03 (late)
+
+### Accounts and login
+- [ ] Title ADMIN entry still checks the local name; gate it on the server admin flag (title_entries and title_focus need the flag passed in)
+- [ ] Hub ACCOUNT row shows fixed "SCOPES NONE"; pass the signed-in admin flag and scopes to draw_hub
+- [ ] account_exists returns false when lr_server forwards to the website, so admin set-roster 404s; needs a website route for it
+- [ ] lr_server holds its state lock for up to 5 s during a forwarded account call; move the forward outside the lock
+- [ ] Website savedAt is in milliseconds, the game uses seconds: both sides should agree on one unit
+- [ ] A stale save PUT now answers 200 with the stored time, not 409 STALE; check how the game client reads it, and add a test for the newest-wins branch
+- [ ] Website keeps 10 save slots per game; delete older run-world-N slots when a new revision saves
+- [ ] Deploy the account forwarding: set LASTROUTE_ACCOUNT_UPSTREAM on VPS3 and restart lastroute-rust.service (needs approval)
+- [ ] Hub SERVER row shows the server host to players; the privacy rule says players never see the address, so decide
+
+### Multiplayer and figures
+- [ ] Runner figures stand in one pose; add a moving flag to RemoteView and a walk cycle
+- [ ] runner_figure.rs keeps its own KNOWN_SKINS list; make SKINS in world_sync.rs visible and use it, and drop the unused cube colours
+- [ ] Check the skin trim placement on the character model in a real run
+- [ ] Guests see other guests' ping as the host-measured round trip; measure it directly if guests ever link to each other
+- [ ] NPC follow is a status line: add a per-NPC follow flag in npc.rs, an npc_remove_at helper, and fix the stale deferred-commands comment at the top of npc.rs
+
+### Stress tests and machines
+- [ ] Stress scenarios: noclip, NPCs, hunters, interactions (tools, breaking barriers) and mixed, chosen with a --stress-scenario flag
+- [ ] --stress-vsync on|off, and the runner runs every scenario in both modes, naming each CSV by scenario and vsync
+- [ ] Run the stress tests on KT-MBA, KT-MBP, AK-MBA, XR-MBA, JV-MBA, ZL-MBA, KT-NEO, KT-T480, AK-T480 and this PC; keep the CSVs and a summary table in docs/PERF_COMPARISON.md
+- [ ] Command-line tools still to install at XR-MBA, JV-MBA, ZL-MBA; alsa-lib-devel at AK-T480
+- [ ] git archive from this PC writes CRLF into shell scripts (core.autocrlf); copy with -c core.autocrlf=false, or add a .gitattributes entry for *.sh
+- [ ] Windows laptop: run the stress test on this PC and compare it with the Intel Macs
+
+### Models
+- [ ] bbmodel is the standard: GLB-to-bbmodel converter, the five Godot models the port lacks (door_frame, floor_tile, wall_block, kathy_scythe, sewer_outflow_pipe_broken), the Godot _0/_1/_2 variants, and the 430 GLBs the port still ships
+- [ ] Make the draw path pick a variant per prop instead of one model for all variants
+
+### Updates and builds
+- [ ] Confirm the first real in-game update end to end on Windows and a Mac, and read the update lines in the log
+- [ ] The Mac app still carries lr_server until its next update; check that the new bundle does not
+- [ ] Keep each machine's download-key in the game folder; the old Mac playtest folder held it and was deleted, so restore it on any other Mac
+- [ ] Commit the Godot account kicker change (KYTTU: THE LAST ROUTE) in LastRouteGodot, with its owner's approval
+- [ ] Map looping report: retest on the current build; batch 12 is in git stash (batch 12 paused: map looping report) and needs a bisect or redo
+
+### Settings
+- [ ] vsync is on by default, so the frame rate stops at the refresh rate; decide whether the default should be off
+- [ ] Add a reduced motion setting (the radar ping reads a constant for it)
 
 ## Moddability
 
