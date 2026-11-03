@@ -33,9 +33,12 @@ function New-Icon([int]$size) {
     $ringPen = New-Object System.Drawing.Pen $goldDark, ([single](5 * $k))
     $r = 18 * $k
     $g.DrawEllipse($ringPen, [single](32 * $k - $r), [single](32 * $k - $r), [single](2 * $r), [single](2 * $r))
-    $dot = New-Object System.Drawing.SolidBrush $gold
-    $d = 8.5 * $k
-    $g.FillEllipse($dot, [single](32 * $k - $d), [single](32 * $k - $d), [single](2 * $d), [single](2 * $d))
+    $font = New-Object System.Drawing.Font 'Segoe UI', ([single](30 * $k)), ([System.Drawing.FontStyle]::Bold), ([System.Drawing.GraphicsUnit]::Pixel)
+    $ink = New-Object System.Drawing.SolidBrush $navy
+    $fmt = New-Object System.Drawing.StringFormat
+    $fmt.Alignment = [System.Drawing.StringAlignment]::Center
+    $fmt.LineAlignment = [System.Drawing.StringAlignment]::Center
+    $g.DrawString('N', $font, $ink, (New-Object System.Drawing.RectangleF 0, 0, $size, $size), $fmt)
     $g.Dispose()
     return $bmp
 }
