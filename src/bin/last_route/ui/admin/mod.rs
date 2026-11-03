@@ -380,13 +380,18 @@ impl Admin {
         self.set_open(false);
     }
 
+    /// Publishes the switches game code reads. Only the admin gets them: when the signed-in account is
+    /// not the admin, every switch is published at its default, whatever admin.cfg says (a saved
+    /// `god_mode=true` from the admin's own session must not reach a player).
     fn publish(&self) {
-        GOD.store(self.god_mode, Ordering::Relaxed);
-        NO_TARGET.store(self.no_target, Ordering::Relaxed);
-        NOCLIP.store(self.noclip, Ordering::Relaxed);
-        FULLBRIGHT.store(self.view == View::Fullbright, Ordering::Relaxed);
-        WIREFRAME.store(self.view == View::Wireframe, Ordering::Relaxed);
-        RUN_SPEED.store(self.run_speed.to_bits(), Ordering::Relaxed);
+        let on = self.enabled;
+        GOD.store(on && self.god_mode, Ordering::Relaxed);
+        NO_TARGET.store(on && self.no_target, Ordering::Relaxed);
+        NOCLIP.store(on && self.noclip, Ordering::Relaxed);
+        FULLBRIGHT.store(on && self.view == View::Fullbright, Ordering::Relaxed);
+        WIREFRAME.store(on && self.view == View::Wireframe, Ordering::Relaxed);
+        let speed = if on { self.run_speed } else { 1.0 };
+        RUN_SPEED.store(speed.to_bits(), Ordering::Relaxed);
     }
 
     /// Call right before `Game::update`.
@@ -445,5 +450,33 @@ impl Admin {
 
     fn sel_of(&self, key: &'static str) -> usize {
         self.sel.get(key).copied().unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+mod publish_tests {
+    use super::*;
+
+    /// A player (not the admin) with a saved god mode in admin.cfg gets no god mode: the switches
+    /// game code reads stay at their defaults until the admin account is signed in.
+    #[test]
+    fn a_player_who_is_not_the_admin_gets_no_switches() {
+        let mut a = Admin::new();
+        a.enabled = false;
+        a.god_mode = true;
+        a.no_target = true;
+        a.noclip = true;
+        a.run_speed = 4.0;
+        a.publish();
+        assert!(!GOD.load(Ordering::Relaxed));
+        assert!(!NO_TARGET.load(Ordering::Relaxed));
+        assert!(!NOCLIP.load(Ordering::Relaxed));
+        assert_eq!(f32::from_bits(RUN_SPEED.load(Ordering::Relaxed)), 1.0);
+        a.enabled = true;
+        a.publish();
+        assert!(GOD.load(Ordering::Relaxed));
+        assert_eq!(f32::from_bits(RUN_SPEED.load(Ordering::Relaxed)), 4.0);
+        a.enabled = false;
+        a.publish();
     }
 }
