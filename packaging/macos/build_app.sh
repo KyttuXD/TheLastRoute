@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds "Kyttu's Lab.app" for macOS as one universal binary (Apple Silicon + Intel).
+# Builds "KYTTU The Last Route.app" for macOS as one universal binary (Apple Silicon + Intel).
 # Run on a Mac from the app/ folder:  sh packaging/macos/build_app.sh
 # Needs Xcode command line tools (lipo, iconutil, sips) and rustup.
 set -e
@@ -7,10 +7,10 @@ cd "$(dirname "$0")/../.."
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 cargo build --release --target aarch64-apple-darwin
 cargo build --release --target x86_64-apple-darwin
-cargo build --release --bin lr_server --target aarch64-apple-darwin
-cargo build --release --bin lr_server --target x86_64-apple-darwin
+cargo build --release --bin lr_server --features server --target aarch64-apple-darwin
+cargo build --release --bin lr_server --features server --target x86_64-apple-darwin
 
-APP="dist/Kyttu's Lab.app"
+APP="dist/KYTTU The Last Route.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 lipo -create \

@@ -45,10 +45,10 @@ jobs:
         run: cargo test --locked --bin last_route
 
       - name: cargo test --bin lr_server
-        run: cargo test --locked --bin lr_server
+        run: cargo test --locked --bin lr_server --features server
 
       - name: Build release binaries
-        run: cargo build --locked --release --bins
+        run: cargo build --locked --release --bins --features server
 
       # Exit 0 pass, 1 fail, 2 nothing ran. The JSON report is kept as an artifact.
       - name: Headless test suites

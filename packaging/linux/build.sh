@@ -7,7 +7,7 @@
 set -e
 cd "$(dirname "$0")/../.."
 cargo build --release
-cargo build --release --bin lr_server
+cargo build --release --bin lr_server --features server
 
 OUT=dist/last-route-linux
 rm -rf "$OUT"

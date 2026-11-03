@@ -674,12 +674,6 @@ impl SessionLookup for AccountService {
     fn session_username(&self, token: &str) -> Option<String> {
         AccountService::session_username(self, token)
     }
-    fn is_admin_owner(&self, username: &str) -> bool {
-        AccountService::is_admin_owner(self, username)
-    }
-    fn account_exists(&self, username: &str) -> bool {
-        AccountService::account_exists(self, username)
-    }
 }
 
 #[cfg(test)]

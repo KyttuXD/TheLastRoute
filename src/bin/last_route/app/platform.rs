@@ -21,23 +21,6 @@ pub fn attach_console() {
     }
 }
 
-/// The primary screen's size in the window system's (logical) pixels, when known.
-pub fn screen_size() -> Option<(i32, i32)> {
-    #[cfg(windows)]
-    {
-        #[link(name = "user32")]
-        extern "system" {
-            fn GetSystemMetrics(index: i32) -> i32;
-        }
-        // SM_CXFULLSCREEN / SM_CYFULLSCREEN: the work area a maximised window gets
-        let (w, h) = unsafe { (GetSystemMetrics(16), GetSystemMetrics(17)) };
-        if w > 0 && h > 0 {
-            return Some((w, h));
-        }
-    }
-    None
-}
-
 /// The starting window size: 1280x720 in every build, debug included.
 pub fn window_size(_fixed: bool) -> (i32, i32) {
     (1280, 720)

@@ -110,6 +110,8 @@ impl BootState {
         self.failed
     }
 
+    /// Test helper: the card has finished loading.
+    #[cfg(test)]
     pub fn is_done(&self) -> bool {
         self.done
     }

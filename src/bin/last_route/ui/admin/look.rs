@@ -14,7 +14,6 @@ pub const INSET: Color = Color::new(0.1176, 0.0745, 0.1333, 1.0); // 1e1322
 pub const INK: Color = Color::new(0.9490, 0.9294, 0.8824, 1.0); // f2ede1
 pub const BODY: Color = Color::new(0.7373, 0.7020, 0.6588, 1.0); // bcb3a8
 pub const MUTED: Color = Color::new(0.5490, 0.5059, 0.4941, 1.0); // 8c817e
-pub const DISABLED: Color = Color::new(0.4627, 0.4314, 0.4471, 1.0); // 766e72
 pub const AMBER: Color = Color::new(0.7882, 0.6627, 0.8471, 1.0); // c9a9d8
 pub const ON_AMBER: Color = Color::new(0.1020, 0.0588, 0.0784, 1.0); // 1a0f14
 pub const ACCENT: Color = Color::new(0.6510, 0.4980, 0.6902, 1.0); // a67fb0

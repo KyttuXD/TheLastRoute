@@ -26,9 +26,11 @@ pub fn system_clock() -> Clock {
 }
 
 /// A settable clock for tests: `let (clock, handle) = manual_clock(1_000); handle.set(2_000);`
+#[cfg(test)]
 #[derive(Clone)]
 pub struct ManualClock(pub Arc<AtomicI64>);
 
+#[cfg(test)]
 impl ManualClock {
     pub fn set(&self, ms: i64) {
         self.0.store(ms, Ordering::SeqCst);
@@ -41,24 +43,24 @@ impl ManualClock {
     }
 }
 
+#[cfg(test)]
 pub fn manual_clock(start_ms: i64) -> (Clock, ManualClock) {
     let cell = Arc::new(AtomicI64::new(start_ms));
     let reader = cell.clone();
     (Arc::new(move || reader.load(Ordering::SeqCst)), ManualClock(cell))
 }
 
+/// Read and parse a JSON file; None when missing or unreadable.
+#[cfg(test)]
+pub fn read_json_file(path: &Path) -> Option<Value> {
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()
+}
+
 /// Anything that can turn a session token into a canonical username (the account service, or a test fake).
 /// Mirrors `accountService.sessionUsername(token)`, which returns "" / null for unknown or expired tokens.
 pub trait SessionLookup {
     fn session_username(&self, token: &str) -> Option<String>;
-    fn is_admin_owner(&self, username: &str) -> bool {
-        let _ = username;
-        false
-    }
-    fn account_exists(&self, username: &str) -> bool {
-        let _ = username;
-        false
-    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -277,28 +279,12 @@ pub fn number_or(value: Option<&Value>, fallback: f64) -> f64 {
     }
 }
 
-/// `Number.isFinite(Number(value))`.
-pub fn is_finite_number(value: Option<&Value>) -> bool {
-    js_number(value).is_finite()
-}
-
 /// `Number.isSafeInteger(value)` (no coercion: only real JSON numbers count).
 pub fn is_safe_integer(value: Option<&Value>) -> bool {
     match value {
         Some(Value::Number(n)) => {
             let f = n.as_f64().unwrap_or(f64::NAN);
             f.is_finite() && f.fract() == 0.0 && f.abs() <= 9_007_199_254_740_991.0
-        }
-        _ => false,
-    }
-}
-
-/// `Number.isInteger(value)` without coercion.
-pub fn is_integer(value: Option<&Value>) -> bool {
-    match value {
-        Some(Value::Number(n)) => {
-            let f = n.as_f64().unwrap_or(f64::NAN);
-            f.is_finite() && f.fract() == 0.0
         }
         _ => false,
     }
@@ -313,11 +299,6 @@ pub fn num(f: f64) -> Value {
         return Value::from(f as i64);
     }
     serde_json::Number::from_f64(f).map(Value::Number).unwrap_or(Value::Null)
-}
-
-/// `typeof value === "object" && value !== null && !Array.isArray(value)`.
-pub fn is_plain_object(value: Option<&Value>) -> bool {
-    matches!(value, Some(Value::Object(_)))
 }
 
 /// Field access that tolerates non-objects (like `body?.field`).
@@ -337,16 +318,6 @@ pub fn js_round(f: f64) -> f64 {
 /// `JSON.stringify(value)`.
 pub fn stringify(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "null".into())
-}
-
-/// `JSON.stringify(value, null, 2)`.
-pub fn stringify_pretty(value: &Value) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_else(|_| "null".into())
-}
-
-/// UTF-8 byte length (`Buffer.byteLength`).
-pub fn byte_len(text: &str) -> usize {
-    text.len()
 }
 
 /// Length in UTF-16 code units (JavaScript `string.length`).
@@ -370,30 +341,9 @@ pub fn js_slice(text: &str, end: usize) -> String {
     out
 }
 
-/// `string.slice(start, end)` in UTF-16 code units.
-pub fn js_slice_range(text: &str, start: usize, end: usize) -> String {
-    let mut count = 0usize;
-    let mut out = String::new();
-    for c in text.chars() {
-        let units = c.len_utf16();
-        if count >= start && count + units <= end {
-            out.push(c);
-        }
-        count += units;
-        if count >= end {
-            break;
-        }
-    }
-    out
-}
-
 /// `string.trim()` (JS whitespace incl. BOM).
 pub fn js_trim(text: &str) -> &str {
     text.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
-}
-
-pub fn obj() -> Map<String, Value> {
-    Map::new()
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -550,12 +500,6 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&temp, path)
 }
 
-/// Read and parse a JSON file; None when missing or unreadable.
-pub fn read_json_file(path: &Path) -> Option<Value> {
-    let text = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()
-}
-
 // ---------------------------------------------------------------------------------------------------------------
 // Time.
 
@@ -581,6 +525,7 @@ pub fn iso_time(ms: i64) -> String {
 }
 
 /// `Date.parse(iso)` for the `YYYY-MM-DDTHH:MM:SS(.mmm)?Z` strings this backend writes; None otherwise.
+#[cfg(test)]
 pub fn parse_iso_time(text: &str) -> Option<i64> {
     let t = text.trim();
     let bytes = t.as_bytes();

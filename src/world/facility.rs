@@ -779,7 +779,7 @@ impl Facility {
         }
         let mut selected: Vec<(usize, usize, u8)> = vec![]; // kind: 0 main, 1 connector, 2 service
         let mut keys: HashSet<(usize, usize)> = HashSet::new();
-        let mut select = |a: usize,
+        let select = |a: usize,
                           b: usize,
                           kind: u8,
                           parent: &mut Vec<usize>,

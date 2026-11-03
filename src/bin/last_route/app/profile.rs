@@ -113,10 +113,6 @@ pub fn discovered(username: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub fn is_discovered(username: &str, id: &str) -> bool {
-    discovered(username).iter().any(|d| d == id)
-}
-
 /// account_discover_hunter(): true when this is a new entry. Not on debug (admin) runs.
 pub fn discover(username: &str, id: &str, debug_run: bool) -> bool {
     if debug_run

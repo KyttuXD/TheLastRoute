@@ -29,7 +29,7 @@ use crate::content::Content;
 use crate::game::{Controls, Game};
 use macroquad::prelude::*;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
 
 /// What the menu asks the app to do with the run (owner route controls).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -50,7 +50,7 @@ pub enum View {
     Wireframe,
 }
 
-pub use crate::shared::admin_flags::{flags, Flags, FULLBRIGHT, GOD, NOCLIP, NO_TARGET, RUN_SPEED, WIREFRAME};
+pub use crate::shared::admin_flags::{FULLBRIGHT, GOD, NOCLIP, NO_TARGET, RUN_SPEED, WIREFRAME};
 
 pub const TABS: [&str; 10] = [
     "STATUS",

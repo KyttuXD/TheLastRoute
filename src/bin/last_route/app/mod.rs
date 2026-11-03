@@ -230,49 +230,6 @@ pub fn save_screen(path: &str) {
     img.export_png(path);
 }
 
-#[cfg(windows)]
-fn utc_offset_minutes() -> i64 {
-    #[repr(C)]
-    struct SystemTime([u16; 8]);
-    #[repr(C)]
-    struct TimeZoneInformation {
-        bias: i32,
-        standard_name: [u16; 32],
-        standard_date: SystemTime,
-        standard_bias: i32,
-        daylight_name: [u16; 32],
-        daylight_date: SystemTime,
-        daylight_bias: i32,
-    }
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn GetTimeZoneInformation(tz: *mut TimeZoneInformation) -> u32;
-    }
-    let mut tz: TimeZoneInformation = unsafe { std::mem::zeroed() };
-    let r = unsafe { GetTimeZoneInformation(&mut tz) };
-    let bias = match r {
-        1 => tz.bias + tz.standard_bias,
-        2 => tz.bias + tz.daylight_bias,
-        _ => tz.bias,
-    };
-    -(bias as i64)
-}
-
-#[cfg(not(windows))]
-fn utc_offset_minutes() -> i64 {
-    0
-}
-
-/// The local hour and minute the solo checkpoint was last written (RunSaves.status_line).
-pub fn checkpoint_clock() -> Option<(u32, u32)> {
-    let p = paths::user_file("checkpoint.json")?;
-    let t = std::fs::metadata(p).ok()?.modified().ok()?;
-    let secs =
-        t.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64 + utc_offset_minutes() * 60;
-    let day = secs.rem_euclid(86_400);
-    Some(((day / 3600) as u32, ((day / 60) % 60) as u32))
-}
-
 /// The world with no boot card: the headless and self-test paths.
 pub async fn load_world() -> World {
     let content = Content::load();

@@ -1,47 +1,76 @@
-# Builds the port for Windows, Linux and macOS (one universal Apple Silicon + Intel app).
-# Artifacts only; nothing is published. Use it from a private repository (see README: the
-# build contains the original game's files and must not be shared).
+# Builds the port for Windows, Linux and macOS: one universal app (Apple Silicon + Intel) and an
+# Intel-only app for kt-mba (both macOS jobs build both slices). Every build is uploaded as a run
+# artifact, and on main also published to the rolling "nightly" pre-release, which is replaced in
+# place on each push (Actions artifact storage is full on this account, so nightly is where the
+# builds are downloaded from). Use it from a private repository (see README: the build contains the
+# original game's files and must not be shared).
 name: build
 on: [push, workflow_dispatch]
+
+permissions:
+  contents: write
 
 jobs:
   windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - run: cargo build --release
-      - run: cargo build --release --bin lr_server
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --bins --features server
       # The self-test needs an OpenGL pixel format, which hosted Windows runners do not have, so it
       # runs locally instead (last_route --self-test). The headless suite runs in test.yml.
+      - name: Collect the Windows builds
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/last_route.exe dist/last_route-windows-x86_64.exe
+          cp target/release/night_watch.exe dist/night_watch-windows-x86_64.exe
+          cp target/release/lr_server.exe dist/lr_server-windows-x86_64.exe
       - uses: actions/upload-artifact@v4
         continue-on-error: true
         with:
           name: last_route-windows
           retention-days: 3
-          path: |
-            target/release/last_route.exe
-            target/release/lr_server.exe
+          path: dist/*.exe
+      - name: Publish to nightly
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh packaging/nightly.sh dist/*.exe
 
   linux:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y pkg-config libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev
       - run: sh packaging/linux/build.sh
       - uses: actions/upload-artifact@v4
         continue-on-error: true
         with: { name: last_route-linux-x86_64, path: dist/last-route-linux-x86_64.tar.gz, retention-days: 3 }
+      - name: Publish to nightly
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh packaging/nightly.sh dist/last-route-linux-x86_64.tar.gz
 
   macos:
     # macos-14 was retired from GitHub Actions on 2026-11-02; macos-15 is the Apple Silicon image.
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
       - run: sh packaging/macos/build_app.sh
-      - run: cd dist && zip -qry last_route-macos-universal.zip "Kyttu's Lab.app"
+      - run: cd dist && zip -qry last_route-macos-universal.zip "KYTTU The Last Route.app"
       - uses: actions/upload-artifact@v4
         continue-on-error: true
         with: { name: last_route-macos-universal, path: dist/last_route-macos-universal.zip, retention-days: 3 }
+      - name: Publish to nightly
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh packaging/nightly.sh dist/last_route-macos-universal.zip
 
   # Intel Mac build for kt-mba. build_app.sh always builds both slices, so the zip holds an
   # x86_64 binary (plus arm64); it runs on Intel. macos-15-intel is the Intel (x64) image.
@@ -49,8 +78,14 @@ jobs:
     runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
       - run: sh packaging/macos/build_app.sh
-      - run: cd dist && zip -qry last_route-macos-x86_64.zip "Kyttu's Lab.app"
+      - run: cd dist && zip -qry last_route-macos-x86_64.zip "KYTTU The Last Route.app"
       - uses: actions/upload-artifact@v4
         continue-on-error: true
         with: { name: last_route-macos-x86_64, path: dist/last_route-macos-x86_64.zip, retention-days: 3 }
+      - name: Publish to nightly
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh packaging/nightly.sh dist/last_route-macos-x86_64.zip
