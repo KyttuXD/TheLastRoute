@@ -1,11 +1,13 @@
 //! A Rust-to-Rust co-op transport over the LRR1 relay (PORT DEVIATION: replaces ENet + Godot SceneMultiplayer).
 //!
-//! Each relay datagram payload is one packet: `channel u8 | kind u8 (0 data, 1 ack) | seq u32 LE | body`, where the
-//! body of a data packet is one encoded [`Message`]. Delivery follows the original channel modes
-//! ([`protocol::delivery`]): reliable channels (EVENTS, HUNTERS_LARGE) are acknowledged, resent every 200 ms and
+//! Each relay datagram payload is one packet: `channel u8 | kind u8 | seq u32 LE | body`, where the kind is one of the
+//! `KIND_` constants and the body of a data packet is one encoded [`Message`]. Delivery follows the original channel
+//! modes ([`protocol::delivery`]): reliable channels (EVENTS, HUNTERS_LARGE) are acknowledged, resent every 200 ms and
 //! delivered in order; unreliable_ordered channels (STATE, HUNTERS) drop anything older than the newest seen;
 //! VOICE is plain unreliable. Peer ids: the host is peer 1 (Godot's authority id); a guest is its relay session id.
 //! A message must fit one datagram (1450 bytes); bigger hunter frames are not fragmented (ENet does that for Godot).
+//! A ping is a `KIND_PING` packet the other side answers with a `KIND_PONG` carrying the same seq: the round trip
+//! through the relay is that runner's ping. The host reports each guest's ping to the guests in a `KIND_PINGS` packet.
 
 use super::protocol::{self, Delivery, Message};
 use super::relay::{RelayEvent, RelayLink, Role, MAX_PAYLOAD_BYTES};
@@ -14,8 +16,14 @@ use std::time::{Duration, Instant};
 
 pub const HOST_PEER_ID: u32 = 1;
 pub const RESEND_INTERVAL: Duration = Duration::from_millis(200);
+const PING_INTERVAL: Duration = Duration::from_secs(1);
 const PACKET_HEADER: usize = 6;
 pub const MAX_MESSAGE_BYTES: usize = MAX_PAYLOAD_BYTES - PACKET_HEADER;
+const KIND_DATA: u8 = 0;
+const KIND_ACK: u8 = 1;
+const KIND_PING: u8 = 2;
+const KIND_PONG: u8 = 3;
+const KIND_PINGS: u8 = 4;
 
 #[derive(Default)]
 struct Channel {
@@ -45,6 +53,12 @@ pub enum SessionEvent {
 pub struct CoopSession {
     pub link: RelayLink,
     peers: HashMap<u32, Peer>,
+    /// The last measured round trip per runner, in ms. A guest holds its own to the host (HOST_PEER_ID) and the host's
+    /// report of the other guests; the host holds its own to each guest.
+    pings: HashMap<u32, u32>,
+    /// A ping sent and not answered yet, per runner: its seq and when it went out.
+    pending_pings: HashMap<u32, (u32, Instant)>,
+    next_ping: Instant,
 }
 
 fn packet(channel: u8, kind: u8, seq: u32, body: &[u8]) -> Vec<u8> {
@@ -58,7 +72,18 @@ fn packet(channel: u8, kind: u8, seq: u32, body: &[u8]) -> Vec<u8> {
 
 impl CoopSession {
     pub fn new(link: RelayLink) -> CoopSession {
-        CoopSession { link, peers: HashMap::new() }
+        CoopSession {
+            link,
+            peers: HashMap::new(),
+            pings: HashMap::new(),
+            pending_pings: HashMap::new(),
+            next_ping: Instant::now(),
+        }
+    }
+
+    /// The last measured round trip to a runner through the relay, in ms; None until one is measured.
+    pub fn ping_ms(&self, peer: u32) -> Option<u32> {
+        self.pings.get(&peer).copied()
     }
 
     pub fn is_host(&self) -> bool {
@@ -89,7 +114,7 @@ impl CoopSession {
         let state = &mut self.peers.entry(key).or_default().channels[channel as usize];
         let seq = state.next_send;
         state.next_send = state.next_send.wrapping_add(1);
-        let bytes = packet(channel, 0, seq, &body);
+        let bytes = packet(channel, KIND_DATA, seq, &body);
         if protocol::delivery(channel) == Delivery::Reliable {
             state.unacked.insert(seq, (bytes.clone(), Instant::now()));
         }
@@ -119,7 +144,34 @@ impl CoopSession {
             }
         }
         self.resend();
+        self.ping();
         out
+    }
+
+    /// Once per [`PING_INTERVAL`], once linked: a guest pings the host; the host pings each guest and reports every
+    /// measured ping to each guest, the guest's own left out.
+    fn ping(&mut self) {
+        let now = Instant::now();
+        if now < self.next_ping || !self.link.ready() {
+            return;
+        }
+        self.next_ping = now + PING_INTERVAL;
+        let targets: Vec<u32> = if self.is_host() { self.peers() } else { vec![HOST_PEER_ID] };
+        for peer in targets {
+            let seq = self.pending_pings.get(&peer).map_or(1, |(seq, _)| seq.wrapping_add(1));
+            self.pending_pings.insert(peer, (seq, now));
+            self.link.send(self.route(peer), &packet(0, KIND_PING, seq, &[]));
+        }
+        if self.is_host() {
+            for peer in self.peers() {
+                let mut body = Vec::new();
+                for (other, ms) in self.pings.iter().filter(|(other, _)| **other != peer && **other != HOST_PEER_ID) {
+                    body.extend_from_slice(&other.to_le_bytes());
+                    body.extend_from_slice(&ms.to_le_bytes());
+                }
+                self.link.send(peer, &packet(0, KIND_PINGS, 0, &body));
+            }
+        }
     }
 
     fn receive(&mut self, session: u32, payload: &[u8], out: &mut Vec<SessionEvent>) {
@@ -130,18 +182,35 @@ impl CoopSession {
         let seq = u32::from_le_bytes([payload[2], payload[3], payload[4], payload[5]]);
         let body = &payload[PACKET_HEADER..];
         let from = if self.is_host() { session } else { HOST_PEER_ID };
+        match kind {
+            KIND_PING => {
+                self.link.send(self.route(session), &packet(0, KIND_PONG, seq, &[]));
+                return;
+            }
+            KIND_PONG => {
+                self.measure(from, seq);
+                return;
+            }
+            KIND_PINGS => {
+                if !self.is_host() {
+                    self.report(body);
+                }
+                return;
+            }
+            _ => {}
+        }
         if self.is_host() && !self.peers.contains_key(&from) {
             out.push(SessionEvent::PeerSeen(from));
         }
         let state = &mut self.peers.entry(from).or_default().channels[channel as usize];
-        if kind == 1 {
+        if kind == KIND_ACK {
             state.unacked.remove(&seq);
             return;
         }
         let mut deliver: Vec<Vec<u8>> = Vec::new();
         match protocol::delivery(channel) {
             Delivery::Reliable => {
-                let ack = packet(channel, 1, seq, &[]);
+                let ack = packet(channel, KIND_ACK, seq, &[]);
                 let route = if self.is_host() { session } else { 0 };
                 self.link.send(route, &ack);
                 let state = &mut self.peers.get_mut(&from).unwrap().channels[channel as usize];
@@ -170,6 +239,27 @@ impl CoopSession {
                 }
                 out.push(SessionEvent::Message { from, message });
             }
+        }
+    }
+
+    /// Records the round trip of the ping `from` answered with `seq`, when it is the one still pending.
+    fn measure(&mut self, from: u32, seq: u32) {
+        if let Some((pending, sent)) = self.pending_pings.get(&from).copied() {
+            if pending == seq {
+                self.pending_pings.remove(&from);
+                let ms = u32::try_from(sent.elapsed().as_millis()).unwrap_or(u32::MAX);
+                self.pings.insert(from, ms);
+            }
+        }
+    }
+
+    /// Guest: the host's report replaces the other guests' pings. Its own ping to the host is kept.
+    fn report(&mut self, body: &[u8]) {
+        self.pings.retain(|peer, _| *peer == HOST_PEER_ID);
+        for pair in body.chunks_exact(8) {
+            let peer = u32::from_le_bytes([pair[0], pair[1], pair[2], pair[3]]);
+            let ms = u32::from_le_bytes([pair[4], pair[5], pair[6], pair[7]]);
+            self.pings.insert(peer, ms);
         }
     }
 
@@ -274,5 +364,52 @@ mod tests {
         assert!(!guest.send(HOST_PEER_ID, &Message::Snapshot { state: Default::default() }), "guests cannot send host RPCs");
         assert!(!host.send(42, &Message::Place { packet: json!("x".repeat(2000)) }), "a message must fit one datagram");
         host.close();
+    }
+
+    /// Host and guest on one fake relay: the guest measures its round trip to the host and the host to the guest.
+    #[test]
+    fn pings_are_measured_through_the_relay() {
+        let relay = UdpSocket::bind("127.0.0.1:0").unwrap();
+        relay.set_nonblocking(true).unwrap();
+        let port = relay.local_addr().unwrap().port();
+        let mut host = CoopSession::new(RelayLink::host("ABCDE", "tok", "127.0.0.1", port).unwrap());
+        let mut guest = CoopSession::new(RelayLink::guest("ABCDE", "127.0.0.1", port, "").unwrap());
+        let (mut host_addr, mut guest_addr) = (None, None);
+        let mut buf = [0u8; 2048];
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline && (host.ping_ms(42).is_none() || guest.ping_ms(HOST_PEER_ID).is_none()) {
+            while let Ok((n, from)) = relay.recv_from(&mut buf) {
+                let f = decode(&buf[..n]).unwrap();
+                match f.kind {
+                    frame::HOST_REGISTER => {
+                        host_addr = Some(from);
+                        relay.send_to(&encode(frame::HOST_ACK, 0, "ABCDE", &[]).unwrap(), from).unwrap();
+                    }
+                    frame::GUEST_JOIN => {
+                        guest_addr = Some(from);
+                        relay.send_to(&encode(frame::GUEST_ACK, 42, "ABCDE", &[]).unwrap(), from).unwrap();
+                    }
+                    frame::GUEST_DATA => {
+                        relay.send_to(&encode(frame::GUEST_DATA, 42, "ABCDE", &f.payload).unwrap(), host_addr.unwrap()).unwrap();
+                    }
+                    frame::HOST_DATA => {
+                        relay.send_to(&encode(frame::HOST_DATA, 42, "ABCDE", &f.payload).unwrap(), guest_addr.unwrap()).unwrap();
+                    }
+                    _ => {}
+                }
+            }
+            for e in guest.poll() {
+                if e == SessionEvent::Ready {
+                    guest.send(HOST_PEER_ID, &Message::RegisterPeer { requested_name: "R-4821".into() });
+                }
+            }
+            host.poll();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(host.ping_ms(42).is_some(), "the host measures its round trip to the guest");
+        assert!(guest.ping_ms(HOST_PEER_ID).is_some(), "the guest measures its round trip to the host");
+        assert!(host.ping_ms(HOST_PEER_ID).is_none(), "the host holds no ping to itself");
+        host.close();
+        guest.close();
     }
 }

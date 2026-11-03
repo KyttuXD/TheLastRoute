@@ -726,6 +726,31 @@ impl Game {
         self.refresh_waypoint();
     }
 
+    /// Rebuilds the live window from its seed and level: the runner stays where it stands and the window keeps its
+    /// origin. The nine chunks leave the chunk cache and the layout read, so they are built again. The claims, the
+    /// discovered cells and the safe rooms carry over, as they do when the window recentres.
+    pub fn regen_window(&mut self, content: &Content, catalog: &Catalog) {
+        if self.inf.is_none() {
+            return;
+        }
+        self.sync_out();
+        if let Some(inf) = self.inf.as_mut() {
+            let (cx, cy, level) = (inf.center.0, inf.center.1, inf.level);
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let k = ChunkKey {
+                        cx: cx + dx,
+                        cy: cy + dy,
+                        level,
+                    };
+                    inf.cache.remove(&k);
+                    inf.layout_pickups.remove(&k);
+                }
+            }
+        }
+        self.load_window(content, catalog);
+    }
+
     /// Recentres the window once the runner leaves the middle chunk, then reads the map discovery
     /// (every frame, as Godot's `_update_map_discovery` does), clears the waypoint on arrival and plans its route.
     pub(super) fn stream_window(&mut self, content: &Content, catalog: &Catalog) {

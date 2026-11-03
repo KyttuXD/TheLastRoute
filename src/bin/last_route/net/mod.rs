@@ -39,6 +39,7 @@ pub mod http;
 pub mod pending;
 pub mod protocol;
 pub mod relay;
+pub mod runner_figure;
 pub mod saves;
 pub mod session;
 pub mod store;

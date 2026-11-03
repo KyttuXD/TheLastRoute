@@ -13,6 +13,9 @@ use std::time::Duration;
 /// The CI run number this build was made in (0 for a local build).
 const BUILD: u64 = parse_build(env!("LR_BUILD_NUMBER"));
 
+/// The commit this build was made from ("unknown" when neither CI nor git was available to the build).
+const REVISION: &str = env!("LR_REVISION");
+
 const fn parse_build(text: &str) -> u64 {
     let bytes = text.as_bytes();
     let mut value = 0u64;
@@ -36,6 +39,7 @@ pub const PLATFORM: &str = if cfg!(windows) {
 /// A newer build the server offers for this platform.
 struct Offer {
     build: u64,
+    revision: String,
     file: String,
     sha256: String,
 }
@@ -50,6 +54,7 @@ fn offer() -> Option<Offer> {
     let update = body.get("update")?.as_object()?;
     Some(Offer {
         build: update.get("build")?.as_u64()?,
+        revision: update.get("revision")?.as_str()?.to_string(),
         file: update.get("file")?.as_str()?.to_string(),
         sha256: update.get("sha256")?.as_str()?.to_string(),
     })
@@ -203,6 +208,17 @@ fn remove_leftover() {
     }
 }
 
+/// Whether an offered build replaces this one. The build number must go up, so an older published build never
+/// replaces a newer one, and the commit must differ, so a rebuild of the same commit does not replace itself.
+fn should_update(current_build: u64, current_rev: &str, offer_build: u64, offer_rev: &str) -> bool {
+    offer_build > current_build && !same_commit(current_rev, offer_rev)
+}
+
+/// The server lists the short commit hash, so one revision that starts the other counts as the same commit.
+fn same_commit(a: &str, b: &str) -> bool {
+    !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
+}
+
 /// Runs the check once, before the game opens. When a newer build is installed, the new one is started and
 /// this process ends; otherwise it returns and the game starts as normal. A failure is logged and never stops
 /// the game from opening.
@@ -218,7 +234,7 @@ pub fn check_on_start() {
     let Some(offer) = offer() else {
         return;
     };
-    if offer.build <= BUILD {
+    if !should_update(BUILD, REVISION, offer.build, &offer.revision) {
         return;
     }
     crate::lr_info!("update: build {} is available (this is {}); downloading", offer.build, BUILD);
@@ -239,5 +255,15 @@ mod tests {
     fn build_number_parses_from_the_build_environment() {
         assert_eq!(parse_build("0"), 0);
         assert_eq!(parse_build("9001"), 9001);
+    }
+
+    #[test]
+    fn an_update_needs_a_newer_build_of_another_commit() {
+        let commit = "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111";
+        assert!(should_update(5, "bbbb2222", 6, commit));
+        assert!(!should_update(6, "bbbb2222", 5, commit), "an older build never replaces a newer one");
+        assert!(!should_update(5, "bbbb2222", 5, commit), "the same build number is not an update");
+        assert!(!should_update(5, commit, 6, commit), "a rebuild of the same commit is not an update");
+        assert!(!should_update(5, commit, 6, "aaaa1111"), "a short hash of the same commit is not an update");
     }
 }

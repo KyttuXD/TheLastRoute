@@ -481,42 +481,34 @@ impl Admin {
                         ui.text(&line, r.x, r.y, 7.0, INK);
                     }
                 }
-                if g.inf.is_none() {
-                    let r = col.take(17.0, 4.0);
-                    let w = ui.tw("REGENERATE FLOOR", 7.0) + 20.0 * u;
-                    let focus = self.focus.as_deref() == Some("regen_floor");
-                    if ui.button(
-                        Rect::new(r.x, r.y, w, r.h),
+                let infinite = g.inf.is_some();
+                let (label, key, hint) = if infinite {
+                    (
+                        "REGENERATE WINDOW",
+                        "regen_window",
+                        "REBUILDS THIS WINDOW FROM ITS SEED",
+                    )
+                } else {
+                    (
                         "REGENERATE FLOOR",
-                        7.0,
-                        false,
-                        focus,
-                    ) {
-                        self.focus = Some("regen_floor".into());
+                        "regen_floor",
+                        "REBUILDS THIS FLOOR FROM ITS SEED",
+                    )
+                };
+                let r = col.take(17.0, 4.0);
+                let w = ui.tw(label, 7.0) + 20.0 * u;
+                let focus = self.focus.as_deref() == Some(key);
+                if ui.button(Rect::new(r.x, r.y, w, r.h), label, 7.0, false, focus) {
+                    self.focus = Some(key.into());
+                    if infinite {
+                        self.regen_window(g, content);
+                    } else {
                         self.regen_floor(g, a, content);
                     }
-                    let r = col.take(line_h(6.0), 4.0);
-                    if ui.visible(r) {
-                        ui.text(
-                            "REBUILDS THIS FLOOR FROM ITS SEED",
-                            r.x,
-                            r.y,
-                            6.0,
-                            MUTED,
-                        );
-                    }
-                } else {
-                    for line in wrap(
-                        &ui,
-                        "FLOOR REGEN IS NOT AVAILABLE ON THE INFINITE ROUTE",
-                        6.0,
-                        page.w,
-                    ) {
-                        let r = col.take(line_h(6.0), 2.0);
-                        if ui.visible(r) {
-                            ui.text(&line, r.x, r.y, 6.0, MUTED);
-                        }
-                    }
+                }
+                let r = col.take(line_h(6.0), 4.0);
+                if ui.visible(r) {
+                    ui.text(hint, r.x, r.y, 6.0, MUTED);
                 }
                 self.dd_row(
                     &mut ui,
@@ -856,6 +848,14 @@ impl Admin {
         self.summoned.clear();
         self.mark_debug();
         g.say("ADMIN // FLOOR REGENERATED FROM ITS SEED");
+    }
+
+    /// Rebuilds the infinite route's live window from its seed (the runner and the window origin stay put).
+    fn regen_window(&mut self, g: &mut Game, content: &Content) {
+        let catalog = crate::world::catalog::Catalog::load();
+        g.regen_window(content, &catalog);
+        self.mark_debug();
+        g.say("ADMIN // WINDOW REGENERATED FROM ITS SEED");
     }
 
     fn fields_page(&mut self, ui: &mut Ui, col: &mut Col, cmds: &mut Vec<Cmd>) {

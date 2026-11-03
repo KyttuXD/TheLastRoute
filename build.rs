@@ -51,12 +51,27 @@ fn embed(name: &str, folder: &str, exts: &[&str], text: bool, code: &mut String)
     code.push_str("];\n");
 }
 
+/// The commit this build comes from: GITHUB_SHA in CI, else `git rev-parse HEAD`, else "unknown".
+fn revision() -> String {
+    let ci = std::env::var("GITHUB_SHA").ok().map(|sha| sha.trim().to_string()).filter(|sha| !sha.is_empty());
+    let git = || {
+        let out = std::process::Command::new("git").args(["rev-parse", "HEAD"]).output().ok()?;
+        let sha = String::from_utf8(out.stdout).ok()?;
+        out.status.success().then(|| sha.trim().to_string()).filter(|sha| !sha.is_empty())
+    };
+    ci.or_else(git).unwrap_or_else(|| "unknown".into())
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=assets");
     // the CI run number is this build's number for the update check; a local build has 0 and never updates
     println!("cargo:rerun-if-env-changed=GITHUB_RUN_NUMBER");
     let build = std::env::var("GITHUB_RUN_NUMBER").ok().filter(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit())).unwrap_or_else(|| "0".into());
     println!("cargo:rustc-env=LR_BUILD_NUMBER={build}");
+    // the commit this build comes from, so the update check can tell a rebuild of the same commit from a new one
+    println!("cargo:rerun-if-env-changed=GITHUB_SHA");
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rustc-env=LR_REVISION={}", revision());
     println!("cargo:rerun-if-changed=data");
     let mut code = String::new();
     embed("DATA_FILES", "data", &["json"], true, &mut code);

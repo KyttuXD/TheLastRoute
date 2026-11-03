@@ -23,8 +23,6 @@ use crate::config::difficulty::ALL;
 use crate::config::Difficulty;
 use crate::game::player::Player;
 use crate::game::Game;
-use crate::render::builder::Builder;
-use crate::render::{scene, shader};
 use crate::shared::assets::Assets;
 use macroquad::prelude::*;
 use serde_json::{json, Map, Value};
@@ -131,7 +129,7 @@ pub fn newer(seq: u32, last: u32) -> bool {
 }
 
 /// One other runner in the room, for the PLAYERS list. `depth` is its floor while it sends samples; `sending` is whether
-/// it has sent one lately.
+/// it has sent one lately; `ping` is its round trip in ms, None until one is measured.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RosterEntry {
     pub peer: u32,
@@ -140,6 +138,7 @@ pub struct RosterEntry {
     pub host: bool,
     pub depth: Option<i32>,
     pub sending: bool,
+    pub ping: Option<u32>,
 }
 
 /// A remote runner that is on this floor and fresh enough to draw.
@@ -407,6 +406,7 @@ impl NetSession {
                 host: peer == HOST_PEER_ID,
                 depth,
                 sending: depth.is_some(),
+                ping: self.coop.ping_ms(peer),
             }
         };
         if self.is_host() {
@@ -837,21 +837,13 @@ pub fn skin_colour(skin: &str, peer: u32) -> Color {
     palette[(peer as usize) % palette.len()]
 }
 
-/// Draws the remote runners as simple figures in the 3D view, lit like the scene and glowing so they read in the dark.
-/// Draws nothing when `remotes` is empty, so a single-player frame is unchanged.
+/// Draws the remote runners in the 3D view (the figures are drawn by `net::runner_figure`). Draws nothing when `remotes`
+/// is empty, so a single-player frame is unchanged.
 pub fn draw_remotes(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, remotes: &[RemoteView]) {
     if remotes.is_empty() {
         return;
     }
-    set_camera(&scene::camera(g, rt));
-    gl_use_material(mat);
-    shader::apply(mat, &scene::lighting(g), &g.world.lamps);
-    let mut b = Builder::new(Some(a.white.clone()));
-    for r in remotes {
-        let colour = skin_colour(&r.skin, r.peer);
-        b.cube(vec3(r.x, 0.85, r.y), vec3(0.42, 1.7, 0.42), r.yaw, colour, 2.0);
-    }
-    b.draw_and_clear();
+    crate::net::runner_figure::draw_runners(g, a, mat, rt, remotes);
 }
 
 #[cfg(test)]
@@ -1012,6 +1004,53 @@ mod tests {
         assert_eq!(guest.room_mods(), ["neon_halls".to_string()]);
         assert!(events.contains(&NetEvent::GuestJoined("GUEST".into())));
         assert!(host.is_host() && !guest.is_host());
+    }
+
+    /// A session on a discarded relay address: only its in-memory state is used.
+    fn offline_session(host: bool, name: &str) -> NetSession {
+        let (role, link, token) = if host {
+            (Role::Host, RelayLink::host("ABCDE", "tok", "127.0.0.1", 9).unwrap(), "tok")
+        } else {
+            (Role::Guest, RelayLink::guest("ABCDE", "127.0.0.1", 9, "").unwrap(), "")
+        };
+        NetSession::new(
+            BackendConfig::loopback(18105),
+            "ABCDE".into(),
+            role,
+            CoopSession::new(link),
+            token.into(),
+            String::new(),
+            name.into(),
+            "DAWN".into(),
+        )
+    }
+
+    #[test]
+    fn the_roster_lists_the_guests_for_the_host_and_the_host_first_for_a_guest() {
+        let now = Instant::now();
+        let mut host = offline_session(true, "HOST");
+        host.guests.insert(42, Guest { name: "NIGHTWALK".into(), last_seen: now });
+        host.guests.insert(7, Guest { name: "QUIET".into(), last_seen: now });
+        host.remotes.insert(42, Remote { sample: sample(1, 0.0, 0.0), last_seen: now });
+        let roster = host.roster();
+        assert_eq!(roster.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["QUIET", "NIGHTWALK"]);
+        assert!(!roster[0].sending && roster[0].depth.is_none(), "a guest with no fresh sample reads NO SIGNAL");
+        assert!(roster[1].sending && roster[1].depth == Some(1), "a guest sending samples is ALIVE on its floor");
+        assert!(roster.iter().all(|e| e.ping.is_none() && !e.host), "no round trip is measured yet");
+        host.coop.close();
+
+        let mut guest = offline_session(false, "GUEST");
+        guest.host_name = "HOST".into();
+        guest.names.insert(9, "NEON".into());
+        let silent = guest.roster();
+        assert_eq!(silent.len(), 1, "a guest that is not sending is not listed");
+        assert!(silent[0].host && silent[0].name == "HOST" && !silent[0].sending, "the host is listed first, reading NO SIGNAL");
+        guest.remotes.insert(HOST_PEER_ID, Remote { sample: sample(1, 3.0, -2.0), last_seen: now });
+        guest.remotes.insert(9, Remote { sample: sample(1, 5.0, 5.0), last_seen: now });
+        let roster = guest.roster();
+        assert_eq!(roster.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["HOST", "NEON"]);
+        assert!(roster[0].host && roster[0].sending, "the host sends samples");
+        guest.coop.close();
     }
 
     #[test]

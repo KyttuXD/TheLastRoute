@@ -119,8 +119,8 @@ pub fn escape(pz: &mut Pause) -> Out {
     }
 }
 
-/// The PLAYERS rows for the other runners in the room: each one's name, whether it is the host, its floor and its
-/// figure colour. A runner that sends no samples shows NO SIGNAL; its ping is not measured on this client.
+/// The PLAYERS rows for the other runners in the room: each one's name, whether it is the host, its ping, its floor and
+/// its figure colour. A runner that sends no samples shows NO SIGNAL; a ping not measured yet shows --.
 pub fn remote_rows(entries: &[RosterEntry], infinite: bool) -> Vec<PlayerRow> {
     entries
         .iter()
@@ -128,7 +128,7 @@ pub fn remote_rows(entries: &[RosterEntry], infinite: bool) -> Vec<PlayerRow> {
             name: if e.name.is_empty() { "RUNNER".into() } else { e.name.clone() },
             host: e.host,
             you: false,
-            ping: "--".into(),
+            ping: e.ping.map_or("--".into(), |ms| format!("{ms} MS")),
             status: if e.sending { "ALIVE" } else { "NO SIGNAL" }.into(),
             floor: e.depth.map_or("--".into(), |d| floor_label(d, infinite)),
             colour: skin_colour(&e.skin, e.peer),
