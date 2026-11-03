@@ -25,19 +25,20 @@ jobs:
           mkdir -p dist
           cp target/release/last_route.exe dist/last_route-windows-x86_64.exe
           cp target/release/night_watch.exe dist/night_watch-windows-x86_64.exe
-          cp target/release/lr_server.exe dist/lr_server-windows-x86_64.exe
       - uses: actions/upload-artifact@v4
         continue-on-error: true
         with:
           name: last_route-windows
           retention-days: 3
-          path: dist/*.exe
+          path: |
+            dist/last_route-windows-x86_64.exe
+            dist/night_watch-windows-x86_64.exe
       - name: Publish to nightly
         if: github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: sh packaging/nightly.sh dist/*.exe
+        run: sh packaging/nightly.sh dist/last_route-windows-x86_64.exe dist/night_watch-windows-x86_64.exe
       - name: Publish to the VPS (automatic updates)
         if: github.ref == 'refs/heads/main'
         shell: bash

@@ -7,8 +7,6 @@ cd "$(dirname "$0")/../.."
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 cargo build --release --target aarch64-apple-darwin
 cargo build --release --target x86_64-apple-darwin
-cargo build --release --bin lr_server --features server --target aarch64-apple-darwin
-cargo build --release --bin lr_server --features server --target x86_64-apple-darwin
 
 APP="dist/KYTTU The Last Route.app"
 rm -rf "$APP"
@@ -17,10 +15,6 @@ lipo -create \
     target/aarch64-apple-darwin/release/last_route \
     target/x86_64-apple-darwin/release/last_route \
     -output "$APP/Contents/MacOS/last_route"
-lipo -create \
-    target/aarch64-apple-darwin/release/lr_server \
-    target/x86_64-apple-darwin/release/lr_server \
-    -output "$APP/Contents/MacOS/lr_server"
 cp packaging/macos/Info.plist "$APP/Contents/Info.plist"
 
 # the original's logo as the app icon

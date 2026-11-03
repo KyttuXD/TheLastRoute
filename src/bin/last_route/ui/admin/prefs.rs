@@ -2,7 +2,7 @@
 //! debug toggles the hub ADMIN panel edits and a run's admin menu applies at start and keeps in
 //! sync. Stored as `key=true|false` lines in the user folder's admin.cfg.
 
-pub const KEYS: [(&str, bool); 9] = [
+pub const KEYS: [(&str, bool); 8] = [
     ("no_target", false),
     ("god_mode", false),
     ("noclip", false),
@@ -10,7 +10,6 @@ pub const KEYS: [(&str, bool); 9] = [
     ("region_map", false),
     ("show_collision", false),
     ("hunter_reveal", false),
-    ("pixel_effect_enabled", true),
     ("perf_overlay", false),
 ];
 

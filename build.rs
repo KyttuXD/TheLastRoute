@@ -53,6 +53,10 @@ fn embed(name: &str, folder: &str, exts: &[&str], text: bool, code: &mut String)
 
 fn main() {
     println!("cargo:rerun-if-changed=assets");
+    // the CI run number is this build's number for the update check; a local build has 0 and never updates
+    println!("cargo:rerun-if-env-changed=GITHUB_RUN_NUMBER");
+    let build = std::env::var("GITHUB_RUN_NUMBER").ok().filter(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit())).unwrap_or_else(|| "0".into());
+    println!("cargo:rustc-env=LR_BUILD_NUMBER={build}");
     println!("cargo:rerun-if-changed=data");
     let mut code = String::new();
     embed("DATA_FILES", "data", &["json"], true, &mut code);

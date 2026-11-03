@@ -21,6 +21,7 @@ pub mod platform;
 pub mod profile;
 pub mod selftest;
 pub mod settings;
+pub mod updater;
 
 use crate::audio::{self, Sounds};
 use crate::config::*;

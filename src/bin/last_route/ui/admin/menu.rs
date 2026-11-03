@@ -118,13 +118,11 @@ const ACT_STORY: [(&str, &str); 2] = [
     ("STOP STORY / CUTSCENE", "story_stop"),
     ("RESET STORY STATE", "story_reset"),
 ];
-const ACT_VISUAL: [(&str, &str); 6] = [
+const ACT_VISUAL: [(&str, &str); 4] = [
     ("TELEPORT TO WAYPOINT", "waypoint_teleport"),
     ("CLEAR WAYPOINT", "waypoint_clear"),
     ("SPAWN RAVELLE TRAP HERE", "ravelle_trap"),
     ("LIGHT PROBE HERE", "light_probe"),
-    ("PIXEL EFFECT +", "pixel_plus"),
-    ("PIXEL EFFECT -", "pixel_minus"),
 ];
 const NPC_OPS: [(&str, &str); 17] = [
     ("TELEPORT TO ME", "teleport"),
@@ -526,7 +524,6 @@ impl Admin {
                     ("region_map", "REGION MAP (F8)"),
                     ("show_collision", "SHOW COLLISION"),
                     ("hunter_reveal", "HUNTER REVEAL"),
-                    ("pixel_effect", "PIXEL EFFECT"),
                     ("perf_overlay", "FPS / SPIKE OVERLAY"),
                 ] {
                     self.toggle_row(&mut ui, &mut col, &mut cmds, id, label);

@@ -118,8 +118,6 @@ pub struct Admin {
     region_map: bool,
     show_collision: bool,
     hunter_reveal: bool,
-    pixel_effect: bool,
-    pixel_percent: f32,
     perf_overlay: bool,
     view: View,
 
@@ -173,8 +171,6 @@ impl Admin {
             region_map: false,
             show_collision: false,
             hunter_reveal: false,
-            pixel_effect: prefs.get("pixel_effect_enabled"),
-            pixel_percent: 42.0,
             perf_overlay: prefs.get("perf_overlay"),
             view: View::Off,
             debug_run: false,
@@ -261,16 +257,6 @@ impl Admin {
         self.view
     }
 
-    /// The admin pixel-effect switch and strength (percent) for the renderer.
-    #[allow(dead_code)]
-    pub fn pixel_effect(&self) -> Option<f32> {
-        if self.pixel_effect {
-            Some(self.pixel_percent)
-        } else {
-            None
-        }
-    }
-
     #[allow(dead_code)]
     pub fn debug_run(&self) -> bool {
         self.debug_run
@@ -342,7 +328,6 @@ impl Admin {
         self.hunter_reveal = self.prefs.get("hunter_reveal");
         self.region_map = self.prefs.get("region_map");
         self.show_collision = self.prefs.get("show_collision");
-        self.pixel_effect = self.prefs.get("pixel_effect_enabled");
         self.perf_overlay = self.prefs.get("perf_overlay");
         self.run_speed = 1.0;
         self.game_speed = 1.0;

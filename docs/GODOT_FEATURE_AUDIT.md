@@ -737,7 +737,7 @@ Night Watch is a separate executable (`src/bin/night_watch/main.rs`) that is onl
 | Reduced motion option | missing | important | `game/autoload/settings.gd` |
 | Short death scenes option | missing | polish | `game/autoload/settings.gd` |
 | Teammate waypoint guidance modes | partial | polish | `game/autoload/settings.gd` |
-| Pixel effect strength | partial | polish | `game/autoload/settings.gd` |
+| Pixel effect strength | n/a | skip | `game/autoload/settings.gd` (option removed from the port) |
 | Send crash reports option | missing | polish | `game/autoload/settings.gd` |
 | VSync, FPS limit, graphics quality and focus pause | partial | polish | `game/autoload/settings.gd` |
 | Automatic run save and CONTINUE | partial | core | `game/autoload/run_saves.gd` |

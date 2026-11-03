@@ -51,11 +51,13 @@ pub struct Request {
     pub headers: Vec<(String, String)>,
     pub body: Option<Vec<u8>>,
     pub timeout: Duration,
+    /// The biggest response this request accepts (the default is MAX_RESPONSE_BYTES; downloads raise it).
+    pub limit: usize,
 }
 
 impl Request {
     pub fn new(method: Method, url: impl Into<String>) -> Request {
-        Request { method, url: url.into(), headers: Vec::new(), body: None, timeout: DEFAULT_TIMEOUT }
+        Request { method, url: url.into(), headers: Vec::new(), body: None, timeout: DEFAULT_TIMEOUT, limit: MAX_RESPONSE_BYTES }
     }
 
     pub fn header(mut self, name: &str, value: &str) -> Request {
@@ -70,6 +72,11 @@ impl Request {
 
     pub fn timeout(mut self, timeout: Duration) -> Request {
         self.timeout = timeout;
+        self
+    }
+
+    pub fn limit(mut self, bytes: usize) -> Request {
+        self.limit = bytes;
         self
     }
 
@@ -272,7 +279,7 @@ pub fn send(req: &Request) -> Result<Response, NetError> {
             return Ok(false);
         }
         rest.extend_from_slice(&chunk[..n]);
-        if rest.len() > MAX_RESPONSE_BYTES + 64 * 1024 {
+        if rest.len() > req.limit + 64 * 1024 {
             return Err(NetError::Protocol("RESPONSE TOO LARGE".into()));
         }
         Ok(true)
@@ -299,7 +306,7 @@ pub fn send(req: &Request) -> Result<Response, NetError> {
             if size == 0 {
                 break;
             }
-            if out.len() + size > MAX_RESPONSE_BYTES {
+            if out.len() + size > req.limit {
                 return Err(NetError::Protocol("RESPONSE TOO LARGE".into()));
             }
             while rest.len() < pos + size + 2 {
@@ -313,7 +320,7 @@ pub fn send(req: &Request) -> Result<Response, NetError> {
         out
     } else if let Some(len) = header("content-length") {
         let len: usize = len.parse().map_err(|_| NetError::Protocol("BAD CONTENT-LENGTH".into()))?;
-        if len > MAX_RESPONSE_BYTES {
+        if len > req.limit {
             return Err(NetError::Protocol("RESPONSE TOO LARGE".into()));
         }
         while rest.len() < len {
@@ -325,7 +332,7 @@ pub fn send(req: &Request) -> Result<Response, NetError> {
         rest
     } else {
         while read_more(&mut rest)? {}
-        if rest.len() > MAX_RESPONSE_BYTES {
+        if rest.len() > req.limit {
             return Err(NetError::Protocol("RESPONSE TOO LARGE".into()));
         }
         rest

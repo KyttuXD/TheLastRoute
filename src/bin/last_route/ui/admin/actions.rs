@@ -57,7 +57,6 @@ impl Admin {
                 | "region_map"
                 | "show_collision"
                 | "hunter_reveal"
-                | "pixel_effect"
                 | "perf_overlay"
                 | "fullbright"
                 | "wireframe"
@@ -76,7 +75,6 @@ impl Admin {
             "region_map" => self.region_map,
             "show_collision" => self.show_collision,
             "hunter_reveal" => self.hunter_reveal,
-            "pixel_effect" => self.pixel_effect,
             "perf_overlay" => self.perf_overlay,
             "fullbright" => self.view == View::Fullbright,
             "wireframe" => self.view == View::Wireframe,
@@ -131,10 +129,6 @@ impl Admin {
             "hunter_reveal" => {
                 self.hunter_reveal = !self.hunter_reveal;
                 self.prefs.set("hunter_reveal", self.hunter_reveal);
-            }
-            "pixel_effect" => {
-                self.pixel_effect = !self.pixel_effect;
-                self.prefs.set("pixel_effect_enabled", self.pixel_effect);
             }
             "perf_overlay" => {
                 self.perf_overlay = !self.perf_overlay;
@@ -332,8 +326,7 @@ impl Admin {
                     "LIGHT // HERE {:.2} (VISIBLE AT 0.36)",
                     g.meters.exposure
                 )),
-                4 => self.pixel_percent = (self.pixel_percent + 10.0).clamp(0.0, 100.0),
-                _ => self.pixel_percent = (self.pixel_percent - 10.0).clamp(0.0, 100.0),
+                _ => {}
             },
             _ => {}
         }

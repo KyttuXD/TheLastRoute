@@ -62,10 +62,11 @@ if [ ! -x "$NEW/Contents/MacOS/last_route" ]; then
 fi
 xattr -cr "$NEW" 2>/dev/null
 
-# keep the previous app as a backup, then move the new one into place
+# move the old app aside, put the new one in its place, then delete the old one (no backup is kept)
 rm -rf "$APP.previous"
 [ -d "$APP" ] && mv "$APP" "$APP.previous"
 if mv "$NEW" "$APP"; then
+    rm -rf "$APP.previous"
     echo "$BUILD" > "$STATE_DIR/nightly.build"
     log "updated the app to build $BUILD ($FILE)"
 else

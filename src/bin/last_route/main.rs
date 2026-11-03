@@ -77,5 +77,8 @@ async fn amain() {
         app::selftest::run(&path).await;
         return;
     }
+    if arg("--screenshot").is_none() {
+        app::updater::check_on_start();
+    }
     app::run(arg("--screenshot")).await;
 }

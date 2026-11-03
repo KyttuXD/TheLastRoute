@@ -742,7 +742,6 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [ ] Port the centre reticle, shown only while the view is aimed (hidden with the cursor free, at the desk, under the tablet or in the pause menu) (effort S; game/hud/crosshair.gd)
 - [ ] Port world-space teammate markers: name and distance at each teammate, edge markers off screen, floor offset, dimming when stale, DOWN and CAUGHT labels (effort M; game/hud/teammate_waypoints.gd)
 - [ ] Port quick-chat map pings: a room-chat ping shows on the minimap and full map on the floor where it was posted (effort S; game/hud/hud.gd)
-- [ ] Port the route-only pixel post-process: low-resolution sampling blended back with colour quantisation, strength-scaled (effort M; game/ui_common/pixel_signal_effect.gd)
 - [ ] Port the QUIT TO DESKTOP confirmation: YES on the left, NO focused by default, Esc or click outside closes; YES saves and closes a hosted room (effort S; game/ui_common/quit_confirm.gd)
 - [ ] Port the top-centre update badge: downloading percentage, then RESTART NOW or LATER, with the status-bar text during a run (effort S; game/menus/update_badge.gd)
 - [ ] Port the games hub ADMIN panel: build info, server health, updates per platform, public route status, notices, debug toggles, skin removal (no tokens shown) (effort M; game/admin/hub_admin_panel.gd)
