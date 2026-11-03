@@ -13,6 +13,7 @@ pub use last_route_core::{audio, config, content, game, hunters, render, shared,
 
 mod app;
 mod headless;
+mod net;
 mod ui;
 
 use macroquad::prelude::*;
@@ -23,7 +24,7 @@ fn window_conf() -> macroquad::conf::Conf {
     let (w, h) = app::platform::window_size(fixed);
     macroquad::conf::Conf {
         miniquad_conf: Conf {
-            window_title: "Kyttu's Lab".to_owned(),
+            window_title: "KYTTU: The Last Route".to_owned(),
             window_width: w,
             window_height: h,
             high_dpi: false,

@@ -2,6 +2,7 @@
 //! the settings and pause overlays, the death moment and run card, and the admin tools.
 
 pub mod admin;
+pub mod boot;
 pub mod hud;
 pub mod map;
 pub mod menus;

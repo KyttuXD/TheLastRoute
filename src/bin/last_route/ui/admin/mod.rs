@@ -368,6 +368,8 @@ impl Admin {
     pub fn before_update(&mut self, g: &mut Game) {
         self.track_run(g);
         self.publish();
+        // the maps read HUNTER REVEAL from the game (Game::map_hunters); the admin keeps it current here
+        g.admin.hunter_reveal = self.enabled && self.hunter_reveal;
         self.pre = Pre {
             pos: g.p.pos,
             report: g.report.is_some(),

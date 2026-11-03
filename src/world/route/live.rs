@@ -41,6 +41,7 @@ use std::collections::HashMap;
 use super::hunter_spawns::HunterSpawn;
 use super::layout::{self, ChunkLayout, Coord, Rect, V2};
 use crate::hunters::navigation;
+use crate::render::door;
 use crate::shared::safe_room::SafeRoom;
 use crate::world::catalog::Catalog;
 use crate::world::facility::{Cell, Facility, Hiding, Options, Pickup, Prop, Room, Stair, STAIR_FLIGHT};
@@ -198,6 +199,10 @@ fn prop_of_layout(p: &crate::world::route::props::Prop, rooms: &[layout::Room]) 
         mount_y: (p.mount_y != 0.0).then_some(p.mount_y),
         solid: p.solid && !navigation::walk_over(size),
         half: navigation::half_extents(size, rotation),
+        door: p.room_door.then(|| {
+            let cells: Vec<(i32, i32)> = p.doorway_cells.iter().map(|c| (c.x, c.y)).collect();
+            door::draw_for((p.cell.x, p.cell.y), &cells)
+        }),
     }
 }
 

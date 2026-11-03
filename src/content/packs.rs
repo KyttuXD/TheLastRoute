@@ -3,7 +3,7 @@
 //! as `hunters/*.json` (`lr.hunter/1`) and `loot/*.json` (`lr.loot/1`). A pack adds new ids;
 //! it may replace a base id only when that id is listed in `overrides`. Packs load in folder
 //! name order from `mods/` beside the executable, `mods/` in the working folder, and the
-//! per-user folder (%APPDATA%/LastRoute/mods). Pack hunters may bring a `.bbmodel` model with
+//! per-user folder (%APPDATA%/KYTTU/TheLastRoute/mods). Pack hunters may bring a `.bbmodel` model with
 //! its atlas and a portrait PNG; a model in another format falls back to the base body.
 
 use super::{hunters, Content};

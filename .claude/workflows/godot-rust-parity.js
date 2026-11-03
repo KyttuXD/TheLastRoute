@@ -1,11 +1,11 @@
 export const meta = {
   name: 'godot-rust-parity',
-  description: 'Compare the Rust port against the Godot original domain by domain, adversarially verify every mismatch, and write docs/PARITY.md',
+  description: 'Compare the Rust port against the Godot original domain by domain, adversarially verify every mismatch, and write docs/GODOT_RUST_PARITY.md',
   whenToUse: 'Run after gameplay, feel or data changes to see where the Rust port still differs from the Godot original (read-only)',
   phases: [
     { title: 'Inventory', detail: 'five domain agents list Godot and Rust values side by side' },
     { title: 'Verify', detail: 'one skeptic per non-matching item re-reads both sides' },
-    { title: 'Report', detail: 'write docs/PARITY.md and return the confirmed list' },
+    { title: 'Report', detail: 'write docs/GODOT_RUST_PARITY.md and return the confirmed list' },
   ],
 }
 
@@ -139,7 +139,7 @@ const unverifiedCount = items.length - checked.length
 log(`${confirmed.length} confirmed mismatches, ${checked.length} verified, ${unverifiedCount} unverified`)
 
 phase('Report')
-const report = await agent(`You are writing the parity report. Write it to ${RUST}\\docs\\PARITY.md (create or overwrite that one file, nothing else). Use this structure:
+const report = await agent(`You are writing the parity report. Write it to ${RUST}\\docs\\GODOT_RUST_PARITY.md (create or overwrite that one file, nothing else). Use this structure:
 - A title and the date of the run (today's date from your environment).
 - A one-paragraph summary: how many values matched, how many confirmed mismatches, what was not verified.
 - A table of CONFIRMED mismatches grouped by domain: name, Godot value (file:line), Rust value (file:line), status, explanation.

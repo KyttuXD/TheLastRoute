@@ -96,30 +96,32 @@ pub struct Pal {
     pub edge_width: f32,
 }
 
+/// The Last Route scheme, taken from the web game (games/last-route/styles.css :root tokens and
+/// the rules cited per field in the spec). Values are checked by `last_route_palette_matches_web`.
 pub const LAST_ROUTE: Pal = Pal {
-    backdrop: hex(0x0d0810),
-    panel: hex(0x170e19),
-    panel_edge: hex(0x2e1f33),
-    inset: hex(0x1e1322),
-    scrim: rgba(0.05, 0.03, 0.07, 0.82),
-    ink: hex(0xf2ede1),
-    body: hex(0xbcb3a8),
-    muted: hex(0x8c817e),
-    dim: hex(0x4c4449),
-    disabled: hex(0x766e72),
-    amber: hex(0xc9a9d8),
-    amber_fill: hex(0xb48ec0),
-    on_amber: hex(0x1a0f14),
-    accent: hex(0xa67fb0),
-    accent_edge: hex(0xc4a2d0),
-    accent_deep: hex(0x5a3f63),
-    teal: hex(0x37b9b0),
-    teal_bright: hex(0xbff5ec),
-    teal_deep: hex(0x1f6e6a),
-    alert: hex(0xe2515d),
-    stable: hex(0x6fbf8a),
+    backdrop: hex(0x020103),
+    panel: hexa(0x0D080FE8),
+    panel_edge: hex(0x4c3849),
+    inset: hex(0x0c080d),
+    scrim: hexa(0x040205E0),
+    ink: hex(0xf0e7dc),
+    body: hex(0xbbb0ad),
+    muted: hex(0xa49996),
+    dim: hex(0x6d5f69),
+    disabled: hex(0x70666c),
+    amber: hex(0xf2bb62),
+    amber_fill: hex(0xf2bb62),
+    on_amber: hex(0x190f13),
+    accent: hex(0xb62d3e),
+    accent_edge: hex(0xfa6c72),
+    accent_deep: hex(0x6f1927),
+    teal: hex(0x86d5cf),
+    teal_bright: hex(0x9be4dc),
+    teal_deep: hex(0x2f6d77),
+    alert: hex(0xe64451),
+    stable: hex(0x75c492),
     field_edge: hex(0x4b3948),
-    keycap_edge: hex(0x6a5264),
+    keycap_edge: hex(0x67505f),
     corner: 0.0,
     edge_width: 1.0,
 };
@@ -173,6 +175,26 @@ pub fn is_last_route() -> bool {
     SCHEME.load(Ordering::Relaxed) == 0
 }
 
+/// `last_route` while the Last Route scheme is active, otherwise `city` (keeps the City's values).
+pub fn lr(last_route: Color, city: Color) -> Color {
+    if is_last_route() {
+        last_route
+    } else {
+        city
+    }
+}
+
+/// The label of a primary button: the web's light cream #fff4eb on Last Route (it reads on the
+/// red slab), the City's dark on_amber ink.
+pub fn primary_label_colour() -> Color {
+    lr(hex(0xfff4eb), pal().on_amber)
+}
+
+/// The focus outline and caret: the web's amber #f2bb62 on Last Route, the City's teal.
+pub fn focus_edge_colour() -> Color {
+    lr(hex(0xf2bb62), pal().teal)
+}
+
 // The project theme (ref_theme.tres), fixed purple whatever the scheme.
 pub const REF_PANEL: Color = hex(0x170e19);
 pub const REF_PANEL_EDGE: Color = hex(0x2e1f33);
@@ -190,13 +212,74 @@ pub const METER_WARN: Color = rgba(0.949, 0.733, 0.384, 1.0);
 pub const METER_SAFE: Color = rgba(0.455, 0.722, 0.553, 1.0);
 pub const STAMINA: Color = rgba(0.941, 0.761, 0.392, 1.0);
 
+/// The safe-zone green: web #75c492 on Last Route, METER_SAFE on the City.
+pub fn meter_safe() -> Color {
+    lr(hex(0x75c492), METER_SAFE)
+}
+
+/// The stamina bar's full colour: web #8fd0e0 on Last Route, STAMINA on the City.
+pub fn stamina_col() -> Color {
+    lr(hex(0x8fd0e0), STAMINA)
+}
+
 // -- the design canvas ----------------------------------------------------------------------
 
-/// Window pixels per design unit (the 480x270 canvas, canvas_items stretch).
+/// The menus' scale against the HUD's canvas: every menu draws at this fraction of the window
+/// pixels per unit, so menus match the web's scale (the web's menus at 1280x720 are about 0.70
+/// of the old Rust menus). The HUD and the boot loader never enter a menu scope and keep 1.0.
+pub const MENU_SCALE: f32 = 0.70;
+
+/// The smallest text the menus draw, in design units: the admin corner caption and the title
+/// kicker are 5 units. At 1280x720 it must stay at or above 9 window pixels (the web's smallest
+/// body text). Pinned by the tests below.
+#[allow(dead_code)]
+pub const MENU_MIN_TEXT_U: f32 = 5.0;
+
+/// Menu draws in progress. Each menu entry point holds a `MenuScope`; nested menus stack.
+static MENU_DEPTH: AtomicUsize = AtomicUsize::new(0);
+
+/// Holds the menu scale for the length of one menu draw (dropped when the draw returns).
+pub struct MenuScope;
+
+impl MenuScope {
+    pub fn enter() -> Self {
+        MENU_DEPTH.fetch_add(1, Ordering::Relaxed);
+        MenuScope
+    }
+}
+
+impl Drop for MenuScope {
+    fn drop(&mut self) {
+        MENU_DEPTH.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Whether a menu is being drawn, so the menu scale applies.
+pub fn in_menu() -> bool {
+    MENU_DEPTH.load(Ordering::Relaxed) > 0
+}
+
+/// Window pixels per design unit for a `w` x `h` window; `menu` applies the menu scale.
+pub fn unit_for(w: f32, h: f32, menu: bool) -> f32 {
+    let base = (w / 480.0).min(h / 270.0).max(0.05);
+    if menu {
+        base * MENU_SCALE
+    } else {
+        base
+    }
+}
+
+/// Window pixels per design unit (the 480x270 canvas, canvas_items stretch), scaled inside menus.
 pub fn unit() -> f32 {
-    (screen_width() / 480.0)
-        .min(screen_height() / 270.0)
-        .max(0.05)
+    unit_for(screen_width(), screen_height(), in_menu())
+}
+
+/// A menu size that renders at `ratio` times its pixel size before the menu scale (`old_u` is
+/// that old size in units). The web's element ratios (web px / old Rust px at 1280x720) go here:
+/// the title 1.20, primary labels 1.00, modal headings 0.88, the lobby title 1.17, settings labels
+/// 0.55. Plain menu sizes stay as they are and take MENU_SCALE alone.
+pub fn menu_size(old_u: f32, ratio: f32) -> f32 {
+    old_u * ratio / MENU_SCALE
 }
 
 /// The canvas size in design units (expand aspect: the long axis grows past 480 or 270).
@@ -671,7 +754,8 @@ pub fn button(a: &Assets, r: Rect, text: &str, size: f32, kind: Kind, st: BtnSta
     };
     let (mut face, mut edge) = (base_fill, base_edge);
     let mut ink = match kind {
-        Kind::Primary | Kind::Selected => p.on_amber,
+        Kind::Primary => primary_label_colour(),
+        Kind::Selected => p.on_amber,
         Kind::Secondary => p.body,
     };
     if st.disabled {
@@ -693,9 +777,9 @@ pub fn button(a: &Assets, r: Rect, text: &str, size: f32, kind: Kind, st: BtnSta
         }
     }
     if st.focused && !st.disabled && !down {
-        // the focus box is drawn over the face: the base fill with a teal edge
+        // the focus box is drawn over the face: the base fill with the focus edge (amber on Last Route)
         face = base_fill;
-        edge = p.teal;
+        edge = focus_edge_colour();
         if kind == Kind::Secondary {
             ink = p.ink;
         }
@@ -820,7 +904,7 @@ pub fn line_edit(
     sbox(
         r,
         p.inset,
-        if focused { p.teal } else { p.field_edge },
+        if focused { focus_edge_colour() } else { p.field_edge },
         1.0,
         p.corner,
     );
@@ -838,7 +922,7 @@ pub fn line_edit(
     if focused && (t * 1.6).fract() < 0.6 {
         let cx = x + tw(a, F::Body, &shown, size);
         let h = F::Body.height() * size;
-        fill(Rect::new(cx, r.y + (r.h - h) * 0.5, 1.0, h), p.teal);
+        fill(Rect::new(cx, r.y + (r.h - h) * 0.5, 1.0, h), focus_edge_colour());
     }
 }
 
@@ -1022,6 +1106,8 @@ pub fn modal(
 ) -> Modal {
     let p = pal();
     scrim();
+    // the web's modal headings are 0.88 of the old size (see menu_size)
+    let heading_size = menu_size(heading_size, 0.88);
     let kick = track(kicker);
     let esc = esc_close_size(a);
     let top_h = esc.y.max(lh(F::Body, 6.0));
@@ -1053,5 +1139,84 @@ pub fn modal(
         inner,
         y: hy + head_h + 5.0,
         close,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A colour's 8-bit channels, rounded the way the web renders them.
+    fn rgba8(c: Color) -> (u8, u8, u8, u8) {
+        let q = |v: f32| (v * 255.0).round() as u8;
+        (q(c.r), q(c.g), q(c.b), q(c.a))
+    }
+
+    /// Guards the Last Route palette against drift from the web game's tokens
+    /// (games/last-route/styles.css :root): ink, the red alert, the amber accent and the panel.
+    #[test]
+    fn last_route_palette_matches_web() {
+        assert_eq!(rgba8(LAST_ROUTE.ink), (0xf0, 0xe7, 0xdc, 0xff));
+        assert_eq!(rgba8(LAST_ROUTE.alert), (0xe6, 0x44, 0x51, 0xff));
+        assert_eq!(rgba8(LAST_ROUTE.amber), (0xf2, 0xbb, 0x62, 0xff));
+        assert_eq!(rgba8(LAST_ROUTE.panel), (0x0d, 0x08, 0x0f, 0xe8));
+    }
+
+    /// Serialises the tests that switch the global colour scheme.
+    static SCHEME_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Last Route primary labels are the web's light cream and its focus outline is amber; the
+    /// City keeps its dark primary label and teal focus.
+    #[test]
+    fn last_route_primary_label_is_light_and_focus_is_amber() {
+        let _guard = SCHEME_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        set_scheme("last_route");
+        assert_eq!(rgba8(primary_label_colour()), (0xff, 0xf4, 0xeb, 0xff));
+        assert_eq!(rgba8(focus_edge_colour()), (0xf2, 0xbb, 0x62, 0xff));
+        set_scheme("city");
+        assert_eq!(rgba8(primary_label_colour()), rgba8(CITY.on_amber));
+        assert_eq!(rgba8(focus_edge_colour()), rgba8(CITY.teal));
+        set_scheme("last_route");
+    }
+
+    /// The menu scale at 1280x720: the menu unit is MENU_SCALE of the old 2.667 window pixels,
+    /// the web's element ratios come out exactly, and the web's 170px slider is 64 old units.
+    #[test]
+    fn menu_scale_is_pinned_at_1280x720() {
+        let old = unit_for(1280.0, 720.0, false);
+        let menu = unit_for(1280.0, 720.0, true);
+        assert!((old - 1280.0 / 480.0).abs() < 1e-4);
+        assert!((menu / old - MENU_SCALE).abs() < 1e-6);
+        assert!((menu - 1.866_666_7).abs() < 1e-4);
+        assert!((menu_size(28.0, 1.20) * menu - 1.20 * 28.0 * old).abs() < 0.01);
+        assert!((menu_size(8.0, 0.55) * menu - 0.55 * 8.0 * old).abs() < 0.01);
+        assert!((menu_size(64.0, 1.0) * menu - 64.0 * old).abs() < 0.01);
+        // 64 old units is 170.7px: the web's 170px track, rounded to the mapping's 64 units
+        assert!((menu_size(64.0, 1.0) * menu - 170.0).abs() < 1.0);
+    }
+
+    /// Menu text stays at or above 9 window pixels at 1280x720, including the per-element sizes.
+    #[test]
+    fn menu_text_stays_readable_at_1280x720() {
+        let menu = unit_for(1280.0, 720.0, true);
+        assert!(MENU_MIN_TEXT_U * menu >= 9.0);
+        assert!(menu_size(8.0, 0.55) * menu >= 9.0);
+        assert!(menu_size(6.0, 1.0) * menu >= 9.0);
+        assert!(menu_size(7.0, 0.88) * menu >= 9.0);
+    }
+
+    /// Menu scopes stack and the HUD's unit is back to the old scale once every scope is gone.
+    #[test]
+    fn menu_scope_nests_and_releases() {
+        assert!(!in_menu());
+        {
+            let _outer = MenuScope::enter();
+            {
+                let _inner = MenuScope::enter();
+                assert!(in_menu());
+            }
+            assert!(in_menu());
+        }
+        assert!(!in_menu());
     }
 }

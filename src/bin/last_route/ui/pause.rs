@@ -223,6 +223,9 @@ pub fn draw_pause(
                         }
                         1 => {
                             pz.sub = Sub::Dossier;
+                            // every opening starts on the Route Dossier tab, at its first hunter
+                            ui.dossier_tab = 0;
+                            ui.dossier_sel = 0;
                             ui.dossier_scroll = 0.0;
                         }
                         2 => {
@@ -256,7 +259,7 @@ pub fn draw_pause(
                 ping: "0 MS".into(),
                 status: "ALIVE".into(),
                 floor,
-                colour: menus::COOP_BLUE,
+                colour: menus::coop_blue(),
             };
             menus::player_list(a, view_r, &[me]);
         }

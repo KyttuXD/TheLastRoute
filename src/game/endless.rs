@@ -848,6 +848,10 @@ impl Game {
             h.search_target = h.search_target.map(|k| (k.0 - sx, k.1 - sy));
             h.clear_path();
         }
+        // NPC teammates share the window frame, so they shift with it (game/npc.rs)
+        for n in self.npcs.iter_mut() {
+            n.shift((-sx, -sy));
+        }
         self.load_window(content, catalog);
         if self.inf.as_ref().is_some_and(|i| i.level == 0) {
             // level 0: residency decides who is in the window; a hunter that leaves it is stored, not respawned

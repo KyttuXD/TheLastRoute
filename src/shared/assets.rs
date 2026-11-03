@@ -11,11 +11,16 @@ use crate::world::TEXTURE_SETS;
 use macroquad::prelude::*;
 use std::collections::HashMap;
 
+/// The hunter model the NPC teammates wear (the base body; there is no mannequin asset in this tree).
+const NPC_BODY_HUNTER: &str = "dovelle";
+
 pub struct Assets {
     pub walls: HashMap<&'static str, Texture2D>,
     pub floors: HashMap<&'static str, Texture2D>,
     pub white: Texture2D,
     pub hunters: HashMap<String, Model>,
+    /// The NPC teammates' body (game/npc.rs): the base hunter model (dovelle) parsed at the runner's height.
+    pub npc_body: Option<Model>,
     pub portraits: HashMap<String, Texture2D>,
     pub props: HashMap<String, Model>,
     /// The original's Blender exports by asset path: props/<set>/<name>.glb and interactables/<name>.glb
@@ -84,6 +89,7 @@ impl Assets {
             }
         }
         let mut hunters = HashMap::new();
+        let mut npc_body = None;
         let mut portraits = HashMap::new();
         for h in &content.hunters {
             let pack_dir = content
@@ -104,6 +110,11 @@ impl Assets {
                         let dir = model_path.rsplit_once('/').map(|x| x.0).unwrap_or("");
                         read(&format!("{dir}/{name}"))
                     };
+                    if h.id == NPC_BODY_HUNTER {
+                        // the NPC teammates' body: the same model at the runner's height (game/npc.rs)
+                        npc_body =
+                            Model::parse(&text, atlas.clone(), &find, Some(crate::config::PLAYER_HEIGHT));
+                    }
                     if let Some(m) =
                         Model::parse(&text, atlas, &find, Some(crate::config::HUNTER_HEIGHT))
                     {
@@ -180,6 +191,7 @@ impl Assets {
             floors,
             white: white_texture(),
             hunters,
+            npc_body,
             portraits,
             props,
             glb,

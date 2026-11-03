@@ -5,6 +5,7 @@
 //! normals. Lights: the switchable room lights and the lamp props' own lights.
 
 use super::builder::Builder;
+use super::door;
 use super::prop_scale;
 use super::shader::Lamp;
 use super::surfaces;
@@ -269,8 +270,15 @@ pub fn build_world(
     let mut authored: HashMap<usize, Builder> = HashMap::new();
     for p in &f.props {
         let (x, z) = p.cell.center();
+        // a room door is centred on its doorway (a double door sits across two cells)
+        let (x, z) = match p.door {
+            Some(d) => (x + d.offset[0], z + d.offset[1]),
+            None => (x, z),
+        };
         let mut y = visual_y(&p.ptype, h, p.mount_y.unwrap_or(0.0) as f32);
         let yaw = p.rotation as f32 * std::f32::consts::FRAC_PI_2;
+        // the model's drawn turn: a room door keeps the gameplay yaw, every other prop gets the half turn
+        let visual_yaw = prop_visual_yaw(yaw, p.door.is_some());
         let original = content
             .props
             .get(&p.ptype)
@@ -292,9 +300,17 @@ pub fn build_world(
             if p.mount_y.is_some() {
                 y -= model.min.y * scale;
             }
-            let xf = Mat4::from_translation(vec3(x, y, z))
-                * Mat4::from_rotation_y(yaw)
-                * Mat4::from_scale(Vec3::splat(scale));
+            // a room door is raised to the hunter's opening and widened to its doorway (door.rs, Godot's
+            // RouteInteractable3D raise); every other prop is the uniform draw scale
+            let xf = match p.door.zip(model.door) {
+                Some((d, dims)) => {
+                    let (sx, sy) = door::door_scale(dims, &p.ptype, d.span);
+                    door::door_transform(vec3(x, y, z), yaw, sx, sy, scale)
+                }
+                None => Mat4::from_translation(vec3(x, y, z))
+                    * Mat4::from_rotation_y(visual_yaw)
+                    * Mat4::from_scale(Vec3::splat(scale)),
+            };
             model.add_to(&mut authored, xf, WHITE);
             continue;
         }
@@ -310,7 +326,7 @@ pub fn build_world(
             &mut verts,
             &mut idx,
             vec3(x, y, z),
-            yaw,
+            visual_yaw,
             Vec3::splat(model.scale * scale),
             0.0,
             0.0,
@@ -346,6 +362,18 @@ pub fn build_world(
     WorldMeshes {
         meshes,
         lamps: lamps(f, lights_on, content),
+    }
+}
+
+/// The radians a room prop's model is turned by when it is drawn, from its gameplay yaw. Godot turns every
+/// authored prop a half turn on top of its gameplay yaw (PropModelCatalog.authored_visual_yaw, applied in
+/// streamed_facility_view_3d.gd `_spawn_authored_prop`): the model's front is local +Z and gameplay forward is -Z.
+/// Room doors are not turned; RouteInteractable3D carries the raw yaw (door.rs `door_transform`).
+pub fn prop_visual_yaw(yaw: f32, door: bool) -> f32 {
+    if door {
+        yaw
+    } else {
+        yaw + std::f32::consts::PI
     }
 }
 
@@ -472,5 +500,59 @@ fn archways(f: &Facility, b: &mut Builder) {
                 b.cube(at(mid, 2.7 - 0.02), size(width, 0.04), 0.0, trim, 0.0);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f32::consts::{FRAC_PI_2, PI};
+
+    /// Where a prop model's front (local +Z, the seat front of the chair GLBs) lands in (x, z) once drawn.
+    fn drawn_front(gameplay_yaw: f32) -> (f32, f32) {
+        let turn = Mat4::from_rotation_y(prop_visual_yaw(gameplay_yaw, false));
+        let v = turn.transform_vector3(vec3(0.0, 0.0, 1.0));
+        (v.x, v.z)
+    }
+
+    /// Gameplay forward in (x, z): (-sin yaw, -cos yaw). Golden check: yaw 0 gives open_direction (0, -1).
+    fn forward(gameplay_yaw: f32) -> (f32, f32) {
+        (-gameplay_yaw.sin(), -gameplay_yaw.cos())
+    }
+
+    fn close(a: (f32, f32), b: (f32, f32)) -> bool {
+        (a.0 - b.0).abs() < 1e-5 && (a.1 - b.1).abs() < 1e-5
+    }
+
+    #[test]
+    fn wooden_chair_at_golden_yaw_zero_faces_its_open_direction() {
+        // golden: woodenChairCushion at cell (8,6), rotation 0 (yaw 0), open_direction (0,-1)
+        let rotation: i32 = 0;
+        let yaw = rotation as f32 * FRAC_PI_2;
+        assert!(close(drawn_front(yaw), (0.0, -1.0)));
+        assert!(close(drawn_front(yaw), forward(yaw)));
+    }
+
+    #[test]
+    fn office_chair_at_golden_yaw_minus_pi_faces_its_open_direction() {
+        // golden: officeChair, yaw -PI, rotation round(-PI / (PI/2)) rem_euclid 4 = 2, open_direction (0,1)
+        let rotation = ((-PI / FRAC_PI_2).round() as i32).rem_euclid(4);
+        assert_eq!(rotation, 2);
+        let yaw = rotation as f32 * FRAC_PI_2;
+        assert!(close(drawn_front(yaw), (0.0, 1.0)));
+    }
+
+    #[test]
+    fn every_quarter_turn_draws_the_front_on_gameplay_forward() {
+        for rotation in 0..4 {
+            let yaw = rotation as f32 * FRAC_PI_2;
+            assert!(close(drawn_front(yaw), forward(yaw)), "rotation {rotation}");
+        }
+    }
+
+    #[test]
+    fn room_door_keeps_the_gameplay_yaw() {
+        assert_eq!(prop_visual_yaw(FRAC_PI_2, true), FRAC_PI_2);
+        assert_eq!(prop_visual_yaw(FRAC_PI_2, false), FRAC_PI_2 + PI);
     }
 }

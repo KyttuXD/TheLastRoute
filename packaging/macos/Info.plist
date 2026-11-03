@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Kyttu's Lab</string>
+    <string>KYTTU: The Last Route</string>
     <key>CFBundleDisplayName</key>
-    <string>Kyttu's Lab</string>
+    <string>KYTTU: The Last Route</string>
     <key>CFBundleIdentifier</key>
     <string>lab.kyttu.lastroute.port</string>
     <key>CFBundleVersion</key>

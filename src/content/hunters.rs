@@ -19,12 +19,21 @@ pub struct HunterDef {
     pub taser_immune: bool,
     pub melee_immune: bool,
     pub category: String,
-    /// The pack that added or last overrode this hunter ("" for the base game).
+    /// The source: the pack that added or last overrode this hunter, or "" for the embedded
+    /// base game.
     pub pack: String,
     /// Model and atlas paths inside the pack (or assets/hunters/ for the base game).
     pub model: Option<String>,
     pub atlas: Option<String>,
     pub portrait: Option<String>,
+}
+
+impl HunterDef {
+    /// True when a mod pack added or replaced this hunter (the dossier's Custom Hunters tab).
+    /// A pack that replaces a built-in id counts as a pack hunter.
+    pub fn is_pack(&self) -> bool {
+        !self.pack.is_empty()
+    }
 }
 
 /// IMPLEMENTED_IDS: the hunters the ordinary per-floor draw picks from.
@@ -138,4 +147,51 @@ pub fn parse(v: &Value, base: Option<&HunterDef>, pack: &str) -> Result<HunterDe
         }
     }
     Ok(def)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn doc(id: &str, name: &str) -> Value {
+        json!({ "schema": "lr.hunter/1", "id": id, "name": name, "speed": 0.9, "chase": 3.0, "sight": 7.0 })
+    }
+
+    #[test]
+    fn base_game_hunter_is_not_a_pack_hunter() {
+        let h = parse(&doc("aki", "Aki"), None, "").unwrap();
+        assert_eq!(h.pack, "");
+        assert!(!h.is_pack());
+    }
+
+    #[test]
+    fn new_pack_hunter_is_tagged_with_its_pack() {
+        let h = parse(&doc("mod_new", "New"), None, "dossier_test").unwrap();
+        assert_eq!(h.pack, "dossier_test");
+        assert!(h.is_pack());
+    }
+
+    #[test]
+    fn pack_override_of_a_built_in_id_counts_as_a_pack_hunter() {
+        let base = parse(&doc("aki", "Aki"), None, "").unwrap();
+        // a partial override: the name and speed come from the pack, the rest from the base
+        let partial = json!({ "schema": "lr.hunter/1", "id": "aki", "speed": 1.1 });
+        let h = parse(&partial, Some(&base), "dossier_test").unwrap();
+        assert!(h.is_pack());
+        assert_eq!(h.pack, "dossier_test");
+        assert_eq!(h.id, "aki");
+        assert_eq!(
+            h.name, "Aki",
+            "fields the override leaves out keep the base value"
+        );
+        assert_eq!(h.speed, 1.1);
+    }
+
+    #[test]
+    fn a_bad_id_is_rejected_whatever_the_source() {
+        let bad = json!({ "schema": "lr.hunter/1", "id": "Bad Id" });
+        assert!(parse(&bad, None, "dossier_test").is_err());
+        assert!(parse(&bad, None, "").is_err());
+    }
 }

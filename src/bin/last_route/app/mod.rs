@@ -6,6 +6,7 @@
 //!   LR_SCHEME=city          the City colour scheme (palette.gd SCHEMES)
 //!   LR_SHOT_SCREEN=...      title | create | join | quit | account | settings | lobby | dossier | admin
 //!   LR_SHOT_TAB=n           the settings tab (0 AUDIO .. 5 MODS)
+//!   LR_SHOT_DOSSIER_TAB=n   the dossier tab (0 ROUTE DOSSIER, 1 CUSTOM HUNTERS)
 //!   LR_SHOT_ACCOUNT=1       the account panel (same as LR_SHOT_SCREEN=account)
 //!   LR_SHOT_RUN=1           start a run (LR_SHOT_INF=1: the Infinite route)
 //!   LR_SHOT_PAUSE=...       with a run: pause | statistics | players | settings | dossier | confirm
@@ -29,6 +30,8 @@ use crate::render::{scene, shader, viewmodel};
 use crate::ui::menus::{self, Action, Screen, Ui};
 use crate::ui::pause::{self, Pause, Sub};
 use crate::ui::{hud, map, report, settings_panel, style};
+use crate::net::world_sync::{self, NetEvent, NetSession, RemoteView};
+use crate::net::{BackendConfig, Pending};
 use crate::world::catalog::Catalog;
 use crate::world::route;
 use assets::Assets;
@@ -77,7 +80,13 @@ pub fn targets(old: Option<Targets>, quality: &str) -> Targets {
 }
 
 pub fn render_play(g: &Game, a: &Assets, mat: &Material, t: &Targets) {
+    render_play_with(g, a, mat, t, &[]);
+}
+
+/// [`render_play`] with the other runners of an open room, drawn into the 3D view on this floor.
+pub fn render_play_with(g: &Game, a: &Assets, mat: &Material, t: &Targets, remotes: &[RemoteView]) {
     scene::draw_scene(g, a, mat, &t.scene);
+    world_sync::draw_remotes(g, a, mat, &t.scene, remotes);
     viewmodel::draw_viewmodel(g, a, mat, &t.view);
     set_default_camera();
     clear_background(BLACK);
@@ -264,12 +273,46 @@ pub fn checkpoint_clock() -> Option<(u32, u32)> {
     Some(((day / 3600) as u32, ((day / 60) % 60) as u32))
 }
 
+/// The world with no boot card: the headless and self-test paths.
 pub async fn load_world() -> World {
     let content = Content::load();
     let catalog = Catalog::load();
     let assets = Assets::load(&content);
     let sounds = Sounds::new().await;
     let mat = shader::load_world_material();
+    World {
+        content,
+        catalog,
+        assets,
+        sounds,
+        mat,
+    }
+}
+
+/// The game's own load, the same steps as `load_world`, each reported to the boot card (ui/boot.rs):
+/// the route data, the art, then the signal (sounds and the world material). A load with no hunters
+/// or no room types fails the card.
+pub async fn load_world_booted(boot: &mut crate::ui::boot::BootLoader) -> World {
+    let t = std::time::Instant::now();
+    let content = Content::load();
+    crate::lr_info!("startup timing: content {} ms", t.elapsed().as_millis());
+    let catalog = Catalog::load();
+    crate::lr_info!("startup timing: catalog {} ms", t.elapsed().as_millis());
+    if content.hunters.is_empty() || catalog.types.is_empty() {
+        boot.fail(crate::ui::boot::FAIL_LOAD);
+    }
+    boot.step(crate::ui::boot::Step::Route).await;
+    crate::lr_info!("startup timing: route step {} ms", t.elapsed().as_millis());
+    let assets = Assets::load(&content);
+    crate::lr_info!("startup timing: assets {} ms", t.elapsed().as_millis());
+    boot.step(crate::ui::boot::Step::Art).await;
+    crate::lr_info!("startup timing: art step {} ms", t.elapsed().as_millis());
+    let sounds = Sounds::new().await;
+    crate::lr_info!("startup timing: sounds {} ms", t.elapsed().as_millis());
+    let mat = shader::load_world_material();
+    crate::lr_info!("startup timing: world material {} ms", t.elapsed().as_millis());
+    boot.step(crate::ui::boot::Step::Signal).await;
+    crate::lr_info!("startup timing: signal step {} ms", t.elapsed().as_millis());
     World {
         content,
         catalog,
@@ -373,6 +416,27 @@ fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
+/// A room request that is in flight: hosting a room, or joining one by its code.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum NetIntent {
+    Host,
+    Join,
+}
+
+/// A line for the title or lobby (`ui.notice`, four seconds).
+fn flash(ui: &mut Ui, text: &str) {
+    ui.notice = text.to_string();
+    ui.notice_t = 4.0;
+}
+
+/// A room event during a run is announced on the HUD; outside one it is a title notice.
+fn show_room_notice(playing: Option<&mut Game>, ui: &mut Ui, text: &str) {
+    match playing {
+        Some(g) => g.announce(text),
+        None => flash(ui, text),
+    }
+}
+
 fn shot_screen(name: &str) -> Option<Screen> {
     Some(match name {
         "title" => Screen::Title,
@@ -400,7 +464,10 @@ pub async fn run(screenshot: Option<String>) {
             }
         }
     }
-    let w = load_world().await;
+    // the boot loader (ui/boot.rs) draws its card before the first load step and yields a frame after each
+    let mut boot = crate::ui::boot::BootLoader::new();
+    boot.pump().await;
+    let w = load_world_booted(&mut boot).await;
     let mut settings = Settings::load();
     style::set_scheme(&env("LR_SCHEME").unwrap_or_else(|| settings.scheme.clone()));
     if settings.fullscreen && screenshot.is_none() {
@@ -414,6 +481,8 @@ pub async fn run(screenshot: Option<String>) {
     let mut room = route::new_room_text();
     let mut pz = Pause::default();
     let mut map_open = false;
+    // the fullscreen map's pan, zoom and double click (ui/map.rs); recentred each time it opens
+    let mut map_view = map::FullView::default();
     let mut hud_hidden = false;
     let mut death: Option<Death> = None;
     let mut last_save: Option<checkpoint::Checkpoint> = None;
@@ -421,6 +490,7 @@ pub async fn run(screenshot: Option<String>) {
     let mut mouse_last: Option<Vec2> = None;
     let mut grabbed = false;
     let mut save = checkpoint::load();
+    boot.step(crate::ui::boot::Step::Saves).await;
     let mut loading: Option<Loading> = None;
     let mut frame = 0u32;
     let mut audio_volumes = (f32::NAN, f32::NAN, f32::NAN);
@@ -431,6 +501,11 @@ pub async fn run(screenshot: Option<String>) {
     // the VSYNC row, as last applied to the live GL context; the FPS LIMIT row paces the loop
     let mut vsync_applied: Option<bool> = None;
     let mut pacer = pacing::Pacer::default();
+    // the room: the open session (host or guest), the request still in flight, and the directory it talks to
+    // (`--backend=` applies here like to the menus; release builds use the primary server)
+    let net_cfg: BackendConfig = BackendConfig::from_args(std::env::args().skip(1), cfg!(debug_assertions)).0;
+    let mut net: Option<NetSession> = None;
+    let mut net_pending: Option<(NetIntent, Pending<NetSession>)> = None;
     if screenshot.is_some() {
         if let Some(s) = env("LR_SHOT_SCREEN").as_deref().and_then(shot_screen) {
             ui.go(s);
@@ -440,6 +515,9 @@ pub async fn run(screenshot: Option<String>) {
         }
         if let Some(t) = env("LR_SHOT_TAB").and_then(|t| t.parse().ok()) {
             ui.settings_tab = t;
+        }
+        if let Some(t) = env("LR_SHOT_DOSSIER_TAB").and_then(|t| t.parse().ok()) {
+            ui.dossier_tab = t;
         }
     }
 
@@ -482,6 +560,83 @@ pub async fn run(screenshot: Option<String>) {
         }
         let s = style::ui_scale();
 
+        // a host or join request that has answered: adopt the session and show its lobby
+        let answered = net_pending.as_mut().and_then(|(intent, p)| p.poll().map(|r| (*intent, r)));
+        if let Some((intent, result)) = answered {
+            net_pending = None;
+            match result {
+                Ok(session) => {
+                    let code = session.code.clone();
+                    match intent {
+                        NetIntent::Host => {
+                            room = world_sync::room_text_for_code(&code, &route::new_room_text());
+                            ui.room_mode = menus::RoomMode::Host;
+                            ui.go(Screen::Lobby);
+                            flash(&mut ui, &format!("ROOM {code} IS OPEN // FRIENDS JOIN WITH THIS CODE"));
+                        }
+                        NetIntent::Join => {
+                            room = format!("ROOM-{code}-");
+                            ui.room_mode = menus::RoomMode::Guest;
+                            ui.go(Screen::Lobby);
+                            flash(&mut ui, &format!("JOINED ROOM {code} // WAITING FOR THE ROUTE"));
+                        }
+                    }
+                    net = Some(session);
+                }
+                Err(e) => {
+                    let text = e.message_or("ROOM REQUEST FAILED");
+                    match intent {
+                        NetIntent::Host => flash(&mut ui, &text),
+                        NetIntent::Join if ui.screen == Screen::Join => ui.join_status = text,
+                        NetIntent::Join => flash(&mut ui, &text),
+                    }
+                }
+            }
+        }
+
+        // the open room: pump it, send this runner's sample while a route runs, and act on what the others sent
+        let sample = match (playing.as_ref(), loading.is_none()) {
+            (Some(g), true) => Some(world_sync::Sample::of(&g.p, g.depth)),
+            _ => None,
+        };
+        let room_events = match net.as_mut() {
+            Some(n) => n.tick(sample),
+            None => Vec::new(),
+        };
+        let mut room_closed: Option<String> = None;
+        for event in room_events {
+            match event {
+                NetEvent::Start { seed, difficulty } => {
+                    // the host started its route: enter the same seeded world (not while one is already running)
+                    if playing.is_none() && loading.is_none() {
+                        diff = world_sync::difficulty_from_name(&difficulty);
+                        room = seed.clone();
+                        loading = Some(Loading::for_room(diff, seed, Some(0)));
+                    }
+                }
+                NetEvent::Seed(seed) => room = seed,
+                NetEvent::GuestJoined(name) => show_room_notice(playing.as_mut(), &mut ui, &format!("{name} JOINED THE ROOM")),
+                NetEvent::GuestLeft(name) => show_room_notice(playing.as_mut(), &mut ui, &format!("{name} LEFT THE ROOM")),
+                NetEvent::HostLeft(reason) => room_closed = Some(reason),
+                NetEvent::Problem(text) => show_room_notice(playing.as_mut(), &mut ui, &text),
+            }
+        }
+        if let Some(reason) = room_closed {
+            // the host closed the room: this guest goes back to the title with the reason
+            net = None;
+            playing = None;
+            loading = None;
+            death = None;
+            pz = Pause::default();
+            map_open = false;
+            set_cursor_grab(false);
+            show_mouse(true);
+            grabbed = false;
+            ui.go(Screen::Title);
+            ui.room_mode = menus::RoomMode::Solo;
+            flash(&mut ui, &reason);
+        }
+
         if let Some(l) = loading.as_mut() {
             // draw the screen first, build on the next frame, then let the bar reach 100%
             l.frames += 1;
@@ -522,6 +677,7 @@ pub async fn run(screenshot: Option<String>) {
             }
         } else if let Some(g) = playing.as_mut() {
             let in_report = g.report.is_some();
+            let remotes = net.as_ref().map(|n| n.remotes_at(g.depth)).unwrap_or_default();
             admin.enabled = settings.username == "KYTTU";
             let admin_esc = if in_report || pz.open {
                 false
@@ -545,11 +701,20 @@ pub async fn run(screenshot: Option<String>) {
             }
             if is_key_pressed(KeyCode::M) && !pz.open && !in_report {
                 map_open = !map_open;
+                if map_open {
+                    map_view.recentre();
+                }
             }
             if is_key_pressed(KeyCode::F1) {
                 hud_hidden = !hud_hidden;
             }
-            let want_grab = !pz.open && !in_report && !admin.is_open() && screenshot.is_none();
+            let want_grab = cursor_grab_wanted(
+                pz.open,
+                in_report,
+                admin.is_open(),
+                map_open,
+                screenshot.is_none(),
+            );
             if want_grab != grabbed {
                 set_cursor_grab(want_grab);
                 show_mouse(!want_grab);
@@ -573,6 +738,10 @@ pub async fn run(screenshot: Option<String>) {
             );
             if pz.open || map_open || admin.is_open() {
                 c = Controls::default();
+            }
+            // the open map takes the mouse and the keys (pan, zoom, waypoints) while the run itself is still
+            if map_open && !pz.open && !in_report && !admin.is_open() {
+                map::full_map_input(g, &mut map_view);
             }
             g.fov_deg = settings.fov;
             let gdt = admin.game_dt(dt);
@@ -643,7 +812,7 @@ pub async fn run(screenshot: Option<String>) {
             }
             match death.as_mut() {
                 Some(Death::Moment(m)) => {
-                    render_play(g, &w.assets, &w.mat, &tg);
+                    render_play_with(g, &w.assets, &w.mat, &tg, &remotes);
                     m.update(dt);
                     m.draw(&w.assets);
                     if m.done {
@@ -687,14 +856,14 @@ pub async fn run(screenshot: Option<String>) {
                 None => {
                     {
                         let _t = perf::section("render 3d");
-                        render_play(g, &w.assets, &w.mat, &tg);
+                        render_play_with(g, &w.assets, &w.mat, &tg, &remotes);
                     }
                     if !hud_hidden || g.escape.is_some() {
                         let _t = perf::section("hud");
                         hud::draw_hud(g, &w.assets, fps, s);
                     }
                     if map_open {
-                        map::draw_full_map(g, &w.assets);
+                        map::draw_full_map(g, &w.assets, &map_view);
                     }
                     admin.draw(g, &w.assets, &w.content);
                     match admin.take_request() {
@@ -746,6 +915,16 @@ pub async fn run(screenshot: Option<String>) {
             }
         } else {
             let username = settings.username.clone();
+            // the lobby's live capacity and guest names (a guest's session has neither)
+            let live = net.as_ref().and_then(|n| n.player_count());
+            let guests = net.as_ref().map(|n| n.guest_names()).unwrap_or_default();
+            // back on the title the room is closed (the host's quit tells the guests)
+            if ui.screen == Screen::Title {
+                if let Some(n) = net.take() {
+                    n.leave();
+                }
+                ui.room_mode = menus::RoomMode::Solo;
+            }
             let action = match ui.screen {
                 Screen::Title => menus::draw_title(&w.assets, &mut ui, &username, true),
                 Screen::Create => menus::draw_create(&w.assets, &mut ui, &username),
@@ -774,7 +953,7 @@ pub async fn run(screenshot: Option<String>) {
                         false,
                     ) {
                         ui.go(Screen::Title);
-                        ui.focus = 2;
+                        ui.focus = menus::title_focus(menus::TitleEntry::Settings, &username);
                     }
                     Action::None
                 }
@@ -799,6 +978,8 @@ pub async fn run(screenshot: Option<String>) {
                     &room,
                     &username,
                     save.as_ref(),
+                    live,
+                    &guests,
                     true,
                 ),
                 Screen::Dossier => {
@@ -810,39 +991,75 @@ pub async fn run(screenshot: Option<String>) {
                         &room,
                         &username,
                         save.as_ref(),
+                        live,
+                        &guests,
                         false,
                     );
                     if menus::draw_dossier(&w.assets, &mut ui, &w.content, &username) {
                         ui.go(Screen::Lobby);
-                        ui.focus = 2;
+                        ui.focus = menus::lobby_focus(ui.room_mode, menus::LobbyButton::CharacterFiles);
                     }
                     Action::None
                 }
             };
+            // the boot card covers the title until it has faded: its buttons take no clicks
+            let action = if boot.blocks_input() { Action::None } else { action };
             match action {
                 Action::Go(next) => {
-                    if next == Screen::Lobby && ui.screen != Screen::Dossier {
+                    // cancelling the JOIN dialog drops its request
+                    if next == Screen::Title && ui.screen == Screen::Join && matches!(net_pending, Some((NetIntent::Join, _))) {
+                        net_pending = None;
+                    }
+                    // back from the account screen the lobby keeps its room (the room is closed only on the title)
+                    if next == Screen::Lobby && ui.screen != Screen::Dossier && ui.screen != Screen::Account {
                         room = route::new_room_text();
+                        ui.room_mode = menus::RoomMode::Solo;
                     }
                     if next == Screen::Account {
                         save = checkpoint::load();
                     }
                     let from = ui.screen;
+                    if next == Screen::Account {
+                        ui.account_back = from;
+                    }
                     ui.go(next);
+                    if next == Screen::Lobby && from == Screen::Account {
+                        ui.focus = menus::lobby_focus(ui.room_mode, menus::LobbyButton::Account);
+                    }
                     if next == Screen::Title {
                         // focus goes back to the button that opened the dialog
-                        ui.focus = match from {
-                            Screen::Join => 1,
-                            Screen::Settings => 2,
-                            Screen::Account => 3,
-                            Screen::Quit => 5,
-                            _ => 0,
-                        };
+                        let who = settings.username.as_str();
+                        ui.focus = title_return_focus(from, who);
                     }
                 }
                 // CREATE ROOM's route is DEFAULT // INFINITE, starting on the top level
-                Action::StartRun => loading = Some(Loading::for_room(diff, room.clone(), Some(0))),
-                Action::Reroll => room = route::new_room_text(),
+                Action::StartRun => {
+                    loading = Some(Loading::for_room(diff, room.clone(), Some(0)));
+                    // a hosted room's guests enter the same route
+                    if let Some(n) = net.as_mut() {
+                        n.start_run(&room, diff.name());
+                    }
+                }
+                Action::Reroll => {
+                    // a hosted or joined room keeps its seed: the code is in it
+                    if ui.room_mode == menus::RoomMode::Solo {
+                        room = route::new_room_text();
+                    }
+                }
+                Action::HostRoom => {
+                    if net.is_none() && net_pending.is_none() {
+                        flash(&mut ui, "OPENING A ROOM ON THE SERVER...");
+                        let name = world_sync::clean_name(&settings.username);
+                        net_pending = Some((NetIntent::Host, world_sync::host_room(net_cfg.clone(), route::new_room_text(), name)));
+                    }
+                }
+                Action::JoinCode(code) => {
+                    if net.is_none() && net_pending.is_none() {
+                        ui.join_status = format!("JOINING ROOM {code}...");
+                        let name = world_sync::clean_name(&settings.username);
+                        net_pending = Some((NetIntent::Join, world_sync::join_room(net_cfg.clone(), code, name)));
+                    }
+                }
                 Action::ContinueRun => {
                     if let Some(c) = &save {
                         settings.save();
@@ -916,9 +1133,79 @@ pub async fn run(screenshot: Option<String>) {
                 return;
             }
         }
+        // the boot card goes over the title once the first title frame is drawn, then fades out
+        if frame == 1 {
+            boot.ready();
+        }
+        boot.draw_frame();
         perf::draw_overlay(w.assets.font.as_ref(), &[]);
         pacer.wait(settings.frame_cap_fps());
         next_frame().await;
+    }
+    // quitting the game closes an open room, so the guests get HOST_LEFT now and not after the directory's TTL
+    if let Some(n) = net.take() {
+        n.leave();
+    }
+}
+
+/// Whether the cursor is captured for look this frame. Only the run itself captures it: the pause menu, a report, the admin
+/// menu, the fullscreen map (M, which pans and places waypoints with the pointer) and a screenshot all leave it free.
+fn cursor_grab_wanted(paused: bool, in_report: bool, admin_open: bool, map_open: bool, live: bool) -> bool {
+    !paused && !in_report && !admin_open && !map_open && live
+}
+
+/// The focus index of the title button that opened the dialog `from`: cancelling the dialog hands
+/// focus back to that button (CREATE ROOM's cancel lands on CREATE ROOM).
+fn title_return_focus(from: Screen, who: &str) -> usize {
+    match from {
+        Screen::Create => menus::title_focus(menus::TitleEntry::Create, who),
+        Screen::Join => menus::title_focus(menus::TitleEntry::Join, who),
+        Screen::Settings => menus::title_focus(menus::TitleEntry::Settings, who),
+        Screen::Account => menus::title_focus(menus::TitleEntry::Account, who),
+        Screen::Quit => menus::title_focus(menus::TitleEntry::Quit, who),
+        _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod title_focus_tests {
+    use super::*;
+
+    #[test]
+    fn cancelling_create_room_returns_focus_to_create_room() {
+        for who in ["ALICE", "KYTTU"] {
+            let i = title_return_focus(Screen::Create, who);
+            assert_eq!(menus::title_entries(who)[i], menus::TitleEntry::Create, "{who}");
+        }
+    }
+
+    #[test]
+    fn other_dialogs_still_return_to_their_own_button() {
+        assert_eq!(
+            menus::title_entries("ALICE")[title_return_focus(Screen::Join, "ALICE")],
+            menus::TitleEntry::Join
+        );
+        assert_eq!(
+            menus::title_entries("ALICE")[title_return_focus(Screen::Quit, "ALICE")],
+            menus::TitleEntry::Quit
+        );
+    }
+}
+
+#[cfg(test)]
+mod grab_tests {
+    use super::*;
+
+    #[test]
+    fn the_open_map_leaves_the_mouse_free() {
+        // the run with nothing on top of it captures the mouse (look)...
+        assert!(cursor_grab_wanted(false, false, false, false, true));
+        // ...and the fullscreen map does not, so the pointer moves and drags the map
+        assert!(!cursor_grab_wanted(false, false, false, true, true), "the map frees the mouse");
+        assert!(!cursor_grab_wanted(true, false, false, true, true));
+        assert!(!cursor_grab_wanted(false, true, false, true, true));
+        assert!(!cursor_grab_wanted(false, false, true, true, true));
+        assert!(!cursor_grab_wanted(false, false, false, false, false), "a screenshot never captures");
     }
 }
 

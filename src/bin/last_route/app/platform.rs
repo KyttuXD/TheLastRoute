@@ -38,25 +38,7 @@ pub fn screen_size() -> Option<(i32, i32)> {
     None
 }
 
-/// The starting window size: 16:9, at most 1280x720 and at most 80% of the screen, so it
-/// never opens larger than the display (also on scaled 125-150% displays). The screenshot
-/// and self-test modes always use 1280x720.
-pub fn window_size(fixed: bool) -> (i32, i32) {
-    const W: i32 = 1280;
-    const H: i32 = 720;
-    if fixed {
-        return (W, H);
-    }
-    match screen_size() {
-        Some((sw, sh)) => {
-            let fit = (sw as f32 * 0.8 / W as f32)
-                .min(sh as f32 * 0.8 / H as f32)
-                .min(1.0);
-            (
-                (W as f32 * fit).round().max(640.0) as i32,
-                (H as f32 * fit).round().max(360.0) as i32,
-            )
-        }
-        None => (W, H),
-    }
+/// The starting window size: 1280x720 in every build, debug included.
+pub fn window_size(_fixed: bool) -> (i32, i32) {
+    (1280, 720)
 }

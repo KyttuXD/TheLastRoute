@@ -76,6 +76,16 @@ pub struct Prop {
     pub solid: bool,
     /// Rotated half extents (f32, as Godot's Vector2).
     pub half: (f32, f32),
+    /// A room door's doorway (draw only: the span and the centre offset from `cell`); `None` for other props.
+    pub door: Option<DoorDraw>,
+}
+
+/// How a room door is drawn: the doorway's width in cells (`door_span`) and the offset of the doorway's centre
+/// from the threshold `cell`, which is `placement_offset` for a double door (door.rs).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DoorDraw {
+    pub span: i32,
+    pub offset: [f32; 2],
 }
 
 #[derive(Clone, Debug)]
@@ -1099,6 +1109,7 @@ impl Facility {
                             mount_y: Some(cat.surface_height(&p.ptype)),
                             solid: cat.is_solid(t),
                             half,
+                            door: None,
                         });
                     }
                     continue;
@@ -1135,6 +1146,7 @@ impl Facility {
                     mount_y: None,
                     solid: cat.is_solid(t),
                     half: cat.footprint(t, rotation),
+                    door: None,
                 });
             }
         }

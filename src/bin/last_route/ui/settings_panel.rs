@@ -1,7 +1,10 @@
-//! The settings overlay (settings_overlay.tscn + settings_panel.gd): a 440x254 panel centred on
-//! the canvas with SETTINGS, the rebind hint, the category tab bar (AUDIO / DISPLAY / CONTROLS /
-//! SKIN / VOICE / MODS; a running route hides SKIN and MODS) and ESC CLOSE. Rows sit at the
-//! scene file's offsets; the tab bar and sliders are the project theme's fixed purple.
+//! The settings overlay (settings_overlay.tscn + settings_panel.gd), laid out as the web's four
+//! tabs (games/last-route/index.html, the controls overlay) with SKIN, VOICE and MODS as their own
+//! tabs after GAMEPLAY: GAMEPLAY, SKIN, VOICE, MODS, AUDIO, VIDEO and CONTROLS.
+//! A 440x254 panel centred on the canvas with SETTINGS, the rebind hint, the tab bar and ESC CLOSE.
+//! Rows sit at the scene file's offsets; the tab bar and sliders are the project theme's fixed purple.
+//! The web's click-to-move and touch rows have no desktop meaning and are left out. SKIN and MODS
+//! show a note instead of their lists during a run.
 
 use super::menus::Ui;
 use super::style::*;
@@ -10,7 +13,35 @@ use crate::app::settings::Settings;
 use crate::content::Content;
 use macroquad::prelude::*;
 
-const TITLES: [&str; 6] = ["AUDIO", "DISPLAY", "CONTROLS", "SKIN", "VOICE", "MODS"];
+/// The web overlay's tabs, in its order (index.html `data-settings-tab`).
+const TABS: [&str; 7] = [
+    "GAMEPLAY", "SKIN", "VOICE", "MODS", "AUDIO", "VIDEO", "CONTROLS",
+];
+
+/// The saved keys (app/settings.rs) each tab shows, in TABS order. Every saved key is in exactly
+/// one tab unless it is in OFF_PANEL_KEYS. The draw code below must match this table.
+#[allow(dead_code)]
+const TAB_KEYS: [&[&str]; 7] = [
+    &["pause_on_focus_loss", "teammate_waypoints"],
+    &[],
+    &[],
+    &[],
+    &[
+        "master_volume",
+        "gameplay_volume",
+        "ui_volume",
+        "voice_volume",
+        "voices",
+        "subtitles",
+    ],
+    &["fullscreen", "ads", "vsync", "quality", "fps_limit", "fov"],
+    &["sensitivity"],
+];
+
+/// Saved keys with no row in this panel: `username` is edited on the account screens, and
+/// `scheme` comes from LR_SCHEME or the saved file.
+#[allow(dead_code)]
+const OFF_PANEL_KEYS: [&str; 2] = ["username", "scheme"];
 
 /// MOVEMENT / ACTIONS / SYSTEM (ControlsRegistry.LAST_ROUTE_TABS) with this build's keys.
 const SECTIONS: [(&str, &[(&str, &str)]); 3] = [
@@ -45,6 +76,12 @@ const SECTIONS: [(&str, &[(&str, &str)]); 3] = [
     ),
     ("SYSTEM", &[("PAUSE", "ESCAPE"), ("FULLSCREEN", "F11")]),
 ];
+
+const SKIN_TEXT: &str =
+    "SKINS ARE STORED ON YOUR ACCOUNT. THIS OFFLINE BUILD PLAYS THE DEFAULT RUNNER.";
+const VOICE_TEXT: &str = "VOICE CHAT RUNS IN ONLINE ROOMS. THIS OFFLINE BUILD HAS NO ROOM SERVER.";
+const MODS_FOOTNOTE: &str =
+    "PUT PACK FOLDERS (pack.json + hunters/ ...) IN \"mods\" BESIDE THE GAME, THEN RESTART.";
 
 /// A ref_theme HSlider: inset track 4 high, accent fill up to the grabber centre, and the
 /// default theme's translucent white grabber (14 units). Returns the new value while dragged.
@@ -85,7 +122,18 @@ fn slider(ui: &mut Ui, id: u32, r: Rect, value: f32, min: f32, max: f32) -> Opti
     None
 }
 
-/// An HBox row: label (BODY 8), slider 180x12, value label; separation 8.
+/// The settings' tab and row labels: 0.55 of the old size (the web's .72rem labels, menu_size).
+fn setting_label_u() -> f32 {
+    menu_size(8.0, 0.55)
+}
+
+/// The settings slider's track: the web's `clamp(90px, 18vw, 170px)`, which is 170px at 1280x720
+/// (64 units before the menu scale).
+fn setting_slider_u() -> f32 {
+    menu_size(64.0, 1.0)
+}
+
+/// An HBox row: label (BODY 8), slider (the web's 170px track), value label; separation 8.
 fn slider_row(
     a: &Assets,
     ui: &mut Ui,
@@ -99,16 +147,21 @@ fn slider_row(
     shown: &str,
 ) -> Option<f32> {
     let p = pal();
-    label_vc(a, F::Body, caption, x, y, 16.0, 8.0, p.body);
-    let sx = x + tw(a, F::Body, caption, 8.0) + 8.0;
-    let out = slider(ui, id, Rect::new(sx, y + 2.0, 180.0, 12.0), value, min, max);
-    label_vc(a, F::Body, shown, sx + 188.0, y, 16.0, 8.0, p.body);
+    let label_u = setting_label_u();
+    let track = setting_slider_u();
+    label_vc(a, F::Body, caption, x, y, 16.0, label_u, p.body);
+    let sx = x + tw(a, F::Body, caption, label_u) + 8.0;
+    let out = slider(ui, id, Rect::new(sx, y + 2.0, track, 12.0), value, min, max);
+    label_vc(a, F::Body, shown, sx + track + 8.0, y, 16.0, label_u, p.body);
     out
 }
 
 /// A TabBar in the project theme, centred in `r`; returns a clicked index.
 pub fn tab_bar(a: &Assets, r: Rect, tabs: &[&str], current: usize, focused: bool) -> Option<usize> {
-    let widths: Vec<f32> = tabs.iter().map(|t| tw(a, F::Body, t, 8.0) + 20.0).collect();
+    let widths: Vec<f32> = tabs
+        .iter()
+        .map(|t| tw(a, F::Body, t, setting_label_u()) + 20.0)
+        .collect();
     let total: f32 = widths.iter().sum();
     let mut x = r.x + (r.w - total) * 0.5;
     let mut hit = None;
@@ -116,9 +169,18 @@ pub fn tab_bar(a: &Assets, r: Rect, tabs: &[&str], current: usize, focused: bool
         let tr = Rect::new(x, r.y, widths[i], r.h);
         let hover = hovered(tr);
         let (face, edge, ink) = if i == current {
-            (REF_ACCENT, REF_ACCENT_EDGE, REF_ON_AMBER)
+            // Last Route: the web's selected tab (#271927 face, amber edge, #fff8f1 text)
+            (
+                lr(hex(0x271927), REF_ACCENT),
+                lr(hex(0xf2bb62), REF_ACCENT_EDGE),
+                lr(hex(0xfff8f1), REF_ON_AMBER),
+            )
         } else if hover {
-            (rgba(0.181, 0.149, 0.188, 1.0), REF_ACCENT_EDGE, REF_INK)
+            (
+                lr(hex(0x271927), rgba(0.181, 0.149, 0.188, 1.0)),
+                REF_ACCENT_EDGE,
+                REF_INK,
+            )
         } else {
             (REF_PANEL, REF_PANEL_EDGE, REF_BODY)
         };
@@ -126,7 +188,7 @@ pub fn tab_bar(a: &Assets, r: Rect, tabs: &[&str], current: usize, focused: bool
         if i == current && focused {
             border(tr, 1.0, REF_TEAL);
         }
-        label_vc(a, F::Body, t, tr.x + 10.0, tr.y, tr.h, 8.0, ink);
+        label_vc(a, F::Body, t, tr.x + 10.0, tr.y, tr.h, setting_label_u(), ink);
         if hover && is_mouse_button_pressed(MouseButton::Left) {
             crate::audio::sound::menu_blip();
             hit = Some(i);
@@ -136,7 +198,121 @@ pub fn tab_bar(a: &Assets, r: Rect, tabs: &[&str], current: usize, focused: bool
     hit
 }
 
-/// Draws the overlay; returns true when it closes. `in_run` hides SKIN and MODS.
+/// One line of the GAMEPLAY tab's scrolling text: its size and colour, its indent, and how far
+/// the next line sits below it.
+struct TextLine {
+    text: String,
+    size: f32,
+    col: Color,
+    dx: f32,
+    step: f32,
+}
+
+fn text_line(text: String, size: f32, col: Color, dx: f32) -> TextLine {
+    TextLine {
+        text,
+        size,
+        col,
+        dx,
+        step: lh(F::Body, size),
+    }
+}
+
+fn heading(out: &mut Vec<TextLine>, title: &str) {
+    out.push(TextLine {
+        text: track(title),
+        size: 8.0,
+        col: pal().amber,
+        dx: 0.0,
+        step: lh(F::Body, 8.0) + 4.0,
+    });
+}
+
+fn gap(out: &mut Vec<TextLine>, px: f32) {
+    out.push(TextLine {
+        text: String::new(),
+        size: 7.0,
+        col: pal().muted,
+        dx: 0.0,
+        step: px,
+    });
+}
+
+/// The text of a section tab: SKIN (1), VOICE (2) or MODS (3). SKIN and MODS show a note during a run.
+fn section_text(a: &Assets, content: &Content, in_run: bool, tab: usize) -> Vec<TextLine> {
+    let p = pal();
+    let mut out = Vec::new();
+    match tab {
+        1 => {
+            if in_run {
+                out.push(text_line("SKINS CHANGE FROM THE TITLE SCREEN.".into(), 7.0, p.muted, 0.0));
+            } else {
+                for l in wrap(a, F::Body, SKIN_TEXT, 400.0, 7.0) {
+                    out.push(text_line(l, 7.0, p.muted, 0.0));
+                }
+            }
+        }
+        2 => {
+            for l in wrap(a, F::Body, VOICE_TEXT, 400.0, 7.0) {
+                out.push(text_line(l, 7.0, p.muted, 0.0));
+            }
+        }
+        _ => {
+            if in_run {
+                out.push(text_line("MODS CHANGE FROM THE TITLE SCREEN.".into(), 7.0, p.muted, 0.0));
+                return out;
+            }
+            heading(&mut out, "INSTALLED MODS");
+            if content.packs.is_empty() {
+                out.push(text_line("NO MODS INSTALLED".into(), 7.0, p.muted, 0.0));
+            }
+            for pk in &content.packs {
+                out.push(text_line(
+                    format!("{} {} // {}", pk.name.to_uppercase(), pk.version, pk.author),
+                    7.0,
+                    p.ink,
+                    0.0,
+                ));
+                let adds = clip(
+                    a,
+                    F::Body,
+                    &format!("ADDS: {}", pk.provides.join(", ")),
+                    400.0,
+                    6.0,
+                );
+                out.push(text_line(adds, 6.0, p.body, 6.0));
+                gap(&mut out, 4.0);
+            }
+            for w in content.warnings.iter().take(4) {
+                out.push(text_line(clip(a, F::Body, w, 400.0, 6.0), 6.0, p.alert, 0.0));
+            }
+            for l in wrap(a, F::Body, MODS_FOOTNOTE, 400.0, 6.0) {
+                out.push(text_line(l, 6.0, p.muted, 0.0));
+            }
+        }
+    }
+    out
+}
+
+/// Draws a column of text lines inside `area`; the mouse wheel scrolls it.
+fn scroll_text(a: &Assets, ui: &mut Ui, x: f32, area: Rect, lines: &[TextLine]) {
+    let total: f32 = lines.iter().map(|l| l.step).sum();
+    if hovered(area) {
+        ui.scroll -= mouse_wheel().1.signum() * 20.0;
+    }
+    ui.scroll = ui.scroll.clamp(0.0, (total - area.h).max(0.0));
+    clip_begin(area);
+    let mut y = area.y - ui.scroll;
+    for l in lines {
+        if !l.text.is_empty() {
+            label(a, F::Body, &l.text, x + l.dx, y, l.size, l.col);
+        }
+        y += l.step;
+    }
+    clip_end();
+}
+
+/// Draws the overlay; returns true when it closes. `in_run` shows a note for SKIN and MODS.
 pub fn draw_settings(
     a: &Assets,
     ui: &mut Ui,
@@ -144,9 +320,11 @@ pub fn draw_settings(
     content: &Content,
     in_run: bool,
 ) -> bool {
+    let _scope = MenuScope::enter();
     let p = pal();
     let panel = centered(440.0, 254.0);
-    fill(panel, p.panel);
+    // opaque: the title screen behind the overlay must not show through the panel
+    fill(panel, Color::new(p.panel.r, p.panel.g, p.panel.b, 1.0));
     let (ox, oy) = (panel.x, panel.y);
     let tw15 = tw(a, F::Title, "SETTINGS", 15.0);
     label(
@@ -167,15 +345,11 @@ pub fn draw_settings(
         7.0,
         p.muted,
     );
-    let cats: Vec<usize> = (0..6)
-        .filter(|c| !(in_run && (*c == 3 || *c == 5)))
-        .collect();
-    let names: Vec<&str> = cats.iter().map(|&c| TITLES[c]).collect();
-    let mut pos = cats.iter().position(|&c| c == ui.settings_tab).unwrap_or(0);
+    let mut pos = ui.settings_tab.min(TABS.len() - 1);
     if let Some(i) = tab_bar(
         a,
         Rect::new(ox + 20.0, oy + 37.0, 400.0, 22.0),
-        &names,
+        &TABS,
         pos,
         true,
     ) {
@@ -185,17 +359,48 @@ pub fn draw_settings(
     if is_key_pressed(KeyCode::Tab) {
         let back = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
         pos = if back {
-            (pos + cats.len() - 1) % cats.len()
+            (pos + TABS.len() - 1) % TABS.len()
         } else {
-            (pos + 1) % cats.len()
+            (pos + 1) % TABS.len()
         };
         ui.scroll = 0.0;
     }
-    ui.settings_tab = cats[pos];
+    ui.settings_tab = pos;
     let x = ox + 20.0;
     let mut changed = false;
     match ui.settings_tab {
         0 => {
+            // GAMEPLAY: the two focus and waypoint toggles stay put; the SKIN, VOICE and MODS
+            // text scrolls below them.
+            if state_toggle(
+                a,
+                Rect::new(x, oy + 66.0, 400.0, 16.0),
+                "PAUSE WHEN WINDOW LOSES FOCUS",
+                st.pause_on_focus_loss,
+                false,
+                plain(),
+            ) {
+                st.pause_on_focus_loss = !st.pause_on_focus_loss;
+                changed = true;
+            }
+            if state_toggle(
+                a,
+                Rect::new(x, oy + 86.0, 400.0, 14.0),
+                "TEAMMATE WAYPOINTS",
+                st.teammate_waypoints,
+                false,
+                plain(),
+            ) {
+                st.teammate_waypoints = !st.teammate_waypoints;
+                changed = true;
+            }
+        }
+        1 | 2 | 3 => {
+            // SKIN, VOICE and MODS each scroll their text below the tab bar
+            let lines = section_text(a, content, in_run, ui.settings_tab);
+            scroll_text(a, ui, x, Rect::new(x, oy + 66.0, 400.0, 160.0), &lines);
+        }
+        4 => {
             let pct = |v: f32| format!("{}%", (v * 100.0).round() as i32);
             if let Some(v) = slider_row(
                 a,
@@ -244,7 +449,7 @@ pub fn draw_settings(
             }
             // SPOKEN CHAT: label 96, the slider fills, readout 34 (separation 4)
             let y = oy + 142.0;
-            label_vc(a, F::Body, "SPOKEN CHAT", x, y, 16.0, 8.0, p.body);
+            label_vc(a, F::Body, "SPOKEN CHAT", x, y, 16.0, setting_label_u(), p.body);
             if let Some(v) = slider(
                 ui,
                 4,
@@ -263,7 +468,7 @@ pub fn draw_settings(
                 x + 366.0,
                 y,
                 16.0,
-                8.0,
+                setting_label_u(),
                 p.body,
             );
             let bw = (400.0 - 4.0) * 0.5;
@@ -290,7 +495,7 @@ pub fn draw_settings(
                 changed = true;
             }
         }
-        1 => {
+        5 => {
             // FULLSCREEN toggle, the F11 hint and the ADS cycle button share one row
             let y = oy + 66.0;
             if state_toggle(
@@ -403,13 +608,17 @@ pub fn draw_settings(
                 _ => "AUTO: picks for this device, eases off if frames drop",
             };
             label_vc(a, F::Body, hint, x, oy + 144.0, 12.0, 7.0, p.muted);
+        }
+        _ => {
+            // CONTROLS: the mouse sensitivity row, then ControlsScroll (20,88)-(420,228) with the
+            // section tabs and the binding rows
             let sens = st.sensitivity_percent().round().max(1.0);
             if let Some(v) = slider_row(
                 a,
                 ui,
                 7,
                 x,
-                oy + 186.0,
+                oy + 66.0,
                 "MOUSE SENSITIVITY",
                 st.sensitivity_percent(),
                 0.0,
@@ -419,32 +628,7 @@ pub fn draw_settings(
                 st.sensitivity = 0.0005 + v / 100.0 * (0.012 - 0.0005);
                 changed = true;
             }
-            if state_toggle(
-                a,
-                Rect::new(x, oy + 208.0, 400.0, 16.0),
-                "PAUSE WHEN WINDOW LOSES FOCUS",
-                st.pause_on_focus_loss,
-                false,
-                plain(),
-            ) {
-                st.pause_on_focus_loss = !st.pause_on_focus_loss;
-                changed = true;
-            }
-            if state_toggle(
-                a,
-                Rect::new(x, oy + 226.0, 400.0, 14.0),
-                "TEAMMATE WAYPOINTS",
-                st.teammate_waypoints,
-                false,
-                plain(),
-            ) {
-                st.teammate_waypoints = !st.teammate_waypoints;
-                changed = true;
-            }
-        }
-        2 => {
-            // ControlsScroll (20,62)-(420,228): the section tabs, then the binding rows
-            let area = Rect::new(x, oy + 62.0, 400.0, 166.0);
+            let area = Rect::new(x, oy + 88.0, 400.0, 140.0);
             let tab_h = F::Body.height() * 8.0 + 8.0;
             let names: Vec<&str> = SECTIONS.iter().map(|s| s.0).collect();
             if hovered(area) {
@@ -468,15 +652,15 @@ pub fn draw_settings(
             }
             y += tab_h + 3.0;
             for (name, key) in rows {
-                label_vc(a, F::Body, name, x, y, row_h, 8.0, p.body);
+                label_vc(a, F::Body, name, x, y, row_h, setting_label_u(), p.body);
                 label_vc(
                     a,
                     F::Body,
                     key,
-                    x + 118.0 + (92.0 - tw(a, F::Body, key, 8.0)) * 0.5,
+                    x + 118.0 + (92.0 - tw(a, F::Body, key, setting_label_u())) * 0.5,
                     y,
                     row_h,
-                    8.0,
+                    setting_label_u(),
                     p.amber,
                 );
                 let mut bx = x + 118.0 + 92.0 + 6.0;
@@ -496,109 +680,66 @@ pub fn draw_settings(
             }
             clip_end();
         }
-        3 => {
-            label(a, F::Body, &track("SKIN"), x, oy + 66.0, 8.0, p.amber);
-            for (i, l) in wrap(
-                a,
-                F::Body,
-                "SKINS ARE STORED ON YOUR ACCOUNT. THIS OFFLINE BUILD PLAYS THE DEFAULT RUNNER.",
-                400.0,
-                7.0,
-            )
-            .iter()
-            .enumerate()
-            {
-                label(
-                    a,
-                    F::Body,
-                    l,
-                    x,
-                    oy + 80.0 + i as f32 * lh(F::Body, 7.0),
-                    7.0,
-                    p.muted,
-                );
-            }
-        }
-        4 => {
-            label(a, F::Body, &track("VOICE"), x, oy + 66.0, 8.0, p.amber);
-            for (i, l) in wrap(
-                a,
-                F::Body,
-                "VOICE CHAT RUNS IN ONLINE ROOMS. THIS OFFLINE BUILD HAS NO ROOM SERVER.",
-                400.0,
-                7.0,
-            )
-            .iter()
-            .enumerate()
-            {
-                label(
-                    a,
-                    F::Body,
-                    l,
-                    x,
-                    oy + 80.0 + i as f32 * lh(F::Body, 7.0),
-                    7.0,
-                    p.muted,
-                );
-            }
-        }
-        _ => {
-            let mut y = oy + 66.0;
-            label(a, F::Body, &track("INSTALLED MODS"), x, y, 8.0, p.amber);
-            y += lh(F::Body, 8.0) + 4.0;
-            if content.packs.is_empty() {
-                label(a, F::Body, "NO MODS INSTALLED", x, y, 7.0, p.muted);
-                y += lh(F::Body, 7.0) + 4.0;
-            }
-            for pk in &content.packs {
-                label(
-                    a,
-                    F::Body,
-                    &format!("{} {} // {}", pk.name.to_uppercase(), pk.version, pk.author),
-                    x,
-                    y,
-                    7.0,
-                    p.ink,
-                );
-                y += lh(F::Body, 7.0);
-                label(
-                    a,
-                    F::Body,
-                    &clip(
-                        a,
-                        F::Body,
-                        &format!("ADDS: {}", pk.provides.join(", ")),
-                        400.0,
-                        6.0,
-                    ),
-                    x + 6.0,
-                    y,
-                    6.0,
-                    p.body,
-                );
-                y += lh(F::Body, 6.0) + 4.0;
-            }
-            for w in content.warnings.iter().take(4) {
-                label(
-                    a,
-                    F::Body,
-                    &clip(a, F::Body, w, 400.0, 6.0),
-                    x,
-                    y,
-                    6.0,
-                    p.alert,
-                );
-                y += lh(F::Body, 6.0);
-            }
-            for l in wrap(a, F::Body, "PUT PACK FOLDERS (pack.json + hunters/ ...) IN \"mods\" BESIDE THE GAME, THEN RESTART.", 400.0, 6.0) {
-                label(a, F::Body, &l, x, y + 4.0, 6.0, p.muted);
-                y += lh(F::Body, 6.0);
-            }
-        }
     }
     if changed {
         st.save();
     }
     let close = esc_close(a, Rect::new(ox + 193.0, oy + 234.0, 54.0, 16.0));
     close || is_key_pressed(KeyCode::Escape)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The saved keys the settings file writes, sorted.
+    fn saved_keys() -> Vec<String> {
+        let v = Settings::default().to_json();
+        let mut keys: Vec<String> = v
+            .as_object()
+            .expect("settings are a JSON object")
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    #[test]
+    fn tabs_match_the_web_overlay_in_order() {
+        assert_eq!(
+            TABS,
+            ["GAMEPLAY", "SKIN", "VOICE", "MODS", "AUDIO", "VIDEO", "CONTROLS"]
+        );
+        assert_eq!(TABS.len(), TAB_KEYS.len());
+    }
+
+    #[test]
+    fn every_saved_setting_is_in_exactly_one_tab() {
+        for key in saved_keys() {
+            let shown = TAB_KEYS
+                .iter()
+                .filter(|keys| keys.contains(&key.as_str()))
+                .count();
+            let expected = if OFF_PANEL_KEYS.contains(&key.as_str()) {
+                0
+            } else {
+                1
+            };
+            assert_eq!(shown, expected, "{key} should appear in {expected} tab(s)");
+        }
+    }
+
+    #[test]
+    fn tabs_only_name_saved_settings() {
+        let saved = saved_keys();
+        for keys in TAB_KEYS.iter() {
+            for key in keys.iter() {
+                assert!(saved.iter().any(|k| k == key), "{key} is not a saved setting");
+            }
+        }
+        for key in OFF_PANEL_KEYS {
+            assert!(saved.iter().any(|k| k == key), "{key} is not a saved setting");
+        }
+    }
 }

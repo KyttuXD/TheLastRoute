@@ -6,6 +6,7 @@ mod hunting;
 mod interact;
 mod items;
 pub mod meters;
+pub mod npc;
 pub mod player;
 
 pub use interact::Focus;
@@ -58,6 +59,9 @@ pub struct Admin {
     pub no_target: bool,
     pub noclip: bool,
     pub run_speed: f32,
+    /// The admin HUNTER REVEAL, on and admin-enabled. The admin UI sets it every frame; the maps then draw every hunter on
+    /// the floor (`Game::map_hunters`).
+    pub hunter_reveal: bool,
 }
 
 impl Default for Admin {
@@ -67,6 +71,7 @@ impl Default for Admin {
             no_target: false,
             noclip: false,
             run_speed: 1.0,
+            hunter_reveal: false,
         }
     }
 }
@@ -170,6 +175,9 @@ pub struct Game {
     /// The Infinite route's streamed window and levels (None on a finite route).
     pub inf: Option<endless::InfState>,
     pub admin: Admin,
+    /// NPC teammates the admin spawned this run (game/npc.rs, phase one), and the next id (never reused).
+    pub npcs: Vec<npc::Npc>,
+    pub npc_next: u32,
     /// Hunters met this run (within 7.5 m, in line of sight) not yet handed to the dossier.
     sightings: Vec<String>,
     sighted: std::collections::HashSet<String>,
@@ -266,6 +274,8 @@ impl Game {
             fov_deg: FIELD_OF_VIEW_DEG,
             inf: None,
             admin: Admin::default(),
+            npcs: vec![],
+            npc_next: 0,
             sightings: vec![],
             sighted: Default::default(),
             fac,
@@ -377,6 +387,8 @@ impl Game {
             fov_deg: FIELD_OF_VIEW_DEG,
             inf: None,
             admin: Admin::default(),
+            npcs: vec![],
+            npc_next: 0,
             sightings: vec![],
             sighted: Default::default(),
             world: WorldMeshes::default(),
@@ -391,6 +403,15 @@ impl Game {
         self.director = Director::new(self.difficulty, &format!("{}-director", self.run_seed));
     }
 
+    /// The hunters the minimap and the full map draw (Godot `_streamed_map_marks`): Porcelle while she is awake, and every
+    /// hunter on the floor while the admin HUNTER REVEAL is on. The maps dim the ones that are asleep.
+    pub fn map_hunters(&self) -> impl Iterator<Item = &Brain> + '_ {
+        let reveal = self.admin.hunter_reveal;
+        self.hunters
+            .iter()
+            .filter(move |h| reveal || (h.active && h.gimmick.on_radar()))
+    }
+
     /// This run's admin switches merged with the admin overlay's (ui::admin::flags).
     pub fn admin_flags(&self) -> Admin {
         let f = crate::shared::admin_flags::flags();
@@ -399,6 +420,7 @@ impl Game {
             no_target: self.admin.no_target || f.no_target,
             noclip: self.admin.noclip || f.noclip,
             run_speed: self.admin.run_speed * if f.run_speed > 0.0 { f.run_speed } else { 1.0 },
+            hunter_reveal: self.admin.hunter_reveal,
         }
     }
 
@@ -434,6 +456,7 @@ impl Game {
         self.music_box_left = 45.0;
         self.relays_collected = 0;
         self.p.place(self.fac.start.center());
+        self.npc_place_beside_runner();
         // the floor's route hunter, then the always-present specials beside her spawn
         let pick = crate::hunters::pick_for_floor(content, &seed, self.depth, self.difficulty);
         let def = content.hunters[pick].clone();
@@ -645,6 +668,8 @@ impl Game {
             }).collect();
             crate::audio::world::update(dt, &listener, &hunters);
         }
+        // NPC teammates follow the runner through the escape struggle too (game/npc.rs)
+        self.update_npcs(dt);
         if self.escape.is_some() {
             self.update_escape(dt, c, sounds);
             return;

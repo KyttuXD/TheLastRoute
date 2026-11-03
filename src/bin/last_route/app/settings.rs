@@ -68,68 +68,76 @@ fn path() -> Option<PathBuf> {
 
 impl Settings {
     pub fn load() -> Settings {
-        let mut s = Settings::default();
-        if let Some(v) = path()
+        path()
             .and_then(|p| std::fs::read_to_string(p).ok())
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .map(|v| Settings::from_json(&v))
+            .unwrap_or_default()
+    }
+
+    /// Reads the saved keys from a parsed settings file. A missing or invalid key keeps its default.
+    pub fn from_json(v: &serde_json::Value) -> Settings {
+        let mut s = Settings::default();
+        let f = |k: &str, d: f32| v[k].as_f64().map(|x| x as f32).unwrap_or(d);
+        let b = |k: &str, d: bool| v[k].as_bool().unwrap_or(d);
+        s.master_volume = f("master_volume", 1.0).clamp(0.0, 1.0);
+        s.gameplay_volume = f("gameplay_volume", 1.0).clamp(0.0, 1.0);
+        s.ui_volume = f("ui_volume", 1.0).clamp(0.0, 1.0);
+        s.voice_volume = f("voice_volume", 80.0).clamp(0.0, 100.0);
+        s.voices = b("voices", true);
+        s.subtitles = b("subtitles", true);
+        s.fov = f("fov", s.fov).clamp(crate::config::FOV_MIN_DEG, crate::config::FOV_MAX_DEG);
+        s.sensitivity = f("sensitivity", s.sensitivity).clamp(
+            crate::config::SENSITIVITY_MIN,
+            crate::config::SENSITIVITY_MAX,
+        );
+        s.fullscreen = b("fullscreen", false);
+        s.vsync = b("vsync", true);
+        s.fps_limit = f("fps_limit", 0.0).clamp(0.0, 240.0);
+        s.pause_on_focus_loss = b("pause_on_focus_loss", true);
+        s.teammate_waypoints = b("teammate_waypoints", true);
+        if let Some(q) = v["quality"]
+            .as_str()
+            .filter(|q| ["AUTO", "LOW", "MEDIUM", "HIGH"].contains(q))
         {
-            let f = |k: &str, d: f32| v[k].as_f64().map(|x| x as f32).unwrap_or(d);
-            let b = |k: &str, d: bool| v[k].as_bool().unwrap_or(d);
-            s.master_volume = f("master_volume", 1.0).clamp(0.0, 1.0);
-            s.gameplay_volume = f("gameplay_volume", 1.0).clamp(0.0, 1.0);
-            s.ui_volume = f("ui_volume", 1.0).clamp(0.0, 1.0);
-            s.voice_volume = f("voice_volume", 80.0).clamp(0.0, 100.0);
-            s.voices = b("voices", true);
-            s.subtitles = b("subtitles", true);
-            s.fov = f("fov", s.fov).clamp(crate::config::FOV_MIN_DEG, crate::config::FOV_MAX_DEG);
-            s.sensitivity = f("sensitivity", s.sensitivity).clamp(
-                crate::config::SENSITIVITY_MIN,
-                crate::config::SENSITIVITY_MAX,
-            );
-            s.fullscreen = b("fullscreen", false);
-            s.vsync = b("vsync", true);
-            s.fps_limit = f("fps_limit", 0.0).clamp(0.0, 240.0);
-            s.pause_on_focus_loss = b("pause_on_focus_loss", true);
-            s.teammate_waypoints = b("teammate_waypoints", true);
-            if let Some(q) = v["quality"]
-                .as_str()
-                .filter(|q| ["AUTO", "LOW", "MEDIUM", "HIGH"].contains(q))
-            {
-                s.quality = q.into();
-            }
-            if let Some(q) = v["ads"]
-                .as_str()
-                .filter(|q| ["off", "gentle", "annoying"].contains(q))
-            {
-                s.ads = q.into();
-            }
-            if let Some(q) = v["scheme"].as_str() {
-                s.scheme = if q == "city" { "city" } else { "last_route" }.into();
-            }
-            if let Some(u) = v["username"].as_str() {
-                s.username = u
-                    .chars()
-                    .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-                    .take(24)
-                    .collect::<String>()
-                    .to_uppercase();
-            }
+            s.quality = q.into();
+        }
+        if let Some(q) = v["ads"]
+            .as_str()
+            .filter(|q| ["off", "gentle", "annoying"].contains(q))
+        {
+            s.ads = q.into();
+        }
+        if let Some(q) = v["scheme"].as_str() {
+            s.scheme = if q == "city" { "city" } else { "last_route" }.into();
+        }
+        if let Some(u) = v["username"].as_str() {
+            s.username = u
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .take(24)
+                .collect::<String>()
+                .to_uppercase();
         }
         s
+    }
+
+    /// The saved keys, as `save` writes them.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "master_volume": self.master_volume, "gameplay_volume": self.gameplay_volume,
+            "ui_volume": self.ui_volume, "voice_volume": self.voice_volume, "voices": self.voices,
+            "subtitles": self.subtitles, "fov": self.fov, "sensitivity": self.sensitivity,
+            "fullscreen": self.fullscreen, "vsync": self.vsync, "fps_limit": self.fps_limit,
+            "quality": self.quality, "ads": self.ads, "pause_on_focus_loss": self.pause_on_focus_loss,
+            "teammate_waypoints": self.teammate_waypoints, "username": self.username, "scheme": self.scheme,
+        })
     }
 
     pub fn save(&self) {
         if let Some(p) = path() {
             let _ = std::fs::create_dir_all(p.parent().unwrap());
-            let v = serde_json::json!({
-                "master_volume": self.master_volume, "gameplay_volume": self.gameplay_volume,
-                "ui_volume": self.ui_volume, "voice_volume": self.voice_volume, "voices": self.voices,
-                "subtitles": self.subtitles, "fov": self.fov, "sensitivity": self.sensitivity,
-                "fullscreen": self.fullscreen, "vsync": self.vsync, "fps_limit": self.fps_limit,
-                "quality": self.quality, "ads": self.ads, "pause_on_focus_loss": self.pause_on_focus_loss,
-                "teammate_waypoints": self.teammate_waypoints, "username": self.username, "scheme": self.scheme,
-            });
-            let _ = std::fs::write(p, v.to_string());
+            let _ = std::fs::write(p, self.to_json().to_string());
         }
     }
 
@@ -201,5 +209,78 @@ mod tests {
         };
         assert_eq!(on.swap_interval(), 1);
         assert_eq!(off.swap_interval(), 0);
+    }
+
+    #[test]
+    fn saved_key_names_are_unchanged() {
+        let mut keys: Vec<String> = Settings::default()
+            .to_json()
+            .as_object()
+            .expect("settings are a JSON object")
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        let mut expected: Vec<String> = [
+            "master_volume",
+            "gameplay_volume",
+            "ui_volume",
+            "voice_volume",
+            "voices",
+            "subtitles",
+            "fov",
+            "sensitivity",
+            "fullscreen",
+            "vsync",
+            "fps_limit",
+            "quality",
+            "ads",
+            "pause_on_focus_loss",
+            "teammate_waypoints",
+            "username",
+            "scheme",
+        ]
+        .iter()
+        .map(|k| k.to_string())
+        .collect();
+        expected.sort();
+        assert_eq!(keys, expected);
+    }
+
+    #[test]
+    fn saved_keys_round_trip() {
+        let saved = Settings {
+            master_volume: 0.4,
+            gameplay_volume: 0.6,
+            ui_volume: 0.2,
+            voice_volume: 45.0,
+            voices: false,
+            subtitles: false,
+            fov: (crate::config::FOV_MIN_DEG + crate::config::FOV_MAX_DEG) * 0.5,
+            sensitivity: (crate::config::SENSITIVITY_MIN + crate::config::SENSITIVITY_MAX) * 0.5,
+            fullscreen: true,
+            vsync: false,
+            fps_limit: 90.0,
+            quality: "MEDIUM".into(),
+            ads: "gentle".into(),
+            pause_on_focus_loss: false,
+            teammate_waypoints: false,
+            username: "ALICE".into(),
+            scheme: "city".into(),
+        };
+        let json = saved.to_json();
+        let back = Settings::from_json(&json);
+        assert_eq!(back.to_json(), json);
+        assert_eq!(back.quality, "MEDIUM");
+        assert_eq!(back.ads, "gentle");
+        assert_eq!(back.username, "ALICE");
+        assert_eq!(back.scheme, "city");
+        assert!(!back.vsync && back.fullscreen);
+    }
+
+    #[test]
+    fn empty_file_keeps_defaults() {
+        let from_empty = Settings::from_json(&serde_json::json!({}));
+        assert_eq!(from_empty.to_json(), Settings::default().to_json());
     }
 }

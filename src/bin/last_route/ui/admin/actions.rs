@@ -199,14 +199,29 @@ impl Admin {
             }
             Cmd::Npc(op) => {
                 let smart = NPC_SMARTS[self.sel_of("npc_smart").min(3)];
+                // offline: the NPCs live on the game, no server (game/npc.rs). Phase one covers spawn and the
+                // removes; the per-NPC and ALL NPCS commands are deferred.
                 let line = match op {
-                    "spawn" => format!(
-                        "ADMIN // NPC TEAMMATES ARE NOT IN THIS BUILD ({} AT SMART {smart})",
-                        self.npc_count
-                    ),
-                    "remove_nearest" | "remove_all" => "ADMIN // NO NPCS".to_string(),
-                    _ if op.starts_with("all_") => "ALL NPCS // 0 NPCS".to_string(),
-                    _ => return, // per-NPC ops need a picked NPC (none: nothing happens, as the original)
+                    "spawn" => {
+                        let eye = g.eye();
+                        let (fwd, _, _) = g.camera_basis();
+                        let n = g.npc_spawn(
+                            self.npc_count,
+                            smart,
+                            (eye.x, eye.y, eye.z),
+                            (fwd.x, fwd.y, fwd.z),
+                        );
+                        format!("ADMIN // {n} NPC(S) SPAWNED")
+                    }
+                    "remove_nearest" => match g.npc_remove_nearest() {
+                        Some(name) => format!("ADMIN // NPC REMOVED // {name}"),
+                        None => "ADMIN // NO NPCS".to_string(),
+                    },
+                    "remove_all" => match g.npc_remove_all() {
+                        0 => "ADMIN // NO NPCS".to_string(),
+                        n => format!("ADMIN // {n} NPCS REMOVED"),
+                    },
+                    _ => "NPC COMMANDS ARE NOT IN THIS BUILD YET".to_string(),
                 };
                 g.say(&line);
                 self.mark_debug();

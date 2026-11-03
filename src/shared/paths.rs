@@ -1,6 +1,6 @@
 //! The per-user folder for settings, the saved run and mod packs, on each desktop system:
-//! Windows `%APPDATA%/LastRoute`, macOS `~/Library/Application Support/LastRoute`, Linux
-//! `$XDG_DATA_HOME/LastRoute` (default `~/.local/share/LastRoute`).
+//! Windows `%APPDATA%/KYTTU/TheLastRoute`, macOS `~/Library/Application Support/KYTTU/TheLastRoute`,
+//! Linux `$XDG_DATA_HOME/KYTTU/TheLastRoute` (default `~/.local/share/KYTTU/TheLastRoute`).
 
 use std::path::PathBuf;
 
@@ -18,7 +18,7 @@ pub fn user_dir() -> Option<PathBuf> {
     } else {
         env("XDG_DATA_HOME").or_else(|| env("HOME").map(|h| h.join(".local").join("share")))
     };
-    base.map(|b| b.join("LastRoute"))
+    base.map(|b| b.join("KYTTU").join("TheLastRoute"))
 }
 
 pub fn user_file(name: &str) -> Option<PathBuf> {

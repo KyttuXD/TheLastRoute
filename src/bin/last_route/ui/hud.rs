@@ -26,13 +26,8 @@ const GAP: f32 = 4.0;
 /// hud.tscn's StyleBoxFlat_hud (Last Route) or the scheme's frame (other schemes).
 fn hud_box(r: Rect) {
     if is_last_route() {
-        sbox(
-            r,
-            rgba(0.078, 0.043, 0.063, 0.9),
-            rgba(0.3, 0.14, 0.18, 0.95),
-            1.0,
-            2.0,
-        );
+        let p = pal();
+        sbox(r, p.panel, p.panel_edge, 1.0, 2.0);
     } else {
         let p = pal();
         sbox(r, alpha(p.panel, 0.9), p.panel_edge, 1.0, p.corner);
@@ -40,13 +35,12 @@ fn hud_box(r: Rect) {
 }
 
 fn meter(r: Rect, f: f32, col: Color) {
-    sbox(
-        r,
-        rgba(0.106, 0.063, 0.086, 1.0),
-        rgba(0.168, 0.102, 0.133, 0.9),
-        1.0,
-        0.0,
-    );
+    let (track, edge) = if is_last_route() {
+        (hex(0x09060a), hexa(0xffffff57))
+    } else {
+        (rgba(0.106, 0.063, 0.086, 1.0), rgba(0.168, 0.102, 0.133, 0.9))
+    };
+    sbox(r, track, edge, 1.0, 0.0);
     if f > 0.0 {
         fill(Rect::new(r.x, r.y, r.w * f.clamp(0.0, 1.0), r.h), col);
     }
@@ -78,7 +72,7 @@ pub fn draw_hud(g: &Game, a: &Assets, fps: i32, _s: f32) -> HudDrawn {
         SAFE,
         SAFE,
         fs(7.0),
-        rgba(0.729, 0.698, 0.659, 0.95),
+        lr(rgba(0.725, 1.0, 0.690, 0.95), rgba(0.729, 0.698, 0.659, 0.95)),
     );
 
     // minimap, then the objective panel under it, both right-aligned
@@ -129,7 +123,7 @@ pub fn draw_hud(g: &Game, a: &Assets, fps: i32, _s: f32) -> HudDrawn {
         obj.x,
         y,
         d7,
-        rgba(0.788, 0.663, 0.847, 1.0),
+        lr(p.amber, rgba(0.788, 0.663, 0.847, 1.0)),
     );
     y += lh(F::Body, d7) + 1.0;
     label(
@@ -139,12 +133,12 @@ pub fn draw_hud(g: &Game, a: &Assets, fps: i32, _s: f32) -> HudDrawn {
         obj.x,
         y,
         d6,
-        rgba(0.949, 0.929, 0.882, 1.0),
+        lr(p.ink, rgba(0.949, 0.929, 0.882, 1.0)),
     );
     y += lh(F::Body, d6) + 1.0;
     if let (Some(d), Some(t)) = (danger, &danger_text) {
         let col = if d < 40 {
-            METER_SAFE
+            meter_safe()
         } else if d < 75 {
             METER_WARN
         } else {
@@ -229,7 +223,7 @@ pub fn draw_hud(g: &Game, a: &Assets, fps: i32, _s: f32) -> HudDrawn {
             } else if g.music_box_left <= 15.0 {
                 METER_WARN
             } else {
-                METER_SAFE
+                meter_safe()
             };
             let t = format!("MUSIC BOX {pct:.0}%");
             shadowed(
@@ -307,7 +301,7 @@ pub fn draw_hud(g: &Game, a: &Assets, fps: i32, _s: f32) -> HudDrawn {
     } else if stamina < 45.0 {
         METER_WARN
     } else {
-        STAMINA
+        stamina_col()
     };
     meter(
         Rect::new(c.x - 82.0, v.y - 50.0, 164.0, 5.0),
@@ -338,11 +332,11 @@ pub fn draw_hud(g: &Game, a: &Assets, fps: i32, _s: f32) -> HudDrawn {
         let edge = if selected {
             p.amber
         } else {
-            rgba(0.3, 0.14, 0.18, 0.92)
+            lr(hexa(0xffffff47), rgba(0.3, 0.14, 0.18, 0.92))
         };
         sbox(
             r,
-            mul(rgba(0.078, 0.043, 0.063, 0.94)),
+            mul(lr(hexa(0x09060ab8), rgba(0.078, 0.043, 0.063, 0.94))),
             mul(edge),
             if selected { 2.0 } else { 1.0 },
             1.0,
@@ -378,7 +372,7 @@ pub fn draw_hud(g: &Game, a: &Assets, fps: i32, _s: f32) -> HudDrawn {
             };
             if let Some(f) = frac {
                 let by = r.y + 20.0 + lh(F::Body, 6.0) - 2.0;
-                meter(Rect::new(r.x + 1.0, by, r.w - 2.0, 3.0), f, METER_SAFE);
+                meter(Rect::new(r.x + 1.0, by, r.w - 2.0, 3.0), f, meter_safe());
             }
             if sl.item.stack_max() > 1 && sl.n > 1 {
                 let t = format!("x{}", sl.n);
@@ -389,7 +383,7 @@ pub fn draw_hud(g: &Game, a: &Assets, fps: i32, _s: f32) -> HudDrawn {
                     r.x + r.w - 1.0 - tw(a, F::Body, &t, 9.0),
                     r.y + r.h - lh(F::Body, 9.0),
                     9.0,
-                    rgba(1.0, 0.94, 0.72, 1.0),
+                    lr(p.ink, rgba(1.0, 0.94, 0.72, 1.0)),
                     rgba(0.0, 0.0, 0.0, 0.9),
                     1.5,
                 );
@@ -420,19 +414,19 @@ pub fn draw_hud(g: &Game, a: &Assets, fps: i32, _s: f32) -> HudDrawn {
             c.x - tw(a, F::Body, t, 11.0) * 0.5,
             y,
             11.0,
-            rgba(0.788, 0.663, 0.847, 1.0),
+            lr(p.ink, rgba(0.788, 0.663, 0.847, 1.0)),
         );
         y += lh(F::Body, 11.0) + 5.0;
         meter(
             Rect::new(r.x + 10.0, y, 160.0, 8.0),
             e.progress as f32 / ESCAPE_PRESSES as f32,
-            rgba(0.91, 0.72, 0.29, 1.0),
+            lr(METER_WARN, rgba(0.91, 0.72, 0.29, 1.0)),
         );
         y += 13.0;
         meter(
             Rect::new(r.x + 10.0, y, 160.0, 4.0),
             e.remaining / ESCAPE_DURATION,
-            rgba(0.902, 0.267, 0.318, 1.0),
+            METER_LOW,
         );
     }
 
@@ -454,9 +448,11 @@ pub fn draw_hud(g: &Game, a: &Assets, fps: i32, _s: f32) -> HudDrawn {
     let heat = ((g.meters.temperature - 76.0) / 24.0).clamp(0.0, 1.0);
     let cold = ((34.0 - g.meters.temperature) / 34.0).clamp(0.0, 1.0);
     if cold > 0.0 {
-        edge(v, 14.0, rgba(0.82, 0.96, 1.0, cold * 0.44 * 0.6));
+        let frost = lr(hex(0x5aa9e0), rgba(0.82, 0.96, 1.0, 1.0));
+        edge(v, 14.0, alpha(frost, cold * 0.44 * 0.6));
     } else if heat > 0.0 {
-        edge(v, 14.0, rgba(1.0, 0.74, 0.12, heat * 0.22));
+        let haze = lr(hex(0xe0512f), rgba(1.0, 0.74, 0.12, 1.0));
+        edge(v, 14.0, alpha(haze, heat * 0.22));
     }
     if g.fade > 0.0 {
         fill(

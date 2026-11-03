@@ -278,4 +278,97 @@ mod tests {
         // SPAWN_MAZE_SHARE is 0.6; the maze also comes from the 40% branch sometimes
         assert!(maze > 200, "maze share {maze}/400");
     }
+
+    #[test]
+    fn catalogue_regions_are_all_names_the_generator_returns() {
+        let t = crate::content::regions::RegionTable::builtin(&mut Vec::new());
+        assert!(!t.defs.is_empty());
+        for d in &t.defs {
+            assert!(NAMES.contains(&d.id.as_str()), "{} is in the catalogue but not in NAMES", d.id);
+        }
+    }
+
+    /// The copies the consumers still hold in code: layout.rs HOSPITAL_ROOMS and MALL_ROOMS,
+    /// furnished.rs HOSPITAL_ROOMS and MALL_ROOMS, props.rs HOSPITAL_PROP_SET and MALL_PROP_SET,
+    /// grid.rs ROOM_DOOR_TABLE (mall row) and render/textures/sets.rs District (hospital, mall).
+    /// A change to data/regions must change these copies as well, until the consumers read the catalogue.
+    #[test]
+    fn catalogue_matches_the_hard_coded_copies() {
+        let t = crate::content::regions::RegionTable::builtin(&mut Vec::new());
+        let hospital = t.def("hospital").unwrap();
+        let mall = t.def("mall").unwrap();
+        assert_eq!(
+            hospital.room_roles,
+            ["ward", "nurses_station", "waiting_room", "operating_theatre", "icu", "morgue", "pharmacy", "imaging", "supply_closet"]
+        );
+        assert_eq!(
+            mall.room_roles,
+            [
+                "donut_shop", "cinema", "corner_store", "food_court", "bakery", "laundromat", "electronics",
+                "night_diner", "drugstore", "florist", "barber", "pawn_shop", "stationery", "music_store",
+            ]
+        );
+        // sets.rs District rows
+        assert_eq!(hospital.hall_floor, ["vinyl0", "vinyl1"]);
+        assert_eq!(hospital.room_default_floor, ["vinyl0", "vinyl1"]);
+        assert!(!hospital.hall_runner);
+        assert_eq!(mall.hall_floor, ["terrazzo0", "terrazzo1"]);
+        assert_eq!(mall.room_default_floor, ["terrazzo0"]);
+        assert!(!mall.hall_runner);
+        // grid.rs ROOM_DOOR_TABLE, mall row
+        assert_eq!(mall.room_door.as_deref(), Some("normalRoomDoor"));
+        assert_eq!(mall.double_room_door.as_deref(), Some("normalDoubleRoomDoor"));
+        assert_eq!(hospital.room_door, None);
+        // props.rs HOSPITAL_PROP_SET and MALL_PROP_SET (type, size, solid)
+        let hospital_set: Vec<(&str, [f32; 3], bool)> =
+            hospital.prop_set.iter().map(|p| (p.prop_type.as_str(), p.size, p.solid)).collect();
+        assert_eq!(
+            hospital_set,
+            vec![
+                ("hospitalBed", [0.95, 1.05, 2.1], true),
+                ("wheelchair", [0.65, 0.95, 0.95], true),
+                ("ivDripStand", [0.45, 1.95, 0.45], true),
+                ("medicalSupplyRack", [1.2, 1.9, 0.5], true),
+                ("waitingChairs", [2.0, 0.86, 0.62], true),
+                ("hospitalWardSign", [0.95, 0.36, 0.06], false),
+                ("xrayLightbox", [1.3, 0.85, 0.08], false),
+            ]
+        );
+        let mall_set: Vec<(&str, [f32; 3], bool)> =
+            mall.prop_set.iter().map(|p| (p.prop_type.as_str(), p.size, p.solid)).collect();
+        assert_eq!(
+            mall_set,
+            vec![
+                ("mallBench", [1.8, 0.5, 0.6], true),
+                ("mallPlanter", [1.3, 2.4, 1.3], true),
+                ("shopShelf", [1.2, 1.9, 0.5], true),
+                ("vendingMachine", [0.85, 1.9, 0.6], true),
+                ("menuBoard", [1.5, 0.9, 0.08], false),
+            ]
+        );
+    }
+
+    #[test]
+    fn region_def_reads_the_catalogue() {
+        assert_eq!(region_def("mall").map(|d| d.id.as_str()), Some("mall"));
+        assert!(region_def("maze").is_none());
+    }
+
+    #[test]
+    fn a_pack_region_with_a_new_id_is_never_placed() {
+        let mut t = crate::content::regions::RegionTable::builtin(&mut Vec::new());
+        let mut warnings = vec![];
+        let dungeon = r#"{"schema":"lr.region/1","id":"dungeon","hall_floor":["stone0"],"hall_runner":false,"room_default_floor":["stone0"],"room_roles":["cell"],"prop_set":[]}"#;
+        t.add_pack("alt", &[], &[("dungeon.json".to_string(), dungeon.to_string())], &mut warnings);
+        assert!(t.def("dungeon").is_some());
+        assert!(warnings.iter().any(|w| w.contains("no level places it")), "{warnings:?}");
+        assert!(!NAMES.contains(&"dungeon"));
+        for level in [0, 1, 2, -1, -2, -3, -6] {
+            for cx in -9..=9 {
+                for cz in -9..=9 {
+                    assert_ne!(region_for("ROOM-DUNGEON-0001", cx, cz, level), "dungeon");
+                }
+            }
+        }
+    }
 }

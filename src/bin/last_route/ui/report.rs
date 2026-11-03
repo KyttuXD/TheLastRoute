@@ -160,7 +160,10 @@ impl DeathMoment {
         let fade = (self.age / 0.25).min(1.0);
         fill(
             Rect::new(0.0, 0.0, v.x, v.y),
-            rgba(0.02, 0.01, 0.03, 0.55 * fade),
+            lr(
+                rgba(0.0078, 0.0039, 0.0118, 0.55 * fade),
+                rgba(0.02, 0.01, 0.03, 0.55 * fade),
+            ),
         );
         // SubtitleBox: anchored bottom centre, -170..170 x -86..-22, pad 9, column separation 4
         let text = self.words[..self.shown].join(" ");
@@ -176,8 +179,8 @@ impl DeathMoment {
         let a_ = |c: Color| alpha(c, c.a * fade);
         sbox(
             r,
-            a_(rgba(0.04, 0.02, 0.06, 0.94)),
-            a_(p.panel_edge),
+            a_(lr(hexa(0x000000f0), rgba(0.04, 0.02, 0.06, 0.94))),
+            a_(lr(hex(0x5a5446), p.panel_edge)),
             1.0,
             p.corner,
         );
@@ -266,7 +269,7 @@ pub fn draw_card(a: &Assets, c: &Card, focus: usize) -> Option<usize> {
     let content_h = l7 + 5.0 + lh(F::Title, 22.0) + 5.0 + l7 + 5.0 + grid_h + 12.0 + 5.0 + bh;
     let h = 192.0f32.max(content_h + 26.0);
     let panel = centered(340.0, h);
-    sbox(panel, p.panel, hex(0x563041), 1.0, p.corner);
+    sbox(panel, p.panel, lr(p.panel_edge, hex(0x563041)), 1.0, p.corner);
     let x = panel.x + 13.0;
     let w = panel.w - 26.0;
     let mut y = panel.y + 13.0;

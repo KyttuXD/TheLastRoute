@@ -42,6 +42,7 @@ pub mod relay;
 pub mod saves;
 pub mod session;
 pub mod store;
+pub mod world_sync;
 
 #[cfg(test)]
 mod tests;

@@ -9,7 +9,7 @@ use super::anim::{
 };
 use super::builder::Builder;
 use super::glb::GlbModel;
-use super::shader::{self, Lighting};
+use super::shader::{self, Lamp, Lighting};
 use crate::shared::assets::Assets;
 use crate::config::*;
 use crate::game::{Game, Heater, Item};
@@ -61,6 +61,29 @@ pub fn lighting(g: &Game) -> Lighting {
     }
 }
 
+/// Energy and reach of a grab's fill light (`grab_fill`): Godot's grab staging (dev/look/grabs.gd) puts an omni fill of
+/// 1.5 over 5 m on the camera, so the hunter at arm's length and the runner's hands read in a dark room.
+pub const GRAB_FILL_ENERGY: f32 = 1.5;
+pub const GRAB_FILL_RANGE: f32 = 5.0;
+
+/// The fill light for a grab: on while the escape struggle holds the runner (`held`) and her grab camera is set, off once
+/// the grab is released (the camera goes with it). The lamp sits behind and above the runner's eye, as Godot's fill does
+/// (camera space (0, .4, .3)), so it lights the grabbed pair. The flashlight is off from the catch (hunting.rs), so this
+/// fill and the room's lamps are what light her.
+pub fn grab_fill(held: bool, camera: Option<(Vec3, Vec3, Vec3)>) -> Option<Lamp> {
+    if !held {
+        return None;
+    }
+    let (eye, target, up) = camera?;
+    let fwd = (target - eye).normalize_or_zero();
+    Some(Lamp {
+        pos: eye - fwd * 0.3 + up * 0.4,
+        range: GRAB_FILL_RANGE,
+        color: Color::new(1.0, 0.95, 0.86, 1.0),
+        energy: GRAB_FILL_ENERGY,
+    })
+}
+
 /// An interactable's model: assets/interactables/<name>.glb.
 pub fn item_model<'a>(a: &'a Assets, name: &str) -> Option<&'a GlbModel> {
     a.glb.get(&format!("interactables/{name}.glb"))
@@ -86,7 +109,16 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     set_camera(&camera(g, rt));
     clear_background(Color::new(FOG.x, FOG.y, FOG.z, 1.0));
     gl_use_material(mat);
-    shader::apply(mat, &lighting(g), &g.world.lamps);
+    // the grab's fill joins the room's lamps while the struggle holds the runner (grab_fill); the flashlight is unchanged
+    let light = lighting(g);
+    match grab_fill(g.escape.is_some(), grab::camera()) {
+        Some(fill) => {
+            let mut lamps = g.world.lamps.clone();
+            lamps.push(fill);
+            shader::apply(mat, &light, &lamps);
+        }
+        None => shader::apply(mat, &light, &g.world.lamps),
+    }
     for m in &g.world.meshes {
         draw_mesh(m);
     }
@@ -164,12 +196,13 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
             continue;
         }
         let base = vec3(p.pos.0, 0.0, p.pos.1);
+        // lit like the floor (mode 0): unlit, the pad read as a flat blue hole in the floor
         b.cube(
             base + vec3(0.0, 0.006, 0.0),
             vec3(0.56, 0.01, 0.56),
             0.4,
             Color::new(TOOL.r * 0.35, TOOL.g * 0.35, TOOL.b * 0.4, 1.0),
-            2.0,
+            0.0,
         );
         match item_model(a, item_file(p.item)) {
             // configure_tool_pickup: scale .72 (stim x1.3), lifted .10, tipped -18 deg and turned 25 deg
@@ -513,6 +546,30 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         }
         stars.draw_and_clear();
     });
+    // NPC teammates (game/npc.rs): the hunter body at the runner's height, drawn without a rig (the same
+    // fallback build a rig-less hunter gets). Only NPCs on the runner's level are drawn.
+    if let Some(body) = a.npc_body.as_ref() {
+        let level = g.runner_level();
+        for n in g.npcs.iter().filter(|n| n.level == level) {
+            let mut verts = vec![];
+            let mut idx = vec![];
+            let amp = if n.walking { 0.6 } else { 0.0 };
+            body.build(
+                &mut verts,
+                &mut idx,
+                vec3(n.at.0, 0.0, n.at.1),
+                n.facing,
+                n.stride * 2.4,
+                amp,
+                WHITE,
+            );
+            draw_mesh(&Mesh {
+                vertices: verts,
+                indices: idx,
+                texture: Some(body.texture.clone()),
+            });
+        }
+    }
     for h in g.hunters.iter().filter(|h| h.active) {
         let faded = h.gimmick.hidden_from_view();
         if faded && !matches!(h.gimmick, Gimmick::Ilyra(_)) {
@@ -581,4 +638,27 @@ fn locker_shape(b: &mut Builder, p: Vec3, yaw: f32, burnt: bool) {
         body,
         0.0,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grab_light_on_during_grab_off_after() {
+        // the runner's eye at 1.6 m looking down -Z at her face 0.8 m away, as the grab camera sets it
+        let cam = (vec3(0.0, 1.6, 0.0), vec3(0.0, 1.6, -0.8), Vec3::Y);
+        // during the struggle: a fill lamp behind and above the eye, close to the pair
+        let on = grab_fill(true, Some(cam)).expect("the grab fill is on while she holds the runner");
+        assert!(on.energy > 0.0 && on.range > 0.0);
+        assert!(on.pos.z > cam.0.z, "the fill is behind the eye, so it lights her face");
+        assert!(on.pos.y > cam.0.y, "the fill is above the eye");
+        assert!((on.pos - cam.0).length() < 1.0, "the fill stays with the pair");
+        // after the release the escape is cleared and the grab camera is gone: the light is off
+        assert!(grab_fill(false, None).is_none());
+        // a stale camera with the escape cleared is still off
+        assert!(grab_fill(false, Some(cam)).is_none());
+        // the escape set before the grab camera exists (the first frame of a catch): off until the grab starts
+        assert!(grab_fill(true, None).is_none());
+    }
 }

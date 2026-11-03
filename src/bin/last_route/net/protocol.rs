@@ -85,6 +85,8 @@ pub const RPC_TABLE: &[(&str, Sender, u8)] = &[
     ("_receive_pings", Sender::Host, 99),
     ("_wire_profile", Sender::AnyPeer, channel::EVENTS),
     ("_place", Sender::AnyPeer, channel::STATE),
+    // Rust port only: the host relays a guest's sample to the other guests (`_peer_place`, peer_id = sender's session)
+    ("_peer_place", Sender::Host, channel::STATE),
     ("_hunters_large", Sender::Host, channel::HUNTERS_LARGE),
     ("_hunters", Sender::Host, channel::HUNTERS),
     ("_submit_event", Sender::AnyPeer, channel::EVENTS),
@@ -133,6 +135,8 @@ pub enum Message {
     WireProfile { profile: Map<String, Value> },
     /// `_place(packet)`: the 20 Hz runner sample (PlayerStateWire); any JSON value.
     Place { packet: Value },
+    /// Host -> guests: `packet` is the sample of peer `peer_id` (1 = the host, else a guest's session id).
+    PeerPlace { peer_id: i64, packet: Value },
     HuntersLarge { data: Vec<Value> },
     Hunters { data: Vec<Value> },
     SubmitEvent { event: Map<String, Value> },
@@ -195,6 +199,7 @@ impl Message {
             Pings { .. } => "_receive_pings",
             WireProfile { .. } => "_wire_profile",
             Place { .. } => "_place",
+            PeerPlace { .. } => "_peer_place",
             HuntersLarge { .. } => "_hunters_large",
             Hunters { .. } => "_hunters",
             SubmitEvent { .. } => "_submit_event",
@@ -258,6 +263,7 @@ impl Message {
             Pings { pings } => json!({ "pings": pings }),
             WireProfile { profile } => json!({ "profile": profile }),
             Place { packet } => json!({ "packet": packet }),
+            PeerPlace { peer_id, packet } => json!({ "peer_id": peer_id, "packet": packet }),
             HuntersLarge { data } | Hunters { data } => json!({ "data": data }),
             SubmitEvent { event } | Event { event } | RequestInteraction { event } | PlayerEvent { event } | SubmitHunterEvent { event } => {
                 json!({ "event": event })
@@ -316,6 +322,7 @@ impl Message {
             "_receive_pings" => Pings { pings: m(o, "pings") },
             "_wire_profile" => WireProfile { profile: m(o, "profile") },
             "_place" => Place { packet: o.get("packet").cloned().unwrap_or(Value::Null) },
+            "_peer_place" => PeerPlace { peer_id: i(o, "peer_id"), packet: o.get("packet").cloned().unwrap_or(Value::Null) },
             "_hunters_large" => HuntersLarge { data: a(o, "data") },
             "_hunters" => Hunters { data: a(o, "data") },
             "_submit_event" => SubmitEvent { event: m(o, "event") },
@@ -375,6 +382,7 @@ mod tests {
             Message::Start { code: "ABCDE".into(), seed: "S".into(), mode: 1, scale: 2, rest: ev.clone() },
             Message::HandoffCheckpointResult { epoch: 7, accepted: true, reason: String::new() },
             Message::Place { packet: json!([1, 2.5, "x"]) },
+            Message::PeerPlace { peer_id: 42, packet: json!({"x": 1.5, "y": -2.0}) },
             Message::Hunters { data: vec![json!({"id": 3})] },
             Message::Event { event: ev },
             Message::VoiceDown { sender: 2, packet: vec![0, 1, 255] },
@@ -386,7 +394,12 @@ mod tests {
         assert_eq!(Message::HostBeat.channel(), channel::VOICE);
         assert!(Message::Snapshot { state: Map::new() }.host_only());
         assert!(!Message::SubmitEvent { event: Map::new() }.host_only());
-        assert_eq!(RPC_TABLE.len(), 39);
+        // the host relays guests' samples: a guest may not send _peer_place, and it travels unreliably on STATE
+        let relayed = Message::PeerPlace { peer_id: 7, packet: Value::Null };
+        assert!(relayed.host_only());
+        assert_eq!(relayed.channel(), channel::STATE);
+        assert_eq!(relayed.to_json()["t"], json!("_peer_place"));
+        assert_eq!(RPC_TABLE.len(), 40);
     }
 
     #[test]

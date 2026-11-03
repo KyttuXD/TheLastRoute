@@ -3,6 +3,7 @@
 //! factors and vertex colours, grouped into one part per texture.
 
 use super::builder::Builder;
+use super::door::{self, DoorMeasure};
 use macroquad::prelude::*;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -22,6 +23,8 @@ pub struct GlbModel {
     pub parts: Vec<Part>,
     pub min: Vec3,
     pub max: Vec3,
+    /// The door measures, for a model with door hinges (door.rs); `None` for every other model.
+    pub door: Option<door::DoorDims>,
 }
 
 fn repeat(t: &Texture2D) {
@@ -72,14 +75,27 @@ impl GlbModel {
         let mut min = Vec3::splat(f32::MAX);
         let mut max = Vec3::splat(f32::MIN);
         let scene = g.default_scene().or_else(|| g.scenes().next())?;
-        let mut stack: Vec<(gltf::Node, Mat4)> =
-            scene.nodes().map(|n| (n, Mat4::IDENTITY)).collect();
-        while let Some((node, parent)) = stack.pop() {
-            let m = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
+        let mut measure = DoorMeasure::default();
+        // (node, parent transform, under a door hinge)
+        let mut stack: Vec<(gltf::Node, Mat4, bool)> =
+            scene.nodes().map(|n| (n, Mat4::IDENTITY, false)).collect();
+        while let Some((node, parent, under_hinge)) = stack.pop() {
+            let name = node.name().unwrap_or("");
+            let mut local = Mat4::from_cols_array_2d(&node.transform().matrix());
+            // a door's hinges are drawn closed, as Godot leaves them by default (door.rs)
+            let hinge = door::closed_hinge_deg(name);
+            if let Some(deg) = hinge {
+                local = door::closed_hinge_local(local, deg);
+                measure.hinge();
+            }
+            let m = parent * local;
+            let under = under_hinge || hinge.is_some();
             for child in node.children() {
-                stack.push((child, m));
+                stack.push((child, m, under));
             }
             let Some(mesh) = node.mesh() else { continue };
+            let header = name == "DoorFrameTop";
+            let jamb = name == "DoorFrameL" || name == "DoorFrameR";
             let nm = Mat3::from_mat4(m).inverse().transpose();
             for prim in mesh.primitives() {
                 if prim.mode() != gltf::mesh::Mode::Triangles {
@@ -115,6 +131,15 @@ impl GlbModel {
                     let p = m.transform_point3(Vec3::from(pos[i]));
                     min = min.min(p);
                     max = max.max(p);
+                    if under {
+                        measure.leaf_vertex(p.y);
+                    }
+                    if header {
+                        measure.header_vertex(p.y);
+                    }
+                    if jamb {
+                        measure.jamb_vertex(p.x);
+                    }
                     let n = (nm * Vec3::from(normals[i])).normalize_or_zero();
                     let c = [
                         (factor[0] * cols[i][0] * 255.0).clamp(0.0, 255.0) as u8,
@@ -149,7 +174,8 @@ impl GlbModel {
                 key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
             })
             .collect();
-        Some(GlbModel { parts, min, max })
+        let door = measure.finish(max.y);
+        Some(GlbModel { parts, min, max, door })
     }
 
     pub fn height(&self) -> f32 {

@@ -4,6 +4,7 @@
 pub mod anim;
 pub mod bbmodel;
 pub mod builder;
+pub mod door;
 pub mod glb;
 pub mod prop_scale;
 pub mod scene;

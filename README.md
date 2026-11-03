@@ -1,63 +1,35 @@
-This build contains the original game's own files, for the private use of the person who owns the game, on their own computer. It must not be shared or published.
+# KYTTU: The Last Route
 
-# Last Route — Rust port
+A first-person survival horror game set in an endless facility. Every run starts fresh, and
+the facility keeps going down: district by district, with stairwells to deeper levels and
+hunters that grow more dangerous the more relays you recover.
 
-A Rust + macroquad port of KYTTU: The Last Route (the Godot 4 project in
-`LastRoute Godot/KyttusLabApp`). CREATE ROOM starts the Infinite route like the original:
-an endless streamed facility, district by district, with stairwells down to deeper levels and
-more hunters as you recover relays. The finite floor-by-floor route (relays, then the service
-lift) is kept too, and a run saves itself at each level; the title's username button opens the
-account menu, where a saved run can be continued or cleared.
+This build contains the game's own files, for the private use of the person who owns the game,
+on their own computer. Please don't share or publish it.
 
-## Run
+## How a run works
 
-```sh
-cargo run --release
-cargo run -- --screenshot shots/now.png   # draws ~120 frames, saves a PNG, exits
-cargo run -- --self-test shots/test.json  # plays the core loop with scripted input, writes results
-```
+- **Start:** choose **CREATE ROOM** on the title screen to begin an Infinite route run.
+- **Explore:** the facility is generated as you walk. Each district is different, and the
+  map (**M**) fills in as you discover it.
+- **Recover relays:** relays are the objective. Each relay you recover brings more hunters
+  into the facility.
+- **Survive:** hunters can see, hear and chase you. Hide in lockers, beds and wardrobes, and
+  keep your light and stamina in mind.
+- **Find safe zones:** a safe zone is a place the hunters can't take you. Reach one when you
+  need to rest or regroup.
+- **Go deeper:** stairwells lead down to deeper, more dangerous levels.
+- **Save:** a run saves itself at each level. Open the account menu from the title screen's
+  username button to continue a saved run or clear it.
 
-## Headless runs, tests and AI-agent control
+## Controls
 
-```sh
-last_route --headless [--port 47600]                       # no window: JSON lines on stdin/stdout (and TCP)
-last_route --agent-window [--port 47600]                   # same protocol with the game window (screenshots)
-last_route --test-suite "tests/*.json" [--out report.json] # headless test suites, JSON report
-last_route --bot --scenario=survive --seed=ALPHA --minutes=5 --out=.playtest/alpha
-```
-
-The protocol keeps the original playtest bridge's commands and JSON shapes (`hello`, `observe`,
-`act`, `step`, `start_run`, `admin`, `screenshot`, ...) plus direct queries for agents; see
-`docs/AGENT_CLI.md`. The simulation runs thousands of times faster than real time headless.
-
-## Windows, macOS and Linux
-
-The same code builds on all three (checked with `cargo check --target x86_64-unknown-linux-gnu`
-and `--target aarch64-apple-darwin`; macOS/Linux binaries have to be linked on those systems).
-
-- **Windows:** `cargo build --release` → `target/release/last_route.exe` (icon embedded).
-- **macOS (Apple Silicon and Intel):** on a Mac, `sh packaging/macos/build_app.sh` →
-  `dist/Kyttu's Lab.app`, one universal app for both chip types, with the original's logo.
-- **Linux:** install `pkg-config libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev`, then
-  `sh packaging/linux/build.sh` → `dist/last-route-linux-x86_64.tar.gz` (binary, desktop entry, icon).
-- `.github/workflows/build.yml` builds all three on a push (artifacts only), for a private repository.
-
-Saves and settings live in `%APPDATA%\LastRoute` (Windows), `~/Library/Application Support/LastRoute`
-(macOS) or `~/.local/share/LastRoute` (Linux). The original's fonts are Courier New Bold and Impact;
-on Linux without them, Liberation Mono/Sans Bold stand in.
-
-## Offline project docs
-
-The app recognizes the local reference library at `C:\Users\Kyttu\Documents\Projects\Docs` when it exists.
-Set `KYTTU_DOCS` to use the same docs from another location; the helper APIs in `src/app/paths.rs`
-only read files beneath that directory and never package the library into the game.
-
-## Controls (the original's default bindings)
+These are the default bindings. You can change them in the settings.
 
 | Action | Key |
 | --- | --- |
 | Move | W A S D |
-| Look | Mouse (I J K L / arrow keys too) |
+| Look | Mouse (I J K L and the arrow keys also work) |
 | Sprint / crouch / hop | Shift (hold) / C (hold) / Space |
 | Use held item | Left click |
 | Interact (relays, pickups, lockers, lift, stairs, safe zone) | E or right click |
@@ -68,28 +40,32 @@ only read files beneath that directory and never package the library into the ga
 | Pause | Escape |
 | Hide HUD / fullscreen | F1 / F11 |
 
-## Layout
+## Saves and settings
 
-The package builds three executables from one library:
+Your settings, saved runs and account data are kept in your user folder:
 
-- `src/lib.rs` (crate `last_route_core`) — the shared core every game uses: `config`, `content`,
-  `world`, `hunters`, `game` (player, items, interactions, capture and escape, the streamed window),
-  `render`, `audio`, and `shared` (assets, paths, checkpoints, admin switches)
-- `src/bin/last_route/` — KYTTU: The Last Route: `app` (main loop, menus, screenshot and self-test
-  modes), `ui` (HUD, map, menus and run report), `headless` (agent and test modes), plus `net`,
-  `updater` and `story`, which are not compiled yet
-- `src/bin/night_watch/` — KYTTU: Night Watch (placeholder, not ported yet)
-- `src/bin/lr_server/` — the dedicated server (`lr_server`)
+- **Windows:** `%APPDATA%\KYTTU\TheLastRoute`
+- **macOS:** `~/Library/Application Support/KYTTU/TheLastRoute`
+- **Linux:** `~/.local/share/KYTTU/TheLastRoute`
 
-Core modules:
+Deleting that folder resets everything.
 
-- `src/config` — tuning numbers and difficulty profiles (see MECHANICS.md)
-- `src/content` — the data-driven content registry (data/*.json + mod packs)
-- `src/world` — seeded random generator, the facility floor generator and the Infinite chunks
-- `src/hunters` — the shared hunter brain and each hunter's own tricks
-- `src/game` — the run logic
-- `src/render` — shader, world meshes, the original's painted textures (`textures/`), Blockbench
-  and Blender models, scene and held item
-- `src/audio` — the original's synthesised sound cues (`cues/`)
-- `data/` — the original's JSON content; `assets/` — the original's textures and models
-- `tools/prop_convert` — converts the original's blocky prop GLBs to .bbmodel
+## Getting the game
+
+- **Windows:** `last_route.exe`.
+- **macOS:** `Kyttu's Lab.app`, one app for both Apple Silicon and Intel Macs.
+- **Linux:** the `last-route-linux-x86_64` archive, with a binary, desktop entry and icon.
+
+Builds are private for now. The game needs a few system fonts (Courier New Bold and Impact on
+Windows and macOS). On Linux, if those aren't installed, Liberation Mono and Liberation Sans
+Bold are used instead.
+
+## Credits
+
+KYTTU: The Last Route was made by Kyttu (KyttuXD, Kyttu's Lab). The full list of the files and
+sources the game uses is in [CREDITS.md](CREDITS.md).
+
+## For developers
+
+Build steps, the headless and test modes, the code layout and the AI-agent protocol are in
+[docs/DEVELOPING.md](docs/DEVELOPING.md).
