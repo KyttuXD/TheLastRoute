@@ -148,6 +148,21 @@ pub const PICKUP_ORDER: [Pickup; 10] = [
     Pickup::BackpackLarge,
 ];
 
+/// What a cell's walk surface is: the ground floor, or a catwalk deck raised over it (Godot's Mezzanine decks).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DeckKind {
+    #[default]
+    Floor,
+    Catwalk,
+}
+
+/// The walk surface of one cell: its kind and its height above the level's floor, in metres.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WalkSurface {
+    pub kind: DeckKind,
+    pub height: f32,
+}
+
 #[derive(Clone)]
 pub struct Facility {
     pub seed_text: String,
@@ -185,6 +200,8 @@ pub struct Facility {
     /// The swing of each room door, keyed by its threshold cell. A door with no entry has not been ticked yet
     /// and counts as open, so a floor nobody calls `update_doors` on stays walkable.
     door_state: HashMap<Cell, DoorState>,
+    /// The walk surface of each cell that is not plain ground floor; a cell with no entry is `Floor` at 0.0 m.
+    walk_surface: HashMap<Cell, WalkSurface>,
 }
 
 /// How far a door is open (0 closed, 1 open) and how long it has stood clear of everyone.
@@ -307,6 +324,7 @@ impl Facility {
             random: Rng::new(seed_text),
             prop_grid: vec![vec![]; (cols * rows) as usize],
             door_state: HashMap::new(),
+            walk_surface: HashMap::new(),
         };
         let room_count = opt.room_count.max(5);
         f.carve_facility_rooms(room_count, cat);
@@ -573,6 +591,7 @@ impl Facility {
             random: Rng::new(seed_text),
             prop_grid: vec![],
             door_state: HashMap::new(),
+            walk_surface: HashMap::new(),
         };
         for (p, ox, oy, region) in parts {
             let sh = |c: Cell| Cell::new(c.x + ox, c.y + oy);
@@ -1077,6 +1096,26 @@ impl Facility {
     /// The open amount of the room door whose threshold cell is `cell`: 1 for a door not yet ticked.
     pub fn door_open_amount(&self, cell: Cell) -> f32 {
         self.door_state.get(&cell).map_or(1.0, |s| s.open)
+    }
+
+    /// The walk surface of `cell`: plain `Floor` at 0.0 m unless it was set with `set_walk_surface`.
+    pub fn walk_surface_at(&self, cell: Cell) -> WalkSurface {
+        self.walk_surface.get(&cell).copied().unwrap_or_default()
+    }
+
+    /// The height of `cell`'s walk surface in metres above the level's floor.
+    pub fn height_at(&self, cell: Cell) -> f32 {
+        self.walk_surface_at(cell).height
+    }
+
+    /// Sets the walk surface of `cell` alone; every other cell keeps its surface.
+    pub fn set_walk_surface(&mut self, cell: Cell, kind: DeckKind, height: f32) {
+        let surface = WalkSurface { kind, height };
+        if surface == WalkSurface::default() {
+            self.walk_surface.remove(&cell);
+        } else {
+            self.walk_surface.insert(cell, surface);
+        }
     }
 
     /// Swings every room door toward open when an actor in `actors` is within `DOOR_TRIGGER` of its centre,
@@ -1883,5 +1922,28 @@ mod tests {
         // a 40-cell sector in the 0.5..0.64 class: the geometry range pins the side to 14, the constants give 20..=25
         assert_eq!(Facility::size_range(40, (0.5, 0.64), room_sizes_for(Some(&tall))), (14, 14));
         assert_eq!(Facility::size_range(40, (0.5, 0.64), room_sizes_for(None)), (20, 25));
+    }
+
+    /// A new floor is all ground floor at 0.0 m; a catwalk set on one cell changes that cell only.
+    #[test]
+    fn a_new_facility_is_all_floor_and_a_catwalk_moves_only_its_own_cell() {
+        let cat = Catalog::load();
+        let mut f = Facility::generate("DECK-1", &Options::default(), &cat);
+        let cells: Vec<Cell> = (0..f.rows)
+            .flat_map(|y| (0..f.cols).map(move |x| Cell::new(x, y)))
+            .collect();
+        for &c in &cells {
+            assert_eq!(f.walk_surface_at(c), WalkSurface { kind: DeckKind::Floor, height: 0.0 });
+            assert_eq!(f.height_at(c), 0.0);
+        }
+        let deck = f.floor_cells()[0];
+        f.set_walk_surface(deck, DeckKind::Catwalk, 4.0);
+        assert_eq!(f.walk_surface_at(deck), WalkSurface { kind: DeckKind::Catwalk, height: 4.0 });
+        assert_eq!(f.height_at(deck), 4.0);
+        for &c in cells.iter().filter(|&&c| c != deck) {
+            assert_eq!(f.walk_surface_at(c), WalkSurface { kind: DeckKind::Floor, height: 0.0 }, "{c:?} moved");
+        }
+        f.set_walk_surface(deck, DeckKind::Floor, 0.0);
+        assert_eq!(f.walk_surface_at(deck), WalkSurface::default());
     }
 }
