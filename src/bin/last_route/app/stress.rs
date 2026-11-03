@@ -1,31 +1,37 @@
-//! Stress mode: `last_route --stress SECONDS --stress-log PATH` (main.rs reads the flags; SECONDS
-//! defaults to 60, PATH to `stress.csv`).
+//! Stress mode: `last_route --stress SECONDS --stress-log PATH --stress-scenario NAME --stress-vsync
+//! on|off` (main.rs reads the flags; SECONDS defaults to 60, PATH to `stress.csv`, NAME to `fly`,
+//! vsync to off). The scenarios are listed on `Scenario`.
 //!
 //! A solo run on the fixed seed `SEED` = 20261101 (room text `route::room_text(SEED)`, the same seed
 //! the screenshot runs use), the Infinite route from the top level (the start CREATE ROOM gives). It
-//! skips the title and the boot card, forces vsync off (swap interval 0) and does not apply the FPS
-//! LIMIT, so the frame times are the game's own. The saved settings file is never written. The
-//! menus, the pause menu and the admin tools take no input in this mode, and a run that is caught
-//! ends there, with the summary covering the run up to the catch.
+//! skips the title and the boot card, sets vsync from `--stress-vsync` (off by default) and does not
+//! apply the FPS LIMIT, so the frame times are the game's own. The saved settings file is never
+//! written. The menus, the pause menu and the admin tools take no input in this mode, and a run that
+//! is caught ends there, with the summary covering the run up to the catch.
 //!
-//! The run flies, as the Godot flythrough does: admin noclip is on and the run speed is `FLY_SPEED`
-//! (`fly`), so walls do not stop the runner and it covers ground fast. The synthetic input is a
+//! The fly scenario flies, as the Godot flythrough does: admin noclip is on and the run speed is
+//! `FLY_SPEED` (`fly`), so walls do not stop the runner and it covers ground fast. The other
+//! scenarios walk the same route with noclip off at normal speed. The synthetic input is a
 //! `Controls` fed to `Game::update` the way `read_controls` feeds the keyboard and mouse: forward all
 //! the time, no sprint, and a turn of `TURN_DEGREES` at each `LEG_SECONDS` boundary. The route is a
 //! pure function of the elapsed time, and each turn's direction comes from the fixed seed, so the
 //! run is repeatable and keeps reaching new ground.
 //!
 //! The log is CSV: a header, one row per whole second (`second` counts from 0), then a
-//! `# summary` line once SECONDS have passed. Each row is flushed as it is written, so a crash
-//! leaves the rows so far. The columns are `second, fps (frames that second), ms_avg, ms_p99`
-//! (the 99th percentile frame time), then `update_ms, render_ms, hud_ms`, `hunters` (active),
-//! `depth` and `travelled_m` (metres the runner has flown in the run so far, 1 cell = 1 m, counted
-//! from its absolute cell so it keeps counting when the window moves). The three section times
-//! are the perf sections' smoothed values, sampled once a frame and averaged over the second.
+//! `# summary` line once SECONDS have passed (it ends with the scenario and vsync). Each row is
+//! flushed as it is written, so a crash leaves the rows so far. The columns are `second, fps (frames
+//! that second), ms_avg, ms_p99` (the 99th percentile frame time), then `update_ms, render_ms,
+//! hud_ms`, `hunters` (active), `depth` and `travelled_m` (metres the runner has moved in the run so
+//! far, 1 cell = 1 m, counted from its absolute cell so it keeps counting when the window moves). The
+//! three section times are the perf sections' smoothed values, sampled once a frame and averaged
+//! over the second.
 
 use super::{perf, World};
-use crate::config::Difficulty;
+use crate::config::{Difficulty, HUNTER_RADIUS, PLAYER_RADIUS};
+use crate::content::Content;
 use crate::game::{Controls, Game};
+use crate::hunters::brain::Brain;
+use crate::hunters::gimmicks::Gimmick;
 use crate::world::route;
 use macroquad::prelude::Vec2;
 use std::fs::File;
@@ -42,18 +48,97 @@ const LEG_SECONDS: f32 = 20.0;
 const TURN_DEGREES: f32 = 110.0;
 /// Seconds over which a turn swings round, from its leg boundary.
 const TURN_SECONDS: f32 = 0.25;
+/// The NPCs the npcs scenario keeps near the runner, and their smartness (the admin's default).
+const NPC_TARGET: usize = 8;
+const NPC_SMART: i32 = 70;
+/// The active hunters the hunters scenario keeps up.
+const HUNTER_TARGET: usize = 6;
+/// Summons spread on a golden-angle ring round the runner (the admin's ADMIN_HUNTER_RING_*).
+const RING_START: f32 = 2.5;
+const RING_STEP: f32 = 1.2;
+const RING_ANGLE: f32 = 2.39996;
+/// Seconds between interact presses in the interact scenario.
+const INTERACT_SECONDS: f32 = 3.0;
+/// The mixed scenario: this many seconds of flight, then a phase of `MIXED_PHASE_SECONDS` for each
+/// of npcs, hunters and interact in turn.
+const MIXED_FLY_SECONDS: f32 = 20.0;
+const MIXED_PHASE_SECONDS: f32 = 10.0;
 const HEADER: &str =
     "second,fps,ms_avg,ms_p99,update_ms,render_ms,hud_ms,hunters,depth,travelled_m";
+
+/// What the run does besides moving along the route.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Scenario {
+    /// Noclip, 4x speed, nothing else (the default).
+    Fly,
+    /// Walk with 8 NPCs kept near the runner.
+    Npcs,
+    /// Walk with 6 hunters kept active, summoned as the admin does.
+    Hunters,
+    /// Walk, and press interact on the focus every 3 s.
+    Interact,
+    /// Fly 20 s, then npcs, hunters and interact in turn, 10 s each.
+    Mixed,
+}
+
+impl Scenario {
+    pub fn parse(s: &str) -> Option<Scenario> {
+        Some(match s {
+            "fly" => Scenario::Fly,
+            "npcs" => Scenario::Npcs,
+            "hunters" => Scenario::Hunters,
+            "interact" => Scenario::Interact,
+            "mixed" => Scenario::Mixed,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Scenario::Fly => "fly",
+            Scenario::Npcs => "npcs",
+            Scenario::Hunters => "hunters",
+            Scenario::Interact => "interact",
+            Scenario::Mixed => "mixed",
+        }
+    }
+
+    /// What the run does `t` seconds in: mixed picks its phase here, the others are themselves.
+    fn mode(self, t: f32) -> Scenario {
+        if self != Scenario::Mixed {
+            return self;
+        }
+        if t < MIXED_FLY_SECONDS {
+            return Scenario::Fly;
+        }
+        match ((t - MIXED_FLY_SECONDS) / MIXED_PHASE_SECONDS) as u32 % 3 {
+            0 => Scenario::Npcs,
+            1 => Scenario::Hunters,
+            _ => Scenario::Interact,
+        }
+    }
+}
 
 /// What `--stress` asked for.
 pub struct Config {
     pub seconds: f32,
     pub log: String,
+    pub scenario: Scenario,
+    /// The vsync for the run, at window creation and live (`--stress-vsync`).
+    pub vsync: bool,
 }
 
 /// The stress run: its clock, the open log, the second being counted and every frame time.
 pub struct Stress {
     seconds: f32,
+    scenario: Scenario,
+    vsync: bool,
+    /// The interact tick already handled, so each `INTERACT_SECONDS` presses once.
+    interact_tick: u32,
+    /// Hunters summoned so far, for the brain seeds.
+    summoned: u32,
+    /// The mode of the last frame, to catch the move from flying to walking.
+    last_mode: Option<Scenario>,
     log: BufWriter<File>,
     /// Set on the first frame of the run, so the load before it is not counted.
     start: Option<Instant>,
@@ -106,9 +191,21 @@ impl Stress {
         writeln!(log, "{}", HEADER)
             .and_then(|()| log.flush())
             .map_err(|e| format!("cannot write {}: {e}", cfg.log))?;
-        crate::lr_info!("stress run: {} s on seed {}, log {}", cfg.seconds, SEED, cfg.log);
+        crate::lr_info!(
+            "stress run: {} s on seed {}, scenario {}, vsync {}, log {}",
+            cfg.seconds,
+            SEED,
+            cfg.scenario.name(),
+            on_off(cfg.vsync),
+            cfg.log
+        );
         Ok(Stress {
             seconds: cfg.seconds,
+            scenario: cfg.scenario,
+            vsync: cfg.vsync,
+            interact_tick: 0,
+            summoned: 0,
+            last_mode: None,
             log,
             start: None,
             second: 0,
@@ -151,13 +248,71 @@ impl Stress {
         t >= self.seconds
     }
 
-    /// The synthetic input for this frame; `dt` is the frame's game time.
-    pub fn controls(&self, dt: f32) -> Controls {
+    /// The synthetic input for this frame; `dt` is the frame's game time and `g` the run.
+    pub fn controls(&mut self, dt: f32, g: &Game) -> Controls {
         let t = self.start.map_or(0.0, |s| s.elapsed().as_secs_f32());
-        Controls {
+        let mut c = Controls {
             fwd: 1.0,
             look: Vec2::new(turn_look(t, dt), 0.0),
             ..Default::default()
+        };
+        // every INTERACT_SECONDS in the interact mode: press interact when the crosshair is on
+        // something (or to step out of a locker the last press hid the runner in)
+        let tick = (t / INTERACT_SECONDS) as u32;
+        if tick != self.interact_tick {
+            self.interact_tick = tick;
+            if self.scenario.mode(t) == Scenario::Interact
+                && (g.focus.is_some() || g.p.hidden.is_some())
+            {
+                c.interact = true;
+            }
+        }
+        c
+    }
+
+    /// Sets the run up for this frame, before the update: the flight switches (noclip and
+    /// `FLY_SPEED`) in the flying mode, none in the walking ones, and the NPCs or hunters the mode
+    /// keeps up. A runner that stops flying inside a wall is moved to the nearest open floor. Called
+    /// each frame, so a game that starts after a level change keeps the mode.
+    pub fn prepare(&mut self, g: &mut Game, content: &Content) {
+        let t = self.start.map_or(0.0, |s| s.elapsed().as_secs_f32());
+        let mode = self.scenario.mode(t);
+        if mode == Scenario::Fly {
+            fly(g);
+        } else {
+            g.admin.noclip = false;
+            g.admin.run_speed = 1.0;
+            if self.last_mode == Some(Scenario::Fly)
+                && !g.fac.body_fits(g.p.pos.0, g.p.pos.1, PLAYER_RADIUS)
+            {
+                if let Some(at) = g.fac.nearest_open(g.p.pos.0, g.p.pos.1, PLAYER_RADIUS) {
+                    g.p.pos = at;
+                }
+            }
+        }
+        self.last_mode = Some(mode);
+        match mode {
+            Scenario::Npcs => keep_npcs(g),
+            Scenario::Hunters => self.keep_hunters(g, content),
+            _ => {}
+        }
+    }
+
+    /// Tops the active hunters up to `HUNTER_TARGET`, placed as the admin summon places them.
+    fn keep_hunters(&mut self, g: &mut Game, content: &Content) {
+        if content.hunters.is_empty() || g.report.is_some() {
+            return;
+        }
+        let mut have = g.hunters.iter().filter(|h| h.active).count();
+        let mut slot = 0usize;
+        // a bounded number of tries, so a floor with no room cannot stall the frame
+        while have < HUNTER_TARGET && slot < HUNTER_TARGET {
+            let def = &content.hunters[self.summoned as usize % content.hunters.len()];
+            if summon(g, &def.id, content, self.summoned, slot) {
+                have += 1;
+            }
+            self.summoned += 1;
+            slot += 1;
         }
     }
 
@@ -168,11 +323,13 @@ impl Stress {
         let avg_fps = if secs > 0.0 { total as f32 / secs } else { 0.0 };
         let worst = self.frame_ms.iter().copied().fold(0.0, f32::max);
         let line = format!(
-            "# summary total_frames={} avg_fps={:.2} low_1pct_fps={:.2} worst_frame_ms={:.2}",
+            "# summary total_frames={} avg_fps={:.2} low_1pct_fps={:.2} worst_frame_ms={:.2} scenario={} vsync={}",
             total,
             avg_fps,
             one_percent_low_fps(&self.frame_ms),
-            worst
+            worst,
+            self.scenario.name(),
+            on_off(self.vsync)
         );
         self.emit(&line);
         println!("{}", line);
@@ -209,6 +366,14 @@ impl Stress {
     }
 }
 
+fn on_off(on: bool) -> &'static str {
+    if on {
+        "on"
+    } else {
+        "off"
+    }
+}
+
 /// The game a stress run plays: the Infinite route from the top level, as CREATE ROOM starts one.
 pub fn start_game(w: &World) -> Game {
     Game::new_infinite(
@@ -224,11 +389,64 @@ pub fn start_game(w: &World) -> Game {
 
 /// Turns the flight on for `g`: admin noclip and the `FLY_SPEED` run speed, set on the game's own
 /// admin switches (the playtest bridge's `noclip` and `speed` helpers), which `admin_flags` merges
-/// with the admin menu's. The saved admin preferences are never written. Called each frame before the
-/// update, so a game that starts after a level change keeps the flight.
-pub fn fly(g: &mut Game) {
+/// with the admin menu's. The saved admin preferences are never written.
+fn fly(g: &mut Game) {
     g.admin.noclip = true;
     g.admin.run_speed = FLY_SPEED;
+}
+
+/// Keeps `NPC_TARGET` NPCs: spawns the missing ones as the admin SPAWN does (round the runner), and
+/// removes the farthest from the runner while there are more.
+fn keep_npcs(g: &mut Game) {
+    if g.npcs.len() < NPC_TARGET {
+        let eye = g.eye();
+        let (fwd, _, _) = g.camera_basis();
+        let missing = (NPC_TARGET - g.npcs.len()) as i32;
+        g.npc_spawn(missing, NPC_SMART, (eye.x, eye.y, eye.z), (fwd.x, fwd.y, fwd.z));
+    }
+    while g.npcs.len() > NPC_TARGET {
+        let runner = g.p.pos;
+        let dist = |i: usize| crate::game::pdist(g.npcs[i].at, runner);
+        let far = (0..g.npcs.len()).max_by(|&a, &b| dist(a).total_cmp(&dist(b)));
+        match far {
+            Some(i) => {
+                g.npcs.remove(i);
+            }
+            None => break,
+        }
+    }
+}
+
+/// The admin's `summon` (ui/admin/actions.rs) for one hunter id: a brain on the golden-angle ring
+/// round the runner, awake and heading for the runner. Returns false when there is no open floor.
+fn summon(g: &mut Game, id: &str, content: &Content, seq: u32, slot: usize) -> bool {
+    let Some(def) = content.hunter(id) else {
+        return false;
+    };
+    let (fx, fy) = g.forward2();
+    let base = fx.atan2(-fy);
+    let angle = base + slot as f32 * RING_ANGLE;
+    let radius = RING_START + RING_STEP * (slot as f32).sqrt();
+    let want = (g.p.pos.0 + angle.cos() * radius, g.p.pos.1 + angle.sin() * radius);
+    let Some(at) = g
+        .fac
+        .nearest_open(want.0, want.1, HUNTER_RADIUS)
+        .or_else(|| g.fac.nearest_open(g.p.pos.0, g.p.pos.1, HUNTER_RADIUS))
+    else {
+        return false;
+    };
+    let mut b = Brain::new(
+        def.clone(),
+        at,
+        &format!("{}:STRESS:{id}:{seq}", g.level_seed()),
+        g.difficulty,
+    );
+    if let Gimmick::Solyth(s) = &mut b.gimmick {
+        s.heat_locked = g.meters.heat_locked;
+    }
+    b.activate_at(g.p.pos);
+    g.hunters.push(b);
+    true
 }
 
 /// The sign of the turn at leg boundary `k` (the first boundary is 1): a fixed multiplicative hash, so
@@ -326,6 +544,20 @@ mod tests {
         assert_eq!(turn_look(t, 1.0 / 60.0), turn_look(t, 1.0 / 60.0));
         let signs: Vec<f32> = (1..=16u32).map(turn_sign).collect();
         assert!(signs.contains(&1.0) && signs.contains(&-1.0));
+    }
+
+    #[test]
+    fn scenarios_parse_and_mixed_cycles_its_phases() {
+        for n in ["fly", "npcs", "hunters", "interact", "mixed"] {
+            assert_eq!(Scenario::parse(n).unwrap().name(), n);
+        }
+        assert!(Scenario::parse("nope").is_none());
+        assert_eq!(Scenario::Mixed.mode(5.0), Scenario::Fly);
+        assert_eq!(Scenario::Mixed.mode(25.0), Scenario::Npcs);
+        assert_eq!(Scenario::Mixed.mode(35.0), Scenario::Hunters);
+        assert_eq!(Scenario::Mixed.mode(45.0), Scenario::Interact);
+        assert_eq!(Scenario::Mixed.mode(55.0), Scenario::Npcs);
+        assert_eq!(Scenario::Npcs.mode(5.0), Scenario::Npcs);
     }
 
     #[test]

@@ -34,9 +34,9 @@ pub const MOUSE_SENSITIVITY: f32 = 0.0075;
 pub const MOUSE_LOOK_DISPLAY_SCALE: f32 = 1.75;
 pub const MOUSE_LOOK_GODOT_WINDOW_SCALE: f32 = 3.0;
 pub const MOUSE_LOOK_MULTIPLIER: f32 = MOUSE_LOOK_DISPLAY_SCALE / MOUSE_LOOK_GODOT_WINDOW_SCALE;
-/// Bounds used by the native settings loader (FUN_14008a590).
+/// Settings FOV bounds (Godot MAX_FIELD_OF_VIEW = 105 in game/autoload/settings.gd).
 pub const FOV_MIN_DEG: f32 = 60.0;
-pub const FOV_MAX_DEG: f32 = 110.0;
+pub const FOV_MAX_DEG: f32 = 105.0;
 pub const SENSITIVITY_MIN: f32 = 0.0005;
 pub const SENSITIVITY_MAX: f32 = 0.012;
 pub const KEY_LOOK_RADIANS_PER_SECOND: f32 = 2.8;

@@ -43,6 +43,21 @@ pub struct Profile {
 
 pub const ALL: [Difficulty; 3] = [Difficulty::Relaxed, Difficulty::Standard, Difficulty::Hard];
 
+/// TIER_WEIGHTS_BY_DIFFICULTY["nightmare"]: easy, intermediate, difficult. Nightmare has no port
+/// Difficulty yet, so the draw reaches it by id (tier_weights_for).
+pub const NIGHTMARE_TIER_WEIGHTS: [f64; 3] = [0.175, 0.525, 0.30];
+
+/// TIER_WEIGHTS_BY_DIFFICULTY.get(id, standard): the hunter draw weights for any difficulty id,
+/// Nightmare included; an unknown id draws as Standard.
+pub fn tier_weights_for(id: &str) -> [f64; 3] {
+    if id == "nightmare" {
+        return NIGHTMARE_TIER_WEIGHTS;
+    }
+    ALL.iter()
+        .find(|d| d.id() == id)
+        .map_or(Difficulty::Standard.tier_weights(), |d| d.tier_weights())
+}
+
 impl Difficulty {
     pub fn id(self) -> &'static str {
         match self {

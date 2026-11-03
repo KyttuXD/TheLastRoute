@@ -1593,10 +1593,7 @@ impl<'a> Gen<'a> {
             return true;
         }
         let mut rng = Rng::new(&format!("{}:SAFE:{}:{}:{}", self.world, c.x, c.y, c.z));
-        let danger = (0.48 - c.y as f64 * 0.075).clamp(0.12, 1.0);
-        let bias = 1.45 + (0.55 - 1.45) * danger;
-        let chance = 0.055 * bias;
-        rng.next_float() < chance
+        rng.next_float() < super::danger::DangerProfile::for_level(c.y).safe_room_chance()
     }
 
     /// `is_pod_room_chunk` (line 2204): the lab's dive pod room, one chunk per lab district.

@@ -31,6 +31,7 @@
 use std::collections::HashSet;
 
 use crate::world::rng::Rng;
+use crate::world::route::danger::DangerProfile;
 use crate::world::route::fixtures::Fixture;
 use crate::world::route::hunter_spawns::{hunter_id, HunterSpawn, STREAMED_HUNTER_IDS};
 use crate::world::route::layout::{Coord, CHUNK, V2};
@@ -70,7 +71,7 @@ pub fn office_void_for(seed_text: &str) -> &'static str {
 
 /// `difficulty_for_level(level).danger` (streamed_route_generator.gd:1293): `clampf(0.48 - level * 0.075, 0.12, 1.0)`.
 fn danger_for_level(level: i32) -> f64 {
-    (0.48 - level as f64 * 0.075).clamp(0.12, 1.0)
+    DangerProfile::for_level(level).danger
 }
 
 /// `is_safe_room` (streamed_route_generator.gd:1403) on the private route. The origin is always safe.
@@ -79,11 +80,8 @@ pub fn is_safe_room(world: &str, c: Coord) -> bool {
         return true;
     }
     let mut rng = Rng::new(&format!("{world}:SAFE:{}:{}:{}", c.x, c.y, c.z));
-    let danger = danger_for_level(c.y);
-    // safe_room_bias = lerpf(1.45, 0.55, danger)
-    let bias = 1.45 + (0.55 - 1.45) * danger;
-    let chance = 0.055 * bias;
-    rng.next_float() < chance
+    // 0.055 * safe_room_bias, safe_room_bias = lerpf(1.45, 0.55, danger)
+    rng.next_float() < DangerProfile::for_level(c.y).safe_room_chance()
 }
 
 /// `_hunter_spawns` (sewer_route_generator.gd:388-464) for one sewer chunk. `fixtures` is the chunk's `_fixtures`

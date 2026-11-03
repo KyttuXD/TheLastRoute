@@ -96,7 +96,7 @@ frame: `interact`, `flashlight`, `taser`, `tool_use`, `drop_item`, `hotbar_previ
 (x/z grid, y ignored), plus port helpers `give` {item: flashlight|taser|crowbar|axe|battery|stim,
 count}, `set` {lamp, stamina, temperature, ambient, exposure, noise, coins, yaw, pitch}, `wake`
 {index, state: "wander"|"idle"} (activate a hunter), `hunter_to` {index, x, z | near: metres in
-front of you}. `god`/`no_target` mean no capture and nothing ends the run (no_target: hunters do
+front of you}, `flicker` {seconds, default 1.4} (force_flashlight_flicker: the beam strobes and [F] is locked). `god`/`no_target` mean no capture and nothing ends the run (no_target: hunters do
 not sense you at all); the in-game admin overlay's switches (`ui::admin::flags()`) act the same.
 
 ### Port commands (direct queries and helpers)

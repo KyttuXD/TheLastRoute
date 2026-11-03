@@ -14,7 +14,7 @@
 
 use crate::app::assets::Assets;
 use macroquad::prelude::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 pub const fn hex(v: u32) -> Color {
     Color::new(
@@ -156,6 +156,7 @@ pub const CITY: Pal = Pal {
 };
 
 static SCHEME: AtomicUsize = AtomicUsize::new(0);
+static REDUCED_MOTION: AtomicBool = AtomicBool::new(false);
 
 /// The active scheme's tokens.
 pub fn pal() -> Pal {
@@ -173,6 +174,15 @@ pub fn set_scheme(id: &str) {
 
 pub fn is_last_route() -> bool {
     SCHEME.load(Ordering::Relaxed) == 0
+}
+
+/// Prefer calm HUD motion (Porcelle's radar ping stays a steady dim dot).
+pub fn set_reduced_motion(on: bool) {
+    REDUCED_MOTION.store(on, Ordering::Relaxed);
+}
+
+pub fn reduced_motion() -> bool {
+    REDUCED_MOTION.load(Ordering::Relaxed)
 }
 
 /// `last_route` while the Last Route scheme is active, otherwise `city` (keeps the City's values).

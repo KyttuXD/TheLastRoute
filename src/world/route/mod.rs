@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod clearance;
+pub mod danger;
 pub mod fixtures;
 pub mod furnished;
 pub mod grid;

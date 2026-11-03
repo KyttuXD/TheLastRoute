@@ -145,6 +145,39 @@ fn floor_label(depth: i32, infinite: bool) -> String {
     }
 }
 
+/// Hold-O overlay (Godot `player_list`): the PLAYERS panel without pause chrome.
+pub fn draw_hold_player_list(
+    a: &Assets,
+    g: &Game,
+    username: &str,
+    room: Vec<PlayerRow>,
+    local_host: bool,
+) {
+    let me = PlayerRow {
+        name: if username.is_empty() {
+            "RUNNER".into()
+        } else {
+            username.to_uppercase()
+        },
+        host: local_host,
+        you: true,
+        ping: "0 MS".into(),
+        status: "ALIVE".into(),
+        floor: floor_label(g.depth, g.is_infinite()),
+        colour: menus::coop_blue(),
+    };
+    let mut rows = vec![me];
+    rows.extend(room);
+    let sw = screen_width();
+    let sh = screen_height();
+    let r = Rect::new(
+        (sw - PANEL_W) * 0.5,
+        (sh - PANEL_H) * 0.5,
+        PANEL_W,
+        PANEL_H,
+    );
+    menus::player_list(a, r, &rows);
+}
 #[allow(clippy::too_many_arguments)]
 pub fn draw_pause(
     a: &Assets,

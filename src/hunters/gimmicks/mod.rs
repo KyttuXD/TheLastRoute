@@ -313,6 +313,18 @@ pub fn describe(id: &str) -> &'static str {
         "xivvy" => "Locks on at arm's length without needing to see you, and only gets faster the longer a chase runs.",
         "ysolde" => "Steals batteries off the floor and keeps her distance from you.",
         "zellia" => "A merchant in the middle of the floor. Coins buy warmth, cold, light or pesticide, but every deal carries a price.",
+        "void_black" => "This stalker moves 50% faster while you are not watching her. Facing her within 11 cells and with a clear line of sight stops her completely. Check behind you regularly, then use the pause to create distance.",
+        "void_blue" => "This anomaly is nearly invisible and hidden on radar. Hitting her with the flashlight beam fully reveals her for 3.5 seconds and pushes her about six cells away. Flash likely approach routes frequently.",
+        "void_brown" => "Every 18 seconds, this entity jams up to two hiding spots within nine cells of you. A jam lasts 20 seconds and never targets the spot you currently occupy. Change rooms if nearby hiding spots are unavailable.",
+        "void_cyan" => "If this hunter keeps clear line of sight to you for 2.5 seconds, she sends your exact position to every other active hunter. After a successful ping she has a 30-second cooldown. Break sight before the lock completes.",
+        "void_gray" => "This entity stays dormant for 180 seconds after activation or collecting a relay, reduced to 120 seconds on Nightmare. When that grace ends, standing still in the open for 45 seconds starts five E-key prompts; Nightmare reduces the idle limit to 30 seconds. Each prompt allows 2.5 seconds, or 1.8 seconds on Nightmare. Completing all five keeps them dormant. Missing one makes her visible and starts a normal chase until another relay resets her.",
+        "void_green" => "Every 22 seconds, this hunter can enter the vent network and reappear about nine cells from you after a two-second delay. This relocation only occurs when she has enough distance to move through the network. Keep moving after she disappears.",
+        "void_orange" => "Every 26 seconds, this saboteur disables either the flashlight, climate controls, or radar for nine seconds. The selected system returns automatically. Move to a safe position and wait for the outage to end.",
+        "void_pink" => "She never attacks and cannot catch you. Every 11 seconds she has a 60% chance to make a few faint footsteps sound somewhere close. They are only a sound: listen, then keep going.",
+        "void_purple" => "Every 21 seconds, this entity adds radar static for eight seconds. Each corruption has a 35% chance to make the radar completely black for 11 seconds. Radar returns automatically; use the game view until it does.",
+        "void_red" => "This speedster moves at 155% speed in corridors and 78% speed inside rooms. Leave long hallways and cut through rooms whenever she begins chasing.",
+        "void_white" => "This hunter moves 35% faster unless your flashlight beam is directly hitting her. A beam within 10 cells stops her completely. Hold the beam long enough to create distance, but watch your remaining battery charge.",
+        "void_yellow" => "This hunter gains 6% movement speed for every second the full-screen map remains open, up to 70% faster. The increase lasts for the run. Use the map only in short checks.",
         _ => "A hunter added by a mod pack. She runs the shared brain on her own tuning.",
     }
 }
@@ -344,4 +356,20 @@ pub fn hiding_exit(fac: &Facility, spot: usize) -> (f32, f32) {
         cy + h.facing.1 as f32 * 0.75,
         0.24,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hunters::residency::VOID_IDS;
+
+    #[test]
+    fn describe_covers_every_void_hunter() {
+        for id in VOID_IDS {
+            let text = describe(id);
+            assert!(!text.is_empty(), "{id}");
+            assert!(!text.contains("mod pack"), "{id}");
+        }
+        assert!(describe("void_red").contains("155%"));
+    }
 }

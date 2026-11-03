@@ -9,7 +9,7 @@ use crate::content::Content;
 use crate::hunters::brain::{Brain, State};
 use crate::hunters::gimmicks::Gimmick;
 use crate::hunters::residency::{self, Cand, Record};
-use crate::shared::safe_room::{SafeRoom, SafeRooms};
+use crate::shared::safe_room::{SafeRoom, SafeRooms, Status};
 use crate::world::catalog::Catalog;
 use crate::world::facility::{stair_well_cells, Facility, Pickup, Stair, STAIR_FLIGHT};
 use crate::world::fixtures::Fixtures;
@@ -153,12 +153,18 @@ pub struct InfState {
     live: bool,
     /// `Game::time` at the last safe-room step, so the step knows its dt (-1 before the first).
     last_time: f32,
+    /// Checkpoints the runner has activated this run (Godot `_run_statistics.checkpoints_activated`): one for every
+    /// change of the active checkpoint, so walking back into the room already active counts nothing.
+    pub checkpoints_activated: u32,
     /// Level-0 hunters the live window does not hold: dormant, or outside the 3x3 window. Their positions are absolute
     /// cells (`Brain.pos` and the target fields), so they keep their place as the window moves (Godot world_state.hunters).
     stored: HashMap<String, Brain>,
     /// The entity ids of `Game.hunters` on level 0, in the same order (`""` for a hunter the route did not admit, such as
     /// an admin summon, which is never stored).
     loaded: Vec<String>,
+    /// The hunters of each level off level 0 that the runner has left by a stairwell, at absolute cells (as `stored`), so the
+    /// level keeps them for the way back (Godot keeps every hunter in world_state on its own level).
+    floor_hunters: HashMap<i32, Vec<Brain>>,
     /// Each level-0 chunk's hunter spawns, read once (`live::hunter_spawns`).
     spawns: HashMap<ChunkKey, Vec<HunterSpawn>>,
     /// Level-0 walls of the discovered chunks, row-major (`live::walls`), read when a chunk is first loaded: Godot keeps
@@ -524,8 +530,10 @@ impl InfState {
             room: None,
             live: false,
             last_time: -1.0,
+            checkpoints_activated: 0,
             stored: HashMap::new(),
             loaded: Vec::new(),
+            floor_hunters: HashMap::new(),
             spawns: HashMap::new(),
             walls: HashMap::new(),
             floor: DiscoveredFloor::default(),
@@ -762,7 +770,13 @@ impl Game {
         self.clear_reached_waypoint();
         self.refresh_waypoint();
         let dt = self.safe_room_dt();
+        let before = self.active_checkpoint().to_string();
         self.safe_room_step(dt);
+        // a checkpoint newly made active saves the run (Godot `_accept_checkpoint`: autosave("checkpoint")); standing on in
+        // the room does not save it again every frame (`_update_checkpoint` skips the `_last_checkpoint`)
+        if !self.active_checkpoint().is_empty() && self.active_checkpoint() != before {
+            self.autosave("checkpoint");
+        }
     }
 
     /// The seconds since the last safe-room step (`Game::time` advances once a frame). Zero on the first step.
@@ -792,8 +806,12 @@ impl Game {
         let centre = middle_safe_centre();
         let inside = !inf.safe.status(&room).breached && pdist(self.p.pos, centre) <= SAFE_ROOM_REACH;
         if inside {
-            if let Some(inf) = self.inf.as_mut() {
-                inf.safe.activate(&room);
+            let fresh = self.inf.as_mut().is_some_and(|inf| {
+                let before = inf.safe.active_checkpoint().to_string();
+                inf.safe.activate(&room) && inf.safe.active_checkpoint() != before
+            });
+            if fresh {
+                self.checkpoint_activated();
             }
             for h in self.hunters.iter_mut() {
                 if h.active && pdist(h.pos, centre) <= SAFE_ROOM_LURE_REACH {
@@ -818,9 +836,61 @@ impl Game {
         }
         let damage = inf.safe.breach(&room, dt, breachers as u32);
         if damage > 0 {
-            inf.safe.damage(&room, damage);
-            self.sync_safe_zone();
+            self.damage_live_room(&room, damage);
         }
+    }
+
+    /// Godot `stream_checkpoint` for the runner who made it: the run statistic, `restore_at_safe_zone` (stamina, lamp,
+    /// exhaustion), `Sound.recharge(20)` and the "SAFE CHECKPOINT ACTIVE" line. The autosave Godot runs here
+    /// (`autosave("checkpoint")`) is the save-trigger work's to add.
+    fn checkpoint_activated(&mut self) {
+        if let Some(inf) = self.inf.as_mut() {
+            inf.checkpoints_activated += 1;
+        }
+        self.p.stamina = MAX_STAMINA;
+        self.p.lamp = MAX_LAMP_CHARGE;
+        self.p.exhausted = false;
+        crate::audio::sound::recharge(20.0);
+        self.say("SAFE CHECKPOINT ACTIVE");
+    }
+
+    /// Integrity off the runner's room (`damage_safe_room`), then the zone follows it. The moment the room falls the
+    /// runner hears it (Godot `stream_safe`: "SAFE ROOM BREACHED" in the room the runner stands in).
+    fn damage_live_room(&mut self, room: &SafeRoom, amount: i32) -> Status {
+        let Some(inf) = self.inf.as_mut() else {
+            return Status { integrity: 0, breached: false };
+        };
+        let was = inf.safe.status(room).breached;
+        let status = inf.safe.damage(room, amount);
+        self.sync_safe_zone();
+        if status.breached && !was {
+            self.say("SAFE ROOM BREACHED");
+        }
+        status
+    }
+
+    /// Godot `_admin_edit_checkpoint` (infinite_route_test.gd): DAMAGE CHECKPOINT takes 25 off the runner's safe room,
+    /// REPAIR CHECKPOINT puts 25 back. `None` when the runner's chunk has no safe room (or off the level-0 layout).
+    pub fn admin_edit_checkpoint(&mut self, amount: i32) -> Option<Status> {
+        let room = self.live_room()?;
+        if amount >= 0 {
+            let status = self.inf.as_mut()?.safe.repair(&room, amount);
+            self.sync_safe_zone();
+            Some(status)
+        } else {
+            Some(self.damage_live_room(&room, -amount))
+        }
+    }
+
+    /// The runner's safe room for the admin status line (Godot `_admin_status`): `None` when the chunk has none.
+    pub fn live_room_status(&self) -> Option<Status> {
+        let room = self.live_room()?;
+        self.inf.as_ref().map(|i| i.safe.status(&room))
+    }
+
+    /// Godot `_run_statistics.checkpoints_activated`: 0 off the infinite route.
+    pub fn checkpoints_activated(&self) -> u32 {
+        self.inf.as_ref().map_or(0, |i| i.checkpoints_activated)
     }
 
     /// The runner's safe room on the level-0 layout: `None` off level 0 and in a chunk that is not safe.
@@ -883,7 +953,11 @@ impl Game {
             self.residency(content);
             return;
         }
-        // hunters that fell outside the window come back in out of sight
+        self.respawn_outside_window();
+    }
+
+    /// Off level 0: the hunters that stand outside the window (or in a wall) come back in out of sight.
+    fn respawn_outside_window(&mut self) {
         let size = (CHUNK * 3) as f32;
         let mut rng = Rng::new(&format!(
             "{}:RESPAWN:{}",
@@ -909,13 +983,19 @@ impl Game {
     /// Takes a stairwell to the level above or below.
     pub(super) fn take_stairs(&mut self, i: usize, content: &Content, catalog: &Catalog) {
         let s = self.fac.stairs[i];
+        // the level stack ends at 0 and at the Inferno (-3): a flight past either end is not taken
+        let to = self.inf.as_ref().map_or(0, |inf| inf.level) + s.dir;
+        if !infinite::level_allowed(to) {
+            return;
+        }
         let other = Cell::new(
             s.cell.x + s.run.0 * (STAIR_FLIGHT + 1),
             s.cell.y + s.run.1 * (STAIR_FLIGHT + 1),
         );
         self.sync_out();
-        // leaving level 0: its loaded hunters are stored at their absolute cells, to be found again on the way back
+        // the level being left keeps its hunters at their absolute cells, to be found again on the way back
         self.store_level0_hunters();
+        self.store_floor_hunters();
         if let Some(inf) = self.inf.as_mut() {
             inf.level += s.dir;
         }
@@ -933,11 +1013,12 @@ impl Game {
             }
             None => self.p.pos = self.fac.start.center(),
         }
-        self.reset_hunters(content);
+        // the level's own hunters come back where they were; a level not visited before gets its lineup
+        self.restore_level_hunters(content);
         let level = self.inf.as_ref().map(|i| i.level).unwrap_or(0);
         self.announce(&format!("LEVEL {level}"));
         self.fade = 1.0;
-        self.save_checkpoint();
+        // the save is the caller's: interact's `autosave("level")` on a flight taken (no double write)
     }
 
     fn spawn_spot(&self, rng: &mut Rng) -> Option<(f32, f32)> {
@@ -960,7 +1041,7 @@ impl Game {
         Some(cands[rng.next_index(cands.len())].center())
     }
 
-    /// The level's lineup. On level 0 the hunters are the layout's spawns that residency admits (`residency`), and
+    /// The level's lineup, built from nothing (a new run, or the first visit to a level). On level 0 the hunters are the layout's spawns that residency admits (`residency`), and
     /// Nyxie and Solyth are not added (Godot's streamed lineup has neither). On the old builder's levels: route hunters
     /// for the current relay count, plus Nyxie and Solyth.
     fn reset_hunters(&mut self, content: &Content) {
@@ -1153,6 +1234,50 @@ impl Game {
                 inf.stored.insert(id, b);
             }
         }
+    }
+
+    /// Leaving a level off level 0 by a stairwell: its hunters are kept at their absolute cells under the level (the
+    /// level-0 hunters go to `stored`, see `store_level0_hunters`).
+    fn store_floor_hunters(&mut self) {
+        let Some(inf) = self.inf.as_mut() else { return };
+        if inf.level == 0 {
+            return;
+        }
+        let o = inf.origin();
+        let o = (o.0 as f32, o.1 as f32);
+        let mut kept = std::mem::take(&mut self.hunters);
+        for b in kept.iter_mut() {
+            shift_brain(b, o);
+        }
+        inf.floor_hunters.insert(inf.level, kept);
+    }
+
+    /// Arriving on a level by a stairwell. Level 0 loads its stored hunters by residency. Another level the runner has
+    /// been on gets back the hunters it kept, in the new window's frame (one now outside the window comes back in out of
+    /// sight, as on a window move), topped up to the population. A level not visited before gets its lineup.
+    fn restore_level_hunters(&mut self, content: &Content) {
+        let Some(inf) = self.inf.as_mut() else { return };
+        if inf.level == 0 {
+            // the loaded set was emptied into `stored` on the way out; residency loads the window's share again
+            self.hunters.clear();
+            inf.loaded.clear();
+            self.reset_director();
+            self.residency(content);
+            return;
+        }
+        let Some(mut kept) = inf.floor_hunters.remove(&inf.level) else {
+            self.reset_hunters(content);
+            return;
+        };
+        let o = inf.origin();
+        let o = (-(o.0 as f32), -(o.1 as f32));
+        for b in kept.iter_mut() {
+            shift_brain(b, o);
+        }
+        self.hunters = kept;
+        self.reset_director();
+        self.respawn_outside_window();
+        self.ensure_hunters(content);
     }
 
     pub fn save_checkpoint(&self) {
@@ -1746,11 +1871,87 @@ mod tests {
     }
 
     #[test]
+    fn a_new_checkpoint_autosaves_once() {
+        let (mut g, content, catalog) = in_room();
+        assert_eq!(g.last_autosave, "");
+        g.stream_window(&content, &catalog);
+        assert_eq!(g.active_checkpoint(), "0:0:0:CHECKPOINT");
+        assert_eq!(g.last_autosave, "checkpoint", "activating the checkpoint saves the run");
+        g.last_autosave = "";
+        g.stream_window(&content, &catalog);
+        assert_eq!(g.last_autosave, "", "standing on in the room does not save every frame");
+    }
+
+    #[test]
+    fn recovering_a_relay_autosaves() {
+        let (mut g, content, catalog) = run();
+        assert!(!g.fac.relays.is_empty(), "the layout has relays");
+        g.interact(super::super::Focus::Relay(0), &content, &catalog, &crate::audio::Sounds::default());
+        assert_eq!(g.relays_collected, 1);
+        assert_eq!(g.last_autosave, "relay", "a recovered relay saves the run");
+    }
+
+    #[test]
+    fn a_finished_run_does_not_autosave() {
+        let (mut g, _, _) = in_room();
+        assert!(g.autosave("quit"));
+        assert_eq!(g.last_autosave, "quit");
+        g.last_autosave = "";
+        g.end_run(0, "caught");
+        assert!(g.report.is_some(), "the catch ends the run");
+        assert!(!g.autosave("quit"), "a caught runner's run has ended");
+        assert_eq!(g.last_autosave, "");
+    }
+
+    #[test]
     fn standing_in_the_room_activates_its_checkpoint() {
         let (mut g, _, _) = in_room();
         assert_eq!(g.active_checkpoint(), "");
         g.safe_room_step(0.0);
         assert_eq!(g.active_checkpoint(), "0:0:0:CHECKPOINT");
+    }
+
+    #[test]
+    fn a_fresh_checkpoint_restores_the_runner_once() {
+        let (mut g, _, _) = in_room();
+        g.p.stamina = 1.0;
+        g.p.lamp = 1.0;
+        g.p.exhausted = true;
+        g.safe_room_step(0.0);
+        assert_eq!(g.checkpoints_activated(), 1);
+        assert_eq!(g.p.stamina, MAX_STAMINA);
+        assert_eq!(g.p.lamp, MAX_LAMP_CHARGE);
+        assert!(!g.p.exhausted);
+        assert_eq!(g.message, "SAFE CHECKPOINT ACTIVE");
+        // standing on in the active room is no new checkpoint
+        g.p.stamina = 1.0;
+        g.message.clear();
+        g.safe_room_step(1.0 / 30.0);
+        assert_eq!(g.checkpoints_activated(), 1);
+        assert_eq!(g.p.stamina, 1.0);
+        assert!(g.message.is_empty());
+    }
+
+    #[test]
+    fn the_runner_hears_the_room_fall_and_admin_edits_its_integrity() {
+        let (mut g, _, _) = in_room();
+        g.safe_room_step(0.0);
+        assert_eq!(g.admin_edit_checkpoint(-25).map(|s| s.integrity), Some(75));
+        assert_eq!(g.live_room_status().map(|s| s.integrity), Some(75));
+        for _ in 0..2 {
+            g.admin_edit_checkpoint(-25);
+        }
+        g.message.clear();
+        let s = g.admin_edit_checkpoint(-25).unwrap();
+        assert!(s.breached && s.integrity == 0);
+        assert_eq!(g.message, "SAFE ROOM BREACHED");
+        assert_eq!(g.fac.safe_zone, None);
+        let s = g.admin_edit_checkpoint(25).unwrap();
+        assert!(!s.breached && s.integrity == 25);
+        assert!(g.fac.safe_zone.is_some(), "a repaired room is the safe zone again");
+        // off the room's chunk there is no checkpoint to edit
+        g.inf.as_mut().unwrap().room = None;
+        assert!(g.admin_edit_checkpoint(-25).is_none());
     }
 
     #[test]
@@ -1948,6 +2149,84 @@ mod tests {
         for (id, pos) in &before {
             assert_eq!(after.get(id), Some(pos), "{id} is stored where it stood");
         }
+    }
+
+    /// The stairwell of the window going `dir` (-1 down, +1 up), if it has one.
+    fn stair(g: &Game, dir: i32) -> Option<usize> {
+        g.fac.stairs.iter().position(|s| s.dir == dir)
+    }
+
+    /// The stairwell back: the landing the last `take_stairs` arrived on.
+    fn stair_back(g: &Game, dir: i32) -> usize {
+        let at = g.p.pos;
+        let mut best = None;
+        for (i, s) in g.fac.stairs.iter().enumerate() {
+            if s.dir != dir {
+                continue;
+            }
+            let d = pdist(s.cell.center(), at);
+            if best.is_none_or(|(_, b)| d < b) {
+                best = Some((i, d));
+            }
+        }
+        best.expect("the landing is a stairwell back").0
+    }
+
+    /// Takes a stairwell going `dir` off level 0 and back: the level-0 hunters are where they stood.
+    #[test]
+    fn the_stairs_keep_the_level_zero_hunters() {
+        let (mut g, content, catalog) = populated();
+        let down = stair(&g, -1).or_else(|| stair(&g, 1)).expect("the start window has a stairwell");
+        let dir = g.fac.stairs[down].dir;
+        let before = absolute(&g);
+        assert!(!before.is_empty());
+        g.take_stairs(down, &content, &catalog);
+        assert_eq!(g.inf.as_ref().unwrap().level, dir);
+        let back = stair_back(&g, -dir);
+        g.take_stairs(back, &content, &catalog);
+        assert_eq!(g.inf.as_ref().unwrap().level, 0);
+        let after = absolute(&g);
+        for (id, pos) in &before {
+            assert_eq!(after.get(id), Some(pos), "{id} keeps its cell over the stairs");
+        }
+    }
+
+    /// Godot keeps every hunter on her own level: a level off level 0 keeps its hunters (the same brains, where they
+    /// stood) while the runner is away, instead of a new lineup on every visit.
+    #[test]
+    fn a_floor_keeps_its_hunters_over_the_stairs() {
+        let (mut g, content, catalog) = populated();
+        let i = stair(&g, -1).or_else(|| stair(&g, 1)).expect("the start window has a stairwell");
+        let dir = g.fac.stairs[i].dir;
+        g.take_stairs(i, &content, &catalog);
+        assert_eq!(g.inf.as_ref().unwrap().level, dir);
+        assert!(!g.hunters.is_empty(), "the floor has its lineup");
+        // mark the floor's hunters: one moves to another open cell and one goes to sleep, which a rebuild would undo
+        let spot = g
+            .fac
+            .floor_cells()
+            .into_iter()
+            .map(|c| c.center())
+            .find(|p| g.fac.body_fits(p.0, p.1, HUNTER_RADIUS) && pdist(*p, g.hunters[0].pos) > 2.0)
+            .expect("an open cell");
+        g.hunters[0].pos = spot;
+        g.hunters[0].active = false;
+        let o = g.inf.as_ref().unwrap().origin();
+        let mark = |g: &Game| -> Vec<(String, (f32, f32), bool)> {
+            g.hunters
+                .iter()
+                .map(|h| (h.def.id.clone(), (h.pos.0 + o.0 as f32, h.pos.1 + o.1 as f32), h.active))
+                .collect()
+        };
+        let before = mark(&g);
+        let back = stair_back(&g, -dir);
+        g.take_stairs(back, &content, &catalog);
+        assert_eq!(g.inf.as_ref().unwrap().level, 0);
+        let again = stair_back(&g, dir);
+        g.take_stairs(again, &content, &catalog);
+        assert_eq!(g.inf.as_ref().unwrap().level, dir);
+        assert_eq!(g.inf.as_ref().unwrap().origin(), o, "the same window");
+        assert_eq!(mark(&g), before, "the floor's hunters are the ones it kept");
     }
 }
 

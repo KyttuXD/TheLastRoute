@@ -25,6 +25,59 @@ pub struct GlbModel {
     pub max: Vec3,
     /// The door measures, for a model with door hinges (door.rs); `None` for every other model.
     pub door: Option<door::DoorDims>,
+    /// A room door's hinge leaves, kept out of `parts` (the static batch bakes the door shut) so each can be turned
+    /// by the door's open amount (`draw_hinges`).
+    pub hinges: Vec<Hinge>,
+    /// A hiding spot's door leaf, kept out of `parts` so it can swing (`draw_locker_door`); `None` for any other model.
+    pub locker_door: Option<LockerDoor>,
+}
+
+/// One door hinge node: its leaf geometry is in the hinge's own frame, with the authored (open) rotation.
+pub struct Hinge {
+    pub name: String,
+    /// The hinge's parent transform in model space, and the hinge's authored local transform.
+    pub base: Mat4,
+    pub local: Mat4,
+    pub parts: Vec<Part>,
+}
+
+/// The door of a hiding spot: its geometry is relative to `pivot`, the hinge line on the model's left edge.
+pub struct LockerDoor {
+    pub pivot: Vec3,
+    pub parts: Vec<Part>,
+}
+
+/// The nodes of the hiding spot model that swing with its door (the hinge blocks stay on the body).
+fn locker_door_part(name: &str) -> bool {
+    matches!(
+        name,
+        "BlockLatch"
+            | "DoorLowerMass"
+            | "DoorRail_L"
+            | "DoorRail_R"
+            | "DoorTopMass"
+            | "Handle"
+            | "HandlePlate"
+            | "LowerInset"
+            | "LowerPanel"
+            | "NumberPlate"
+            | "SightCrackLeftRail"
+            | "SightCrackRightRail"
+            | "SightSlat_1"
+            | "SightSlat_2"
+            | "SightSlat_3"
+    )
+}
+
+/// The node whose position is the hiding spot door's hinge line.
+const LOCKER_HINGE_NODE: &str = "BlockHinge_1";
+
+type Geometry = HashMap<Option<usize>, (Vec<Vertex>, Vec<u32>)>;
+
+enum Dest {
+    Body,
+    Hinge(usize),
+    Leaf,
 }
 
 fn repeat(t: &Texture2D) {
@@ -71,7 +124,14 @@ impl GlbModel {
                 t
             }));
         }
-        let mut by_tex: HashMap<Option<usize>, (Vec<Vertex>, Vec<u32>)> = HashMap::new();
+        let mut by_tex: Geometry = HashMap::new();
+        let mut hinges: Vec<Hinge> = vec![];
+        let mut hinge_geo: Vec<Geometry> = vec![];
+        let mut leaf_geo: Geometry = HashMap::new();
+        let locker_pivot = g
+            .nodes()
+            .find(|n| n.name() == Some(LOCKER_HINGE_NODE))
+            .map(|n| Vec3::from(n.transform().decomposed().0));
         let mut min = Vec3::splat(f32::MAX);
         let mut max = Vec3::splat(f32::MIN);
         let scene = g.default_scene().or_else(|| g.scenes().next())?;

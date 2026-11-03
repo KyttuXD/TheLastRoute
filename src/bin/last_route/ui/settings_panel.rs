@@ -10,6 +10,7 @@ use super::menus::{wheel_notch, Ui};
 use super::style::*;
 use crate::app::assets::Assets;
 use crate::app::settings::Settings;
+use crate::config::{FOV_MAX_DEG, FOV_MIN_DEG};
 use crate::content::Content;
 use macroquad::prelude::*;
 
@@ -22,7 +23,7 @@ const TABS: [&str; 7] = [
 /// one tab unless it is in OFF_PANEL_KEYS. The draw code below must match this table.
 #[allow(dead_code)]
 const TAB_KEYS: [&[&str]; 7] = [
-    &["pause_on_focus_loss", "teammate_waypoints"],
+    &["pause_on_focus_loss", "teammate_waypoints", "reduced_motion"],
     &[
         "master_volume",
         "gameplay_volume",
@@ -43,38 +44,47 @@ const TAB_KEYS: [&[&str]; 7] = [
 #[allow(dead_code)]
 const OFF_PANEL_KEYS: [&str; 3] = ["username", "scheme", "skin"];
 
-/// MOVEMENT / ACTIONS / SYSTEM (ControlsRegistry.LAST_ROUTE_TABS) with this build's keys.
+/// MOVEMENT / ACTIONS / SYSTEM (ControlsRegistry.LAST_ROUTE_TABS) with Godot/web defaults
+/// (project.godot [input] + LAST_ROUTE_TABS). Labels only — rebinding stays disabled.
 const SECTIONS: [(&str, &[(&str, &str)]); 3] = [
     (
         "MOVEMENT",
         &[
-            ("MOVE UP", "W"),
-            ("MOVE DOWN", "S"),
-            ("MOVE LEFT", "A"),
-            ("MOVE RIGHT", "D"),
-            ("LOOK UP", "I / UP"),
-            ("LOOK DOWN", "K / DOWN"),
-            ("LOOK LEFT", "J / LEFT"),
-            ("LOOK RIGHT", "L / RIGHT"),
-            ("SPRINT", "SHIFT"),
-            ("CROUCH", "C"),
-            ("JUMP / HOP", "SPACE"),
+            ("MOVE UP", "W / L-STICK"),
+            ("MOVE DOWN", "S / L-STICK"),
+            ("MOVE LEFT", "A / L-STICK"),
+            ("MOVE RIGHT", "D / L-STICK"),
+            ("LOOK UP", "I / UP / R-STICK"),
+            ("LOOK DOWN", "K / DOWN / R-STICK"),
+            ("LOOK LEFT", "J / LEFT / R-STICK"),
+            ("LOOK RIGHT", "L / RIGHT / R-STICK"),
+            ("SPRINT", "SHIFT / PAD L3"),
+            ("CROUCH", "C / PAD B"),
+            ("JUMP / HOP", "SPACE / PAD A"),
         ],
     ),
     (
         "ACTIONS",
         &[
-            ("INTERACT", "E / MOUSE 2"),
-            ("FLASHLIGHT", "F"),
-            ("TASER", "G"),
-            ("USE HELD TOOL", "MOUSE 1"),
-            ("INVENTORY", "1-5 / WHEEL"),
-            ("DROP HELD ITEM", "Q"),
-            ("TOGGLE MAP", "M"),
+            ("INTERACT", "E / MOUSE 2 / PAD X"),
+            ("FLASHLIGHT", "F / PAD RB"),
+            ("TASER", "G / PAD LB"),
+            ("USE HELD TOOL", "MOUSE 1 / RT"),
+            ("INVENTORY", "TAB / PAD Y"),
+            ("HOTBAR", "1-5 / WHEEL"),
+            ("DROP HELD ITEM", "Q / DPAD DOWN"),
+            ("CHAT", "T / /"),
+            ("PUSH TO TALK", "X / R-STICK"),
+            ("QUICK CHAT", "` / DPAD UP"),
+            ("TOGGLE MAP", "M / PAD BACK"),
+            ("PLAYER LIST", "O"),
             ("HIDE HUD", "F1"),
         ],
     ),
-    ("SYSTEM", &[("PAUSE", "ESCAPE"), ("FULLSCREEN", "F11")]),
+    (
+        "SYSTEM",
+        &[("PAUSE", "ESCAPE / PAD START"), ("FULLSCREEN", "F11")],
+    ),
 ];
 
 const SKIN_TEXT: &str =
@@ -394,6 +404,18 @@ pub fn draw_settings(
                 st.teammate_waypoints = !st.teammate_waypoints;
                 changed = true;
             }
+            if state_toggle(
+                a,
+                Rect::new(x, oy + 106.0, 400.0, 14.0),
+                "REDUCED MOTION",
+                st.reduced_motion,
+                false,
+                plain(),
+            ) {
+                st.reduced_motion = !st.reduced_motion;
+                super::style::set_reduced_motion(st.reduced_motion);
+                changed = true;
+            }
         }
         4 | 5 | 6 => {
             // SKIN, VOICE and MODS each scroll their text below the tab bar
@@ -594,8 +616,8 @@ pub fn draw_settings(
                 oy + 126.0,
                 "FIELD OF VIEW",
                 st.fov,
-                60.0,
-                105.0,
+                FOV_MIN_DEG,
+                FOV_MAX_DEG,
                 &format!("{}°", st.fov.round() as i32),
             ) {
                 st.fov = v.round();
@@ -728,6 +750,25 @@ mod tests {
             };
             assert_eq!(shown, expected, "{key} should appear in {expected} tab(s)");
         }
+    }
+
+    #[test]
+    fn default_bindings_match_godot_defaults() {
+        let actions = SECTIONS.iter().find(|(n, _)| *n == "ACTIONS").unwrap().1;
+        let get = |name: &str| {
+            actions
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, b)| *b)
+                .unwrap_or("")
+        };
+        assert!(get("INVENTORY").contains("TAB"), "inventory default is Tab: {}", get("INVENTORY"));
+        assert!(get("INVENTORY").contains("PAD Y"), "inventory gamepad Y: {}", get("INVENTORY"));
+        assert!(get("CHAT").contains('T'), "chat default is T: {}", get("CHAT"));
+        assert!(get("PLAYER LIST").contains('O'), "player list default is O: {}", get("PLAYER LIST"));
+        let movement = SECTIONS.iter().find(|(n, _)| *n == "MOVEMENT").unwrap().1;
+        let jump = movement.iter().find(|(n, _)| *n == "JUMP / HOP").unwrap().1;
+        assert!(jump.contains("PAD A"), "jump gamepad: {jump}");
     }
 
     #[test]

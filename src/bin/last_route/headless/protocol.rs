@@ -800,6 +800,12 @@ impl Session {
                 }
                 json!({ "ok": true, "given": given })
             }
+            "flicker" => {
+                // force_flashlight_flicker: the beam strobes and [F] is locked out for `seconds` (default the splash's 1.4)
+                let seconds = f(c, "seconds").unwrap_or(1.4).clamp(0.0, 30.0);
+                let forced = g.force_flashlight_flicker(seconds);
+                json!({ "ok": true, "forced": forced, "seized": g.p.flashlight_seized() })
+            }
             "set" => {
                 // body / meter values: lamp, stamina, temperature, ambient, exposure, noise, coins, yaw, pitch
                 let mut set = Map::new();

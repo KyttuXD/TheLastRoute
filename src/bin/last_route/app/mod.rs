@@ -416,6 +416,7 @@ fn shot_screen(name: &str) -> Option<Screen> {
 pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>) {
     // a stress run (`--stress`) opens its log before the load, so a bad --stress-log path fails at once
     let stress_on = stress_cfg.is_some();
+    let stress_vsync = stress_cfg.as_ref().map(|c| c.vsync);
     let mut stress_run = match stress_cfg.map(stress::Stress::open) {
         Some(Ok(s)) => Some(s),
         Some(Err(e)) => {
@@ -450,6 +451,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
     };
     let mut settings = Settings::load();
     style::set_scheme(&env("LR_SCHEME").unwrap_or_else(|| settings.scheme.clone()));
+    style::set_reduced_motion(settings.reduced_motion);
     if settings.fullscreen && screenshot.is_none() {
         set_fullscreen(true);
     }
@@ -524,8 +526,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
 
     loop {
         frame += 1;
-        // a stress run forces vsync off without touching the saved setting
-        let vsync = settings.vsync && !stress_on;
+        // a stress run takes --stress-vsync without touching the saved setting
+        let vsync = stress_vsync.unwrap_or(settings.vsync);
         if vsync_applied != Some(vsync) {
             pacing::apply_vsync(vsync);
             vsync_applied = Some(vsync);
@@ -793,8 +795,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
                 relock_settle = RELOCK_SETTLE_FRAMES;
             }
             // a stress run drives the run with its own input (app/stress.rs) and reads no keys or mouse
-            let mut c = match stress_run.as_ref() {
-                Some(st) => st.controls(dt),
+            let mut c = match stress_run.as_mut() {
+                Some(st) => st.controls(dt, g),
                 None => read_controls(
                     &mut mouse_last,
                     grabbed,
@@ -817,8 +819,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
             }
             g.fov_deg = settings.fov;
             let gdt = admin.game_dt(dt);
-            if stress_on {
-                stress::fly(g);
+            if let Some(st) = stress_run.as_mut() {
+                st.prepare(g, &w.content);
             }
             admin.before_update(g);
             if !pz.open {
@@ -948,6 +950,21 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
                     if !hud_hidden {
                         hud::draw_crosshair(g, grabbed);
                     }
+                    // Hold O: player list overlay (Godot player_list; Tab/T are labels until inventory/chat UI land).
+                    if !stress_on && !pz.open && !in_report && is_key_down(KeyCode::O) {
+                        let room = net
+                            .as_ref()
+                            .map(|n| pause::remote_rows(&n.roster(), g.is_infinite()))
+                            .unwrap_or_default();
+                        let local_host = net.as_ref().map_or(true, |n| n.is_host());
+                        pause::draw_hold_player_list(
+                            &w.assets,
+                            g,
+                            &settings.username,
+                            room,
+                            local_host,
+                        );
+                    }
                     if map_open {
                         map::draw_full_map(g, &w.assets, &map_view);
                     }
@@ -987,6 +1004,10 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
                             room,
                             local_host,
                         ) {
+                            // leaving the route saves it first (Godot `_leave_test`: autosave("quit")); a guest never saves
+                            if local_host {
+                                g.autosave("quit");
+                            }
                             leave = true;
                         }
                     }
@@ -1051,7 +1072,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
                     menus::draw_title(&w.assets, &mut ui, &username, false);
                     if crate::ui::admin::draw_hub(
                         &w.assets,
-                        hub.get_or_insert_with(crate::ui::admin::HubPanel::new),
+                        hub.get_or_insert_with(|| crate::ui::admin::HubPanel::new(net_cfg.clone())),
                         &settings.username,
                     ) {
                         hub = None;

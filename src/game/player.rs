@@ -49,6 +49,8 @@ pub struct Player {
     pub noclip: bool,
     /// Admin run speed: multiplies every movement speed (admin_menu.gd).
     pub speed_scale: f32,
+    /// Eye height change during a stair or ladder climb (game/transition.rs), in metres: negative going down.
+    pub climb_lift: f32,
     /// Seconds left in a forced flicker (a plunge splash or a hunter event); the
     /// beam strobes until it runs out and the player's own switch cannot override it.
     flicker_remaining: f32,
@@ -91,6 +93,7 @@ impl Player {
             walked: 0.0,
             noclip: false,
             speed_scale: 1.0,
+            climb_lift: 0.0,
             flicker_remaining: 0.0,
             flicker_next_toggle: 0.0,
             flicker_dark: false,
@@ -158,7 +161,7 @@ impl Player {
     }
 
     pub fn eye_height(&self) -> f32 {
-        CAMERA_HEIGHT + (CAMERA_HEIGHT * CROUCH_EYE_RATIO - CAMERA_HEIGHT) * self.crouch_t
+        CAMERA_HEIGHT + (CAMERA_HEIGHT * CROUCH_EYE_RATIO - CAMERA_HEIGHT) * self.crouch_t + self.climb_lift
     }
 
     /// Facing on the grid: (-sin yaw, -cos yaw), as the original's controller.

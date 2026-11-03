@@ -5,6 +5,7 @@ pub mod admin;
 pub mod boot;
 pub mod hud;
 pub mod map;
+pub mod radar_ping;
 pub mod menus;
 pub mod pause;
 pub mod report;

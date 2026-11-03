@@ -36,6 +36,18 @@ pub fn closed_hinge_local(local: Mat4, deg: f32) -> Mat4 {
     Mat4::from_translation(local.w_axis.truncate()) * Mat4::from_rotation_y(deg.to_radians())
 }
 
+/// The smoothed swing for an open amount (0 closed, 1 open): slow at both ends, so a leaf eases off its latch.
+pub fn swing_ease(open: f32) -> f32 {
+    let t = open.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// A hinge's rotation for an open amount: the closed pose at 0 and the authored open leaf (no turn) at 1.
+/// `None` for any node that is not a hinge. Feed it to `closed_hinge_local` in place of the closed angle.
+pub fn hinge_deg(node: &str, open: f32) -> Option<f32> {
+    closed_hinge_deg(node).map(|closed| closed * (1.0 - swing_ease(open)))
+}
+
 /// The door's own measures, read from its model's nodes (see `DoorMeasure`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DoorDims {
@@ -257,6 +269,18 @@ mod tests {
         assert!(close(leaf.y, 1.19, 1e-6), "the hinge keeps the leaf's height ({})", leaf.y);
         assert_eq!(closed_hinge_deg("DoorHingeRight"), Some(68.0));
         assert_eq!(closed_hinge_deg("DoorFrameL"), None);
+    }
+
+    #[test]
+    fn hinges_swing_from_closed_to_the_authored_open_pose() {
+        assert_eq!(hinge_deg("DoorHinge", 0.0), Some(-68.0));
+        assert_eq!(hinge_deg("DoorHingeRight", 0.0), Some(68.0));
+        assert_eq!(hinge_deg("DoorHinge", 1.0), Some(0.0));
+        let half = hinge_deg("DoorHinge", 0.5).unwrap();
+        assert!(close(half, -34.0, 1e-4), "midway {half}");
+        assert_eq!(hinge_deg("DoorFrameL", 0.5), None);
+        assert_eq!(swing_ease(-1.0), 0.0);
+        assert_eq!(swing_ease(2.0), 1.0);
     }
 
     #[test]

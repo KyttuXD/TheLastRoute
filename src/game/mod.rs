@@ -4,10 +4,13 @@
 pub mod endless;
 mod hunting;
 mod interact;
+#[cfg(test)]
+mod ladder_tests;
 mod items;
 pub mod meters;
 pub mod npc;
 pub mod player;
+mod transition;
 
 pub use interact::Focus;
 pub use items::{Item, Slot};
@@ -19,7 +22,7 @@ use crate::content::Content;
 use crate::hunters::brain::Brain;
 use crate::hunters::director::Director;
 use crate::hunters::gimmicks::Gimmick;
-use crate::render::world_mesh::{build_world, WorldMeshes};
+use crate::render::world_mesh::{ChunkFrame, WorldMeshes};
 use crate::world::catalog::Catalog;
 use crate::world::facility::{Facility, Options};
 use crate::world::fixtures::{self, Fixtures};
@@ -181,6 +184,10 @@ pub struct Game {
     /// Hunters met this run (within 7.5 m, in line of sight) not yet handed to the dossier.
     sightings: Vec<String>,
     sighted: std::collections::HashSet<String>,
+    /// Why the run last autosaved ("relay", "checkpoint", "quit"), "" before any (Godot `_last_autosave_reason`).
+    pub last_autosave: &'static str,
+    /// The climb to another level and its fade (game/transition.rs): input is frozen while it runs.
+    pub transition: Option<transition::Transition>,
 }
 
 pub fn pdist(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -278,6 +285,8 @@ impl Game {
             npc_next: 0,
             sightings: vec![],
             sighted: Default::default(),
+            last_autosave: "",
+            transition: None,
             fac,
             fix,
             world,
@@ -391,6 +400,8 @@ impl Game {
             npc_next: 0,
             sightings: vec![],
             sighted: Default::default(),
+            last_autosave: "",
+            transition: None,
             world: WorldMeshes::default(),
             world_dirty: true,
             fac,
@@ -595,7 +606,8 @@ impl Game {
     /// Builds the render meshes for the current floor if it changed (needs the GPU assets).
     pub fn sync_world(&mut self, assets: &Assets, content: &Content) {
         if self.world_dirty {
-            self.world = build_world(&self.fac, &self.lights_on, assets, content);
+            let frame = self.inf.as_ref().map(|i| ChunkFrame { level: i.level, center: i.center });
+            self.world.rebuild(&self.fac, &self.lights_on, frame, assets, content);
             self.world_dirty = false;
         }
     }
@@ -629,6 +641,10 @@ impl Game {
         self.toast_t = (self.toast_t - dt).max(0.0);
         self.message_t = (self.message_t - dt).max(0.0);
         if self.report.is_some() {
+            return;
+        }
+        if self.transition.is_some() {
+            self.advance_transition(dt, content, catalog);
             return;
         }
         let prof = self.prof();
@@ -675,6 +691,12 @@ impl Game {
         }
         // NPC teammates follow the runner through the escape struggle too (game/npc.rs)
         self.update_npcs(dt);
+        let level = self.runner_level();
+        let actors: Vec<(f32, f32)> = std::iter::once(self.p.pos)
+            .chain(self.hunters.iter().filter(|h| h.active).map(|h| h.pos))
+            .chain(self.npcs.iter().filter(|n| n.level == level).map(|n| n.at))
+            .collect();
+        self.fac.update_doors(&actors, dt);
         if self.escape.is_some() {
             self.update_escape(dt, c, sounds);
             return;

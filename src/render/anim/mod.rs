@@ -7,6 +7,7 @@
 //!              heavy-stun reel, BlockyFace expressions and the stun stars.
 //! * `grab`   -- HunterGrab / GrabStyles: the hunter's hold on a caught runner (style pick, body points, two-bone arm IK).
 //! * `held`   -- the first-person held item: HeldItemPoses plus the player's tool tweens (swing, use, taser kick, torch click).
+//! * `hide`   -- the hiding spot's door cycle and the runner's crouch pose, driven by the hiding state.
 //!
 //! The views keep state between frames (smoothed speed, current clip, blends...), which the immutable `Game` does not
 //! carry, so they live here, keyed by the hunter's slot, and advance on the game clock.
@@ -14,6 +15,7 @@
 pub mod clip;
 pub mod grab;
 pub mod held;
+pub mod hide;
 pub mod hunter;
 pub mod player;
 

@@ -1,6 +1,7 @@
 //! The request routing of `server.mjs` (the `createServer` callback), in the same order as the original.
 
 use super::*;
+use std::sync::MutexGuard;
 use crate::crash_reports::CRASH_MAX_BODY_BYTES;
 use crate::game_saves::{match_save_path, SAVE_MAX_BYTES};
 use crate::lr_regex as regex;
@@ -71,6 +72,13 @@ fn session_user(state: &State, body: &Value) -> String {
     }
 }
 
+fn owner_identity(accounts: &AccountService, body: &Value) -> bool {
+    accounts
+        .session_admin_identity(&str_or_empty(body.get("sessionToken")))
+        .map(|identity| identity.get("adminOwner") == Some(&Value::Bool(true)))
+        .unwrap_or(false)
+}
+
 impl LastRouteServer {
     fn rate_limit(&self, state: &mut State, request: &Request, pathname: &str) -> i64 {
         let sensitive = ACCOUNT_RATE_LIMIT_PATHS.contains(&pathname);
@@ -101,6 +109,11 @@ impl LastRouteServer {
 
     /// `developerRequest(body)`: a live dev token, the setup password as `adminProof`, or an owner session.
     fn developer_request(&self, state: &mut State, body: &Value) -> bool {
+        self.developer_proof(state, body) || owner_identity(&state.accounts, body)
+    }
+
+    /// The part of `developerRequest` that needs only the server state: a live dev token or the setup password.
+    fn developer_proof(&self, state: &mut State, body: &Value) -> bool {
         if truthy(body.get("devToken")) {
             let key = str_or_empty(body.get("devToken"));
             if let Some(expires) = state.dev_tokens.get(&key).copied() {
@@ -110,14 +123,24 @@ impl LastRouteServer {
                 state.dev_tokens.remove(&key);
             }
         }
-        if !self.config.admin_password.is_empty() && safe_equal(&str_or_empty(body.get("adminProof")), &self.config.admin_password) {
-            return true;
+        !self.config.admin_password.is_empty() && safe_equal(&str_or_empty(body.get("adminProof")), &self.config.admin_password)
+    }
+
+    /// Runs `call` against the account service with the state lock released, then takes the lock again. The account
+    /// service synchronizes itself, and a forwarded call can wait on the website for seconds.
+    fn with_accounts<'a, T>(&'a self, guard: MutexGuard<'a, State>, call: impl FnOnce(&AccountService) -> T) -> (T, MutexGuard<'a, State>) {
+        let accounts = guard.accounts.clone();
+        drop(guard);
+        let value = call(&accounts);
+        (value, self.state.lock().unwrap())
+    }
+
+    /// `developerRequest` for the account routes: the upstream session lookup runs without the state lock.
+    fn developer_request_unlocked<'a>(&'a self, mut guard: MutexGuard<'a, State>, body: &Value) -> (bool, MutexGuard<'a, State>) {
+        if self.developer_proof(&mut guard, body) {
+            return (true, guard);
         }
-        state
-            .accounts
-            .session_admin_identity(&str_or_empty(body.get("sessionToken")))
-            .map(|identity| identity.get("adminOwner") == Some(&Value::Bool(true)))
-            .unwrap_or(false)
+        self.with_accounts(guard, |accounts| owner_identity(accounts, body))
     }
 
     fn issue_dev_token(&self, state: &mut State) -> String {
@@ -129,11 +152,13 @@ impl LastRouteServer {
         token
     }
 
-    pub(crate) fn route(&self, state: &mut State, request: &Request) -> Response {
+    pub(crate) fn route(&self, request: &Request) -> Response {
         let method = request.method.as_str();
         if method == "OPTIONS" {
             return json_response(204, &json!({}), &[]);
         }
+        let mut guard = self.state.lock().unwrap();
+        let state = &mut *guard;
         state.dir.prune();
         let path = request.path.as_str();
         let retry_after = self.rate_limit(state, request, path);
@@ -191,7 +216,7 @@ impl LastRouteServer {
         if let Some(response) = self.route_posts(state, request, &body) {
             return response;
         }
-        let result = self.route_accounts(state, &body, path);
+        let result = self.route_accounts(guard, &body, path);
         log_account_event(self.now(), path, &body, &result, &requester_address(request, self.config.trust_proxy));
         reply(result)
     }
@@ -251,7 +276,7 @@ impl LastRouteServer {
             if let Some((game_id, slot)) = match_save_path(path) {
                 let token = request.header("x-session-token");
                 if method == "GET" {
-                    return Some(reply(state.game_saves.get(&state.accounts, &token, &game_id, &slot)));
+                    return Some(reply(state.game_saves.get(&*state.accounts, &token, &game_id, &slot)));
                 }
                 if request.body_overflow || request.body.len() > SAVE_MAX_BYTES {
                     return Some(json_response(413, &json!({ "ok": false, "code": "SAVE_TOO_LARGE",
@@ -261,7 +286,7 @@ impl LastRouteServer {
                     return Some(json_response(400, &json!({ "ok": false, "code": "BAD_SAVE", "error": "INVALID JSON BODY" }), &[]));
                 };
                 let State { game_saves, accounts, .. } = state;
-                return Some(reply(game_saves.put(&*accounts, &token, &game_id, &slot, &body)));
+                return Some(reply(game_saves.put(&**accounts, &token, &game_id, &slot, &body)));
             }
         }
         if get_or_head {
@@ -637,65 +662,99 @@ impl LastRouteServer {
         }
     }
 
-    /// The final dispatch table of server.mjs (legacy rooms, guest names, accounts, roster).
-    fn route_accounts(&self, state: &mut State, body: &Value, path: &str) -> Reply {
+    /// The final dispatch table of server.mjs (legacy rooms, guest names, accounts, roster). The account calls may be
+    /// forwarded to the website, so they run with the state lock released and take it again only for the state they touch.
+    fn route_accounts<'a>(&'a self, guard: MutexGuard<'a, State>, body: &Value, path: &str) -> Reply {
+        let mut guard = guard;
         let mut result: Reply = match path {
-            "/api/rooms/join" => state.room_service.join_room(body),
-            "/api/rooms/state" => state.room_service.update_room(body),
-            "/api/rooms/settings" => state.room_service.update_room_settings(body),
-            "/api/rooms/start" => state.room_service.start_room_round(body),
-            "/api/rooms/default-start" => state.room_service.start_default_route(body),
-            "/api/rooms/abandon" => state.room_service.abandon_route(body),
-            "/api/rooms/custom-map" => state.room_service.set_custom_map(body),
-            "/api/rooms/dialog-start" => state.room_service.start_dialog(body),
-            "/api/rooms/dialog-advance" => state.room_service.advance_dialog(body),
+            "/api/rooms/join" => guard.room_service.join_room(body),
+            "/api/rooms/state" => guard.room_service.update_room(body),
+            "/api/rooms/settings" => guard.room_service.update_room_settings(body),
+            "/api/rooms/start" => guard.room_service.start_room_round(body),
+            "/api/rooms/default-start" => guard.room_service.start_default_route(body),
+            "/api/rooms/abandon" => guard.room_service.abandon_route(body),
+            "/api/rooms/custom-map" => guard.room_service.set_custom_map(body),
+            "/api/rooms/dialog-start" => guard.room_service.start_dialog(body),
+            "/api/rooms/dialog-advance" => guard.room_service.advance_dialog(body),
             "/api/skins/mine" | "/api/skins/clear" | "/api/skins/remove" => {
                 (503, json!({ "ok": false, "code": "SKINS_UNAVAILABLE", "error": "Skins are not available on this server" }))
             }
             "/api/city-maps/list" | "/api/city-maps/ticket" => {
                 (404, json!({ "ok": false, "code": "CITY_MAPS_UNAVAILABLE", "error": "City maps are not part of this server" }))
             }
-            "/api/rooms/leave" => state.room_service.leave_room(body),
-            "/api/guest/name" => state.guest_names.issue(body),
+            "/api/rooms/leave" => guard.room_service.leave_room(body),
+            "/api/guest/name" => guard.guest_names.issue(body),
             "/api/account/register" | "/api/account/login" => {
-                let mut r = if path == "/api/account/register" {
-                    let allow = self.developer_request(state, body);
-                    state.accounts.register(body, allow)
-                } else {
-                    state.accounts.login(body)
-                };
+                let register = path == "/api/account/register";
+                let (allow, g) = if register { self.developer_request_unlocked(guard, body) } else { (false, guard) };
+                let (mut r, g) = self.with_accounts(g, |accounts| if register { accounts.register(body, allow) } else { accounts.login(body) });
+                guard = g;
                 // The website mints its own devToken for an owner, so a forwarded reply keeps it.
-                if !state.accounts.is_upstream() && r.1.get("ok") == Some(&json!(true)) && truthy(r.1.get("adminOwner")) {
-                    r.1["devToken"] = json!(self.issue_dev_token(state));
+                if !guard.accounts.is_upstream() && r.1.get("ok") == Some(&json!(true)) && truthy(r.1.get("adminOwner")) {
+                    r.1["devToken"] = json!(self.issue_dev_token(&mut guard));
                 }
                 r
             }
-            "/api/account/session" => state.accounts.current_session(body),
-            "/api/account/guest" => state.accounts.forward(path, body).unwrap_or_else(unknown_endpoint),
-            "/api/account/password" => state.accounts.change_password(body),
+            "/api/account/session" => {
+                let (r, g) = self.with_accounts(guard, |accounts| accounts.current_session(body));
+                guard = g;
+                r
+            }
+            "/api/account/guest" => {
+                let (r, g) = self.with_accounts(guard, |accounts| accounts.forward(path, body).unwrap_or_else(unknown_endpoint));
+                guard = g;
+                r
+            }
+            "/api/account/password" => {
+                let (r, g) = self.with_accounts(guard, |accounts| accounts.change_password(body));
+                guard = g;
+                r
+            }
             "/api/account/rename" => {
-                let previous = state.accounts.session_username(&str_or_empty(body.get("sessionToken")));
-                let allow = self.developer_request(state, body);
-                let r = state.accounts.rename(body, allow);
+                let (previous, g) =
+                    self.with_accounts(guard, |accounts| accounts.session_username(&str_or_empty(body.get("sessionToken"))));
+                let (allow, g) = self.developer_request_unlocked(g, body);
+                let (r, g) = self.with_accounts(g, |accounts| accounts.rename(body, allow));
+                guard = g;
                 if let (Some(true), Some(previous)) = (r.1.get("ok").and_then(Value::as_bool), previous) {
-                    state.moderation.rename_account(&previous, &str_nullish(r.1.get("username")));
+                    guard.moderation.rename_account(&previous, &str_nullish(r.1.get("username")));
                 }
                 r
             }
-            "/api/account/save" => state.accounts.save(body),
-            "/api/account/load" => state.accounts.load_progress(body),
-            "/api/account/logout" => state.accounts.logout(body),
-            "/api/admin/roster" => state.accounts.list_admin_roster(body),
+            "/api/account/save" => {
+                let (r, g) = self.with_accounts(guard, |accounts| accounts.save(body));
+                guard = g;
+                r
+            }
+            "/api/account/load" => {
+                let (r, g) = self.with_accounts(guard, |accounts| accounts.load_progress(body));
+                guard = g;
+                r
+            }
+            "/api/account/logout" => {
+                let (r, g) = self.with_accounts(guard, |accounts| accounts.logout(body));
+                guard = g;
+                r
+            }
+            "/api/admin/roster" => {
+                let (r, g) = self.with_accounts(guard, |accounts| accounts.list_admin_roster(body));
+                guard = g;
+                r
+            }
             "/api/admin/roster/set" | "/api/admin/roster/remove" => {
-                let r = if path == "/api/admin/roster/set" {
-                    state.accounts.set_admin_roster(body)
-                } else {
-                    state.accounts.remove_admin_roster(body)
-                };
+                let set = path == "/api/admin/roster/set";
+                let (r, g) = self.with_accounts(guard, |accounts| {
+                    if set {
+                        accounts.set_admin_roster(body)
+                    } else {
+                        accounts.remove_admin_roster(body)
+                    }
+                });
+                guard = g;
                 if r.1.get("ok") == Some(&json!(true)) {
-                    let name = if path == "/api/admin/roster/set" { r.1.get("entry").and_then(|e| e.get("username")) } else { r.1.get("username") };
+                    let name = if set { r.1.get("entry").and_then(|e| e.get("username")) } else { r.1.get("username") };
                     let name = name.map(|n| str_nullish(Some(n)));
-                    state.dir.admin_tickets.retain(|_, proof| Some(&proof.username) != name.as_ref());
+                    guard.dir.admin_tickets.retain(|_, proof| Some(&proof.username) != name.as_ref());
                 }
                 r
             }
@@ -703,7 +762,7 @@ impl LastRouteServer {
         };
         if let Value::Object(map) = &mut result.1 {
             if truthy(map.get("room")) && !map.contains_key("ok") {
-                map.insert("reloadId".into(), json!(state.reload_id));
+                map.insert("reloadId".into(), json!(guard.reload_id));
             }
         }
         result

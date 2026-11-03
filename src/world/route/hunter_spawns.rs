@@ -21,6 +21,7 @@
 use std::collections::HashSet;
 
 use super::layout::{Coord, Grid, CHUNK, V2};
+use super::danger::{DangerProfile, OFFICE_VOID_CHANCE};
 use super::props::{self, Prop};
 use crate::world::rng::Rng;
 
@@ -45,11 +46,6 @@ pub fn hunter_id(c: Coord, index: usize) -> String {
     format!("{}:HUNTER:{}", props::chunk_tag(c), index)
 }
 
-/// `difficulty_for_level(level).danger` (streamed_route_generator.gd:1293): `clampf(0.48 - level * 0.075, 0.12, 1.0)`.
-fn danger_for_level(level: i32) -> f64 {
-    (0.48 - level as f64 * 0.075).clamp(0.12, 1.0)
-}
-
 /// `_hunter_spawns` (streamed_route_generator.gd:5635-5703) for a level-0 chunk. `grid` is the chunk's final grid,
 /// `stairs` the stair anchor cells (always empty on level 0), `region_props` the props after the post passes, and
 /// `safe` the safe-room flag.
@@ -65,11 +61,11 @@ pub fn chunk_hunter_spawns(
     if safe {
         return Vec::new();
     }
-    let danger = danger_for_level(c.y);
+    let profile = DangerProfile::for_level(c.y);
     let tag = props::chunk_tag(c);
     let mut rng = Rng::new(&format!("{world}:HUNTERS:{tag}"));
     // lerpf(0.16, 0.42, danger)
-    let spawn_chance = 0.16 + (0.42 - 0.16) * danger;
+    let spawn_chance = profile.hunter_spawn_chance();
     let guaranteed_primary = c == Coord::new(1, 0, 0);
     // 5652: the roll is drawn before the candidate check (an empty pool still spends it).
     if !guaranteed_primary && rng.next_float() >= spawn_chance {
@@ -104,8 +100,13 @@ pub fn chunk_hunter_spawns(
     if candidates.is_empty() {
         return Vec::new();
     }
-    // 5674: the primary chunk places two hunters. The level -6 extra roll (5675) is not reached at level 0.
-    let count = if guaranteed_primary { 2 } else { 1 };
+    // 5674-5676: the primary chunk places two hunters; at level -6 and below any chunk may roll a second one.
+    let mut count = if guaranteed_primary { 2 } else { 1 };
+    if let Some(pair) = profile.deep_pair_chance() {
+        if rng.next_float() < pair {
+            count = 2;
+        }
+    }
     let mut result: Vec<HunterSpawn> = Vec::new();
     for index in 0..count {
         if candidates.is_empty() {
@@ -113,8 +114,11 @@ pub fn chunk_hunter_spawns(
         }
         let picked = rng.next_index(candidates.len());
         let cell = candidates.remove(picked);
-        let identity = STREAMED_HUNTER_IDS[rng.next_index(STREAMED_HUNTER_IDS.len())];
-        // The office void roll (5689) is at level -2 and below, so it is not reached at level 0.
+        let mut identity = STREAMED_HUNTER_IDS[rng.next_index(STREAMED_HUNTER_IDS.len())];
+        // 5689-5691: the office void roll, at level -2 and below (not reached at level 0).
+        if profile.rolls_office_void() && rng.next_float() < OFFICE_VOID_CHANCE {
+            identity = crate::world::route::sewer::hunters::office_void_for(&format!("{world}:{tag}:{index}"));
+        }
         result.push(HunterSpawn {
             id: hunter_id(c, index),
             hunter_id: identity,
@@ -152,7 +156,7 @@ mod tests {
 
     #[test]
     fn level_zero_spawn_chance_is_the_godot_value() {
-        let danger = danger_for_level(0);
+        let danger = DangerProfile::for_level(0).danger;
         assert!((danger - 0.48).abs() < 1e-12);
         let chance = 0.16 + (0.42 - 0.16) * danger;
         assert!((chance - 0.2848).abs() < 1e-12);

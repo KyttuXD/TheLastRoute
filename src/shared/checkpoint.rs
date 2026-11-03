@@ -60,7 +60,8 @@ fn from_json(v: &serde_json::Value) -> Option<Checkpoint> {
 pub static ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 fn enabled() -> bool {
-    ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+    // the lib's unit tests drive relays, checkpoints and stairs: they never touch the player's real save
+    !cfg!(test) && ENABLED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 pub fn save(c: &Checkpoint) {

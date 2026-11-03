@@ -1,18 +1,26 @@
 //! The title / hub ADMIN panel (hub_admin_panel.gd): "ADMIN // STATUS" with REFRESH and CLOSE,
 //! then centred sections: THIS BUILD, ACCOUNT, SERVER, UPDATES, PUBLIC ROUTE, SERVER NOTICES,
 //! DEBUG TOGGLES (the admin preferences the run's admin menu applies, as ON/OFF toggles), SKINS,
-//! MODERATION and ROUTE TOOLS. The SERVER and UPDATES rows show the answer of one status request,
-//! made on open and on REFRESH; the other network sections read as the original does when the
-//! server cannot be reached; skins and moderation are owner-only.
+//! MODERATION and ROUTE TOOLS. On open and on REFRESH, like `refresh_all()`, the panel asks the
+//! server for `/api/health` (SERVER), `/api/updates/<channel>/<platform>` for every platform
+//! (UPDATES, one line each) and `/api/public/status` (PUBLIC ROUTE); skins and moderation are
+//! owner-only.
+//!
+//! PORT DEVIATION: Godot's `_fetch` turns every failure into `{}`, so a server that answers with
+//! an error reads the same as one that cannot be reached. Here an HTTP 5xx is reported as the
+//! server being reached but failing ("SERVER ERROR (HTTP 500)"), and only a connection failure or
+//! timeout reads "CAN'T REACH THE SERVER" / "NO ANSWER". The SERVER section also says ONLINE when
+//! the health check answers.
 
 use super::look::*;
 use super::prefs::{Prefs, KEYS};
 use crate::app::assets::Assets;
-use crate::app::updater::PLATFORM;
-use crate::net::api::{self, UpdateManifest};
-use crate::net::config::PRIMARY_BASE_URL;
-use crate::net::Pending;
+use crate::net::api::{self, Json};
+use crate::net::http::{Method, Request};
+use crate::net::{BackendConfig, NetError, Pending};
 use macroquad::prelude::*;
+use serde_json::Value;
+use std::time::Duration;
 
 const SECTIONS: [&str; 10] = [
     "THIS BUILD",
@@ -27,40 +35,98 @@ const SECTIONS: [&str; 10] = [
     "ROUTE TOOLS",
 ];
 
+/// hub_admin_panel.gd `PLATFORMS` (macos, windows, phone, quest) plus linux, which the Rust port
+/// also builds and the updater asks for (`updater::PLATFORM`).
+const PLATFORMS: [&str; 5] = ["macos", "windows", "linux", "phone", "quest"];
+/// `Build.update_channel()`: the port only ships debug builds (the updater asks `/api/updates/debug/..`).
+const CHANNEL: &str = "debug";
+/// `request.timeout = 6.0` in `_fetch`.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(6);
+/// The health keys `refresh_all()` lists, in its order.
+const HEALTH_KEYS: [&str; 7] = ["instance", "service", "rooms", "webRooms", "relay", "runtime", "now"];
+/// `ServerPrivacy.FRIENDLY_UNREACHABLE`.
+const UNREACHABLE: &str = "CAN'T REACH THE SERVER";
+
 pub struct HubPanel {
     prefs: Prefs,
     scroll: f32,
     content_h: f32,
     checking: f32,
-    request: Option<Pending<UpdateManifest>>,
-    link: ServerLink,
+    config: BackendConfig,
+    health: Probe,
+    updates: Vec<(&'static str, Probe)>,
+    public: Probe,
+    requests: Vec<(Target, Pending<Probe>)>,
 }
 
 impl Default for HubPanel {
     fn default() -> Self {
-        HubPanel::new()
+        HubPanel::new(BackendConfig::primary())
     }
+}
+
+/// Which section a running request fills in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Target {
+    Health,
+    Update(usize),
+    Public,
 }
 
 impl HubPanel {
     /// Opening the panel reads the current admin preferences and asks the server for its status.
-    pub fn new() -> HubPanel {
+    /// Uses the same [`BackendConfig`] as the rest of the client (`--backend=` / primary).
+    pub fn new(config: BackendConfig) -> HubPanel {
         let mut hub = HubPanel {
             prefs: Prefs::load(),
             scroll: 0.0,
             content_h: 0.0,
             checking: 0.0,
-            request: None,
-            link: ServerLink::Checking,
+            config,
+            health: Probe::Checking,
+            updates: PLATFORMS.iter().map(|p| (*p, Probe::Checking)).collect(),
+            public: Probe::Checking,
+            requests: Vec::new(),
         };
-        hub.request_status();
+        hub.refresh_all();
         hub
     }
 
-    /// One status request for this platform's update manifest. A request still running is dropped.
-    fn request_status(&mut self) {
-        self.link = ServerLink::Checking;
-        self.request = Some(Pending::spawn(|| api::update_manifest(PLATFORM)));
+    /// `refresh_all()`: health, every platform's manifest and the public route, all at once (the
+    /// original awaits them one after another). Requests still running are dropped.
+    fn refresh_all(&mut self) {
+        self.health = Probe::Checking;
+        self.public = Probe::Checking;
+        for (_, probe) in &mut self.updates {
+            *probe = Probe::Checking;
+        }
+        self.requests.clear();
+        let mut targets = vec![(Target::Health, "/api/health".to_string())];
+        targets.extend(PLATFORMS.iter().enumerate().map(|(i, p)| (Target::Update(i), format!("/api/updates/{CHANNEL}/{p}"))));
+        targets.push((Target::Public, "/api/public/status".to_string()));
+        for (target, path) in targets {
+            let config = self.config.clone();
+            self.requests.push((target, Pending::spawn(move || Ok(fetch(&config, &path)))));
+        }
+    }
+
+    /// Takes in every answer that arrived this frame.
+    fn poll(&mut self) {
+        let mut i = 0;
+        while i < self.requests.len() {
+            match self.requests[i].1.poll() {
+                Some(answer) => {
+                    let (target, _) = self.requests.remove(i);
+                    let probe = answer.unwrap_or(Probe::Unreachable);
+                    match target {
+                        Target::Health => self.health = probe,
+                        Target::Update(n) => self.updates[n].1 = probe,
+                        Target::Public => self.public = probe,
+                    }
+                }
+                None => i += 1,
+            }
+        }
     }
 
     fn section(&self, title: &str, username: &str) -> String {
@@ -71,9 +137,9 @@ impl HubPanel {
                 std::env::consts::OS.to_uppercase()
             ),
             "ACCOUNT" => format!("{} // ADMIN // SCOPES NONE", if username.is_empty() { "NOT SIGNED IN".to_string() } else { username.to_uppercase() }),
-            "SERVER" => server_text(&self.link, PRIMARY_BASE_URL),
-            "UPDATES" => updates_text(&self.link, env!("LR_BUILD_NUMBER").parse().unwrap_or(0), env!("LR_REVISION")),
-            "PUBLIC ROUTE" => "NO ANSWER".into(),
+            "SERVER" => server_text(&self.health),
+            "UPDATES" => updates_text(&self.updates),
+            "PUBLIC ROUTE" => public_text(&self.public),
             "SERVER NOTICES" => "NONE THIS SESSION".into(),
             "DEBUG TOGGLES" => "Applied in the next run (the run's admin menu changes them live).".into(),
             "SKINS" | "MODERATION" => "OWNERS ONLY".into(),
@@ -82,73 +148,137 @@ impl HubPanel {
     }
 }
 
-/// What the status request found: still running, no answer from the server, or the server's manifest.
+/// One status request's outcome: still running, no answer (could not connect / timed out), or an
+/// HTTP answer with its status and JSON object body (`{}` when the body is not a JSON object).
 #[derive(Clone, Debug, PartialEq)]
-enum ServerLink {
+enum Probe {
     Checking,
     Unreachable,
-    Reached(UpdateManifest),
+    Answered { status: u16, body: Json },
 }
 
-/// The SERVER row. A server that answered is ONLINE, whether or not it publishes a build.
-fn server_text(link: &ServerLink, base_url: &str) -> String {
-    match link {
-        ServerLink::Checking => "CHECKING...".into(),
-        ServerLink::Unreachable => "OFFLINE (SOLO) // CHANNEL LOCAL\nCAN'T REACH THE SERVER".into(),
-        ServerLink::Reached(manifest) => {
-            format!("ONLINE // CHANNEL {}\n{}", channel_text(&manifest.channel), host_name(base_url).to_uppercase())
+impl Probe {
+    fn from_result(result: Result<Json, NetError>) -> Probe {
+        match result {
+            Ok(body) => Probe::Answered { status: 200, body },
+            Err(NetError::Http { status, body, .. }) => {
+                Probe::Answered { status, body: if let Value::Object(map) = body { map } else { Json::new() } }
+            }
+            Err(_) => Probe::Unreachable,
         }
     }
 }
 
-/// The UPDATES row: this platform's published build against this build. A build made without CI (build 0)
-/// never updates, so a newer published build is not announced for it.
-fn updates_text(link: &ServerLink, build: i64, revision: &str) -> String {
-    match link {
-        ServerLink::Checking => "CHECKING...".into(),
-        ServerLink::Unreachable => "CAN'T REACH THE SERVER\nOTHERS: SEE THE SITE".into(),
-        ServerLink::Reached(manifest) => match &manifest.update {
-            None => "THIS PLATFORM: NONE PUBLISHED\nOTHERS: SEE THE SITE".into(),
-            Some(published) => {
-                let status = if same_commit(&published.revision, revision) {
-                    "UP TO DATE"
-                } else if build > 0 && published.build > build {
-                    "UPDATE ON NEXT START"
-                } else {
-                    "NOT THE PUBLISHED BUILD"
-                };
-                format!(
-                    "THIS PLATFORM: BUILD {} ({})\nTHIS BUILD: {build} ({}) // {status}\nOTHERS: SEE THE SITE",
-                    published.build,
-                    short_revision(&published.revision),
-                    short_revision(revision)
-                )
-            }
-        },
+/// `_fetch(path, {})`: a GET with the 6 s timeout.
+fn fetch(config: &BackendConfig, path: &str) -> Probe {
+    if config.offline {
+        return Probe::Unreachable;
     }
+    let sent = Request::new(Method::Get, config.url(path))
+        .header("Accept", "application/json")
+        .header("Content-Type", "application/json")
+        .timeout(FETCH_TIMEOUT)
+        .send();
+    Probe::from_result(sent.and_then(api::check))
 }
 
-fn channel_text(channel: &str) -> String {
-    if channel.is_empty() {
-        "DEBUG".into()
+/// The update channel line; the server address is never shown.
+fn debug_line() -> String {
+    format!("CHANNEL {}", CHANNEL.to_uppercase())
+}
+
+/// "SERVER ERROR (HTTP 500)" for a 5xx, "HTTP 404" for any other non-2xx.
+fn http_trouble(status: u16) -> String {
+    if status >= 500 {
+        format!("SERVER ERROR (HTTP {status})")
     } else {
-        channel.to_uppercase()
+        format!("HTTP {status}")
     }
 }
 
-/// `http://host:port` -> `host`.
-fn host_name(base_url: &str) -> &str {
-    let authority = base_url.split_once("://").map_or(base_url, |(_, rest)| rest);
-    authority.split([':', '/']).next().unwrap_or(authority)
+/// The SERVER section: the debug line, then ONLINE and the health keys when `/api/health` answered,
+/// the reached-but-failing status for an error answer, or CAN'T REACH THE SERVER.
+fn server_text(health: &Probe) -> String {
+    let mut lines = vec![debug_line()];
+    match health {
+        Probe::Checking => lines.push("CHECKING...".into()),
+        Probe::Unreachable => lines.push(UNREACHABLE.into()),
+        Probe::Answered { status, body } if (200..300).contains(status) => {
+            lines.push("ONLINE".into());
+            for key in HEALTH_KEYS {
+                if let Some(value) = body.get(key) {
+                    lines.push(format!("{}: {}", key.to_uppercase(), short(value)));
+                }
+            }
+        }
+        Probe::Answered { status, .. } => lines.push(format!("REACHED // {}", http_trouble(*status))),
+    }
+    lines.join("\n")
 }
 
-fn short_revision(revision: &str) -> String {
-    revision.chars().take(7).collect()
+/// One UPDATES line: `PLATFORM: BUILD N @ REVISION` (8 characters), `NONE PUBLISHED` (the server
+/// answered without an `update`, e.g. 404 NO UPDATE PUBLISHED), or the honest failure.
+fn update_line(platform: &str, probe: &Probe) -> String {
+    let state = match probe {
+        Probe::Checking => "CHECKING...".to_string(),
+        Probe::Unreachable => "NO ANSWER".to_string(),
+        Probe::Answered { status, .. } if *status >= 500 => http_trouble(*status),
+        Probe::Answered { body, .. } => match body.get("update") {
+            Some(Value::Object(update)) if !update.is_empty() => {
+                let build = update.get("build").and_then(|b| b.as_f64()).unwrap_or(0.0) as i64;
+                let revision = match update.get("revision") {
+                    Some(Value::String(r)) => r.chars().take(8).collect::<String>().to_uppercase(),
+                    _ => String::new(),
+                };
+                format!("BUILD {build} @ {revision}")
+            }
+            _ => "NONE PUBLISHED".to_string(),
+        },
+    };
+    format!("{}: {state}", platform.to_uppercase())
 }
 
-/// `updater::same_commit`: a short hash of the same commit counts as the same commit.
-fn same_commit(a: &str, b: &str) -> bool {
-    !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
+fn updates_text(updates: &[(&str, Probe)]) -> String {
+    updates.iter().map(|(platform, probe)| update_line(platform, probe)).collect::<Vec<_>>().join("\n")
+}
+
+/// The PUBLIC ROUTE section: `_short(/api/public/status)`, or NO ANSWER.
+fn public_text(public: &Probe) -> String {
+    match public {
+        Probe::Checking => "CHECKING...".into(),
+        Probe::Answered { status, body } if (200..300).contains(status) && !body.is_empty() => short_map(body),
+        Probe::Answered { status, .. } if *status >= 500 => format!("NO ANSWER // {}", http_trouble(*status)),
+        _ => "NO ANSWER".into(),
+    }
+}
+
+/// `_short(value)`: an object as `key value, key value` (nested objects and arrays as their size,
+/// keys naming a token, secret or password left out), anything else as text.
+fn short(value: &Value) -> String {
+    match value {
+        Value::Object(map) => short_map(map),
+        Value::String(s) => s.clone(),
+        Value::Null => "<null>".into(),
+        Value::Array(items) => format!("[{}]", items.iter().map(short).collect::<Vec<_>>().join(", ")),
+        other => other.to_string(),
+    }
+}
+
+fn short_map(map: &Json) -> String {
+    let mut parts = vec![];
+    for (key, value) in map {
+        let lower = key.to_lowercase();
+        if lower.contains("token") || lower.contains("secret") || lower.contains("password") {
+            continue; // never secrets
+        }
+        let shown = match value {
+            Value::Object(o) => o.len().to_string(),
+            Value::Array(a) => a.len().to_string(),
+            other => short(other),
+        };
+        parts.push(format!("{key} {shown}"));
+    }
+    parts.join(", ")
 }
 
 fn wrap(ui: &Ui, text: &str, size: f32, width: f32) -> Vec<String> {
@@ -179,14 +309,7 @@ pub fn draw_hub(a: &Assets, hub: &mut HubPanel, username: &str) -> bool {
     let (sw, sh) = (screen_width(), screen_height());
     let u = px_per_unit();
     hub.checking = (hub.checking - get_frame_time()).max(0.0);
-    let answered = hub.request.as_mut().and_then(|p| p.poll());
-    if let Some(answer) = answered {
-        hub.request = None;
-        hub.link = match answer {
-            Ok(manifest) => ServerLink::Reached(manifest),
-            Err(_) => ServerLink::Unreachable,
-        };
-    }
+    hub.poll();
     let mut ui = Ui::new(a, u, is_mouse_button_pressed(MouseButton::Left));
     draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.78));
     let panel = Rect::new(16.0 * u, 12.0 * u, sw - 32.0 * u, sh - 24.0 * u);
@@ -208,7 +331,7 @@ pub fn draw_hub(a: &Assets, hub: &mut HubPanel, username: &str) -> bool {
     ui.text_center("ADMIN // STATUS", title_box, 10.0, AMBER);
     if ui.button(refresh, "REFRESH", 8.0, false, hub.checking > 0.0) {
         hub.checking = 0.6;
-        hub.request_status();
+        hub.refresh_all();
     }
     let closed = ui.button(close, "CLOSE", 8.0, false, false) || is_key_pressed(KeyCode::Escape);
 
@@ -287,56 +410,72 @@ pub fn draw_hub(a: &Assets, hub: &mut HubPanel, username: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::api::PublishedBuild;
+    use serde_json::json;
 
-    fn published(build: i64, revision: &str) -> ServerLink {
-        ServerLink::Reached(UpdateManifest { channel: "debug".into(), update: Some(PublishedBuild { build, revision: revision.into() }) })
+    fn answered(status: u16, body: Value) -> Probe {
+        Probe::Answered { status, body: body.as_object().cloned().unwrap_or_default() }
     }
 
     #[test]
-    fn server_row_online_offline_and_checking() {
-        let answered = ServerLink::Reached(UpdateManifest { channel: "debug".into(), update: None });
-        assert_eq!(server_text(&answered, PRIMARY_BASE_URL), "ONLINE // CHANNEL DEBUG\nLASTROUTE.KYTTUSLAB.ORG");
-        assert_eq!(server_text(&ServerLink::Unreachable, PRIMARY_BASE_URL), "OFFLINE (SOLO) // CHANNEL LOCAL\nCAN'T REACH THE SERVER");
-        assert_eq!(server_text(&ServerLink::Checking, PRIMARY_BASE_URL), "CHECKING...");
+    fn debug_line_uses_backend_override_host() {
+        let cfg = BackendConfig::loopback(18105);
+        assert_eq!(cfg.base_url, "http://127.0.0.1:18105");
+        assert_eq!(debug_line(), "CHANNEL DEBUG");
     }
 
     #[test]
-    fn server_row_without_a_channel_says_debug() {
-        let answered = ServerLink::Reached(UpdateManifest::default());
-        assert_eq!(server_text(&answered, "http://127.0.0.1:18105"), "ONLINE // CHANNEL DEBUG\n127.0.0.1");
-    }
-
-    #[test]
-    fn updates_row_for_a_newer_published_build() {
-        assert_eq!(
-            updates_text(&published(11, "0123456789abcdef"), 10, "fedcba9876543210"),
-            "THIS PLATFORM: BUILD 11 (0123456)\nTHIS BUILD: 10 (fedcba9) // UPDATE ON NEXT START\nOTHERS: SEE THE SITE"
+    fn server_online_lists_health_keys_in_godot_order() {
+        let health = answered(
+            200,
+            json!({"ok": true, "runtime": "node", "service": "last-route-backend", "instance": "main", "port": 8105,
+                   "rooms": 2, "relay": {"enabled": true, "rooms": [1, 2]}, "webRooms": 0, "now": "2026-11-03T19:00:00.000Z"}),
         );
         assert_eq!(
-            updates_text(&published(11, "0123456789abcdef"), 0, "unknown"),
-            "THIS PLATFORM: BUILD 11 (0123456)\nTHIS BUILD: 0 (unknown) // NOT THE PUBLISHED BUILD\nOTHERS: SEE THE SITE"
+            server_text(&health),
+            "CHANNEL DEBUG\nONLINE\nINSTANCE: main\nSERVICE: last-route-backend\nROOMS: 2\nWEBROOMS: 0\nRELAY: enabled true, rooms 2\nRUNTIME: node\nNOW: 2026-11-03T19:00:00.000Z"
         );
     }
 
     #[test]
-    fn updates_row_for_the_same_commit() {
+    fn server_unreachable_error_and_checking() {
+        assert_eq!(server_text(&Probe::Unreachable), "CHANNEL DEBUG\nCAN'T REACH THE SERVER");
         assert_eq!(
-            updates_text(&published(11, "0123456789abcdef"), 11, "0123456"),
-            "THIS PLATFORM: BUILD 11 (0123456)\nTHIS BUILD: 11 (0123456) // UP TO DATE\nOTHERS: SEE THE SITE"
+            server_text(&answered(500, json!({}))),
+            "CHANNEL DEBUG\nREACHED // SERVER ERROR (HTTP 500)"
         );
+        assert_eq!(server_text(&Probe::Checking), "CHANNEL DEBUG\nCHECKING...");
     }
 
     #[test]
-    fn updates_row_without_a_published_build_or_an_answer() {
-        let answered = ServerLink::Reached(UpdateManifest::default());
-        assert_eq!(updates_text(&answered, 11, "abc1234"), "THIS PLATFORM: NONE PUBLISHED\nOTHERS: SEE THE SITE");
-        assert_eq!(updates_text(&ServerLink::Unreachable, 11, "abc1234"), "CAN'T REACH THE SERVER\nOTHERS: SEE THE SITE");
+    fn a_5xx_reads_as_reached_and_a_connect_failure_as_unreachable() {
+        let err = NetError::Http { status: 500, code: String::new(), error: String::new(), body: json!({}) };
+        assert_eq!(Probe::from_result(Err(err)), answered(500, json!({})));
+        assert_eq!(Probe::from_result(Err(NetError::Timeout)), Probe::Unreachable);
+        assert_eq!(Probe::from_result(Err(NetError::Transport("refused".into()))), Probe::Unreachable);
     }
 
     #[test]
-    fn host_name_drops_scheme_and_port() {
-        assert_eq!(host_name(PRIMARY_BASE_URL), "lastroute.kyttuslab.org");
-        assert_eq!(host_name("http://127.0.0.1"), "127.0.0.1");
+    fn updates_list_every_platform_one_line_each() {
+        let updates = vec![
+            ("macos", answered(200, json!({"ok": true, "channel": "debug", "update": {"build": 42, "revision": "0123456789abcdef"}}))),
+            ("windows", answered(500, json!({}))),
+            ("linux", Probe::Unreachable),
+            ("phone", answered(404, json!({"ok": false, "error": "NO UPDATE PUBLISHED"}))),
+            ("quest", Probe::Checking),
+        ];
+        assert_eq!(
+            updates_text(&updates),
+            "MACOS: BUILD 42 @ 01234567\nWINDOWS: SERVER ERROR (HTTP 500)\nLINUX: NO ANSWER\nPHONE: NONE PUBLISHED\nQUEST: CHECKING..."
+        );
+        assert_eq!(PLATFORMS, ["macos", "windows", "linux", "phone", "quest"]);
+    }
+
+    #[test]
+    fn public_route_is_short_and_never_shows_secrets() {
+        let public = answered(200, json!({"ok": true, "game": "last-route", "hostToken": "x", "players": [1, 2, 3], "route": {"a": 1}}));
+        assert_eq!(public_text(&public), "ok true, game last-route, players 3, route 1");
+        assert_eq!(public_text(&Probe::Unreachable), "NO ANSWER");
+        assert_eq!(public_text(&answered(500, json!({}))), "NO ANSWER // SERVER ERROR (HTTP 500)");
+        assert_eq!(public_text(&answered(200, json!({}))), "NO ANSWER");
     }
 }

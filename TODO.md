@@ -831,6 +831,17 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [ ] vsync is on by default, so the frame rate stops at the refresh rate; decide whether the default should be off
 - [ ] Add a reduced motion setting (the radar ping reads a constant for it)
 
+## Movies, trailers and cutscenes (Rust port)
+
+The "Movies / cutscenes and a scene maker" item above is done on the Godot side (tools/playtest, shot files). The Rust port has none of it yet.
+
+- [ ] Port the shot file format: a JSON shot (stage, actors, camera path, timing) read the way Godot's playtest sequencer reads it (`dev/playtest/playtest_sequencer.gd`, `docs/FLYTHROUGH.md`)
+- [ ] Port the flythrough camera: planned tracks through an area, noclip and input frozen, reusing the stress mode's route code where it fits
+- [ ] Cutscene runner: play a shot list with a fixed timeline, hold the game (no hunters, no input) and return control at the end
+- [ ] Scene maker: an admin tab to place actors and a camera path on the live map and save them as a shot file
+- [ ] Movie capture: write each frame to PNG at a fixed fps, then assemble with ffmpeg (report the exact command used)
+- [ ] Trailer shot list: a data file that names the shots in order, so a trailer is reproducible from the seed
+
 ## Moddability
 
 - [~] Region geometry block (lr.region/1, optional): wall_height, room_min and room_max are parsed and tested. The 3D walls and the route room sizes do not read them yet

@@ -46,7 +46,7 @@ mod tests {
 
     #[test]
     fn profile_dir_default_is_unchanged_without_the_variable() {
-        let user = PathBuf::from("USER").join("LastRoute").join("profile.json");
+        let user = PathBuf::from("USER").join("KYTTU").join("TheLastRoute").join("profile.json");
         assert_eq!(resolve_path(None, || Some(user.clone())), Some(user.clone()));
         // an empty value counts as unset
         assert_eq!(

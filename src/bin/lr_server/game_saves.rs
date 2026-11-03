@@ -116,6 +116,15 @@ fn saved_seconds(saved_at: Option<&Value>) -> f64 {
     (util::number_or(saved_at, 0.0) / 1000.0).floor()
 }
 
+/// The newest-wins answer to a PUT against the website's stored time (both in game seconds): an upload older than the
+/// stored save is not written and answers 200 with the stored time. None when the upload may be written.
+fn newest_wins_reply(game_id: &str, slot: &str, stored_at: f64, requested: f64) -> Option<Reply> {
+    if stored_at <= requested {
+        return None;
+    }
+    Some((200, json!({ "ok": true, "gameId": game_id, "slot": slot, "updatedAt": num(stored_at) })))
+}
+
 /// The game's shape for a slot the website returned from `/api/v1/saves/load`.
 fn loaded_save(game_id: &str, slot: &str, website: &Value) -> Value {
     json!({
@@ -266,8 +275,8 @@ impl GameSaves {
             return (status, stored);
         }
         let stored_at = saved_seconds(stored.get("savedAt"));
-        if stored_at > requested {
-            return (200, json!({ "ok": true, "gameId": game_id, "slot": slot, "updatedAt": num(stored_at) }));
+        if let Some(reply) = newest_wins_reply(game_id, slot, stored_at, requested) {
+            return reply;
         }
         recent.push(now);
         self.writes.insert(key, recent);
@@ -517,6 +526,32 @@ mod tests {
         let loaded = loaded_save("last-route-rust", "run", &json!({ "ok": true, "data": null, "savedAt": 2_000 }));
         assert_eq!(loaded["updatedAt"].as_f64(), Some(2.0));
         assert_eq!((loaded["gameId"].clone(), loaded["slot"].clone(), loaded["data"].clone()), (json!("last-route-rust"), json!("run"), Value::Null));
+    }
+
+    #[test]
+    fn website_savedat_milliseconds_convert_to_game_seconds_both_ways() {
+        // ms -> seconds: the sub-second part is dropped, so a stamp lands in the whole second it falls in.
+        assert_eq!(saved_seconds(Some(&json!(999))), 0.0);
+        assert_eq!(saved_seconds(Some(&json!(1000))), 1.0);
+        assert_eq!(saved_seconds(Some(&json!(1_700_000_123_999i64))), 1_700_000_123.0);
+        // seconds -> ms: a game second stored as s * 1000 (plus any sub-second part) reads back as s, and one
+        // millisecond earlier reads back as the second before.
+        for seconds in [1.0, 60.0, 1_700_000_123.0] {
+            for sub_second_ms in [0.0, 1.0, 999.0] {
+                assert_eq!(saved_seconds(Some(&num(seconds * 1000.0 + sub_second_ms))), seconds);
+            }
+            assert_eq!(saved_seconds(Some(&num(seconds * 1000.0 - 1.0))), seconds - 1.0);
+        }
+    }
+
+    #[test]
+    fn newest_wins_refuses_an_older_upload_with_200_and_the_stored_seconds() {
+        let stored_at = saved_seconds(Some(&json!(500_999)));
+        assert_eq!(stored_at, 500.0);
+        let refused = newest_wins_reply("last-route-rust", "run", stored_at, 400.0).expect("an older upload is refused");
+        assert_eq!(refused, (200, json!({ "ok": true, "gameId": "last-route-rust", "slot": "run", "updatedAt": 500 })));
+        assert_eq!(newest_wins_reply("last-route-rust", "run", stored_at, 500.0), None, "an equal time is written");
+        assert_eq!(newest_wins_reply("last-route-rust", "run", stored_at, 501.0), None, "a newer upload is written");
     }
 
     #[test]

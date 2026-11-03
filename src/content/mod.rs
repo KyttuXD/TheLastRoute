@@ -9,7 +9,7 @@ pub mod props;
 pub mod regions;
 
 use hunters::HunterDef;
-use loot::Loot;
+use loot::{Loot, LootTables};
 use packs::Pack;
 use props::PropDef;
 use regions::RegionTable;
@@ -18,7 +18,7 @@ use std::collections::HashMap;
 pub struct Content {
     pub hunters: Vec<HunterDef>,
     pub props: HashMap<String, PropDef>,
-    pub loot: Loot,
+    pub loot: LootTables,
     /// The region catalogue (data/regions and packs' regions/), `lr.region/1`.
     pub regions: RegionTable,
     pub packs: Vec<Pack>,
@@ -31,7 +31,7 @@ impl Content {
         let mut c = Content {
             hunters: vec![],
             props: HashMap::new(),
-            loot: Loot::default(),
+            loot: LootTables::default(),
             regions: RegionTable::default(),
             packs: vec![],
             warnings: vec![],
@@ -63,9 +63,11 @@ impl Content {
                 Err(e) => c.warnings.push(format!("{path}: {e}")),
             }
         }
-        if let Some((_, text)) = embedded::data_under("loot/route.json").next() {
-            if let Ok(v) = serde_json::from_str(text) {
-                c.loot = Loot::parse(&v);
+        for (file, table) in [("loot/route.json", &mut c.loot.route), ("loot/sewer.json", &mut c.loot.sewer)] {
+            if let Some((_, text)) = embedded::data_under(file).next() {
+                if let Ok(v) = serde_json::from_str(text) {
+                    *table = Loot::parse(&v);
+                }
             }
         }
         packs::load_all(&mut c);

@@ -5,7 +5,9 @@ pub mod catalog;
 pub mod facility;
 pub mod fixtures;
 pub mod godot_sort;
+pub mod inferno;
 pub mod infinite;
+pub mod level_links;
 pub mod rng;
 pub mod route;
 

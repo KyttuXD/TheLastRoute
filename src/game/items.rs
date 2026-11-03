@@ -80,10 +80,23 @@ impl Game {
             .position(|s| s.map(|s| s.item == item).unwrap_or(false))
     }
 
+    /// Strobes the runner's beam for `duration` seconds (player_controller_3d.gd `force_flashlight_flicker`): the plunge
+    /// splash (1.4 s) and the troll's fake step (0.4-1.2 s). Only a runner who owns a flashlight is affected.
+    pub fn force_flashlight_flicker(&mut self, duration: f32) -> bool {
+        if self.slot_of(Item::Flashlight).is_none() {
+            return false;
+        }
+        self.p.force_flashlight_flicker(duration);
+        true
+    }
+
     fn toggle_flashlight(&mut self, _sounds: &Sounds) {
         let Some(i) = self.slot_of(Item::Flashlight) else {
             return;
         };
+        if self.p.flashlight_seized() {
+            return; // the flicker holds the beam; [F] does not fight it (player_controller_3d.gd 2407)
+        }
         self.select(i);
         if self.p.lamp <= 0.0 && !self.p.flashlight_on {
             crate::audio::sound::light_switch(); // an empty flashlight just clicks (player_controller_3d.gd 2442)

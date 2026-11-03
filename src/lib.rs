@@ -7,6 +7,7 @@ pub mod config;
 pub mod content;
 pub mod game;
 pub mod hunters;
+pub mod night_watch;
 pub mod render;
 pub mod shared;
 pub mod world;

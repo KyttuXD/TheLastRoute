@@ -29,22 +29,23 @@
 //! and the Inferno -3), so the live window has nothing to port for them on this level.
 //!
 //! What is deliberately not taken here (see docs/PARITY.md, "Live level 0"): the old centre heater,
-//! the old vent ring, the old room light switches, the Rust stair flights beyond the shared level 0
-//! to -1 link, and the layout's checkpoints, hunter spawns and stairwells, which stay in the layout
-//! until their behaviour stages land.
+//! the old vent ring, the old room light switches, and the layout's checkpoints and hunter spawns,
+//! which stay in the layout until their behaviour stages land. The level 0 stair is the layout's
+//! stairwell (`carve_stair_well`): a walled box entered only by its doorway, with no bay and no hall.
 //!
 //! `KYTTU_LEGACY_CHUNKS=1` (read in `world::infinite::chunk`) puts the old level-0 builder back
 //! for comparison.
 
 use std::collections::HashMap;
 
+use super::danger::DangerProfile;
 use super::hunter_spawns::HunterSpawn;
-use super::layout::{self, ChunkLayout, Coord, Rect, V2};
+use super::layout::{self, ChunkLayout, Coord, Rect, Stairwell, V2};
 use crate::hunters::navigation;
 use crate::render::door;
 use crate::shared::safe_room::SafeRoom;
 use crate::world::catalog::Catalog;
-use crate::world::facility::{Cell, Facility, Hiding, Options, Pickup, Prop, Room, Stair, STAIR_FLIGHT};
+use crate::world::facility::{Cell, Facility, Hiding, LinkKind, Options, Pickup, Prop, Room, Stair};
 use crate::world::fixtures::Fixtures;
 use crate::world::infinite::{self, ChunkKey, CHUNK};
 use crate::world::rng::Rng;
@@ -96,21 +97,18 @@ pub fn from_layout(seed: &str, k: ChunkKey, lay: &ChunkLayout, cat: &Catalog) ->
         .map(|p| prop_of_layout(p, &lay.rooms))
         .collect();
 
-    // The level 0 to -1 link. Godot has no stairs on level 0 (stair_links, SRG:1399), but the old
-    // -1 builder links its upper end to this same shared rule (infinite::stair_link), so the flight
-    // is kept until the -1 builder honours the layout's wells (stage 3e). It carves before the
-    // lists below are set, so layout pickups and fixtures are not cut out by it.
+    // The level 0 to -1 stair is the layout's stairwell (Godot `_carve_stairwell`), with no stair where the
+    // layout has none. The -1 builder still links its upper end with `infinite::stair_link`, so the two
+    // ends meet only once that builder honours the layout's wells (stage 3e). It carves before the lists
+    // below are set, so layout pickups and fixtures are not cut out by it.
     f.stairs.clear();
-    if let Some((anchor, run)) = infinite::stair_link(seed, k.cx, k.cy, 0) {
-        carve_flight(
-            &mut f,
-            Stair {
-                cell: Cell::new(anchor.0, anchor.1),
-                dir: -1,
-                run,
-            },
-        );
+    for well in &lay.stairwells {
+        let stair = carve_stair_well(&mut f, well);
+        f.stairs.push(stair);
     }
+    // the sewer ladders down (docs/SEWERS.md): Godot keeps their top cell a clear hallway cell, so nothing is carved
+    f.stairs.extend(crate::world::level_links::ladders(seed, k));
+
 
     f.relays.clear();
     f.batteries.clear();
@@ -365,14 +363,7 @@ pub fn is_safe_chunk(world: &str, cx: i32, cy: i32) -> bool {
         return true;
     }
     let mut rng = Rng::new(&format!("{world}:SAFE:{cx}:0:{cy}"));
-    let danger = level0_danger();
-    let bias = 1.45 + (0.55 - 1.45) * danger;
-    rng.next_float() < 0.055 * bias
-}
-
-/// Godot `difficulty_for_level(0).danger` (streamed_route_generator.gd:1293): `clampf(0.48 - level * 0.075, 0.12, 1.0)`.
-fn level0_danger() -> f64 {
-    0.48f64.clamp(0.12, 1.0)
+    rng.next_float() < DangerProfile::for_level(0).safe_room_chance()
 }
 
 /// The safe room of a level-0 chunk as the Godot `safe_room_data` dictionary (streamed_route_generator.gd:1416),
@@ -382,7 +373,7 @@ pub fn safe_room(world: &str, k: ChunkKey) -> Option<SafeRoom> {
     if k.level != 0 || !is_safe_chunk(world, k.cx, k.cy) {
         return None;
     }
-    let pressure = ((0.55 + (1.65 - 0.55) * level0_danger()) * 100.0).round() / 100.0;
+    let pressure = DangerProfile::for_level(k.level).breach_pressure();
     Some(SafeRoom {
         id: format!("{}:0:{}:SAFE", k.cx, k.cy),
         checkpoint_id: format!("{}:0:{}:CHECKPOINT", k.cx, k.cy),
@@ -393,24 +384,56 @@ pub fn safe_room(world: &str, k: ChunkKey) -> Option<SafeRoom> {
     })
 }
 
-/// The 3-wide hall from a stair landing to the centre lobby and down its flight, as the old builder
-/// carved it (infinite::chunk, the stairwell block), but from the chunk centre.
-fn carve_flight(f: &mut Facility, s: Stair) {
-    let far = Cell::new(
-        s.cell.x + s.run.0 * (STAIR_FLIGHT + 1),
-        s.cell.y + s.run.1 * (STAIR_FLIGHT + 1),
-    );
-    let x0 = s.cell.x.min(far.x) - 1;
-    let x1 = s.cell.x.max(far.x) + 1;
-    let y0 = s.cell.y - 1;
-    let y1 = s.cell.y + 2;
-    f.clear_props_in(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
-    f.open_cells(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
-    let (cx, cy) = (f.start.x, f.start.y);
-    let mx = (x0 + x1) / 2;
-    f.open_cells(mx.min(cx) - 1, y0, (mx - cx).abs() + 3, 3);
-    f.open_cells(cx - 1, y0.min(cy), 3, (y0 - cy).abs() + 3);
-    f.stairs.push(s);
+/// The stairwells of a level-0 chunk from the layout (`ChunkLayout.stairwells`, the maze's 0 to -1 well). Empty on
+/// other levels and where the layout does not lay the chunk out.
+pub(crate) fn layout_stairwells(seed: &str, k: ChunkKey) -> Vec<Stairwell> {
+    if k.level != 0 {
+        return vec![];
+    }
+    layout::chunk_layout(seed, Coord::new(k.cx, 0, k.cy)).map_or_else(Vec::new, |lay| lay.stairwells)
+}
+
+/// Carves a layout stairwell into `f` as the level 0 stair: the walled box, the landing and doorway left open,
+/// the shaft left as the well (`Facility::is_hole`), and a 3-wide corridor from the doorway out to the first open
+/// row, the hall. Nothing else opens onto the box. Returns the stair, whose landing is the cell in front of the
+/// doorway and whose run goes into the shaft (Godot `Stairwells.cells_for`, `_geometry` at stairwells.gd:66).
+pub(crate) fn carve_stair_well(f: &mut Facility, well: &Stairwell) -> Stair {
+    let bx = well.bbox;
+    let door = well.door;
+    let outward = if well.north { 1 } else { -1 };
+    set_walls(f, bx, true);
+    for at in &well.walk {
+        set_walls(f, Rect::new(at.x, at.y, 1, 1), false);
+    }
+    let lane_x = door.x + door.w / 2 - 1;
+    let mut row = door.y + outward;
+    let mut last = door.y;
+    while row > 0 && row < CHUNK - 1 {
+        let hall = (lane_x..lane_x + 3).any(|x| !f.is_wall_cell(x, row));
+        set_walls(f, Rect::new(lane_x, row, 3, 1), false);
+        last = row;
+        if hall {
+            break;
+        }
+        row += outward;
+    }
+    f.clear_props_in(bx.x, bx.y, bx.w, bx.h);
+    f.clear_props_in(lane_x, door.y.min(last), 3, (door.y - last).abs() + 1);
+    Stair {
+        cell: Cell::new(door.x + door.w / 2, door.y - outward),
+        dir: -1,
+        run: (0, -outward),
+        kind: LinkKind::Stairs,
+    }
+}
+
+/// Sets the cells of `r` in `f.wall` to `solid`, clipped to the floor.
+fn set_walls(f: &mut Facility, r: Rect, solid: bool) {
+    for z in r.y.max(0)..(r.y + r.h).min(f.rows) {
+        for x in r.x.max(0)..(r.x + r.w).min(f.cols) {
+            f.wall[z as usize][x as usize] = solid;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -545,7 +568,7 @@ mod tests {
             // the legacy builder has no layout ids (window_ids is None on purpose)
             return;
         }
-        let loot = crate::content::loot::Loot::default();
+        let loot = crate::content::loot::LootTables::default();
         for world in WORLDS {
             for centre in [(0, 0), (1, 0), (-2, 3)] {
                 let mut chunks = HashMap::new();
@@ -575,7 +598,7 @@ mod tests {
 
     #[test]
     fn dispatch_sends_level_zero_here_and_the_rest_to_the_legacy_builder() {
-        let loot = crate::content::loot::Loot::default();
+        let loot = crate::content::loot::LootTables::default();
         let below = ChunkKey { cx: 1, cy: 2, level: -1 };
         let (a, _) = infinite::chunk(WORLDS[0], below, cat(), &loot);
         let (b, _) = infinite::legacy_chunk(WORLDS[0], below, cat(), &loot);
@@ -592,7 +615,7 @@ mod tests {
     #[test]
     fn window_merges_adapted_chunks() {
         let mut cache = std::collections::HashMap::new();
-        let loot = crate::content::loot::Loot::default();
+        let loot = crate::content::loot::LootTables::default();
         let (f, _) = infinite::window(WORLDS[1], (0, 0), 0, cat(), &loot, &mut cache);
         assert_eq!(f.cols, CHUNK * infinite::WINDOW);
         assert_eq!(f.rows, CHUNK * infinite::WINDOW);
@@ -700,5 +723,73 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The cells a walk from `from` reaches over walkable cells (no wall, no shaft hole), never entering `blocked`.
+    fn walk_reach(f: &Facility, from: Cell, blocked: &[Cell]) -> std::collections::HashSet<Cell> {
+        let open = |c: Cell| !f.is_wall_cell(c.x, c.y) && !f.is_hole(c.x, c.y) && !blocked.contains(&c);
+        let mut seen = std::collections::HashSet::from([from]);
+        let mut queue = vec![from];
+        while let Some(at) = queue.pop() {
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let n = Cell::new(at.x + dx, at.y + dy);
+                if open(n) && seen.insert(n) {
+                    queue.push(n);
+                }
+            }
+        }
+        seen
+    }
+
+    /// A level-0 stair is a dead end: its box is walled except the doorway, its landing stands in front of the
+    /// doorway with the shaft behind it, and a walk from the landing reaches the hall only through the doorway.
+    fn check_dead_end(f: &Facility, well: &Stairwell, label: &str) {
+        let outward = if well.north { 1 } else { -1 };
+        let (bx, door) = (well.bbox, well.door);
+        let landing = Cell::new(door.x + door.w / 2, door.y - outward);
+        assert!(
+            f.stairs
+                .iter()
+                .any(|s| s.kind == LinkKind::Stairs && s.dir == -1 && s.cell == landing && s.run == (0, -outward)),
+            "{label}: no stair at the landing {landing:?}"
+        );
+        let in_box = |c: Cell| c.x >= bx.x && c.x < bx.x + bx.w && c.y >= bx.y && c.y < bx.y + bx.h;
+        let door_cells: Vec<Cell> = (door.x..door.x + door.w).map(|x| Cell::new(x, door.y)).collect();
+        for z in bx.y..bx.y + bx.h {
+            for x in bx.x..bx.x + bx.w {
+                let ring = x == bx.x || x == bx.x + bx.w - 1 || z == bx.y || z == bx.y + bx.h - 1;
+                if ring && !door_cells.contains(&Cell::new(x, z)) {
+                    assert!(f.is_wall_cell(x, z), "{label}: box wall {x},{z} is open");
+                }
+            }
+        }
+        assert!(!f.is_wall_cell(landing.x, landing.y) && !f.is_hole(landing.x, landing.y), "{label}: landing is closed");
+        assert!(f.is_hole(landing.x, landing.y - outward), "{label}: the flight does not run from the landing");
+        let through_door_only = walk_reach(f, landing, &door_cells);
+        assert!(through_door_only.iter().all(|c| in_box(*c)), "{label}: the landing reaches the hall without its doorway");
+        let all = walk_reach(f, landing, &[]);
+        assert!(all.iter().any(|c| !in_box(*c)), "{label}: the landing does not reach the hall");
+        assert!(door_cells.iter().any(|c| all.contains(c)), "{label}: the doorway is closed");
+    }
+
+    #[test]
+    fn a_level_zero_stair_is_a_dead_end_through_its_doorway() {
+        let loot = crate::content::loot::LootTables::default();
+        let mut wells = 0;
+        for world in WORLDS {
+            for cx in -3..=3 {
+                for cy in -3..=3 {
+                    let k = ChunkKey { cx, cy, level: 0 };
+                    for well in layout_stairwells(world, k) {
+                        wells += 1;
+                        let (live, _) = chunk(world, k, cat()).unwrap();
+                        check_dead_end(&live, &well, &format!("{world} {cx},{cy} live"));
+                        let (legacy, _) = infinite::legacy_chunk(world, k, cat(), &loot);
+                        check_dead_end(&legacy, &well, &format!("{world} {cx},{cy} legacy"));
+                    }
+                }
+            }
+        }
+        assert!(wells > 0, "no level-0 stairwell in the sampled chunks");
     }
 }

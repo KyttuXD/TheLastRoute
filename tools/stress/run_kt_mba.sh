@@ -1,11 +1,17 @@
 #!/bin/sh
-# Stress run on KT-MBA (Intel MacBook Air, macOS 12.7.6).
-# Builds the copy in $HOME/lr-stress and runs the 60 second stress mode.
+# Stress runs on KT-MBA (Intel MacBook Air, macOS 12.7.6).
+# Builds the copy in $HOME/lr-stress and runs every stress scenario in both vsync modes,
+# 60 seconds each, one run per combination.
+# SCENARIOS (default "fly npcs hunters interact mixed") and VSYNC (default "off on") limit the list,
+# e.g. SCENARIOS="fly mixed" VSYNC=off sh tools/stress/run_kt_mba.sh
 # See docs/STRESS_TESTS.md for how the copy gets there.
 set -e
 
 PROJECT="$HOME/lr-stress"
 OUT_DIR="$HOME/lr-stress-out"
+SECONDS_PER_RUN=60
+SCENARIOS="${SCENARIOS:-fly npcs hunters interact mixed}"
+VSYNC="${VSYNC:-off on}"
 
 if [ ! -f "$PROJECT/Cargo.toml" ]; then
   echo "error: $PROJECT/Cargo.toml is missing. Copy the project to $PROJECT first (docs/STRESS_TESTS.md)." >&2
@@ -27,8 +33,6 @@ cargo build --release --bin last_route > "$OUT_DIR/build.log" 2>&1 || {
 }
 
 STAMP=$(date +%Y%m%d-%H%M%S)
-CSV="$OUT_DIR/run-$STAMP.csv"
-RUN_OUT="$OUT_DIR/run-$STAMP.out"
 
 if command -v caffeinate >/dev/null 2>&1; then
   RUNNER="caffeinate -d"
@@ -36,17 +40,25 @@ else
   RUNNER=""
 fi
 
-echo "running stress mode for 60 seconds"
-$RUNNER ./target/release/last_route --stress 60 --stress-log "$CSV" > "$RUN_OUT" 2>&1 || {
-  echo "error: stress run failed, see $RUN_OUT" >&2
-  exit 1
-}
+for SCENARIO in $SCENARIOS; do
+  for MODE in $VSYNC; do
+    NAME="run-$SCENARIO-vsync$MODE-$STAMP"
+    CSV="$OUT_DIR/$NAME.csv"
+    RUN_OUT="$OUT_DIR/$NAME.out"
 
-if [ ! -s "$CSV" ]; then
-  echo "error: no CSV written at $CSV, see $RUN_OUT" >&2
-  exit 1
-fi
+    echo "running $SCENARIO, vsync $MODE, $SECONDS_PER_RUN seconds"
+    $RUNNER ./target/release/last_route --stress "$SECONDS_PER_RUN" --stress-log "$CSV" \
+      --stress-scenario "$SCENARIO" --stress-vsync "$MODE" > "$RUN_OUT" 2>&1 || {
+      echo "error: stress run $NAME failed, see $RUN_OUT" >&2
+      exit 1
+    }
 
-echo "CSV: $CSV"
-echo "stdout: $RUN_OUT"
-echo "summary: $(tail -n 1 "$RUN_OUT")"
+    if [ ! -s "$CSV" ]; then
+      echo "error: no CSV written at $CSV, see $RUN_OUT" >&2
+      exit 1
+    fi
+
+    echo "CSV: $CSV"
+    echo "summary: $(tail -n 1 "$RUN_OUT")"
+  done
+done

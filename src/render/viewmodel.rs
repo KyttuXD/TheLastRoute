@@ -150,7 +150,7 @@ pub fn draw_viewmodel(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         }
     }
     // the lens glows while the flashlight is on
-    if shown == Item::Flashlight && g.p.flashlight_on {
+    if shown == Item::Flashlight && g.p.beam_lit() {
         if let Some(m) = item_model(a, "flashlight_item") {
             let tip = xf.transform_point3(vec3(0.0, m.max.y, 0.0));
             let mut b = Builder::new(Some(a.white.clone()));

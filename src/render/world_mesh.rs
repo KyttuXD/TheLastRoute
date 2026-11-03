@@ -1,6 +1,6 @@
 //! The floor's static geometry: floors and walls in each room region's own pictures (halls in
-//! the maze set), baseboard and brass rail trims, ceilings, archways where halls open into
-//! rooms, and the room props: the original's authored Blender models where a type has them
+//! the maze set), baseboard and brass rail trims, ceilings, and
+//! the room props: the original's authored Blender models where a type has them
 //! (assets/props/<set>/*.glb), else the blocky rebuilds as Blockbench meshes with smoothed
 //! normals. Lights: the switchable room lights and the lamp props' own lights.
 
@@ -15,7 +15,8 @@ use crate::config::WALL_HEIGHT;
 use crate::content::props::{stable_index, visual_y};
 use crate::content::regions::{RegionDef, RegionSafeLight};
 use crate::content::Content;
-use crate::world::facility::{stair_well_cells, STAIR_FLIGHT};
+use crate::world::facility::{stair_well_cells, Cell, STAIR_FLIGHT};
+use crate::world::infinite::{CHUNK, WINDOW};
 use crate::world::{region_texture, Facility, TEXTURE_SETS};
 use macroquad::prelude::*;
 use std::collections::HashMap;
@@ -24,6 +25,266 @@ use std::collections::HashMap;
 pub struct WorldMeshes {
     pub meshes: Vec<Mesh>,
     pub lamps: Vec<Lamp>,
+    /// The Infinite window's geometry by chunk part, kept while a part's chunk stays in (or just left) the window.
+    parts: HashMap<PartKey, Part>,
+    /// The part each of `meshes` was taken from (None for the safe pad, built fresh each time).
+    drawn: Vec<Option<PartKey>>,
+    builds: u64,
+}
+
+/// Where the Infinite route's 3x3 window stands: its level and its centre chunk.
+#[derive(Clone, Copy, Debug)]
+pub struct ChunkFrame {
+    pub level: i32,
+    pub center: (i32, i32),
+}
+
+/// One slice of a window chunk's geometry: the cells and rooms that read the same sides past the chunk's edge
+/// (`needs`, a bit per side), and which of those sides had a loaded chunk (`open`). The slice is the same
+/// wherever the window stands as long as `open` is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct PartKey {
+    level: i32,
+    cx: i32,
+    cy: i32,
+    needs: u8,
+    open: u8,
+}
+
+struct Part {
+    meshes: Vec<Mesh>,
+    /// The window origin the vertices are placed for.
+    origin: (i32, i32),
+    used: u64,
+}
+
+const WEST: u8 = 1;
+const EAST: u8 = 2;
+const NORTH: u8 = 4;
+const SOUTH: u8 = 8;
+
+/// How far along an axis a cell's geometry reads other cells: the hall runner's six-cell scan, plus one.
+const REACH: i32 = 7;
+
+/// Lifts the safe pad over the floor it covers.
+const PAD_LIFT: f32 = 0.006;
+
+/// The sides past its chunk a cell (chunk-local `lx`, `ly`) reads.
+fn side_needs(lx: i32, ly: i32) -> u8 {
+    let mut n = 0;
+    if lx < REACH {
+        n |= WEST;
+    }
+    if lx >= CHUNK - REACH {
+        n |= EAST;
+    }
+    if ly < REACH {
+        n |= NORTH;
+    }
+    if ly >= CHUNK - REACH {
+        n |= SOUTH;
+    }
+    n
+}
+
+/// The sides of window slot (`sx`, `sy`) that have a loaded chunk.
+fn slot_open(sx: i32, sy: i32) -> u8 {
+    let mut n = 0;
+    if sx > 0 {
+        n |= WEST;
+    }
+    if sx < WINDOW - 1 {
+        n |= EAST;
+    }
+    if sy > 0 {
+        n |= NORTH;
+    }
+    if sy < WINDOW - 1 {
+        n |= SOUTH;
+    }
+    n
+}
+
+fn slot_key(frame: ChunkFrame, sx: i32, sy: i32, needs: u8) -> PartKey {
+    PartKey {
+        level: frame.level,
+        cx: frame.center.0 - 1 + sx,
+        cy: frame.center.1 - 1 + sy,
+        needs,
+        open: slot_open(sx, sy) & needs,
+    }
+}
+
+/// What one build draws: floor cells, the rooms it draws, the props and light fixtures inside
+/// `fixtures` (x0, y0, x1, y1, half-open), and whether the safe pad replaces the floor under it.
+struct Pick {
+    cells: Vec<Cell>,
+    rooms: Vec<usize>,
+    fixtures: Option<(i32, i32, i32, i32)>,
+    pad: bool,
+}
+
+/// The window's floor cut into chunk parts. Each chunk's fixtures go with its part that reads no other chunk.
+fn window_parts(f: &Facility, frame: ChunkFrame) -> Vec<(PartKey, Pick)> {
+    let mut parts: Vec<(PartKey, Pick)> = vec![];
+    let mut index: HashMap<PartKey, usize> = HashMap::new();
+    let slot = |v: i32| v.div_euclid(CHUNK).clamp(0, WINDOW - 1);
+    let mut at = |sx: i32, sy: i32, needs: u8, parts: &mut Vec<(PartKey, Pick)>| {
+        let key = slot_key(frame, sx, sy, needs);
+        *index.entry(key).or_insert_with(|| {
+            let (x0, y0) = (sx * CHUNK, sy * CHUNK);
+            parts.push((
+                key,
+                Pick {
+                    cells: vec![],
+                    rooms: vec![],
+                    fixtures: (needs == 0).then_some((x0, y0, x0 + CHUNK, y0 + CHUNK)),
+                    pad: false,
+                },
+            ));
+            parts.len() - 1
+        })
+    };
+    for sy in 0..WINDOW {
+        for sx in 0..WINDOW {
+            at(sx, sy, 0, &mut parts);
+        }
+    }
+    for c in f.floor_cells() {
+        let (sx, sy) = (slot(c.x), slot(c.y));
+        let i = at(sx, sy, side_needs(c.x - sx * CHUNK, c.y - sy * CHUNK), &mut parts);
+        parts[i].1.cells.push(c);
+    }
+    for (ri, r) in f.rooms.iter().enumerate() {
+        let (sx, sy) = (slot(r.x), slot(r.y));
+        let (x0, y0) = (sx * CHUNK, sy * CHUNK);
+        // the room's trims and props read one cell past the room on every side
+        let needs = side_needs(r.x - 1 - x0, r.y - 1 - y0) | side_needs(r.x + r.w - x0, r.y + r.h - y0);
+        let i = at(sx, sy, needs, &mut parts);
+        parts[i].1.rooms.push(ri);
+    }
+    parts
+}
+
+/// Moves a part's vertices from the window origin they were placed for to `to`.
+fn reframe(meshes: &mut [Mesh], from: (i32, i32), to: (i32, i32)) {
+    let (dx, dz) = ((from.0 - to.0) as f32, (from.1 - to.1) as f32);
+    for m in meshes {
+        for v in &mut m.vertices {
+            v.position.x += dx;
+            v.position.z += dz;
+        }
+    }
+}
+
+impl WorldMeshes {
+    /// Rebuilds the meshes for `f`. On the Infinite window (`frame`) only the chunk parts that are new, or whose
+    /// neighbour chunks changed, are built; the rest are moved to the new window origin. Any other floor is
+    /// built whole.
+    pub fn rebuild(
+        &mut self,
+        f: &Facility,
+        lights_on: &[bool],
+        frame: Option<ChunkFrame>,
+        assets: &Assets,
+        content: &Content,
+    ) {
+        self.lamps = lamps(f, lights_on, content);
+        for (m, key) in std::mem::take(&mut self.meshes).into_iter().zip(std::mem::take(&mut self.drawn)) {
+            if let Some(p) = key.and_then(|k| self.parts.get_mut(&k)) {
+                p.meshes.push(m);
+            }
+        }
+        let size = CHUNK * WINDOW;
+        let frame = frame.filter(|fr| {
+            f.cols == size
+                && f.rows == size
+                && f.origin == ((fr.center.0 - 1) * CHUNK, (fr.center.1 - 1) * CHUNK)
+        });
+        let mut choices = HashMap::new();
+        let Some(frame) = frame else {
+            self.parts.clear();
+            let pick = Pick {
+                cells: f.floor_cells(),
+                rooms: (0..f.rooms.len()).collect(),
+                fixtures: Some((0, 0, f.cols, f.rows)),
+                pad: true,
+            };
+            self.meshes = build_meshes(f, &pick, &mut choices, assets, content);
+            self.drawn = vec![None; self.meshes.len()];
+            return;
+        };
+        self.builds += 1;
+        let mut out: Vec<(Option<PartKey>, Mesh)> = vec![];
+        for (key, pick) in window_parts(f, frame) {
+            let part = self.parts.entry(key).or_insert_with(|| Part {
+                meshes: build_meshes(f, &pick, &mut choices, assets, content),
+                origin: f.origin,
+                used: 0,
+            });
+            part.used = self.builds;
+            if part.origin != f.origin {
+                reframe(&mut part.meshes, part.origin, f.origin);
+                part.origin = f.origin;
+            }
+            out.extend(part.meshes.drain(..).map(|m| (Some(key), m)));
+        }
+        out.extend(safe_pad(f, assets).into_iter().map(|m| (None, m)));
+        // the window's last two builds stay, so a step back or a flight straight back up builds nothing
+        let builds = self.builds;
+        self.parts.retain(|_, p| p.used + 1 >= builds);
+        // one texture's meshes side by side, so the batcher joins them into one draw call
+        let mut textures: Vec<Option<Texture2D>> = vec![];
+        let mut order: Vec<usize> = out
+            .iter()
+            .map(|(_, m)| match textures.iter().position(|t| *t == m.texture) {
+                Some(i) => i,
+                None => {
+                    textures.push(m.texture.clone());
+                    textures.len() - 1
+                }
+            })
+            .collect();
+        let mut sorted: Vec<(usize, (Option<PartKey>, Mesh))> = order.drain(..).zip(out).collect();
+        sorted.sort_by_key(|(t, _)| *t);
+        let (drawn, meshes) = sorted.into_iter().map(|(_, km)| km).unzip();
+        self.drawn = drawn;
+        self.meshes = meshes;
+    }
+}
+
+/// The safe-zone pad over the window's floor (the chunk parts draw the floor under it as it is without one).
+fn safe_pad(f: &Facility, assets: &Assets) -> Vec<Mesh> {
+    let Some(sz) = f.safe_zone else { return vec![] };
+    let steps = stair_steps(f);
+    let mut surf: HashMap<(&'static str, &'static str), Builder> = HashMap::new();
+    for y in sz.y - 3..=sz.y + 3 {
+        for x in sz.x - 3..=sz.x + 3 {
+            if x < 1 || y < 1 || x >= f.cols - 1 || y >= f.rows - 1 || f.is_wall_cell(x, y) {
+                continue;
+            }
+            if steps.contains_key(&(x, y)) {
+                continue;
+            }
+            let Some(k) = textures::sets::safe_pad_kind(x - sz.x, y - sz.y) else {
+                continue;
+            };
+            let (x, z) = (x as f32, y as f32);
+            painted(&mut surf, TexRef::new("floor", k), assets.floor(room_set(f, x as i32, z as i32))).quad(
+                [
+                    vec3(x, PAD_LIFT, z),
+                    vec3(x + 1., PAD_LIFT, z),
+                    vec3(x + 1., PAD_LIFT, z + 1.),
+                    vec3(x, PAD_LIFT, z + 1.),
+                ],
+                UV1,
+                vec3(0., 1., 0.),
+                WHITE,
+                0.0,
+            );
+        }
+    }
+    surf.into_values().flat_map(Builder::finish).collect()
 }
 
 const UV1: [Vec2; 4] = [vec2(0., 0.), vec2(1., 0.), vec2(1., 1.), vec2(0., 1.)];
@@ -114,6 +375,7 @@ fn cell_surfaces<'c>(
     f: &Facility,
     x: i32,
     y: i32,
+    pad: bool,
     cache: &'c mut HashMap<(String, String, bool), TextureChoice>,
 ) -> (&'c TextureChoice, TexRef) {
     let room = f
@@ -143,7 +405,7 @@ fn cell_surfaces<'c>(
             floor = TexRef::new("floor", k);
         }
     }
-    if let Some(sz) = f.safe_zone {
+    if let Some(sz) = f.safe_zone.filter(|_| pad) {
         if let Some(k) = textures::sets::safe_pad_kind(x - sz.x, y - sz.y) {
             floor = TexRef::new("floor", k);
         }
@@ -200,14 +462,36 @@ fn painted<'b>(
     })
 }
 
+/// The whole floor's meshes, built in one go.
 pub fn build_world(
     f: &Facility,
     lights_on: &[bool],
     assets: &Assets,
     content: &Content,
 ) -> WorldMeshes {
+    let mut w = WorldMeshes::default();
+    w.rebuild(f, lights_on, None, assets, content);
+    w
+}
+
+/// The room a prop's model variant is picked by. A window room's id carries its chunk's place in the window
+/// (`Facility::merge`), so it is put on the absolute cell instead and the variant holds as the window moves.
+fn variant_key(f: &Facility, room: usize) -> String {
+    let r = &f.rooms[room];
+    match r.id.rsplit_once('@') {
+        Some((id, _)) => format!("{id}@{},{}", r.x + f.origin.0, r.y + f.origin.1),
+        None => r.id.clone(),
+    }
+}
+
+fn build_meshes(
+    f: &Facility,
+    pick: &Pick,
+    choices: &mut HashMap<(String, String, bool), TextureChoice>,
+    assets: &Assets,
+    content: &Content,
+) -> Vec<Mesh> {
     let mut surf: HashMap<(&'static str, &'static str), Builder> = HashMap::new();
-    let mut choices: HashMap<(String, String, bool), TextureChoice> = HashMap::new();
     let mut plain = Builder::new(Some(assets.white.clone()));
     let h = WALL_HEIGHT;
     let ceiling = Color::from_rgba(46, 34, 44, 255);
@@ -217,10 +501,10 @@ pub fn build_world(
     let rise = h / (STAIR_FLIGHT + 1) as f32;
     // one painted storey stretched floor to ceiling, cornice at the top (RefSurfaceMesh.add_wall)
     let tiers = textures::wall_tiers(h) as f32;
-    for c in f.floor_cells() {
+    for &c in &pick.cells {
         let (x, z) = (c.x as f32, c.y as f32);
         let set = room_set(f, c.x, c.y);
-        let (choice, floor_kind) = cell_surfaces(f, c.x, c.y, &mut choices);
+        let (choice, floor_kind) = cell_surfaces(f, c.x, c.y, pick.pad, choices);
         let wall_kind = choice.wall_at((c.x + f.origin.0) as i64, (c.y + f.origin.1) as i64);
         let ceil_kind = choice.ceiling;
         // this cell's walls and ceiling take its region's wall height (WALL_HEIGHT without a geometry block)
@@ -314,13 +598,13 @@ pub fn build_world(
             );
         }
     }
-    archways(f, &mut plain);
+    let fixture = |c: Cell| pick.fixtures.is_some_and(|(x0, y0, x1, y1)| c.x >= x0 && c.y >= y0 && c.x < x1 && c.y < y1);
 
     // room props: the original's Blender models (PropModelCatalog's originals, variant picked by
     // a hash of the room id like _variant_index), falling back to the blocky rebuilds
     let mut props = Builder::new(assets.props.values().next().map(|m| m.texture.clone()));
     let mut authored: HashMap<usize, Builder> = HashMap::new();
-    for p in &f.props {
+    for p in f.props.iter().filter(|p| fixture(p.cell)) {
         let (x, z) = p.cell.center();
         // a room door is centred on its doorway (a double door sits across two cells); any other prop is
         // drawn at its placement offset (a flush bed sits against its wall), as the footprint is
@@ -338,10 +622,10 @@ pub fn build_world(
             .map(|d| d.originals())
             .filter(|o| !o.is_empty())
             .and_then(|o| {
-                let room_id = &f.rooms[p.room].id;
+                let room_id = variant_key(f, p.room);
                 assets
                     .glb
-                    .get(&o[stable_index(room_id, o.len())])
+                    .get(&o[stable_index(&room_id, o.len())])
                     .or_else(|| o.iter().find_map(|m| assets.glb.get(m)))
             });
         // Godot's per-type hunter scale (PropModelCatalog.HUNTER_SCALE, data/render/prop_draw_scale.json).
@@ -361,7 +645,7 @@ pub fn build_world(
                     // the wall over the opening, from the raised frame's top up to the ceiling (Godot's door header)
                     let bottom = door::header_bottom(dims, sy, h);
                     if bottom < h {
-                        let (choice, _) = cell_surfaces(f, p.cell.x, p.cell.y, &mut choices);
+                        let (choice, _) = cell_surfaces(f, p.cell.x, p.cell.y, pick.pad, choices);
                         let wall = choice.wall_at((p.cell.x + f.origin.0) as i64, (p.cell.y + f.origin.1) as i64);
                         let fallback = assets.wall(room_set(f, p.cell.x, p.cell.y));
                         door_header(&mut surf, wall, fallback, vec3(x, 0.0, z), yaw, d.span as f32, bottom, h, tiers);
@@ -400,7 +684,7 @@ pub fn build_world(
         props.idx.extend(idx.into_iter().map(|i| i + base_i));
     }
     // emissive lamp fixtures for the switchable room lights
-    for l in &f.room_lights {
+    for l in f.room_lights.iter().filter(|l| fixture(l.center)) {
         let (x, z) = l.center.center();
         plain.cube(
             vec3(x, h - 0.04, z),
@@ -420,10 +704,7 @@ pub fn build_world(
         meshes.extend(b.finish());
     }
     meshes.extend(plain.finish());
-    WorldMeshes {
-        meshes,
-        lamps: lamps(f, lights_on, content),
-    }
+    meshes
 }
 
 /// The radians a room prop's model is turned by when it is drawn, from its gameplay yaw. Godot turns every
@@ -506,134 +787,12 @@ fn soften(verts: &mut [Vertex]) {
     }
 }
 
-/// A run of open cells along one side of a room where a hall opens into it: the cells, in order along the
-/// side, and the outward step from the room to the hall.
-#[derive(Debug, Clone, PartialEq)]
-struct ArchwayRun {
-    cells: Vec<(i32, i32)>,
-    outward: (i32, i32),
-}
-
-/// The doorways of a room `(x, y, w, h)`: on each side, each run of open cells whose outward cell is open too,
-/// up to five cells wide (a longer run is a wall-less side, not a doorway). `is_wall` reads the wall grid.
-fn archway_runs(rect: (i32, i32, i32, i32), is_wall: impl Fn(i32, i32) -> bool) -> Vec<ArchwayRun> {
-    let (x0, y0, w, h) = rect;
-    // each side: cells just inside the edge and the outward step
-    let sides: [(Vec<(i32, i32)>, (i32, i32)); 4] = [
-        ((x0..x0 + w).map(|x| (x, y0)).collect(), (0, -1)),
-        ((x0..x0 + w).map(|x| (x, y0 + h - 1)).collect(), (0, 1)),
-        ((y0..y0 + h).map(|y| (x0, y)).collect(), (-1, 0)),
-        ((y0..y0 + h).map(|y| (x0 + w - 1, y)).collect(), (1, 0)),
-    ];
-    let mut runs = vec![];
-    for (cells, outward) in sides {
-        let (ox, oy) = outward;
-        let open: Vec<bool> = cells
-            .iter()
-            .map(|(x, y)| !is_wall(*x, *y) && !is_wall(x + ox, y + oy))
-            .collect();
-        let mut i = 0;
-        while i < cells.len() {
-            if !open[i] {
-                i += 1;
-                continue;
-            }
-            let s = i;
-            while i < cells.len() && open[i] {
-                i += 1;
-            }
-            let e = i - 1;
-            if e - s + 1 > 5 {
-                continue; // a wall-less side, not a doorway
-            }
-            runs.push(ArchwayRun {
-                cells: cells[s..=e].to_vec(),
-                outward,
-            });
-        }
-    }
-    runs
-}
-
-/// Arched frames where a hall opens into a room: two dark pillars at the sides of the opening
-/// and a stepped arch under a lintel.
-fn archways(f: &Facility, b: &mut Builder) {
-    let wood = Color::from_rgba(72, 42, 32, 255);
-    let trim = Color::from_rgba(150, 108, 52, 255);
-    for r in f.rooms.iter() {
-        // the lintel stands under the room's own wall height
-        let h = region_wall_height(&r.region);
-        for run in archway_runs((r.x, r.y, r.w, r.h), |x, y| f.is_wall_cell(x, y)) {
-            let (ox, oy) = run.outward;
-            let (sx, sy) = run.cells[0];
-            let (ex, ey) = run.cells[run.cells.len() - 1];
-            // the opening's plane sits on the room's boundary line
-            let (px, pz, along) = if ox != 0 {
-                let edge = if ox < 0 { sx as f32 } else { sx as f32 + 1.0 };
-                (edge, 0.0, false)
-            } else {
-                let edge = if oy < 0 { sy as f32 } else { sy as f32 + 1.0 };
-                (0.0, edge, true)
-            };
-            let (a0, a1) = if along {
-                (sx as f32, ex as f32 + 1.0)
-            } else {
-                (sy as f32, ey as f32 + 1.0)
-            };
-            let width = a1 - a0;
-            let mid = (a0 + a1) / 2.0;
-            let at = |t: f32, y: f32| {
-                if along {
-                    vec3(t, y, pz)
-                } else {
-                    vec3(px, y, t)
-                }
-            };
-            let size = |w: f32, hh: f32| {
-                if along {
-                    vec3(w, hh, 0.32)
-                } else {
-                    vec3(0.32, hh, w)
-                }
-            };
-            // pillars
-            for t in [a0 + 0.08, a1 - 0.08] {
-                b.cube(at(t, 1.35), size(0.16, 2.7), 0.0, wood, 0.0);
-                b.cube(at(t, 1.05), size(0.2, 0.06), 0.0, trim, 0.0);
-            }
-            // lintel and a stepped arch beneath it
-            b.cube(
-                at(mid, (2.7 + h) / 2.0),
-                size(width, h - 2.7),
-                0.0,
-                wood,
-                0.0,
-            );
-            let steps = 4;
-            for k in 0..steps {
-                let frac = (k as f32 + 1.0) / (steps as f32 + 1.0);
-                let inset = (1.0 - (1.0 - frac * frac).sqrt()) * width * 0.5;
-                let y = 2.7 - (k as f32 + 1.0) * 0.09;
-                for t in [a0 + inset * 0.5, a1 - inset * 0.5] {
-                    b.cube(
-                        at(t, y + 0.045),
-                        size(inset.max(0.05), 0.09),
-                        0.0,
-                        wood,
-                        0.0,
-                    );
-                }
-            }
-            b.cube(at(mid, 2.7 - 0.02), size(width, 0.04), 0.0, trim, 0.0);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::f32::consts::{FRAC_PI_2, PI};
-    use crate::world::facility::{Cell, DoorDraw};
+    use crate::world::facility::DoorDraw;
+    use std::collections::HashSet;
 
     /// A temporary region with a geometry block is parsed like a pack's file: its wall height is its own, and a
     /// region without the block (or no region) keeps WALL_HEIGHT.
@@ -728,33 +887,105 @@ mod tests {
             .collect()
     }
 
-    /// A door's header and an archway's lintel are both drawn over a doorway, so they must not share a cell.
-    ///
-    /// Why this checks the cell pickers and not a generated floor: a real floor needs `Facility::generate`
-    /// with the content catalog, which a unit test cannot build cheaply. So this runs the archway picker
-    /// (`archway_runs`) and the door header's cell placement (`door_header_cells`, which mirrors the `across`
-    /// and centre math of `door_header`) on a hand-made 4x4 room with one doorway in its top wall, and puts the
-    /// door on its west wall. It shows that these two placements stay apart. It does not show that a generated
-    /// door never lands on an archway run.
+    /// A door's header covers exactly the cells its span crosses: a double door on the west wall at threshold
+    /// (2, 4), across the wall along z (rotation 1), covers two cells.
     #[test]
-    fn door_header_and_archway_never_share_a_cell() {
-        // room floor x 2..=5, y 2..=5; a hall at y 0..=1 open at x 3 and 4; every other cell is wall
-        let is_wall = |x: i32, y: i32| {
-            let room = (2..6).contains(&x) && (2..6).contains(&y);
-            let hall = (3..5).contains(&x) && (0..2).contains(&y);
-            !(room || hall)
-        };
-        let runs = archway_runs((2, 2, 4, 4), is_wall);
-        assert_eq!(runs.len(), 1, "one doorway in the top wall: {runs:?}");
-        assert_eq!(runs[0].cells, vec![(3, 2), (4, 2)]);
-        assert_eq!(runs[0].outward, (0, -1));
-        let archway: Vec<(i32, i32)> = runs.iter().flat_map(|r| r.cells.iter().copied()).collect();
-
-        // a double door on the west wall: threshold (2, 4), across the wall along z (rotation 1)
+    fn door_header_covers_the_cells_of_its_span() {
         let door = door_header_cells(Cell::new(2, 4), 1, DoorDraw { span: 2, offset: [0.0, 0.0] });
         assert_eq!(door.len(), 2, "a double door covers two cells: {door:?}");
-        for c in &door {
-            assert!(!archway.contains(c), "door cell {c:?} is also an archway cell");
+        assert_eq!(door.iter().map(|c| c.0).collect::<HashSet<_>>(), HashSet::from([2]));
+    }
+
+    /// The keys a window's parts take: every slot with each side set its cells can read.
+    fn keys(frame: ChunkFrame) -> HashSet<PartKey> {
+        let mut out = HashSet::new();
+        for sy in 0..WINDOW {
+            for sx in 0..WINDOW {
+                for (lx, ly) in [(0, 0), (20, 0), (44, 0), (0, 20), (20, 20), (44, 20), (0, 44), (20, 44), (44, 44)] {
+                    out.insert(slot_key(frame, sx, sy, side_needs(lx, ly)));
+                }
+            }
         }
+        out
+    }
+
+    /// A step east keeps the six chunks that stay, less the parts on the sides whose neighbour changed: the
+    /// west parts of the chunks now on the window's west edge and the east parts of the ones that were on its east edge.
+    #[test]
+    fn a_step_east_rebuilds_only_the_new_chunks_and_the_changed_edges() {
+        let a = keys(ChunkFrame { level: 0, center: (0, 0) });
+        let b = keys(ChunkFrame { level: 0, center: (1, 0) });
+        assert_eq!(a.len(), 81);
+        let kept: Vec<_> = b.intersection(&a).collect();
+        assert_eq!(kept.len(), 36, "six chunks keep six parts each");
+        assert!(kept.iter().all(|k| k.cx == 0 || k.cx == 1));
+        assert!(kept.iter().all(|k| k.needs & if k.cx == 0 { WEST } else { EAST } == 0));
+        let down = keys(ChunkFrame { level: -1, center: (0, 0) });
+        assert!(down.is_disjoint(&a), "another level shares no part");
+    }
+
+    /// What a cell's geometry reads in window `f`, at the absolute cell (ax, ay): the walls, districts and rooms
+    /// along both axes out to REACH.
+    fn reads(f: &Facility, ax: i32, ay: i32) -> Vec<(bool, String, Option<(i32, i32, i32, i32)>)> {
+        let mut out = vec![];
+        for d in -REACH..=REACH {
+            for (x, y) in [(ax + d - f.origin.0, ay - f.origin.1), (ax - f.origin.0, ay + d - f.origin.1)] {
+                let room = f
+                    .room_at(x as f64 + 0.5, y as f64 + 0.5)
+                    .map(|i| &f.rooms[i])
+                    .map(|r| (r.x + f.origin.0, r.y + f.origin.1, r.w, r.h));
+                out.push((f.is_wall_cell(x, y), f.region_at(x, y).to_string(), room));
+            }
+        }
+        out
+    }
+
+    /// On two real windows a step apart, every part both share picks the same cells and rooms, and each of its
+    /// cells reads the same walls, districts and rooms out to REACH: the part drawn for one window is right for the other.
+    #[test]
+    fn a_kept_part_reads_the_same_floor_in_both_windows() {
+        use crate::content::loot::LootTables;
+        use crate::world::catalog::Catalog;
+        use crate::world::infinite::window;
+        let cat = Catalog::load();
+        let loot = LootTables::default();
+        let mut cache = HashMap::new();
+        let frames = [ChunkFrame { level: 0, center: (0, 0) }, ChunkFrame { level: 0, center: (1, 0) }];
+        let wins: Vec<Facility> = frames
+            .iter()
+            .map(|fr| window("1426541270", fr.center, fr.level, &cat, &loot, &mut cache).0)
+            .collect();
+        let abs_parts = |f: &Facility, fr: ChunkFrame| -> HashMap<PartKey, (Vec<(i32, i32)>, Vec<(i32, i32, i32, i32)>)> {
+            let parts = window_parts(f, fr);
+            let cells: usize = parts.iter().map(|(_, p)| p.cells.len()).sum();
+            assert_eq!(cells, f.floor_cells().len(), "every floor cell in one part");
+            let rooms: usize = parts.iter().map(|(_, p)| p.rooms.len()).sum();
+            assert_eq!(rooms, f.rooms.len(), "every room in one part");
+            parts
+                .into_iter()
+                .map(|(k, p)| {
+                    let cells = p.cells.iter().map(|c| (c.x + f.origin.0, c.y + f.origin.1)).collect();
+                    let rooms = p
+                        .rooms
+                        .iter()
+                        .map(|&i| &f.rooms[i])
+                        .map(|r| (r.x + f.origin.0, r.y + f.origin.1, r.w, r.h))
+                        .collect();
+                    (k, (cells, rooms))
+                })
+                .collect()
+        };
+        let a = abs_parts(&wins[0], frames[0]);
+        let b = abs_parts(&wins[1], frames[1]);
+        let mut shared = 0;
+        for (k, pa) in &a {
+            let Some(pb) = b.get(k) else { continue };
+            shared += 1;
+            assert_eq!(pa, pb, "part {k:?} picks other cells or rooms");
+            for &(ax, ay) in &pa.0 {
+                assert_eq!(reads(&wins[0], ax, ay), reads(&wins[1], ax, ay), "cell ({ax}, {ay}) of {k:?}");
+            }
+        }
+        assert_eq!(shared, 36);
     }
 }

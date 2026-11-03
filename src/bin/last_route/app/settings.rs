@@ -2,10 +2,11 @@
 //! sensitivity, fullscreen, and the rest of the original's settings panel. Saved to a small
 //! JSON file in the per-user folder.
 //!
-//! MENU / UI volume scales the menu blip. Some rows are kept for the panel only (spoken-chat volume,
-//! voices, subtitles, graphics quality, ads, pause-on-focus-loss, teammate waypoints): this build
-//! has no voice chat or quality presets, so they are stored but change nothing. VSYNC and the FPS
-//! LIMIT are live: `app::pacing` applies them (see `swap_interval` and `frame_cap_fps` below).
+//! MENU / UI volume scales the menu blip. Graphics quality drives the 3D render-target scale
+//! via `app::targets` (LOW/MEDIUM/HIGH/AUTO). Some rows are kept for the panel only (spoken-chat
+//! volume, voices, subtitles, ads, pause-on-focus-loss, teammate waypoints): this build has no
+//! voice chat, so they are stored but change nothing. VSYNC and the FPS LIMIT are live:
+//! `app::pacing` applies them (see `swap_interval` and `frame_cap_fps` below).
 
 use crate::net::world_sync::{clean_skin, SKIN_DEFAULT};
 use std::path::PathBuf;
@@ -32,6 +33,8 @@ pub struct Settings {
     pub ads: String,
     pub pause_on_focus_loss: bool,
     pub teammate_waypoints: bool,
+    /// Prefer calm HUD motion (Porcelle's radar ping stays a steady dim dot).
+    pub reduced_motion: bool,
     /// The local profile name the title's account button shows (the admin's is KYTTU).
     pub username: String,
     /// The menus' colour scheme (palette.gd SCHEMES): "last_route" or "city". The original
@@ -59,6 +62,7 @@ impl Default for Settings {
             ads: "off".into(),
             pause_on_focus_loss: true,
             teammate_waypoints: true,
+            reduced_motion: false,
             // empty: a new game starts signed out (guest). Only signing in as KYTTU enables the admin tools.
             username: String::new(),
             scheme: "last_route".into(),
@@ -101,6 +105,7 @@ impl Settings {
         s.fps_limit = f("fps_limit", 0.0).max(0.0);
         s.pause_on_focus_loss = b("pause_on_focus_loss", true);
         s.teammate_waypoints = b("teammate_waypoints", true);
+        s.reduced_motion = b("reduced_motion", false);
         if let Some(q) = v["quality"]
             .as_str()
             .filter(|q| ["AUTO", "LOW", "MEDIUM", "HIGH"].contains(q))
@@ -138,7 +143,7 @@ impl Settings {
             "subtitles": self.subtitles, "fov": self.fov, "sensitivity": self.sensitivity,
             "fullscreen": self.fullscreen, "vsync": self.vsync, "fps_limit": self.fps_limit,
             "quality": self.quality, "ads": self.ads, "pause_on_focus_loss": self.pause_on_focus_loss,
-            "teammate_waypoints": self.teammate_waypoints, "username": self.username, "scheme": self.scheme,
+            "teammate_waypoints": self.teammate_waypoints, "reduced_motion": self.reduced_motion, "username": self.username, "scheme": self.scheme,
             "skin": self.skin,
         })
     }
@@ -245,6 +250,7 @@ mod tests {
             "ads",
             "pause_on_focus_loss",
             "teammate_waypoints",
+            "reduced_motion",
             "username",
             "scheme",
             "skin",
@@ -274,6 +280,7 @@ mod tests {
             ads: "gentle".into(),
             pause_on_focus_loss: false,
             teammate_waypoints: false,
+            reduced_motion: true,
             username: "ALICE".into(),
             scheme: "city".into(),
             skin: "NIGHT".into(),
@@ -289,6 +296,7 @@ mod tests {
         assert_eq!(Settings::from_json(&serde_json::json!({"skin": "no way!!"})).skin, "NOWAY");
         assert_eq!(Settings::from_json(&serde_json::json!({"skin": ""})).skin, "DEFAULT");
         assert!(!back.vsync && back.fullscreen);
+        assert!(back.reduced_motion);
     }
 
     #[test]

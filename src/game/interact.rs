@@ -9,6 +9,7 @@ use crate::config::*;
 use crate::content::Content;
 use crate::hunters::gimmicks::{ceryth::Entry, Gimmick};
 use crate::world::catalog::Catalog;
+use crate::world::facility::{Cover, LinkKind};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Focus {
@@ -28,6 +29,28 @@ pub enum Focus {
 }
 
 impl Game {
+    /// One automatic save of the run (Godot `autosave`, infinite_route_test.gd): a relay, a newly active checkpoint or
+    /// a level change (the stairs and the lift) or leaving the route. A finished run never saves (Godot
+    /// `_save_write_denial`: THE RUN HAS ENDED), so a death still clears the save. Returns true when it saved.
+    pub fn autosave(&mut self, reason: &'static str) -> bool {
+        if self.report.is_some() {
+            return false;
+        }
+        self.save_checkpoint();
+        self.last_autosave = reason;
+        true
+    }
+
+    /// The load of a flight, run behind the fade (game/transition.rs): a flight taken saves the run on its new level
+    /// (Godot `_update_run_statistics`: autosave("level")).
+    pub(super) fn take_flight(&mut self, i: usize, content: &Content, catalog: &Catalog) {
+        let from = self.inf.as_ref().map(|inf| inf.level);
+        self.take_stairs(i, content, catalog);
+        if self.inf.as_ref().map(|inf| inf.level) != from {
+            self.autosave("level");
+        }
+    }
+
     pub fn shop_open(&self) -> bool {
         self.hunters
             .iter()
@@ -149,12 +172,23 @@ impl Game {
                 }
             }
             Focus::Safe => "[E] REST AT SAFE ZONE".into(),
-            Focus::Lift => "[E] SERVICE LIFT".into(),
-            Focus::Stairs(i) => {
-                if self.fac.stairs[i].dir < 0 {
-                    "[E] TAKE STAIRS DOWN".into()
+            // Godot `route_interactable_3d.gd` prompt: "USE SERVICE LIFT", with the relay target until the floor is cleared
+            Focus::Lift => {
+                let target = self.fac.relays.len() as i32;
+                if self.relays_collected < target {
+                    format!("[E] USE SERVICE LIFT \u{2014} NEED {target} RELAY")
                 } else {
-                    "[E] TAKE STAIRS UP".into()
+                    "[E] USE SERVICE LIFT".into()
+                }
+            }
+            Focus::Stairs(i) => {
+                let s = self.fac.stairs[i];
+                match (s.kind, s.dir < 0) {
+                    (LinkKind::Ladder(Cover::Manhole), true) => "[E] OPEN THE MANHOLE // CLIMB DOWN".into(),
+                    (LinkKind::Ladder(Cover::Grate), true) => "[E] LIFT THE GRATE // CLIMB DOWN".into(),
+                    (LinkKind::Ladder(_), false) => "[E] CLIMB THE LADDER UP".into(),
+                    (LinkKind::Stairs, true) => "[E] TAKE STAIRS DOWN".into(),
+                    (LinkKind::Stairs, false) => "[E] TAKE STAIRS UP".into(),
                 }
             }
             Focus::LightSwitch(_) => "[E] TOGGLE ROOM LIGHT".into(),
@@ -220,6 +254,8 @@ impl Game {
                 self.score += RELAY_SCORE;
                 crate::audio::sound::collect();
                 self.announce("RELAY ONLINE");
+                // a recovered relay saves the run (Godot `_sync_stream_progress`: autosave("relay"))
+                self.autosave("relay");
                 let need = self
                     .prof()
                     .activation_relays
@@ -270,9 +306,7 @@ impl Game {
                 crate::audio::sound::recharge(20.0);
                 self.say("Safe zone: lamp and stamina restored.");
             }
-            Focus::Stairs(i) => {
-                self.take_stairs(i, content, catalog);
-            }
+            Focus::Stairs(i) => self.start_stairs(i),
             Focus::Lift => {
                 if self.relays_collected < self.fac.relays.len() as i32 {
                     crate::audio::sound::interaction_fail();
@@ -281,7 +315,7 @@ impl Game {
                 }
                 self.depth += 1;
                 self.start_floor_sim(content, catalog);
-                self.save_checkpoint();
+                self.autosave("level");
                 let d = self.depth;
                 self.say(&format!("Descending to depth {d}..."));
             }
@@ -449,5 +483,76 @@ impl Game {
             self.say("ZELLIA'S STORE // THE DEAL COST MORE THAN COINS");
             self.end_run(zi, "deal");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Difficulty;
+
+    #[test]
+    fn taking_the_stairs_autosaves_the_new_level() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-TEST-7", 0, &content, &catalog);
+        let i = g
+            .fac
+            .stairs
+            .iter()
+            .position(|s| crate::world::infinite::level_allowed(s.dir))
+            .expect("the start window has a stairwell down");
+        let dir = g.fac.stairs[i].dir;
+        g.interact(Focus::Stairs(i), &content, &catalog, &Sounds::default());
+        for _ in 0..100 {
+            if g.transition.is_none() {
+                break;
+            }
+            g.step(0.05, &crate::game::Controls::default(), &content, &catalog, &Sounds::default());
+        }
+        assert!(g.transition.is_none(), "the climb and the fade finish");
+        assert_eq!(g.inf.as_ref().unwrap().level, dir);
+        assert_eq!(g.last_autosave, "level", "a new level saves the run");
+    }
+
+    #[test]
+    fn the_lift_autosaves_the_next_depth() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let mut g = Game::new_sim(Difficulty::Standard, 4242, &content, &catalog);
+        g.relays_collected = g.fac.relays.len() as i32;
+        let depth = g.depth;
+        g.interact(Focus::Lift, &content, &catalog, &Sounds::default());
+        assert_eq!(g.depth, depth + 1);
+        assert_eq!(g.last_autosave, "level", "the next depth saves the run");
+    }
+
+    #[test]
+    fn the_lift_names_the_relay_target_until_the_floor_is_cleared() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let mut g = Game::new_sim(Difficulty::Standard, 4242, &content, &catalog);
+        assert!(g.fac.has_lift && !g.fac.relays.is_empty());
+        let target = g.fac.relays.len();
+        g.focus = Some(Focus::Lift);
+        g.relays_collected = 0;
+        assert_eq!(
+            g.focus_prompt().as_deref(),
+            Some(format!("[E] USE SERVICE LIFT \u{2014} NEED {target} RELAY").as_str())
+        );
+        g.relays_collected = target as i32;
+        assert_eq!(g.focus_prompt().as_deref(), Some("[E] USE SERVICE LIFT"));
+    }
+
+    #[test]
+    fn the_lift_stays_put_without_route_signal() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let mut g = Game::new_sim(Difficulty::Standard, 4242, &content, &catalog);
+        g.relays_collected = g.fac.relays.len() as i32 - 1;
+        let (depth, saved) = (g.depth, g.last_autosave);
+        g.interact(Focus::Lift, &content, &catalog, &Sounds::default());
+        assert_eq!(g.depth, depth, "no descent short of the relay target");
+        assert_eq!(g.last_autosave, saved, "a refused lift does not save");
     }
 }

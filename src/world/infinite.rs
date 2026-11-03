@@ -12,11 +12,11 @@
 //! selected by level/region while the finite catalogue supplies authored room content.
 
 use super::catalog::Catalog;
-use super::facility::{Cell, Facility, Options, Pickup, Stair, STAIR_FLIGHT};
+use super::facility::{Cell, Facility, LinkKind, Options, Pickup, Stair, STAIR_FLIGHT};
 use super::fixtures::{self, Fixtures};
 use super::rng::Rng;
 use super::route::regions;
-use crate::content::loot::Loot;
+use crate::content::loot::LootTables;
 use std::collections::HashMap;
 
 pub const CHUNK: i32 = 45;
@@ -32,6 +32,8 @@ const STAIR_BAY_ANCHORS: [[(i32, i32); 4]; 4] = [
 const STAIR_BAYS_BY_PARITY: [[usize; 2]; 2] = [[0, 3], [1, 2]];
 /// Share of boundaries (away from the origin column) that carry a stair link (estimated).
 const STAIR_CHANCE: f64 = 0.3;
+/// Godot `INFERNO_LEVEL` (streamed_route_generator.gd:34): the depth floor. Nothing is built or linked below it.
+pub const INFERNO_LEVEL: i32 = -3;
 /// Relays and batteries per chunk (estimated: "denser interactables", spread over many chunks).
 const CHUNK_RELAYS: usize = 3;
 const CHUNK_BATTERIES: usize = 4;
@@ -82,10 +84,17 @@ fn boundary_offsets(seed: &str, key: &str) -> Vec<i32> {
     out
 }
 
+/// Godot `is_chunk_allowed` (streamed_route_generator.gd:1437-1442) for a level, with MEZZANINE_ENABLED false: the
+/// route streams level 0 down to the Inferno (-3) and nothing above or below.
+pub fn level_allowed(level: i32) -> bool {
+    (INFERNO_LEVEL..=0).contains(&level)
+}
+
 /// A stair link on the boundary between `upper` and `upper - 1` in column (cx, cy):
 /// Some((anchor, run)) when it exists. Shared by both levels.
 pub(crate) fn stair_link(seed: &str, cx: i32, cy: i32, upper: i32) -> Option<((i32, i32), (i32, i32))> {
-    if upper > 0 {
+    // both ends must be levels the route has (Godot `stairwells_at`, 676-685): no flight above 0 or below -3
+    if !level_allowed(upper) || !level_allowed(upper - 1) {
         return None;
     }
     let mut rng = Rng::new(&format!("{seed}:STAIRS:{upper}:{cx},{cy}"));
@@ -113,7 +122,7 @@ pub fn legacy_level0() -> bool {
 
 /// Builds one chunk: level 0 from the Godot layout (`route::live::chunk`), unless
 /// `KYTTU_LEGACY_CHUNKS=1`; every other level from `legacy_chunk`.
-pub fn chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &Loot) -> (Facility, Fixtures) {
+pub fn chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -> (Facility, Fixtures) {
     if k.level == 0 && !legacy_level0() {
         if let Some(pair) = super::route::live::chunk(seed, k, cat) {
             return pair;
@@ -124,7 +133,7 @@ pub fn chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &Loot) -> (Facility, 
 
 /// The old builder: a `Facility::generate` floor re-dressed as streamed rooms, with Rust's own
 /// loot, seams, stair flights and fixtures.
-pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &Loot) -> (Facility, Fixtures) {
+pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -> (Facility, Fixtures) {
     let origin = k.cx == 0 && k.cy == 0 && k.level == 0;
     let text = format!("{seed}:L{}:C{},{}", k.level, k.cx, k.cy);
     let opt = Options {
@@ -139,10 +148,38 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &Loot) -> (Fac
     // seams, stairs and fixtures are added so every downstream system sees the
     // same bounded rooms and circulation mask.
     let region = region_for(seed, k);
-    f.apply_godot_streamed_layout(&text, region, cat);
+    // level -1: the ported Godot sewer geometry replaces the generic facility floor when the generator gives a chunk
+    let sewer_floor = if k.level == super::route::sewer::core::LEVEL || k.level == super::route::sewer::core::LOWER_LEVEL {
+        super::route::sewer::chunk(
+            super::route::layout::Coord::new(k.cx, k.level, k.cy),
+            &super::route::sewer::Inputs { world: seed },
+        )
+    } else {
+        None
+    };
+    match &sewer_floor {
+        Some(sc) => apply_sewer_floor(&mut f, sc),
+        None => f.apply_godot_streamed_layout(&text, region, cat),
+    }
+    // level -3: carve the caverns, halls and crevices (world::inferno) over the maze layout
+    if k.level == INFERNO_LEVEL {
+        let inf = super::inferno::Inferno::carve(seed, k);
+        for cv in &inf.caverns {
+            let r = cv.rect;
+            f.clear_props_in(r.x, r.y, r.w, r.h);
+        }
+        for r in &inf.halls {
+            f.clear_props_in(r.x, r.y, r.w, r.h);
+        }
+        for c in inf.open_cells() {
+            f.open_cells(c.x, c.y, 1, 1);
+        }
+        f.rebuild_grids();
+    }
     f.has_lift = false;
     f.exit = Cell::new(-10000, -10000);
-    // loot (data/loot/route.json): a base battery, then each roll by its chance
+    // loot (the region's data/loot table): a base battery, then each roll by its chance
+    let loot = loot.table_for(region);
     let mut rng = Rng::new(&format!("{text}:LOOT"));
     let mut free: Vec<Cell> = f
         .floor_cells()
@@ -199,6 +236,10 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &Loot) -> (Fac
         }
     }
     f.pickups = pickups;
+    let mut sewer_coins: Vec<Cell> = vec![];
+    if let Some(sc) = &sewer_floor {
+        sewer_coins = apply_sewer_dressing(&mut f, seed, sc);
+    }
 
     // seams: open the chunk's border where its boundaries open, then run a 3-wide hall inward
     let sides = [
@@ -208,6 +249,9 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &Loot) -> (Fac
         (format!("H:{}:{}:{}", k.level, k.cx, k.cy + 1), 3),
     ];
     for (key, side) in sides {
+        if sewer_floor.is_some() {
+            break; // the sewer's own tunnel cross already reaches every border
+        }
         for o in boundary_offsets(seed, &key) {
             for step in 0..CHUNK {
                 let (x, y) = match side {
@@ -227,27 +271,46 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &Loot) -> (Fac
         }
     }
 
-    // stairwells: down to `level - 1` and up to `level + 1`, each on its boundary's bay
+    // stairwells: level 0 takes the layout's stairwell (route::live::carve_stair_well), walled and dead-ended with
+    // no bay. The levels below keep the bay of each boundary's stair link, down to `level - 1` and up to `level + 1`.
     let mut links = vec![];
-    if let Some((anchor, run)) = stair_link(seed, k.cx, k.cy, k.level) {
-        links.push(Stair {
-            cell: Cell::new(anchor.0, anchor.1),
-            dir: -1,
-            run,
-        });
-    }
-    if let Some((anchor, run)) = stair_link(seed, k.cx, k.cy, k.level + 1) {
-        let far = Cell::new(
-            anchor.0 + run.0 * (STAIR_FLIGHT + 1),
-            anchor.1 + run.1 * (STAIR_FLIGHT + 1),
-        );
-        links.push(Stair {
-            cell: far,
-            dir: 1,
-            run: (-run.0, -run.1),
-        });
+    if k.level == 0 {
+        for well in super::route::live::layout_stairwells(seed, k) {
+            let stair = super::route::live::carve_stair_well(&mut f, &well);
+            f.stairs.push(stair);
+        }
+    } else {
+        if let Some((anchor, run)) = stair_link(seed, k.cx, k.cy, k.level) {
+            links.push(Stair {
+                cell: Cell::new(anchor.0, anchor.1),
+                dir: -1,
+                run,
+                kind: LinkKind::Stairs,
+            });
+        }
+        if sewer_floor.is_some() && k.level == super::route::sewer::core::LEVEL {
+            // the way up to level 0 is the maze's stairwell: its far end in the sewer well (level_links::well_stairs)
+            links.extend(crate::world::level_links::well_stairs(seed, k));
+        } else if let Some((anchor, run)) = stair_link(seed, k.cx, k.cy, k.level + 1) {
+            let far = Cell::new(
+                anchor.0 + run.0 * (STAIR_FLIGHT + 1),
+                anchor.1 + run.1 * (STAIR_FLIGHT + 1),
+            );
+            links.push(Stair {
+                cell: far,
+                dir: 1,
+                run: (-run.0, -run.1),
+                kind: LinkKind::Stairs,
+            });
+        }
     }
     for s in links {
+        if sewer_floor.is_some() && k.level == super::route::sewer::core::LEVEL && s.dir > 0 {
+            // a sewer well stair: the well is already carved; open its end cell and keep the flight a hole
+            f.open_cells(s.cell.x, s.cell.y, 1, 1);
+            f.stairs.push(s);
+            continue;
+        }
         let ends = [
             s.cell,
             Cell::new(
@@ -268,9 +331,96 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &Loot) -> (Fac
         f.open_cells(cx - 1, y0.min(cy), 3, (y0 - cy).abs() + 3);
         f.stairs.push(s);
     }
+    // the sewer's ladder bottoms: the same cells as the maze's ladder tops, so both levels agree
+    for s in crate::world::level_links::ladders(seed, k) {
+        f.open_cells(s.cell.x - 1, s.cell.y - 1, 3, 3);
+        f.stairs.push(s);
+    }
     f.rebuild_grids();
-    let fix = fixtures::place(&f);
+    let mut fix = fixtures::place(&f);
+    fix.coins.extend(sewer_coins);
     (f, fix)
+}
+
+/// The sewer port's own pickups and hiding spots (`sewer::pickups::chunk_pickups`, `sewer::fixtures::fixtures`)
+/// replace the legacy loot rolls on a sewer floor. Relays and batteries fill their lists, tools, aid and backpacks
+/// become pickups, and the coins are returned for the chunk's `Fixtures`. A name the `Pickup` enum cannot hold is dropped.
+fn apply_sewer_dressing(f: &mut Facility, seed: &str, sc: &super::route::sewer::SewerChunk) -> Vec<Cell> {
+    f.relays.clear();
+    f.batteries.clear();
+    f.pickups.clear();
+    let mut coins = vec![];
+    for p in super::route::sewer::pickups::chunk_pickups(seed, sc, false) {
+        let cell = Cell::new(p.cell.x, p.cell.y);
+        match p.kind {
+            "relay" => f.relays.push(cell),
+            "battery" => f.batteries.push(cell),
+            "coin" => coins.push(cell),
+            _ => {
+                let item = match p.item {
+                    "taser" => Pickup::Taser,
+                    "lockpick" => Pickup::Lockpick,
+                    "crowbar" => Pickup::Crowbar,
+                    "rescue_axe" => Pickup::Axe,
+                    "stim_pack" => Pickup::Stim,
+                    "revive_kit" => Pickup::ReviveKit,
+                    "backpack_small" => Pickup::BackpackSmall,
+                    "backpack_medium" => Pickup::BackpackMedium,
+                    "backpack_large" => Pickup::BackpackLarge,
+                    _ => continue,
+                };
+                f.pickups.push((cell, item));
+            }
+        }
+    }
+    let rooms = f.rooms.clone();
+    f.hiding = super::route::sewer::fixtures::fixtures(seed, sc)
+        .iter()
+        .filter(|x| x.kind == "hiding_spot" && x.hide.is_none())
+        .map(|x| super::facility::Hiding {
+            cell: Cell::new(x.cell.x, x.cell.y),
+            facing: (x.open_direction.x, x.open_direction.y),
+            room: rooms
+                .iter()
+                .position(|r| x.cell.x >= r.x && x.cell.y >= r.y && x.cell.x < r.x + r.w && x.cell.y < r.y + r.h),
+        })
+        .collect();
+    coins
+}
+
+/// Overwrites `f`'s floor with the sewer chunk: SOLID and FALL are walls, every other code (dry, water, bridge, ramp,
+/// shaft) is open. The sewer's rooms replace the facility's; props start empty. The start is the junction.
+fn apply_sewer_floor(f: &mut Facility, sc: &super::route::sewer::SewerChunk) {
+    use super::route::sewer::core::{FALL, SOLID};
+    f.wall = (0..CHUNK as usize)
+        .map(|z| (0..CHUNK as usize).map(|x| matches!(sc.sewer_grid[z][x], SOLID | FALL)).collect())
+        .collect();
+    f.rooms = sc
+        .rooms
+        .iter()
+        .map(|r| super::facility::Room {
+            id: r.id.clone(),
+            sector: String::new(),
+            x: r.rect.x,
+            y: r.rect.y,
+            w: r.rect.w,
+            h: r.rect.h,
+            center: Cell::new(r.center.x, r.center.y),
+            rtype: r.room_type.to_string(),
+            label: r.room_type.to_string(),
+            region: "sewer".to_string(),
+            landmark: false,
+            prop_types: vec![],
+        })
+        .collect();
+    f.props.clear();
+    f.hiding.clear();
+    f.room_lights.clear();
+    f.relays.clear();
+    f.batteries.clear();
+    f.safe_zone = None;
+    f.start = Cell::new(CHUNK / 2, CHUNK / 2);
+    f.hunter_spawn = f.start;
 }
 
 /// The live window: 3x3 chunks around `center` on `level`, merged into one floor, plus the
@@ -281,7 +431,7 @@ pub fn window(
     center: (i32, i32),
     level: i32,
     cat: &Catalog,
-    loot: &Loot,
+    loot: &LootTables,
     cache: &mut HashMap<ChunkKey, (Facility, Fixtures)>,
 ) -> (Facility, Fixtures) {
     let mut parts = vec![];
@@ -342,4 +492,113 @@ pub fn window(
 /// A throwaway floor a Game holds before its first window is built.
 pub fn placeholder(seed: &str, cat: &Catalog) -> Facility {
     Facility::generate(&format!("{seed}:SHELL"), &Options::default(), cat)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::OnceLock;
+
+    fn cat() -> &'static Catalog {
+        static CAT: OnceLock<Catalog> = OnceLock::new();
+        CAT.get_or_init(Catalog::load)
+    }
+
+    const WORLDS: [&str; 3] = ["1426541270", "4157433391", "2899547009"];
+
+    #[test]
+    fn the_level_stack_is_zero_down_to_the_inferno() {
+        assert!(level_allowed(0) && level_allowed(-1) && level_allowed(-2) && level_allowed(INFERNO_LEVEL));
+        assert!(!level_allowed(1) && !level_allowed(INFERNO_LEVEL - 1));
+    }
+
+    #[test]
+    fn no_stair_link_leads_above_zero_or_below_the_inferno() {
+        for world in WORLDS {
+            for cx in -5..=5 {
+                for cy in -5..=5 {
+                    assert!(stair_link(world, cx, cy, 1).is_none());
+                    assert!(stair_link(world, cx, cy, INFERNO_LEVEL).is_none());
+                }
+            }
+            // the origin column links every storey from 0 down to the Inferno
+            for upper in (INFERNO_LEVEL + 1)..=0 {
+                assert!(stair_link(world, 0, 0, upper).is_some(), "{world} upper {upper}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_inferno_chunk_has_a_way_up_and_no_way_down() {
+        let loot = LootTables::default();
+        for world in WORLDS {
+            let (f, _) = chunk(world, ChunkKey { cx: 0, cy: 0, level: INFERNO_LEVEL }, cat(), &loot);
+            assert!(f.stairs.iter().any(|s| s.dir > 0), "{world}: no flight up from the Inferno");
+            assert!(f.stairs.iter().all(|s| s.dir > 0), "{world}: a flight leads below the Inferno");
+        }
+    }
+
+    /// Level -2 is the ported lower sewer: it has floor, and every stair down from -1 has its up stair on -2.
+    #[test]
+    fn the_lower_sewer_meets_the_first_sewer_stairs() {
+        let loot = LootTables::default();
+        let (mut stairs, mut matched) = (0, 0);
+        for world in WORLDS {
+            for cx in -2..=2 {
+                for cy in -2..=2 {
+                    let (low, _) = chunk(world, ChunkKey { cx, cy, level: -2 }, cat(), &loot);
+                    assert!(!low.floor_cells().is_empty(), "{world} {cx},{cy}: no walkable cells");
+                    let (sew, _) = chunk(world, ChunkKey { cx, cy, level: -1 }, cat(), &loot);
+                    for s in sew.stairs.iter().filter(|s| s.dir < 0 && !s.is_ladder()) {
+                        stairs += 1;
+                        let far = Cell::new(
+                            s.cell.x + s.run.0 * (STAIR_FLIGHT + 1),
+                            s.cell.y + s.run.1 * (STAIR_FLIGHT + 1),
+                        );
+                        let t = low
+                            .stairs
+                            .iter()
+                            .find(|t| t.dir > 0 && !t.is_ladder() && t.cell == far)
+                            .unwrap_or_else(|| panic!("{world} {cx},{cy}: no -2 up stair at {far:?}"));
+                        assert_eq!(t.run, (-s.run.0, -s.run.1));
+                        assert!(!low.is_wall_cell(far.x, far.y), "{world} {cx},{cy}: far end is walled");
+                        matched += 1;
+                    }
+                }
+            }
+        }
+        assert!(stairs > 0 && matched == stairs, "{matched}/{stairs}");
+    }
+
+    /// Level -1 is the ported sewer floor, and every level 0 stair has its stair at the far end in the sewer well.
+    #[test]
+    fn the_sewer_floor_meets_the_maze_stairs() {
+        let loot = LootTables::default();
+        let (mut stairs, mut matched) = (0, 0);
+        for world in WORLDS {
+            for cx in -2..=2 {
+                for cy in -2..=2 {
+                    let (sew, _) = chunk(world, ChunkKey { cx, cy, level: -1 }, cat(), &loot);
+                    assert!(!sew.floor_cells().is_empty(), "{world} {cx},{cy}: no walkable cells");
+                    let (top, _) = chunk(world, ChunkKey { cx, cy, level: 0 }, cat(), &loot);
+                    for s in top.stairs.iter().filter(|s| !s.is_ladder()) {
+                        stairs += 1;
+                        let far = Cell::new(
+                            s.cell.x + s.run.0 * (STAIR_FLIGHT + 1),
+                            s.cell.y + s.run.1 * (STAIR_FLIGHT + 1),
+                        );
+                        let near = sew
+                            .stairs
+                            .iter()
+                            .find(|t| t.dir > 0 && !t.is_ladder() && (t.cell.x - far.x).abs() <= 2 && (t.cell.y - far.y).abs() <= 2);
+                        let t = near.unwrap_or_else(|| panic!("{world} {cx},{cy}: no sewer stair near {far:?}"));
+                        assert_eq!(t.cell, far, "take_stairs needs the exact cell");
+                        assert!(!sew.is_wall_cell(far.x, far.y), "{world} {cx},{cy}: far end is walled");
+                        matched += 1;
+                    }
+                }
+            }
+        }
+        assert!(stairs > 0 && matched == stairs, "{matched}/{stairs}");
+    }
 }

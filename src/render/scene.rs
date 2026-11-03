@@ -53,7 +53,7 @@ pub fn lighting(g: &Game) -> Lighting {
         eye,
         flashlight_pos: eye + right * 0.08 - up * 0.05 + fwd * 0.12,
         flashlight_dir: fwd,
-        flashlight_on: g.p.flashlight_on,
+        flashlight_on: g.p.beam_lit(),
         // rooms are dark unless something lights them: Godot's RefLook ambient (shader::AMBIENT_COLOR x AMBIENT_ENERGY)
         ambient: shader::AMBIENT_COLOR * shader::AMBIENT_ENERGY,
         fog: FOG,

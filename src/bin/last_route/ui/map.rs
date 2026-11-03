@@ -208,11 +208,21 @@ fn draw_floor(g: &Game, xf: Xf, cells: (i32, i32, i32, i32), full: bool, remotes
 
 /// A hunter's mark on the maps: red while awake, dimmed while asleep (the admin reveal shows the sleeping ones too).
 fn hunter_colour(h: &Brain) -> Color {
-    if h.active {
+    let base = if h.active {
         METER_LOW
     } else {
         alpha(METER_LOW, 0.4)
+    };
+    // Porcelle's radar ping (Godot RadarPing): strength gates alpha; reduced motion
+    // keeps a steady dim via style::reduced_motion().
+    if h.def.id == "porcelle" {
+        let s = super::radar_ping::sample(macroquad::time::get_time() as f32, super::style::reduced_motion());
+        if s.strength <= 0.001 {
+            return alpha(base, 0.0);
+        }
+        return alpha(base, base.a * s.strength);
     }
+    base
 }
 
 /// Godot PlayerColors' palette (Okabe-Ito plus Tol extensions), the colour of a teammate's pin. Godot ranks the peers of the

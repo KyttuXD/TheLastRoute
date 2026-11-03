@@ -188,9 +188,12 @@ fn load_pack(c: &mut Content, dir: &Path) {
             .ok()
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
         {
-            if v["id"].as_str() == Some("route") && overrides.iter().any(|o| o == "route") {
-                c.loot = super::loot::Loot::parse(&v);
-                pack.provides.push("loot:route".into());
+            let lid = v["id"].as_str().unwrap_or("");
+            if overrides.iter().any(|o| o == lid) {
+                if let Some(table) = c.loot.by_id_mut(lid) {
+                    *table = super::loot::Loot::parse(&v);
+                    pack.provides.push(format!("loot:{lid}"));
+                }
             }
         }
     }

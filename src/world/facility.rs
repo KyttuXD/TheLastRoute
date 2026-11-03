@@ -182,13 +182,41 @@ pub struct Facility {
     random: Rng,
     /// Solid props by cell, for fast footprint tests.
     prop_grid: Vec<Vec<usize>>,
+    /// The swing of each room door, keyed by its threshold cell. A door with no entry has not been ticked yet
+    /// and counts as open, so a floor nobody calls `update_doors` on stays walkable.
+    door_state: HashMap<Cell, DoorState>,
 }
+
+/// How far a door is open (0 closed, 1 open) and how long it has stood clear of everyone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DoorState {
+    pub open: f32,
+    pub idle: f32,
+    centre: (f32, f32),
+    half: (f32, f32),
+}
+
+/// An actor this close to a door's centre swings it open.
+pub const DOOR_TRIGGER: f32 = 1.7;
+/// Seconds a door stays open after the last actor leaves its trigger range.
+pub const DOOR_CLOSE_DELAY: f32 = 1.2;
+/// Open amount gained or lost per second.
+pub const DOOR_SWING_RATE: f32 = 4.0;
+/// A door at or past this open amount lets a body through.
+pub const DOOR_PASSABLE: f32 = 0.6;
+/// Half the thickness of a closed door's blocking slab, in metres.
+const DOOR_HALF_DEPTH: f32 = 0.1;
 
 /// Cells a flight runs down (or up) from its landing: 2 wide, this many long.
 pub const STAIR_FLIGHT: i32 = 4;
 
-/// The two cells of the well at step `k` (1..=STAIR_FLIGHT) from the landing.
+/// The two cells of the well at step `k` (1..=STAIR_FLIGHT) from the landing. A ladder's well is its own cell, open
+/// only at the top end (the shaft down); at the bottom the sewer floor stays, so both cells are off the grid.
 pub fn stair_well_cells(s: Stair, k: i32) -> [Cell; 2] {
+    if s.is_ladder() {
+        let c = if s.dir < 0 { s.cell } else { Cell::new(-1, -1) };
+        return [c, c];
+    }
     // the second lane is always on the +x / +y side, so both ends of a flight agree on its well
     let side = (s.run.1.abs(), s.run.0.abs());
     let c = Cell::new(s.cell.x + s.run.0 * k, s.cell.y + s.run.1 * k);
@@ -201,8 +229,30 @@ pub struct Stair {
     pub cell: Cell,
     /// -1 leads down a level, +1 up.
     pub dir: i32,
-    /// Unit step the flight runs along (from the landing into the well).
+    /// Unit step the flight runs along (from the landing into the well); (0, 0) for a ladder.
     pub run: (i32, i32),
+    pub kind: LinkKind,
+}
+
+impl Stair {
+    pub fn is_ladder(&self) -> bool {
+        matches!(self.kind, LinkKind::Ladder(_))
+    }
+}
+
+/// What a level link is (Godot `LevelLink.kind`): a stair flight, or a sewer ladder under a manhole or a floor grate
+/// (`world::level_links`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkKind {
+    Stairs,
+    Ladder(Cover),
+}
+
+/// A ladder's `cover` at the maze end (docs/SEWERS.md "Ladders").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cover {
+    Manhole,
+    Grate,
 }
 
 pub struct Options {
@@ -256,6 +306,7 @@ impl Facility {
             hunter_open: vec![],
             random: Rng::new(seed_text),
             prop_grid: vec![vec![]; (cols * rows) as usize],
+            door_state: HashMap::new(),
         };
         let room_count = opt.room_count.max(5);
         f.carve_facility_rooms(room_count, cat);
@@ -521,6 +572,7 @@ impl Facility {
             hunter_open: vec![],
             random: Rng::new(seed_text),
             prop_grid: vec![],
+            door_state: HashMap::new(),
         };
         for (p, ox, oy, region) in parts {
             let sh = |c: Cell| Cell::new(c.x + ox, c.y + oy);
@@ -991,10 +1043,68 @@ impl Facility {
                 return false;
             }
         }
+        if self.door_blocks(x, y, r) {
+            return false;
+        }
         self.hiding.iter().all(|h| {
             let (lx, ly) = self.locker_center(h);
             (x - lx).abs() >= LOCKER_HALF + r || (y - ly).abs() >= LOCKER_HALF + r
         })
+    }
+
+    /// The centre of a room door and the half extents of its blocking slab (long side along the wall).
+    fn door_slab(p: &Prop, d: DoorDraw) -> ((f32, f32), (f32, f32)) {
+        let c = (p.cell.x as f32 + 0.5 + d.offset[0], p.cell.y as f32 + 0.5 + d.offset[1]);
+        let along = d.span as f32 * 0.5;
+        let half = if p.rotation.rem_euclid(2) == 0 {
+            (along, DOOR_HALF_DEPTH)
+        } else {
+            (DOOR_HALF_DEPTH, along)
+        };
+        (c, half)
+    }
+
+    /// Whether a closed door (open below `DOOR_PASSABLE`) overlaps a body of radius `r` at `(x, y)`.
+    fn door_blocks(&self, x: f32, y: f32, r: f32) -> bool {
+        if self.door_state.is_empty() {
+            return false;
+        }
+        self.door_state.values().any(|s| {
+            s.open < DOOR_PASSABLE && (x - s.centre.0).abs() < s.half.0 + r && (y - s.centre.1).abs() < s.half.1 + r
+        })
+    }
+
+    /// The open amount of the room door whose threshold cell is `cell`: 1 for a door not yet ticked.
+    pub fn door_open_amount(&self, cell: Cell) -> f32 {
+        self.door_state.get(&cell).map_or(1.0, |s| s.open)
+    }
+
+    /// Swings every room door toward open when an actor in `actors` is within `DOOR_TRIGGER` of its centre,
+    /// and back to closed `DOOR_CLOSE_DELAY` seconds after the last one leaves. The first call registers
+    /// every door closed.
+    pub fn update_doors(&mut self, actors: &[(f32, f32)], dt: f32) {
+        for p in &self.props {
+            let Some(d) = p.door else { continue };
+            let (c, half) = Self::door_slab(p, d);
+            let near = actors
+                .iter()
+                .any(|a| (a.0 - c.0).hypot(a.1 - c.1) < DOOR_TRIGGER + d.span as f32 * 0.5);
+            let s = self.door_state.entry(p.cell).or_insert(DoorState {
+                open: 0.0,
+                idle: DOOR_CLOSE_DELAY,
+                centre: c,
+                half,
+            });
+            if near {
+                s.idle = 0.0;
+                s.open = (s.open + DOOR_SWING_RATE * dt).min(1.0);
+            } else {
+                s.idle += dt;
+                if s.idle >= DOOR_CLOSE_DELAY {
+                    s.open = (s.open - DOOR_SWING_RATE * dt).max(0.0);
+                }
+            }
+        }
     }
 
     pub fn locker_center(&self, h: &Hiding) -> (f32, f32) {
@@ -1719,6 +1829,49 @@ impl Facility {
 mod tests {
     use super::*;
     use crate::content::regions::parse_file;
+
+    fn door_floor() -> Facility {
+        let cat = Catalog::load();
+        let mut f = Facility::generate("DOOR-1", &Options::default(), &cat);
+        let cell = f.floor_cells()[0];
+        f.props.push(Prop {
+            id: "door".into(),
+            cell,
+            ptype: "normalRoomDoor".into(),
+            room: 0,
+            rotation: 0,
+            mount_y: None,
+            solid: false,
+            half: (0.5, 0.1),
+            offset: (0.0, 0.0),
+            door: Some(DoorDraw { span: 1, offset: [0.0, 0.0] }),
+        });
+        f
+    }
+
+    /// A door nobody ticked is open floor; once ticked it is closed and blocks, opens for a nearby actor,
+    /// and closes again after the delay.
+    #[test]
+    fn a_closed_door_blocks_and_an_open_door_lets_a_body_through() {
+        let mut f = door_floor();
+        let cell = f.props.last().unwrap().cell;
+        let (cx, cy) = cell.center();
+        assert!(!f.door_blocks(cx, cy, 0.2), "an unticked door is open");
+        assert_eq!(f.door_open_amount(cell), 1.0);
+        f.update_doors(&[], 0.0);
+        assert_eq!(f.door_open_amount(cell), 0.0);
+        assert!(f.door_blocks(cx, cy, 0.2), "a closed door blocks its slab");
+        assert!(!f.door_blocks(cx, cy + 0.6, 0.2), "clear of the slab");
+        f.update_doors(&[(cx, cy + 1.0)], 0.1);
+        assert!(f.door_open_amount(cell) > 0.0);
+        f.update_doors(&[(cx, cy + 1.0)], 0.5);
+        assert_eq!(f.door_open_amount(cell), 1.0);
+        assert!(!f.door_blocks(cx, cy, 0.2), "an open door is passable");
+        f.update_doors(&[], 0.5);
+        assert_eq!(f.door_open_amount(cell), 1.0, "it holds open for the delay");
+        f.update_doors(&[], DOOR_CLOSE_DELAY);
+        assert_eq!(f.door_open_amount(cell), 0.0);
+    }
 
     /// A temporary region with a geometry block sets its room side range; without one the game-wide range stays.
     #[test]

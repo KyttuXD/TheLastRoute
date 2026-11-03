@@ -18,7 +18,7 @@ mod ui;
 
 use macroquad::prelude::*;
 
-fn window_conf(stress: bool) -> macroquad::conf::Conf {
+fn window_conf(stress_vsync: Option<bool>) -> macroquad::conf::Conf {
     // fitted to the screen; the screenshot / self-test captures stay 1280x720
     let fixed = std::env::args().any(|a| a == "--screenshot" || a == "--self-test");
     let (w, h) = app::platform::window_size(fixed);
@@ -29,12 +29,12 @@ fn window_conf(stress: bool) -> macroquad::conf::Conf {
             window_height: h,
             high_dpi: false,
             icon: app::assets::window_icon(),
-            // miniquad defaults to swap interval 1 (vsync on) whatever the VSYNC row says; a stress run forces it off
+            // miniquad defaults to swap interval 1 (vsync on) whatever the VSYNC row says; a stress run
+            // takes --stress-vsync instead of the saved row
             platform: macroquad::miniquad::conf::Platform {
-                swap_interval: Some(if stress {
-                    0
-                } else {
-                    app::settings::Settings::load().swap_interval()
+                swap_interval: Some(match stress_vsync {
+                    Some(on) => i32::from(on),
+                    None => app::settings::Settings::load().swap_interval(),
                 }),
                 ..Default::default()
             },
@@ -55,8 +55,9 @@ fn arg(name: &str) -> Option<String> {
         .and_then(|i| v.get(i + 1).cloned())
 }
 
-/// `--stress [SECONDS] [--stress-log PATH]` (app/stress.rs): a performance run that exits when done.
-/// Exits the process on a bad SECONDS value, before any window exists.
+/// `--stress [SECONDS] [--stress-log PATH] [--stress-scenario NAME] [--stress-vsync on|off]`
+/// (app/stress.rs): a performance run that exits when done. Exits the process on a bad value, before
+/// any window exists.
 fn stress_config() -> Option<app::stress::Config> {
     if !std::env::args().any(|a| a == "--stress") {
         return None;
@@ -72,7 +73,22 @@ fn stress_config() -> Option<app::stress::Config> {
         _ => 60.0,
     };
     let log = arg("--stress-log").unwrap_or_else(|| "stress.csv".to_owned());
-    Some(app::stress::Config { seconds, log })
+    let scenario = match arg("--stress-scenario") {
+        None => app::stress::Scenario::Fly,
+        Some(v) => app::stress::Scenario::parse(&v).unwrap_or_else(|| {
+            eprintln!("--stress-scenario needs fly, npcs, hunters, interact or mixed, not {v}");
+            std::process::exit(2);
+        }),
+    };
+    let vsync = match arg("--stress-vsync").as_deref() {
+        None | Some("off") => false,
+        Some("on") => true,
+        Some(v) => {
+            eprintln!("--stress-vsync needs on or off, not {v}");
+            std::process::exit(2);
+        }
+    };
+    Some(app::stress::Config { seconds, log, scenario, vsync })
 }
 
 /// What `#[macroquad::main(window_conf)]` expanded to, with the windowless modes picked first
@@ -91,10 +107,10 @@ fn main() {
     }
     let stress = stress_config();
     if headless::wants_agent_window() {
-        macroquad::Window::from_config(window_conf(false), headless::window::run());
+        macroquad::Window::from_config(window_conf(None), headless::window::run());
         return;
     }
-    macroquad::Window::from_config(window_conf(stress.is_some()), amain(stress));
+    macroquad::Window::from_config(window_conf(stress.as_ref().map(|c| c.vsync)), amain(stress));
 }
 
 async fn amain(stress: Option<app::stress::Config>) {

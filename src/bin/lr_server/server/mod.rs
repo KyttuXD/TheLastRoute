@@ -343,7 +343,7 @@ pub struct State {
     pub dir: Directory,
     pub relay: Option<EnetRelay>,
     pub(crate) room_service: RoomService,
-    pub(crate) accounts: AccountService,
+    pub(crate) accounts: Arc<AccountService>,
     pub(crate) guest_names: GuestNames,
     pub(crate) moderation: Moderation,
     pub(crate) crash_reports: Option<CrashReports>,
@@ -421,7 +421,7 @@ impl LastRouteServer {
                 room_ttl_ms: opts.room_ttl_ms,
                 player_ttl_ms: opts.player_ttl_ms,
             }),
-            accounts,
+            accounts: Arc::new(accounts),
             guest_names,
             moderation,
             crash_reports,
@@ -570,10 +570,8 @@ impl LastRouteServer {
 
     /// Handles one HTTP request (the body of the Node `createServer` callback).
     pub fn handle(&self, request: &Request) -> Response {
-        let mut guard = self.state.lock().unwrap();
-        let response = self.route(&mut guard, request);
-        let outgoing = guard.relay.as_mut().map(|r| r.take_outbox()).unwrap_or_default();
-        drop(guard);
+        let response = self.route(request);
+        let outgoing = self.state.lock().unwrap().relay.as_mut().map(|r| r.take_outbox()).unwrap_or_default();
         self.flush_relay(outgoing);
         response
     }
@@ -650,7 +648,8 @@ impl LastRouteServer {
 
 impl SessionLookup for LastRouteServer {
     fn session_username(&self, token: &str) -> Option<String> {
-        self.state.lock().unwrap().accounts.session_username(token)
+        let accounts = self.state.lock().unwrap().accounts.clone();
+        accounts.session_username(token)
     }
 }
 

@@ -363,10 +363,15 @@ impl Admin {
                 0 => self.grant_relays(g, false),
                 1 => self.grant_relays(g, true),
                 2 | 3 => {
-                    if g.in_safe_zone() {
-                        g.say("ADMIN // CHECKPOINT INTEGRITY IS NOT MODELLED IN THIS BUILD");
-                    } else {
-                        g.say("ADMIN // NO CHECKPOINT HERE: STAND IN A SAFE ROOM");
+                    // Godot _admin_edit_checkpoint: -25 / +25 on the runner's safe room
+                    let amount = if i == 2 { -25 } else { 25 };
+                    match g.admin_edit_checkpoint(amount) {
+                        Some(s) => g.say(&format!(
+                            "ADMIN // CHECKPOINT {}%{}",
+                            s.integrity,
+                            if s.breached { " BREACHED" } else { "" }
+                        )),
+                        None => g.say("ADMIN // NO CHECKPOINT HERE: STAND IN A SAFE ROOM"),
                     }
                 }
                 4 => {
@@ -842,19 +847,18 @@ impl Admin {
                 out += &format!("LOADED 1  DISCOVERED 1  HUNTERS {}\n", g.hunters.len());
             }
         }
-        let safe = if g.fac.safe_zone.is_some() {
-            "100%"
-        } else {
-            "NONE"
+        // Godot _admin_status: the runner's room integrity, then the active checkpoint id
+        let safe = match g.live_room_status() {
+            Some(s) => format!("{}%{}", s.integrity, if s.breached { " BREACHED" } else { "" }),
+            None if g.fac.safe_zone.is_some() => "100%".to_string(),
+            None => "NONE".to_string(),
         };
-        out += &format!(
-            "SAFE {safe}  CHECKPOINT {}\n",
-            if crate::app::checkpoint::load().is_some() {
-                "SAVED"
-            } else {
-                "NONE"
-            }
-        );
+        let checkpoint = match g.active_checkpoint() {
+            "" if crate::app::checkpoint::load().is_some() => "SAVED".to_string(),
+            "" => "NONE".to_string(),
+            id => id.to_string(),
+        };
+        out += &format!("SAFE {safe}  CHECKPOINT {checkpoint}\n");
         out += &format!(
             "RELAYS {}/{}  SCORE {}  SEED {}\n",
             g.relays_collected,
