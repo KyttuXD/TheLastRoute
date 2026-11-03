@@ -719,7 +719,7 @@ Tabs today (src/bin/last_route/ui/admin/mod.rs TABS): STATUS, GENERAL, PLAYER, H
 - [ ] Admin panel closes cleanly on ESC without leaving the mouse locked or the pause menu open
 - [ ] DEBUG VIEW tab: toggles for the collider, path and navigation overlays, each saved between runs
 - [ ] FIELDS tab: list every tunable value with its file and key (config, region data and hunter data)
-- [ ] NPCS tab: per-NPC commands (teleport, remove, follow) instead of only spawn and remove all
+- [~] NPCS tab: per-NPC commands (teleport, remove, follow) instead of only spawn and remove all. Teleport and remove are in; follow is a status line until npc.rs has a per-NPC follow flag, and remove should go through an npc.rs helper
 - [~] WORLD tab: regenerate the current floor from its seed and show the seed on screen
 - [ ] STORY tab: jump to a story beat by its id, and show which beats have already fired
 - [ ] Admin tools only enable for the signed-in KYTTU account (see the login reset), with a clear message when they are off
@@ -785,6 +785,8 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [ ] The F7 overlay averages are not collected over runs; log spikes with a cause, as Godot's PerfLog does
 - [ ] Clean build time: profile.dev sets opt-level 2 for the game and 3 for dependencies. Measure opt-level 1 for dependencies on a cold build
 - [ ] CI builds: confirm the rust-cache hits in build.yml after the first run
+- [ ] Reach 144+ FPS on this laptop (AMD Ryzen AI 5 340, integrated Radeon 840M, 1280x720) with vsync off: run the --stress route, record the average and the 1% low, then fix the top cost in each frame section until the 1% low reaches 144
+- [ ] Godot vs Rust performance comparison: the same seed, route and hardware for both builds (KT-MBA and this PC). Record frame time (average, 1% low), startup, memory, hunter cost at 38 and draw calls, from the Rust --stress CSV and the Godot F7 overlay. Keep both tables in docs/PERF_COMPARISON.md and tick each number when measured.
 
 ## Moddability
 

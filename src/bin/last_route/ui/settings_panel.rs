@@ -580,7 +580,7 @@ pub fn draw_settings(
                 "FPS LIMIT",
                 st.fps_limit,
                 0.0,
-                240.0,
+                1000.0,
                 &fps,
             ) {
                 st.fps_limit = (v / 30.0).round() * 30.0;

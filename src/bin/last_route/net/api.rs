@@ -102,6 +102,46 @@ pub fn health(cfg: &BackendConfig) -> Result<Json, NetError> {
     }
 }
 
+// ---- update manifest ------------------------------------------------------------------------------
+
+/// The updater's own timeout for its check (`app/updater.rs`).
+pub const UPDATE_CHECK_TIMEOUT_SECS: u64 = 5;
+
+/// The newest build published for a platform (`public_update_manifest` in server.mjs).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PublishedBuild {
+    pub build: i64,
+    /// The commit the build was made from (the server lists the short hash).
+    pub revision: String,
+}
+
+/// The update answer. `channel` is empty when the reply names none; `update` is `None` when nothing is
+/// published for the platform.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UpdateManifest {
+    pub channel: String,
+    pub update: Option<PublishedBuild>,
+}
+
+/// `GET /api/updates/debug/<platform>` on the primary origin, the request the updater makes on start. The
+/// server answers 404 `NO UPDATE PUBLISHED` when nothing is published for the platform: the server was reached,
+/// so that is an answer, not an error.
+pub fn update_manifest(platform: &str) -> Result<UpdateManifest, NetError> {
+    let r = Request::new(Method::Get, format!("{}/api/updates/debug/{platform}", config::PRIMARY_BASE_URL))
+        .header("Accept", "application/json")
+        .timeout(Duration::from_secs(UPDATE_CHECK_TIMEOUT_SECS))
+        .send()?;
+    let p = match check(r) {
+        Ok(p) => p,
+        Err(NetError::Http { status: 404, error, .. }) if error == "NO UPDATE PUBLISHED" => return Ok(UpdateManifest::default()),
+        Err(e) => return Err(e),
+    };
+    Ok(UpdateManifest {
+        channel: s(&p, "channel"),
+        update: obj(&p, "update").map(|u| PublishedBuild { build: i(&u, "build"), revision: s(&u, "revision") }),
+    })
+}
+
 // ---- accounts -----------------------------------------------------------------------------------
 
 /// The register / login / session / rename answer (`accountResult` in account_service.mjs).

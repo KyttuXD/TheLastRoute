@@ -12,7 +12,7 @@ use super::menu::{
 use super::{Admin, Request, View};
 use crate::config::*;
 use crate::content::Content;
-use crate::game::{pdist, Game, Item, Slot};
+use crate::game::{npc::NAV_RADIUS, pdist, Game, Item, Slot};
 use crate::hunters::brain::{Brain, State};
 use crate::hunters::gimmicks::Gimmick;
 use crate::world::infinite::CHUNK;
@@ -23,6 +23,38 @@ const RING_STEP: f32 = 1.2;
 const RING_ANGLE: f32 = 2.39996;
 /// ADMIN_SAFE_SEARCH: how far (cells) a teleport looks for open floor.
 const SAFE_SEARCH: i32 = 16;
+
+/// NPC TELEPORT TO ME: the NPC lands on the open floor nearest the runner, on the runner's level.
+/// `shift` moves it and drops its path, so it replans from there.
+fn npc_teleport(g: &mut Game, i: usize) -> String {
+    let runner = g.p.pos;
+    let level = g.runner_level();
+    let Some(spot) = g.fac.nearest_open(runner.0, runner.1, NAV_RADIUS) else {
+        return "ADMIN // NO OPEN FLOOR NEAR YOU".to_string();
+    };
+    let n = &mut g.npcs[i];
+    let d = (spot.0 - n.at.0, spot.1 - n.at.1);
+    n.shift(d);
+    n.level = level;
+    format!("ADMIN // NPC TELEPORTED // {}", n.name)
+}
+
+/// NPC FOLLOW ME: every NPC on the runner's level already follows the runner (game/npc.rs), so this
+/// reports that state and changes nothing. A per-NPC follow flag is not in game/npc.rs yet.
+fn npc_follow(g: &Game, i: usize) -> String {
+    let n = &g.npcs[i];
+    if n.level == g.runner_level() {
+        format!("ADMIN // {} ALREADY FOLLOWS YOU", n.name)
+    } else {
+        format!("ADMIN // {} IS ON ANOTHER LEVEL", n.name)
+    }
+}
+
+/// NPC REMOVE: takes the picked NPC off the floor. Nothing else holds an NPC's index.
+fn npc_remove(g: &mut Game, i: usize) -> String {
+    let name = g.npcs.remove(i).name;
+    format!("ADMIN // NPC REMOVED // {name}")
+}
 
 /// _admin_safe_landing: the nearest cell (rings outward) a runner fits in, else None.
 pub(super) fn safe_landing(g: &Game, x: f32, y: f32) -> Option<(f32, f32)> {
@@ -153,6 +185,12 @@ impl Admin {
         self.mark_debug();
     }
 
+    /// The NPC the NPC picker shows, as an index into `g.npcs`, clamped the way the picker draws it.
+    pub(super) fn picked_npc(&self, g: &Game) -> Option<usize> {
+        let n = g.npcs.len();
+        (n > 0).then(|| self.sel_of("npc_pick").min(n - 1))
+    }
+
     pub(super) fn run_cmd(
         &mut self,
         cmd: Cmd,
@@ -167,7 +205,12 @@ impl Admin {
                 let id = hunters.get(*h).map_or("?", |(id, _)| id.as_str());
                 format!("admin: hunter {id} op {op} emote {emote}")
             }
-            Cmd::Npc(op) => format!("admin: npc {op}"),
+            Cmd::Npc(op) => match self.picked_npc(g) {
+                Some(i) if matches!(*op, "teleport" | "follow" | "remove") => {
+                    format!("admin: npc {op} {}", g.npcs[i].name)
+                }
+                _ => format!("admin: npc {op}"),
+            },
             Cmd::Field(i) => format!("admin: field {i}"),
         };
         crate::lr_info!("{line}");
@@ -204,8 +247,10 @@ impl Admin {
             }
             Cmd::Npc(op) => {
                 let smart = NPC_SMARTS[self.sel_of("npc_smart").min(3)];
-                // offline: the NPCs live on the game, no server (game/npc.rs). Phase one covers spawn and the
-                // removes; the per-NPC and ALL NPCS commands are deferred.
+                let picked = self.picked_npc(g);
+                // offline: the NPCs live on the game, no server (game/npc.rs). Spawn, the removes and the
+                // picked NPC's teleport and remove are wired; follow only reports the always-on state; the
+                // rest of the per-NPC and ALL NPCS commands are deferred.
                 let line = match op {
                     "spawn" => {
                         let eye = g.eye();
@@ -225,6 +270,18 @@ impl Admin {
                     "remove_all" => match g.npc_remove_all() {
                         0 => "ADMIN // NO NPCS".to_string(),
                         n => format!("ADMIN // {n} NPCS REMOVED"),
+                    },
+                    "teleport" => match picked {
+                        Some(i) => npc_teleport(g, i),
+                        None => "ADMIN // NO NPCS".to_string(),
+                    },
+                    "follow" => match picked {
+                        Some(i) => npc_follow(g, i),
+                        None => "ADMIN // NO NPCS".to_string(),
+                    },
+                    "remove" => match picked {
+                        Some(i) => npc_remove(g, i),
+                        None => "ADMIN // NO NPCS".to_string(),
                     },
                     _ => "NPC COMMANDS ARE NOT IN THIS BUILD YET".to_string(),
                 };

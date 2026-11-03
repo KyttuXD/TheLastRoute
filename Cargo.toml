@@ -61,5 +61,10 @@ debug = 0
 strip = "symbols"
 panic = "abort"
 
+# CI builds (cargo build --profile ci) keep the dev settings and line tables for backtraces, without full debug info.
+[profile.ci]
+inherits = "dev"
+debug = "line-tables-only"
+
 [patch.crates-io]
 quad-snd = { path = "src/audio/quad-snd" }

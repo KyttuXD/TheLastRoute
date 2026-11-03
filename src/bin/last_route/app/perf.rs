@@ -142,6 +142,11 @@ pub fn counter(name: &'static str, v: f64) {
     S.with(|s| s.borrow_mut().counters.insert(name, v));
 }
 
+/// A section's smoothed time in ms, read by the stress run (app/stress.rs); 0 until it has run.
+pub fn section_ms(name: &str) -> f32 {
+    S.with(|s| s.borrow().sections.get(name).copied().unwrap_or(0.0))
+}
+
 /// F7 cycles the overlay mode.
 pub fn handle_keys() {
     if is_key_pressed(KeyCode::F7) {

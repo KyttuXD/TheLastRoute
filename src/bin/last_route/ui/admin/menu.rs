@@ -472,7 +472,7 @@ impl Admin {
                     labels(&ACT_HUNTERS),
                 );
             }
-            4 => self.npc_panel(&mut ui, &mut col, &mut cmds),
+            4 => self.npc_panel(&mut ui, &mut col, &mut cmds, g),
             5 => {
                 let seeds = format!("RUN SEED {}  FLOOR SEED {}", g.run_seed, g.level_seed());
                 for line in wrap(&ui, &seeds, 7.0, page.w) {
@@ -730,9 +730,9 @@ impl Admin {
         }
     }
 
-    /// AdminNpcPanel: SPAWN (count stepper, smartness, SPAWN NPC), the removes, the NPC list and
+    /// AdminNpcPanel: SPAWN (count stepper, smartness, SPAWN NPC), the removes, the NPC picker and
     /// its per-NPC grid, and the ALL NPCS grid. Separation 2 inside the panel.
-    fn npc_panel(&mut self, ui: &mut Ui, col: &mut Col, cmds: &mut Vec<Cmd>) {
+    fn npc_panel(&mut self, ui: &mut Ui, col: &mut Col, cmds: &mut Vec<Cmd>, g: &Game) {
         let u = col.u;
         let cap = |ui: &Ui, col: &mut Col, s: &str| {
             let r = col.take(line_h(7.0), 2.0);
@@ -796,11 +796,13 @@ impl Admin {
         }
         cap(ui, col, "NPC");
         let r = col.take(19.5, 2.0);
-        if ui.visible(r) {
-            ui.dropdown_face(r, "", false, 8.0);
-            let _ = ui.clicked(r);
-        }
-        cap(ui, col, "NO NPCS");
+        let names: Vec<String> = g.npcs.iter().map(|n| n.name.clone()).collect();
+        self.dropdown(ui, r, "npc_pick", names, 8.0);
+        let caption = match self.picked_npc(g) {
+            Some(i) => format!("{} COMMANDS", g.npcs[i].name),
+            None => "NO NPCS".to_string(),
+        };
+        cap(ui, col, caption.as_str());
         self.grid(ui, col, cmds, &NPC_OPS);
         cap(ui, col, "ALL NPCS");
         self.grid(ui, col, cmds, &NPC_ALL);

@@ -46,14 +46,10 @@ jobs:
         with:
           key: test-${{ matrix.os }}
 
-      - name: cargo test --lib
-        run: cargo test --locked --lib
-
-      - name: cargo test --bin last_route
-        run: cargo test --locked --bin last_route
-
-      - name: cargo test --bin lr_server
-        run: cargo test --locked --bin lr_server --features server
+      # One run over one crate graph. No src or tests file is cfg-gated on the server feature, so
+      # the lib and last_route suites run the same tests as before; the feature only adds lr_server.
+      - name: cargo test --lib --bin last_route --bin lr_server
+        run: cargo test --locked --lib --bin last_route --bin lr_server --features server
 
       - name: Build release binaries
         run: cargo build --locked --release --bins --features server

@@ -24,7 +24,7 @@ pub struct Settings {
     pub sensitivity: f32,
     pub fullscreen: bool,
     pub vsync: bool,
-    /// 0 = unlimited, else 30..240 in steps of 30.
+    /// 0 = unlimited, else 30 or more in steps of 30. No upper cap: the row goes as high as the screen can show.
     pub fps_limit: f32,
     /// AUTO / LOW / MEDIUM / HIGH.
     pub quality: String,
@@ -98,7 +98,7 @@ impl Settings {
         );
         s.fullscreen = b("fullscreen", false);
         s.vsync = b("vsync", true);
-        s.fps_limit = f("fps_limit", 0.0).clamp(0.0, 240.0);
+        s.fps_limit = f("fps_limit", 0.0).max(0.0);
         s.pause_on_focus_loss = b("pause_on_focus_loss", true);
         s.teammate_waypoints = b("teammate_waypoints", true);
         if let Some(q) = v["quality"]
@@ -170,12 +170,12 @@ impl Settings {
 
     /// The frame cap the FPS LIMIT row asks for: `None` is UNLIMITED. Mirrors Godot's
     /// `Settings.set_fps_limit`: a value under 15 means unlimited, anything else is rounded and
-    /// kept in 30..240.
+    /// kept at 30 or more.
     pub fn frame_cap_fps(&self) -> Option<u32> {
         if self.fps_limit < 15.0 {
             None
         } else {
-            Some(self.fps_limit.round().clamp(30.0, 240.0) as u32)
+            Some(self.fps_limit.round().max(30.0) as u32)
         }
     }
 }
@@ -196,14 +196,13 @@ mod tests {
         // the row's 0 and anything under 15 are UNLIMITED (settings.gd set_fps_limit)
         assert_eq!(with_limit(0.0).frame_cap_fps(), None);
         assert_eq!(with_limit(14.9).frame_cap_fps(), None);
-        // the row snaps to 30..240 in steps of 30
+        // the row snaps to 30 and up in steps of 30; nothing above 240 is clamped away
         assert_eq!(with_limit(15.0).frame_cap_fps(), Some(30));
         assert_eq!(with_limit(30.0).frame_cap_fps(), Some(30));
         assert_eq!(with_limit(60.0).frame_cap_fps(), Some(60));
         assert_eq!(with_limit(144.0).frame_cap_fps(), Some(144));
         assert_eq!(with_limit(240.0).frame_cap_fps(), Some(240));
-        // out-of-range values from a hand-edited file stay inside the clamp
-        assert_eq!(with_limit(1000.0).frame_cap_fps(), Some(240));
+        assert_eq!(with_limit(1000.0).frame_cap_fps(), Some(1000));
     }
 
     #[test]

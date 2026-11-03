@@ -22,6 +22,7 @@ pub mod profile;
 pub mod screenshot;
 pub mod selftest;
 pub mod settings;
+pub mod stress;
 pub mod updater;
 
 use crate::audio::{self, Sounds};
@@ -412,7 +413,17 @@ fn shot_screen(name: &str) -> Option<Screen> {
     })
 }
 
-pub async fn run(screenshot: Option<String>) {
+pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>) {
+    // a stress run (`--stress`) opens its log before the load, so a bad --stress-log path fails at once
+    let stress_on = stress_cfg.is_some();
+    let mut stress_run = match stress_cfg.map(stress::Stress::open) {
+        Some(Ok(s)) => Some(s),
+        Some(Err(e)) => {
+            eprintln!("--stress: {e}");
+            std::process::exit(2);
+        }
+        None => None,
+    };
     // the window is created at the system's default position; keep it on the work area (above the taskbar)
     if screenshot.is_none() {
         platform::centre_on_work_area();
@@ -429,9 +440,14 @@ pub async fn run(screenshot: Option<String>) {
         }
     }
     // the boot loader (ui/boot.rs) draws its card before the first load step and yields a frame after each
+    // a stress run skips the boot card (ui/boot.rs) and loads with none
     let mut boot = crate::ui::boot::BootLoader::new();
-    boot.pump().await;
-    let w = load_world_booted(&mut boot).await;
+    let w = if stress_on {
+        load_world().await
+    } else {
+        boot.pump().await;
+        load_world_booted(&mut boot).await
+    };
     let mut settings = Settings::load();
     style::set_scheme(&env("LR_SCHEME").unwrap_or_else(|| settings.scheme.clone()));
     if settings.fullscreen && screenshot.is_none() {
@@ -439,7 +455,12 @@ pub async fn run(screenshot: Option<String>) {
     }
     let mut tg = targets(None, &settings.quality);
     let mut ui = Ui::default();
-    let mut playing: Option<Game> = None;
+    // a stress run starts its route at once, with no title
+    let mut playing: Option<Game> = if stress_on {
+        Some(stress::start_game(&w))
+    } else {
+        None
+    };
     let mut diff = Difficulty::Standard;
     // the lobby's room seed text (ROOM-<code>-<hex>); the run seed is its djb2
     let mut room = route::new_room_text();
@@ -457,7 +478,9 @@ pub async fn run(screenshot: Option<String>) {
     let mut relock_settle = 0u32;
     let mut grabbed = false;
     let mut save = checkpoint::load();
-    boot.step(crate::ui::boot::Step::Saves).await;
+    if !stress_on {
+        boot.step(crate::ui::boot::Step::Saves).await;
+    }
     let mut loading: Option<Loading> = None;
     let mut frame = 0u32;
     let mut audio_volumes = (f32::NAN, f32::NAN, f32::NAN);
@@ -476,7 +499,10 @@ pub async fn run(screenshot: Option<String>) {
     if backend.account.session_token.is_empty() && !settings.username.is_empty() {
         // a name with no saved session was never confirmed by the server: the title shows it signed out
         settings.username.clear();
-        settings.save();
+        // a stress run never writes the settings file
+        if !stress_on {
+            settings.save();
+        }
     }
     backend.restore_session();
     let mut net: Option<NetSession> = None;
@@ -498,12 +524,21 @@ pub async fn run(screenshot: Option<String>) {
 
     loop {
         frame += 1;
-        if vsync_applied != Some(settings.vsync) {
-            pacing::apply_vsync(settings.vsync);
-            vsync_applied = Some(settings.vsync);
+        // a stress run forces vsync off without touching the saved setting
+        let vsync = settings.vsync && !stress_on;
+        if vsync_applied != Some(vsync) {
+            pacing::apply_vsync(vsync);
+            vsync_applied = Some(vsync);
         }
         perf::frame(get_frame_time());
         perf::handle_keys();
+        if let Some(st) = stress_run.as_mut() {
+            if st.frame(get_frame_time(), playing.as_ref()) {
+                st.finish();
+                log::flush();
+                std::process::exit(0);
+            }
+        }
         let dt = get_frame_time().min(0.05);
         ui.t += dt;
         ui.notice_t = (ui.notice_t - dt).max(0.0);
@@ -542,7 +577,9 @@ pub async fn run(screenshot: Option<String>) {
             match event {
                 BackendEvent::SignedIn(reply) => {
                     settings.username = reply.username;
-                    settings.save();
+                    if !stress_on {
+                        settings.save();
+                    }
                     ui.acct_user.clear();
                     ui.acct_pass.clear();
                     ui.acct_status.clear();
@@ -551,7 +588,9 @@ pub async fn run(screenshot: Option<String>) {
                     // a sign out, or a saved session the server refused: a sign in that came since keeps its name
                     if !backend.signed_in() {
                         settings.username.clear();
-                        settings.save();
+                        if !stress_on {
+                            settings.save();
+                        }
                     }
                 }
                 BackendEvent::AccountError(text) => ui.acct_status = text,
@@ -697,13 +736,13 @@ pub async fn run(screenshot: Option<String>) {
             let in_report = g.report.is_some();
             let remotes = net.as_ref().map(|n| n.remotes_at(g.depth, g.window_origin())).unwrap_or_default();
             // the admin tools follow the server's admin flag for the signed-in account, never the local name
-            admin.enabled = backend.admin;
+            admin.enabled = backend.admin && !stress_on;
             let admin_esc = if in_report || pz.open {
                 false
             } else {
                 admin.input(g)
             };
-            if is_key_pressed(KeyCode::Escape) && !in_report && !admin_esc {
+            if is_key_pressed(KeyCode::Escape) && !in_report && !admin_esc && !stress_on {
                 if pz.open {
                     pause::escape(&mut pz);
                 } else if map_open {
@@ -718,7 +757,7 @@ pub async fn run(screenshot: Option<String>) {
                     pz.show();
                 }
             }
-            if is_key_pressed(KeyCode::M) && !pz.open && !in_report {
+            if is_key_pressed(KeyCode::M) && !pz.open && !in_report && !stress_on {
                 map_open = !map_open;
                 if map_open {
                     map_view.recentre();
@@ -732,7 +771,7 @@ pub async fn run(screenshot: Option<String>) {
                 in_report,
                 admin.is_open(),
                 map_open,
-                screenshot.is_none(),
+                screenshot.is_none() && !stress_on,
             );
             if want_grab != grabbed {
                 set_cursor_grab(want_grab);
@@ -753,12 +792,16 @@ pub async fn run(screenshot: Option<String>) {
                 mouse_last = None;
                 relock_settle = RELOCK_SETTLE_FRAMES;
             }
-            let mut c = read_controls(
-                &mut mouse_last,
-                grabbed,
-                settings.sensitivity,
-                g.shop_open(),
-            );
+            // a stress run drives the run with its own input (app/stress.rs) and reads no keys or mouse
+            let mut c = match stress_run.as_ref() {
+                Some(st) => st.controls(dt),
+                None => read_controls(
+                    &mut mouse_last,
+                    grabbed,
+                    settings.sensitivity,
+                    g.shop_open(),
+                ),
+            };
             // after a re-lock the cursor is still moving to its capture point; that move is not a look turn.
             // read_controls keeps tracking the cursor, so the look is zero only while the settle lasts.
             if relock_settle > 0 {
@@ -811,6 +854,16 @@ pub async fn run(screenshot: Option<String>) {
             }
             let seed_text = g.room_text.clone();
             let mut leave = false;
+            // a caught stress run starts again on the same seed, with no death screens
+            if stress_on && g.report.is_some() {
+                loading = Some(Loading::new(
+                    g.difficulty,
+                    g.run_seed,
+                    g.room_text.clone(),
+                    g.inf.as_ref().map(|_| 0),
+                ));
+                leave = true;
+            }
             if g.report.is_some() {
                 if death.is_none() {
                     let r = g.report.as_ref().unwrap();
@@ -1190,13 +1243,18 @@ pub async fn run(screenshot: Option<String>) {
         if frame == 1 {
             boot.ready();
         }
-        boot.draw_frame();
+        if !stress_on {
+            boot.draw_frame();
+        }
         perf::draw_overlay(w.assets.font.as_ref(), &[]);
         if shot_key {
             shots.capture();
         }
         shots.draw(&w.assets, dt);
-        pacer.wait(settings.frame_cap_fps());
+        // the FPS LIMIT would cap the numbers a stress run measures, so it does not pace one
+        if !stress_on {
+            pacer.wait(settings.frame_cap_fps());
+        }
         next_frame().await;
     }
     // quitting the game closes an open room, so the guests get HOST_LEFT now and not after the directory's TTL
