@@ -14,6 +14,8 @@
 //! watcher that exits with status 75 (`github_source_watch.mjs`), `deploy_mod_pack.mjs` and `region_agent.mjs`.
 //!
 //! `lr_server --check` builds the server from the environment, prints the resolved configuration and exits.
+//! `lr_server --check-pack <folder>` checks a mod pack folder (see `pack_check`) without starting the server; it
+//! exits 0 when the folder is clean and 1 when it has errors.
 
 
 mod util;
@@ -32,6 +34,7 @@ mod reserved_rooms;
 
 mod env_file;
 mod mod_packs;
+mod pack_check;
 mod pack_kinds;
 mod regions;
 
@@ -42,10 +45,42 @@ mod server;
 
 use crate::server::{options_from_environment, public_update_status, LastRouteServer};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+/// `--check-pack <folder>`: prints every problem with its file and key; returns the exit status (0 clean, 1 errors).
+fn run_pack_check(folder: Option<&str>) -> i32 {
+    let Some(folder) = folder else {
+        eprintln!("usage: lr_server --check-pack <folder>");
+        return 1;
+    };
+    let folder = Path::new(folder);
+    if !folder.is_dir() {
+        eprintln!("--check-pack: {} is not a folder", folder.display());
+        return 1;
+    }
+    let check = pack_check::check_pack_folder(folder);
+    for warning in &check.warnings {
+        println!("warning: {warning}");
+    }
+    for error in &check.errors {
+        println!("error: {error}");
+    }
+    if check.errors.is_empty() {
+        println!("{}: clean", folder.display());
+        0
+    } else {
+        println!("{}: {} error(s)", folder.display(), check.errors.len());
+        1
+    }
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(at) = args.iter().position(|a| a == "--check-pack") {
+        std::process::exit(run_pack_check(args.get(at + 1).map(String::as_str)));
+    }
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     for file in [cwd.join("backend").join(".env"), cwd.join(".env")] {
         if let Err(error) = crate::env_file::load_environment_file(&file) {

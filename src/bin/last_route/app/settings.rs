@@ -7,6 +7,7 @@
 //! has no voice chat or quality presets, so they are stored but change nothing. VSYNC and the FPS
 //! LIMIT are live: `app::pacing` applies them (see `swap_interval` and `frame_cap_fps` below).
 
+use crate::net::world_sync::{clean_skin, SKIN_DEFAULT};
 use std::path::PathBuf;
 
 #[derive(Clone)]
@@ -36,6 +37,8 @@ pub struct Settings {
     /// The menus' colour scheme (palette.gd SCHEMES): "last_route" or "city". The original
     /// switches it with the game that is open; here LR_SCHEME or this saved value picks it.
     pub scheme: String,
+    /// The runner's skin id, sent to the room in the wire profile (`world_sync::clean_skin`).
+    pub skin: String,
 }
 
 impl Default for Settings {
@@ -59,6 +62,7 @@ impl Default for Settings {
             // empty: a new game starts signed out (guest). Only signing in as KYTTU enables the admin tools.
             username: String::new(),
             scheme: "last_route".into(),
+            skin: SKIN_DEFAULT.into(),
         }
     }
 }
@@ -112,6 +116,9 @@ impl Settings {
         if let Some(q) = v["scheme"].as_str() {
             s.scheme = if q == "city" { "city" } else { "last_route" }.into();
         }
+        if let Some(k) = v["skin"].as_str() {
+            s.skin = clean_skin(k);
+        }
         if let Some(u) = v["username"].as_str() {
             s.username = u
                 .chars()
@@ -132,6 +139,7 @@ impl Settings {
             "fullscreen": self.fullscreen, "vsync": self.vsync, "fps_limit": self.fps_limit,
             "quality": self.quality, "ads": self.ads, "pause_on_focus_loss": self.pause_on_focus_loss,
             "teammate_waypoints": self.teammate_waypoints, "username": self.username, "scheme": self.scheme,
+            "skin": self.skin,
         })
     }
 
@@ -240,6 +248,7 @@ mod tests {
             "teammate_waypoints",
             "username",
             "scheme",
+            "skin",
         ]
         .iter()
         .map(|k| k.to_string())
@@ -268,6 +277,7 @@ mod tests {
             teammate_waypoints: false,
             username: "ALICE".into(),
             scheme: "city".into(),
+            skin: "NIGHT".into(),
         };
         let json = saved.to_json();
         let back = Settings::from_json(&json);
@@ -276,6 +286,9 @@ mod tests {
         assert_eq!(back.ads, "gentle");
         assert_eq!(back.username, "ALICE");
         assert_eq!(back.scheme, "city");
+        assert_eq!(back.skin, "NIGHT");
+        assert_eq!(Settings::from_json(&serde_json::json!({"skin": "no way!!"})).skin, "NOWAY");
+        assert_eq!(Settings::from_json(&serde_json::json!({"skin": ""})).skin, "DEFAULT");
         assert!(!back.vsync && back.fullscreen);
     }
 

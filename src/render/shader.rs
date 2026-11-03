@@ -3,6 +3,8 @@
 //! flashlight's cone, and distance fog. Vertex `normal.w` selects the mode:
 //! 0 tiled texture (fract UVs), 1 atlas texture, 2 unlit/emissive.
 
+use std::cell::RefCell;
+
 use macroquad::miniquad::{
     BlendFactor, BlendState, BlendValue, Comparison, Equation, PipelineParams, UniformType,
 };
@@ -146,6 +148,78 @@ pub struct Lighting {
     pub fog_far: f32,
 }
 
+/// The lamps nearest the eye, packed for the shader: `pos` holds (x, y, z, range) and `col` holds (r, g, b, energy),
+/// nearest first. Slots past the lamp count stay zero, which the shader reads as "no lamp" (range 0).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NearLamps {
+    pos: [Vec4; MAX_LAMPS],
+    col: [Vec4; MAX_LAMPS],
+}
+
+/// The up to MAX_LAMPS lamps nearest `eye`, nearest first. Equal distances keep their input order (stable sort).
+pub fn nearest_lamps(eye: Vec3, lamps: &[Lamp]) -> NearLamps {
+    let mut near: Vec<(f32, &Lamp)> = lamps
+        .iter()
+        .map(|lp| ((lp.pos - eye).length_squared(), lp))
+        .collect();
+    near.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut out = NearLamps {
+        pos: [Vec4::ZERO; MAX_LAMPS],
+        col: [Vec4::ZERO; MAX_LAMPS],
+    };
+    for (i, (_, lp)) in near.iter().take(MAX_LAMPS).enumerate() {
+        out.pos[i] = vec4(lp.pos.x, lp.pos.y, lp.pos.z, lp.range);
+        out.col[i] = vec4(lp.color.r, lp.color.g, lp.color.b, lp.energy);
+    }
+    out
+}
+
+/// True when two lamp lists hold the same lamps in the same order.
+fn same_lamps(a: &[Lamp], b: &[Lamp]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(x, y)| {
+            x.pos == y.pos
+                && x.range == y.range
+                && x.energy == y.energy
+                && x.color.r == y.color.r
+                && x.color.g == y.color.g
+                && x.color.b == y.color.b
+                && x.color.a == y.color.a
+        })
+}
+
+/// The last `nearest_lamps` result and the inputs it came from.
+struct LampCache {
+    eye: Vec3,
+    lamps: Vec<Lamp>,
+    near: NearLamps,
+}
+
+thread_local! {
+    static LAMP_CACHE: RefCell<Option<LampCache>> = const { RefCell::new(None) };
+}
+
+/// `nearest_lamps`, reused while the eye and the lamp list are unchanged. Every material is drawn with the same
+/// lighting in a frame, so the sort runs once per frame rather than once per material. Any change to the eye or to
+/// a lamp (position, reach, colour or energy, or order) is a miss, so the result never goes stale.
+fn cached_nearest_lamps(eye: Vec3, lamps: &[Lamp]) -> NearLamps {
+    LAMP_CACHE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some(hit) = &*slot {
+            if hit.eye == eye && same_lamps(&hit.lamps, lamps) {
+                return hit.near;
+            }
+        }
+        let near = nearest_lamps(eye, lamps);
+        *slot = Some(LampCache {
+            eye,
+            lamps: lamps.to_vec(),
+            near,
+        });
+        near
+    })
+}
+
 /// Uploads the lighting for this frame, keeping the lamps nearest the eye.
 pub fn apply(mat: &Material, l: &Lighting, lamps: &[Lamp]) {
     mat.set_uniform("CamPos", l.eye);
@@ -155,17 +229,76 @@ pub fn apply(mat: &Material, l: &Lighting, lamps: &[Lamp]) {
     mat.set_uniform("AmbientColor", l.ambient);
     mat.set_uniform("FogColor", l.fog);
     mat.set_uniform("FogFar", l.fog_far);
-    let mut near: Vec<(f32, &Lamp)> = lamps
-        .iter()
-        .map(|lp| ((lp.pos - l.eye).length_squared(), lp))
-        .collect();
-    near.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    let mut pos = [Vec4::ZERO; MAX_LAMPS];
-    let mut col = [Vec4::ZERO; MAX_LAMPS];
-    for (i, (_, lp)) in near.iter().take(MAX_LAMPS).enumerate() {
-        pos[i] = vec4(lp.pos.x, lp.pos.y, lp.pos.z, lp.range);
-        col[i] = vec4(lp.color.r, lp.color.g, lp.color.b, lp.energy);
+    let near = cached_nearest_lamps(l.eye, lamps);
+    mat.set_uniform_array("Lamps", &near.pos[..]);
+    mat.set_uniform_array("LampColors", &near.col[..]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lamp_at(x: f32, range: f32) -> Lamp {
+        Lamp {
+            pos: vec3(x, 0.0, 0.0),
+            range,
+            color: Color::new(1.0, 0.5, 0.25, 1.0),
+            energy: 2.0,
+        }
     }
-    mat.set_uniform_array("Lamps", &pos[..]);
-    mat.set_uniform_array("LampColors", &col[..]);
+
+    #[test]
+    fn nearest_lamps_sort_by_distance_with_ties_in_input_order() {
+        // the range is the lamp's id; distances from the eye at the origin are 5, 1, 3, 1 and 2
+        let lamps = [
+            lamp_at(5.0, 1.0),
+            lamp_at(-1.0, 2.0),
+            lamp_at(3.0, 3.0),
+            lamp_at(1.0, 4.0),
+            lamp_at(-2.0, 5.0),
+        ];
+        let near = nearest_lamps(Vec3::ZERO, &lamps);
+        let ids: Vec<f32> = (0..lamps.len()).map(|i| near.pos[i].w).collect();
+        // the two lamps at distance 1 keep their input order, then 2, 3 and 5
+        assert_eq!(ids, vec![2.0, 4.0, 5.0, 3.0, 1.0]);
+        assert_eq!(near.col[0], vec4(1.0, 0.5, 0.25, 2.0));
+        assert_eq!(near.pos[0], vec4(-1.0, 0.0, 0.0, 2.0));
+        // unused slots stay zero
+        assert_eq!(near.pos[lamps.len()], Vec4::ZERO);
+        assert_eq!(near.col[lamps.len()], Vec4::ZERO);
+    }
+
+    #[test]
+    fn nearest_lamps_keep_the_sixteen_nearest_in_order() {
+        // twenty lamps, input farthest first: lamp j sits at x = 19 - j and has range j + 1
+        let lamps: Vec<Lamp> = (0..20)
+            .map(|j| lamp_at((19 - j) as f32, (j + 1) as f32))
+            .collect();
+        let near = nearest_lamps(Vec3::ZERO, &lamps);
+        // x = 0 is nearest (range 20), x = 15 is the sixteenth (range 5)
+        assert_eq!(near.pos[0].w, 20.0);
+        assert_eq!(near.pos[MAX_LAMPS - 1].w, 5.0);
+        for i in 0..MAX_LAMPS {
+            assert_eq!(near.pos[i].x, i as f32);
+        }
+    }
+
+    #[test]
+    fn cached_lamps_match_a_fresh_sort_and_follow_changes() {
+        let eye = Vec3::ZERO;
+        let a = [lamp_at(4.0, 1.0), lamp_at(1.0, 2.0)];
+        assert_eq!(cached_nearest_lamps(eye, &a), nearest_lamps(eye, &a));
+        // the same inputs again are served from the cache and still match
+        assert_eq!(cached_nearest_lamps(eye, &a), nearest_lamps(eye, &a));
+        // same length, one lamp's reach changed: the old cached order must not come back
+        let b = [lamp_at(1.0, 9.0), lamp_at(4.0, 1.0)];
+        let got = cached_nearest_lamps(eye, &b);
+        assert_eq!(got, nearest_lamps(eye, &b));
+        assert_eq!(got.pos[0].w, 9.0);
+        // a moved eye re-sorts the same list
+        let moved = vec3(4.0, 0.0, 0.0);
+        let got = cached_nearest_lamps(moved, &b);
+        assert_eq!(got, nearest_lamps(moved, &b));
+        assert_eq!(got.pos[0].w, 1.0);
+    }
 }

@@ -528,11 +528,13 @@ pub async fn run(screenshot: Option<String>) {
         if let Some((intent, result)) = answered {
             net_pending = None;
             match result {
-                Ok(session) => {
+                Ok(mut session) => {
                     let code = session.code.clone();
                     match intent {
                         NetIntent::Host => {
                             room = world_sync::room_text_for_code(&code, &route::new_room_text());
+                            // the guests are sent the text this host runs on, so both start the same route
+                            session.set_room_seed(room.clone());
                             ui.room_mode = menus::RoomMode::Host;
                             ui.go(Screen::Lobby);
                             flash(&mut ui, &format!("ROOM {code} IS OPEN // FRIENDS JOIN WITH THIS CODE"));
@@ -578,6 +580,22 @@ pub async fn run(screenshot: Option<String>) {
                     }
                 }
                 NetEvent::Seed(seed) => room = seed,
+                NetEvent::Packs(ids) => {
+                    // the room's mod packs: packs load at boot, so a pack this game lacks is named, not applied now
+                    let missing: Vec<&str> = ids
+                        .iter()
+                        .filter(|id| !w.content.packs.iter().any(|p| p.id == **id))
+                        .map(String::as_str)
+                        .collect();
+                    if !ids.is_empty() {
+                        let text = if missing.is_empty() {
+                            format!("ROOM MODS: {}", ids.join(", ").to_uppercase())
+                        } else {
+                            format!("ROOM MODS MISSING: {} // INSTALL THEN RESTART", missing.join(", ").to_uppercase())
+                        };
+                        show_room_notice(playing.as_mut(), &mut ui, &text);
+                    }
+                }
                 NetEvent::GuestJoined(name) => show_room_notice(playing.as_mut(), &mut ui, &format!("{name} JOINED THE ROOM")),
                 NetEvent::GuestLeft(name) => show_room_notice(playing.as_mut(), &mut ui, &format!("{name} LEFT THE ROOM")),
                 NetEvent::HostLeft(reason) => room_closed = Some(reason),
@@ -1007,10 +1025,15 @@ pub async fn run(screenshot: Option<String>) {
                 }
                 // CREATE ROOM's route is DEFAULT // INFINITE, starting on the top level
                 Action::StartRun => {
-                    loading = Some(Loading::for_room(diff, room.clone(), Some(0)));
-                    // a hosted room's guests enter the same route
-                    if let Some(n) = net.as_mut() {
-                        n.start_run(&room, diff.name());
+                    // a guest enters the host's route when the host starts it; a guest's own room text is not a route
+                    if ui.room_mode == menus::RoomMode::Guest {
+                        flash(&mut ui, "WAITING FOR THE HOST TO START THE ROUTE");
+                    } else {
+                        loading = Some(Loading::for_room(diff, room.clone(), Some(0)));
+                        // a hosted room's guests enter the same route
+                        if let Some(n) = net.as_mut() {
+                            n.start_run(&room, diff.name());
+                        }
                     }
                 }
                 Action::Reroll => {
@@ -1023,14 +1046,16 @@ pub async fn run(screenshot: Option<String>) {
                     if net.is_none() && net_pending.is_none() {
                         flash(&mut ui, "OPENING A ROOM ON THE SERVER...");
                         let name = world_sync::clean_name(&settings.username);
-                        net_pending = Some((NetIntent::Host, world_sync::host_room(net_cfg.clone(), route::new_room_text(), name)));
+                        let skin = world_sync::clean_skin(&settings.skin);
+                        net_pending = Some((NetIntent::Host, world_sync::host_room(net_cfg.clone(), route::new_room_text(), name, skin)));
                     }
                 }
                 Action::JoinCode(code) => {
                     if net.is_none() && net_pending.is_none() {
                         ui.join_status = format!("JOINING ROOM {code}...");
                         let name = world_sync::clean_name(&settings.username);
-                        net_pending = Some((NetIntent::Join, world_sync::join_room(net_cfg.clone(), code, name)));
+                        let skin = world_sync::clean_skin(&settings.skin);
+                        net_pending = Some((NetIntent::Join, world_sync::join_room(net_cfg.clone(), code, name, skin)));
                     }
                 }
                 Action::ContinueRun => {

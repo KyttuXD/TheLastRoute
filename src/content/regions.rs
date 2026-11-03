@@ -22,9 +22,9 @@ pub const SCHEMA: &str = "lr.region/1";
 /// The source name of a built-in region (every other source is the id of the pack that added it).
 pub const BUILTIN: &str = "builtin";
 
-/// Every top-level key of `lr.region/1` (Godot REGION_FIELDS). Any other key is an error. `geometry` is
-/// optional: it was added to /1 before the first full release, so /1 stays the schema name until then.
-const KEYS: [&str; 11] = [
+/// Every top-level key of `lr.region/1` (Godot REGION_FIELDS). Any other key is an error. `geometry` and
+/// `safe_light` are optional: they were added to /1 before the first full release, so /1 stays the schema name.
+const KEYS: [&str; 12] = [
     "schema",
     "id",
     "hall_floor",
@@ -36,11 +36,20 @@ const KEYS: [&str; 11] = [
     "double_room_door",
     "prop_set",
     "geometry",
+    "safe_light",
 ];
 /// The keys of the optional `geometry` block.
 const GEOMETRY_KEYS: [&str; 3] = ["wall_height", "room_min", "room_max"];
 /// The allowed range of `geometry.wall_height`, in metres.
 pub const WALL_HEIGHT_RANGE: (f64, f64) = (2.5, 8.0);
+/// The keys of the optional `safe_light` block.
+const SAFE_LIGHT_KEYS: [&str; 2] = ["color", "energy"];
+/// The allowed range of `safe_light.energy`.
+pub const SAFE_LIGHT_ENERGY_RANGE: (f64, f64) = (0.2, 6.0);
+/// The safe-zone checkpoint light's colour (linear RGB, 0..1) when the region has no `safe_light` block.
+pub const SAFE_LIGHT_COLOR: [f32; 3] = [0.95, 0.78, 0.55];
+/// The safe-zone checkpoint light's energy when the region has no `safe_light` block.
+pub const SAFE_LIGHT_ENERGY: f32 = 2.0;
 /// The keys a file must have. `shop_names`, `room_door` and `double_room_door` are optional.
 const REQUIRED: [&str; 7] = [
     "schema",
@@ -81,6 +90,23 @@ impl Default for RegionGeometry {
     }
 }
 
+/// The optional `safe_light` block: the colour and energy of the safe zone's checkpoint light in a region.
+/// A region without the block has `RegionSafeLight::default()`, the game's current light.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RegionSafeLight {
+    pub color: [f32; 3],
+    pub energy: f32,
+}
+
+impl Default for RegionSafeLight {
+    fn default() -> Self {
+        RegionSafeLight {
+            color: SAFE_LIGHT_COLOR,
+            energy: SAFE_LIGHT_ENERGY,
+        }
+    }
+}
+
 /// One region's facts, as `lr.region/1` states them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RegionDef {
@@ -96,6 +122,8 @@ pub struct RegionDef {
     pub prop_set: Vec<PropChoice>,
     /// Wall height and room sizes, when the file has a `geometry` block. `None` keeps the game-wide sizes.
     pub geometry: Option<RegionGeometry>,
+    /// Safe-zone light colour and energy, when the file has a `safe_light` block. `None` keeps the game's light.
+    pub safe_light: Option<RegionSafeLight>,
     /// `BUILTIN`, or the id of the pack that added or replaced the region.
     pub source: String,
 }
@@ -185,6 +213,41 @@ fn geometry(file: &str, obj: &Map<String, Value>) -> Result<Option<RegionGeometr
         return Err(format!("{file}: \"geometry.room_min\" ({}) is larger than \"geometry.room_max\" ({})", g.room_min, g.room_max));
     }
     Ok(Some(g))
+}
+
+/// The optional `safe_light` block. Missing keys keep the defaults. `color` is three numbers from 0 to 1.
+fn safe_light(file: &str, obj: &Map<String, Value>) -> Result<Option<RegionSafeLight>, String> {
+    let Some(value) = obj.get("safe_light") else {
+        return Ok(None);
+    };
+    let mut s = RegionSafeLight::default();
+    let block = value
+        .as_object()
+        .ok_or_else(|| wrong(file, "safe_light", "an object"))?;
+    if let Some(key) = block.keys().find(|k| !SAFE_LIGHT_KEYS.contains(&k.as_str())) {
+        return Err(format!("{file}: unknown key \"safe_light.{key}\""));
+    }
+    if let Some(value) = block.get("color") {
+        let numbers = value
+            .as_array()
+            .filter(|a| a.len() == 3)
+            .ok_or_else(|| wrong(file, "safe_light.color", "three numbers from 0 to 1"))?;
+        for (slot, n) in s.color.iter_mut().zip(numbers) {
+            *slot = n
+                .as_f64()
+                .filter(|c| (0.0..=1.0).contains(c))
+                .ok_or_else(|| wrong(file, "safe_light.color", "three numbers from 0 to 1"))? as f32;
+        }
+    }
+    if let Some(value) = block.get("energy") {
+        let (lo, hi) = SAFE_LIGHT_ENERGY_RANGE;
+        let e = value
+            .as_f64()
+            .filter(|e| (lo..=hi).contains(e))
+            .ok_or_else(|| wrong(file, "safe_light.energy", &format!("a number from {lo} to {hi}")))?;
+        s.energy = e as f32;
+    }
+    Ok(Some(s))
 }
 
 fn optional_string(file: &str, obj: &Map<String, Value>, key: &str) -> Result<Option<String>, String> {
@@ -283,6 +346,7 @@ pub fn parse_file(file: &str, text: &str) -> Result<RegionDef, String> {
         double_room_door: optional_string(file, obj, "double_room_door")?,
         prop_set: prop_set(file, obj)?,
         geometry: geometry(file, obj)?,
+        safe_light: safe_light(file, obj)?,
         source: String::new(),
     })
 }
@@ -564,6 +628,62 @@ mod tests {
         let text = MIN.replacen("\"id\":\"t\"", "\"id\":\"t\",\"geometry\":{\"room_min\":20,\"room_max\":12}", 1);
         let e = fails(&text);
         assert!(e.contains("room_min") && e.contains("room_max"), "{e}");
+    }
+
+    fn with_safe_light(block: &str) -> String {
+        MIN.replacen("\"id\":\"t\"", &format!("\"id\":\"t\",\"safe_light\":{block}"), 1)
+    }
+
+    #[test]
+    fn a_file_without_safe_light_has_none_and_the_defaults_match_the_game_light() {
+        let d = parse_file("t.json", MIN).unwrap();
+        assert_eq!(d.safe_light, None);
+        let s = RegionSafeLight::default();
+        assert_eq!(s.color, [0.95, 0.78, 0.55]);
+        assert_eq!(s.energy, 2.0);
+        assert_eq!(s, RegionSafeLight { color: SAFE_LIGHT_COLOR, energy: SAFE_LIGHT_ENERGY });
+    }
+
+    #[test]
+    fn a_safe_light_block_sets_colour_and_energy() {
+        let d = parse_file("t.json", &with_safe_light(r#"{"color":[0.2,0.5,1],"energy":4.5}"#)).unwrap();
+        assert_eq!(d.safe_light, Some(RegionSafeLight { color: [0.2, 0.5, 1.0], energy: 4.5 }));
+    }
+
+    #[test]
+    fn a_safe_light_block_with_missing_keys_keeps_the_defaults() {
+        let only_energy = parse_file("t.json", &with_safe_light(r#"{"energy":0.2}"#)).unwrap();
+        assert_eq!(only_energy.safe_light, Some(RegionSafeLight { color: SAFE_LIGHT_COLOR, energy: 0.2 }));
+        let empty = parse_file("t.json", &with_safe_light("{}")).unwrap();
+        assert_eq!(empty.safe_light, Some(RegionSafeLight::default()));
+    }
+
+    #[test]
+    fn a_safe_light_energy_outside_the_range_names_the_key() {
+        for bad in ["0.1", "6.5", "\"2\""] {
+            let e = fails(&with_safe_light(&format!(r#"{{"energy":{bad}}}"#)));
+            assert!(e.contains("safe_light.energy") && e.contains("0.2 to 6"), "{e}");
+        }
+    }
+
+    #[test]
+    fn a_safe_light_colour_outside_zero_to_one_names_the_key() {
+        for bad in ["[1.2,0,0]", "[0,-0.1,0]", "[0,0]", "[0,0,\"x\"]", "\"red\""] {
+            let e = fails(&with_safe_light(&format!(r#"{{"color":{bad}}}"#)));
+            assert!(e.contains("safe_light.color") && e.contains("three numbers from 0 to 1"), "{e}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_safe_light_key_fails() {
+        let e = fails(&with_safe_light(r#"{"flicker":true}"#));
+        assert!(e.contains("unknown key \"safe_light.flicker\""), "{e}");
+    }
+
+    #[test]
+    fn a_safe_light_that_is_not_an_object_fails() {
+        let e = fails(&with_safe_light("[1]"));
+        assert!(e.contains("\"safe_light\" must be an object"), "{e}");
     }
 
     #[test]

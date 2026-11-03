@@ -671,6 +671,26 @@ Sources: the website game at KyttusLab/games/night-watch (src/modes, docs/ROADMA
 - [ ] Staging server: a second service on another port with the nightly-server build, for testing before the VPS update
 - [ ] A rollback step for the VPS: keep the previous lr_server binary and restore it with one command
 
+## Intel Mac FPS (KT-MBA: Intel, macOS 12.7.6)
+
+Measure first: the Intel build has not been timed yet. Every item below should be checked against numbers from KT-MBA.
+
+- [ ] Baseline on KT-MBA: F7 overlay frame time, the update / render 3d / hud split, draw calls and spikes, in the same 60-second walk through a run, recorded in this list
+- [ ] Renderer check on the Intel GPU: confirm the backend miniquad uses on macOS (OpenGL profile, not Metal) and whether it is the bottleneck
+- [ ] Quality AUTO picks a tier from the GPU and the first second of frames on this Mac, instead of a fixed 50% render scale for every Mac
+- [ ] Quality governor: step the render scale down on slow frames and back up when there is headroom (Godot quality_governor.gd: 40/50/60 targets, four notches)
+- [ ] Lamp shader cost: the fragment shader loops over 16 lamps plus the flashlight for every pixel; test 8 lamps and distance culling on Intel
+- [ ] Per-material lamp sort: shader::apply sorts the lamp list for every material each frame; compute it once per frame
+- [ ] Draw calls: count meshes per floor and per frame in a run, and merge meshes that share a material
+- [ ] Triangle budget: GLB prop and character models, measured on this Mac; decimate or swap the heaviest ones
+- [ ] Texture sizes and count: check the atlas and floor set sizes against the Intel GPU memory budget
+- [ ] Vsync and frame cap: the window starts with vsync on; check whether the FPS limit setting (0 = off) helps tearing and power on this Mac
+- [ ] Release profile: test codegen-units = 1 and lto = "thin" in [profile.release] for speed, with the build time recorded
+- [ ] Startup on Intel: assets and sounds load time on KT-MBA, measured against the boot card
+- [ ] Mesh rebuild on floor change (see Performance and FPS): the Intel frame cost of a chunk recentre, measured here before and after the fix
+- [ ] Fog and the far-plane distance: check how much fragment work the fog and draw distance add on Intel
+- [ ] Run the Intel and Apple Silicon builds side by side and record the frame-time gap, so later fixes can be judged on both
+
 ## Known bugs (2026-11-03)
 
 - [ ] Beds stick out of rooms into the hallway behind them (in progress: workflow bed-placement-fix; see furnished.rs bed placement)

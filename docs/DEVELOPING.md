@@ -33,6 +33,9 @@ default.
 ## Building
 
 - **Windows:** `cargo build --release` → `target/release/last_route.exe` (icon embedded).
+  A running `last_route.exe` locks `target/release/last_route.exe`, so cargo cannot replace it and
+  the build fails with a file-lock error. Either close the game first, or build into another target
+  directory, for example `cargo build --release --target-dir target/release-check`.
 - **macOS (Apple Silicon and Intel):** on a Mac, `sh packaging/macos/build_app.sh` →
   `dist/Kyttu's Lab.app`, one universal app for both chip types.
 - **Linux:** install `pkg-config libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev`, then

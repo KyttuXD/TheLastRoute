@@ -15,7 +15,7 @@ use macroquad::prelude::*;
 
 /// The web overlay's tabs, in its order (index.html `data-settings-tab`).
 const TABS: [&str; 7] = [
-    "GAMEPLAY", "SKIN", "VOICE", "MODS", "AUDIO", "VIDEO", "CONTROLS",
+    "GAMEPLAY", "AUDIO", "VIDEO", "CONTROLS", "SKIN", "VOICE", "MODS",
 ];
 
 /// The saved keys (app/settings.rs) each tab shows, in TABS order. Every saved key is in exactly
@@ -23,9 +23,6 @@ const TABS: [&str; 7] = [
 #[allow(dead_code)]
 const TAB_KEYS: [&[&str]; 7] = [
     &["pause_on_focus_loss", "teammate_waypoints"],
-    &[],
-    &[],
-    &[],
     &[
         "master_volume",
         "gameplay_volume",
@@ -36,12 +33,15 @@ const TAB_KEYS: [&[&str]; 7] = [
     ],
     &["fullscreen", "ads", "vsync", "quality", "fps_limit", "fov"],
     &["sensitivity"],
+    &[],
+    &[],
+    &[],
 ];
 
-/// Saved keys with no row in this panel: `username` is edited on the account screens, and
-/// `scheme` comes from LR_SCHEME or the saved file.
+/// Saved keys with no row in this panel: `username` is edited on the account screens, `scheme` comes
+/// from LR_SCHEME or the saved file, and `skin` is chosen from the title screen.
 #[allow(dead_code)]
-const OFF_PANEL_KEYS: [&str; 2] = ["username", "scheme"];
+const OFF_PANEL_KEYS: [&str; 3] = ["username", "scheme", "skin"];
 
 /// MOVEMENT / ACTIONS / SYSTEM (ControlsRegistry.LAST_ROUTE_TABS) with this build's keys.
 const SECTIONS: [(&str, &[(&str, &str)]); 3] = [
@@ -243,7 +243,7 @@ fn section_text(a: &Assets, content: &Content, in_run: bool, tab: usize) -> Vec<
     let p = pal();
     let mut out = Vec::new();
     match tab {
-        1 => {
+        4 => {
             if in_run {
                 out.push(text_line("SKINS CHANGE FROM THE TITLE SCREEN.".into(), 7.0, p.muted, 0.0));
             } else {
@@ -252,7 +252,7 @@ fn section_text(a: &Assets, content: &Content, in_run: bool, tab: usize) -> Vec<
                 }
             }
         }
-        2 => {
+        5 => {
             for l in wrap(a, F::Body, VOICE_TEXT, 400.0, 7.0) {
                 out.push(text_line(l, 7.0, p.muted, 0.0));
             }
@@ -395,12 +395,12 @@ pub fn draw_settings(
                 changed = true;
             }
         }
-        1 | 2 | 3 => {
+        4 | 5 | 6 => {
             // SKIN, VOICE and MODS each scroll their text below the tab bar
             let lines = section_text(a, content, in_run, ui.settings_tab);
             scroll_text(a, ui, x, Rect::new(x, oy + 66.0, 400.0, 160.0), &lines);
         }
-        4 => {
+        1 => {
             let pct = |v: f32| format!("{}%", (v * 100.0).round() as i32);
             if let Some(v) = slider_row(
                 a,
@@ -495,7 +495,7 @@ pub fn draw_settings(
                 changed = true;
             }
         }
-        5 => {
+        2 => {
             // FULLSCREEN toggle, the F11 hint and the ADS cycle button share one row
             let y = oy + 66.0;
             if state_toggle(
@@ -709,7 +709,7 @@ mod tests {
     fn tabs_match_the_web_overlay_in_order() {
         assert_eq!(
             TABS,
-            ["GAMEPLAY", "SKIN", "VOICE", "MODS", "AUDIO", "VIDEO", "CONTROLS"]
+            ["GAMEPLAY", "AUDIO", "VIDEO", "CONTROLS", "SKIN", "VOICE", "MODS"]
         );
         assert_eq!(TABS.len(), TAB_KEYS.len());
     }

@@ -244,6 +244,8 @@ pub struct ServerOptions {
     pub custom_map_directory: Option<PathBuf>,
     pub save_directory: Option<PathBuf>,
     pub update_directory: Option<PathBuf>,
+    /// When set, update files need this key in the `X-Download-Key` header (LASTROUTE_UPDATE_KEY).
+    pub update_key: String,
     pub admin_password: String,
     pub updates: Value,
     pub updates_provider: Option<UpdatesProvider>,
@@ -283,6 +285,7 @@ impl Default for ServerOptions {
             custom_map_directory: None,
             save_directory: None,
             update_directory: None,
+            update_key: String::new(),
             admin_password: String::new(),
             updates: json!({}),
             updates_provider: None,
@@ -316,6 +319,8 @@ pub(crate) struct Config {
     pub public_directory: Option<PathBuf>,
     pub custom_map_directory: Option<PathBuf>,
     pub update_directory: Option<PathBuf>,
+    /// When set, update files need this key in the `X-Download-Key` header (LASTROUTE_UPDATE_KEY).
+    pub update_key: String,
     pub admin_password: String,
     pub updates: Value,
     pub updates_provider: Option<UpdatesProvider>,
@@ -435,6 +440,7 @@ impl LastRouteServer {
                 public_directory: opts.public_directory,
                 custom_map_directory: opts.custom_map_directory,
                 update_directory: opts.update_directory,
+                update_key: opts.update_key,
                 admin_password: opts.admin_password,
                 updates: opts.updates,
                 updates_provider: opts.updates_provider,
@@ -709,6 +715,7 @@ pub fn options_from_environment(env: &HashMap<String, String>, cwd: &Path) -> En
         public_directory: existing(path_of("LASTROUTE_PUBLIC_DIR")),
         custom_map_directory: existing(custom),
         update_directory: existing(path_of("LASTROUTE_UPDATE_DIR")),
+        update_key: get("LASTROUTE_UPDATE_KEY").unwrap_or_default(),
         updates,
         updates_provider: provider,
         admin_password: env

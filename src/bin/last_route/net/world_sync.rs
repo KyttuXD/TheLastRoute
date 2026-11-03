@@ -50,6 +50,13 @@ const PEER_COLOURS: [Color; 4] = [
     Color::new(0.55, 0.95, 0.55, 1.0),
     Color::new(0.95, 0.55, 0.85, 1.0),
 ];
+/// The skin a runner wears when none is chosen. It is the id the wire profile carries.
+pub const SKIN_DEFAULT: &str = "DEFAULT";
+/// Longest skin id a profile or the settings keep.
+const MAX_SKIN: usize = 24;
+/// The skins by id, each with its figure colours by peer id. DEFAULT is the only one so far; an id no skin has
+/// is drawn as DEFAULT (see [`skin_colour`]).
+const SKINS: [(&str, [Color; 4]); 1] = [(SKIN_DEFAULT, PEER_COLOURS)];
 
 /// One runner's sample: the `_place` packet `{seq, depth, x, y, yaw, moving, sprinting, crouching}`.
 /// `x` and `y` are the runner's ground position (`Player.pos`), `depth` its floor.
@@ -112,12 +119,14 @@ pub fn newer(seq: u32, last: u32) -> bool {
 }
 
 /// A remote runner that is on this floor and fresh enough to draw.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RemoteView {
     pub peer: u32,
     pub x: f32,
     pub y: f32,
     pub yaw: f32,
+    /// The runner's skin id (`SKIN_DEFAULT` until its profile arrives).
+    pub skin: String,
 }
 
 /// What the room tells the game. The app acts on these between frames.
@@ -131,6 +140,9 @@ pub enum NetEvent {
     Start { seed: String, difficulty: String },
     /// The room's route seed (guest side).
     Seed(String),
+    /// The room's mod pack ids changed (guest side). The guest shows them; a pack it lacks must be installed, then
+    /// the game restarted, because packs are read at boot.
+    Packs(Vec<String>),
     /// The room is gone (the host quit, or the directory forgot it).
     HostLeft(String),
     /// Something to show the player.
@@ -147,6 +159,28 @@ struct Guest {
     last_seen: Instant,
 }
 
+/// The wire profile of a runner: `{peer_id, name, skin}`. A guest sends its own (the host reads the sender from the
+/// relay); the host forwards each profile with its `peer_id`, and sends a new guest every profile in the room.
+fn profile_message(peer: u32, name: &str, skin: &str) -> Message {
+    let mut profile = Map::new();
+    profile.insert("peer_id".into(), json!(peer));
+    profile.insert("name".into(), json!(name));
+    profile.insert("skin".into(), json!(skin));
+    Message::WireProfile { profile }
+}
+
+/// The host's room mod packs as the wire carries them: `{ids: [...]}`.
+fn packs_message(ids: &[String]) -> Message {
+    let mut packs = Map::new();
+    packs.insert("ids".into(), Value::Array(ids.iter().cloned().map(Value::String).collect()));
+    Message::Packs { packs }
+}
+
+/// The skin a received profile names, cleaned. A profile without one is DEFAULT.
+fn profile_skin(profile: &Map<String, Value>) -> String {
+    clean_skin(profile.get("skin").and_then(Value::as_str).unwrap_or_default())
+}
+
 /// An open room, host or guest. Call [`NetSession::tick`] once per frame.
 pub struct NetSession {
     pub cfg: BackendConfig,
@@ -160,6 +194,16 @@ pub struct NetSession {
     /// The route the host started, sent to guests who join later: (seed, difficulty name).
     run: Option<(String, String)>,
     name: String,
+    /// Guest: the host's name and the other runners' names, from the host's last roster.
+    host_name: String,
+    players: Vec<String>,
+    /// This runner's skin id, sent in its wire profile and to the guests that join.
+    skin: String,
+    /// The room's mod pack ids: host, the ones it was given ([`NetSession::set_room_mods`]); guest, the ones the host
+    /// sent. Sent to each runner with the room.
+    mods: Vec<String>,
+    /// The skin id of each other runner, by peer id, from its wire profile.
+    skins: HashMap<u32, String>,
     guests: HashMap<u32, Guest>,
     remotes: HashMap<u32, Remote>,
     seq: u32,
@@ -172,7 +216,7 @@ pub struct NetSession {
 }
 
 /// CREATE a room on the directory and open its relay. The request blocks, so the frame loop polls the result.
-pub fn host_room(cfg: BackendConfig, route_seed: String, name: String) -> Pending<NetSession> {
+pub fn host_room(cfg: BackendConfig, route_seed: String, name: String, skin: String) -> Pending<NetSession> {
     Pending::spawn(move || {
         if cfg.offline {
             return Err(NetError::Offline);
@@ -182,7 +226,7 @@ pub fn host_room(cfg: BackendConfig, route_seed: String, name: String) -> Pendin
             let code = api::make_room_code();
             let request = RegisterRoom { code: code.clone(), device_id: device_id.clone(), ..RegisterRoom::default() };
             match api::register_room(&cfg, &request) {
-                Ok(reg) => return open_host(cfg, code, route_seed, name, reg),
+                Ok(reg) => return open_host(cfg, code, route_seed, name, skin, reg),
                 Err(NetError::Http { status: 403, code: reserved, .. }) if reserved == "ROOM_RESERVED" => continue,
                 Err(e) => return Err(e),
             }
@@ -191,7 +235,14 @@ pub fn host_room(cfg: BackendConfig, route_seed: String, name: String) -> Pendin
     })
 }
 
-fn open_host(cfg: BackendConfig, code: String, route_seed: String, name: String, reg: Registered) -> Result<NetSession, NetError> {
+fn open_host(
+    cfg: BackendConfig,
+    code: String,
+    route_seed: String,
+    name: String,
+    skin: String,
+    reg: Registered,
+) -> Result<NetSession, NetError> {
     if reg.room.transport != "relay" || reg.room.address.is_empty() {
         // this client has no direct path: give the code back rather than leave a room nobody can join
         let _ = api::unregister_room(&cfg, &code, &reg.token);
@@ -199,11 +250,11 @@ fn open_host(cfg: BackendConfig, code: String, route_seed: String, name: String,
     }
     let link = RelayLink::host(&code, &reg.token, &reg.room.address, reg.room.port)
         .map_err(|e| NetError::Transport(e.to_string()))?;
-    Ok(NetSession::new(cfg, code, Role::Host, CoopSession::new(link), reg.token, route_seed, name))
+    Ok(NetSession::new(cfg, code, Role::Host, CoopSession::new(link), reg.token, route_seed, name, skin))
 }
 
 /// JOIN by code: the directory lookup, the build check, then the relay. Blocking, so polled like [`host_room`].
-pub fn join_room(cfg: BackendConfig, code: String, name: String) -> Pending<NetSession> {
+pub fn join_room(cfg: BackendConfig, code: String, name: String, skin: String) -> Pending<NetSession> {
     Pending::spawn(move || {
         if cfg.offline {
             return Err(NetError::Offline);
@@ -217,7 +268,7 @@ pub fn join_room(cfg: BackendConfig, code: String, name: String) -> Pending<NetS
             return Err(NetError::Refused(refused));
         }
         let link = RelayLink::guest(&code, &room.address, room.port, "").map_err(|e| NetError::Transport(e.to_string()))?;
-        Ok(NetSession::new(cfg, code, Role::Guest, CoopSession::new(link), String::new(), String::new(), name))
+        Ok(NetSession::new(cfg, code, Role::Guest, CoopSession::new(link), String::new(), String::new(), name, skin))
     })
 }
 
@@ -230,6 +281,7 @@ impl NetSession {
         token: String,
         room_seed: String,
         name: String,
+        skin: String,
     ) -> NetSession {
         let now = Instant::now();
         NetSession {
@@ -241,6 +293,11 @@ impl NetSession {
             room_seed,
             run: None,
             name,
+            host_name: String::new(),
+            players: Vec::new(),
+            skin,
+            mods: Vec::new(),
+            skins: HashMap::new(),
             guests: HashMap::new(),
             remotes: HashMap::new(),
             seq: 0,
@@ -263,10 +320,32 @@ impl NetSession {
         self.is_host().then(|| 1 + self.guests.len() as u32)
     }
 
-    /// Host only: the names of the guests that have registered, in the order they joined (peer id).
+    /// Host: the room's mod pack ids (the reserved room's `mods`), sent to every runner with the room. Ids that are not
+    /// a pack id are dropped, repeats too, and the list is capped at [`MAX_MODS`].
+    pub fn set_room_mods(&mut self, ids: &[String]) {
+        self.mods = clean_mod_ids(ids);
+    }
+
+    /// The room's mod pack ids (host: the ones it was given; guest: the ones the host sent).
+    pub fn room_mods(&self) -> &[String] {
+        &self.mods
+    }
+
+    /// The other runners for the lobby roster. Host: the guests that have registered, in the order they joined
+    /// (peer id). Guest: the host and the other guests, as the host's last roster listed them.
     pub fn guest_names(&self) -> Vec<String> {
         if !self.is_host() {
-            return Vec::new();
+            let mut names = Vec::new();
+            if !self.host_name.is_empty() {
+                names.push(self.host_name.clone());
+            }
+            names.extend(
+                self.players
+                    .iter()
+                    .filter(|p| !p.is_empty() && !p.eq_ignore_ascii_case(&self.name))
+                    .cloned(),
+            );
+            return names;
         }
         let mut peers: Vec<(&u32, &Guest)> = self.guests.iter().collect();
         peers.sort_by_key(|(peer, _)| **peer);
@@ -285,6 +364,26 @@ impl NetSession {
     /// The route seed the room runs on (host: its own; guest: the last one received).
     pub fn room_seed(&self) -> &str {
         &self.room_seed
+    }
+
+    /// Host: the room text the guests are sent. It must be the text the host runs on.
+    pub fn set_room_seed(&mut self, seed: String) {
+        self.room_seed = seed;
+    }
+
+    /// Host: sends the room (its code, seed and the roster) to every guest. The roster is the host and the guests that
+    /// have registered, so a guest can list everyone in the lobby.
+    fn send_room_and_roster(&mut self) {
+        let mut rest = Map::new();
+        rest.insert("host".into(), Value::String(self.name.clone()));
+        let players: Vec<Value> = self.guest_names().into_iter().map(Value::String).collect();
+        rest.insert("players".into(), Value::Array(players));
+        let room = Message::Room { code: self.code.clone(), seed: self.room_seed.clone(), mode: 0, scale: 0, rest };
+        let packs = packs_message(&self.mods);
+        for peer in self.coop.peers() {
+            self.coop.send(peer, &room);
+            self.coop.send(peer, &packs);
+        }
     }
 
     /// Host: the route starts. Guests in the room enter it now; guests who join later get it on their join.
@@ -318,7 +417,13 @@ impl NetSession {
             .remotes
             .iter()
             .filter(|(_, r)| r.sample.depth == depth && now.duration_since(r.last_seen) < REMOTE_TIMEOUT)
-            .map(|(peer, r)| RemoteView { peer: *peer, x: r.sample.x, y: r.sample.y, yaw: r.sample.yaw })
+            .map(|(peer, r)| RemoteView {
+                peer: *peer,
+                x: r.sample.x,
+                y: r.sample.y,
+                yaw: r.sample.yaw,
+                skin: self.skins.get(peer).cloned().unwrap_or_else(|| SKIN_DEFAULT.into()),
+            })
             .collect();
         out.sort_by_key(|r| r.peer);
         out
@@ -394,6 +499,8 @@ impl NetSession {
                 if !self.is_host() {
                     let hello = Message::RegisterPeer { requested_name: self.name.clone() };
                     self.coop.send(HOST_PEER_ID, &hello);
+                    let profile = profile_message(self.coop.link.session(), &self.name, &self.skin);
+                    self.coop.send(HOST_PEER_ID, &profile);
                 }
             }
             SessionEvent::PeerSeen(peer) => {
@@ -414,16 +521,38 @@ impl NetSession {
                 guest.name = name.clone();
                 guest.last_seen = now;
                 out.push(NetEvent::GuestJoined(name));
-                let room = Message::Room { code: self.code.clone(), seed: self.room_seed.clone(), mode: 0, scale: 0, rest: Map::new() };
-                self.coop.send(from, &room);
+                self.send_room_and_roster();
                 if let Some((seed, difficulty)) = self.run.clone() {
                     self.coop.send(from, &start_message(&self.code, &seed, &difficulty));
                 }
+                self.send_profiles_to(from);
+            }
+            Message::WireProfile { profile } if self.is_host() => {
+                let skin = profile_skin(&profile);
+                let name = clean_name(profile.get("name").and_then(Value::as_str).unwrap_or_default());
+                self.skins.insert(from, skin.clone());
+                let forward = profile_message(from, &name, &skin);
+                let others: Vec<u32> = self.coop.peers().into_iter().filter(|p| *p != from).collect();
+                for peer in others {
+                    self.coop.send(peer, &forward);
+                }
+            }
+            Message::WireProfile { profile } if !self.is_host() => {
+                // the host's relayed profile: `peer_id` is the runner it describes (HOST_PEER_ID for the host)
+                let Some(peer) = profile.get("peer_id").and_then(Value::as_i64).and_then(|p| u32::try_from(p).ok()) else {
+                    return;
+                };
+                if peer == self.coop.link.session() {
+                    return;
+                }
+                self.skins.insert(peer, profile_skin(&profile));
             }
             Message::PeerLeave if self.is_host() => {
                 self.remotes.remove(&from);
+                self.skins.remove(&from);
                 if let Some(guest) = self.guests.remove(&from) {
                     out.push(NetEvent::GuestLeft(guest.name));
+                    self.send_room_and_roster();
                 }
             }
             Message::Place { packet } if self.is_host() => {
@@ -440,9 +569,28 @@ impl NetSession {
                     self.coop.send(peer, &Message::PeerPlace { peer_id: from as i64, packet: packet.clone() });
                 }
             }
-            Message::Room { seed, .. } if !self.is_host() => {
+            Message::Room { seed, rest, .. } if !self.is_host() => {
                 self.room_seed = seed.clone();
+                self.host_name = rest.get("host").and_then(Value::as_str).unwrap_or_default().to_string();
+                self.players = rest
+                    .get("players")
+                    .and_then(Value::as_array)
+                    .map(|names| names.iter().filter_map(|n| n.as_str().map(str::to_string)).collect())
+                    .unwrap_or_default();
                 out.push(NetEvent::Seed(seed));
+            }
+            Message::Packs { packs } if !self.is_host() => {
+                // the host's room mod packs: an event only when the list changes (the host resends it with the roster)
+                let listed: Vec<String> = packs
+                    .get("ids")
+                    .and_then(Value::as_array)
+                    .map(|ids| ids.iter().filter_map(|id| id.as_str().map(str::to_string)).collect())
+                    .unwrap_or_default();
+                let mods = clean_mod_ids(&listed);
+                if mods != self.mods {
+                    self.mods = mods.clone();
+                    out.push(NetEvent::Packs(mods));
+                }
             }
             Message::Start { seed, rest, .. } if !self.is_host() => {
                 let difficulty = rest.get("difficulty").and_then(Value::as_str).unwrap_or("STANDARD").to_string();
@@ -459,6 +607,21 @@ impl NetSession {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Host: sends a guest that just registered every runner's profile in the room, the host's first, then each
+    /// other guest's. Those that have not sent a profile yet are DEFAULT (their own profile follows).
+    fn send_profiles_to(&mut self, to: u32) {
+        let mut profiles = vec![profile_message(HOST_PEER_ID, &self.name, &self.skin)];
+        for (peer, guest) in &self.guests {
+            if *peer != to {
+                let skin = self.skins.get(peer).map_or(SKIN_DEFAULT, String::as_str);
+                profiles.push(profile_message(*peer, &guest.name, skin));
+            }
+        }
+        for profile in &profiles {
+            self.coop.send(to, profile);
         }
     }
 
@@ -484,6 +647,7 @@ impl NetSession {
                 .collect();
             for peer in gone {
                 self.remotes.remove(&peer);
+                self.skins.remove(&peer);
                 if let Some(guest) = self.guests.remove(&peer) {
                     out.push(NetEvent::GuestLeft(guest.name));
                 }
@@ -523,6 +687,37 @@ fn start_message(code: &str, seed: &str, difficulty: &str) -> Message {
     Message::Start { code: code.to_string(), seed: seed.to_string(), mode: 0, scale: 0, rest }
 }
 
+/// Most mod pack ids a room carries (the reserved-room settings keep at most this many).
+pub const MAX_MODS: usize = 32;
+
+/// The room's mod pack ids, cleaned: a pack id is 3 to 32 lower-case letters, digits or underscores that starts with a
+/// letter or digit (the directory's rule). Others are dropped, repeats too, and the list is capped at [`MAX_MODS`].
+pub fn clean_mod_ids(ids: &[String]) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    for id in ids {
+        let b = id.as_bytes();
+        let valid = (3..=32).contains(&b.len())
+            && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
+            && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_');
+        if valid && !kept.contains(id) && kept.len() < MAX_MODS {
+            kept.push(id.clone());
+        }
+    }
+    kept
+}
+
+/// A skin id as the wire and the settings keep it: letters, digits and underscore, upper-cased, at most 24
+/// characters. Empty becomes DEFAULT.
+pub fn clean_skin(text: &str) -> String {
+    let kept: String = text.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(MAX_SKIN).collect();
+    let id = kept.to_ascii_uppercase();
+    if id.is_empty() {
+        SKIN_DEFAULT.into()
+    } else {
+        id
+    }
+}
+
 /// A runner's name in a room: letters, digits, space, dash and underscore, upper-cased, at most 24 characters.
 /// Empty becomes RUNNER.
 pub fn clean_name(text: &str) -> String {
@@ -558,6 +753,12 @@ pub fn difficulty_from_name(name: &str) -> Difficulty {
     ALL.iter().copied().find(|d| d.name() == name).unwrap_or(Difficulty::Standard)
 }
 
+/// The figure colour of a runner: its skin's palette by peer id. An id no skin has is drawn as DEFAULT.
+pub fn skin_colour(skin: &str, peer: u32) -> Color {
+    let palette = SKINS.iter().find(|(id, _)| *id == skin).unwrap_or(&SKINS[0]).1;
+    palette[(peer as usize) % palette.len()]
+}
+
 /// Draws the remote runners as simple figures in the 3D view, lit like the scene and glowing so they read in the dark.
 /// Draws nothing when `remotes` is empty, so a single-player frame is unchanged.
 pub fn draw_remotes(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, remotes: &[RemoteView]) {
@@ -569,7 +770,7 @@ pub fn draw_remotes(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, rem
     shader::apply(mat, &scene::lighting(g), &g.world.lamps);
     let mut b = Builder::new(Some(a.white.clone()));
     for r in remotes {
-        let colour = PEER_COLOURS[(r.peer as usize) % PEER_COLOURS.len()];
+        let colour = skin_colour(&r.skin, r.peer);
         b.cube(vec3(r.x, 0.85, r.y), vec3(0.42, 1.7, 0.42), r.yaw, colour, 2.0);
     }
     b.draw_and_clear();
@@ -633,6 +834,18 @@ mod tests {
     }
 
     #[test]
+    fn skin_ids_are_cleaned_and_unknown_skins_draw_as_default() {
+        assert_eq!(clean_skin(""), SKIN_DEFAULT);
+        assert_eq!(clean_skin("  ??  "), SKIN_DEFAULT);
+        assert_eq!(clean_skin("night-owl!"), "NIGHTOWL");
+        assert_eq!(clean_skin("abcdefghijklmnopqrstuvwxyz"), "ABCDEFGHIJKLMNOPQRSTUVWX");
+        for peer in 0..8 {
+            assert_eq!(skin_colour("NO_SUCH_SKIN", peer), skin_colour(SKIN_DEFAULT, peer));
+        }
+        assert_eq!(skin_colour(SKIN_DEFAULT, 1), PEER_COLOURS[1]);
+    }
+
+    #[test]
     fn names_are_cleaned_for_the_room() {
         assert_eq!(clean_name("  kyttu<script>!  "), "KYTTUSCRIPT");
         assert_eq!(clean_name("abcdefghijklmnopqrstuvwxyz0123"), "ABCDEFGHIJKLMNOPQRSTUVWX");
@@ -654,6 +867,7 @@ mod tests {
             "tok".into(),
             "ROOM-ABCDE-0123".into(),
             "HOST".into(),
+            "DAWN".into(),
         );
         let mut guest = NetSession::new(
             cfg,
@@ -663,7 +877,9 @@ mod tests {
             String::new(),
             String::new(),
             "GUEST".into(),
+            "NIGHT".into(),
         );
+        host.set_room_mods(&["neon_halls".to_string(), "BAD".to_string()]);
         host.start_run("ROOM-ABCDE-0123", "STANDARD");
         let (mut host_addr, mut guest_addr) = (None, None);
         let mut buf = [0u8; 2048];
@@ -671,7 +887,8 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         let (host_sample, guest_sample) = (sample(0, 3.0, -2.0), sample(0, 7.5, 1.25));
         let mut done = (false, false, false);
-        while Instant::now() < deadline && !(done.0 && done.1 && done.2) {
+        let mut packs_seen = false;
+        while Instant::now() < deadline && !(done.0 && done.1 && done.2 && packs_seen) {
             while let Ok((n, from)) = relay.recv_from(&mut buf) {
                 let f = decode(&buf[..n]).unwrap();
                 match f.kind {
@@ -694,17 +911,31 @@ mod tests {
             }
             events.extend(host.tick(Some(host_sample)));
             events.extend(guest.tick(Some(guest_sample)));
-            done.0 = host.remotes_at(1).iter().any(|r| r.peer == 42 && (r.x - 7.5).abs() < 1e-4 && (r.y - 1.25).abs() < 1e-4);
-            done.1 = guest.remotes_at(1).iter().any(|r| r.peer == HOST_PEER_ID && (r.x - 3.0).abs() < 1e-4);
+            done.0 = host.remotes_at(1).iter().any(|r| r.peer == 42 && (r.x - 7.5).abs() < 1e-4 && (r.y - 1.25).abs() < 1e-4 && r.skin == "NIGHT");
+            done.1 = guest.remotes_at(1).iter().any(|r| r.peer == HOST_PEER_ID && (r.x - 3.0).abs() < 1e-4 && r.skin == "DAWN");
             done.2 = events.contains(&NetEvent::Start { seed: "ROOM-ABCDE-0123".into(), difficulty: "STANDARD".into() })
                 || guest.room_seed() == "ROOM-ABCDE-0123";
+            packs_seen = events.contains(&NetEvent::Packs(vec!["neon_halls".into()]));
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(done.0, "the host sees the guest's sample");
-        assert!(done.1, "the guest sees the host's sample");
+        assert!(done.0, "the host sees the guest's sample and skin");
+        assert!(done.1, "the guest sees the host's sample and skin");
         assert!(done.2, "the guest receives the route seed");
+        assert!(packs_seen, "the guest receives the room's mod packs, without the id that is not a pack id");
+        assert_eq!(guest.room_mods(), ["neon_halls".to_string()]);
         assert!(events.contains(&NetEvent::GuestJoined("GUEST".into())));
         assert!(host.is_host() && !guest.is_host());
+    }
+
+    #[test]
+    fn room_mod_ids_keep_only_pack_ids_without_repeats() {
+        let ids: Vec<String> = ["neon_halls", "Bad-Id", "ab", "neon_halls", "2nd_pack", "x".repeat(33).as_str()]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(clean_mod_ids(&ids), ["neon_halls".to_string(), "2nd_pack".to_string()]);
+        let many: Vec<String> = (0..40).map(|i| format!("pack_{i:02}")).collect();
+        assert_eq!(clean_mod_ids(&many).len(), MAX_MODS);
     }
 
     /// Against a running lr_server (`LR_NET_TEST_HTTP_PORT`, relay as the server reports it): host a room, join it by
@@ -729,14 +960,14 @@ mod tests {
 
     fn room_round_trip(cfg: BackendConfig) {
         let route = crate::world::route::new_room_text();
-        let mut host = host_room(cfg.clone(), route.clone(), "HOST".into()).wait().expect("the host registers a room");
+        let mut host = host_room(cfg.clone(), route.clone(), "HOST".into(), SKIN_DEFAULT.into()).wait().expect("the host registers a room");
         assert!(host.is_host());
         let code = host.code.clone();
         assert!(api::valid_room_code(&code), "{code}");
         host.start_run(&route, "STANDARD");
-        let mut guest = join_room(cfg.clone(), code.clone(), "GUEST".into()).wait().expect("the guest joins by code");
+        let mut guest = join_room(cfg.clone(), code.clone(), "GUEST".into(), SKIN_DEFAULT.into()).wait().expect("the guest joins by code");
         assert!(!guest.is_host());
-        let unknown = join_room(cfg.clone(), "AAAAA".into(), "X".into()).wait().err().and_then(|e| e.status());
+        let unknown = join_room(cfg.clone(), "AAAAA".into(), "X".into(), SKIN_DEFAULT.into()).wait().err().and_then(|e| e.status());
         assert_eq!(unknown, Some(404), "an unknown code is refused by the directory");
 
         let (host_sample, guest_sample) = (sample(0, 3.0, -2.0), sample(0, 7.5, 1.25));
@@ -754,6 +985,9 @@ mod tests {
         assert!(host_sees, "the host sees the guest on the live relay");
         assert!(guest_sees, "the guest sees the host on the live relay");
         assert!(seed_seen, "the guest gets the route seed and the start");
+        // the lobby roster: the host lists the guest, and the guest lists the host
+        assert!(host.guest_names().iter().any(|n| n == "GUEST"), "the host lists the guest: {:?}", host.guest_names());
+        assert!(guest.guest_names().iter().any(|n| n == "HOST"), "the guest lists the host: {:?}", guest.guest_names());
         guest.leave();
         host.leave();
     }

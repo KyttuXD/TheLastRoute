@@ -6,7 +6,7 @@ use crate::game_saves::{match_save_path, SAVE_MAX_BYTES};
 use crate::lr_regex as regex;
 use crate::moderation::Who;
 use crate::public_route::JoinOptions;
-use crate::util::{hex, iso_time, js_number, str_nullish, str_or_empty, truthy, Reply};
+use crate::util::{hex, iso_time, js_number, str_nullish, str_or_empty, timing_safe_equal, truthy, Reply};
 
 fn not_owner() -> Response {
     json_response(403, &json!({ "ok": false, "code": "ADMIN_OWNER_REQUIRED", "error": "Full admin account required" }), &[])
@@ -249,6 +249,11 @@ impl LastRouteServer {
         }
         if get_or_head {
             if let Some(caps) = regex!(r"^/api/updates/files/([^/]+)$").captures(path) {
+                // the game files are not public: when a key is configured, the request must carry it
+                let key = &self.config.update_key;
+                if !key.is_empty() && !timing_safe_equal(request.header("x-download-key").as_bytes(), key.as_bytes()) {
+                    return Some(json_response(403, &json!({ "ok": false, "code": "DOWNLOAD_KEY_REQUIRED", "error": "A DOWNLOAD KEY IS REQUIRED" }), &[]));
+                }
                 let asset = published_update_path(&self.current_updates(), &caps[1]);
                 let found = if asset.is_empty() { None } else { try_static_file(method, self.config.update_directory.as_deref(), &asset) };
                 return Some(found.unwrap_or_else(|| json_response(404, &json!({ "ok": false, "error": "UPDATE FILE NOT FOUND" }), &[])));

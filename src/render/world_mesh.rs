@@ -13,7 +13,7 @@ use super::textures::{self, TexRef, TextureChoice};
 use crate::shared::assets::Assets;
 use crate::config::WALL_HEIGHT;
 use crate::content::props::{stable_index, visual_y};
-use crate::content::regions::RegionDef;
+use crate::content::regions::{RegionDef, RegionSafeLight};
 use crate::content::Content;
 use crate::world::facility::{stair_well_cells, STAIR_FLIGHT};
 use crate::world::{region_texture, Facility, TEXTURE_SETS};
@@ -46,11 +46,12 @@ pub fn lamps(f: &Facility, lights_on: &[bool], content: &Content) -> Vec<Lamp> {
     // the safe zone is a checkpoint: a warm light over its pad, so it reads as a lit area from the halls
     if let Some(s) = f.safe_zone {
         let (x, z) = s.center();
+        let light = safe_light_for(f, s.x, s.y);
         out.push(Lamp {
             pos: vec3(x, WALL_HEIGHT - 0.6, z),
             range: 7.0,
-            color: Color::new(0.95, 0.78, 0.55, 1.0),
-            energy: 2.0,
+            color: Color::new(light.color[0], light.color[1], light.color[2], 1.0),
+            energy: light.energy,
         });
     }
     let mut budget = 10;
@@ -161,13 +162,29 @@ fn region_wall_height(region: &str) -> f32 {
     geometry_wall_height(crate::content::regions::table().def(region))
 }
 
-/// The wall height of the region a floor cell is in: its room's region, or the district of its hall when the
-/// cell is in no room (or the lobby). The same choice `cell_surfaces` makes for the cell's textures.
-fn cell_wall_height(f: &Facility, x: i32, y: i32) -> f32 {
+/// The region a floor cell is in: its room's region, or the district of its hall when the cell is in no room
+/// (or the lobby). The same choice `cell_surfaces` makes for the cell's textures.
+fn cell_region(f: &Facility, x: i32, y: i32) -> &str {
     match f.room_at(x as f64 + 0.5, y as f64 + 0.5).filter(|i| !f.rooms[*i].lobby()) {
-        Some(i) => region_wall_height(&f.rooms[i].region),
-        None => region_wall_height(f.region_at(x, y)),
+        Some(i) => &f.rooms[i].region,
+        None => f.region_at(x, y),
     }
+}
+
+/// The wall height of the region a floor cell is in.
+fn cell_wall_height(f: &Facility, x: i32, y: i32) -> f32 {
+    region_wall_height(cell_region(f, x, y))
+}
+
+/// The safe-zone checkpoint light of the region that holds the cell (x, y): its `safe_light` block, or the
+/// game's defaults when the region has none (or no region is installed for it).
+fn safe_light_for(f: &Facility, x: i32, y: i32) -> RegionSafeLight {
+    safe_light_of(crate::content::regions::table().def(cell_region(f, x, y)))
+}
+
+/// A region's safe-zone light: its `safe_light` block, or the defaults when the region has no block (or no region).
+fn safe_light_of(def: Option<&RegionDef>) -> RegionSafeLight {
+    def.and_then(|d| d.safe_light).unwrap_or_default()
 }
 
 /// A builder per painted kind, falling back to the region swatch PNG for an unknown kind.
@@ -489,6 +506,55 @@ fn soften(verts: &mut [Vertex]) {
     }
 }
 
+/// A run of open cells along one side of a room where a hall opens into it: the cells, in order along the
+/// side, and the outward step from the room to the hall.
+#[derive(Debug, Clone, PartialEq)]
+struct ArchwayRun {
+    cells: Vec<(i32, i32)>,
+    outward: (i32, i32),
+}
+
+/// The doorways of a room `(x, y, w, h)`: on each side, each run of open cells whose outward cell is open too,
+/// up to five cells wide (a longer run is a wall-less side, not a doorway). `is_wall` reads the wall grid.
+fn archway_runs(rect: (i32, i32, i32, i32), is_wall: impl Fn(i32, i32) -> bool) -> Vec<ArchwayRun> {
+    let (x0, y0, w, h) = rect;
+    // each side: cells just inside the edge and the outward step
+    let sides: [(Vec<(i32, i32)>, (i32, i32)); 4] = [
+        ((x0..x0 + w).map(|x| (x, y0)).collect(), (0, -1)),
+        ((x0..x0 + w).map(|x| (x, y0 + h - 1)).collect(), (0, 1)),
+        ((y0..y0 + h).map(|y| (x0, y)).collect(), (-1, 0)),
+        ((y0..y0 + h).map(|y| (x0 + w - 1, y)).collect(), (1, 0)),
+    ];
+    let mut runs = vec![];
+    for (cells, outward) in sides {
+        let (ox, oy) = outward;
+        let open: Vec<bool> = cells
+            .iter()
+            .map(|(x, y)| !is_wall(*x, *y) && !is_wall(x + ox, y + oy))
+            .collect();
+        let mut i = 0;
+        while i < cells.len() {
+            if !open[i] {
+                i += 1;
+                continue;
+            }
+            let s = i;
+            while i < cells.len() && open[i] {
+                i += 1;
+            }
+            let e = i - 1;
+            if e - s + 1 > 5 {
+                continue; // a wall-less side, not a doorway
+            }
+            runs.push(ArchwayRun {
+                cells: cells[s..=e].to_vec(),
+                outward,
+            });
+        }
+    }
+    runs
+}
+
 /// Arched frames where a hall opens into a room: two dark pillars at the sides of the opening
 /// and a stepped arch under a lintel.
 fn archways(f: &Facility, b: &mut Builder) {
@@ -497,99 +563,68 @@ fn archways(f: &Facility, b: &mut Builder) {
     for r in f.rooms.iter() {
         // the lintel stands under the room's own wall height
         let h = region_wall_height(&r.region);
-        // each side: cells just inside the edge and the outward step
-        let sides: [(Vec<(i32, i32)>, (i32, i32)); 4] = [
-            ((r.x..r.x + r.w).map(|x| (x, r.y)).collect(), (0, -1)),
-            (
-                (r.x..r.x + r.w).map(|x| (x, r.y + r.h - 1)).collect(),
-                (0, 1),
-            ),
-            ((r.y..r.y + r.h).map(|y| (r.x, y)).collect(), (-1, 0)),
-            (
-                (r.y..r.y + r.h).map(|y| (r.x + r.w - 1, y)).collect(),
-                (1, 0),
-            ),
-        ];
-        for (cells, (ox, oy)) in sides {
-            let open: Vec<bool> = cells
-                .iter()
-                .map(|(x, y)| !f.is_wall_cell(*x, *y) && !f.is_wall_cell(x + ox, y + oy))
-                .collect();
-            let mut i = 0;
-            while i < cells.len() {
-                if !open[i] {
-                    i += 1;
-                    continue;
-                }
-                let s = i;
-                while i < cells.len() && open[i] {
-                    i += 1;
-                }
-                let e = i - 1;
-                if e - s + 1 > 5 {
-                    continue; // a wall-less side, not a doorway
-                }
-                let (sx, sy) = cells[s];
-                let (ex, ey) = cells[e];
-                // the opening's plane sits on the room's boundary line
-                let (px, pz, along) = if ox != 0 {
-                    let edge = if ox < 0 { sx as f32 } else { sx as f32 + 1.0 };
-                    (edge, 0.0, false)
+        for run in archway_runs((r.x, r.y, r.w, r.h), |x, y| f.is_wall_cell(x, y)) {
+            let (ox, oy) = run.outward;
+            let (sx, sy) = run.cells[0];
+            let (ex, ey) = run.cells[run.cells.len() - 1];
+            // the opening's plane sits on the room's boundary line
+            let (px, pz, along) = if ox != 0 {
+                let edge = if ox < 0 { sx as f32 } else { sx as f32 + 1.0 };
+                (edge, 0.0, false)
+            } else {
+                let edge = if oy < 0 { sy as f32 } else { sy as f32 + 1.0 };
+                (0.0, edge, true)
+            };
+            let (a0, a1) = if along {
+                (sx as f32, ex as f32 + 1.0)
+            } else {
+                (sy as f32, ey as f32 + 1.0)
+            };
+            let width = a1 - a0;
+            let mid = (a0 + a1) / 2.0;
+            let at = |t: f32, y: f32| {
+                if along {
+                    vec3(t, y, pz)
                 } else {
-                    let edge = if oy < 0 { sy as f32 } else { sy as f32 + 1.0 };
-                    (0.0, edge, true)
-                };
-                let (a0, a1) = if along {
-                    (sx as f32, ex as f32 + 1.0)
+                    vec3(px, y, t)
+                }
+            };
+            let size = |w: f32, hh: f32| {
+                if along {
+                    vec3(w, hh, 0.32)
                 } else {
-                    (sy as f32, ey as f32 + 1.0)
-                };
-                let width = a1 - a0;
-                let mid = (a0 + a1) / 2.0;
-                let at = |t: f32, y: f32| {
-                    if along {
-                        vec3(t, y, pz)
-                    } else {
-                        vec3(px, y, t)
-                    }
-                };
-                let size = |w: f32, hh: f32| {
-                    if along {
-                        vec3(w, hh, 0.32)
-                    } else {
-                        vec3(0.32, hh, w)
-                    }
-                };
-                // pillars
-                for t in [a0 + 0.08, a1 - 0.08] {
-                    b.cube(at(t, 1.35), size(0.16, 2.7), 0.0, wood, 0.0);
-                    b.cube(at(t, 1.05), size(0.2, 0.06), 0.0, trim, 0.0);
+                    vec3(0.32, hh, w)
                 }
-                // lintel and a stepped arch beneath it
-                b.cube(
-                    at(mid, (2.7 + h) / 2.0),
-                    size(width, h - 2.7),
-                    0.0,
-                    wood,
-                    0.0,
-                );
-                let steps = 4;
-                for k in 0..steps {
-                    let frac = (k as f32 + 1.0) / (steps as f32 + 1.0);
-                    let inset = (1.0 - (1.0 - frac * frac).sqrt()) * width * 0.5;
-                    let y = 2.7 - (k as f32 + 1.0) * 0.09;
-                    for t in [a0 + inset * 0.5, a1 - inset * 0.5] {
-                        b.cube(
-                            at(t, y + 0.045),
-                            size(inset.max(0.05), 0.09),
-                            0.0,
-                            wood,
-                            0.0,
-                        );
-                    }
-                }
-                b.cube(at(mid, 2.7 - 0.02), size(width, 0.04), 0.0, trim, 0.0);
+            };
+            // pillars
+            for t in [a0 + 0.08, a1 - 0.08] {
+                b.cube(at(t, 1.35), size(0.16, 2.7), 0.0, wood, 0.0);
+                b.cube(at(t, 1.05), size(0.2, 0.06), 0.0, trim, 0.0);
             }
+            // lintel and a stepped arch beneath it
+            b.cube(
+                at(mid, (2.7 + h) / 2.0),
+                size(width, h - 2.7),
+                0.0,
+                wood,
+                0.0,
+            );
+            let steps = 4;
+            for k in 0..steps {
+                let frac = (k as f32 + 1.0) / (steps as f32 + 1.0);
+                let inset = (1.0 - (1.0 - frac * frac).sqrt()) * width * 0.5;
+                let y = 2.7 - (k as f32 + 1.0) * 0.09;
+                for t in [a0 + inset * 0.5, a1 - inset * 0.5] {
+                    b.cube(
+                        at(t, y + 0.045),
+                        size(inset.max(0.05), 0.09),
+                        0.0,
+                        wood,
+                        0.0,
+                    );
+                }
+            }
+            b.cube(at(mid, 2.7 - 0.02), size(width, 0.04), 0.0, trim, 0.0);
         }
     }
 }
@@ -598,6 +633,7 @@ fn archways(f: &Facility, b: &mut Builder) {
 mod tests {
     use super::*;
     use std::f32::consts::{FRAC_PI_2, PI};
+    use crate::world::facility::{Cell, DoorDraw};
 
     /// A temporary region with a geometry block is parsed like a pack's file: its wall height is its own, and a
     /// region without the block (or no region) keeps WALL_HEIGHT.
@@ -611,6 +647,22 @@ mod tests {
         assert_eq!(geometry_wall_height(Some(&tall)), 6.5);
         assert_eq!(geometry_wall_height(Some(&plain)), WALL_HEIGHT);
         assert_eq!(geometry_wall_height(None), WALL_HEIGHT);
+    }
+
+    /// A region's safe-zone light comes from its `safe_light` block. A region without the block, or no region,
+    /// gets the checkpoint light the game shipped with (warm colour, energy 2.0).
+    #[test]
+    fn a_region_safe_light_block_sets_the_checkpoint_light_and_the_rest_default() {
+        use crate::content::regions::parse_file;
+        let lit = r#"{"schema":"lr.region/1","id":"tmp_lit","hall_floor":["a"],"hall_runner":false,"room_default_floor":["a"],"room_roles":["r"],"prop_set":[],"safe_light":{"color":[0.1,0.2,0.3],"energy":5.0}}"#;
+        let plain = r#"{"schema":"lr.region/1","id":"tmp_dim","hall_floor":["a"],"hall_runner":false,"room_default_floor":["a"],"room_roles":["r"],"prop_set":[]}"#;
+        let lit = parse_file("tmp_lit.json", lit).unwrap();
+        let plain = parse_file("tmp_dim.json", plain).unwrap();
+        assert_eq!(safe_light_of(Some(&lit)), RegionSafeLight { color: [0.1, 0.2, 0.3], energy: 5.0 });
+        assert_eq!(safe_light_of(Some(&plain)), RegionSafeLight::default());
+        assert_eq!(safe_light_of(None), RegionSafeLight::default());
+        assert_eq!(safe_light_of(None).color, [0.95, 0.78, 0.55]);
+        assert_eq!(safe_light_of(None).energy, 2.0);
     }
 
     /// Where a prop model's front (local +Z, the seat front of the chair GLBs) lands in (x, z) once drawn.
@@ -659,5 +711,50 @@ mod tests {
     fn room_door_keeps_the_gameplay_yaw() {
         assert_eq!(prop_visual_yaw(FRAC_PI_2, true), FRAC_PI_2);
         assert_eq!(prop_visual_yaw(FRAC_PI_2, false), FRAC_PI_2 + PI);
+    }
+
+    /// The cells a room door's header covers, placed as `door_header` places it: the doorway's `span` cells
+    /// across the wall (local X from the yaw), centred on the threshold cell's centre plus the drawn offset.
+    fn door_header_cells(cell: Cell, rotation: i32, door: DoorDraw) -> Vec<(i32, i32)> {
+        let yaw = rotation as f32 * FRAC_PI_2;
+        let across = Mat3::from_rotation_y(yaw) * Vec3::X;
+        let (cx, cz) = cell.center();
+        let centre = vec3(cx + door.offset[0], 0.0, cz + door.offset[1]);
+        (0..door.span)
+            .map(|i| {
+                let p = centre + across * (i as f32 - (door.span as f32 - 1.0) / 2.0);
+                (p.x.floor() as i32, p.z.floor() as i32)
+            })
+            .collect()
+    }
+
+    /// A door's header and an archway's lintel are both drawn over a doorway, so they must not share a cell.
+    ///
+    /// Why this checks the cell pickers and not a generated floor: a real floor needs `Facility::generate`
+    /// with the content catalog, which a unit test cannot build cheaply. So this runs the archway picker
+    /// (`archway_runs`) and the door header's cell placement (`door_header_cells`, which mirrors the `across`
+    /// and centre math of `door_header`) on a hand-made 4x4 room with one doorway in its top wall, and puts the
+    /// door on its west wall. It shows that these two placements stay apart. It does not show that a generated
+    /// door never lands on an archway run.
+    #[test]
+    fn door_header_and_archway_never_share_a_cell() {
+        // room floor x 2..=5, y 2..=5; a hall at y 0..=1 open at x 3 and 4; every other cell is wall
+        let is_wall = |x: i32, y: i32| {
+            let room = (2..6).contains(&x) && (2..6).contains(&y);
+            let hall = (3..5).contains(&x) && (0..2).contains(&y);
+            !(room || hall)
+        };
+        let runs = archway_runs((2, 2, 4, 4), is_wall);
+        assert_eq!(runs.len(), 1, "one doorway in the top wall: {runs:?}");
+        assert_eq!(runs[0].cells, vec![(3, 2), (4, 2)]);
+        assert_eq!(runs[0].outward, (0, -1));
+        let archway: Vec<(i32, i32)> = runs.iter().flat_map(|r| r.cells.iter().copied()).collect();
+
+        // a double door on the west wall: threshold (2, 4), across the wall along z (rotation 1)
+        let door = door_header_cells(Cell::new(2, 4), 1, DoorDraw { span: 2, offset: [0.0, 0.0] });
+        assert_eq!(door.len(), 2, "a double door covers two cells: {door:?}");
+        for c in &door {
+            assert!(!archway.contains(c), "door cell {c:?} is also an archway cell");
+        }
     }
 }
