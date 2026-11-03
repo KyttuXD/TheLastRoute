@@ -38,6 +38,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: sh packaging/nightly.sh dist/*.exe
+      - name: Publish to the VPS (automatic updates)
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          NIGHTLY_SSH_KEY: ${{ secrets.NIGHTLY_SSH_KEY }}
+          NIGHTLY_KNOWN_HOSTS: ${{ secrets.NIGHTLY_KNOWN_HOSTS }}
+        run: sh packaging/publish-vps.sh windows dist/last_route-windows-x86_64.exe
 
   linux:
     runs-on: ubuntu-22.04
@@ -54,6 +61,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: sh packaging/nightly.sh dist/last-route-linux-x86_64.tar.gz
+      - name: Publish to the VPS (automatic updates)
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          NIGHTLY_SSH_KEY: ${{ secrets.NIGHTLY_SSH_KEY }}
+          NIGHTLY_KNOWN_HOSTS: ${{ secrets.NIGHTLY_KNOWN_HOSTS }}
+        run: sh packaging/publish-vps.sh linux dist/last-route-linux-x86_64.tar.gz
       # The server alone, for updating the VPS: its own rolling release, nightly-server.
       - name: Collect the server build
         run: |
@@ -84,6 +98,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: sh packaging/nightly.sh dist/last_route-macos-universal.zip
+      - name: Publish to the VPS (automatic updates)
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          NIGHTLY_SSH_KEY: ${{ secrets.NIGHTLY_SSH_KEY }}
+          NIGHTLY_KNOWN_HOSTS: ${{ secrets.NIGHTLY_KNOWN_HOSTS }}
+        run: sh packaging/publish-vps.sh macos dist/last_route-macos-universal.zip
 
   # Intel Mac build for kt-mba. build_app.sh always builds both slices, so the zip holds an
   # x86_64 binary (plus arm64); it runs on Intel. macos-15-intel is the Intel (x64) image.

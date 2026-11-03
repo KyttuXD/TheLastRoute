@@ -1,52 +1,55 @@
 #!/bin/sh
-# Keeps "KYTTU The Last Route.app" in /Applications on this Mac up to date with the nightly macOS Intel build.
-# Uses curl and the GitHub API, so the GitHub CLI is not needed. Run by launchd (com.kyttu.lastroute.nightly.plist).
-# One-time setup: create a fine-grained GitHub token with read-only "Contents" access to KyttuXD/TheLastRoute only,
-# and save it to the file TOKEN_FILE below (chmod 600). The token is never printed or logged.
-REPO="KyttuXD/TheLastRoute"
-ASSET="last_route-macos-x86_64.zip"
+# Keeps "KYTTU The Last Route.app" in /Applications up to date with the newest macOS build published to the VPS.
+# Reads the public manifest, downloads the file with the download key, checks its SHA-256, then installs it.
+# Run by launchd (com.kyttu.lastroute.nightly.plist). Needs only curl, unzip and shasum (all present on macOS).
+# One-time setup: save the download key to $KEY_FILE (chmod 600). It is never printed or logged.
+BASE="http://lastroute.kyttuslab.org:8105/api/updates"
+CHANNEL="debug"
+PLATFORM="macos"
 APP="/Applications/KYTTU The Last Route.app"
 STATE_DIR="$HOME/Library/Application Support/LastRoutePlaytest"
-TOKEN_FILE="$STATE_DIR/github-token"
+KEY_FILE="$STATE_DIR/download-key"
 LOG="$STATE_DIR/nightly.log"
 mkdir -p "$STATE_DIR"
 
 log() { echo "$(date '+%Y-%m-%dT%H:%M:%S') $*" >> "$LOG"; }
 
-if [ ! -s "$TOKEN_FILE" ]; then
-    log "no token: save a read-only GitHub token to $TOKEN_FILE"
+if [ ! -s "$KEY_FILE" ]; then
+    log "no download key: save it to $KEY_FILE"
     exit 1
 fi
-TOKEN="$(cat "$TOKEN_FILE")"
-API="https://api.github.com/repos/$REPO/releases/tags/nightly"
-AUTH="Authorization: Bearer $TOKEN"
+KEY="$(cat "$KEY_FILE")"
 
-# the release JSON as one line; the asset block for our file holds its id and its updated_at time
-RELEASE="$(curl -fsSL -H "$AUTH" -H "Accept: application/vnd.github+json" "$API" 2>/dev/null | tr -d '\n')"
-if [ -z "$RELEASE" ]; then
-    log "could not read the nightly release (offline, or the token is wrong)"
+MANIFEST="$(curl -fsS -m 30 "$BASE/$CHANNEL/$PLATFORM" 2>/dev/null | tr -d '\n')"
+if [ -z "$MANIFEST" ]; then
+    log "could not read the update manifest (offline, or the server is down)"
     exit 1
 fi
-ASSET_ID="$(printf '%s' "$RELEASE" | grep -o "\"id\": *[0-9]*[^{}]*\"name\": *\"$ASSET\"" | grep -o '[0-9]*' | head -n 1)"
-STAMP="$(printf '%s' "$RELEASE" | grep -o "\"updated_at\": *\"[^\"]*\"[^{}]*\"name\": *\"$ASSET\"" | sed -E 's/.*"updated_at": *"([^"]*)".*/\1/' | head -n 1)"
-if [ -z "$ASSET_ID" ] || [ -z "$STAMP" ]; then
-    log "the nightly release has no $ASSET yet"
+FILE="$(printf '%s' "$MANIFEST" | sed -n 's/.*"file":"\([^"]*\)".*/\1/p')"
+SHA="$(printf '%s' "$MANIFEST" | sed -n 's/.*"sha256":"\([0-9a-f]*\)".*/\1/p')"
+BUILD="$(printf '%s' "$MANIFEST" | sed -n 's/.*"build":\([0-9]*\).*/\1/p')"
+if [ -z "$FILE" ] || [ -z "$SHA" ] || [ -z "$BUILD" ]; then
+    log "the manifest has no $PLATFORM build yet"
     exit 1
 fi
 
-CURRENT="$(cat "$STATE_DIR/nightly.stamp" 2>/dev/null)"
-if [ "$STAMP" = "$CURRENT" ] && [ -d "$APP" ]; then
+if [ "$BUILD" = "$(cat "$STATE_DIR/nightly.build" 2>/dev/null)" ] && [ -d "$APP" ]; then
     exit 0
 fi
 
 WORK="$(mktemp -d)"
-if ! curl -fsSL -H "$AUTH" -H "Accept: application/octet-stream" \
-        "https://api.github.com/repos/$REPO/releases/assets/$ASSET_ID" -o "$WORK/$ASSET"; then
-    log "download of $ASSET failed"
+if ! curl -fsSL -m 900 -H "X-Download-Key: $KEY" "$BASE/files/$FILE" -o "$WORK/$FILE"; then
+    log "download of $FILE failed (check the download key)"
     rm -rf "$WORK"
     exit 1
 fi
-if ! unzip -q "$WORK/$ASSET" -d "$WORK/unpacked"; then
+GOT="$(shasum -a 256 "$WORK/$FILE" | cut -d' ' -f1)"
+if [ "$GOT" != "$SHA" ]; then
+    log "checksum mismatch for $FILE: not installed"
+    rm -rf "$WORK"
+    exit 1
+fi
+if ! unzip -q "$WORK/$FILE" -d "$WORK/unpacked"; then
     log "the download did not unpack"
     rm -rf "$WORK"
     exit 1
@@ -63,8 +66,8 @@ xattr -cr "$NEW" 2>/dev/null
 rm -rf "$APP.previous"
 [ -d "$APP" ] && mv "$APP" "$APP.previous"
 if mv "$NEW" "$APP"; then
-    echo "$STAMP" > "$STATE_DIR/nightly.stamp"
-    log "updated the app to nightly $STAMP"
+    echo "$BUILD" > "$STATE_DIR/nightly.build"
+    log "updated the app to build $BUILD ($FILE)"
 else
     log "could not move the new app into /Applications; restoring the previous one"
     [ -d "$APP.previous" ] && mv "$APP.previous" "$APP"
