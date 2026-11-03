@@ -1,7 +1,7 @@
 //! Build steps:
-//! 1. Embeds everything under data/ (JSON content) and assets/ (pictures, Blockbench models)
+//! 1. Embeds the game's data (src/bin/last_route/data, data/regions) and assets (src/bin/last_route/assets) (pictures, Blockbench models)
 //!    into the executable, so the game runs from anywhere; mod packs still load from disk.
-//! 2. Gives the Windows executable the original app icon (assets/branding/logo_*.png, the same
+//! 2. Gives the Windows executable the original app icon (src/bin/last_route/assets/branding/logo_*.png, the same
 //!    octagon the Godot export presets use), packed into an .ico at build time.
 
 use std::path::{Path, PathBuf};
@@ -27,10 +27,9 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
     }
 }
 
-fn embed(name: &str, folder: &str, exts: &[&str], text: bool, code: &mut String) {
-    let root = Path::new(folder);
-    let mut files = vec![];
-    walk(root, root, &mut files);
+/// One static list of the files under each `(folder, key prefix)` root with an extension in `exts`:
+/// the key is the prefix plus the path under the folder, so the keys do not change when a folder moves.
+fn embed(name: &str, roots: &[(&str, &str)], exts: &[&str], text: bool, code: &mut String) {
     let ty = if text { "&str" } else { "&[u8]" };
     let mac = if text {
         "include_str!"
@@ -38,15 +37,21 @@ fn embed(name: &str, folder: &str, exts: &[&str], text: bool, code: &mut String)
         "include_bytes!"
     };
     code.push_str(&format!("pub static {name}: &[(&str, {ty})] = &[\n"));
-    for (rel, abs) in files {
-        let ext = rel.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-        if !exts.contains(&ext.as_str()) {
-            continue;
+    for (folder, prefix) in roots {
+        let root = Path::new(folder);
+        let mut files = vec![];
+        walk(root, root, &mut files);
+        for (rel, abs) in files {
+            let ext = rel.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+            if !exts.contains(&ext.as_str()) {
+                continue;
+            }
+            code.push_str(&format!(
+                "    ({:?}, {mac}({:?})),\n",
+                format!("{prefix}{rel}"),
+                abs.to_string_lossy()
+            ));
         }
-        code.push_str(&format!(
-            "    ({rel:?}, {mac}({:?})),\n",
-            abs.to_string_lossy()
-        ));
     }
     code.push_str("];\n");
 }
@@ -63,7 +68,7 @@ fn revision() -> String {
 }
 
 fn main() {
-    println!("cargo:rerun-if-changed=assets");
+    println!("cargo:rerun-if-changed=src/bin/last_route/assets");
     // the CI run number is this build's number for the update check; a local build has 0 and never updates
     println!("cargo:rerun-if-env-changed=GITHUB_RUN_NUMBER");
     let build = std::env::var("GITHUB_RUN_NUMBER").ok().filter(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit())).unwrap_or_else(|| "0".into());
@@ -72,12 +77,20 @@ fn main() {
     println!("cargo:rerun-if-env-changed=GITHUB_SHA");
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rustc-env=LR_REVISION={}", revision());
-    println!("cargo:rerun-if-changed=data");
+    println!("cargo:rerun-if-changed=src/bin/last_route/data");
+    println!("cargo:rerun-if-changed=data/regions");
     let mut code = String::new();
-    embed("DATA_FILES", "data", &["json"], true, &mut code);
+    // the game's data and pictures live in its bin folder; data/regions stays at the top (the lib's packs read it)
+    embed(
+        "DATA_FILES",
+        &[("src/bin/last_route/data", ""), ("data/regions", "regions/")],
+        &["json"],
+        true,
+        &mut code,
+    );
     embed(
         "ASSET_FILES",
-        "assets",
+        &[("src/bin/last_route/assets", "")],
         &["png", "bbmodel", "json", "glb"],
         false,
         &mut code,
@@ -109,7 +122,7 @@ fn main() {
         let images: Vec<(u32, Vec<u8>)> = sizes
             .iter()
             .filter_map(|s| {
-                std::fs::read(format!("assets/branding/logo_{s}.png"))
+                std::fs::read(format!("src/bin/last_route/assets/branding/logo_{s}.png"))
                     .ok()
                     .map(|b| (*s, b))
             })

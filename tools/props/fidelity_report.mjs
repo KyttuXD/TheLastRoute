@@ -24,11 +24,11 @@ const rel = (p) => path.relative(root, p).replace(/\\/g, '/');
 // (1) the five models
 console.log('== 1. Godot-only models: GLB vs converted bbmodel ==');
 const five = [
-  ['door_frame', 'environment/door_frame.glb', 'assets/environment/door_frame.bbmodel'],
-  ['floor_tile', 'environment/floor_tile.glb', 'assets/environment/floor_tile.bbmodel'],
-  ['wall_block', 'environment/wall_block.glb', 'assets/environment/wall_block.bbmodel'],
-  ['kathy_scythe', 'props/hunter_items/kathy_scythe.glb', 'assets/props/hunter_items/kathy_scythe.bbmodel'],
-  ['sewer_outflow_pipe_broken', 'props/sewer/sewer_outflow_pipe_broken.glb', 'assets/props/sewer/sewer_outflow_pipe_broken.bbmodel'],
+  ['door_frame', 'environment/door_frame.glb', 'src/bin/last_route/assets/environment/door_frame.bbmodel'],
+  ['floor_tile', 'environment/floor_tile.glb', 'src/bin/last_route/assets/environment/floor_tile.bbmodel'],
+  ['wall_block', 'environment/wall_block.glb', 'src/bin/last_route/assets/environment/wall_block.bbmodel'],
+  ['kathy_scythe', 'props/hunter_items/kathy_scythe.glb', 'src/bin/last_route/assets/props/hunter_items/kathy_scythe.bbmodel'],
+  ['sewer_outflow_pipe_broken', 'props/sewer/sewer_outflow_pipe_broken.glb', 'src/bin/last_route/assets/props/sewer/sewer_outflow_pipe_broken.bbmodel'],
 ];
 for (const [name, glb, out] of five) {
   const r = convert(fs.readFileSync(path.join(godot, glb)), name);
@@ -45,7 +45,7 @@ for (const [name, glb, out] of five) {
 console.log('\n== 2. Scale check: converter output vs existing assets/props/*.bbmodel (same prop, variant _0) ==');
 for (const name of ['arcadeCabinet', 'diningChair', 'bedroomRug', 'labBench', 'gothicRoomDoor', 'ivStand']) {
   const g = ['_0.glb', '.glb'].map((s) => path.join(godot, 'props', 'blocky', name + s)).find((p) => fs.existsSync(p));
-  const existing = path.join(root, 'assets', 'props', name + '.bbmodel');
+  const existing = path.join(root, 'src', 'bin', 'last_route', 'assets', 'props', name + '.bbmodel');
   if (!g || !fs.existsSync(existing)) { console.log(`${name}: skipped (no ${!g ? 'Godot GLB' : 'Rust bbmodel'})`); continue; }
   const r = convert(fs.readFileSync(g), name), a = bboxOfBb(r.bbmodel), b = bboxOfBb(JSON.parse(fs.readFileSync(existing, 'utf8')));
   const same = [0, 1, 2].every((i) => Math.abs(a.mn[i] - b.mn[i]) < 0.01 && Math.abs(a.mx[i] - b.mx[i]) < 0.01);
@@ -56,25 +56,25 @@ for (const name of ['arcadeCabinet', 'diningChair', 'bedroomRug', 'labBench', 'g
 console.log('\n== 3. Variants: arcadeCabinet_0/1/2 -> tools/props/out/variants ==');
 const vdir = path.join(here, 'out', 'variants');
 fs.mkdirSync(vdir, { recursive: true });
-const ex = bboxOfBb(JSON.parse(fs.readFileSync(path.join(root, 'assets', 'props', 'arcadeCabinet.bbmodel'), 'utf8')));
+const ex = bboxOfBb(JSON.parse(fs.readFileSync(path.join(root, 'src', 'bin', 'last_route', 'assets', 'props', 'arcadeCabinet.bbmodel'), 'utf8')));
 console.log(`existing arcadeCabinet.bbmodel size ${ex.size.join('x')} m`);
 for (const i of [0, 1, 2]) {
   const name = `arcadeCabinet_${i}`;
   const r = convert(fs.readFileSync(path.join(godot, 'props', 'blocky', name + '.glb')), name, { atlasName: 'blocky_atlas.png' });
   fs.writeFileSync(path.join(vdir, name + '.bbmodel'), JSON.stringify(r.bbmodel));
   const b = bboxOfBb(r.bbmodel), rt = roundTrip(r.bbmodel, r.source);
-  const shared = Buffer.from(JSON.parse(fs.readFileSync(path.join(root, 'assets', 'props', 'arcadeCabinet.bbmodel'), 'utf8')).textures[0].source.split(',')[1], 'base64').equals(r.source.png);
+  const shared = Buffer.from(JSON.parse(fs.readFileSync(path.join(root, 'src', 'bin', 'last_route', 'assets', 'props', 'arcadeCabinet.bbmodel'), 'utf8')).textures[0].source.split(',')[1], 'base64').equals(r.source.png);
   console.log(`${name}: size ${b.size.join('x')} m | cubes ${r.stats.cubes} mesh elements ${r.stats.meshElements} faces ${r.stats.totalFaces} | atlas same PNG as existing: ${shared} | roundtrip ${rt.ok ? 'OK' : 'FAIL'} | same bounds as existing: ${[0, 1, 2].every((k) => Math.abs(b.size[k] - ex.size[k]) < 0.01)}`);
 }
 
 // (4) the 430 GLBs the Rust port ships
 console.log('\n== 4. All GLBs shipped in assets/ ==');
 const all = [];
-(function walk(d) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else if (e.name.endsWith('.glb')) all.push(p); } })(path.join(root, 'assets'));
+(function walk(d) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else if (e.name.endsWith('.glb')) all.push(p); } })(path.join(root, 'src', 'bin', 'last_route', 'assets'));
 const per = {}, rows = [];
 let fail = 0;
 for (const f of all) {
-  const folder = path.relative(path.join(root, 'assets'), path.dirname(f)).replace(/\\/g, '/');
+  const folder = path.relative(path.join(root, 'src', 'bin', 'last_route', 'assets'), path.dirname(f)).replace(/\\/g, '/');
   const t = (per[folder] ||= { n: 0, pure: 0, mixed: 0, meshOnly: 0, fail: 0, rtFail: 0, cubes: 0, meshFaces: 0, faces: 0 });
   t.n++;
   try {

@@ -735,10 +735,10 @@ impl AccountService {
 
     /// `accountExists(name)`.
     pub fn account_exists(&self, name: &str) -> bool {
-        // The website has no route that answers this, and the local store is empty: report no account rather than
-        // guess one.
-        if self.is_upstream() {
-            return false;
+        // With an upstream the website answers; a refused or unreachable answer is no account, never a guess from the
+        // empty local store.
+        if let Some((status, reply)) = self.forward("/api/account/exists", &json!({ "username": name })) {
+            return status == 200 && reply.get("exists") == Some(&json!(true));
         }
         self.lock().accounts.contains_key(&username_of_str(name))
     }

@@ -57,24 +57,21 @@ the game.
 
 The package builds three executables from one library:
 
-- `src/lib.rs` (crate `last_route_core`) — the shared core every game uses: `config`, `content`,
-  `world`, `hunters`, `game` (player, items, interactions, capture and escape, the streamed
-  window), `render`, `audio`, and `shared` (assets, paths, checkpoints, admin switches)
-- `src/bin/last_route/` — KYTTU: The Last Route: `app` (main loop, menus, screenshot and self-test
-  modes), `ui` (HUD, map, menus and run report), `headless` (agent and test modes), plus `net`
-  and `updater`, which are not compiled yet
-- `src/bin/night_watch/` — KYTTU: Night Watch (placeholder, not started)
+- `src/lib.rs` (crate `last_route_core`) — only what executables share: `packs` and `shared::paths`
+- `src/bin/last_route/` — KYTTU: The Last Route: the front end (`app`, `ui`, `headless`, `net`, `updater`) and the
+  game modules (`config`, `content`, `world`, `hunters`, `game`, `render`, `audio`, `shared`), plus its `data/` and `assets/`
+- `src/bin/night_watch/` — KYTTU: Night Watch (shell, framework and modes; see [NIGHT_WATCH_MODES.md](NIGHT_WATCH_MODES.md))
 - `src/bin/lr_server/` — the dedicated server (`lr_server`)
 
-Core modules:
+Game modules (all under `src/bin/last_route/`; the layout is in [SOURCE_LAYOUT.md](SOURCE_LAYOUT.md)):
 
-- `src/config` — tuning numbers and difficulty profiles (see [MECHANICS.md](../MECHANICS.md))
-- `src/content` — the data-driven content registry (`data/*.json` and mod packs)
-- `src/world` — the seeded random generator, the facility floor generator and the Infinite chunks
-- `src/hunters` — the shared hunter brain and each hunter's own tricks
-- `src/game` — the run logic
-- `src/render` — shader, world meshes, the painted textures (`textures/`), Blockbench and Blender
+- `config` — tuning numbers and difficulty profiles (see [MECHANICS.md](../MECHANICS.md))
+- `content` — the data-driven content registry (`data/*.json` and mod packs)
+- `world` — the seeded random generator, the facility floor generator and the Infinite chunks
+- `hunters` — the shared hunter brain and each hunter's own tricks
+- `game` — the run logic
+- `render` — shader, world meshes, the painted textures (`textures/`), Blockbench and Blender
   models, scene and held item
-- `src/audio` — the synthesised sound cues (`cues/`)
-- `data/` — the game's JSON content; `assets/` — textures and models
+- `audio` — the synthesised sound cues (`cues/`)
+- `data/` and `assets/` — the game's JSON content, textures and models (`data/regions` stays at the top level)
 - `tools/prop_convert` — converts the blocky prop GLBs to .bbmodel

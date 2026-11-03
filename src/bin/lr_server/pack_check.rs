@@ -2,13 +2,13 @@
 //!
 //! It builds the manifest the index would receive (`pack.json` plus a `files` list of every file in the folder, with
 //! its sha256 and size) and runs it through [`validate_pack_manifest`] with [`MOD_LIMITS`]. Then it runs the game's
-//! region loader on the folder (`content::regions::load`), the same code the game uses at start-up. Nothing is
+//! region loader on the folder (`packs::regions::load`), the same code the game uses at start-up. Nothing is
 //! written and no port is opened.
 
 use crate::mod_packs::{validate_pack_manifest, ManifestError, MOD_LIMITS};
 use crate::util;
-use last_route_core::content::packs::Pack;
-use last_route_core::content::regions;
+use last_route_core::packs::regions;
+use last_route_core::packs::Pack;
 use serde_json::{json, Value};
 use std::path::Path;
 

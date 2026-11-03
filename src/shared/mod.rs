@@ -1,5 +1,3 @@
-pub mod admin_flags;
-pub mod assets;
-pub mod checkpoint;
+//! Items every executable shares. The game's own shared modules live in `src/bin/last_route/shared`.
+
 pub mod paths;
-pub mod safe_room;

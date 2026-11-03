@@ -21,7 +21,7 @@ cp packaging/macos/Info.plist "$APP/Contents/Info.plist"
 ICONSET="$(mktemp -d)/last_route.iconset"
 mkdir -p "$ICONSET"
 for s in 16 32 64 128 256; do
-    cp "assets/branding/logo_$s.png" "$ICONSET/icon_${s}x${s}.png"
+    cp "src/bin/last_route/assets/branding/logo_$s.png" "$ICONSET/icon_${s}x${s}.png"
 done
 cp assets/branding/logo_32.png "$ICONSET/icon_16x16@2x.png"
 cp assets/branding/logo_64.png "$ICONSET/icon_32x32@2x.png"

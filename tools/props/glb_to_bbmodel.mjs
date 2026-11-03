@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// glb_to_bbmodel: Godot-side blocky GLB -> Blockbench .bbmodel the Rust loader (src/render/bbmodel.rs) accepts.
+// glb_to_bbmodel: Godot-side blocky GLB -> Blockbench .bbmodel the Rust loader (src/bin/last_route/render/bbmodel.rs) accepts.
 //
 //   node tools/props/glb_to_bbmodel.mjs <in.glb> <out.bbmodel> [--name NAME] [--atlas-name FILE.png] [--quiet]
 //   node tools/props/glb_to_bbmodel.mjs --dir <glb_dir> --out <out_dir> [--recursive] [--quiet]
@@ -323,7 +323,7 @@ export function convert(buf, name, opts = {}) {
   return { bbmodel: bb, stats, source: src };
 }
 
-// ---------- loader replica (mirrors src/render/bbmodel.rs) for round-trip checks ----------
+// ---------- loader replica (mirrors src/bin/last_route/render/bbmodel.rs) for round-trip checks ----------
 /** Faces the Rust loader would build: [{corners:[[x,y,z]..] (bbmodel units), uv:[[px,px]..]}] */
 export function loadLikeRust(bb) {
   const out = [];

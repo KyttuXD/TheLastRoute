@@ -9,7 +9,16 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-pub use last_route_core::{audio, config, content, game, hunters, render, shared, world};
+pub use last_route_core::packs;
+
+mod audio;
+mod config;
+mod content;
+mod game;
+mod hunters;
+mod render;
+mod shared;
+mod world;
 
 mod app;
 mod headless;

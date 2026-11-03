@@ -1,0 +1,53 @@
+{
+	"schema": "nw.calls/1",
+	"id": "bedroom",
+	"order": 3,
+	"levels": [
+		{
+			"level": "1",
+			"at": 6,
+			"lines": [
+				"Zellia. This room is quiet and there are no cameras. You'll hear things before you see them.",
+				"Loxelle is in the closet. You won't see her, but you'll hear her breathing on the left, and her breath gets heavy when she's close. A holds it shut until it stops.",
+				"D puts a light on the hall, F on the bed. You only have one free hand, so choose.",
+				"The battery is limited, and it doesn't come back. Don't waste it."
+			]
+		},
+		{
+			"level": "2",
+			"at": 6,
+			"lines": [
+				"Javelle is awake. She stays where the light ends. A little light on the hall is usually enough."
+			]
+		},
+		{
+			"level": "3",
+			"at": 6,
+			"lines": [
+				"Haelith only moves when the room is dark, and a light on the bed pushes her back. Keep that in mind when you're saving the battery."
+			]
+		},
+		{
+			"level": "4",
+			"at": 6,
+			"lines": [
+				"The house is louder tonight. Listen for which side it's coming from, and answer that side.",
+				"It also notices stillness. If you lie there doing nothing for too long, they get restless. The closet door costs nothing to hold."
+			]
+		},
+		{
+			"level": "5",
+			"at": 6,
+			"lines": [
+				"All three are awake. Listen first, then act, and save the battery for the side that needs it."
+			]
+		},
+		{
+			"level": "6",
+			"at": 6,
+			"lines": [
+				"Last night in this room. The battery is the shortest it has been. Same as before: listen first, then act."
+			]
+		}
+	]
+}

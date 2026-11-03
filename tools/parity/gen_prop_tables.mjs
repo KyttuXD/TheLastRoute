@@ -1,7 +1,7 @@
-// Generates src/world/route/prop_tables.rs from the Godot sources (read-only).
+// Generates src/bin/last_route/world/route/prop_tables.rs from the Godot sources (read-only).
 //
 // Usage (from the Rust repo root or anywhere):
-//   node tools/parity/gen_prop_tables.mjs          write src/world/route/prop_tables.rs
+//   node tools/parity/gen_prop_tables.mjs          write src/bin/last_route/world/route/prop_tables.rs
 //   node tools/parity/gen_prop_tables.mjs --check  write nothing; exit 1 when the file on disk is not what this would write
 //
 // The Godot app root is $KT_GODOT_APP, else ../LastRoute Godot/KyttusLabApp beside this Rust repo.
@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const RUST_ROOT = path.resolve(HERE, '..', '..');
-const OUT_PATH = path.join(RUST_ROOT, 'src', 'world', 'route', 'prop_tables.rs');
+const OUT_PATH = path.join(RUST_ROOT, 'src', 'bin', 'last_route', 'world', 'route', 'prop_tables.rs');
 const GODOT_APP = process.env.KT_GODOT_APP
 	? path.resolve(process.env.KT_GODOT_APP)
 	: path.resolve(RUST_ROOT, '..', 'LastRoute Godot', 'KyttusLabApp');

@@ -989,7 +989,7 @@ impl Session {
                     .stairs
                     .iter()
                     .enumerate()
-                    .filter(|(_, s)| s.dir == dir)
+                    .filter(|(_, s)| s.dir == dir && s.kind == crate::world::facility::LinkKind::Stairs)
                     .min_by(|a, b| {
                         pdist(a.1.cell.center(), me)
                             .partial_cmp(&pdist(b.1.cell.center(), me))

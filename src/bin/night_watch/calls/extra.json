@@ -1,0 +1,36 @@
+{
+	"schema": "nw.calls/1",
+	"id": "extra",
+	"order": 7,
+	"levels": [
+		{
+			"level": "1",
+			"at": 6,
+			"lines": [
+				"Zellia. Tonight's watch is on the roof. The wind keeps taking the lantern, so relight it when it goes.",
+				"A is the stair door and D is the hatch. Q and E hold the torch toward each side.",
+				"Close one when she's at it, and keep the torch on her while she approaches. The lantern's oil works the winches as well as the light, so don't hold them shut for longer than you have to."
+			]
+		},
+		{
+			"level": "2",
+			"at": 6,
+			"lines": [
+				"The bus stop. It's colder than it looks out there.",
+				"The heat lamp is on H and it burns fuel. There are canisters left around the shelter. Pick them up when you see them.",
+				"Snow comes through in squalls, and the cold bites harder while one lasts. The first bus is due at dawn."
+			]
+		},
+		{
+			"level": "3",
+			"at": 6,
+			"lines": [
+				"Last watch is the campfire. Logs go in on Space, and G fetches more from the dark. Your back is to the trees while you do.",
+				"Verrine comes out of the trees on the left, Quenelle on the right. Q and E hold the torch on a side, and that holds her still.",
+				"Keep the torch on Verrine once she reaches the light, and she goes back. It only holds Quenelle: get in the tent with T while she's there and she loses the trail.",
+				"The tent only hides you from Quenelle. Verrine keeps coming, and Ysolde goes for the logs. Stay in too long and she looks in.",
+				"Rain comes and goes, and the fire goes down faster in it. When it burns low, they get bolder."
+			]
+		}
+	]
+}

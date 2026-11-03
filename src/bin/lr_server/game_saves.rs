@@ -24,6 +24,7 @@ pub const SAVE_MAX_BYTES: usize = 64 * 1024;
 pub const ALLOWED_SAVES: &[(&str, &[&str])] = &[
     ("last-route-godot", &["run", "run-world-1"]),
     ("last-route-rust", &["run", "run-world-1"]),
+    ("night-watch-rust", &["progress"]),
 ];
 
 /// `SAVE_PATH.exec(pathname)` -> `(gameId, slot)` (raw, never decoded).
@@ -132,6 +133,48 @@ fn loaded_save(game_id: &str, slot: &str, website: &Value) -> Value {
         "data": website.get("data").cloned().unwrap_or(Value::Null),
         "updatedAt": num(saved_seconds(website.get("savedAt"))),
     })
+}
+
+/// The revision of a `run-world-N` slot; None for any other slot.
+fn run_world_revision(slot: &str) -> Option<u32> {
+    slot.strip_prefix("run-world-")?.parse().ok()
+}
+
+/// The older `run-world-N` slots to delete once `slot` was saved: every revision below it except the newest of them, so
+/// at most one older revision remains beside the one just written.
+fn superseded_run_worlds(slots: &[String], slot: &str) -> Vec<String> {
+    let Some(current) = run_world_revision(slot) else { return Vec::new() };
+    let mut older: Vec<(u32, &String)> = slots
+        .iter()
+        .filter_map(|name| run_world_revision(name).filter(|revision| *revision < current).map(|revision| (revision, name)))
+        .collect();
+    older.sort_by(|a, b| b.0.cmp(&a.0));
+    older.into_iter().skip(1).map(|(_, name)| name.clone()).collect()
+}
+
+/// Deletes the superseded run-world slots of the account on the website. A failed list or delete is logged and never
+/// fails the save that already went through.
+fn prune_older_revisions(upstream: &Upstream, token: &str, game_id: &str, slot: &str) {
+    if run_world_revision(slot).is_none() {
+        return;
+    }
+    let (status, listed) = upstream.call("/api/v1/saves/list", &json!({ "sessionToken": token, "gameId": game_id }));
+    if status != 200 || listed.get("ok") != Some(&json!(true)) {
+        util::log_warn(&format!("[saves] could not list {game_id} saves to prune behind {slot}: status {status}"));
+        return;
+    }
+    let names: Vec<String> = listed
+        .get("slots")
+        .and_then(Value::as_array)
+        .map(|rows| rows.iter().filter_map(|row| row.get("slotId")?.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    for old in superseded_run_worlds(&names, slot) {
+        let (status, deleted) =
+            upstream.call("/api/v1/saves/delete", &json!({ "sessionToken": token, "gameId": game_id, "slotId": old }));
+        if status != 200 || deleted.get("ok") != Some(&json!(true)) {
+            util::log_warn(&format!("[saves] could not delete superseded {game_id} slot {old}: status {status}"));
+        }
+    }
 }
 
 fn off() -> Reply {
@@ -286,6 +329,7 @@ impl GameSaves {
         if status != 200 || saved.get("ok") != Some(&json!(true)) {
             return (status, saved);
         }
+        prune_older_revisions(upstream, token, game_id, slot);
         let updated_at = if saved.get("savedAt").is_some() { saved_seconds(saved.get("savedAt")) } else { requested };
         (200, json!({ "ok": true, "gameId": game_id, "slot": slot, "updatedAt": num(updated_at) }))
     }
@@ -552,6 +596,14 @@ mod tests {
         assert_eq!(refused, (200, json!({ "ok": true, "gameId": "last-route-rust", "slot": "run", "updatedAt": 500 })));
         assert_eq!(newest_wins_reply("last-route-rust", "run", stored_at, 500.0), None, "an equal time is written");
         assert_eq!(newest_wins_reply("last-route-rust", "run", stored_at, 501.0), None, "a newer upload is written");
+    }
+
+    #[test]
+    fn after_a_run_world_save_only_one_older_revision_survives() {
+        let slots: Vec<String> = ["run", "run-world-1", "run-world-2", "run-world-3"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(superseded_run_worlds(&slots, "run-world-3"), vec!["run-world-1".to_string()]);
+        assert!(superseded_run_worlds(&slots, "run-world-2").is_empty());
+        assert!(superseded_run_worlds(&slots, "run").is_empty());
     }
 
     #[test]

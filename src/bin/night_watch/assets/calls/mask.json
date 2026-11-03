@@ -1,0 +1,60 @@
+{
+	"schema": "nw.calls/1",
+	"id": "mask",
+	"order": 1,
+	"levels": [
+		{
+			"level": "1",
+			"at": 6,
+			"lines": [
+				"Zellia. This wing has no doors, so the usual routine doesn't apply.",
+				"Thessine will use the hall. If she walks into the office, put the mask on with S and keep it on until she leaves. F lights the hall.",
+				"The cameras are on Space or W, and the music box is on camera 1. Hold R to wind it. It starts to run down at 2 AM tonight.",
+				"Watch the ballroom. Whoever is standing there takes the hall next. Camera 8 is the hall itself, right outside your door.",
+				"While you watch one of them on camera on her way here, she holds still. The cameras run off your battery, though, and so does the desk lamp on L.",
+				"Your flashlight is limited, and it doesn't come back. If it dies, don't wait in the dark."
+			]
+		},
+		{
+			"level": "2",
+			"at": 6,
+			"lines": [
+				"Verrine is out tonight. She stays in the vents, and it is dark in there, so she only shows in the light. Q lights the left one and E the right. A light on her usually settles things.",
+				"Cameras 6 and 7 show the ducts, and the ducts are dark too. Hold Q on camera 6 or E on camera 7 to light the duct. If she's crawling down one, you know which vent to light."
+			]
+		},
+		{
+			"level": "3",
+			"at": 6,
+			"lines": [
+				"Umbriel is out tonight, and she doesn't walk. She runs. When you hear her break into a run, she's coming down the hall.",
+				"The mask does nothing to her. Flash the hall light at her, F, a few quick flashes, and she backs off to the gallery.",
+				"If she's crouched by the hall doors on camera 4, she's about to go. Watching her there holds her, but once she runs, the cameras won't stop her.",
+				"Each flash costs a little battery, so don't waste them."
+			]
+		},
+		{
+			"level": "4",
+			"at": 6,
+			"lines": [
+				"The music box runs down faster now. Listen to the tune. When it slows, it needs winding.",
+				"Haelith is out tonight. She runs the ducts fast, and a quick light sends her off. She doesn't go far: she comes back down the other duct."
+			]
+		},
+		{
+			"level": "5",
+			"at": 6,
+			"lines": [
+				"Everyone in this wing is awake tonight. The routine hasn't changed.",
+				"Ilyra is out tonight too. She creeps along the ducts while it is dark and freezes when the light is on her. Only one of them is ever in the vents at a time."
+			]
+		},
+		{
+			"level": "6",
+			"at": 6,
+			"lines": [
+				"This is the last night in this wing, and the box runs down fastest of all. Keep to the routine, and keep the flashlight for when it counts."
+			]
+		}
+	]
+}

@@ -67,4 +67,4 @@ inherits = "dev"
 debug = "line-tables-only"
 
 [patch.crates-io]
-quad-snd = { path = "src/audio/quad-snd" }
+quad-snd = { path = "src/bin/last_route/audio/quad-snd" }
