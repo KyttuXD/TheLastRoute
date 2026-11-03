@@ -113,22 +113,5 @@ jobs:
           NIGHTLY_KNOWN_HOSTS: ${{ secrets.NIGHTLY_KNOWN_HOSTS }}
         run: sh packaging/publish-vps.sh macos dist/last_route-macos-universal.zip
 
-  # Intel Mac build for kt-mba. build_app.sh always builds both slices, so the zip holds an
-  # x86_64 binary (plus arm64); it runs on Intel. macos-15-intel is the Intel (x64) image.
-  macos-intel:
-    runs-on: macos-15-intel
-    steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: macos-intel
-      - run: sh packaging/macos/build_app.sh
-      - run: cd dist && zip -qry last_route-macos-x86_64.zip "KYTTU The Last Route.app"
-      - uses: actions/upload-artifact@v4
-        continue-on-error: true
-        with: { name: last_route-macos-x86_64, path: dist/last_route-macos-x86_64.zip, retention-days: 3 }
-      - name: Publish to nightly
-        if: github.ref == 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: sh packaging/nightly.sh dist/last_route-macos-x86_64.zip
+# The universal zip above already holds the Intel (x86_64) slice, so kt-mba takes that file. A separate
+# macos-15-intel job compiled the same two slices again on a slower runner (about 8 minutes) and was removed.
