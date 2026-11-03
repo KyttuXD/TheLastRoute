@@ -15,6 +15,7 @@ use crate::app::assets::Assets;
 use crate::game::endless::{FullMapFeed, MapChunk};
 use crate::game::Game;
 use crate::hunters::brain::Brain;
+use crate::net::world_sync::RemoteView;
 use crate::world::infinite::CHUNK;
 use macroquad::prelude::*;
 
@@ -103,8 +104,8 @@ fn fit_box(plan: Rect, w: i32, h: i32) -> Xf {
     }
 }
 
-/// Draws the minimap or a floor map into `r` (units).
-pub fn draw_map(g: &Game, r: Rect, full: bool) {
+/// Draws the minimap or a floor map into `r` (units), with the teammates in `remotes` as pins.
+pub fn draw_map(g: &Game, r: Rect, full: bool, remotes: &[RemoteView]) {
     let (vx, vy, vw, vh) = view_cells(g, full);
     let b = fit_box(r, vw, vh);
     let xf = Xf {
@@ -112,12 +113,12 @@ pub fn draw_map(g: &Game, r: Rect, full: bool) {
         ox: b.ox - vx as f32 * b.cell,
         oy: b.oy - vy as f32 * b.cell,
     };
-    draw_floor(g, xf, (vx, vy, vw, vh), full);
+    draw_floor(g, xf, (vx, vy, vw, vh), full, remotes);
 }
 
 /// Draws the floor cells `cells` (x, y, w, h) through `xf`: the floor, the safe zone, relays, batteries, the lift, the
-/// stairs, the waypoint, the hunters on the map and the runner.
-fn draw_floor(g: &Game, xf: Xf, cells: (i32, i32, i32, i32), full: bool) {
+/// stairs, the waypoint, the hunters on the map, the teammates and the runner.
+fn draw_floor(g: &Game, xf: Xf, cells: (i32, i32, i32, i32), full: bool, remotes: &[RemoteView]) {
     let p = pal();
     let (vx, vy, vw, vh) = cells;
     let cell = xf.cell;
@@ -200,6 +201,7 @@ fn draw_floor(g: &Game, xf: Xf, cells: (i32, i32, i32, i32), full: bool) {
             (cell * 0.55).max(if full { 3.0 } else { 1.2 }),
         );
     }
+    draw_runner_pins(xf, cells, (0, 0), remotes, full);
     let q = xf.at(g.p.pos);
     runner_wedge(g, vec2(q.0, q.1), cell, full);
 }
@@ -210,6 +212,87 @@ fn hunter_colour(h: &Brain) -> Color {
         METER_LOW
     } else {
         alpha(METER_LOW, 0.4)
+    }
+}
+
+/// Godot PlayerColors' palette (Okabe-Ito plus Tol extensions), the colour of a teammate's pin. Godot ranks the peers of the
+/// room for a slot; the Rust map has no roster in view, so the slot is the peer id.
+const TEAMMATE_PALETTE: [Color; 12] = [
+    hex(0xe69f00),
+    hex(0x56b4e9),
+    hex(0x009e73),
+    hex(0xf0e442),
+    hex(0x0072b2),
+    hex(0xd55e00),
+    hex(0xcc79a7),
+    hex(0xb8b8b8),
+    hex(0x882255),
+    hex(0x88ccee),
+    hex(0xddcc77),
+    hex(0xaa4499),
+];
+/// The ink that rings every teammate arrow (Godot `_draw_remote_player`'s ink).
+const TEAMMATE_INK: Color = rgba(0.01, 0.04, 0.05, 0.95);
+
+/// The colour of a teammate's pin, by peer id.
+pub fn teammate_colour(peer: u32) -> Color {
+    TEAMMATE_PALETTE[peer as usize % TEAMMATE_PALETTE.len()]
+}
+
+/// The map cell of a teammate's runner: its `RemoteView` position moved by `origin` into the frame the map is drawn in (the window
+/// origin on the full map's level 0, else (0, 0)). It is the same cell frame as the runner's own `Game::p.pos`.
+pub fn runner_cell(origin: (i32, i32), at: (f32, f32)) -> (f32, f32) {
+    (at.0 + origin.0 as f32, at.1 + origin.1 as f32)
+}
+
+/// The plan point of a teammate's runner through the frame `xf`.
+pub fn runner_pin_at(xf: Xf, origin: (i32, i32), at: (f32, f32)) -> (f32, f32) {
+    xf.at(runner_cell(origin, at))
+}
+
+/// Draws the teammates as arrows on a map (Godot `_draw_remote_player`): each along its runner's facing, ringed in ink, in its
+/// peer's colour. Radius is the larger of 3.4 (the full map) or 3.0 (the minimap) and half a cell, as Godot takes it. `remotes`
+/// are the runners on this floor, `origin` moves them into the frame of `xf` and `cells` (x, y, w, h) is what is shown, in that
+/// same frame. A runner outside `cells` is not drawn; Godot's border arrows are not ported yet.
+pub fn draw_runner_pins(
+    xf: Xf,
+    cells: (i32, i32, i32, i32),
+    origin: (i32, i32),
+    remotes: &[RemoteView],
+    full: bool,
+) {
+    let (vx, vy, vw, vh) = cells;
+    let cell = xf.cell;
+    let floor: f32 = if full { 3.4 } else { 3.0 };
+    let radius = floor.max(cell * 0.5);
+    let len = radius * 1.55;
+    let half = radius * 1.05;
+    for r in remotes {
+        let c = runner_cell(origin, (r.x, r.y));
+        let inside = c.0 >= vx as f32
+            && c.1 >= vy as f32
+            && c.0 < (vx + vw) as f32
+            && c.1 < (vy + vh) as f32;
+        if !inside {
+            continue;
+        }
+        // Player::forward2, as the runner's wedge takes it; a zero heading points up
+        let facing = vec2(-r.yaw.sin(), -r.yaw.cos()).normalize_or_zero();
+        let f = if facing == Vec2::ZERO { vec2(0.0, -1.0) } else { facing };
+        let side = vec2(-f.y, f.x);
+        let p = runner_pin_at(xf, origin, (r.x, r.y));
+        let at = vec2(p.0, p.1);
+        let arrow = |grow: f32, col: Color| {
+            let (l, h) = (len + grow, half + grow);
+            let tip = at + f * l;
+            let left = at - f * l * 0.7 + side * h;
+            let notch = at - f * len * 0.25;
+            let right = at - f * l * 0.7 - side * h;
+            tri(tip, left, notch, col);
+            tri(tip, notch, right, col);
+        };
+        arrow(1.1, TEAMMATE_INK);
+        arrow(0.0, teammate_colour(r.peer));
     }
 }
 
@@ -564,7 +647,7 @@ pub fn full_map_input(g: &mut Game, map_view: &mut FullView) {
 /// The level-0 full map: every discovered chunk (`feed`), drawn through the frame `geo`. The floor is drawn per chunk in runs
 /// of cells, then the solid props, the relays and batteries, the stairs, the waypoint, the hunters on the map and the runner.
 /// Off the discovered area nothing is drawn.
-fn draw_level0(g: &Game, feed: &FullMapFeed, plan: Rect, geo: &FullPlan) {
+fn draw_level0(g: &Game, feed: &FullMapFeed, plan: Rect, geo: &FullPlan, remotes: &[RemoteView]) {
     let p = pal();
     let keys: Vec<(i32, i32)> = feed.chunks.iter().map(|(k, _)| (k.cx, k.cy)).collect();
     let Some(fit) = fit_discovered(plan, &keys) else { return };
@@ -667,12 +750,18 @@ fn draw_level0(g: &Game, feed: &FullMapFeed, plan: Rect, geo: &FullPlan) {
     for h in g.map_hunters() {
         dot((h.pos.0 + o.0, h.pos.1 + o.1), hunter_colour(h), (cell * 0.55).max(3.0));
     }
+    draw_runner_pins(xf, (fit.x0, fit.y0, fit.w, fit.h), feed.origin, remotes, true);
     let q = xf.at(geo.runner);
     runner_wedge(g, vec2(q.0, q.1), cell, true);
 }
 
 /// The fullscreen map overlay (hud.tscn MapOverlay): title, plan and legend. `map_view` is the view the input steps.
 pub fn draw_full_map(g: &Game, a: &Assets, map_view: &FullView) {
+    draw_full_map_with_runners(g, a, map_view, &[]);
+}
+
+/// The fullscreen map overlay with the teammates in `remotes` drawn as pins (see `draw_full_map`).
+pub fn draw_full_map_with_runners(g: &Game, a: &Assets, map_view: &FullView, remotes: &[RemoteView]) {
     let p = pal();
     let v = view();
     fill(
@@ -698,8 +787,8 @@ pub fn draw_full_map(g: &Game, a: &Assets, map_view: &FullView) {
     let geo = full_plan(g, plan, map_view);
     clip_begin(plan);
     match g.full_map_feed() {
-        Some(feed) => draw_level0(g, &feed, plan, &geo),
-        None => draw_floor(g, geo.xf, (0, 0, g.fac.cols, g.fac.rows), true),
+        Some(feed) => draw_level0(g, &feed, plan, &geo, remotes),
+        None => draw_floor(g, geo.xf, (0, 0, g.fac.cols, g.fac.rows), true, remotes),
     }
     clip_end();
     let legend = if is_last_route() {
@@ -780,6 +869,17 @@ mod tests {
         // the far corner is the box's bottom right
         let far = fit.xf().at(((fit.x0 + fit.w) as f32, (fit.y0 + fit.h) as f32));
         assert!(close(far.0, left.0 + box_w) && close(far.1, left.1 + box_h), "{far:?}");
+    }
+
+    #[test]
+    fn a_teammate_pin_lands_on_its_cell_through_the_frame_and_origin() {
+        // cells 4 units across, cell (0, 0) at (10, 20); a window origin of (3, -2) moves the runner cell (1.5, 2.5) to absolute
+        // (4.5, 0.5), so the pin is at (10 + 4.5 * 4, 20 + 0.5 * 4)
+        let xf = Xf { cell: 4.0, ox: 10.0, oy: 20.0 };
+        let pin = runner_pin_at(xf, (3, -2), (1.5, 2.5));
+        assert!(close(pin.0, 28.0) && close(pin.1, 22.0), "{pin:?}");
+        // with no origin (the minimap's frame) it is the runner's own cell through the same transform
+        assert_eq!(runner_pin_at(xf, (0, 0), (1.5, 2.5)), xf.at((1.5, 2.5)));
     }
 
     #[test]

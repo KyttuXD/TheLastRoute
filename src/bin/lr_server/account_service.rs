@@ -936,6 +936,23 @@ mod tests {
     }
 
     #[test]
+    fn a_store_that_fails_to_load_logs_no_password_or_session_token() {
+        let root = temp_root("accounts-log-");
+        let path = root.join("accounts.json");
+        let session = format!("tok-{PASSWORD}");
+        std::fs::write(
+            &path,
+            format!(r#"{{"accounts":[{{"username":"ADA","password":"{PASSWORD}"}}],"sessions":[{{"token":"{session}"}}"#),
+        )
+        .unwrap();
+        let broken = AccountService::new(AccountServiceOptions { store_path: Some(path.clone()), ..Default::default() });
+        let logged = util::log_line(&broken.load_warning().expect("a truncated store is logged"));
+        assert!(logged.contains("not loaded"), "{logged}");
+        assert!(!logged.contains(PASSWORD) && !logged.contains(&session), "{logged}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn persisted_file_keeps_the_node_layout() {
         // extra (unknown) account fields and key order survive a load + save round trip, like `{ ...value, username }`
         let app = open_accounts();

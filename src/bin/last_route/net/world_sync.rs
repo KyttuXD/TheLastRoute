@@ -332,7 +332,8 @@ impl NetSession {
     }
 
     /// The other runners for the lobby roster. Host: the guests that have registered, in the order they joined
-    /// (peer id). Guest: the host and the other guests, as the host's last roster listed them.
+    /// (peer id). Guest: the host first, then the other guests, as the host's last roster listed them. This runner
+    /// and the host are each listed once.
     pub fn guest_names(&self) -> Vec<String> {
         if !self.is_host() {
             let mut names = Vec::new();
@@ -342,7 +343,11 @@ impl NetSession {
             names.extend(
                 self.players
                     .iter()
-                    .filter(|p| !p.is_empty() && !p.eq_ignore_ascii_case(&self.name))
+                    .filter(|p| {
+                        !p.is_empty()
+                            && !p.eq_ignore_ascii_case(&self.name)
+                            && !p.eq_ignore_ascii_case(&self.host_name)
+                    })
                     .cloned(),
             );
             return names;

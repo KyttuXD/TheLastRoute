@@ -691,6 +691,69 @@ Measure first: the Intel build has not been timed yet. Every item below should b
 - [ ] Fog and the far-plane distance: check how much fragment work the fog and draw distance add on Intel
 - [ ] Run the Intel and Apple Silicon builds side by side and record the frame-time gap, so later fixes can be judged on both
 
+## Admin menu (2026-11-03)
+
+Tabs today (src/bin/last_route/ui/admin/mod.rs TABS): STATUS, GENERAL, PLAYER, HUNTERS, NPCS, WORLD, STORY, VISUAL, DEBUG VIEW, FIELDS.
+
+### Hunter pathfinding and HUNTER VIEW
+
+- [ ] HUNTER VIEW option on the HUNTERS tab: show the selected hunter's current path on the map and in the 3D view
+- [ ] Path overlay: the hunter's planned route as a line, with waypoints and the target cell marked
+- [ ] Path cost readout: path length, cells searched and time for the last path search, from find_path in src/world/facility.rs
+- [ ] Hunter state readout next to the path: state (patrol, hunt, search, return), target, and the last sighting
+- [ ] Step the hunter one tick at a time while the path shows, to debug turns and stuck cases
+- [ ] Show the hunter's sight cone and hearing radius on the same overlay
+- [ ] Highlight blocked cells and the reason a path failed (no route, door closed, prop collider)
+- [ ] Pick a hunter by clicking it in the 3D view, not only from the list
+- [ ] HUNTER VIEW works on every hunter in the lineup, including those spawned by admin NPC tools
+
+### More admin menu fixes and parts
+
+- [ ] Admin tab order and keyboard navigation: Tab and arrows move between tabs and fields
+- [ ] Every admin field shows its current value and its allowed range before it is edited
+- [ ] Reset button per field and a reset-all on each tab
+- [ ] Admin actions write one line to the debug log so a run can be audited afterwards
+- [ ] Admin panel closes cleanly on ESC without leaving the mouse locked or the pause menu open
+- [ ] DEBUG VIEW tab: toggles for the collider, path and navigation overlays, each saved between runs
+- [ ] FIELDS tab: list every tunable value with its file and key (config, region data and hunter data)
+- [ ] NPCS tab: per-NPC commands (teleport, remove, follow) instead of only spawn and remove all
+- [ ] WORLD tab: regenerate the current floor from its seed and show the seed on screen
+- [ ] STORY tab: jump to a story beat by its id, and show which beats have already fired
+- [ ] Admin tools only enable for the signed-in KYTTU account (see the login reset), with a clear message when they are off
+- [ ] Admin menu screenshot checks at 1280x720 for every tab, so layout bugs show up in review
+
+### CI and build speed
+
+- [ ] CI speedup: cut the four separate cargo test invocations in test.yml to one run where the crate graph is shared
+- [ ] CI speedup: cache the Windows target directory across runs in build.yml and test.yml (rust-cache keys per job)
+- [ ] CI speedup: run the Linux and macOS build jobs in parallel with the Windows build instead of one after another
+- [ ] CI speedup: skip the release build in test.yml when only docs or TODO.md changed (paths-ignore)
+- [ ] CI speedup: use prebuilt tools (cargo-binstall) rather than building any CLI tool in CI
+- [ ] Faster GitHub compilations: a dev-profile setting for CI that trims debug info (debug = "line-tables-only")
+- [ ] Faster compilations on this PC: measure a cold build with opt-level 1 for dependencies, record the time, then decide
+- [ ] Faster compilations: split the server-only dependencies from the game build (done with the server feature; check the CI cache keys match)
+- [ ] Faster compilations: check linker speed on Windows (rust-lld) and record the time it saves
+
+## Godot parity: found by discovery (2026-11-03)
+
+New items from a read-only comparison of the Godot game folders with TODO.md. Effort as marked.
+
+- [ ] Port Porcelle's hunter radar ping on the minimap: a slow ping about every 8 s, an eased ring, and a steady dim dot under reduced motion (effort S; game/hud/radar_ping.gd)
+- [ ] Port the centre reticle, shown only while the view is aimed (hidden with the cursor free, at the desk, under the tablet or in the pause menu) (effort S; game/hud/crosshair.gd)
+- [ ] Port world-space teammate markers: name and distance at each teammate, edge markers off screen, floor offset, dimming when stale, DOWN and CAUGHT labels (effort M; game/hud/teammate_waypoints.gd)
+- [ ] Port quick-chat map pings: a room-chat ping shows on the minimap and full map on the floor where it was posted (effort S; game/hud/hud.gd)
+- [ ] Port the route-only pixel post-process: low-resolution sampling blended back with colour quantisation, strength-scaled (effort M; game/ui_common/pixel_signal_effect.gd)
+- [ ] Port the QUIT TO DESKTOP confirmation: YES on the left, NO focused by default, Esc or click outside closes; YES saves and closes a hosted room (effort S; game/ui_common/quit_confirm.gd)
+- [ ] Port the top-centre update badge: downloading percentage, then RESTART NOW or LATER, with the status-bar text during a run (effort S; game/menus/update_badge.gd)
+- [ ] Port the games hub ADMIN panel: build info, server health, updates per platform, public route status, notices, debug toggles, skin removal (no tokens shown) (effort M; game/admin/hub_admin_panel.gd)
+- [ ] Port the public route daily lineup: a stable UTC-day featured pair, weighted draw (easy 50%, intermediate 40%, difficult 10%), one extra hunter per two players, capped at 8 (effort M; game/config/public_roster.gd)
+- [ ] Port the admin find-player marker: a beam and two rings through walls at the target for about 6 s, following the live position (effort S; game/admin/admin_pulse.gd)
+- [ ] Port troll-mode advertisements for a chosen player: gentle and annoying profiles, a per-window cap, never shown while caught or in menus (effort M; game/admin/troll_ads.gd)
+- [ ] Port the F2 screenshot: saves the whole game window to a dated PNG from any screen (effort S; game/autoload/screenshot.gd)
+- [ ] Port the single cursor owner: menus register named claims, and any claim frees the cursor so the camera cannot re-grab it under a menu (effort S; game/autoload/mouse_lock.gd)
+- [ ] Port phone touch controls: on-screen D-pad, drag-to-look, touch buttons, and the phone and low-memory budgets with --touch and --lowmem (effort L; game/hud/touch_controls.gd)
+- [ ] Port XR (OpenXR headset) mode: comfort and fade, gaze pointer, hand tracking, and the route and menu panels in 3D (effort L; game/xr/xr_comfort.gd)
+
 ## Known bugs (2026-11-03)
 
 - [ ] Beds stick out of rooms into the hallway behind them (in progress: workflow bed-placement-fix; see furnished.rs bed placement)

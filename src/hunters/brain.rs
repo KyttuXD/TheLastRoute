@@ -36,6 +36,12 @@ pub struct Target {
     pub pesticide: bool,
 }
 
+/// LightField.unlit_scale: a runner in pitch dark is seen close, one in a lamp pool far.
+fn light_unlit_scale(exposure: f32) -> f32 {
+    let t = exposure.clamp(0.0, 1.0);
+    LIGHT_DARK_SIGHT_SCALE + (LIGHT_LIT_SIGHT_SCALE - LIGHT_DARK_SIGHT_SCALE) * t
+}
+
 pub fn dist(a: (f32, f32), b: (f32, f32)) -> f32 {
     ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
 }
@@ -85,6 +91,10 @@ pub struct Brain {
     pub moving_speed: f32,
     /// Model shown instead of her own (Umbriel's disguise).
     pub disguise: Option<String>,
+    /// How lit this hunter stands, set by the host a few times a second (None: the light rule is off).
+    pub self_exposure: Option<f32>,
+    /// The runner's own lamp exposure for this target (None: the light rule is off).
+    pub target_exposure: Option<f32>,
 }
 
 const ARRIVAL_DISTANCE: f32 = 0.65;
@@ -93,6 +103,11 @@ const BEAM_ATTENTION_TIME: f32 = 0.35;
 const BEAM_ATTENTION_DECAY: f32 = 1.6;
 const BEAM_ATTENTION_RANGE: f32 = 12.0;
 const BEAM_ATTENTION_HALF_ANGLE: f32 = 0.28;
+/// LightField (game/look/light_field.gd): the exposure a hunter needs to make out a lit runner, and the sight
+/// scale of a runner in pitch dark and in a lamp pool.
+const LIGHT_VISIBLE_EXPOSURE: f32 = 0.36;
+const LIGHT_DARK_SIGHT_SCALE: f32 = 0.25;
+const LIGHT_LIT_SIGHT_SCALE: f32 = 1.6;
 
 impl Brain {
     pub fn new(def: HunterDef, spawn: (f32, f32), seed: &str, diff: Difficulty) -> Brain {
@@ -135,6 +150,8 @@ impl Brain {
             stride: 0.0,
             moving_speed: 0.0,
             disguise: None,
+            self_exposure: None,
+            target_exposure: None,
         }
     }
 
@@ -371,11 +388,20 @@ impl Brain {
 
     pub fn sight_limit(&self, flashlight_on: bool, prof: &Profile, g: &Gimmick) -> f32 {
         let s = self.def.sight;
-        let limit = if flashlight_on {
+        let mut limit = if flashlight_on {
             FLASHLIGHT_SIGHT_MIN.max(s * FLASHLIGHT_SIGHT_SCALE) * prof.hunter_sight
         } else {
-            s * UNLIT_SIGHT_SCALE * prof.hunter_sight
+            let scale = match self.target_exposure {
+                Some(e) => light_unlit_scale(e),
+                None => UNLIT_SIGHT_SCALE,
+            };
+            s * scale * prof.hunter_sight
         };
+        // mutual light: a hunter standing in light the runner can see her by also sees the runner at full range
+        let lit_here = matches!(self.self_exposure, Some(e) if e >= LIGHT_VISIBLE_EXPOSURE);
+        if lit_here {
+            limit = limit.max(s * prof.hunter_sight);
+        }
         limit * g.sight_scale()
     }
 
@@ -825,5 +851,53 @@ mod tests {
         }
         assert!(dasher.direct_visible, "she should see the runner on a clear line");
         assert!((dashed / (18.0 * dt) - 4.26).abs() < 0.02, "dashed {dashed} cells in 0.3 s");
+    }
+
+    /// With the beam off, a runner in a lit cell is seen from further off than one in pitch dark: the unlit
+    /// limit follows her lamp exposure (LightField.unlit_scale), and the default is the old unlit scale.
+    #[test]
+    fn a_runner_standing_in_light_is_seen_further_without_the_beam() {
+        let prof = Difficulty::Standard.profile();
+        let mut b = Brain::new(aki(), (0.0, 0.0), "PIN", Difficulty::Standard);
+        let (s, k) = (b.def.sight, b.gimmick.sight_scale());
+        let want = |scale: f32| s * scale * prof.hunter_sight * k;
+        let rule_off = b.sight_limit(false, &prof, &b.gimmick);
+        assert!((rule_off - want(UNLIT_SIGHT_SCALE)).abs() < 1e-4);
+        b.target_exposure = Some(1.0);
+        let lit = b.sight_limit(false, &prof, &b.gimmick);
+        assert!((lit - want(LIGHT_LIT_SIGHT_SCALE)).abs() < 1e-4);
+        b.target_exposure = Some(0.0);
+        let dark = b.sight_limit(false, &prof, &b.gimmick);
+        assert!((dark - want(LIGHT_DARK_SIGHT_SCALE)).abs() < 1e-4);
+        assert!(lit > dark);
+    }
+
+    /// A hunter standing in light (self_exposure at the visible level) sees a dark runner at her full range.
+    #[test]
+    fn a_hunter_in_light_sees_a_dark_runner_at_full_range() {
+        let prof = Difficulty::Standard.profile();
+        let mut b = Brain::new(aki(), (0.0, 0.0), "PIN", Difficulty::Standard);
+        let (s, k) = (b.def.sight, b.gimmick.sight_scale());
+        let want = |scale: f32| s * scale * prof.hunter_sight * k;
+        b.target_exposure = Some(0.0);
+        b.self_exposure = Some(LIGHT_VISIBLE_EXPOSURE - 0.01);
+        let dim = b.sight_limit(false, &prof, &b.gimmick);
+        assert!((dim - want(LIGHT_DARK_SIGHT_SCALE)).abs() < 1e-4);
+        b.self_exposure = Some(LIGHT_VISIBLE_EXPOSURE);
+        let lit = b.sight_limit(false, &prof, &b.gimmick);
+        assert!((lit - want(1.0)).abs() < 1e-4);
+    }
+
+    /// The beam keeps its range whatever the runner's lamp exposure or her own light is.
+    #[test]
+    fn the_beam_still_gives_its_flashlight_range() {
+        let prof = Difficulty::Standard.profile();
+        let mut b = Brain::new(aki(), (0.0, 0.0), "PIN", Difficulty::Standard);
+        let (s, k) = (b.def.sight, b.gimmick.sight_scale());
+        let beam = FLASHLIGHT_SIGHT_MIN.max(s * FLASHLIGHT_SIGHT_SCALE) * prof.hunter_sight * k;
+        b.target_exposure = Some(0.0);
+        b.self_exposure = Some(1.0);
+        assert!((b.sight_limit(true, &prof, &b.gimmick) - beam).abs() < 1e-4);
+        assert!(beam > b.sight_limit(false, &prof, &b.gimmick));
     }
 }

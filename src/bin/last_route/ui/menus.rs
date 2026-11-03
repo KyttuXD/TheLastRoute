@@ -1193,7 +1193,8 @@ pub struct LobbyPlayer {
     pub status: String,
 }
 
-/// The roster the lobby shows: this runner first, then a host's guests. A guest only knows itself.
+/// The roster the lobby shows, each runner once: this runner first, marked YOU. A host adds its guests. A guest adds
+/// the host, which is the first of `guests` (as `NetSession::guest_names` orders them), then the other guests.
 pub fn lobby_players(mode: RoomMode, username: &str, guests: &[String]) -> Vec<LobbyPlayer> {
     let host = mode == RoomMode::Host;
     let mut v = vec![LobbyPlayer {
@@ -1202,13 +1203,25 @@ pub fn lobby_players(mode: RoomMode, username: &str, guests: &[String]) -> Vec<L
         you: true,
         status: if host { "HOST // STAGING" } else { "STAGING" }.into(),
     }];
-    if host {
-        v.extend(guests.iter().map(|g| LobbyPlayer {
+    match mode {
+        RoomMode::Solo => {}
+        RoomMode::Host => v.extend(guests.iter().map(|g| LobbyPlayer {
             name: g.to_uppercase(),
             host: false,
             you: false,
             status: "STAGING".into(),
-        }));
+        })),
+        RoomMode::Guest => {
+            for (i, g) in guests.iter().enumerate().filter(|(_, g)| !g.is_empty() && !g.eq_ignore_ascii_case(username)) {
+                let is_host = i == 0;
+                v.push(LobbyPlayer {
+                    name: g.to_uppercase(),
+                    host: is_host,
+                    you: false,
+                    status: if is_host { "HOST // STAGING" } else { "STAGING" }.into(),
+                });
+            }
+        }
     }
     v
 }
@@ -2593,10 +2606,33 @@ mod lobby_tests {
         assert_eq!(host[1].name, "ANA");
         assert!(!host[1].host && !host[1].you);
 
-        // a guest sees only itself
-        let guest = lobby_players(RoomMode::Guest, "ana", &["KYTTU".to_string()]);
-        assert_eq!(guest.len(), 1);
-        assert!(!guest[0].host && guest[0].you);
+        // a guest sees itself, the host and the other guests
+        let guest = lobby_players(RoomMode::Guest, "ana", &["KYTTU".to_string(), "BO".to_string()]);
+        assert_eq!(guest.len(), 3);
+        assert!(guest[0].you && !guest[0].host);
+        assert_eq!((guest[1].name.as_str(), guest[1].host, guest[1].you), ("KYTTU", true, false));
+        assert_eq!((guest[2].name.as_str(), guest[2].host, guest[2].you), ("BO", false, false));
+    }
+
+    #[test]
+    fn the_lobby_lists_every_connected_runner_once_with_the_local_one_marked() {
+        // a fake room: host KYTTU with guests ANA and BO, seen from the host and then from guest ANA
+        let host_roster = ["ANA".to_string(), "BO".to_string()];
+        let host = lobby_players(RoomMode::Host, "kyttu", &host_roster);
+        let names: Vec<&str> = host.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["KYTTU", "ANA", "BO"]);
+        assert_eq!(host.iter().filter(|p| p.you).count(), 1);
+        assert!(host[0].you && host[0].host);
+
+        let guest_roster = ["KYTTU".to_string(), "ANA".to_string(), "BO".to_string()];
+        let guest = lobby_players(RoomMode::Guest, "ana", &guest_roster);
+        let names: Vec<&str> = guest.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["ANA", "KYTTU", "BO"]);
+        assert_eq!(guest.iter().filter(|p| p.you).count(), 1);
+        assert_eq!(guest.iter().filter(|p| p.host).count(), 1);
+        assert!(guest[0].you && !guest[0].host);
+        assert!(guest[1].host && !guest[1].you);
+        assert_eq!(guest[1].status, "HOST // STAGING");
     }
 
     #[test]

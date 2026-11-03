@@ -84,7 +84,7 @@ fn main() {
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     for file in [cwd.join("backend").join(".env"), cwd.join(".env")] {
         if let Err(error) = crate::env_file::load_environment_file(&file) {
-            eprintln!("Could not read {}: {error}", file.display());
+            util::log_error(&format!("Could not read {}: {error}", file.display()));
         }
     }
     let env: HashMap<String, String> = std::env::vars().collect();
@@ -94,26 +94,30 @@ fn main() {
     let relay_enabled = config.relay_enabled;
     let server = Arc::new(LastRouteServer::new(config.options));
     let address = format!("{}:{}", config.host, config.http_port);
-    println!("Last Route backend (rust) listening on http://{address}");
-    println!("Account data: {}", config.account_store_path.display());
+    util::log_info(&format!("Last Route backend (rust) listening on http://{address}"));
+    util::log_info(&format!("Account data: {}", config.account_store_path.display()));
     if let Some(status) = public_update_status(&updates).as_object() {
         for (channel, s) in status {
-            println!("Published {channel} update: {} @ {}", s["version"], s["revision"]);
+            util::log_info(&format!("Published {channel} update: {} @ {}", s["version"], s["revision"]));
         }
     }
     if check_only {
-        println!("relay: {} (UDP {})", if relay_enabled { "enabled" } else { "disabled" }, config.relay_port);
+        util::log_info(&format!(
+            "relay: {} (UDP {})",
+            if relay_enabled { "enabled" } else { "disabled" },
+            config.relay_port
+        ));
         return;
     }
     if relay_enabled {
         if let Err(error) = server.start_enet_relay(&config.host, config.relay_port) {
-            eprintln!("ENet gameplay relay error: {error}");
+            util::log_error(&format!("ENet gameplay relay error: {error}"));
         }
     }
     let http = match tiny_http::Server::http(&address) {
         Ok(http) => Arc::new(http),
         Err(error) => {
-            eprintln!("Could not listen on {address}: {error}");
+            util::log_error(&format!("Could not listen on {address}: {error}"));
             std::process::exit(1);
         }
     };

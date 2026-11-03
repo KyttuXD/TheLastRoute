@@ -9,6 +9,10 @@ use crate::config::*;
 use crate::world::Facility;
 use macroquad::prelude::*;
 
+/// Strobe period bounds for a forced flicker (player_controller_3d.gd 867-870).
+const FLICKER_MIN_PERIOD: f32 = 0.08;
+const FLICKER_MAX_PERIOD: f32 = 0.35;
+
 pub struct Player {
     pub pos: (f32, f32),
     pub feet_y: f32,
@@ -45,6 +49,13 @@ pub struct Player {
     pub noclip: bool,
     /// Admin run speed: multiplies every movement speed (admin_menu.gd).
     pub speed_scale: f32,
+    /// Seconds left in a forced flicker (a plunge splash or a hunter event); the
+    /// beam strobes until it runs out and the player's own switch cannot override it.
+    flicker_remaining: f32,
+    flicker_next_toggle: f32,
+    /// The strobe's dark half: the beam is forced off while this is set.
+    flicker_dark: bool,
+    flicker_seed: u32,
 }
 
 impl Player {
@@ -80,7 +91,57 @@ impl Player {
             walked: 0.0,
             noclip: false,
             speed_scale: 1.0,
+            flicker_remaining: 0.0,
+            flicker_next_toggle: 0.0,
+            flicker_dark: false,
+            flicker_seed: 0x2545_F491,
         }
+    }
+
+    /// Strobes the beam off and on at random short intervals for `duration` seconds,
+    /// then restores the real state (Godot `force_flashlight_flicker`). Called by a
+    /// plunge splash or a hunter event; the lamp keeps its charge and the switch keeps its state.
+    pub fn force_flashlight_flicker(&mut self, duration: f32) {
+        self.flicker_remaining = self.flicker_remaining.max(duration);
+        self.flicker_next_toggle = 0.0;
+    }
+
+    /// True while a flicker holds the beam, so the player's [F] does not fight it.
+    pub fn flashlight_seized(&self) -> bool {
+        self.flicker_remaining > 0.0
+    }
+
+    /// The beam as the world sees it: the player's switch, a charged lamp, and not in the
+    /// dark half of a flicker.
+    pub fn beam_lit(&self) -> bool {
+        self.flashlight_on && self.lamp > 0.0 && !self.flicker_dark
+    }
+
+    fn update_flashlight_flicker(&mut self, dt: f32) {
+        if self.flicker_remaining <= 0.0 {
+            return;
+        }
+        self.flicker_remaining -= dt;
+        self.flicker_next_toggle -= dt;
+        if self.flicker_remaining <= 0.0 {
+            // Back to the real state rather than wherever the last random toggle left it.
+            self.flicker_remaining = 0.0;
+            self.flicker_dark = false;
+            return;
+        }
+        if self.flicker_next_toggle <= 0.0 {
+            self.flicker_dark = !self.flicker_dark;
+            self.flicker_next_toggle = self.next_flicker_period();
+        }
+    }
+
+    fn next_flicker_period(&mut self) -> f32 {
+        self.flicker_seed = self
+            .flicker_seed
+            .wrapping_mul(1_664_525)
+            .wrapping_add(1_013_904_223);
+        let unit = (self.flicker_seed >> 8) as f32 / (1u32 << 24) as f32;
+        FLICKER_MIN_PERIOD + (FLICKER_MAX_PERIOD - FLICKER_MIN_PERIOD) * unit
     }
 
     /// A new floor: start one cell south of the lobby centre, facing north.
@@ -184,6 +245,7 @@ impl Player {
         self.noise_burst_timer = (self.noise_burst_timer - dt).max(0.0);
         self.stun = (self.stun - dt).max(0.0);
         self.pesticide = (self.pesticide - dt).max(0.0);
+        self.update_flashlight_flicker(dt);
         if self.in_vent {
             self.vent_time += dt;
         }
@@ -312,5 +374,60 @@ impl Player {
             };
             crate::audio::sound::footstep(gait, "", ground.min(speed * 1.5));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const STEP: f32 = 0.01;
+
+    #[test]
+    fn flicker_turns_the_beam_off_and_back_on_within_its_duration() {
+        let mut p = Player::new((0.0, 0.0));
+        p.flashlight_on = true;
+        p.lamp = MAX_LAMP_CHARGE;
+        assert!(p.beam_lit());
+
+        p.force_flashlight_flicker(1.0);
+        assert!(p.flashlight_seized());
+
+        let mut elapsed = 0.0;
+        let mut saw_dark = false;
+        let mut saw_lit_after_dark = false;
+        while p.flashlight_seized() {
+            p.update_flashlight_flicker(STEP);
+            elapsed += STEP;
+            assert!(elapsed < 1.0 + 2.0 * STEP, "flicker ran past its duration");
+            if p.flashlight_seized() {
+                if !p.beam_lit() {
+                    saw_dark = true;
+                } else if saw_dark {
+                    saw_lit_after_dark = true;
+                }
+            }
+        }
+        assert!(saw_dark, "the beam never went dark during the flicker");
+        assert!(
+            saw_lit_after_dark,
+            "the beam never came back on during the flicker"
+        );
+        assert!(p.beam_lit());
+        assert!(p.flashlight_on);
+    }
+
+    #[test]
+    fn flicker_restores_the_players_switch_and_never_lights_an_off_beam() {
+        let mut p = Player::new((0.0, 0.0));
+        p.lamp = MAX_LAMP_CHARGE;
+        p.force_flashlight_flicker(0.5);
+        for _ in 0..60 {
+            p.update_flashlight_flicker(STEP);
+            assert!(!p.beam_lit());
+        }
+        assert!(!p.flashlight_seized());
+        assert!(!p.flashlight_on);
+        assert!(!p.beam_lit());
     }
 }

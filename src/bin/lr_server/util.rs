@@ -68,13 +68,19 @@ pub trait SessionLookup {
 // Logging (the Node `logger = console`).
 
 pub fn log_info(message: &str) {
-    println!("{message}");
+    println!("{}", log_line(message));
 }
 pub fn log_warn(message: &str) {
-    eprintln!("{message}");
+    eprintln!("{}", log_line(message));
 }
 pub fn log_error(message: &str) {
-    eprintln!("{message}");
+    eprintln!("{}", log_line(message));
+}
+
+/// The text a log call writes: credential-shaped spans (session tokens, passwords, bearer values, 40+ hex digits) are
+/// replaced with `[redacted]` by the same scrub the crash reports use.
+pub fn log_line(message: &str) -> String {
+    crate::crash_reports::scrub_secrets(message)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -567,6 +573,17 @@ pub fn parse_iso_time(text: &str) -> Option<i64> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn log_lines_redact_passwords_session_tokens_bearer_values_and_hex_keys() {
+        let line = log_line("sync: password=hunter22x session_token: abc123def456 Authorization: Bearer abcdefghijkl key 0123456789abcdef0123456789abcdef01234567");
+        for secret in ["hunter22x", "abc123def456", "abcdefghijkl", "0123456789abcdef0123456789abcdef01234567"] {
+            assert!(!line.contains(secret), "{secret} survived: {line}");
+        }
+        assert!(line.contains("password: [redacted]") || line.contains("password=[redacted]"), "{line}");
+        let plain = "Account store was not loaded: expected value at line 1 column 1";
+        assert_eq!(log_line(plain), plain, "an ordinary message is written unchanged");
+    }
 
     #[test]
     fn coercions_match_javascript() {
