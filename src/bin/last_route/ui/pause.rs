@@ -10,6 +10,7 @@ use crate::app::assets::Assets;
 use crate::app::settings::Settings;
 use crate::content::Content;
 use crate::game::Game;
+use crate::net::world_sync::{skin_colour, RosterEntry};
 use macroquad::prelude::*;
 
 /// The pause panel (pause_menu.gd): 380x236 with a 16 inset on every side.
@@ -118,6 +119,32 @@ pub fn escape(pz: &mut Pause) -> Out {
     }
 }
 
+/// The PLAYERS rows for the other runners in the room: each one's name, whether it is the host, its floor and its
+/// figure colour. A runner that sends no samples shows NO SIGNAL; its ping is not measured on this client.
+pub fn remote_rows(entries: &[RosterEntry], infinite: bool) -> Vec<PlayerRow> {
+    entries
+        .iter()
+        .map(|e| PlayerRow {
+            name: if e.name.is_empty() { "RUNNER".into() } else { e.name.clone() },
+            host: e.host,
+            you: false,
+            ping: "--".into(),
+            status: if e.sending { "ALIVE" } else { "NO SIGNAL" }.into(),
+            floor: e.depth.map_or("--".into(), |d| floor_label(d, infinite)),
+            colour: skin_colour(&e.skin, e.peer),
+        })
+        .collect()
+}
+
+/// A floor as the PLAYERS list shows it: below the start on the infinite route, above it on a finite run.
+fn floor_label(depth: i32, infinite: bool) -> String {
+    if infinite {
+        format!("{:+}", -(depth - 1))
+    } else {
+        format!("+{}", depth - 1)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn draw_pause(
     a: &Assets,
@@ -127,6 +154,8 @@ pub fn draw_pause(
     content: &Content,
     g: &Game,
     username: &str,
+    room: Vec<PlayerRow>,
+    local_host: bool,
 ) -> Out {
     let p = pal();
     let v = view();
@@ -243,25 +272,22 @@ pub fn draw_pause(
         }
         1 => draw_statistics(a, pz, view_r, g),
         _ => {
-            let floor = if g.is_infinite() {
-                format!("{:+}", -(g.depth - 1))
-            } else {
-                format!("+{}", g.depth - 1)
-            };
             let me = PlayerRow {
                 name: if username.is_empty() {
                     "RUNNER".into()
                 } else {
                     username.to_uppercase()
                 },
-                host: true,
+                host: local_host,
                 you: true,
                 ping: "0 MS".into(),
                 status: "ALIVE".into(),
-                floor,
+                floor: floor_label(g.depth, g.is_infinite()),
                 colour: menus::coop_blue(),
             };
-            menus::player_list(a, view_r, &[me]);
+            let mut rows = vec![me];
+            rows.extend(room);
+            menus::player_list(a, view_r, &rows);
         }
     }
     out

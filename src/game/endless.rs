@@ -536,7 +536,7 @@ impl InfState {
         }
     }
 
-    fn origin(&self) -> (i32, i32) {
+    pub fn origin(&self) -> (i32, i32) {
         ((self.center.0 - 1) * CHUNK, (self.center.1 - 1) * CHUNK)
     }
 }

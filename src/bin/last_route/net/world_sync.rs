@@ -59,7 +59,8 @@ const MAX_SKIN: usize = 24;
 const SKINS: [(&str, [Color; 4]); 1] = [(SKIN_DEFAULT, PEER_COLOURS)];
 
 /// One runner's sample: the `_place` packet `{seq, depth, x, y, yaw, moving, sprinting, crouching}`.
-/// `x` and `y` are the runner's ground position (`Player.pos`), `depth` its floor.
+/// `x` and `y` are the runner's absolute ground cell (its window position moved by the window's origin, see
+/// [`to_absolute`]), so runners in different streamed windows agree on where each one stands. `depth` is its floor.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sample {
     pub seq: u32,
@@ -73,13 +74,14 @@ pub struct Sample {
 }
 
 impl Sample {
-    /// The sample of a runner's body; `seq` is filled in when it is sent.
-    pub fn of(p: &Player, depth: i32) -> Sample {
+    /// The sample of a runner's body in the window whose origin is `origin`; `seq` is filled in when it is sent.
+    pub fn of(p: &Player, depth: i32, origin: (i32, i32)) -> Sample {
+        let (x, y) = to_absolute(p.pos, origin);
         Sample {
             seq: 0,
             depth,
-            x: p.pos.0,
-            y: p.pos.1,
+            x,
+            y,
             yaw: p.yaw,
             moving: p.moving,
             sprinting: p.sprinting,
@@ -113,9 +115,31 @@ impl Sample {
     }
 }
 
+/// A window position in absolute cells: what a sample carries, so every runner's sample means the same cell.
+pub fn to_absolute(at: (f32, f32), origin: (i32, i32)) -> (f32, f32) {
+    (at.0 + origin.0 as f32, at.1 + origin.1 as f32)
+}
+
+/// An absolute cell in a window with origin `origin`: the inverse of [`to_absolute`].
+pub fn to_window(at: (f32, f32), origin: (i32, i32)) -> (f32, f32) {
+    (at.0 - origin.0 as f32, at.1 - origin.1 as f32)
+}
+
 /// `a` is a newer sample than `last`, with wrap-around (the unreliable-ordered rule of `net::session`).
 pub fn newer(seq: u32, last: u32) -> bool {
     seq != last && seq.wrapping_sub(last) < u32::MAX / 2
+}
+
+/// One other runner in the room, for the PLAYERS list. `depth` is its floor while it sends samples; `sending` is whether
+/// it has sent one lately.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RosterEntry {
+    pub peer: u32,
+    pub name: String,
+    pub skin: String,
+    pub host: bool,
+    pub depth: Option<i32>,
+    pub sending: bool,
 }
 
 /// A remote runner that is on this floor and fresh enough to draw.
@@ -204,6 +228,8 @@ pub struct NetSession {
     mods: Vec<String>,
     /// The skin id of each other runner, by peer id, from its wire profile.
     skins: HashMap<u32, String>,
+    /// The name of each other runner, by peer id, from its wire profile (a guest keeps the others' names too).
+    names: HashMap<u32, String>,
     guests: HashMap<u32, Guest>,
     remotes: HashMap<u32, Remote>,
     seq: u32,
@@ -298,6 +324,7 @@ impl NetSession {
             skin,
             mods: Vec::new(),
             skins: HashMap::new(),
+            names: HashMap::new(),
             guests: HashMap::new(),
             remotes: HashMap::new(),
             seq: 0,
@@ -361,6 +388,46 @@ impl NetSession {
             .collect()
     }
 
+    /// The other runners for the PLAYERS list, the host first. A guest lists the host and each other runner that is
+    /// sending samples; the host lists each guest that registered. `depth` is None while a runner sends nothing.
+    pub fn roster(&self) -> Vec<RosterEntry> {
+        let now = Instant::now();
+        let fresh = |peer: u32| {
+            self.remotes
+                .get(&peer)
+                .filter(|r| now.duration_since(r.last_seen) < REMOTE_TIMEOUT)
+                .map(|r| r.sample.depth)
+        };
+        let entry = |peer: u32, name: String| {
+            let depth = fresh(peer);
+            RosterEntry {
+                peer,
+                name,
+                skin: self.skins.get(&peer).cloned().unwrap_or_else(|| SKIN_DEFAULT.into()),
+                host: peer == HOST_PEER_ID,
+                depth,
+                sending: depth.is_some(),
+            }
+        };
+        if self.is_host() {
+            let mut peers: Vec<(&u32, &Guest)> = self.guests.iter().collect();
+            peers.sort_by_key(|(peer, _)| **peer);
+            return peers.into_iter().map(|(peer, guest)| entry(*peer, guest.name.clone())).collect();
+        }
+        let mut out = Vec::new();
+        if !self.host_name.is_empty() || fresh(HOST_PEER_ID).is_some() {
+            out.push(entry(HOST_PEER_ID, self.host_name.clone()));
+        }
+        let mut others: Vec<(&u32, &String)> = self
+            .names
+            .iter()
+            .filter(|(peer, _)| **peer != HOST_PEER_ID && **peer != self.coop.link.session() && fresh(**peer).is_some())
+            .collect();
+        others.sort_by_key(|(peer, _)| **peer);
+        out.extend(others.into_iter().map(|(peer, name)| entry(*peer, name.clone())));
+        out
+    }
+
     /// True once the relay accepted us (HOST_ACK / GUEST_ACK).
     pub fn linked(&self) -> bool {
         self.coop.link.ready()
@@ -415,19 +482,23 @@ impl NetSession {
         out
     }
 
-    /// The other runners on `depth` that are fresh enough to draw, in peer order.
-    pub fn remotes_at(&self, depth: i32) -> Vec<RemoteView> {
+    /// The other runners on `depth` that are fresh enough to draw, in peer order. `origin` is this runner's window
+    /// origin: the samples are absolute cells, so they are moved into this window before they are returned.
+    pub fn remotes_at(&self, depth: i32, origin: (i32, i32)) -> Vec<RemoteView> {
         let now = Instant::now();
         let mut out: Vec<RemoteView> = self
             .remotes
             .iter()
             .filter(|(_, r)| r.sample.depth == depth && now.duration_since(r.last_seen) < REMOTE_TIMEOUT)
-            .map(|(peer, r)| RemoteView {
-                peer: *peer,
-                x: r.sample.x,
-                y: r.sample.y,
-                yaw: r.sample.yaw,
-                skin: self.skins.get(peer).cloned().unwrap_or_else(|| SKIN_DEFAULT.into()),
+            .map(|(peer, r)| {
+                let (x, y) = to_window((r.sample.x, r.sample.y), origin);
+                RemoteView {
+                    peer: *peer,
+                    x,
+                    y,
+                    yaw: r.sample.yaw,
+                    skin: self.skins.get(peer).cloned().unwrap_or_else(|| SKIN_DEFAULT.into()),
+                }
             })
             .collect();
         out.sort_by_key(|r| r.peer);
@@ -551,6 +622,8 @@ impl NetSession {
                     return;
                 }
                 self.skins.insert(peer, profile_skin(&profile));
+                let name = clean_name(profile.get("name").and_then(Value::as_str).unwrap_or_default());
+                self.names.insert(peer, name);
             }
             Message::PeerLeave if self.is_host() => {
                 self.remotes.remove(&from);
@@ -803,6 +876,15 @@ mod tests {
     }
 
     #[test]
+    fn a_sample_is_absolute_and_comes_back_into_each_window() {
+        let absolute = to_absolute((3.0, -2.5), (100, -40));
+        assert_eq!(absolute, (103.0, -42.5));
+        assert_eq!(to_window(absolute, (100, -40)), (3.0, -2.5), "the sender's own window");
+        assert_eq!(to_window(absolute, (0, 0)), (103.0, -42.5), "a finite floor's origin is (0, 0)");
+        assert_eq!(to_window(absolute, (103, -40)), (0.0, -2.5), "a window moved east sees the runner nearer its west edge");
+    }
+
+    #[test]
     fn newer_follows_the_wrapping_rule() {
         assert!(newer(1, 0));
         assert!(!newer(0, 0));
@@ -916,8 +998,8 @@ mod tests {
             }
             events.extend(host.tick(Some(host_sample)));
             events.extend(guest.tick(Some(guest_sample)));
-            done.0 = host.remotes_at(1).iter().any(|r| r.peer == 42 && (r.x - 7.5).abs() < 1e-4 && (r.y - 1.25).abs() < 1e-4 && r.skin == "NIGHT");
-            done.1 = guest.remotes_at(1).iter().any(|r| r.peer == HOST_PEER_ID && (r.x - 3.0).abs() < 1e-4 && r.skin == "DAWN");
+            done.0 = host.remotes_at(1, (0, 0)).iter().any(|r| r.peer == 42 && (r.x - 7.5).abs() < 1e-4 && (r.y - 1.25).abs() < 1e-4 && r.skin == "NIGHT");
+            done.1 = guest.remotes_at(1, (0, 0)).iter().any(|r| r.peer == HOST_PEER_ID && (r.x - 3.0).abs() < 1e-4 && r.skin == "DAWN");
             done.2 = events.contains(&NetEvent::Start { seed: "ROOM-ABCDE-0123".into(), difficulty: "STANDARD".into() })
                 || guest.room_seed() == "ROOM-ABCDE-0123";
             packs_seen = events.contains(&NetEvent::Packs(vec!["neon_halls".into()]));
@@ -982,8 +1064,8 @@ mod tests {
         while Instant::now() < deadline && !(host_sees && guest_sees && seed_seen) {
             host.tick(Some(host_sample));
             guest_events.extend(guest.tick(Some(guest_sample)));
-            host_sees = host.remotes_at(1).iter().any(|r| (r.x - 7.5).abs() < 1e-4);
-            guest_sees = guest.remotes_at(1).iter().any(|r| (r.x - 3.0).abs() < 1e-4);
+            host_sees = host.remotes_at(1, (0, 0)).iter().any(|r| (r.x - 7.5).abs() < 1e-4);
+            guest_sees = guest.remotes_at(1, (0, 0)).iter().any(|r| (r.x - 3.0).abs() < 1e-4);
             seed_seen = guest.room_seed() == route || guest_events.contains(&NetEvent::Start { seed: route.clone(), difficulty: "STANDARD".into() });
             std::thread::sleep(Duration::from_millis(5));
         }

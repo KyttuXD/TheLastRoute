@@ -435,6 +435,11 @@ impl Game {
         }
     }
 
+    /// The absolute cell of this run's streamed window's (0, 0) on the infinite route; (0, 0) on a finite floor.
+    pub fn window_origin(&self) -> (i32, i32) {
+        self.inf.as_ref().map_or((0, 0), |i| i.origin())
+    }
+
     /// Builds the floor for the current depth and its hunters (and its render meshes).
     pub fn start_floor(&mut self, content: &Content, catalog: &Catalog, assets: &Assets) {
         self.start_floor_sim(content, catalog);

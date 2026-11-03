@@ -567,7 +567,7 @@ pub async fn run(screenshot: Option<String>) {
 
         // the open room: pump it, send this runner's sample while a route runs, and act on what the others sent
         let sample = match (playing.as_ref(), loading.is_none()) {
-            (Some(g), true) => Some(world_sync::Sample::of(&g.p, g.depth)),
+            (Some(g), true) => Some(world_sync::Sample::of(&g.p, g.depth, g.window_origin())),
             _ => None,
         };
         let room_events = match net.as_mut() {
@@ -664,7 +664,7 @@ pub async fn run(screenshot: Option<String>) {
             }
         } else if let Some(g) = playing.as_mut() {
             let in_report = g.report.is_some();
-            let remotes = net.as_ref().map(|n| n.remotes_at(g.depth)).unwrap_or_default();
+            let remotes = net.as_ref().map(|n| n.remotes_at(g.depth, g.window_origin())).unwrap_or_default();
             admin.enabled = settings.username == "KYTTU";
             let admin_esc = if in_report || pz.open {
                 false
@@ -888,6 +888,8 @@ pub async fn run(screenshot: Option<String>) {
                     }
                     if pz.open {
                         let name = settings.username.clone();
+                        let room = net.as_ref().map(|n| pause::remote_rows(&n.roster(), g.is_infinite())).unwrap_or_default();
+                        let local_host = net.as_ref().map_or(true, |n| n.is_host());
                         if let pause::Out::Abandon = pause::draw_pause(
                             &w.assets,
                             &mut pz,
@@ -896,6 +898,8 @@ pub async fn run(screenshot: Option<String>) {
                             &w.content,
                             g,
                             &name,
+                            room,
+                            local_host,
                         ) {
                             leave = true;
                         }
