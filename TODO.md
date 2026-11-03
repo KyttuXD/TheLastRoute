@@ -675,6 +675,8 @@ Sources: the website game at KyttusLab/games/night-watch (src/modes, docs/ROADMA
 
 Measure first: the Intel build has not been timed yet. Every item below should be checked against numbers from KT-MBA.
 
+Target: 100+ FPS on the Intel MacBook Air with vsync off, measured with the F7 overlay in the same 60-second walk through a run.
+
 - [ ] Baseline on KT-MBA: F7 overlay frame time, the update / render 3d / hud split, draw calls and spikes, in the same 60-second walk through a run, recorded in this list
 - [ ] Renderer check on the Intel GPU: confirm the backend miniquad uses on macOS (OpenGL profile, not Metal) and whether it is the bottleneck
 - [ ] Quality AUTO picks a tier from the GPU and the first second of frames on this Mac, instead of a fixed 50% render scale for every Mac
@@ -690,6 +692,7 @@ Measure first: the Intel build has not been timed yet. Every item below should b
 - [ ] Mesh rebuild on floor change (see Performance and FPS): the Intel frame cost of a chunk recentre, measured here before and after the fix
 - [ ] Fog and the far-plane distance: check how much fragment work the fog and draw distance add on Intel
 - [ ] Run the Intel and Apple Silicon builds side by side and record the frame-time gap, so later fixes can be judged on both
+- [ ] Reach 100+ FPS on the Intel MacBook Air with vsync off: record the F7 average and the slowest 1% in the 60-second walk, then rank the items above by what they cost on this Mac
 
 ## Admin menu (2026-11-03)
 
