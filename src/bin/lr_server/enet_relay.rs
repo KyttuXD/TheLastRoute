@@ -269,10 +269,6 @@ impl EnetRelay {
         self.last_error.clear();
     }
 
-    pub fn set_error(&mut self, message: &str) {
-        self.last_error = message.to_string();
-    }
-
     pub fn note_send_error(&mut self) {
         self.counters.send_errors += 1;
     }
@@ -729,9 +725,11 @@ impl EnetRelay {
         self.begin_handoff(&code.trim().to_uppercase(), session as u32, handoff_epoch as i64, rooms)
     }
 
+    #[cfg(test)]
     pub fn host_count(&self) -> usize {
         self.hosts.len()
     }
+    #[cfg(test)]
     pub fn session_count(&self) -> usize {
         self.sessions.len()
     }

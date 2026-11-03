@@ -410,6 +410,10 @@ fn shot_screen(name: &str) -> Option<Screen> {
 }
 
 pub async fn run(screenshot: Option<String>) {
+    // the window is created at the system's default position; keep it on the work area (above the taskbar)
+    if screenshot.is_none() {
+        platform::centre_on_work_area();
+    }
     if screenshot.is_some() {
         if let Some((Some(sw), Some(sh))) = env("LR_SHOT_SIZE").and_then(|s| {
             s.split_once('x')
@@ -445,6 +449,8 @@ pub async fn run(screenshot: Option<String>) {
     let mut last_save: Option<checkpoint::Checkpoint> = None;
     let mut save_poll = 0.0f32;
     let mut mouse_last: Option<Vec2> = None;
+    // frames left before look input counts after a re-lock: the cursor is still moving to the capture point
+    let mut relock_settle = 0u32;
     let mut grabbed = false;
     let mut save = checkpoint::load();
     boot.step(crate::ui::boot::Step::Saves).await;
@@ -677,6 +683,9 @@ pub async fn run(screenshot: Option<String>) {
                 show_mouse(!want_grab);
                 grabbed = want_grab;
                 mouse_last = None;
+                if want_grab {
+                    relock_settle = RELOCK_SETTLE_FRAMES;
+                }
             } else if want_grab
                 && (is_mouse_button_pressed(MouseButton::Left)
                     || is_mouse_button_pressed(MouseButton::Right))
@@ -686,6 +695,7 @@ pub async fn run(screenshot: Option<String>) {
                 set_cursor_grab(true);
                 show_mouse(false);
                 mouse_last = None;
+                relock_settle = RELOCK_SETTLE_FRAMES;
             }
             let mut c = read_controls(
                 &mut mouse_last,
@@ -693,6 +703,12 @@ pub async fn run(screenshot: Option<String>) {
                 settings.sensitivity,
                 g.shop_open(),
             );
+            // after a re-lock the cursor is still moving to its capture point; that move is not a look turn.
+            // read_controls keeps tracking the cursor, so the look is zero only while the settle lasts.
+            if relock_settle > 0 {
+                c.look = Vec2::ZERO;
+                relock_settle -= 1;
+            }
             if pz.open || map_open || admin.is_open() {
                 c = Controls::default();
             }
@@ -1104,6 +1120,9 @@ pub async fn run(screenshot: Option<String>) {
         n.leave();
     }
 }
+
+/// Frames after the cursor is captured again (on re-lock) during which look input is ignored, about 0.15 s at 60 fps.
+const RELOCK_SETTLE_FRAMES: u32 = 9;
 
 /// Whether the cursor is captured for look this frame. Only the run itself captures it: the pause menu, a report, the admin
 /// menu, the fullscreen map (M, which pans and places waypoints with the pointer) and a screenshot all leave it free.

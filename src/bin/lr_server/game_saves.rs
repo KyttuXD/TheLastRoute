@@ -19,9 +19,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub const SAVE_MAX_BYTES: usize = 64 * 1024;
-pub const SAVE_TOKEN_HEADER: &str = "x-session-token";
-/// The JavaScript `SAVE_PATH` regex source (use [`match_save_path`]).
-pub const SAVE_PATH: &str = r"^/api/v1/saves/([^/]+)/([^/]+)$";
 /// Keep the pre-revision slot intact; beta world revisions use distinct slots.
 pub const ALLOWED_SAVES: &[(&str, &[&str])] = &[("last-route-godot", &["run", "run-world-1"])];
 

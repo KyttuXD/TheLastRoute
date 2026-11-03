@@ -266,10 +266,6 @@ impl ReservedRooms {
         self.rooms.contains_key(&normalize_code_str(code))
     }
 
-    pub fn codes(&self) -> Vec<String> {
-        self.rooms.keys().cloned().collect()
-    }
-
     fn invites_of(room: &Value) -> Vec<String> {
         match room.get("invites") {
             Some(Value::Array(items)) => items.iter().map(js_string_of).collect(),

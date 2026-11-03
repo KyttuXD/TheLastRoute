@@ -5,6 +5,712 @@ Updated as work lands. The port's current implementation is now treated as the
 completed scope for this checklist; future expansions should be tracked as new
 items rather than left in an ambiguous in-progress state.
 
+## Godot parity gaps (audit 2026-11-03)
+
+From a read-only audit of every open and partial item against the Rust code (539 distinct gaps). [~] partial, [ ] open. Effort S is under half a day, M a day or two, L more. 47 audit items were marked implemented and are not listed here; their old TODO entries may be stale.
+
+### Effort S (167)
+
+- [~] Account screen: Night Watch sign-in and create account
+- [~] Account screen: Night Watch sign-in and create account on shared backend
+- [~] Adaptive quality governor: frame-time governed steps
+- [~] Admin access gate: scope and server check
+- [~] Aki exposure values hard-coded
+- [~] Aki exposure: GameConfig values hard-coded
+- [~] Autosave on relays, level changes, safe-room checkpoints and quit
+- [~] Briselle relay tracker lock, speed, stun hard-coded
+- [~] Briselle relay tracker: lock, speed and stun hard-coded
+- [~] Camera bob with step-locked cadence and lateral sway
+- [~] Camera minimap with CAM buttons at room positions
+- [~] Capture reach and immunity gate
+- [~] Capture reach, gate and immunity states not fully confirmed
+- [~] Ceryth hiding trap retreat speed and distance
+- [~] Ceryth hiding trap: retreat speed and distance hard-coded
+- [~] Chunk fixtures: six target spots, every third a vent, five-cell spacing
+- [~] Chunk seams: centre-cross openings and wide hall openings
+- [~] Coins for Zellia's store: streamed coin source is unconfirmed
+- [~] Collision and walkways: cell-based collision, no walkway clearance
+- [~] Connected players list: only the local row is listed
+- [~] Controls table: one action table with rebinding, hint line, controls tab
+- [~] Controls table: one action table with rebinding, hint line, tab
+- [~] Crowbar and axe STUNNED callout Godot has switched off
+- [~] Crowbar and axe STUNNED callout still printed
+- [~] Crowbar and rescue axe: breach, break-free and rescue
+- [~] Data-driven region files: mall and hospital JSON embedded but never read
+- [~] Death lines: secret spider lines
+- [ ] Default bindings: Tab inventory, T chat, O player list, gamepad
+- [ ] Difficulty profiles: Nightmare profile
+- [~] Director share: flank and cover partial, no Nightmare profile
+- [~] Door and wall thresholds: door props, double doors, hump removal
+- [ ] Door hold last stage
+- [~] Dossier descriptions: no text for Void gimmick chart
+- [ ] Dossier text for the Void gimmick chart
+- [~] Dossier: black square instead of name for undiscovered hunters
+- [ ] Elise closeness bar and wrong-attempt bumps
+- [~] Escape struggle loop and knock-back timing
+- [~] Escape struggle loop and knock-back timing unconfirmed
+- [~] Field of view and sensitivity: 105 vs 110 max
+- [ ] Fix settings.rs comment saying graphics quality changes nothing
+- [ ] Flashlight flicker and seize after plunge splash or hunter event
+- [~] Floor-surface footsteps: surface kind passed
+- [~] Furniture hiding capacity: beds and wardrobes hold one or two runners
+- [ ] Glyra winder threat
+- [~] Guest names flow
+- [ ] Haelith counter threat
+- [~] Hall light and battery that does not recharge
+- [~] Hall light and the battery that does not recharge
+- [~] Heater station placement: streamed parity is unconfirmed
+- [~] Held keys A, D and F with single flashlight battery
+- [~] Held keys A, D and F with the single flashlight battery
+- [~] Hide glide animating into the locker
+- [~] Hold drop key to drop a whole stack
+- [ ] Hunter draw pool: Nightmare weights
+- [~] Hunter scale for Night Watch placements via one instantiate path
+- [~] Hunter scale: MODEL_SCALE 1.5 through one Night Watch instantiate path
+- [~] Hunter speed model: hard-ability and troll scales missing
+- [~] Hunters walking the building at a walking pace
+- [~] Ilyra corner observer: Nightmare zero-second pounce delay absent
+- [~] Ilyra Nightmare zero-second pounce delay
+- [~] In-game check of mouse vertical look sign
+- [~] Interaction prompt text: wording fixed to keyboard keys
+- [~] Javelle hiding timeout reach and stall values
+- [~] Javelle hiding timeout: reach and stall values hard-coded
+- [~] Join room: password field and network join
+- [ ] Left and right vent lights
+- [~] Locker hide check still prints callouts
+- [~] Locker hide check: callout toasts still print
+- [~] Locker inspection breath: no inspect state
+- [ ] Loot tables: sewer loot table unused
+- [~] Map: waypoint and teammate pins
+- [ ] Mask toggle exclusive with monitor, raise and lower timings
+- [~] Minimap and full map: teammate and waypoint pins, pan and zoom
+- [~] Movement, camera and look tuning values
+- [~] Music box wind, tune and run-down
+- [~] Music boxes: two per 4x4 region block with a shared tune
+- [~] Mutual light sight: hunters see runners by lamp exposure
+- [~] Navigation on streamed grid windows
+- [~] Noise meter from salvaging and visitor response
+- [~] Noise meter with hearing line
+- [ ] Opalie monitor-gated threat
+- [ ] Open Air Zellia calls from the shared table
+- [~] Pause card: RESUME (Esc) and QUIT TO HUB, paused time stopped
+- [~] Pause card: RESUME (Esc), QUIT TO HUB, paused time stopped
+- [~] Pause menu: SAID RECENTLY and MUTE block, and the save status line
+- [~] Per-hunter tuning not compared with Godot roster
+- [~] Personal waypoint pin: placement, clear, drawing and guidance
+- [~] Placement clearance: door keep-clear zones and push-out
+- [~] Player list shows the room's runners
+- [~] Player waypoint pin: placement, clear, distance, off-screen arrow
+- [~] Port Admin access gate: enabled by display name, with no scope or server check
+- [~] Port Automatic run save: no temp file or backup, no pause-quit or pickup saves, no position saved
+- [~] Port Carnival booth cues: no booths to play them
+- [~] Port Coins for Zellia's store (Godot streamed coin source unconfirmed)
+- [~] Port Data-driven content and mod packs: props, hunters and route loot only
+- [~] Port Data-driven region files (mall and hospital JSON embedded but never read)
+- [ ] Port Death lines: secret spider lines are absent
+- [ ] Port Difficulty profiles: Nightmare profile missing
+- [ ] Port Field of view and sensitivity: FOV maximum 110 in Rust vs 105 in Godot
+- [~] Port Floor-surface footsteps: the finite route passes no surface kind
+- [~] Port Guest names: the client has no guest name flow
+- [~] Port Heater station placement (Godot streamed placement not located)
+- [~] Port Hide server address from players: no scrub of host or port text
+- [~] Port Hiding in furniture: lockers only, no beds or wardrobes
+- [~] Port Hiding occupancy (capacity, front and beside slots)
+- [ ] Port Hunter draw pool: Nightmare weights missing
+- [~] Port Hunter grab animations: 16 Godot grab files have no Rust copy
+- [~] Port Hunter spawn points per chunk (per-chunk spawn rules differ)
+- [~] Port Interaction prompt text: prompt wording fixed to keyboard keys
+- [~] Port Join room: password field and network join
+- [~] Port Movement, camera and look tuning: pitch clamp, FOV maximum and bob rates differ from Godot
+- [~] Port Music boxes (two per 4x4 region block, shared tune)
+- [~] Port Night Watch cue family: no scene calls the nw cues
+- [ ] Port Pause menu: SAID RECENTLY and MUTE block, and the save status line
+- [~] Port Per-level danger profile (hunter speed, count bias, safe-room odds)
+- [~] Port Persistent chunk state (checkpoint damage and breaches not stored)
+- [~] Port Personal waypoint pin: placement, clear, drawing and guidance
+- [~] Port Player waypoint pin: placement, clear, distance and off-screen arrow
+- [~] Port Rebindable controls: fixed labels, no rebinding or saved bindings
+- [ ] Port Reduced motion option: no setting exists
+- [~] Port Room catalogue sizes: room size profiles missing
+- [~] Port Room roles per district (Godot role lists vs Rust catalogue tags)
+- [~] Port Safe rooms on Infinite route (none generated, safe zone cleared per chunk)
+- [~] Port Screen-edge danger effects: thermal warning panel and strength curves
+- [ ] Port Settings audio: voice and subtitle rows have no effect
+- [~] Port Settings display: vsync, FPS limit, quality, ADS and focus pause have no effect
+- [~] Port Stamina and tool tuning: overheat multiplier applied to sprint, and the troll drain missing
+- [~] Port Top-centre status bar: test server, admin active and public route segments
+- [~] Port Typed co-op message catalogue: round-trip tested but unused in the game path
+- [~] Progress save: night_watch.cfg with cleared levels, stars, best scores
+- [~] Pursuit and route-following sweep and look-ahead parity unconfirmed
+- [~] Quality governor stepping quality down on slow frames
+- [~] Quenelle flashlight tracker: Nightmare lock time and ramp
+- [~] Quenelle lock time and speed ramp constants
+- [~] Ravelle tripwire: wire radius and trap stun hard-coded
+- [~] Ravelle wire radius and trap stun hard-coded
+- [ ] Reduced motion option
+- [~] Relay rush timings and targets against Godot
+- [~] Relay rush timings and targets need verifying
+- [~] Room catalogue sizes and size profiles
+- [~] Run statistics on run card: time, distance, rooms, levels, hunters met
+- [~] Safe rooms on the Infinite route: none generated, zone cleared per chunk
+- [~] Salvage rack: four slots, three decks, hold to take
+- [~] Seeded integer streams: Night Watch mulberry, stream and pacer
+- [~] Settings: Calm mode, Scare Full/Short/Off, ERASE progress
+- [~] Shared lobby settings, start and end
+- [ ] Smooth remote movement with 100 ms delay
+- [~] Stamina and tool tuning: overheat and troll drain
+- [~] Stuck detection: centre-steer and wedge snap-back
+- [~] Sweep and waypoint look-ahead parity unconfirmed
+- [~] Taser stun versus taser-immune slow divergence
+- [~] Taser stun versus taser-immune slow divergence not revisited
+- [~] Thessine mimic callout where Godot plays sound
+- [~] Thessine mimic: callout printed where Godot plays sound only
+- [~] Title menu: PUBLIC ROUTE button and admin visibility for non-KYTTU admins
+- [~] Title screen: PLAY, CUSTOM NIGHT, ACCOUNT, SETTINGS, CREDITS, QUIT, clock
+- [~] Title screen: PLAY, CUSTOM NIGHT, ACCOUNT, SETTINGS, CREDITS, QUIT, drifting clock
+- [ ] Top-centre status bar: test server, admin active, public route segments
+- [~] Typed co-op message catalogue used in game path
+- [~] Umbriel disguise pool hard-coded, Nightmare copy absent
+- [~] Umbriel shapeshifter: disguise pool hard-coded, no Nightmare copy
+- [~] Update docs/PARITY.md items 2 and 3 for keyboard look
+- [~] Void Purple radar corrupter: static and blackout rules missing
+- [~] Wander and search picking: patrol-anchor branch missing
+- [~] Win and death end cards: Next night, Retry, Menu
+- [~] Wynelle cold materializer: constants hard-coded
+- [~] Zellia merchant: sabotaged relay repair and Nightmare death chance
+
+### Effort M (302)
+
+- [~] Account panel: sign-in and account creation offline only
+- [~] Account progress and dossier sync
+- [~] Account sign-in and saved session
+- [~] Anti-AFK void pressure on idle parties
+- [~] Automatic run save: backups and more save points
+- [ ] Bedroom view from the pillow: dark 5x5 room with look controls
+- [ ] Black wolf spider: harsher faster variant
+- [~] Breakables: sealed wings, loose boards and pipes; no interaction
+- [ ] Broadcast booth office with stations
+- [ ] Bus stop watch with warmth and heat lamp
+- [ ] Campfire watch with tent, firewood and two threats
+- [ ] Cargo bay office with rack, ledger and two doors
+- [ ] Carnival booth cues: booths to play them
+- [~] Carnival booths: playable stalls and carousel missing
+- [~] Caught moment and scare setting: pose, framing, duration, sound
+- [~] Caught moment and scare setting: scare pose, framing, duration, sound
+- [ ] Caught players spectate in co-op
+- [ ] CHAOS shift events
+- [~] Checkpoint and autosave on relays, level changes, safe rooms and quit
+- [~] Chunk loot and objectives: stair flights and sealed cells
+- [ ] Classic night rules: seven nights, door and light tables, 6 AM win
+- [~] Cloud copy of the run save
+- [~] Co-op revives: downed state, revive kit hold and window
+- [~] Collision model: oriented prop boxes and door gaps
+- [ ] Control room office with keypad and task board
+- [ ] Corner peek and ambush PEEK state
+- [~] Corner peek and ambush: no PEEK state
+- [~] Crouch stand-up headroom check and crouch hitbox
+- [~] Crowbar and axe: breach boards and doors, cut grabs, rescue teammates
+- [ ] Custom Night watch chain
+- [ ] Custom Night: per-hunter 0-20 sliders, presets, score, START NIGHT
+- [ ] Day shop: five toggle upgrades within the week budget
+- [ ] Day shop: five toggle upgrades within the week's budget
+- [~] Daylight and LightField exposure in sight limit
+- [~] Daylight and LightField exposure missing from sight limit
+- [ ] Dead Air shift, nights 1-6 and Custom Night
+- [~] Dense bank layout: 11x9 pairs, 21x9 big rooms, hall-centred rows
+- [ ] Desk monitor with eight cameras
+- [~] Desktop self-update: version parsing only
+- [ ] Device-aware control glyphs: gamepad and rebind-aware prompts
+- [~] Director flank and cover roles, no Nightmare profile
+- [~] District layout matching Godot: seeds and region tags differ
+- [~] District selection: weighted districts, deeper-level extras, sewer district
+- [ ] Door and vent seal budgets
+- [~] Doors and door lights: two steel doors held shut and lit
+- [~] Doorways sized for hunter scale: single-cell doors only
+- [ ] Dovelle and Ravelle path walkers
+- [ ] Drawn threat roster and the six threat types
+- [~] Eight-room building and walkable paths
+- [ ] ENDLESS ramp and rotations
+- [ ] ENDLESS ramp and rotations (Mixed Shift)
+- [ ] Facility shift, nights 1-6 and Custom Night
+- [~] First-person body, climb hands and held-item grips
+- [ ] Five descents and stage order
+- [ ] Five weeks with budget, quota and carry-over
+- [~] Five-room plant with lift and doorway timing
+- [~] Flood valves
+- [~] Flood valves: valve focus and flood sync
+- [ ] Floodwater wading and soaked state
+- [ ] Front office with no door and five stations
+- [ ] Full inventory overlay: grid with drag and drop
+- [ ] Fuse-box wires puzzle with wrong-button restart
+- [ ] Gamepad input: sticks, triggers and pad bindings
+- [ ] Gamepad: right-stick look, pad bindings and triggers
+- [~] Glyra music box route boxes and peek ambush
+- [~] Glyra music box: per-region route boxes and peek ambush missing
+- [~] Grab view: arm stretch, camera clearance, runner body
+- [ ] Great halls: 21x21 merged middle rooms
+- [ ] Hard ability door slam-through
+- [ ] Hard ability intercept of the runner's line
+- [ ] Hard ability pounce leap
+- [ ] Hard ability pounce leap (Hard and Nightmare)
+- [ ] Hard ability sprint burst after losing sight
+- [~] Hard-ability speed scale and troll scale
+- [~] Hiding in furniture: lockers only, no beds or wardrobes
+- [~] Hiding occupancy: capacity and front and beside slots
+- [~] Hiding props: beds, wardrobes, tables with capacity 1 to 2
+- [~] Host-authoritative route sync: protocol exists but run loop does not call it
+- [ ] Host-side guest anti-cheat with strikes
+- [ ] House wing map: bedroom, hall, living room, galley, kids' room, bathroom
+- [ ] Hub office with two doors and three vents
+- [~] HUD: shift clock, power meter, status line, prompt line
+- [~] Hunter emotes and personalities catalogue
+- [~] Hunter navigation on streamed grid windows
+- [ ] Hunter pacing: three-second window that slides with AI level
+- [~] Hunter pose library: 21 data-driven poses and state table
+- [~] Hunter spawn points per chunk: per-chunk spawn rules differ
+- [~] Hunters persist across chunks and floors and walk the stairs
+- [ ] Ilyra and Aki watched threats
+- [~] Inferno spider spawn on level -3
+- [~] Interactable stations and prompts: monitor, doors, light, lamp, ledger
+- [ ] Inventory screen and backpack upgrades (Tab)
+- [ ] Inventory screen on Tab and backpack capacity upgrades
+- [~] Kathy search beam affected-summon unported
+- [~] Kathy search beam: affected-summon unported in both trees
+- [ ] Lamp exposure input to hunter sight
+- [~] Late-join world snapshot
+- [ ] Level layer beds: sewer and Inferno
+- [~] Level stack: sewer (-1), lower sewer (-2), Inferno (-3) with depth floor
+- [~] Linear hotel and prison layout along the central cross
+- [~] Locker inspection breath needs inspect state
+- [ ] Lockpick set and locked caches
+- [~] Loxelle incinerator: chase-only room-door breach missing
+- [~] Loxelle passive incinerator room-door breach
+- [ ] Loxelle, Javelle and Haelith Bedtime behaviour
+- [ ] Masked Hours six-night shift and Custom Night sliders
+- [~] Masked Hours wing layout: 14 rooms on an AStar3D graph
+- [~] Masked Hours wing layout: 14 rooms on AStar3D graph
+- [~] Mixed sector layout: quadrant rooms, beach excluded where Godot includes it
+- [~] Mod pack loader: size limits and sha256 checks
+- [ ] Moderation client (online only)
+- [ ] Monitor and camera feeds: raise monitor, switch cameras
+- [ ] Monitor and camera feeds: raise the monitor and switch cameras
+- [ ] Monitor panel with systems rows and LURE
+- [~] Music wing instrument cues: playable props
+- [~] Music wing: rehearsal rooms and stage missing
+- [ ] Mutual light sight: hunters see runners standing in light
+- [ ] Night 7 Kathy alone: hum at doors, eye-meet on hall camera, fade
+- [~] Night Watch cue family: scenes call them
+- [~] Night Watch sound mapping: event-to-cue and room tones
+- [~] Night Watch sound mapping: event-to-cue table and room tones
+- [ ] Nightly task list with six task types
+- [ ] Nightmare difficulty scaling profile for teams and pounces
+- [ ] NPC teammate lines: dialogue data
+- [~] NPC teammates
+- [~] NPCS admin page: NPC commands
+- [~] Nyxie and Solyth Nightmare pounce branches
+- [~] Nyxie darkness stalker Nightmare pounce
+- [~] Nyxie darkness stalker: Nightmare pounce missing
+- [ ] Office contract: one walkable office per mode with stations
+- [~] Online backend client compiled and wired
+- [ ] Opalie in the gallery
+- [~] Open grounds map and waypoint paths
+- [~] Patrol-anchor branch in wander and search picks
+- [~] PEEK and INSPECT states in the brain
+- [ ] Per-floor draw Nightmare weights
+- [~] Per-hunter tuning numbers not compared with Godot roster
+- [~] Per-level danger profile: hunter speed, count bias, safe-room odds
+- [ ] Per-mode map registry, validated against Classic
+- [~] Persistent chunk state: checkpoint damage and breaches are not stored
+- [ ] Phantoms breaking systems and reboots
+- [ ] Pipework puzzle with flow check
+- [ ] Porcelle and the beacon
+- [ ] Port Account panel: sign-in and account creation are offline only
+- [~] Port Account progress and dossier sync: discoveries are kept locally only
+- [~] Port Account sign-in and saved session: the client code is not compiled
+- [~] Port Ambient beds: silent on the finite route, streamed-route beds missing
+- [~] Port Auto-updater: no download, verify or apply code (version parsing only)
+- [~] Port Breakables (sealed wings, loose boards, pipes; no interaction)
+- [~] Port Carnival booths (playable stalls and carousel missing)
+- [ ] Port Caught players spectate in co-op
+- [~] Port Chunk loot and objectives (stair flights and sealed cells differ)
+- [~] Port Chunk seams (centre-cross openings, wide hall openings)
+- [~] Port Cloud copy of the run save: only the local checkpoint is used
+- [~] Port Collision and walkways: cell-based collision, no walkway clearance
+- [~] Port Data-driven base content loader: regions, rooms and other kinds not loaded
+- [~] Port Desktop self-update: version parsing only
+- [ ] Port Device-aware control glyphs: gamepad and rebind-aware prompts
+- [~] Port Doorways sized for hunter scale: single-cell doors only
+- [ ] Port Download missing mod packs from the index
+- [ ] Port Full inventory overlay: grid with drag and drop
+- [ ] Port Guest waits for the synced world before moving
+- [~] Port Host hunter state broadcast
+- [~] Port Host-side guest anti-cheat: server moderation only, no guest validator
+- [ ] Port Host-side guest anti-cheat: speed, teleport and noclip checks with strikes
+- [~] Port Hunter emotes and personalities: no emote catalogue
+- [~] Port Late-join world snapshot
+- [ ] Port Level layer beds: no sewer or Inferno beds
+- [ ] Port Linear hotel and prison layout along the central cross
+- [~] Port Mixed sector layout (quadrant rooms, beach excluded where Godot includes it)
+- [~] Port Mod pack loader: only hunters, props and route loot load; no size limits or sha256 checks
+- [ ] Port Moderation client: online only
+- [~] Port Music wing instrument cues: no playable props
+- [~] Port Night Watch content: no data in Rust
+- [ ] Port NPC teammate lines: no dialogue data
+- [~] Port NPCS admin page: NPC teammates are not in the Rust port
+- [~] Port Owner moderation review queue and flags (placeholder in the admin hub)
+- [ ] Port Persistent public route client: server side is ported
+- [~] Port Positional emitters: waterfall, flood and lava loops missing
+- [~] Port Prop collision boxes: solidity is cell-based, with no oriented boxes
+- [ ] Port Public route featured hunters: featured pair and weighted lineup missing
+- [ ] Port Public route join from the title screen: client not in the build
+- [~] Port Reserved private rooms: owner tools have no client code
+- [~] Port Room chat, speech bubbles and subtitles
+- [~] Port Room furnishing recipes (orientation, seat-to-screen logic, room size profiles)
+- [~] Port Room staging: online host controls, chat and route sync
+- [ ] Port Same mod packs as the host: pack hash announce and check
+- [ ] Port Server update manifests client flow (server side is ported)
+- [ ] Port Settings controls: rebinding is not possible, and the CHANGE, + and RESET buttons are disabled
+- [~] Port Sewer, waterworks and ladder or ramp level stack: stairs only
+- [~] Port Shared lobby settings, start and end: guests receive no settings
+- [~] Port Shared world events and interaction requests
+- [~] Port Smooth remote movement: snapshot interpolation with 100 ms delay
+- [ ] Port Spectating banner and ghost follow
+- [ ] Port Spectators and ghost runners: no ghost state
+- [ ] Port Spoken chat through OS text to speech: no speech output
+- [~] Port Stairwells (spiral and switchback flights, placement, access halls)
+- [ ] Port Startup gate and update check: no check, retry or minimum splash
+- [~] Port Surface themes: surfaces are painted in code, with no theme data
+- [~] Port Text chat (team and nearby)
+- [~] Port Title menu: PUBLIC ROUTE button and admin visibility for admin accounts other than KYTTU
+- [ ] Port Update-in-progress screen
+- [~] Port Vent network (ducts and crawl movement missing, grates only)
+- [ ] Port Voice packet codec (IMA ADPCM)
+- [~] Positional emitters: waterfall, flood, lava loops
+- [~] Power drain, blackout and Nyxie arrival
+- [ ] Public route featured hunters and lineup
+- [ ] Public-route patrol around a live runner: no patrol anchor
+- [ ] Quenelle and the lift
+- [~] Radio station map and waypoint graph
+- [ ] Rebindable controls with saved bindings
+- [~] Reserved private rooms and owner tools
+- [ ] Revive kit pickups collected
+- [ ] Rooftop watch with torch, barriers and lantern oil
+- [~] Room climate offsets: per-room profiles instead of per-region estimates
+- [~] Room furnishing recipes: orientation, seat-to-screen logic, room size profiles
+- [~] Room roles per district: Godot role lists differ from Rust tags
+- [~] Room staging: online host controls, chat and route sync
+- [~] Safe rooms with breach and checkpoints
+- [ ] Same mod packs: pack hash announce and check
+- [ ] Screen-edge danger effects: thermal warning panel and strength curves
+- [ ] Sealing vents and air stress
+- [ ] Security room: walkable office with desk, monitor and stations
+- [~] Seeded replayable shifts with golden fixtures for each mode
+- [ ] Server update manifests client flow
+- [~] Service elevator view with Elise waiting at the sill
+- [~] Settings audio: voice and subtitle rows have no effect
+- [~] Settings controls: rebinding not possible; CHANGE, +, RESET disabled
+- [~] Settings display: vsync, FPS limit, quality, ADS, focus pause have no effect
+- [~] Sewer layer: separate generator, ramps, falls, ladders and floods
+- [ ] Shift board: nine mode rows, cleared counts, portraits, START SHIFT
+- [ ] Ship and scrap yard map
+- [ ] Signal panel memory puzzle
+- [ ] Sit, lie and ride on furniture
+- [ ] Sit, lie and ride on furniture (use_furniture, rest spots)
+- [ ] Six Bedtime nights and the Custom Night row
+- [ ] Six-night Masked Hours shift and Custom Night sliders
+- [~] Sleep and drowsiness, hunters stirring and jolting the sleeper
+- [~] Sleep and drowsiness: hunters stir or jolt a sleeping runner
+- [ ] Sleep meter (creep) and restless house cues
+- [ ] Spectating a downed or ghost runner
+- [ ] Spectating and ghost follow
+- [ ] Spectating banner and ghost follow
+- [ ] Spectators and ghost runners: no ghost state
+- [~] Spoken chat through OS text to speech: no speech output
+- [ ] Squall and shower weather schedule
+- [~] Stairs walked in Godot, not teleported; spiral and switchback flights
+- [ ] Stairs walked rather than teleported to the landing
+- [~] Stairwells: spiral and switchback flights, placement and access halls
+- [~] Startup gate and update check
+- [~] Stuck detection: centre-steer and wedge snap-back missing
+- [ ] Surface themes from theme data
+- [ ] Tells before every kill and their pulse sounds
+- [~] Temperature, heater and fan climate rules
+- [~] Text chat (team and nearby)
+- [~] Text-to-speech chat for nearby players
+- [ ] Thessine walking in from the hall
+- [ ] Transit hub map and vent run
+- [ ] Umbriel the rusher
+- [ ] Update-in-progress screen
+- [ ] Vent hunters Verrine, Haelith and Ilyra
+- [ ] Verrine vent crawler threat
+- [~] Verrine vent lurker: physical duct crawl and vent events missing
+- [ ] Visitors at the side doors (Ravelle, Ceryth) with warnings
+- [ ] Voice packet codec (IMA ADPCM)
+- [ ] Void Black rear stalker: no gimmick, freeze and unwatched rules
+- [ ] Void Blue silent stalker: beam reveal and map exclusion
+- [~] Void Brown jam hiding spots
+- [~] Void Brown spot jammer: jam hiding spots
+- [ ] Void Cyan runner position broadcast to hunters
+- [ ] Void Cyan signal ping: runner position broadcast to hunters
+- [~] Void Gray anti-idle signal route: networked flow missing
+- [ ] Void Green vent submerge, uncatchable two seconds
+- [ ] Void Green vent submerge: hidden and uncatchable two seconds
+- [~] Void incursions: no incursion chance, void hunters rarely drawn
+- [~] Void Orange outage state for runner systems
+- [ ] Void Orange system outages: no outage state for runner systems
+- [~] Void Purple radar static and blackout rules
+- [ ] Void Red hall and room speed multipliers
+- [ ] Void Red hall runner: hallway and room speed multipliers
+- [ ] Void White light-frozen: lit torch freeze rule missing
+- [ ] Void White lit-torch freeze rule
+- [ ] Void Yellow map pressure while map is open
+- [ ] Void Yellow map pressure: speed grows while map is open
+- [~] Wander, idle, investigate, chase, search: PEEK and INSPECT states
+- [ ] Watch post office in three variants
+- [~] Waypoints: one per player, route chevrons and ground trail
+- [~] Win and death end cards: Next night, Retry and Menu
+- [ ] Wolf spider pair shared rest and recall
+- [ ] Wolf spider pair shared rest and recall logic
+- [ ] Xivvy and the lure mechanic
+- [~] Xivvy chase accelerator: clearance-driven flight and landing missing
+- [~] Xivvy clearance-driven flight and landing
+- [ ] Ysolde at the window: knock and quiet rule
+- [~] Zellia calls for nights 1-6 (Dead Air)
+- [~] Zellia sabotaged relay repair and Nightmare death chance
+- [~] Zellia scripted calls for nights 1-6 (Masked Hours)
+- [ ] Zellia's call box: ring, typed lines, subtitles, queued calls
+- [~] Zellia's call box: ring, typed lines, subtitles, queued scripted calls
+- [ ] Zellia's calls for nights 1-6 (Dead Air)
+- [ ] Zellia's Facility calls
+- [ ] Zellia's scripted calls for nights 1-6
+
+### Effort L (70)
+
+- [~] Ambient beds on streamed route
+- [~] Auto-updater: download, verify, apply
+- [ ] Carnival booths and carousel rides
+- [ ] Carnival booths and carousel rides as interactions
+- [ ] Co-op revives: downed runners, revive hold and window
+- [~] Data-driven base content loader: rooms and kinds
+- [~] Data-driven content and mod packs: props, hunters and route loot only
+- [~] District layout matching Godot seeds and region tags
+- [ ] Download missing mod packs from the index
+- [ ] Emotes, blocky face, doorway pose and player skins
+- [ ] Five shifts: QUIET, STEADY, RESTLESS, CHAOS and ENDLESS
+- [~] Fix Infinite map to match Godot layout, districts, stairs, population
+- [~] Gameplay UDP relay client tunnel (ENet proxy)
+- [ ] Godot-compatible co-op wire (ENet and RPCs)
+- [ ] Host hunter state broadcast
+- [~] Host-side guest anti-cheat: server moderation only, no guest validator
+- [~] Hunter AI: stalkers, door queue and pair speed-up combos
+- [ ] Hunters nap in beds and wake on a meter
+- [ ] Hunters take ladders and stairs to other levels
+- [ ] Hunters use ducts on Hard and Nightmare
+- [~] Inferno caverns and cage pit: no carving or lava
+- [~] Inferno caverns: cave carving, lava pits, cages and spider lair
+- [~] Infinite district layout matches Godot's streamed route generator
+- [~] Level links other than stairs: ladders, ramps, manholes, grates, elevators, drops
+- [ ] Night Watch content data
+- [~] Night Watch game shell, mode registry and save progress: placeholder binary only
+- [ ] Night Watch nine modes: none ported
+- [ ] Nightmare difficulty scaling profile
+- [~] Online route sync in the run loop
+- [ ] Owner moderation review queue and flags
+- [ ] Pacing director: beats, spikes and moods
+- [ ] Persistent public route client
+- [~] Port Gameplay UDP relay client tunnel: no ENet proxy in the Rust client
+- [ ] Port Godot-compatible co-op wire (ENet and SceneMultiplayer RPCs): Rust and Godot cannot share a room
+- [~] Port Inferno caverns (cave carving, lava pits, cages, spider lair)
+- [ ] Port Inferno caverns and cage pit: no carving or lava
+- [~] Port Level stack (sewer -1, lower sewer -2, Inferno -3, floor at -3)
+- [~] Port Night Watch game shell, mode registry and save progress: placeholder binary only
+- [ ] Port Night Watch nine modes: none ported
+- [~] Port NPC teammates with dialogue, text chat with TTS, full online mode
+- [~] Port Proximity voice chat
+- [~] Port Proximity voice chat: wire messages exist but no capture or playback
+- [~] Port Sewer layer (separate generator, ramps, falls, ladders, floods)
+- [ ] Port Voice, spoken chat and text-to-speech: no speech code
+- [~] Prop collision boxes: oriented, not cell-based
+- [~] Proximity voice chat
+- [~] Proximity voice chat: wire messages exist but no capture or playback
+- [ ] Public route join from title screen
+- [ ] Public-route patrol around a live runner
+- [ ] Room chat, speech bubbles and subtitles
+- [~] Sewer levels -1 to -3 with cistern, collector and Inferno maze
+- [~] Sewer, collector and Inferno levels with own tunnels and ladders
+- [~] Sewer, waterworks and ladder or ramp level stack: stairs only
+- [ ] Shared shift framework: NightWatchMode base, hand-over, mode registry
+- [ ] Shared world events and interaction requests
+- [ ] Shift scene contract and session hand-over (NightWatchMode)
+- [ ] The Facility shift, nights 1-6 and Custom Night
+- [ ] Three outdoor watches: Rooftop, Bus Stop and Campfire
+- [~] Vent network: ducts and crawl movement missing (grates only)
+- [~] Verrine physical duct crawl and vent events
+- [~] Voice, spoken chat and text-to-speech
+- [ ] Void Black rear stalker gimmick and speed rules
+- [ ] Void Blue beam reveal and map exclusion
+- [~] Void Gray networked signal route flow
+- [~] Void incursions and void_*.json hunters never drawn
+- [ ] Void player powers: Gray signal route, Orange outages, Purple static, Pink footsteps
+- [~] Void player powers: Gray, Orange, Purple and Pink effects
+- [ ] Void player powers: signal route, outages, radar static, false footsteps
+- [ ] White wolf spider lurk, bark, hunt and retreat brain
+- [~] White wolf spider lurk, bark, hunt, retreat
+
+## Region and area character (2026-11-03)
+
+Today every area is a box with a floor, walls and props. These items give each region and each area its own look and layout.
+
+- [ ] Each region gets a signature layout language: room shapes and sizes that differ (the geometry block is the start, see Moddability)
+- [ ] Hall shapes beyond straight corridors: bends, widened junctions, alcoves and dead ends per region
+- [ ] Per-region ceilings: drop ceilings, exposed beams, vaulted or open-to-sky areas, with lights set in the ceiling
+- [ ] Per-region wall treatments beyond the flat texture: panelling, tiles, partitions, half walls, arches and columns
+- [ ] Area-specific props: a signature prop set for each room role (the mall's shops, the hospital's wards), placed to read at a glance
+- [ ] Floor variety inside a region: rugs, tile patterns, worn or wet patches, drains and grates
+- [ ] Per-area light colour and temperature, so a diner, a ward and a stock room read differently in the dark
+- [ ] Clutter and wear: boxes, stacked chairs, cones, tape and posters placed by rule, not just scattered
+- [ ] Landmark areas in each region that the player can recognise and use as a waypoint
+- [ ] Sound and ambience per area (a hum in the stock room, a radio in the diner), tied to the audio cue system
+- [ ] Props that break the grid: leaning shelves, half-open doors, fallen furniture, cracked walls
+- [ ] Region-specific hiding spots that match the area (a laundry basket, a ward curtain, a freezer)
+- [ ] A visual check list per region, so each region is reviewed in a run before it ships
+
+## Night Watch port (from the website and the Godot version)
+
+Sources: the website game at KyttusLab/games/night-watch (src/modes, docs/ROADMAP.md, docs/LAST_ROUTE_MATCH.md) and the Godot version at LastRoute Godot/KyttusLabApp/game/night_watch. The Rust binary (src/bin/night_watch) is a stub: 28 lines and no game yet. Each item says which version it ports from.
+
+### Shell and shared framework
+
+- [ ] Rust Night Watch app shell: window, title, hub menu with the eight night types, and quit (website: index.html hub; Godot: night_watch_menu.gd)
+- [ ] Shared roster: the 26 Last Route characters with their roles (website: docs/LAST_ROUTE_MATCH.md; Godot: night_watch_data.gd)
+- [ ] Shared save and progress across night types, using the same account store as Last Route (website: account; Godot: night_watch_game.gd)
+- [ ] Mode registry: each night type registered once, with its name, unlock rule and entry scene (website: src/modes/registry.js; Godot: night_watch_mode_registry.gd)
+- [ ] Shared HUD, timers, power and camera-map layout (website: ui/; Godot: night_watch_hud.gd, night_watch_cam_map.gd)
+- [ ] Night Watch art and hunter scale through one instantiate path (Godot: night_watch_art.gd, night_watch_hunter_scale.gd)
+- [ ] Night Watch sound cues wired to the scene code (Godot: the nw cues; the Rust nw.rs cues are not called yet)
+- [ ] Admin and debug panel for Night Watch, with the same owner-only gate as Last Route (Godot: night_watch/admin; website: debug-private)
+- [ ] Office building layout with doors, lights and cameras (website: docs/OFFICES.md; Godot: night_watch_building.gd)
+
+### The eight night types
+
+- [ ] 1. Classic: static office, 12 to 6 AM, two doors, two lights, cameras, power budget (website: src/modes/classic; Godot: night_watch_classic.gd)
+- [ ] 2. Masked Hours: mask to fool attackers, flashlight, one resource to keep alive, vents (website: src/modes/mask; Godot: mask/)
+- [ ] 3. Dead Air: audio lures, reboot subsystems, hallucinations, vent seal, temperature (website: src/modes/lure; Godot: lure/)
+- [ ] 4. Bedtime: bedroom with no cameras, listen at doors, breathing check (website: src/modes/bedroom; Godot: bedroom/)
+- [ ] 5. The Facility: scripted nights with guided hallway, vent and crawl sections, and a shock button (website: src/modes/story; Godot: night_watch_story or the admin story scenes)
+- [ ] 6. The Descent: elevator shaft repair puzzles under a hunter's eye (website: src/modes/descent; Godot: descent/)
+- [ ] 7. Salvage Run: day management and night salvage with an upgrade layer (website: src/modes/dayshift; Godot: dayshift/)
+- [ ] 8. Open Air: three outdoor watches with the roster outside the building (website: src/modes/openair; Godot: night_watch_mixed.gd or the open-air data)
+- [ ] Mixed Shift: a drawn roster of threats paced by a director, with QUIET, STEADY, RESTLESS, CHAOS and ENDLESS shifts (website: src/modes/mixed and docs/MIXED_SHIFT.md; Godot: mixed/)
+- [ ] Variety pass: make the existing modes less repetitive (website: docs/VARIETY.md)
+- [ ] New modes drafted on the website (website: docs/NEW_MODES_DRAFT.md): decide which to port
+
+### Checks
+
+- [ ] Each night type reviewed in a run against the website for timing, power and AI levels (website is the reference for feel; Godot for numbers)
+- [ ] Night Watch save migration: website saves read into the Rust app without loss
+
+## Multiplayer (Last Route)
+
+- [ ] Two-window room test: one host and one guest on this laptop, room code join, both see each other move
+- [ ] Two-machine test: the Mac on KT-MBA joins a room hosted on this laptop, and the reverse
+- [ ] Nightly server build: deploy the nightly-server Linux build to the VPS (194.156.90.219) after a check on a test port
+- [ ] VPS update procedure: stop the lastroute-rust service, replace /opt/lastroute-rust/current/lr_server, check the SHA-256, start the service
+- [ ] Hunter stats stay hidden from other players in a room (the stats check from the open questions, Q24)
+- [ ] Room directory: list open rooms, show capacity, and refresh without reconnecting
+- [ ] Reconnect: a player who drops can rejoin their room within the reserved window
+- [ ] Host migration or room close when the host leaves, with a clear message to the others
+- [ ] Co-op revives: downed runners, a revive hold, and a time window (open in the audit)
+- [ ] Spectate a downed or ghost runner (the SPECTATE admin button has no handler yet)
+- [ ] Player list shows every connected player, not only the local row
+- [ ] Runner sync checked at 20 Hz under 100 ms of latency
+- [ ] Hunters and their state are identical on every client in a room (the host simulates; guests display)
+- [ ] NPC teammates visible to other players in the room
+- [ ] Chat: text chat between players in a room
+- [ ] Player and room limits: capacity, kick and ban for the host, with the existing moderation rules
+- [ ] Multiplayer error messages for refused joins, timeouts and a server that is offline
+
+## Admin custom rooms (2026-11-03)
+
+- [ ] Admins can type any room code into the JOIN ROOM code box, even an empty or unused code, and start that room
+- [ ] An empty code entered by an admin creates the room with that code, so a test room can be started from the join screen
+- [ ] Admin-started rooms show an ADMIN tag in the room list and in the room header
+- [ ] Admin rooms keep the admin's chosen settings (seed, mode, difficulty) when the code is entered again later
+- [ ] Non-admin players still get the normal refusal for unknown codes, with the same wording as before
+- [ ] Admin room codes follow the existing code rules, and the server refuses a code that is already in use by another room
+- [ ] Check that an admin room started from the join screen works for two windows (see the multiplayer two-window test)
+
+## Account system and servers (2026-11-03)
+
+### Accounts (Rust client and server)
+
+- [ ] Sign-up and sign-in from the title's ACCOUNT screen, with the username rule 3-24 characters A-Z 0-9 _ (see OPEN_QUESTIONS 11)
+- [ ] Passwords stored only as scrypt hashes on the server, with the same parameters as the Node backend (the scrypt test vector in lr_server is the check)
+- [ ] Sign-out clears the saved session on this PC, and the signed-in name goes back to empty (guest)
+- [ ] Sessions expire on the server, and a session token from one PC is refused on another after sign-out
+- [ ] Saved sessions are per server: the primary server and any local test server keep separate sessions (the account config sections)
+- [ ] Password change and account deletion from ACCOUNT SETTINGS, with a confirmation step
+- [ ] Password reset path for players who lose their password (contact flow or recovery code), decided first in OPEN_QUESTIONS
+- [ ] Account saves: each account's run saves go through /api/v1/saves/:gameId/:slot, with the same slot rules as the website
+- [ ] Website and desktop accounts share one account store, so a name signed up on one works on the other
+- [ ] Migration: existing accounts in data/accounts.json load without loss, and the old session format still signs in once
+- [ ] Admin accounts: the owner's account is the only one with admin tools, and admin status is checked on the server, not only in the client
+- [ ] Rate limits on sign-in and sign-up, with clear messages when they trip
+
+### Servers (lr_server, VPS)
+
+- [ ] VPS deploy: replace /opt/lastroute-rust/current/lr_server from the nightly-server release, check its SHA-256, restart lastroute-rust.service
+- [ ] Health check endpoint and a script that reports whether the service answers on port 8105 (HTTP) and 1105 (relay)
+- [ ] Data backups: back up /var/lib/lastroute-rust (accounts, rooms, saves, crash reports) on a schedule, and test a restore
+- [ ] Secrets: /etc/lastroute-rust/lastroute-rust.env stays root-owned 0640 and is never printed or committed; document the rotation steps
+- [ ] Logs: rotate service logs, and make sure no password or session token is logged
+- [ ] Crash reports: uploaded from the client, stored per server, and viewable by the owner only
+- [ ] Mod packs: pack lists and downloads served from the server, with the blocked-pack rules checked on the server
+- [ ] Room directory: public rooms listed with capacity, and rooms cleaned up when they are empty
+- [ ] Server version reporting: the client shows the server build and warns when the client and server builds differ
+- [ ] Staging server: a second service on another port with the nightly-server build, for testing before the VPS update
+- [ ] A rollback step for the VPS: keep the previous lr_server binary and restore it with one command
+
+## Known bugs (2026-11-03)
+
+- [ ] Beds stick out of rooms into the hallway behind them (in progress: workflow bed-placement-fix; see furnished.rs bed placement)
+- [ ] Dossier: the mouse wheel scroll jumps back to the top. Not reproduced from the code; needs the tab and steps from the person testing it
+- [ ] Door headers above doors (added in the 3D map pass) are not checked in a run, and may overlap archway lintels
+- [ ] Safe zone checkpoint light and the 0.35 ambient are checked in one screenshot only; confirm in a safe zone and in a dark corridor
+- [ ] Release build fails while last_route.exe is running (file lock). Close the game first, or build to a copy
+- [ ] Windows CI: the server test step compiles slowly on the runner and was cancelled once; confirm it finishes on a normal run
+- [ ] Windows CI: the self-test runs locally only (hosted runners have no OpenGL pixel format)
+- [ ] Account screen kicker still reads "KYTTU'S LAB // ACCOUNT"; change it to "KYTTU: THE LAST ROUTE"
+- [ ] Chairs face their tables: the code matches Godot, but no restaurant render has been checked (OPEN_QUESTIONS 21)
+- [ ] Ambient is 0.35 here against Godot's 0.035, a deliberate change; decide whether to keep it or match Godot
+- [ ] Mouse look speed is unchecked against Godot with the same swipe (OPEN_QUESTIONS 20)
+- [ ] Two-window multiplayer room test still needs a person at the screen (KT-MBA)
+- [ ] lr_server: some helpers are only used by tests and are gated with cfg(test); delete the ones nothing needs
+
+## Performance and FPS
+
+- [ ] Window recentre hitch of about 80 ms per recentre: about 55 ms is the full world mesh rebuild (build_world on every floor change in sync_world); build the mesh per chunk instead
+- [ ] Chunk window load of about 23 to 28 ms per recentre (infinite::window generation, residency, sync_in); move it off the frame or build the next window ahead
+- [ ] No quality governor or frame budget. Godot has quality_governor.gd (40/50/60 fps targets, tiers for shadows, prop range and lamp count); add the same tiers
+- [ ] Hunter cost is untested at high counts. Godot measured brain.update at 31.8 ms with 38 hunters; bench the Rust brains at 38
+- [ ] Light sight cost is unknown; MAX_LAMPS is capped at 16 in the shader, so lamp pools can pop in and out
+- [ ] Steady-state render cost is not measured because vsync caps frames at 60; add a capture with vsync off
+- [ ] Startup: assets take about 195 to 208 ms and sounds about 249 to 266 ms. Load in slices behind the boot card, as Godot's STARTUP_BUDGET_MS does
+- [ ] Draw calls per frame are not counted in a run; use the F7 counters and log the totals
+- [ ] The F7 overlay averages are not collected over runs; log spikes with a cause, as Godot's PerfLog does
+- [ ] Clean build time: profile.dev sets opt-level 2 for the game and 3 for dependencies. Measure opt-level 1 for dependencies on a cold build
+- [ ] CI builds: confirm the rust-cache hits in build.yml after the first run
+
+## Moddability
+
+- [~] Region geometry block (lr.region/1, optional): wall_height, room_min and room_max are parsed and tested. The 3D walls and the route room sizes do not read them yet
+- [ ] Godot's REGION_FIELDS must accept geometry, or Godot drops region files that use it
+- [ ] Mod-authored props with their own GLB models, through the props catalogue
+- [ ] Mod-authored loot tables per region
+- [ ] Mod-authored safe-zone light colour and strength per region
+- [ ] A pack validator command that checks a pack folder without starting the game
+- [ ] docs/MODDING_SPEC.md is a placeholder: write the region, hunter, prop and pack formats
+
 ## Godot feature audit (2026-11-01): Infinite route, player and main loop
 
 Read-only audit of `LastRoute Godot/KyttusLabApp` against `src/`. Only gaps are listed:
@@ -273,23 +979,23 @@ Full read-only audit of `LastRoute Godot/KyttusLabApp` against the Rust port, wr
 - [ ] Port Level stack: sewer (-1), lower sewer (-2) and Inferno (-3) with a depth floor at -3 (partial)
 - [ ] Port Stairwells: spiral and switchback flights, placement and access halls; Rust uses straight 4-cell flights
 - [ ] Port Chunk seams: centre-cross openings and wide hall openings; Rust draws random offsets
-- [ ] Port District selection: weighted districts, deeper-level extras and a sewer district
+- [x] Port District selection: weighted districts, deeper-level extras and a sewer district
 - [ ] Port Sewer layer: separate generator, ramps, falls, ladders and floods
 - [ ] Port Inferno caverns: cave carving, lava pits, cages and the spider lair
 - [ ] Port Per-level danger profile: hunter speed, count bias and safe-room odds by depth
-- [ ] Port Maze warrens: irregular cell layouts for maze and lab chunks
-- [ ] Port Dense bank layout: 11x9 pairs, 21x9 big rooms and hall-centred rows
+- [x] Port Maze warrens: irregular cell layouts for maze and lab chunks
+- [x] Port Dense bank layout: 11x9 pairs, 21x9 big rooms and hall-centred rows
 - [ ] Port Linear hotel and prison layout along the central cross
 - [ ] Port Mixed sector layout: quadrant rooms, with beach excluded where Godot includes it
-- [ ] Port Apartment suites with shared suite entrances
-- [ ] Port Great halls: 21x21 merged middle rooms
+- [x] Port Apartment suites with shared suite entrances
+- [x] Port Great halls: 21x21 merged middle rooms
 - [ ] Port Room roles per district: Godot role lists differ from Rust catalogue tags
 - [ ] Port Data-driven region files: mall and hospital JSON are embedded but never read
 - [ ] Port Room furnishing recipes: orientation, seat-to-screen logic and room size profiles
-- [ ] Port Door and wall thresholds: door props, double doors and hump removal
-- [ ] Port Collision model: oriented prop boxes and door gaps
-- [ ] Port Placement clearance: door keep-clear zones and push-out
-- [ ] Port Chunk fixtures: six target spots per chunk, every third a vent, five-cell spacing
+- [x] Port Door and wall thresholds: door props, double doors and hump removal
+- [x] Port Collision model: oriented prop boxes and door gaps
+- [x] Port Placement clearance: door keep-clear zones and push-out
+- [x] Port Chunk fixtures: six target spots per chunk, every third a vent, five-cell spacing
 - [ ] Port Hiding occupancy: capacity and front and beside slots
 - [ ] Port Music boxes: two per 4x4 region block with a shared tune
 - [ ] Port Heater station placement: Godot's streamed placement is not located, so parity is unconfirmed
@@ -309,7 +1015,7 @@ Full read-only audit of `LastRoute Godot/KyttusLabApp` against the Rust port, wr
 
 ### Look and controls
 - [ ] Port Gamepad input: sticks, triggers and pad bindings
-- [ ] Port Mutual light sight: hunters see runners by lamp exposure
+- [x] Port Mutual light sight: hunters see runners by lamp exposure
 - [ ] Port Adaptive quality governor: frame-time governed steps (Rust uses a fixed scale per setting)
 
 ### Meters
@@ -325,7 +1031,7 @@ Full read-only audit of `LastRoute Godot/KyttusLabApp` against the Rust port, wr
 - [ ] Port Furniture hiding capacity: beds and wardrobes hold one or two runners
 
 ### Loop, infinite route and sewers
-- [ ] Port Hunter persistence across chunks and floors: stair walking and per-hunter state
+- [x] Port Hunter persistence across chunks and floors: stair walking and per-hunter state
 - [ ] Port Checkpoint and autosave on relays, level changes, safe rooms and quit
 - [ ] Port Anti-AFK void pressure on idle parties
 - [ ] Port Void player powers: Gray's signal route, Orange's outages, Purple's static and Pink's footsteps
@@ -339,7 +1045,7 @@ Full read-only audit of `LastRoute Godot/KyttusLabApp` against the Rust port, wr
 
 ### Map and waypoints
 - [ ] Port Minimap and full map: teammate and waypoint pins, pan and zoom
-- [ ] Port Waypoints and route trail
+- [x] Port Waypoints and route trail
 
 ### Co-op and NPCs
 - [ ] Port Co-op revives: downed state, revive kit hold and window
@@ -356,7 +1062,7 @@ Full read-only audit of `LastRoute Godot/KyttusLabApp` against the Rust port, wr
 - [ ] Port Full inventory overlay: grid with drag and drop
 - [ ] Port Screen-edge danger effects: thermal warning panel and strength curves
 - [ ] Port Top-centre status bar: test server, admin active and public route segments
-- [ ] Port Fullscreen map: pan, zoom and recentre
+- [x] Port Fullscreen map: pan, zoom and recentre
 - [ ] Port Room chat, speech bubbles and subtitles
 - [ ] Port Spectating banner and ghost follow
 - [ ] Port Player waypoint pin: placement, clear, distance and off-screen arrow
@@ -386,13 +1092,13 @@ Full read-only audit of `LastRoute Godot/KyttusLabApp` against the Rust port, wr
 - [ ] Port Co-op message transport: own protocol, not ENet, and not compiled
 - [ ] Port Godot-compatible co-op wire (ENet and SceneMultiplayer RPCs): Rust and Godot cannot share a room
 - [ ] Port Typed co-op message catalogue: round-trip tested but unused in the game path
-- [ ] Port Runner movement sync at 20 Hz
+- [x] Port Runner movement sync at 20 Hz
 - [ ] Port Smooth remote movement: snapshot interpolation with 100 ms delay
-- [ ] Port Other players' bodies on screen
+- [x] Port Other players' bodies on screen
 - [ ] Port Host hunter state broadcast
 - [ ] Port Shared world events and interaction requests
 - [ ] Port Late-join world snapshot
-- [ ] Port Guest waits for the synced world before moving
+- [x] Port Guest waits for the synced world before moving
 - [ ] Port Same mod packs as the host: pack hash announce and check
 - [ ] Port Download missing mod packs from the index
 - [ ] Port Host-side guest anti-cheat: speed, teleport and noclip checks with strikes
@@ -741,11 +1447,11 @@ Every feature of the Godot original that the Rust port does not have yet, from t
 - [ ] Port Sewer layer: separate generator, ramps, falls, ladders and floods
 - [ ] Port Inferno caverns: cave carving, lava pits, cages and the spider lair
 - [ ] Port Per-level danger profile: hunter speed, count bias and safe-room odds by depth
-- [ ] Port Maze warrens: irregular cell layouts for maze and lab chunks
+- [x] Port Maze warrens: irregular cell layouts for maze and lab chunks
 - [ ] Port Dense bank layout: 11x9 pairs, 21x9 big rooms and hall-centred rows
 - [ ] Port Linear hotel and prison layout along the central cross
 - [ ] Port Mixed sector layout: quadrant rooms, with beach excluded where Godot includes it
-- [ ] Port Apartment suites with shared suite entrances
+- [x] Port Apartment suites with shared suite entrances
 - [ ] Port Great halls: 21x21 merged middle rooms
 - [ ] Port Room roles per district: Godot role lists differ from Rust catalogue tags
 - [ ] Port Data-driven region files: mall and hospital JSON are embedded but never read
@@ -799,7 +1505,7 @@ Every feature of the Godot original that the Rust port does not have yet, from t
 
 ### Loop, infinite route and sewers
 
-- [ ] Port Hunter persistence across chunks and floors: stair walking and per-hunter state
+- [x] Port Hunter persistence across chunks and floors: stair walking and per-hunter state
 - [ ] Port Checkpoint and autosave on relays, level changes, safe rooms and quit
 - [ ] Port Anti-AFK void pressure on idle parties
 - [ ] Port Void player powers: Gray's signal route, Orange's outages, Purple's static and Pink's footsteps
@@ -814,7 +1520,7 @@ Every feature of the Godot original that the Rust port does not have yet, from t
 ### Map and waypoints
 
 - [ ] Port Minimap and full map: teammate and waypoint pins, pan and zoom
-- [ ] Port Waypoints and route trail
+- [x] Port Waypoints and route trail
 
 ### Co-op and NPCs
 
@@ -830,7 +1536,7 @@ Every feature of the Godot original that the Rust port does not have yet, from t
 - [ ] Port Full inventory overlay: grid with drag and drop
 - [ ] Port Screen-edge danger effects: thermal warning panel and strength curves
 - [ ] Port Top-centre status bar: test server, admin active and public route segments
-- [ ] Port Fullscreen map: pan, zoom and recentre
+- [x] Port Fullscreen map: pan, zoom and recentre
 - [ ] Port Room chat, speech bubbles and subtitles
 - [ ] Port Spectating banner and ghost follow
 - [ ] Port Player waypoint pin: placement, clear, distance and off-screen arrow
@@ -861,9 +1567,9 @@ Every feature of the Godot original that the Rust port does not have yet, from t
 - [ ] Port Co-op message transport: own protocol, not ENet, and not compiled
 - [ ] Port Godot-compatible co-op wire (ENet and SceneMultiplayer RPCs): Rust and Godot cannot share a room
 - [ ] Port Typed co-op message catalogue: round-trip tested but unused in the game path
-- [ ] Port Runner movement sync at 20 Hz
+- [x] Port Runner movement sync at 20 Hz
 - [ ] Port Smooth remote movement: snapshot interpolation with 100 ms delay
-- [ ] Port Other players' bodies on screen
+- [x] Port Other players' bodies on screen
 - [ ] Port Host hunter state broadcast
 - [ ] Port Shared world events and interaction requests
 - [ ] Port Late-join world snapshot

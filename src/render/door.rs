@@ -131,6 +131,12 @@ pub fn door_scale(dims: DoorDims, ptype: &str, span: i32) -> (f32, f32) {
     (sx, sy)
 }
 
+/// The underside of the wall over a door (Godot's `DoorwayFrames.header_y`): just under the raised frame's top
+/// (`dims.top * sy`), and never above `wall_top`, so the header runs up to the ceiling.
+pub fn header_bottom(dims: DoorDims, sy: f32, wall_top: f32) -> f32 {
+    (dims.top * sy - 0.02).min(wall_top)
+}
+
 /// The door's transform: the origin on the floor, then the yaw, then the scale in the door's own axes, as
 /// Godot scales the visual before it turns the door.
 pub fn door_transform(origin: Vec3, yaw: f32, sx: f32, sy: f32, scale: f32) -> Mat4 {

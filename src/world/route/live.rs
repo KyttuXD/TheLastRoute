@@ -199,6 +199,12 @@ fn prop_of_layout(p: &crate::world::route::props::Prop, rooms: &[layout::Room]) 
         mount_y: (p.mount_y != 0.0).then_some(p.mount_y),
         solid: p.solid && !navigation::walk_over(size),
         half: navigation::half_extents(size, rotation),
+        // a flush prop's centre is cell + .5 + placement_offset (Godot's collision and draw); a room door keeps
+        // its own doorway offset in `door`, so it takes none here
+        offset: match p.placement_offset {
+            Some(po) if !p.room_door => (po[0], po[1]),
+            _ => (0.0, 0.0),
+        },
         door: p.room_door.then(|| {
             let cells: Vec<(i32, i32)> = p.doorway_cells.iter().map(|c| (c.x, c.y)).collect();
             door::draw_for((p.cell.x, p.cell.y), &cells)

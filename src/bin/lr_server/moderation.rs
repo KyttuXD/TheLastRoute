@@ -56,10 +56,6 @@ pub trait ModerationHost {
     }
 }
 
-/// The defaults of `createModeration` (no owners, every account exists, no updates).
-pub struct DefaultModerationHost;
-impl ModerationHost for DefaultModerationHost {}
-
 fn username_of(value: Option<&Value>) -> String {
     js_slice(&str_or_empty(value).trim().to_uppercase(), 24)
 }

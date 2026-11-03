@@ -653,6 +653,7 @@ impl ModPacks {
     }
 
     /// `modPacks.size`.
+    #[cfg(test)]
     pub fn size(&self) -> usize {
         self.packs.len()
     }

@@ -54,6 +54,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: sh packaging/nightly.sh dist/last-route-linux-x86_64.tar.gz
+      # The server alone, for updating the VPS: its own rolling release, nightly-server.
+      - name: Collect the server build
+        run: |
+          mkdir -p dist
+          cp target/release/lr_server dist/lr_server-linux-x86_64
+          sha256sum dist/lr_server-linux-x86_64 > dist/lr_server-linux-x86_64.sha256
+      - name: Publish the server to nightly-server
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NIGHTLY_TAG: nightly-server
+          NIGHTLY_TITLE: Nightly server (Linux x86_64)
+        run: sh packaging/nightly.sh dist/lr_server-linux-x86_64 dist/lr_server-linux-x86_64.sha256
 
   macos:
     # macos-14 was retired from GitHub Actions on 2026-11-02; macos-15 is the Apple Silicon image.

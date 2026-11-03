@@ -13,7 +13,7 @@
 //!   also opportunistically at the start of `join` / `post` / `leave` / `status`. `flush()` writes immediately.
 
 use crate::util::{
-    base64url, field, iso_time, js_len, js_number, js_slice, js_string_of, js_trim, log_error, log_info, log_warn,
+    base64url, field, iso_time, js_len, js_number, js_slice, js_string_of, log_error, log_info, log_warn,
     num, random_bytes, str_or_empty, stringify, system_clock, truthy, write_atomic, Clock, Reply,
 };
 use regex::Regex;
@@ -39,11 +39,6 @@ const MAX_CLAIMS: usize = 20_000;
 const STATE_MIN_INTERVAL_MS: i64 = 250;
 const JOIN_LIMIT_PER_MINUTE: u32 = 20;
 const SAVE_DEBOUNCE_MS: i64 = 1500;
-
-/// `PUBLIC_CODES[game]`.
-pub fn public_code_for(game: &str) -> Option<&'static str> {
-    PUBLIC_CODES.iter().find(|(id, _)| *id == game).map(|(_, code)| *code)
-}
 
 fn player_key_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -123,18 +118,6 @@ pub fn sanitize_inventory(value: Option<&Value>) -> Value {
     Value::Array(result)
 }
 
-fn clean_name(value: Option<&Value>) -> String {
-    let upper = str_or_empty(value).to_uppercase();
-    let kept: String =
-        upper.chars().filter(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || matches!(c, ' ' | '_' | '-')).collect();
-    let name = js_slice(js_trim(&kept), 32);
-    if name.is_empty() {
-        "RUNNER".to_string()
-    } else {
-        name
-    }
-}
-
 /// A string-keyed map that iterates in insertion order like a JS `Map` (re-setting a key keeps its position,
 /// deleting and re-adding moves it to the end).
 struct OrderedMap<V> {
@@ -199,8 +182,6 @@ struct Resume {
 struct LivePlayer {
     session_id: String,
     player_key: String,
-    name: String,
-    joined_at: i64,
     last_seen: i64,
     last_state_at: i64,
     position: Option<Value>,
@@ -348,12 +329,8 @@ impl PublicRoute {
         (self.now)()
     }
 
-    /// The route's room code (`PUBLC` / `CTYPR`).
-    pub fn code(&self) -> &str {
-        &self.code
-    }
-
     /// The current authority snapshot (`_state.snapshot` in the JS tests).
+    #[cfg(test)]
     pub fn snapshot(&self) -> &str {
         &self.state.snapshot
     }
@@ -623,8 +600,6 @@ impl PublicRoute {
         let player = LivePlayer {
             session_id: session_id.clone(),
             player_key,
-            name: clean_name(field(body, "name")),
-            joined_at: timestamp,
             last_seen: timestamp,
             last_state_at: 0,
             position: resume.as_ref().map(|r| r.position.clone()),
@@ -676,9 +651,6 @@ impl PublicRoute {
             }
             if let Some(inventory) = field(body, "inventory") {
                 player.inventory = sanitize_inventory(Some(inventory));
-            }
-            if truthy(field(body, "name")) {
-                player.name = clean_name(field(body, "name"));
             }
         }
         let mut respawned = Vec::new();
@@ -734,14 +706,6 @@ impl PublicRoute {
 
     pub fn reset_authority(&mut self) {
         self.authority = Authority::default();
-    }
-
-    /// `players()`: `[{ name, position, joinedAt }]` of the live sessions.
-    pub fn players(&self) -> Vec<Value> {
-        self.players
-            .iter()
-            .map(|(_, p)| json!({ "name": p.name, "position": p.position.clone().unwrap_or(Value::Null), "joinedAt": p.joined_at }))
-            .collect()
     }
 }
 

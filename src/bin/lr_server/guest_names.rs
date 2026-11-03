@@ -21,6 +21,7 @@ use std::sync::Arc;
 pub const GUEST_LETTERS: &str = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 pub const GUEST_DIGITS: &str = "23456789";
 /// The JavaScript `GUEST_NAME_PATTERN` source (use [`is_guest_name`] to test).
+#[cfg(test)]
 pub const GUEST_NAME_PATTERN: &str = r"^[A-HJ-NP-Z]-[2-9]{4}$";
 pub const LEASE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 const MAX_TRIES: usize = 64;
@@ -146,11 +147,6 @@ impl GuestNames {
     /// `held(name)`: a live lease exists for the name.
     pub fn held(&self, name: &str) -> bool {
         self.leases.get(name).is_some_and(|lease| lease.expiry > self.now() as f64)
-    }
-
-    /// `size()`: the number of leases in memory.
-    pub fn size(&self) -> usize {
-        self.leases.len()
     }
 
     fn grant(&mut self, name: &str, token: Option<String>) -> String {

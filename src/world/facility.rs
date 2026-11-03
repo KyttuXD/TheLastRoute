@@ -7,6 +7,7 @@
 
 use super::catalog::Catalog;
 use super::godot_sort::sort_custom;
+use crate::content::regions::RegionDef;
 use super::rng::Rng;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 
@@ -16,6 +17,15 @@ pub const SECTOR_GAP: i32 = 2;
 pub const SECTOR_MARGIN: i32 = 2;
 pub const MIN_AUTHORED_ROOM_SIZE: i32 = 10;
 pub const MAX_AUTHORED_ROOM_SIZE: i32 = 26;
+
+/// The room side range (min, max) in cells for a region: its `geometry` block's `room_min` and `room_max`, or
+/// the game-wide `MIN_AUTHORED_ROOM_SIZE` and `MAX_AUTHORED_ROOM_SIZE` when the region has no block (or no region).
+pub fn room_sizes_for(def: Option<&RegionDef>) -> (i32, i32) {
+    match def.and_then(|d| d.geometry) {
+        Some(g) => (g.room_min, g.room_max),
+        None => (MIN_AUTHORED_ROOM_SIZE, MAX_AUTHORED_ROOM_SIZE),
+    }
+}
 pub const ROOM_SECTOR_FILL: f64 = 0.86;
 pub const DEFAULT_AGENT_RADIUS: f64 = 0.23;
 /// Half extents of a hiding locker's solid body (estimated from the locker model).
@@ -76,6 +86,10 @@ pub struct Prop {
     pub solid: bool,
     /// Rotated half extents (f32, as Godot's Vector2).
     pub half: (f32, f32),
+    /// The prop's centre is `cell + .5 + offset` (Godot's `placement_offset`: a wall-backed bed is pushed
+    /// flush to its wall). The drawn model and the footprint both use it, as Godot's `_spawn_authored_prop`
+    /// and `CollisionWorld` do. Zero for a prop with no offset.
+    pub offset: (f32, f32),
     /// A room door's doorway (draw only: the span and the centre offset from `cell`); `None` for other props.
     pub door: Option<DoorDraw>,
 }
@@ -463,9 +477,11 @@ impl Facility {
             }
         }
         self.prop_grid = vec![vec![]; (self.cols * self.rows) as usize];
-        for (i, p) in self.props.iter().enumerate() {
-            if p.solid {
-                self.prop_grid[(p.cell.y * self.cols + p.cell.x) as usize].push(i);
+        for i in 0..self.props.len() {
+            if self.props[i].solid {
+                for ci in self.prop_index_cells(&self.props[i]) {
+                    self.prop_grid[ci].push(i);
+                }
             }
         }
         self.build_hunter_grid();
@@ -624,10 +640,10 @@ impl Facility {
         chosen
     }
 
-    fn size_range(dim: i32, r: (f64, f64)) -> (i32, i32) {
+    fn size_range(dim: i32, r: (f64, f64), (min, max): (i32, i32)) -> (i32, i32) {
         let clamp = |v: i32| {
-            let max = MAX_AUTHORED_ROOM_SIZE.min(dim);
-            MIN_AUTHORED_ROOM_SIZE.min(max).max(max.min(v))
+            let top = max.min(dim);
+            min.min(top).max(top.min(v))
         };
         let lo = clamp((dim as f64 * r.0).floor() as i32);
         let hi = lo.max(clamp((dim as f64 * r.1).floor() as i32));
@@ -715,21 +731,24 @@ impl Facility {
             } else {
                 (0.64, 0.8)
             };
-            let (wl, wh) = Self::size_range(sw, class);
-            let (hl, hh) = Self::size_range(sh, class);
+            // the room's region sets its side range (its geometry block), else the game-wide range
+            let sizes = room_sizes_for(crate::content::regions::table().def(&t.region));
+            let (room_min, _) = sizes;
+            let (wl, wh) = Self::size_range(sw, class, sizes);
+            let (hl, hh) = Self::size_range(sh, class, sizes);
             let dw = wl + self.random.next_index((wh - wl + 1) as usize) as i32;
             let dh = hl + self.random.next_index((hh - hl + 1) as usize) as i32;
             let wc = if t.landmark {
                 sw
             } else {
-                MIN_AUTHORED_ROOM_SIZE
+                room_min
                     .min(sw)
                     .max((sw as f64 * ROOM_SECTOR_FILL).floor() as i32)
             };
             let hc = if t.landmark {
                 sh
             } else {
-                MIN_AUTHORED_ROOM_SIZE
+                room_min
                     .min(sh)
                     .max((sh as f64 * ROOM_SECTOR_FILL).floor() as i32)
             };
@@ -920,7 +939,7 @@ impl Facility {
             for xx in (cx - 2).max(0)..=(cx + 2).min(self.cols - 1) {
                 for &pi in &self.prop_grid[(yy * self.cols + xx) as usize] {
                     let p = &self.props[pi];
-                    let (px, py) = (p.cell.x as f64 + 0.5, p.cell.y as f64 + 0.5);
+                    let (px, py) = (p.cell.x as f64 + 0.5 + p.offset.0 as f64, p.cell.y as f64 + 0.5 + p.offset.1 as f64);
                     if (x - px).abs() < p.half.0 as f64 + r && (y - py).abs() < p.half.1 as f64 + r
                     {
                         return false;
@@ -1057,10 +1076,31 @@ impl Facility {
 
     // -- room props -------------------------------------------------------------------------
 
+    /// The solid-prop index cells of a prop: every cell its footprint reaches, plus one cell of margin for the
+    /// body radius. A prop can reach past its own cell (a flush bed sits up to ~1.2 cells toward its wall), and
+    /// the footprint test reads only the cells two either side of the point.
+    fn prop_index_cells(&self, p: &Prop) -> Vec<usize> {
+        let cx = p.cell.x as f64 + 0.5 + p.offset.0 as f64;
+        let cy = p.cell.y as f64 + 0.5 + p.offset.1 as f64;
+        let x0 = ((cx - p.half.0 as f64).floor() as i32 - 1).max(0);
+        let x1 = ((cx + p.half.0 as f64).floor() as i32 + 1).min(self.cols - 1);
+        let y0 = ((cy - p.half.1 as f64).floor() as i32 - 1).max(0);
+        let y1 = ((cy + p.half.1 as f64).floor() as i32 + 1).min(self.rows - 1);
+        let mut cells = Vec::new();
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                cells.push((y * self.cols + x) as usize);
+            }
+        }
+        cells
+    }
+
     fn add_prop(&mut self, p: Prop) {
         let idx = self.props.len();
         if p.solid {
-            self.prop_grid[(p.cell.y * self.cols + p.cell.x) as usize].push(idx);
+            for ci in self.prop_index_cells(&p) {
+                self.prop_grid[ci].push(idx);
+            }
         }
         self.props.push(p);
     }
@@ -1109,6 +1149,7 @@ impl Facility {
                             mount_y: Some(cat.surface_height(&p.ptype)),
                             solid: cat.is_solid(t),
                             half,
+                            offset: (0.0, 0.0),
                             door: None,
                         });
                     }
@@ -1146,6 +1187,7 @@ impl Facility {
                     mount_y: None,
                     solid: cat.is_solid(t),
                     half: cat.footprint(t, rotation),
+                    offset: (0.0, 0.0),
                     door: None,
                 });
             }
@@ -1184,7 +1226,7 @@ impl Facility {
             if !o.solid {
                 continue;
             }
-            let (ox, oy) = (o.cell.x as f64 + 0.5, o.cell.y as f64 + 0.5);
+            let (ox, oy) = (o.cell.x as f64 + 0.5 + o.offset.0 as f64, o.cell.y as f64 + 0.5 + o.offset.1 as f64);
             if (cx - ox).abs() < fx + o.half.0 as f64 + clearance
                 && (cy - oy).abs() < fy + o.half.1 as f64 + clearance
             {
@@ -1670,5 +1712,23 @@ impl Facility {
                 (a.1 + (b.1 - a.1) * t) as f64,
             )
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::regions::parse_file;
+
+    /// A temporary region with a geometry block sets its room side range; without one the game-wide range stays.
+    #[test]
+    fn a_region_geometry_block_sets_the_room_sizes() {
+        let text = r#"{"schema":"lr.region/1","id":"tmp_tall","hall_floor":["a"],"hall_runner":false,"room_default_floor":["a"],"room_roles":["r"],"prop_set":[],"geometry":{"room_min":8,"room_max":14}}"#;
+        let tall = parse_file("tmp_tall.json", text).unwrap();
+        assert_eq!(room_sizes_for(Some(&tall)), (8, 14));
+        assert_eq!(room_sizes_for(None), (MIN_AUTHORED_ROOM_SIZE, MAX_AUTHORED_ROOM_SIZE));
+        // a 40-cell sector in the 0.5..0.64 class: the geometry range pins the side to 14, the constants give 20..=25
+        assert_eq!(Facility::size_range(40, (0.5, 0.64), room_sizes_for(Some(&tall))), (14, 14));
+        assert_eq!(Facility::size_range(40, (0.5, 0.64), room_sizes_for(None)), (20, 25));
     }
 }

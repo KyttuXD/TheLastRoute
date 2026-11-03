@@ -253,7 +253,6 @@ pub struct Room {
     pub discovered: HashSet<String>,
     pub discovered_list: Vec<String>,
     pub discovered_epoch: i64,
-    pub created_at: i64,
     pub last_active_at: i64,
     pub players: Vec<Player>,
 }
@@ -278,7 +277,6 @@ impl Room {
             discovered: HashSet::new(),
             discovered_list: Vec::new(),
             discovered_epoch: 0,
-            created_at: timestamp,
             last_active_at: timestamp,
             players: Vec::new(),
         }

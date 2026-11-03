@@ -20,6 +20,7 @@ fn alias_of(id: &str) -> Option<&'static str> {
 }
 
 /// `canonicalHunterId(id)` for a string id: the lore-name id for an old alias, otherwise the id unchanged.
+#[cfg(test)]
 pub fn canonical_hunter_id(id: &str) -> String {
     alias_of(id).map(str::to_string).unwrap_or_else(|| id.to_string())
 }

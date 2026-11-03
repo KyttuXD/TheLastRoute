@@ -6,7 +6,7 @@
 //! The web's click-to-move and touch rows have no desktop meaning and are left out. SKIN and MODS
 //! show a note instead of their lists during a run.
 
-use super::menus::Ui;
+use super::menus::{wheel_notch, Ui};
 use super::style::*;
 use crate::app::assets::Assets;
 use crate::app::settings::Settings;
@@ -298,7 +298,7 @@ fn section_text(a: &Assets, content: &Content, in_run: bool, tab: usize) -> Vec<
 fn scroll_text(a: &Assets, ui: &mut Ui, x: f32, area: Rect, lines: &[TextLine]) {
     let total: f32 = lines.iter().map(|l| l.step).sum();
     if hovered(area) {
-        ui.scroll -= mouse_wheel().1.signum() * 20.0;
+        ui.scroll -= wheel_notch(mouse_wheel().1, 20.0);
     }
     ui.scroll = ui.scroll.clamp(0.0, (total - area.h).max(0.0));
     clip_begin(area);
@@ -632,7 +632,7 @@ pub fn draw_settings(
             let tab_h = F::Body.height() * 8.0 + 8.0;
             let names: Vec<&str> = SECTIONS.iter().map(|s| s.0).collect();
             if hovered(area) {
-                ui.scroll -= mouse_wheel().1.signum() * 20.0;
+                ui.scroll -= wheel_notch(mouse_wheel().1, 20.0);
             }
             let rows = SECTIONS[ui.controls_tab.min(2)].1;
             let row_h = button_min(a, "X", 8.0, false).y;

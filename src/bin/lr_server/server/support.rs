@@ -42,16 +42,19 @@ pub struct Request {
 }
 
 impl Request {
+    #[cfg(test)]
     pub fn new(method: &str, target: &str) -> Request {
         let (path, query) = split_target(target);
         Request { method: method.to_string(), path, query, remote: "127.0.0.1".into(), ..Request::default() }
     }
+    #[cfg(test)]
     pub fn json(method: &str, target: &str, body: &Value) -> Request {
         let mut request = Request::new(method, target);
         request.body = stringify(body).into_bytes();
         request.headers.insert("content-type".into(), "application/json".into());
         request
     }
+    #[cfg(test)]
     pub fn with_header(mut self, name: &str, value: &str) -> Request {
         self.headers.insert(name.to_ascii_lowercase(), value.to_string());
         self
@@ -72,6 +75,7 @@ pub struct Response {
 }
 
 impl Response {
+    #[cfg(test)]
     pub fn json_body(&self) -> Value {
         serde_json::from_slice(&self.body).unwrap_or(Value::Null)
     }

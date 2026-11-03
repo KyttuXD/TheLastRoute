@@ -229,6 +229,7 @@ pub struct AccountService {
     now: Clock,
     session_ttl_ms: i64,
     state: Mutex<State>,
+    #[cfg(test)]
     load_warning: Option<String>,
 }
 
@@ -254,6 +255,7 @@ impl AccountService {
             now: opts.now,
             session_ttl_ms: opts.session_ttl_ms,
             state: Mutex::new(state),
+            #[cfg(test)]
             load_warning,
         }
     }
@@ -286,6 +288,7 @@ impl AccountService {
     }
 
     /// The warning logged while loading the store (None when it loaded or did not exist). For tests and diagnostics.
+    #[cfg(test)]
     pub fn load_warning(&self) -> Option<String> {
         self.load_warning.clone()
     }
@@ -451,11 +454,6 @@ impl AccountService {
     pub fn session_username(&self, token: &str) -> Option<String> {
         let mut state = self.lock();
         self.session_user(&mut state, token)
-    }
-
-    /// `sessionUsername(body.sessionToken)` for a raw JSON value.
-    pub fn session_username_of(&self, token: Option<&Value>) -> Option<String> {
-        self.session_username(&str_or_empty(token))
     }
 
     /// POST /api/account/session.

@@ -2,6 +2,7 @@
 //! anything reads the environment; variables that are already set (Pterodactyl panel variables, variables given to
 //! the process) always win.
 
+#[cfg(test)]
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -134,6 +135,7 @@ pub fn parse_environment_file(contents: &str) -> Vec<(String, String)> {
 
 /// `loadEnvironmentFile(path, environment)` with an explicit environment map: Ok(false) when the file does not
 /// exist; keys already present in `environment` are left alone.
+#[cfg(test)]
 pub fn load_environment_file_into(path: &Path, environment: &mut HashMap<String, String>) -> std::io::Result<bool> {
     let contents = match read_text(path)? {
         Some(text) => text,

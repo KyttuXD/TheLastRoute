@@ -3026,4 +3026,80 @@ mod tests {
         assert_eq!(interaction_for("standingMirror"), "");
         assert_eq!(interaction_for("bathroomMirror"), "mirror");
     }
+
+    /// A bed's generator collider stays inside its room. A wall-backed bed is pushed flush to its wall by
+    /// `placement_offset`, and `collider_rects` (Godot's `_collider_rects`) includes that offset. The live
+    /// footprint is checked by `live_beds_stay_inside_their_room`.
+    #[test]
+    fn beds_stay_inside_their_room() {
+        const BEDS: [&str; 4] = ["singleBed", "doubleBed", "bunkBed", "gothicDoubleBed"];
+        const EPS: f32 = 1e-3;
+        let mut beds = 0usize;
+        for world in ["1426541270", "4157433391", "2899547009"] {
+            for cx in -3..=3 {
+                for cz in -3..=3 {
+                    let Some(layout) = crate::world::route::layout::chunk_layout(world, Coord::new(cx, 0, cz)) else {
+                        continue;
+                    };
+                    let Some(props) = layout.region_props.as_ref() else {
+                        continue;
+                    };
+                    for p in props.iter().filter(|p| BEDS.contains(&p.prop_type)) {
+                        beds += 1;
+                        let room = layout.rooms.iter().find(|r| r.id == p.room_id).expect("a bed has its room");
+                        let (x0, y0) = (room.rect.x as f32, room.rect.y as f32);
+                        let (x1, y1) = ((room.rect.x + room.rect.w) as f32, (room.rect.y + room.rect.h) as f32);
+                        let inside = |x: f32, y: f32| x >= x0 - EPS && x <= x1 + EPS && y >= y0 - EPS && y <= y1 + EPS;
+                        let label = format!("{world} {cx},{cz} {} {}", p.id, p.prop_type);
+                        // the generator's collider boxes, with the placement offset
+                        for (centre, half, yaw) in collider_rects(p) {
+                            let (ax, ay) = (axis_x(yaw), axis_y(yaw));
+                            for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                                let x = centre[0] as f64 + sx * half[0] as f64 * ax[0] + sy * half[1] as f64 * ay[0];
+                                let y = centre[1] as f64 + sx * half[0] as f64 * ax[1] + sy * half[1] as f64 * ay[1];
+                                assert!(inside(x as f32, y as f32), "{label}: collider corner ({x:.3}, {y:.3}) leaves the room");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(beds > 0, "the sampled chunks place no beds");
+    }
+
+    /// The same bed rule on the live footprints the player and the drawn model use (`live::chunk` ->
+    /// `facility::Prop`): centre `cell + .5 + offset`, half extents of the rotated collider, inside the bed's room.
+    #[test]
+    fn live_beds_stay_inside_their_room() {
+        const BEDS: [&str; 4] = ["singleBed", "doubleBed", "bunkBed", "gothicDoubleBed"];
+        const EPS: f32 = 1e-3;
+        let mut beds = 0usize;
+        for world in ["1426541270", "4157433391", "2899547009"] {
+            for cx in -3..=3 {
+                for cz in -3..=3 {
+                    let key = crate::world::infinite::ChunkKey { cx, cy: cz, level: 0 };
+                    let Some((fac, _)) = crate::world::route::live::chunk(world, key, catalog()) else {
+                        continue;
+                    };
+                    for p in fac.props.iter().filter(|p| BEDS.contains(&p.ptype.as_str()) && p.door.is_none()) {
+                        beds += 1;
+                        let room = &fac.rooms[p.room];
+                        let (x0, y0) = (room.x as f32, room.y as f32);
+                        let (x1, y1) = ((room.x + room.w) as f32, (room.y + room.h) as f32);
+                        let cxf = p.cell.x as f32 + 0.5 + p.offset.0;
+                        let cyf = p.cell.y as f32 + 0.5 + p.offset.1;
+                        let (hx, hy) = p.half;
+                        for (x, y) in [(cxf - hx, cyf - hy), (cxf + hx, cyf + hy)] {
+                            assert!(
+                                x >= x0 - EPS && x <= x1 + EPS && y >= y0 - EPS && y <= y1 + EPS,
+                                "{world} {cx},{cz} {}: footprint corner ({x:.3}, {y:.3}) leaves the room",
+                                p.id
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(beds > 0, "the sampled live chunks place no beds");
+    }
 }

@@ -86,6 +86,17 @@ pub fn title_focus(entry: TitleEntry, username: &str) -> usize {
     title_entries(username).iter().position(|e| *e == entry).unwrap_or(0)
 }
 
+/// The scroll step for one frame's mouse-wheel delta: `px` per notch, sign taken from the wheel,
+/// and nothing when the wheel did not move. `signum(0.0)` is 1.0, so without this guard a resting
+/// mouse over a list would drift it every frame.
+pub fn wheel_notch(wheel: f32, px: f32) -> f32 {
+    if wheel == 0.0 {
+        0.0
+    } else {
+        wheel.signum() * px
+    }
+}
+
 pub const VERSION: &str = "VERSION 0.0.1.0";
 
 /// Menu state that lives across frames (focus, fields, scroll, dialogs).
@@ -199,6 +210,8 @@ fn kicker() -> Color {
 
 /// The title's wordmark, in two lines as the web title wraps it at its size.
 const TITLE_LINES: [&str; 2] = ["THE LAST", "ROUTE"];
+/// The small kicker above the account screen's modal title, drawn and measured in every account dialog.
+const ACCOUNT_KICKER: &str = "KYTTU: THE LAST ROUTE";
 
 /// The ACCOUNT button's caption: ACCOUNT once signed in (the web's account button), otherwise
 /// REGISTER / SIGN IN.
@@ -692,7 +705,7 @@ pub fn draw_account(
     draw_title(a, ui, username, false);
     let btn_h = dialog_action_h(a);
     let mut out = Action::None;
-    let kick_w = tw(a, F::Body, &track("KYTTU'S LAB // ACCOUNT"), 6.0) + esc_close_size(a).x;
+    let kick_w = tw(a, F::Body, &track(ACCOUNT_KICKER), 6.0) + esc_close_size(a).x;
     if username.is_empty() {
         // the sign-in form (240x150)
         if is_key_pressed(KeyCode::Tab) {
@@ -714,7 +727,7 @@ pub fn draw_account(
             lines.len() as f32 * lh(F::Body, 6.0) + 5.0 + 22.0 + 5.0 + 22.0 + 5.0 + btn_h;
         let m = modal(
             a,
-            "KYTTU'S LAB // ACCOUNT",
+            ACCOUNT_KICKER,
             "ACCOUNT",
             14.0,
             vec2(240.0, 150.0),
@@ -801,7 +814,7 @@ pub fn draw_account(
         let content_h = l6 * 3.0 + 22.0 * 2.0 + btn_h * 3.0 + 7.0 * 5.0;
         let m = modal(
             a,
-            "KYTTU'S LAB // ACCOUNT",
+            ACCOUNT_KICKER,
             "ACCOUNT SETTINGS",
             14.0,
             vec2(280.0, 214.0),
@@ -894,7 +907,7 @@ pub fn draw_account(
     let content_h = l6 + 5.0 + l6 + 5.0 + row_h * 2.0 + 3.0 + 5.0 + btn_h;
     let m = modal(
         a,
-        "KYTTU'S LAB // ACCOUNT",
+        ACCOUNT_KICKER,
         "ACCOUNT",
         14.0,
         vec2(260.0, 130.0 + 22.0 * 2.0),
@@ -966,17 +979,6 @@ pub fn draw_account(
             Action::Go(ui.account_back)
         };
     }
-    y += row_h + 3.0;
-    label_vc(
-        a,
-        F::Body,
-        "NIGHT WATCH // NONE",
-        m.inner.x,
-        y,
-        row_h,
-        6.0,
-        p.muted,
-    );
     y += row_h + 5.0;
     let w1 = button_min(a, "ACCOUNT SETTINGS", 7.0, false).x;
     let w2 = button_min(a, "SIGN OUT", 7.0, false).x;
@@ -1791,7 +1793,8 @@ pub fn draw_dossier(a: &Assets, ui: &mut Ui, content: &Content, username: &str) 
     let found = crate::app::profile::discovered(username);
     let signed_in = crate::app::profile::signed_in(username);
     // the web's CHARACTER FILES dialog: a two-column roster beside the detail column
-    const ROSTER_W: f32 = 240.0;
+    // the web's dossier grid is minmax(260px, 340px) for the roster and 1fr for the details
+    const ROSTER_W: f32 = 190.0;
     let min = vec2(420.0, 260.0);
     let m = modal(
         a,
@@ -1881,7 +1884,7 @@ pub fn draw_dossier(a: &Assets, ui: &mut Ui, content: &Content, username: &str) 
         .sum();
     let view_h = list.h - 6.0;
     if hovered(list) {
-        ui.dossier_scroll -= mouse_wheel().1.signum() * 26.0;
+        ui.dossier_scroll -= wheel_notch(mouse_wheel().1, 26.0);
     }
     if moved {
         // the selected cell's line, found by walking the visual lines from the top
@@ -2098,6 +2101,13 @@ pub fn draw_dossier(a: &Assets, ui: &mut Ui, content: &Content, username: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wheel_notch_scrolls_only_while_the_wheel_moves() {
+        assert_eq!(wheel_notch(0.0, 26.0), 0.0);
+        assert_eq!(wheel_notch(1.0, 26.0), 26.0);
+        assert_eq!(wheel_notch(-0.5, 26.0), -26.0);
+    }
 
     #[test]
     fn title_buttons_follow_the_web_order_for_a_normal_account() {

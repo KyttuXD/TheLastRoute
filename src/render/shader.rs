@@ -130,9 +130,10 @@ pub struct Lamp {
 /// The global ambient, Godot's RefLook environment (game/look/ref_look.gd make_environment): colour #5a3550 at
 /// energy AMBIENT_ENERGY. Godot has no player setting for it and no per-region or per-level ambient (the night-watch
 /// office moods are their own scenes), so neither does this. Lit surfaces get `AMBIENT_COLOR * AMBIENT_ENERGY` added
-/// before the lamps and the flashlight.
+/// before the lamps and the flashlight. Godot's 0.035 leaves this shader's rooms black, so the port uses 0.35: a faint
+/// plum floor and walls away from the lamps, with the flashlight still the main light.
 pub const AMBIENT_COLOR: Vec3 = Vec3::new(0.352941, 0.207843, 0.313725);
-pub const AMBIENT_ENERGY: f32 = 0.035;
+pub const AMBIENT_ENERGY: f32 = 0.35;
 
 pub struct Lighting {
     pub eye: Vec3,

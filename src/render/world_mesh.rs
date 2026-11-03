@@ -13,6 +13,7 @@ use super::textures::{self, TexRef, TextureChoice};
 use crate::shared::assets::Assets;
 use crate::config::WALL_HEIGHT;
 use crate::content::props::{stable_index, visual_y};
+use crate::content::regions::RegionDef;
 use crate::content::Content;
 use crate::world::facility::{stair_well_cells, STAIR_FLIGHT};
 use crate::world::{region_texture, Facility, TEXTURE_SETS};
@@ -42,6 +43,16 @@ pub fn lamps(f: &Facility, lights_on: &[bool], content: &Content) -> Vec<Lamp> {
             });
         }
     }
+    // the safe zone is a checkpoint: a warm light over its pad, so it reads as a lit area from the halls
+    if let Some(s) = f.safe_zone {
+        let (x, z) = s.center();
+        out.push(Lamp {
+            pos: vec3(x, WALL_HEIGHT - 0.6, z),
+            range: 7.0,
+            color: Color::new(0.95, 0.78, 0.55, 1.0),
+            energy: 2.0,
+        });
+    }
     let mut budget = 10;
     for p in &f.props {
         if budget == 0 {
@@ -51,7 +62,8 @@ pub fn lamps(f: &Facility, lights_on: &[bool], content: &Content) -> Vec<Lamp> {
             continue;
         };
         budget -= 1;
-        let (x, z) = p.cell.center();
+        let (cx, cz) = p.cell.center();
+        let (x, z) = (cx + p.offset.0, cz + p.offset.1);
         let yaw = p.rotation as f32 * std::f32::consts::FRAC_PI_2;
         let off = Mat3::from_rotation_y(yaw) * vec3(light.offset.0, 0.0, light.offset.2);
         let y = visual_y(&p.ptype, WALL_HEIGHT, p.mount_y.unwrap_or(0.0) as f32) + light.offset.1;
@@ -138,6 +150,26 @@ fn cell_surfaces<'c>(
     (choice, floor)
 }
 
+/// A region's wall height in metres: its `geometry.wall_height`, or WALL_HEIGHT when the region has no block
+/// (or no region).
+fn geometry_wall_height(def: Option<&RegionDef>) -> f32 {
+    def.and_then(|d| d.geometry).map_or(WALL_HEIGHT, |g| g.wall_height)
+}
+
+/// The wall height of the region named `region` (its installed `lr.region/1` definition), else WALL_HEIGHT.
+fn region_wall_height(region: &str) -> f32 {
+    geometry_wall_height(crate::content::regions::table().def(region))
+}
+
+/// The wall height of the region a floor cell is in: its room's region, or the district of its hall when the
+/// cell is in no room (or the lobby). The same choice `cell_surfaces` makes for the cell's textures.
+fn cell_wall_height(f: &Facility, x: i32, y: i32) -> f32 {
+    match f.room_at(x as f64 + 0.5, y as f64 + 0.5).filter(|i| !f.rooms[*i].lobby()) {
+        Some(i) => region_wall_height(&f.rooms[i].region),
+        None => region_wall_height(f.region_at(x, y)),
+    }
+}
+
 /// A builder per painted kind, falling back to the region swatch PNG for an unknown kind.
 fn painted<'b>(
     map: &'b mut HashMap<(&'static str, &'static str), Builder>,
@@ -174,6 +206,9 @@ pub fn build_world(
         let (choice, floor_kind) = cell_surfaces(f, c.x, c.y, &mut choices);
         let wall_kind = choice.wall_at((c.x + f.origin.0) as i64, (c.y + f.origin.1) as i64);
         let ceil_kind = choice.ceiling;
+        // this cell's walls and ceiling take its region's wall height (WALL_HEIGHT without a geometry block)
+        let wall_h = cell_wall_height(f, c.x, c.y);
+        let wall_tiers = textures::wall_tiers(wall_h) as f32;
         let step = steps.get(&(c.x, c.y)).copied();
         match step {
             // a flight down: the floor opens onto steps sinking into the level below
@@ -214,10 +249,10 @@ pub fn build_world(
         }
         if !matches!(step, Some((_, d)) if d > 0) {
             let corners = [
-                vec3(x, h, z + 1.),
-                vec3(x + 1., h, z + 1.),
-                vec3(x + 1., h, z),
-                vec3(x, h, z),
+                vec3(x, wall_h, z + 1.),
+                vec3(x + 1., wall_h, z + 1.),
+                vec3(x + 1., wall_h, z),
+                vec3(x, wall_h, z),
             ];
             match ceil_kind {
                 Some(k) => painted(&mut surf, k, &assets.white).quad(
@@ -254,8 +289,8 @@ pub fn build_world(
             }
             // the painted wall carries its own cornice, chair rail and skirting
             painted(&mut surf, wall_kind, assets.wall(set)).quad(
-                [a + up * h, b + up * h, b, a],
-                [vec2(0., 0.), vec2(1., 0.), vec2(1., tiers), vec2(0., tiers)],
+                [a + up * wall_h, b + up * wall_h, b, a],
+                [vec2(0., 0.), vec2(1., 0.), vec2(1., wall_tiers), vec2(0., wall_tiers)],
                 n,
                 WHITE,
                 0.0,
@@ -270,10 +305,11 @@ pub fn build_world(
     let mut authored: HashMap<usize, Builder> = HashMap::new();
     for p in &f.props {
         let (x, z) = p.cell.center();
-        // a room door is centred on its doorway (a double door sits across two cells)
+        // a room door is centred on its doorway (a double door sits across two cells); any other prop is
+        // drawn at its placement offset (a flush bed sits against its wall), as the footprint is
         let (x, z) = match p.door {
             Some(d) => (x + d.offset[0], z + d.offset[1]),
-            None => (x, z),
+            None => (x + p.offset.0, z + p.offset.1),
         };
         let mut y = visual_y(&p.ptype, h, p.mount_y.unwrap_or(0.0) as f32);
         let yaw = p.rotation as f32 * std::f32::consts::FRAC_PI_2;
@@ -305,6 +341,14 @@ pub fn build_world(
             let xf = match p.door.zip(model.door) {
                 Some((d, dims)) => {
                     let (sx, sy) = door::door_scale(dims, &p.ptype, d.span);
+                    // the wall over the opening, from the raised frame's top up to the ceiling (Godot's door header)
+                    let bottom = door::header_bottom(dims, sy, h);
+                    if bottom < h {
+                        let (choice, _) = cell_surfaces(f, p.cell.x, p.cell.y, &mut choices);
+                        let wall = choice.wall_at((p.cell.x + f.origin.0) as i64, (p.cell.y + f.origin.1) as i64);
+                        let fallback = assets.wall(room_set(f, p.cell.x, p.cell.y));
+                        door_header(&mut surf, wall, fallback, vec3(x, 0.0, z), yaw, d.span as f32, bottom, h, tiers);
+                    }
                     door::door_transform(vec3(x, y, z), yaw, sx, sy, scale)
                 }
                 None => Mat4::from_translation(vec3(x, y, z))
@@ -377,6 +421,52 @@ pub fn prop_visual_yaw(yaw: f32, door: bool) -> f32 {
     }
 }
 
+/// The wall over a room door's opening, from `bottom` (the frame's top) up to the ceiling `h` (Godot's door
+/// header, streamed_facility_view_3d.gd add_door_header): a wall face on each side of the threshold cell and the
+/// soffit under it. The door stands on its threshold's centre line, so the faces sit half a cell either side of the
+/// origin, and the header spans the doorway's `span` cells across the wall (the door's local X).
+#[allow(clippy::too_many_arguments)]
+fn door_header(
+    map: &mut HashMap<(&'static str, &'static str), Builder>,
+    tex: TexRef,
+    fallback: &Texture2D,
+    origin: Vec3,
+    yaw: f32,
+    span: f32,
+    bottom: f32,
+    h: f32,
+    tiers: f32,
+) {
+    let rot = Mat3::from_rotation_y(yaw);
+    let (across, through) = (rot * Vec3::X, rot * Vec3::Z);
+    let half = span / 2.0;
+    let at = |s: f32, d: f32, y: f32| origin + across * s + through * d + Vec3::Y * y;
+    // the wall texture's v runs from 0 at the top of the wall to `tiers` at its floor
+    let v = tiers * (h - bottom) / h;
+    let b = painted(map, tex, fallback);
+    for (d, n) in [(0.5, through), (-0.5, -through)] {
+        let (tl, tr, br, bl) = (at(-half, d, h), at(half, d, h), at(half, d, bottom), at(-half, d, bottom));
+        let uv = [vec2(0., 0.), vec2(span, 0.), vec2(span, v), vec2(0., v)];
+        if d > 0.0 {
+            b.quad([tl, bl, br, tr], [uv[0], uv[3], uv[2], uv[1]], n, WHITE, 0.0);
+        } else {
+            b.quad([tl, tr, br, bl], uv, n, WHITE, 0.0);
+        }
+    }
+    b.quad(
+        [
+            at(-half, -0.5, bottom),
+            at(half, -0.5, bottom),
+            at(half, 0.5, bottom),
+            at(-half, 0.5, bottom),
+        ],
+        [vec2(0., 0.), vec2(span, 0.), vec2(span, 1.), vec2(0., 1.)],
+        -Vec3::Y,
+        WHITE,
+        0.0,
+    );
+}
+
 /// Averages normals across corners that share a position, so the blocky props shade as
 /// rounded forms instead of hard boxes.
 fn soften(verts: &mut [Vertex]) {
@@ -404,8 +494,9 @@ fn soften(verts: &mut [Vertex]) {
 fn archways(f: &Facility, b: &mut Builder) {
     let wood = Color::from_rgba(72, 42, 32, 255);
     let trim = Color::from_rgba(150, 108, 52, 255);
-    let h = WALL_HEIGHT;
     for r in f.rooms.iter() {
+        // the lintel stands under the room's own wall height
+        let h = region_wall_height(&r.region);
         // each side: cells just inside the edge and the outward step
         let sides: [(Vec<(i32, i32)>, (i32, i32)); 4] = [
             ((r.x..r.x + r.w).map(|x| (x, r.y)).collect(), (0, -1)),
@@ -507,6 +598,20 @@ fn archways(f: &Facility, b: &mut Builder) {
 mod tests {
     use super::*;
     use std::f32::consts::{FRAC_PI_2, PI};
+
+    /// A temporary region with a geometry block is parsed like a pack's file: its wall height is its own, and a
+    /// region without the block (or no region) keeps WALL_HEIGHT.
+    #[test]
+    fn a_region_geometry_block_sets_its_wall_height() {
+        use crate::content::regions::parse_file;
+        let tall = r#"{"schema":"lr.region/1","id":"tmp_tall","hall_floor":["a"],"hall_runner":false,"room_default_floor":["a"],"room_roles":["r"],"prop_set":[],"geometry":{"wall_height":6.5}}"#;
+        let plain = r#"{"schema":"lr.region/1","id":"tmp_plain","hall_floor":["a"],"hall_runner":false,"room_default_floor":["a"],"room_roles":["r"],"prop_set":[]}"#;
+        let tall = parse_file("tmp_tall.json", tall).unwrap();
+        let plain = parse_file("tmp_plain.json", plain).unwrap();
+        assert_eq!(geometry_wall_height(Some(&tall)), 6.5);
+        assert_eq!(geometry_wall_height(Some(&plain)), WALL_HEIGHT);
+        assert_eq!(geometry_wall_height(None), WALL_HEIGHT);
+    }
 
     /// Where a prop model's front (local +Z, the seat front of the chair GLBs) lands in (x, z) once drawn.
     fn drawn_front(gameplay_yaw: f32) -> (f32, f32) {

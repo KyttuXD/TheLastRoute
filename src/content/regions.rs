@@ -22,8 +22,9 @@ pub const SCHEMA: &str = "lr.region/1";
 /// The source name of a built-in region (every other source is the id of the pack that added it).
 pub const BUILTIN: &str = "builtin";
 
-/// Every top-level key of `lr.region/1` (Godot REGION_FIELDS). Any other key is an error.
-const KEYS: [&str; 10] = [
+/// Every top-level key of `lr.region/1` (Godot REGION_FIELDS). Any other key is an error. `geometry` is
+/// optional: it was added to /1 before the first full release, so /1 stays the schema name until then.
+const KEYS: [&str; 11] = [
     "schema",
     "id",
     "hall_floor",
@@ -34,7 +35,12 @@ const KEYS: [&str; 10] = [
     "room_door",
     "double_room_door",
     "prop_set",
+    "geometry",
 ];
+/// The keys of the optional `geometry` block.
+const GEOMETRY_KEYS: [&str; 3] = ["wall_height", "room_min", "room_max"];
+/// The allowed range of `geometry.wall_height`, in metres.
+pub const WALL_HEIGHT_RANGE: (f64, f64) = (2.5, 8.0);
 /// The keys a file must have. `shop_names`, `room_door` and `double_room_door` are optional.
 const REQUIRED: [&str; 7] = [
     "schema",
@@ -56,6 +62,25 @@ pub struct PropChoice {
     pub solid: bool,
 }
 
+/// The optional `geometry` block: the wall height in metres, and the room size range in grid cells (a room's
+/// side is drawn from `room_min..=room_max`). A region without the block has the game's defaults.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RegionGeometry {
+    pub wall_height: f32,
+    pub room_min: i32,
+    pub room_max: i32,
+}
+
+impl Default for RegionGeometry {
+    fn default() -> Self {
+        RegionGeometry {
+            wall_height: crate::config::WALL_HEIGHT,
+            room_min: crate::world::facility::MIN_AUTHORED_ROOM_SIZE,
+            room_max: crate::world::facility::MAX_AUTHORED_ROOM_SIZE,
+        }
+    }
+}
+
 /// One region's facts, as `lr.region/1` states them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RegionDef {
@@ -69,6 +94,8 @@ pub struct RegionDef {
     pub room_door: Option<String>,
     pub double_room_door: Option<String>,
     pub prop_set: Vec<PropChoice>,
+    /// Wall height and room sizes, when the file has a `geometry` block. `None` keeps the game-wide sizes.
+    pub geometry: Option<RegionGeometry>,
     /// `BUILTIN`, or the id of the pack that added or replaced the region.
     pub source: String,
 }
@@ -112,6 +139,52 @@ fn shop_names(file: &str, obj: &Map<String, Value>) -> Result<Vec<(String, Strin
                 .ok_or_else(|| wrong(file, &format!("shop_names.{role}"), "a string"))
         })
         .collect()
+}
+
+/// The optional `geometry` block. Missing keys keep the defaults; `room_min` is capped at `room_max` when only
+/// `room_max` is given, so a small `room_max` alone is valid.
+fn geometry(file: &str, obj: &Map<String, Value>) -> Result<Option<RegionGeometry>, String> {
+    let Some(value) = obj.get("geometry") else {
+        return Ok(None);
+    };
+    let mut g = RegionGeometry::default();
+    let block = value
+        .as_object()
+        .ok_or_else(|| wrong(file, "geometry", "an object"))?;
+    if let Some(key) = block.keys().find(|k| !GEOMETRY_KEYS.contains(&k.as_str())) {
+        return Err(format!("{file}: unknown key \"geometry.{key}\""));
+    }
+    if let Some(value) = block.get("wall_height") {
+        let (lo, hi) = WALL_HEIGHT_RANGE;
+        let h = value
+            .as_f64()
+            .filter(|h| (lo..=hi).contains(h))
+            .ok_or_else(|| wrong(file, "geometry.wall_height", &format!("a number from {lo} to {hi}")))?;
+        g.wall_height = h as f32;
+    }
+    let (min_lo, max_hi) = (4, crate::world::facility::MAX_AUTHORED_ROOM_SIZE);
+    let size = |key: &str| -> Result<Option<i32>, String> {
+        match block.get(key) {
+            None => Ok(None),
+            Some(v) => v
+                .as_i64()
+                .filter(|n| (min_lo as i64..=max_hi as i64).contains(n))
+                .map(|n| Some(n as i32))
+                .ok_or_else(|| wrong(file, &format!("geometry.{key}"), &format!("a whole number from {min_lo} to {max_hi}"))),
+        }
+    };
+    let (min, max) = (size("room_min")?, size("room_max")?);
+    if let Some(max) = max {
+        g.room_max = max;
+        g.room_min = g.room_min.min(max);
+    }
+    if let Some(min) = min {
+        g.room_min = min;
+    }
+    if g.room_min > g.room_max {
+        return Err(format!("{file}: \"geometry.room_min\" ({}) is larger than \"geometry.room_max\" ({})", g.room_min, g.room_max));
+    }
+    Ok(Some(g))
 }
 
 fn optional_string(file: &str, obj: &Map<String, Value>, key: &str) -> Result<Option<String>, String> {
@@ -209,6 +282,7 @@ pub fn parse_file(file: &str, text: &str) -> Result<RegionDef, String> {
         room_door: optional_string(file, obj, "room_door")?,
         double_room_door: optional_string(file, obj, "double_room_door")?,
         prop_set: prop_set(file, obj)?,
+        geometry: geometry(file, obj)?,
         source: String::new(),
     })
 }
@@ -448,6 +522,48 @@ mod tests {
         assert_eq!(d.prop_set, vec![PropChoice { prop_type: "crate".into(), size: [1.0, 1.0, 1.0], solid: true }]);
         assert!(d.shop_names.is_empty());
         assert_eq!(d.room_door, None);
+    }
+
+    #[test]
+    fn a_file_without_geometry_keeps_the_defaults() {
+        let d = parse_file("t.json", MIN).unwrap();
+        assert_eq!(d.geometry, None);
+    }
+
+    #[test]
+    fn a_geometry_block_sets_wall_height_and_room_sizes() {
+        let text = MIN.replacen("\"id\":\"t\"", "\"id\":\"t\",\"geometry\":{\"wall_height\":6.5,\"room_min\":8,\"room_max\":14}", 1);
+        let g = parse_file("t.json", &text).unwrap().geometry;
+        assert_eq!(g, Some(RegionGeometry { wall_height: 6.5, room_min: 8, room_max: 14 }));
+    }
+
+    #[test]
+    fn a_room_max_alone_caps_the_default_minimum() {
+        let text = MIN.replacen("\"id\":\"t\"", "\"id\":\"t\",\"geometry\":{\"room_max\":6}", 1);
+        let g = parse_file("t.json", &text).unwrap().geometry.unwrap();
+        assert_eq!((g.room_min, g.room_max), (6, 6));
+        assert_eq!(g.wall_height, RegionGeometry::default().wall_height);
+    }
+
+    #[test]
+    fn a_wall_height_outside_the_range_names_the_key() {
+        let text = MIN.replacen("\"id\":\"t\"", "\"id\":\"t\",\"geometry\":{\"wall_height\":12}", 1);
+        let e = fails(&text);
+        assert!(e.contains("geometry.wall_height"), "{e}");
+    }
+
+    #[test]
+    fn an_unknown_geometry_key_fails() {
+        let text = MIN.replacen("\"id\":\"t\"", "\"id\":\"t\",\"geometry\":{\"hall_width\":3}", 1);
+        let e = fails(&text);
+        assert!(e.contains("unknown key \"geometry.hall_width\""), "{e}");
+    }
+
+    #[test]
+    fn room_min_above_room_max_fails() {
+        let text = MIN.replacen("\"id\":\"t\"", "\"id\":\"t\",\"geometry\":{\"room_min\":20,\"room_max\":12}", 1);
+        let e = fails(&text);
+        assert!(e.contains("room_min") && e.contains("room_max"), "{e}");
     }
 
     #[test]

@@ -56,7 +56,8 @@ impl Default for Settings {
             ads: "off".into(),
             pause_on_focus_loss: true,
             teammate_waypoints: true,
-            username: "KYTTU".into(),
+            // empty: a new game starts signed out (guest). Only signing in as KYTTU enables the admin tools.
+            username: String::new(),
             scheme: "last_route".into(),
         }
     }

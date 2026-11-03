@@ -1,7 +1,8 @@
 //! Frame timing and the F7 performance overlay. F7 cycles: off → small FPS readout → full panel
 //! (frame-time graph, average / 1% low / worst, per-section CPU times, spike count, scene
 //! counts). Sections are timed with `let _t = perf::section("hud");` (ends when dropped).
-//! Spikes (frames over 2x the average and over 25 ms) are written to the debug log.
+//! Spikes (frames over 2x the average and over 25 ms) are written to the debug log. Every frame
+//! over 33.3 ms also goes into a rolling log of the last 20 (frame time and slowest section).
 
 use macroquad::prelude::*;
 use std::cell::RefCell;
@@ -9,14 +10,54 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 const HISTORY: usize = 240;
+/// Frames over this many milliseconds are logged as spikes.
+const SPIKE_MS: f32 = 33.3;
+const SPIKE_LOG_LEN: usize = 20;
+
+/// One logged spike: the frame time and the section that took longest in that frame.
+#[derive(Clone, Copy)]
+struct Spike {
+    ms: f32,
+    section: &'static str,
+    section_ms: f32,
+}
+
+/// Rolling log of the last `SPIKE_LOG_LEN` spikes, oldest overwritten first. `total` counts every
+/// spike seen. Pushing reuses the existing slots, so it does not allocate per frame.
+#[derive(Default)]
+struct SpikeLog {
+    entries: Vec<Spike>,
+    head: usize,
+    total: u32,
+}
+
+impl SpikeLog {
+    fn push(&mut self, spike: Spike) {
+        self.total += 1;
+        if self.entries.len() < SPIKE_LOG_LEN {
+            self.entries.push(spike);
+        } else {
+            self.entries[self.head] = spike;
+        }
+        self.head = (self.head + 1) % SPIKE_LOG_LEN;
+    }
+
+    /// The most recent spike, if any.
+    fn latest(&self) -> Option<&Spike> {
+        self.entries.get((self.head + SPIKE_LOG_LEN - 1) % SPIKE_LOG_LEN)
+    }
+}
 
 #[derive(Default)]
 struct State {
     frames: Vec<f32>,
     head: usize,
     sections: BTreeMap<&'static str, f32>,
+    // raw section times of the frame in progress; cleared each frame so a spike names its own
+    // slowest section rather than a smoothed average
+    frame_secs: Vec<(&'static str, f32)>,
     open: BTreeMap<&'static str, Instant>,
-    spikes: u32,
+    spikes: SpikeLog,
     mode: u8,
     counters: BTreeMap<&'static str, f64>,
 }
@@ -34,8 +75,20 @@ pub fn frame(dt: f32) {
         } else {
             s.frames.iter().sum::<f32>() / s.frames.len() as f32
         };
+        if dt * 1000.0 > SPIKE_MS {
+            let (section, section_ms) = s
+                .frame_secs
+                .iter()
+                .copied()
+                .max_by(|a, b| a.1.total_cmp(&b.1))
+                .unwrap_or(("none", 0.0));
+            s.spikes.push(Spike {
+                ms: dt * 1000.0,
+                section,
+                section_ms,
+            });
+        }
         if s.frames.len() >= 30 && dt > avg * 2.0 && dt > 0.025 {
-            s.spikes += 1;
             let worst = s
                 .sections
                 .iter()
@@ -48,6 +101,7 @@ pub fn frame(dt: f32) {
                 avg * 1000.0
             );
         }
+        s.frame_secs.clear();
         if s.frames.len() < HISTORY {
             s.frames.push(dt);
         } else {
@@ -74,6 +128,10 @@ impl Drop for Section {
                 let ms = t.elapsed().as_secs_f32() * 1000.0;
                 let e = s.sections.entry(self.0).or_insert(ms);
                 *e = *e * 0.9 + ms * 0.1;
+                match s.frame_secs.iter_mut().find(|e| e.0 == self.0) {
+                    Some(e) => e.1 += ms,
+                    None => s.frame_secs.push((self.0, ms)),
+                }
             }
         });
     }
@@ -146,7 +204,7 @@ pub fn draw_overlay(font: Option<&Font>, extra: &[(String, String)]) {
         return;
     }
     let w = 300.0;
-    let lines = 7 + S.with(|s| s.borrow().sections.len() + s.borrow().counters.len()) + extra.len();
+    let lines = 8 + S.with(|s| s.borrow().sections.len() + s.borrow().counters.len()) + extra.len();
     let h = 62.0 + lines as f32 * 15.0;
     draw_rectangle(x - 6.0, y - 16.0, w, h, Color::new(0.02, 0.01, 0.03, 0.78));
     draw_rectangle_lines(
@@ -208,7 +266,17 @@ pub fn draw_overlay(font: Option<&Font>, extra: &[(String, String)]) {
     row("frame avg", format!("{avg:.2} ms"));
     row("1% low", format!("{low:.0} fps"));
     row("worst (4 s)", format!("{worst:.1} ms"));
-    row("spikes", S.with(|s| s.borrow().spikes.to_string()));
+    row("spikes >33 ms", S.with(|s| s.borrow().spikes.total.to_string()));
+    row(
+        "last spike",
+        S.with(|s| {
+            let s = s.borrow();
+            match s.spikes.latest() {
+                Some(sp) => format!("{:.1} ms, {} {:.1} ms", sp.ms, sp.section, sp.section_ms),
+                None => "none".to_string(),
+            }
+        }),
+    );
     row(
         "window",
         format!("{:.0} x {:.0}", screen_width(), screen_height()),
@@ -222,5 +290,44 @@ pub fn draw_overlay(font: Option<&Font>, extra: &[(String, String)]) {
     }
     for (k, v) in extra {
         row(k, v.clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spike(ms: f32) -> Spike {
+        Spike {
+            ms,
+            section: "hud",
+            section_ms: 1.0,
+        }
+    }
+
+    #[test]
+    fn spike_log_keeps_only_the_last_twenty() {
+        let mut log = SpikeLog::default();
+        assert!(log.latest().is_none());
+        for i in 1..=25 {
+            log.push(spike(i as f32));
+        }
+        assert_eq!(log.total, 25);
+        assert_eq!(log.entries.len(), SPIKE_LOG_LEN);
+        let mut kept: Vec<f32> = log.entries.iter().map(|s| s.ms).collect();
+        kept.sort_by(|a, b| a.total_cmp(b));
+        let expected: Vec<f32> = (6..=25).map(|i| i as f32).collect();
+        assert_eq!(kept, expected);
+        assert_eq!(log.latest().map(|s| s.ms), Some(25.0));
+    }
+
+    #[test]
+    fn spike_log_latest_tracks_pushes_before_it_is_full() {
+        let mut log = SpikeLog::default();
+        log.push(spike(34.0));
+        assert_eq!(log.latest().map(|s| s.ms), Some(34.0));
+        log.push(spike(50.0));
+        assert_eq!(log.latest().map(|s| s.ms), Some(50.0));
+        assert_eq!(log.total, 2);
     }
 }

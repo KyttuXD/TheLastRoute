@@ -10,11 +10,10 @@ use crate::util::{self, Clock, Reply};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 
-pub const REGION_PATTERN: &str = r"^[a-z][a-z0-9-]{1,23}$";
 pub const SIGNATURE_WINDOW_MS: i64 = 60_000;
 pub const REGION_STALE_MS: i64 = 20_000;
 
-/// `REGION_PATTERN.test(region)`.
+/// Matches `^[a-z][a-z0-9-]{1,23}$`.
 pub fn is_region(region: &str) -> bool {
     let bytes = region.as_bytes();
     (2..=24).contains(&bytes.len())
@@ -33,7 +32,7 @@ pub fn sign_agent_request(token: &str, region: &str, time: f64, body: &str) -> S
     util::hex(&util::hmac_sha256(token.as_bytes(), message.as_bytes()))
 }
 
-/// `parseAgentTokens(value)`: `"region:token,..."`; regions must match [`REGION_PATTERN`], tokens be 24+ characters.
+/// `parseAgentTokens(value)`: `"region:token,..."`; regions must pass [`is_region`], tokens be 24+ characters.
 pub fn parse_agent_tokens(value: &str) -> HashMap<String, String> {
     let mut tokens = HashMap::new();
     for pair in value.split(',') {
@@ -299,6 +298,7 @@ impl Regions {
         String::new()
     }
 
+    #[cfg(test)]
     pub fn has_tokens(&self) -> bool {
         !self.tokens.is_empty()
     }

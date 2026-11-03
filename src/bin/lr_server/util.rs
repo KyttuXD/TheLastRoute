@@ -4,11 +4,12 @@
 //! `JSON.stringify` output. These helpers reproduce those semantics so each ported module can stay a line-by-line
 //! translation of its `.mjs` original.
 
-use serde_json::{Map, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::Path;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicI64, Ordering};
 
 /// A module result, like the `[status, body]` pairs the Node modules return.
 pub type Reply = (u16, Value);

@@ -1,10 +1,12 @@
 #!/bin/sh
-# Uploads builds to the rolling "nightly" pre-release of this repository. The release is created on
-# first use, its tag is moved to the commit being built, and the files are replaced (--clobber), so
-# the release always holds the latest build from main. Needs GH_TOKEN with contents: write (the
-# build workflow passes github.token). Usage: sh packaging/nightly.sh FILE...
+# Uploads builds to a rolling pre-release of this repository: "nightly" by default, or the tag in
+# NIGHTLY_TAG (the Linux server build goes to "nightly-server"). The release is created on first use,
+# its tag is moved to the commit being built, and the files are replaced (--clobber), so the release
+# always holds the latest build from main. Needs GH_TOKEN with contents: write (the build workflow
+# passes github.token). Usage: sh packaging/nightly.sh FILE...
 set -e
-TAG=nightly
+TAG="${NIGHTLY_TAG:-nightly}"
+TITLE="${NIGHTLY_TITLE:-Nightly build}"
 REPO="$GITHUB_REPOSITORY"
 
 i=0
@@ -16,7 +18,7 @@ until gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; do
     fi
     # Another job may create it first; a failed create is retried by the check above.
     gh release create "$TAG" --repo "$REPO" --target "$GITHUB_SHA" --prerelease \
-        --title "Nightly build" --notes "Rebuilt on every push to main. The files are replaced in place." >/dev/null 2>&1 || sleep 5
+        --title "$TITLE" --notes "Rebuilt on every push to main. The files are replaced in place." >/dev/null 2>&1 || sleep 5
 done
 
 # Point the tag at this commit, so the release matches the files uploaded below.

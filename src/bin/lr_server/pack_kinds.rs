@@ -34,18 +34,6 @@ pub fn backend_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// `PACK_KINDS_FILE`: `<backend dir>/pack_kinds.json`.
-pub fn pack_kinds_file() -> PathBuf {
-    backend_dir().join(PACK_KINDS_FILE_NAME)
-}
-
-/// `resolve(HERE, "..")`, the default repo root.
-pub fn default_repo_root() -> PathBuf {
-    let here = backend_dir();
-    let absolute = std::fs::canonicalize(&here).unwrap_or(here);
-    absolute.parent().map(Path::to_path_buf).unwrap_or(absolute)
-}
-
 /// `readPackKindsFromRepo(root)`: built-in kinds (source order) then extension kinds (sorted); None when `root` is
 /// not a checkout.
 pub fn read_pack_kinds_from_repo(root: &Path) -> Option<Vec<String>> {
@@ -120,6 +108,7 @@ pub fn load_pack_kinds(fallback: &[&str]) -> Vec<String> {
 }
 
 /// `JSON.stringify(value, null, 1)`.
+#[cfg(test)]
 fn stringify_indent1(value: &Value) -> String {
     fn write(value: &Value, depth: usize, out: &mut String) {
         let pad = |n: usize| " ".repeat(n);
@@ -156,6 +145,7 @@ fn stringify_indent1(value: &Value) -> String {
 
 /// The `node backend/pack_kinds.mjs [--write]` CLI: Ok(stdout) or Err(stderr) (exit status 1). `here` is the backend
 /// folder the kinds file is written to; the repo is `here/..`.
+#[cfg(test)]
 pub fn run_cli(here: &Path, write: bool) -> Result<String, String> {
     let absolute = std::fs::canonicalize(here).unwrap_or_else(|_| here.to_path_buf());
     let root = absolute.parent().map(Path::to_path_buf).unwrap_or_else(|| absolute.clone());

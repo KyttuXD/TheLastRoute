@@ -146,7 +146,8 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         }
         match item_model(a, "safe_zone") {
             Some(m) => m.draw(at(sx, 0.0, sy, 0.0), WHITE),
-            None => b.cube(vec3(sx, 0.05, sy), vec3(0.8, 0.1, 0.8), 0.0, SAFE, 2.0),
+            // lit (mode 0), so the safe zone's checkpoint light falls on its pad
+            None => b.cube(vec3(sx, 0.05, sy), vec3(0.8, 0.1, 0.8), 0.0, SAFE, 0.0),
         }
     }
     for (i, c) in f.relays.iter().enumerate() {

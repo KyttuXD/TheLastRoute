@@ -9,7 +9,7 @@ use crate::util::{self, Clock, Reply};
 use regex::Regex;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 pub const CRASH_SCHEMA: &str = "lr.crash/1";
@@ -227,14 +227,6 @@ impl CrashReports {
             util::log_error(&format!("Crash reports: could not create {}: {error}", options.directory.display()));
         }
         CrashReports { directory: options.directory, now: options.now, rates: HashMap::new() }
-    }
-
-    pub fn directory(&self) -> &Path {
-        &self.directory
-    }
-
-    pub fn exists(&self) -> bool {
-        self.directory.exists()
     }
 
     fn files(&self) -> Vec<String> {
