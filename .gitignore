@@ -35,3 +35,6 @@ checks/
 .env.*
 !.env.example
 accounts.json
+
+# Runtime data folder (moderation, reserved rooms, saves): never commit
+.data/

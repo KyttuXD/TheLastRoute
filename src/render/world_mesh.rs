@@ -5,11 +5,12 @@
 //! normals. Lights: the switchable room lights and the lamp props' own lights.
 
 use super::builder::Builder;
+use super::prop_scale;
 use super::shader::Lamp;
 use super::surfaces;
 use super::textures::{self, TexRef, TextureChoice};
-use crate::app::assets::Assets;
-use crate::config::{PROP_MODEL_SCALE, WALL_HEIGHT};
+use crate::shared::assets::Assets;
+use crate::config::WALL_HEIGHT;
 use crate::content::props::{stable_index, visual_y};
 use crate::content::Content;
 use crate::world::facility::{stair_well_cells, STAIR_FLIGHT};
@@ -282,16 +283,18 @@ pub fn build_world(
                     .get(&o[stable_index(room_id, o.len())])
                     .or_else(|| o.iter().find_map(|m| assets.glb.get(m)))
             });
+        // Godot's per-type hunter scale (PropModelCatalog.HUNTER_SCALE, data/render/prop_draw_scale.json).
+        let scale = prop_scale::draw_scale(&p.ptype);
         if let Some(model) = original {
             // Surface children are authored with different local origins. Align the
             // model's actual lowest vertex to the authored tabletop height so computers,
             // printers and lamps sit on the parent instead of floating above it.
             if p.mount_y.is_some() {
-                y -= model.min.y * PROP_MODEL_SCALE;
+                y -= model.min.y * scale;
             }
             let xf = Mat4::from_translation(vec3(x, y, z))
                 * Mat4::from_rotation_y(yaw)
-                * Mat4::from_scale(Vec3::splat(PROP_MODEL_SCALE));
+                * Mat4::from_scale(Vec3::splat(scale));
             model.add_to(&mut authored, xf, WHITE);
             continue;
         }
@@ -299,7 +302,7 @@ pub fn build_world(
             continue;
         };
         if p.mount_y.is_some() {
-            y -= model.min.y * model.scale * PROP_MODEL_SCALE;
+            y -= model.min.y * model.scale * scale;
         }
         let mut verts = vec![];
         let mut idx = vec![];
@@ -308,7 +311,7 @@ pub fn build_world(
             &mut idx,
             vec3(x, y, z),
             yaw,
-            Vec3::splat(model.scale * PROP_MODEL_SCALE),
+            Vec3::splat(model.scale * scale),
             0.0,
             0.0,
             WHITE,

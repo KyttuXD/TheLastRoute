@@ -11,7 +11,7 @@ pub mod player;
 pub use interact::Focus;
 pub use items::{Item, Slot};
 
-use crate::app::assets::Assets;
+use crate::shared::assets::Assets;
 use crate::audio::Sounds;
 use crate::config::*;
 use crate::content::Content;
@@ -106,6 +106,9 @@ pub struct Report {
 pub struct Game {
     pub difficulty: Difficulty,
     pub run_seed: u32,
+    /// The run's room seed text (`ROOM-<code>-<hex>`): shown by the menus, the loading screen,
+    /// the pause menu and the run report, and the source of the Infinite route's world seed.
+    pub room_text: String,
     pub depth: i32,
     pub score: i32,
     pub coins: i32,
@@ -208,6 +211,7 @@ impl Game {
         let mut g = Game {
             difficulty,
             run_seed,
+            room_text: crate::world::route::room_text(run_seed),
             depth: 1,
             score: 0,
             coins: 0,
@@ -278,28 +282,37 @@ impl Game {
     pub fn new_infinite(
         difficulty: Difficulty,
         run_seed: u32,
+        room_text: &str,
         level: i32,
         content: &Content,
         catalog: &Catalog,
         assets: &Assets,
     ) -> Game {
-        let mut g = Game::new_infinite_sim(difficulty, run_seed, level, content, catalog);
+        let mut g =
+            Game::new_infinite_sim(difficulty, run_seed, room_text, level, content, catalog);
         g.sync_world(assets, content);
         g
     }
 
-    /// `new_infinite` without render data (headless runs).
+    /// `new_infinite` without render data (headless runs). `room_text` is the run's room seed
+    /// text (a new run's `route::new_room_text`, or `route::room_text(seed)` for a numeric seed);
+    /// its djb2 is the Infinite route's world seed, `run_seed` stays the decimal run seed.
     pub fn new_infinite_sim(
         difficulty: Difficulty,
         run_seed: u32,
+        room_text: &str,
         level: i32,
         content: &Content,
         catalog: &Catalog,
     ) -> Game {
-        let seed = format!("{run_seed}");
+        // the Infinite route's world seed is str(RoomState.run_seed) of the run's room seed text
+        // (route::world_seed); every run start (new run, checkpoint, headless) passes the text
+        // the run was made with, so every start reaches the same world
+        let seed = crate::world::route::world_seed(room_text);
         // a 1x1 placeholder floor; enter_infinite swaps in the streamed window
         let fac = crate::world::infinite::placeholder(&seed, catalog);
         let mut g = Game::new_shell(difficulty, run_seed, fac, Fixtures::default());
+        g.room_text = room_text.to_string();
         g.inf = Some(endless::InfState::new(&seed, level));
         g.enter_infinite(content, catalog);
         g
@@ -309,6 +322,7 @@ impl Game {
         Game {
             difficulty,
             run_seed,
+            room_text: crate::world::route::room_text(run_seed),
             depth: 1,
             score: 0,
             coins: 0,
@@ -379,7 +393,7 @@ impl Game {
 
     /// This run's admin switches merged with the admin overlay's (ui::admin::flags).
     pub fn admin_flags(&self) -> Admin {
-        let f = crate::ui::admin::flags();
+        let f = crate::shared::admin_flags::flags();
         Admin {
             god: self.admin.god || f.god_mode,
             no_target: self.admin.no_target || f.no_target,

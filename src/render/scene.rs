@@ -10,7 +10,7 @@ use super::anim::{
 use super::builder::Builder;
 use super::glb::GlbModel;
 use super::shader::{self, Lighting};
-use crate::app::assets::Assets;
+use crate::shared::assets::Assets;
 use crate::config::*;
 use crate::game::{Game, Heater, Item};
 use crate::hunters::brain::State;
@@ -54,8 +54,8 @@ pub fn lighting(g: &Game) -> Lighting {
         flashlight_pos: eye + right * 0.08 - up * 0.05 + fwd * 0.12,
         flashlight_dir: fwd,
         flashlight_on: g.p.flashlight_on,
-        // rooms are dark unless something lights them
-        ambient: 0.028,
+        // rooms are dark unless something lights them: Godot's RefLook ambient (shader::AMBIENT_COLOR x AMBIENT_ENERGY)
+        ambient: shader::AMBIENT_COLOR * shader::AMBIENT_ENERGY,
         fog: FOG,
         fog_far: 24.0,
     }

@@ -6,7 +6,7 @@ use super::anim::held::{self, HeldId, HeldState, Motion};
 use super::builder::Builder;
 use super::scene::{camera, item_file, item_model, lighting, BATTERY};
 use super::shader;
-use crate::app::assets::Assets;
+use crate::shared::assets::Assets;
 use crate::config::WALL_HEIGHT;
 use crate::game::{Game, Item};
 use macroquad::prelude::*;

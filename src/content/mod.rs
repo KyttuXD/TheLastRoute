@@ -6,17 +6,21 @@ pub mod hunters;
 pub mod loot;
 pub mod packs;
 pub mod props;
+pub mod regions;
 
 use hunters::HunterDef;
 use loot::Loot;
 use packs::Pack;
 use props::PropDef;
+use regions::RegionTable;
 use std::collections::HashMap;
 
 pub struct Content {
     pub hunters: Vec<HunterDef>,
     pub props: HashMap<String, PropDef>,
     pub loot: Loot,
+    /// The region catalogue (data/regions and packs' regions/), `lr.region/1`.
+    pub regions: RegionTable,
     pub packs: Vec<Pack>,
     /// Problems found while loading (shown on the MODS settings tab).
     pub warnings: Vec<String>,
@@ -28,6 +32,7 @@ impl Content {
             hunters: vec![],
             props: HashMap::new(),
             loot: Loot::default(),
+            regions: RegionTable::default(),
             packs: vec![],
             warnings: vec![],
         };
@@ -64,6 +69,8 @@ impl Content {
             }
         }
         packs::load_all(&mut c);
+        c.regions = regions::load(&c.packs, &mut c.warnings);
+        regions::install(c.regions.clone());
         c
     }
 

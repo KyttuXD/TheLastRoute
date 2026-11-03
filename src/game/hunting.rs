@@ -306,7 +306,7 @@ impl Game {
         }
         self.p.flashlight_on = false;
         // THE RUN SAVES ITSELF // DEATH ENDS IT
-        crate::app::checkpoint::clear();
+        crate::shared::checkpoint::clear();
         let h = &self.hunters[hunter];
         self.report = Some(Report {
             hunter: h.def.id.clone(),

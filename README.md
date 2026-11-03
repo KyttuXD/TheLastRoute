@@ -70,15 +70,26 @@ only read files beneath that directory and never package the library into the ga
 
 ## Layout
 
-- `src/app` — the main loop, menus, assets, screenshot and self-test modes
+The package builds three executables from one library:
+
+- `src/lib.rs` (crate `last_route_core`) — the shared core every game uses: `config`, `content`,
+  `world`, `hunters`, `game` (player, items, interactions, capture and escape, the streamed window),
+  `render`, `audio`, and `shared` (assets, paths, checkpoints, admin switches)
+- `src/bin/last_route/` — KYTTU: The Last Route: `app` (main loop, menus, screenshot and self-test
+  modes), `ui` (HUD, map, menus and run report), `headless` (agent and test modes), plus `net`,
+  `updater` and `story`, which are not compiled yet
+- `src/bin/night_watch/` — KYTTU: Night Watch (placeholder, not ported yet)
+- `src/bin/lr_server/` — the dedicated server (`lr_server`)
+
+Core modules:
+
 - `src/config` — tuning numbers and difficulty profiles (see MECHANICS.md)
 - `src/content` — the data-driven content registry (data/*.json + mod packs)
 - `src/world` — seeded random generator, the facility floor generator and the Infinite chunks
 - `src/hunters` — the shared hunter brain and each hunter's own tricks
-- `src/game` — the run: player, items, interactions, capture and escape, the streamed window
+- `src/game` — the run logic
 - `src/render` — shader, world meshes, the original's painted textures (`textures/`), Blockbench
   and Blender models, scene and held item
-- `src/ui` — HUD, map, menus (account, loading) and run report
 - `src/audio` — the original's synthesised sound cues (`cues/`)
 - `data/` — the original's JSON content; `assets/` — the original's textures and models
 - `tools/prop_convert` — converts the original's blocky prop GLBs to .bbmodel

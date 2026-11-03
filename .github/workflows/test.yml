@@ -1,0 +1,80 @@
+# Runs the default Rust tests, the headless game suite and the self-test on Windows and Linux.
+# Only default tests run here: the full Godot golden tests (#[ignore], need PARITY_DIR and the
+# golden files) are not in CI. Nothing is published; reports are private run artifacts.
+name: test
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            ext: ".exe"
+            wrap: ""
+          - os: ubuntu-22.04
+            ext: ""
+            # the self-test opens a game window, so give it a virtual X display
+            wrap: "xvfb-run -a "
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev xvfb
+
+      # The repo has no rust-toolchain file, so this is the runner's stable Rust.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo test --lib
+        run: cargo test --locked --lib
+
+      - name: cargo test --bin last_route
+        run: cargo test --locked --bin last_route
+
+      - name: cargo test --bin lr_server
+        run: cargo test --locked --bin lr_server
+
+      - name: Build release binaries
+        run: cargo build --locked --release --bins
+
+      # Exit 0 pass, 1 fail, 2 nothing ran. The JSON report is kept as an artifact.
+      - name: Headless test suites
+        run: ./target/release/last_route${{ matrix.ext }} --test-suite "tests/*.json" --out target/ci/suite-report.json
+
+      # The self-test always exits 0 and only writes JSON, so fail on any step that did not pass.
+      - name: Self-test
+        run: |
+          ${{ matrix.wrap }}./target/release/last_route${{ matrix.ext }} --self-test target/ci/self-test.json
+          node -e "
+            const fs = require('fs');
+            const s = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+            const steps = s.steps || [];
+            if (steps.length === 0) { console.error('self-test recorded no steps'); process.exit(1); }
+            const bad = steps.filter((x) => x.passed !== true);
+            for (const b of bad) console.error('self-test FAILED: ' + b.step + ' - ' + b.detail);
+            console.log(steps.length + ' self-test steps, ' + bad.length + ' failed');
+            process.exit(bad.length ? 1 : 0);
+          " target/ci/self-test.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-reports-${{ matrix.os }}
+          path: target/ci/
+          if-no-files-found: warn

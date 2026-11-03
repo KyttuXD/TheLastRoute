@@ -66,7 +66,24 @@ fn main() {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     std::fs::write(out_dir.join("embedded.rs"), code).unwrap();
 
-    // the .exe icon only when building for Windows (macOS and Linux get theirs from packaging/)
+    // Windows executables each carry their own icon. `compile_for` links a resource into that one
+    // binary only (cargo:rustc-link-arg-bin), so the server and Night Watch do not share the game's.
+    #[cfg(windows)]
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        for (bin, ico) in [
+            ("lr_server", "packaging/windows/lr_server.ico"),
+            ("night_watch", "packaging/windows/night_watch.ico"),
+        ] {
+            println!("cargo:rerun-if-changed={ico}");
+            let mut res = winresource::WindowsResource::new();
+            res.set_icon(ico);
+            if let Err(e) = res.compile_for(bin) {
+                println!("cargo:warning={bin} icon not embedded: {e}");
+            }
+        }
+    }
+
+    // the game's .exe icon only when building for Windows (macOS and Linux get theirs from packaging/)
     #[cfg(windows)]
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let sizes = [16u32, 32, 64, 128, 256];
@@ -100,7 +117,7 @@ fn main() {
         std::fs::write(&out, ico).unwrap();
         let mut res = winresource::WindowsResource::new();
         res.set_icon(out.to_str().unwrap());
-        if let Err(e) = res.compile() {
+        if let Err(e) = res.compile_for("last_route") {
             println!("cargo:warning=app icon not embedded: {e}");
         }
     }

@@ -3,7 +3,8 @@
 //! levels going down from level 0 linked by stairwells.
 //!
 //! From game/world/generation/streamed_route_generator.gd: CHUNK_SIZE 45, REGION_SIZE_CHUNKS 4,
-//! REGIONS, SPAWN_MAZE_SHARE 0.6, EDGE_OFFSETS (where chunk seams may open), CORRIDOR_WIDTH 3,
+//! the region rules (world::route::regions, SPAWN_MAZE_SHARE 0.6), EDGE_OFFSETS (where chunk
+//! seams may open), CORRIDOR_WIDTH 3,
 //! STAIR_BAY_ANCHORS and STAIR_BAYS_BY_BOUNDARY_PARITY (a stair link belongs to the boundary
 //! between two levels, so both levels agree on it, and up/down links never share a bay), and
 //! MEZZANINE_ENABLED false (level 0 is the top). District-specific room banks and shared
@@ -14,27 +15,13 @@ use super::catalog::Catalog;
 use super::facility::{Cell, Facility, Options, Pickup, Stair, STAIR_FLIGHT};
 use super::fixtures::{self, Fixtures};
 use super::rng::Rng;
+use super::route::regions;
 use crate::content::loot::Loot;
 use std::collections::HashMap;
 
 pub const CHUNK: i32 = 45;
 pub const WINDOW: i32 = 3;
-pub const REGION_SIZE_CHUNKS: i32 = 4;
-pub const REGIONS: [&str; 13] = [
-    "maze",
-    "mansion",
-    "hotel",
-    "apartment",
-    "beach",
-    "gothic",
-    "prison",
-    "inferno",
-    "carnival",
-    "hospital",
-    "lab",
-    "greenhouse",
-    "mall",
-];
+pub const REGION_SIZE_CHUNKS: i32 = regions::REGION_SIZE_CHUNKS;
 pub const EDGE_OFFSETS: [i32; 7] = [5, 11, 17, 22, 27, 33, 39];
 const STAIR_BAY_ANCHORS: [[(i32, i32); 4]; 4] = [
     [(8, 8), (12, 8), (8, 12), (12, 12)],
@@ -56,37 +43,18 @@ pub struct ChunkKey {
     pub level: i32,
 }
 
-/// The district a chunk belongs to: one region per 4x4 chunks per level; the spawn district is
-/// the maze on 60% of seeds; prison only below level 0, the Inferno only from level -3, and the
-/// greenhouse only on the top level, which (with the Mezzanine removed) is never reached above 0.
-pub fn region_for(seed: &str, k: ChunkKey) -> usize {
-    let (rx, ry) = (
-        k.cx.div_euclid(REGION_SIZE_CHUNKS),
-        k.cy.div_euclid(REGION_SIZE_CHUNKS),
-    );
-    if k.level == 0
-        && rx == 0
-        && ry == 0
-        && Rng::new(&format!("{seed}:SPAWN-REGION")).next_float() < 0.6
-    {
-        return 0;
-    }
-    let pool: Vec<usize> = (0..REGIONS.len())
-        .filter(|i| match REGIONS[*i] {
-            "prison" => k.level < 0,
-            "inferno" => k.level <= -3,
-            "greenhouse" => false,
-            _ => true,
-        })
-        .collect();
-    let mut rng = Rng::new(&format!("{seed}:REGION:{}:{rx},{ry}", k.level));
-    pool[rng.next_index(pool.len())]
+/// The district a chunk belongs to (world::route::regions::region_for, Godot's region_for:
+/// `seed` is the world seed, str(run_seed) (route::world_seed), the chunk is (x, z) = (cx, cy)
+/// on level k.level).
+pub fn region_for(seed: &str, k: ChunkKey) -> &'static str {
+    regions::region_for(seed, k.cx, k.cy, k.level)
 }
 
 /// The catalogue room region each district prefers to dress its rooms in.
 pub fn hall_set(region: &str) -> &'static str {
     match region {
         "maze" => "maze",
+        "sewer" => "maze",
         "mansion" => "mansion",
         "hotel" => "hotel",
         "apartment" => "apartment",
@@ -116,7 +84,7 @@ fn boundary_offsets(seed: &str, key: &str) -> Vec<i32> {
 
 /// A stair link on the boundary between `upper` and `upper - 1` in column (cx, cy):
 /// Some((anchor, run)) when it exists. Shared by both levels.
-fn stair_link(seed: &str, cx: i32, cy: i32, upper: i32) -> Option<((i32, i32), (i32, i32))> {
+pub(crate) fn stair_link(seed: &str, cx: i32, cy: i32, upper: i32) -> Option<((i32, i32), (i32, i32))> {
     if upper > 0 {
         return None;
     }
@@ -136,8 +104,27 @@ fn stair_link(seed: &str, cx: i32, cy: i32, upper: i32) -> Option<((i32, i32), (
     Some((anchor, run))
 }
 
-/// Builds one chunk.
+/// `KYTTU_LEGACY_CHUNKS=1` keeps the old level-0 builder (`legacy_chunk`) for comparison. Unset,
+/// level 0 is the Godot layout adapter (`route::live`). Levels -1 to -3 always use `legacy_chunk`.
+pub fn legacy_level0() -> bool {
+    static LEGACY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *LEGACY.get_or_init(|| std::env::var("KYTTU_LEGACY_CHUNKS").map(|v| v == "1").unwrap_or(false))
+}
+
+/// Builds one chunk: level 0 from the Godot layout (`route::live::chunk`), unless
+/// `KYTTU_LEGACY_CHUNKS=1`; every other level from `legacy_chunk`.
 pub fn chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &Loot) -> (Facility, Fixtures) {
+    if k.level == 0 && !legacy_level0() {
+        if let Some(pair) = super::route::live::chunk(seed, k, cat) {
+            return pair;
+        }
+    }
+    legacy_chunk(seed, k, cat, loot)
+}
+
+/// The old builder: a `Facility::generate` floor re-dressed as streamed rooms, with Rust's own
+/// loot, seams, stair flights and fixtures.
+pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &Loot) -> (Facility, Fixtures) {
     let origin = k.cx == 0 && k.cy == 0 && k.level == 0;
     let text = format!("{seed}:L{}:C{},{}", k.level, k.cx, k.cy);
     let opt = Options {
@@ -151,8 +138,8 @@ pub fn chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &Loot) -> (Facility, 
     // differ from the finite floor generator. Rebuild the chunk topology before
     // seams, stairs and fixtures are added so every downstream system sees the
     // same bounded rooms and circulation mask.
-    let region = REGIONS[region_for(seed, k)];
-    f.apply_godot_streamed_layout(&text, &region, cat);
+    let region = region_for(seed, k);
+    f.apply_godot_streamed_layout(&text, region, cat);
     f.has_lift = false;
     f.exit = Cell::new(-10000, -10000);
     // loot (data/loot/route.json): a base battery, then each roll by its chance
@@ -320,7 +307,12 @@ pub fn window(
                 fix.vents = entry.1.vents.iter().map(|c| sh(*c)).collect();
             }
             fix.coins.extend(entry.1.coins.iter().map(|c| sh(*c)));
-            parts.push((entry.0.clone(), ox, oy, region_for(seed, k)));
+            parts.push((
+                entry.0.clone(),
+                ox,
+                oy,
+                regions::region_index(region_for(seed, k)),
+            ));
         }
     }
     if cache.len() > 192 {
@@ -329,7 +321,7 @@ pub fn window(
             k.level == level && (k.cx - center.0).abs() <= 3 && (k.cy - center.1).abs() <= 3
         });
     }
-    let names = REGIONS.iter().map(|s| s.to_string()).collect();
+    let names = regions::NAMES.iter().map(|s| s.to_string()).collect();
     let mid = parts[4].0.start;
     let mut f = Facility::merge(
         parts,

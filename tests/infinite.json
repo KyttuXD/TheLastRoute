@@ -10,7 +10,7 @@
         { "path": "obs.world.size", "value": [135, 135] }, { "path": "objects.has_lift", "value": false },
         { "path": "run.level", "value": 0 }, { "path": "run.depth", "value": 1 }, { "path": "run.chunks_visited", "value": 9 },
         { "path": "run.window_center", "value": [0, 0] }, { "path": "objects.stairs.len", "op": ">=", "value": 1 },
-        { "path": "run.level_seed", "value": "12345:L0" } ] } ]
+        { "path": "run.level_seed", "value": "40490470:L0" } ] } ]
     },
     {
       "name": "stairs down to level -1",
@@ -19,7 +19,7 @@
         { "cmd": "teleport", "to": "stairs_down", "expect": [ { "path": "last.focus.kind", "value": "stairs" } ] },
         { "cmd": "interact", "kind": "STAIRS" },
         { "expect": [
-          { "path": "run.level", "value": -1 }, { "path": "run.depth", "value": 2 }, { "path": "run.level_seed", "value": "12345:L-1" },
+          { "path": "run.level", "value": -1 }, { "path": "run.depth", "value": 2 }, { "path": "run.level_seed", "value": "40490470:L-1" },
           { "any": "events", "where": [ { "path": "type", "value": "floor_changed" }, { "path": "level", "value": -1 } ] },
           { "path": "director.stats.rushes", "value": 0 } ] }
       ]
@@ -37,10 +37,10 @@
       "name": "the streamed population grows with relays",
       "start_run": { "no_target": true },
       "steps": [
-        { "expect": [ { "path": "hunters.len", "value": 2 }, { "path": "hunters.0.id", "value": "nyxie" } ] },
+        { "expect": [ { "path": "hunters.len", "value": 0 } ] },
         { "cmd": "teleport", "to": "relay", "index": 0 },
         { "cmd": "interact", "kind": "RELAY" },
-        { "expect": [ { "path": "run.relays_collected", "value": 1 }, { "path": "hunters.len", "value": 3 }, { "path": "hunters.2.active", "value": true } ] }
+        { "expect": [ { "path": "run.relays_collected", "value": 1 }, { "path": "hunters.len", "value": 1 }, { "path": "hunters.0.active", "value": true } ] }
       ]
     }
   ]

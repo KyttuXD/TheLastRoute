@@ -5325,13 +5325,13 @@
       "base": 0.75,
       "base_from_table": true,
       "hunter_scale": 1.5,
-      "value": 1.125
+      "value": 1.2625
     },
     "woodenTable": {
       "base": 0.75,
       "base_from_table": true,
       "hunter_scale": 1.5,
-      "value": 1.125
+      "value": 1.185
     },
     "bedroomNightstand": {
       "base": 0.71,
@@ -5349,25 +5349,25 @@
       "base": 1.02,
       "base_from_table": true,
       "hunter_scale": 1.5,
-      "value": 1.53
+      "value": 1.6725
     },
     "officeDesk": {
       "base": 0.75,
       "base_from_table": true,
       "hunter_scale": 1.5,
-      "value": 1.125
+      "value": 1.2458
     },
     "officeCornerWorkstation": {
       "base": 0.78,
       "base_from_table": true,
       "hunter_scale": 1.5,
-      "value": 1.17
+      "value": 1.26
     },
     "normalCoffeeTable": {
       "base": 0.49,
       "base_from_table": true,
       "hunter_scale": 1.5,
-      "value": 0.735
+      "value": 0.795
     },
     "gothicNightstand": {
       "base": 0.79,
@@ -5385,19 +5385,19 @@
       "base": 0.75,
       "base_from_table": true,
       "hunter_scale": 1.5,
-      "value": 1.125
+      "value": 1.3591
     },
     "labBench": {
       "base": 0.92,
       "base_from_table": true,
       "hunter_scale": 1.0,
-      "value": 0.92
+      "value": 0.932
     },
     "mixingDesk": {
       "base": 0.82,
       "base_from_table": true,
       "hunter_scale": 1.5,
-      "value": 1.23
+      "value": 1.4063
     }
   },
   "surface_height_rule": "surface_height(parent) = float(SURFACE_HEIGHTS.get(parent, 0.8)) * PropModelCatalog.hunter_scale(parent) where hunter_scale = float(HUNTER_SCALE.get(parent, 1.0)); f64 arithmetic.",

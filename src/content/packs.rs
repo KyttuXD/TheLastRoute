@@ -29,7 +29,7 @@ pub fn search_dirs() -> Vec<PathBuf> {
         }
     }
     dirs.push(PathBuf::from("mods"));
-    if let Some(user) = crate::app::paths::user_dir() {
+    if let Some(user) = crate::shared::paths::user_dir() {
         dirs.push(user.join("mods"));
     }
     let mut seen = vec![];

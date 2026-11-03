@@ -41,7 +41,7 @@ uniform vec3 CamPos;
 uniform vec3 LightPos;
 uniform vec3 LightDir;
 uniform float LightOn;
-uniform float Ambient;
+uniform vec3 AmbientColor;
 uniform vec3 FogColor;
 uniform float FogFar;
 uniform vec4 Lamps[16];
@@ -58,7 +58,7 @@ void main() {
         return;
     }
     vec3 n = normalize(nrm.xyz);
-    vec3 light = vec3(Ambient, Ambient * 0.94, Ambient * 1.08);
+    vec3 light = AmbientColor;
     for (int i = 0; i < 16; i++) {
         float range = Lamps[i].w;
         if (range > 0.0) {
@@ -106,7 +106,7 @@ pub fn load_world_material() -> Material {
                 UniformDesc::new("LightPos", UniformType::Float3),
                 UniformDesc::new("LightDir", UniformType::Float3),
                 UniformDesc::new("LightOn", UniformType::Float1),
-                UniformDesc::new("Ambient", UniformType::Float1),
+                UniformDesc::new("AmbientColor", UniformType::Float3),
                 UniformDesc::new("FogColor", UniformType::Float3),
                 UniformDesc::new("FogFar", UniformType::Float1),
                 UniformDesc::new("Lamps", UniformType::Float4).array(MAX_LAMPS),
@@ -127,12 +127,20 @@ pub struct Lamp {
     pub energy: f32,
 }
 
+/// The global ambient, Godot's RefLook environment (game/look/ref_look.gd make_environment): colour #5a3550 at
+/// energy AMBIENT_ENERGY. Godot has no player setting for it and no per-region or per-level ambient (the night-watch
+/// office moods are their own scenes), so neither does this. Lit surfaces get `AMBIENT_COLOR * AMBIENT_ENERGY` added
+/// before the lamps and the flashlight.
+pub const AMBIENT_COLOR: Vec3 = Vec3::new(0.352941, 0.207843, 0.313725);
+pub const AMBIENT_ENERGY: f32 = 0.035;
+
 pub struct Lighting {
     pub eye: Vec3,
     pub flashlight_pos: Vec3,
     pub flashlight_dir: Vec3,
     pub flashlight_on: bool,
-    pub ambient: f32,
+    /// The ambient light's colour already multiplied by its energy (AMBIENT_COLOR * AMBIENT_ENERGY).
+    pub ambient: Vec3,
     pub fog: Vec3,
     pub fog_far: f32,
 }
@@ -143,7 +151,7 @@ pub fn apply(mat: &Material, l: &Lighting, lamps: &[Lamp]) {
     mat.set_uniform("LightPos", l.flashlight_pos);
     mat.set_uniform("LightDir", l.flashlight_dir);
     mat.set_uniform("LightOn", if l.flashlight_on { 1.0f32 } else { 0.0 });
-    mat.set_uniform("Ambient", l.ambient);
+    mat.set_uniform("AmbientColor", l.ambient);
     mat.set_uniform("FogColor", l.fog);
     mat.set_uniform("FogFar", l.fog_far);
     let mut near: Vec<(f32, &Lamp)> = lamps

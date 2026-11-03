@@ -7,6 +7,7 @@ pub mod fixtures;
 pub mod godot_sort;
 pub mod infinite;
 pub mod rng;
+pub mod route;
 
 pub use facility::{Cell, Facility};
 

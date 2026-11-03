@@ -1,0 +1,131 @@
+# Godot to Rust Parity Report
+
+**Run date:** 2026-11-01
+**Workflow:** godot-rust-parity
+**Godot reference:** `C:\Users\Kyttu\Documents\Projects\LR Game Stuff\LastRoute Godot\KyttusLabApp` (Godot paths below are relative to this, for example `game\player\player_controller_3d.gd`)
+**Rust port:** `C:\Users\Kyttu\Documents\Projects\LR Game Stuff\LastRoute Rust` (Rust paths below are relative to this, for example `src\game\player.rs`)
+
+## Summary
+
+The run compared 364 items between the Godot reference and the Rust port. 262 matched. Of the 102 non-matching items, 25 went through the verification pass, and 18 of those were confirmed by re-reading the source: 11 value mismatches, 4 behaviours absent from Rust (rust_missing), and 3 unit-convention differences that agree only after conversion (unit_differs). The verification pass was capped at 25 of the 102 non-matching items, so 77 non-matching items were not checked, and the harness reports 339 of 364 items as unverified. Nothing was built, run or played; every finding comes from static reading. The confirmed items fall in two domains: mouse-camera (6 items) and movement-meters (12 items). The hunters-difficulty, route-generation and items-audio domains have no confirmed items in this run; their notes are in the gaps section.
+
+Status legend: **mismatch** means both sides have a value and the values differ. **unit_differs** means the values agree only after a unit conversion. **rust_missing** means Godot has the behaviour and the Rust port does not implement it.
+
+## Confirmed mismatches
+
+### mouse-camera (6)
+
+| # | Name | Godot value (file:line) | Rust value (file:line) | Status | Explanation |
+|---|------|------------------------|------------------------|--------|-------------|
+| 1 | Vertical turn sign (mouse) | `game\player\player_controller_3d.gd:1116` `_pitch = clampf(_pitch - event.relative.y * sens, -1.4, 1.4)`. Mouse down (relative.y > 0) lowers pitch, so the view looks down. | `src\app\mod.rs:113-120` (primary and fallback paths agree; fallback at line 118). `src\game\player.rs:143` `pitch = (pitch - d.y).clamp(...)`. Mouse down gives look.y < 0, which raises pitch. Positive pitch looks up (`player.rs:112`). | mismatch | Mouse vertical sign is inverted relative to Godot. Keyboard look is consistent with Godot. The test at `app\mod.rs:920-923` asserts only primary == fallback, so it does not pin the sign to Godot. The finding rests on reading macroquad 0.4.16 source (`input.rs:75`, `208-211`, in the cargo registry, not a project file). Not run; verify in game. |
+| 2 | Keyboard look sensitivity scaling | `game\player\player_controller_3d.gd:1071-1074` `sensitivity_scale = mouse_sensitivity / 0.0075` multiplies the 2.8 rad/s rate. Range 0.187 rad/s at minimum sensitivity to 4.48 rad/s at maximum. | `src\app\mod.rs:187-199` (`k = 2.8 x frame time`, no sensitivity term). `src\config\mod.rs:32`. `read_controls` takes `sens` but uses it only for the mouse term (`mod.rs:180`). | mismatch | Units rad/s. Equal only at the default sensitivity 0.0075. Rust ignores the slider for keyboard look. |
+| 3 | Keyboard look diagonal rate | `game\player\player_controller_3d.gd:1066, 1083` `Input.get_vector` caps the combined length at 1, so a diagonal gives 1.98 rad/s per axis (2.8 rad/s combined). | `src\app\mod.rs:188-199`: each axis adds its step independently. Diagonal gives 2.8 rad/s per axis, 3.96 rad/s combined. | mismatch | Rust diagonal is about 41% faster. The Godot side relies on Godot's documented `Input.get_vector` behaviour, not repo source, and the engine source is not in the workspace. |
+| 4 | Pitch clamp | `game\player\player_controller_3d.gd:1074, 1093, 1116`: clamp at ±1.4 rad (about ±80.2 deg). | `src\game\player.rs:143`: clamp at ±1.45 rad (about ±83.1 deg). `src\headless\protocol.rs:817, 895, 901, 907` also use 1.45. | mismatch | Rust allows 0.05 rad (2.9 deg) more in each direction. Godot clamps before `grab_pitch` is added (`grab_pitch` is always 0 in the codebase). Godot's network state restore (`player_controller_3d.gd:3234-3235`) uses ±85 deg (about ±1.4835 rad), a third value that the original claim did not cover. `protocol.rs:895` is an atan2 aim clamp, not a camera clamp. |
+| 5 | Field of view maximum | `game\autoload\settings.gd:38` `MAX_FIELD_OF_VIEW = 105.0` deg, enforced at `:407` and `:716-717`. `tests\validate_layout.gd:554-555` asserts the slider max equals this value. | `src\config\mod.rs:29` `FOV_MAX_DEG = 110.0` deg. `src\app\settings.rs:83` clamps the loaded value to [60, 110]. | mismatch | Minimum 60 deg and default 78 deg agree. The Rust doc comment (`config\mod.rs:27`) cites the native loader `FUN_14008a590`, and `MECHANICS.md:92` records 60..110. The native binary was not checked. The owner must decide which value is the reference; the Godot 105 is locked by a validator, so it looks intentional. |
+| 6 | Crouch eye height (default standing) | `game\player\player_controller_3d.gd:41, 46-47, 1001-1002`: `min(standing x 0.69, 1.15236 - 0.08)` = 1.0724 m. The clamp is active at the fallback standing height 1.7072 m. | `src\game\player.rs:99-101` and `src\config\mod.rs:16-17`: `1.7072 x 0.69` = 1.1780 m. No clamp. | mismatch | Rust crouched eye is about 0.106 m higher. The Godot clamp is active for standing heights of about 1.55 to 1.90 m. The Godot runtime standing height comes from model eye attachments (`:946-959`), which were not measured, so the true value is unverified. |
+
+### movement-meters (12)
+
+| # | Name | Godot value (file:line) | Rust value (file:line) | Status | Explanation |
+|---|------|------------------------|------------------------|--------|-------------|
+| 7 | Walk speed | `game\config\game_config.gd:10` `PLAYER_WALK_SPEED = 64.0` px/s, used at `player_controller_3d.gd:1871, 1888`, converted by `/ TILE_SIZE` at `:1951` = 4.0 m/s. | `src\config\mod.rs:6-7` `64 / 16` = 4.0 m/s. `src\config\difficulty.rs:103` standard 1.0. `src\game\player.rs:234`. | unit_differs | Both give 4.0 m/s for standard, dry, unfrozen walking. Godot stores px/s and Rust stores m/s, so they agree only after the px-to-m conversion (see below). The wading speed scale (Godot 0.45) is absent in Rust; see row 11. |
+| 8 | Sprint speed | `game\config\game_config.gd:11` `PLAYER_SPRINT_SPEED = 100.0` px/s, used at `player_controller_3d.gd:1883`, converted at `:1951` = 6.25 m/s. | `src\config\mod.rs:8` `100 / 16` = 6.25 m/s. `src\game\player.rs:224-228`. | unit_differs | Same conversion as walk. Godot's nightmare sprint multiplier (0.96, `game_config.gd:50-52`) has no Rust counterpart because Rust has no nightmare difficulty. |
+| 9 | Crouch speed | `game\config\game_config.gd:12` `PLAYER_CROUCH_SPEED = 36.0` px/s, used at `player_controller_3d.gd:1880`, converted at `:1951` = 2.25 m/s. | `src\config\mod.rs:9` `36 / 16` = 2.25 m/s. `src\game\player.rs:222-224`. | unit_differs | Same conversion. Crouch multipliers match on relaxed 1.06, standard 1.0 and hard 0.97. Godot's nightmare crouch multiplier (0.94) has no Rust counterpart. |
+| 10 | Sprint stamina drain | `game\config\game_config.gd:66-67` 32.0 points/s; `:77` stim scale 0.5; `:94` troll scale 1.6. `player_controller_3d.gd:2391-2393`: no temperature term. | `src\config\mod.rs:37` 32.0. `src\game\player.rs:252-260`: stim 0.5, then multiplied by `meters.drain_scale()` (1.35 when overheating, `src\game\meters.rs:58-68`). | mismatch | Rust applies the overheat multiplier to sprint stamina. Godot applies `drain_scale()` only to the lamp (`player_controller_3d.gd:2414`). At overheat Rust sprints at 43.2 points/s; Godot at 32.0. Godot's troll multiplier (1.6) has no Rust counterpart. Base rate and stim halving match. |
+| 11 | Wading stamina drain | `game\player\player_controller_3d.gd:375-376` `WADE_TIRING_DEPTH = 0.6` m; `WADE_STAMINA_DRAIN = 6.0` points/s. Applied at `:1247-1248` while moving and not in admin god mode. | Not implemented. No wading or flood-depth model in `src\game\player.rs` or `src\config\mod.rs`. | rust_missing | Rust has no flood-wading model. The wading speed scale `WADE_SPEED_SCALE = 0.45` (`player_controller_3d.gd:368`, applied at `:1892-1893`) is also absent in Rust. |
+| 12 | Troll-mode stamina drain scale | `game\config\game_config.gd:94` `TROLL_STAMINA_DRAIN_SCALE = 1.6`. Applied at `player_controller_3d.gd:2391-2392`. `troll_active` declared at `:228`. | Not implemented. No troll state in `src\game\player.rs`. | rust_missing | Unitless multiplier. Troll handling exists only in server moderation code (`src\bin\lr_server\moderation.rs`), not in client movement. |
+| 13 | Battery use threshold (lamp already full) | `game\player\player_controller_3d.gd:3368` `if lamp_charge >= MAX_LAMP_CHARGE - .01` = 99.99 lamp points. Silent refusal. | `src\game\items.rs:210` `if self.p.lamp >= MAX_LAMP_CHARGE` = 100.0 (`src\config\mod.rs:49`). Shows "FLASHLIGHT ALREADY FULL". | mismatch | Divergent band is lamp in [99.99, 100). Godot refuses silently; Rust consumes a battery and recharges by less than 0.01. Adjacent, not in the claim: Godot rejects a non-battery selected item (`:3370-3373`) and Rust does not check item type before consuming. |
+| 14 | Crouch capsule height | `game\player\player_controller_3d.gd:41` `CROUCH_COLLISION_HEIGHT = 1.08 x 1.067` = 1.1524 m. Capsule snap at `:986-991`. Stand-up headroom query at `:962-978`. | Not implemented. `src\game\player.rs` has a 2D circle footprint only (`PLAYER_RADIUS = 0.24` m, `src\config\mod.rs:12`). | rust_missing | Rust crouch changes speed and eye height only. Adjacent: `src\config\mod.rs:14` `PLAYER_HEIGHT = 1.90` is defined but unused, and it does not match the Godot standing height of 1.8139 m. |
+| 15 | Camera bob phase rate, walk | `game\player\player_controller_3d.gd:1007-1009, 1989-1991`; `game\autoload\sound.gd:411, 414-415, 425` (stride 1.34 m, gap clamped 0.12 to 0.9 s). Walk = PI / 1.34 = 2.344 rad/m at about 1.49 m/s and above. Constant 3.49 rad/s in the clamped band. Fallback 8.5 rad/s below 0.3 m/s (`:1008`). | `src\game\player.rs:300-302` `bob_phase += dt x ground x 1.9` = 1.9 rad/m. Phase held below 0.3 m/s. | mismatch | Rust rate is 0.81 times Godot's at walk. Rust has no gap clamp and no fallback rate. The vertical bob form `sin(2 phase)` matches (`player.rs:130`). |
+| 16 | Camera bob phase rate, sprint | `game\player\player_controller_3d.gd:1007-1009`; `game\autoload\sound.gd:411` (stride 1.28 m). PI / 1.28 = 2.454 rad/m. Fallback 12.0 rad/s (`:1008`). | `src\game\player.rs:300-302` 1.9 rad/m, same for all gaits. | mismatch | At 6.25 m/s Godot is about 15.3 rad/s and Rust about 11.9 rad/s. Godot keeps advancing at the fallback rate below 0.3 m/s; Rust freezes the phase. |
+| 17 | Camera bob phase rate, crouch | `game\player\player_controller_3d.gd:1007-1009`; `game\autoload\sound.gd:411` (stride 1.15 m). PI / 1.15 = 2.732 rad/m. Fallback 6.5 rad/s (`:1008`). | `src\game\player.rs:300-302` 1.9 rad/m. | mismatch | Ratio about 1.44. The vent-crawl call (`player_controller_3d.gd:3854`) passes no step rate, so Godot uses the fallback there. |
+| 18 | Camera bob lateral sway | `game\player\player_controller_3d.gd:1014` `target_x = cos(phase) x amplitude x 0.42` (peaks: walk 0.01075 m, sprint 0.01703 m, crouch 0.00538 m). Eased at `:1019-1020`. | `src\game\player.rs:121-139` `eye()` returns a vertical offset only. | rust_missing | Rust camera bob is vertical only. |
+
+## unit_differs items and the conversion that makes them agree
+
+All three are speed constants. Godot stores them in 2D pixels per second; Rust stores them in metres per second. Godot converts at `game\player\player_controller_3d.gd:1951` (`speed_mps = movement_speed x meters.movement_scale() / TILE_SIZE`) with `TILE_SIZE = 16` px per tile (`game_config.gd:8`).
+
+- **Walk speed:** 64 px/s / 16 = **4.0 m/s**. Rust stores this directly at `src\config\mod.rs:7`.
+- **Sprint speed:** 100 px/s / 16 = **6.25 m/s**. Rust stores this at `src\config\mod.rs:8`.
+- **Crouch speed:** 36 px/s / 16 = **2.25 m/s**. Rust stores this at `src\config\mod.rs:9`.
+
+Once converted, the values agree for standard difficulty with admin speed scale 1.0. The conversion is the only way they agree; the stored units differ.
+
+## Gaps and unverified items
+
+### Counts and method
+- 364 items total: 262 matched, 102 non-matching. The run data does not list the 262 matches individually, so they are reported as counted by the harness.
+- 25 of the 102 non-matching items went through verification. 18 were confirmed and listed above. The other 7 verified items are not in the confirmed list, and the run data does not say what became of them.
+- 77 non-matching items were not verified. The harness reports 339 of 364 items as unverified.
+- Static reading only. No builds, tests, playtests or in-game runs. The mouse vertical sign (item 1) in particular needs an in-game check.
+
+### mouse-camera
+- Godot viewport and stretch settings (`project.godot`, display settings) were not read, so "relative mouse motion is physical pixels" is taken from the task premise.
+- The Godot `FirstPersonCamera` `.tscn` defaults (near, far, keep_aspect) were not read; keep_aspect is assumed at the engine default (KEEP_HEIGHT).
+- Godot standing eye height depends on the eye attachments in the player GLB (`L-Eye-Attachment`, `R-Eye-Attachment`), which were not read.
+- `Input.get_vector` normalisation of digital diagonal input is engine behaviour, taken from Godot's documented API.
+- Not compared: bob rate, the Rust settings-slider step (Godot uses 0.0001), the hunter, headless and bot pitch clamps (`src\headless\bot.rs:860`), and rest, sit and lay pitch and yaw limits (`player_controller_3d.gd:396-399`).
+
+### movement-meters
+- The runtime Godot standing camera height (from model eye attachments, `player_controller_3d.gd:946-959`) was not read. Only the 1.7072 m fallback was compared.
+- The Godot runner collision capsule radius (0.24 m) comes from a code comment at `player_controller_3d.gd:39` only; the scene was not located.
+- Difficulty `stamina_drain` (13.5 standard, `game_config.gd:35`, `difficulty.rs:114`) is used only by hunter stamina on both sides and was not treated as a player value.
+- Only the standard difficulty profile was compared for speed and drain. Relaxed, hard and nightmare were not checked, apart from the multipliers noted above. Rust has no nightmare profile; `difficulty.rs` lists only Relaxed, Standard and Hard.
+- Rust has no capsule, headroom check or wading model, so the crouch hitbox, stand-up blocking, wading slowdown and troll mode could not be compared as values; they are listed as rust_missing.
+- Adjacent differences not in the claims: Godot's ground speed is `min(real velocity, speed x 1.5)` (`player_controller_3d.gd:1987`), while Rust uses raw displacement; Godot's admin speed scale (`:1891`) and Rust's `speed_scale` (`player.rs:236`) were not checked for identical wiring; Godot sprint in floodwater is slowed and Rust is not.
+
+### hunters-difficulty (no confirmed items in this run)
+- Nightmare is absent in Rust (`difficulty.rs` has Relaxed, Standard, Hard only).
+- Rust lacks Godot's day-mode sight, LightField exposure sight, troll speed, hard-ability speed, patrol anchor, spawn-distance rule and NORMAL_HUNTER_EXTREME scale.
+- Latent divergence: Rust's non-taser-immune branch uses `escape_stun` (`src\game\items.rs:133`) where Godot uses `taser_stun`. No hunter in `data/hunters` currently has `taser_immune` false, so it has no effect on current content.
+- Godot `game\hunters\gimmicks\ceryth_gimmick.gd` is missing from the tree (only the `.uid` file exists), so the Ceryth retreat speed could not be confirmed.
+- Not compared: hide profile values, hunter seats, naps, peek, inspect and level roam, hard-ability frequencies, emote values, streamed hunter population, escape and struggle constants, and the Nyxie and Solyth spawn rules.
+
+### route-generation (no confirmed items in this run)
+- Path correction: the task named `game/infinite_route/streamed_route_generator.gd`, but the file is at `KyttusLabApp\game\world\generation\streamed_route_generator.gd`. `game\infinite_route\` holds only tests.
+- `stair_links()` returns `[]` (`streamed_route_generator.gd:1399-1400`), so the stair bay constants are dormant. Live Godot stairs come from `stairwells.gd` (levels 0 to -1 only).
+- Nightmare is not ported in Rust (`difficulty.rs:2-3`).
+- Rust chunk RNG stream tags differ from Godot's, so the same seed will not give the same layout chunk for chunk, even where constants match.
+- Godot's header comments disagree with its code in places (`streamed_route_generator.gd:14-16` versus `stairwells.gd:51`). The code was treated as authoritative.
+- Not located or not read: the infinite-route coin source, `_prop_hiding_fixtures` (`:5307`), vent grate placement, `LootTables.table_for(region)` (`:5397`), SealRules beyond two constants, and the StreamedFacilityView3D recentring rule.
+- Stair-flight comparison assumes 1 cell = 1 m, the `mechanics.json` convention.
+
+### items-audio (no confirmed items in this run)
+- Godot has no `game\items` directory. Item definitions are in `player_controller_3d.gd:139-176` and `game_config.gd`.
+- Rust loads only `route.json` from the loot tables (`src\content\mod.rs:61-63`), and only `route.json` and `sewer.json` exist in `data/loot`.
+- Loot roll ordering and RNG streams differ by design, so seed-level loot parity was not compared; only table values were.
+- Godot tests (`tests\validate_audio.gd`, `tests\validate_data_loot.gd`) were not run.
+- Tool audio for taser, crowbar and axe swings was not compared line by line; only the shared footstep, heartbeat and breath cues were checked in full.
+- Breath trigger timing differs (`hunter_view_3d.gd:1537-1560` versus `src\...\hunting.rs:284-293`); values were compared, trigger timing was not verified at runtime.
+- The stim crash heartbeat and the hunter step clock were not fully compared.
+
+### Citation corrections found during verification
+- Keyboard look block in Rust is `src\app\mod.rs:187-199`, not 189-201.
+- The crouch fallback bob rate is at `player_controller_3d.gd:1008`; line 1007 sets the rate formula.
+- Mouse sign Rust lines: `src\app\mod.rs:113-120` covers both paths. The claim cited 116-118.
+- The "input.rs" references for the mouse sign are macroquad 0.4.16 in the cargo registry, not project files.
+- `src\headless\protocol.rs:895` (atan2 aim clamp, 1.45 rad) was missing from the original inventory.
+
+### Out of scope for this run
+- The user note relayed with this workflow asks that the folder `C:\Users\Kyttu\Documents\Projects\Docs` be recorded for future reference. It documents multiple things. It was not opened in this run.
+
+## Live level 0 (Infinite route)
+
+- Level 0 of the Infinite route is built from the Godot layout (`src/world/route/live.rs`, over `route::layout::chunk_layout`). The walls, rooms, props, relays, batteries, pickups (tools, aid, backpacks), hiding spots, vents and the first music box come from the layout.
+- `KYTTU_LEGACY_CHUNKS=1` puts the old level-0 builder back (`infinite::legacy_chunk`) for comparison. Unset or any other value uses the layout. Read once per process.
+- Levels -1, -2 and -3 always use `infinite::legacy_chunk`.
+- Coins come from the layout (`Fixtures.coins`). Each claimed coin is worth 2 (Godot `COIN_PICKUP_VALUE`, recounted in `_sync_stream_progress`).
+- Claims are keyed by Godot entity id (`x:0:z:PICKUP:KIND:n`), so a claim survives the window moving away and back. Levels -1 to -3 key by absolute cell.
+- Not in the live floor yet: lockpicks, revive kits and backpacks (the `Item` enum has no variant for them, so `floor_pickups` leaves them out). Backpacks would also need the inventory to grow.
+- Not taken from the layout on level 0 yet: the old centre heater, the old room light switches, the old vent ring, and the layout's stairwells. The level 0 to -1 flight stays on the shared Rust rule so the -1 builder's upper links still meet a landing.
+- Intended difference: the live level 0 carves a stair flight from level 0 down to level -1 into the grid (`src/world/route/live.rs` `from_layout` and `carve_flight`). Godot has no level-0 stairs, so the walls differ from the goldens only inside those carve rectangles (146 to 263 wall cells per golden). Kept by decision (KT, 2026-11-03).
+- Safe rooms on level 0 (`src/world/route/live.rs` `safe_room`, `src/shared/safe_room.rs`, `src/game/endless.rs` `safe_room_step`). The middle chunk's room (the runner's) is the only one the runner's rules read: standing within 3.25 cells of its centre while it is intact activates its checkpoint; hunters within 18 cells are sent to investigate the centre; hunters within 4.25 cells batter it while the runner is inside, at 1.08 x 7 points a second per hunter (carried fractionally between steps); a crowbar (12) or rescue axe (18) used within 4.25 cells repairs it, breached or not. Integrity is kept per room for the run, so it survives the window moving away and back. A breached room is no safe zone (`Facility.safe_zone` carries the intact middle room's centre, so the existing in-safe-zone, hunter flag and pad read it). Not yet: the save-point marks on the map, the per-room pads and breached visuals for rooms other than the runner's, the respawn at the active checkpoint (a death ends the run here), the tool hook for repair (`repair_safe_room` has no caller yet), saving the room state, and any multiplayer sync. Levels -1 to -3 have no safe rooms in the old builder (Godot has them there; stages 3d and 3e).
+- Level 0 has no breakable props, sluice gates or valve wheels: those are sewer features (levels -1 and -2) and the Inferno seals (-3). No level-0 golden has one.
+- Map discovery on level 0 (`src/game/endless.rs`, `discover_map`; Godot `_discover_loaded_chunks` and `_update_map_discovery`, infinite_route_test.gd 1516-1711). Every chunk the window loads is on the map at once (its walls and floor). Relays and batteries are drawn once their marker is discovered: the runner's room discovers the markers inside it, and any marker within `MAP_DISCOVERY_NEARBY_RADIUS` (4.5 cells) of the runner is discovered too. Discovered rooms and markers persist for the run, keyed by layout id. Levels -1 to -3 keep the line-of-sight reveal.
+- Hunters on level 0 (`src/game/endless.rs` `residency`, `src/hunters/residency.rs`, `src/hunters/navigation.rs`; Godot `_refresh_hunter_stream_work` and `StreamedHunterNavigation`, infinite_route_test.gd 2768). The lineup is the layout's `hunter_spawns` of the active chunks (the runner's 3x3 ring, and the ring of each awake hunter within 3 chunks), admitted nearest first up to the relay population (`population`). A new hunter is created dormant at its spawn cell with its identity. A duplicate identity is replaced from the A-Z and Void roster, and the office-void roll applies. Nyxie and Solyth are not added by default on level 0 (the streamed lineup does not have them; they can still come through the duplicate-identity replacement). A wanted hunter in the runner's 3x3 window is loaded and wakes at the runner on its first load. The others are stored at their absolute cells and resume where they stood. A prop's footprint is its collider (`collider_size`, else `blocker_size`), and a prop no taller than 0.25 is floor.
+- Hunter gaps on level 0: only the 3x3 window is simulated, so a wanted hunter in an outer ring (Godot `HUNTER_RESIDENCY_CHUNK_RADIUS`, 3 chunks) is stored and frozen until the window reaches it. The director is re-created when the set of loaded hunters changes, because its ids are indices into the list. No hunter on another level is in a level-0 window, so the vertical rings (`HUNTER_VERTICAL_STREAM_RADIUS`) add nothing yet. The hunters' grid is `Facility::hunter_open` (a capsule test per cell), not Godot's cell solid map. Not ported: the day and public-route populations, the save repair, the Gray Void anti-idle spawn, admin removals, and the collider's raised base (`collider_y0`), which the Rust prop does not carry.
+- Map discovery gaps on level 0: the full map draws only the live 3x3 window, not every chunk visited (Godot keeps all discovered chunks). Solid props are discovered but the Rust map does not draw props. Hiding spots and vents have no ids in the Rust lists, so they are not marked. Discovery is not saved with the run (Godot saves it in the route save). The headless `rooms_discovered` (protocol.rs) still counts rooms by centre cell, which is every room in the window now.
+
+## How to re-run
+
+Run the workflow `godot-rust-parity` from the project folder (`C:\Users\Kyttu\Documents\Projects\LR Game Stuff\LastRoute Rust`).

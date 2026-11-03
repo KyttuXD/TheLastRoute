@@ -7,8 +7,8 @@ cd "$(dirname "$0")/../.."
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 cargo build --release --target aarch64-apple-darwin
 cargo build --release --target x86_64-apple-darwin
-cargo build --manifest-path server/Cargo.toml --release --target aarch64-apple-darwin
-cargo build --manifest-path server/Cargo.toml --release --target x86_64-apple-darwin
+cargo build --release --bin lr_server --target aarch64-apple-darwin
+cargo build --release --bin lr_server --target x86_64-apple-darwin
 
 APP="dist/Kyttu's Lab.app"
 rm -rf "$APP"
@@ -18,8 +18,8 @@ lipo -create \
     target/x86_64-apple-darwin/release/last_route \
     -output "$APP/Contents/MacOS/last_route"
 lipo -create \
-    server/target/aarch64-apple-darwin/release/lr_server \
-    server/target/x86_64-apple-darwin/release/lr_server \
+    target/aarch64-apple-darwin/release/lr_server \
+    target/x86_64-apple-darwin/release/lr_server \
     -output "$APP/Contents/MacOS/lr_server"
 cp packaging/macos/Info.plist "$APP/Contents/Info.plist"
 

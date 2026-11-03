@@ -20,6 +20,20 @@ pub const CAMERA_BOB_SPRINT: f32 = 0.038 * PLAYER_MODEL_SCALE;
 pub const CAMERA_BOB_CROUCH: f32 = 0.012 * PLAYER_MODEL_SCALE;
 pub const FIELD_OF_VIEW_DEG: f32 = 78.0;
 pub const MOUSE_SENSITIVITY: f32 = 0.0075;
+/// Mouse look is scaled so one physical mouse pixel turns the same as in the Godot original.
+/// Godot's `relative` is in viewport pixels: physical pixels divided by the window's integer scale
+/// k (480x270 base, canvas_items/expand, DPI-aware on Windows), so it turns `sens / k` radians per
+/// physical pixel. This window is not DPI-aware (`high_dpi: false` in main.rs), so Windows reports
+/// its mouse motion in logical pixels, and one physical pixel is `1 / display scale` logical pixels.
+/// Matching the two gives `display scale / k`.
+/// Measured on the target machine: a 2256x1504 panel at 175 % scale, Godot windowed (the default,
+/// `fullscreen=false` in its saved settings), so the window is 1440x810 physical, k = 3.
+/// Other machines need their own value (a 100 % display at k = 3 would use 1 / 3). Check with one
+/// identical physical swipe in both builds at the same sensitivity: multiply by Godot's turn over
+/// this build's turn.
+pub const MOUSE_LOOK_DISPLAY_SCALE: f32 = 1.75;
+pub const MOUSE_LOOK_GODOT_WINDOW_SCALE: f32 = 3.0;
+pub const MOUSE_LOOK_MULTIPLIER: f32 = MOUSE_LOOK_DISPLAY_SCALE / MOUSE_LOOK_GODOT_WINDOW_SCALE;
 /// Bounds used by the native settings loader (FUN_14008a590).
 pub const FOV_MIN_DEG: f32 = 60.0;
 pub const FOV_MAX_DEG: f32 = 110.0;
@@ -102,8 +116,6 @@ pub const CAMP_COOLDOWN: f32 = 30.0;
 pub const CAMP_LEAVE_DISTANCE: f32 = 12.0;
 /// Hunter model height (2.58 m: "the runner is 1.9 m beside a 2.58 m hunter", game_config.gd).
 pub const HUNTER_HEIGHT: f32 = 2.58;
-/// Shared authored-prop scale used by Godot's PropModelCatalog (including arcade cabinets).
-pub const PROP_MODEL_SCALE: f32 = 1.5;
 
 // -- capture / escape -------------------------------------------------------------------------
 // Native capture path: 0x14001dc8a string reference and 0x14008a600 update.

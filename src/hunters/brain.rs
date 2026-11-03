@@ -723,3 +723,107 @@ impl Brain {
         self.pos
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Difficulty;
+    use crate::world::facility::Options;
+
+    fn aki() -> HunterDef {
+        let v: serde_json::Value =
+            serde_json::from_str(include_str!("../../data/hunters/aki.json")).unwrap();
+        crate::content::hunters::parse(&v, None, "").unwrap()
+    }
+
+    /// data/hunters/aki.json: speed 0.82 (PATROL), chase 3.55 (CHASE), prog 0.2, the same numbers as
+    /// game/hunters/ai/hunter_brain.gd _current_speed at standard difficulty, depth 1, no relays.
+    #[test]
+    fn aki_chase_and_patrol_speed_match_the_godot_roster() {
+        let prof = Difficulty::Standard.profile();
+        let mut b = Brain::new(aki(), (0.0, 0.0), "PIN", Difficulty::Standard);
+        b.state = State::Chase;
+        assert!((b.current_speed(1, 0, &prof, 1.0) - 3.55).abs() < 1e-5);
+        b.state = State::Wander;
+        assert!((b.current_speed(1, 0, &prof, 1.0) - 0.82).abs() < 1e-5);
+    }
+
+    /// Walking a route in chase (no clear line to the runner) moves her at exactly her chase speed, and a
+    /// clear straight line with her in sight dashes at HUNTER_VISIBLE_CHASE_SPEED_SCALE (1.20) times it.
+    #[test]
+    fn aki_moves_at_her_chase_speed_and_dashes_on_a_clear_sight_line() {
+        let prof = Difficulty::Standard.profile();
+        let cat = crate::world::catalog::Catalog::load();
+        let fac = Facility::generate("PROBE-1", &Options::default(), &cat);
+        let cells = fac.floor_cells();
+        let relays_taken: Vec<bool> = vec![];
+        let batteries_taken: Vec<bool> = vec![];
+        let hiding_disabled: Vec<bool> = vec![];
+        let ctx = Ctx {
+            fac: &fac,
+            relays_taken: &relays_taken,
+            batteries_taken: &batteries_taken,
+            hiding_disabled: &hiding_disabled,
+            vents: &[],
+            heater_on: false,
+            heater_thawed: true,
+            diff: Difficulty::Standard,
+            music_box_left: 0.0,
+            exposure: 0.0,
+        };
+        let dt = 1.0 / 60.0;
+
+        // a long route, the runner parked at its far end out of sight
+        let mut route: Option<(Cell, Cell)> = None;
+        'search: for a in cells.iter().step_by(37).take(60) {
+            for b in cells.iter().step_by(53).take(60) {
+                if fac.find_path(*a, *b).len() >= 22 {
+                    route = Some((*a, *b));
+                    break 'search;
+                }
+            }
+        }
+        let (from, to) = route.expect("a route long enough to measure");
+        let mut walker = Brain::new(aki(), from.center(), "PIN", Difficulty::Standard);
+        walker.active = true;
+        walker.chase(to.center());
+        let far = Target { pos: to.center(), facing: (1.0, 0.0), ..Default::default() };
+        let mut walked = 0.0f32;
+        let mut prev = walker.pos;
+        for _ in 0..60 {
+            walker.update(dt, &ctx, &far, 1, 0, &prof);
+            walked += dist(prev, walker.pos);
+            prev = walker.pos;
+        }
+        // never faster than her chase speed; the turns of the route cost a little (each waypoint stops the
+        // frame's travel short, as hunter_brain.gd _pursue does)
+        assert!(walked <= 3.56 && walked >= 3.4, "walked {walked} cells in one second");
+
+        // a straight run of clear floor with the runner 3.8 cells ahead, in plain sight
+        let mut line: Option<Cell> = None;
+        for c in cells.iter() {
+            let (sx, sy) = (c.x as f32 + 0.5, c.y as f32 + 0.5);
+            let clear = (0..=38).all(|i| fac.body_fits(sx + i as f32 * 0.1, sy, HUNTER_RADIUS));
+            if clear && fac.has_line_of_sight((sx, sy), (sx + 3.8, sy)) {
+                line = Some(*c);
+                break;
+            }
+        }
+        let c = line.expect("a clear straight line");
+        let start = (c.x as f32 + 0.5, c.y as f32 + 0.5);
+        let runner = (start.0 + 3.8, start.1);
+        let mut dasher = Brain::new(aki(), start, "PIN", Difficulty::Standard);
+        dasher.active = true;
+        dasher.chase(runner);
+        let seen = Target { pos: runner, facing: (-1.0, 0.0), ..Default::default() };
+        let mut dashed = 0.0f32;
+        let mut prev = dasher.pos;
+        for _ in 0..18 {
+            dasher.update(dt, &ctx, &seen, 1, 0, &prof);
+            dashed += dist(prev, dasher.pos);
+            prev = dasher.pos;
+        }
+        assert!(dasher.direct_visible, "she should see the runner on a clear line");
+        assert!((dashed / (18.0 * dt) - 4.26).abs() < 0.02, "dashed {dashed} cells in 0.3 s");
+    }
+}

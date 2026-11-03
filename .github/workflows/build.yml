@@ -10,14 +10,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cargo build --release
-      - run: cargo build --manifest-path server/Cargo.toml --release
-      - run: cargo run --release -- --self-test self-test.json
+      - run: cargo build --release --bin lr_server
+      - run: cargo run --release --bin last_route -- --self-test self-test.json
       - uses: actions/upload-artifact@v4
         with:
           name: last_route-windows
           path: |
             target/release/last_route.exe
-            server/target/release/lr_server.exe
+            target/release/lr_server.exe
 
   linux:
     runs-on: ubuntu-22.04
@@ -29,10 +29,22 @@ jobs:
         with: { name: last_route-linux-x86_64, path: dist/last-route-linux-x86_64.tar.gz }
 
   macos:
-    runs-on: macos-14
+    # macos-14 was retired from GitHub Actions on 2026-11-02; macos-15 is the Apple Silicon image.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - run: sh packaging/macos/build_app.sh
       - run: cd dist && zip -qry last_route-macos-universal.zip "Kyttu's Lab.app"
       - uses: actions/upload-artifact@v4
         with: { name: last_route-macos-universal, path: dist/last_route-macos-universal.zip }
+
+  # Intel Mac build for kt-mba. build_app.sh always builds both slices, so the zip holds an
+  # x86_64 binary (plus arm64); it runs on Intel. macos-15-intel is the Intel (x64) image.
+  macos-intel:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh packaging/macos/build_app.sh
+      - run: cd dist && zip -qry last_route-macos-x86_64.zip "Kyttu's Lab.app"
+      - uses: actions/upload-artifact@v4
+        with: { name: last_route-macos-x86_64, path: dist/last_route-macos-x86_64.zip }

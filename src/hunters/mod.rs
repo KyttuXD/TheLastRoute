@@ -3,6 +3,8 @@
 pub mod brain;
 pub mod director;
 pub mod gimmicks;
+pub mod navigation;
+pub mod residency;
 
 use crate::config::Difficulty;
 use crate::content::Content;
