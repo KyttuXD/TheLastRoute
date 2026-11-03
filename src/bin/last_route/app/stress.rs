@@ -46,6 +46,12 @@ const FLY_SPEED: f32 = 4.0;
 const LEG_SECONDS: f32 = 20.0;
 /// The size of each turn, to the left or the right by the seed's sign (`turn_sign`).
 const TURN_DEGREES: f32 = 110.0;
+/// A walking runner that moves less than STUCK_METRES in STUCK_SECONDS is against a wall: it turns
+/// AVOID_DEGREES over AVOID_SECONDS, away from the wall, and goes on.
+const STUCK_METRES: f32 = 0.5;
+const STUCK_SECONDS: f32 = 1.5;
+const AVOID_DEGREES: f32 = 150.0;
+const AVOID_SECONDS: f32 = 1.0;
 /// Seconds over which a turn swings round, from its leg boundary.
 const TURN_SECONDS: f32 = 0.25;
 /// The NPCs the npcs scenario keeps near the runner, and their smartness (the admin's default).
@@ -151,6 +157,10 @@ pub struct Stress {
     hunters: usize,
     depth: i32,
     travel: Travel,
+    /// Where the walking runner was when it last moved on, and when (seconds into the run).
+    progress: Option<((f32, f32), f32)>,
+    /// While set, the runner turns away from a wall: the time the turn ends and its turn rate (rad per second).
+    avoid: Option<(f32, f32)>,
 }
 
 /// The frames of one second: their times and the sum of each section's samples.
@@ -214,6 +224,8 @@ impl Stress {
             hunters: 0,
             depth: 0,
             travel: Travel::default(),
+            progress: None,
+            avoid: None,
         })
     }
 
@@ -256,6 +268,32 @@ impl Stress {
             look: Vec2::new(turn_look(t, dt), 0.0),
             ..Default::default()
         };
+        // a walking runner that stops moving turns away from the wall for a moment, then goes on
+        if self.scenario.mode(t) != Scenario::Fly {
+            let o = g.window_origin();
+            let here = (g.p.pos.0 + o.0 as f32, g.p.pos.1 + o.1 as f32);
+            if let Some((turn_end, rate)) = self.avoid {
+                if t < turn_end {
+                    c.look.x = rate * dt;
+                    return c;
+                }
+                self.avoid = None;
+                self.progress = Some((here, t));
+            }
+            match self.progress {
+                Some((at, _)) if crate::game::pdist(at, here) >= STUCK_METRES => {
+                    self.progress = Some((here, t))
+                }
+                Some((_, since)) if t - since >= STUCK_SECONDS => {
+                    let side = if turn_sign(t as u32) > 0.0 { 1.0 } else { -1.0 };
+                    let rate = side * AVOID_DEGREES.to_radians() / AVOID_SECONDS;
+                    self.avoid = Some((t + AVOID_SECONDS, rate));
+                    c.look.x = rate * dt;
+                }
+                Some(_) => {}
+                None => self.progress = Some((here, t)),
+            }
+        }
         // every INTERACT_SECONDS in the interact mode: press interact when the crosshair is on
         // something (or to step out of a locker the last press hid the runner in)
         let tick = (t / INTERACT_SECONDS) as u32;
