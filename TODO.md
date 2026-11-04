@@ -379,7 +379,7 @@ Godot references are `game/...` under the KyttusLabApp folder.
 ### Infinite route and levels
 
 - [~] Infinite district layout matches Godot's streamed route generator (see the round 4 map item). `src/bin/last_route/world/infinite.rs` and the chunk RNG tags differ, so seeds will not match
-- [~] Stairs are walked in Godot; Rust teleports to the landing with a fade (`src/bin/last_route/game/endless.rs` `take_stairs`). Godot's `game/world/generation/stairwells.gd` also has spiral and switchback flights
+- [~] Stairs are walked in Godot; Rust teleports to the landing (`src/bin/last_route/game/endless.rs` `take_stairs`). Fade and hold removed 2026-11-04: the level changes on the connection's frame, numbers in `data/stairs_links.json`. Godot's `game/world/generation/stairwells.gd` also has spiral and switchback flights
 - [ ] Level links other than stairs: ladders, ramps, manholes, grates, elevators and drops (`docs/SEWERS.md`, `game/world/generation/sewer_route_generator.gd`) (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Natural stairs and ladders: port the Godot slope system so stairs are walked as slopes and ladders are climbed, and hunters cross stairs between floors
 - [ ] Sewer levels -1 to -3, with the cistern, collector and Inferno maze. `src/bin/last_route/world/infinite.rs` picks regions by level, but no sewer geometry exists and `src/bin/last_route/data/loot/sewer.json` is unused (status note: [~] in the parity-gaps audit; the less complete status is kept)
@@ -877,7 +877,7 @@ Source: `LastRoute Godot\KyttusLabApp` (re-synced from the other computer) compa
 ### Vents, ladders and stairs
 - [ ] Physical vent crawl and duct network: Godot `game/world/regions/vent_crawl.gd:18-145`, `vent_network.gd:12-140`, `player_controller_3d.gd:3806-3857`. Rust does an instant grate hop (`game/interact.rs:445-473`) and still says VENT TRANSIT.
 - [ ] Lamp drain pinned to idle while in a vent (`player_controller_3d.gd:2407-2420`). Rust pays the sprint surcharge in a vent (`player.rs:336-345`).
-- [ ] Ladder hold-to-climb, let-go, mount and dismount, one climber at a time (`player_controller_3d.gd:1272-1382`, `ladder_traffic.gd:14`). Rust uses a timed auto-climb (`game/transition.rs`). Part of the natural-stairs and ladders plan.
+- [x] Ladder hold-to-climb, let-go, mount and dismount, one climber at a time (`player_controller_3d.gd:1272-1382`, `ladder_traffic.gd:14`). Done 2026-11-04: hand climb in `src/bin/last_route/game/ladder.rs` (mount, climb at `LADDER_CLIMB_SPEED`, let go by jump, dismount, one climber), tests in `game/ladder.rs` and `game/ladder_tests.rs`. Not yet run: cargo test (build stage). The natural-stairs plan is separate.
 
 ### NPC teammates, player list, minimap, waypoints
 - [ ] NPC teammate capture, down, revive window, grace and out-of-run (`game/player/npc_teammates.gd:168-284`). Rust `game/npc.rs` has no down, grace or out state; `game/hunting.rs:69-105` captures the runner only.
@@ -921,3 +921,12 @@ Source: `LastRoute Godot\KyttusLabApp` (re-synced from the other computer) compa
 ## Memory (noted 2026-11-04)
 
 - [ ] Both T480 laptops show a "memory shortage avoided" message during play: find what triggers it (the game, the system, or the stress runs), and whether it lines up with the frame drops and the memory caps in the memory pass
+
+## Performance beyond 60 fps (2026-11-04)
+
+- [ ] Intel MacBook Air (KT-MBA, AK-MBA) now holds 60 fps consistently. Go higher: measure where the next 10 ms goes with the per-part timers (LR_PERF_PARTS), then target 75 to 90 fps. Record before and after per scenario
+- [ ] Performance optimization for the other devices: KT-NEO (Apple silicon, capped near 59 fps with vsync off: confirm the display refresh and the NSOpenGLContext swap path), KT-MBP, AK-T480 and KT-T480 (Fedora: live vsync is unsupported on Linux, memory-shortage message), ZL-MBA, JV-MBA and XR-MBA. One table per device in docs/PERF_COMPARISON.md
+- [ ] Preload every chunk of each level so going up or down stairs and ladders is instant (the adjacent storey is prefetched near a connection today; load all chunks per level ahead)
+- [ ] Rust compile speed on the laptop: dev and CI profiles with trimmed debug info, linker choice per platform, split debug info, incremental builds. Record the cold and warm times before and after
+- [ ] CI speed plan for every platform (macOS and Windows first, then Linux): per-target parallel jobs, sccache, pinned toolchain, thin debug info, cargo-nextest. Aim for a reasonable compile time and record the time per job
+- [ ] Agent workflow efficiency: the reusable pass (.claude/workflows/edit-pass.js) runs sonnet low edit agents with no cargo, QA and format checks, one build, up to three test instances, then a review. Keep it current as the process changes

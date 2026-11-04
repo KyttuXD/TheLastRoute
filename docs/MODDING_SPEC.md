@@ -13,7 +13,7 @@ Where a rule is only in the code and not in the module docs, the section says so
 
 - The region schema is `lr.region/1`. The `geometry` block is optional and was added to `/1` before the first full release, so `/1` stays the schema name until then. The next shape change is `lr.region/2`, added in both engines.
 - The pack manifest schema is `lr.pack/1`.
-- Built-in region files live in `data/regions/` (`hospital.json`, `mall.json`) and are embedded at build time.
+- Built-in region files live in `data/regions/` (apartment, beach, carnival, gothic, greenhouse, hospital, hotel, lab, mall, mansion, maze, prison, sewer) and are embedded at build time. The other data files are listed in [DATA_FILES.md](DATA_FILES.md).
 
 ## 2. Pack layout
 
