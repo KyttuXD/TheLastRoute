@@ -44,6 +44,8 @@ pub struct InfernoRules {
     pub crevices_max: usize,
     pub tier_ledge_frac: f32,
     pub tier_basin_frac: f32,
+    /// The noisy floor and ceiling (`inferno_terrain`).
+    pub terrain: super::inferno_terrain::TerrainRules,
 }
 
 impl InfernoRules {
@@ -71,6 +73,7 @@ impl InfernoRules {
             crevices_max: i(&v, "crevices_max").max(0) as usize,
             tier_ledge_frac: f(&v, "tier_ledge_frac") as f32,
             tier_basin_frac: f(&v, "tier_basin_frac") as f32,
+            terrain: super::inferno_terrain::TerrainRules::parse(&v["terrain"]).unwrap_or_else(|e| panic!("{e}")),
         }
     }
 

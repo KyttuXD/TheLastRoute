@@ -155,7 +155,8 @@ impl Game {
             pesticide: self.p.pesticide > 0.0,
             map_open: self.map_open,
             level: self.runner_level(),
-            y: self.p.y(),
+            // the runner's feet stand on the Inferno's noisy floor like a hunter's (`Brain::follow_terrain`)
+            y: self.p.y() + self.fac.terrain().map_or(0.0, |_| self.fac.ground_height(self.p.pos.0, self.p.pos.1)),
             cross: None,
         }
     }

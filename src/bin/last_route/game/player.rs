@@ -545,6 +545,14 @@ impl Player {
                 self.vy = PLAYER_JUMP_VELOCITY;
             }
         }
+        // On the Inferno's noisy floor a grounded body walking downhill sticks to the surface instead of dropping in
+        // small hops behind it (the data's `ground_snap`); a jump (vy above 0) or a real drop is left alone.
+        if let Some(t) = fac.terrain() {
+            if self.grounded && self.vy <= 0.0 && self.feet_y - min_feet <= t.rules().ground_snap {
+                self.feet_y = min_feet;
+                self.vy = 0.0;
+            }
+        }
         self.vy -= PLAYER_GRAVITY * dt;
         self.feet_y = (self.feet_y + self.vy * dt).max(min_feet);
         self.grounded = self.feet_y <= min_feet;

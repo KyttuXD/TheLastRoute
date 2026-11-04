@@ -234,6 +234,8 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     let mut b = Builder::new(Some(a.white.clone()));
     let t = g.time;
     let f = &g.fac;
+    // on the Inferno's noisy floor every item rests on the ground under it
+    let ground = |x: f32, z: f32| f.terrain().map_or(0.0, |t| t.floor_at(x, z));
 
     // safe zone: the authored marker at the spawn, plus a faint ring showing its 2.5-cell radius
     if let Some(s) = f.safe_zone {
@@ -266,9 +268,9 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
             continue;
         }
         match item_model(a, "relay") {
-            Some(m) => draw_static(m, at(x, 0.0, y, 0.0), WHITE),
+            Some(m) => draw_static(m, at(x, ground(x, y), y, 0.0), WHITE),
             None => b.cube(
-                vec3(x, 0.32, y),
+                vec3(x, ground(x, y) + 0.32, y),
                 vec3(0.42, 0.64, 0.42),
                 0.0,
                 Color::new(0.22, 0.24, 0.27, 1.0),
@@ -279,7 +281,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
             // a live signal glows faintly so it reads in the dark
             let pulse = 0.6 + 0.4 * (t * 2.0 + i as f32).sin();
             b.cube(
-                vec3(x, 0.01, y),
+                vec3(x, ground(x, y) + 0.01, y),
                 vec3(0.62, 0.012, 0.62),
                 0.0,
                 Color::new(
@@ -296,8 +298,8 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         if !g.batteries_taken[i] {
             let (x, y) = c.center();
             match item_model(a, "battery") {
-                Some(m) => draw_static(m, at(x, 0.0, y, i as f32), WHITE),
-                None => battery_shape(&mut b, vec3(x, 0.0, y), i as f32),
+                Some(m) => draw_static(m, at(x, ground(x, y), y, i as f32), WHITE),
+                None => battery_shape(&mut b, vec3(x, ground(x, y), y), i as f32),
             }
         }
     }
@@ -305,7 +307,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         if p.taken {
             continue;
         }
-        let base = vec3(p.pos.0, 0.0, p.pos.1);
+        let base = vec3(p.pos.0, ground(p.pos.0, p.pos.1), p.pos.1);
         // lit like the floor (mode 0): unlit, the pad read as a flat blue hole in the floor
         b.cube(
             base + vec3(0.0, 0.006, 0.0),
@@ -332,9 +334,9 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
             let (x, y) = c.center();
             let bob = (t * 2.0 + i as f32).sin() * 0.03;
             match item_model(a, "coin") {
-                Some(m) => m.draw(at(x, 0.05 + bob, y, t * 2.0 + i as f32), WHITE),
+                Some(m) => m.draw(at(x, ground(x, y) + 0.05 + bob, y, t * 2.0 + i as f32), WHITE),
                 None => b.cube(
-                    vec3(x, 0.12 + bob, y),
+                    vec3(x, ground(x, y) + 0.12 + bob, y),
                     vec3(0.16, 0.16, 0.03),
                     t * 2.0 + i as f32,
                     Color::new(0.95, 0.78, 0.2, 1.0),

@@ -8,6 +8,7 @@ pub mod fixtures;
 pub mod godot_sort;
 pub mod inferno;
 pub mod inferno_caves;
+pub mod inferno_terrain;
 pub mod infinite;
 pub mod level_links;
 pub mod rng;

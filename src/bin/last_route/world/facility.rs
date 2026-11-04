@@ -13,6 +13,7 @@ use super::infinite::ChunkKey;
 use super::route::catwalk_links::{self, CatwalkLink};
 use super::route::{catwalk, maze_regions};
 use crate::content::regions::RegionDef;
+use super::inferno_terrain::Terrain;
 use super::rng::Rng;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 
@@ -222,6 +223,9 @@ pub struct Facility {
     air_list: Vec<Cell>,
     drop: Vec<bool>,
     air: Vec<bool>,
+    /// The noisy floor and ceiling of an Inferno window (`world/inferno_terrain.rs`); `None` on every other level. Set by
+    /// `set_terrain`; the cell walk surfaces above stay for catwalk decks.
+    terrain: Option<Terrain>,
 }
 
 /// How far a door is open (0 closed, 1 open) and whether it is meant to be open. `open` chases `want_open` at
@@ -520,6 +524,7 @@ impl Facility {
             air_list: vec![],
             drop: vec![],
             air: vec![],
+            terrain: None,
         };
         let room_count = opt.room_count.max(5);
         f.carve_facility_rooms(room_count, cat);
@@ -813,6 +818,7 @@ impl Facility {
             air_list: vec![],
             drop: vec![],
             air: vec![],
+            terrain: None,
         };
         for (p, ox, oy, region) in parts {
             let sh = |c: Cell| Cell::new(c.x + ox, c.y + oy);
@@ -1450,7 +1456,9 @@ impl Facility {
         if self.divider_blocks(x, y, r) {
             return false;
         }
-        if !self.walk_surface.is_empty() || height != 0.0 {
+        // an Inferno window has no decks: its floor is one continuous noisy surface with the slope limited by
+        // construction (`TerrainRules`), so no cell edge is a step and the per-cell height rule does not apply
+        if self.terrain.is_none() && (!self.walk_surface.is_empty() || height != 0.0) {
             for (sx, sy) in [(x - r, y - r), (x + r, y - r), (x - r, y + r), (x + r, y + r)] {
                 let cell = Cell::new(sx.floor() as i32, sy.floor() as i32);
                 // open air holds a body at any height: only the cells around it say whether it is below the floor
@@ -1586,6 +1594,32 @@ impl Facility {
     /// The height of `cell`'s walk surface in metres above the level's floor.
     pub fn height_at(&self, cell: Cell) -> f32 {
         self.walk_surface_at(cell).height
+    }
+
+    /// The height of the ground under the point (x, z), metres above the level's floor line: the noisy cavern floor of
+    /// an Inferno window (`set_terrain`), else the walk surface of the cell (0 or a deck). A flight tread is not
+    /// included (`level_stack::local_ground` asks the flights first).
+    pub fn ground_height(&self, x: f32, z: f32) -> f32 {
+        match &self.terrain {
+            Some(t) => t.floor_at(x, z),
+            None => self.height_at(Cell::new(x.floor() as i32, z.floor() as i32)),
+        }
+    }
+
+    /// The height of the ceiling over the point (x, z) on an Inferno window; `None` elsewhere (the region's wall height).
+    pub fn ceiling_height(&self, x: f32, z: f32) -> Option<f32> {
+        self.terrain.as_ref().map(|t| t.ceiling_at(x, z))
+    }
+
+    /// The Inferno terrain of this window, when it has one.
+    pub fn terrain(&self) -> Option<&Terrain> {
+        self.terrain.as_ref()
+    }
+
+    /// Gives this facility the Inferno terrain of world `world` for its grid (the cell (0, 0) is world cell
+    /// `self.origin`, so set `origin` first). `chunks` is how many chunks the grid spans each way.
+    pub fn set_terrain(&mut self, world: &str, chunks: i32) {
+        self.terrain = Some(Terrain::new(world, self.origin, chunks));
     }
 
     /// Sets the walk surface of `cell` alone; every other cell keeps its surface.

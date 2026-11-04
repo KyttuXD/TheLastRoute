@@ -17,6 +17,8 @@ pub mod swim;
 mod ladder_tests;
 #[cfg(test)]
 mod stack_walk_tests;
+#[cfg(test)]
+mod inferno_terrain_tests;
 mod items;
 pub mod meters;
 pub mod swim_effects;

@@ -315,7 +315,7 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [x] lr_server: some helpers are only used by tests and are gated with cfg(test); delete the ones nothing needs
 - [x] God mode leaked to other players in a room (fixed 2026-11-03)
 - [ ] Peek lean is not visually confirmed: hunter hallway peeking works in the tests, but no screenshot has shown the lean yet
-- [ ] Inferno floor heights are not followed by the player: the player stays at the base floor height in the Inferno region
+- [x] Inferno floor heights are followed by the player, hunters, bots, props and items: the caverns now have a noisy floor and ceiling (`world/inferno_terrain.rs`, owner override of Godot parity, 2026-11-04; docs/OPEN_QUESTIONS.md 27)
 - [x] Stairwell with only 2 walk rows at seed 40490470, chunk (3,2): check that the flight is walkable end to end (covered by the contract test `the_todo_stairwell_at_seed_40490470_chunk_3_2_is_walkable_end_to_end` in world/stack_contract_tests.rs, stairs phase 1)
 
 ## Performance and FPS
@@ -1006,7 +1006,8 @@ Source: the 2026-11-04 repo audit. Items that need a design decision are in `doc
 - [ ] Wire `data/loot/sewer.json` into the pickup roll (`sewer_route_generator.gd` 662)
 - [ ] Sewer level ambience bed mapping (`game/audio/level_ambience.gd`) and the missing lava loop (`audio/emitter_loops.gd` 29, 44-45)
 - [ ] Check sewer extra relay chance .55 (`sewer_route_generator.gd` 27) and the hunter affinity lists (`sewer_route_generator.gd` 388 vs `world/route/sewer/hunters.rs` 43-45)
-- [ ] Inferno lava pits and the player following inferno floor heights (`world/inferno.rs`, `Inferno::height_at`) (update 2026-11-04: inferno caves are in; lava pits still to check)
+- [ ] Inferno lava pits (`world/inferno.rs`) (update 2026-11-04: inferno caves are in and the player, hunters and bots follow the noisy cavern floor; lava cells stay closed walls, no damage or stun rule, and the floor does not dip toward lava)
+- [ ] Inferno terrain: the noise covers the whole level -3 window, maze rooms and halls included, not only the carved caves; confine it to the caves if the owner wants flat halls (docs/OPEN_QUESTIONS.md 27)
 - [ ] Inferno cages and spider lair, with the -3 spider spawn rule (`config/secret_creatures.gd`)
 - [~] Level-0 catwalk geometry and the see-through breakables list (`streamed_hunter_navigation.gd` 548-576) (update 2026-11-04: catwalks above level 0 are in; the see-through breakables list is open)
 - [ ] Shared HardAbilities: burst, intercept, slam (`hunters/ai/hard_abilities.gd` 55, 60, 65, 179); confirm the Nyxie data file matches 15-19, 51-53

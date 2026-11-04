@@ -21,5 +21,13 @@
 	},
 	"crevices_max": 3,
 	"tier_ledge_frac": 0.1,
-	"tier_basin_frac": 0.9
+	"tier_basin_frac": 0.9,
+	"terrain": {
+		"_about": "Noisy floor and ceiling of the caverns (world/inferno_terrain.rs): smooth value noise sampled at every grid corner of the world, so a body stands on the same surface the renderer draws and chunks join without a seam. Heights are metres above the level's floor line (0 = the maze floor). floor: amplitude is the largest rise or dip, scale the cells between noise lattice points of the first octave (each next octave halves it), persistence the amplitude kept per octave. ceiling: amplitude is the deepest sag of the ceiling below the slab line (storey - slab); min_headroom is the least clear height over the floor (at least 2.4 m). pad_blend: cells over which the terrain eases to flat floor and full-height ceiling around a stairwell. max_step_per_cell: the steepest rise between two neighbouring corners the data may allow, held by construction (the loader refuses numbers whose bound is higher) and never above the step-up of the body. ground_snap: a grounded body this close above the surface sticks to it when walking downhill.",
+		"floor": { "amplitude": 0.5, "scale": 16.0, "octaves": 3, "persistence": 0.35 },
+		"ceiling": { "amplitude": 1.2, "scale": 12.0, "octaves": 2, "persistence": 0.5, "min_headroom": 2.6 },
+		"pad_blend": 8.0,
+		"max_step_per_cell": 0.25,
+		"ground_snap": 0.15
+	}
 }

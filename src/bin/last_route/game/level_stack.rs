@@ -206,11 +206,12 @@ pub fn levels_to_keep(
     out
 }
 
-/// The surface under (x, z) measured from its own level's floor: a stair tread, else the cell's walk surface, else 0.
+/// The surface under (x, z) measured from its own level's floor: a stair tread, else the Inferno's noisy floor or the
+/// cell's walk surface, else 0.
 /// Callers that work relative to the floor use this instead of subtracting the floor from `ground_y`, which loses
 /// precision (a flight on level -1 would come out as 1.8e-7 instead of the tread height).
 pub fn local_ground(fac: &Facility, x: f32, z: f32) -> f32 {
-    stair_height_at(fac, (x, z)).unwrap_or_else(|| fac.height_at(Cell::new(x.floor() as i32, z.floor() as i32)))
+    stair_height_at(fac, (x, z)).unwrap_or_else(|| fac.ground_height(x, z))
 }
 
 #[cfg(test)]
