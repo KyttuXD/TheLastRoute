@@ -24,15 +24,15 @@ pub fn skin_dir() -> Option<PathBuf> {
     paths::user_dir().map(|d| d.join("skins"))
 }
 
-/// True when the first bytes of a file are a PNG signature and an IHDR of exactly 64x64.
-/// Only the header is read; the pixels are not decoded.
+/// True when the first bytes of a file are a PNG signature and an IHDR of 64x64 or the old 64x32.
+/// Only the header is read; the pixels are not decoded (see [`validate_skin`] for the full check).
 pub fn png_is_skin_size(head: &[u8]) -> bool {
     if head.len() < 24 || head[..8] != PNG_SIGNATURE || &head[12..16] != b"IHDR" {
         return false;
     }
     let width = u32::from_be_bytes([head[16], head[17], head[18], head[19]]);
     let height = u32::from_be_bytes([head[20], head[21], head[22], head[23]]);
-    width == SKIN_SIZE && height == SKIN_SIZE
+    width == SKIN_SIZE && (height == SKIN_SIZE || height == SKIN_SIZE / 2)
 }
 
 /// Reads the first 24 bytes of `path` and checks them with [`png_is_skin_size`].
@@ -109,11 +109,8 @@ pub fn skin_png(id: &str) -> Option<(String, Vec<u8>)> {
         return None;
     }
     let bytes = std::fs::read(skin_file(id)?).ok()?;
-    if bytes.len() > max_bytes() || !png_is_skin_size(&bytes) {
-        return None;
-    }
-    let hash = sha256_hex(&bytes);
-    Some((hash, bytes))
+    // The canonical re-encoding is what is hashed, cached and uploaded, so every client agrees on the id.
+    skin_from_png(bytes).ok()
 }
 
 /// The lowercase hex SHA-256 of `bytes`: the id a skin PNG is known by (64 hex characters).
@@ -160,6 +157,9 @@ pub fn fetch_needed(dir: &Path, id: &str) -> bool {
 pub struct SkinConfig {
     /// The largest skin file accepted, in bytes.
     pub max_bytes: usize,
+    /// The largest canonical PNG the website stores, in bytes (the server's SKIN_MAX_BYTES, 16 KB). A skin whose canonical
+    /// re-encoding is bigger is refused before upload.
+    pub upload_max_bytes: usize,
     /// The skins host base, tried first when fetching (no trailing slash).
     pub host_base: String,
     /// The path on the skins host, with `{id}` for the skin hash.
@@ -182,6 +182,7 @@ pub fn parse_config(text: &str) -> Option<SkinConfig> {
     let fetch = &v["fetch"];
     Some(SkinConfig {
         max_bytes: v["max_bytes"].as_u64()? as usize,
+        upload_max_bytes: v["upload_max_bytes"].as_u64()? as usize,
         host_base: fetch["host_base"].as_str()?.trim_end_matches('/').to_string(),
         host_path: fetch["host_path"].as_str()?.to_string(),
         backend_path: fetch["backend_path"].as_str()?.to_string(),
@@ -204,6 +205,11 @@ pub fn config() -> Option<SkinConfig> {
 /// The largest skin file accepted. 0 when the config is missing, which refuses every skin rather than guessing a cap.
 pub fn max_bytes() -> usize {
     config().map_or(0, |c| c.max_bytes)
+}
+
+/// The largest canonical PNG the website accepts. 0 when the config is missing, which refuses every skin.
+pub fn upload_max_bytes() -> usize {
+    config().map_or(0, |c| c.upload_max_bytes)
 }
 
 /// The byte limit for a download: one more than the cap, so a file over the cap is seen as over it
@@ -508,25 +514,388 @@ pub fn fetch_https(url: &str, rules: &SkinRules, allowed_hosts: &[&str], limit: 
     Ok(reply.body)
 }
 
-/// A downloaded or picked file as a skin: at most the website's size cap, a PNG, and 64x64. Returns the wire id and the
-/// bytes. The same checks as the skins folder ([`png_is_skin_size`]).
+/// A downloaded or picked file as a skin: at most the website's size cap, a real PNG, 64x64 (or the old 64x32), with the
+/// base layer made opaque. Returns the wire id and the canonical PNG bytes (see [`validate_skin`]).
 pub fn skin_from_png(bytes: Vec<u8>) -> Result<(String, Vec<u8>), String> {
     skin_from_png_capped(bytes, max_bytes())
 }
 
 /// [`skin_from_png`] with the size cap given (the shipped cap is data/skins/config.json `max_bytes`).
 pub fn skin_from_png_capped(bytes: Vec<u8>, cap: usize) -> Result<(String, Vec<u8>), String> {
+    validate_skin(&bytes, cap).map(|s| (s.hash, s.png))
+}
+
+#[allow(dead_code)]
+/// A skin that passed [`validate_skin`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValidSkin {
+    /// The canonical 64x64 PNG: the bytes the id, the cache and the website are keyed on.
+    pub png: Vec<u8>,
+    /// The lowercase hex SHA-256 of `png`.
+    pub hash: String,
+    /// True when the arms use the slim (Alex) layout. Read before the base layer is made opaque; an old 64x32 skin is never slim.
+    pub slim: bool,
+    /// The 64x64 RGBA pixels of `png` (16384 bytes).
+    pub rgba: Vec<u8>,
+}
+
+/// The pixel rectangles of data/skins/rules.json `layout`: [x, y, w, h].
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkinLayout {
+    /// Second-layer rectangles, the only places a pixel may stay transparent.
+    pub overlay_rects: Vec<[u32; 4]>,
+    /// The arms' 4th texture column in both base layers: transparent there means slim arms.
+    pub slim_probe_rects: Vec<[u32; 4]>,
+    /// Old-format limb boxes copied mirrored, as (from, to) corners.
+    pub legacy_mirror: Vec<([u32; 2], [u32; 2])>,
+}
+
+/// The layout from its rules JSON text. None when the schema or a rectangle is missing or malformed.
+pub fn parse_layout(text: &str) -> Option<SkinLayout> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    if v["schema"].as_str()? != RULES_SCHEMA {
+        return None;
+    }
+    let layout = &v["layout"];
+    let rects = |val: &serde_json::Value| -> Option<Vec<[u32; 4]>> {
+        val.as_array()?
+            .iter()
+            .map(|r| {
+                let a = r.as_array()?;
+                let n = |i: usize| a.get(i).and_then(|x| x.as_u64()).map(|x| x as u32);
+                (a.len() == 4).then_some([n(0)?, n(1)?, n(2)?, n(3)?])
+            })
+            .collect()
+    };
+    let pair = |val: &serde_json::Value| -> Option<[u32; 2]> {
+        let a = val.as_array()?;
+        (a.len() == 2).then_some([a[0].as_u64()? as u32, a[1].as_u64()? as u32])
+    };
+    let mirror = layout["legacy_mirror"]
+        .as_array()?
+        .iter()
+        .map(|m| Some((pair(&m["from"])?, pair(&m["to"])?)))
+        .collect::<Option<Vec<_>>>()?;
+    Some(SkinLayout {
+        overlay_rects: rects(&layout["overlay_rects"])?,
+        slim_probe_rects: rects(&layout["slim_probe_rects"])?,
+        legacy_mirror: mirror,
+    })
+}
+
+/// The shipped layout (data/skins/rules.json), read once. None when the file is missing or broken.
+pub fn layout() -> Option<SkinLayout> {
+    static LAYOUT: std::sync::OnceLock<Option<SkinLayout>> = std::sync::OnceLock::new();
+    LAYOUT
+        .get_or_init(|| {
+            crate::content::embedded::data_under("skins/rules.json").next().and_then(|(_, text)| parse_layout(text))
+        })
+        .clone()
+}
+
+fn in_rect(r: &[u32; 4], x: u32, y: u32) -> bool {
+    x >= r[0] && y >= r[1] && x < r[0] + r[2] && y < r[1] + r[3]
+}
+
+/// True when pixel (x, y) is in a second-layer rectangle (player_skin.gd `is_overlay_pixel`).
+pub fn is_overlay_pixel(layout: &SkinLayout, x: u32, y: u32) -> bool {
+    layout.overlay_rects.iter().any(|r| in_rect(r, x, y))
+}
+
+/// True when the arms use the slim layout: the 4th arm column is fully transparent in both arm bases (player_skin.gd
+/// `is_slim_layout`). `rgba` is w*h*4 bytes; a skin smaller than 64x64 is never slim.
+#[allow(dead_code)]
+pub fn is_slim_layout(rgba: &[u8], w: u32, h: u32) -> bool {
+    let Some(layout) = layout() else { return false };
+    slim_with(&layout, rgba, w, h)
+}
+
+fn slim_with(layout: &SkinLayout, rgba: &[u8], w: u32, h: u32) -> bool {
+    if w < SKIN_SIZE || h < SKIN_SIZE || rgba.len() < (w * h * 4) as usize {
+        return false;
+    }
+    layout.slim_probe_rects.iter().all(|r| {
+        (r[1]..r[1] + r[3]).all(|y| (r[0]..r[0] + r[2]).all(|x| rgba[((y * w + x) * 4 + 3) as usize] == 0))
+    })
+}
+
+/// Copies a limb box (4 wide, 4 deep, 12 tall) mirrored left to right: top, bottom, front and back flip; the two side
+/// faces swap (player_skin.gd `_mirror_box`).
+fn mirror_box(px: &mut [u8], from: [u32; 2], to: [u32; 2]) {
+    let src = px.to_vec();
+    let at = |x: u32, y: u32| ((y * SKIN_SIZE + x) * 4) as usize;
+    let pairs = [
+        ([from[0] + 4, from[1], 4, 4], [to[0] + 4, to[1]]),
+        ([from[0] + 8, from[1], 4, 4], [to[0] + 8, to[1]]),
+        ([from[0], from[1] + 4, 4, 12], [to[0] + 8, to[1] + 4]),
+        ([from[0] + 4, from[1] + 4, 4, 12], [to[0] + 4, to[1] + 4]),
+        ([from[0] + 8, from[1] + 4, 4, 12], [to[0], to[1] + 4]),
+        ([from[0] + 12, from[1] + 4, 4, 12], [to[0] + 12, to[1] + 4]),
+    ];
+    for (s, d) in pairs {
+        for y in 0..s[3] {
+            for x in 0..s[2] {
+                let (a, b) = (at(s[0] + x, s[1] + y), at(d[0] + (s[2] - 1 - x), d[1] + y));
+                px[b..b + 4].copy_from_slice(&src[a..a + 4]);
+            }
+        }
+    }
+}
+
+/// Validates and normalises a skin file, never trusting the bytes (player_skin.gd `validate`): size cap, PNG signature,
+/// header dimensions (64x64 or the old 64x32, checked before decoding), a real decode, the old format upgraded to
+/// 64x64, the slim layout read, the base layer forced opaque, and a canonical re-encoding that is hashed.
+pub fn validate_skin(bytes: &[u8], cap: usize) -> Result<ValidSkin, String> {
+    if bytes.is_empty() {
+        return Err("the file is empty".to_string());
+    }
     if bytes.len() > cap {
         return Err("the file is too big".to_string());
     }
     if bytes.len() < PNG_SIGNATURE.len() || bytes[..PNG_SIGNATURE.len()] != PNG_SIGNATURE {
         return Err("that is not a PNG file".to_string());
     }
-    if !png_is_skin_size(&bytes) {
+    if !png_is_skin_size(bytes) {
         return Err("a skin must be 64x64 pixels".to_string());
     }
-    let hash = sha256_hex(&bytes);
-    Ok((hash, bytes))
+    let layout = layout().ok_or_else(|| "the skin rules are missing".to_string())?;
+    let img = macroquad::prelude::Image::from_file_with_format(bytes, Some(macroquad::prelude::ImageFormat::Png))
+        .map_err(|_| "the PNG could not be read".to_string())?;
+    let (w, h) = (img.width as u32, img.height as u32);
+    let legacy = w == SKIN_SIZE && h == SKIN_SIZE / 2;
+    if w != SKIN_SIZE || (h != SKIN_SIZE && !legacy) || img.bytes.len() != (w * h * 4) as usize {
+        return Err("a skin must be 64x64 pixels".to_string());
+    }
+    let mut px = vec![0u8; (SKIN_SIZE * SKIN_SIZE * 4) as usize];
+    px[..img.bytes.len()].copy_from_slice(&img.bytes);
+    if legacy {
+        for (from, to) in &layout.legacy_mirror {
+            mirror_box(&mut px, *from, *to);
+        }
+    }
+    let slim = !legacy && slim_with(&layout, &px, SKIN_SIZE, SKIN_SIZE);
+    for y in 0..SKIN_SIZE {
+        for x in 0..SKIN_SIZE {
+            if !is_overlay_pixel(&layout, x, y) {
+                px[((y * SKIN_SIZE + x) * 4 + 3) as usize] = 255;
+            }
+        }
+    }
+    let png = encode_png(&px, SKIN_SIZE, SKIN_SIZE);
+    // The canonical bytes are what is uploaded and hashed, and the website refuses more than its cap.
+    if png.len() > upload_max_bytes() {
+        return Err(format!("the skin is too detailed to upload (over {} KB once saved)", upload_max_bytes() / 1024));
+    }
+    Ok(ValidSkin { hash: sha256_hex(&png), png, slim, rgba: px })
+}
+
+/// The arm style setting of the SKIN tab (ids as `settings_panel.rs` ARMS).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum ArmsSetting {
+    Auto,
+    Classic,
+    Slim,
+}
+
+#[allow(dead_code)]
+impl ArmsSetting {
+    /// The setting for a saved id ("auto", "classic", "slim"). None for anything else.
+    pub fn parse(id: &str) -> Option<Self> {
+        match id.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "classic" => Some(Self::Classic),
+            "slim" => Some(Self::Slim),
+            _ => None,
+        }
+    }
+    /// The saved id.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Classic => "classic",
+            Self::Slim => "slim",
+        }
+    }
+    /// The button label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "AUTO",
+            Self::Classic => "CLASSIC",
+            Self::Slim => "SLIM",
+        }
+    }
+    /// The next setting when ARMS is pressed: auto, classic, slim, auto.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Auto => Self::Classic,
+            Self::Classic => Self::Slim,
+            Self::Slim => Self::Auto,
+        }
+    }
+    /// True when the model should draw slim arms: Auto follows the skin's layout, the others force it.
+    pub fn resolve(self, is_slim: bool) -> bool {
+        match self {
+            Self::Auto => is_slim,
+            Self::Classic => false,
+            Self::Slim => true,
+        }
+    }
+}
+
+/// [`ArmsSetting::resolve`] as a function: slim arms or not for a setting and the skin's detected layout.
+#[allow(dead_code)]
+pub fn resolve_arms(setting: ArmsSetting, is_slim: bool) -> bool {
+    setting.resolve(is_slim)
+}
+
+// A small PNG writer: Sub filter, LZ77 and one fixed-Huffman deflate block. Dependency-free and deterministic, so two
+// clients that normalise the same pixels get the same bytes and the same id.
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &b in data {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+        }
+    }
+    !crc
+}
+
+fn adler32(data: &[u8]) -> u32 {
+    let (mut a, mut b) = (1u32, 0u32);
+    for &x in data {
+        a = (a + x as u32) % 65521;
+        b = (b + a) % 65521;
+    }
+    (b << 16) | a
+}
+
+struct Bits {
+    out: Vec<u8>,
+    acc: u32,
+    n: u32,
+}
+
+impl Bits {
+    /// Writes the low `n` bits of `v`, least significant first.
+    fn put(&mut self, v: u32, n: u32) {
+        self.acc |= v << self.n;
+        self.n += n;
+        while self.n >= 8 {
+            self.out.push(self.acc as u8);
+            self.acc >>= 8;
+            self.n -= 8;
+        }
+    }
+    /// Writes a Huffman code, most significant bit first.
+    fn code(&mut self, code: u32, len: u32) {
+        let mut rev = 0;
+        for i in 0..len {
+            rev |= ((code >> i) & 1) << (len - 1 - i);
+        }
+        self.put(rev, len);
+    }
+    fn literal_or_length(&mut self, sym: u32) {
+        match sym {
+            0..=143 => self.code(0x30 + sym, 8),
+            144..=255 => self.code(0x190 + sym - 144, 9),
+            256..=279 => self.code(sym - 256, 7),
+            _ => self.code(0xC0 + sym - 280, 8),
+        }
+    }
+}
+
+const LEN_BASE: [u32; 29] =
+    [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
+const LEN_EXTRA: [u32; 29] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
+const DIST_BASE: [u32; 30] = [
+    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145,
+    8193, 12289, 16385, 24577,
+];
+const DIST_EXTRA: [u32; 30] = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
+
+/// A zlib stream (one fixed-Huffman block) for `data`.
+fn zlib(data: &[u8]) -> Vec<u8> {
+    let mut w = Bits { out: vec![0x78, 0x01], acc: 0, n: 0 };
+    w.put(1, 1);
+    w.put(1, 2);
+    let mut head: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    let key = |i: usize| (data[i] as u32) << 16 | (data[i + 1] as u32) << 8 | data[i + 2] as u32;
+    let mut i = 0;
+    while i < data.len() {
+        let mut best = (0usize, 0usize);
+        if i + 3 <= data.len() {
+            if let Some(&cand) = head.get(&key(i)) {
+                let dist = i - cand;
+                if dist <= 32768 {
+                    let mut len = 0;
+                    while len < 258 && i + len < data.len() && data[cand + len] == data[i + len] {
+                        len += 1;
+                    }
+                    if len >= 3 {
+                        best = (len, dist);
+                    }
+                }
+            }
+        }
+        let step = if best.0 >= 3 {
+            let li = LEN_BASE.iter().rposition(|&b| b <= best.0 as u32).unwrap_or(0);
+            w.literal_or_length(257 + li as u32);
+            w.put(best.0 as u32 - LEN_BASE[li], LEN_EXTRA[li]);
+            let di = DIST_BASE.iter().rposition(|&b| b <= best.1 as u32).unwrap_or(0);
+            w.code(di as u32, 5);
+            w.put(best.1 as u32 - DIST_BASE[di], DIST_EXTRA[di]);
+            best.0
+        } else {
+            w.literal_or_length(data[i] as u32);
+            1
+        };
+        for j in i..i + step {
+            if j + 3 <= data.len() {
+                head.insert(key(j), j);
+            }
+        }
+        i += step;
+    }
+    w.literal_or_length(256);
+    if w.n > 0 {
+        w.put(0, 8 - w.n);
+    }
+    let mut out = w.out;
+    out.extend_from_slice(&adler32(data).to_be_bytes());
+    out
+}
+
+fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], body: &[u8]) {
+    out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    let mut crc_in = kind.to_vec();
+    crc_in.extend_from_slice(body);
+    out.extend_from_slice(&crc_in);
+    out.extend_from_slice(&crc32(&crc_in).to_be_bytes());
+}
+
+/// Encodes `rgba` (w*h*4 bytes) as an 8-bit RGBA PNG with the Sub filter on every row.
+pub fn encode_png(rgba: &[u8], w: u32, h: u32) -> Vec<u8> {
+    let stride = (w * 4) as usize;
+    let mut raw = Vec::with_capacity((stride + 1) * h as usize);
+    for y in 0..h as usize {
+        let row = &rgba[y * stride..(y + 1) * stride];
+        raw.push(1);
+        for (i, &b) in row.iter().enumerate() {
+            raw.push(b.wrapping_sub(if i >= 4 { row[i - 4] } else { 0 }));
+        }
+    }
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&w.to_be_bytes());
+    ihdr.extend_from_slice(&h.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+    let mut out = PNG_SIGNATURE.to_vec();
+    chunk(&mut out, b"IHDR", &ihdr);
+    chunk(&mut out, b"IDAT", &zlib(&raw));
+    chunk(&mut out, b"IEND", &[]);
+    out
 }
 
 /// FROM URL: a 64x64 PNG downloaded from an https link. Returns the validated bytes.
@@ -834,7 +1203,12 @@ mod tests {
 
     #[test]
     fn from_url_rejects_non_64_by_64_and_non_png() {
-        assert!(skin_from_png(png_head(64, 64)).is_ok());
+        assert!(skin_from_png(fixture_png(false)).is_ok());
+        assert_eq!(
+            skin_from_png(png_head(64, 64)).unwrap_err(),
+            "the PNG could not be read",
+            "a bare header is not a skin: the pixels must decode"
+        );
         assert_eq!(skin_from_png(png_head(32, 32)).unwrap_err(), "a skin must be 64x64 pixels");
         assert_eq!(
             skin_from_png(b"GIF89a..............................".to_vec()).unwrap_err(),
@@ -846,6 +1220,7 @@ mod tests {
     #[test]
     fn config_holds_the_godot_standard_values() {
         let c = shipped_config();
+        assert_eq!(c.upload_max_bytes, 16 * 1024, "the website's SKIN_MAX_BYTES (lr_server skins.rs)");
         assert_eq!(c.max_bytes, 65536, "PlayerSkin.MAX_BYTES (game/player/player_skin.gd:16), not the old 16 KB");
         assert_eq!(read_limit(), 65537, "FETCH_LIMIT_BYTES = MAX_BYTES + 1 (game/autoload/skin_sync.gd:23)");
         assert_eq!(c.host_base, "https://skins.kyttuslab.org");
@@ -869,11 +1244,11 @@ mod tests {
         assert_eq!(skin_host_url(&edited, &id), format!("https://mirror.example.org/{id}.png"));
         assert_eq!(skin_backend_url(&edited, "http://h/", &id), format!("http://h/x/{id}"));
         assert_eq!(shipped_config().timeout_secs, 8, "the shipped value is unchanged");
-        let png = png_head(64, 64);
-        // the 28-byte header is under the edited cap, so pad it past the cap to test the refusal
+        let png = fixture_png(false);
         let over = [png.clone(), vec![0u8; edited.max_bytes]].concat();
         assert!(skin_from_png_capped(over, edited.max_bytes).is_err(), "a lower cap in data refuses it");
         assert!(skin_from_png_capped(png.clone(), png.len()).is_ok(), "a cap that fits accepts it");
+        assert!(skin_from_png_capped(png.clone(), png.len() - 1).is_err(), "one byte over the cap is refused");
     }
 
     #[test]
@@ -903,5 +1278,192 @@ mod tests {
         )
         .unwrap();
         assert_eq!(profile_skin_url(&other, &r), None, "a skin URL off the textures host is ignored");
+    }
+
+    // ---- full validation (Godot player_skin.gd validate / upgrade_legacy / is_slim_layout) ----
+
+    fn shipped_layout() -> SkinLayout {
+        layout().expect("data/skins/rules.json layout loads")
+    }
+
+    fn px_at(x: u32, y: u32, w: u32) -> usize {
+        ((y * w + x) * 4) as usize
+    }
+
+    /// A 64x64 RGBA skin, every pixel opaque. A slim one clears the 4th arm column in both arm bases.
+    fn fixture_rgba(slim: bool) -> Vec<u8> {
+        let mut px = vec![255u8; 64 * 64 * 4];
+        for y in 0..64u32 {
+            for x in 0..64u32 {
+                let i = px_at(x, y, 64);
+                px[i] = (x * 4) as u8;
+                px[i + 1] = (y * 4) as u8;
+                px[i + 2] = 90;
+            }
+        }
+        if slim {
+            for r in &shipped_layout().slim_probe_rects {
+                for y in r[1]..r[1] + r[3] {
+                    for x in r[0]..r[0] + r[2] {
+                        px[px_at(x, y, 64) + 3] = 0;
+                    }
+                }
+            }
+        }
+        px
+    }
+
+    fn fixture_png(slim: bool) -> Vec<u8> {
+        encode_png(&fixture_rgba(slim), 64, 64)
+    }
+
+    #[test]
+    fn the_encoder_round_trips_through_the_decoder_and_fits_the_website_cap() {
+        let mut px = fixture_rgba(false);
+        px[px_at(40, 5, 64) + 3] = 0;
+        let png = encode_png(&px, 64, 64);
+        assert!(png_is_skin_size(&png));
+        assert!(png.len() <= 16 * 1024, "a canonical skin fits the website's 16 KB cap ({} bytes)", png.len());
+        let img = macroquad::prelude::Image::from_file_with_format(&png, Some(macroquad::prelude::ImageFormat::Png))
+            .expect("the PNG decodes");
+        assert_eq!((img.width, img.height), (64, 64));
+        assert_eq!(img.bytes, px, "decoding gives back the pixels that were encoded");
+        assert_eq!(encode_png(&px, 64, 64), png, "encoding is deterministic");
+    }
+
+    /// What the upload sends and the website checks: canonical bytes under its cap, hashed as received.
+    fn assert_uploadable(png: &[u8], what: &str) {
+        let (hash, canonical) = skin_from_png(png.to_vec()).unwrap_or_else(|e| panic!("{what}: {e}"));
+        assert!(canonical.len() <= upload_max_bytes(), "{what}: {} bytes is over the website cap", canonical.len());
+        assert!(png_is_skin_size(&canonical), "{what}: the website wants exactly 64x64");
+        assert_eq!(hash, sha256_hex(&canonical), "{what}: the announced id is the hash of the bytes the website receives");
+        let again = skin_from_png(canonical.clone()).expect("canonical bytes validate again");
+        assert_eq!(again, (hash, canonical), "{what}: canonical bytes are a fixed point");
+    }
+
+    #[test]
+    fn canonical_skins_fit_the_website_cap_and_the_announced_hash_is_of_the_canonical_bytes() {
+        assert_uploadable(&fixture_png(false), "classic fixture");
+        assert_uploadable(&fixture_png(true), "slim fixture");
+        for skin in catalog() {
+            if let Some(png) = catalog_png(&skin) {
+                assert_uploadable(&png, &skin.id);
+            }
+        }
+        // A 64x32 skin is upgraded to 64x64 before it is hashed or uploaded.
+        let old = encode_png(&fixture_rgba(false)[..64 * 32 * 4], 64, 32);
+        let (_, canonical) = skin_from_png(old).expect("an old skin upgrades");
+        assert!(png_is_skin_size(&canonical));
+        // Pure noise cannot compress: it is refused with a message, never uploaded over the cap.
+        let mut state = 12345u32;
+        let noise: Vec<u8> = (0..64 * 64 * 4)
+            .map(|_| {
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                (state >> 24) as u8
+            })
+            .collect();
+        let err = skin_from_png(encode_png(&noise, 64, 64)).unwrap_err();
+        assert!(err.contains("too detailed"), "{err}");
+    }
+
+    #[test]
+    fn an_old_64x32_skin_is_upgraded_to_64x64_with_mirrored_limbs() {
+        let mut px = vec![255u8; 64 * 32 * 4];
+        // a marker on the right leg's front face (4..8, 20..32); the left leg front is (20..24, 52..64) mirrored
+        let marker = px_at(4, 20, 64);
+        px[marker..marker + 4].copy_from_slice(&[200, 10, 20, 255]);
+        let v = validate_skin(&encode_png(&px, 64, 32), 65536).expect("a legacy skin is accepted");
+        assert_eq!(v.rgba.len(), 64 * 64 * 4, "the result is 64x64");
+        assert!(!v.slim, "an old skin has only classic arms");
+        let img = macroquad::prelude::Image::from_file_with_format(&v.png, Some(macroquad::prelude::ImageFormat::Png))
+            .unwrap();
+        assert_eq!((img.width, img.height), (64, 64));
+        let right_edge = px_at(16 + 4 + 3, 52, 64);
+        assert_eq!(&v.rgba[right_edge..right_edge + 3], &[200, 10, 20], "the left leg is the right one mirrored");
+        assert_eq!(v.rgba[right_edge + 3], 255);
+    }
+
+    #[test]
+    fn a_transparent_body_pixel_becomes_opaque_but_a_transparent_hat_pixel_stays() {
+        let mut px = fixture_rgba(false);
+        px[px_at(10, 10, 64) + 3] = 0; // head, base layer
+        px[px_at(40, 5, 64) + 3] = 0; // hat, overlay
+        px[px_at(20, 40, 64) + 3] = 0; // jacket, overlay
+        let v = validate_skin(&encode_png(&px, 64, 64), 65536).unwrap();
+        assert_eq!(v.rgba[px_at(10, 10, 64) + 3], 255, "base pixels are forced opaque");
+        assert_eq!(v.rgba[px_at(40, 5, 64) + 3], 0, "a hat pixel may stay transparent");
+        assert_eq!(v.rgba[px_at(20, 40, 64) + 3], 0, "a jacket pixel may stay transparent");
+    }
+
+    #[test]
+    fn skins_that_differ_only_in_invisible_base_alpha_hash_the_same() {
+        let a = fixture_rgba(false);
+        let mut b = a.clone();
+        b[px_at(10, 10, 64) + 3] = 0;
+        b[px_at(30, 12, 64) + 3] = 7;
+        let (ha, pa) = skin_from_png(encode_png(&a, 64, 64)).unwrap();
+        let (hb, pb) = skin_from_png(encode_png(&b, 64, 64)).unwrap();
+        assert_eq!(ha, hb);
+        assert_eq!(pa, pb, "the canonical bytes are identical");
+        assert_eq!(ha, sha256_hex(&pa), "the id is the SHA-256 of the canonical PNG");
+        let mut c = a.clone();
+        c[px_at(40, 5, 64) + 3] = 0;
+        assert_ne!(skin_from_png(encode_png(&c, 64, 64)).unwrap().0, ha, "a visible overlay difference changes the id");
+    }
+
+    #[test]
+    fn slim_and_classic_layouts_are_detected() {
+        assert!(is_slim_layout(&fixture_rgba(true), 64, 64));
+        assert!(!is_slim_layout(&fixture_rgba(false), 64, 64));
+        assert!(!is_slim_layout(&fixture_rgba(true)[..64 * 32 * 4], 64, 32), "a short image is never slim");
+        let mut one_pixel = fixture_rgba(true);
+        let r = shipped_layout().slim_probe_rects[1];
+        one_pixel[px_at(r[0], r[1], 64) + 3] = 255;
+        assert!(!is_slim_layout(&one_pixel, 64, 64), "one painted pixel in the 4th column means classic arms");
+        assert!(validate_skin(&fixture_png(true), 65536).unwrap().slim, "slim is read before the base is made opaque");
+        assert!(!validate_skin(&fixture_png(false), 65536).unwrap().slim);
+    }
+
+    #[test]
+    fn a_bad_size_or_a_non_png_is_refused_with_a_reason() {
+        let wrong = encode_png(&vec![255u8; 63 * 64 * 4], 63, 64);
+        assert_eq!(validate_skin(&wrong, 65536).unwrap_err(), "a skin must be 64x64 pixels");
+        let tall = encode_png(&vec![255u8; 64 * 128 * 4], 64, 128);
+        assert_eq!(validate_skin(&tall, 65536).unwrap_err(), "a skin must be 64x64 pixels");
+        assert_eq!(validate_skin(b"hello, not a png at all", 65536).unwrap_err(), "that is not a PNG file");
+        assert_eq!(validate_skin(b"", 65536).unwrap_err(), "the file is empty");
+        assert_eq!(validate_skin(&fixture_png(false), 100).unwrap_err(), "the file is too big");
+        let mut broken = fixture_png(false);
+        broken.truncate(60);
+        assert_eq!(validate_skin(&broken, 65536).unwrap_err(), "the PNG could not be read", "pixels must really decode");
+    }
+
+    #[test]
+    fn the_overlay_rects_come_from_data() {
+        let text = include_str!("../data/skins/rules.json");
+        let shipped = parse_layout(text).expect("shipped layout parses");
+        assert_eq!(shipped.overlay_rects.len(), 6, "hat, jacket, two sleeves, two pants (player_skin.gd OVERLAY_RECTS)");
+        assert!(is_overlay_pixel(&shipped, 40, 5), "the hat is an overlay");
+        assert!(!is_overlay_pixel(&shipped, 10, 10), "the head is not");
+        assert_eq!(shipped.overlay_rects[0], [32, 0, 32, 16]);
+        let edited = parse_layout(&text.replace("[[32, 0, 32, 16], ", "[")).expect("edited layout parses");
+        assert!(!is_overlay_pixel(&edited, 40, 5), "a changed rect in data changes what is overlay");
+        assert!(parse_layout(&text.replace("\"overlay_rects\"", "\"nope\"")).is_none(), "a missing list is refused");
+    }
+
+    #[test]
+    fn arms_settings_resolve_and_round_trip() {
+        for id in ["auto", "classic", "slim"] {
+            assert_eq!(ArmsSetting::parse(id).unwrap().id(), id);
+        }
+        assert_eq!(ArmsSetting::parse("wide"), None);
+        assert_eq!(ArmsSetting::parse(" SLIM "), Some(ArmsSetting::Slim));
+        assert_eq!(ArmsSetting::Auto.next(), ArmsSetting::Classic);
+        assert_eq!(ArmsSetting::Slim.next(), ArmsSetting::Auto);
+        assert!(resolve_arms(ArmsSetting::Auto, true), "auto follows the skin");
+        assert!(!resolve_arms(ArmsSetting::Auto, false));
+        assert!(!resolve_arms(ArmsSetting::Classic, true), "classic forces classic");
+        assert!(resolve_arms(ArmsSetting::Slim, false), "slim forces slim");
+        assert_eq!(ArmsSetting::Slim.label(), "SLIM");
     }
 }

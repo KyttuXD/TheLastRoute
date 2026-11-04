@@ -1,26 +1,36 @@
 {
-  "schema": "lr.player_models/1",
-  "_source": "Godot: LastRoute Godot/KyttusLabApp/game/config/player_models.gd (one body for every runner); rig and bone names from assets/hunters_blocky/player_mannequin/player_mannequin.bbmodel; standard swing amplitudes from src/bin/last_route/render/bbmodel.rs build_scaled (arm 0.9, leg 0.75).",
+  "schema": "lr.player_models/2",
+  "_source": "Godot: LastRoute Godot/KyttusLabApp/game/config/player_models.gd (one body for every runner); rig and bone names from assets/hunters_blocky/player_mannequin/player_mannequin.bbmodel. Poses come from the player rig's clips (render/anim/clip.rs), not from a swing table.",
   "runner": {
     "body": "blocky",
-    "standing": { "swing": 0.0, "amp": 0.0 }
+    "slim_body": "blocky_slim",
+    "_height": "audit P13: the head top is head_top_units up and one unit is 1.067/64 m, so the figure is 1.90 m tall.",
+    "head_top_units": 113.92,
+    "metres_per_unit": 0.016671875,
+    "rig": "player_mannequin",
+    "blend_s": 0.15,
+    "states": {
+      "idle": { "clip": "idle", "speed": 1.0 },
+      "walk": { "clip": "walk", "speed": 1.0, "ref_mps": 3.0 },
+      "sprint": { "clip": "sprint", "speed": 1.0, "ref_mps": 5.5 },
+      "crouch": { "clip": "idle", "speed": 0.55 }
+    },
+    "speed_scale_min": 0.6,
+    "speed_scale_max": 1.6
   },
   "bots": {
-    "_source": "Rust-only: NPC teammates (game/npc.rs) wear the runner mannequin with the same bends; the skin is picked from `skins` by a hash of the guest name, so bots look like fake players. Standard walk amp 0.6 is the swing scene.rs used for NPCs before.",
+    "_source": "Rust-only: NPC teammates (game/npc.rs) wear the runner mannequin and the same clips; the skin is picked from `skins` by a hash of the guest name. state_for_speed: a bot's state comes from how fast its position changed (metres per second).",
     "skins": ["DEFAULT"],
-    "walk_amp": 0.6,
-    "stride_swing": 2.4
+    "state_for_speed": { "walk_min_mps": 0.3, "sprint_min_mps": 4.8 }
   },
   "bodies": {
     "blocky": {
       "model": "player/player_mannequin.bbmodel",
-      "atlas": "player/player_mannequin_atlas.png",
-      "bones": {
-        "R-Arm": { "side": 1.0, "amp": 0.9, "max_deg": 60.0 },
-        "L-Arm": { "side": -1.0, "amp": 0.9, "max_deg": 60.0 },
-        "L-Thigh": { "side": 1.0, "amp": 0.75, "max_deg": 50.0 },
-        "R-Thigh": { "side": -1.0, "amp": 0.75, "max_deg": 50.0 }
-      }
+      "atlas": "player/player_mannequin_atlas.png"
+    },
+    "blocky_slim": {
+      "model": "player/player_mannequin_slim.bbmodel",
+      "atlas": "player/player_mannequin_atlas.png"
     }
   }
 }

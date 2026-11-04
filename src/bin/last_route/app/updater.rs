@@ -8,6 +8,7 @@ use crate::net::http::{self, Method, Request};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 /// The CI run number this build was made in (0 for a local build).
@@ -231,37 +232,196 @@ fn same_commit(a: &str, b: &str) -> bool {
     !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
 }
 
-/// Runs the check once, before the game opens. When a newer build is installed, the new one is started and
-/// this process ends; otherwise it returns and the game starts as normal. A failure is logged and never stops
-/// the game from opening.
-pub fn check_on_start() {
+/// What the update check is doing, for the boot screen.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UpdateStatus {
+    /// A development build (BUILD == 0): nothing is checked and nothing is shown.
+    LocalBuild,
+    /// There is no download key, so no check is made.
+    NoKey,
+    Checking,
+    UpToDate(u64),
+    /// Downloading build `build`. A total of 0 means the size is not known yet.
+    Downloading { build: u64, got: u64, total: u64 },
+    Installing,
+    Failed(String),
+    /// The previous run installed this build and started it.
+    Updated(u64),
+}
+
+/// The shared status the check thread writes and the boot screen reads.
+pub type UpdateHandle = Arc<Mutex<UpdateStatus>>;
+
+/// The update screen's words and timings (data/app/updater.json).
+pub struct UpdaterText {
+    pub marker_file: String,
+    pub marker_text: String,
+    pub line_fade_ms: f32,
+    pub line_hold_ms: f32,
+    strings: serde_json::Value,
+}
+
+impl UpdaterText {
+    pub fn parse(text: &str) -> Result<UpdaterText, String> {
+        let v: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string).ok_or(format!("updater.json has no {k}"));
+        let n = |k: &str| v.get(k).and_then(|x| x.as_f64()).map(|x| x as f32).ok_or(format!("updater.json has no {k}"));
+        Ok(UpdaterText {
+            marker_file: s("marker_file")?,
+            marker_text: s("marker_text")?,
+            line_fade_ms: n("line_fade_ms")?,
+            line_hold_ms: n("line_hold_ms")?,
+            strings: v.get("strings").cloned().ok_or("updater.json has no strings")?,
+        })
+    }
+
+    /// The built-in data, parsed once.
+    pub fn standard() -> &'static UpdaterText {
+        static TEXT: OnceLock<UpdaterText> = OnceLock::new();
+        TEXT.get_or_init(|| UpdaterText::parse(include_str!("../data/app/updater.json")).expect("updater.json parses"))
+    }
+
+    fn string(&self, key: &str) -> &str {
+        self.strings.get(key).and_then(|v| v.as_str()).unwrap_or("")
+    }
+
+    /// The line the boot screen shows for a status, or None when it shows nothing.
+    pub fn line(&self, status: &UpdateStatus) -> Option<String> {
+        let fill = |key: &str, build: u64, percent: u32, reason: &str| {
+            self.string(key)
+                .replace("{build}", &build.to_string())
+                .replace("{percent}", &percent.to_string())
+                .replace("{reason}", reason)
+        };
+        let text = match status {
+            UpdateStatus::LocalBuild | UpdateStatus::NoKey => return None,
+            UpdateStatus::Checking => fill("checking", 0, 0, ""),
+            UpdateStatus::UpToDate(b) => fill("up_to_date", *b, 0, ""),
+            UpdateStatus::Downloading { build, got, total } => fill("downloading", *build, percent(*got, *total), ""),
+            UpdateStatus::Installing => fill("installing", 0, 0, ""),
+            UpdateStatus::Failed(why) => fill("failed", 0, 0, why),
+            UpdateStatus::Updated(b) => fill("updated", *b, 0, ""),
+        };
+        (!text.is_empty()).then_some(text)
+    }
+
+    /// Whether the status is a final one, so the line should fade out.
+    pub fn is_final(status: &UpdateStatus) -> bool {
+        matches!(status, UpdateStatus::UpToDate(_) | UpdateStatus::Failed(_) | UpdateStatus::Updated(_))
+    }
+}
+
+/// Download progress as a whole percent, clamped to 0..=100; a total of 0 (unknown) reads 0.
+pub fn percent(got: u64, total: u64) -> u32 {
+    if total == 0 {
+        return 0;
+    }
+    ((got.min(total) as u128 * 100) / total as u128) as u32
+}
+
+fn marker_path() -> Option<PathBuf> {
+    Some(std::env::current_exe().ok()?.parent()?.join(&UpdaterText::standard().marker_file))
+}
+
+/// Writes the marker the next launch reads: the build that was just installed.
+fn write_marker(path: &Path, text: &UpdaterText, build: u64) -> std::io::Result<()> {
+    std::fs::write(path, text.marker_text.replace("{build}", &build.to_string()))
+}
+
+/// Reads the marker and deletes it, so "Updated to build N" shows once. None when there is no marker.
+fn take_marker(path: &Path, text: &UpdaterText) -> Option<u64> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let _ = std::fs::remove_file(path);
+    let (head, tail) = text.marker_text.split_once("{build}")?;
+    content.trim().strip_prefix(head)?.strip_suffix(tail)?.trim().parse().ok()
+}
+
+/// The status a check starts in, before any thread runs.
+fn initial_status(build: u64, has_key: bool) -> UpdateStatus {
+    if build == 0 {
+        UpdateStatus::LocalBuild
+    } else if !has_key {
+        UpdateStatus::NoKey
+    } else {
+        UpdateStatus::Checking
+    }
+}
+
+fn set(handle: &Mutex<UpdateStatus>, status: UpdateStatus) {
+    if let Ok(mut s) = handle.lock() {
+        *s = status;
+    }
+}
+
+/// Records the server's offer: Downloading when it replaces this build (true), otherwise UpToDate (false).
+/// An "Updated" line from the last run stays rather than being replaced by "Up to date".
+fn apply_offer(handle: &Mutex<UpdateStatus>, build: u64, revision: &str, offer: &Offer) -> bool {
+    if should_update(build, revision, offer.build, &offer.revision) {
+        set(handle, UpdateStatus::Downloading { build: offer.build, got: 0, total: 0 });
+        return true;
+    }
+    if let Ok(mut s) = handle.lock() {
+        if !matches!(*s, UpdateStatus::Updated(_)) {
+            *s = UpdateStatus::UpToDate(build);
+        }
+    }
+    false
+}
+
+/// Starts the check on a thread and returns the status the boot screen reads. When a newer build is
+/// installed, the new one is started and this process ends; otherwise the game starts as normal. A failure
+/// is logged, shown, and never stops the game from opening.
+pub fn start_check() -> UpdateHandle {
     remove_leftover();
+    let key = download_key();
+    let handle: UpdateHandle = Arc::new(Mutex::new(initial_status(BUILD, key.is_some())));
+    let marker = marker_path().and_then(|p| take_marker(&p, UpdaterText::standard()));
     if BUILD == 0 {
         crate::lr_info!("update: this is a local build (no CI build number), so no update check");
-        return;
+        return handle;
     }
-    let Some(key) = download_key() else {
+    if let Some(built) = marker {
+        set(&handle, UpdateStatus::Updated(built));
+    }
+    let Some(key) = key else {
         crate::lr_info!("update: no download key in the game folder, so no update check");
-        return;
+        return handle;
     };
+    let shared = handle.clone();
+    std::thread::spawn(move || check_thread(&shared, &key));
+    handle
+}
+
+fn check_thread(handle: &Mutex<UpdateStatus>, key: &str) {
     let offer = match offer() {
         Ok(offer) => offer,
         Err(why) => {
             crate::lr_info!("update: could not read the offer from the server: {why} (this is build {BUILD})");
+            set(handle, UpdateStatus::Failed(why));
             return;
         }
     };
-    if !should_update(BUILD, REVISION, offer.build, &offer.revision) {
+    if !apply_offer(handle, BUILD, REVISION, &offer) {
         crate::lr_info!("{}", current_line(BUILD, REVISION, offer.build, &offer.revision));
         return;
     }
     crate::lr_info!("update: build {} is available (this is {}); downloading", offer.build, BUILD);
-    match download(&offer, &key).and_then(|bytes| install(&bytes, &offer.file)) {
+    let result = download(&offer, key).and_then(|bytes| {
+        set(handle, UpdateStatus::Installing);
+        install(&bytes, &offer.file)
+    });
+    match result {
         Ok(()) => {
             crate::lr_info!("update: installed build {}; starting it", offer.build);
+            if let Some(path) = marker_path() {
+                let _ = write_marker(&path, UpdaterText::standard(), offer.build);
+            }
             start_installed();
         }
-        Err(e) => crate::lr_error!("update: {e}"),
+        Err(e) => {
+            crate::lr_error!("update: {e}");
+            set(handle, UpdateStatus::Failed(e));
+        }
     }
 }
 
@@ -289,5 +449,78 @@ mod tests {
         assert!(!should_update(5, "bbbb2222", 5, commit), "the same build number is not an update");
         assert!(!should_update(5, commit, 6, commit), "a rebuild of the same commit is not an update");
         assert!(!should_update(5, commit, 6, "aaaa1111"), "a short hash of the same commit is not an update");
+    }
+
+    fn offer_of(build: u64, rev: &str) -> Offer {
+        Offer { build, revision: rev.into(), file: "f".into(), sha256: "s".into() }
+    }
+
+    #[test]
+    fn a_local_build_reports_local_build_and_shows_nothing() {
+        assert_eq!(initial_status(0, true), UpdateStatus::LocalBuild);
+        assert_eq!(initial_status(5, false), UpdateStatus::NoKey);
+        assert_eq!(initial_status(5, true), UpdateStatus::Checking);
+        let text = UpdaterText::standard();
+        assert!(text.line(&UpdateStatus::LocalBuild).is_none() && text.line(&UpdateStatus::NoKey).is_none());
+    }
+
+    #[test]
+    fn status_moves_from_checking_to_up_to_date_or_downloading() {
+        let status = Mutex::new(UpdateStatus::Checking);
+        assert!(!apply_offer(&status, 6, "bbbb2222", &offer_of(6, "aaaa1111")));
+        assert_eq!(*status.lock().unwrap(), UpdateStatus::UpToDate(6));
+        *status.lock().unwrap() = UpdateStatus::Checking;
+        assert!(apply_offer(&status, 6, "bbbb2222", &offer_of(7, "aaaa1111")));
+        assert_eq!(*status.lock().unwrap(), UpdateStatus::Downloading { build: 7, got: 0, total: 0 });
+        set(&status, UpdateStatus::Installing);
+        assert_eq!(*status.lock().unwrap(), UpdateStatus::Installing);
+    }
+
+    #[test]
+    fn an_updated_line_survives_an_up_to_date_check() {
+        let status = Mutex::new(UpdateStatus::Updated(7));
+        assert!(!apply_offer(&status, 7, "bbbb2222", &offer_of(7, "bbbb2222")));
+        assert_eq!(*status.lock().unwrap(), UpdateStatus::Updated(7));
+    }
+
+    #[test]
+    fn the_percent_is_clamped_and_safe_with_no_total() {
+        assert_eq!(percent(5, 0), 0);
+        assert_eq!(percent(0, 100), 0);
+        assert_eq!(percent(42, 100), 42);
+        assert_eq!(percent(500, 100), 100, "more than the total clamps to 100");
+        assert_eq!(percent(u64::MAX, u64::MAX), 100);
+    }
+
+    #[test]
+    fn the_marker_is_written_then_read_once_and_cleared() {
+        let text = UpdaterText::standard();
+        let path = std::env::temp_dir().join(format!("lr-marker-test-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(take_marker(&path, text), None);
+        write_marker(&path, text, 42).unwrap();
+        assert!(path.exists());
+        assert_eq!(take_marker(&path, text), Some(42));
+        assert!(!path.exists(), "reading the marker deletes it");
+        assert_eq!(take_marker(&path, text), None);
+    }
+
+    #[test]
+    fn the_strings_and_timings_come_from_the_json() {
+        let custom = r#"{"marker_file":"m","marker_text":"b{build}","line_fade_ms":10,"line_hold_ms":20,
+            "strings":{"checking":"C?","downloading":"D {build} {percent}","installing":"I","up_to_date":"U{build}","updated":"N{build}","failed":"F {reason}"}}"#;
+        let t = UpdaterText::parse(custom).unwrap();
+        assert_eq!(t.line(&UpdateStatus::Checking).as_deref(), Some("C?"));
+        assert_eq!(t.line(&UpdateStatus::UpToDate(3)).as_deref(), Some("U3"));
+        assert_eq!(t.line(&UpdateStatus::Downloading { build: 8, got: 1, total: 4 }).as_deref(), Some("D 8 25"));
+        assert_eq!(t.line(&UpdateStatus::Failed("x".into())).as_deref(), Some("F x"));
+        assert_eq!(t.line_fade_ms, 10.0);
+        let std = UpdaterText::standard();
+        assert_eq!(std.line(&UpdateStatus::Checking).as_deref(), Some("Checking for updates"));
+        assert_eq!(std.line(&UpdateStatus::Updated(9)).as_deref(), Some("Updated to build 9"));
+        assert_eq!(
+            std.line(&UpdateStatus::Downloading { build: 9, got: 42, total: 100 }).as_deref(),
+            Some("Downloading build 9: 42%")
+        );
     }
 }

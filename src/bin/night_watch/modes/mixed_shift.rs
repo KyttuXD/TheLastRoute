@@ -711,6 +711,15 @@ impl Threat {
     pub fn armed(&self) -> bool {
         self.armed
     }
+
+    /// The side of the gate this threat stands at while it is armed (None for a counter, or when it is not armed).
+    pub fn gate(&self) -> Option<Side> {
+        if self.armed {
+            self.side
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

@@ -135,6 +135,10 @@ pub fn draw_viewmodel(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         * Mat4::from_rotation_x(rx)
         * Mat4::from_rotation_z(rz);
     let xf = cam * items * view * held::model_transform(id);
+    // the runner's own forearm and hand under the item, its prop point on the grip (none while hiding or held: returned above)
+    if g.p.hidden.is_none() {
+        super::fp_hands::draw_item_hand(a, cam * items * view);
+    }
     match item_model(a, item_file(shown)) {
         Some(m) => m.draw(xf, WHITE),
         None => {

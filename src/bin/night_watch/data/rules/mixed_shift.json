@@ -129,6 +129,20 @@
 		},
 		{ "name": "ENDLESS", "speed": 1.0, "tell_ms": 1900, "start_ms": 32000, "roster": [3, 4], "spikes": [1, 1], "grace_ms": 75000, "new_max": 2, "min_types": 3, "endless": true }
 	],
+	"sounds": {
+		"arrive": "clunk",
+		"vent_knock": "glass_tap",
+		"door_bang": "clank",
+		"counter_tell": "breath",
+		"box_winding": "tape",
+		"box_wound": "chime",
+		"box_stop": "squeak",
+		"door_pop": "hinge",
+		"caught": "scare",
+		"dawn": "chime",
+		"decoy": "glass_tap",
+		"echo": "rustle"
+	},
 	"call": {
 		"at_s": 5,
 		"lines": [

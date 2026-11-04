@@ -189,6 +189,20 @@ impl HunterMeshCache {
     }
 }
 
+/// Names a roster hunter drawn without a rig (the stiff fallback block) once on stderr, so a missing
+/// assets/hunters/anim/<id>.json is noticed. Hooked from render/scene.rs where `anim::clip::rig(id)` is `None`.
+pub fn warn_unrigged_once(id: &str) {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    if let Ok(mut s) = seen.lock() {
+        if s.insert(id.to_string()) {
+            eprintln!("hunter {id}: no rig (assets/hunters/anim/{id}.json), drawing the stiff fallback");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,5 +310,128 @@ mod tests {
         assert!(CacheTuning::parse(r#"{"pose_step": 0}"#).is_err());
         assert!(CacheTuning::parse(r#"{"max_entries": 0}"#).is_err());
         assert!(CacheTuning::parse("[]").is_err());
+    }
+
+    /// Every roster hunter id (data/hunters/*.json with the hunter schema).
+    fn roster_ids() -> Vec<String> {
+        embedded::data_under("hunters/")
+            .filter_map(|(_, t)| serde_json::from_str::<serde_json::Value>(t).ok())
+            .filter(|v| v["schema"].as_str().is_some_and(|s| s.starts_with("lr.hunter/")))
+            .filter_map(|v| v["id"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    const RIGGED_LATE: [&str; 14] = [
+        "nyxie", "solyth", "void_black", "void_blue", "void_brown", "void_cyan", "void_gray", "void_green",
+        "void_orange", "void_pink", "void_purple", "void_red", "void_white", "void_yellow",
+    ];
+
+    fn rig_json(id: &str) -> serde_json::Value {
+        let bytes = embedded::asset(&format!("hunters/anim/{id}.json")).unwrap_or_else(|| panic!("{id}: no rig file"));
+        serde_json::from_slice(bytes).unwrap()
+    }
+
+    #[test]
+    fn every_roster_hunter_with_a_model_has_a_rig() {
+        let ids = roster_ids();
+        // data/hunters holds 38 roster files; every late-rigged hunter must be among them
+        assert!(ids.len() >= 38, "roster looks empty: {}", ids.len());
+        for late in RIGGED_LATE {
+            assert!(ids.iter().any(|i| i == late), "{late} is missing from the roster");
+        }
+        for id in ids {
+            if embedded::asset(&format!("hunters/{id}.bbmodel")).is_some() {
+                assert!(embedded::asset(&format!("hunters/anim/{id}.json")).is_some(), "{id} has a model but no rig (stiff fallback)");
+            }
+        }
+    }
+
+    #[test]
+    fn late_rigs_have_idle_walk_and_chase() {
+        for id in RIGGED_LATE {
+            let j = rig_json(id);
+            for clip in ["idle", "walk", "chase"] {
+                let c = &j["clips"][clip];
+                assert!(c.is_object(), "{id}: no {clip} clip");
+                assert!(!c["tracks"].as_array().unwrap().is_empty(), "{id}: {clip} has no tracks");
+            }
+            assert!(j["clips"]["idle"]["loop"].as_bool().unwrap() && j["clips"]["walk"]["loop"].as_bool().unwrap(), "{id}");
+            assert!(j["stride"]["walk"]["ref"].as_f64().unwrap() > 0.0, "{id}: no walk stride");
+            assert!(j["clips"].as_object().unwrap().keys().all(|k| !k.starts_with("emote_")), "{id}: emotes are a later pass");
+        }
+    }
+
+    #[test]
+    fn late_rig_bones_exist_in_the_model() {
+        // the rig drives the model's outliner groups by name, so Head and a leg must be among them
+        for id in RIGGED_LATE {
+            let j = rig_json(id);
+            let names: Vec<&str> = j["bones"].as_array().unwrap().iter().map(|b| b[0].as_str().unwrap()).collect();
+            for n in ["Pelvis", "Head", "L-Thigh", "R-Thigh"] {
+                assert!(names.contains(&n), "{id}: no bone {n}");
+            }
+            for t in j["clips"].as_object().unwrap().values() {
+                for tr in t["tracks"].as_array().unwrap() {
+                    assert!((tr[0].as_u64().unwrap() as usize) < names.len(), "{id}: track on a missing bone");
+                }
+            }
+        }
+    }
+
+    /// Model top in bbmodel units: the highest cube face.
+    fn model_top(id: &str) -> f32 {
+        let j: serde_json::Value = serde_json::from_slice(embedded::asset(&format!("hunters/{id}.bbmodel")).unwrap()).unwrap();
+        j["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["visibility"].as_bool() != Some(false))
+            .filter_map(|e| e["to"][1].as_f64())
+            .fold(0.0, f64::max) as f32
+    }
+
+    #[test]
+    fn rigged_hunters_are_drawn_at_model_scale() {
+        // the drawn height is top / unit x MODEL_SCALE (hunter_roster.gd 185: every humanoid takes 1.5), and
+        // the void models are authored against unit 65 like the others
+        for id in RIGGED_LATE {
+            let unit = rig_json(id)["unit"].as_f64().unwrap() as f32;
+            assert!((unit - 65.0).abs() < 0.01, "{id}: unit {unit}");
+            let metres = model_top(id) / unit * crate::render::anim::hunter::MODEL_SCALE;
+            let want = if id.starts_with("void_") { 121.75 / 65.0 * 1.5 } else { metres };
+            assert!((metres - want).abs() < 0.02, "{id}: {metres} m");
+        }
+        // Nyxie and Solyth reach the audit's heights
+        assert!((model_top("nyxie") / 65.0 * 1.5 - 3.14).abs() < 0.1);
+        assert!((model_top("solyth") / 65.0 * 1.5 - 3.19).abs() < 0.1);
+    }
+
+    #[test]
+    fn extract_is_deterministic() {
+        // needs the original's project and Python: set LR_GODOT_DIR to run it, otherwise it is skipped
+        let Ok(godot) = std::env::var("LR_GODOT_DIR") else { return };
+        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/last_route/render/anim/extract.py");
+        let run = |tag: &str| -> Vec<u8> {
+            let app = std::env::temp_dir().join(format!("lr_extract_{}_{tag}", std::process::id()));
+            let hunters = app.join("assets").join("hunters");
+            std::fs::create_dir_all(&hunters).unwrap();
+            std::fs::copy(
+                concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/last_route/assets/hunters/nyxie.bbmodel"),
+                hunters.join("nyxie.bbmodel"),
+            )
+            .unwrap();
+            let ok = std::process::Command::new("python").args(["-I", script]).arg(&godot).arg(&app).status().map(|s| s.success());
+            assert_eq!(ok.ok(), Some(true), "extract.py failed");
+            let bytes = std::fs::read(hunters.join("anim").join("nyxie.json")).unwrap();
+            let _ = std::fs::remove_dir_all(&app);
+            bytes
+        };
+        assert_eq!(run("a"), run("b"));
+    }
+
+    #[test]
+    fn warning_is_safe_to_repeat() {
+        warn_unrigged_once("test_hunter");
+        warn_unrigged_once("test_hunter");
     }
 }

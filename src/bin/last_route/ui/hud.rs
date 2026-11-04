@@ -379,20 +379,6 @@ pub fn draw_hud_with_runners(
             }
         }
     } else if g.p.hidden.is_some() {
-        fill(
-            Rect::new(0.0, 0.0, v.x, v.y * 0.5 - 12.0),
-            rgba(0.02, 0.02, 0.03, 0.92),
-        );
-        fill(
-            Rect::new(0.0, v.y * 0.5 + 12.0, v.x, v.y * 0.5),
-            rgba(0.02, 0.02, 0.03, 0.92),
-        );
-        for k in 0..4 {
-            fill(
-                Rect::new(v.x * 0.3, v.y * 0.5 - 10.0 + k as f32 * 5.5, v.x * 0.4, 2.5),
-                rgba(0.02, 0.02, 0.03, 0.9),
-            );
-        }
         let t = if g.p.hide_lock > 0.0 {
             format!("LOCKED IN // {:.0}s", g.p.hide_lock.ceil())
         } else {

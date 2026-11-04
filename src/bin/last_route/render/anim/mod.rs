@@ -18,6 +18,7 @@ pub mod held;
 pub mod hide;
 pub mod hunter;
 pub mod player;
+pub mod runner;
 
 use hunter::HunterView;
 use std::cell::RefCell;

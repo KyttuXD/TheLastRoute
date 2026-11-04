@@ -1,0 +1,6 @@
+{
+  "phase_per_metre": 1.9,
+  "ease_rate": 10.0,
+  "sway_ratio": 0.42,
+  "crouch_eye_clearance": 0.08
+}

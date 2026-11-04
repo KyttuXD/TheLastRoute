@@ -59,20 +59,30 @@ const LIFT: Color = Color::new(0.76, 0.55, 0.96, 1.0);
 const LOCKER: Color = Color::new(0.45, 0.60, 0.70, 1.0);
 const TOOL: Color = Color::new(0.64, 0.84, 0.96, 1.0);
 
-/// The runner's eye and view basis (forward, right, up): the player's own, with the hiding crouch and slide
-/// (`hide::player_now`) applied, so the eye drops, slides back along the view and looks down a little.
+thread_local! {
+    /// The spot the runner hid in last: the leave glide still needs it while `g.p.hidden` is already None.
+    static LAST_SPOT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// The runner's eye and view basis (forward, right, up): the player's own, or, while hiding (and gliding in or out),
+/// the locker's window view from `render/hiding_cam.rs` (the eye at the spot's vent, the look clamped to its cone).
 pub fn view(g: &Game) -> (Vec3, Vec3, Vec3, Vec3) {
     let eye = g.eye();
     let (fwd, right, up) = g.camera_basis();
     let h = hide::player_now();
+    if let Some(i) = g.p.hidden {
+        LAST_SPOT.with(|s| s.set(Some(i)));
+    }
     if h.weight <= 0.0 {
         return (eye, fwd, right, up);
     }
-    let (fx, fz) = g.forward2();
-    let pitch = (g.p.pitch + h.pitch).clamp(-1.45, 1.45);
-    let fwd = vec3(fx * pitch.cos(), pitch.sin(), fz * pitch.cos()).normalize();
-    let up = right.cross(fwd).normalize();
-    (eye - vec3(0.0, h.drop, 0.0) - fwd * h.slide_back, fwd, right, up)
+    let spot = g.p.hidden.or_else(|| LAST_SPOT.with(|s| s.get()));
+    let Some(l) = spot.and_then(|i| g.fac.hiding.get(i)) else {
+        return (eye, fwd, right, up);
+    };
+    let centre = g.fac.locker_center(l);
+    let facing = (l.facing.0 as f32, l.facing.1 as f32);
+    super::hiding_cam::view_from(eye, h.weight, (g.p.yaw, g.p.pitch), centre, facing, "locker")
 }
 
 pub fn camera(g: &Game, rt: &RenderTarget) -> Camera3D {
@@ -577,6 +587,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
                 WHITE
             };
             let Some(rig) = anim::clip::rig(id) else {
+                crate::render::hunter_cache::warn_unrigged_once(id);
                 if !h.active {
                     continue;
                 }

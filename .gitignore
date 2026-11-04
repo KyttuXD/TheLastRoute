@@ -41,3 +41,5 @@ accounts.json
 
 # Local builds and logs from packaging/local/publish-local.sh
 dist-local/
+
+__pycache__/

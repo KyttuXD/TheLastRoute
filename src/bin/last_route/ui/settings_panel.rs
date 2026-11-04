@@ -35,11 +35,12 @@ const TAB_KEYS: [&[&str]; 7] = [
         "voice_volume",
         "voices",
         "subtitles",
+        "speech_enabled",
     ],
     &["fullscreen", "ads", "vsync", "quality", "fps_limit", "fov"],
     &["sensitivity"],
     &[],
-    &[],
+    &["arms"],
     &[],
 ];
 
@@ -347,8 +348,6 @@ struct SkinUi {
     catalog: Option<Vec<skins::CatalogSkin>>,
     catalog_index: usize,
     folder_cursor: usize,
-    /// ARMS (auto, classic or slim). Not saved by this build yet.
-    arms: &'static str,
     /// OTHERS MAY COPY: on by default (Godot settings.gd `skin_copyable`). Not saved by this build yet.
     copyable: bool,
 }
@@ -367,7 +366,6 @@ impl Default for SkinUi {
             catalog: None,
             catalog_index: 0,
             folder_cursor: 0,
-            arms: "auto",
             copyable: true,
         }
     }
@@ -397,6 +395,28 @@ fn reset_to_default(st: &mut Settings, s: &mut SkinUi) {
     s.pick = None;
     s.shown = None;
     s.status = "Back to the default skin.".to_string();
+}
+
+/// What ARMS shows: the setting, and for auto the arm style the skin in the preview resolves to.
+fn arms_label(arms: &str, slim: bool) -> String {
+    if arms == "auto" {
+        format!("ARMS: AUTO ({})", if slim { "SLIM" } else { "CLASSIC" })
+    } else {
+        format!("ARMS: {}", arms.to_uppercase())
+    }
+}
+
+/// True when the preview should wear slim arms. HOOK: the integrator points this at ArmsSetting::resolve (task 6).
+fn preview_slim(arms: &str, png: Option<&[u8]>) -> bool {
+    crate::app::settings::ArmsSetting::resolve(arms, png)
+}
+
+/// TEMPLATE: saves the skin template to Downloads and reports where, or why not.
+fn save_template_status(s: &mut SkinUi) {
+    s.status = match crate::shared::skin_template::save_template_to_downloads() {
+        Ok(path) => format!("Saved template to {}", path.display()),
+        Err(e) => format!("Could not save the template: {e}"),
+    };
 }
 
 /// The ARMS setting after `cur`: auto, classic, slim, then auto again.
@@ -585,6 +605,11 @@ fn draw_front(tex: &Texture2D, area: Rect) {
     part((40.0, 8.0), (8.0, 8.0), cx - 4.0 * k, top);
 }
 
+thread_local! {
+    /// The rotating 3D mannequin in the preview box (ui/skin_preview.rs).
+    static SKIN_PREVIEW: RefCell<crate::ui::skin_preview::SkinPreview> = RefCell::new(crate::ui::skin_preview::SkinPreview::new());
+}
+
 /// The preview box: the chosen skin (or the pick waiting for APPLY), else the word DEFAULT.
 fn draw_preview(a: &Assets, s: &mut SkinUi, st: &Settings, area: Rect) {
     if s.shown.is_none() {
@@ -595,6 +620,18 @@ fn draw_preview(a: &Assets, s: &mut SkinUi, st: &Settings, area: Rect) {
         };
         s.shown = Some(png.map(|bytes| texture_of(&bytes)));
     }
+    let png: Option<Vec<u8>> = match &s.pick {
+        Some(bytes) => Some(bytes.clone()),
+        None if st.skin == SKIN_DEFAULT => None,
+        None => skins::skin_png(&st.skin).map(|(_, bytes)| bytes),
+    };
+    let slim = preview_slim(&st.arms, png.as_deref());
+    if a.npc_body.is_some() {
+        let tex = s.shown.as_ref().and_then(Option::as_ref);
+        SKIN_PREVIEW.with(|p| p.borrow_mut().draw(a, area, tex, slim, get_frame_time()));
+        return;
+    }
+    // Fallback: the flat front, when the 3D preview target cannot be made.
     match s.shown.as_ref().and_then(Option::as_ref) {
         Some(tex) => draw_front(tex, area),
         None => label_c(
@@ -678,7 +715,7 @@ fn skin_tab(a: &Assets, st: &mut Settings, ox: f32, oy: f32, changed: &mut bool)
             Kind::Secondary,
             gate(!busy),
         ) {
-            s.status = "The skin template is not in this build yet.".to_string();
+            save_template_status(&mut s);
         }
 
         // Row 3: the https link box and FROM URL
@@ -759,9 +796,15 @@ fn skin_tab(a: &Assets, st: &mut Settings, ox: f32, oy: f32, changed: &mut bool)
         ) {
             s.copyable = !s.copyable;
         }
-        let arms_label = format!("ARMS: {}", s.arms.to_uppercase());
-        if button(a, Rect::new(bx, options_row, gw, 16.0), &arms_label, 7.0, Kind::Secondary, plain()) {
-            s.arms = next_arms(s.arms);
+        let shown_png: Option<Vec<u8>> = match &s.pick {
+            Some(bytes) => Some(bytes.clone()),
+            None if st.skin == SKIN_DEFAULT => None,
+            None => skins::skin_png(&st.skin).map(|(_, bytes)| bytes),
+        };
+        let label_text = arms_label(&st.arms, preview_slim(&st.arms, shown_png.as_deref()));
+        if button(a, Rect::new(bx, options_row, gw, 16.0), &label_text, 7.0, Kind::Secondary, plain()) {
+            st.arms = next_arms(&st.arms).to_string();
+            *changed = true;
         }
 
         // Status, then the skin in use
@@ -969,6 +1012,17 @@ pub fn draw_settings(
                 plain(),
             ) {
                 st.subtitles = !st.subtitles;
+                changed = true;
+            }
+            if state_toggle(
+                a,
+                Rect::new(x, oy + 190.0, 400.0, 16.0),
+                "SPEAK NEARBY CHAT",
+                st.speech_enabled,
+                false,
+                plain(),
+            ) {
+                st.speech_enabled = !st.speech_enabled;
                 changed = true;
             }
         }
@@ -1256,7 +1310,25 @@ mod tests {
     fn skin_tab_defaults_match_godot() {
         let s = SkinUi::default();
         assert!(s.copyable, "OTHERS MAY COPY is on by default (settings.gd skin_copyable)");
-        assert_eq!(s.arms, "auto");
+        assert_eq!(Settings::default().arms, "auto");
+    }
+
+    #[test]
+    fn arms_persists_through_the_settings_struct() {
+        let mut st = Settings::default();
+        let mut seen = vec![st.arms.clone()];
+        for _ in 0..3 {
+            st.arms = next_arms(&st.arms).to_string();
+            seen.push(st.arms.clone());
+        }
+        assert_eq!(seen, ["auto", "classic", "slim", "auto"]);
+    }
+
+    #[test]
+    fn arms_label_shows_the_effective_style_for_auto() {
+        assert_eq!(arms_label("auto", true), "ARMS: AUTO (SLIM)");
+        assert_eq!(arms_label("auto", false), "ARMS: AUTO (CLASSIC)");
+        assert_eq!(arms_label("slim", false), "ARMS: SLIM");
     }
 
     #[test]

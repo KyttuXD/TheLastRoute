@@ -1,0 +1,12 @@
+{
+  "schema": "lr.tts/1",
+  "radius": 18.0,
+  "max_chars": 80,
+  "over_length": "trim",
+  "duplicate_window_ms": 20000,
+  "queue_max": 3,
+  "volume_floor": 0.2,
+  "rate": { "windows": 1, "macos": 190, "linux": 160 },
+  "voices": { "windows": "", "macos": "", "linux": "" },
+  "linux_programs": ["espeak", "spd-say"]
+}

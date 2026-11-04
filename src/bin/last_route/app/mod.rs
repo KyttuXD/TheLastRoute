@@ -104,6 +104,7 @@ pub fn render_play_with(g: &Game, a: &Assets, mat: &Material, t: &Targets, remot
     {
         let _t = perf::section("viewmodel");
         viewmodel::draw_viewmodel(g, a, mat, &t.view);
+        crate::render::fp_hands::draw_ladder_hands(g, a, mat, &t.view);
     }
     set_default_camera();
     clear_background(BLACK);
@@ -436,7 +437,7 @@ fn shot_screen(name: &str) -> Option<Screen> {
     })
 }
 
-pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>) {
+pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>, update: Option<updater::UpdateHandle>) {
     // a stress run (`--stress`) opens its log before the load, so a bad --stress-log path fails at once
     let stress_on = stress_cfg.is_some();
     let stress_vsync = stress_cfg.as_ref().map(|c| c.vsync);
@@ -466,6 +467,9 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
     // the boot loader (ui/boot.rs) draws its card before the first load step and yields a frame after each
     // a stress run skips the boot card (ui/boot.rs) and loads with none
     let mut boot = crate::ui::boot::BootLoader::new();
+    if let Some(h) = update {
+        boot.set_update(h);
+    }
     let w = if stress_on {
         load_world().await
     } else {
@@ -573,6 +577,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
             }
         }
         let dt = get_frame_time().min(0.05);
+        crate::render::fp_hands::set_look(&settings.skin, &settings.arms);
         ui.t += dt;
         ui.notice_t = (ui.notice_t - dt).max(0.0);
         fps_t += dt;
@@ -1612,7 +1617,7 @@ mod remote_level_tests {
     use super::*;
 
     fn view(peer: u32, h: f32, level: i32) -> RemoteView {
-        RemoteView { peer, x: 1.0, y: 2.0, yaw: 0.0, h, level, skin: String::new() }
+        RemoteView { peer, x: 1.0, y: 2.0, yaw: 0.0, h, level, skin: String::new(), moving: false, sprinting: false, crouching: false, slim: false, speed: 0.0, vy: 0.0 }
     }
 
     #[test]

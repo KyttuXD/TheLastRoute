@@ -94,6 +94,23 @@
 		"shot_frame_ms": 16.6667,
 		"shot_frames": 600,
 		"shot_max_frames": 200000,
+		"walk": {
+			"walk_ms": 1400,
+			"ease": "smooth",
+			"height": 0.5,
+			"width_ratio": 0.6,
+			"alpha": 0.95,
+			"facing": "front",
+			"flash_ms": 900,
+			"flash_blinks": 3,
+			"flash_alpha": 0.8,
+			"flash_at": [240, 250],
+			"stops": {
+				"officeL": [54, 225],
+				"booth": [240, 250],
+				"officeR": [426, 225]
+			}
+		},
 		"names": {
 			"xivvy": "XIVVY",
 			"ferryn": "FERRYN",

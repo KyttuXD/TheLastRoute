@@ -1,0 +1,16 @@
+{
+  "table_id": "player_mannequin",
+  "model_scale": 1.067,
+  "travel_clips": ["walk", "sprint"],
+  "still_speed": 0.05,
+  "min_ratio": 0.55,
+  "max_ratio": 1.9,
+  "hard_min": 0.2,
+  "hard_max": 2.6,
+  "fallback_ref": {"walk": 1.4, "chase": 3.0, "sprint": 4.2},
+  "clips": {
+    "chase":  {"contacts": 76, "cycle": 0.5,   "forward_ok": true, "ref": 3.976, "reverse": false, "slip_rms": 0.508, "stance": 3.152},
+    "sprint": {"contacts": 80, "cycle": 0.667, "forward_ok": true, "ref": 3.152, "reverse": false, "slip_rms": 0.611, "stance": 2.988},
+    "walk":   {"contacts": 75, "cycle": 1.0,   "forward_ok": true, "ref": 1.567, "reverse": false, "slip_rms": 0.475, "stance": 1.127}
+  }
+}

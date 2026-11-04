@@ -1,0 +1,11 @@
+{
+  "schema": "lr.hide_sync/1",
+  "max_capacity": 2,
+  "max_spot_index": 4096,
+  "max_style_len": 24,
+  "search_tell": {
+    "duration_s": 1.2,
+    "amplitude": 0.03,
+    "rate_hz": 18
+  }
+}

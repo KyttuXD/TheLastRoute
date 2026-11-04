@@ -1,0 +1,25 @@
+{
+  "hand": {
+    "scale": 0.52,
+    "tilt_deg": 118.0,
+    "bare_view": [0.27, -0.24, -0.52]
+  },
+  "climb": {
+    "scale": 0.3,
+    "tilt_deg": 105.0,
+    "offset": [0.2, -0.06, -0.45],
+    "rung_spacing": 0.3,
+    "reach": 0.11,
+    "pull": 0.03
+  },
+  "model": {
+    "classic_group": "R-Forearm",
+    "slim_group": "R-Forearm-Slim",
+    "prop_point": [21.36, 46.28, 0.0],
+    "slim_width": 0.75
+  },
+  "poses": {
+    "lockpick": { "view": [0.25, -0.26, -0.52], "scale": 0.56, "yaw": 20.0, "pitch": -58.0, "grip": 0.12, "reach": 0.80 },
+    "revive_kit": { "view": [0.24, -0.40, -0.56], "scale": 0.55, "yaw": 20.0, "pitch": 0.0, "grip": 0.31, "reach": 0.85 }
+  }
+}

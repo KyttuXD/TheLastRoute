@@ -160,6 +160,7 @@ impl Game {
         // the turn is a sound the hunters can hear, whoever made it: it sounds at the valve, on the valve's storey. The
         // runner's meter noise is the turner's own (none here), so only the positioned event is pushed.
         self.push_valve_events(&ev, valve_at, storey);
+        self.start_authored_floods(&req.valve_id, super::hunter_pipes::authored_floods());
         Some(valve_events::turn_fields(&ev))
     }
 }

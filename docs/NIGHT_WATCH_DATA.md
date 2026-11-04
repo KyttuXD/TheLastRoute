@@ -9,6 +9,8 @@ src/bin/night_watch/data/
   rules/<mode>.json       all 9 modes: timings, AI tables, scoring, presets, Custom Night sliders
   cast/<mode>.json        classic, bedtime, dead_air, masked_hours, facility, open_air, mixed_shift
   buildings/<mode>.json   classic, bedtime, dead_air, masked_hours, facility, mixed_shift
+  maps/<mode>.json        all 9 modes (floor plans, see Building maps)
+  sounds.json             the nw_ cue table and the per-mode event-to-cue map (see Sounds)
 ```
 
 Mode ids: `classic`, `bedtime`, `salvage_run`, `descent`, `masked_hours`, `dead_air`, `facility`, `open_air`, `mixed_shift`.
@@ -52,3 +54,13 @@ The registry already lists every current file, so converting a mode only edits i
 - Drawing: `scene(area, &MapView)` makes primitives, `draw` paints them with macroquad and `to_svg` writes the same picture. `MapView` takes the active camera, the `(room, hunter id)` markers, `floor` (None draws every floor side by side, Some(i) shows one floor as a tab) and the legend flag. `room_at_screen` and `camera_at_screen` turn clicks into rooms and cameras.
 - Screenshots: `NW_MAP_SVG_DIR=<folder> cargo test --bin night_watch svg_screenshots` writes `<mode>.svg` (and `<mode>_<floor>.svg` for multi-floor maps) to open in a browser.
 - The tests check adjacency, camera coverage, link endpoints, the office, room overlap, that every room reaches the office, and that the maps still hold the edges and camera numbers of the mode data.
+
+## Sounds (`data/sounds.json`, `nw_sound.rs`)
+
+Schema `nw.sounds/1`. Night Watch cannot import the game binary's cue table, so the `nw_` cues are data here and `nw_sound.rs` renders them to a mono 16-bit WAV (same WAV writer as `blip.rs`) and plays them with macroquad audio.
+
+- `sample_rate`, `master` and `tone_volume`: render rate and gain.
+- `cues.<name>`: a list of layers. A layer is `{type: tone|noise, hz, ms, gain, wave (sine, square, triangle, saw), delay_ms, k}`; `k` marks a layer the caller's closeness value scales.
+- `events.<mode>.<event>`: the cue a mode event plays. Classic has its block; each other mode adds one as its driver starts calling `nw_sound::event(mode, event, pan)`. A missing event or cue is silent with one log line, and `resolve` returns an error naming the missing key for the tests.
+- API: `cue(name, pan, k)`, `event(mode, event, pan)`, `room_tone(name, on)`, and the pure `render(name, pan, k)` the tests use.
+- To add a cue or a mapping, edit the JSON only; no code changes.

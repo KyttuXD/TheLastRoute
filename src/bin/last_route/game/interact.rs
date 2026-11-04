@@ -517,6 +517,7 @@ impl Game {
         let Some(level) = self.inf.as_ref().map(|inf| inf.level) else { return false };
         let Some(prop) = self.fac.props.get(i) else { return false };
         let (effect, gate) = valve_keys(prop);
+        let valve_id = prop.id.clone();
         let q = super::pipes::TurnAt {
             valve_id: &prop.id,
             effect: &effect,
@@ -530,6 +531,7 @@ impl Game {
         match self.pipes.turn(q) {
             Ok(ev) => {
                 self.pipes.apply(&ev, self.time);
+                self.start_authored_floods(&valve_id, super::hunter_pipes::authored_floods());
                 let at = self.p.pos;
                 self.push_valve_events(&ev, at, level);
                 if !self.remote_hunters {

@@ -209,7 +209,18 @@
 			"rules": "salvage_run",
 			"nights": "weeks",
 			"night_label": "WEEK {n}",
-			"save_key": "salvage_run"
+			"save_key": "salvage_run",
+			"custom": {
+				"night": 5,
+				"unlock_night": 5,
+				"max": 20,
+				"points_per_level": 10,
+				"sliders": [
+					{ "id": "ravelle", "label": "RAVELLE" },
+					{ "id": "ceryth", "label": "CERYTH" },
+					{ "id": "ysolde", "label": "YSOLDE" }
+				]
+			}
 		},
 		{
 			"id": "mixed",

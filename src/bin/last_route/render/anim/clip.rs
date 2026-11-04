@@ -306,7 +306,7 @@ pub fn rig(id: &str) -> Option<Rc<Rig>> {
         r.borrow_mut()
             .entry(id.to_string())
             .or_insert_with(|| {
-                let bytes = embedded::asset(&format!("hunters/anim/{id}.json"))?;
+                let bytes = embedded::asset(&format!("hunters/anim/{id}.json")).or_else(|| embedded::asset(&format!("player/anim/{id}.json")))?;
                 Rig::parse(id, std::str::from_utf8(bytes).ok()?).map(Rc::new)
             })
             .clone()

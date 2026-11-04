@@ -43,6 +43,11 @@ thread_local! {
     }));
 }
 
+thread_local! {
+    /// The mouse position last frame, for the look delta.
+    static LAST_MOUSE: std::cell::Cell<Option<Vec2>> = const { std::cell::Cell::new(None) };
+}
+
 fn office_art() -> &'static OfficeArt {
     OFFICE.with(|o| *o)
 }
@@ -101,8 +106,14 @@ fn caught_line(who: Hunter) -> &'static str {
 }
 
 /// What the player did this frame. The hold is held (it works while A is down); the lights are held too, one at a time.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Controls {
+    /// Mouse movement this frame in pixels (right and down are positive), sent only while the look button is held.
+    pub look_dx: f32,
+    pub look_dy: f32,
+    /// Arrow keys: right and up are +1.
+    pub key_x: f32,
+    pub key_y: f32,
     /// Hold the closet door shut. No light works while it is held (both hands are on the door).
     pub hold: bool,
     /// Hold the hall light (it wins over the bed light when both are down).
@@ -144,6 +155,8 @@ pub struct BedtimeRun {
     flash_ms: f64,
     notes: Vec<(String, f64)>,
     anim_ms: f64,
+    look: Look,
+    sounds: Vec<SoundCue>,
 }
 
 #[cfg(test)]
@@ -172,6 +185,8 @@ impl BedtimeRun {
             flash_ms: 0.0,
             notes: Vec::new(),
             anim_ms: 0.0,
+            look: Look::default(),
+            sounds: Vec::new(),
         }
     }
 
@@ -220,6 +235,7 @@ impl BedtimeRun {
         if c.plan {
             self.plan_up = !self.plan_up;
         }
+        self.look.apply(dt_ms, c.look_dx, c.look_dy, c.key_x, c.key_y);
         if c.skip_call {
             self.call.skip();
         }
@@ -245,6 +261,9 @@ impl BedtimeRun {
     }
 
     fn play(&mut self, event: BedtimeEvent) {
+        if let Some(cue) = self.cue_for(&event) {
+            self.sounds.push(cue);
+        }
         match event {
             BedtimeEvent::Restless => self.note(ui_text("notes.restless")),
             BedtimeEvent::Breath(Hunter::Loxelle) => self.note(ui_text("notes.breath_loxelle")),
@@ -286,6 +305,158 @@ impl BedtimeRun {
         }
     }
 }
+
+// ---- pillow view: look, projection and breathing sounds --------------------------------------------------------
+
+/// Where the player is looking from the pillow. Yaw turns left when positive and pitch looks up when positive, as in
+/// Godot's `bedroom_game.gd`; both are clamped to the limits in the rules file's `look` block.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Look {
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+fn look_num(key: &str) -> f32 {
+    num(rules("bedtime"), &format!("look.{key}")) as f32
+}
+
+impl Look {
+    /// Keeps yaw and pitch inside the limits (looking down goes less far than looking up).
+    pub fn clamp(&mut self) {
+        let yaw = look_num("yaw_limit");
+        let up = look_num("pitch_up");
+        self.yaw = self.yaw.clamp(-yaw, yaw);
+        self.pitch = self.pitch.clamp(-up * look_num("pitch_down_share"), up);
+    }
+
+    /// Mouse movement in pixels (right and down are positive) and the arrow axes (right and up are +1).
+    pub fn apply(&mut self, dt_ms: f64, mouse_dx: f32, mouse_dy: f32, key_x: f32, key_y: f32) {
+        let dt = (dt_ms / 1000.0) as f32;
+        let sens = look_num("sensitivity");
+        self.yaw -= mouse_dx * sens + key_x * look_num("key_yaw_rate") * dt;
+        self.pitch -= mouse_dy * sens - key_y * look_num("key_pitch_rate") * dt;
+        self.clamp();
+    }
+}
+
+/// A point of the room in metres (x east, y up, z south) as a screen position seen from the pillow, or None when it
+/// is behind the viewer.
+fn project(look: Look, p: [f32; 3], sw: f32, sh: f32) -> Option<Vec2> {
+    let eye = [
+        num(rules("bedtime"), "scene.eye.0") as f32,
+        num(rules("bedtime"), "scene.eye.1") as f32,
+        num(rules("bedtime"), "scene.eye.2") as f32,
+    ];
+    let (dx, dy, dz) = (p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]);
+    let (sy, cy) = look.yaw.sin_cos();
+    let right = dx * cy - dz * sy;
+    let fwd = -dx * sy - dz * cy;
+    let (sp, cp) = look.pitch.sin_cos();
+    let f = fwd * cp + dy * sp;
+    let u = dy * cp - fwd * sp;
+    if f < 0.1 {
+        return None;
+    }
+    let focal = sh * 0.5 / (look_num("fov_deg").to_radians() * 0.5).tan();
+    Some(vec2(sw * 0.5 + right / f * focal, sh * 0.5 - u / f * focal))
+}
+
+/// The screen rectangle of a vertical door or opening in a side wall.
+fn wall_rect(look: Look, key: &str, sw: f32, sh: f32) -> Option<Rect> {
+    let r = rules("bedtime");
+    let n = |k: &str| num(r, &format!("scene.{key}.{k}")) as f32;
+    let (x, z, w, h) = (n("x"), n("z"), n("width"), n("height"));
+    bounds(look, &[[x, 0.0, z - w * 0.5], [x, h, z + w * 0.5], [x, 0.0, z + w * 0.5], [x, h, z - w * 0.5]], sw, sh)
+}
+
+/// The screen rectangle of the floor at the foot of the bed.
+fn bed_rect(look: Look, sw: f32, sh: f32) -> Option<Rect> {
+    let r = rules("bedtime");
+    let n = |k: &str| num(r, &format!("scene.bed_floor.{k}")) as f32;
+    let (x, z, w, d, h) = (n("x"), n("z"), n("width"), n("depth"), n("height"));
+    let pts = [[x - w * 0.5, 0.0, z], [x + w * 0.5, h, z - d], [x - w * 0.5, h, z - d], [x + w * 0.5, 0.0, z]];
+    bounds(look, &pts, sw, sh)
+}
+
+fn bounds(look: Look, pts: &[[f32; 3]], sw: f32, sh: f32) -> Option<Rect> {
+    let mut lo = vec2(f32::MAX, f32::MAX);
+    let mut hi = vec2(f32::MIN, f32::MIN);
+    for p in pts {
+        let s = project(look, *p, sw, sh)?;
+        lo = lo.min(s);
+        hi = hi.max(s);
+    }
+    Some(Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y))
+}
+
+/// One breathing or step sound for the shell to play through the Night Watch sound module.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoundCue {
+    pub name: &'static str,
+    /// -1 (left) to 1 (right), from where the hunter is against the way the player looks.
+    pub pan: f32,
+    /// 0 (far) to 1 (close).
+    pub k: f32,
+}
+
+/// The hunter and the event kind an event sounds for, if the rules file lists that kind under `sounds.events`.
+fn event_sound(event: &BedtimeEvent) -> Option<(Hunter, &'static str)> {
+    let (who, kind) = match *event {
+        BedtimeEvent::Breath(w) => (w, "breath"),
+        BedtimeEvent::Breathing(w) => (w, "breathing"),
+        BedtimeEvent::Near(w) => (w, "near"),
+        BedtimeEvent::Stir { .. } => (Hunter::Haelith, "stir"),
+        _ => return None,
+    };
+    crate::data::list(rules("bedtime"), "sounds.events").iter().any(|v| v.as_str() == Some(kind)).then_some((who, kind))
+}
+
+/// The cue for `who` heard from `at` (metres on the floor plan) by a player looking along `yaw`.
+fn cue_at(who: Hunter, at: [f32; 2], yaw: f32) -> SoundCue {
+    let r = rules("bedtime");
+    let eye = [num(r, "scene.eye.0") as f32, num(r, "scene.eye.2") as f32];
+    let (dx, dz) = (at[0] - eye[0], at[1] - eye[1]);
+    let (sy, cy) = yaw.sin_cos();
+    let dist = dx.hypot(dz).max(0.01);
+    let pan = ((dx * cy - dz * sy) / dist).clamp(-1.0, 1.0);
+    let k = (1.0 - dist / num(r, "sounds.max_distance") as f32).clamp(0.0, 1.0);
+    SoundCue { name: text(r, &format!("sounds.hunters.{}.cue", hunter_key(who))), pan, k }
+}
+
+impl BedtimeRun {
+    /// Where on the floor plan the hunter's sound comes from right now: her door spot (far or near), or Haelith's
+    /// place on her way across the floor.
+    fn sound_point(&self, who: Hunter) -> [f32; 2] {
+        let r = rules("bedtime");
+        let at = |which: &str| {
+            let p = format!("sounds.hunters.{}.{which}", hunter_key(who));
+            [num(r, &format!("{p}.0")) as f32, num(r, &format!("{p}.1")) as f32]
+        };
+        if who == Hunter::Haelith {
+            let (a, b, t) = (at("far"), at("near"), self.night.creep_share() as f32);
+            return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        }
+        at(if self.night.door_state(who) == DoorState::Near { "near" } else { "far" })
+    }
+
+    /// The sound an event makes, if any.
+    fn cue_for(&self, event: &BedtimeEvent) -> Option<SoundCue> {
+        let (who, _) = event_sound(event)?;
+        Some(cue_at(who, self.sound_point(who), self.look.yaw))
+    }
+
+    /// Hands the sounds queued since the last call to the shell, which plays each through `nw_sound::cue`.
+    pub fn take_sounds(&mut self) -> Vec<SoundCue> {
+        std::mem::take(&mut self.sounds)
+    }
+
+    /// The result screen's score and rating for how the night ended.
+    fn result_summary(&self, outcome: Outcome) -> (i32, String) {
+        let score = self.night.result_score(matches!(outcome, Outcome::Win));
+        (score, bedtime::rating_of(score, bedtime::custom_max_score()))
+    }
+}
+
 
 // ---- layout ----------------------------------------------------------------------------------------------------
 
@@ -334,7 +505,21 @@ pub fn poll_controls(run: &BedtimeRun) -> Controls {
     let mouse = Vec2::from(mouse_position());
     let click = is_mouse_button_pressed(MouseButton::Left);
     let held = is_mouse_button_down(MouseButton::Left);
+    // mouse look: pixels moved since the last frame, only while the look button is held (the cursor stays free for the buttons)
+    let look_held = is_mouse_button_down(MouseButton::Right);
+    let (look_dx, look_dy) = LAST_MOUSE.with(|m| {
+        let prev = m.replace(Some(mouse));
+        match prev {
+            Some(p) if look_held => (mouse.x - p.x, mouse.y - p.y),
+            _ => (0.0, 0.0),
+        }
+    });
+    let axis = |plus: KeyCode, minus: KeyCode| f32::from(is_key_down(plus) as u8) - f32::from(is_key_down(minus) as u8);
     let mut c = Controls {
+        look_dx,
+        look_dy,
+        key_x: axis(KeyCode::Right, KeyCode::Left),
+        key_y: axis(KeyCode::Up, KeyCode::Down),
         hold: is_key_down(KeyCode::A),
         light_hall: is_key_down(KeyCode::D),
         light_bed: is_key_down(KeyCode::F),
@@ -438,9 +623,22 @@ pub fn draw(run: &BedtimeRun) {
 }
 
 /// The bedroom: the closet on the left, the hall doorway on the right, the bed in the middle. Dark unless a light is on.
+/// Where the three things the player answers sit on screen.
+struct ViewRects {
+    closet: Rect,
+    hallway: Rect,
+    bed: Rect,
+}
+
 fn draw_room(run: &BedtimeRun, l: &Layout, sw: f32, sh: f32) {
     let night = &run.night;
     let lit_any = night.light != Light::Off;
+    // the closet, the hall doorway and the foot of the bed where the 5 x 5 m room puts them for this look
+    let vr = ViewRects {
+        closet: wall_rect(run.look, "closet", sw, sh).unwrap_or(l.closet),
+        hallway: wall_rect(run.look, "doorway", sw, sh).unwrap_or(l.hallway),
+        bed: bed_rect(run.look, sw, sh).unwrap_or(l.bed),
+    };
     // the office art, dark unless a light is on: the dark is in the tint, so the frame stays solid under the HUD and the call box
     let art = office_art();
     let shade = if lit_any { 1.0 } else { 0.42 };
@@ -450,7 +648,7 @@ fn draw_room(run: &BedtimeRun, l: &Layout, sw: f32, sh: f32) {
     // the closet: Loxelle's breath shows as wisps at the crack and the door rattles when she is at it
     let loxelle = night.door_state(Hunter::Loxelle);
     let shake = if loxelle == DoorState::Near { (run.anim_ms as f32 / 25.0).sin() * 4.0 } else { 0.0 };
-    let c = Rect::new(l.closet.x + shake, l.closet.y, l.closet.w, l.closet.h);
+    let c = Rect::new(vr.closet.x + shake, vr.closet.y, vr.closet.w, vr.closet.h);
     if night.hold {
         draw_rectangle(c.x, c.y, c.w, c.h, Color::new(0.30, 0.33, 0.37, 1.0));
         for i in 1..8 {
@@ -481,7 +679,7 @@ fn draw_room(run: &BedtimeRun, l: &Layout, sw: f32, sh: f32) {
     }
 
     // the hall doorway: the lamp washes out past it, and Javelle waits in it
-    let h = l.hallway;
+    let h = vr.hallway;
     draw_rectangle(h.x, h.y, h.w, h.h, Color::new(0.01, 0.01, 0.015, 1.0));
     let hall_lit = night.light == Light::Hall;
     if hall_lit {
@@ -501,12 +699,18 @@ fn draw_room(run: &BedtimeRun, l: &Layout, sw: f32, sh: f32) {
     text_centered(ui_text("labels.hall"), h.x + h.w * 0.5, h.y - 14.0, 20.0, DIM);
 
     // the bed, Haelith at its foot while she creeps (she shows fully only under the bed light)
-    let b = l.bed;
+    let b = vr.bed;
     draw_rectangle(b.x - 10.0, b.y - 30.0, 14.0, b.h + 30.0, Color::new(0.16, 0.10, 0.07, 1.0));
     draw_rectangle(b.x, b.y, b.w, b.h, Color::new(0.14, 0.12, 0.16, 1.0));
     draw_rectangle(b.x + 16.0, b.y + 10.0, b.w * 0.22, b.h * 0.35, Color::new(0.24, 0.23, 0.27, 1.0));
     let creep = night.creep_share() as f32;
     let bed_lit = night.light == Light::Bed;
+    // the bed light on its stand beside the pillow
+    let lamp = rules("bedtime");
+    let lamp_at = [num(lamp, "scene.bed_light.x") as f32, num(lamp, "scene.bed_light.y") as f32, num(lamp, "scene.bed_light.z") as f32];
+    if let Some(p) = project(run.look, lamp_at, sw, sh) {
+        draw_circle(p.x, p.y, sh * 0.012, if bed_lit { LAMP } else { DIM });
+    }
     if bed_lit {
         draw_circle(b.x + b.w * 0.5, b.y + b.h * 0.3, sw * 0.22, Color::new(LAMP.r, LAMP.g, LAMP.b, 0.10));
         draw_circle(b.x + b.w * 0.5, b.y + b.h * 0.3, sw * 0.12, Color::new(LAMP.r, LAMP.g, LAMP.b, 0.10));
@@ -566,10 +770,9 @@ fn draw_result(run: &BedtimeRun, end: End, sw: f32, sh: f32) {
     };
     text_centered(&title, sw * 0.5, sh * 0.40, 64.0, colour);
     text_centered(line, sw * 0.5, sh * 0.40 + 48.0, 28.0, INK);
-    if let Some(score) = run.night.score() {
-        let name = bedtime::rating_of(score, bedtime::custom_max_score());
-        text_centered(&name, sw * 0.5, sh * 0.40 + 84.0, 26.0, AMBER);
-    }
+    let (score, name) = run.result_summary(end.outcome);
+    let row = format!("{}   {}", fill(ui_text("labels.score"), "{n}", &score.to_string()), name);
+    text_centered(&row, sw * 0.5, sh * 0.40 + 84.0, 26.0, AMBER);
     let next = match end.outcome {
         Outcome::Win if run.number < bedtime::night_count() => ui_text("labels.next_night"),
         Outcome::Win => ui_text("labels.hub_night"),
@@ -768,6 +971,92 @@ mod tests {
         assert_eq!(fill(ui_text("labels.cleared"), "{n}", "2"), "NIGHT 2 CLEARED");
         assert_eq!(fill(ui_text("notes.near"), "{name}", "LOXELLE"), "LOXELLE is at the door!");
         assert!(ui_text("labels.hint").ends_with("ESC HUB"));
+    }
+
+    #[test]
+    fn look_clamps_to_the_limits_in_the_rules_file() {
+        let mut look = Look::default();
+        look.apply(16.0, -100_000.0, -100_000.0, 0.0, 0.0);
+        assert!((look.yaw - look_num("yaw_limit")).abs() < 1e-6, "{look:?}");
+        assert!((look.pitch - look_num("pitch_up")).abs() < 1e-6, "{look:?}");
+        look.apply(16.0, 100_000.0, 100_000.0, 0.0, 0.0);
+        assert!((look.yaw + look_num("yaw_limit")).abs() < 1e-6);
+        assert!((look.pitch + look_num("pitch_up") * look_num("pitch_down_share")).abs() < 1e-6);
+        look.apply(1000.0, 0.0, 0.0, -1.0, 1.0);
+        assert!(look.yaw <= look_num("yaw_limit") && look.pitch <= look_num("pitch_up"));
+    }
+
+    #[test]
+    fn a_mouse_delta_turns_yaw_by_the_sensitivity() {
+        let mut look = Look::default();
+        look.apply(16.0, 100.0, 0.0, 0.0, 0.0);
+        assert!((look.yaw + 100.0 * look_num("sensitivity")).abs() < 1e-6, "moving right turns right");
+        let mut up = Look::default();
+        up.apply(16.0, 0.0, 0.0, 0.0, 1.0);
+        assert!(up.pitch > 0.0, "the up arrow looks up");
+    }
+
+    #[test]
+    fn the_closet_sits_left_of_the_hall_door_and_turning_moves_them() {
+        let (sw, sh) = (1280.0, 720.0);
+        let a = wall_rect(Look::default(), "closet", sw, sh).expect("closet in view");
+        let b = wall_rect(Look::default(), "doorway", sw, sh).expect("doorway in view");
+        assert!(a.x < sw * 0.5 && b.x > sw * 0.5);
+        let right = Look { yaw: -0.4, pitch: 0.0 };
+        let a2 = wall_rect(right, "closet", sw, sh).expect("closet in view");
+        assert!(a2.x < a.x, "turning right pushes the closet further left");
+    }
+
+    #[test]
+    fn each_breath_event_resolves_to_its_cue_and_a_pan_on_the_hunters_side() {
+        let r = run(1);
+        let cases = [
+            (BedtimeEvent::Breath(Hunter::Loxelle), "bed_breath", -1.0),
+            (BedtimeEvent::Breathing(Hunter::Loxelle), "bed_breath", -1.0),
+            (BedtimeEvent::Breath(Hunter::Javelle), "breath", 1.0),
+            (BedtimeEvent::Near(Hunter::Javelle), "breath", 1.0),
+            (BedtimeEvent::Breathing(Hunter::Haelith), "step", -1.0),
+        ];
+        for (event, name, side) in cases {
+            let cue = r.cue_for(&event).unwrap_or_else(|| panic!("{event:?} makes no sound"));
+            assert_eq!(cue.name, name, "{event:?}");
+            assert!(cue.pan * side > 0.0, "{event:?} pans {} but sits at {side}", cue.pan);
+            assert!((0.0..=1.0).contains(&cue.k), "{event:?} k {}", cue.k);
+        }
+        assert!(r.cue_for(&BedtimeEvent::Restless).is_none());
+        assert!(r.cue_for(&BedtimeEvent::Win).is_none());
+    }
+
+    #[test]
+    fn turning_the_head_swings_the_pan_and_nearer_hunters_are_louder() {
+        let left = cue_at(Hunter::Loxelle, [-2.6, -0.9], 0.0);
+        let turned = cue_at(Hunter::Loxelle, [-2.6, -0.9], 1.2);
+        assert!(turned.pan > left.pan, "looking toward the closet centres it");
+        let far = cue_at(Hunter::Javelle, [5.0, -0.9], 0.0);
+        let near = cue_at(Hunter::Javelle, [2.6, -0.9], 0.0);
+        assert!(near.k > far.k);
+    }
+
+    #[test]
+    fn played_events_queue_sounds_for_the_shell_once() {
+        let mut r = run(1);
+        r.play(BedtimeEvent::Breath(Hunter::Loxelle));
+        r.play(BedtimeEvent::Caught(Hunter::Loxelle));
+        let sounds = r.take_sounds();
+        assert_eq!(sounds.len(), 1);
+        assert!(r.take_sounds().is_empty());
+    }
+
+    #[test]
+    fn the_result_scores_a_cleared_and_a_caught_night_and_rates_them() {
+        let r = run(4);
+        let (won, won_name) = r.result_summary(Outcome::Win);
+        assert_eq!(won, 340, "levels 16 + 11 + 7, ten points each");
+        assert_eq!(won_name, bedtime::rating_of(340, bedtime::custom_max_score()));
+        let (lost, lost_name) = r.result_summary(Outcome::Caught(Hunter::Haelith));
+        assert!(lost < won, "a night lost at once scores less");
+        assert_eq!(lost_name, "Great Job!");
+        assert!(ui_text("labels.score").contains("{n}"));
     }
 
     #[test]

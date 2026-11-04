@@ -42,6 +42,12 @@ pub struct Settings {
     pub scheme: String,
     /// The runner's skin id, sent to the room in the wire profile (`world_sync::clean_skin`).
     pub skin: String,
+    /// Arm style for the runner body and the first-person hands: auto, classic or slim.
+    pub arms: String,
+    /// Speak nearby chat lines aloud (audio/tts.rs).
+    pub speech_enabled: bool,
+    /// Peers whose chat is never spoken. Session only; not saved.
+    pub muted_peers: std::collections::HashSet<i64>,
 }
 
 impl Default for Settings {
@@ -67,7 +73,23 @@ impl Default for Settings {
             username: String::new(),
             scheme: "last_route".into(),
             skin: SKIN_DEFAULT.into(),
+            arms: "auto".into(),
+            speech_enabled: true,
+            muted_peers: Default::default(),
         }
+    }
+}
+
+/// The ARMS setting as the skin panel uses it.
+pub struct ArmsSetting;
+
+impl ArmsSetting {
+    /// True when slim arms are worn: the saved setting `arms`, and for auto the layout of the picked skin `png`.
+    pub fn resolve(arms: &str, png: Option<&[u8]>) -> bool {
+        use crate::shared::skins;
+        let setting = skins::ArmsSetting::parse(arms).unwrap_or(skins::ArmsSetting::Auto);
+        let slim = png.and_then(|b| skins::validate_skin(b, skins::max_bytes()).ok()).map_or(false, |v| v.slim);
+        setting.resolve(slim)
     }
 }
 
@@ -124,6 +146,10 @@ impl Settings {
         if let Some(k) = v["skin"].as_str() {
             s.skin = clean_skin(k);
         }
+        if let Some(a) = v["arms"].as_str().and_then(crate::shared::skins::ArmsSetting::parse) {
+            s.arms = a.id().into();
+        }
+        s.speech_enabled = b("speech_enabled", true);
         if let Some(u) = v["username"].as_str() {
             s.username = u
                 .chars()
@@ -145,6 +171,7 @@ impl Settings {
             "quality": self.quality, "ads": self.ads, "pause_on_focus_loss": self.pause_on_focus_loss,
             "teammate_waypoints": self.teammate_waypoints, "reduced_motion": self.reduced_motion, "username": self.username, "scheme": self.scheme,
             "skin": self.skin,
+            "arms": self.arms, "speech_enabled": self.speech_enabled,
         })
     }
 
@@ -254,6 +281,8 @@ mod tests {
             "username",
             "scheme",
             "skin",
+            "arms",
+            "speech_enabled",
         ]
         .iter()
         .map(|k| k.to_string())
@@ -284,6 +313,9 @@ mod tests {
             username: "ALICE".into(),
             scheme: "city".into(),
             skin: "NIGHT".into(),
+            arms: "slim".into(),
+            speech_enabled: false,
+            muted_peers: Default::default(),
         };
         let json = saved.to_json();
         let back = Settings::from_json(&json);

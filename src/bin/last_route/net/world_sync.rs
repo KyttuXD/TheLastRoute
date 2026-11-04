@@ -66,7 +66,7 @@ const MAX_SKIN: usize = 24;
 const MAX_TASER_SLOT: i64 = 63;
 /// The skins by id, each with its figure colours by peer id. DEFAULT is the only one so far; an id no skin has
 /// is drawn as DEFAULT (see [`skin_colour`]).
-const SKINS: [(&str, [Color; 4]); 1] = [(SKIN_DEFAULT, PEER_COLOURS)];
+pub(crate) const SKINS: [(&str, [Color; 4]); 1] = [(SKIN_DEFAULT, PEER_COLOURS)];
 
 /// One runner's sample: the `_place` packet `{seq, depth, x, y, yaw, moving, sprinting, crouching}`.
 /// `x` and `y` are the runner's absolute ground cell (its window position moved by the window's origin, see
@@ -210,6 +210,15 @@ pub struct RemoteView {
     pub level: i32,
     /// The runner's skin id (`SKIN_DEFAULT` until its profile arrives).
     pub skin: String,
+    /// From its last sample: the figure's walk, sprint and crouch.
+    pub moving: bool,
+    pub sprinting: bool,
+    pub crouching: bool,
+    /// Slim arms (the ARMS setting resolved for its skin); false until the skin's layout is known here.
+    pub slim: bool,
+    /// Ground speed and vertical speed in metres per second, from the sample's gait.
+    pub speed: f32,
+    pub vy: f32,
 }
 
 /// What the room tells the game. The app acts on these between frames.
@@ -1088,6 +1097,20 @@ impl NetSession {
                     h,
                     level: crate::game::level_stack::owning_level(h),
                     skin: self.skins.get(peer).cloned().unwrap_or_else(|| SKIN_DEFAULT.into()),
+                    moving: r.sample.moving,
+                    sprinting: r.sample.sprinting,
+                    crouching: r.sample.crouching,
+                    slim: false,
+                    speed: if !r.sample.moving {
+                        0.0
+                    } else if r.sample.sprinting {
+                        crate::config::PLAYER_SPRINT_SPEED
+                    } else if r.sample.crouching {
+                        crate::config::PLAYER_CROUCH_SPEED
+                    } else {
+                        crate::config::PLAYER_WALK_SPEED
+                    },
+                    vy: 0.0,
                 }
             })
             .collect();

@@ -1,8 +1,8 @@
 //! Hiding animation, driven from `g.p.hidden` (set by `Game::enter_locker`, cleared by `leave_locker`):
 //!
 //! * the spot's door swings open and shut again when the runner goes in or comes out (`door_angle`);
-//! * the runner's view crouches and slides toward the spot over `PLAYER_SLIDE_TIME` and eases back on leaving
-//!   (`HideView::player`).
+//! * the runner's glide weight (`HideView::player`) runs over the data glide times; `render/hiding_cam.rs` turns it
+//!   into the camera.
 //!
 //! `HideView` keeps the last seen hiding state between frames, like the other views in this folder, and advances on
 //! the game clock. The spot's hinge side and the camera hook are applied by the caller (`render/scene.rs` for the prop,
@@ -16,15 +16,6 @@ pub const DOOR_SWING_TIME: f32 = 0.25;
 pub const DOOR_HOLD_TIME: f32 = 0.15;
 /// Fully open door angle, radians (about 100 degrees).
 pub const DOOR_OPEN_ANGLE: f32 = 1.75;
-/// Time for the runner to slide in and crouch, and to rise again on leaving.
-pub const PLAYER_SLIDE_TIME: f32 = 0.4;
-/// How far the eye drops at full crouch, metres.
-pub const PLAYER_CROUCH_DROP: f32 = 0.45;
-/// How far the view slides back into the spot at full crouch, metres.
-pub const PLAYER_SLIDE_BACK: f32 = 0.12;
-/// Forward pitch at full crouch, radians (a slight look down).
-pub const PLAYER_CROUCH_PITCH: f32 = -0.12;
-
 /// Total length of one door open-hold-close cycle.
 pub const DOOR_CYCLE_TIME: f32 = DOOR_SWING_TIME * 2.0 + DOOR_HOLD_TIME;
 
@@ -48,25 +39,10 @@ pub fn door_angle(elapsed: f32) -> f32 {
     open * DOOR_OPEN_ANGLE
 }
 
-/// The runner's view offset while hiding: eye drop, slide back along the view, pitch.
+/// The runner's glide into or out of the spot: `weight` 0 standing, 1 inside (the camera is `render/hiding_cam.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct PlayerHide {
     pub weight: f32,
-    pub drop: f32,
-    pub slide_back: f32,
-    pub pitch: f32,
-}
-
-impl PlayerHide {
-    fn from_weight(weight: f32) -> Self {
-        let e = smooth(weight);
-        PlayerHide {
-            weight: e,
-            drop: PLAYER_CROUCH_DROP * e,
-            slide_back: PLAYER_SLIDE_BACK * e,
-            pitch: PLAYER_CROUCH_PITCH * e,
-        }
-    }
 }
 
 #[derive(Default)]
@@ -104,7 +80,7 @@ impl HideView {
             }
             self.spot = hidden;
         }
-        let step = dt / PLAYER_SLIDE_TIME;
+        let step = dt / crate::render::hiding_cam::glide_seconds(hidden.is_some());
         self.weight = if hidden.is_some() {
             (self.weight + step).min(1.0)
         } else {
@@ -126,7 +102,7 @@ impl HideView {
     }
 
     pub fn player(&self) -> PlayerHide {
-        PlayerHide::from_weight(self.weight)
+        PlayerHide { weight: self.weight }
     }
 }
 
@@ -161,20 +137,18 @@ mod tests {
     }
 
     #[test]
-    fn crouch_takes_the_slide_time_and_returns() {
+    fn glide_weight_rises_and_returns() {
         let mut v = HideView::new();
         v.update(None, 0.0);
         v.update(Some(2), 0.0);
         let mut t = 0.0;
-        while t < PLAYER_SLIDE_TIME + 0.05 {
+        while t < 1.0 {
             t += 0.02;
             v.update(Some(2), t);
         }
-        let p = v.player();
-        assert!((p.drop - PLAYER_CROUCH_DROP).abs() < 1e-5);
-        assert!(v.door(2, t - 0.02) >= 0.0);
+        assert_eq!(v.player().weight, 1.0);
         let mid = t;
-        while t < mid + PLAYER_SLIDE_TIME + 0.05 {
+        while t < mid + 1.0 {
             t += 0.02;
             v.update(None, t);
         }

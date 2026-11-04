@@ -16,5 +16,10 @@
 		"profile_url": "https://sessionserver.mojang.com/session/minecraft/profile/{uuid}",
 		"profile_host": "sessionserver.mojang.com",
 		"textures_host": "textures.minecraft.net"
+	},
+	"layout": {
+		"overlay_rects": [[32, 0, 32, 16], [16, 32, 24, 16], [40, 32, 16, 16], [0, 32, 16, 16], [48, 48, 16, 16], [0, 48, 16, 16]],
+		"slim_probe_rects": [[50, 16, 2, 4], [54, 20, 2, 12], [42, 48, 2, 4], [46, 52, 2, 12]],
+		"legacy_mirror": [{"from": [0, 16], "to": [16, 48]}, {"from": [40, 16], "to": [32, 48]}]
 	}
 }

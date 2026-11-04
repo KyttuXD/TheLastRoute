@@ -354,6 +354,28 @@ mod tests {
         assert_eq!(r.splash_noise(&f, (5, 5)), 0.0);
     }
 
+    #[test]
+    fn hunters_avoid_deep_water_wade_when_chasing_and_replan_when_a_valve_floods_the_route() {
+        let r = rules();
+        let dry = WaterField::from_depths(&[], &[]);
+        let wade = WaterField::from_depths(&[((1, 0), 0.5)], &[]);
+        let flood = WaterField::from_depths(&[((1, 0), 0.5)], &[(2, 0)]);
+        // a hunter that cannot swim plans around deep water, in any state
+        for chasing in [false, true] {
+            assert!(r.step_factor(&flood, (2, 0), chasing).is_none(), "a flooded cell is a wall for a non-swimmer");
+        }
+        // a chase still wades the knee-deep cell, at a higher cost than dry ground
+        let wading = r.step_factor(&wade, (1, 0), true).expect("a chase wades");
+        assert!(wading > r.step_factor(&dry, (1, 0), true).unwrap());
+        // a valve flooding the route changes the field (version), so the planner replans, and the route cell closes
+        assert_ne!(dry.version(), flood.version());
+        assert_ne!(wade.version(), flood.version());
+        assert!(r.step_factor(&dry, (2, 0), false).is_some());
+        assert!(r.step_factor(&flood, (2, 0), false).is_none());
+        // a drained flow gives the dry field back, with the same version as before it ran
+        assert_eq!(WaterField::from_depths(&[], &[]).version(), dry.version());
+    }
+
     fn table(edit: impl FnOnce(&mut serde_json::Value)) -> Result<WaterRules, String> {
         let mut v: serde_json::Value = serde_json::from_str(include_str!("../data/hunters/water.json")).unwrap();
         edit(&mut v);

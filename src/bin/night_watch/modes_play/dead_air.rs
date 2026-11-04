@@ -212,6 +212,67 @@ pub struct DeadAirRun {
     flash_ms: f64,
     notes: Vec<(String, f64)>,
     anim_ms: f64,
+    /// Xivvy's walk on the booth floor: the room she was last in, the one she is walking from and how far along.
+    walk: Walk,
+}
+
+/// Xivvy's booth-floor walk: she eases from the stop of the room she left to the stop of the room she entered.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Walk {
+    room: &'static str,
+    from: &'static str,
+    ms: f64,
+    /// Time left on the lure flash in the doorway.
+    flash_ms: f64,
+}
+
+fn walk_num(key: &str) -> f64 {
+    play(&format!("walk.{key}"))
+}
+
+/// Where a room's stop is on the booth art (feet point, art pixels), or None when the booth cannot see that room.
+fn walk_stop(room: &str) -> Option<Vec2> {
+    let at = rules().pointer("/play/walk/stops")?.get(room)?.as_array()?;
+    Some(vec2(at.first()?.as_f64()? as f32, at.get(1)?.as_f64()? as f32))
+}
+
+/// The eased fraction of a walk (0 to 1) as `play.walk.ease` says ("smooth" or anything else for linear).
+fn walk_ease(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    match data::text(rules(), "play.walk.ease") {
+        "smooth" => t * t * (3.0 - 2.0 * t),
+        _ => t,
+    }
+}
+
+/// The point between two stops at raw progress `t`.
+fn walk_between(a: Vec2, b: Vec2, t: f64) -> Vec2 {
+    a + (b - a) * walk_ease(t) as f32
+}
+
+impl Walk {
+    fn new(room: &'static str) -> Self {
+        Self { room, from: room, ms: walk_num("walk_ms"), flash_ms: 0.0 }
+    }
+
+    /// Follows the sim: a new room starts a walk from the old one.
+    fn track(&mut self, room: &'static str, dt_ms: f64) {
+        if room != self.room {
+            self.from = self.room;
+            self.room = room;
+            self.ms = 0.0;
+        } else {
+            self.ms = (self.ms + dt_ms).min(walk_num("walk_ms"));
+        }
+        self.flash_ms = (self.flash_ms - dt_ms).max(0.0);
+    }
+
+    /// Where Xivvy stands on the booth art, or None when she is somewhere the booth cannot see.
+    fn position(&self) -> Option<Vec2> {
+        let to = walk_stop(self.room)?;
+        let from = walk_stop(self.from).unwrap_or(to);
+        Some(walk_between(from, to, self.ms / walk_num("walk_ms").max(1.0)))
+    }
 }
 
 impl DeadAirRun {
@@ -220,11 +281,13 @@ impl DeadAirRun {
         let night = night.clamp(1, nights());
         let map = building_map::load(DATA).expect("the dead air building map is embedded");
         let cam = map.cameras.first().map_or(1, |c| c.id);
+        let dead = DeadAir::new(DeadAirSetup::night(night, seed));
+        let start_room = dead.killer_room();
         let mut view = CallView::new();
         view.player.enabled = persist;
         Self {
             night,
-            dead: DeadAir::new(DeadAirSetup::night(night, seed)),
+            dead,
             call: dead_air::call_script(calls, night, false),
             view,
             map,
@@ -237,6 +300,7 @@ impl DeadAirRun {
             flash_ms: 0.0,
             notes: Vec::new(),
             anim_ms: 0.0,
+            walk: Walk::new(start_room),
         }
     }
 
@@ -245,6 +309,7 @@ impl DeadAirRun {
         let levels: HashMap<Hunter, i32> = levels.iter().map(|(id, level)| (Hunter::from_id(id), *level)).collect();
         let mut run = Self::new(calls, night, seed, false);
         run.dead = DeadAir::new(DeadAirSetup::custom(seed, levels));
+        run.walk = Walk::new(run.dead.killer_room());
         run.call = dead_air::call_script(calls, night, true);
         run
     }
@@ -366,6 +431,7 @@ impl DeadAirRun {
         let dt = dt_ms.min(play("max_step_ms"));
         let watch = self.cam_up.then(|| self.cam_room());
         let events = self.dead.step(dt, watch);
+        self.walk.track(self.dead.killer_room(), dt);
         self.call.update(self.dead.elapsed_ms(), dt);
         self.view.update(&self.call);
         for event in events {
@@ -424,6 +490,7 @@ impl DeadAirRun {
     fn lure(&mut self) {
         let room = self.cam_room();
         if self.dead.lure(room) {
+            self.walk.flash_ms = walk_num("flash_ms");
             let line = fill(text("lure_ok"), &[self.room_label(room)]);
             self.note(line);
         } else {
@@ -757,6 +824,36 @@ fn draw_booth(run: &DeadAirRun, art: &Art, sw: f32, sh: f32) {
         draw_triangle(q[0], q[2], q[3], SHUTTER);
         let centre = q.iter().fold(Vec2::ZERO, |acc, p| acc + *p) * 0.25;
         text_centered(text("shut"), centre.x, centre.y + 8.0, 26.0, Color::new(0.85, 0.88, 0.92, 1.0));
+    }
+    draw_walker(run, a);
+}
+
+/// Xivvy as her cut-out on the booth floor: walking between stops, and blinking in the doorway after a lure.
+fn draw_walker(run: &DeadAirRun, a: Rect) {
+    let facing = match data::text(rules(), "play.walk.facing") {
+        "back" => Facing::Back,
+        _ => Facing::Front,
+    };
+    let place = |feet: Vec2, alpha: f64| {
+        let feet = to_screen(a, feet);
+        let h = a.h * walk_num("height") as f32;
+        let rect = Rect::new(feet.x - h * walk_num("width_ratio") as f32 * 0.5, feet.y - h, h * walk_num("width_ratio") as f32, h);
+        let tint = Color::new(1.0, 1.0, 1.0, alpha as f32);
+        if !sprites::draw_hunter(hunter_id(Hunter::Xivvy), facing, rect, tint) {
+            figure(feet.x, feet.y, h, hunter_color("xivvy"), alpha as f32);
+        }
+    };
+    if run.walk.flash_ms > 0.0 {
+        let at = rules().pointer("/play/walk/flash_at").and_then(|v| v.as_array());
+        let blinks = walk_num("flash_blinks").max(1.0);
+        let phase = (1.0 - run.walk.flash_ms / walk_num("flash_ms").max(1.0)) * blinks * 2.0;
+        if let (Some(at), true) = (at, phase.floor() as i64 % 2 == 0) {
+            let p = vec2(at[0].as_f64().unwrap_or(0.0) as f32, at[1].as_f64().unwrap_or(0.0) as f32);
+            place(p, walk_num("flash_alpha"));
+        }
+    }
+    if let Some(p) = run.walk.position() {
+        place(p, walk_num("alpha"));
     }
 }
 
@@ -1168,5 +1265,67 @@ mod tests {
         for key in ["static_frame_ms", "static_lines", "static_alpha", "scanline_gap", "scanline_alpha", "alarm_blink_ms", "broken_flash_scale", "hunter_alpha", "hunter_height", "hunter_feet", "hunter_name"] {
             assert!(ui(key) > 0.0, "{key}");
         }
+    }
+
+    #[test]
+    fn the_walk_is_placed_between_two_stops_and_eased_per_data() {
+        let (a, b) = (walk_stop("officeL").unwrap(), walk_stop("officeR").unwrap());
+        assert_eq!(walk_between(a, b, 0.0), a);
+        assert_eq!(walk_between(a, b, 1.0), b);
+        let mid = walk_between(a, b, 0.5);
+        assert!((mid - (a + b) * 0.5).length() < 0.01, "halfway is the middle");
+        // "smooth" eases in: a quarter of the time covers less than a quarter of the way.
+        assert_eq!(data::text(rules(), "play.walk.ease"), "smooth");
+        assert!(walk_ease(0.25) < 0.25 && walk_ease(0.75) > 0.75);
+        assert!(walk_ease(-1.0) == 0.0 && walk_ease(2.0) == 1.0);
+    }
+
+    #[test]
+    fn a_new_room_starts_a_walk_from_the_old_stop() {
+        let mut w = Walk::new("officeL");
+        assert_eq!(w.position(), walk_stop("officeL"));
+        w.track("officeR", 0.0);
+        assert_eq!(w.position(), walk_stop("officeL"), "t=0 is the stop she left");
+        w.track("officeR", walk_num("walk_ms"));
+        assert_eq!(w.position(), walk_stop("officeR"), "t=1 is the new stop");
+    }
+
+    #[test]
+    fn xivvy_is_hidden_in_a_room_the_booth_cannot_see() {
+        let mut w = Walk::new("officeL");
+        w.track("lobby", 0.0);
+        assert!(walk_stop("lobby").is_none());
+        assert_eq!(w.position(), None);
+    }
+
+    #[test]
+    fn after_a_lure_she_heads_for_the_lure_cell() {
+        let calls = CallsData::load();
+        let mut r = DeadAirRun::new_custom(&calls, 1, &[("xivvy", 20)], 11);
+        r.update(16.0, &Controls { toggle_cam: true, ..Controls::default() });
+        let from = r.dead.killer_room();
+        let target = r.map.rooms.iter().map(|room| room.id.as_str()).filter(|id| !r.map.is_office(id) && *id != from && r.map.camera_for_room(id).is_some() && !data::list(data::building("dead_air"), "crawl_rooms").iter().any(|v| v.as_str() == Some(*id)))
+            .max_by_key(|id| r.map.path(from, id).map_or(0, |p| p.len())).unwrap();
+        let before = r.map.path(from, target).unwrap().len();
+        r.cam = r.map.camera_for_room(target).expect("a camera covers the target").id;
+        r.update(16.0, &Controls { lure: true, ..Controls::default() });
+        assert_eq!(r.dead.lure_target(), Some(target));
+        assert!(r.walk.flash_ms > 0.0, "the doorway flash starts with the lure");
+        for _ in 0..200 {
+            if r.end.is_some() {
+                break;
+            }
+            r.update(100.0, &Controls::default());
+        }
+        let now = r.dead.killer_room();
+        let after = r.map.path(now, target).map_or(0, |p| p.len());
+        assert!(r.end.is_some() || after < before, "she closed in on the lure ({before} to {after})");
+    }
+
+    #[test]
+    fn the_custom_night_runs_xivvy_at_the_slider_and_saves_nothing() {
+        let r = DeadAirRun::new_custom(&CallsData::load(), 1, &[("xivvy", 20)], 5);
+        assert_eq!(r.dead.level_of(Hunter::Xivvy), 20);
+        assert!(!r.persist);
     }
 }

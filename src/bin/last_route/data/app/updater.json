@@ -1,0 +1,15 @@
+{
+  "marker_file": "last_route.updated",
+  "marker_text": "updated to build {build}",
+  "line_fade_ms": 1500,
+  "line_hold_ms": 2500,
+  "strings": {
+    "checking": "Checking for updates",
+    "downloading": "Downloading build {build}: {percent}%",
+    "installing": "Installing",
+    "up_to_date": "Up to date (build {build})",
+    "updated": "Updated to build {build}",
+    "failed": "Update failed: {reason}",
+    "no_key": ""
+  }
+}

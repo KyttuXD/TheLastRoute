@@ -13,6 +13,8 @@ use std::collections::HashMap;
 use crate::building_map::{self, BuildingMap, MapView};
 use crate::calls_view::CallView;
 use crate::data::{self, CallsData, CALL_INCOMING_TEXT};
+use crate::framework::CallEvent;
+use crate::nw_sound;
 use crate::modes::classic::{self, ClassicNight, Event, Input, Meet, Outcome};
 use crate::save::{NightWatchSave, CLASSIC, NIGHTS};
 use crate::sprites::{self, Facing};
@@ -211,15 +213,24 @@ impl ClassicRun {
         } else {
             if c.door_l {
                 self.shut[0] = !self.shut[0];
+                nw_sound::event(MODE, "door_toggle", -0.6);
             }
             if c.door_r {
                 self.shut[1] = !self.shut[1];
+                nw_sound::event(MODE, "door_toggle", 0.6);
             }
             if c.toggle_cam {
                 self.cam_up = !self.cam_up;
+                nw_sound::event(MODE, "camera", 0.0);
             }
         }
-        self.lights = [c.light_l && !out, c.light_r && !out];
+        let lit = [c.light_l && !out, c.light_r && !out];
+        for (i, side) in [-0.6f32, 0.6].into_iter().enumerate() {
+            if lit[i] && !self.lights[i] {
+                nw_sound::event(MODE, "light_on", side);
+            }
+        }
+        self.lights = lit;
         let ids = self.cam_ids();
         if let Some(id) = c.pick_cam.filter(|id| ids.contains(id)) {
             self.cam = id;
@@ -253,6 +264,7 @@ impl ClassicRun {
     }
 
     fn play(&mut self, event: Event) {
+        self.sound(&event);
         match event {
             Event::Out => {
                 self.note(label("power_out_note"));
@@ -275,6 +287,25 @@ impl ClassicRun {
                 self.save_clear();
             }
             Event::Moved { .. } | Event::Arrived { .. } | Event::Attack { .. } | Event::Call(_) => {}
+        }
+    }
+
+    /// The cue for a rules event (the event-to-cue map is `events.classic` in `data/sounds.json`).
+    fn sound(&self, event: &Event) {
+        let side = |door: &str| if door == "doorL" { -0.6 } else { 0.6 };
+        match event {
+            Event::Out => nw_sound::event(MODE, "power_out", 0.0),
+            Event::Caught { .. } => nw_sound::event(MODE, "caught", 0.0),
+            Event::Win => nw_sound::event(MODE, "win", 0.0),
+            Event::Moved { .. } => nw_sound::event(MODE, "step", 0.0),
+            Event::Arrived { .. } => nw_sound::event(MODE, "arrive", 0.0),
+            Event::Attack { .. } => nw_sound::event(MODE, "lure", 0.0),
+            Event::Repelled { .. } => nw_sound::event(MODE, "repelled", 0.0),
+            Event::Pushed { .. } => nw_sound::event(MODE, "pushed", 0.0),
+            Event::Flinch { .. } => nw_sound::event(MODE, "flinch", 0.0),
+            Event::Hum { door, muffled, .. } => nw_sound::event(MODE, if *muffled { "hum_muffled" } else { "hum" }, side(door)),
+            Event::Call(CallEvent::Ring) => nw_sound::event(MODE, "ring", 0.0),
+            Event::Call(_) => {}
         }
     }
 

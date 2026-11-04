@@ -1,6 +1,7 @@
 {
 	"schema": "lr.skin_config/1",
 	"max_bytes": 65536,
+	"upload_max_bytes": 16384,
 	"fetch": {
 		"host_base": "https://skins.kyttuslab.org",
 		"host_path": "/{id}.png",

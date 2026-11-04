@@ -520,6 +520,22 @@ impl Bedtime {
         self.levels.map(custom_score)
     }
 
+    /// The score on the result screen: 10 points per level of the three hunters (the Custom Night sliders, or the
+    /// campaign night's own levels). A cleared night keeps all of it; a caught night keeps the share of hours survived.
+    pub fn result_score(&self, won: bool) -> i32 {
+        let full = self.score().unwrap_or_else(|| {
+            let sum: i32 = [Hunter::Loxelle, Hunter::Javelle, Hunter::Haelith]
+                .iter()
+                .map(|&w| base_level(self.levels, &self.row, w).clamp(0, self.rules.max_ai))
+                .sum();
+            sum * self.rules.points_per_level
+        });
+        if won {
+            return full;
+        }
+        full * self.rules.hour_index(self.elapsed) / self.rules.hours.max(1)
+    }
+
     pub fn step(&mut self, dt_ms: f64, input: BedtimeInput) -> Vec<BedtimeEvent> {
         let mut ev = Vec::new();
         if self.over.is_some() {
@@ -696,6 +712,20 @@ mod tests {
         assert_eq!(r.flash_seconds.len(), 6);
         assert_eq!(r.ratings.len(), 6);
         assert_eq!(r.level_bumps.len(), 2);
+    }
+
+    #[test]
+    fn result_score_is_ten_points_per_level_and_a_caught_night_keeps_the_hours_survived() {
+        let g = Bedtime::new(BedtimeOptions::campaign(1, 3));
+        assert_eq!(g.result_score(true), 30, "night 1 is levels 3, 0, 0");
+        assert_eq!(g.result_score(false), 0, "caught in the first hour keeps nothing");
+        let mut late = Bedtime::new(BedtimeOptions::campaign(4, 3));
+        late.elapsed = Rules::load().night_ms * 0.5;
+        assert_eq!(late.result_score(true), 340);
+        assert_eq!(late.result_score(false), 340 * 3 / 6);
+        let custom = Bedtime::new(BedtimeOptions::custom([20, 20, 20], 1));
+        assert_eq!(custom.result_score(true), custom_max_score());
+        assert_eq!(rating_of(custom.result_score(true), custom_max_score()), "Unbeatable!");
     }
 
     #[test]

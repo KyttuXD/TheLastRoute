@@ -407,6 +407,14 @@ impl Game {
         _sounds: &Sounds,
     ) {
         let li = self.p.hidden.unwrap();
+        // the look stays inside the locker window's cone (render/hiding_cam.rs); a rattling locker holds it still
+        let shaking = matches!(self.hide_check, Some((spot, _, _)) if spot == li);
+        if !crate::render::hiding_cam::look_locked(shaking) {
+            let facing = self.fac.hiding.get(li).map_or((0.0, 1.0), |h| (h.facing.0 as f32, h.facing.1 as f32));
+            let (yaw, pitch) = crate::render::hiding_cam::clamp_look(self.p.yaw, self.p.pitch, crate::render::hiding_cam::facing_yaw(facing));
+            self.p.yaw = yaw;
+            self.p.pitch = pitch;
+        }
         self.p.moving = false;
         self.p.sprinting = false;
         self.p.noise = 0.0;
@@ -1000,6 +1008,86 @@ mod remote_hunter_tests {
             queued.iter().any(|e| e["what"] == json!("hunter_door") && e["action"] == json!("open")),
             "the pull queues hunter_door: {queued:?}"
         );
+    }
+
+    #[test]
+    fn a_hidden_look_is_held_to_the_window_cone_and_frozen_while_the_locker_shakes() {
+        use crate::render::hiding_cam;
+        let (mut g, _, _) = run();
+        let li = 0usize;
+        let facing = (g.fac.hiding[li].facing.0 as f32, g.fac.hiding[li].facing.1 as f32);
+        let base = hiding_cam::facing_yaw(facing);
+        let (ym, pm) = (hiding_cam::cfg().yaw_deg.to_radians(), hiding_cam::cfg().pitch_deg.to_radians());
+        g.p.hidden = Some(li);
+        g.remote_hunters = true; // no hunter acts, so the only thing under test is the look
+        let (prof, sounds) = (g.prof(), crate::audio::Sounds::default());
+        // looking far off to the side and straight up is pulled back to the data's cone
+        g.p.yaw = base + 2.5;
+        g.p.pitch = 1.4;
+        g.update_hidden(0.0, &Controls::default(), &prof, &sounds);
+        let wrap = |a: f32| (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+        assert!((wrap(g.p.yaw - base) - ym).abs() < 1e-4, "yaw held at the cone edge");
+        assert!((g.p.pitch - pm).abs() < 1e-4, "pitch held at the cone edge");
+        // a look inside the cone is left alone
+        g.p.yaw = base + 0.2;
+        g.p.pitch = -0.1;
+        g.update_hidden(0.0, &Controls::default(), &prof, &sounds);
+        assert!((g.p.yaw - (base + 0.2)).abs() < 1e-5 && (g.p.pitch + 0.1).abs() < 1e-6);
+        // the look never moves the eye: the camera position is the spot's fixed centre (the shake is a model transform)
+        let l = g.fac.hiding[li].clone();
+        let centre = g.fac.locker_center(&l);
+        let eye = hiding_cam::eye_position(centre, facing, "locker");
+        let (a, ..) = hiding_cam::view_from(g.eye(), 1.0, (g.p.yaw, g.p.pitch), centre, facing, "locker");
+        let (b, ..) = hiding_cam::view_from(g.eye(), 1.0, (g.p.yaw + 0.3, g.p.pitch), centre, facing, "locker");
+        assert!((a - eye).length() < 1e-4, "the eye sits at the spot's fixed point");
+        assert!((a - b).length() < 1e-6, "turning the head does not move the eye");
+        // while the locker rattles the look is frozen (the data flag), so the shake cannot drag the view either
+        if hiding_cam::cfg().lock_look_while_shaking {
+            g.hide_check = Some((li, 0, 5.0));
+            g.p.yaw = base + 2.5;
+            g.p.pitch = 1.4;
+            g.update_hidden(0.0, &Controls::default(), &prof, &sounds);
+            assert_eq!((g.p.yaw, g.p.pitch), (base + 2.5, 1.4), "frozen, not clamped, while it shakes");
+        }
+    }
+
+    #[test]
+    fn a_guest_in_a_locker_starts_no_check_and_leaves_every_hunter_alone() {
+        let (mut g, _, _) = run();
+        let li = 0usize;
+        let centre = g.fac.hiding[li].cell.center();
+        g.remote_hunters = true;
+        g.p.hidden = Some(li);
+        g.hide_check = None;
+        g.locker_cooldown[li] = 0.0;
+        g.hunters[0].active = true;
+        g.hunters[0].stun = 0.0;
+        g.hunters[0].state = State::Chase;
+        g.hunters[0].pos = centre;
+        g.hunters[0].last_known = Some(centre);
+        let (prof, sounds) = (g.prof(), crate::audio::Sounds::default());
+        g.update_hidden(0.0, &Controls::default(), &prof, &sounds);
+        assert!(g.hide_check.is_none(), "only the host decides that a hunter checks a locker");
+        assert!(g.hunter_out.take().is_empty(), "no hunter event from a guest");
+        assert_eq!(g.hunters[0].state, State::Chase);
+        assert_eq!(g.hunters[0].stun, 0.0, "the guest did not stun the hunter");
+    }
+
+    #[test]
+    fn a_hunter_after_a_bot_is_no_danger_to_a_runner_in_a_locker() {
+        let (mut g, _, _) = run();
+        g.p.hidden = Some(0);
+        let centre = g.fac.hiding[0].cell.center();
+        g.hunters[0].active = true;
+        g.hunters[0].state = State::Chase;
+        g.hunters[0].pos = centre;
+        g.hunters[0].target_is_bot = true;
+        for h in g.hunters.iter_mut().skip(1) {
+            h.active = false;
+        }
+        assert_eq!(g.danger(), 0.0, "a hunter chasing an NPC teammate feeds no danger");
+        g.hunters[0].target_is_bot = false;
+        assert!(g.danger() > 0.0, "the same hunter after the runner does");
     }
 
     #[test]

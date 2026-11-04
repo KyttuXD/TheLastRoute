@@ -14,6 +14,8 @@ same hunters from the .bbmodel, so this keeps only what the bbmodel lacks:
   stride clip -> {"ref", "reverse"} from assets/hunters_blocky/stride_table.json (HunterStride, measured per model)
 
 Usage: python -I extract.py <original KyttusLabApp dir> <port app dir> [--emotes]
+       python -I extract.py --player <original KyttusLabApp dir> <port app dir>   (runner mannequin -> assets/player/anim/)
+       python -I extract.py --check <original KyttusLabApp dir> <port app dir>    (self-check of the player data)
 Only reads the original project.
 """
 import json
@@ -22,6 +24,8 @@ import struct
 import sys
 
 GAMEPLAY = ["idle", "walk", "chase", "sprint", "crouch", "charge", "flight", "jumpscare", "climb", "stun", "stun_recover"]
+PLAYER_CLIPS = ["idle", "walk", "chase", "sprint", "crouch", "stun", "stun_recover", "tpose", "sit", "lay", "jump", "fall", "climb"]
+PLAYER_RIGS = [("player_mannequin", "player_mannequin"), ("player_mannequin_slim", "player_mannequin_slim")]
 CMP_EPSILON = 0.00001
 
 
@@ -75,7 +79,7 @@ def r5(x):
     return round(x, 5)
 
 
-def extract(glb_path, bb_path, stride):
+def extract(glb_path, bb_path, stride, only=None):
     j, acc = read_glb(glb_path)
     nodes = j["nodes"]
     parent = {}
@@ -122,7 +126,7 @@ def extract(glb_path, bb_path, stride):
         for suffix in ("-loop", "_loop"):
             if name.endswith(suffix):
                 name, loop = name[: -len(suffix)], True
-        wanted = name in GAMEPLAY or name.startswith("scythe_") or ("--emotes" in sys.argv and name.startswith("emote_"))
+        wanted = (name in only) if only is not None else name in GAMEPLAY or name.startswith("scythe_") or ("--emotes" in sys.argv and name.startswith("emote_"))
         if not wanted:
             continue
         end = 0.0
@@ -157,7 +161,66 @@ def extract(glb_path, bb_path, stride):
     return out
 
 
+def player_paths(orig, app, rig):
+    src = os.path.join(orig, "assets", "hunters_blocky", rig)
+    return os.path.join(src, rig + ".glb"), os.path.join(src, rig + ".bbmodel"), src, os.path.join(app, "assets", "player")
+
+
+def player_main(orig, app):
+    import shutil
+    table = json.load(open(os.path.join(orig, "assets", "hunters_blocky", "stride_table.json"), encoding="utf-8"))
+    for rig, _ in PLAYER_RIGS:
+        glb, bb, src, dst = player_paths(orig, app, rig)
+        os.makedirs(os.path.join(dst, "anim"), exist_ok=True)
+        if rig.endswith("_slim"):
+            for f in (rig + ".bbmodel", rig + "_atlas.png"):
+                shutil.copyfile(os.path.join(src, f), os.path.join(dst, f))
+        data = extract(glb, bb, table.get(rig), only=PLAYER_CLIPS)
+        path = os.path.join(dst, "anim", rig + ".json")
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(data, fh, separators=(",", ":"))
+        print(rig, "unit", data["unit"], "bones", len(data["bones"]), "clips", len(data["clips"]), os.path.getsize(path))
+    # the slim rig must be driven by the regular rig's bones: report any group-name difference
+    names = []
+    for rig, _ in PLAYER_RIGS:
+        names.append(set(outliner_origins(json.load(open(player_paths(orig, app, rig)[1], encoding="utf-8")))))
+    print("slim vs regular group names:", "identical" if names[0] == names[1] else
+          "DIFFER only-regular=%s only-slim=%s" % (sorted(names[0] - names[1]), sorted(names[1] - names[0])))
+
+
+def player_check(orig, app):
+    """Asserts: 13 clips, every bone is a bbmodel group, clip lengths equal the GLB's own max key time."""
+    for rig, _ in PLAYER_RIGS:
+        glb, bb, src, dst = player_paths(orig, app, rig)
+        data = json.load(open(os.path.join(dst, "anim", rig + ".json"), encoding="utf-8"))
+        assert sorted(data["clips"]) == sorted(PLAYER_CLIPS), (rig, sorted(data["clips"]))
+        assert len(data["clips"]) == 13, rig
+        groups = set(outliner_origins(json.load(open(os.path.join(dst, rig + ".bbmodel") if rig.endswith("_slim")
+                                                    else os.path.join(dst, rig + ".bbmodel"), encoding="utf-8"))))
+        for b in data["bones"]:
+            # eye attachments and hand props are glb-only mount nodes (no bbmodel group); every other bone is a group
+            assert b[0] in groups or b[0].endswith(("Attachment", "Prop")), (rig, "bone not in bbmodel", b[0])
+        j, acc = read_glb(glb)
+        want = {}
+        for an in j["animations"]:
+            n = an["name"]
+            for suffix in ("-loop", "_loop"):
+                if n.endswith(suffix):
+                    n = n[: -len(suffix)]
+            want[n] = max(max(v[0] for v in acc(s["input"])) for s in an["samplers"])
+        for name, c in data["clips"].items():
+            assert abs(c["len"] - want[name]) < 1e-4, (rig, name, c["len"], want[name])
+        for name, ln in (("idle", 2.4), ("walk", 1.0), ("chase", 0.5), ("sprint", 0.67)):
+            assert abs(data["clips"][name]["len"] - ln) < 0.01, (rig, name, data["clips"][name]["len"])
+        assert data["clips"]["idle"]["loop"] and data["clips"]["walk"]["loop"], rig
+        print(rig, "ok:", len(data["clips"]), "clips,", len(data["bones"]), "bones")
+
+
 def main():
+    if sys.argv[1] == "--player":
+        return player_main(sys.argv[2], sys.argv[3])
+    if sys.argv[1] == "--check":
+        return player_check(sys.argv[2], sys.argv[3])
     orig, app = sys.argv[1], sys.argv[2]
     src = os.path.join(orig, "assets", "hunters_blocky")
     table = json.load(open(os.path.join(src, "stride_table.json"), encoding="utf-8"))

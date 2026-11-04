@@ -24,6 +24,7 @@ mod save;
 mod select;
 mod shell;
 mod sprites;
+mod nw_sound;
 mod typewriter;
 
 use classic_play::{ClassicRun, Flow};
@@ -166,6 +167,7 @@ async fn take_dead_air_screenshot(run: &dead_play::DeadAirRun, art: &dead_play::
 #[macroquad::main(window_conf)]
 async fn main() {
     let calls = CallsData::load();
+    nw_sound::init();
     let args: Vec<String> = std::env::args().collect();
     if let Some(path) = arg_value(&args, "--select-shot") {
         // The Night Select screen for one mode, on the demo save; `--custom` opens its Custom Night.
@@ -333,6 +335,7 @@ async fn main() {
                     "lure" => dead = Some(dead_play::DeadAirRun::new_custom(&calls, night as i32, &levels, seed)),
                     "bedroom" => bedtime = Some(bedtime_play::BedtimeRun::new_custom(&calls, night, [levels[0].1, levels[1].1, levels[2].1], seed)),
                     "story" => facility = Some(facility_play::FacilityRun::new_custom(&calls, [Some(levels[0].1), Some(levels[1].1), Some(levels[2].1)], seed)),
+                    "dayshift" => salvage_run = Some(salvage::SalvageRunRun::new_custom(&calls, &levels, seed)),
                     _ => {}
                 }
             }
@@ -344,7 +347,11 @@ async fn main() {
         }
         if let Some(run) = facility.as_mut() {
             let controls = facility_play::poll_controls(run);
-            match run.update(f64::from(dt) * 1000.0, &controls) {
+            let flow = run.update(f64::from(dt) * 1000.0, &controls);
+            for id in run.take_sound_events() {
+                nw_sound::event("facility", id, 0.0);
+            }
+            match flow {
                 facility_play::Flow::Stay => {}
                 facility_play::Flow::Hub => {
                     facility = None;
@@ -361,7 +368,11 @@ async fn main() {
         }
         if let Some(run) = descent.as_mut() {
             let controls = descent_play::poll_controls(run);
-            match run.update(f64::from(dt) * 1000.0, &controls, &calls) {
+            let flow = run.update(f64::from(dt) * 1000.0, &controls, &calls);
+            for cue in run.take_cues() {
+                nw_sound::event("descent", cue, 0.0);
+            }
+            match flow {
                 descent_play::Flow::Stay => {}
                 descent_play::Flow::Hub => {
                     descent = None;
@@ -377,7 +388,11 @@ async fn main() {
         }
         if let Some(run) = mixed.as_mut() {
             let controls = mixed_play::poll_controls(run);
-            if run.update(f64::from(dt) * 1000.0, &controls) == mixed_play::Flow::Hub {
+            let flow = run.update(f64::from(dt) * 1000.0, &controls);
+            for (id, pan) in run.take_sound_events() {
+                nw_sound::event("mixed", id, pan);
+            }
+            if flow == mixed_play::Flow::Hub {
                 mixed = None;
                 hub.set_toast("Back at the hub.");
             }
@@ -408,7 +423,11 @@ async fn main() {
         }
         if let Some(run) = bedtime.as_mut() {
             let controls = bedtime_play::poll_controls(run);
-            match run.update(f64::from(dt) * 1000.0, &controls) {
+            let flow = run.update(f64::from(dt) * 1000.0, &controls);
+            for c in run.take_sounds() {
+                nw_sound::cue(c.name, c.pan, c.k);
+            }
+            match flow {
                 bedtime_play::Flow::Stay => {}
                 bedtime_play::Flow::Hub => {
                     bedtime = None;
@@ -442,7 +461,11 @@ async fn main() {
         }
         if let Some(run) = salvage_run.as_mut() {
             let controls = salvage::poll_controls(run);
-            match run.update(f64::from(dt) * 1000.0, &controls, &calls) {
+            let flow = run.update(f64::from(dt) * 1000.0, &controls, &calls);
+            for cue in run.take_cues() {
+                nw_sound::event("salvage_run", cue, 0.0);
+            }
+            match flow {
                 salvage::Flow::Stay => {}
                 salvage::Flow::Hub => {
                     salvage_run = None;

@@ -17,6 +17,7 @@ pub mod cues;
 mod engine;
 pub mod falls;
 pub mod sound;
+pub mod tts;
 pub mod world;
 
 use macroquad::audio::{play_sound, PlaySoundParams, Sound};

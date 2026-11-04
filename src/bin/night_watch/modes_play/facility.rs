@@ -137,6 +137,12 @@ pub struct FacilityRun {
     flash_ms: f64,
     notes: Vec<(String, f64)>,
     anim_ms: f64,
+    /// How long the lift has been in its current phase, in ms (drives the ride picture).
+    phase_ms: f64,
+    last_phase: LiftPhase,
+    was_hidden: bool,
+    /// Sound event ids raised since the shell last drained them (`take_sound_events`).
+    cues: Vec<&'static str>,
 }
 
 impl FacilityRun {
@@ -156,7 +162,26 @@ impl FacilityRun {
             flash_ms: 0.0,
             notes: Vec::new(),
             anim_ms: 0.0,
+            phase_ms: 0.0,
+            last_phase: LiftPhase::Away,
+            was_hidden: false,
+            cues: Vec::new(),
         }
+    }
+
+    /// The sound event ids raised since the last call (keys of `play.sound_events`). HOOK: the shell passes each to
+    /// `nw_sound::event("facility", id)`.
+    pub fn take_sound_events(&mut self) -> Vec<&'static str> {
+        std::mem::take(&mut self.cues)
+    }
+
+    fn cue(&mut self, event: &'static str) {
+        self.cues.push(event);
+    }
+
+    /// How far Quenelle's lift has risen, 0 to 1 (the lift picture and its floor lamps follow it).
+    pub fn lift_progress(&self) -> f64 {
+        ride_progress(self.sim.lift_phase(), self.phase_ms)
     }
 
     fn note(&mut self, text: impl Into<String>) {
@@ -205,6 +230,9 @@ impl FacilityRun {
             if !self.sim.walk_through(door) && !walking {
                 self.note(label("no_door"));
             }
+            if !walking && self.sim.moving.is_some() {
+                self.cue(if self.sim.crawl { "crawl" } else { "door" });
+            }
         }
         if let Some(press) = c.press {
             for event in self.sim.interact(press) {
@@ -222,6 +250,17 @@ impl FacilityRun {
         self.view.update(&self.call);
         for event in events {
             self.play(event);
+        }
+        if self.sim.hidden != self.was_hidden {
+            self.was_hidden = self.sim.hidden;
+            self.cue(if self.was_hidden { "hide" } else { "unhide" });
+        }
+        let phase = self.sim.lift_phase();
+        if phase == self.last_phase {
+            self.phase_ms += dt;
+        } else {
+            self.last_phase = phase;
+            self.phase_ms = 0.0;
         }
         Flow::Stay
     }
@@ -244,9 +283,19 @@ impl FacilityRun {
             }
             Event::Pushed(hunter) => self.note(fill(label("pushed"), &[("name", hunter.name())])),
             Event::Alert(hunter) => self.note(fill(label("hears_warning"), &[("name", hunter.name())])),
-            Event::Bell(_) => self.note(label("lift_bell")),
-            Event::Open(_) => self.note(label("lift_open")),
-            Event::Leave(_) => self.note(label("lift_leaves")),
+            Event::Bell(_) => {
+                self.cue("lift_bell");
+                self.cue("lift_ride");
+                self.note(label("lift_bell"));
+            }
+            Event::Open(_) => {
+                self.cue("lift_open");
+                self.note(label("lift_open"));
+            }
+            Event::Leave(_) => {
+                self.cue("lift_leave");
+                self.note(label("lift_leaves"));
+            }
             Event::Station { ok: false, .. } => self.note(label("wrong")),
             Event::Deny => self.note(label("nothing_here")),
             Event::TaskDone(done) => {
@@ -286,6 +335,78 @@ impl FacilityRun {
         if save.save().is_err() {
             self.note(label("save_failed"));
         }
+    }
+}
+
+// ---- the lift picture and the walk-through sounds (`play` block of the rules) -----------------------------------
+
+fn play_num(path: &str) -> f64 {
+    data::num(data::rules(RULES_MODE), &format!("play.{path}"))
+}
+
+fn play_color(key: &str) -> Color {
+    let c = data::list(data::rules(RULES_MODE), &format!("play.lift_view.colors.{key}"));
+    let at = |i: usize| c.get(i).and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+    Color::new(at(0), at(1), at(2), at(3))
+}
+
+/// The cue name a sound event id maps to in `play.sound_events` (None for an id the rules do not know).
+pub fn cue_for_event(event: &str) -> Option<&'static str> {
+    data::rules(RULES_MODE)["play"]["sound_events"][event].as_str()
+}
+
+/// How far the lift has risen, 0 to 1: it climbs through the bell phase and stays at the top while the doors are open.
+pub fn ride_progress(phase: LiftPhase, phase_ms: f64) -> f64 {
+    match phase {
+        LiftPhase::Away => 0.0,
+        LiftPhase::Bell => (phase_ms / data::num(data::rules(RULES_MODE), "lift.bell_ms")).clamp(0.0, 1.0),
+        LiftPhase::Open => 1.0,
+    }
+}
+
+/// How far the lift doors have slid apart, 0 (shut) to 1 (fully open), once the lift is open.
+pub fn door_open(phase: LiftPhase, phase_ms: f64) -> f64 {
+    match phase {
+        LiftPhase::Open => (phase_ms / play_num("lift_view.door_slide_ms")).clamp(0.0, 1.0),
+        _ => 0.0,
+    }
+}
+
+/// The floor lamp that is lit for a ride progress, 0 (bottom) to `floors - 1` (top).
+pub fn indicator_floor(progress: f64, floors: usize) -> usize {
+    let top = floors.saturating_sub(1);
+    ((progress.clamp(0.0, 1.0) * top as f64).round() as usize).min(top)
+}
+
+/// The lift: shaft, two sliding doors, a floor indicator over the frame and Quenelle's silhouette rising behind the doors.
+fn draw_lift_view(run: &FacilityRun, sw: f32, sh: f32) {
+    let sim = &run.sim;
+    if sim.level(Hunter::Quenelle) <= 0 || !matches!(sim.room, Room::Control | Room::Lift) {
+        return;
+    }
+    let f = |key: &str| play_num(&format!("lift_view.frame.{key}")) as f32;
+    let frame = Rect::new(sw * f("x"), sh * f("y"), sw * f("w"), sh * f("h"));
+    let border = play_num("lift_view.frame_px") as f32;
+    let progress = run.lift_progress();
+    let open = door_open(sim.lift_phase(), run.phase_ms) as f32;
+    draw_rectangle(frame.x, frame.y, frame.w, frame.h, play_color("shaft"));
+    if progress > 0.0 {
+        let h = frame.h * play_num("lift_view.figure_h") as f32 * progress as f32;
+        let alpha = play_num("lift_view.figure_alpha") as f32;
+        hunter_figure(Hunter::Quenelle, frame.x + frame.w * 0.5, frame.y + frame.h, h, HUNTER_COLORS[Hunter::Quenelle as usize], alpha);
+    }
+    let half = frame.w * 0.5;
+    let slide = half * open * play_num("lift_view.door_open_max") as f32 * 2.0;
+    draw_rectangle(frame.x, frame.y, half - slide, frame.h, play_color("door"));
+    draw_rectangle(frame.x + half + slide, frame.y, half - slide, frame.h, play_color("door"));
+    draw_rectangle_lines(frame.x, frame.y, frame.w, frame.h, border, play_color("frame"));
+    let floors = play_num("lift_view.floors") as usize;
+    let lit = indicator_floor(progress, floors);
+    let (r, gap) = (play_num("lift_view.floor_lamp_r") as f32, play_num("lift_view.floor_lamp_gap") as f32);
+    let x0 = frame.x + frame.w * 0.5 - gap * (floors.saturating_sub(1)) as f32 * 0.5;
+    for i in 0..floors {
+        let color = if i == lit { if i + 1 == floors { play_color("lamp_top") } else { play_color("lamp_on") } } else { play_color("lamp_off") };
+        draw_circle(x0 + i as f32 * gap, frame.y - r - border, r, color);
     }
 }
 
@@ -647,6 +768,7 @@ fn draw_room(run: &FacilityRun, art: &Art, sw: f32, sh: f32) {
     let idx = run.sim.room as usize;
     let fit = || DrawTextureParams { dest_size: Some(vec2(sw, sh)), ..Default::default() };
     draw_texture_ex(&art.back[idx], 0.0, 0.0, WHITE, fit());
+    draw_lift_view(run, sw, sh);
     draw_hunters(run, sw, sh);
     draw_texture_ex(&art.front[idx], 0.0, 0.0, WHITE, fit());
 }
@@ -1024,6 +1146,85 @@ mod tests {
         for key in labels.keys() {
             assert!(!label(key).is_empty(), "ui.labels.{key} is empty");
         }
+    }
+
+    #[test]
+    fn the_lift_indicator_tracks_the_ride_and_tops_out_at_the_data_time() {
+        let bell = data::num(data::rules(RULES_MODE), "lift.bell_ms");
+        let floors = play_num("lift_view.floors") as usize;
+        assert!(floors >= 2);
+        assert_eq!(ride_progress(LiftPhase::Away, 99_999.0), 0.0);
+        assert_eq!(ride_progress(LiftPhase::Bell, 0.0), 0.0);
+        assert!((ride_progress(LiftPhase::Bell, bell * 0.5) - 0.5).abs() < 1e-9);
+        assert_eq!(ride_progress(LiftPhase::Bell, bell), 1.0);
+        assert_eq!(ride_progress(LiftPhase::Open, 0.0), 1.0);
+        let mut last = 0.0;
+        for step in 0..=20 {
+            let p = ride_progress(LiftPhase::Bell, bell * f64::from(step) / 20.0);
+            assert!((0.0..=1.0).contains(&p) && p >= last);
+            last = p;
+        }
+        assert_eq!(indicator_floor(0.0, floors), 0);
+        assert_eq!(indicator_floor(1.0, floors), floors - 1);
+        assert!(indicator_floor(0.5, floors) > 0 && indicator_floor(0.5, floors) < floors - 1);
+        assert_eq!(door_open(LiftPhase::Bell, 1e6), 0.0);
+        assert_eq!(door_open(LiftPhase::Open, 1e6), 1.0);
+
+        // a live shift: the run's progress climbs through the bell and is at the top when the doors open
+        let calls = calls();
+        let mut run = FacilityRun::new(&calls, 6, 11, false);
+        run.sim.god = true;
+        let (mut rang, mut opened) = (false, false);
+        for _ in 0..200_000 {
+            run.update(FRAME_MS, &Controls::default());
+            match run.sim.lift_phase() {
+                LiftPhase::Bell => {
+                    rang = true;
+                    assert!(run.lift_progress() < 1.0 || run.phase_ms >= bell - 1.0);
+                }
+                LiftPhase::Open => {
+                    assert_eq!(run.lift_progress(), 1.0);
+                    opened = true;
+                    break;
+                }
+                LiftPhase::Away => assert_eq!(run.lift_progress(), 0.0),
+            }
+        }
+        assert!(rang && opened, "the lift rang and opened");
+    }
+
+    #[test]
+    fn every_sound_event_in_the_rules_resolves_to_a_cue() {
+        let cues = &serde_json::from_str::<serde_json::Value>(include_str!("../data/sounds.json")).expect("sounds.json parses")["cues"];
+        let map = data::rules(RULES_MODE)["play"]["sound_events"].as_object().expect("play.sound_events is an object");
+        for id in ["door", "crawl", "hide", "unhide", "lift_bell", "lift_ride", "lift_open", "lift_leave"] {
+            assert!(map.contains_key(id), "{id} is mapped");
+        }
+        for (id, cue) in map {
+            assert_eq!(cue_for_event(id), cue.as_str());
+            assert!(cues.get(cue.as_str().expect("a cue name")).is_some(), "{id} maps to an unknown cue");
+        }
+        assert_eq!(cue_for_event("nope"), None);
+    }
+
+    #[test]
+    fn walking_hiding_and_the_lift_raise_sound_events() {
+        let calls = calls();
+        let mut run = FacilityRun::new(&calls, 6, 5, false);
+        run.sim.god = true;
+        run.update(FRAME_MS, &Controls { door: Some(Door::Left), ..Controls::default() });
+        assert_eq!(run.take_sound_events(), vec!["door"]);
+        assert!(run.take_sound_events().is_empty(), "drained");
+        let mut run = FacilityRun::new(&calls, 6, 5, false);
+        run.sim.god = true;
+        run.update(FRAME_MS, &Controls { door: Some(Door::Left), crawl: true, ..Controls::default() });
+        assert_eq!(run.take_sound_events(), vec!["crawl"]);
+        let mut run = FacilityRun::new(&calls, 6, 5, false);
+        run.sim.god = true;
+        run.update(FRAME_MS, &Controls { hide: true, ..Controls::default() });
+        assert_eq!(run.take_sound_events(), vec!["hide"]);
+        run.update(FRAME_MS, &Controls::default());
+        assert_eq!(run.take_sound_events(), vec!["unhide"]);
     }
 
     #[test]

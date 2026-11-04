@@ -198,6 +198,8 @@ pub struct DescentRun {
     flash_ms: f64,
     anim_ms: f64,
     notes: Vec<(String, f64)>,
+    /// Sound events raised since the shell last took them (`take_cues`).
+    cues: Vec<&'static str>,
     view: CallView,
 }
 
@@ -231,6 +233,7 @@ impl DescentRun {
             flash_ms: 0.0,
             anim_ms: 0.0,
             notes: Vec::new(),
+            cues: Vec::new(),
             view,
         }
     }
@@ -353,6 +356,11 @@ impl DescentRun {
         }
     }
 
+    /// The sound events raised since the last call. The shell plays each with `nw_sound::event("descent", id, 0.0)`.
+    pub fn take_cues(&mut self) -> Vec<&'static str> {
+        std::mem::take(&mut self.cues)
+    }
+
     fn note(&mut self, text: impl Into<String>) {
         self.notes.push((text.into(), ui("note_ms")));
         if self.notes.len() > ui("note_max") as usize {
@@ -361,6 +369,14 @@ impl DescentRun {
     }
 
     fn on_event(&mut self, event: DescentEvent) {
+        self.cues.push(match event {
+            DescentEvent::Step => "step",
+            DescentEvent::Wrong => "wrong",
+            DescentEvent::StageCleared { .. } => "stage_cleared",
+            DescentEvent::Ride { .. } => "ride",
+            DescentEvent::Won => "won",
+            DescentEvent::Caught => "caught",
+        });
         match event {
             DescentEvent::Step => {}
             DescentEvent::Wrong => {

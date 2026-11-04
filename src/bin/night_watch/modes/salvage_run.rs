@@ -553,6 +553,24 @@ impl SalvageRun {
         self.window.state
     }
 
+    /// How far the knock has run, 0 to 1 (0 outside the knock). The window picture raises Ysolde with it.
+    pub fn knock_progress(&self) -> f64 {
+        match self.window.state {
+            WindowState::Knock => (self.window.t / self.window.knock.max(1.0)).clamp(0.0, 1.0),
+            _ => 0.0,
+        }
+    }
+
+    /// How close the glass is to catching her, 0 to 1: the noise she has heard against `window.expose_ms`.
+    pub fn expose_progress(&self) -> f64 {
+        (self.window.expose / tuning().expose_ms.max(1.0)).clamp(0.0, 1.0)
+    }
+
+    /// The most the noise meter holds (`noise.max`).
+    pub fn noise_max(&self) -> f64 {
+        tuning().noise_max
+    }
+
     /// Advances the night by `dt_ms` with the shell's input and returns what happened this step.
     pub fn step(&mut self, dt_ms: f64, input: Input) -> Vec<Event> {
         let mut events = Vec::new();

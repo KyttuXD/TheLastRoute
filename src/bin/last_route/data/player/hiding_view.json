@@ -1,0 +1,12 @@
+{
+  "yaw_deg": 55.0,
+  "pitch_deg": 35.0,
+  "glide_enter_s": 0.6,
+  "glide_leave_s": 0.6,
+  "vent_lo": 1.38,
+  "vent_hi": 1.72,
+  "bed_eye": 0.16,
+  "wardrobe_eye": 1.5,
+  "lock_look_while_shaking": true,
+  "forward_offset": { "locker": 0.12, "wardrobe": 0.05, "bed": 0.0 }
+}

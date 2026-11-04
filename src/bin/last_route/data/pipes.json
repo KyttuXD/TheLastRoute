@@ -48,5 +48,7 @@
 		"standard": { "creep_scale": 1.0, "rise_scale": 1.0 },
 		"hard": { "creep_scale": 0.8, "rise_scale": 0.9 },
 		"nightmare": { "creep_scale": 0.6, "rise_scale": 0.8 }
-	}
+	},
+	"_authored_note": "Authored pipe floods on storeys that are not the sewer (game/hunter_pipes.rs). Each row: id (the flow id), trigger (the valve id whose turn starts it), level (the storey), cells (absolute [x, y] cells the water reaches) and optional steps (per cell, walkway steps from the pipe; default the cell index). The hunters path around its deep cells once the flow runs. Empty until a level authors one.",
+	"authored_floods": []
 }

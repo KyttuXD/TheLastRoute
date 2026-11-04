@@ -151,8 +151,9 @@ impl Game {
                     let seconds = def.taser_slow_seconds.unwrap_or(prof.taser_slow_seconds);
                     self.hunters[h].apply_slow(seconds, factor);
                 } else {
-                    self.hunters[h].apply_stun(prof.escape_stun, false);
-                    self.say("TASER HIT");
+                    let stun = taser_stun(&prof);
+                    self.hunters[h].apply_stun(stun, false);
+                    self.say(&format!("STUNNED {:.1}s", stun));
                 }
             }
             None => self.say("TASER // NO TARGET"),
@@ -295,5 +296,75 @@ impl Game {
         if c.drop {
             self.drop_selected();
         }
+    }
+}
+
+/// The taser's stun in seconds: the profile's escape stun less `stun_offset` (never under `stun_min`), both from
+/// data/player/taser.json (game_config.gd: taser_stun = escape_stun - 0.2 on every difficulty). A `taser_stun` field on
+/// `Profile` would replace this.
+pub fn taser_stun(prof: &Profile) -> f32 {
+    static RULES: std::sync::OnceLock<(f32, f32)> = std::sync::OnceLock::new();
+    let (offset, min) = *RULES.get_or_init(|| {
+        let v = crate::content::embedded::data_under("player/taser.json")
+            .next()
+            .and_then(|(_, t)| serde_json::from_str::<serde_json::Value>(t).ok());
+        let get = |k: &str, d: f64| v.as_ref().and_then(|v| v.get(k)).and_then(|x| x.as_f64()).unwrap_or(d) as f32;
+        (get("stun_offset", 0.2), get("stun_min", 0.5))
+    });
+    (prof.escape_stun - offset).max(min)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::Content;
+    use crate::world::catalog::Catalog;
+
+    /// A standard game with a hunter 0.8 m in front of the runner (None when no spot has a clear line).
+    fn face_a_hunter() -> Option<(Game, usize)> {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-ITEMS-7", 0, &content, &catalog);
+        g.relays_collected = 1;
+        g.ensure_hunters(&content);
+        let t = g.hunters.iter().position(|h| h.active && !h.def.taser_immune && !h.def.melee_immune && !h.gimmick.hidden_from_view())?;
+        let hp = g.hunters[t].pos;
+        for (dx, dz) in [(0.8f32, 0.0f32), (-0.8, 0.0), (0.0, 0.8), (0.0, -0.8)] {
+            let from = (hp.0 + dx, hp.1 + dz);
+            if g.fac.has_line_of_sight(from, hp) {
+                g.p.pos = from;
+                g.p.yaw = (-(hp.0 - from.0)).atan2(-(hp.1 - from.1));
+                g.hunters[t].stun = 0.0;
+                return Some((g, t));
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn the_standard_taser_stun_is_the_escape_stun_less_the_offset() {
+        let prof = Difficulty::Standard.profile();
+        assert!((taser_stun(&prof) - (prof.escape_stun - 0.2)).abs() < 1e-5);
+        assert!(taser_stun(&prof) < prof.escape_stun);
+    }
+
+    #[test]
+    fn the_taser_stuns_for_the_taser_time_and_says_so() {
+        let Some((mut g, t)) = face_a_hunter() else { return };
+        let want = taser_stun(&g.prof());
+        g.taser_cd = 0.0;
+        g.fire_taser(&Sounds::default());
+        assert!((g.hunters[t].stun - want).abs() < 1e-4, "stun {} want {want}", g.hunters[t].stun);
+        assert_eq!(g.toast, format!("STUNNED {:.1}s", want));
+    }
+
+    #[test]
+    fn a_crowbar_hit_stuns_and_prints_no_stunned_message() {
+        let Some((mut g, t)) = face_a_hunter() else { return };
+        g.slots[g.selected] = Some(Slot { item: Item::Crowbar, n: 10 });
+        g.toast.clear();
+        g.melee_cd = 0.0;
+        g.swing(Item::Crowbar, &Sounds::default());
+        assert!(g.hunters[t].stun > 0.0, "the hit lands");
+        assert!(!g.toast.contains("STUNNED"), "toast was {:?}", g.toast);
     }
 }

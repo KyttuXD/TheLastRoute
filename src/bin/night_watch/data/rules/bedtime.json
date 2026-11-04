@@ -48,6 +48,32 @@
 		{ "ai": [20, 12, 9], "breath_ms": 2560, "near_ms": 3360, "first_ms": [3000, 3000], "rest_ms": [1500, 5000] }
 	],
 	"custom_night": { "ai": [0, 0, 0], "breath_ms": 3200, "near_ms": 4200, "first_ms": [3000, 3000], "rest_ms": [7000, 7000] },
+	"look": {
+		"yaw_limit": 1.25,
+		"pitch_up": 0.7,
+		"pitch_down_share": 0.6,
+		"sensitivity": 0.0022,
+		"key_yaw_rate": 1.4,
+		"key_pitch_rate": 1.0,
+		"fov_deg": 75
+	},
+	"scene": {
+		"half": 2.5,
+		"eye": [0.0, 0.95, 1.9],
+		"closet": { "x": -2.5, "z": -0.9, "width": 1.2, "height": 2.2 },
+		"doorway": { "x": 2.5, "z": -0.9, "width": 1.2, "height": 2.2 },
+		"bed_light": { "x": 0.0, "y": 0.9, "z": 0.5 },
+		"bed_floor": { "x": 0.15, "z": 0.75, "width": 1.8, "depth": 0.9, "height": 0.5 }
+	},
+	"sounds": {
+		"max_distance": 8.0,
+		"events": ["breath", "breathing", "near", "stir"],
+		"hunters": {
+			"loxelle": { "cue": "bed_breath", "far": [-2.6, -0.9], "near": [-2.6, -0.9] },
+			"javelle": { "cue": "breath", "far": [5.0, -0.9], "near": [2.6, -0.9] },
+			"haelith": { "cue": "step", "far": [-1.7, -2.0], "near": [0.15, 0.75] }
+		}
+	},
 	"ui": {
 		"max_step_ms": 100,
 		"result_lock_ms": 900,
@@ -85,13 +111,14 @@
 			"hall": "HALL",
 			"shut": "SHUT",
 			"restless": "RESTLESS",
-			"hint": "HOLD A CLOSET DOOR   HOLD D HALL LIGHT   HOLD F BED LIGHT   TAB PLAN   M MUTE CALL   ESC HUB",
+			"hint": "HOLD A CLOSET DOOR   HOLD D HALL LIGHT   HOLD F BED LIGHT   ARROWS OR RIGHT MOUSE LOOK   TAB PLAN   M MUTE CALL   ESC HUB",
 			"night": "NIGHT {n}",
 			"cleared": "NIGHT {n} CLEARED",
 			"battery": "BATTERY {pct}%",
 			"midnight": "12 AM",
 			"hour": "{h} AM",
 			"won_line": "6 AM. The house is quiet again.",
+				"score": "SCORE {n}",
 			"caught": "CAUGHT",
 			"next_night": "ENTER  NEXT NIGHT",
 			"hub_night": "ENTER  BACK TO THE HUB",

@@ -283,6 +283,18 @@ pub fn scale_for(w: f32, h: f32) -> f32 {
     (w / 480.0).min(h / 270.0).max(0.05) * (480.0 / 1280.0)
 }
 
+/// Opacity of the update line: full while the check runs, full for `hold_ms` once final, then a linear
+/// fade over `fade_ms`.
+pub fn update_line_alpha(is_final: bool, final_ms: f32, hold_ms: f32, fade_ms: f32) -> f32 {
+    if !is_final || final_ms <= hold_ms {
+        return 1.0;
+    }
+    if fade_ms <= 0.0 {
+        return 0.0;
+    }
+    (1.0 - (final_ms - hold_ms) / fade_ms).clamp(0.0, 1.0)
+}
+
 /// Every box of the card, in window pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Layout {
@@ -678,6 +690,12 @@ pub struct BootLoader {
     body: Option<Font>,
     title: Option<Font>,
     bake: Option<Texture2D>,
+    /// The update check's status, when the app started one.
+    update: Option<crate::app::updater::UpdateHandle>,
+    /// Milliseconds the status has been final (the line holds, then fades).
+    update_final_ms: f32,
+    /// This frame's update line and its opacity.
+    update_view: Option<(String, f32)>,
 }
 
 impl BootLoader {
@@ -703,7 +721,15 @@ impl BootLoader {
                 "LiberationSans-Bold.ttf",
             ]),
             bake: None,
+            update: None,
+            update_final_ms: 0.0,
+            update_view: None,
         }
+    }
+
+    /// Shows the update check's progress line under the card.
+    pub fn set_update(&mut self, handle: crate::app::updater::UpdateHandle) {
+        self.update = Some(handle);
     }
 
     /// A startup step has completed: the bar eases to its value and the status shows its text.
@@ -744,6 +770,7 @@ impl BootLoader {
     pub fn draw_frame(&mut self) {
         let dt = get_frame_time().clamp(0.0, 0.1);
         self.clock += dt;
+        self.refresh_update_line(dt);
         let Some(alpha) = self.state.tick(dt) else {
             self.release();
             return;
@@ -753,6 +780,22 @@ impl BootLoader {
         }
         let lay = Layout::new(screen_width(), screen_height());
         self.draw(alpha, &lay);
+    }
+
+    fn refresh_update_line(&mut self, dt: f32) {
+        use crate::app::updater::UpdaterText;
+        let Some(status) = self.update.as_ref().and_then(|h| h.lock().ok().map(|s| s.clone())) else {
+            return;
+        };
+        let text = UpdaterText::standard();
+        let is_final = UpdaterText::is_final(&status);
+        if is_final {
+            self.update_final_ms += dt * 1000.0;
+        } else {
+            self.update_final_ms = 0.0;
+        }
+        let alpha = update_line_alpha(is_final, self.update_final_ms, text.line_hold_ms, text.line_fade_ms);
+        self.update_view = text.line(&status).map(|line| (line, alpha)).filter(|(_, a)| *a > 0.0);
     }
 
     /// Frees the fonts and the bake once the card is gone.
@@ -797,6 +840,11 @@ impl BootLoader {
         draw_rectangle(card.x, card.y, card.w, card.h, c8(13, 8, 15, 0.91 * a));
         draw_rectangle_lines(card.x, card.y, card.w, card.h, k, c8(238, 222, 210, 0.2 * a));
         let cx = l.centre_x();
+        if let Some((line, la)) = &self.update_view {
+            let size = 14.0 * k;
+            let w = text_w(body, line, size, 0.0);
+            put(body, line, cx - w / 2.0, card.y + card.h + 28.0 * k, size, 0.0, c8(238, 222, 210, 0.7 * la * a));
+        }
 
         // the overline: amber, 700, .19em
         let over = "SIGNAL ARCHIVE // ROUTE SYNC";
@@ -1004,6 +1052,20 @@ mod tests {
 
     fn close(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() <= eps
+    }
+
+    #[test]
+    fn the_update_line_holds_then_fades_with_the_json_timings() {
+        use crate::app::updater::{UpdateStatus, UpdaterText};
+        let t = UpdaterText::standard();
+        assert_eq!(update_line_alpha(false, 99999.0, t.line_hold_ms, t.line_fade_ms), 1.0, "a running check never fades");
+        assert_eq!(update_line_alpha(true, t.line_hold_ms, t.line_hold_ms, t.line_fade_ms), 1.0);
+        let mid = update_line_alpha(true, t.line_hold_ms + t.line_fade_ms / 2.0, t.line_hold_ms, t.line_fade_ms);
+        assert!(mid > 0.4 && mid < 0.6, "{mid}");
+        assert_eq!(update_line_alpha(true, t.line_hold_ms + t.line_fade_ms, t.line_hold_ms, t.line_fade_ms), 0.0);
+        assert!(t.line(&UpdateStatus::LocalBuild).is_none(), "a local build shows nothing");
+        assert_eq!(t.line(&UpdateStatus::Installing).as_deref(), Some("Installing"));
+        assert_eq!(t.line(&UpdateStatus::UpToDate(12)).as_deref(), Some("Up to date (build 12)"));
     }
 
     #[test]

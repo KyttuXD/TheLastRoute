@@ -128,8 +128,9 @@ async fn amain(stress: Option<app::stress::Config>) {
         return;
     }
     // a stress run never looks for an update, so nothing downloads or prompts while it measures
+    let mut update = None;
     if arg("--screenshot").is_none() && stress.is_none() {
-        app::updater::check_on_start();
+        update = Some(app::updater::start_check());
     }
-    app::run(arg("--screenshot"), stress).await;
+    app::run(arg("--screenshot"), stress, update).await;
 }

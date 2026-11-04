@@ -105,6 +105,37 @@
 	"task_level": { "every_tasks": 2, "cap": 2 },
 	"move_window": { "base_ms": 13000, "per_level_ms": 500, "min_ms": 2500, "width_ms": 3000 },
 	"lift": { "base_ms": 30000, "per_level_ms": 1000, "min_ms": 14000, "bell_ms": 3500, "open_ms": 5000, "expose_ms": 1500 },
+	"play": {
+		"lift_view": {
+			"frame": { "x": 0.40, "y": 0.26, "w": 0.20, "h": 0.42 },
+			"frame_px": 6,
+			"floors": 5,
+			"floor_lamp_r": 7,
+			"floor_lamp_gap": 22,
+			"door_slide_ms": 600,
+			"door_open_max": 0.42,
+			"figure_h": 0.92,
+			"figure_alpha": 0.85,
+			"colors": {
+				"frame": [0.30, 0.28, 0.25, 1.0],
+				"shaft": [0.02, 0.02, 0.03, 0.92],
+				"door": [0.46, 0.44, 0.40, 1.0],
+				"lamp_off": [0.20, 0.18, 0.14, 1.0],
+				"lamp_on": [0.88, 0.69, 0.29, 1.0],
+				"lamp_top": [0.88, 0.31, 0.29, 1.0]
+			}
+		},
+		"sound_events": {
+			"door": "door",
+			"crawl": "rustle",
+			"hide": "rustle",
+			"unhide": "latch",
+			"lift_bell": "ring",
+			"lift_ride": "hum",
+			"lift_open": "hinge",
+			"lift_leave": "clunk"
+		}
+	},
 	"levels": [[0, 8, 10, 10, 11, 13], [0, 0, 10, 10, 10, 12], [0, 0, 0, 6, 9, 12]],
 	"nights": {
 		"start_dist": [3, 2, 2, 2, 2, 2],

@@ -270,6 +270,11 @@ pub struct MixedRun {
     call: CallScript,
     view: CallView,
     anim_ms: f64,
+    /// Where a persisting run writes its save (None: the game's own progress file). Tests point it at a temp file.
+    save_path: Option<std::path::PathBuf>,
+    /// Sound events raised since the shell last drained them (`take_sound_events`): the event id and its pan.
+    sounds: Vec<(&'static str, f32)>,
+    was_winding: bool,
 }
 
 impl MixedRun {
@@ -311,7 +316,25 @@ impl MixedRun {
             call: call_script(),
             view,
             anim_ms: 0.0,
+            save_path: None,
+            sounds: Vec::new(),
+            was_winding: false,
         }
+    }
+
+    /// Makes this run persist its clears to `path` instead of the game's progress file (tests and tools).
+    #[cfg(test)]
+    fn persist_to(&mut self, path: std::path::PathBuf) {
+        self.best_endless = NightWatchSave::load_from(&path).best_score(ENDLESS_BEST);
+        self.persist = true;
+        self.save_path = Some(path);
+    }
+
+    /// The sound events raised since the last call, as (event id, pan). HOOK: the shell passes each to
+    /// `nw_sound::event("mixed", id, pan)`; `sounds` in `data/rules/mixed_shift.json` names the cue behind each id.
+    #[allow(dead_code)]
+    pub fn take_sound_events(&mut self) -> Vec<(&'static str, f32)> {
+        std::mem::take(&mut self.sounds)
     }
 
     /// Starts shift `shift` (0 QUIET to 4 ENDLESS) on a fresh seed.
@@ -334,6 +357,8 @@ impl MixedRun {
         self.end_ms = 0.0;
         self.flash_ms = 0.0;
         self.notes.clear();
+        self.sounds.clear();
+        self.was_winding = false;
         self.call = call_script();
     }
 
@@ -469,11 +494,19 @@ impl MixedRun {
         }
         night.set_monitor(self.cam_up);
         night.set_room(CAM_ROOMS[(self.cam - 1) as usize]);
+        let winding = c.wind && self.cam_up;
+        if winding && !self.was_winding {
+            self.sounds.push(("box_winding", 0.0));
+        }
+        self.was_winding = winding;
 
         let dt = dt_ms.min(ui_ms("max_step_ms"));
         self.call.update(night.elapsed_ms(), dt);
         let events = night.step(dt);
         for ev in &events {
+            if let Some(sound) = sound_for(ev, night) {
+                self.sounds.push(sound);
+            }
             if let Some(text) = describe(ev, night) {
                 self.note(text);
             }
@@ -490,7 +523,10 @@ impl MixedRun {
         if !self.persist {
             return;
         }
-        let mut save = NightWatchSave::load();
+        let mut save = match &self.save_path {
+            Some(path) => NightWatchSave::load_from(path),
+            None => NightWatchSave::load(),
+        };
         match end.outcome {
             Outcome::Win => {
                 save.record_level_clear(MODE, self.shift as u32 + 1);
@@ -506,11 +542,57 @@ impl MixedRun {
             },
             Outcome::Ongoing => return,
         }
-        if save.save().is_err() {
+        let saved = match &self.save_path {
+            Some(path) => save.save_to(path),
+            None => save.save(),
+        };
+        if saved.is_err() {
             self.note(label("notes.save_failed"));
         }
     }
 
+}
+
+/// Every sound event id the shell raises. Each must have a cue in `sounds` of `data/rules/mixed_shift.json`.
+#[cfg(test)]
+const SOUND_IDS: [&str; 12] = [
+    "arrive", "vent_knock", "door_bang", "counter_tell", "box_winding", "box_wound", "box_stop", "door_pop", "caught", "dawn",
+    "decoy", "echo",
+];
+
+/// The cue behind a sound event id, from the rules' `sounds` map (None for an id the rules do not know).
+#[allow(dead_code)]
+pub fn cue_for_event(id: &str) -> Option<&'static str> {
+    data::rules(MODE)["sounds"][id].as_str()
+}
+
+fn pan_of(side: Option<Side>) -> f32 {
+    match side {
+        Some(Side::L) => -0.6,
+        Some(Side::R) => 0.6,
+        _ => 0.0,
+    }
+}
+
+/// The sound for an event: the tells (a vent knock, a door bang), the music box, a threat's arrival and the ending.
+/// Pure: the id and pan only; `cue_for_event` turns the id into a cue.
+fn sound_for(ev: &Event, night: &MixedShift) -> Option<(&'static str, f32)> {
+    Some(match ev {
+        Event::Arrive { side, .. } => ("arrive", pan_of(*side)),
+        Event::Tell { pool, side, .. } => match (night.threat(*pool).kind(), side) {
+            (Kind::Vent, _) => ("vent_knock", pan_of(*side)),
+            (_, Some(_)) => ("door_bang", pan_of(*side)),
+            (_, None) => ("counter_tell", 0.0),
+        },
+        Event::Wound { .. } => ("box_wound", 0.0),
+        Event::Stop { .. } => ("box_stop", 0.0),
+        Event::Strain { side } => ("door_pop", pan_of(Some(*side))),
+        Event::Decoy { side, .. } => ("decoy", pan_of(Some(*side))),
+        Event::Echo { .. } => ("echo", 0.0),
+        Event::Kill { .. } => ("caught", 0.0),
+        Event::Win => ("dawn", 0.0),
+        _ => return None,
+    })
 }
 
 /// The notes for the events a player can act on or must notice. Pure: the names come from the night's threats.
@@ -1222,5 +1304,126 @@ mod tests {
             assert!(data::HUNTER_SPRITE_FILES.iter().any(|(h, _, _)| *h == id), "{id} has no sprite embedded");
         }
         assert_eq!(hunter_id(0), "haelith", "pool 0 is the first threat in the cast");
+    }
+
+    /// A scripted defender, driven only through `Controls`. It watches which threats stand armed at a gate (the tell)
+    /// and answers each: the matching door for a walker, a held seal for a crawler. It never touches the monitor, so a
+    /// counter never builds and the monitor-gated threat never gets its echoes. The old reactive `bot` loses because it
+    /// looks for threats with `occupants`, which leaves out armed ones: a threat at a door is armed the moment it
+    /// arrives, so the bot's door logic never fires. (No rules bug: the tell lead is never below the floor.)
+    fn defender(run: &MixedRun, _frame: u32) -> Controls {
+        let Some(night) = run.night.as_ref() else { return idle() };
+        let (mut door, mut seal) = ([false; 2], [false; 3]);
+        for &p in night.roster() {
+            let t = night.threat(p);
+            let Some(side) = t.gate() else { continue };
+            if t.kind() == Kind::Vent {
+                seal[side_ix(side)] = true;
+            } else if side != Side::T {
+                door[side_ix(side)] = true;
+            }
+        }
+        Controls { door: [door[0] != run.want[0], door[1] != run.want[1]], seal, ..idle() }
+    }
+
+    fn temp_save(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("nw_mixed_{tag}_{}", std::process::id())).join("progress.json")
+    }
+
+    /// Plays QUIET with the defender, persisting to `path`. Returns the outcome and every sound event raised.
+    fn defend_quiet(seed: i64, path: &std::path::Path) -> (Outcome, Vec<&'static str>) {
+        let mut run = MixedRun::new(seed, false);
+        run.persist_to(path.to_path_buf());
+        run.begin(0);
+        let (mut steps, mut heard) = (0, Vec::new());
+        while run.end.is_none() && steps < MAX_STEPS {
+            let c = defender(&run, steps);
+            run.update(16.0, &c);
+            heard.extend(run.take_sound_events().into_iter().map(|(id, _)| id));
+            steps += 1;
+        }
+        (run.end.expect("QUIET ended").outcome, heard)
+    }
+
+    #[test]
+    fn the_scripted_defender_clears_quiet_and_the_win_is_saved() {
+        for seed in [1, 20_261_104, 77] {
+            let path = temp_save("win");
+            let _ = std::fs::remove_file(&path);
+            let (outcome, _) = defend_quiet(seed, &path);
+            assert_eq!(outcome, Outcome::Win, "the defender clears QUIET (seed {seed})");
+            let save = NightWatchSave::load_from(&path);
+            assert_eq!(save.cleared_levels(MODE), vec![1], "cleared_mixed_shift lists the shift (seed {seed})");
+            assert_eq!(save.best_score(MODE), 10);
+            assert_eq!(save.night_best(MODE, 1), Some(10));
+            let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn a_second_win_keeps_the_best_score_and_does_not_duplicate_the_clear() {
+        let path = temp_save("best");
+        let _ = std::fs::remove_file(&path);
+        let mut seeded = NightWatchSave::default();
+        seeded.record_level_clear(MODE, 1);
+        seeded.record_best(MODE, 25);
+        seeded.record_night_best(MODE, 1, 25);
+        seeded.save_to(&path).unwrap();
+        let (outcome, _) = defend_quiet(5, &path);
+        assert_eq!(outcome, Outcome::Win);
+        let save = NightWatchSave::load_from(&path);
+        assert_eq!(save.best_score(MODE), 25, "a lower score never replaces the best");
+        assert_eq!(save.night_best(MODE, 1), Some(25));
+        assert_eq!(save.cleared_levels(MODE), vec![1]);
+        let (again, _) = defend_quiet(6, &path);
+        assert_eq!(again, Outcome::Win);
+        assert_eq!(NightWatchSave::load_from(&path).cleared_levels(MODE), vec![1], "two clears list the shift once");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn every_sound_event_resolves_to_a_cue_and_the_tells_are_heard() {
+        let cues: Value = serde_json::from_str(include_str!("../data/sounds.json")).expect("sounds.json parses");
+        for id in SOUND_IDS {
+            let cue = cue_for_event(id).unwrap_or_else(|| panic!("sound event {id} has no cue in rules.sounds"));
+            assert!(cues["cues"].get(cue).is_some(), "{id} -> {cue} is not a cue in data/sounds.json");
+        }
+        assert_eq!(cue_for_event("no_such_event"), None);
+        // the tells by kind: a crawler knocks in the vent, a walker bangs the door, a counter has no side
+        let night = MixedShift::start(3, 3);
+        let tell = |pool: usize, side: Option<Side>| Event::Tell { pool, side, lead: 3000.0, rearm: false };
+        assert_eq!(sound_for(&tell(6, Some(Side::L)), &night), Some(("vent_knock", -0.6)));
+        assert_eq!(sound_for(&tell(4, Some(Side::R)), &night), Some(("door_bang", 0.6)));
+        assert_eq!(sound_for(&tell(0, None), &night), Some(("counter_tell", 0.0)));
+        assert_eq!(sound_for(&Event::Wound { pool: 7 }, &night).map(|s| s.0), Some("box_wound"));
+        assert_eq!(sound_for(&Event::Arrive { pool: 4, room: None, side: Some(Side::L) }, &night).map(|s| s.0), Some("arrive"));
+        // a whole night raises only known ids, and at least one tell is among them
+        let path = temp_save("sound");
+        let (_, heard) = defend_quiet(9, &path);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        assert!(heard.iter().all(|id| SOUND_IDS.contains(id) && cue_for_event(id).is_some()), "{heard:?}");
+        assert!(heard.iter().any(|id| matches!(*id, "door_bang" | "vent_knock" | "counter_tell")), "no tell was heard: {heard:?}");
+        assert!(heard.contains(&"dawn"));
+    }
+
+    #[test]
+    fn endless_never_ends_before_the_data_minimum_time() {
+        let rules = data::rules(MODE);
+        let endless = data::list(rules, "shifts").iter().find(|s| data::text(s, "name") == "ENDLESS").expect("an ENDLESS shift");
+        // nothing can arm before its grace, and a kill needs the tell floor after that
+        let min_ms = data::num(endless, "grace_ms") + data::num(rules, "fairness.tell_floor_ms");
+        assert!(data::num(rules, "endless.gap_min") > 0.0 && data::num(rules, "endless.pace_cap") >= 1.0, "pacing is data");
+        for seed in [2, 31, 20_261_104] {
+            let mut run = MixedRun::new(seed, false);
+            run.begin(4);
+            let mut steps = 0;
+            while run.end.is_none() && steps < MAX_STEPS {
+                run.update(16.0, &idle());
+                steps += 1;
+            }
+            let night = run.night.as_ref().expect("the night is kept at its end");
+            assert!(matches!(run.end.map(|e| e.outcome), Some(Outcome::Caught(_))), "ENDLESS only ends in a catch");
+            assert!(night.elapsed_ms() >= min_ms, "caught at {} ms, before {} ms (seed {seed})", night.elapsed_ms(), min_ms);
+        }
     }
 }

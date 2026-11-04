@@ -1,0 +1,14 @@
+{
+  "schema": "lr.skin_preview/1",
+  "_source": "Godot: game/ui/skin_panel.gd (the mannequin scaled to the 1.60 m runner, turning on its own). Camera numbers are Rust-only presentation.",
+  "model": "player/player_mannequin.bbmodel",
+  "slim_model": "player/player_mannequin_slim.bbmodel",
+  "rig": "player_mannequin",
+  "idle_clip": "idle",
+  "height_m": 1.60,
+  "turn_deg_per_sec": 36.0,
+  "start_deg": 25.0,
+  "camera": { "distance": 3.6, "look_height_frac": 0.5, "fov_deg": 32.0 },
+  "background": [0.07, 0.07, 0.09],
+  "resolution_scale": 1.0
+}

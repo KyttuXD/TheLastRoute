@@ -146,6 +146,7 @@ impl Model {
         let mut owner: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         fn walk(
             nodes: &serde_json::Value,
+            gmap: &std::collections::HashMap<&str, &serde_json::Value>,
             parent: Option<usize>,
             groups: &mut Vec<Group>,
             owner: &mut std::collections::HashMap<String, usize>,
@@ -156,17 +157,25 @@ impl Model {
                         owner.insert(uuid.to_string(), p);
                     }
                 } else if n.is_object() {
+                    // Blockbench 5 outline nodes hold only {uuid, children}; the name and origin are in "groups"
+                    let src = n["uuid"].as_str().and_then(|u| gmap.get(u)).copied().unwrap_or(n);
                     groups.push(Group {
-                        name: n["name"].as_str().unwrap_or("").to_string(),
+                        name: src["name"].as_str().unwrap_or("").to_string(),
                         parent,
-                        origin: v3(&n["origin"]),
+                        origin: v3(&src["origin"]),
                     });
                     let me = groups.len() - 1;
-                    walk(&n["children"], Some(me), groups, owner);
+                    walk(&n["children"], gmap, Some(me), groups, owner);
                 }
             }
         }
-        walk(&j["outliner"], None, &mut groups, &mut owner);
+        let gmap: std::collections::HashMap<&str, &serde_json::Value> = j["groups"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|g| g["uuid"].as_str().map(|u| (u, g)))
+            .collect();
+        walk(&j["outliner"], &gmap, None, &mut groups, &mut owner);
         let mut min = Vec3::splat(f32::MAX);
         let mut max = Vec3::splat(f32::MIN);
         let mut parts = vec![];

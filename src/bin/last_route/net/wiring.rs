@@ -67,7 +67,7 @@ mod tests {
     }
 
     fn remote(peer: u32) -> RemoteView {
-        RemoteView { peer, x: 3.5, y: 4.5, yaw: 1.25, h: 0.0, level: 0, skin: String::new() }
+        RemoteView { peer, x: 3.5, y: 4.5, yaw: 1.25, h: 0.0, level: 0, skin: String::new(), moving: false, sprinting: false, crouching: false, slim: false, speed: 0.0, vy: 0.0 }
     }
 
     #[test]

@@ -8,7 +8,7 @@
 use macroquad::prelude::*;
 
 use crate::calls_view::CallView;
-use crate::data::{self, num, text, CallsData};
+use crate::data::{self, list, num, text, CallsData};
 use crate::framework::CallScript;
 use crate::modes::salvage_run::{self as logic, Devices, Event, Hunter, Input, Kind, Options, Outcome, SalvageRun, Upgrade, WindowState};
 use crate::save::NightWatchSave;
@@ -92,6 +92,10 @@ pub struct SalvageRunRun {
     end_ms: f64,
     flash_ms: f64,
     notes: Vec<(String, f64)>,
+    /// The sound events this run has raised since the shell last took them (`take_cues`).
+    cues: Vec<&'static str>,
+    /// A Custom Night: the hunters' chosen levels. It skips the shop and the save, and ends at the hub.
+    custom: Option<[Option<i32>; 3]>,
 }
 
 fn ui_num(key: &str) -> f64 {
@@ -110,6 +114,73 @@ fn label(key: &str) -> &'static str {
 /// A UI label with its `{name}` placeholders filled in.
 fn fill(key: &str, pairs: &[(&str, String)]) -> String {
     pairs.iter().fold(label(key).to_owned(), |s, (name, value)| s.replace(&format!("{{{name}}}"), value))
+}
+
+/// An `[r, g, b, a]` colour from `ui.window.<key>` in the rules file.
+fn window_colour(key: &str) -> Color {
+    let v: Vec<f32> = list(data::rules(MODE), &format!("ui.window.{key}")).iter().map(|x| x.as_f64().unwrap_or(0.0) as f32).collect();
+    Color::new(v[0], v[1], v[2], v[3])
+}
+
+/// The sound id `ui.cues` maps an event key to.
+fn cue_for(key: &str) -> &'static str {
+    text(data::rules(MODE), &format!("ui.cues.{key}"))
+}
+
+/// The `ui.cues` key an event raises, if it makes a sound.
+fn event_key(event: &Event) -> Option<&'static str> {
+    let key = match event {
+        Event::Item { .. } => "item",
+        Event::Salvage { .. } => "salvage",
+        Event::Expire { .. } => "expire",
+        Event::Close { dist: 0, .. } => "at_door",
+        Event::Close { .. } => "step",
+        Event::Repelled { .. } => "repelled",
+        Event::Warned { .. } => "warned",
+        Event::Knock => "knock",
+        Event::Window => "window",
+        Event::Gone => "gone",
+        Event::Out => "out",
+        Event::Caught { .. } => "caught",
+        Event::Win { .. } => "win",
+        Event::Short { .. } => return None,
+    };
+    Some(key)
+}
+
+/// How tall Ysolde stands in the window, 0 to 1: she rises with the knock to `knock_rise`, then at the glass climbs
+/// the rest of the way as the noise she hears builds, and sinks again when it is quiet.
+fn ysolde_height(state: WindowState, knock: f64, expose: f64) -> f64 {
+    let rise = ui_num("window.knock_rise");
+    match state {
+        WindowState::Away => 0.0,
+        WindowState::Knock => rise * knock.clamp(0.0, 1.0),
+        WindowState::Here => rise + (1.0 - rise) * expose.clamp(0.0, 1.0),
+    }
+}
+
+/// The noise meter's fill, 0 to 1.
+fn noise_fill(noise: f64, max: f64) -> f64 {
+    (noise / max.max(1.0)).clamp(0.0, 1.0)
+}
+
+/// What the visitors make of the noise: the thresholds are `noise.uneasy` and `noise.loud`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NoiseBand {
+    Calm,
+    Uneasy,
+    Loud,
+}
+
+fn noise_band(noise: f64) -> NoiseBand {
+    let rules = data::rules(MODE);
+    if noise >= num(rules, "noise.loud") {
+        NoiseBand::Loud
+    } else if noise >= num(rules, "noise.uneasy") {
+        NoiseBand::Uneasy
+    } else {
+        NoiseBand::Calm
+    }
 }
 
 fn hunter_key(hunter: Hunter) -> &'static str {
@@ -181,7 +252,36 @@ impl SalvageRunRun {
             end_ms: 0.0,
             flash_ms: 0.0,
             notes: Vec::new(),
+            cues: Vec::new(),
+            custom: None,
         }
+    }
+
+    /// The Custom Night from the hub: the three hunters' levels as (id, level) pairs in the order ravelle, ceryth,
+    /// ysolde (any id the select screen sends), no shop, the last week's quota, straight into the night.
+    pub fn new_custom(calls: &CallsData, levels: &[(&str, i32)], seed: i64) -> Self {
+        let mut run = Self::new(seed, false);
+        let mut chosen = [None; 3];
+        for (id, level) in levels {
+            if let Some(i) = ["ravelle", "ceryth", "ysolde"].iter().position(|k| k.eq_ignore_ascii_case(id)) {
+                chosen[i] = Some(*level);
+            }
+        }
+        run.week = ui_num("custom.week") as u32;
+        run.quota = ui_num("custom.quota") as u32;
+        run.custom = Some(chosen);
+        run.start_night(calls);
+        run
+    }
+
+    /// The sound events raised since the last call, as the sound ids `ui.cues` maps them to. The shell plays each
+    /// with `nw_sound::event("salvage_run", id)`.
+    pub fn take_cues(&mut self) -> Vec<&'static str> {
+        std::mem::take(&mut self.cues)
+    }
+
+    fn cue(&mut self, key: &str) {
+        self.cues.push(cue_for(key));
     }
 
     pub fn in_shop(&self) -> bool {
@@ -219,7 +319,11 @@ impl SalvageRunRun {
     fn start_night(&mut self, calls: &CallsData) {
         self.shifts += 1;
         let seed = self.seed.wrapping_add(i64::from(self.shifts));
-        let night = SalvageRun::new(self.week, seed, Options { upgrades: self.owned.clone(), ..Options::default() });
+        let options = match self.custom {
+            Some(levels) => Options { levels, custom: true, quota: Some(self.quota), ..Options::default() },
+            None => Options { upgrades: self.owned.clone(), ..Options::default() },
+        };
+        let night = SalvageRun::new(self.week, seed, options);
         self.quota = night.quota();
         self.night = Some(night);
         self.call = CallScript::for_level(calls, CALL_ID, self.week as i32);
@@ -251,13 +355,17 @@ impl SalvageRunRun {
             self.shut = [false; 2];
             self.lights = [false; 2];
         } else {
-            if c.door_l {
-                self.shut[0] = !self.shut[0];
+            for (side, pressed) in [c.door_l, c.door_r].into_iter().enumerate() {
+                if pressed {
+                    self.shut[side] = !self.shut[side];
+                    self.cue(if self.shut[side] { "door_shut" } else { "door_open" });
+                }
             }
-            if c.door_r {
-                self.shut[1] = !self.shut[1];
+            let lights = [c.light_l, c.light_r];
+            if lights.iter().zip(self.lights).any(|(now, was)| *now && !was) {
+                self.cue("light");
             }
-            self.lights = [c.light_l, c.light_r];
+            self.lights = lights;
         }
         if let Some(slot) = c.pick_slot {
             self.selected = slot;
@@ -291,6 +399,9 @@ impl SalvageRunRun {
     }
 
     fn play(&mut self, event: Event) {
+        if let Some(key) = event_key(&event) {
+            self.cue(key);
+        }
         match event {
             Event::Salvage { value, .. } => self.note(fill("note_salvaged", &[("value", value.to_string())])),
             Event::Expire { .. } => self.note(label("note_expire")),
@@ -318,7 +429,7 @@ impl SalvageRunRun {
 
     /// A met quota: saves the week (best effort) and shows the result.
     fn win(&mut self, ending: Ending) {
-        if self.persist {
+        if self.persist && self.custom.is_none() {
             let mut save = NightWatchSave::load();
             save.record_level_clear(MODE, self.week);
             save.record_best(MODE, self.money);
@@ -337,6 +448,9 @@ impl SalvageRunRun {
         }
         if !(c.confirm && self.end_ms >= ui_num("result_lock_ms")) {
             return Flow::Stay;
+        }
+        if self.custom.is_some() {
+            return Flow::Hub;
         }
         match self.ending() {
             Some(Ending::Cleared) => {
@@ -409,7 +523,7 @@ fn layout(sw: f32, sh: f32) -> Layout {
     let call = Rect::new((sw - call_w) * 0.5, 48.0, call_w, 132.0);
     let door_w = sw * 0.18;
     let doorway = [Rect::new(sw * 0.03, sh * 0.22, door_w, sh * 0.52), Rect::new(sw - sw * 0.03 - door_w, sh * 0.22, door_w, sh * 0.52)];
-    let window = Rect::new(sw * 0.36, sh * 0.26, sw * 0.28, sh * 0.22);
+    let window = Rect::new(sw * ui_num("window.x") as f32, sh * ui_num("window.y") as f32, sw * ui_num("window.w") as f32, sh * ui_num("window.h") as f32);
     let gap = 12.0;
     let slot_w = (sw * 0.40 - 3.0 * gap) / 4.0;
     let slots = std::array::from_fn(|i| Rect::new(sw * 0.30 + i as f32 * (slot_w + gap), sh * 0.60, slot_w, sh * 0.14));
@@ -642,26 +756,50 @@ fn draw_shop(run: &SalvageRunRun, art: &Art, l: &Layout, sw: f32, sh: f32) {
     text_centered(label("shop_hint"), sw * 0.5, sh - 20.0, 18.0, DIM);
 }
 
+/// The window as its own frame: the night yard through the glass, Ysolde's silhouette rising from the sill on the
+/// knock and sinking when the room is quiet, blinds across the glass, the frame and the sill. Geometry and colours
+/// are `ui.window` in the rules file.
+fn draw_window(night: Option<&SalvageRun>, w: Rect) {
+    let yard = window_colour("yard");
+    let moon = window_colour("moon");
+    draw_rectangle(w.x, w.y, w.w, w.h, window_colour("glass"));
+    draw_rectangle(w.x, w.y + w.h * 0.72, w.w, w.h * 0.28, yard);
+    draw_circle(w.x + w.w * 0.8, w.y + w.h * 0.22, w.h * 0.09, moon);
+    let state = night.map_or(WindowState::Away, SalvageRun::window);
+    if let Some(night) = night {
+        let height = ysolde_height(state, night.knock_progress(), night.expose_progress()) as f32;
+        if height > 0.0 {
+            let full_h = w.h * ui_num("window.figure_scale") as f32;
+            hunter_figure(Hunter::Ysolde, w.x + w.w * 0.5, w.y + w.h, full_h * height, 0.9);
+        }
+    }
+    // blinds: slats across the glass; at the glass they hang open
+    let slats = ui_num("window.blinds") as i32;
+    let open = if state == WindowState::Here { ui_num("window.blind_open_here") as f32 } else { 0.0 };
+    let blind = window_colour("blind");
+    for i in 0..slats {
+        let y = w.y + w.h * i as f32 / slats as f32;
+        let slat_h = w.h / slats as f32 * (0.45 - 0.35 * open);
+        draw_rectangle(w.x, y, w.w, slat_h, blind);
+    }
+    let frame = ui_num("window.frame_px") as f32;
+    draw_rectangle_lines(w.x, w.y, w.w, w.h, frame, window_colour("frame"));
+    draw_rectangle(w.x - frame, w.y + w.h, w.w + 2.0 * frame, ui_num("window.sill_px") as f32, window_colour("sill"));
+    match state {
+        WindowState::Away => {}
+        WindowState::Knock => {
+            draw_rectangle_lines(w.x - 4.0, w.y - 4.0, w.w + 8.0, w.h + 8.0, 4.0, RED_TEXT);
+            text_centered(label("knock"), w.x + w.w * 0.5, w.y - 10.0, 26.0, RED_TEXT);
+        }
+        WindowState::Here => text_centered(label("window_label"), w.x + w.w * 0.5, w.y + w.h + ui_num("window.sill_px") as f32 + 18.0, 20.0, INK),
+    }
+}
+
 fn draw_night(run: &SalvageRunRun, art: &Art, l: &Layout, sw: f32, sh: f32) {
     full(&art.back, sw, sh);
     let night = run.night.as_ref();
-    // the window at the back: Ysolde knocking, or at the glass
-    let w = l.window;
-    draw_rectangle(w.x, w.y, w.w, w.h, Color::new(0.10, 0.16, 0.20, 0.85));
-    if let Some(night) = night {
-        match night.window() {
-            WindowState::Away => {}
-            WindowState::Knock => {
-                draw_rectangle_lines(w.x - 4.0, w.y - 4.0, w.w + 8.0, w.h + 8.0, 4.0, RED_TEXT);
-                text_centered(label("knock"), w.x + w.w * 0.5, w.y - 10.0, 26.0, RED_TEXT);
-            }
-            WindowState::Here => {
-                hunter_figure(Hunter::Ysolde, w.x + w.w * 0.5, w.y + w.h * 0.95, w.h * 0.85, 0.9);
-                text_centered(label("window_label"), w.x + w.w * 0.5, w.y + w.h + 22.0, 20.0, INK);
-            }
-        }
-    }
-    draw_rectangle_lines(w.x, w.y, w.w, w.h, 3.0, Color::new(0.30, 0.45, 0.50, 1.0));
+    // the window at the back, as its own frame
+    draw_window(night, l.window);
 
     // the two side doors: Ravelle's on the left (A), Ceryth's on the right (D)
     for side in 0..2 {
@@ -684,6 +822,9 @@ fn draw_night(run: &SalvageRunRun, art: &Art, l: &Layout, sw: f32, sh: f32) {
             let wait = night.door_wait(hunter) as f32;
             draw_rectangle(r.x, r.bottom() + 6.0, r.w, 6.0, Color::new(0.2, 0.2, 0.2, 1.0));
             draw_rectangle(r.x, r.bottom() + 6.0, r.w * wait, 6.0, RED_TEXT);
+            if dist > 0 && dist <= ui_num("door_warning_dist") as i32 {
+                text_centered(&fill("door_warning", &[("name", hunter_name(hunter).to_owned())]), r.x + r.w * 0.5, r.bottom() + 30.0, 18.0, AMBER);
+            }
         }
         if run.shut[side] {
             draw_rectangle(r.x, r.y, r.w, r.h, SHUT_GREY);
@@ -737,6 +878,33 @@ fn draw_controls(run: &SalvageRunRun, l: &Layout) {
     button(l.light_btn[1], label("btn_light_e"), lit[1]);
 }
 
+/// The noise meter: the label, the bar filled to noise/max, a tick at each warning threshold and the visitors' mood.
+fn draw_noise_bar(noise: f64, max: f64) {
+    let band = noise_band(noise);
+    let colour = match band {
+        NoiseBand::Loud => RED_TEXT,
+        NoiseBand::Uneasy => AMBER,
+        NoiseBand::Calm => INK,
+    };
+    let (x, y, w, h, tick) = (ui_num("noise_bar.x") as f32, ui_num("noise_bar.y") as f32, ui_num("noise_bar.w") as f32, ui_num("noise_bar.h") as f32, ui_num("noise_bar.tick_w") as f32);
+    draw_text(&fill("hud_noise", &[("noise", (noise.ceil() as i32).to_string())]), x, y - 6.0, 20.0, colour);
+    draw_rectangle(x, y, w, h, Color::new(0.2, 0.2, 0.2, 1.0));
+    draw_rectangle(x, y, w * noise_fill(noise, max) as f32, h, colour);
+    for (key, mark) in [("noise.uneasy", AMBER), ("noise.loud", RED_TEXT)] {
+        let tx = x + w * noise_fill(num(data::rules(MODE), key), max) as f32;
+        draw_rectangle(tx - tick * 0.5, y - 2.0, tick, h + 4.0, mark);
+    }
+    match band {
+        NoiseBand::Calm => {}
+        NoiseBand::Uneasy => {
+            draw_text(label("noise_uneasy"), x, y + h + 16.0, 16.0, AMBER);
+        }
+        NoiseBand::Loud => {
+            draw_text(label("noise_loud"), x, y + h + 16.0, 16.0, RED_TEXT);
+        }
+    }
+}
+
 fn draw_hud(run: &SalvageRunRun, sw: f32, sh: f32) {
     let Some(night) = run.night.as_ref() else { return };
     draw_rectangle(0.0, 0.0, sw, 44.0, Color::new(0.0, 0.0, 0.0, 0.6));
@@ -752,20 +920,7 @@ fn draw_hud(run: &SalvageRunRun, sw: f32, sh: f32) {
     draw_text(&fill("hud_power", &[("power", (power.ceil() as i32).to_string())]), 24.0, 66.0, 20.0, power_colour);
     draw_rectangle(24.0, 72.0, 200.0, 6.0, Color::new(0.2, 0.2, 0.2, 1.0));
     draw_rectangle(24.0, 72.0, 200.0 * (power / 100.0).clamp(0.0, 1.0), 6.0, power_colour);
-    let noise = night.noise() as f32;
-    let loud = num(data::rules(MODE), "noise.loud") as f32;
-    let uneasy = num(data::rules(MODE), "noise.uneasy") as f32;
-    let noise_max = num(data::rules(MODE), "noise.max") as f32;
-    let noise_colour = if noise >= loud {
-        RED_TEXT
-    } else if noise >= uneasy {
-        AMBER
-    } else {
-        INK
-    };
-    draw_text(&fill("hud_noise", &[("noise", (noise.ceil() as i32).to_string())]), 24.0, 100.0, 20.0, noise_colour);
-    draw_rectangle(24.0, 106.0, 200.0, 6.0, Color::new(0.2, 0.2, 0.2, 1.0));
-    draw_rectangle(24.0, 106.0, 200.0 * (noise / noise_max).clamp(0.0, 1.0), 6.0, noise_colour);
+    draw_noise_bar(night.noise(), night.noise_max());
 
     text_centered(label("hud_hint"), sw * 0.5, sh - 14.0, 16.0, DIM);
 }
@@ -978,6 +1133,86 @@ mod tests {
             assert!(l.call.intersect(room).is_none(), "the call box clears {room:?}");
         }
         assert!(l.start.bottom() <= 720.0 - 30.0 && l.cards.iter().all(|r| r.right() <= 1280.0));
+    }
+
+    #[test]
+    fn ysolde_height_follows_the_knock_timer() {
+        let rise = ui_num("window.knock_rise");
+        assert_eq!(ysolde_height(WindowState::Away, 0.0, 0.0), 0.0);
+        let early = ysolde_height(WindowState::Knock, 0.25, 0.0);
+        let late = ysolde_height(WindowState::Knock, 0.75, 0.0);
+        assert!(0.0 < early && early < late && late < rise, "she rises through the knock: {early} {late}");
+        assert!((ysolde_height(WindowState::Knock, 1.0, 0.0) - rise).abs() < 1e-9, "the knock ends at the rise height");
+        let quiet = ysolde_height(WindowState::Here, 0.0, 0.0);
+        let heard = ysolde_height(WindowState::Here, 0.0, 1.0);
+        assert!(quiet >= rise && heard > quiet && heard <= 1.0, "noise lifts her, silence sinks her");
+        // from a real night: the height grows while the knock runs
+        let mut night = SalvageRun::new(5, 11, Options::default());
+        let mut last = 0.0;
+        let mut knocked = false;
+        for _ in 0..40_000 {
+            night.step(16.0, Input::default());
+            if night.window() == WindowState::Knock {
+                knocked = true;
+                let h = ysolde_height(night.window(), night.knock_progress(), night.expose_progress());
+                assert!(h >= last, "the silhouette never sinks mid-knock");
+                last = h;
+            } else if knocked {
+                break;
+            }
+        }
+        assert!(knocked && last > 0.0, "a knock came and raised her");
+    }
+
+    #[test]
+    fn the_noise_meter_fill_is_noise_over_the_data_max() {
+        let max = num(data::rules(MODE), "noise.max");
+        assert_eq!(noise_fill(0.0, max), 0.0);
+        assert!((noise_fill(max / 2.0, max) - 0.5).abs() < 1e-9);
+        assert_eq!(noise_fill(max * 3.0, max), 1.0);
+        let (uneasy, loud) = (num(data::rules(MODE), "noise.uneasy"), num(data::rules(MODE), "noise.loud"));
+        assert_eq!(noise_band(uneasy - 0.1), NoiseBand::Calm);
+        assert_eq!(noise_band(uneasy), NoiseBand::Uneasy);
+        assert_eq!(noise_band(loud), NoiseBand::Loud);
+        let night = SalvageRun::new(1, 3, Options::default());
+        assert_eq!(night.noise_max(), max);
+    }
+
+    #[test]
+    fn knock_and_visitor_events_resolve_to_cues() {
+        let events = [
+            Event::Knock,
+            Event::Window,
+            Event::Gone,
+            Event::Salvage { slot: 0, value: 10 },
+            Event::Close { id: Hunter::Ravelle, dist: 2 },
+            Event::Close { id: Hunter::Ceryth, dist: 0 },
+            Event::Repelled { id: Hunter::Ravelle },
+            Event::Warned { id: Hunter::Ceryth },
+            Event::Caught { by: Hunter::Ysolde },
+            Event::Out,
+        ];
+        for event in &events {
+            let key = event_key(event).unwrap_or_else(|| panic!("{event:?} makes a sound"));
+            assert!(!cue_for(key).is_empty(), "{key} maps to a cue");
+        }
+        assert_ne!(event_key(&events[3]), event_key(&events[0]));
+        assert_ne!(event_key(&events[4]), event_key(&events[5]), "a step and a visitor at the door differ");
+        let mut run = SalvageRunRun::new(1, false);
+        run.play(Event::Knock);
+        assert_eq!(run.take_cues(), vec![cue_for("knock")]);
+        assert!(run.take_cues().is_empty());
+    }
+
+    #[test]
+    fn a_custom_night_start_reaches_this_driver_without_the_shop() {
+        let calls = calls();
+        let mut run = SalvageRunRun::new_custom(&calls, &[("ravelle", 12), ("ceryth", 0), ("ysolde", 20)], 5);
+        assert!(!run.in_shop(), "the custom night skips the shop");
+        assert_eq!(run.night.as_ref().map(SalvageRun::quota), Some(ui_num("custom.quota") as u32));
+        let dt = Controls::default();
+        assert_eq!(run.update(STEP, &dt, &calls), Flow::Stay);
+        assert!(run.night.as_ref().is_some_and(|n| !n.is_out()));
     }
 
     #[test]

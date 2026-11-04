@@ -15,7 +15,7 @@ const CLOCK_SECONDS_PER_HOUR: f32 = 12.0;
 
 /// The night types with a playable driver (a screen, controls and a save). The others are ticked with no input.
 /// `main.rs` starts each of these with its own driver instead of `modes::start`.
-pub const PLAYABLE: [&str; 7] = ["classic", "mask", "bedroom", "dayshift", "mixed", "story", "descent"];
+pub const PLAYABLE: [&str; 9] = ["classic", "mask", "lure", "bedroom", "story", "descent", "dayshift", "extra", "mixed"];
 
 pub struct HubEntry {
     pub id: &'static str,

@@ -23,6 +23,42 @@ const STAIR_FOLLOW_RATE: f32 = 40.0;
 /// data/swim/fall.json, read through `swim::fall_rules()`.
 use super::swim::fall_rules;
 
+/// The camera-feel tunables (data/player/bob.json): bob phase per metre walked (the step-locked cadence), the rad/s
+/// the phase eases back to rest at, the lateral sway as a share of the bob amplitude, and the gap between the crouched
+/// eye and the top of the shortened capsule (player_controller_3d.gd 997-1020, 1001-1002).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BobRules {
+    pub phase_per_metre: f32,
+    pub ease_rate: f32,
+    pub sway_ratio: f32,
+    pub crouch_eye_clearance: f32,
+}
+
+impl Default for BobRules {
+    fn default() -> Self {
+        BobRules { phase_per_metre: 1.9, ease_rate: 10.0, sway_ratio: 0.42, crouch_eye_clearance: 0.08 }
+    }
+}
+
+pub fn bob_rules() -> &'static BobRules {
+    static RULES: std::sync::OnceLock<BobRules> = std::sync::OnceLock::new();
+    RULES.get_or_init(|| {
+        let d = BobRules::default();
+        let v = crate::content::embedded::data_under("player/bob.json")
+            .next()
+            .and_then(|(_, t)| serde_json::from_str::<serde_json::Value>(t).ok());
+        let get = |k: &str, dv: f32| {
+            v.as_ref().and_then(|v| v.get(k)).and_then(|x| x.as_f64()).map(|x| x as f32).unwrap_or(dv)
+        };
+        BobRules {
+            phase_per_metre: get("phase_per_metre", d.phase_per_metre),
+            ease_rate: get("ease_rate", d.ease_rate),
+            sway_ratio: get("sway_ratio", d.sway_ratio),
+            crouch_eye_clearance: get("crouch_eye_clearance", d.crouch_eye_clearance),
+        }
+    })
+}
+
 /// A fall that just ended: the body touched the ground at `y` (absolute feet y) after dropping `drop_height` metres,
 /// at `speed` m/s, at `pos`. `Player::take_landing` hands it over once; the game applies the effects (stun, stamina,
 /// noise) from it.
@@ -73,6 +109,8 @@ pub struct Player {
     pub noise_burst: f32,
     pub noise_burst_timer: f32,
     pub bob_phase: f32,
+    /// Whether jump was held last frame: a hop needs a fresh press (Godot just_pressed), not a held key.
+    pub jump_prev: bool,
     pub stim_inject: f32,
     pub stim_boost: f32,
     pub stim_crash: f32,
@@ -133,6 +171,7 @@ impl Player {
             noise_burst: 0.0,
             noise_burst_timer: 0.0,
             bob_phase: 0.0,
+            jump_prev: false,
             stim_inject: 0.0,
             stim_boost: 0.0,
             stim_crash: 0.0,
@@ -222,7 +261,10 @@ impl Player {
     }
 
     pub fn eye_height(&self) -> f32 {
-        CAMERA_HEIGHT + (CAMERA_HEIGHT * CROUCH_EYE_RATIO - CAMERA_HEIGHT) * self.crouch_t
+        // the crouched eye never sits above the shortened capsule (Godot 1001-1002)
+        let cap = crate::world::route::sewer::core::CROUCH_COLLISION_HEIGHT as f32 - bob_rules().crouch_eye_clearance;
+        let crouched = (CAMERA_HEIGHT * CROUCH_EYE_RATIO).min(cap);
+        CAMERA_HEIGHT + (crouched - CAMERA_HEIGHT) * self.crouch_t
     }
 
     /// Absolute y of the feet' walking surface: the level's floor plus the stair or deck lift (`height`).
@@ -286,11 +328,13 @@ impl Player {
         } else {
             0.0
         };
+        // lateral sway: cos(phase) * amplitude * ratio along the view's right (Godot 1017)
+        let sway = if self.moving && self.grounded { self.bob_phase.cos() * amp * bob_rules().sway_ratio } else { 0.0 };
         // View-relative: `eye_y()` minus the floor, so the level's offset never moves the picture.
         vec3(
-            self.pos.0,
+            self.pos.0 + self.yaw.cos() * sway,
             self.eye_y() - self.floor_y + bob,
-            self.pos.1,
+            self.pos.1 - self.yaw.sin() * sway,
         )
     }
 
@@ -351,6 +395,8 @@ impl Player {
         meters: &mut Meters,
         _sounds: &Sounds,
     ) {
+        let jump_edge = c.jump && !self.jump_prev;
+        self.jump_prev = c.jump;
         self.noise_burst_timer = (self.noise_burst_timer - dt).max(0.0);
         self.stun = (self.stun - dt).max(0.0);
         self.pesticide = (self.pesticide - dt).max(0.0);
@@ -495,7 +541,7 @@ impl Player {
         if self.feet_y <= min_feet {
             self.feet_y = min_feet;
             self.vy = 0.0;
-            if c.jump && !self.crouching && self.stun <= 0.0 && !on_stair {
+            if jump_edge && !self.crouching && self.stun <= 0.0 && !on_stair {
                 self.vy = PLAYER_JUMP_VELOCITY;
             }
         }
@@ -539,7 +585,11 @@ impl Player {
     /// The head bob and the footsteps of the frame (only on the ground).
     fn after_move(&mut self, dt: f32, moving: bool, sprinting: bool, speed: f32, speed_now: f32) {
         if moving && self.grounded && speed_now > 0.3 {
-            self.bob_phase += dt * speed_now * 1.9;
+            self.bob_phase = (self.bob_phase + dt * speed_now * bob_rules().phase_per_metre).rem_euclid(std::f32::consts::TAU);
+        } else {
+            // ease back to rest instead of freezing mid-stride (Godot 1009-1011: move_toward 0)
+            let step = dt * bob_rules().ease_rate;
+            self.bob_phase = if self.bob_phase.abs() <= step { 0.0 } else { self.bob_phase - step * self.bob_phase.signum() };
         }
         // Sound.footstep every frame on the floor (player_controller_3d.gd 1987-1993): the cadence is stride / ground
         // speed, no step under 0.3 m/s, feet alternate
@@ -740,8 +790,9 @@ mod tests {
         run_body(&mut g, 0.1, &hop);
         assert_eq!(g.p.feet_y, 0.0, "no hop on a stair");
         g.p.pos = off_stair(s);
+        run_body(&mut g, FRAME, &Controls::default());
         run_body(&mut g, FRAME, &hop);
-        assert!(g.p.feet_y > 0.0, "the same press hops on the floor");
+        assert!(g.p.feet_y > 0.0, "a fresh press hops on the floor");
     }
 
     #[test]
@@ -1131,5 +1182,53 @@ mod tests {
         p.fall_top = Some(1.0);
         p.set_abs_y(-2.0);
         assert_eq!((p.y(), p.feet_y, p.vy, p.grounded, p.falling()), (-2.0, 0.0, 0.0, true, false));
+    }
+
+    #[test]
+    fn a_held_jump_hops_once_until_released() {
+        let (mut g, s) = flight_game();
+        g.p.pos = off_stair(s);
+        run_body(&mut g, 0.1, &Controls::default());
+        let held = Controls { jump: true, ..Default::default() };
+        run_body(&mut g, FRAME, &held);
+        assert!(g.p.feet_y > 0.0, "the press hops");
+        run_body(&mut g, 3.0, &held);
+        assert!(g.p.grounded && g.p.feet_y == 0.0, "still held, landed, no second hop");
+        run_body(&mut g, FRAME, &Controls::default());
+        run_body(&mut g, FRAME, &held);
+        assert!(g.p.feet_y > 0.0, "a fresh press hops again");
+    }
+
+    #[test]
+    fn the_crouched_eye_is_capped_under_the_shortened_capsule() {
+        let mut p = Player::new((1.0, 1.0));
+        p.crouch_t = 1.0;
+        let cap = crate::world::route::sewer::core::CROUCH_COLLISION_HEIGHT as f32 - bob_rules().crouch_eye_clearance;
+        assert!(p.eye_height() <= cap + 1e-6, "{} over {cap}", p.eye_height());
+        p.crouch_t = 0.0;
+        assert!((p.eye_height() - CAMERA_HEIGHT).abs() < 1e-6, "standing is untouched");
+    }
+
+    #[test]
+    fn the_bob_phase_eases_to_rest_when_the_walk_stops() {
+        let (mut g, s) = flight_game();
+        g.p.pos = off_stair(s);
+        run_body(&mut g, 0.1, &Controls::default());
+        g.p.bob_phase = 2.0;
+        run_body(&mut g, 0.1, &Controls::default());
+        assert!(g.p.bob_phase > 0.0 && g.p.bob_phase < 2.0, "eased, not held or snapped: {}", g.p.bob_phase);
+        run_body(&mut g, 1.0, &Controls::default());
+        assert_eq!(g.p.bob_phase, 0.0);
+    }
+
+    #[test]
+    fn the_eye_sways_sideways_only_while_walking() {
+        let mut p = Player::new((1.0, 1.0));
+        p.grounded = true;
+        p.bob_phase = 0.0;
+        p.moving = true;
+        assert!((p.eye().x - p.pos.0).abs() > 1e-5, "lateral sway while walking");
+        p.moving = false;
+        assert_eq!((p.eye().x, p.eye().z), p.pos);
     }
 }

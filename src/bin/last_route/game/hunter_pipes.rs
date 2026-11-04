@@ -53,6 +53,12 @@ pub fn cells_for_flow(flood_cells: &[(i32, i32)], steps: &[i32], origin: (i32, i
 /// chunk's breakable number `n`; a flow valve's flow, named after its valve, floods the pipe that lists the valve
 /// among its props. The sewer gives one flood list per pipe, so every outlet uses it.
 pub(super) fn cells(g: &Game) -> Vec<PipeCells> {
+    let mut out = sewer_cells(g);
+    out.extend(authored_cells(g, authored_floods()));
+    out
+}
+
+fn sewer_cells(g: &Game) -> Vec<PipeCells> {
     let Some((key, Some(ch))) = &g.water_cache else { return vec![] };
     let origin = g.window_origin();
     let base = (key.0 * sewer_core::CHUNK, key.2 * sewer_core::CHUNK);
@@ -70,6 +76,90 @@ pub(super) fn cells(g: &Game) -> Vec<PipeCells> {
         out.push(PipeCells { id, outlet, cells: cells_for_flow(&absolute, &p.flood_steps, origin) });
     }
     out
+}
+
+/// One authored pipe flood on a non-sewer storey (a row of `authored_floods` in `data/pipes.json`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AuthoredFlood {
+    pub id: String,
+    pub trigger: String,
+    pub level: i32,
+    pub cells: Vec<(i32, i32)>,
+    pub steps: Vec<i32>,
+}
+
+/// Reads the `authored_floods` rows of a pipes table. A malformed row is an error naming it.
+pub fn parse_authored(text: &str) -> Result<Vec<AuthoredFlood>, String> {
+    let root: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let Some(rows) = root.get("authored_floods") else { return Ok(vec![]) };
+    let rows = rows.as_array().ok_or("authored_floods: a list is needed")?;
+    let mut out = vec![];
+    for (i, r) in rows.iter().enumerate() {
+        let who = format!("authored_floods[{i}]");
+        let s = |k: &str| r.get(k).and_then(|v| v.as_str()).filter(|v| !v.is_empty()).map(str::to_string);
+        let id = s("id").ok_or(format!("{who}.id: a string is needed"))?;
+        let trigger = s("trigger").ok_or(format!("{who}.trigger: a string is needed"))?;
+        let level = r.get("level").and_then(|v| v.as_i64()).ok_or(format!("{who}.level: an integer is needed"))? as i32;
+        let pair = |v: &serde_json::Value| -> Option<(i32, i32)> {
+            let a = v.as_array()?;
+            Some((a.first()?.as_i64()? as i32, a.get(1)?.as_i64()? as i32))
+        };
+        let cells: Vec<(i32, i32)> = r
+            .get("cells")
+            .and_then(|v| v.as_array())
+            .ok_or(format!("{who}.cells: a list is needed"))?
+            .iter()
+            .map(|c| pair(c).ok_or(format!("{who}.cells: each cell is [x, y]")))
+            .collect::<Result<_, _>>()?;
+        let steps: Vec<i32> = match r.get("steps").and_then(|v| v.as_array()) {
+            Some(a) => a.iter().filter_map(|v| v.as_i64()).map(|v| v as i32).collect(),
+            None => (0..cells.len() as i32).collect(),
+        };
+        out.push(AuthoredFlood { id, trigger, level, cells, steps });
+    }
+    Ok(out)
+}
+
+/// The embedded authored floods.
+pub fn authored_floods() -> &'static [AuthoredFlood] {
+    static T: std::sync::OnceLock<Vec<AuthoredFlood>> = std::sync::OnceLock::new();
+    T.get_or_init(|| parse_authored(include_str!("../data/pipes.json")).unwrap_or_else(|e| panic!("data/pipes.json: {e}")))
+}
+
+/// The window cells of the authored floods whose flow runs on the runner's storey.
+pub(super) fn authored_cells(g: &Game, floods: &[AuthoredFlood]) -> Vec<PipeCells> {
+    let origin = g.window_origin();
+    let level = g.runner_level();
+    floods
+        .iter()
+        .filter(|f| f.level == level)
+        .filter_map(|f| {
+            let run = g.pipes.run(&f.id)?;
+            Some(PipeCells { id: f.id.clone(), outlet: run.outlet, cells: cells_for_flow(&f.cells, &f.steps, origin) })
+        })
+        .collect()
+}
+
+impl Game {
+    /// A valve turn starts every authored flood it triggers (not yet running). Whoever applies a turn calls this.
+    pub fn start_authored_floods(&mut self, valve_id: &str, floods: &[AuthoredFlood]) {
+        let now = self.time;
+        for f in floods.iter().filter(|f| f.trigger == valve_id) {
+            self.pipes.start_flow(&f.id, now);
+        }
+    }
+
+    /// A bot (or chased fake player) turns a valve: the network decides as for the runner, the turn is applied, and
+    /// the hunters hear it. No runner noise burst and no danger cue. Returns the event for the net layer, or None
+    /// when the bot is too far or on the wrong storey.
+    pub fn bot_valve_events(&mut self, q: pipes::TurnAt) -> Option<TurnEvent> {
+        let q = pipes::TurnAt { by_player: false, ..q };
+        let ev = self.pipes.turn(q).ok()?;
+        self.pipes.apply(&ev, self.time);
+        self.start_authored_floods(q.valve_id, authored_floods());
+        self.push_valve_events(&ev, q.at, q.storey);
+        Some(ev)
+    }
 }
 
 #[cfg(test)]
@@ -116,6 +206,100 @@ mod tests {
         g.water_cache = Some(((center.0, sewer_core::LEVEL, center.1), Some(Box::new(ch))));
         let id = format!("{}{n}", pipes::flow_prefix((center.0, sewer_core::LEVEL, center.1)));
         (g, id)
+    }
+
+    fn authored(level: i32) -> Vec<AuthoredFlood> {
+        parse_authored(&format!(
+            r#"{{"authored_floods":[{{"id":"AUTH:lab:1","trigger":"SEWER:2:-1:3:PROP:7","level":{level},"cells":[[20,20],[21,20],[22,20]]}}]}}"#
+        ))
+        .unwrap()
+    }
+
+    fn bot_turn<'a>(level: i32, near: f32) -> pipes::TurnAt<'a> {
+        pipes::TurnAt {
+            valve_id: "SEWER:2:-1:3:PROP:7",
+            effect: "flood",
+            gate: "",
+            valve_at: (1.0, 1.0),
+            valve_storey: level,
+            at: (1.0 + near, 1.0),
+            storey: level,
+            by_player: true,
+        }
+    }
+
+    #[test]
+    fn the_embedded_authored_floods_parse_and_bad_rows_name_themselves() {
+        let rows = authored_floods();
+        for f in rows {
+            assert!(!f.cells.is_empty() && f.steps.len() >= f.cells.len(), "{} has cells and a step each", f.id);
+        }
+        assert!(parse_authored(r#"{"authored_floods":[{"id":"a"}]}"#).unwrap_err().contains("authored_floods[0]"));
+        assert!(parse_authored(r#"{"schema":"x"}"#).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_authored_flood_floods_its_cells_only_once_its_valve_runs_on_that_storey() {
+        let (mut g, _) = game_with_pipe(&[(3, 3)]);
+        let level = g.runner_level();
+        let floods = authored(level);
+        assert!(authored_cells(&g, &floods).is_empty(), "nothing flows before the valve");
+        g.start_authored_floods("SOME:OTHER:VALVE", &floods);
+        assert!(authored_cells(&g, &floods).is_empty(), "another valve does not start it");
+        g.start_authored_floods("SEWER:2:-1:3:PROP:7", &floods);
+        let c = authored_cells(&g, &floods);
+        assert_eq!(c.len(), 1);
+        let o = g.window_origin();
+        assert_eq!(c[0].cells, vec![((20 - o.0, 20 - o.1), 0), ((21 - o.0, 20 - o.1), 1), ((22 - o.0, 20 - o.1), 2)]);
+        assert!(authored_cells(&g, &authored(level + 3)).is_empty(), "a flood on another storey is not this window's");
+    }
+
+    #[test]
+    fn a_bot_turning_a_valve_makes_the_hunters_hear_it_and_a_far_bot_makes_nothing() {
+        let (mut g, _) = game_with_pipe(&[(3, 3)]);
+        g.noise_events.clear();
+        g.p.noise_burst = 0.0;
+        let ev = g.bot_valve_events(bot_turn(-1, 0.5)).expect("a bot beside the valve turns it");
+        assert_eq!(ev.noise, None, "a bot never feeds the runner's danger readout");
+        assert_eq!(g.p.noise_burst, 0.0);
+        assert_eq!(g.pipes.turns("SEWER:2:-1:3:PROP:7"), 1);
+        let rules = crate::hunters::noise_events::rules();
+        let heard = crate::hunters::noise_events::heard_with(rules, &g.noise_events, (1.5, 1.0), 1.0)
+            .expect("a hunter beside the valve hears the bot");
+        assert_eq!(heard.kind, NoiseKind::ValveTurn);
+        assert_ne!(heard.response, crate::hunters::noise_events::Response::Search, "a valve turn is investigated, never a chase");
+        g.noise_events.clear();
+        let reach = pipes::rules().valve.reach;
+        assert!(g.bot_valve_events(bot_turn(-1, reach + 5.0)).is_none(), "out of reach, nothing turns");
+        assert!(g.noise_events.is_empty(), "and nothing is heard");
+        assert!(g.bot_valve_events(bot_turn(-3, 0.5)).is_none(), "the wrong storey, nothing turns");
+    }
+
+    #[test]
+    fn a_plunge_is_heard_inside_its_radius_and_not_beyond() {
+        let rules = crate::hunters::noise_events::rules();
+        let ev = [crate::hunters::noise_events::NoiseEvent::new(NoiseKind::PlungeSplash, (0.0, 0.0), -1)];
+        let reach = rules.radius_of(&ev[0], 1.0);
+        assert!(reach > 1.0);
+        let h = crate::hunters::noise_events::heard_with(rules, &ev, (reach * 0.5, 0.0), 1.0).expect("heard near");
+        assert_eq!(h.kind, NoiseKind::PlungeSplash);
+        assert!(crate::hunters::noise_events::heard_with(rules, &ev, (reach + 1.0, 0.0), 1.0).is_none());
+    }
+
+    #[test]
+    fn a_closed_gate_blocks_the_hunters_and_an_open_event_lets_them_through() {
+        use crate::hunters::brain::gate_floor_cells;
+        use crate::world::Cell;
+        let cells = [Cell::new(4, 4), Cell::new(5, 4)];
+        let (mut g, _) = game_with_pipe(&[(3, 3)]);
+        let id = "SEWER:2:-1:3:PROP:9";
+        let gate = pipes::TurnAt { valve_id: id, effect: "gate", gate: "g", ..bot_turn(-1, 0.5) };
+        assert!(!g.pipes.is_open(id));
+        assert!(gate_floor_cells(&cells, g.pipes.is_open(id)).is_empty(), "a raised gate is no crossing");
+        g.bot_valve_events(gate).expect("the bot lowers the gate");
+        assert!(g.pipes.is_open(id));
+        assert_eq!(gate_floor_cells(&cells, g.pipes.is_open(id)).len(), 2, "the open event makes the cells passable");
+        assert!(g.noise_events.iter().any(|e| e.kind == NoiseKind::SluiceOpen), "and the sluice is heard");
     }
 
     #[test]
