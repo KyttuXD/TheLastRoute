@@ -5,22 +5,8 @@
 
 use super::shader::Lamp;
 use crate::world::facility::{Cover, LinkKind, Stair, STAIR_FLIGHT};
+use crate::world::vertical::{tread_top, STAIR_STEPS, STEPS_PER_CELL};
 use macroquad::prelude::*;
-
-/// Treads per cell of the flight, so a cell's metre of run is three deep steps rather than one metre-high block.
-pub const STEPS_PER_CELL: i32 = 3;
-
-/// The flat treads at the foot of a flight down (its last cell): a landing to stand on, so the flight ends on a floor
-/// and not against the pit's wall.
-pub const LANDING: i32 = STEPS_PER_CELL;
-
-/// How far a flight up rises per cell of run: about 33 degrees.
-pub const RISE_UP: f32 = 0.65;
-
-/// How far a flight down sinks per cell of run, over the cells before its landing: about 14 degrees. From a standing
-/// eye the near lip of the pit hides a steep flight's treads (at 2 m back a 0.36 m cell hid the top steps), so the
-/// flight is laid shallow enough that its treads still show past the lip; each riser is then 0.08 m, a visible step.
-pub const RISE_DOWN: f32 = 0.24;
 
 /// How far the shaft over a flight up rises past the ceiling before its cap.
 pub const SHAFT_ABOVE: f32 = 1.6;
@@ -66,15 +52,8 @@ pub struct Tread {
 /// and up for 1. A flight down ends in LANDING flat treads.
 pub fn treads(dir: i32) -> Vec<Tread> {
     let per = STEPS_PER_CELL as f32;
-    let rise = if dir < 0 { RISE_DOWN } else { RISE_UP } / per;
-    let n = STAIR_FLIGHT * STEPS_PER_CELL;
-    let sloped = if dir < 0 { n - LANDING } else { n };
-    (1..=n)
-        .map(|j| Tread {
-            top: dir.signum() as f32 * j.min(sloped) as f32 * rise,
-            from: (j - 1) as f32 / per,
-            to: j as f32 / per,
-        })
+    (1..=STAIR_STEPS)
+        .map(|j| Tread { top: tread_top(dir, j), from: (j - 1) as f32 / per, to: j as f32 / per })
         .collect()
 }
 
@@ -366,6 +345,7 @@ pub fn lamp(s: Stair, h: f32) -> Lamp {
 mod tests {
     use super::*;
     use crate::world::facility::{stair_well_cells, Cell, LinkKind};
+    use crate::world::vertical::{LANDING, RISE_DOWN, RISE_UP};
     use std::collections::HashSet;
 
     const H: f32 = 5.0;

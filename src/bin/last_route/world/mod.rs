@@ -11,6 +11,7 @@ pub mod infinite;
 pub mod level_links;
 pub mod rng;
 pub mod route;
+pub mod vertical;
 
 pub use facility::{Cell, Facility};
 
