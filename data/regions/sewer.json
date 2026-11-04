@@ -1,0 +1,35 @@
+{
+	"schema": "lr.region/1",
+	"id": "sewer",
+	"hall_floor": [
+		"stone0",
+		"stone1"
+	],
+	"hall_runner": false,
+	"room_default_floor": [
+		"concrete0",
+		"concrete1"
+	],
+	"room_roles": [
+		"pump_room",
+		"valve_room"
+	],
+	"prop_set": [
+		{
+			"type": "sewerPump",
+			"size": [
+				1.3,
+				1.5,
+				0.9
+			]
+		},
+		{
+			"type": "sewerOutflowPipe",
+			"size": [
+				1.64,
+				1.64,
+				3.2
+			]
+		}
+	]
+}

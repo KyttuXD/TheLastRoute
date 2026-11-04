@@ -26,9 +26,10 @@ pub const MAX_ROOM_SIZE: i32 = 26;
 
 /// The built-in region files, `(file name, text)`. The game embeds the same files from data/regions/ at
 /// build time; a test in `content::regions` keeps the two lists equal.
-pub const BUILTIN_FILES: [(&str, &str); 2] = [
+pub const BUILTIN_FILES: [(&str, &str); 3] = [
     ("regions/hospital.json", include_str!("../../data/regions/hospital.json")),
     ("regions/mall.json", include_str!("../../data/regions/mall.json")),
+    ("regions/sewer.json", include_str!("../../data/regions/sewer.json")),
 ];
 
 /// The only region schema this build reads. A new shape is `lr.region/2`, added in both engines.
