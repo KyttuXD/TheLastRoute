@@ -128,6 +128,7 @@ not sense you at all); the in-game admin overlay's switches (`ui::admin::flags()
 | `step_until` | `expect` (list, see Expectations), `max_frames` (600), `act`, `bot` (let the bot drive), `check_every` | `met`, `frames`, `unmet` |
 | `bot` | `frames`, `bot_seed`, `reset`, `debug`, `bot_events`, `observe` | the bot plays N frames: `bot` stats (+ `bot_events`) |
 | `walk_flight` | `dir` (`down` default, `up`), `frames` (default 900), `stop_on_level_change` | walks the nearest flight end to end along its walk path. `stop_on_level_change: true` stops on the frame the level label changes (the walk never rebuilds or moves the body; only an admin level jump does). Kept for `tests/*.json` and the bots |
+| `stairs_report` | | the stair-link diagnostic: `level`, window `origin`, window `center`, `resident_levels`, the `player` (absolute cell, y, `on_flight`) and the nearest 3 links of the active level (`flights`, ladders included and marked): `kind`, `dir`, `to_level`, `shape`, `run`, absolute `landing` and `foot` cells, `distance`, `well_cells` (count), `surface_rel_landing` and `surface_rel_foot` (tread height above the active floor, null off the flight), `neighbour_resident` and `twin` (true when the other level holds the matching record at this link's far end; null while that level is not resident). Run it standing at a stairwell that does not link and send it with the seed and the level |
 | `help` | | command and pulse lists |
 
 Focus / interactable kinds (the original's `RouteInteractable3D.Kind` names): `RELAY`, `BATTERY`,
