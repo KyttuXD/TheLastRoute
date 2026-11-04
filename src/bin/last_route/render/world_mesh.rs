@@ -15,7 +15,7 @@ use crate::config::WALL_HEIGHT;
 use crate::content::props::{stable_index, visual_y};
 use crate::content::regions::{RegionDef, RegionSafeLight};
 use crate::content::Content;
-use crate::world::facility::{stair_well_cells, Cell, DeckKind, DoorDraw, Prop, Stair, STAIR_FLIGHT};
+use crate::world::facility::{Cell, DeckKind, DoorDraw, Prop, Stair};
 use crate::world::inferno::Inferno;
 use crate::world::infinite::{ChunkKey, CHUNK, INFERNO_LEVEL, WINDOW};
 use crate::world::route::sewer::core::{Grid, LEVEL as SEWER_LEVEL, LOWER_LEVEL as SEWER_LOWER_LEVEL, WATER};
@@ -579,17 +579,15 @@ fn drawn_cells(f: &Facility) -> Vec<Cell> {
     cells
 }
 
-/// Stairwell flights: each hole cell's step number (1 = next to the landing) and its stair.
-fn stair_steps(f: &Facility) -> HashMap<(i32, i32), (i32, Stair)> {
-    let mut out = HashMap::new();
+/// Stairwell flights: each well cell and its stair.
+fn stair_steps(f: &Facility) -> HashMap<(i32, i32), Stair> {
+    let mut m = HashMap::new();
     for s in &f.stairs {
-        for k in 1..=STAIR_FLIGHT {
-            for c in stair_well_cells(*s, k) {
-                out.insert((c.x, c.y), (k, *s));
-            }
+        for c in s.well_cells() {
+            m.insert((c.x, c.y), *s);
         }
     }
-    out
+    m
 }
 
 /// The original's surfaces for the space a cell is in (a room by its region and type, else the
@@ -1060,8 +1058,8 @@ fn build_meshes(
         match step {
             // a flight down opens the floor onto lit steps in a lined pit, a ladder onto its shaft; a flight up
             // climbs through an open shaft in the ceiling (render/stairs.rs)
-            Some((_, s)) if s.is_ladder() => stairs::ladder_down(&mut bits, (c.x, c.y), s, &site),
-            Some((k, s)) => stairs::flight_cell(&mut bits, (c.x, c.y), k, s, &site),
+            Some(s) if s.is_ladder() => stairs::ladder_down(&mut bits, (c.x, c.y), s, &site),
+            Some(s) => stairs::flight_cell(&mut bits, (c.x, c.y), s, f.level, &site),
             // a channel cell: the bed, flat, at the data depth below the floor
             None if sewer.as_mut().is_some_and(|s| s.is_water(c.x, c.y)) => painted(&mut surf, floor_kind, assets.floor(set)).quad(
                 [vec3(x, bed, z), vec3(x + 1., bed, z), vec3(x + 1., bed, z + 1.), vec3(x, bed, z + 1.)],
@@ -1091,7 +1089,7 @@ fn build_meshes(
             stairs::ladder_up(&mut bits, (c.x, c.y), &site);
         }
         add_stairs(bits, &mut surf, &mut plain, &mut glow, floor_kind, wall_kind, assets, set);
-        if !matches!(step, Some((_, s)) if s.dir > 0) {
+        if !matches!(step, Some(s) if s.dir > 0) {
             let corners = [
                 vec3(x, wall_h, z + 1.),
                 vec3(x + 1., wall_h, z + 1.),

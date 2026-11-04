@@ -1,4 +1,5 @@
 //! Level links other than the stair flights: the sewer ladders between the maze (level 0) and the first sewer (-1).
+//! The stair flights themselves, including the sewer end of each maze stairwell, are `world::flight_links`.
 //!
 //! Godot places them in `SewerRouteGenerator._build_chunk` (sewer_route_generator.gd, see docs/SEWERS.md "Ladders"):
 //! about 55 % of sewer chunks (the origin always) take up to two `LevelLink`s of kind `ladder`, with `cover` set to
@@ -6,7 +7,7 @@
 //! them from the ported generator (`route::sewer::chunk`), so both levels agree on every ladder. The climb itself is not
 //! ported: a ladder is taken like a stairwell, with the fade (`Game::take_stairs`).
 
-use super::facility::{Cell, Cover, LinkKind, Stair, STAIR_FLIGHT};
+use super::facility::{Cell, Cover, Stair};
 use super::infinite::ChunkKey;
 use super::route::layout::Coord;
 use super::route::sewer;
@@ -27,39 +28,7 @@ pub fn ladders(seed: &str, k: ChunkKey) -> Vec<Stair> {
         .iter()
         .map(|l| {
             let c = if dir < 0 { l.from_cell } else { l.to_cell };
-            Stair {
-                cell: Cell::new(c.x, c.y),
-                dir,
-                run: (0, 0),
-                kind: LinkKind::Ladder(if l.cover == "grate" { Cover::Grate } else { Cover::Manhole }),
-            }
-        })
-        .collect()
-}
-
-/// The sewer end of each maze stairwell in column (cx, cy): the level 0 flight starts at the cell in front of the
-/// well's doorway and runs `STAIR_FLIGHT + 1` cells into the well (`Game::take_stairs` looks for a stair on the far
-/// level at exactly that cell), so the sewer stair sits there, running back. Empty off level -1.
-pub fn well_stairs(seed: &str, k: ChunkKey) -> Vec<Stair> {
-    if k.level != sewer::core::LEVEL {
-        return vec![];
-    }
-    let Some(chunk) = sewer::chunk(Coord::new(k.cx, sewer::core::LEVEL, k.cy), &sewer::Inputs { world: seed }) else {
-        return vec![];
-    };
-    chunk
-        .wells
-        .iter()
-        .map(|w| {
-            let outward = if w.north { 1 } else { -1 };
-            let top = Cell::new(w.door.x + w.door.w / 2, w.door.y - outward);
-            let run = (0, -outward);
-            Stair {
-                cell: Cell::new(top.x + run.0 * (STAIR_FLIGHT + 1), top.y + run.1 * (STAIR_FLIGHT + 1)),
-                dir: 1,
-                run: (-run.0, -run.1),
-                kind: LinkKind::Stairs,
-            }
+            Stair::ladder(Cell::new(c.x, c.y), dir, if l.cover == "grate" { Cover::Grate } else { Cover::Manhole })
         })
         .collect()
 }

@@ -6,7 +6,9 @@
 //! unstable sort are reproduced where they decide placement).
 
 use super::catalog::Catalog;
+use super::flight::{flight_surface_y, flights, walk_path as flight_walk_path, well_footprint, Flight, FlightKind, FlightShape, Footprint};
 use super::godot_sort::sort_custom;
+use super::vertical::STOREY;
 use super::infinite::ChunkKey;
 use super::route::catwalk_links::{self, CatwalkLink};
 use super::route::{catwalk, maze_regions};
@@ -249,36 +251,168 @@ pub enum DoorToggle {
     Blocked,
 }
 
-/// Cells a flight runs down (or up) from its landing: 2 wide, this many long.
-pub const STAIR_FLIGHT: i32 = 4;
-
-/// The two cells of the well at step `k` (1..=STAIR_FLIGHT) from the landing. A ladder's well is its own cell, open
-/// only at the top end (the shaft down); at the bottom the sewer floor stays, so both cells are off the grid.
-pub fn stair_well_cells(s: Stair, k: i32) -> [Cell; 2] {
-    if s.is_ladder() {
-        let c = if s.dir < 0 { s.cell } else { Cell::new(-1, -1) };
-        return [c, c];
-    }
-    // the second lane is always on the +x / +y side, so both ends of a flight agree on its well
-    let side = (s.run.1.abs(), s.run.0.abs());
-    let c = Cell::new(s.cell.x + s.run.0 * k, s.cell.y + s.run.1 * k);
-    [c, Cell::new(c.x + side.0, c.y + side.1)]
-}
-
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Stair {
-    /// The landing cell where the runner steps on.
+    /// dir < 0 (lives on the UPPER level): the landing cell A where the runner steps on. dir > 0 (lives on the LOWER
+    /// level): the foot cell B where the flight ends. A ladder: the hatch.
     pub cell: Cell,
     /// -1 leads down a level, +1 up.
     pub dir: i32,
-    /// Unit step the flight runs along (from the landing into the well); (0, 0) for a ladder.
+    /// The flight's own run (A toward the well), the same on both levels; (0, 0) for a ladder.
     pub run: (i32, i32),
     pub kind: LinkKind,
+    /// How the flight is laid out (a ladder: Switchback, unused).
+    pub shape: FlightShape,
+    /// Spiral only: which way it turns.
+    pub clockwise: bool,
 }
 
 impl Stair {
     pub fn is_ladder(&self) -> bool {
         matches!(self.kind, LinkKind::Ladder(_))
+    }
+
+    /// A stair record of a walked flight; `cell` is A for dir < 0 and B for dir > 0.
+    pub fn stairs(cell: Cell, dir: i32, run: (i32, i32), shape: FlightShape, clockwise: bool) -> Stair {
+        Stair { cell, dir, run, kind: LinkKind::Stairs, shape, clockwise }
+    }
+
+    /// A ladder record: `cell` is the hatch.
+    pub fn ladder(cell: Cell, dir: i32, cover: Cover) -> Stair {
+        Stair {
+            cell,
+            dir,
+            run: (0, 0),
+            kind: LinkKind::Ladder(cover),
+            shape: FlightShape::Switchback,
+            clockwise: false,
+        }
+    }
+
+    /// The flight this record is one end of, seen from `level`, the level of the facility holding it. `None` for a
+    /// ladder.
+    pub fn flight(&self, level: i32) -> Option<Flight> {
+        if self.is_ladder() {
+            return None;
+        }
+        Some(if self.dir < 0 {
+            Flight::new(FlightKind::Stairs, self.shape, level, self.cell, self.run).with_clockwise(self.clockwise)
+        } else {
+            Flight::from_foot_with(
+                flights(),
+                FlightKind::Stairs,
+                self.shape,
+                level,
+                self.cell,
+                self.run,
+                self.clockwise,
+            )
+        })
+    }
+
+    /// The footprint of a stair (the cells do not depend on the level number).
+    fn footprint(&self) -> Option<Footprint> {
+        self.flight(if self.dir < 0 { 0 } else { -1 }).map(|f| well_footprint(&f))
+    }
+
+    /// The cells that are a hole on the upper level and open ceiling on the lower. A ladder: its hatch on the upper
+    /// level only.
+    pub fn well_cells(&self) -> Vec<Cell> {
+        match self.footprint() {
+            Some(fp) => fp.upper_hole,
+            None if self.dir < 0 => vec![self.cell],
+            None => vec![],
+        }
+    }
+
+    /// The landing A (upper level). A ladder: its hatch.
+    pub fn landing(&self) -> Cell {
+        self.footprint().map_or(self.cell, |fp| fp.landing)
+    }
+
+    /// The foot B (lower level). A ladder: its hatch.
+    pub fn foot(&self) -> Cell {
+        self.footprint().map_or(self.cell, |fp| fp.foot)
+    }
+
+    /// The end of the flight on the other level: the foot for an upper stair, the landing for a lower one.
+    pub fn far_end(&self) -> Cell {
+        if self.dir < 0 {
+            self.foot()
+        } else {
+            self.landing()
+        }
+    }
+
+    /// Every cell the flight needs kept clear: the well, both ends and their margins (sorted, no repeats).
+    pub fn carve_cells(&self) -> Vec<Cell> {
+        let Some(fp) = self.footprint() else { return vec![self.cell] };
+        let mut v = fp.upper_hole;
+        v.push(fp.landing);
+        v.push(fp.foot);
+        v.extend(fp.upper_clear);
+        v.extend(fp.lower_clear);
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    /// The walking height at `(x, z)` above the floor of `level`, the level of the facility holding this record: the
+    /// absolute surface minus `level * STOREY`, so it is continuous across the level change. `Some` only over the
+    /// well and this stair's own end (A for dir < 0, B for dir > 0), never on the other end.
+    pub fn surface_rel(&self, level: i32, x: f32, z: f32) -> Option<f32> {
+        let flight = self.flight(level)?;
+        let fp = well_footprint(&flight);
+        // The cell holding the point, by the flight's own frame (each cell is half-open towards the well: u in
+        // [k-1, k)), so a point exactly on a cell edge belongs to the same cell whichever way the run points. Floor of
+        // the world coordinate would put it in the far-end cell for a negative run and drop the walker off the flight.
+        let (rx, rz) = flight.run;
+        let (sx, sz) = (rz.abs(), rx.abs());
+        let (ex, ez) = (
+            flight.anchor_cell.x as f32 + (rx > 0) as i32 as f32,
+            flight.anchor_cell.y as f32 + (rz > 0) as i32 as f32,
+        );
+        let u = rx as f32 * (x - ex) + rz as f32 * (z - ez);
+        let v = sx as f32 * (x - ex) + sz as f32 * (z - ez);
+        let (k, j) = (u.floor() as i32 + 1, v.floor() as i32);
+        let cell_k = |k: i32| {
+            Cell::new(flight.anchor_cell.x + rx * k + sx * j, flight.anchor_cell.y + rz * k + sz * j)
+        };
+        let mut here = cell_k(k);
+        let (own, other) = if self.dir < 0 { (fp.landing, fp.foot) } else { (fp.foot, fp.landing) };
+        // On the edge between the last well cell and the far end (u a whole number) the point is still the flight's:
+        // the edge belongs to the well, never to the other storey's cell.
+        if here == other && u.fract() == 0.0 && fp.upper_hole.contains(&cell_k(k - 1)) {
+            here = cell_k(k - 1);
+        }
+        // The same for a far end off the run axis (a spiral exits sideways): a point exactly on the edge it shares with a
+        // well cell stays the well's.
+        if here == other {
+            let west = Cell::new(here.x - 1, here.y);
+            let north = Cell::new(here.x, here.y - 1);
+            if x.fract() == 0.0 && fp.upper_hole.contains(&west) {
+                here = west;
+            } else if z.fract() == 0.0 && fp.upper_hole.contains(&north) {
+                here = north;
+            }
+        }
+        if here == other || !(here == own || fp.upper_hole.contains(&here)) {
+            return None;
+        }
+        flight_surface_y(&flight, x, z).map(|y| y - level as f32 * STOREY)
+    }
+
+    /// The walked route from the centre of A to the centre of B, always in that order.
+    pub fn walk_path(&self, level: i32, step: f32) -> Vec<(f32, f32)> {
+        match self.flight(level) {
+            Some(f) => flight_walk_path(&f, step),
+            None => vec![self.cell.center()],
+        }
+    }
+
+    /// The same record moved by `(dx, dy)` cells.
+    pub fn shifted(&self, dx: i32, dy: i32) -> Stair {
+        Stair { cell: Cell::new(self.cell.x + dx, self.cell.y + dy), ..*self }
     }
 }
 
@@ -565,11 +699,9 @@ impl Facility {
     pub fn rebuild_grids(&mut self) {
         self.hole = vec![false; (self.cols * self.rows) as usize];
         for s in self.stairs.clone() {
-            for k in 1..=STAIR_FLIGHT {
-                for c in stair_well_cells(s, k) {
-                    if c.x >= 0 && c.y >= 0 && c.x < self.cols && c.y < self.rows {
-                        self.hole[(c.y * self.cols + c.x) as usize] = true;
-                    }
+            for c in s.well_cells() {
+                if c.x >= 0 && c.y >= 0 && c.x < self.cols && c.y < self.rows {
+                    self.hole[(c.y * self.cols + c.x) as usize] = true;
                 }
             }
         }
@@ -622,7 +754,7 @@ impl Facility {
             walk_surface: HashMap::new(),
             catwalk_links: vec![],
             maze_variant: None,
-            level: 0,
+            level: parts.first().map_or(0, |p| p.0.level),
         };
         for (p, ox, oy, region) in parts {
             let sh = |c: Cell| Cell::new(c.x + ox, c.y + oy);
@@ -669,10 +801,7 @@ impl Facility {
                     switch_cell: sh(l.switch_cell),
                     ..l
                 }));
-            f.stairs.extend(p.stairs.into_iter().map(|s| Stair {
-                cell: sh(s.cell),
-                ..s
-            }));
+            f.stairs.extend(p.stairs.into_iter().map(|s| s.shifted(ox, oy)));
             // catwalk decks and their links ride along with the chunk they belong to
             for (c, s) in p.walk_surface {
                 f.walk_surface.insert(sh(c), s);
@@ -1088,8 +1217,7 @@ impl Facility {
     fn on_stair_flight(&self, x: f32, y: f32) -> bool {
         let cell = Cell::new(x.floor() as i32, y.floor() as i32);
         self.stairs.iter().any(|s| {
-            (1..=STAIR_FLIGHT).any(|k| stair_well_cells(*s, k).contains(&cell))
-                && crate::world::vertical::stair_surface_y(*s, (x, y)).is_some()
+            s.well_cells().contains(&cell) && s.surface_rel(self.level, x, y).is_some()
         })
     }
 
@@ -1308,6 +1436,13 @@ impl Facility {
             for dy in -3..=3 {
                 for dx in -3..=3 {
                     keep_clear.insert(Cell::new(s.cell.x + dx, s.cell.y + dy));
+                }
+            }
+            for c in s.carve_cells() {
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        keep_clear.insert(Cell::new(c.x + dx, c.y + dy));
+                    }
                 }
             }
         }
@@ -2558,6 +2693,30 @@ mod tests {
                 }
             }
             assert!(checked > 0);
+        }
+    }
+
+    #[test]
+    fn a_stair_opens_its_well_on_both_levels_and_merge_keeps_level_and_shifts_it() {
+        use crate::world::flight::FlightShape;
+        let cat = Catalog::load();
+        for (level, dir) in [(0, -1), (-1, 1)] {
+            let mut part = Facility::generate("STAIR-1", &Options::default(), &cat);
+            part.level = level;
+            let (cell, run) = (Cell::new(20, 20), (0, 1));
+            let upper = Stair::stairs(cell, -1, run, FlightShape::Switchback, false);
+            let foot = upper.foot();
+            let s = if dir < 0 { upper } else { Stair::stairs(foot, 1, run, FlightShape::Switchback, false) };
+            part.stairs.push(s);
+            part.rebuild_grids();
+            for c in s.well_cells() {
+                assert!(part.is_hole(c.x, c.y), "level {level}: {c:?} is a hole");
+            }
+            let (x, y) = s.well_cells()[0].center();
+            assert!(part.on_stair_flight(x, y), "level {level}: the well is a tread for the flight");
+            let merged = Facility::merge(vec![(part, 3, 2, 0)], 60, 60, vec!["maze".into()], "STAIR-1");
+            assert_eq!(merged.level, level);
+            assert_eq!(merged.stairs, vec![s.shifted(3, 2)]);
         }
     }
 }

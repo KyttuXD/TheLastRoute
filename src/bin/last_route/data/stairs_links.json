@@ -1,8 +1,7 @@
 {
   "schema": "lr.stairs_links/1",
-  "_about": "Level links (stair flights and sewer ladders) taken direct: the runner reaches the connection and the level changes on that frame, with no fade, no hold and no climb wait. Read by game/transition.rs. prefetch_distance is how close (cells) the runner gets to a stair or ladder landing before the storey it leads to is built ahead (game/endless.rs prefetch_connections), so the change on the connection's frame builds nothing.landing_offset is how far in from the far landing's cell the runner is put on arrival (cells); flight_steps is the cells from the near landing to the far one. Godot reference: game/world/generation/stairwells.gd (landing and flight cells), game/infinite_route/infinite_route_test.gd (_update_player_ladder, _on_player_ladder_finished).",
+  "_about": "Level links (stair flights and sewer ladders) taken direct: the runner reaches the connection and the level changes on that frame, with no fade, no hold and no climb wait. Read by game/transition.rs. prefetch_distance is how close (cells) the runner gets to a stair or ladder landing before the storey it leads to is built ahead (game/endless.rs prefetch_connections), so the change on the connection's frame builds nothing. landing_offset is how far in from the far end (foot B going down, landing A going up) the runner is put on arrival (cells), along the direction the flight leaves that end by; the far end is the stair itself, there is no flight length to state. Godot reference: game/world/generation/stairwells.gd (landing and flight cells), game/infinite_route/infinite_route_test.gd (_update_player_ladder, _on_player_ladder_finished).",
   "landing_offset": 0.6,
-  "flight_steps": 5,
   "prefetch_distance": 8,
   "preload_levels_up": 2,
   "preload_levels_down": 2,

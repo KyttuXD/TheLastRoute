@@ -14,6 +14,7 @@ pub mod rng;
 pub mod route;
 pub mod vertical;
 pub mod flight;
+pub mod flight_links;
 #[cfg(test)]
 mod stack_contract_tests;
 

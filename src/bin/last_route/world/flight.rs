@@ -367,10 +367,6 @@ impl FlightRules {
     fn sp_span(&self) -> f32 {
         TAU * self.sp_turns
     }
-    /// The flat stub past each end of the spiral's arc (an angle), half a cell of walkway.
-    fn sp_ext(&self) -> f32 {
-        0.5 / self.sp_radius
-    }
     /// The weights in force on `level`.
     pub fn weights_for(&self, level: i32) -> ShapeWeights {
         self.region_weights.iter().find(|(l, _)| *l == level).map(|(_, w)| *w).unwrap_or(self.weights)
@@ -593,27 +589,46 @@ pub fn well_footprint(f: &Flight) -> Footprint {
     well_footprint_with(flights(), f)
 }
 
-/// The progress along the spiral (0 at the top, 1 at the foot) of a point, or `None` off the walkway. The arc has a
-/// flat stub half a cell long past each end so the cells beside the landing and the foot are covered.
+/// The progress along the spiral (0 at the top, 1 at the foot) of a point, or `None` off the walkway. The walkway is the
+/// arc (an annulus `lane_width` wide, `turns` of a circle) plus a straight stub at each end, as wide as the lane and
+/// running from where the arc starts (ends) out to the edge of the well square, so the walkway is never narrower than the
+/// lane where the walker steps on at the landing A and off at the foot B.
 fn spiral_progress(rules: &FlightRules, f: &Flight, u: f32, v: f32) -> Option<f32> {
     let uc = rules.sp_half() as f32 + 0.5;
     let (du, dv) = (u - uc, v - 0.5);
     let d = (du * du + dv * dv).sqrt();
-    if (d - rules.sp_radius).abs() > rules.sp_lane_width as f32 * 0.5 + 1e-4 {
-        return None;
+    let (span, half_lane) = (rules.sp_span(), rules.sp_lane_width as f32 * 0.5 + 1e-4);
+    if (d - rules.sp_radius).abs() <= half_lane {
+        let a = spiral_dir(rules, f) * (dv.atan2(du) - PI);
+        let w = (a - span * 0.5).rem_euclid(TAU);
+        let a = span * 0.5 + if w > PI { w - TAU } else { w };
+        if (0.0..=span).contains(&a) {
+            return Some(a / span);
+        }
+        // A short lead-in past each end of the arc, held flat at that end's floor: the arc itself ends in a radial cut,
+        // so without it the walkway is only half a lane wide where the straight stub meets it and a body is blocked.
+        let lead = (rules.sp_lane_width as f32 / rules.sp_radius).min(0.6);
+        if a < 0.0 && a >= -lead {
+            return Some(0.0);
+        }
+        if a > span && a <= span + lead {
+            return Some(1.0);
+        }
     }
-    let (span, ext) = (rules.sp_span(), rules.sp_ext());
-    let a = spiral_dir(rules, f) * (dv.atan2(du) - PI);
-    let mid = span * 0.5;
-    let mut w = (a - mid).rem_euclid(TAU);
-    if w > PI {
-        w -= TAU;
+    // the well edge, with a hair of tolerance: a walk sample exactly on the cell edge belongs to the flight
+    let edge = rules.sp_half() as f32 + 0.5 + 1e-3;
+    // the stub at the top: from the arc start (angle PI, outwards along -u) to the well edge
+    let (along, across) = (-du, dv);
+    if (rules.sp_radius..=edge).contains(&along) && across.abs() <= half_lane {
+        return Some(0.0);
     }
-    let a = mid + w;
-    if a < -ext || a > span + ext {
-        return None;
+    // the stub at the foot: outwards along the exit axis
+    let (eu, ev) = spiral_exit(rules, f);
+    let (along, across) = (du * eu as f32 + dv * ev as f32, du * ev as f32 - dv * eu as f32);
+    if (rules.sp_radius..=edge).contains(&along) && across.abs() <= half_lane {
+        return Some(1.0);
     }
-    Some((a / span).clamp(0.0, 1.0))
+    None
 }
 
 /// The absolute y of the walking surface at `(x, z)` (grid cells), or `None` off the flight. Exactly the upper floor at

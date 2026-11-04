@@ -45,7 +45,9 @@ use crate::hunters::navigation;
 use crate::render::door;
 use crate::shared::safe_room::SafeRoom;
 use crate::world::catalog::Catalog;
-use crate::world::facility::{stair_well_cells, Cell, Facility, Hiding, LinkKind, Options, Pickup, Prop, Room, Stair, STAIR_FLIGHT};
+use crate::world::facility::{Cell, Facility, Hiding, Options, Pickup, Prop, Room, Stair};
+use crate::world::flight::{well_footprint, Flight};
+use crate::world::flight_links;
 use crate::world::fixtures::Fixtures;
 use crate::world::infinite::{self, ChunkKey, CHUNK};
 use crate::world::rng::Rng;
@@ -76,6 +78,7 @@ pub fn from_layout(seed: &str, k: ChunkKey, lay: &ChunkLayout, cat: &Catalog) ->
         ..Default::default()
     };
     let mut f = Facility::generate(&base_seed, &opt, cat);
+    f.level = k.level;
 
     // walls: the layout grid, code 0 open and every other code solid (level 0 has no water or ramps)
     f.wall = (0..CHUNK as usize)
@@ -103,7 +106,15 @@ pub fn from_layout(seed: &str, k: ChunkKey, lay: &ChunkLayout, cat: &Catalog) ->
     // below are set, so layout pickups and fixtures are not cut out by it.
     f.stairs.clear();
     for well in &lay.stairwells {
-        let stair = carve_stair_well(&mut f, well);
+        let flight = flight_links::level0_well_flight(
+            seed,
+            k.cx,
+            k.cy,
+            well.kind,
+            (well.door.x, well.door.y, well.door.w),
+            well.north,
+        );
+        let stair = carve_stair_well(&mut f, well, &flight);
         f.stairs.push(stair);
     }
     // the sewer ladders down (docs/SEWERS.md): Godot keeps their top cell a clear hallway cell, so nothing is carved
@@ -151,6 +162,7 @@ pub fn from_layout(seed: &str, k: ChunkKey, lay: &ChunkLayout, cat: &Catalog) ->
     f.hunter_spawn = f.start;
     let _ = f.apply_maze_variant(seed, k);
     // apply_catwalks reads the hole and prop grids (can_occupy, is_hole), which only exist once they are built
+    f.level = k.level;
     f.rebuild_grids();
     f.apply_catwalks(seed, k, crate::world::route::regions::region_for(seed, k.cx, k.cy, k.level));
     f.rebuild_grids();
@@ -410,9 +422,9 @@ pub(crate) fn layout_stairwells(seed: &str, k: ChunkKey) -> Vec<Stairwell> {
 
 /// Carves a layout stairwell into `f` as the level 0 stair: the walled box, the landing and doorway left open,
 /// the shaft left as the well (`Facility::is_hole`), and a 3-wide corridor from the doorway out to the first open
-/// row, the hall. Nothing else opens onto the box. Returns the stair, whose landing is the cell in front of the
-/// doorway and whose run goes into the shaft (Godot `Stairwells.cells_for`, `_geometry` at stairwells.gd:66).
-pub(crate) fn carve_stair_well(f: &mut Facility, well: &Stairwell) -> Stair {
+/// row, the hall. Nothing else opens onto the box. Returns the stair of `flight` (world::flight_links), whose landing is
+/// the flight's landing A and whose hole is the open well (Godot `Stairwells.cells_for`, `_geometry` at stairwells.gd:66).
+pub(crate) fn carve_stair_well(f: &mut Facility, well: &Stairwell, flight: &Flight) -> Stair {
     let bx = well.bbox;
     let door = well.door;
     let outward = if well.north { 1 } else { -1 };
@@ -434,21 +446,24 @@ pub(crate) fn carve_stair_well(f: &mut Facility, well: &Stairwell) -> Stair {
     }
     f.clear_props_in(bx.x, bx.y, bx.w, bx.h);
     f.clear_props_in(lane_x, door.y.min(last), 3, (door.y - last).abs() + 1);
-    let stair = Stair {
-        cell: Cell::new(door.x + door.w / 2, door.y - outward),
-        dir: -1,
-        run: (0, -outward),
-        kind: LinkKind::Stairs,
-    };
-    // the flight's own treads are walkable (the walking body stands on them), so their cells are open
-    for k in 1..=STAIR_FLIGHT {
-        for c in stair_well_cells(stair, k) {
-            if c.x >= 0 && c.y >= 0 && c.x < f.cols && c.y < f.rows {
-                f.wall[c.y as usize][c.x as usize] = false;
-            }
+    // the flight's own cells are walkable (the walking body stands on them): its hole, its landing and the margin behind
+    // the landing. Its foot and the margin beyond it belong to the level below, so they stay as the box leaves them.
+    let fp = well_footprint(flight);
+    let in_box = |c: &Cell| c.x >= bx.x && c.x < bx.x + bx.w && c.y >= bx.y && c.y < bx.y + bx.h;
+    let open: Vec<Cell> = fp
+        .upper_hole
+        .iter()
+        .chain(fp.upper_clear.iter())
+        .chain(std::iter::once(&fp.landing))
+        .filter(|c| in_box(c) || **c == fp.landing)
+        .copied()
+        .collect();
+    for c in open {
+        if c.x >= 0 && c.y >= 0 && c.x < f.cols && c.y < f.rows {
+            f.wall[c.y as usize][c.x as usize] = false;
         }
     }
-    stair
+    flight_links::upper_stair(flight)
 }
 
 /// Sets the cells of `r` in `f.wall` to `solid`, clipped to the floor.
@@ -767,14 +782,12 @@ mod tests {
 
     /// A level-0 stair is a dead end: its box is walled except the doorway, its landing stands in front of the
     /// doorway with the shaft behind it, and a walk from the landing reaches the hall only through the doorway.
-    fn check_dead_end(f: &Facility, well: &Stairwell, label: &str) {
-        let outward = if well.north { 1 } else { -1 };
+    fn check_dead_end(f: &Facility, well: &Stairwell, flight: &Flight, label: &str) {
         let (bx, door) = (well.bbox, well.door);
-        let landing = Cell::new(door.x + door.w / 2, door.y - outward);
+        let landing = well_footprint(flight).landing;
+        let run = flight.run;
         assert!(
-            f.stairs
-                .iter()
-                .any(|s| s.kind == LinkKind::Stairs && s.dir == -1 && s.cell == landing && s.run == (0, -outward)),
+            f.stairs.iter().any(|s| !s.is_ladder() && s.dir == -1 && s.cell == landing && s.run == run),
             "{label}: no stair at the landing {landing:?}"
         );
         let in_box = |c: Cell| c.x >= bx.x && c.x < bx.x + bx.w && c.y >= bx.y && c.y < bx.y + bx.h;
@@ -788,10 +801,15 @@ mod tests {
             }
         }
         assert!(!f.is_wall_cell(landing.x, landing.y) && !f.is_hole(landing.x, landing.y), "{label}: landing is closed");
-        assert!(f.is_hole(landing.x, landing.y - outward), "{label}: the flight does not run from the landing");
-        let through_door_only = walk_reach(f, landing, &door_cells);
-        assert!(through_door_only.iter().all(|c| in_box(*c)), "{label}: the landing reaches the hall without its doorway");
+        assert!(f.is_hole(landing.x + run.0, landing.y + run.1), "{label}: the flight does not run from the landing");
         let all = walk_reach(f, landing, &[]);
+        if door_cells.contains(&landing) {
+            // a spiral starts on the doorway cell itself: nothing inside the box is walkable ground (all of it is flight)
+            assert!(all.iter().all(|c| !in_box(*c) || door_cells.contains(c)), "{label}: ground inside the spiral well");
+        } else {
+            let through_door_only = walk_reach(f, landing, &door_cells);
+            assert!(through_door_only.iter().all(|c| in_box(*c)), "{label}: the landing reaches the hall without its doorway");
+        }
         assert!(all.iter().any(|c| !in_box(*c)), "{label}: the landing does not reach the hall");
         assert!(door_cells.iter().any(|c| all.contains(c)), "{label}: the doorway is closed");
     }
@@ -807,9 +825,17 @@ mod tests {
                     for well in layout_stairwells(world, k) {
                         wells += 1;
                         let (live, _) = chunk(world, k, cat()).unwrap();
-                        check_dead_end(&live, &well, &format!("{world} {cx},{cy} live"));
+                        let flight = flight_links::level0_well_flight(
+                            world,
+                            cx,
+                            cy,
+                            well.kind,
+                            (well.door.x, well.door.y, well.door.w),
+                            well.north,
+                        );
+                        check_dead_end(&live, &well, &flight, &format!("{world} {cx},{cy} live"));
                         let (legacy, _) = infinite::legacy_chunk(world, k, cat(), &loot);
-                        check_dead_end(&legacy, &well, &format!("{world} {cx},{cy} legacy"));
+                        check_dead_end(&legacy, &well, &flight, &format!("{world} {cx},{cy} legacy"));
                     }
                 }
             }

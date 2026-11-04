@@ -285,7 +285,7 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [x] God mode leaked to other players in a room (fixed 2026-11-03)
 - [ ] Peek lean is not visually confirmed: hunter hallway peeking works in the tests, but no screenshot has shown the lean yet
 - [ ] Inferno floor heights are not followed by the player: the player stays at the base floor height in the Inferno region
-- [ ] Stairwell with only 2 walk rows at seed 40490470, chunk (3,2): check that the flight is walkable end to end
+- [x] Stairwell with only 2 walk rows at seed 40490470, chunk (3,2): check that the flight is walkable end to end (covered by the contract test `the_todo_stairwell_at_seed_40490470_chunk_3_2_is_walkable_end_to_end` in world/stack_contract_tests.rs, stairs phase 1)
 
 ## Performance and FPS
 

@@ -28,6 +28,7 @@ use crate::world::rng::Rng;
 use crate::world::route::layout::{self, chunk_layout, ChunkLayout, Coord, Stairwell, V2};
 use super::breach::BreachSpec;
 use super::seals;
+use crate::world::flight_links;
 
 /// Godot `CHUNK_SIZE` (streamed_route_generator.gd:19).
 pub const CHUNK: i32 = 45;
@@ -1602,8 +1603,31 @@ pub fn chunk(coord: Coord, inputs: &Inputs) -> Option<SewerChunk> {
     if coord.y == LOWER_LEVEL {
         overlay_level2(&mut c, inputs);
     }
+    if coord.y == LEVEL {
+        carve_spiral_feet(&mut c, inputs.world);
+    }
     place_room(&mut c, inputs.world);
     Some(c)
+}
+
+/// The cells the played sewer opens for the spiral wells of a chunk: a spiral well's foot, its clear margin and the cell past it lie outside the well's box, in rock the Godot layout
+/// (`chunk_base`, which the goldens read) leaves solid. The played sewer makes room: those cells become floor, so the
+/// well is a spiral on both levels. Only for wells `flight_links::spiral_carvable` accepts (the chunk edge excepted).
+fn spiral_feet(c: &SewerChunk, world: &str) -> Vec<V2> {
+    let mut out = Vec::new();
+    for well in c.wells.iter().filter(|w| w.kind == "spiral") {
+        let flight = flight_links::spiral_well_flight(world, (well.door.x, well.door.y, well.door.w), well.north);
+        if flight_links::spiral_carvable(&flight) {
+            out.extend(flight_links::spiral_open_cells(&flight).into_iter().map(|cell| V2::new(cell.x, cell.y)));
+        }
+    }
+    out
+}
+
+fn carve_spiral_feet(c: &mut SewerChunk, world: &str) {
+    for cell in spiral_feet(c, world) {
+        c.sewer_grid[cell.y as usize][cell.x as usize] = DRY;
+    }
 }
 
 /// Open the second level's tunnels and pools into the lower storey: its non-solid cells are copied over solid ones
@@ -2486,8 +2510,16 @@ mod tests {
                 assert_eq!(a.links, b.links);
                 assert_eq!(a.ramps, b.ramps);
                 assert_eq!(a.region_props.len() >= b.region_props.len(), true);
+                let feet = spiral_feet(&a, "wired-sewer");
+                let carved = |xx: i32, zz: i32| feet.contains(&V2::new(xx, zz));
                 let Some(room) = &a.room else {
-                    assert_eq!(a.sewer_grid, b.sewer_grid, "({x}, {z}) no room, same grid");
+                    for zz in 0..N as i32 {
+                        for xx in 0..N as i32 {
+                            if !carved(xx, zz) {
+                                assert_eq!(a.sewer_grid[zz as usize][xx as usize], b.sewer_grid[zz as usize][xx as usize], "({x}, {z}) no room, same grid outside the spiral feet");
+                            }
+                        }
+                    }
                     continue;
                 };
                 placed += 1;
@@ -2496,6 +2528,7 @@ mod tests {
                         let (rx, rz) = (xx - room.origin.x, zz - room.origin.y);
                         match room.def.code_at(rx, rz) {
                             Some(code) => assert_eq!(a.sewer_grid[zz as usize][xx as usize], code),
+                            None if carved(xx, zz) => {}
                             None => assert_eq!(a.sewer_grid[zz as usize][xx as usize], b.sewer_grid[zz as usize][xx as usize]),
                         }
                     }

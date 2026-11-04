@@ -4,16 +4,17 @@
 //! reaches the connection (game/endless.rs `walked_level_change`, game/ladder.rs `advance_ladder`), through the same
 //! `change_storey` load, with the momentum and the cell kept.
 //!
-//! The landing offset and the far end's distance are data (data/stairs_links.json, `links()`). The far end must be the
-//! landing the world generator lays out one storey over (`STAIR_FLIGHT + 1` steps), so `parse` refuses any other
-//! `flight_steps`. Godot reference: game/infinite_route/infinite_route_test.gd (`_update_player_ladder`,
-//! `_on_player_ladder_finished`).
+//! The landing offset and the prefetch distance are data (data/stairs_links.json, `links()`). Where the runner arrives
+//! is `arrival`: the far end of the flight (foot B going down, landing A going up), put `landing_offset` in along the
+//! direction the flight leaves that end by, facing along it. There is no far-cell arithmetic: both levels derive the
+//! flight from the same connection (world/flight_links.rs), so the far end is the stair's own `far_end()`.
+//! Godot reference: game/infinite_route/infinite_route_test.gd (`_update_player_ladder`, `_on_player_ladder_finished`).
 
 use super::Game;
 use crate::content::embedded;
 use crate::content::Content;
 use crate::world::catalog::Catalog;
-use crate::world::facility::STAIR_FLIGHT;
+use crate::world::facility::Stair;
 use crate::world::infinite;
 use std::sync::OnceLock;
 
@@ -25,14 +26,12 @@ pub const STAIRS_LINKS_PATH: &str = "stairs_links.json";
 pub struct StairsLinks {
     /// How far in from the far landing's cell, along the flight, the runner stands on arrival (cells).
     pub landing_offset: f32,
-    /// Cells from the near landing to the far one (the flight's length plus one).
-    pub flight_steps: i32,
     /// How close (cells) the runner gets to a stair or ladder landing before the storey it leads to is built ahead
     /// (`Game::prefetch_connections`), so the change on the connection's frame builds no window.
     pub prefetch_distance: f32,
 }
 
-/// Reads a `StairsLinks` from the JSON text. A value out of range or a `flight_steps` other than the world's is an error.
+/// Reads a `StairsLinks` from the JSON text. A negative value is an error.
 pub fn parse(text: &str) -> Result<StairsLinks, String> {
     let v: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
     let num = |k: &str| {
@@ -43,12 +42,8 @@ pub fn parse(text: &str) -> Result<StairsLinks, String> {
     };
     let links = StairsLinks {
         landing_offset: num("landing_offset")?,
-        flight_steps: num("flight_steps")? as i32,
         prefetch_distance: num("prefetch_distance")?,
     };
-    if links.flight_steps != STAIR_FLIGHT + 1 {
-        return Err(format!("flight_steps must be {} (the world's flight plus one)", STAIR_FLIGHT + 1));
-    }
     if !(links.prefetch_distance >= 0.0) {
         return Err("prefetch_distance must not be negative".into());
     }
@@ -76,6 +71,35 @@ pub fn landing_offset() -> f32 {
     links().landing_offset
 }
 
+/// Where the runner stands, and which way it faces, after taking stair `s` on `from_level` (the level that holds `s`):
+/// on the flight's far end (foot B going down, landing A going up), `landing_offset` in along the direction the flight
+/// leaves that end by, facing along it. At the landing A that direction is `-run` (away from the flight, into the
+/// room); at the foot B it is the unit vector of the last segment of the walk path (a switchback gives `-run`, a
+/// straight flight `+run`, a spiral sideways). The yaw faces along that direction (Player forward is (-sin, -cos)).
+pub fn arrival(s: &Stair, from_level: i32) -> ((f32, f32), f32) {
+    let target = s.far_end();
+    let landing = s.dir > 0;
+    let e = if landing {
+        (-(s.run.0 as f32), -(s.run.1 as f32))
+    } else {
+        let path = s.walk_path(from_level, 0.25);
+        let last = *path.last().unwrap_or(&target.center());
+        // the earliest sample from the end that is a real step back, so a short final segment cannot skew the direction
+        let back = path
+            .iter()
+            .rev()
+            .find(|p| (last.0 - p.0).hypot(last.1 - p.1) >= 0.3)
+            .copied()
+            .unwrap_or((last.0 + s.run.0 as f32, last.1 + s.run.1 as f32));
+        let (dx, dz) = (last.0 - back.0, last.1 - back.1);
+        let len = dx.hypot(dz).max(1e-6);
+        (dx / len, dz / len)
+    };
+    let (cx, cz) = target.center();
+    let off = landing_offset();
+    ((cx + e.0 * off, cz + e.1 * off), (-e.0).atan2(-e.1))
+}
+
 impl Game {
     /// Takes stairwell `i` (interact's `Focus::Stairs`) on this frame: the level changes and the runner is on the far
     /// landing at once, with no fade and no climb. A level the run may not enter is refused here.
@@ -98,7 +122,6 @@ mod tests {
     fn standard() -> StairsLinks {
         StairsLinks {
             landing_offset: 0.6,
-            flight_steps: STAIR_FLIGHT + 1,
             prefetch_distance: 8.0,
         }
     }
@@ -118,7 +141,6 @@ mod tests {
         let got = links();
         let want = standard();
         assert!((got.landing_offset - want.landing_offset).abs() < 1e-6);
-        assert_eq!(got.flight_steps, want.flight_steps);
         assert!((got.prefetch_distance - want.prefetch_distance).abs() < 1e-6);
         assert_eq!(landing_offset(), got.landing_offset);
     }
@@ -131,9 +153,49 @@ mod tests {
     }
 
     #[test]
-    fn the_flight_length_in_the_data_must_match_the_world() {
-        assert!(parse(&with_json("flight_steps", "6")).is_err(), "a far end the world does not lay out is refused");
+    fn a_negative_value_in_the_data_is_refused() {
         assert!(parse(&with_json("landing_offset", "-1")).is_err(), "a negative offset is refused");
         assert!(parse(&with_json("prefetch_distance", "-1")).is_err(), "a negative prefetch distance is refused");
+    }
+
+    /// A real window with a Stairs flight of `shape` on `level` (ROOM-TEST-n, n < 300).
+    fn find(shape: crate::world::flight::FlightShape, level: i32) -> Option<(Game, Stair)> {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        for n in 0..300 {
+            let text = format!("ROOM-TEST-{n}");
+            let g = Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, &text, level, &content, &catalog);
+            let s = g
+                .fac
+                .stairs
+                .iter()
+                .copied()
+                .find(|s| matches!(s.kind, crate::world::facility::LinkKind::Stairs) && s.shape == shape);
+            if let Some(s) = s {
+                return Some((g, s));
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn arrival_is_offset_in_from_the_far_end_and_faces_along_the_exit() {
+        use crate::world::flight::FlightShape::*;
+        let mut checked = 0;
+        for (shape, level) in [(Switchback, 0), (Spiral, 0), (Straight, -1)] {
+            let Some((g, s)) = find(shape, level) else { continue };
+            let (pos, yaw) = arrival(&s, g.fac.level);
+            let (cx, cz) = s.far_end().center();
+            let d = (pos.0 - cx).hypot(pos.1 - cz);
+            assert!((d - landing_offset()).abs() < 1e-4, "{shape:?}: {d} m from the far end's centre");
+            // the facing is the exit direction: forward is (-sin yaw, -cos yaw)
+            let fwd = (-yaw.sin(), -yaw.cos());
+            let e = ((pos.0 - cx) / d, (pos.1 - cz) / d);
+            assert!((fwd.0 - e.0).abs() < 1e-3 && (fwd.1 - e.1).abs() < 1e-3, "{shape:?}: faces along the exit {e:?}, not {fwd:?}");
+            if s.dir > 0 {
+                assert!((e.0 + s.run.0 as f32).abs() < 1e-4 && (e.1 + s.run.1 as f32).abs() < 1e-4, "landing A exits by -run");
+            }
+            checked += 1;
+        }
+        assert!(checked >= 1, "a flight was found in the scanned windows");
     }
 }

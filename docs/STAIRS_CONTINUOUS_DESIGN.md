@@ -1,6 +1,6 @@
 # Continuous levels: stairs, ladders and drops as one space
 
-Status: design, not implemented. Owner request (KT, repeated): levels must connect "like they're together", not through a player teleport, a storey swap, or a fake connection.
+Status: phase 1 implemented: flights span 5.0 m in three shapes, level swap kept. Owner request (KT, repeated): levels must connect "like they are together", not through a player teleport, a storey swap, or a fake connection.
 
 All line numbers come from five read-only investigator reports on a working tree that other agents were editing. Re-check each one with `git show HEAD:path` before editing. Paths are under `src/bin/last_route/` unless noted.
 
@@ -320,3 +320,14 @@ Rules for every task: edit only the listed files; do not touch the hubs unless t
     - Test: end-to-end headless walk of every flight in the golden seeds with y continuity (no jump over 0.25 m per frame), `stairs_cannot_be_used_to_teleport`, grep test that `change_storey` has only respawn, checkpoint and new-run callers, then `cargo test --lib`, `lr_server`, and headless suites.
 
 Ordering: 1 and 2 first (parallel). Then 3 and 4. Then 5. Then 6 and 7 (7 after 3). Then 8, 9, 10, 11 in parallel (after 5 to 7). Task 12 lands the hub changes at each phase boundary, in the order Phase 3, 5, 9, and is the only agent that edits hubs.
+
+---
+
+## Phase 1 as built
+
+- `Stair` carries `shape` and `clockwise`; `run` is the flight's own run on both levels. A `dir < 0` stair is the upper level's landing A, a `dir > 0` stair is the lower level's foot B.
+- `Stair::surface_rel(level, x, z)` is the flight's surface relative to the level holding the stair (flight y minus `level * STOREY`), `Some` only on the footprint plus the stair's own end, so swapping levels at the midpoint keeps the absolute y continuous.
+- `world/flight_links.rs` is the single place that turns a connection into a `Flight`; both levels call the same pure function, so their footprints cannot disagree.
+- Level-0 wells keep Godot's layout boxes: stairs give Switchback, spiral gives Spiral. Straight therefore appears only on the -1/-2 bay links. A spiral falls back to Switchback when its foot is blocked on the sewer side.
+- `interact` `take_stairs` still swaps the level (teleport) until phase 5. Pit and shaft closure fakes in the renderer stay until phase 4.
+- Contract tests: `world/stack_contract_tests.rs` (landing and foot, footprint clearance, seed 40490470 chunk (3,2) walk). The ladder, catwalk and drop contract tests stay ignored until their phases.

@@ -54,6 +54,7 @@ pub const COMMANDS: &[&str] = &[
     "goto",
     "step_until",
     "walk",
+    "walk_flight",
     "bot",
     "hash",
     "help",
@@ -332,6 +333,7 @@ impl Session {
             "step" => self.step(c),
             "step_until" => self.step_until(c),
             "walk" => self.walk(c),
+            "walk_flight" => self.walk_flight(c),
             "ui" => {
                 json!({ "ok": true, "ui": { "buttons": [], "focus": "" }, "scene": self.scene() })
             }
@@ -610,6 +612,46 @@ impl Session {
         self.sim.held.fwd = 0.0;
         self.sim.held.strafe = 0.0;
         let mut r = json!({ "ok": true, "frames": done, "frame": self.sim.frame });
+        if c.get("observe").and_then(|v| v.as_bool()).unwrap_or(false) {
+            r["obs"] = self.observe();
+        }
+        r
+    }
+
+    /// Walks the nearest flight of stairs going `dir` ("down", default, or "up") end to end, steered along its walk path
+    /// (headless/steer.rs), for at most `frames` (default 900) frames; reports the walk. `stop_on_level_change: true`
+    /// ends it on the frame the level changes.
+    fn walk_flight(&mut self, c: &Value) -> Value {
+        if let Err(e) = self.need_game() {
+            return e;
+        }
+        let up = match c.get("dir").and_then(|v| v.as_str()).unwrap_or("down") {
+            "down" => false,
+            "up" => true,
+            other => return err(format!("walk_flight dir must be 'down' or 'up', not '{other}'")),
+        };
+        let n = c.get("frames").and_then(|v| v.as_u64()).unwrap_or(900).clamp(1, MAX_STEP_FRAMES) as usize;
+        let stop = c.get("stop_on_level_change").and_then(|v| v.as_bool()).unwrap_or(false);
+        let sim = &mut self.sim;
+        let g = sim.game.as_mut().unwrap();
+        let dir = if up { 1 } else { -1 };
+        let me = g.p.pos;
+        let Some(s) = g
+            .fac
+            .stairs
+            .iter()
+            .copied()
+            .filter(|s| s.dir == dir && s.kind == crate::world::facility::LinkKind::Stairs)
+            .min_by(|a, b| pdist(a.cell.center(), me).partial_cmp(&pdist(b.cell.center(), me)).unwrap())
+        else {
+            return err(format!("no stairs going {} in this window", if up { "up" } else { "down" }));
+        };
+        let w = super::steer::walk_flight_until(g, s, &sim.content, &sim.catalog, n, stop);
+        sim.frame += w.frames as u64;
+        sim.diff_events();
+        let mut r = w.to_json();
+        r["ok"] = json!(true);
+        r["frame"] = json!(sim.frame);
         if c.get("observe").and_then(|v| v.as_bool()).unwrap_or(false) {
             r["obs"] = self.observe();
         }

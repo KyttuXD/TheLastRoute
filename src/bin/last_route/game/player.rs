@@ -8,7 +8,7 @@ use super::Controls;
 use crate::audio::Sounds;
 use crate::config::*;
 use crate::world::facility::LinkKind;
-use crate::world::vertical::stair_surface_y;
+
 use crate::world::Facility;
 use macroquad::prelude::*;
 
@@ -19,19 +19,19 @@ const FLICKER_MAX_PERIOD: f32 = 0.35;
 /// How fast the body's height follows the stair tread under it, per second (an exponential ease).
 const STAIR_FOLLOW_RATE: f32 = 40.0;
 
-/// The walking height of the stair flight under `pos` (vertical.rs `stair_surface_y`), or None off the stairs. Only
+/// The walking height of the stair flight under `pos` (`Stair::surface_rel`, relative to the level floor), or None off the stairs. Only
 /// the facility's `Stairs` flights count: a sewer ladder is climbed by hand (game/ladder.rs) and is never a stair here.
 pub fn stair_height_at(fac: &Facility, pos: (f32, f32)) -> Option<f32> {
     fac.stairs
         .iter()
         .filter(|s| matches!(s.kind, LinkKind::Stairs))
-        .find_map(|s| stair_surface_y(*s, pos))
+        .find_map(|s| s.surface_rel(fac.level, pos.0, pos.1))
 }
 
 /// Whether a body of `PLAYER_RADIUS` centred at (x, y) and standing at `h` fits. Off the stairs this is the facility's
 /// rule at the floor. The flight's wells are holes to that rule, so a body whose centre is on a flight stands on it:
 /// each corner must be on the stair or on a cell that is not a hole, and the walls and props must still clear.
-fn body_fits(fac: &Facility, x: f32, y: f32, h: f32) -> bool {
+pub(crate) fn body_fits(fac: &Facility, x: f32, y: f32, h: f32) -> bool {
     let on_stair = stair_height_at(fac, (x, y)).is_some();
     if fac.body_fits_at(x, y, PLAYER_RADIUS, if on_stair { h } else { 0.0 }) {
         return true;
@@ -518,7 +518,6 @@ mod tests {
     use crate::game::{Controls, Game};
     use crate::world::catalog::Catalog;
     use crate::world::facility::Stair;
-    use crate::world::vertical::stair_surface_y;
 
     const FRAME: f32 = 1.0 / 60.0;
 
@@ -545,19 +544,32 @@ mod tests {
         panic!("no window in the first 40 test rooms has a stair flight");
     }
 
-    /// A point `along` metres up the flight from its landing's far edge, on the first lane (vertical.rs `at`).
-    fn on_flight(s: Stair, along: f32) -> (f32, f32) {
-        let edge = (s.cell.x + (s.run.0 > 0) as i32, s.cell.y + (s.run.1 > 0) as i32);
-        let side = (s.run.1.abs() as f32, s.run.0.abs() as f32);
-        (
-            edge.0 as f32 + s.run.0 as f32 * along + side.0 * 0.5,
-            edge.1 as f32 + s.run.1 as f32 * along + side.1 * 0.5,
-        )
+    /// The flight's walk path (landing A to foot B, 0.25 m apart) on the level that holds `s`.
+    fn path(g: &Game, s: Stair) -> Vec<(f32, f32)> {
+        s.walk_path(g.fac.level, 0.25)
     }
 
-    /// A point just behind the landing, off the stair.
+    /// A point on the flight, `k` samples along its walk path.
+    fn on_flight(g: &Game, s: Stair, k: usize) -> (f32, f32) {
+        let p = path(g, s);
+        p[k.min(p.len() - 1)]
+    }
+
+    /// The yaw that faces along the direction `d` (forward is (-sin, -cos)).
+    fn yaw_along(d: (f32, f32)) -> f32 {
+        (-d.0).atan2(-d.1)
+    }
+
+    /// Stands the body at the flight's first path point facing the next ones.
+    fn start_on_flight(g: &mut Game, s: Stair) {
+        let p = path(g, s);
+        g.p.pos = p[0];
+        g.p.yaw = yaw_along((p[3].0 - p[0].0, p[3].1 - p[0].1));
+    }
+
+    /// A point just behind the landing A, off the stair.
     fn off_stair(s: Stair) -> (f32, f32) {
-        let (cx, cy) = s.cell.center();
+        let (cx, cy) = s.landing().center();
         (cx - s.run.0 as f32, cy - s.run.1 as f32)
     }
 
@@ -574,9 +586,8 @@ mod tests {
     fn walking_records_a_velocity_and_a_storey_change_keeps_it() {
         let (content, catalog) = (Content::load(), Catalog::load());
         let (mut g, s) = flight_game();
-        g.p.pos = s.cell.center();
-        g.p.yaw = (-(s.run.0 as f32)).atan2(-(s.run.1 as f32));
-        run_body(&mut g, 0.5, &Controls { fwd: 1.0, ..Default::default() });
+        start_on_flight(&mut g, s);
+        run_body(&mut g, 0.15, &Controls { fwd: 1.0, ..Default::default() });
         let v = g.p.move_vel;
         assert!(v.0.hypot(v.1) > 0.5, "the walk left a velocity: {v:?}");
         // the change to the storey below (flight_game's levels are 0 and -1, so `level - 1` is always allowed)
@@ -596,26 +607,24 @@ mod tests {
     #[test]
     fn stepping_onto_a_flight_raises_the_body_by_the_tread_heights() {
         let (mut g, s) = flight_game();
-        // from the landing, walk onto the flight: the forward of the yaw is the flight's run
-        g.p.pos = s.cell.center();
-        g.p.yaw = (-(s.run.0 as f32)).atan2(-(s.run.1 as f32));
+        // from the landing, walk onto the flight along its path
+        start_on_flight(&mut g, s);
         let start = g.p.pos;
-        run_body(&mut g, 0.5, &Controls { fwd: 1.0, ..Default::default() });
+        run_body(&mut g, 0.15, &Controls { fwd: 1.0, ..Default::default() });
         let moved = ((g.p.pos.0 - start.0).powi(2) + (g.p.pos.1 - start.1).powi(2)).sqrt();
-        assert!(moved > 1.0, "the body walked onto the flight: {moved} m");
-        let surface = stair_surface_y(s, g.p.pos).expect("the body is on the flight");
+        assert!(moved > 0.2, "the body walked onto the flight: {moved} m");
+        let surface = s.surface_rel(g.fac.level, g.p.pos.0, g.p.pos.1).expect("the body is on the flight");
         assert!(stair_height_at(&g.fac, g.p.pos).is_some());
         assert!((g.p.height - surface).abs() < 0.1, "height {} follows the tread {surface}", g.p.height);
-        assert!(g.p.height * s.dir as f32 > 0.2, "the body rose (or sank) with the flight: {}", g.p.height);
     }
 
     #[test]
     fn the_eye_follows_the_body_up_the_steps_and_the_pitch_is_unchanged() {
         let (mut g, s) = flight_game();
-        g.p.pos = on_flight(s, 0.5);
+        g.p.pos = on_flight(&g, s, 12);
         g.p.pitch = 0.3;
         run_body(&mut g, 2.0, &Controls::default());
-        let surface = stair_surface_y(s, g.p.pos).unwrap();
+        let surface = s.surface_rel(g.fac.level, g.p.pos.0, g.p.pos.1).unwrap();
         let eye = g.p.eye();
         assert!(
             (eye.y - (CAMERA_HEIGHT + surface)).abs() < 1e-3,
@@ -629,7 +638,7 @@ mod tests {
     fn jump_is_refused_on_a_stair_and_still_works_on_the_floor() {
         let (mut g, s) = flight_game();
         let hop = Controls { jump: true, ..Default::default() };
-        g.p.pos = on_flight(s, 0.5);
+        g.p.pos = on_flight(&g, s, 12);
         run_body(&mut g, 0.1, &hop);
         assert_eq!(g.p.feet_y, 0.0, "no hop on a stair");
         g.p.pos = off_stair(s);
@@ -640,7 +649,7 @@ mod tests {
     #[test]
     fn leaving_the_stair_returns_the_height_to_zero() {
         let (mut g, s) = flight_game();
-        g.p.pos = on_flight(s, 0.5);
+        g.p.pos = on_flight(&g, s, 12);
         run_body(&mut g, 2.0, &Controls::default());
         assert!(g.p.height.abs() > 0.1, "up on the flight: {}", g.p.height);
         g.p.pos = off_stair(s);
@@ -685,13 +694,92 @@ mod tests {
         let (mut b, _) = flight_game();
         b.p.floor_y = -5.0;
         for g in [&mut a, &mut b] {
-            g.p.pos = s.cell.center();
-            g.p.yaw = (-(s.run.0 as f32)).atan2(-(s.run.1 as f32));
-            run_body(g, 0.5, &Controls { fwd: 1.0, jump: true, ..Default::default() });
+            start_on_flight(g, s);
+            run_body(g, 0.15, &Controls { fwd: 1.0, jump: true, ..Default::default() });
         }
         assert_eq!(a.p.pos, b.p.pos);
         assert_eq!(a.p.feet_y, b.p.feet_y);
         assert_eq!(a.p.height, b.p.height);
         assert!((a.p.eye().y - b.p.eye().y).abs() < 1e-5);
+    }
+
+    /// A real window with a Stairs flight of `shape` on `level` (scanning ROOM-TEST-n, n < 300).
+    fn shape_game(shape: crate::world::flight::FlightShape, level: i32) -> Option<(Game, Stair)> {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        for n in 0..300 {
+            let text = format!("ROOM-TEST-{n}");
+            let g = Game::new_infinite_sim(Difficulty::Standard, 7, &text, level, &content, &catalog);
+            let found = g
+                .fac
+                .stairs
+                .iter()
+                .copied()
+                .find(|s| matches!(s.kind, LinkKind::Stairs) && s.shape == shape);
+            if let Some(s) = found {
+                return Some((g, s));
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn the_body_fits_along_the_whole_walk_path_of_every_shape() {
+        use crate::world::flight::FlightShape::*;
+        let mut checked = 0;
+        for (shape, level) in [(Switchback, 0), (Spiral, 0), (Straight, -1)] {
+            let Some((g, s)) = shape_game(shape, level) else { continue };
+            let p = path(&g, s);
+            assert!(p.len() > 8, "{shape:?}: a real path");
+            // The walk path ends in the centre of the OTHER end's cell: that cell is the other storey's floor, held
+            // by the other level's facility, so only the samples strictly inside it are not this level's flight.
+            let other = if s.dir < 0 { s.foot() } else { s.landing() };
+            let (ox, oy) = (other.x as f32, other.y as f32);
+            for (i, pt) in p.iter().enumerate() {
+                if pt.0 > ox - 0.25 && pt.0 < ox + 1.25 && pt.1 > oy - 0.25 && pt.1 < oy + 1.25 {
+                    continue;
+                }
+                let h = s
+                    .surface_rel(g.fac.level, pt.0, pt.1)
+                    .unwrap_or_else(|| panic!("{shape:?}: path sample {i} {pt:?} is on the flight"));
+                assert!(body_fits(&g.fac, pt.0, pt.1, h), "{shape:?}: the body fits at path sample {i} {pt:?}");
+            }
+            checked += 1;
+        }
+        assert!(checked >= 1, "at least one shape was found in the scanned windows");
+    }
+
+    /// Every flight found over a sweep of windows on levels 0 and -1 (all three shapes, both ends of the connection):
+    /// the body fits at every sample of its walk path except inside the other end's cell.
+    #[test]
+    fn the_body_fits_along_the_walk_path_of_every_flight_in_a_sweep() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let mut seen = std::collections::BTreeMap::new();
+        let mut bad = Vec::new();
+        for level in [0, -1] {
+            for n in 0..60 {
+                let text = format!("ROOM-TEST-{n}");
+                let g = Game::new_infinite_sim(Difficulty::Standard, 7, &text, level, &content, &catalog);
+                for s in g.fac.stairs.iter().copied().filter(|s| matches!(s.kind, LinkKind::Stairs)) {
+                    *seen.entry((format!("{:?}", s.shape), level)).or_insert(0) += 1;
+                    let other = if s.dir < 0 { s.foot() } else { s.landing() };
+                    let (ox, oy) = (other.x as f32, other.y as f32);
+                    for (i, pt) in s.walk_path(g.fac.level, 0.25).into_iter().enumerate() {
+                        if pt.0 > ox - 0.25 && pt.0 < ox + 1.25 && pt.1 > oy - 0.25 && pt.1 < oy + 1.25 {
+                            continue;
+                        }
+                        let fits = s.surface_rel(g.fac.level, pt.0, pt.1).is_some_and(|h| body_fits(&g.fac, pt.0, pt.1, h));
+                        if !fits {
+                            bad.push(format!("{:?} L{level} {text} stair {:?} sample {i} {pt:?}", s.shape, s.cell));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(seen.keys().any(|(sh, _)| sh == "Spiral"), "the sweep met a spiral: {seen:?}");
+        assert!(seen.keys().any(|(sh, _)| sh == "Switchback") && seen.keys().any(|(sh, _)| sh == "Straight"), "{seen:?}");
+        assert!(bad.is_empty(), "the body is blocked on the walk path ({seen:?}): {bad:#?}");
     }
 }

@@ -11,7 +11,7 @@ use crate::hunters::gimmicks::Gimmick;
 use crate::hunters::residency::{self, Cand, Record};
 use crate::shared::safe_room::{SafeRoom, SafeRooms, Status};
 use crate::world::catalog::Catalog;
-use crate::world::facility::{stair_well_cells, Facility, Pickup, Stair, STAIR_FLIGHT};
+use crate::world::facility::{Facility, Pickup, Stair};
 use crate::world::fixtures::Fixtures;
 use crate::world::infinite::{self, ChunkKey, CHUNK};
 use crate::world::route::hunter_spawns::HunterSpawn;
@@ -57,11 +57,9 @@ impl MapChunk {
         let abs = |c: Cell| Cell::new(c.x + o.0, c.y + o.1);
         let mut holes = vec![false; (CHUNK * CHUNK) as usize];
         for s in &fac.stairs {
-            for step in 1..=STAIR_FLIGHT {
-                for c in stair_well_cells(*s, step) {
-                    if (0..CHUNK).contains(&c.x) && (0..CHUNK).contains(&c.y) {
-                        holes[(c.y * CHUNK + c.x) as usize] = true;
-                    }
+            for c in s.well_cells() {
+                if (0..CHUNK).contains(&c.x) && (0..CHUNK).contains(&c.y) {
+                    holes[(c.y * CHUNK + c.x) as usize] = true;
                 }
             }
         }
@@ -1188,23 +1186,12 @@ impl Game {
         if !infinite::level_allowed(to) {
             return;
         }
-        let steps = super::transition::links().flight_steps;
-        let other = Cell::new(s.cell.x + s.run.0 * steps, s.cell.y + s.run.1 * steps);
+        let from_level = self.inf.as_ref().map_or(0, |inf| inf.level);
+        let (target, yaw) = super::transition::arrival(&s, from_level);
         self.change_storey(to, content, catalog, |g| {
-            let landing = g.fac.stairs.iter().find(|t| t.cell == other).copied();
-            match landing {
-                Some(t) => {
-                    let (cx, cy) = t.cell.center();
-                    let offset = super::transition::landing_offset();
-                    g.p.pos = g.fac.nearest_open_or(
-                        cx - t.run.0 as f32 * offset,
-                        cy - t.run.1 as f32 * offset,
-                        PLAYER_RADIUS,
-                    );
-                    g.p.yaw = (t.run.0 as f32).atan2(t.run.1 as f32);
-                }
-                None => g.p.pos = g.fac.start.center(),
-            }
+            g.p.pos = g.fac.nearest_open_or(target.0, target.1, PLAYER_RADIUS);
+            g.p.yaw = yaw;
+            g.p.height = 0.0;
         });
         // the save is the caller's: interact's `autosave("level")` on a flight taken (no double write)
     }
@@ -2793,6 +2780,7 @@ mod walked_stair_tests {
     use crate::content::Content;
     use crate::game::Controls;
     use crate::world::catalog::Catalog;
+    use crate::headless::steer::{walk_flight, walk_flight_until};
     use crate::world::facility::LinkKind;
     use crate::world::Cell;
 
@@ -2801,9 +2789,11 @@ mod walked_stair_tests {
     /// Opens the whole run of a flight. infinite.rs opens the link box from the landing row only, so a flight along y is
     /// walled after its first cell (a separate bug, outside this change); the test opens the rest of its own flight.
     fn open_run(g: &mut Game, s: Stair) {
-        let far = Cell::new(s.cell.x + s.run.0 * (STAIR_FLIGHT + 1), s.cell.y + s.run.1 * (STAIR_FLIGHT + 1));
-        let (x0, y0) = (s.cell.x.min(far.x) - 1, s.cell.y.min(far.y) - 1);
-        let (x1, y1) = (s.cell.x.max(far.x) + 1, s.cell.y.max(far.y) + 2);
+        let cells = s.carve_cells();
+        let x0 = cells.iter().map(|c| c.x).min().unwrap_or(s.cell.x) - 1;
+        let y0 = cells.iter().map(|c| c.y).min().unwrap_or(s.cell.y) - 1;
+        let x1 = cells.iter().map(|c| c.x).max().unwrap_or(s.cell.x) + 1;
+        let y1 = cells.iter().map(|c| c.y).max().unwrap_or(s.cell.y) + 1;
         g.fac.open_cells(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
     }
 
@@ -2879,9 +2869,9 @@ mod walked_stair_tests {
     #[test]
     fn a_walk_down_past_the_midpoint_changes_storey_once() {
         let (content, catalog) = (Content::load(), Catalog::load());
-        let (mut g, _) = on_landing(-1, &content, &catalog);
-        let changes = walk(&mut g, &content, &catalog, 900, 1.0);
-        assert_eq!(changes, 1);
+        let (mut g, s) = on_landing(-1, &content, &catalog);
+        let w = walk_flight(&mut g, s, &content, &catalog, 900);
+        assert_eq!(w.level_changes, 1);
         assert_eq!(g.inf.as_ref().unwrap().level, -1);
         assert_eq!(g.depth, 2, "the storey below is depth 2");
     }
@@ -2889,10 +2879,18 @@ mod walked_stair_tests {
     #[test]
     fn walking_back_up_changes_storey_once_and_does_not_double_change() {
         let (content, catalog) = (Content::load(), Catalog::load());
-        let (mut g, _) = on_landing(-1, &content, &catalog);
-        assert_eq!(walk(&mut g, &content, &catalog, 900, 1.0), 1);
-        // turn round and walk back up the flight below: one change up, and standing still changes nothing
-        assert_eq!(walk(&mut g, &content, &catalog, 900, -1.0), 1, "one change back up");
+        let (mut g, s) = on_landing(-1, &content, &catalog);
+        let flight = s.flight(0).expect("the flight");
+        assert_eq!(walk_flight(&mut g, s, &content, &catalog, 900).level_changes, 1);
+        // follow the same flight back up from the foot below: one change up, and standing still changes nothing
+        let foot = g
+            .fac
+            .stairs
+            .iter()
+            .copied()
+            .find(|t| t.dir > 0 && t.flight(-1) == Some(flight))
+            .expect("the lower end of the flight");
+        assert_eq!(walk_flight(&mut g, foot, &content, &catalog, 900).level_changes, 1, "one change back up");
         assert_eq!(g.inf.as_ref().unwrap().level, 0);
         assert_eq!(walk(&mut g, &content, &catalog, 300, 0.0), 0, "standing still changes nothing");
     }
@@ -2900,46 +2898,36 @@ mod walked_stair_tests {
     #[test]
     fn the_cell_is_continuous_across_the_change() {
         let (content, catalog) = (Content::load(), Catalog::load());
-        let (mut g, _) = on_landing(-1, &content, &catalog);
-        let c = Controls { fwd: 1.0, ..Default::default() };
         let abs = |g: &Game| {
             let o = g.inf.as_ref().unwrap().origin();
             (g.p.pos.0 + o.0 as f32, g.p.pos.1 + o.1 as f32)
         };
-        let mut prev_level = 0;
-        for _ in 0..900 {
-            let before = abs(&g);
-            g.step(FRAME, &c, &content, &catalog, &Sounds::default());
-            let level = g.inf.as_ref().unwrap().level;
-            if level != prev_level {
-                let after = abs(&g);
-                // one frame of walking is at most ~0.07 m; a change that moved the cell would be far more
-                assert!(
-                    (before.0 - after.0).abs() < 0.1 && (before.1 - after.1).abs() < 0.1,
-                    "the cell moved across the change: {before:?} -> {after:?}"
-                );
-                prev_level = level;
-            }
-        }
-        assert_eq!(prev_level, -1, "the walk changed the storey");
+        // the same deterministic walk twice: to the frame of the change, and to one frame short of it
+        let (mut g, s) = on_landing(-1, &content, &catalog);
+        let w = walk_flight_until(&mut g, s, &content, &catalog, 900, true);
+        assert_eq!(g.inf.as_ref().unwrap().level, -1, "the walk changed the storey");
+        let after = abs(&g);
+        let (mut g2, s2) = on_landing(-1, &content, &catalog);
+        walk_flight(&mut g2, s2, &content, &catalog, w.frames - 1);
+        let before = abs(&g2);
+        // one frame of walking is at most ~0.07 m; a change that moved the cell would be far more
+        assert!(
+            (before.0 - after.0).abs() < 0.1 && (before.1 - after.1).abs() < 0.1,
+            "the cell moved across the change: {before:?} -> {after:?}"
+        );
     }
 
     #[test]
     fn a_change_holds_nothing_the_body_keeps_walking_on_the_next_frame() {
         let (content, catalog) = (Content::load(), Catalog::load());
-        let (mut g, _) = on_landing(-1, &content, &catalog);
+        let (mut g, s) = on_landing(-1, &content, &catalog);
+        walk_flight_until(&mut g, s, &content, &catalog, 900, true);
+        assert_eq!(g.inf.as_ref().unwrap().level, -1, "the walk changed the storey");
+        // the walker leaves the body facing the next waypoint, so forward keeps it moving: no halt
         let c = Controls { fwd: 1.0, ..Default::default() };
-        for _ in 0..900 {
-            g.step(FRAME, &c, &content, &catalog, &Sounds::default());
-            if g.inf.as_ref().unwrap().level == -1 {
-                // the frame after the change moves the body: no halt
-                let at_change = g.p.pos;
-                g.step(FRAME, &c, &content, &catalog, &Sounds::default());
-                assert!(pdist(g.p.pos, at_change) > 1e-4, "the body halted after the change");
-                return;
-            }
-        }
-        panic!("the walk never changed the storey");
+        let at_change = g.p.pos;
+        g.step(FRAME, &c, &content, &catalog, &Sounds::default());
+        assert!(pdist(g.p.pos, at_change) > 1e-4, "the body halted after the change");
     }
 
     #[test]
@@ -2959,11 +2947,11 @@ mod walked_stair_tests {
     }
 
     fn flight(cell: (i32, i32), dir: i32, ladder: bool) -> Stair {
-        Stair {
-            cell: Cell::new(cell.0, cell.1),
-            dir,
-            run: if ladder { (0, 0) } else { (1, 0) },
-            kind: if ladder { LinkKind::Ladder(crate::world::facility::Cover::Manhole) } else { LinkKind::Stairs },
+        let at = Cell::new(cell.0, cell.1);
+        if ladder {
+            Stair::ladder(at, dir, crate::world::facility::Cover::Manhole)
+        } else {
+            Stair::stairs(at, dir, (1, 0), crate::world::flight::FlightShape::Switchback, true)
         }
     }
 

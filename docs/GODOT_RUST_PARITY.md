@@ -107,3 +107,9 @@ One relationship is a conversion in form. For mouse look, Rust turn per physical
 ## How to re-run
 
 From the project folder, run the workflow `godot-rust-parity`.
+
+## Stairs, phase 1 (continuous levels)
+
+- Golden layout parity compares stairwell boxes only, so no golden stair cell changed.
+- Our Switchback and Spiral are the same kinds Godot uses for level-0 wells.
+- Godot's half-storey flight is not copied: a Rust flight spans a full storey of 5.0 m (see [STAIRS_CONTINUOUS_DESIGN.md](STAIRS_CONTINUOUS_DESIGN.md)).

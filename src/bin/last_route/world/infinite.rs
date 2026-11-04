@@ -12,7 +12,9 @@
 //! selected by level/region while the finite catalogue supplies authored room content.
 
 use super::catalog::Catalog;
-use super::facility::{Cell, Facility, LinkKind, Options, Pickup, Stair, STAIR_FLIGHT};
+use super::facility::{Cell, Facility, Options, Pickup};
+use super::flight::Flight;
+use super::flight_links::{bay_flight, carve_cells, lower_stair, sewer_well_flights, upper_stair};
 use super::fixtures::{self, Fixtures};
 use super::rng::Rng;
 use super::route::regions;
@@ -105,12 +107,40 @@ pub(crate) fn stair_link(seed: &str, cx: i32, cy: i32, upper: i32) -> Option<((i
     let bays = STAIR_BAYS_BY_PARITY[upper.rem_euclid(2) as usize];
     let bay = bays[rng.next_index(2)];
     let anchor = STAIR_BAY_ANCHORS[bay][rng.next_index(4)];
-    let run = if bay == 0 || bay == 2 {
+    Some((anchor, bay_run(bay)))
+}
+
+/// The unit step a flight runs along in a bay: east in the west bays (0 and 2), west in the east bays.
+fn bay_run(bay: usize) -> (i32, i32) {
+    if bay == 0 || bay == 2 {
         (1, 0)
     } else {
         (-1, 0)
+    }
+}
+
+/// Every place the stair link between `upper` and `upper - 1` in column (cx, cy) could go, best first: the link's own
+/// anchor, the other three anchors of its bay, then the four anchors of the other bay of the same parity (up and down
+/// links never share a bay). Empty when there is no link. A pure function of its arguments, shared by both levels.
+pub(crate) fn bay_candidates(seed: &str, cx: i32, cy: i32, upper: i32) -> Vec<((i32, i32), (i32, i32))> {
+    let Some((anchor, _)) = stair_link(seed, cx, cy, upper) else {
+        return vec![];
     };
-    Some((anchor, run))
+    let bays = STAIR_BAYS_BY_PARITY[upper.rem_euclid(2) as usize];
+    let first = bays.iter().position(|b| STAIR_BAY_ANCHORS[*b].contains(&anchor)).unwrap_or(0);
+    let mut out = vec![];
+    for (i, bay) in [bays[first], bays[1 - first]].into_iter().enumerate() {
+        let run = bay_run(bay);
+        if i == 0 {
+            out.push((anchor, run));
+        }
+        for a in STAIR_BAY_ANCHORS[bay] {
+            if !(i == 0 && a == anchor) {
+                out.push((a, run));
+            }
+        }
+    }
+    out
 }
 
 /// `KYTTU_LEGACY_CHUNKS=1` keeps the old level-0 builder (`legacy_chunk`) for comparison. Unset,
@@ -143,6 +173,7 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -
         ..Default::default()
     };
     let mut f = Facility::generate(&text, &opt, cat);
+    f.level = k.level;
     // CREATE ROOM uses Godot's streamed route, whose room banks and shared halls
     // differ from the finite floor generator. Rebuild the chunk topology before
     // seams, stairs and fixtures are added so every downstream system sees the
@@ -269,74 +300,73 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -
 
     // stairwells: level 0 takes the layout's stairwell (route::live::carve_stair_well), walled and dead-ended with
     // no bay. The levels below keep the bay of each boundary's stair link, down to `level - 1` and up to `level + 1`.
-    let mut links = vec![];
+    // Every connection is a `Flight` (world::flight_links), the same one on both levels.
     if k.level == 0 {
         for well in super::route::live::layout_stairwells(seed, k) {
-            let stair = super::route::live::carve_stair_well(&mut f, &well);
+            let flight = super::flight_links::level0_well_flight(
+                seed,
+                k.cx,
+                k.cy,
+                well.kind,
+                (well.door.x, well.door.y, well.door.w),
+                well.north,
+            );
+            let stair = super::route::live::carve_stair_well(&mut f, &well, &flight);
             f.stairs.push(stair);
         }
     } else {
-        if let Some((anchor, run)) = stair_link(seed, k.cx, k.cy, k.level) {
-            links.push(Stair {
-                cell: Cell::new(anchor.0, anchor.1),
-                dir: -1,
-                run,
-                kind: LinkKind::Stairs,
-            });
+        // this level is the upper end of the link below it
+        if let Some(flight) = bay_flight(seed, k.cx, k.cy, k.level) {
+            carve_bay(&mut f, &flight, true);
+            f.stairs.push(upper_stair(&flight));
         }
+        // this level is the lower end of the link above it
         if sewer_floor.is_some() && k.level == super::route::sewer::core::LEVEL {
-            // the way up to level 0 is the maze's stairwell: its far end in the sewer well (level_links::well_stairs)
-            links.extend(crate::world::level_links::well_stairs(seed, k));
-        } else if let Some((anchor, run)) = stair_link(seed, k.cx, k.cy, k.level + 1) {
-            let far = Cell::new(
-                anchor.0 + run.0 * (STAIR_FLIGHT + 1),
-                anchor.1 + run.1 * (STAIR_FLIGHT + 1),
-            );
-            links.push(Stair {
-                cell: far,
-                dir: 1,
-                run: (-run.0, -run.1),
-                kind: LinkKind::Stairs,
-            });
+            // the way up to level 0 is the maze's stairwell: its flights seen from the sewer. The well is already
+            // carved by the sewer; open the foot, the margins and the hole.
+            for flight in sewer_well_flights(seed, k) {
+                carve_bay(&mut f, &flight, false);
+                f.stairs.push(lower_stair(&flight));
+            }
+        } else if let Some(flight) = bay_flight(seed, k.cx, k.cy, k.level + 1) {
+            carve_bay(&mut f, &flight, true);
+            f.stairs.push(lower_stair(&flight));
         }
-    }
-    for s in links {
-        if sewer_floor.is_some() && k.level == super::route::sewer::core::LEVEL && s.dir > 0 {
-            // a sewer well stair: the well is already carved; open its end cell and keep the flight a hole
-            f.open_cells(s.cell.x, s.cell.y, 1, 1);
-            f.stairs.push(s);
-            continue;
-        }
-        let ends = [
-            s.cell,
-            Cell::new(
-                s.cell.x + s.run.0 * (STAIR_FLIGHT + 1),
-                s.cell.y + s.run.1 * (STAIR_FLIGHT + 1),
-            ),
-        ];
-        let x0 = ends[0].x.min(ends[1].x) - 1;
-        let x1 = ends[0].x.max(ends[1].x) + 1;
-        // the rows span the whole flight, the same as the columns (a vertical flight is walled past its first cell otherwise)
-        let y0 = ends[0].y.min(ends[1].y) - 1;
-        let y1 = ends[0].y.max(ends[1].y) + 1;
-        f.clear_props_in(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
-        f.open_cells(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
-        // a 3-wide hall from the stair bay to the lobby so the flight is always reachable
-        let (cx, cy) = (f.start.x, f.start.y);
-        let mx = (x0 + x1) / 2;
-        f.open_cells(mx.min(cx) - 1, y0, (mx - cx).abs() + 3, 3);
-        f.open_cells(cx - 1, y0.min(cy), 3, (y0 - cy).abs() + 3);
-        f.stairs.push(s);
     }
     // the sewer's ladder bottoms: the same cells as the maze's ladder tops, so both levels agree
     for s in crate::world::level_links::ladders(seed, k) {
         f.open_cells(s.cell.x - 1, s.cell.y - 1, 3, 3);
         f.stairs.push(s);
     }
+    f.level = k.level;
     f.rebuild_grids();
     let mut fix = fixtures::place(&f);
     fix.coins.extend(sewer_coins);
     (f, fix)
+}
+
+/// Opens the room a flight needs in `f`: the bounding box of its carve cells (hole, landing, foot, both clear margins)
+/// grown by one and kept inside the chunk border is cleared of props. With `hall`, it is also opened and a 3-wide hall
+/// runs from it to the lobby so the flight is always reachable. Without, only the carve cells themselves are opened
+/// (the sewer's wells are already joined to their own tunnels).
+fn carve_bay(f: &mut Facility, flight: &Flight, hall: bool) {
+    let cells = carve_cells(flight);
+    let x0 = (cells.iter().map(|c| c.x).min().unwrap_or(1) - 1).max(1);
+    let x1 = (cells.iter().map(|c| c.x).max().unwrap_or(1) + 1).min(CHUNK - 2);
+    let y0 = (cells.iter().map(|c| c.y).min().unwrap_or(1) - 1).max(1);
+    let y1 = (cells.iter().map(|c| c.y).max().unwrap_or(1) + 1).min(CHUNK - 2);
+    f.clear_props_in(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+    if hall {
+        f.open_cells(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+        let (cx, cy) = (f.start.x, f.start.y);
+        let mx = (x0 + x1) / 2;
+        f.open_cells(mx.min(cx) - 1, y0, (mx - cx).abs() + 3, 3);
+        f.open_cells(cx - 1, y0.min(cy), 3, (y0 - cy).abs() + 3);
+    } else {
+        for c in &cells {
+            f.open_cells(c.x, c.y, 1, 1);
+        }
+    }
 }
 
 /// The sewer port's own pickups and hiding spots (`sewer::pickups::chunk_pickups`, `sewer::fixtures::fixtures`)
@@ -535,7 +565,7 @@ mod tests {
         }
     }
 
-    /// Level -2 is the ported lower sewer: it has floor, and every stair down from -1 has its up stair on -2.
+    /// Level -2 is the ported lower sewer: it has floor, and every stair down from -1 has the up stair of the same flight on -2.
     #[test]
     fn the_lower_sewer_meets_the_first_sewer_stairs() {
         let loot = LootTables::default();
@@ -548,17 +578,13 @@ mod tests {
                     let (sew, _) = chunk(world, ChunkKey { cx, cy, level: -1 }, cat(), &loot);
                     for s in sew.stairs.iter().filter(|s| s.dir < 0 && !s.is_ladder()) {
                         stairs += 1;
-                        let far = Cell::new(
-                            s.cell.x + s.run.0 * (STAIR_FLIGHT + 1),
-                            s.cell.y + s.run.1 * (STAIR_FLIGHT + 1),
-                        );
+                        let want = s.flight(-1).unwrap_or_else(|| panic!("{world} {cx},{cy}: the -1 stair has no flight"));
                         let t = low
                             .stairs
                             .iter()
-                            .find(|t| t.dir > 0 && !t.is_ladder() && t.cell == far)
-                            .unwrap_or_else(|| panic!("{world} {cx},{cy}: no -2 up stair at {far:?}"));
-                        assert_eq!(t.run, (-s.run.0, -s.run.1));
-                        assert!(!low.is_wall_cell(far.x, far.y), "{world} {cx},{cy}: far end is walled");
+                            .find(|t| t.dir > 0 && !t.is_ladder() && t.flight(-2) == Some(want))
+                            .unwrap_or_else(|| panic!("{world} {cx},{cy}: no -2 up stair of {want:?}"));
+                        assert!(!low.is_wall_cell(t.cell.x, t.cell.y), "{world} {cx},{cy}: the foot is walled");
                         matched += 1;
                     }
                 }
@@ -567,7 +593,7 @@ mod tests {
         assert!(stairs > 0 && matched == stairs, "{matched}/{stairs}");
     }
 
-    /// Level -1 is the ported sewer floor, and every level 0 stair has its stair at the far end in the sewer well.
+    /// Level -1 is the ported sewer floor, and every level 0 stair has the sewer stair of the same flight.
     #[test]
     fn the_sewer_floor_meets_the_maze_stairs() {
         let loot = LootTables::default();
@@ -580,22 +606,42 @@ mod tests {
                     let (top, _) = chunk(world, ChunkKey { cx, cy, level: 0 }, cat(), &loot);
                     for s in top.stairs.iter().filter(|s| !s.is_ladder()) {
                         stairs += 1;
-                        let far = Cell::new(
-                            s.cell.x + s.run.0 * (STAIR_FLIGHT + 1),
-                            s.cell.y + s.run.1 * (STAIR_FLIGHT + 1),
-                        );
-                        let near = sew
+                        let want = s.flight(0).unwrap_or_else(|| panic!("{world} {cx},{cy}: the level 0 stair has no flight"));
+                        let t = sew
                             .stairs
                             .iter()
-                            .find(|t| t.dir > 0 && !t.is_ladder() && (t.cell.x - far.x).abs() <= 2 && (t.cell.y - far.y).abs() <= 2);
-                        let t = near.unwrap_or_else(|| panic!("{world} {cx},{cy}: no sewer stair near {far:?}"));
-                        assert_eq!(t.cell, far, "take_stairs needs the exact cell");
-                        assert!(!sew.is_wall_cell(far.x, far.y), "{world} {cx},{cy}: far end is walled");
+                            .find(|t| t.dir > 0 && !t.is_ladder() && t.flight(-1) == Some(want))
+                            .unwrap_or_else(|| panic!("{world} {cx},{cy}: no sewer stair of {want:?}"));
+                        assert!(!sew.is_wall_cell(t.cell.x, t.cell.y), "{world} {cx},{cy}: the foot is walled");
                         matched += 1;
                     }
                 }
             }
         }
         assert!(stairs > 0 && matched == stairs, "{matched}/{stairs}");
+    }
+
+    #[test]
+    fn the_bay_candidates_start_at_the_link_and_stay_in_the_parity_bays() {
+        for world in WORLDS {
+            for cx in -3..=3 {
+                for cy in -3..=3 {
+                    for upper in [0, -1, -2, -3] {
+                        let c = bay_candidates(world, cx, cy, upper);
+                        match stair_link(world, cx, cy, upper) {
+                            None => assert!(c.is_empty(), "{world} {cx},{cy} upper {upper}"),
+                            Some(link) => {
+                                assert_eq!(c.len(), 8, "{world} {cx},{cy} upper {upper}");
+                                assert_eq!(c[0], link);
+                                let bays = STAIR_BAYS_BY_PARITY[upper.rem_euclid(2) as usize];
+                                for (anchor, _) in &c {
+                                    assert!(bays.iter().any(|b| STAIR_BAY_ANCHORS[*b].contains(anchor)));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

@@ -17,8 +17,12 @@ pub mod expect;
 pub mod protocol;
 pub mod runner;
 pub mod sim;
+pub mod steer;
 pub mod suite;
 pub mod window;
+
+#[cfg(test)]
+mod flight_tests;
 
 use protocol::Session;
 use serde_json::Value;

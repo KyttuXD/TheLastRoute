@@ -9,20 +9,20 @@
 //! chunk. Nothing here is called by the running game.
 //!
 //! Each connection kind is its own test. A kind that fails today is `#[ignore]`d with the reason; the failure message
-//! lists the failing seeds and chunks. Later phases un-ignore them one by one. This file was written in a stage where
-//! cargo was not run, so every ignored kind says what is expected to fail and must be verified once: run
-//! `cargo test --lib stack_contract -- --ignored` and un-ignore each test that passes.
+//! lists the failing seeds and chunks. Stairwells are done (phase 1); the ladder, catwalk and drop kinds stay ignored
+//! until their phases and are un-ignored one by one.
 #![cfg(test)]
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use super::catalog::Catalog;
-use super::facility::{stair_well_cells, Cell, DeckKind, Facility, Stair, STAIR_FLIGHT};
+use super::facility::{Cell, DeckKind, Facility, Stair};
+use super::flight::{well_footprint, FlightShape};
 use super::infinite::{chunk, ChunkKey, CHUNK};
 use super::route::layout::Coord;
 use super::route::sewer;
-use super::vertical::stair_surface_y;
+use super::vertical::STOREY;
 use crate::content::loot::LootTables;
 
 /// The seeds every contract is checked on: the golden ones first, then a property sweep.
@@ -68,6 +68,7 @@ fn built(seed: &str, cx: i32, cy: i32, level: i32) -> Arc<Built> {
             }
         }
     }
+    assert_eq!(f.level, level, "{seed} chunk {cx},{cy}: the builder must set Facility.level");
     let b = Arc::new(Built { f, water });
     cache.lock().unwrap().insert(key, b.clone());
     b
@@ -117,7 +118,7 @@ fn has_step_cell(b: &Built, c: Cell) -> bool {
 }
 
 fn footprint(s: Stair) -> BTreeSet<Cell> {
-    (1..=STAIR_FLIGHT).flat_map(|k| stair_well_cells(s, k)).collect()
+    s.well_cells().into_iter().collect()
 }
 
 /// Fails the test with the failing seeds and chunks (at most 40 shown, all counted).
@@ -133,7 +134,7 @@ fn report(kind: &str, fails: &[String]) {
 struct StairPair {
     tag: String,
     s: Stair,
-    /// The lower level's flight that meets `s`: the up flight whose landing is nearest to the far end.
+    /// The lower level's stair of the same flight (full `Flight` equality); `None` is a failure.
     t: Option<Stair>,
     up: Arc<Built>,
     lo: Arc<Built>,
@@ -146,13 +147,12 @@ fn stair_pairs() -> Vec<StairPair> {
             let up = built(&seed, cx, cy, u);
             let lo = built(&seed, cx, cy, u - 1);
             for s in up.f.stairs.iter().filter(|s| s.dir < 0 && !s.is_ladder()) {
-                let far = Cell::new(s.cell.x + s.run.0 * (STAIR_FLIGHT + 1), s.cell.y + s.run.1 * (STAIR_FLIGHT + 1));
+                let want = s.flight(u);
                 let t = lo
                     .f
                     .stairs
                     .iter()
-                    .filter(|t| t.dir > 0 && !t.is_ladder())
-                    .min_by_key(|t| (t.cell.x - far.x).abs() + (t.cell.y - far.y).abs())
+                    .find(|t| t.dir > 0 && !t.is_ladder() && want.is_some() && t.flight(u - 1) == want)
                     .copied();
                 out.push(StairPair { tag: format!("{seed} {cx},{cy} L{u}"), s: *s, t, up: up.clone(), lo: lo.clone() });
             }
@@ -196,6 +196,9 @@ fn the_sweep_finds_stairs_ladders_and_builds_every_level() {
         assert!(pairs.iter().any(|p| p.tag.ends_with(&format!("L{l}"))), "no stairwell down from level {l}");
     }
     assert!(!ladder_pairs().is_empty(), "no sewer ladder in the sweep");
+    for shape in [FlightShape::Switchback, FlightShape::Spiral, FlightShape::Straight] {
+        assert!(pairs.iter().any(|p| p.s.shape == shape), "no {shape:?} flight in the sweep");
+    }
     for seed in GOLDEN {
         for level in [0, -1, -2, -3] {
             let b = built(seed, 0, 0, level);
@@ -225,29 +228,49 @@ fn stairwells_share_one_footprint() {
 }
 
 #[test]
-#[ignore = "contract not met yet: the upper landing is the doorway cell and the lower foot is the cell past the well; margins and landing clearance are not generated from one footprint (phase 1/Task 4)"]
 fn stairwells_have_an_open_landing_above_and_an_open_foot_below() {
     let mut fails = vec![];
     for p in stair_pairs() {
-        if !stand_ok(&p.up, p.s.cell) {
-            fails.push(format!("{}: upper landing {:?} not open ({:?})", p.tag, p.s.cell, blocked(&p.up, p.s.cell)));
+        let Some(fl) = p.s.flight(p.up.f.level) else {
+            fails.push(format!("{}: stair has no flight", p.tag));
+            continue;
+        };
+        let fp = well_footprint(&fl);
+        if !stand_ok(&p.up, fp.landing) {
+            fails.push(format!("{}: upper landing {:?} not open ({:?})", p.tag, fp.landing, blocked(&p.up, fp.landing)));
         }
-        match p.t {
-            None => fails.push(format!("{}: no lower flight", p.tag)),
-            Some(t) if !stand_ok(&p.lo, t.cell) => {
-                fails.push(format!("{}: lower foot {:?} not open ({:?})", p.tag, t.cell, blocked(&p.lo, t.cell)))
+        if p.t.is_none() {
+            fails.push(format!("{}: no lower flight", p.tag));
+        }
+        if !stand_ok(&p.lo, fp.foot) {
+            fails.push(format!("{}: lower foot {:?} not open ({:?})", p.tag, fp.foot, blocked(&p.lo, fp.foot)));
+        }
+        // the clear margins: no wall or solid prop (water is allowed there, not on A, B or the hole)
+        let hole: BTreeSet<Cell> = fp.upper_hole.iter().copied().collect();
+        for (name, b, cells) in [("upper", &p.up, &fp.upper_clear), ("lower", &p.lo, &fp.lower_clear)] {
+            for c in cells {
+                if hole.contains(c) || *c == fp.landing || *c == fp.foot {
+                    continue;
+                }
+                if b.f.is_wall_cell(c.x, c.y) || !b.f.can_occupy(c.x as f64 + 0.5, c.y as f64 + 0.5, 0.05) {
+                    fails.push(format!("{}: {name} clear margin cell {:?} is a wall or solid prop", p.tag, c));
+                }
             }
-            _ => {}
         }
     }
     report("stairwell landing and foot", &fails);
 }
 
 #[test]
-#[ignore = "contract not met yet: wells are carved per level (route::live::carve_stair_well, infinite bays, sewer wells) so a wall, solid prop or sewer water can sit in the shared footprint on one side (Task 4)"]
 fn stairwell_footprints_hold_no_wall_prop_or_water_on_either_level() {
     let mut fails = vec![];
     for p in stair_pairs() {
+        if let Some(fl) = p.s.flight(p.up.f.level) {
+            let fp = well_footprint(&fl);
+            if fp.upper_hole != fp.lower_open {
+                fails.push(format!("{}: upper_hole and lower_open differ", p.tag));
+            }
+        }
         for (name, b, cells) in [("upper", &p.up, Some(footprint(p.s))), ("lower", &p.lo, p.t.map(footprint))] {
             for c in cells.unwrap_or_default() {
                 if let Some(why) = blocked(b, c) {
@@ -276,7 +299,7 @@ fn ladders_share_one_cell() {
 }
 
 #[test]
-#[ignore = "contract not met yet: the hatch cell is a layout hallway cell with no guaranteed clear cell beside it (decision D4), and the sewer foot opens only a 3x3 that can still hold water"]
+#[ignore = "ladder phase (stairwells are done): the hatch cell is a layout hallway cell with no guaranteed clear cell beside it (decision D4), and the sewer foot opens only a 3x3 that can still hold water"]
 fn ladders_have_an_open_hatch_a_step_cell_and_an_open_foot() {
     let mut fails = vec![];
     for p in ladder_pairs() {
@@ -298,7 +321,7 @@ fn ladders_have_an_open_hatch_a_step_cell_and_an_open_foot() {
 }
 
 #[test]
-#[ignore = "contract not met yet: no generation step keeps the shaft cell clear of props and sewer water on both levels (Task 4)"]
+#[ignore = "ladder phase (stairwells are done): no generation step keeps the shaft cell clear of props and sewer water on both levels (Task 4)"]
 fn ladder_shafts_hold_no_wall_prop_or_water_on_either_level() {
     let mut fails = vec![];
     for p in ladder_pairs() {
@@ -317,7 +340,7 @@ fn ladder_shafts_hold_no_wall_prop_or_water_on_either_level() {
 
 /// The ground end is open at height 0 and a deck cell at exactly the link's height is beside it.
 #[test]
-#[ignore = "contract not met yet: not verified when written; expected to need a clear step cell beside a ladder link and a deck landing that is not a hole or prop (Task 4)"]
+#[ignore = "catwalk phase (stairwells are done): expected to need a clear step cell beside a ladder link and a deck landing that is not a hole or prop (Task 4)"]
 fn catwalk_links_have_an_open_foot_and_a_deck_landing() {
     let mut fails = vec![];
     for (seed, cx, cy) in columns() {
@@ -341,7 +364,7 @@ fn catwalk_links_have_an_open_foot_and_a_deck_landing() {
 }
 
 #[test]
-#[ignore = "contract not met yet: not verified when written; a link's deck neighbours may hold a solid prop (the deck grid ignores props)"]
+#[ignore = "catwalk phase (stairwells are done): a link's deck neighbours may hold a solid prop (the deck grid ignores props)"]
 fn catwalk_link_footprints_hold_no_wall_prop_or_water() {
     let mut fails = vec![];
     for (seed, cx, cy) in columns() {
@@ -408,7 +431,7 @@ fn drops_share_one_cell_over_a_landing_pool() {
 }
 
 #[test]
-#[ignore = "contract not met yet: the upper fall cells are WALL cells in the Facility (apply_sewer_floor treats FALL as solid), so the channel floor has no opening, and no landing is guaranteed beside the void"]
+#[ignore = "drop phase (stairwells are done): the upper fall cells are WALL cells in the Facility (apply_sewer_floor treats FALL as solid), so the channel floor has no opening, and no landing is guaranteed beside the void"]
 fn drops_have_an_open_upper_channel_and_a_clear_pool_below() {
     let mut fails = vec![];
     for (tag, up, lo, c, falls) in drops() {
@@ -440,56 +463,98 @@ fn drops_have_an_open_upper_channel_and_a_clear_pool_below() {
 /// end". Every stair of that level 0 chunk: the stairwell's walk cells and the landing are open, both lanes of every
 /// flight cell have a tread surface that never turns back, a body fits on each, and the landing is reachable.
 #[test]
-#[ignore = "contract not met yet: not verified when written; TODO.md reports this stairwell has only 2 walk rows, so a flight cell may be walled or have no tread surface"]
 fn the_todo_stairwell_at_seed_40490470_chunk_3_2_is_walkable_end_to_end() {
     let (seed, cx, cy) = ("40490470", 3, 2);
     let b = built(seed, cx, cy, 0);
     let mut fails = vec![];
-    for well in super::route::live::layout_stairwells(seed, ChunkKey { cx, cy, level: 0 }) {
-        for w in &well.walk {
-            if b.f.is_wall_cell(w.x, w.y) {
-                fails.push(format!("walk cell ({}, {}) of the stairwell is walled", w.x, w.y));
-            }
-        }
-    }
-    let flights: Vec<&Stair> = b.f.stairs.iter().filter(|s| !s.is_ladder()).collect();
-    if flights.is_empty() {
+    let stairs: Vec<&Stair> = b.f.stairs.iter().filter(|s| !s.is_ladder() && s.dir < 0).collect();
+    if stairs.is_empty() {
         fails.push("the chunk has no stair flight".to_string());
     }
-    for s in flights {
-        if !stand_ok(&b, s.cell) {
-            fails.push(format!("landing {:?} is not open", s.cell));
+    for s in stairs {
+        let Some(fl) = s.flight(0) else {
+            fails.push(format!("stair at {:?} has no flight", s.cell));
+            continue;
+        };
+        let fp = well_footprint(&fl);
+        if !stand_ok(&b, fp.landing) {
+            fails.push(format!("landing {:?} is not open", fp.landing));
         }
-        if b.f.hunter_open(b.f.start) && b.f.hunter_open(s.cell) && b.f.find_path(b.f.start, s.cell).is_empty() {
-            fails.push(format!("landing {:?} is not reachable from the chunk start {:?}", s.cell, b.f.start));
+        if b.f.hunter_open(b.f.start) && b.f.hunter_open(fp.landing) && b.f.find_path(b.f.start, fp.landing).is_empty() {
+            fails.push(format!("landing {:?} is not reachable from the chunk start {:?}", fp.landing, b.f.start));
         }
-        let mut last = 0.0f32;
-        for k in 1..=STAIR_FLIGHT {
-            for c in stair_well_cells(*s, k) {
-                if b.f.is_wall_cell(c.x, c.y) {
-                    fails.push(format!("flight cell {c:?} (step {k}) is a wall"));
-                    continue;
-                }
-                let (x, y) = c.center();
-                match stair_surface_y(*s, (x, y)) {
-                    None => fails.push(format!("flight cell {c:?} (step {k}) has no tread surface")),
-                    Some(h) => {
-                        if h.abs() + 1e-3 < last.abs() {
-                            fails.push(format!("tread height turns back at {c:?} (step {k}): {h} after {last}"));
-                        }
-                        last = last.abs().max(h.abs()) * h.signum();
-                    }
-                }
-                if !b.f.body_fits(x, y, 0.2) {
-                    fails.push(format!("a body does not fit on flight cell {c:?} (step {k})"));
-                }
+        let path = s.walk_path(0, 0.25);
+        if path.is_empty() {
+            fails.push(format!("stair {:?}: empty walk path", s.cell));
+        }
+        let lower = built(seed, cx, cy, -1);
+        let t = lower.f.stairs.iter().find(|t| t.dir > 0 && !t.is_ladder() && t.flight(-1) == Some(fl));
+        let mut last = f32::INFINITY;
+        for (x, z) in &path {
+            // the foot cell B belongs to the lower level: there the surface comes from the lower level's own stair
+            let on_foot = Cell::new(x.floor() as i32, z.floor() as i32) == fp.foot;
+            let (lvl, fac, stair) = if on_foot { (-1, &lower, t) } else { (0, &b, Some(s)) };
+            let Some(rel) = stair.and_then(|st| st.surface_rel(lvl, *x, *z)) else {
+                fails.push(format!("no surface at ({x:.2}, {z:.2}) on the flight from {:?}", s.cell));
+                continue;
+            };
+            let abs = lvl as f32 * STOREY + rel;
+            if !(-STOREY - 1e-3..=1e-3).contains(&abs) {
+                fails.push(format!("surface {abs} at ({x:.2}, {z:.2}) is outside 0..-5 m"));
+            }
+            if abs > last + 1e-3 {
+                fails.push(format!("height turns back at ({x:.2}, {z:.2}): {abs} after {last}"));
+            }
+            last = last.min(abs);
+            if !crate::game::player::body_fits(&fac.f, *x, *z, rel) {
+                fails.push(format!("the player's body does not fit at ({x:.2}, {z:.2}) height {rel}"));
             }
         }
-        // the far end of the run, where the other level takes over, must not be a wall either
-        let far = Cell::new(s.cell.x + s.run.0 * (STAIR_FLIGHT + 1), s.cell.y + s.run.1 * (STAIR_FLIGHT + 1));
-        if b.f.is_wall_cell(far.x, far.y) {
-            fails.push(format!("the far end {far:?} of the flight is a wall"));
+        if let Some((x, z)) = path.last() {
+            let (fx, fz) = (x.floor() as i32, z.floor() as i32);
+            if b.f.is_wall_cell(fx, fz) {
+                fails.push(format!("the far end ({fx}, {fz}) of the flight is a wall"));
+            }
         }
     }
     report("seed 40490470 chunk (3,2)", &fails);
+}
+
+/// Every stairwell of the sweep (all seeds, all three upper levels): the walked route from the landing to the foot has
+/// a surface at every sample (the foot cell's from the lower level's stair), never turns back, and ends on the lower
+/// floor of the storey.
+#[test]
+fn every_flight_walk_path_has_a_surface_at_every_sample() {
+    let mut fails = vec![];
+    let mut walked = 0;
+    for p in stair_pairs() {
+        let u = p.up.f.level;
+        let Some(fl) = p.s.flight(u) else { continue };
+        let Some(t) = p.t else { continue };
+        let fp = well_footprint(&fl);
+        let mut last = f32::INFINITY;
+        for (x, z) in p.s.walk_path(u, 0.25) {
+            let on_foot = Cell::new(x.floor() as i32, z.floor() as i32) == fp.foot;
+            let abs = if on_foot {
+                t.surface_rel(u - 1, x, z).map(|r| (u - 1) as f32 * STOREY + r)
+            } else {
+                p.s.surface_rel(u, x, z).map(|r| u as f32 * STOREY + r)
+            };
+            let Some(abs) = abs else {
+                fails.push(format!("{}: no surface at ({x:?}, {z:?}) {:?} flight from {:?} foot {:?} run {:?} on_foot {on_foot}", p.tag, p.s.shape, p.s.cell, fp.foot, p.s.run));
+                continue;
+            };
+            if abs > last + 1e-3 {
+                fails.push(format!("{}: height turns back at ({x:.2}, {z:.2})", p.tag));
+            }
+            last = last.min(abs);
+            walked += 1;
+        }
+        let low = (u - 1) as f32 * STOREY;
+        if (last - low).abs() > 0.5 {
+            fails.push(format!("{}: the route ends at {last}, not near the lower floor {low}", p.tag));
+        }
+    }
+    assert!(walked > 200, "only {walked} samples walked");
+    report("flight walk paths", &fails);
 }

@@ -88,12 +88,8 @@ mod tests {
             let g = crate::game::Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, &text, -1, &content, &cat);
             let f = &g.fac;
             let Some(s) = f.stairs.iter().copied().find(|s| matches!(s.kind, LinkKind::Stairs)) else { continue };
-            let edge = (s.cell.x + (s.run.0 > 0) as i32, s.cell.y + (s.run.1 > 0) as i32);
-            let side = (s.run.1.abs() as f32, s.run.0.abs() as f32);
-            let p = (
-                edge.0 as f32 + s.run.0 as f32 * 1.5 + side.0 * 0.5,
-                edge.1 as f32 + s.run.1 as f32 * 1.5 + side.1 * 0.5,
-            );
+            let path = s.walk_path(f.level, 0.25);
+            let p = path[path.len() / 2];
             let tread = stair_height_at(f, p).expect("on the flight");
             assert!(tread != 0.0, "a flight cell is off the floor");
             let ground = ground_y(f, p.0, p.1, floor_y_of(f.level));

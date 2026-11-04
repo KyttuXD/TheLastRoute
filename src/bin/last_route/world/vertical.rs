@@ -1,11 +1,11 @@
-//! The vertical numbers of the facility in one place: the stair treads (drawn by `render/stairs.rs`, which reads
-//! them from here), the height a body stands at on a flight, which storey a body is on (with its hysteresis) and the
-//! ladder's timings. Godot is the reference: its storey is 4 m (`StreamedFacilityView3D.LEVEL_HEIGHT`,
-//! `game/world/streaming/streamed_facility_view_3d.gd:18`) and ours is `WALL_HEIGHT` (5 m, `config/mod.rs`), so every
-//! Godot distance here is scaled by `GODOT_TO_OURS` = 5/4. Slopes and ratios carry over unchanged.
+//! The vertical numbers of the facility in one place: the storey, which storey a body is on (with its hysteresis), the
+//! height a body stands at on a flight and the ladder's timings. The flight itself is defined once in `world/flight.rs`
+//! (absolute y, data in `data/flights.json`); this file only reads it for a stair record. Godot is the reference: its
+//! storey is 4 m (`StreamedFacilityView3D.LEVEL_HEIGHT`, `game/world/streaming/streamed_facility_view_3d.gd:18`) and ours
+//! is `WALL_HEIGHT` (5 m, `config/mod.rs`), so every Godot distance here is scaled by `GODOT_TO_OURS` = 5/4.
 
 use crate::config::WALL_HEIGHT;
-use crate::world::facility::{stair_well_cells, Stair, STAIR_FLIGHT};
+use crate::world::facility::Stair;
 
 /// Godot's storey height in metres (`streamed_facility_view_3d.gd:18`, LEVEL_HEIGHT).
 pub const GODOT_STOREY: f32 = 4.0;
@@ -17,51 +17,17 @@ pub const GODOT_TO_OURS: f32 = WALL_HEIGHT / GODOT_STOREY;
 pub const STOREY: f32 = WALL_HEIGHT;
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Stair flights (the numbers render/stairs.rs draws)
+// Stair flights
 // ---------------------------------------------------------------------------------------------------------------------
 
-/// Treads per cell of run, so a cell's metre of run is three deep steps rather than one metre-high block.
+/// Treads per cell of run, so a cell's metre of run is three deep steps rather than one metre-high block (read by
+/// `world/flight.rs`).
 pub const STEPS_PER_CELL: i32 = 3;
 
-/// The flat treads at the foot of a flight down (its last cell): a landing to stand on, so the flight ends on a floor
-/// and not against the pit's wall.
-pub const LANDING: i32 = STEPS_PER_CELL;
-
-/// Treads in one whole flight: every cell of run times the treads per cell.
-pub const STAIR_STEPS: i32 = STAIR_FLIGHT * STEPS_PER_CELL;
-
 /// The level change: a body this far above or below its storey's floor changes level (`LEVEL_MIDPOINT` plus the
-/// hysteresis margin, `level_from_height`). A walked flight must reach it, so both flight constants below are sized
-/// from it. KT decided the flights may be steeper than Godot's, which climbs only half a storey.
+/// hysteresis margin, `level_from_height`). A flight spans the whole storey, so the swap happens near its middle and
+/// absolute height stays continuous.
 pub const LEVEL_CHANGE_HEIGHT: f32 = LEVEL_MIDPOINT + LEVEL_TRANSITION_MARGIN;
-
-/// How far a flight up rises per metre of run: 0.75, about 36.9 degrees (`FLIGHT_SLOPE_DEG` is Godot's 33.7, which
-/// stops at half a storey). Over the flight's `STAIR_FLIGHT` cells it tops out at 3.0 m, past the 2.9375 m level
-/// change. The least rise that reaches it is 2.9375 / 4 = 0.734, so 0.75 is the round number just above that.
-pub const RISE_UP: f32 = 0.75;
-
-/// How far a flight down sinks per metre of run, over the sloped cells before its landing: 1.0, exactly 45 degrees.
-/// Over those 3 cells it sinks 3.0 m, past the 2.9375 m level change. The least rise that reaches it is
-/// 2.9375 / 3 = 0.979 (44.4 degrees), so 1.0 is the round number just above that. It is steep enough that the near lip
-/// of the pit hides the first treads from a standing eye at 2 m (see the test in render/stairs.rs).
-pub const RISE_DOWN: f32 = 1.0;
-
-/// The height of one tread's riser on a flight up (`RISE_UP` spread over its treads per cell).
-pub const STAIR_RISE: f32 = RISE_UP / STEPS_PER_CELL as f32;
-
-/// Godot's switchback half flight runs this far (metres, `game/world/generation/stairwells.gd`: rows 2..last-1 of the
-/// interior, a 3 m run) while it rises half a storey to the mid landing.
-pub const GODOT_SWITCHBACK_RUN: f32 = 3.0;
-
-/// The Godot flight slope in degrees: half a storey (2 m) over the 3 m run is atan(2/3), 33.7 degrees.
-pub const FLIGHT_SLOPE_DEG: f32 = 33.7;
-
-/// The same slope as rise per metre of run (tan 33.7 degrees is 2/3). Our `RISE_UP` (0.75) is steeper, on purpose.
-pub const FLIGHT_RISE_PER_RUN: f32 = 2.0 / 3.0;
-
-/// A half flight in our metres: its run and, to the mid landing, its rise (half of `STOREY`).
-pub const FLIGHT_RUN: f32 = GODOT_SWITCHBACK_RUN * GODOT_TO_OURS;
-pub const MID_LANDING_RISE: f32 = STOREY * 0.5;
 
 /// Godot's FLOOR_SNAP (`player_controller_3d.gd:45`): .28 of the player's model scale (`player_models.gd` SCALE 1.067),
 /// how far a grounded body is pulled down onto a ramp. Scaled to our storey like every distance.
@@ -106,37 +72,10 @@ pub const LADDER_LET_GO_HEIGHT: f32 = 1.3 * 1.067 * GODOT_TO_OURS;
 // Functions
 // ---------------------------------------------------------------------------------------------------------------------
 
-/// The top of tread `j` (1-based, 1..=STAIR_STEPS) of a flight: `dir` -1 down, 1 up. Each tread is one rise further
-/// than the last; a flight down stops sinking at its foot, so its last `LANDING` treads are flat.
-pub fn tread_top(dir: i32, j: i32) -> f32 {
-    let per = STEPS_PER_CELL as f32;
-    let rise = (if dir < 0 { RISE_DOWN } else { RISE_UP }) / per;
-    let sloped = if dir < 0 { STAIR_STEPS - LANDING } else { STAIR_STEPS };
-    dir.signum() as f32 * j.min(sloped) as f32 * rise
-}
-
-/// The height of the walking surface at `pos` (x, z in grid cells, a cell `(x, y)` spanning `x..x+1`), or `None` off
-/// the stair. The landing cell is flat at 0; each flight cell is the height of the tread under `pos`, so the surface
-/// is flat on a landing and steps up or down along a flight. A ladder has no stair surface.
-pub fn stair_surface_y(stair: Stair, pos: (f32, f32)) -> Option<f32> {
-    if stair.is_ladder() {
-        return None;
-    }
-    let (x, z) = pos;
-    let here = (x.floor() as i32, z.floor() as i32);
-    if here == (stair.cell.x, stair.cell.y) {
-        return Some(0.0);
-    }
-    // metres along the run from the landing cell's far edge (0 there, 1 at the end of the first cell)
-    let edge = (stair.cell.x + (stair.run.0 > 0) as i32, stair.cell.y + (stair.run.1 > 0) as i32);
-    let along = stair.run.0 as f32 * (x - edge.0 as f32) + stair.run.1 as f32 * (z - edge.1 as f32);
-    for k in 1..=STAIR_FLIGHT {
-        if stair_well_cells(stair, k).iter().any(|c| (c.x, c.y) == here) {
-            let j = ((along * STEPS_PER_CELL as f32).floor() as i32).clamp(0, STAIR_STEPS - 1);
-            return Some(tread_top(stair.dir, j + 1));
-        }
-    }
-    None
+/// The height of the walking surface at `pos` (x, z in grid cells) above the floor of `level`, the level of the facility
+/// holding `stair`, or `None` off the stair (see `Stair::surface_rel`). A ladder has no stair surface.
+pub fn stair_surface_y(stair: Stair, level: i32, pos: (f32, f32)) -> Option<f32> {
+    stair.surface_rel(level, pos.0, pos.1)
 }
 
 /// The level a body at height `y` is on, given the level it was on last (`current`). It stays put until the body is
@@ -152,120 +91,135 @@ pub fn level_from_height(y: f32, current: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::stairs::treads;
-    use crate::world::facility::{Cell, LinkKind};
-
-    fn flight(dir: i32, run: (i32, i32)) -> Stair {
-        Stair { cell: Cell::new(20, 20), dir, run, kind: LinkKind::Stairs }
-    }
-
-    /// A point `along` metres from the landing's far edge, on the first lane of the flight.
-    fn at(s: Stair, along: f32) -> (f32, f32) {
-        let edge = (s.cell.x + (s.run.0 > 0) as i32, s.cell.y + (s.run.1 > 0) as i32);
-        let side = (s.run.1.abs() as f32, s.run.0.abs() as f32);
-        (
-            edge.0 as f32 + s.run.0 as f32 * along + side.0 * 0.5,
-            edge.1 as f32 + s.run.1 as f32 * along + side.1 * 0.5,
-        )
-    }
+    use crate::world::facility::{Cell, Cover};
+    use crate::world::flight::{flight_surface_y, flights, max_riser_of, well_footprint, FlightShape};
 
     const RUNS: [(i32, i32); 4] = [(0, -1), (0, 1), (1, 0), (-1, 0)];
+    const SHAPES: [FlightShape; 3] = [FlightShape::Switchback, FlightShape::Straight, FlightShape::Spiral];
+
+    /// The stair on the upper level (level 0) and the stair on the lower level (-1) of the same flight.
+    fn pair(shape: FlightShape, run: (i32, i32)) -> (Stair, Stair) {
+        let upper = Stair::stairs(Cell::new(30, 30), -1, run, shape, false);
+        let flight = upper.flight(0).unwrap();
+        let lower = Stair::stairs(well_footprint(&flight).foot, 1, run, shape, false);
+        (upper, lower)
+    }
+
+    fn cell_of(p: (f32, f32)) -> Cell {
+        Cell::new(p.0.floor() as i32, p.1.floor() as i32)
+    }
 
     #[test]
     fn the_numbers_are_godot_scaled_to_our_storey() {
         assert!((GODOT_TO_OURS - 1.25).abs() < 1e-6);
         assert!((LEVEL_MIDPOINT - 2.5).abs() < 1e-6, "2 m at Godot's 4 m storey is 2.5 m here");
         assert!((LEVEL_TRANSITION_MARGIN - 0.4375).abs() < 1e-6);
-        assert!((FLIGHT_RISE_PER_RUN.atan().to_degrees() - FLIGHT_SLOPE_DEG).abs() < 0.05);
-        assert!((MID_LANDING_RISE - LEVEL_MIDPOINT).abs() < 1e-6);
         assert!((FLOOR_SNAP - 0.28 * 1.067 * 1.25).abs() < 1e-6);
-        // the drawn flight up is the steeper 36.87 degrees (atan 0.75), and the flight down is 45 degrees
-        assert!((RISE_UP.atan().to_degrees() - 36.87).abs() < 0.01);
-        assert!((RISE_DOWN.atan().to_degrees() - 45.0).abs() < 1e-3);
-    }
-
-    #[test]
-    fn a_walked_flight_reaches_the_level_change_height() {
         assert!((LEVEL_CHANGE_HEIGHT - 2.9375).abs() < 1e-6);
-        // the top of a flight up is past the level change above its floor, and the surface reaches it
-        let top_up = tread_top(1, STAIR_STEPS);
-        assert!(top_up >= LEVEL_CHANGE_HEIGHT, "top {top_up}");
-        assert!((top_up - 3.0).abs() < 1e-5);
-        for run in RUNS {
-            let s = flight(1, run);
-            let y = stair_surface_y(s, at(s, STAIR_FLIGHT as f32 - 0.01)).unwrap();
-            assert!(y >= LEVEL_CHANGE_HEIGHT, "run {run:?}: the last metre is at {y}");
-        }
-        // a flight down sinks past the level change too: its sloped part ends at the foot, 3 m under the floor
-        let foot = tread_top(-1, STAIR_STEPS - LANDING);
-        assert!(-foot >= LEVEL_CHANGE_HEIGHT, "foot {foot}");
-        assert!((foot + 3.0).abs() < 1e-5);
-        // and the level changes there: a body at the top of a flight up is on the level above, at the foot below
-        assert_eq!(level_from_height(top_up, 0), 1);
-        assert_eq!(level_from_height(foot, 0), -1);
     }
 
     #[test]
-    fn the_surface_is_flat_on_the_landings() {
-        for dir in [-1, 1] {
-            let s = flight(dir, (0, -1));
-            // the landing cell the runner steps on is level with the floor
-            for along in [-0.9, -0.5, -0.1] {
-                assert_eq!(stair_surface_y(s, at(s, along)), Some(0.0), "dir {dir} at {along}");
-            }
-        }
-        // a flight down ends in LANDING flat treads: the last cell is one level, at the foot's height
-        for run in RUNS {
-            let s = flight(-1, run);
-            let foot = tread_top(-1, STAIR_STEPS);
-            for j in 0..LANDING {
-                let along = (STAIR_STEPS - LANDING + j) as f32 / STEPS_PER_CELL as f32 + 0.1;
-                assert!((stair_surface_y(s, at(s, along)).unwrap() - foot).abs() < 1e-6, "run {run:?} tread {j}");
-            }
-            assert!((tread_top(-1, STAIR_STEPS - LANDING) - foot).abs() < 1e-6, "the sloped part meets the foot");
-        }
-    }
+    fn a_flight_reaches_the_storey() {
+        for shape in SHAPES {
+            for run in RUNS {
+                let (upper, lower) = pair(shape, run);
+                let flight = upper.flight(0).unwrap();
+                assert_eq!(lower.flight(-1), Some(flight), "{shape:?} {run:?}: both levels see one flight");
+                let fp = well_footprint(&flight);
+                assert_eq!(upper.well_cells(), lower.well_cells(), "{shape:?} {run:?}: one footprint");
+                assert_eq!((upper.landing(), upper.foot()), (fp.landing, fp.foot));
+                assert_eq!(upper.far_end(), fp.foot);
+                assert_eq!(lower.far_end(), fp.landing);
 
-    #[test]
-    fn the_surface_is_monotonic_on_the_flight() {
-        for run in RUNS {
-            for dir in [-1, 1] {
-                let s = flight(dir, run);
-                let mut prev = stair_surface_y(s, at(s, 0.0)).unwrap();
-                // 0.01 m steps over the whole flight, from just past the landing to just short of its last metre
-                for i in 1..(STAIR_FLIGHT * 100) {
-                    let along = i as f32 * 0.01;
-                    let y = stair_surface_y(s, at(s, along)).unwrap();
-                    assert!((y - prev) * dir as f32 >= -1e-6, "dir {dir} run {run:?} at {along}: {prev} -> {y}");
+                // the own end is the level's own floor, the other end is plain floor with no stair surface
+                let (a, b) = (fp.landing.center(), fp.foot.center());
+                assert_eq!(stair_surface_y(upper, 0, a), Some(0.0), "{shape:?} {run:?}: A is the upper floor");
+                assert_eq!(stair_surface_y(lower, -1, b), Some(0.0), "{shape:?} {run:?}: B is the lower floor");
+                assert_eq!(stair_surface_y(lower, -1, a), None, "{shape:?} {run:?}: no surface at A below");
+                assert_eq!(stair_surface_y(upper, 0, b), None, "{shape:?} {run:?}: no surface at B above");
+
+                let step = 0.05;
+                let path = upper.walk_path(0, step);
+                assert_eq!(path, flight_path_forward(&flight, step), "walk_path goes A to B");
+                assert_eq!(cell_of(path[0]), fp.landing);
+                assert_eq!(cell_of(*path.last().unwrap()), fp.foot);
+
+                // absolute height along the walk: 0 at A down to -STOREY at B, never rising, small steps, one level flip
+                let abs: Vec<f32> = path.iter().map(|p| flight_surface_y(&flight, p.0, p.1).unwrap()).collect();
+                assert!((abs[0] - 0.0).abs() < 1e-4 && (abs[abs.len() - 1] + STOREY).abs() < 1e-4);
+                assert!((abs[0] - abs[abs.len() - 1] - STOREY).abs() < 1e-4, "spans exactly one storey");
+                let max_step = max_riser_of(flights(), shape) * STEPS_PER_CELL as f32 * step * 1.05 + 1e-4;
+                let mut level = 0;
+                let mut flips = 0;
+                for w in abs.windows(2) {
+                    assert!(w[1] <= w[0] + 1e-5, "{shape:?} {run:?}: rises on the way down {} -> {}", w[0], w[1]);
+                    assert!(w[0] - w[1] <= max_step, "{shape:?} {run:?}: step {} over {max_step}", w[0] - w[1]);
+                }
+                for y in &abs {
+                    let next = level_from_height(*y, level);
+                    flips += (next != level) as i32;
+                    level = next;
+                }
+                assert_eq!((flips, level), (1, -1), "{shape:?} {run:?}: the level flips exactly once");
+
+                // the upper stair: relative height 0 down to -STOREY, equal to the absolute height on level 0
+                let mut prev = 0.0f32;
+                for p in path.iter().filter(|p| cell_of(**p) != fp.foot) {
+                    let y = stair_surface_y(upper, 0, *p).expect("surface on the well and at A");
+                    assert!(y <= prev + 1e-5 && y >= -STOREY - 1e-4, "{shape:?} {run:?}: upper {prev} -> {y}");
                     prev = y;
                 }
-                // the flight goes the way it is meant to: up ends above the floor, down ends below it
-                assert!(prev * dir as f32 >= 0.0);
+                // the lower stair walked from B to A: relative height 0 up, never falling, the same surface + STOREY
+                let mut prev = 0.0f32;
+                for p in path.iter().rev().filter(|p| cell_of(**p) != fp.landing) {
+                    let y = stair_surface_y(lower, -1, *p).expect("surface on the well and at B");
+                    let want = flight_surface_y(&flight, p.0, p.1).unwrap() + STOREY;
+                    assert!((y - want).abs() < 1e-4, "{shape:?} {run:?}: lower is the same surface");
+                    assert!(y >= prev - 1e-5 && y <= STOREY + 1e-4, "{shape:?} {run:?}: lower {prev} -> {y}");
+                    prev = y;
+                }
+                assert!(prev >= 3.0, "{shape:?} {run:?}: the lower stair climbs most of the storey, {prev}");
+            }
+        }
+    }
+
+    fn flight_path_forward(f: &crate::world::flight::Flight, step: f32) -> Vec<(f32, f32)> {
+        crate::world::flight::walk_path(f, step)
+    }
+
+    #[test]
+    fn the_surface_is_none_off_the_stair_and_for_ladders() {
+        let (upper, _) = pair(FlightShape::Switchback, (0, -1));
+        assert_eq!(stair_surface_y(upper, 0, (0.5, 0.5)), None, "far from the stair");
+        let ladder = Stair::ladder(Cell::new(30, 30), -1, Cover::Grate);
+        assert_eq!(stair_surface_y(ladder, 0, (30.5, 30.5)), None, "a ladder has no stair surface");
+        assert!(ladder.flight(0).is_none());
+        assert_eq!(ladder.well_cells(), vec![Cell::new(30, 30)], "a ladder opens its hatch on the upper level");
+        assert!(Stair::ladder(Cell::new(30, 30), 1, Cover::Grate).well_cells().is_empty());
+    }
+
+    #[test]
+    fn the_carve_cells_cover_the_well_both_ends_and_the_margins() {
+        for shape in SHAPES {
+            let (upper, lower) = pair(shape, (1, 0));
+            let carve = upper.carve_cells();
+            let mut sorted = carve.clone();
+            sorted.sort();
+            sorted.dedup();
+            assert_eq!(carve, sorted, "sorted without repeats");
+            assert_eq!(carve, lower.carve_cells(), "both levels carve the same cells");
+            for c in upper.well_cells().into_iter().chain([upper.landing(), upper.foot()]) {
+                assert!(carve.contains(&c), "{shape:?}: {c:?}");
             }
         }
     }
 
     #[test]
-    fn the_surface_matches_the_mesh_step_tops() {
-        for dir in [-1, 1] {
-            let s = flight(dir, (0, 1));
-            let mesh = treads(dir);
-            assert_eq!(mesh.len(), STAIR_STEPS as usize);
-            for (i, t) in mesh.iter().enumerate() {
-                let mid = (t.from + t.to) * 0.5;
-                let y = stair_surface_y(s, at(s, mid)).unwrap();
-                assert!((y - t.top).abs() < 1e-6, "dir {dir} tread {i}: surface {y} mesh {}", t.top);
-            }
-        }
-    }
-
-    #[test]
-    fn the_surface_is_none_off_the_stair() {
-        let s = flight(-1, (0, -1));
-        assert_eq!(stair_surface_y(s, (0.5, 0.5)), None, "far from the stair");
-        assert_eq!(stair_surface_y(s, at(s, STAIR_FLIGHT as f32 + 0.5)), None, "past the last cell");
-        let ladder = Stair { kind: LinkKind::Ladder(crate::world::facility::Cover::Grate), ..s };
-        assert_eq!(stair_surface_y(ladder, at(s, 0.5)), None, "a ladder has no stair surface");
+    fn shifted_moves_only_the_cell() {
+        let (upper, _) = pair(FlightShape::Spiral, (0, 1));
+        let s = upper.shifted(3, -2);
+        assert_eq!(s.cell, Cell::new(33, 28));
+        assert_eq!((s.dir, s.run, s.shape, s.clockwise), (upper.dir, upper.run, upper.shape, upper.clockwise));
     }
 
     #[test]
