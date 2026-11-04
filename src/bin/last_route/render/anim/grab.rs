@@ -150,9 +150,9 @@ pub fn look_for(id: &str) -> Look {
     }
 }
 
-/// GrabStyles.pick
-pub fn pick(id: &str, roll: f32, room: &Room) -> String {
-    let mut pool: Vec<(String, f32)> = data(id)
+/// A hunter's weighted pool from assets/hunters/grabs/<id>.json (style, weight), or shoulder_grab alone when the file is missing.
+pub fn pool_of(id: &str) -> Vec<(String, f32)> {
+    data(id)
         .and_then(|d| {
             d["pool"].as_object().map(|o| {
                 o.iter()
@@ -160,7 +160,16 @@ pub fn pick(id: &str, roll: f32, room: &Room) -> String {
                     .collect()
             })
         })
-        .unwrap_or_else(|| vec![("shoulder_grab".into(), 1.0)]);
+        .unwrap_or_else(|| vec![("shoulder_grab".into(), 1.0)])
+}
+
+/// GrabStyles.pick
+pub fn pick(id: &str, roll: f32, room: &Room) -> String {
+    pick_in(pool_of(id), roll, room)
+}
+
+/// GrabStyles.pick over a given pool: the styles the room rules out drop out, then a weighted pick with `roll`.
+pub fn pick_in(mut pool: Vec<(String, f32)>, roll: f32, room: &Room) -> String {
     pool.sort_by(|a, b| a.0.cmp(&b.0));
     let fitting: Vec<&(String, f32)> = pool
         .iter()
@@ -1046,5 +1055,84 @@ mod tests {
             full_angle.to_degrees()
         );
         assert!(turn.angle_between(full) < 1e-3, "head did not reach the look-away aim");
+    }
+
+    fn open_room() -> Room {
+        Room {
+            ceiling: 99.0,
+            back: 99.0,
+            hunter_back: 99.0,
+        }
+    }
+
+    /// The 16 grab pools ported from Godot's data/grabs/<id>.json (the ids without a Rust copy before) hold the Standard
+    /// weights of the originals: each row is the Godot file's "pool", read as (style, weight).
+    #[test]
+    fn ported_grab_pools_match_godot_standard() {
+        let expected: [(&str, &[(&str, f32)]); 16] = [
+            ("black_wolf_spider", &[("pounce_pin", 6.0)]),
+            ("nyxie", &[("wrap", 6.0), ("leg_grab", 2.0), ("upside_down", 2.0)]),
+            ("solyth", &[("wrist_yank", 6.0), ("shoulder_grab", 2.0), ("collar_drag", 2.0)]),
+            ("white_wolf_spider", &[("pounce_pin", 6.0)]),
+            ("void_black", &[("wrap", 6.0), ("upside_down", 2.0), ("shoulder_carry", 2.0)]),
+            ("void_blue", &[("shoulder_grab", 6.0), ("wall_pin", 3.0), ("shoulder_carry", 2.0)]),
+            ("void_brown", &[("tackle", 6.0), ("shoulder_grab", 2.0)]),
+            ("void_cyan", &[("wrist_yank", 6.0), ("tackle", 2.0)]),
+            ("void_gray", &[("shoulder_grab", 6.0), ("wall_pin", 2.0), ("collar_drag", 2.0)]),
+            ("void_green", &[("leg_grab", 6.0), ("collar_drag", 2.0), ("upside_down", 2.0)]),
+            ("void_orange", &[("tackle", 6.0), ("wrist_yank", 2.0)]),
+            ("void_pink", &[("wrist_yank", 6.0), ("wrap", 2.0)]),
+            ("void_purple", &[("wrap", 6.0), ("shoulder_carry", 3.0)]),
+            ("void_red", &[("tackle", 6.0), ("wall_pin", 2.0), ("shoulder_grab", 2.0)]),
+            ("void_white", &[("wrist_yank", 6.0), ("upside_down", 3.0)]),
+            ("void_yellow", &[("shoulder_grab", 6.0), ("shoulder_carry", 2.0)]),
+        ];
+        for (id, want) in expected {
+            let mut got = pool_of(id);
+            got.sort_by(|a, b| a.0.cmp(&b.0));
+            let mut want: Vec<(String, f32)> = want.iter().map(|(s, w)| (s.to_string(), *w)).collect();
+            want.sort_by(|a, b| a.0.cmp(&b.0));
+            assert_eq!(got, want, "grab pool for {id} differs from data/grabs/{id}.json");
+        }
+    }
+
+    /// Changing a weight in the data changes the pick: the same roll lands on a different style when the weights swap.
+    #[test]
+    fn grab_pool_weights_change_the_pick() {
+        let room = open_room();
+        let heavy_wrap = vec![("wrap".to_string(), 6.0), ("tackle".to_string(), 2.0)];
+        let heavy_tackle = vec![("wrap".to_string(), 2.0), ("tackle".to_string(), 6.0)];
+        assert_eq!(pick_in(heavy_wrap, 0.5, &room), "wrap");
+        assert_eq!(pick_in(heavy_tackle, 0.5, &room), "tackle");
+    }
+
+    /// The room drops styles the data allows: void_gray's wall pin needs a wall within 1.3 m, so an open room picks
+    /// only from shoulder_grab and collar_drag, and the roll decides between them (weights 6 and 2, sorted by style).
+    #[test]
+    fn grab_room_rules_out_wall_pin_for_void_gray() {
+        let room = open_room();
+        assert_eq!(pick("void_gray", 0.0, &room), "collar_drag");
+        assert_eq!(pick("void_gray", 0.9, &room), "shoulder_grab");
+        let wall = Room {
+            ceiling: 99.0,
+            back: 0.5,
+            hunter_back: 99.0,
+        };
+        // with a wall behind the runner, wall_pin (weight 2) joins the pool; sorted: collar_drag, shoulder_grab, wall_pin
+        assert_eq!(pick("void_gray", 0.99, &wall), "wall_pin");
+    }
+
+    /// An empty fitting pool falls back to shoulder_grab, the same as GrabStyles.FALLBACK.
+    #[test]
+    fn grab_no_fitting_style_falls_back_to_shoulder_grab() {
+        let cramped = Room {
+            ceiling: 0.0,
+            back: 0.0,
+            hunter_back: 0.0,
+        };
+        // tackle needs 1.7 m clear behind the runner; a pool of only tackle has nothing that fits
+        assert_eq!(pick_in(vec![("tackle".to_string(), 1.0)], 0.5, &cramped), "shoulder_grab");
+        // and the shipped void_brown pool (tackle 6, shoulder_grab 2) still picks shoulder_grab in the cramped spot
+        assert_eq!(pick("void_brown", 0.5, &cramped), "shoulder_grab");
     }
 }

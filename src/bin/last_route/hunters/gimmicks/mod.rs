@@ -3,6 +3,7 @@
 //! position, breaching hiding, capture immunity and inescapable grabs. Specs: docs/GIMMICKS.md.
 
 pub mod aki;
+pub mod charge;
 pub mod briselle;
 pub mod ceryth;
 pub mod elise;
@@ -288,6 +289,7 @@ impl Gimmick {
             Gimmick::Verrine(g) => g.speed_scale,
             Gimmick::Xivvy(g) => g.speed_scale,
             Gimmick::Nyxie(g) => g.speed_scale(),
+            Gimmick::Solyth(g) => g.speed_scale(),
             Gimmick::VoidBlack(g) => g.speed_scale(),
             Gimmick::VoidRed(g) => g.speed_scale(),
             Gimmick::VoidWhite(g) => g.speed_scale(),
@@ -307,6 +309,8 @@ impl Gimmick {
         match self {
             Gimmick::Ceryth(g) => g.holds_position(),
             Gimmick::Ilyra(_) => true,
+            Gimmick::Nyxie(g) => g.holds_position(),
+            Gimmick::Solyth(g) => g.holds_position(),
             Gimmick::Loxelle(g) => g.holds_position(),
             Gimmick::Mavrine(g) => g.holds_position(),
             Gimmick::Opalie(g) => g.on_station,

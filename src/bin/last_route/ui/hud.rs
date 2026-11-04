@@ -24,6 +24,143 @@ pub struct HudDrawn {
 const SAFE: f32 = 8.0;
 const GAP: f32 = 4.0;
 
+/// The danger readout's colour band.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DangerBand {
+    Safe,
+    Warn,
+    Low,
+}
+
+/// The HUD's danger rules and status labels (data/hud.json, `lr.hud/1`). The Standard values are the
+/// defaults, used when the embedded file is missing or a field is broken.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HudRules {
+    /// Danger (percent) below this is the safe green.
+    pub safe_below: i32,
+    /// Danger (percent) at or above this is the low (red) band; between the two is the warn band.
+    pub low_from: i32,
+    /// Danger (0..1) above which the crimson edge pulse starts.
+    pub pulse_from: f32,
+    /// Pulse frequency: base plus `pulse_speed_per_danger` times the danger.
+    pub pulse_speed: f32,
+    pub pulse_speed_per_danger: f32,
+    /// Width in design units of the crimson edge pulse.
+    pub pulse_width: f32,
+    /// Peak alpha scale of the crimson edge pulse.
+    pub pulse_alpha: f32,
+    /// Lowest factor the pulse dips to (1.0 means no dip).
+    pub pulse_floor: f32,
+    /// Width reserved for the danger meter beside its label.
+    pub meter_min_width: f32,
+    pub label_danger: String,
+    pub label_relays_run: String,
+    pub label_relays_floor: String,
+}
+
+impl Default for HudRules {
+    fn default() -> Self {
+        Self {
+            safe_below: 40,
+            low_from: 75,
+            pulse_from: 0.35,
+            pulse_speed: 3.0,
+            pulse_speed_per_danger: 6.0,
+            pulse_width: 10.0,
+            pulse_alpha: 0.55,
+            pulse_floor: 0.55,
+            meter_min_width: 72.0,
+            label_danger: "DANGER {}%".to_string(),
+            label_relays_run: "RELAYS {} // CHUNKS {}".to_string(),
+            label_relays_floor: "{}/{} SIGNAL RELAYS".to_string(),
+        }
+    }
+}
+
+impl HudRules {
+    /// Reads `lr.hud/1`. Missing or malformed fields keep the Standard default.
+    pub fn parse(v: &serde_json::Value) -> HudRules {
+        let mut r = HudRules::default();
+        let d = &v["danger"];
+        if let Some(x) = d["safe_below"].as_i64() {
+            r.safe_below = x.clamp(0, 100) as i32;
+        }
+        if let Some(x) = d["low_from"].as_i64() {
+            r.low_from = x.clamp(0, 100) as i32;
+        }
+        let f = |key: &str, cur: f32| d[key].as_f64().map(|x| x as f32).unwrap_or(cur);
+        r.pulse_from = f("pulse_from", r.pulse_from);
+        r.pulse_speed = f("pulse_speed", r.pulse_speed);
+        r.pulse_speed_per_danger = f("pulse_speed_per_danger", r.pulse_speed_per_danger);
+        r.pulse_width = f("pulse_width", r.pulse_width);
+        r.pulse_alpha = f("pulse_alpha", r.pulse_alpha);
+        r.pulse_floor = f("pulse_floor", r.pulse_floor).clamp(0.0, 1.0);
+        r.meter_min_width = f("meter_min_width", r.meter_min_width);
+        let l = &v["labels"];
+        if let Some(s) = l["danger"].as_str() {
+            r.label_danger = s.to_string();
+        }
+        if let Some(s) = l["relays_run"].as_str() {
+            r.label_relays_run = s.to_string();
+        }
+        if let Some(s) = l["relays_floor"].as_str() {
+            r.label_relays_floor = s.to_string();
+        }
+        r
+    }
+
+    /// The embedded data/hud.json (the Standard defaults if it is missing or broken).
+    pub fn load() -> &'static HudRules {
+        static RULES: std::sync::OnceLock<HudRules> = std::sync::OnceLock::new();
+        RULES.get_or_init(|| {
+            crate::content::embedded::data_under("hud.json")
+                .next()
+                .and_then(|(_, text)| serde_json::from_str::<serde_json::Value>(text).ok())
+                .map(|v| HudRules::parse(&v))
+                .unwrap_or_default()
+        })
+    }
+
+    /// The colour band for a danger percent.
+    pub fn band(&self, percent: i32) -> DangerBand {
+        if percent < self.safe_below {
+            DangerBand::Safe
+        } else if percent < self.low_from {
+            DangerBand::Warn
+        } else {
+            DangerBand::Low
+        }
+    }
+
+    /// The pulse's flicker speed for a danger level (0..1).
+    pub fn pulse_speed_for(&self, danger: f32) -> f32 {
+        self.pulse_speed + danger * self.pulse_speed_per_danger
+    }
+
+    /// The edge pulse's alpha for a danger level (0..1) and a flicker `pulse` (0..1).
+    pub fn pulse_alpha_for(&self, danger: f32, pulse: f32) -> f32 {
+        (danger - self.pulse_from) * self.pulse_alpha * (self.pulse_floor + (1.0 - self.pulse_floor) * pulse)
+    }
+}
+
+/// Fills a `{}` label template with `args` in order. Extra placeholders are left as they are.
+pub fn fill_label(template: &str, args: &[String]) -> String {
+    let mut out = String::new();
+    let mut rest = template;
+    let mut i = 0;
+    while let Some(at) = rest.find("{}") {
+        out.push_str(&rest[..at]);
+        match args.get(i) {
+            Some(a) => out.push_str(a),
+            None => out.push_str("{}"),
+        }
+        i += 1;
+        rest = &rest[at + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// hud.tscn's StyleBoxFlat_hud (Last Route) or the scheme's frame (other schemes).
 fn hud_box(r: Rect) {
     if is_last_route() {
@@ -75,6 +212,7 @@ pub fn draw_hud_with_runners(
     let mut drawn = HudDrawn::default();
     let p = pal();
     let v = view();
+    let rules = HudRules::load();
     let floor_units = (12.0 / unit()).ceil().min(9.0);
     let fs = |base: f32| base.max(floor_units);
 
@@ -99,27 +237,25 @@ pub fn draw_hud_with_runners(
     let depth = format!("DEPTH {:02}", g.depth);
     let (relays, danger) = match &g.inf {
         Some(_) => (
-            format!(
-                "RELAYS {} // CHUNKS {}",
-                g.relays_collected,
-                g.chunks_visited()
+            fill_label(
+                &rules.label_relays_run,
+                &[g.relays_collected.to_string(), g.chunks_visited().to_string()],
             ),
             Some((g.danger() * 100.0).round().clamp(0.0, 100.0) as i32),
         ),
         None => (
-            format!(
-                "{}/{} SIGNAL RELAYS",
-                g.relays_collected,
-                g.fac.relays.len()
+            fill_label(
+                &rules.label_relays_floor,
+                &[g.relays_collected.to_string(), g.fac.relays.len().to_string()],
             ),
             None,
         ),
     };
     let (d7, d6) = (fs(7.0), fs(6.0));
-    let danger_text = danger.map(|d| format!("DANGER {d}%"));
+    let danger_text = danger.map(|d| fill_label(&rules.label_danger, &[d.to_string()]));
     let mut ow = tw(a, F::Body, &depth, d7).max(tw(a, F::Body, &relays, d6));
     if let Some(t) = &danger_text {
-        ow = ow.max(tw(a, F::Body, t, d6) + 3.0 + 72.0);
+        ow = ow.max(tw(a, F::Body, t, d6) + 3.0 + rules.meter_min_width);
     }
     let mut oh = lh(F::Body, d7) + 1.0 + lh(F::Body, d6);
     if danger.is_some() {
@@ -149,12 +285,10 @@ pub fn draw_hud_with_runners(
     );
     y += lh(F::Body, d6) + 1.0;
     if let (Some(d), Some(t)) = (danger, &danger_text) {
-        let col = if d < 40 {
-            meter_safe()
-        } else if d < 75 {
-            METER_WARN
-        } else {
-            METER_LOW
+        let col = match rules.band(d) {
+            DangerBand::Safe => meter_safe(),
+            DangerBand::Warn => METER_WARN,
+            DangerBand::Low => METER_LOW,
         };
         label(a, F::Body, t, obj.x, y, d6, col);
         let bx = obj.x + tw(a, F::Body, t, d6) + 3.0;
@@ -435,17 +569,12 @@ pub fn draw_hud_with_runners(
 
     // the crimson edge pulse while a hunter hunts close by; frost or heat haze at the extremes
     let danger = g.danger();
-    if danger > 0.35 && g.report.is_none() {
-        let pulse = 0.5 + 0.5 * (g.time * (3.0 + danger * 6.0)).sin();
+    if danger > rules.pulse_from && g.report.is_none() {
+        let pulse = 0.5 + 0.5 * (g.time * rules.pulse_speed_for(danger)).sin();
         edge(
             v,
-            10.0,
-            rgba(
-                0.6,
-                0.05,
-                0.1,
-                (danger - 0.35) * 0.55 * (0.55 + 0.45 * pulse),
-            ),
+            rules.pulse_width,
+            rgba(0.6, 0.05, 0.1, rules.pulse_alpha_for(danger, pulse)),
         );
     }
     let heat = ((g.meters.temperature - 76.0) / 24.0).clamp(0.0, 1.0);
@@ -494,4 +623,91 @@ fn edge(v: Vec2, e: f32, col: Color) {
     fill(Rect::new(0.0, v.y - e, v.x, e), col);
     fill(Rect::new(0.0, e, e, v.y - 2.0 * e), col);
     fill(Rect::new(v.x - e, e, e, v.y - 2.0 * e), col);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    fn embedded() -> Value {
+        let (_, text) = crate::content::embedded::data_under("hud.json")
+            .next()
+            .expect("data/hud.json is embedded");
+        serde_json::from_str(text).expect("data/hud.json parses")
+    }
+
+    #[test]
+    fn the_embedded_file_matches_the_standard_values() {
+        let r = HudRules::parse(&embedded());
+        assert_eq!(r, HudRules::default());
+        assert_eq!(r.safe_below, 40);
+        assert_eq!(r.low_from, 75);
+        assert!((r.pulse_from - 0.35).abs() < 1e-6);
+        assert!((r.pulse_width - 10.0).abs() < 1e-6);
+        assert!((r.meter_min_width - 72.0).abs() < 1e-6);
+        assert_eq!(r.label_danger, "DANGER {}%");
+        assert_eq!(r.label_relays_run, "RELAYS {} // CHUNKS {}");
+        assert_eq!(r.label_relays_floor, "{}/{} SIGNAL RELAYS");
+    }
+
+    #[test]
+    fn standard_bands_split_at_40_and_75() {
+        let r = HudRules::default();
+        assert_eq!(r.band(0), DangerBand::Safe);
+        assert_eq!(r.band(39), DangerBand::Safe);
+        assert_eq!(r.band(40), DangerBand::Warn);
+        assert_eq!(r.band(74), DangerBand::Warn);
+        assert_eq!(r.band(75), DangerBand::Low);
+        assert_eq!(r.band(100), DangerBand::Low);
+    }
+
+    #[test]
+    fn changing_the_band_data_changes_the_band() {
+        let v = json!({ "danger": { "safe_below": 50, "low_from": 60 } });
+        let r = HudRules::parse(&v);
+        assert_eq!(r.band(49), DangerBand::Safe);
+        assert_eq!(r.band(50), DangerBand::Warn);
+        assert_eq!(r.band(60), DangerBand::Low);
+    }
+
+    #[test]
+    fn standard_pulse_matches_the_old_constants() {
+        let r = HudRules::default();
+        // old code: speed 3 + 6 * danger; alpha (danger - 0.35) * 0.55 * (0.55 + 0.45 * pulse)
+        assert!((r.pulse_speed_for(0.5) - 6.0).abs() < 1e-6);
+        assert!((r.pulse_alpha_for(0.85, 1.0) - 0.5 * 0.55).abs() < 1e-6);
+        assert!((r.pulse_alpha_for(0.85, 0.0) - 0.5 * 0.55 * 0.55).abs() < 1e-6);
+    }
+
+    #[test]
+    fn changing_the_pulse_data_changes_the_pulse() {
+        let r = HudRules::parse(&json!({ "danger": { "pulse_speed": 1.0, "pulse_alpha": 1.0, "pulse_floor": 1.0 } }));
+        assert!((r.pulse_speed_for(0.0) - 1.0).abs() < 1e-6);
+        assert!((r.pulse_alpha_for(0.85, 0.0) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn changing_the_label_data_changes_the_text() {
+        let r = HudRules::parse(&json!({ "labels": { "danger": "THREAT {}%" } }));
+        assert_eq!(fill_label(&r.label_danger, &["42".to_string()]), "THREAT 42%");
+        assert_eq!(
+            fill_label(&HudRules::default().label_danger, &["42".to_string()]),
+            "DANGER 42%"
+        );
+    }
+
+    #[test]
+    fn fill_label_replaces_placeholders_in_order() {
+        let a = ["3".to_string(), "9".to_string()];
+        assert_eq!(fill_label("{}/{} SIGNAL RELAYS", &a), "3/9 SIGNAL RELAYS");
+        assert_eq!(fill_label("RELAYS {} // CHUNKS {}", &a), "RELAYS 3 // CHUNKS 9");
+        assert_eq!(fill_label("no slots", &a), "no slots");
+    }
+
+    #[test]
+    fn broken_fields_keep_the_standard_default() {
+        let r = HudRules::parse(&json!({ "danger": { "safe_below": "soon" }, "labels": { "danger": 5 } }));
+        assert_eq!(r, HudRules::default());
+    }
 }

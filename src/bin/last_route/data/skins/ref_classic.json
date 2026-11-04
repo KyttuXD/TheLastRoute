@@ -1,0 +1,7 @@
+{
+	"schema": "lr.skin/1",
+	"id": "ref_classic",
+	"name": "Reference (classic)",
+	"image": "skins/ref_classic.png",
+	"arms": "classic"
+}

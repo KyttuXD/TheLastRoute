@@ -11,6 +11,7 @@ use crate::world::rng::Rng;
 use crate::world::{Cell, Facility};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::sync::OnceLock;
 
 #[cfg(test)]
 #[path = "bench.rs"]
@@ -247,6 +248,8 @@ pub struct Brain {
     peek_corner_cell: Option<Cell>,
     /// A validator's fixed peek chance (peek_chance_override); None: the tuning's.
     pub peek_chance_override: Option<f32>,
+    /// Search points picked during this chase (newest last), for `unchecked_first`.
+    searched: Vec<(f32, f32)>,
 }
 
 const ARRIVAL_DISTANCE: f32 = 0.65;
@@ -320,6 +323,7 @@ impl Brain {
             peek_resume: State::Search,
             peek_corner_cell: None,
             peek_chance_override: None,
+            searched: Vec::new(),
         }
     }
 
@@ -419,6 +423,7 @@ impl Brain {
         self.last_known = Some(p);
         self.search_timer = duration;
         self.search_visits = 0;
+        self.searched.clear();
         self.search_target = Some(self.pick_search_target(fac));
         self.clear_path();
     }
@@ -683,7 +688,7 @@ impl Brain {
     ) -> f32 {
         let depth_boost = HUNTER_DEPTH_SPEED_BONUS_MAX
             .min((depth.max(1) - 1) as f32 * HUNTER_DEPTH_SPEED_BONUS_PER_LEVEL);
-        let prog = relays.max(0) as f32 * HUNTER_RELAY_SPEED_BONUS + depth_boost;
+        let prog = crate::game::progression::Progression::load().chase_speed_bonus(relays) + depth_boost;
         let mut speed = if self.state == State::Chase {
             self.def.chase + prog * self.def.prog
         } else {
@@ -764,6 +769,7 @@ impl Brain {
                 self.state = State::Search;
                 self.search_timer = prof.search_time;
                 self.search_visits = 0;
+                self.searched.clear();
                 self.search_target = Some(self.pick_search_target(fac));
             }
             State::Search => {
@@ -1096,30 +1102,189 @@ impl Brain {
         cands[self.next_index(cands.len())]
     }
 
+    /// _pick_search_target: the next point to search. Hiding spots near the last sighting and the offsets around it
+    /// come from data/hunters/search.json (per difficulty); every point is one a route actually leads to.
     pub fn pick_search_target(&mut self, fac: &Facility) -> (f32, f32) {
+        let rules = search_rules();
+        let scale = rules.scale(self.diff);
+        match self.pick_search_point(fac, rules, scale) {
+            Some(p) => {
+                self.searched.push(p);
+                let excess = self.searched.len().saturating_sub(rules.memory);
+                self.searched.drain(..excess);
+                p
+            }
+            None => self.pos,
+        }
+    }
+
+    fn pick_search_point(&mut self, fac: &Facility, rules: &SearchRules, scale: SearchScale) -> Option<(f32, f32)> {
+        let want_spot = if scale.last_seen_spot_first {
+            true
+        } else if scale.hiding_spot_chance > 0.0 {
+            self.next_float() < scale.hiding_spot_chance
+        } else {
+            false
+        };
+        if want_spot {
+            if let Some(spot) = self.hiding_spot_near_last_seen(fac, rules) {
+                return Some(spot);
+            }
+        }
         let lk = self.last_known.unwrap_or(self.pos);
-        let mut offs = [
-            (3.0, 0.0),
-            (-3.0, 0.0),
-            (0.0, 3.0),
-            (0.0, -3.0),
-            (2.0, 2.0),
-            (-2.0, 2.0),
-            (2.0, -2.0),
-            (-2.0, -2.0),
-        ];
+        let mut offs = rules.offsets.clone();
         self.rng.shuffle(&mut offs);
+        let mut reachable = Vec::new();
         for (ox, oy) in offs {
             if let Some(c) = fac.nearest_open(lk.0 + ox, lk.1 + oy, HUNTER_RADIUS) {
-                if dist(c, self.pos) > 0.5
-                    && !plan_route(fac, self.pos, cell_of(c), &self.avoid).is_empty()
-                {
-                    return c;
+                if dist(c, self.pos) > 0.5 && !plan_route(fac, self.pos, cell_of(c), &self.avoid).is_empty() {
+                    if !scale.unchecked_first {
+                        return Some(c);
+                    }
+                    reachable.push(c);
                 }
             }
         }
-        self.pos
+        least_recently_checked(&reachable, &self.searched)
     }
+
+    /// The hiding spot whose centre is nearest the last sighting, when it is within `reach` and a route leads to it.
+    fn hiding_spot_near_last_seen(&self, fac: &Facility, rules: &SearchRules) -> Option<(f32, f32)> {
+        let lk = self.last_known.unwrap_or(self.pos);
+        let mut best: Option<((f32, f32), f32)> = None;
+        for h in &fac.hiding {
+            let c = h.cell.center();
+            let gap = dist(c, lk);
+            if gap > rules.reach || dist(c, self.pos) <= 0.5 {
+                continue;
+            }
+            if best.map_or(true, |(_, g)| gap < g) {
+                best = Some((c, gap));
+            }
+        }
+        let (c, _) = best?;
+        if plan_route(fac, self.pos, cell_of(c), &self.avoid).is_empty() {
+            return None;
+        }
+        Some(c)
+    }
+}
+
+/// The candidate farthest from every point already searched this chase (an unchecked spot). With nothing searched
+/// yet, or no candidates, the first candidate wins; ties keep the earlier one.
+pub fn least_recently_checked(cands: &[(f32, f32)], searched: &[(f32, f32)]) -> Option<(f32, f32)> {
+    let mut best: Option<((f32, f32), f32)> = None;
+    for &c in cands {
+        let score = searched.iter().map(|&s| dist(c, s)).fold(f32::INFINITY, f32::min);
+        if best.map_or(true, |(_, b)| score > b) {
+            best = Some((c, score));
+        }
+    }
+    best.map(|(c, _)| c)
+}
+
+/// One difficulty's search behaviour (data/hunters/search.json).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SearchScale {
+    /// Chance a search point is the hiding spot nearest the last sighting (Godot hide_random).
+    pub hiding_spot_chance: f32,
+    /// Always check that spot first when one is in reach, instead of rolling for it.
+    pub last_seen_spot_first: bool,
+    /// Prefer the reachable offset farthest from points already searched this chase.
+    pub unchecked_first: bool,
+}
+
+/// The search rules: reach of the hiding-spot check, how many searched points are remembered, the offsets around
+/// the last sighting, and the per-difficulty scale. Missing values keep the defaults.
+#[derive(Clone, Debug)]
+pub struct SearchRules {
+    /// Largest gap between a hiding spot and the last sighting for it to be checked.
+    pub reach: f32,
+    /// Searched points remembered for `unchecked_first`.
+    pub memory: usize,
+    pub offsets: Vec<(f32, f32)>,
+    default: SearchScale,
+    difficulty: HashMap<String, SearchScale>,
+}
+
+impl Default for SearchRules {
+    fn default() -> Self {
+        SearchRules {
+            reach: 8.0,
+            memory: 12,
+            offsets: vec![
+                (3.0, 0.0),
+                (-3.0, 0.0),
+                (0.0, 3.0),
+                (0.0, -3.0),
+                (2.0, 2.0),
+                (-2.0, 2.0),
+                (2.0, -2.0),
+                (-2.0, -2.0),
+            ],
+            default: SearchScale { hiding_spot_chance: 0.0, last_seen_spot_first: false, unchecked_first: false },
+            difficulty: HashMap::new(),
+        }
+    }
+}
+
+fn search_scale_of(v: &serde_json::Value, base: SearchScale) -> SearchScale {
+    let mut s = base;
+    if let Some(x) = v["hiding_spot_chance"].as_f64() {
+        s.hiding_spot_chance = (x as f32).clamp(0.0, 1.0);
+    }
+    if let Some(b) = v["last_seen_spot_first"].as_bool() {
+        s.last_seen_spot_first = b;
+    }
+    if let Some(b) = v["unchecked_first"].as_bool() {
+        s.unchecked_first = b;
+    }
+    s
+}
+
+impl SearchRules {
+    pub fn parse(v: &serde_json::Value) -> SearchRules {
+        let mut r = SearchRules::default();
+        if let Some(x) = v["reach"].as_f64() {
+            r.reach = (x as f32).clamp(0.0, 64.0);
+        }
+        if let Some(n) = v["memory"].as_i64() {
+            r.memory = n.clamp(0, 256) as usize;
+        }
+        if let Some(a) = v["offsets"].as_array() {
+            let offs: Vec<(f32, f32)> = a
+                .iter()
+                .filter_map(|p| Some((p.get(0)?.as_f64()? as f32, p.get(1)?.as_f64()? as f32)))
+                .collect();
+            if !offs.is_empty() {
+                r.offsets = offs;
+            }
+        }
+        r.default = search_scale_of(&v["default"], r.default);
+        if let Some(m) = v["difficulty"].as_object() {
+            for (id, s) in m {
+                r.difficulty.insert(id.clone(), search_scale_of(s, r.default));
+            }
+        }
+        r
+    }
+
+    /// The difficulty's scale; a difficulty with no row uses the default.
+    pub fn scale(&self, diff: Difficulty) -> SearchScale {
+        self.difficulty.get(diff.id()).copied().unwrap_or(self.default)
+    }
+}
+
+/// The embedded search rules (data/hunters/search.json); the defaults when the file is missing or broken.
+pub fn search_rules() -> &'static SearchRules {
+    static RULES: OnceLock<SearchRules> = OnceLock::new();
+    RULES.get_or_init(|| {
+        crate::content::embedded::data_under("hunters/search.json")
+            .next()
+            .and_then(|(_, text)| serde_json::from_str::<serde_json::Value>(text).ok())
+            .map(|v| SearchRules::parse(&v))
+            .unwrap_or_default()
+    })
 }
 
 #[cfg(test)]
@@ -1650,5 +1815,71 @@ mod tests {
             }
         }
         (false, slide)
+    }
+}
+
+#[cfg(test)]
+mod search_rules_tests {
+    use super::*;
+    use crate::config::Difficulty;
+    use serde_json::json;
+
+    #[test]
+    fn the_embedded_search_rules_match_godot_hide_random_per_difficulty() {
+        // game_config.gd DIFFICULTY_PROFILES hide_random: 0.0, 0.05, 0.25, 0.45
+        let rules = search_rules();
+        assert_eq!(rules.scale(Difficulty::Relaxed).hiding_spot_chance, 0.0);
+        assert_eq!(rules.scale(Difficulty::Standard).hiding_spot_chance, 0.05);
+        assert_eq!(rules.scale(Difficulty::Hard).hiding_spot_chance, 0.25);
+        assert_eq!(rules.scale(Difficulty::Nightmare).hiding_spot_chance, 0.45);
+        for d in [Difficulty::Relaxed, Difficulty::Standard, Difficulty::Hard, Difficulty::Nightmare] {
+            assert_eq!(rules.scale(d).hiding_spot_chance, d.profile().hide_random, "{d:?}");
+        }
+    }
+
+    #[test]
+    fn standard_keeps_the_plain_search_and_higher_difficulties_check_last_seen_first() {
+        let rules = search_rules();
+        let standard = rules.scale(Difficulty::Standard);
+        assert!(!standard.last_seen_spot_first && !standard.unchecked_first);
+        for d in [Difficulty::Hard, Difficulty::Nightmare] {
+            let s = rules.scale(d);
+            assert!(s.last_seen_spot_first && s.unchecked_first, "{d:?}");
+        }
+        assert_eq!(rules.offsets.len(), 8);
+        assert_eq!(rules.offsets[0], (3.0, 0.0));
+    }
+
+    #[test]
+    fn changing_the_search_data_changes_the_scale_the_brain_reads() {
+        let v = json!({
+            "schema": "lr.search/1",
+            "reach": 5.0,
+            "memory": 3,
+            "offsets": [[1, 0], [0, 1]],
+            "default": { "hiding_spot_chance": 0.1 },
+            "difficulty": { "standard": { "hiding_spot_chance": 0.9, "last_seen_spot_first": true } }
+        });
+        let rules = SearchRules::parse(&v);
+        assert_eq!(rules.reach, 5.0);
+        assert_eq!(rules.memory, 3);
+        assert_eq!(rules.offsets, vec![(1.0, 0.0), (0.0, 1.0)]);
+        let standard = rules.scale(Difficulty::Standard);
+        assert_eq!(standard.hiding_spot_chance, 0.9);
+        assert!(standard.last_seen_spot_first);
+        assert!(!standard.unchecked_first, "a field left out keeps its default");
+        // a difficulty with no row falls back to the default
+        assert_eq!(rules.scale(Difficulty::Hard).hiding_spot_chance, 0.1);
+        // the chance is clamped to 0..1
+        let high = SearchRules::parse(&json!({ "difficulty": { "hard": { "hiding_spot_chance": 7.0 } } }));
+        assert_eq!(high.scale(Difficulty::Hard).hiding_spot_chance, 1.0);
+    }
+
+    #[test]
+    fn unchecked_first_picks_the_spot_farthest_from_what_was_searched() {
+        let cands = [(0.0, 0.0), (5.0, 0.0), (9.0, 0.0)];
+        assert_eq!(least_recently_checked(&cands, &[(0.0, 0.0)]), Some((9.0, 0.0)));
+        assert_eq!(least_recently_checked(&cands, &[]), Some((0.0, 0.0)), "nothing searched: first candidate");
+        assert_eq!(least_recently_checked(&[], &[(0.0, 0.0)]), None);
     }
 }

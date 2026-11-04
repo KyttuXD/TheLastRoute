@@ -14,6 +14,7 @@
 //!   A sample is `null` while nothing is playing: that keeps the relay session alive, nothing else.
 
 use super::api::{self, Heartbeat, RegisterRoom, Registered, ReservedHostView};
+use super::hunter_events::{self, Tracker};
 use super::config::{self, BackendConfig};
 use super::protocol::{self, Message};
 use super::relay::{RelayEvent, RelayLink, Role};
@@ -216,6 +217,10 @@ pub enum NetEvent {
     RouteCommand(RouteCommand),
     /// The host ended the route (guest side): the run is over, the room stays open. The text is the host's reason.
     RouteEnded(String),
+    /// The host's hunter frame (guest side): each hunter's state, as `hunter_events::state_name` names it. Display only.
+    Hunters(Vec<Value>),
+    /// A world event the host relayed (guest side): an object with `what` (see `net::hunter_events`).
+    WorldEvent(Map<String, Value>),
 }
 
 /// An owner route command for a reserved room, as Godot `RoomState.carry_out_route_command` carries it out.
@@ -334,6 +339,17 @@ fn profile_skin(profile: &Map<String, Value>) -> String {
     clean_skin(profile.get("skin").and_then(Value::as_str).unwrap_or_default())
 }
 
+/// The skin a host publishes in its room: its own skin id only when the website holds that skin (`uploaded` is the
+/// list of ids it accepted, see `shared::skins::uploaded_ids`), else DEFAULT. Godot `SkinSync.shared_hash`.
+pub fn published_skin(skin: &str, uploaded: &[String]) -> String {
+    let id = clean_skin(skin);
+    if is_skin_hash(&id) && uploaded.contains(&id) {
+        id
+    } else {
+        SKIN_DEFAULT.into()
+    }
+}
+
 /// An open room, host or guest. Call [`NetSession::tick`] once per frame.
 pub struct NetSession {
     pub cfg: BackendConfig,
@@ -375,6 +391,8 @@ pub struct NetSession {
     owner: OwnerCursor,
     /// Host: owner events from the registration reply, handed to the app on the first tick.
     backlog: Vec<NetEvent>,
+    /// Host: the hunter event state (last states, grab, frame timing), see [`hunter_events::Tracker`].
+    hunter_tracker: Tracker,
 }
 
 /// CREATE a room on the directory and open its relay. The request blocks, so the frame loop polls the result.
@@ -412,6 +430,8 @@ fn open_host(
     }
     let link = RelayLink::host(&code, &reg.token, &reg.room.address, reg.room.port)
         .map_err(|e| NetError::Transport(e.to_string()))?;
+    let uploaded = if is_skin_hash(&clean_skin(&skin)) { crate::shared::skins::uploaded_ids() } else { Vec::new() };
+    let skin = published_skin(&skin, &uploaded);
     // Godot `_take_reserved(payload.reserved, true)`: a fresh registration takes the commands it lists
     let mut owner = OwnerCursor::default();
     let backlog = reg.reserved.as_ref().map(|view| owner.take(view)).unwrap_or_default();
@@ -421,8 +441,9 @@ fn open_host(
     Ok(session)
 }
 
-/// JOIN by code: the directory lookup, then the join. An owner's lookup that finds nothing (404) reserves the typed
-/// code and hosts it ([`reserve_and_host`]); every other lookup, a guest's miss and a live code included, takes the
+/// JOIN by code: the directory lookup, then the join. An owner's lookup that finds nothing (404) or hits a code already
+/// reserved (403 `ROOM_RESERVED`) reserves the typed code and hosts it ([`reserve_and_host`]); every other lookup, a
+/// guest's miss and a live code included, takes the
 /// guest join. Blocking, so polled like [`host_room`].
 pub fn join_room(cfg: BackendConfig, code: String, name: String, skin: String, session_token: String, is_admin: bool) -> Pending<NetSession> {
     Pending::spawn(move || {
@@ -430,7 +451,7 @@ pub fn join_room(cfg: BackendConfig, code: String, name: String, skin: String, s
             return Err(NetError::Offline);
         }
         match lookup_outcome(api::lookup_room(&cfg, &code), is_admin, &session_token)? {
-            JoinStep::Found(room) => join_found(cfg, code, room, name, skin),
+            JoinStep::Found(room) => join_found(cfg, code, room, name),
             JoinStep::Reserve => reserve_and_host(cfg, code, name, skin, session_token),
         }
     })
@@ -456,7 +477,8 @@ fn lookup_outcome(lookup: Result<api::RoomEndpoint, NetError>, is_admin: bool, s
 }
 
 /// The guest join to a live room: it must be on the relay and run this build's protocol, then the relay joins.
-fn join_found(cfg: BackendConfig, code: String, room: api::RoomEndpoint, name: String, skin: String) -> Result<NetSession, NetError> {
+/// A guest publishes no skin: the guest's own skin stays on its own screen (Godot "Local-only", `PLAYER_SKINS.md`).
+fn join_found(cfg: BackendConfig, code: String, room: api::RoomEndpoint, name: String) -> Result<NetSession, NetError> {
     if room.transport != "relay" || room.address.is_empty() {
         return Err(NetError::Refused("THAT ROOM CANNOT BE JOINED FROM THIS BUILD".into()));
     }
@@ -465,7 +487,7 @@ fn join_found(cfg: BackendConfig, code: String, room: api::RoomEndpoint, name: S
         return Err(NetError::Refused(refused));
     }
     let link = RelayLink::guest(&code, &room.address, room.port, "").map_err(|e| NetError::Transport(e.to_string()))?;
-    Ok(NetSession::new(cfg, code, Role::Guest, CoopSession::new(link), String::new(), String::new(), name, skin))
+    Ok(NetSession::new(cfg, code, Role::Guest, CoopSession::new(link), String::new(), String::new(), name, SKIN_DEFAULT.into()))
 }
 
 /// An owner's miss: reserve the typed code for her session, then register and open it as the host (the same open as
@@ -475,7 +497,7 @@ fn reserve_and_host(cfg: BackendConfig, code: String, name: String, skin: String
         Ok(()) => {}
         Err(NetError::Http { code: c, .. }) if c == "ROOM_ALREADY_HOSTED" => {
             let room = api::lookup_room(&cfg, &code)?;
-            return join_found(cfg, code, room, name, skin);
+            return join_found(cfg, code, room, name);
         }
         Err(e) => return Err(e),
     }
@@ -528,6 +550,7 @@ impl NetSession {
             timed_out: false,
             owner: OwnerCursor::default(),
             backlog: Vec::new(),
+            hunter_tracker: Tracker::default(),
         }
     }
 
@@ -687,6 +710,34 @@ impl NetSession {
             for peer in self.coop.peers() {
                 self.coop.send(peer, &start_message(&self.code, seed, difficulty));
             }
+        }
+    }
+
+    /// Host: sends the hunters' frame to every guest at the rate of `data/net/hunter_events.json`, and the world events
+    /// the rules allow (state changes, the grab start and end). `grab` is the index of the hunter holding the runner.
+    /// Nothing is sent by a guest, and nothing on a difficulty the rules leave out. Call it once per frame.
+    pub fn send_hunter_frame(&mut self, frame: Vec<Value>, diff: Difficulty, grab: Option<usize>, now: Instant) {
+        if !self.is_host() {
+            return;
+        }
+        let rules = hunter_events::rules();
+        for event in self.hunter_tracker.events(rules, diff, &frame, grab, now) {
+            let message = Message::Event { event };
+            for peer in self.coop.peers() {
+                self.coop.send(peer, &message);
+            }
+        }
+        if !hunter_events::frames_on(rules, diff) || !self.hunter_tracker.frame_due(rules, now) {
+            return;
+        }
+        let bytes = serde_json::to_vec(&frame).map_or(0, |b| b.len());
+        let message = if bytes > rules.large_frame_over_bytes {
+            Message::HuntersLarge { data: frame }
+        } else {
+            Message::Hunters { data: frame }
+        };
+        for peer in self.coop.peers() {
+            self.coop.send(peer, &message);
         }
     }
 
@@ -923,6 +974,11 @@ impl NetSession {
             }
             // the host ended the route (Godot `_receive_end`): the run is over here too, the room stays open
             Message::End { reason } if !self.is_host() => out.push(NetEvent::RouteEnded(reason)),
+            // the host's hunters and world events (Godot `_hunters` and `_event`): display only, a guest never sends them
+            Message::Hunters { data } | Message::HuntersLarge { data } if !self.is_host() => {
+                out.push(NetEvent::Hunters(data));
+            }
+            Message::Event { event } if !self.is_host() => out.push(NetEvent::WorldEvent(event)),
             Message::Start { seed, rest, .. } if !self.is_host() => {
                 let difficulty = rest.get("difficulty").and_then(Value::as_str).unwrap_or("STANDARD").to_string();
                 self.difficulty = difficulty_from_name(&difficulty).name().to_string();
@@ -1231,6 +1287,28 @@ mod tests {
     }
 
     #[test]
+    fn the_wire_profile_carries_the_skin_id_and_a_peer_reads_it_back() {
+        let hash = "c".repeat(64);
+        match profile_message(3, "RUNNER", &hash) {
+            Message::WireProfile { profile } => {
+                assert_eq!(profile.get("skin").and_then(Value::as_str), Some(hash.as_str()));
+                assert_eq!(profile_skin(&profile), hash);
+                assert_eq!(profile_skin(&Map::new()), SKIN_DEFAULT, "a profile without a skin is DEFAULT");
+            }
+            _ => panic!("a profile message is a WireProfile"),
+        }
+    }
+
+    #[test]
+    fn a_host_publishes_its_skin_only_when_the_website_holds_it() {
+        let hash = "b".repeat(64);
+        assert_eq!(published_skin(&hash, &[hash.clone()]), hash);
+        assert_eq!(published_skin(&hash, &[]), SKIN_DEFAULT, "an unuploaded skin is not published");
+        assert_eq!(published_skin(SKIN_DEFAULT, &[hash.clone()]), SKIN_DEFAULT);
+        assert_eq!(published_skin("night-owl", &["NIGHTOWL".into()]), SKIN_DEFAULT, "only a skin hash is published");
+    }
+
+    #[test]
     fn skin_ids_are_cleaned_and_unknown_skins_draw_as_default() {
         assert_eq!(clean_skin(""), SKIN_DEFAULT);
         assert_eq!(clean_skin("  ??  "), SKIN_DEFAULT);
@@ -1326,6 +1404,67 @@ mod tests {
         assert_eq!(guest.room_mods(), ["neon_halls".to_string()]);
         assert!(events.contains(&NetEvent::GuestJoined("GUEST".into())));
         assert!(host.is_host() && !guest.is_host());
+    }
+
+    #[test]
+    fn a_guest_takes_the_hosts_hunter_frames_and_world_events_and_never_sends_them() {
+        let now = Instant::now();
+        let mut guest = offline_session(false, "GUEST");
+        let frame = vec![json!({"index": 0, "id": "aki", "state": "CHASE", "position": [1.0, 2.0]})];
+        let mut out = Vec::new();
+        guest.on_message(HOST_PEER_ID, Message::Hunters { data: frame.clone() }, now, &mut out);
+        guest.on_message(HOST_PEER_ID, Message::HuntersLarge { data: frame.clone() }, now, &mut out);
+        assert_eq!(out, vec![NetEvent::Hunters(frame.clone()), NetEvent::Hunters(frame)]);
+        let mut event = Map::new();
+        event.insert("what".into(), json!("hunter_grab"));
+        event.insert("phase".into(), json!("start"));
+        event.insert("hunter_id".into(), json!("aki"));
+        out.clear();
+        guest.on_message(HOST_PEER_ID, Message::Event { event: event.clone() }, now, &mut out);
+        assert_eq!(out, vec![NetEvent::WorldEvent(event)]);
+        // the host's own frames are not applied back to it: a host ignores a relayed frame
+        let mut host = offline_session(true, "HOST");
+        out.clear();
+        host.on_message(2, Message::Hunters { data: vec![] }, now, &mut out);
+        assert!(out.is_empty());
+        // a guest's send of a frame does nothing (the host is the only sender)
+        guest.send_hunter_frame(vec![json!({"index": 0})], Difficulty::Standard, None, now);
+    }
+
+    #[test]
+    fn the_hosts_difficulty_reaches_the_guest_and_a_guest_cannot_set_it() {
+        let now = Instant::now();
+        let mut host = offline_session(true, "HOST");
+        let mut guest = offline_session(false, "GUEST");
+        assert_eq!(host.room_difficulty(), "STANDARD");
+        host.set_room_difficulty(Difficulty::Hard);
+        assert_eq!(host.room_difficulty(), "HARD");
+        // a guest's call does nothing: the guest keeps the host's difficulty
+        guest.set_room_difficulty(Difficulty::Nightmare);
+        assert_eq!(guest.room_difficulty(), "STANDARD");
+        // the host's room message carries the difficulty, and the guest takes it
+        let mut rest = Map::new();
+        rest.insert("difficulty".into(), json!(host.room_difficulty()));
+        rest.insert("host".into(), json!("HOST"));
+        let room = Message::Room { code: "ABCDE".into(), seed: "ROOM-ABCDE-0123".into(), mode: 0, scale: 0, rest };
+        let mut out = Vec::new();
+        guest.on_message(HOST_PEER_ID, room, now, &mut out);
+        assert_eq!(guest.room_difficulty(), "HARD");
+        assert_eq!(difficulty_from_name(guest.room_difficulty()), Difficulty::Hard);
+    }
+
+    #[test]
+    fn a_guest_follows_each_difficulty_the_host_sets_and_an_unknown_name_is_standard() {
+        let now = Instant::now();
+        let mut guest = offline_session(false, "GUEST");
+        for (name, want) in [("RELAXED", Difficulty::Relaxed), ("NIGHTMARE", Difficulty::Nightmare), ("NOPE", Difficulty::Standard)] {
+            let mut rest = Map::new();
+            rest.insert("difficulty".into(), json!(name));
+            let room = Message::Room { code: "ABCDE".into(), seed: "ROOM-ABCDE-0123".into(), mode: 0, scale: 0, rest };
+            let mut out = Vec::new();
+            guest.on_message(HOST_PEER_ID, room, now, &mut out);
+            assert_eq!(difficulty_from_name(guest.room_difficulty()), want, "{name}");
+        }
     }
 
     /// A session on a discarded relay address: only its in-memory state is used.
@@ -1473,6 +1612,14 @@ mod admin_join_tests {
     fn a_live_code_is_joined_not_recreated() {
         assert!(matches!(lookup_outcome(Ok(api::RoomEndpoint::default()), true, "tok"), Ok(JoinStep::Found(_))));
         assert!(matches!(lookup_outcome(Ok(api::RoomEndpoint::default()), false, ""), Ok(JoinStep::Found(_))));
+    }
+
+    #[test]
+    fn an_owners_reserved_code_is_reserved_and_hosted() {
+        let reserved = NetError::Http { status: 403, code: "ROOM_RESERVED".into(), error: "RESERVED".into(), body: Value::Null };
+        assert!(matches!(lookup_outcome(Err(reserved), true, "tok"), Ok(JoinStep::Reserve)));
+        let reserved = NetError::Http { status: 403, code: "ROOM_RESERVED".into(), error: "RESERVED".into(), body: Value::Null };
+        assert_eq!(lookup_outcome(Err(reserved), false, "tok").err().and_then(|e| e.status()), Some(403), "a guest keeps the access flow");
     }
 
     #[test]

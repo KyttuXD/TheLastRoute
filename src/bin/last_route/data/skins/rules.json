@@ -1,0 +1,20 @@
+{
+	"schema": "lr.skin_rules/1",
+	"url": {
+		"scheme": "https://",
+		"max_length": 512,
+		"timeout_secs": 5,
+		"port": 443,
+		"blocked_hosts": ["localhost"],
+		"blocked_suffixes": [".localhost", ".local", ".internal", ".lan"]
+	},
+	"minecraft": {
+		"name_max": 16,
+		"name_chars": "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
+		"lookup_url": "https://api.mojang.com/users/profiles/minecraft/{name}",
+		"lookup_host": "api.mojang.com",
+		"profile_url": "https://sessionserver.mojang.com/session/minecraft/profile/{uuid}",
+		"profile_host": "sessionserver.mojang.com",
+		"textures_host": "textures.minecraft.net"
+	}
+}

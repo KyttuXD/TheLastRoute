@@ -37,6 +37,7 @@ pub mod chat;
 pub mod config;
 pub mod http;
 pub mod pending;
+pub mod hunter_events;
 pub mod protocol;
 pub mod relay;
 pub mod runner_figure;

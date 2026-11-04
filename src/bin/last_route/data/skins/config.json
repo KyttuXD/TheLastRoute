@@ -1,0 +1,10 @@
+{
+	"schema": "lr.skin_config/1",
+	"max_bytes": 65536,
+	"fetch": {
+		"host_base": "https://skins.kyttuslab.org",
+		"host_path": "/{id}.png",
+		"backend_path": "/api/skins/files/{id}.png",
+		"timeout_secs": 8
+	}
+}

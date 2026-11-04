@@ -8,6 +8,7 @@ pub mod loot;
 pub mod npcs;
 pub mod packs;
 pub mod props;
+pub mod public_roster;
 pub mod regions;
 
 use hunters::HunterDef;
@@ -52,7 +53,15 @@ impl Content {
                 Err(e) => c.warnings.push(format!("{path}: {e}")),
             }
         }
-        for (path, text) in embedded::data_under("hunters/") {
+        for (path, text) in embedded::data_under("hunters/").filter(|(p, _)| !p.ends_with("sabotage.json") && !p.ends_with("nightmare_pounce.json")) {
+            // hunters/search.json is the search rules (hunters/brain.rs), not a hunter definition
+            if path == "hunters/search.json" {
+                continue;
+            }
+            // hunters/charge.json is the per-hunter charge table (hunters/gimmicks/charge.rs), not a hunter definition
+            if path == crate::hunters::gimmicks::charge::CHARGE_PATH {
+                continue;
+            }
             match serde_json::from_str::<serde_json::Value>(text)
                 .map_err(|e| e.to_string())
                 .and_then(|v| hunters::parse(&v, None, ""))

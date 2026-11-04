@@ -78,10 +78,54 @@ impl NpcRules {
     }
 }
 
+/// The data/npcs.json the loader reads, parsed. Both NpcRules and the bots' Tuning (game/npc.rs) read it from here,
+/// so the embedded default is in one place. Null when the file is missing or does not parse.
+pub fn embedded_json() -> Value {
+    crate::content::embedded::data_under("npcs.json")
+        .next()
+        .and_then(|(_, text)| serde_json::from_str(text).ok())
+        .unwrap_or(Value::Null)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::Difficulty;
+    use crate::game::npc::Tuning;
+
+    #[test]
+    fn the_bots_tuning_reads_the_embedded_standard_values() {
+        let t = Tuning::parse(&embedded_json()).expect("embedded npcs.json has the tuning keys");
+        assert_eq!(t.threat_range, 14.0);
+        assert_eq!(t.smart_base, 0.5);
+        assert_eq!(t.flee_step, 12.0);
+        assert!(t.flee_running);
+        assert_eq!(t.min_away, 0.1);
+        assert_eq!(t.follow_radius, 5.0);
+        assert_eq!(t.door_think, 0.25);
+        assert_eq!(t.door_think_jitter, 0.1);
+        assert_eq!(t.tasks, vec!["door".to_string()]);
+        assert_eq!(*Tuning::get(), t);
+    }
+
+    #[test]
+    fn changing_a_tuning_value_in_the_data_changes_the_tuning() {
+        let mut v = embedded_json();
+        v["threat"]["range"] = serde_json::json!(20.0);
+        v["door"]["think"] = serde_json::json!(0.5);
+        v["tasks"] = serde_json::json!([]);
+        let t = Tuning::parse(&v).expect("the edited file still parses");
+        assert_eq!(t.threat_range, 20.0);
+        assert_eq!(t.door_think, 0.5);
+        assert!(!t.does("door"));
+        assert_ne!(t, *Tuning::get());
+    }
+
+    #[test]
+    fn a_missing_tuning_key_is_refused_so_the_default_stays_whole() {
+        let v: Value = serde_json::from_str(r#"{"threat":{"range":14.0}}"#).unwrap();
+        assert!(Tuning::parse(&v).is_none());
+    }
 
     #[test]
     fn the_embedded_file_parses_to_the_defaults() {

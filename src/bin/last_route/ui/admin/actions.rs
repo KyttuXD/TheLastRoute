@@ -6,9 +6,8 @@
 //! roster server, NPC teammates, the story director, waypoints, safe-room integrity, emotes)
 //! answer with a HUD line instead, as the original does when the system is unavailable.
 
-use super::menu::{
-    Cmd, EMOTES, FIELDS, GAME_SPEEDS, ITEMS, NPC_SMARTS, RUN_SPEEDS, STORIES, TELEPORTS,
-};
+use super::menu::Cmd;
+use super::menu_data::menu;
 use super::{Admin, Request, View};
 use crate::config::*;
 use crate::content::Content;
@@ -239,14 +238,14 @@ impl Admin {
                             .count();
                         g.say(&format!(
                             "HUNTER EMOTE // {} // {near} HUNTERS (NO EMOTE CLIPS IN THIS BUILD)",
-                            EMOTES.get(emote).unwrap_or(&"?")
+                            menu().emotes.get(emote).unwrap_or(&"?")
                         ));
                     }
                 }
                 self.mark_debug();
             }
             Cmd::Npc(op) => {
-                let smart = NPC_SMARTS[self.sel_of("npc_smart").min(3)];
+                let smart = menu().npc_smarts[self.sel_of("npc_smart").min(3)];
                 let picked = self.picked_npc(g);
                 // offline: the NPCs live on the game, no server (game/npc.rs). Spawn, the removes and the
                 // picked NPC's teleport and remove are wired; follow only reports the always-on state; the
@@ -294,7 +293,7 @@ impl Admin {
                     0 => self.teleport_coordinates(g, &text),
                     _ => g.say(&format!(
                         "ADMIN ROSTER FAILED // {} NEEDS THE PRIMARY SERVER",
-                        FIELDS[i].0
+                        menu().fields[i].0
                     )),
                 }
                 if i == 0 {
@@ -308,10 +307,10 @@ impl Admin {
         let mut debug = true;
         match key {
             "give_item" => self.give_item(g, i),
-            "teleport" => self.teleport_chunk(g, TELEPORTS[i.min(TELEPORTS.len() - 1)].0),
-            "run_speed" => self.run_speed = RUN_SPEEDS[i.min(3)].0,
+            "teleport" => self.teleport_chunk(g, menu().teleports[i.min(menu().teleports.len() - 1)].0),
+            "run_speed" => self.run_speed = menu().run_speeds[i.min(3)].0,
             "game_speed" => {
-                let s = GAME_SPEEDS[i.min(5)].0;
+                let s = menu().game_speeds[i.min(5)].0;
                 if s < 0.0 {
                     self.game_speed = 0.0;
                     self.step_frames = 1;
@@ -321,7 +320,7 @@ impl Admin {
             }
             "story_start" => g.say(&format!(
                 "ADMIN STORY FAILED // {} // NO STORY DIRECTOR IN THIS BUILD",
-                STORIES[i.min(2)].1
+                menu().stories[i.min(2)].1
             )),
             "act_general" => match i {
                 0 => {
@@ -410,7 +409,7 @@ impl Admin {
 
     /// _admin_give_item / grant_inventory_item: stacks first, then the first empty slot.
     fn give_item(&mut self, g: &mut Game, i: usize) {
-        let (id, label) = ITEMS[i.min(ITEMS.len() - 1)];
+        let (id, label) = menu().items[i.min(menu().items.len() - 1)];
         let (item, n) = match id {
             "flashlight" => (Item::Flashlight, 100),
             "taser" => (Item::Taser, 1),

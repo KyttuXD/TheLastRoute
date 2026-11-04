@@ -1,0 +1,30 @@
+{
+	"schema": "lr.nightmare_pounce/1",
+	"_note": "Nightmare pounce for the special hunters Nyxie and Solyth (hunters/gimmicks/nyxie.rs, solyth.rs). Source: Godot game/hunters/ai/hard_abilities.gd: POUNCE nightmare row (lines 49-50), LEAP_SPEED / LEAD_SECONDS / BONK_STUN / STUMBLE_SPEED (lines 52-55), BUDGET nightmare (line 17), ROSTER nightmare (line 26), _pounce_allowed_for_hunter (lines 214-218), wall sweep in _maybe_pounce (line 246, SWEEP_STEP in hunter_brain.gd line 34). numbers.rate is the chance per eligible second (rolled as rate * dt). budget.seconds is the party-wide gap between two pounces. sweep.step is the sample spacing in cells. The per-runner guard (POUNCE_RUNNER_GUARD, line 19) is not ported yet.",
+	"difficulties": ["nightmare"],
+	"numbers": {
+		"min": 2.2,
+		"max": 5.5,
+		"rate": 0.56,
+		"cooldown": 18.0,
+		"per_chase": 2,
+		"stumble": 0.8,
+		"seconds": 0.5
+	},
+	"leap": {
+		"leap_speed": 7.2,
+		"lead_seconds": 0.15,
+		"bonk_stun": 0.8,
+		"stumble_speed": 0.3
+	},
+	"gates": {
+		"nyxie_requires_dark": true,
+		"solyth_min_temperature": 60.0
+	},
+	"budget": {
+		"seconds": 25.0
+	},
+	"sweep": {
+		"step": 0.15
+	}
+}

@@ -1,0 +1,14 @@
+{
+  "schema": "lr.hunter_sabotage/1",
+  "relay": {
+    "near_cells": 3,
+    "dwell_s": 5.0,
+    "resecure_s": 2.6
+  },
+  "difficulties": {
+    "relaxed": { "enabled": false, "target": "relay", "chance": 0.5 },
+    "standard": { "enabled": false, "target": "relay", "chance": 0.5 },
+    "hard": { "enabled": false, "target": "relay", "chance": 0.5 },
+    "nightmare": { "enabled": false, "target": "relay", "chance": 0.5 }
+  }
+}

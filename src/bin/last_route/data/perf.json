@@ -1,0 +1,19 @@
+{
+  "schema": "lr.perf/1",
+  "_source": "Godot reference: game/look/perf_log.gd 57 (SPIKE_MS 33.3, also game/hud/perf_overlay.gd 4), 60 (MAX_SPIKES 400). The other numbers are the Rust port's values, kept from app/perf.rs so Standard does not change.",
+  "history": 240,
+  "spike_ms": 33.3,
+  "spike_log_len": 20,
+  "spike_lines_per_sec": 5,
+  "spike_section_ms": 2.0,
+  "graph_max_ms": 50.0,
+  "guides_ms": [16.7, 33.3],
+  "good_ms": 17.5,
+  "ok_ms": 34.0,
+  "section_keep": 0.9,
+  "section_new": 0.1,
+  "debug_min_frames": 30,
+  "debug_avg_ratio": 2.0,
+  "debug_min_ms": 25.0,
+  "parts": ["world meshes", "scene items", "doors", "hunters", "remote players", "viewmodel", "render 3d"]
+}

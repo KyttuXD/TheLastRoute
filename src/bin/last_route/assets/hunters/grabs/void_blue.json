@@ -1,0 +1,9 @@
+{
+	"schema": "lr.grab/1",
+	"id": "void_blue",
+	"pool": {
+		"shoulder_grab": 6,
+		"wall_pin": 3,
+		"shoulder_carry": 2
+	}
+}

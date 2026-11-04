@@ -7,5 +7,23 @@
     "max_distance": 20,
     "join_radius": 6
   },
-  "smart": [30, 50, 70, 90]
+  "smart": [30, 50, 70, 90],
+  "follow": {
+    "radius": 5.0,
+    "_source": "Godot game/player/npc_teammates.gd 24 FOLLOW_RADIUS"
+  },
+  "threat": {
+    "range": 14.0,
+    "smart_base": 0.5,
+    "flee_step": 12.0,
+    "flee_running": true,
+    "min_away": 0.1,
+    "_source": "Godot npc_teammates.gd 25 THREAT_RANGE, 307 smart scale (.5 + smart/100), 311 away > .1, 312 flee 12 m, 324-326 running"
+  },
+  "door": {
+    "think": 0.25,
+    "think_jitter": 0.1,
+    "_source": "Rust-only figures from the first port (npc.rs DOOR_THINK); no Godot line"
+  },
+  "tasks": ["door"]
 }

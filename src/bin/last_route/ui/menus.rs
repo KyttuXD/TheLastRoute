@@ -1117,14 +1117,79 @@ pub fn coop_blue() -> Color {
 
 // -- the room lobby (web #room-lobby) --------------------------------------------------------
 
-/// The difficulty's display label (web NORMAL). The id and the wire name stay `Difficulty::Standard`'s "STANDARD".
-pub fn difficulty_label(d: Difficulty) -> &'static str {
-    match d {
-        Difficulty::Relaxed => "RELAXED",
-        Difficulty::Standard => "NORMAL",
-        Difficulty::Hard => "HARD",
-        Difficulty::Nightmare => "NIGHTMARE",
+/// One lobby difficulty option, as `data/lobby.json` (`lr.lobby/1`) lists it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LobbyOption {
+    pub difficulty: Difficulty,
+    pub label: String,
+    pub blurb: String,
+}
+
+/// The lobby's difficulty row: its title, the guest's locked title (`{label}` is the host's label), and the options in
+/// row order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LobbyDifficulty {
+    pub title: String,
+    pub guest_title: String,
+    pub options: Vec<LobbyOption>,
+}
+
+/// Reads the lobby's difficulty row from `data/lobby.json` text. An option whose id is no difficulty is an error, so a
+/// typo in the data fails the tests instead of quietly dropping a button.
+pub fn parse_lobby_difficulty(text: &str) -> Result<LobbyDifficulty, String> {
+    let root: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let block = root.get("difficulty").ok_or("lobby.json has no difficulty block")?;
+    let field = |key: &str| -> Result<String, String> {
+        block.get(key).and_then(|v| v.as_str()).map(str::to_string).ok_or(format!("difficulty.{key} is missing"))
+    };
+    let mut options = Vec::new();
+    for entry in block.get("options").and_then(|v| v.as_array()).ok_or("difficulty.options is missing")? {
+        let id = entry.get("id").and_then(|v| v.as_str()).ok_or("an option has no id")?;
+        let difficulty = LOBBY
+            .iter()
+            .copied()
+            .find(|d| d.id() == id)
+            .ok_or(format!("option id {id:?} is no difficulty"))?;
+        let text_of = |key: &str| entry.get(key).and_then(|v| v.as_str()).map(str::to_string);
+        options.push(LobbyOption {
+            difficulty,
+            label: text_of("label").ok_or(format!("option {id:?} has no label"))?,
+            blurb: text_of("blurb").ok_or(format!("option {id:?} has no blurb"))?,
+        });
     }
+    Ok(LobbyDifficulty { title: field("title")?, guest_title: field("guest_title")?, options })
+}
+
+/// The lobby difficulty content, read once from the embedded `data/lobby.json`.
+pub fn lobby_difficulty() -> &'static LobbyDifficulty {
+    static CONTENT: std::sync::OnceLock<LobbyDifficulty> = std::sync::OnceLock::new();
+    CONTENT.get_or_init(|| {
+        let (_, text) = crate::content::embedded::data_under("lobby.json")
+            .find(|(p, _)| *p == "lobby.json")
+            .expect("data/lobby.json is embedded");
+        parse_lobby_difficulty(text).expect("data/lobby.json is valid")
+    })
+}
+
+/// The option the lobby data gives a difficulty, when it lists one.
+fn lobby_option(d: Difficulty) -> Option<&'static LobbyOption> {
+    lobby_difficulty().options.iter().find(|o| o.difficulty == d)
+}
+
+/// The lobby's difficulty row, in the order `data/lobby.json` lists it. Difficulties the data leaves out are not shown.
+pub fn lobby_row() -> Vec<Difficulty> {
+    lobby_difficulty().options.iter().map(|o| o.difficulty).collect()
+}
+
+/// The difficulty's display label (web NORMAL, from `data/lobby.json`). The id and the wire name stay
+/// `Difficulty::Standard`'s "STANDARD".
+pub fn difficulty_label(d: Difficulty) -> &'static str {
+    lobby_option(d).map_or(d.name(), |o| o.label.as_str())
+}
+
+/// The staging blurb under the difficulty buttons, from `data/lobby.json`.
+pub fn difficulty_blurb(d: Difficulty) -> &'static str {
+    lobby_option(d).map_or("", |o| o.blurb.as_str())
 }
 
 /// Only the host (a solo runner is its own host) sets the route's difficulty; a guest waits for the host's.
@@ -1135,10 +1200,11 @@ pub fn difficulty_editable(mode: RoomMode) -> bool {
 /// The lobby's difficulty row title: a guest reads the host's difficulty name here, the host and a solo runner get the
 /// plain title.
 pub fn difficulty_row_title(mode: RoomMode, current: Difficulty) -> String {
+    let content = lobby_difficulty();
     if difficulty_editable(mode) {
-        "DIFFICULTY".to_string()
+        content.title.clone()
     } else {
-        format!("DIFFICULTY // HOST SETS {}", difficulty_label(current))
+        content.guest_title.replace("{label}", difficulty_label(current))
     }
 }
 
@@ -1435,7 +1501,8 @@ pub fn draw_lobby(
     label(a, F::Body, &difficulty_row_title(mode, *diff), cx, cy, 6.0, p.muted);
     let by = cy + l6 + 2.0;
     let mut bx = cx;
-    for d in LOBBY.iter().copied() {
+    let row = lobby_row();
+    for d in row.iter().copied() {
         let bw = button_min(a, difficulty_label(d), 7.0, false).x;
         let kind = if d == *diff {
             Kind::Selected
@@ -1452,18 +1519,19 @@ pub fn draw_lobby(
     }
     if interactive
         && difficulty_editable(mode)
+        && !row.is_empty()
         && (is_key_pressed(KeyCode::Left) || is_key_pressed(KeyCode::Right))
         && (is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift))
     {
-        let n = LOBBY.len();
-        let i = LOBBY.iter().position(|d| d == diff).unwrap_or(1);
-        *diff = LOBBY[if is_key_pressed(KeyCode::Left) {
+        let n = row.len();
+        let i = row.iter().position(|d| d == diff).unwrap_or(0);
+        *diff = row[if is_key_pressed(KeyCode::Left) {
             (i + n - 1) % n
         } else {
             (i + 1) % n
         }];
     }
-    label(a, F::Body, diff.blurb(), cx, by + btn_h + 2.0, 6.0, p.muted);
+    label(a, F::Body, difficulty_blurb(*diff), cx, by + btn_h + 2.0, 6.0, p.muted);
     cy = by + btn_h + 2.0 + l6 + 5.0;
     label(a, F::Body, "SAVE SLOT", cx, cy, 6.0, p.muted);
     let sy = cy + l6 + 2.0;
@@ -1689,8 +1757,8 @@ fn stat_values(chase: f32, sight: f32, hearing: f32) -> [String; 3] {
     [format!("{chase:.2} c/s"), format!("{sight:.1} cells"), hearing]
 }
 
-/// What the dossier detail shows. An undiscovered hunter (`known` false) is blanked: "???" for
-/// the name and for each stat card, and no description at all, so neither the real name, the
+/// What the dossier detail shows. An undiscovered hunter (`known` false) is blanked: an empty
+/// name (drawn as a black square), "???" for each stat card, and no description at all, so neither the real name, the
 /// description nor any number is ever drawn. A discovered hunter shows every field.
 pub fn dossier_text(
     known: bool,
@@ -1708,7 +1776,8 @@ pub fn dossier_text(
         }
     } else {
         DossierText {
-            title: "??? (LOCKED)".to_string(),
+            // no name text: the detail draws a black square in its place
+            title: String::new(),
             description: String::new(),
             stats: std::array::from_fn(|_| LOCKED_PLACEHOLDER.to_string()),
         }
@@ -2010,26 +2079,30 @@ pub fn draw_dossier(a: &Assets, ui: &mut Ui, content: &Content, username: &str) 
                             },
                         );
                     }
-                    let shown = if open {
-                        h.name.to_uppercase()
+                    if open {
+                        let name = clip(a, F::Body, &h.name.to_uppercase(), rr.w - 54.0, 7.0);
+                        label_vc(
+                            a,
+                            F::Body,
+                            &name,
+                            rr.x + 52.0,
+                            rr.y,
+                            rr.h,
+                            7.0,
+                            if k == ui.dossier_sel {
+                                p.on_amber
+                            } else {
+                                p.body
+                            },
+                        );
                     } else {
-                        LOCKED_PLACEHOLDER.to_string()
-                    };
-                    let name = clip(a, F::Body, &shown, rr.w - 54.0, 7.0);
-                    label_vc(
-                        a,
-                        F::Body,
-                        &name,
-                        rr.x + 52.0,
-                        rr.y,
-                        rr.h,
-                        7.0,
-                        if k == ui.dossier_sel {
-                            p.on_amber
-                        } else {
-                            p.body
-                        },
-                    );
+                        // a locked hunter's name is a black square, centred on the row
+                        let side = lh(F::Body, 7.0);
+                        fill(
+                            Rect::new(rr.x + 52.0, rr.y + (rr.h - side) * 0.5, side, side),
+                            DOSSIER_SILHOUETTE,
+                        );
+                    }
                 }
                 y += item_h;
             }
@@ -2108,7 +2181,12 @@ pub fn draw_dossier(a: &Assets, ui: &mut Ui, content: &Content, username: &str) 
         let status_lines = wrap(a, F::Body, &status, text_w, 6.0);
         let block_h = name_h + 3.0 + status_lines.len() as f32 * status_h;
         let ty = split_y + (72.0 - block_h) * 0.5;
-        label(a, F::Title, &clip(a, F::Title, &text.title, text_w, 16.0), tx, ty, 16.0, p.ink);
+        if open {
+            label(a, F::Title, &clip(a, F::Title, &text.title, text_w, 16.0), tx, ty, 16.0, p.ink);
+        } else {
+            // a locked hunter's name is a black square, the height of the title line
+            fill(Rect::new(tx, ty, name_h, name_h), DOSSIER_SILHOUETTE);
+        }
         for (n, l) in status_lines.iter().enumerate() {
             label(a, F::Body, l, tx, ty + name_h + 3.0 + n as f32 * status_h, 6.0, p.amber);
         }
@@ -2231,7 +2309,7 @@ mod tests {
     fn undiscovered_hunter_is_blank_in_every_field() {
         for name in ["Aki", "Mara Vex", "The Twin"] {
             let t = dossier_text(false, name, DESC, CHASE, SIGHT, HEARING);
-            assert_eq!(t.title, "??? (LOCKED)");
+            assert_eq!(t.title, "");
             assert_eq!(t.description, "");
             assert_eq!(t.stats, ["???", "???", "???"].map(String::from));
             let title_and_stats = std::iter::once(&t.title).chain(t.stats.iter());
@@ -2254,6 +2332,32 @@ mod tests {
         }
         assert!(t.description.is_empty());
         assert!(!t.description.contains("fuse"));
+    }
+
+    #[test]
+    fn undiscovered_hunter_has_no_name_text_so_the_black_square_is_drawn_instead() {
+        let t = dossier_text(false, "Aki", DESC, CHASE, SIGHT, HEARING);
+        assert!(t.title.is_empty());
+        let open = dossier_text(true, "Aki", DESC, CHASE, SIGHT, HEARING);
+        assert_eq!(open.title, "AKI");
+    }
+
+    #[test]
+    fn draw_pool_weights_match_godot_tier_table_and_each_row_sums_to_one() {
+        // data/hunters/draw_pool.json; Godot game/config/hunter_roster.gd TIER_WEIGHTS_BY_DIFFICULTY
+        let v: serde_json::Value =
+            serde_json::from_str(include_str!("../data/hunters/draw_pool.json")).unwrap();
+        let w = |d: &str| -> [f64; 3] {
+            ["easy", "intermediate", "difficult"].map(|t| v["tier_weights"][d][t].as_f64().unwrap())
+        };
+        assert_eq!(w("relaxed"), [0.70, 0.25, 0.05]);
+        assert_eq!(w("standard"), [0.35, 0.50, 0.15]);
+        assert_eq!(w("hard"), [0.2625, 0.5125, 0.225]);
+        assert_eq!(w("nightmare"), [0.175, 0.525, 0.30]);
+        for d in ["relaxed", "standard", "hard", "nightmare"] {
+            let sum: f64 = w(d).iter().sum();
+            assert!((sum - 1.0).abs() < 1e-9, "{d} weights sum to {sum}");
+        }
     }
 
     #[test]
@@ -2446,7 +2550,8 @@ mod tests {
             SIGHT,
             HEARING,
         );
-        assert_eq!(t.title, "??? (LOCKED)");
+        // the name is a black square drawn over an empty title (see undiscovered_hunter_has_no_name_text...)
+        assert_eq!(t.title, "");
         assert!(t.description.is_empty() && t.stats == ["???", "???", "???"].map(String::from));
         assert!(!t.title.contains("test_mod_a"));
         // each pack hunter unlocks on its own, with no category to unlock first
@@ -2583,8 +2688,57 @@ mod lobby_tests {
 
     #[test]
     fn difficulty_row_is_relaxed_normal_hard_nightmare() {
-        let shown: Vec<&str> = LOBBY.iter().map(|d| difficulty_label(*d)).collect();
+        let shown: Vec<&str> = lobby_row().iter().map(|d| difficulty_label(*d)).collect();
         assert_eq!(shown, vec!["RELAXED", "NORMAL", "HARD", "NIGHTMARE"]);
+    }
+
+    /// The embedded lobby.json, read as the game reads it.
+    fn embedded_lobby_text() -> &'static str {
+        crate::content::embedded::data_under("lobby.json").find(|(p, _)| *p == "lobby.json").expect("embedded").1
+    }
+
+    #[test]
+    fn lobby_json_standard_values_match_the_current_game() {
+        let content = lobby_difficulty();
+        assert_eq!(content.title, "DIFFICULTY");
+        assert_eq!(content.guest_title, "DIFFICULTY // HOST SETS {label}");
+        let standard = content.options.iter().find(|o| o.difficulty == Difficulty::Standard).expect("standard");
+        assert_eq!(standard.label, "NORMAL");
+        assert_eq!(standard.blurb, "The route as meant: hunters work together, so keep moving.");
+        assert_eq!(difficulty_blurb(Difficulty::Hard), "Hunters wake at once and hear more. Spend your light well.");
+    }
+
+    #[test]
+    fn changing_a_label_in_the_data_changes_the_lobby_label() {
+        let edited = embedded_lobby_text().replacen("\"RELAXED\"", "\"CALM\"", 1);
+        let parsed = parse_lobby_difficulty(&edited).expect("valid");
+        let relaxed = parsed.options.iter().find(|o| o.difficulty == Difficulty::Relaxed).expect("relaxed");
+        assert_eq!(relaxed.label, "CALM");
+        // the untouched labels stay as they were
+        assert_eq!(parsed.options.iter().find(|o| o.difficulty == Difficulty::Standard).unwrap().label, "NORMAL");
+    }
+
+    #[test]
+    fn changing_the_row_order_in_the_data_changes_the_row() {
+        let mut root: serde_json::Value = serde_json::from_str(embedded_lobby_text()).expect("json");
+        root["difficulty"]["options"].as_array_mut().expect("array").reverse();
+        let parsed = parse_lobby_difficulty(&root.to_string()).expect("valid");
+        let order: Vec<Difficulty> = parsed.options.iter().map(|o| o.difficulty).collect();
+        assert_eq!(order, vec![Difficulty::Nightmare, Difficulty::Hard, Difficulty::Standard, Difficulty::Relaxed]);
+    }
+
+    #[test]
+    fn an_option_with_an_unknown_id_is_an_error() {
+        let edited = embedded_lobby_text().replacen("\"hard\"", "\"brutal\"", 1);
+        assert!(parse_lobby_difficulty(&edited).is_err());
+    }
+
+    #[test]
+    fn the_guest_title_takes_the_host_label_from_the_data() {
+        let edited = embedded_lobby_text().replacen("HOST SETS {label}", "HOST PICKED {label}", 1);
+        let parsed = parse_lobby_difficulty(&edited).expect("valid");
+        assert!(parsed.guest_title.contains("{label}"));
+        assert_eq!(parsed.guest_title.replace("{label}", "HARD"), "DIFFICULTY // HOST PICKED HARD");
     }
 
     #[test]

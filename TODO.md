@@ -238,6 +238,11 @@ Tabs today (src/bin/last_route/ui/admin/mod.rs TABS): STATUS, GENERAL, PLAYER, H
 - [ ] Faster compilations on this PC: measure a cold build with opt-level 1 for dependencies, record the time, then decide (profile.dev sets opt-level 2 for the game and 3 for dependencies)
 - [ ] Faster compilations: split the server-only dependencies from the game build (done with the server feature; check the CI cache keys match)
 - [ ] Faster compilations: check linker speed on Windows (rust-lld) and record the time it saves
+- [ ] CI speedup (2026-11-04): the macOS build compiles two targets in one job (x86_64 then arm64) before lipo. Run one job per target in parallel and combine the binaries in a final job (packaging/macos/universal.sh)
+- [ ] CI speedup (2026-11-04): share a compile cache between the macOS target jobs and the Windows job with sccache, so the common crates build once per run
+- [ ] CI speedup (2026-11-04): make the nightly publish steps run only after the build artifacts are uploaded, so a failed zip step does not leave a half-published nightly
+- [ ] CI speedup (2026-11-04): record the cold and warm build times for each job in the run summary, so a regression shows up in the run list without reading the logs
+- [ ] CI speedup (2026-11-04): pin the Rust toolchain version in CI (rust-toolchain.toml) so a new stable release does not invalidate every cache at once
 
 ## Godot parity: found by discovery (2026-11-03)
 

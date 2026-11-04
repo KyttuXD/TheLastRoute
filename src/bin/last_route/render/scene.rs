@@ -18,6 +18,7 @@ use crate::hunters::gimmicks::Gimmick;
 use macroquad::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 thread_local! {
     /// The meshes of the static props (relays, batteries, lockers' bodies and the like), kept while they stay drawn.
@@ -291,7 +292,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         let burnt = g.hiding_disabled[i];
         match item_model(a, "hiding_spot") {
             Some(m) => {
-                if locker_fully_fogged(light.eye, cx, cy, (m.max - m.min).length() * 0.5) {
+                if locker_fully_fogged(light.eye, cx, cy, locker_reach(m), locker_cull().margin_m) {
                     continue;
                 }
                 let xf = at(cx, 0.0, cy, yaw);
@@ -714,12 +715,63 @@ fn pickup_shape(b: &mut Builder, item: Item, p: Vec3, spin: f32) {
     }
 }
 
-/// Metres past the fog's full reach before a locker is skipped, so rounding never drops a visible one.
-const LOCKER_CULL_MARGIN: f32 = 1.0;
+/// The locker cull's data file, under data/ (compiled in by build.rs).
+const LOCKER_CULL_PATH: &str = "render/locker_cull.json";
+
+/// The locker fog-cull tunables from data/render/locker_cull.json.
+pub struct LockerCull {
+    /// Metres past the fog's full reach before a locker is skipped, so rounding never drops a visible one.
+    pub margin_m: f32,
+    /// The door's full open angle, radians (hide.rs DOOR_OPEN_ANGLE): the swing the locker's reach must cover. The reach
+    /// covers every angle, so only the tests read it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub door_swing_rad: f32,
+}
+
+impl LockerCull {
+    /// Parses `{ "margin_m": <metres>, "door_swing_rad": <radians> }`. Both must be numbers, zero or more.
+    pub fn parse(text: &str) -> Result<LockerCull, String> {
+        let value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let num = |key: &str| {
+            value
+                .get(key)
+                .and_then(|v| v.as_f64())
+                .filter(|v| *v >= 0.0)
+                .map(|v| v as f32)
+                .ok_or_else(|| format!("{key}: expected a number, zero or more"))
+        };
+        Ok(LockerCull {
+            margin_m: num("margin_m")?,
+            door_swing_rad: num("door_swing_rad")?,
+        })
+    }
+}
+
+/// The locker cull compiled into the executable. A table that fails to parse is reported on stderr and the
+/// Standard values (the margin of the Rust cull before the data existed, and hide.rs DOOR_OPEN_ANGLE) are used.
+pub fn locker_cull() -> &'static LockerCull {
+    static CULL: OnceLock<LockerCull> = OnceLock::new();
+    CULL.get_or_init(|| {
+        let text = crate::content::embedded::data_under(LOCKER_CULL_PATH)
+            .next()
+            .map(|(_, text)| text)
+            .unwrap_or("{}");
+        LockerCull::parse(text).unwrap_or_else(|e| {
+            eprintln!("{LOCKER_CULL_PATH}: {e}");
+            LockerCull {
+                margin_m: 1.0,
+                door_swing_rad: 1.75,
+            }
+        })
+    })
+}
+
+/// Metres past the fog's full reach before a world mesh is skipped, so rounding never drops a visible one.
+const WORLD_CULL_MARGIN: f32 = 1.0;
 
 /// Distance from the eye past which a world mesh is skipped: the unlit mode's full fog (FOG_RANGE * 1.6) plus the margin.
 /// Lit surfaces reach full fog sooner (FOG_RANGE), so every fragment this far is fog colour in both modes.
-const WORLD_CULL_RANGE: f32 = FOG_RANGE * 1.6 + LOCKER_CULL_MARGIN;
+const WORLD_CULL_RANGE: f32 = FOG_RANGE * 1.6 + WORLD_CULL_MARGIN;
 
 /// True when the box `lo`..`hi` lies wholly `reach` metres or more from `eye`: every point of it is then fully fogged,
 /// and so is every triangle inside it (the fog is a function of distance from the eye, and a box is convex).
@@ -728,12 +780,28 @@ fn box_fully_fogged(eye: Vec3, lo: Vec3, hi: Vec3, reach: f32) -> bool {
     gap.length_squared() >= reach * reach
 }
 
-/// True when every point of a locker (a horizontal disc of `half_extent` about its centre) is past the fog's full
-/// reach from the eye: the shader then writes the fog colour alone, the same as the clear colour, so the locker
-/// draws nothing new. The unlit path (mode > 1.5) reaches full fog at `FOG_RANGE * 1.6` (shader.rs), the farther limit.
-fn locker_fully_fogged(eye: Vec3, cx: f32, cy: f32, half_extent: f32) -> bool {
+/// The farthest any of `points` lies from the origin (zero for none).
+fn farthest(points: impl Iterator<Item = Vec3>) -> f32 {
+    points.map(|p| p.length()).fold(0.0, f32::max)
+}
+
+/// The farthest any point of a locker model lies from its origin, its door included at every swing. The door turns
+/// about its pivot, and its parts are relative to that pivot (prop_model.rs `add_locker_door`), so a door point sits
+/// within `|pivot| + |part|` of the origin whatever the angle: the reach covers the full swing without reading it.
+fn locker_reach(m: &PropModel) -> f32 {
+    let body = farthest(m.parts.iter().flat_map(|p| p.verts.iter()).map(|v| v.position));
+    let door = m.locker_door.as_ref().map_or(0.0, |d| {
+        d.pivot.length() + farthest(d.parts.iter().flat_map(|p| p.verts.iter()).map(|v| v.position))
+    });
+    body.max(door)
+}
+
+/// True when every point of a locker, a sphere of `reach` metres about its origin at (`cx`, `cy`), is past the fog's
+/// full reach from the eye by `margin` metres: the shader then writes the fog colour alone, the same as the clear
+/// colour, so the locker draws nothing new. The unlit path (mode > 1.5) reaches full fog at `FOG_RANGE * 1.6` (shader.rs).
+fn locker_fully_fogged(eye: Vec3, cx: f32, cy: f32, reach: f32, margin: f32) -> bool {
     let (dx, dz) = (cx - eye.x, cy - eye.z);
-    (dx * dx + dz * dz).sqrt() - half_extent >= FOG_RANGE * 1.6 + LOCKER_CULL_MARGIN
+    (dx * dx + dz * dz).sqrt() - reach >= FOG_RANGE * 1.6 + margin
 }
 
 fn locker_shape(b: &mut Builder, p: Vec3, yaw: f32, burnt: bool, swing: f32) {
@@ -799,12 +867,55 @@ mod tests {
     #[test]
     fn far_lockers_are_skipped_only_when_fully_fogged() {
         let eye = vec3(0.0, 1.6, 0.0);
-        let half = 1.2;
+        let reach = 1.2;
+        let margin = locker_cull().margin_m;
         // 45 m off: the nearest point of the locker is past the full fog reach, so it is skipped
-        assert!(locker_fully_fogged(eye, 45.0, 0.0, half));
+        assert!(locker_fully_fogged(eye, 45.0, 0.0, reach, margin));
         // 30 m off: still inside the fog ramp, so it is drawn
-        assert!(!locker_fully_fogged(eye, 30.0, 0.0, half));
+        assert!(!locker_fully_fogged(eye, 30.0, 0.0, reach, margin));
         // the vertical offset never shortens the distance, so a locker straight below the eye is judged by its plan distance only
-        assert!(!locker_fully_fogged(eye, 0.0, 0.0, half));
+        assert!(!locker_fully_fogged(eye, 0.0, 0.0, reach, margin));
+    }
+
+    #[test]
+    fn locker_cull_standard_values_match_the_game() {
+        // Standard: the 1.0 m margin the cull used before the data existed (scene.rs LOCKER_CULL_MARGIN), and the
+        // full door swing hide.rs DOOR_OPEN_ANGLE drives (about 100 degrees).
+        let cull = locker_cull();
+        assert!((cull.margin_m - 1.0).abs() < 1e-6);
+        assert!((cull.door_swing_rad - hide::DOOR_OPEN_ANGLE).abs() < 1e-6);
+    }
+
+    #[test]
+    fn changing_the_margin_data_changes_the_locker_cull() {
+        let eye = vec3(0.0, 1.6, 0.0);
+        let tight = LockerCull::parse(r#"{"margin_m": 0.0, "door_swing_rad": 1.75}"#).unwrap();
+        let wide = LockerCull::parse(r#"{"margin_m": 5.0, "door_swing_rad": 1.75}"#).unwrap();
+        // 41 m off with a 1.2 m reach: 39.8 m clear of the eye, past the 38.4 m fog reach by 1.4 m
+        assert!(locker_fully_fogged(eye, 41.0, 0.0, 1.2, tight.margin_m));
+        assert!(!locker_fully_fogged(eye, 41.0, 0.0, 1.2, wide.margin_m));
+    }
+
+    #[test]
+    fn locker_cull_rejects_bad_tables() {
+        assert!(LockerCull::parse(r#"{"margin_m": -1.0, "door_swing_rad": 1.75}"#).is_err());
+        assert!(LockerCull::parse(r#"{"margin_m": 1.0}"#).is_err());
+        assert!(LockerCull::parse(r#"{"margin_m": "wide", "door_swing_rad": 1.75}"#).is_err());
+        assert!(LockerCull::parse("[1.0]").is_err());
+    }
+
+    #[test]
+    fn a_swung_door_stays_inside_the_locker_reach() {
+        // a door leaf about a hinge line 0.35 m from the origin; its points are pivot-relative, as add_locker_door places them
+        let pivot = vec3(-0.35, 1.0, 0.3);
+        let leaf = [vec3(0.35, 0.95, 0.0), vec3(0.35, -0.95, 0.02), vec3(0.0, 0.0, 0.0)];
+        let reach = pivot.length() + farthest(leaf.iter().copied());
+        let swing = locker_cull().door_swing_rad;
+        for angle in [0.0, swing * 0.5, swing] {
+            let turn = Mat3::from_rotation_y(-angle);
+            for p in leaf {
+                assert!((pivot + turn * p).length() <= reach + 1e-5, "a door point at {angle} rad leaves the reach");
+            }
+        }
     }
 }

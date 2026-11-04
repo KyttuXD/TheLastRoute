@@ -6,9 +6,68 @@ use super::{pdist, Escape, Game, Heater, Report};
 use crate::audio::Sounds;
 use crate::config::*;
 use crate::hunters::brain::{State, Target};
+use crate::net::hunter_events;
+use serde_json::{json, Value};
 use crate::hunters::gimmicks::{nyxie::Wake, Ctx, Event, Gimmick};
 
 impl Game {
+    /// The host's hunter frame (Godot `_collect_hunter_report`): one object per hunter, indexed as `hunters` is, with
+    /// its id, position, facing, state name, active flag, stun, slow factor and disguise. Guests read it through
+    /// [`Game::apply_hunter_frame`].
+    pub fn hunter_frame(&self) -> Vec<Value> {
+        self.hunters
+            .iter()
+            .enumerate()
+            .map(|(index, h)| {
+                json!({
+                    "index": index,
+                    "id": h.def.id,
+                    "position": [h.pos.0, h.pos.1],
+                    "facing": [h.facing.0, h.facing.1],
+                    "state": hunter_events::state_name(h.state),
+                    "active": h.active,
+                    "stun": h.stun,
+                    "slow_factor": h.slow_factor,
+                    "disguise": h.disguise,
+                })
+            })
+            .collect()
+    }
+
+    /// Guest: shows the host's hunters. Each entry is applied to the hunter at its `index` when the id matches, and a
+    /// field that is missing or not finite is left as it was. Only the display state is set here.
+    pub fn apply_hunter_frame(&mut self, data: &[Value]) {
+        for entry in data {
+            let Some(index) = entry["index"].as_u64().map(|i| i as usize) else { continue };
+            let Some(h) = self.hunters.get_mut(index) else { continue };
+            if entry["id"].as_str() != Some(h.def.id.as_str()) {
+                continue;
+            }
+            let finite = |v: &Value| v.as_f64().map(|f| f as f32).filter(|f| f.is_finite());
+            if let (Some(x), Some(y)) = (finite(&entry["position"][0]), finite(&entry["position"][1])) {
+                h.pos = (x, y);
+            }
+            if let (Some(x), Some(y)) = (finite(&entry["facing"][0]), finite(&entry["facing"][1])) {
+                h.facing = (x, y);
+            }
+            if let Some(state) = entry["state"].as_str().and_then(hunter_events::state_from_name) {
+                h.state = state;
+            }
+            if let Some(active) = entry["active"].as_bool() {
+                h.active = active;
+            }
+            if let Some(stun) = finite(&entry["stun"]) {
+                h.stun = stun;
+            }
+            if let Some(slow) = finite(&entry["slow_factor"]) {
+                h.slow_factor = slow;
+            }
+            if entry.get("disguise").is_some() {
+                h.disguise = entry["disguise"].as_str().map(str::to_string);
+            }
+        }
+    }
+
     fn target(&self) -> Target {
         let mut t = self.runner_target();
         if self.admin_flags().no_target {
@@ -41,6 +100,10 @@ impl Game {
     }
 
     pub(super) fn update_hunters(&mut self, dt: f32, prof: &Profile, _sounds: &Sounds) {
+        // a guest runs no hunter simulation: the host's frames set every hunter (apply_hunter_frame)
+        if self.remote_hunters {
+            return;
+        }
         // _direct_hunters: the director runs every frame before the brains, in every mode
         // (relay rush on); the Infinite route then pushes crowded hunters apart
         let target = self.target();
@@ -63,6 +126,15 @@ impl Game {
         self.director.relay_rush_enabled = true;
         self.director
             .tick(dt, &mut self.hunters, &targets, &self.fac, &remaining);
+        // hunter sabotage (hunters/sabotage.rs): a dwell near an online relay may roll, and a hit blocks that relay
+        // until its resecure time; off on every difficulty today
+        let sabotaged = match self.sabotage.as_mut() {
+            Some(tr) => tr.tick(dt, self.hunters.iter().map(|h| h.pos), &remaining).is_some(),
+            None => false,
+        };
+        if sabotaged {
+            self.announce("SIGNAL LOST // RELAY OFFLINE");
+        }
         if self.inf.is_some() {
             crate::hunters::director::separate(dt, &mut self.hunters, &self.fac);
         }
@@ -267,7 +339,7 @@ impl Game {
             }
             _ => {
                 let centre = self.fac.hiding[li].cell.center();
-                if self.locker_cooldown[li] > 0.0 {
+                if self.locker_cooldown[li] > 0.0 || self.remote_hunters {
                     return;
                 }
                 let found = self.hunters.iter().position(|h| {
@@ -323,5 +395,137 @@ impl Game {
             seed: self.run_seed,
             difficulty: self.difficulty,
         });
+    }
+}
+
+#[cfg(test)]
+mod remote_hunter_tests {
+    use super::super::Controls;
+    use super::*;
+    use crate::content::Content;
+    use crate::world::catalog::Catalog;
+    use std::time::{Duration, Instant};
+
+    fn run() -> (Game, Content, Catalog) {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let g = Game::new_infinite_sim(
+            crate::config::Difficulty::Standard,
+            7,
+            "ROOM-TEST-7",
+            0,
+            &content,
+            &catalog,
+        );
+        // Standard activates route hunters after one relay (Godot GameConfig.streamed_hunter_population), so a
+        // fresh run has none; the first relay admits the route hunter the frames below address
+        let mut g = g;
+        g.relays_collected = 1;
+        g.ensure_hunters(&content);
+        (g, content, catalog)
+    }
+
+    #[test]
+    fn a_guest_applies_the_host_frame_to_the_hunter_at_its_index() {
+        let (mut g, _, _) = run();
+        assert!(!g.hunters.is_empty());
+        let id = g.hunters[0].def.id.clone();
+        let frame = vec![json!({
+            "index": 0, "id": id, "position": [3.5, 4.5], "facing": [0.0, 1.0],
+            "state": "CHASE", "active": true, "stun": 0.25, "slow_factor": 0.5, "disguise": null
+        })];
+        g.apply_hunter_frame(&frame);
+        let h = &g.hunters[0];
+        assert_eq!(h.pos, (3.5, 4.5));
+        assert_eq!(h.facing, (0.0, 1.0));
+        assert!(matches!(h.state, State::Chase));
+        assert!(h.active);
+        assert_eq!(h.stun, 0.25);
+        assert_eq!(h.slow_factor, 0.5);
+        assert_eq!(h.disguise, None);
+    }
+
+    #[test]
+    fn a_mismatched_id_an_out_of_range_index_or_a_null_field_leaves_the_hunter_as_it_was() {
+        let (mut g, _, _) = run();
+        let id = g.hunters[0].def.id.clone();
+        let before_pos = g.hunters[0].pos;
+        let before_state = hunter_events::state_name(g.hunters[0].state);
+        g.apply_hunter_frame(&[json!({"index": 0, "id": "not-a-hunter", "position": [9.0, 9.0], "state": "CHASE"})]);
+        assert_eq!(g.hunters[0].pos, before_pos);
+        assert_eq!(hunter_events::state_name(g.hunters[0].state), before_state);
+        g.apply_hunter_frame(&[json!({"index": 0, "id": id, "position": null})]);
+        assert_eq!(g.hunters[0].pos, before_pos, "a null position is not applied");
+        g.apply_hunter_frame(&[json!({"index": 999, "id": id, "position": [1.0, 1.0]})]);
+    }
+
+    #[test]
+    fn a_guest_shows_each_state_name_the_host_frame_carries() {
+        let (mut g, _, _) = run();
+        let id = g.hunters[0].def.id.clone();
+        for name in ["IDLE", "WANDER", "INVESTIGATE", "CHASE", "SEARCH"] {
+            g.apply_hunter_frame(&[json!({"index": 0, "id": id, "state": name})]);
+            assert_eq!(hunter_events::state_name(g.hunters[0].state), name);
+        }
+    }
+
+    #[test]
+    fn the_host_frame_reaches_the_guest_unchanged() {
+        let (host, _, _) = run();
+        let frame = host.hunter_frame();
+        let (mut guest, _, _) = run();
+        for h in guest.hunters.iter_mut() {
+            h.pos = (0.5, 0.5);
+            h.state = State::Idle;
+        }
+        guest.apply_hunter_frame(&frame);
+        for (i, h) in host.hunters.iter().enumerate() {
+            assert_eq!(guest.hunters[i].pos, h.pos);
+            assert_eq!(hunter_events::state_name(guest.hunters[i].state), hunter_events::state_name(h.state));
+        }
+    }
+
+    #[test]
+    fn a_guest_runs_no_hunter_simulation_and_the_host_does() {
+        let (mut guest, content, catalog) = run();
+        guest.remote_hunters = true;
+        let sounds = crate::audio::Sounds::default();
+        let before: Vec<((f32, f32), &'static str)> = guest
+            .hunters
+            .iter()
+            .map(|h| (h.pos, hunter_events::state_name(h.state)))
+            .collect();
+        for _ in 0..300 {
+            guest.step(1.0 / 60.0, &Controls::default(), &content, &catalog, &sounds);
+        }
+        for (i, (pos, state)) in before.iter().enumerate() {
+            assert_eq!(guest.hunters[i].pos, *pos, "guest hunter {i} moved");
+            assert_eq!(hunter_events::state_name(guest.hunters[i].state), *state, "guest hunter {i} changed state");
+        }
+        assert!(guest.escape.is_none() && guest.report.is_none(), "a guest captures nothing");
+        // the same steps on the host move or change at least one hunter, so the flag is what holds them still
+        let (mut host, content, catalog) = run();
+        for _ in 0..300 {
+            host.step(1.0 / 60.0, &Controls::default(), &content, &catalog, &sounds);
+        }
+        let moved = before.iter().enumerate().any(|(i, (pos, state))| {
+            host.hunters.get(i).is_some_and(|h| h.pos != *pos || hunter_events::state_name(h.state) != *state)
+        });
+        assert!(moved, "the host simulation still runs");
+    }
+
+    #[test]
+    fn the_frame_rate_is_the_one_in_the_data_file() {
+        let text = include_str!("../data/net/hunter_events.json");
+        let standard = hunter_events::parse(text).unwrap();
+        let slow = hunter_events::parse(&text.replace("\"rate_hz\": 20", "\"rate_hz\": 10")).unwrap();
+        let t0 = Instant::now();
+        let mut a = hunter_events::Tracker::default();
+        let mut b = hunter_events::Tracker::default();
+        assert!(a.frame_due(&standard, t0));
+        assert!(b.frame_due(&slow, t0));
+        let t1 = t0 + Duration::from_millis(60);
+        assert!(a.frame_due(&standard, t1), "20 Hz: a frame every 50 ms");
+        assert!(!b.frame_due(&slow, t1), "10 Hz: no frame before 100 ms");
     }
 }

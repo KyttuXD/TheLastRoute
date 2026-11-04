@@ -1,0 +1,146 @@
+{
+  "schema": "lr.admin_menu/1",
+  "items": [
+    { "id": "flashlight", "label": "FLASHLIGHT" },
+    { "id": "taser", "label": "TASER" },
+    { "id": "lockpick", "label": "LOCKPICK SET" },
+    { "id": "crowbar", "label": "CROWBAR" },
+    { "id": "rescue_axe", "label": "AXE" },
+    { "id": "battery", "label": "FLASHLIGHT BATTERY" },
+    { "id": "stim_pack", "label": "STIM PACK" },
+    { "id": "revive_kit", "label": "REVIVE KIT" },
+    { "id": "backpack_small", "label": "SMALL BACKPACK" },
+    { "id": "backpack_medium", "label": "MEDIUM BACKPACK" },
+    { "id": "backpack_large", "label": "LARGE BACKPACK" }
+  ],
+  "teleports": [
+    { "id": "north", "label": "CHUNK N" },
+    { "id": "south", "label": "CHUNK S" },
+    { "id": "east", "label": "CHUNK E" },
+    { "id": "west", "label": "CHUNK W" },
+    { "id": "safe_room", "label": "SAFE ROOM" },
+    { "id": "relay", "label": "NEAREST RELAY" },
+    { "id": "start", "label": "START" },
+    { "id": "checkpoint", "label": "CHECKPOINT" }
+  ],
+  "run_speeds": [
+    { "value": 1.0, "label": "1X" },
+    { "value": 1.5, "label": "1.5X" },
+    { "value": 2.0, "label": "2X" },
+    { "value": 3.0, "label": "3X" }
+  ],
+  "game_speeds": [
+    { "value": 0.0, "label": "PAUSE" },
+    { "value": 0.25, "label": "0.25X" },
+    { "value": 1.0, "label": "1X" },
+    { "value": 2.0, "label": "2X" },
+    { "value": 4.0, "label": "4X" },
+    { "value": -1.0, "label": "STEP 1 FRAME" }
+  ],
+  "stories": [
+    { "id": "admin_sample_tour", "label": "ADMIN SAMPLE TOUR" },
+    { "id": "first_signal", "label": "FIRST SIGNAL" },
+    { "id": "ilyra_warning", "label": "ILYRA WARNING" }
+  ],
+  "hunter_do": [
+    "SUMMON",
+    "REMOVE (ALL MATCHES)",
+    "TOGGLE (SUMMON / REMOVE ALL MATCHES)",
+    "PLAY EMOTE (NEARBY)"
+  ],
+  "emotes": [
+    "TAUNT",
+    "LAUGH",
+    "POINT",
+    "BECKON",
+    "SHRUG",
+    "LOOK AROUND",
+    "SMUG",
+    "DANCE",
+    "FLINCH",
+    "STRETCH",
+    "YAWN",
+    "HUM",
+    "WAVE",
+    "VICTORY"
+  ],
+  "act_general": [
+    { "id": "roster_refresh", "label": "REFRESH ADMIN ROSTER" },
+    { "id": "restart_new", "label": "RESTART ROUTE // NEW SEED" },
+    { "id": "restart_same", "label": "RESTART ROUTE // SAME SEED" },
+    { "id": "end_route", "label": "END ROUTE" },
+    { "id": "chat_mute", "label": "ROOM MUTE LAST SPEAKER" },
+    { "id": "chat_unmute", "label": "ROOM UNMUTE EVERYONE" },
+    { "id": "chat_kick", "label": "KICK LAST SPEAKER" }
+  ],
+  "act_player": [
+    { "id": "full_lamp", "label": "FULL LAMP" },
+    { "id": "restore_player", "label": "RESTORE PLAYER" },
+    { "id": "clear_stun", "label": "CLEAR STUN + COOLDOWNS" }
+  ],
+  "act_hunters": [
+    { "id": "stun_hunters", "label": "STUN ALL HUNTERS" },
+    { "id": "wake_hunters", "label": "WAKE ALL HUNTERS" },
+    { "id": "calm_hunters", "label": "CALM ALL HUNTERS" },
+    { "id": "freeze_hunters", "label": "FREEZE ALL HUNTERS" },
+    { "id": "release_hunters", "label": "RELEASE ALL HUNTERS" },
+    { "id": "summon_all", "label": "SUMMON ALL HUNTERS" },
+    { "id": "remove_summoned", "label": "REMOVE SUMMONED HUNTERS" }
+  ],
+  "act_world": [
+    { "id": "grant_relay", "label": "GRANT RELAY" },
+    { "id": "all_relays", "label": "ALL LOADED RELAYS" },
+    { "id": "damage_checkpoint", "label": "DAMAGE CHECKPOINT" },
+    { "id": "repair_checkpoint", "label": "REPAIR CHECKPOINT" },
+    { "id": "copy_seed", "label": "COPY SEED" },
+    { "id": "copy_room_code", "label": "COPY ROOM CODE" }
+  ],
+  "act_story": [
+    { "id": "story_stop", "label": "STOP STORY / CUTSCENE" },
+    { "id": "story_reset", "label": "RESET STORY STATE" }
+  ],
+  "act_visual": [
+    { "id": "waypoint_teleport", "label": "TELEPORT TO WAYPOINT" },
+    { "id": "waypoint_clear", "label": "CLEAR WAYPOINT" },
+    { "id": "ravelle_trap", "label": "SPAWN RAVELLE TRAP HERE" },
+    { "id": "light_probe", "label": "LIGHT PROBE HERE" }
+  ],
+  "npc_ops": [
+    { "id": "teleport", "label": "TELEPORT TO ME" },
+    { "id": "goto", "label": "GO TO ME" },
+    { "id": "follow", "label": "FOLLOW ME" },
+    { "id": "unfollow", "label": "STOP FOLLOWING" },
+    { "id": "freeze", "label": "FREEZE" },
+    { "id": "resume", "label": "RESUME" },
+    { "id": "ignore", "label": "HUNTERS IGNORE" },
+    { "id": "target", "label": "HUNTERS TARGET" },
+    { "id": "chat_on", "label": "CHAT ON" },
+    { "id": "chat_off", "label": "CHAT OFF" },
+    { "id": "smart", "label": "SMART = SPAWN SMART" },
+    { "id": "down", "label": "DOWN" },
+    { "id": "revive", "label": "REVIVE" },
+    { "id": "kill", "label": "KILL" },
+    { "id": "remove", "label": "REMOVE" },
+    { "id": "clear", "label": "CLEAR HUNTER FLAGS" },
+    { "id": "spectate", "label": "SPECTATE" }
+  ],
+  "npc_all": [
+    { "id": "all_teleport", "label": "ALL TO ME" },
+    { "id": "all_follow", "label": "ALL FOLLOW ME" },
+    { "id": "all_unfollow", "label": "ALL STOP FOLLOW" },
+    { "id": "all_freeze", "label": "ALL FREEZE" },
+    { "id": "all_resume", "label": "ALL RESUME" },
+    { "id": "all_ignore", "label": "ALL IGNORE" },
+    { "id": "all_target", "label": "ALL TARGET" },
+    { "id": "all_clear", "label": "ALL CLEAR" },
+    { "id": "all_chat_on", "label": "ALL CHAT ON" },
+    { "id": "all_chat_off", "label": "ALL CHAT OFF" },
+    { "id": "all_smart", "label": "ALL SMART" }
+  ],
+  "npc_smarts": [30, 50, 70, 90],
+  "fields": [
+    { "label": "SAFE TELEPORT", "placeholder": "X,Z or X,Z,LEVEL" },
+    { "label": "ADD / UPDATE LIMITED ADMIN", "placeholder": "USERNAME:player,world,hunters,visual,inventory" },
+    { "label": "REMOVE LIMITED ADMIN", "placeholder": "USERNAME" }
+  ]
+}

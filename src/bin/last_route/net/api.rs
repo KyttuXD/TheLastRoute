@@ -740,10 +740,13 @@ pub fn admin_reserve_body(code: &str, session_token: &str) -> Value {
 }
 
 /// Whether a failed JOIN ROOM lookup may reserve the typed code for this player: only an owner's
-/// own lookup that found nothing (404). Guests, other failures and a code already live keep the
-/// `ROOM NOT FOUND` / join behaviour.
+/// own lookup that found nothing (404) or hit a code already reserved (403 `ROOM_RESERVED`, which
+/// the owner hosts the same way: `admin_reserve_room` answers `ROOM_ALREADY_RESERVED` as ok). Guests,
+/// other failures and a code already live keep the `ROOM NOT FOUND` / join behaviour.
 pub fn admin_may_reserve_on_miss(is_admin: bool, session_token: &str, err: &NetError) -> bool {
-    is_admin && !session_token.is_empty() && err.status() == Some(404)
+    let miss = err.status() == Some(404)
+        || matches!(err, NetError::Http { status: 403, code, .. } if code == "ROOM_RESERVED");
+    is_admin && !session_token.is_empty() && miss
 }
 
 /// Reserves `code` for the owner before she hosts it. Ok when the code is reserved for her now
@@ -998,6 +1001,17 @@ mod admin_join_tests {
         assert!(!admin_may_reserve_on_miss(true, "", &miss), "no session, no reserve");
         let other = NetError::Http { status: 500, code: String::new(), error: "DOWN".into(), body: Value::Null };
         assert!(!admin_may_reserve_on_miss(true, "token", &other), "only a not-found code is reserved");
+    }
+
+    #[test]
+    fn an_owners_reserved_code_is_hosted_like_a_miss() {
+        // a code already reserved answers 403 ROOM_RESERVED on lookup: the owner reserves (ok) and hosts it
+        let reserved = NetError::Http { status: 403, code: "ROOM_RESERVED".into(), error: "RESERVED".into(), body: Value::Null };
+        assert!(admin_may_reserve_on_miss(true, "token", &reserved));
+        assert!(!admin_may_reserve_on_miss(false, "token", &reserved), "a guest still gets the access flow");
+        assert!(!admin_may_reserve_on_miss(true, "", &reserved), "no session, no reserve");
+        let other_403 = NetError::Http { status: 403, code: "FORBIDDEN".into(), error: "NO".into(), body: Value::Null };
+        assert!(!admin_may_reserve_on_miss(true, "token", &other_403), "only ROOM_RESERVED is treated as a miss");
     }
 
     #[test]

@@ -3,6 +3,9 @@
 //! the original's room staging, greyed out.
 
 use super::{TASER_SLOW_FACTOR, TASER_SLOW_SECONDS};
+use crate::content::embedded;
+use std::collections::HashMap;
+use std::sync::OnceLock;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Difficulty {
@@ -54,8 +57,48 @@ pub const LOBBY: [Difficulty; 4] = [
     Difficulty::Nightmare,
 ];
 
-/// TIER_WEIGHTS_BY_DIFFICULTY["nightmare"]: easy, intermediate, difficult.
+/// TIER_WEIGHTS_BY_DIFFICULTY["nightmare"]: easy, intermediate, difficult. Kept for callers that
+/// name it; the live value is data/hunters/draw_pool.json (test `draw_pool_drives_tier_weights`).
 pub const NIGHTMARE_TIER_WEIGHTS: [f64; 3] = [0.175, 0.525, 0.30];
+
+/// Used only when data/hunters/draw_pool.json is missing or unreadable: an even split. The
+/// embedded file always loads (see the tests), so this never draws in a shipped build.
+const UNIFORM_TIER_WEIGHTS: [f64; 3] = [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0];
+
+/// Path of the hunter draw weights inside the embedded data (data/hunters/draw_pool.json).
+const DRAW_POOL_PATH: &str = "hunters/draw_pool.json";
+
+/// Parse `tier_weights` from a draw_pool document into id -> [easy, intermediate, difficult].
+/// A row with a missing or non-numeric tier is skipped.
+pub fn parse_draw_pool(v: &serde_json::Value) -> HashMap<String, [f64; 3]> {
+    let mut out = HashMap::new();
+    if let Some(rows) = v["tier_weights"].as_object() {
+        for (id, row) in rows {
+            let w = ["easy", "intermediate", "difficult"].map(|t| row[t].as_f64());
+            if let [Some(a), Some(b), Some(c)] = w {
+                out.insert(id.clone(), [a, b, c]);
+            }
+        }
+    }
+    out
+}
+
+/// The draw weights for one difficulty id, from a parsed draw pool.
+pub fn weights_from(pool: &HashMap<String, [f64; 3]>, id: &str) -> Option<[f64; 3]> {
+    pool.get(id).copied()
+}
+
+/// The embedded draw pool, parsed once.
+fn draw_pool() -> &'static HashMap<String, [f64; 3]> {
+    static POOL: OnceLock<HashMap<String, [f64; 3]>> = OnceLock::new();
+    POOL.get_or_init(|| {
+        embedded::data_under(DRAW_POOL_PATH)
+            .next()
+            .and_then(|(_, text)| serde_json::from_str::<serde_json::Value>(text).ok())
+            .map(|v| parse_draw_pool(&v))
+            .unwrap_or_default()
+    })
+}
 
 /// TIER_WEIGHTS_BY_DIFFICULTY.get(id, standard): the hunter draw weights for any difficulty id,
 /// Nightmare included; an unknown id draws as Standard.
@@ -221,14 +264,9 @@ impl Difficulty {
         }
     }
 
-    /// TIER_WEIGHTS_BY_DIFFICULTY: easy, intermediate, difficult.
+    /// TIER_WEIGHTS_BY_DIFFICULTY: easy, intermediate, difficult. Read from data/hunters/draw_pool.json.
     pub fn tier_weights(self) -> [f64; 3] {
-        match self {
-            Difficulty::Relaxed => [0.70, 0.25, 0.05],
-            Difficulty::Standard => [0.35, 0.50, 0.15],
-            Difficulty::Hard => [0.2625, 0.5125, 0.225],
-            Difficulty::Nightmare => NIGHTMARE_TIER_WEIGHTS,
-        }
+        weights_from(draw_pool(), self.id()).unwrap_or(UNIFORM_TIER_WEIGHTS)
     }
 
     /// SAFE_ZONE_LIMITS_BY_DIFFICULTY: >0 puts the safe zone at the spawn.
@@ -305,5 +343,72 @@ mod nightmare_tests {
     fn room_wire_list_excludes_nightmare_until_net_maps_it() {
         assert_eq!(ALL.len(), 3);
         assert!(!ALL.contains(&Difficulty::Nightmare));
+    }
+}
+
+#[cfg(test)]
+mod draw_pool_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn embedded_pool() -> HashMap<String, [f64; 3]> {
+        draw_pool().clone()
+    }
+
+    /// The shipped data file loads, so the even-split fallback never draws in a real build.
+    #[test]
+    fn embedded_draw_pool_loads_every_difficulty() {
+        let pool = embedded_pool();
+        for d in LOBBY {
+            assert!(pool.contains_key(d.id()), "{} missing from draw_pool.json", d.id());
+        }
+    }
+
+    /// Standard values in the data match the game (Godot hunter_roster.gd 171-174).
+    #[test]
+    fn standard_and_relaxed_weights_match_the_game() {
+        assert_eq!(Difficulty::Standard.tier_weights(), [0.35, 0.50, 0.15]);
+        assert_eq!(Difficulty::Relaxed.tier_weights(), [0.70, 0.25, 0.05]);
+        assert_eq!(Difficulty::Hard.tier_weights(), [0.2625, 0.5125, 0.225]);
+        assert_eq!(Difficulty::Nightmare.tier_weights(), NIGHTMARE_TIER_WEIGHTS);
+    }
+
+    /// Changing a value in the data changes the weights the draw uses.
+    #[test]
+    fn changing_a_data_value_changes_the_weights() {
+        let doc = json!({ "tier_weights": {
+            "standard": { "easy": 0.2, "intermediate": 0.3, "difficult": 0.5 }
+        }});
+        let pool = parse_draw_pool(&doc);
+        assert_eq!(weights_from(&pool, "standard"), Some([0.2, 0.3, 0.5]));
+        assert_eq!(weights_from(&pool, "hard"), None, "an id absent from the data has no row");
+        assert_ne!(
+            weights_from(&pool, "standard"),
+            Some(Difficulty::Standard.tier_weights()),
+            "a retuned file must not fall back to the shipped numbers"
+        );
+    }
+
+    /// A row with a missing or non-numeric tier is dropped rather than read as zero.
+    #[test]
+    fn broken_rows_are_skipped() {
+        let doc = json!({ "tier_weights": {
+            "relaxed": { "easy": 1.0, "intermediate": 0.0 },
+            "hard": { "easy": "x", "intermediate": 0.5, "difficult": 0.5 }
+        }});
+        let pool = parse_draw_pool(&doc);
+        assert!(pool.is_empty());
+    }
+
+    /// The Nightmare const kept for callers matches its data row.
+    #[test]
+    fn draw_pool_drives_tier_weights() {
+        assert_eq!(
+            weights_from(&embedded_pool(), "nightmare"),
+            Some(NIGHTMARE_TIER_WEIGHTS)
+        );
+        for d in ALL {
+            assert_eq!(d.tier_weights(), weights_from(&embedded_pool(), d.id()).unwrap());
+        }
     }
 }

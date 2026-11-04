@@ -1,0 +1,9 @@
+{
+	"schema": "lr.grab/1",
+	"id": "solyth",
+	"pool": {
+		"wrist_yank": 6,
+		"shoulder_grab": 2,
+		"collar_drag": 2
+	}
+}

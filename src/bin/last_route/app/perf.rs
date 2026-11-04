@@ -1,23 +1,148 @@
 //! Frame timing and the F7 performance overlay. F7 cycles: off → small FPS readout → full panel
 //! (frame-time graph, average / 1% low / worst, per-section CPU times, spike count, scene
 //! counts). Sections are timed with `let _t = perf::section("hud");` (ends when dropped).
-//! Spikes (frames over 2x the average and over 25 ms) are written to the debug log. Every frame
-//! over 33.3 ms also goes into a rolling log of the last 20 (frame time and slowest section), and
-//! into the game log with the sections over 2 ms, at most 5 lines a second.
+//! Spikes (frames over `spike_ms` and over 2x the average and `debug_min_ms`) are written to the debug log. Every frame
+//! over `spike_ms` also goes into a rolling log of the last few (frame time and slowest section), and into the game log
+//! with the sections over `spike_section_ms`, at most `spike_lines_per_sec` lines a second.
+//!
+//! The numbers (history length, spike threshold, log sizes, the CSV's render parts, the overlay colour bands and the
+//! debug-log rule) live in data/perf.json (`lr.perf/1`), parsed once; `Rules::default()` is the Standard set.
 
 use macroquad::prelude::*;
+use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-const HISTORY: usize = 240;
-/// Frames over this many milliseconds are logged as spikes.
-const SPIKE_MS: f32 = 33.3;
-const SPIKE_LOG_LEN: usize = 20;
-/// Spike lines written to the game log per second; the rest are counted in the next second's line.
-const SPIKE_LINES_PER_SEC: u32 = 5;
-/// Sections over this many milliseconds are named on a spike's game log line.
-const SPIKE_SECTION_MS: f32 = 2.0;
+/// The tunable numbers, from data/perf.json. The defaults are the Standard values.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Rules {
+    /// Frames kept for the graph, the average and the 1% low.
+    pub history: usize,
+    /// Frames over this many milliseconds are logged as spikes.
+    pub spike_ms: f32,
+    /// Spikes in the rolling log shown on the panel.
+    pub spike_log_len: usize,
+    /// Spike lines written to the game log per second; the rest are counted in the next second's line.
+    pub spike_lines_per_sec: u32,
+    /// Sections over this many milliseconds are named on a spike's game log line.
+    pub spike_section_ms: f32,
+    /// Top of the frame-time graph in milliseconds, and the guide lines drawn across it.
+    pub graph_max_ms: f32,
+    pub guides_ms: Vec<f32>,
+    /// Average frame time under `good_ms` is green, under `ok_ms` yellow, otherwise red.
+    pub good_ms: f32,
+    pub ok_ms: f32,
+    /// A section's smoothed time keeps `section_keep` of its old value and adds `section_new` of the frame's time.
+    pub section_keep: f32,
+    pub section_new: f32,
+    /// Debug-log spike rule: at least `debug_min_frames` frames of history, a frame over `debug_avg_ratio` times
+    /// the average and over `debug_min_ms`.
+    pub debug_min_frames: usize,
+    pub debug_avg_ratio: f32,
+    pub debug_min_ms: f32,
+    /// The render parts written to the `LR_PERF_PARTS` CSV, one column each (`render 3d` is the whole pass).
+    pub parts: Vec<String>,
+}
+
+impl Default for Rules {
+    fn default() -> Rules {
+        Rules {
+            history: 240,
+            spike_ms: 33.3,
+            spike_log_len: 20,
+            spike_lines_per_sec: 5,
+            spike_section_ms: 2.0,
+            graph_max_ms: 50.0,
+            guides_ms: vec![16.7, 33.3],
+            good_ms: 17.5,
+            ok_ms: 34.0,
+            section_keep: 0.9,
+            section_new: 0.1,
+            debug_min_frames: 30,
+            debug_avg_ratio: 2.0,
+            debug_min_ms: 25.0,
+            parts: [
+                "world meshes",
+                "scene items",
+                "doors",
+                "hunters",
+                "remote players",
+                "viewmodel",
+                "render 3d",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        }
+    }
+}
+
+fn num(v: &Value, key: &str, lo: f32, hi: f32, into: &mut f32) {
+    if let Some(x) = v[key].as_f64() {
+        *into = (x as f32).clamp(lo, hi);
+    }
+}
+
+impl Rules {
+    pub fn parse(v: &Value) -> Rules {
+        let mut r = Rules::default();
+        if let Some(n) = v["history"].as_u64() {
+            r.history = (n as usize).clamp(1, 10_000);
+        }
+        num(v, "spike_ms", 0.0, 10_000.0, &mut r.spike_ms);
+        if let Some(n) = v["spike_log_len"].as_u64() {
+            r.spike_log_len = (n as usize).clamp(1, 1000);
+        }
+        if let Some(n) = v["spike_lines_per_sec"].as_u64() {
+            r.spike_lines_per_sec = n.min(1000) as u32;
+        }
+        num(v, "spike_section_ms", 0.0, 10_000.0, &mut r.spike_section_ms);
+        num(v, "graph_max_ms", 0.1, 10_000.0, &mut r.graph_max_ms);
+        if let Some(a) = v["guides_ms"].as_array() {
+            r.guides_ms = a.iter().filter_map(|x| x.as_f64()).map(|x| x as f32).collect();
+        }
+        num(v, "good_ms", 0.0, 10_000.0, &mut r.good_ms);
+        num(v, "ok_ms", 0.0, 10_000.0, &mut r.ok_ms);
+        num(v, "section_keep", 0.0, 1.0, &mut r.section_keep);
+        num(v, "section_new", 0.0, 1.0, &mut r.section_new);
+        if let Some(n) = v["debug_min_frames"].as_u64() {
+            r.debug_min_frames = n as usize;
+        }
+        num(v, "debug_avg_ratio", 0.0, 100.0, &mut r.debug_avg_ratio);
+        num(v, "debug_min_ms", 0.0, 10_000.0, &mut r.debug_min_ms);
+        if let Some(a) = v["parts"].as_array() {
+            let parts: Vec<String> = a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect();
+            if !parts.is_empty() {
+                r.parts = parts;
+            }
+        }
+        r
+    }
+}
+
+/// The embedded rules (data/perf.json); the Standard defaults when the file is missing or broken.
+pub fn rules() -> &'static Rules {
+    static RULES: OnceLock<Rules> = OnceLock::new();
+    RULES.get_or_init(|| {
+        crate::content::embedded::data_under("perf.json")
+            .next()
+            .and_then(|(_, text)| serde_json::from_str::<Value>(text).ok())
+            .map(|v| Rules::parse(&v))
+            .unwrap_or_default()
+    })
+}
+
+/// Whether a frame of `dt` seconds is a spike (logged on the game log and the panel's spike log).
+fn is_spike(r: &Rules, dt: f32) -> bool {
+    dt * 1000.0 > r.spike_ms
+}
+
+/// Whether a frame is a debug-log spike: enough history, over `debug_avg_ratio` times the average and over `debug_min_ms`.
+fn is_debug_spike(r: &Rules, dt: f32, avg: f32, frames: usize) -> bool {
+    frames >= r.debug_min_frames && dt > avg * r.debug_avg_ratio && dt > r.debug_min_ms / 1000.0
+}
 
 /// One logged spike: the frame time and the section that took longest in that frame.
 #[derive(Clone, Copy)]
@@ -27,10 +152,10 @@ struct Spike {
     section_ms: f32,
 }
 
-/// Rolling log of the last `SPIKE_LOG_LEN` spikes, oldest overwritten first. `total` counts every
-/// spike seen. Pushing reuses the existing slots, so it does not allocate per frame.
-#[derive(Default)]
+/// Rolling log of the last `cap` spikes, oldest overwritten first. `total` counts every spike seen.
+/// Pushing reuses the existing slots, so it does not allocate per frame.
 struct SpikeLog {
+    cap: usize,
     entries: Vec<Spike>,
     head: usize,
     total: u32,
@@ -50,19 +175,29 @@ struct SpikeWindow {
 }
 
 impl SpikeLog {
+    fn new(cap: usize) -> SpikeLog {
+        SpikeLog {
+            cap: cap.max(1),
+            entries: Vec::new(),
+            head: 0,
+            total: 0,
+            window: SpikeWindow::default(),
+        }
+    }
+
     fn push(&mut self, spike: Spike) {
         self.total += 1;
-        if self.entries.len() < SPIKE_LOG_LEN {
+        if self.entries.len() < self.cap {
             self.entries.push(spike);
         } else {
             self.entries[self.head] = spike;
         }
-        self.head = (self.head + 1) % SPIKE_LOG_LEN;
+        self.head = (self.head + 1) % self.cap;
     }
 
     /// The most recent spike, if any.
     fn latest(&self) -> Option<&Spike> {
-        self.entries.get((self.head + SPIKE_LOG_LEN - 1) % SPIKE_LOG_LEN)
+        self.entries.get((self.head + self.cap - 1) % self.cap)
     }
 
     /// Counts a frame and its draw calls in the window. When the window ends, the spikes and draw
@@ -90,39 +225,28 @@ impl SpikeLog {
         w.draws_max = w.draws_max.max(draws);
     }
 
-    /// Writes a spike to the game log with its sections over `SPIKE_SECTION_MS`, or only counts it
-    /// once this second has `SPIKE_LINES_PER_SEC` lines.
-    fn log_spike(&mut self, ms: f32, sections: &[(&'static str, f32)]) {
+    /// Writes a spike to the game log with its sections over `spike_section_ms`, or only counts it
+    /// once this second has `spike_lines_per_sec` lines.
+    fn log_spike(&mut self, r: &Rules, ms: f32, sections: &[(&'static str, f32)]) {
         let w = &mut self.window;
         w.spikes += 1;
-        if w.logged >= SPIKE_LINES_PER_SEC {
+        if w.logged >= r.spike_lines_per_sec {
             return;
         }
         w.logged += 1;
         let slow: Vec<String> = sections
             .iter()
-            .filter(|(_, t)| *t > SPIKE_SECTION_MS)
+            .filter(|(_, t)| *t > r.spike_section_ms)
             .map(|(name, t)| format!("{name} {t:.1} ms"))
             .collect();
         let cause = if slow.is_empty() {
-            format!("no section over {SPIKE_SECTION_MS} ms")
+            format!("no section over {} ms", r.spike_section_ms)
         } else {
             slow.join(", ")
         };
         crate::lr_info!("frame spike {:.1} ms; {}", ms, cause);
     }
 }
-
-/// The render parts written to the `LR_PERF_PARTS` CSV, one row a second. Each is a section name; `render 3d` is the whole pass.
-const PARTS: [&str; 7] = [
-    "world meshes",
-    "scene items",
-    "doors",
-    "hunters",
-    "remote players",
-    "viewmodel",
-    "render 3d",
-];
 
 /// Per-second means (ms per frame) of the render parts, from the raw section times of each frame. Opened only when the
 /// `LR_PERF_PARTS` environment variable names a file; a measurement aid that changes no drawing.
@@ -131,25 +255,32 @@ struct PartsLog {
     start: Option<Instant>,
     second: u32,
     frames: u32,
-    sums: [f32; PARTS.len()],
+    parts: Vec<String>,
+    sums: Vec<f32>,
 }
 
 impl PartsLog {
-    fn open() -> Option<PartsLog> {
+    /// The CSV header: `second,frames` then one `<part>_ms` column per part, spaces as underscores.
+    fn header(parts: &[String]) -> String {
+        let mut header = String::from("second,frames");
+        for p in parts {
+            header.push_str(&format!(",{}_ms", p.replace(' ', "_")));
+        }
+        header
+    }
+
+    fn open(parts: &[String]) -> Option<PartsLog> {
         use std::io::Write;
         let path = std::env::var("LR_PERF_PARTS").ok()?;
         let mut file = std::fs::File::create(path).ok()?;
-        let mut header = String::from("second,frames");
-        for p in PARTS {
-            header.push_str(&format!(",{}_ms", p.replace(' ', "_")));
-        }
-        writeln!(file, "{header}").ok()?;
+        writeln!(file, "{}", PartsLog::header(parts)).ok()?;
         Some(PartsLog {
             file,
             start: None,
             second: 0,
             frames: 0,
-            sums: [0.0; PARTS.len()],
+            parts: parts.to_vec(),
+            sums: vec![0.0; parts.len()],
         })
     }
 
@@ -160,25 +291,26 @@ impl PartsLog {
         if now.duration_since(start) >= Duration::from_secs(1) {
             let n = self.frames.max(1) as f32;
             let mut row = format!("{},{}", self.second, self.frames);
-            for s in self.sums {
+            for s in &self.sums {
                 row.push_str(&format!(",{:.3}", s / n));
             }
             let _ = writeln!(self.file, "{row}");
-            self.sums = [0.0; PARTS.len()];
+            for s in self.sums.iter_mut() {
+                *s = 0.0;
+            }
             self.frames = 0;
             self.second += 1;
             self.start = Some(now);
         }
         self.frames += 1;
-        for (i, name) in PARTS.iter().enumerate() {
-            if let Some(e) = secs.iter().find(|e| e.0 == *name) {
+        for (i, name) in self.parts.iter().enumerate() {
+            if let Some(e) = secs.iter().find(|e| e.0 == name.as_str()) {
                 self.sums[i] += e.1;
             }
         }
     }
 }
 
-#[derive(Default)]
 struct State {
     parts: Option<PartsLog>,
     parts_checked: bool,
@@ -194,13 +326,31 @@ struct State {
     counters: BTreeMap<&'static str, f64>,
 }
 
+impl State {
+    fn new() -> State {
+        State {
+            parts: None,
+            parts_checked: false,
+            frames: Vec::new(),
+            head: 0,
+            sections: BTreeMap::new(),
+            frame_secs: Vec::new(),
+            open: BTreeMap::new(),
+            spikes: SpikeLog::new(rules().spike_log_len),
+            mode: 0,
+            counters: BTreeMap::new(),
+        }
+    }
+}
+
 thread_local! {
-    static S: RefCell<State> = RefCell::new(State::default());
+    static S: RefCell<State> = RefCell::new(State::new());
 }
 
 /// Records one frame's duration in seconds and the draw calls it made.
 pub fn frame(dt: f32) {
     let draws = crate::render::builder::take_draw_count();
+    let r = rules();
     S.with(|s| {
         let mut s = s.borrow_mut();
         let s = &mut *s;
@@ -210,7 +360,7 @@ pub fn frame(dt: f32) {
             s.frames.iter().sum::<f32>() / s.frames.len() as f32
         };
         s.spikes.tick(Instant::now(), draws);
-        if dt * 1000.0 > SPIKE_MS {
+        if is_spike(r, dt) {
             let (section, section_ms) = s
                 .frame_secs
                 .iter()
@@ -222,9 +372,9 @@ pub fn frame(dt: f32) {
                 section,
                 section_ms,
             });
-            s.spikes.log_spike(dt * 1000.0, &s.frame_secs);
+            s.spikes.log_spike(r, dt * 1000.0, &s.frame_secs);
         }
-        if s.frames.len() >= 30 && dt > avg * 2.0 && dt > 0.025 {
+        if is_debug_spike(r, dt, avg, s.frames.len()) {
             let worst = s
                 .sections
                 .iter()
@@ -239,19 +389,19 @@ pub fn frame(dt: f32) {
         }
         if !s.parts_checked {
             s.parts_checked = true;
-            s.parts = PartsLog::open();
+            s.parts = PartsLog::open(&r.parts);
         }
         if let Some(p) = s.parts.as_mut() {
             p.tick(Instant::now(), &s.frame_secs);
         }
         s.frame_secs.clear();
-        if s.frames.len() < HISTORY {
+        if s.frames.len() < r.history {
             s.frames.push(dt);
         } else {
             let h = s.head;
             s.frames[h] = dt;
         }
-        s.head = (s.head + 1) % HISTORY;
+        s.head = (s.head + 1) % r.history;
     });
     counter("draws", f64::from(draws));
 }
@@ -266,12 +416,13 @@ pub fn section(name: &'static str) -> Section {
 
 impl Drop for Section {
     fn drop(&mut self) {
+        let r = rules();
         S.with(|s| {
             let mut s = s.borrow_mut();
             if let Some(t) = s.open.remove(self.0) {
                 let ms = t.elapsed().as_secs_f32() * 1000.0;
                 let e = s.sections.entry(self.0).or_insert(ms);
-                *e = *e * 0.9 + ms * 0.1;
+                *e = *e * r.section_keep + ms * r.section_new;
                 match s.frame_secs.iter_mut().find(|e| e.0 == self.0) {
                     Some(e) => e.1 += ms,
                     None => s.frame_secs.push((self.0, ms)),
@@ -332,6 +483,7 @@ pub fn draw_overlay(font: Option<&Font>, extra: &[(String, String)]) {
     if mode == 0 {
         return;
     }
+    let r = rules();
     let (fps, avg, low, worst) = stats();
     let tp = |size: u16, color: Color| TextParams {
         font,
@@ -364,9 +516,9 @@ pub fn draw_overlay(font: Option<&Font>, extra: &[(String, String)]) {
         1.0,
         Color::new(0.45, 0.3, 0.5, 1.0),
     );
-    let ok = if avg < 17.5 {
+    let ok = if avg < r.good_ms {
         GREEN
-    } else if avg < 34.0 {
+    } else if avg < r.ok_ms {
         YELLOW
     } else {
         RED
@@ -378,27 +530,29 @@ pub fn draw_overlay(font: Option<&Font>, extra: &[(String, String)]) {
         tp(15, ok),
     );
     y += 16.0;
-    // the frame-time graph: last 240 frames, 16.7 and 33.3 ms guides
+    // the frame-time graph: last `history` frames, with the guide lines from data/perf.json
     let gh = 40.0;
     let gy = y;
     draw_rectangle(x, gy, w - 12.0, gh, Color::new(1.0, 1.0, 1.0, 0.04));
-    for (ms, c) in [
-        (16.7, Color::new(0.3, 0.9, 0.4, 0.4)),
-        (33.3, Color::new(0.9, 0.4, 0.3, 0.4)),
-    ] {
-        let ly = gy + gh - (ms / 50.0 * gh).min(gh);
+    for (i, ms) in r.guides_ms.iter().enumerate() {
+        let c = if i == 0 {
+            Color::new(0.3, 0.9, 0.4, 0.4)
+        } else {
+            Color::new(0.9, 0.4, 0.3, 0.4)
+        };
+        let ly = gy + gh - (ms / r.graph_max_ms * gh).min(gh);
         draw_line(x, ly, x + w - 12.0, ly, 1.0, c);
     }
     S.with(|s| {
         let s = s.borrow();
         let n = s.frames.len();
         for i in 0..n {
-            let f = s.frames[(s.head + HISTORY - n + i) % HISTORY.max(n)] * 1000.0;
-            let bh = (f / 50.0 * gh).min(gh);
-            let bx = x + i as f32 * (w - 12.0) / HISTORY as f32;
-            let c = if f < 17.5 {
+            let f = s.frames[(s.head + r.history - n + i) % r.history.max(n)] * 1000.0;
+            let bh = (f / r.graph_max_ms * gh).min(gh);
+            let bx = x + i as f32 * (w - 12.0) / r.history as f32;
+            let c = if f < r.good_ms {
                 Color::new(0.4, 0.9, 0.5, 0.9)
-            } else if f < 34.0 {
+            } else if f < r.ok_ms {
                 YELLOW
             } else {
                 RED
@@ -415,7 +569,10 @@ pub fn draw_overlay(font: Option<&Font>, extra: &[(String, String)]) {
     row("frame avg", format!("{avg:.2} ms"));
     row("1% low", format!("{low:.0} fps"));
     row("worst (4 s)", format!("{worst:.1} ms"));
-    row("spikes >33 ms", S.with(|s| s.borrow().spikes.total.to_string()));
+    row(
+        &format!("spikes >{:.0} ms", r.spike_ms),
+        S.with(|s| s.borrow().spikes.total.to_string()),
+    );
     row(
         "last spike",
         S.with(|s| {
@@ -454,15 +611,65 @@ mod tests {
         }
     }
 
+    fn parsed(text: &str) -> Rules {
+        Rules::parse(&serde_json::from_str::<Value>(text).expect("valid json"))
+    }
+
+    #[test]
+    fn data_file_matches_standard_defaults() {
+        let v: Value = serde_json::from_str(include_str!("../data/perf.json")).expect("perf.json parses");
+        assert_eq!(v["schema"].as_str(), Some("lr.perf/1"));
+        assert_eq!(Rules::parse(&v), Rules::default());
+        assert_eq!(Rules::default().history, 240);
+        assert_eq!(Rules::default().spike_ms, 33.3);
+        assert_eq!(Rules::default().spike_log_len, 20);
+        assert_eq!(Rules::default().spike_lines_per_sec, 5);
+        assert_eq!(Rules::default().parts.len(), 7);
+    }
+
+    #[test]
+    fn changing_spike_threshold_in_data_changes_spike_detection() {
+        let std_rules = Rules::default();
+        let tight = parsed(r#"{ "spike_ms": 20.0 }"#);
+        assert!(!is_spike(&std_rules, 0.025));
+        assert!(is_spike(&tight, 0.025));
+        assert!(!is_spike(&tight, 0.019));
+    }
+
+    #[test]
+    fn debug_spike_rule_reads_frames_ratio_and_ms_from_data() {
+        let std_rules = Rules::default();
+        assert!(!is_debug_spike(&std_rules, 0.1, 0.01, 29));
+        assert!(is_debug_spike(&std_rules, 0.1, 0.01, 30));
+        assert!(!is_debug_spike(&std_rules, 0.02, 0.01, 100));
+        let loose = parsed(r#"{ "debug_min_frames": 5, "debug_avg_ratio": 1.5, "debug_min_ms": 10.0 }"#);
+        assert!(is_debug_spike(&loose, 0.02, 0.01, 5));
+        assert!(!is_debug_spike(&loose, 0.009, 0.001, 5));
+    }
+
+    #[test]
+    fn spike_log_length_comes_from_data() {
+        let mut log = SpikeLog::new(parsed(r#"{ "spike_log_len": 5 }"#).spike_log_len);
+        for i in 1..=8 {
+            log.push(spike(i as f32));
+        }
+        assert_eq!(log.total, 8);
+        assert_eq!(log.entries.len(), 5);
+        let mut kept: Vec<f32> = log.entries.iter().map(|s| s.ms).collect();
+        kept.sort_by(|a, b| a.total_cmp(b));
+        assert_eq!(kept, vec![4.0, 5.0, 6.0, 7.0, 8.0]);
+        assert_eq!(log.latest().map(|s| s.ms), Some(8.0));
+    }
+
     #[test]
     fn spike_log_keeps_only_the_last_twenty() {
-        let mut log = SpikeLog::default();
+        let mut log = SpikeLog::new(Rules::default().spike_log_len);
         assert!(log.latest().is_none());
         for i in 1..=25 {
             log.push(spike(i as f32));
         }
         assert_eq!(log.total, 25);
-        assert_eq!(log.entries.len(), SPIKE_LOG_LEN);
+        assert_eq!(log.entries.len(), 20);
         let mut kept: Vec<f32> = log.entries.iter().map(|s| s.ms).collect();
         kept.sort_by(|a, b| a.total_cmp(b));
         let expected: Vec<f32> = (6..=25).map(|i| i as f32).collect();
@@ -472,11 +679,43 @@ mod tests {
 
     #[test]
     fn spike_log_latest_tracks_pushes_before_it_is_full() {
-        let mut log = SpikeLog::default();
+        let mut log = SpikeLog::new(20);
         log.push(spike(34.0));
         assert_eq!(log.latest().map(|s| s.ms), Some(34.0));
         log.push(spike(50.0));
         assert_eq!(log.latest().map(|s| s.ms), Some(50.0));
         assert_eq!(log.total, 2);
+    }
+
+    #[test]
+    fn csv_header_is_unchanged_by_default_and_follows_data_parts() {
+        assert_eq!(
+            PartsLog::header(&Rules::default().parts),
+            "second,frames,world_meshes_ms,scene_items_ms,doors_ms,hunters_ms,remote_players_ms,viewmodel_ms,render_3d_ms"
+        );
+        let custom = parsed(r#"{ "parts": ["hunters"] }"#);
+        assert_eq!(PartsLog::header(&custom.parts), "second,frames,hunters_ms");
+        let empty = parsed(r#"{ "parts": [] }"#);
+        assert_eq!(empty.parts, Rules::default().parts);
+    }
+
+    #[test]
+    fn history_and_colour_bands_come_from_data() {
+        let r = parsed(r#"{ "history": 60, "good_ms": 10.0, "ok_ms": 20.0, "guides_ms": [8.0] }"#);
+        assert_eq!(r.history, 60);
+        assert_eq!(r.good_ms, 10.0);
+        assert_eq!(r.ok_ms, 20.0);
+        assert_eq!(r.guides_ms, vec![8.0]);
+        assert_eq!(parsed(r#"{ "history": 0 }"#).history, 1);
+        assert_eq!(Rules::default().good_ms, 17.5);
+        assert_eq!(Rules::default().ok_ms, 34.0);
+    }
+
+    #[test]
+    fn section_smoothing_weights_come_from_data() {
+        let r = Rules::default();
+        assert!((r.section_keep + r.section_new - 1.0).abs() < 1e-6);
+        let custom = parsed(r#"{ "section_keep": 0.5, "section_new": 0.5 }"#);
+        assert_eq!((custom.section_keep, custom.section_new), (0.5, 0.5));
     }
 }

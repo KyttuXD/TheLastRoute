@@ -21,6 +21,8 @@ use crate::world::infinite::{ChunkKey, CHUNK, INFERNO_LEVEL, WINDOW};
 use crate::world::{region_texture, Facility, TEXTURE_SETS};
 use macroquad::prelude::*;
 use std::collections::HashMap;
+use std::sync::OnceLock;
+use std::time::Instant;
 
 #[derive(Default)]
 pub struct WorldMeshes {
@@ -36,6 +38,11 @@ pub struct WorldMeshes {
     /// The part each of `meshes` was taken from (None for the safe pad, built fresh each time).
     drawn: Vec<Option<PartKey>>,
     builds: u64,
+    /// Window parts the last rebuild left for a later frame (the frame budget ran out); see `has_pending`. While any
+    /// are pending and something is drawn, the drawn set stays as it was, so the floor shows no holes.
+    pending: usize,
+    /// The window frame the last window rebuild was for: a jump from it (a level change or a teleport) builds in one step.
+    last_frame: Option<ChunkFrame>,
 }
 
 /// A room door to draw each frame: its threshold cell (the key of `Facility::door_open_amount`), the model it uses and
@@ -193,6 +200,23 @@ fn reframe(meshes: &mut [Mesh], from: (i32, i32), to: (i32, i32)) {
     }
 }
 
+/// Whether a move of the window from `from` to `to` is a jump (a level change, or a centre more than `jump_steps`
+/// chunks away) rather than a step. streamed_facility_view_3d.gd 726-727.
+fn is_jump(from: ChunkFrame, to: ChunkFrame, jump_steps: i32) -> bool {
+    from.level != to.level
+        || (from.center.0 - to.center.0).abs() > jump_steps
+        || (from.center.1 - to.center.1).abs() > jump_steps
+}
+
+/// Whether the window's parts are all built in this one rebuild: a jump from the last window, or coming back onto the
+/// window after a floor that was not on it (`builds_before` > 0). The first load of a run streams.
+fn builds_in_one_step(last: Option<ChunkFrame>, next: ChunkFrame, builds_before: u64, jump_steps: i32) -> bool {
+    match last {
+        Some(last) => is_jump(last, next, jump_steps),
+        None => builds_before > 0,
+    }
+}
+
 impl WorldMeshes {
     /// Rebuilds the meshes for `f`. On the Infinite window (`frame`) only the chunk parts that are new, or whose
     /// neighbour chunks changed, are built; the rest are moved to the new window origin. Any other floor is
@@ -207,11 +231,6 @@ impl WorldMeshes {
     ) {
         self.lamps = lamps(f, lights_on, content);
         self.doors = door_instances(f, assets, content);
-        for (m, key) in std::mem::take(&mut self.meshes).into_iter().zip(std::mem::take(&mut self.drawn)) {
-            if let Some(p) = key.and_then(|k| self.parts.get_mut(&k)) {
-                p.meshes.push(m);
-            }
-        }
         let size = CHUNK * WINDOW;
         let frame = frame.filter(|fr| {
             f.cols == size
@@ -221,6 +240,7 @@ impl WorldMeshes {
         let mut choices = HashMap::new();
         let Some(frame) = frame else {
             self.parts.clear();
+            self.last_frame = None;
             let pick = Pick {
                 cells: drawn_cells(f),
                 rooms: (0..f.rooms.len()).collect(),
@@ -232,20 +252,53 @@ impl WorldMeshes {
             self.bounds = mesh_bounds(&self.meshes);
             return;
         };
-        self.builds += 1;
+        let table = stream_table();
+        let started = Instant::now();
+        // a level change or a teleport builds its whole window in this one step; a step builds what the budget allows
+        let one_step = builds_in_one_step(self.last_frame, frame, self.builds, table.jump_steps);
+        self.last_frame = Some(frame);
+        let build_no = self.builds + 1;
+        let wanted = window_parts(f, frame);
+        let queued = wanted.iter().filter(|(k, _)| !self.parts.contains_key(k)).count();
+        // Phase 1: build the parts still missing (the budget is data: data/render/stream.json). The drawn set is not
+        // touched until every wanted part is here, so the old geometry stays on screen while the rest waits for later
+        // frames, and no hole is drawn.
+        let mut built = 0;
+        let mut pending = 0;
+        for (key, pick) in &wanted {
+            if let Some(p) = self.parts.get_mut(key) {
+                p.used = build_no;
+                continue;
+            }
+            if !one_step && !table.allows(built, started.elapsed().as_secs_f64() * 1000.0, queued) {
+                pending += 1;
+                continue;
+            }
+            built += 1;
+            let meshes = build_meshes(f, pick, &mut choices, assets, content);
+            self.parts.insert(*key, Part { meshes, origin: f.origin, used: build_no });
+        }
+        self.pending = pending;
+        // with something drawn, the drawn set waits for the window to be whole; with nothing drawn yet (the first
+        // load) the built parts show as they come
+        if pending > 0 && !self.drawn.is_empty() {
+            return;
+        }
+        self.builds = build_no;
+        // Phase 2: the drawn set goes back into the parts it came from, then every wanted part is drawn in order.
+        for (m, key) in std::mem::take(&mut self.meshes).into_iter().zip(std::mem::take(&mut self.drawn)) {
+            if let Some(p) = key.and_then(|k| self.parts.get_mut(&k)) {
+                p.meshes.push(m);
+            }
+        }
         let mut out: Vec<(Option<PartKey>, Mesh)> = vec![];
-        for (key, pick) in window_parts(f, frame) {
-            let part = self.parts.entry(key).or_insert_with(|| Part {
-                meshes: build_meshes(f, &pick, &mut choices, assets, content),
-                origin: f.origin,
-                used: 0,
-            });
-            part.used = self.builds;
+        for (key, _) in &wanted {
+            let part = self.parts.get_mut(key).expect("phase 1 built or kept every wanted part");
             if part.origin != f.origin {
                 reframe(&mut part.meshes, part.origin, f.origin);
                 part.origin = f.origin;
             }
-            out.extend(part.meshes.drain(..).map(|m| (Some(key), m)));
+            out.extend(part.meshes.drain(..).map(|m| (Some(*key), m)));
         }
         out.extend(safe_pad(f, assets).into_iter().map(|m| (None, m)));
         // the window's last two builds stay, so a step back or a flight straight back up builds nothing
@@ -270,6 +323,93 @@ impl WorldMeshes {
         self.meshes = meshes;
         self.bounds = mesh_bounds(&self.meshes);
     }
+
+    /// Whether the last rebuild left window parts unbuilt: the caller calls `rebuild` again (same floor) until
+    /// this is false, so a window change is spread over frames instead of one long frame.
+    pub fn has_pending(&self) -> bool {
+        self.pending > 0
+    }
+}
+
+/// Path of the streaming budget under data/ (the embedded file's name).
+pub const STREAM_TABLE_PATH: &str = "render/stream.json";
+
+/// The streaming budget of the window's chunk builds (data/render/stream.json). Godot's values: STREAM_BUDGET_MS,
+/// STREAM_BUDGET_PER_QUEUED_MS, STREAM_BUDGET_MAX_MS (streamed_facility_view_3d.gd 36-38) and
+/// STARTUP_CHUNKS_PER_FRAME (line 1370).
+pub struct StreamBudget {
+    pub frame_budget_ms: f64,
+    pub per_queued_ms: f64,
+    pub max_budget_ms: f64,
+    pub chunks_per_frame: usize,
+    /// A window centre more than this many chunks from the last one in a frame is a jump (a teleport): built in one step.
+    pub jump_steps: i32,
+}
+
+impl StreamBudget {
+    /// Parses `{ "frame_budget_ms", "per_queued_ms", "max_budget_ms", "chunks_per_frame", "jump_steps" }`; the times
+    /// must be positive, chunks_per_frame a whole number of at least 1 and jump_steps one of at least 1.
+    pub fn parse(text: &str) -> Result<StreamBudget, String> {
+        let value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let num = |key: &str| -> Result<f64, String> {
+            value
+                .get(key)
+                .and_then(|v| v.as_f64())
+                .filter(|v| *v > 0.0)
+                .ok_or_else(|| format!("{key}: must be a positive number"))
+        };
+        let chunks = value
+            .get("chunks_per_frame")
+            .and_then(|v| v.as_u64())
+            .filter(|v| *v >= 1)
+            .ok_or_else(|| "chunks_per_frame: must be a whole number of at least 1".to_string())?;
+        let jump_steps = value
+            .get("jump_steps")
+            .and_then(|v| v.as_i64())
+            .and_then(|v| i32::try_from(v).ok())
+            .filter(|v| *v >= 1)
+            .ok_or_else(|| "jump_steps: must be a whole number of at least 1".to_string())?;
+        Ok(StreamBudget {
+            frame_budget_ms: num("frame_budget_ms")?,
+            per_queued_ms: num("per_queued_ms")?,
+            max_budget_ms: num("max_budget_ms")?,
+            chunks_per_frame: chunks as usize,
+            jump_steps,
+        })
+    }
+
+    /// The milliseconds a frame may spend on chunk builds with `queued` parts still to build, capped at the max.
+    pub fn budget_ms(&self, queued: usize) -> f64 {
+        (self.frame_budget_ms + self.per_queued_ms * queued as f64).min(self.max_budget_ms)
+    }
+
+    /// Whether one more part may be built after `built` this frame, `elapsed_ms` into the frame. The first part of
+    /// a rebuild always builds, so the queue never stalls.
+    pub fn allows(&self, built: usize, elapsed_ms: f64, queued: usize) -> bool {
+        built == 0 || (built < self.chunks_per_frame && elapsed_ms < self.budget_ms(queued))
+    }
+}
+
+/// The table compiled into the executable. A table that fails to parse is reported on stderr and the Standard
+/// values are used.
+pub fn stream_table() -> &'static StreamBudget {
+    static TABLE: OnceLock<StreamBudget> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let text = crate::content::embedded::data_under(STREAM_TABLE_PATH)
+            .next()
+            .map(|(_, text)| text)
+            .unwrap_or("{}");
+        StreamBudget::parse(text).unwrap_or_else(|e| {
+            eprintln!("{STREAM_TABLE_PATH}: {e}");
+            StreamBudget {
+                frame_budget_ms: 4.0,
+                per_queued_ms: 1.0,
+                max_budget_ms: 9.0,
+                chunks_per_frame: 4,
+                jump_steps: 1,
+            }
+        })
+    })
 }
 
 /// Each mesh's box over its vertices (min, max). An empty mesh gets an inverted box, which the scene's cull treats as far.
@@ -1102,5 +1242,103 @@ mod tests {
             }
         }
         assert_eq!(shared, 36);
+    }
+}
+
+#[cfg(test)]
+mod stream_budget_tests {
+    use super::*;
+
+    const STANDARD: &str = r#"{
+  "frame_budget_ms": 4.0,
+  "per_queued_ms": 1.0,
+  "max_budget_ms": 9.0,
+  "chunks_per_frame": 4,
+  "jump_steps": 1
+}"#;
+
+    #[test]
+    fn the_embedded_stream_table_holds_the_godot_standard_values() {
+        let t = stream_table();
+        assert_eq!(t.frame_budget_ms, 4.0, "streamed_facility_view_3d.gd STREAM_BUDGET_MS");
+        assert_eq!(t.per_queued_ms, 1.0, "streamed_facility_view_3d.gd STREAM_BUDGET_PER_QUEUED_MS");
+        assert_eq!(t.max_budget_ms, 9.0, "streamed_facility_view_3d.gd STREAM_BUDGET_MAX_MS");
+        assert_eq!(t.chunks_per_frame, 4, "streamed_facility_view_3d.gd STARTUP_CHUNKS_PER_FRAME");
+        assert_eq!(t.jump_steps, 1, "streamed_facility_view_3d.gd 726-727: more than one chunk away is a jump");
+    }
+
+    #[test]
+    fn the_budget_grows_with_the_queue_and_stops_at_the_max() {
+        let t = StreamBudget::parse(STANDARD).unwrap();
+        assert_eq!(t.budget_ms(0), 4.0);
+        assert_eq!(t.budget_ms(3), 7.0);
+        assert_eq!(t.budget_ms(20), 9.0, "capped at STREAM_BUDGET_MAX_MS");
+    }
+
+    #[test]
+    fn a_larger_frame_budget_in_the_data_builds_more_in_one_frame() {
+        let standard = StreamBudget::parse(STANDARD).unwrap();
+        let roomy = StreamBudget::parse(&STANDARD.replace("\"frame_budget_ms\": 4.0", "\"frame_budget_ms\": 8.0")).unwrap();
+        // 5 ms into the frame with one part built: the Standard budget (4 + 1 per queued part) is spent, a roomier one is not
+        assert!(!standard.allows(1, 5.0, 0));
+        assert!(roomy.allows(1, 5.0, 0));
+    }
+
+    #[test]
+    fn the_chunks_per_frame_cap_in_the_data_limits_the_builds() {
+        let standard = StreamBudget::parse(STANDARD).unwrap();
+        let capped = StreamBudget::parse(&STANDARD.replace("\"chunks_per_frame\": 4", "\"chunks_per_frame\": 2")).unwrap();
+        assert!(standard.allows(3, 0.0, 9));
+        assert!(!capped.allows(2, 0.0, 9));
+        assert!(capped.allows(1, 0.0, 9));
+    }
+
+    #[test]
+    fn the_first_part_of_a_rebuild_always_builds() {
+        let t = StreamBudget::parse(STANDARD).unwrap();
+        assert!(t.allows(0, 999.0, 9), "no stall: at least one part per rebuild");
+    }
+
+    #[test]
+    fn a_jump_is_more_than_one_chunk_away_or_a_level_change_as_in_godot() {
+        let t = StreamBudget::parse(STANDARD).unwrap();
+        let at = |level: i32, x: i32, z: i32| ChunkFrame { level, center: (x, z) };
+        assert!(!is_jump(at(0, 5, 5), at(0, 6, 6), t.jump_steps), "a diagonal step to the next chunk is a step");
+        assert!(is_jump(at(0, 5, 5), at(0, 7, 5), t.jump_steps), "two chunks in one frame is a teleport");
+        assert!(is_jump(at(0, 5, 5), at(0, 5, 2), t.jump_steps), "a teleport along z is a jump too");
+        assert!(is_jump(at(0, 5, 5), at(1, 5, 5), t.jump_steps), "a level change is a jump");
+    }
+
+    #[test]
+    fn a_larger_jump_steps_in_the_data_changes_which_moves_are_jumps() {
+        let standard = StreamBudget::parse(STANDARD).unwrap();
+        let roomy = StreamBudget::parse(&STANDARD.replace("\"jump_steps\": 1", "\"jump_steps\": 3")).unwrap();
+        let (from, to) = (ChunkFrame { level: 0, center: (5, 5) }, ChunkFrame { level: 0, center: (7, 5) });
+        assert!(is_jump(from, to, standard.jump_steps));
+        assert!(!is_jump(from, to, roomy.jump_steps));
+    }
+
+    #[test]
+    fn a_teleport_or_a_level_change_builds_its_window_in_one_step_and_a_step_streams() {
+        let t = StreamBudget::parse(STANDARD).unwrap();
+        let at = |level: i32, x: i32, z: i32| ChunkFrame { level, center: (x, z) };
+        assert!(!builds_in_one_step(None, at(0, 5, 5), 0, t.jump_steps), "the first load of a run streams");
+        assert!(builds_in_one_step(None, at(0, 5, 5), 3, t.jump_steps), "back onto the window after leaving the floor");
+        assert!(!builds_in_one_step(Some(at(0, 5, 5)), at(0, 6, 5), 3, t.jump_steps), "a step streams");
+        assert!(builds_in_one_step(Some(at(0, 5, 5)), at(0, 9, 5), 3, t.jump_steps), "a teleport builds in one step");
+        assert!(builds_in_one_step(Some(at(0, 5, 5)), at(2, 5, 5), 3, t.jump_steps), "a level change builds in one step");
+    }
+
+    #[test]
+    fn a_bad_jump_steps_is_refused() {
+        assert!(StreamBudget::parse(&STANDARD.replace("\"jump_steps\": 1", "\"jump_steps\": 0")).is_err());
+        assert!(StreamBudget::parse(&STANDARD.replace("\"jump_steps\": 1", "\"jump_steps\": 1.5")).is_err());
+    }
+
+    #[test]
+    fn a_table_with_a_bad_value_is_refused() {
+        assert!(StreamBudget::parse(&STANDARD.replace("\"max_budget_ms\": 9.0", "\"max_budget_ms\": 0")).is_err());
+        assert!(StreamBudget::parse(&STANDARD.replace("\"chunks_per_frame\": 4", "\"chunks_per_frame\": 0")).is_err());
+        assert!(StreamBudget::parse(&STANDARD.replace("\"per_queued_ms\": 1.0,", "")).is_err());
     }
 }

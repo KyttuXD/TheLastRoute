@@ -1,0 +1,7 @@
+{
+  "frame_budget_ms": 4.0,
+  "per_queued_ms": 1.0,
+  "max_budget_ms": 9.0,
+  "chunks_per_frame": 4,
+  "jump_steps": 1
+}

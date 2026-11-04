@@ -1,0 +1,20 @@
+{
+  "schema": "lr.player_models/1",
+  "_source": "Godot: LastRoute Godot/KyttusLabApp/game/config/player_models.gd (one body for every runner); rig and bone names from assets/hunters_blocky/player_mannequin/player_mannequin.bbmodel; standard swing amplitudes from src/bin/last_route/render/bbmodel.rs build_scaled (arm 0.9, leg 0.75).",
+  "runner": {
+    "body": "blocky",
+    "standing": { "swing": 0.0, "amp": 0.0 }
+  },
+  "bodies": {
+    "blocky": {
+      "model": "player/player_mannequin.bbmodel",
+      "atlas": "player/player_mannequin_atlas.png",
+      "bones": {
+        "R-Arm": { "side": 1.0, "amp": 0.9, "max_deg": 60.0 },
+        "L-Arm": { "side": -1.0, "amp": 0.9, "max_deg": 60.0 },
+        "L-Thigh": { "side": 1.0, "amp": 0.75, "max_deg": 50.0 },
+        "R-Thigh": { "side": -1.0, "amp": 0.75, "max_deg": 50.0 }
+      }
+    }
+  }
+}

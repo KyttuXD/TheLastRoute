@@ -20,6 +20,7 @@ mod effects;
 mod hub;
 mod look;
 mod menu;
+mod menu_data;
 mod prefs;
 
 pub use hub::{draw_hub, HubPanel};

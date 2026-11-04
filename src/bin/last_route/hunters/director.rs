@@ -71,8 +71,14 @@ pub const SCATTER_HOLD: f32 = 16.0;
 pub const SCATTER_CLEAR: f32 = 12.0;
 pub const SEPARATION: f32 = 1.1;
 pub const SEPARATION_SPEED: f32 = 2.5;
-pub const RELAY_RUSH_COUNT: i32 = 7;
-pub const RELAY_RUSH_DELAY: f32 = 45.0;
+/// Relay rush starts at this many relays (data/progression.json relay_rush.relays; Standard 7).
+pub fn relay_rush_count() -> i32 {
+    crate::game::progression::Progression::load().rush_relays
+}
+/// ... once that has held this long, in seconds (relay_rush.delay_seconds; Standard 45.0).
+pub fn relay_rush_delay() -> f32 {
+    crate::game::progression::Progression::load().rush_delay
+}
 pub const RUSH_HOLD: f32 = 14.0;
 pub const RUSH_ARRIVED: f32 = 3.0;
 
@@ -169,7 +175,7 @@ impl Director {
     pub fn relay_rush_active(&self) -> bool {
         self.relay_rush_enabled
             && self.rush_since >= 0.0
-            && self.clock - self.rush_since >= RELAY_RUSH_DELAY
+            && self.clock - self.rush_since >= relay_rush_delay()
     }
 
     /// One frame. `targets[i]` is the runner position hunter i is after (None when it has none);
@@ -184,7 +190,7 @@ impl Director {
     ) {
         self.clock += dt;
         self.timer += dt;
-        if self.relay_rush_enabled && self.relays_collected >= RELAY_RUSH_COUNT {
+        if self.relay_rush_enabled && self.relays_collected >= relay_rush_count() {
             if self.rush_since < 0.0 {
                 self.rush_since = self.clock;
             }

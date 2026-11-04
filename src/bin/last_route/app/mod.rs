@@ -19,6 +19,7 @@ pub mod pacing;
 pub mod perf;
 pub mod platform;
 pub mod profile;
+pub mod public_route;
 pub mod screenshot;
 pub mod selftest;
 pub mod settings;
@@ -673,6 +674,17 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
                 diff = world_sync::difficulty_from_name(n.room_difficulty());
             }
         }
+        // a guest's game runs no hunter simulation: the host's frames drive the hunters (game/hunting.rs)
+        if let Some(g) = playing.as_mut() {
+            g.remote_hunters = net.as_ref().is_some_and(|n| !n.is_host());
+        }
+        // the host's hunters and their events go to the guests (a guest never sends them)
+        if let (Some(n), Some(g)) = (net.as_mut().filter(|n| n.is_host()), playing.as_ref()) {
+            if loading.is_none() {
+                let grab = g.escape.as_ref().map(|e| e.hunter);
+                n.send_hunter_frame(g.hunter_frame(), g.difficulty, grab, std::time::Instant::now());
+            }
+        }
         let mut room_closed: Option<String> = None;
         for event in room_events {
             match event {
@@ -685,6 +697,17 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
                     }
                 }
                 NetEvent::Seed(seed) => room = seed,
+                NetEvent::Hunters(data) => {
+                    // the host's hunters: a guest shows them, the host's frame is the one that counts
+                    if let Some(g) = playing.as_mut() {
+                        g.apply_hunter_frame(&data);
+                    }
+                }
+                NetEvent::WorldEvent(event) => {
+                    if let Some(text) = crate::net::hunter_events::notice(&event) {
+                        show_room_notice(playing.as_mut(), &mut ui, &text);
+                    }
+                }
                 NetEvent::Packs(ids) => {
                     // the room's mod packs: packs load at boot, so a pack this game lacks is named, not applied now
                     let missing: Vec<&str> = ids

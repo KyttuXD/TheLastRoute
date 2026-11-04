@@ -7,6 +7,7 @@
 //! FIELDS line edits. Clicks become `Cmd`s that `actions.rs` runs on the Game.
 
 use super::look::*;
+use super::menu_data::menu;
 use super::{Admin, Popup, TABS};
 use crate::app::assets::Assets;
 use crate::content::Content;
@@ -22,149 +23,6 @@ pub(super) enum Cmd {
     Npc(&'static str),
     Field(usize),
 }
-
-pub(super) const ITEMS: [(&str, &str); 11] = [
-    ("flashlight", "FLASHLIGHT"),
-    ("taser", "TASER"),
-    ("lockpick", "LOCKPICK SET"),
-    ("crowbar", "CROWBAR"),
-    ("rescue_axe", "AXE"),
-    ("battery", "FLASHLIGHT BATTERY"),
-    ("stim_pack", "STIM PACK"),
-    ("revive_kit", "REVIVE KIT"),
-    ("backpack_small", "SMALL BACKPACK"),
-    ("backpack_medium", "MEDIUM BACKPACK"),
-    ("backpack_large", "LARGE BACKPACK"),
-];
-pub(super) const TELEPORTS: [(&str, &str); 8] = [
-    ("north", "CHUNK N"),
-    ("south", "CHUNK S"),
-    ("east", "CHUNK E"),
-    ("west", "CHUNK W"),
-    ("safe_room", "SAFE ROOM"),
-    ("relay", "NEAREST RELAY"),
-    ("start", "START"),
-    ("checkpoint", "CHECKPOINT"),
-];
-pub(super) const RUN_SPEEDS: [(f32, &str); 4] =
-    [(1.0, "1X"), (1.5, "1.5X"), (2.0, "2X"), (3.0, "3X")];
-pub(super) const GAME_SPEEDS: [(f32, &str); 6] = [
-    (0.0, "PAUSE"),
-    (0.25, "0.25X"),
-    (1.0, "1X"),
-    (2.0, "2X"),
-    (4.0, "4X"),
-    (-1.0, "STEP 1 FRAME"),
-];
-pub(super) const STORIES: [(&str, &str); 3] = [
-    ("admin_sample_tour", "ADMIN SAMPLE TOUR"),
-    ("first_signal", "FIRST SIGNAL"),
-    ("ilyra_warning", "ILYRA WARNING"),
-];
-pub(super) const HUNTER_DO: [&str; 4] = [
-    "SUMMON",
-    "REMOVE (ALL MATCHES)",
-    "TOGGLE (SUMMON / REMOVE ALL MATCHES)",
-    "PLAY EMOTE (NEARBY)",
-];
-pub(super) const EMOTES: [&str; 14] = [
-    "TAUNT",
-    "LAUGH",
-    "POINT",
-    "BECKON",
-    "SHRUG",
-    "LOOK AROUND",
-    "SMUG",
-    "DANCE",
-    "FLINCH",
-    "STRETCH",
-    "YAWN",
-    "HUM",
-    "WAVE",
-    "VICTORY",
-];
-const ACT_GENERAL: [(&str, &str); 7] = [
-    ("REFRESH ADMIN ROSTER", "roster_refresh"),
-    ("RESTART ROUTE // NEW SEED", "restart_new"),
-    ("RESTART ROUTE // SAME SEED", "restart_same"),
-    ("END ROUTE", "end_route"),
-    ("ROOM MUTE LAST SPEAKER", "chat_mute"),
-    ("ROOM UNMUTE EVERYONE", "chat_unmute"),
-    ("KICK LAST SPEAKER", "chat_kick"),
-];
-const ACT_PLAYER: [(&str, &str); 3] = [
-    ("FULL LAMP", "full_lamp"),
-    ("RESTORE PLAYER", "restore_player"),
-    ("CLEAR STUN + COOLDOWNS", "clear_stun"),
-];
-const ACT_HUNTERS: [(&str, &str); 7] = [
-    ("STUN ALL HUNTERS", "stun_hunters"),
-    ("WAKE ALL HUNTERS", "wake_hunters"),
-    ("CALM ALL HUNTERS", "calm_hunters"),
-    ("FREEZE ALL HUNTERS", "freeze_hunters"),
-    ("RELEASE ALL HUNTERS", "release_hunters"),
-    ("SUMMON ALL HUNTERS", "summon_all"),
-    ("REMOVE SUMMONED HUNTERS", "remove_summoned"),
-];
-const ACT_WORLD: [(&str, &str); 6] = [
-    ("GRANT RELAY", "grant_relay"),
-    ("ALL LOADED RELAYS", "all_relays"),
-    ("DAMAGE CHECKPOINT", "damage_checkpoint"),
-    ("REPAIR CHECKPOINT", "repair_checkpoint"),
-    ("COPY SEED", "copy_seed"),
-    ("COPY ROOM CODE", "copy_room_code"),
-];
-const ACT_STORY: [(&str, &str); 2] = [
-    ("STOP STORY / CUTSCENE", "story_stop"),
-    ("RESET STORY STATE", "story_reset"),
-];
-const ACT_VISUAL: [(&str, &str); 4] = [
-    ("TELEPORT TO WAYPOINT", "waypoint_teleport"),
-    ("CLEAR WAYPOINT", "waypoint_clear"),
-    ("SPAWN RAVELLE TRAP HERE", "ravelle_trap"),
-    ("LIGHT PROBE HERE", "light_probe"),
-];
-const NPC_OPS: [(&str, &str); 17] = [
-    ("TELEPORT TO ME", "teleport"),
-    ("GO TO ME", "goto"),
-    ("FOLLOW ME", "follow"),
-    ("STOP FOLLOWING", "unfollow"),
-    ("FREEZE", "freeze"),
-    ("RESUME", "resume"),
-    ("HUNTERS IGNORE", "ignore"),
-    ("HUNTERS TARGET", "target"),
-    ("CHAT ON", "chat_on"),
-    ("CHAT OFF", "chat_off"),
-    ("SMART = SPAWN SMART", "smart"),
-    ("DOWN", "down"),
-    ("REVIVE", "revive"),
-    ("KILL", "kill"),
-    ("REMOVE", "remove"),
-    ("CLEAR HUNTER FLAGS", "clear"),
-    ("SPECTATE", "spectate"),
-];
-const NPC_ALL: [(&str, &str); 11] = [
-    ("ALL TO ME", "all_teleport"),
-    ("ALL FOLLOW ME", "all_follow"),
-    ("ALL STOP FOLLOW", "all_unfollow"),
-    ("ALL FREEZE", "all_freeze"),
-    ("ALL RESUME", "all_resume"),
-    ("ALL IGNORE", "all_ignore"),
-    ("ALL TARGET", "all_target"),
-    ("ALL CLEAR", "all_clear"),
-    ("ALL CHAT ON", "all_chat_on"),
-    ("ALL CHAT OFF", "all_chat_off"),
-    ("ALL SMART", "all_smart"),
-];
-pub(super) const NPC_SMARTS: [i32; 4] = [30, 50, 70, 90];
-pub(super) const FIELDS: [(&str, &str); 3] = [
-    ("SAFE TELEPORT", "X,Z or X,Z,LEVEL"),
-    (
-        "ADD / UPDATE LIMITED ADMIN",
-        "USERNAME:player,world,hunters,visual,inventory",
-    ),
-    ("REMOVE LIMITED ADMIN", "USERNAME"),
-];
 
 /// A VBox cursor down the page (pixels).
 struct Col {
@@ -182,7 +40,7 @@ impl Col {
     }
 }
 
-fn labels<const N: usize>(list: &[(&str, &str); N]) -> Vec<String> {
+fn labels(list: &[(&str, &str)]) -> Vec<String> {
     list.iter().map(|(l, _)| l.to_string()).collect()
 }
 
@@ -417,7 +275,7 @@ impl Admin {
                     &mut cmds,
                     "give_item",
                     "ITEMS",
-                    ITEMS.iter().map(|(_, l)| l.to_string()).collect(),
+                    menu().items.iter().map(|(_, l)| l.to_string()).collect(),
                 );
                 self.dd_row(
                     &mut ui,
@@ -425,7 +283,7 @@ impl Admin {
                     &mut cmds,
                     "act_general",
                     "ACTION",
-                    labels(&ACT_GENERAL),
+                    labels(&menu().act_general),
                 );
             }
             2 => {
@@ -435,7 +293,7 @@ impl Admin {
                     &mut cmds,
                     "teleport",
                     "TELEPORT",
-                    TELEPORTS.iter().map(|(_, l)| l.to_string()).collect(),
+                    menu().teleports.iter().map(|(_, l)| l.to_string()).collect(),
                 );
                 self.dd_row(
                     &mut ui,
@@ -443,7 +301,7 @@ impl Admin {
                     &mut cmds,
                     "run_speed",
                     "RUN SPEED",
-                    RUN_SPEEDS.iter().map(|(_, l)| l.to_string()).collect(),
+                    menu().run_speeds.iter().map(|(_, l)| l.to_string()).collect(),
                 );
                 for (id, label) in [
                     ("no_target", "NO TARGET"),
@@ -458,7 +316,7 @@ impl Admin {
                     &mut cmds,
                     "act_player",
                     "ACTION",
-                    labels(&ACT_PLAYER),
+                    labels(&menu().act_player),
                 );
             }
             3 => {
@@ -469,7 +327,7 @@ impl Admin {
                     &mut cmds,
                     "act_hunters",
                     "ACTION",
-                    labels(&ACT_HUNTERS),
+                    labels(&menu().act_hunters),
                 );
             }
             4 => self.npc_panel(&mut ui, &mut col, &mut cmds, g),
@@ -516,7 +374,7 @@ impl Admin {
                     &mut cmds,
                     "game_speed",
                     "GAME SPEED // SOLO RUNS ONLY",
-                    GAME_SPEEDS.iter().map(|(_, l)| l.to_string()).collect(),
+                    menu().game_speeds.iter().map(|(_, l)| l.to_string()).collect(),
                 );
                 self.toggle_row(
                     &mut ui,
@@ -531,7 +389,7 @@ impl Admin {
                     &mut cmds,
                     "act_world",
                     "ACTION",
-                    labels(&ACT_WORLD),
+                    labels(&menu().act_world),
                 );
             }
             6 => {
@@ -541,7 +399,7 @@ impl Admin {
                     &mut cmds,
                     "story_start",
                     "PLAY STORY / CUTSCENE",
-                    STORIES.iter().map(|(_, l)| l.to_string()).collect(),
+                    menu().stories.iter().map(|(_, l)| l.to_string()).collect(),
                 );
                 self.dd_row(
                     &mut ui,
@@ -549,7 +407,7 @@ impl Admin {
                     &mut cmds,
                     "act_story",
                     "ACTION",
-                    labels(&ACT_STORY),
+                    labels(&menu().act_story),
                 );
             }
             7 => {
@@ -570,7 +428,7 @@ impl Admin {
                     &mut cmds,
                     "act_visual",
                     "ACTION",
-                    labels(&ACT_VISUAL),
+                    labels(&menu().act_visual),
                 );
             }
             8 => {
@@ -702,7 +560,7 @@ impl Admin {
             ui,
             r,
             "hunter_do",
-            HUNTER_DO.iter().map(|s| s.to_string()).collect(),
+            menu().hunter_do.iter().map(|s| s.to_string()).collect(),
             5.0,
         );
         if self.sel_of("hunter_do") == 3 {
@@ -714,7 +572,7 @@ impl Admin {
                 ui,
                 dd,
                 "emote",
-                EMOTES.iter().map(|s| s.to_string()).collect(),
+                menu().emotes.iter().map(|s| s.to_string()).collect(),
                 5.0,
             );
         }
@@ -764,7 +622,7 @@ impl Admin {
         if ui.visible(count) {
             ui.text_center(&self.npc_count.to_string(), count, 7.0, MUTED);
         }
-        let smarts: Vec<String> = NPC_SMARTS.iter().map(|s| format!("SMART {s}")).collect();
+        let smarts: Vec<String> = menu().npc_smarts.iter().map(|s| format!("SMART {s}")).collect();
         if !self.sel.contains_key("npc_smart") {
             self.sel.insert("npc_smart", 2);
         }
@@ -803,9 +661,9 @@ impl Admin {
             None => "NO NPCS".to_string(),
         };
         cap(ui, col, caption.as_str());
-        self.grid(ui, col, cmds, &NPC_OPS);
+        self.grid(ui, col, cmds, &menu().npc_ops);
         cap(ui, col, "ALL NPCS");
-        self.grid(ui, col, cmds, &NPC_ALL);
+        self.grid(ui, col, cmds, &menu().npc_all);
     }
 
     /// GridContainer, 3 columns, 4-unit separations, columns as wide as their widest button.
@@ -880,7 +738,7 @@ impl Admin {
                 cmds.push(Cmd::Field(i));
             }
         }
-        for (i, (label, placeholder)) in FIELDS.iter().enumerate() {
+        for (i, (label, placeholder)) in menu().fields.iter().enumerate() {
             let c = col.take(line_h(7.0), 4.0);
             if ui.visible(c) {
                 ui.text(label, c.x, c.y, 7.0, AMBER);

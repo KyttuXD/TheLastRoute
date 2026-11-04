@@ -1,0 +1,9 @@
+{
+	"schema": "lr.grab/1",
+	"id": "nyxie",
+	"pool": {
+		"wrap": 6,
+		"leg_grab": 2,
+		"upside_down": 2
+	}
+}

@@ -1,8 +1,12 @@
 //! Solyth (special): heat manifest. Once body temperature reaches 100 the heat latches for the
 //! rest of the run and she appears 12 cells away, chasing for good and burning one uncollected
 //! battery every 30 s. Dormant on Relaxed (solyth_gimmick.gd).
+//!
+//! Nightmare only: while she chases and the runner is at 60 or more degrees she pounces with the
+//! shared leap (nyxie.rs; hard_abilities.gd pounce, Nightmare row). The party budget and the wall
+//! sweep are checked in the shared pounce_frame (nyxie.rs). Data: data/hunters/nightmare_pounce.json.
 
-use super::nyxie::spawn_near;
+use super::nyxie::{pounce, pounce_frame, spawn_near, Leap};
 use super::{Ctx, Event};
 use crate::hunters::brain::{Brain, State, Target};
 
@@ -12,9 +16,19 @@ pub struct Solyth {
     burn: f32,
     /// Latched by the game when the runner's temperature hits 100.
     pub heat_locked: bool,
+    leap: Leap,
 }
 
 impl Solyth {
+    /// The leap holds her position (the leap moves her itself).
+    pub fn holds_position(&self) -> bool {
+        self.leap.leaping
+    }
+
+    pub fn speed_scale(&self) -> f32 {
+        self.leap.speed_scale(pounce())
+    }
+
     pub fn before(&mut self, b: &mut Brain, dt: f32, c: &Ctx, t: &Target, ev: &mut Vec<Event>) {
         if c.diff == crate::config::Difficulty::Relaxed {
             b.active = false;
@@ -38,6 +52,49 @@ impl Solyth {
                 ev.push(Event::TakeBattery(i));
             }
         }
+        let gate = t.temperature >= pounce().solyth_min_temperature;
+        if pounce_frame(&mut self.leap, b, dt, c, t, gate) {
+            return;
+        }
         b.chase(t.pos);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Difficulty;
+
+    #[test]
+    fn solyth_pounce_gate_is_sixty_degrees_from_data() {
+        // Godot hard_abilities.gd _pounce_allowed_for_hunter "solyth": temperature >= 60 (line 215-216).
+        let v: serde_json::Value =
+            serde_json::from_str(include_str!("../../data/hunters/nightmare_pounce.json")).unwrap();
+        assert_eq!(crate::hunters::gimmicks::nyxie::NightmarePounce::parse(&v).solyth_min_temperature, 60.0);
+    }
+
+    #[test]
+    fn solyth_pounce_is_nightmare_only() {
+        let n = pounce();
+        assert!(n.applies(Difficulty::Nightmare));
+        assert!(!n.applies(Difficulty::Hard), "Godot lists Solyth in the Hard pounce roster too; this port is Nightmare only for now");
+        assert!(!n.applies(Difficulty::Standard));
+        assert!(!n.applies(Difficulty::Relaxed));
+    }
+
+    #[test]
+    fn solyth_uses_the_party_budget_and_sweep_from_data() {
+        // Godot hard_abilities.gd BUDGET nightmare 25.0 and SWEEP_STEP .15: the same numbers Nyxie uses.
+        let n = pounce();
+        assert_eq!(n.budget_seconds, 25.0);
+        assert_eq!(n.sweep_step, 0.15);
+        assert!(n.applies(Difficulty::Nightmare));
+    }
+
+    #[test]
+    fn a_fresh_solyth_is_not_leaping_and_has_full_speed() {
+        let s = Solyth::default();
+        assert!(!s.holds_position());
+        assert_eq!(s.speed_scale(), 1.0);
     }
 }

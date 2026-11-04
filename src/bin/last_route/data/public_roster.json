@@ -1,0 +1,18 @@
+{
+  "schema": "lr.public_roster/1",
+  "weights": {
+    "easy": 0.5,
+    "intermediate": 0.4,
+    "difficult": 0.1
+  },
+  "default_weight": 0.3,
+  "featured_count": 2,
+  "players_per_extra_hunter": 2,
+  "cap": 8,
+  "patrol": {
+    "radius": 30.0,
+    "fallback_radius_scale": 2.0,
+    "dwell_msec": 20000,
+    "speed_scale": 1.0
+  }
+}

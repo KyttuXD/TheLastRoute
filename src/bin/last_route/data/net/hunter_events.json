@@ -1,0 +1,43 @@
+{
+  "schema": "lr.hunter_events/1",
+  "frame": {
+    "channel": "HUNTERS",
+    "rate_hz": 20,
+    "large_frame_over_bytes": 1100,
+    "difficulties": ["relaxed", "standard", "hard", "nightmare"]
+  },
+  "events": {
+    "hunter_state": {
+      "channel": "EVENTS",
+      "on_change_only": true,
+      "min_gap_s": 0.0,
+      "difficulties": ["relaxed", "standard", "hard"]
+    },
+    "hunter_grab": {
+      "channel": "EVENTS",
+      "difficulties": ["relaxed", "standard", "hard"]
+    },
+    "hunter_door": {
+      "channel": "EVENTS",
+      "max_per_s": 4,
+      "difficulties": ["relaxed", "standard", "hard"]
+    },
+    "hunter_locker": {
+      "channel": "EVENTS",
+      "cooldown_s": 1.0,
+      "difficulties": ["relaxed", "standard", "hard"]
+    },
+    "hunter_charge": {
+      "channel": "EVENTS",
+      "difficulties": ["standard", "hard"]
+    },
+    "hunter_ability": {
+      "channel": "EVENTS",
+      "difficulties": ["nightmare"]
+    },
+    "sabotage": {
+      "channel": "EVENTS",
+      "difficulties": ["relaxed", "standard", "hard"]
+    }
+  }
+}

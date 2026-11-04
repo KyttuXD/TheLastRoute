@@ -1,0 +1,29 @@
+{
+  "schema": "lr.lobby/1",
+  "difficulty": {
+    "title": "DIFFICULTY",
+    "guest_title": "DIFFICULTY // HOST SETS {label}",
+    "options": [
+      {
+        "id": "relaxed",
+        "label": "RELAXED",
+        "blurb": "Room to breathe: hunters wake late and tire early."
+      },
+      {
+        "id": "standard",
+        "label": "NORMAL",
+        "blurb": "The route as meant: hunters work together, so keep moving."
+      },
+      {
+        "id": "hard",
+        "label": "HARD",
+        "blurb": "Hunters wake at once and hear more. Spend your light well."
+      },
+      {
+        "id": "nightmare",
+        "label": "NIGHTMARE",
+        "blurb": "Hunters are faster and sharper, and the torch burns down quicker."
+      }
+    ]
+  }
+}

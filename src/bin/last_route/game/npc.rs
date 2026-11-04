@@ -8,18 +8,20 @@
 //! walking up to it (hunters do); it stops at a shut door, faces it, waits a short seeded think delay and presses
 //! interact through the same `press_door` path as the runner, then walks on once the opening fits its body.
 //!
-//! Deferred (see docs/NPC_TEAMMATES in the Godot tree): per-NPC commands, catching and fleeing,
+//! Deferred (see docs/NPC_TEAMMATES in the Godot tree): per-NPC commands, catching,
 //! chat, storey crossing, co-op packets, name tags, saves, and the mannequin body.
 
 use super::pdist;
 use super::Game;
 use crate::hunters::brain::State;
 use crate::world::rng::Rng;
-use crate::config::{INTERACT_REACH, PLAYER_RADIUS, PLAYER_WALK_SPEED};
+use crate::config::{INTERACT_REACH, PLAYER_RADIUS, PLAYER_SPRINT_SPEED, PLAYER_WALK_SPEED};
 use crate::render::textures::rng::GodotRng;
 use crate::world::route::run_seed_of_text;
 use crate::world::{Cell, Facility};
+use serde_json::Value;
 use std::f32::consts::PI;
+use std::sync::OnceLock;
 
 /// Godot `npc_teammates.gd` 17: the ring radius of the first eight slots.
 pub const SLOT_RADIUS: f32 = 2.4;
@@ -27,8 +29,6 @@ pub const SLOT_RADIUS: f32 = 2.4;
 pub const SLOT_RING_SLOTS: f32 = 8.0;
 /// Godot `npc_teammates.gd` 23: each slot's first repath phase.
 pub const PATH_STAGGER: f32 = 0.137;
-/// Godot `npc_teammates.gd` 24: an NPC walks to its slot again once the runner is this far.
-pub const FOLLOW_RADIUS: f32 = 5.0;
 /// Godot `npc_teammates.gd` 27: seconds between path plans.
 pub const REPATH: f32 = 0.5;
 /// Godot `npc_teammates.gd` 39: time constant of the heading ease.
@@ -40,26 +40,84 @@ pub const TURN_RATE: f32 = 5.0;
 /// The bot's body radius: the runner's (Godot's nav literal was `.23`, npc_teammates.gd 190, 348). Nav cells must
 /// fit it, and the doors block a bot with it.
 pub const NAV_RADIUS: f32 = PLAYER_RADIUS;
-/// Seconds a bot waits at a shut door before it presses interact: this base plus up to `DOOR_THINK_JITTER`, seeded.
-pub const DOOR_THINK: f32 = 0.25;
-/// The seeded spread added to `DOOR_THINK`.
-pub const DOOR_THINK_JITTER: f32 = 0.1;
 /// Godot literal `2.39996` (npc_teammates.gd 76, 187, 329): the golden angle between slots.
 pub const SLOT_ANGLE: f32 = 2.39996;
 /// Godot `admin_npc_panel.gd` 155: the crosshair ray that picks the spawn point, in metres.
 pub const SPAWN_RAY_RANGE: f32 = 30.0;
 /// Godot `infinite_route_test.gd` 6772: a crosshair point farther than this from the admin is not used.
 pub const SPAWN_NEAR_ADMIN: f32 = 40.0;
-/// Godot `npc_teammates.gd` 25: a chasing hunter this close (scaled by smartness) makes the NPC run.
-pub const THREAT_RANGE: f32 = 14.0;
-/// How far ahead of itself a fleeing NPC aims, in metres.
-const FLEE_STEP: f32 = 8.0;
 /// Godot `admin_npc_panel.gd` 149-160: the ray's step while it looks for the floor (the window's quarter cell).
 const RAY_STEP: f32 = 0.25;
 /// How far ahead along the planned route a bot looks for a straight line it fits on, in cells.
 const LOOKAHEAD_CELLS: usize = 4;
 /// Metres between the body checks along a step. A body is 0.46 m across, so this never skips a wall corner.
 const SWEEP_STEP: f32 = 0.05;
+
+/// The bots' thresholds and task list, from the `threat`, `follow`, `door` and `tasks` keys of data/npcs.json. Every
+/// number the bot uses lives there; the code keeps only the behaviour.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tuning {
+    /// Godot `THREAT_RANGE` (npc_teammates.gd 25): metres a chasing hunter is noticed at, before the smart scale.
+    pub threat_range: f32,
+    /// Godot `.5` in `threat_range * (.5 + smart / 100)` (npc_teammates.gd 307).
+    pub smart_base: f32,
+    /// Godot 312: how far ahead of itself a fleeing NPC aims, in metres.
+    pub flee_step: f32,
+    /// Godot 324-326: a fleeing NPC runs at the sprint speed (true) rather than walking.
+    pub flee_running: bool,
+    /// Godot 311: an away vector this short points the bot right (Godot `Vector2.RIGHT`).
+    pub min_away: f32,
+    /// Godot `FOLLOW_RADIUS` (npc_teammates.gd 24): metres from the runner before the NPC walks to its slot again.
+    pub follow_radius: f32,
+    /// Seconds a bot waits at a shut door before it presses interact: this base plus up to `door_think_jitter`, seeded.
+    pub door_think: f32,
+    /// The seeded spread added to `door_think`.
+    pub door_think_jitter: f32,
+    /// The tasks a bot does. Only "door" (press shut doors for the runner) is built; relays and lockers are not.
+    pub tasks: Vec<String>,
+}
+
+impl Tuning {
+    /// Reads the tuning from a parsed data/npcs.json. None when a key is missing or has the wrong type.
+    pub fn parse(v: &Value) -> Option<Tuning> {
+        let num = |node: &Value, key: &str| node[key].as_f64().map(|x| x as f32);
+        let threat = &v["threat"];
+        let door = &v["door"];
+        Some(Tuning {
+            threat_range: num(threat, "range")?,
+            smart_base: num(threat, "smart_base")?,
+            flee_step: num(threat, "flee_step")?,
+            flee_running: threat["flee_running"].as_bool()?,
+            min_away: num(threat, "min_away")?,
+            follow_radius: num(&v["follow"], "radius")?,
+            door_think: num(door, "think")?,
+            door_think_jitter: num(door, "think_jitter")?,
+            tasks: v["tasks"]
+                .as_array()?
+                .iter()
+                .filter_map(|t| t.as_str().map(str::to_string))
+                .collect(),
+        })
+    }
+
+    /// The tuning of the embedded data/npcs.json, read once.
+    pub fn get() -> &'static Tuning {
+        static TUNING: OnceLock<Tuning> = OnceLock::new();
+        TUNING.get_or_init(|| {
+            // Read through the content loader (content/npcs.rs), so the embedded default is the one place it lives
+            let v = crate::content::npcs::embedded_json();
+            Tuning::parse(&v).expect("data/npcs.json has the threat, follow, door and tasks keys")
+        })
+    }
+
+    /// True when the bots do this task (a name in `tasks`).
+    pub fn does(&self, task: &str) -> bool {
+        self.tasks.iter().any(|t| t == task)
+    }
+}
+
+/// A hunter as a bot sees it: its floor position and whether it is chasing.
+type Seen = ((f32, f32), bool);
 
 /// One player bot (NPC teammate). Fields for the deferred features (catch, revive, chat, admin commands) are
 /// added when those land.
@@ -161,8 +219,9 @@ fn turn(n: &mut Npc, want: f32, dt: f32) {
 
 /// The bot stands at the door `door` that blocks its next step. A door still swinging open (or one the bot is too far
 /// from to reach) is waited out; a shut one is faced, and after the seeded think delay its cell is queued in
-/// `presses` for the interact press (`Game::update_npcs` makes it through `press_door`, the runner's path).
-fn wait_at_door(n: &mut Npc, fac: &Facility, door: Cell, dt: f32, presses: &mut Vec<Cell>) {
+/// `presses` for the interact press (`Game::update_npcs` makes it through `press_door`, the runner's path). A bot
+/// without the "door" task waits at the door and never presses it.
+fn wait_at_door(n: &mut Npc, fac: &Facility, door: Cell, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) {
     n.walking = false;
     let Some(centre) = fac.door_centre(door) else { return };
     let (dx, dz) = (centre.0 - n.at.0, centre.1 - n.at.1);
@@ -176,12 +235,14 @@ fn wait_at_door(n: &mut Npc, fac: &Facility, door: Cell, dt: f32, presses: &mut 
         Some((c, t)) if c == door => t - dt,
         _ => {
             let mut rng = Rng::new(&format!("{}:door:{}:{}", n.name, door.x, door.y));
-            DOOR_THINK + DOOR_THINK_JITTER * rng.next_f32() - dt
+            t.door_think + t.door_think_jitter * rng.next_f32() - dt
         }
     };
     if left <= 0.0 {
         n.door = None;
-        presses.push(door);
+        if t.does("door") {
+            presses.push(door);
+        }
     } else {
         n.door = Some((door, left));
     }
@@ -233,7 +294,7 @@ fn plan(n: &mut Npc, fac: &Facility, goal: (f32, f32)) {
 /// The bot aims at the furthest of the next `LOOKAHEAD_CELLS` cells it reaches in a straight line its body fits on, so
 /// it follows the route round a corner and never cuts one. A shut door in the way stops it (`wait_at_door`). A step
 /// that runs into a wall is not slid along: the route is replanned at once and the bot waits for its next step.
-fn walk_toward(n: &mut Npc, fac: &Facility, goal: (f32, f32), dt: f32, presses: &mut Vec<Cell>) {
+fn walk_toward(n: &mut Npc, fac: &Facility, goal: (f32, f32), running: bool, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) {
     let here = n.at;
     n.path_age += dt;
     if n.path_age >= REPATH {
@@ -281,7 +342,8 @@ fn walk_toward(n: &mut Npc, fac: &Facility, goal: (f32, f32), dt: f32, presses: 
             n.heading = (h.0 / hl, h.1 / hl);
         }
     }
-    let speed = PLAYER_WALK_SPEED;
+    // a runner's speed: the sprint when the NPC runs from a hunter, the walk otherwise (Godot `_move_speed`)
+    let speed = if running { PLAYER_SPRINT_SPEED } else { PLAYER_WALK_SPEED };
     let arrives = len <= speed * dt;
     let (moved, to) = if arrives {
         (len, target)
@@ -293,7 +355,7 @@ fn walk_toward(n: &mut Npc, fac: &Facility, goal: (f32, f32), dt: f32, presses: 
             Sweep::Clear => {}
             // a shut door in the way stops the bot, as it stops the runner
             Sweep::Door(door) => {
-                wait_at_door(n, fac, door, dt, presses);
+                wait_at_door(n, fac, door, t, dt, presses);
                 return;
             }
             // a wall in the way: no slide along it, a fresh route, and the next step waits for it
@@ -317,33 +379,36 @@ fn walk_toward(n: &mut Npc, fac: &Facility, goal: (f32, f32), dt: f32, presses: 
 }
 
 /// Godot `_think` for phase one, same-level only: follow the runner to the NPC's slot when it has
-/// drifted past `FOLLOW_RADIUS + ring - SLOT_RADIUS` (or is mid-walk), else stand still.
-fn follow(n: &mut Npc, fac: &Facility, leader: (f32, f32), dt: f32, presses: &mut Vec<Cell>) {
+/// drifted past `follow_radius + ring - SLOT_RADIUS` (or is mid-walk), else stand still.
+fn follow(n: &mut Npc, fac: &Facility, leader: (f32, f32), t: &Tuning, dt: f32, presses: &mut Vec<Cell>) {
     let ring = slot_radius(n.slot);
-    if pdist(n.at, leader) > FOLLOW_RADIUS + ring - SLOT_RADIUS || !n.path.is_empty() {
+    if pdist(n.at, leader) > t.follow_radius + ring - SLOT_RADIUS || !n.path.is_empty() {
         let goal = slot_point(leader, n.slot, ring);
-        walk_toward(n, fac, goal, dt, presses);
+        walk_toward(n, fac, goal, false, t, dt, presses);
     } else {
         n.walking = false;
     }
 }
 
-/// Runs from the nearest hunter in `chasers` that is inside the smart-scaled threat range. True when it ran.
-fn flee(n: &mut Npc, fac: &Facility, chasers: &[(f32, f32)], dt: f32, presses: &mut Vec<Cell>) -> bool {
-    let range = THREAT_RANGE * (0.5 + n.smart as f32 / 100.0);
-    let near = chasers
+/// Godot `_think`'s flee (npc_teammates.gd 305-315): the nearest hunter of any state; when it is chasing and inside
+/// the smart-scaled threat range the bot runs straight away from it, `flee_step` ahead. True when it ran.
+fn flee(n: &mut Npc, fac: &Facility, seen: &[Seen], t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -> bool {
+    let range = t.threat_range * (t.smart_base + n.smart as f32 / 100.0);
+    let near = seen
         .iter()
-        .map(|&c| (c, pdist(n.at, c)))
-        .filter(|&(_, d)| d < range)
-        .min_by(|a, b| a.1.total_cmp(&b.1));
-    let Some((c, d)) = near else { return false };
-    let away = if d > 1e-3 {
+        .map(|&(c, chasing)| (c, chasing, pdist(n.at, c)))
+        .min_by(|a, b| a.2.total_cmp(&b.2));
+    let Some((c, chasing, d)) = near else { return false };
+    if !chasing || d >= range {
+        return false;
+    }
+    let away = if d > t.min_away {
         ((n.at.0 - c.0) / d, (n.at.1 - c.1) / d)
     } else {
         (1.0, 0.0)
     };
-    let goal = (n.at.0 + away.0 * FLEE_STEP, n.at.1 + away.1 * FLEE_STEP);
-    walk_toward(n, fac, goal, dt, presses);
+    let goal = (n.at.0 + away.0 * t.flee_step, n.at.1 + away.1 * t.flee_step);
+    walk_toward(n, fac, goal, t.flee_running, t, dt, presses);
     true
 }
 
@@ -543,11 +608,12 @@ impl Game {
         let level = self.runner_level();
         let leader = self.p.pos;
         let fac = &self.fac;
-        let chasers: Vec<(f32, f32)> = self
+        let t = Tuning::get();
+        let seen: Vec<Seen> = self
             .hunters
             .iter()
-            .filter(|h| h.active && matches!(h.state, State::Chase))
-            .map(|h| h.pos)
+            .filter(|h| h.active)
+            .map(|h| (h.pos, matches!(h.state, State::Chase)))
             .collect();
         let mut presses: Vec<Cell> = vec![];
         for n in self.npcs.iter_mut() {
@@ -555,7 +621,7 @@ impl Game {
                 n.walking = false;
                 continue;
             }
-            if flee(n, fac, &chasers, dt, &mut presses) {
+            if flee(n, fac, &seen, t, dt, &mut presses) {
                 continue;
             }
             if !n.joined {
@@ -567,7 +633,7 @@ impl Game {
                     continue;
                 }
             }
-            follow(n, fac, leader, dt, &mut presses);
+            follow(n, fac, leader, t, dt, &mut presses);
         }
         self.npc_press_doors(presses);
     }
@@ -736,7 +802,7 @@ mod tests {
         };
         g.npcs[0].at = far;
         let before = pdist(far, runner);
-        assert!(before > FOLLOW_RADIUS, "starts out of follow range");
+        assert!(before > Tuning::get().follow_radius, "starts out of follow range");
         // 40 simulated seconds at 60 Hz: long enough to walk ~9 m at 4 m/s, with room to spare
         for _ in 0..(40 * 60) {
             g.update_npcs(1.0 / 60.0);
@@ -744,7 +810,7 @@ mod tests {
         let after = pdist(g.npcs[0].at, g.p.pos);
         assert!(after < before, "the NPC closed in: {before} -> {after}");
         assert!(
-            after <= FOLLOW_RADIUS + 0.5,
+            after <= Tuning::get().follow_radius + 0.5,
             "the NPC is within follow range of the runner: {after}"
         );
         // once in range and not walking, it stands still
@@ -955,7 +1021,7 @@ mod tests {
     /// One frame of a bot heading for `goal`: its step, its interact press and the door swing, as `Game::update` runs them.
     fn bot_frame(g: &mut Game, goal: (f32, f32), dt: f32) {
         let mut presses = vec![];
-        walk_toward(&mut g.npcs[0], &g.fac, goal, dt, &mut presses);
+        walk_toward(&mut g.npcs[0], &g.fac, goal, false, Tuning::get(), dt, &mut presses);
         g.npc_press_doors(presses);
         let bodies: Vec<(f32, f32)> = std::iter::once(g.p.pos).chain(g.npcs.iter().map(|n| n.at)).collect();
         g.fac.update_doors(&[], &bodies, dt);
@@ -983,7 +1049,8 @@ mod tests {
         }
         let (stopped, pressed) = (stopped.expect("the bot reached the door"), pressed.expect("the bot opened the door"));
         let waited = (pressed - stopped) as f32 * dt;
-        assert!(waited >= DOOR_THINK - dt && waited <= DOOR_THINK + DOOR_THINK_JITTER + 2.0 * dt, "think delay {waited}");
+        let t = Tuning::get();
+        assert!(waited >= t.door_think - dt && waited <= t.door_think + t.door_think_jitter + 2.0 * dt, "think delay {waited}");
         assert!(g.fac.door_is_open(cell) && g.fac.door_in_way(b.0, b.1, NAV_RADIUS).is_none());
         assert!(pdist(g.npcs[0].at, b) < 0.6, "it walked on through the door, got {:?} for {b:?}", g.npcs[0].at);
     }
@@ -1109,7 +1176,7 @@ mod tests {
         n.path = vec![(wall.x, wall.y)];
         n.path_age = 0.0;
         let mut presses = vec![];
-        walk_toward(&mut g.npcs[0], &g.fac, goal, 1.0 / 60.0, &mut presses);
+        walk_toward(&mut g.npcs[0], &g.fac, goal, false, Tuning::get(), 1.0 / 60.0, &mut presses);
         let n = &g.npcs[0];
         assert_eq!(n.at, at, "the bot stops at the wall rather than sliding along it");
         assert!(!n.walking);
@@ -1143,5 +1210,121 @@ mod tests {
         assert_eq!(n.at, (-13.0, 36.0));
         assert!(n.path.is_empty());
         assert!(n.path_age >= REPATH);
+    }
+
+    /// The embedded data/npcs.json with one edit made to its JSON, parsed as the bots read it.
+    fn tuning_with(edit: impl Fn(&mut Value)) -> Tuning {
+        let (_, text) = crate::content::embedded::data_under("npcs.json")
+            .next()
+            .expect("data/npcs.json is embedded");
+        let mut v: Value = serde_json::from_str(text).expect("data/npcs.json parses");
+        edit(&mut v);
+        Tuning::parse(&v).expect("data/npcs.json still has every key")
+    }
+
+    #[test]
+    fn standard_tuning_matches_the_game() {
+        let t = Tuning::get();
+        assert_eq!(t.threat_range, 14.0, "Godot npc_teammates.gd 25 THREAT_RANGE");
+        assert_eq!(t.smart_base, 0.5, "npc_teammates.gd 307 (.5 + smart / 100)");
+        assert_eq!(t.flee_step, 12.0, "npc_teammates.gd 312 flee distance");
+        assert!(t.flee_running, "npc_teammates.gd 324-326 runs");
+        assert_eq!(t.min_away, 0.1, "npc_teammates.gd 311 away length");
+        assert_eq!(t.follow_radius, 5.0, "npc_teammates.gd 24 FOLLOW_RADIUS");
+        assert_eq!(t.door_think, 0.25, "DOOR_THINK, the first port's figure");
+        assert_eq!(t.door_think_jitter, 0.1, "DOOR_THINK_JITTER, the first port's figure");
+        assert_eq!(t.tasks, vec!["door".to_string()]);
+        assert_eq!(*t, tuning_with(|_| {}), "the cached tuning is the embedded file");
+    }
+
+    #[test]
+    fn the_threat_range_in_data_decides_when_a_bot_runs() {
+        let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        let start = g.npcs[0].at;
+        let dt = 1.0 / 60.0;
+        let chasing_5m = vec![((start.0 + 5.0, start.1), true)];
+        let wide = tuning_with(|v| v["threat"]["range"] = Value::from(14.0));
+        let narrow = tuning_with(|v| v["threat"]["range"] = Value::from(1.0));
+        let mut presses = vec![];
+        {
+            let fac = &g.fac;
+            assert!(flee(&mut g.npcs[0], fac, &chasing_5m, &wide, dt, &mut presses), "5 m is inside a 14 m range");
+            assert!(!flee(&mut g.npcs[0], fac, &chasing_5m, &narrow, dt, &mut presses), "5 m is outside a 1 m range");
+        }
+        // the nearest hunter must be chasing: a nearer hunter that is only wandering stops the run, as Godot's _nearest_hunter
+        let nearer_wandering = vec![((start.0 + 2.0, start.1), false), ((start.0 + 5.0, start.1), true)];
+        assert!(!flee(&mut g.npcs[0], &g.fac, &nearer_wandering, &wide, dt, &mut presses));
+    }
+
+    #[test]
+    fn a_bot_steps_at_the_speed_it_is_asked_for() {
+        let (g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        let runner = g.p.pos;
+        let start = Cell::new(runner.0.floor() as i32, runner.1.floor() as i32);
+        let far = g
+            .fac
+            .distance_map(start)
+            .into_iter()
+            .filter(|(c, steps)| *steps >= 8 && *steps <= 12 && g.fac.body_fits(c.center().0, c.center().1, NAV_RADIUS))
+            .map(|(c, _)| c.center())
+            .next()
+            .expect("a reachable open cell 8 to 12 cells away");
+        let dt = 1.0 / 60.0;
+        let one_frame = |running: bool| -> f32 {
+            let mut n = g.npcs[0].clone();
+            n.at = far;
+            n.path.clear();
+            n.path_age = REPATH;
+            n.heading = (0.0, 0.0);
+            n.stride = 0.0;
+            let mut presses = vec![];
+            walk_toward(&mut n, &g.fac, runner, running, Tuning::get(), dt, &mut presses);
+            n.stride
+        };
+        let walk = one_frame(false);
+        let sprint = one_frame(true);
+        assert!((walk - PLAYER_WALK_SPEED * dt).abs() < 1e-4, "walking covers the walk speed: {walk}");
+        assert!((sprint - PLAYER_SPRINT_SPEED * dt).abs() < 1e-4, "running covers the sprint speed: {sprint}");
+    }
+
+    #[test]
+    fn the_door_think_in_data_sets_the_wait() {
+        let dt = 1.0 / 60.0;
+        let quick = tuning_with(|v| {
+            v["door"]["think"] = Value::from(0.0);
+            v["door"]["think_jitter"] = Value::from(0.0);
+        });
+        let (mut g, cell, a, _) = door_case();
+        g.npcs[0].at = a;
+        g.p.pos = (a.0 + 40.0, a.1 + 40.0);
+        let mut presses = vec![];
+        wait_at_door(&mut g.npcs[0], &g.fac, cell, &quick, dt, &mut presses);
+        assert_eq!(presses, vec![cell], "no think time: it presses on the first frame");
+
+        let (mut g, cell, a, _) = door_case();
+        g.npcs[0].at = a;
+        g.p.pos = (a.0 + 40.0, a.1 + 40.0);
+        let mut presses = vec![];
+        wait_at_door(&mut g.npcs[0], &g.fac, cell, Tuning::get(), dt, &mut presses);
+        assert!(presses.is_empty(), "the standard think time (0.25 s) has not passed after one frame");
+    }
+
+    #[test]
+    fn a_bot_without_the_door_task_never_presses() {
+        let dt = 1.0 / 60.0;
+        let idle = tuning_with(|v| {
+            v["door"]["think"] = Value::from(0.0);
+            v["door"]["think_jitter"] = Value::from(0.0);
+            v["tasks"] = Value::Array(vec![]);
+        });
+        assert!(!idle.does("door"));
+        let (mut g, cell, a, _) = door_case();
+        g.npcs[0].at = a;
+        g.p.pos = (a.0 + 40.0, a.1 + 40.0);
+        let mut presses = vec![];
+        for _ in 0..30 {
+            wait_at_door(&mut g.npcs[0], &g.fac, cell, &idle, dt, &mut presses);
+        }
+        assert!(presses.is_empty(), "no door task, no press");
     }
 }

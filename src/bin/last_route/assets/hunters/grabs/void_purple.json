@@ -1,0 +1,8 @@
+{
+	"schema": "lr.grab/1",
+	"id": "void_purple",
+	"pool": {
+		"wrap": 6,
+		"shoulder_carry": 3
+	}
+}

@@ -371,4 +371,45 @@ mod tests {
             }
         }
     }
+
+    /// data/regions/sewer.json against the constants the sewer port holds in world/route/sewer/core.rs
+    /// (PUMP_COLLIDER, OUTFLOW_SIZE, ROOM_KINDS) and the district row of render/textures/sets.rs, which
+    /// matches Godot's game/look/floor_sets.gd "sewer" row (stone walkways, concrete rooms, no runner).
+    /// The Standard values must stay the game's current ones.
+    #[test]
+    fn sewer_catalogue_matches_the_sewer_constants() {
+        use crate::world::route::sewer::core::{OUTFLOW_SIZE, PUMP_COLLIDER, ROOM_KINDS};
+        let d = region_def("sewer").expect("data/regions/sewer.json is built in");
+        assert_eq!(d.hall_floor, ["stone0", "stone1"]);
+        assert!(!d.hall_runner);
+        assert_eq!(d.room_default_floor, ["concrete0", "concrete1"]);
+        assert_eq!(d.room_roles, ROOM_KINDS);
+        let pump = d.prop_set.iter().find(|p| p.prop_type == "sewerPump").expect("pump row");
+        assert_eq!(pump.size, PUMP_COLLIDER);
+        assert!(pump.solid);
+        let outflow = d.prop_set.iter().find(|p| p.prop_type == "sewerOutflowPipe").expect("outflow row");
+        assert_eq!(outflow.size, OUTFLOW_SIZE);
+        assert!(outflow.solid);
+    }
+
+    /// The catalogue is what a consumer reads: a pack that overrides regions/sewer changes the row that
+    /// region_def returns, so a data edit reaches the game without a code edit.
+    #[test]
+    fn a_sewer_override_changes_the_catalogue_row() {
+        let mut t = crate::content::regions::RegionTable::builtin(&mut Vec::new());
+        let file = r#"{"schema":"lr.region/1","id":"sewer","hall_floor":["stone0"],"hall_runner":true,"room_default_floor":["concrete0"],"room_roles":["pump_room"],"prop_set":[{"type":"sewerPump","size":[2.0,1.5,0.9]}]}"#;
+        let mut warnings = vec![];
+        t.add_pack(
+            "alt",
+            &["regions/sewer".to_string()],
+            &[("sewer.json".to_string(), file.to_string())],
+            &mut warnings,
+        );
+        let d = t.def("sewer").expect("sewer");
+        assert_eq!(d.source, "alt", "{warnings:?}");
+        assert_eq!(d.hall_floor, ["stone0"]);
+        assert!(d.hall_runner);
+        assert_eq!(d.prop_set[0].size, [2.0, 1.5, 0.9]);
+        assert_eq!(d.room_roles, ["pump_room"]);
+    }
 }

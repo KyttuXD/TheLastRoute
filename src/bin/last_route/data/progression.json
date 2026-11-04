@@ -1,0 +1,21 @@
+{
+  "schema": "lr.progression/1",
+  "_source": "Godot reference: game/config/game_config.gd 161 (FACILITY_RELAY_COUNT), 388 (HUNTER_RELAY_SPEED_BONUS), 408-413 (HUNTER_ACTIVATION_RELAYS), 422-428 (STREAMED_HUNTER_BASE, STREAMED_HUNTER_RELAY_STEP); game/hunters/ai/hunter_director.gd 39-40 (RELAY_RUSH_COUNT, RELAY_RUSH_DELAY). Rust mirror: config/mod.rs, config/difficulty.rs, game/endless.rs.",
+  "relays": {
+    "count": 5,
+    "score": 100,
+    "lift_needs_all": true
+  },
+  "difficulty": {
+    "relaxed":   { "activation_relays": 3, "streamed_base": 1, "streamed_step": 3 },
+    "standard":  { "activation_relays": 1, "streamed_base": 1, "streamed_step": 2 },
+    "hard":      { "activation_relays": 0, "streamed_base": 1, "streamed_step": 1 },
+    "nightmare": { "activation_relays": 0, "streamed_base": 2, "streamed_step": 1 }
+  },
+  "chase_speed_bonus_per_relay": 0.1,
+  "relay_rush": { "relays": 7, "delay_seconds": 45.0 },
+  "milestones": [
+    { "relays": 5, "unlocks": ["service_lift"] },
+    { "relays": 7, "unlocks": ["relay_rush"] }
+  ]
+}
