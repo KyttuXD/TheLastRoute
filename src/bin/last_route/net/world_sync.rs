@@ -25,6 +25,7 @@ use crate::config::difficulty::{ALL, LOBBY};
 use crate::config::Difficulty;
 use crate::game::player::Player;
 use crate::game::Game;
+use crate::world::vertical::STOREY;
 use crate::shared::assets::Assets;
 use macroquad::prelude::*;
 use serde_json::{json, Map, Value};
@@ -74,6 +75,9 @@ const SKINS: [(&str, [Color; 4]); 1] = [(SKIN_DEFAULT, PEER_COLOURS)];
 pub struct Sample {
     pub seq: u32,
     pub depth: i32,
+    /// The runner's absolute feet height (continuous levels). `None` from an older client, which is then filtered by
+    /// `depth` alone.
+    pub h: Option<f32>,
     pub x: f32,
     pub y: f32,
     pub yaw: f32,
@@ -95,6 +99,7 @@ impl Sample {
         Sample {
             seq: 0,
             depth,
+            h: Some(p.y()),
             x,
             y,
             yaw: p.yaw,
@@ -116,11 +121,15 @@ impl Sample {
     }
 
     pub fn to_json(&self) -> Value {
-        json!({
+        let mut v = json!({
             "seq": self.seq, "depth": self.depth, "x": self.x, "y": self.y, "yaw": self.yaw,
             "moving": self.moving, "sprinting": self.sprinting, "crouching": self.crouching,
             "spectating": self.spectating, "game_over": self.game_over, "escape_active": self.escape_active,
-        })
+        });
+        if let (Some(h), Some(o)) = (self.h, v.as_object_mut()) {
+            o.insert("h".into(), json!(h));
+        }
+        v
     }
 
     /// Parses a received sample. `None` for anything else (a keep-alive is `null`) and for a
@@ -132,6 +141,7 @@ impl Sample {
         Some(Sample {
             seq: o.get("seq")?.as_u64()? as u32,
             depth: o.get("depth")?.as_i64()? as i32,
+            h: num("h"),
             x: num("x")?,
             y: num("y")?,
             yaw: num("yaw").unwrap_or(0.0),
@@ -194,6 +204,10 @@ pub struct RemoteView {
     pub x: f32,
     pub y: f32,
     pub yaw: f32,
+    /// The runner's absolute feet height (an old client's sample gives `depth * STOREY`).
+    pub h: f32,
+    /// The level that owns `h`.
+    pub level: i32,
     /// The runner's skin id (`SKIN_DEFAULT` until its profile arrives).
     pub skin: String,
 }
@@ -1048,21 +1062,31 @@ impl NetSession {
         out
     }
 
-    /// The other runners on `depth` that are fresh enough to draw, in peer order. `origin` is this runner's window
+    /// The other runners near the viewer that are fresh enough to draw, in peer order: with a height, those within
+    /// one storey of `viewer_h`; from an old client (no height), those on `depth`. `origin` is this runner's window
     /// origin: the samples are absolute cells, so they are moved into this window before they are returned.
-    pub fn remotes_at(&self, depth: i32, origin: (i32, i32)) -> Vec<RemoteView> {
+    pub fn remotes_at(&self, viewer_h: f32, depth: i32, origin: (i32, i32)) -> Vec<RemoteView> {
         let now = Instant::now();
         let mut out: Vec<RemoteView> = self
             .remotes
             .iter()
-            .filter(|(_, r)| r.sample.depth == depth && now.duration_since(r.last_seen) < REMOTE_TIMEOUT)
+            .filter(|(_, r)| {
+                let near = match r.sample.h {
+                    Some(h) => (h - viewer_h).abs() <= STOREY + 0.05,
+                    None => r.sample.depth == depth,
+                };
+                near && now.duration_since(r.last_seen) < REMOTE_TIMEOUT
+            })
             .map(|(peer, r)| {
                 let (x, y) = to_window((r.sample.x, r.sample.y), origin);
+                let h = r.sample.h.unwrap_or(r.sample.depth as f32 * STOREY);
                 RemoteView {
                     peer: *peer,
                     x,
                     y,
                     yaw: r.sample.yaw,
+                    h,
+                    level: crate::game::level_stack::owning_level(h),
                     skin: self.skins.get(peer).cloned().unwrap_or_else(|| SKIN_DEFAULT.into()),
                 }
             })
@@ -1497,6 +1521,7 @@ mod tests {
         Sample {
             seq,
             depth: 1,
+            h: Some(5.0),
             x,
             y,
             yaw: 0.5,
@@ -1514,6 +1539,7 @@ mod tests {
         let s = Sample {
             seq: 9,
             depth: -2,
+            h: Some(-9.5),
             x: 12.5,
             y: -3.25,
             yaw: 1.57,
@@ -1741,8 +1767,8 @@ mod tests {
             }
             events.extend(host.tick(Some(host_sample)));
             events.extend(guest.tick(Some(guest_sample)));
-            done.0 = host.remotes_at(1, (0, 0)).iter().any(|r| r.peer == 42 && (r.x - 7.5).abs() < 1e-4 && (r.y - 1.25).abs() < 1e-4 && r.skin == "NIGHT");
-            done.1 = guest.remotes_at(1, (0, 0)).iter().any(|r| r.peer == HOST_PEER_ID && (r.x - 3.0).abs() < 1e-4 && r.skin == "DAWN");
+            done.0 = host.remotes_at(5.0, 1, (0, 0)).iter().any(|r| r.peer == 42 && (r.x - 7.5).abs() < 1e-4 && (r.y - 1.25).abs() < 1e-4 && r.skin == "NIGHT");
+            done.1 = guest.remotes_at(5.0, 1, (0, 0)).iter().any(|r| r.peer == HOST_PEER_ID && (r.x - 3.0).abs() < 1e-4 && r.skin == "DAWN");
             done.2 = events.contains(&NetEvent::Start { seed: "ROOM-ABCDE-0123".into(), difficulty: "STANDARD".into() })
                 || guest.room_seed() == "ROOM-ABCDE-0123";
             packs_seen = events.contains(&NetEvent::Packs(vec!["neon_halls".into()]));
@@ -2106,8 +2132,8 @@ mod tests {
         while Instant::now() < deadline && !(host_sees && guest_sees && seed_seen) {
             host.tick(Some(host_sample));
             guest_events.extend(guest.tick(Some(guest_sample)));
-            host_sees = host.remotes_at(1, (0, 0)).iter().any(|r| (r.x - 7.5).abs() < 1e-4);
-            guest_sees = guest.remotes_at(1, (0, 0)).iter().any(|r| (r.x - 3.0).abs() < 1e-4);
+            host_sees = host.remotes_at(5.0, 1, (0, 0)).iter().any(|r| (r.x - 7.5).abs() < 1e-4);
+            guest_sees = guest.remotes_at(5.0, 1, (0, 0)).iter().any(|r| (r.x - 3.0).abs() < 1e-4);
             seed_seen = guest.room_seed() == route || guest_events.contains(&NetEvent::Start { seed: route.clone(), difficulty: "STANDARD".into() });
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -2383,5 +2409,63 @@ mod owner_route_tests {
         assert!(host.guest_position(2).is_none());
         host.remotes.insert(2, Remote { sample: sample(1, 3.0, 4.0), last_seen: now });
         assert_eq!(host.guest_position(2), Some((3.0, 4.0, 1)));
+    }
+}
+
+/// Phase 8 (continuous levels): the optional absolute height on a sample and the near-storey filter.
+#[cfg(test)]
+mod height_tests {
+    use super::tests::{offline_session, sample};
+    use super::*;
+
+    #[test]
+    fn old_sample_without_h_still_parses() {
+        let old = json!({"seq": 4, "depth": -1, "x": 2.0, "y": 3.0, "yaw": 0.5, "moving": true});
+        let s = Sample::from_json(&old).expect("a pre-phase-8 sample parses");
+        assert_eq!(s.h, None);
+        assert_eq!(s.depth, -1);
+        let back = s.to_json();
+        assert!(back.get("h").is_none(), "no h key is written when there is none");
+        assert_eq!(Sample::from_json(&back), Some(s));
+    }
+
+    #[test]
+    fn sample_h_round_trips_and_a_non_finite_h_is_ignored() {
+        let mut s = sample(1, 1.0, 2.0);
+        s.h = Some(-2.5);
+        assert_eq!(s.to_json()["h"].as_f64(), Some(-2.5));
+        assert_eq!(Sample::from_json(&s.to_json()), Some(s));
+        for bad in [json!(null), json!("high"), json!(1e39)] {
+            let mut v = s.to_json();
+            v["h"] = bad;
+            let parsed = Sample::from_json(&v).expect("a bad h never rejects the sample");
+            assert_eq!(parsed.h, None);
+            assert_eq!(parsed.x, 1.0);
+        }
+    }
+
+    #[test]
+    fn remotes_at_returns_peers_within_one_storey() {
+        let now = Instant::now();
+        let mut s = offline_session(true, "HOST");
+        let mut near = sample(1, 1.0, 1.0);
+        near.h = Some(-4.2);
+        near.depth = -1;
+        let mut far = sample(1, 2.0, 2.0);
+        far.h = Some(-6.0);
+        far.depth = -1;
+        let mut old = sample(1, 3.0, 3.0);
+        old.h = None;
+        old.depth = -1;
+        for (peer, smp) in [(2, near), (3, far), (4, old)] {
+            s.remotes.insert(peer, Remote { sample: smp, last_seen: now });
+        }
+        let seen: Vec<u32> = s.remotes_at(0.0, 0, (0, 0)).iter().map(|r| r.peer).collect();
+        assert_eq!(seen, vec![2], "h=-4.2 shown, h=-6.0 not, an old sample on depth -1 not for depth 0");
+        let views = s.remotes_at(-5.0, -1, (0, 0));
+        assert_eq!(views.iter().map(|r| r.peer).collect::<Vec<_>>(), vec![2, 3, 4]);
+        assert_eq!(views[2].h, -STOREY, "an old sample's height is depth * STOREY");
+        assert_eq!(views[0].level, -1);
+        s.coop.close();
     }
 }

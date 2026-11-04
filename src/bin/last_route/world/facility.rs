@@ -244,7 +244,7 @@ pub const DOOR_SWING_RATE: f32 = 4.0;
 /// Half the thickness of a closed door's blocking slab, in metres.
 const DOOR_HALF_DEPTH: f32 = 0.1;
 /// How far (metres) a body's walk height may be from a flight's surface for it to stand on the flight.
-const FLIGHT_FIT_TOL: f32 = 0.6;
+pub(crate) const FLIGHT_FIT_TOL: f32 = 0.6;
 /// A door passes a body once the gap the swung leaf leaves is this much wider than the body.
 const DOOR_GAP_MARGIN: f32 = 0.04;
 /// How far past the door's slab, on every side, a body stands in the leaf's sweep: the leaf's clearance plus a body
@@ -2486,6 +2486,80 @@ impl Facility {
             && c.x < self.cols
             && c.y < self.rows
             && self.hunter_open[(c.y * self.cols + c.x) as usize]
+    }
+
+    /// Whether a sight line may pass `(x, z)` on this level: open floor, or a well / hatch / drop / air cell (an opening
+    /// in a slab is no wall). With no hole cell standing in a wall this equals `is_floor`.
+    pub fn sight_open(&self, x: f32, z: f32) -> bool {
+        if self.is_floor(x as f64, z as f64) {
+            return true;
+        }
+        let c = Cell::new(x.floor() as i32, z.floor() as i32);
+        c.x >= 0
+            && c.y >= 0
+            && c.x < self.cols
+            && c.y < self.rows
+            && (self.is_hole(c.x, c.y) || self.is_drop(c) || self.is_air_above(c))
+    }
+
+    /// Whether a hunter body of radius `r` stands at `(x, z)` with feet at absolute height `y_abs`. This is the hunter
+    /// footprint rule for flight cells: `body_fits_at_y` lets a body stand on a flight surface within `FLIGHT_FIT_TOL`.
+    pub fn hunter_fits_at_y(&self, x: f32, z: f32, y_abs: f32, r: f32) -> bool {
+        self.body_fits_at_y(x, z, y_abs, r)
+    }
+
+    /// Two open levels (0 and -1) joined by one flight, for the tests of the hunters' stack navigation. `ladder` joins
+    /// them with a ladder (the shape is then unused); otherwise a stair of `shape` runs along +y from the landing (8, 8).
+    #[cfg(test)]
+    pub(crate) fn test_levels(shape: FlightShape, ladder: bool) -> (Facility, Facility) {
+        let anchor = Cell::new(8, 8);
+        let (up_s, lo_s) = if ladder {
+            (
+                Stair::ladder_with_run(anchor, -1, Cover::Manhole, (0, -1)),
+                Stair::ladder_with_run(anchor, 1, Cover::Manhole, (0, -1)),
+            )
+        } else {
+            let upper = Stair::stairs(anchor, -1, (0, 1), shape, false);
+            (upper, Stair::stairs(upper.foot(), 1, (0, 1), shape, false))
+        };
+        let mut upper = Facility::open_test_level(0);
+        upper.stairs.push(up_s);
+        upper.rebuild_grids();
+        let mut lower = Facility::open_test_level(-1);
+        lower.stairs.push(lo_s);
+        lower.rebuild_grids();
+        (upper, lower)
+    }
+
+    /// Two open levels (0 and -1) with a drop at cells (18..20, 18..20) above and open air under it, and no stairs.
+    #[cfg(test)]
+    pub(crate) fn test_levels_drop() -> (Facility, Facility) {
+        let mut upper = Facility::open_test_level(0);
+        let mut lower = Facility::open_test_level(-1);
+        let cells: Vec<Cell> = (18..20).flat_map(|y| (18..20).map(move |x| Cell::new(x, y))).collect();
+        upper.set_drop_cells(&cells);
+        lower.set_air_above_cells(&cells);
+        upper.rebuild_grids();
+        lower.rebuild_grids();
+        (upper, lower)
+    }
+
+    /// A generated facility of `level` whose cells 4..30 are open floor with no props.
+    #[cfg(test)]
+    fn open_test_level(level: i32) -> Facility {
+        let cat = crate::world::catalog::Catalog::load();
+        let mut f = Facility::generate("NAV-1", &Options::default(), &cat);
+        f.level = level;
+        for z in 4..30usize {
+            for x in 4..30usize {
+                f.wall[z][x] = false;
+            }
+        }
+        let inside = |c: Cell| (3..31).contains(&c.x) && (3..31).contains(&c.y);
+        f.props.retain(|p| !inside(p.cell));
+        f.hiding.retain(|h| !inside(h.cell));
+        f.rebuild_grids();
+        f
     }
 
     /// 8-way A* with an octile heuristic and no corner cutting (AStarGrid2D,

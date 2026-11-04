@@ -55,7 +55,7 @@ impl Game {
         let facing = (-yaw.sin(), -yaw.cos());
         let mut best: Option<(f32, usize)> = None;
         for (i, h) in self.hunters.iter().enumerate() {
-            if !h.active || h.gimmick.hidden_from_view() {
+            if !h.active || h.level != self.fac.level || h.gimmick.hidden_from_view() {
                 continue;
             }
             if Brain::beam_reaches(&self.fac, from, facing, h.pos, TASER_RANGE, TASER_HALF_ANGLE) {
@@ -88,7 +88,7 @@ impl Game {
             self.hunters
                 .iter()
                 .enumerate()
-                .filter(|(_, h)| h.active)
+                .filter(|(_, h)| h.active && h.level == self.fac.level)
                 .min_by(|a, b| super::pdist(a.1.pos, at).total_cmp(&super::pdist(b.1.pos, at)))
                 .map(|(i, _)| i)
         };
@@ -96,7 +96,7 @@ impl Game {
         let prof = self.prof();
         let axe = ev.get("axe").and_then(Value::as_bool).unwrap_or(false);
         self.hunters[i].apply_stun(prof.escape_stun * if axe { 2.0 } else { 1.0 }, false);
-        if let Some(p) = at {
+        if let Some(p) = at.filter(|_| self.hunters[i].level == self.fac.level) {
             let fac = &self.fac;
             self.hunters[i].enter_search_from(p, 1.8, fac);
         }
@@ -157,6 +157,9 @@ impl Game {
         };
         let ev = self.pipes.turn(q).ok()?;
         self.pipes.apply(&ev, self.time);
+        // the turn is a sound the hunters can hear, whoever made it: it sounds at the valve, on the valve's storey. The
+        // runner's meter noise is the turner's own (none here), so only the positioned event is pushed.
+        self.push_valve_events(&ev, valve_at, storey);
         Some(valve_events::turn_fields(&ev))
     }
 }
@@ -214,6 +217,27 @@ mod tests {
     }
 
     #[test]
+    fn a_guest_taser_ignores_a_hunter_on_another_level() {
+        let mut g = run();
+        let Some(target) = g.hunters.iter().position(|h| h.active && !h.def.taser_immune && !h.gimmick.hidden_from_view()) else {
+            return;
+        };
+        let hp = g.hunters[target].pos;
+        for (dx, dz) in [(0.8f32, 0.0f32), (-0.8, 0.0), (0.0, 0.8), (0.0, -0.8)] {
+            let from = (hp.0 + dx, hp.1 + dz);
+            if !g.fac.has_line_of_sight(from, hp) {
+                continue;
+            }
+            let yaw = (-(hp.0 - from.0)).atan2(-(hp.1 - from.1));
+            g.hunters[target].level = g.fac.level + 1;
+            g.hunters[target].stun = 0.0;
+            g.apply_guest_event(event("taser", vec![("x", json!(from.0)), ("y", json!(from.1)), ("yaw", json!(yaw))]));
+            assert_eq!(g.hunters[target].stun, 0.0, "a hunter one floor away is not tasered");
+            return;
+        }
+    }
+
+    #[test]
     fn a_guest_taser_stuns_the_hunter_in_front_of_it_and_misses_one_behind() {
         let mut g = run();
         let Some(target) = g.hunters.iter().position(|h| h.active && !h.def.taser_immune && !h.gimmick.hidden_from_view()) else {
@@ -245,6 +269,23 @@ mod tests {
         let id = g.hunters[0].def.id.clone();
         g.apply_guest_event(event("escaped", vec![("hunter_id", json!(id))]));
         assert_eq!(g.hunters[0].stun, 0.0, "only the host resolves reports");
+    }
+
+    #[test]
+    fn an_old_guest_ignores_the_new_keys() {
+        let mut g = run();
+        g.remote_hunters = true;
+        let id = g.hunters[0].def.id.clone();
+        let level = g.runner_level();
+        let frame = json!({"index": 0, "id": id, "position": [4.5, 6.5], "level": level, "presentation_y": g.p.y()});
+        g.apply_hunter_frame(&[frame]);
+        assert_eq!(g.hunters[0].pos, (4.5, 6.5), "position is still applied when level and presentation_y ride along");
+        // a level of another floor is read too: the hunter leaves the viewer's list and the position still lands
+        let frame = json!({"index": 0, "id": id, "position": [5.5, 7.5], "level": level - 1, "presentation_y": -2.0});
+        g.apply_hunter_frame(&[frame]);
+        assert!(g.hunters.is_empty(), "it is shown on the floor below");
+        let below = g.resident_hunters.list(level - 1).iter().find(|s| s.brain.def.id == id).expect("on the other floor's list");
+        assert_eq!((below.brain.pos, below.brain.level), ((5.5, 7.5), level - 1));
     }
 
     #[test]
@@ -321,8 +362,13 @@ mod tests {
         let reach = crate::game::pipes::rules().valve.reach;
         assert!(g.host_turn_valve(&req, (10.5 + reach + 5.0, 10.5), 1).is_none(), "too far");
         assert!(g.host_turn_valve(&req, (10.5, 10.5), 2).is_none(), "wrong storey");
+        g.noise_events.clear();
         let fields = g.host_turn_valve(&req, (10.5, 10.5), 1).expect("at the valve on its storey");
         assert!(fields.iter().any(|(k, v)| *k == "turns" && v == &json!(1)));
+        let heard = g.noise_events.iter().find(|e| e.kind == crate::hunters::noise_events::NoiseKind::ValveTurn);
+        let heard = heard.expect("a guest's valve turn is a sound the hunters can hear");
+        assert_eq!((heard.pos, heard.level), ((10.5, 10.5), -1), "at the valve, on the valve's storey");
+        assert_eq!(g.p.noise_burst, 0.0, "and the runner's own meter noise is not touched");
         assert!(g.pipes.is_open("SEWER:0:-1:0:PROP:3"), "the host applied the turn too");
         g.remote_hunters = true;
         assert!(g.host_turn_valve(&req, (10.5, 10.5), 1).is_none(), "a guest never decides a turn");

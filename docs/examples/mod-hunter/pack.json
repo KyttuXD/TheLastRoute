@@ -1,0 +1,8 @@
+{
+  "schema": "lr.pack/1",
+  "id": "mimic_pack",
+  "name": "Mimic Sample Pack",
+  "version": "1.0.0",
+  "author": "KYTTU",
+  "description": "Sample pack: one new hunter (mimic) with a custom skin atlas and tuned stats."
+}

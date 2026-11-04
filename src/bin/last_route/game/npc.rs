@@ -15,17 +15,27 @@
 //! the chase is over. A bot avoids the points hunters searched when it picks an errand spot, and it shuts an open door
 //! once it has walked clear of it.
 //!
+//! Levels are one continuous space (docs/STAIRS_CONTINUOUS_DESIGN.md, phase 8). A bot has an absolute `y` and a level
+//! derived from it (`level_at`). Every resident level keeps simulating its bots: a bot that is not on the runner's level
+//! asks `StackNav::next_hop` for the flight or ladder to take, walks to its entrance, and walks the edge at the bot's
+//! walk speed (a ladder at the climb speed times the data `ladder_speed_scale`). Doors, errands and hiding stay
+//! own-level intents and only run on the runner's level. A bot on a level that is not resident stands still (bots
+//! follow the runner, so this only happens after a rebuild).
+//!
 //! Deferred (see docs/NPC_TEAMMATES in the Godot tree): per-NPC commands, catching,
-//! chat, storey crossing, co-op packets, name tags, saves, and the mannequin body. A bot's relay errand stands at the
+//! chat, co-op packets, name tags, saves, and the mannequin body. A bot's relay errand stands at the
 //! relay but does not claim it.
 
+use super::level_stack::{floor_y_of, level_at, local_ground};
 use super::pdist;
 use super::Game;
 use crate::hunters::brain::State;
+use crate::hunters::flight_edges::{self, EdgeWalk, Hop, Node, StackNav};
 use crate::world::rng::Rng;
 use crate::config::{INTERACT_REACH, PLAYER_RADIUS, PLAYER_SPRINT_SPEED, PLAYER_WALK_SPEED};
 use crate::render::textures::rng::GodotRng;
 use crate::world::route::run_seed_of_text;
+use crate::world::vertical::LADDER_CLIMB_SPEED;
 use crate::world::{Cell, Facility};
 use serde_json::Value;
 use std::f32::consts::PI;
@@ -113,6 +123,9 @@ pub struct Tuning {
     pub searched_avoid: f32,
     /// Metres of water over the bed from which a bot keeps out of a cell unless it flees (data `water.avoid_depth`).
     pub water_avoid_depth: f32,
+    /// Path cost of a step into a cell the bot keeps out of (deep water) when it plans across levels (data
+    /// `water.deep_step_cost`, optional: `DEFAULT_DEEP_STEP_COST` while the key is missing).
+    pub deep_step_cost: f32,
     /// Metres from a door's centre at which a bot counts itself at that door (data `doors.near`).
     pub door_near: f32,
     /// Metres from a door's centre at which a bot is clear of it and shuts it behind itself (data `doors.close_clear`).
@@ -159,6 +172,7 @@ impl Tuning {
             searched_memory: num(searched, "memory")?.max(0.0) as usize,
             searched_avoid: num(searched, "avoid_radius")?,
             water_avoid_depth: num(&v["water"], "avoid_depth")?,
+            deep_step_cost: num(&v["water"], "deep_step_cost").unwrap_or(DEFAULT_DEEP_STEP_COST),
             door_near: num(doors, "near")?,
             close_clear: num(doors, "close_clear")?,
             tasks: v["tasks"]
@@ -185,6 +199,60 @@ impl Tuning {
     }
 }
 
+/// The deep-cell step cost a bot plans across levels with while data/npcs.json has no `water.deep_step_cost`.
+pub const DEFAULT_DEEP_STEP_COST: f32 = 8.0;
+/// A bot starts an edge once it is this close to the hop's entrance (its body radius).
+const EDGE_ENTER_REACH: f32 = NAV_RADIUS;
+/// A bot whose route to the entrance has run out starts the edge from this far (one cell).
+const EDGE_ENTER_SNAP: f32 = 1.0;
+
+// ---- the seam to hunters/flight_edges.rs (task 1) ----------------------------------------------------------------
+// Everything the bots need from the shared flight graph goes through these few functions: `flight_edges::rules()`,
+// `StackNav::next_hop` (a `Hop` names the edge and the entrance cell), `StackNav::start_walk` and `EdgeWalk::advance`.
+
+/// Metres per second along a ladder edge.
+fn ladder_speed() -> f32 {
+    LADDER_CLIMB_SPEED * flight_edges::rules().ladder_speed_scale
+}
+
+/// Seconds past an edge's own length after which a bot on it is put on the nearer end.
+fn edge_stuck_seconds() -> f32 {
+    flight_edges::rules().edge_stuck_seconds
+}
+
+/// The scale a sound one storey away is heard at (data `hear_adjacent_scale`).
+fn hear_adjacent_scale() -> f32 {
+    flight_edges::rules().hear_adjacent_scale
+}
+
+/// Metres per second a bot moves along `w`: the walk speed on a flight, the climb speed on a ladder.
+pub fn edge_speed(w: &EdgeWalk) -> f32 {
+    if w.is_ladder() { ladder_speed() } else { PLAYER_WALK_SPEED }
+}
+
+/// Where a bot stands after `dt` seconds along `w`: x/z, absolute y and whether it has reached the far end. A flight is
+/// walked at the bot's walk speed, a ladder at the data climb speed (the edge walk applies it).
+fn edge_advance(w: &mut EdgeWalk, dt: f32) -> ((f32, f32), f32, bool) {
+    let s = w.advance(PLAYER_WALK_SPEED, dt, flight_edges::rules());
+    ((s.x, s.z), s.y, s.done)
+}
+
+/// An edge walk that starts at the hop's entrance on `level`.
+fn edge_start(nav: &StackNav, level: i32, hop: &Hop) -> Option<EdgeWalk> {
+    nav.start_walk(level, hop)
+}
+
+/// The next hop from `from` toward `to` over the stack's edges. `cost` is the multiplier of a step on a level (water);
+/// a value under 1 counts as 1 and `None` forbids the step.
+fn next_hop(nav: &StackNav, from: Node, to: Node, cost: &dyn Fn(i32, Cell, Cell) -> Option<f32>) -> Option<Hop> {
+    nav.next_hop(from, to, cost)
+}
+
+/// The cell a floor point is in.
+fn cell_at(p: (f32, f32)) -> Cell {
+    Cell::new(p.0.floor() as i32, p.1.floor() as i32)
+}
+
 /// A hunter as a bot sees it: its floor position and whether it is chasing.
 type Seen = ((f32, f32), bool);
 
@@ -207,8 +275,16 @@ pub struct Npc {
     pub slot: u32,
     /// Position on the window floor, in the same frame as `Game::p.pos`.
     pub at: (f32, f32),
-    /// The infinite level the NPC stands on (0 on a finite floor).
+    /// The infinite level the NPC stands on (0 on a finite floor), derived from `y` with `level_at` every frame.
     pub level: i32,
+    /// Absolute height of the feet (floor of `level` plus the ground under it; the edge's surface on a flight or ladder).
+    pub y: f32,
+    /// The flight, ladder or drop the bot is walking, if any (`at` is then its x/z and `y` follows the edge).
+    pub walk: Option<EdgeWalk>,
+    /// Seconds spent on the current edge (the stuck give-up).
+    pub edge_clock: f32,
+    /// The hop toward the runner's level the bot is walking to the entrance of.
+    pub hop: Option<Hop>,
     /// Body yaw in radians, Godot's `facing`.
     pub facing: f32,
     /// The turn spring's velocity (Godot `turn_v`).
@@ -278,6 +354,9 @@ impl Npc {
         self.deep_cells.clear();
         self.heard = None;
         self.last_door = None;
+        self.walk = None;
+        self.edge_clock = 0.0;
+        self.hop = None;
     }
 }
 
@@ -414,10 +493,29 @@ pub fn bots_hear(
     events: &[crate::hunters::noise_events::NoiseEvent],
     r: &crate::hunters::noise_events::Rules,
 ) {
+    bots_hear_with(npcs, events, r, hear_adjacent_scale());
+}
+
+/// `bots_hear` with the scale a sound one storey away is heard at, so a test can vary it. A sound on the bot's own
+/// level is heard at `bot_hearing_scale`; one a storey above or below at `bot_hearing_scale * adjacent` (only when no
+/// sound of its own level is heard); two or more storeys away not at all.
+pub fn bots_hear_with(
+    npcs: &mut [Npc],
+    events: &[crate::hunters::noise_events::NoiseEvent],
+    r: &crate::hunters::noise_events::Rules,
+    adjacent: f32,
+) {
     for n in npcs.iter_mut() {
-        let here: Vec<crate::hunters::noise_events::NoiseEvent> =
-            events.iter().filter(|e| e.level == n.level).cloned().collect();
-        if let Some(ear) = crate::hunters::noise_events::heard_with(r, &here, n.at, r.bot_hearing_scale) {
+        let mut heard = None;
+        for (gap, scale) in [(0, r.bot_hearing_scale), (1, r.bot_hearing_scale * adjacent)] {
+            let here: Vec<crate::hunters::noise_events::NoiseEvent> =
+                events.iter().filter(|e| (e.level - n.level).abs() == gap).cloned().collect();
+            heard = crate::hunters::noise_events::heard_with(r, &here, n.at, scale);
+            if heard.is_some() {
+                break;
+            }
+        }
+        if let Some(ear) = heard {
             n.heard = Some((ear.at, r.bot_look_seconds));
         }
     }
@@ -640,14 +738,117 @@ fn flee(n: &mut Npc, fac: &Facility, seen: &[Seen], t: &Tuning, dt: f32, presses
     true
 }
 
-/// What a bot sees on one frame: the facility, which lockers are burnt out, the runner, the hunters seen and the
-/// points hunters are searching now.
+/// What a bot sees on one frame: the facility of its own level, which lockers are burnt out, the runner, the hunters
+/// of its level that it sees and the points they are searching now.
 struct Scene<'a> {
     fac: &'a Facility,
     disabled: &'a [bool],
     leader: (f32, f32),
     seen: &'a [Seen],
     searching: &'a [(f32, f32)],
+    /// The level the runner stands on.
+    runner_level: i32,
+    /// The graph of flights, ladders and drops between the resident levels (None on a finite floor).
+    nav: Option<&'a StackNav>,
+}
+
+/// Sets the bot's cross-level walk going: the flight or ladder it takes toward the runner's level. It plans to the
+/// hop's entrance on its own level, walks there (`walk_toward`), and starts the `EdgeWalk` once it is there. With no
+/// route the bot stands and asks again in `REPATH` seconds.
+fn follow_across(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) {
+    let Some(nav) = sc.nav else {
+        n.walking = false;
+        return;
+    };
+    if n.hop.is_none() || n.path_age >= REPATH {
+        let deep_cost = t.deep_step_cost;
+        let (level, deep) = (n.level, &n.deep_cells);
+        let cost = move |step_level: i32, _from: Cell, to: Cell| {
+            Some(if step_level == level && deep.contains(&(to.x, to.y)) { deep_cost } else { 1.0 })
+        };
+        let hop = next_hop(
+            nav,
+            Node { level: n.level, cell: cell_at(n.at) },
+            Node { level: sc.runner_level, cell: cell_at(sc.leader) },
+            &cost,
+        );
+        // a fresh hop is planned to on this frame; with no route the next ask waits a full repath
+        n.path_age = if hop.is_some() { REPATH } else { 0.0 };
+        n.hop = hop;
+    }
+    let Some(hop) = n.hop.clone() else {
+        n.walking = false;
+        n.path.clear();
+        return;
+    };
+    let entrance = hop.entrance.center();
+    let d = pdist(n.at, entrance);
+    if d <= EDGE_ENTER_REACH || (n.path.is_empty() && n.path_age < REPATH && d <= EDGE_ENTER_SNAP) {
+        let Some(walk) = edge_start(nav, n.level, &hop) else {
+            // the edge is gone (a rebuild dropped it): plan again
+            n.hop = None;
+            n.path_age = REPATH;
+            return;
+        };
+        n.walk = Some(walk);
+        n.edge_clock = 0.0;
+        n.hop = None;
+        n.path.clear();
+        n.door = None;
+        n.walking = true;
+        return;
+    }
+    walk_toward(n, sc.fac, entrance, false, t, dt, presses);
+}
+
+/// Puts the bot on the nearer end of the edge it was walking, with its route and hop cleared so it plans again.
+fn settle_on_nearer_end(n: &mut Npc, w: &EdgeWalk) {
+    let p = if w.fraction() < 0.5 { w.start_point() } else { w.end_point() };
+    let (at, y) = ((p[0], p[1]), p[2]);
+    n.at = at;
+    n.y = y;
+    n.level = level_at(y, n.level);
+    n.walk = None;
+    n.edge_clock = 0.0;
+    n.hop = None;
+    n.path.clear();
+    n.path_age = REPATH;
+    n.walking = false;
+}
+
+/// One frame along the bot's edge: it moves `speed * dt` along the flight (walk speed) or ladder (climb speed), its y
+/// follows the edge, and its level is derived from that y. At the far end the walk and the route are cleared. A bot on
+/// an edge for longer than its length at that speed plus the data `edge_stuck_seconds` is put on the nearer end.
+fn advance_edge(n: &mut Npc, dt: f32) {
+    let Some(mut w) = n.walk.take() else { return };
+    n.edge_clock += dt;
+    let speed = edge_speed(&w);
+    if n.edge_clock > w.len / speed + edge_stuck_seconds() {
+        settle_on_nearer_end(n, &w);
+        return;
+    }
+    let from = n.at;
+    let (at, y, done) = edge_advance(&mut w, dt);
+    let moved = pdist(from, at);
+    if moved > 1e-4 {
+        n.heading = ((at.0 - from.0) / moved, (at.1 - from.1) / moved);
+        let heading = n.heading;
+        turn(n, (-heading.0).atan2(-heading.1), dt);
+    }
+    n.stride += moved + (y - n.y).abs();
+    n.at = at;
+    n.y = y;
+    n.level = level_at(y, n.level);
+    n.walking = true;
+    n.door = None;
+    n.path.clear();
+    if done {
+        n.edge_clock = 0.0;
+        n.hop = None;
+        n.path_age = REPATH;
+    } else {
+        n.walk = Some(w);
+    }
 }
 
 /// True when a chasing hunter is nearer `p` than `range` metres.
@@ -850,9 +1051,15 @@ fn run_intent(n: &mut Npc, sc: &Scene, intent: &str, t: &Tuning, dt: f32, presse
     match intent {
         "flee" => flee(n, sc.fac, sc.seen, t, dt, presses),
         _ if !n.joined => false,
+        // hiding and errands are own-level intents: they only run on the runner's level
+        "hide" | "relay" | "locker" if n.level != sc.runner_level => false,
         "hide" => hide(n, sc, t, dt, presses),
         "relay" => errand(n, sc, false, t, dt, presses),
         "locker" => errand(n, sc, true, t, dt, presses),
+        "follow" if n.level != sc.runner_level => {
+            follow_across(n, sc, t, dt, presses);
+            true
+        }
         "follow" => {
             follow(n, sc.fac, sc.leader, t, dt, presses);
             true
@@ -943,6 +1150,10 @@ impl Game {
             slot,
             at,
             level,
+            y: floor_y_of(level),
+            walk: None,
+            edge_clock: 0.0,
+            hop: None,
             facing: 0.0,
             turn_v: 0.0,
             heading: (0.0, 0.0),
@@ -1036,10 +1247,12 @@ impl Game {
     }
 
     /// Re-places every NPC beside the runner after the floor is rebuilt (a new finite floor replaces the
-    /// facility, so old positions mean nothing). Ring rule as at spawn.
+    /// facility, so old positions mean nothing). Ring rule as at spawn. The only way a bot changes level
+    /// other than walking an edge: its y becomes the runner's and any edge walk is dropped.
     pub(super) fn npc_place_beside_runner(&mut self) {
         let level = self.runner_level();
         let spot = self.p.pos;
+        let y = self.p.y();
         let total = self.npcs.len();
         let fac = &self.fac;
         for n in self.npcs.iter_mut() {
@@ -1050,6 +1263,7 @@ impl Game {
                 .or_else(|| fac.nearest_open(spot.0, spot.1, NAV_RADIUS))
                 .unwrap_or(spot);
             n.level = level;
+            n.y = y;
             n.forget_frame();
             n.walking = false;
         }
@@ -1060,10 +1274,10 @@ impl Game {
         self.update_npcs_with(dt, Tuning::get());
     }
 
-    /// The per-frame tick: an NPC on the runner's level tries its intents in order (data `intents`): it hides or runs
+    /// The per-frame tick: an NPC on a resident level tries its intents in order (data `intents`): it hides or runs
     /// from a chasing hunter, goes on a relay or locker errand, or follows the runner. A run NPC not yet joined waits
-    /// until the runner is close and in sight. An NPC on another level stands still (its level's storey crossing is
-    /// deferred). `t` is the tuning, so the tests can vary one value of the data.
+    /// until the runner is close and in sight. A bot on another resident level follows over the flights and ladders; one on a level that is not resident stands still.
+    /// `t` is the tuning, so the tests can vary one value of the data.
     pub(super) fn update_npcs_with(&mut self, dt: f32, t: &Tuning) {
         if self.npcs.is_empty() {
             return;
@@ -1071,43 +1285,73 @@ impl Game {
         self.npc_sync_water(t);
         let level = self.runner_level();
         let leader = self.p.pos;
-        let seen: Vec<Seen> = self
-            .hunters
-            .iter()
-            .filter(|h| h.active)
-            .map(|h| (h.pos, matches!(h.state, State::Chase)))
+        // the hunters of every level, as each bot sees them: only those on the bot's own level count
+        let mut by_level: Vec<(i32, Vec<Seen>, Vec<(f32, f32)>)> = vec![];
+        for h in self.hunters.iter().chain(self.resident_hunters.iter_all()).filter(|h| h.active) {
+            let i = match by_level.iter().position(|e| e.0 == h.level) {
+                Some(i) => i,
+                None => {
+                    by_level.push((h.level, vec![], vec![]));
+                    by_level.len() - 1
+                }
+            };
+            by_level[i].1.push((h.pos, matches!(h.state, State::Chase)));
+            if matches!(h.state, State::Search) {
+                by_level[i].2.push(h.pos);
+            }
+        }
+        // the facility of each resident level: the active one and the stack's (a bot elsewhere stands still)
+        let empty_stack = super::level_stack::LevelStack::EMPTY;
+        let stack = self.inf.as_ref().map_or(&empty_stack, |i| &i.stack);
+        let active_level = self.fac.level;
+        let facs: Vec<(i32, &Facility)> = std::iter::once((active_level, &self.fac))
+            .chain(stack.residents.iter().map(|r| (r.level, &r.fac)))
             .collect();
-        let searching: Vec<(f32, f32)> = self
-            .hunters
-            .iter()
-            .filter(|h| h.active && matches!(h.state, State::Search))
-            .map(|h| h.pos)
-            .collect();
-        let sc = Scene {
-            fac: &self.fac,
-            disabled: &self.hiding_disabled,
-            leader,
-            seen: &seen,
-            searching: &searching,
-        };
+        let nav: Option<&StackNav> = Some(&*self.stack_nav);
+        let no_seen: &[Seen] = &[];
+        let no_points: &[(f32, f32)] = &[];
         let mut presses: Vec<Cell> = vec![];
         let mut closes: Vec<Cell> = vec![];
         for n in self.npcs.iter_mut() {
-            if n.level != level {
+            let Some(&(_, fac)) = facs.iter().find(|(l, _)| *l == n.level) else {
+                // a level that is not resident: the bot stands (it follows the runner, so this is a rebuild's leftover)
                 n.walking = false;
                 continue;
+            };
+            let (seen, searching) = by_level
+                .iter()
+                .find(|e| e.0 == n.level)
+                .map_or((no_seen, no_points), |e| (&e.1[..], &e.2[..]));
+            let own = n.level == active_level;
+            let sc = Scene {
+                fac,
+                disabled: if own { &self.hiding_disabled[..] } else { &[] },
+                leader,
+                seen,
+                searching,
+                runner_level: level,
+                nav,
+            };
+            // a bot on a flight or ladder finishes the edge before it thinks about anything else
+            if n.walk.is_some() {
+                advance_edge(n, dt);
+                continue;
             }
-            note_searched(n, &searching, t);
+            n.y = floor_y_of(n.level) + local_ground(fac, n.at.0, n.at.1);
+            // doors are the active facility's: another level's bot never queues a press or a close on it
+            let mut sink: Vec<Cell> = vec![];
+            let door_presses = if own { &mut presses } else { &mut sink };
+            note_searched(n, searching, t);
             if n.hidden.is_some() {
                 hidden_tick(n, &sc, t, dt);
                 continue;
             }
-            if !n.joined && pdist(n.at, leader) <= n.join_radius && sc.fac.has_line_of_sight(n.at, leader) {
+            if !n.joined && n.level == level && pdist(n.at, leader) <= n.join_radius && sc.fac.has_line_of_sight(n.at, leader) {
                 n.joined = true;
             }
             let mut ran = false;
             for intent in &t.intents {
-                ran = run_intent(n, &sc, intent, t, dt, &mut presses);
+                ran = run_intent(n, &sc, intent, t, dt, door_presses);
                 if ran {
                     // any intent but an errand ends the errand: the bot hid, ran or followed instead
                     if !matches!(intent.as_str(), "relay" | "locker") {
@@ -1137,7 +1381,7 @@ impl Game {
                 let clear = sc.fac.door_centre(d).map_or(true, |c| pdist(n.at, c) >= t.close_clear);
                 if clear {
                     n.last_door = None;
-                    if sc.fac.door_is_open(d) {
+                    if own && sc.fac.door_is_open(d) {
                         closes.push(d);
                     }
                 }
@@ -1147,9 +1391,9 @@ impl Game {
         self.npc_close_doors(closes);
     }
 
-    /// The bots on the events' level hear this frame's noise events (hunters/noise_events.rs `heard`, at the data
-    /// `bot_hearing_scale`): the event heard by the widest margin is remembered for `bot_look_seconds`, and the bot
-    /// turns toward it while it stands. A bot never changes any hunter, meter or cue because of a sound.
+    /// The bots on the events' level, and one storey away at the data `hear_adjacent_scale`, hear this frame's noise
+    /// events (hunters/noise_events.rs `heard`, at the data `bot_hearing_scale`): the event heard by the widest margin
+    /// is remembered for `bot_look_seconds`, and the bot turns toward it while it stands. A bot never changes any hunter, meter or cue because of a sound.
     pub(super) fn npc_hear(&mut self, events: &[crate::hunters::noise_events::NoiseEvent]) {
         if events.is_empty() || self.npcs.is_empty() {
             return;
@@ -1161,10 +1405,14 @@ impl Game {
     /// round the bot with at least `water_avoid_depth` of water. Left as it was with no field yet.
     pub(super) fn npc_sync_water(&mut self, t: &Tuning) {
         let Some(hw) = self.hunter_water.as_ref() else { return };
-        let field = hw.field.clone();
-        let level = self.runner_level();
-        for n in self.npcs.iter_mut().filter(|n| n.level == level) {
-            n.deep_cells = deep_cells_near(n.at, t.water_avoid_depth, |c| field.depth_at((c.x, c.y)));
+        let (field, water_level) = (hw.field.clone(), hw.key.level);
+        // the field belongs to one level: a bot on another storey reads it as dry
+        for n in self.npcs.iter_mut() {
+            n.deep_cells = if n.level == water_level {
+                deep_cells_near(n.at, t.water_avoid_depth, |c| field.depth_at((c.x, c.y)))
+            } else {
+                vec![]
+            };
         }
     }
 
@@ -1770,6 +2018,10 @@ mod tests {
             slot: 1,
             at: (3.0, 4.0),
             level: 0,
+            y: 0.0,
+            walk: None,
+            edge_clock: 0.0,
+            hop: None,
             facing: 0.0,
             turn_v: 0.0,
             heading: (0.0, 1.0),
@@ -2173,7 +2425,7 @@ mod water_tests {
         let fac = facility();
         let (a, b, mid) = detour_case(&fac).expect("a detour case");
         let mut n = Npc {
-            id: 0, name: String::new(), slot: 1, at: a.center(), level: 0, facing: 0.0, turn_v: 0.0, heading: (0.0, 0.0),
+            id: 0, name: String::new(), slot: 1, at: a.center(), level: 0, y: 0.0, walk: None, edge_clock: 0.0, hop: None, facing: 0.0, turn_v: 0.0, heading: (0.0, 0.0),
             path: vec![], path_age: 0.0, walking: false, stride: 0.0, smart: 50, key: None, joined: true,
             join_radius: 0.0, door: None, hidden: None, errand: None, dwell: 0.0, visited: vec![], clear_time: 0.0,
             searched: vec![], last_door: None, deep_cells: vec![mid], fleeing: false, heard: None,
@@ -2206,6 +2458,53 @@ mod water_tests {
     }
 
     #[test]
+    fn a_bot_avoids_a_flooded_cell_from_a_pipe_flood() {
+        use crate::game::hunting::{HunterWater, WaterKey};
+        use crate::hunters::water::WaterField;
+        use std::sync::Arc;
+        let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        let t = Tuning::get();
+        // a start, a goal and a middle cell of the direct route that a dry detour avoids, close enough to be in the
+        // bot's water look
+        let cells = g.fac.floor_cells();
+        let mut found = None;
+        'search: for a in cells.iter().step_by(7).take(120) {
+            for b in cells.iter().step_by(13).take(120) {
+                let p = g.fac.find_path(*a, *b);
+                if p.len() < 6 {
+                    continue;
+                }
+                let mid = p[p.len() / 2];
+                let near = (mid.x - a.x).abs().max((mid.y - a.y).abs()) <= WATER_LOOK;
+                if near && !dry_route(&g.fac, *a, *b, &[(mid.x, mid.y)]).is_empty() {
+                    found = Some((*a, *b, (mid.x, mid.y)));
+                    break 'search;
+                }
+            }
+        }
+        let (a, b, mid) = found.expect("a generated floor has a route with a detour near its start");
+        g.npcs[0].at = a.center();
+        g.npcs[0].level = g.runner_level();
+        // a hand-built field: a pipe flood over that one cell (flooded, deeper than the bots avoid)
+        let field = Arc::new(WaterField::from_depths(&[(mid, t.water_avoid_depth + 1.0)], &[mid]));
+        let origin = g.window_origin();
+        let key = |level: i32| WaterKey { chunk: None, origin, level, bucket: 1, pipe_cells: 1, hunters: 0 };
+        g.hunter_water = Some(HunterWater { key: key(g.runner_level()), field: field.clone(), splash_in: vec![], last_pos: vec![] });
+        g.npc_sync_water(t);
+        assert!(g.npcs[0].deep_cells.contains(&mid), "the flooded cell is deep to the bot");
+        let mut n = g.npcs[0].clone();
+        plan(&mut n, &g.fac, b.center());
+        assert!(!n.path.contains(&mid), "the bot's route goes round the flooded cell");
+        // the same field on another storey is a dry floor to this bot: the direct route again
+        g.hunter_water = Some(HunterWater { key: key(g.runner_level() + 1), field, splash_in: vec![], last_pos: vec![] });
+        g.npc_sync_water(t);
+        assert!(g.npcs[0].deep_cells.is_empty());
+        let mut n = g.npcs[0].clone();
+        plan(&mut n, &g.fac, b.center());
+        assert!(n.path.contains(&mid), "with no water on its storey the bot takes the direct route through that cell");
+    }
+
+    #[test]
     fn a_valve_turn_is_heard_by_a_bot_in_range_and_not_out_of_it() {
         use crate::hunters::noise_events::{NoiseEvent, NoiseKind};
         let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
@@ -2219,8 +2518,62 @@ mod water_tests {
         g.npcs[0].heard = None;
         g.npc_hear(&[NoiseEvent::new(NoiseKind::ValveTurn, (at.0 + 300.0, at.1), level)]);
         assert!(g.npcs[0].heard.is_none());
-        g.npc_hear(&[NoiseEvent::new(NoiseKind::ValveTurn, (at.0 + 2.0, at.1), level + 1)]);
-        assert!(g.npcs[0].heard.is_none(), "another level's sound is not heard");
+        g.npc_hear(&[NoiseEvent::new(NoiseKind::ValveTurn, (at.0 + 2.0, at.1), level + 2)]);
+        assert!(g.npcs[0].heard.is_none(), "a sound two storeys away is not heard");
+    }
+
+    #[test]
+    fn a_sound_one_storey_away_is_heard_at_the_adjacent_scale_only() {
+        use crate::hunters::noise_events::{rules, NoiseEvent, NoiseKind};
+        let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        let r = rules();
+        let at = g.npcs[0].at;
+        let level = g.npcs[0].level;
+        let probe = NoiseEvent::new(NoiseKind::ValveTurn, at, level + 1);
+        let scale = 0.5;
+        let reach = r.radius_of(&probe, r.bot_hearing_scale * scale);
+        assert!(reach > 0.5, "a valve turn carries some way");
+        // inside the scaled reach: heard from the storey above and below
+        for gap in [1, -1] {
+            g.npcs[0].heard = None;
+            let near = NoiseEvent::new(NoiseKind::ValveTurn, (at.0 + reach * 0.5, at.1), level + gap);
+            bots_hear_with(&mut g.npcs, &[near], r, scale);
+            assert!(g.npcs[0].heard.is_some(), "a sound {gap} storey away inside the scaled reach is heard");
+        }
+        // outside the scaled reach but inside the full reach: heard on the bot's own level, not a storey away
+        let between = (at.0 + (reach + r.radius_of(&probe, r.bot_hearing_scale)) * 0.5, at.1);
+        assert!(between.0 - at.0 > reach, "the case lies between the two reaches");
+        g.npcs[0].heard = None;
+        bots_hear_with(&mut g.npcs, &[NoiseEvent::new(NoiseKind::ValveTurn, between, level + 1)], r, scale);
+        assert!(g.npcs[0].heard.is_none(), "past the scaled reach the adjacent storey does not hear it");
+        bots_hear_with(&mut g.npcs, &[NoiseEvent::new(NoiseKind::ValveTurn, between, level)], r, scale);
+        assert!(g.npcs[0].heard.is_some(), "the same sound on the bot's own level is heard");
+        // a changed data value changes what is heard
+        g.npcs[0].heard = None;
+        bots_hear_with(&mut g.npcs, &[NoiseEvent::new(NoiseKind::ValveTurn, between, level + 1)], r, 1.0);
+        assert!(g.npcs[0].heard.is_some(), "at scale 1.0 the adjacent storey hears as well as its own");
+    }
+
+    #[test]
+    fn a_bot_reads_the_water_of_its_own_level_only() {
+        use crate::game::hunting::{HunterWater, WaterKey};
+        use crate::hunters::water::WaterField;
+        use std::sync::Arc;
+        let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        let t = Tuning::get();
+        let at = g.npcs[0].at;
+        let cell = (at.0.floor() as i32 + 1, at.1.floor() as i32);
+        // a pipe flood: the cell is flooded, whatever the bed
+        let field = Arc::new(WaterField::from_depths(&[(cell, t.water_avoid_depth + 1.0)], &[cell]));
+        let origin = g.window_origin();
+        let key = |level: i32| WaterKey { chunk: None, origin, level, bucket: 1, pipe_cells: 1, hunters: 0 };
+        let level = g.npcs[0].level;
+        g.hunter_water = Some(HunterWater { key: key(level), field: field.clone(), splash_in: vec![], last_pos: vec![] });
+        g.npc_sync_water(t);
+        assert!(g.npcs[0].deep_cells.contains(&cell), "the flooded cell is deep for a bot on the field's level");
+        g.hunter_water = Some(HunterWater { key: key(level - 1), field, splash_in: vec![], last_pos: vec![] });
+        g.npc_sync_water(t);
+        assert!(g.npcs[0].deep_cells.is_empty(), "a bot on another storey reads a dry floor");
     }
 
     #[test]
@@ -2245,5 +2598,252 @@ mod water_tests {
             g.update_npcs_with(1.0 / 60.0, t);
         }
         assert!(g.npcs[0].heard.is_none(), "the look lasts bot_look_seconds and then ends");
+    }
+}
+
+/// Bots across levels (docs/STAIRS_CONTINUOUS_DESIGN.md, phase 8): a bot on any resident level keeps simulating and
+/// follows the runner over the same flights and ladders. The scenes are real Infinite windows with the neighbour level
+/// resident (`keep_stack`), stepped through `Game::step` so the flight graph is refreshed as in a run.
+#[cfg(test)]
+mod level_tests {
+    use super::*;
+    use crate::audio::Sounds;
+    use crate::config::Difficulty;
+    use crate::content::Content;
+    use crate::game::Controls;
+    use crate::world::catalog::Catalog;
+    use crate::world::facility::Stair;
+    use crate::world::flight::FlightShape;
+    use crate::world::vertical::STOREY;
+
+    const FRAME: f32 = 1.0 / 60.0;
+    /// No bot may take longer than this to reach a runner one storey away.
+    const CAP_SECONDS: f32 = 40.0;
+    /// Levels whose downward flights include each shape (as game/stack_walk_tests.rs).
+    const CASES: [(FlightShape, i32); 4] =
+        [(FlightShape::Switchback, 0), (FlightShape::Switchback, -1), (FlightShape::Straight, -1), (FlightShape::Spiral, -2)];
+
+    /// A window with the runner standing at one end of a link and one bot at the other, on the neighbour level.
+    struct Case {
+        g: Game,
+        content: Content,
+        catalog: Catalog,
+    }
+
+    fn tick(c: &mut Case) {
+        c.g.hunters.clear();
+        c.g.step(FRAME, &Controls::default(), &c.content, &c.catalog, &Sounds::default());
+    }
+
+    /// Steps until `done` or `secs`; the seconds it took.
+    fn run(c: &mut Case, secs: f32, mut done: impl FnMut(&Game) -> bool) -> Option<f32> {
+        for i in 0..(secs / FRAME) as usize {
+            tick(c);
+            if done(&c.g) {
+                return Some((i + 1) as f32 * FRAME);
+            }
+        }
+        None
+    }
+
+    /// The bot is on the runner's level, off any edge.
+    fn arrived(g: &Game) -> bool {
+        g.npcs[0].level == g.runner_level() && g.npcs[0].walk.is_none()
+    }
+
+    /// A window on `level`: the runner on the end of the link on that level (`dir` -1: the landing of a flight down, the
+    /// hatch of a ladder; `dir` 1: the foot of a flight up), the neighbour level resident and one joined bot at the far
+    /// end of the link on it. None (with a message) when 200 seeds have no such link.
+    fn case(level: i32, dir: i32, pick: impl Fn(&Stair) -> bool) -> Option<Case> {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let sounds = Sounds::default();
+        for n in 0..200 {
+            let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, &format!("ROOM-STACK-{n}"), level, &content, &catalog);
+            let choose = |g: &Game| {
+                g.fac
+                    .stairs
+                    .iter()
+                    .copied()
+                    .filter(|s| s.dir == dir && pick(s))
+                    .min_by(|a, b| pdist(a.cell.center(), g.p.pos).total_cmp(&pdist(b.cell.center(), g.p.pos)))
+            };
+            let Some(first) = choose(&g) else { continue };
+            g.p.pos = first.cell.center();
+            g.step(FRAME, &Controls::default(), &content, &catalog, &sounds);
+            let Some(stair) = choose(&g) else { continue };
+            g.p.pos = stair.cell.center();
+            for _ in 0..8 {
+                g.keep_stack(&content, &catalog);
+            }
+            let other = level + if dir < 0 { -1 } else { 1 };
+            if !g.inf.as_ref().is_some_and(|i| i.stack.has(other)) {
+                continue;
+            }
+            let end = if stair.is_ladder() {
+                stair.cell.center()
+            } else {
+                let path = stair.walk_path(level, 0.25);
+                if dir < 0 { *path.last().unwrap() } else { path[0] }
+            };
+            g.npcs.clear();
+            let at = {
+                let r = g.inf.as_ref().unwrap().stack.get(other).unwrap();
+                r.fac.nearest_open(end.0, end.1, NAV_RADIUS).unwrap_or(end)
+            };
+            g.push_npc(at, other, 70, None, 0.0);
+            g.hunters.clear();
+            return Some(Case { g, content, catalog });
+        }
+        eprintln!("SKIPPED: no window on level {level} has a dir {dir} link in 200 seeds");
+        None
+    }
+
+    fn ladder_case() -> Option<Case> {
+        [-1, -2].into_iter().find_map(|l| case(l, -1, |s| s.is_ladder()))
+    }
+
+    fn up_case(shape: FlightShape, level: i32) -> Option<Case> {
+        case(level, -1, move |s| !s.is_ladder() && s.shape == shape)
+    }
+
+    fn any_switchback() -> Option<Case> {
+        up_case(FlightShape::Switchback, 0).or_else(|| up_case(FlightShape::Switchback, -1))
+    }
+
+    #[test]
+    fn a_bot_follows_across_levels() {
+        let mut cases: Vec<(String, Case)> = CASES
+            .iter()
+            .filter_map(|&(shape, level)| up_case(shape, level).map(|c| (format!("{shape:?} {level}"), c)))
+            .collect();
+        if let Some(c) = ladder_case() {
+            cases.push(("ladder".to_string(), c));
+        }
+        for (what, mut c) in cases {
+            let floor = floor_y_of(c.g.runner_level());
+            assert_eq!(c.g.npcs[0].level, c.g.runner_level() - 1, "{what}: the bot starts a storey below");
+            let t = run(&mut c, CAP_SECONDS, arrived);
+            assert!(t.is_some(), "{what}: the bot reached the runner's level within {CAP_SECONDS} s");
+            let n = &c.g.npcs[0];
+            assert_eq!(n.level, c.g.runner_level(), "{what}");
+            assert!((n.y - floor).abs() < 0.05, "{what}: the bot stands on the floor it reached: y {} floor {floor}", n.y);
+        }
+    }
+
+    #[test]
+    fn a_bot_follows_down_a_flight() {
+        let Some(mut c) = [-1, -2].into_iter().find_map(|l| case(l, 1, |s| !s.is_ladder())) else { return };
+        let runner = c.g.runner_level();
+        assert_eq!(c.g.npcs[0].level, runner + 1, "the bot starts a storey above");
+        let t = run(&mut c, CAP_SECONDS, arrived);
+        assert!(t.is_some(), "the bot walked down to the runner within {CAP_SECONDS} s");
+        let n = &c.g.npcs[0];
+        assert_eq!(n.level, runner);
+        assert!((n.y - floor_y_of(runner)).abs() < 0.05, "it stands on the lower floor: y {}", n.y);
+    }
+
+    #[test]
+    fn a_bot_on_a_resident_floor_keeps_simulating() {
+        let Some(mut c) = any_switchback() else { return };
+        let (before, level) = (c.g.npcs[0].at, c.g.npcs[0].level);
+        assert!(c.g.inf.as_ref().unwrap().stack.has(level), "its floor is resident, not the active one");
+        run(&mut c, 3.0, |_| false);
+        let n = &c.g.npcs[0];
+        assert!(
+            pdist(n.at, before) > 0.1 || n.walk.is_some() || n.level != level,
+            "a bot on a resident floor moves: {before:?} -> {:?}",
+            n.at
+        );
+    }
+
+    #[test]
+    fn a_bot_on_a_non_resident_floor_stands() {
+        let Some(mut c) = any_switchback() else { return };
+        let far = c.g.runner_level() + 9;
+        assert!(!c.g.inf.as_ref().unwrap().stack.has(far));
+        c.g.npcs[0].level = far;
+        let (at, y) = (c.g.npcs[0].at, c.g.npcs[0].y);
+        run(&mut c, 3.0, |_| false);
+        let n = &c.g.npcs[0];
+        assert_eq!((n.at, n.y, n.level), (at, y, far), "a bot on a level that is not resident does not move");
+        assert!(!n.walking && n.walk.is_none());
+    }
+
+    #[test]
+    fn a_bot_uses_the_ladder_at_climb_speed() {
+        let Some(mut c) = ladder_case() else { return };
+        let mut on_edge: Vec<f32> = vec![];
+        run(&mut c, CAP_SECONDS, |g| {
+            let n = &g.npcs[0];
+            if n.walk.is_some() {
+                on_edge.push(n.y);
+            }
+            arrived(g)
+        });
+        assert!(on_edge.len() > 2, "the bot climbed the ladder as an edge walk");
+        let rise = (on_edge[on_edge.len() - 1] - on_edge[0]).abs();
+        let secs = on_edge.len() as f32 * FRAME;
+        let speed = LADDER_CLIMB_SPEED * flight_edges::rules().ladder_speed_scale;
+        assert!(rise > STOREY * 0.5, "it climbed most of a storey: {rise}");
+        assert!(secs + 2.0 * FRAME >= rise / speed, "the climb took {secs} s but {rise} m at {speed} m/s needs {}", rise / speed);
+    }
+
+    #[test]
+    fn a_bot_does_not_get_stuck_on_a_flight() {
+        for (shape, level) in CASES {
+            let Some(mut c) = up_case(shape, level) else { continue };
+            let mut worst = 0.0f32;
+            let t = run(&mut c, CAP_SECONDS, |g| {
+                worst = worst.max(g.npcs[0].edge_clock);
+                arrived(g)
+            });
+            assert!(t.is_some(), "{shape:?} at {level}: the bot reached the runner within {CAP_SECONDS} s");
+            assert!(worst <= CAP_SECONDS, "{shape:?} at {level}: no edge lasted past the cap");
+            // and it keeps following: nothing leaves it on an edge or off the level afterwards
+            run(&mut c, 3.0, |_| false);
+            assert_eq!(c.g.npcs[0].level, c.g.runner_level());
+            assert!(c.g.npcs[0].walk.is_none());
+        }
+    }
+
+    #[test]
+    fn a_bot_stuck_on_an_edge_is_put_on_the_nearer_end() {
+        let Some(mut c) = any_switchback() else { return };
+        let started = run(&mut c, CAP_SECONDS, |g| g.npcs[0].walk.is_some());
+        assert!(started.is_some(), "the bot reached the flight");
+        c.g.npcs[0].edge_clock = 1.0e6;
+        tick(&mut c);
+        let n = &c.g.npcs[0];
+        assert!(n.walk.is_none(), "the give-up ends the edge");
+        let on_floor = [n.level - 1, n.level, n.level + 1].iter().any(|l| (n.y - floor_y_of(*l)).abs() < 0.3);
+        assert!(on_floor, "it stands on one of the two floors, not mid-air: y {}", n.y);
+        // it does not loop: it still arrives
+        assert!(run(&mut c, CAP_SECONDS, arrived).is_some(), "after the give-up the bot still reaches the runner");
+    }
+
+    #[test]
+    fn npc_place_beside_runner_resets_y_and_walk() {
+        let Some(mut c) = any_switchback() else { return };
+        let started = run(&mut c, CAP_SECONDS, |g| g.npcs[0].walk.is_some());
+        assert!(started.is_some(), "the bot reached the flight");
+        c.g.npcs[0].y = 123.0;
+        c.g.npcs[0].edge_clock = 2.0;
+        c.g.npc_place_beside_runner();
+        let n = &c.g.npcs[0];
+        assert!(n.walk.is_none() && n.hop.is_none(), "a rebuild drops the edge walk");
+        assert_eq!(n.edge_clock, 0.0);
+        assert_eq!(n.y, c.g.p.y(), "the bot takes the runner's height");
+        assert_eq!(n.level, c.g.runner_level());
+    }
+
+    #[test]
+    fn a_spawned_bot_stands_on_its_levels_floor() {
+        let (mut g, _) = super::tests::run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        g.npcs.clear();
+        let (e, d) = ((g.p.pos.0, 1.6, g.p.pos.1), (0.0, 1.0, 0.0));
+        g.npc_spawn(1, 70, e, d);
+        let n = &g.npcs[0];
+        assert_eq!(n.y, floor_y_of(n.level));
+        assert!(n.walk.is_none() && n.hop.is_none() && n.edge_clock == 0.0);
     }
 }

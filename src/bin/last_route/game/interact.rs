@@ -531,10 +531,7 @@ impl Game {
             Ok(ev) => {
                 self.pipes.apply(&ev, self.time);
                 let at = self.p.pos;
-                self.push_noise(crate::hunters::noise_events::NoiseKind::ValveTurn, at);
-                if !ev.gate.is_empty() && ev.turns % 2 == 1 {
-                    self.push_noise(crate::hunters::noise_events::NoiseKind::SluiceOpen, at);
-                }
+                self.push_valve_events(&ev, at, level);
                 if !self.remote_hunters {
                     self.hunter_out.emit(
                         crate::net::hunter_events::rules(),

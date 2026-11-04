@@ -91,6 +91,8 @@ pub struct Investigate {
     pub response: Response,
     pub search_seconds: f32,
     pub kind: NoiseKind,
+    /// The level the sound happened on (a listener one storey away walks there through the nearest flight).
+    pub level: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -190,7 +192,36 @@ pub fn heard_with(rules: &Rules, events: &[NoiseEvent], listener: (f32, f32), he
     }
     best.map(|(_, e)| {
         let rule = rules.kind(e.kind);
-        Investigate { at: e.pos, response: rule.response, search_seconds: rule.search_seconds, kind: e.kind }
+        Investigate { at: e.pos, response: rule.response, search_seconds: rule.search_seconds, kind: e.kind, level: e.level }
+    })
+}
+
+/// `heard_with` for a listener standing on `level`: an event on the same level carries at its radius, one a single
+/// storey away at `adjacent_scale` times it (sound passes the slab, so no 3D check; `flight_edges::rules().hear_adjacent_scale`).
+/// An event further away, or an adjacent one when `adjacent_scale` is not positive, is not heard.
+pub fn heard_levels_with(
+    rules: &Rules,
+    events: &[NoiseEvent],
+    listener: (f32, f32),
+    hearing_scale: f32,
+    level: i32,
+    adjacent_scale: f32,
+) -> Option<Investigate> {
+    let mut best: Option<(f32, &NoiseEvent)> = None;
+    for e in events {
+        let scale = match (e.level - level).abs() {
+            0 => 1.0,
+            1 if adjacent_scale > 0.0 => adjacent_scale,
+            _ => continue,
+        };
+        let margin = rules.radius_of(e, hearing_scale * scale) - dist(e.pos, listener);
+        if margin >= 0.0 && best.map_or(true, |(m, _)| margin > m) {
+            best = Some((margin, e));
+        }
+    }
+    best.map(|(_, e)| {
+        let rule = rules.kind(e.kind);
+        Investigate { at: e.pos, response: rule.response, search_seconds: rule.search_seconds, kind: e.kind, level: e.level }
     })
 }
 
@@ -201,10 +232,18 @@ pub fn heard(events: &[NoiseEvent], listener: (f32, f32), hearing_scale: f32) ->
 }
 
 /// The host's hunters react to this frame's events (`hearing_mult` is the difficulty's `hunter_hearing`). A hunter that
-/// is inactive, stunned, chasing or peeking is left alone; the others investigate or search from the sound. Only events
-/// on `level` count. Returns how many hunters reacted. Never chases and never touches the player's meters.
+/// is inactive, stunned, chasing or peeking is left alone; the others investigate or search from the sound. Hunters on
+/// `level` hear events on `level` at the normal radius and events one storey away at `hear_adjacent_scale` times it
+/// (data/hunters/flights.json); an adjacent-level sound sends the hunter to that floor through the nearest flight
+/// (`investigate_on`), and the arrival logic then searches. Returns how many hunters reacted. Never chases and never
+/// touches the player's meters.
 pub fn react(hunters: &mut [Brain], events: &[NoiseEvent], level: i32, hearing_mult: f32, fac: &Facility) -> usize {
-    let here: Vec<NoiseEvent> = events.iter().filter(|e| e.level == level).cloned().collect();
+    let adjacent = super::flight_edges::rules().hear_adjacent_scale;
+    let here: Vec<NoiseEvent> = events
+        .iter()
+        .filter(|e| e.level == level || ((e.level - level).abs() == 1 && adjacent > 0.0))
+        .cloned()
+        .collect();
     if here.is_empty() {
         return 0;
     }
@@ -213,10 +252,17 @@ pub fn react(hunters: &mut [Brain], events: &[NoiseEvent], level: i32, hearing_m
         if !h.active || h.stun > 0.0 || matches!(h.state, State::Chase | State::Peek) {
             continue;
         }
-        let Some(ear) = heard(&here, h.pos, h.hearing_scale * hearing_mult) else { continue };
-        match ear.response {
-            Response::Investigate => h.investigate(ear.at),
-            Response::Search => h.enter_search_from(ear.at, ear.search_seconds, fac),
+        let Some(ear) = heard_levels_with(rules(), &here, h.pos, h.hearing_scale * hearing_mult, level, adjacent) else {
+            continue;
+        };
+        if ear.level == level {
+            match ear.response {
+                Response::Investigate => h.investigate(ear.at),
+                Response::Search => h.enter_search_from(ear.at, ear.search_seconds, fac),
+            }
+        } else {
+            // Another floor: walk there first; on arrival the brain searches the spot.
+            h.investigate_on(ear.at, ear.level);
         }
         n += 1;
     }
@@ -329,9 +375,31 @@ mod tests {
     fn a_wading_splash_makes_a_hunter_investigate_and_another_level_is_deaf() {
         let mut g = game_with_hunter((5.5, 5.5));
         let e = NoiseEvent::new(NoiseKind::WadingSplash, (6.5, 5.5), 0);
-        assert_eq!(react(&mut g.hunters, &[e.clone()], 1, 1.0, &g.fac), 0, "an event on another level is not heard");
+        assert_eq!(react(&mut g.hunters, &[e.clone()], 2, 1.0, &g.fac), 0, "an event two storeys away is not heard");
         assert_eq!(react(&mut g.hunters, &[e], 0, 1.0, &g.fac), 1);
         assert_eq!(g.hunters[0].state, State::Investigate);
+    }
+
+    #[test]
+    fn noise_on_the_other_floor_is_heard_at_the_adjacent_scale_and_walked_to() {
+        let scale = super::super::flight_edges::rules().hear_adjacent_scale;
+        assert!(scale > 0.0 && scale < 1.0, "the data sets a reduced adjacent hearing");
+        let e = NoiseEvent::new(NoiseKind::WadingSplash, (5.5, 5.5), 1);
+        let reach = rules().radius_of(&e, 1.0);
+        // inside the reduced radius: heard, and the brain is sent to level 1
+        let mut g = game_with_hunter((5.5 + reach * scale * 0.5, 5.5));
+        assert_eq!(react(&mut g.hunters, &[e.clone()], 0, 1.0, &g.fac), 1);
+        assert_eq!(g.hunters[0].state, State::Investigate);
+        assert_eq!(g.hunters[0].last_known, Some(e.pos));
+        assert_eq!(g.hunters[0].last_known_level, 1);
+        // between the reduced and the full radius: the same sound on the same floor is heard, from the next floor not
+        let d = reach * (scale + 1.0) * 0.5;
+        let mut g = game_with_hunter((5.5 + d, 5.5));
+        assert_eq!(react(&mut g.hunters, &[e.clone()], 0, 1.0, &g.fac), 0, "outside the adjacent radius");
+        let same = NoiseEvent::new(NoiseKind::WadingSplash, (5.5, 5.5), 0);
+        assert_eq!(react(&mut g.hunters, &[same], 0, 1.0, &g.fac), 1, "inside it on the same floor");
+        // the adjacent scale is data: switched off, nothing carries between floors
+        assert!(heard_levels_with(rules(), &[e], (5.5, 5.5), 1.0, 0, 0.0).is_none());
     }
 
     #[test]

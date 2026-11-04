@@ -35,6 +35,14 @@
         { "cmd": "interact", "kind": "RELAY" },
         { "expect": [ { "path": "run.relays_collected", "value": 1 } ] }
       ]
+    },
+    {
+      "name": "the bot explores from level -1 (floor above resident) without soft locks",
+      "start_run": { "seed": "BRAVO", "mode": "infinite", "level": -1, "god": true },
+      "steps": [
+        { "cmd": "step_until", "bot": true, "expect": [ { "path": "run.chunks_visited", "op": ">=", "value": 15 } ], "max_frames": 10800, "check_every": 60 },
+        { "expect": [ { "path": "bot.soft_locks", "value": 0 }, { "path": "bot.idle_max_s", "op": "<", "value": 90 } ] }
+      ]
     }
   ]
 }

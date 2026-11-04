@@ -361,3 +361,15 @@ Ordering: 1 and 2 first (parallel). Then 3 and 4. Then 5. Then 6 and 7 (7 after 
 
 - Phase 8: hunters, bots and remote players crossing: absolute y and derived level on brains and bots, flight, ladder and drop edges, 3D line of sight, no NPC freeze, `h` in net samples.
 - Phase 9: delete the swap machinery: `store_*` and `restore_*` hunter functions, the `respawn_outside_window` level path, and reduce `change_storey` callers to respawn, checkpoint and new run.
+
+## Phase 8 status (integration stage)
+
+Integration is not done: at the time of this stage the files of tasks 1 to 7 were not in the tree (no `hunters/flight_edges.rs`, `data/hunters/flights.json`, `game/resident_hunters.rs`, `game/hunter_pipes.rs`; no `edge_clock`, `EdgeWalk` or `StackNav` anywhere), so no hub HOOK line could be applied and nothing was built or run.
+
+Landed in this stage:
+
+- `hunters/bench.rs`: `resident_floor_step_cost` (ignored) steps 1, 2 and 3 floors of 12 hunters and prints ms per tick against the 1.0 ms p95 budget. Not measured yet (no cargo this stage); KT-MBA numbers still to record.
+- `tests/determinism.json`: `the host sim replays exactly with a resident floor` (level -1 start, 1800 bot frames, hash equal across a restart, other seed differs) and `a flight chase replays exactly`. Existing single-level cases keep their hashes.
+- `tests/bot.json`: the bot explores from level -1 without soft locks.
+
+Still open: hub hooks (`hunters/mod.rs` `pub mod flight_edges;`, `content/mod.rs` FLIGHTS_PATH exclusion, `game/mod.rs` fields and `mod hunter_pipes;`, `interact.rs` `push_noise_at`, `endless.rs` accessors, `render/scene.rs`), `observe()` fields `level`, `y`, `resident` (`headless/protocol.rs`, needs `Brain.y`/`level`), the `--stack` bot mode, the soak `no_hunter_or_bot_gets_stuck_on_a_flight`, the benchmark run, and the full gate. Known limit: the swap machinery stays until phase 9.

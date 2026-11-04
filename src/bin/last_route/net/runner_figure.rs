@@ -165,6 +165,12 @@ pub fn pick(skin: &str, has_skin: &dyn Fn(&str) -> bool) -> Pick {
     }
 }
 
+/// The scene y a remote runner is drawn at: its absolute feet height less the active floor's absolute y (the scene
+/// frame puts the active floor at 0). A runner on a flight is drawn at its height whatever its label says.
+pub fn runner_draw_y(h: f32, active_floor_y: f32) -> f32 {
+    h - active_floor_y
+}
+
 /// Draws the remote runners in the 3D view, lit like the scene. Each one is the mannequin at its position and yaw,
 /// wearing its skin's texture. Draws nothing when `remotes` is empty, so a single-player frame is unchanged.
 pub fn draw_runners(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, remotes: &[RemoteView]) {
@@ -172,6 +178,7 @@ pub fn draw_runners(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, rem
         return;
     }
     set_camera(&scene::camera(g, rt));
+    let active_y = crate::game::level_stack::floor_y_of(g.fac.level);
     gl_use_material(mat);
     shader::apply(mat, &scene::lighting(g), &g.world.lamps);
     match a.npc_body.as_ref() {
@@ -184,7 +191,7 @@ pub fn draw_runners(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, rem
                     Pick::Skin(id) => a.skin_texture(&id).unwrap_or_else(|| body.texture.clone()),
                     Pick::Atlas => body.texture.clone(),
                 };
-                let root = Mat4::from_translation(vec3(r.x, 0.0, r.y))
+                let root = Mat4::from_translation(vec3(r.x, runner_draw_y(r.h, active_y), r.y))
                     * Mat4::from_rotation_y(r.yaw)
                     * Mat4::from_scale(Vec3::splat(body.scale));
                 let mut verts = vec![];
@@ -201,7 +208,7 @@ pub fn draw_runners(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, rem
             // The mannequin failed to load: a plain grey post keeps the runner visible in the 3D view.
             let mut b = crate::render::builder::Builder::new(Some(a.white.clone()));
             for r in remotes {
-                b.cube(vec3(r.x, 0.85, r.y), vec3(0.42, 1.7, 0.42), r.yaw, GRAY, 2.0);
+                b.cube(vec3(r.x, runner_draw_y(r.h, active_y) + 0.85, r.y), vec3(0.42, 1.7, 0.42), r.yaw, GRAY, 2.0);
             }
             b.draw_and_clear();
         }
@@ -235,6 +242,8 @@ pub struct BotView<'a> {
     pub facing: f32,
     pub stride: f32,
     pub walking: bool,
+    /// Draw offset of the feet from the drawn floor (render::stack_actors::actor_dy); 0 on the drawn floor.
+    pub y: f32,
 }
 
 /// Draws NPC teammates with the runner mannequin, bent the same way a runner's limbs bend, each wearing its skin (see
@@ -256,7 +265,7 @@ pub fn draw_bots(a: &Assets, bots: &[BotView]) {
             Pick::Skin(id) => a.skin_texture(&id).unwrap_or_else(|| body.texture.clone()),
             Pick::Atlas => body.texture.clone(),
         };
-        let root = Mat4::from_translation(vec3(b.at.0, 0.0, b.at.1))
+        let root = Mat4::from_translation(vec3(b.at.0, b.y, b.at.1))
             * Mat4::from_rotation_y(b.facing)
             * Mat4::from_scale(Vec3::splat(body.scale));
         let mut verts = vec![];
@@ -273,6 +282,16 @@ pub fn draw_bots(a: &Assets, bots: &[BotView]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_on_a_flight_is_drawn_at_its_height() {
+        assert_eq!(runner_draw_y(-2.5, 0.0), -2.5);
+        assert_eq!(runner_draw_y(-2.5, -5.0), 2.5);
+        // the label is not an input: the same h gives the same y whichever floor the sender called itself
+        let (a, b) = (RemoteView { peer: 1, x: 0.0, y: 0.0, yaw: 0.0, h: -2.5, level: -1, skin: String::new() },
+            RemoteView { peer: 1, x: 0.0, y: 0.0, yaw: 0.0, h: -2.5, level: 0, skin: String::new() });
+        assert_eq!(runner_draw_y(a.h, 0.0), runner_draw_y(b.h, 0.0));
+    }
 
     /// The models.json text the game embeds.
     fn shipped_text() -> &'static str {

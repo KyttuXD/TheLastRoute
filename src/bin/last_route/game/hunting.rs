@@ -2,10 +2,12 @@
 //! events, captures and the escape struggle (mash [E] 6 times in 3.2 s), the hide check at a
 //! locker, and the run report.
 
-use super::{pdist, Escape, Game, Heater, Report};
+use super::{pdist, Admin, Escape, Game, Heater, Report};
 use crate::audio::Sounds;
 use crate::config::*;
-use crate::hunters::brain::{choose_target, State, Target, TargetRules};
+use super::level_stack::floor_y_of;
+use super::resident_hunters::{frame_entry, Slot};
+use crate::hunters::brain::{State, Target};
 use crate::net::hunter_events;
 use serde_json::{json, Value};
 use crate::hunters::gimmicks::{nyxie::Wake, Ctx, Event, Gimmick};
@@ -67,39 +69,36 @@ pub fn water_layers(
 }
 
 impl Game {
-    /// The host's hunter frame (Godot `_collect_hunter_report`): one object per hunter, indexed as `hunters` is, with
-    /// its id, position, facing, state name, active flag, stun, slow factor and disguise. Guests read it through
+    /// The host's hunter frame (Godot `_collect_hunter_report`): one object per hunter of every list, with its id,
+    /// position, facing, state name, active flag, stun, slow factor and disguise, and the `level` it stands on and its
+    /// `presentation_y` (absolute feet). The active list comes first, indexed as `hunters` is; the resident hunters follow
+    /// at `active.len() + k`, so an old guest's id check at that index skips them. Guests read it through
     /// [`Game::apply_hunter_frame`].
     pub fn hunter_frame(&self) -> Vec<Value> {
-        self.hunters
-            .iter()
-            .enumerate()
-            .map(|(index, h)| {
-                json!({
-                    "index": index,
-                    "id": h.def.id,
-                    "position": [h.pos.0, h.pos.1],
-                    "facing": [h.facing.0, h.facing.1],
-                    "state": hunter_events::state_name(h.state),
-                    "active": h.active,
-                    "stun": h.stun,
-                    "slow_factor": h.slow_factor,
-                    "disguise": h.disguise,
-                })
-            })
-            .collect()
+        let mut out: Vec<Value> = self.hunters.iter().enumerate().map(|(index, h)| frame_entry(index, h)).collect();
+        out.extend(self.resident_frame_entries());
+        out
     }
 
-    /// Guest: shows the host's hunters. Each entry is applied to the hunter at its `index` when the id matches, and a
-    /// field that is missing or not finite is left as it was. Only the display state is set here.
+    /// Guest: shows the host's hunters. Each entry finds its hunter by id (its `index` is only a hint), sets `level` and
+    /// `presentation_y` (an old host sends neither: the hunter stands on the viewer's level at that floor's height), and a
+    /// hunter whose level is not its list's moves to the list of that level. A field that is missing or not finite is left
+    /// as it was. Only the display state is set here.
     pub fn apply_hunter_frame(&mut self, data: &[Value]) {
+        let viewer = self.runner_level();
+        let finite = |v: &Value| v.as_f64().map(|f| f as f32).filter(|f| f.is_finite());
         for entry in data {
-            let Some(index) = entry["index"].as_u64().map(|i| i as usize) else { continue };
-            let Some(h) = self.hunters.get_mut(index) else { continue };
-            if entry["id"].as_str() != Some(h.def.id.as_str()) {
-                continue;
-            }
-            let finite = |v: &Value| v.as_f64().map(|f| f as f32).filter(|f| f.is_finite());
+            let Some(id) = entry["id"].as_str() else { continue };
+            let index = entry["index"].as_u64().map_or(usize::MAX, |i| i as usize);
+            let level = entry["level"].as_i64().and_then(|l| i32::try_from(l).ok());
+            let spot = match self.locate_hunter(id, index, level) {
+                Some(s) => s,
+                None => match self.create_guest_hunter(id, level) {
+                    Some(s) => s,
+                    None => continue,
+                },
+            };
+            let Some(h) = self.hunter_at_mut(spot) else { continue };
             if let (Some(x), Some(y)) = (finite(&entry["position"][0]), finite(&entry["position"][1])) {
                 h.pos = (x, y);
             }
@@ -121,10 +120,13 @@ impl Game {
             if entry.get("disguise").is_some() {
                 h.disguise = entry["disguise"].as_str().map(str::to_string);
             }
+            h.level = level.unwrap_or(viewer);
+            h.y = finite(&entry["presentation_y"]).unwrap_or_else(|| floor_y_of(h.level));
         }
+        self.move_crossers();
     }
 
-    fn target(&self) -> Target {
+    pub(super) fn target(&self) -> Target {
         let mut t = self.runner_target();
         if self.admin_flags().no_target {
             // admin no_target: the runner reads as sheltered and silent to every hunter
@@ -152,6 +154,9 @@ impl Game {
             temperature: self.meters.temperature,
             pesticide: self.p.pesticide > 0.0,
             map_open: self.map_open,
+            level: self.runner_level(),
+            y: self.p.y(),
+            cross: None,
         }
     }
 
@@ -163,10 +168,15 @@ impl Game {
         for h in &mut self.hunters {
             h.display_only = display_only;
         }
+        for h in self.resident_hunters.iter_all_mut() {
+            h.display_only = display_only;
+        }
         // a guest runs no hunter simulation: the host's frames set every hunter (apply_hunter_frame)
         if self.remote_hunters {
             return;
         }
+        // one navigation graph over the active and resident levels, given to every brain of every list
+        self.sync_stack_nav();
         // _direct_hunters: the director runs every frame before the brains, in every mode
         // (relay rush on); the Infinite route then pushes crowded hunters apart
         let target = self.target();
@@ -207,33 +217,17 @@ impl Game {
         // a hunter's wading splash is heard by the bots only: hunters do not call each other
         let wading = self.hunter_wading_events(dt);
         self.npc_hear(&wading);
-        // the NPC bots on the runner's level are candidate targets too (data/hunters/targets.json); the runner stays the
-        // default target, and a bot is chased only where the rules allow it (hunters::brain::choose_target)
-        let runner_level = self.runner_level();
-        let bot_targets: Vec<Target> = self
-            .npcs
-            .iter()
-            .filter(|n| n.level == runner_level)
-            .map(|n| Target { pos: n.at, facing: n.heading, ..Default::default() })
-            .collect();
-        let bot_pos: Vec<(f32, f32)> = bot_targets.iter().map(|t| t.pos).collect();
-        let rules = TargetRules::get();
+        // the NPC bots on a hunter's own level are candidate targets too (data/hunters/targets.json); the runner stays the
+        // default target, and a bot is chased only where the rules allow it (hunters::brain::choose_target). A runner on
+        // another level than the hunter carries the hunter's 3D sight and the adjacent hearing (`target_for`).
+        let list_level = self.runner_level();
+        let bot_targets = self.bot_targets();
         let mut all_events: Vec<(usize, Event)> = vec![];
         let mut caught: Option<usize> = None;
         for i in 0..self.hunters.len() {
-            let chosen = choose_target(
-                rules,
-                self.difficulty,
-                self.hunters[i].pos,
-                target.pos,
-                &bot_pos,
-                |a, b| self.fac.has_line_of_sight(a, b),
-            );
-            self.hunters[i].target_is_bot = chosen.is_some();
-            let hunter_target = match chosen {
-                Some(b) => &bot_targets[b],
-                None => &target,
-            };
+            let (hunter_target, chose_bot) = self.target_for(&self.hunters[i], list_level, &target, &bot_targets);
+            self.hunters[i].target_is_bot = chose_bot;
+            let hunter_target = &hunter_target;
             if let Gimmick::Solyth(s) = &mut self.hunters[i].gimmick {
                 s.heat_locked = self.meters.heat_locked;
             }
@@ -264,7 +258,7 @@ impl Game {
                 );
             }
             // a capture ends the run only when the runner was the target: a bot caught is no run end
-            if c && chosen.is_none() && caught.is_none() {
+            if c && !chose_bot && caught.is_none() {
                 caught = Some(i);
             }
             all_events.extend(ev.into_iter().map(|e| (i, e)));
@@ -275,32 +269,46 @@ impl Game {
                 return;
             }
         }
+        // every resident floor simulates too (D5); a resident hunter that caught the runner joins the active list so the
+        // struggle and the run report read it there
+        if let Some((level, i)) = self.update_resident_hunters(dt, prof) {
+            if caught.is_none() {
+                caught = Some(self.adopt_resident(level, i));
+            }
+        }
         // hunter footsteps, heartbeat, chase_start and Nyxie's wake cue: crate::audio::world::update (Game::update)
         if let Some(i) = caught {
-            if self.escape_grace > 0.0 || admin.god || admin.no_target {
-                return;
-            }
-            crate::audio::sound::capture();
-            if self.hunters[i].gimmick.capture_inescapable() || self.escape_cooldown > 0.0 {
-                let cause = if matches!(&self.hunters[i].gimmick, Gimmick::Nyxie(n) if n.wake == Wake::Empty)
-                {
-                    "lamp"
-                } else {
-                    "contact"
-                };
-                self.end_run(i, cause);
+            self.resolve_capture(i, &admin);
+        }
+        // a hunter whose derived level changed (it walked a flight or a ladder) moves to the list of that level
+        self.move_crossers();
+    }
+
+    /// The runner is caught by active hunter `i`: the struggle starts, or the run ends when the hunter's capture cannot
+    /// be escaped (or the escape is still cooling down).
+    fn resolve_capture(&mut self, i: usize, admin: &Admin) {
+        if self.escape_grace > 0.0 || admin.god || admin.no_target {
+            return;
+        }
+        crate::audio::sound::capture();
+        if self.hunters[i].gimmick.capture_inescapable() || self.escape_cooldown > 0.0 {
+            let cause = if matches!(&self.hunters[i].gimmick, Gimmick::Nyxie(n) if n.wake == Wake::Empty) {
+                "lamp"
             } else {
-                self.p.flashlight_on = false;
-                self.escape = Some(Escape {
-                    remaining: ESCAPE_DURATION,
-                    progress: 0,
-                    hunter: i,
-                });
-            }
+                "contact"
+            };
+            self.end_run(i, cause);
+        } else {
+            self.p.flashlight_on = false;
+            self.escape = Some(Escape {
+                remaining: ESCAPE_DURATION,
+                progress: 0,
+                hunter: i,
+            });
         }
     }
 
-    fn apply_event(&mut self, from: usize, e: Event) {
+    pub(super) fn apply_event(&mut self, from: usize, e: Event) {
         match e {
             Event::Stun(s) => self.p.stun = self.p.stun.max(s),
             Event::FacilityAlert { at, except_self } => {
@@ -523,7 +531,7 @@ impl Game {
 /// The ability a hunter is using right now, for the host's world events: a Loxelle lunge (`hunter_charge`) or a Nightmare
 /// pounce (`hunter_ability`, Nyxie and Solyth). None for every other hunter and while it is idle. The names are the
 /// event kinds in `data/net/hunter_events.json`, so their difficulties and gaps come from the data.
-fn ability_held(b: &crate::hunters::brain::Brain) -> Option<(&'static str, &'static str)> {
+pub(super) fn ability_held(b: &crate::hunters::brain::Brain) -> Option<(&'static str, &'static str)> {
     match &b.gimmick {
         Gimmick::Loxelle(_) if b.gimmick.holds_position(b) => Some(("hunter_charge", "lunge")),
         Gimmick::Nyxie(_) | Gimmick::Solyth(_) if b.gimmick.holds_position(b) => Some(("hunter_ability", "pounce")),
@@ -554,10 +562,19 @@ impl Game {
         out
     }
 
-    /// The window cells each running pipe flow reaches. Empty until the pipe geometry is wired (the pipes' step cells
-    /// are not stored by `PipeNetwork`; the integrator maps a flow id to its walkway cells).
+    /// The window cells each running pipe flow reaches, from the sewer chunk's own flood cells and steps
+    /// (`game/hunter_pipes.rs`).
     pub(super) fn hunter_pipe_cells(&self) -> Vec<PipeCells> {
-        vec![]
+        super::hunter_pipes::cells(self)
+    }
+
+    /// Gives the hunters of every resident list the dry field: the water field belongs to the level the runner's chunk
+    /// was read for, and a hunter on any other level must not wade through it.
+    fn sync_resident_water(&mut self) {
+        let dry = self.resident_hunters.dry_field();
+        for h in self.resident_hunters.iter_all_mut() {
+            h.set_water(dry.clone());
+        }
     }
 
     /// Builds the hunters' water field when something changed, and gives it to every brain (`Brain::set_water`).
@@ -585,6 +602,7 @@ impl Game {
             hunters: self.hunters.len(),
         };
         if self.hunter_water.as_ref().is_some_and(|w| w.key == key) {
+            self.sync_resident_water();
             return;
         }
         let sewer = self.sewer_water_cells();
@@ -608,6 +626,7 @@ impl Game {
             _ => (vec![0.0; n], self.hunters.iter().map(|h| h.pos).collect()),
         };
         self.hunter_water = Some(HunterWater { key, field, splash_in, last_pos });
+        self.sync_resident_water();
     }
 
     /// The wading splashes of the hunters this frame: a hunter that moved while standing in at least
@@ -647,17 +666,29 @@ impl Game {
         }
         self.npc_hear(events);
         let level = self.runner_level();
-        noise_events::react(&mut self.hunters, events, level, hearing, &self.fac)
+        let mut reacted = noise_events::react(&mut self.hunters, events, level, hearing, &self.fac);
+        // every resident floor hears too: its own level's sounds at the full radius, a storey away at the adjacent scale
+        for l in self.resident_hunters.levels() {
+            let (ids, mut brains): (Vec<String>, Vec<crate::hunters::brain::Brain>) =
+                std::mem::take(self.resident_hunters.list_mut(l)).into_iter().map(|s| (s.id, s.brain)).unzip();
+            if let Some((fac, _)) = self.level_parts(l) {
+                reacted += noise_events::react(&mut brains, events, l, hearing, fac);
+            }
+            *self.resident_hunters.list_mut(l) =
+                ids.into_iter().zip(brains).map(|(id, brain)| Slot { id, brain }).collect();
+        }
+        reacted
     }
 
     /// Producer accessor for the integrator: a noise event at `pos` on the runner's level, from the host's own
-    /// simulation. A guest's runner never causes an event for the host's hunters (the host sees only its own).
+    /// simulation. A guest's runner never causes an event for the host's hunters (the host sees only its own). A sound
+    /// that happens on another storey goes through `push_noise_at`.
     pub fn push_noise(&mut self, kind: NoiseKind, pos: (f32, f32)) {
         if self.remote_hunters {
             return;
         }
         let level = self.runner_level();
-        self.noise_events.push(NoiseEvent::new(kind, pos, level));
+        self.push_noise_at(kind, pos, level);
     }
 }
 
@@ -982,5 +1013,455 @@ mod remote_hunter_tests {
         let mut g = g;
         g.hunters[0].gimmick = Gimmick::Loxelle(Loxelle::default());
         assert_eq!(ability_held(&g.hunters[0]), None, "a Loxelle that has not wound up is not lunging");
+    }
+}
+
+#[cfg(test)]
+mod resident_floor_tests {
+    use super::*;
+    use crate::audio::Sounds;
+    use crate::config::Difficulty;
+    use crate::content::Content;
+    use crate::game::player::stair_height_at;
+    use crate::hunters::brain::Brain;
+    use crate::hunters::flight_edges;
+    use crate::world::catalog::Catalog;
+    use crate::world::facility::LinkKind;
+    use crate::world::Cell;
+
+    const FRAME: f32 = 1.0 / 60.0;
+
+    /// A level-0 window with the body on a flight going down and level -1 resident beside it, its lineup as built.
+    fn stacked_raw() -> (Game, Content, Catalog) {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        for n in 0..60 {
+            let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, &format!("ROOM-WALK-{n}"), 0, &content, &catalog);
+            let Some(s) = g.fac.stairs.iter().copied().find(|s| s.dir < 0 && matches!(s.kind, LinkKind::Stairs)) else {
+                continue;
+            };
+            let path = s.walk_path(g.fac.level, 0.25);
+            let p = path[path.len() / 4];
+            g.p.pos = p;
+            let Some(h) = stair_height_at(&g.fac, p) else { continue };
+            g.p.height = h;
+            g.keep_stack(&content, &catalog);
+            g.keep_stack(&content, &catalog);
+            if !g.inf.as_ref().unwrap().stack.has(-1) {
+                continue;
+            }
+            return (g, content, catalog);
+        }
+        panic!("no test window has a flight going down with its neighbour resident");
+    }
+
+    /// `stacked_raw` with no hunters anywhere, so a test adds exactly the ones it checks.
+    fn stacked() -> (Game, Content, Catalog) {
+        let (mut g, content, catalog) = stacked_raw();
+        g.hunters.clear();
+        if let Some(inf) = g.inf.as_mut() {
+            inf.loaded_mut().clear();
+        }
+        for level in g.resident_hunters.levels() {
+            g.resident_hunters.list_mut(level).clear();
+        }
+        (g, content, catalog)
+    }
+
+    fn hunter(content: &Content, def: usize, at: (f32, f32), level: i32, stamina: f32) -> Brain {
+        let mut h = Brain::new(content.hunters[def].clone(), at, "T", Difficulty::Standard);
+        h.active = true;
+        h.state = State::Wander;
+        h.level = level;
+        h.y = floor_y_of(level);
+        h.last_known_level = level;
+        h.stamina = stamina;
+        h
+    }
+
+    /// A hunter that picks its own wander target on its first tick (a bare `Wander` with no target stands still).
+    fn ready_to_wander(mut b: Brain) -> Brain {
+        b.state = State::Idle;
+        b.idle_timer = 0.0;
+        b
+    }
+
+    /// `n` spread-out cells of `level` a hunter stands in, at least `from_min` m from `from`.
+    fn open_spots(g: &Game, level: i32, n: usize, from: (f32, f32), from_min: f32) -> Vec<(f32, f32)> {
+        let (fac, _) = g.level_parts(level).expect("the level is held");
+        let spots: Vec<(f32, f32)> = fac
+            .floor_cells()
+            .into_iter()
+            .filter(|c| {
+                let (x, z) = c.center();
+                fac.hunter_open(*c) && fac.body_fits(x, z, HUNTER_RADIUS) && pdist((x, z), from) >= from_min
+            })
+            .map(|c| c.center())
+            .step_by(7)
+            .take(n)
+            .collect();
+        assert_eq!(spots.len(), n, "the level has {n} spread-out open cells");
+        spots
+    }
+
+    fn slot(brain: Brain) -> Slot {
+        Slot { id: String::new(), brain }
+    }
+
+    fn frames(g: &mut Game, n: usize) {
+        let prof = g.prof();
+        let sounds = Sounds::default();
+        for _ in 0..n {
+            g.update_hunters(FRAME, &prof, &sounds);
+        }
+    }
+
+    #[test]
+    fn a_level_never_visited_gets_a_lineup_on_its_own_floor() {
+        let (g, _, _) = stacked_raw();
+        let list = g.resident_hunters.list(-1);
+        assert!(!list.is_empty(), "the specials at least are built");
+        for s in list {
+            assert_eq!(s.brain.level, -1, "{} stands on its own level", s.brain.def.id);
+            assert_eq!(s.brain.y, floor_y_of(-1));
+            assert!(s.id.is_empty(), "off level 0 there is no residency id");
+        }
+    }
+
+    #[test]
+    fn a_hunter_on_the_other_resident_floor_keeps_simulating() {
+        let (mut g, content, _) = stacked();
+        let spot = open_spots(&g, -1, 1, g.p.pos, 8.0)[0];
+        let mut dormant = hunter(&content, 0, (3.5, 3.5), 0, 0.5);
+        dormant.active = false;
+        dormant.state = State::Idle;
+        let before = (dormant.pos, dormant.state);
+        g.hunters.push(dormant);
+        g.resident_hunters.list_mut(-1).push(slot(ready_to_wander(hunter(&content, 0, spot, -1, 1.0))));
+        frames(&mut g, 300);
+        let now = g.resident_hunters.list(-1);
+        assert_eq!(now.len(), 1, "it stayed on its floor");
+        assert!(pdist(now[0].brain.pos, spot) > 0.3, "five seconds on, the resident hunter has moved");
+        assert_eq!((g.hunters[0].pos, g.hunters[0].state), before, "the active hunters are untouched");
+    }
+
+    #[test]
+    fn relabel_keeps_every_hunter_and_swaps_lists() {
+        let (mut g, content, catalog) = stacked();
+        let up = open_spots(&g, 0, 1, g.p.pos, 8.0)[0];
+        let down = open_spots(&g, -1, 1, g.p.pos, 8.0)[0];
+        let mut a = hunter(&content, 0, up, 0, 0.123);
+        a.state = State::Search;
+        let mut b = hunter(&content, 1, down, -1, 0.456);
+        b.state = State::Investigate;
+        let (a_at, b_at) = ((a.pos, a.state), (b.pos, b.state));
+        g.hunters.push(a);
+        g.resident_hunters.list_mut(-1).push(slot(b));
+        // where the hunter with this stamina is: the level of its list, its position and its state
+        let find = |g: &Game, stamina: f32| -> Option<(i32, (f32, f32), State)> {
+            g.hunters
+                .iter()
+                .filter(|h| h.stamina == stamina)
+                .map(|h| (g.runner_level(), h.pos, h.state))
+                .chain(
+                    g.resident_hunters
+                        .iter_leveled()
+                        .filter(|(_, h)| h.stamina == stamina)
+                        .map(|(l, h)| (l, h.pos, h.state)),
+                )
+                .next()
+        };
+        assert!(g.relabel(-1, &content, &catalog), "down to the resident neighbour");
+        assert_eq!(find(&g, 0.456), Some((-1, b_at.0, b_at.1)), "the neighbour's hunter is now in the active list, untouched");
+        assert_eq!(find(&g, 0.123), Some((0, a_at.0, a_at.1)), "the old active hunter is the resident list's, untouched");
+        assert!(g.hunters.iter().any(|h| h.stamina == 0.456));
+        assert!(g.resident_hunters.list(0).iter().any(|s| s.brain.stamina == 0.123));
+        assert!(g.relabel(0, &content, &catalog), "and back up");
+        assert_eq!(find(&g, 0.456), Some((-1, b_at.0, b_at.1)));
+        assert_eq!(find(&g, 0.123), Some((0, a_at.0, a_at.1)));
+        assert!(g.hunters.iter().any(|h| h.stamina == 0.123), "back in the active list");
+        assert!(g.resident_hunters.list(-1).iter().any(|s| s.brain.stamina == 0.456));
+    }
+
+    #[test]
+    fn a_chase_follows_the_runner_across_a_flight_into_the_active_list() {
+        let (mut g, content, _) = stacked();
+        let spot = open_spots(&g, -1, 1, g.p.pos, 8.0)[0];
+        let mut chaser = hunter(&content, 0, spot, -1, 0.9);
+        chaser.state = State::Chase;
+        g.resident_hunters.list_mut(-1).push(slot(chaser));
+        g.move_crossers();
+        assert_eq!(g.hunters.len(), 0, "still below: it stays in its list");
+        // the flight is walked: the brain's derived level is now the runner's
+        {
+            let b = &mut g.resident_hunters.list_mut(-1)[0].brain;
+            b.level = 0;
+            b.y = floor_y_of(0);
+        }
+        g.move_crossers();
+        assert_eq!(g.hunters.len(), 1, "it joined the active list");
+        assert!(g.resident_hunters.list(-1).is_empty());
+        assert_eq!((g.hunters[0].level, g.hunters[0].state), (0, State::Chase), "its state came with it");
+        g.move_crossers();
+        assert_eq!(g.hunters.len(), 1, "and one call moved it once");
+        // and down again
+        g.hunters[0].level = -1;
+        g.move_crossers();
+        assert!(g.hunters.is_empty());
+        assert_eq!(g.resident_hunters.list(-1).len(), 1);
+    }
+
+    #[test]
+    fn a_crosser_to_a_level_that_is_not_resident_is_stored_at_once() {
+        let (mut g, content, _) = stacked();
+        let spot = open_spots(&g, -1, 1, g.p.pos, 8.0)[0];
+        let mut far = hunter(&content, 0, spot, 7, 0.31);
+        far.y = floor_y_of(7);
+        g.resident_hunters.list_mut(-1).push(slot(far));
+        g.move_crossers();
+        assert!(g.resident_hunters.list(-1).is_empty());
+        let kept = g.inf.as_mut().unwrap().floor_hunters_mut();
+        assert_eq!(kept.get(&7).map(Vec::len), Some(1), "level 7 keeps it under its level");
+    }
+
+    #[test]
+    fn a_hunter_on_a_flight_sees_the_runner_through_the_well() {
+        let (g, content, _) = stacked();
+        let upper = &g.fac;
+        let lower = &g.inf.as_ref().unwrap().stack.get(-1).expect("level -1 is resident").fac;
+        let cells = |f: &crate::world::Facility| -> Vec<(i32, i32)> {
+            (0..f.rows).flat_map(|y| (0..f.cols).map(move |x| (x, y))).collect()
+        };
+        let well = cells(upper)
+            .into_iter()
+            .find(|&(x, y)| upper.is_hole(x, y) && lower.hunter_open(Cell::new(x, y)))
+            .expect("the flight's well is a hole in the upper floor over open floor below");
+        let solid = cells(upper)
+            .into_iter()
+            .find(|&(x, y)| {
+                let c = Cell::new(x, y);
+                upper.hunter_open(c)
+                    && !upper.is_hole(x, y)
+                    && !upper.is_drop(c)
+                    && !upper.open_below(c)
+                    && lower.hunter_open(c)
+                    && !lower.open_above(c)
+            })
+            .expect("most of the floor is slab");
+        let runner_at = |c: (i32, i32)| {
+            let mut t = g.target();
+            t.pos = Cell::new(c.0, c.1).center();
+            t.level = 0;
+            t.y = floor_y_of(0);
+            t
+        };
+        let under = |c: (i32, i32)| hunter(&content, 0, Cell::new(c.0, c.1).center(), -1, 1.0);
+        let cross = g.cross_for(&under(well), &runner_at(well)).expect("two levels apart from each other");
+        assert!(cross.sees, "straight up through the open well");
+        assert_eq!(cross.hear_scale, flight_edges::rules().hear_adjacent_scale, "a storey away is heard at the data scale");
+        let blocked = g.cross_for(&under(solid), &runner_at(solid)).expect("two levels");
+        assert!(!blocked.sees, "never through a slab");
+        let same = hunter(&content, 0, runner_at(solid).pos, 0, 1.0);
+        assert_eq!(g.cross_for(&same, &runner_at(solid)), None, "one level: the facility answers");
+    }
+
+    #[test]
+    fn a_noise_one_floor_down_sends_a_resident_hunter_to_the_flight() {
+        let (mut g, content, _) = stacked();
+        let spot = open_spots(&g, -1, 1, g.p.pos, 6.0)[0];
+        g.resident_hunters.list_mut(-1).push(slot(hunter(&content, 0, spot, -1, 1.0)));
+        // the splash is on level 0, a storey above the hunter and a metre from it in plan
+        let ev = NoiseEvent::new(NoiseKind::PlungeSplash, (spot.0 + 1.0, spot.1), 0);
+        assert!(g.hunters_hear_noise(&[ev.clone()], 1.0) >= 1, "heard one storey away at the adjacent scale");
+        let b = &g.resident_hunters.list(-1)[0].brain;
+        assert_eq!(b.state, State::Investigate, "it walks there first");
+        assert_eq!(b.last_known, Some(ev.pos));
+        assert_eq!(b.last_known_level, 0, "the point is on the floor above: the way is the flight");
+        // two storeys away is not heard
+        let far = NoiseEvent::new(NoiseKind::PlungeSplash, spot, 4);
+        g.resident_hunters.list_mut(-1)[0].brain.state = State::Wander;
+        assert_eq!(g.hunters_hear_noise(&[far], 1.0), 0);
+        assert_eq!(g.resident_hunters.list(-1)[0].brain.state, State::Wander);
+    }
+
+    #[test]
+    fn resident_cap_limits_ticked_hunters() {
+        let (mut g, content, _) = stacked();
+        let cap = flight_edges::rules().resident_hunter_cap as usize;
+        let spots = open_spots(&g, -1, cap + 3, g.p.pos, 8.0);
+        for (i, s) in spots.iter().enumerate() {
+            g.resident_hunters.list_mut(-1).push(slot(ready_to_wander(hunter(&content, 0, *s, -1, 1.0 - i as f32 * 0.01))));
+        }
+        let print = |g: &Game| -> Vec<((f32, f32), Option<(f32, f32)>)> {
+            g.resident_hunters.list(-1).iter().map(|s| (s.brain.pos, s.brain.wander_target)).collect()
+        };
+        let before = print(&g);
+        frames(&mut g, 3);
+        let after = print(&g);
+        let changed = before.iter().zip(&after).filter(|(a, b)| a != b).count();
+        assert!(changed >= 1, "the nearest hunters tick");
+        assert!(changed <= cap, "{changed} hunters changed with a cap of {cap}");
+        assert_eq!(g.resident_hunters.list(-1).len(), cap + 3, "the others are kept, only not ticked");
+    }
+
+    #[test]
+    fn an_evicted_level_stores_its_hunters_by_absolute_cell_and_restores_them() {
+        let (mut g, content, catalog) = stacked();
+        let spot = open_spots(&g, -1, 1, g.p.pos, 8.0)[0];
+        g.resident_hunters.list_mut(-1).push(slot(hunter(&content, 0, spot, -1, 0.777)));
+        let o = g.inf.as_ref().unwrap().origin();
+        g.inf.as_mut().unwrap().stack.residents.clear();
+        g.sync_resident_hunters(&content);
+        assert!(!g.resident_hunters.has(-1), "the list left with its level");
+        {
+            let kept = g.inf.as_mut().unwrap().floor_hunters_mut();
+            let list = kept.get(&-1).expect("level -1 keeps its hunters");
+            assert_eq!(list.len(), 1);
+            let at = (spot.0 + o.0 as f32, spot.1 + o.1 as f32);
+            assert!(pdist(list[0].pos, at) < 1e-3, "kept at the absolute cell: {:?} vs {:?}", list[0].pos, at);
+        }
+        g.keep_stack(&content, &catalog);
+        g.keep_stack(&content, &catalog);
+        let back = g.resident_hunters.list(-1);
+        let me = back.iter().find(|s| s.brain.stamina == 0.777).expect("the hunter came back with its level");
+        assert!(pdist(me.brain.pos, spot) < 1e-3, "in the window frame again, where it stood");
+        assert!(g.inf.as_mut().unwrap().floor_hunters_mut().get(&-1).is_none(), "and out of the store");
+    }
+
+    #[test]
+    fn hunter_frame_round_trips_level_and_presentation_y() {
+        let (mut host, content, _) = stacked();
+        let up = open_spots(&host, 0, 1, host.p.pos, 8.0)[0];
+        let down = open_spots(&host, -1, 1, host.p.pos, 8.0)[0];
+        let mut a = hunter(&content, 0, up, 0, 1.0);
+        a.y = 2.5;
+        let mut b = hunter(&content, 1, down, -1, 1.0);
+        b.y = -3.25;
+        host.hunters.push(a);
+        host.resident_hunters.list_mut(-1).push(slot(b));
+        let frame = host.hunter_frame();
+        assert_eq!(frame.len(), 2, "one entry per hunter of every list");
+        assert_eq!(frame[0]["index"].as_u64(), Some(0));
+        assert_eq!(frame[1]["index"].as_u64(), Some(1), "residents follow the active list");
+        assert_eq!(frame[0]["level"].as_i64(), Some(0));
+        assert_eq!(frame[1]["level"].as_i64(), Some(-1));
+        assert_eq!(frame[0]["presentation_y"].as_f64(), Some(2.5));
+        assert_eq!(frame[1]["presentation_y"].as_f64(), Some(-3.25));
+
+        let (mut guest, _, _) = stacked();
+        guest.remote_hunters = true;
+        let (up, down) = (open_spots(&guest, 0, 1, guest.p.pos, 8.0)[0], open_spots(&guest, -1, 1, guest.p.pos, 8.0)[0]);
+        guest.hunters.push(hunter(&content, 0, up, 0, 1.0));
+        guest.resident_hunters.list_mut(-1).push(slot(hunter(&content, 1, down, -1, 1.0)));
+        guest.apply_hunter_frame(&frame);
+        assert_eq!(guest.hunters[0].y, 2.5);
+        let r = &guest.resident_hunters.list(-1)[0].brain;
+        assert_eq!((r.level, r.y), (-1, -3.25));
+
+        // the resident hunter walked the flight: the next frame says level 0, and the guest moves it to the active list
+        let mut next = frame.clone();
+        next[1]["level"] = json!(0);
+        next[1]["presentation_y"] = json!(0.0);
+        guest.apply_hunter_frame(&next);
+        assert_eq!(guest.hunters.len(), 2, "it joined the active list");
+        assert!(guest.resident_hunters.list(-1).is_empty());
+        assert_eq!(guest.hunters[1].level, 0);
+    }
+
+    #[test]
+    fn an_old_frame_without_level_applies_on_the_viewers_level() {
+        let (mut g, content, _) = stacked();
+        let up = open_spots(&g, 0, 1, g.p.pos, 8.0)[0];
+        let mut h = hunter(&content, 0, up, -1, 1.0);
+        h.y = -3.0;
+        let id = h.def.id.clone();
+        g.hunters.push(h);
+        g.apply_hunter_frame(&[json!({"index": 0, "id": id, "position": [3.5, 4.5], "state": "CHASE"})]);
+        assert_eq!(g.hunters.len(), 1, "it stays in the active list");
+        assert_eq!(g.hunters[0].level, g.runner_level(), "no level key: the viewer's level");
+        assert_eq!(g.hunters[0].y, floor_y_of(g.runner_level()), "at that floor's height");
+        assert_eq!(g.hunters[0].pos, (3.5, 4.5));
+    }
+
+    #[test]
+    fn a_guest_never_simulates_resident_hunters() {
+        let (mut g, content, _) = stacked();
+        let spot = open_spots(&g, -1, 1, g.p.pos, 8.0)[0];
+        g.resident_hunters.list_mut(-1).push(slot(hunter(&content, 0, spot, -1, 1.0)));
+        g.remote_hunters = true;
+        frames(&mut g, 300);
+        let b = &g.resident_hunters.list(-1)[0].brain;
+        assert_eq!((b.pos, b.state), (spot, State::Wander), "the host's frames move it, not the guest");
+        assert!(b.display_only, "and it never starts an emote of its own");
+        // a level that left the stack is not stored by a guest either
+        g.inf.as_mut().unwrap().stack.residents.clear();
+        g.sync_resident_hunters(&content);
+        assert!(g.inf.as_mut().unwrap().floor_hunters_mut().get(&-1).is_none(), "a guest stores nothing");
+    }
+
+    #[test]
+    fn a_guest_shadow_is_shown_but_never_simulated_stored_or_counted() {
+        let (mut guest, content, _) = stacked();
+        guest.remote_hunters = true;
+        let id = content.hunters[0].id.clone();
+        let near = (guest.p.pos.0 + 1.0, guest.p.pos.1);
+        let frame = |level: i32, at: (f32, f32)| {
+            json!({"index": 0, "id": id, "position": [at.0, at.1], "state": hunter_events::state_name(State::Chase), "active": true,
+                   "level": level, "presentation_y": floor_y_of(level)})
+        };
+
+        // a hunter the guest's own lineup never built, on the floor below: shown, but marked as the host's shadow
+        let below = open_spots(&guest, -1, 1, guest.p.pos, 8.0)[0];
+        guest.apply_hunter_frame(&[frame(-1, below)]);
+        let s = &guest.resident_hunters.list(-1)[0].brain;
+        assert!(s.shadow && s.display_only, "made from a frame, display only");
+        assert_eq!(s.pos, below);
+
+        // no brain runs for it, whatever the frames or the noise are
+        guest.noise_events.push(NoiseEvent::new(NoiseKind::PlungeSplash, below, -1));
+        frames(&mut guest, 120);
+        let s = &guest.resident_hunters.list(-1)[0].brain;
+        assert_eq!((s.pos, s.state), (below, State::Chase), "only the host's frames move it");
+
+        // a shadow on the viewer's own level feeds neither the danger readout nor the chase cue ...
+        guest.apply_hunter_frame(&[frame(0, near)]);
+        assert_eq!(guest.hunters.len(), 1, "it came up to the viewer's list");
+        assert!(guest.hunters[0].shadow);
+        assert_eq!(guest.danger(), 0.0, "a shadow chasing at one metre is no danger readout");
+        let audio = |g: &Game| -> (Option<f64>, bool) {
+            let list: Vec<crate::audio::world::HunterAudio> = g
+                .hunters
+                .iter()
+                .map(|h| crate::audio::world::HunterAudio {
+                    id: &h.def.id,
+                    pos: h.pos,
+                    active: h.active,
+                    chasing: h.state == State::Chase,
+                    idle: false,
+                    direct_visible: true,
+                    winded: false,
+                    stunned: false,
+                    in_vent: false,
+                    nyxie_empty_wake: false,
+                    glyra_humming: false,
+                    targets_runner: !h.target_is_bot && !h.shadow,
+                })
+                .collect();
+            crate::audio::world::runner_danger_inputs(g.p.pos, &list)
+        };
+        assert_eq!(audio(&guest), (None, false), "and no chase cue");
+        // ... while the same hunter of the guest's own lineup does (the control)
+        guest.hunters[0].shadow = false;
+        assert!(guest.danger() > 0.75);
+        assert!(audio(&guest).1, "a lineup hunter chasing from a metre is a chase cue");
+        guest.hunters[0].shadow = true;
+
+        // and when its level leaves the stack nothing is stored or restored
+        guest.apply_hunter_frame(&[frame(-1, below)]);
+        guest.inf.as_mut().unwrap().stack.residents.clear();
+        guest.sync_resident_hunters(&content);
+        assert!(!guest.resident_hunters.has(-1), "the guest drops the list instead of storing it");
+        assert!(guest.inf.as_mut().unwrap().floor_hunters_mut().is_empty(), "a guest stores nothing");
+        assert!(guest.inf.as_mut().unwrap().stored_mut().is_empty());
     }
 }

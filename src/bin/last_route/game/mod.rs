@@ -4,6 +4,8 @@
 
 pub mod endless;
 mod hunting;
+mod hunter_pipes;
+mod resident_hunters;
 mod guest_gate;
 mod guest_apply;
 mod interact;
@@ -202,6 +204,8 @@ pub struct Game {
     pub fov_deg: f32,
     /// The Infinite route's streamed window and levels (None on a finite route).
     pub inf: Option<endless::InfState>,
+    pub resident_hunters: resident_hunters::ResidentHunters,
+    pub stack_nav: std::sync::Arc<crate::hunters::flight_edges::StackNav>,
     pub admin: Admin,
     /// NPC teammates the admin spawned this run (game/npc.rs, phase one), and the next id (never reused).
     pub npcs: Vec<npc::Npc>,
@@ -326,6 +330,8 @@ impl Game {
             shots: 0,
             fov_deg: FIELD_OF_VIEW_DEG,
             inf: None,
+            resident_hunters: Default::default(),
+            stack_nav: std::sync::Arc::new(crate::hunters::flight_edges::StackNav::empty()),
             admin: Admin::default(),
             npcs: vec![],
             npc_next: 0,
@@ -456,6 +462,8 @@ impl Game {
             shots: 0,
             fov_deg: FIELD_OF_VIEW_DEG,
             inf: None,
+            resident_hunters: Default::default(),
+            stack_nav: std::sync::Arc::new(crate::hunters::flight_edges::StackNav::empty()),
             admin: Admin::default(),
             npcs: vec![],
             npc_next: 0,
@@ -534,6 +542,7 @@ impl Game {
         // a new floor: no cached sewer chunk, dry again
         self.water_cache = None;
         self.hunter_water = None;
+        self.resident_hunters = Default::default();
         self.noise_events.clear();
         self.flood_depth = 0.0;
         self.swim = swim_effects::SwimState::default();
@@ -772,7 +781,7 @@ impl Game {
                 nyxie_empty_wake: matches!(&h.gimmick, Gimmick::Nyxie(n) if n.wake == Wake::Empty),
                 glyra_humming: matches!(&h.gimmick, Gimmick::Glyra(g) if g.playing()),
                 // a hunter that chose a player bot (update_hunters) is no danger cue for the runner
-                targets_runner: !h.target_is_bot,
+                targets_runner: !h.target_is_bot && !h.shadow,
             }).collect();
             crate::audio::world::update(dt, &listener, &hunters);
         }
@@ -894,7 +903,7 @@ impl Game {
         for h in self
             .hunters
             .iter()
-            .filter(|h| h.active && !h.target_is_bot && !h.gimmick.hidden_from_view())
+            .filter(|h| h.active && !h.target_is_bot && !h.shadow && !h.gimmick.hidden_from_view())
         {
             let d = pdist(h.pos, self.p.pos);
             let base = match h.state {

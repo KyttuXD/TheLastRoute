@@ -42,6 +42,35 @@
         { "cmd": "bot", "frames": 2400, "observe": false },
         { "cmd": "hash", "expect": [ { "path": "last.hash", "var": "a.hash" } ] }
       ]
+    },
+    {
+      "name": "the host sim replays exactly with a resident floor",
+      "start_run": { "mode": "infinite", "seed": 20261104, "level": -1 },
+      "steps": [
+        { "cmd": "bot", "frames": 1800, "observe": false },
+        { "cmd": "hash", "save_as": "a" },
+        { "cmd": "start_run", "seed": 20261104, "difficulty": "standard", "mode": "infinite", "level": -1 },
+        { "cmd": "bot", "frames": 1800, "observe": false },
+        { "cmd": "hash", "expect": [ { "path": "last.hash", "var": "a.hash" } ] },
+        { "cmd": "start_run", "seed": 20261105, "difficulty": "standard", "mode": "infinite", "level": -1 },
+        { "cmd": "bot", "frames": 1800, "observe": false },
+        { "cmd": "hash", "expect": [ { "path": "last.hash", "op": "!=", "var": "a.hash" } ] }
+      ]
+    },
+    {
+      "name": "a flight chase replays exactly",
+      "start_run": { "mode": "infinite", "seed": 20261104 },
+      "steps": [
+        { "cmd": "teleport", "to": "stairs_down" },
+        { "cmd": "walk_flight", "dir": "down", "frames": 900 },
+        { "cmd": "step", "frames": 600, "act": { "move": [0, 0] }, "observe": false },
+        { "cmd": "hash", "save_as": "a" },
+        { "cmd": "start_run", "seed": 20261104, "difficulty": "standard", "mode": "infinite" },
+        { "cmd": "teleport", "to": "stairs_down" },
+        { "cmd": "walk_flight", "dir": "down", "frames": 900 },
+        { "cmd": "step", "frames": 600, "act": { "move": [0, 0] }, "observe": false },
+        { "cmd": "hash", "expect": [ { "path": "last.hash", "var": "a.hash" } ] }
+      ]
     }
   ]
 }

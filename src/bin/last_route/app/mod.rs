@@ -88,6 +88,12 @@ pub fn render_play(g: &Game, a: &Assets, mat: &Material, t: &Targets) {
     render_play_with(g, a, mat, t, &[]);
 }
 
+/// The remotes on the viewer's own level: what the HUD, the map pins and a guest event's placing may use. A teammate one floor
+/// away is drawn in the 3D world but never as a dot on the wrong map.
+pub fn same_level_remotes(remotes: &[RemoteView], depth: i32) -> Vec<RemoteView> {
+    remotes.iter().filter(|r| r.level == depth).cloned().collect()
+}
+
 /// [`render_play`] with the other runners of an open room, drawn into the 3D view on this floor.
 pub fn render_play_with(g: &Game, a: &Assets, mat: &Material, t: &Targets, remotes: &[RemoteView]) {
     scene::draw_scene(g, a, mat, &t.scene);
@@ -725,7 +731,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
         // the sabotaged relay count rides in the snapshot the next late joiner is sent
         if loading.is_none() {
             if let (Some(n), Some(g)) = (net.as_mut().filter(|n| n.is_host()), playing.as_mut()) {
-                let remotes = n.remotes_at(g.depth, g.window_origin());
+                let remotes = same_level_remotes(&n.remotes_at(g.p.y(), g.depth, g.window_origin()), g.depth);
                 for mut ev in n.take_guest_events() {
                     crate::net::wiring::place_guest_event(&mut ev, &remotes);
                     g.apply_guest_event(ev);
@@ -917,7 +923,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
             }
         } else if let Some(g) = playing.as_mut() {
             let in_report = g.report.is_some();
-            let remotes = net.as_ref().map(|n| n.remotes_at(g.depth, g.window_origin())).unwrap_or_default();
+            let remotes = net.as_ref().map(|n| n.remotes_at(g.p.y(), g.depth, g.window_origin())).unwrap_or_default();
             // the admin tools follow the server's admin flag for the signed-in account, never the local name
             admin.enabled = backend.admin && !stress_on;
             let admin_esc = if in_report || pz.open {
@@ -1590,5 +1596,22 @@ mod look_tests {
         let godot = 100.0 * SENS / MOUSE_LOOK_GODOT_WINDOW_SCALE;
         assert!((turn.x - godot).abs() < 1e-4, "turn {} godot {}", turn.x, godot);
         assert!((godot - 0.25).abs() < 1e-6, "godot {godot}");
+    }
+}
+
+#[cfg(test)]
+mod remote_level_tests {
+    use super::*;
+
+    fn view(peer: u32, h: f32, level: i32) -> RemoteView {
+        RemoteView { peer, x: 1.0, y: 2.0, yaw: 0.0, h, level, skin: String::new() }
+    }
+
+    #[test]
+    fn a_remote_one_floor_away_is_not_on_the_map_list() {
+        let near = [view(1, -0.5, 0), view(2, -4.2, -1)];
+        let map = same_level_remotes(&near, 0);
+        assert_eq!(map.iter().map(|r| r.peer).collect::<Vec<_>>(), vec![1], "the 3D list keeps both, the map list one");
+        assert_eq!(near.len(), 2);
     }
 }

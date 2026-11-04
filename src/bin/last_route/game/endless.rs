@@ -539,6 +539,15 @@ pub fn population(diff: Difficulty, relays: i32) -> i32 {
 }
 
 impl InfState {
+    pub(super) fn floor_hunters_mut(&mut self) -> &mut HashMap<i32, Vec<Brain>> {
+        &mut self.floor_hunters
+    }
+    pub(super) fn stored_mut(&mut self) -> &mut HashMap<String, Brain> {
+        &mut self.stored
+    }
+    pub(super) fn loaded_mut(&mut self) -> &mut Vec<String> {
+        &mut self.loaded
+    }
     pub fn new(seed: &str, level: i32) -> InfState {
         InfState {
             seed: seed.to_string(),
@@ -917,6 +926,7 @@ impl Game {
             let (fac, fix) = infinite::window(&inf.seed, center, t, catalog, &content.loot, &mut inf.cache);
             inf.stack.put(Resident { level: t, center, fac, fix });
         }
+        self.sync_resident_hunters(content);
     }
 
     /// An Axe breach of sewer pipe number `n` in `chunk` starts its flow (game/pipes.rs). A flow already running is left
@@ -1126,6 +1136,7 @@ impl Game {
                 h.search_target = h.search_target.map(|k| (k.0 - sx, k.1 - sy));
                 h.clear_path();
             }
+            self.shift_resident_hunters((-sx, -sy));
         }
         // NPC teammates share the window frame, so they shift with it (game/npc.rs)
         for n in self.npcs.iter_mut() {
@@ -1183,6 +1194,7 @@ impl Game {
     #[cfg_attr(not(test), allow(dead_code))]
     /// absolute y and `walk_relabel` changes the label). A resident window of the storey (`keep_stack`) is swapped in by the load.
     pub(super) fn change_storey(&mut self, to: i32, content: &Content, catalog: &Catalog, arrive: impl FnOnce(&mut Game)) {
+        self.drain_resident_hunters();
         self.sync_out();
         // the level being left keeps its hunters at their absolute cells, to be found again on the way back
         self.store_level0_hunters();
@@ -1219,8 +1231,6 @@ impl Game {
         }
         self.sync_out();
         // the level being left keeps its hunters at their absolute cells, to be found again on the way back
-        self.store_level0_hunters();
-        self.store_floor_hunters();
         let Some(inf) = self.inf.as_mut() else { return false };
         let Some(r) = inf.stack.take(to) else { return false };
         let old = Resident {
@@ -1231,6 +1241,7 @@ impl Game {
         };
         inf.stack.put(old);
         inf.relabelled = true;
+        let from = inf.level;
         inf.level = to;
         self.fac.level = to;
         self.p.rebase_floor(floor_y_of(to));
@@ -1246,7 +1257,7 @@ impl Game {
             .collect();
         self.fac.update_doors(&[], &bodies, 0.0);
         self.focus = self.find_focus();
-        self.restore_level_hunters(content);
+        self.relabel_hunters(from, to, content);
         self.world_nb.relabel(&mut self.world, to);
         // cheap: the parts are cached, and a level change is not a jump for the render
         self.world_dirty = true;
@@ -1313,6 +1324,7 @@ impl Game {
                 if let Gimmick::Solyth(s) = &mut b.gimmick {
                     s.heat_locked = self.meters.heat_locked;
                 }
+                self.settle_new_brain(&mut b);
                 self.hunters.push(b);
             }
         }
@@ -1355,6 +1367,7 @@ impl Game {
             );
             let at = self.p.pos;
             b.activate_at(at);
+            self.settle_new_brain(&mut b);
             self.hunters.push(b);
         }
     }
@@ -1474,7 +1487,7 @@ impl Game {
 
     /// Leaving level 0 by a stairwell: the loaded hunters go to the store at their absolute cells, so the level
     /// they were on keeps them (Godot keeps every hunter in world_state).
-    fn store_level0_hunters(&mut self) {
+    pub(super) fn store_level0_hunters(&mut self) {
         if super::guest_gate::is_display_only(self) {
             return;
         }
@@ -1497,7 +1510,7 @@ impl Game {
 
     /// Leaving a level off level 0 by a stairwell: its hunters are kept at their absolute cells under the level (the
     /// level-0 hunters go to `stored`, see `store_level0_hunters`).
-    fn store_floor_hunters(&mut self) {
+    pub(super) fn store_floor_hunters(&mut self) {
         if super::guest_gate::is_display_only(self) {
             return;
         }
@@ -1517,7 +1530,7 @@ impl Game {
     /// Arriving on a level by a stairwell. Level 0 loads its stored hunters by residency. Another level the runner has
     /// been on gets back the hunters it kept, in the new window's frame (one now outside the window comes back in out of
     /// sight, as on a window move), topped up to the population. A level not visited before gets its lineup.
-    fn restore_level_hunters(&mut self, content: &Content) {
+    pub(super) fn restore_level_hunters(&mut self, content: &Content) {
         if super::guest_gate::is_display_only(self) {
             return;
         }
@@ -1715,7 +1728,7 @@ impl Game {
 
 /// Moves a hunter's absolute-cell fields by `d`: its position, its last known cell and its two targets. The path is
 /// dropped, since it is in the old frame.
-fn shift_brain(b: &mut Brain, d: (f32, f32)) {
+pub(super) fn shift_brain(b: &mut Brain, d: (f32, f32)) {
     let s = move |p: (f32, f32)| (p.0 + d.0, p.1 + d.1);
     b.pos = s(b.pos);
     b.last_known = b.last_known.map(s);

@@ -304,7 +304,7 @@ impl Game {
             self.p.force_flashlight_flicker(p.flicker_seconds);
             self.p.noise_burst = p.noise;
             self.p.noise_burst_timer = p.noise_seconds;
-            self.push_noise(crate::hunters::noise_events::NoiseKind::PlungeSplash, l.pos);
+            self.push_noise_at(crate::hunters::noise_events::NoiseKind::PlungeSplash, l.pos, level);
             if p.soak {
                 self.swim.soak(&self.swim_cfg);
             }
@@ -321,7 +321,7 @@ impl Game {
         self.p.noise_burst = g.noise * k;
         self.p.noise_burst_timer = g.noise_seconds;
         self.p.force_flashlight_flicker(g.flicker_seconds);
-        self.push_noise(crate::hunters::noise_events::NoiseKind::HardLanding, l.pos);
+        self.push_noise_scaled(crate::hunters::noise_events::NoiseKind::HardLanding, l.pos, level, (l.drop_height / rules.min_height).clamp(1.0, 2.0));
         self.say("You hit the floor hard.");
     }
 
@@ -680,5 +680,70 @@ mod tests {
         assert_eq!(g.inf.as_ref().unwrap().builds, builds, "no window was built");
         assert_eq!(g.inf.as_ref().unwrap().level, level, "the storey label is untouched");
         assert_eq!(g.p.pos, pos, "the landing never moves the runner");
+    }
+
+    // --- the landing sounds (hunters hear them on the storey where they happen) ---
+
+    use crate::hunters::brain::{Brain, State};
+    use crate::hunters::noise_events::{self, NoiseKind};
+
+    #[test]
+    fn a_plunge_splash_is_investigated() {
+        let (mut g, content, catalog) = sewer_game(sewer_core::LEVEL);
+        let pos = sewer_cell(&g, sewer_core::WATER);
+        g.hunters.clear();
+        let mut h = Brain::new(content.hunters[0].clone(), (pos.0 + 6.0, pos.1), "T", crate::config::Difficulty::Standard);
+        h.active = true;
+        h.state = State::Wander;
+        g.hunters.push(h);
+        g.noise_events.clear();
+        let drop = swim::fall_rules().min_height * 2.0;
+        g.apply_landing(landing(sewer_core::LEVEL, pos, drop), &content, &catalog);
+        let events = std::mem::take(&mut g.noise_events);
+        let splash = events.iter().find(|e| e.kind == NoiseKind::PlungeSplash).expect("a splash event");
+        assert_eq!(splash.level, sewer_core::LEVEL);
+        assert_eq!(g.hunters_hear_noise(&events, 1.0), 1);
+        assert!(matches!(g.hunters[0].state, State::Search | State::Investigate), "{:?}", g.hunters[0].state);
+        // a hunter on another storey hears nothing
+        g.hunters[0].state = State::Wander;
+        let mut elsewhere = splash.clone();
+        elsewhere.level = sewer_core::LEVEL + 5;
+        assert_eq!(g.hunters_hear_noise(&[elsewhere], 1.0), 0);
+        assert_eq!(g.hunters[0].state, State::Wander);
+    }
+
+    #[test]
+    fn a_hard_landing_event_carries_the_landing_level_not_the_label() {
+        let (mut g, content, catalog) = sewer_game(sewer_core::LEVEL);
+        assert_eq!(g.runner_level(), sewer_core::LEVEL);
+        g.noise_events.clear();
+        g.apply_landing(landing(0, (3.5, 3.5), STOREY), &content, &catalog);
+        let e = g.noise_events.iter().find(|e| e.kind == NoiseKind::HardLanding).expect("a hard landing event");
+        assert_eq!(e.level, 0, "the storey that owns the landing height, not the runner's label");
+    }
+
+    #[test]
+    fn a_taller_fall_is_heard_farther_but_never_past_the_cap() {
+        let (mut g, content, catalog) = sewer_game(0);
+        let rules = swim::fall_rules();
+        let nr = noise_events::rules();
+        let mut radius_for = |drop: f32| {
+            g.noise_events.clear();
+            g.apply_landing(landing(0, (3.5, 3.5), drop), &content, &catalog);
+            let e = g.noise_events.iter().find(|e| e.kind == NoiseKind::HardLanding).expect("event").clone();
+            nr.radius_of(&e, 1.0)
+        };
+        let (short, tall, huge) = (radius_for(rules.min_height), radius_for(rules.min_height * 2.0), radius_for(rules.min_height * 20.0));
+        assert!(tall >= short, "a taller fall carries at least as far: {short} {tall}");
+        assert!(huge <= nr.max_radius + 1e-4, "never past the cap");
+        assert!(huge >= tall);
+    }
+
+    #[test]
+    fn a_fall_below_the_minimum_emits_no_event() {
+        let (mut g, content, catalog) = sewer_game(0);
+        g.noise_events.clear();
+        g.apply_landing(landing(0, (3.5, 3.5), swim::fall_rules().min_height * 0.5), &content, &catalog);
+        assert!(g.noise_events.is_empty());
     }
 }

@@ -1,0 +1,5 @@
+{
+  "schema": "lr.resident_hunters/1",
+  "_note": "Hunters on every resident floor (game/resident_hunters.rs, docs/STAIRS_CONTINUOUS_DESIGN.md D5). hunter_eye_height is the height in metres above a hunter's feet from which it looks at a runner on another storey (the 3D sight line through an open well). The resident floor hunter cap, the capture height and the adjacent hearing scale are in hunters/flights.json.",
+  "hunter_eye_height": 2.2
+}

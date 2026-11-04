@@ -235,6 +235,30 @@ pub fn rules() -> &'static Rules {
     })
 }
 
+/// Frame keys added by continuous levels (optional; an old build reads only `position`).
+pub const KEY_LEVEL: &str = "level";
+pub const KEY_PRESENTATION_Y: &str = "presentation_y";
+
+/// The level a frame entry says its hunter is on, or `default_level` when the key is missing or not an integer.
+pub fn frame_level(entry: &Value, default_level: i32) -> i32 {
+    entry
+        .get(KEY_LEVEL)
+        .and_then(Value::as_i64)
+        .and_then(|n| i32::try_from(n).ok())
+        .unwrap_or(default_level)
+}
+
+/// The absolute y a frame entry presents its hunter at; a missing, non-numeric or non-finite value falls back to the
+/// floor of `level`.
+pub fn frame_y(entry: &Value, level: i32) -> f32 {
+    entry
+        .get(KEY_PRESENTATION_Y)
+        .and_then(Value::as_f64)
+        .map(|f| f as f32)
+        .filter(|f| f.is_finite())
+        .unwrap_or_else(|| crate::game::level_stack::floor_y_of(level))
+}
+
 /// The name a frame carries for a hunter state (the Godot `state` numbers have no meaning on the wire).
 pub fn state_name(state: State) -> &'static str {
     match state {
@@ -466,6 +490,27 @@ pub fn notice(event: &Map<String, Value>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hunter_frame_level_and_y_default_when_absent() {
+        let old = json!({"index": 0, "id": "a", "position": [1.0, 2.0]});
+        assert_eq!(frame_level(&old, 2), 2);
+        assert_eq!(frame_y(&old, -1), -5.0, "the floor of the level");
+        let new = json!({"level": -1, "presentation_y": -3.5});
+        assert_eq!((frame_level(&new, 0), frame_y(&new, -1)), (-1, -3.5));
+        for bad in [json!("x"), json!(null), json!(1e39)] {
+            let e = json!({"level": bad.clone(), "presentation_y": bad});
+            assert_eq!(frame_level(&e, 3), 3);
+            assert_eq!(frame_y(&e, 1), 5.0);
+        }
+    }
+
+    #[test]
+    fn snapshot_tolerates_frame_entries_with_the_new_keys() {
+        let hunters = vec![json!({"index": 0, "id": "a", "level": -1, "presentation_y": -2.0})];
+        let snap = parse_snapshot(&snapshot_state(&hunters, 1)).expect("snapshot");
+        assert_eq!(snap.hunters, hunters);
+    }
 
     fn frame(states: &[(&str, &str)]) -> Vec<Value> {
         states

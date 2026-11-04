@@ -3,6 +3,7 @@
 //! search state machine, with each hunter's gimmick hooked in at the original's points.
 //! Positions are grid cells (1 cell = 1 m).
 
+use super::flight_edges::{self, EdgeWalk, Hop, Node, StackNav};
 use super::gimmicks::{Ctx, Event, Gimmick};
 use super::peek::{self, Corner, Style};
 use crate::config::*;
@@ -76,6 +77,21 @@ pub struct Target {
     pub pesticide: bool,
     /// The full-screen map is open (Godot target["map_open"], main_3d.gd:444). Read by Void Yellow.
     pub map_open: bool,
+    /// The level the target stands on (continuous levels). Only read when `cross` is Some.
+    pub level: i32,
+    /// The target's absolute feet height (m); the capture test needs the same height.
+    pub y: f32,
+    /// How a target on another level is sensed; None means the same level (the facility answers as before).
+    pub cross: Option<CrossSense>,
+}
+
+/// What a hunter senses of a target on another level, filled by the host: `sees` from
+/// `flight_edges::sight_clear_3d` (an open well passes sight, a slab never does) and `hear_scale` from
+/// `flight_edges::rules().hear_adjacent_scale`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CrossSense {
+    pub sees: bool,
+    pub hear_scale: f32,
 }
 
 /// LightField.unlit_scale: a runner in pitch dark is seen close, one in a lamp pool far.
@@ -169,7 +185,17 @@ pub fn choose_target(
 }
 
 fn body_fits_gated(fac: &Facility, gates: &[Cell], x: f32, y: f32) -> bool {
-    fac.body_fits(x, y, HUNTER_RADIUS) || (!gates.is_empty() && gates.contains(&cell_of((x, y))))
+    body_fits_gated_at(fac, gates, x, y, None)
+}
+
+/// `body_fits_gated` with an optional absolute height: on an edge walk the footprint is the flight surface at `h`
+/// (`navigation::on_flight`); without one it is the plain floor test.
+fn body_fits_gated_at(fac: &Facility, gates: &[Cell], x: f32, z: f32, h: Option<f32>) -> bool {
+    let fits = match h {
+        Some(h) => super::navigation::on_flight(fac, x, z, h),
+        None => fac.body_fits(x, z, HUNTER_RADIUS),
+    };
+    fits || (!gates.is_empty() && gates.contains(&cell_of((x, z))))
 }
 
 /// Whether a body of HUNTER_RADIUS can sweep the straight line from `from` to `to` (sampled every 0.15 m).
@@ -392,6 +418,25 @@ pub struct Brain {
     water_seen: u64,
     /// A guest shows the host's emote index and never starts one.
     pub display_only: bool,
+    /// A guest's copy of a host hunter that the guest's own lineup does not have (made by `create_guest_hunter` from a
+    /// host frame). It is shown and nothing more: never simulated, stored or restored, and it feeds neither the danger
+    /// readout nor the chase cue.
+    pub shadow: bool,
+    /// The level this hunter stands on, derived from `y` with hysteresis while an edge is walked.
+    pub level: i32,
+    /// Absolute feet height (m): `floor_y_of(level)` off an edge, the flight or ladder surface on one.
+    pub y: f32,
+    /// The flight, ladder or drop being walked; None off an edge.
+    pub walk: Option<EdgeWalk>,
+    /// The level `last_known` is on (read only while `last_known` is the point it was set with).
+    pub last_known_level: i32,
+    last_known_stamp: Option<(f32, f32)>,
+    /// The edge graph across the resident levels; empty until the host sets it.
+    nav: Arc<StackNav>,
+    /// The hop (edge and entrance cell) the current route heads for, when the goal is on another level.
+    hop: Option<Hop>,
+    /// Seconds spent on the current edge.
+    edge_clock: f32,
 }
 
 const ARRIVAL_DISTANCE: f32 = 0.65;
@@ -481,6 +526,64 @@ impl Brain {
             water_rules: WaterRules::get().for_hunter(&def_id),
             water_seen: 0,
             display_only: false,
+            shadow: false,
+            level: 0,
+            y: 0.0,
+            walk: None,
+            last_known_level: 0,
+            last_known_stamp: None,
+            nav: Arc::new(StackNav::empty()),
+            hop: None,
+            edge_clock: 0.0,
+        }
+    }
+
+    /// Stand on `level`'s floor (a spawn, a respawn or a list swap): level and y together, and no edge in progress.
+    pub fn set_level(&mut self, level: i32) {
+        self.level = level;
+        self.y = crate::game::level_stack::floor_y_of(level);
+        self.walk = None;
+        self.hop = None;
+        self.edge_clock = 0.0;
+        self.last_known_level = level;
+        self.last_known_stamp = None;
+    }
+
+    /// The edge graph this brain plans through. A changed graph version drops the route timer at once; an edge walk
+    /// in progress keeps going (it owns its own edge).
+    pub fn set_nav(&mut self, nav: Arc<StackNav>) {
+        if nav.version() != self.nav.version() {
+            self.path_timer = 0.0;
+            self.hop = None;
+        }
+        self.nav = nav;
+    }
+
+    /// Investigate `p` on `level`: the hunter walks to the nearest flight when that is not its own level.
+    pub fn investigate_on(&mut self, p: (f32, f32), level: i32) {
+        self.investigate(p);
+        self.set_known_level(p, level);
+    }
+
+    /// True while a flight, ladder or drop is being walked.
+    pub fn on_edge(&self) -> bool {
+        self.walk.is_some()
+    }
+
+    fn set_known_level(&mut self, p: (f32, f32), level: i32) {
+        self.last_known = Some(p);
+        self.last_known_level = level;
+        self.last_known_stamp = Some(p);
+    }
+
+    /// The level the current goal is on. `last_known_level` counts only while `last_known` is still the point it was
+    /// set with; any other write to `last_known` (a gimmick's, a shift of the window) means the hunter's own level.
+    fn goal_level(&self) -> i32 {
+        match self.state {
+            State::Chase | State::Investigate if self.last_known.is_some() && self.last_known == self.last_known_stamp => {
+                self.last_known_level
+            }
+            _ => self.level,
         }
     }
 
@@ -665,7 +768,9 @@ impl Brain {
         self.update_stamina(dt, prof);
         let holds = g.holds_position(self);
         self.peek_cooldown = (self.peek_cooldown - dt).max(0.0);
-        self.consider_peek(ctx.fac, &g, holds);
+        if self.walk.is_none() {
+            self.consider_peek(ctx.fac, &g, holds);
+        }
         let speed_scale = g.speed_scale(self);
         self.update_movement(dt, ctx.fac, depth, relays, prof, holds, speed_scale);
         self.tick_emotes(dt, state_before, dist(self.pos, target.pos));
@@ -681,7 +786,8 @@ impl Brain {
         let caught = (!target.hidden || may_grab_hidden)
             && !target.in_safe_zone
             && !immune
-            && dist(self.pos, target.pos) < self.capture_reach(prof);
+            && dist(self.pos, target.pos) < self.capture_reach(prof)
+            && (self.y - target.y).abs() <= flight_edges::rules().capture_height;
         (caught, events)
     }
 
@@ -851,21 +957,27 @@ impl Brain {
             self.direct_visible = false;
         }
         self.sense_timer -= dt;
+        // A target on another level is sensed through `cross` (the host's 3D sight and the adjacent hearing scale).
+        let cross = target.cross;
+        let target_level = if cross.is_some() { target.level } else { self.level };
         if self.sense_timer > 0.0 {
             if self.state == State::Chase && can_sense {
-                self.last_known = Some(target.pos);
+                self.set_known_level(target.pos, target_level);
             }
             return;
         }
         self.sense_timer = HUNTER_SENSE_INTERVAL;
         let sight_limit = self.sight_limit(target.flashlight_on, prof, g);
-        let hearing_limit = target.noise * self.hearing_scale * prof.hunter_hearing;
+        let hearing_limit = target.noise * self.hearing_scale * prof.hunter_hearing * cross.map_or(1.0, |c| c.hear_scale);
         let mut sees = false;
         let mut line_clear = false;
         if can_sense {
             let ray = sight_limit.max(hearing_limit * HEARING_OPEN_AIR_SCALE);
             if direct < ray {
-                line_clear = fac.has_line_of_sight(eye, target.pos);
+                line_clear = match cross {
+                    Some(c) => c.sees,
+                    None => fac.has_line_of_sight(eye, target.pos),
+                };
             }
             sees = direct < sight_limit && line_clear;
         }
@@ -874,12 +986,17 @@ impl Brain {
             if line_clear && direct <= hearing_limit * HEARING_OPEN_AIR_SCALE {
                 hears = true;
             } else if direct < hearing_limit * HEARING_OUTER_SCALE {
-                let p = plan_route(fac, self.pos, cell_of(target.pos), &self.avoid, &self.gate_floor);
-                hears = !p.is_empty() && p.len() <= hearing_limit.ceil() as usize;
-                if hears && self.state == State::Chase {
-                    self.path = p;
-                    self.path_timer = HUNTER_REPATH_CHASE;
-                    self.path_goal = Some(cell_of(target.pos));
+                if cross.is_some() {
+                    // Another floor: heard when a flight leads there.
+                    hears = self.hop_to(fac, target.pos, target.level).is_some();
+                } else {
+                    let p = plan_route(fac, self.pos, cell_of(target.pos), &self.avoid, &self.gate_floor);
+                    hears = !p.is_empty() && p.len() <= hearing_limit.ceil() as usize;
+                    if hears && self.state == State::Chase {
+                        self.path = p;
+                        self.path_timer = HUNTER_REPATH_CHASE;
+                        self.path_goal = Some(cell_of(target.pos));
+                    }
                 }
             }
         }
@@ -889,11 +1006,12 @@ impl Brain {
         }
         if sees {
             self.state = State::Chase;
-            self.last_known = Some(target.pos);
+            self.set_known_level(target.pos, target_level);
             self.lost_sight = 0.0;
-            self.direct_visible = true;
+            // The straight dash needs the same floor; across levels the hunter walks the flight.
+            self.direct_visible = cross.is_none();
         } else if hears {
-            self.last_known = Some(target.pos);
+            self.set_known_level(target.pos, target_level);
             self.direct_visible = false;
             if self.state == State::Chase {
                 self.lost_sight = 0.0;
@@ -963,6 +1081,11 @@ impl Brain {
         holds: bool,
         gscale: f32,
     ) {
+        if self.walk.is_some() {
+            let speed = self.current_speed(depth, relays, prof, gscale);
+            self.walk_edge(dt, fac, speed, prof);
+            return;
+        }
         match self.state {
             State::Peek => {
                 let speed = self.current_speed(depth, relays, prof, gscale);
@@ -1001,8 +1124,88 @@ impl Brain {
         let Some(goal) = goal else { return };
         let speed = self.current_speed(depth, relays, prof, gscale);
         self.pursue(goal, speed, dt, fac, prof);
-        if dist(self.pos, goal) <= ARRIVAL_DISTANCE {
+        if self.walk.is_none() && self.level == self.goal_level() && dist(self.pos, goal) <= ARRIVAL_DISTANCE {
             self.handle_arrival(fac, prof);
+        }
+    }
+
+    /// The first hop of the cheapest way to `goal` on `goal_level`, costing own-level cells like `plan_route_wet`
+    /// (water and gates); cells on other levels cost 1.
+    fn hop_to(&self, fac: &Facility, goal: (f32, f32), goal_level: i32) -> Option<Hop> {
+        let plan = WaterPlan { field: &self.water, rules: &self.water_rules, chasing: self.state == State::Chase };
+        let own = self.level;
+        let gates = &self.gate_floor;
+        let step_cost = |level: i32, _from: Cell, c: Cell| -> Option<f32> {
+            if level != own {
+                return Some(1.0);
+            }
+            if !(fac.hunter_open(c) || gates.contains(&c)) {
+                return None;
+            }
+            plan.step_factor((c.x, c.y))
+        };
+        self.nav.next_hop(
+            Node { level: self.level, cell: cell_of(self.pos) },
+            Node { level: goal_level, cell: cell_of(goal) },
+            &step_cost,
+        )
+    }
+
+    /// One frame on an edge: the walk alone moves the body (at the hunter's own speed, no climb animation), the level
+    /// follows the height, and a hunter held on the edge past its time is put on the nearer end and gives the goal up.
+    fn walk_edge(&mut self, dt: f32, fac: &Facility, speed: f32, prof: &Profile) {
+        let Some(walk) = self.walk.as_ref() else { return };
+        let len = walk.len;
+        let (from, to) = (walk.from, walk.to);
+        let limit_speed = walk.speed(speed, self.nav.rules());
+        // The footprint test is for a flight's treads. A ladder shaft and a drop's fall are vertical paths built by
+        // the graph (there is no walk surface between the floors to test), so only a flight is checked.
+        let flight = walk.kind == flight_edges::EdgeKind::Flight;
+        self.edge_clock += dt;
+        let mut next = walk.clone();
+        let pose = next.advance(speed, dt, self.nav.rules());
+        let (done, x, z, y) = (pose.done, pose.x, pose.z, pose.y);
+        let prev = self.pos;
+        if done {
+            self.pos = to.cell.center();
+            self.y = crate::game::level_stack::floor_y_of(to.level);
+            self.level = to.level;
+            self.walk = None;
+            self.hop = None;
+            self.edge_clock = 0.0;
+            self.clear_path();
+            self.path_timer = 0.0;
+            self.moving_speed = speed;
+            self.stride += dist(prev, self.pos).max(speed * dt);
+            return;
+        }
+        if !flight || super::navigation::on_flight(fac, x, z, y) {
+            self.pos = (x, z);
+            self.y = y;
+            self.level = crate::game::level_stack::level_at(self.y, self.level);
+            self.walk = Some(next);
+            let d = dist(prev, self.pos);
+            if d > 1e-4 {
+                self.facing = ((self.pos.0 - prev.0) / d, (self.pos.1 - prev.1) / d);
+            }
+            // A ladder moves only in y, so the stride runs at the walk speed either way.
+            self.stride += speed * dt;
+            self.moving_speed = speed;
+        } else {
+            self.moving_speed = 0.0;
+        }
+        let limit = len / limit_speed.max(0.2) + self.nav.rules().edge_stuck_seconds;
+        if self.edge_clock > limit {
+            let (from_y, to_y) = (crate::game::level_stack::floor_y_of(from.level), crate::game::level_stack::floor_y_of(to.level));
+            let end = if (self.y - from_y).abs() <= (to_y - self.y).abs() { from } else { to };
+            self.pos = end.cell.center();
+            self.y = crate::game::level_stack::floor_y_of(end.level);
+            self.level = end.level;
+            self.walk = None;
+            self.hop = None;
+            self.edge_clock = 0.0;
+            self.moving_speed = 0.0;
+            self.give_up_goal(fac, prof);
         }
     }
 
@@ -1095,13 +1298,19 @@ impl Brain {
     }
 
     fn pursue(&mut self, goal: (f32, f32), speed: f32, dt: f32, fac: &Facility, prof: &Profile) {
-        let target_cell = cell_of(goal);
+        let mut target_cell = cell_of(goal);
+        let goal_level = self.goal_level();
+        let cross = goal_level != self.level;
+        if !cross {
+            self.hop = None;
+        }
         self.path_timer -= dt;
         for a in self.avoid.iter_mut() {
             a.1 -= dt;
         }
         self.avoid.retain(|a| a.1 > 0.0);
-        if self.state == State::Chase
+        if !cross
+            && self.state == State::Chase
             && self.direct_visible
             && self.clear_sweep(fac, self.pos, goal)
             && self.water_line_ok(goal)
@@ -1119,13 +1328,51 @@ impl Brain {
             self.water_seen = self.water.version();
             self.path_timer = 0.0;
         }
+        let mut no_hop = false;
         if self.path_timer <= 0.0 || self.path.is_empty() || self.path_goal.is_none() {
+            if cross {
+                self.hop = self.hop_to(fac, goal, goal_level);
+                no_hop = self.hop.is_none();
+            }
+            if let Some(h) = self.hop.as_ref().filter(|_| cross) {
+                target_cell = h.entrance;
+            }
             let plan = WaterPlan { field: &self.water, rules: &self.water_rules, chasing: self.state == State::Chase };
-            self.path = plan_route_wet(fac, self.pos, target_cell, &self.avoid, &self.gate_floor, Some(&plan));
+            self.path = if no_hop {
+                vec![]
+            } else {
+                plan_route_wet(fac, self.pos, target_cell, &self.avoid, &self.gate_floor, Some(&plan))
+            };
             self.path_timer = interval;
             self.path_goal = Some(target_cell);
+        } else if cross {
+            match self.hop.as_ref() {
+                Some(h) => target_cell = h.entrance,
+                None => no_hop = true,
+            }
         }
-        if self.path.is_empty() && cell_of(self.pos) != target_cell {
+        let enter_radius = self.nav.rules().edge_enter_radius;
+        let enter = self
+            .hop
+            .as_ref()
+            .filter(|h| cross && dist(self.pos, h.entrance.center()) <= enter_radius)
+            .map(|h| self.nav.start_walk(self.level, h));
+        if let Some(started) = enter {
+            let Some(walk) = started else {
+                // the edge is gone (a nav rebuild dropped it): plan the hop again
+                self.hop = None;
+                self.path_timer = 0.0;
+                return;
+            };
+            self.walk = Some(walk);
+            self.edge_clock = 0.0;
+            self.hop = None;
+            self.unreachable = 0.0;
+            self.blocked_time = 0.0;
+            self.clear_path();
+            return;
+        }
+        if self.path.is_empty() && (no_hop || cell_of(self.pos) != target_cell) {
             self.unreachable += dt;
             if self.unreachable >= self.give_up_after {
                 self.give_up_goal(fac, prof);
@@ -1148,7 +1395,7 @@ impl Brain {
             }
         }
         let on_path = !self.path.is_empty();
-        let mut waypoint = goal;
+        let mut waypoint = if cross { target_cell.center() } else { goal };
         if on_path {
             let mut furthest = 0;
             waypoint = self.path[0].center();
@@ -2573,5 +2820,292 @@ mod wiring_tests {
         assert_eq!(plan_route(&fac, deck1.center(), deck2, &[], &[]).last(), Some(&deck2), "decks are walked on deck cells");
         fac.catwalk_links.push(CatwalkLink { cell: ground, kind: CatwalkKind::Ladder, deck_height: 4.0, run: (1, 0) });
         assert_eq!(plan_route(&fac, ground.center(), deck1, &[], &[]).last(), Some(&deck1), "a link is the way on");
+    }
+}
+
+/// Cross-level behaviour (continuous levels, phase 8). The stage comes from `flight_edges::test_nav`; `stage` and
+/// `stage_with` are the only places that know its shape.
+#[cfg(test)]
+mod edge_tests {
+    use super::*;
+    use crate::game::level_stack::floor_y_of;
+    use crate::hunters::flight_edges::{self, FlightEdgeRules as FlightRules, TestShape, TestStage as Stage, TEST_HIGH_LEVEL as HIGH, TEST_LOW_LEVEL as LOW};
+    use crate::world::facility::FLIGHT_FIT_TOL;
+    use crate::world::vertical::LADDER_CLIMB_SPEED;
+
+    fn aki() -> HunterDef {
+        let v: serde_json::Value = serde_json::from_str(include_str!("../data/hunters/aki.json")).unwrap();
+        crate::content::hunters::parse(&v, None, "").unwrap()
+    }
+
+    fn stage(shape: TestShape) -> Stage {
+        stage_with(shape, flight_edges::rules().clone())
+    }
+
+    fn stage_with(shape: TestShape, rules: FlightRules) -> Stage {
+        flight_edges::test_stage(shape, &rules)
+    }
+
+    fn hunter(s: &Stage, at: (f32, f32), level: i32) -> Brain {
+        let mut b = Brain::new(aki(), at, "EDGE", Difficulty::Standard);
+        b.active = true;
+        b.set_level(level);
+        b.set_nav(s.nav.clone());
+        b
+    }
+
+    fn ctx(fac: &Facility) -> Ctx<'_> {
+        Ctx {
+            fac,
+            relays_taken: &[],
+            batteries_taken: &[],
+            hiding_disabled: &[],
+            vents: &[],
+            heater_on: false,
+            heater_thawed: true,
+            diff: Difficulty::Standard,
+            music_box_left: 0.0,
+            exposure: 0.0,
+        }
+    }
+
+    /// A target on `level` at `p` that is seen (an open well) or not.
+    fn runner(p: (f32, f32), level: i32, sees: bool) -> Target {
+        Target {
+            pos: p,
+            y: floor_y_of(level),
+            level,
+            flashlight_on: true,
+            cross: Some(CrossSense { sees, hear_scale: 1.0 }),
+            ..Default::default()
+        }
+    }
+
+    /// Updates at 1/60 s until `done`, returning the seconds taken (None when `limit` ran out). `each` sees every frame.
+    fn run_until(
+        b: &mut Brain,
+        s: &Stage,
+        t: &Target,
+        limit: f32,
+        mut each: impl FnMut(&Brain),
+        done: impl Fn(&Brain) -> bool,
+    ) -> Option<f32> {
+        let prof = Difficulty::Standard.profile();
+        let dt = 1.0 / 60.0;
+        let mut time = 0.0;
+        while time < limit {
+            // the facility of the level the hunter is on now (the lists swap when its level flips)
+            let c = ctx(s.fac_of(b.level));
+            b.update(dt, &c, t, 1, 0, &prof);
+            time += dt;
+            each(b);
+            if done(b) {
+                return Some(time);
+            }
+        }
+        None
+    }
+
+    fn crossed(b: &Brain, level: i32) -> bool {
+        b.level == level && (b.y - floor_y_of(level)).abs() < 0.05 && b.walk.is_none()
+    }
+
+    #[test]
+    fn a_hunter_chases_the_runner_up_a_flight() {
+        for shape in [TestShape::Switchback, TestShape::Straight, TestShape::Spiral] {
+            let s = stage(shape);
+            let mut b = hunter(&s, s.low, LOW);
+            let t = runner(s.high, HIGH, true);
+            let mut last_y = b.y;
+            let mut off_surface = 0.0f32;
+            let took = run_until(
+                &mut b,
+                &s,
+                &t,
+                25.0,
+                |h| {
+                    assert!(h.y >= last_y - 1e-4, "{shape:?}: y is monotone going up {} -> {} level {} walk {:?} pos {:?}", last_y, h.y, h.level, h.walk.as_ref().map(|w| (w.s, w.len)), h.pos);
+                    last_y = h.y;
+                    if h.walk.is_some() {
+                        off_surface = off_surface.max(flight_edges::surface_error(&s, h.pos, h.y));
+                    }
+                },
+                |h| crossed(h, HIGH),
+            );
+            assert!(took.is_some(), "{shape:?}: the hunter reaches the upper floor");
+            assert!(off_surface <= FLIGHT_FIT_TOL, "{shape:?}: stayed on the flight surface ({off_surface})");
+        }
+    }
+
+    #[test]
+    fn a_hunter_chases_down_a_flight() {
+        for shape in [TestShape::Switchback, TestShape::Straight, TestShape::Spiral] {
+            let s = stage(shape);
+            let mut b = hunter(&s, s.high, HIGH);
+            let t = runner(s.low, LOW, true);
+            let mut last_y = b.y;
+            let took = run_until(
+                &mut b,
+                &s,
+                &t,
+                25.0,
+                |h| {
+                    assert!(h.y <= last_y + 1e-4, "{shape:?}: y is monotone going down");
+                    last_y = h.y;
+                },
+                |h| crossed(h, LOW),
+            );
+            assert!(took.is_some(), "{shape:?}: the hunter reaches the lower floor");
+        }
+    }
+
+    #[test]
+    fn the_brain_flips_level_in_the_middle_of_a_flight() {
+        let s = stage(TestShape::Straight);
+        let mut b = hunter(&s, s.low, LOW);
+        let t = runner(s.high, HIGH, true);
+        let mut flipped_mid = false;
+        run_until(&mut b, &s, &t, 25.0, |h| flipped_mid |= h.level == HIGH && h.walk.is_some(), |h| crossed(h, HIGH));
+        assert!(flipped_mid, "the level changes while still on the flight (hysteresis), not at the end");
+    }
+
+    fn ladder_time(rules: FlightRules, down: bool) -> (f32, f32) {
+        let s = stage_with(TestShape::Ladder, rules);
+        let (from, level, to_level) = if down { (s.high, HIGH, LOW) } else { (s.low, LOW, HIGH) };
+        let mut b = hunter(&s, from, level);
+        let t = runner(if down { s.low } else { s.high }, to_level, true);
+        let took = run_until(&mut b, &s, &t, 60.0, |_| {}, |h| crossed(h, to_level)).expect("the ladder is climbed");
+        (took, s.len)
+    }
+
+    #[test]
+    fn a_hunter_chases_down_a_ladder() {
+        let base = flight_edges::rules().clone();
+        let (took, len) = ladder_time(base.clone(), true);
+        let floor = len / (LADDER_CLIMB_SPEED * base.ladder_speed_scale);
+        assert!(took >= floor - 0.05, "a ladder takes at least len / climb speed: {took} vs {floor}");
+        let mut slow = base;
+        slow.ladder_speed_scale *= 0.5;
+        let (slower, _) = ladder_time(slow, true);
+        assert!(slower > took, "the ladder speed is data: {slower} vs {took}");
+    }
+
+    #[test]
+    fn a_hunter_climbs_a_ladder_up() {
+        let (took, _) = ladder_time(flight_edges::rules().clone(), false);
+        assert!(took > 0.0);
+    }
+
+    #[test]
+    fn a_hunter_does_not_jump_a_drop_by_default() {
+        let base = flight_edges::rules().clone();
+        assert!(!base.drop_allowed, "Standard keeps drops off");
+        let s = stage_with(TestShape::Drop, base.clone());
+        let mut b = hunter(&s, s.high, HIGH);
+        let t = runner(s.low, LOW, true);
+        let give_up = search_rules().unreachable_give_up;
+        let took = run_until(&mut b, &s, &t, give_up + 3.0, |h| assert!(h.walk.is_none(), "no jump"), |h| h.state == State::Search);
+        assert!(took.is_some(), "the unreachable goal is given up and the hunter searches");
+        assert_eq!(b.level, HIGH);
+
+        let mut on = base;
+        on.drop_allowed = true;
+        let s = stage_with(TestShape::Drop, on);
+        let mut b = hunter(&s, s.high, HIGH);
+        let t = runner(s.low, LOW, true);
+        assert!(run_until(&mut b, &s, &t, 25.0, |_| {}, |h| crossed(h, LOW)).is_some(), "with the data on, the drop is taken");
+        // and it never climbs back up the drop
+        let far = runner(s.high, HIGH, true);
+        run_until(&mut b, &s, &far, 12.0, |_| {}, |h| h.level == HIGH);
+        assert_eq!(b.level, LOW, "a drop is one way");
+    }
+
+    #[test]
+    fn a_hunter_sees_through_a_well_not_a_slab() {
+        let s = stage(TestShape::Straight);
+        let prof = Difficulty::Standard.profile();
+        let c = ctx(s.fac_of(LOW));
+        for (sees, chased) in [(true, true), (false, false)] {
+            let mut b = hunter(&s, s.low, LOW);
+            b.state = State::Wander;
+            let t = Target { noise: 0.0, ..runner((s.low.0 + 1.0, s.low.1), HIGH, sees) };
+            for _ in 0..30 {
+                b.update(1.0 / 60.0, &c, &t, 1, 0, &prof);
+            }
+            assert_eq!(b.state == State::Chase, chased, "sees={sees}");
+            if chased {
+                assert_eq!(b.last_known_level, HIGH);
+            }
+        }
+    }
+
+    #[test]
+    fn a_capture_needs_the_same_height() {
+        let s = stage(TestShape::Straight);
+        let prof = Difficulty::Standard.profile();
+        let c = ctx(s.fac_of(LOW));
+        let mut near = runner(s.low, LOW, true);
+        near.cross = None;
+        let mut b = hunter(&s, s.low, LOW);
+        b.state = State::Chase;
+        b.last_known = Some(s.low);
+        assert!(b.update(1.0 / 60.0, &c, &near, 1, 0, &prof).0, "same spot, same height: caught");
+        let mut above = near.clone();
+        above.y += flight_edges::rules().capture_height + 1.0;
+        let mut b = hunter(&s, s.low, LOW);
+        b.state = State::Chase;
+        b.last_known = Some(s.low);
+        assert!(!b.update(1.0 / 60.0, &c, &above, 1, 0, &prof).0, "right above: not caught");
+    }
+
+    #[test]
+    fn a_hunter_stuck_on_an_edge_gives_up_within_the_data_time() {
+        let s = stage(TestShape::Straight);
+        let mut b = hunter(&s, s.low, LOW);
+        let t = runner(s.high, HIGH, true);
+        run_until(&mut b, &s, &t, 25.0, |_| {}, |h| h.on_edge()).expect("the hunter steps onto the flight");
+        let prof = Difficulty::Standard.profile();
+        let c = ctx(s.fac_of(b.level));
+        let held = b.walk.clone();
+        // the brain measures the limit with its live speed (stamina and dashes change it), so the slowest speed it had
+        // on the edge gives the latest moment it may let go
+        let mut slowest = b.current_speed(1, 0, &prof, 1.0);
+        let mut on_edge_for = 0.0;
+        while b.on_edge() && on_edge_for < 20.0 {
+            b.walk = held.clone(); // freeze the advance
+            b.update(1.0 / 60.0, &c, &t, 1, 0, &prof);
+            slowest = slowest.min(b.current_speed(1, 0, &prof, 1.0));
+            on_edge_for += 1.0 / 60.0;
+        }
+        let limit = s.len / slowest.max(0.2) + flight_edges::rules().edge_stuck_seconds;
+        assert!(!b.on_edge(), "put back on an end");
+        assert!(on_edge_for >= flight_edges::rules().edge_stuck_seconds, "not before the data time: {on_edge_for}");
+        assert!(on_edge_for <= limit + 0.2, "within the data time: {on_edge_for} vs {limit}");
+        assert!(b.y == floor_y_of(LOW) || b.y == floor_y_of(HIGH));
+        assert_ne!(b.state, State::Chase, "the chase gives up to a search");
+    }
+
+    #[test]
+    fn the_edge_walk_survives_a_nav_rebuild() {
+        let s = stage(TestShape::Straight);
+        let mut b = hunter(&s, s.low, LOW);
+        let t = runner(s.high, HIGH, true);
+        run_until(&mut b, &s, &t, 25.0, |_| {}, |h| h.on_edge()).expect("on the edge");
+        let s2 = stage(TestShape::Straight);
+        b.set_nav(s2.nav.clone());
+        assert!(b.on_edge(), "a new graph does not drop the walk in progress");
+        assert!(run_until(&mut b, &s, &t, 25.0, |_| {}, |h| crossed(h, HIGH)).is_some());
+    }
+
+    #[test]
+    fn a_hunter_with_no_route_to_another_level_gives_up_within_the_data_time() {
+        let s = stage(TestShape::Straight);
+        let mut b = Brain::new(aki(), s.low, "EDGE", Difficulty::Standard);
+        b.active = true; // no graph set: nothing leads off the floor
+        b.investigate_on(s.high, HIGH);
+        let t = Target { pos: (-500.0, -500.0), hidden: true, ..Default::default() };
+        let give_up = search_rules().unreachable_give_up;
+        let took = run_until(&mut b, &s, &t, give_up + 3.0, |_| {}, |h| h.state == State::Search).expect("gives up");
+        assert!(took <= give_up + 1.0, "{took} vs {give_up}");
     }
 }

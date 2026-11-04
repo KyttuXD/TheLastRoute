@@ -37,6 +37,13 @@ pub fn half_extents(size: [f32; 3], quarter_turns: i32) -> (f32, f32) {
     }
 }
 
+/// The one footprint rule for a body on a flight at absolute height `y` (`Facility::hunter_fits_at_y`): the brain's
+/// edge walk and the gimmicks share it, so a hunter standing on a flight cell off an edge is legal exactly when it is
+/// legal on one.
+pub fn on_flight(fac: &crate::world::Facility, x: f32, z: f32, y: f32) -> bool {
+    fac.hunter_fits_at_y(x, z, y, super::flight_edges::rules().edge_fit_radius)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

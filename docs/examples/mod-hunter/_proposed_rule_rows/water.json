@@ -1,0 +1,6 @@
+{
+  "schema": "lr.hunters.water/1",
+  "hunters": {
+    "mimic": { "can_swim": true, "swim_speed_scale": 0.8, "wade_speed_scale": 0.9, "avoids_when_idle": false }
+  }
+}

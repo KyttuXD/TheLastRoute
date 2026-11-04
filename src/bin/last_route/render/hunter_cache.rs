@@ -89,6 +89,25 @@ pub fn tint_key(tuning: &CacheTuning, tint: Color) -> [i32; 4] {
     [q(tint.r, tuning.tint_step), q(tint.g, tuning.tint_step), q(tint.b, tuning.tint_step), q(tint.a, tuning.tint_step)]
 }
 
+/// A cache slot: the absolute level of the list a hunter lives in, and its index there. A bare index means level 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SlotKey {
+    pub level: i32,
+    pub index: usize,
+}
+
+impl From<usize> for SlotKey {
+    fn from(index: usize) -> SlotKey {
+        SlotKey { level: 0, index }
+    }
+}
+
+impl From<(i32, usize)> for SlotKey {
+    fn from((level, index): (i32, usize)) -> SlotKey {
+        SlotKey { level, index }
+    }
+}
+
 struct Entry {
     model: String,
     pose: Vec<i32>,
@@ -98,7 +117,9 @@ struct Entry {
 
 #[derive(Default)]
 pub struct HunterMeshCache {
-    entries: HashMap<usize, Entry>,
+    entries: HashMap<SlotKey, Entry>,
+    /// The run the entries were made for.
+    run: u32,
     pub rebuilds: u64,
     pub hits: u64,
 }
@@ -113,13 +134,14 @@ impl HunterMeshCache {
     pub fn get_or_build(
         &mut self,
         tuning: &CacheTuning,
-        slot: usize,
+        slot: impl Into<SlotKey>,
         model: &str,
         pose: Vec<i32>,
         tint: [i32; 4],
         texture: Option<Texture2D>,
         build: impl FnOnce(&mut Vec<Vertex>, &mut Vec<u16>),
     ) -> &Mesh {
+        let slot: SlotKey = slot.into();
         let fresh = self
             .entries
             .get(&slot)
@@ -138,6 +160,20 @@ impl HunterMeshCache {
             self.entries.insert(slot, Entry { model: model.to_string(), pose, tint, mesh: Mesh { vertices, indices, texture } });
         }
         &self.entries[&slot].mesh
+    }
+
+    /// Keeps the slots of every list across a relabel or a hand-over: `lists` is (absolute level, hunter count) for
+    /// each list. Entries of a vanished slot are dropped, and a new run clears all. True when anything was dropped.
+    pub fn sync(&mut self, lists: &[(i32, usize)], run: u32) -> bool {
+        if self.run != run {
+            let had = !self.entries.is_empty();
+            self.entries.clear();
+            self.run = run;
+            return had;
+        }
+        let before = self.entries.len();
+        self.entries.retain(|k, _| lists.iter().any(|(l, n)| *l == k.level && k.index < *n));
+        self.entries.len() != before
     }
 
     pub fn clear(&mut self) {
@@ -218,6 +254,31 @@ mod tests {
         assert_eq!(n, 2);
         run(&mut c, &t, 2, "a", Mat4::IDENTITY, WHITE, &mut n);
         assert!(c.len() <= 2);
+    }
+
+    #[test]
+    fn hunter_cache_keeps_slots_across_a_relabel() {
+        let t = CacheTuning::default();
+        let mut c = HunterMeshCache::new();
+        let mut n = 0;
+        for l in [0, 1] {
+            let pose = pose_key(&t, &Mat4::IDENTITY, &[], 0);
+            c.get_or_build(&t, (l, 0usize), "a", pose, tint_key(&t, WHITE), None, |_, ix| {
+                n += 1;
+                ix.push(0);
+            });
+        }
+        assert_eq!(n, 2);
+        // levels are absolute, so a relabel leaves the lists as they were: nothing dropped, nothing re-posed
+        assert!(!c.sync(&[(0, 1), (1, 1)], 0));
+        let pose = pose_key(&t, &Mat4::IDENTITY, &[], 0);
+        c.get_or_build(&t, (1, 0usize), "a", pose, tint_key(&t, WHITE), None, |_, _| n += 1);
+        assert_eq!(n, 2);
+        // a vanished list drops only its slots; a new run drops all
+        assert!(c.sync(&[(0, 1)], 0));
+        assert_eq!(c.len(), 1);
+        assert!(c.sync(&[(0, 1)], 7));
+        assert!(c.is_empty());
     }
 
     #[test]

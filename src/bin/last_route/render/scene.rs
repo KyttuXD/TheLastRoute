@@ -32,30 +32,17 @@ thread_local! {
     static HUNTER_MESHES: RefCell<HunterMeshes> = RefCell::new(HunterMeshes::default());
 }
 
-/// The hunter mesh cache and what it was filled for: a change of hunter count, level or run drops every entry, so a
-/// removed hunter's mesh or a stale slot never shows.
+/// The hunter mesh cache: slots are keyed by (level, index) and a vanished slot or a new run drops its entry
+/// (render/hunter_cache.rs), so a removed hunter's mesh or a stale slot never shows.
 #[derive(Default)]
 struct HunterMeshes {
     cache: HunterMeshCache,
-    hunters: usize,
-    level: i32,
-    run: u32,
-}
-
-impl HunterMeshes {
-    /// Clears the cache when the hunters, the level or the run differ from the last frame's; true when it cleared.
-    fn sync(&mut self, hunters: usize, level: i32, run: u32) -> bool {
-        if (self.hunters, self.level, self.run) == (hunters, level, run) {
-            return false;
-        }
-        self.cache.clear();
-        (self.hunters, self.level, self.run) = (hunters, level, run);
-        true
-    }
 }
 
 /// Slot offset for the hunters drawn without a rig, so their cache entries never clash with the rigged ones.
 const UNRIGGED_SLOT_BASE: usize = 1000;
+/// First view slot of the resident floors' hunters (the drawn list's slots are its indexes).
+const RESIDENT_VIEW_BASE: usize = 1_000_000;
 
 /// Draws a static prop with its placement: its meshes come from the cache, built on first use.
 fn draw_static(m: &PropModel, xf: Mat4, tint: Color) {
@@ -515,10 +502,11 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     }
     // Ravelle's tripwires, drawn faintly
     for h in g.hunters.iter().filter(|h| h.active) {
+        let wire_dy = crate::render::stack_actors::actor_dy(h.y, g.fac.level);
         if let Gimmick::Ravelle(r) = &h.gimmick {
             for w in r.wires.iter().filter(|w| !w.triggered) {
-                let a3 = vec3(w.a.0, 0.25, w.a.1);
-                let b3 = vec3(w.b.0, 0.25, w.b.1);
+                let a3 = vec3(w.a.0, 0.25 + wire_dy, w.a.1);
+                let b3 = vec3(w.b.0, 0.25 + wire_dy, w.b.1);
                 let mid = (a3 + b3) * 0.5;
                 let len = (b3 - a3).length();
                 let yaw = (b3.x - a3.x).atan2(b3.z - a3.z);
@@ -541,10 +529,29 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     let (cam_fwd, _, _) = g.camera_basis();
     let runner_feet = vec3(g.p.pos.0, g.p.feet_y.max(0.0), g.p.pos.1);
     let tune = hunter_cache::tuning();
-    HUNTER_MESHES.with(|m| m.borrow_mut().sync(g.hunters.len(), g.runner_level(), g.run_seed));
+    // every hunter to pose: the drawn floor's list (dormant ones too), then each resident floor's list. A body on
+    // another floor is drawn only when an opening shows it (render/stack_actors.rs).
+    let cull = crate::render::stack_actors::ActorCull::new(g);
+    let cull_eye = g.eye();
+    let mut lists: Vec<(i32, usize)> = vec![(g.fac.level, g.hunters.len() + UNRIGGED_SLOT_BASE)];
+    let mut posed: Vec<(i32, usize, usize, &crate::hunters::brain::Brain)> =
+        g.hunters.iter().enumerate().map(|(i, h)| (g.fac.level, i, i, h)).collect();
+    for l in g.resident_hunters.levels() {
+        let list = g.resident_hunters.list(l);
+        lists.push((l, list.len() + UNRIGGED_SLOT_BASE));
+        for (i, s) in list.iter().enumerate() {
+            // the view slot is past the drawn list's, so a rig view never clashes with another floor's
+            posed.push((l, i, RESIDENT_VIEW_BASE + posed.len(), &s.brain));
+        }
+    }
+    HUNTER_MESHES.with(|m| m.borrow_mut().cache.sync(&lists, g.run_seed));
     anim::with_views(g.time, |views, dt| {
         let mut stars = Builder::new(Some(a.white.clone()));
-        for (slot, h) in g.hunters.iter().enumerate() {
+        for &(lvl, cslot, slot, h) in posed.iter() {
+            if !cull.visible(g, lvl, h.y, h.pos, cull_eye) {
+                continue;
+            }
+            let dy = crate::render::stack_actors::actor_dy(h.y, g.fac.level);
             let faded = h.gimmick.hidden_from_view();
             if faded && !matches!(h.gimmick, Gimmick::Ilyra(_)) {
                 continue;
@@ -581,7 +588,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
                     Gimmick::Xivvy(x) if !grabbed => (x.lift(), x.sway_offset(h.facing)),
                     _ => (0.0, (0.0, 0.0)),
                 };
-                let at = vec3(h.pos.0 + sway.0, lift, h.pos.1 + sway.1);
+                let at = vec3(h.pos.0 + sway.0, lift + dy, h.pos.1 + sway.1);
                 let (swing, amp_scale) = (h.stride * 2.4, amp);
                 let pose = hunter_cache::pose_key(
                     tune,
@@ -593,7 +600,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
                     let mut m = m.borrow_mut();
                     let mesh = m.cache.get_or_build(
                         tune,
-                        UNRIGGED_SLOT_BASE + slot,
+                        (lvl, UNRIGGED_SLOT_BASE + cslot),
                         id,
                         pose,
                         hunter_cache::tint_key(tune, tint),
@@ -666,17 +673,18 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
             );
             let bone_of = |k: usize| rig.bone(&model.groups[k].name).map(|b| out.bones[b]);
             let bones: Vec<Mat4> = (0..model.groups.len()).filter_map(|k| bone_of(k)).collect();
-            let pose = hunter_cache::pose_key(tune, &out.root, &bones, out.face_cell as i32);
+            let root = if dy == 0.0 { out.root } else { Mat4::from_translation(vec3(0.0, dy, 0.0)) * out.root };
+            let pose = hunter_cache::pose_key(tune, &root, &bones, out.face_cell as i32);
             HUNTER_MESHES.with(|m| {
                 let mut m = m.borrow_mut();
                 let mesh = m.cache.get_or_build(
                     tune,
-                    slot,
+                    (lvl, cslot),
                     id,
                     pose,
                     hunter_cache::tint_key(tune, tint),
                     Some(model.texture.clone()),
-                    |v, i| model.build_posed(v, i, out.root, &bone_of, model.face_cell_uv(out.face_cell), tint),
+                    |v, i| model.build_posed(v, i, root, &bone_of, model.face_cell_uv(out.face_cell), tint),
                 );
                 draw_mesh(mesh);
             });
@@ -692,21 +700,38 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         stars.draw_and_clear();
     });
     // NPC teammates (game/npc.rs) and bots: the runner mannequin in its skin, bent like a runner (net/runner_figure.rs),
-    // in this camera and material scope like the remote runners. Only those on the runner's level are drawn.
-    runner_figure::draw_bots(a, &crate::net::wiring::bot_views(&g.npcs, g.runner_level()));
+    // in this camera and material scope like the remote runners. A bot on another floor shows through an opening only.
+    let bot_views: Vec<runner_figure::BotView> = crate::render::stack_actors::draw_list(g)
+        .iter()
+        .filter(|r| r.kind == crate::render::stack_actors::ActorKind::Bot)
+        .filter(|r| cull.visible(g, r.level, r.y, r.pos, cull_eye))
+        .map(|r| {
+            let n = &g.npcs[r.index];
+            runner_figure::BotView {
+                name: &n.name,
+                at: n.at,
+                facing: n.facing,
+                stride: n.stride,
+                walking: n.walking,
+                y: crate::render::stack_actors::actor_dy(r.y, g.fac.level),
+            }
+        })
+        .collect();
+    runner_figure::draw_bots(a, &bot_views);
     for h in g.hunters.iter().filter(|h| h.active) {
         let faded = h.gimmick.hidden_from_view();
         if faded && !matches!(h.gimmick, Gimmick::Ilyra(_)) {
             continue;
         }
         let yaw = (-h.facing.0).atan2(-h.facing.1);
+        let eye_dy = crate::render::stack_actors::actor_dy(h.y, g.fac.level);
         if let Some(eye) = h.gimmick.eye_color() {
             let mut e = Builder::new(Some(a.white.clone()));
             let fwd = vec3(h.facing.0, 0.0, h.facing.1);
             let right = vec3(-h.facing.1, 0.0, h.facing.0);
             for s in [-1.0, 1.0] {
                 e.cube(
-                    vec3(h.pos.0, HUNTER_HEIGHT * 0.86, h.pos.1) + fwd * 0.33 + right * 0.1 * s,
+                    vec3(h.pos.0, HUNTER_HEIGHT * 0.86 + eye_dy, h.pos.1) + fwd * 0.33 + right * 0.1 * s,
                     vec3(0.06, 0.04, 0.02),
                     yaw,
                     Color::new(eye.0, eye.1, eye.2, 1.0),
@@ -1148,23 +1173,28 @@ mod tests {
     }
 
     #[test]
-    fn the_hunter_cache_clears_when_the_hunters_the_level_or_the_run_change() {
+    fn the_hunter_cache_clears_when_the_hunters_the_list_or_the_run_change() {
         let tune = hunter_cache::tuning();
         let mut m = HunterMeshes::default();
-        assert!(!m.sync(0, 0, 0), "nothing differs from a fresh state");
-        assert!(m.sync(3, 0, 7), "a new run with three hunters");
+        assert!(!m.cache.sync(&[], 0), "nothing differs from a fresh state");
+        assert!(!m.cache.sync(&[(0, 3)], 7), "a new run with nothing cached drops nothing");
         let root = Mat4::IDENTITY;
         let mut builds = 0;
         for _ in 0..3 {
-            m.cache.get_or_build(tune, 1, "dovelle", hunter_cache::pose_key(tune, &root, &[], 0), [100; 4], None, |_, _| builds += 1);
+            m.cache.get_or_build(tune, (0, 2), "dovelle", hunter_cache::pose_key(tune, &root, &[], 0), [100; 4], None, |_, _| builds += 1);
         }
         assert_eq!(builds, 1, "the same pose is built once");
-        assert!(!m.sync(3, 0, 7));
+        assert!(!m.cache.sync(&[(0, 3)], 7));
         assert_eq!(m.cache.len(), 1, "an unchanged frame keeps the cache");
-        assert!(m.sync(2, 0, 7), "a removed hunter drops every entry");
+        assert!(m.cache.sync(&[(0, 2)], 7), "a removed hunter drops its entry");
         assert!(m.cache.is_empty());
-        m.cache.get_or_build(tune, 1, "dovelle", vec![0], [100; 4], None, |_, _| {});
-        assert!(m.sync(2, -1, 7), "a level change drops them too");
+        m.cache.get_or_build(tune, (0, 1), "dovelle", vec![0], [100; 4], None, |_, _| {});
+        assert!(!m.cache.sync(&[(0, 2), (-1, 4)], 7), "a second list keeps the first list's entries");
+        assert_eq!(m.cache.len(), 1);
+        assert!(m.cache.sync(&[(-1, 4)], 7), "a list that is gone drops its entries");
+        assert!(m.cache.is_empty());
+        m.cache.get_or_build(tune, (-1, 0), "dovelle", vec![0], [100; 4], None, |_, _| {});
+        assert!(m.cache.sync(&[(-1, 4)], 8), "a new run drops them all");
         assert!(m.cache.is_empty());
     }
 

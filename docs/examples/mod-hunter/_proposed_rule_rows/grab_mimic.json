@@ -1,0 +1,5 @@
+{
+  "schema": "lr.grab/1",
+  "id": "mimic",
+  "pool": { "shoulder_grab": 5, "wall_pin": 3, "tackle": 2 }
+}

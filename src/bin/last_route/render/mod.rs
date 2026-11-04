@@ -14,6 +14,7 @@ pub mod prop_scale;
 pub mod scene;
 pub mod shader;
 pub mod stairs;
+pub mod stack_actors;
 pub mod surfaces;
 pub mod textures;
 pub mod water;

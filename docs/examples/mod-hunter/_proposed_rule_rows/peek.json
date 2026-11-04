@@ -1,0 +1,6 @@
+{
+  "schema": "lr.peek/1",
+  "hunters": {
+    "mimic": { "chance": 0.6, "look": 1.6, "style": "ambush" }
+  }
+}

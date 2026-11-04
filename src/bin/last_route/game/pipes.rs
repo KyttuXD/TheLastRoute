@@ -300,6 +300,14 @@ pub struct TurnEvent {
     pub noise: Option<(f32, f32)>,
 }
 
+impl TurnEvent {
+    /// Whether the turn is a sound the hunters can hear: every turn is, by a bot as much as by the runner. The
+    /// runner's meter noise (`noise`) stays player-only. Derived locally, never on the wire.
+    pub fn noise_event(&self) -> bool {
+        true
+    }
+}
+
 /// Where a turn is asked: the valve and the turner.
 #[derive(Clone, Copy, Debug)]
 pub struct TurnAt<'a> {
@@ -343,6 +351,27 @@ impl PipeNetwork {
     /// Valve turns so far (0 for one never turned).
     pub fn turns(&self, id: &str) -> u32 {
         self.valves.get(id).map_or(0, |v| v.turns)
+    }
+
+    /// Every flow of `chunk` (running or shut) as `(flow id, outlet, number n)`. A burst flow is `BRK:x:y:z:<pipe n>`;
+    /// a flow valve's flow is named after its valve, so its `n` is the valve prop's number. Flows of other chunks and
+    /// ids that do not parse are ignored.
+    pub fn flows_in(&self, chunk: Chunk) -> Vec<(String, usize, usize)> {
+        let prefix = flow_prefix(chunk);
+        self.runs
+            .iter()
+            .filter_map(|(id, run)| {
+                let rest = id.strip_prefix(&prefix)?;
+                let n = match rest.parse::<usize>() {
+                    Ok(n) => n,
+                    Err(_) => {
+                        parse_valve_id(rest, rules().valve.max_id_length).filter(|c| *c == chunk)?;
+                        rest.rsplit(':').next()?.parse().ok()?
+                    }
+                };
+                Some((id.clone(), run.outlet, n))
+            })
+            .collect()
     }
 
     /// Whether a flow of the chunk is running (started and not shut).
@@ -573,6 +602,28 @@ mod tests {
         assert_eq!(n.turn(TurnAt { at: (10.5, 10.5 + reach + 0.1), ..q("flood", true) }), Err(Refused::TooFar));
         assert!(n.turn(TurnAt { at: (10.5, 10.5 + reach - 0.1), ..q("flood", true) }).is_ok());
         assert_eq!(n.turn(q("bogus", true)), Err(Refused::UnknownEffect));
+    }
+
+    #[test]
+    fn a_bot_turn_is_a_noise_event_but_carries_no_meter_noise() {
+        let n = PipeNetwork::new();
+        let ev = n.turn(q("flood", false)).unwrap();
+        assert!(ev.noise_event());
+        assert_eq!(ev.noise, None);
+    }
+
+    #[test]
+    fn flows_in_ignores_other_chunks() {
+        let mut n = PipeNetwork::new();
+        n.start_flow("BRK:2:-1:3:4", 0.0);
+        n.start_flow("BRK:2:-1:3:9", 0.0);
+        n.start_flow("BRK:2:-1:4:1", 0.0);
+        n.start_flow("BRK:2:-1:3:SEWER:2:-1:3:PROP:7", 0.0);
+        n.start_flow("BRK:2:-1:3:junk", 0.0);
+        let mut f: Vec<usize> = n.flows_in((2, -1, 3)).iter().map(|x| x.2).collect();
+        f.sort();
+        assert_eq!(f, vec![4, 7, 9]);
+        assert!(n.flows_in((0, 0, 0)).is_empty());
     }
 
     #[test]

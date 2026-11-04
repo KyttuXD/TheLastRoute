@@ -12,6 +12,12 @@ use crate::world::Facility;
 use macroquad::prelude::*;
 use std::collections::HashMap;
 
+/// How far (m, floor plane) from an opening an actor on another level is still drawn: the neighbour cull radius.
+/// Relabelling the active level does not touch the hunter mesh cache, because every body keeps its absolute y.
+pub fn actor_cull_range() -> f32 {
+    world_mesh::stream_table().neighbour_cull_radius
+}
+
 /// How many of the room's own nearest lamps are always kept.
 const OWN_KEPT: usize = 8;
 /// How many ordinary neighbour lamps join the stairwell lamp.

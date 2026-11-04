@@ -4,6 +4,7 @@
 pub mod brain;
 pub mod director;
 pub mod emotes;
+pub mod flight_edges;
 pub mod gimmicks;
 pub mod navigation;
 pub mod noise_events;
