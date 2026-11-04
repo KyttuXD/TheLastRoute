@@ -537,7 +537,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     // in their slowed stun clip (HunterView3D.model_alpha: an inactive hunter shows whole).
     let t_hunters = crate::app::perf::section("hunters");
     let (cam_fwd, _, _) = g.camera_basis();
-    let runner_feet = vec3(g.p.pos.0, g.p.feet_y.max(0.0), g.p.pos.1);
+    let runner_feet = vec3(g.p.pos.0, (g.p.height + g.p.feet_y).max(0.0), g.p.pos.1);
     let tune = hunter_cache::tuning();
     // every hunter to pose: the drawn floor's list (dormant ones too), then each resident floor's list. A body on
     // another floor is drawn only when an opening shows it (render/stack_actors.rs).

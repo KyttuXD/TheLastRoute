@@ -1558,7 +1558,7 @@ impl Session {
             },
         });
         obs["player"] = json!({
-            "pos": [r2(me.0), r2(g.p.feet_y), r2(me.1)], "cell": [me.0.floor() as i32, me.1.floor() as i32],
+            "pos": [r2(me.0), r2(g.p.height + g.p.feet_y), r2(me.1)], "cell": [me.0.floor() as i32, me.1.floor() as i32],
             "yaw": r2(g.p.yaw), "pitch": r2(g.p.pitch), "vel": [0.0, 0.0, 0.0],
             "hidden": g.p.hidden.is_some(), "stamina": r2(g.p.stamina), "lamp": r2(g.p.lamp),
             "flashlight": g.p.flashlight_on, "mode": mode, "noise": r2(g.p.noise), "frozen": g.p.stun > 0.0,

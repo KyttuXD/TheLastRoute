@@ -51,3 +51,10 @@ Catwalk links use the Ladder `Flight` footprint for cells only: the step cell an
 ## Hunters and bots on decks
 
 Ladders and stairs onto a deck are continuous `Flight` footprints, not a swap. Bots and hunters use the same edges as the runner (`hunters/flight_edges.rs`). Nothing is "taken" and nothing fades.
+
+## Climbing to a deck (2026-11-04)
+
+- Every deck link is a ladder the runner climbs by hand (`game/ladder.rs`, `Climb::catwalk`): walk into the deck's front face from the link's ground cell to climb up, or into it from the deck landing to climb down. The shaft spans the deck's height (`deck_height`), not a storey; the top lands on the deck cell and the bottom back on the ground cell, with no jump or fade. `ladder_share` is 1.0 because a link has only two cells of footprint, too small for a stair of that rise.
+- Decks are 2.5 m up under the 5 m ceiling (`catwalk.json` `height`, `catwalk_links.json` `deck_height`): 2.5 m of headroom, so the head clears the ceiling. A deck must stay under the level-label midpoint (`world/vertical.rs`, about 2.94 m).
+- A body on a deck keeps the deck's absolute y in `height` (like a tread), so the collision and the ladder agree on `y()`; before, the deck left `height` at 0 and the body fell or was refused.
+- The deck's rail is left open on the side facing the ladder; the rails and rungs are drawn on the deck's front face (`render/world_mesh.rs`, `catwalk_ladder_boxes`).

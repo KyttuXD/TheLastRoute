@@ -1114,7 +1114,7 @@ impl Game {
             return 0;
         }
         let runner = self.p.pos;
-        let floor_y = self.p.feet_y.max(0.0);
+        let floor_y = (self.p.height + self.p.feet_y).max(0.0);
         let spot = match self.npc_crosshair_floor(eye, dir, floor_y) {
             Some(p) if pdist(p, runner) < SPAWN_NEAR_ADMIN && self.fac.body_fits(p.0, p.1, NAV_RADIUS) => {
                 p

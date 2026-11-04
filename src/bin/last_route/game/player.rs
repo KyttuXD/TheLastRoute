@@ -520,7 +520,10 @@ impl Player {
         // a floor far below the feet is a hole or a shaft (a ladder's), which the body does not drop into by easing
         let neighbour = under.level != fac.level && (under.y - self.y()).abs() <= STEP_UP;
         let on_flight = stair_height_at(fac, self.pos).is_some();
-        let lifted = neighbour || on_flight;
+        // a catwalk deck of the level's own window is a raised surface like a tread: the height is its absolute y (the
+        // collision and the ladder read `y()`), never a jump offset left over the floor
+        let on_deck = under.level == fac.level && rel > 0.01;
+        let lifted = neighbour || on_flight || on_deck;
         // No ground within a step under a standing body (a drop cell, a ladder shaft, a hole): the body falls. A jump in
         // the air over such a place falls too, from the height of its walking surface.
         if !self.falling() && !self.noclip && !on_flight {
