@@ -46,9 +46,7 @@ pub fn alpha(c: Color, a: f32) -> Color {
 
 /// Pixels per canvas unit: the window's expand-stretch factor on the 480x270 design canvas.
 pub fn px_per_unit() -> f32 {
-    (screen_width() / 480.0)
-        .min(screen_height() / 270.0)
-        .max(0.1)
+    crate::ui::style::unit().max(0.1)
 }
 
 /// Line box height of the Courier face at a font size (rounded ascent + descent, as Godot's
@@ -226,6 +224,18 @@ impl<'a> Ui<'a> {
             crate::audio::sound::menu_blip();
         }
         pressed
+    }
+
+    /// A button for a command this build does not run yet: muted text on the flat face. It still takes
+    /// the click, so pressing it reports why nothing happened instead of staying silent.
+    pub fn button_muted(&mut self, r: Rect, label: &str, size: f32) -> bool {
+        if !self.visible(r) {
+            return false;
+        }
+        let hover = self.hover(r);
+        self.boxed(r, PANEL, if hover { lightened(PANEL_EDGE, 0.2) } else { PANEL_EDGE });
+        self.text_center(label, r, size, MUTED);
+        self.clicked(r)
     }
 
     /// Palette.style_state_toggle on a CheckBox (compact): caption on the left, a boxed ON/OFF

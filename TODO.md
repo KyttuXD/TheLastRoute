@@ -237,17 +237,31 @@ Tabs today (src/bin/last_route/ui/admin/mod.rs TABS): STATUS, GENERAL, PLAYER, H
 ### More admin menu fixes and parts
 
 - [x] Admin tab order and keyboard navigation: Tab and arrows move between tabs and fields
-- [ ] Every admin field shows its current value and its allowed range before it is edited
-- [ ] Reset button per field and a reset-all on each tab
+- [~] Every admin field shows its current value and its allowed range before it is edited (done 2026-11-04: RUN SPEED and GAME SPEED captions show NOW <speed> and their dropdowns start on it; the NPC count shows 1 TO 32 AT ONCE. Still open: the FIELDS line edits are commands with no stored value, and toggle rows show only ON/OFF)
+- [~] Reset button per field and a reset-all on each tab (done 2026-11-04: RESET ALL SETTINGS on GENERAL, PLAYER, VISUAL and DEBUG VIEW resets every switch, speed and field and saves admin.cfg; no per-field reset)
 - [x] Admin actions write one line to the debug log so a run can be audited afterwards
-- [ ] Admin panel closes cleanly on ESC without leaving the mouse locked or the pause menu open
+- [x] Admin panel closes cleanly on ESC without leaving the mouse locked or the pause menu open (done 2026-11-04: Esc is used by the admin first; a gate that drops while the menu is open now closes it, so no invisible menu keeps the mouse free)
 - [ ] DEBUG VIEW tab: toggles for the collider, path and navigation overlays, each saved between runs
 - [x] FIELDS tab: list every tunable value with its file and key (config, region data and hunter data)
 - [~] NPCS tab: per-NPC commands (teleport, remove, follow) instead of only spawn and remove all. Teleport and remove are in; follow is a status line until npc.rs has a per-NPC follow flag, and remove should go through an npc.rs helper
 - [x] WORLD tab: regenerate the current floor from its seed and show the seed on screen
 - [ ] STORY tab: jump to a story beat by its id, and show which beats have already fired. Blocked: the game has no story beat table or fired-beat state yet (see the pacing director item)
-- [ ] Admin tools only enable for the signed-in KYTTU account (see the login reset), with a clear message when they are off
-- [ ] Admin menu screenshot checks at 1280x720 for every tab, so layout bugs show up in review
+- [~] Admin tools only enable for the signed-in KYTTU account (see the login reset), with a clear message when they are off (the gate follows backend.admin and is tested; there is still no on-screen message when 0 does nothing for a non-admin)
+- [~] Admin menu screenshot checks at 1280x720 for every tab, so layout bugs show up in review (LR_SHOT_RUN=1 LR_SHOT_INF=1 LR_SHOT_ADMIN=<tab> --screenshot draws any tab, see docs/ADMIN_MENU.md; no automated image comparison yet)
+
+### Admin menu pass (2026-11-04)
+
+- [x] Fixed: every ACTION dropdown listed raw ids ("stun_hunters", "full_lamp") and every NPC button showed its id, because the data move swapped (id, label) and the menu read the wrong half; the NPC buttons also sent the label as the command, so TELEPORT, FOLLOW and REMOVE reported "not in this build"
+- [x] NPC commands live: teleport, follow, stop following, smart, remove, and the ALL versions; the rest are drawn muted and say which command is not built (freeze, resume, go to me, hunters ignore and target, chat on and off, down, revive, kill, clear hunter flags, SPECTATE, and the ALL FREEZE / RESUME / IGNORE / TARGET / CLEAR / CHAT rows need NPC systems that do not exist)
+- [x] GAME SPEED started on PAUSE while the game ran at 1X (RUN would pause it); the speed rows start on the speed in force
+- [x] Tall pages show a scroll bar and scroll with Up, Down, PgUp, PgDn, Home and End; the footer hint is per tab
+- [x] The NPC spawn count is capped (npc_spawn_max in data/admin/menu.json); admin prefs are in-memory in unit tests so tests no longer touch the real admin.cfg
+- [ ] TELEPORT TO WAYPOINT and CLEAR WAYPOINT now say waypoints are not in this build; waypoints themselves are still open (Teammate waypoints item)
+- [ ] STORY tab rows (play story, stop, reset) only report that there is no story director
+- [ ] ROSTER rows (REFRESH ADMIN ROSTER, ADD / REMOVE LIMITED ADMIN, ROOM MUTE / UNMUTE / KICK) need the primary server; they report that and do nothing offline
+- [ ] STATUS always starts with "SERVER OFFLINE (SOLO, NO SERVER)", even in a hosted room: Admin has no handle on the net session
+- [ ] In-game and pause settings have no admin extras to fix; the settings panel was left alone (the skin track is editing its skin tab)
+- [ ] Not exercised by hand here: dropdown list positioning at very small windows (under 480x270), mouse-only use with a touch screen
 
 ### CI and build speed
 

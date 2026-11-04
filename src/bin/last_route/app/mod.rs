@@ -10,6 +10,7 @@
 //!   LR_SHOT_ACCOUNT=1       the account panel (same as LR_SHOT_SCREEN=account)
 //!   LR_SHOT_RUN=1           start a run (LR_SHOT_INF=1: the Infinite route)
 //!   LR_SHOT_PAUSE=...       with a run: pause | statistics | players | settings | dossier | confirm
+//!   LR_SHOT_ADMIN=n         with a run: the admin menu on tab n (0 STATUS .. 9 FIELDS)
 //!   LR_SHOT_MAP=1           with a run: the full map
 //!   LR_SHOT_DEATH=...       with a run: moment | card (a capture by the floor's hunter)
 
@@ -938,7 +939,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             let in_report = g.report.is_some();
             let remotes = net.as_ref().map(|n| n.remotes_at(g.p.y(), g.depth, g.window_origin())).unwrap_or_default();
             // the admin tools follow the server's admin flag for the signed-in account, never the local name
-            admin.enabled = backend.admin && !stress_on;
+            admin.enabled = (backend.admin || (screenshot.is_some() && env("LR_SHOT_ADMIN").is_some())) && !stress_on;
             let admin_esc = if in_report || pz.open {
                 false
             } else {
@@ -1446,6 +1447,13 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 }
                 map_open = env("LR_SHOT_MAP").is_some();
                 playing = Some(g);
+            }
+            // LR_SHOT_ADMIN=n opens the admin menu on tab n (LR_SHOT_ADMIN_POPUP=key opens a dropdown)
+            if frame == 30 && playing.is_some() {
+                if let Some(t) = env("LR_SHOT_ADMIN").and_then(|t| t.parse::<usize>().ok()) {
+                    admin.enabled = true;
+                    admin.show_tab(t);
+                }
             }
             if frame == 60 {
                 if let (Some(kind), Some(g)) = (env("LR_SHOT_DEATH"), playing.as_mut()) {

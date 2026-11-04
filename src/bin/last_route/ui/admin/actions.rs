@@ -38,15 +38,42 @@ fn npc_teleport(g: &mut Game, i: usize) -> String {
     format!("ADMIN // NPC TELEPORTED // {}", n.name)
 }
 
-/// NPC FOLLOW ME: every NPC on the runner's level already follows the runner (game/npc.rs), so this
-/// reports that state and changes nothing. A per-NPC follow flag is not in game/npc.rs yet.
-fn npc_follow(g: &Game, i: usize) -> String {
-    let n = &g.npcs[i];
-    if n.level == g.runner_level() {
-        format!("ADMIN // {} ALREADY FOLLOWS YOU", n.name)
-    } else {
-        format!("ADMIN // {} IS ON ANOTHER LEVEL", n.name)
-    }
+/// NPC FOLLOW ME: the NPC joins the runner again (an admin NPC follows from the moment it spawns, and
+/// STOP FOLLOWING parks it; across levels it walks the stairs to the runner, game/npc.rs).
+fn npc_follow(g: &mut Game, i: usize) -> String {
+    let n = &mut g.npcs[i];
+    n.joined = true;
+    format!("ADMIN // {} FOLLOWS YOU", n.name)
+}
+
+/// NPC STOP FOLLOWING: the NPC stands where it is. An admin NPC has no join radius, so it stays put until
+/// FOLLOW ME or TELEPORT TO ME.
+fn npc_unfollow(g: &mut Game, i: usize) -> String {
+    let n = &mut g.npcs[i];
+    n.joined = false;
+    format!("ADMIN // {} STAYS HERE", n.name)
+}
+
+/// NPC SMART = SPAWN SMART: the NPC takes the smartness the SMART dropdown shows.
+fn npc_set_smart(g: &mut Game, i: usize, smart: i32) -> String {
+    let n = &mut g.npcs[i];
+    n.smart = smart.clamp(0, 100);
+    format!("ADMIN // {} SMART {}", n.name, n.smart)
+}
+
+/// The NPC commands this build runs, by id (`npc_ops` and `npc_all` in data/admin/menu.json). The rest of
+/// the grid is drawn muted and answers with a line that names the command.
+pub(super) fn npc_op_live(op: &str) -> bool {
+    matches!(
+        op,
+        "teleport" | "follow" | "unfollow" | "smart" | "remove" | "all_teleport" | "all_follow" | "all_unfollow" | "all_smart"
+    )
+}
+
+/// The label of an NPC command id, for the "not in this build" line.
+fn npc_op_label(op: &str) -> &'static str {
+    let m = menu();
+    m.npc_ops.iter().chain(m.npc_all.iter()).find(|(id, _)| *id == op).map_or("THAT COMMAND", |(_, l)| l)
 }
 
 /// NPC REMOVE: takes the picked NPC off the floor. Nothing else holds an NPC's index.
@@ -205,7 +232,7 @@ impl Admin {
                 format!("admin: hunter {id} op {op} emote {emote}")
             }
             Cmd::Npc(op) => match self.picked_npc(g) {
-                Some(i) if matches!(*op, "teleport" | "follow" | "remove") => {
+                Some(i) if matches!(*op, "teleport" | "follow" | "unfollow" | "smart" | "remove") => {
                     format!("admin: npc {op} {}", g.npcs[i].name)
                 }
                 _ => format!("admin: npc {op}"),
@@ -245,11 +272,11 @@ impl Admin {
                 self.mark_debug();
             }
             Cmd::Npc(op) => {
-                let smart = menu().npc_smarts[self.sel_of("npc_smart").min(3)];
+                let smart = menu().npc_smarts[self.sel_of("npc_smart").min(menu().npc_smarts.len() - 1)];
                 let picked = self.picked_npc(g);
-                // offline: the NPCs live on the game, no server (game/npc.rs). Spawn, the removes and the
-                // picked NPC's teleport and remove are wired; follow only reports the always-on state; the
-                // rest of the per-NPC and ALL NPCS commands are deferred.
+                // offline: the NPCs live on the game, no server (game/npc.rs). Spawn, the removes, teleport,
+                // follow / stop following and smart are wired (per NPC and for all); freeze, go to, ignore,
+                // target, chat, down, revive, kill, clear and spectate need systems the NPCs do not have yet.
                 let line = match op {
                     "spawn" => {
                         let eye = g.eye();
@@ -278,11 +305,45 @@ impl Admin {
                         Some(i) => npc_follow(g, i),
                         None => "ADMIN // NO NPCS".to_string(),
                     },
+                    "unfollow" => match picked {
+                        Some(i) => npc_unfollow(g, i),
+                        None => "ADMIN // NO NPCS".to_string(),
+                    },
+                    "smart" => match picked {
+                        Some(i) => npc_set_smart(g, i, smart),
+                        None => "ADMIN // NO NPCS".to_string(),
+                    },
                     "remove" => match picked {
                         Some(i) => npc_remove(g, i),
                         None => "ADMIN // NO NPCS".to_string(),
                     },
-                    _ => "NPC COMMANDS ARE NOT IN THIS BUILD YET".to_string(),
+                    "all_teleport" | "all_follow" | "all_unfollow" | "all_smart" if g.npcs.is_empty() => {
+                        "ADMIN // NO NPCS".to_string()
+                    }
+                    "all_teleport" => {
+                        for i in 0..g.npcs.len() {
+                            npc_teleport(g, i);
+                        }
+                        format!("ADMIN // {} NPCS TELEPORTED", g.npcs.len())
+                    }
+                    "all_follow" | "all_unfollow" => {
+                        let follow = op == "all_follow";
+                        for n in g.npcs.iter_mut() {
+                            n.joined = follow;
+                        }
+                        format!(
+                            "ADMIN // {} NPCS {}",
+                            g.npcs.len(),
+                            if follow { "FOLLOW YOU" } else { "STAY HERE" }
+                        )
+                    }
+                    "all_smart" => {
+                        for n in g.npcs.iter_mut() {
+                            n.smart = smart.clamp(0, 100);
+                        }
+                        format!("ADMIN // {} NPCS SMART {smart}", g.npcs.len())
+                    }
+                    other => format!("ADMIN // {} IS NOT IN THIS BUILD YET", npc_op_label(other)),
                 };
                 g.say(&line);
                 self.mark_debug();
@@ -308,9 +369,9 @@ impl Admin {
         match key {
             "give_item" => self.give_item(g, i),
             "teleport" => self.teleport_chunk(g, menu().teleports[i.min(menu().teleports.len() - 1)].0),
-            "run_speed" => self.run_speed = menu().run_speeds[i.min(3)].0,
+            "run_speed" => self.run_speed = menu().run_speeds[i.min(menu().run_speeds.len() - 1)].0,
             "game_speed" => {
-                let s = menu().game_speeds[i.min(5)].0;
+                let s = menu().game_speeds[i.min(menu().game_speeds.len() - 1)].0;
                 if s < 0.0 {
                     self.game_speed = 0.0;
                     self.step_frames = 1;
@@ -391,8 +452,10 @@ impl Admin {
                 _ => g.say("ADMIN STORY STATE RESET"),
             },
             "act_visual" => match i {
-                0 => g.say("ADMIN // NO WAYPOINT SET"),
-                1 => debug = false,
+                0 | 1 => {
+                    debug = false;
+                    g.say("ADMIN // WAYPOINTS ARE NOT IN THIS BUILD YET");
+                }
                 2 => self.spawn_ravelle_trap(g),
                 3 => g.say(&format!(
                     "LIGHT // HERE {:.2} (VISIBLE AT 0.36)",
