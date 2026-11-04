@@ -169,6 +169,12 @@ impl Directory {
             }
         }
         self.enet_rooms.retain(|_, room| room.expires_at > timestamp);
+        if let Some(reserved) = self.reserved.as_mut() {
+            let live: std::collections::HashSet<String> = self.enet_rooms.keys().cloned().collect();
+            for code in reserved.sweep(&|code| live.contains(code)) {
+                crate::util::log_error(&format!("Reserved rooms: deleted the idle room {code}"));
+            }
+        }
         let rooms = &self.enet_rooms;
         self.admin_tickets.retain(|_, proof| proof.expires_at > timestamp && rooms.contains_key(&proof.code));
     }
@@ -267,6 +273,8 @@ pub struct ServerOptions {
     pub crash_report_directory: Option<PathBuf>,
     pub reserved_room_store_path: Option<PathBuf>,
     pub reserved_room_codes: Vec<String>,
+    /// Idle time after which an admin-made reservation with no live session is deleted (0 never deletes).
+    pub reserved_room_idle_ms: i64,
     pub agent_tokens: HashMap<String, String>,
     pub mod_download_base: String,
     pub rate_limit_window_ms: i64,
@@ -310,6 +318,7 @@ impl Default for ServerOptions {
             crash_report_directory: None,
             reserved_room_store_path: None,
             reserved_room_codes: Vec::new(),
+            reserved_room_idle_ms: 3_600_000,
             agent_tokens: HashMap::new(),
             mod_download_base: String::new(),
             rate_limit_window_ms: DEFAULT_RATE_LIMIT_WINDOW_MS,
@@ -415,7 +424,12 @@ impl LastRouteServer {
         let crash_reports =
             opts.crash_report_directory.clone().map(|directory| CrashReports::new(CrashReportsOptions { directory, now: now.clone() }));
         let reserved = opts.reserved_room_store_path.clone().map(|store_path| {
-            ReservedRooms::new(ReservedRoomsOptions { store_path, codes: opts.reserved_room_codes.clone(), now: now.clone() })
+            ReservedRooms::new(ReservedRoomsOptions {
+                store_path,
+                codes: opts.reserved_room_codes.clone(),
+                now: now.clone(),
+                idle_ttl_ms: opts.reserved_room_idle_ms,
+            })
         });
         let state = State {
             dir: Directory {
@@ -733,6 +747,7 @@ pub fn options_from_environment(env: &HashMap<String, String>, cwd: &Path) -> Re
     let existing = |p: Option<PathBuf>| p.filter(|p| p.exists());
     let options = ServerOptions {
         enet_room_ttl_ms: (number("ENET_ROOM_TTL_SECONDS", 60.0).max(15.0) * 1000.0) as i64,
+        reserved_room_idle_ms: (number("RESERVED_ROOM_IDLE_SECONDS", 3600.0).max(0.0) * 1000.0) as i64,
         account_store_path: Some(accounts.clone()),
         account_upstream,
         account_service_token,

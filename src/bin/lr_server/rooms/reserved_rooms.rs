@@ -177,6 +177,7 @@ pub fn owner_view(room: &Value) -> Value {
         "createdBy": room.get("createdBy").cloned().unwrap_or(Value::Null),
         "updatedAt": room.get("updatedAt").cloned().unwrap_or(Value::Null),
         "fromEnvironment": truthy(room.get("fromEnvironment")),
+        "keep": truthy(room.get("keep")),
     })
 }
 
@@ -184,6 +185,9 @@ pub struct ReservedRoomsOptions {
     pub store_path: PathBuf,
     pub codes: Vec<String>,
     pub now: Clock,
+    /// A reservation made by an admin that has no live session and no host activity for this long is deleted
+    /// (milliseconds; 0 keeps every reservation for ever). Rooms from the environment and rooms flagged `keep` stay.
+    pub idle_ttl_ms: i64,
 }
 
 pub struct ReservedRooms {
@@ -192,6 +196,10 @@ pub struct ReservedRooms {
     rooms: Map<String, Value>,
     /// code -> (ticket hex -> expiresAt), insertion ordered; memory only.
     tickets: HashMap<String, Vec<(String, i64)>>,
+    idle_ttl_ms: i64,
+    /// code -> the last time a host, a join ticket or an owner edit touched the room; memory only, so a restart gives
+    /// every room a fresh idle period.
+    active: HashMap<String, i64>,
 }
 
 impl ReservedRooms {
@@ -212,7 +220,18 @@ impl ReservedRooms {
                 )),
             }
         }
-        let mut this = ReservedRooms { store_path: opts.store_path, now: opts.now, rooms, tickets: HashMap::new() };
+        let mut this = ReservedRooms {
+            store_path: opts.store_path,
+            now: opts.now,
+            rooms,
+            tickets: HashMap::new(),
+            idle_ttl_ms: opts.idle_ttl_ms,
+            active: HashMap::new(),
+        };
+        let started = (this.now)();
+        for code in this.rooms.keys().cloned().collect::<Vec<_>>() {
+            this.active.insert(code, started);
+        }
         for room in this.rooms.values_mut() {
             let invites = clean_invites(room.get("invites")).unwrap_or_default();
             if let Value::Object(map) = room {
@@ -286,8 +305,47 @@ impl ReservedRooms {
     }
 
     /// A short-lived ticket the relay accepts as the guest's join nonce for this code (base64url, 18 bytes).
+    /// Marks a room as in use now, so the idle sweep leaves it alone.
+    pub fn touch(&mut self, code: &str) {
+        let now = (self.now)();
+        self.active.insert(normalize_code_str(code), now);
+    }
+
+    /// Deletes the admin-made reservations nobody is using: not from the environment, not flagged `keep`, no live
+    /// session on the code (`live`) and idle for longer than the idle period. Returns the deleted codes.
+    pub fn sweep(&mut self, live: &dyn Fn(&str) -> bool) -> Vec<String> {
+        if self.idle_ttl_ms <= 0 {
+            return Vec::new();
+        }
+        let now = (self.now)();
+        let mut gone = Vec::new();
+        for (code, room) in self.rooms.iter() {
+            if truthy(room.get("fromEnvironment")) || truthy(room.get("keep")) || room.get("createdBy").and_then(Value::as_str) == Some("environment") {
+                continue;
+            }
+            if live(code) {
+                self.active.insert(code.clone(), now);
+                continue;
+            }
+            let last = *self.active.entry(code.clone()).or_insert(now);
+            if now - last > self.idle_ttl_ms {
+                gone.push(code.clone());
+            }
+        }
+        for code in &gone {
+            self.rooms.remove(code);
+            self.tickets.remove(code);
+            self.active.remove(code);
+        }
+        if !gone.is_empty() {
+            self.save();
+        }
+        gone
+    }
+
     pub fn issue_ticket(&mut self, code: &str) -> String {
         let clean = normalize_code_str(code);
+        self.touch(&clean);
         let ticket = random_bytes(18);
         let timestamp = (self.now)();
         let map = self.tickets.entry(clean).or_default();
@@ -345,6 +403,9 @@ impl ReservedRooms {
             let room = self.fresh(&code, owner, false);
             self.rooms.insert(code.clone(), room);
         }
+        if self.rooms.contains_key(&code) && (action == "create" || action == "update") {
+            self.touch(&code);
+        }
         if !self.rooms.contains_key(&code) {
             return (404, json!({ "ok": false, "code": "ROOM_NOT_RESERVED", "error": "That code is not reserved" }));
         }
@@ -377,6 +438,9 @@ impl ReservedRooms {
                 let hash = if password.is_empty() { String::new() } else { hash_password(&password) };
                 self.room_mut(&code).insert("passwordHash".into(), Value::String(hash));
                 self.tickets.remove(&code); // a new password revokes outstanding join tickets
+            }
+            if let Some(keep) = body.get("keep").and_then(Value::as_bool) {
+                self.room_mut(&code).insert("keep".into(), Value::Bool(keep));
             }
             self.room_mut(&code).insert("updatedAt".into(), Value::String(now_iso));
             self.save();
@@ -466,6 +530,7 @@ impl ReservedRooms {
         if !self.rooms.contains_key(&code) {
             return None;
         }
+        self.touch(&code);
         let acked = {
             let n = js_number(ack);
             if n.is_nan() {
@@ -531,7 +596,42 @@ mod tests {
             store_path: store.clone(),
             codes: codes.iter().map(|c| c.to_string()).collect(),
             now: system_clock(),
+            idle_ttl_ms: 0,
         })
+    }
+
+    #[test]
+    fn an_idle_admin_reservation_is_swept_but_environment_keep_and_live_rooms_stay() {
+        let root = temp_root("sweep");
+        let store = root.join("data").join("reserved_rooms.json");
+        let clock = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(1_000_000));
+        let now: Clock = {
+            let c = clock.clone();
+            std::sync::Arc::new(move || c.load(std::sync::atomic::Ordering::SeqCst))
+        };
+        let mut rooms = ReservedRooms::new(ReservedRoomsOptions {
+            store_path: store.clone(),
+            codes: vec!["ENVRM".into()],
+            now,
+            idle_ttl_ms: 60_000,
+        });
+        for code in ["IDLE1", "KEEP1", "LIVE1", "BUSY1"] {
+            assert_eq!(rooms.admin(&json!({"action": "create", "code": code}), "KYTTU").0, 201);
+        }
+        assert_eq!(rooms.admin(&json!({"action": "update", "code": "KEEP1", "keep": true}), "KYTTU").1["room"]["keep"], json!(true));
+        clock.fetch_add(30_000, std::sync::atomic::Ordering::SeqCst);
+        assert!(rooms.sweep(&|_| false).is_empty(), "nothing is idle for longer than the period yet");
+        rooms.host_view("BUSY1", None, None); // a host heartbeat counts as use
+        clock.fetch_add(40_000, std::sync::atomic::Ordering::SeqCst);
+        let gone = rooms.sweep(&|code| code == "LIVE1");
+        assert_eq!(gone, vec!["IDLE1".to_string()], "only the idle admin room goes");
+        assert!(rooms.is_reserved("ENVRM") && rooms.is_reserved("KEEP1") && rooms.is_reserved("LIVE1") && rooms.is_reserved("BUSY1"));
+        assert!(!rooms.is_reserved("IDLE1"));
+        let saved = std::fs::read_to_string(&store).unwrap();
+        assert!(!saved.contains("IDLE1") && saved.contains("KEEP1"), "the deletion is saved");
+        let mut never = open(&store, &[]);
+        clock.fetch_add(10_000_000, std::sync::atomic::Ordering::SeqCst);
+        assert!(never.sweep(&|_| false).is_empty(), "an idle period of 0 never deletes");
     }
 
     #[test]
