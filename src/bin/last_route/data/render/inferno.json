@@ -52,7 +52,16 @@
       "max_per_chunk": 24,
       "size_m": [0.8, 2.5],
       "color": [0.95, 0.3, 0.05],
+      "glow_radius_m": 2.5,
       "glow_strength": 0.6
     }
+  },
+  "scene": {
+    "glow_cull_m": 36.0,
+    "ember_cull_m": 24.0,
+    "glow_height_m": 0.6,
+    "crack_height_m": 0.3,
+    "ember_start_m": 0.1,
+    "ember_drift_m": 0.35
   }
 }

@@ -5,6 +5,9 @@
 //! and playing the loop are hooked in by the scene.
 
 use crate::content::embedded;
+use crate::world::route::sewer::core::{falls_between, Inputs, CHUNK, LEVEL, LOWER_LEVEL};
+use crate::world::route::sewer::water::surface_y;
+use crate::world::vertical::STOREY;
 use std::sync::OnceLock;
 
 pub const PATH: &str = "render/waterfall.json";
@@ -34,6 +37,31 @@ pub struct SplashCfg {
     pub light_range_m: f32,
 }
 
+/// How the falls are drawn: the foam's colour, the sheet's flowing streaks and how far away a fall is skipped.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViewCfg {
+    pub foam_color: [f32; 4],
+    /// Bands of brightness down the sheet that scroll with `flow_speed` (the sheet has no texture).
+    pub streak_bands: f32,
+    /// How much the streaks darken the sheet, 0..1.
+    pub streak_depth: f32,
+    /// A fall further than this from the eye is not drawn.
+    pub cull_m: f32,
+}
+
+/// The sound loop of a fall: filtered noise rendered at runtime, heard positionally to `sound_range_m`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoundCfg {
+    pub loop_seconds: f32,
+    /// One-pole low-pass coefficient of the noise, 0..1 (lower is duller).
+    pub lowpass: f32,
+    pub gain: f32,
+    pub unit_size_m: f32,
+    pub volume_db: f32,
+    pub max_db: f32,
+    pub height_m: f32,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct WaterfallCfg {
     pub sheet_width_m: f32,
@@ -46,6 +74,8 @@ pub struct WaterfallCfg {
     pub splash: SplashCfg,
     pub sound_key: String,
     pub sound_range_m: f32,
+    pub view: ViewCfg,
+    pub sound: SoundCfg,
 }
 
 fn num(v: &serde_json::Value, key: &str) -> Result<f32, String> {
@@ -73,6 +103,8 @@ impl WaterfallCfg {
         let v: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let m = v.get("mist").ok_or("mist: missing")?;
         let s = v.get("splash").ok_or("splash: missing")?;
+        let vw = v.get("view").ok_or("view: missing")?;
+        let sn = v.get("sound").ok_or("sound: missing")?;
         let cfg = WaterfallCfg {
             sheet_width_m: num(&v, "sheet_width_m")?,
             throw_m: num(&v, "throw_m")?,
@@ -108,9 +140,27 @@ impl WaterfallCfg {
                 .ok_or("sound_key: expected a non-empty string")?
                 .to_string(),
             sound_range_m: num(&v, "sound_range_m")?,
+            view: ViewCfg {
+                foam_color: arr(vw, "foam_color")?,
+                streak_bands: num(vw, "streak_bands")?,
+                streak_depth: num(vw, "streak_depth")?,
+                cull_m: num(vw, "cull_m")?,
+            },
+            sound: SoundCfg {
+                loop_seconds: num(sn, "loop_seconds")?,
+                lowpass: num(sn, "lowpass")?,
+                gain: num(sn, "gain")?,
+                unit_size_m: num(sn, "unit_size_m")?,
+                volume_db: num(sn, "volume_db")?,
+                max_db: num(sn, "max_db")?,
+                height_m: num(sn, "height_m")?,
+            },
         };
         if cfg.sheet_width_m <= 0.0 || cfg.curl_segments == 0 || cfg.mist.lifetime_s <= 0.0 {
             return Err("sheet width, curl segments and mist lifetime must be positive".into());
+        }
+        if cfg.sound.loop_seconds <= 0.0 || !(0.0..=1.0).contains(&cfg.sound.lowpass) || cfg.sound.unit_size_m <= 0.0 {
+            return Err("sound loop seconds and unit size must be positive and the low-pass 0..1".into());
         }
         Ok(cfg)
     }
@@ -245,6 +295,84 @@ pub fn build(cfg: &WaterfallCfg, top_y: f32, bottom_y: f32, out: f32, t: f32) ->
     }
 }
 
+/// One fall in the streamed window: where its lip is (window metres, the middle of the lip), which way it throws
+/// (`out`, -1 north or +1 south along z) and the water surfaces it joins.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Site {
+    pub lip: [f32; 2],
+    pub out: f32,
+    pub top_y: f32,
+    pub bottom_y: f32,
+}
+
+/// The falls of the 3x3 window around `center` on a sewer storey (`LEVEL` or `LOWER_LEVEL`), from the sewer
+/// generator's `falls_between`; none on any other level. The first sewer shows the sheet from its own water down
+/// into the cistern, the second shows the same sheet coming down from the storey above onto its own water. Every
+/// height is relative to the drawn storey's floor.
+pub fn sites_in_window(seed: &str, level: i32, center: (i32, i32)) -> Vec<Site> {
+    if level != LEVEL && level != LOWER_LEVEL {
+        return Vec::new();
+    }
+    let inputs = Inputs { world: seed };
+    let own = surface_y(0.0);
+    let (top_y, bottom_y) = if level == LEVEL { (own, own - STOREY) } else { (own + STOREY, own) };
+    let mut out = Vec::new();
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            let Some(f) = falls_between(&inputs, center.0 + dx, center.1 + dy) else { continue };
+            let (ox, oy) = ((dx + 1) * CHUNK, (dy + 1) * CHUNK);
+            out.push(Site {
+                lip: [ox as f32 + f.edge_x0 as f32 + 1.5, oy as f32 + f.edge_z as f32],
+                out: if f.north { -1.0 } else { 1.0 },
+                top_y,
+                bottom_y,
+            });
+        }
+    }
+    out
+}
+
+type SiteKey = (String, i32, (i32, i32));
+
+thread_local! {
+    static SITES: std::cell::RefCell<Option<(SiteKey, Vec<Site>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `sites_in_window`, kept while the window stays the same (the scene asks every frame).
+pub fn sites_cached(seed: &str, level: i32, center: (i32, i32)) -> Vec<Site> {
+    SITES.with(|c| {
+        let mut c = c.borrow_mut();
+        if let Some(((s, l, ce), v)) = &*c {
+            if s == seed && *l == level && *ce == center {
+                return v.clone();
+            }
+        }
+        let v = sites_in_window(seed, level, center);
+        *c = Some(((seed.to_string(), level, center), v.clone()));
+        v
+    })
+}
+
+/// The brightness factor of the sheet's flowing streaks at height fraction `v` (0 top, 1 bottom) and time `t`:
+/// 1 at the brightest, `1 - streak_depth` at the dimmest, scrolling down at `flow_speed`.
+pub fn streak(cfg: &WaterfallCfg, v: f32, t: f32) -> f32 {
+    let wave = 0.5 + 0.5 * ((v * cfg.view.streak_bands - cfg.flow_speed * t) * std::f32::consts::TAU).sin();
+    1.0 - cfg.view.streak_depth * wave
+}
+
+/// The fall nearest to `eye` (x, z) within `sound_range_m`, as the position its loop plays from.
+pub fn nearest_sound(cfg: &WaterfallCfg, sites: &[Site], eye: (f32, f32), t: f32) -> Option<[f32; 3]> {
+    let d2 = |p: &[f32; 3]| (p[0] - eye.0).powi(2) + (p[2] - eye.1).powi(2);
+    sites
+        .iter()
+        .map(|s| {
+            let w = build(cfg, s.top_y, s.bottom_y, s.out, t);
+            [s.lip[0] + w.sound_pos[0], w.sound_pos[1], s.lip[1] + w.sound_pos[2]]
+        })
+        .filter(|p| d2(p).sqrt() <= cfg.sound_range_m)
+        .min_by(|a, b| d2(a).partial_cmp(&d2(b)).unwrap_or(std::cmp::Ordering::Equal))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,6 +438,52 @@ mod tests {
         let w = build(&c, 0.0, -3.0, 1.0, 0.0);
         assert!(w.foam_center[1] > -3.0 && w.foam_center[1] < -2.9);
         assert!(w.light_pos[1] > w.foam_center[1]);
+    }
+
+    #[test]
+    fn only_the_two_sewer_storeys_have_falls_and_they_line_up() {
+        let seed = (0..400)
+            .map(|i| format!("fall-seed-{i}"))
+            .find(|s| !sites_in_window(s, LEVEL, (0, 0)).is_empty())
+            .expect("some seed has a fall");
+        assert!(sites_in_window(&seed, 0, (0, 0)).is_empty());
+        assert!(sites_in_window(&seed, -3, (0, 0)).is_empty());
+        let upper = sites_in_window(&seed, LEVEL, (0, 0));
+        let lower = sites_in_window(&seed, LOWER_LEVEL, (0, 0));
+        assert_eq!(upper.len(), lower.len());
+        let span = 3.0 * CHUNK as f32;
+        for (u, l) in upper.iter().zip(&lower) {
+            assert_eq!((u.lip, u.out), (l.lip, l.out), "the same fall on both storeys");
+            assert!(u.top_y > u.bottom_y && l.top_y > l.bottom_y);
+            assert!((u.top_y - u.bottom_y - STOREY).abs() < 1e-4);
+            assert!(u.lip[0] >= 0.0 && u.lip[0] < span && u.lip[1] >= 0.0 && u.lip[1] < span);
+        }
+        assert_eq!(sites_cached(&seed, LEVEL, (0, 0)), upper, "the cached answer is the computed one");
+    }
+
+    #[test]
+    fn streaks_scroll_and_stay_in_range() {
+        let c = cfg();
+        let d = c.view.streak_depth;
+        for i in 0..40 {
+            let f = streak(&c, i as f32 / 40.0, i as f32 * 0.13);
+            assert!(f <= 1.0 + 1e-5 && f >= 1.0 - d - 1e-5);
+        }
+        assert_ne!(streak(&c, 0.3, 0.0), streak(&c, 0.3, 0.2), "the streaks move with time");
+        let mut flat = c.clone();
+        flat.view.streak_depth = 0.0;
+        assert_eq!(streak(&flat, 0.3, 0.9), 1.0, "data turns them off");
+    }
+
+    #[test]
+    fn the_loop_follows_the_nearest_fall_in_range() {
+        let c = cfg();
+        let site = |x: f32| Site { lip: [x, 10.0], out: 1.0, top_y: 0.0, bottom_y: -5.0 };
+        let sites = [site(10.0), site(40.0)];
+        let p = nearest_sound(&c, &sites, (38.0, 10.0), 0.0).unwrap();
+        assert!((p[0] - 40.0).abs() < 1.0, "the nearer fall plays");
+        assert!(nearest_sound(&c, &sites, (10.0 + c.sound_range_m + 5.0, 90.0), 0.0).is_none(), "out of range is silent");
+        assert!(nearest_sound(&c, &[], (0.0, 0.0), 0.0).is_none());
     }
 
     #[test]

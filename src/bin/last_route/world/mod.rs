@@ -13,6 +13,9 @@ pub mod level_links;
 pub mod rng;
 pub mod route;
 pub mod vertical;
+pub mod flight;
+#[cfg(test)]
+mod stack_contract_tests;
 
 pub use facility::{Cell, Facility};
 

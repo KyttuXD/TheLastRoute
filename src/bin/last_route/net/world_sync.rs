@@ -19,6 +19,7 @@ use super::config::{self, BackendConfig};
 use super::protocol::{self, Message};
 use super::relay::{RelayEvent, RelayLink, Role};
 use super::session::{CoopSession, SessionEvent, HOST_PEER_ID};
+use super::valve_events::{self, ValveRequest};
 use super::{store, NetError, Pending};
 use crate::config::difficulty::{ALL, LOBBY};
 use crate::config::Difficulty;
@@ -27,7 +28,7 @@ use crate::game::Game;
 use crate::shared::assets::Assets;
 use macroquad::prelude::*;
 use serde_json::{json, Map, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 /// A runner's sample goes out this often (the original's 20 Hz `_place`).
@@ -310,6 +311,14 @@ impl OwnerCursor {
     }
 }
 
+/// A capture the host is waiting on: when it was sent, which hunter took the guest and where (host-held, this
+/// window's cells).
+struct PendingCapture {
+    sent: Instant,
+    hunter: Option<String>,
+    at: Option<(f32, f32)>,
+}
+
 struct Remote {
     sample: Sample,
     last_seen: Instant,
@@ -413,7 +422,12 @@ pub struct NetSession {
     hunter_tracker: Tracker,
     /// Host: guests the host captured and has not yet heard back from (Godot `_pending_captures`). A guest's escaped,
     /// caught or capture_blocked report is accepted only from one of these, and only once.
-    pending_captures: HashSet<u32>,
+    /// Each with the moment the host sent the capture, so one that never answers expires (`capture.timeout_s`).
+    pending_captures: HashMap<u32, PendingCapture>,
+    /// Host: the last taser intent accepted from each guest, for the data's least gap (`guest.taser_min_gap_s`).
+    last_taser: HashMap<u32, Instant>,
+    /// Host: guests' sewer valve turn requests waiting for the game ([`NetSession::take_valve_requests`]).
+    valve_requests: Vec<ValveRequest>,
     /// Host: guest hunter events accepted this tick (taser, or a resolved capture with `peer_id`), taken by the app.
     guest_events: Vec<Map<String, Value>>,
     /// Host: the hunter frame last sent, and the sabotaged relay count, for the snapshot a late joiner is sent.
@@ -480,6 +494,35 @@ pub fn join_room(cfg: BackendConfig, code: String, name: String, skin: String, s
         match lookup_outcome(api::lookup_room(&cfg, &code), is_admin, &session_token)? {
             JoinStep::Found(room) => join_found(cfg, code, room, name, skin),
             JoinStep::Reserve => reserve_and_host(cfg, code, name, skin, session_token),
+        }
+    })
+}
+
+/// PUBLIC ROUTE: looks up the public code (`data/net/public_route.json`). A runner holding it is joined as a guest; a
+/// miss opens the room and holds the route as its host. A code someone registered between the lookup and the open joins
+/// that room instead. Blocking, so polled like [`host_room`].
+pub fn join_public_room(cfg: BackendConfig, name: String, skin: String) -> Pending<NetSession> {
+    Pending::spawn(move || {
+        if cfg.offline {
+            return Err(NetError::Offline);
+        }
+        let code = super::public_route::rules().code.clone();
+        match super::public_route::step(api::lookup_room(&cfg, &code))? {
+            super::public_route::Step::Join(room) => join_found(cfg, code, room, name, skin),
+            super::public_route::Step::Host => {
+                let request = RegisterRoom {
+                    code: code.clone(),
+                    device_id: store::device_id(&store::default_dir()),
+                    ..RegisterRoom::default()
+                };
+                match api::register_room(&cfg, &request) {
+                    Ok(reg) => open_host(cfg, code, crate::world::route::new_room_text(), name, skin, reg),
+                    Err(first) => match api::lookup_room(&cfg, &code) {
+                        Ok(room) => join_found(cfg, code, room, name, skin),
+                        Err(_) => Err(first),
+                    },
+                }
+            }
         }
     })
 }
@@ -580,7 +623,9 @@ impl NetSession {
             owner: OwnerCursor::default(),
             backlog: Vec::new(),
             hunter_tracker: Tracker::default(),
-            pending_captures: HashSet::new(),
+            pending_captures: HashMap::new(),
+            last_taser: HashMap::new(),
+            valve_requests: Vec::new(),
             guest_events: Vec::new(),
             hunters_now: Vec::new(),
             relays_sabotaged: 0,
@@ -804,8 +849,87 @@ impl NetSession {
     /// Host: the host captured this guest, so its next escaped, caught or capture_blocked report is expected (Godot
     /// `_pending_captures[peer_id]` set where the host sends a capture). Does nothing on a guest.
     pub fn expect_capture(&mut self, peer: u32) {
+        self.expect_capture_by(peer, None, None);
+    }
+
+    /// Host: as [`NetSession::expect_capture`], and records which hunter (`hunter`, its def id) took the guest and
+    /// where (`at`, this window's cells). The guest's later escaped report is resolved against this record only: the
+    /// hunter id and place the guest claims are dropped.
+    pub fn expect_capture_by(&mut self, peer: u32, hunter: Option<String>, at: Option<(f32, f32)>) {
         if self.is_host() {
-            self.pending_captures.insert(peer);
+            self.pending_captures.insert(peer, PendingCapture { sent: Instant::now(), hunter, at });
+        }
+    }
+
+    /// Host: stops waiting for the captured guests that have not answered within `capture.timeout_s`. Each one is
+    /// handed to the app as a `capture_timeout` guest event (with its `peer_id`), once, and a late report from it is
+    /// dropped like any report that was not expected. Returns how many expired.
+    fn expire_captures(&mut self, now: Instant) -> usize {
+        let limit = hunter_events::rules().capture_timeout;
+        let mut expired: Vec<u32> = self
+            .pending_captures
+            .iter()
+            .filter(|(_, p)| now.saturating_duration_since(p.sent) >= limit)
+            .map(|(peer, _)| *peer)
+            .collect();
+        expired.sort_unstable();
+        for peer in &expired {
+            self.pending_captures.remove(peer);
+            let mut ev = Map::new();
+            ev.insert("what".into(), json!("capture_timeout"));
+            ev.insert("peer_id".into(), json!(peer));
+            self.guest_events.push(ev);
+        }
+        expired.len()
+    }
+
+    /// Host: the guests' valve turn requests since the last call, oldest first. A guest always gets nothing.
+    pub fn take_valve_requests(&mut self) -> Vec<ValveRequest> {
+        std::mem::take(&mut self.valve_requests)
+    }
+
+    /// Host: where a guest last stood (absolute cell and depth), for the checks on its requests: the host's own copy
+    /// of the last accepted sample, never a place the request itself carries. `None` for a peer with no fresh sample
+    /// (older than [`REMOTE_TIMEOUT`]), or on a guest.
+    pub fn guest_position(&self, peer: u32) -> Option<(f32, f32, i32)> {
+        let now = Instant::now();
+        self.is_host()
+            .then(|| self.remotes.get(&peer))
+            .flatten()
+            .filter(|r| now.duration_since(r.last_seen) < REMOTE_TIMEOUT)
+            .map(|r| (r.sample.x, r.sample.y, r.sample.depth))
+    }
+
+    /// Guest: sends the host a hunter event (Godot `_submit_hunter_event`): a `taser` intent with its `slot`, or the
+    /// `escaped`, `caught` and `capture_blocked` reports that answer a capture. Any other kind is not sent. The host
+    /// re-checks everything from its own state. Returns whether it was sent; a host never sends one.
+    pub fn submit_hunter_event(&mut self, event: Map<String, Value>) -> bool {
+        let what = event.get("what").and_then(Value::as_str).unwrap_or_default();
+        if self.is_host() || !["taser", "escaped", "caught", "capture_blocked"].contains(&what) {
+            return false;
+        }
+        self.coop.send(HOST_PEER_ID, &Message::SubmitHunterEvent { event })
+    }
+
+    /// Guest: asks the host to turn a sewer valve (the host runs the turn and publishes a `stream_valve` event that
+    /// every machine applies). Does nothing on the host, which turns valves itself.
+    pub fn request_valve(&mut self, valve_id: &str, effect: &str, gate: &str, valve_at: (f32, f32)) {
+        if !self.is_host() {
+            let event = valve_events::request_message(valve_id, effect, gate, valve_at);
+            self.coop.send(HOST_PEER_ID, &Message::RequestInteraction { event });
+        }
+    }
+
+    /// Host: checks a guest's valve request and queues it for the game (bounded by `guest.max_valve_requests`).
+    fn accept_valve_request(&mut self, from: u32, event: &Map<String, Value>) {
+        if from <= HOST_PEER_ID || !self.guests.contains_key(&from) {
+            return;
+        }
+        if self.valve_requests.len() >= hunter_events::rules().max_valve_requests {
+            return;
+        }
+        if let Some(request) = valve_events::parse_request(from, event) {
+            self.valve_requests.push(request);
         }
     }
 
@@ -819,13 +943,19 @@ impl NetSession {
     /// sight from its own state), so it is passed on with the sender and a slot clamped to -1..=63 like Godot does. The
     /// three report kinds are accepted only when the host expects that guest's capture, and that expectation is used up.
     /// Host-only senders (peer 1 or lower) and other kinds are dropped.
-    fn accept_guest_event(&mut self, from: u32, event: Map<String, Value>) {
+    fn accept_guest_event(&mut self, from: u32, event: Map<String, Value>, now: Instant) {
         if from <= HOST_PEER_ID {
             return;
         }
         let what = event.get("what").and_then(Value::as_str).unwrap_or_default().to_string();
         match what.as_str() {
             "taser" => {
+                // one intent per `guest.taser_min_gap_s`: a faster stream from one guest is dropped
+                let gap = hunter_events::rules().guest_taser_gap;
+                if self.last_taser.get(&from).is_some_and(|t| now.saturating_duration_since(*t) < gap) {
+                    return;
+                }
+                self.last_taser.insert(from, now);
                 let slot = event.get("slot").and_then(Value::as_f64).map_or(-1, |v| v as i64);
                 let slot = slot.clamp(-1, MAX_TASER_SLOT);
                 let mut out = Map::new();
@@ -835,10 +965,22 @@ impl NetSession {
                 self.guest_events.push(out);
             }
             "escaped" | "caught" | "capture_blocked" => {
-                if !self.pending_captures.remove(&from) {
-                    return;
-                }
+                let Some(pending) = self.pending_captures.remove(&from) else { return };
                 let mut received = event;
+                if what == "escaped" {
+                    // the escape is resolved against what the host recorded at the capture; the guest's own claim of
+                    // the hunter and the place is dropped
+                    for key in ["hunter_id", "entity_id", "x", "y", "yaw"] {
+                        received.remove(key);
+                    }
+                    if let Some(id) = pending.hunter {
+                        received.insert("hunter_id".into(), json!(id));
+                    }
+                    if let Some((x, y)) = pending.at {
+                        received.insert("x".into(), json!(x));
+                        received.insert("y".into(), json!(y));
+                    }
+                }
                 received.insert("peer_id".into(), json!(from));
                 self.guest_events.push(received);
             }
@@ -1071,6 +1213,7 @@ impl NetSession {
                 self.remotes.remove(&from);
                 self.skins.remove(&from);
                 self.pending_captures.remove(&from);
+                self.last_taser.remove(&from);
                 if let Some(guest) = self.guests.remove(&from) {
                     out.push(NetEvent::GuestLeft(guest.name));
                     self.send_room_and_roster();
@@ -1095,7 +1238,14 @@ impl NetSession {
                 if let Some(guest) = self.guests.get_mut(&from) {
                     guest.last_seen = now;
                 }
-                self.accept_guest_event(from, event);
+                self.accept_guest_event(from, event, now);
+            }
+            // a guest's request to turn a sewer valve (Godot `_request_valve`): the host's game decides
+            Message::RequestInteraction { event } if self.is_host() => {
+                if let Some(guest) = self.guests.get_mut(&from) {
+                    guest.last_seen = now;
+                }
+                self.accept_valve_request(from, &event);
             }
             Message::Room { seed, rest, .. } if !self.is_host() => {
                 self.room_seed = seed.clone();
@@ -1196,10 +1346,12 @@ impl NetSession {
                 self.remotes.remove(&peer);
                 self.skins.remove(&peer);
                 self.pending_captures.remove(&peer);
+                self.last_taser.remove(&peer);
                 if let Some(guest) = self.guests.remove(&peer) {
                     out.push(NetEvent::GuestLeft(guest.name));
                 }
             }
+            self.expire_captures(now);
         } else if !self.coop.link.ready() && !self.timed_out && now.duration_since(self.opened) >= JOIN_TIMEOUT {
             self.timed_out = true;
             out.push(NetEvent::Problem("NO ANSWER FROM THE ROOM'S RELAY".into()));
@@ -1341,7 +1493,7 @@ mod tests {
     use crate::net::relay::{decode, encode, frame};
     use std::net::UdpSocket;
 
-    fn sample(seq: u32, x: f32, y: f32) -> Sample {
+    pub(super) fn sample(seq: u32, x: f32, y: f32) -> Sample {
         Sample {
             seq,
             depth: 1,
@@ -1712,7 +1864,7 @@ mod tests {
     }
 
     /// A session on a discarded relay address: only its in-memory state is used.
-    fn guest_report(what: &str) -> Map<String, Value> {
+    pub(super) fn guest_report(what: &str) -> Map<String, Value> {
         let mut m = Map::new();
         m.insert("what".into(), json!(what));
         m
@@ -1731,7 +1883,9 @@ mod tests {
         host.on_message(3, Message::SubmitHunterEvent { event: low }, now, &mut out);
         let mut none = guest_report("taser");
         none.insert("slot".into(), json!("nope"));
-        host.on_message(2, Message::SubmitHunterEvent { event: none }, now, &mut out);
+        // peer 2's second intent comes after the data's least gap
+        let later = now + hunter_events::rules().guest_taser_gap + Duration::from_millis(1);
+        host.on_message(2, Message::SubmitHunterEvent { event: none }, later, &mut out);
         let got = host.take_guest_events();
         assert_eq!(got.len(), 3);
         assert_eq!(got[0]["what"], json!("taser"));
@@ -1761,6 +1915,30 @@ mod tests {
         // the expectation is used up: a second report is dropped
         host.on_message(2, Message::SubmitHunterEvent { event: guest_report("caught") }, now, &mut out);
         assert!(host.take_guest_events().is_empty(), "the report is one-shot");
+    }
+
+    #[test]
+    fn an_escape_is_resolved_against_the_hunter_and_place_the_host_recorded_not_the_guests_claim() {
+        let now = Instant::now();
+        let mut host = offline_session(true, "HOST");
+        let mut out = Vec::new();
+        host.expect_capture_by(2, Some("aki".into()), Some((7.5, 8.5)));
+        let mut claim = guest_report("escaped");
+        claim.insert("hunter_id".into(), json!("someone_else"));
+        claim.insert("entity_id".into(), json!("another"));
+        claim.insert("x".into(), json!(99.0));
+        claim.insert("y".into(), json!(-4.0));
+        host.on_message(2, Message::SubmitHunterEvent { event: claim.clone() }, now, &mut out);
+        let got = host.take_guest_events();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0]["hunter_id"], json!("aki"));
+        assert_eq!((got[0]["x"].as_f64(), got[0]["y"].as_f64()), (Some(7.5), Some(8.5)));
+        assert!(!got[0].contains_key("entity_id"));
+        // a capture with no record carries no claim through either
+        host.expect_capture(2);
+        host.on_message(2, Message::SubmitHunterEvent { event: claim }, now, &mut out);
+        let got = host.take_guest_events();
+        assert!(!got[0].contains_key("hunter_id") && !got[0].contains_key("x") && !got[0].contains_key("y"));
     }
 
     #[test]
@@ -1823,7 +2001,7 @@ mod tests {
         assert!(out.is_empty());
     }
 
-    fn offline_session(host: bool, name: &str) -> NetSession {
+    pub(super) fn offline_session(host: bool, name: &str) -> NetSession {
         let (role, link, token) = if host {
             (Role::Host, RelayLink::host("ABCDE", "tok", "127.0.0.1", 9).unwrap(), "tok")
         } else {
@@ -1989,6 +2167,7 @@ mod admin_join_tests {
 /// `game/autoload/backend_client.gd` `_take_reserved`, `ack_reserved_command`, `_send_heartbeat`.
 #[cfg(test)]
 mod owner_route_tests {
+    use super::tests::{guest_report, offline_session, sample};
     use super::*;
     use std::net::UdpSocket;
 
@@ -2092,5 +2271,117 @@ mod owner_route_tests {
         let mut out = Vec::new();
         guest.on_message(HOST_PEER_ID, Message::End { reason: "ROUTE RESTARTING".into() }, Instant::now(), &mut out);
         assert_eq!(out, vec![NetEvent::RouteEnded("ROUTE RESTARTING".into())]);
+    }
+
+    #[test]
+    fn only_a_guest_sends_only_the_four_hunter_event_kinds() {
+        let mut host = offline_session(true, "HOST");
+        assert!(!host.submit_hunter_event(guest_report("taser")), "the host resolves events, it never submits them");
+        let mut guest = offline_session(false, "GUEST");
+        assert!(!guest.submit_hunter_event(guest_report("hunter_state")), "a world event kind is not a guest report");
+        assert!(!guest.submit_hunter_event(Map::new()), "an event with no kind is not sent");
+        assert!(!guest.submit_hunter_event(guest_report("escape")), "the kind must be exact");
+    }
+
+    fn registered(host: &mut NetSession, peer: u32, now: Instant) {
+        host.guests.insert(peer, Guest { name: format!("G{peer}"), last_seen: now });
+    }
+
+    #[test]
+    fn a_captured_guest_that_never_answers_is_released_once_after_the_data_timeout() {
+        let mut host = offline_session(true, "HOST");
+        host.expect_capture(2);
+        let limit = hunter_events::rules().capture_timeout;
+        let sent = host.pending_captures[&2].sent;
+        assert_eq!(host.expire_captures(sent + limit - Duration::from_millis(1)), 0, "not yet");
+        assert!(host.take_guest_events().is_empty());
+        assert_eq!(host.expire_captures(sent + limit), 1);
+        let got = host.take_guest_events();
+        assert_eq!((got.len(), got[0]["what"].clone(), got[0]["peer_id"].clone()), (1, json!("capture_timeout"), json!(2)));
+        assert_eq!(host.expire_captures(sent + limit * 2), 0, "the timeout is reported once");
+        // a late report from the released guest is not an expected one
+        let mut out = Vec::new();
+        host.on_message(2, Message::SubmitHunterEvent { event: guest_report("caught") }, sent + limit, &mut out);
+        assert!(host.take_guest_events().is_empty());
+    }
+
+    #[test]
+    fn a_report_inside_the_timeout_is_still_accepted_and_the_prune_runs_the_expiry() {
+        let mut host = offline_session(true, "HOST");
+        host.expect_capture(2);
+        let sent = host.pending_captures[&2].sent;
+        let mut out = Vec::new();
+        host.prune(sent + Duration::from_millis(10), &mut out);
+        host.on_message(2, Message::SubmitHunterEvent { event: guest_report("escaped") }, sent, &mut out);
+        assert_eq!(host.take_guest_events().len(), 1);
+        host.expect_capture(3);
+        let sent3 = host.pending_captures[&3].sent;
+        host.prune(sent3 + hunter_events::rules().capture_timeout, &mut out);
+        assert_eq!(host.take_guest_events()[0]["what"], json!("capture_timeout"), "prune is the call site of the expiry");
+    }
+
+    #[test]
+    fn a_guests_taser_intents_are_spaced_by_the_data_gap() {
+        let now = Instant::now();
+        let mut host = offline_session(true, "HOST");
+        let mut out = Vec::new();
+        host.on_message(2, Message::SubmitHunterEvent { event: guest_report("taser") }, now, &mut out);
+        host.on_message(2, Message::SubmitHunterEvent { event: guest_report("taser") }, now + Duration::from_millis(10), &mut out);
+        assert_eq!(host.take_guest_events().len(), 1, "a second intent inside the gap is dropped");
+        host.on_message(3, Message::SubmitHunterEvent { event: guest_report("taser") }, now, &mut out);
+        assert_eq!(host.take_guest_events().len(), 1, "the gap is per guest");
+    }
+
+    #[test]
+    fn a_guests_valve_request_reaches_the_host_queue_bounded_by_data() {
+        let now = Instant::now();
+        let mut host = offline_session(true, "HOST");
+        let mut out = Vec::new();
+        let request = valve_events::request_message("SEWER:0:-1:0:PROP:3", "flow", "", (5.5, 6.5));
+        host.on_message(2, Message::RequestInteraction { event: request.clone() }, now, &mut out);
+        assert!(host.take_valve_requests().is_empty(), "a peer that never registered is ignored");
+        registered(&mut host, 2, now);
+        host.on_message(2, Message::RequestInteraction { event: request.clone() }, now, &mut out);
+        let got = host.take_valve_requests();
+        assert_eq!((got.len(), got[0].peer, got[0].valve_id.as_str()), (1, 2, "SEWER:0:-1:0:PROP:3"));
+        assert!(host.take_valve_requests().is_empty(), "taking empties the queue");
+        for _ in 0..hunter_events::rules().max_valve_requests + 5 {
+            host.on_message(2, Message::RequestInteraction { event: request.clone() }, now, &mut out);
+        }
+        assert_eq!(host.take_valve_requests().len(), hunter_events::rules().max_valve_requests);
+        let bad = valve_events::request_message("not a valve", "flow", "", (0.0, 0.0));
+        host.on_message(2, Message::RequestInteraction { event: bad }, now, &mut out);
+        assert!(host.take_valve_requests().is_empty());
+        let mut guest = offline_session(false, "GUEST");
+        guest.on_message(2, Message::RequestInteraction { event: request }, now, &mut out);
+        assert!(guest.take_valve_requests().is_empty(), "a guest never queues requests");
+    }
+
+    #[test]
+    fn a_host_event_for_a_valve_reaches_a_guest_as_a_world_event_the_app_applies() {
+        let now = Instant::now();
+        let mut guest = offline_session(false, "GUEST");
+        let mut out = Vec::new();
+        let ev = crate::game::pipes::TurnEvent {
+            valve_id: "SEWER:0:-1:0:PROP:3".into(),
+            chunk: (0, -1, 0),
+            effect: "flow".into(),
+            shut: false,
+            turns: 1,
+            gate: String::new(),
+            noise: None,
+        };
+        let mut event = Map::new();
+        event.insert("what".into(), json!(valve_events::VALVE));
+        for (k, v) in valve_events::turn_fields(&ev) {
+            event.insert(k.into(), v);
+        }
+        guest.on_message(HOST_PEER_ID, Message::Event { event: event.clone() }, now, &mut out);
+        assert_eq!(out, vec![NetEvent::WorldEvent(event.clone())]);
+        assert_eq!(valve_events::parse_turn(&event).map(|t| t.turns), Some(1));
+        let mut host = offline_session(true, "HOST");
+        assert!(host.guest_position(2).is_none());
+        host.remotes.insert(2, Remote { sample: sample(1, 3.0, 4.0), last_seen: now });
+        assert_eq!(host.guest_position(2), Some((3.0, 4.0, 1)));
     }
 }

@@ -28,6 +28,8 @@ pub enum Focus {
     Shop(usize),
     /// A room door, by its index in `Facility::props`.
     Door(usize),
+    /// A sewer valve wheel, by its index in `Facility::props` (game/pipes.rs).
+    Valve(usize),
 }
 
 impl Game {
@@ -158,6 +160,13 @@ impl Game {
                 consider(n, eye.y.clamp(0.3, 1.8), INTERACT_REACH, Focus::Door(i));
             }
         }
+        // sewer valve wheels: the prop type is data (data/pipes.json)
+        let valve_type = super::pipes::rules().valve.prop_type.as_str();
+        for (i, p) in self.fac.props.iter().enumerate() {
+            if p.ptype == valve_type {
+                consider(p.cell.center(), 1.0, INTERACT_REACH, Focus::Valve(i));
+            }
+        }
         best.map(|b| b.1)
     }
 
@@ -209,6 +218,10 @@ impl Game {
             },
             Focus::MusicBox => "HOLD [E] // WIND MUSIC BOX".into(),
             Focus::Vent(_) => "[E] VENT".into(),
+            Focus::Valve(i) => {
+                let p = &self.fac.props[i];
+                self.pipes.prompt(&p.id, &valve_keys(p).0)
+            }
             Focus::Shop(_) => "[E] OPEN ZELLIA'S STORE".into(),
             // Godot `route_interactable_3d.gd` get_prompt: "OPEN DOOR" / "CLOSE DOOR"
             Focus::Door(i) => {
@@ -235,6 +248,7 @@ impl Game {
             Focus::Heater => self.fix.heater.map(|c| c.center()).unwrap_or(self.p.pos),
             Focus::MusicBox => self.fix.music_box.map(|c| c.center()).unwrap_or(self.p.pos),
             Focus::Vent(i) => self.fix.vents[i].center(),
+            Focus::Valve(i) => self.fac.props[i].cell.center(),
             Focus::Shop(i) => self.hunters[i].pos,
             Focus::Door(i) => self.fac.doors().find(|d| d.0 == i).map_or(self.p.pos, |d| d.1),
         }
@@ -377,6 +391,8 @@ impl Game {
                 }
             }
             Focus::Door(i) => self.use_door(i),
+            // the turn is a hold (`update_valve_hold`), not a press
+            Focus::Valve(_) => {}
         }
     }
 
@@ -477,8 +493,90 @@ impl Game {
         self.say(&format!("VENT TRANSIT // VENT-{}", next + 1));
     }
 
+    /// The valve wheel held for `Valve::hold_seconds` (data/pipes.json) turns. Called every frame with whether interact is
+    /// held: the hold counts up while the crosshair stays on a wheel and resets when it leaves or is released. Returns
+    /// true on the frame the turn is made. `valve_spin` counts the wheel's spin down for the renderer.
+    pub(super) fn update_valve_hold(&mut self, dt: f32, held: bool) -> bool {
+        let target = match self.focus {
+            Some(Focus::Valve(i)) if held && self.p.stun <= 0.0 => Some(i),
+            _ => None,
+        };
+        let hold_seconds = super::pipes::rules().valve.hold_seconds;
+        let Some(inf) = self.inf.as_mut() else { return false };
+        inf.valve_spin = (inf.valve_spin - dt).max(0.0);
+        let Some(i) = target else {
+            inf.valve_hold = 0.0;
+            return false;
+        };
+        inf.valve_hold += dt;
+        if inf.valve_hold < hold_seconds {
+            return false;
+        }
+        inf.valve_hold = 0.0;
+        self.turn_valve(i)
+    }
+
+    /// The runner turns the valve wheel `props[i]`: the pipe network decides (reach and storey), the turn is applied here,
+    /// the runner's noise is a normal noise burst (not a danger cue) and the event is queued for the net layer
+    /// (`take_valve_events`). Returns whether the wheel turned.
+    pub(super) fn turn_valve(&mut self, i: usize) -> bool {
+        let Some(level) = self.inf.as_ref().map(|inf| inf.level) else { return false };
+        let Some(prop) = self.fac.props.get(i) else { return false };
+        let (effect, gate) = valve_keys(prop);
+        let q = super::pipes::TurnAt {
+            valve_id: &prop.id,
+            effect: &effect,
+            gate: &gate,
+            valve_at: prop.cell.center(),
+            valve_storey: level,
+            at: self.p.pos,
+            storey: level,
+            by_player: true,
+        };
+        match self.pipes.turn(q) {
+            Ok(ev) => {
+                self.pipes.apply(&ev, self.time);
+                if !self.remote_hunters {
+                    self.hunter_out.emit(
+                        crate::net::hunter_events::rules(),
+                        self.difficulty,
+                        crate::net::valve_events::VALVE,
+                        crate::net::valve_events::turn_fields(&ev),
+                        std::time::Instant::now(),
+                    );
+                }
+                if let Some((radius, seconds)) = ev.noise {
+                    self.p.noise_burst = radius;
+                    self.p.noise_burst_timer = seconds;
+                }
+                let spin = super::pipes::rules().valve.turn_seconds;
+                if let Some(inf) = self.inf.as_mut() {
+                    inf.valve_spin = spin;
+                    inf.valve_outbox.push(ev);
+                }
+                crate::audio::sound::door(true);
+                true
+            }
+            Err(_) => {
+                crate::audio::sound::interaction_fail();
+                false
+            }
+        }
+    }
+
+    /// The valve turns made on this machine, to be sent by the net layer; the queue is emptied.
+    pub fn take_valve_events(&mut self) -> Vec<super::pipes::TurnEvent> {
+        self.inf.as_mut().map(|inf| std::mem::take(&mut inf.valve_outbox)).unwrap_or_default()
+    }
+
+    /// A valve turn published by the host (or echoed to this machine): applied here the same way. Replaying one is harmless.
+    pub fn apply_valve_event(&mut self, ev: &super::pipes::TurnEvent) {
+        self.pipes.apply(ev, self.time);
+    }
+
     /// Held interactions: winding the music box, and Zellia's store choices.
     pub(super) fn update_holds(&mut self, dt: f32, c: &super::Controls, _sounds: &Sounds) {
+        self.update_valve_hold(dt, c.interact_held);
         if c.interact_held && self.focus == Some(Focus::MusicBox) {
             self.wind_hold += dt;
             if self.wind_hold >= 1.5 {
@@ -541,6 +639,12 @@ impl Game {
             self.end_run(zi, "deal");
         }
     }
+}
+
+/// The `valve_effect` and `gate` keys of a valve wheel prop. The facility prop does not carry them yet, so a wheel is a
+/// flood valve with no gate until it does (`""` is the flood effect, game/pipes.rs).
+fn valve_keys(_prop: &crate::world::facility::Prop) -> (String, String) {
+    (String::new(), String::new())
 }
 
 #[cfg(test)]
@@ -632,5 +736,79 @@ mod tests {
         g.interact(Focus::Lift, &content, &catalog, &Sounds::default());
         assert_eq!(g.depth, depth, "no descent short of the relay target");
         assert_eq!(g.last_autosave, saved, "a refused lift does not save");
+    }
+
+    fn valve_prop(id: &str, at: (i32, i32)) -> crate::world::facility::Prop {
+        crate::world::facility::Prop {
+            id: id.to_string(),
+            cell: crate::world::Cell::new(at.0, at.1),
+            ptype: crate::game::pipes::rules().valve.prop_type.clone(),
+            room: 0,
+            rotation: 0,
+            mount_y: None,
+            solid: false,
+            half: (0.3, 0.3),
+            offset: (0.0, 0.0),
+            door: None,
+        }
+    }
+
+    fn valve_game() -> (Game, usize, String) {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-VALVE-7", 0, &content, &catalog);
+        let id = "SEWER:0:0:0:PROP:1".to_string();
+        let at = (g.p.pos.0.floor() as i32, g.p.pos.1.floor() as i32);
+        g.fac.props.push(valve_prop(&id, at));
+        let i = g.fac.props.len() - 1;
+        g.focus = Some(Focus::Valve(i));
+        (g, i, id)
+    }
+
+    #[test]
+    fn a_valve_wheel_turns_only_after_the_hold_and_makes_normal_noise() {
+        let (mut g, _, id) = valve_game();
+        let hold = crate::game::pipes::rules().valve.hold_seconds;
+        assert!(!g.update_valve_hold(hold * 0.4, true));
+        assert!(!g.update_valve_hold(hold * 0.4, true), "not yet held long enough");
+        assert_eq!(g.pipes.turns(&id), 0);
+        assert!(g.update_valve_hold(hold * 0.4, true), "the hold is complete");
+        assert_eq!(g.pipes.turns(&id), 1, "the wheel turned once");
+        let v = &crate::game::pipes::rules().valve;
+        assert_eq!((g.p.noise_burst, g.p.noise_burst_timer), (v.noise, v.turn_seconds), "the runner's noise burst");
+        let events = g.take_valve_events();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].noise.is_some());
+        assert!(g.take_valve_events().is_empty(), "the queue is emptied");
+    }
+
+    #[test]
+    fn releasing_or_looking_away_resets_the_valve_hold() {
+        let (mut g, i, id) = valve_game();
+        let hold = crate::game::pipes::rules().valve.hold_seconds;
+        assert!(!g.update_valve_hold(hold * 0.9, true));
+        assert!(!g.update_valve_hold(0.01, false), "released");
+        assert!(!g.update_valve_hold(hold * 0.9, true), "the hold started again from zero");
+        g.focus = None;
+        assert!(!g.update_valve_hold(hold * 0.9, true));
+        g.focus = Some(Focus::Valve(i));
+        assert!(!g.update_valve_hold(hold * 0.9, true));
+        assert_eq!(g.pipes.turns(&id), 0);
+    }
+
+    #[test]
+    fn a_valve_out_of_reach_does_not_turn() {
+        let (mut g, i, id) = valve_game();
+        g.p.pos.0 += crate::game::pipes::rules().valve.reach + 2.0;
+        assert!(!g.turn_valve(i));
+        assert_eq!(g.pipes.turns(&id), 0);
+        assert!(g.take_valve_events().is_empty());
+    }
+
+    #[test]
+    fn the_valve_prompt_comes_from_the_pipe_data() {
+        let (g, _, id) = valve_game();
+        assert_eq!(g.focus_prompt(), Some(g.pipes.prompt(&id, "")));
+        assert!(g.focus_prompt().is_some_and(|p| !p.is_empty()));
     }
 }

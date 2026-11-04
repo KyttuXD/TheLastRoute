@@ -9,6 +9,7 @@ Changing a value in a file changes behaviour after a rebuild. The task rule is o
 | File | Read by | Controls |
 |---|---|---|
 | `data/stairs_links.json` (`lr.stairs_links/1`) | `game/transition.rs` (`links()`) | Level links, stair flights and sewer ladders. `landing_offset` (0.6 cells in from the far landing), `flight_steps` (5, must equal the world's `STAIR_FLIGHT + 1`), `prefetch_distance` (8 cells, when the storey ahead is built). See [MECHANICS.md](../MECHANICS.md) for the rule. |
+| `data/flights.json` | `world/flight.rs` | Continuous-level flights: storey, slab, rise, max riser, steps per cell, margin, switchback/straight/spiral settings, shape and per-region weights. Not used by the running game yet. |
 | `data/hunters/search.json` (`lr.search/1`) | `hunters/brain.rs`, via `content/mod.rs` | Hunter search after a lost sighting: `reach`, `memory`, the search `offsets`, and per-difficulty `hiding_spot_chance`, `last_seen_spot_first`, `unchecked_first`. Standard keeps `hiding_spot_chance` at 0.0, so hunters keep searching beside the runner and the relay rush is not starved. |
 | `data/hunters/sabotage.json` (`lr.hunter_sabotage/1`) | `hunters/sabotage.rs`, via `content/mod.rs` | Relay sabotage: `near_cells`, `dwell_s`, `resecure_s`, and per-difficulty `enabled` (false on every difficulty today), `target`, `chance`. |
 | `data/hunters/charge.json` (`lr.charge/1`) | `hunters/gimmicks/charge.rs` | Per-hunter charge (Loxelle): passive chance and timings, the charge windup, speed and distances, and the door-charge stun. |

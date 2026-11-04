@@ -1,0 +1,25 @@
+{
+	"schema": "lr.inferno/1",
+	"basin_depth": 1.2,
+	"margin": 3,
+	"hall_width": 5,
+	"caves_enabled": true,
+	"cavern": {
+		"width": [16, 22],
+		"height": [16, 22],
+		"clear_half": 3,
+		"rim_min": 0.86,
+		"rim_spread": 0.22,
+		"slope_from": 0.35,
+		"slope_to": 0.8
+	},
+	"second_cavern": {
+		"width": [14, 16],
+		"height": [14, 16],
+		"gap": 2,
+		"attempts": 24
+	},
+	"crevices_max": 3,
+	"tier_ledge_frac": 0.1,
+	"tier_basin_frac": 0.9
+}

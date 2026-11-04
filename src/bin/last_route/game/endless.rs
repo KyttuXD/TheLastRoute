@@ -155,6 +155,13 @@ pub struct InfState {
     live: bool,
     /// `Game::time` at the last safe-room step, so the step knows its dt (-1 before the first).
     last_time: f32,
+    /// `Game::time` at the last prune of drained pipe flows (`pipes_tick`).
+    pipes_pruned_at: f32,
+    /// Seconds interact has been held on a valve wheel (game/interact.rs `update_valve_hold`), the seconds the wheel
+    /// still spins after a turn, and the turns made here that the net layer has not sent yet.
+    pub(super) valve_hold: f32,
+    pub(super) valve_spin: f32,
+    pub(super) valve_outbox: Vec<super::pipes::TurnEvent>,
     /// Checkpoints the runner has activated this run (Godot `_run_statistics.checkpoints_activated`): one for every
     /// change of the active checkpoint, so walking back into the room already active counts nothing.
     pub checkpoints_activated: u32,
@@ -193,6 +200,45 @@ struct Prefetch {
     level: i32,
     center: (i32, i32),
     window: (Facility, Fixtures),
+}
+
+impl Prefetch {
+    /// The memory the window holds, estimated from its grids and lists (the input to the preload memory cap).
+    fn bytes(&self) -> usize {
+        window_bytes(&self.window.0, &self.window.1)
+    }
+}
+
+/// An estimate of the bytes a built window holds: the per-cell grids and the entries of its lists.
+pub(super) fn window_bytes(fac: &Facility, fix: &Fixtures) -> usize {
+    use std::mem::size_of;
+    let cells = (fac.cols.max(0) as usize) * (fac.rows.max(0) as usize);
+    // wall, region, hole and hunter-open flags, and the solid-prop index per cell
+    let grids = cells * (4 + size_of::<usize>());
+    grids
+        + fac.props.len() * size_of::<crate::world::facility::Prop>()
+        + fac.rooms.len() * size_of::<crate::world::facility::Room>()
+        + fac.pickups.len() * size_of::<(Cell, Pickup)>()
+        + fac.stairs.len() * size_of::<Stair>()
+        + (fac.relays.len() + fac.batteries.len() + fix.vents.len() + fix.coins.len()) * size_of::<Cell>()
+}
+
+/// The storeys the stairs and ladders within `reach` of `pos` lead to, from `level`: a flight to the storey its `dir`
+/// names, a ladder to both neighbours. Only storeys the run may enter.
+pub(super) fn connection_targets(level: i32, pos: (f32, f32), reach: f32, stairs: &[Stair]) -> Vec<i32> {
+    let mut out: Vec<i32> = Vec::new();
+    for s in stairs {
+        if pdist(pos, s.cell.center()) > reach {
+            continue;
+        }
+        let offsets: Vec<i32> = if s.is_ladder() { vec![-1, 1] } else { vec![s.dir] };
+        for t in offsets.into_iter().map(|d| level + d) {
+            if t != level && infinite::level_allowed(t) && !out.contains(&t) {
+                out.push(t);
+            }
+        }
+    }
+    out
 }
 
 /// Godot `WaypointState.ARRIVAL_RADIUS`: the runner within this many cells (XZ) of the waypoint clears it.
@@ -544,6 +590,10 @@ impl InfState {
             room: None,
             live: false,
             last_time: -1.0,
+            pipes_pruned_at: 0.0,
+            valve_hold: 0.0,
+            valve_spin: 0.0,
+            valve_outbox: Vec::new(),
             checkpoints_activated: 0,
             stored: HashMap::new(),
             loaded: Vec::new(),
@@ -804,6 +854,7 @@ impl Game {
         self.clear_reached_waypoint();
         self.refresh_waypoint();
         self.prefetch_connections(content, catalog);
+        self.pipes_tick();
         let dt = self.safe_room_dt();
         let before = self.active_checkpoint().to_string();
         self.safe_room_step(dt);
@@ -818,32 +869,83 @@ impl Game {
     /// of a landing (game/transition.rs). A flight leads to the storey its `dir` names; a ladder either way, so both
     /// neighbours. The change on the connection's frame then only relocates the runner and swaps the window in
     /// (`change_storey`). A window built for another centre, or for a storey no longer near, is dropped.
+    ///
+    /// Beyond the connections in reach, the storeys within the data's preload reach (game/preload.rs) are kept built too,
+    /// nearest first and at most `builds_per_frame` a frame, so every adjacent storey of the runner's window is resident
+    /// for an instant change either way. Windows outside that set, and the farthest ones while the held bytes pass the
+    /// memory cap, are dropped. Catwalk links join the same level-0 window (a deck is a walk surface, not a storey), so
+    /// they need no window of their own.
     fn prefetch_connections(&mut self, content: &Content, catalog: &Catalog) {
         let Some(inf) = self.inf.as_ref() else { return };
         let (level, center) = (inf.level, inf.center);
         let reach = super::transition::links().prefetch_distance;
-        let mut wanted: Vec<i32> = Vec::new();
-        for s in self.fac.stairs.iter() {
-            if pdist(self.p.pos, s.cell.center()) > reach {
-                continue;
-            }
-            let offsets: Vec<i32> = if s.is_ladder() { vec![-1, 1] } else { vec![s.dir] };
-            for t in offsets.into_iter().map(|d| level + d) {
-                if t != level && infinite::level_allowed(t) && !wanted.contains(&t) {
-                    wanted.push(t);
-                }
+        let near = connection_targets(level, self.p.pos, reach, &self.fac.stairs);
+        let cfg = super::preload::preload();
+        let mut keep = super::preload::keep_levels(level, &cfg, infinite::level_allowed);
+        for t in &near {
+            if !keep.contains(t) {
+                keep.push(*t);
             }
         }
         let Some(inf) = self.inf.as_mut() else { return };
-        inf.prefetched.retain(|p| p.center == center && wanted.contains(&p.level));
-        for t in wanted {
-            if inf.prefetched.iter().any(|p| p.level == t) {
+        inf.prefetched.retain(|p| p.center == center && keep.contains(&p.level));
+        let held: Vec<(i32, usize)> = inf.prefetched.iter().map(|p| (p.level, p.bytes())).collect();
+        let drop = super::preload::to_evict(&held, &keep, level, &cfg);
+        inf.prefetched.retain(|p| !drop.contains(&p.level));
+        // the connections in reach are built now; the rest of the keep set at the per-frame budget
+        let near_set = near.clone();
+        let mut build: Vec<i32> = near.into_iter().filter(|t| !inf.prefetched.iter().any(|p| p.level == *t)).collect();
+        let held_levels: Vec<i32> = inf.prefetched.iter().map(|p| p.level).chain(build.iter().copied()).collect();
+        build.extend(super::preload::to_build(
+            &keep.iter().copied().filter(|l| *l != level).collect::<Vec<_>>(),
+            &held_levels,
+            &cfg,
+        ));
+        for t in build {
+            // a level the memory cap just dropped is not built again at once
+            if drop.contains(&t) && !near_set.contains(&t) {
                 continue;
             }
             inf.builds += 1;
             let window = infinite::window(&inf.seed, center, t, catalog, &content.loot, &mut inf.cache);
             inf.prefetched.push(Prefetch { level: t, center, window });
         }
+    }
+
+    /// An Axe breach of sewer pipe number `n` in `chunk` starts its flow (game/pipes.rs). A flow already running is left
+    /// as it is. Returns the flow id, which the water mesh and `pipe_depth` read.
+    pub(super) fn burst_pipe(&mut self, chunk: super::pipes::Chunk, n: usize) -> String {
+        let id = format!("{}{n}", super::pipes::flow_prefix(chunk));
+        let now = self.time;
+        self.pipes.start_flow(&id, now);
+        if !self.remote_hunters {
+            self.hunter_out.emit(
+                crate::net::hunter_events::rules(),
+                self.difficulty,
+                crate::net::valve_events::BURST,
+                crate::net::valve_events::burst_fields(&id),
+                std::time::Instant::now(),
+            );
+        }
+        id
+    }
+
+    /// Drops drained pipe flows about once a second of game time.
+    fn pipes_tick(&mut self) {
+        let now = self.time;
+        let Some(inf) = self.inf.as_mut() else { return };
+        if now - inf.pipes_pruned_at < 1.0 && now >= inf.pipes_pruned_at {
+            return;
+        }
+        inf.pipes_pruned_at = now;
+        self.pipes.prune(now);
+    }
+
+    /// The pipe water over the walkway cell `step` steps from the pipe of flow `id`, on outlet `outlet`, now, at this
+    /// run's difficulty: the depth the wading reads (the swim state's input).
+    pub fn pipe_depth(&self, id: &str, step: i32, outlet: usize) -> f32 {
+        let name = format!("{:?}", self.difficulty).to_lowercase();
+        self.pipes.depth_at_step(id, step, outlet, self.time, &name)
     }
 
     /// The seconds since the last safe-room step (`Game::time` advances once a frame). Zero on the first step.
@@ -1159,6 +1261,10 @@ impl Game {
     fn reset_hunters(&mut self, content: &Content) {
         self.hunters.clear();
         self.reset_director();
+        // a guest only shows the hunters the host's frames send: it builds no lineup of its own
+        if super::guest_gate::is_display_only(self) {
+            return;
+        }
         if self.inf.as_ref().is_some_and(|i| i.level == 0) {
             if let Some(inf) = self.inf.as_mut() {
                 inf.loaded.clear();
@@ -1184,6 +1290,9 @@ impl Game {
     /// Adds route hunters until the population matches the relays recovered so far. On level 0 this is the
     /// residency pass (admission, then loading and storing); the old builder's levels keep the spawn-spot lineup.
     pub(super) fn ensure_hunters(&mut self, content: &Content) {
+        if super::guest_gate::is_display_only(self) {
+            return;
+        }
         if self.inf.as_ref().is_some_and(|i| i.level == 0) {
             self.residency(content);
             return;
@@ -2845,6 +2954,121 @@ mod walked_stair_tests {
         g.take_stairs(i, &content, &catalog);
         assert_eq!(g.inf.as_ref().unwrap().level, -1, "the storey changes at once");
         assert_eq!(g.fade, 0.0, "no fade");
+    }
+
+    fn flight(cell: (i32, i32), dir: i32, ladder: bool) -> Stair {
+        Stair {
+            cell: Cell::new(cell.0, cell.1),
+            dir,
+            run: if ladder { (0, 0) } else { (1, 0) },
+            kind: if ladder { LinkKind::Ladder(crate::world::facility::Cover::Manhole) } else { LinkKind::Stairs },
+        }
+    }
+
+    #[test]
+    fn connections_in_reach_name_the_storeys_they_lead_to() {
+        let near = (10.5, 10.5);
+        let stairs = [flight((10, 10), -1, false), flight((11, 10), 0, true), flight((40, 40), 1, false)];
+        // a flight goes where its dir says, a ladder both ways; level 0 has nothing above it; the far flight is out of reach
+        assert_eq!(connection_targets(0, near, 8.0, &stairs), vec![-1]);
+        assert_eq!(connection_targets(-1, near, 8.0, &stairs), vec![-2, 0]);
+        assert!(connection_targets(0, near, 0.2, &stairs[2..]).is_empty());
+        // a wider reach from data takes the far flight in (up from -1 is 0)
+        assert!(connection_targets(-1, near, 80.0, &stairs).contains(&0));
+    }
+
+    #[test]
+    fn the_levels_near_the_runner_are_all_built_ahead_within_the_frame_budget() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let (mut g, _) = on_landing(-1, &content, &catalog);
+        let level = g.inf.as_ref().unwrap().level;
+        let cfg = super::super::preload::preload();
+        let keep = super::super::preload::keep_levels(level, &cfg, infinite::level_allowed);
+        assert!(keep.len() > 2, "more than the adjacent storey is kept");
+        for _ in 0..=keep.len() {
+            g.prefetch_connections(&content, &catalog);
+        }
+        let inf = g.inf.as_ref().unwrap();
+        for l in keep.iter().filter(|l| **l != level) {
+            assert!(inf.prefetched.iter().any(|p| p.level == *l), "level {l} is resident");
+        }
+        assert!(inf.prefetched.len() <= cfg.max_windows, "the window count stays within the cap");
+        // the first call builds the connection in reach plus at most the per-frame budget
+        let (mut g2, _) = on_landing(-1, &content, &catalog);
+        let before = g2.inf.as_ref().unwrap().builds;
+        g2.prefetch_connections(&content, &catalog);
+        let built = g2.inf.as_ref().unwrap().builds - before;
+        assert!(built as usize <= 1 + cfg.builds_per_frame + 1, "a frame builds a bounded number of windows: {built}");
+    }
+
+    #[test]
+    fn a_window_outside_the_kept_levels_is_dropped_and_counted_in_bytes() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let (mut g, _) = on_landing(-1, &content, &catalog);
+        g.prefetch_connections(&content, &catalog);
+        let inf = g.inf.as_mut().unwrap();
+        let mut p = inf.prefetched.pop().expect("a window was built ahead");
+        assert!(p.bytes() > 0, "a built window has a byte size");
+        p.level = 40;
+        inf.prefetched.push(p);
+        g.prefetch_connections(&content, &catalog);
+        assert!(!g.inf.as_ref().unwrap().prefetched.iter().any(|p| p.level == 40), "a level far away is evicted");
+    }
+
+    #[test]
+    fn a_guest_keeps_its_hunters_over_a_stairwell() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let (mut g, _) = on_landing(-1, &content, &catalog);
+        g.remote_hunters = true;
+        g.hunters = vec![Brain::new(content.hunters[0].clone(), (5.5, 5.5), "GUEST-HUNTER", g.difficulty)];
+        let before: Vec<(f32, f32)> = g.hunters.iter().map(|h| h.pos).collect();
+        let stored = g.inf.as_ref().unwrap().stored.len();
+        g.change_storey(-1, &content, &catalog, |g| g.p.pos = g.fac.start.center());
+        g.change_storey(0, &content, &catalog, |g| g.p.pos = g.fac.start.center());
+        let after: Vec<(f32, f32)> = g.hunters.iter().map(|h| h.pos).collect();
+        assert_eq!(before, after, "the host's frames set a guest's hunters, a level change does not");
+        assert_eq!(g.inf.as_ref().unwrap().stored.len(), stored, "a guest stores no hunter");
+        g.reset_hunters(&content);
+        assert!(g.hunters.is_empty(), "a guest builds no lineup of its own");
+        g.ensure_hunters(&content);
+        assert!(g.hunters.is_empty(), "nor tops one up");
+    }
+
+    #[test]
+    fn an_axe_breach_starts_the_pipe_flow_and_the_wading_reads_its_depth() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let mut g = Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, "ROOM-PIPE-7", 0, &content, &catalog);
+        let chunk = (0, 0, 0);
+        let id = g.burst_pipe(chunk, 3);
+        assert_eq!(id, format!("{}3", super::super::pipes::flow_prefix(chunk)));
+        assert!(g.pipes.flows_running(chunk));
+        assert_eq!(g.pipe_depth(&id, 0, 0), 0.0, "the water has not risen yet");
+        g.time += super::super::pipes::rules().flow.rise_seconds + 5.0;
+        assert!(g.pipe_depth(&id, 0, 0) > 0.0, "the flow reaches the cell by the pipe");
+        assert_eq!(g.pipe_depth("BRK:9:9:9:1", 0, 0), 0.0, "an unknown flow has no water");
+    }
+
+    #[test]
+    fn drained_pipe_flows_are_pruned_about_once_a_second() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let mut g = Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, "ROOM-PIPE-8", 0, &content, &catalog);
+        let chunk = (0, 0, 0);
+        let id = g.burst_pipe(chunk, 1);
+        let shut = super::super::pipes::TurnEvent {
+            valve_id: "SEWER:0:0:0:PROP:1".into(),
+            chunk,
+            effect: "flood".into(),
+            shut: true,
+            turns: 0,
+            gate: String::new(),
+            noise: None,
+        };
+        g.pipes.apply(&shut, g.time);
+        g.pipes_tick();
+        assert!(g.pipes.run(&id).is_some(), "a flow still draining stays");
+        g.time += super::super::pipes::rules().flow.shut_drain_seconds + 2.0;
+        g.pipes_tick();
+        assert!(g.pipes.run(&id).is_none(), "the drained flow is dropped");
     }
 
 }

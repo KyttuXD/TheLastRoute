@@ -226,6 +226,166 @@ impl SwimState {
     }
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// The running game: the real runner's water depth, wading, the soaked state and the waterfall plunge.
+// Only the real player's runner comes through here, so bots and chased fake players never raise the danger readout,
+// heartbeat or chase cue from water.
+
+/// The sewer chunk the runner stands in, kept so its grid is generated once per chunk, not per frame.
+pub type WaterChunk = ((i32, i32, i32), Option<Box<crate::world::route::sewer::SewerChunk>>);
+
+/// A waterfall plunge in progress. Its positions are absolute cells (so the window may change under it).
+#[derive(Clone, Copy, Debug)]
+pub struct ActivePlunge {
+    pub plunge: super::swim::Plunge,
+    /// The storey already changed to the collector (done on the splash).
+    pub switched: bool,
+}
+
+use super::{swim, Controls, Game};
+use crate::content::Content;
+use crate::world::catalog::Catalog;
+use crate::world::route::sewer::{self, core as sewer_core, water};
+
+impl Game {
+    fn sewer_level(&self) -> Option<i32> {
+        self.inf
+            .as_ref()
+            .map(|i| i.level)
+            .filter(|l| *l == sewer_core::LEVEL || *l == sewer_core::LOWER_LEVEL)
+    }
+
+    /// Loads (or reuses) the sewer chunk under the runner and returns the runner's cell inside it. None off the sewer.
+    fn load_water_chunk(&mut self) -> Option<(i32, i32)> {
+        let level = self.sewer_level()?;
+        let o = self.window_origin();
+        let abs = (o.0 + self.p.pos.0.floor() as i32, o.1 + self.p.pos.1.floor() as i32);
+        let (chunk, local) = swim::split_cell(abs, sewer_core::CHUNK);
+        let key = (chunk.0, level, chunk.1);
+        if self.water_cache.as_ref().map(|c| c.0) != Some(key) {
+            let seed = self.inf.as_ref()?.seed.clone();
+            let ch = sewer::chunk(
+                crate::world::route::layout::Coord::new(key.0, key.1, key.2),
+                &sewer::Inputs { world: &seed },
+            );
+            self.water_cache = Some((key, ch.map(Box::new)));
+        }
+        Some(local)
+    }
+
+    /// Metres of water at the runner's feet: the sewer's water cells, or the pipe flood a valve opened
+    /// (`flood_depth`, set each frame by the endless update), whichever is deeper. 0 off the sewer.
+    pub(super) fn runner_water_depth(&mut self) -> f32 {
+        let mut d = self.flood_depth.max(0.0);
+        if let Some(local) = self.load_water_chunk() {
+            if let Some((_, Some(ch))) = &self.water_cache {
+                d = d.max(water::water_depth_at(&ch.sewer_grid, local.0, local.1));
+            }
+        }
+        d
+    }
+
+    /// The wading speed multiplier for `depth` (1 when dry).
+    pub(super) fn wade_scale(depth: f32) -> f32 {
+        swim::wade_speed_scale(&swim::rules().wade, depth)
+    }
+
+    /// Once per frame after the runner moved: wading noise, stamina, the soaked state and its sounds.
+    pub(super) fn update_swim(&mut self, dt: f32, depth: f32, god: bool) {
+        let input = SwimInput {
+            depth,
+            moving: self.p.moving,
+            god_mode: god,
+            holding_item: self.slots[self.selected].is_some(),
+            flashlight_on: self.p.flashlight_on,
+            plunging: self.plunge.is_some(),
+        };
+        let o = self.swim.update(&self.swim_cfg, dt, input, &mut || macroquad::rand::gen_range(0.0f32, 1.0));
+        self.apply_swim_output(o);
+    }
+
+    pub(super) fn apply_swim_output(&mut self, o: SwimOutput) {
+        let scale = self.swim.noise_scale(&self.swim_cfg);
+        self.p.noise = swim::merge_water_noise(self.p.noise, o.noise, scale);
+        if o.stamina_drain > 0.0 {
+            self.p.stamina = (self.p.stamina - o.stamina_drain).max(0.0);
+            if self.p.stamina <= 0.0 {
+                self.p.exhausted = true;
+            }
+        }
+        if let Some(g) = o.splash {
+            crate::audio::sound::play(crate::audio::cues::rules::splash_big(0.0, g as f64));
+        }
+        if let Some(g) = o.drip {
+            crate::audio::sound::play(crate::audio::cues::rules::water_drip(0.0, g as f64));
+        }
+        if o.flicker_seconds > 0.0 {
+            self.p.force_flashlight_flicker(o.flicker_seconds);
+        }
+        if o.flashlight_drain > 0.0 {
+            self.p.lamp = (self.p.lamp - o.flashlight_drain).max(0.0);
+        }
+        if o.drop_item {
+            self.drop_selected();
+        }
+    }
+
+    /// The runner presses jump on the waterfall ledge of a first-sewer chunk: the deliberate plunge to the collector.
+    pub(super) fn try_begin_plunge(&mut self, c: &Controls) {
+        if !c.jump || self.plunge.is_some() || self.sewer_level() != Some(sewer_core::LEVEL) {
+            return;
+        }
+        let Some(local) = self.load_water_chunk() else { return };
+        let Some((key, Some(ch))) = &self.water_cache else { return };
+        let Some(falls) = &ch.falls else { return };
+        let j = &falls.jump;
+        if !swim::at_jump_ledge(local, (j.start.x, j.start.y), (j.cell.x, j.cell.y)) {
+            return;
+        }
+        let rules = swim::rules().plunge;
+        let base = ((key.0 * sewer_core::CHUNK) as f32, (key.2 * sewer_core::CHUNK) as f32);
+        let o = self.window_origin();
+        let surface = water::surface_y(0.0);
+        let from = [o.0 as f32 + self.p.pos.0, surface + rules.min_drop, o.1 as f32 + self.p.pos.1];
+        let land = [base.0 + j.land[0] as f32, surface, base.1 + j.land[1] as f32];
+        let exit = [base.0 + j.exit[0] as f32, 0.0, base.1 + j.exit[1] as f32];
+        self.plunge = Some(ActivePlunge { plunge: swim::Plunge::begin(&rules, from, land, exit, surface), switched: false });
+    }
+
+    /// One frame of a plunge: input is ignored, the body follows the arc with collision off, the splash changes the
+    /// storey, and the finish soaks the runner.
+    pub(super) fn advance_plunge(&mut self, dt: f32, content: &Content, catalog: &Catalog) {
+        let Some(mut a) = self.plunge.take() else { return };
+        let rules = swim::rules().plunge;
+        let f = a.plunge.step(dt);
+        self.p.moving = false;
+        self.p.sprinting = false;
+        self.p.noise = f.noise;
+        if f.splashed {
+            crate::audio::sound::play(crate::audio::cues::rules::splash_big(0.0, 1.0));
+            self.p.force_flashlight_flicker(self.swim_cfg.flicker_seconds);
+            self.p.noise_burst = rules.splash_noise;
+            self.p.noise_burst_timer = rules.splash_noise_seconds;
+            if !a.switched {
+                a.switched = true;
+                if self.sewer_level() == Some(sewer_core::LEVEL) {
+                    self.change_storey(sewer_core::LOWER_LEVEL, content, catalog, |_| {});
+                }
+            }
+        }
+        let o = self.window_origin();
+        self.p.pos = (f.pos[0] - o.0 as f32, f.pos[2] - o.1 as f32);
+        self.p.feet_y = if f.phase == swim::PlungePhase::Fall { (f.pos[1] - water::surface_y(0.0)).max(0.0) } else { 0.0 };
+        if f.finished {
+            self.swim.soak(&self.swim_cfg);
+            self.p.feet_y = 0.0;
+            self.p.noise = 0.0;
+        } else {
+            self.plunge = Some(a);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,5 +473,128 @@ mod tests {
         let i = SwimInput { flashlight_on: true, ..input(1.5) };
         assert!(s.update(&c, 1.0, i, &mut || 0.0).flicker_seconds > 0.0);
         assert_eq!(s.update(&c, 1.0, i, &mut || 0.99).flicker_seconds, 0.0);
+    }
+
+    // --- the running game (the call sites in Game::step reach these) ---
+
+    fn sewer_game(level: i32) -> (Game, Content, Catalog) {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let g = Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, "ROOM-SWIM-7", level, &content, &catalog);
+        (g, content, catalog)
+    }
+
+    #[test]
+    fn the_runner_reads_the_water_depth_of_the_sewer_cell_under_it() {
+        let (mut g, _, _) = sewer_game(sewer_core::LEVEL);
+        let center = g.inf.as_ref().unwrap().center;
+        let seed = g.inf.as_ref().unwrap().seed.clone();
+        let ch = sewer::chunk(crate::world::route::layout::Coord::new(center.0, sewer_core::LEVEL, center.1), &sewer::Inputs { world: &seed })
+            .expect("a sewer chunk");
+        let mut wet = None;
+        let mut dry = None;
+        for z in 0..sewer_core::N {
+            for x in 0..sewer_core::N {
+                match ch.sewer_grid[z][x] {
+                    sewer_core::WATER if wet.is_none() => wet = Some((x, z)),
+                    sewer_core::DRY if dry.is_none() => dry = Some((x, z)),
+                    _ => {}
+                }
+            }
+        }
+        let o = g.window_origin();
+        let place = |g: &mut Game, c: (usize, usize)| {
+            let abs = (center.0 * sewer_core::CHUNK + c.0 as i32, center.1 * sewer_core::CHUNK + c.1 as i32);
+            g.p.pos = ((abs.0 - o.0) as f32 + 0.5, (abs.1 - o.1) as f32 + 0.5);
+        };
+        place(&mut g, wet.expect("the main cross carries water"));
+        assert!((g.runner_water_depth() - water::params().full_depth()).abs() < 1e-4);
+        place(&mut g, dry.expect("a dry cell"));
+        assert_eq!(g.runner_water_depth(), 0.0);
+        g.flood_depth = 0.5;
+        assert!((g.runner_water_depth() - 0.5).abs() < 1e-4, "a pipe flood wets a dry cell");
+    }
+
+    #[test]
+    fn a_dry_floor_has_no_water_and_no_slowdown() {
+        let (mut g, _, _) = sewer_game(0);
+        assert_eq!(g.runner_water_depth(), 0.0);
+        assert_eq!(Game::wade_scale(0.0), 1.0);
+    }
+
+    #[test]
+    fn deeper_water_slows_the_runner_by_the_swim_data() {
+        let w = swim::rules().wade;
+        assert!(Game::wade_scale(0.3) < 1.0);
+        assert!(Game::wade_scale(0.6) < Game::wade_scale(0.3));
+        assert!((Game::wade_scale(w.deep_depth) - w.speed_scale).abs() < 1e-5);
+    }
+
+    #[test]
+    fn wading_makes_noise_hunters_hear_once_costs_stamina_and_soaks() {
+        let (mut g, _, _) = sewer_game(0);
+        g.p.moving = true;
+        g.p.noise = 0.0;
+        g.p.stamina = crate::config::MAX_STAMINA;
+        g.update_swim(0.1, 0.8, false);
+        assert!(g.swim.is_soaked());
+        assert!(g.p.noise > 0.0);
+        assert!(g.p.stamina < crate::config::MAX_STAMINA, "deep wading tires");
+        let heard = g.p.noise * g.swim.noise_scale(&g.swim_cfg);
+        assert!(heard >= g.swim_cfg.wade_noise * 0.5 && heard <= g.swim_cfg.wade_deep_noise * g.swim_cfg.noise_scale + 1e-3);
+        // god mode never tires
+        g.p.stamina = crate::config::MAX_STAMINA;
+        g.update_swim(0.1, 0.8, true);
+        assert_eq!(g.p.stamina, crate::config::MAX_STAMINA);
+    }
+
+    #[test]
+    fn standing_in_water_makes_no_noise() {
+        let (mut g, _, _) = sewer_game(0);
+        g.p.moving = false;
+        g.p.noise = 0.0;
+        g.update_swim(0.1, 0.8, false);
+        assert_eq!(g.p.noise, 0.0);
+    }
+
+    #[test]
+    fn a_dry_runner_stays_dry_and_a_soaked_one_dries_out() {
+        let (mut g, _, _) = sewer_game(0);
+        g.update_swim(0.1, 0.0, false);
+        assert!(!g.swim.is_soaked());
+        g.swim.soak(&g.swim_cfg);
+        for _ in 0..((g.swim_cfg.soaked_seconds / 0.5) as usize + 4) {
+            g.update_swim(0.5, 0.0, false);
+        }
+        assert!(!g.swim.is_soaked());
+    }
+
+    #[test]
+    fn a_finished_plunge_soaks_the_runner_and_returns_control() {
+        let (mut g, content, catalog) = sewer_game(sewer_core::LEVEL);
+        let rules = swim::rules().plunge;
+        let p0 = g.p.pos;
+        let o = g.window_origin();
+        let from = [o.0 as f32 + p0.0, rules.min_drop, o.1 as f32 + p0.1];
+        let land = [from[0] + 2.0, 0.0, from[2]];
+        let exit = [from[0] + 4.0, 0.0, from[2]];
+        g.plunge = Some(ActivePlunge { plunge: swim::Plunge::begin(&rules, from, land, exit, 0.0), switched: false });
+        assert!(!g.swim.is_soaked());
+        let mut frames = 0;
+        while g.plunge.is_some() && frames < 4000 {
+            g.advance_plunge(0.05, &content, &catalog);
+            frames += 1;
+        }
+        assert!(g.plunge.is_none(), "the plunge finishes");
+        assert_eq!(g.inf.as_ref().unwrap().level, sewer_core::LOWER_LEVEL, "the splash changed the storey");
+        assert!(g.swim.is_soaked(), "the finished plunge soaks the runner");
+    }
+
+    #[test]
+    fn jump_off_the_ledge_is_the_only_way_to_begin_a_plunge() {
+        let (mut g, _, _) = sewer_game(0);
+        let c = Controls { jump: true, ..Default::default() };
+        g.try_begin_plunge(&c);
+        assert!(g.plunge.is_none(), "not on a sewer storey");
     }
 }

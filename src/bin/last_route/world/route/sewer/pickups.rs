@@ -46,6 +46,33 @@ pub const SEWER_EXTRA_RELAY_CHANCE: f64 = 0.55;
 
 /// `_pickups` (sewer:662-722) for one sewer chunk. `world` is the world seed text, `coop` is `surface.coop` (714).
 pub fn chunk_pickups(world: &str, chunk: &SewerChunk, coop: bool) -> Vec<Pickup> {
+    let mut result = base_pickups(world, chunk, coop);
+    if let Some(room) = &chunk.room {
+        append_room_loot(world, chunk, room, &mut result);
+    }
+    result
+}
+
+/// The tool items a room's loot table may name, as the static names the pickups carry.
+const ROOM_TOOLS: [&str; 6] = ["taser", "lockpick", "crowbar", "rescue_axe", "stim_pack", "revive_kit"];
+
+/// The room's loot (`Placed::loot`) as pickups: "battery" is a battery, a known tool name is a tool pickup, anything
+/// else is skipped. Ids continue each kind's count after the base pickups.
+fn append_room_loot(world: &str, chunk: &SewerChunk, room: &super::rooms::Placed<'_>, out: &mut Vec<Pickup>) {
+    for (item, cell) in room.loot(world, &super::core::chunk_id(chunk.coord)) {
+        let (kind, item): (&'static str, &'static str) = if item == "battery" {
+            ("battery", "")
+        } else if let Some(tool) = ROOM_TOOLS.iter().find(|t| **t == item) {
+            ("tool", *tool)
+        } else {
+            continue;
+        };
+        let index = out.iter().filter(|p| p.kind == kind).count();
+        out.push(Pickup { id: pickup_id(chunk.coord, index, kind), cell, kind, item });
+    }
+}
+
+fn base_pickups(world: &str, chunk: &SewerChunk, coop: bool) -> Vec<Pickup> {
     let coord = chunk.coord;
     let grid = seals::streamed_grid(&chunk.sewer_grid);
     let sealed: HashSet<V2> = chunk.sealed_cells.iter().copied().collect();
@@ -168,8 +195,36 @@ fn open_spawn_neighbourhood(grid: &Grid, cell: V2) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A chunk the game plays (with a room) carries the room's loot in its pickups, on room floor, with unique ids.
+    #[test]
+    fn played_chunks_carry_their_rooms_loot() {
+        use crate::world::route::layout::Coord;
+        use crate::world::route::sewer::core::{chunk as played, Inputs};
+        let mut with_loot = 0;
+        for x in -8..8 {
+            for z in -8..8 {
+                let Some(c) = played(Coord::new(x, -1, z), &Inputs { world: "rooms-loot" }) else { continue };
+                let Some(room) = &c.room else { continue };
+                let all = chunk_pickups("rooms-loot", &c, false);
+                let base = base_pickups("rooms-loot", &c, false);
+                assert!(all.len() >= base.len());
+                assert_eq!(&all[..base.len()], &base[..]);
+                let mut ids: Vec<&String> = all.iter().map(|p| &p.id).collect();
+                ids.sort();
+                ids.dedup();
+                assert_eq!(ids.len(), all.len(), "({x}, {z}) duplicate pickup id");
+                for extra in &all[base.len()..] {
+                    let at = (extra.cell.x - room.origin.x, extra.cell.y - room.origin.y);
+                    assert_eq!(room.def.code_at(at.0, at.1), Some(DRY));
+                    with_loot += 1;
+                }
+            }
+        }
+        assert!(with_loot > 0, "no room loot in the scanned area");
+    }
     use crate::world::route::layout::Coord;
-    use crate::world::route::sewer::core::{chunk, Inputs, N};
+    use crate::world::route::sewer::core::{chunk_base as chunk, Inputs, N};
     use serde_json::Value;
 
     /// The golden id text `<x>:<y>:<z>:PICKUP:<suffix>` (`pickup_id` 1528 with the streamed chunk id).

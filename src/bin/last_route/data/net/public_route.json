@@ -1,0 +1,6 @@
+{
+  "schema": "lr.public_route/1",
+  "_about": "The PUBLIC ROUTE title button joins the always-open room under this code, or opens it when no runner holds it yet (Godot room_state.gd PUBLIC_CODE, public_route.gd). The code is five letters like any room code.",
+  "code": "PUBLC",
+  "start_when_hosting": true
+}

@@ -39,6 +39,8 @@ pub enum Action {
     HostRoom,
     /// The code the JOIN ROOM dialog submitted (already checked by `world_sync::parse_join_code`).
     JoinCode(String),
+    /// PUBLIC ROUTE: join the always-open public room, or open it when nobody holds it (`world_sync::join_public_room`).
+    PublicRoute,
     /// SIGN IN with the typed name and password; the app sends them to the server.
     SignIn { name: String, password: String },
     /// CREATE ACCOUNT with the typed name and password; the app sends them to the server.
@@ -59,7 +61,7 @@ pub enum RoomMode {
 /// The title's buttons. ADMIN shows for the admin's account only.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TitleEntry {
-    /// PUBLIC ROUTE: no behaviour in this build yet (it shows a notice).
+    /// PUBLIC ROUTE: joins the always-open public room, or opens it (`Action::PublicRoute`).
     PublicRoute,
     Create,
     Join,
@@ -67,6 +69,19 @@ pub enum TitleEntry {
     Account,
     Admin,
     Quit,
+}
+
+/// What pressing a title button does. PUBLIC ROUTE asks the app to join or open the public room.
+pub fn title_entry_action(entry: TitleEntry) -> Action {
+    match entry {
+        TitleEntry::PublicRoute => Action::PublicRoute,
+        TitleEntry::Create => Action::Go(Screen::Create),
+        TitleEntry::Join => Action::Go(Screen::Join),
+        TitleEntry::Settings => Action::Go(Screen::Settings),
+        TitleEntry::Account => Action::Go(Screen::Account),
+        TitleEntry::Admin => Action::Go(Screen::Admin),
+        TitleEntry::Quit => Action::Go(Screen::Quit),
+    }
 }
 
 /// The title's buttons in order for this account (the web title's order: PUBLIC ROUTE,
@@ -376,20 +391,7 @@ pub fn draw_title(a: &Assets, ui: &mut Ui, username: &str, active: bool) -> Acti
             ui.focus = i;
         }
         if hit || (enter && ui.focus == i) {
-            out = match entries[i] {
-                TitleEntry::PublicRoute => {
-                    // no public rooms in this build yet: show a plain notice, change nothing
-                    ui.notice = "PUBLIC ROUTE IS NOT AVAILABLE IN THIS BUILD YET".into();
-                    ui.notice_t = 4.0;
-                    Action::None
-                }
-                TitleEntry::Create => Action::Go(Screen::Create),
-                TitleEntry::Join => Action::Go(Screen::Join),
-                TitleEntry::Settings => Action::Go(Screen::Settings),
-                TitleEntry::Account => Action::Go(Screen::Account),
-                TitleEntry::Admin => Action::Go(Screen::Admin),
-                TitleEntry::Quit => Action::Go(Screen::Quit),
-            };
+            out = title_entry_action(entries[i]);
         }
     }
     let vw = tw(a, F::Body, VERSION, 6.0);
@@ -2264,6 +2266,19 @@ mod tests {
                     TitleEntry::Quit,
                 ]
             );
+        }
+    }
+
+    #[test]
+    fn the_public_route_button_asks_the_app_to_join_the_public_room_and_the_others_go_where_they_did() {
+        assert!(matches!(title_entry_action(TitleEntry::PublicRoute), Action::PublicRoute));
+        assert!(matches!(title_entry_action(TitleEntry::Create), Action::Go(Screen::Create)));
+        assert!(matches!(title_entry_action(TitleEntry::Join), Action::Go(Screen::Join)));
+        assert!(matches!(title_entry_action(TitleEntry::Quit), Action::Go(Screen::Quit)));
+        for name in ["ALICE", "KYTTU"] {
+            for e in title_entries(name) {
+                assert!(!matches!(title_entry_action(e), Action::None), "{e:?} does something");
+            }
         }
     }
 

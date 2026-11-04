@@ -389,6 +389,8 @@ fn env(name: &str) -> Option<String> {
 enum NetIntent {
     Host,
     Join,
+    /// PUBLIC ROUTE: the session turns out hosted or joined once the directory has answered.
+    Public,
 }
 
 /// A line for the title or lobby (`ui.notice`, four seconds).
@@ -518,6 +520,10 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
     backend.restore_session();
     // the skin last sent to the website (see the upload check in the frame loop)
     let mut uploaded_skin_seen = String::new();
+    // the skin last offered to the open room, the uploaded count it was judged against, and when to look again
+    let mut room_skin_seen = String::new();
+    let mut room_uploaded_seen = usize::MAX;
+    let mut room_skin_check = 0.0f64;
     let mut net: Option<NetSession> = None;
     let mut net_pending: Option<(NetIntent, Pending<NetSession>)> = None;
     if screenshot.is_some() {
@@ -625,6 +631,13 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
             match result {
                 Ok(mut session) => {
                     let code = session.code.clone();
+                    // PUBLIC ROUTE is a host when nobody held the room, else a guest of the runner who does
+                    let public = intent == NetIntent::Public;
+                    let intent = match intent {
+                        NetIntent::Public if session.is_host() => NetIntent::Host,
+                        NetIntent::Public => NetIntent::Join,
+                        other => other,
+                    };
                     match intent {
                         NetIntent::Host => {
                             room = world_sync::room_text_for_code(&code, &route::new_room_text());
@@ -633,6 +646,11 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
                             ui.room_mode = menus::RoomMode::Host;
                             ui.go(Screen::Lobby);
                             flash(&mut ui, &format!("ROOM {code} IS OPEN // FRIENDS JOIN WITH THIS CODE"));
+                            // the public route has no lobby to wait in: the runner who opens it starts it
+                            if public && crate::net::public_route::rules().start_when_hosting {
+                                loading = Some(Loading::for_room(diff, room.clone(), Some(0)));
+                                session.start_run(&room, diff.name());
+                            }
                         }
                         NetIntent::Join => {
                             room = format!("ROOM-{code}-");
@@ -640,13 +658,17 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
                             ui.go(Screen::Lobby);
                             flash(&mut ui, &format!("JOINED ROOM {code} // WAITING FOR THE ROUTE"));
                         }
+                        NetIntent::Public => {}
                     }
+                    // a new room is offered the chosen skin on the next frame
+                    room_skin_seen.clear();
+                    room_uploaded_seen = usize::MAX;
                     net = Some(session);
                 }
                 Err(e) => {
                     let text = e.message_or("ROOM REQUEST FAILED");
                     match intent {
-                        NetIntent::Host => flash(&mut ui, &text),
+                        NetIntent::Host | NetIntent::Public => flash(&mut ui, &text),
                         NetIntent::Join if ui.screen == Screen::Join => ui.join_status = text,
                         NetIntent::Join => flash(&mut ui, &text),
                     }
@@ -674,9 +696,50 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
                 diff = world_sync::difficulty_from_name(n.room_difficulty());
             }
         }
+        // the chosen skin goes to the room: at once on a setting change or a new room, and again when the website
+        // accepts the upload (set_skin sends nothing when the published id stays the same)
+        if let Some(n) = net.as_mut() {
+            if settings.skin != room_skin_seen || get_time() >= room_skin_check {
+                room_skin_check = get_time() + crate::net::hunter_events::rules().skin_recheck.as_secs_f64();
+                let uploaded = skins::uploaded_ids();
+                if settings.skin != room_skin_seen || uploaded.len() != room_uploaded_seen {
+                    room_skin_seen = settings.skin.clone();
+                    room_uploaded_seen = uploaded.len();
+                    n.set_skin(&skins::chosen_skin(&settings.skin), &uploaded);
+                }
+            }
+        }
         // a guest's game runs no hunter simulation: the host's frames drive the hunters (game/hunting.rs)
         if let Some(g) = playing.as_mut() {
             g.remote_hunters = net.as_ref().is_some_and(|n| !n.is_host());
+        }
+        // a guest that joined a running route is told how many relays the host has sabotaged (the late joiner's snapshot)
+        if loading.is_none() {
+            if let (Some(n), Some(g)) = (net.as_mut().filter(|n| !n.is_host()), playing.as_mut()) {
+                if let Some(s) = n.take_snapshot() {
+                    g.apply_relay_snapshot(s.relays_sabotaged);
+                }
+            }
+        }
+        // the host's game resolves what the guests reported (taser, escape, caught) and the valves they asked to turn;
+        // the sabotaged relay count rides in the snapshot the next late joiner is sent
+        if loading.is_none() {
+            if let (Some(n), Some(g)) = (net.as_mut().filter(|n| n.is_host()), playing.as_mut()) {
+                let remotes = n.remotes_at(g.depth, g.window_origin());
+                for mut ev in n.take_guest_events() {
+                    crate::net::wiring::place_guest_event(&mut ev, &remotes);
+                    g.apply_guest_event(ev);
+                }
+                for req in n.take_valve_requests() {
+                    if let Some((x, y, depth)) = n.guest_position(req.peer) {
+                        if let Some(fields) = g.host_turn_valve(&req, (x, y), depth) {
+                            let rules = crate::net::hunter_events::rules();
+                            g.hunter_out.emit(rules, g.difficulty, crate::net::valve_events::VALVE, fields, std::time::Instant::now());
+                        }
+                    }
+                }
+                n.set_relays_sabotaged(g.relays_sabotaged_count());
+            }
         }
         // the host's hunters and their events go to the guests (a guest never sends them)
         if let (Some(n), Some(g)) = (net.as_mut().filter(|n| n.is_host()), playing.as_ref()) {
@@ -711,8 +774,12 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
                     }
                 }
                 NetEvent::WorldEvent(event) => {
-                    if let Some(text) = crate::net::hunter_events::notice(&event) {
-                        show_room_notice(playing.as_mut(), &mut ui, &text);
+                    // a valve turn or a burst pipe changes the sewer water here too; anything else may be a notice
+                    let piped = playing.as_mut().is_some_and(|g| g.apply_pipe_event(&event));
+                    if !piped {
+                        if let Some(text) = crate::net::hunter_events::notice(&event) {
+                            show_room_notice(playing.as_mut(), &mut ui, &text);
+                        }
                     }
                 }
                 NetEvent::Packs(ids) => {
@@ -1277,6 +1344,19 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
                         let name = world_sync::clean_name(&settings.username);
                         let skin = skins::chosen_skin(&settings.skin);
                         net_pending = Some((NetIntent::Host, world_sync::host_room(net_cfg.clone(), route::new_room_text(), name, skin)));
+                    }
+                }
+                Action::PublicRoute => {
+                    if net.is_none() && net_pending.is_none() {
+                        let messages = crate::content::public_roster::PublicRoster::load().messages;
+                        if net_cfg.offline {
+                            flash(&mut ui, &messages.unavailable);
+                        } else {
+                            flash(&mut ui, &messages.joining);
+                            let name = world_sync::clean_name(&settings.username);
+                            let skin = skins::chosen_skin(&settings.skin);
+                            net_pending = Some((NetIntent::Public, world_sync::join_public_room(net_cfg.clone(), name, skin)));
+                        }
                     }
                 }
                 Action::JoinCode(code) => {

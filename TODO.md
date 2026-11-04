@@ -332,6 +332,7 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 
 ### Updates and builds
 - [ ] Confirm the first real in-game update end to end on Windows and a Mac, and read the update lines in the log
+- [ ] Make the update visibly obvious: show "Checking for updates" on the loading screen, a progress line while the new build downloads and installs, and "Updated to build N" after restart. Right now a launch with nothing to install logs nothing, so a player cannot tell the check ran (found on KT-MBA, 2026-11-04)
 - [ ] The Mac app still carries lr_server until its next update; check that the new bundle does not
 - [ ] Keep each machine's download-key in the game folder; the old Mac playtest folder held it and was deleted, so restore it on any other Mac
 - [ ] Commit the Godot account kicker change (KYTTU: THE LAST ROUTE) in LastRouteGodot, with its owner's approval

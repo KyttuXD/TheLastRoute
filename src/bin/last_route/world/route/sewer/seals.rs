@@ -540,7 +540,7 @@ pub fn chunk_breakables(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::route::sewer::core::{chunk, Inputs};
+    use crate::world::route::sewer::core::{chunk_base as chunk, Inputs};
     use serde_json::{json, Value};
 
     /// One golden chunk of levels -1 or -2: `data` is the compact extract's (`sewer-seals-<tag>.json`) or the full

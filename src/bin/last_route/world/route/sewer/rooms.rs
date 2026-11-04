@@ -20,6 +20,8 @@ const DATA: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/data/regio
 #[derive(Clone, Debug, PartialEq)]
 pub struct RoomProp {
     pub prop_type: String,
+    /// The sewer prop type the room prop becomes (`prop_types` in the data; the room type itself when unmapped).
+    pub kind: &'static str,
     pub at: V2,
     pub yaw: f64,
     pub solid: bool,
@@ -99,6 +101,9 @@ fn glyph(c: char) -> Option<u8> {
 pub fn parse(text: &str) -> Result<Rooms, String> {
     let v: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
     let place = &v["place"];
+    let kind_of = |t: &str| -> &'static str {
+        Box::leak(v["prop_types"][t].as_str().unwrap_or(t).to_string().into_boxed_str())
+    };
     let mut rooms = Vec::new();
     for r in v["rooms"].as_array().ok_or("rooms missing")? {
         let id = r["id"].as_str().ok_or("room without id")?.to_string();
@@ -116,8 +121,10 @@ pub fn parse(text: &str) -> Result<Rooms, String> {
             .map(|a| {
                 a.iter()
                     .filter_map(|p| {
+                        let prop_type = p["type"].as_str()?.to_string();
                         Some(RoomProp {
-                            prop_type: p["type"].as_str()?.to_string(),
+                            kind: kind_of(&prop_type),
+                            prop_type,
                             at: v2(&p["at"])?,
                             yaw: p["yaw"].as_f64().unwrap_or(0.0),
                             solid: p["solid"].as_bool().unwrap_or(false),
@@ -168,6 +175,51 @@ pub fn parse(text: &str) -> Result<Rooms, String> {
 pub fn rooms() -> &'static Rooms {
     static CELL: OnceLock<Rooms> = OnceLock::new();
     CELL.get_or_init(|| parse(DATA).expect("sewer_rooms.json parses"))
+}
+
+/// Whether the room of this size, put at (x, z), is open on a doorway: some border cell that is not solid has a
+/// non-solid neighbour outside the room in `grid`. `grid` is indexed `[z][x]`.
+pub fn connects(def: &RoomDef, grid: &[[u8; CHUNK as usize]; CHUNK as usize], x: i32, z: i32) -> bool {
+    let open = |cx: i32, cz: i32| {
+        cx >= 0 && cz >= 0 && cx < CHUNK && cz < CHUNK && grid[cz as usize][cx as usize] != SOLID
+    };
+    for ry in 0..def.h {
+        for rx in 0..def.w {
+            let edge = rx == 0 || ry == 0 || rx == def.w - 1 || ry == def.h - 1;
+            if !edge || def.code_at(rx, ry) == Some(SOLID) {
+                continue;
+            }
+            let out = [(-1, 0, rx == 0), (1, 0, rx == def.w - 1), (0, -1, ry == 0), (0, 1, ry == def.h - 1)];
+            if out.iter().any(|(dx, dz, on)| *on && open(x + rx + dx, z + ry + dz)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether a room rectangle may go into a chunk grid: every cell under it is solid, no `keep_clear` cell lies in it
+/// or the ring round it, and some room of this size opens onto existing floor (a doorway that leads somewhere).
+pub fn spot_is_free(
+    rooms: &Rooms,
+    grid: &[[u8; CHUNK as usize]; CHUNK as usize],
+    keep_clear: &[V2],
+    x: i32,
+    z: i32,
+    w: i32,
+    h: i32,
+) -> bool {
+    for cz in z..z + h {
+        for cx in x..x + w {
+            if grid[cz as usize][cx as usize] != SOLID {
+                return false;
+            }
+        }
+    }
+    if keep_clear.iter().any(|c| c.x >= x - 1 && c.x <= x + w && c.y >= z - 1 && c.y <= z + h) {
+        return false;
+    }
+    rooms.rooms.iter().any(|d| d.w == w && d.h == h && connects(d, grid, x, z))
 }
 
 impl RoomDef {

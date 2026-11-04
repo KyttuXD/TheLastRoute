@@ -86,13 +86,23 @@ struct Caller {
     owner: Option<String>,
 }
 
-/// `body.sessionToken ? accountService.sessionUsername(body.sessionToken) || "" : ""`.
-fn session_user(state: &State, body: &Value) -> String {
-    if truthy(body.get("sessionToken")) {
-        state.accounts.session_username(&str_or_empty(body.get("sessionToken"))).unwrap_or_default()
-    } else {
-        String::new()
-    }
+/// Locks a mutex, recovering the data when a panicking request poisoned it: one failed request must not take every
+/// later request down with it.
+fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The 500 a route answers when internal state it expected is missing.
+fn internal_error() -> Response {
+    json_response(500, &json!({ "ok": false, "code": "INTERNAL_ERROR", "error": "Internal server error" }), &[])
+}
+
+/// True for the routes that resolve the caller's session before taking the state lock: the admin and moderation
+/// routes plus the public join, reserved resolve and room register routes (a session lookup can wait on the website).
+fn resolves_caller_first(path: &str) -> bool {
+    path.starts_with("/api/admin/")
+        || path.starts_with("/api/moderation/")
+        || matches!(path, "/api/public/join" | "/api/rooms/reserved/resolve" | "/api/enet/rooms/register")
 }
 
 fn owner_identity(accounts: &AccountService, body: &Value) -> bool {
@@ -158,11 +168,11 @@ impl LastRouteServer {
         let accounts = guard.accounts.clone();
         drop(guard);
         let value = call(&accounts);
-        (value, self.state.lock().unwrap())
+        (value, lock_recover(&self.state))
     }
 
     /// Resolves the caller's session for the admin and moderation routes with the state lock released, so a slow website
-    /// session lookup does not block other requests. The values match `session_user` and the old `owner_of`.
+    /// session lookup does not block other requests. The values match the old `session_user` and `owner_of`.
     fn resolve_caller<'a>(&'a self, guard: MutexGuard<'a, State>, body: &Value) -> (Caller, MutexGuard<'a, State>) {
         let token = str_or_empty(body.get("sessionToken"));
         let ((session, owner), guard) = self.with_accounts(guard, |accounts| {
@@ -196,7 +206,7 @@ impl LastRouteServer {
         if method == "OPTIONS" {
             return json_response(204, &json!({}), &[]);
         }
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = lock_recover(&self.state);
         let state = &mut *guard;
         state.dir.prune();
         let path = request.path.as_str();
@@ -280,7 +290,7 @@ impl LastRouteServer {
             return reply(skins.upload(&*accounts, &body));
         }
         // Admin and moderation routes resolve the caller's session with the state lock released, then retake it.
-        let scoped = path.starts_with("/api/admin/") || path.starts_with("/api/moderation/");
+        let scoped = resolves_caller_first(path);
         let (caller, mut guard) = if scoped { self.resolve_caller(guard, &body) } else { (Caller::default(), guard) };
         let state = &mut *guard;
         if let Some(response) = self.route_posts(state, request, &body, &caller) {
@@ -295,7 +305,8 @@ impl LastRouteServer {
     fn save_route(&self, saves: &Mutex<GameSaves>, accounts: &AccountService, request: &Request, game_id: &str, slot: &str) -> Response {
         let token = request.header("x-session-token");
         if request.method == "GET" {
-            return reply(saves.lock().unwrap().get(accounts, &token, game_id, slot));
+            let Ok(store) = saves.lock() else { return internal_error() };
+            return reply(store.get(accounts, &token, game_id, slot));
         }
         if request.body_overflow || request.body.len() > SAVE_MAX_BYTES {
             return json_response(413, &json!({ "ok": false, "code": "SAVE_TOO_LARGE",
@@ -304,7 +315,8 @@ impl LastRouteServer {
         let Ok(body) = serde_json::from_slice::<Value>(&request.body) else {
             return json_response(400, &json!({ "ok": false, "code": "BAD_SAVE", "error": "INVALID JSON BODY" }), &[]);
         };
-        reply(saves.lock().unwrap().put(accounts, &token, game_id, slot, &body))
+        let Ok(mut store) = saves.lock() else { return internal_error() };
+        reply(store.put(accounts, &token, game_id, slot, &body))
     }
 
     /// The size and moderation checks a skin upload passes before the (unported) skin store. The session lookup can
@@ -439,7 +451,7 @@ impl LastRouteServer {
                 None => (false, false),
             };
             if path == "/api/public/join" {
-                let username = state.accounts.session_username(&str_or_empty(body.get("sessionToken"))).unwrap_or_default();
+                let username = caller.username.clone();
                 let who = Who { username, device_id: body.get("deviceId").cloned(), address: address.clone() };
                 if let Some(refused) = state.moderation.check_public_join(&who) {
                     return Some(reply(refused));
@@ -459,11 +471,11 @@ impl LastRouteServer {
             if code.is_empty() || !state.dir.reserved.as_ref().map(|r| r.is_reserved(&code)).unwrap_or(false) {
                 return Some(json_response(404, &json!({ "ok": false, "error": "ROOM NOT FOUND" }), &[]));
             }
-            let username = session_user(state, body);
-            let owner = !username.is_empty() && state.accounts.is_admin_owner(&username);
+            let username = caller.username.clone();
+            let owner = caller.owner.is_some();
             let password = str_or_empty(body.get("password"));
             let live = state.dir.enet_rooms.get(&code).cloned();
-            let reserved = state.dir.reserved.as_mut().unwrap();
+            let Some(reserved) = state.dir.reserved.as_mut() else { return Some(internal_error()) };
             if !reserved.has_access(&code, &username, &password, owner) {
                 return Some(json_response(403, &json!({ "ok": false, "code": "ROOM_ACCESS_DENIED", "reserved": true,
                     "error": "NOT ON THIS ROOM'S INVITE LIST // WRONG ROOM PASSWORD" }), &[]));
@@ -527,7 +539,8 @@ impl LastRouteServer {
                     return Some(json_response(409, &json!({ "ok": false, "code": "ROOM_ALREADY_HOSTED", "error": "Someone is hosting that code" }), &[]));
                 }
             }
-            let mut result = state.dir.reserved.as_mut().unwrap().admin(body, &owner);
+            let Some(reserved) = state.dir.reserved.as_mut() else { return Some(internal_error()) };
+            let mut result = reserved.admin(body, &owner);
             if let Some(Value::Array(rooms)) = result.1.get_mut("rooms") {
                 for room in rooms.iter_mut() {
                     let code = str_nullish(room.get("code"));
@@ -543,7 +556,7 @@ impl LastRouteServer {
         }
 
         if path == "/api/enet/rooms/register" {
-            return Some(self.register_room(state, request, body, &address));
+            return Some(self.register_room(state, request, body, &address, caller));
         }
         if path.starts_with("/api/enet/") {
             if let Some(response) = self.route_enet(state, body, path) {
@@ -839,7 +852,7 @@ impl LastRouteServer {
         result
     }
 
-    fn register_room(&self, state: &mut State, request: &Request, body: &Value, address: &str) -> Response {
+    fn register_room(&self, state: &mut State, request: &Request, body: &Value, address: &str, caller: &Caller) -> Response {
         let now = self.now();
         let code = normalize_enet_code(body.get("code"));
         let web_room = body.get("transport").and_then(Value::as_str) == Some("ws");
@@ -850,7 +863,7 @@ impl LastRouteServer {
         if !web_room && !(port.is_finite() && port.fract() == 0.0 && (1.0..=65_535.0).contains(&port)) {
             return json_response(400, &json!({ "ok": false, "error": "INVALID ENET PORT" }), &[]);
         }
-        let host_user = session_user(state, body);
+        let host_user = caller.username.clone();
         let reserved = state.dir.reserved.as_ref().map(|r| r.is_reserved(&code)).unwrap_or(false);
         let spawned = state.spawn_tickets.get(&code).map(|(ticket, expires)| {
             *expires > now && truthy(body.get("spawnTicket")) && safe_equal(&str_or_empty(body.get("spawnTicket")), ticket)
@@ -862,9 +875,9 @@ impl LastRouteServer {
             return json_response(400, &json!({ "ok": false, "error": "INVALID ROOM CODE" }), &[]);
         }
         if reserved && !spawned {
-            let owner = !host_user.is_empty() && state.accounts.is_admin_owner(&host_user);
+            let owner = caller.owner.is_some();
             let password = str_or_empty(body.get("roomPassword"));
-            if !state.dir.reserved.as_ref().unwrap().has_access(&code, &host_user, &password, owner) {
+            if !state.dir.reserved.as_ref().map(|r| r.has_access(&code, &host_user, &password, owner)).unwrap_or(false) {
                 return json_response(403, &json!({ "ok": false, "code": "ROOM_RESERVED", "reserved": true,
                     "error": "THAT ROOM CODE IS RESERVED // INVITE OR ROOM PASSWORD REQUIRED" }), &[]);
             }
@@ -920,7 +933,7 @@ impl LastRouteServer {
         out.insert("room".into(), view);
         if reserved {
             // a new host starts clean: commands meant for the previous one are dropped
-            if let Some(view) = state.dir.reserved.as_mut().unwrap().host_view(&code, None, Some(&json!(9_007_199_254_740_991i64))) {
+            if let Some(view) = state.dir.reserved.as_mut().and_then(|r| r.host_view(&code, None, Some(&json!(9_007_199_254_740_991i64)))) {
                 out.insert("reserved".into(), view);
             }
         }
@@ -1087,4 +1100,47 @@ mod skin_lock_tests {
         let anonymous = anonymous_server.handle(&Request::json("POST", "/api/admin/flags", &json!({})));
         assert_eq!((anonymous.status, anonymous.json_body()["code"].clone()), (403, json!("ADMIN_OWNER_REQUIRED")));
     }
+
+    #[test]
+    fn the_public_and_room_routes_resolve_the_session_before_the_state_lock() {
+        for path in ["/api/public/join", "/api/rooms/reserved/resolve", "/api/enet/rooms/register", "/api/admin/regions", "/api/moderation/peers"] {
+            assert!(resolves_caller_first(path), "{path}");
+        }
+        assert!(!resolves_caller_first("/api/health") && !resolves_caller_first("/api/public/state"));
+    }
+
+    #[test]
+    fn a_session_lookup_on_public_join_does_not_block_another_request() {
+        let (release, released) = mpsc::channel();
+        let upstream = slow_website(released, r#"{"ok":true,"username":"PLAYERONE"}"#);
+        let server = Arc::new(LastRouteServer::new(ServerOptions { account_upstream: Some(upstream), ..Default::default() }));
+        let joining = {
+            let server = server.clone();
+            std::thread::spawn(move || server.handle(&Request::json("POST", "/api/public/join", &json!({ "sessionToken": "token" }))))
+        };
+        std::thread::sleep(Duration::from_millis(200));
+        let (done_tx, done_rx) = mpsc::channel();
+        let health_server = server.clone();
+        std::thread::spawn(move || {
+            let _ = done_tx.send(health_server.handle(&Request::new("GET", "/api/health")).status);
+        });
+        assert_eq!(done_rx.recv_timeout(Duration::from_secs(2)).expect("health waited on the public join lookup"), 200);
+        release.send(()).unwrap();
+        let _ = joining.join().unwrap();
+    }
+
+    #[test]
+    fn a_poisoned_lock_is_recovered_and_a_poisoned_save_store_answers_500() {
+        let mutex = Arc::new(Mutex::new(5));
+        let poisoner = mutex.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.lock().unwrap();
+            panic!("poison the lock");
+        })
+        .join();
+        assert_eq!(*lock_recover(&mutex), 5);
+        assert_eq!(internal_error().status, 500);
+        assert_eq!(internal_error().json_body()["code"], json!("INTERNAL_ERROR"));
+    }
+
 }

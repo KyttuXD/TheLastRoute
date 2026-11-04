@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 pub const SCHEMA: &str = "lr.hunter_events/1";
 
 /// The event kinds the data file may tune.
-pub const EVENT_KINDS: [&str; 7] = [
+pub const EVENT_KINDS: [&str; 9] = [
     "hunter_state",
     "hunter_grab",
     "hunter_door",
@@ -31,7 +31,12 @@ pub const EVENT_KINDS: [&str; 7] = [
     "hunter_charge",
     "hunter_ability",
     "sabotage",
+    "stream_valve",
+    "stream_pipe_burst",
 ];
+
+/// The capture timeout when the data file has no `capture` block.
+const DEFAULT_CAPTURE_TIMEOUT_S: u64 = 15;
 
 /// The difficulty ids a rule may name (`Difficulty::id`).
 const DIFFICULTY_IDS: [&str; 4] = ["relaxed", "standard", "hard", "nightmare"];
@@ -53,6 +58,15 @@ pub struct Rules {
     pub large_frame_over_bytes: usize,
     pub frame_difficulties: Vec<String>,
     pub events: HashMap<String, EventRule>,
+    /// How long the host waits for a captured guest's escaped, caught or capture_blocked report before it stops waiting
+    /// (`capture.timeout_s`).
+    pub capture_timeout: Duration,
+    /// The least time between two taser intents from one guest (`guest.taser_min_gap_s`).
+    pub guest_taser_gap: Duration,
+    /// The most valve turn requests the host keeps waiting for its game (`guest.max_valve_requests`).
+    pub max_valve_requests: usize,
+    /// How often the app asks whether the chosen skin can be (re)published to the room (`guest.skin_recheck_s`).
+    pub skin_recheck: Duration,
 }
 
 impl Default for Rules {
@@ -74,6 +88,10 @@ impl Default for Rules {
             large_frame_over_bytes: 1100,
             frame_difficulties: DIFFICULTY_IDS.iter().map(|s| s.to_string()).collect(),
             events,
+            capture_timeout: Duration::from_secs(DEFAULT_CAPTURE_TIMEOUT_S),
+            guest_taser_gap: Duration::from_millis(400),
+            max_valve_requests: 16,
+            skin_recheck: Duration::from_secs(2),
         }
     }
 }
@@ -132,7 +150,7 @@ fn channel_is(o: &Map<String, Value>, what: &str, want: &str) -> Result<(), Stri
 pub fn parse(text: &str) -> Result<Rules, String> {
     let root: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
     let root = object(&root, "hunter_events")?;
-    check_keys(root, "hunter_events", &["schema", "frame", "events"])?;
+    check_keys(root, "hunter_events", &["schema", "frame", "events", "capture", "guest"])?;
     if root.get("schema").and_then(Value::as_str) != Some(SCHEMA) {
         return Err(format!("hunter_events.schema must be {SCHEMA}"));
     }
@@ -142,6 +160,32 @@ pub fn parse(text: &str) -> Result<Rules, String> {
     let rate_hz = number(frame, "rate_hz", "frame", 0.5, 60.0)?.unwrap_or(20.0) as f32;
     let large = number(frame, "large_frame_over_bytes", "frame", 64.0, 65_000.0)?.unwrap_or(1100.0) as usize;
     let frame_difficulties = difficulties(frame, "frame")?;
+
+    let capture_timeout = match root.get("capture") {
+        None => Duration::from_secs(DEFAULT_CAPTURE_TIMEOUT_S),
+        Some(c) => {
+            let c = object(c, "capture")?;
+            check_keys(c, "capture", &["timeout_s"])?;
+            let s = number(c, "timeout_s", "capture", 1.0, 300.0)?.unwrap_or(DEFAULT_CAPTURE_TIMEOUT_S as f64);
+            Duration::from_secs_f64(s)
+        }
+    };
+
+    let (mut guest_taser_gap, mut max_valve_requests) = (Duration::from_millis(400), 16usize);
+    let mut skin_recheck = Duration::from_secs(2);
+    if let Some(g) = root.get("guest") {
+        let g = object(g, "guest")?;
+        check_keys(g, "guest", &["taser_min_gap_s", "max_valve_requests", "skin_recheck_s"])?;
+        if let Some(s) = number(g, "skin_recheck_s", "guest", 0.1, 60.0)? {
+            skin_recheck = Duration::from_secs_f64(s);
+        }
+        if let Some(s) = number(g, "taser_min_gap_s", "guest", 0.0, 60.0)? {
+            guest_taser_gap = Duration::from_secs_f64(s);
+        }
+        if let Some(n) = number(g, "max_valve_requests", "guest", 1.0, 256.0)? {
+            max_valve_requests = n as usize;
+        }
+    }
 
     let mut events = HashMap::new();
     let table = object(root.get("events").ok_or("hunter_events.events is missing")?, "events")?;
@@ -177,7 +221,7 @@ pub fn parse(text: &str) -> Result<Rules, String> {
             },
         );
     }
-    Ok(Rules { rate_hz, large_frame_over_bytes: large, frame_difficulties, events })
+    Ok(Rules { rate_hz, large_frame_over_bytes: large, frame_difficulties, events, capture_timeout, guest_taser_gap, max_valve_requests, skin_recheck })
 }
 
 /// The embedded rules (data/net/hunter_events.json), read once. The defaults when the file is missing or broken.
@@ -444,6 +488,29 @@ mod tests {
         assert!(!event_on(&r, "hunter_state", Difficulty::Nightmare));
         assert!(event_on(&r, "hunter_grab", Difficulty::Hard));
         assert_eq!(rules(), &parse(text).unwrap());
+    }
+
+    #[test]
+    fn the_guest_and_capture_numbers_come_from_the_data_file() {
+        let text = include_str!("../data/net/hunter_events.json");
+        let r = parse(text).unwrap();
+        assert_eq!(r.capture_timeout, Duration::from_secs(15));
+        assert_eq!(r.guest_taser_gap, Duration::from_millis(400));
+        assert_eq!(r.max_valve_requests, 16);
+        assert_eq!(r.skin_recheck, Duration::from_secs(2));
+        let tuned = text.replace(r#""timeout_s": 15"#, r#""timeout_s": 4"#).replace(r#""max_valve_requests": 16"#, r#""max_valve_requests": 2"#);
+        let t = parse(&tuned).unwrap();
+        assert_eq!((t.capture_timeout, t.max_valve_requests), (Duration::from_secs(4), 2), "a changed value changes the rule");
+        assert!(parse(&text.replace(r#""timeout_s": 15"#, r#""timeout_s": 0"#)).is_err(), "a timeout of nothing is refused");
+        assert!(parse(&text.replace("taser_min_gap_s", "taser_gap")).unwrap_err().contains("taser_gap"));
+    }
+
+    #[test]
+    fn the_pipe_events_are_sent_on_every_difficulty() {
+        let r = parse(include_str!("../data/net/hunter_events.json")).unwrap();
+        for diff in [Difficulty::Relaxed, Difficulty::Standard, Difficulty::Hard, Difficulty::Nightmare] {
+            assert!(event_on(&r, "stream_valve", diff) && event_on(&r, "stream_pipe_burst", diff), "{diff:?}");
+        }
     }
 
     #[test]

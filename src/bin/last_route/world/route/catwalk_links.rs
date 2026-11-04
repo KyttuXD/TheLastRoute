@@ -119,6 +119,35 @@ pub fn links_for(
     out
 }
 
+/// The level 0 regions whose chunks get catwalk decks (the file's `regions`), loaded once.
+pub fn allowed_regions() -> &'static [String] {
+    static REGIONS: OnceLock<Vec<String>> = OnceLock::new();
+    REGIONS.get_or_init(|| {
+        let text = embedded::data_under("regions/")
+            .find(|(p, _)| *p == PATH)
+            .map(|(_, t)| t)
+            .expect("data/regions/catwalk_links.json is embedded by build.rs");
+        parse_regions(text).expect("data/regions/catwalk_links.json has regions")
+    })
+}
+
+/// The `regions` list of a catwalk_links file: an array of region ids.
+pub fn parse_regions(text: &str) -> Result<Vec<String>, String> {
+    let v: Value = serde_json::from_str(text).map_err(|e| format!("catwalk_links: {e}"))?;
+    let arr = v
+        .get("regions")
+        .and_then(Value::as_array)
+        .ok_or("catwalk_links: \"regions\" must be an array of region ids")?;
+    arr.iter()
+        .map(|s| s.as_str().map(str::to_string).ok_or_else(|| "catwalk_links: \"regions\" must hold strings".to_string()))
+        .collect()
+}
+
+/// Whether a chunk of `region` gets catwalk decks.
+pub fn allowed_in(region: &str) -> bool {
+    allowed_regions().iter().any(|r| r == region)
+}
+
 /// How close (cells) the runner gets to a catwalk link before the storey it leads to is built ahead: the stair data's.
 pub fn prefetch_distance() -> f32 {
     crate::game::transition::links().prefetch_distance
@@ -232,5 +261,13 @@ mod tests {
         let s = crate::game::transition::links();
         assert_eq!(landing_offset(), s.landing_offset);
         assert_eq!(prefetch_distance(), s.prefetch_distance);
+    }
+
+    #[test]
+    fn the_regions_list_comes_from_data() {
+        assert!(allowed_in("maze"));
+        assert!(!allowed_in("mansion"));
+        assert!(parse_regions(&FILE.replace("[\"maze\"]", "[\"mall\", \"maze\"]")).unwrap().contains(&"mall".to_string()));
+        assert!(parse_regions(&FILE.replace("\"regions\"", "\"x\"")).is_err());
     }
 }

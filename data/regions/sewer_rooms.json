@@ -5,6 +5,7 @@
 		"margin": 3,
 		"max_tries": 40
 	},
+	"prop_types": {"pump": "sewerPump", "pipe": "sewerPipeRun", "valve": "sewerValveWheel"},
 	"rooms": [
 		{
 			"id": "pump_room",

@@ -149,6 +149,10 @@ pub fn from_layout(seed: &str, k: ChunkKey, lay: &ChunkLayout, cat: &Catalog) ->
     };
 
     f.hunter_spawn = f.start;
+    let _ = f.apply_maze_variant(seed, k);
+    // apply_catwalks reads the hole and prop grids (can_occupy, is_hole), which only exist once they are built
+    f.rebuild_grids();
+    f.apply_catwalks(seed, k, crate::world::route::regions::region_for(seed, k.cx, k.cy, k.level));
     f.rebuild_grids();
     (f, fixtures)
 }
@@ -335,12 +339,23 @@ pub fn window_ids(
                 let pickups = layout_pickups(seed, k)?;
                 cache.insert(k, pickups);
             }
+            // a maze region variant thins the chunk's loose pickups (Facility::apply_maze_variant): drop the same ones
+            let (loot, tag) = match super::maze_regions::variant_at(seed, k.cx, k.cy, 0) {
+                Some(v) => (v.spawn_rules.loot_scale, format!("{},{}", k.cx, k.cy)),
+                None => (1.0, String::new()),
+            };
+            let mut n = 0usize;
             for p in &cache[&k] {
                 match slot_of(p.kind, p.item) {
                     Slot::Relay => out.relays.push(p.id.clone()),
                     Slot::Battery => out.batteries.push(p.id.clone()),
                     Slot::Coin => out.coins.push(p.id.clone()),
-                    Slot::Pickup(_) => out.pickups.push(p.id.clone()),
+                    Slot::Pickup(_) => {
+                        n += 1;
+                        if super::maze_regions::keeps(loot, seed, &format!("{tag}:loot"), n) {
+                            out.pickups.push(p.id.clone());
+                        }
+                    }
                     Slot::Dropped => {}
                 }
             }

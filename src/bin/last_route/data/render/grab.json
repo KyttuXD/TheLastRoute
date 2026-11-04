@@ -1,0 +1,15 @@
+{
+  "reach_seconds": 0.35,
+  "act_seconds": 0.7,
+  "hold_seconds": 0.85,
+  "carry_metres": 2.4,
+  "carry_seconds": 3.2,
+  "ease_seconds": 0.45,
+  "catch_ease": 0.35,
+  "max_roll": 0.26,
+  "flip_sway": 0.17,
+  "waist_bend": 1.2,
+  "squat_bend": 1.45,
+  "head_turn_rate": 7.0,
+  "look_away_seconds": 0.4
+}

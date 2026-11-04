@@ -92,7 +92,7 @@ pub fn stretches(style: &str) -> bool {
 
 pub fn stretch_for(style: &str, t: f32) -> f32 {
     if stretches(style) {
-        1.0 + (style_table().arm_stretch - 1.0) * smooth(t / REACH_SECONDS)
+        1.0 + (style_table().arm_stretch - 1.0) * smooth(t / grab_timing().reach_seconds)
     } else {
         1.0
     }
@@ -105,19 +105,97 @@ use macroquad::prelude::*;
 use std::cell::RefCell;
 use std::f32::consts::PI;
 
-pub const REACH_SECONDS: f32 = 0.35;
-pub const ACT_SECONDS: f32 = 0.7;
-pub const HOLD_SECONDS: f32 = 0.85;
-pub const TOTAL_SECONDS: f32 = REACH_SECONDS + ACT_SECONDS + HOLD_SECONDS;
-pub const CARRY_METRES: f32 = 2.4;
-pub const CARRY_SECONDS: f32 = 3.2;
+/// Where the timing table lives under data/ (the embedded file's name).
+pub const GRAB_TIMING_PATH: &str = "render/grab.json";
+
+/// The grab animation's timings and limits (data/render/grab.json): Godot's HunterGrab values. Seconds are the
+/// phases of a grab, `carry_*` the shoulder carry, `ease_seconds` the release ease, `catch_ease` the view's catch
+/// ease, the bends and roll limits radians. `head_turn_rate` is k of the head turn's 1 - e^(-k delta) ease.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GrabTiming {
+    pub reach_seconds: f32,
+    pub act_seconds: f32,
+    pub hold_seconds: f32,
+    pub carry_metres: f32,
+    pub carry_seconds: f32,
+    pub ease_seconds: f32,
+    pub catch_ease: f32,
+    pub max_roll: f32,
+    pub flip_sway: f32,
+    pub waist_bend: f32,
+    pub squat_bend: f32,
+    pub head_turn_rate: f32,
+    pub look_away_seconds: f32,
+}
+
+impl Default for GrabTiming {
+    /// The Standard (Godot) values; also the fallback when the table fails to parse.
+    fn default() -> GrabTiming {
+        GrabTiming {
+            reach_seconds: 0.35,
+            act_seconds: 0.7,
+            hold_seconds: 0.85,
+            carry_metres: 2.4,
+            carry_seconds: 3.2,
+            ease_seconds: 0.45,
+            catch_ease: 0.35,
+            max_roll: 0.26,
+            flip_sway: 0.17,
+            waist_bend: 1.2,
+            squat_bend: 1.45,
+            head_turn_rate: 7.0,
+            look_away_seconds: 0.4,
+        }
+    }
+}
+
+impl GrabTiming {
+    /// Parses the table; every number must be present and positive.
+    pub fn parse(text: &str) -> Result<GrabTiming, String> {
+        let v: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let num = |k: &str| -> Result<f32, String> {
+            v.get(k)
+                .and_then(|x| x.as_f64())
+                .filter(|x| *x > 0.0)
+                .map(|x| x as f32)
+                .ok_or_else(|| format!("{k}: must be a positive number"))
+        };
+        Ok(GrabTiming {
+            reach_seconds: num("reach_seconds")?,
+            act_seconds: num("act_seconds")?,
+            hold_seconds: num("hold_seconds")?,
+            carry_metres: num("carry_metres")?,
+            carry_seconds: num("carry_seconds")?,
+            ease_seconds: num("ease_seconds")?,
+            catch_ease: num("catch_ease")?,
+            max_roll: num("max_roll")?,
+            flip_sway: num("flip_sway")?,
+            waist_bend: num("waist_bend")?,
+            squat_bend: num("squat_bend")?,
+            head_turn_rate: num("head_turn_rate")?,
+            look_away_seconds: num("look_away_seconds")?,
+        })
+    }
+
+    /// A normal grab's whole length: reach, act and hold.
+    pub fn total_seconds(&self) -> f32 {
+        self.reach_seconds + self.act_seconds + self.hold_seconds
+    }
+}
+
+/// The table compiled into the executable, read once; a bad table is reported on stderr and Standard is used.
+pub fn grab_timing() -> &'static GrabTiming {
+    static TABLE: std::sync::OnceLock<GrabTiming> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let text = embedded::data_under(GRAB_TIMING_PATH).next().map(|(_, t)| t).unwrap_or("{}");
+        GrabTiming::parse(text).unwrap_or_else(|e| {
+            eprintln!("{GRAB_TIMING_PATH}: {e}");
+            GrabTiming::default()
+        })
+    })
+}
+
 const BODY_EYE: f32 = 1.612;
-const GRAB_EASE_SECONDS: f32 = 0.45;
-const CATCH_EASE: f32 = 0.35;
-const MAX_ROLL: f32 = 0.26;
-const FLIP_SWAY: f32 = 0.17;
-const WAIST_BEND: f32 = 1.2;
-const SQUAT_BEND: f32 = 1.45;
 const PLAYER_MODELS_SCALE: f32 = 1.067;
 
 /// GrabStyles.BODY_POINTS: on the runner body, facing -Z, +X its right, feet at 0.
@@ -141,9 +219,9 @@ pub fn smooth(k: f32) -> f32 {
 
 pub fn duration(style: &str) -> f32 {
     if style == "shoulder_carry" {
-        CARRY_SECONDS
+        grab_timing().carry_seconds
     } else {
-        TOTAL_SECONDS
+        grab_timing().total_seconds()
     }
 }
 
@@ -253,17 +331,17 @@ pub fn neck_turn(facing: Vec3, wanted: Vec3, limit: f32) -> Quat {
     }
 }
 
-/// GrabStyles.head_look's easing: the turn eases toward `full` by 1 - e^(-7 delta) every frame, the catch frame
+/// GrabStyles.head_look's easing: the turn eases toward `full` by 1 - e^(-head_turn_rate delta), Standard 7 every frame, the catch frame
 /// included (Godot eases from identity there too; snapping to a full look-away in one frame reads as a broken neck).
 pub fn ease_head_turn(current: Quat, full: Quat, delta: f32) -> Quat {
-    gd_slerp(current, full, 1.0 - (-7.0 * delta).exp())
+    gd_slerp(current, full, 1.0 - (-grab_timing().head_turn_rate * delta).exp())
 }
 
 fn look_away(look: &Look, t: f32) -> f32 {
     if look.delay <= 0.0 {
         0.0
     } else {
-        1.0 - smooth((t - look.delay) / 0.4)
+        1.0 - smooth((t - look.delay) / grab_timing().look_away_seconds)
     }
 }
 
@@ -291,9 +369,9 @@ pub struct Pose {
 
 /// GrabStyles.pose
 pub fn pose(style: &str, t: f32, c: &Ctx) -> Pose {
-    let r = smooth(t / REACH_SECONDS);
-    let a = smooth((t - REACH_SECONDS) / ACT_SECONDS);
-    let hold = (t - REACH_SECONDS - ACT_SECONDS).max(0.0);
+    let r = smooth(t / grab_timing().reach_seconds);
+    let a = smooth((t - grab_timing().reach_seconds) / grab_timing().act_seconds);
+    let hold = (t - grab_timing().reach_seconds - grab_timing().act_seconds).max(0.0);
     let shake = (t * 9.0).sin() * a * 0.6;
     let sway = (t * 7.0).sin() * a;
     let lerp = |x: f32, y: f32, k: f32| x + (y - x) * k;
@@ -321,17 +399,17 @@ pub fn pose(style: &str, t: f32, c: &Ctx) -> Pose {
             o.arms = vec![('R', "l_shoulder", r), ('L', "r_shoulder", r)];
         }
         "tackle" => {
-            let flat = smooth((t - REACH_SECONDS) / (ACT_SECONDS + 0.35));
+            let flat = smooth((t - grab_timing().reach_seconds) / (grab_timing().act_seconds + 0.35));
             o.at = vec3(0.0, 0.0, lerp(0.75, 1.25, flat));
             o.tilt = lerp(0.0, PI * 0.5 - 0.1, flat);
             o.arms = vec![('R', "l_shoulder", r), ('L', "r_shoulder", r)];
             let down = smooth(
-                (t - REACH_SECONDS - ACT_SECONDS * 0.4) / (ACT_SECONDS * 0.6 + HOLD_SECONDS * 0.4),
+                (t - grab_timing().reach_seconds - grab_timing().act_seconds * 0.4) / (grab_timing().act_seconds * 0.6 + grab_timing().hold_seconds * 0.4),
             );
             o.hunter = [0.3 * down, 0.3 * down, 0.3 * down];
         }
         "wrist_yank" => {
-            let yank = smooth((t - REACH_SECONDS) / (ACT_SECONDS * 0.45));
+            let yank = smooth((t - grab_timing().reach_seconds) / (grab_timing().act_seconds * 0.45));
             o.at = vec3(0.0, 0.0, lerp(1.05, 0.88, yank));
             o.tilt = -0.06 * yank;
             o.view_roll = -0.08 * yank;
@@ -345,16 +423,16 @@ pub fn pose(style: &str, t: f32, c: &Ctx) -> Pose {
             o.wide = true;
         }
         "shoulder_carry" => {
-            let hoist = smooth((t - REACH_SECONDS) / 0.9);
-            let walk = smooth((t - REACH_SECONDS - 1.0) / 1.5);
+            let hoist = smooth((t - grab_timing().reach_seconds) / 0.9);
+            let walk = smooth((t - grab_timing().reach_seconds - 1.0) / 1.5);
             let tilt = -(PI - 0.35) * hoist;
             let pelvis = vec3(
                 c.shoulder_side,
                 c.shoulder_y + 0.05,
-                c.shoulder_fwd + walk * CARRY_METRES,
+                c.shoulder_fwd + walk * grab_timing().carry_metres,
             );
             let carried = pelvis - vec3(0.0, 0.6 * tilt.cos(), 0.6 * tilt.sin());
-            let out_side = smooth((t - REACH_SECONDS * 0.5) / 0.35);
+            let out_side = smooth((t - grab_timing().reach_seconds * 0.5) / 0.35);
             let wide = 1.0 + 0.3 * (PI * hoist.clamp(0.0, 1.0)).sin();
             o.at = vec3(
                 carried.x * out_side * wide,
@@ -363,25 +441,25 @@ pub fn pose(style: &str, t: f32, c: &Ctx) -> Pose {
             );
             o.tilt = tilt;
             o.arms = vec![('R', "knees", r)];
-            o.hunter = [walk * CARRY_METRES, 0.0, 0.0];
+            o.hunter = [walk * grab_timing().carry_metres, 0.0, 0.0];
             o.look_ahead = true;
         }
         "leg_grab" => {
-            let fall = smooth((t - REACH_SECONDS) / (ACT_SECONDS + 0.25));
+            let fall = smooth((t - grab_timing().reach_seconds) / (grab_timing().act_seconds + 0.25));
             let drag = smooth(
-                (t - REACH_SECONDS - ACT_SECONDS * 0.35)
-                    / (ACT_SECONDS * 0.65 + HOLD_SECONDS * 0.6),
+                (t - grab_timing().reach_seconds - grab_timing().act_seconds * 0.35)
+                    / (grab_timing().act_seconds * 0.65 + grab_timing().hold_seconds * 0.6),
             );
             o.face = -1.0;
             o.at = vec3(0.0, 0.0, lerp(1.25, 0.75, drag));
             o.tilt = lerp(0.25 * r, PI * 0.5 - 0.06, fall);
-            let stoop = smooth((t - REACH_SECONDS - 0.2) / (ACT_SECONDS * 0.55));
+            let stoop = smooth((t - grab_timing().reach_seconds - 0.2) / (grab_timing().act_seconds * 0.55));
             o.arms = vec![('R', "r_ankle", stoop.max(r * 0.3))];
             o.hunter = [0.0, 0.7 * stoop, 0.45 * stoop];
         }
         "upside_down" => {
-            let hoist = smooth((t - REACH_SECONDS) / (ACT_SECONDS + 0.65));
-            let flip = smooth((t - REACH_SECONDS) / 1.5);
+            let hoist = smooth((t - grab_timing().reach_seconds) / (grab_timing().act_seconds + 0.65));
+            let flip = smooth((t - grab_timing().reach_seconds) / 1.5);
             o.at = vec3(
                 c.shoulder_side,
                 lerp(0.0, c.shoulder_y - 0.15, hoist),
@@ -394,7 +472,7 @@ pub fn pose(style: &str, t: f32, c: &Ctx) -> Pose {
         }
         "collar_drag" => {
             let pull = smooth(
-                (t - REACH_SECONDS - ACT_SECONDS * 0.5) / (ACT_SECONDS * 0.5 + HOLD_SECONDS * 0.7),
+                (t - grab_timing().reach_seconds - grab_timing().act_seconds * 0.5) / (grab_timing().act_seconds * 0.5 + grab_timing().hold_seconds * 0.7),
             );
             o.at = vec3(c.shoulder_side * r, 0.0, lerp(0.9, 0.6, pull));
             o.tilt = -0.9 * a;
@@ -407,9 +485,9 @@ pub fn pose(style: &str, t: f32, c: &Ctx) -> Pose {
         }
         "wall_pin" => {
             let to_wall = (c.back - 0.2).clamp(0.0, 1.1);
-            let shove = smooth((t - REACH_SECONDS) / (ACT_SECONDS * 0.5));
+            let shove = smooth((t - grab_timing().reach_seconds) / (grab_timing().act_seconds * 0.5));
             o.at = vec3(c.shoulder_side, 0.3 * shove, 0.75 + to_wall * shove);
-            o.view_roll = ((t - REACH_SECONDS - ACT_SECONDS * 0.5).max(0.0) * 12.0).sin()
+            o.view_roll = ((t - grab_timing().reach_seconds - grab_timing().act_seconds * 0.5).max(0.0) * 12.0).sin()
                 * 0.04
                 * (-hold * 4.0).exp()
                 * shove;
@@ -593,12 +671,12 @@ impl<'a> Body<'a> {
         }
         let i = |k: usize| ids[k].unwrap();
         let leg = self.pos(i(3)).distance(self.pos(i(4))) + self.pos(i(4)).distance(self.pos(i(5)));
-        let squat_drop = drop.min(leg * (1.0 - SQUAT_BEND.cos()));
+        let squat_drop = drop.min(leg * (1.0 - grab_timing().squat_bend.cos()));
         let squat = (1.0 - soft(squat_drop) / leg.max(0.01))
             .clamp(-1.0, 1.0)
             .acos();
         let torso = self.pos(i(2)).distance(self.pos(i(0)));
-        let waist = (drop - squat_drop).min(torso * (1.0 - WAIST_BEND.cos()));
+        let waist = (drop - squat_drop).min(torso * (1.0 - grab_timing().waist_bend.cos()));
         let bend = (1.0 - soft(waist) / torso.max(0.01))
             .clamp(-1.0, 1.0)
             .acos();
@@ -763,14 +841,14 @@ impl Grab {
 
     /// The runner's body for this moment: (feet with the lift, basis, view roll).
     fn body(&self, p: &Pose, t: f32) -> (Vec3, Mat3, f32) {
-        let r = smooth(t / REACH_SECONDS);
+        let r = smooth(t / grab_timing().reach_seconds);
         let feet = self.origin + self.side * p.at.x + self.along * p.at.z;
         let runner = self.start_runner.lerp(feet, r);
         let basis = body_basis(self.along, p.face, p.tilt);
         let roll = if self.style == "upside_down" {
-            PI * p.flip + (p.view_roll - PI * p.flip).clamp(-FLIP_SWAY, FLIP_SWAY)
+            PI * p.flip + (p.view_roll - PI * p.flip).clamp(-grab_timing().flip_sway, grab_timing().flip_sway)
         } else {
-            p.view_roll.clamp(-MAX_ROLL, MAX_ROLL)
+            p.view_roll.clamp(-grab_timing().max_roll, grab_timing().max_roll)
         };
         (runner + Vec3::Y * p.at.y, basis, roll)
     }
@@ -794,7 +872,7 @@ impl Grab {
             .map(|(s, n, k)| (*s, body_feet + basis * body_point(n), *k))
             .collect();
         let scale = super::hunter::MODEL_SCALE / rig.unit;
-        let turn_k = smooth(t / REACH_SECONDS);
+        let turn_k = smooth(t / grab_timing().reach_seconds);
         let yaw = self.yaw0 + self.turn * turn_k;
         let mut offsets = p.hunter;
         let stretch = stretch_for(&self.style, t);
@@ -908,7 +986,7 @@ impl Grab {
         let mut eye = body_feet + basis * vec3(0.0, self.ctx.eye, 0.0);
         eye.y = eye.y.max(self.start_runner.y + 0.1);
         let face = self.face_point.unwrap_or(eye + self.along);
-        let e = smooth(t / CATCH_EASE);
+        let e = smooth(t / grab_timing().catch_ease);
         let eye = self.camera_from.0.lerp(eye, e);
         let dir =
             (self.camera_from.1.lerp((face - eye).normalize_or_zero(), e)).normalize_or_zero();
@@ -1005,7 +1083,7 @@ pub fn drive(
             .as_ref()
             .filter(|r| r.slot == slot && !r.start.is_nan())
         {
-            let w = 1.0 - smooth((now - r.start) / GRAB_EASE_SECONDS);
+            let w = 1.0 - smooth((now - r.start) / grab_timing().ease_seconds);
             if w < 0.01 {
                 g.release = None;
                 return normal;
@@ -1040,6 +1118,33 @@ pub fn camera() -> Option<(Vec3, Vec3, Vec3)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grab_timing_data_matches_standard_and_drives_behaviour() {
+        let text = include_str!("../../data/render/grab.json");
+        let t = GrabTiming::parse(text).expect("grab.json parses");
+        assert_eq!(t, GrabTiming::default());
+        assert_eq!(grab_timing(), &t);
+        assert!((t.total_seconds() - 1.9).abs() < 1e-6);
+        // a changed value changes behaviour
+        let slow = GrabTiming::parse(&text.replace("\"reach_seconds\": 0.35", "\"reach_seconds\": 0.5")).unwrap();
+        assert!((slow.total_seconds() - t.total_seconds() - 0.15).abs() < 1e-5);
+        assert!(GrabTiming::parse("{}").is_err());
+        assert!(GrabTiming::parse(&text.replace("\"max_roll\": 0.26", "\"max_roll\": 0")).is_err());
+    }
+
+    #[test]
+    fn ease_head_turn_follows_the_data_rate() {
+        let full = Quat::from_rotation_y(1.0);
+        let k = 1.0 - (-grab_timing().head_turn_rate * 0.1).exp();
+        let want = gd_slerp(Quat::IDENTITY, full, k);
+        // compare components: Quat::angle_between is acos of a dot near 1, which only resolves ~5e-4 rad in f32
+        let got = ease_head_turn(Quat::IDENTITY, full, 0.1);
+        assert!((got.dot(want).abs() - 1.0).abs() < 1e-6, "got {got:?} want {want:?}");
+        assert!(got.angle_between(want) < 1e-3);
+        assert!(ease_head_turn(Quat::IDENTITY, full, 0.0).angle_between(Quat::IDENTITY) < 1e-6);
+        assert!(ease_head_turn(Quat::IDENTITY, full, 10.0).angle_between(full) < 1e-3);
+    }
 
     /// A look-away grab (the head turned to the side and down, away from the runner) never turns the head past
     /// Aki's neck limit, and the limit is Godot's default look yaw (2.0 radians, about 115 degrees).

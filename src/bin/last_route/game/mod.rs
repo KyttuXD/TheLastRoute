@@ -5,6 +5,7 @@
 pub mod endless;
 mod hunting;
 mod guest_gate;
+mod guest_apply;
 mod interact;
 pub mod ladder;
 pub mod pipes;
@@ -212,6 +213,15 @@ pub struct Game {
     /// The real runner's wet and swimming state and its numbers (game/swim_effects.rs).
     pub swim: swim_effects::SwimState,
     pub swim_cfg: swim_effects::SwimConfig,
+    /// The waterfall plunge in progress: input is ignored and collision is off until it finishes.
+    pub plunge: Option<swim_effects::ActivePlunge>,
+    /// The sewer chunk under the runner (its water cells), generated once per chunk.
+    pub water_cache: Option<swim_effects::WaterChunk>,
+    /// Metres of pipe flood at the runner's feet, set each frame by the endless update (task 2: game/endless.rs, from
+    /// `self.pipes.depth_at_step(..)`); wading uses the deeper of this and the sewer water.
+    pub flood_depth: f32,
+    // preload.rs is pure (preload::preload() config, keep_levels, to_build, to_evict): the held windows live in
+    // `InfState::prefetched`, so no preload cache field is needed here.
 }
 
 pub fn pdist(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -319,6 +329,9 @@ impl Game {
             pipes: pipes::PipeNetwork::new(),
             swim: swim_effects::SwimState::default(),
             swim_cfg: swim_effects::SwimConfig::load(),
+            plunge: None,
+            water_cache: None,
+            flood_depth: 0.0,
             fac,
             fix,
             world,
@@ -442,6 +455,9 @@ impl Game {
             pipes: pipes::PipeNetwork::new(),
             swim: swim_effects::SwimState::default(),
             swim_cfg: swim_effects::SwimConfig::load(),
+            plunge: None,
+            water_cache: None,
+            flood_depth: 0.0,
             world: WorldMeshes::default(),
             world_dirty: true,
             fac,
@@ -502,6 +518,10 @@ impl Game {
     /// Builds the floor for the current depth and its hunters; the meshes wait for `sync_world`.
     pub fn start_floor_sim(&mut self, content: &Content, catalog: &Catalog) {
         crate::audio::world::reset(); // a new floor: new hunter views, no hum, nothing queued
+        self.plunge = None; // a new floor: no plunge in flight, no cached sewer chunk, dry again
+        self.water_cache = None;
+        self.flood_depth = 0.0;
+        self.swim = swim_effects::SwimState::default();
         let seed = self.level_seed();
         let opt = Options {
             safe_zone_count: self.difficulty.safe_zone_limit(),
@@ -753,7 +773,11 @@ impl Game {
         }
 
         self.p.look(c.look);
-        if self.ladder.is_some() {
+        if self.plunge.is_some() {
+            // the waterfall plunge: no input, no collision, until it finishes (then the runner is soaked)
+            self.advance_plunge(dt, content, catalog);
+            self.update_swim(dt, 0.0, false);
+        } else if self.ladder.is_some() {
             self.advance_ladder(dt, c, content, catalog);
         } else if self.p.hidden.is_some() {
             self.update_hidden(dt, c, &prof, sounds);
@@ -764,9 +788,14 @@ impl Game {
             let local = self.local_climate();
             let admin = self.admin_flags();
             self.p.noclip = admin.noclip;
-            self.p.speed_scale = admin.run_speed;
+            // wading: the water at the runner's feet slows the step (swim.json), then adds its noise, stamina cost and
+            // the soaked state (swim_effects.json); the real runner only
+            let water = self.runner_water_depth();
+            self.p.speed_scale = admin.run_speed * Game::wade_scale(water);
             self.p
                 .update_movement(dt, c, &prof, &self.fac, &mut self.meters, sounds);
+            self.update_swim(dt, water, admin.god);
+            self.try_begin_plunge(c);
             self.ladder_walk_in();
             self.walked_level_change(content, catalog);
             if admin.noclip {

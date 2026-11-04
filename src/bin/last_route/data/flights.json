@@ -1,0 +1,34 @@
+{
+  "schema": "lr.flights/1",
+  "_about": "The flight definition (world/flight.rs): one stair, ladder or drop between two floors, in one vertical frame (floor y = level * storey). Lengths are cells (1 cell = 1 m of run), heights are metres. storey and rise_total must equal the game's STOREY (world/vertical.rs, 5.0) or the file is refused; slab is the floor/ceiling slab thickness between two storeys. max_riser is the tallest step the walked surface may have: the rise per tread, with steps_per_cell treads per metre of run; a shape that would exceed it is refused. margin_cells is the clear cells kept beyond the landing (upper level) and the foot (lower level). switchback: a well length x (2 * lane_width) cells with a mid landing mid_landing_rise above the lower floor, mid_landing_len cells deep at the far end of the well. straight: a longer flight, length cells long and width cells wide. spiral: a flight around a centre column, radius (cells, a whole number) to the middle of the walkway, lane_width (odd) cells wide, turns of a full circle (0.25, 0.5 or 0.75). shape_weights pick the shape of a stairwell (shape_for); region_weights replace them for the listed levels (key = level number).",
+  "storey": 5.0,
+  "slab": 0.3,
+  "rise_total": 5.0,
+  "max_riser": 0.3,
+  "steps_per_cell": 3,
+  "margin_cells": 1,
+  "switchback": {
+    "length": 4,
+    "lane_width": 1,
+    "mid_landing_rise": 2.5,
+    "mid_landing_len": 0.5
+  },
+  "straight": {
+    "length": 8,
+    "width": 2
+  },
+  "spiral": {
+    "radius": 2,
+    "lane_width": 1,
+    "turns": 0.75
+  },
+  "shape_weights": {
+    "switchback": 0.5,
+    "straight": 0.3,
+    "spiral": 0.2
+  },
+  "region_weights": {
+    "-1": { "switchback": 0.7, "straight": 0.3, "spiral": 0.0 },
+    "-3": { "switchback": 0.3, "straight": 0.2, "spiral": 0.5 }
+  }
+}

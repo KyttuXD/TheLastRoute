@@ -87,6 +87,54 @@ pub fn is_safe_room(world: &str, c: Coord) -> bool {
 /// `_hunter_spawns` (sewer_route_generator.gd:388-464) for one sewer chunk. `fixtures` is the chunk's `_fixtures`
 /// (`fixtures::fixtures`), `pickup_cells` the cells of its pickups (`_pickups`, not ported yet).
 pub fn chunk_hunter_spawns(world: &str, chunk: &SewerChunk, fixtures: &[Fixture], pickup_cells: &[V2]) -> Vec<HunterSpawn> {
+    let mut result = base_hunter_spawns(world, chunk, fixtures, pickup_cells);
+    if let Some(room) = &chunk.room {
+        let coord = chunk.coord;
+        // the same exits as the base pass: the arrival column and a safe surface room hold no hunters
+        if (coord.x.abs() > 1 || coord.z.abs() > 1) && !is_safe_room(world, Coord::new(coord.x, SURFACE_LEVEL, coord.z)) {
+            add_room_spawns(world, chunk, room, &mut result);
+        }
+    }
+    result
+}
+
+/// The static roster id for a name in a room's prefer list (`SEWER_PREFER` first, then the streamed roster).
+fn roster_id(name: &str) -> Option<&'static str> {
+    SEWER_PREFER.iter().chain(STREAMED_HUNTER_IDS.iter()).find(|id| **id == name).copied()
+}
+
+/// The room's hunter cells (`Placed::hunter_spawns`, chance lerped by the level's danger) as spawns. The identity is
+/// drawn from the room's prefer list minus its avoid list, and by `sewer_affinity` never from the hunters who avoid
+/// the sewer; with no usable preference it falls back to the roster the base pass uses.
+fn add_room_spawns(world: &str, chunk: &SewerChunk, room: &super::rooms::Placed<'_>, out: &mut Vec<HunterSpawn>) {
+    let coord = chunk.coord;
+    let sewer_id = chunk_id(coord);
+    let danger = danger_for_level(coord.y);
+    for (n, (cell, prefer, avoid)) in room.hunter_spawns(world, &sewer_id, danger).into_iter().enumerate() {
+        let mut pool: Vec<&'static str> = prefer
+            .iter()
+            .filter(|p| !avoid.contains(p))
+            .filter_map(|p| roster_id(p))
+            .filter(|id| sewer_affinity(id) != "avoid")
+            .collect();
+        if pool.is_empty() {
+            pool = STREAMED_HUNTER_IDS
+                .iter()
+                .copied()
+                .filter(|id| sewer_affinity(id) != "avoid" && !avoid.iter().any(|a| a == id))
+                .collect();
+        }
+        if pool.is_empty() || out.iter().any(|s| s.cell == cell) {
+            continue;
+        }
+        let mut rng = Rng::new(&format!("{world}:SEWER-ROOMS:{sewer_id}:IDENTITY:{n}"));
+        let identity = pool[rng.next_index(pool.len())];
+        let index = out.len();
+        out.push(HunterSpawn { id: hunter_id(coord, index), hunter_id: identity, cell, level: coord.y, origin_chunk: coord });
+    }
+}
+
+fn base_hunter_spawns(world: &str, chunk: &SewerChunk, fixtures: &[Fixture], pickup_cells: &[V2]) -> Vec<HunterSpawn> {
     let coord = chunk.coord;
     // 390-395: not a sewer chunk, the four chunks round the arrival column, a safe surface room: no spawns, no draw.
     if !is_chunk_allowed(coord) {
@@ -232,7 +280,34 @@ fn distance(a: V2, b: V2) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::route::sewer::core::{chunk, Inputs};
+
+    /// A played chunk with a room can add that room's hunters: on room floor, never an avoider, ids unique and the
+    /// base spawns come first and unchanged.
+    #[test]
+    fn played_chunks_add_their_rooms_hunters() {
+        use crate::world::route::sewer::core::{chunk as played, Inputs};
+        let mut added = 0;
+        for x in -12..12 {
+            for z in -12..12 {
+                let Some(c) = played(Coord::new(x, -2, z), &Inputs { world: "rooms-hunt" }) else { continue };
+                let Some(room) = &c.room else { continue };
+                let all = chunk_hunter_spawns("rooms-hunt", &c, &[], &[]);
+                let base = base_hunter_spawns("rooms-hunt", &c, &[], &[]);
+                assert_eq!(&all[..base.len()], &base[..]);
+                let mut ids: Vec<&String> = all.iter().map(|s| &s.id).collect();
+                ids.sort();
+                ids.dedup();
+                assert_eq!(ids.len(), all.len());
+                for s in &all[base.len()..] {
+                    added += 1;
+                    assert_ne!(sewer_affinity(s.hunter_id), "avoid");
+                    assert_eq!(room.def.code_at(s.cell.x - room.origin.x, s.cell.y - room.origin.y), Some(DRY));
+                }
+            }
+        }
+        assert!(added > 0, "no room hunters in the scanned area");
+    }
+    use crate::world::route::sewer::core::{chunk_base as chunk, Inputs};
     use serde_json::Value;
 
     const TAGS: [&str; 3] = ["parity", "k7qxm", "demo"];

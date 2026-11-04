@@ -100,6 +100,11 @@ impl Game {
     }
 
     pub(super) fn update_hunters(&mut self, dt: f32, prof: &Profile, _sounds: &Sounds) {
+        // a guest's hunters only display: they never start emotes of their own
+        let display_only = self.remote_hunters;
+        for h in &mut self.hunters {
+            h.display_only = display_only;
+        }
         // a guest runs no hunter simulation: the host's frames set every hunter (apply_hunter_frame)
         if self.remote_hunters {
             return;

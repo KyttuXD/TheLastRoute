@@ -239,6 +239,174 @@ fn unit(h: u64, n: u64) -> f32 {
     (z >> 40) as f32 / (1u64 << 24) as f32
 }
 
+/// How the scene shows the glowing kinds (the numbers are in the `scene` block of data/render/inferno.json).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneCfg {
+    /// A glow further than this from the eye (along the floor) casts no light.
+    pub glow_cull_m: f32,
+    /// An ember further than this is not drawn.
+    pub ember_cull_m: f32,
+    /// Height of a lava glow's light above its floor.
+    pub glow_height_m: f32,
+    /// Height of a floor crack's light above its floor.
+    pub crack_height_m: f32,
+    /// Height above the floor where an ember starts to rise.
+    pub ember_start_m: f32,
+    /// How far an ember wanders sideways by the end of its life.
+    pub ember_drift_m: f32,
+}
+
+impl SceneCfg {
+    pub fn parse(text: &str) -> Result<SceneCfg, String> {
+        let root: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let s = root.get("scene").ok_or("scene: missing")?;
+        let num = |key: &str| -> Result<f32, String> {
+            s.get(key)
+                .and_then(|x| x.as_f64())
+                .filter(|n| *n >= 0.0)
+                .map(|n| n as f32)
+                .ok_or_else(|| format!("scene.{key}: expected a number, zero or more"))
+        };
+        Ok(SceneCfg {
+            glow_cull_m: num("glow_cull_m")?,
+            ember_cull_m: num("ember_cull_m")?,
+            glow_height_m: num("glow_height_m")?,
+            crack_height_m: num("crack_height_m")?,
+            ember_start_m: num("ember_start_m")?,
+            ember_drift_m: num("ember_drift_m")?,
+        })
+    }
+}
+
+/// The scene numbers compiled into the executable. A table that fails to parse is reported on stderr and the
+/// glowing kinds are not shown (every distance is zero).
+pub fn scene_cfg() -> &'static SceneCfg {
+    static CFG: OnceLock<SceneCfg> = OnceLock::new();
+    CFG.get_or_init(|| {
+        let text = crate::content::embedded::data_under(PATH).next().map(|(_, t)| t).unwrap_or("{}");
+        SceneCfg::parse(text).unwrap_or_else(|e| {
+            eprintln!("{PATH}: {e}");
+            SceneCfg { glow_cull_m: 0.0, ember_cull_m: 0.0, glow_height_m: 0.0, crack_height_m: 0.0, ember_start_m: 0.0, ember_drift_m: 0.0 }
+        })
+    })
+}
+
+/// A placed piece in window metres: `pos` is (x, floor height, z).
+#[derive(Clone, Copy, Debug)]
+pub struct Placed {
+    pub deco: Deco,
+    pub pos: [f32; 3],
+}
+
+/// Every piece of the 3x3 window of level -3 around `center` (the streamed window's centre chunk), placed in window
+/// metres (the window's (0, 0) is the corner of chunk (centre - 1)).
+pub fn window_decos(deco: &InfernoDeco, seed: &str, center: (i32, i32)) -> Vec<Placed> {
+    let mut out = Vec::new();
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            let key = ChunkKey { cx: center.0 + dx, cy: center.1 + dy, level: crate::world::infinite::INFERNO_LEVEL };
+            let inf = Inferno::carve(seed, key);
+            let (ox, oy) = (((dx + 1) * CHUNK) as f32, ((dy + 1) * CHUNK) as f32);
+            for d in deco.place(seed, key, &inf) {
+                let pos = [ox + d.cell.x as f32 + 0.5 + d.offset[0], d.floor_y, oy + d.cell.y as f32 + 0.5 + d.offset[1]];
+                out.push(Placed { deco: d, pos });
+            }
+        }
+    }
+    out
+}
+
+type WindowKey = (String, (i32, i32));
+
+thread_local! {
+    static WINDOW: std::cell::RefCell<Option<(WindowKey, Vec<Placed>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `f` on the window's pieces, placed once while the window stays the same (the scene asks every frame).
+pub fn with_window_decos<R>(seed: &str, center: (i32, i32), f: impl FnOnce(&[Placed]) -> R) -> R {
+    WINDOW.with(|c| {
+        let mut c = c.borrow_mut();
+        let fresh = matches!(&*c, Some(((s, ce), _)) if s == seed && *ce == center);
+        if !fresh {
+            *c = Some(((seed.to_string(), center), window_decos(inferno_deco(), seed, center)));
+        }
+        f(&c.as_ref().expect("just set").1)
+    })
+}
+
+/// A point light of a glowing piece.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Glow {
+    pub pos: [f32; 3],
+    pub color: [f32; 3],
+    pub range_m: f32,
+    pub energy: f32,
+}
+
+fn near(eye: [f32; 3], p: [f32; 3], within: f32) -> bool {
+    (p[0] - eye[0]).powi(2) + (p[2] - eye[2]).powi(2) <= within * within
+}
+
+/// The point lights of the lava glows (flickering at their `flicker_hz`) and the floor cracks (their steady
+/// `glow_strength`), for pieces within `glow_cull_m` of the eye, at time `t_s`. A kind with no radius or no
+/// strength in the data casts no light.
+pub fn glows(placed: &[Placed], eye: [f32; 3], t_s: f32, deco: &InfernoDeco, cfg: &SceneCfg) -> Vec<Glow> {
+    let mut out = Vec::new();
+    for p in placed {
+        let (height, steady) = match p.deco.kind {
+            DecoKind::LavaGlow => (cfg.glow_height_m, false),
+            DecoKind::FloorCrack => (cfg.crack_height_m, true),
+            _ => continue,
+        };
+        let Some(rule) = deco.rule(p.deco.kind) else { continue };
+        if rule.glow_radius_m <= 0.0 || rule.glow_strength <= 0.0 || !near(eye, p.pos, cfg.glow_cull_m) {
+            continue;
+        }
+        let flick = if steady || rule.flicker_hz <= 0.0 { 1.0 } else { flicker(t_s, p.deco.phase, rule.flicker_hz) };
+        out.push(Glow {
+            pos: [p.pos[0], p.pos[1] + height, p.pos[2]],
+            color: p.deco.color,
+            range_m: rule.glow_radius_m,
+            energy: rule.glow_strength * flick,
+        });
+    }
+    out
+}
+
+/// One ember on the wing: its place, size and colour. It shrinks as it burns out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ember {
+    pub pos: [f32; 3],
+    pub size_m: f32,
+    pub color: [f32; 3],
+}
+
+/// The embers at time `t_s`: each rises from its piece at a speed and over a life drawn from its rule's ranges (by
+/// its phase), drifts sideways a little, shrinks to nothing and starts again. Only those within `ember_cull_m`.
+pub fn embers(placed: &[Placed], eye: [f32; 3], t_s: f32, deco: &InfernoDeco, cfg: &SceneCfg) -> Vec<Ember> {
+    let Some(rule) = deco.rule(DecoKind::Ember) else { return Vec::new() };
+    if rule.life_s[1] <= 0.0 {
+        return Vec::new();
+    }
+    placed
+        .iter()
+        .filter(|p| p.deco.kind == DecoKind::Ember && near(eye, p.pos, cfg.ember_cull_m))
+        .map(|p| {
+            let ph = p.deco.phase;
+            let life = lerp(rule.life_s, ph).max(0.01);
+            let speed = lerp(rule.rise_speed_mps, (ph * 7.31).fract());
+            let burn = ((t_s / life) + ph).rem_euclid(1.0);
+            let age = burn * life;
+            let drift = (t_s * 1.3 + ph * std::f32::consts::TAU).sin() * cfg.ember_drift_m * burn;
+            Ember {
+                pos: [p.pos[0] + drift, p.pos[1] + cfg.ember_start_m + speed * age, p.pos[2] + drift * 0.5],
+                size_m: p.deco.size_m * (1.0 - burn),
+                color: p.deco.color,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,6 +509,112 @@ mod tests {
         assert!(InfernoDeco::parse(&text.replacen("[\"basin\"]", "[\"moon\"]", 1)).is_err());
         assert!(InfernoDeco::parse(&text.replacen("[1.0, 0.42, 0.08]", "[2.0, 0.4, 0.1]", 1)).is_err());
         assert!(InfernoDeco::parse(&text.replacen("[1.2, 2.4]", "[3.0, 1.0]", 1)).is_err());
+    }
+
+    fn window() -> Vec<Placed> {
+        window_decos(inferno_deco(), SEED, (2, 2))
+    }
+
+    #[test]
+    fn the_window_places_every_chunk_inside_its_span() {
+        let w = window();
+        assert!(!w.is_empty());
+        let span = 3.0 * CHUNK as f32;
+        for p in &w {
+            assert!(p.pos[0] >= 0.0 && p.pos[0] < span && p.pos[2] >= 0.0 && p.pos[2] < span);
+        }
+        let again = with_window_decos(SEED, (2, 2), |p| p.len());
+        assert_eq!(again, w.len(), "the cached window is the placed one");
+        assert_eq!(with_window_decos(SEED, (2, 2), |p| p.len()), w.len());
+    }
+
+    /// A placed piece of `kind` at window (x, z) on a floor at y -1, with the rule's own colour.
+    fn piece(kind: DecoKind, x: f32, z: f32, phase: f32) -> Placed {
+        let rule = inferno_deco().rule(kind).unwrap();
+        Placed {
+            deco: Deco {
+                kind,
+                cell: Cell::new(0, 0),
+                offset: [0.0, 0.0],
+                size_m: rule.size_m[1],
+                yaw: 0.0,
+                color: rule.color,
+                floor_y: -1.0,
+                phase,
+            },
+            pos: [x, -1.0, z],
+        }
+    }
+
+    #[test]
+    fn lava_glows_flicker_and_cracks_stay_steady() {
+        let (deco, cfg) = (inferno_deco(), scene_cfg());
+        let lava = deco.rule(DecoKind::LavaGlow).unwrap();
+        let crack = deco.rule(DecoKind::FloorCrack).unwrap();
+        let placed = [piece(DecoKind::LavaGlow, 10.0, 10.0, 0.1), piece(DecoKind::FloorCrack, 12.0, 10.0, 0.1), piece(DecoKind::Stalactite, 11.0, 10.0, 0.1)];
+        let eye = [10.0, 1.6, 10.0];
+        let a = glows(&placed, eye, 0.0, deco, cfg);
+        let b = glows(&placed, eye, 0.2, deco, cfg);
+        assert_eq!(a.len(), 2, "only glowing kinds light");
+        assert_eq!((a[0].range_m, a[0].color), (lava.glow_radius_m, lava.color));
+        assert!(a[0].pos[1] > -1.0, "the light hangs above the floor");
+        assert_ne!(a[0].energy, b[0].energy, "lava flickers with time");
+        for g in [a[0], b[0]] {
+            assert!(g.energy >= lava.glow_strength * 0.8 - 1e-4 && g.energy <= lava.glow_strength * 1.2 + 1e-4);
+        }
+        assert_eq!((a[1].energy, b[1].energy), (crack.glow_strength, crack.glow_strength), "cracks do not");
+        assert_eq!(a[1].range_m, crack.glow_radius_m);
+    }
+
+    #[test]
+    fn glows_obey_the_cull_and_the_data() {
+        let (deco, cfg) = (inferno_deco(), scene_cfg());
+        let placed = [piece(DecoKind::LavaGlow, 10.0, 10.0, 0.0), piece(DecoKind::LavaGlow, 10.0 + cfg.glow_cull_m + 5.0, 10.0, 0.0)];
+        let eye = [10.0, 1.6, 10.0];
+        assert_eq!(glows(&placed, eye, 0.0, deco, cfg).len(), 1, "the far one casts no light");
+        let mut tight = cfg.clone();
+        tight.glow_cull_m = 0.5;
+        assert_eq!(glows(&placed, [30.0, 1.6, 10.0], 0.0, deco, &tight).len(), 0);
+        let dark = InfernoDeco::parse(&include_str!("../data/render/inferno.json").replace("\"glow_strength\": 1.4", "\"glow_strength\": 0.0")).unwrap();
+        assert!(glows(&placed, eye, 0.0, &dark, cfg).is_empty(), "no strength, no light");
+    }
+
+    #[test]
+    fn embers_rise_shrink_and_start_again() {
+        let (deco, cfg) = (inferno_deco(), scene_cfg());
+        let rule = deco.rule(DecoKind::Ember).unwrap();
+        let placed = [piece(DecoKind::Ember, 10.0, 10.0, 0.25), piece(DecoKind::Ember, 11.0, 10.0, 0.6), piece(DecoKind::LavaGlow, 12.0, 10.0, 0.6)];
+        let eye = [10.0, 1.6, 10.0];
+        let a = embers(&placed, eye, 0.0, deco, cfg);
+        assert_eq!(a.len(), 2, "only embers rise");
+        let reach = cfg.ember_start_m + rule.rise_speed_mps[1] * rule.life_s[1];
+        let mut last = [f32::MIN; 2];
+        let mut restarted = false;
+        for step in 0..400 {
+            let t = step as f32 * 0.05;
+            for (i, e) in embers(&placed, eye, t, deco, cfg).iter().enumerate() {
+                assert!(e.size_m >= 0.0 && e.size_m <= rule.size_m[1] + 1e-6);
+                assert!(e.pos[1] >= -1.0 + cfg.ember_start_m - 1e-4 && e.pos[1] <= -1.0 + reach + 1e-3);
+                if e.pos[1] < last[i] {
+                    restarted = true;
+                } else if last[i] > f32::MIN {
+                    assert!(e.pos[1] >= last[i], "it climbs between restarts");
+                }
+                last[i] = e.pos[1];
+            }
+        }
+        assert!(restarted, "an ember that burns out starts again at the floor");
+        assert!(embers(&placed, [9000.0, 0.0, 9000.0], 0.0, deco, cfg).is_empty());
+    }
+
+    #[test]
+    fn scene_numbers_are_data() {
+        let text = include_str!("../data/render/inferno.json");
+        let c = SceneCfg::parse(text).unwrap();
+        assert_eq!(&c, scene_cfg());
+        assert!(SceneCfg::parse("{}").is_err());
+        let wider = SceneCfg::parse(&text.replacen("\"glow_cull_m\": 36.0", "\"glow_cull_m\": 60.0", 1)).unwrap();
+        assert!(wider.glow_cull_m > c.glow_cull_m);
     }
 
     #[test]

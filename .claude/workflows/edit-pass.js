@@ -17,6 +17,8 @@ const DOCS = 'C:\\Users\\Kyttu\\Documents\\Projects\\Docs'
 const tasks = (args && args.tasks) || []
 const label = (args && args.label) || 'pass'
 const extra = (args && args.extraRules) || ''
+// args.skipNightWatch: leave src/bin/night_watch out of the build and test stages (KT: ignore Night Watch during the stairs pass)
+const NW = !(args && args.skipNightWatch)
 const TARGET = 'target/' + String(label).replace(/[^a-z0-9]+/gi, '-').toLowerCase()
 
 const RULES = `Repo: ${REPO} (git repo; commit nothing, stage nothing, no git add/commit/checkout/stash/reset/push, no deploys, no SSH, no VPS changes).
@@ -92,7 +94,7 @@ ${reports}`, { label: 'QA: test read', phase: 'QA', model: 'haiku', effort: 'low
 phase('Build')
 const build = await agent(`${RULES}
 
-All edits and QA are done. One build only, with CARGO_TARGET_DIR=${TARGET}: cargo build --bin last_route; then cargo test --bin last_route --no-run; then cargo build --bin lr_server --features server and cargo build --bin night_watch. Report every compile error with file and line. If something fails, apply the one-line fixes from the QA reports below ONLY if they match the error exactly, rebuild once, and report what you changed. Do not make other changes.
+All edits and QA are done. One build only, with CARGO_TARGET_DIR=${TARGET}: cargo build --bin last_route; then cargo test --bin last_route --no-run; then cargo build --bin lr_server --features server${NW ? ' and cargo build --bin night_watch' : ' (do NOT build night_watch in this pass)'}. Report every compile error with file and line. If something fails, apply the one-line fixes from the QA reports below ONLY if they match the error exactly, rebuild once, and report what you changed. Do not make other changes.
 
 QA data/format:
 ${String(dataQa)}
@@ -112,7 +114,7 @@ Test instance 2 of 3. Use ${TARGET}/debug/last_route.exe (build it with CARGO_TA
 
 Build: ${String(build)}`, { label: 'test 2: headless', phase: 'Test', model: 'haiku', effort: 'low' }),
   () => agent(`${RULES}
-Test instance 3 of 3. CARGO_TARGET_DIR=${TARGET}. Run cargo test --bin lr_server --features server and cargo test --bin night_watch once each. Report counts and each failing test with its first assertion. Fix nothing.
+Test instance 3 of 3. CARGO_TARGET_DIR=${TARGET}. Run cargo test --bin lr_server --features server${NW ? ' and cargo test --bin night_watch' : ' (skip night_watch in this pass)'} once. Report counts and each failing test with its first assertion. Fix nothing.
 
 Build: ${String(build)}`, { label: 'test 3: lr_server and night_watch', phase: 'Test', model: 'haiku', effort: 'low' }),
 ])

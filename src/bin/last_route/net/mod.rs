@@ -39,11 +39,13 @@ pub mod http;
 pub mod pending;
 pub mod hunter_events;
 pub mod protocol;
+pub mod public_route;
 pub mod relay;
 pub mod runner_figure;
 pub mod saves;
 pub mod session;
 pub mod store;
+pub mod valve_events;
 pub mod wiring;
 pub mod world_sync;
 

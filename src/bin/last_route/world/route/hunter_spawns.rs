@@ -65,7 +65,7 @@ pub fn chunk_hunter_spawns(
     let tag = props::chunk_tag(c);
     let mut rng = Rng::new(&format!("{world}:HUNTERS:{tag}"));
     // lerpf(0.16, 0.42, danger)
-    let spawn_chance = profile.hunter_spawn_chance();
+    let spawn_chance = crate::world::route::maze_regions::hunter_chance_at(profile.hunter_spawn_chance(), world, c.x, c.z, c.y);
     let guaranteed_primary = c == Coord::new(1, 0, 0);
     // 5652: the roll is drawn before the candidate check (an empty pool still spends it).
     if !guaranteed_primary && rng.next_float() >= spawn_chance {
@@ -190,6 +190,8 @@ mod parity_tests {
     use std::path::{Path, PathBuf};
 
     const TAGS: [&str; 3] = ["parity", "k7qxm", "demo"];
+    /// Level-0 chunks across all TAGS that carry a maze variant and are left out of the Godot comparison.
+    const EXPECTED_VARIANT_CHUNKS: usize = 28;
 
     /// The level-0 chunks of one golden: the world seed, and each chunk's coord with its Godot hunter entries.
     struct Golden {
@@ -292,11 +294,17 @@ mod parity_tests {
     fn check(tags: &[&str], load: fn(&str) -> Golden) {
         let mut report = String::new();
         let mut failures: Vec<String> = Vec::new();
+        let mut excluded: Vec<String> = Vec::new();
         for tag in tags {
             let golden = load(tag);
             let (mut chunks, mut matched_chunks, mut made) = (0usize, 0usize, 0usize);
             let (mut entries, mut matched_entries) = (0usize, 0usize);
             for (c, wanted) in &golden.chunks {
+                // A maze variant chunk is new content with its own hunter chance; Godot has no such chunk.
+                if let Some(v) = crate::world::route::maze_regions::variant_at(&golden.world, c.x, c.z, c.y) {
+                    excluded.push(format!("{tag} [{},{},{}] {}", c.x, c.y, c.z, v.id));
+                    continue;
+                }
                 chunks += 1;
                 entries += wanted.len();
                 let Some(layout) = chunk_layout(&golden.world, *c) else {
@@ -320,6 +328,8 @@ mod parity_tests {
             ));
         }
         eprintln!("{report}");
+        eprintln!("EXCLUDED {} maze variant chunks: {}", excluded.len(), excluded.join("; "));
+        assert_eq!(excluded.len(), EXPECTED_VARIANT_CHUNKS, "variant chunks excluded: {excluded:?}");
         for line in failures.iter().take(25) {
             eprintln!("MISMATCH {line}");
         }

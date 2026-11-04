@@ -51,5 +51,9 @@
     "think_jitter": 0.1,
     "_source": "Rust-only figures from the first port (npc.rs DOOR_THINK); no Godot line"
   },
+  "water": {
+    "avoid_depth": 0.5,
+    "_source": "Rust-only figure: a bot keeps out of sewer water at least this deep (metres over the bed) unless it is fleeing a chasing hunter"
+  },
   "tasks": ["door"]
 }

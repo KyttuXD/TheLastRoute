@@ -164,6 +164,7 @@ pub fn kind_name(f: Focus) -> &'static str {
         Focus::Vent(_) => "VENT",
         Focus::Shop(_) => "SHOP",
         Focus::Door(_) => "ROOM_DOOR",
+        Focus::Valve(_) => "VALVE",
     }
 }
 

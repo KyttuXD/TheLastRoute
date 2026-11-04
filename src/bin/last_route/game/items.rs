@@ -246,7 +246,7 @@ impl Game {
         }
     }
 
-    fn drop_selected(&mut self) {
+    pub(super) fn drop_selected(&mut self) {
         let Some(slot) = self.slots[self.selected] else {
             return;
         };

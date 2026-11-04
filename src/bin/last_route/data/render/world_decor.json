@@ -1,0 +1,9 @@
+{
+  "cone_sides": 6,
+  "cone_radius_fraction": 0.2,
+  "charred_width_fraction": 0.7,
+  "crack_width_fraction": 0.12,
+  "crack_length_fraction": 1.0,
+  "crack_lift_m": 0.012,
+  "crack_unlit_mode": 2.0
+}

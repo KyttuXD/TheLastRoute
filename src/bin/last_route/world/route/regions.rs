@@ -284,6 +284,10 @@ mod tests {
         let t = crate::content::regions::RegionTable::builtin(&mut Vec::new());
         assert!(!t.defs.is_empty());
         for d in &t.defs {
+            // level layouts (second sewer, pipe sewer, inferno caves) are catalogue rows, never drawn as a district
+            if ["sewer2", "sewer_pipes", "inferno_caves"].contains(&d.id.as_str()) {
+                continue;
+            }
             assert!(NAMES.contains(&d.id.as_str()), "{} is in the catalogue but not in NAMES", d.id);
         }
     }

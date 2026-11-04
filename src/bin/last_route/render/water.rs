@@ -32,12 +32,18 @@ pub fn corner_depth(grid: &Grid, cx: i32, cz: i32, p: &WaterParams) -> f32 {
 /// The water quads of a chunk's grid: chunk cell (0,0) at `origin` (x, z in metres), `cell` metres a side, the
 /// surface at `floor_y` plus the surface offset. Returns the number of quads added.
 pub fn add_water(b: &mut Builder, grid: &Grid, origin: Vec2, cell: f32, floor_y: f32) -> usize {
+    add_water_cells(b, grid, origin, cell, floor_y, &|_, _| true)
+}
+
+/// `add_water` for the cells `keep(x, z)` accepts only (a streamed part draws the cells it owns, so no cell is
+/// drawn twice); the shore depth still reads every neighbour.
+pub fn add_water_cells(b: &mut Builder, grid: &Grid, origin: Vec2, cell: f32, floor_y: f32, keep: &dyn Fn(i32, i32) -> bool) -> usize {
     let p = params();
     let y = floor_y + p.water_surface;
     let mut count = 0;
     for z in 0..N as i32 {
         for x in 0..N as i32 {
-            if !is_water(grid, x, z) {
+            if !is_water(grid, x, z) || !keep(x, z) {
                 continue;
             }
             let corner = |cx: i32, cz: i32| (vec3(origin.x + cx as f32 * cell, y, origin.y + cz as f32 * cell), corner_depth(grid, cx, cz, p));
@@ -89,5 +95,24 @@ mod tests {
         let p = params();
         assert_eq!(corner_depth(&g, 6, 6, p), p.full_depth());
         assert!(corner_depth(&g, 4, 4, p) < corner_depth(&g, 6, 6, p));
+    }
+
+    #[test]
+    fn the_surface_sits_at_the_data_depth_and_only_kept_cells_are_drawn() {
+        let mut g: Grid = [[SOLID; N]; N];
+        for z in 4..9 {
+            for x in 4..9 {
+                g[z][x] = WATER;
+            }
+        }
+        let p = params();
+        let mut all = Builder::new(None);
+        assert_eq!(add_water(&mut all, &g, vec2(10.0, 20.0), 1.0, 0.0), 25);
+        assert!(all.verts.iter().all(|v| (v.position.y - p.water_surface).abs() < 1e-5), "surface = floor + water_surface");
+        assert!(all.verts.iter().all(|v| v.position.x >= 14.0 && v.position.x <= 19.0 && v.position.z >= 24.0));
+        let mut part = Builder::new(None);
+        let kept = add_water_cells(&mut part, &g, vec2(0.0, 0.0), 1.0, 2.0, &|x, _| x < 6);
+        assert_eq!(kept, 10, "two columns of five cells");
+        assert!(part.verts.iter().all(|v| (v.position.y - (2.0 + p.water_surface)).abs() < 1e-5));
     }
 }

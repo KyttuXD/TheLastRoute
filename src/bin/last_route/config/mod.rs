@@ -114,6 +114,7 @@ pub const HUNTER_DEPTH_SPEED_BONUS_PER_LEVEL: f32 = 0.055;
 pub const HUNTER_DEPTH_SPEED_BONUS_MAX: f32 = 0.55;
 pub const HUNTER_ARRIVAL_DISTANCE: f32 = 0.65;
 pub const HUNTER_WAYPOINT_DISTANCE: f32 = 0.18;
+// Standard fallback; the game reads data/hunters/search.json (unreachable_give_up) and a brain.rs test keeps them equal.
 pub const UNREACHABLE_GIVE_UP: f32 = 1.6;
 pub const HIDE_CHECK_REACH: f32 = 1.8;
 pub const CAMP_RADIUS: f32 = 2.0;

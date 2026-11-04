@@ -26,7 +26,7 @@ pub const MAX_ROOM_SIZE: i32 = 26;
 
 /// The built-in region files, `(file name, text)`. The game embeds the same files from data/regions/ at
 /// build time; a test in `content::regions` keeps the two lists equal.
-pub const BUILTIN_FILES: [(&str, &str); 13] = [
+pub const BUILTIN_FILES: [(&str, &str); 16] = [
     ("regions/apartment.json", include_str!("../../data/regions/apartment.json")),
     ("regions/beach.json", include_str!("../../data/regions/beach.json")),
     ("regions/carnival.json", include_str!("../../data/regions/carnival.json")),
@@ -34,12 +34,15 @@ pub const BUILTIN_FILES: [(&str, &str); 13] = [
     ("regions/greenhouse.json", include_str!("../../data/regions/greenhouse.json")),
     ("regions/hospital.json", include_str!("../../data/regions/hospital.json")),
     ("regions/hotel.json", include_str!("../../data/regions/hotel.json")),
+    ("regions/inferno_caves.json", include_str!("../../data/regions/inferno_caves.json")),
     ("regions/lab.json", include_str!("../../data/regions/lab.json")),
     ("regions/mall.json", include_str!("../../data/regions/mall.json")),
     ("regions/mansion.json", include_str!("../../data/regions/mansion.json")),
     ("regions/maze.json", include_str!("../../data/regions/maze.json")),
     ("regions/prison.json", include_str!("../../data/regions/prison.json")),
     ("regions/sewer.json", include_str!("../../data/regions/sewer.json")),
+    ("regions/sewer2.json", include_str!("../../data/regions/sewer2.json")),
+    ("regions/sewer_pipes.json", include_str!("../../data/regions/sewer_pipes.json")),
 ];
 
 /// The only region schema this build reads. A new shape is `lr.region/2`, added in both engines.

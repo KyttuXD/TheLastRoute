@@ -391,9 +391,52 @@ pub fn soaked_noise(rules: &PlungeRules, base_noise: f32, soaked_left: f32) -> f
     }
 }
 
+/// An absolute cell split into its chunk (x, z) and the cell inside that chunk (floor division, so negative cells work).
+pub fn split_cell(abs: (i32, i32), chunk: i32) -> ((i32, i32), (i32, i32)) {
+    (
+        (abs.0.div_euclid(chunk), abs.1.div_euclid(chunk)),
+        (abs.0.rem_euclid(chunk), abs.1.rem_euclid(chunk)),
+    )
+}
+
+/// The footstep noise to store on the runner for a water step of `water_noise` (already soaked-scaled by
+/// `SwimState::update`). The hunters' hearing multiplies the stored noise by the soaked `scale` again
+/// (`Game::runner_target`), so the water step is divided by it here: hunters then hear exactly `water_noise`.
+pub fn merge_water_noise(current: f32, water_noise: f32, scale: f32) -> f32 {
+    let stored = if scale > 0.0 { water_noise / scale } else { water_noise };
+    current.max(stored)
+}
+
+/// True when the runner stands at the waterfall ledge cell: on `start` or `cell` of the jump (chunk-local cells).
+pub fn at_jump_ledge(local: (i32, i32), start: (i32, i32), cell: (i32, i32)) -> bool {
+    local == start || local == cell
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_cell_handles_negative_cells() {
+        assert_eq!(split_cell((50, 3), 45), ((1, 0), (5, 3)));
+        assert_eq!(split_cell((-1, -45), 45), ((-1, -1), (44, 0)));
+    }
+
+    #[test]
+    fn hunters_hear_the_water_step_once_not_twice() {
+        let scale = 1.45;
+        let stored = merge_water_noise(0.0, 17.4, scale);
+        assert!((stored * scale - 17.4).abs() < 1e-4);
+        assert_eq!(merge_water_noise(30.0, 17.4, scale), 30.0, "a louder footstep stays");
+        assert_eq!(merge_water_noise(2.0, 0.0, scale), 2.0);
+    }
+
+    #[test]
+    fn the_ledge_is_the_jump_start_or_cell() {
+        assert!(at_jump_ledge((3, 4), (3, 4), (3, 5)));
+        assert!(at_jump_ledge((3, 5), (3, 4), (3, 5)));
+        assert!(!at_jump_ledge((9, 9), (3, 4), (3, 5)));
+    }
 
     fn standard() -> SwimRules {
         SwimRules::default()

@@ -134,6 +134,35 @@ pub fn rules() -> &'static Rules {
     })
 }
 
+/// Where the window settings live under data/ (the embedded file's name).
+const WINDOW_PATH: &str = "app/perf.json";
+
+/// The length of the counting window of the game log's spike line and the CSV's rows (data/app/perf.json
+/// `window_seconds`, Standard 1 second); a missing, broken or non-positive value reads as Standard.
+fn window_len() -> Duration {
+    static LEN: OnceLock<Duration> = OnceLock::new();
+    *LEN.get_or_init(|| {
+        crate::content::embedded::data_under(WINDOW_PATH)
+            .next()
+            .and_then(|(_, text)| parse_window(text))
+            .unwrap_or(STANDARD_WINDOW)
+    })
+}
+
+const STANDARD_WINDOW: Duration = Duration::from_secs(1);
+
+/// Parses `{ "window_seconds" }`: a finite number above 0.
+fn parse_window(text: &str) -> Option<Duration> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    let s = v["window_seconds"].as_f64().filter(|s| s.is_finite() && *s > 0.0)?;
+    Some(Duration::from_secs_f64(s))
+}
+
+/// Whether the window that began at `start` has run its length by `now`.
+fn window_elapsed(start: Instant, now: Instant, window: Duration) -> bool {
+    now.saturating_duration_since(start) >= window
+}
+
 /// Whether a frame of `dt` seconds is a spike (logged on the game log and the panel's spike log).
 fn is_spike(r: &Rules, dt: f32) -> bool {
     dt * 1000.0 > r.spike_ms
@@ -203,9 +232,14 @@ impl SpikeLog {
     /// Counts a frame and its draw calls in the window. When the window ends, the spikes and draw
     /// calls of the second that just ended go to the game log.
     fn tick(&mut self, now: Instant, draws: u32) {
+        self.tick_in(window_len(), now, draws);
+    }
+
+    /// `tick` with the window length given (the tests use short ones).
+    fn tick_in(&mut self, window: Duration, now: Instant, draws: u32) {
         let w = &mut self.window;
         let start = *w.start.get_or_insert(now);
-        if now.duration_since(start) >= Duration::from_secs(1) {
+        if window_elapsed(start, now, window) {
             if w.spikes > 0 {
                 crate::lr_info!(
                     "frame spikes last second: {} total, {} suppressed; draw calls per frame avg {:.0}, max {}",
@@ -288,7 +322,7 @@ impl PartsLog {
     fn tick(&mut self, now: Instant, secs: &[(&'static str, f32)]) {
         use std::io::Write;
         let start = *self.start.get_or_insert(now);
-        if now.duration_since(start) >= Duration::from_secs(1) {
+        if window_elapsed(start, now, window_len()) {
             let n = self.frames.max(1) as f32;
             let mut row = format!("{},{}", self.second, self.frames);
             for s in &self.sums {
@@ -717,5 +751,44 @@ mod tests {
         assert!((r.section_keep + r.section_new - 1.0).abs() < 1e-6);
         let custom = parsed(r#"{ "section_keep": 0.5, "section_new": 0.5 }"#);
         assert_eq!((custom.section_keep, custom.section_new), (0.5, 0.5));
+    }
+
+    #[test]
+    fn window_data_matches_standard_and_parses_strictly() {
+        let text = include_str!("../data/app/perf.json");
+        assert_eq!(parse_window(text), Some(STANDARD_WINDOW));
+        assert_eq!(window_len(), STANDARD_WINDOW);
+        assert_eq!(parse_window(r#"{ "window_seconds": 0.5 }"#), Some(Duration::from_millis(500)));
+        assert_eq!(parse_window(r#"{ "window_seconds": 0 }"#), None);
+        assert_eq!(parse_window("{}"), None);
+    }
+
+    #[test]
+    fn window_length_decides_when_a_window_ends_on_an_injected_clock() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        assert!(!window_elapsed(t0, at(999), STANDARD_WINDOW));
+        assert!(window_elapsed(t0, at(1000), STANDARD_WINDOW));
+        assert!(window_elapsed(t0, at(250), Duration::from_millis(250)));
+        // a clock reading before the start never ends the window
+        assert!(!window_elapsed(at(500), t0, STANDARD_WINDOW));
+    }
+
+    #[test]
+    fn spike_window_restarts_after_the_data_length() {
+        let t0 = Instant::now();
+        let mut log = SpikeLog::new(5);
+        let short = Duration::from_millis(100);
+        log.tick_in(short, t0, 10);
+        log.tick_in(short, t0 + Duration::from_millis(50), 30);
+        assert_eq!((log.window.frames, log.window.draws_max), (2, 30));
+        // past the window: it restarts, this frame counted in the new one
+        log.tick_in(short, t0 + Duration::from_millis(120), 7);
+        assert_eq!((log.window.frames, log.window.draws, log.window.draws_max), (1, 7, 7));
+        // the same gap under a one second window does not restart it
+        let mut std_log = SpikeLog::new(5);
+        std_log.tick_in(STANDARD_WINDOW, t0, 10);
+        std_log.tick_in(STANDARD_WINDOW, t0 + Duration::from_millis(120), 7);
+        assert_eq!(std_log.window.frames, 2);
     }
 }

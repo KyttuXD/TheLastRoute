@@ -116,6 +116,55 @@ pub fn grid_due(prev: Option<Instant>, now: Instant, period: Duration) -> Instan
     }
 }
 
+/// Where the pacing rules live under data/ (the embedded file's name).
+pub const PACING_RULES_PATH: &str = "app/pacing.json";
+
+/// The pacing rules (data/app/pacing.json).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PacingRules {
+    /// OS sleeps overshoot by up to a timer tick (about 15 ms by default on Windows), so the loop sleeps to this
+    /// many milliseconds short of the due time and spins the rest.
+    pub spin_slack_ms: f64,
+}
+
+impl Default for PacingRules {
+    fn default() -> PacingRules {
+        PacingRules { spin_slack_ms: 2.0 }
+    }
+}
+
+impl PacingRules {
+    /// Parses `{ "spin_slack_ms" }`; the slack must be a number of at least 0.
+    pub fn parse(text: &str) -> Result<PacingRules, String> {
+        let v: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let slack = v
+            .get("spin_slack_ms")
+            .and_then(|x| x.as_f64())
+            .filter(|x| *x >= 0.0 && x.is_finite())
+            .ok_or_else(|| "spin_slack_ms: must be a number of at least 0".to_string())?;
+        Ok(PacingRules { spin_slack_ms: slack })
+    }
+
+    fn slack(&self) -> Duration {
+        Duration::from_secs_f64(self.spin_slack_ms / 1000.0)
+    }
+}
+
+/// The rules compiled into the executable; a table that fails to parse is reported on stderr and Standard is used.
+pub fn pacing_rules() -> &'static PacingRules {
+    static RULES: std::sync::OnceLock<PacingRules> = std::sync::OnceLock::new();
+    RULES.get_or_init(|| {
+        let text = crate::content::embedded::data_under(PACING_RULES_PATH)
+            .next()
+            .map(|(_, t)| t)
+            .unwrap_or("{}");
+        PacingRules::parse(text).unwrap_or_else(|e| {
+            eprintln!("{PACING_RULES_PATH}: {e}");
+            PacingRules::default()
+        })
+    })
+}
+
 /// Holds the loop to the FPS LIMIT. Call `wait` once per frame, before the frame is presented.
 #[derive(Default)]
 pub struct Pacer {
@@ -124,31 +173,50 @@ pub struct Pacer {
 
 impl Pacer {
     pub fn wait(&mut self, cap: Option<u32>) {
+        self.wait_with(cap, pacing_rules(), &mut Instant::now, &mut nap);
+    }
+
+    /// `wait` with the time source and the sleep injected: `now` reads the clock, `nap(d)` waits about `d`
+    /// (a zero `d` only yields). The tests drive a fake clock through it.
+    pub fn wait_with(
+        &mut self,
+        cap: Option<u32>,
+        rules: &PacingRules,
+        now: &mut dyn FnMut() -> Instant,
+        nap: &mut dyn FnMut(Duration),
+    ) {
         let Some(fps) = cap else {
             self.grid = None;
             return;
         };
         let period = Duration::from_secs_f64(1.0 / fps.max(1) as f64);
-        let due = grid_due(self.grid, Instant::now(), period);
-        sleep_until(due);
+        let due = grid_due(self.grid, now(), period);
+        sleep_until(due, rules.slack(), now, nap);
         self.grid = Some(due + period);
     }
 }
 
-/// Sleeps to `due`. OS sleeps overshoot by up to a timer tick (about 15 ms by default on
-/// Windows), so the loop sleeps to 2 ms short and spins the rest.
-fn sleep_until(due: Instant) {
-    const SLACK: Duration = Duration::from_millis(2);
+/// The real sleep: a zero wait yields the thread, anything else sleeps it.
+fn nap(d: Duration) {
+    if d.is_zero() {
+        std::thread::yield_now();
+    } else {
+        std::thread::sleep(d);
+    }
+}
+
+/// Waits to `due`: sleeps while more than `slack` is left (to `slack` short of it), spins the rest.
+fn sleep_until(due: Instant, slack: Duration, now: &mut dyn FnMut() -> Instant, nap: &mut dyn FnMut(Duration)) {
     loop {
-        let now = Instant::now();
-        if now >= due {
+        let t = now();
+        if t >= due {
             return;
         }
-        let left = due.duration_since(now);
-        if left > SLACK {
-            std::thread::sleep(left - SLACK);
+        let left = due.duration_since(t);
+        if left > slack {
+            nap(left - slack);
         } else {
-            std::thread::yield_now();
+            nap(Duration::ZERO);
         }
     }
 }
@@ -156,6 +224,30 @@ fn sleep_until(due: Instant) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::{Cell, RefCell};
+
+    /// A fake clock: reading it returns the base plus the elapsed fake time; a nap advances it (a yield costs 50 us).
+    struct Fake {
+        base: Instant,
+        elapsed: Cell<Duration>,
+        naps: RefCell<Vec<Duration>>,
+    }
+
+    impl Fake {
+        fn new() -> Fake {
+            Fake { base: Instant::now(), elapsed: Cell::new(Duration::ZERO), naps: RefCell::new(Vec::new()) }
+        }
+        fn now(&self) -> Instant {
+            self.base + self.elapsed.get()
+        }
+        fn nap(&self, d: Duration) {
+            self.naps.borrow_mut().push(d);
+            self.elapsed.set(self.elapsed.get() + if d.is_zero() { Duration::from_micros(50) } else { d });
+        }
+        fn wait(&self, p: &mut Pacer, cap: Option<u32>, rules: &PacingRules) {
+            p.wait_with(cap, rules, &mut || self.now(), &mut |d| self.nap(d));
+        }
+    }
 
     #[test]
     fn vsync_row_maps_to_swap_interval_one_or_zero() {
@@ -186,26 +278,54 @@ mod tests {
     }
 
     #[test]
+    fn pacing_data_matches_standard() {
+        let r = PacingRules::parse(include_str!("../data/app/pacing.json")).expect("pacing.json parses");
+        assert_eq!(r, PacingRules::default());
+        assert_eq!(pacing_rules(), &r);
+        assert!(PacingRules::parse("{}").is_err());
+        assert!(PacingRules::parse(r#"{ "spin_slack_ms": -1 }"#).is_err());
+    }
+
+    #[test]
     fn uncapped_pacer_does_not_sleep() {
+        let clock = Fake::new();
         let mut p = Pacer::default();
-        let t0 = Instant::now();
         for _ in 0..1000 {
-            p.wait(None);
+            clock.wait(&mut p, None, &PacingRules::default());
         }
-        assert!(t0.elapsed() < Duration::from_millis(100));
+        assert!(clock.naps.borrow().is_empty());
+        assert_eq!(clock.elapsed.get(), Duration::ZERO);
         assert!(p.grid.is_none());
     }
 
     #[test]
     fn capped_pacer_holds_the_frame_rate() {
+        let clock = Fake::new();
         let mut p = Pacer::default();
-        let t0 = Instant::now();
-        // 30 frames at a 60 fps cap take about half a second (29 gaps of 16.7 ms)
+        // 30 frames at a 60 fps cap take 29 gaps of 16.7 ms on the grid, give or take a spin step
         for _ in 0..30 {
-            p.wait(Some(60));
+            clock.wait(&mut p, Some(60), &PacingRules::default());
         }
-        let took = t0.elapsed();
-        assert!(took >= Duration::from_millis(480), "took {took:?}");
-        assert!(took < Duration::from_millis(900), "took {took:?}");
+        let took = clock.elapsed.get();
+        let want = Duration::from_secs_f64(29.0 / 60.0);
+        assert!(took >= want && took < want + Duration::from_millis(5), "took {took:?}");
+    }
+
+    #[test]
+    fn spin_slack_in_data_changes_how_far_short_the_sleep_stops() {
+        let first_sleep = |slack_ms: f64| {
+            let clock = Fake::new();
+            let mut p = Pacer::default();
+            let rules = PacingRules { spin_slack_ms: slack_ms };
+            clock.wait(&mut p, Some(100), &rules); // first frame: due now
+            clock.wait(&mut p, Some(100), &rules); // second: a 10 ms gap
+            let naps = clock.naps.borrow();
+            *naps.iter().find(|d| !d.is_zero()).expect("a real sleep")
+        };
+        let tight = first_sleep(2.0);
+        let loose = first_sleep(5.0);
+        assert!((tight.as_secs_f64() - 0.008).abs() < 1e-3, "{tight:?}");
+        assert!((loose.as_secs_f64() - 0.005).abs() < 1e-3, "{loose:?}");
+        assert!(loose < tight);
     }
 }

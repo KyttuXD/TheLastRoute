@@ -7,6 +7,9 @@
 
 use super::catalog::Catalog;
 use super::godot_sort::sort_custom;
+use super::infinite::ChunkKey;
+use super::route::catwalk_links::{self, CatwalkLink};
+use super::route::{catwalk, maze_regions};
 use crate::content::regions::RegionDef;
 use super::rng::Rng;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
@@ -203,6 +206,10 @@ pub struct Facility {
     door_state: HashMap<Cell, DoorState>,
     /// The walk surface of each cell that is not plain ground floor; a cell with no entry is `Floor` at 0.0 m.
     walk_surface: HashMap<Cell, WalkSurface>,
+    /// The stairs and ladders up to this chunk's catwalk decks (`apply_catwalks`); empty on a chunk with none.
+    pub catwalk_links: Vec<CatwalkLink>,
+    /// The id of the level 0 maze variant that dresses this chunk (`apply_maze_variant`); `None` is the plain maze.
+    pub maze_variant: Option<String>,
 }
 
 /// How far a door is open (0 closed, 1 open) and whether it is meant to be open. `open` chases `want_open` at
@@ -340,6 +347,8 @@ impl Facility {
             prop_grid: vec![vec![]; (cols * rows) as usize],
             door_state: HashMap::new(),
             walk_surface: HashMap::new(),
+            catwalk_links: vec![],
+            maze_variant: None,
         };
         let room_count = opt.room_count.max(5);
         f.carve_facility_rooms(room_count, cat);
@@ -607,6 +616,8 @@ impl Facility {
             prop_grid: vec![],
             door_state: HashMap::new(),
             walk_surface: HashMap::new(),
+            catwalk_links: vec![],
+            maze_variant: None,
         };
         for (p, ox, oy, region) in parts {
             let sh = |c: Cell| Cell::new(c.x + ox, c.y + oy);
@@ -657,6 +668,11 @@ impl Facility {
                 cell: sh(s.cell),
                 ..s
             }));
+            // catwalk decks and their links ride along with the chunk they belong to
+            for (c, s) in p.walk_surface {
+                f.walk_surface.insert(sh(c), s);
+            }
+            f.catwalk_links.extend(p.catwalk_links.into_iter().map(|l| CatwalkLink { cell: sh(l.cell), ..l }));
             if let Some(s) = p.safe_zone {
                 f.safe_zone = Some(sh(s));
             }
@@ -1221,6 +1237,197 @@ impl Facility {
         } else {
             self.walk_surface.insert(cell, surface);
         }
+    }
+
+    /// Dresses a level 0 maze chunk with its region variant (`route::maze_regions`): records the variant id and thins
+    /// the chunk's loose pickups by the variant's `loot_scale` and its props by `prop_density` (a scale of 1 or more
+    /// changes nothing; relays, batteries and doors are never thinned). The floors, room roles and prop set of the
+    /// variant are read by the renderer through `maze_variant`. Returns the variant, `None` for the plain maze.
+    pub fn apply_maze_variant(&mut self, seed: &str, key: ChunkKey) -> Option<&'static maze_regions::MazeVariant> {
+        self.maze_variant = None;
+        let v = maze_regions::variant_at(seed, key.cx, key.cy, key.level)?;
+        self.maze_variant = Some(v.id.clone());
+        let tag = format!("{},{}", key.cx, key.cy);
+        let loot = v.spawn_rules.loot_scale;
+        let mut n = 0usize;
+        self.pickups.retain(|_| {
+            n += 1;
+            maze_regions::keeps(loot, seed, &format!("{tag}:loot"), n)
+        });
+        let density = v.spawn_rules.prop_density;
+        if density < 1.0 {
+            let mut n = 0usize;
+            self.props.retain(|p| {
+                n += 1;
+                p.door.is_some() || maze_regions::keeps(density, seed, &format!("{tag}:prop"), n)
+            });
+            self.rebuild_grids();
+        }
+        Some(v)
+    }
+
+    /// Raises catwalk decks over the level 0 floor of a chunk whose region the data allows (`catwalk_links.json`
+    /// `regions`) and links them to the ground by stairs and ladders. The deck grid is `route::catwalk`'s; a deck cell
+    /// stands only on an open, clear ground cell, and only where lifting it leaves the cells around it still
+    /// connected, so the ground floor stays walkable. Only the decks a link reaches are kept. Returns the number of
+    /// deck cells set (0 when the chunk has no catwalk).
+    pub fn apply_catwalks(&mut self, seed: &str, key: ChunkKey, region: &str) -> usize {
+        self.catwalk_links.clear();
+        if key.level != 0 || !catwalk_links::allowed_in(region) {
+            return 0;
+        }
+        let params = catwalk::params();
+        let grid = catwalk::generate(&format!("{seed}:L0:C{},{}", key.cx, key.cy));
+        let n = self.cols;
+        if self.rows != n || grid.size as i32 != n {
+            return 0;
+        }
+        let idx = |c: Cell| (c.y * n + c.x) as usize;
+        let mut ground = vec![false; (n * n) as usize];
+        for y in 0..n {
+            for x in 0..n {
+                ground[idx(Cell::new(x, y))] =
+                    !self.is_hole(x, y) && self.can_occupy(x as f64 + 0.5, y as f64 + 0.5, 0.25);
+            }
+        }
+        let open = ground.clone();
+        let mut keep_clear = self.taken_cells();
+        for s in &self.stairs {
+            for dy in -3..=3 {
+                for dx in -3..=3 {
+                    keep_clear.insert(Cell::new(s.cell.x + dx, s.cell.y + dy));
+                }
+            }
+        }
+        for p in self.props.iter().filter(|p| p.door.is_some()) {
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    keep_clear.insert(Cell::new(p.cell.x + dx, p.cell.y + dy));
+                }
+            }
+        }
+        let mut deck: HashSet<Cell> = HashSet::new();
+        for y in 0..n {
+            for x in 0..n {
+                let c = Cell::new(x, y);
+                if grid.walkable(x, y) && ground[idx(c)] && !keep_clear.contains(&c) && Self::lifts_cleanly(&ground, n, c) {
+                    ground[idx(c)] = false;
+                    deck.insert(c);
+                }
+            }
+        }
+        let mut candidates: Vec<Cell> = Vec::new();
+        for c in &deck {
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let g = Cell::new(c.x + dx, c.y + dy);
+                if g.x >= 0 && g.y >= 0 && g.x < n && g.y < n && ground[idx(g)] && !keep_clear.contains(&g) {
+                    candidates.push(g);
+                }
+            }
+        }
+        let rules = catwalk_links::rules();
+        let links = catwalk_links::links_for(seed, key, &candidates, Some(params.height), &rules);
+        if links.is_empty() {
+            return 0;
+        }
+        // keep the deck cells joined to a link
+        let mut kept: HashSet<Cell> = HashSet::new();
+        let mut queue: VecDeque<Cell> = VecDeque::new();
+        for l in &links {
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let c = Cell::new(l.cell.x + dx, l.cell.y + dy);
+                if deck.contains(&c) && kept.insert(c) {
+                    queue.push_back(c);
+                }
+            }
+        }
+        while let Some(c) = queue.pop_front() {
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let m = Cell::new(c.x + dx, c.y + dy);
+                if deck.contains(&m) && kept.insert(m) {
+                    queue.push_back(m);
+                }
+            }
+        }
+        // the ground must not be cut in two by what is kept
+        let mut after = open.clone();
+        for c in &kept {
+            after[idx(*c)] = false;
+        }
+        if Self::ground_pieces(&after, n) > Self::ground_pieces(&open, n) {
+            return 0;
+        }
+        for c in &kept {
+            self.set_walk_surface(*c, DeckKind::Catwalk, params.height);
+        }
+        self.catwalk_links = links;
+        self.build_hunter_grid();
+        kept.len()
+    }
+
+    /// Whether closing `c` leaves its open 4-neighbours joined through the ring of cells around it.
+    fn lifts_cleanly(ground: &[bool], n: i32, c: Cell) -> bool {
+        const RING: [(i32, i32); 8] = [(-1, -1), (0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0)];
+        let at = |(dx, dy): (i32, i32)| {
+            let (x, y) = (c.x + dx, c.y + dy);
+            x >= 0 && y >= 0 && x < n && y < n && ground[(y * n + x) as usize]
+        };
+        let o: Vec<bool> = RING.iter().map(|d| at(*d)).collect();
+        let edges_open = (1..8).step_by(2).filter(|i| o[*i]).count();
+        if edges_open <= 1 {
+            return true;
+        }
+        let Some(start) = o.iter().position(|x| !*x) else {
+            return true;
+        };
+        let (mut run, mut prev_open) = (0usize, false);
+        let mut edge_run: Option<usize> = None;
+        for step in 1..=8 {
+            let i = (start + step) % 8;
+            if o[i] {
+                if !prev_open {
+                    run += 1;
+                }
+                if i % 2 == 1 {
+                    match edge_run {
+                        None => edge_run = Some(run),
+                        Some(r) if r != run => return false,
+                        _ => {}
+                    }
+                }
+            }
+            prev_open = o[i];
+        }
+        true
+    }
+
+    /// The number of 4-connected pieces of open ground in `ground` (an n x n grid).
+    fn ground_pieces(ground: &[bool], n: i32) -> usize {
+        let mut seen = vec![false; ground.len()];
+        let mut pieces = 0;
+        for s in 0..ground.len() {
+            if !ground[s] || seen[s] {
+                continue;
+            }
+            pieces += 1;
+            seen[s] = true;
+            let mut q = VecDeque::from([s as i32]);
+            while let Some(i) = q.pop_front() {
+                let (x, y) = (i % n, i / n);
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if nx < 0 || ny < 0 || nx >= n || ny >= n {
+                        continue;
+                    }
+                    let j = (ny * n + nx) as usize;
+                    if ground[j] && !seen[j] {
+                        seen[j] = true;
+                        q.push_back(j as i32);
+                    }
+                }
+            }
+        }
+        pieces
     }
 
     /// Swings every room door toward its wanted state. `openers` (the hunters, never the runner or a player bot) open a
@@ -2178,5 +2385,141 @@ mod tests {
     fn a_body_on_the_deck_is_blocked_by_a_floor_cell_at_zero() {
         let (f, _, floor) = deck_fixture();
         assert!(!f.body_fits_at(floor.center().0, floor.center().1, 0.2, 4.0));
+    }
+
+    const WORLD: &str = "1426541270";
+
+    /// The level 0 maze chunks around the origin, each built the way the live route builds it.
+    fn maze_chunks() -> Vec<(ChunkKey, Facility)> {
+        let cat = Catalog::load();
+        let mut out = vec![];
+        for cx in -8..8 {
+            for cy in -8..8 {
+                let key = ChunkKey { cx, cy, level: 0 };
+                if crate::world::route::regions::region_for(WORLD, cx, cy, 0) != "maze" {
+                    continue;
+                }
+                if let Some((f, _)) = crate::world::route::live::chunk(WORLD, key, &cat) {
+                    out.push((key, f));
+                }
+            }
+        }
+        out
+    }
+
+    fn open_ground(f: &Facility) -> Vec<bool> {
+        let mut g = vec![false; (f.cols * f.rows) as usize];
+        for y in 0..f.rows {
+            for x in 0..f.cols {
+                g[(y * f.cols + x) as usize] = !f.is_hole(x, y) && f.can_occupy(x as f64 + 0.5, y as f64 + 0.5, 0.25);
+            }
+        }
+        g
+    }
+
+    #[test]
+    fn catwalk_decks_stand_on_clear_ground_and_every_link_touches_a_deck() {
+        let height = catwalk::params().height;
+        let mut with_decks = 0;
+        for (key, mut f) in maze_chunks() {
+            let before = open_ground(&f);
+            let set = f.apply_catwalks(WORLD, key, "maze");
+            if set == 0 {
+                assert!(f.catwalk_links.is_empty());
+                continue;
+            }
+            with_decks += 1;
+            assert!(!f.catwalk_links.is_empty() && f.catwalk_links.len() <= catwalk_links::rules().per_chunk);
+            let decks: Vec<Cell> = (0..f.rows)
+                .flat_map(|y| (0..f.cols).map(move |x| Cell::new(x, y)))
+                .filter(|c| f.walk_surface_at(*c).kind == DeckKind::Catwalk)
+                .collect();
+            assert_eq!(decks.len(), set);
+            for c in &decks {
+                assert!(before[(c.y * f.cols + c.x) as usize], "a deck over a wall or prop at {c:?}");
+                assert_eq!(f.height_at(*c), height);
+                // a runner up on the deck fits there; one on the floor does not
+                assert!(f.body_fits_at(c.center().0, c.center().1, 0.2, height));
+                assert!(!f.body_fits_at(c.center().0, c.center().1, 0.2, 0.0));
+            }
+            for l in &f.catwalk_links {
+                assert_eq!(f.walk_surface_at(l.cell).kind, DeckKind::Floor, "a link starts on the ground");
+                assert!(decks.iter().any(|d| (d.x - l.cell.x).abs() + (d.y - l.cell.y).abs() == 1));
+                assert_eq!(l.deck_height, height);
+            }
+            // lifting the decks cut no ground floor in two
+            let mut after = before.clone();
+            for c in &decks {
+                after[(c.y * f.cols + c.x) as usize] = false;
+            }
+            assert!(Facility::ground_pieces(&after, f.cols) <= Facility::ground_pieces(&before, f.cols));
+        }
+        assert!(with_decks > 0, "no maze chunk got a catwalk");
+    }
+
+    #[test]
+    fn catwalks_are_deterministic_and_follow_the_data_regions() {
+        let (key, f) = maze_chunks().into_iter().find(|(k, f)| {
+            let mut g = f.clone();
+            g.apply_catwalks(WORLD, *k, "maze") > 0
+        }).expect("a chunk with a catwalk");
+        let (mut a, mut b) = (f.clone(), f.clone());
+        assert_eq!(a.apply_catwalks(WORLD, key, "maze"), b.apply_catwalks(WORLD, key, "maze"));
+        assert_eq!(a.catwalk_links, b.catwalk_links);
+        // a region the data does not list, and any level but 0, get none
+        // (live::chunk already decked this chunk as a maze one, so start from the bare chunk)
+        let mut c = f.clone();
+        c.walk_surface.clear();
+        assert_eq!(c.apply_catwalks(WORLD, key, "mansion"), 0);
+        assert!(c.walk_surface.is_empty());
+        assert_eq!(c.apply_catwalks(WORLD, ChunkKey { level: -1, ..key }, "maze"), 0);
+    }
+
+    #[test]
+    fn merging_chunks_keeps_their_decks_and_links_shifted() {
+        let (key, mut f) = maze_chunks().into_iter().find(|(k, f)| {
+            let mut g = f.clone();
+            g.apply_catwalks(WORLD, *k, "maze") > 0
+        }).expect("a chunk with a catwalk");
+        f.apply_catwalks(WORLD, key, "maze");
+        let deck = (0..f.rows)
+            .flat_map(|y| (0..f.cols).map(move |x| Cell::new(x, y)))
+            .find(|c| f.walk_surface_at(*c).kind == DeckKind::Catwalk)
+            .unwrap();
+        let link = f.catwalk_links[0];
+        let m = Facility::merge(vec![(f.clone(), 45, 45, 0)], 135, 135, vec!["maze".into()], WORLD);
+        assert_eq!(m.walk_surface_at(Cell::new(deck.x + 45, deck.y + 45)), f.walk_surface_at(deck));
+        assert_eq!(m.walk_surface_at(deck).kind, DeckKind::Floor);
+        assert!(m.catwalk_links.iter().any(|l| l.cell == Cell::new(link.cell.x + 45, link.cell.y + 45)));
+    }
+
+    #[test]
+    fn a_maze_variant_is_recorded_and_thins_only_what_the_data_says() {
+        let mut seen_variant = false;
+        for (key, mut f) in maze_chunks() {
+            let doors = f.props.iter().filter(|p| p.door.is_some()).count();
+            let (pickups, relays, batteries) = (f.pickups.len(), f.relays.len(), f.batteries.len());
+            let v = f.apply_maze_variant(WORLD, key);
+            assert_eq!(f.maze_variant.as_deref(), v.map(|v| v.id.as_str()));
+            assert_eq!(f.maze_variant.as_deref(), maze_regions::variant_at(WORLD, key.cx, key.cy, 0).map(|v| v.id.as_str()));
+            assert_eq!(f.props.iter().filter(|p| p.door.is_some()).count(), doors);
+            assert_eq!((f.relays.len(), f.batteries.len()), (relays, batteries));
+            match v {
+                None => assert_eq!(f.pickups.len(), pickups),
+                Some(v) => {
+                    seen_variant = true;
+                    assert!(f.pickups.len() <= pickups);
+                    if v.spawn_rules.loot_scale >= 1.0 {
+                        assert_eq!(f.pickups.len(), pickups);
+                    }
+                }
+            }
+        }
+        assert!(seen_variant, "no maze chunk got a variant");
+        // not level 0: never a variant
+        let cat = Catalog::load();
+        let mut f = Facility::generate("V", &Options::default(), &cat);
+        assert!(f.apply_maze_variant(WORLD, ChunkKey { cx: 0, cy: 0, level: -1 }).is_none());
+        assert!(f.maze_variant.is_none());
     }
 }

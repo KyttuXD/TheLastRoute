@@ -8,13 +8,18 @@ use super::anim::{
     hunter::{HunterView, Input},
 };
 use super::builder::{submit_all, Builder};
+use super::hunter_cache::{self, HunterMeshCache};
 use super::prop_model::{draw_builders, Placement, PropModel, StaticCache};
 use super::shader::{self, Lamp, Lighting};
+use super::{catwalk, inferno_deco, waterfall};
 use crate::shared::assets::Assets;
 use crate::config::*;
 use crate::game::{Game, Heater, Item};
 use crate::hunters::brain::State;
 use crate::hunters::gimmicks::Gimmick;
+use crate::net::runner_figure;
+use crate::world::facility::{Cell, DeckKind, Facility};
+use crate::world::infinite::INFERNO_LEVEL;
 use macroquad::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -23,7 +28,34 @@ use std::sync::OnceLock;
 thread_local! {
     /// The meshes of the static props (relays, batteries, lockers' bodies and the like), kept while they stay drawn.
     static STATIC_PROPS: RefCell<StaticCache<Placement, Vec<Mesh>>> = RefCell::new(StaticCache::default());
+    /// The hunters' posed meshes, rebuilt only when a hunter's model, pose or tint changes (render/hunter_cache.rs).
+    static HUNTER_MESHES: RefCell<HunterMeshes> = RefCell::new(HunterMeshes::default());
 }
+
+/// The hunter mesh cache and what it was filled for: a change of hunter count, level or run drops every entry, so a
+/// removed hunter's mesh or a stale slot never shows.
+#[derive(Default)]
+struct HunterMeshes {
+    cache: HunterMeshCache,
+    hunters: usize,
+    level: i32,
+    run: u32,
+}
+
+impl HunterMeshes {
+    /// Clears the cache when the hunters, the level or the run differ from the last frame's; true when it cleared.
+    fn sync(&mut self, hunters: usize, level: i32, run: u32) -> bool {
+        if (self.hunters, self.level, self.run) == (hunters, level, run) {
+            return false;
+        }
+        self.cache.clear();
+        (self.hunters, self.level, self.run) = (hunters, level, run);
+        true
+    }
+}
+
+/// Slot offset for the hunters drawn without a rig, so their cache entries never clash with the rigged ones.
+const UNRIGGED_SLOT_BASE: usize = 1000;
 
 /// Draws a static prop with its placement: its meshes come from the cache, built on first use.
 fn draw_static(m: &PropModel, xf: Mat4, tint: Color) {
@@ -142,13 +174,22 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     gl_use_material(mat);
     // the grab's fill joins the room's lamps while the struggle holds the runner (grab_fill); the flashlight is unchanged
     let light = lighting(g);
-    match grab_fill(g.escape.is_some(), grab::camera()) {
-        Some(fill) => {
-            let mut lamps = g.world.lamps.clone();
-            lamps.push(fill);
-            shader::apply(mat, &light, &lamps);
-        }
-        None => shader::apply(mat, &light, &g.world.lamps),
+    // this storey's own lights join the room's lamps: the falls' pool lights, the inferno's lava and cracks, the catwalks' lamps
+    let fx = level_fx(g, light.eye);
+    let mut extra = fx.lamps.clone();
+    extra.extend(grab_fill(g.escape.is_some(), grab::camera()));
+    if extra.is_empty() {
+        shader::apply(mat, &light, &g.world.lamps);
+    } else {
+        let mut lamps = g.world.lamps.clone();
+        lamps.extend(extra);
+        shader::apply(mat, &light, &lamps);
+    }
+    // the falls' loop plays from the nearest fall in range, and stops on a storey without one
+    {
+        let (_, fwd, right, up) = view(g);
+        let near = waterfall::nearest_sound(waterfall::config(), &fx.sites, (light.eye.x, light.eye.z), g.time);
+        crate::audio::falls::update(near, light.eye.to_array(), right.to_array(), up.to_array(), fwd.to_array());
     }
     // the floor's meshes wholly past the fog's full reach are skipped: they would paint the fog colour alone (see
     // `box_fully_fogged`), which the clear colour already is
@@ -476,6 +517,8 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     let t_hunters = crate::app::perf::section("hunters");
     let (cam_fwd, _, _) = g.camera_basis();
     let runner_feet = vec3(g.p.pos.0, g.p.feet_y.max(0.0), g.p.pos.1);
+    let tune = hunter_cache::tuning();
+    HUNTER_MESHES.with(|m| m.borrow_mut().sync(g.hunters.len(), g.runner_level(), g.run_seed));
     anim::with_views(g.time, |views, dt| {
         let mut stars = Builder::new(Some(a.white.clone()));
         for (slot, h) in g.hunters.iter().enumerate() {
@@ -496,8 +539,6 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
             let Some(model) = a.hunter_model(id) else {
                 continue;
             };
-            let mut verts = vec![];
-            let mut idx = vec![];
             let tint = if faded {
                 Color::new(0.35, 0.35, 0.45, 1.0)
             } else if h.stun > 0.0 {
@@ -517,19 +558,26 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
                     Gimmick::Xivvy(x) if !grabbed => (x.lift(), x.sway_offset(h.facing)),
                     _ => (0.0, (0.0, 0.0)),
                 };
-                model.build(
-                    &mut verts,
-                    &mut idx,
-                    vec3(h.pos.0 + sway.0, lift, h.pos.1 + sway.1),
-                    yaw,
-                    h.stride * 2.4,
-                    amp,
-                    tint,
+                let at = vec3(h.pos.0 + sway.0, lift, h.pos.1 + sway.1);
+                let (swing, amp_scale) = (h.stride * 2.4, amp);
+                let pose = hunter_cache::pose_key(
+                    tune,
+                    &Mat4::from_translation(at),
+                    &[Mat4::from_rotation_y(yaw), Mat4::from_rotation_x(swing), Mat4::from_scale(Vec3::splat(amp_scale))],
+                    0,
                 );
-                draw_mesh(&Mesh {
-                    vertices: verts,
-                    indices: idx,
-                    texture: Some(model.texture.clone()),
+                HUNTER_MESHES.with(|m| {
+                    let mut m = m.borrow_mut();
+                    let mesh = m.cache.get_or_build(
+                        tune,
+                        UNRIGGED_SLOT_BASE + slot,
+                        id,
+                        pose,
+                        hunter_cache::tint_key(tune, tint),
+                        Some(model.texture.clone()),
+                        |v, i| model.build(v, i, at, yaw, swing, amp_scale, tint),
+                    );
+                    draw_mesh(mesh);
                 });
                 continue;
             };
@@ -594,18 +642,20 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
                 WALL_HEIGHT,
             );
             let bone_of = |k: usize| rig.bone(&model.groups[k].name).map(|b| out.bones[b]);
-            model.build_posed(
-                &mut verts,
-                &mut idx,
-                out.root,
-                &bone_of,
-                model.face_cell_uv(out.face_cell),
-                tint,
-            );
-            draw_mesh(&Mesh {
-                vertices: verts,
-                indices: idx,
-                texture: Some(model.texture.clone()),
+            let bones: Vec<Mat4> = (0..model.groups.len()).filter_map(|k| bone_of(k)).collect();
+            let pose = hunter_cache::pose_key(tune, &out.root, &bones, out.face_cell as i32);
+            HUNTER_MESHES.with(|m| {
+                let mut m = m.borrow_mut();
+                let mesh = m.cache.get_or_build(
+                    tune,
+                    slot,
+                    id,
+                    pose,
+                    hunter_cache::tint_key(tune, tint),
+                    Some(model.texture.clone()),
+                    |v, i| model.build_posed(v, i, out.root, &bone_of, model.face_cell_uv(out.face_cell), tint),
+                );
+                draw_mesh(mesh);
             });
             let star = if view.heavy(&input) {
                 Color::new(1.0, 0.42, 0.18, 1.0)
@@ -618,30 +668,9 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         }
         stars.draw_and_clear();
     });
-    // NPC teammates (game/npc.rs): the hunter body at the runner's height, drawn without a rig (the same
-    // fallback build a rig-less hunter gets). Only NPCs on the runner's level are drawn.
-    if let Some(body) = a.npc_body.as_ref() {
-        let level = g.runner_level();
-        for n in g.npcs.iter().filter(|n| n.level == level) {
-            let mut verts = vec![];
-            let mut idx = vec![];
-            let amp = if n.walking { 0.6 } else { 0.0 };
-            body.build(
-                &mut verts,
-                &mut idx,
-                vec3(n.at.0, 0.0, n.at.1),
-                n.facing,
-                n.stride * 2.4,
-                amp,
-                WHITE,
-            );
-            draw_mesh(&Mesh {
-                vertices: verts,
-                indices: idx,
-                texture: Some(body.texture.clone()),
-            });
-        }
-    }
+    // NPC teammates (game/npc.rs) and bots: the runner mannequin in its skin, bent like a runner (net/runner_figure.rs),
+    // in this camera and material scope like the remote runners. Only those on the runner's level are drawn.
+    runner_figure::draw_bots(a, &crate::net::wiring::bot_views(&g.npcs, g.runner_level()));
     for h in g.hunters.iter().filter(|h| h.active) {
         let faded = h.gimmick.hidden_from_view();
         if faded && !matches!(h.gimmick, Gimmick::Ilyra(_)) {
@@ -665,7 +694,192 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         }
     }
     drop(t_hunters);
+    draw_level_fx(g, a, &fx, light.eye);
     gl_use_default_material();
+}
+
+/// Whether a storey's catwalk lamps, falls and inferno glow are in this frame, found once per frame.
+struct LevelFx {
+    /// The point lights this storey adds to the room's lamps.
+    lamps: Vec<Lamp>,
+    /// The falls within reach of the eye, each with its drawn sheet, mist and foam.
+    falls: Vec<(waterfall::Site, waterfall::Waterfall)>,
+    /// All of the window's falls (the loop picks the nearest in range, seen or not).
+    sites: Vec<waterfall::Site>,
+}
+
+/// The lamps of the catwalk cells within `radius` metres of `eye` (x, z): every cell of a deck that carries one
+/// (`catwalk::lamp`, by absolute cell), placed above the deck at the cell's middle.
+pub fn catwalk_lamps(fac: &Facility, eye: (f32, f32), radius: f32, cfg: &catwalk::CatwalkCfg) -> Vec<Lamp> {
+    let r = radius.ceil() as i32;
+    let (cx, cy) = (eye.0.floor() as i32, eye.1.floor() as i32);
+    let mut out = Vec::new();
+    for y in cy - r..=cy + r {
+        for x in cx - r..=cx + r {
+            let surface = fac.walk_surface_at(Cell::new(x, y));
+            if surface.kind != DeckKind::Catwalk {
+                continue;
+            }
+            if let Some(l) = catwalk::lamp(cfg, (x + fac.origin.0, y + fac.origin.1)) {
+                out.push(Lamp {
+                    pos: vec3(x as f32 + 0.5 + l.pos[0], surface.height + l.pos[1], y as f32 + 0.5 + l.pos[2]),
+                    range: l.range_m,
+                    color: Color::new(l.color[0], l.color[1], l.color[2], 1.0),
+                    energy: l.energy,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The point light of a fall's splash pool (waterfall.rs `Waterfall::light_pos`, placed at the fall's lip).
+pub fn splash_lamp(cfg: &waterfall::WaterfallCfg, site: &waterfall::Site, w: &waterfall::Waterfall) -> Lamp {
+    let c = cfg.splash.light_color;
+    Lamp {
+        pos: vec3(site.lip[0] + w.light_pos[0], w.light_pos[1], site.lip[1] + w.light_pos[2]),
+        range: cfg.splash.light_range_m,
+        color: Color::new(c[0], c[1], c[2], 1.0),
+        energy: cfg.splash.light_energy,
+    }
+}
+
+/// The lights and falls of the runner's storey this frame: catwalk lamps on any storey, the falls and their pool lights
+/// on the two sewer storeys, the lava and cracks of the inferno (level -3) with their flicker.
+fn level_fx(g: &Game, eye: Vec3) -> LevelFx {
+    let mut fx = LevelFx { lamps: Vec::new(), falls: Vec::new(), sites: Vec::new() };
+    fx.lamps.extend(catwalk_lamps(&g.fac, (eye.x, eye.z), scene_lights().catwalk_scan_radius_m, catwalk::config()));
+    let Some(inf) = g.inf.as_ref() else { return fx };
+    let cfg = waterfall::config();
+    fx.sites = waterfall::sites_cached(&inf.seed, inf.level, inf.center);
+    for s in &fx.sites {
+        let d = ((s.lip[0] - eye.x).powi(2) + (s.lip[1] - eye.z).powi(2)).sqrt();
+        if d > cfg.view.cull_m {
+            continue;
+        }
+        let w = waterfall::build(cfg, s.top_y, s.bottom_y, s.out, g.time);
+        fx.lamps.push(splash_lamp(cfg, s, &w));
+        fx.falls.push((s.clone(), w));
+    }
+    if inf.level == INFERNO_LEVEL {
+        let (deco, scene) = (inferno_deco::inferno_deco(), inferno_deco::scene_cfg());
+        inferno_deco::with_window_decos(&inf.seed, inf.center, |placed| {
+            for gl in inferno_deco::glows(placed, [eye.x, eye.y, eye.z], g.time, deco, scene) {
+                fx.lamps.push(Lamp {
+                    pos: Vec3::from_array(gl.pos),
+                    range: gl.range_m,
+                    color: Color::new(gl.color[0], gl.color[1], gl.color[2], 1.0),
+                    energy: gl.energy,
+                });
+            }
+        });
+    }
+    fx
+}
+
+/// Draws the storey's effects in the world material: the inferno's embers (small unlit cubes), then, alpha-blended and
+/// unlit, each fall's sheet (with flowing streaks), its mist puffs (billboards) and its foam on the pool.
+fn draw_level_fx(g: &Game, a: &Assets, fx: &LevelFx, eye: Vec3) {
+    if let Some(inf) = g.inf.as_ref().filter(|i| i.level == INFERNO_LEVEL) {
+        let (deco, scene) = (inferno_deco::inferno_deco(), inferno_deco::scene_cfg());
+        let mut b = Builder::new(Some(a.white.clone()));
+        inferno_deco::with_window_decos(&inf.seed, inf.center, |placed| {
+            for e in inferno_deco::embers(placed, [eye.x, eye.y, eye.z], g.time, deco, scene) {
+                let c = e.color;
+                b.cube(Vec3::from_array(e.pos), Vec3::splat(e.size_m), 0.0, Color::new(c[0], c[1], c[2], 1.0), 2.0);
+            }
+        });
+        b.draw_and_clear();
+    }
+    if fx.falls.is_empty() {
+        return;
+    }
+    let cfg = waterfall::config();
+    let mode = scene_lights().translucent_mode;
+    let (_, _, right, up) = view(g);
+    let mut b = Builder::new(Some(a.white.clone()));
+    for (site, w) in &fx.falls {
+        let at = |p: [f32; 3]| vec3(site.lip[0] + p[0], p[1], site.lip[1] + p[2]);
+        let s = cfg.sheet_color;
+        for q in &w.sheet {
+            let shade = waterfall::streak(cfg, (q.v_top + q.v_bottom) * 0.5, g.time);
+            b.quad(
+                [at(q.corners[0]), at(q.corners[1]), at(q.corners[2]), at(q.corners[3])],
+                [vec2(0.0, q.v_top), vec2(1.0, q.v_top), vec2(1.0, q.v_bottom), vec2(0.0, q.v_bottom)],
+                Vec3::Y,
+                Color::new(s[0] * shade, s[1] * shade, s[2] * shade, s[3]),
+                mode,
+            );
+        }
+        let f = cfg.view.foam_color;
+        let (fx_, fz) = (cfg.splash.foam_size_m[0] * 0.5, cfg.splash.foam_size_m[1] * 0.5);
+        let c = w.foam_center;
+        b.quad(
+            [at([c[0] - fx_, c[1], c[2] - fz]), at([c[0] + fx_, c[1], c[2] - fz]), at([c[0] + fx_, c[1], c[2] + fz]), at([c[0] - fx_, c[1], c[2] + fz])],
+            [vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0)],
+            Vec3::Y,
+            Color::new(f[0], f[1], f[2], f[3]),
+            mode,
+        );
+        let m = cfg.mist.color;
+        for p in &w.mist {
+            let (c, h) = (at(p.pos), p.size_m * 0.5);
+            b.quad(
+                [c - right * h + up * h, c + right * h + up * h, c + right * h - up * h, c - right * h - up * h],
+                [vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0)],
+                Vec3::Y,
+                Color::new(m[0], m[1], m[2], p.alpha),
+                mode,
+            );
+        }
+    }
+    b.draw_and_clear();
+}
+
+/// The scene's own tunables, under data/ (compiled in by build.rs).
+const SCENE_LIGHTS_PATH: &str = "render/scene_lights.json";
+
+/// The scene light tunables from data/render/scene_lights.json.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneLights {
+    /// How far from the eye (metres, along the floor) the catwalk cells are searched for lamps.
+    pub catwalk_scan_radius_m: f32,
+    /// The shader mode of an unlit, alpha-blended surface (falls, mist, foam).
+    pub translucent_mode: f32,
+}
+
+impl SceneLights {
+    /// Parses `{ "catwalk_scan_radius_m": <metres>, "translucent_mode": <shader mode> }`; the radius is zero or more
+    /// and the mode is above 1.5 (the unlit modes).
+    pub fn parse(text: &str) -> Result<SceneLights, String> {
+        let value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let num = |key: &str| {
+            value
+                .get(key)
+                .and_then(|v| v.as_f64())
+                .filter(|v| *v >= 0.0)
+                .map(|v| v as f32)
+                .ok_or_else(|| format!("{key}: expected a number, zero or more"))
+        };
+        let out = SceneLights { catwalk_scan_radius_m: num("catwalk_scan_radius_m")?, translucent_mode: num("translucent_mode")? };
+        if out.translucent_mode <= 1.5 {
+            return Err("translucent_mode: expected an unlit mode above 1.5".into());
+        }
+        Ok(out)
+    }
+}
+
+/// The scene light tunables compiled into the executable. A table that fails to parse is reported on stderr and the
+/// catwalks are searched out to the fog's reach.
+pub fn scene_lights() -> &'static SceneLights {
+    static LIGHTS: OnceLock<SceneLights> = OnceLock::new();
+    LIGHTS.get_or_init(|| {
+        let text = crate::content::embedded::data_under(SCENE_LIGHTS_PATH).next().map(|(_, text)| text).unwrap_or("{}");
+        SceneLights::parse(text).unwrap_or_else(|e| {
+            eprintln!("{SCENE_LIGHTS_PATH}: {e}");
+            SceneLights { catwalk_scan_radius_m: FOG_RANGE, translucent_mode: 2.0 }
+        })
+    })
 }
 
 /// The room doors, each swung to its open amount (the world meshes hold them shut): the hinge leaves of every door near
@@ -849,6 +1063,98 @@ mod tests {
         assert!(grab_fill(false, Some(cam)).is_none());
         // the escape set before the grab camera exists (the first frame of a catch): off until the grab starts
         assert!(grab_fill(true, None).is_none());
+    }
+
+    fn deck_floor() -> Facility {
+        use crate::world::catalog::Catalog;
+        use crate::world::facility::Options;
+        Facility::generate("SCENE-DECK", &Options::default(), &Catalog::load())
+    }
+
+    /// A cell whose absolute coordinates both divide by `every`, so a lamp of that spacing stands on it.
+    fn lamp_cell(f: &Facility, every: i32) -> Cell {
+        let pick = |origin: i32| (0..every).find(|v| (v + origin).rem_euclid(every) == 0).unwrap() + every * 3;
+        Cell::new(pick(f.origin.0), pick(f.origin.1))
+    }
+
+    #[test]
+    fn a_catwalk_lamp_hangs_over_its_deck_and_a_floor_cell_has_none() {
+        let cfg = catwalk::config();
+        let mut f = deck_floor();
+        let c = lamp_cell(&f, cfg.light_every_cells);
+        let eye = (c.x as f32 + 0.5, c.y as f32 + 0.5);
+        assert!(catwalk_lamps(&f, eye, 6.0, cfg).is_empty(), "no deck, no lamp");
+        f.set_walk_surface(c, DeckKind::Catwalk, 4.0);
+        let lamps = catwalk_lamps(&f, eye, 6.0, cfg);
+        assert_eq!(lamps.len(), 1);
+        let l = lamps[0];
+        assert_eq!((l.pos.x, l.pos.z), (eye.0, eye.1), "over the middle of the cell");
+        assert!((l.pos.y - (4.0 + cfg.light_height_m)).abs() < 1e-5, "above the deck, not the floor");
+        assert_eq!((l.range, l.energy), (cfg.light_range_m, cfg.light_energy));
+        // a deck cell the lamp spacing skips carries none, and a deck out of the search reach is not looked at
+        let skipped = Cell::new(c.x + 1, c.y);
+        f.set_walk_surface(skipped, DeckKind::Catwalk, 4.0);
+        assert_eq!(catwalk_lamps(&f, eye, 6.0, cfg).len(), 1);
+        assert!(catwalk_lamps(&f, (eye.0 + 100.0, eye.1), 6.0, cfg).is_empty());
+    }
+
+    #[test]
+    fn the_catwalk_lamp_spacing_is_data() {
+        let text = include_str!("../data/render/catwalk.json");
+        let dense = catwalk::CatwalkCfg::parse(&text.replacen("\"every_cells\": 3", "\"every_cells\": 1", 1)).unwrap();
+        let mut f = deck_floor();
+        let c = Cell::new(10, 10);
+        for dx in 0..3 {
+            f.set_walk_surface(Cell::new(c.x + dx, c.y), DeckKind::Catwalk, 4.0);
+        }
+        let eye = (11.5, 10.5);
+        assert!(catwalk_lamps(&f, eye, 6.0, &dense).len() == 3, "a lamp on every deck cell");
+        assert!(catwalk_lamps(&f, eye, 6.0, catwalk::config()).len() < 3);
+    }
+
+    #[test]
+    fn the_splash_lamp_sits_at_the_lip_with_the_data_colour() {
+        let cfg = waterfall::config();
+        let site = waterfall::Site { lip: [40.0, 30.0], out: -1.0, top_y: -0.3, bottom_y: -5.3 };
+        let w = waterfall::build(cfg, site.top_y, site.bottom_y, site.out, 0.0);
+        let l = splash_lamp(cfg, &site, &w);
+        assert!((l.pos.x - 40.0).abs() < 1e-4 && l.pos.z < 30.0, "out to the north of the lip");
+        assert!(l.pos.y > site.bottom_y && l.pos.y < site.top_y, "over the pool, under the lip");
+        assert_eq!((l.range, l.energy), (cfg.splash.light_range_m, cfg.splash.light_energy));
+        assert_eq!([l.color.r, l.color.g, l.color.b], cfg.splash.light_color);
+    }
+
+    #[test]
+    fn the_hunter_cache_clears_when_the_hunters_the_level_or_the_run_change() {
+        let tune = hunter_cache::tuning();
+        let mut m = HunterMeshes::default();
+        assert!(!m.sync(0, 0, 0), "nothing differs from a fresh state");
+        assert!(m.sync(3, 0, 7), "a new run with three hunters");
+        let root = Mat4::IDENTITY;
+        let mut builds = 0;
+        for _ in 0..3 {
+            m.cache.get_or_build(tune, 1, "dovelle", hunter_cache::pose_key(tune, &root, &[], 0), [100; 4], None, |_, _| builds += 1);
+        }
+        assert_eq!(builds, 1, "the same pose is built once");
+        assert!(!m.sync(3, 0, 7));
+        assert_eq!(m.cache.len(), 1, "an unchanged frame keeps the cache");
+        assert!(m.sync(2, 0, 7), "a removed hunter drops every entry");
+        assert!(m.cache.is_empty());
+        m.cache.get_or_build(tune, 1, "dovelle", vec![0], [100; 4], None, |_, _| {});
+        assert!(m.sync(2, -1, 7), "a level change drops them too");
+        assert!(m.cache.is_empty());
+    }
+
+    #[test]
+    fn scene_light_tunables_are_data() {
+        let text = include_str!("../data/render/scene_lights.json");
+        let s = SceneLights::parse(text).unwrap();
+        assert_eq!(&s, scene_lights());
+        assert!(s.translucent_mode > 1.5 && s.catwalk_scan_radius_m > 0.0);
+        assert!(SceneLights::parse("{}").is_err());
+        assert!(SceneLights::parse(&text.replacen("3.0", "1.0", 1)).is_err(), "a lit mode cannot be translucent");
+        let wide = SceneLights::parse(&text.replacen("24.0", "48.0", 1)).unwrap();
+        assert!(wide.catwalk_scan_radius_m > s.catwalk_scan_radius_m);
     }
 
     #[test]

@@ -15,6 +15,7 @@
 
 pub mod cues;
 mod engine;
+pub mod falls;
 pub mod sound;
 pub mod world;
 

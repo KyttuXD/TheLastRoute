@@ -163,12 +163,8 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -
     }
     // level -3: carve the caverns, halls and crevices (world::inferno) over the maze layout
     if k.level == INFERNO_LEVEL {
-        let inf = super::inferno::Inferno::carve(seed, k);
-        for cv in &inf.caverns {
-            let r = cv.rect;
-            f.clear_props_in(r.x, r.y, r.w, r.h);
-        }
-        for r in &inf.halls {
+        let inf = super::inferno::InfernoChunk::carve(seed, k);
+        for r in inf.clear_rects() {
             f.clear_props_in(r.x, r.y, r.w, r.h);
         }
         for c in inf.open_cells() {

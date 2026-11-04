@@ -103,6 +103,25 @@ pub fn water_depth_at(grid: &Grid, x: i32, y: i32) -> f32 {
     depth_of_code(grid[y as usize][x as usize], params())
 }
 
+/// Metres of water over the bed on a storey: the second level (`LOWER_LEVEL`) has its own depth in
+/// `data/regions/sewer2.json`; every other sewer storey uses the Standard depth.
+pub fn full_depth_for_level(level: i32) -> f32 {
+    if level == super::core::LOWER_LEVEL {
+        super::level2::rules().water_depth as f32
+    } else {
+        params().full_depth()
+    }
+}
+
+/// `water_depth_at` for a chunk of the given storey.
+pub fn water_depth_at_level(grid: &Grid, x: i32, y: i32, level: i32) -> f32 {
+    if water_depth_at(grid, x, y) > 0.0 {
+        full_depth_for_level(level)
+    } else {
+        0.0
+    }
+}
+
 /// The water surface height for a storey whose floor is at `floor_y`.
 pub fn surface_y(floor_y: f32) -> f32 {
     floor_y + params().water_surface
@@ -167,5 +186,16 @@ mod tests {
             "tint":{"shallow":[1,2,3,4],"deep":[5,6,7,8],"deepen_power":1.0}}"#;
         assert!(WaterParams::from_text(bad).is_err());
         assert!(WaterParams::from_text("{}").is_err());
+    }
+
+    #[test]
+    fn the_second_level_reads_its_own_water_depth() {
+        use crate::world::route::sewer::core::{LEVEL, LOWER_LEVEL};
+        assert_eq!(full_depth_for_level(LEVEL), params().full_depth());
+        assert_eq!(full_depth_for_level(LOWER_LEVEL), super::super::level2::rules().water_depth as f32);
+        let g = grid_with(&[(3, 3, WATER)]);
+        assert_eq!(water_depth_at_level(&g, 3, 3, LOWER_LEVEL), full_depth_for_level(LOWER_LEVEL));
+        assert_eq!(water_depth_at_level(&g, 4, 3, LOWER_LEVEL), 0.0);
+        assert_eq!(water_depth_at_level(&g, 3, 3, LEVEL), params().full_depth());
     }
 }

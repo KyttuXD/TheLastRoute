@@ -113,7 +113,7 @@ fn backing_wall_direction(grid: &Grid, cell: V2) -> V2 {
 mod tests {
     use super::*;
     use crate::world::route::layout::Coord;
-    use crate::world::route::sewer::core::{chunk, Inputs, N};
+    use crate::world::route::sewer::core::{chunk_base as chunk, Inputs, N};
     use serde_json::Value;
 
     const TAGS: [&str; 3] = ["parity", "k7qxm", "demo"];

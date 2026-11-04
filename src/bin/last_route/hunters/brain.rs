@@ -28,6 +28,25 @@ pub enum State {
     Peek,
 }
 
+impl State {
+    /// The wire state name (`net::wiring::transition_rule` and the wire use these).
+    pub fn name(self) -> &'static str {
+        match self {
+            State::Idle => "IDLE",
+            State::Wander => "WANDER",
+            State::Investigate => "INVESTIGATE",
+            State::Chase => "CHASE",
+            State::Search => "SEARCH",
+            State::Peek => "PEEK",
+        }
+    }
+}
+
+/// The sluice-gate channel cells a hunter may cross: all of them while the gate is down, none while it is raised.
+pub fn gate_floor_cells(cells: &[Cell], gate_down: bool) -> Vec<Cell> {
+    if gate_down { cells.to_vec() } else { Vec::new() }
+}
+
 /// The beats of a corner peek (HunterBrain.Peek): slide into the lean spot, look round the edge, then either carry on
 /// (nothing there), burst into a chase (`Seen`, a "burst" hunter) or wait behind the corner (`Ambush`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -148,17 +167,17 @@ pub fn choose_target(
     best.1
 }
 
+fn body_fits_gated(fac: &Facility, gates: &[Cell], x: f32, y: f32) -> bool {
+    fac.body_fits(x, y, HUNTER_RADIUS) || (!gates.is_empty() && gates.contains(&cell_of((x, y))))
+}
+
 /// Whether a body of HUNTER_RADIUS can sweep the straight line from `from` to `to` (sampled every 0.15 m).
-fn sweep_clear(fac: &Facility, from: (f32, f32), to: (f32, f32)) -> bool {
+fn sweep_clear(fac: &Facility, gates: &[Cell], from: (f32, f32), to: (f32, f32)) -> bool {
     let d = dist(from, to);
     let steps = ((d / 0.15).ceil() as i32).max(1);
     (1..=steps).all(|i| {
         let t = i as f32 / steps as f32;
-        fac.body_fits(
-            from.0 + (to.0 - from.0) * t,
-            from.1 + (to.1 - from.1) * t,
-            HUNTER_RADIUS,
-        )
+        body_fits_gated(fac, gates, from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
     })
 }
 
@@ -182,9 +201,9 @@ impl Ord for OpenCell {
 /// A route over the hunter grid from the cell under `from` to `to`, as `Facility::find_path` plans it, except that the
 /// cells in `avoid` (ones a step has just been blocked by) are left out. A closed start cell (the body stands
 /// off-centre in it) starts from the nearest open cell beside it.
-fn plan_route(fac: &Facility, from: (f32, f32), to: Cell, avoid: &[(Cell, f32)]) -> Vec<Cell> {
+fn plan_route(fac: &Facility, from: (f32, f32), to: Cell, avoid: &[(Cell, f32)], gates: &[Cell]) -> Vec<Cell> {
     let avoided = |c: Cell| avoid.iter().any(|(a, _)| *a == c);
-    let open = |c: Cell| fac.hunter_open(c) && !avoided(c);
+    let open = |c: Cell| (fac.hunter_open(c) || gates.contains(&c)) && !avoided(c);
     let here = cell_of(from);
     let start = if open(here) {
         here
@@ -202,7 +221,7 @@ fn plan_route(fac: &Facility, from: (f32, f32), to: Cell, avoid: &[(Cell, f32)])
     if to == start {
         return vec![start];
     }
-    if !fac.hunter_open(to) || avoided(to) {
+    if !open(to) {
         return vec![];
     }
     let h = |c: Cell| {
@@ -329,6 +348,20 @@ pub struct Brain {
     /// The host chose a player bot (not the runner) as this hunter's target this frame; such a hunter feeds no
     /// danger readout, heartbeat or chase cue.
     pub target_is_bot: bool,
+    /// Sluice-gate channel cells that are floor right now (the gate is down); set by the host from the pipes state.
+    pub gate_floor: Vec<Cell>,
+    /// The emote playing (index into the emote catalogue) and its seconds left; the wire carries the index.
+    pub emote: Option<usize>,
+    emote_left: f32,
+    pub emote_timers: super::emotes::Timers,
+    emote_rng: Rng,
+    state_time: f32,
+    emote_pending: Option<&'static str>,
+    blocked_time: f32,
+    /// Seconds without a route before the goal is given up (data/hunters/search.json, unreachable_give_up).
+    give_up_after: f32,
+    /// A guest shows the host's emote index and never starts one.
+    pub display_only: bool,
 }
 
 const ARRIVAL_DISTANCE: f32 = 0.65;
@@ -404,6 +437,16 @@ impl Brain {
             peek_chance_override: None,
             searched: Vec::new(),
             target_is_bot: false,
+            gate_floor: Vec::new(),
+            emote: None,
+            emote_left: 0.0,
+            emote_timers: super::emotes::Timers::default(),
+            emote_rng: Rng::new(&format!("{seed}:emote")),
+            state_time: 0.0,
+            emote_pending: None,
+            blocked_time: 0.0,
+            give_up_after: search_rules().unreachable_give_up,
+            display_only: false,
         }
     }
 
@@ -528,6 +571,7 @@ impl Brain {
     ) -> (bool, Vec<Event>) {
         let mut events = vec![];
         self.tick_slow(dt);
+        let state_before = self.state;
         self.moving_speed = 0.0;
         let mut g = std::mem::take(&mut self.gimmick);
         let self_summoning = g.runs_while_inactive();
@@ -559,6 +603,7 @@ impl Brain {
         self.consider_peek(ctx.fac, &g, holds);
         let speed_scale = g.speed_scale(self);
         self.update_movement(dt, ctx.fac, depth, relays, prof, holds, speed_scale);
+        self.tick_emotes(dt, state_before, dist(self.pos, target.pos));
         let breaches = g.breaches_hiding();
         let immune = g.immune_to_capture(self);
         self.gimmick = g;
@@ -573,6 +618,63 @@ impl Brain {
             && !immune
             && dist(self.pos, target.pos) < self.capture_reach(prof);
         (caught, events)
+    }
+
+    /// Set the open sluice-gate channel cells: `cells` become floor for this hunter while `gate_down` (the valve
+    /// turned an odd number of times, `Pipes::is_open`), and walls again otherwise.
+    pub fn set_gate_floor(&mut self, cells: &[Cell], gate_down: bool) {
+        self.gate_floor = gate_floor_cells(cells, gate_down);
+    }
+
+    /// Emote wiring (hunter_emoter.gd): a state change fires its transition rule (`net::wiring::transition_rule`),
+    /// the chase and idle rules roll per second, and the playing emote counts down. Host only: a guest hunter never
+    /// starts one. The rolls come from the hunter's own emote stream, so no other roll shifts.
+    fn tick_emotes(&mut self, dt: f32, prev: State, runner_dist: f32) {
+        self.emote_timers.tick(dt);
+        if self.emote_left > 0.0 {
+            self.emote_left -= dt;
+            if self.emote_left <= 0.0 {
+                self.emote = None;
+            }
+        }
+        if self.display_only {
+            return;
+        }
+        if self.state != prev {
+            self.state_time = 0.0;
+            self.emote_pending = crate::net::wiring::transition_rule(prev.name(), self.state.name());
+        } else {
+            self.state_time += dt;
+        }
+        let cat = super::emotes::Catalogue::get();
+        let busy = self.emote.is_some() || self.stun > 0.0;
+        let mk = |me: &Self| super::emotes::Ctx { dt, time_in_state: me.state_time, distance: runner_dist, busy };
+        let mut fired = None;
+        if let Some(rule) = self.emote_pending {
+            let min = cat.rule(rule).map_or(0.0, |r| r.min_seconds);
+            if self.state_time >= min {
+                self.emote_pending = None;
+                let (gate, pick) = (self.emote_rng.next_float() as f32, self.emote_rng.next_float() as f32);
+                let c = mk(self);
+                fired = cat.try_trigger(&mut self.emote_timers, &self.def.id, rule, self.diff.id(), c, gate, pick);
+            }
+        }
+        if fired.is_none() {
+            let per_tick = match self.state {
+                State::Chase => Some("chase"),
+                State::Idle => Some("idle"),
+                _ => None,
+            };
+            if let Some(rule) = per_tick {
+                let (gate, pick) = (self.emote_rng.next_float() as f32, self.emote_rng.next_float() as f32);
+                let c = mk(self);
+                fired = cat.try_trigger(&mut self.emote_timers, &self.def.id, rule, self.diff.id(), c, gate, pick);
+            }
+        }
+        if let Some(i) = fired {
+            self.emote = Some(i);
+            self.emote_left = cat.emote(i).map_or(1.0, |e| e.seconds);
+        }
     }
 
     fn camp_guard(&mut self, dt: f32, target: &Target, prof: &Profile) -> bool {
@@ -707,7 +809,7 @@ impl Brain {
             if line_clear && direct <= hearing_limit * HEARING_OPEN_AIR_SCALE {
                 hears = true;
             } else if direct < hearing_limit * HEARING_OUTER_SCALE {
-                let p = plan_route(fac, self.pos, cell_of(target.pos), &self.avoid);
+                let p = plan_route(fac, self.pos, cell_of(target.pos), &self.avoid, &self.gate_floor);
                 hears = !p.is_empty() && p.len() <= hearing_limit.ceil() as usize;
                 if hears && self.state == State::Chase {
                     self.path = p;
@@ -861,7 +963,7 @@ impl Brain {
     }
 
     fn clear_sweep(&self, fac: &Facility, from: (f32, f32), to: (f32, f32)) -> bool {
-        sweep_clear(fac, from, to)
+        sweep_clear(fac, &self.gate_floor, from, to)
     }
 
     pub fn move_with_collision(&mut self, dx: f32, dy: f32, fac: &Facility) -> f32 {
@@ -873,10 +975,10 @@ impl Brain {
         let steps = ((total / 0.11).ceil() as i32).max(1);
         let (sx, sy) = (dx / steps as f32, dy / steps as f32);
         for _ in 0..steps {
-            if fac.body_fits(self.pos.0 + sx, self.pos.1, HUNTER_RADIUS) {
+            if body_fits_gated(fac, &self.gate_floor, self.pos.0 + sx, self.pos.1) {
                 self.pos.0 += sx;
             }
-            if fac.body_fits(self.pos.0, self.pos.1 + sy, HUNTER_RADIUS) {
+            if body_fits_gated(fac, &self.gate_floor, self.pos.0, self.pos.1 + sy) {
                 self.pos.1 += sy;
             }
         }
@@ -897,6 +999,33 @@ impl Brain {
             self.moving_speed = moved / dt;
         }
         moved
+    }
+
+    /// The goal cannot be reached (no route for UNREACHABLE_GIVE_UP seconds, or every step toward it blocked for that
+    /// long, the dead-end case): a chaser or investigator starts to search, a searcher picks a new point, a wanderer
+    /// falls back to idle. A hunter never keeps pushing at a dead end past that time.
+    fn give_up_goal(&mut self, fac: &Facility, prof: &Profile) {
+        self.unreachable = 0.0;
+        self.blocked_time = 0.0;
+        self.avoid.clear();
+        match self.state {
+            State::Chase | State::Investigate => {
+                self.last_known = None;
+                self.state = State::Search;
+                self.search_timer = prof.search_time;
+                self.search_visits = 0;
+                self.search_target = Some(self.pick_search_target(fac));
+            }
+            State::Search => self.search_target = Some(self.pick_search_target(fac)),
+            State::Wander => {
+                self.state = State::Idle;
+                self.wander_target = None;
+                self.idle_timer = 0.25 + self.next_float() * 0.5;
+            }
+            _ => {}
+        }
+        self.clear_path();
+        self.path_goal = None;
     }
 
     fn pursue(&mut self, goal: (f32, f32), speed: f32, dt: f32, fac: &Facility, prof: &Profile) {
@@ -920,26 +1049,14 @@ impl Brain {
             HUNTER_REPATH_WANDER
         };
         if self.path_timer <= 0.0 || self.path.is_empty() || self.path_goal.is_none() {
-            self.path = plan_route(fac, self.pos, target_cell, &self.avoid);
+            self.path = plan_route(fac, self.pos, target_cell, &self.avoid, &self.gate_floor);
             self.path_timer = interval;
             self.path_goal = Some(target_cell);
         }
         if self.path.is_empty() && cell_of(self.pos) != target_cell {
             self.unreachable += dt;
-            if self.unreachable >= UNREACHABLE_GIVE_UP {
-                self.unreachable = 0.0;
-                match self.state {
-                    State::Chase | State::Investigate => {
-                        self.last_known = None;
-                        self.state = State::Search;
-                        self.search_timer = prof.search_time;
-                        self.search_visits = 0;
-                        self.search_target = Some(self.pick_search_target(fac));
-                    }
-                    State::Search => self.search_target = Some(self.pick_search_target(fac)),
-                    _ => {}
-                }
-                self.path_goal = None;
+            if self.unreachable >= self.give_up_after {
+                self.give_up_goal(fac, prof);
                 return;
             }
             if self.state == State::Wander {
@@ -965,7 +1082,7 @@ impl Brain {
             waypoint = self.path[0].center();
             for i in 0..self.path.len().min(4) {
                 let c = self.path[i].center();
-                if !fac.body_fits(c.0, c.1, HUNTER_RADIUS) || !self.clear_sweep(fac, self.pos, c) {
+                if !body_fits_gated(fac, &self.gate_floor, c.0, c.1) || !self.clear_sweep(fac, self.pos, c) {
                     break;
                 }
                 furthest = i;
@@ -989,17 +1106,23 @@ impl Brain {
         if on_path
             && blocked_cell != cell_of(self.pos)
             && blocked_cell != target_cell
-            && !sweep_clear(fac, self.pos, next)
+            && !sweep_clear(fac, &self.gate_floor, self.pos, next)
         {
             // The step into the next cell is blocked: do not slide along the wall. Keep that cell out of the route for
             // a moment and plan again from where the body stands. (Off-centre in its own cell the body walks to the
             // centre, as before; the goal's own cell is never kept out, the body closes on it as far as it can.)
+            self.blocked_time += dt;
+            if self.blocked_time >= self.give_up_after {
+                self.give_up_goal(fac, prof);
+                return;
+            }
             self.avoid.push((blocked_cell, BLOCKED_AVOID_SECONDS));
             self.clear_path();
             self.path_timer = 0.0;
             self.moving_speed = 0.0;
             return;
         }
+        self.blocked_time = 0.0;
         self.step_toward(waypoint, travel, fac, dt);
     }
 
@@ -1217,7 +1340,7 @@ impl Brain {
         let mut reachable = Vec::new();
         for (ox, oy) in offs {
             if let Some(c) = fac.nearest_open(lk.0 + ox, lk.1 + oy, HUNTER_RADIUS) {
-                if dist(c, self.pos) > 0.5 && !plan_route(fac, self.pos, cell_of(c), &self.avoid).is_empty() {
+                if dist(c, self.pos) > 0.5 && !plan_route(fac, self.pos, cell_of(c), &self.avoid, &self.gate_floor).is_empty() {
                     if !scale.unchecked_first {
                         return Some(c);
                     }
@@ -1243,7 +1366,7 @@ impl Brain {
             }
         }
         let (c, _) = best?;
-        if plan_route(fac, self.pos, cell_of(c), &self.avoid).is_empty() {
+        if plan_route(fac, self.pos, cell_of(c), &self.avoid, &self.gate_floor).is_empty() {
             return None;
         }
         Some(c)
@@ -1282,6 +1405,8 @@ pub struct SearchRules {
     pub reach: f32,
     /// Searched points remembered for `unchecked_first`.
     pub memory: usize,
+    /// Seconds without a route (or with every step blocked) before a hunter gives its goal up.
+    pub unreachable_give_up: f32,
     pub offsets: Vec<(f32, f32)>,
     default: SearchScale,
     difficulty: HashMap<String, SearchScale>,
@@ -1292,6 +1417,7 @@ impl Default for SearchRules {
         SearchRules {
             reach: 8.0,
             memory: 12,
+            unreachable_give_up: UNREACHABLE_GIVE_UP,
             offsets: vec![
                 (3.0, 0.0),
                 (-3.0, 0.0),
@@ -1330,6 +1456,9 @@ impl SearchRules {
         }
         if let Some(n) = v["memory"].as_i64() {
             r.memory = n.clamp(0, 256) as usize;
+        }
+        if let Some(x) = v["unreachable_give_up"].as_f64() {
+            r.unreachable_give_up = (x as f32).clamp(0.05, 60.0);
         }
         if let Some(a) = v["offsets"].as_array() {
             let offs: Vec<(f32, f32)> = a
@@ -2053,5 +2182,163 @@ mod target_choice_tests {
     fn no_bots_is_the_runner() {
         let r = TargetRules::get();
         assert_eq!(choose_target(r, Difficulty::Nightmare, (0.0, 0.0), (4.0, 0.0), &[], clear), None);
+    }
+}
+
+#[cfg(test)]
+mod wiring_tests {
+    use super::*;
+    use crate::config::Difficulty;
+    use crate::world::facility::Options;
+
+    fn aki() -> HunterDef {
+        let v: serde_json::Value = serde_json::from_str(include_str!("../data/hunters/aki.json")).unwrap();
+        crate::content::hunters::parse(&v, None, "").unwrap()
+    }
+
+    fn facility() -> Facility {
+        let cat = crate::world::catalog::Catalog::load();
+        Facility::generate("WIRING-1", &Options::default(), &cat)
+    }
+
+    /// A wall cell with an open cell beside it, and that open cell.
+    fn wall_beside_floor(fac: &Facility) -> (Cell, Cell) {
+        for y in 1..fac.rows - 1 {
+            for x in 1..fac.cols - 1 {
+                let w = Cell::new(x, y);
+                if fac.hunter_open(w) {
+                    continue;
+                }
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let o = Cell::new(x + dx, y + dy);
+                    if fac.hunter_open(o) {
+                        return (w, o);
+                    }
+                }
+            }
+        }
+        panic!("a generated floor has a wall beside floor");
+    }
+
+    #[test]
+    fn state_names_feed_the_emote_transition_rules() {
+        assert_eq!(State::Chase.name(), "CHASE");
+        assert_eq!(crate::net::wiring::transition_rule(State::Wander.name(), State::Chase.name()), Some("spot"));
+        assert_eq!(crate::net::wiring::transition_rule(State::Chase.name(), State::Search.name()), Some("lose"));
+        assert_eq!(crate::net::wiring::transition_rule(State::Idle.name(), State::Search.name()), Some("search"));
+    }
+
+    #[test]
+    fn an_open_gate_makes_its_cells_floor_and_a_raised_gate_does_not() {
+        let cells = [Cell::new(3, 4), Cell::new(3, 5)];
+        assert_eq!(gate_floor_cells(&cells, true).len(), 2);
+        assert!(gate_floor_cells(&cells, false).is_empty());
+        let mut b = Brain::new(aki(), (0.0, 0.0), "G", Difficulty::Standard);
+        b.set_gate_floor(&cells, true);
+        assert_eq!(b.gate_floor.len(), 2);
+        b.set_gate_floor(&cells, false);
+        assert!(b.gate_floor.is_empty());
+    }
+
+    #[test]
+    fn a_hunter_routes_through_an_open_gate_cell_and_not_a_closed_one() {
+        let fac = facility();
+        let (wall, floor) = wall_beside_floor(&fac);
+        assert!(plan_route(&fac, floor.center(), wall, &[], &[]).is_empty(), "a wall is not a goal");
+        let through = plan_route(&fac, floor.center(), wall, &[], &[wall]);
+        assert_eq!(through.last(), Some(&wall), "with the gate down the channel cell is a goal");
+        assert!(body_fits_gated(&fac, &[wall], wall.center().0, wall.center().1));
+        assert!(!body_fits_gated(&fac, &[], wall.center().0, wall.center().1));
+    }
+
+    #[test]
+    fn a_state_change_fires_the_data_emote_rule_on_the_host_only() {
+        let prof_dt = 0.1;
+        let mut host_fired = 0;
+        for i in 0..400 {
+            let mut b = Brain::new(aki(), (0.0, 0.0), &format!("E{i}"), Difficulty::Standard);
+            b.state = State::Chase;
+            b.tick_emotes(prof_dt, State::Wander, 6.0);
+            if let Some(e) = b.emote {
+                assert!(super::super::emotes::Catalogue::get().emote(e).is_some(), "a real catalogue index");
+                host_fired += 1;
+            }
+            let mut g = Brain::new(aki(), (0.0, 0.0), &format!("E{i}"), Difficulty::Standard);
+            g.display_only = true;
+            g.state = State::Chase;
+            g.tick_emotes(prof_dt, State::Wander, 6.0);
+            assert!(g.emote.is_none(), "a guest never starts an emote");
+        }
+        assert!(host_fired > 0, "the spot rule fires for some hunters (its chance is data)");
+        assert!(host_fired < 400, "and not for all of them");
+    }
+
+    #[test]
+    fn a_hunter_gives_up_an_unreachable_goal_within_the_data_time() {
+        let fac = facility();
+        let prof = Difficulty::Standard.profile();
+        let (_, floor) = wall_beside_floor(&fac);
+        let mut b = Brain::new(aki(), floor.center(), "DEAD", Difficulty::Standard);
+        b.active = true;
+        b.state = State::Investigate;
+        let goal = (-40.5, -40.5);
+        let dt = 1.0 / 30.0;
+        let mut t = 0.0;
+        while b.state == State::Investigate && t < UNREACHABLE_GIVE_UP + 1.0 {
+            b.pursue(goal, 2.0, dt, &fac, &prof);
+            t += dt;
+        }
+        assert_eq!(b.state, State::Search, "no route: it stops pushing and searches");
+        assert!(t <= UNREACHABLE_GIVE_UP + 2.0 * dt, "within the give-up time, took {t}");
+    }
+
+    #[test]
+    fn the_give_up_time_is_data_and_matches_the_fallback_constant() {
+        let data: serde_json::Value =
+            serde_json::from_str(include_str!("../data/hunters/search.json")).unwrap();
+        assert_eq!(SearchRules::parse(&data).unreachable_give_up, UNREACHABLE_GIVE_UP);
+        assert_eq!(search_rules().unreachable_give_up, UNREACHABLE_GIVE_UP);
+        let mut changed = data.clone();
+        changed["unreachable_give_up"] = serde_json::json!(0.5);
+        assert_eq!(SearchRules::parse(&changed).unreachable_give_up, 0.5);
+    }
+
+    #[test]
+    fn changing_the_give_up_data_changes_when_a_hunter_gives_up() {
+        let fac = facility();
+        let prof = Difficulty::Standard.profile();
+        let (_, floor) = wall_beside_floor(&fac);
+        let dt = 1.0 / 30.0;
+        let time_to_give_up = |secs: f32| {
+            let mut b = Brain::new(aki(), floor.center(), "DEAD", Difficulty::Standard);
+            b.give_up_after = secs;
+            b.active = true;
+            b.state = State::Investigate;
+            let mut t = 0.0;
+            while b.state == State::Investigate && t < 10.0 {
+                b.pursue((-40.5, -40.5), 2.0, dt, &fac, &prof);
+                t += dt;
+            }
+            t
+        };
+        let short = time_to_give_up(0.5);
+        let long = time_to_give_up(3.0);
+        assert!(short <= 0.5 + 2.0 * dt, "short give-up took {short}");
+        assert!(long >= 3.0 - 2.0 * dt, "long give-up took {long}");
+    }
+
+    #[test]
+    fn giving_up_leaves_a_chase_a_search_and_a_wander_idle() {
+        let fac = facility();
+        let prof = Difficulty::Standard.profile();
+        let (_, floor) = wall_beside_floor(&fac);
+        for (from, to) in [(State::Chase, State::Search), (State::Investigate, State::Search), (State::Wander, State::Idle)] {
+            let mut b = Brain::new(aki(), floor.center(), "GU", Difficulty::Standard);
+            b.state = from;
+            b.blocked_time = UNREACHABLE_GIVE_UP;
+            b.give_up_goal(&fac, &prof);
+            assert_eq!(b.state, to);
+            assert_eq!(b.blocked_time, 0.0);
+        }
     }
 }

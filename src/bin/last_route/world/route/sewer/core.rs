@@ -1589,11 +1589,88 @@ pub struct SewerChunk {
     /// The crawl pipes' `behind` cells (the raw feature key, sewer:853-854), in feature order, both sides of each pipe.
     /// Excluded exactly (not a neighbourhood) by `_hunter_spawns` and `_pickups`.
     pub behind: Vec<V2>,
+    /// The extra room put into this chunk by `chunk` (`rooms::pick`); `None` from `chunk_base` and for chunks without one.
+    pub room: Option<super::rooms::Placed<'static>>,
 }
 
 /// `sewer().chunk(coord)` for the sewer levels (`_build_chunk`, sewer:275-376) up to the seams. `None` for a
 /// coordinate that is not a sewer chunk.
+/// The sewer chunk as it is played: the Godot layout (`chunk_base`) plus the extra sewer room (`rooms`) in a free
+/// spot and, on the lower storey, the second level's water tunnels and landing pools (`level2`).
 pub fn chunk(coord: Coord, inputs: &Inputs) -> Option<SewerChunk> {
+    let mut c = chunk_base(coord, inputs)?;
+    if coord.y == LOWER_LEVEL {
+        overlay_level2(&mut c, inputs);
+    }
+    place_room(&mut c, inputs.world);
+    Some(c)
+}
+
+/// Open the second level's tunnels and pools into the lower storey: its non-solid cells are copied over solid ones
+/// (never into a sealed wing), so the tunnels run under the whole level and the landing pools sit under each falls.
+fn overlay_level2(c: &mut SewerChunk, inputs: &Inputs) {
+    let l2 = super::level2::chunk(inputs, c.coord.x, c.coord.z);
+    let sealed: HashSet<V2> = c.sealed_cells.iter().copied().collect();
+    for z in 0..N {
+        for x in 0..N {
+            let code = l2.grid[z][x];
+            if code != SOLID && c.sewer_grid[z][x] == SOLID && !sealed.contains(&V2::new(x as i32, z as i32)) {
+                c.sewer_grid[z][x] = code;
+            }
+        }
+    }
+}
+
+/// Put one extra room (pump room, valve hall...) into a free spot of the chunk, after the maze, the region props and
+/// the seal frame, and before the pickups, hunters and fixtures read the chunk. Its props join `region_props`.
+fn place_room(c: &mut SewerChunk, world: &str) {
+    let table = super::rooms::rooms();
+    let mut keep_clear: Vec<V2> = c.region_props.iter().map(|p| p.cell).collect();
+    keep_clear.extend(c.sealed_cells.iter().copied());
+    keep_clear.extend(c.behind.iter().copied());
+    let grid = c.sewer_grid;
+    let free = |x: i32, z: i32, w: i32, h: i32| super::rooms::spot_is_free(table, &grid, &keep_clear, x, z, w, h);
+    let Some(placed) = super::rooms::pick(table, world, &chunk_id(c.coord), &free) else { return };
+    // `free` only knows the size: the picked room must be one that opens onto floor at that spot
+    if !super::rooms::connects(placed.def, &grid, placed.origin.x, placed.origin.y) {
+        return;
+    }
+    placed.stamp(&mut c.sewer_grid);
+    let base = c.region_props.len();
+    for (i, p) in placed.props().into_iter().enumerate() {
+        let mut prop = SewerProp {
+            id: format!("{}:PROP:{}", chunk_id(c.coord), base + i),
+            prop_type: p.kind,
+            cell: p.at,
+            yaw: p.yaw.to_radians(),
+            solid: p.solid,
+            mount_y: None,
+            mount_offset: None,
+            placement_offset: None,
+            collider_size: None,
+            collider_y0: None,
+            occupied_cells: None,
+            crawl_under: false,
+            crawl_side: None,
+            crawl_step: None,
+            outflow: false,
+            outflow_wall: None,
+            valve_effect: None,
+            gate: None,
+            gate_cells: None,
+            link: None,
+            breakable_id: None,
+        };
+        if p.kind == "sewerValveWheel" {
+            prop.valve_effect = Some("flood");
+        }
+        c.region_props.push(prop);
+    }
+    c.room = Some(placed);
+}
+
+/// `sewer().chunk(coord)` for the Godot layout only: the golden tests read this one.
+pub fn chunk_base(coord: Coord, inputs: &Inputs) -> Option<SewerChunk> {
     if !is_chunk_allowed(coord) {
         return None;
     }
@@ -1741,6 +1818,7 @@ pub fn chunk(coord: Coord, inputs: &Inputs) -> Option<SewerChunk> {
         breakables,
         sealed_cells,
         behind,
+        room: None,
     })
 }
 
@@ -2141,7 +2219,7 @@ mod tests {
             let level = g.coord.y;
             let entry = counts.entry((g.tag.clone(), level)).or_default();
             entry.0 += 1;
-            let Some(chunk) = chunk(g.coord, &Inputs { world: &g.world }) else {
+            let Some(chunk) = chunk_base(g.coord, &Inputs { world: &g.world }) else {
                 mismatches.push(format!("{} {:?} {field}: no sewer chunk", g.tag, (g.coord.x, g.coord.y, g.coord.z)));
                 continue;
             };
@@ -2384,5 +2462,96 @@ mod tests {
             eprintln!("MISMATCH {m}");
         }
         assert!(failures.is_empty(), "{} layout mismatches; first: {}", failures.len(), failures.first().cloned().unwrap_or_default());
+    }
+
+    // ----- the wired extras: rooms and the second level -----
+
+    fn played(x: i32, y: i32, z: i32) -> SewerChunk {
+        chunk(Coord::new(x, y, z), &Inputs { world: "wired-sewer" }).expect("sewer chunk")
+    }
+
+    fn base(x: i32, y: i32, z: i32) -> SewerChunk {
+        chunk_base(Coord::new(x, y, z), &Inputs { world: "wired-sewer" }).expect("sewer chunk")
+    }
+
+    /// The played chunk is the Godot chunk plus an extra room: outside the room's rectangle the grid is the same
+    /// (level -1), the room's layout is in it, and its props are appended with unique ids.
+    #[test]
+    fn the_first_sewer_gets_rooms_and_keeps_the_rest_of_its_layout() {
+        let mut placed = 0;
+        for x in -10..10 {
+            for z in -10..10 {
+                let (a, b) = (played(x, -1, z), base(x, -1, z));
+                assert_eq!(a.rooms, b.rooms);
+                assert_eq!(a.links, b.links);
+                assert_eq!(a.ramps, b.ramps);
+                assert_eq!(a.region_props.len() >= b.region_props.len(), true);
+                let Some(room) = &a.room else {
+                    assert_eq!(a.sewer_grid, b.sewer_grid, "({x}, {z}) no room, same grid");
+                    continue;
+                };
+                placed += 1;
+                for zz in 0..N as i32 {
+                    for xx in 0..N as i32 {
+                        let (rx, rz) = (xx - room.origin.x, zz - room.origin.y);
+                        match room.def.code_at(rx, rz) {
+                            Some(code) => assert_eq!(a.sewer_grid[zz as usize][xx as usize], code),
+                            None => assert_eq!(a.sewer_grid[zz as usize][xx as usize], b.sewer_grid[zz as usize][xx as usize]),
+                        }
+                    }
+                }
+                let added = &a.region_props[b.region_props.len()..];
+                assert_eq!(added.len(), room.def.props.len());
+                let mut ids: Vec<&String> = a.region_props.iter().map(|p| &p.id).collect();
+                ids.sort();
+                ids.dedup();
+                assert_eq!(ids.len(), a.region_props.len());
+                // the room opens onto the existing floor
+                assert!(super::super::rooms::connects(room.def, &b.sewer_grid, room.origin.x, room.origin.y));
+            }
+        }
+        assert!(placed > 10, "rooms are placed in the real sewer: {placed}");
+    }
+
+    /// The second level's tunnels and landing pools are in the lower storey; the collector's own floor is kept.
+    #[test]
+    fn the_lower_storey_gets_the_second_levels_water_and_keeps_the_collector() {
+        let mut pools = 0;
+        for x in -6..6 {
+            for z in -6..6 {
+                let (a, b) = (played(x, -2, z), base(x, -2, z));
+                let l2 = super::super::level2::chunk(&Inputs { world: "wired-sewer" }, x, z);
+                for zz in 0..N {
+                    for xx in 0..N {
+                        if b.sewer_grid[zz][xx] != SOLID {
+                            // collector floor stays unless the extra room covers it
+                            if a.room.is_none() {
+                                assert_eq!(a.sewer_grid[zz][xx], b.sewer_grid[zz][xx]);
+                            }
+                        } else if a.room.is_none() && !b.sealed_cells.contains(&V2::new(xx as i32, zz as i32)) {
+                            assert_eq!(a.sewer_grid[zz][xx], l2.grid[zz][xx]);
+                        }
+                    }
+                }
+                if let Some(pool) = l2.landing_pool {
+                    pools += 1;
+                    // under every first-level falls there is open water to land in
+                    assert!(a.sewer_grid[pool.y as usize + 1][pool.x as usize + 1] != SOLID);
+                }
+                // the collector's ramps up to the first sewer are still there
+                assert_eq!(a.ramps, b.ramps);
+            }
+        }
+        assert!(pools > 0, "no falls in the scanned area");
+    }
+
+    /// The same world and chunk give the same room and the same grid.
+    #[test]
+    fn placed_rooms_are_deterministic() {
+        for x in -4..4 {
+            let (a, b) = (played(x, -1, 3), played(x, -1, 3));
+            assert_eq!(a.sewer_grid, b.sewer_grid);
+            assert_eq!(a.room.map(|r| (r.def.id.clone(), r.origin)), b.room.map(|r| (r.def.id.clone(), r.origin)));
+        }
     }
 }

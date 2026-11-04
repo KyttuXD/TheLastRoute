@@ -511,6 +511,56 @@ pub fn finite_purpose(room_type: &str) -> (Option<&'static str>, Option<&'static
     (intern_purpose(room_type), None)
 }
 
+/// The floor kind names of the floor painter table, so a data name becomes the table's own `&'static str`.
+fn intern_floor(name: &str) -> Option<&'static str> {
+    super::FLOOR_PAINTERS.iter().map(|e| e.0).find(|k| *k == name)
+}
+
+/// A maze variant's district: the plain maze's walls and ceiling, the variant's floors. Names the painter table
+/// lacks are dropped; a list left empty falls back to the maze's own.
+pub fn district_of_variant(
+    maze: &District,
+    hall_floor: &[String],
+    hall_runner: bool,
+    room_default: &[String],
+) -> District {
+    let list = |names: &[String], fallback: &'static [&'static str]| -> &'static [&'static str] {
+        let kinds: Vec<&'static str> = names.iter().filter_map(|n| intern_floor(n)).collect();
+        if kinds.is_empty() {
+            fallback
+        } else {
+            Box::leak(kinds.into_boxed_slice())
+        }
+    };
+    District {
+        id: "maze",
+        wall: maze.wall,
+        ceiling: maze.ceiling,
+        hall_floor: list(hall_floor, maze.hall_floor),
+        hall_runner,
+        room_default: list(room_default, maze.room_default),
+    }
+}
+
+/// The maze variants as districts, built once from `world::route::maze_regions::variants()`.
+fn variant_districts() -> &'static [(String, District)] {
+    use std::sync::OnceLock;
+    static CELL: OnceLock<Vec<(String, District)>> = OnceLock::new();
+    CELL.get_or_init(|| {
+        let maze = district_or_maze("maze");
+        crate::world::route::maze_regions::variants()
+            .iter()
+            .map(|v| (v.id.clone(), district_of_variant(maze, &v.hall_floor, v.hall_runner, &v.room_default_floor)))
+            .collect()
+    })
+}
+
+/// The district of a maze variant named by `region` (its id, with or without a `maze_` prefix), if there is one.
+pub fn variant_district(region: &str) -> Option<&'static District> {
+    let id = region.strip_prefix("maze_").unwrap_or(region);
+    variant_districts().iter().find(|(v, _)| v.strip_prefix("maze_").unwrap_or(v) == id).map(|(_, d)| d)
+}
+
 /// The textures of a finite-route space. `region` is the room's RoomCatalog region ("" for halls / the lobby),
 /// `room_type` its type id ("" for a hall), `is_hall` true for corridors and junctions (doorway cells take the hall's
 /// floor in the original: the room floor starts inside the door line).
@@ -521,6 +571,8 @@ pub fn region_set(region: &str, room_type: &str, is_hall: bool) -> TextureChoice
         finite_purpose(room_type)
     };
     let d = district_or_maze(override_district.unwrap_or_else(|| finite_district(region)));
+    // a level 0 maze variant (data/regions/maze_*.json) brings its own floors; walls and ceiling stay the maze's
+    let variant = variant_district(region).filter(|_| override_district.is_none());
     let inferno = d.id == "inferno";
     let wall_kinds = if is_hall {
         d.wall
@@ -530,9 +582,12 @@ pub fn region_set(region: &str, room_type: &str, is_hall: bool) -> TextureChoice
     let floor_kinds = if inferno {
         INFERNO_ROCK
     } else if is_hall {
-        d.hall_floor
+        variant.map_or(d.hall_floor, |v| v.hall_floor)
     } else {
-        room_floor_kinds(d.id, purpose)
+        match (variant, purpose.and_then(|p| lookup(ROOM_FLOORS, p))) {
+            (Some(v), None) => v.room_default,
+            _ => room_floor_kinds(d.id, purpose),
+        }
     };
     TextureChoice {
         district: d.id,
@@ -543,7 +598,7 @@ pub fn region_set(region: &str, room_type: &str, is_hall: bool) -> TextureChoice
         wall_kinds,
         floor_kinds,
         per_cell: inferno,
-        runner: is_hall && d.hall_runner,
+        runner: is_hall && variant.map_or(d.hall_runner, |v| v.hall_runner),
         is_hall,
     }
 }
@@ -639,6 +694,35 @@ pub fn safe_pad_kind(dx: i32, dz: i32) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_maze_variant_district_takes_its_data_floors_and_the_maze_walls() {
+        let maze = district_or_maze("maze");
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let d = district_of_variant(maze, &names(&["terracotta0", "no_such_floor", "stone0"]), true, &names(&["parquet0"]));
+        assert_eq!(d.hall_floor, &["terracotta0", "stone0"], "unknown names are dropped, known ones kept in order");
+        assert_eq!(d.room_default, &["parquet0"]);
+        assert!(d.hall_runner);
+        assert_eq!(d.wall, maze.wall);
+        assert_eq!(d.ceiling, maze.ceiling);
+        // a list with no known name falls back to the maze's
+        let d = district_of_variant(maze, &names(&["nope"]), false, &names(&[]));
+        assert_eq!(d.hall_floor, maze.hall_floor);
+        assert_eq!(d.room_default, maze.room_default);
+    }
+
+    #[test]
+    fn every_embedded_maze_variant_resolves_to_painted_floors() {
+        for v in crate::world::route::maze_regions::variants() {
+            let d = variant_district(&v.id).expect("variant has a district");
+            assert!(!d.hall_floor.is_empty() && !d.room_default.is_empty());
+            for k in d.hall_floor.iter().chain(d.room_default) {
+                assert!(variant_of("floor", k).is_some(), "{} uses unpainted floor {k}", v.id);
+            }
+            let hall = region_set(&v.id, "", true);
+            assert_eq!(hall.floor_kinds, d.hall_floor);
+        }
+    }
 
     #[test]
     fn every_kind_is_painted() {

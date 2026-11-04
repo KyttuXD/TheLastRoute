@@ -27,6 +27,15 @@ pub const ALLOWED_SAVES: &[(&str, &[&str])] = &[
     ("night-watch-rust", &["progress"]),
 ];
 
+/// Longest game id or slot path segment a save route accepts.
+pub const SAVE_SEGMENT_MAX_LEN: usize = 64;
+
+/// A save path segment (game id or slot): 1..=SAVE_SEGMENT_MAX_LEN of `[A-Za-z0-9_-]`. Checked before the segment is
+/// compared with the allow-list or goes near a file or an upstream path.
+pub fn save_segment_valid(segment: &str) -> bool {
+    (1..=SAVE_SEGMENT_MAX_LEN).contains(&segment.len()) && segment.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 /// `SAVE_PATH.exec(pathname)` -> `(gameId, slot)` (raw, never decoded).
 pub fn match_save_path(pathname: &str) -> Option<(String, String)> {
     let rest = pathname.strip_prefix("/api/v1/saves/")?;
@@ -211,7 +220,9 @@ impl GameSaves {
     }
 
     fn slot_allowed(&self, game_id: &str, slot: &str) -> bool {
-        self.allowed.iter().any(|(game, slots)| game == game_id && slots.iter().any(|s| s == slot))
+        save_segment_valid(game_id)
+            && save_segment_valid(slot)
+            && self.allowed.iter().any(|(game, slots)| game == game_id && slots.iter().any(|s| s == slot))
     }
 
     fn who(&self, accounts: &dyn SessionLookup, token: &str) -> String {
@@ -394,6 +405,19 @@ mod tests {
     use crate::util::{hex, random_bytes};
 
     const PATH: &str = "/api/v1/saves/last-route-godot/run";
+
+    #[test]
+    fn save_segments_are_validated_before_the_allow_list() {
+        assert!(save_segment_valid("run-world-1") && save_segment_valid("last-route-rust"));
+        for bad in ["", "..", "a/b", "a b", "run.json", "%2e%2e", &"x".repeat(SAVE_SEGMENT_MAX_LEN + 1)] {
+            assert!(!save_segment_valid(bad), "{bad:?} must be refused");
+        }
+        let f = fixture_with(true, None);
+        assert_eq!(f.saves.get(&f.accounts, "token", "last-route-rust", "..").0, 404);
+        assert_eq!(f.saves.get(&f.accounts, "token", "..", "run").0, 404);
+        assert!(f.saves.slot_allowed("last-route-rust", "run"));
+        assert!(!f.saves.slot_allowed("last-route-rust", &"x".repeat(SAVE_SEGMENT_MAX_LEN + 1)));
+    }
 
     struct Fixture {
         root: PathBuf,

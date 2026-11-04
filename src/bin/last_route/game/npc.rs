@@ -111,6 +111,8 @@ pub struct Tuning {
     pub searched_memory: usize,
     /// Metres round a searched point, or a hunter searching now, that a bot picks no spot in (data `searched.avoid_radius`).
     pub searched_avoid: f32,
+    /// Metres of water over the bed from which a bot keeps out of a cell unless it flees (data `water.avoid_depth`).
+    pub water_avoid_depth: f32,
     /// Metres from a door's centre at which a bot counts itself at that door (data `doors.near`).
     pub door_near: f32,
     /// Metres from a door's centre at which a bot is clear of it and shuts it behind itself (data `doors.close_clear`).
@@ -156,6 +158,7 @@ impl Tuning {
             locker_dwell: num(&errand["locker"], "dwell")?,
             searched_memory: num(searched, "memory")?.max(0.0) as usize,
             searched_avoid: num(searched, "avoid_radius")?,
+            water_avoid_depth: num(&v["water"], "avoid_depth")?,
             door_near: num(doors, "near")?,
             close_clear: num(doors, "close_clear")?,
             tasks: v["tasks"]
@@ -244,6 +247,10 @@ pub struct Npc {
     pub searched: Vec<(f32, f32)>,
     /// The door the bot last came near, which it shuts once it has walked clear of it.
     pub last_door: Option<Cell>,
+    /// Cells with water at least `water_avoid_depth` deep, set by the host from the sewer water layer (`deep_cells_of`).
+    pub deep_cells: Vec<(i32, i32)>,
+    /// True while this frame's walk is a flight from a chasing hunter: deep water is then fine.
+    pub fleeing: bool,
 }
 
 impl Npc {
@@ -266,6 +273,7 @@ impl Npc {
         self.visited.clear();
         self.clear_time = 0.0;
         self.searched.clear();
+        self.deep_cells.clear();
         self.last_door = None;
     }
 }
@@ -374,14 +382,73 @@ fn sweep(fac: &Facility, a: (f32, f32), b: (f32, f32)) -> Sweep {
     Sweep::Clear
 }
 
+/// The cells of `depths` (cell, metres of water over the bed) a bot keeps out of: at least `avoid_depth` deep.
+pub fn deep_cells_of(depths: &[((i32, i32), f32)], avoid_depth: f32) -> Vec<(i32, i32)> {
+    depths.iter().filter(|(_, d)| *d >= avoid_depth).map(|(c, _)| *c).collect()
+}
+
+/// A dry route: 8-way breadth-first over the hunter-open cells, with no corner cutting, never entering a `deep` cell.
+/// Empty when `to` cannot be reached dry. The path includes `from`, like `Facility::find_path`.
+fn dry_route(fac: &Facility, from: Cell, to: Cell, deep: &[(i32, i32)]) -> Vec<Cell> {
+    let ok = |c: Cell| fac.hunter_open(c) && !deep.contains(&(c.x, c.y));
+    if !ok(from) || !ok(to) {
+        return vec![];
+    }
+    let mut came: std::collections::HashMap<Cell, Cell> = std::collections::HashMap::new();
+    let mut queue = std::collections::VecDeque::from([from]);
+    let mut seen = std::collections::HashSet::from([from]);
+    while let Some(c) = queue.pop_front() {
+        if c == to {
+            let mut path = vec![c];
+            let mut at = c;
+            while let Some(p) = came.get(&at) {
+                at = *p;
+                path.push(at);
+            }
+            path.reverse();
+            return path;
+        }
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let nb = Cell::new(c.x + dx, c.y + dy);
+                if (dx == 0 && dy == 0) || seen.contains(&nb) || !ok(nb) {
+                    continue;
+                }
+                if dx != 0 && dy != 0 && (!ok(Cell::new(c.x + dx, c.y)) || !ok(Cell::new(c.x, c.y + dy))) {
+                    continue;
+                }
+                seen.insert(nb);
+                came.insert(nb, c);
+                queue.push_back(nb);
+            }
+        }
+    }
+    vec![]
+}
+
+/// Whether a route crosses a deep-water cell (the cell it starts in does not count).
+fn crosses_deep(path: &[Cell], deep: &[(i32, i32)]) -> bool {
+    path.iter().skip(1).any(|c| deep.contains(&(c.x, c.y)))
+}
+
+/// The route a bot takes: the shortest one, unless it crosses deep water and the bot is not fleeing and a dry route
+/// exists, in which case the dry one. With no dry way round the bot wades, as it has to.
+fn route_for(fac: &Facility, from: Cell, to: Cell, deep: &[(i32, i32)], fleeing: bool) -> Vec<Cell> {
+    let direct = fac.find_path(from, to);
+    if fleeing || deep.is_empty() || !crosses_deep(&direct, deep) {
+        return direct;
+    }
+    let dry = dry_route(fac, from, to, deep);
+    if dry.is_empty() { direct } else { dry }
+}
+
 /// Plans a route from the bot's cell to the open cell nearest `goal`, and drops the cell the bot stands in.
 fn plan(n: &mut Npc, fac: &Facility, goal: (f32, f32)) {
     n.path_age = 0.0;
     let from = Cell::new(n.at.0.floor() as i32, n.at.1.floor() as i32);
     let to = fac.nearest_open(goal.0, goal.1, NAV_RADIUS).unwrap_or(goal);
     let to = Cell::new(to.0.floor() as i32, to.1.floor() as i32);
-    n.path = fac
-        .find_path(from, to)
+    n.path = route_for(fac, from, to, &n.deep_cells, n.fleeing)
         .into_iter()
         .map(|c| (c.x, c.y))
         .collect();
@@ -531,7 +598,9 @@ fn flee(n: &mut Npc, fac: &Facility, seen: &[Seen], t: &Tuning, dt: f32, presses
         (1.0, 0.0)
     };
     let goal = (n.at.0 + away.0 * t.flee_step, n.at.1 + away.1 * t.flee_step);
+    n.fleeing = true;
     walk_toward(n, fac, goal, t.flee_running, t, dt, presses);
+    n.fleeing = false;
     true
 }
 
@@ -857,6 +926,8 @@ impl Game {
             clear_time: 0.0,
             searched: vec![],
             last_door: None,
+            deep_cells: Vec::new(),
+            fleeing: false,
         });
         self.npc_next += 1;
         id
@@ -1648,6 +1719,8 @@ mod tests {
             clear_time: 1.0,
             searched: vec![(0.0, 0.0)],
             last_door: None,
+            deep_cells: Vec::new(),
+            fleeing: false,
         };
         n.shift((-16.0, 32.0));
         assert_eq!(n.at, (-13.0, 36.0));
@@ -1968,5 +2041,85 @@ mod tests {
             g.update_npcs_with(dt, &hide_first);
         }
         assert!(g.npcs[0].hidden.is_some(), "with hide first the chased bot hides");
+    }
+}
+
+#[cfg(test)]
+mod water_tests {
+    use super::*;
+    use crate::world::facility::Options;
+
+    fn facility() -> Facility {
+        let cat = crate::world::catalog::Catalog::load();
+        Facility::generate("BOTWATER-1", &Options::default(), &cat)
+    }
+
+    /// A start, a goal, a direct route of at least six cells and one of its middle cells that a dry detour avoids.
+    fn detour_case(fac: &Facility) -> Option<(Cell, Cell, (i32, i32))> {
+        let cells = fac.floor_cells();
+        for a in cells.iter().step_by(11).take(80) {
+            for b in cells.iter().step_by(17).take(80) {
+                let p = fac.find_path(*a, *b);
+                if p.len() < 6 {
+                    continue;
+                }
+                let mid = p[p.len() / 2];
+                if !dry_route(fac, *a, *b, &[(mid.x, mid.y)]).is_empty() {
+                    return Some((*a, *b, (mid.x, mid.y)));
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn standard_water_threshold_is_data_and_filters_the_depths() {
+        let t = Tuning::get();
+        assert!(t.water_avoid_depth > 0.0, "a bot avoids water of some depth");
+        let depths = [((1, 1), 0.2), ((2, 1), t.water_avoid_depth), ((3, 1), t.water_avoid_depth + 0.5)];
+        assert_eq!(deep_cells_of(&depths, t.water_avoid_depth), vec![(2, 1), (3, 1)]);
+        assert!(deep_cells_of(&depths, 99.0).is_empty(), "a changed data value changes which cells are deep");
+    }
+
+    #[test]
+    fn a_walking_bot_detours_round_deep_water_and_a_fleeing_bot_wades() {
+        let fac = facility();
+        let (a, b, mid) = detour_case(&fac).expect("a generated floor has a route with a detour");
+        let deep = [mid];
+        let direct = fac.find_path(a, b);
+        assert!(crosses_deep(&direct, &deep));
+        let walking = route_for(&fac, a, b, &deep, false);
+        assert!(!walking.is_empty() && !crosses_deep(&walking, &deep), "walking: dry route");
+        assert_eq!(walking.last(), Some(&b));
+        let fleeing = route_for(&fac, a, b, &deep, true);
+        assert_eq!(fleeing, direct, "fleeing: the shortest route, water or not");
+    }
+
+    #[test]
+    fn plan_uses_the_dry_route_for_a_bot_that_is_not_fleeing() {
+        let fac = facility();
+        let (a, b, mid) = detour_case(&fac).expect("a detour case");
+        let mut n = Npc {
+            id: 0, name: String::new(), slot: 1, at: a.center(), level: 0, facing: 0.0, turn_v: 0.0, heading: (0.0, 0.0),
+            path: vec![], path_age: 0.0, walking: false, stride: 0.0, smart: 50, key: None, joined: true,
+            join_radius: 0.0, door: None, hidden: None, errand: None, dwell: 0.0, visited: vec![], clear_time: 0.0,
+            searched: vec![], last_door: None, deep_cells: vec![mid], fleeing: false,
+        };
+        plan(&mut n, &fac, b.center());
+        assert!(!n.path.contains(&mid), "the planned route keeps out of the deep cell");
+        n.fleeing = true;
+        plan(&mut n, &fac, b.center());
+        assert!(n.path.contains(&mid), "a fleeing bot takes the short way through it");
+    }
+
+    #[test]
+    fn with_no_dry_way_a_bot_wades_rather_than_stands_still() {
+        let fac = facility();
+        let cells = fac.floor_cells();
+        let a = cells[0];
+        let b = *cells.iter().find(|c| fac.find_path(a, **c).len() >= 3).expect("a reachable far cell");
+        let all: Vec<(i32, i32)> = cells.iter().filter(|c| **c != a && **c != b).map(|c| (c.x, c.y)).collect();
+        let r = route_for(&fac, a, b, &all, false);
+        assert_eq!(r, fac.find_path(a, b));
     }
 }

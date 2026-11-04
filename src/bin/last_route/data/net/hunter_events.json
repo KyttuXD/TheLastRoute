@@ -6,6 +6,14 @@
     "large_frame_over_bytes": 1100,
     "difficulties": ["relaxed", "standard", "hard", "nightmare"]
   },
+  "capture": {
+    "timeout_s": 15
+  },
+  "guest": {
+    "taser_min_gap_s": 0.4,
+    "max_valve_requests": 16,
+    "skin_recheck_s": 2
+  },
   "events": {
     "hunter_state": {
       "channel": "EVENTS",
@@ -38,6 +46,12 @@
     "sabotage": {
       "channel": "EVENTS",
       "difficulties": ["relaxed", "standard", "hard"]
+    },
+    "stream_valve": {
+      "channel": "EVENTS"
+    },
+    "stream_pipe_burst": {
+      "channel": "EVENTS"
     }
   }
 }

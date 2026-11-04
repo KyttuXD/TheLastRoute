@@ -15,12 +15,13 @@ use crate::config::WALL_HEIGHT;
 use crate::content::props::{stable_index, visual_y};
 use crate::content::regions::{RegionDef, RegionSafeLight};
 use crate::content::Content;
-use crate::world::facility::{stair_well_cells, Cell, DoorDraw, Prop, Stair, STAIR_FLIGHT};
+use crate::world::facility::{stair_well_cells, Cell, DeckKind, DoorDraw, Prop, Stair, STAIR_FLIGHT};
 use crate::world::inferno::Inferno;
 use crate::world::infinite::{ChunkKey, CHUNK, INFERNO_LEVEL, WINDOW};
+use crate::world::route::sewer::core::{Grid, LEVEL as SEWER_LEVEL, LOWER_LEVEL as SEWER_LOWER_LEVEL, WATER};
 use crate::world::{region_texture, Facility, TEXTURE_SETS};
 use macroquad::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -53,6 +54,23 @@ pub struct DoorInstance {
     pub xf: Mat4,
     /// How the model is fitted to its doorway (the posts' slide, the leaves' stretch).
     pub fit: door::DoorFit,
+}
+
+/// Whether `c` lies in one of the half-open boxes (x0, y0, x1, y1): the same test as a part's `fixture` filter.
+fn cell_in_rects(c: Cell, rects: &[(i32, i32, i32, i32)]) -> bool {
+    rects.iter().any(|&(x0, y0, x1, y1)| c.x >= x0 && c.y >= y0 && c.x < x1 && c.y < y1)
+}
+
+/// The items whose cell lies in a built part's fixture box. A room door's frame is built with its chunk part's
+/// props, so only those doors may have their leaves drawn.
+fn keep_in_rects<T>(items: Vec<T>, cell: impl Fn(&T) -> Cell, rects: &[(i32, i32, i32, i32)]) -> Vec<T> {
+    items.into_iter().filter(|i| cell_in_rects(cell(i), rects)).collect()
+}
+
+/// `doors` cut down to the ones whose frames are in the built parts `rects`. A floor built whole publishes all of
+/// its doors, so this is for the streamed window only.
+fn doors_in_rects(doors: Vec<DoorInstance>, rects: &[(i32, i32, i32, i32)]) -> Vec<DoorInstance> {
+    keep_in_rects(doors, |d| d.cell, rects)
 }
 
 /// Where the Infinite route's 3x3 window stands: its level and its centre chunk.
@@ -237,7 +255,10 @@ impl WorldMeshes {
         content: &Content,
     ) {
         self.lamps = lamps(f, lights_on, content);
-        self.doors = door_instances(f, assets, content);
+        // The hinge leaves are drawn each frame apart from the meshes, whose frames are built part by part. The
+        // leaves therefore follow the meshes: they are published only with the drawn set (below), and on a
+        // streamed floor only for the parts that are built, so a leaf never stands without its frame.
+        let doors = door_instances(f, assets, content);
         let size = CHUNK * WINDOW;
         let frame = frame.filter(|fr| {
             f.cols == size
@@ -255,6 +276,7 @@ impl WorldMeshes {
                 pad: true,
             };
             self.meshes = build_meshes(f, &pick, &mut choices, assets, content);
+            self.doors = doors;
             self.drawn = vec![None; self.meshes.len()];
             self.bounds = mesh_bounds(&self.meshes);
             return;
@@ -292,6 +314,13 @@ impl WorldMeshes {
             return;
         }
         self.builds = build_no;
+        // the leaves of the doors whose frames are in a built part (every wanted part, unless this is the first load)
+        let built: Vec<(i32, i32, i32, i32)> = wanted
+            .iter()
+            .filter(|(k, _)| self.parts.contains_key(k))
+            .filter_map(|(_, pick)| pick.fixtures)
+            .collect();
+        self.doors = doors_in_rects(doors, &built);
         // Phase 2: the drawn set goes back into the parts it came from, then every wanted part is drawn in order.
         for (m, key) in std::mem::take(&mut self.meshes).into_iter().zip(std::mem::take(&mut self.drawn)) {
             if let Some(p) = key.and_then(|k| self.parts.get_mut(&k)) {
@@ -778,6 +807,213 @@ impl InfernoFloor {
     }
 }
 
+impl InfernoFloor {
+    /// The carve of the chunk `key`, made once.
+    fn carve(&mut self, key: (i32, i32)) -> &Inferno {
+        let seed = &self.seed;
+        self.chunks
+            .entry(key)
+            .or_insert_with(|| Inferno::carve(seed, ChunkKey { cx: key.0, cy: key.1, level: INFERNO_LEVEL }))
+    }
+}
+
+/// The cave decoration's drawing numbers (data/render/world_decor.json); the pieces' own look is in inferno.json.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecorCfg {
+    /// Sides of a stalactite or stalagmite cone.
+    pub cone_sides: usize,
+    /// Base radius of a cone, as a fraction of its height.
+    pub cone_radius_fraction: f32,
+    /// Width of a charred prop's box, as a fraction of its size.
+    pub charred_width_fraction: f32,
+    /// A floor crack's width and length, as fractions of its size.
+    pub crack_width_fraction: f32,
+    pub crack_length_fraction: f32,
+    /// How far a crack lies above the floor, in metres.
+    pub crack_lift_m: f32,
+    /// Shader mode of a crack (2 = unlit, so it glows).
+    pub crack_unlit_mode: f32,
+}
+
+impl DecorCfg {
+    pub fn parse(text: &str) -> Result<DecorCfg, String> {
+        let v: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let num = |k: &str| -> Result<f32, String> {
+            v.get(k)
+                .and_then(|x| x.as_f64())
+                .map(|x| x as f32)
+                .filter(|x| x.is_finite() && *x >= 0.0)
+                .ok_or_else(|| format!("world_decor.json: \"{k}\" must be a number of zero or more"))
+        };
+        let sides = num("cone_sides")?;
+        if sides < 3.0 {
+            return Err("world_decor.json: \"cone_sides\" must be at least 3".to_string());
+        }
+        Ok(DecorCfg {
+            cone_sides: sides as usize,
+            cone_radius_fraction: num("cone_radius_fraction")?,
+            charred_width_fraction: num("charred_width_fraction")?,
+            crack_width_fraction: num("crack_width_fraction")?,
+            crack_length_fraction: num("crack_length_fraction")?,
+            crack_lift_m: num("crack_lift_m")?,
+            crack_unlit_mode: num("crack_unlit_mode")?,
+        })
+    }
+}
+
+pub const DECOR_PATH: &str = "render/world_decor.json";
+
+/// The decoration numbers compiled into the executable; a bad file is reported on stderr and the Standard values used.
+pub fn decor_cfg() -> &'static DecorCfg {
+    static CFG: OnceLock<DecorCfg> = OnceLock::new();
+    CFG.get_or_init(|| {
+        let text = crate::content::embedded::data_under(DECOR_PATH).next().map(|(_, t)| t).unwrap_or("{}");
+        DecorCfg::parse(text).unwrap_or_else(|e| {
+            eprintln!("{DECOR_PATH}: {e}");
+            DecorCfg {
+                cone_sides: 6,
+                cone_radius_fraction: 0.2,
+                charred_width_fraction: 0.7,
+                crack_width_fraction: 0.12,
+                crack_length_fraction: 1.0,
+                crack_lift_m: 0.012,
+                crack_unlit_mode: 2.0,
+            }
+        })
+    })
+}
+
+/// A cone from a circular base (`base` centre, horizontal `radius`) to `apex`, as `sides` triangles, each wound
+/// with its front outward (the floor's quads have `cross(b - a, c - a)` against the normal).
+fn cone(b: &mut Builder, base: Vec3, apex: Vec3, radius: f32, sides: usize, col: Color) {
+    for i in 0..sides {
+        let (a0, a1) = (i as f32 / sides as f32 * std::f32::consts::TAU, (i + 1) as f32 / sides as f32 * std::f32::consts::TAU);
+        let p0 = base + vec3(a0.cos() * radius, 0.0, a0.sin() * radius);
+        let p1 = base + vec3(a1.cos() * radius, 0.0, a1.sin() * radius);
+        let mid = (a0 + a1) * 0.5;
+        let out = vec3(mid.cos(), 0.0, mid.sin());
+        let (p0, p1) = if (p1 - p0).cross(apex - p0).dot(out) > 0.0 { (p1, p0) } else { (p0, p1) };
+        let n = (p1 - p0).cross(apex - p0).normalize_or_zero() * -1.0;
+        b.quad([p0, p1, apex, apex], [vec2(0., 0.), vec2(1., 0.), vec2(0.5, 1.), vec2(0.5, 1.)], n, col, 0.0);
+    }
+}
+
+fn rgb(c: [f32; 3]) -> Color {
+    Color::new(c[0], c[1], c[2], 1.0)
+}
+
+/// Draws the cave decoration `d` of a chunk whose cell (0, 0) lies at facility cell `at`: stalactites hang from the
+/// ceiling `ceiling_y`, stalagmites rise from the floor, charred props are dark boxes, cracks are flat glowing quads.
+/// Lava glow and embers are lights and particles (the scene's).
+fn add_deco(
+    plain: &mut Builder,
+    glow: &mut Builder,
+    d: &crate::render::inferno_deco::Deco,
+    at: (i32, i32),
+    ceiling_y: f32,
+    cfg: &DecorCfg,
+) {
+    use crate::render::inferno_deco::DecoKind;
+    let x = (at.0 + d.cell.x) as f32 + 0.5 + d.offset[0];
+    let z = (at.1 + d.cell.y) as f32 + 0.5 + d.offset[1];
+    let col = rgb(d.color);
+    match d.kind {
+        DecoKind::Stalactite => cone(
+            plain,
+            vec3(x, ceiling_y, z),
+            vec3(x, (ceiling_y - d.size_m).max(d.floor_y), z),
+            d.size_m * cfg.cone_radius_fraction,
+            cfg.cone_sides,
+            col,
+        ),
+        DecoKind::Stalagmite => cone(
+            plain,
+            vec3(x, d.floor_y, z),
+            vec3(x, (d.floor_y + d.size_m).min(ceiling_y), z),
+            d.size_m * cfg.cone_radius_fraction,
+            cfg.cone_sides,
+            col,
+        ),
+        DecoKind::CharredProp => {
+            let w = d.size_m * cfg.charred_width_fraction;
+            plain.cube(vec3(x, d.floor_y + d.size_m * 0.5, z), vec3(w, d.size_m, w), d.yaw, col, 0.0);
+        }
+        DecoKind::FloorCrack => {
+            let (w, l) = (d.size_m * cfg.crack_width_fraction * 0.5, d.size_m * cfg.crack_length_fraction * 0.5);
+            let (s, c) = d.yaw.sin_cos();
+            let at = |u: f32, v: f32| vec3(x + c * u + s * v, d.floor_y + cfg.crack_lift_m, z - s * u + c * v);
+            glow.quad(
+                [at(-w, -l), at(w, -l), at(w, l), at(-w, l)],
+                UV1,
+                vec3(0., 1., 0.),
+                col,
+                cfg.crack_unlit_mode,
+            );
+        }
+        DecoKind::LavaGlow | DecoKind::Ember => {}
+    }
+}
+
+/// The sewer window's grids: each chunk's `sewer_grid`, made once, read per cell (level -1 and the lower sewer).
+struct SewerFloor {
+    seed: String,
+    origin: (i32, i32),
+    level: i32,
+    chunks: HashMap<(i32, i32), Option<Grid>>,
+}
+
+/// The chunk (cx, cy) and the cell inside it of facility cell (`x`, `y`) of a window that starts at `origin`.
+fn chunk_cell(origin: (i32, i32), x: i32, y: i32) -> ((i32, i32), (usize, usize)) {
+    let (gx, gy) = (x + origin.0, y + origin.1);
+    ((gx.div_euclid(CHUNK), gy.div_euclid(CHUNK)), (gx.rem_euclid(CHUNK) as usize, gy.rem_euclid(CHUNK) as usize))
+}
+
+impl SewerFloor {
+    /// The window's sewer grids, or None when `f` is not a sewer window (its text is `<seed>:L<level>`).
+    fn of(f: &Facility) -> Option<SewerFloor> {
+        let (seed, level) = f.seed_text.rsplit_once(":L")?;
+        let level = level.parse::<i32>().ok().filter(|l| *l == SEWER_LEVEL || *l == SEWER_LOWER_LEVEL)?;
+        Some(SewerFloor { seed: seed.to_string(), origin: f.origin, level, chunks: HashMap::new() })
+    }
+
+    fn grid(&mut self, key: (i32, i32)) -> Option<&Grid> {
+        let (seed, level) = (&self.seed, self.level);
+        self.chunks
+            .entry(key)
+            .or_insert_with(|| {
+                crate::world::route::sewer::chunk(
+                    crate::world::route::layout::Coord::new(key.0, level, key.1),
+                    &crate::world::route::sewer::Inputs { world: seed },
+                )
+                .map(|c| c.sewer_grid)
+            })
+            .as_ref()
+    }
+
+    /// Whether facility cell (`x`, `y`) is channel water.
+    fn is_water(&mut self, x: i32, y: i32) -> bool {
+        let (key, (lx, ly)) = chunk_cell(self.origin, x, y);
+        self.grid(key).is_some_and(|g| g[ly][lx] == WATER)
+    }
+}
+
+/// The boxes of one catwalk cell as (centre, size, colour) in facility metres: `deck_height` above the floor,
+/// `deck_at(x, y)` telling which neighbours are deck (a railing stands on each side that is not).
+fn catwalk_boxes(c: Cell, deck_height: f32, deck_at: &dyn Fn(i32, i32) -> bool) -> Vec<(Vec3, Vec3, Color)> {
+    use super::catwalk;
+    let open = catwalk::OpenSides {
+        north: !deck_at(c.x, c.y - 1),
+        south: !deck_at(c.x, c.y + 1),
+        west: !deck_at(c.x - 1, c.y),
+        east: !deck_at(c.x + 1, c.y),
+    };
+    let mid = vec3(c.x as f32 + 0.5, deck_height, c.y as f32 + 0.5);
+    catwalk::build(catwalk::config(), 1.0, deck_height, open, (c.x, c.y))
+        .into_iter()
+        .map(|p| (mid + Vec3::from(p.center), Vec3::from(p.size), rgb(p.color)))
+        .collect()
+}
+
 fn build_meshes(
     f: &Facility,
     pick: &Pick,
@@ -796,6 +1032,11 @@ fn build_meshes(
     // a ladder's sewer end has no well: its ladder climbs to a hatch in the ceiling over an ordinary cell
     let hatches: Vec<Cell> = f.stairs.iter().filter(|s| s.is_ladder() && s.dir > 0).map(|s| s.cell).collect();
     let mut inferno = InfernoFloor::of(f);
+    // the sewer window's channel water: the bed lies below the floor, the surface (unlit, tinted by depth) above it
+    let mut sewer = SewerFloor::of(f);
+    let water_params = crate::world::route::sewer::water::params();
+    let bed = water_params.bed_offset();
+    let mut water = Builder::new(Some(assets.white.clone()));
     // one painted storey stretched floor to ceiling, cornice at the top (RefSurfaceMesh.add_wall)
     let tiers = textures::wall_tiers(h) as f32;
     for &c in &pick.cells {
@@ -821,6 +1062,14 @@ fn build_meshes(
             // climbs through an open shaft in the ceiling (render/stairs.rs)
             Some((_, s)) if s.is_ladder() => stairs::ladder_down(&mut bits, (c.x, c.y), s, &site),
             Some((k, s)) => stairs::flight_cell(&mut bits, (c.x, c.y), k, s, &site),
+            // a channel cell: the bed, flat, at the data depth below the floor
+            None if sewer.as_mut().is_some_and(|s| s.is_water(c.x, c.y)) => painted(&mut surf, floor_kind, assets.floor(set)).quad(
+                [vec3(x, bed, z), vec3(x + 1., bed, z), vec3(x + 1., bed, z + 1.), vec3(x, bed, z + 1.)],
+                UV1,
+                up,
+                WHITE,
+                0.0,
+            ),
             None => {
                 let (i, j) = (c.x, c.y);
                 let drop = |inf: &mut Option<InfernoFloor>, i: i32, j: i32| inf.as_mut().map_or(0.0, |s| s.corner(i, j));
@@ -860,6 +1109,14 @@ fn build_meshes(
                 None => plain.quad(corners, UV1, -up, ceiling, 0.0),
             }
         }
+        // a catwalk deck: grating, railings on its open sides and supports (render/catwalk.rs, data/render/catwalk.json)
+        let surface = f.walk_surface_at(c);
+        if surface.kind == DeckKind::Catwalk && step.is_none() {
+            let deck_at = |x: i32, y: i32| f.walk_surface_at(Cell::new(x, y)).kind == DeckKind::Catwalk;
+            for (center, size, col) in catwalk_boxes(c, surface.height, &deck_at) {
+                plain.cube(center, size, 0.0, col, 0.0);
+            }
+        }
         let edges = [
             (0, -1, vec3(x + 1., 0., z), vec3(x, 0., z), vec3(0., 0., 1.)),
             (
@@ -878,7 +1135,15 @@ fn build_meshes(
                 vec3(-1., 0., 0.),
             ),
         ];
+        let here_water = step.is_none() && sewer.as_mut().is_some_and(|s| s.is_water(c.x, c.y));
         for (dx, dz, a, b, n) in edges {
+            // the channel's bank: from the floor down to the bed, wherever the next cell is not channel water
+            if here_water
+                && !steps.contains_key(&(c.x + dx, c.y + dz))
+                && !sewer.as_mut().is_some_and(|s| s.is_water(c.x + dx, c.y + dz))
+            {
+                painted(&mut surf, floor_kind, assets.floor(set)).quad([a, b, b + up * bed, a + up * bed], UV1, n, WHITE, 0.0);
+            }
             // a stairwell's shaft is open to its landing and the other lane, whatever its cells' wall flags say
             if !f.is_wall_cell(c.x + dx, c.y + dz) || steps.contains_key(&(c.x + dx, c.y + dz)) {
                 continue;
@@ -898,6 +1163,36 @@ fn build_meshes(
                 WHITE,
                 0.0,
             );
+        }
+    }
+    // the picked cells by chunk, for the sewer water and the cave decoration, which are made per chunk
+    let mut chunk_cells: HashMap<(i32, i32), HashSet<(i32, i32)>> = HashMap::new();
+    if sewer.is_some() || inferno.is_some() {
+        for c in &pick.cells {
+            chunk_cells.entry(chunk_cell(f.origin, c.x, c.y).0).or_default().insert((c.x, c.y));
+        }
+    }
+    // sewer water surface (render/water.rs), only for the cells this part owns so no cell is drawn twice
+    if let Some(s) = sewer.as_mut() {
+        for (&key, owned) in &chunk_cells {
+            let Some(grid) = s.grid(key).copied() else { continue };
+            let origin = (key.0 * CHUNK - f.origin.0, key.1 * CHUNK - f.origin.1);
+            let keep = |lx: i32, lz: i32| owned.contains(&(origin.0 + lx, origin.1 + lz));
+            super::water::add_water_cells(&mut water, &grid, vec2(origin.0 as f32, origin.1 as f32), 1.0, 0.0, &keep);
+        }
+    }
+    // level -3 cave decoration (render/inferno_deco.rs): the pieces of the picked cells
+    if let Some(inf) = inferno.as_mut() {
+        let (seed, cfg) = (inf.seed.clone(), decor_cfg());
+        for (&key, owned) in &chunk_cells {
+            let at = (key.0 * CHUNK - f.origin.0, key.1 * CHUNK - f.origin.1);
+            let carved = inf.carve(key);
+            for d in crate::render::inferno_deco::inferno_deco().place(&seed, ChunkKey { cx: key.0, cy: key.1, level: INFERNO_LEVEL }, carved) {
+                let cell = (at.0 + d.cell.x, at.1 + d.cell.y);
+                if owned.contains(&cell) {
+                    add_deco(&mut plain, &mut glow, &d, at, cell_wall_height(f, cell.0, cell.1), cfg);
+                }
+            }
         }
     }
     let fixture = |c: Cell| pick.fixtures.is_some_and(|(x0, y0, x1, y1)| c.x >= x0 && c.y >= y0 && c.x < x1 && c.y < y1);
@@ -972,6 +1267,7 @@ fn build_meshes(
     }
     meshes.extend(plain.finish());
     meshes.extend(glow.finish());
+    meshes.extend(water.finish());
     meshes
 }
 
@@ -1126,6 +1422,114 @@ mod tests {
             let yaw = rotation as f32 * FRAC_PI_2;
             assert!(close(drawn_front(yaw), forward(yaw)), "rotation {rotation}");
         }
+    }
+
+    /// The door fix: leaves are kept only for doors whose cell lies in a built part's fixture box, so the first
+    /// frame of a streamed chunk never has a leaf without its frame, and a built chunk never loses its doors.
+    #[test]
+    fn door_leaves_follow_the_built_parts() {
+        let rects = [(0, 0, 45, 45)];
+        let cells = vec![Cell::new(0, 0), Cell::new(44, 44), Cell::new(45, 10), Cell::new(10, 45), Cell::new(-1, 3)];
+        let kept = keep_in_rects(cells.clone(), |c| *c, &rects);
+        assert_eq!(kept, vec![Cell::new(0, 0), Cell::new(44, 44)], "the box is half-open");
+        assert!(keep_in_rects(cells.clone(), |c| *c, &[]).is_empty(), "no built part, no leaf");
+        let two = [(0, 0, 45, 45), (45, 0, 90, 45)];
+        assert_eq!(keep_in_rects(cells, |c| *c, &two).len(), 3, "a second built part brings its doors");
+    }
+
+    #[test]
+    fn a_window_cell_maps_to_its_chunk_and_local_cell() {
+        let origin = (-CHUNK, 2 * CHUNK);
+        assert_eq!(chunk_cell(origin, 0, 0), ((-1, 2), (0, 0)));
+        assert_eq!(chunk_cell(origin, CHUNK + 3, 5), ((0, 2), (3, 5)));
+        assert_eq!(chunk_cell((-1, 0), 0, 0), ((-1, 0), ((CHUNK - 1) as usize, 0)));
+    }
+
+    #[test]
+    fn a_catwalk_cell_gets_rails_only_on_its_open_sides() {
+        let c = Cell::new(4, 4);
+        let all = catwalk_boxes(c, 4.0, &|_, _| true);
+        let alone = catwalk_boxes(c, 4.0, &|x, y| (x, y) == (4, 4));
+        assert!(!all.is_empty());
+        assert!(alone.len() > all.len(), "open sides add railing boxes");
+        let side = catwalk_boxes(c, 4.0, &|x, y| !(x == 5 && y == 4));
+        assert!(side.len() > all.len() && side.len() < alone.len(), "one open side adds fewer rails than four");
+        // every box is placed around the cell centre, the grating at the deck height
+        for (centre, _, _) in &alone {
+            assert!((centre.x - 4.5).abs() < 1.0 && (centre.z - 4.5).abs() < 1.0);
+        }
+        assert!(all.iter().any(|(centre, _, _)| (centre.y - 4.0).abs() < 0.1), "grating sits at the deck height");
+        assert!(all.iter().all(|(centre, _, _)| centre.y <= 4.0 + 1e-3), "all-deck cell has nothing above the deck");
+    }
+
+    #[test]
+    fn decor_numbers_come_from_data() {
+        let cfg = DecorCfg::parse(include_str!("../data/render/world_decor.json")).unwrap();
+        assert_eq!(decor_cfg(), &cfg);
+        assert!(DecorCfg::parse("{}").is_err());
+        let few = include_str!("../data/render/world_decor.json").replace("\"cone_sides\": 6", "\"cone_sides\": 2");
+        assert!(DecorCfg::parse(&few).is_err());
+    }
+
+    fn deco(kind: crate::render::inferno_deco::DecoKind) -> crate::render::inferno_deco::Deco {
+        crate::render::inferno_deco::Deco {
+            kind,
+            cell: Cell::new(2, 3),
+            offset: [0.1, -0.1],
+            size_m: 1.5,
+            yaw: 0.0,
+            color: [0.5, 0.2, 0.1],
+            floor_y: -0.4,
+            phase: 0.0,
+        }
+    }
+
+    #[test]
+    fn stalactites_hang_from_the_ceiling_and_stalagmites_rise_from_the_floor() {
+        use crate::render::inferno_deco::DecoKind;
+        let cfg = decor_cfg();
+        let (mut tite, mut mite, mut glow) = (Builder::new(None), Builder::new(None), Builder::new(None));
+        add_deco(&mut tite, &mut glow, &deco(DecoKind::Stalactite), (10, 20), 5.0, cfg);
+        add_deco(&mut mite, &mut glow, &deco(DecoKind::Stalagmite), (10, 20), 5.0, cfg);
+        let ys = |b: &Builder| b.verts.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v.position.y), hi.max(v.position.y)));
+        let (lo, hi) = ys(&tite);
+        assert!((hi - 5.0).abs() < 1e-4 && (lo - 3.5).abs() < 1e-4, "hangs 1.5 m down from the ceiling: {lo}..{hi}");
+        let (lo, hi) = ys(&mite);
+        assert!((lo + 0.4).abs() < 1e-4 && (hi - 1.1).abs() < 1e-4, "rises 1.5 m from the floor: {lo}..{hi}");
+        assert_eq!(tite.verts.len(), cfg.cone_sides * 4, "one quad per side");
+        // placed at the chunk's cell plus the offset (cells from the centre)
+        assert!(tite.verts.iter().any(|v| (v.position.x - 12.6).abs() < 1e-3 && (v.position.z - 23.4).abs() < 1e-3));
+        assert!(glow.verts.is_empty(), "cones are not glowing");
+    }
+
+    #[test]
+    fn cone_side_count_follows_the_data() {
+        use crate::render::inferno_deco::DecoKind;
+        let mut cfg = decor_cfg().clone();
+        cfg.cone_sides = 9;
+        let (mut b, mut g) = (Builder::new(None), Builder::new(None));
+        add_deco(&mut b, &mut g, &deco(DecoKind::Stalactite), (0, 0), 5.0, &cfg);
+        assert_eq!(b.verts.len(), 9 * 4);
+    }
+
+    #[test]
+    fn floor_cracks_glow_and_charred_props_stand() {
+        use crate::render::inferno_deco::DecoKind;
+        let cfg = decor_cfg();
+        let (mut plain, mut glow) = (Builder::new(None), Builder::new(None));
+        add_deco(&mut plain, &mut glow, &deco(DecoKind::FloorCrack), (0, 0), 5.0, cfg);
+        assert_eq!(glow.verts.len(), 4);
+        assert!(glow.verts.iter().all(|v| (v.position.y - (-0.4 + cfg.crack_lift_m)).abs() < 1e-5 && v.normal.w == cfg.crack_unlit_mode));
+        assert!(plain.verts.is_empty());
+        add_deco(&mut plain, &mut glow, &deco(DecoKind::CharredProp), (0, 0), 5.0, cfg);
+        assert!(!plain.verts.is_empty());
+        let top = plain.verts.iter().map(|v| v.position.y).fold(f32::MIN, f32::max);
+        assert!((top - 1.1).abs() < 1e-4, "stands on the floor, 1.5 m tall");
+        // light and particle kinds draw nothing here
+        let (mut p2, mut g2) = (Builder::new(None), Builder::new(None));
+        add_deco(&mut p2, &mut g2, &deco(DecoKind::LavaGlow), (0, 0), 5.0, cfg);
+        add_deco(&mut p2, &mut g2, &deco(DecoKind::Ember), (0, 0), 5.0, cfg);
+        assert!(p2.verts.is_empty() && g2.verts.is_empty());
     }
 
     #[test]

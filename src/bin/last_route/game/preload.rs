@@ -1,5 +1,7 @@
 //! Keeps the built windows of every level near the runner, so going up and down is instant. Pure keep and evict logic;
-//! the numbers are data (data/stairs_links.json, `preload_*`). The hooks that call it are in the integration notes.
+//! the numbers are data (data/stairs_links.json, `preload_*`). Called every frame by `Game::prefetch_connections`
+//! (game/endless.rs): `keep_levels` names the storeys held, `to_evict` drops the rest and the farthest over the memory cap,
+//! `to_build` meters the builds per frame.
 
 use crate::content::embedded;
 use std::sync::OnceLock;

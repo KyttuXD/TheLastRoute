@@ -27,5 +27,20 @@
     "light_range_m": 10.0
   },
   "sound_key": "falls",
-  "sound_range_m": 18.0
+  "sound_range_m": 18.0,
+  "view": {
+    "foam_color": [0.9, 0.96, 0.94, 0.5],
+    "streak_bands": 6.0,
+    "streak_depth": 0.22,
+    "cull_m": 40.0
+  },
+  "sound": {
+    "loop_seconds": 2.0,
+    "lowpass": 0.12,
+    "gain": 0.45,
+    "unit_size_m": 6.0,
+    "volume_db": 0.0,
+    "max_db": 3.0,
+    "height_m": 0.0
+  }
 }

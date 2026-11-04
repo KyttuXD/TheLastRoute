@@ -185,6 +185,38 @@ pub fn maze_variant_for_chunk(world: &str, cx: i32, cz: i32) -> Option<&'static 
     maze_variant(world, cx.div_euclid(s), cz.div_euclid(s))
 }
 
+/// The variant that dresses the chunk (cx, cz) on `level`: `None` for any level but 0, for a chunk whose region is not
+/// the maze, and for a plain-maze pick. This is the one gate the level 0 chunk build, the hunter spawn chance and the
+/// renderer go through, so they agree on a chunk's variant.
+pub fn variant_at(world: &str, cx: i32, cz: i32, level: i32) -> Option<&'static MazeVariant> {
+    if level != 0 || super::regions::region_for(world, cx, cz, 0) != "maze" {
+        return None;
+    }
+    maze_variant_for_chunk(world, cx, cz)
+}
+
+/// `base` scaled by a variant's `hunter_chance_scale`, kept in 0..=1. No variant leaves `base` unchanged.
+pub fn scaled_chance(base: f64, v: Option<&MazeVariant>) -> f64 {
+    match v {
+        Some(v) => (base * v.spawn_rules.hunter_chance_scale).clamp(0.0, 1.0),
+        None => base,
+    }
+}
+
+/// The hunter spawn chance of chunk (cx, cz) on `level` from the level's `base` chance (0.2848 on level 0).
+pub fn hunter_chance_at(base: f64, world: &str, cx: i32, cz: i32, level: i32) -> f64 {
+    scaled_chance(base, variant_at(world, cx, cz, level))
+}
+
+/// Whether the `n`th of `count` things (loot or props, in layout order) of a chunk survives `scale` (a variant's
+/// `loot_scale` or `prop_density`): a scale of 1 or more keeps all, below 1 keeps that share, deterministically.
+pub fn keeps(scale: f64, seed: &str, tag: &str, n: usize) -> bool {
+    if scale >= 1.0 {
+        return true;
+    }
+    Rng::new(&format!("{seed}:MAZE-KEEP:{tag}:{n}")).next_float() < scale.max(0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,5 +291,45 @@ mod tests {
         let b = one("b", 1.0, 2.0);
         assert!(parse_all([("a", a.as_str()), ("b", b.as_str())].into_iter()).is_err());
         assert!(parse_all([("a", a.as_str()), ("a2", a.as_str())].into_iter()).is_err());
+    }
+
+    #[test]
+    fn a_variant_applies_only_to_level_zero_maze_chunks() {
+        let mut seen = 0;
+        for cx in -12..12 {
+            for cz in -12..12 {
+                assert!(variant_at("5", cx, cz, -1).is_none());
+                if let Some(v) = variant_at("5", cx, cz, 0) {
+                    seen += 1;
+                    assert_eq!(super::super::regions::region_for("5", cx, cz, 0), "maze");
+                    assert_eq!(Some(v.id.clone()), maze_variant_for_chunk("5", cx, cz).map(|v| v.id.clone()));
+                }
+            }
+        }
+        assert!(seen > 0, "no chunk got a variant");
+    }
+
+    #[test]
+    fn the_hunter_chance_scales_by_the_variant_data_and_stays_a_chance() {
+        let v = variants().first().unwrap();
+        assert_eq!(scaled_chance(0.2848, None), 0.2848);
+        let s = scaled_chance(0.2848, Some(v));
+        assert!((s - (0.2848 * v.spawn_rules.hunter_chance_scale).clamp(0.0, 1.0)).abs() < 1e-12);
+        let mut w = v.clone();
+        w.spawn_rules.hunter_chance_scale = 100.0;
+        assert_eq!(scaled_chance(0.2848, Some(&w)), 1.0);
+        w.spawn_rules.hunter_chance_scale = 0.0;
+        assert_eq!(scaled_chance(0.2848, Some(&w)), 0.0);
+        // a chunk without a variant keeps the level's base chance
+        assert_eq!(hunter_chance_at(0.2848, "5", 0, 0, -2), 0.2848);
+    }
+
+    #[test]
+    fn keeps_thins_below_one_and_is_deterministic() {
+        assert!((0..50).all(|n| keeps(1.0, "w", "0,0", n)));
+        assert!((0..50).all(|n| !keeps(0.0, "w", "0,0", n)));
+        let kept = (0..400).filter(|n| keeps(0.5, "w", "0,0", *n)).count();
+        assert!((120..280).contains(&kept), "kept {kept}");
+        assert_eq!(keeps(0.5, "w", "1,2", 7), keeps(0.5, "w", "1,2", 7));
     }
 }

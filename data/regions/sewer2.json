@@ -11,6 +11,7 @@
 		"concrete1"
 	],
 	"room_roles": [],
+	"prop_set": [],
 	"layout": {
 		"level": -2,
 		"tunnel_half": 3,

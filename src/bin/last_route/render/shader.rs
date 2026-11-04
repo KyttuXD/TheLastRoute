@@ -52,11 +52,11 @@ void main() {
     float mode = nrm.w;
     vec2 tuv = mode < 0.5 ? fract(uv) : uv;
     vec4 tex = texture2D(Texture, tuv) * color;
-    if (tex.a < 0.5) discard;
+    if (mode < 2.5 && tex.a < 0.5) discard;
     float fd = length(wpos - CamPos);
     if (mode > 1.5) {
         float f = clamp(fd / (FogFar * 1.6), 0.0, 1.0);
-        gl_FragColor = vec4(mix(tex.rgb, FogColor, f * f), 1.0);
+        gl_FragColor = vec4(mix(tex.rgb, FogColor, f * f), mode > 2.5 ? tex.a : 1.0);
         return;
     }
     vec3 n = normalize(nrm.xyz);
