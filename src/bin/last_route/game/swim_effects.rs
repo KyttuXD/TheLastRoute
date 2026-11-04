@@ -278,6 +278,27 @@ impl Game {
         d
     }
 
+    /// Metres the runner's eye should be lowered: over a sewer WATER cell the eye drops by the channel depth (the
+    /// render bed, the same for every sewer storey) as if the body sank into the water, capped and eased by
+    /// data/swim/camera.json. Dry floor and a pipe flood over it give 0 with the shipped data.
+    pub(super) fn runner_water_sink_target(&mut self) -> f32 {
+        let mut drop = 0.0;
+        if let Some(level) = self.sewer_level() {
+            if self.water_depth_on(level, self.p.pos) > 0.0 {
+                drop = water::params().channel_depth;
+            }
+        }
+        let flood = self.flood_depth.max(0.0);
+        swim::sink_target(swim::camera_rules(), drop, flood, self.p.eye_height(), water::params().water_surface)
+    }
+
+    /// One frame of the water camera: eases `Player::water_sink` to its target (0 when `wet` is false, a ladder or a
+    /// hiding spot must not keep a sunk eye).
+    pub(super) fn update_water_sink(&mut self, dt: f32, wet: bool) {
+        let target = if wet { self.runner_water_sink_target() } else { 0.0 };
+        self.p.water_sink = swim::ease_sink(swim::camera_rules(), self.p.water_sink, target, dt);
+    }
+
     /// Metres of sewer water on storey `level` at window position `pos` (0 off the sewer or over dry floor).
     pub(super) fn water_depth_on(&mut self, level: i32, pos: (f32, f32)) -> f32 {
         let Some(local) = self.load_water_chunk(level, pos) else { return 0.0 };
@@ -552,6 +573,49 @@ mod tests {
             g.update_swim(0.5, 0.0, false);
         }
         assert!(!g.swim.is_soaked());
+    }
+
+    // --- the water camera ---
+
+    #[test]
+    fn the_eye_sinks_in_sewer_water_and_rises_on_dry_floor() {
+        let (mut g, _, _) = sewer_game(sewer_core::LEVEL);
+        let wet = sewer_cell(&g, sewer_core::WATER);
+        let dry = sewer_cell(&g, sewer_core::DRY);
+        let rules = swim::camera_rules();
+        g.p.pos = wet;
+        let standing = g.p.eye_height();
+        for _ in 0..60 {
+            g.update_water_sink(1.0 / 60.0, true);
+            assert!(g.p.eye_y() - g.p.y() >= rules.min_eye_above_floor - 1e-4, "never under the floor limit");
+        }
+        assert!((g.p.water_sink - 1.0).abs() < 0.02, "sink {}", g.p.water_sink);
+        assert!((g.p.eye_y() - g.p.y() - (standing - 1.0)).abs() < 0.02);
+        assert!(g.p.eye_y() - g.p.y() - water::params().water_surface >= rules.min_eye_above_surface - 1e-3);
+        g.p.pos = dry;
+        for _ in 0..200 {
+            g.update_water_sink(1.0 / 60.0, true);
+        }
+        assert_eq!(g.p.water_sink, 0.0, "back on dry floor the eye is up again");
+        // a hiding spot or a ladder lets a sunk eye rise too
+        g.p.pos = wet;
+        for _ in 0..60 {
+            g.update_water_sink(1.0 / 60.0, true);
+        }
+        for _ in 0..200 {
+            g.update_water_sink(1.0 / 60.0, false);
+        }
+        assert_eq!(g.p.water_sink, 0.0);
+    }
+
+    #[test]
+    fn a_pipe_flood_over_dry_floor_does_not_sink_the_eye() {
+        let (mut g, _, _) = sewer_game(sewer_core::LEVEL);
+        g.p.pos = sewer_cell(&g, sewer_core::DRY);
+        g.flood_depth = 0.5;
+        assert_eq!(g.runner_water_sink_target(), 0.0);
+        let mut off = Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, "ROOM-SWIM-7", 0, &Content::load(), &Catalog::load());
+        assert_eq!(off.runner_water_sink_target(), 0.0, "no sewer, no sink");
     }
 
     // --- the landing rule of a fall (data/swim/fall.json) ---

@@ -22,3 +22,10 @@ How the sewer levels connect, as built for the continuous levels project (see [S
 ## Water and hunters
 
 - The sewer water field and valve floods reach hunters: `game/hunter_pipes.rs` and `hunter_pipe_cells` mark flooded cells, so hunters path around deep water, wade when chasing, and replan when a valve floods their route. Rules per hunter: `data/hunters/water.json`.
+
+## Heights and the water camera
+
+- The sewer ceiling is 4.0 m (`geometry.wall_height` in `data/regions/sewer.json` and `sewer2.json`): Godot's `CEILING_HEIGHT` 3.2 times our 1.25. The storey stays 5.0 m, so a 1.0 m slab lies between the sewer ceiling and the floor above. Ladder shafts and stair flights are lined up through that slab to the floor above (`Site::shaft_top` in `render/stairs.rs`), so no void shows.
+- The water has the same depth on every sewer storey: `data/sewer_water.json` (channel depth 1.0, surface -0.3, so 0.7 m over the bed). Level -2 no longer has its own depth; the drawn bed and the swim physics, hunters and landing agree. The numbers are Godot's unscaled values, which are player-relative there.
+- The eye sinks in channel water, as if the body sank into it (`data/swim/camera.json`). The feet stay on the walkway, so ground, steps and falls are unchanged; `Player::water_sink` lowers `eye_y()` (and so the camera and the hunters' sight line to the runner). The target is the channel depth over a water cell, capped by `max_sink`, and never closer than `min_eye_above_surface` to the surface or `min_eye_above_floor` to the walkway; it eases at `ease_down_per_s` and `ease_up_per_s`. A ladder or a hiding spot lets it rise. A pipe flood over dry floor gives no sink with the shipped data. Godot never lowers the camera in wading water (only its plunge puts the eye just above the surface), so this is an owner decision, not parity.
+- The Inferno floor (level -3) is flat, as in Godot; see `data/inferno.json` `floor`.

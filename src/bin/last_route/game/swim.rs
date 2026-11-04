@@ -300,6 +300,96 @@ pub fn fall_rules() -> &'static FallRules {
     })
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// The water camera (data/swim/camera.json, `lr.swim.camera/1`)
+
+/// How far the eye sinks while the runner stands in sewer water. The feet stay on the walkway (ground, steps and
+/// falls are untouched); only the eye drops, as if the body sank into the channel. Godot never lowers the camera in
+/// wading water, its only sink is the plunge (feet on the bed, the eye just clearing the surface), so this follows
+/// that idea (owner decision).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CameraRules {
+    /// Share of the walkway-to-bed distance the eye drops at full channel depth.
+    pub sink_fraction: f32,
+    /// Share of a pipe flood's depth the eye drops over a dry floor (0: the flood lifts the water, not the floor).
+    pub flood_sink_fraction: f32,
+    /// The deepest the eye ever sinks (metres).
+    pub max_sink: f32,
+    /// The eye never comes closer than this to the water surface (metres).
+    pub min_eye_above_surface: f32,
+    /// The eye never goes lower than this above the walkway (metres).
+    pub min_eye_above_floor: f32,
+    pub ease_down_per_s: f32,
+    pub ease_up_per_s: f32,
+}
+
+impl Default for CameraRules {
+    fn default() -> Self {
+        CameraRules {
+            sink_fraction: 1.0,
+            flood_sink_fraction: 0.0,
+            max_sink: 1.0,
+            min_eye_above_surface: 0.45,
+            min_eye_above_floor: 0.55,
+            ease_down_per_s: 5.0,
+            ease_up_per_s: 4.0,
+        }
+    }
+}
+
+impl CameraRules {
+    /// Reads the rules; a missing, negative or non-finite field keeps its default (rates stay above zero).
+    pub fn parse(v: &Value) -> CameraRules {
+        let d = CameraRules::default();
+        CameraRules {
+            sink_fraction: nn(v, "sink_fraction", d.sink_fraction),
+            flood_sink_fraction: nn(v, "flood_sink_fraction", d.flood_sink_fraction),
+            max_sink: nn(v, "max_sink", d.max_sink),
+            min_eye_above_surface: nn(v, "min_eye_above_surface", d.min_eye_above_surface),
+            min_eye_above_floor: nn(v, "min_eye_above_floor", d.min_eye_above_floor),
+            ease_down_per_s: pos(v, "ease_down_per_s", d.ease_down_per_s),
+            ease_up_per_s: pos(v, "ease_up_per_s", d.ease_up_per_s),
+        }
+    }
+}
+
+/// The embedded camera rules (data/swim/camera.json); the defaults when the file is missing or broken.
+pub fn camera_rules() -> &'static CameraRules {
+    static RULES: OnceLock<CameraRules> = OnceLock::new();
+    RULES.get_or_init(|| {
+        crate::content::embedded::data_under("swim/camera.json")
+            .next()
+            .and_then(|(_, text)| serde_json::from_str::<Value>(text).ok())
+            .map(|v| CameraRules::parse(&v))
+            .unwrap_or_default()
+    })
+}
+
+/// Metres the eye should be lowered: `channel_drop` is the walkway-to-bed distance when standing over a water cell
+/// (0 on dry floor), `flood_depth` a pipe flood's depth, `eye_height` the current eye above the walkway and
+/// `surface_offset` the (negative) water surface offset from the walkway. Capped by `max_sink`, and never lets the
+/// eye fall under `min_eye_above_floor` above the walkway or `min_eye_above_surface` above the water. Never negative.
+pub fn sink_target(r: &CameraRules, channel_drop: f32, flood_depth: f32, eye_height: f32, surface_offset: f32) -> f32 {
+    let want = (channel_drop.max(0.0) * r.sink_fraction + flood_depth.max(0.0) * r.flood_sink_fraction).clamp(0.0, r.max_sink);
+    if want <= 0.0 {
+        return 0.0;
+    }
+    let by_floor = eye_height - r.min_eye_above_floor;
+    let by_surface = eye_height - r.min_eye_above_surface - surface_offset.min(0.0);
+    want.min(by_floor).min(by_surface).max(0.0)
+}
+
+/// One frame of easing `current` towards `target`: exponential, faster down than up, never overshooting.
+pub fn ease_sink(r: &CameraRules, current: f32, target: f32, dt: f32) -> f32 {
+    let rate = if target > current { r.ease_down_per_s } else { r.ease_up_per_s };
+    let next = current + (target - current) * (1.0 - (-rate * dt.max(0.0)).exp());
+    if (target - next).abs() < 1e-4 {
+        target
+    } else {
+        next
+    }
+}
+
 fn lerp(a: f32, b: f32, k: f32) -> f32 {
     a + (b - a) * k
 }
@@ -373,6 +463,60 @@ pub fn merge_water_noise(current: f32, water_noise: f32, scale: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- the water camera ---
+
+    #[test]
+    fn camera_json_parses_to_the_defaults() {
+        let text = include_str!("../data/swim/camera.json");
+        let v: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(v["schema"], "lr.swim.camera/1");
+        assert_eq!(CameraRules::parse(&v), CameraRules::default());
+        assert_eq!(*camera_rules(), CameraRules::default());
+        let bad: Value = serde_json::from_str(r#"{"max_sink": -1, "ease_down_per_s": 0, "sink_fraction": "x"}"#).unwrap();
+        assert_eq!(CameraRules::parse(&bad), CameraRules::default(), "bad values keep their defaults");
+    }
+
+    #[test]
+    fn sink_target_follows_the_water_and_keeps_the_eye_above_it() {
+        let r = CameraRules::default();
+        let (eye, crouched, surface) = (1.7072, 1.1, -0.3);
+        assert_eq!(sink_target(&r, 0.0, 0.0, eye, surface), 0.0, "no water, no sink");
+        assert_eq!(sink_target(&r, 0.0, 0.5, eye, surface), 0.0, "a flood over dry floor does not sink the floor");
+        assert!(sink_target(&r, 0.5, 0.0, eye, surface) < sink_target(&r, 1.0, 0.0, eye, surface));
+        assert!((sink_target(&r, 1.0, 0.0, eye, surface) - 1.0).abs() < 1e-5);
+        assert_eq!(sink_target(&r, 5.0, 0.0, eye, surface), r.max_sink, "capped by max_sink");
+        for e in [eye, crouched] {
+            let s = sink_target(&r, 1.0, 0.0, e, surface);
+            assert!(e - s >= r.min_eye_above_floor - 1e-5, "never under the floor limit");
+            assert!(e - s - surface >= r.min_eye_above_surface - 1e-5, "never nearer the surface than the limit");
+        }
+        let flood = CameraRules { flood_sink_fraction: 0.5, ..r };
+        assert!((sink_target(&flood, 0.0, 0.4, eye, surface) - 0.2).abs() < 1e-5);
+    }
+
+    #[test]
+    fn ease_sink_is_monotone_and_never_overshoots() {
+        let r = CameraRules::default();
+        let mut x = 0.0;
+        for _ in 0..200 {
+            let n = ease_sink(&r, x, 1.0, 1.0 / 60.0);
+            assert!(n >= x && n <= 1.0);
+            x = n;
+        }
+        assert_eq!(x, 1.0);
+        let down = ease_sink(&r, 0.0, 1.0, 0.1);
+        let up = 1.0 - ease_sink(&r, 1.0, 0.0, 0.1);
+        assert!(down > up, "the eye drops faster than it rises");
+        assert_eq!(ease_sink(&r, 0.5, 0.5, 0.1), 0.5);
+        let mut y = 1.0;
+        for _ in 0..200 {
+            let n = ease_sink(&r, y, 0.0, 1.0 / 60.0);
+            assert!(n <= y && n >= 0.0);
+            y = n;
+        }
+        assert_eq!(y, 0.0);
+    }
 
     #[test]
     fn split_cell_handles_negative_cells() {

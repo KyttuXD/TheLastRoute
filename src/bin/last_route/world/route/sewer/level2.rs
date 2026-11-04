@@ -30,8 +30,6 @@ pub struct Rules2 {
     pub landing_grow: i32,
     /// Half-width of the dry path from the landing pool to the tunnel.
     pub exit_half: i32,
-    /// Water depth in metres (the swim and plunge code reads this).
-    pub water_depth: f64,
     pub side_pool_chance: f64,
     pub side_pool_size: [i32; 2],
     pub side_pool_centers: Vec<V2>,
@@ -100,7 +98,6 @@ impl Rules2 {
             junction_half: int(v, "junction_half")?,
             landing_grow: int(v, "landing_grow")?,
             exit_half: int(v, "exit_half")?,
-            water_depth: num(v, "water_depth")?,
             side_pool_chance: num(v, "side_pool_chance")?,
             side_pool_size: pair(v.get("side_pool_size").ok_or("layout.side_pool_size is missing")?, "side_pool_size")?,
             side_pool_centers,
@@ -217,7 +214,7 @@ mod tests {
     fn the_standard_data_parses_and_is_consistent() {
         let r = rules();
         assert!(r.channel_half < r.tunnel_half && r.tunnel_half < r.junction_half);
-        assert!(r.water_depth > 0.0 && !r.drops.is_empty());
+        assert!(!r.drops.is_empty());
     }
 
     #[test]

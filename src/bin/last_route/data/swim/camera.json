@@ -1,0 +1,10 @@
+{
+  "schema": "lr.swim.camera/1",
+  "sink_fraction": 1.0,
+  "flood_sink_fraction": 0.0,
+  "max_sink": 1.0,
+  "min_eye_above_surface": 0.45,
+  "min_eye_above_floor": 0.55,
+  "ease_down_per_s": 5.0,
+  "ease_up_per_s": 4.0
+}

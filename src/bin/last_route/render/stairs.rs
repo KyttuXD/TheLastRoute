@@ -124,6 +124,15 @@ pub struct Site<'a> {
     pub solid: &'a dyn Fn(i32, i32) -> bool,
 }
 
+impl Site<'_> {
+    /// The top of a shaft's lining: the storey above's floor, or this cell's ceiling when that is higher. A region whose
+    /// ceiling is lower than the storey (the sewer's 4 m under a 5 m storey) still has its shafts lined up to the
+    /// floor above, so no void shows between the ceiling and that floor.
+    pub fn shaft_top(&self) -> f32 {
+        self.h.max(self.wall_h)
+    }
+}
+
 /// The ladder's rails and rungs: a light iron, so they read against the dark shaft from standing height.
 const IRON: Color = Color::new(0.82, 0.78, 0.72, 1.0);
 /// The risers: warm concrete, a shade under the treads' stone, so each step's face reads apart from its tread.
@@ -234,8 +243,8 @@ pub fn flight_cell(out: &mut Parts, c: (i32, i32), s: Stair, level: i32, site: &
             if nc != c && !(site.well)(nc.0, nc.1) {
                 // the edge of the whole block
                 if !(site.solid)(nc.0, nc.1) && t.top > eps {
-                    // the side of the stair block where nothing else closes it, facing out of the block (never above the ceiling)
-                    edge_face(out, Face::Wall, site, mid, size, d, 0.0, t.top.min(site.wall_h), col);
+                    // the side of the stair block where nothing else closes it, facing out of the block (up to the tread, even through a ceiling lower than the storey: the shaft is lined to the floor above)
+                    edge_face(out, Face::Wall, site, mid, size, d, 0.0, t.top.min(site.shaft_top()), col);
                 }
                 continue;
             }
@@ -307,7 +316,7 @@ pub fn divider_wall(out: &mut Parts, s: Stair, level: i32, site: &Site) {
             let (px, pz) = (seg.a.0 + ux * m, seg.a.1 + uz * m);
             let side = |k: f32| s.surface_rel(level, px + nx * k, pz + nz * k);
             let top = [side(0.0), side(0.2), side(-0.2)].into_iter().flatten().fold(0.0f32, f32::max);
-            let hi = (top + RAIL_H).min(site.wall_h);
+            let hi = (top + RAIL_H).min(site.shaft_top());
             if hi <= 1e-4 {
                 continue;
             }
@@ -437,13 +446,30 @@ pub fn ladder_down(out: &mut Parts, c: (i32, i32), s: Stair, site: &Site) {
 /// bars and no ceiling: the shaft is open above, and the cell above is the real hole.
 pub fn ladder_up(out: &mut Parts, c: (i32, i32), s: Stair, site: &Site) {
     let m = s.rails_side();
-    ladder(out, c, m, 0.0, site.wall_h);
-    let centre = vec3(c.0 as f32 + 0.5, site.wall_h * 0.5, c.1 as f32 + 0.5);
+    // up to the floor above (`shaft_top`), which is the ceiling when the region's ceiling is as high as the storey
+    let top = site.shaft_top();
+    ladder(out, c, m, 0.0, top);
+    let centre = vec3(c.0 as f32 + 0.5, top * 0.5, c.1 as f32 + 0.5);
     let to_wall = vec3(m.0 as f32, 0.0, m.1 as f32);
     let across = vec3(m.1.abs() as f32, 0.0, m.0.abs() as f32);
     let thin = vec3(m.0.abs() as f32, 0.0, m.1.abs() as f32);
     let at = centre + to_wall * (0.5 - BACK_PLATE_T * 0.5);
-    out.boxes.push((at, across * 0.6 + thin * BACK_PLATE_T + vec3(0.0, site.wall_h, 0.0), BACK_PLATE));
+    out.boxes.push((at, across * 0.6 + thin * BACK_PLATE_T + vec3(0.0, top, 0.0), BACK_PLATE));
+    // a ceiling lower than the storey leaves a slab between it and the floor above: line the shaft on all four sides
+    // through that slab (Godot lines the ladder shaft from the maze floor down to the sewer ceiling)
+    let (lo, hi) = (site.wall_h, top);
+    if hi - lo > 1e-4 {
+        for d in DIRS {
+            let along = vec3(d.1.abs() as f32, 0.0, d.0.abs() as f32);
+            let thin = vec3(d.0.abs() as f32, 0.0, d.1.abs() as f32);
+            let at = vec3(
+                c.0 as f32 + 0.5 + d.0 as f32 * (0.5 - BACK_PLATE_T * 0.5),
+                (lo + hi) * 0.5,
+                c.1 as f32 + 0.5 + d.1 as f32 * (0.5 - BACK_PLATE_T * 0.5),
+            );
+            out.boxes.push((at, along * 1.0 + thin * BACK_PLATE_T + vec3(0.0, hi - lo, 0.0), BACK_PLATE));
+        }
+    }
 }
 
 /// The warm light of a stairwell (a cool shaft of daylight at a ladder's sewer end), so its steps read in the dark.
@@ -925,6 +951,30 @@ mod tests {
         }
         let plate = p.boxes.iter().find(|(_, _, col)| *col == BACK_PLATE).expect("a back plate");
         assert!((plate.1.y - H).abs() < EPS && (plate.1.x.min(plate.1.z) - BACK_PLATE_T).abs() < EPS);
+    }
+
+    #[test]
+    fn a_low_ceiling_still_lines_the_ladder_shaft_to_the_floor_above() {
+        // the sewer: a 4 m ceiling under a 5 m storey
+        let (well, solid) = (|_: i32, _: i32| false, |_: i32, _: i32| false);
+        let site = Site { h: H, wall_h: 4.0, tiers: 1.0, well: &well, solid: &solid };
+        assert_eq!(site.shaft_top(), H);
+        let mut p = Parts::default();
+        ladder_up(&mut p, LADDER_CELL, ladder(1, Cover::Manhole), &site);
+        for (c, s, _) in p.boxes.iter().filter(|(_, s, col)| *col == IRON && s.y > 1.0) {
+            assert!((c.y - s.y * 0.5).abs() < EPS && (c.y + s.y * 0.5 - H).abs() < EPS, "rails climb to the floor above");
+        }
+        // four lining boxes through the 1 m slab, none above the floor above, none under the ceiling
+        let lining: Vec<_> = p.boxes.iter().filter(|(_, s, col)| *col == BACK_PLATE && (s.y - 1.0).abs() < EPS).collect();
+        assert_eq!(lining.len(), 4);
+        for (c, s, _) in lining {
+            assert!((c.y - s.y * 0.5 - 4.0).abs() < EPS && (c.y + s.y * 0.5 - H).abs() < EPS);
+        }
+        // a ceiling as high as the storey needs no lining
+        let tall = Site { h: H, wall_h: H, tiers: 1.0, well: &well, solid: &solid };
+        let mut q = Parts::default();
+        ladder_up(&mut q, LADDER_CELL, ladder(1, Cover::Manhole), &tall);
+        assert_eq!(q.boxes.iter().filter(|(_, _, col)| *col == BACK_PLATE).count(), 1);
     }
 
     #[test]
