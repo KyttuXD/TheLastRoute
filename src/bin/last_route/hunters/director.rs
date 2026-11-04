@@ -26,7 +26,8 @@ pub struct DirectorProfile {
     pub rushers: i32,
 }
 
-/// PROFILES (relaxed, standard, hard; the original's nightmare has no port difficulty yet).
+/// PROFILES (relaxed, standard, hard). Nightmare has no director profile port yet (TODO.md), so it
+/// reuses the Hard profile.
 pub fn profile(d: Difficulty) -> DirectorProfile {
     match d {
         Difficulty::Relaxed => DirectorProfile {
@@ -51,7 +52,7 @@ pub fn profile(d: Difficulty) -> DirectorProfile {
             interval: 1.5,
             rushers: 2,
         },
-        Difficulty::Hard => DirectorProfile {
+        Difficulty::Hard | Difficulty::Nightmare => DirectorProfile {
             share_radius: 24.0,
             share_chance: 1.0,
             cap: 3,

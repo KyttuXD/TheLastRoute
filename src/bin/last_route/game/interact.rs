@@ -325,7 +325,13 @@ impl Game {
                 crate::audio::sound::recharge(20.0);
                 self.say("Safe zone: lamp and stamina restored.");
             }
-            Focus::Stairs(i) => self.start_stairs(i),
+            Focus::Stairs(i) => {
+                if self.fac.stairs[i].is_ladder() {
+                    self.start_ladder(i);
+                } else {
+                    self.start_stairs(i);
+                }
+            }
             Focus::Lift => {
                 if self.relays_collected < self.fac.relays.len() as i32 {
                     crate::audio::sound::interaction_fail();
@@ -480,6 +486,7 @@ impl Game {
                 self.wind_hold = 0.0;
                 self.music_box_left = match self.difficulty {
                     Difficulty::Hard => 35.0,
+                    Difficulty::Nightmare => 25.0,
                     _ => 45.0,
                 };
                 self.say("Music box wound. The room settles.");
@@ -551,15 +558,17 @@ mod tests {
             .fac
             .stairs
             .iter()
-            .position(|s| crate::world::infinite::level_allowed(s.dir))
-            .expect("the start window has a stairwell down");
+            .position(|s| s.is_ladder() && s.dir < 0)
+            .expect("the start window has a ladder down");
         let dir = g.fac.stairs[i].dir;
+        // a ladder is climbed by hand (game/ladder.rs): hold back to go down the shaft until the storey changes
         g.interact(Focus::Stairs(i), &content, &catalog, &Sounds::default());
-        for _ in 0..100 {
-            if g.transition.is_none() {
+        let back = crate::game::Controls { fwd: -1.0, ..Default::default() };
+        for _ in 0..400 {
+            if g.transition.is_none() && g.last_autosave == "level" {
                 break;
             }
-            g.step(0.05, &crate::game::Controls::default(), &content, &catalog, &Sounds::default());
+            g.step(0.05, &back, &content, &catalog, &Sounds::default());
         }
         assert!(g.transition.is_none(), "the climb and the fade finish");
         assert_eq!(g.inf.as_ref().unwrap().level, dir);

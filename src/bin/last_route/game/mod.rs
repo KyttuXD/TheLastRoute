@@ -5,6 +5,7 @@
 pub mod endless;
 mod hunting;
 mod interact;
+pub mod ladder;
 #[cfg(test)]
 mod ladder_tests;
 mod items;
@@ -194,6 +195,10 @@ pub struct Game {
     pub last_autosave: &'static str,
     /// The climb to another level and its fade (game/transition.rs): input is frozen while it runs.
     pub transition: Option<transition::Transition>,
+    /// The manual climb of a sewer ladder (game/ladder.rs): the one climber, while it runs input is the climb.
+    pub ladder: Option<ladder::Climb>,
+    /// The lockout after a walked level change (game/endless.rs `walked_level_change`): no second change while it runs.
+    pub level_lockout: f32,
 }
 
 pub fn pdist(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -295,6 +300,8 @@ impl Game {
             sighted: Default::default(),
             last_autosave: "",
             transition: None,
+            ladder: None,
+            level_lockout: 0.0,
             fac,
             fix,
             world,
@@ -412,6 +419,8 @@ impl Game {
             sighted: Default::default(),
             last_autosave: "",
             transition: None,
+            ladder: None,
+            level_lockout: 0.0,
             world: WorldMeshes::default(),
             world_dirty: true,
             fac,
@@ -666,6 +675,7 @@ impl Game {
         }
         let prof = self.prof();
         self.taser_cd = (self.taser_cd - dt).max(0.0);
+        self.level_lockout = (self.level_lockout - dt).max(0.0);
         self.melee_cd = (self.melee_cd - dt).max(0.0);
         self.swing_t = (self.swing_t - dt).max(0.0);
         self.taser_fx = (self.taser_fx - dt).max(0.0);
@@ -723,7 +733,9 @@ impl Game {
         }
 
         self.p.look(c.look);
-        if self.p.hidden.is_some() {
+        if self.ladder.is_some() {
+            self.advance_ladder(dt, c);
+        } else if self.p.hidden.is_some() {
             self.update_hidden(dt, c, &prof, sounds);
         } else {
             self.hide_check = None;
@@ -735,6 +747,8 @@ impl Game {
             self.p.speed_scale = admin.run_speed;
             self.p
                 .update_movement(dt, c, &prof, &self.fac, &mut self.meters, sounds);
+            self.ladder_walk_in();
+            self.walked_level_change(content, catalog);
             if admin.noclip {
                 self.p.pos.0 = self.p.pos.0.clamp(0.5, self.fac.cols as f32 - 0.5);
                 self.p.pos.1 = self.p.pos.1.clamp(0.5, self.fac.rows as f32 - 0.5);
@@ -777,7 +791,8 @@ impl Game {
                 self.ensure_hunters(content);
             }
         }
-        if self.inf.is_some() {
+        // no window shift while a climb runs: the ladder is held in the window's own cell coordinates
+        if self.inf.is_some() && self.ladder.is_none() {
             self.stream_window(content, catalog);
         }
         self.update_hunters(dt, &prof, sounds);

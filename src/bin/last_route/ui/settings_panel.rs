@@ -12,6 +12,7 @@ use crate::app::assets::Assets;
 use crate::app::settings::Settings;
 use crate::config::{FOV_MAX_DEG, FOV_MIN_DEG};
 use crate::content::Content;
+use crate::shared::skins;
 use macroquad::prelude::*;
 
 /// The web overlay's tabs, in its order (index.html `data-settings-tab`).
@@ -87,8 +88,8 @@ const SECTIONS: [(&str, &[(&str, &str)]); 3] = [
     ),
 ];
 
-const SKIN_TEXT: &str =
-    "SKINS ARE STORED ON YOUR ACCOUNT. THIS OFFLINE BUILD PLAYS THE DEFAULT RUNNER.";
+/// Skin rows shown on the SKIN tab; the rest are counted in the hint line.
+const SKIN_ROWS: usize = 6;
 const VOICE_TEXT: &str = "VOICE CHAT RUNS IN ONLINE ROOMS. THIS OFFLINE BUILD HAS NO ROOM SERVER.";
 const MODS_FOOTNOTE: &str =
     "PUT PACK FOLDERS (pack.json + hunters/ ...) IN \"mods\" BESIDE THE GAME, THEN RESTART.";
@@ -254,13 +255,7 @@ fn section_text(a: &Assets, content: &Content, in_run: bool, tab: usize) -> Vec<
     let mut out = Vec::new();
     match tab {
         4 => {
-            if in_run {
-                out.push(text_line("SKINS CHANGE FROM THE TITLE SCREEN.".into(), 7.0, p.muted, 0.0));
-            } else {
-                for l in wrap(a, F::Body, SKIN_TEXT, 400.0, 7.0) {
-                    out.push(text_line(l, 7.0, p.muted, 0.0));
-                }
-            }
+            out.push(text_line("SKINS CHANGE FROM THE TITLE SCREEN.".into(), 7.0, p.muted, 0.0));
         }
         5 => {
             for l in wrap(a, F::Body, VOICE_TEXT, 400.0, 7.0) {
@@ -417,8 +412,33 @@ pub fn draw_settings(
                 changed = true;
             }
         }
+        4 if !in_run => {
+            // SKIN: DEFAULT, then the valid 64x64 PNGs in the skins folder; the chosen one is marked
+            let dir = skins::skin_dir();
+            let ids = skins::list_skins(dir.as_deref());
+            let chosen = skins::resolve_skin(&st.skin, &ids);
+            let mut y = oy + 66.0;
+            for id in ids.iter().take(SKIN_ROWS) {
+                if state_toggle(a, Rect::new(x, y, 400.0, 14.0), id, *id == chosen, true, plain()) {
+                    st.skin = id.clone();
+                    changed = true;
+                }
+                y += 18.0;
+            }
+            let more = ids.len().saturating_sub(SKIN_ROWS);
+            let folder = dir.map_or_else(|| "NO USER FOLDER".to_string(), |d| d.display().to_string());
+            let mut hint = format!("64X64 PNG FILES GO IN: {folder}");
+            if more > 0 {
+                hint = format!("{hint}  (+{more} MORE NOT SHOWN)");
+            }
+            let lines: Vec<TextLine> = wrap(a, F::Body, &hint, 400.0, 7.0)
+                .into_iter()
+                .map(|l| text_line(l, 7.0, p.muted, 0.0))
+                .collect();
+            scroll_text(a, ui, x, Rect::new(x, y + 2.0, 400.0, 40.0), &lines);
+        }
         4 | 5 | 6 => {
-            // SKIN, VOICE and MODS each scroll their text below the tab bar
+            // SKIN (during a run), VOICE and MODS each scroll their text below the tab bar
             let lines = section_text(a, content, in_run, ui.settings_tab);
             scroll_text(a, ui, x, Rect::new(x, oy + 66.0, 400.0, 160.0), &lines);
         }

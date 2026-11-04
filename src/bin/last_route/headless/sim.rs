@@ -35,6 +35,7 @@ pub fn parse_difficulty(s: &str) -> Option<Difficulty> {
         "relaxed" | "easy" => Some(Difficulty::Relaxed),
         "standard" | "normal" | "default" => Some(Difficulty::Standard),
         "hard" => Some(Difficulty::Hard),
+        "nightmare" => Some(Difficulty::Nightmare),
         _ => None,
     }
 }

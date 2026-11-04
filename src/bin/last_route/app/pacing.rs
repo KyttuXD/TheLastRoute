@@ -3,18 +3,29 @@
 //! VSYNC: miniquad (0.4.11) creates the GL context with swap interval 1 unless the window config
 //! sets `platform.swap_interval`, and it never changes it afterwards. `main.rs` sets the creation
 //! value from the saved setting, and `apply_vsync` changes the live context when the row is
-//! toggled (on Windows, through the WGL_EXT_swap_control entry point the context was made with).
+//! toggled (on Windows, through the WGL_EXT_swap_control entry point the context was made with; on
+//! macOS, through NSOpenGLContext's swap interval parameter). On macOS miniquad forces the creation
+//! value to 0 whatever the config says, so the first frame's `apply_vsync` is what turns vsync on.
 //!
 //! FPS LIMIT: `Pacer::wait` sleeps the loop to a fixed frame grid before the next frame. With no
 //! cap it returns at once, so the loop runs as fast as vsync (if on) allows.
 
 use std::time::{Duration, Instant};
 
-/// Applies the VSYNC row to the live GL context. Returns whether the change took effect. Only
-/// Windows can change the swap interval at run time here; elsewhere the creation-time value
-/// stays until the next launch, and the FPS LIMIT still paces the loop.
+/// The GL swap interval for the VSYNC row: 1 waits for the display's refresh, 0 does not.
+pub fn swap_interval_for(on: bool) -> i32 {
+    if on {
+        1
+    } else {
+        0
+    }
+}
+
+/// Applies the VSYNC row to the live GL context. Returns whether the change took effect. Windows
+/// and macOS change the swap interval at run time; elsewhere the creation-time value stays until
+/// the next launch, and the FPS LIMIT still paces the loop.
 pub fn apply_vsync(on: bool) -> bool {
-    let interval = if on { 1 } else { 0 };
+    let interval = swap_interval_for(on);
     let state = if on { "on" } else { "off" };
     let applied = set_swap_interval(interval);
     if applied {
@@ -44,7 +55,53 @@ fn set_swap_interval(interval: i32) -> bool {
     unsafe { swap_interval(interval) != 0 }
 }
 
-#[cfg(not(windows))]
+/// NSOpenGLCPSwapInterval (NSOpenGLContextParameter 222): the swap interval of a macOS GL context.
+#[cfg(target_os = "macos")]
+const NS_OPENGL_CP_SWAP_INTERVAL: std::ffi::c_long = 222;
+
+/// Sets the swap interval of the current NSOpenGLContext through the Objective-C runtime:
+/// `[NSOpenGLContext currentContext] setValues:&interval forParameter:NSOpenGLCPSwapInterval`.
+/// miniquad's window loop runs on the thread that made the context, so it is the current one.
+/// `objc_msgSend` is called through a pointer typed to each call's signature, as the runtime
+/// requires on arm64 and x86_64 alike. libobjc is always present on macOS.
+#[cfg(target_os = "macos")]
+fn set_swap_interval(interval: i32) -> bool {
+    use core::ffi::{c_char, c_int, c_void};
+    #[link(name = "objc")]
+    extern "C" {
+        fn objc_getClass(name: *const c_char) -> *mut c_void;
+        fn sel_registerName(name: *const c_char) -> *mut c_void;
+        fn objc_msgSend();
+    }
+    type ClassMsg = unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void;
+    type SetValuesMsg = unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_int, std::ffi::c_long);
+    unsafe {
+        let class = objc_getClass(b"NSOpenGLContext\0".as_ptr() as *const c_char);
+        if class.is_null() {
+            return false;
+        }
+        let msg = objc_msgSend as *const ();
+        let current: ClassMsg = std::mem::transmute(msg);
+        let context = current(
+            class,
+            sel_registerName(b"currentContext\0".as_ptr() as *const c_char),
+        );
+        if context.is_null() {
+            return false;
+        }
+        let set_values: SetValuesMsg = std::mem::transmute(msg);
+        let value: c_int = interval;
+        set_values(
+            context,
+            sel_registerName(b"setValues:forParameter:\0".as_ptr() as *const c_char),
+            &value,
+            NS_OPENGL_CP_SWAP_INTERVAL,
+        );
+    }
+    true
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn set_swap_interval(_interval: i32) -> bool {
     false
 }
@@ -99,6 +156,12 @@ fn sleep_until(due: Instant) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vsync_row_maps_to_swap_interval_one_or_zero() {
+        assert_eq!(swap_interval_for(true), 1);
+        assert_eq!(swap_interval_for(false), 0);
+    }
 
     #[test]
     fn grid_starts_now_on_the_first_frame_and_after_a_big_hitch() {

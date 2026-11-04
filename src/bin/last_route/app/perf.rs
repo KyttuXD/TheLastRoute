@@ -113,8 +113,75 @@ impl SpikeLog {
     }
 }
 
+/// The render parts written to the `LR_PERF_PARTS` CSV, one row a second. Each is a section name; `render 3d` is the whole pass.
+const PARTS: [&str; 7] = [
+    "world meshes",
+    "scene items",
+    "doors",
+    "hunters",
+    "remote players",
+    "viewmodel",
+    "render 3d",
+];
+
+/// Per-second means (ms per frame) of the render parts, from the raw section times of each frame. Opened only when the
+/// `LR_PERF_PARTS` environment variable names a file; a measurement aid that changes no drawing.
+struct PartsLog {
+    file: std::fs::File,
+    start: Option<Instant>,
+    second: u32,
+    frames: u32,
+    sums: [f32; PARTS.len()],
+}
+
+impl PartsLog {
+    fn open() -> Option<PartsLog> {
+        use std::io::Write;
+        let path = std::env::var("LR_PERF_PARTS").ok()?;
+        let mut file = std::fs::File::create(path).ok()?;
+        let mut header = String::from("second,frames");
+        for p in PARTS {
+            header.push_str(&format!(",{}_ms", p.replace(' ', "_")));
+        }
+        writeln!(file, "{header}").ok()?;
+        Some(PartsLog {
+            file,
+            start: None,
+            second: 0,
+            frames: 0,
+            sums: [0.0; PARTS.len()],
+        })
+    }
+
+    /// Counts one frame's section times; when a second has passed, writes that second's row.
+    fn tick(&mut self, now: Instant, secs: &[(&'static str, f32)]) {
+        use std::io::Write;
+        let start = *self.start.get_or_insert(now);
+        if now.duration_since(start) >= Duration::from_secs(1) {
+            let n = self.frames.max(1) as f32;
+            let mut row = format!("{},{}", self.second, self.frames);
+            for s in self.sums {
+                row.push_str(&format!(",{:.3}", s / n));
+            }
+            let _ = writeln!(self.file, "{row}");
+            self.sums = [0.0; PARTS.len()];
+            self.frames = 0;
+            self.second += 1;
+            self.start = Some(now);
+        }
+        self.frames += 1;
+        for (i, name) in PARTS.iter().enumerate() {
+            if let Some(e) = secs.iter().find(|e| e.0 == *name) {
+                self.sums[i] += e.1;
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct State {
+    parts: Option<PartsLog>,
+    parts_checked: bool,
     frames: Vec<f32>,
     head: usize,
     sections: BTreeMap<&'static str, f32>,
@@ -169,6 +236,13 @@ pub fn frame(dt: f32) {
                 dt * 1000.0,
                 avg * 1000.0
             );
+        }
+        if !s.parts_checked {
+            s.parts_checked = true;
+            s.parts = PartsLog::open();
+        }
+        if let Some(p) = s.parts.as_mut() {
+            p.tick(Instant::now(), &s.frame_secs);
         }
         s.frame_secs.clear();
         if s.frames.len() < HISTORY {

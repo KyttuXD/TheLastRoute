@@ -53,6 +53,7 @@ pub const COMMANDS: &[&str] = &[
     "teleport",
     "goto",
     "step_until",
+    "walk",
     "bot",
     "hash",
     "help",
@@ -329,6 +330,7 @@ impl Session {
             }
             "step" => self.step(c),
             "step_until" => self.step_until(c),
+            "walk" => self.walk(c),
             "ui" => {
                 json!({ "ok": true, "ui": { "buttons": [], "focus": "" }, "scene": self.scene() })
             }
@@ -586,6 +588,31 @@ impl Session {
             }
         }
         Ok(())
+    }
+
+    /// Walks: holds `fwd` (-1..1, default 1: forward) and `strafe` for `frames` (default 60) frames, then lets go.
+    /// The frames run as `step` does, so expectations and events see the walk.
+    fn walk(&mut self, c: &Value) -> Value {
+        if let Err(e) = self.need_game() {
+            return e;
+        }
+        let fwd = f(c, "fwd").unwrap_or(1.0).clamp(-1.0, 1.0);
+        let strafe = f(c, "strafe").unwrap_or(0.0).clamp(-1.0, 1.0);
+        let n = c
+            .get("frames")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(60)
+            .clamp(1, MAX_STEP_FRAMES);
+        self.sim.held.fwd = fwd;
+        self.sim.held.strafe = strafe;
+        let done = self.sim.step(n, true);
+        self.sim.held.fwd = 0.0;
+        self.sim.held.strafe = 0.0;
+        let mut r = json!({ "ok": true, "frames": done, "frame": self.sim.frame });
+        if c.get("observe").and_then(|v| v.as_bool()).unwrap_or(false) {
+            r["obs"] = self.observe();
+        }
+        r
     }
 
     fn step(&mut self, c: &Value) -> Value {
@@ -1000,6 +1027,27 @@ impl Session {
         if let Some(to0) = c.get("to").and_then(|v| v.as_str()) {
             let mut i = c.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             let mut to = to0;
+            if to0 == "ladder_down" {
+                // the nearest sewer ladder going down (game/ladder.rs): mounted from its rungs
+                let me = g.p.pos;
+                match g
+                    .fac
+                    .stairs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| s.dir < 0 && s.is_ladder())
+                    .min_by(|a, b| {
+                        pdist(a.1.cell.center(), me)
+                            .partial_cmp(&pdist(b.1.cell.center(), me))
+                            .unwrap()
+                    }) {
+                    Some((k, _)) => {
+                        i = k;
+                        to = "stairs";
+                    }
+                    None => return err("no ladder_down in this window"),
+                }
+            }
             if to0 == "stairs_down" || to0 == "stairs_up" {
                 // the nearest flight going that way
                 let dir = if to0 == "stairs_down" { -1 } else { 1 };
@@ -1077,9 +1125,16 @@ impl Session {
                 }
                 "stairs" => {
                     let s = g.fac.stairs[i];
-                    // as the self-test: on the landing, facing down the flight
-                    g.p.pos = s.cell.center();
-                    g.p.yaw = (-(s.run.0 as f32)).atan2(-(s.run.1 as f32));
+                    if s.is_ladder() {
+                        // a ladder: on its rungs, facing the wall (game/ladder.rs)
+                        let side = crate::game::ladder::wall_side(s.cell, |x, y| g.fac.is_wall_cell(x, y));
+                        g.p.pos = crate::game::ladder::stand(s.cell, side);
+                        g.p.yaw = crate::game::ladder::facing(side);
+                    } else {
+                        // as the self-test: on the landing, facing down the flight
+                        g.p.pos = s.cell.center();
+                        g.p.yaw = (-(s.run.0 as f32)).atan2(-(s.run.1 as f32));
+                    }
                     g.p.pitch = -0.45;
                 }
                 "start" | "hunter" | "safe_zone" => {

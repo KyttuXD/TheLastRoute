@@ -45,7 +45,7 @@ use crate::hunters::navigation;
 use crate::render::door;
 use crate::shared::safe_room::SafeRoom;
 use crate::world::catalog::Catalog;
-use crate::world::facility::{Cell, Facility, Hiding, LinkKind, Options, Pickup, Prop, Room, Stair};
+use crate::world::facility::{stair_well_cells, Cell, Facility, Hiding, LinkKind, Options, Pickup, Prop, Room, Stair, STAIR_FLIGHT};
 use crate::world::fixtures::Fixtures;
 use crate::world::infinite::{self, ChunkKey, CHUNK};
 use crate::world::rng::Rng;
@@ -419,12 +419,21 @@ pub(crate) fn carve_stair_well(f: &mut Facility, well: &Stairwell) -> Stair {
     }
     f.clear_props_in(bx.x, bx.y, bx.w, bx.h);
     f.clear_props_in(lane_x, door.y.min(last), 3, (door.y - last).abs() + 1);
-    Stair {
+    let stair = Stair {
         cell: Cell::new(door.x + door.w / 2, door.y - outward),
         dir: -1,
         run: (0, -outward),
         kind: LinkKind::Stairs,
+    };
+    // the flight's own treads are walkable (the walking body stands on them), so their cells are open
+    for k in 1..=STAIR_FLIGHT {
+        for c in stair_well_cells(stair, k) {
+            if c.x >= 0 && c.y >= 0 && c.x < f.cols && c.y < f.rows {
+                f.wall[c.y as usize][c.x as usize] = false;
+            }
+        }
     }
+    stair
 }
 
 /// Sets the cells of `r` in `f.wall` to `solid`, clipped to the floor.

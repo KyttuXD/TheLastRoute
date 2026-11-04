@@ -17,9 +17,14 @@ use crate::world::infinite::{self, ChunkKey, CHUNK};
 use crate::world::route::hunter_spawns::HunterSpawn;
 use crate::world::route::live;
 use crate::world::rng::Rng;
+use crate::world::vertical::{level_from_height, STOREY};
 use crate::world::Cell;
+use super::player::stair_height_at;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
+
+/// Seconds after a walked level change in which no second change is made (the bounce guard).
+pub const LEVEL_LOCKOUT: f32 = 1.0;
 
 /// What the full map draws of one discovered level-0 chunk (Godot's `_discovered_chunks` record for the map). It is taken
 /// when the chunk first loads and kept for the run, so the chunk stays on the map after the window moves on. `walls` and
@@ -505,7 +510,7 @@ pub fn population(diff: Difficulty, relays: i32) -> i32 {
     let step = match diff {
         Difficulty::Relaxed => 3,
         Difficulty::Standard => 2,
-        Difficulty::Hard => 1,
+        Difficulty::Hard | Difficulty::Nightmare => 1,
     };
     1 + (relays - activation) / step
 }
@@ -1034,6 +1039,42 @@ impl Game {
         self.announce(&format!("LEVEL {level}"));
         self.fade = 1.0;
         // the save is the caller's: interact's `autosave("level")` on a flight taken (no double write)
+    }
+
+    /// A walked flight changes storey with no fade (`step` calls this every frame the body is on the walk). The body's
+    /// absolute height is its storey's floor plus the walking surface under it, and `level_from_height` decides the
+    /// storey from that, with the midpoint and hysteresis of world/vertical.rs. The body keeps its cell (the window's
+    /// origin does not move), and on the new storey it stands on that storey's surface at the cell, or on the floor
+    /// (the nearest open cell if the floor there is a well). A lockout of `LEVEL_LOCKOUT` after a change stops a body
+    /// on the line from bouncing back.
+    pub(super) fn walked_level_change(&mut self, content: &Content, catalog: &Catalog) {
+        if self.level_lockout > 0.0 || self.inf.is_none() || self.transition.is_some() {
+            return;
+        }
+        let Some(surface) = stair_height_at(&self.fac, self.p.pos) else {
+            return;
+        };
+        let cur = self.inf.as_ref().map_or(0, |i| i.level);
+        let to = level_from_height(cur as f32 * STOREY + surface, cur);
+        if to == cur || !infinite::level_allowed(to) {
+            return;
+        }
+        self.sync_out();
+        self.store_level0_hunters();
+        self.store_floor_hunters();
+        if let Some(inf) = self.inf.as_mut() {
+            inf.level = to;
+        }
+        self.load_window(content, catalog);
+        let (x, y) = self.p.pos;
+        if stair_height_at(&self.fac, self.p.pos).is_none() && !self.fac.body_fits_at(x, y, PLAYER_RADIUS, 0.0) {
+            self.p.pos = self.fac.nearest_open_or(x, y, PLAYER_RADIUS);
+        }
+        self.p.height = stair_height_at(&self.fac, self.p.pos).unwrap_or(0.0);
+        self.restore_level_hunters(content);
+        self.level_lockout = LEVEL_LOCKOUT;
+        self.announce(&format!("LEVEL {to}"));
+        self.autosave("level");
     }
 
     fn spawn_spot(&self, rng: &mut Rng) -> Option<(f32, f32)> {
@@ -2522,5 +2563,141 @@ mod waypoint_tests {
         assert!((marks.last().unwrap().at.0 - 26.6).abs() < 1e-3);
         assert_eq!(marks[0].dir, (1.0, 0.0));
         assert!(chevrons(&[(1.0, 1.0)]).is_empty());
+    }
+}
+
+/// A walked flight changes storey with no fade (`walked_level_change`): once per crossing, with the cell kept and the
+/// lockout after it.
+#[cfg(test)]
+mod walked_stair_tests {
+    use super::*;
+    use crate::audio::Sounds;
+    use crate::content::Content;
+    use crate::game::Controls;
+    use crate::world::catalog::Catalog;
+    use crate::world::facility::LinkKind;
+    use crate::world::Cell;
+
+    const FRAME: f32 = 1.0 / 60.0;
+
+    /// Opens the whole run of a flight. infinite.rs opens the link box from the landing row only, so a flight along y is
+    /// walled after its first cell (a separate bug, outside this change); the test opens the rest of its own flight.
+    fn open_run(g: &mut Game, s: Stair) {
+        let far = Cell::new(s.cell.x + s.run.0 * (STAIR_FLIGHT + 1), s.cell.y + s.run.1 * (STAIR_FLIGHT + 1));
+        let (x0, y0) = (s.cell.x.min(far.x) - 1, s.cell.y.min(far.y) - 1);
+        let (x1, y1) = (s.cell.x.max(far.x) + 1, s.cell.y.max(far.y) + 2);
+        g.fac.open_cells(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+    }
+
+    /// A level-0 window with a flight going `dir` (-1 down, +1 up), the body stood on its landing facing up it. The
+    /// first frame recentres the window on the body, so the flight is looked up again after it.
+    fn on_landing(dir: i32, content: &Content, catalog: &Catalog) -> (Game, Stair) {
+        for n in 0..60 {
+            let mut g = Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, &format!("ROOM-WALK-{n}"), 0, content, catalog);
+            let Some(first) = g.fac.stairs.iter().copied().find(|s| s.dir == dir && matches!(s.kind, LinkKind::Stairs)) else {
+                continue;
+            };
+            g.p.pos = first.cell.center();
+            g.step(FRAME, &Controls::default(), content, catalog, &Sounds::default());
+            let pos = g.p.pos;
+            let s = g
+                .fac
+                .stairs
+                .iter()
+                .copied()
+                .filter(|s| s.dir == dir && matches!(s.kind, LinkKind::Stairs))
+                .min_by(|a, b| {
+                    let (da, db) = (super::pdist(a.cell.center(), pos), super::pdist(b.cell.center(), pos));
+                    da.partial_cmp(&db).unwrap()
+                })
+                .unwrap();
+            open_run(&mut g, s);
+            g.p.pos = s.cell.center();
+            g.p.yaw = (-(s.run.0 as f32)).atan2(-(s.run.1 as f32));
+            g.p.pitch = 0.0;
+            return (g, s);
+        }
+        panic!("no test window has a flight going {dir}");
+    }
+
+    /// Walks `frames` frames with the forward key at `fwd` through `step` (the game's own frame). Returns the number of
+    /// storey changes, and checks that no transition starts.
+    fn walk(g: &mut Game, content: &Content, catalog: &Catalog, frames: usize, fwd: f32) -> usize {
+        let c = Controls { fwd, ..Default::default() };
+        let mut changes = 0;
+        let mut prev = g.inf.as_ref().map_or(0, |i| i.level);
+        for _ in 0..frames {
+            g.step(FRAME, &c, content, catalog, &Sounds::default());
+            let now = g.inf.as_ref().map_or(0, |i| i.level);
+            if now != prev {
+                changes += 1;
+                prev = now;
+            }
+            assert!(g.transition.is_none(), "a walked flight starts no transition");
+        }
+        changes
+    }
+
+    #[test]
+    fn a_walk_down_past_the_midpoint_changes_storey_once() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let (mut g, _) = on_landing(-1, &content, &catalog);
+        let changes = walk(&mut g, &content, &catalog, 900, 1.0);
+        assert_eq!(changes, 1);
+        assert_eq!(g.inf.as_ref().unwrap().level, -1);
+        assert_eq!(g.depth, 2, "the storey below is depth 2");
+    }
+
+    #[test]
+    fn walking_back_up_changes_storey_once_and_does_not_double_change() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let (mut g, _) = on_landing(-1, &content, &catalog);
+        assert_eq!(walk(&mut g, &content, &catalog, 900, 1.0), 1);
+        // turn round and walk back up the flight below: one change up, and standing still changes nothing
+        assert_eq!(walk(&mut g, &content, &catalog, 900, -1.0), 1, "one change back up");
+        assert_eq!(g.inf.as_ref().unwrap().level, 0);
+        assert_eq!(walk(&mut g, &content, &catalog, 300, 0.0), 0, "standing still changes nothing");
+    }
+
+    #[test]
+    fn the_cell_is_continuous_across_the_change() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let (mut g, _) = on_landing(-1, &content, &catalog);
+        let c = Controls { fwd: 1.0, ..Default::default() };
+        let abs = |g: &Game| {
+            let o = g.inf.as_ref().unwrap().origin();
+            (g.p.pos.0 + o.0 as f32, g.p.pos.1 + o.1 as f32)
+        };
+        let mut prev_level = 0;
+        for _ in 0..900 {
+            let before = abs(&g);
+            g.step(FRAME, &c, &content, &catalog, &Sounds::default());
+            let level = g.inf.as_ref().unwrap().level;
+            if level != prev_level {
+                let after = abs(&g);
+                // one frame of walking is at most ~0.07 m; a change that moved the cell would be far more
+                assert!(
+                    (before.0 - after.0).abs() < 0.1 && (before.1 - after.1).abs() < 0.1,
+                    "the cell moved across the change: {before:?} -> {after:?}"
+                );
+                prev_level = level;
+            }
+        }
+        assert_eq!(prev_level, -1, "the walk changed the storey");
+    }
+
+    #[test]
+    fn the_lockout_follows_a_change() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let (mut g, _) = on_landing(-1, &content, &catalog);
+        let c = Controls { fwd: 1.0, ..Default::default() };
+        for _ in 0..900 {
+            g.step(FRAME, &c, &content, &catalog, &Sounds::default());
+            if g.inf.as_ref().unwrap().level == -1 {
+                break;
+            }
+        }
+        assert_eq!(g.inf.as_ref().unwrap().level, -1);
+        assert!((g.level_lockout - LEVEL_LOCKOUT).abs() < 0.05, "lockout {}", g.level_lockout);
     }
 }

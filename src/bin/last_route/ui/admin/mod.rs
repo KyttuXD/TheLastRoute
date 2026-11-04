@@ -24,6 +24,35 @@ mod prefs;
 
 pub use hub::{draw_hub, HubPanel};
 
+/// The game's admin owners, the same list the server grants owner rights to
+/// (`ADMIN_OWNER_USERNAMES` in src/bin/lr_server/accounts/account_service.rs). Client gates use this
+/// list; matching is case-insensitive.
+pub const ADMIN_OWNERS: [&str; 2] = ["KYTTU", "AYTTU"];
+
+/// Whether a signed-in account name is one of the admin owners (KYTTU or AYTTU, any case).
+pub fn is_admin_owner(username: &str) -> bool {
+    ADMIN_OWNERS.iter().any(|owner| owner.eq_ignore_ascii_case(username))
+}
+
+#[cfg(test)]
+mod owner_gate_tests {
+    use super::*;
+
+    #[test]
+    fn admin_owners_pass_the_gate_in_any_case() {
+        for name in ["KYTTU", "kyttu", "AYTTU", "ayttu", "Ayttu"] {
+            assert!(is_admin_owner(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn normal_names_do_not_pass_the_gate() {
+        for name in ["ALICE", "", "KYTTU2", " KYTTU", "AYTT"] {
+            assert!(!is_admin_owner(name), "{name:?}");
+        }
+    }
+}
+
 use crate::app::assets::Assets;
 use crate::content::Content;
 use crate::game::{Controls, Game};

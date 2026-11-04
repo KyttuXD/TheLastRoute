@@ -161,7 +161,7 @@ impl Gimmick {
             "nyxie" => Gimmick::Nyxie(Default::default()),
             "opalie" => Gimmick::Opalie(Default::default()),
             "porcelle" => Gimmick::Porcelle,
-            "quenelle" => Gimmick::Quenelle(Default::default()),
+            "quenelle" => Gimmick::Quenelle(quenelle::Quenelle::for_difficulty(diff)),
             "ravelle" => Gimmick::Ravelle(Default::default()),
             "solyth" => Gimmick::Solyth(Default::default()),
             "thessine" => Gimmick::Thessine(thessine::Thessine::new()),
@@ -175,8 +175,8 @@ impl Gimmick {
             "void_blue" => Gimmick::VoidBlue(Default::default()),
             "void_brown" => Gimmick::VoidBrown(Default::default()),
             "void_cyan" => Gimmick::VoidCyan(Default::default()),
-            // Godot void_gray_gimmick.gd: Nightmare is not a Rust difficulty yet, so the standard timings apply
-            "void_gray" => Gimmick::VoidGray(void::void_gray::VoidGray::new(false)),
+            // Godot void_gray_gimmick.gd: Nightmare uses its own idle, grace and node timings
+            "void_gray" => Gimmick::VoidGray(void::void_gray::VoidGray::new(diff == Difficulty::Nightmare)),
             "void_green" => Gimmick::VoidGreen(Default::default()),
             "void_orange" => Gimmick::VoidOrange(Default::default()),
             "void_pink" => Gimmick::VoidPink(Default::default()),

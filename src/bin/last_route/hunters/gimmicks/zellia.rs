@@ -15,11 +15,24 @@ pub struct Zellia {
 pub const OFFERS: [(&str, i32); 4] = [("COOL", 2), ("WARM", 2), ("REPAIR", 3), ("PESTICIDE", 4)];
 
 impl Zellia {
+    /// game_config.gd ZELLIA_DEATH_CHANCE["nightmare"] = 0.12 (Standard 0.05, Hard 0.075).
+    pub const NIGHTMARE_DEATH_CHANCE: f32 = 0.12;
+
+    /// Zellia on Nightmare: a 12 percent death chance per trade.
+    pub fn nightmare() -> Zellia {
+        Zellia {
+            settled: false,
+            death_chance: Zellia::NIGHTMARE_DEATH_CHANCE,
+            shop_open: false,
+        }
+    }
+
     pub fn new(diff: Difficulty) -> Zellia {
         let death_chance = match diff {
             Difficulty::Relaxed => 0.02,
             Difficulty::Standard => 0.05,
             Difficulty::Hard => 0.075,
+            Difficulty::Nightmare => Zellia::NIGHTMARE_DEATH_CHANCE,
         };
         Zellia {
             settled: false,
@@ -64,5 +77,18 @@ impl Zellia {
         if self.shop_open && crate::hunters::brain::dist(b.pos, t.pos) > 1.35 + 0.25 {
             self.shop_open = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// game_config.gd ZELLIA_DEATH_CHANCE nightmare = 0.12.
+    #[test]
+    fn nightmare_death_chance_is_twelve_percent() {
+        assert_eq!(Zellia::nightmare().death_chance, 0.12);
+        assert_eq!(Zellia::new(Difficulty::Standard).death_chance, 0.05);
+        assert_eq!(Zellia::new(Difficulty::Hard).death_chance, 0.075);
     }
 }

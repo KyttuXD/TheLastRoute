@@ -84,6 +84,22 @@ pub fn post_with_timeout(cfg: &BackendConfig, path: &str, body: &Value, timeout:
     check(json_request(Method::Post, cfg.url(path)).json_body(body).timeout(timeout).send()?)
 }
 
+// ---- skins --------------------------------------------------------------------------------------
+
+/// The largest PNG the website takes for a skin (`skins.mjs`: 16 KB).
+pub const SKIN_MAX_BYTES: usize = 16 * 1024;
+
+/// The body of `POST /api/v1/skins`: the session token and the PNG as standard base64.
+pub fn skin_upload_body(session_token: &str, png: &[u8]) -> Value {
+    json!({"sessionToken": session_token, "png": super::base64_encode(png)})
+}
+
+/// `POST /api/v1/skins {sessionToken, png}`. The website answers `{ok, id}` with the id it computed (the SHA-256 of the PNG).
+pub fn upload_skin(cfg: &BackendConfig, session_token: &str, png: &[u8]) -> Result<String, NetError> {
+    let p = post_with_timeout(cfg, "/api/v1/skins", &skin_upload_body(session_token, png), Duration::from_secs(10))?;
+    Ok(s(&p, "id"))
+}
+
 // ---- health -------------------------------------------------------------------------------------
 
 /// `GET /api/health` (5 s). `Ok(true)` only for 200 with `ok: true` ("DIRECTORY ONLINE").
@@ -361,6 +377,18 @@ pub fn valid_room_code(value: &str) -> bool {
 pub fn valid_join_code(value: &str) -> bool {
     let clean = value.trim().to_uppercase();
     clean.chars().count() == CODE_LENGTH && clean.chars().all(|c| CODE_ALPHABET.contains(c) || "IO01".contains(c))
+}
+
+/// An owner's JOIN ROOM text that is not a code (`parse_join_code` refused it) turned into a valid room code: the
+/// text is uppercased, every character outside `CODE_ALPHABET` is dropped, the first `CODE_LENGTH` characters are
+/// kept and any shortfall is padded with `random` (which yields characters of `CODE_ALPHABET`). Empty or all-invalid
+/// text gives a fully random code. The result always passes [`valid_room_code`].
+pub fn admin_code_from_input(typed: &str, mut random: impl FnMut() -> char) -> String {
+    let mut code: String = typed.to_uppercase().chars().filter(|c| CODE_ALPHABET.contains(*c)).take(CODE_LENGTH).collect();
+    while code.chars().count() < CODE_LENGTH {
+        code.push(random());
+    }
+    code
 }
 
 /// A room as the directory publishes it (`publicEnetRoom` in server.mjs).
@@ -706,6 +734,31 @@ pub fn resolve_room(cfg: &BackendConfig, code: &str, session_token: &str, room_p
     }
 }
 
+/// The body of an owner's JOIN ROOM reserve request (`POST /api/admin/reserved-rooms`).
+pub fn admin_reserve_body(code: &str, session_token: &str) -> Value {
+    json!({"action": "create", "code": code, "sessionToken": session_token})
+}
+
+/// Whether a failed JOIN ROOM lookup may reserve the typed code for this player: only an owner's
+/// own lookup that found nothing (404). Guests, other failures and a code already live keep the
+/// `ROOM NOT FOUND` / join behaviour.
+pub fn admin_may_reserve_on_miss(is_admin: bool, session_token: &str, err: &NetError) -> bool {
+    is_admin && !session_token.is_empty() && err.status() == Some(404)
+}
+
+/// Reserves `code` for the owner before she hosts it. Ok when the code is reserved for her now
+/// (created here, or already reserved). A code someone is hosting comes back as the
+/// `ROOM_ALREADY_HOSTED` error so the caller joins that room instead of recreating it.
+pub fn admin_reserve_room(cfg: &BackendConfig, code: &str, session_token: &str) -> Result<(), NetError> {
+    guard(cfg)?;
+    let r = json_request(Method::Post, cfg.url("/api/admin/reserved-rooms")).json_body(&admin_reserve_body(code, session_token)).send()?;
+    match check(r) {
+        Ok(_) => Ok(()),
+        Err(NetError::Http { code: c, .. }) if c == "ROOM_ALREADY_RESERVED" => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 // ---- reserved-room owner tools --------------------------------------------------------------------------
 
 /// `POST /api/admin/reserved-rooms {sessionToken, action: "command", code, command, ...args}` -> 202.
@@ -841,6 +894,13 @@ mod tests {
     }
 
     #[test]
+    fn skin_upload_request_body() {
+        let b = skin_upload_body("tok", b"abc");
+        assert_eq!(b, json!({"sessionToken": "tok", "png": "YWJj"}));
+        assert_eq!(SKIN_MAX_BYTES, 16 * 1024);
+    }
+
+    #[test]
     fn bodies() {
         let b = credentials_body(" kyttu ", "pw", "");
         assert_eq!(b, json!({"username": "KYTTU", "password": "pw"}));
@@ -871,5 +931,78 @@ mod tests {
         assert_eq!(a.admin_permissions, vec!["hunters", "world"]);
         assert_eq!(a.saved_at, 5);
         assert!(a.progress.is_some());
+    }
+}
+
+#[cfg(test)]
+mod admin_join_tests {
+    use super::*;
+
+    #[test]
+    fn admin_invalid_codes_become_valid_room_codes() {
+        // a deterministic stand-in for the random source: cycles through the alphabet, one call per padded slot
+        fn cycle() -> impl FnMut() -> char {
+            let mut i = 0usize;
+            move || {
+                let c = CODE_ALPHABET.as_bytes()[i % CODE_ALPHABET.len()] as char;
+                i += 1;
+                c
+            }
+        }
+        let out = admin_code_from_input("ab-c", cycle());
+        assert_eq!(out.chars().count(), CODE_LENGTH);
+        assert!(out.starts_with("ABC"), "{out}");
+        assert!(valid_room_code(&out), "{out}");
+
+        let mut calls = 0;
+        let out = admin_code_from_input("IIIII", || {
+            calls += 1;
+            'K'
+        });
+        assert_eq!(out, "KKKKK", "every I is dropped, so all five slots are padded");
+        assert_eq!(calls, CODE_LENGTH);
+        assert!(valid_room_code(&out));
+
+        assert_eq!(admin_code_from_input("ABCDEFG", || 'Z'), "ABCDE", "a long code keeps its first five");
+        assert_eq!(admin_code_from_input("ab c1o0", || 'Z'), "ABCZZ", "I/O/0/1 and spaces are dropped, then padded");
+
+        let mut calls = 0;
+        let out = admin_code_from_input("", || {
+            calls += 1;
+            CODE_ALPHABET.as_bytes()[calls % CODE_ALPHABET.len()] as char
+        });
+        assert_eq!(calls, CODE_LENGTH, "an empty code is five random characters");
+        assert!(valid_room_code(&out), "{out}");
+        assert!(valid_room_code(&admin_code_from_input("   ", cycle())), "a blank code is random too");
+
+        for typed in ["kathy", "x", "!@#$%", "ZZZZZZZZ", " 1 2 3 "] {
+            let out = admin_code_from_input(typed, cycle());
+            assert!(valid_room_code(&out), "{typed:?} -> {out}");
+        }
+    }
+
+    #[test]
+    fn a_guest_still_gets_the_join_message_for_an_invalid_code() {
+        // the guest path is unchanged: an invalid code is refused before any lookup, and a guest's miss never reserves
+        assert!(!valid_join_code("ab-c"));
+        assert!(!valid_join_code(""));
+        let miss = NetError::Http { status: 404, code: String::new(), error: "ROOM NOT FOUND".into(), body: Value::Null };
+        assert!(!admin_may_reserve_on_miss(false, "token", &miss), "a guest's miss is ROOM NOT FOUND, not a reserve");
+    }
+
+    #[test]
+    fn an_owners_miss_asks_for_the_reserve_request_a_guest_does_not() {
+        let miss = NetError::Http { status: 404, code: String::new(), error: "ROOM NOT FOUND".into(), body: Value::Null };
+        assert!(admin_may_reserve_on_miss(true, "token", &miss));
+        assert!(!admin_may_reserve_on_miss(false, "token", &miss), "a guest never reserves a code");
+        assert!(!admin_may_reserve_on_miss(true, "", &miss), "no session, no reserve");
+        let other = NetError::Http { status: 500, code: String::new(), error: "DOWN".into(), body: Value::Null };
+        assert!(!admin_may_reserve_on_miss(true, "token", &other), "only a not-found code is reserved");
+    }
+
+    #[test]
+    fn the_reserve_request_names_the_code_and_the_owner_session() {
+        let body = admin_reserve_body("ADMN1", "tok");
+        assert_eq!(body, json!({"action": "create", "code": "ADMN1", "sessionToken": "tok"}));
     }
 }

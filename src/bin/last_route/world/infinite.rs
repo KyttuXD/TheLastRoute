@@ -320,8 +320,9 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -
         ];
         let x0 = ends[0].x.min(ends[1].x) - 1;
         let x1 = ends[0].x.max(ends[1].x) + 1;
-        let y0 = s.cell.y - 1;
-        let y1 = s.cell.y + 2;
+        // the rows span the whole flight, the same as the columns (a vertical flight is walled past its first cell otherwise)
+        let y0 = ends[0].y.min(ends[1].y) - 1;
+        let y1 = ends[0].y.max(ends[1].y) + 1;
         f.clear_props_in(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
         f.open_cells(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
         // a 3-wide hall from the stair bay to the lobby so the flight is always reachable

@@ -72,7 +72,7 @@ impl NpcRules {
         let i = match difficulty {
             crate::config::Difficulty::Relaxed => 0,
             crate::config::Difficulty::Standard => 1,
-            crate::config::Difficulty::Hard => 2,
+            crate::config::Difficulty::Hard | crate::config::Difficulty::Nightmare => 2,
         };
         self.per_run[i].min(self.max)
     }

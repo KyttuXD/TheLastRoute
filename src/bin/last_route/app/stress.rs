@@ -11,7 +11,8 @@
 //!
 //! The fly scenario flies, as the Godot flythrough does: admin noclip is on and the run speed is
 //! `FLY_SPEED` (`fly`), so walls do not stop the runner and it covers ground fast. The other
-//! scenarios walk the same route with noclip off at normal speed. The synthetic input is a
+//! scenarios walk the same route with noclip off at normal speed, and steer round walls with whiskers
+//! (`whisker_pick`). The synthetic input is a
 //! `Controls` fed to `Game::update` the way `read_controls` feeds the keyboard and mouse: forward all
 //! the time, no sprint, and a turn of `TURN_DEGREES` at each `LEG_SECONDS` boundary. The route is a
 //! pure function of the elapsed time, and each turn's direction comes from the fixed seed, so the
@@ -46,10 +47,19 @@ const FLY_SPEED: f32 = 4.0;
 const LEG_SECONDS: f32 = 20.0;
 /// The size of each turn, to the left or the right by the seed's sign (`turn_sign`).
 const TURN_DEGREES: f32 = 110.0;
-/// A walking runner that moves less than STUCK_METRES in STUCK_SECONDS is against a wall: it turns
-/// AVOID_DEGREES over AVOID_SECONDS, away from the wall, and goes on.
-const STUCK_METRES: f32 = 0.5;
-const STUCK_SECONDS: f32 = 1.5;
+/// Whiskers: each walking frame the runner probes headings at these offsets (degrees) from the route
+/// heading, out to WHISKER_METRES in WHISKER_STEP_METRES steps, and steers toward the open one closest
+/// to the route. The side last steered to wins ties, and an offset is held WHISKER_HOLD_SECONDS so the
+/// steering does not flip back and forth at a corner.
+const WHISKER_DEGREES: [f32; 7] = [-90.0, -60.0, -30.0, 0.0, 30.0, 60.0, 90.0];
+const WHISKER_METRES: f32 = 2.5;
+const WHISKER_STEP_METRES: f32 = 0.25;
+const WHISKER_HOLD_SECONDS: f32 = 0.4;
+/// The most the steering moves the heading off the route, in rad per second.
+const STEER_RATE: f32 = 6.0;
+/// With every heading shut the runner backs off for BACK_SECONDS, then turns AVOID_DEGREES over
+/// AVOID_SECONDS and goes on.
+const BACK_SECONDS: f32 = 0.5;
 const AVOID_DEGREES: f32 = 150.0;
 const AVOID_SECONDS: f32 = 1.0;
 /// Seconds between presses on a shut door in the walking modes.
@@ -159,12 +169,32 @@ pub struct Stress {
     hunters: usize,
     depth: i32,
     travel: Travel,
-    /// Where the walking runner was when it last moved on, and when (seconds into the run).
-    progress: Option<((f32, f32), f32)>,
-    /// While set, the runner turns away from a wall: the time the turn ends and its turn rate (rad per second).
-    avoid: Option<(f32, f32)>,
+    /// The route heading (the facing the route alone would give), in rad; it turns with the route only.
+    route: Option<f32>,
+    /// The whisker steering of the walking runner.
+    steer: Steer,
+    /// Set while a runner with every heading shut backs off and turns.
+    recover: Option<Recover>,
     /// When the runner last pressed interact on a shut door (seconds into the run).
     door_press: f32,
+}
+
+/// The whisker steering: the offset from the route heading the runner steers to (rad), the side it
+/// last steered to (+1 or -1, 0 before any steer), and the time the offset may change again.
+#[derive(Default, Clone, Copy)]
+struct Steer {
+    offset: f32,
+    side: f32,
+    hold_until: f32,
+}
+
+/// A runner with every heading shut: it backs off until `back_until`, then turns at `rate` (rad per
+/// second) until `turn_until`.
+#[derive(Clone, Copy)]
+struct Recover {
+    back_until: f32,
+    turn_until: f32,
+    rate: f32,
 }
 
 /// The frames of one second: their times and the sum of each section's samples.
@@ -228,8 +258,9 @@ impl Stress {
             hunters: 0,
             depth: 0,
             travel: Travel::default(),
-            progress: None,
-            avoid: None,
+            route: None,
+            steer: Steer::default(),
+            recover: None,
             door_press: -DOOR_PRESS_SECONDS,
         })
     }
@@ -268,44 +299,18 @@ impl Stress {
     /// The synthetic input for this frame; `dt` is the frame's game time and `g` the run.
     pub fn controls(&mut self, dt: f32, g: &Game) -> Controls {
         let t = self.start.map_or(0.0, |s| s.elapsed().as_secs_f32());
+        let turn = turn_look(t, dt);
         let mut c = Controls {
             fwd: 1.0,
-            look: Vec2::new(turn_look(t, dt), 0.0),
+            look: Vec2::new(turn, 0.0),
             ..Default::default()
         };
-        // a walking runner that stops moving turns away from the wall for a moment, then goes on
+        // the route heading turns with the route alone; the facing is the game's own yaw
+        let facing = facing_angle(g.p.yaw);
+        let route_prev = self.route.unwrap_or(facing);
+        self.route = Some(route_prev + turn);
         if self.scenario.mode(t) != Scenario::Fly {
-            let o = g.window_origin();
-            let here = (g.p.pos.0 + o.0 as f32, g.p.pos.1 + o.1 as f32);
-            if let Some((turn_end, rate)) = self.avoid {
-                if t < turn_end {
-                    c.look.x = rate * dt;
-                    return c;
-                }
-                self.avoid = None;
-                self.progress = Some((here, t));
-            }
-            match self.progress {
-                Some((at, _)) if crate::game::pdist(at, here) >= STUCK_METRES => {
-                    self.progress = Some((here, t))
-                }
-                Some((_, since)) if t - since >= STUCK_SECONDS => {
-                    let side = if turn_sign(t as u32) > 0.0 { 1.0 } else { -1.0 };
-                    let rate = side * AVOID_DEGREES.to_radians() / AVOID_SECONDS;
-                    self.avoid = Some((t + AVOID_SECONDS, rate));
-                    c.look.x = rate * dt;
-                }
-                Some(_) => {}
-                None => self.progress = Some((here, t)),
-            }
-            // a shut door on the way never opens for the runner: the crosshair on one is a press, held off
-            // for DOOR_PRESS_SECONDS so the next press does not shut it again
-            if g.closed_door_in_focus() && t - self.door_press >= DOOR_PRESS_SECONDS {
-                self.door_press = t;
-                self.avoid = None;
-                self.progress = Some((here, t));
-                c.interact = true;
-            }
+            self.steer(g, t, dt, facing, route_prev, &mut c);
         }
         // every INTERACT_SECONDS in the interact mode: press interact when the crosshair is on
         // something (or to step out of a locker the last press hid the runner in)
@@ -319,6 +324,64 @@ impl Stress {
             }
         }
         c
+    }
+
+    /// The walking runner's steering for one frame. A shut door on the way is pressed (never opened). With
+    /// every heading shut the runner backs off and turns; otherwise it steers toward the open whisker
+    /// heading closest to the route. `facing` is its yaw as a heading, `route_prev` the route heading
+    /// before this frame's turn. The look is the route's turn plus the steer, so with an open route the
+    /// runner follows the route exactly.
+    fn steer(&mut self, g: &Game, t: f32, dt: f32, facing: f32, route_prev: f32, c: &mut Controls) {
+        // a shut door on the way never opens for the runner: the crosshair on one is a press, held off
+        // for DOOR_PRESS_SECONDS so the next press does not shut it again
+        if g.closed_door_in_focus() && t - self.door_press >= DOOR_PRESS_SECONDS {
+            self.door_press = t;
+            c.interact = true;
+        }
+        if let Some(r) = self.recover {
+            if t < r.back_until {
+                c.fwd = -1.0;
+                return;
+            }
+            if t < r.turn_until {
+                c.look.x += r.rate * dt;
+                // the route turns with the facing, so it leaves the dead-end heading for good
+                self.route = Some(recovery_route(self.route.unwrap_or(route_prev), r.rate, dt));
+                return;
+            }
+            self.recover = None;
+        }
+        let route = self.route.unwrap_or(route_prev);
+        let open = |x: f32, y: f32| g.fac.body_fits(x, y, PLAYER_RADIUS);
+        let Some(want) = whisker_pick(g.p.pos, route, self.steer.side, &open) else {
+            let side = if self.steer.side != 0.0 {
+                self.steer.side
+            } else {
+                turn_sign(t as u32)
+            };
+            self.recover = Some(Recover {
+                back_until: t + BACK_SECONDS,
+                turn_until: t + BACK_SECONDS + AVOID_SECONDS,
+                rate: side * AVOID_DEGREES.to_radians() / AVOID_SECONDS,
+            });
+            c.fwd = -1.0;
+            return;
+        };
+        // an offset is held for a moment after it is chosen, so the runner does not flip back at once
+        let keep = t < self.steer.hold_until
+            && whisker_clear(g.p.pos, route + self.steer.offset, &open);
+        let target = if keep { self.steer.offset } else { want };
+        if target != self.steer.offset {
+            self.steer.hold_until = t + WHISKER_HOLD_SECONDS;
+        }
+        if target != 0.0 {
+            self.steer.side = target.signum();
+        }
+        self.steer.offset = target;
+        // the facing now is route_prev + cur; the steer turns it toward the target at most STEER_RATE
+        let cur = wrap_angle(facing - route_prev);
+        let step = wrap_angle(target - cur).clamp(-STEER_RATE * dt, STEER_RATE * dt);
+        c.look.x += step;
     }
 
     /// Sets the run up for this frame, before the update: the flight switches (noclip and
@@ -534,6 +597,52 @@ fn turn_look(t: f32, dt: f32) -> f32 {
     heading(t) - heading(t - dt)
 }
 
+/// The heading (the angle of the forward vector `(cos, sin)` on the grid) for a yaw. A look of `d`
+/// turns the yaw by `-d` and the heading by `+d`, so the route's turns carry over to the facing.
+fn facing_angle(yaw: f32) -> f32 {
+    (-yaw.cos()).atan2(-yaw.sin())
+}
+
+/// `a` wrapped into (-PI, PI].
+fn wrap_angle(a: f32) -> f32 {
+    a.sin().atan2(a.cos())
+}
+
+/// The route heading after one frame of a recovery turn at `rate` rad/s: the route turns with the
+/// facing, so a runner turned out of a dead end keeps its route pointing away from it.
+fn recovery_route(route: f32, rate: f32, dt: f32) -> f32 {
+    route + rate * dt
+}
+
+/// Whether a walk along heading `angle` from `pos` stays open out to WHISKER_METRES.
+fn whisker_clear(pos: (f32, f32), angle: f32, open: &impl Fn(f32, f32) -> bool) -> bool {
+    let (dx, dy) = (angle.cos(), angle.sin());
+    let steps = (WHISKER_METRES / WHISKER_STEP_METRES).round() as u32;
+    (1..=steps).all(|k| {
+        let d = k as f32 * WHISKER_STEP_METRES;
+        open(pos.0 + dx * d, pos.1 + dy * d)
+    })
+}
+
+/// The whisker pick from `pos` on the route heading `route`: the offset (rad) from the route of the
+/// open whisker closest to it. Ties go to the side `prefer` (+1 or -1; 0 for none). None when every
+/// whisker is shut.
+fn whisker_pick(
+    pos: (f32, f32),
+    route: f32,
+    prefer: f32,
+    open: &impl Fn(f32, f32) -> bool,
+) -> Option<f32> {
+    // closest first, and at equal distance the preferred side first (a penalty for the other side)
+    let rank = |deg: f32| deg.abs() * 2.0 + if deg * prefer < 0.0 { 1.0 } else { 0.0 };
+    let mut order = WHISKER_DEGREES;
+    order.sort_by(|a, b| rank(*a).total_cmp(&rank(*b)));
+    order
+        .into_iter()
+        .map(|deg| deg.to_radians())
+        .find(|o| whisker_clear(pos, route + o, open))
+}
+
 /// The `p`th percentile (0 to 100) of frame times in ms, by nearest rank; 0 when there are none.
 fn percentile(ms: &[f32], p: f32) -> f32 {
     if ms.is_empty() {
@@ -629,5 +738,65 @@ mod tests {
         travel.add(None);
         travel.add(Some((50.0, 50.0)));
         assert!((travel.metres - 9.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn whiskers_steer_a_runner_against_a_wall_to_the_open_side() {
+        // a wall across the route ahead on the y >= 0 side: the open side is y < 0
+        let open = |x: f32, y: f32| !(x > 1.0 && y >= 0.0);
+        let pick = whisker_pick((0.0, 0.0), 0.0, 0.0, &open).expect("an open heading");
+        assert!((pick - (-30f32).to_radians()).abs() < 1e-4, "picked {pick}");
+    }
+
+    #[test]
+    fn whiskers_keep_the_side_last_steered_to_when_both_are_open() {
+        // a wall straight ahead only: +30 and -30 are both open, and the memory breaks the tie
+        let open = |x: f32, y: f32| !(x > 1.0 && y.abs() < 0.6);
+        let right = whisker_pick((0.0, 0.0), 0.0, 1.0, &open).expect("open");
+        let left = whisker_pick((0.0, 0.0), 0.0, -1.0, &open).expect("open");
+        assert!((right - 30f32.to_radians()).abs() < 1e-4, "right {right}");
+        assert!((left + 30f32.to_radians()).abs() < 1e-4, "left {left}");
+    }
+
+    #[test]
+    fn a_runner_in_an_open_corridor_keeps_the_route_heading() {
+        // a corridor along x, two metres either side: the route heading is open, so no offset
+        let corridor = |_: f32, y: f32| y.abs() < 2.0;
+        assert_eq!(whisker_pick((0.0, 0.0), 0.0, 0.0, &corridor), Some(0.0));
+        assert_eq!(whisker_pick((0.0, 0.0), 0.3, 0.0, &corridor), Some(0.0));
+        let open_room = |_: f32, _: f32| true;
+        assert_eq!(whisker_pick((5.0, 5.0), -1.2, 1.0, &open_room), Some(0.0));
+    }
+
+    #[test]
+    fn a_runner_with_every_heading_shut_finds_no_pick() {
+        assert_eq!(whisker_pick((0.0, 0.0), 0.0, 0.0, &|_: f32, _: f32| false), None);
+    }
+
+    #[test]
+    fn a_runner_in_a_dead_end_turns_its_route_out_of_it() {
+        // a dead-end hallway along x: open within 1 m of the centre line up to x = 3, shut past it
+        let hallway = |x: f32, y: f32| x <= 3.0 && y.abs() < 1.0;
+        let pos = (2.5, 0.0);
+        // the scripted route points into the dead end: every whisker is shut, so the runner recovers
+        assert_eq!(whisker_pick(pos, 0.0, 0.0, &hallway), None);
+        // the recovery turn carries the route round by AVOID_DEGREES over AVOID_SECONDS
+        let rate = AVOID_DEGREES.to_radians() / AVOID_SECONDS;
+        let dt = 1.0 / 60.0;
+        let mut route = 0.0;
+        for _ in 0..(AVOID_SECONDS / dt).round() as u32 {
+            route = recovery_route(route, rate, dt);
+        }
+        assert!((route - AVOID_DEGREES.to_radians()).abs() < 1e-3, "route {route}");
+        // the turned route has an open heading back down the hallway (the +30 whisker, heading 180)
+        let pick = whisker_pick(pos, route, 0.0, &hallway).expect("an open heading out");
+        assert!((pick - 30f32.to_radians()).abs() < 1e-4, "picked {pick}");
+    }
+
+    #[test]
+    fn a_look_turns_the_facing_by_the_same_angle_as_the_route() {
+        // the look subtracts from the yaw, so the facing moves by the look: the route's turn carries over
+        let (yaw, d) = (0.3f32, 0.2f32);
+        assert!((wrap_angle(facing_angle(yaw - d) - facing_angle(yaw)) - d).abs() < 1e-5);
     }
 }

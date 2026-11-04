@@ -56,6 +56,10 @@ pub const THREAT_RANGE: f32 = 14.0;
 const FLEE_STEP: f32 = 8.0;
 /// Godot `admin_npc_panel.gd` 149-160: the ray's step while it looks for the floor (the window's quarter cell).
 const RAY_STEP: f32 = 0.25;
+/// How far ahead along the planned route a bot looks for a straight line it fits on, in cells.
+const LOOKAHEAD_CELLS: usize = 4;
+/// Metres between the body checks along a step. A body is 0.46 m across, so this never skips a wall corner.
+const SWEEP_STEP: f32 = 0.05;
 
 /// One player bot (NPC teammate). Fields for the deferred features (catch, revive, chat, admin commands) are
 /// added when those land.
@@ -183,29 +187,74 @@ fn wait_at_door(n: &mut Npc, fac: &Facility, door: Cell, dt: f32, presses: &mut 
     }
 }
 
-/// Godot `_walk_toward`: one grid step toward `goal`, replanning every `REPATH` seconds. A shut door in the way
-/// stops the bot (`wait_at_door`).
+/// What a body of `NAV_RADIUS` meets on a straight line.
+enum Sweep {
+    Clear,
+    /// A room door (or its swinging leaf) is in the way at this threshold.
+    Door(Cell),
+    /// A wall, prop or locker is in the way.
+    Blocked,
+}
+
+/// Samples the straight line from `a` to `b` every `SWEEP_STEP` metres, up to and including `b`, and reports the first
+/// thing a body meets on it.
+fn sweep(fac: &Facility, a: (f32, f32), b: (f32, f32)) -> Sweep {
+    let steps = ((pdist(a, b) / SWEEP_STEP).ceil() as i32).max(1);
+    for i in 1..=steps {
+        let t = i as f32 / steps as f32;
+        let (x, y) = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+        if let Some(door) = fac.door_in_way(x, y, NAV_RADIUS) {
+            return Sweep::Door(door);
+        }
+        if !fac.body_fits(x, y, NAV_RADIUS) {
+            return Sweep::Blocked;
+        }
+    }
+    Sweep::Clear
+}
+
+/// Plans a route from the bot's cell to the open cell nearest `goal`, and drops the cell the bot stands in.
+fn plan(n: &mut Npc, fac: &Facility, goal: (f32, f32)) {
+    n.path_age = 0.0;
+    let from = Cell::new(n.at.0.floor() as i32, n.at.1.floor() as i32);
+    let to = fac.nearest_open(goal.0, goal.1, NAV_RADIUS).unwrap_or(goal);
+    let to = Cell::new(to.0.floor() as i32, to.1.floor() as i32);
+    n.path = fac
+        .find_path(from, to)
+        .into_iter()
+        .map(|c| (c.x, c.y))
+        .collect();
+    if !n.path.is_empty() {
+        n.path.remove(0);
+    }
+}
+
+/// Godot `_walk_toward`: one step toward `goal` along the planned route (`path`, replanned every `REPATH` seconds).
+/// The bot aims at the furthest of the next `LOOKAHEAD_CELLS` cells it reaches in a straight line its body fits on, so
+/// it follows the route round a corner and never cuts one. A shut door in the way stops it (`wait_at_door`). A step
+/// that runs into a wall is not slid along: the route is replanned at once and the bot waits for its next step.
 fn walk_toward(n: &mut Npc, fac: &Facility, goal: (f32, f32), dt: f32, presses: &mut Vec<Cell>) {
     let here = n.at;
     n.path_age += dt;
     if n.path_age >= REPATH {
-        n.path_age = 0.0;
-        let to = fac.nearest_open(goal.0, goal.1, NAV_RADIUS).unwrap_or(goal);
-        let from = Cell::new(here.0.floor() as i32, here.1.floor() as i32);
-        let to = Cell::new(to.0.floor() as i32, to.1.floor() as i32);
-        n.path = fac
-            .find_path(from, to)
-            .into_iter()
-            .map(|c| (c.x, c.y))
-            .collect();
-        if !n.path.is_empty() {
-            // the cell it stands in (find_path starts at it)
-            n.path.remove(0);
-        }
+        plan(n, fac, goal);
     }
     if n.path.is_empty() {
         n.walking = false;
         return;
+    }
+    // a bot already inside a door's slab is let out, and one inside a wall is not checked for walls (as before)
+    let in_door = fac.door_in_way(here.0, here.1, NAV_RADIUS).is_some();
+    let fits = fac.body_fits(here.0, here.1, NAV_RADIUS);
+    if fits && !in_door {
+        let reach = n.path.len().min(LOOKAHEAD_CELLS);
+        let ahead = (1..reach).rev().find(|&k| {
+            let c = (n.path[k].0 as f32 + 0.5, n.path[k].1 as f32 + 0.5);
+            matches!(sweep(fac, here, c), Sweep::Clear)
+        });
+        if let Some(k) = ahead {
+            n.path.drain(..k);
+        }
     }
     let next = n.path[0];
     let target = (next.0 as f32 + 0.5, next.1 as f32 + 0.5);
@@ -239,11 +288,21 @@ fn walk_toward(n: &mut Npc, fac: &Facility, goal: (f32, f32), dt: f32, presses: 
     } else {
         (speed * dt, (here.0 + dir.0 * speed * dt, here.1 + dir.1 * speed * dt))
     };
-    // a shut door in the way stops the bot, as it stops the runner (a bot already inside a leaf's slab is let out)
-    if fac.door_in_way(here.0, here.1, NAV_RADIUS).is_none() {
-        if let Some(door) = fac.door_in_way(to.0, to.1, NAV_RADIUS) {
-            wait_at_door(n, fac, door, dt, presses);
-            return;
+    if !in_door {
+        match sweep(fac, here, to) {
+            Sweep::Clear => {}
+            // a shut door in the way stops the bot, as it stops the runner
+            Sweep::Door(door) => {
+                wait_at_door(n, fac, door, dt, presses);
+                return;
+            }
+            // a wall in the way: no slide along it, a fresh route, and the next step waits for it
+            Sweep::Blocked if fits => {
+                plan(n, fac, goal);
+                n.walking = false;
+                return;
+            }
+            Sweep::Blocked => {}
         }
     }
     n.door = None;
@@ -806,6 +865,64 @@ mod tests {
         assert!(pdist(g.npcs[i].at, g.hunters.last().unwrap().pos) > before, "it ran away");
     }
 
+    /// The pursuit inputs `audio::world::update` derives from the hunter list (world.rs 86-96): the nearest active
+    /// hunter's distance to the listener, and whether an active chaser pursues the listener.
+    fn pursuit_inputs(g: &Game) -> (Option<f64>, bool) {
+        let mut nearest: Option<f64> = None;
+        let mut pursued = false;
+        for h in g.hunters.iter().filter(|h| h.active) {
+            let d = pdist(h.pos, g.p.pos);
+            nearest = Some(nearest.map_or(d as f64, |n| n.min(d as f64)));
+            if h.state == State::Chase && h.stun <= 0.0 && (h.direct_visible || d <= 18.0) {
+                pursued = true;
+            }
+        }
+        (nearest, pursued)
+    }
+
+    /// A bot must not feed the danger readout, the vignette or the heartbeat/chase cues: a hunter chasing a bot (the
+    /// runner far off and out of sight) gives the same danger and pursuit inputs with or without that bot.
+    #[test]
+    fn a_bot_being_chased_does_not_change_the_danger_inputs() {
+        // (danger, nearest hunter distance, pursued, heartbeat danger, bot moved, hunter position)
+        let play = |with_bot: bool| {
+            let (mut g, content) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+            let bot_before = g.npcs[0].at;
+            if with_bot {
+                g.npcs[0].joined = true;
+            }
+            // the runner is 30 cells off and the hunter cannot see them
+            g.p.pos = (bot_before.0 - 30.0, bot_before.1);
+            let hunter_at = (bot_before.0 + 3.0, bot_before.1);
+            let mut h = crate::hunters::brain::Brain::new(
+                content.hunters[0].clone(),
+                hunter_at,
+                "T",
+                Difficulty::Standard,
+            );
+            h.active = true;
+            h.state = State::Chase;
+            h.direct_visible = false;
+            g.hunters.push(h);
+            for _ in 0..60 {
+                g.update_npcs(1.0 / 60.0);
+            }
+            let bot_moved = pdist(g.npcs[0].at, bot_before) > 0.5;
+            let (nearest, pursued) = pursuit_inputs(&g);
+            let heart = crate::audio::cues::rules::heartbeat_danger(nearest, pursued, g.in_safe_zone());
+            let hunter_pos = g.hunters.last().unwrap().pos;
+            (g.danger(), nearest, pursued, heart, bot_moved, hunter_pos)
+        };
+        let without = play(false);
+        let with = play(true);
+        assert!(with.4, "the bot really ran, so the comparison is not vacuous");
+        assert_eq!(with.0, without.0, "danger() with a bot equals danger() without one");
+        assert_eq!(with.1, without.1, "nearest hunter distance is unchanged");
+        assert_eq!(with.2, without.2, "pursued flag is unchanged");
+        assert_eq!(with.3, without.3, "heartbeat danger is unchanged");
+        assert_eq!(with.5, without.5, "the hunter did not move because of the bot");
+    }
+
     /// A game with a room door a bot can cross in a straight line: the door's threshold cell and the open points a
     /// metre either side of it. Doors are registered (ticked) and shut.
     fn door_case() -> (Game, Cell, (f32, f32), (f32, f32)) {
@@ -901,6 +1018,104 @@ mod tests {
         // and it treats the bot as a body: the leaf does not swing shut through it
         g.fac.update_doors(&[], &[g.npcs[0].at], 1.0);
         assert_eq!(g.fac.door_open_amount(cell), 1.0);
+    }
+
+    /// A floor point with a wall between it and a floor point 4 to 12 m off that is at least six cells away by route
+    /// (no line of sight, so the straight way is blocked).
+    fn walled_pair(g: &Game) -> Option<((f32, f32), (f32, f32))> {
+        let fac = &g.fac;
+        for s in fac.floor_cells() {
+            let a = s.center();
+            if !fac.body_fits(a.0, a.1, NAV_RADIUS) {
+                continue;
+            }
+            // sorted: `distance_map` is a HashMap, whose order changes every process, so the pick must not follow it
+            let mut reach: Vec<(Cell, i32)> = fac.distance_map(s).into_iter().collect();
+            reach.sort_by_key(|(c, _)| (c.x, c.y));
+            for (c, steps) in reach {
+                let b = c.center();
+                if steps >= 6
+                    && (4.0..=12.0).contains(&pdist(a, b))
+                    && fac.body_fits(b.0, b.1, NAV_RADIUS)
+                    && !fac.has_line_of_sight(a, b)
+                {
+                    return Some((a, b));
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn an_npc_walks_round_a_wall_to_its_goal() {
+        let (mut g, _, _) = offline_game();
+        let Some((a, b)) = walled_pair(&g) else {
+            panic!("no point behind a wall in the test floor");
+        };
+        let (e, d) = sky(g.p.pos);
+        g.npc_spawn(1, 70, e, d);
+        g.npcs[0].joined = true;
+        g.npcs[0].at = a;
+        // 60 simulated seconds: far more than the walk round the wall needs
+        for f in 0..(60 * 60) {
+            bot_frame(&mut g, b, 1.0 / 60.0);
+            let at = g.npcs[0].at;
+            assert!(g.fac.body_fits(at.0, at.1, NAV_RADIUS), "frame {f}: the bot is in a wall at {at:?}");
+            if pdist(at, b) < 0.3 {
+                return;
+            }
+        }
+        panic!("the bot did not reach {b:?}: it stopped at {:?}", g.npcs[0].at);
+    }
+
+    #[test]
+    fn a_blocked_step_replans_instead_of_sliding() {
+        let (mut g, _, _) = offline_game();
+        let (open, wall, goal) = {
+            let fac = &g.fac;
+            let (open, wall) = fac
+                .floor_cells()
+                .into_iter()
+                .filter(|c| {
+                    let p = c.center();
+                    fac.body_fits(p.0, p.1, NAV_RADIUS)
+                })
+                .find_map(|c| {
+                    [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                        .into_iter()
+                        .map(|(dx, dy)| Cell::new(c.x + dx, c.y + dy))
+                        .find(|w| !fac.is_floor(w.x as f64 + 0.5, w.y as f64 + 0.5))
+                        .map(|w| (c, w))
+                })
+                .expect("an open cell beside a wall");
+            let goal = fac
+                .distance_map(open)
+                .into_iter()
+                .filter(|&(c, steps)| steps >= 4 && fac.body_fits(c.center().0, c.center().1, NAV_RADIUS))
+                .map(|(c, _)| c.center())
+                .next()
+                .expect("a reachable goal");
+            (open, wall, goal)
+        };
+        let (e, d) = sky(g.p.pos);
+        g.npc_spawn(1, 70, e, d);
+        // a quarter of a cell from the open cell's centre toward the wall: the next step runs into it
+        let (cx, cy) = open.center();
+        let (dx, dy) = ((wall.x - open.x) as f32, (wall.y - open.y) as f32);
+        let at = (cx + dx * 0.25, cy + dy * 0.25);
+        let n = &mut g.npcs[0];
+        n.joined = true;
+        n.at = at;
+        n.path = vec![(wall.x, wall.y)];
+        n.path_age = 0.0;
+        let mut presses = vec![];
+        walk_toward(&mut g.npcs[0], &g.fac, goal, 1.0 / 60.0, &mut presses);
+        let n = &g.npcs[0];
+        assert_eq!(n.at, at, "the bot stops at the wall rather than sliding along it");
+        assert!(!n.walking);
+        assert_eq!(n.path_age, 0.0, "the blocked step replanned the route");
+        assert!(!n.path.contains(&(wall.x, wall.y)), "the new route avoids the wall");
+        assert!(!n.path.is_empty(), "and still leads to the goal");
     }
 
     #[test]

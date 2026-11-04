@@ -1062,6 +1062,16 @@ impl Facility {
             .unwrap_or("maze")
     }
 
+    /// Whether (x, y) is a tread of a stair flight. A flight's well cells are holes for a body that is not
+    /// walking it; the flight itself is walkable at the height stair_surface_y gives for that point.
+    fn on_stair_flight(&self, x: f32, y: f32) -> bool {
+        let cell = Cell::new(x.floor() as i32, y.floor() as i32);
+        self.stairs.iter().any(|s| {
+            (1..=STAIR_FLIGHT).any(|k| stair_well_cells(*s, k).contains(&cell))
+                && crate::world::vertical::stair_surface_y(*s, (x, y)).is_some()
+        })
+    }
+
     pub fn body_fits(&self, x: f32, y: f32, r: f32) -> bool {
         self.body_fits_at(x, y, r, 0.0)
     }
@@ -1087,7 +1097,7 @@ impl Facility {
             (x + r, y + r),
             (x, y),
         ] {
-            if self.is_hole(sx.floor() as i32, sy.floor() as i32) {
+            if self.is_hole(sx.floor() as i32, sy.floor() as i32) && !self.on_stair_flight(sx, sy) {
                 return false;
             }
         }

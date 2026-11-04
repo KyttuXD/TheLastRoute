@@ -9,6 +9,8 @@ use crate::config::*;
 use crate::content::hunters::HunterDef;
 use crate::world::rng::Rng;
 use crate::world::{Cell, Facility};
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 #[cfg(test)]
 #[path = "bench.rs"]
@@ -69,6 +71,114 @@ pub fn cell_of(p: (f32, f32)) -> Cell {
     Cell::new(p.0.floor() as i32, p.1.floor() as i32)
 }
 
+/// Whether a body of HUNTER_RADIUS can sweep the straight line from `from` to `to` (sampled every 0.15 m).
+fn sweep_clear(fac: &Facility, from: (f32, f32), to: (f32, f32)) -> bool {
+    let d = dist(from, to);
+    let steps = ((d / 0.15).ceil() as i32).max(1);
+    (1..=steps).all(|i| {
+        let t = i as f32 / steps as f32;
+        fac.body_fits(
+            from.0 + (to.0 - from.0) * t,
+            from.1 + (to.1 - from.1) * t,
+            HUNTER_RADIUS,
+        )
+    })
+}
+
+#[derive(PartialEq)]
+struct OpenCell(f32, Cell);
+
+impl Eq for OpenCell {}
+
+impl PartialOrd for OpenCell {
+    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
+        Some(self.cmp(o))
+    }
+}
+
+impl Ord for OpenCell {
+    fn cmp(&self, o: &Self) -> Ordering {
+        o.0.partial_cmp(&self.0).unwrap_or(Ordering::Equal)
+    }
+}
+
+/// A route over the hunter grid from the cell under `from` to `to`, as `Facility::find_path` plans it, except that the
+/// cells in `avoid` (ones a step has just been blocked by) are left out. A closed start cell (the body stands
+/// off-centre in it) starts from the nearest open cell beside it.
+fn plan_route(fac: &Facility, from: (f32, f32), to: Cell, avoid: &[(Cell, f32)]) -> Vec<Cell> {
+    let avoided = |c: Cell| avoid.iter().any(|(a, _)| *a == c);
+    let open = |c: Cell| fac.hunter_open(c) && !avoided(c);
+    let here = cell_of(from);
+    let start = if open(here) {
+        here
+    } else {
+        let mut near: Vec<Cell> = (-1..=1)
+            .flat_map(|dy| (-1..=1).map(move |dx| Cell::new(here.x + dx, here.y + dy)))
+            .filter(|c| open(*c))
+            .collect();
+        near.sort_by(|a, b| dist(a.center(), from).total_cmp(&dist(b.center(), from)));
+        match near.first() {
+            Some(c) => *c,
+            None => return vec![],
+        }
+    };
+    if to == start {
+        return vec![start];
+    }
+    if !fac.hunter_open(to) || avoided(to) {
+        return vec![];
+    }
+    let h = |c: Cell| {
+        let dx = (c.x - to.x).abs() as f32;
+        let dy = (c.y - to.y).abs() as f32;
+        dx.max(dy) + (std::f32::consts::SQRT_2 - 1.0) * dx.min(dy)
+    };
+    let mut g: HashMap<Cell, f32> = HashMap::from([(start, 0.0)]);
+    let mut came: HashMap<Cell, Cell> = HashMap::new();
+    let mut closed: HashSet<Cell> = HashSet::new();
+    let mut frontier = BinaryHeap::from([OpenCell(h(start), start)]);
+    while let Some(OpenCell(_, c)) = frontier.pop() {
+        if c == to {
+            let mut path = vec![c];
+            let mut at = c;
+            while let Some(prev) = came.get(&at) {
+                at = *prev;
+                path.push(at);
+            }
+            path.reverse();
+            return path;
+        }
+        if !closed.insert(c) {
+            continue;
+        }
+        let gc = g[&c];
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                let n = Cell::new(c.x + dx, c.y + dy);
+                if closed.contains(&n) || (n != to && !open(n)) {
+                    continue;
+                }
+                if dx != 0
+                    && dy != 0
+                    && (!open(Cell::new(c.x + dx, c.y)) || !open(Cell::new(c.x, c.y + dy)))
+                {
+                    continue;
+                }
+                let ng = gc + if dx != 0 && dy != 0 { std::f32::consts::SQRT_2 } else { 1.0 };
+                if ng < *g.get(&n).unwrap_or(&f32::INFINITY) {
+                    g.insert(n, ng);
+                    came.insert(n, c);
+                    frontier.push(OpenCell(ng + h(n), n));
+                }
+            }
+        }
+    }
+    vec![]
+}
+
 pub struct Brain {
     pub def: HunterDef,
     pub pos: (f32, f32),
@@ -95,6 +205,8 @@ pub struct Brain {
     path: Vec<Cell>,
     path_timer: f32,
     path_goal: Option<Cell>,
+    /// Cells a step was just blocked by, with the seconds left to keep them out of the route.
+    avoid: Vec<(Cell, f32)>,
     unreachable: f32,
     camp_time: f32,
     camp_cooldown: f32,
@@ -139,6 +251,8 @@ pub struct Brain {
 
 const ARRIVAL_DISTANCE: f32 = 0.65;
 const WAYPOINT_DISTANCE: f32 = 0.18;
+/// How long a cell a step was blocked by stays out of a hunter's route.
+const BLOCKED_AVOID_SECONDS: f32 = 2.0;
 const BEAM_ATTENTION_TIME: f32 = 0.35;
 const BEAM_ATTENTION_DECAY: f32 = 1.6;
 const BEAM_ATTENTION_RANGE: f32 = 12.0;
@@ -178,6 +292,7 @@ impl Brain {
             path: vec![],
             path_timer: 0.0,
             path_goal: None,
+            avoid: vec![],
             unreachable: 0.0,
             camp_time: 0.0,
             camp_cooldown: 0.0,
@@ -507,7 +622,7 @@ impl Brain {
             if line_clear && direct <= hearing_limit * HEARING_OPEN_AIR_SCALE {
                 hears = true;
             } else if direct < hearing_limit * HEARING_OUTER_SCALE {
-                let p = fac.find_path(cell_of(self.pos), cell_of(target.pos));
+                let p = plan_route(fac, self.pos, cell_of(target.pos), &self.avoid);
                 hears = !p.is_empty() && p.len() <= hearing_limit.ceil() as usize;
                 if hears && self.state == State::Chase {
                     self.path = p;
@@ -660,16 +775,7 @@ impl Brain {
     }
 
     fn clear_sweep(&self, fac: &Facility, from: (f32, f32), to: (f32, f32)) -> bool {
-        let d = dist(from, to);
-        let steps = ((d / 0.15).ceil() as i32).max(1);
-        (1..=steps).all(|i| {
-            let t = i as f32 / steps as f32;
-            fac.body_fits(
-                from.0 + (to.0 - from.0) * t,
-                from.1 + (to.1 - from.1) * t,
-                HUNTER_RADIUS,
-            )
-        })
+        sweep_clear(fac, from, to)
     }
 
     pub fn move_with_collision(&mut self, dx: f32, dy: f32, fac: &Facility) -> f32 {
@@ -710,6 +816,10 @@ impl Brain {
     fn pursue(&mut self, goal: (f32, f32), speed: f32, dt: f32, fac: &Facility, prof: &Profile) {
         let target_cell = cell_of(goal);
         self.path_timer -= dt;
+        for a in self.avoid.iter_mut() {
+            a.1 -= dt;
+        }
+        self.avoid.retain(|a| a.1 > 0.0);
         if self.state == State::Chase
             && self.direct_visible
             && self.clear_sweep(fac, self.pos, goal)
@@ -724,7 +834,7 @@ impl Brain {
             HUNTER_REPATH_WANDER
         };
         if self.path_timer <= 0.0 || self.path.is_empty() || self.path_goal.is_none() {
-            self.path = fac.find_path(cell_of(self.pos), target_cell);
+            self.path = plan_route(fac, self.pos, target_cell, &self.avoid);
             self.path_timer = interval;
             self.path_goal = Some(target_cell);
         }
@@ -762,8 +872,9 @@ impl Brain {
                 break;
             }
         }
+        let on_path = !self.path.is_empty();
         let mut waypoint = goal;
-        if !self.path.is_empty() {
+        if on_path {
             let mut furthest = 0;
             waypoint = self.path[0].center();
             for i in 0..self.path.len().min(4) {
@@ -780,13 +891,30 @@ impl Brain {
                 }
             }
         }
-        let moved = self.step_toward(waypoint, speed * dt, fac, dt);
-        if moved <= 0.001 && !self.path.is_empty() {
+        let travel = speed * dt;
+        let d = dist(self.pos, waypoint);
+        let t = travel.min(d);
+        let next = if d <= 0.001 {
+            self.pos
+        } else {
+            (self.pos.0 + (waypoint.0 - self.pos.0) / d * t, self.pos.1 + (waypoint.1 - self.pos.1) / d * t)
+        };
+        let blocked_cell = cell_of(waypoint);
+        if on_path
+            && blocked_cell != cell_of(self.pos)
+            && blocked_cell != target_cell
+            && !sweep_clear(fac, self.pos, next)
+        {
+            // The step into the next cell is blocked: do not slide along the wall. Keep that cell out of the route for
+            // a moment and plan again from where the body stands. (Off-centre in its own cell the body walks to the
+            // centre, as before; the goal's own cell is never kept out, the body closes on it as far as it can.)
+            self.avoid.push((blocked_cell, BLOCKED_AVOID_SECONDS));
+            self.clear_path();
             self.path_timer = 0.0;
-            if self.path.len() > 1 {
-                self.path.remove(0);
-            }
+            self.moving_speed = 0.0;
+            return;
         }
+        self.step_toward(waypoint, travel, fac, dt);
     }
 
     // -- corner peek (hunter_brain.gd 1245-1363) ---------------------------------------------------------------------
@@ -984,7 +1112,7 @@ impl Brain {
         for (ox, oy) in offs {
             if let Some(c) = fac.nearest_open(lk.0 + ox, lk.1 + oy, HUNTER_RADIUS) {
                 if dist(c, self.pos) > 0.5
-                    && !fac.find_path(cell_of(self.pos), cell_of(c)).is_empty()
+                    && !plan_route(fac, self.pos, cell_of(c), &self.avoid).is_empty()
                 {
                     return c;
                 }
@@ -1459,5 +1587,68 @@ mod tests {
         b.apply_slow(2.0, 0.7);
         assert_eq!(b.slow_factor, 0.7, "a new slow after expiry is not stacked on the old factor");
         assert_eq!(b.slow_timer, 2.0);
+    }
+
+    /// A chasing hunter with a wall between her and the runner walks round the wall to the runner's side, and her walk
+    /// does not slide along the wall: the distance she covers while moving off the way her step was aimed stays under
+    /// 1 m. Over the pairs of a maze that a route walks round (the hunter starts and the runner stands in cells the
+    /// route connects, with no line of sight), almost every hunter arrives; the few that do not are the cells a
+    /// hunter cannot close on at all, and none of those slides.
+    #[test]
+    fn a_chasing_hunter_walks_round_a_wall_without_sliding_along_it() {
+        let prof = Difficulty::Standard.profile();
+        let cat = crate::world::catalog::Catalog::load();
+        let fac = Facility::generate("NAV-2", &Options::default(), &cat);
+        let cells = fac.floor_cells();
+        let (mut pairs, mut arrived, mut worst_slide) = (0, 0, 0.0f32);
+        for a in cells.iter().step_by(23) {
+            for b in cells.iter().step_by(31) {
+                let (ca, cb) = (a.center(), b.center());
+                let straight = dist(ca, cb);
+                if !(3.0..=12.0).contains(&straight) || fac.has_line_of_sight(ca, cb) {
+                    continue;
+                }
+                if fac.find_path(*a, *b).len() < 8 {
+                    continue;
+                }
+                let (reached, slide) = chase_round_wall(&fac, &prof, ca, cb);
+                pairs += 1;
+                arrived += reached as i32;
+                worst_slide = worst_slide.max(slide);
+            }
+        }
+        assert!(pairs >= 20, "the test maze has walls between cells a route walks round: {pairs} pairs");
+        assert!(worst_slide <= 1.0, "a hunter slid {worst_slide:.2} m along a wall");
+        assert!(arrived * 100 >= pairs * 95, "only {arrived} of {pairs} hunters reached the runner's side");
+    }
+
+    /// Walks one hunter from `from` towards a runner at `goal` for up to 40 s. Returns whether she came within 1 m of
+    /// the runner, and how far she slid: distance covered in steps that were not along the way she was facing.
+    fn chase_round_wall(
+        fac: &Facility,
+        prof: &crate::config::Profile,
+        from: (f32, f32),
+        goal: (f32, f32),
+    ) -> (bool, f32) {
+        let mut h = Brain::new(aki(), from, "NAV-WALL", Difficulty::Standard);
+        h.active = true;
+        h.state = State::Chase;
+        h.last_known = Some(goal);
+        let speed = h.current_speed(1, 0, prof, 1.0);
+        let dt = 1.0 / 60.0;
+        let mut slide = 0.0f32;
+        for _ in 0..(60 * 40) {
+            let before = h.pos;
+            h.pursue(goal, speed, dt, fac, prof);
+            let d = (h.pos.0 - before.0, h.pos.1 - before.1);
+            let len = (d.0 * d.0 + d.1 * d.1).sqrt();
+            if len > 1e-3 && (d.0 * h.facing.0 + d.1 * h.facing.1) / len < 0.5 {
+                slide += len;
+            }
+            if dist(h.pos, goal) <= 1.0 {
+                return (true, slide);
+            }
+        }
+        (false, slide)
     }
 }

@@ -8,18 +8,24 @@ use crate::render::bbmodel::Model;
 use crate::render::builder::white_texture;
 use crate::render::prop_model::{AtlasCache, PropModel};
 use crate::world::TEXTURE_SETS;
+use crate::net::world_sync::SKIN_DEFAULT;
+use crate::shared::skins;
 use macroquad::prelude::*;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
-/// The hunter model the NPC teammates wear (the base body; there is no mannequin asset in this tree).
-const NPC_BODY_HUNTER: &str = "dovelle";
+/// The runner body (remote runners and NPC teammates): the blocky mannequin from the Godot build, embedded under
+/// assets/player/. Its atlas is also embedded as a data URI, but the file name is what the model's `find` resolves first.
+const RUNNER_BODY_MODEL: &str = "player/player_mannequin.bbmodel";
+const RUNNER_BODY_ATLAS: &str = "player/player_mannequin_atlas.png";
 
 pub struct Assets {
     pub walls: HashMap<&'static str, Texture2D>,
     pub floors: HashMap<&'static str, Texture2D>,
     pub white: Texture2D,
     pub hunters: HashMap<String, Model>,
-    /// The NPC teammates' body (game/npc.rs): the base hunter model (dovelle) parsed at the runner's height.
+    /// The runner body (remote runners and NPC teammates): the blocky mannequin parsed at the runner's height.
     pub npc_body: Option<Model>,
     pub portraits: HashMap<String, Texture2D>,
     /// Every prop, fixture and hand-tool model by the path the prop data names it under: props/<set>/<name>.bbmodel
@@ -32,7 +38,20 @@ pub struct Assets {
     pub title_font: Option<Font>,
     /// Courier New italic: the death moment's caption lines.
     pub caption_font: Option<Font>,
+    /// Runner skin textures by skin id, read from the skin folders when first needed (see [`Assets::skin_texture`]).
+    skin_textures: RefCell<HashMap<String, SkinSlot>>,
 }
+
+/// One skin id's texture: loaded, or still waiting for a file (checked again later, and fetched from the website once in a while).
+enum SkinSlot {
+    Ready(Texture2D),
+    Waiting { check_at: Instant, fetch_at: Instant },
+}
+
+/// How often a missing skin file is looked for again on disk.
+const SKIN_RECHECK: Duration = Duration::from_secs(2);
+/// How often a missing skin is asked for again from the website.
+const SKIN_REFETCH: Duration = Duration::from_secs(30);
 
 pub fn tex(bytes: &[u8]) -> Texture2D {
     let t = Texture2D::from_file_with_format(bytes, Some(ImageFormat::Png));
@@ -42,6 +61,14 @@ pub fn tex(bytes: &[u8]) -> Texture2D {
 
 fn asset_tex(path: &str) -> Option<Texture2D> {
     embedded::asset(path).map(tex)
+}
+
+/// The runner body: the embedded mannequin model, its atlas by file name, scaled so its top sits at PLAYER_HEIGHT.
+fn load_runner_body() -> Option<Model> {
+    let text = embedded::asset(RUNNER_BODY_MODEL).and_then(|b| std::str::from_utf8(b).ok())?;
+    let atlas = asset_tex(RUNNER_BODY_ATLAS);
+    let find = |name: &str| embedded::asset(&format!("player/{name}")).map(|b| b.to_vec());
+    Model::parse(text, atlas, &find, Some(crate::config::PLAYER_HEIGHT))
 }
 
 fn system_font(names: &[&str]) -> Option<Font> {
@@ -158,7 +185,7 @@ impl Assets {
             }
         }
         let mut hunters = HashMap::new();
-        let mut npc_body = None;
+        let npc_body = load_runner_body();
         let mut portraits = HashMap::new();
         for h in &content.hunters {
             let pack_dir = content
@@ -179,11 +206,6 @@ impl Assets {
                         let dir = model_path.rsplit_once('/').map(|x| x.0).unwrap_or("");
                         read(&format!("{dir}/{name}"))
                     };
-                    if h.id == NPC_BODY_HUNTER {
-                        // the NPC teammates' body: the same model at the runner's height (game/npc.rs)
-                        npc_body =
-                            Model::parse(&text, atlas.clone(), &find, Some(crate::config::PLAYER_HEIGHT));
-                    }
                     if let Some(m) =
                         Model::parse(&text, atlas, &find, Some(crate::config::HUNTER_HEIGHT))
                     {
@@ -237,6 +259,7 @@ impl Assets {
                 "Courier_New_Italic.ttf",
                 "LiberationMono-Italic.ttf",
             ]),
+            skin_textures: RefCell::new(HashMap::new()),
         }
     }
 
@@ -258,6 +281,39 @@ impl Assets {
     pub fn hunter_model(&self, id: &str) -> Option<&Model> {
         self.hunters.get(id).or_else(|| self.hunters.get("dovelle"))
     }
+
+    /// The texture a runner's skin id draws with. DEFAULT is the mannequin atlas, so it gives None; so does an id whose
+    /// skin is not on disk yet (the caller then draws the atlas too). A found skin is cached as one texture per id.
+    pub fn skin_texture(&self, id: &str) -> Option<Texture2D> {
+        if id == SKIN_DEFAULT {
+            return None;
+        }
+        let now = Instant::now();
+        let mut slots = self.skin_textures.borrow_mut();
+        if let Some(SkinSlot::Ready(t)) = slots.get(id) {
+            return Some(t.clone());
+        }
+        let (check_at, fetch_at) = match slots.get(id) {
+            Some(SkinSlot::Waiting { check_at, fetch_at }) => (*check_at, *fetch_at),
+            _ => (now, now),
+        };
+        if now < check_at {
+            return None;
+        }
+        if let Some(bytes) = skins::read_skin(id) {
+            let t = tex(&bytes);
+            slots.insert(id.to_string(), SkinSlot::Ready(t.clone()));
+            return Some(t);
+        }
+        let fetch_at = if now >= fetch_at {
+            skins::fetch_skin_in_background(id);
+            now + SKIN_REFETCH
+        } else {
+            fetch_at
+        };
+        slots.insert(id.to_string(), SkinSlot::Waiting { check_at: now + SKIN_RECHECK, fetch_at });
+        None
+    }
 }
 
 /// The window icon from the original's branding PNGs.
@@ -274,4 +330,45 @@ pub fn window_icon() -> Option<macroquad::miniquad::conf::Icon> {
     let medium: [u8; 4096] = load(32)?.try_into().ok()?;
     let big: [u8; 16384] = load(64)?.try_into().ok()?;
     Some(macroquad::miniquad::conf::Icon { small, medium, big })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::bbmodel::texture_bytes;
+    use serde_json::Value;
+
+    fn runner_json() -> Value {
+        let text = embedded::asset(RUNNER_BODY_MODEL).expect("the runner body is embedded");
+        serde_json::from_slice(text).expect("the runner body is JSON")
+    }
+
+    #[test]
+    fn the_runner_body_is_the_mannequin_and_its_atlas_resolves() {
+        let j = runner_json();
+        let find = |name: &str| embedded::asset(&format!("player/{name}")).map(|b| b.to_vec());
+        let (name, png) = texture_bytes(&j, &find).expect("the body names a texture");
+        assert_eq!(name.as_deref(), Some("player_mannequin_atlas.png"));
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n", "the atlas is a PNG");
+        let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
+        let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
+        assert_eq!((width, height), (64, 64));
+        assert!(embedded::asset(RUNNER_BODY_ATLAS).is_some(), "the atlas file is embedded too");
+    }
+
+    #[test]
+    fn the_runner_body_stands_at_player_height() {
+        let j = runner_json();
+        // the top of the visible cubes, in model units (the parser's scale is height / top)
+        let top = j["elements"]
+            .as_array()
+            .expect("elements")
+            .iter()
+            .filter(|e| e["visibility"].as_bool() != Some(false) && e["export"].as_bool() != Some(false))
+            .filter(|e| e["type"].as_str().unwrap_or("cube") == "cube")
+            .map(|e| e["to"][1].as_f64().unwrap_or(0.0) as f32)
+            .fold(f32::MIN, f32::max);
+        let scale = crate::config::PLAYER_HEIGHT / top.max(1.0);
+        assert!((top * scale - crate::config::PLAYER_HEIGHT).abs() < 0.01, "top {} at {}", top * scale, crate::config::PLAYER_HEIGHT);
+    }
 }

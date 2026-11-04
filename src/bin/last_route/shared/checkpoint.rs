@@ -37,6 +37,7 @@ fn from_json(v: &serde_json::Value) -> Option<Checkpoint> {
     let difficulty = match v["difficulty_id"].as_str()? {
         "relaxed" => Difficulty::Relaxed,
         "hard" => Difficulty::Hard,
+        "nightmare" => Difficulty::Nightmare,
         _ => Difficulty::Standard,
     };
     let run_seed = v["run_seed"].as_u64()? as u32;

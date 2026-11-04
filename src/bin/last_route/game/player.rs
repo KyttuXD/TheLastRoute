@@ -6,12 +6,46 @@ use super::meters::Meters;
 use super::Controls;
 use crate::audio::Sounds;
 use crate::config::*;
+use crate::world::facility::LinkKind;
+use crate::world::vertical::stair_surface_y;
 use crate::world::Facility;
 use macroquad::prelude::*;
 
 /// Strobe period bounds for a forced flicker (player_controller_3d.gd 867-870).
 const FLICKER_MIN_PERIOD: f32 = 0.08;
 const FLICKER_MAX_PERIOD: f32 = 0.35;
+
+/// How fast the body's height follows the stair tread under it, per second (an exponential ease).
+const STAIR_FOLLOW_RATE: f32 = 40.0;
+
+/// The walking height of the stair flight under `pos` (vertical.rs `stair_surface_y`), or None off the stairs. Only
+/// the facility's `Stairs` flights count: a sewer ladder is climbed by hand (game/ladder.rs) and is never a stair here.
+pub fn stair_height_at(fac: &Facility, pos: (f32, f32)) -> Option<f32> {
+    fac.stairs
+        .iter()
+        .filter(|s| matches!(s.kind, LinkKind::Stairs))
+        .find_map(|s| stair_surface_y(*s, pos))
+}
+
+/// Whether a body of `PLAYER_RADIUS` centred at (x, y) and standing at `h` fits. Off the stairs this is the facility's
+/// rule at the floor. The flight's wells are holes to that rule, so a body whose centre is on a flight stands on it:
+/// each corner must be on the stair or on a cell that is not a hole, and the walls and props must still clear.
+fn body_fits(fac: &Facility, x: f32, y: f32, h: f32) -> bool {
+    let on_stair = stair_height_at(fac, (x, y)).is_some();
+    if fac.body_fits_at(x, y, PLAYER_RADIUS, if on_stair { h } else { 0.0 }) {
+        return true;
+    }
+    if !on_stair {
+        return false;
+    }
+    let r = PLAYER_RADIUS;
+    [(x, y), (x - r, y - r), (x + r, y - r), (x - r, y + r), (x + r, y + r)]
+        .into_iter()
+        .all(|(px, py)| {
+            stair_height_at(fac, (px, py)).is_some() || !fac.is_hole(px.floor() as i32, py.floor() as i32)
+        })
+        && fac.can_occupy(x as f64, y as f64, r as f64)
+}
 
 pub struct Player {
     pub pos: (f32, f32),
@@ -47,7 +81,8 @@ pub struct Player {
     pub walked: f32,
     /// Admin noclip: the body ignores walls and props (admin_menu.gd).
     pub noclip: bool,
-    /// Walk height of the surface the body stands on: 0.0 on the floor, a deck's height on a catwalk.
+    /// Height of the walking surface under the body: 0.0 on the floor, the tread's height on a stair flight (eased
+    /// toward it in `update_movement`).
     pub height: f32,
     /// Admin run speed: multiplies every movement speed (admin_menu.gd).
     pub speed_scale: f32,
@@ -154,6 +189,7 @@ impl Player {
     pub fn place(&mut self, start: (f32, f32)) {
         self.pos = (start.0, start.1 + 1.0);
         self.feet_y = 0.0;
+        self.height = 0.0;
         self.vy = 0.0;
         self.yaw = 0.0;
         self.pitch = 0.0;
@@ -200,7 +236,7 @@ impl Player {
         };
         vec3(
             self.pos.0,
-            self.feet_y + self.eye_height() + bob,
+            self.feet_y + self.height + self.eye_height() + bob,
             self.pos.1,
         )
     }
@@ -228,11 +264,11 @@ impl Player {
         let start = self.pos;
         for _ in 0..steps {
             let nx = self.pos.0 + dx / steps as f32;
-            if self.noclip || fac.body_fits_at(nx, self.pos.1, PLAYER_RADIUS, self.height) {
+            if self.noclip || body_fits(fac, nx, self.pos.1, self.height) {
                 self.pos.0 = nx;
             }
             let ny = self.pos.1 + dy / steps as f32;
-            if self.noclip || fac.body_fits_at(self.pos.0, ny, PLAYER_RADIUS, self.height) {
+            if self.noclip || body_fits(fac, self.pos.0, ny, self.height) {
                 self.pos.1 = ny;
             }
         }
@@ -285,9 +321,12 @@ impl Player {
         self.crouching = c.crouch;
         let target = if self.crouching { 1.0 } else { 0.0 };
         self.crouch_t += (target - self.crouch_t) * (1.0 - (-14.0 * dt).exp());
-        let wants_sprint = c.sprint && moving && !self.exhausted;
+        let on_stair = stair_height_at(fac, self.pos).is_some();
+        let wants_sprint = c.sprint && moving && !self.exhausted && !on_stair;
         let mut sprinting = false;
-        let speed = if self.crouching {
+        let speed = if on_stair {
+            PLAYER_WALK_SPEED * prof.player_speed
+        } else if self.crouching {
             PLAYER_CROUCH_SPEED * prof.crouch_speed
         } else if wants_sprint && self.stamina > 0.0 {
             sprinting = true;
@@ -358,12 +397,16 @@ impl Player {
         if self.feet_y <= 0.0 {
             self.feet_y = 0.0;
             self.vy = 0.0;
-            if c.jump && !self.crouching && self.stun <= 0.0 {
+            if c.jump && !self.crouching && self.stun <= 0.0 && !on_stair {
                 self.vy = PLAYER_JUMP_VELOCITY;
             }
         }
         self.vy -= PLAYER_GRAVITY * dt;
         self.feet_y = (self.feet_y + self.vy * dt).max(0.0);
+        // The body rises and sinks with the flight under it: the height eases toward the tread it now stands on, and back
+        // to the floor off the stairs, so it never snaps through a tread.
+        let surface = stair_height_at(fac, self.pos).unwrap_or(0.0);
+        self.height += (surface - self.height) * (1.0 - (-STAIR_FOLLOW_RATE * dt).exp());
 
         if moving && self.feet_y <= 0.0 && ground > 0.3 {
             self.bob_phase += dt * ground * 1.9;
@@ -435,5 +478,118 @@ mod tests {
         assert!(!p.flashlight_seized());
         assert!(!p.flashlight_on);
         assert!(!p.beam_lit());
+    }
+
+    use crate::audio::Sounds;
+    use crate::config::{Difficulty, CAMERA_HEIGHT};
+    use crate::content::Content;
+    use crate::game::{Controls, Game};
+    use crate::world::catalog::Catalog;
+    use crate::world::facility::Stair;
+    use crate::world::vertical::stair_surface_y;
+
+    const FRAME: f32 = 1.0 / 60.0;
+
+    /// The first window of a fixed run that has a stair flight, and that flight (an upward one when it has one).
+    fn flight_game() -> (Game, Stair) {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        for n in 0..40 {
+            for level in [0, -1] {
+                let text = format!("ROOM-TEST-{n}");
+                let g = Game::new_infinite_sim(Difficulty::Standard, 7, &text, level, &content, &catalog);
+                let flight = g
+                    .fac
+                    .stairs
+                    .iter()
+                    .copied()
+                    .filter(|s| matches!(s.kind, LinkKind::Stairs))
+                    .max_by_key(|s| s.dir);
+                if let Some(s) = flight {
+                    return (g, s);
+                }
+            }
+        }
+        panic!("no window in the first 40 test rooms has a stair flight");
+    }
+
+    /// A point `along` metres up the flight from its landing's far edge, on the first lane (vertical.rs `at`).
+    fn on_flight(s: Stair, along: f32) -> (f32, f32) {
+        let edge = (s.cell.x + (s.run.0 > 0) as i32, s.cell.y + (s.run.1 > 0) as i32);
+        let side = (s.run.1.abs() as f32, s.run.0.abs() as f32);
+        (
+            edge.0 as f32 + s.run.0 as f32 * along + side.0 * 0.5,
+            edge.1 as f32 + s.run.1 as f32 * along + side.1 * 0.5,
+        )
+    }
+
+    /// A point just behind the landing, off the stair.
+    fn off_stair(s: Stair) -> (f32, f32) {
+        let (cx, cy) = s.cell.center();
+        (cx - s.run.0 as f32, cy - s.run.1 as f32)
+    }
+
+    /// Runs the body for `secs` under `c`, through the same call the game makes each frame.
+    fn run_body(g: &mut Game, secs: f32, c: &Controls) {
+        let prof = g.prof();
+        let sounds = Sounds::default();
+        for _ in 0..(secs / FRAME).round() as i32 {
+            g.p.update_movement(FRAME, c, &prof, &g.fac, &mut g.meters, &sounds);
+        }
+    }
+
+    #[test]
+    fn stepping_onto_a_flight_raises_the_body_by_the_tread_heights() {
+        let (mut g, s) = flight_game();
+        // from the landing, walk onto the flight: the forward of the yaw is the flight's run
+        g.p.pos = s.cell.center();
+        g.p.yaw = (-(s.run.0 as f32)).atan2(-(s.run.1 as f32));
+        let start = g.p.pos;
+        run_body(&mut g, 0.5, &Controls { fwd: 1.0, ..Default::default() });
+        let moved = ((g.p.pos.0 - start.0).powi(2) + (g.p.pos.1 - start.1).powi(2)).sqrt();
+        assert!(moved > 1.0, "the body walked onto the flight: {moved} m");
+        let surface = stair_surface_y(s, g.p.pos).expect("the body is on the flight");
+        assert!(stair_height_at(&g.fac, g.p.pos).is_some());
+        assert!((g.p.height - surface).abs() < 0.1, "height {} follows the tread {surface}", g.p.height);
+        assert!(g.p.height * s.dir as f32 > 0.2, "the body rose (or sank) with the flight: {}", g.p.height);
+    }
+
+    #[test]
+    fn the_eye_follows_the_body_up_the_steps_and_the_pitch_is_unchanged() {
+        let (mut g, s) = flight_game();
+        g.p.pos = on_flight(s, 0.5);
+        g.p.pitch = 0.3;
+        run_body(&mut g, 2.0, &Controls::default());
+        let surface = stair_surface_y(s, g.p.pos).unwrap();
+        let eye = g.p.eye();
+        assert!(
+            (eye.y - (CAMERA_HEIGHT + surface)).abs() < 1e-3,
+            "eye {} is the standing eye on the tread {surface}",
+            eye.y
+        );
+        assert_eq!(g.p.pitch, 0.3);
+    }
+
+    #[test]
+    fn jump_is_refused_on_a_stair_and_still_works_on_the_floor() {
+        let (mut g, s) = flight_game();
+        let hop = Controls { jump: true, ..Default::default() };
+        g.p.pos = on_flight(s, 0.5);
+        run_body(&mut g, 0.1, &hop);
+        assert_eq!(g.p.feet_y, 0.0, "no hop on a stair");
+        g.p.pos = off_stair(s);
+        run_body(&mut g, FRAME, &hop);
+        assert!(g.p.feet_y > 0.0, "the same press hops on the floor");
+    }
+
+    #[test]
+    fn leaving_the_stair_returns_the_height_to_zero() {
+        let (mut g, s) = flight_game();
+        g.p.pos = on_flight(s, 0.5);
+        run_body(&mut g, 2.0, &Controls::default());
+        assert!(g.p.height.abs() > 0.1, "up on the flight: {}", g.p.height);
+        g.p.pos = off_stair(s);
+        run_body(&mut g, 2.0, &Controls::default());
+        assert!(g.p.height.abs() < 1e-3, "back on the floor: {}", g.p.height);
     }
 }

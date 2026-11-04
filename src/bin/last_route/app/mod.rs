@@ -13,7 +13,7 @@
 //!   LR_SHOT_MAP=1           with a run: the full map
 //!   LR_SHOT_DEATH=...       with a run: moment | card (a capture by the floor's hunter)
 
-pub use crate::shared::{assets, checkpoint, paths};
+pub use crate::shared::{assets, checkpoint, paths, skins};
 pub mod log;
 pub mod pacing;
 pub mod perf;
@@ -90,8 +90,14 @@ pub fn render_play(g: &Game, a: &Assets, mat: &Material, t: &Targets) {
 /// [`render_play`] with the other runners of an open room, drawn into the 3D view on this floor.
 pub fn render_play_with(g: &Game, a: &Assets, mat: &Material, t: &Targets, remotes: &[RemoteView]) {
     scene::draw_scene(g, a, mat, &t.scene);
-    world_sync::draw_remotes(g, a, mat, &t.scene, remotes);
-    viewmodel::draw_viewmodel(g, a, mat, &t.view);
+    {
+        let _t = perf::section("remote players");
+        world_sync::draw_remotes(g, a, mat, &t.scene, remotes);
+    }
+    {
+        let _t = perf::section("viewmodel");
+        viewmodel::draw_viewmodel(g, a, mat, &t.view);
+    }
     set_default_camera();
     clear_background(BLACK);
     let p = DrawTextureParams {
@@ -486,7 +492,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
     let mut loading: Option<Loading> = None;
     let mut frame = 0u32;
     let mut audio_volumes = (f32::NAN, f32::NAN, f32::NAN);
-    // the admin tools: the signed-in admin's account (KYTTU) only, like Build.tools_enabled
+    // the admin tools: the signed-in admin's account (KYTTU or AYTTU) only, like Build.tools_enabled
     let mut admin = crate::ui::admin::Admin::new();
     let mut hub: Option<crate::ui::admin::HubPanel> = None;
     let (mut fps_t, mut fps_n, mut fps) = (0.0f32, 0, 60);
@@ -496,6 +502,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
     // the room: the open session (host or guest), the request still in flight, and the directory it talks to
     // (`--backend=` applies here like to the menus; release builds use the primary server)
     let net_cfg: BackendConfig = BackendConfig::from_args(std::env::args().skip(1), cfg!(debug_assertions)).0;
+    // runner skins are fetched from the same website the account uses (never when offline)
+    skins::set_backend_base(if net_cfg.offline { "" } else { &net_cfg.base_url });
     // the account session: the title start checks the saved one once, and each frame takes the answers below
     let mut backend = Backend::new(net_cfg.clone(), &crate::net::store::default_dir());
     if backend.account.session_token.is_empty() && !settings.username.is_empty() {
@@ -507,6 +515,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
         }
     }
     backend.restore_session();
+    // the skin last sent to the website (see the upload check in the frame loop)
+    let mut uploaded_skin_seen = String::new();
     let mut net: Option<NetSession> = None;
     let mut net_pending: Option<(NetIntent, Pending<NetSession>)> = None;
     if screenshot.is_some() {
@@ -573,6 +583,12 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
         // read now, saved at the end of the frame, after everything is drawn
         let shot_key = is_key_pressed(KeyCode::F2);
         let s = style::ui_scale();
+
+        // a chosen skin goes to the website once the account is signed in (in the background; once per id)
+        if backend.signed_in() && !net_cfg.offline && settings.skin != uploaded_skin_seen {
+            uploaded_skin_seen = settings.skin.clone();
+            skins::upload_in_background(net_cfg.clone(), backend.account.session_token.clone(), settings.skin.clone());
+        }
 
         // the account answers: the profile name is set only when the server confirms it
         for event in backend.update() {
@@ -649,6 +665,14 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
             Some(n) => n.tick(sample),
             None => Vec::new(),
         };
+        // the room's difficulty: the host sets it and sends it; a guest takes the host's and never sends its own
+        if let Some(n) = net.as_mut() {
+            if n.is_host() {
+                n.set_room_difficulty(diff);
+            } else {
+                diff = world_sync::difficulty_from_name(n.room_difficulty());
+            }
+        }
         let mut room_closed: Option<String> = None;
         for event in room_events {
             match event {
@@ -686,7 +710,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
                     // everyone (ROUTE RESTARTING), then a new run starts on the new seed that the guests enter
                     let current = playing.as_ref().map_or_else(|| room.clone(), |g| g.room_text.clone());
                     room = RouteCommand::restart_seed(same_seed, &seed, &current, &route::new_room_text());
-                    if let Some(d) = difficulty {
+                    // a guest's restart never changes the room's difficulty (only the host's does)
+                    if let Some(d) = world_sync::commanded_difficulty(ui.room_mode == menus::RoomMode::Guest, difficulty) {
                         diff = d;
                     }
                     if let Some(n) = net.as_mut().filter(|n| n.is_host()) {
@@ -1191,9 +1216,6 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
                         ui.account_back = from;
                     }
                     ui.go(next);
-                    if next == Screen::Lobby && from == Screen::Account {
-                        ui.focus = menus::lobby_focus(ui.room_mode, menus::LobbyButton::Account);
-                    }
                     if next == Screen::Title {
                         // focus goes back to the button that opened the dialog
                         let who = settings.username.as_str();
@@ -1223,7 +1245,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
                     if net.is_none() && net_pending.is_none() {
                         flash(&mut ui, "OPENING A ROOM ON THE SERVER...");
                         let name = world_sync::clean_name(&settings.username);
-                        let skin = world_sync::clean_skin(&settings.skin);
+                        let skin = skins::chosen_skin(&settings.skin);
                         net_pending = Some((NetIntent::Host, world_sync::host_room(net_cfg.clone(), route::new_room_text(), name, skin)));
                     }
                 }
@@ -1231,8 +1253,10 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
                     if net.is_none() && net_pending.is_none() {
                         ui.join_status = format!("JOINING ROOM {code}...");
                         let name = world_sync::clean_name(&settings.username);
-                        let skin = world_sync::clean_skin(&settings.skin);
-                        net_pending = Some((NetIntent::Join, world_sync::join_room(net_cfg.clone(), code, name, skin)));
+                        let skin = skins::chosen_skin(&settings.skin);
+                        // an owner's miss reserves the typed code and hosts it (world_sync::join_room); everyone else joins as a guest
+                        let owner = backend.signed_in() && crate::ui::admin::is_admin_owner(&backend.account.username);
+                        net_pending = Some((NetIntent::Join, world_sync::join_room(net_cfg.clone(), code, name, skin, backend.account.session_token.clone(), owner)));
                     }
                 }
                 Action::ContinueRun => {

@@ -7,7 +7,7 @@ use super::settings_panel::tab_bar;
 use super::style::*;
 use crate::app::assets::Assets;
 use crate::app::checkpoint::Checkpoint;
-use crate::config::difficulty::ALL;
+use crate::config::difficulty::LOBBY;
 use crate::config::Difficulty;
 use crate::content::hunters::HunterDef;
 use crate::content::Content;
@@ -81,7 +81,7 @@ pub fn title_entries(username: &str) -> Vec<TitleEntry> {
         TitleEntry::Admin,
         TitleEntry::Quit,
     ];
-    if !username.eq_ignore_ascii_case("KYTTU") {
+    if !crate::ui::admin::is_admin_owner(username) {
         v.retain(|e| *e != TitleEntry::Admin);
     }
     v
@@ -598,6 +598,14 @@ pub fn draw_join(a: &Assets, ui: &mut Ui, username: &str) -> Action {
         if ui.join_net {
             return match crate::net::world_sync::parse_join_code(&ui.join_code) {
                 Some(code) => Action::JoinCode(code),
+                // an owner's invalid or empty code becomes a valid code (api::admin_code_from_input) and is hosted
+                None if crate::ui::admin::is_admin_owner(username) => {
+                    let alpha = crate::net::api::CODE_ALPHABET.as_bytes();
+                    let code = crate::net::api::admin_code_from_input(&ui.join_code, || {
+                        alpha[crate::net::random_below(alpha.len())] as char
+                    });
+                    Action::JoinCode(code)
+                }
                 None => {
                     ui.join_status = "ENTER A VALID FIVE-CHARACTER ROOM CODE".into();
                     Action::None
@@ -1115,12 +1123,23 @@ pub fn difficulty_label(d: Difficulty) -> &'static str {
         Difficulty::Relaxed => "RELAXED",
         Difficulty::Standard => "NORMAL",
         Difficulty::Hard => "HARD",
+        Difficulty::Nightmare => "NIGHTMARE",
     }
 }
 
 /// Only the host (a solo runner is its own host) sets the route's difficulty; a guest waits for the host's.
 pub fn difficulty_editable(mode: RoomMode) -> bool {
     mode != RoomMode::Guest
+}
+
+/// The lobby's difficulty row title: a guest reads the host's difficulty name here, the host and a solo runner get the
+/// plain title.
+pub fn difficulty_row_title(mode: RoomMode, current: Difficulty) -> String {
+    if difficulty_editable(mode) {
+        "DIFFICULTY".to_string()
+    } else {
+        format!("DIFFICULTY // HOST SETS {}", difficulty_label(current))
+    }
 }
 
 /// The difficulty after a click on `picked`: a guest keeps the host's difficulty.
@@ -1139,8 +1158,6 @@ pub enum LobbyButton {
     Enter,
     /// Solo only: resume the one saved run.
     ContinueRun,
-    /// REGISTER / SIGN IN, or ACCOUNT once a name is set. Opens the account screen, which returns here.
-    Account,
     /// The hunter dossier.
     CharacterFiles,
     /// Solo: BACK TO LAST ROUTE. A host or guest: LEAVE ROOM.
@@ -1153,7 +1170,6 @@ pub fn lobby_buttons(mode: RoomMode) -> Vec<LobbyButton> {
     if mode == RoomMode::Solo {
         v.push(LobbyButton::ContinueRun);
     }
-    v.push(LobbyButton::Account);
     v.push(LobbyButton::CharacterFiles);
     v.push(LobbyButton::Leave);
     v
@@ -1165,13 +1181,11 @@ pub fn lobby_focus(mode: RoomMode, button: LobbyButton) -> usize {
 }
 
 /// The label of an actions-row button in this room.
-pub fn lobby_label(button: LobbyButton, mode: RoomMode, signed_in: bool) -> &'static str {
+pub fn lobby_label(button: LobbyButton, mode: RoomMode) -> &'static str {
     match button {
         LobbyButton::Enter if mode == RoomMode::Guest => "WAITING FOR HOST",
         LobbyButton::Enter => "ENTER ROUTE",
         LobbyButton::ContinueRun => "CONTINUE RUN",
-        LobbyButton::Account if signed_in => "ACCOUNT",
-        LobbyButton::Account => "REGISTER / SIGN IN",
         LobbyButton::CharacterFiles => "CHARACTER FILES",
         LobbyButton::Leave if mode == RoomMode::Solo => "BACK TO LAST ROUTE",
         LobbyButton::Leave => "LEAVE ROOM",
@@ -1270,7 +1284,6 @@ pub fn draw_lobby(
     let mode = ui.room_mode;
     let solo = mode == RoomMode::Solo;
     let guest = mode == RoomMode::Guest;
-    let signed_in = !username.is_empty();
     let btn_h = button_min(a, "X", 7.0, false).y.max(row);
     let panel = Rect::new(v.x * 0.5 - 190.0, 10.0, 380.0, v.y - 20.0);
     panel_box(panel, p.panel, p.panel_edge);
@@ -1418,17 +1431,19 @@ pub fn draw_lobby(
         );
     }
     cy += l7 + 3.0;
-    label(a, F::Body, "DIFFICULTY", cx, cy, 6.0, p.muted);
+    // a guest sees the host's difficulty as a locked row; only the host (or a solo runner) can pick another
+    label(a, F::Body, &difficulty_row_title(mode, *diff), cx, cy, 6.0, p.muted);
     let by = cy + l6 + 2.0;
     let mut bx = cx;
-    for d in ALL.iter().copied() {
+    for d in LOBBY.iter().copied() {
         let bw = button_min(a, difficulty_label(d), 7.0, false).x;
         let kind = if d == *diff {
             Kind::Selected
         } else {
             Kind::Secondary
         };
-        if button(a, Rect::new(bx, by, bw, btn_h), difficulty_label(d), 7.0, kind, plain())
+        let st = BtnState { disabled: !difficulty_editable(mode), ..plain() };
+        if button(a, Rect::new(bx, by, bw, btn_h), difficulty_label(d), 7.0, kind, st)
             && interactive
         {
             *diff = pick_difficulty(mode, *diff, d);
@@ -1440,11 +1455,12 @@ pub fn draw_lobby(
         && (is_key_pressed(KeyCode::Left) || is_key_pressed(KeyCode::Right))
         && (is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift))
     {
-        let i = ALL.iter().position(|d| d == diff).unwrap_or(1);
-        *diff = ALL[if is_key_pressed(KeyCode::Left) {
-            (i + 2) % 3
+        let n = LOBBY.len();
+        let i = LOBBY.iter().position(|d| d == diff).unwrap_or(1);
+        *diff = LOBBY[if is_key_pressed(KeyCode::Left) {
+            (i + n - 1) % n
         } else {
-            (i + 1) % 3
+            (i + 1) % n
         }];
     }
     label(a, F::Body, diff.blurb(), cx, by + btn_h + 2.0, 6.0, p.muted);
@@ -1543,7 +1559,7 @@ pub fn draw_lobby(
         } else {
             (7.0, Kind::Secondary)
         };
-        let text = lobby_label(*b, mode, signed_in);
+        let text = lobby_label(*b, mode);
         let locked = lobby_locked(*b, mode, save.is_some());
         let bw = button_min(a, text, fs, false).x;
         if ax + bw > x + w && ax > x {
@@ -1560,7 +1576,6 @@ pub fn draw_lobby(
             out = match b {
                 LobbyButton::Enter => Action::StartRun,
                 LobbyButton::ContinueRun => Action::ContinueRun,
-                LobbyButton::Account => Action::Go(Screen::Account),
                 LobbyButton::CharacterFiles => Action::Go(Screen::Dossier),
                 LobbyButton::Leave => Action::Go(Screen::Title),
             };
@@ -2158,7 +2173,7 @@ mod tests {
 
     #[test]
     fn title_buttons_follow_the_web_order_for_the_admin_account() {
-        for name in ["KYTTU", "kyttu"] {
+        for name in ["KYTTU", "kyttu", "AYTTU", "ayttu"] {
             assert_eq!(
                 title_entries(name),
                 vec![
@@ -2201,6 +2216,8 @@ mod tests {
     #[test]
     fn admin_is_still_a_title_entry_for_the_admin_account_only() {
         assert!(title_entries("KYTTU").contains(&TitleEntry::Admin));
+        assert!(title_entries("AYTTU").contains(&TitleEntry::Admin));
+        assert!(title_entries("ayttu").contains(&TitleEntry::Admin));
         assert!(!title_entries("ALICE").contains(&TitleEntry::Admin));
     }
 
@@ -2485,21 +2502,20 @@ mod tests {
 mod lobby_tests {
     use super::*;
 
-    fn labels(mode: RoomMode, signed_in: bool) -> Vec<&'static str> {
+    fn labels(mode: RoomMode) -> Vec<&'static str> {
         lobby_buttons(mode)
             .into_iter()
-            .map(|b| lobby_label(b, mode, signed_in))
+            .map(|b| lobby_label(b, mode))
             .collect()
     }
 
     #[test]
     fn solo_actions_row_order() {
         assert_eq!(
-            labels(RoomMode::Solo, false),
+            labels(RoomMode::Solo),
             vec![
                 "ENTER ROUTE",
                 "CONTINUE RUN",
-                "REGISTER / SIGN IN",
                 "CHARACTER FILES",
                 "BACK TO LAST ROUTE",
             ]
@@ -2509,25 +2525,25 @@ mod lobby_tests {
     #[test]
     fn host_actions_row_order() {
         assert_eq!(
-            labels(RoomMode::Host, false),
-            vec!["ENTER ROUTE", "REGISTER / SIGN IN", "CHARACTER FILES", "LEAVE ROOM"]
+            labels(RoomMode::Host),
+            vec!["ENTER ROUTE", "CHARACTER FILES", "LEAVE ROOM"]
         );
     }
 
     #[test]
     fn guest_actions_row_order() {
         assert_eq!(
-            labels(RoomMode::Guest, false),
-            vec!["WAITING FOR HOST", "REGISTER / SIGN IN", "CHARACTER FILES", "LEAVE ROOM"]
+            labels(RoomMode::Guest),
+            vec!["WAITING FOR HOST", "CHARACTER FILES", "LEAVE ROOM"]
         );
     }
 
     #[test]
-    fn account_button_reads_account_once_signed_in() {
+    fn the_lobby_has_no_account_button() {
         for mode in [RoomMode::Solo, RoomMode::Host, RoomMode::Guest] {
-            let row = labels(mode, true);
-            assert!(row.contains(&"ACCOUNT"), "{mode:?}");
-            assert!(!row.contains(&"REGISTER / SIGN IN"), "{mode:?}");
+            {
+                assert!(!labels(mode).iter().any(|l| l.contains("ACCOUNT") || l.contains("SIGN IN")), "{mode:?}");
+            }
         }
     }
 
@@ -2550,11 +2566,9 @@ mod lobby_tests {
 
     #[test]
     fn focus_finds_each_button_in_its_mode() {
-        assert_eq!(lobby_focus(RoomMode::Solo, LobbyButton::Account), 2);
-        assert_eq!(lobby_focus(RoomMode::Solo, LobbyButton::CharacterFiles), 3);
-        assert_eq!(lobby_focus(RoomMode::Host, LobbyButton::Account), 1);
-        assert_eq!(lobby_focus(RoomMode::Host, LobbyButton::CharacterFiles), 2);
-        assert_eq!(lobby_focus(RoomMode::Guest, LobbyButton::Leave), 3);
+        assert_eq!(lobby_focus(RoomMode::Solo, LobbyButton::CharacterFiles), 2);
+        assert_eq!(lobby_focus(RoomMode::Host, LobbyButton::CharacterFiles), 1);
+        assert_eq!(lobby_focus(RoomMode::Guest, LobbyButton::Leave), 2);
     }
 
     #[test]
@@ -2568,9 +2582,20 @@ mod lobby_tests {
     }
 
     #[test]
-    fn difficulty_row_is_relaxed_normal_hard() {
-        let shown: Vec<&str> = ALL.iter().map(|d| difficulty_label(*d)).collect();
-        assert_eq!(shown, vec!["RELAXED", "NORMAL", "HARD"]);
+    fn difficulty_row_is_relaxed_normal_hard_nightmare() {
+        let shown: Vec<&str> = LOBBY.iter().map(|d| difficulty_label(*d)).collect();
+        assert_eq!(shown, vec!["RELAXED", "NORMAL", "HARD", "NIGHTMARE"]);
+    }
+
+    #[test]
+    fn nightmare_is_selectable_in_the_lobby() {
+        assert!(LOBBY.contains(&Difficulty::Nightmare));
+        assert_eq!(difficulty_label(Difficulty::Nightmare), "NIGHTMARE");
+        assert_eq!(
+            pick_difficulty(RoomMode::Host, Difficulty::Standard, Difficulty::Nightmare),
+            Difficulty::Nightmare
+        );
+        assert_eq!(difficulty_row_title(RoomMode::Solo, Difficulty::Nightmare), "DIFFICULTY");
     }
 
     #[test]
@@ -2584,6 +2609,14 @@ mod lobby_tests {
             pick_difficulty(RoomMode::Guest, Difficulty::Relaxed, Difficulty::Relaxed),
             Difficulty::Relaxed
         );
+    }
+
+    #[test]
+    fn guest_lobby_shows_the_hosts_difficulty_locked() {
+        assert_eq!(difficulty_row_title(RoomMode::Guest, Difficulty::Hard), "DIFFICULTY // HOST SETS HARD");
+        assert_eq!(difficulty_row_title(RoomMode::Guest, Difficulty::Standard), "DIFFICULTY // HOST SETS NORMAL");
+        assert_eq!(difficulty_row_title(RoomMode::Host, Difficulty::Hard), "DIFFICULTY");
+        assert_eq!(difficulty_row_title(RoomMode::Solo, Difficulty::Relaxed), "DIFFICULTY");
     }
 
     #[test]

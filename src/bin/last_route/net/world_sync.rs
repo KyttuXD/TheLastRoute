@@ -19,7 +19,7 @@ use super::protocol::{self, Message};
 use super::relay::{RelayEvent, RelayLink, Role};
 use super::session::{CoopSession, SessionEvent, HOST_PEER_ID};
 use super::{store, NetError, Pending};
-use crate::config::difficulty::ALL;
+use crate::config::difficulty::{ALL, LOBBY};
 use crate::config::Difficulty;
 use crate::game::player::Player;
 use crate::game::Game;
@@ -355,6 +355,9 @@ pub struct NetSession {
     /// The room's mod pack ids: host, the ones it was given ([`NetSession::set_room_mods`]); guest, the ones the host
     /// sent. Sent to each runner with the room.
     mods: Vec<String>,
+    /// The room's difficulty name: host, the one it sets ([`NetSession::set_room_difficulty`]); guest, the host's, from
+    /// the room and the route start. A guest never sets it.
+    difficulty: String,
     /// The skin id of each other runner, by peer id, from its wire profile.
     skins: HashMap<u32, String>,
     /// The name of each other runner, by peer id, from its wire profile (a guest keeps the others' names too).
@@ -418,23 +421,72 @@ fn open_host(
     Ok(session)
 }
 
-/// JOIN by code: the directory lookup, the build check, then the relay. Blocking, so polled like [`host_room`].
-pub fn join_room(cfg: BackendConfig, code: String, name: String, skin: String) -> Pending<NetSession> {
+/// JOIN by code: the directory lookup, then the join. An owner's lookup that finds nothing (404) reserves the typed
+/// code and hosts it ([`reserve_and_host`]); every other lookup, a guest's miss and a live code included, takes the
+/// guest join. Blocking, so polled like [`host_room`].
+pub fn join_room(cfg: BackendConfig, code: String, name: String, skin: String, session_token: String, is_admin: bool) -> Pending<NetSession> {
     Pending::spawn(move || {
         if cfg.offline {
             return Err(NetError::Offline);
         }
-        let room = api::lookup_room(&cfg, &code)?;
-        if room.transport != "relay" || room.address.is_empty() {
-            return Err(NetError::Refused("THAT ROOM CANNOT BE JOINED FROM THIS BUILD".into()));
+        match lookup_outcome(api::lookup_room(&cfg, &code), is_admin, &session_token)? {
+            JoinStep::Found(room) => join_found(cfg, code, room, name, skin),
+            JoinStep::Reserve => reserve_and_host(cfg, code, name, skin, session_token),
         }
-        let refused = api::protocol_mismatch(&room.protocol, &protocol::fingerprint());
-        if !refused.is_empty() {
-            return Err(NetError::Refused(refused));
-        }
-        let link = RelayLink::guest(&code, &room.address, room.port, "").map_err(|e| NetError::Transport(e.to_string()))?;
-        Ok(NetSession::new(cfg, code, Role::Guest, CoopSession::new(link), String::new(), String::new(), name, skin))
     })
+}
+
+/// What a JOIN ROOM does with its directory lookup.
+#[derive(Debug)]
+enum JoinStep {
+    /// The code is live: join the room the directory returned.
+    Found(api::RoomEndpoint),
+    /// An owner's miss: reserve the typed code for her and host it.
+    Reserve,
+}
+
+/// The step for a lookup result: only an owner's own not-found lookup reserves; a guest's miss and any other failure
+/// are returned as they are (`ROOM NOT FOUND` for a guest).
+fn lookup_outcome(lookup: Result<api::RoomEndpoint, NetError>, is_admin: bool, session_token: &str) -> Result<JoinStep, NetError> {
+    match lookup {
+        Ok(room) => Ok(JoinStep::Found(room)),
+        Err(miss) if api::admin_may_reserve_on_miss(is_admin, session_token, &miss) => Ok(JoinStep::Reserve),
+        Err(e) => Err(e),
+    }
+}
+
+/// The guest join to a live room: it must be on the relay and run this build's protocol, then the relay joins.
+fn join_found(cfg: BackendConfig, code: String, room: api::RoomEndpoint, name: String, skin: String) -> Result<NetSession, NetError> {
+    if room.transport != "relay" || room.address.is_empty() {
+        return Err(NetError::Refused("THAT ROOM CANNOT BE JOINED FROM THIS BUILD".into()));
+    }
+    let refused = api::protocol_mismatch(&room.protocol, &protocol::fingerprint());
+    if !refused.is_empty() {
+        return Err(NetError::Refused(refused));
+    }
+    let link = RelayLink::guest(&code, &room.address, room.port, "").map_err(|e| NetError::Transport(e.to_string()))?;
+    Ok(NetSession::new(cfg, code, Role::Guest, CoopSession::new(link), String::new(), String::new(), name, skin))
+}
+
+/// An owner's miss: reserve the typed code for her session, then register and open it as the host (the same open as
+/// [`host_room`]). A code someone started hosting between the lookup and the reserve joins that live room instead.
+fn reserve_and_host(cfg: BackendConfig, code: String, name: String, skin: String, session_token: String) -> Result<NetSession, NetError> {
+    match api::admin_reserve_room(&cfg, &code, &session_token) {
+        Ok(()) => {}
+        Err(NetError::Http { code: c, .. }) if c == "ROOM_ALREADY_HOSTED" => {
+            let room = api::lookup_room(&cfg, &code)?;
+            return join_found(cfg, code, room, name, skin);
+        }
+        Err(e) => return Err(e),
+    }
+    let request = RegisterRoom {
+        code: code.clone(),
+        device_id: store::device_id(&store::default_dir()),
+        session_token,
+        ..RegisterRoom::default()
+    };
+    let reg = api::register_room(&cfg, &request)?;
+    open_host(cfg, code, crate::world::route::new_room_text(), name, skin, reg)
 }
 
 impl NetSession {
@@ -462,6 +514,7 @@ impl NetSession {
             players: Vec::new(),
             skin,
             mods: Vec::new(),
+            difficulty: Difficulty::Standard.name().to_string(),
             skins: HashMap::new(),
             names: HashMap::new(),
             guests: HashMap::new(),
@@ -497,6 +550,20 @@ impl NetSession {
     /// The room's mod pack ids (host: the ones it was given; guest: the ones the host sent).
     pub fn room_mods(&self) -> &[String] {
         &self.mods
+    }
+
+    /// Host: the room's difficulty, sent to every guest with the room. A change goes out at once, so a guest's lobby
+    /// shows it. A guest's call does nothing: only the host sets the room's difficulty.
+    pub fn set_room_difficulty(&mut self, difficulty: Difficulty) {
+        if self.is_host() && self.difficulty != difficulty.name() {
+            self.difficulty = difficulty.name().to_string();
+            self.send_room_and_roster();
+        }
+    }
+
+    /// The room's difficulty name (host: the one it set; guest: the host's). Read it with [`difficulty_from_name`].
+    pub fn room_difficulty(&self) -> &str {
+        &self.difficulty
     }
 
     /// The other runners for the lobby roster. Host: the guests that have registered, in the order they joined
@@ -604,6 +671,7 @@ impl NetSession {
         rest.insert("host".into(), Value::String(self.name.clone()));
         let players: Vec<Value> = self.guest_names().into_iter().map(Value::String).collect();
         rest.insert("players".into(), Value::Array(players));
+        rest.insert("difficulty".into(), Value::String(self.difficulty.clone()));
         let room = Message::Room { code: self.code.clone(), seed: self.room_seed.clone(), mode: 0, scale: 0, rest };
         let packs = packs_message(&self.mods);
         for peer in self.coop.peers() {
@@ -835,6 +903,9 @@ impl NetSession {
                     .and_then(Value::as_array)
                     .map(|names| names.iter().filter_map(|n| n.as_str().map(str::to_string)).collect())
                     .unwrap_or_default();
+                if let Some(d) = rest.get("difficulty").and_then(Value::as_str) {
+                    self.difficulty = difficulty_from_name(d).name().to_string();
+                }
                 out.push(NetEvent::Seed(seed));
             }
             Message::Packs { packs } if !self.is_host() => {
@@ -854,6 +925,7 @@ impl NetSession {
             Message::End { reason } if !self.is_host() => out.push(NetEvent::RouteEnded(reason)),
             Message::Start { seed, rest, .. } if !self.is_host() => {
                 let difficulty = rest.get("difficulty").and_then(Value::as_str).unwrap_or("STANDARD").to_string();
+                self.difficulty = difficulty_from_name(&difficulty).name().to_string();
                 out.push(NetEvent::Start { seed, difficulty });
             }
             Message::PeerPlace { peer_id, packet } if !self.is_host() => {
@@ -967,9 +1039,18 @@ pub fn clean_mod_ids(ids: &[String]) -> Vec<String> {
     kept
 }
 
+/// True for a wire skin id: the 64 lowercase hex characters of a SHA-256 (see `shared::skins::chosen_skin`).
+pub fn is_skin_hash(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// A skin id as the wire and the settings keep it: letters, digits and underscore, upper-cased, at most 24
 /// characters. Empty becomes DEFAULT.
 pub fn clean_skin(text: &str) -> String {
+    // a wire id (the SHA-256 of a skin PNG) is kept as it is
+    if is_skin_hash(text) {
+        return text.to_string();
+    }
     let kept: String = text.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(MAX_SKIN).collect();
     let id = kept.to_ascii_uppercase();
     if id.is_empty() {
@@ -1011,7 +1092,17 @@ pub fn room_text_for_code(code: &str, fresh: &str) -> String {
 
 /// A difficulty by its name as `Difficulty::name` writes it; anything unknown is STANDARD.
 pub fn difficulty_from_name(name: &str) -> Difficulty {
-    ALL.iter().copied().find(|d| d.name() == name).unwrap_or(Difficulty::Standard)
+    LOBBY.iter().copied().find(|d| d.name() == name).unwrap_or(Difficulty::Standard)
+}
+
+/// The difficulty a route command may set. Only a host (or solo) runner's command does: a guest's never changes the
+/// run's difficulty, so the guest keeps the host's (Godot `room_state.gd` sets it on the host only).
+pub fn commanded_difficulty(guest: bool, requested: Option<Difficulty>) -> Option<Difficulty> {
+    if guest {
+        None
+    } else {
+        requested
+    }
 }
 
 /// The figure colour of a runner: its skin's palette by peer id. An id no skin has is drawn as DEFAULT.
@@ -1120,11 +1211,35 @@ mod tests {
     }
 
     #[test]
+    fn nightmare_survives_the_room_wire_round_trip() {
+        let wire = Difficulty::Nightmare.name();
+        assert_eq!(wire, "NIGHTMARE");
+        assert!(difficulty_from_name(wire) == Difficulty::Nightmare);
+        assert!(difficulty_from_name(Difficulty::Standard.name()) == Difficulty::Standard);
+        assert!(difficulty_from_name(Difficulty::Hard.name()) == Difficulty::Hard);
+    }
+
+    #[test]
+    fn guest_command_difficulty_is_ignored_and_host_command_difficulty_applies() {
+        // a guest's restart or start carries no difficulty of its own: the host's stays
+        assert_eq!(commanded_difficulty(true, Some(Difficulty::Hard)), None);
+        assert_eq!(commanded_difficulty(true, Some(Difficulty::Relaxed)), None);
+        assert_eq!(commanded_difficulty(true, None), None);
+        // the host (and a solo runner) sets it
+        assert_eq!(commanded_difficulty(false, Some(Difficulty::Hard)), Some(Difficulty::Hard));
+        assert_eq!(commanded_difficulty(false, None), None);
+    }
+
+    #[test]
     fn skin_ids_are_cleaned_and_unknown_skins_draw_as_default() {
         assert_eq!(clean_skin(""), SKIN_DEFAULT);
         assert_eq!(clean_skin("  ??  "), SKIN_DEFAULT);
         assert_eq!(clean_skin("night-owl!"), "NIGHTOWL");
         assert_eq!(clean_skin("abcdefghijklmnopqrstuvwxyz"), "ABCDEFGHIJKLMNOPQRSTUVWX");
+        let hash = "a".repeat(63) + "9";
+        assert!(is_skin_hash(&hash));
+        assert_eq!(clean_skin(&hash), hash, "a wire id survives cleaning");
+        assert!(!is_skin_hash(&hash.to_uppercase()));
         for peer in 0..8 {
             assert_eq!(skin_colour("NO_SUCH_SKIN", peer), skin_colour(SKIN_DEFAULT, peer));
         }
@@ -1307,9 +1422,9 @@ mod tests {
         let code = host.code.clone();
         assert!(api::valid_room_code(&code), "{code}");
         host.start_run(&route, "STANDARD");
-        let mut guest = join_room(cfg.clone(), code.clone(), "GUEST".into(), SKIN_DEFAULT.into()).wait().expect("the guest joins by code");
+        let mut guest = join_room(cfg.clone(), code.clone(), "GUEST".into(), SKIN_DEFAULT.into(), String::new(), false).wait().expect("the guest joins by code");
         assert!(!guest.is_host());
-        let unknown = join_room(cfg.clone(), "AAAAA".into(), "X".into(), SKIN_DEFAULT.into()).wait().err().and_then(|e| e.status());
+        let unknown = join_room(cfg.clone(), "AAAAA".into(), "X".into(), SKIN_DEFAULT.into(), String::new(), false).wait().err().and_then(|e| e.status());
         assert_eq!(unknown, Some(404), "an unknown code is refused by the directory");
 
         let (host_sample, guest_sample) = (sample(0, 3.0, -2.0), sample(0, 7.5, 1.25));
@@ -1332,6 +1447,38 @@ mod tests {
         assert!(guest.guest_names().iter().any(|n| n == "HOST"), "the guest lists the host: {:?}", guest.guest_names());
         guest.leave();
         host.leave();
+    }
+}
+
+#[cfg(test)]
+mod admin_join_tests {
+    use super::*;
+
+    fn not_found() -> NetError {
+        NetError::Http { status: 404, code: String::new(), error: "ROOM NOT FOUND".into(), body: Value::Null }
+    }
+
+    #[test]
+    fn an_owners_miss_reserves_the_typed_code() {
+        assert!(matches!(lookup_outcome(Err(not_found()), true, "tok"), Ok(JoinStep::Reserve)));
+    }
+
+    #[test]
+    fn a_guests_miss_is_not_reserved() {
+        assert_eq!(lookup_outcome(Err(not_found()), false, "tok").err().and_then(|e| e.status()), Some(404));
+        assert_eq!(lookup_outcome(Err(not_found()), true, "").err().and_then(|e| e.status()), Some(404), "no session, no reserve");
+    }
+
+    #[test]
+    fn a_live_code_is_joined_not_recreated() {
+        assert!(matches!(lookup_outcome(Ok(api::RoomEndpoint::default()), true, "tok"), Ok(JoinStep::Found(_))));
+        assert!(matches!(lookup_outcome(Ok(api::RoomEndpoint::default()), false, ""), Ok(JoinStep::Found(_))));
+    }
+
+    #[test]
+    fn an_owners_other_failure_is_not_reserved() {
+        let down = NetError::Http { status: 500, code: String::new(), error: "DOWN".into(), body: Value::Null };
+        assert_eq!(lookup_outcome(Err(down), true, "tok").err().and_then(|e| e.status()), Some(500));
     }
 }
 

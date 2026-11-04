@@ -100,7 +100,11 @@ pub fn place(f: &Facility) -> Fixtures {
 
     let mut coins = vec![];
     let mut rng = Rng::new(&format!("{}:COINS", f.seed_text));
+    // a window with no rooms (a stair or sewer chunk) has nowhere to put a coin
     for _ in 0..5 {
+        if f.rooms.is_empty() {
+            break;
+        }
         let r = &f.rooms[rng.next_index(f.rooms.len())];
         let (cx, cy) = r.center.center();
         let ox = rng.next_f32() * 2.0 - 1.0;

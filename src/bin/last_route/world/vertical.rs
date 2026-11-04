@@ -30,12 +30,21 @@ pub const LANDING: i32 = STEPS_PER_CELL;
 /// Treads in one whole flight: every cell of run times the treads per cell.
 pub const STAIR_STEPS: i32 = STAIR_FLIGHT * STEPS_PER_CELL;
 
-/// How far a flight up rises per metre of run: about 33 degrees (`FLIGHT_SLOPE_DEG` gives the Godot slope it follows).
-pub const RISE_UP: f32 = 0.65;
+/// The level change: a body this far above or below its storey's floor changes level (`LEVEL_MIDPOINT` plus the
+/// hysteresis margin, `level_from_height`). A walked flight must reach it, so both flight constants below are sized
+/// from it. KT decided the flights may be steeper than Godot's, which climbs only half a storey.
+pub const LEVEL_CHANGE_HEIGHT: f32 = LEVEL_MIDPOINT + LEVEL_TRANSITION_MARGIN;
 
-/// How far a flight down sinks per metre of run, over the metres before its landing: about 14 degrees. Kept shallower
-/// than Godot's flights so the treads still show past the near lip of the pit from a standing eye.
-pub const RISE_DOWN: f32 = 0.24;
+/// How far a flight up rises per metre of run: 0.75, about 36.9 degrees (`FLIGHT_SLOPE_DEG` is Godot's 33.7, which
+/// stops at half a storey). Over the flight's `STAIR_FLIGHT` cells it tops out at 3.0 m, past the 2.9375 m level
+/// change. The least rise that reaches it is 2.9375 / 4 = 0.734, so 0.75 is the round number just above that.
+pub const RISE_UP: f32 = 0.75;
+
+/// How far a flight down sinks per metre of run, over the sloped cells before its landing: 1.0, exactly 45 degrees.
+/// Over those 3 cells it sinks 3.0 m, past the 2.9375 m level change. The least rise that reaches it is
+/// 2.9375 / 3 = 0.979 (44.4 degrees), so 1.0 is the round number just above that. It is steep enough that the near lip
+/// of the pit hides the first treads from a standing eye at 2 m (see the test in render/stairs.rs).
+pub const RISE_DOWN: f32 = 1.0;
 
 /// The height of one tread's riser on a flight up (`RISE_UP` spread over its treads per cell).
 pub const STAIR_RISE: f32 = RISE_UP / STEPS_PER_CELL as f32;
@@ -47,7 +56,7 @@ pub const GODOT_SWITCHBACK_RUN: f32 = 3.0;
 /// The Godot flight slope in degrees: half a storey (2 m) over the 3 m run is atan(2/3), 33.7 degrees.
 pub const FLIGHT_SLOPE_DEG: f32 = 33.7;
 
-/// The same slope as rise per metre of run (tan 33.7 degrees is 2/3). Our `RISE_UP` is 0.65, a hair under it.
+/// The same slope as rise per metre of run (tan 33.7 degrees is 2/3). Our `RISE_UP` (0.75) is steeper, on purpose.
 pub const FLIGHT_RISE_PER_RUN: f32 = 2.0 / 3.0;
 
 /// A half flight in our metres: its run and, to the mid landing, its rise (half of `STOREY`).
@@ -75,8 +84,13 @@ pub const LEVEL_MIDPOINT: f32 = STOREY * 0.5;
 // Ladders (`game/player/player_controller_3d.gd`)
 // ---------------------------------------------------------------------------------------------------------------------
 
-/// Ladder climb speed in m/s (`player_controller_3d.gd:377`). Taken as Godot's value; see the report note on scaling.
-pub const LADDER_CLIMB_SPEED: f32 = 1.7;
+/// Ladder climb speed in m/s (`player_controller_3d.gd:377`, 1.7): a speed is a distance over time, so it scales with
+/// the storey like every distance does (2.125 m/s on our 5 m storey).
+pub const LADDER_CLIMB_SPEED: f32 = 1.7 * GODOT_TO_OURS;
+
+/// How far the body stands from the rails, in metres (`player_controller_3d.gd:1492`, LADDER_RUNG_REACH .4). It is a
+/// reach to the rungs, not a storey distance, so it is not scaled.
+pub const LADDER_RAIL_REACH: f32 = 0.4;
 
 /// The smooth mount onto a ladder, in seconds (`player_controller_3d.gd:379`).
 pub const LADDER_MOUNT_SECONDS: f32 = 0.3;
@@ -165,8 +179,30 @@ mod tests {
         assert!((FLIGHT_RISE_PER_RUN.atan().to_degrees() - FLIGHT_SLOPE_DEG).abs() < 0.05);
         assert!((MID_LANDING_RISE - LEVEL_MIDPOINT).abs() < 1e-6);
         assert!((FLOOR_SNAP - 0.28 * 1.067 * 1.25).abs() < 1e-6);
-        // the drawn flight up is within a degree of Godot's slope
-        assert!((RISE_UP.atan().to_degrees() - FLIGHT_SLOPE_DEG).abs() < 1.0);
+        // the drawn flight up is the steeper 36.87 degrees (atan 0.75), and the flight down is 45 degrees
+        assert!((RISE_UP.atan().to_degrees() - 36.87).abs() < 0.01);
+        assert!((RISE_DOWN.atan().to_degrees() - 45.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_walked_flight_reaches_the_level_change_height() {
+        assert!((LEVEL_CHANGE_HEIGHT - 2.9375).abs() < 1e-6);
+        // the top of a flight up is past the level change above its floor, and the surface reaches it
+        let top_up = tread_top(1, STAIR_STEPS);
+        assert!(top_up >= LEVEL_CHANGE_HEIGHT, "top {top_up}");
+        assert!((top_up - 3.0).abs() < 1e-5);
+        for run in RUNS {
+            let s = flight(1, run);
+            let y = stair_surface_y(s, at(s, STAIR_FLIGHT as f32 - 0.01)).unwrap();
+            assert!(y >= LEVEL_CHANGE_HEIGHT, "run {run:?}: the last metre is at {y}");
+        }
+        // a flight down sinks past the level change too: its sloped part ends at the foot, 3 m under the floor
+        let foot = tread_top(-1, STAIR_STEPS - LANDING);
+        assert!(-foot >= LEVEL_CHANGE_HEIGHT, "foot {foot}");
+        assert!((foot + 3.0).abs() < 1e-5);
+        // and the level changes there: a body at the top of a flight up is on the level above, at the foot below
+        assert_eq!(level_from_height(top_up, 0), 1);
+        assert_eq!(level_from_height(foot, 0), -1);
     }
 
     #[test]

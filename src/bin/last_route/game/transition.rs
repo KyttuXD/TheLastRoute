@@ -54,6 +54,8 @@ pub struct Transition {
     yaw_from: f32,
     yaw_to: f32,
     lift: f32,
+    /// A ladder down or up that changes storey (game/ladder.rs): after the load the runner is put beside this ladder.
+    beside: Option<(Cell, (i32, i32))>,
 }
 
 impl Transition {
@@ -79,6 +81,25 @@ impl Transition {
             yaw_from: yaw,
             yaw_to,
             lift: s.dir as f32 * WALL_HEIGHT,
+            beside: None,
+        }
+    }
+
+    /// The fade alone, for a manual ladder climb that changes storey (game/ladder.rs): no climb, the screen goes black,
+    /// the storey loads, and the runner is placed beside the ladder on the new storey (`beside`). The body stays where it
+    /// stood until the load.
+    pub fn ladder_fade(stair: usize, cell: Cell, side: (i32, i32), at: (f32, f32), yaw: f32) -> Transition {
+        Transition {
+            phase: Phase::FadeOut,
+            t: 0.0,
+            stair,
+            from: at,
+            via: at,
+            to: at,
+            yaw_from: yaw,
+            yaw_to: yaw,
+            lift: 0.0,
+            beside: Some((cell, side)),
         }
     }
 
@@ -176,6 +197,9 @@ impl Game {
         if tr.tick(dt) {
             self.take_flight(tr.stair, content, catalog);
             self.p.climb_lift = 0.0;
+            if let Some((cell, side)) = tr.beside {
+                self.place_beside_ladder(cell, side);
+            }
         }
         if tr.phase != Phase::FadeIn {
             let pose = tr.pose();
@@ -196,7 +220,7 @@ mod tests {
     use crate::audio::Sounds;
     use crate::config::{Difficulty, CAMERA_HEIGHT};
     use crate::game::player::Player;
-    use crate::game::{Controls, Focus};
+    use crate::game::Controls;
     use crate::world::facility::LinkKind;
     use macroquad::prelude::vec2;
 
@@ -310,21 +334,6 @@ mod tests {
     }
 
     #[test]
-    fn the_ladder_climb_keeps_its_heading_and_raises_the_eye_going_up() {
-        let mut down = Transition::new(0, ladder_down(), (2.5, 4.5), 0.7);
-        down.t = CLIMB_SECONDS;
-        let p = down.pose();
-        assert!(near(p.pos, ladder_down().cell.center()), "into the shaft: {:?}", p.pos);
-        assert_eq!(p.yaw, 0.7);
-        assert!((p.lift + WALL_HEIGHT).abs() < 1e-4);
-
-        let up = Stair { dir: 1, ..ladder_down() };
-        let mut up = Transition::new(0, up, (2.5, 4.5), 0.7);
-        up.t = CLIMB_SECONDS;
-        assert!((up.pose().lift - WALL_HEIGHT).abs() < 1e-4);
-    }
-
-    #[test]
     fn the_climb_lift_moves_the_eye_height() {
         let mut p = Player::new((0.0, 0.0));
         assert_eq!(p.eye_height(), CAMERA_HEIGHT);
@@ -338,8 +347,9 @@ mod tests {
         let catalog = Catalog::load();
         let (mut idle, i) = ladder_game(&content, &catalog);
         let (mut busy, _) = ladder_game(&content, &catalog);
-        idle.interact(Focus::Stairs(i), &content, &catalog, &Sounds::default());
-        busy.interact(Focus::Stairs(i), &content, &catalog, &Sounds::default());
+        for g in [&mut idle, &mut busy] {
+            g.transition = Some(Transition::new(i, g.fac.stairs[i], g.p.pos, g.p.yaw));
+        }
         assert!(idle.transition.is_some() && busy.transition.is_some());
 
         let quiet = Controls::default();
