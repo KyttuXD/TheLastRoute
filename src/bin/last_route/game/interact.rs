@@ -43,8 +43,8 @@ impl Game {
         true
     }
 
-    /// The load of a flight, run behind the fade (game/transition.rs): a flight taken saves the run on its new level
-    /// (Godot `_update_run_statistics`: autosave("level")).
+    /// The change of level for a flight taken (game/transition.rs, no fade): a flight taken saves the run on its new
+    /// level (Godot `_update_run_statistics`: autosave("level")).
     pub(super) fn take_flight(&mut self, i: usize, content: &Content, catalog: &Catalog) {
         let from = self.inf.as_ref().map(|inf| inf.level);
         self.take_stairs(i, content, catalog);
@@ -270,14 +270,13 @@ impl Game {
                 }
                 self.relays_taken[i] = true;
                 self.relays_collected += 1;
-                self.score += RELAY_SCORE;
+                self.score += crate::game::progression::Progression::load().relay_score;
                 crate::audio::sound::collect();
                 self.announce("RELAY ONLINE");
                 // a recovered relay saves the run (Godot `_sync_stream_progress`: autosave("relay"))
                 self.autosave("relay");
-                let need = self
-                    .prof()
-                    .activation_relays
+                let need = crate::game::progression::Progression::load()
+                    .activation_relays(self.difficulty)
                     .min(self.fac.relays.len() as i32);
                 if self.is_infinite() {
                     // the streamed population grows instead (ensure_hunters)
@@ -329,7 +328,7 @@ impl Game {
                 if self.fac.stairs[i].is_ladder() {
                     self.start_ladder(i);
                 } else {
-                    self.start_stairs(i);
+                    self.start_stairs(i, content, catalog);
                 }
             }
             Focus::Lift => {
@@ -565,13 +564,32 @@ mod tests {
         g.interact(Focus::Stairs(i), &content, &catalog, &Sounds::default());
         let back = crate::game::Controls { fwd: -1.0, ..Default::default() };
         for _ in 0..400 {
-            if g.transition.is_none() && g.last_autosave == "level" {
+            if g.last_autosave == "level" {
                 break;
             }
             g.step(0.05, &back, &content, &catalog, &Sounds::default());
         }
-        assert!(g.transition.is_none(), "the climb and the fade finish");
+        assert!(g.ladder.is_none(), "the climb is over on the change");
         assert_eq!(g.inf.as_ref().unwrap().level, dir);
+        assert_eq!(g.last_autosave, "level", "a new level saves the run");
+    }
+
+    #[test]
+    fn a_stairwell_taken_by_interact_changes_storey_at_once_with_no_fade() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        // not every start window has a stairwell (the origin chunk always has a ladder), so the first room seed that does
+        let (mut g, i) = (0..60)
+            .find_map(|n| {
+                let g = Game::new_infinite_sim(Difficulty::Standard, 7, &format!("ROOM-STAIRS-{n}"), 0, &content, &catalog);
+                let i = g.fac.stairs.iter().position(|s| s.dir == -1 && matches!(s.kind, LinkKind::Stairs))?;
+                Some((g, i))
+            })
+            .expect("a start window has a stairwell down");
+        g.fade = 0.0;
+        g.interact(Focus::Stairs(i), &content, &catalog, &Sounds::default());
+        assert_eq!(g.inf.as_ref().unwrap().level, -1, "the level changes on the frame the stairs are taken");
+        assert_eq!(g.fade, 0.0, "no fade");
         assert_eq!(g.last_autosave, "level", "a new level saves the run");
     }
 

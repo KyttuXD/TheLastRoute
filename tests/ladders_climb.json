@@ -1,6 +1,6 @@
 {
   "suite": "ladders_climb",
-  "description": "Sewer ladders climbed by hand (game/ladder.rs, Godot player_controller_3d.gd 1265-1386): walking into the rung point mounts, back climbs down, the bottom changes the storey through the fade; forward at the top dismounts onto the floor.",
+  "description": "Sewer ladders climbed by hand (game/ladder.rs, Godot player_controller_3d.gd 1265-1386): walking into the rung point mounts, back climbs down, and the storey changes on the frame the bottom of the shaft is reached, with no fade and no hold; forward at the top dismounts onto the floor.",
   "ported_from": "game/player/player_controller_3d.gd begin_ladder_climb, _update_ladder_climb",
   "defaults": { "seed": 12345, "difficulty": "standard", "mode": "infinite" },
   "tests": [
@@ -12,6 +12,17 @@
         { "cmd": "step", "frames": 1, "act": { "move": [0, 0.5] }, "observe": false },
         { "cmd": "step", "frames": 30, "act": { "move": [0, 0] }, "observe": false },
         { "cmd": "step", "frames": 400, "act": { "move": [0, -1] }, "observe": false },
+        { "expect": [ { "path": "run.level", "value": -1 } ] }
+      ]
+    },
+    {
+      "name": "the storey changes on the frame the bottom of the shaft is reached",
+      "start_run": { "no_target": true },
+      "steps": [
+        { "cmd": "teleport", "to": "ladder_down" },
+        { "cmd": "step", "frames": 1, "act": { "move": [0, 0.5] }, "observe": false },
+        { "cmd": "step", "frames": 30, "act": { "move": [0, 0] }, "observe": false },
+        { "cmd": "step_until", "act": { "move": [0, -1] }, "expect": [ { "path": "run.level", "value": -1 } ], "max_frames": 1000, "check_every": 1, "observe": false },
         { "expect": [ { "path": "run.level", "value": -1 } ] }
       ]
     },

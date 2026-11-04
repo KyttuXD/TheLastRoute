@@ -3,14 +3,15 @@
 //! the body lerps to the rung line and faces the wall, then forward climbs up and back climbs down at
 //! `LADDER_CLIMB_SPEED`, and no key hangs the body still. The climb ends at either end, or by jump at or below
 //! `LADDER_LET_GO_HEIGHT`, and the body dismounts onto the open floor beside that end. An end on another storey
-//! (`level_from_height`, as the stairs use) hands over to the fade in `transition.rs`, which loads that storey and
-//! puts the runner beside the ladder there.
+//! (`level_from_height`, as the stairs use) changes storey on the frame the shaft's end is reached: the window loads
+//! that storey and the runner is put beside the ladder there, with no fade and no hold (game/transition.rs).
 //!
 //! One climber at a time: `Game::ladder` holds the one climb, and a second mount is refused while it runs.
 
-use super::transition::Transition;
 use super::{pdist, Controls, Game};
 use crate::config::PLAYER_RADIUS;
+use crate::content::Content;
+use crate::world::catalog::Catalog;
 use crate::world::facility::Cell;
 use crate::world::infinite;
 use crate::world::vertical::{
@@ -55,10 +56,12 @@ pub struct Climb {
     pub end: End,
     /// Whether the dismount at `end` leaves this storey (decided when the dismount starts).
     pub changes: bool,
+    /// The storey the dismount at `end` reaches (the storey this one when it does not change).
+    next: i32,
     from: (f32, f32),
     from_yaw: f32,
     from_lift: f32,
-    /// Where a dismount lands on this storey; None when it changes storey (the body holds, then the fade takes over).
+    /// Where a dismount lands on this storey; None when it changes storey (the change takes the body at once).
     exit: Option<(f32, f32)>,
 }
 
@@ -76,6 +79,7 @@ impl Climb {
             height: if dir < 0 { STOREY } else { 0.0 },
             end: End::Bottom,
             changes: false,
+            next: 0,
             from,
             from_yaw: yaw,
             from_lift: lift,
@@ -156,10 +160,10 @@ impl Game {
     }
 
     /// Mounts the ladder `i` of this storey (interact, or walking into its rung point). Refused while another climb
-    /// runs (one climber), during a transition, or when the storey beyond may not be entered. Returns true on a mount.
+    /// runs (one climber), or when the storey beyond may not be entered. Returns true on a mount.
     pub(super) fn start_ladder(&mut self, i: usize) -> bool {
         let s = self.fac.stairs[i];
-        if !s.is_ladder() || self.ladder.is_some() || self.transition.is_some() {
+        if !s.is_ladder() || self.ladder.is_some() {
             return false;
         }
         if !infinite::level_allowed(self.storey() + s.dir) {
@@ -174,7 +178,7 @@ impl Game {
 
     /// The runner walked into a rung point: mount that ladder without interact. Called while the body moves.
     pub(super) fn ladder_walk_in(&mut self) {
-        if !self.p.moving || self.ladder.is_some() || self.transition.is_some() || self.p.stun > 0.0 {
+        if !self.p.moving || self.ladder.is_some() || self.p.stun > 0.0 {
             return;
         }
         let hit = (0..self.fac.stairs.len()).find(|&i| {
@@ -187,7 +191,7 @@ impl Game {
     }
 
     /// Begins a dismount at `end`: the body goes to the open floor beside that end, or, when that end is on another
-    /// storey, holds on the rungs while the fade takes it there.
+    /// storey, the storey changes at once on the frame the end is reached (`advance_ladder`).
     fn dismount(&self, k: &mut Climb, end: End) {
         k.phase = Phase::Dismount;
         k.t = 0.0;
@@ -197,21 +201,18 @@ impl Game {
         let level = self.storey();
         let next = level_from_height(level as f32 * STOREY + lift_at(end_height(end), k.dir), level);
         k.changes = self.inf.is_some() && next != level;
+        k.next = next;
         k.exit = if k.changes { None } else { Some(self.beside(k.cell, k.side)) };
     }
 
-    /// Ends the climb: the body is on the floor (same storey), or the fade takes the runner to the next storey.
+    /// Ends a dismount onto the floor of this storey: the body is beside that end.
     fn finish_ladder(&mut self, k: Climb) {
         self.ladder = None;
-        if k.changes {
-            self.transition = Some(Transition::ladder_fade(k.stair, k.cell, k.side, self.p.pos, self.p.yaw));
-        } else {
-            self.p.pos = k.exit.unwrap_or(self.p.pos);
-            self.p.climb_lift = 0.0;
-        }
+        self.p.pos = k.exit.unwrap_or(self.p.pos);
+        self.p.climb_lift = 0.0;
     }
 
-    /// Lands the runner beside the ladder on the storey the fade just loaded (`transition.rs`).
+    /// Lands the runner beside the ladder on the storey the change just loaded (`Game::change_storey`).
     pub(super) fn place_beside_ladder(&mut self, cell: Cell, _side: (i32, i32)) {
         let side = self.ladder_side(cell);
         self.p.pos = self.beside(cell, side);
@@ -220,7 +221,7 @@ impl Game {
     }
 
     /// One frame of the climb (mount, climb or dismount). Replaces the movement while mounted.
-    pub(super) fn advance_ladder(&mut self, dt: f32, c: &Controls) {
+    pub(super) fn advance_ladder(&mut self, dt: f32, c: &Controls, content: &Content, catalog: &Catalog) {
         let Some(mut k) = self.ladder else {
             return;
         };
@@ -251,6 +252,14 @@ impl Game {
                 } else if axis.abs() > 0.2 {
                     k.height = (h + axis.signum() * LADDER_CLIMB_SPEED * dt).clamp(0.0, STOREY);
                     moving = true;
+                }
+                if k.phase == Phase::Dismount && k.changes {
+                    // the shaft's end is the connection: the storey changes on this frame, with no hold and no fade
+                    self.ladder = None;
+                    self.p.moving = false;
+                    self.change_storey(k.next, content, catalog, |g| g.place_beside_ladder(k.cell, k.side));
+                    self.autosave("level");
+                    return;
                 }
                 if k.phase == Phase::Climb {
                     self.p.pos = stand(k.cell, k.side);
@@ -402,9 +411,13 @@ mod tests {
         assert_eq!(g.ladder.unwrap().phase, Phase::Climb, "a jump high up does not let go");
         // down to the let-go height, then jump
         g.ladder.as_mut().unwrap().height = LET_GO * 0.5;
+        let level = g.inf.as_ref().unwrap().level;
+        g.fade = 0.0;
         run(&mut g, &jump(), DT, &content, &catalog);
-        let k = g.ladder.unwrap();
-        assert_eq!((k.phase, k.end), (Phase::Dismount, End::Bottom), "low jump lets go");
+        // the bottom of this shaft is the storey below: the jump lets go and the storey changes on that frame, no hold, no fade
+        assert!(g.ladder.is_none(), "low jump lets go, and the change ends the climb");
+        assert_eq!(g.inf.as_ref().unwrap().level, level - 1, "the storey below");
+        assert_eq!(g.fade, 0.0, "no fade");
     }
 
     #[test]
@@ -421,8 +434,7 @@ mod tests {
         assert_eq!((k.phase, k.end, k.changes), (Phase::Dismount, End::Top, false));
         run(&mut g, &quiet(), LADDER_DISMOUNT_SECONDS + DT, &content, &catalog);
         assert!(g.ladder.is_none(), "the climb is over");
-        assert!(g.transition.is_none(), "no storey changed");
-        assert_eq!(g.inf.as_ref().unwrap().level, level);
+        assert_eq!(g.inf.as_ref().unwrap().level, level, "no storey changed");
         assert_eq!(g.p.climb_lift, 0.0);
         // the window may have re-centred since the dismount: the ladder is read back from this storey's own list
         let cell = nearest_ladder(&g);
@@ -432,32 +444,31 @@ mod tests {
     }
 
     #[test]
-    fn climbing_down_to_the_bottom_changes_storey_through_the_fade() {
+    fn climbing_down_to_the_bottom_changes_storey_on_that_frame_with_no_fade() {
         let content = Content::load();
         let catalog = Catalog::load();
         let (mut g, i) = ladder_game(&content, &catalog);
         let level = g.inf.as_ref().unwrap().level;
         g.start_ladder(i);
         run(&mut g, &quiet(), MOUNT + DT, &content, &catalog);
+        g.fade = 0.0;
         // back down the whole shaft: the bottom is the storey below (level_from_height)
-        run(&mut g, &back(), STOREY / LADDER_CLIMB_SPEED + 0.25, &content, &catalog);
-        let k = g.ladder.unwrap();
-        assert_eq!((k.phase, k.end, k.changes), (Phase::Dismount, End::Bottom, true));
-        run(&mut g, &quiet(), LADDER_DISMOUNT_SECONDS + DT, &content, &catalog);
-        assert!(g.ladder.is_none());
-        assert!(g.transition.is_some(), "the fade takes the runner down");
-        let cell = k.cell;
-        // step the fade out; it ends on the frame the storey is settled, before the window re-centres on the runner
         let mut frames = 0;
-        while g.transition.is_some() {
-            g.step(DT, &quiet(), &content, &catalog, &Sounds::default());
+        while g.inf.as_ref().unwrap().level == level {
+            g.step(DT, &back(), &content, &catalog, &Sounds::default());
+            assert_eq!(g.fade, 0.0, "a ladder creates no fade");
             frames += 1;
-            assert!(frames < 100, "the fade never ended");
+            assert!(frames < 2000, "the climb never reached the bottom");
         }
+        // the change came on the frame the shaft's end was reached: no dismount hold, no fade, the climb is over
+        assert!(g.ladder.is_none(), "the climb ends on the change frame");
         assert_eq!(g.inf.as_ref().unwrap().level, level - 1, "the storey below");
+        assert_eq!(g.fade, 0.0);
         assert_eq!(g.p.climb_lift, 0.0);
-        // the runner lands beside the ladder's foot on the storey below (the sewer end may sit elsewhere in that window)
-        let d = pdist(g.p.pos, cell.center());
+        // the runner lands beside the ladder's foot on the storey below. The window re-centres on the runner after the
+        // change, so the foot is read back from this storey's own list (the old cell's coordinates no longer apply)
+        let foot = nearest_ladder(&g);
+        let d = pdist(g.p.pos, foot.center());
         assert!((0.6..1.2).contains(&d), "beside the ladder's foot, not in it: {d}");
     }
 

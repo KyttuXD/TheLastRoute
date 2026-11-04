@@ -23,9 +23,6 @@ use super::player::stair_height_at;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
-/// Seconds after a walked level change in which no second change is made (the bounce guard).
-pub const LEVEL_LOCKOUT: f32 = 1.0;
-
 /// What the full map draws of one discovered level-0 chunk (Godot's `_discovered_chunks` record for the map). It is taken
 /// when the chunk first loads and kept for the run, so the chunk stays on the map after the window moves on. `walls` and
 /// `holes` are chunk-local (row-major, `z * CHUNK + x`); the stairs, relays, batteries and props are absolute cells.
@@ -184,6 +181,18 @@ pub struct InfState {
     /// The routes to the waypoint, planned when `route_key` changes (`refresh_waypoint`).
     routes: WaypointRoutes,
     route_key: Option<RouteKey>,
+    /// The windows built ahead for the storeys the connections near the runner lead to (`prefetch_connections`).
+    prefetched: Vec<Prefetch>,
+    /// The windows built so far (`infinite::window` calls), so a test can see that a change builds none.
+    builds: u32,
+}
+
+/// A storey's window built ahead of a change to it (`Game::prefetch_connections`): the level and centre it was built for,
+/// and the window. `change_storey` swaps it in rather than building it on the connection's frame.
+struct Prefetch {
+    level: i32,
+    center: (i32, i32),
+    window: (Facility, Fixtures),
 }
 
 /// Godot `WaypointState.ARRIVAL_RADIUS`: the runner within this many cells (XZ) of the waypoint clears it.
@@ -546,6 +555,8 @@ impl InfState {
             waypoint: None,
             routes: WaypointRoutes::default(),
             route_key: None,
+            prefetched: Vec::new(),
+            builds: 0,
         }
     }
 
@@ -644,14 +655,16 @@ impl Game {
     /// Builds the window around the current centre chunk and level.
     fn load_window(&mut self, content: &Content, catalog: &Catalog) {
         let Some(inf) = self.inf.as_mut() else { return };
-        let (fac, fix) = infinite::window(
-            &inf.seed,
-            inf.center,
-            inf.level,
-            catalog,
-            &content.loot,
-            &mut inf.cache,
-        );
+        // the storey's window is the one built ahead for it (`prefetch_connections`) when there is one, so the change to
+        // that storey builds nothing on its frame; otherwise it is built here
+        let ahead = inf.prefetched.iter().position(|p| p.level == inf.level && p.center == inf.center);
+        let (fac, fix) = match ahead {
+            Some(i) => inf.prefetched.swap_remove(i).window,
+            None => {
+                inf.builds += 1;
+                infinite::window(&inf.seed, inf.center, inf.level, catalog, &content.loot, &mut inf.cache)
+            }
+        };
         // claim ids for the new window: the layout's on level 0, else by absolute cell
         let (level, origin) = (inf.level, inf.origin());
         let lens = [fac.relays.len(), fac.batteries.len(), fac.pickups.len(), fix.coins.len()];
@@ -751,6 +764,7 @@ impl Game {
         }
         self.sync_out();
         if let Some(inf) = self.inf.as_mut() {
+            inf.prefetched.clear();
             let (cx, cy, level) = (inf.center.0, inf.center.1, inf.level);
             for dy in -1..=1 {
                 for dx in -1..=1 {
@@ -789,6 +803,7 @@ impl Game {
         self.discover_map();
         self.clear_reached_waypoint();
         self.refresh_waypoint();
+        self.prefetch_connections(content, catalog);
         let dt = self.safe_room_dt();
         let before = self.active_checkpoint().to_string();
         self.safe_room_step(dt);
@@ -796,6 +811,38 @@ impl Game {
         // the room does not save it again every frame (`_update_checkpoint` skips the `_last_checkpoint`)
         if !self.active_checkpoint().is_empty() && self.active_checkpoint() != before {
             self.autosave("checkpoint");
+        }
+    }
+
+    /// Builds ahead the storeys the stairs and ladders the runner is near lead to, within the data's `prefetch_distance`
+    /// of a landing (game/transition.rs). A flight leads to the storey its `dir` names; a ladder either way, so both
+    /// neighbours. The change on the connection's frame then only relocates the runner and swaps the window in
+    /// (`change_storey`). A window built for another centre, or for a storey no longer near, is dropped.
+    fn prefetch_connections(&mut self, content: &Content, catalog: &Catalog) {
+        let Some(inf) = self.inf.as_ref() else { return };
+        let (level, center) = (inf.level, inf.center);
+        let reach = super::transition::links().prefetch_distance;
+        let mut wanted: Vec<i32> = Vec::new();
+        for s in self.fac.stairs.iter() {
+            if pdist(self.p.pos, s.cell.center()) > reach {
+                continue;
+            }
+            let offsets: Vec<i32> = if s.is_ladder() { vec![-1, 1] } else { vec![s.dir] };
+            for t in offsets.into_iter().map(|d| level + d) {
+                if t != level && infinite::level_allowed(t) && !wanted.contains(&t) {
+                    wanted.push(t);
+                }
+            }
+        }
+        let Some(inf) = self.inf.as_mut() else { return };
+        inf.prefetched.retain(|p| p.center == center && wanted.contains(&p.level));
+        for t in wanted {
+            if inf.prefetched.iter().any(|p| p.level == t) {
+                continue;
+            }
+            inf.builds += 1;
+            let window = infinite::window(&inf.seed, center, t, catalog, &content.loot, &mut inf.cache);
+            inf.prefetched.push(Prefetch { level: t, center, window });
         }
     }
 
@@ -1000,7 +1047,27 @@ impl Game {
         }
     }
 
-    /// Takes a stairwell to the level above or below.
+    /// Moves the run to storey `to` on the frame it is asked for: the hunters of the storey left are stored, the window
+    /// loads the storey entered, `arrive` places the body on it, and that storey's hunters come back. No fade and no
+    /// hold: the connection is the change (game/transition.rs). The window was built ahead of the
+    /// connection (`prefetch_connections`), so the load only swaps it in.
+    pub(super) fn change_storey(&mut self, to: i32, content: &Content, catalog: &Catalog, arrive: impl FnOnce(&mut Game)) {
+        self.sync_out();
+        // the level being left keeps its hunters at their absolute cells, to be found again on the way back
+        self.store_level0_hunters();
+        self.store_floor_hunters();
+        if let Some(inf) = self.inf.as_mut() {
+            inf.level = to;
+        }
+        self.load_window(content, catalog);
+        arrive(&mut *self);
+        // the level's own hunters come back where they were; a level not visited before gets its lineup
+        self.restore_level_hunters(content);
+        self.announce(&format!("LEVEL {to}"));
+    }
+
+    /// Takes a stairwell to the level above or below, to its far landing (interact's `take_flight`, on the frame the
+    /// runner takes it). The far cell and the landing offset are data (game/transition.rs `links`, `landing_offset`).
     pub(super) fn take_stairs(&mut self, i: usize, content: &Content, catalog: &Catalog) {
         let s = self.fac.stairs[i];
         // the level stack ends at 0 and at the Inferno (-3): a flight past either end is not taken
@@ -1008,47 +1075,35 @@ impl Game {
         if !infinite::level_allowed(to) {
             return;
         }
-        let other = Cell::new(
-            s.cell.x + s.run.0 * (STAIR_FLIGHT + 1),
-            s.cell.y + s.run.1 * (STAIR_FLIGHT + 1),
-        );
-        self.sync_out();
-        // the level being left keeps its hunters at their absolute cells, to be found again on the way back
-        self.store_level0_hunters();
-        self.store_floor_hunters();
-        if let Some(inf) = self.inf.as_mut() {
-            inf.level += s.dir;
-        }
-        self.load_window(content, catalog);
-        let landing = self.fac.stairs.iter().find(|t| t.cell == other).copied();
-        match landing {
-            Some(t) => {
-                let (cx, cy) = t.cell.center();
-                self.p.pos = self.fac.nearest_open_or(
-                    cx - t.run.0 as f32 * 0.6,
-                    cy - t.run.1 as f32 * 0.6,
-                    PLAYER_RADIUS,
-                );
-                self.p.yaw = (t.run.0 as f32).atan2(t.run.1 as f32);
+        let steps = super::transition::links().flight_steps;
+        let other = Cell::new(s.cell.x + s.run.0 * steps, s.cell.y + s.run.1 * steps);
+        self.change_storey(to, content, catalog, |g| {
+            let landing = g.fac.stairs.iter().find(|t| t.cell == other).copied();
+            match landing {
+                Some(t) => {
+                    let (cx, cy) = t.cell.center();
+                    let offset = super::transition::landing_offset();
+                    g.p.pos = g.fac.nearest_open_or(
+                        cx - t.run.0 as f32 * offset,
+                        cy - t.run.1 as f32 * offset,
+                        PLAYER_RADIUS,
+                    );
+                    g.p.yaw = (t.run.0 as f32).atan2(t.run.1 as f32);
+                }
+                None => g.p.pos = g.fac.start.center(),
             }
-            None => self.p.pos = self.fac.start.center(),
-        }
-        // the level's own hunters come back where they were; a level not visited before gets its lineup
-        self.restore_level_hunters(content);
-        let level = self.inf.as_ref().map(|i| i.level).unwrap_or(0);
-        self.announce(&format!("LEVEL {level}"));
-        self.fade = 1.0;
+        });
         // the save is the caller's: interact's `autosave("level")` on a flight taken (no double write)
     }
 
-    /// A walked flight changes storey with no fade (`step` calls this every frame the body is on the walk). The body's
-    /// absolute height is its storey's floor plus the walking surface under it, and `level_from_height` decides the
-    /// storey from that, with the midpoint and hysteresis of world/vertical.rs. The body keeps its cell (the window's
-    /// origin does not move), and on the new storey it stands on that storey's surface at the cell, or on the floor
-    /// (the nearest open cell if the floor there is a well). A lockout of `LEVEL_LOCKOUT` after a change stops a body
-    /// on the line from bouncing back.
+    /// A walked flight changes storey with no fade and no hold (`step` calls this every frame the body is on the walk).
+    /// The body's absolute height is its storey's floor plus the walking surface under it, and `level_from_height`
+    /// decides the storey from that, with the midpoint and hysteresis of world/vertical.rs: that hysteresis is what
+    /// keeps a body on the line from bouncing back, so there is no lockout. The body keeps its cell (the window's origin
+    /// does not move), and on the new storey it stands on that storey's surface at the cell, or on the floor (the
+    /// nearest open cell if the floor there is a well).
     pub(super) fn walked_level_change(&mut self, content: &Content, catalog: &Catalog) {
-        if self.level_lockout > 0.0 || self.inf.is_none() || self.transition.is_some() {
+        if self.inf.is_none() {
             return;
         }
         let Some(surface) = stair_height_at(&self.fac, self.p.pos) else {
@@ -1059,21 +1114,13 @@ impl Game {
         if to == cur || !infinite::level_allowed(to) {
             return;
         }
-        self.sync_out();
-        self.store_level0_hunters();
-        self.store_floor_hunters();
-        if let Some(inf) = self.inf.as_mut() {
-            inf.level = to;
-        }
-        self.load_window(content, catalog);
-        let (x, y) = self.p.pos;
-        if stair_height_at(&self.fac, self.p.pos).is_none() && !self.fac.body_fits_at(x, y, PLAYER_RADIUS, 0.0) {
-            self.p.pos = self.fac.nearest_open_or(x, y, PLAYER_RADIUS);
-        }
-        self.p.height = stair_height_at(&self.fac, self.p.pos).unwrap_or(0.0);
-        self.restore_level_hunters(content);
-        self.level_lockout = LEVEL_LOCKOUT;
-        self.announce(&format!("LEVEL {to}"));
+        self.change_storey(to, content, catalog, |g| {
+            let (x, y) = g.p.pos;
+            if stair_height_at(&g.fac, g.p.pos).is_none() && !g.fac.body_fits_at(x, y, PLAYER_RADIUS, 0.0) {
+                g.p.pos = g.fac.nearest_open_or(x, y, PLAYER_RADIUS);
+            }
+            g.p.height = stair_height_at(&g.fac, g.p.pos).unwrap_or(0.0);
+        });
         self.autosave("level");
     }
 
@@ -2566,8 +2613,8 @@ mod waypoint_tests {
     }
 }
 
-/// A walked flight changes storey with no fade (`walked_level_change`): once per crossing, with the cell kept and the
-/// lockout after it.
+/// A walked flight changes storey on the frame the body crosses (`walked_level_change`): once per crossing, with the
+/// cell kept, no fade, and no hold after it.
 #[cfg(test)]
 mod walked_stair_tests {
     use super::*;
@@ -2621,11 +2668,12 @@ mod walked_stair_tests {
     }
 
     /// Walks `frames` frames with the forward key at `fwd` through `step` (the game's own frame). Returns the number of
-    /// storey changes, and checks that no transition starts.
+    /// storey changes, and checks that no fade starts: the fade is cleared first and must stay clear on every frame.
     fn walk(g: &mut Game, content: &Content, catalog: &Catalog, frames: usize, fwd: f32) -> usize {
         let c = Controls { fwd, ..Default::default() };
         let mut changes = 0;
         let mut prev = g.inf.as_ref().map_or(0, |i| i.level);
+        g.fade = 0.0;
         for _ in 0..frames {
             g.step(FRAME, &c, content, catalog, &Sounds::default());
             let now = g.inf.as_ref().map_or(0, |i| i.level);
@@ -2633,9 +2681,28 @@ mod walked_stair_tests {
                 changes += 1;
                 prev = now;
             }
-            assert!(g.transition.is_none(), "a walked flight starts no transition");
+            assert_eq!(g.fade, 0.0, "a walked flight creates no fade");
         }
         changes
+    }
+
+    /// A flight's storey is built ahead: once the runner is at the landing the window of the storey beyond exists, and the
+    /// change to it on that frame builds no window (the change only relocates the runner and swaps the window in).
+    #[test]
+    fn the_storey_a_flight_leads_to_is_built_before_the_change_frame() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let (mut g, s) = on_landing(-1, &content, &catalog);
+        let from = g.inf.as_ref().map_or(0, |i| i.level);
+        let to = from + s.dir;
+        g.prefetch_connections(&content, &catalog);
+        let ahead = g.inf.as_ref().unwrap().prefetched.iter().any(|p| p.level == to);
+        assert!(ahead, "the storey beyond the landing is built before the change frame");
+        let built = g.inf.as_ref().unwrap().builds;
+        g.change_storey(to, &content, &catalog, |g| g.p.pos = g.fac.start.center());
+        let inf = g.inf.as_ref().unwrap();
+        assert_eq!(inf.level, to, "the change lands on the storey beyond");
+        assert_eq!(inf.builds, built, "the change itself builds no window");
+        assert!(!inf.prefetched.iter().any(|p| p.level == to), "the window built ahead is the one swapped in");
     }
 
     #[test]
@@ -2687,17 +2754,37 @@ mod walked_stair_tests {
     }
 
     #[test]
-    fn the_lockout_follows_a_change() {
+    fn a_change_holds_nothing_the_body_keeps_walking_on_the_next_frame() {
         let (content, catalog) = (Content::load(), Catalog::load());
         let (mut g, _) = on_landing(-1, &content, &catalog);
         let c = Controls { fwd: 1.0, ..Default::default() };
         for _ in 0..900 {
             g.step(FRAME, &c, &content, &catalog, &Sounds::default());
             if g.inf.as_ref().unwrap().level == -1 {
-                break;
+                // the frame after the change moves the body: no halt
+                let at_change = g.p.pos;
+                g.step(FRAME, &c, &content, &catalog, &Sounds::default());
+                assert!(pdist(g.p.pos, at_change) > 1e-4, "the body halted after the change");
+                return;
             }
         }
-        assert_eq!(g.inf.as_ref().unwrap().level, -1);
-        assert!((g.level_lockout - LEVEL_LOCKOUT).abs() < 0.05, "lockout {}", g.level_lockout);
+        panic!("the walk never changed the storey");
     }
+
+    #[test]
+    fn a_stairwell_taken_by_interact_changes_storey_on_that_frame_with_no_fade() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let (mut g, _) = on_landing(-1, &content, &catalog);
+        let i = g
+            .fac
+            .stairs
+            .iter()
+            .position(|s| s.dir == -1 && matches!(s.kind, LinkKind::Stairs))
+            .expect("a stairwell down");
+        g.fade = 0.0;
+        g.take_stairs(i, &content, &catalog);
+        assert_eq!(g.inf.as_ref().unwrap().level, -1, "the storey changes at once");
+        assert_eq!(g.fade, 0.0, "no fade");
+    }
+
 }

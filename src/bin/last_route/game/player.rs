@@ -86,7 +86,7 @@ pub struct Player {
     pub height: f32,
     /// Admin run speed: multiplies every movement speed (admin_menu.gd).
     pub speed_scale: f32,
-    /// Eye height change during a stair or ladder climb (game/transition.rs), in metres: negative going down.
+    /// Eye height change on a stair flight or a ladder shaft (game/ladder.rs, the stairs walk), in metres: negative going down.
     pub climb_lift: f32,
     /// Seconds left in a forced flicker (a plunge splash or a hunter event); the
     /// beam strobes until it runs out and the player's own switch cannot override it.

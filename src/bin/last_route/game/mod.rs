@@ -12,6 +12,7 @@ mod items;
 pub mod meters;
 pub mod npc;
 pub mod player;
+pub mod progression;
 mod transition;
 mod void_player;
 
@@ -130,6 +131,10 @@ pub struct Game {
     pub world: WorldMeshes,
     world_dirty: bool,
     pub relays_taken: Vec<bool>,
+    pub sabotage: Option<crate::hunters::sabotage::Tracker>,
+    /// Guest: the host simulates the hunters and its frames set them (hunting.rs `apply_hunter_frame`), so this game
+    /// runs no hunter simulation. The app sets it each frame from the room's role.
+    pub remote_hunters: bool,
     pub batteries_taken: Vec<bool>,
     pub coins_taken: Vec<bool>,
     pub pickups: Vec<FloorPickup>,
@@ -193,12 +198,8 @@ pub struct Game {
     sighted: std::collections::HashSet<String>,
     /// Why the run last autosaved ("relay", "checkpoint", "quit"), "" before any (Godot `_last_autosave_reason`).
     pub last_autosave: &'static str,
-    /// The climb to another level and its fade (game/transition.rs): input is frozen while it runs.
-    pub transition: Option<transition::Transition>,
     /// The manual climb of a sewer ladder (game/ladder.rs): the one climber, while it runs input is the climb.
     pub ladder: Option<ladder::Climb>,
-    /// The lockout after a walked level change (game/endless.rs `walked_level_change`): no second change while it runs.
-    pub level_lockout: f32,
 }
 
 pub fn pdist(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -242,6 +243,8 @@ impl Game {
             score: 0,
             coins: 0,
             relays_taken: vec![],
+            sabotage: None,
+            remote_hunters: false,
             batteries_taken: vec![],
             coins_taken: vec![],
             pickups: vec![],
@@ -299,9 +302,7 @@ impl Game {
             sightings: vec![],
             sighted: Default::default(),
             last_autosave: "",
-            transition: None,
             ladder: None,
-            level_lockout: 0.0,
             fac,
             fix,
             world,
@@ -361,6 +362,8 @@ impl Game {
             score: 0,
             coins: 0,
             relays_taken: vec![],
+            sabotage: None,
+            remote_hunters: false,
             batteries_taken: vec![],
             coins_taken: vec![],
             pickups: vec![],
@@ -418,9 +421,7 @@ impl Game {
             sightings: vec![],
             sighted: Default::default(),
             last_autosave: "",
-            transition: None,
             ladder: None,
-            level_lockout: 0.0,
             world: WorldMeshes::default(),
             world_dirty: true,
             fac,
@@ -545,6 +546,7 @@ impl Game {
         self.world.lamps = crate::render::world_mesh::lamps(&self.fac, &self.lights_on, content);
         self.world_dirty = true;
         self.relays_taken = vec![false; self.fac.relays.len()];
+        self.sabotage = Some(crate::hunters::sabotage::Tracker::for_floor(self.depth, self.difficulty.id()));
         self.batteries_taken = vec![false; self.fac.batteries.len()];
         self.coins_taken = vec![false; self.fix.coins.len()];
         self.hiding_disabled = vec![false; self.fac.hiding.len()];
@@ -631,7 +633,8 @@ impl Game {
         if self.world_dirty {
             let frame = self.inf.as_ref().map(|i| ChunkFrame { level: i.level, center: i.center });
             self.world.rebuild(&self.fac, &self.lights_on, frame, assets, content);
-            self.world_dirty = false;
+            // parts the frame budget left for later keep the floor dirty until every part is built
+            self.world_dirty = self.world.has_pending();
         }
     }
 
@@ -669,13 +672,8 @@ impl Game {
         if self.report.is_some() {
             return;
         }
-        if self.transition.is_some() {
-            self.advance_transition(dt, content, catalog);
-            return;
-        }
         let prof = self.prof();
         self.taser_cd = (self.taser_cd - dt).max(0.0);
-        self.level_lockout = (self.level_lockout - dt).max(0.0);
         self.melee_cd = (self.melee_cd - dt).max(0.0);
         self.swing_t = (self.swing_t - dt).max(0.0);
         self.taser_fx = (self.taser_fx - dt).max(0.0);
@@ -734,7 +732,7 @@ impl Game {
 
         self.p.look(c.look);
         if self.ladder.is_some() {
-            self.advance_ladder(dt, c);
+            self.advance_ladder(dt, c, content, catalog);
         } else if self.p.hidden.is_some() {
             self.update_hidden(dt, c, &prof, sounds);
         } else {
