@@ -5,9 +5,9 @@
 		{
 			"id": "specimenTank",
 			"models": [
-				"res://assets/props/blocky/specimenTank_0.glb",
-				"res://assets/props/blocky/specimenTank_1.glb",
-				"res://assets/props/blocky/specimenTank_2.glb"
+				"res://assets/props/blocky/specimenTank_0.bbmodel",
+				"res://assets/props/blocky/specimenTank_1.bbmodel",
+				"res://assets/props/blocky/specimenTank_2.bbmodel"
 			],
 			"light": {
 				"color": "5fe8d8",
@@ -23,43 +23,43 @@
 		{
 			"id": "containmentCell",
 			"models": [
-				"res://assets/props/blocky/containmentCell.glb"
+				"res://assets/props/blocky/containmentCell.bbmodel"
 			]
 		},
 		{
 			"id": "labCoolingUnit",
 			"models": [
-				"res://assets/props/blocky/labCoolingUnit.glb"
+				"res://assets/props/blocky/labCoolingUnit.bbmodel"
 			]
 		},
 		{
 			"id": "controlConsole",
 			"models": [
-				"res://assets/props/blocky/controlConsole.glb"
+				"res://assets/props/blocky/controlConsole.bbmodel"
 			]
 		},
 		{
 			"id": "monitorWall",
 			"models": [
-				"res://assets/props/blocky/monitorWall.glb"
+				"res://assets/props/blocky/monitorWall.bbmodel"
 			]
 		},
 		{
 			"id": "divePod",
 			"models": [
-				"res://assets/props/blocky/divePod.glb"
+				"res://assets/props/blocky/divePod.bbmodel"
 			]
 		},
 		{
 			"id": "divePodFilm",
 			"models": [
-				"res://assets/props/blocky/divePodFilm.glb"
+				"res://assets/props/blocky/divePodFilm.bbmodel"
 			]
 		},
 		{
 			"id": "divePodLit",
 			"models": [
-				"res://assets/props/blocky/divePodLit.glb"
+				"res://assets/props/blocky/divePodLit.bbmodel"
 			],
 			"light": {
 				"color": "8fe6f0",
@@ -75,76 +75,76 @@
 		{
 			"id": "diveHeadsetStand",
 			"models": [
-				"res://assets/props/blocky/diveHeadsetStand.glb"
+				"res://assets/props/blocky/diveHeadsetStand.bbmodel"
 			]
 		},
 		{
 			"id": "diveHeadsetShelf",
 			"models": [
-				"res://assets/props/blocky/diveHeadsetShelf.glb"
+				"res://assets/props/blocky/diveHeadsetShelf.bbmodel"
 			]
 		},
 		{
 			"id": "diveConsole",
 			"models": [
-				"res://assets/props/blocky/diveConsole.glb"
+				"res://assets/props/blocky/diveConsole.bbmodel"
 			]
 		},
 		{
 			"id": "deconShower",
 			"models": [
-				"res://assets/props/blocky/deconShower.glb"
+				"res://assets/props/blocky/deconShower.bbmodel"
 			]
 		},
 		{
 			"id": "coldStorageUnit",
 			"models": [
-				"res://assets/props/blocky/coldStorageUnit.glb"
+				"res://assets/props/blocky/coldStorageUnit.bbmodel"
 			]
 		},
 		{
 			"id": "labWhiteboard",
 			"models": [
-				"res://assets/props/blocky/labWhiteboard.glb"
+				"res://assets/props/blocky/labWhiteboard.bbmodel"
 			]
 		},
 		{
 			"id": "hazardSign",
 			"models": [
-				"res://assets/props/blocky/hazardSign_0.glb",
-				"res://assets/props/blocky/hazardSign_1.glb"
+				"res://assets/props/blocky/hazardSign_0.bbmodel",
+				"res://assets/props/blocky/hazardSign_1.bbmodel"
 			]
 		},
 		{
 			"id": "labGlassPartition",
 			"models": [
-				"res://assets/props/blocky/labGlassPartition.glb"
+				"res://assets/props/blocky/labGlassPartition.bbmodel"
 			]
 		},
 		{
 			"id": "labStool",
 			"models": [
-				"res://assets/props/blocky/labStool_0.glb",
-				"res://assets/props/blocky/labStool_1.glb",
-				"res://assets/props/blocky/labStool_2.glb"
+				"res://assets/props/blocky/labStool_0.bbmodel",
+				"res://assets/props/blocky/labStool_1.bbmodel",
+				"res://assets/props/blocky/labStool_2.bbmodel"
 			]
 		},
 		{
 			"id": "labMicroscope",
 			"models": [
-				"res://assets/props/blocky/labMicroscope.glb"
+				"res://assets/props/blocky/labMicroscope.bbmodel"
 			]
 		},
 		{
 			"id": "gasCylinderRack",
 			"models": [
-				"res://assets/props/blocky/gasCylinderRack.glb"
+				"res://assets/props/blocky/gasCylinderRack.bbmodel"
 			]
 		},
 		{
 			"id": "biohazardBin",
 			"models": [
-				"res://assets/props/blocky/biohazardBin.glb"
+				"res://assets/props/blocky/biohazardBin.bbmodel"
 			]
 		}
 	]

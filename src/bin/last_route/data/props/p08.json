@@ -5,121 +5,121 @@
 		{
 			"id": "mansionGrandfatherClock",
 			"models": [
-				"res://assets/props/mansion/mansion_grandfather_clock.glb"
+				"res://assets/props/mansion/mansion_grandfather_clock.bbmodel"
 			]
 		},
 		{
 			"id": "mansionCoatRack",
 			"models": [
-				"res://assets/props/mansion/mansion_coat_rack.glb"
+				"res://assets/props/mansion/mansion_coat_rack.bbmodel"
 			]
 		},
 		{
 			"id": "mansionTeaCart",
 			"models": [
-				"res://assets/props/mansion/mansion_tea_cart.glb"
+				"res://assets/props/mansion/mansion_tea_cart.bbmodel"
 			]
 		},
 		{
 			"id": "mansionRockingChair",
 			"models": [
-				"res://assets/props/mansion/mansion_rocking_chair.glb"
+				"res://assets/props/mansion/mansion_rocking_chair.bbmodel"
 			]
 		},
 		{
 			"id": "mansionRoomDivider",
 			"models": [
-				"res://assets/props/mansion/mansion_room_divider.glb"
+				"res://assets/props/mansion/mansion_room_divider.bbmodel"
 			]
 		},
 		{
 			"id": "gothicWritingDesk",
 			"models": [
-				"res://assets/props/mansion/gothic_writing_desk.glb"
+				"res://assets/props/mansion/gothic_writing_desk.bbmodel"
 			]
 		},
 		{
 			"id": "gothicBookcase",
 			"models": [
-				"res://assets/props/mansion/gothic_bookcase.glb"
+				"res://assets/props/mansion/gothic_bookcase.bbmodel"
 			]
 		},
 		{
 			"id": "gothicPedestalTable",
 			"models": [
-				"res://assets/props/mansion/gothic_pedestal_table.glb"
+				"res://assets/props/mansion/gothic_pedestal_table.bbmodel"
 			]
 		},
 		{
 			"id": "gothicFloorCandelabra",
 			"models": [
-				"res://assets/props/mansion/gothic_floor_candelabra.glb"
+				"res://assets/props/mansion/gothic_floor_candelabra.bbmodel"
 			]
 		},
 		{
 			"id": "gothicCoffinChest",
 			"models": [
-				"res://assets/props/mansion/gothic_coffin_chest.glb"
+				"res://assets/props/mansion/gothic_coffin_chest.bbmodel"
 			]
 		},
 		{
 			"id": "normalKitchenCounter",
 			"models": [
-				"res://assets/props/mansion/normal_kitchen_counter.glb"
+				"res://assets/props/mansion/normal_kitchen_counter.bbmodel"
 			]
 		},
 		{
 			"id": "normalKitchenSink",
 			"models": [
-				"res://assets/props/mansion/normal_kitchen_sink.glb"
+				"res://assets/props/mansion/normal_kitchen_sink.bbmodel"
 			]
 		},
 		{
 			"id": "normalKitchenStove",
 			"models": [
-				"res://assets/props/mansion/normal_kitchen_stove.glb"
+				"res://assets/props/mansion/normal_kitchen_stove.bbmodel"
 			]
 		},
 		{
 			"id": "normalKitchenFridge",
 			"models": [
-				"res://assets/props/mansion/normal_kitchen_fridge.glb"
+				"res://assets/props/mansion/normal_kitchen_fridge.bbmodel"
 			]
 		},
 		{
 			"id": "normalKitchenWallCabinet",
 			"models": [
-				"res://assets/props/mansion/normal_kitchen_wall_cabinet.glb"
+				"res://assets/props/mansion/normal_kitchen_wall_cabinet.bbmodel"
 			]
 		},
 		{
 			"id": "normalKitchenIsland",
 			"models": [
-				"res://assets/props/mansion/normal_kitchen_island.glb"
+				"res://assets/props/mansion/normal_kitchen_island.bbmodel"
 			]
 		},
 		{
 			"id": "luxuryKitchenCounter",
 			"models": [
-				"res://assets/props/mansion/luxury_kitchen_counter.glb"
+				"res://assets/props/mansion/luxury_kitchen_counter.bbmodel"
 			]
 		},
 		{
 			"id": "luxuryKitchenSink",
 			"models": [
-				"res://assets/props/mansion/luxury_kitchen_sink.glb"
+				"res://assets/props/mansion/luxury_kitchen_sink.bbmodel"
 			]
 		},
 		{
 			"id": "luxuryKitchenStove",
 			"models": [
-				"res://assets/props/mansion/luxury_kitchen_stove.glb"
+				"res://assets/props/mansion/luxury_kitchen_stove.bbmodel"
 			]
 		},
 		{
 			"id": "luxuryKitchenFridge",
 			"models": [
-				"res://assets/props/mansion/luxury_kitchen_fridge.glb"
+				"res://assets/props/mansion/luxury_kitchen_fridge.bbmodel"
 			]
 		}
 	]

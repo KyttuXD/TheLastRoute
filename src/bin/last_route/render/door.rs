@@ -8,7 +8,7 @@
 //! and Z is the depth into the room. Its origin is the opening's centre on the floor.
 
 use crate::world::facility::DoorDraw;
-use macroquad::prelude::{vec3, Mat4, Vec3};
+use macroquad::prelude::{vec3, Mat3, Mat4, Vec3};
 
 /// The hunter clearance the opening must reach (`DoorwayFrames.TARGET_OPENING`, 3.15 m).
 pub const TARGET_OPENING: f32 = 3.15;
@@ -48,6 +48,19 @@ pub fn hinge_deg(node: &str, open: f32) -> Option<f32> {
     closed_hinge_deg(node).map(|closed| closed * (1.0 - swing_ease(open)))
 }
 
+
+/// How far the posts' inner faces stand inside the wall gap on each side (Godot's `DoorwayFrames.POST_PROUD`
+/// is 1 cm). Flush, they would z-fight with the gap's faces; 1 mm is far under the pixel at any distance the
+/// door is drawn from, and keeps the clear opening within 2 mm of the doorway.
+pub const POST_PROUD: f32 = 0.001;
+/// The wall over a door overlaps the frame's top by this much, so the soffit never leaves a crack on the bar.
+pub const HEADER_OVERLAP: f32 = 0.001;
+/// Half the frame's depth (the models' posts and bar run z -0.09 to 0.09).
+pub const FRAME_HALF_DEPTH: f32 = 0.09;
+/// Where a widened frame's posts start to slide out: this share of the clear half-width, so the middle (a crest,
+/// the lintel's ornament) stays as authored (Godot's `WIDE_DOOR_OUTER_SHARE`).
+pub const WIDE_OUTER_SHARE: f32 = 0.6;
+
 /// The door's own measures, read from its model's nodes (see `DoorMeasure`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DoorDims {
@@ -57,6 +70,14 @@ pub struct DoorDims {
     pub top: f32,
     /// The clear width of a single doorway: twice the inner face of the jamb posts.
     pub inner: f32,
+    /// The top of the leaf, closed.
+    pub leaf_top: f32,
+    /// The header bar's underside: where the leaf must reach.
+    pub header: f32,
+    /// The header bar's top: where the wall over the door meets the frame.
+    pub bar_top: f32,
+    /// Two leaves (a `DoorHingeRight` hinge), meeting in the middle.
+    pub double: bool,
 }
 
 /// Collects the door measures while a model's nodes are walked. The leaf is every vertex under a closed
@@ -64,8 +85,10 @@ pub struct DoorDims {
 #[derive(Clone, Copy, Debug)]
 pub struct DoorMeasure {
     hinged: bool,
+    double: bool,
     leaf_top: f32,
     header_low: f32,
+    header_high: f32,
     jamb_inner: f32,
 }
 
@@ -73,17 +96,20 @@ impl Default for DoorMeasure {
     fn default() -> Self {
         DoorMeasure {
             hinged: false,
+            double: false,
             leaf_top: f32::MIN,
             header_low: f32::MAX,
+            header_high: f32::MIN,
             jamb_inner: f32::MAX,
         }
     }
 }
 
 impl DoorMeasure {
-    /// The model has a hinge node: it is a door.
-    pub fn hinge(&mut self) {
+    /// The model has a hinge node (named `name`): it is a door.
+    pub fn hinge(&mut self, name: &str) {
         self.hinged = true;
+        self.double |= name == "DoorHingeRight";
     }
 
     /// A world-space vertex under a closed hinge.
@@ -94,6 +120,7 @@ impl DoorMeasure {
     /// A world-space vertex of `DoorFrameTop`.
     pub fn header_vertex(&mut self, y: f32) {
         self.header_low = self.header_low.min(y);
+        self.header_high = self.header_high.max(y);
     }
 
     /// A world-space vertex of `DoorFrameL` or `DoorFrameR`; the post's inner face is its smallest |x|.
@@ -111,6 +138,10 @@ impl DoorMeasure {
             opening: self.leaf_top.min(self.header_low),
             top,
             inner: 2.0 * self.jamb_inner,
+            leaf_top: self.leaf_top,
+            header: self.header_low,
+            bar_top: self.header_high,
+            double: self.double,
         })
     }
 }
@@ -122,9 +153,10 @@ pub fn raise_scale(opening: f32, top: f32, cap: f32) -> f32 {
 }
 
 /// The widen (route_interactable_3d.gd:1025): the scale of the visual's X that fills a doorway `span` metres
-/// wide, with the frame's inner width `inner`, held to between 1 and 1.25. Z is not scaled.
+/// wide, with the frame's inner width `inner`, held to between 1 and 1.25. Z is not scaled. A doorway wider
+/// than the clamp allows is finished by `DoorFit::shift`.
 pub fn widen_scale(span: f32, inner: f32) -> f32 {
-    ((span - 0.02) / inner).clamp(1.0, MAX_WIDEN)
+    ((span - 2.0 * POST_PROUD) / inner).clamp(1.0, MAX_WIDEN)
 }
 
 /// The raise cap by door type: gothic doors have the taller spire.
@@ -143,10 +175,125 @@ pub fn door_scale(dims: DoorDims, ptype: &str, span: i32) -> (f32, f32) {
     (sx, sy)
 }
 
-/// The underside of the wall over a door (Godot's `DoorwayFrames.header_y`): just under the raised frame's top
-/// (`dims.top * sy`), and never above `wall_top`, so the header runs up to the ceiling.
+/// How a door model is fitted to its doorway: the uniform raise and widen (`door_transform`), and for a doorway
+/// wider than the widen allows (a three-cell double door) the posts slide out the rest of the way, as Godot's
+/// `_widen_double_door` rebuilds the frame instead of stretching it. All lengths but `sx` and `sy` are in the
+/// model's own units, before the scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DoorFit {
+    pub sx: f32,
+    pub sy: f32,
+    /// How far each side's posts and sill slide outward (0 when the widen alone fills the doorway).
+    pub shift: f32,
+    /// Static-frame vertices at |x| of at least this slide.
+    pub from: f32,
+    /// Half the clear width once fitted: the posts' inner faces, and where the leaves end.
+    pub jamb: f32,
+}
+
+impl DoorFit {
+    /// The fit of `dims` into a doorway `span` cells wide.
+    pub fn new(dims: DoorDims, ptype: &str, span: i32) -> DoorFit {
+        let (sx, sy) = door_scale(dims, ptype, span);
+        let want = (span as f32 - 2.0 * POST_PROUD) / sx;
+        let shift = ((want - dims.inner) * 0.5).max(0.0);
+        DoorFit {
+            sx,
+            sy,
+            shift,
+            from: dims.inner * 0.5 * WIDE_OUTER_SHARE,
+            jamb: dims.inner * 0.5 + shift,
+        }
+    }
+
+    /// A frame vertex's model X after the posts slide out.
+    pub fn body_x(&self, x: f32) -> f32 {
+        if self.shift > 0.0 && x.abs() >= self.from {
+            x + x.signum() * self.shift
+        } else {
+            x
+        }
+    }
+}
+
+/// How one leaf is fitted between the posts: its X span is stretched along its own width (`widen`) and moved
+/// (`dx`, model space) so the closed leaf ends exactly on the jamb's inner face and on the other leaf, and its
+/// height is stretched (`ky`) to meet the header bar. `axis` is the leaf's width direction in the hinge's frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LeafFit {
+    pub widen: f32,
+    pub dx: f32,
+    pub ky: f32,
+    pub axis: Vec3,
+}
+
+impl LeafFit {
+    /// No change.
+    pub const NONE: LeafFit = LeafFit {
+        widen: 1.0,
+        dx: 0.0,
+        ky: 1.0,
+        axis: Vec3::X,
+    };
+}
+
+/// The fit of the leaf under hinge `name`, whose closed leaf spans model X `closed_x` (low, high) and whose
+/// pivot is the end at the jamb (the low end for `DoorHinge`, the high end for `DoorHingeRight`). A single door's
+/// leaf fills jamb to jamb; each leaf of a double door fills its jamb to the middle.
+pub fn leaf_fit(dims: DoorDims, fit: &DoorFit, name: &str, closed_x: (f32, f32)) -> LeafFit {
+    let Some(deg) = closed_hinge_deg(name) else {
+        return LeafFit::NONE;
+    };
+    let right = name == "DoorHingeRight";
+    let (lo, hi) = closed_x;
+    let (t_lo, t_hi) = match (right, dims.double) {
+        (false, false) => (-fit.jamb, fit.jamb),
+        (false, true) => (-fit.jamb, 0.0),
+        (true, _) => (0.0, fit.jamb),
+    };
+    let widen = if hi - lo > 1e-4 { (t_hi - t_lo) / (hi - lo) } else { 1.0 };
+    let dx = if right { t_hi - hi } else { t_lo - lo };
+    let ky = if dims.leaf_top > 0.0 && dims.header > 0.0 {
+        dims.header / dims.leaf_top
+    } else {
+        1.0
+    };
+    LeafFit {
+        widen,
+        dx,
+        ky,
+        axis: Mat4::from_rotation_y((-deg).to_radians()).transform_vector3(Vec3::X),
+    }
+}
+
+/// A hinge leaf's model transform at open amount `open`: the swing about the hinge (`hinge_deg`), the leaf
+/// stretched in its own frame, and the pivot moved to the fitted jamb. `base` and `local` are the hinge's parent
+/// transform and authored local transform.
+pub fn leaf_xf(base: Mat4, local: Mat4, name: &str, open: f32, fit: &LeafFit) -> Mat4 {
+    let deg = hinge_deg(name, open).unwrap_or(0.0);
+    let u = fit.axis;
+    let grow = fit.widen - 1.0;
+    // I + (widen - 1) u u^T: a stretch along the leaf's width only
+    let stretch = Mat3::from_cols(
+        Vec3::X + u * (grow * u.x),
+        Vec3::Y + u * (grow * u.y),
+        Vec3::Z + u * (grow * u.z),
+    );
+    let tall = Mat3::from_diagonal(vec3(1.0, fit.ky, 1.0));
+    Mat4::from_translation(vec3(fit.dx, 0.0, 0.0)) * base * closed_hinge_local(local, deg) * Mat4::from_mat3(tall * stretch)
+}
+
+/// The underside of the wall over a door: just under the raised frame's top (`dims.top * sy`, so a crest or spire
+/// stands in the recess), and never above `wall_top`, so the header runs up to the ceiling.
 pub fn header_bottom(dims: DoorDims, sy: f32, wall_top: f32) -> f32 {
-    (dims.top * sy - 0.02).min(wall_top)
+    (dims.top * sy - HEADER_OVERLAP).min(wall_top)
+}
+
+/// Where the filler between the header bar and the soffit starts: the bar's top, raised. It is `None` when the
+/// bar is the frame's top (a plain door), so the wall meets the bar with nothing between.
+pub fn filler_from(dims: DoorDims, sy: f32) -> Option<f32> {
+    let from = dims.bar_top * sy - HEADER_OVERLAP;
+    (dims.top * sy - HEADER_OVERLAP - from > 2.0 * HEADER_OVERLAP + 1e-4).then_some(from)
 }
 
 /// The door's transform: the origin on the floor, then the yaw, then the scale in the door's own axes, as
@@ -180,51 +327,78 @@ pub fn draw_for(cell: (i32, i32), doorway: &[(i32, i32)]) -> DoorDraw {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gltf::Gltf;
+    use serde_json::Value;
 
-    const NORMAL_SINGLE: &[u8] = include_bytes!("../assets/props/mansion/normal_room_door.glb");
-    const NORMAL_DOUBLE: &[u8] = include_bytes!("../assets/props/mansion/normal_double_room_door.glb");
+    // the models' bbmodel text: the tests read the same groups and pivots the loader reads (render/prop_model.rs), without a
+    // graphics context
+    const NORMAL_SINGLE: &str = include_str!("../assets/props/mansion/normal_room_door.bbmodel");
+    const NORMAL_DOUBLE: &str = include_str!("../assets/props/mansion/normal_double_room_door.bbmodel");
 
     fn close(a: f32, b: f32, tol: f32) -> bool {
         (a - b).abs() <= tol
     }
 
-    /// The door's measures, read from the GLB's node tree the same way `GlbModel::parse` reads it.
-    fn measure(bytes: &[u8]) -> DoorDims {
-        let g = Gltf::from_slice(bytes).expect("a glb");
-        let blob = g.blob.as_deref().expect("a binary glb");
-        let scene = g.default_scene().or_else(|| g.scenes().next()).expect("a scene");
-        let mut stack: Vec<(gltf::Node, Mat4, bool)> =
-            scene.nodes().map(|n| (n, Mat4::IDENTITY, false)).collect();
+    fn vec_of(v: &Value) -> Vec3 {
+        let a = v.as_array().expect("a vector");
+        let g = |i: usize| a[i].as_f64().expect("a number") as f32;
+        vec3(g(0), g(1), g(2))
+    }
+
+    /// An element's corner points in metres: a mesh's vertices, a cube's eight corners.
+    fn element_points(e: &Value) -> Vec<Vec3> {
+        if e["type"].as_str() == Some("mesh") {
+            return e["vertices"].as_object().expect("vertices").values().map(|v| vec_of(v) / 16.0).collect();
+        }
+        let (f, t) = (vec_of(&e["from"]), vec_of(&e["to"]));
+        (0..8)
+            .map(|i| vec3(if i & 1 == 0 { f.x } else { t.x }, if i & 2 == 0 { f.y } else { t.y }, if i & 4 == 0 { f.z } else { t.z }) / 16.0)
+            .collect()
+    }
+
+    /// A model's points by outliner group in metres: (group name, group pivot, points); an element outside any group
+    /// is in the group "" with the origin as its pivot.
+    fn model_points(text: &str) -> Vec<(String, Vec3, Vec<Vec3>)> {
+        let j: Value = serde_json::from_str(text).expect("a bbmodel");
+        let by_uuid = |u: &str| -> Vec<Vec3> {
+            let e = j["elements"].as_array().expect("elements").iter().find(|e| e["uuid"].as_str() == Some(u)).expect("an element");
+            element_points(e)
+        };
+        let mut out: Vec<(String, Vec3, Vec<Vec3>)> = vec![];
+        for node in j["outliner"].as_array().expect("an outliner") {
+            match node.as_str() {
+                Some(u) => out.push((String::new(), Vec3::ZERO, by_uuid(u))),
+                None => {
+                    let pts = node["children"].as_array().expect("children").iter().flat_map(|c| by_uuid(c.as_str().expect("an element"))).collect();
+                    out.push((node["name"].as_str().expect("a name").to_string(), vec_of(&node["origin"]) / 16.0, pts));
+                }
+            }
+        }
+        out
+    }
+
+    /// The door's measures, read from the model's groups the same way `PropModel::parse` reads them: the leaf under
+    /// the closed hinge, the header and the posts by group name.
+    fn measure(text: &str) -> DoorDims {
         let mut measure = DoorMeasure::default();
         let mut top = f32::MIN;
-        while let Some((node, parent, under)) = stack.pop() {
-            let name = node.name().unwrap_or("").to_string();
-            let mut local = Mat4::from_cols_array_2d(&node.transform().matrix());
-            if let Some(deg) = closed_hinge_deg(&name) {
-                local = closed_hinge_local(local, deg);
-                measure.hinge();
+        for (name, pivot, pts) in model_points(text) {
+            let deg = closed_hinge_deg(&name);
+            if deg.is_some() {
+                measure.hinge(&name);
             }
-            let world = parent * local;
-            let under = under || closed_hinge_deg(&name).is_some();
-            for child in node.children() {
-                stack.push((child, world, under));
-            }
-            let Some(mesh) = node.mesh() else { continue };
-            for prim in mesh.primitives() {
-                let reader = prim.reader(|_| Some(blob));
-                let Some(positions) = reader.read_positions() else { continue };
-                for p in positions {
-                    let w = world.transform_point3(Vec3::from(p));
-                    top = top.max(w.y);
-                    if under {
-                        measure.leaf_vertex(w.y);
-                    }
-                    match name.as_str() {
-                        "DoorFrameTop" => measure.header_vertex(w.y),
-                        "DoorFrameL" | "DoorFrameR" => measure.jamb_vertex(w.x),
-                        _ => {}
-                    }
+            for p in pts {
+                let w = match deg {
+                    Some(deg) => closed_hinge_local(Mat4::from_translation(pivot), deg).transform_point3(p - pivot),
+                    None => p,
+                };
+                top = top.max(w.y);
+                if deg.is_some() {
+                    measure.leaf_vertex(w.y);
+                }
+                match name.as_str() {
+                    "DoorFrameTop" => measure.header_vertex(w.y),
+                    "DoorFrameL" | "DoorFrameR" => measure.jamb_vertex(w.x),
+                    _ => {}
                 }
             }
         }
@@ -232,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn normal_single_door_reads_its_opening_and_jambs_from_the_glb() {
+    fn normal_single_door_reads_its_opening_and_jambs_from_the_model() {
         let dims = measure(NORMAL_SINGLE);
         assert!(close(dims.opening, 2.37, 0.005), "opening {}", dims.opening);
         assert!(close(dims.top, 2.55, 0.005), "top {}", dims.top);
@@ -244,16 +418,16 @@ mod tests {
         let dims = measure(NORMAL_SINGLE);
         let (sx, sy) = door_scale(dims, "normalRoomDoor", 1);
         assert!(close(sy, 1.329, 0.002), "sy {sy}");
-        assert!(close(sx, 1.114, 0.002), "sx {sx}");
+        assert!(close(sx, 1.134, 0.002), "sx {sx}");
         // the frame top and the leaf top after the raise (3.39 m and 3.15 m)
         let xf = door_transform(Vec3::ZERO, 0.0, sx, sy, 1.0);
         let frame_top = xf.transform_point3(vec3(0.0, 2.55, 0.0)).y;
         let leaf_top = xf.transform_point3(vec3(0.0, 2.37, 0.0)).y;
         assert!(close(frame_top, 3.39, 0.01), "frame top {frame_top}");
         assert!(close(leaf_top, 3.15, 0.01), "leaf top {leaf_top}");
-        // the hinge pivot (the jamb, x -0.43 m) moves out to -0.479 m with the widen
+        // the hinge pivot (the jamb, x -0.43 m) moves out to -0.4876 m with the widen
         let hinge = xf.transform_point3(vec3(-0.43, 0.0, 0.0));
-        assert!(close(hinge.x, -0.479, 0.002), "hinge x {}", hinge.x);
+        assert!(close(hinge.x, -0.4876, 0.002), "hinge x {}", hinge.x);
         assert!(close(hinge.y, 0.0, 1e-6) && close(hinge.z, 0.0, 1e-6), "hinge pivot {hinge:?}");
     }
 
@@ -295,11 +469,11 @@ mod tests {
         assert_eq!(doorway_offset((4, 2), &[(4, 2)]), [0.0, 0.0]);
         let draw = draw_for((4, 2), &[(4, 2), (5, 2)]);
         assert_eq!(draw.span, 2);
-        // The double door GLB widens by 1.031 (1.98 m over its 1.92 m frame), and the closed hinges sit at +-0.96.
+        // The double door model widens by 1.041 (1.998 m over its 1.92 m frame), and the closed hinges sit at +-0.96.
         let dims = measure(NORMAL_DOUBLE);
         assert!(close(dims.inner, 1.92, 0.005), "double inner {}", dims.inner);
         let (sx, sy) = door_scale(dims, "normalDoubleRoomDoor", 2);
-        assert!(close(sx, 1.031, 0.002), "double sx {sx}");
+        assert!(close(sx, 1.041, 0.002), "double sx {sx}");
         assert!(close(sy, 1.329, 0.002), "double sy {sy}");
     }
 
@@ -309,9 +483,236 @@ mod tests {
         assert!(close(raise_scale(3.5, 3.6, RAISE_CAP), 1.0, 1e-6));
         assert!(close(raise_scale(2.37, 2.55, RAISE_CAP), 1.329, 0.002));
         assert_eq!(raise_scale(2.0, 4.0, RAISE_CAP), 1.0);
-        assert!(close(widen_scale(1.0, 0.88), 1.114, 0.002));
+        assert!(close(widen_scale(1.0, 0.88), 1.134, 0.002));
         assert!(close(widen_scale(3.0, 0.88), 1.25, 1e-6));
         assert_eq!(raise_cap("gothicRoomDoor"), GOTHIC_RAISE_CAP);
         assert_eq!(raise_cap("normalRoomDoor"), RAISE_CAP);
+    }
+
+    const GOTHIC_SINGLE: &str = include_str!("../assets/props/mansion/gothic_room_door.bbmodel");
+    const GOTHIC_DOUBLE: &str = include_str!("../assets/props/mansion/gothic_double_room_door.bbmodel");
+    const LUXURY_SINGLE: &str = include_str!("../assets/props/mansion/luxury_room_door.bbmodel");
+    const LUXURY_DOUBLE: &str = include_str!("../assets/props/mansion/luxury_double_room_door.bbmodel");
+
+    /// Every door model with its prop type, and whether it is a double door.
+    fn all_models() -> Vec<(&'static str, &'static str, bool)> {
+        vec![
+            ("normalRoomDoor", NORMAL_SINGLE, false),
+            ("luxuryRoomDoor", LUXURY_SINGLE, false),
+            ("gothicRoomDoor", GOTHIC_SINGLE, false),
+            ("normalDoubleRoomDoor", NORMAL_DOUBLE, true),
+            ("luxuryDoubleRoomDoor", LUXURY_DOUBLE, true),
+            ("gothicDoubleRoomDoor", GOTHIC_DOUBLE, true),
+        ]
+    }
+
+    /// An axis-aligned box.
+    #[derive(Clone, Copy)]
+    struct Bounds {
+        lo: Vec3,
+        hi: Vec3,
+    }
+
+    impl Bounds {
+        fn empty() -> Bounds {
+            Bounds {
+                lo: Vec3::splat(f32::MAX),
+                hi: Vec3::splat(f32::MIN),
+            }
+        }
+        fn add(&mut self, p: Vec3) {
+            self.lo = self.lo.min(p);
+            self.hi = self.hi.max(p);
+        }
+    }
+
+    /// One hinge of a door model as the model loader keeps it: its frame, and its leaf's vertices in that frame.
+    struct TestHinge {
+        name: String,
+        base: Mat4,
+        local: Mat4,
+        verts: Vec<Vec3>,
+    }
+
+    /// A door model split the way `PropModel::parse` splits it: the frame's vertices by node name (model space,
+    /// hinges closed) and the hinges.
+    struct TestDoor {
+        body: Vec<(String, Vec3)>,
+        hinges: Vec<TestHinge>,
+    }
+
+    fn load(text: &str) -> TestDoor {
+        let mut door = TestDoor { body: vec![], hinges: vec![] };
+        for (name, pivot, pts) in model_points(text) {
+            if closed_hinge_deg(&name).is_some() {
+                door.hinges.push(TestHinge {
+                    name,
+                    base: Mat4::IDENTITY,
+                    local: Mat4::from_translation(pivot),
+                    verts: pts.into_iter().map(|p| p - pivot).collect(),
+                });
+            } else {
+                door.body.extend(pts.into_iter().map(|p| (name.clone(), p)));
+            }
+        }
+        door
+    }
+
+    /// The closed leaf's span along the model's X, before any fit (what `Hinge::closed_x` holds).
+    fn closed_x(h: &TestHinge) -> (f32, f32) {
+        let xf = h.base * closed_hinge_local(h.local, closed_hinge_deg(&h.name).unwrap());
+        h.verts.iter().fold((f32::MAX, f32::MIN), |acc, v| {
+            let x = xf.transform_point3(*v).x;
+            (acc.0.min(x), acc.1.max(x))
+        })
+    }
+
+    /// The built door of a doorway `span` cells wide, in the doorway's own frame (origin on the floor at the
+    /// centre, X along the wall, as `door_xf` places it): the frame node `name`'s box, and each leaf's box at `open`.
+    struct Built {
+        frame: Vec<(String, Bounds)>,
+        leaves: Vec<Bounds>,
+        fit: DoorFit,
+        dims: DoorDims,
+    }
+
+    fn build(text: &str, ptype: &str, span: i32, open: f32) -> Built {
+        let dims = measure(text);
+        let door = load(text);
+        let fit = DoorFit::new(dims, ptype, span);
+        let xf = door_transform(Vec3::ZERO, 0.0, fit.sx, fit.sy, 1.0);
+        let mut frame: Vec<(String, Bounds)> = vec![];
+        for (name, p) in &door.body {
+            let w = xf.transform_point3(vec3(fit.body_x(p.x), p.y, p.z));
+            match frame.iter_mut().find(|(n, _)| n == name) {
+                Some((_, b)) => b.add(w),
+                None => {
+                    let mut b = Bounds::empty();
+                    b.add(w);
+                    frame.push((name.clone(), b));
+                }
+            }
+        }
+        let leaves = door
+            .hinges
+            .iter()
+            .map(|h| {
+                let leaf = leaf_fit(dims, &fit, &h.name, closed_x(h));
+                let m = xf * leaf_xf(h.base, h.local, &h.name, open, &leaf);
+                let mut b = Bounds::empty();
+                for v in &h.verts {
+                    b.add(m.transform_point3(*v));
+                }
+                b
+            })
+            .collect();
+        Built { frame, leaves, fit, dims }
+    }
+
+    impl Built {
+        fn frame(&self, name: &str) -> Bounds {
+            self.frame.iter().find(|(n, _)| n == name).unwrap_or_else(|| panic!("no {name}")).1
+        }
+    }
+
+    /// The wall opening of a doorway `span` cells wide is `span` metres between the wall ends. For every door model
+    /// and doorway width, the posts' inner faces stand within 1 mm of those wall ends (and the posts reach into the
+    /// wall, so no gap shows behind them), the closed leaves fill the clear opening edge to edge and meet in the
+    /// middle, and the leaves reach the header bar's underside.
+    #[test]
+    fn doors_fill_their_doorway_flush_with_the_wall_ends() {
+        let mm = 0.001 + 1e-4;
+        for (ptype, text, double) in all_models() {
+            let spans: Vec<i32> = if double { vec![2, 3] } else { vec![1] };
+            for span in spans {
+                let b = build(text, ptype, span, 0.0);
+                let half = span as f32 / 2.0;
+                let (l, r, top) = (b.frame("DoorFrameL"), b.frame("DoorFrameR"), b.frame("DoorFrameTop"));
+                let ctx = format!("{ptype} span {span}");
+                // hinge side and latch side: the posts' inner faces on the wall ends, their outer faces in the wall
+                assert!((l.hi.x + half).abs() <= mm, "{ctx}: left post inner {} vs wall end {}", l.hi.x, -half);
+                assert!((r.lo.x - half).abs() <= mm, "{ctx}: right post inner {} vs wall end {}", r.lo.x, half);
+                assert!(l.lo.x <= -half && r.hi.x >= half, "{ctx}: posts reach into the wall");
+                // the bar spans wall end to wall end (it runs into the wall on both sides)
+                assert!(top.lo.x <= -half && top.hi.x >= half, "{ctx}: bar {}..{}", top.lo.x, top.hi.x);
+                // the leaves fill the clear opening edge to edge
+                let lo = b.leaves.iter().map(|x| x.lo.x).fold(f32::MAX, f32::min);
+                let hi = b.leaves.iter().map(|x| x.hi.x).fold(f32::MIN, f32::max);
+                assert!((lo - l.hi.x).abs() <= 0.001, "{ctx}: leaf low {lo} vs post {}", l.hi.x);
+                assert!((hi - r.lo.x).abs() <= 0.001, "{ctx}: leaf high {hi} vs post {}", r.lo.x);
+                if double {
+                    assert_eq!(b.leaves.len(), 2, "{ctx}");
+                    let (a, c) = (b.leaves[0], b.leaves[1]);
+                    let (left, right) = if a.lo.x < c.lo.x { (a, c) } else { (c, a) };
+                    assert!((left.hi.x - right.lo.x).abs() <= 0.001, "{ctx}: leaves meet at {} / {}", left.hi.x, right.lo.x);
+                    assert!(left.hi.x.abs() <= 0.001, "{ctx}: leaves meet in the middle ({})", left.hi.x);
+                } else {
+                    assert_eq!(b.leaves.len(), 1, "{ctx}");
+                }
+                // the top: the leaf reaches the bar's underside, so no crack shows over it
+                for leaf in &b.leaves {
+                    assert!((leaf.hi.y - top.lo.y).abs() <= 0.001, "{ctx}: leaf top {} vs bar underside {}", leaf.hi.y, top.lo.y);
+                    assert!(leaf.lo.y >= -1e-4 && leaf.lo.y <= 0.05, "{ctx}: leaf stands on the floor ({})", leaf.lo.y);
+                }
+                // the wall over the door meets the frame: the soffit overlaps the bar's top by under 1 mm (or a
+                // filler band spans the gap above the bar up to a crest's top)
+                let bottom = header_bottom(b.dims, b.fit.sy, 5.0);
+                let bar_top = top.hi.y;
+                match filler_from(b.dims, b.fit.sy) {
+                    None => assert!((bottom - bar_top).abs() <= mm, "{ctx}: soffit {bottom} vs bar top {bar_top}"),
+                    Some(from) => {
+                        assert!((from - bar_top).abs() <= mm, "{ctx}: filler from {from} vs bar top {bar_top}");
+                        let crest = b.frame.iter().map(|(_, x)| x.hi.y).fold(f32::MIN, f32::max);
+                        assert!((bottom - crest).abs() <= mm, "{ctx}: soffit {bottom} vs crest top {crest}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The gap reported in the field: a three-cell double door used to stop at the widen's clamp (1.25), leaving
+    /// 29 cm between each post and the wall end. The posts now slide out to the wall ends, and the leaves widen.
+    #[test]
+    fn three_cell_double_door_no_longer_leaves_a_gap_at_the_wall_ends() {
+        let dims = measure(NORMAL_DOUBLE);
+        let fit = DoorFit::new(dims, "normalDoubleRoomDoor", 3);
+        assert!(close(fit.sx, MAX_WIDEN, 1e-6), "clamped widen {}", fit.sx);
+        assert!(fit.shift > 0.2, "the posts slide out the rest of the way ({})", fit.shift);
+        // without the slide the inner face stands at 1.2 m of the 1.5 m wall end
+        assert!(close(dims.inner * 0.5 * fit.sx, 1.2, 0.01));
+        let b = build(NORMAL_DOUBLE, "normalDoubleRoomDoor", 3, 0.0);
+        let inner = b.frame("DoorFrameR").lo.x;
+        assert!(close(inner, 1.5, 0.0011), "right post inner face {inner}");
+        // an open leaf keeps its widened width: it stands further out than a two-cell leaf's
+        let open = build(NORMAL_DOUBLE, "normalDoubleRoomDoor", 3, 1.0);
+        let two = build(NORMAL_DOUBLE, "normalDoubleRoomDoor", 2, 1.0);
+        let reach = |x: &Built| x.leaves.iter().map(|l| l.hi.z - l.lo.z).fold(f32::MIN, f32::max);
+        assert!(reach(&open) > reach(&two), "{} vs {}", reach(&open), reach(&two));
+    }
+
+    /// A door with a crest (luxury) or a spire (gothic) is taller than its bar: the wall over it starts above the
+    /// crest, and a filler band closes the slit between the bar and that soffit. A plain door needs none.
+    #[test]
+    fn crest_doors_get_a_filler_and_plain_doors_do_not() {
+        let plain = build(NORMAL_SINGLE, "normalRoomDoor", 1, 0.0);
+        assert!(filler_from(plain.dims, plain.fit.sy).is_none());
+        for (ptype, text) in [("luxuryRoomDoor", LUXURY_SINGLE), ("gothicRoomDoor", GOTHIC_SINGLE)] {
+            let b = build(text, ptype, 1, 0.0);
+            let from = filler_from(b.dims, b.fit.sy).unwrap_or_else(|| panic!("{ptype} needs a filler"));
+            assert!(from < header_bottom(b.dims, b.fit.sy, 5.0), "{ptype}");
+        }
+    }
+
+    /// The doorway's wall ends are cell boundaries: a doorway of cells x0..x0+span centred at x0 + span/2 has its ends
+    /// `span / 2` either side, which is where the posts stand.
+    #[test]
+    fn doorway_centre_puts_the_wall_ends_on_cell_boundaries() {
+        for span in 1..=3 {
+            let cells: Vec<(i32, i32)> = (0..span).map(|i| (4 + i, 2)).collect();
+            let offset = doorway_offset((4, 2), &cells);
+            let centre = 4.5 + offset[0];
+            assert!(close(centre - span as f32 / 2.0, 4.0, 1e-5), "span {span}: left end {}", centre - span as f32 / 2.0);
+            assert!(close(centre + span as f32 / 2.0, (4 + span) as f32, 1e-5), "span {span}");
+        }
     }
 }

@@ -5,63 +5,63 @@
 		{
 			"id": "corridorCarpet",
 			"models": [
-				"res://assets/props/mansion/corridor_carpet_teal.glb",
-				"res://assets/props/mansion/corridor_carpet_burgundy.glb"
+				"res://assets/props/mansion/corridor_carpet_teal.bbmodel",
+				"res://assets/props/mansion/corridor_carpet_burgundy.bbmodel"
 			]
 		},
 		{
 			"id": "hotelCarpet",
 			"models": [
-				"res://assets/props/mansion/hotel_carpet_burgundy.glb",
-				"res://assets/props/mansion/hotel_carpet_navy.glb",
-				"res://assets/props/mansion/hotel_carpet_ivory.glb"
+				"res://assets/props/mansion/hotel_carpet_burgundy.bbmodel",
+				"res://assets/props/mansion/hotel_carpet_navy.bbmodel",
+				"res://assets/props/mansion/hotel_carpet_ivory.bbmodel"
 			]
 		},
 		{
 			"id": "apartmentCarpet",
 			"models": [
-				"res://assets/props/mansion/apartment_carpet_olive.glb",
-				"res://assets/props/mansion/apartment_carpet_charcoal.glb",
-				"res://assets/props/mansion/apartment_carpet_rust.glb"
+				"res://assets/props/mansion/apartment_carpet_olive.bbmodel",
+				"res://assets/props/mansion/apartment_carpet_charcoal.bbmodel",
+				"res://assets/props/mansion/apartment_carpet_rust.bbmodel"
 			]
 		},
 		{
 			"id": "beachMat",
 			"models": [
-				"res://assets/props/mansion/beach_mat_teal.glb",
-				"res://assets/props/mansion/beach_mat_sun.glb"
+				"res://assets/props/mansion/beach_mat_teal.bbmodel",
+				"res://assets/props/mansion/beach_mat_sun.bbmodel"
 			]
 		},
 		{
 			"id": "mansionBookshelf",
 			"models": [
-				"res://assets/props/mansion/mansion_bookshelf.glb"
+				"res://assets/props/mansion/mansion_bookshelf.bbmodel"
 			]
 		},
 		{
 			"id": "mansionFireplace",
 			"models": [
-				"res://assets/props/mansion/mansion_fireplace.glb"
+				"res://assets/props/mansion/mansion_fireplace.bbmodel"
 			]
 		},
 		{
 			"id": "magazineRack",
 			"models": [
-				"res://assets/props/mansion/magazine_rack.glb"
+				"res://assets/props/mansion/magazine_rack.bbmodel"
 			]
 		},
 		{
 			"id": "tableCandelabra",
 			"models": [
-				"res://assets/props/mansion/table_candelabra.glb"
+				"res://assets/props/mansion/table_candelabra.bbmodel"
 			]
 		},
 		{
 			"id": "wallSconce",
 			"models": [
-				"res://assets/props/mansion/wall_sconce.glb",
-				"res://assets/props/mansion/wall_sconce_cool.glb",
-				"res://assets/props/mansion/wall_sconce_gothic.glb"
+				"res://assets/props/mansion/wall_sconce.bbmodel",
+				"res://assets/props/mansion/wall_sconce_cool.bbmodel",
+				"res://assets/props/mansion/wall_sconce_gothic.bbmodel"
 			],
 			"light": {
 				"color": "ffd292",
@@ -77,67 +77,67 @@
 		{
 			"id": "bathroomStall",
 			"models": [
-				"res://assets/props/mansion/bathroom_stall.glb"
+				"res://assets/props/mansion/bathroom_stall.bbmodel"
 			]
 		},
 		{
 			"id": "bathroomSink",
 			"models": [
-				"res://assets/props/mansion/bathroom_sink.glb"
+				"res://assets/props/mansion/bathroom_sink.bbmodel"
 			]
 		},
 		{
 			"id": "bathroomMirror",
 			"models": [
-				"res://assets/props/mansion/bathroom_mirror.glb"
+				"res://assets/props/mansion/bathroom_mirror.bbmodel"
 			]
 		},
 		{
 			"id": "bathroomVanity",
 			"models": [
-				"res://assets/props/mansion/bathroom_vanity.glb"
+				"res://assets/props/mansion/bathroom_vanity.bbmodel"
 			]
 		},
 		{
 			"id": "publicRestroomToilet",
 			"models": [
-				"res://assets/props/mansion/public_restroom_toilet.glb"
+				"res://assets/props/mansion/public_restroom_toilet.bbmodel"
 			]
 		},
 		{
 			"id": "publicMensUrinal",
 			"models": [
-				"res://assets/props/mansion/public_mens_urinal.glb"
+				"res://assets/props/mansion/public_mens_urinal.bbmodel"
 			]
 		},
 		{
 			"id": "publicSinkBank",
 			"models": [
-				"res://assets/props/mansion/public_sink_bank.glb"
+				"res://assets/props/mansion/public_sink_bank.bbmodel"
 			]
 		},
 		{
 			"id": "publicHandDryer",
 			"models": [
-				"res://assets/props/mansion/public_hand_dryer.glb"
+				"res://assets/props/mansion/public_hand_dryer.bbmodel"
 			]
 		},
 		{
 			"id": "publicSoapDispenser",
 			"models": [
-				"res://assets/props/mansion/public_soap_dispenser.glb"
+				"res://assets/props/mansion/public_soap_dispenser.bbmodel"
 			]
 		},
 		{
 			"id": "publicPaperTowelDispenser",
 			"models": [
-				"res://assets/props/mansion/public_paper_towel_dispenser.glb"
+				"res://assets/props/mansion/public_paper_towel_dispenser.bbmodel"
 			]
 		},
 		{
 			"id": "publicBabyChangeStation",
 			"models": [
-				"res://assets/props/mansion/public_baby_change_station.glb"
+				"res://assets/props/mansion/public_baby_change_station.bbmodel"
 			]
 		}
 	]

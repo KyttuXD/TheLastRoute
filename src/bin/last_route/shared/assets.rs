@@ -1,12 +1,12 @@
 //! Everything drawn from files: the original's region wall/floor pictures, the hunters'
-//! Blockbench models and portraits, the props rebuilt as Blockbench models, the inventory
-//! icons and the app icon. Fonts are the system faces the original asks for (Courier New bold
+//! Blockbench models and portraits, the props and interactables (Blockbench models too), the
+//! inventory icons and the app icon. Fonts are the system faces the original asks for (Courier New bold
 //! for text, Impact for titles).
 
 use crate::content::{embedded, packs, Content};
 use crate::render::bbmodel::Model;
 use crate::render::builder::white_texture;
-use crate::render::glb::GlbModel;
+use crate::render::prop_model::{AtlasCache, PropModel};
 use crate::world::TEXTURE_SETS;
 use macroquad::prelude::*;
 use std::collections::HashMap;
@@ -22,10 +22,9 @@ pub struct Assets {
     /// The NPC teammates' body (game/npc.rs): the base hunter model (dovelle) parsed at the runner's height.
     pub npc_body: Option<Model>,
     pub portraits: HashMap<String, Texture2D>,
-    pub props: HashMap<String, Model>,
-    /// The original's Blender exports by asset path: props/<set>/<name>.glb and interactables/<name>.glb
-    /// (and "pack:<id>:<path>" for pack props).
-    pub glb: HashMap<String, GlbModel>,
+    /// Every prop, fixture and hand-tool model by the path the prop data names it under: props/<set>/<name>.bbmodel
+    /// and interactables/<name>.bbmodel (and "pack:<id>:<path>" for pack props).
+    pub models: HashMap<String, PropModel>,
     /// flashlight, taser, crowbar, axe, battery, stim
     pub icons: Vec<Texture2D>,
     pub logo: Option<Texture2D>,
@@ -74,6 +73,76 @@ fn system_font(names: &[&str]) -> Option<Font> {
         }
     }
     None
+}
+
+/// Reads a text file out of a model's folder for a bbmodel that names its atlas by file: the folder itself, else the one
+/// above it (the blocky props share `props/blocky_atlas.png`).
+fn embedded_sibling(dir: &str) -> impl Fn(&str) -> Option<Vec<u8>> + '_ {
+    move |file: &str| {
+        let up = dir.rsplit_once('/').map(|x| x.0);
+        embedded::asset(&format!("{dir}/{file}"))
+            .or_else(|| up.and_then(|u| embedded::asset(&format!("{u}/{file}"))))
+            .map(|b| b.to_vec())
+    }
+}
+
+/// The prop, fixture and hand-tool models: every interactable, every model the prop data names, and the models
+/// mod packs bring (a pack's `.bbmodel`, or its `.glb`, the one format still read besides bbmodel).
+fn load_models(content: &Content) -> HashMap<String, PropModel> {
+    let mut models = HashMap::new();
+    let mut cache = AtlasCache::default();
+    let embedded_models = embedded::assets_under("interactables/")
+        .map(|(p, _)| p)
+        .filter(|p| p.ends_with(".bbmodel"))
+        .chain(
+            content
+                .props
+                .values()
+                .flat_map(|d| d.models.iter())
+                .map(|m| m.as_str())
+                .filter(|m| !m.starts_with("pack:")),
+        );
+    for path in embedded_models {
+        if models.contains_key(path) {
+            continue;
+        }
+        let Some(text) = embedded::asset(path).and_then(|b| std::str::from_utf8(b).ok()) else {
+            continue;
+        };
+        let dir = path.rsplit_once('/').map(|x| x.0).unwrap_or("");
+        let soft = path.starts_with("props/blocky/");
+        if let Some(m) = PropModel::parse(text, &embedded_sibling(dir), dir, &mut cache, soft) {
+            models.insert(path.to_string(), m);
+        }
+    }
+    let white = white_texture();
+    for def in content.props.values() {
+        for m in def.models.iter().filter(|m| m.starts_with("pack:")) {
+            let mut it = m.splitn(3, ':');
+            let (_, pid, rel) = (it.next(), it.next().unwrap_or(""), it.next().unwrap_or(""));
+            let Some(pack) = content.packs.iter().find(|p| p.id == pid) else {
+                continue;
+            };
+            let dir = rel.rsplit_once('/').map(|x| x.0).unwrap_or("");
+            let sibling = |file: &str| packs::read_pack_file(&pack.dir, &format!("{dir}/{file}"));
+            let Some(bytes) = packs::read_pack_file(&pack.dir, rel) else {
+                continue;
+            };
+            let model = if rel.ends_with(".bbmodel") {
+                String::from_utf8(bytes)
+                    .ok()
+                    .and_then(|t| PropModel::parse(&t, &sibling, &format!("pack:{pid}/{dir}"), &mut cache, false))
+            } else if rel.ends_with(".glb") {
+                PropModel::parse_glb(&bytes, &sibling, &white)
+            } else {
+                None
+            };
+            if let Some(model) = model {
+                models.insert(m.clone(), model);
+            }
+        }
+    }
+    models
 }
 
 impl Assets {
@@ -126,55 +195,7 @@ impl Assets {
                 portraits.insert(h.id.clone(), tex(&p));
             }
         }
-        let prop_atlas = asset_tex("props/blocky_atlas.png");
-        let mut props = HashMap::new();
-        for (path, bytes) in embedded::assets_under("props/") {
-            let Some(name) = path
-                .strip_prefix("props/")
-                .and_then(|n| n.strip_suffix(".bbmodel"))
-            else {
-                continue;
-            };
-            if let Ok(text) = std::str::from_utf8(bytes) {
-                if let Some(m) = Model::parse(text, prop_atlas.clone(), &|_| None, None) {
-                    props.insert(name.to_string(), m);
-                }
-            }
-        }
-        let white = white_texture();
-        let mut glb = HashMap::new();
-        for (path, bytes) in
-            embedded::assets_under("props/").chain(embedded::assets_under("interactables/"))
-        {
-            if !path.ends_with(".glb") {
-                continue;
-            }
-            let dir = path.rsplit_once('/').map(|x| x.0).unwrap_or("");
-            let sibling = |uri: &str| embedded::asset(&format!("{dir}/{uri}")).map(|b| b.to_vec());
-            if let Some(m) = GlbModel::parse(bytes, &sibling, &white) {
-                glb.insert(path.to_string(), m);
-            }
-        }
-        for def in content.props.values() {
-            for m in def
-                .models
-                .iter()
-                .filter(|m| m.starts_with("pack:") && m.ends_with(".glb"))
-            {
-                let mut it = m.splitn(3, ':');
-                let (_, pid, rel) = (it.next(), it.next().unwrap_or(""), it.next().unwrap_or(""));
-                let Some(pack) = content.packs.iter().find(|p| p.id == pid) else {
-                    continue;
-                };
-                let dir = rel.rsplit_once('/').map(|x| x.0).unwrap_or("");
-                let sibling = |uri: &str| packs::read_pack_file(&pack.dir, &format!("{dir}/{uri}"));
-                if let Some(model) = packs::read_pack_file(&pack.dir, rel)
-                    .and_then(|b| GlbModel::parse(&b, &sibling, &white))
-                {
-                    glb.insert(m.clone(), model);
-                }
-            }
-        }
+        let models = load_models(content);
         let icons = [
             "flashlight_item",
             "taser_item",
@@ -193,8 +214,7 @@ impl Assets {
             hunters,
             npc_body,
             portraits,
-            props,
-            glb,
+            models,
             icons,
             logo: asset_tex("branding/logo_128.png"),
             // Courier New Bold / Impact as the original asks; metric-compatible stand-ins on Linux

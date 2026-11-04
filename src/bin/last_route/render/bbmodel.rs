@@ -6,11 +6,11 @@
 use crate::content::embedded::base64_decode;
 use macroquad::prelude::*;
 
-struct Face {
+pub struct Face {
     /// Corners in model units (TL, TR, BR, BL for cubes; 3 or 4 for mesh faces) and UVs (0..1).
-    corners: Vec<Vec3>,
-    uv: Vec<Vec2>,
-    normal: Vec3,
+    pub corners: Vec<Vec3>,
+    pub uv: Vec<Vec2>,
+    pub normal: Vec3,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -70,27 +70,27 @@ fn rot_of(e: &serde_json::Value) -> Mat3 {
     )
 }
 
-/// The model's first texture: `find(relative_path or name)` first, else the embedded data URI.
-fn texture_of(j: &serde_json::Value, find: &dyn Fn(&str) -> Option<Vec<u8>>) -> Option<Texture2D> {
+/// The model's first texture file: `find(relative_path or name)` first (the file name it was found under comes back
+/// with the bytes, so models that name the same atlas can share one texture), else the embedded data URI.
+pub fn texture_bytes(j: &serde_json::Value, find: &dyn Fn(&str) -> Option<Vec<u8>>) -> Option<(Option<String>, Vec<u8>)> {
     let t = j["textures"].get(0)?;
-    let mut bytes = None;
     for key in ["relative_path", "name", "path"] {
         if let Some(name) = t[key].as_str() {
             let file = name.rsplit(['/', '\\']).next().unwrap_or(name);
             if let Some(b) = find(file) {
-                bytes = Some(b);
-                break;
+                return Some((Some(file.to_string()), b));
             }
         }
     }
-    if bytes.is_none() {
-        if let Some(src) = t["source"].as_str() {
-            if let Some(i) = src.find("base64,") {
-                bytes = Some(base64_decode(&src[i + 7..]));
-            }
-        }
-    }
-    let tex = Texture2D::from_file_with_format(&bytes?, Some(ImageFormat::Png));
+    let src = t["source"].as_str()?;
+    let i = src.find("base64,")?;
+    Some((None, base64_decode(&src[i + 7..])))
+}
+
+/// The model's first texture, nearest-sampled.
+fn texture_of(j: &serde_json::Value, find: &dyn Fn(&str) -> Option<Vec<u8>>) -> Option<Texture2D> {
+    let (_, bytes) = texture_bytes(j, find)?;
+    let tex = Texture2D::from_file_with_format(&bytes, Some(ImageFormat::Png));
     tex.set_filter(FilterMode::Nearest);
     Some(tex)
 }
@@ -105,9 +105,19 @@ impl Model {
         height_m: Option<f32>,
     ) -> Option<Model> {
         let j: serde_json::Value = serde_json::from_str(text).ok()?;
+        Model::from_json(&j, texture, find, height_m)
+    }
+
+    /// `parse` on a document already read (a caller that looks at the textures first reads it once).
+    pub fn from_json(
+        j: &serde_json::Value,
+        texture: Option<Texture2D>,
+        find: &dyn Fn(&str) -> Option<Vec<u8>>,
+        height_m: Option<f32>,
+    ) -> Option<Model> {
         let texture = match texture {
             Some(t) => t,
-            None => texture_of(&j, find)?,
+            None => texture_of(j, find)?,
         };
         let res_w = j["resolution"]["width"]
             .as_f64()
@@ -392,6 +402,11 @@ impl Model {
                 }
             }
         }
+    }
+
+    /// Every face with the outliner group its element hangs under (an index into `groups`), in file order.
+    pub fn faces(&self) -> impl Iterator<Item = (Option<usize>, &Face)> {
+        self.parts.iter().flat_map(|p| p.faces.iter().map(move |f| (p.group, f)))
     }
 
     /// The BlockyFace cell's UV offset on this model's atlas (8x8 px cells, 3 columns).

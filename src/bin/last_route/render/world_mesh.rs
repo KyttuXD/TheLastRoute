@@ -1,13 +1,13 @@
 //! The floor's static geometry: floors and walls in each room region's own pictures (halls in
 //! the maze set), baseboard and brass rail trims, ceilings, and
-//! the room props: the original's authored Blender models where a type has them
-//! (assets/props/<set>/*.glb), else the blocky rebuilds as Blockbench meshes with smoothed
-//! normals. Lights: the switchable room lights and the lamp props' own lights.
+//! the room props: each type's Blockbench model (assets/props/<set>/*.bbmodel, one of the variants the prop data
+//! names). Lights: the switchable room lights and the lamp props' own lights.
 
 use super::builder::Builder;
 use super::door;
 use super::prop_scale;
 use super::shader::Lamp;
+use super::stairs;
 use super::surfaces;
 use super::textures::{self, TexRef, TextureChoice};
 use crate::shared::assets::Assets;
@@ -15,7 +15,7 @@ use crate::config::WALL_HEIGHT;
 use crate::content::props::{stable_index, visual_y};
 use crate::content::regions::{RegionDef, RegionSafeLight};
 use crate::content::Content;
-use crate::world::facility::{stair_well_cells, Cell, DoorDraw, Prop, STAIR_FLIGHT};
+use crate::world::facility::{stair_well_cells, Cell, DoorDraw, Prop, Stair, STAIR_FLIGHT};
 use crate::world::inferno::Inferno;
 use crate::world::infinite::{ChunkKey, CHUNK, INFERNO_LEVEL, WINDOW};
 use crate::world::{region_texture, Facility, TEXTURE_SETS};
@@ -35,12 +35,14 @@ pub struct WorldMeshes {
     builds: u64,
 }
 
-/// A room door to draw each frame: its threshold cell (the key of `Facility::door_open_amount`), the glb it uses and
+/// A room door to draw each frame: its threshold cell (the key of `Facility::door_open_amount`), the model it uses and
 /// where it stands.
 pub struct DoorInstance {
     pub cell: Cell,
     pub model: String,
     pub xf: Mat4,
+    /// How the model is fitted to its doorway (the posts' slide, the leaves' stretch).
+    pub fit: door::DoorFit,
 }
 
 /// Where the Infinite route's 3x3 window stands: its level and its centre chunk.
@@ -161,7 +163,7 @@ fn window_parts(f: &Facility, frame: ChunkFrame) -> Vec<(PartKey, Pick)> {
             at(sx, sy, 0, &mut parts);
         }
     }
-    for c in f.floor_cells() {
+    for c in drawn_cells(f) {
         let (sx, sy) = (slot(c.x), slot(c.y));
         let i = at(sx, sy, side_needs(c.x - sx * CHUNK, c.y - sy * CHUNK), &mut parts);
         parts[i].1.cells.push(c);
@@ -217,7 +219,7 @@ impl WorldMeshes {
         let Some(frame) = frame else {
             self.parts.clear();
             let pick = Pick {
-                cells: f.floor_cells(),
+                cells: drawn_cells(f),
                 rooms: (0..f.rooms.len()).collect(),
                 fixtures: Some((0, 0, f.cols, f.rows)),
                 pad: true,
@@ -327,6 +329,8 @@ pub fn lamps(f: &Facility, lights_on: &[bool], content: &Content) -> Vec<Lamp> {
             energy: light.energy,
         });
     }
+    // each stairwell and ladder well carries a light, so its steps and rungs read in the dark
+    out.extend(f.stairs.iter().map(|s| stairs::lamp(*s, WALL_HEIGHT)));
     let mut budget = 10;
     for p in &f.props {
         if budget == 0 {
@@ -367,13 +371,27 @@ fn room_set(f: &Facility, x: i32, y: i32) -> &'static str {
     }
 }
 
-/// Stairwell flights: each hole cell's step number (1 = next to the landing) and direction.
-fn stair_steps(f: &Facility) -> HashMap<(i32, i32), (i32, i32)> {
+/// The cells the floor draws: its floor cells, and the shaft cells of a stairwell that are walls (a level 0 well is a
+/// walled box), where the flight is drawn.
+fn drawn_cells(f: &Facility) -> Vec<Cell> {
+    let mut cells = f.floor_cells();
+    let mut shaft: Vec<Cell> = stair_steps(f)
+        .keys()
+        .filter(|&&(x, y)| f.is_wall_cell(x, y) && x >= 1 && y >= 1 && x < f.cols - 1 && y < f.rows - 1)
+        .map(|&(x, y)| Cell::new(x, y))
+        .collect();
+    shaft.sort_by_key(|c| (c.y, c.x));
+    cells.extend(shaft);
+    cells
+}
+
+/// Stairwell flights: each hole cell's step number (1 = next to the landing) and its stair.
+fn stair_steps(f: &Facility) -> HashMap<(i32, i32), (i32, Stair)> {
     let mut out = HashMap::new();
     for s in &f.stairs {
         for k in 1..=STAIR_FLIGHT {
             for c in stair_well_cells(*s, k) {
-                out.insert((c.x, c.y), (k, s.dir));
+                out.insert((c.x, c.y), (k, *s));
             }
         }
     }
@@ -474,6 +492,33 @@ fn painted<'b>(
     })
 }
 
+/// Files a stair cell's pieces under the cell's floor and wall pictures (the steps and the pit walls), or in plain colour.
+fn add_stairs(
+    bits: stairs::Parts,
+    surf: &mut HashMap<(&'static str, &'static str), Builder>,
+    plain: &mut Builder,
+    glow: &mut Builder,
+    floor: TexRef,
+    wall: TexRef,
+    assets: &Assets,
+    set: &str,
+) {
+    for q in bits.quads {
+        let b = match q.face {
+            stairs::Face::Floor => painted(surf, floor, assets.floor(set)),
+            stairs::Face::Wall => painted(surf, wall, assets.wall(set)),
+            stairs::Face::Plain => &mut *plain,
+        };
+        b.quad(q.c, q.uv, q.n, q.col, 0.0);
+    }
+    for (centre, size, col) in bits.boxes {
+        plain.cube(centre, size, 0.0, col, 0.0);
+    }
+    for (centre, size, col) in bits.glow {
+        glow.cube(centre, size, 0.0, col, 2.0);
+    }
+}
+
 /// The whole floor's meshes, built in one go.
 pub fn build_world(
     f: &Facility,
@@ -496,39 +541,39 @@ fn variant_key(f: &Facility, room: usize) -> String {
     }
 }
 
-/// The authored model a prop is drawn with, if its type has originals: the variant its room picks, else the first one
-/// that is loaded.
-fn prop_original<'c>(f: &Facility, p: &Prop, assets: &Assets, content: &'c Content) -> Option<&'c String> {
-    let originals = content.props.get(&p.ptype).map(|d| d.originals()).filter(|o| !o.is_empty())?;
-    let picked = &originals[stable_index(&variant_key(f, p.room), originals.len())];
-    if assets.glb.contains_key(picked) {
+/// The model a prop is drawn with: the variant its room picks, else the first one that is loaded.
+fn prop_model_key<'c>(f: &Facility, p: &Prop, assets: &Assets, content: &'c Content) -> Option<&'c String> {
+    let models = content.props.get(&p.ptype).map(|d| d.models.as_slice()).filter(|m| !m.is_empty())?;
+    let picked = &models[stable_index(&variant_key(f, p.room), models.len())];
+    if assets.models.contains_key(picked) {
         Some(picked)
     } else {
-        originals.iter().find(|m| assets.glb.contains_key(*m))
+        models.iter().find(|m| assets.models.contains_key(*m))
     }
 }
 
 /// Where a room door stands: raised to the hunter's opening and widened to its doorway, on its doorway's centre.
-fn door_xf(p: &Prop, d: DoorDraw, dims: door::DoorDims, h: f32) -> Mat4 {
+fn door_xf(p: &Prop, d: DoorDraw, fit: &door::DoorFit, h: f32) -> Mat4 {
     let (x, z) = p.cell.center();
     let y = visual_y(&p.ptype, h, p.mount_y.unwrap_or(0.0) as f32);
     let yaw = p.rotation as f32 * std::f32::consts::FRAC_PI_2;
-    let (sx, sy) = door::door_scale(dims, &p.ptype, d.span);
-    door::door_transform(vec3(x + d.offset[0], y, z + d.offset[1]), yaw, sx, sy, prop_scale::draw_scale(&p.ptype))
+    door::door_transform(vec3(x + d.offset[0], y, z + d.offset[1]), yaw, fit.sx, fit.sy, prop_scale::draw_scale(&p.ptype))
 }
 
-/// Every room door of `f` that has an authored model, for the per-frame leaf draw.
+/// Every room door of `f` that has a model, for the per-frame leaf draw.
 fn door_instances(f: &Facility, assets: &Assets, content: &Content) -> Vec<DoorInstance> {
     f.props
         .iter()
         .filter_map(|p| {
             let d = p.door?;
-            let key = prop_original(f, p, assets, content)?;
-            let dims = assets.glb.get(key)?.door?;
+            let key = prop_model_key(f, p, assets, content)?;
+            let dims = assets.models.get(key)?.door?;
+            let fit = door::DoorFit::new(dims, &p.ptype, d.span);
             Some(DoorInstance {
                 cell: p.cell,
                 model: key.clone(),
-                xf: door_xf(p, d, dims, WALL_HEIGHT),
+                xf: door_xf(p, d, &fit, WALL_HEIGHT),
+                fit,
             })
         })
         .collect()
@@ -577,12 +622,14 @@ fn build_meshes(
 ) -> Vec<Mesh> {
     let mut surf: HashMap<(&'static str, &'static str), Builder> = HashMap::new();
     let mut plain = Builder::new(Some(assets.white.clone()));
+    // the stair treads' nosing, drawn unlit
+    let mut glow = Builder::new(Some(assets.white.clone()));
     let h = WALL_HEIGHT;
     let ceiling = Color::from_rgba(46, 34, 44, 255);
     let up = vec3(0., 1., 0.);
     let steps = stair_steps(f);
-    let step_col = Color::from_rgba(92, 78, 82, 255);
-    let rise = h / (STAIR_FLIGHT + 1) as f32;
+    // a ladder's sewer end has no well: its ladder climbs to a hatch in the ceiling over an ordinary cell
+    let hatches: Vec<Cell> = f.stairs.iter().filter(|s| s.is_ladder() && s.dir > 0).map(|s| s.cell).collect();
     let mut inferno = InfernoFloor::of(f);
     // one painted storey stretched floor to ceiling, cornice at the top (RefSurfaceMesh.add_wall)
     let tiers = textures::wall_tiers(h) as f32;
@@ -596,30 +643,19 @@ fn build_meshes(
         let wall_h = cell_wall_height(f, c.x, c.y);
         let wall_tiers = textures::wall_tiers(wall_h) as f32;
         let step = steps.get(&(c.x, c.y)).copied();
+        let site = stairs::Site {
+            h,
+            wall_h,
+            tiers: wall_tiers,
+            well: &|x, z| steps.contains_key(&(x, z)),
+            solid: &|x, z| f.is_wall_cell(x, z),
+        };
+        let mut bits = stairs::Parts::default();
         match step {
-            // a flight down: the floor opens onto steps sinking into the level below
-            Some((k, d)) if d < 0 => {
-                let top = -(k as f32) * rise;
-                let bottom = -h - 0.2;
-                plain.cube(
-                    vec3(x + 0.5, (top + bottom) / 2.0, z + 0.5),
-                    vec3(1.0, top - bottom, 1.0),
-                    0.0,
-                    step_col,
-                    0.0,
-                );
-            }
-            // a flight up: steps rising through an open shaft in the ceiling
-            Some((k, _)) => {
-                let top = k as f32 * rise;
-                plain.cube(
-                    vec3(x + 0.5, top / 2.0, z + 0.5),
-                    vec3(1.0, top, 1.0),
-                    0.0,
-                    step_col,
-                    0.0,
-                );
-            }
+            // a flight down opens the floor onto lit steps in a lined pit, a ladder onto its shaft; a flight up
+            // climbs through an open shaft in the ceiling (render/stairs.rs)
+            Some((_, s)) if s.is_ladder() => stairs::ladder_down(&mut bits, (c.x, c.y), s, &site),
+            Some((k, s)) => stairs::flight_cell(&mut bits, (c.x, c.y), k, s, &site),
             None => {
                 let (i, j) = (c.x, c.y);
                 let drop = |inf: &mut Option<InfernoFloor>, i: i32, j: i32| inf.as_mut().map_or(0.0, |s| s.corner(i, j));
@@ -637,7 +673,11 @@ fn build_meshes(
                 )
             }
         }
-        if !matches!(step, Some((_, d)) if d > 0) {
+        if step.is_none() && hatches.contains(&c) {
+            stairs::ladder_up(&mut bits, (c.x, c.y), &site);
+        }
+        add_stairs(bits, &mut surf, &mut plain, &mut glow, floor_kind, wall_kind, assets, set);
+        if !matches!(step, Some((_, s)) if s.dir > 0) {
             let corners = [
                 vec3(x, wall_h, z + 1.),
                 vec3(x + 1., wall_h, z + 1.),
@@ -674,7 +714,8 @@ fn build_meshes(
             ),
         ];
         for (dx, dz, a, b, n) in edges {
-            if !f.is_wall_cell(c.x + dx, c.y + dz) {
+            // a stairwell's shaft is open to its landing and the other lane, whatever its cells' wall flags say
+            if !f.is_wall_cell(c.x + dx, c.y + dz) || steps.contains_key(&(c.x + dx, c.y + dz)) {
                 continue;
             }
             let (a, b) = match inferno.as_mut() {
@@ -696,9 +737,7 @@ fn build_meshes(
     }
     let fixture = |c: Cell| pick.fixtures.is_some_and(|(x0, y0, x1, y1)| c.x >= x0 && c.y >= y0 && c.x < x1 && c.y < y1);
 
-    // room props: the original's Blender models (PropModelCatalog's originals, variant picked by
-    // a hash of the room id like _variant_index), falling back to the blocky rebuilds
-    let mut props = Builder::new(assets.props.values().next().map(|m| m.texture.clone()));
+    // room props: each type's model, the variant picked by a hash of the room id like _variant_index
     let mut authored: HashMap<usize, Builder> = HashMap::new();
     for p in f.props.iter().filter(|p| fixture(p.cell)) {
         let (x, z) = p.cell.center();
@@ -712,10 +751,10 @@ fn build_meshes(
         let yaw = p.rotation as f32 * std::f32::consts::FRAC_PI_2;
         // the model's drawn turn: a room door keeps the gameplay yaw, every other prop gets the half turn
         let visual_yaw = prop_visual_yaw(yaw, p.door.is_some());
-        let original = prop_original(f, p, assets, content).and_then(|k| assets.glb.get(k));
+        let model = prop_model_key(f, p, assets, content).and_then(|k| assets.models.get(k));
         // Godot's per-type hunter scale (PropModelCatalog.HUNTER_SCALE, data/render/prop_draw_scale.json).
         let scale = prop_scale::draw_scale(&p.ptype);
-        if let Some(model) = original {
+        if let Some(model) = model {
             // Surface children are authored with different local origins. Align the
             // model's actual lowest vertex to the authored tabletop height so computers,
             // printers and lamps sit on the parent instead of floating above it.
@@ -726,47 +765,26 @@ fn build_meshes(
             // RouteInteractable3D raise); every other prop is the uniform draw scale
             let xf = match p.door.zip(model.door) {
                 Some((d, dims)) => {
-                    let sy = door::door_scale(dims, &p.ptype, d.span).1;
+                    let fit = door::DoorFit::new(dims, &p.ptype, d.span);
                     // the wall over the opening, from the raised frame's top up to the ceiling (Godot's door header)
-                    let bottom = door::header_bottom(dims, sy, h);
+                    let bottom = door::header_bottom(dims, fit.sy, h);
                     if bottom < h {
                         let (choice, _) = cell_surfaces(f, p.cell.x, p.cell.y, pick.pad, choices);
                         let wall = choice.wall_at((p.cell.x + f.origin.0) as i64, (p.cell.y + f.origin.1) as i64);
                         let fallback = assets.wall(room_set(f, p.cell.x, p.cell.y));
-                        door_header(&mut surf, wall, fallback, vec3(x, 0.0, z), yaw, d.span as f32, bottom, h, tiers);
+                        let filler = door::filler_from(dims, fit.sy);
+                        door_header(&mut surf, wall, fallback, vec3(x, 0.0, z), yaw, d.span as f32, (bottom, filler), h, tiers);
                     }
-                    door_xf(p, d, dims, h)
+                    let xf = door_xf(p, d, &fit, h);
+                    model.add_door_body(&mut authored, xf, WHITE, &fit);
+                    continue;
                 }
                 None => Mat4::from_translation(vec3(x, y, z))
                     * Mat4::from_rotation_y(visual_yaw)
                     * Mat4::from_scale(Vec3::splat(scale)),
             };
             model.add_to(&mut authored, xf, WHITE);
-            continue;
         }
-        let Some(model) = assets.props.get(&p.ptype) else {
-            continue;
-        };
-        if p.mount_y.is_some() {
-            y -= model.min.y * model.scale * scale;
-        }
-        let mut verts = vec![];
-        let mut idx = vec![];
-        model.build_scaled(
-            &mut verts,
-            &mut idx,
-            vec3(x, y, z),
-            visual_yaw,
-            Vec3::splat(model.scale * scale),
-            0.0,
-            0.0,
-            WHITE,
-        );
-        soften(&mut verts);
-        props.reserve(verts.len());
-        let base_i = props.verts.len() as u16;
-        props.verts.extend(verts);
-        props.idx.extend(idx.into_iter().map(|i| i + base_i));
     }
     // emissive lamp fixtures for the switchable room lights
     for l in f.room_lights.iter().filter(|l| fixture(l.center)) {
@@ -784,11 +802,11 @@ fn build_meshes(
     for (_, b) in surf {
         meshes.extend(b.finish());
     }
-    meshes.extend(props.finish());
     for (_, b) in authored {
         meshes.extend(b.finish());
     }
     meshes.extend(plain.finish());
+    meshes.extend(glow.finish());
     meshes
 }
 
@@ -816,7 +834,7 @@ fn door_header(
     origin: Vec3,
     yaw: f32,
     span: f32,
-    bottom: f32,
+    (bottom, filler): (f32, Option<f32>),
     h: f32,
     tiers: f32,
 ) {
@@ -848,27 +866,21 @@ fn door_header(
         WHITE,
         0.0,
     );
-}
-
-/// Averages normals across corners that share a position, so the blocky props shade as
-/// rounded forms instead of hard boxes.
-fn soften(verts: &mut [Vertex]) {
-    let key = |p: Vec3| {
-        (
-            (p.x * 64.0).round() as i32,
-            (p.y * 64.0).round() as i32,
-            (p.z * 64.0).round() as i32,
-        )
-    };
-    let mut sum: HashMap<(i32, i32, i32), Vec3> = HashMap::new();
-    for v in verts.iter() {
-        *sum.entry(key(v.position)).or_insert(Vec3::ZERO) += v.normal.truncate();
-    }
-    for v in verts.iter_mut() {
-        let face = v.normal.truncate();
-        let avg = sum[&key(v.position)].normalize_or_zero();
-        let n = (face * 0.45 + avg * 0.55).normalize_or_zero();
-        v.normal = vec4(n.x, n.y, n.z, v.normal.w);
+    // a crest or spire above the frame's bar stands in front of a wall-coloured band that closes the slit between the
+    // bar and the soffit, a hair behind the frame's face so the crest hides it
+    if let Some(from) = filler {
+        let depth = door::FRAME_HALF_DEPTH - 0.005;
+        let v = tiers * (h - from) / h;
+        let v0 = tiers * (h - bottom) / h;
+        for (d, n) in [(depth, through), (-depth, -through)] {
+            let (tl, tr, br, bl) = (at(-half, d, bottom), at(half, d, bottom), at(half, d, from), at(-half, d, from));
+            let uv = [vec2(0., v0), vec2(span, v0), vec2(span, v), vec2(0., v)];
+            if d > 0.0 {
+                b.quad([tl, bl, br, tr], [uv[0], uv[3], uv[2], uv[1]], n, WHITE, 0.0);
+            } else {
+                b.quad([tl, tr, br, bl], uv, n, WHITE, 0.0);
+            }
+        }
     }
 }
 
@@ -1043,7 +1055,7 @@ mod tests {
         let abs_parts = |f: &Facility, fr: ChunkFrame| -> HashMap<PartKey, (Vec<(i32, i32)>, Vec<(i32, i32, i32, i32)>)> {
             let parts = window_parts(f, fr);
             let cells: usize = parts.iter().map(|(_, p)| p.cells.len()).sum();
-            assert_eq!(cells, f.floor_cells().len(), "every floor cell in one part");
+            assert_eq!(cells, drawn_cells(f).len(), "every floor cell in one part");
             let rooms: usize = parts.iter().map(|(_, p)| p.rooms.len()).sum();
             assert_eq!(rooms, f.rooms.len(), "every room in one part");
             parts

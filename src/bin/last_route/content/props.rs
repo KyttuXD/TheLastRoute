@@ -1,5 +1,5 @@
 //! Prop definitions (`lr.prop/1`, data/props/*.json): each catalogue type's model variants
-//! (the original Blender exports, or blocky rebuilds) and its fixture light, as
+//! (Blockbench models) and its fixture light, as
 //! PropModelCatalog.MODEL_PATHS / LIGHT_PROFILES resolve them.
 
 use serde_json::Value;
@@ -15,20 +15,10 @@ pub struct Light {
 #[derive(Clone, Debug)]
 pub struct PropDef {
     pub id: String,
-    /// Asset paths relative to assets/ ("props/maze/locker.glb").
+    /// The model variants, as asset paths relative to assets/ ("props/maze/locker.bbmodel"); a room draws one of them
+    /// (PropModelCatalog's variant pick). A mod pack's are "pack:<id>:<path>".
     pub models: Vec<String>,
     pub light: Option<Light>,
-}
-
-impl PropDef {
-    /// PropModelCatalog.original_paths: the authored models, empty when any variant is a blocky rebuild.
-    pub fn originals(&self) -> &[String] {
-        if self.models.iter().any(|m| m.starts_with("props/blocky/")) {
-            &[]
-        } else {
-            &self.models
-        }
-    }
 }
 
 fn hex(s: &str) -> (f32, f32, f32) {
@@ -158,5 +148,51 @@ pub fn visual_y(t: &str, wall_height: f32, mount_y: f32) -> f32 {
         wall_height - top
     } else {
         0.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::content::{embedded, Content};
+
+    /// Every model a prop type names is a bbmodel the build embeds, and the game's interactables are all there: the game
+    /// reads no other model format from its own assets.
+    #[test]
+    fn every_prop_model_is_an_embedded_bbmodel() {
+        let content = Content::load();
+        assert!(content.props.len() > 300, "{} prop types", content.props.len());
+        for def in content.props.values() {
+            assert!(!def.models.is_empty(), "{} names no model", def.id);
+            for m in &def.models {
+                assert!(m.ends_with(".bbmodel"), "{}: {m} is not a bbmodel", def.id);
+                assert!(embedded::asset(m).is_some(), "{}: {m} is not embedded", def.id);
+            }
+        }
+        for name in ["relay", "battery", "coin", "hiding_spot", "lift", "vent", "safe_zone", "music_box", "heater_station", "wall_light_switch", "flashlight_item", "taser_item", "crowbar", "rescue_axe", "stim_pack"] {
+            assert!(embedded::asset(&format!("interactables/{name}.bbmodel")).is_some(), "{name}");
+        }
+        assert!(!embedded::assets_under("").any(|(p, _)| p.ends_with(".glb")), "a .glb is embedded");
+    }
+
+    /// The two models the game splits by outliner group name carry those groups, with the pivots door.rs and the
+    /// locker draw expect.
+    #[test]
+    fn door_and_locker_models_carry_their_groups() {
+        let group_names = |path: &str| -> Vec<String> {
+            let j: serde_json::Value = serde_json::from_slice(embedded::asset(path).expect(path)).expect(path);
+            j["outliner"]
+                .as_array()
+                .expect(path)
+                .iter()
+                .filter(|n| n.is_object())
+                .map(|n| n["name"].as_str().unwrap_or("").to_string())
+                .collect()
+        };
+        let single = group_names("props/mansion/normal_room_door.bbmodel");
+        for g in ["DoorHinge", "DoorFrameL", "DoorFrameR", "DoorFrameTop"] {
+            assert!(single.iter().any(|n| n == g), "normal_room_door lacks {g}");
+        }
+        assert!(group_names("props/mansion/normal_double_room_door.bbmodel").iter().any(|n| n == "DoorHingeRight"));
+        assert!(group_names("interactables/hiding_spot.bbmodel").iter().any(|n| n == "LockerDoor"));
     }
 }

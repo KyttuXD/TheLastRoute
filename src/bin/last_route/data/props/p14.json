@@ -5,142 +5,142 @@
 		{
 			"id": "raisedPlanter",
 			"models": [
-				"res://assets/props/blocky/raisedPlanter_0.glb",
-				"res://assets/props/blocky/raisedPlanter_1.glb",
-				"res://assets/props/blocky/raisedPlanter_2.glb"
+				"res://assets/props/blocky/raisedPlanter_0.bbmodel",
+				"res://assets/props/blocky/raisedPlanter_1.bbmodel",
+				"res://assets/props/blocky/raisedPlanter_2.bbmodel"
 			]
 		},
 		{
 			"id": "pottingBench",
 			"models": [
-				"res://assets/props/blocky/pottingBench_0.glb",
-				"res://assets/props/blocky/pottingBench_1.glb",
-				"res://assets/props/blocky/pottingBench_2.glb"
+				"res://assets/props/blocky/pottingBench_0.bbmodel",
+				"res://assets/props/blocky/pottingBench_1.bbmodel",
+				"res://assets/props/blocky/pottingBench_2.bbmodel"
 			]
 		},
 		{
 			"id": "pottedPalm",
 			"models": [
-				"res://assets/props/blocky/pottedPalm_0.glb",
-				"res://assets/props/blocky/pottedPalm_1.glb",
-				"res://assets/props/blocky/pottedPalm_2.glb"
+				"res://assets/props/blocky/pottedPalm_0.bbmodel",
+				"res://assets/props/blocky/pottedPalm_1.bbmodel",
+				"res://assets/props/blocky/pottedPalm_2.bbmodel"
 			]
 		},
 		{
 			"id": "bananaPlant",
 			"models": [
-				"res://assets/props/blocky/bananaPlant_0.glb",
-				"res://assets/props/blocky/bananaPlant_1.glb"
+				"res://assets/props/blocky/bananaPlant_0.bbmodel",
+				"res://assets/props/blocky/bananaPlant_1.bbmodel"
 			]
 		},
 		{
 			"id": "saguaroCactus",
 			"models": [
-				"res://assets/props/blocky/saguaroCactus.glb"
+				"res://assets/props/blocky/saguaroCactus.bbmodel"
 			]
 		},
 		{
 			"id": "cactusCluster",
 			"models": [
-				"res://assets/props/blocky/cactusCluster.glb"
+				"res://assets/props/blocky/cactusCluster.bbmodel"
 			]
 		},
 		{
 			"id": "seedlingRack",
 			"models": [
-				"res://assets/props/blocky/seedlingRack.glb"
+				"res://assets/props/blocky/seedlingRack.bbmodel"
 			]
 		},
 		{
 			"id": "irrigationManifold",
 			"models": [
-				"res://assets/props/blocky/irrigationManifold_0.glb",
-				"res://assets/props/blocky/irrigationManifold_1.glb",
-				"res://assets/props/blocky/irrigationManifold_2.glb"
+				"res://assets/props/blocky/irrigationManifold_0.bbmodel",
+				"res://assets/props/blocky/irrigationManifold_1.bbmodel",
+				"res://assets/props/blocky/irrigationManifold_2.bbmodel"
 			]
 		},
 		{
 			"id": "mistingPost",
 			"models": [
-				"res://assets/props/blocky/mistingPost.glb"
+				"res://assets/props/blocky/mistingPost.bbmodel"
 			]
 		},
 		{
 			"id": "overgrowthPatch",
 			"models": [
-				"res://assets/props/blocky/overgrowthPatch.glb"
+				"res://assets/props/blocky/overgrowthPatch.bbmodel"
 			]
 		},
 		{
 			"id": "hangingVines",
 			"models": [
-				"res://assets/props/blocky/hangingVines_0.glb",
-				"res://assets/props/blocky/hangingVines_1.glb"
+				"res://assets/props/blocky/hangingVines_0.bbmodel",
+				"res://assets/props/blocky/hangingVines_1.bbmodel"
 			]
 		},
 		{
 			"id": "domeFountain",
 			"models": [
-				"res://assets/props/blocky/domeFountain.glb"
+				"res://assets/props/blocky/domeFountain.bbmodel"
 			]
 		},
 		{
 			"id": "wateringCart",
 			"models": [
-				"res://assets/props/blocky/wateringCart.glb"
+				"res://assets/props/blocky/wateringCart.bbmodel"
 			]
 		},
 		{
 			"id": "greenhouseBench",
 			"models": [
-				"res://assets/props/blocky/greenhouseBench_0.glb",
-				"res://assets/props/blocky/greenhouseBench_1.glb",
-				"res://assets/props/blocky/greenhouseBench_2.glb"
+				"res://assets/props/blocky/greenhouseBench_0.bbmodel",
+				"res://assets/props/blocky/greenhouseBench_1.bbmodel",
+				"res://assets/props/blocky/greenhouseBench_2.bbmodel"
 			]
 		},
 		{
 			"id": "compostBins",
 			"models": [
-				"res://assets/props/blocky/compostBins_0.glb",
-				"res://assets/props/blocky/compostBins_1.glb"
+				"res://assets/props/blocky/compostBins_0.bbmodel",
+				"res://assets/props/blocky/compostBins_1.bbmodel"
 			]
 		},
 		{
 			"id": "shopShelf",
 			"models": [
-				"res://assets/props/blocky/shopShelf_0.glb",
-				"res://assets/props/blocky/shopShelf_1.glb",
-				"res://assets/props/blocky/shopShelf_2.glb"
+				"res://assets/props/blocky/shopShelf_0.bbmodel",
+				"res://assets/props/blocky/shopShelf_1.bbmodel",
+				"res://assets/props/blocky/shopShelf_2.bbmodel"
 			]
 		},
 		{
 			"id": "shopFridge",
 			"models": [
-				"res://assets/props/blocky/shopFridge_0.glb",
-				"res://assets/props/blocky/shopFridge_1.glb"
+				"res://assets/props/blocky/shopFridge_0.bbmodel",
+				"res://assets/props/blocky/shopFridge_1.bbmodel"
 			]
 		},
 		{
 			"id": "checkoutCounter",
 			"models": [
-				"res://assets/props/blocky/checkoutCounter_0.glb",
-				"res://assets/props/blocky/checkoutCounter_1.glb",
-				"res://assets/props/blocky/checkoutCounter_2.glb"
+				"res://assets/props/blocky/checkoutCounter_0.bbmodel",
+				"res://assets/props/blocky/checkoutCounter_1.bbmodel",
+				"res://assets/props/blocky/checkoutCounter_2.bbmodel"
 			]
 		},
 		{
 			"id": "displayCase",
 			"models": [
-				"res://assets/props/blocky/displayCase_0.glb",
-				"res://assets/props/blocky/displayCase_1.glb",
-				"res://assets/props/blocky/displayCase_2.glb"
+				"res://assets/props/blocky/displayCase_0.bbmodel",
+				"res://assets/props/blocky/displayCase_1.bbmodel",
+				"res://assets/props/blocky/displayCase_2.bbmodel"
 			]
 		},
 		{
 			"id": "coffeeStation",
 			"models": [
-				"res://assets/props/blocky/coffeeStation_0.glb",
-				"res://assets/props/blocky/coffeeStation_1.glb"
+				"res://assets/props/blocky/coffeeStation_0.bbmodel",
+				"res://assets/props/blocky/coffeeStation_1.bbmodel"
 			]
 		}
 	]

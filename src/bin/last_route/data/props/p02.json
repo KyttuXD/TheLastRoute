@@ -5,123 +5,123 @@
 		{
 			"id": "brokenAquarium",
 			"models": [
-				"res://assets/props/maze/broken_aquarium.glb"
+				"res://assets/props/maze/broken_aquarium.bbmodel"
 			]
 		},
 		{
 			"id": "carnivalCarousel",
 			"models": [
-				"res://assets/props/maze/carnival_carousel.glb"
+				"res://assets/props/maze/carnival_carousel.bbmodel"
 			]
 		},
 		{
 			"id": "flowerBlue",
 			"models": [
-				"res://assets/props/maze/flower_blue.glb"
+				"res://assets/props/maze/flower_blue.bbmodel"
 			]
 		},
 		{
 			"id": "flowerRose",
 			"models": [
-				"res://assets/props/maze/flower_rose.glb"
+				"res://assets/props/maze/flower_rose.bbmodel"
 			]
 		},
 		{
 			"id": "flowerSun",
 			"models": [
-				"res://assets/props/maze/flower_sun.glb"
+				"res://assets/props/maze/flower_sun.bbmodel"
 			]
 		},
 		{
 			"id": "flowerViolet",
 			"models": [
-				"res://assets/props/maze/flower_violet.glb"
+				"res://assets/props/maze/flower_violet.bbmodel"
 			]
 		},
 		{
 			"id": "gardenPlanterBench",
 			"models": [
-				"res://assets/props/maze/garden_planter_bench.glb"
+				"res://assets/props/maze/garden_planter_bench.bbmodel"
 			]
 		},
 		{
 			"id": "giantTree",
 			"models": [
-				"res://assets/props/maze/giant_tree.glb"
+				"res://assets/props/maze/giant_tree.bbmodel"
 			]
 		},
 		{
 			"id": "grassFern",
 			"models": [
-				"res://assets/props/maze/grass_fern.glb"
+				"res://assets/props/maze/grass_fern.bbmodel"
 			]
 		},
 		{
 			"id": "locker",
 			"models": [
-				"res://assets/props/maze/locker.glb"
+				"res://assets/props/maze/locker.bbmodel"
 			]
 		},
 		{
 			"id": "maintenanceCleaningCart",
 			"models": [
-				"res://assets/props/maze/maintenance_cleaning_cart.glb"
+				"res://assets/props/maze/maintenance_cleaning_cart.bbmodel"
 			]
 		},
 		{
 			"id": "maintenanceToolCabinet",
 			"models": [
-				"res://assets/props/maze/maintenance_tool_cabinet.glb"
+				"res://assets/props/maze/maintenance_tool_cabinet.bbmodel"
 			]
 		},
 		{
 			"id": "mascotStatue",
 			"models": [
-				"res://assets/props/maze/mascot_statue.glb"
+				"res://assets/props/maze/mascot_statue.bbmodel"
 			]
 		},
 		{
 			"id": "prizeClawMachine",
 			"models": [
-				"res://assets/props/maze/prize_claw_machine.glb"
+				"res://assets/props/maze/prize_claw_machine.bbmodel"
 			]
 		},
 		{
 			"id": "prizeCounter",
 			"models": [
-				"res://assets/props/maze/prize_counter.glb"
+				"res://assets/props/maze/prize_counter.bbmodel"
 			]
 		},
 		{
 			"id": "snackKiosk",
 			"models": [
-				"res://assets/props/maze/snack_kiosk.glb"
+				"res://assets/props/maze/snack_kiosk.bbmodel"
 			]
 		},
 		{
 			"id": "stagePlatform",
 			"models": [
-				"res://assets/props/maze/stage_platform.glb"
+				"res://assets/props/maze/stage_platform.bbmodel"
 			]
 		},
 		{
 			"id": "stageSpeaker",
 			"models": [
-				"res://assets/props/maze/stage_speaker.glb"
+				"res://assets/props/maze/stage_speaker.bbmodel"
 			]
 		},
 		{
 			"id": "utilityCart",
 			"models": [
-				"res://assets/props/maze/utility_cart.glb"
+				"res://assets/props/maze/utility_cart.bbmodel"
 			]
 		},
 		{
 			"id": "floorLamp",
 			"models": [
-				"res://assets/props/maze/floor_lamp.glb",
-				"res://assets/props/mansion/floor_lamp_teal.glb",
-				"res://assets/props/mansion/floor_lamp_ivory.glb"
+				"res://assets/props/maze/floor_lamp.bbmodel",
+				"res://assets/props/mansion/floor_lamp_teal.bbmodel",
+				"res://assets/props/mansion/floor_lamp_ivory.bbmodel"
 			],
 			"light": {
 				"color": "ffe1a3",

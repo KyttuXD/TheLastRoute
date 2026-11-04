@@ -27,9 +27,10 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
     }
 }
 
-/// One static list of the files under each `(folder, key prefix)` root with an extension in `exts`:
-/// the key is the prefix plus the path under the folder, so the keys do not change when a folder moves.
-fn embed(name: &str, roots: &[(&str, &str)], exts: &[&str], text: bool, code: &mut String) {
+/// One static list of the files under each `(folder, key prefix)` root with an extension in `exts` that `skip` (given
+/// the key) does not reject: the key is the prefix plus the path under the folder, so the keys do not change when a
+/// folder moves.
+fn embed(name: &str, roots: &[(&str, &str)], exts: &[&str], skip: &dyn Fn(&str) -> bool, text: bool, code: &mut String) {
     let ty = if text { "&str" } else { "&[u8]" };
     let mac = if text {
         "include_str!"
@@ -43,12 +44,13 @@ fn embed(name: &str, roots: &[(&str, &str)], exts: &[&str], text: bool, code: &m
         walk(root, root, &mut files);
         for (rel, abs) in files {
             let ext = rel.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-            if !exts.contains(&ext.as_str()) {
+            let key = format!("{prefix}{rel}");
+            if !exts.contains(&ext.as_str()) || skip(&key) {
                 continue;
             }
             code.push_str(&format!(
                 "    ({:?}, {mac}({:?})),\n",
-                format!("{prefix}{rel}"),
+                key,
                 abs.to_string_lossy()
             ));
         }
@@ -85,13 +87,19 @@ fn main() {
         "DATA_FILES",
         &[("src/bin/last_route/data", ""), ("data/regions", "regions/")],
         &["json"],
+        &|_| false,
         true,
         &mut code,
     );
     embed(
         "ASSET_FILES",
         &[("src/bin/last_route/assets", "")],
-        &["png", "bbmodel", "json", "glb"],
+        &["png", "bbmodel", "json"],
+        // The game reads every model through the prop data (props/<set>/<name>.bbmodel, props/blocky/...) and
+        // interactables/; the one-per-prop props/<id>.bbmodel rebuilds from before the data named variants are not
+        // loaded by anything, so they stay on disk and out of the executable. GLBs are not embedded either (the
+        // converter's sources live in tools/props/source_glb).
+        &|key| key.strip_prefix("props/").is_some_and(|rest| !rest.contains('/') && rest.ends_with(".bbmodel")),
         false,
         &mut code,
     );

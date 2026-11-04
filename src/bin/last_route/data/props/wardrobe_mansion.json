@@ -6,9 +6,9 @@
 			"id": "bedroomWardrobeMansion",
 			"hide_capacity": 2,
 			"models": [
-				"res://assets/props/blocky/bedroomWardrobeMansion_0.glb",
-				"res://assets/props/blocky/bedroomWardrobeMansion_1.glb",
-				"res://assets/props/blocky/bedroomWardrobeMansion_2.glb"
+				"res://assets/props/blocky/bedroomWardrobeMansion_0.bbmodel",
+				"res://assets/props/blocky/bedroomWardrobeMansion_1.bbmodel",
+				"res://assets/props/blocky/bedroomWardrobeMansion_2.bbmodel"
 			]
 		}
 	]

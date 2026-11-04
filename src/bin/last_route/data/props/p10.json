@@ -5,121 +5,121 @@
 		{
 			"id": "surfboardRack",
 			"models": [
-				"res://assets/props/beach/surfboard_rack.glb"
+				"res://assets/props/beach/surfboard_rack.bbmodel"
 			]
 		},
 		{
 			"id": "palmTree",
 			"models": [
-				"res://assets/props/beach/palm_tree.glb"
+				"res://assets/props/beach/palm_tree.bbmodel"
 			]
 		},
 		{
 			"id": "frozenBeachHut",
 			"models": [
-				"res://assets/props/beach/frozen_beach_hut.glb"
+				"res://assets/props/beach/frozen_beach_hut.bbmodel"
 			]
 		},
 		{
 			"id": "frozenTidelinePool",
 			"models": [
-				"res://assets/props/beach/frozen_tideline_pool.glb"
+				"res://assets/props/beach/frozen_tideline_pool.bbmodel"
 			]
 		},
 		{
 			"id": "carnivalTicketBooth",
 			"models": [
-				"res://assets/props/carnival/carnival_ticket_booth.glb"
+				"res://assets/props/carnival/carnival_ticket_booth.bbmodel"
 			]
 		},
 		{
 			"id": "popcornCart",
 			"models": [
-				"res://assets/props/carnival/popcorn_cart.glb"
+				"res://assets/props/carnival/popcorn_cart.bbmodel"
 			]
 		},
 		{
 			"id": "ringTossStall",
 			"models": [
-				"res://assets/props/carnival/ring_toss_stall.glb"
+				"res://assets/props/carnival/ring_toss_stall.bbmodel"
 			]
 		},
 		{
 			"id": "strengthTester",
 			"models": [
-				"res://assets/props/carnival/strength_tester.glb"
+				"res://assets/props/carnival/strength_tester.bbmodel"
 			]
 		},
 		{
 			"id": "circusPedestal",
 			"models": [
-				"res://assets/props/carnival/circus_pedestal.glb"
+				"res://assets/props/carnival/circus_pedestal.bbmodel"
 			]
 		},
 		{
 			"id": "shootingGallery",
 			"models": [
-				"res://assets/props/carnival/ring_toss_stall.glb"
+				"res://assets/props/carnival/ring_toss_stall.bbmodel"
 			]
 		},
 		{
 			"id": "whackAMole",
 			"models": [
-				"res://assets/props/carnival/ring_toss_stall.glb"
+				"res://assets/props/carnival/ring_toss_stall.bbmodel"
 			]
 		},
 		{
 			"id": "duckPond",
 			"models": [
-				"res://assets/props/carnival/circus_pedestal.glb"
+				"res://assets/props/carnival/circus_pedestal.bbmodel"
 			]
 		},
 		{
 			"id": "carouselCenterpiece",
 			"models": [
-				"res://assets/props/carnival/carousel_centerpiece.glb"
+				"res://assets/props/carnival/carousel_centerpiece.bbmodel"
 			]
 		},
 		{
 			"id": "lavaVent",
 			"models": [
-				"res://assets/props/nether/lava_vent.glb"
+				"res://assets/props/nether/lava_vent.bbmodel"
 			]
 		},
 		{
 			"id": "emberBrazier",
 			"models": [
-				"res://assets/props/nether/ember_brazier.glb"
+				"res://assets/props/nether/ember_brazier.bbmodel"
 			]
 		},
 		{
 			"id": "basaltPillar",
 			"models": [
-				"res://assets/props/nether/basalt_pillar.glb"
+				"res://assets/props/nether/basalt_pillar.bbmodel"
 			]
 		},
 		{
 			"id": "basaltRubble",
 			"models": [
-				"res://assets/props/nether/basalt_rubble.glb"
+				"res://assets/props/nether/basalt_rubble.bbmodel"
 			]
 		},
 		{
 			"id": "magmaCrystalCluster",
 			"models": [
-				"res://assets/props/nether/magma_crystal_cluster.glb"
+				"res://assets/props/nether/magma_crystal_cluster.bbmodel"
 			]
 		},
 		{
 			"id": "infernoAltar",
 			"models": [
-				"res://assets/props/nether/inferno_altar.glb"
+				"res://assets/props/nether/inferno_altar.bbmodel"
 			]
 		},
 		{
 			"id": "infernoChainLantern",
 			"models": [
-				"res://assets/props/nether/inferno_chain_lantern.glb"
+				"res://assets/props/nether/inferno_chain_lantern.bbmodel"
 			]
 		}
 	]

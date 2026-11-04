@@ -5,9 +5,9 @@
 		{
 			"id": "ceilingLight",
 			"models": [
-				"res://assets/props/mansion/ceiling_light_warm.glb",
-				"res://assets/props/mansion/ceiling_light_cool.glb",
-				"res://assets/props/mansion/ceiling_light_teal.glb"
+				"res://assets/props/mansion/ceiling_light_warm.bbmodel",
+				"res://assets/props/mansion/ceiling_light_cool.bbmodel",
+				"res://assets/props/mansion/ceiling_light_teal.bbmodel"
 			],
 			"light": {
 				"color": "dff8ff",
@@ -23,9 +23,9 @@
 		{
 			"id": "ceilingFan",
 			"models": [
-				"res://assets/props/mansion/ceiling_fan_walnut.glb",
-				"res://assets/props/mansion/ceiling_fan_ivory.glb",
-				"res://assets/props/mansion/ceiling_fan_charcoal.glb"
+				"res://assets/props/mansion/ceiling_fan_walnut.bbmodel",
+				"res://assets/props/mansion/ceiling_fan_ivory.bbmodel",
+				"res://assets/props/mansion/ceiling_fan_charcoal.bbmodel"
 			],
 			"light": {
 				"color": "fff0c2",
@@ -41,9 +41,9 @@
 		{
 			"id": "tableLamp",
 			"models": [
-				"res://assets/props/mansion/table_lamp_burgundy.glb",
-				"res://assets/props/mansion/table_lamp_teal.glb",
-				"res://assets/props/mansion/table_lamp_ivory.glb"
+				"res://assets/props/mansion/table_lamp_burgundy.bbmodel",
+				"res://assets/props/mansion/table_lamp_teal.bbmodel",
+				"res://assets/props/mansion/table_lamp_ivory.bbmodel"
 			],
 			"light": {
 				"color": "ffd99a",
@@ -59,64 +59,64 @@
 		{
 			"id": "loungeCouch",
 			"models": [
-				"res://assets/props/maze/lounge_couch_red.glb",
-				"res://assets/props/mansion/lounge_couch_black.glb",
-				"res://assets/props/mansion/lounge_couch_brown.glb",
-				"res://assets/props/mansion/lounge_couch_ivory.glb",
-				"res://assets/props/mansion/lounge_couch_navy.glb",
-				"res://assets/props/mansion/lounge_couch_olive.glb",
-				"res://assets/props/mansion/lounge_couch_violet.glb"
+				"res://assets/props/maze/lounge_couch_red.bbmodel",
+				"res://assets/props/mansion/lounge_couch_black.bbmodel",
+				"res://assets/props/mansion/lounge_couch_brown.bbmodel",
+				"res://assets/props/mansion/lounge_couch_ivory.bbmodel",
+				"res://assets/props/mansion/lounge_couch_navy.bbmodel",
+				"res://assets/props/mansion/lounge_couch_olive.bbmodel",
+				"res://assets/props/mansion/lounge_couch_violet.bbmodel"
 			]
 		},
 		{
 			"id": "loungeCouchWide",
 			"models": [
-				"res://assets/props/mansion/lounge_couch_red_wide.glb",
-				"res://assets/props/mansion/lounge_couch_black_wide.glb",
-				"res://assets/props/mansion/lounge_couch_brown_wide.glb",
-				"res://assets/props/mansion/lounge_couch_ivory_wide.glb",
-				"res://assets/props/mansion/lounge_couch_navy_wide.glb",
-				"res://assets/props/mansion/lounge_couch_olive_wide.glb",
-				"res://assets/props/mansion/lounge_couch_violet_wide.glb"
+				"res://assets/props/mansion/lounge_couch_red_wide.bbmodel",
+				"res://assets/props/mansion/lounge_couch_black_wide.bbmodel",
+				"res://assets/props/mansion/lounge_couch_brown_wide.bbmodel",
+				"res://assets/props/mansion/lounge_couch_ivory_wide.bbmodel",
+				"res://assets/props/mansion/lounge_couch_navy_wide.bbmodel",
+				"res://assets/props/mansion/lounge_couch_olive_wide.bbmodel",
+				"res://assets/props/mansion/lounge_couch_violet_wide.bbmodel"
 			]
 		},
 		{
 			"id": "privacyCurtain",
 			"models": [
-				"res://assets/props/maze/privacy_curtain.glb"
+				"res://assets/props/maze/privacy_curtain.bbmodel"
 			]
 		},
 		{
 			"id": "serverRack",
 			"models": [
-				"res://assets/props/maze/server_rack.glb"
+				"res://assets/props/maze/server_rack.bbmodel"
 			]
 		},
 		{
 			"id": "supplyCrates",
 			"models": [
-				"res://assets/props/maze/supply_crates.glb"
+				"res://assets/props/maze/supply_crates.bbmodel"
 			]
 		},
 		{
 			"id": "trashBin",
 			"models": [
-				"res://assets/props/maze/trash_bin.glb"
+				"res://assets/props/maze/trash_bin.bbmodel"
 			]
 		},
 		{
 			"id": "vendingMachine",
 			"models": [
-				"res://assets/props/maze/vending_machine.glb"
+				"res://assets/props/maze/vending_machine.bbmodel"
 			]
 		},
 		{
 			"id": "woodenChair",
 			"models": [
-				"res://assets/props/maze/wooden_chair_oak.glb",
-				"res://assets/props/maze/wooden_chair_walnut.glb",
-				"res://assets/props/maze/wooden_chair_mahogany.glb",
-				"res://assets/props/maze/wooden_chair_ash.glb"
+				"res://assets/props/maze/wooden_chair_oak.bbmodel",
+				"res://assets/props/maze/wooden_chair_walnut.bbmodel",
+				"res://assets/props/maze/wooden_chair_mahogany.bbmodel",
+				"res://assets/props/maze/wooden_chair_ash.bbmodel"
 			],
 			"themes": [
 				"oak",
@@ -129,10 +129,10 @@
 		{
 			"id": "woodenChairCushion",
 			"models": [
-				"res://assets/props/maze/wooden_chair_cushion.glb",
-				"res://assets/props/maze/wooden_chair_cushion_walnut.glb",
-				"res://assets/props/maze/wooden_chair_cushion_mahogany.glb",
-				"res://assets/props/maze/wooden_chair_cushion_ash.glb"
+				"res://assets/props/maze/wooden_chair_cushion.bbmodel",
+				"res://assets/props/maze/wooden_chair_cushion_walnut.bbmodel",
+				"res://assets/props/maze/wooden_chair_cushion_mahogany.bbmodel",
+				"res://assets/props/maze/wooden_chair_cushion_ash.bbmodel"
 			],
 			"themes": [
 				"oak",
@@ -145,10 +145,10 @@
 		{
 			"id": "woodenTable",
 			"models": [
-				"res://assets/props/maze/wooden_table.glb",
-				"res://assets/props/maze/wooden_table_walnut.glb",
-				"res://assets/props/maze/wooden_table_mahogany.glb",
-				"res://assets/props/maze/wooden_table_ash.glb"
+				"res://assets/props/maze/wooden_table.bbmodel",
+				"res://assets/props/maze/wooden_table_walnut.bbmodel",
+				"res://assets/props/maze/wooden_table_mahogany.bbmodel",
+				"res://assets/props/maze/wooden_table_ash.bbmodel"
 			],
 			"themes": [
 				"oak",
@@ -161,16 +161,16 @@
 		{
 			"id": "restaurantPartyTable",
 			"models": [
-				"res://assets/props/maze/restaurant_party_table.glb"
+				"res://assets/props/maze/restaurant_party_table.bbmodel"
 			]
 		},
 		{
 			"id": "woodenDresserSideboard",
 			"models": [
-				"res://assets/props/maze/wooden_dresser_sideboard.glb",
-				"res://assets/props/maze/wooden_dresser_sideboard_walnut.glb",
-				"res://assets/props/maze/wooden_dresser_sideboard_mahogany.glb",
-				"res://assets/props/maze/wooden_dresser_sideboard_ash.glb"
+				"res://assets/props/maze/wooden_dresser_sideboard.bbmodel",
+				"res://assets/props/maze/wooden_dresser_sideboard_walnut.bbmodel",
+				"res://assets/props/maze/wooden_dresser_sideboard_mahogany.bbmodel",
+				"res://assets/props/maze/wooden_dresser_sideboard_ash.bbmodel"
 			],
 			"themes": [
 				"oak",
@@ -183,10 +183,10 @@
 		{
 			"id": "retroComputerCompact",
 			"models": [
-				"res://assets/props/maze/retro_computer_compact_ivory.glb",
-				"res://assets/props/maze/retro_computer_compact_charcoal.glb",
-				"res://assets/props/maze/retro_computer_compact_teal.glb",
-				"res://assets/props/maze/retro_computer_compact_burgundy.glb"
+				"res://assets/props/maze/retro_computer_compact_ivory.bbmodel",
+				"res://assets/props/maze/retro_computer_compact_charcoal.bbmodel",
+				"res://assets/props/maze/retro_computer_compact_teal.bbmodel",
+				"res://assets/props/maze/retro_computer_compact_burgundy.bbmodel"
 			],
 			"themes": [
 				"ivory",
@@ -199,10 +199,10 @@
 		{
 			"id": "retroComputerTower",
 			"models": [
-				"res://assets/props/maze/retro_computer_tower_ivory.glb",
-				"res://assets/props/maze/retro_computer_tower_charcoal.glb",
-				"res://assets/props/maze/retro_computer_tower_teal.glb",
-				"res://assets/props/maze/retro_computer_tower_burgundy.glb"
+				"res://assets/props/maze/retro_computer_tower_ivory.bbmodel",
+				"res://assets/props/maze/retro_computer_tower_charcoal.bbmodel",
+				"res://assets/props/maze/retro_computer_tower_teal.bbmodel",
+				"res://assets/props/maze/retro_computer_tower_burgundy.bbmodel"
 			],
 			"themes": [
 				"ivory",
@@ -215,10 +215,10 @@
 		{
 			"id": "retroComputerDesktop",
 			"models": [
-				"res://assets/props/maze/retro_computer_desktop_ivory.glb",
-				"res://assets/props/maze/retro_computer_desktop_charcoal.glb",
-				"res://assets/props/maze/retro_computer_desktop_teal.glb",
-				"res://assets/props/maze/retro_computer_desktop_burgundy.glb"
+				"res://assets/props/maze/retro_computer_desktop_ivory.bbmodel",
+				"res://assets/props/maze/retro_computer_desktop_charcoal.bbmodel",
+				"res://assets/props/maze/retro_computer_desktop_teal.bbmodel",
+				"res://assets/props/maze/retro_computer_desktop_burgundy.bbmodel"
 			],
 			"themes": [
 				"ivory",
@@ -231,10 +231,10 @@
 		{
 			"id": "retroComputerTerminal",
 			"models": [
-				"res://assets/props/maze/retro_computer_terminal_ivory.glb",
-				"res://assets/props/maze/retro_computer_terminal_charcoal.glb",
-				"res://assets/props/maze/retro_computer_terminal_teal.glb",
-				"res://assets/props/maze/retro_computer_terminal_burgundy.glb"
+				"res://assets/props/maze/retro_computer_terminal_ivory.bbmodel",
+				"res://assets/props/maze/retro_computer_terminal_charcoal.bbmodel",
+				"res://assets/props/maze/retro_computer_terminal_teal.bbmodel",
+				"res://assets/props/maze/retro_computer_terminal_burgundy.bbmodel"
 			],
 			"themes": [
 				"ivory",
@@ -247,7 +247,7 @@
 		{
 			"id": "diningTable",
 			"models": [
-				"res://assets/props/mansion/grand_dining_table.glb"
+				"res://assets/props/mansion/grand_dining_table.bbmodel"
 			]
 		}
 	]

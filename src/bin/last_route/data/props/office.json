@@ -5,9 +5,9 @@
 		{
 			"id": "officeDesk",
 			"models": [
-				"res://assets/props/maze/office_desk.glb",
-				"res://assets/props/maze/office_desk_charcoal.glb",
-				"res://assets/props/maze/office_desk_teal.glb"
+				"res://assets/props/maze/office_desk.bbmodel",
+				"res://assets/props/maze/office_desk_charcoal.bbmodel",
+				"res://assets/props/maze/office_desk_teal.bbmodel"
 			],
 			"themes": [
 				"neutral",
@@ -19,9 +19,9 @@
 		{
 			"id": "officeChair",
 			"models": [
-				"res://assets/props/maze/office_task_chair.glb",
-				"res://assets/props/maze/office_task_chair_charcoal.glb",
-				"res://assets/props/maze/office_task_chair_teal.glb"
+				"res://assets/props/maze/office_task_chair.bbmodel",
+				"res://assets/props/maze/office_task_chair_charcoal.bbmodel",
+				"res://assets/props/maze/office_task_chair_teal.bbmodel"
 			],
 			"themes": [
 				"neutral",
@@ -33,9 +33,9 @@
 		{
 			"id": "officeCrtSecurityConsole",
 			"models": [
-				"res://assets/props/maze/office_crt_security_console.glb",
-				"res://assets/props/maze/office_crt_security_console_charcoal.glb",
-				"res://assets/props/maze/office_crt_security_console_teal.glb"
+				"res://assets/props/maze/office_crt_security_console.bbmodel",
+				"res://assets/props/maze/office_crt_security_console_charcoal.bbmodel",
+				"res://assets/props/maze/office_crt_security_console_teal.bbmodel"
 			],
 			"themes": [
 				"neutral",
@@ -47,9 +47,9 @@
 		{
 			"id": "officeCubiclePartition",
 			"models": [
-				"res://assets/props/maze/office_cubicle_partition.glb",
-				"res://assets/props/maze/office_cubicle_partition_charcoal.glb",
-				"res://assets/props/maze/office_cubicle_partition_teal.glb"
+				"res://assets/props/maze/office_cubicle_partition.bbmodel",
+				"res://assets/props/maze/office_cubicle_partition_charcoal.bbmodel",
+				"res://assets/props/maze/office_cubicle_partition_teal.bbmodel"
 			],
 			"themes": [
 				"neutral",
@@ -61,9 +61,9 @@
 		{
 			"id": "officePrinter",
 			"models": [
-				"res://assets/props/maze/office_printer.glb",
-				"res://assets/props/maze/office_printer_charcoal.glb",
-				"res://assets/props/maze/office_printer_teal.glb"
+				"res://assets/props/maze/office_printer.bbmodel",
+				"res://assets/props/maze/office_printer_charcoal.bbmodel",
+				"res://assets/props/maze/office_printer_teal.bbmodel"
 			],
 			"themes": [
 				"neutral",
@@ -75,9 +75,9 @@
 		{
 			"id": "officeWaterCooler",
 			"models": [
-				"res://assets/props/maze/office_water_cooler.glb",
-				"res://assets/props/maze/office_water_cooler_charcoal.glb",
-				"res://assets/props/maze/office_water_cooler_teal.glb"
+				"res://assets/props/maze/office_water_cooler.bbmodel",
+				"res://assets/props/maze/office_water_cooler_charcoal.bbmodel",
+				"res://assets/props/maze/office_water_cooler_teal.bbmodel"
 			],
 			"themes": [
 				"neutral",
@@ -89,9 +89,9 @@
 		{
 			"id": "officePhotocopier",
 			"models": [
-				"res://assets/props/maze/office_photocopier.glb",
-				"res://assets/props/maze/office_photocopier_charcoal.glb",
-				"res://assets/props/maze/office_photocopier_teal.glb"
+				"res://assets/props/maze/office_photocopier.bbmodel",
+				"res://assets/props/maze/office_photocopier_charcoal.bbmodel",
+				"res://assets/props/maze/office_photocopier_teal.bbmodel"
 			],
 			"themes": [
 				"neutral",
@@ -103,9 +103,9 @@
 		{
 			"id": "officeShredder",
 			"models": [
-				"res://assets/props/maze/office_shredder.glb",
-				"res://assets/props/maze/office_shredder_charcoal.glb",
-				"res://assets/props/maze/office_shredder_teal.glb"
+				"res://assets/props/maze/office_shredder.bbmodel",
+				"res://assets/props/maze/office_shredder_charcoal.bbmodel",
+				"res://assets/props/maze/office_shredder_teal.bbmodel"
 			],
 			"themes": [
 				"neutral",
@@ -117,9 +117,9 @@
 		{
 			"id": "officeFileBoxes",
 			"models": [
-				"res://assets/props/maze/office_file_boxes.glb",
-				"res://assets/props/maze/office_file_boxes_charcoal.glb",
-				"res://assets/props/maze/office_file_boxes_teal.glb"
+				"res://assets/props/maze/office_file_boxes.bbmodel",
+				"res://assets/props/maze/office_file_boxes_charcoal.bbmodel",
+				"res://assets/props/maze/office_file_boxes_teal.bbmodel"
 			],
 			"themes": [
 				"neutral",
@@ -131,9 +131,9 @@
 		{
 			"id": "officeCornerWorkstation",
 			"models": [
-				"res://assets/props/maze/office_corner_workstation.glb",
-				"res://assets/props/maze/office_corner_workstation_charcoal.glb",
-				"res://assets/props/maze/office_corner_workstation_teal.glb"
+				"res://assets/props/maze/office_corner_workstation.bbmodel",
+				"res://assets/props/maze/office_corner_workstation_charcoal.bbmodel",
+				"res://assets/props/maze/office_corner_workstation_teal.bbmodel"
 			],
 			"themes": [
 				"neutral",

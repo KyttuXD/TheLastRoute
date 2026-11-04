@@ -5,62 +5,62 @@
 		{
 			"id": "restraintChair",
 			"models": [
-				"res://assets/props/prison/restraint_chair.glb"
+				"res://assets/props/prison/restraint_chair.bbmodel"
 			]
 		},
 		{
 			"id": "hospitalBed",
 			"models": [
-				"res://assets/props/blocky/hospitalBed_0.glb",
-				"res://assets/props/blocky/hospitalBed_1.glb",
-				"res://assets/props/blocky/hospitalBed_2.glb"
+				"res://assets/props/blocky/hospitalBed_0.bbmodel",
+				"res://assets/props/blocky/hospitalBed_1.bbmodel",
+				"res://assets/props/blocky/hospitalBed_2.bbmodel"
 			]
 		},
 		{
 			"id": "hospitalCurtain",
 			"models": [
-				"res://assets/props/blocky/hospitalCurtain_0.glb",
-				"res://assets/props/blocky/hospitalCurtain_1.glb",
-				"res://assets/props/blocky/hospitalCurtain_2.glb"
+				"res://assets/props/blocky/hospitalCurtain_0.bbmodel",
+				"res://assets/props/blocky/hospitalCurtain_1.bbmodel",
+				"res://assets/props/blocky/hospitalCurtain_2.bbmodel"
 			]
 		},
 		{
 			"id": "ivDripStand",
 			"models": [
-				"res://assets/props/blocky/ivDripStand.glb"
+				"res://assets/props/blocky/ivDripStand.bbmodel"
 			]
 		},
 		{
 			"id": "vitalsMonitor",
 			"models": [
-				"res://assets/props/blocky/vitalsMonitor.glb"
+				"res://assets/props/blocky/vitalsMonitor.bbmodel"
 			]
 		},
 		{
 			"id": "nursesStation",
 			"models": [
-				"res://assets/props/blocky/nursesStation_0.glb",
-				"res://assets/props/blocky/nursesStation_1.glb"
+				"res://assets/props/blocky/nursesStation_0.bbmodel",
+				"res://assets/props/blocky/nursesStation_1.bbmodel"
 			]
 		},
 		{
 			"id": "waitingChairs",
 			"models": [
-				"res://assets/props/blocky/waitingChairs_0.glb",
-				"res://assets/props/blocky/waitingChairs_1.glb",
-				"res://assets/props/blocky/waitingChairs_2.glb"
+				"res://assets/props/blocky/waitingChairs_0.bbmodel",
+				"res://assets/props/blocky/waitingChairs_1.bbmodel",
+				"res://assets/props/blocky/waitingChairs_2.bbmodel"
 			]
 		},
 		{
 			"id": "operatingTable",
 			"models": [
-				"res://assets/props/blocky/operatingTable.glb"
+				"res://assets/props/blocky/operatingTable.bbmodel"
 			]
 		},
 		{
 			"id": "surgicalLight",
 			"models": [
-				"res://assets/props/blocky/surgicalLight.glb"
+				"res://assets/props/blocky/surgicalLight.bbmodel"
 			],
 			"light": {
 				"color": "f4fbff",
@@ -76,37 +76,37 @@
 		{
 			"id": "instrumentTrolley",
 			"models": [
-				"res://assets/props/blocky/instrumentTrolley.glb"
+				"res://assets/props/blocky/instrumentTrolley.bbmodel"
 			]
 		},
 		{
 			"id": "morgueCabinet",
 			"models": [
-				"res://assets/props/blocky/morgueCabinet.glb"
+				"res://assets/props/blocky/morgueCabinet.bbmodel"
 			]
 		},
 		{
 			"id": "autopsyTable",
 			"models": [
-				"res://assets/props/blocky/autopsyTable.glb"
+				"res://assets/props/blocky/autopsyTable.bbmodel"
 			]
 		},
 		{
 			"id": "pharmacyShelf",
 			"models": [
-				"res://assets/props/blocky/pharmacyShelf.glb"
+				"res://assets/props/blocky/pharmacyShelf.bbmodel"
 			]
 		},
 		{
 			"id": "xrayMachine",
 			"models": [
-				"res://assets/props/blocky/xrayMachine.glb"
+				"res://assets/props/blocky/xrayMachine.bbmodel"
 			]
 		},
 		{
 			"id": "xrayLightbox",
 			"models": [
-				"res://assets/props/blocky/xrayLightbox.glb"
+				"res://assets/props/blocky/xrayLightbox.bbmodel"
 			],
 			"light": {
 				"color": "e8f4ff",
@@ -122,35 +122,35 @@
 		{
 			"id": "medicalSupplyRack",
 			"models": [
-				"res://assets/props/blocky/medicalSupplyRack.glb"
+				"res://assets/props/blocky/medicalSupplyRack.bbmodel"
 			]
 		},
 		{
 			"id": "wheelchair",
 			"models": [
-				"res://assets/props/blocky/wheelchair_0.glb",
-				"res://assets/props/blocky/wheelchair_1.glb",
-				"res://assets/props/blocky/wheelchair_2.glb"
+				"res://assets/props/blocky/wheelchair_0.bbmodel",
+				"res://assets/props/blocky/wheelchair_1.bbmodel",
+				"res://assets/props/blocky/wheelchair_2.bbmodel"
 			]
 		},
 		{
 			"id": "hospitalWardSign",
 			"models": [
-				"res://assets/props/blocky/hospitalWardSign_0.glb",
-				"res://assets/props/blocky/hospitalWardSign_1.glb",
-				"res://assets/props/blocky/hospitalWardSign_2.glb"
+				"res://assets/props/blocky/hospitalWardSign_0.bbmodel",
+				"res://assets/props/blocky/hospitalWardSign_1.bbmodel",
+				"res://assets/props/blocky/hospitalWardSign_2.bbmodel"
 			]
 		},
 		{
 			"id": "labBench",
 			"models": [
-				"res://assets/props/blocky/labBench.glb"
+				"res://assets/props/blocky/labBench.bbmodel"
 			]
 		},
 		{
 			"id": "fumeHood",
 			"models": [
-				"res://assets/props/blocky/fumeHood.glb"
+				"res://assets/props/blocky/fumeHood.bbmodel"
 			]
 		}
 	]

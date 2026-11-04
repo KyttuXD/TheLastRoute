@@ -5,22 +5,22 @@
 		{
 			"id": "diningChair",
 			"models": [
-				"res://assets/props/mansion/dining_chair_burgundy.glb",
-				"res://assets/props/mansion/dining_chair_ivory.glb"
+				"res://assets/props/mansion/dining_chair_burgundy.bbmodel",
+				"res://assets/props/mansion/dining_chair_ivory.bbmodel"
 			]
 		},
 		{
 			"id": "diningChairCushion",
 			"models": [
-				"res://assets/props/mansion/dining_chair_cushion_burgundy.glb"
+				"res://assets/props/mansion/dining_chair_cushion_burgundy.bbmodel"
 			]
 		},
 		{
 			"id": "diningChandelier",
 			"models": [
-				"res://assets/props/mansion/dining_chandelier.glb",
-				"res://assets/props/mansion/dining_chandelier_crystal.glb",
-				"res://assets/props/mansion/dining_chandelier_gothic.glb"
+				"res://assets/props/mansion/dining_chandelier.bbmodel",
+				"res://assets/props/mansion/dining_chandelier_crystal.bbmodel",
+				"res://assets/props/mansion/dining_chandelier_gothic.bbmodel"
 			],
 			"light": {
 				"color": "ffd58c",
@@ -36,103 +36,103 @@
 		{
 			"id": "diningSideboard",
 			"models": [
-				"res://assets/props/mansion/ornate_sideboard.glb"
+				"res://assets/props/mansion/ornate_sideboard.bbmodel"
 			]
 		},
 		{
 			"id": "flowerCenterpiece",
 			"models": [
-				"res://assets/props/mansion/flower_centerpiece.glb"
+				"res://assets/props/mansion/flower_centerpiece.bbmodel"
 			]
 		},
 		{
 			"id": "framedWallPortrait",
 			"models": [
-				"res://assets/props/mansion/framed_wall_portrait.glb"
+				"res://assets/props/mansion/framed_wall_portrait.bbmodel"
 			]
 		},
 		{
 			"id": "normalPictureFrameEmpty",
 			"models": [
-				"res://assets/props/mansion/normal_picture_frame_empty.glb"
+				"res://assets/props/mansion/normal_picture_frame_empty.bbmodel"
 			]
 		},
 		{
 			"id": "normalPaintingFrameEmpty",
 			"models": [
-				"res://assets/props/mansion/normal_painting_frame_empty.glb"
+				"res://assets/props/mansion/normal_painting_frame_empty.bbmodel"
 			]
 		},
 		{
 			"id": "luxuryPictureFrameEmpty",
 			"models": [
-				"res://assets/props/mansion/luxury_picture_frame_empty.glb"
+				"res://assets/props/mansion/luxury_picture_frame_empty.bbmodel"
 			]
 		},
 		{
 			"id": "luxuryPaintingFrameEmpty",
 			"models": [
-				"res://assets/props/mansion/luxury_painting_frame_empty.glb"
+				"res://assets/props/mansion/luxury_painting_frame_empty.bbmodel"
 			]
 		},
 		{
 			"id": "gothicPictureFrameEmpty",
 			"models": [
-				"res://assets/props/mansion/gothic_picture_frame_empty.glb"
+				"res://assets/props/mansion/gothic_picture_frame_empty.bbmodel"
 			]
 		},
 		{
 			"id": "gothicPaintingFrameEmpty",
 			"models": [
-				"res://assets/props/mansion/gothic_painting_frame_empty.glb"
+				"res://assets/props/mansion/gothic_painting_frame_empty.bbmodel"
 			]
 		},
 		{
 			"id": "normalRoomDoor",
 			"models": [
-				"res://assets/props/mansion/normal_room_door.glb"
+				"res://assets/props/mansion/normal_room_door.bbmodel"
 			]
 		},
 		{
 			"id": "luxuryRoomDoor",
 			"models": [
-				"res://assets/props/mansion/luxury_room_door.glb"
+				"res://assets/props/mansion/luxury_room_door.bbmodel"
 			]
 		},
 		{
 			"id": "gothicRoomDoor",
 			"models": [
-				"res://assets/props/mansion/gothic_room_door.glb"
+				"res://assets/props/mansion/gothic_room_door.bbmodel"
 			]
 		},
 		{
 			"id": "normalDoubleRoomDoor",
 			"models": [
-				"res://assets/props/mansion/normal_double_room_door.glb"
+				"res://assets/props/mansion/normal_double_room_door.bbmodel"
 			]
 		},
 		{
 			"id": "luxuryDoubleRoomDoor",
 			"models": [
-				"res://assets/props/mansion/luxury_double_room_door.glb"
+				"res://assets/props/mansion/luxury_double_room_door.bbmodel"
 			]
 		},
 		{
 			"id": "gothicDoubleRoomDoor",
 			"models": [
-				"res://assets/props/mansion/gothic_double_room_door.glb"
+				"res://assets/props/mansion/gothic_double_room_door.bbmodel"
 			]
 		},
 		{
 			"id": "heavyMansionDrapes",
 			"models": [
-				"res://assets/props/mansion/heavy_mansion_drapes.glb"
+				"res://assets/props/mansion/heavy_mansion_drapes.bbmodel"
 			]
 		},
 		{
 			"id": "mansionAreaRug",
 			"models": [
-				"res://assets/props/mansion/mansion_area_rug.glb"
+				"res://assets/props/mansion/mansion_area_rug.bbmodel"
 			]
 		}
 	]

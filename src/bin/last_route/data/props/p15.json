@@ -5,39 +5,39 @@
 		{
 			"id": "donutFryer",
 			"models": [
-				"res://assets/props/blocky/donutFryer.glb"
+				"res://assets/props/blocky/donutFryer.bbmodel"
 			]
 		},
 		{
 			"id": "bakeryRack",
 			"models": [
-				"res://assets/props/blocky/bakeryRack_0.glb",
-				"res://assets/props/blocky/bakeryRack_1.glb",
-				"res://assets/props/blocky/bakeryRack_2.glb"
+				"res://assets/props/blocky/bakeryRack_0.bbmodel",
+				"res://assets/props/blocky/bakeryRack_1.bbmodel",
+				"res://assets/props/blocky/bakeryRack_2.bbmodel"
 			]
 		},
 		{
 			"id": "dinerStool",
 			"models": [
-				"res://assets/props/blocky/dinerStool_0.glb",
-				"res://assets/props/blocky/dinerStool_1.glb",
-				"res://assets/props/blocky/dinerStool_2.glb"
+				"res://assets/props/blocky/dinerStool_0.bbmodel",
+				"res://assets/props/blocky/dinerStool_1.bbmodel",
+				"res://assets/props/blocky/dinerStool_2.bbmodel"
 			]
 		},
 		{
 			"id": "dinerBooth",
 			"models": [
-				"res://assets/props/blocky/dinerBooth_0.glb",
-				"res://assets/props/blocky/dinerBooth_1.glb",
-				"res://assets/props/blocky/dinerBooth_2.glb"
+				"res://assets/props/blocky/dinerBooth_0.bbmodel",
+				"res://assets/props/blocky/dinerBooth_1.bbmodel",
+				"res://assets/props/blocky/dinerBooth_2.bbmodel"
 			]
 		},
 		{
 			"id": "menuBoard",
 			"models": [
-				"res://assets/props/blocky/menuBoard_0.glb",
-				"res://assets/props/blocky/menuBoard_1.glb",
-				"res://assets/props/blocky/menuBoard_2.glb"
+				"res://assets/props/blocky/menuBoard_0.bbmodel",
+				"res://assets/props/blocky/menuBoard_1.bbmodel",
+				"res://assets/props/blocky/menuBoard_2.bbmodel"
 			],
 			"light": {
 				"color": "ffe0b0",
@@ -53,8 +53,8 @@
 		{
 			"id": "donutSign",
 			"models": [
-				"res://assets/props/blocky/donutSign_0.glb",
-				"res://assets/props/blocky/donutSign_1.glb"
+				"res://assets/props/blocky/donutSign_0.bbmodel",
+				"res://assets/props/blocky/donutSign_1.bbmodel"
 			],
 			"light": {
 				"color": "ff8fc8",
@@ -70,106 +70,106 @@
 		{
 			"id": "washingMachine",
 			"models": [
-				"res://assets/props/blocky/washingMachine_0.glb",
-				"res://assets/props/blocky/washingMachine_1.glb",
-				"res://assets/props/blocky/washingMachine_2.glb"
+				"res://assets/props/blocky/washingMachine_0.bbmodel",
+				"res://assets/props/blocky/washingMachine_1.bbmodel",
+				"res://assets/props/blocky/washingMachine_2.bbmodel"
 			]
 		},
 		{
 			"id": "dryerStack",
 			"models": [
-				"res://assets/props/blocky/dryerStack_0.glb",
-				"res://assets/props/blocky/dryerStack_1.glb"
+				"res://assets/props/blocky/dryerStack_0.bbmodel",
+				"res://assets/props/blocky/dryerStack_1.bbmodel"
 			]
 		},
 		{
 			"id": "flowerStand",
 			"models": [
-				"res://assets/props/blocky/flowerStand_0.glb",
-				"res://assets/props/blocky/flowerStand_1.glb"
+				"res://assets/props/blocky/flowerStand_0.bbmodel",
+				"res://assets/props/blocky/flowerStand_1.bbmodel"
 			]
 		},
 		{
 			"id": "barberChair",
 			"models": [
-				"res://assets/props/blocky/barberChair_0.glb",
-				"res://assets/props/blocky/barberChair_1.glb",
-				"res://assets/props/blocky/barberChair_2.glb"
+				"res://assets/props/blocky/barberChair_0.bbmodel",
+				"res://assets/props/blocky/barberChair_1.bbmodel",
+				"res://assets/props/blocky/barberChair_2.bbmodel"
 			]
 		},
 		{
 			"id": "barberStation",
 			"models": [
-				"res://assets/props/blocky/barberStation_0.glb",
-				"res://assets/props/blocky/barberStation_1.glb"
+				"res://assets/props/blocky/barberStation_0.bbmodel",
+				"res://assets/props/blocky/barberStation_1.bbmodel"
 			]
 		},
 		{
 			"id": "clothesRack",
 			"models": [
-				"res://assets/props/blocky/clothesRack_0.glb",
-				"res://assets/props/blocky/clothesRack_1.glb",
-				"res://assets/props/blocky/clothesRack_2.glb"
+				"res://assets/props/blocky/clothesRack_0.bbmodel",
+				"res://assets/props/blocky/clothesRack_1.bbmodel",
+				"res://assets/props/blocky/clothesRack_2.bbmodel"
 			]
 		},
 		{
 			"id": "tvWall",
 			"models": [
-				"res://assets/props/blocky/tvWall_0.glb",
-				"res://assets/props/blocky/tvWall_1.glb",
-				"res://assets/props/blocky/tvWall_2.glb"
+				"res://assets/props/blocky/tvWall_0.bbmodel",
+				"res://assets/props/blocky/tvWall_1.bbmodel",
+				"res://assets/props/blocky/tvWall_2.bbmodel"
 			]
 		},
 		{
 			"id": "cinemaSeats",
 			"models": [
-				"res://assets/props/blocky/cinemaSeats_0.glb",
-				"res://assets/props/blocky/cinemaSeats_1.glb"
+				"res://assets/props/blocky/cinemaSeats_0.bbmodel",
+				"res://assets/props/blocky/cinemaSeats_1.bbmodel"
 			]
 		},
 		{
 			"id": "cinemaScreen",
 			"models": [
-				"res://assets/props/blocky/cinemaScreen_0.glb",
-				"res://assets/props/blocky/cinemaScreen_1.glb"
+				"res://assets/props/blocky/cinemaScreen_0.bbmodel",
+				"res://assets/props/blocky/cinemaScreen_1.bbmodel"
 			]
 		},
 		{
 			"id": "ticketBooth",
 			"models": [
-				"res://assets/props/blocky/ticketBooth_0.glb",
-				"res://assets/props/blocky/ticketBooth_1.glb",
-				"res://assets/props/blocky/ticketBooth_2.glb"
+				"res://assets/props/blocky/ticketBooth_0.bbmodel",
+				"res://assets/props/blocky/ticketBooth_1.bbmodel",
+				"res://assets/props/blocky/ticketBooth_2.bbmodel"
 			]
 		},
 		{
 			"id": "concessionCounter",
 			"models": [
-				"res://assets/props/blocky/concessionCounter_0.glb",
-				"res://assets/props/blocky/concessionCounter_1.glb"
+				"res://assets/props/blocky/concessionCounter_0.bbmodel",
+				"res://assets/props/blocky/concessionCounter_1.bbmodel"
 			]
 		},
 		{
 			"id": "foodCourtTable",
 			"models": [
-				"res://assets/props/blocky/foodCourtTable_0.glb",
-				"res://assets/props/blocky/foodCourtTable_1.glb",
-				"res://assets/props/blocky/foodCourtTable_2.glb"
+				"res://assets/props/blocky/foodCourtTable_0.bbmodel",
+				"res://assets/props/blocky/foodCourtTable_1.bbmodel",
+				"res://assets/props/blocky/foodCourtTable_2.bbmodel"
 			]
 		},
 		{
 			"id": "mallPlanter",
 			"models": [
-				"res://assets/props/blocky/mallPlanter_0.glb",
-				"res://assets/props/blocky/mallPlanter_1.glb",
-				"res://assets/props/blocky/mallPlanter_2.glb"
+				"res://assets/props/blocky/mallPlanter_0.bbmodel",
+				"res://assets/props/blocky/mallPlanter_1.bbmodel",
+				"res://assets/props/blocky/mallPlanter_2.bbmodel"
 			]
 		},
 		{
 			"id": "mallBench",
 			"models": [
-				"res://assets/props/blocky/mallBench_0.glb",
-				"res://assets/props/blocky/mallBench_1.glb"
+				"res://assets/props/blocky/mallBench_0.bbmodel",
+				"res://assets/props/blocky/mallBench_1.bbmodel"
 			]
 		}
 	]

@@ -3,6 +3,8 @@
 //
 //   node tools/props/glb_to_bbmodel.mjs <in.glb> <out.bbmodel> [--name NAME] [--atlas-name FILE.png] [--quiet]
 //   node tools/props/glb_to_bbmodel.mjs --dir <glb_dir> --out <out_dir> [--recursive] [--quiet]
+//   node tools/props/glb_to_bbmodel.mjs --all      (every GLB in tools/props/source_glb -> the game's assets folder)
+//   node tools/props/glb_to_bbmodel.mjs --check    (same, writes nothing, fails if a bbmodel on disk is not what the converter makes)
 //
 // Dependency-free (Node built-ins only). Conventions copied from tools/prop_convert (the Rust converter that
 // produced assets/props/*.bbmodel): glTF metres * 16 = bbmodel units, Y up, no axis flip, node transforms baked
@@ -13,9 +15,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 export const UNITS_PER_METRE = 16;
+// node names the runtime looks for (kept in step with render/door.rs `closed_hinge_deg` and render/prop_model.rs `locker_door_part`)
+const HINGES = ['DoorHinge', 'DoorHingeRight'];
+const FRAME_NODES = ['DoorFrameTop', 'DoorFrameL', 'DoorFrameR'];
+const LOCKER_GROUP = 'LockerDoor';
+const LOCKER_DOOR_NODES = [
+  'BlockLatch', 'DoorLowerMass', 'DoorRail_L', 'DoorRail_R', 'DoorTopMass', 'Handle', 'HandlePlate', 'LowerInset', 'LowerPanel',
+  'NumberPlate', 'SightCrackLeftRail', 'SightCrackRightRail', 'SightSlat_1', 'SightSlat_2', 'SightSlat_3',
+];
 const r4 = (x) => Math.round(x * 1e4) / 1e4;
 
 // ---------- GLB / glTF parsing ----------
@@ -86,46 +97,138 @@ const xp = (m, p) => [
   m[2] * p[0] + m[6] * p[1] + m[10] * p[2] + m[14]];
 const det3 = (m) => m[0] * (m[5] * m[10] - m[9] * m[6]) - m[4] * (m[1] * m[10] - m[9] * m[2]) + m[8] * (m[1] * m[6] - m[5] * m[2]);
 
-/** Primitives with world-space positions (metres), uvs in atlas pixels, triangles. */
+// ---------- minimal PNG codec (8-bit, non-interlaced, colour types 0/2/3/4/6) for stacking several images into one atlas ----------
+function decodePng(png) {
+  const w = png.readUInt32BE(16), h = png.readUInt32BE(20), depth = png[24], ct = png[25];
+  if (depth !== 8 || png[28] !== 0) throw new Error('PNG must be 8-bit and not interlaced to be merged');
+  const chans = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }[ct];
+  if (!chans) throw new Error('PNG colour type ' + ct + ' not supported');
+  let off = 8, plte = null, trns = null; const idat = [];
+  while (off + 8 <= png.length) {
+    const len = png.readUInt32BE(off), type = png.toString('latin1', off + 4, off + 8), data = png.subarray(off + 8, off + 8 + len);
+    if (type === 'IDAT') idat.push(data); else if (type === 'PLTE') plte = data; else if (type === 'tRNS') trns = data;
+    off += 12 + len;
+  }
+  const raw = zlib.inflateSync(Buffer.concat(idat)), stride = w * chans, cur = Buffer.alloc(h * stride);
+  for (let y = 0; y < h; y++) {
+    const ft = raw[y * (stride + 1)], row = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
+    for (let x = 0; x < stride; x++) {
+      const a = x >= chans ? cur[y * stride + x - chans] : 0, b = y ? cur[(y - 1) * stride + x] : 0, c = x >= chans && y ? cur[(y - 1) * stride + x - chans] : 0;
+      let p = 0;
+      if (ft === 2) p = b; else if (ft === 1) p = a; else if (ft === 3) p = (a + b) >> 1;
+      else if (ft === 4) { const q = a + b - c, pa = Math.abs(q - a), pb = Math.abs(q - b), pc = Math.abs(q - c); p = pa <= pb && pa <= pc ? a : pb <= pc ? b : c; }
+      cur[y * stride + x] = (row[x] + p) & 255;
+    }
+  }
+  const rgba = Buffer.alloc(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    let r, g, b, a = 255;
+    if (ct === 6) [r, g, b, a] = cur.subarray(i * 4, i * 4 + 4);
+    else if (ct === 2) [r, g, b] = cur.subarray(i * 3, i * 3 + 3);
+    else if (ct === 0) r = g = b = cur[i];
+    else if (ct === 4) { r = g = b = cur[i * 2]; a = cur[i * 2 + 1]; }
+    else { const k = cur[i]; r = plte[k * 3]; g = plte[k * 3 + 1]; b = plte[k * 3 + 2]; if (trns && k < trns.length) a = trns[k]; }
+    rgba.set([r, g, b, a], i * 4);
+  }
+  return { w, h, rgba };
+}
+const crcTable = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(b) { let c = 0xffffffff; for (const x of b) c = crcTable[(c ^ x) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; }
+function encodePng(w, h, rgba) {
+  const chunk = (type, data) => {
+    const out = Buffer.alloc(12 + data.length), t = Buffer.from(type, 'latin1');
+    out.writeUInt32BE(data.length, 0); t.copy(out, 4); data.copy(out, 8); out.writeUInt32BE(crc32(Buffer.concat([t, data])), 8 + data.length);
+    return out;
+  };
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 6;
+  const raw = Buffer.alloc(h * (w * 4 + 1));
+  for (let y = 0; y < h; y++) rgba.copy(raw, y * (w * 4 + 1) + 1, y * w * 4, (y + 1) * w * 4);
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw, { level: 9 })), chunk('IEND', Buffer.alloc(0))]);
+}
+
+/**
+ * Primitives with world-space positions (metres), uvs in atlas pixels, triangles. A model whose materials use more than
+ * one image gets those images stacked top to bottom into one atlas (the loader draws one texture per model), with each
+ * primitive's UVs moved down by its image's offset.
+ */
 export function readGlb(buf) {
   const { gltf: g, bin } = parseGlb(buf);
   if (!g.images || !g.images.length) throw new Error('no image in GLB');
-  const im = g.images[0];
-  if (im.bufferView === undefined) throw new Error('image is not embedded');
-  const bv = g.bufferViews[im.bufferView];
-  const png = Buffer.from(bin.subarray(bv.byteOffset || 0, (bv.byteOffset || 0) + bv.byteLength));
-  if (png.readUInt32BE(0) !== 0x89504e47) throw new Error('embedded image is not a PNG');
-  const width = png.readUInt32BE(16), height = png.readUInt32BE(20);
+  const pngOf = (i) => {
+    const im = g.images[i];
+    if (im.bufferView === undefined) throw new Error('image is not embedded');
+    const bv = g.bufferViews[im.bufferView];
+    const png = Buffer.from(bin.subarray(bv.byteOffset || 0, (bv.byteOffset || 0) + bv.byteLength));
+    if (png.readUInt32BE(0) !== 0x89504e47) throw new Error('embedded image is not a PNG');
+    return png;
+  };
+  // the image a primitive's base colour reads (material -> texture -> source), image 0 when it names none
+  const imageOfPrim = (p) => {
+    const t = g.materials && g.materials[p.material] && g.materials[p.material].pbrMetallicRoughness && g.materials[p.material].pbrMetallicRoughness.baseColorTexture;
+    const src = t && g.textures && g.textures[t.index] ? g.textures[t.index].source : 0;
+    return src === undefined ? 0 : src;
+  };
+  const used = [...new Set(g.meshes.flatMap((m) => m.primitives.map(imageOfPrim)))].sort((a, b) => a - b);
+  let png, width, height;
+  const offset = new Map(), size = new Map(); // image index -> v offset (px), [w, h]
+  if (used.length <= 1) {
+    const only = used.length ? used[0] : 0;
+    png = pngOf(only); width = png.readUInt32BE(16); height = png.readUInt32BE(20);
+    offset.set(only, 0); size.set(only, [width, height]);
+  } else {
+    const dec = used.map((i) => ({ i, ...decodePng(pngOf(i)) }));
+    width = Math.max(...dec.map((d) => d.w)); height = dec.reduce((a, d) => a + d.h, 0);
+    const rgba = Buffer.alloc(width * height * 4);
+    let y0 = 0;
+    for (const d of dec) {
+      for (let y = 0; y < d.h; y++) d.rgba.copy(rgba, ((y0 + y) * width) * 4, y * d.w * 4, (y + 1) * d.w * 4);
+      offset.set(d.i, y0); size.set(d.i, [d.w, d.h]); y0 += d.h;
+    }
+    png = encodePng(width, height, rgba);
+  }
   const prims = [];
   const scene = g.scenes && g.scenes[g.scene || 0];
   const roots = scene ? scene.nodes : g.nodes.map((_, i) => i);
-  const visit = (ni, parent) => {
+  // Structure the runtime reads by name (render/prop_model.rs, render/door.rs): a room door's hinge nodes (the leaves hang under
+  // them and swing about the hinge), its frame pieces (measured for the raise and widen) and a hiding spot's door leaf.
+  const groups = new Map(); // group name -> pivot, in metres
+  const lockerNode = g.nodes.find((n) => n.name === 'BlockHinge_1');
+  const lockerPivot = lockerNode ? (lockerNode.translation || [0, 0, 0]) : null;
+  if (lockerPivot) groups.set(LOCKER_GROUP, lockerPivot);
+  const visit = (ni, parent, hinge) => {
     const n = g.nodes[ni], world = mmul(parent, nodeMatrix(n));
+    if (!hinge && HINGES.includes(n.name)) {
+      hinge = n.name;
+      groups.set(hinge, [world[12], world[13], world[14]]);
+    }
     if (n.mesh !== undefined) {
+      const group = hinge || (lockerPivot && LOCKER_DOOR_NODES.includes(n.name) ? LOCKER_GROUP : FRAME_NODES.includes(n.name) ? n.name : null);
+      if (group && !groups.has(group)) groups.set(group, [0, 0, 0]);
       const mesh = g.meshes[n.mesh];
       mesh.primitives.forEach((p, pi) => {
         if ((p.mode === undefined ? 4 : p.mode) !== 4) throw new Error('primitive mode ' + p.mode + ' not supported');
         const P = readAccessor(g, bin, p.attributes.POSITION);
         const pos = [];
         for (let i = 0; i < P.data.length; i += 3) pos.push(xp(world, [P.data[i], P.data[i + 1], P.data[i + 2]]));
+        const img = imageOfPrim(p), [iw, ih] = size.get(img), io = offset.get(img);
         let uv;
         if (p.attributes.TEXCOORD_0 !== undefined) {
           const T = readAccessor(g, bin, p.attributes.TEXCOORD_0);
           uv = [];
-          for (let i = 0; i < T.data.length; i += 2) uv.push([T.data[i] * width, T.data[i + 1] * height]);
+          for (let i = 0; i < T.data.length; i += 2) uv.push([T.data[i] * iw, T.data[i + 1] * ih + io]);
         } else uv = pos.map(() => [0, 0]);
         const idx = p.indices !== undefined ? Array.from(readAccessor(g, bin, p.indices).data) : pos.map((_, i) => i);
         const flip = det3(world) < 0;
         const tris = [];
         for (let i = 0; i + 2 < idx.length; i += 3) tris.push(flip ? [idx[i], idx[i + 2], idx[i + 1]] : [idx[i], idx[i + 1], idx[i + 2]]);
-        prims.push({ name: n.name || mesh.name || 'mesh', multi: mesh.primitives.length > 1 ? pi : -1, pos, uv, tris });
+        prims.push({ name: n.name || mesh.name || 'mesh', multi: mesh.primitives.length > 1 ? pi : -1, pos, uv, tris, group });
       });
     }
-    (n.children || []).forEach((c) => visit(c, world));
+    (n.children || []).forEach((c) => visit(c, world, hinge));
   };
-  roots.forEach((r) => visit(r, I4()));
+  roots.forEach((r) => visit(r, I4(), null));
   if (!prims.length) throw new Error('no triangle geometry');
-  return { prims, png, width, height, imageCount: g.images.length };
+  return { prims, png, width, height, imageCount: g.images.length, groups };
 }
 
 // ---------- geometry helpers ----------
@@ -231,7 +334,7 @@ export function stableUuid(s) {
 export function convert(buf, name, opts = {}) {
   const src = readGlb(buf);
   const atlasName = opts.atlasName || `${name}_atlas.png`;
-  const elements = [], outliner = [];
+  const elements = [], outliner = [], members = {};
   const stats = {
     cubes: 0, meshElements: 0, meshFaces: 0, meshTriangles: 0, srcTriangles: 0,
     bboxMin: [1e9, 1e9, 1e9], bboxMax: [-1e9, -1e9, -1e9], imageCount: src.imageCount, width: src.width, height: src.height,
@@ -255,9 +358,9 @@ export function convert(buf, name, opts = {}) {
     const leftover = [];
     for (const comp of comps.values()) {
       const cube = asCube(comp);
-      if (cube) cubesSpec.push({ cube, base: prim.name }); else leftover.push(...comp);
+      if (cube) cubesSpec.push({ cube, base: prim.name, group: prim.group }); else leftover.push(...comp);
     }
-    if (leftover.length) meshSpec.push({ name: prim.multi >= 0 ? `${prim.name}_${prim.multi}` : prim.name, faces: leftover });
+    if (leftover.length) meshSpec.push({ name: prim.multi >= 0 ? `${prim.name}_${prim.multi}` : prim.name, faces: leftover, group: prim.group });
   }
   let n = 0;
   const colour = () => (n++) % 8;
@@ -278,7 +381,7 @@ export function convert(buf, name, opts = {}) {
       name: `${base}_cube${i}`, type: 'cube', uuid, box_uv: false, rescale: false, locked: false,
       from, to, autouv: 0, color: colour(), origin: [0, 0, 0], rotation: [0, 0, 0], faces,
     });
-    outliner.push(uuid);
+    (cubesSpec[i].group ? (members[cubesSpec[i].group] ??= []) : outliner).push(uuid);
     stats.cubes++;
     grow(cube.from); grow(cube.to);
   });
@@ -301,9 +404,16 @@ export function convert(buf, name, opts = {}) {
       name: m.name, color: colour(), origin: [0, 0, 0], rotation: [0, 0, 0], export: true, visibility: true, locked: false,
       render_order: 'default', allow_mirror_modeling: true, vertices, faces, type: 'mesh', uuid,
     });
-    outliner.push(uuid);
+    (m.group ? (members[m.group] ??= []) : outliner).push(uuid);
     stats.meshElements++;
   });
+  // outliner groups: the pivot is the hinge line (a door's hinge, the hiding spot's door), everything stays in model space
+  for (const [gname, pivot] of src.groups) {
+    outliner.push({
+      name: gname, origin: pivot.map((c) => r4(c * UNITS_PER_METRE)), rotation: [0, 0, 0], color: 0, uuid: stableUuid(`${name}/group/${gname}`),
+      export: true, isOpen: true, locked: false, visibility: true, autouv: 0, children: members[gname] || [],
+    });
+  }
   stats.cubeFaces = elements.filter((e) => e.type === 'cube').reduce((a, e) => a + Object.values(e.faces).filter((f) => f.texture === 0).length, 0);
   stats.totalFaces = stats.cubeFaces + stats.meshFaces;
   stats.totalTriangles = stats.cubeFaces * 2 + stats.meshTriangles;
@@ -394,21 +504,58 @@ function walk(dir, recursive, out = []) {
   }
   return out;
 }
+// Default paths: the GLB sources live in tools/props/source_glb/<path under assets/>.glb and every one converts to
+// src/bin/last_route/assets/<same path>.bbmodel (the game loads only the bbmodels).
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+export const SOURCE_GLB = path.join(ROOT, 'tools', 'props', 'source_glb');
+export const ASSETS = path.join(ROOT, 'src', 'bin', 'last_route', 'assets');
+const toPosix = (p) => p.split(path.sep).join('/');
+/** The atlas name a model's texture is stored under: the blocky props share one atlas, every other model has its own. */
+export function atlasNameFor(rel) {
+  return rel.startsWith('props/blocky/') ? 'blocky_atlas.png' : undefined;
+}
+
 function main(argv) {
   const opt = { _: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--quiet' || a === '--recursive') opt[a.slice(2)] = true;
+    if (a === '--quiet' || a === '--recursive' || a === '--all' || a === '--check') opt[a.slice(2)] = true;
     else if (a.startsWith('--')) opt[a.slice(2)] = argv[++i];
     else opt._.push(a);
   }
   const jobs = [];
+  if (opt.all || opt.check) {
+    // every GLB under tools/props/source_glb -> the bbmodel beside its place under assets/. --check writes nothing and
+    // fails when a bbmodel on disk differs from what the converter makes now.
+    let bad = 0, n = 0;
+    for (const f of walk(SOURCE_GLB, true)) {
+      const rel = toPosix(path.relative(SOURCE_GLB, f)).replace(/\.glb$/i, '');
+      const outp = path.join(ASSETS, rel + '.bbmodel');
+      const name = path.basename(outp, '.bbmodel');
+      try {
+        const r = convert(fs.readFileSync(f), name, { atlasName: atlasNameFor(rel + '.glb') });
+        const text = JSON.stringify(r.bbmodel);
+        const rt = roundTrip(r.bbmodel, r.source);
+        if (!rt.ok) { console.error(`ROUND TRIP ${rel}: missing ${rt.missing}, area ${rt.srcArea} vs ${rt.outArea}`); bad++; }
+        if (opt.check) {
+          if (!fs.existsSync(outp) || fs.readFileSync(outp, 'utf8') !== text) { console.error(`DIFFERS ${rel}`); bad++; }
+        } else {
+          fs.mkdirSync(path.dirname(outp), { recursive: true });
+          fs.writeFileSync(outp, text);
+        }
+        n++;
+      } catch (e) { console.error(`FAILED ${rel}: ${e.message}`); bad++; }
+    }
+    console.log(`${n} models ${opt.check ? 'checked' : 'written'}, ${bad} problems`);
+    if (bad) process.exitCode = 1;
+    return;
+  }
   if (opt.dir) {
     if (!opt.out) { console.error('--dir needs --out'); process.exit(2); }
     for (const f of walk(opt.dir, !!opt.recursive)) jobs.push([f, path.join(opt.out, path.basename(f, '.glb') + '.bbmodel')]);
   } else if (opt._.length === 2) jobs.push([opt._[0], opt._[1]]);
   else {
-    console.error('usage: glb_to_bbmodel.mjs <in.glb> <out.bbmodel> [--name N] [--atlas-name F]\n       glb_to_bbmodel.mjs --dir <dir> --out <dir> [--recursive]');
+    console.error('usage: glb_to_bbmodel.mjs <in.glb> <out.bbmodel> [--name N] [--atlas-name F]\n       glb_to_bbmodel.mjs --dir <dir> --out <dir> [--recursive]\n       glb_to_bbmodel.mjs --all | --check   (tools/props/source_glb -> src/bin/last_route/assets)');
     process.exit(2);
   }
   let failed = 0;
