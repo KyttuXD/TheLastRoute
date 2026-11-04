@@ -37,7 +37,7 @@ const TAB_KEYS: [&[&str]; 7] = [
         "subtitles",
         "speech_enabled",
     ],
-    &["fullscreen", "ads", "vsync", "quality", "fps_limit", "fov"],
+    &["fullscreen", "ads", "vsync", "quality", "fps_limit", "fov", "graphics_api"],
     &["sensitivity"],
     &[],
     &["arms"],
@@ -48,6 +48,12 @@ const TAB_KEYS: [&[&str]; 7] = [
 /// from LR_SCHEME or the saved file, and `skin` is chosen from the title screen.
 #[allow(dead_code)]
 const OFF_PANEL_KEYS: [&str; 3] = ["username", "scheme", "skin"];
+
+/// The GRAPHICS API row: the saved choice and the API this run opened with (they differ until a restart, or when
+/// AUTO or a safeguard picked).
+fn graphics_api_label(setting: &str, metal_now: bool) -> String {
+    format!("GRAPHICS API: {setting} (NOW {})", if metal_now { "METAL" } else { "OPENGL" })
+}
 
 /// MOVEMENT / ACTIONS / SYSTEM (ControlsRegistry.LAST_ROUTE_TABS) with Godot/web defaults
 /// (project.godot [input] + LAST_ROUTE_TABS). Labels only — rebinding stays disabled.
@@ -1139,6 +1145,18 @@ pub fn draw_settings(
                 _ => "AUTO: picks for this device, eases off if frames drop",
             };
             label_vc(a, F::Body, hint, x, oy + 144.0, 12.0, 7.0, p.muted);
+            // Metal or OpenGL: macOS only, read when the game starts (app/gfx.rs)
+            if cfg!(target_os = "macos") {
+                let label = graphics_api_label(&st.graphics_api, crate::app::platform::is_metal());
+                if button(a, Rect::new(x, oy + 164.0, 400.0, 16.0), &label, 8.0, Kind::Secondary, plain()) {
+                    let next = crate::app::gfx::Choice::parse(&st.graphics_api)
+                        .unwrap_or(crate::app::gfx::Choice::Auto)
+                        .next();
+                    st.graphics_api = next.id().into();
+                    changed = true;
+                }
+                label_vc(a, F::Body, "TAKES EFFECT THE NEXT TIME THE GAME STARTS", x, oy + 184.0, 12.0, 7.0, p.muted);
+            }
         }
         _ => {
             // CONTROLS: the mouse sensitivity row, then ControlsScroll (20,88)-(420,228) with the
@@ -1234,6 +1252,13 @@ mod tests {
             .collect();
         keys.sort();
         keys
+    }
+
+    #[test]
+    fn graphics_api_row_names_the_running_api() {
+        assert_eq!(graphics_api_label("AUTO", true), "GRAPHICS API: AUTO (NOW METAL)");
+        assert_eq!(graphics_api_label("OPENGL", false), "GRAPHICS API: OPENGL (NOW OPENGL)");
+        assert_eq!(graphics_api_label("METAL", false), "GRAPHICS API: METAL (NOW OPENGL)");
     }
 
     #[test]

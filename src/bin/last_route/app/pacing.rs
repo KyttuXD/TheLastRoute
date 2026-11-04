@@ -4,8 +4,15 @@
 //! sets `platform.swap_interval`, and it never changes it afterwards. `main.rs` sets the creation
 //! value from the saved setting, and `apply_vsync` changes the live context when the row is
 //! toggled (on Windows, through the WGL_EXT_swap_control entry point the context was made with; on
-//! macOS, through NSOpenGLContext's swap interval parameter). On macOS miniquad forces the creation
-//! value to 0 whatever the config says, so the first frame's `apply_vsync` is what turns vsync on.
+//! macOS, through NSOpenGLContext's swap interval parameter, or under Metal through the CAMetalLayer's
+//! displaySyncEnabled). On macOS miniquad forces the creation value to 0 whatever the config says, so the
+//! first frame's `apply_vsync` is what turns vsync on.
+//!
+//! THE MACOS DISPLAY LINK: miniquad's macOS run loop also waits on a CVDisplayLink at the top of every
+//! iteration, whatever the swap interval says, so even "vsync off" ran at the display's refresh rate (73-75 FPS
+//! on a 75 Hz panel, on OpenGL and Metal alike). The vendored miniquad (vendor/miniquad) lets the game switch
+//! that wait with `window::set_frame_pacer`: `apply_vsync` keeps it on while VSYNC is on and drops it while
+//! VSYNC is off, live, for both backends.
 //!
 //! FPS LIMIT: `Pacer::wait` sleeps the loop to a fixed frame grid before the next frame. With no
 //! cap it returns at once, so the loop runs as fast as vsync (if on) allows.
@@ -28,12 +35,20 @@ pub fn apply_vsync(on: bool) -> bool {
     let interval = swap_interval_for(on);
     let state = if on { "on" } else { "off" };
     let applied = set_swap_interval(interval);
+    #[cfg(target_os = "macos")]
+    macroquad::miniquad::window::set_frame_pacer(frame_pacer_for(on));
     if applied {
         crate::lr_info!("vsync {state} (swap interval {interval})");
     } else {
         crate::lr_warn!("vsync {state}: the live swap interval could not be changed");
     }
     applied
+}
+
+/// Whether the macOS run loop waits on the display link: only while VSYNC is on.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn frame_pacer_for(vsync_on: bool) -> bool {
+    vsync_on
 }
 
 #[cfg(windows)]
@@ -66,6 +81,9 @@ const NS_OPENGL_CP_SWAP_INTERVAL: std::ffi::c_long = 222;
 /// requires on arm64 and x86_64 alike. libobjc is always present on macOS.
 #[cfg(target_os = "macos")]
 fn set_swap_interval(interval: i32) -> bool {
+    if crate::app::platform::is_metal() {
+        return set_metal_display_sync(interval > 0);
+    }
     use core::ffi::{c_char, c_int, c_void};
     #[link(name = "objc")]
     extern "C" {
@@ -97,6 +115,42 @@ fn set_swap_interval(interval: i32) -> bool {
             &value,
             NS_OPENGL_CP_SWAP_INTERVAL,
         );
+    }
+    true
+}
+
+/// Under Metal there is no NSOpenGLContext: the view's layer is a CAMetalLayer, whose `displaySyncEnabled`
+/// is the swap interval (YES waits for the display's refresh, NO presents at once). `[view layer]` then
+/// `setDisplaySyncEnabled:`, after a `respondsToSelector:` check (the property is macOS 10.13+).
+#[cfg(target_os = "macos")]
+fn set_metal_display_sync(on: bool) -> bool {
+    use core::ffi::{c_char, c_void};
+    #[link(name = "objc")]
+    extern "C" {
+        fn sel_registerName(name: *const c_char) -> *mut c_void;
+        fn objc_msgSend();
+    }
+    type GetMsg = unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void;
+    type RespondsMsg = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> i8;
+    type SetBoolMsg = unsafe extern "C" fn(*mut c_void, *mut c_void, i8);
+    unsafe {
+        let view = macroquad::miniquad::window::apple_view() as *mut c_void;
+        if view.is_null() {
+            return false;
+        }
+        let msg = objc_msgSend as *const ();
+        let get: GetMsg = std::mem::transmute(msg);
+        let layer = get(view, sel_registerName(b"layer\0".as_ptr() as *const c_char));
+        if layer.is_null() {
+            return false;
+        }
+        let set_sel = sel_registerName(b"setDisplaySyncEnabled:\0".as_ptr() as *const c_char);
+        let responds: RespondsMsg = std::mem::transmute(msg);
+        if responds(layer, sel_registerName(b"respondsToSelector:\0".as_ptr() as *const c_char), set_sel) == 0 {
+            return false;
+        }
+        let set: SetBoolMsg = std::mem::transmute(msg);
+        set(layer, set_sel, on as i8);
     }
     true
 }
@@ -253,6 +307,12 @@ mod tests {
     fn vsync_row_maps_to_swap_interval_one_or_zero() {
         assert_eq!(swap_interval_for(true), 1);
         assert_eq!(swap_interval_for(false), 0);
+    }
+
+    #[test]
+    fn macos_display_link_wait_follows_the_vsync_row() {
+        assert!(frame_pacer_for(true));
+        assert!(!frame_pacer_for(false));
     }
 
     #[test]

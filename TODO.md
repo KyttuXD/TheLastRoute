@@ -202,7 +202,11 @@ Measure first: the Intel build has not been timed yet. Every item below should b
 Target: 100+ FPS on the Intel MacBook Air with vsync off, measured with the F7 overlay in the same 60-second walk through a run.
 
 - [ ] Baseline on KT-MBA: F7 overlay frame time, the update / render 3d / hud split, draw calls and spikes, in the same 60-second walk through a run, recorded in this list
-- [ ] Renderer check on the Intel GPU: confirm the backend miniquad uses on macOS (OpenGL profile, not Metal) and whether it is the bottleneck
+- [ ] Renderer check on the Intel GPU: Metal and OpenGL are both built in now (docs/GRAPHICS_API.md); AUTO uses OpenGL on Intel until `LR_GFX=metal target/release/last_route --stress 60 --stress-vsync off` is compared with `LR_GFX=gl` on KT-MBA, then pick the faster one for AUTO. Metal read-back (screenshots) is not implemented, so screenshots stay on OpenGL
+- [x] Metal renderer for macOS (graphics API setting AUTO / METAL / OPENGL, `--gfx`, `LR_GFX`, vendored miniquad with three Metal fixes, MSL twin of the world shader, crash-guard marker). On the M4 it ran slower than OpenGL unlimited (GPU-bound about 8-11 ms per frame, cause not found); both sit at the refresh rate with vsync on
+- [ ] Metal GPU time: find why the world pass costs 8-11 ms of GPU on the M4 under Metal when OpenGL finishes the whole frame in about 5 ms (try a Depth32Float depth target instead of Depth32Float_Stencil8, count passes per frame, the Xcode GPU capture, the 16-lamp loop unrolled)
+- [ ] Metal screenshots: implement `texture_read_pixels` in the vendored miniquad Metal backend and a Metal branch of macroquad's `grab_screen` (it is `unimplemented!()` for non-OpenGL ids), so `--screenshot`, `--self-test` and the F-key capture work without `--gfx gl`
+- [x] The 60-75 FPS cap on macOS was not OpenGL: miniquad's macOS run loop waits on a CVDisplayLink every iteration (75 Hz display here, both backends). With VSYNC off the wait is now skipped, live, through `window::set_frame_pacer` in the vendored miniquad; with vsync on it stays
 - [ ] Quality AUTO picks a tier from the GPU and the first second of frames on this Mac, instead of a fixed 50% render scale for every Mac
 - [ ] Quality governor: step the render scale down on slow frames and back up when there is headroom (Godot quality_governor.gd: 40/50/60 targets, four notches)
 - [ ] Lamp shader cost: the fragment shader loops over 16 lamps plus the flashlight for every pixel; test 8 lamps and distance culling on Intel
@@ -210,7 +214,7 @@ Target: 100+ FPS on the Intel MacBook Air with vsync off, measured with the F7 o
 - [ ] Draw calls: count meshes per floor and per frame in a run, and merge meshes that share a material
 - [ ] Triangle budget: GLB prop and character models, measured on this Mac; decimate or swap the heaviest ones
 - [ ] Texture sizes and count: check the atlas and floor set sizes against the Intel GPU memory budget
-- [ ] Vsync and frame cap: the window starts with vsync on; check whether the FPS limit setting (0 = off) helps tearing and power on this Mac
+- [ ] Vsync and frame cap: the window starts with vsync on; with vsync off the loop now runs uncapped on macOS (no display-link wait), so check tearing, CPU use and whether the FPS limit setting (0 = off) helps both on this Mac
 - [ ] Release profile: test codegen-units = 1 and lto = "thin" in [profile.release] for speed, with the build time recorded
 - [ ] Startup on Intel: assets and sounds load time on KT-MBA, measured against the boot card
 - [ ] Mesh rebuild on floor change (see Performance and FPS): the Intel frame cost of a chunk recentre, measured here before and after the fix

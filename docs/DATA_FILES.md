@@ -24,6 +24,7 @@ Changing a value in a file changes behaviour after a rebuild. The task rule is o
 | `data/skins/config.json` (`lr.skin_config/1`) | `shared/skins.rs` | Skin download: `max_bytes`, the host and backend paths, and `timeout_secs`. |
 | `data/lobby.json` (`lr.lobby/1`) | `ui/menus.rs` | Difficulty picker: titles, guest title, and the label and blurb of each option. |
 | `data/hud.json` (`lr.hud/1`) | `ui/hud.rs` | Danger meter thresholds and pulse timing, meter minimum width, and HUD label templates. |
+| `data/app/gfx.json` (`lr.gfx/1`) | `app/gfx.rs` | Graphics API crash guard: `boot_marker` (a plain file name in the per-user folder) and `good_frames` (frames after which a Metal start counts as good). The Metal or OpenGL choice itself is code and settings, see docs/GRAPHICS_API.md. |
 | `data/perf.json` (`lr.perf/1`) | `app/perf.rs` | Frame-time history length, spike threshold and logging, graph range, guide lines, colour bands, and the names of the timed parts. |
 | `data/regions/*.json` (`lr.region/1`) | `packs/regions.rs` | One file per built-in region: floor sets, room roles, prop set and sizes. Current files: apartment, beach, carnival, gothic, greenhouse, hospital, hotel, lab, mall, mansion, maze, prison, sewer. |
 

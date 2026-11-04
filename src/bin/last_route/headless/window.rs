@@ -37,6 +37,7 @@ pub async fn run() {
         super::protocol::PROTOCOL
     );
     loop {
+        crate::app::gfx::boot_guard_tick();
         // commands queued since the last frame
         while let Ok(msg) = rx.try_recv() {
             match msg {

@@ -78,3 +78,5 @@ opt-level = 2
 
 [patch.crates-io]
 quad-snd = { path = "src/bin/last_route/audio/quad-snd" }
+# miniquad 0.4.11 with Metal fixes and a live frame-pacer switch (vendor/miniquad/LAST_ROUTE_PATCHES.md).
+miniquad = { path = "vendor/miniquad" }

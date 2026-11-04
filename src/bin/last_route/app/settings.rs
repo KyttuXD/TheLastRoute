@@ -31,6 +31,8 @@ pub struct Settings {
     pub quality: String,
     /// off / gentle / annoying.
     pub ads: String,
+    /// AUTO / METAL / OPENGL (macOS only; read at launch, so a change needs a restart). See `app::gfx`.
+    pub graphics_api: String,
     pub pause_on_focus_loss: bool,
     pub teammate_waypoints: bool,
     /// Prefer calm HUD motion (Porcelle's radar ping stays a steady dim dot).
@@ -66,6 +68,7 @@ impl Default for Settings {
             fps_limit: 0.0,
             quality: "AUTO".into(),
             ads: "off".into(),
+            graphics_api: "AUTO".into(),
             pause_on_focus_loss: true,
             teammate_waypoints: true,
             reduced_motion: false,
@@ -140,6 +143,9 @@ impl Settings {
         {
             s.ads = q.into();
         }
+        if let Some(c) = v["graphics_api"].as_str().and_then(super::gfx::Choice::parse) {
+            s.graphics_api = c.id().into();
+        }
         if let Some(q) = v["scheme"].as_str() {
             s.scheme = if q == "city" { "city" } else { "last_route" }.into();
         }
@@ -168,7 +174,7 @@ impl Settings {
             "ui_volume": self.ui_volume, "voice_volume": self.voice_volume, "voices": self.voices,
             "subtitles": self.subtitles, "fov": self.fov, "sensitivity": self.sensitivity,
             "fullscreen": self.fullscreen, "vsync": self.vsync, "fps_limit": self.fps_limit,
-            "quality": self.quality, "ads": self.ads, "pause_on_focus_loss": self.pause_on_focus_loss,
+            "quality": self.quality, "ads": self.ads, "graphics_api": self.graphics_api, "pause_on_focus_loss": self.pause_on_focus_loss,
             "teammate_waypoints": self.teammate_waypoints, "reduced_motion": self.reduced_motion, "username": self.username, "scheme": self.scheme,
             "skin": self.skin,
             "arms": self.arms, "speech_enabled": self.speech_enabled,
@@ -275,6 +281,7 @@ mod tests {
             "fps_limit",
             "quality",
             "ads",
+            "graphics_api",
             "pause_on_focus_loss",
             "teammate_waypoints",
             "reduced_motion",
@@ -307,6 +314,7 @@ mod tests {
             fps_limit: 90.0,
             quality: "MEDIUM".into(),
             ads: "gentle".into(),
+            graphics_api: "METAL".into(),
             pause_on_focus_loss: false,
             teammate_waypoints: false,
             reduced_motion: true,
@@ -322,6 +330,7 @@ mod tests {
         assert_eq!(back.to_json(), json);
         assert_eq!(back.quality, "MEDIUM");
         assert_eq!(back.ads, "gentle");
+        assert_eq!(back.graphics_api, "METAL");
         assert_eq!(back.username, "ALICE");
         assert_eq!(back.scheme, "city");
         assert_eq!(back.skin, "NIGHT");
@@ -329,6 +338,18 @@ mod tests {
         assert_eq!(Settings::from_json(&serde_json::json!({"skin": ""})).skin, "DEFAULT");
         assert!(!back.vsync && back.fullscreen);
         assert!(back.reduced_motion);
+    }
+
+    #[test]
+    fn graphics_api_defaults_to_auto_and_old_files_load() {
+        // a settings file from before the row existed
+        let old = serde_json::json!({ "vsync": false, "quality": "HIGH" });
+        assert_eq!(Settings::from_json(&old).graphics_api, "AUTO");
+        assert_eq!(Settings::default().graphics_api, "AUTO");
+        // the saved text is normalised; junk is ignored
+        assert_eq!(Settings::from_json(&serde_json::json!({ "graphics_api": "gl" })).graphics_api, "OPENGL");
+        assert_eq!(Settings::from_json(&serde_json::json!({ "graphics_api": "metal" })).graphics_api, "METAL");
+        assert_eq!(Settings::from_json(&serde_json::json!({ "graphics_api": "vulkan" })).graphics_api, "AUTO");
     }
 
     #[test]
