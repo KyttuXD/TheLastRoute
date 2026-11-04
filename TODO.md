@@ -5,6 +5,13 @@ Updated as work lands. The port's current implementation is now treated as the
 completed scope for this checklist; future expansions should be tracked as new
 items rather than left in an ambiguous in-progress state.
 
+## Status 2026-11-04
+
+- Shipped: the stairs and ladders project (phases 0-9, one continuous space), build 42 published for windows, linux and macos, lr_server on VPS3, all suites green at ae38f79.
+- Blocked: the GitHub Actions budget is used up (every job fails to start); KT must raise the spending limit. Publishing is local until then.
+- Next: wire the locker body and nearby-player TTS into the game, cleanup Tier B (needs KT), mod packs with mechanics, the Godot parity batches.
+- Waiting on KT: hallucinations design for Dead Air, Descent sounds, Standard-visible hunter changes, the Mac Mini GitHub login.
+
 ## Godot parity gaps (audit 2026-11-03)
 
 From a read-only audit of every open and partial item against the Rust code (539 distinct gaps; 38 remain here, because gaps that also appear in the topical audit sections below were merged into those sections and carry an (effort S/M/L) tag). [~] partial, [ ] open. Effort S is under half a day, M a day or two, L more. 47 audit items were marked implemented and are not listed here; their old TODO entries may be stale. Where the audits disagreed on status, the less complete one is kept with a note.
@@ -35,26 +42,26 @@ From a read-only audit of every open and partial item against the Rust code (539
 - [~] Flood valves
 - [ ] Moderation client (online only)
 - [~] Night Watch cue family: scenes call them
-- [~] NPC teammates, built as player bots and not as in-game NPCs (`game/player/npc_teammates.gd`; normal runs seed them from src/bin/last_route/data/npcs.json, they wait, join and flee chasing hunters; still no catch/revive, chat, storey crossing, saves, net sync) (session 2026-11-03: first slice done: player bots spawn in runs; they obey the runner's door rules: a bot stops at a shut door, waits about 0.3 s and presses interact through `press_door`, never opens one by walking up, and counts as a body in the doorway; only hunters auto-open. Hunters ignore bots, and pickups and interact focus are the runner's alone)
+- [~] NPC teammates, built as player bots and not as in-game NPCs (`game/player/npc_teammates.gd`; normal runs seed them from src/bin/last_route/data/npcs.json, they wait, join and flee chasing hunters; still no catch/revive, chat, storey crossing, saves, net sync) (session 2026-11-03: first slice done: player bots spawn in runs; they obey the runner's door rules: a bot stops at a shut door, waits about 0.3 s and presses interact through `press_door`, never opens one by walking up, and counts as a body in the doorway; only hunters auto-open. Hunters ignore bots, and pickups and interact focus are the runner's alone) (update 2026-11-04: storey crossing is done: bots cross flights and ladders)
 - [~] Online backend client compiled and wired
 - [~] Patrol-anchor branch in wander and search picks
 - [~] Port Breakables (sealed wings, loose boards, pipes; no interaction)
 - [~] Port Carnival booths (playable stalls and carousel missing)
 - [~] Port Chunk seams (centre-cross openings, wide hall openings)
-- [~] Port Stairwells (spiral and switchback flights, placement, access halls)
+- [x] Port Stairwells (spiral and switchback flights, placement, access halls) (done 2026-11-04: flights are switchback, straight and spiral, see docs/STAIRS_CONTINUOUS_DESIGN.md)
 - [~] Port Vent network (ducts and crawl movement missing, grates only)
 - [ ] Public route featured hunters and lineup
 - [~] Room climate offsets: per-room profiles instead of per-region estimates
-- [~] Text-to-speech chat for nearby players
+- [~] Text-to-speech chat for nearby players (update 2026-11-04: audio/tts.rs exists, no caller yet)
 - [ ] Void Red hall runner: hallway and room speed multipliers
 
 ### Effort L (5)
 
 - [~] Fix Infinite map to match Godot layout, districts, stairs, population
 - [~] Port Inferno caverns (cave carving, lava pits, cages, spider lair)
-- [~] Port Level stack (sewer -1, lower sewer -2, Inferno -3, floor at -3)
+- [~] Port Level stack (sewer -1, lower sewer -2, Inferno -3, floor at -3) (update 2026-11-04: sewer water, second sewer and inferno caves are in; check the depth floor and the remaining parity)
 - [~] Port NPC teammates with dialogue, text chat with TTS, full online mode (session 2026-11-03: NPCs are player bots, not in-game NPCs; the first slice spawns them in runs, dialogue, chat and online are still open)
-- [~] Port Sewer layer (separate generator, ramps, falls, ladders, floods)
+- [~] Port Sewer layer (separate generator, ramps, falls, ladders, floods) (update 2026-11-04: water, swim, pipes, a second sewer, ladders and drops are in; floods and the rest of the generator parity are open)
 
 ## Region and area character (2026-11-03)
 
@@ -86,7 +93,7 @@ Sources: the website game at KyttusLab/games/night-watch (src/modes, docs/ROADMA
 - [~] Mode registry: each night type registered once, with its name, unlock rule and entry scene (website: src/modes/registry.js; Godot: night_watch_mode_registry.gd) (session 2026-11-03: modes are data-driven now; unlock rules and the other entry scenes are open)
 - [ ] Shared HUD, timers, power and camera-map layout (website: ui/; Godot: night_watch_hud.gd, night_watch_cam_map.gd)
 - [ ] Night Watch art and hunter scale through one instantiate path (Godot: night_watch_art.gd, night_watch_hunter_scale.gd)
-- [ ] Night Watch sound cues wired to the scene code (Godot: the nw cues; the Rust nw.rs cues are not called yet)
+- [~] Night Watch sound cues wired to the scene code (Godot: the nw cues; the Rust nw.rs cues are not called yet) (update 2026-11-04: nw_sound module and sounds.json exist; several modes need the hub to forward events)
 - [ ] Admin and debug panel for Night Watch, with the same owner-only gate as Last Route (Godot: night_watch/admin; website: debug-private)
 - [x] Office building layout with doors, lights and cameras (website: docs/OFFICES.md; Godot: night_watch_building.gd) (session 2026-11-03: full building maps are done)
 
@@ -94,35 +101,38 @@ Sources: the website game at KyttusLab/games/night-watch (src/modes, docs/ROADMA
 
 - [x] 1. Classic: static office, 12 to 6 AM, two doors, two lights, cameras, power budget (website: src/modes/classic; Godot: night_watch_classic.gd) (session 2026-11-03: Classic is playable)
 - [x] 2. Masked Hours: mask to fool attackers, flashlight, one resource to keep alive, vents (website: src/modes/mask; Godot: mask/) (session 2026-11-04: mechanics present and tested; Ilyra's creep now shows a note. Not yet checked in a running window)
-- [~] 3. Dead Air: audio lures, reboot subsystems, hallucinations, vent seal, temperature (website: src/modes/lure; Godot: lure/) (session 2026-11-04: lures, reboots, vent seal and temperature are playable and tested. Hallucinations are not in any source and need a design decision from KT first)
-- [~] 4. Bedtime: bedroom with no cameras, listen at doors, breathing check (website: src/modes/bedroom; Godot: bedroom/) (session 2026-11-04: repeating door breaths and Haelith's exhale added and tested. Breathing is shown as notes and visuals only, with no sound yet)
-- [ ] 5. The Facility: scripted nights with guided hallway, vent and crawl sections, and a shock button (website: src/modes/story; Godot: night_watch_story or the admin story scenes)
-- [ ] 6. The Descent: elevator shaft repair puzzles under a hunter's eye (website: src/modes/descent; Godot: descent/)
-- [ ] 7. Salvage Run: day management and night salvage with an upgrade layer (website: src/modes/dayshift; Godot: dayshift/)
+- [~] 3. Dead Air: audio lures, reboot subsystems, hallucinations, vent seal, temperature (website: src/modes/lure; Godot: lure/) (session 2026-11-04: lures, reboots, vent seal and temperature are playable and tested. Hallucinations are not in any source and need a design decision from KT first) (update 2026-11-04: Xivvy walks the booth; hallucinations still need KT's design decision)
+- [~] 4. Bedtime: bedroom with no cameras, listen at doors, breathing check (website: src/modes/bedroom; Godot: bedroom/) (session 2026-11-04: repeating door breaths and Haelith's exhale added and tested. Breathing is shown as notes and visuals only, with no sound yet) (update 2026-11-04: Bedtime sounds added)
+- [~] 5. The Facility: scripted nights with guided hallway, vent and crawl sections, and a shock button (website: src/modes/story; Godot: night_watch_story or the admin story scenes) (update 2026-11-04: Facility sounds and lift picture added; cue_for_event is unused (warning))
+- [~] 6. The Descent: elevator shaft repair puzzles under a hunter's eye (website: src/modes/descent; Godot: descent/) (update 2026-11-04: Descent cues added; the sounds are a pick for KT to listen to)
+- [~] 7. Salvage Run: day management and night salvage with an upgrade layer (website: src/modes/dayshift; Godot: dayshift/) (update 2026-11-04: own picture and noise meter; Custom Night is not reachable from the hub)
 - [ ] 8. Open Air: three outdoor watches with the roster outside the building (website: src/modes/openair; Godot: night_watch_mixed.gd or the open-air data)
 - [ ] Night Watch other 8 modes unplayable: Masked Hours, Dead Air, Bedtime, The Facility, The Descent, Salvage Run, Open Air and Mixed Shift have data but no playable scene
 - [ ] Night Watch night-select and Custom Night: pick a night and set a custom hunter lineup before a shift
-- [ ] Mixed Shift: a drawn roster of threats paced by a director, with QUIET, STEADY, RESTLESS, CHAOS and ENDLESS shifts (website: src/modes/mixed and docs/MIXED_SHIFT.md; Godot: mixed/)
+- [~] Mixed Shift: a drawn roster of threats paced by a director, with QUIET, STEADY, RESTLESS, CHAOS and ENDLESS shifts (website: src/modes/mixed and docs/MIXED_SHIFT.md; Godot: mixed/) (update 2026-11-04: scripted win added; Threat::gate is unused (warning))
 - [ ] Variety pass: make the existing modes less repetitive (website: docs/VARIETY.md)
 - [ ] New modes drafted on the website (website: docs/NEW_MODES_DRAFT.md): decide which to port
 
 ### Checks
+
+- [ ] Night Watch hub forwards events to every mode (several modes need it for sounds); Salvage Run Custom Night is not reachable from the hub; Facility cue_for_event and Mixed Shift Threat::gate are unused (compiler warnings)
+- [ ] Dead Air hallucinations: needs KT's design decision first; the Descent sounds are a pick, KT to listen
 
 - [ ] Each night type reviewed in a run against the website for timing, power and AI levels (website is the reference for feel; Godot for numbers)
 - [ ] Night Watch save migration: website saves read into the Rust app without loss
 
 ## Hunters and pathfinding adapt to the new mechanics (KT, 2026-11-04, next code pass)
 
-- [ ] Water-aware pathfinding: path cost by water depth (shore, wading, deep) with per-hunter swim ability and speed from data (`data/hunters/water.json`, speeds from `data/swim/`); most hunters route around deep water unless chasing and able to swim; a hunter that wades makes splash noise the runner can hear; flooded cells (pipe burst, open sluice) change the cost live and force a replan.
-- [ ] Hunters and bots react to pipes and valves: a burst or a turned valve is a noise event they investigate; a sluice gate opening makes its channel passable; closed gates and flooded dead ends do not trap them (stuck-time give-up already in data).
-- [ ] Hunters react to the runner's water and fall noise: plunge splash, soaked footsteps (x1.45) and a hard landing are heard at their data ranges and start a search at the sound.
-- [ ] Catwalk decks: hunters path on deck cells (walk surface) and use the catwalk links; a hunter never plans through a deck rail.
+- [x] Water-aware pathfinding: path cost by water depth (shore, wading, deep) with per-hunter swim ability and speed from data (`data/hunters/water.json`, speeds from `data/swim/`); most hunters route around deep water unless chasing and able to swim; a hunter that wades makes splash noise the runner can hear; flooded cells (pipe burst, open sluice) change the cost live and force a replan. (done 2026-11-04: data/hunters/water.json, hunters route around deep water and wade when chasing)
+- [~] Hunters and bots react to pipes and valves: a burst or a turned valve is a noise event they investigate; a sluice gate opening makes its channel passable; closed gates and flooded dead ends do not trap them (stuck-time give-up already in data). (update 2026-11-04: noise events are in data/hunters/noise_events.json; check that valves and sluice gates are covered)
+- [x] Hunters react to the runner's water and fall noise: plunge splash, soaked footsteps (x1.45) and a hard landing are heard at their data ranges and start a search at the sound. (done 2026-11-04: plunge, soaked steps and hard landing are heard at data ranges (data/hunters/noise_events.json))
+- [x] Catwalk decks: hunters path on deck cells (walk surface) and use the catwalk links; a hunter never plans through a deck rail. (done 2026-11-04: hunters respect catwalk rails (hunters/brain.rs) and use the catwalk links)
 - [x] Hunters use flights, ladders and drops between floors at normal speed (phase 8 of the stairs project): edges between the resident levels, line of sight across the open stairwell, no freeze for a hunter on another loaded floor (KT decision D5). (commit )
 - [x] Tests: a hunter paths around deep water, wades when chasing, replans when a valve floods its route, cannot be trapped by a closed gate, hears a plunge, and follows a runner up a flight. (commit )
 
 ## Multiplayer (Last Route)
 
-- [ ] Nearby-player text to speech comes first (KT, 2026-11-04): a chat line from a player near you is spoken aloud (volume and range by distance, a per-player mute and a speech toggle in Settings, rate and voice in data). Voice chat (capture, IMA ADPCM codec, playback) is a later step and builds on the same range and mute rules.
+- [ ] Nearby-player text to speech comes first (KT, 2026-11-04): a chat line from a player near you is spoken aloud (volume and range by distance, a per-player mute and a speech toggle in Settings, rate and voice in data). Voice chat (capture, IMA ADPCM codec, playback) is a later step and builds on the same range and mute rules. (update 2026-11-04: audio/tts.rs exists but nothing calls it; hook it into chat and add the Settings toggle)
 - [ ] Two-window room test: one host and one guest on this laptop, room code join, both see each other move (still needs a person at the screen, KT-MBA)
 - [ ] Two-machine test: the Mac on KT-MBA joins a room hosted on this laptop, and the reverse
 - [ ] Nightly server build: deploy the nightly-server Linux build to the VPS (194.156.90.219) after a check on a test port
@@ -142,6 +152,8 @@ Sources: the website game at KyttusLab/games/night-watch (src/modes, docs/ROADMA
 - [ ] Multiplayer error messages for refused joins, timeouts and a server that is offline
 
 ## Admin custom rooms (2026-11-03)
+
+- [x] lr_server deletes idle admin reservations (RESERVED_ROOM_IDLE_SECONDS, with a keep flag); deployed to VPS3 (done 2026-11-04)
 
 - [ ] Admins can type any room code into the JOIN ROOM code box, even an empty or unused code, and start that room
 - [ ] An empty code entered by an admin creates the room with that code, so a test room can be started from the join screen
@@ -171,7 +183,7 @@ Sources: the website game at KyttusLab/games/night-watch (src/modes, docs/ROADMA
 
 ### Servers (lr_server, VPS)
 
-- [ ] VPS deploy: replace /opt/lastroute-rust/current/lr_server from the nightly-server release, check its SHA-256, restart lastroute-rust.service
+- [x] VPS deploy: replace /opt/lastroute-rust/current/lr_server from the nightly-server release, check its SHA-256, restart lastroute-rust.service (done 2026-11-04: lr_server deployed to VPS3)
 - [ ] Health check endpoint and a script that reports whether the service answers on port 8105 (HTTP) and 1105 (relay)
 - [ ] Data backups: back up /var/lib/lastroute-rust (accounts, rooms, saves, crash reports) on a schedule, and test a restore
 - [ ] Secrets: /etc/lastroute-rust/lastroute-rust.env stays root-owned 0640 and is never printed or committed; document the rotation steps
@@ -239,6 +251,10 @@ Tabs today (src/bin/last_route/ui/admin/mod.rs TABS): STATUS, GENERAL, PLAYER, H
 
 ### CI and build speed
 
+- [x] CI cost cuts: macOS builds run only on [mac] in the commit message, workflow_dispatch or the repo variable MAC_ON_PUSH; Windows tests run weekly or by hand (done 2026-11-04)
+- [x] Local build and publish to the VPS (packaging/local/publish-local.sh: Windows here, Linux on KT-T480, macOS arm64, intel and universal on KT-NEO); build 42 is published for windows, linux and macos (done 2026-11-04)
+- [ ] CI is blocked: the GitHub Actions budget is used up and every job fails to start. KT must raise the spending limit (Settings > Billing > Budgets); until then publishing is local (2026-11-04)
+
 - [ ] CI speedup: cut the four separate cargo test invocations in test.yml to one run where the crate graph is shared
 - [x] CI speedup: cache the Windows target directory across runs in build.yml and test.yml (rust-cache keys per job)
 - [x] CI speedup: run the Linux and macOS build jobs in parallel with the Windows build instead of one after another
@@ -255,6 +271,9 @@ Tabs today (src/bin/last_route/ui/admin/mod.rs TABS): STATUS, GENERAL, PLAYER, H
 - [ ] CI speedup (2026-11-04): pin the Rust toolchain version in CI (rust-toolchain.toml) so a new stable release does not invalidate every cache at once
 
 ## Godot parity: found by discovery (2026-11-03)
+
+- [x] Godot parity audit written: docs/GODOT_AUDIT_2026-11-04.md (done 2026-11-04)
+- [ ] Parity audit leftovers, batch by batch (docs/GODOT_AUDIT_2026-11-04.md): hunters look and motion, feel numbers, UI, world look and sound, hiding co-op feel
 
 New items from a read-only comparison of the Godot game folders with TODO.md. Effort as marked.
 
@@ -274,10 +293,13 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [ ] Port XR (OpenXR headset) mode: comfort and fade, gaze pointer, hand tracking, and the route and menu panels in 3D (effort L; game/xr/xr_comfort.gd)
 
 ## Known bugs (2026-11-03)
-- [ ] Skin menu is missing two things (KT, 2026-11-04): (1) the TEMPLATE button only says "not in this build yet" (ui/settings_panel.rs ~line 676); it must save `lastroute_skin_template.png`, the 64x64 template (Godot `PlayerSkin.template_png()`, `skin_panel.gd` _save_template / write_template), to the Downloads folder or through a save dialog and report the path. (2) the preview is a flat 2D stand-in (`draw_preview`); it must show the skin on the rotating 3D mannequin (`assets/player/player_mannequin.bbmodel`, scaled to the 1.60 m runner as in `skin_panel.gd`), turning on its own and with the chosen or picked skin applied live.
-- [ ] Locker hiding must be a real 3D view, not a 2D overlay (KT, 2026-11-04). Today ui/hud.rs paints black bars with four slits over the screen and render/scene.rs skips drawing the locker while hidden. Godot (`player_controller_3d.gd` enter_hiding / _begin_hide_move, `route_interactable_3d.gd` hiding_inside_position, hiding_eye_height, hiding_outward_yaw, _build_hide_seal, set_local_hiding_view): the camera moves into the locker (behind the vent band, eye centred on the vent band, yaw = the locker's facing), the player sees out through the real door louvres of the 3D model, and a dark two-sided shell just inside the prop bounds stops the hider seeing out through back faces. Remove the HUD bars; keep the LEAVE / LOCKED IN text. Wardrobes and beds get the same treatment (bed: lie flat, slit under the foot). Runs after the stairs phases 1 and 2 (both touch game/player.rs and render/scene.rs).
-  - [ ] The locker is physical with the player inside: the runner's body stays in the locker (visible to other players, hunters and bots) so the hunter locker animations (search tell, open, reach in, pull out; Javelle, Loxelle and the others) play against a real occupant. Hunters and co-op peers see the hider's figure in the locker, not an empty locker.
-  - [ ] Look limits while hidden (KT, 2026-11-04): the camera must not be rigidly tied to the locker so that free look is lost or broken. Keep the camera independent of the locker's shake (search tell, door swing) and limit the look to a small yaw and pitch cone through the vents (cone sizes in data/ JSON), or lock the look while the locker moves. No free look through the walls.
+
+- [x] macOS crash on the first map load: world_mesh phase 2 skipped unbuilt parts (done 2026-11-04)
+- [ ] Mansion doors are invisible (found on KT-MBA; builds run there now). luxuryRoomDoor models and data are fine, so check the in-game draw
+- [x] Skin menu is missing two things (KT, 2026-11-04): (1) the TEMPLATE button only says "not in this build yet" (ui/settings_panel.rs ~line 676); it must save `lastroute_skin_template.png`, the 64x64 template (Godot `PlayerSkin.template_png()`, `skin_panel.gd` _save_template / write_template), to the Downloads folder or through a save dialog and report the path. (2) the preview is a flat 2D stand-in (`draw_preview`); it must show the skin on the rotating 3D mannequin (`assets/player/player_mannequin.bbmodel`, scaled to the 1.60 m runner as in `skin_panel.gd`), turning on its own and with the chosen or picked skin applied live. (done 2026-11-04: TEMPLATE button saves the template, rotating 3D preview, full skin validation (64x32 upgrade, opaque base layer, canonical hash, 16 KB cap))
+- [~] Locker hiding must be a real 3D view, not a 2D overlay (KT, 2026-11-04). Today ui/hud.rs paints black bars with four slits over the screen and render/scene.rs skips drawing the locker while hidden. Godot (`player_controller_3d.gd` enter_hiding / _begin_hide_move, `route_interactable_3d.gd` hiding_inside_position, hiding_eye_height, hiding_outward_yaw, _build_hide_seal, set_local_hiding_view): the camera moves into the locker (behind the vent band, eye centred on the vent band, yaw = the locker's facing), the player sees out through the real door louvres of the 3D model, and a dark two-sided shell just inside the prop bounds stops the hider seeing out through back faces. Remove the HUD bars; keep the LEAVE / LOCKED IN text. Wardrobes and beds get the same treatment (bed: lie flat, slit under the foot). Runs after the stairs phases 1 and 2 (both touch game/player.rs and render/scene.rs). (update 2026-11-04: camera inside the locker (render/hiding_cam.rs), HUD bars removed; wardrobe and bed styles still open)
+  - [ ] The locker is physical with the player inside: the runner's body stays in the locker (visible to other players, hunters and bots) so the hunter locker animations (search tell, open, reach in, pull out; Javelle, Loxelle and the others) play against a real occupant. Hunters and co-op peers see the hider's figure in the locker, not an empty locker. (update 2026-11-04: render/locker_shell.rs, locker_occupant.rs and net/hide_sync.rs exist with tests but scene.rs and net do not call them yet; hunter locker animations against the occupant are open)
+  - [x] Look limits while hidden (KT, 2026-11-04): the camera must not be rigidly tied to the locker so that free look is lost or broken. Keep the camera independent of the locker's shake (search tell, door swing) and limit the look to a small yaw and pitch cone through the vents (cone sizes in data/ JSON), or lock the look while the locker moves. No free look through the walls. (done 2026-11-04: camera independent of the locker shake, look limited to a data cone)
 
 - [ ] Beds stick out of rooms into the hallway behind them (in progress: workflow bed-placement-fix; see furnished.rs bed placement)
 - [ ] Dossier: the mouse wheel scroll jumps back to the top. Not reproduced from the code; needs the tab and steps from the person testing it
@@ -325,13 +347,16 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [ ] Hub SERVER row shows the server host to players; the privacy rule says players never see the address, so decide
 
 ### Multiplayer and figures
-- [ ] Runner figures stand in one pose; add a moving flag to RemoteView and a walk cycle
+- [x] Runner figures stand in one pose; add a moving flag to RemoteView and a walk cycle (done 2026-11-04: RemoteView carries moving, sprinting, crouching and slim; player clips drive runner figures (render/anim/runner.rs))
 - [ ] runner_figure.rs keeps its own KNOWN_SKINS list; make SKINS in world_sync.rs visible and use it, and drop the unused cube colours
 - [ ] Check the skin trim placement on the character model in a real run
 - [ ] Guests see other guests' ping as the host-measured round trip; measure it directly if guests ever link to each other
 - [ ] NPC follow is a status line: add a per-NPC follow flag in npc.rs, an npc_remove_at helper, and fix the stale deferred-commands comment at the top of npc.rs
 
 ### Stress tests and machines
+
+- [ ] The two Mac Minis (KT-Mini4-1, KT-Mini4-2) have git clones at ~/Developer/LastRoute-Rust with origin set to GitHub; they need a one-time GitHub login (2026-11-04)
+- [ ] KT-PC (G:/Projects/KyttusLab-Rust) has no SSH server, so the copy is pending (2026-11-04)
 - [x] Stress walking runners no longer stall on walls (fixed 2026-11-03)
 - [ ] Stress scenarios: noclip, NPCs, hunters, interactions (tools, breaking barriers) and mixed, chosen with a --stress-scenario flag
 - [ ] --stress-vsync on|off, and the runner runs every scenario in both modes, naming each CSV by scenario and vsync
@@ -346,7 +371,7 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 
 ### Updates and builds
 - [ ] Confirm the first real in-game update end to end on Windows and a Mac, and read the update lines in the log
-- [ ] Make the update visibly obvious: show "Checking for updates" on the loading screen, a progress line while the new build downloads and installs, and "Updated to build N" after restart. Right now a launch with nothing to install logs nothing, so a player cannot tell the check ran (found on KT-MBA, 2026-11-04)
+- [x] Make the update visibly obvious: show "Checking for updates" on the loading screen, a progress line while the new build downloads and installs, and "Updated to build N" after restart. Right now a launch with nothing to install logs nothing, so a player cannot tell the check ran (found on KT-MBA, 2026-11-04) (done 2026-11-04: updater logs every outcome, boot screen shows check, progress and "Updated to build N")
 - [ ] The Mac app still carries lr_server until its next update; check that the new bundle does not
 - [ ] Keep each machine's download-key in the game folder; the old Mac playtest folder held it and was deleted, so restore it on any other Mac
 - [ ] Commit the Godot account kicker change (KYTTU: THE LAST ROUTE) in LastRouteGodot, with its owner's approval
@@ -377,6 +402,12 @@ See docs/SOURCE_LAYOUT.md for the inventory.
 
 ## Moddability
 
+- [x] Mod example pack docs/examples/mod-hunter/ (done 2026-11-04)
+- [ ] Mod packs cannot carry mechanics, rule tables, rigs, grab pools or noise rows. Design (2026-11-04 plan): start with a declarative JSON behaviour language, a sandboxed script engine later behind a flag, no native plugins. Not built
+- [ ] The overrides format differs between the server index (hunters/<id>) and the local loader (bare id): make them agree
+- [ ] Guests without the pack see a mod hunter as Dovelle: send a fallback or require the pack
+- [ ] docs/MODDING_SPEC.md lacks the lr.hunter/1 field table and names stale server paths
+
 - [~] Region geometry block (lr.region/1, optional): wall_height, room_min and room_max are parsed and tested. The 3D walls and the route room sizes do not read them yet
 - [ ] Godot's REGION_FIELDS must accept geometry, or Godot drops region files that use it
 - [~] Mod-authored props with their own GLB models, through the props catalogue (session 2026-11-03: props now load as bbmodel; mod pack bbmodel support is in progress)
@@ -393,9 +424,13 @@ Godot references are `game/...` under the KyttusLabApp folder.
 
 ### Infinite route and levels
 
+- [x] Stairs and ladders project, phases 0-9 (docs/STAIRS_CONTINUOUS_DESIGN.md): floors 5 m apart in one continuous space; every stairwell is a Flight (world/flight.rs, data/flights.json); stairs walked with no prompt, fade or teleport; ladders are a real climb in absolute y (data/ladders.json); waterfalls and drops are a physical free fall with a landing rule (data/swim/fall.json); the neighbour floor is visible through the open stairwell; relabel and walk_relabel replace the level swap (done 2026-11-04)
+- [x] Hunters, bots and remote players cross flights and ladders (hunters/flight_edges.rs, data/hunters/flights.json); hunters simulate on all resident floors; remote players are drawn at their true height (done 2026-11-04)
+- [x] Saves store absolute y (y_abs) and legacy saves migrate; change_storey remains only for respawn, admin jump and the test helper (done 2026-11-04)
+- [x] Catwalks above level 0, sewer water, swim and pipes, second sewer, inferno caves and level 0 maze variants (done 2026-11-04)
 - [~] Infinite district layout matches Godot's streamed route generator (see the round 4 map item). `src/bin/last_route/world/infinite.rs` and the chunk RNG tags differ, so seeds will not match
 - [x] Stairs are walked in Godot; Rust teleports to the landing (`src/bin/last_route/game/endless.rs` `take_stairs`). Fade and hold removed 2026-11-04: the level changes on the connection's frame, numbers in `data/stairs_links.json`. Godot's `game/world/generation/stairwells.gd` also has spiral and switchback flights (done, stairs project phases 5-7: flights are walked, no teleport)
-- [ ] Level links other than stairs: ladders, ramps, manholes, grates, elevators and drops (`docs/SEWERS.md`, `game/world/generation/sewer_route_generator.gd`) (status note: [~] in the parity-gaps audit; the less complete status is kept)
+- [~] Level links other than stairs: ladders, ramps, manholes, grates, elevators and drops (`docs/SEWERS.md`, `game/world/generation/sewer_route_generator.gd`) (status note: [~] in the parity-gaps audit; the less complete status is kept) (update 2026-11-04: ladders and drops are done (data/ladders.json, data/swim/fall.json); manholes, grates, elevators and ramps are not rechecked)
 - [x] Natural stairs and ladders: port the Godot slope system so stairs are walked as slopes and ladders are climbed, and hunters cross stairs between floors (stairs and ladders done in phases 5-6; hunters crossing is phase 8) (commit )
 - [ ] Sewer levels -1 to -3, with the cistern, collector and Inferno maze. `src/bin/last_route/world/infinite.rs` picks regions by level, but no sewer geometry exists and `src/bin/last_route/data/loot/sewer.json` is unused (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [x] Hunters persist across chunks and floors and walk the stairs in Godot. Rust rebuilds the lineup on every level change (`reset_hunters` in `endless.rs`) and respawns out-of-window hunters (`stream_window`) (commit )
@@ -439,8 +474,8 @@ Godot references are `game/...` under the KyttusLabApp folder.
 ### Controls, look and presentation
 
 - [ ] Default bindings: Tab inventory, T chat, O player list and the gamepad are missing (`docs/CONTROLS.md`). Movement, E, F, G, Q, 1-5, the wheel, M, F1, F7, F11 and Escape are present (status note: [~] in the full audit; the less complete status is kept)
-- [~] First-person body, climb hands and held-item grips (`player/first_person_body.gd`, `player/held_item_poses.gd`). The grab view notes the runner's own body and hands are not ported (`src/bin/last_route/render/anim/grab.rs` header)
-- [ ] Emotes, the blocky face, doorway pose and player skins (`player/blocky_emotes.gd`, `player/blocky_face.gd`, `player/doorway_pose.gd`, `player/player_skin.gd`). The Rust SKIN tab says the offline build plays the default runner
+- [~] First-person body, climb hands and held-item grips (`player/first_person_body.gd`, `player/held_item_poses.gd`). The grab view notes the runner's own body and hands are not ported (`src/bin/last_route/render/anim/grab.rs` header) (update 2026-11-04: first-person hands are in)
+- [ ] Emotes, the blocky face, doorway pose and player skins (`player/blocky_emotes.gd`, `player/blocky_face.gd`, `player/doorway_pose.gd`, `player/player_skin.gd`). The Rust SKIN tab says the offline build plays the default runner (update 2026-11-04: skins are validated and the skin menu works; emotes, face and doorway pose still open)
 
 ### Checks and corrections to earlier notes
 
@@ -465,7 +500,7 @@ Full read-only audit of `LastRoute Godot/KyttusLabApp` against the Rust port, wr
 - [ ] Port Controls table: one action table with rebinding, hint line and controls tab (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Interactable stations and prompts: monitor, doors, light, lamp and ledger (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Hunter scale for Night Watch placements: reuse MODEL_SCALE 1.5 through one instantiate path (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [ ] Port Night Watch sound mapping: 36 nw_ cues exist, but no event-to-cue mapping or room tones (status note: [~] in the parity-gaps audit; the less complete status is kept)
+- [~] Port Night Watch sound mapping: 36 nw_ cues exist, but no event-to-cue mapping or room tones (status note: [~] in the parity-gaps audit; the less complete status is kept) (update 2026-11-04: nw_sound module and sounds.json map events to cues)
 - [ ] Port Seeded integer streams: Night Watch mulberry, stream and pacer on the existing RNG core (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Hunter pose library: 21 data-driven poses and the state table (only a quaternion helper exists) (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port HUD: shift clock, power meter, status line and prompt line (status note: [~] in the parity-gaps audit; the less complete status is kept)
@@ -584,6 +619,8 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [ ] Port Transit hub map and vent run (effort M)
 - [ ] Port Hub office with two doors and three vents (effort M)
 ### Hunters
+- [x] Nyxie and Solyth have their own models; hunter and anim rigs for Nyxie, Solyth and the 12 void hunters (done 2026-11-04)
+- [x] The 26 A-Z hunters display as letters A..Z (done 2026-11-04)
 - [x] Port Per-floor draw Nightmare weights: only Relaxed, Standard and Hard weights exist. Done 2026-11-03: see the hunter draw pool item above.
 - [ ] Port Per-hunter tuning: numeric values not compared with Godot's roster tuning (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Special hunters Nyxie and Solyth: Nightmare pounce branches absent (status note: [~] in the parity-gaps audit; the less complete status is kept)
@@ -653,7 +690,7 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [x] Port Stairwells: spiral and switchback flights, placement and access halls; Rust uses straight 4-cell flights (status note: [~] in the parity-gaps audit; the less complete status is kept) (commit )
 - [ ] Port Chunk seams: centre-cross openings and wide hall openings; Rust draws random offsets (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port District selection: weighted districts, deeper-level extras and a sewer district (status note: [x] in the full audit 2026-11-01; the less complete status is kept)
-- [ ] Port Sewer layer: separate generator, ramps, falls, ladders and floods (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
+- [~] Port Sewer layer: separate generator, ramps, falls, ladders and floods (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (update 2026-11-04: water, swim, pipes, second sewer, ladders and drops are in; floods and generator parity open)
 - [ ] Port Inferno caverns: cave carving, lava pits, cages and the spider lair (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Per-level danger profile: hunter speed, count bias and safe-room odds by depth (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [x] Port Maze warrens: irregular cell layouts for maze and lab chunks
@@ -704,7 +741,7 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [ ] Port Checkpoint and autosave on relays, level changes, safe rooms and quit (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [ ] Port District layout matching Godot: seeds and region tags differ (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [x] Port Stairs walked rather than teleported to the landing (effort M)
-- [ ] Port Sewer, collector and Inferno levels with their own tunnels and ladders (status note: [~] in the parity-gaps audit; the less complete status is kept)
+- [~] Port Sewer, collector and Inferno levels with their own tunnels and ladders (status note: [~] in the parity-gaps audit; the less complete status is kept) (update 2026-11-04: ladders, drops and the second sewer are in; tunnels and Inferno parity open)
 - [ ] Port Floodwater wading and soaked state (effort M)
 - [ ] Port Flood valves: valve focus and flood sync (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 
@@ -791,12 +828,12 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [ ] Port Online room session and relay: client code exists but is not compiled
 - [ ] Port Public route join from the title screen: client not in the build (effort M)
 - [ ] Port Moderation client: online only (effort M)
-- [ ] Port Auto-updater: no download, verify or apply code (version parsing only) (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
+- [~] Port Auto-updater: no download, verify or apply code (version parsing only) (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (update 2026-11-04: download and apply run; every outcome is logged)
 - [ ] Port Voice, spoken chat and text-to-speech: no speech code (effort L) (status note: [~] in the parity-gaps audit; the less complete status is kept)
 
 ### Boot, mods and story
 - [ ] Port Startup gate and update check: no check, retry or minimum splash (effort M) (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [ ] Port Update-in-progress screen (effort M)
+- [x] Port Update-in-progress screen (effort M) (done 2026-11-04: the boot screen shows download progress)
 - [ ] Port Mod pack loader: only hunters, props and route loot load; no size limits or sha256 checks (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 
 ### Admin
@@ -807,7 +844,7 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [ ] Port Floor-surface footsteps: the finite route passes no surface kind (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [ ] Port Carnival booth cues: no booths to play them (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [ ] Port Music wing instrument cues: no playable props (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Night Watch cue family: no scene calls the nw cues (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
+- [~] Port Night Watch cue family: no scene calls the nw cues (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (update 2026-11-04: nw_sound module in; the hub must forward events to every mode)
 - [ ] Port Ambient beds: silent on the finite route, streamed-route beds missing (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [ ] Port Level layer beds: no sewer or Inferno beds (effort M)
 - [ ] Port Positional emitters: waterfall, flood and lava loops missing (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
@@ -820,7 +857,7 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [~] Port Night Watch game shell, mode registry and save progress: placeholder binary only (effort L) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (session 2026-11-03: a window, a data-driven mode registry and Classic are in; save progress is open)
 - [~] Port Night Watch nine modes: none ported (effort L) (session 2026-11-03: Classic is playable; the other eight modes are not)
 - [ ] Port Desktop self-update: version parsing only (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Sewer, waterworks and ladder or ramp level stack: stairs only (effort L/M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
+- [~] Port Sewer, waterworks and ladder or ramp level stack: stairs only (effort L/M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (update 2026-11-04: ladders, drops and flights are in; ramps and waterworks open)
 - [ ] Port Inferno caverns and cage pit: carving and height done; lava and cages not ported (effort L) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [ ] Port Hiding in furniture: lockers only, no beds or wardrobes (effort M/S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [~] Port Doorways sized for hunter scale: single-cell doors only (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (session 2026-11-03: door scaling is done; multi-cell doorways are still open)
@@ -887,7 +924,7 @@ Source: `LastRoute Godot\KyttusLabApp` (re-synced from the other computer) compa
 - [ ] Xivvy flight: Godot checks headroom, hovers, lands before doors, floats and casts a shadow (`game/hunters/view/xivvy_flight.gd:9-131`). Rust uses a fixed 0.48 lift (`render/scene.rs:476-482`) and flies for 0.65 s regardless of geometry (`hunters/gimmicks/xivvy.rs:15-37`).
 - [ ] Verrine duct chase (VentNav, VentCrawl, exit bursts, thumps), `verrine_gimmick.gd:27-155`. Rust is the legacy grate-to-grate path (`hunters/gimmicks/verrine.rs:1-34`).
 - [x] Taser slow: done. Per-hunter `taser_slow_factor` / `taser_slow_seconds` read in `content/hunters.rs` and used in `game/items.rs`; `hunters/brain.rs` `apply_slow` keeps the stronger slow and the longer time, and `tick_slow` resets the factor on expiry (Godot `hunter_brain.gd` apply_slow / _tick_slow). Unit tests in `hunters/brain.rs`; headless suite 54/54.
-- [ ] Hunter storey roaming (LINK_KINDS, CHANCE, WINDOW, STAY, `hunter_level_roam.gd:14-25`). Rust has per-level storage only (`game/endless.rs:1011-1013`). Ties to the natural-stairs work.
+- [x] Hunter storey roaming (LINK_KINDS, CHANCE, WINDOW, STAY, `hunter_level_roam.gd:14-25`). Rust has per-level storage only (`game/endless.rs:1011-1013`). Ties to the natural-stairs work. (done 2026-11-04: hunters simulate on all resident floors and cross flights, ladders and drops (hunters/flight_edges.rs))
 
 ### Vents, ladders and stairs
 - [ ] Physical vent crawl and duct network: Godot `game/world/regions/vent_crawl.gd:18-145`, `vent_network.gd:12-140`, `player_controller_3d.gd:3806-3857`. Rust does an instant grate hop (`game/interact.rs:445-473`) and still says VENT TRANSIT.
@@ -924,13 +961,16 @@ Source: `LastRoute Godot\KyttusLabApp` (re-synced from the other computer) compa
 
 ## Gameplay progression and hunter mechanics (requested 2026-11-04)
 
+- [ ] Hunters: pack and guests: guest shadow hunters (2026-11-04)
+- [ ] Hunter changes that are visible on Standard and need KT's OK from earlier passes: relay rush include_searching, director clear_radius and memory, npc intents
+
 - [ ] Hunter sabotage: hunters disable or damage relays, lights, doors or the lift, as the Godot sabotage code does (game/autoload/game_state.gd, game/autoload/run_saves.gd, game/config/game_config.gd mention sabotage; check the Godot version before porting)
 - [ ] Progression items: relays to collect and activate in a run (count, order, what each unlocks), with the Godot rules
 - [ ] Hunter-specific charge abilities (2026-11-03 pass A: not started; no shared charge constant was found in Rust, Loxelle's windup and charge timers are inline in `hunters/gimmicks/loxelle.rs`): each hunter has its own charge (Quenelle is one example, game/hunters/gimmicks/quenelle_gimmick.gd; the charge timing is in hunter_brain.gd); defined per hunter in data, not shared across all hunters
 - [~] Nightmare mode (2026-11-03: selectable in the lobby, profile, Zellia 12 percent and Quenelle 5 s applied; still open: the room wire name in `net/world_sync.rs` `difficulty_from_name` has no NIGHTMARE arm, so a hosted room reads Nightmare back as STANDARD, and the director uses the Hard profile): difficulty profile from game/config/game_config.gd (nightmare block at line ~50: lowered footprint, Zellia death chance 12 percent), selectable in the port, with hunter-specific Nightmare abilities (for example Quenelle locks on after 5 s, game_config.gd line ~277) defined per hunter in data
 - [ ] NPC bots run away from hunters (fleeing like players do), with the same reaction rules as the runner
-- [ ] NPC bots use player-like models and abilities: the same mannequin body as players, and the same tasks (relays, doors, lockers)
-- [ ] Player mannequin model with bends like the hunters, imported from the Godot player model (assets/hunters_blocky/player_mannequin, the rig with joints and clips), replacing the plain Minecraft-style skin model
+- [~] NPC bots use player-like models and abilities: the same mannequin body as players, and the same tasks (relays, doors, lockers) (update 2026-11-04: bot figures use the player clips (render/anim/runner.rs))
+- [~] Player mannequin model with bends like the hunters, imported from the Godot player model (assets/hunters_blocky/player_mannequin, the rig with joints and clips), replacing the plain Minecraft-style skin model (update 2026-11-04: player clips drive runner and bot figures; slim arms mesh in)
 - [ ] Smarter hunters: at higher difficulties, hunters open and check lockers (and other hiding spots) during a search, not only walk past them. Searches should cover dead ends and rooms they have not checked, with the check rate set by difficulty. Other smarter-search behaviour (for example opening doors on the way and checking the last-seen spot first) is part of this item
 
 ## Memory (noted 2026-11-04)
@@ -941,7 +981,7 @@ Source: `LastRoute Godot\KyttusLabApp` (re-synced from the other computer) compa
 
 - [ ] Intel MacBook Air (KT-MBA, AK-MBA) now holds 60 fps consistently. Go higher: measure where the next 10 ms goes with the per-part timers (LR_PERF_PARTS), then target 75 to 90 fps. Record before and after per scenario
 - [ ] Performance optimization for the other devices: KT-NEO (Apple silicon, capped near 59 fps with vsync off: confirm the display refresh and the NSOpenGLContext swap path), KT-MBP, AK-T480 and KT-T480 (Fedora: live vsync is unsupported on Linux, memory-shortage message), ZL-MBA, JV-MBA and XR-MBA. One table per device in docs/PERF_COMPARISON.md
-- [ ] Preload every chunk of each level so going up or down stairs and ladders is instant (the adjacent storey is prefetched near a connection today; load all chunks per level ahead)
+- [x] Preload every chunk of each level so going up or down stairs and ladders is instant (the adjacent storey is prefetched near a connection today; load all chunks per level ahead) (done 2026-11-04: adjacent floors are preloaded)
 - [ ] Rust compile speed on the laptop: dev and CI profiles with trimmed debug info, linker choice per platform, split debug info, incremental builds. Record the cold and warm times before and after
 - [ ] CI speed plan for every platform (macOS and Windows first, then Linux): per-target parallel jobs, sccache, pinned toolchain, thin debug info, cargo-nextest. Aim for a reasonable compile time and record the time per job
 - [ ] Agent workflow efficiency: the reusable pass (.claude/workflows/edit-pass.js) runs sonnet low edit agents with no cargo, QA and format checks, one build, up to three test instances, then a review. Keep it current as the process changes
@@ -959,19 +999,19 @@ Source: the 2026-11-04 repo audit. Items that need a design decision are in `doc
 
 ### Godot gaps (with Godot file and line)
 - [x] Waterfall plunge and swim (`player_controller_3d.gd` 1154-1229, swim speed 1.5 at 357) into `game/player.rs` (done, phase 7: physical free fall, data/swim/fall.json)
-- [ ] Flood wading: per-cell depth, speed, noise and tiring (`player_controller_3d.gd` 336-338, 365-372, 1237-1256)
-- [ ] Soaked status and drip noise (`player_controller_3d.gd` 362-364, 1255 on): 30 s, noise scale 1.45, drip every 1.1-2.4 s
+- [x] Flood wading: per-cell depth, speed, noise and tiring (`player_controller_3d.gd` 336-338, 365-372, 1237-1256) (done 2026-11-04: game/swim.rs, data/swim/movement.json)
+- [x] Soaked status and drip noise (`player_controller_3d.gd` 362-364, 1255 on): 30 s, noise scale 1.45, drip every 1.1-2.4 s (done 2026-11-04: soaked 30 s, noise x1.45 in game/swim.rs)
 - [ ] Water depth and surface height in the sewer mesh and collision (`sewer_route_generator.gd` 95-96; Rust `world/route/sewer/core.rs` 47-53)
 - [ ] Test flood reach 12 and cap 160 cells (`sewer_route_generator.gd` 910-911; `world/route/sewer/breach.rs` 49-50)
 - [ ] Wire `data/loot/sewer.json` into the pickup roll (`sewer_route_generator.gd` 662)
 - [ ] Sewer level ambience bed mapping (`game/audio/level_ambience.gd`) and the missing lava loop (`audio/emitter_loops.gd` 29, 44-45)
 - [ ] Check sewer extra relay chance .55 (`sewer_route_generator.gd` 27) and the hunter affinity lists (`sewer_route_generator.gd` 388 vs `world/route/sewer/hunters.rs` 43-45)
-- [ ] Inferno lava pits and the player following inferno floor heights (`world/inferno.rs`, `Inferno::height_at`)
+- [ ] Inferno lava pits and the player following inferno floor heights (`world/inferno.rs`, `Inferno::height_at`) (update 2026-11-04: inferno caves are in; lava pits still to check)
 - [ ] Inferno cages and spider lair, with the -3 spider spawn rule (`config/secret_creatures.gd`)
-- [ ] Level-0 catwalk geometry and the see-through breakables list (`streamed_hunter_navigation.gd` 548-576)
+- [~] Level-0 catwalk geometry and the see-through breakables list (`streamed_hunter_navigation.gd` 548-576) (update 2026-11-04: catwalks above level 0 are in; the see-through breakables list is open)
 - [ ] Shared HardAbilities: burst, intercept, slam (`hunters/ai/hard_abilities.gd` 55, 60, 65, 179); confirm the Nyxie data file matches 15-19, 51-53
 - [ ] Check hunter constants against Godot: brain stuck/centre/give-up (`hunter_brain.gd` 30-43), hearing and sight (`hunter_seats.gd` 14-16), void sight 2.5 (`void_cyan_gimmick.gd` 7), relay rush 7 and delay (`hunter_director.gd` 10-13, 39)
-- [ ] NPC teammates: storey crossing (`npc_teammates.gd` 34, 396-567), chat with 30 s cooldown (52, 637), down and revive (235, 261), remaining command ops (47-51), 12 Hz sync (35)
+- [ ] NPC teammates: storey crossing (`npc_teammates.gd` 34, 396-567), chat with 30 s cooldown (52, 637), down and revive (235, 261), remaining command ops (47-51), 12 Hz sync (35) (update 2026-11-04: storey crossing is done (bots cross flights and ladders); chat, down and revive, command ops and sync are open)
 - [ ] Teammate waypoint overlay (`hud/teammate_waypoints.gd`, `hud/waypoint_overlay.gd`); the setting is saved and does nothing
 - [ ] Interactable diff: vent, lift, heater station against `assets/interactables/`
 - [ ] Remove the "did you hear that?" line (`game/hunting.rs` 253) and the STUNNED messages (`game/items.rs` 156, 196)
@@ -980,3 +1020,10 @@ Source: the 2026-11-04 repo audit. Items that need a design decision are in `doc
 - [ ] Update `docs/GIMMICKS.md` line 9 and 341, 368, 419: Nightmare is ported
 - [ ] Update `docs/GODOT_FEATURE_AUDIT.md` line 595: the Skin tab exists (`ui/settings_panel.rs` 612, 872)
 - [x] Add a one-line note on direct stairs (no fade, no lockout) to the stairs docs (done in docs/STAIRS_CONTINUOUS_DESIGN.md and MECHANICS.md)
+
+
+## Cleanup (2026-11-04)
+
+- [x] Cleanup run: about 200 GB of target/ dirs and 3 worktrees removed; docs/CLEANUP_AUDIT_2026-11-04.md lists the rest (done 2026-11-04)
+- [ ] Cleanup Tier B, waiting on KT (docs/CLEANUP_AUDIT_2026-11-04.md sections 3 and 5): docs archive moves, docs/admin_screens, route-port*.js workflows, run-local.cmd, tools/playtest, tools/nightly-mac, duplicate assets/calls and cams/mixed, dead-code removals after a build, assets/props cross-check
+- [ ] The worktree scratchpad/ayttu-wt holds an unpushed commit 3aa3f66 "Admin: AYTTU is a game admin (client gate matches the server owner list)": push it or decide
