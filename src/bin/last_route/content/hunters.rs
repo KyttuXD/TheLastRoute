@@ -225,6 +225,24 @@ mod tests {
         assert_eq!(n, 12);
     }
 
+    /// Regression (2026-11-04): Nyxie and Solyth had no model files, so the renderer drew them with Dovelle's body
+    /// and skin. Every built-in hunter must ship its own model and a texture (an atlas file or one embedded in the model).
+    #[test]
+    fn every_built_in_hunter_ships_its_own_model_and_texture() {
+        let content = crate::content::Content::load();
+        let mut checked = 0;
+        for h in content.hunters.iter().filter(|h| !h.is_pack()) {
+            checked += 1;
+            let model = h.model.as_deref().unwrap_or_default();
+            let bytes = crate::content::embedded::asset(model).unwrap_or_else(|| panic!("{}: model {model:?} is not embedded", h.id));
+            let j: serde_json::Value = serde_json::from_slice(bytes).unwrap_or_else(|e| panic!("{}: {model} is not JSON: {e}", h.id));
+            let atlas = h.atlas.as_deref().and_then(crate::content::embedded::asset);
+            let find = |name: &str| -> Option<Vec<u8>> { crate::content::embedded::asset(&format!("hunters/{name}")).map(|b| b.to_vec()) };
+            assert!(atlas.is_some() || crate::render::bbmodel::texture_bytes(&j, &find).is_some(), "{}: no atlas file and no embedded texture", h.id);
+        }
+        assert!(checked >= 36, "only {checked} built-in hunters checked");
+    }
+
     #[test]
     fn a_bad_id_is_rejected_whatever_the_source() {
         let bad = json!({ "schema": "lr.hunter/1", "id": "Bad Id" });
