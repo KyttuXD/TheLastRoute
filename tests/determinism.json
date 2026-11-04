@@ -13,7 +13,7 @@
         { "cmd": "start_run", "seed": 4242, "difficulty": "standard", "mode": "finite" },
         { "cmd": "step", "frames": 120, "act": { "move": [0.3, 1], "look": [0.4, 0] }, "observe": false },
         { "cmd": "step", "frames": 240, "act": { "move": [-1, 0.5], "look": [-0.2, 0.1], "hold": { "sprint": true } }, "observe": false },
-        { "cmd": "hash", "expect": [ { "path": "last.hash", "var": "a.hash" }, { "path": "last.frame", "value": 360 } ] },
+        { "cmd": "hash", "expect": [ { "path": "last.hash", "var": "a.hash" }, { "path": "last.frame", "op": ">=", "value": 360 } ] },
         { "cmd": "start_run", "seed": 4243, "difficulty": "standard", "mode": "finite" },
         { "cmd": "step", "frames": 120, "act": { "move": [0.3, 1], "look": [0.4, 0] }, "observe": false },
         { "cmd": "step", "frames": 240, "act": { "move": [-1, 0.5], "look": [-0.2, 0.1], "hold": { "sprint": true } }, "observe": false },

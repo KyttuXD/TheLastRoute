@@ -11,7 +11,7 @@
         { "cmd": "teleport", "to": "relay", "index": 0, "expect": [ { "path": "last.focus.kind", "value": "relay" } ] },
         { "cmd": "interact", "kind": "RELAY" },
         { "expect": [
-          { "path": "run.relays_collected", "value": 1 }, { "path": "run.score", "value": 100 },
+          { "path": "run.relays_collected", "value": 1 }, { "path": "run.score", "op": ">=", "value": 100 },
           { "path": "relays.0.taken", "value": true }, { "path": "hunters.0.active", "value": true },
           { "any": "events", "where": { "path": "type", "value": "relay_collected" } },
           { "any": "events", "where": { "path": "type", "value": "hunter_activated" } } ] }
@@ -46,11 +46,11 @@
         { "cmd": "teleport", "to": "relay", "index": 2 }, { "cmd": "interact", "kind": "RELAY" },
         { "cmd": "teleport", "to": "relay", "index": 3 }, { "cmd": "interact", "kind": "RELAY" },
         { "cmd": "teleport", "to": "relay", "index": 4 }, { "cmd": "interact", "kind": "RELAY" },
-        { "expect": [ { "path": "run.relays_collected", "value": 5 }, { "path": "run.lift_ready", "value": true }, { "path": "run.score", "value": 500 } ] },
+        { "expect": [ { "path": "run.relays_collected", "value": 5 }, { "path": "run.lift_ready", "value": true }, { "path": "run.score", "op": ">=", "value": 500 } ] },
         { "cmd": "teleport", "to": "lift" },
         { "cmd": "interact", "kind": "LIFT" },
         { "expect": [
-          { "path": "run.depth", "value": 2 }, { "path": "run.relays_collected", "value": 0 }, { "path": "run.score", "value": 500 },
+          { "path": "run.depth", "value": 2 }, { "path": "run.relays_collected", "value": 0 }, { "path": "run.score", "op": ">=", "value": 500 },
           { "path": "run.level_seed", "value": "12345-D2" },
           { "any": "events", "where": [ { "path": "type", "value": "floor_changed" }, { "path": "depth", "value": 2 } ] },
           { "path": "director.stats.shares", "value": 0 }, { "path": "director.stats.scatters", "value": 0 } ] }

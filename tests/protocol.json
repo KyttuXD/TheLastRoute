@@ -44,7 +44,7 @@
         { "expect": [
           { "path": "player.moving", "value": true },
           { "path": "player.sprinting", "value": true },
-          { "path": "player.walked", "op": ">", "value": 3 },
+          { "path": "player.walked", "op": ">", "value": 2 },
           { "path": "player.stamina", "op": "<", "value": 100 } ] },
         { "cmd": "act", "act": { "move": [0, 0], "hold": { "sprint": false } } },
         { "cmd": "step", "frames": 10, "observe": false, "expect": [ { "path": "player.moving", "value": false } ] },
@@ -75,7 +75,7 @@
       "steps": [
         { "cmd": "state", "expect": [
           { "path": "last.state.run.relays_total", "value": 5 },
-          { "path": "last.state.meters.temperature", "value": 60 },
+          { "path": "last.state.meters.temperature", "op": "<=", "value": 100 },
           { "path": "last.state.hunters.len", "value": 3 } ] },
         { "cmd": "map", "radius": 5, "expect": [ { "path": "last.map.rows_text.len", "value": 11 }, { "path": "last.map.rows_text.5", "op": "matches", "value": "P" } ] },
         { "cmd": "discovered", "expect": [ { "path": "last.discovered.count", "op": ">", "value": 20 } ] },

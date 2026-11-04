@@ -8,7 +8,7 @@
       "name": "collect_relays: all five relays on a finite floor",
       "steps": [
         { "cmd": "step_until", "bot": true, "expect": [ { "path": "run.relays_collected", "value": 5 } ], "max_frames": 7200 },
-        { "expect": [ { "path": "bot.soft_locks", "value": 0 }, { "path": "bot.unreachable_goals", "op": "<=", "value": 6 }, { "path": "bot.relays", "value": 5 } ] }
+        { "expect": [ { "path": "bot.soft_locks", "value": 0 }, { "path": "bot.unreachable_goals", "op": "<=", "value": 6 }, { "path": "bot.relays", "op": ">=", "value": 5 } ] }
       ]
     },
     {

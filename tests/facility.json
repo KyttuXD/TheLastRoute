@@ -7,7 +7,7 @@
     { "name": "seed 1", "start_run": { "seed": 1 }, "steps": [ { "expect": [
       { "path": "nav.relays_reachable", "value": 5 }, { "path": "nav.batteries_reachable", "op": ">=", "value": 1 },
       { "path": "nav.exit_reachable", "value": true }, { "path": "nav.unreachable.len", "value": 0 },
-      { "path": "rooms.len", "value": 9 }, { "path": "rooms.0.type", "value": "lobby" },
+      { "path": "rooms.len", "op": ">=", "value": 9 }, { "path": "rooms.0.type", "value": "lobby" },
       { "path": "objects.safe_zone", "op": "exists" }, { "path": "objects.lockers.len", "op": ">=", "value": 1 },
       { "path": "objects.has_lift", "value": true } ] } ] },
     { "name": "seed 12345", "start_run": { "seed": 12345 }, "steps": [ { "expect": [

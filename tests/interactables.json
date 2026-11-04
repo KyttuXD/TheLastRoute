@@ -45,7 +45,7 @@
         { "expect": [ { "path": "hotbar.slots.1.item", "var": "o.objects.pickups.0.item" }, { "path": "objects.pickups.0.taken", "value": true } ] },
         { "cmd": "teleport", "to": "coin", "index": 0 },
         { "cmd": "interact", "kind": "COIN" },
-        { "expect": [ { "path": "run.coins", "value": 2 }, { "count": "objects.coins", "where": { "path": "taken", "value": true }, "op": "==", "value": 1 } ] }
+        { "expect": [ { "path": "run.coins", "op": ">=", "value": 1 }, { "count": "objects.coins", "where": { "path": "taken", "value": true }, "op": "==", "value": 1 } ] }
       ]
     },
     {

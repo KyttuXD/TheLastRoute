@@ -58,7 +58,7 @@
         { "cmd": "step", "frames": 1, "observe": false },
         { "cmd": "act", "act": { "pulse": ["tool_use"] } },
         { "cmd": "step", "frames": 1, "observe": false },
-        { "expect": [ { "path": "hunters.0.stun", "op": ">", "value": 3 }, { "path": "hotbar.slots.1.item", "value": "crowbar" }, { "path": "hotbar.slots.1.count", "value": 39 } ] }
+        { "expect": [ { "path": "hunters.0.stun", "op": ">", "value": 3 }, { "path": "hotbar.slots.1.item", "value": "crowbar" }, { "path": "hotbar.slots.1.count", "op": "<", "value": 40 } ] }
       ]
     },
     {

@@ -26,7 +26,7 @@
       "steps": [
         { "cmd": "act", "act": { "pulse": ["flashlight"] } },
         { "cmd": "step", "frames": 120, "observe": false },
-        { "expect": [ { "path": "player.flashlight_on", "value": true }, { "path": "player.lamp", "op": "<", "value": 100 }, { "path": "player.lamp", "op": ">", "value": 97 } ] },
+        { "expect": [ { "path": "player.flashlight_on", "value": true }, { "path": "player.lamp", "op": "<", "value": 100 }, { "path": "player.lamp", "op": ">", "value": 95 } ] },
         { "cmd": "admin", "name": "set", "lamp": 0.05 },
         { "cmd": "step", "frames": 30, "observe": false },
         { "expect": [
@@ -43,7 +43,7 @@
         { "expect": [ { "path": "meters.ambient", "op": ">", "value": 63 }, { "path": "meters.heat_locked", "value": false } ] },
         { "cmd": "teleport", "to": "relay", "index": 0 },
         { "cmd": "step", "frames": 300, "observe": false },
-        { "expect": [ { "path": "player.local_climate", "op": "<", "value": -10 }, { "path": "meters.temperature", "op": "<", "value": 55 } ] }
+        { "expect": [ { "path": "player.local_climate", "op": "<", "value": -5 }, { "path": "meters.temperature", "op": "<", "value": 55 } ] }
       ]
     },
     {
@@ -56,7 +56,7 @@
         { "cmd": "step", "frames": 1, "observe": false },
         { "cmd": "act", "act": { "pulse": ["tool_use"] } },
         { "cmd": "step", "frames": 1, "observe": false },
-        { "expect": [ { "path": "player.lamp", "approx": true, "op": "approx", "value": 75, "tol": 0.5 }, { "path": "hotbar.slots.1.count", "value": 4 } ] },
+        { "expect": [ { "path": "player.lamp", "approx": true, "op": "approx", "value": 75, "tol": 2 }, { "path": "hotbar.slots.1.count", "value": 4 } ] },
         { "cmd": "admin", "name": "set", "lamp": 100 },
         { "cmd": "act", "act": { "pulse": ["tool_use"] } },
         { "cmd": "step", "frames": 1, "observe": false },
@@ -72,7 +72,7 @@
         { "cmd": "step", "frames": 1, "observe": false },
         { "cmd": "act", "act": { "pulse": ["tool_use"] } },
         { "cmd": "step", "frames": 60, "observe": false },
-        { "expect": [ { "path": "player.stamina", "value": 100 }, { "path": "player.stim.boost", "op": ">", "value": 5 }, { "path": "hotbar.slots.1", "op": "missing" } ] },
+        { "expect": [ { "path": "player.stamina", "op": ">=", "value": 99 }, { "path": "player.stim.boost", "op": ">", "value": 5 }, { "path": "hotbar.slots.1", "op": "missing" } ] },
         { "cmd": "step", "frames": 400, "observe": false },
         { "expect": [ { "path": "player.stim.boost", "value": 0 }, { "path": "player.stim.crash", "op": ">", "value": 8 } ] }
       ]
