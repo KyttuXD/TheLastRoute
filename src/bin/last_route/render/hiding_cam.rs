@@ -3,6 +3,7 @@
 //! search-tell shake and the door swing never move the eye. All numbers come from `data/player/hiding_view.json`.
 
 use macroquad::prelude::*;
+use crate::config::look::{smooth, soft_step, turn};
 use std::sync::OnceLock;
 
 #[derive(Clone, Debug)]
@@ -129,6 +130,24 @@ pub fn clamp_look(yaw: f32, pitch: f32, base_yaw: f32) -> (f32, f32) {
     clamp_look_with(yaw, pitch, base_yaw, cfg())
 }
 
+/// One frame of hidden mouse look, eased at the cone's edge instead of walled: `dyaw`/`dpitch` are the frame's turn
+/// (positive = yaw and pitch increase, as `Player::look` applies it). Inside the cone minus the soft zone the look
+/// follows the mouse 1:1; in the last zone it slows smoothly and never passes the cone, so a flick into the edge
+/// slides to it and turning back moves at once. `clamp_look` stays as the final safety.
+pub fn soft_look(yaw: f32, pitch: f32, dyaw: f32, dpitch: f32, base_yaw: f32, c: &Cfg, zone_deg: f32) -> (f32, f32) {
+    let zone = zone_deg.to_radians();
+    let ny = base_yaw + soft_step(wrap(yaw - base_yaw), dyaw, c.yaw_deg.to_radians(), zone);
+    let np = soft_step(pitch, dpitch, c.pitch_deg.to_radians(), zone);
+    (ny, np)
+}
+
+/// The look while the entry glide runs: from where the runner was looking to straight out of the spot, on the glide's
+/// own smoothstep clock (`t` 0..1), so the eye and the view arrive together and nothing jumps on the first hidden frame.
+pub fn entry_look(from: (f32, f32), to: (f32, f32), t: f32) -> (f32, f32) {
+    let e = smooth(t);
+    (from.0 + turn(from.0, to.0) * e, from.1 + (to.1 - from.1) * e)
+}
+
 /// Whether mouse look is frozen: only while the spot is shaking and the data asks for it.
 pub fn look_locked(shaking: bool) -> bool {
     shaking && cfg().lock_look_while_shaking
@@ -238,6 +257,54 @@ mod tests {
         assert!(Cfg::parse(&bad).unwrap_err().contains("pitch_deg"));
         let bad = good.replace("\"locker\": 0.12", "\"locker\": \"x\"");
         assert!(Cfg::parse(&bad).unwrap_err().contains("forward_offset.locker"));
+    }
+
+    #[test]
+    fn soft_look_follows_inside_slows_at_the_edge_and_never_passes_the_cone() {
+        let c = cfg();
+        let zone = crate::config::look::cfg().hide_soft_zone_deg;
+        for f in FACINGS {
+            let base = facing_yaw(f);
+            let ym = c.yaw_deg.to_radians();
+            // inside: 1:1
+            let (y, p) = soft_look(base, 0.0, -0.05, 0.02, base, c, zone);
+            assert!((y - (base - 0.05)).abs() < 1e-5 && (p - 0.02).abs() < 1e-5);
+            // a long sweep to one side: monotonic, bounded, and the last step is smaller than the first
+            let (mut yaw, mut pitch) = (base, 0.0);
+            let mut steps = vec![];
+            for _ in 0..300 {
+                let (ny, np) = soft_look(yaw, pitch, 0.02, 0.02, base, c, zone);
+                steps.push(wrap(ny - yaw));
+                assert!(wrap(ny - base) >= wrap(yaw - base) - 1e-6 && wrap(ny - base) <= ym + 1e-4);
+                assert!(np <= c.pitch_deg.to_radians() + 1e-4);
+                (yaw, pitch) = (ny, np);
+            }
+            assert!(steps.last().unwrap() < &(steps[0] * 0.2), "slows into the edge");
+            // the hard clamp has nothing left to do
+            let (cy, cp) = clamp_look(yaw, pitch, base);
+            assert!(wrap(cy - yaw).abs() < 1e-4 && (cp - pitch).abs() < 1e-4);
+            // a flick far past the edge in one frame lands inside the cone
+            let (y, _) = soft_look(base, 0.0, 9.0, 0.0, base, c, zone);
+            assert!(wrap(y - base) <= ym + 1e-4);
+        }
+    }
+
+    #[test]
+    fn entry_look_glides_without_a_jump() {
+        let from = (2.0, 0.6);
+        let to = (-3.0, 0.0);
+        assert_eq!(entry_look(from, to, 0.0), from);
+        let end = entry_look(from, to, 1.0);
+        assert!(wrap(end.0 - to.0).abs() < 1e-4 && end.1.abs() < 1e-5);
+        // 0.6 s at 60 fps: no frame turns more than 1.6x the straight-line rate (smoothstep peaks at 1.5x)
+        let frames = (glide_seconds(true) * 60.0).ceil();
+        let rate = turn(from.0, to.0).abs() / frames;
+        let mut prev = from;
+        for i in 1..=frames as i32 {
+            let n = entry_look(from, to, i as f32 / frames);
+            assert!(turn(prev.0, n.0).abs() <= rate * 1.6 + 1e-4, "frame {i}");
+            prev = n;
+        }
     }
 
     #[test]

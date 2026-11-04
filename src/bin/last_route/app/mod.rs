@@ -27,6 +27,7 @@ pub mod stress;
 pub mod updater;
 
 use crate::audio::{self, Sounds};
+use crate::config::look::{self, LookFilter};
 use crate::config::*;
 use crate::content::Content;
 use crate::game::{Controls, Game};
@@ -125,28 +126,6 @@ pub struct World {
     pub mat: Material,
 }
 
-/// Look for one frame of mouse motion, in the Godot original's units: `sens` radians per screen
-/// pixel (the default 0.0075 turns 100 px by 0.75 rad). macroquad's `mouse_delta_position` is in
-/// [-1, 1] screen units (a full-width sweep is 2), so it is scaled back to pixels first.
-/// `fallback_px` is the pixel move since the last frame, used when the platform reports no delta.
-/// Both sources use the same signs, so the first turn after capture goes the same way as the rest.
-fn look_radians(
-    delta: Vec2,
-    screen: Vec2,
-    fallback_px: Option<Vec2>,
-    sens: f32,
-    multiplier: f32,
-) -> Vec2 {
-    // Both signs match Godot: mouse right turns right (yaw -= x) and mouse down looks down
-    // (pitch -= y). macroquad's delta is last - current, so both axes are flipped on that path.
-    let px = if delta.length_squared() > 0.0 {
-        vec2(-delta.x, -delta.y) * screen * 0.5
-    } else {
-        fallback_px.unwrap_or(Vec2::ZERO)
-    };
-    px * sens * multiplier
-}
-
 /// Keyboard look for one frame: Godot's `Input.get_vector` caps the combined stick at length 1,
 /// so a diagonal turns no faster than a straight key, and the rate follows the mouse sensitivity
 /// relative to its default (player_controller_3d.gd, `sensitivity_scale`).
@@ -155,7 +134,14 @@ fn keyboard_look(stick: Vec2, dt: f32, sens: f32) -> Vec2 {
     stick * KEY_LOOK_RADIANS_PER_SECOND * dt * (sens / MOUSE_SENSITIVITY)
 }
 
-fn read_controls(mouse_last: &mut Option<Vec2>, grabbed: bool, sens: f32, shop: bool) -> Controls {
+fn read_controls(
+    mouse_last: &mut Option<Vec2>,
+    filter: &mut LookFilter,
+    grabbed: bool,
+    sens: f32,
+    shop: bool,
+    dt: f32,
+) -> Controls {
     let mut c = Controls::default();
     if is_key_down(KeyCode::W) {
         c.fwd += 1.0;
@@ -208,13 +194,16 @@ fn read_controls(mouse_last: &mut Option<Vec2>, grabbed: bool, sens: f32, shop: 
         // position-delta fallback as well; otherwise the first mouse turn can appear dead.
         let pos: Vec2 = mouse_position().into();
         let screen = vec2(screen_width(), screen_height());
-        c.look = look_radians(
+        let look_cfg = look::cfg();
+        let px = look::delta_px(
             mouse_delta_position(),
             screen,
+            screen_dpi_scale(),
             mouse_last.map(|last| pos - last),
-            sens,
-            MOUSE_LOOK_MULTIPLIER,
         );
+        // the settle after a capture, the warp-spike rejection and the per-frame cap (config/look.rs)
+        let px = filter.apply(px, dt, look_cfg);
+        c.look = look::px_to_radians(px, sens, look_cfg.multiplier());
         *mouse_last = Some(pos);
     } else {
         *mouse_last = None;
@@ -232,7 +221,7 @@ fn read_controls(mouse_last: &mut Option<Vec2>, grabbed: bool, sens: f32, shop: 
     if is_key_down(KeyCode::K) || is_key_down(KeyCode::Down) {
         stick.y += 1.0;
     }
-    c.look += keyboard_look(stick, get_frame_time(), sens);
+    c.look += keyboard_look(stick, dt, sens);
     c
 }
 
@@ -503,8 +492,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
     let mut last_save: Option<checkpoint::Checkpoint> = None;
     let mut save_poll = 0.0f32;
     let mut mouse_last: Option<Vec2> = None;
-    // frames left before look input counts after a re-lock: the cursor is still moving to the capture point
-    let mut relock_settle = 0u32;
+    // the look filter: a short settle after a re-lock while the cursor moves to the capture point, then spike rejection
+    let mut look_filter = LookFilter::default();
     let mut grabbed = false;
     let mut save = checkpoint::load();
     if !stress_on {
@@ -576,7 +565,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 std::process::exit(0);
             }
         }
-        let dt = get_frame_time().min(0.05);
+        let raw_dt = get_frame_time();
+        let dt = raw_dt.min(0.05);
         crate::render::fp_hands::set_look(&settings.skin, &settings.arms);
         ui.t += dt;
         ui.notice_t = (ui.notice_t - dt).max(0.0);
@@ -975,41 +965,44 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 map_open,
                 screenshot.is_none() && !stress_on,
             );
+            // a long frame (a hitch, or the window was in the background) may have left the capture half-undone and
+            // the cursor warp pending: settle again, re-issue the capture now and again on the next click
+            if grabbed && want_grab && raw_dt > look::cfg().gap_relock_s {
+                look_filter.relock(look::cfg());
+                mouse_last = None;
+                set_cursor_grab(true);
+                show_mouse(false);
+            }
+            let click = is_mouse_button_pressed(MouseButton::Left) || is_mouse_button_pressed(MouseButton::Right);
+            let action = look::relock_action(want_grab != grabbed, want_grab && grabbed && click, cfg!(target_os = "macos"));
             if want_grab != grabbed {
                 set_cursor_grab(want_grab);
                 show_mouse(!want_grab);
                 grabbed = want_grab;
-                mouse_last = None;
                 if want_grab {
-                    relock_settle = RELOCK_SETTLE_FRAMES;
+                    look_filter.relock(look::cfg());
                 }
-            } else if want_grab
-                && (is_mouse_button_pressed(MouseButton::Left)
-                    || is_mouse_button_pressed(MouseButton::Right))
-            {
-                // Re-issue capture on the first click. Native Windows backends can reject a
-                // grab requested during the scene transition before the window is focused.
+            } else if want_grab && click {
+                // Re-issue capture on a click. Native Windows backends can reject a grab requested during the scene
+                // transition before the window is focused. A click never freezes the look (relock_action).
                 set_cursor_grab(true);
                 show_mouse(false);
+            }
+            if action.clear_last {
                 mouse_last = None;
-                relock_settle = RELOCK_SETTLE_FRAMES;
             }
             // a stress run drives the run with its own input (app/stress.rs) and reads no keys or mouse
             let mut c = match stress_run.as_mut() {
                 Some(st) => st.controls(dt, g),
                 None => read_controls(
                     &mut mouse_last,
+                    &mut look_filter,
                     grabbed,
                     settings.sensitivity,
                     g.shop_open(),
+                    dt,
                 ),
             };
-            // after a re-lock the cursor is still moving to its capture point; that move is not a look turn.
-            // read_controls keeps tracking the cursor, so the look is zero only while the settle lasts.
-            if relock_settle > 0 {
-                c.look = Vec2::ZERO;
-                relock_settle -= 1;
-            }
             if pz.open || map_open || admin.is_open() {
                 c = Controls::default();
             }
@@ -1495,8 +1488,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
     }
 }
 
-/// Frames after the cursor is captured again (on re-lock) during which look input is ignored, about 0.15 s at 60 fps.
-const RELOCK_SETTLE_FRAMES: u32 = 9;
+
 
 /// Whether the cursor is captured for look this frame. Only the run itself captures it: the pause menu, a report, the admin
 /// menu, the fullscreen map (M, which pans and places waypoints with the pointer) and a screenshot all leave it free.
@@ -1566,21 +1558,6 @@ mod look_tests {
     const SENS: f32 = crate::config::MOUSE_SENSITIVITY;
 
     #[test]
-    fn unit_multiplier_turns_100_px_by_the_godot_amount() {
-        let screen = vec2(1920.0, 1080.0);
-        // macroquad reports a 100 px move to the right as last - current, in [-1, 1] units
-        let primary = look_radians(vec2(-100.0 * 2.0 / 1920.0, 0.0), screen, None, SENS, 1.0);
-        assert!((primary.x - 0.75).abs() < 1e-4, "primary x {}", primary.x);
-        // the fallback (no platform delta) must turn the same way
-        let fallback = look_radians(Vec2::ZERO, screen, Some(vec2(100.0, 0.0)), SENS, 1.0);
-        assert!((fallback.x - 0.75).abs() < 1e-4, "fallback x {}", fallback.x);
-        // a 100 px move down matches the primary path's vertical sign
-        let down = look_radians(vec2(0.0, -100.0 * 2.0 / 1080.0), screen, None, SENS, 1.0);
-        let down_fb = look_radians(Vec2::ZERO, screen, Some(vec2(0.0, 100.0)), SENS, 1.0);
-        assert!((down.y - down_fb.y).abs() < 1e-4);
-    }
-
-    #[test]
     fn keyboard_diagonal_is_not_faster_and_scales_with_sensitivity() {
         let straight = keyboard_look(vec2(1.0, 0.0), 1.0, MOUSE_SENSITIVITY).length();
         let diagonal = keyboard_look(vec2(1.0, 1.0), 1.0, MOUSE_SENSITIVITY).length();
@@ -1591,24 +1568,20 @@ mod look_tests {
     }
 
     #[test]
-    fn multiplier_scales_the_turn() {
-        let screen = vec2(1920.0, 1080.0);
-        let turn = look_radians(vec2(-100.0 * 2.0 / 1920.0, 0.0), screen, None, SENS, MOUSE_LOOK_MULTIPLIER);
-        assert!((turn.x - 0.75 * MOUSE_LOOK_MULTIPLIER).abs() < 1e-4, "x {}", turn.x);
-    }
-
-    #[test]
-    fn default_look_turns_a_physical_pixel_like_godot() {
-        // The target display is 2256x1504 at 175 %, so this window's logical size is 2256 / 1.75 by
-        // 1504 / 1.75. A 100 physical px move reaches it as 100 / 1.75 logical px. Godot turns
-        // sens / k per physical px, with k the window's integer scale.
+    fn platform_multiplier_turns_a_physical_pixel_like_godot() {
+        // macOS: points, Godot k = 3 -> sens / 3 per point. Windows: 175 % display, logical px, sens * 1.75 / 3.
+        use crate::config::look;
         use crate::config::{MOUSE_LOOK_DISPLAY_SCALE, MOUSE_LOOK_GODOT_WINDOW_SCALE};
+        let k = MOUSE_LOOK_GODOT_WINDOW_SCALE;
+        let c = look::cfg();
+        let mac = look::px_to_radians(vec2(100.0, 0.0), SENS, c.mouse_multiplier_macos);
+        assert!((mac.x - 100.0 * SENS / k).abs() < 1e-4, "mac {}", mac.x);
         let screen = vec2(2256.0 / MOUSE_LOOK_DISPLAY_SCALE, 1504.0 / MOUSE_LOOK_DISPLAY_SCALE);
         let logical = 100.0 / MOUSE_LOOK_DISPLAY_SCALE;
-        let turn = look_radians(vec2(-logical * 2.0 / screen.x, 0.0), screen, None, SENS, MOUSE_LOOK_MULTIPLIER);
-        let godot = 100.0 * SENS / MOUSE_LOOK_GODOT_WINDOW_SCALE;
-        assert!((turn.x - godot).abs() < 1e-4, "turn {} godot {}", turn.x, godot);
-        assert!((godot - 0.25).abs() < 1e-6, "godot {godot}");
+        let px = look::delta_px(vec2(-logical * 2.0 / screen.x, 0.0), screen, 1.0, None);
+        let win = look::px_to_radians(px, SENS, c.mouse_multiplier_windows);
+        assert!((win.x - 100.0 * SENS / k).abs() < 1e-4, "win {}", win.x);
+        assert!(c.multiplier() > 0.0);
     }
 }
 

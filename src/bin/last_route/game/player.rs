@@ -340,7 +340,8 @@ impl Player {
 
     pub fn look(&mut self, d: Vec2) {
         self.yaw -= d.x;
-        self.pitch = (self.pitch - d.y).clamp(-1.45, 1.45);
+        let lim = crate::config::look::cfg().pitch_limit_rad;
+        self.pitch = (self.pitch - d.y).clamp(-lim, lim);
     }
 
     pub fn recover_stamina(&mut self, dt: f32) {
