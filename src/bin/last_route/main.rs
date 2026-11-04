@@ -31,6 +31,9 @@ fn window_conf(stress_vsync: Option<bool>) -> macroquad::conf::Conf {
     // fitted to the screen; the screenshot / self-test captures stay 1280x720
     let fixed = std::env::args().any(|a| a == "--screenshot" || a == "--self-test");
     let (w, h) = app::platform::window_size(fixed);
+    // Metal or OpenGL: miniquad reads it once, at window creation (app/gfx.rs has the rules)
+    let gfx = app::gfx::chosen().gfx;
+    app::gfx::boot_guard_start();
     macroquad::conf::Conf {
         miniquad_conf: Conf {
             window_title: "KYTTU: The Last Route".to_owned(),
@@ -45,6 +48,10 @@ fn window_conf(stress_vsync: Option<bool>) -> macroquad::conf::Conf {
                     Some(on) => i32::from(on),
                     None => app::settings::Settings::load().swap_interval(),
                 }),
+                apple_gfx_api: match gfx {
+                    app::gfx::Gfx::Metal => macroquad::miniquad::conf::AppleGfxApi::Metal,
+                    app::gfx::Gfx::Gl => macroquad::miniquad::conf::AppleGfxApi::OpenGl,
+                },
                 ..Default::default()
             },
             ..Default::default()

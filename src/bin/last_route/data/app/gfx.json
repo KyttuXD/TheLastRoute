@@ -1,0 +1,6 @@
+{
+  "schema": "lr.gfx/1",
+  "_note": "Graphics API choice (app/gfx.rs). No Godot counterpart: the Godot project uses the engine's own renderer. boot_marker is a file in the per-user folder written before a Metal window opens and deleted after good_frames drawn frames; if it is still there at the next launch, the Metal start crashed and AUTO uses OpenGL.",
+  "boot_marker": "gfx_boot.marker",
+  "good_frames": 120
+}

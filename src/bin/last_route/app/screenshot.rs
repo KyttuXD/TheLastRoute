@@ -35,6 +35,7 @@ impl Screenshots {
                 crate::lr_info!("screenshot: {}", path.display());
                 format!("SCREENSHOT  {name}")
             }
+            None if super::platform::is_metal() => "SCREENSHOT NEEDS OPENGL (SETTINGS, GRAPHICS API)".to_owned(),
             None => "SCREENSHOT FAILED: nothing was written".to_owned(),
         };
         self.line = Some((text, SHOW_SECONDS + FADE_SECONDS));
@@ -71,6 +72,10 @@ fn save_capture() -> Option<PathBuf> {
     let dir = paths::user_dir()?.join("screenshots");
     std::fs::create_dir_all(&dir).ok()?;
     let path = unused_path(&dir, &file_stem(stamp_now()));
+    if super::platform::is_metal() {
+        crate::lr_warn!("screenshot skipped: the Metal window cannot be read back (use --gfx gl)");
+        return None;
+    }
     let mut img = get_screen_data();
     // the swapchain's alpha is not reliable, so the picture is opaque (as `save_screen` does)
     for px in img.bytes.chunks_mut(4) {

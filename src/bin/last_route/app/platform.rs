@@ -21,6 +21,19 @@ pub fn attach_console() {
     }
 }
 
+/// True when this run draws through Metal (macOS with the Metal window; see `app::gfx`). Reads what miniquad
+/// opened, so it is right once the window exists.
+pub fn is_metal() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macroquad::miniquad::window::apple_gfx_api() == macroquad::miniquad::conf::AppleGfxApi::Metal
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
 /// The design size of the game window: 1280x720.
 const DESIGN_SIZE: (i32, i32) = (1280, 720);
 

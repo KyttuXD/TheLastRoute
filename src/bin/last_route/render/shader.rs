@@ -86,12 +86,125 @@ void main() {
     gl_FragColor = vec4(mix(col, FogColor, f * f), 1.0);
 }"#;
 
+/// The Metal twin of VERTEX and FRAGMENT. It must stay line for line with them (the test below checks the
+/// constants). Two Metal differences: clip z runs 0..w where macroquad's matrices give -w..w, and macroquad packs
+/// uniform bytes tightly with no std140 padding, so every float3 is a `packed_float3` and the lamp arrays are
+/// `packed_float4`; the field order is the byte order (see `world_uniforms`).
+const MSL: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+struct Uniforms {
+    float4x4 Projection;
+    float4x4 Model;
+    float4 _Time;
+    packed_float3 CamPos;
+    packed_float3 LightPos;
+    packed_float3 LightDir;
+    float LightOn;
+    packed_float3 AmbientColor;
+    packed_float3 FogColor;
+    float FogFar;
+    packed_float4 Lamps[16];
+    packed_float4 LampColors[16];
+};
+struct Vertex {
+    float3 position [[attribute(0)]];
+    float2 texcoord [[attribute(1)]];
+    float4 color0   [[attribute(2)]];
+    float4 normal   [[attribute(3)]];
+};
+struct VOut {
+    float4 position [[position]];
+    float2 uv;
+    float4 color;
+    float3 wpos;
+    float4 nrm;
+};
+vertex VOut vertexShader(Vertex v [[stage_in]], constant Uniforms& u [[buffer(0)]]) {
+    VOut o;
+    float4 w = u.Model * float4(v.position, 1.0);
+    float4 p = u.Projection * w;
+    p.z = (p.z + p.w) * 0.5;
+    o.position = p;
+    o.wpos = w.xyz;
+    o.uv = v.texcoord;
+    o.color = v.color0 / 255.0;
+    o.nrm = v.normal;
+    return o;
+}
+fragment float4 fragmentShader(VOut in [[stage_in]], constant Uniforms& u [[buffer(0)]],
+                               texture2d<float> Texture [[texture(0)]], sampler TextureSmplr [[sampler(0)]]) {
+    float mode = in.nrm.w;
+    float2 tuv = mode < 0.5 ? fract(in.uv) : in.uv;
+    float4 tex = Texture.sample(TextureSmplr, tuv) * in.color;
+    if (mode < 2.5 && tex.a < 0.5) discard_fragment();
+    float fd = length(in.wpos - float3(u.CamPos));
+    if (mode > 1.5) {
+        float f = clamp(fd / (u.FogFar * 1.6), 0.0, 1.0);
+        return float4(mix(tex.rgb, float3(u.FogColor), f * f), mode > 2.5 ? tex.a : 1.0);
+    }
+    float3 n = normalize(in.nrm.xyz);
+    float3 light = float3(u.AmbientColor);
+    for (int i = 0; i < 16; i++) {
+        float4 lamp = float4(u.Lamps[i]);
+        float range = lamp.w;
+        if (range > 0.0) {
+            float3 d = lamp.xyz - in.wpos;
+            float dist = length(d) + 0.001;
+            float att = clamp(1.0 - dist / range, 0.0, 1.0);
+            float ndl = max(dot(n, d / dist), 0.0) * 0.7 + 0.3;
+            float4 lc = float4(u.LampColors[i]);
+            light += lc.rgb * lc.a * att * att * ndl;
+        }
+    }
+    if (u.LightOn > 0.5) {
+        float3 d = in.wpos - float3(u.LightPos);
+        float dist = length(d) + 0.001;
+        float3 dir = d / dist;
+        float c = dot(dir, float3(u.LightDir));
+        float cone = smoothstep(0.80, 0.93, c) + 0.6 * smoothstep(0.955, 0.985, c);
+        float att = clamp(1.0 - dist / 16.0, 0.0, 1.0);
+        float ndl = max(dot(n, -dir), 0.0);
+        light += float3(1.0, 0.95, 0.86) * cone * att * att * (0.25 + 0.75 * ndl) * 1.9;
+    }
+    float3 col = tex.rgb * light;
+    float f = clamp(fd / u.FogFar, 0.0, 1.0);
+    return float4(mix(col, float3(u.FogColor), f * f), 1.0);
+}
+"#;
+
+/// The world material's own uniforms, in declaration order. macroquad packs them tightly after its built-in
+/// block (Projection, Model, _Time: `BUILTIN_UNIFORM_BYTES`), so this order is the byte order of the MSL struct.
+fn world_uniforms() -> Vec<UniformDesc> {
+    vec![
+        UniformDesc::new("CamPos", UniformType::Float3),
+        UniformDesc::new("LightPos", UniformType::Float3),
+        UniformDesc::new("LightDir", UniformType::Float3),
+        UniformDesc::new("LightOn", UniformType::Float1),
+        UniformDesc::new("AmbientColor", UniformType::Float3),
+        UniformDesc::new("FogColor", UniformType::Float3),
+        UniformDesc::new("FogFar", UniformType::Float1),
+        UniformDesc::new("Lamps", UniformType::Float4).array(MAX_LAMPS),
+        UniformDesc::new("LampColors", UniformType::Float4).array(MAX_LAMPS),
+    ]
+}
+
+/// macroquad's built-in uniforms ahead of the material's own: Projection and Model (4x4 floats each) and _Time.
+#[cfg(test)]
+const BUILTIN_UNIFORM_BYTES: usize = 64 + 64 + 16;
+
 pub fn load_world_material() -> Material {
-    load_material(
+    // macroquad picks its own shaders by backend; ours needs the matching source
+    let source = if crate::app::platform::is_metal() {
+        ShaderSource::Msl { program: MSL }
+    } else {
         ShaderSource::Glsl {
             vertex: VERTEX,
             fragment: FRAGMENT,
-        },
+        }
+    };
+    load_material(
+        source,
         MaterialParams {
             pipeline_params: PipelineParams {
                 depth_write: true,
@@ -103,17 +216,7 @@ pub fn load_world_material() -> Material {
                 )),
                 ..Default::default()
             },
-            uniforms: vec![
-                UniformDesc::new("CamPos", UniformType::Float3),
-                UniformDesc::new("LightPos", UniformType::Float3),
-                UniformDesc::new("LightDir", UniformType::Float3),
-                UniformDesc::new("LightOn", UniformType::Float1),
-                UniformDesc::new("AmbientColor", UniformType::Float3),
-                UniformDesc::new("FogColor", UniformType::Float3),
-                UniformDesc::new("FogFar", UniformType::Float1),
-                UniformDesc::new("Lamps", UniformType::Float4).array(MAX_LAMPS),
-                UniformDesc::new("LampColors", UniformType::Float4).array(MAX_LAMPS),
-            ],
+            uniforms: world_uniforms(),
             ..Default::default()
         },
     )
@@ -300,5 +403,65 @@ mod tests {
         let got = cached_nearest_lamps(moved, &b);
         assert_eq!(got, nearest_lamps(moved, &b));
         assert_eq!(got.pos[0].w, 1.0);
+    }
+
+    /// The byte size of an MSL field type used in the Uniforms struct.
+    fn msl_size(ty: &str) -> usize {
+        match ty {
+            "float4x4" => 64,
+            "float4" | "packed_float4" => 16,
+            "packed_float3" => 12,
+            "float" => 4,
+            other => panic!("unexpected uniform type {other}"),
+        }
+    }
+
+    #[test]
+    fn msl_uniform_block_matches_macroquad_byte_layout() {
+        // the byte offsets macroquad uses: the built-ins, then the material's uniforms packed in order
+        let mut want: Vec<(String, usize)> = vec![("Projection".into(), 0), ("Model".into(), 64), ("_Time".into(), 128)];
+        let mut at = BUILTIN_UNIFORM_BYTES;
+        for u in world_uniforms() {
+            want.push((u.name.clone(), at));
+            at += u.uniform_type.size() * u.array_count;
+        }
+        assert_eq!(at, 724, "total uniform bytes");
+        let off = |n: &str| want.iter().find(|(k, _)| k == n).map(|(_, o)| *o);
+        assert_eq!(
+            [off("CamPos"), off("LightPos"), off("LightDir"), off("LightOn"), off("AmbientColor"), off("FogColor"), off("FogFar"), off("Lamps"), off("LampColors")],
+            [144, 156, 168, 180, 184, 196, 208, 212, 468].map(Some)
+        );
+        // the MSL struct, walked field by field, must land every field on the same offset with no padding
+        let body = MSL.split("struct Uniforms {").nth(1).and_then(|b| b.split("};").next()).expect("Uniforms struct");
+        let mut got: Vec<(String, usize)> = Vec::new();
+        let mut at = 0;
+        for line in body.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let line = line.trim_end_matches(';');
+            let (ty, name) = line.split_once(' ').expect("type and name");
+            assert!(ty != "float3", "bare float3 is 16-byte aligned in MSL; use packed_float3: {line}");
+            let (name, count) = match name.split_once('[') {
+                Some((n, c)) => (n, c.trim_end_matches(']').parse::<usize>().expect("array length")),
+                None => (name, 1),
+            };
+            got.push((name.to_string(), at));
+            at += msl_size(ty) * count;
+        }
+        assert_eq!(got, want);
+        assert_eq!(at, 724);
+        // the arrays of 16 in the MSL are MAX_LAMPS
+        assert_eq!(MAX_LAMPS, 16);
+    }
+
+    #[test]
+    fn msl_and_glsl_share_the_same_lighting_constants() {
+        for k in ["0.80", "0.93", "0.955", "0.985", "16.0", "1.9", "0.001", "0.7 + 0.3", "0.25 + 0.75", "(FogFar * 1.6)", "1.0, 0.95, 0.86", "0.6 *"] {
+            let msl_k = k.replace("FogFar", "u.FogFar");
+            assert!(FRAGMENT.contains(k), "GLSL lost {k}");
+            assert!(MSL.contains(&msl_k), "MSL lost {k}");
+        }
+        // the modes and the lamp loop bound
+        for k in ["mode < 0.5", "mode < 2.5", "mode > 1.5", "mode > 2.5", "i < 16"] {
+            assert!(FRAGMENT.contains(k) && MSL.contains(k), "{k}");
+        }
     }
 }

@@ -218,7 +218,7 @@ impl SkinPreview {
             area.x,
             area.y,
             WHITE,
-            DrawTextureParams { dest_size: Some(vec2(area.w, area.h)), flip_y: true, ..Default::default() },
+            DrawTextureParams { dest_size: Some(vec2(area.w, area.h)), flip_y: !crate::app::platform::is_metal(), ..Default::default() },
         );
     }
 

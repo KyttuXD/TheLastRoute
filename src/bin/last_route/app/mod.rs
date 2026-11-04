@@ -14,6 +14,7 @@
 //!   LR_SHOT_DEATH=...       with a run: moment | card (a capture by the floor's hunter)
 
 pub use crate::shared::{assets, checkpoint, paths, skins};
+pub mod gfx;
 pub mod log;
 pub mod pacing;
 pub mod perf;
@@ -110,7 +111,8 @@ pub fn render_play_with(g: &Game, a: &Assets, mat: &Material, t: &Targets, remot
     clear_background(BLACK);
     let p = DrawTextureParams {
         dest_size: Some(vec2(screen_width(), screen_height())),
-        flip_y: true,
+        // OpenGL render targets are bottom-up; Metal's are top-down
+        flip_y: !platform::is_metal(),
         ..Default::default()
     };
     draw_texture_ex(&t.scene.texture, 0.0, 0.0, WHITE, p.clone());
@@ -236,8 +238,13 @@ fn read_controls(mouse_last: &mut Option<Vec2>, grabbed: bool, sens: f32, shop: 
     c
 }
 
-/// Saves the window's current picture (the framebuffer reads bottom-up).
+/// Saves the window's current picture (the framebuffer reads bottom-up). Under Metal there is no read-back
+/// (miniquad's Metal backend and macroquad's `grab_screen` are OpenGL only), so nothing is written and the log says so.
 pub fn save_screen(path: &str) {
+    if platform::is_metal() {
+        crate::lr_warn!("screenshot {path} skipped: the Metal window cannot be read back (use --gfx gl)");
+        return;
+    }
     if let Some(dir) = std::path::Path::new(path).parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -561,6 +568,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
 
     loop {
         frame += 1;
+        gfx::boot_guard_tick();
         // a stress run takes --stress-vsync without touching the saved setting
         let vsync = stress_vsync.unwrap_or(settings.vsync);
         if vsync_applied != Some(vsync) {
