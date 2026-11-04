@@ -63,7 +63,8 @@ jobs:
       - name: Build time to the run summary
         if: always()
         shell: bash
-        run: echo "- windows: $(( $(date +%s) - JOB_START )) s" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "- windows: $(( $(date +%s) - JOB_START )) s" >> "$GITHUB_STEP_SUMMARY"
 
   linux:
     runs-on: ubuntu-22.04
@@ -111,7 +112,8 @@ jobs:
       - name: Build time to the run summary
         if: always()
         shell: bash
-        run: echo "- linux: $(( $(date +%s) - JOB_START )) s" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "- linux: $(( $(date +%s) - JOB_START )) s" >> "$GITHUB_STEP_SUMMARY"
 
   # One macOS slice per job, in parallel. Each job hands its .app bundles to macos-universal through
   # a run-scoped Actions cache, not an artifact: artifact storage is full on this account, and a
@@ -148,7 +150,8 @@ jobs:
       - name: Build time to the run summary
         if: always()
         shell: bash
-        run: echo "- macos-intel: $(( $(date +%s) - JOB_START )) s" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "- macos-intel: $(( $(date +%s) - JOB_START )) s" >> "$GITHUB_STEP_SUMMARY"
 
   # The Apple Silicon slice. macos-15 is the Apple Silicon image.
   macos-arm64:
@@ -181,7 +184,8 @@ jobs:
       - name: Build time to the run summary
         if: always()
         shell: bash
-        run: echo "- macos-arm64: $(( $(date +%s) - JOB_START )) s" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "- macos-arm64: $(( $(date +%s) - JOB_START )) s" >> "$GITHUB_STEP_SUMMARY"
 
   # Joins the two slices into the universal zips, then uploads and publishes them. Publishing comes
   # after the upload steps in this job.
@@ -234,6 +238,7 @@ jobs:
       - name: Build time to the run summary
         if: always()
         shell: bash
-        run: echo "- macos-universal: $(( $(date +%s) - JOB_START )) s" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "- macos-universal: $(( $(date +%s) - JOB_START )) s" >> "$GITHUB_STEP_SUMMARY"
 
 # The universal zip holds the Intel (x86_64) slice too, so kt-mba takes that file.
