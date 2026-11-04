@@ -103,14 +103,10 @@ pub fn water_depth_at(grid: &Grid, x: i32, y: i32) -> f32 {
     depth_of_code(grid[y as usize][x as usize], params())
 }
 
-/// Metres of water over the bed on a storey: the second level (`LOWER_LEVEL`) has its own depth in
-/// `data/regions/sewer2.json`; every other sewer storey uses the Standard depth.
-pub fn full_depth_for_level(level: i32) -> f32 {
-    if level == super::core::LOWER_LEVEL {
-        super::level2::rules().water_depth as f32
-    } else {
-        params().full_depth()
-    }
+/// Metres of water over the bed on a storey: the same on every sewer storey (Godot has one `CHANNEL_DEPTH` and one
+/// `WATER_SURFACE`), so the swim physics, the hunters and the landing agree with the drawn bed.
+pub fn full_depth_for_level(_level: i32) -> f32 {
+    params().full_depth()
 }
 
 /// `water_depth_at` for a chunk of the given storey.
@@ -189,12 +185,13 @@ mod tests {
     }
 
     #[test]
-    fn the_second_level_reads_its_own_water_depth() {
+    fn every_sewer_storey_has_the_same_water_depth_as_the_drawn_bed() {
         use crate::world::route::sewer::core::{LEVEL, LOWER_LEVEL};
         assert_eq!(full_depth_for_level(LEVEL), params().full_depth());
-        assert_eq!(full_depth_for_level(LOWER_LEVEL), super::super::level2::rules().water_depth as f32);
+        assert_eq!(full_depth_for_level(LOWER_LEVEL), params().full_depth());
+        assert_eq!(full_depth_for_level(LOWER_LEVEL), params().channel_depth + params().water_surface, "render bed = physics");
         let g = grid_with(&[(3, 3, WATER)]);
-        assert_eq!(water_depth_at_level(&g, 3, 3, LOWER_LEVEL), full_depth_for_level(LOWER_LEVEL));
+        assert_eq!(water_depth_at_level(&g, 3, 3, LOWER_LEVEL), params().full_depth());
         assert_eq!(water_depth_at_level(&g, 4, 3, LOWER_LEVEL), 0.0);
         assert_eq!(water_depth_at_level(&g, 3, 3, LEVEL), params().full_depth());
     }

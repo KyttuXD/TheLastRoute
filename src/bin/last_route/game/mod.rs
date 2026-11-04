@@ -805,9 +805,11 @@ impl Game {
         if self.ladder.is_some() {
             // a climb is continuous in y: the label follows the body's height every frame, like a walked flight
             self.advance_ladder(dt, c, content, catalog);
+            self.update_water_sink(dt, false);
             self.walk_relabel(content, catalog);
         } else if self.p.hidden.is_some() {
             self.update_hidden(dt, c, &prof, sounds);
+            self.update_water_sink(dt, false);
         } else {
             self.hide_check = None;
             let heater_on = self.heater_running();
@@ -824,6 +826,7 @@ impl Game {
             self.p
                 .update_movement(dt, c, &prof, &self.fac, stack, &mut self.meters, sounds);
             self.update_swim(dt, water, admin.god);
+            self.update_water_sink(dt, true);
             self.ladder_walk_in();
             self.walk_relabel(content, catalog);
             if admin.noclip {

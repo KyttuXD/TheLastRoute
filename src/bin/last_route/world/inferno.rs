@@ -44,6 +44,12 @@ pub struct InfernoRules {
     pub crevices_max: usize,
     pub tier_ledge_frac: f32,
     pub tier_basin_frac: f32,
+    /// Height of every walkable cell relative to the level floor (Godot's Inferno floor is flat).
+    pub walk_height: f32,
+    /// Lava surface height (Godot LAVA_Y -0.7 x 1.25). Not drawn yet.
+    pub lava_y: f32,
+    /// Floor of a lava pit (Godot BASIN_Y -1.6 x 1.25). Lava cells are closed and never walkable. Not drawn yet.
+    pub lava_basin_y: f32,
 }
 
 impl InfernoRules {
@@ -71,6 +77,9 @@ impl InfernoRules {
             crevices_max: i(&v, "crevices_max").max(0) as usize,
             tier_ledge_frac: f(&v, "tier_ledge_frac") as f32,
             tier_basin_frac: f(&v, "tier_basin_frac") as f32,
+            walk_height: f(&v["floor"], "walk_height") as f32,
+            lava_y: f(&v["floor"], "lava_y") as f32,
+            lava_basin_y: f(&v["floor"], "lava_basin_y") as f32,
         }
     }
 
@@ -454,6 +463,29 @@ mod tests {
     }
 
     #[test]
+    fn the_walkable_floor_is_flat_and_only_lava_sits_in_the_pit() {
+        let r = InfernoRules::builtin();
+        assert_eq!((r.walk_height, r.lava_y, r.lava_basin_y), (0.0, -0.875, -2.0), "Godot -0.7 and -1.6, times 1.25");
+        assert!(r.lava_basin_y < r.lava_y && r.lava_y < r.walk_height);
+        let mut lava_seen = 0;
+        for world in WORLDS {
+            for (cx, cy) in [(0, 0), (1, -1), (-2, 2), (2, 1)] {
+                let k = ChunkKey { cx, cy, level: INFERNO_LEVEL };
+                let inf = InfernoChunk::carve(world, k);
+                assert!(inf.caves.is_some(), "the shipped data carves caves");
+                for c in inf.open_cells() {
+                    assert_eq!(inf.height_at(c), r.walk_height, "{world} {cx},{cy}: {c:?} is not flat");
+                }
+                for l in inf.lava_cells() {
+                    assert_eq!(inf.height_at(l), r.lava_basin_y);
+                    lava_seen += 1;
+                }
+            }
+        }
+        assert!(lava_seen > 0, "the sample has lava");
+    }
+
+    #[test]
     fn the_inferno_floor_opens_the_caverns_and_keeps_the_up_stair() {
         let cat = Catalog::load();
         let loot = LootTables::default();
@@ -542,16 +574,15 @@ impl InfernoChunk {
         Tier::Ledge
     }
 
-    /// Floor height in metres for the cell's tier.
+    /// Floor height in metres relative to the level floor, as in Godot: every walkable cell is flat
+    /// (`floor.walk_height`), only a lava cell sits down at the pit floor (`floor.lava_basin_y`, never walkable).
+    /// The tiers are for decoration only and no longer drop the floor.
     pub fn height_at(&self, c: Cell) -> f32 {
-        if self.caves.is_none() {
-            return self.inferno.height_at(c);
-        }
-        let d = self.inferno.rules.basin_depth;
-        match self.tier_at(c) {
-            Tier::Ledge => 0.0,
-            Tier::Slope => -d * 0.5,
-            Tier::Basin => -d,
+        let r = &self.inferno.rules;
+        if self.is_lava(c) {
+            r.lava_basin_y
+        } else {
+            r.walk_height
         }
     }
 }

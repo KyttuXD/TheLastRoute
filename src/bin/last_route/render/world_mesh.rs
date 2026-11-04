@@ -16,7 +16,7 @@ use crate::content::props::{stable_index, visual_y};
 use crate::content::regions::{RegionDef, RegionSafeLight};
 use crate::content::Content;
 use crate::world::facility::{Cell, DeckKind, DoorDraw, Prop, Stair};
-use crate::world::inferno::Inferno;
+use crate::world::inferno::InfernoChunk;
 use crate::world::infinite::{ChunkKey, CHUNK, INFERNO_LEVEL, WINDOW};
 use crate::world::route::sewer::core::{Grid, LEVEL as SEWER_LEVEL, LOWER_LEVEL as SEWER_LOWER_LEVEL, WATER};
 use crate::world::{region_texture, Facility, TEXTURE_SETS};
@@ -1111,7 +1111,7 @@ fn door_instances(f: &Facility, assets: &Assets, content: &Content) -> Vec<DoorI
 struct InfernoFloor {
     seed: String,
     origin: (i32, i32),
-    chunks: HashMap<(i32, i32), Inferno>,
+    chunks: HashMap<(i32, i32), InfernoChunk>,
 }
 
 impl InfernoFloor {
@@ -1125,29 +1125,41 @@ impl InfernoFloor {
         })
     }
 
-    fn cell(&mut self, x: i32, y: i32) -> f32 {
+    /// The floor height of a cell and whether it is lava (a closed pit cell, which the floor and walls never follow down).
+    fn cell(&mut self, x: i32, y: i32) -> (f32, bool) {
         let (gx, gy) = (x + self.origin.0, y + self.origin.1);
         let key = (gx.div_euclid(CHUNK), gy.div_euclid(CHUNK));
-        let seed = &self.seed;
-        self.chunks
-            .entry(key)
-            .or_insert_with(|| Inferno::carve(seed, ChunkKey { cx: key.0, cy: key.1, level: INFERNO_LEVEL }))
-            .height_at(Cell::new(gx.rem_euclid(CHUNK), gy.rem_euclid(CHUNK)))
+        let c = Cell::new(gx.rem_euclid(CHUNK), gy.rem_euclid(CHUNK));
+        let chunk = self.carve(key);
+        (chunk.height_at(c), chunk.is_lava(c))
     }
 
-    /// The height of the grid corner (`i`, `j`): the mean of the four cells that share it.
+    /// The height of the grid corner (`i`, `j`): the mean of the walkable cells that share it (flat, as in Godot; the
+    /// carve the open cells use). A corner of lava cells only keeps the walk height.
     fn corner(&mut self, i: i32, j: i32) -> f32 {
-        (self.cell(i - 1, j - 1) + self.cell(i, j - 1) + self.cell(i - 1, j) + self.cell(i, j)) / 4.0
+        let (mut sum, mut n) = (0.0, 0);
+        for (x, y) in [(i - 1, j - 1), (i, j - 1), (i - 1, j), (i, j)] {
+            let (h, lava) = self.cell(x, y);
+            if !lava {
+                sum += h;
+                n += 1;
+            }
+        }
+        if n == 0 {
+            crate::world::inferno::InfernoRules::builtin().walk_height
+        } else {
+            sum / n as f32
+        }
     }
 }
 
 impl InfernoFloor {
     /// The carve of the chunk `key`, made once.
-    fn carve(&mut self, key: (i32, i32)) -> &Inferno {
+    fn carve(&mut self, key: (i32, i32)) -> &InfernoChunk {
         let seed = &self.seed;
         self.chunks
             .entry(key)
-            .or_insert_with(|| Inferno::carve(seed, ChunkKey { cx: key.0, cy: key.1, level: INFERNO_LEVEL }))
+            .or_insert_with(|| InfernoChunk::carve(seed, ChunkKey { cx: key.0, cy: key.1, level: INFERNO_LEVEL }))
     }
 }
 
@@ -1902,6 +1914,20 @@ mod tests {
             color: [0.5, 0.2, 0.1],
             floor_y: -0.4,
             phase: 0.0,
+        }
+    }
+
+    #[test]
+    fn the_drawn_inferno_floor_is_flat_on_every_corner_of_an_open_cell() {
+        let r = crate::world::inferno::InfernoRules::builtin();
+        let mut floor = InfernoFloor { seed: "ROOM-FLAT-1".into(), origin: (0, 0), chunks: HashMap::new() };
+        let key = ChunkKey { cx: 0, cy: 0, level: INFERNO_LEVEL };
+        let open = crate::world::inferno::InfernoChunk::carve("ROOM-FLAT-1", key).open_cells();
+        assert!(!open.is_empty());
+        for c in open {
+            for (i, j) in [(c.x, c.y), (c.x + 1, c.y), (c.x, c.y + 1), (c.x + 1, c.y + 1)] {
+                assert_eq!(floor.corner(i, j), r.walk_height, "corner {i},{j} of open cell {c:?}");
+            }
         }
     }
 

@@ -315,7 +315,7 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [x] lr_server: some helpers are only used by tests and are gated with cfg(test); delete the ones nothing needs
 - [x] God mode leaked to other players in a room (fixed 2026-11-03)
 - [ ] Peek lean is not visually confirmed: hunter hallway peeking works in the tests, but no screenshot has shown the lean yet
-- [ ] Inferno floor heights are not followed by the player: the player stays at the base floor height in the Inferno region
+- [x] Inferno floor heights: Godot's Inferno floor is flat, so the player standing at the base height is parity and the Rust-only drop (0 / -0.6 / -1.2 m, drawn from the old carve) is gone; the drawn floor, walls and decorations read the carve the open cells use (`InfernoChunk::height_at`: walkable 0, lava `floor.lava_basin_y`, data/inferno.json) (done 2026-11-04). Not Inferno parity yet: layout, ceilings, lava pit render and cages are open (see the lava pit line below)
 - [x] Stairwell with only 2 walk rows at seed 40490470, chunk (3,2): check that the flight is walkable end to end (covered by the contract test `the_todo_stairwell_at_seed_40490470_chunk_3_2_is_walkable_end_to_end` in world/stack_contract_tests.rs, stairs phase 1)
 
 ## Performance and FPS
@@ -1001,13 +1001,14 @@ Source: the 2026-11-04 repo audit. Items that need a design decision are in `doc
 - [x] Waterfall plunge and swim (`player_controller_3d.gd` 1154-1229, swim speed 1.5 at 357) into `game/player.rs` (done, phase 7: physical free fall, data/swim/fall.json)
 - [x] Flood wading: per-cell depth, speed, noise and tiring (`player_controller_3d.gd` 336-338, 365-372, 1237-1256) (done 2026-11-04: game/swim.rs, data/swim/movement.json)
 - [x] Soaked status and drip noise (`player_controller_3d.gd` 362-364, 1255 on): 30 s, noise scale 1.45, drip every 1.1-2.4 s (done 2026-11-04: soaked 30 s, noise x1.45 in game/swim.rs)
-- [ ] Water depth and surface height in the sewer mesh and collision (`sewer_route_generator.gd` 95-96; Rust `world/route/sewer/core.rs` 47-53)
+- [x] Water depth and surface height in the sewer mesh and collision (`sewer_route_generator.gd` 95-96; Rust `world/route/sewer/core.rs` 47-53) (done 2026-11-04: every sewer storey has the same depth, level -2 no longer has its own 1.4 m, so render bed and swim physics agree; the eye sinks in channel water, data/swim/camera.json, docs/SEWERS.md; the sewer ceiling is 4.0 m = Godot 3.2 x 1.25, shafts and flights are lined through the 1 m slab. Water numbers stay Godot's unscaled 1.0 / -0.3, they are player-relative there)
 - [ ] Test flood reach 12 and cap 160 cells (`sewer_route_generator.gd` 910-911; `world/route/sewer/breach.rs` 49-50)
 - [ ] Wire `data/loot/sewer.json` into the pickup roll (`sewer_route_generator.gd` 662)
 - [ ] Sewer level ambience bed mapping (`game/audio/level_ambience.gd`) and the missing lava loop (`audio/emitter_loops.gd` 29, 44-45)
 - [ ] Check sewer extra relay chance .55 (`sewer_route_generator.gd` 27) and the hunter affinity lists (`sewer_route_generator.gd` 388 vs `world/route/sewer/hunters.rs` 43-45)
-- [ ] Inferno lava pits and the player following inferno floor heights (`world/inferno.rs`, `Inferno::height_at`) (update 2026-11-04: inferno caves are in; lava pits still to check)
+- [ ] Inferno lava pits and ceilings (`world/inferno.rs`): the floor is flat as in Godot (done) and the data numbers are in data/inferno.json (`floor.lava_y` -0.875, `floor.lava_basin_y` -2.0 = Godot -0.7 and -1.6 x 1.25), but nothing draws a lava surface, basin or lip walls yet, and ceilings are a flat 5.0 m. Godot ceilings x 1.25 for the later work: tunnels 3.875-4.625 (3.1 + 0.2 x pick(0..3)), chambers and halls 4.875, seam ring 4.25 (`streamed_facility_view_3d.gd` 1244-1259, `inferno_pit_view.gd` 9-10); the Inferno layout (margin, hall width, carve) is also not a port of `inferno_caverns.gd`
 - [ ] Inferno cages and spider lair, with the -3 spider spawn rule (`config/secret_creatures.gd`)
+- [ ] Water camera leftovers: `grab::drive` (render/scene.rs) still reads the standing eye, so a grabbed runner in water keeps the standing eye; a pipe flood over dry floor gives no sink with the shipped data (`flood_sink_fraction` 0); the sewer wall collider is still the full storey (Godot 3.9 x 1.25) and the under-trench vault (Godot 2.9 x 1.25) is not drawn; no rendered check of the sunk eye or the 4 m ceiling was done
 - [~] Level-0 catwalk geometry and the see-through breakables list (`streamed_hunter_navigation.gd` 548-576) (update 2026-11-04: catwalks above level 0 are in; the see-through breakables list is open)
 - [ ] Shared HardAbilities: burst, intercept, slam (`hunters/ai/hard_abilities.gd` 55, 60, 65, 179); confirm the Nyxie data file matches 15-19, 51-53
 - [ ] Check hunter constants against Godot: brain stuck/centre/give-up (`hunter_brain.gd` 30-43), hearing and sight (`hunter_seats.gd` 14-16), void sight 2.5 (`void_cyan_gimmick.gd` 7), relay rush 7 and delay (`hunter_director.gd` 10-13, 39)

@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 use crate::world::facility::Cell;
 use crate::world::infinite::{ChunkKey, CHUNK};
-use crate::world::inferno::{Inferno, Tier};
+use crate::world::inferno::{InfernoChunk, Tier};
 
 const PATH: &str = "render/inferno.json";
 
@@ -89,7 +89,7 @@ impl InfernoDeco {
     }
 
     /// Places every piece for a carved chunk. Deterministic from `seed` and `key`; nothing lands on a closed cell.
-    pub fn place(&self, seed: &str, key: ChunkKey, inf: &Inferno) -> Vec<Deco> {
+    pub fn place(&self, seed: &str, key: ChunkKey, inf: &InfernoChunk) -> Vec<Deco> {
         let mut out: Vec<Deco> = Vec::new();
         let open = inf.open_cells();
         for (kind, rule) in &self.rules {
@@ -305,7 +305,7 @@ pub fn window_decos(deco: &InfernoDeco, seed: &str, center: (i32, i32)) -> Vec<P
     for dy in -1..=1 {
         for dx in -1..=1 {
             let key = ChunkKey { cx: center.0 + dx, cy: center.1 + dy, level: crate::world::infinite::INFERNO_LEVEL };
-            let inf = Inferno::carve(seed, key);
+            let inf = InfernoChunk::carve(seed, key);
             let (ox, oy) = (((dx + 1) * CHUNK) as f32, ((dy + 1) * CHUNK) as f32);
             for d in deco.place(seed, key, &inf) {
                 let pos = [ox + d.cell.x as f32 + 0.5 + d.offset[0], d.floor_y, oy + d.cell.y as f32 + 0.5 + d.offset[1]];
@@ -418,8 +418,8 @@ mod tests {
         ChunkKey { cx, cy, level: INFERNO_LEVEL }
     }
 
-    fn placed(deco: &InfernoDeco, cx: i32, cy: i32) -> (Inferno, Vec<Deco>) {
-        let inf = Inferno::carve(SEED, key(cx, cy));
+    fn placed(deco: &InfernoDeco, cx: i32, cy: i32) -> (InfernoChunk, Vec<Deco>) {
+        let inf = InfernoChunk::carve(SEED, key(cx, cy));
         let d = deco.place(SEED, key(cx, cy), &inf);
         (inf, d)
     }
@@ -449,7 +449,9 @@ mod tests {
             assert_eq!((x.kind, x.cell, x.size_m), (y.kind, y.cell, y.size_m));
         }
         for d in &a {
-            assert!(inf.is_open(d.cell));
+            assert!(inf.open_cells().contains(&d.cell));
+            assert_eq!(d.floor_y, inf.height_at(d.cell), "the piece sits on the same flat floor the open cells use");
+            assert_eq!(d.floor_y, crate::world::inferno::InfernoRules::builtin().walk_height);
             assert!(d.cell.x < CHUNK && d.cell.y < CHUNK);
         }
     }
@@ -495,7 +497,7 @@ mod tests {
         assert_ne!(off_text, text);
         let off = InfernoDeco::parse(&off_text).unwrap();
         let on = InfernoDeco::parse(&text).unwrap();
-        let inf = Inferno::carve(SEED, key(0, 0));
+        let inf = InfernoChunk::carve(SEED, key(0, 0));
         let count = |d: &InfernoDeco| d.place(SEED, key(0, 0), &inf).iter().filter(|x| x.kind == DecoKind::Stalactite).count();
         assert_eq!(count(&off), 0);
         assert!(count(&on) > 0);

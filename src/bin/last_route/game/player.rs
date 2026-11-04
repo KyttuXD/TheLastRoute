@@ -98,6 +98,8 @@ pub struct Player {
     pub yaw: f32,
     pub pitch: f32,
     pub crouch_t: f32,
+    /// Metres the eye is lowered while the runner stands in sewer water (0 = dry); the feet stay on the walkway.
+    pub water_sink: f32,
     pub crouching: bool,
     pub sprinting: bool,
     pub moving: bool,
@@ -160,6 +162,7 @@ impl Player {
             yaw: 0.0,
             pitch: 0.0,
             crouch_t: 0.0,
+            water_sink: 0.0,
             crouching: false,
             sprinting: false,
             moving: false,
@@ -246,6 +249,7 @@ impl Player {
     pub fn place(&mut self, start: (f32, f32)) {
         self.pos = (start.0, start.1 + 1.0);
         self.feet_y = 0.0;
+        self.water_sink = 0.0;
         self.grounded = true;
         self.height = 0.0;
         self.vy = 0.0;
@@ -272,9 +276,10 @@ impl Player {
         self.floor_y + self.height
     }
 
-    /// Absolute y of the eye without head bob: `y()` plus the jump and the standing or crouched eye height.
+    /// Absolute y of the eye without head bob: `y()` plus the jump and the standing or crouched eye height, minus the
+    /// water sink.
     pub fn eye_y(&self) -> f32 {
-        self.y() + self.feet_y + self.eye_height()
+        self.y() + self.feet_y + self.eye_height() - self.water_sink
     }
 
     /// Puts the feet at absolute `y` on the spot (a ladder holds the body on its shaft): the height absorbs the difference to
@@ -816,6 +821,22 @@ mod tests {
         assert_eq!(p.y(), -5.0 + 0.75);
         p.feet_y = 0.2;
         assert!((p.eye_y() - (p.y() + 0.2 + p.eye_height())).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_water_sink_lowers_only_the_eye() {
+        let mut p = Player::new((1.0, 1.0));
+        p.floor_y = -5.0;
+        let dry = p.eye_y();
+        assert_eq!(p.water_sink, 0.0);
+        p.water_sink = 0.8;
+        assert!((p.eye_y() - (p.y() + p.feet_y + p.eye_height() - 0.8)).abs() < 1e-6);
+        assert!((dry - p.eye_y() - 0.8).abs() < 1e-6, "the eye drops by the sink");
+        assert_eq!(p.y(), -5.0, "the feet stay on the walkway");
+        // the hunters' sight line reads `eye_y() - y()`: the lowered eye
+        assert!((p.eye_y() - p.y() - (p.eye_height() - 0.8)).abs() < 1e-6);
+        p.place((2.0, 2.0));
+        assert_eq!(p.water_sink, 0.0, "placing the runner dries the eye");
     }
 
     #[test]
