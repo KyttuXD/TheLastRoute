@@ -87,7 +87,7 @@ impl Game {
             hidden: self.p.hidden.is_some(),
             hiding_spot: self.p.hidden,
             in_safe_zone: self.in_safe_zone(),
-            noise: self.p.noise,
+            noise: self.p.noise * self.swim.noise_scale(&self.swim_cfg),
             flashlight_on: self.p.flashlight_on,
             lamp_charge: self.p.lamp,
             sprinting: self.p.sprinting && self.p.noise > 0.0,
@@ -160,6 +160,7 @@ impl Game {
                 &bot_pos,
                 |a, b| self.fac.has_line_of_sight(a, b),
             );
+            self.hunters[i].target_is_bot = chosen.is_some();
             let hunter_target = match chosen {
                 Some(b) => &bot_targets[b],
                 None => &target,
@@ -262,7 +263,7 @@ impl Game {
                     *d = v;
                 }
             }
-            Event::Mimic { rare: _ } => self.say("...did you hear that?"),
+            Event::Mimic { rare: _ } => {}
             Event::TakeBattery(i) => {
                 if let Some(t) = self.batteries_taken.get_mut(i) {
                     *t = true;
@@ -486,6 +487,36 @@ mod remote_hunter_tests {
         g.relays_collected = 1;
         g.ensure_hunters(&content);
         (g, content, catalog)
+    }
+
+    #[test]
+    fn a_hunter_chasing_a_bot_raises_no_danger_and_one_chasing_the_runner_does() {
+        let (mut g, _, _) = run();
+        assert!(!g.hunters.is_empty());
+        g.hunters[0].active = true;
+        g.hunters[0].state = State::Chase;
+        g.hunters[0].pos = (g.p.pos.0 + 2.0, g.p.pos.1);
+        g.hunters[0].gimmick = crate::hunters::gimmicks::Gimmick::None;
+        let audio = |g: &Game| -> (Option<f64>, bool) {
+            let list: Vec<crate::audio::world::HunterAudio> = g
+                .hunters
+                .iter()
+                .map(|h| crate::audio::world::HunterAudio {
+                    id: &h.def.id, pos: h.pos, active: h.active, chasing: h.state == State::Chase, idle: false,
+                    direct_visible: true, winded: false, stunned: false, in_vent: false,
+                    nyxie_empty_wake: false, glyra_humming: false, targets_runner: !h.target_is_bot,
+                })
+                .collect();
+            crate::audio::world::runner_danger_inputs(g.p.pos, &list)
+        };
+        g.hunters[0].target_is_bot = true;
+        let (near, pursued) = audio(&g);
+        assert!(near.is_none() && !pursued);
+        assert_eq!(g.danger(), 0.0);
+        g.hunters[0].target_is_bot = false;
+        let (near, pursued) = audio(&g);
+        assert!(near.is_some() && pursued);
+        assert!(g.danger() > 0.75);
     }
 
     #[test]

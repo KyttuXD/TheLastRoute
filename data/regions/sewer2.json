@@ -1,0 +1,31 @@
+{
+	"schema": "lr.region/1",
+	"id": "sewer2",
+	"hall_floor": [
+		"stone0",
+		"stone1"
+	],
+	"hall_runner": false,
+	"room_default_floor": [
+		"concrete0",
+		"concrete1"
+	],
+	"room_roles": [],
+	"layout": {
+		"level": -2,
+		"tunnel_half": 3,
+		"channel_half": 2,
+		"junction_half": 5,
+		"landing_grow": 1,
+		"exit_half": 1,
+		"water_depth": 1.4,
+		"side_pool_chance": 0.5,
+		"side_pool_size": [5, 5],
+		"side_pool_centers": [[9, 9], [35, 9], [9, 35], [35, 35]],
+		"drops": [
+			{ "id": "west", "offset": [-2, 0] },
+			{ "id": "centre", "offset": [0, 0] },
+			{ "id": "east", "offset": [2, 0] }
+		]
+	}
+}

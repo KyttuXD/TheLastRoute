@@ -326,6 +326,9 @@ pub struct Brain {
     pub peek_chance_override: Option<f32>,
     /// Search points picked during this chase (newest last), for `unchecked_first`.
     searched: Vec<(f32, f32)>,
+    /// The host chose a player bot (not the runner) as this hunter's target this frame; such a hunter feeds no
+    /// danger readout, heartbeat or chase cue.
+    pub target_is_bot: bool,
 }
 
 const ARRIVAL_DISTANCE: f32 = 0.65;
@@ -400,6 +403,7 @@ impl Brain {
             peek_corner_cell: None,
             peek_chance_override: None,
             searched: Vec::new(),
+            target_is_bot: false,
         }
     }
 

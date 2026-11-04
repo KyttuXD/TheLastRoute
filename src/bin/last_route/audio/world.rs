@@ -45,6 +45,53 @@ pub struct HunterAudio<'a> {
     pub nyxie_empty_wake: bool,
     /// Glyra: her box is PLAYING (`Glyra::playing()`). Ignored for the others.
     pub glyra_humming: bool,
+    /// The hunter's target is the runner (not a bot or fake player). Only these feed the danger readout, the
+    /// heartbeat and the chase cue.
+    pub targets_runner: bool,
+}
+
+/// (nearest runner-targeting active hunter distance, pursued) for the heartbeat and the chase cue.
+pub fn runner_danger_inputs(pos: (f32, f32), hunters: &[HunterAudio]) -> (Option<f64>, bool) {
+    let mut nearest = f32::INFINITY;
+    let mut pursued = false;
+    for h in crate::hunters::target_filter::runner_targeting(hunters, |h| h.targets_runner) {
+        if !h.active {
+            continue;
+        }
+        let d = ((h.pos.0 - pos.0).powi(2) + (h.pos.1 - pos.1).powi(2)).sqrt();
+        nearest = nearest.min(d);
+        if h.chasing && !h.stunned && (h.direct_visible || d <= CHASE_CUE_RANGE) {
+            pursued = true;
+        }
+    }
+    (nearest.is_finite().then_some(nearest as f64), pursued)
+}
+
+#[cfg(test)]
+mod runner_only_tests {
+    use super::*;
+
+    fn h(chasing: bool, targets_runner: bool) -> HunterAudio<'static> {
+        HunterAudio {
+            id: "glyra", pos: (3.0, 0.0), active: true, chasing, idle: false, direct_visible: true,
+            winded: false, stunned: false, in_vent: false, nyxie_empty_wake: false,
+            glyra_humming: false, targets_runner,
+        }
+    }
+
+    #[test]
+    fn hunter_chasing_a_bot_raises_no_danger_or_pursuit() {
+        let (near, pursued) = runner_danger_inputs((0.0, 0.0), &[h(true, false)]);
+        assert!(near.is_none());
+        assert!(!pursued);
+    }
+
+    #[test]
+    fn hunter_chasing_the_runner_raises_both() {
+        let (near, pursued) = runner_danger_inputs((0.0, 0.0), &[h(true, false), h(true, true)]);
+        assert_eq!(near, Some(3.0));
+        assert!(pursued);
+    }
 }
 
 #[derive(Default)]
@@ -81,19 +128,14 @@ pub fn update(dt: f32, l: &Listener, hunters: &[HunterAudio]) {
             }
             e.pump();
             let now = e.now_usec();
-            let mut nearest = f32::INFINITY;
             let mut stepping: Option<(usize, f32)> = None;
-            let mut pursued = false;
+            let (nearest, pursued) = runner_danger_inputs(l.pos, hunters);
             for (i, h) in hunters.iter().enumerate() {
                 let d = ((h.pos.0 - l.pos.0).powi(2) + (h.pos.1 - l.pos.1).powi(2)).sqrt();
                 let was = w.was_active.get(h.id).copied().unwrap_or(false);
                 if h.active {
-                    nearest = nearest.min(d);
                     if !h.idle && stepping.map(|s| d < s.1).unwrap_or(true) {
                         stepping = Some((i, d));
-                    }
-                    if h.chasing && !h.stunned && (h.direct_visible || d <= CHASE_CUE_RANGE) {
-                        pursued = true;
                     }
                     if h.id == "nyxie" && !was {
                         e.play(&if h.nyxie_empty_wake {
@@ -131,7 +173,7 @@ pub fn update(dt: f32, l: &Listener, hunters: &[HunterAudio]) {
             }
             w.was_pursued = pursued;
             let danger = rules::heartbeat_danger(
-                nearest.is_finite().then_some(nearest as f64),
+                nearest,
                 pursued,
                 l.in_safe_zone,
             );

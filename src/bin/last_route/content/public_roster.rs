@@ -363,10 +363,10 @@ mod tests {
     #[test]
     fn standard_weights_and_caps_match_godot() {
         let r = PublicRoster::default();
-        assert_eq!(r.weight_of("easy"), 0.5);
-        assert_eq!(r.weight_of("intermediate"), 0.4);
-        assert_eq!(r.weight_of("difficult"), 0.1);
-        assert_eq!(r.weight_of("unknown-tier"), 0.3);
+        assert!((r.weight_of("easy") - 0.5_f64).abs() < 1e-4);
+        assert!((r.weight_of("intermediate") - 0.4_f64).abs() < 1e-4);
+        assert!((r.weight_of("difficult") - 0.1_f64).abs() < 1e-4);
+        assert!((r.weight_of("unknown-tier") - 0.3_f64).abs() < 1e-4);
         assert_eq!(r.featured_count, 2);
         assert_eq!(r.players_per_extra_hunter, 2);
         assert_eq!(r.cap, 8);
@@ -375,19 +375,19 @@ mod tests {
     #[test]
     fn standard_patrol_matches_godot() {
         let p = PublicRoster::default().patrol;
-        assert_eq!(p.radius, 30.0);
-        assert_eq!(p.fallback_radius_scale, 2.0);
+        assert!((p.radius - 30.0_f32).abs() < 1e-4);
+        assert!((p.fallback_radius_scale - 2.0_f32).abs() < 1e-4);
         assert_eq!(p.dwell_msec, 20_000);
-        assert_eq!(p.speed_scale, 1.0);
+        assert!((p.speed_scale - 1.0_f32).abs() < 1e-4);
     }
 
     #[test]
     fn changing_the_patrol_block_changes_the_parsed_values() {
         let r = parse(r#"{"patrol":{"radius":12.5,"fallback_radius_scale":3,"dwell_msec":5000,"speed_scale":0.5}}"#);
-        assert_eq!(r.patrol.radius, 12.5);
-        assert_eq!(r.patrol.fallback_radius_scale, 3.0);
+        assert!((r.patrol.radius - 12.5_f32).abs() < 1e-4);
+        assert!((r.patrol.fallback_radius_scale - 3.0_f32).abs() < 1e-4);
         assert_eq!(r.patrol.dwell_msec, 5_000);
-        assert_eq!(r.patrol.speed_scale, 0.5);
+        assert!((r.patrol.speed_scale - 0.5_f32).abs() < 1e-4);
         // The rest of the roster keeps its Standard values.
         assert_eq!(r.cap, 8);
         // A missing or broken key keeps the Standard patrol.
@@ -471,8 +471,8 @@ mod tests {
     #[test]
     fn changing_the_default_weight_changes_the_draw_for_unlisted_tiers() {
         let r = parse(r#"{"weights":{},"default_weight":0.0}"#);
-        assert_eq!(r.weight_of("easy"), 0.0);
-        assert_eq!(r.weight_of("difficult"), 0.0);
+        assert!((r.weight_of("easy") - 0.0_f64).abs() < 1e-4);
+        assert!((r.weight_of("difficult") - 0.0_f64).abs() < 1e-4);
         assert_eq!(PublicRoster::default().weight_of("easy"), 0.5);
     }
 

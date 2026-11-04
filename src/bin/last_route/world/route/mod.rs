@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod clearance;
+pub mod catwalk;
+pub mod catwalk_links;
 pub mod danger;
 pub mod fixtures;
 pub mod furnished;
@@ -20,6 +22,7 @@ pub mod hunter_spawns;
 pub mod layout;
 pub mod live;
 pub mod loot;
+pub mod maze_regions;
 pub mod music_boxes;
 pub mod pickups;
 pub mod prop_tables;

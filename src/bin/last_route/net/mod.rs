@@ -44,6 +44,7 @@ pub mod runner_figure;
 pub mod saves;
 pub mod session;
 pub mod store;
+pub mod wiring;
 pub mod world_sync;
 
 #[cfg(test)]

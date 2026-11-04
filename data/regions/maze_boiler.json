@@ -1,0 +1,19 @@
+{
+	"schema": "lr.maze_region/1",
+	"id": "maze_boiler",
+	"label": "Boiler room",
+	"weight": 1.5,
+	"plain_weight": 10.0,
+	"hall_floor": ["concrete0", "epoxy0"],
+	"hall_runner": false,
+	"room_default_floor": ["epoxy0", "concrete0"],
+	"room_roles": ["control_room", "storage", "decon"],
+	"prop_set": [
+		{ "type": "sewerPump", "size": [1.2, 1.4, 1.0] },
+		{ "type": "sewerOutflowPipe", "size": [0.5, 2.0, 0.5] },
+		{ "type": "gasCylinderRack", "size": [1.0, 1.4, 0.6] },
+		{ "type": "hazardSign", "size": [0.6, 0.6, 0.08], "solid": false },
+		{ "type": "supplyCrates", "size": [1.4, 1.0, 0.8] }
+	],
+	"spawn_rules": { "hunter_chance_scale": 1.2, "loot_scale": 0.9, "prop_density": 1.0 }
+}

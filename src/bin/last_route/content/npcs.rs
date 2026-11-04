@@ -96,14 +96,14 @@ mod tests {
     #[test]
     fn the_bots_tuning_reads_the_embedded_standard_values() {
         let t = Tuning::parse(&embedded_json()).expect("embedded npcs.json has the tuning keys");
-        assert_eq!(t.threat_range, 14.0);
-        assert_eq!(t.smart_base, 0.5);
-        assert_eq!(t.flee_step, 12.0);
+        assert!((t.threat_range - 14.0_f32).abs() < 1e-4);
+        assert!((t.smart_base - 0.5_f32).abs() < 1e-4);
+        assert!((t.flee_step - 12.0_f32).abs() < 1e-4);
         assert!(t.flee_running);
-        assert_eq!(t.min_away, 0.1);
-        assert_eq!(t.follow_radius, 5.0);
-        assert_eq!(t.door_think, 0.25);
-        assert_eq!(t.door_think_jitter, 0.1);
+        assert!((t.min_away - 0.1_f32).abs() < 1e-4);
+        assert!((t.follow_radius - 5.0_f32).abs() < 1e-4);
+        assert!((t.door_think - 0.25_f32).abs() < 1e-4);
+        assert!((t.door_think_jitter - 0.1_f32).abs() < 1e-4);
         assert_eq!(t.tasks, vec!["door".to_string()]);
         assert_eq!(*Tuning::get(), t);
     }
@@ -115,8 +115,8 @@ mod tests {
         v["door"]["think"] = serde_json::json!(0.5);
         v["tasks"] = serde_json::json!([]);
         let t = Tuning::parse(&v).expect("the edited file still parses");
-        assert_eq!(t.threat_range, 20.0);
-        assert_eq!(t.door_think, 0.5);
+        assert!((t.threat_range - 20.0_f32).abs() < 1e-4);
+        assert!((t.door_think - 0.5_f32).abs() < 1e-4);
         assert!(!t.does("door"));
         assert_ne!(t, *Tuning::get());
     }

@@ -9,8 +9,11 @@ pub mod breach;
 pub mod core;
 pub mod fixtures;
 pub mod hunters;
+pub mod level2;
 pub mod pickups;
+pub mod rooms;
 pub mod seals;
+pub mod water;
 
 #[allow(unused_imports)] // re-exported API
 pub use core::{

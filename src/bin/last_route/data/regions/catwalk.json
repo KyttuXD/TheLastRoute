@@ -1,0 +1,12 @@
+{
+  "size": 45,
+  "spacing": 9,
+  "margin": 4,
+  "width": 2,
+  "gap_chance": 0.18,
+  "gap_length": 2,
+  "landing_size": 3,
+  "min_landings": 2,
+  "height": 4.0,
+  "rail_height": 1.1
+}

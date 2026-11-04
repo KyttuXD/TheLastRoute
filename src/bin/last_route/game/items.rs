@@ -152,8 +152,7 @@ impl Game {
                     self.hunters[h].apply_slow(seconds, factor);
                 } else {
                     self.hunters[h].apply_stun(prof.escape_stun, false);
-                    let n = self.hunters[h].def.name.to_uppercase();
-                    self.say(&format!("TASER HIT // {n} STUNNED"));
+                    self.say("TASER HIT");
                 }
             }
             None => self.say("TASER // NO TARGET"),
@@ -192,8 +191,6 @@ impl Game {
                 };
                 self.hunters[h].apply_stun(s, true);
                 self.hits += 1;
-                let n = self.hunters[h].def.name.to_uppercase();
-                self.say(&format!("{n} STUNNED {s:.1}s"));
             }
         }
         if let Some(slot) = self.slots[self.selected].as_mut() {

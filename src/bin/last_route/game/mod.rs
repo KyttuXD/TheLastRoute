@@ -4,16 +4,21 @@
 
 pub mod endless;
 mod hunting;
+mod guest_gate;
 mod interact;
 pub mod ladder;
+pub mod pipes;
+pub mod swim;
 #[cfg(test)]
 mod ladder_tests;
 mod items;
 pub mod meters;
+pub mod swim_effects;
 pub mod npc;
 pub mod player;
+pub mod preload;
 pub mod progression;
-mod transition;
+pub(crate) mod transition;
 mod void_player;
 
 pub use interact::Focus;
@@ -202,6 +207,11 @@ pub struct Game {
     pub last_autosave: &'static str,
     /// The manual climb of a sewer ladder (game/ladder.rs): the one climber, while it runs input is the climb.
     pub ladder: Option<ladder::Climb>,
+    /// The sewer valves and the flows they open or shut (game/pipes.rs).
+    pub pipes: pipes::PipeNetwork,
+    /// The real runner's wet and swimming state and its numbers (game/swim_effects.rs).
+    pub swim: swim_effects::SwimState,
+    pub swim_cfg: swim_effects::SwimConfig,
 }
 
 pub fn pdist(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -306,6 +316,9 @@ impl Game {
             sighted: Default::default(),
             last_autosave: "",
             ladder: None,
+            pipes: pipes::PipeNetwork::new(),
+            swim: swim_effects::SwimState::default(),
+            swim_cfg: swim_effects::SwimConfig::load(),
             fac,
             fix,
             world,
@@ -426,6 +439,9 @@ impl Game {
             sighted: Default::default(),
             last_autosave: "",
             ladder: None,
+            pipes: pipes::PipeNetwork::new(),
+            swim: swim_effects::SwimState::default(),
+            swim_cfg: swim_effects::SwimConfig::load(),
             world: WorldMeshes::default(),
             world_dirty: true,
             fac,
@@ -715,6 +731,8 @@ impl Game {
                 in_vent: matches!(&h.gimmick, Gimmick::Verrine(v) if v.active_in_vent),
                 nyxie_empty_wake: matches!(&h.gimmick, Gimmick::Nyxie(n) if n.wake == Wake::Empty),
                 glyra_humming: matches!(&h.gimmick, Gimmick::Glyra(g) if g.playing()),
+                // a hunter that chose a player bot (update_hunters) is no danger cue for the runner
+                targets_runner: !h.target_is_bot,
             }).collect();
             crate::audio::world::update(dt, &listener, &hunters);
         }
@@ -824,7 +842,7 @@ impl Game {
         for h in self
             .hunters
             .iter()
-            .filter(|h| h.active && !h.gimmick.hidden_from_view())
+            .filter(|h| h.active && !h.target_is_bot && !h.gimmick.hidden_from_view())
         {
             let d = pdist(h.pos, self.p.pos);
             let base = match h.state {

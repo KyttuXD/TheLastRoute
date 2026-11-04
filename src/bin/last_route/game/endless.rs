@@ -1225,6 +1225,9 @@ impl Game {
     /// first load, where the relay activation used to wake a spawn. A change in who is loaded resets the director, whose
     /// ids are indices into `hunters`.
     fn residency(&mut self, content: &Content) {
+        if super::guest_gate::is_display_only(self) {
+            return;
+        }
         let (seed, runner, origin, limit) = match self.inf.as_ref() {
             Some(i) if i.level == 0 => (
                 i.seed.clone(),
@@ -1331,6 +1334,9 @@ impl Game {
     /// Leaving level 0 by a stairwell: the loaded hunters go to the store at their absolute cells, so the level
     /// they were on keeps them (Godot keeps every hunter in world_state).
     fn store_level0_hunters(&mut self) {
+        if super::guest_gate::is_display_only(self) {
+            return;
+        }
         let Some(inf) = self.inf.as_mut() else { return };
         if inf.level != 0 {
             return;
@@ -1351,6 +1357,9 @@ impl Game {
     /// Leaving a level off level 0 by a stairwell: its hunters are kept at their absolute cells under the level (the
     /// level-0 hunters go to `stored`, see `store_level0_hunters`).
     fn store_floor_hunters(&mut self) {
+        if super::guest_gate::is_display_only(self) {
+            return;
+        }
         let Some(inf) = self.inf.as_mut() else { return };
         if inf.level == 0 {
             return;
@@ -1368,6 +1377,9 @@ impl Game {
     /// been on gets back the hunters it kept, in the new window's frame (one now outside the window comes back in out of
     /// sight, as on a window move), topped up to the population. A level not visited before gets its lineup.
     fn restore_level_hunters(&mut self, content: &Content) {
+        if super::guest_gate::is_display_only(self) {
+            return;
+        }
         let Some(inf) = self.inf.as_mut() else { return };
         if inf.level == 0 {
             // the loaded set was emptied into `stored` on the way out; residency loads the window's share again

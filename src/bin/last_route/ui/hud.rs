@@ -418,17 +418,7 @@ pub fn draw_hud_with_runners(
             p.teal,
         );
     }
-    if g.p.stun > 0.0 {
-        let t = format!("STUNNED {:.1}s", g.p.stun);
-        shadowed(
-            a,
-            &t,
-            c.x - tw(a, F::Body, &t, fs(8.0)) * 0.5,
-            v.y * 0.4,
-            fs(8.0),
-            METER_LOW,
-        );
-    }
+    // no on-screen STUNNED notice: the stun mechanic stays, only the message is gone
 
     // the compact stamina bar (164x5) over the hotbar panel (188x34)
     let stamina = (g.p.stamina / MAX_STAMINA * 100.0).round();

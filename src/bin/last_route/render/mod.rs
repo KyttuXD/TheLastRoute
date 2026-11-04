@@ -5,7 +5,10 @@
 pub mod anim;
 pub mod bbmodel;
 pub mod builder;
+pub mod catwalk;
 pub mod door;
+pub mod hunter_cache;
+pub mod inferno_deco;
 pub mod prop_model;
 pub mod prop_scale;
 pub mod scene;
@@ -13,5 +16,7 @@ pub mod shader;
 pub mod stairs;
 pub mod surfaces;
 pub mod textures;
+pub mod water;
 pub mod viewmodel;
+pub mod waterfall;
 pub mod world_mesh;

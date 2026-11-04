@@ -1,0 +1,19 @@
+{
+	"schema": "lr.maze_region/1",
+	"id": "maze_courtyard",
+	"label": "Courtyard",
+	"weight": 3.0,
+	"plain_weight": 10.0,
+	"hall_floor": ["stone0", "concrete0"],
+	"hall_runner": false,
+	"room_default_floor": ["terracotta0", "stone0"],
+	"room_roles": ["storage", "public_restroom", "waiting_room"],
+	"prop_set": [
+		{ "type": "raisedPlanter", "size": [1.6, 0.8, 0.9] },
+		{ "type": "mallBench", "size": [1.8, 0.9, 0.6] },
+		{ "type": "mallPlanter", "size": [0.9, 1.1, 0.9] },
+		{ "type": "overgrowthPatch", "size": [1.6, 0.05, 1.6], "solid": false },
+		{ "type": "normalPictureFrameEmpty", "size": [0.7, 0.9, 0.12], "solid": false }
+	],
+	"spawn_rules": { "hunter_chance_scale": 0.9, "loot_scale": 0.8, "prop_density": 0.8 }
+}

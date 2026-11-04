@@ -1,0 +1,11 @@
+{
+  "schema": "lr.sewer_water/1",
+  "channel_depth": 1.0,
+  "water_surface": -0.3,
+  "shore_depth_fraction": 0.35,
+  "tint": {
+    "shallow": [74, 112, 96, 150],
+    "deep": [14, 34, 38, 235],
+    "deepen_power": 1.0
+  }
+}

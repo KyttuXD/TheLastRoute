@@ -205,7 +205,7 @@ mod tests {
             h.name, "Aki",
             "fields the override leaves out keep the base value"
         );
-        assert_eq!(h.speed, 1.1);
+        assert!((h.speed - 1.1_f32).abs() < 1e-4);
     }
 
     /// The void runners wear their own bbmodel (texture embedded in the model), not a path the loader would skip.

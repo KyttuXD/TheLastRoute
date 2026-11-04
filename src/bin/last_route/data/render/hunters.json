@@ -1,0 +1,6 @@
+{
+  "pose_step": 0.002,
+  "position_step": 0.004,
+  "tint_step": 0.01,
+  "max_entries": 64
+}

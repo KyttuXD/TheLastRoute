@@ -9,6 +9,7 @@ pub mod navigation;
 pub mod peek;
 pub mod residency;
 pub mod sabotage;
+pub mod target_filter;
 
 use crate::config::{tier_weights_for, Difficulty};
 use crate::content::Content;

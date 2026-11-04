@@ -1,0 +1,31 @@
+{
+  "sheet_width_m": 3.0,
+  "throw_m": 0.9,
+  "curl_drop_m": 0.7,
+  "curl_segments": 6,
+  "sheet_color": [0.62, 0.78, 0.74, 0.55],
+  "flow_speed": 1.4,
+  "mist": {
+    "count": 22,
+    "lifetime_s": 1.8,
+    "box_half_extents_m": [1.4, 0.15, 0.5],
+    "offset_out_m": 0.5,
+    "above_surface_m": 0.1,
+    "speed_min": 0.3,
+    "speed_max": 1.1,
+    "gravity": -0.15,
+    "size_min_m": 0.42,
+    "size_max_m": 1.12,
+    "color": [0.78, 0.84, 0.8, 0.16]
+  },
+  "splash": {
+    "foam_size_m": [4.2, 2.6],
+    "offset_out_m": 0.3,
+    "light_height_m": 1.4,
+    "light_color": [0.56, 0.88, 0.75],
+    "light_energy": 1.8,
+    "light_range_m": 10.0
+  },
+  "sound_key": "falls",
+  "sound_range_m": 18.0
+}

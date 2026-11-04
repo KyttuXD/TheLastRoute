@@ -1,0 +1,35 @@
+{
+  "schema": "lr.swim.movement/1",
+  "wade": {
+    "deep_depth": 0.9,
+    "max_flood_depth": 0.35,
+    "speed_scale": 0.45,
+    "tiring_depth": 0.6,
+    "stamina_drain": 6.0,
+    "noise": 12.0,
+    "deep_noise": 17.0,
+    "splash_every": 0.42,
+    "splash_gain": 0.6,
+    "soaked_floor_fraction": 0.5
+  },
+  "plunge": {
+    "hop_speed": 1.6,
+    "gravity": 9.8,
+    "min_drop": 0.5,
+    "splash_seconds": 0.55,
+    "swim_speed": 1.5,
+    "min_swim_seconds": 2.0,
+    "bob_amplitude": 0.04,
+    "bob_rate": 3.0,
+    "climb_out_seconds": 0.6,
+    "climb_out_hop": 0.12,
+    "splash_noise": 3.0,
+    "splash_noise_seconds": 1.2,
+    "swim_noise": 0.8,
+    "climb_out_noise": 0.3,
+    "soaked_seconds": 30.0,
+    "soaked_noise_scale": 1.45,
+    "channel_depth": 0.0,
+    "water_surface": 0.0
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "soaked": {
+    "seconds": 30.0,
+    "wade_floor_fraction": 0.5,
+    "noise_scale": 1.45,
+    "drip_every": [1.1, 2.4],
+    "drip_gain_base": 0.35,
+    "drip_gain_span": 0.65
+  },
+  "wade": {
+    "max_depth": 0.35,
+    "deep_depth": 0.9,
+    "noise": 12.0,
+    "deep_noise": 17.0,
+    "splash_every": 0.42,
+    "splash_gain": 0.6,
+    "tiring_depth": 0.6,
+    "stamina_drain": 6.0
+  },
+  "swim": {
+    "noise": 0.8,
+    "stamina_drain": 9.0,
+    "flashlight_flicker_chance_per_second": 0.35,
+    "flashlight_flicker_seconds": 0.4,
+    "flashlight_drain_per_second": 0.0,
+    "drop_item_chance_per_second": 0.0,
+    "drop_item_min_depth": 1.2
+  }
+}

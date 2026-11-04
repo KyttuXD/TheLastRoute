@@ -674,7 +674,7 @@ mod tests {
         assert_eq!(d.safe_light, None);
         let s = RegionSafeLight::default();
         assert_eq!(s.color, [0.95, 0.78, 0.55]);
-        assert_eq!(s.energy, 2.0);
+        assert!((s.energy - 2.0_f32).abs() < 1e-4);
         assert_eq!(s, RegionSafeLight { color: SAFE_LIGHT_COLOR, energy: SAFE_LIGHT_ENERGY });
     }
 

@@ -10,7 +10,20 @@ mod tests {
 
     #[test]
     fn the_standalone_builtin_files_match_the_embedded_data() {
-        let embedded: Vec<(&str, &str)> = embedded::data_under("regions/").collect();
+        // Files beside the region catalogue that are not `lr.region/1` (maze variants, sewer and cave
+        // layout tables, catwalk tables) are read by their own modules, not through BUILTIN_FILES.
+        const OTHER: [&str; 7] = [
+            "regions/catwalk.json",
+            "regions/catwalk_links.json",
+            "regions/inferno_caves.json",
+            "regions/maze_",
+            "regions/sewer2.json",
+            "regions/sewer_pipes.json",
+            "regions/sewer_rooms.json",
+        ];
+        let embedded: Vec<(&str, &str)> = embedded::data_under("regions/")
+            .filter(|(p, _)| !OTHER.iter().any(|o| p.starts_with(o)))
+            .collect();
         assert_eq!(embedded, BUILTIN_FILES.to_vec());
     }
 
