@@ -747,6 +747,10 @@ pub fn separate(dt: f32, hunters: &mut [Brain], fac: &Facility) -> i32 {
             if i == j || !hunters[j].active {
                 continue;
             }
+            // a hunter on a deck and one on the floor below it do not crowd each other
+            if (hunters[i].y - hunters[j].y).abs() > super::flight_edges::rules().same_layer_eps {
+                continue;
+            }
             let off = (
                 hunters[i].pos.0 - hunters[j].pos.0,
                 hunters[i].pos.1 - hunters[j].pos.1,
@@ -958,6 +962,30 @@ mod tests {
         let mut stunned = rush_hunter(State::Search, (0.0, 0.0));
         stunned.stun = 1.0;
         assert!(!rush_eligible(&stunned, &far, Some(12.0)));
+    }
+
+    #[test]
+    fn separation_ignores_hunters_at_different_heights() {
+        let cat = crate::world::catalog::Catalog::load();
+        let fac = Facility::generate("SEP-1", &crate::world::facility::Options::default(), &cat);
+        let at = fac
+            .floor_cells()
+            .into_iter()
+            .find(|c| fac.hunter_open(*c) && fac.can_occupy(c.x as f64 + 0.9, c.y as f64 + 0.5, 0.23))
+            .expect("an open cell")
+            .center();
+        let pair = |dy: f32| {
+            let mut a = rush_hunter(State::Wander, at);
+            let mut b = rush_hunter(State::Wander, (at.0 + 0.2, at.1));
+            b.y = dy;
+            a.y = 0.0;
+            vec![a, b]
+        };
+        let mut level = pair(0.0);
+        assert!(separate(1.0 / 60.0, &mut level, &fac) > 0, "two hunters on one floor push apart");
+        let mut stacked = pair(crate::world::route::catwalk::params().height);
+        assert_eq!(separate(1.0 / 60.0, &mut stacked, &fac), 0, "a hunter on a deck and one below it do not crowd each other");
+        assert_eq!(stacked[0].pos, at);
     }
 
     #[test]
