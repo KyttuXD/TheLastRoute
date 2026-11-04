@@ -7,8 +7,22 @@
 # (see README: the build contains the original game's files and must not be shared).
 # The Rust version is pinned in rust-toolchain.toml; the workflows install the same version.
 # Each job writes its wall-clock build time to the run summary.
+#
+# Cost: a private repository bills macOS minutes at 10x and Windows at 2x, and one push of every job came to
+# roughly 200 billed minutes, which used up the account budget (every job then failed with "The job was not
+# started because an Actions budget is preventing further use"). So: pushes that only touch docs, markdown or
+# tooling build nothing, and the two macOS slices plus the universal join run only when the commit message
+# contains [mac], when the workflow is run by hand, or when the repository variable MAC_ON_PUSH is "true"
+# (set it once the budget allows macOS on every push). Windows and Linux still build on every code push.
 name: build
-on: [push, workflow_dispatch]
+on:
+  push:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".claude/**"
+      - "tools/**"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -122,6 +136,7 @@ jobs:
   macos-intel:
     # Intel runner for the x86_64 slice.
     runs-on: macos-15-intel
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.MAC_ON_PUSH == 'true' || contains(github.event.head_commit.message, '[mac]') }}
     steps:
       - name: Start job clock
         shell: bash
@@ -156,6 +171,7 @@ jobs:
   # The Apple Silicon slice. macos-15 is the Apple Silicon image.
   macos-arm64:
     runs-on: macos-15
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.MAC_ON_PUSH == 'true' || contains(github.event.head_commit.message, '[mac]') }}
     steps:
       - name: Start job clock
         shell: bash

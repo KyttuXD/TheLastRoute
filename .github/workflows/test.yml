@@ -1,16 +1,23 @@
 # Runs the default Rust tests, the headless game suite and the self-test on Windows and Linux.
 # Only default tests run here: the full Godot golden tests (#[ignore], need PARITY_DIR and the
 # golden files) are not in CI. Nothing is published; reports are private run artifacts.
+#
+# Cost: Windows minutes bill at 2x, so a push runs Linux only; Windows runs by hand (workflow_dispatch) and
+# once a week (Monday 06:00 UTC), which still catches line-ending and path differences.
 name: test
 on:
   push:
     paths-ignore:
       - "**.md"
       - "docs/**"
+      - ".claude/**"
+      - "tools/**"
   pull_request:
     paths-ignore:
       - "**.md"
       - "docs/**"
+  schedule:
+    - cron: "0 6 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -27,11 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            ext: ".exe"
-          - os: ubuntu-22.04
-            ext: ""
+        os: ${{ fromJSON(github.event_name == 'push' && '["ubuntu-22.04"]' || '["ubuntu-22.04","windows-latest"]') }}
     steps:
       - uses: actions/checkout@v4
 
@@ -60,7 +63,7 @@ jobs:
 
       # Exit 0 pass, 1 fail, 2 nothing ran. The JSON report is kept as an artifact.
       - name: Headless test suites
-        run: ./target/ci/last_route${{ matrix.ext }} --test-suite "tests/*.json" --out target/test-reports/suite-report.json
+        run: ./target/ci/last_route${{ runner.os == 'Windows' && '.exe' || '' }} --test-suite "tests/*.json" --out target/test-reports/suite-report.json
 
       # The self-test is not run here: it needs a real OpenGL context and an audio device, which
       # hosted runners do not have (Windows fails on the pixel format and hangs). Run it locally.
