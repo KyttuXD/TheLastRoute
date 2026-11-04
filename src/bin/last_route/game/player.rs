@@ -19,6 +19,21 @@ const FLICKER_MAX_PERIOD: f32 = 0.35;
 /// How fast the body's height follows the stair tread under it, per second (an exponential ease).
 const STAIR_FOLLOW_RATE: f32 = 40.0;
 
+/// The fall tunables (air control, the gap that makes a fall, the drop that reports a landing) are data:
+/// data/swim/fall.json, read through `swim::fall_rules()`.
+use super::swim::fall_rules;
+
+/// A fall that just ended: the body touched the ground at `y` (absolute feet y) after dropping `drop_height` metres,
+/// at `speed` m/s, at `pos`. `Player::take_landing` hands it over once; the game applies the effects (stun, stamina,
+/// noise) from it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Landing {
+    pub y: f32,
+    pub drop_height: f32,
+    pub speed: f32,
+    pub pos: (f32, f32),
+}
+
 /// The walking height of the stair flight under `pos` (`Stair::surface_rel`, relative to the level floor), or None off the stairs. Only
 /// the facility's `Stairs` flights count: a sewer ladder is climbed by hand (game/ladder.rs) and is never a stair here.
 pub fn stair_height_at(fac: &Facility, pos: (f32, f32)) -> Option<f32> {
@@ -79,12 +94,15 @@ pub struct Player {
     pub height: f32,
     /// Admin run speed: multiplies every movement speed (admin_menu.gd).
     pub speed_scale: f32,
-    /// Eye height change on a stair flight or a ladder shaft (game/ladder.rs, the stairs walk), in metres: negative going down.
-    pub climb_lift: f32,
+    /// While the body falls: the highest absolute y of the fall (its start, or the top of the arc), for the drop height.
+    /// None when the body is not falling.
+    fall_top: Option<f32>,
+    /// The landing the last fall left, until `take_landing` takes it.
+    landing: Option<Landing>,
     /// The body's velocity over the last frame, in metres a second, from the displacement `update_movement` made. It is
     /// not cleared by a storey change (game/endless.rs `change_storey`), so the momentum carries onto the next floor.
     pub move_vel: (f32, f32),
-    /// Seconds left in a forced flicker (a plunge splash or a hunter event); the
+    /// Seconds left in a forced flicker (a pool landing or a hunter event); the
     /// beam strobes until it runs out and the player's own switch cannot override it.
     flicker_remaining: f32,
     flicker_next_toggle: f32,
@@ -129,7 +147,8 @@ impl Player {
             noclip: false,
             height: 0.0,
             speed_scale: 1.0,
-            climb_lift: 0.0,
+            fall_top: None,
+            landing: None,
             move_vel: (0.0, 0.0),
             flicker_remaining: 0.0,
             flicker_next_toggle: 0.0,
@@ -140,7 +159,7 @@ impl Player {
 
     /// Strobes the beam off and on at random short intervals for `duration` seconds,
     /// then restores the real state (Godot `force_flashlight_flicker`). Called by a
-    /// plunge splash or a hunter event; the lamp keeps its charge and the switch keeps its state.
+    /// pool landing or a hunter event; the lamp keeps its charge and the switch keeps its state.
     pub fn force_flashlight_flicker(&mut self, duration: f32) {
         self.flicker_remaining = self.flicker_remaining.max(duration);
         self.flicker_next_toggle = 0.0;
@@ -191,6 +210,8 @@ impl Player {
         self.grounded = true;
         self.height = 0.0;
         self.vy = 0.0;
+        self.fall_top = None;
+        self.landing = None;
         self.move_vel = (0.0, 0.0);
         self.yaw = 0.0;
         self.pitch = 0.0;
@@ -201,7 +222,7 @@ impl Player {
     }
 
     pub fn eye_height(&self) -> f32 {
-        CAMERA_HEIGHT + (CAMERA_HEIGHT * CROUCH_EYE_RATIO - CAMERA_HEIGHT) * self.crouch_t + self.climb_lift
+        CAMERA_HEIGHT + (CAMERA_HEIGHT * CROUCH_EYE_RATIO - CAMERA_HEIGHT) * self.crouch_t
     }
 
     /// Absolute y of the feet' walking surface: the level's floor plus the stair or deck lift (`height`).
@@ -212,6 +233,26 @@ impl Player {
     /// Absolute y of the eye without head bob: `y()` plus the jump and the standing or crouched eye height.
     pub fn eye_y(&self) -> f32 {
         self.y() + self.feet_y + self.eye_height()
+    }
+
+    /// Puts the feet at absolute `y` on the spot (a ladder holds the body on its shaft): the height absorbs the difference to
+    /// the level floor, and the jump offset, vertical speed and any fall end; the body is grounded.
+    pub fn set_abs_y(&mut self, y: f32) {
+        self.height = y - self.floor_y;
+        self.feet_y = 0.0;
+        self.vy = 0.0;
+        self.grounded = true;
+        self.fall_top = None;
+    }
+
+    /// Whether the body is in a fall (no ground under it, `update_movement` integrates its height).
+    pub fn falling(&self) -> bool {
+        self.fall_top.is_some()
+    }
+
+    /// The landing the last fall left, once.
+    pub fn take_landing(&mut self) -> Option<Landing> {
+        self.landing.take()
     }
 
     /// Facing on the grid: (-sin yaw, -cos yaw), as the original's controller.
@@ -348,7 +389,8 @@ impl Player {
         let target = if self.crouching { 1.0 } else { 0.0 };
         self.crouch_t += (target - self.crouch_t) * (1.0 - (-14.0 * dt).exp());
         let on_stair = stair_height_at(fac, self.pos).is_some();
-        let wants_sprint = c.sprint && moving && !self.exhausted && !on_stair;
+        let airborne = self.falling();
+        let wants_sprint = c.sprint && moving && !self.exhausted && !on_stair && !airborne;
         let mut sprinting = false;
         let speed = if on_stair {
             PLAYER_WALK_SPEED * prof.player_speed
@@ -366,7 +408,8 @@ impl Player {
         } else {
             PLAYER_WALK_SPEED * prof.player_speed
         } * meters.movement_scale()
-            * self.speed_scale;
+            * self.speed_scale
+            * fall_rules().air_scale(airborne);
         self.sprinting = sprinting;
         self.moving = moving;
         self.noise = if !moving {
@@ -430,7 +473,24 @@ impl Player {
         // a neighbour's surface is followed only when it is within a step of the feet (the flight's own continuation);
         // a floor far below the feet is a hole or a shaft (a ladder's), which the body does not drop into by easing
         let neighbour = under.level != fac.level && (under.y - self.y()).abs() <= STEP_UP;
-        let lifted = neighbour || stair_height_at(fac, self.pos).is_some();
+        let on_flight = stair_height_at(fac, self.pos).is_some();
+        let lifted = neighbour || on_flight;
+        // No ground within a step under a standing body (a drop cell, a ladder shaft, a hole): the body falls. A jump in
+        // the air over such a place falls too, from the height of its walking surface.
+        if !self.falling() && !self.noclip && !on_flight {
+            let rest = self.y() + if self.grounded { self.feet_y } else { 0.0 };
+            if fall_rules().starts_fall(rest - under.y) {
+                self.height += self.feet_y;
+                self.feet_y = 0.0;
+                self.grounded = false;
+                self.fall_top = Some(self.y());
+            }
+        }
+        if self.falling() {
+            self.fall_step(dt, fac, stack);
+            self.after_move(dt, moving, sprinting, speed, speed_now);
+            return;
+        }
         let (surface, min_feet) = if lifted { (rel, 0.0) } else { (0.0, rel) };
         if self.feet_y <= min_feet {
             self.feet_y = min_feet;
@@ -446,6 +506,38 @@ impl Player {
         // back to the floor off the stairs, so it never snaps through a tread.
         self.height += (surface - self.height) * (1.0 - (-STAIR_FOLLOW_RATE * dt).exp());
 
+        self.after_move(dt, moving, sprinting, speed, speed_now);
+    }
+
+    /// One frame of a fall: the height integrates the vertical speed directly (so `y()` is the true absolute y), the
+    /// horizontal control was applied by the caller, and the body touches down when its feet reach the ground under it
+    /// (measured from where the frame began, so a floor between two frames is never passed).
+    fn fall_step(&mut self, dt: f32, fac: &Facility, stack: &LevelStack) {
+        let y0 = self.y();
+        let ground = ground_y(fac, stack, self.pos.0, self.pos.1, y0);
+        self.vy -= PLAYER_GRAVITY * dt;
+        let y1 = y0 + self.vy * dt;
+        self.grounded = false;
+        self.fall_top = self.fall_top.map(|t| t.max(y1));
+        // a surface far above the feet is not ground (the body is under an overhang); only one within a step is
+        if y1 <= ground.y && ground.y <= y0 + STEP_UP {
+            let top = self.fall_top.take().unwrap_or(y0);
+            let speed = self.vy.abs();
+            self.height = ground.y - self.floor_y;
+            self.feet_y = 0.0;
+            self.vy = 0.0;
+            self.grounded = true;
+            let drop_height = top - ground.y;
+            if fall_rules().reports_landing(drop_height) {
+                self.landing = Some(Landing { y: ground.y, drop_height, speed, pos: self.pos });
+            }
+        } else {
+            self.height = y1 - self.floor_y;
+        }
+    }
+
+    /// The head bob and the footsteps of the frame (only on the ground).
+    fn after_move(&mut self, dt: f32, moving: bool, sprinting: bool, speed: f32, speed_now: f32) {
         if moving && self.grounded && speed_now > 0.3 {
             self.bob_phase += dt * speed_now * 1.9;
         }
@@ -523,7 +615,7 @@ mod tests {
     use crate::content::Content;
     use crate::game::{Controls, Game};
     use crate::world::catalog::Catalog;
-    use crate::world::facility::Stair;
+    use crate::world::facility::{Cell, Stair};
 
     const FRAME: f32 = 1.0 / 60.0;
 
@@ -886,5 +978,158 @@ mod tests {
         p.rebase_floor(-5.0);
         assert_eq!(p.feet_y, 0.8, "the jump offset survives the relabel");
         assert!((p.y() - y).abs() < 1e-5 && (p.eye_y() - eye).abs() < 1e-5);
+    }
+
+    /// A start window of a fixed run with a ladder going down, both levels resident, and the body standing in the hatch
+    /// cell at the upper floor (as a body that just let go of the top of the shaft).
+    fn shaft_game() -> (Game, Stair) {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-TEST-7", 0, &content, &catalog);
+        let s = g
+            .fac
+            .stairs
+            .iter()
+            .copied()
+            .find(|s| s.is_ladder() && s.dir < 0)
+            .expect("the start window has a ladder down");
+        g.p.pos = s.cell.center();
+        g.p.set_abs_y(floor_y_of(g.fac.level));
+        g.keep_stack(&content, &catalog);
+        assert!(g.inf.as_ref().unwrap().stack.has(g.fac.level - 1), "the level below is resident beside the ladder");
+        (g, s)
+    }
+
+    /// One frame of the body against the game's own level stack.
+    fn step_in_stack(g: &mut Game, c: &Controls, dt: f32) {
+        let prof = g.prof();
+        let sounds = Sounds::default();
+        let empty = LevelStack::EMPTY;
+        let stack = g.inf.as_ref().map_or(&empty, |i| &i.stack);
+        g.p.update_movement(dt, c, &prof, &g.fac, stack, &mut g.meters, &sounds);
+    }
+
+    /// Falls from the hatch to the floor below at `dt` a frame: the time it took and the landing.
+    fn fall_down_the_shaft(g: &mut Game, dt: f32) -> (f32, Landing) {
+        let mut t = 0.0;
+        while t < 3.0 {
+            step_in_stack(g, &Controls::default(), dt);
+            t += dt;
+            if let Some(l) = g.p.take_landing() {
+                return (t, l);
+            }
+        }
+        panic!("the body never landed: y {} falling {}", g.p.y(), g.p.falling());
+    }
+
+    #[test]
+    fn fall_time_matches_sqrt_2_storey_over_g() {
+        let (mut g, _) = shaft_game();
+        let (t, l) = fall_down_the_shaft(&mut g, 1.0 / 240.0);
+        let want = (2.0 * STOREY_DROP / PLAYER_GRAVITY).sqrt();
+        assert!((t - want).abs() < 0.06, "fell in {t} s, free fall takes {want} s");
+        assert!((l.y - (g.fac.level - 1) as f32 * STOREY_DROP).abs() < 1e-3, "landed on the floor below: {}", l.y);
+    }
+
+    /// One storey in metres (the drop from a hatch to the floor below).
+    const STOREY_DROP: f32 = crate::world::vertical::STOREY;
+
+    #[test]
+    fn landing_reports_height_and_speed() {
+        let (mut g, s) = shaft_game();
+        let (_, l) = fall_down_the_shaft(&mut g, 1.0 / 120.0);
+        assert!((l.drop_height - STOREY_DROP).abs() < 0.05, "dropped a storey: {}", l.drop_height);
+        let v = (2.0 * PLAYER_GRAVITY * STOREY_DROP).sqrt();
+        assert!((l.speed - v).abs() < 0.6, "touched down at about {v} m/s, not {}", l.speed);
+        assert!(((l.pos.0 - s.cell.center().0).hypot(l.pos.1 - s.cell.center().1)) < 1e-3, "no sideways drift: {:?}", l.pos);
+        assert!(!g.p.falling() && g.p.grounded && g.p.take_landing().is_none(), "the landing is taken once");
+    }
+
+    /// A start window on the first sewer level with a waterfall void, the level below resident, and a drop cell whose
+    /// neighbour in direction `run` is a drop too (open air a falling body may steer through). A ladder shaft is one
+    /// cell under a slab, so it cannot show the steering: the void is the place a body falls freely.
+    fn drop_game() -> (Game, Cell, (i32, i32)) {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        for n in 0..60 {
+            let text = format!("ROOM-TEST-{n}");
+            let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, &text, -1, &content, &catalog);
+            let found = g.fac.drop_cells().iter().copied().find_map(|c| {
+                [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                    .into_iter()
+                    .find(|d| g.fac.is_drop(Cell::new(c.x + d.0, c.y + d.1)) && g.fac.is_drop(Cell::new(c.x - d.1, c.y + d.0)))
+                    .map(|d| (c, d))
+            });
+            if let Some((c, d)) = found {
+                g.p.pos = c.center();
+                g.p.set_abs_y(floor_y_of(g.fac.level));
+                g.keep_stack(&content, &catalog);
+                assert!(g.inf.as_ref().unwrap().stack.has(g.fac.level - 1), "the level under the void is resident");
+                return (g, c, d);
+            }
+        }
+        panic!("no window in the first 60 test rooms has a waterfall void");
+    }
+
+    #[test]
+    fn air_control_moves_the_body_in_a_fall() {
+        let (mut g, _, run) = drop_game();
+        g.p.yaw = yaw_along((run.0 as f32, run.1 as f32));
+        let start = g.p.pos;
+        let c = Controls { fwd: 1.0, ..Default::default() };
+        let dt = 1.0 / 120.0;
+        for _ in 0..30 {
+            step_in_stack(&mut g, &c, dt);
+        }
+        assert!(g.p.falling(), "still in the air after a quarter second");
+        let moved = (g.p.pos.0 - start.0).hypot(g.p.pos.1 - start.1);
+        let prof = g.prof();
+        let want = PLAYER_WALK_SPEED * prof.player_speed * g.meters.movement_scale() * fall_rules().air_control * 30.0 * dt;
+        assert!(moved > 0.0, "the body steers in the air");
+        assert!(moved < want * 1.15 && moved > want * 0.85, "moved {moved} m, air speed gives {want} m");
+    }
+
+    #[test]
+    fn a_drop_under_fall_min_gap_is_a_step() {
+        let (mut g, s) = flight_game();
+        g.p.pos = off_stair(s);
+        // 0.4 m above the floor: a short drop, eased as a step, no fall and no landing
+        g.p.feet_y = fall_rules().min_gap * 0.65;
+        g.p.grounded = true;
+        run_body(&mut g, 1.5, &Controls::default());
+        assert!(!g.p.falling() && g.p.take_landing().is_none());
+        // 1.5 m above the floor: a fall that reports its landing
+        g.p.feet_y = 1.5;
+        g.p.grounded = true;
+        run_body(&mut g, 0.05, &Controls::default());
+        assert!(g.p.falling(), "a drop over the gap is a fall");
+        run_body(&mut g, 1.5, &Controls::default());
+        let l = g.p.take_landing().expect("the fall landed");
+        assert!((l.drop_height - 1.5).abs() < 0.05, "{}", l.drop_height);
+        assert!(g.p.height.abs() < 1e-3 && g.p.grounded);
+    }
+
+    #[test]
+    fn rebase_during_a_fall_keeps_y() {
+        let mut p = Player::new((3.0, 4.0));
+        p.floor_y = 0.0;
+        p.height = -2.0;
+        p.vy = -4.0;
+        p.grounded = false;
+        p.fall_top = Some(0.0);
+        let y = p.y();
+        p.rebase_floor(-5.0);
+        assert!((p.y() - y).abs() < 1e-5, "a relabel moves nothing");
+        assert!(p.falling() && p.vy == -4.0 && !p.grounded, "the fall carries on");
+    }
+
+    #[test]
+    fn set_abs_y_puts_the_feet_there_and_ends_a_fall() {
+        let mut p = Player::new((1.0, 1.0));
+        p.floor_y = -5.0;
+        p.feet_y = 0.5;
+        p.vy = 3.0;
+        p.grounded = false;
+        p.fall_top = Some(1.0);
+        p.set_abs_y(-2.0);
+        assert_eq!((p.y(), p.feet_y, p.vy, p.grounded, p.falling()), (-2.0, 0.0, 0.0, true, false));
     }
 }

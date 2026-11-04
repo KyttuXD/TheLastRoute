@@ -1,6 +1,6 @@
 {
   "suite": "ladders_climb",
-  "description": "Sewer ladders climbed by hand (game/ladder.rs, Godot player_controller_3d.gd 1265-1386): walking into the rung point mounts, back climbs down, and the storey changes on the frame the bottom of the shaft is reached, with no fade and no hold; forward at the top dismounts onto the floor.",
+  "description": "Sewer ladders climbed by hand in one continuous space (game/ladder.rs, Godot player_controller_3d.gd 1265-1386): walking into the hatch from its step cell mounts, back climbs down and the level label flips mid-shaft while the climb goes on (no fade, no hold, no move of the body), forward at the top dismounts onto the step cell, and climbing up from the sewer foot reaches level 0 beside the hatch.",
   "ported_from": "game/player/player_controller_3d.gd begin_ladder_climb, _update_ladder_climb",
   "defaults": { "seed": 12345, "difficulty": "standard", "mode": "infinite" },
   "tests": [
@@ -9,21 +9,21 @@
       "start_run": { "no_target": true },
       "steps": [
         { "cmd": "teleport", "to": "ladder_down" },
-        { "cmd": "step", "frames": 1, "act": { "move": [0, 0.5] }, "observe": false },
+        { "cmd": "step_until", "act": { "move": [0, 0.5] }, "expect": [ { "path": "player.climbing", "value": true } ], "max_frames": 60, "check_every": 1, "observe": false },
         { "cmd": "step", "frames": 30, "act": { "move": [0, 0] }, "observe": false },
         { "cmd": "step", "frames": 400, "act": { "move": [0, -1] }, "observe": false },
         { "expect": [ { "path": "run.level", "value": -1 } ] }
       ]
     },
     {
-      "name": "the storey changes on the frame the bottom of the shaft is reached",
+      "name": "the label flips mid-shaft and the climb goes on",
       "start_run": { "no_target": true },
       "steps": [
         { "cmd": "teleport", "to": "ladder_down" },
-        { "cmd": "step", "frames": 1, "act": { "move": [0, 0.5] }, "observe": false },
+        { "cmd": "step_until", "act": { "move": [0, 0.5] }, "expect": [ { "path": "player.climbing", "value": true } ], "max_frames": 60, "check_every": 1, "observe": false },
         { "cmd": "step", "frames": 30, "act": { "move": [0, 0] }, "observe": false },
         { "cmd": "step_until", "act": { "move": [0, -1] }, "expect": [ { "path": "run.level", "value": -1 } ], "max_frames": 1000, "check_every": 1, "observe": false },
-        { "expect": [ { "path": "run.level", "value": -1 } ] }
+        { "expect": [ { "path": "run.level", "value": -1 }, { "path": "player.climbing", "value": true }, { "path": "player.y", "op": "<", "value": -2.5 }, { "path": "player.y", "op": ">", "value": -4.9 } ] }
       ]
     },
     {
@@ -31,10 +31,26 @@
       "start_run": { "no_target": true },
       "steps": [
         { "cmd": "teleport", "to": "ladder_down" },
-        { "cmd": "step", "frames": 1, "act": { "move": [0, 0.5] }, "observe": false },
+        { "cmd": "step_until", "act": { "move": [0, 0.5] }, "expect": [ { "path": "player.climbing", "value": true } ], "max_frames": 60, "check_every": 1, "observe": false },
         { "cmd": "step", "frames": 30, "act": { "move": [0, 0] }, "observe": false },
         { "cmd": "step", "frames": 60, "act": { "move": [0, 1] }, "observe": false },
-        { "expect": [ { "path": "run.level", "value": 0 } ] }
+        { "expect": [ { "path": "run.level", "value": 0 }, { "path": "player.climbing", "value": false } ] }
+      ]
+    },
+    {
+      "name": "climbing up from the sewer foot reaches level 0 beside the hatch",
+      "start_run": { "no_target": true },
+      "steps": [
+        { "cmd": "teleport", "to": "ladder_down" },
+        { "cmd": "step_until", "act": { "move": [0, 0.5] }, "expect": [ { "path": "player.climbing", "value": true } ], "max_frames": 60, "check_every": 1, "observe": false },
+        { "cmd": "step", "frames": 30, "act": { "move": [0, 0] }, "observe": false },
+        { "cmd": "step", "frames": 400, "act": { "move": [0, -1] }, "observe": false },
+        { "expect": [ { "path": "run.level", "value": -1 }, { "path": "player.climbing", "value": false } ] },
+        { "cmd": "teleport", "to": "ladder_up" },
+        { "cmd": "step_until", "act": { "move": [0, 0.5] }, "expect": [ { "path": "player.climbing", "value": true } ], "max_frames": 60, "check_every": 1, "observe": false },
+        { "cmd": "step", "frames": 30, "act": { "move": [0, 0] }, "observe": false },
+        { "cmd": "step", "frames": 400, "act": { "move": [0, 1] }, "observe": false },
+        { "expect": [ { "path": "run.level", "value": 0 }, { "path": "player.climbing", "value": false }, { "path": "player.y", "op": "<", "value": 0.3 }, { "path": "player.y", "op": ">", "value": -0.3 } ] }
       ]
     }
   ]

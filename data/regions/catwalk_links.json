@@ -1,6 +1,6 @@
 {
 	"schema": "lr.catwalk_links/1",
-	"_about": "Stairs and ladders between the level 0 floor and the catwalk decks over it. Direct, like every level link: no fade, no halt (landing offset and prefetch distance come from stairs_links.json). Read by world/route/catwalk_links.rs, not by the region catalogue. chance is the share of chunks with a deck that get links; per_chunk caps them; spacing is the fewest cells between two links in a chunk; ladder_share is the share of links that are ladders (the rest are stairs); ladder_rise is the tallest deck (m) a ladder serves, a taller deck always takes stairs. regions names the level 0 regions whose chunks get decks.",
+	"_about": "Stairs and ladders between the level 0 floor and the catwalk decks over it. Direct, like every level link: no fade, no halt (landing offset and prefetch distance come from stairs_links.json). Read by world/route/catwalk_links.rs, not by the region catalogue. chance is the share of chunks with a deck that get links; per_chunk caps them; spacing is the fewest cells between two links in a chunk; ladder_share is the share of links that are ladders (the rest are stairs); ladder_rise is the tallest deck (m) a ladder serves, a taller deck always takes stairs. link_clearance is the half side (m, 0 to 0.5) of the footprint that must be free of solid props on a link's ground cell and its deck landing; a larger value drops more links (and so more decks). regions names the level 0 regions whose chunks get decks.",
 	"chance": 0.6,
 	"min_per_chunk": 1,
 	"per_chunk": 2,
@@ -8,5 +8,6 @@
 	"ladder_share": 0.3,
 	"ladder_rise": 5.0,
 	"deck_height": 4.0,
+	"link_clearance": 0.45,
 	"regions": ["maze"]
 }

@@ -1,14 +1,15 @@
-//! Swimmable sewer water, movement (Godot `game/player/player_controller_3d.gd`: `begin_plunge` / `_update_plunge`,
-//! lines 1154-1229, and the wading speed by depth, lines 336-338, 365-372, 1237-1256, 1893). Pure state and speed
-//! functions: the caller feeds them the water depth at the feet (`water_depth_at`) and applies the result.
+//! Swimmable sewer water, movement (Godot `game/player/player_controller_3d.gd`: the wading speed by depth, lines
+//! 336-338, 365-372, 1237-1256, 1893) and the landing rule of a fall. Pure state and speed functions: the caller
+//! feeds them the water depth at the feet (`water_depth_at`) and applies the result.
 //!
-//! The plunge is the deliberate waterfall jump: an arc off the ledge to the pool (`Fall`), a muffled moment under
-//! the surface (`Splash`), a slow swim to the walkway ring (`Swim`, `swim_speed`) and a climb out (`ClimbOut`), then
-//! `soaked_seconds` of soaked. Collision is off for the duration; the caller ignores input while a `Plunge` runs.
+//! There is no scripted waterfall plunge any more: the runner falls like anywhere else (`Player::falling`) and
+//! `Game::apply_landing` applies `FallRules` (data/swim/fall.json) at the touchdown, a splash in the pool or a
+//! stun on the ground. In the pool the runner then swims freely with the wade rules.
 //! Noise is only the figure hunters hear; the player's own danger readout, heartbeat and chase cue are not driven by
 //! it, so bots and chased fake players never reach those cues from here.
 //!
-//! Every number is in data/swim/movement.json (`lr.swim.movement/1`), parsed once; defaults match the Godot values.
+//! Every number is in data/swim/movement.json (`lr.swim.movement/1`) and data/swim/fall.json (`lr.swim.fall/1`),
+//! parsed once; defaults match the Godot values.
 
 use serde_json::Value;
 use std::sync::OnceLock;
@@ -29,20 +30,8 @@ pub struct WadeRules {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlungeRules {
-    pub hop_speed: f32,
-    pub gravity: f32,
-    pub min_drop: f32,
-    pub splash_seconds: f32,
-    pub swim_speed: f32,
-    pub min_swim_seconds: f32,
-    pub bob_amplitude: f32,
-    pub bob_rate: f32,
-    pub climb_out_seconds: f32,
-    pub climb_out_hop: f32,
     pub splash_noise: f32,
     pub splash_noise_seconds: f32,
-    pub swim_noise: f32,
-    pub climb_out_noise: f32,
     pub soaked_seconds: f32,
     pub soaked_noise_scale: f32,
     /// Metres from the water surface down to the bed (Godot CHANNEL_DEPTH + WATER_SURFACE); the swim runs on the bed.
@@ -72,20 +61,8 @@ impl Default for SwimRules {
                 soaked_floor_fraction: 0.5,
             },
             plunge: PlungeRules {
-                hop_speed: 1.6,
-                gravity: 9.8,
-                min_drop: 0.5,
-                splash_seconds: 0.55,
-                swim_speed: 1.5,
-                min_swim_seconds: 2.0,
-                bob_amplitude: 0.04,
-                bob_rate: 3.0,
-                climb_out_seconds: 0.6,
-                climb_out_hop: 0.12,
                 splash_noise: 3.0,
                 splash_noise_seconds: 1.2,
-                swim_noise: 0.8,
-                climb_out_noise: 0.3,
                 soaked_seconds: 30.0,
                 soaked_noise_scale: 1.45,
                 channel_depth: 0.0,
@@ -121,7 +98,7 @@ fn nn(o: &Value, k: &str, d: f32) -> f32 {
 
 impl SwimRules {
     /// Reads the rules from parsed JSON; a missing or wrong-typed field keeps its default. Values are kept sane
-    /// (non-negative; gravity, speeds and durations above zero) so a bad edit cannot divide by zero.
+    /// (non-negative; durations above zero) so a bad edit cannot divide by zero.
     pub fn parse(v: &Value) -> SwimRules {
         let w = &v["wade"];
         let p = &v["plunge"];
@@ -140,20 +117,8 @@ impl SwimRules {
                 soaked_floor_fraction: nn(w, "soaked_floor_fraction", d.wade.soaked_floor_fraction).min(1.0),
             },
             plunge: PlungeRules {
-                hop_speed: nn(p, "hop_speed", d.plunge.hop_speed),
-                gravity: pos(p, "gravity", d.plunge.gravity),
-                min_drop: nn(p, "min_drop", d.plunge.min_drop),
-                splash_seconds: pos(p, "splash_seconds", d.plunge.splash_seconds),
-                swim_speed: pos(p, "swim_speed", d.plunge.swim_speed),
-                min_swim_seconds: pos(p, "min_swim_seconds", d.plunge.min_swim_seconds),
-                bob_amplitude: nn(p, "bob_amplitude", d.plunge.bob_amplitude),
-                bob_rate: nn(p, "bob_rate", d.plunge.bob_rate),
-                climb_out_seconds: pos(p, "climb_out_seconds", d.plunge.climb_out_seconds),
-                climb_out_hop: nn(p, "climb_out_hop", d.plunge.climb_out_hop),
                 splash_noise: nn(p, "splash_noise", d.plunge.splash_noise),
                 splash_noise_seconds: nn(p, "splash_noise_seconds", d.plunge.splash_noise_seconds),
-                swim_noise: nn(p, "swim_noise", d.plunge.swim_noise),
-                climb_out_noise: nn(p, "climb_out_noise", d.plunge.climb_out_noise),
                 soaked_seconds: nn(p, "soaked_seconds", d.plunge.soaked_seconds),
                 soaked_noise_scale: nn(p, "soaked_noise_scale", d.plunge.soaked_noise_scale),
                 channel_depth: nn(p, "channel_depth", d.plunge.channel_depth),
@@ -175,10 +140,164 @@ pub fn rules() -> &'static SwimRules {
     })
 }
 
-/// Godot `_smooth`: smoothstep on 0..1.
-fn smooth(k: f32) -> f32 {
-    let k = k.clamp(0.0, 1.0);
-    k * k * (3.0 - 2.0 * k)
+// ---------------------------------------------------------------------------------------------------------------
+// The landing rule of a fall (data/swim/fall.json, `lr.swim.fall/1`)
+
+/// What a landing in deep enough water does: a splash and a soak, never a stun.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PoolLanding {
+    /// Water at least this deep (metres) takes the body.
+    pub min_depth: f32,
+    pub splash_gain: f32,
+    pub noise: f32,
+    pub noise_seconds: f32,
+    pub flicker_seconds: f32,
+    pub soak: bool,
+}
+
+/// What a landing on dry floor does. There are no hit points: a stun, a stamina loss, exposure and a noise burst,
+/// all scaled by `(drop_height / STOREY).clamp(scale_min, scale_max)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroundLanding {
+    pub stun_seconds: f32,
+    pub stamina_loss: f32,
+    pub exposure_add: f32,
+    pub noise: f32,
+    pub noise_seconds: f32,
+    pub flicker_seconds: f32,
+    pub scale_min: f32,
+    pub scale_max: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FallRules {
+    /// A fall shorter than this (metres) has no landing effect.
+    pub min_height: f32,
+    /// The share of the ground speed the body keeps while it falls (steering in the air).
+    pub air_control: f32,
+    /// A drop shorter than this (metres) is a step the height eases down; a longer one is a fall.
+    pub min_gap: f32,
+    /// A fall whose drop is at least this (metres) reports a `Landing` (the game then applies `min_height` and the rest).
+    pub landing_report_gap: f32,
+    pub pool: PoolLanding,
+    pub ground: GroundLanding,
+}
+
+/// The shipped file, the single source of the standard values.
+const FALL_JSON: &str = include_str!("../data/swim/fall.json");
+
+impl Default for FallRules {
+    /// The standard values: the embedded data/swim/fall.json, parsed (there is no second copy of the numbers). The shipped
+    /// file is checked by the tests, so a refusal here is a broken build.
+    fn default() -> Self {
+        serde_json::from_str::<Value>(FALL_JSON)
+            .map_err(|e| e.to_string())
+            .and_then(|v| FallRules::parse(&v))
+            .expect("the embedded data/swim/fall.json is valid")
+    }
+}
+
+/// A finite number in `lo..=hi` at `section.key`, or the reason it is refused.
+fn limited(v: &Value, section: &str, key: &str, lo: f32, hi: f32) -> Result<f32, String> {
+    let x = v
+        .get(section)
+        .and_then(|s| s.get(key))
+        .and_then(Value::as_f64)
+        .ok_or_else(|| format!("fall.json: {section}.{key} is missing or not a number"))? as f32;
+    if x.is_finite() && x >= lo && x <= hi {
+        Ok(x)
+    } else {
+        Err(format!("fall.json: {section}.{key} = {x} is outside {lo}..={hi}"))
+    }
+}
+
+impl FallRules {
+    /// Reads and checks a fall file. Every field must be present and inside its limits; a bad file is refused whole.
+    pub fn parse(v: &Value) -> Result<FallRules, String> {
+        if v.get("schema").and_then(Value::as_str) != Some("lr.swim.fall/1") {
+            return Err("fall.json: schema must be lr.swim.fall/1".into());
+        }
+        let top = |k: &str, lo: f32, hi: f32| -> Result<f32, String> {
+            let x = v.get(k).and_then(Value::as_f64).ok_or_else(|| format!("fall.json: {k} is missing or not a number"))? as f32;
+            if x.is_finite() && x >= lo && x <= hi {
+                Ok(x)
+            } else {
+                Err(format!("fall.json: {k} = {x} is outside {lo}..={hi}"))
+            }
+        };
+        let soak = v
+            .pointer("/pool/soak")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| "fall.json: pool.soak is missing or not a boolean".to_string())?;
+        let rules = FallRules {
+            min_height: top("min_height", 0.0, 100.0)?,
+            air_control: top("air_control", 0.0, 1.0)?,
+            min_gap: top("min_gap", 0.01, 10.0)?,
+            landing_report_gap: top("landing_report_gap", 0.0, 100.0)?,
+            pool: PoolLanding {
+                min_depth: limited(v, "pool", "min_depth", 0.01, 10.0)?,
+                splash_gain: limited(v, "pool", "splash_gain", 0.0, 4.0)?,
+                noise: limited(v, "pool", "noise", 0.0, 100.0)?,
+                noise_seconds: limited(v, "pool", "noise_seconds", 0.0, 30.0)?,
+                flicker_seconds: limited(v, "pool", "flicker_seconds", 0.0, 30.0)?,
+                soak,
+            },
+            ground: GroundLanding {
+                stun_seconds: limited(v, "ground", "stun_seconds", 0.0, 30.0)?,
+                stamina_loss: limited(v, "ground", "stamina_loss", 0.0, 1000.0)?,
+                exposure_add: limited(v, "ground", "exposure_add", 0.0, 100.0)?,
+                noise: limited(v, "ground", "noise", 0.0, 100.0)?,
+                noise_seconds: limited(v, "ground", "noise_seconds", 0.0, 30.0)?,
+                flicker_seconds: limited(v, "ground", "flicker_seconds", 0.0, 30.0)?,
+                scale_min: limited(v, "ground", "scale_min", 0.01, 10.0)?,
+                scale_max: limited(v, "ground", "scale_max", 0.01, 10.0)?,
+            },
+        };
+        if rules.ground.scale_max < rules.ground.scale_min {
+            return Err("fall.json: ground.scale_max is below scale_min".into());
+        }
+        if rules.landing_report_gap < rules.min_gap {
+            return Err("fall.json: landing_report_gap is below min_gap".into());
+        }
+        Ok(rules)
+    }
+
+    /// The speed multiplier of the body: `air_control` while it falls, 1 on the ground.
+    pub fn air_scale(&self, airborne: bool) -> f32 {
+        if airborne {
+            self.air_control
+        } else {
+            1.0
+        }
+    }
+
+    /// Whether the ground `gap` metres under a standing body is a fall (not a step the height eases down).
+    pub fn starts_fall(&self, gap: f32) -> bool {
+        gap > self.min_gap
+    }
+
+    /// Whether a fall of `drop_height` metres reports a landing.
+    pub fn reports_landing(&self, drop_height: f32) -> bool {
+        drop_height >= self.landing_report_gap
+    }
+
+    /// How hard a landing from `drop_height` metres hits on dry floor: the drop in storeys, between the clamps.
+    pub fn ground_scale(&self, drop_height: f32) -> f32 {
+        (drop_height / crate::world::vertical::STOREY).clamp(self.ground.scale_min, self.ground.scale_max)
+    }
+}
+
+/// The embedded landing rules (data/swim/fall.json); the standard values (the same file) if the embedded copy is
+/// missing or refused.
+pub fn fall_rules() -> &'static FallRules {
+    static RULES: OnceLock<FallRules> = OnceLock::new();
+    RULES.get_or_init(|| {
+        crate::content::embedded::data_under("swim/fall.json")
+            .next()
+            .and_then(|(_, text)| serde_json::from_str::<Value>(text).ok())
+            .and_then(|v| FallRules::parse(&v).ok())
+            .unwrap_or_default()
+    })
 }
 
 fn lerp(a: f32, b: f32, k: f32) -> f32 {
@@ -226,162 +345,6 @@ pub fn wade_soaked_floor(wade: &WadeRules, plunge: &PlungeRules, depth: f32) -> 
     }
 }
 
-// ---------------------------------------------------------------------------------------------------------------
-// The plunge
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PlungePhase {
-    Fall,
-    Splash,
-    Swim,
-    ClimbOut,
-}
-
-/// What one `Plunge::step` asks of the caller.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PlungeFrame {
-    /// Where the feet are now: x, y (floor or bed height), z.
-    pub pos: [f32; 3],
-    /// The noise hunters hear this frame.
-    pub noise: f32,
-    pub phase: PlungePhase,
-    /// True on the one frame the body hits the water: play the big splash, muffle sound, flicker the light, and
-    /// emit a noise burst of `splash_noise` for `splash_noise_seconds`.
-    pub splashed: bool,
-    /// True while sound is muffled (from the splash until the swim ends).
-    pub muffled: bool,
-    /// True on the one frame the swim ends and sound is unmuffled.
-    pub unmuffled: bool,
-    /// True on the last frame: restore collision, set soaked to `soaked_seconds`; the storey changes by itself as
-    /// the feet cross it (direct, no fade, no halt).
-    pub finished: bool,
-}
-
-/// One waterfall jump in progress. Build with `Plunge::begin`, call `step` every frame until `finished`.
-#[derive(Clone, Copy, Debug)]
-pub struct Plunge {
-    rules: PlungeRules,
-    phase: PlungePhase,
-    t: f32,
-    from: [f32; 3],
-    land: [f32; 3],
-    exit: [f32; 3],
-    surface: f32,
-    bed: f32,
-    fall_seconds: f32,
-    swim_seconds: f32,
-    swim_end: [f32; 3],
-    pos: [f32; 3],
-    muffled: bool,
-}
-
-impl Plunge {
-    /// `begin_plunge`: from the ledge `from`, an arc to the pool at `land` (water surface at `surface_y`), a swim to
-    /// `exit` on the walkway ring.
-    pub fn begin(rules: &PlungeRules, from: [f32; 3], land: [f32; 3], exit: [f32; 3], surface_y: f32) -> Plunge {
-        let drop = (from[1] - surface_y).max(rules.min_drop);
-        let fall_seconds =
-            (rules.hop_speed + (rules.hop_speed * rules.hop_speed + 2.0 * rules.gravity * drop).sqrt()) / rules.gravity;
-        let bed = surface_y - rules.channel_depth - rules.water_surface;
-        let dist = ((land[0] - exit[0]).powi(2) + (land[2] - exit[2]).powi(2)).sqrt();
-        Plunge {
-            rules: *rules,
-            phase: PlungePhase::Fall,
-            t: 0.0,
-            from,
-            land,
-            exit,
-            surface: surface_y,
-            bed,
-            fall_seconds,
-            swim_seconds: (dist / rules.swim_speed).max(rules.min_swim_seconds),
-            swim_end: land,
-            pos: from,
-            muffled: false,
-        }
-    }
-
-    pub fn phase(&self) -> PlungePhase {
-        self.phase
-    }
-
-    pub fn pos(&self) -> [f32; 3] {
-        self.pos
-    }
-
-    /// Seconds the fall lasts (from the drop height).
-    pub fn fall_seconds(&self) -> f32 {
-        self.fall_seconds
-    }
-
-    /// Seconds the swim lasts (distance over `swim_speed`, at least `min_swim_seconds`).
-    pub fn swim_seconds(&self) -> f32 {
-        self.swim_seconds
-    }
-
-    /// `_update_plunge`: advances by `dt` seconds. The caller ignores input while a plunge runs.
-    pub fn step(&mut self, dt: f32) -> PlungeFrame {
-        let r = self.rules;
-        self.t += dt.max(0.0);
-        let (mut splashed, mut unmuffled, mut finished) = (false, false, false);
-        let mut noise = 0.0;
-        match self.phase {
-            PlungePhase::Fall => {
-                let k = (self.t / self.fall_seconds).clamp(0.0, 1.0);
-                let y = self.from[1] + r.hop_speed * self.t - 0.5 * r.gravity * self.t * self.t;
-                self.pos = [lerp(self.from[0], self.land[0], k), y.max(self.surface), lerp(self.from[2], self.land[2], k)];
-                if self.t >= self.fall_seconds {
-                    self.phase = PlungePhase::Splash;
-                    self.t = 0.0;
-                    self.muffled = true;
-                    splashed = true;
-                    noise = r.splash_noise;
-                }
-            }
-            PlungePhase::Splash => {
-                let k = (self.t / r.splash_seconds).clamp(0.0, 1.0);
-                self.pos = [self.land[0], lerp(self.surface, self.bed, smooth(k)), self.land[2]];
-                noise = r.splash_noise;
-                if self.t >= r.splash_seconds {
-                    self.phase = PlungePhase::Swim;
-                    self.t = 0.0;
-                    // This frame is reported as Swim, so it carries the swim noise, not the splash burst.
-                    noise = r.swim_noise;
-                }
-            }
-            PlungePhase::Swim => {
-                let k = smooth(self.t / self.swim_seconds);
-                let bob = (self.t * r.bob_rate).sin() * r.bob_amplitude;
-                self.pos = [lerp(self.land[0], self.exit[0], k), self.bed + bob, lerp(self.land[2], self.exit[2], k)];
-                noise = r.swim_noise;
-                if self.t >= self.swim_seconds {
-                    self.phase = PlungePhase::ClimbOut;
-                    self.t = 0.0;
-                    self.swim_end = self.pos;
-                    self.muffled = false;
-                    unmuffled = true;
-                }
-            }
-            PlungePhase::ClimbOut => {
-                let k = (self.t / r.climb_out_seconds).clamp(0.0, 1.0);
-                let s = smooth(k);
-                let hop = (k * std::f32::consts::PI).sin() * r.climb_out_hop;
-                self.pos = [
-                    lerp(self.swim_end[0], self.exit[0], s),
-                    lerp(self.swim_end[1], self.exit[1], s) + hop,
-                    lerp(self.swim_end[2], self.exit[2], s),
-                ];
-                noise = r.climb_out_noise;
-                if self.t >= r.climb_out_seconds {
-                    finished = true;
-                    self.pos = self.exit;
-                }
-            }
-        }
-        PlungeFrame { pos: self.pos, noise, phase: self.phase, splashed, muffled: self.muffled, unmuffled, finished }
-    }
-}
-
 /// Footstep noise while soaked (hunters hear a wet runner from further away).
 pub fn soaked_noise(rules: &PlungeRules, base_noise: f32, soaked_left: f32) -> f32 {
     if soaked_left > 0.0 {
@@ -407,11 +370,6 @@ pub fn merge_water_noise(current: f32, water_noise: f32, scale: f32) -> f32 {
     current.max(stored)
 }
 
-/// True when the runner stands at the waterfall ledge cell: on `start` or `cell` of the jump (chunk-local cells).
-pub fn at_jump_ledge(local: (i32, i32), start: (i32, i32), cell: (i32, i32)) -> bool {
-    local == start || local == cell
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,13 +389,6 @@ mod tests {
         assert_eq!(merge_water_noise(2.0, 0.0, scale), 2.0);
     }
 
-    #[test]
-    fn the_ledge_is_the_jump_start_or_cell() {
-        assert!(at_jump_ledge((3, 4), (3, 4), (3, 5)));
-        assert!(at_jump_ledge((3, 5), (3, 4), (3, 5)));
-        assert!(!at_jump_ledge((9, 9), (3, 4), (3, 5)));
-    }
-
     fn standard() -> SwimRules {
         SwimRules::default()
     }
@@ -445,25 +396,132 @@ mod tests {
     #[test]
     fn embedded_data_matches_godot_standard() {
         assert_eq!(*rules(), standard());
-        assert_eq!(rules().plunge.swim_speed, 1.5);
         assert_eq!(rules().wade.speed_scale, 0.45);
         assert_eq!(rules().plunge.soaked_seconds, 30.0);
     }
 
     #[test]
     fn changed_data_changes_behaviour() {
-        let v = serde_json::json!({ "wade": { "speed_scale": 0.2 }, "plunge": { "swim_speed": 3.0 } });
+        let v = serde_json::json!({ "wade": { "speed_scale": 0.2 }, "plunge": { "soaked_noise_scale": 3.0 } });
         let r = SwimRules::parse(&v);
         assert!(wade_speed_scale(&r.wade, 0.9) < wade_speed_scale(&standard().wade, 0.9));
-        let p = Plunge::begin(&r.plunge, [0.0, 3.0, 0.0], [0.0; 3], [30.0, 0.0, 0.0], 0.0);
-        let q = Plunge::begin(&standard().plunge, [0.0, 3.0, 0.0], [0.0; 3], [30.0, 0.0, 0.0], 0.0);
-        assert!(p.swim_seconds() < q.swim_seconds());
+        assert!(soaked_noise(&r.plunge, 10.0, 5.0) > soaked_noise(&standard().plunge, 10.0, 5.0));
     }
 
     #[test]
     fn bad_data_falls_back() {
-        let v = serde_json::json!({ "plunge": { "gravity": 0.0, "swim_speed": -1 }, "wade": { "deep_depth": "x" } });
+        let v = serde_json::json!({ "plunge": { "soaked_seconds": -1 }, "wade": { "deep_depth": "x" } });
         assert_eq!(SwimRules::parse(&v), standard());
+    }
+
+    // --- the landing rule (data/swim/fall.json) ---
+
+    fn fall_text() -> &'static str {
+        include_str!("../data/swim/fall.json")
+    }
+
+    fn fall_json() -> Value {
+        serde_json::from_str(fall_text()).unwrap()
+    }
+
+    #[test]
+    fn fall_json_matches_standard_values() {
+        let r = FallRules::parse(&fall_json()).expect("the shipped file parses");
+        assert_eq!(r, FallRules::default());
+        assert_eq!(*fall_rules(), r, "the embedded file is the one in the tree");
+        assert_eq!(r.min_height, 1.5);
+        assert_eq!((r.air_control, r.min_gap, r.landing_report_gap), (0.6, 0.6, 1.2));
+        assert_eq!((r.ground.stun_seconds, r.ground.stamina_loss, r.ground.exposure_add), (2.5, 60.0, 12.0));
+        assert_eq!((r.ground.noise, r.ground.noise_seconds, r.ground.flicker_seconds), (18.0, 1.5, 0.8));
+        assert_eq!((r.ground.scale_min, r.ground.scale_max), (0.4, 2.0));
+        assert!(r.pool.soak);
+        // the pool splash is the old plunge splash
+        assert_eq!(r.pool.noise, rules().plunge.splash_noise);
+        assert_eq!(r.pool.noise_seconds, rules().plunge.splash_noise_seconds);
+    }
+
+    #[test]
+    fn a_bad_fall_file_is_refused() {
+        let ok = fall_json();
+        let with = |section: &str, key: &str, val: Value| {
+            let mut v = ok.clone();
+            if section.is_empty() {
+                v[key] = val;
+            } else {
+                v[section][key] = val;
+            }
+            v
+        };
+        let neg = serde_json::json!(-1.0);
+        let huge = serde_json::json!(1.0e9);
+        let text = serde_json::json!("x");
+        let cases = [
+            ("", "min_height", neg.clone()),
+            ("", "min_height", huge.clone()),
+            ("", "min_height", text.clone()),
+            ("", "air_control", neg.clone()),
+            ("", "air_control", serde_json::json!(1.5)),
+            ("", "min_gap", serde_json::json!(0.0)),
+            ("", "min_gap", huge.clone()),
+            ("", "landing_report_gap", neg.clone()),
+            ("", "landing_report_gap", serde_json::json!(0.1)),
+            ("pool", "min_depth", neg.clone()),
+            ("pool", "min_depth", serde_json::json!(0.0)),
+            ("pool", "splash_gain", neg.clone()),
+            ("pool", "noise", huge.clone()),
+            ("pool", "noise_seconds", neg.clone()),
+            ("pool", "flicker_seconds", huge.clone()),
+            ("pool", "soak", serde_json::json!(1)),
+            ("ground", "stun_seconds", neg.clone()),
+            ("ground", "stamina_loss", huge.clone()),
+            ("ground", "exposure_add", serde_json::json!(101.0)),
+            ("ground", "noise", neg.clone()),
+            ("ground", "noise_seconds", huge.clone()),
+            ("ground", "flicker_seconds", neg.clone()),
+            ("ground", "scale_min", serde_json::json!(0.0)),
+            ("ground", "scale_max", huge.clone()),
+        ];
+        for (section, key, val) in cases {
+            assert!(FallRules::parse(&with(section, key, val.clone())).is_err(), "{section}.{key} = {val} must be refused");
+        }
+        // a missing field, a wrong schema and an inverted clamp
+        let mut missing = ok.clone();
+        missing["ground"].as_object_mut().unwrap().remove("stun_seconds");
+        assert!(FallRules::parse(&missing).is_err());
+        assert!(FallRules::parse(&with("", "schema", serde_json::json!("lr.swim.fall/2"))).is_err());
+        let mut inverted = ok.clone();
+        inverted["ground"]["scale_min"] = serde_json::json!(3.0);
+        assert!(FallRules::parse(&inverted).is_err(), "scale_max below scale_min");
+    }
+
+    #[test]
+    fn changed_fall_data_changes_the_scale() {
+        let mut v = fall_json();
+        v["ground"]["scale_max"] = serde_json::json!(4.0);
+        let wide = FallRules::parse(&v).unwrap();
+        let drop = 3.0 * crate::world::vertical::STOREY;
+        assert!(wide.ground_scale(drop) > FallRules::default().ground_scale(drop));
+    }
+
+    #[test]
+    fn changed_fall_data_changes_the_body_rules() {
+        let base = FallRules::default();
+        let mut v = fall_json();
+        v["air_control"] = serde_json::json!(0.2);
+        v["min_gap"] = serde_json::json!(1.0);
+        v["landing_report_gap"] = serde_json::json!(3.0);
+        let r = FallRules::parse(&v).unwrap();
+        assert!(r.air_scale(true) < base.air_scale(true), "less air control");
+        assert_eq!((r.air_scale(false), base.air_scale(false)), (1.0, 1.0), "the ground speed is never scaled");
+        assert!(base.starts_fall(0.8) && !r.starts_fall(0.8), "a wider gap is still a step");
+        assert!(base.reports_landing(2.0) && !r.reports_landing(2.0), "a higher report gap hides a short landing");
+        assert!(!base.starts_fall(base.min_gap) && base.starts_fall(base.min_gap + 0.01));
+        assert!(base.reports_landing(base.landing_report_gap) && !base.reports_landing(base.landing_report_gap - 0.01));
+    }
+
+    #[test]
+    fn the_default_is_the_shipped_file() {
+        assert_eq!(FallRules::default(), FallRules::parse(&fall_json()).unwrap());
     }
 
     #[test]
@@ -488,85 +546,6 @@ mod tests {
         let p = standard().plunge;
         assert_eq!(wade_soaked_floor(&w, &p, 0.0), 0.0);
         assert!(wade_soaked_floor(&w, &p, 0.1) > 0.0);
-    }
-
-    fn run(p: &mut Plunge) -> (Vec<PlungePhase>, f32, i32, i32) {
-        let (mut phases, mut t, mut splashes, mut unmuffles) = (vec![], 0.0, 0, 0);
-        loop {
-            let f = p.step(1.0 / 60.0);
-            t += 1.0 / 60.0;
-            if phases.last() != Some(&f.phase) {
-                phases.push(f.phase);
-            }
-            splashes += f.splashed as i32;
-            unmuffles += f.unmuffled as i32;
-            if f.finished {
-                return (phases, t, splashes, unmuffles);
-            }
-            assert!(t < 120.0, "plunge never finished");
-        }
-    }
-
-    #[test]
-    fn plunge_runs_all_phases_and_lands_on_exit() {
-        let r = standard().plunge;
-        let exit = [8.0, 0.4, 2.0];
-        let mut p = Plunge::begin(&r, [0.0, 3.0, 0.0], [1.0, 0.0, 0.0], exit, 0.0);
-        let (phases, t, splashes, unmuffles) = run(&mut p);
-        assert_eq!(phases, vec![PlungePhase::Fall, PlungePhase::Splash, PlungePhase::Swim, PlungePhase::ClimbOut]);
-        assert_eq!((splashes, unmuffles), (1, 1));
-        assert_eq!(p.pos(), exit);
-        assert!(t > 5.0 && t < 15.0, "t = {t}");
-    }
-
-    #[test]
-    fn swim_has_minimum_and_scales_with_distance() {
-        let r = standard().plunge;
-        let near = Plunge::begin(&r, [0.0, 2.0, 0.0], [0.0; 3], [0.5, 0.0, 0.0], 0.0);
-        let far = Plunge::begin(&r, [0.0, 2.0, 0.0], [0.0; 3], [15.0, 0.0, 0.0], 0.0);
-        assert_eq!(near.swim_seconds(), r.min_swim_seconds);
-        assert!((far.swim_seconds() - 15.0 / r.swim_speed).abs() < 1e-4);
-    }
-
-    #[test]
-    fn fall_stays_above_surface_and_muffle_spans_splash_to_swim_end() {
-        let r = standard().plunge;
-        let mut p = Plunge::begin(&r, [0.0, 4.0, 0.0], [2.0, 0.0, 0.0], [6.0, 0.0, 0.0], 0.0);
-        let mut seen_muffled = false;
-        for _ in 0..2000 {
-            let f = p.step(1.0 / 30.0);
-            match f.phase {
-                PlungePhase::Fall => assert!(f.pos[1] >= 0.0 && !f.muffled),
-                PlungePhase::Splash | PlungePhase::Swim => {
-                    assert!(f.muffled);
-                    seen_muffled = true;
-                }
-                PlungePhase::ClimbOut => assert!(!f.muffled),
-            }
-            if f.finished {
-                break;
-            }
-        }
-        assert!(seen_muffled);
-    }
-
-    #[test]
-    fn swim_is_quieter_than_splash() {
-        let r = standard().plunge;
-        let mut p = Plunge::begin(&r, [0.0, 3.0, 0.0], [0.0; 3], [6.0, 0.0, 0.0], 0.0);
-        let (mut splash, mut swim) = (0.0f32, 0.0f32);
-        loop {
-            let f = p.step(1.0 / 60.0);
-            match f.phase {
-                PlungePhase::Splash => splash = splash.max(f.noise),
-                PlungePhase::Swim => swim = swim.max(f.noise),
-                _ => {}
-            }
-            if f.finished {
-                break;
-            }
-        }
-        assert!(splash > swim && swim > 0.0);
     }
 
     #[test]

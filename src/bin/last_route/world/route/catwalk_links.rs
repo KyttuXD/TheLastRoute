@@ -29,6 +29,9 @@ pub struct CatwalkRules {
     pub ladder_share: f64,
     pub ladder_rise: f32,
     pub deck_height: f32,
+    /// Half the side (m) of the footprint that must be free of solid props on a link's ground cell and the deck cell it
+    /// steps onto (`Facility::apply_catwalks`): which catwalks survive, so it changes the fixed-seed output.
+    pub link_clearance: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +46,9 @@ pub struct CatwalkLink {
     pub cell: Cell,
     pub kind: CatwalkKind,
     pub deck_height: f32,
+    /// The unit step from the ground `cell` to the adjacent deck cell it reaches (the deck landing). `links_for` leaves
+    /// it `(0, 0)`: `Facility::apply_catwalks` fills it in once it knows which deck cells are kept.
+    pub run: (i32, i32),
 }
 
 fn field(v: &Value, key: &str, min: f64, max: f64) -> Result<f64, String> {
@@ -65,6 +71,7 @@ pub fn parse(text: &str) -> Result<CatwalkRules, String> {
         ladder_share: field(&v, "ladder_share", 0.0, 1.0)?,
         ladder_rise: field(&v, "ladder_rise", 0.0, 100.0)? as f32,
         deck_height: field(&v, "deck_height", 0.1, 100.0)? as f32,
+        link_clearance: field(&v, "link_clearance", 0.0, 0.5)?,
     };
     if r.min_per_chunk > r.per_chunk {
         return Err("catwalk_links: \"min_per_chunk\" must not exceed \"per_chunk\"".into());
@@ -114,7 +121,7 @@ pub fn links_for(
         // always draw, so the stream does not depend on the deck's height
         let wants_ladder = rng.next_float() < rules.ladder_share;
         let kind = if wants_ladder && height <= rules.ladder_rise { CatwalkKind::Ladder } else { CatwalkKind::Stairs };
-        out.push(CatwalkLink { cell: c, kind, deck_height: height });
+        out.push(CatwalkLink { cell: c, kind, deck_height: height, run: (0, 0) });
     }
     out
 }
@@ -249,6 +256,16 @@ mod tests {
         r.chance = 1.0;
         assert!(links_for("w", ChunkKey { cx: 0, cy: 0, level: -1 }, &grid(), None, &r).is_empty());
         assert!(links_for("w", key(0), &[], None, &r).is_empty());
+    }
+
+    #[test]
+    fn a_link_leaves_its_deck_step_to_the_facility() {
+        // links_for knows only the ground cells: the step onto the deck is filled in by Facility::apply_catwalks
+        let mut r = std_rules();
+        r.chance = 1.0;
+        let links = links_for("w", key(0), &grid(), None, &r);
+        assert!(!links.is_empty());
+        assert!(links.iter().all(|l| l.run == (0, 0)));
     }
 
     #[test]

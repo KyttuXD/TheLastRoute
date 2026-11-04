@@ -113,3 +113,7 @@ From the project folder, run the workflow `godot-rust-parity`.
 - Golden layout parity compares stairwell boxes only, so no golden stair cell changed.
 - Our Switchback and Spiral are the same kinds Godot uses for level-0 wells.
 - Godot's half-storey flight is not copied: a Rust flight spans a full storey of 5.0 m (see [STAIRS_CONTINUOUS_DESIGN.md](STAIRS_CONTINUOUS_DESIGN.md)).
+
+## Waterfall plunge (continuous levels, phase 7)
+
+- Godot scripts the fall (`begin_plunge` in `player_controller_3d.gd`, input off, level swapped). Rust falls physically from absolute y with air control and a landing rule. This is an intentional difference (KT D7).

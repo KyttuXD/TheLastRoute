@@ -1,0 +1,6 @@
+{
+  "schema": "lr.ladders/1",
+  "_about": "Sewer ladder walk-in numbers, read by game/ladder.rs. A runner standing on a ladder's step cell mounts it without interact by walking into the hatch. walk_in_reach_margin (m) is added to the player radius: the body stops one radius short of the open hatch, so this is the extra distance from the hatch edge (cell centre + run * 0.5) at which the mount still triggers. walk_in_facing is the least dot of the facing and the way to the hatch (1 = straight at it, 0 = side on).",
+  "walk_in_reach_margin": 0.2,
+  "walk_in_facing": 0.5
+}

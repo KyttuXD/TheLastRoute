@@ -394,9 +394,9 @@ Godot references are `game/...` under the KyttusLabApp folder.
 ### Infinite route and levels
 
 - [~] Infinite district layout matches Godot's streamed route generator (see the round 4 map item). `src/bin/last_route/world/infinite.rs` and the chunk RNG tags differ, so seeds will not match
-- [~] Stairs are walked in Godot; Rust teleports to the landing (`src/bin/last_route/game/endless.rs` `take_stairs`). Fade and hold removed 2026-11-04: the level changes on the connection's frame, numbers in `data/stairs_links.json`. Godot's `game/world/generation/stairwells.gd` also has spiral and switchback flights
+- [x] Stairs are walked in Godot; Rust teleports to the landing (`src/bin/last_route/game/endless.rs` `take_stairs`). Fade and hold removed 2026-11-04: the level changes on the connection's frame, numbers in `data/stairs_links.json`. Godot's `game/world/generation/stairwells.gd` also has spiral and switchback flights (done, stairs project phases 5-7: flights are walked, no teleport)
 - [ ] Level links other than stairs: ladders, ramps, manholes, grates, elevators and drops (`docs/SEWERS.md`, `game/world/generation/sewer_route_generator.gd`) (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [ ] Natural stairs and ladders: port the Godot slope system so stairs are walked as slopes and ladders are climbed, and hunters cross stairs between floors
+- [~] Natural stairs and ladders: port the Godot slope system so stairs are walked as slopes and ladders are climbed, and hunters cross stairs between floors (stairs and ladders done in phases 5-6; hunters crossing is phase 8)
 - [ ] Sewer levels -1 to -3, with the cistern, collector and Inferno maze. `src/bin/last_route/world/infinite.rs` picks regions by level, but no sewer geometry exists and `src/bin/last_route/data/loot/sewer.json` is unused (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [~] Hunters persist across chunks and floors and walk the stairs in Godot. Rust rebuilds the lineup on every level change (`reset_hunters` in `endless.rs`) and respawns out-of-window hunters (`stream_window`)
 - [ ] Safe rooms with breach and checkpoints (`_update_checkpoint`, `_request_breach` in `game/infinite_route/infinite_route_test.gd`). Rust has one rest-only safe zone per floor (`interact.rs` 266-272) (status note: [~] in the parity-gaps audit; the less complete status is kept)
@@ -703,7 +703,7 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [x] Port Hunter persistence across chunks and floors: stair walking and per-hunter state
 - [ ] Port Checkpoint and autosave on relays, level changes, safe rooms and quit (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [ ] Port District layout matching Godot: seeds and region tags differ (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Stairs walked rather than teleported to the landing (effort M)
+- [x] Port Stairs walked rather than teleported to the landing (effort M)
 - [ ] Port Sewer, collector and Inferno levels with their own tunnels and ladders (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Floodwater wading and soaked state (effort M)
 - [ ] Port Flood valves: valve focus and flood sync (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
@@ -958,7 +958,7 @@ Source: the 2026-11-04 repo audit. Items that need a design decision are in `doc
 - [ ] Route-table test: every POST route in `routes.rs` has a body limit
 
 ### Godot gaps (with Godot file and line)
-- [ ] Waterfall plunge and swim (`player_controller_3d.gd` 1154-1229, swim speed 1.5 at 357) into `game/player.rs`
+- [x] Waterfall plunge and swim (`player_controller_3d.gd` 1154-1229, swim speed 1.5 at 357) into `game/player.rs` (done, phase 7: physical free fall, data/swim/fall.json)
 - [ ] Flood wading: per-cell depth, speed, noise and tiring (`player_controller_3d.gd` 336-338, 365-372, 1237-1256)
 - [ ] Soaked status and drip noise (`player_controller_3d.gd` 362-364, 1255 on): 30 s, noise scale 1.45, drip every 1.1-2.4 s
 - [ ] Water depth and surface height in the sewer mesh and collision (`sewer_route_generator.gd` 95-96; Rust `world/route/sewer/core.rs` 47-53)
@@ -979,4 +979,4 @@ Source: the 2026-11-04 repo audit. Items that need a design decision are in `doc
 ### Docs
 - [ ] Update `docs/GIMMICKS.md` line 9 and 341, 368, 419: Nightmare is ported
 - [ ] Update `docs/GODOT_FEATURE_AUDIT.md` line 595: the Skin tab exists (`ui/settings_panel.rs` 612, 872)
-- [ ] Add a one-line note on direct stairs (no fade, no lockout) to the stairs docs
+- [x] Add a one-line note on direct stairs (no fade, no lockout) to the stairs docs (done in docs/STAIRS_CONTINUOUS_DESIGN.md and MECHANICS.md)

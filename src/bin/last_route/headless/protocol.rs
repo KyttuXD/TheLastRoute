@@ -1096,6 +1096,27 @@ impl Session {
                     None => return err("no ladder_down in this window"),
                 }
             }
+            if to0 == "ladder_up" {
+                // the nearest sewer ladder foot going up (the shaft's lower end)
+                let me = g.p.pos;
+                match g
+                    .fac
+                    .stairs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| s.dir > 0 && s.is_ladder())
+                    .min_by(|a, b| {
+                        pdist(a.1.cell.center(), me)
+                            .partial_cmp(&pdist(b.1.cell.center(), me))
+                            .unwrap()
+                    }) {
+                    Some((k, _)) => {
+                        i = k;
+                        to = "stairs";
+                    }
+                    None => return err("no ladder_up in this window"),
+                }
+            }
             if to0 == "stairs_down" || to0 == "stairs_up" {
                 // the nearest flight going that way
                 let dir = if to0 == "stairs_down" { -1 } else { 1 };
@@ -1174,10 +1195,11 @@ impl Session {
                 "stairs" => {
                     let s = g.fac.stairs[i];
                     if s.is_ladder() {
-                        // a ladder: on its rungs, facing the wall (game/ladder.rs)
-                        let side = crate::game::ladder::wall_side(s.cell, |x, y| g.fac.is_wall_cell(x, y));
-                        g.p.pos = crate::game::ladder::stand(s.cell, side);
-                        g.p.yaw = crate::game::ladder::facing(side);
+                        // a ladder: on its step cell, facing the hatch (game/ladder.rs); walking in mounts it
+                        let run = crate::game::ladder::run_of(&s);
+                        g.p.pos = crate::game::ladder::step_center(s.cell, run);
+                        g.p.yaw = crate::game::ladder::facing((-run.0, -run.1));
+                        g.p.set_abs_y(g.p.y());
                     } else {
                         // as the self-test: on the landing, facing down the flight
                         g.p.pos = s.cell.center();

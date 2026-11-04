@@ -452,6 +452,20 @@ pub fn spiral_clockwise_for(seed: u64, upper_level: i32, cell: Cell) -> bool {
     mix(seed, upper_level, cell, 0x5B1_7A15) & 1 == 1
 }
 
+/// The four unit steps of a ladder's step cell in the order they are tried for the hatch `cell` of chunk column
+/// `chunk` in world `seed` (the world seed as `flight_links::seed_key`): a rotation of north, east, south, west that
+/// starts at a seeded point and turns one way or the other. A pure function, so both levels agree.
+pub fn ladder_dir_order(seed: u64, chunk: (i32, i32), cell: Cell) -> [(i32, i32); 4] {
+    const DIRS: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+    let column = seed
+        ^ (chunk.0 as i64 as u64).wrapping_mul(0xD6E8_FEB8_6659_FD93)
+        ^ (chunk.1 as i64 as u64).wrapping_mul(0xA076_1D64_78BD_642F);
+    let h = mix(column, 0, cell, 0x1ADD_E4);
+    let start = (h % 4) as usize;
+    let backwards = (h >> 8) & 1 == 1;
+    std::array::from_fn(|i| DIRS[if backwards { (start + 4 - i) % 4 } else { (start + i) % 4 }])
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Geometry
 // ---------------------------------------------------------------------------------------------------------------------
@@ -888,6 +902,49 @@ mod tests {
             };
             assert!(lane_gap(0.05) > rules.max_riser);
             assert!((lane_gap(ub) - rules.max_riser).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn the_ladder_dir_order_is_a_seeded_rotation_of_the_four_steps() {
+        let mut firsts = std::collections::BTreeSet::new();
+        for seed in [1u64, 99, 123_456_789] {
+            for cx in -2..=2 {
+                for cell in [Cell::new(10, 12), Cell::new(30, 7), Cell::new(22, 22)] {
+                    let order = ladder_dir_order(seed, (cx, 1), cell);
+                    assert_eq!(order, ladder_dir_order(seed, (cx, 1), cell), "deterministic");
+                    let mut sorted = order.to_vec();
+                    sorted.sort();
+                    sorted.dedup();
+                    assert_eq!(sorted.len(), 4, "all four directions, once each");
+                    for d in order {
+                        assert_eq!(d.0.abs() + d.1.abs(), 1, "a unit step");
+                    }
+                    // a rotation: consecutive entries are quarter turns of one another, all the same way
+                    let turn = |a: (i32, i32), b: (i32, i32)| a.0 * b.1 - a.1 * b.0;
+                    let t0 = turn(order[0], order[1]);
+                    assert!(t0 != 0 && (1..3).all(|i| turn(order[i], order[i + 1]) == t0), "{order:?} is not a rotation");
+                    firsts.insert(order[0]);
+                }
+            }
+        }
+        assert!(firsts.len() >= 3, "the rotation should start at different steps, got {firsts:?}");
+    }
+
+    #[test]
+    fn a_ladder_steps_off_beside_its_hatch_in_its_run_direction() {
+        let rules = flights();
+        for run in RUNS {
+            let f = Flight::new(FlightKind::Ladder, FlightShape::Switchback, 0, Cell::new(20, 20), run);
+            let fp = well_footprint_with(rules, &f);
+            assert_eq!(fp.upper_hole, vec![Cell::new(20, 20)], "the hatch alone is the hole");
+            assert_eq!(fp.landing, Cell::new(20 + run.0, 20 + run.1), "the step cell is one step along the run");
+            assert_eq!(fp.step_cell, Some(fp.landing));
+            assert_eq!(fp.foot, Cell::new(20, 20), "the foot is the hatch's own cell below");
+            assert!(fp.upper_clear.contains(&fp.landing) && fp.lower_clear.contains(&fp.foot));
+            // the same flight seen from its foot is the same record
+            let low = Flight::from_foot_with(rules, FlightKind::Ladder, FlightShape::Switchback, -1, fp.foot, run, false);
+            assert_eq!(low, f, "{run:?}: both levels build one flight");
         }
     }
 

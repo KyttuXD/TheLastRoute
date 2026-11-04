@@ -318,16 +318,8 @@ pub fn divider_wall(out: &mut Parts, s: Stair, level: i32, site: &Site) {
     }
 }
 
-/// The side of a ladder cell the ladder is fixed to: the first wall next to it (north, east, south, west), else north.
-fn ladder_side(c: (i32, i32), solid: &dyn Fn(i32, i32) -> bool) -> (i32, i32) {
-    [(0, -1), (1, 0), (0, 1), (-1, 0)]
-        .into_iter()
-        .find(|m| solid(c.0 + m.0, c.1 + m.1))
-        .unwrap_or((0, -1))
-}
-
-/// A ladder's two rails and rungs fixed against side `m` of cell `c`, from height `y0` to `y1`.
-fn ladder(out: &mut Parts, c: (i32, i32), m: (i32, i32), y0: f32, y1: f32) {
+/// A ladder's two rails and its rungs fixed against side `m` of cell `c`, from height `y0` to `y1`, rungs at `rungs`.
+fn ladder_with(out: &mut Parts, c: (i32, i32), m: (i32, i32), y0: f32, y1: f32, rungs: &[f32]) {
     let centre = vec3(c.0 as f32 + 0.5, 0.0, c.1 as f32 + 0.5);
     let to_wall = vec3(m.0 as f32, 0.0, m.1 as f32);
     let across = vec3(m.1.abs() as f32, 0.0, m.0.abs() as f32);
@@ -337,45 +329,97 @@ fn ladder(out: &mut Parts, c: (i32, i32), m: (i32, i32), y0: f32, y1: f32) {
         let p = base + across * s;
         out.boxes.push((vec3(p.x, mid, p.z), vec3(0.08, len, 0.08), IRON));
     }
-    let rungs = (len / 0.3) as i32;
-    for r in 1..=rungs {
-        let y = y0 + r as f32 * 0.3;
+    for &y in rungs {
         // the rung runs across the ladder: wide along `across`, thin the other way
         let size = vec3(0.07 + 0.33 * across.x, 0.06, 0.07 + 0.33 * across.z);
         out.boxes.push((vec3(base.x, y, base.z), size, IRON));
     }
 }
 
-/// A shaft down under a ladder's maze end (`Stair::is_ladder`, `dir < 0`): the four walls of the cell down to the
-/// storey below, its floor, the ladder on the first wall, and the bars of a grate cover.
-pub fn ladder_down(out: &mut Parts, c: (i32, i32), s: Stair, site: &Site) {
-    let (cx, cz) = (c.0 as f32, c.1 as f32);
-    let corner = |x: i32, z: i32| vec3(cx + x as f32, 0.0, cz + z as f32);
-    // the walls, each in bands so the depth darkens them
-    let sides = [
-        ((0, 0), (1, 0), vec3(0., 0., 1.)),
-        ((1, 0), (1, 1), vec3(-1., 0., 0.)),
-        ((1, 1), (0, 1), vec3(0., 0., -1.)),
-        ((0, 1), (0, 0), vec3(1., 0., 0.)),
-    ];
-    let bands = 4;
-    for (a, b, n) in sides {
-        for i in 0..bands {
-            let (hi, lo) = (-site.h * i as f32 / bands as f32, -site.h * (i + 1) as f32 / bands as f32);
-            wall_face(out, site, (corner(a.0, a.1), 0.0), (corner(b.0, b.1), 1.0), lo, hi, n, shade((hi + lo) / 2.0, site.h));
+/// A full-height ladder: a rung every 0.3 m from `y0` up.
+fn ladder(out: &mut Parts, c: (i32, i32), m: (i32, i32), y0: f32, y1: f32) {
+    let rungs: Vec<f32> = (1..=((y1 - y0) / 0.3) as i32).map(|r| y0 + r as f32 * 0.3).collect();
+    ladder_with(out, c, m, y0, y1, &rungs);
+}
+
+/// Height and width of the low coaming round a ladder hatch.
+const COAMING_H: f32 = 0.1;
+const COAMING_W: f32 = 0.08;
+/// The coaming's iron, a dark steel.
+const COAMING: Color = Color::new(0.38, 0.37, 0.36, 1.0);
+/// A manhole cover's iron.
+const COVER: Color = Color::new(0.46, 0.45, 0.43, 1.0);
+/// The back plate behind a shaft's ladder.
+const BACK_PLATE: Color = Color::new(0.34, 0.33, 0.32, 1.0);
+/// Thickness of the back plate behind the shaft ladder.
+const BACK_PLATE_T: f32 = 0.04;
+/// How far a propped cover stands open from the floor, in degrees.
+const COVER_OPEN_DEG: f32 = 75.0;
+/// Diameter of the cover (the hatch cell is 1 m).
+const COVER_DIA: f32 = 0.8;
+
+/// A cover propped open about 75 degrees on the rim of side `m` of cell `c`: a disc (octagon) built of axis boxes, one
+/// slice per step away from the hinge, each slice as wide as the octagon's chord there. It leans out over the rim, away
+/// from the hole, so the hole stays open and the lower floor shows through. A grate is the same outline as a frame and
+/// bars.
+fn propped_cover(out: &mut Parts, c: (i32, i32), m: (i32, i32), grate: bool) {
+    let a = COVER_OPEN_DEG.to_radians();
+    let (rise, lean) = (a.sin(), a.cos());
+    let hinge = vec3(c.0 as f32 + 0.5 + m.0 as f32 * 0.5, 0.0, c.1 as f32 + 0.5 + m.1 as f32 * 0.5);
+    let out_dir = vec3(m.0 as f32, 0.0, m.1 as f32);
+    let across = vec3(m.1.abs() as f32, 0.0, m.0.abs() as f32);
+    let r = COVER_DIA * 0.5;
+    let n = 6;
+    let step = COVER_DIA / n as f32;
+    for i in 0..n {
+        let u = (i as f32 + 0.5) * step;
+        // octagon chord at distance u along the disc's diameter (flat-topped octagon, apothem r)
+        let d = (u - r).abs();
+        let k = r * 0.4142; // half the side of a regular octagon of apothem r
+        let chord = if d <= k { r * 2.0 } else { (r - (d - k)).max(0.05) * 2.0 };
+        let p = hinge + out_dir * (u * lean) + vec3(0.0, u * rise, 0.0);
+        // thin along the lean, as wide as the chord across, as tall as the slice rises (plus a hair so the slices join)
+        let thick = step * lean + 0.03;
+        let tall = step * rise + 0.03;
+        // the hair of overlap goes up, so the lowest slice rests on the floor and nothing dips below it
+        let p = p + vec3(0.0, 0.015, 0.0);
+        let size = across * chord + vec3(out_dir.x.abs() * thick, tall, out_dir.z.abs() * thick);
+        if grate && i % 2 == 1 {
+            // between the bars: only the frame's two side rails of the slice
+            for s in [-1.0f32, 1.0] {
+                let q = p + across * (s * (chord * 0.5 - 0.025));
+                let w = across * 0.05 + vec3(out_dir.x.abs() * thick, tall, out_dir.z.abs() * thick);
+                out.boxes.push((q, w, GRATE));
+            }
+        } else {
+            out.boxes.push((p, size, if grate { GRATE } else { COVER }));
         }
     }
-    let bottom = [vec3(cx, 0., cz), vec3(cx + 1., 0., cz), vec3(cx + 1., 0., cz + 1.), vec3(cx, 0., cz + 1.)].map(|v| vec3(v.x, -site.h + 0.01, v.z));
-    push(out, Face::Floor, bottom, [vec2(0., 0.), vec2(1., 0.), vec2(1., 1.), vec2(0., 1.)], vec3(0., 1., 0.), shade(-site.h, site.h));
-    // under its cover (every ladder well has one) the rails stop just below it
-    ladder(out, c, ladder_side(c, site.solid), -site.h + 0.1, -0.1);
-    if s.kind == LinkKind::Ladder(Cover::Grate) {
-        for i in 0..5 {
-            out.boxes.push((vec3(cx + 0.1 + 0.2 * i as f32, 0.025, cz + 0.5), vec3(0.05, 0.05, 1.0), GRATE));
+}
+
+/// The hatch of a ladder, seen from the upper level (`Stair::is_ladder`, `dir < 0`): a hole in the floor. There is no
+/// pit, no shaft wall and no pit floor (the lower level is the floor you see through it). Round it: a low coaming
+/// on the three sides that are not the step cell's side, two rails and two rungs standing `RAIL_H` above the floor on
+/// the rails side, and the cover as a model propped open on that side's rim. A grate adds its lit rim strips.
+pub fn ladder_down(out: &mut Parts, c: (i32, i32), s: Stair, site: &Site) {
+    let _ = site;
+    let (cx, cz) = (c.0 as f32, c.1 as f32);
+    let step = s.step_cell();
+    let step_dir = (step.x - c.0, step.y - c.1);
+    let m = s.rails_side();
+    for d in DIRS {
+        if d == step_dir {
+            continue;
         }
-        for z in [0.25f32, 0.75] {
-            out.boxes.push((vec3(cx + 0.5, 0.02, cz + z), vec3(1.0, 0.04, 0.05), GRATE));
-        }
+        let along = vec3(d.1.abs() as f32, 0.0, d.0.abs() as f32);
+        let thin = vec3(d.0.abs() as f32, 0.0, d.1.abs() as f32);
+        let at = vec3(cx + 0.5 + d.0 as f32 * (0.5 - COAMING_W * 0.5), COAMING_H * 0.5, cz + 0.5 + d.1 as f32 * (0.5 - COAMING_W * 0.5));
+        out.boxes.push((at, along * 1.0 + thin * COAMING_W + vec3(0.0, COAMING_H, 0.0), COAMING));
+    }
+    ladder_with(out, c, m, 0.0, RAIL_H, &[RAIL_H * 0.5, RAIL_H * 0.9]);
+    let grate = s.kind == LinkKind::Ladder(Cover::Grate);
+    propped_cover(out, c, m, grate);
+    if grate {
         // the grate's lit rim: four thin warm strips round the cell's edge, so the cover's outline reads from above
         for (centre, size) in [
             (vec3(cx + 0.5, 0.03, cz + 0.02), vec3(1.0, 0.03, 0.04)),
@@ -388,37 +432,30 @@ pub fn ladder_down(out: &mut Parts, c: (i32, i32), s: Stair, site: &Site) {
     }
 }
 
-/// A ladder's sewer end (`dir > 0`): the ladder up the wall to a hatch in the ceiling.
-pub fn ladder_up(out: &mut Parts, c: (i32, i32), site: &Site) {
-    let m = ladder_side(c, site.solid);
-    ladder(out, c, m, 0.0, site.wall_h - 0.05);
-    let (x, z) = (c.0 as f32 + 0.5 + m.0 as f32 * 0.4, c.1 as f32 + 0.5 + m.1 as f32 * 0.4);
-    let y = site.wall_h - 0.02;
-    // the cover: an unlit plate just under the hatch's line, so it is lit grey-cream whatever the shaft's light is
-    out.glow.push((vec3(x, y - 0.02, z), vec3(0.9, 0.03, 0.9), HATCH));
-    // a cool frame round its edge and two grate bars across it, so the hatch reads as a cover from the ladder's foot
-    for (centre, size) in [
-        (vec3(x, y, z - 0.45), vec3(0.94, 0.04, 0.04)),
-        (vec3(x, y, z + 0.45), vec3(0.94, 0.04, 0.04)),
-        (vec3(x - 0.45, y, z), vec3(0.04, 0.04, 0.94)),
-        (vec3(x + 0.45, y, z), vec3(0.04, 0.04, 0.94)),
-    ] {
-        out.glow.push((centre, size, DAYLIGHT));
-    }
-    for along in [-0.15f32, 0.15] {
-        out.boxes.push((vec3(x + along, y, z), vec3(0.04, 0.04, 0.9), GRATE));
-    }
+/// A ladder's foot, seen from the lower level (`dir > 0`): the rails and rungs on the rails side from the floor to the
+/// ceiling (`site.wall_h`) and a thin back plate behind them, so the shaft reads as a fixture. No hatch plate, no grate
+/// bars and no ceiling: the shaft is open above, and the cell above is the real hole.
+pub fn ladder_up(out: &mut Parts, c: (i32, i32), s: Stair, site: &Site) {
+    let m = s.rails_side();
+    ladder(out, c, m, 0.0, site.wall_h);
+    let centre = vec3(c.0 as f32 + 0.5, site.wall_h * 0.5, c.1 as f32 + 0.5);
+    let to_wall = vec3(m.0 as f32, 0.0, m.1 as f32);
+    let across = vec3(m.1.abs() as f32, 0.0, m.0.abs() as f32);
+    let thin = vec3(m.0.abs() as f32, 0.0, m.1.abs() as f32);
+    let at = centre + to_wall * (0.5 - BACK_PLATE_T * 0.5);
+    out.boxes.push((at, across * 0.6 + thin * BACK_PLATE_T + vec3(0.0, site.wall_h, 0.0), BACK_PLATE));
 }
 
 /// The warm light of a stairwell (a cool shaft of daylight at a ladder's sewer end), so its steps read in the dark.
-/// Only the dir > 0 stair (the owner of the flight) should have its lamp pushed; callers (world_mesh, world_stack)
-/// filter out dir < 0 stairs, whose lamp is not wanted. The return type stays Lamp for both.
+/// Only the dir > 0 stair (the owner of the flight or shaft) should have its lamp pushed; callers (world_mesh,
+/// world_stack) filter out dir < 0 stairs, whose lamp is not wanted: the upper level's hatch has no shaft to light, the
+/// lower level's lamp does that. A dir < 0 ladder still returns a harmless lamp at the hatch so the type stays Lamp.
 pub fn lamp(s: Stair, h: f32) -> Lamp {
     let (cx, cz) = s.cell.center();
     if s.is_ladder() {
         return if s.dir < 0 {
-            // low in the shaft, under the cover's rim, so the grate's bars and the rungs take the light from above
-            Lamp { pos: vec3(cx, -0.9, cz), range: 9.0, color: Color::new(1.0, 0.72, 0.42, 1.0), energy: 5.0 }
+            // never pushed; a dim placeholder just over the hatch
+            Lamp { pos: vec3(cx, 1.2, cz), range: 4.0, color: Color::new(1.0, 0.72, 0.42, 1.0), energy: 1.0 }
         } else {
             Lamp { pos: vec3(cx, h * 0.45, cz), range: 7.0, color: Color::new(0.8, 0.88, 1.0, 1.0), energy: 1.7 }
         };
@@ -754,7 +791,7 @@ mod tests {
     }
 
     #[test]
-    fn the_stairwell_lamp_hangs_over_its_flight_and_the_ladder_lamps_in_their_shafts() {
+    fn the_stairwell_lamp_hangs_over_its_flight_and_the_ladder_lamp_is_the_lower_levels() {
         for shape in SHAPES {
             for dir in [-1, 1] {
                 for run in RUNS {
@@ -769,58 +806,133 @@ mod tests {
                 }
             }
         }
-        let ladder_stair = |dir| Stair { cell: Cell::new(5, 5), dir, run: (0, 0), kind: LinkKind::Ladder(Cover::Manhole), shape: FlightShape::Straight, clockwise: false };
-        assert!(lamp(ladder_stair(-1), H).pos.y < 0.0, "inside the shaft");
-        assert!(lamp(ladder_stair(1), H).pos.y > 0.0);
+        // the shaft foot (dir > 0) has its cool lamp in the shaft; the hatch (dir < 0) has no shaft to light
+        let l = lamp(ladder(1, Cover::Manhole), H);
+        assert!(l.pos.y > 0.0 && l.pos.y < H && l.energy > 0.0);
+        assert!(lamp(ladder(-1, Cover::Manhole), H).pos.y >= 0.0, "nothing is lit below the upper floor any more");
     }
 
-    #[test]
-    fn the_ladder_lamp_sits_in_the_shaft_below_the_cover_and_lights_the_rungs() {
-        // the shaft's lamp hangs under the cover, above the ladder's foot, so the rungs take its light from the side
-        let l = lamp(Stair { cell: Cell::new(5, 5), dir: -1, run: (0, 0), kind: LinkKind::Ladder(Cover::Grate), shape: FlightShape::Straight, clockwise: false }, H);
-        assert!(l.pos.y < 0.0 && l.pos.y > -H + 0.1, "lamp at {}", l.pos.y);
-        assert!(l.energy >= 5.0 && l.range >= 9.0, "{} {}", l.energy, l.range);
-        assert!(IRON.r >= 0.75 && IRON.g >= 0.7 && IRON.b >= 0.65, "the rungs are a light iron: {IRON:?}");
+    const LADDER_CELL: (i32, i32) = (10, 10);
+
+    fn ladder(dir: i32, cover: Cover) -> Stair {
+        Stair { cell: Cell::new(LADDER_CELL.0, LADDER_CELL.1), dir, run: (1, 0), kind: LinkKind::Ladder(cover), shape: FlightShape::Switchback, clockwise: false }
     }
 
-    #[test]
-    fn a_ladder_well_is_walled_to_the_floor_below_and_has_a_ladder() {
-        let grate = |c: Cell| Stair { cell: c, dir: -1, run: (0, 0), kind: LinkKind::Ladder(Cover::Grate), shape: FlightShape::Straight, clockwise: false };
-        let solid = |x: i32, z: i32| (x, z) == (9, 10);
-        let well = |_, _| false;
+    fn ladder_parts(dir: i32, cover: Cover) -> Parts {
+        let (well, solid) = (|_: i32, _: i32| false, |_: i32, _: i32| false);
         let site = Site { h: H, wall_h: H, tiers: 1.0, well: &well, solid: &solid };
-        let s = grate(Cell::new(10, 10));
         let mut p = Parts::default();
-        ladder_down(&mut p, (10, 10), s, &site);
-        let walls: Vec<_> = p.quads.iter().filter(|q| q.face == Face::Wall).collect();
-        assert_eq!(walls.len(), 16, "four walls in four bands");
-        let deepest = walls.iter().flat_map(|q| q.c).map(|v| v.y).fold(0.0f32, f32::min);
-        assert!((deepest + H).abs() < 1e-5);
-        assert!(p.quads.iter().any(|q| q.face == Face::Floor && q.c.iter().all(|v| v.y < -H + 0.1)));
-        // two rails and a rung every 0.3 m from the bottom to a hand above the floor, then the grate's bars
-        assert!(p.boxes.len() >= 2 + 15 + 7);
-        // the ladder hangs on the wall to the west (x = 9)
-        assert!(p.boxes.iter().take(2).all(|(c, _, _)| c.x < 10.2));
-        // the rails run from the bottom up to just under the cover, not above the floor
-        assert!(p.boxes.iter().take(2).all(|(c, s, _)| c.y - s.y / 2.0 <= -H + 0.11 && c.y + s.y / 2.0 <= 0.0 && c.y + s.y / 2.0 >= -0.2));
-        let mut up = Parts::default();
-        ladder_up(&mut up, (10, 10), &site);
-        assert!(up.boxes.iter().all(|(c, _, _)| c.y > 0.0 && c.y < H));
-        assert_eq!(up.quads.len(), 0, "the hatch is an unlit plate, not a dark picture");
-        // the hatch's plate is lit grey-cream (never black) and sits under the ceiling, with a lit frame and bars
-        let plate = up.glow.iter().find(|(_, s, _)| s.x > 0.8 && s.z > 0.8).expect("the plate");
-        assert!(plate.2.r >= 0.55 && plate.2.g >= 0.55 && plate.2.b >= 0.5, "{:?}", plate.2);
-        assert!(plate.0.y < site.wall_h && plate.0.y > site.wall_h - 0.1, "under the ceiling: {}", plate.0.y);
-        assert_eq!(up.glow.len(), 5, "the plate and the frame");
-        assert!(up.boxes.iter().filter(|(_, _, col)| *col == GRATE).count() == 2, "two bars across the hatch");
-        // the grate's bars are mid grey, not near-black, and its rim is lit
-        assert!(GRATE.r >= 0.3 && GRATE.g >= 0.3 && GRATE.b >= 0.3, "{GRATE:?}");
-        let mut g = Parts::default();
-        ladder_down(&mut g, (10, 10), s, &site);
-        assert_eq!(g.glow.len(), 4, "the grate's lit rim");
-        assert!(g.glow.iter().all(|(_, _, col)| *col == RIM));
-        // the shaft's lamp is lit well enough to read the rungs from a standing eye
-        let l = lamp(s, H);
-        assert!(l.energy >= 3.0 && l.range >= 8.0, "{} {}", l.energy, l.range);
+        let s = ladder(dir, cover);
+        if dir < 0 {
+            ladder_down(&mut p, LADDER_CELL, s, &site);
+        } else {
+            ladder_up(&mut p, LADDER_CELL, s, &site);
+        }
+        p
+    }
+
+    #[test]
+    fn a_ladder_down_has_no_pit_floor_or_shaft_walls() {
+        for cover in [Cover::Manhole, Cover::Grate] {
+            let p = ladder_parts(-1, cover);
+            assert!(p.quads.is_empty(), "{cover:?}: no pit walls, no pit floor");
+            let lowest = p.boxes.iter().chain(&p.glow).map(|(c, s, _)| c.y - s.y * 0.5).fold(f32::MAX, f32::min);
+            assert!(lowest >= -EPS, "{cover:?}: nothing below the floor ({lowest})");
+        }
+    }
+
+    #[test]
+    fn upper_rails_top_out_at_rail_h() {
+        for cover in [Cover::Manhole, Cover::Grate] {
+            let p = ladder_parts(-1, cover);
+            let rails: Vec<_> = p.boxes.iter().filter(|(_, s, col)| *col == IRON && s.y > 0.5).collect();
+            assert_eq!(rails.len(), 2, "two rails");
+            for (c, s, _) in rails {
+                assert!((c.y + s.y * 0.5 - RAIL_H).abs() < EPS && (c.y - s.y * 0.5).abs() < EPS, "rail runs 0..RAIL_H");
+            }
+            assert_eq!(p.boxes.iter().filter(|(_, s, col)| *col == IRON && s.y < 0.1).count(), 2, "two rungs");
+        }
+    }
+
+    #[test]
+    fn ladder_rails_side_is_opposite_the_step_cell() {
+        for dir in [-1, 1] {
+            let s = ladder(dir, Cover::Manhole);
+            let (m, step) = (s.rails_side(), s.step_cell());
+            assert_eq!((m.0, m.1), (-(step.x - LADDER_CELL.0), -(step.y - LADDER_CELL.1)), "dir {dir}");
+        }
+        // the geometry follows it: the rails sit on the rails side of the cell centre
+        let m = ladder(-1, Cover::Manhole).rails_side();
+        let p = ladder_parts(-1, Cover::Manhole);
+        let rail = p.boxes.iter().find(|(_, s, col)| *col == IRON && s.y > 0.5).unwrap();
+        let off = ((rail.0.x - (LADDER_CELL.0 as f32 + 0.5)) * m.0 as f32) + ((rail.0.z - (LADDER_CELL.1 as f32 + 0.5)) * m.1 as f32);
+        assert!(off > 0.3, "rails are against the rails side: {off}");
+        // and the coaming leaves the step cell side open
+        let step = ladder(-1, Cover::Manhole).step_cell();
+        let sd = ((step.x - LADDER_CELL.0) as f32, (step.y - LADDER_CELL.1) as f32);
+        let coaming: Vec<_> = p.boxes.iter().filter(|(_, _, col)| *col == COAMING).collect();
+        assert_eq!(coaming.len(), 3);
+        assert!(coaming.iter().all(|(c, s, _)| {
+            assert!((s.y - COAMING_H).abs() < EPS);
+            (c.x - (LADDER_CELL.0 as f32 + 0.5)) * sd.0 + (c.z - (LADDER_CELL.1 as f32 + 0.5)) * sd.1 <= 0.01
+        }));
+    }
+
+    /// Share of cell `LADDER_CELL` covered, seen from above, by the cover's boxes and lit strips.
+    fn cover_share(p: &Parts, cover: Cover) -> f32 {
+        let iron = if cover == Cover::Grate { GRATE } else { COVER };
+        let pieces: Vec<_> = p.boxes.iter().filter(|(_, _, col)| *col == iron).chain(p.glow.iter()).collect();
+        let n = 100;
+        let mut hit = 0;
+        for i in 0..n {
+            for j in 0..n {
+                let (x, z) = (LADDER_CELL.0 as f32 + (i as f32 + 0.5) / n as f32, LADDER_CELL.1 as f32 + (j as f32 + 0.5) / n as f32);
+                if pieces.iter().any(|(c, s, _)| (x - c.x).abs() <= s.x * 0.5 && (z - c.z).abs() <= s.z * 0.5) {
+                    hit += 1;
+                }
+            }
+        }
+        hit as f32 / (n * n) as f32
+    }
+
+    #[test]
+    fn ladder_cover_sits_on_the_rim_and_leaves_the_hole_open() {
+        for cover in [Cover::Manhole, Cover::Grate] {
+            let p = ladder_parts(-1, cover);
+            let iron = if cover == Cover::Grate { GRATE } else { COVER };
+            let lid: Vec<_> = p.boxes.iter().filter(|(_, _, col)| *col == iron).collect();
+            assert!(lid.len() >= 4, "{cover:?}: the cover is a model of several boxes");
+            // it stands up from the floor, propped (about 75 degrees), not lying flat over the hole
+            let top = lid.iter().map(|(c, s, _)| c.y + s.y * 0.5).fold(0.0f32, f32::max);
+            assert!(top > 0.5, "{cover:?}: propped open ({top})");
+            // its foot is on the rails-side rim
+            let m = ladder(-1, cover).rails_side();
+            let rim = lid.iter().map(|(c, _, _)| (c.x - (LADDER_CELL.0 as f32 + 0.5)) * m.0 as f32 + (c.z - (LADDER_CELL.1 as f32 + 0.5)) * m.1 as f32).fold(f32::MAX, f32::min);
+            assert!(rim >= 0.45, "{cover:?}: starts on the rim ({rim})");
+            let share = cover_share(&p, cover);
+            assert!(share <= 0.4, "{cover:?}: covers {share} of the cell");
+        }
+        assert_eq!(ladder_parts(-1, Cover::Grate).glow.len(), 4, "the grate keeps its lit rim");
+        assert!(ladder_parts(-1, Cover::Manhole).glow.is_empty());
+    }
+
+    #[test]
+    fn ladder_rails_span_floor_to_wall_h_on_the_lower_level() {
+        let p = ladder_parts(1, Cover::Manhole);
+        let rails: Vec<_> = p.boxes.iter().filter(|(_, s, col)| *col == IRON && s.y > 1.0).collect();
+        assert_eq!(rails.len(), 2);
+        for (c, s, _) in rails {
+            assert!((c.y - s.y * 0.5).abs() < EPS && (c.y + s.y * 0.5 - H).abs() < EPS);
+        }
+        let plate = p.boxes.iter().find(|(_, _, col)| *col == BACK_PLATE).expect("a back plate");
+        assert!((plate.1.y - H).abs() < EPS && (plate.1.x.min(plate.1.z) - BACK_PLATE_T).abs() < EPS);
+    }
+
+    #[test]
+    fn ladder_up_emits_no_plate_or_grate() {
+        let p = ladder_parts(1, Cover::Grate);
+        assert!(p.quads.is_empty() && p.glow.is_empty(), "no hatch plate, no frame");
+        assert!(p.boxes.iter().all(|(_, _, col)| *col != GRATE), "no grate bars");
+        assert!(p.boxes.iter().all(|(c, s, _)| c.y + s.y * 0.5 <= H + EPS), "nothing above the ceiling line, no cap");
     }
 }

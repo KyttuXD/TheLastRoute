@@ -80,8 +80,8 @@ impl Game {
             .position(|s| s.map(|s| s.item == item).unwrap_or(false))
     }
 
-    /// Strobes the runner's beam for `duration` seconds (player_controller_3d.gd `force_flashlight_flicker`): the plunge
-    /// splash (1.4 s) and the troll's fake step (0.4-1.2 s). Only a runner who owns a flashlight is affected.
+    /// Strobes the runner's beam for `duration` seconds (player_controller_3d.gd `force_flashlight_flicker`): a landing
+    /// in the pool (1.4 s) and the troll's fake step (0.4-1.2 s). Only a runner who owns a flashlight is affected.
     pub fn force_flashlight_flicker(&mut self, duration: f32) -> bool {
         if self.slot_of(Item::Flashlight).is_none() {
             return false;

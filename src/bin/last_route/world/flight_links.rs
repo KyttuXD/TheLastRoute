@@ -14,9 +14,9 @@
 //! are chunk geometry.
 
 use super::facility::{Cell, Stair};
-use super::flight::{shape_for, spiral_clockwise_for, well_footprint, Flight, FlightKind, FlightShape};
+use super::flight::{ladder_dir_order, shape_for, spiral_clockwise_for, well_footprint, Flight, FlightKind, FlightShape};
 use super::infinite::{self, CHUNK};
-use super::route::layout::Coord;
+use super::route::layout::{self, Coord};
 use super::route::sewer::{self, core as score};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -54,9 +54,18 @@ struct WellInfo {
     north: bool,
 }
 
+/// A sewer ladder of the chunk: the maze hallway cell it hangs from, the sewer cell it ends at, and its cover.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LadderCells {
+    pub from: Cell,
+    pub to: Cell,
+    pub grate: bool,
+}
+
 struct SewerInfo {
     grid: score::Grid,
     wells: Vec<WellInfo>,
+    ladders: Vec<LadderCells>,
 }
 
 type SewerKey = (String, i32, i32, i32);
@@ -77,6 +86,15 @@ fn sewer_info(seed: &str, cx: i32, level: i32, cy: i32) -> Arc<Option<SewerInfo>
             .wells
             .iter()
             .map(|w| WellInfo { kind: w.kind, door: (w.door.x, w.door.y, w.door.w), north: w.north })
+            .collect(),
+        ladders: sc
+            .links
+            .iter()
+            .map(|l| LadderCells {
+                from: Cell::new(l.from_cell.x, l.from_cell.y),
+                to: Cell::new(l.to_cell.x, l.to_cell.y),
+                grate: l.cover == "grate",
+            })
             .collect(),
     });
     let v = Arc::new(built);
@@ -171,6 +189,126 @@ pub fn sewer_well_flights(seed: &str, k: infinite::ChunkKey) -> Vec<Flight> {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Sewer ladders (level 0 hatch over a level -1 foot)
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// The sewer ladders of column (cx, cy): the cells the ported sewer generator gives them (memoized with the chunk).
+pub fn sewer_ladder_cells(seed: &str, cx: i32, cy: i32) -> Vec<LadderCells> {
+    sewer_info(seed, cx, score::LEVEL, cy).as_ref().as_ref().map(|i| i.ladders.clone()).unwrap_or_default()
+}
+
+/// The cells of the level -1 chunk of column (cx, cy) that are a waterfall void (`FALL`): the drop cells of level -1
+/// and, in the same x/z, the air above the landing pool on level -2. Empty where the chunk has no falls.
+pub fn fall_cells(seed: &str, cx: i32, cy: i32) -> Vec<Cell> {
+    let info = sewer_info(seed, cx, score::LEVEL, cy);
+    let Some(info) = info.as_ref() else { return vec![] };
+    let mut out = vec![];
+    for (y, row) in info.grid.iter().enumerate() {
+        for (x, code) in row.iter().enumerate() {
+            if *code == score::FALL {
+                out.push(Cell::new(x as i32, y as i32));
+            }
+        }
+    }
+    out
+}
+
+/// The maze (level 0) side of a column as the ladder choice needs it: which cells the layout leaves open, and the
+/// flights of its stairwells. Memoized; `None` where the layout does not lay the chunk out.
+struct MazeInfo {
+    open: Vec<bool>,
+    flights: Vec<Flight>,
+}
+
+fn maze_info(seed: &str, cx: i32, cy: i32) -> Arc<Option<MazeInfo>> {
+    static CACHE: OnceLock<Mutex<HashMap<SewerKey, Arc<Option<MazeInfo>>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key: SewerKey = (seed.to_string(), cx, cy, 0);
+    if let Some(v) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return v.clone();
+    }
+    let built = layout::chunk_layout(seed, Coord::new(cx, 0, cy)).map(|lay| MazeInfo {
+        open: (0..CHUNK as usize).flat_map(|z| (0..CHUNK as usize).map(move |x| (x, z))).map(|(x, z)| lay.grid[z][x] == 0).collect(),
+        flights: lay
+            .stairwells
+            .iter()
+            .map(|w| level0_well_flight(seed, cx, cy, w.kind, (w.door.x, w.door.y, w.door.w), w.north))
+            .collect(),
+    });
+    let v = Arc::new(built);
+    let mut g = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if g.len() > 2048 {
+        g.clear();
+    }
+    g.insert(key, v.clone());
+    v
+}
+
+/// What `ladder_choice` decided for one ladder.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LadderChoice {
+    pub flight: Flight,
+    /// The step cell is a wall in the maze layout: the level 0 builder must open it (`Facility::open_cells`).
+    pub carve_maze: bool,
+}
+
+/// Whether a sewer cell can be stood on beside a ladder's foot: not rock, water, a fall void, a stair shaft or a ramp.
+fn sewer_standable(code: u8) -> bool {
+    !matches!(code, score::SOLID | score::WATER | score::FALL | score::SHAFT | score::RAMP)
+}
+
+/// Picks the step cell of the ladder whose hatch is `cell` in column (cx, cy), and so the one `Flight` both levels
+/// build it from. The four directions are tried in a seeded rotation (`flight::ladder_dir_order`); the step cell must
+/// lie inside the chunk border, outside every other flight's carve cells and other ladder's hatch, and be a standable
+/// (dry) cell of the sewer. A step cell the maze layout leaves open wins; failing that the first such direction is
+/// taken and the maze carves it (`carve_maze`). `None` when the foot is wet or rock or no direction has a dry sewer
+/// cell: the link is dropped on both levels (`level_links::ladders`). A pure function of (seed, cx, cy, cell).
+pub fn ladder_choice(seed: &str, cx: i32, cy: i32, cell: Cell) -> Option<LadderChoice> {
+    let sewer = sewer_info(seed, cx, score::LEVEL, cy);
+    let sewer = sewer.as_ref().as_ref()?;
+    let at = |c: Cell| sewer.grid[c.y as usize][c.x as usize];
+    let inside = |c: Cell| c.x >= 0 && c.y >= 0 && c.x < CHUNK && c.y < CHUNK;
+    if !inside(cell) || matches!(at(cell), score::SOLID | score::WATER | score::FALL) {
+        return None;
+    }
+    let maze = maze_info(seed, cx, cy);
+    let mut taken: Vec<Cell> = sewer.ladders.iter().flat_map(|l| [l.from, l.to]).filter(|c| *c != cell).collect();
+    if let Some(m) = maze.as_ref() {
+        for f in &m.flights {
+            taken.extend(carve_cells(f));
+        }
+    }
+    if let Some(f) = bay_flight(seed, cx, cy, score::LEVEL) {
+        taken.extend(carve_cells(&f));
+    }
+    // the hatch and foot cell itself must not sit in another flight's carve cells either (a bay well's hole is not a floor)
+    if taken.contains(&cell) {
+        return None;
+    }
+    let candidates: Vec<(Cell, (i32, i32))> = ladder_dir_order(seed_key(seed), (cx, cy), cell)
+        .into_iter()
+        .map(|d| (Cell::new(cell.x + d.0, cell.y + d.1), d))
+        .filter(|(s, _)| in_bounds(*s) && !taken.contains(s) && sewer_standable(at(*s)))
+        .collect();
+    let maze_open = |c: Cell| maze.as_ref().as_ref().is_some_and(|m| m.open[(c.y * CHUNK + c.x) as usize]);
+    let (step, carve) = match candidates.iter().find(|(s, _)| maze_open(*s)) {
+        Some(c) => (*c, false),
+        None => (*candidates.first()?, true),
+    };
+    let flight = Flight::new(FlightKind::Ladder, FlightShape::Switchback, 0, cell, step.1);
+    Some(LadderChoice { flight, carve_maze: carve })
+}
+
+/// The ladder `Flight` of the hatch `cell` of column (cx, cy): the single producer both levels read, so their step
+/// cells cannot disagree. A hatch with no usable step cell (`ladder_choice` is `None`) gets the default northward run;
+/// `level_links::ladders` drops such a link on both levels, so no record is ever built from it.
+pub fn ladder_flight(seed: &str, cx: i32, cy: i32, cell: Cell) -> Flight {
+    ladder_choice(seed, cx, cy, cell)
+        .map(|c| c.flight)
+        .unwrap_or_else(|| Flight::new(FlightKind::Ladder, FlightShape::Switchback, 0, cell, (0, -1)))
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // Bay flights (levels -1 -> -2 and -2 -> -3)
 // ---------------------------------------------------------------------------------------------------------------------
 
@@ -238,6 +376,13 @@ fn bay_fits(seed: &str, cx: i32, cy: i32, f: &Flight) -> bool {
     let mut wet_check: Vec<Cell> = fp.upper_hole.clone();
     wet_check.push(fp.landing);
     wet_check.push(fp.foot);
+    // a waterfall void (FALL on level -1, air above the pool on -2) is no floor to land, stand or margin on: no carve
+    // cell of the flight may touch one, on either of the two levels
+    if let Some(info) = sewer_info(seed, cx, score::LEVEL, cy).as_ref() {
+        if cells.iter().any(|c| info.grid[c.y as usize][c.x as usize] == score::FALL) {
+            return false;
+        }
+    }
     for level in [f.upper_level, f.upper_level - 1] {
         if level != score::LEVEL && level != score::LOWER_LEVEL {
             continue;

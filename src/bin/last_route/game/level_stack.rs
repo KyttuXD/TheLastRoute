@@ -145,6 +145,11 @@ pub fn ground_y(active: &Facility, stack: &LevelStack, x: f32, z: f32, y_abs: f3
 /// walls, props, doors and flight rules); a head reaching the next floor also needs that level's walls clear when it
 /// is resident. A level that is not resident falls back to the active facility.
 pub fn body_fits_at_y(active: &Facility, stack: &LevelStack, x: f32, z: f32, y_abs: f32, r: f32) -> bool {
+    // A drop cell (the void of a fall) is open air down to the level below: with that level not resident there is
+    // nothing to land on, so the body is kept out of it.
+    if active.is_drop(Cell::new(x.floor() as i32, z.floor() as i32)) && !stack.has(active.level - 1) {
+        return false;
+    }
     let owner = owning_level(y_abs);
     let own = stack.fac_for(active, owner).unwrap_or(active);
     if !own.body_fits_at_y(x, z, y_abs, r) {
@@ -341,6 +346,30 @@ mod tests {
             }
         }
         assert!(found, "a lower wall under an open upper cell exists in the window");
+    }
+
+    #[test]
+    fn body_cannot_enter_a_drop_without_the_level_below() {
+        let content = crate::content::Content::load();
+        let cat = Catalog::load();
+        for n in 0..200 {
+            let text = format!("ROOM-DROP-{n}");
+            let g = crate::game::Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, &text, -1, &content, &cat);
+            let Some(c) = g.fac.drop_cells().first().copied() else { continue };
+            let (x, z) = c.center();
+            let y = floor_y_of(g.fac.level);
+            assert!(
+                !body_fits_at_y(&g.fac, &LevelStack::EMPTY, x, z, y, 0.3),
+                "with nothing below, the drop cell {c:?} is shut"
+            );
+            // the level below resident: the guard no longer shuts the cell (the fall's own rule decides)
+            let center = g.inf.as_ref().expect("infinite run").center;
+            let mut st = LevelStack::default();
+            st.put(resident(g.fac.level - 1, center));
+            assert!(body_fits_at_y(&g.fac, &st, x, z, y, 0.3), "with the level below resident the drop cell is entered");
+            return;
+        }
+        panic!("no test window on level -1 has a drop cell");
     }
 
     #[test]

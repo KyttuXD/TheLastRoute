@@ -67,7 +67,7 @@ To compile this module, `src/audio/mod.rs` needs a `pub mod cues;` line (not add
   that allows more.
 - While a loading screen is up, every world sound (SFX and Master) is muted through a gate bus. On entering the world it
   fades back in over 0.5 s (game/audio/world_audio_gate.gd). UI sounds are never gated.
-- Underwater, `Sound.set_muffled(true)` puts a 650 Hz low-pass on Master. This only happens in the sewer plunge, which is
+- Underwater, `Sound.set_muffled(true)` puts a 650 Hz low-pass on Master. This only happens in a pool landing, which is
   not on the finite route.
 
 ## Cues the finite route plays
@@ -142,7 +142,7 @@ route are `glyra_hum` (and `heartbeat`, which repeats).
   - carnival_* (CarnivalBooth3D, carousel_ride_3d)
   - spider_bark / spider_hiss / spider_skitter / inferno_crackle (creature_view)
   - pit_rumble (inferno_pit_rumble)
-  - splash_big / water_drip (sewer plunge and wading)
+  - splash_big / water_drip (pool landing and wading)
   - ladder_rung and hunter_snore (infinite_route_test 3483, 3660)
   - hide_search (`play_search_tell`, only called from infinite_route_test 5656)
   - music_* (MusicProps)

@@ -222,8 +222,6 @@ pub struct Game {
     /// The real runner's wet and swimming state and its numbers (game/swim_effects.rs).
     pub swim: swim_effects::SwimState,
     pub swim_cfg: swim_effects::SwimConfig,
-    /// The waterfall plunge in progress: input is ignored and collision is off until it finishes.
-    pub plunge: Option<swim_effects::ActivePlunge>,
     /// The sewer chunk under the runner (its water cells), generated once per chunk.
     pub water_cache: Option<swim_effects::WaterChunk>,
     /// Metres of pipe flood at the runner's feet, set each frame by the endless update (task 2: game/endless.rs, from
@@ -340,7 +338,6 @@ impl Game {
             hunter_water: None,
             swim: swim_effects::SwimState::default(),
             swim_cfg: swim_effects::SwimConfig::load(),
-            plunge: None,
             water_cache: None,
             flood_depth: 0.0,
             fac,
@@ -471,7 +468,6 @@ impl Game {
             hunter_water: None,
             swim: swim_effects::SwimState::default(),
             swim_cfg: swim_effects::SwimConfig::load(),
-            plunge: None,
             water_cache: None,
             flood_depth: 0.0,
             world: WorldMeshes::default(),
@@ -535,7 +531,7 @@ impl Game {
     /// Builds the floor for the current depth and its hunters; the meshes wait for `sync_world`.
     pub fn start_floor_sim(&mut self, content: &Content, catalog: &Catalog) {
         crate::audio::world::reset(); // a new floor: new hunter views, no hum, nothing queued
-        self.plunge = None; // a new floor: no plunge in flight, no cached sewer chunk, dry again
+        // a new floor: no cached sewer chunk, dry again
         self.water_cache = None;
         self.hunter_water = None;
         self.noise_events.clear();
@@ -797,12 +793,10 @@ impl Game {
         }
 
         self.p.look(c.look);
-        if self.plunge.is_some() {
-            // the waterfall plunge: no input, no collision, until it finishes (then the runner is soaked)
-            self.advance_plunge(dt, content, catalog);
-            self.update_swim(dt, 0.0, false);
-        } else if self.ladder.is_some() {
+        if self.ladder.is_some() {
+            // a climb is continuous in y: the label follows the body's height every frame, like a walked flight
             self.advance_ladder(dt, c, content, catalog);
+            self.walk_relabel(content, catalog);
         } else if self.p.hidden.is_some() {
             self.update_hidden(dt, c, &prof, sounds);
         } else {
@@ -821,7 +815,6 @@ impl Game {
             self.p
                 .update_movement(dt, c, &prof, &self.fac, stack, &mut self.meters, sounds);
             self.update_swim(dt, water, admin.god);
-            self.try_begin_plunge(c);
             self.ladder_walk_in();
             self.walk_relabel(content, catalog);
             if admin.noclip {
@@ -855,6 +848,10 @@ impl Game {
                 }
             }
             self.update_holds(dt, c, sounds);
+        }
+        // a free fall that touched down this frame (a drop, a ladder let go, a hole): the landing rule (swim_effects.rs)
+        if let Some(l) = self.p.take_landing() {
+            self.apply_landing(l, content, catalog);
         }
 
         self.discover_timer -= dt;

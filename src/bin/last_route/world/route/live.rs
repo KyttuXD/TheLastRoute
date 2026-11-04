@@ -159,6 +159,15 @@ pub fn from_layout(seed: &str, k: ChunkKey, lay: &ChunkLayout, cat: &Catalog) ->
         coins,
     };
 
+    // Each sewer ladder keeps its hatch cell a layout hallway cell (the hole) and gets one clear step cell beside it
+    // (`flight_links::ladder_choice`): no prop on either, and the step cell opened when the layout left it a wall.
+    for s in f.stairs.clone().iter().filter(|s| s.is_ladder()) {
+        for c in [s.cell, s.step_cell()] {
+            f.open_cells(c.x, c.y, 1, 1);
+            f.clear_props_at(c);
+        }
+    }
+
     f.hunter_spawn = f.start;
     let _ = f.apply_maze_variant(seed, k);
     // apply_catwalks reads the hole and prop grids (can_occupy, is_hole), which only exist once they are built

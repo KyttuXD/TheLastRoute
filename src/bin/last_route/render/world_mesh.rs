@@ -59,10 +59,13 @@ pub struct Opening {
     pub upper_level: i32,
 }
 
-/// The openings of the stairs of `f`, the UPPER level's facility (one per stair with dir < 0). A neighbour below the
-/// active level is scoped with the openings of the active facility; one above, with those of its own.
+/// The openings of the stairs of `f`, the UPPER level's facility (one per stair with dir < 0, ladder hatches among
+/// them) and one per open drop (a connected patch of the falls void on level -1, `Facility::drop_cells`), so the level
+/// below is built near the hole it is seen through. A neighbour below the active level is scoped with the openings of
+/// the active facility; one above, with those of its own.
 pub fn openings(f: &Facility) -> Vec<Opening> {
-    f.stairs
+    let mut out: Vec<Opening> = f
+        .stairs
         .iter()
         .filter(|s| s.dir < 0)
         .filter_map(|s| {
@@ -70,11 +73,44 @@ pub fn openings(f: &Facility) -> Vec<Opening> {
             if cells.is_empty() {
                 return None;
             }
-            let n = cells.len() as f32;
-            let sum = cells.iter().map(|c| c.center()).fold((0.0, 0.0), |a, c| (a.0 + c.0, a.1 + c.1));
-            Some(Opening { centre: (sum.0 / n, sum.1 / n), cells, upper_level: f.level })
+            Some(opening_of(cells, f.level))
         })
-        .collect()
+        .collect();
+    out.extend(drop_patches(f.drop_cells().to_vec()).into_iter().map(|cells| opening_of(cells, f.level)));
+    out
+}
+
+/// An opening over `cells`, centred on their mean.
+fn opening_of(cells: Vec<Cell>, upper_level: i32) -> Opening {
+    let n = cells.len().max(1) as f32;
+    let sum = cells.iter().map(|c| c.center()).fold((0.0, 0.0), |a, c| (a.0 + c.0, a.1 + c.1));
+    Opening { centre: (sum.0 / n, sum.1 / n), cells, upper_level }
+}
+
+/// `cells` split into 4-connected patches, so two voids far apart are two openings and not one centred between them.
+fn drop_patches(cells: Vec<Cell>) -> Vec<Vec<Cell>> {
+    let mut left: HashSet<(i32, i32)> = cells.iter().map(|c| (c.x, c.y)).collect();
+    let mut order: Vec<(i32, i32)> = left.iter().copied().collect();
+    order.sort();
+    let mut out = Vec::new();
+    for start in order {
+        if !left.remove(&start) {
+            continue;
+        }
+        let mut patch = vec![Cell::new(start.0, start.1)];
+        let mut i = 0;
+        while i < patch.len() {
+            let c = patch[i];
+            i += 1;
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                if left.remove(&(c.x + dx, c.y + dy)) {
+                    patch.push(Cell::new(c.x + dx, c.y + dy));
+                }
+            }
+        }
+        out.push(patch);
+    }
+    out
 }
 
 /// What a neighbour level builds: where it stands, the openings it is seen through and the data limits.
@@ -1318,6 +1354,28 @@ fn draws_ceiling(step: Option<Stair>) -> bool {
     !matches!(step, Some(s) if s.dir > 0)
 }
 
+/// What a cell of the window draws besides its fittings: the plain floor quad, the ceiling quad and the wall columns
+/// on its sides. `step` is the stair whose well holds the cell (a ladder foot counts, dir > 0). The lower level's
+/// ladder foot has no ceiling (the shaft is open to the hatch above), nor has a level -2 cell under the falls void
+/// (`is_air_above`); a level -1 drop cell (the void) has no floor and no walls. A hatch (dir < 0) draws its floor
+/// itself (`stairs::ladder_down`), so it has no plain quad either.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CellDraws {
+    floor: bool,
+    ceiling: bool,
+    walls: bool,
+}
+
+fn cell_draws(f: &Facility, c: Cell, step: Option<Stair>) -> CellDraws {
+    let drop = f.is_drop(c);
+    let foot = matches!(step, Some(s) if s.is_ladder() && s.dir > 0);
+    CellDraws {
+        floor: !drop && (step.is_none() || foot),
+        ceiling: draws_ceiling(step) && !f.is_air_above(c),
+        walls: !drop,
+    }
+}
+
 fn build_meshes(
     f: &Facility,
     pick: &Pick,
@@ -1333,8 +1391,6 @@ fn build_meshes(
     let ceiling = Color::from_rgba(46, 34, 44, 255);
     let up = vec3(0., 1., 0.);
     let steps = stair_steps(f);
-    // a ladder's sewer end has no well: its ladder climbs to a hatch in the ceiling over an ordinary cell
-    let hatches: Vec<Cell> = f.stairs.iter().filter(|s| s.is_ladder() && s.dir > 0).map(|s| s.cell).collect();
     let mut inferno = InfernoFloor::of(f);
     // the sewer window's channel water: the bed lies below the floor, the surface (unlit, tinted by depth) above it
     let mut sewer = SewerFloor::of(f);
@@ -1353,6 +1409,11 @@ fn build_meshes(
         let wall_h = cell_wall_height(f, c.x, c.y);
         let wall_tiers = textures::wall_tiers(wall_h) as f32;
         let step = steps.get(&(c.x, c.y)).copied();
+        // what the cell draws (ceiling, floor, walls), then the stair split: the lower level's ladder foot is an
+        // ordinary floor cell with the rails of its shaft, not a well drawn as a hatch
+        let draw = cell_draws(f, c, step);
+        let foot = step.filter(|s| s.is_ladder() && s.dir > 0);
+        let step = step.filter(|s| !(s.is_ladder() && s.dir > 0));
         let site = stairs::Site {
             h,
             wall_h,
@@ -1366,6 +1427,8 @@ fn build_meshes(
             // climbs through an open shaft in the ceiling (render/stairs.rs)
             Some(s) if s.is_ladder() => stairs::ladder_down(&mut bits, (c.x, c.y), s, &site),
             Some(s) => stairs::flight_cell(&mut bits, (c.x, c.y), s, f.level, &site),
+            // the falls void on level -1: open air, no floor quad (the lip around it keeps its own)
+            None if !draw.floor => {}
             // a channel cell: the bed, flat, at the data depth below the floor
             None if sewer.as_mut().is_some_and(|s| s.is_water(c.x, c.y)) => painted(&mut surf, floor_kind, assets.floor(set)).quad(
                 [vec3(x, bed, z), vec3(x + 1., bed, z), vec3(x + 1., bed, z + 1.), vec3(x, bed, z + 1.)],
@@ -1391,11 +1454,12 @@ fn build_meshes(
                 )
             }
         }
-        if step.is_none() && hatches.contains(&c) {
-            stairs::ladder_up(&mut bits, (c.x, c.y), &site);
+        // the lower level's ladder foot: rails and rungs up the shaft, no ceiling over it (stairs::ladder_up)
+        if let Some(s) = foot {
+            stairs::ladder_up(&mut bits, (c.x, c.y), s, &site);
         }
         add_stairs(bits, &mut surf, &mut plain, &mut glow, floor_kind, wall_kind, assets, set);
-        if draws_ceiling(step) {
+        if draw.ceiling {
             let corners = [
                 vec3(x, wall_h, z + 1.),
                 vec3(x + 1., wall_h, z + 1.),
@@ -1439,7 +1503,7 @@ fn build_meshes(
                 vec3(-1., 0., 0.),
             ),
         ];
-        let here_water = step.is_none() && sewer.as_mut().is_some_and(|s| s.is_water(c.x, c.y));
+        let here_water = step.is_none() && draw.walls && sewer.as_mut().is_some_and(|s| s.is_water(c.x, c.y));
         for (dx, dz, a, b, n) in edges {
             // the channel's bank: from the floor down to the bed, wherever the next cell is not channel water
             if here_water
@@ -1448,8 +1512,13 @@ fn build_meshes(
             {
                 painted(&mut surf, floor_kind, assets.floor(set)).quad([a, b, b + up * bed, a + up * bed], UV1, n, WHITE, 0.0);
             }
-            // a stairwell's shaft is open to its landing and the other lane, whatever its cells' wall flags say
-            if !f.is_wall_cell(c.x + dx, c.y + dz) || steps.contains_key(&(c.x + dx, c.y + dz)) {
+            // a stairwell's shaft is open to its landing and the other lane, whatever its cells' wall flags say; the
+            // falls void has no wall columns, on either side of its edge
+            if !draw.walls
+                || !f.is_wall_cell(c.x + dx, c.y + dz)
+                || steps.contains_key(&(c.x + dx, c.y + dz))
+                || f.is_drop(Cell::new(c.x + dx, c.y + dz))
+            {
                 continue;
             }
             let (a, b) = match inferno.as_mut() {
@@ -2216,6 +2285,101 @@ mod stack_mesh_tests {
             "no floor quad at y = 0 over the hole"
         );
         assert!(p.quads.iter().all(|q| q.face != Face::Plain || q.n.y.abs() < 0.5), "no treads on the upper level");
+    }
+
+    /// The first window near the origin of `level` whose facility passes `want`, and its centre chunk.
+    fn find_window(level: i32, want: impl Fn(&Facility) -> bool) -> (Facility, (i32, i32)) {
+        use crate::content::loot::LootTables;
+        use crate::world::catalog::Catalog;
+        use crate::world::infinite::window;
+        let (cat, loot) = (Catalog::load(), LootTables::default());
+        let mut cache = HashMap::new();
+        for r in 0..8i32 {
+            for cx in -r..=r {
+                for cy in -r..=r {
+                    if cx.abs().max(cy.abs()) != r {
+                        continue;
+                    }
+                    let (f, _) = window("1426541270", (cx, cy), level, &cat, &loot, &mut cache);
+                    if want(&f) {
+                        return (f, (cx, cy));
+                    }
+                }
+            }
+        }
+        panic!("no level {level} window near the origin with the wanted feature");
+    }
+
+    #[test]
+    fn no_ceiling_over_a_ladder_foot() {
+        let (f, _) = find_window(SEWER_LEVEL, |f| f.stairs.iter().any(|s| s.is_ladder() && s.dir > 0));
+        let mut seen = 0;
+        for s in f.stairs.iter().filter(|s| s.is_ladder() && s.dir > 0) {
+            let d = cell_draws(&f, s.cell, Some(*s));
+            assert!(!d.ceiling, "the shaft is open above the foot at {:?}", s.cell);
+            assert!(d.floor && d.walls, "the foot is an ordinary floor cell");
+            seen += 1;
+        }
+        assert!(seen > 0);
+        assert!(cell_draws(&f, f.start, None).ceiling, "an ordinary cell keeps its ceiling");
+    }
+
+    #[test]
+    fn no_floor_over_a_ladder_hatch() {
+        let (f, _) = find_window(0, |f| f.stairs.iter().any(|s| s.is_ladder() && s.dir < 0));
+        for s in f.stairs.iter().filter(|s| s.is_ladder() && s.dir < 0) {
+            let d = cell_draws(&f, s.cell, Some(*s));
+            assert!(!d.floor, "the hatch at {:?} is a hole, drawn by ladder_down", s.cell);
+            assert!(d.ceiling, "the upper level keeps its ceiling over the hatch");
+        }
+        assert!(cell_draws(&f, f.start, None).floor);
+    }
+
+    #[test]
+    fn no_floor_or_wall_over_a_drop() {
+        let (f, _) = find_window(SEWER_LEVEL, |f| !f.drop_cells().is_empty());
+        for &c in f.drop_cells() {
+            let d = cell_draws(&f, c, None);
+            assert!(!d.floor && !d.walls, "the void at {c:?} is open: no floor quad, no wall columns");
+        }
+        assert!(cell_draws(&f, f.start, None).floor && cell_draws(&f, f.start, None).walls);
+    }
+
+    #[test]
+    fn no_ceiling_over_the_pool_under_a_drop() {
+        let (_, centre) = find_window(SEWER_LEVEL, |f| !f.drop_cells().is_empty());
+        use crate::content::loot::LootTables;
+        use crate::world::catalog::Catalog;
+        let (cat, loot) = (Catalog::load(), LootTables::default());
+        let (low, _) = crate::world::infinite::window("1426541270", centre, SEWER_LOWER_LEVEL, &cat, &loot, &mut HashMap::new());
+        let air: Vec<Cell> = (0..low.rows)
+            .flat_map(|y| (0..low.cols).map(move |x| Cell::new(x, y)))
+            .filter(|c| low.is_air_above(*c))
+            .collect();
+        assert!(!air.is_empty(), "the pool under the void is air above");
+        assert!(air.iter().all(|c| !cell_draws(&low, *c, None).ceiling), "no ceiling quad over the pool");
+        assert!(cell_draws(&low, low.start, None).ceiling, "the rest of level -2 keeps its ceiling");
+    }
+
+    #[test]
+    fn a_drop_is_an_opening_for_the_neighbour() {
+        let (f, _) = find_window(SEWER_LEVEL, |f| !f.drop_cells().is_empty());
+        let ops = openings(&f);
+        let drops = f.drop_cells();
+        for c in drops {
+            assert!(ops.iter().any(|o| o.cells.contains(c)), "the void cell {c:?} is in an opening");
+        }
+        for o in ops.iter().filter(|o| o.cells.iter().any(|c| drops.contains(c))) {
+            assert_eq!(o.upper_level, f.level);
+            let (lo, hi) = o.cells.iter().fold(((f32::MAX, f32::MAX), (f32::MIN, f32::MIN)), |(lo, hi), c| {
+                let p = c.center();
+                ((lo.0.min(p.0), lo.1.min(p.1)), (hi.0.max(p.0), hi.1.max(p.1)))
+            });
+            assert!(o.centre.0 >= lo.0 && o.centre.0 <= hi.0 && o.centre.1 >= lo.1 && o.centre.1 <= hi.1);
+        }
+        // a patch is one connected void: two openings never share a cell
+        let total: usize = ops.iter().filter(|o| o.cells.iter().all(|c| drops.contains(c))).map(|o| o.cells.len()).sum();
+        assert_eq!(total, drops.len(), "every drop cell belongs to exactly one opening");
     }
 
     fn sample_window() -> (Facility, ChunkFrame) {

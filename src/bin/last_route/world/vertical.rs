@@ -92,7 +92,7 @@ pub fn level_from_height(y: f32, current: i32) -> i32 {
 mod tests {
     use super::*;
     use crate::world::facility::{Cell, Cover};
-    use crate::world::flight::{flight_surface_y, flights, max_riser_of, well_footprint, FlightShape};
+    use crate::world::flight::{flight_surface_y, flights, max_riser_of, well_footprint, FlightKind, FlightShape};
 
     const RUNS: [(i32, i32); 4] = [(0, -1), (0, 1), (1, 0), (-1, 0)];
     const SHAPES: [FlightShape; 3] = [FlightShape::Switchback, FlightShape::Straight, FlightShape::Spiral];
@@ -191,11 +191,34 @@ mod tests {
     fn the_surface_is_none_off_the_stair_and_for_ladders() {
         let (upper, _) = pair(FlightShape::Switchback, (0, -1));
         assert_eq!(stair_surface_y(upper, 0, (0.5, 0.5)), None, "far from the stair");
-        let ladder = Stair::ladder(Cell::new(30, 30), -1, Cover::Grate);
-        assert_eq!(stair_surface_y(ladder, 0, (30.5, 30.5)), None, "a ladder has no stair surface");
-        assert!(ladder.flight(0).is_none());
-        assert_eq!(ladder.well_cells(), vec![Cell::new(30, 30)], "a ladder opens its hatch on the upper level");
-        assert!(Stair::ladder(Cell::new(30, 30), 1, Cover::Grate).well_cells().is_empty());
+        for run in RUNS {
+            let ladder = Stair::ladder_with_run(Cell::new(30, 30), -1, Cover::Grate, run);
+            let step = Cell::new(30 + run.0, 30 + run.1);
+            for at in [(30.5, 30.5), (step.x as f32 + 0.5, step.y as f32 + 0.5)] {
+                assert_eq!(stair_surface_y(ladder, 0, at), None, "{run:?}: a ladder has no stair surface");
+            }
+            let flight = ladder.flight(0).expect("a ladder is a flight");
+            assert_eq!(flight.kind, FlightKind::Ladder);
+            assert_eq!((flight.anchor_cell, flight.run), (Cell::new(30, 30), run));
+            assert_eq!(ladder.well_cells(), vec![Cell::new(30, 30)], "a ladder opens its hatch on the upper level");
+            // the foot below is the same cell and the same flight: one hatch cell on both levels
+            let foot = Stair::ladder_with_run(Cell::new(30, 30), 1, Cover::Grate, run);
+            assert_eq!(foot.well_cells(), ladder.well_cells(), "{run:?}: one shaft cell from both records");
+            assert_eq!(foot.flight(-1), Some(flight), "{run:?}: both levels are one flight");
+            assert_eq!((ladder.step_cell(), foot.step_cell()), (step, step), "{run:?}: one step cell");
+            assert_eq!((ladder.landing(), ladder.foot()), (step, Cell::new(30, 30)));
+            assert_eq!(ladder.far_end(), Cell::new(30, 30));
+            assert_eq!(foot.far_end(), step);
+            assert_eq!(ladder.rails_side(), (-run.0, -run.1), "the rails stand opposite the step cell");
+            assert_eq!(ladder.carve_cells(), foot.carve_cells());
+            for c in [Cell::new(30, 30), step] {
+                assert!(ladder.carve_cells().contains(&c), "{run:?}: the hatch and the step cell are carved");
+            }
+            assert!(ladder.dividers(0).is_empty());
+        }
+        let plain = Stair::ladder(Cell::new(30, 30), -1, Cover::Grate);
+        assert_eq!(plain.run, (0, -1), "the default step is north");
+        assert_eq!(plain.step_cell(), Cell::new(30, 29));
     }
 
     #[test]

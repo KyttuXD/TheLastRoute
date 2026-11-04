@@ -1138,7 +1138,7 @@ mod tests {
     #[test]
     fn the_splash_lamp_sits_at_the_lip_with_the_data_colour() {
         let cfg = waterfall::config();
-        let site = waterfall::Site { lip: [40.0, 30.0], out: -1.0, top_y: -0.3, bottom_y: -5.3 };
+        let site = waterfall::Site { lip: [40.0, 30.0], out: -1.0, top_abs: -5.3, bottom_abs: -10.3, top_y: -0.3, bottom_y: -5.3 };
         let w = waterfall::build(cfg, site.top_y, site.bottom_y, site.out, 0.0);
         let l = splash_lamp(cfg, &site, &w);
         assert!((l.pos.x - 40.0).abs() < 1e-4 && l.pos.z < 30.0, "out to the north of the lip");

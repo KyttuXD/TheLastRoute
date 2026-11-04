@@ -28,9 +28,9 @@ pub struct NeighbourWorlds {
 }
 
 /// Whether a neighbour is worth building now: the eye is within `reach` metres (in the floor plane) of an opening's
-/// centre, or the runner is on a flight.
-pub fn wants_neighbour(eye: (f32, f32, f32), openings: &[Opening], reach: f32, on_flight: bool) -> bool {
-    on_flight
+/// centre, or the runner is on a link (flight, ladder or fall).
+pub fn wants_neighbour(eye: (f32, f32, f32), openings: &[Opening], reach: f32, on_link: bool) -> bool {
+    on_link
         || openings.iter().any(|o| {
             let (dx, dz) = (o.centre.0 - eye.0, o.centre.1 - eye.2);
             dx * dx + dz * dz <= reach * reach

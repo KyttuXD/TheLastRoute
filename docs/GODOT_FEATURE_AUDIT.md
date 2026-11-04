@@ -489,7 +489,7 @@ Night Watch is a separate executable (`src/bin/night_watch/main.rs`) that is onl
 |---|---|---|---|
 | Sewer, collector and Inferno levels | missing | important | `docs/SEWERS.md` |
 | Floodwater wading and soaked | missing | important | `game/player/player_controller_3d.gd` |
-| Waterfall plunge into a cistern | missing | polish | `game/player/player_controller_3d.gd` |
+| Waterfall plunge into a cistern (Godot scripted `begin_plunge`; Rust is a physical free fall with a landing rule, an intentional difference, KT D7) | partial | polish | `game/player/player_controller_3d.gd` |
 | Flood valves | missing | important | `game/infinite_route/infinite_route_test.gd` |
 
 ## finite (1)

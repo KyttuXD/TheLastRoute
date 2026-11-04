@@ -8,9 +8,10 @@
 //! every level (all chunks are CHUNK x CHUNK, see `infinite::window`), so the two levels are compared chunk against
 //! chunk. Nothing here is called by the running game.
 //!
-//! Each connection kind is its own test. A kind that fails today is `#[ignore]`d with the reason; the failure message
-//! lists the failing seeds and chunks. Stairwells are done (phase 1); the ladder, catwalk and drop kinds stay ignored
-//! until their phases and are un-ignored one by one.
+//! Each connection kind is its own test. A kind that fails is reported with the failing seeds and chunks (a kind that
+//! cannot pass yet is `#[ignore]`d with the reason). Stairwells (phase 1), ladders and catwalk links (phase 6) and
+//! drops (phase 7) all hold: a ladder is a hatch plus one step cell, a catwalk link a ground cell plus the deck cell
+//! it steps onto, a drop a hole in the upper floor over air above the pool.
 #![cfg(test)]
 
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -110,11 +111,6 @@ fn blocked(b: &Built, c: Cell) -> Option<&'static str> {
 /// A cell a body can stand on: clear and not a hole.
 fn stand_ok(b: &Built, c: Cell) -> bool {
     blocked(b, c).is_none() && !b.f.is_hole(c.x, c.y) && b.f.can_occupy(c.x as f64 + 0.5, c.y as f64 + 0.5, 0.23)
-}
-
-/// Whether one of the four cells beside `c` is a clear standing cell (the ladder's step cell).
-fn has_step_cell(b: &Built, c: Cell) -> bool {
-    [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|(dx, dy)| stand_ok(b, Cell::new(c.x + dx, c.y + dy)))
 }
 
 fn footprint(s: Stair) -> BTreeSet<Cell> {
@@ -298,73 +294,143 @@ fn ladders_share_one_cell() {
     report("ladder footprint", &fails);
 }
 
+/// The hatch is a clear hallway cell and a hole above, its step cell is a clear standing cell, and the foot and its
+/// step cell below are open, dry and prop free (decision D4: one clear cell beside every hatch).
 #[test]
-#[ignore = "ladder phase (stairwells are done): the hatch cell is a layout hallway cell with no guaranteed clear cell beside it (decision D4), and the sewer foot opens only a 3x3 that can still hold water"]
 fn ladders_have_an_open_hatch_a_step_cell_and_an_open_foot() {
     let mut fails = vec![];
     for p in ladder_pairs() {
+        let step = p.s.step_cell();
         if blocked(&p.up, p.s.cell).is_some() {
             fails.push(format!("{}: hatch {:?} blocked ({:?})", p.tag, p.s.cell, blocked(&p.up, p.s.cell)));
         }
-        if !has_step_cell(&p.up, p.s.cell) {
-            fails.push(format!("{}: no clear step cell beside the hatch {:?} on level 0", p.tag, p.s.cell));
+        if !p.up.f.is_hole(p.s.cell.x, p.s.cell.y) {
+            fails.push(format!("{}: the hatch {:?} is not a hole on level 0", p.tag, p.s.cell));
+        }
+        if !stand_ok(&p.up, step) {
+            fails.push(format!(
+                "{}: step cell {step:?} beside the hatch {:?} on level 0 is not clear ({:?})",
+                p.tag,
+                p.s.cell,
+                blocked(&p.up, step)
+            ));
         }
         if !stand_ok(&p.lo, p.s.cell) {
             fails.push(format!("{}: ladder foot {:?} not open ({:?})", p.tag, p.s.cell, blocked(&p.lo, p.s.cell)));
         }
-        if !has_step_cell(&p.lo, p.s.cell) {
-            fails.push(format!("{}: no clear cell beside the ladder foot {:?} on level -1", p.tag, p.s.cell));
+        if p.lo.f.is_hole(p.s.cell.x, p.s.cell.y) {
+            fails.push(format!("{}: the foot {:?} is a hole on level -1: it is an ordinary floor cell", p.tag, p.s.cell));
         }
-        let _ = p.t;
+        if !stand_ok(&p.lo, step) {
+            fails.push(format!(
+                "{}: the step cell {step:?} beside the foot on level -1 is not clear ({:?})",
+                p.tag,
+                blocked(&p.lo, step)
+            ));
+        }
+        if !p.lo.f.open_above(p.s.cell) || !p.up.f.open_below(p.s.cell) {
+            fails.push(format!("{}: the shaft {:?} is not open from both levels", p.tag, p.s.cell));
+        }
+        if p.t.is_none() {
+            fails.push(format!("{}: no ladder foot record on level -1", p.tag));
+        }
     }
     report("ladder landing, step and foot", &fails);
 }
 
 #[test]
-#[ignore = "ladder phase (stairwells are done): no generation step keeps the shaft cell clear of props and sewer water on both levels (Task 4)"]
 fn ladder_shafts_hold_no_wall_prop_or_water_on_either_level() {
     let mut fails = vec![];
     for p in ladder_pairs() {
+        let step = p.s.step_cell();
         for (name, b) in [("upper", &p.up), ("lower", &p.lo)] {
-            if let Some(why) = blocked(b, p.s.cell) {
-                fails.push(format!("{}: {name} shaft cell {:?}: {why}", p.tag, p.s.cell));
+            for (what, c) in [("shaft", p.s.cell), ("step", step)] {
+                if let Some(why) = blocked(b, c) {
+                    fails.push(format!("{}: {name} {what} cell {c:?}: {why}", p.tag));
+                }
             }
         }
     }
     report("ladder shaft clearance", &fails);
 }
 
+/// Both levels build the ladder from one `Flight`: the same step direction, so the same step cell.
+#[test]
+fn ladder_step_cell_is_the_same_on_both_levels() {
+    let mut fails = vec![];
+    for p in ladder_pairs() {
+        let Some(t) = p.t else {
+            fails.push(format!("{}: no lower ladder", p.tag));
+            continue;
+        };
+        if p.s.run != t.run || p.s.step_cell() != t.step_cell() {
+            fails.push(format!("{}: step {:?} above, {:?} below", p.tag, p.s.step_cell(), t.step_cell()));
+        }
+        if p.s.run.0.abs() + p.s.run.1.abs() != 1 {
+            fails.push(format!("{}: run {:?} is not a unit step", p.tag, p.s.run));
+        }
+        if p.s.flight(0) != t.flight(-1) || p.s.flight(0).is_none() {
+            fails.push(format!("{}: the two records are not one flight", p.tag));
+        }
+        if p.s.well_cells() != t.well_cells() {
+            fails.push(format!("{}: shaft {:?} above, {:?} below", p.tag, p.s.well_cells(), t.well_cells()));
+        }
+        let want = Cell::new(p.s.cell.x + p.s.run.0, p.s.cell.y + p.s.run.1);
+        if p.s.step_cell() != want {
+            fails.push(format!("{}: step cell {:?} is not hatch + run {:?}", p.tag, p.s.step_cell(), want));
+        }
+        // standable on both levels at the same x/z
+        for (name, b) in [("upper", &p.up), ("lower", &p.lo)] {
+            if !stand_ok(b, p.s.step_cell()) {
+                fails.push(format!("{}: step cell {:?} is not standable on the {name} level", p.tag, p.s.step_cell()));
+            }
+        }
+    }
+    report("ladder step cell", &fails);
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Catwalk links (same world: the "upper level" is the deck)
 // ---------------------------------------------------------------------------------------------------------------------
 
-/// The ground end is open at height 0 and a deck cell at exactly the link's height is beside it.
+/// The ground end is open at height 0 and the deck cell the link steps onto (`run`) is a kept deck cell at exactly the
+/// link's height, with no hole or prop on it.
 #[test]
-#[ignore = "catwalk phase (stairwells are done): expected to need a clear step cell beside a ladder link and a deck landing that is not a hole or prop (Task 4)"]
 fn catwalk_links_have_an_open_foot_and_a_deck_landing() {
     let mut fails = vec![];
+    let mut links = 0;
     for (seed, cx, cy) in columns() {
         let b = built(&seed, cx, cy, 0);
         for l in &b.f.catwalk_links {
+            links += 1;
             let tag = format!("{seed} {cx},{cy} L0 link {:?}", l.cell);
             if !stand_ok(&b, l.cell) || b.f.height_at(l.cell) != 0.0 {
                 fails.push(format!("{tag}: ground foot not open at height 0"));
             }
-            let landing = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|(dx, dy)| {
-                let c = Cell::new(l.cell.x + dx, l.cell.y + dy);
-                let s = b.f.walk_surface_at(c);
-                s.kind == DeckKind::Catwalk && (s.height - l.deck_height).abs() < 0.01 && !b.f.is_hole(c.x, c.y)
-            });
-            if !landing {
-                fails.push(format!("{tag}: no deck cell at {} m beside the foot", l.deck_height));
+            if l.run.0.abs() + l.run.1.abs() != 1 {
+                fails.push(format!("{tag}: run {:?} is not a unit step", l.run));
+                continue;
+            }
+            let deck = Cell::new(l.cell.x + l.run.0, l.cell.y + l.run.1);
+            let s = b.f.walk_surface_at(deck);
+            if !(s.kind == DeckKind::Catwalk && (s.height - l.deck_height).abs() < 0.01 && !b.f.is_hole(deck.x, deck.y)) {
+                fails.push(format!("{tag}: run {:?} leads to {deck:?}, which is not a deck cell at {} m", l.run, l.deck_height));
+            }
+            if !stand_ok(&b, deck) {
+                fails.push(format!("{tag}: the deck landing {deck:?} is not clear ({:?})", blocked(&b, deck)));
+            }
+            // the link as a flight: foot on the ground cell, landing on the deck cell
+            let fp = well_footprint(&Facility::catwalk_flight(l));
+            if (fp.foot, fp.landing) != (l.cell, deck) {
+                fails.push(format!("{tag}: catwalk_flight foot/landing {:?}/{:?}, wanted {:?}/{deck:?}", fp.foot, fp.landing, l.cell));
             }
         }
     }
+    assert!(links > 0, "no catwalk link in the sweep");
     report("catwalk foot and landing", &fails);
 }
 
 #[test]
-#[ignore = "catwalk phase (stairwells are done): a link's deck neighbours may hold a solid prop (the deck grid ignores props)"]
 fn catwalk_link_footprints_hold_no_wall_prop_or_water() {
     let mut fails = vec![];
     for (seed, cx, cy) in columns() {
@@ -372,6 +438,10 @@ fn catwalk_link_footprints_hold_no_wall_prop_or_water() {
         for l in &b.f.catwalk_links {
             if let Some(why) = blocked(&b, l.cell) {
                 fails.push(format!("{seed} {cx},{cy} L0 link {:?}: ground cell {why}", l.cell));
+            }
+            let deck = Cell::new(l.cell.x + l.run.0, l.cell.y + l.run.1);
+            if let Some(why) = blocked(&b, deck) {
+                fails.push(format!("{seed} {cx},{cy} L0 link {:?}: deck landing {deck:?} {why}", l.cell));
             }
             for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
                 let c = Cell::new(l.cell.x + dx, l.cell.y + dy);
@@ -430,29 +500,69 @@ fn drops_share_one_cell_over_a_landing_pool() {
     report("drop footprint", &fails);
 }
 
+/// The upper void cells are drop cells (open air, not walls), the pool cells under them are air above and water, and a
+/// standable cell on the spur, its deck or the overlook is there to jump from.
 #[test]
-#[ignore = "drop phase (stairwells are done): the upper fall cells are WALL cells in the Facility (apply_sewer_floor treats FALL as solid), so the channel floor has no opening, and no landing is guaranteed beside the void"]
 fn drops_have_an_open_upper_channel_and_a_clear_pool_below() {
     let mut fails = vec![];
+    let mut seen = 0;
     for (tag, up, lo, c, falls) in drops() {
+        seen += 1;
         if up.f.is_wall_cell(c.x, c.y) {
             fails.push(format!("{tag}: upper drop cell {c:?} is a wall, not an opening"));
         }
-        if let Some(why) = blocked(&up, c).filter(|w| *w != "wall") {
-            fails.push(format!("{tag}: upper drop cell {c:?}: {why}"));
+        if !up.f.is_drop(c) || !up.f.is_hole(c.x, c.y) || !up.f.open_below(c) {
+            fails.push(format!("{tag}: upper cell {c:?} is not a drop"));
+        }
+        if !lo.f.is_air_above(c) || !lo.f.open_above(c) {
+            fails.push(format!("{tag}: the pool cell {c:?} has a ceiling"));
+        }
+        if !lo.water.contains(&c) {
+            fails.push(format!("{tag}: the pool cell {c:?} under the drop holds no water"));
         }
         if !lo.f.can_occupy(c.x as f64 + 0.5, c.y as f64 + 0.5, 0.05) {
             fails.push(format!("{tag}: solid prop in the pool at {c:?}"));
         }
-        // an open landing to jump from: a clear cell of the spur or the overlook on the upper level
-        let open_edge = [falls.spur, falls.overlook].iter().any(|r| {
+        // every void cell that is a drop above has air above it below, and no wall on either level
+        for v in sewer::level2::void_cells(&falls) {
+            let vc = Cell::new(v.x, v.y);
+            if up.f.is_drop(vc) && (up.f.is_wall_cell(vc.x, vc.y) || !lo.f.is_air_above(vc)) {
+                fails.push(format!("{tag}: void cell {vc:?} is a wall above or has no air above it"));
+            }
+        }
+        // an open landing to jump from: a clear cell of the spur, its deck or the overlook on the upper level
+        let open_edge = [falls.spur, falls.spur_deck, falls.overlook].iter().any(|r| {
             (r.y..r.y + r.h).any(|y| (r.x..r.x + r.w).any(|x| stand_ok(&up, Cell::new(x, y))))
         });
         if !open_edge {
             fails.push(format!("{tag}: no open cell on the spur or overlook above {c:?}"));
         }
     }
+    assert!(seen > 0, "no drops in the sweep");
     report("drop opening and landing", &fails);
+}
+
+/// The drop cells of level -1 and the air-above cells of level -2 are one list, and the two floors are one storey
+/// apart in absolute y (`level * STOREY`).
+#[test]
+fn the_drop_cells_line_up_between_the_two_levels() {
+    let mut fails = vec![];
+    let mut seen = 0;
+    for (tag, up, lo, c, _falls) in drops() {
+        seen += 1;
+        if up.f.drop_cells() != lo.f.air_above_cells() {
+            fails.push(format!("{tag}: {} drop cells above, {} air cells below", up.f.drop_cells().len(), lo.f.air_above_cells().len()));
+        }
+        if up.f.is_drop(c) != lo.f.is_air_above(c) {
+            fails.push(format!("{tag}: {c:?} is_drop {} above but is_air_above {} below", up.f.is_drop(c), lo.f.is_air_above(c)));
+        }
+        let (up_y, lo_y) = (up.f.level as f32 * STOREY, lo.f.level as f32 * STOREY);
+        if (up_y - lo_y - STOREY).abs() > 1e-4 {
+            fails.push(format!("{tag}: upper floor y {up_y} minus lower floor y {lo_y} is not one storey"));
+        }
+    }
+    assert!(seen > 0, "no drops in the sweep");
+    report("drop alignment", &fails);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

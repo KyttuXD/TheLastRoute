@@ -870,8 +870,14 @@ impl Game {
         let Some(inf) = self.inf.as_ref() else { return };
         let (level, center) = (inf.level, inf.center);
         let reach = super::transition::links().prefetch_distance;
+        // on a flight, a ladder or in a fall both sides of the active level stay resident and none is evicted
         let on_flight = stair_height_at(&self.fac, self.p.pos).is_some();
-        let near = levels_to_keep(level, self.p.pos, reach, &self.fac.stairs, on_flight, infinite::level_allowed);
+        let on_link = on_flight || self.ladder.is_some() || self.p.falling();
+        let mut near = levels_to_keep(level, self.p.pos, reach, &self.fac.stairs, on_link, infinite::level_allowed);
+        // an open drop within reach (the falls void of level -1) is a connection to the level below, built this frame
+        if self.fac.drop_within(self.p.pos.0, self.p.pos.1, reach) && infinite::level_allowed(level - 1) && !near.contains(&(level - 1)) {
+            near.push(level - 1);
+        }
         let cfg = super::preload::preload();
         let mut keep = super::preload::keep_levels(level, &cfg, infinite::level_allowed);
         for t in &near {
@@ -882,8 +888,8 @@ impl Game {
         let Some(inf) = self.inf.as_mut() else { return };
         inf.stack.retain_center(center);
         let mut drop: Vec<i32> = Vec::new();
-        if on_flight {
-            // nothing resident is evicted while a flight is walked (only the active level's own label can not be resident)
+        if on_link {
+            // nothing resident is evicted while a flight is walked, a ladder is climbed or a fall runs (only the active level's own label can not be resident)
             let kept: Vec<i32> = inf.stack.levels().into_iter().filter(|l| *l != level).collect();
             inf.stack.retain_levels(&kept);
         } else {
@@ -1171,9 +1177,11 @@ impl Game {
     }
 
     /// Moves the run to storey `to` on the frame it is asked for: the hunters of the storey left are stored, the window
-    /// loads the storey entered, `arrive` places the body on it, and that storey's hunters come back. No fade and no
-    /// hold: the connection is the change (game/transition.rs). Used by ladders, drops, respawn, checkpoint and a new
-    /// run; a walked flight is a `relabel`. A resident window of the storey (`keep_stack`) is swapped in by the load.
+    /// hold: the connection is the change (game/transition.rs). After phases 6 and 7 the only caller is the test helper
+    /// `go_to_level` (and tests); ladders, drops and falls move the body in absolute y and `walk_relabel` changes the
+    /// label, and respawn, checkpoint and a new run rebuild the floor (`start_floor_sim`). A resident window is swapped in by the load.
+    #[cfg_attr(not(test), allow(dead_code))]
+    /// absolute y and `walk_relabel` changes the label). A resident window of the storey (`keep_stack`) is swapped in by the load.
     pub(super) fn change_storey(&mut self, to: i32, content: &Content, catalog: &Catalog, arrive: impl FnOnce(&mut Game)) {
         self.sync_out();
         // the level being left keeps its hunters at their absolute cells, to be found again on the way back
@@ -1250,10 +1258,7 @@ impl Game {
     /// A walked flight changes the level label on the frame the body's absolute height crosses into the neighbour
     /// (`level_at`, the hysteresis of world/vertical.rs): once per crossing, with no fade, no hold and no move of the body.
     pub(super) fn walk_relabel(&mut self, content: &Content, catalog: &Catalog) {
-        // a ladder climb or a plunge changes the storey by `change_storey`; the label is never also read from its height
-        if self.ladder.is_some() || self.plunge.is_some() {
-            return;
-        }
+        // the label follows the body's absolute height on a flight, a ladder and in a fall alike (no `change_storey`)
         let Some(inf) = self.inf.as_ref() else { return };
         let cur = inf.level;
         let to = level_at(self.p.y(), cur);
@@ -3049,6 +3054,219 @@ mod walked_stair_tests {
         assert!(stair_height_at(&g.fac, g.p.pos).is_none());
         g.keep_stack(&content, &catalog);
         assert!(!g.inf.as_ref().unwrap().stack.has(40), "a level far away is evicted off the flight");
+    }
+
+
+    /// A level -1 game whose centre chunk holds an open drop (the falls void), with the lip cell to stand on and the
+    /// unit step from it into the void: (game, lip cell, step).
+    fn falls_game(content: &Content, catalog: &Catalog) -> (Game, Cell, (i32, i32)) {
+        for n in 0..120 {
+            let g = Game::new_infinite_sim(
+                crate::config::Difficulty::Standard,
+                7,
+                &format!("ROOM-FALL-{n}"),
+                crate::world::route::sewer::core::LEVEL,
+                content,
+                catalog,
+            );
+            // the centre chunk spans [CHUNK, 2 CHUNK) of the 3x3 window: far enough from its edge that the window holds still
+            let inside = |c: Cell| c.x >= CHUNK + 2 && c.x < 2 * CHUNK - 2 && c.y >= CHUNK + 2 && c.y < 2 * CHUNK - 2;
+            for &d in g.fac.drop_cells() {
+                for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let lip = Cell::new(d.x - dx, d.y - dz);
+                    let (x, z) = lip.center();
+                    if inside(lip)
+                        && inside(d)
+                        && !g.fac.is_drop(lip)
+                        && !g.fac.is_hole(lip.x, lip.y)
+                        && g.fac.body_fits(x, z, PLAYER_RADIUS)
+                    {
+                        return (g, lip, (dx, dz));
+                    }
+                }
+            }
+        }
+        panic!("no level -1 test window has a drop with a standable lip");
+    }
+
+    fn idle_frames(g: &mut Game, content: &Content, catalog: &Catalog, frames: usize) {
+        for _ in 0..frames {
+            g.step(FRAME, &Controls::default(), content, catalog, &Sounds::default());
+        }
+    }
+
+    #[test]
+    fn keep_stack_keeps_the_level_below_near_a_drop() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let (mut g, lip, _) = falls_game(&content, &catalog);
+        let below = crate::world::route::sewer::core::LOWER_LEVEL;
+        g.p.pos = lip.center();
+        assert!(
+            g.fac.drop_within(g.p.pos.0, g.p.pos.1, super::super::transition::links().prefetch_distance),
+            "the lip is within reach of the void"
+        );
+        // the connection in reach is built on the frame (the first call after a relabel only clears its flag)
+        g.keep_stack(&content, &catalog);
+        g.keep_stack(&content, &catalog);
+        assert!(g.inf.as_ref().unwrap().stack.has(below), "the level under the void is resident beside it");
+        // and it stays through any number of frames
+        for _ in 0..6 {
+            g.keep_stack(&content, &catalog);
+            assert!(g.inf.as_ref().unwrap().stack.has(below));
+        }
+    }
+
+    #[test]
+    fn keep_stack_never_evicts_during_a_climb_or_a_fall() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        // a climb: the ladder is the link, a far marker level survives it and goes once the climb is over
+        let mut g = Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, "ROOM-TEST-7", 0, &content, &catalog);
+        let i = g.fac.stairs.iter().position(|s| s.is_ladder() && s.dir < 0).expect("the origin chunk has a ladder down");
+        let top = g.fac.stairs[i];
+        g.p.pos = top.step_cell().center();
+        idle_frames(&mut g, &content, &catalog, 3);
+        let i = g.fac.stairs.iter().position(|s| s.is_ladder() && s.dir < 0 && s.cell == top.cell).unwrap_or(i);
+        g.keep_stack(&content, &catalog);
+        g.keep_stack(&content, &catalog);
+        let below = g.inf.as_ref().unwrap().level - 1;
+        let mut marker = g.inf.as_mut().unwrap().stack.take(below).expect("the level below the ladder is resident");
+        marker.level = 40;
+        g.inf.as_mut().unwrap().stack.put(marker);
+        assert!(g.start_ladder(i), "the climb starts");
+        for _ in 0..6 {
+            g.keep_stack(&content, &catalog);
+            let st = &g.inf.as_ref().unwrap().stack;
+            assert!(st.has(40), "nothing is evicted during a climb");
+            assert!(st.has(below), "the ladder's far end stays resident");
+        }
+        g.ladder = None;
+        g.p.pos = g.fac.start.center();
+        for _ in 0..2 {
+            g.keep_stack(&content, &catalog);
+        }
+        let reach = super::super::transition::links().prefetch_distance;
+        let far = g.fac.stairs.iter().all(|s| pdist(s.cell.center(), g.p.pos) > reach);
+        if far {
+            assert!(!g.inf.as_ref().unwrap().stack.has(40), "off the climb the far level goes");
+        }
+    }
+
+    #[test]
+    fn a_ladder_climb_down_calls_no_load_window() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let mut g = Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, "ROOM-TEST-7", 0, &content, &catalog);
+        let top = g.fac.stairs.iter().copied().find(|s| s.is_ladder() && s.dir < 0).expect("a ladder down");
+        g.p.pos = top.step_cell().center();
+        idle_frames(&mut g, &content, &catalog, 90);
+        let here = g.p.pos;
+        let i = g
+            .fac
+            .stairs
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.is_ladder() && s.dir < 0)
+            .min_by(|a, b| {
+                let (da, db) = (pdist(a.1.cell.center(), here), pdist(b.1.cell.center(), here));
+                da.partial_cmp(&db).unwrap()
+            })
+            .map(|(i, _)| i)
+            .unwrap();
+        assert!(g.inf.as_ref().unwrap().stack.has(-1), "the shaft's lower end is resident before the climb");
+        let builds = g.inf.as_ref().unwrap().builds;
+        assert!(g.start_ladder(i));
+        let down = Controls { fwd: -1.0, ..Default::default() };
+        let mut flipped = false;
+        for _ in 0..1500 {
+            g.step(FRAME, &down, &content, &catalog, &Sounds::default());
+            assert_eq!(g.fade, 0.0, "a climb creates no fade");
+            if g.inf.as_ref().unwrap().level == -1 {
+                flipped = true;
+                assert_eq!(g.inf.as_ref().unwrap().builds, builds, "the label flips with no window built");
+                break;
+            }
+        }
+        assert!(flipped, "the climb down relabels the level to -1 by itself");
+    }
+
+    #[test]
+    fn a_walk_off_the_lip_falls_through_the_relabel_with_no_pos_rewrite() {
+        use crate::world::route::sewer::core::{LEVEL, LOWER_LEVEL};
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let (mut g, lip, (dx, dz)) = falls_game(&content, &catalog);
+        g.p.pos = lip.center();
+        g.p.yaw = (-(dx as f32)).atan2(-(dz as f32)); // forward is (dx, dz)
+        g.p.pitch = 0.0;
+        g.p.height = 0.0;
+        idle_frames(&mut g, &content, &catalog, 90);
+        assert!(g.inf.as_ref().unwrap().stack.has(LOWER_LEVEL), "the level under the void is resident");
+        assert!(pdist(g.p.pos, lip.center()) < 0.6, "the runner stood on the lip");
+        assert_eq!(g.inf.as_ref().unwrap().level, LEVEL);
+        let builds = g.inf.as_ref().unwrap().builds;
+        let abs = |g: &Game| {
+            let o = g.window_origin();
+            (o.0 as f32 + g.p.pos.0, o.1 as f32 + g.p.pos.1)
+        };
+        let walk = Controls { fwd: 1.0, ..Default::default() };
+        let (mut prev, start_y) = (abs(&g), g.p.y());
+        let mut prev_y = start_y;
+        let mut levels = vec![LEVEL];
+        let (mut fall_start, mut fall_frames, mut was_falling) = (None, 0usize, false);
+        let mut builds_at_flip = None;
+        let mut landed = false;
+        for frame in 0..900usize {
+            g.step(FRAME, &walk, &content, &catalog, &Sounds::default());
+            let now = abs(&g);
+            assert!(
+                pdist(now, prev) <= PLAYER_SPRINT_SPEED * FRAME * 1.2,
+                "x and z move only by the controls (frame {frame}): {prev:?} -> {now:?}"
+            );
+            prev = now;
+            let y = g.p.y();
+            if fall_start.is_some() {
+                assert!(y <= prev_y + 1e-4, "y falls monotonically: {prev_y} -> {y} (frame {frame})");
+            }
+            prev_y = y;
+            if fall_start.is_none() && y < start_y - 1e-3 {
+                fall_start = Some(frame);
+                // a fall never evicts what is resident, however often the stack is kept
+                let before = g.inf.as_ref().unwrap().stack.levels();
+                for _ in 0..4 {
+                    g.keep_stack(&content, &catalog);
+                }
+                let st = &g.inf.as_ref().unwrap().stack;
+                assert!(before.iter().all(|l| st.has(*l)), "nothing resident is evicted in a fall");
+            }
+            let lvl = g.inf.as_ref().unwrap().level;
+            if lvl != *levels.last().unwrap() {
+                levels.push(lvl);
+                builds_at_flip = Some(g.inf.as_ref().unwrap().builds);
+            }
+            if fall_start.is_some() {
+                fall_frames += 1;
+            }
+            if g.p.falling() {
+                was_falling = true;
+            } else if was_falling {
+                landed = true;
+                break;
+            }
+        }
+        assert!(landed, "the runner fell and landed");
+        let expected = (2.0 * crate::world::vertical::STOREY / PLAYER_GRAVITY).sqrt();
+        let took = fall_frames as f32 * FRAME;
+        assert!((took - expected).abs() < 0.1, "a storey takes sqrt(2 STOREY / g) = {expected} s, took {took} s");
+        assert_eq!(levels, vec![LEVEL, LOWER_LEVEL], "the label flips once, to the level below");
+        assert_eq!(builds_at_flip, Some(builds), "the flip builds no window (change_storey and load_window are not called)");
+        assert_eq!(g.fade, 0.0);
+        assert!((g.p.y() - floor_y_of(LOWER_LEVEL)).abs() < 0.05, "the runner stands on the level below: y = {}", g.p.y());
+        // the landing rule: a pool takes the body (splash, soaked, no stun), anything else stuns
+        let min_depth = crate::game::swim::fall_rules().pool.min_depth;
+        if g.runner_water_depth() > min_depth {
+            assert!(g.swim.is_soaked(), "landing in the pool soaks the runner");
+            assert_eq!(g.p.stun, 0.0, "a pool landing does not stun");
+        } else {
+            assert!(g.p.stun > 0.0, "landing outside the pool stuns");
+        }
     }
 
     #[test]

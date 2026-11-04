@@ -301,7 +301,13 @@ pub fn build(cfg: &WaterfallCfg, top_y: f32, bottom_y: f32, out: f32, t: f32) ->
 pub struct Site {
     pub lip: [f32; 2],
     pub out: f32,
+    /// Absolute y of the channel water surface the sheet leaves (`LEVEL * STOREY + surface_y(0)`).
+    pub top_abs: f32,
+    /// Absolute y of the pool surface it lands on (`LOWER_LEVEL * STOREY + surface_y(0)`).
+    pub bottom_abs: f32,
+    /// `top_abs` relative to the drawn storey's floor.
     pub top_y: f32,
+    /// `bottom_abs` relative to the drawn storey's floor.
     pub bottom_y: f32,
 }
 
@@ -314,8 +320,11 @@ pub fn sites_in_window(seed: &str, level: i32, center: (i32, i32)) -> Vec<Site> 
         return Vec::new();
     }
     let inputs = Inputs { world: seed };
-    let own = surface_y(0.0);
-    let (top_y, bottom_y) = if level == LEVEL { (own, own - STOREY) } else { (own + STOREY, own) };
+    // one formula for both storeys: the true y values, shifted by the drawn storey's floor
+    let top_abs = LEVEL as f32 * STOREY + surface_y(0.0);
+    let bottom_abs = LOWER_LEVEL as f32 * STOREY + surface_y(0.0);
+    let floor = level as f32 * STOREY;
+    let (top_y, bottom_y) = (top_abs - floor, bottom_abs - floor);
     let mut out = Vec::new();
     for dy in -1..=1 {
         for dx in -1..=1 {
@@ -324,6 +333,8 @@ pub fn sites_in_window(seed: &str, level: i32, center: (i32, i32)) -> Vec<Site> 
             out.push(Site {
                 lip: [ox as f32 + f.edge_x0 as f32 + 1.5, oy as f32 + f.edge_z as f32],
                 out: if f.north { -1.0 } else { 1.0 },
+                top_abs,
+                bottom_abs,
                 top_y,
                 bottom_y,
             });
@@ -461,6 +472,39 @@ mod tests {
         assert_eq!(sites_cached(&seed, LEVEL, (0, 0)), upper, "the cached answer is the computed one");
     }
 
+    fn some_seed() -> String {
+        (0..400)
+            .map(|i| format!("fall-seed-{i}"))
+            .find(|s| !sites_in_window(s, LEVEL, (0, 0)).is_empty())
+            .expect("some seed has a fall")
+    }
+
+    #[test]
+    fn the_sheet_spans_the_true_y_values() {
+        let seed = some_seed();
+        let s0 = surface_y(0.0);
+        for s in sites_in_window(&seed, LEVEL, (0, 0)) {
+            assert!((s.bottom_abs - s.top_abs + STOREY).abs() < 1e-4);
+            assert!((s.top_y - s0).abs() < 1e-4 && (s.bottom_y - (-STOREY + s0)).abs() < 1e-4);
+        }
+        for s in sites_in_window(&seed, LOWER_LEVEL, (0, 0)) {
+            assert!((s.bottom_abs - s.top_abs + STOREY).abs() < 1e-4);
+            assert!((s.top_y - (STOREY + s0)).abs() < 1e-4 && (s.bottom_y - s0).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn the_pool_surface_is_minus_storey_plus_the_water_surface() {
+        let seed = some_seed();
+        let up = sites_in_window(&seed, LEVEL, (0, 0));
+        let low = sites_in_window(&seed, LOWER_LEVEL, (0, 0));
+        for (u, l) in up.iter().zip(&low) {
+            assert!((u.bottom_y - (-STOREY + surface_y(0.0))).abs() < 1e-4);
+            assert!((u.bottom_abs - l.bottom_abs).abs() < 1e-6 && (u.top_abs - l.top_abs).abs() < 1e-6);
+            assert!((l.bottom_y - surface_y(0.0)).abs() < 1e-4);
+        }
+    }
+
     #[test]
     fn streaks_scroll_and_stay_in_range() {
         let c = cfg();
@@ -478,7 +522,7 @@ mod tests {
     #[test]
     fn the_loop_follows_the_nearest_fall_in_range() {
         let c = cfg();
-        let site = |x: f32| Site { lip: [x, 10.0], out: 1.0, top_y: 0.0, bottom_y: -5.0 };
+        let site = |x: f32| Site { lip: [x, 10.0], out: 1.0, top_abs: 0.0, bottom_abs: -5.0, top_y: 0.0, bottom_y: -5.0 };
         let sites = [site(10.0), site(40.0)];
         let p = nearest_sound(&c, &sites, (38.0, 10.0), 0.0).unwrap();
         assert!((p[0] - 40.0).abs() < 1.0, "the nearer fall plays");

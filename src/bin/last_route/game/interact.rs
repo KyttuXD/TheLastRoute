@@ -672,7 +672,17 @@ mod tests {
             }
             g.step(0.05, &back, &content, &catalog, &Sounds::default());
         }
-        assert!(g.ladder.is_none(), "the climb is over on the change");
+        // the autosave is the label change (relabel), not an interact: it happens when the body's height reaches the new storey
+        assert_eq!(g.last_autosave, "level", "the label change saves the run");
+        assert_eq!(g.inf.as_ref().unwrap().level, dir);
+        assert!((g.p.y() - crate::game::level_stack::floor_y_of(dir)).abs() < 0.5, "the label flips at the new storey's floor");
+        for _ in 0..400 {
+            if g.ladder.is_none() {
+                break;
+            }
+            g.step(0.05, &back, &content, &catalog, &Sounds::default());
+        }
+        assert!(g.ladder.is_none(), "the climb ends by dismount");
         assert_eq!(g.inf.as_ref().unwrap().level, dir);
         assert_eq!(g.last_autosave, "level", "a new level saves the run");
     }

@@ -2571,7 +2571,7 @@ mod wiring_tests {
         assert!(plan_route(&fac, ground.center(), deck1, &[], &[]).is_empty(), "the deck edge is a rail");
         assert!(plan_route(&fac, deck1.center(), ground, &[], &[]).is_empty(), "and a hunter does not step off it");
         assert_eq!(plan_route(&fac, deck1.center(), deck2, &[], &[]).last(), Some(&deck2), "decks are walked on deck cells");
-        fac.catwalk_links.push(CatwalkLink { cell: ground, kind: CatwalkKind::Ladder, deck_height: 4.0 });
+        fac.catwalk_links.push(CatwalkLink { cell: ground, kind: CatwalkKind::Ladder, deck_height: 4.0, run: (1, 0) });
         assert_eq!(plan_route(&fac, ground.center(), deck1, &[], &[]).last(), Some(&deck1), "a link is the way on");
     }
 }

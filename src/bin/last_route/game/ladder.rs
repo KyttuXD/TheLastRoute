@@ -1,13 +1,17 @@
 //! Sewer ladders, climbed by hand (Godot `game/player/player_controller_3d.gd`: `begin_ladder_climb`, the mount, the
-//! climb and the dismount, lines 1265-1386). The runner mounts on the rungs (interact, or walking into the rung point),
-//! the body lerps to the rung line and faces the wall, then forward climbs up and back climbs down at
-//! `LADDER_CLIMB_SPEED`, and no key hangs the body still. The climb ends at either end, or by jump at or below
-//! `LADDER_LET_GO_HEIGHT`, and the body dismounts onto the open floor beside that end. An end on another storey
-//! (`level_from_height`, as the stairs use) changes storey on the frame the shaft's end is reached: the window loads
-//! that storey and the runner is put beside the ladder there, with no fade and no hold (game/transition.rs).
+//! climb and the dismount, lines 1265-1386), in one continuous space. A ladder is a shaft between two floors 5 m apart,
+//! on the same cell on both levels, with its rails on the side away from the one clear step cell beside the hatch
+//! (`Stair::rails_side`, `Stair::step_cell`). The runner mounts on the rungs (interact, or walking into the hatch from
+//! the step cell), the body lerps to the rung line and faces the rails, then forward climbs up and back climbs down at
+//! `LADDER_CLIMB_SPEED`, and no key hangs the body still. The body's absolute y moves smoothly the whole way
+//! (`Player::set_abs_y`); the level label flips mid-shaft by the same height rule as a walked flight
+//! (`Game::walk_relabel`), with no fade, no hold and no move of the body. A dismount lerps to the centre of the step
+//! cell at that end. Letting go (jump at or below `LADDER_LET_GO_HEIGHT` above the bottom) hands the body back to the
+//! normal movement, which falls to the floor below (game/player.rs).
 //!
 //! One climber at a time: `Game::ladder` holds the one climb, and a second mount is refused while it runs.
 
+use super::level_stack::floor_y_of;
 use super::{pdist, Controls, Game};
 use crate::config::PLAYER_RADIUS;
 use crate::content::Content;
@@ -15,17 +19,63 @@ use crate::world::catalog::Catalog;
 use crate::world::facility::Cell;
 use crate::world::infinite;
 use crate::world::vertical::{
-    level_from_height, LADDER_CLIMB_SPEED, LADDER_DISMOUNT_SECONDS, LADDER_LET_GO_HEIGHT, LADDER_MOUNT_SECONDS,
-    LADDER_RAIL_REACH, STOREY,
+    LADDER_CLIMB_SPEED, LADDER_DISMOUNT_SECONDS, LADDER_LET_GO_HEIGHT, LADDER_MOUNT_SECONDS, LADDER_RAIL_REACH,
 };
 use std::f32::consts::{PI, TAU};
 
-/// How near the rung point the body must walk to mount without interact (our number: the rung trigger).
-const WALK_IN_REACH: f32 = 0.3;
-/// How far beside the ladder's foot a dismount lands, from the cell centre, away from the wall (metres).
-const BESIDE: f32 = 0.75;
 /// The noise a climbing body makes while it moves: the rungs clank (player_controller_3d.gd:1326, noise .35).
 const CLANK_NOISE: f32 = 0.35;
+
+/// The walk-in numbers (data/ladders.json): when walking into a hatch from its step cell mounts without interact.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LadderRules {
+    /// Metres added to the player radius: how near the hatch edge (facing the step cell) the body must walk to mount.
+    /// The body stops one radius short of the open hatch, so the reach is that radius and this margin.
+    pub walk_in_reach_margin: f32,
+    /// How closely the body must face the hatch (dot of the facing and the way to the hatch) to walk into it.
+    pub walk_in_facing: f32,
+}
+
+impl Default for LadderRules {
+    fn default() -> Self {
+        LadderRules { walk_in_reach_margin: 0.2, walk_in_facing: 0.5 }
+    }
+}
+
+impl LadderRules {
+    /// Reads and checks a ladders file: both numbers must be present, finite and inside their limits, or it is refused.
+    pub fn parse(text: &str) -> Result<LadderRules, String> {
+        let v: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("ladders.json: {e}"))?;
+        let num = |key: &str, lo: f32, hi: f32| -> Result<f32, String> {
+            let x = v
+                .get(key)
+                .and_then(serde_json::Value::as_f64)
+                .ok_or_else(|| format!("ladders.json: {key} is missing or not a number"))? as f32;
+            if x.is_finite() && x >= lo && x <= hi {
+                Ok(x)
+            } else {
+                Err(format!("ladders.json: {key} = {x} is outside {lo}..={hi}"))
+            }
+        };
+        Ok(LadderRules { walk_in_reach_margin: num("walk_in_reach_margin", 0.0, 2.0)?, walk_in_facing: num("walk_in_facing", 0.0, 1.0)? })
+    }
+
+    /// Whether a body at `pos` facing `forward` mounts the hatch at `cell` whose step cell lies along `run`.
+    pub fn walks_in(&self, cell: Cell, run: (i32, i32), pos: (f32, f32), forward: (f32, f32)) -> bool {
+        let (cx, cy) = cell.center();
+        let (rx, ry) = (run.0 as f32, run.1 as f32);
+        let edge = (cx + rx * 0.5, cy + ry * 0.5);
+        let on_step_side = (pos.0 - cx) * rx + (pos.1 - cy) * ry > 0.0;
+        let toward = -(forward.0 * rx + forward.1 * ry) > self.walk_in_facing;
+        on_step_side && toward && pdist(edge, pos) <= PLAYER_RADIUS + self.walk_in_reach_margin
+    }
+}
+
+/// The embedded walk-in rules (data/ladders.json); the shipped numbers if the file is refused.
+pub fn rules() -> &'static LadderRules {
+    static RULES: std::sync::OnceLock<LadderRules> = std::sync::OnceLock::new();
+    RULES.get_or_init(|| LadderRules::parse(include_str!("../data/ladders.json")).unwrap_or_default())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -34,75 +84,86 @@ pub enum Phase {
     Dismount,
 }
 
-/// The end of the shaft a dismount goes off: the top (`STOREY`) or the bottom (0).
+/// The end of the shaft a dismount goes off: the top (the upper floor) or the bottom (the lower floor).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum End {
     Top,
     Bottom,
 }
 
-/// One runner on one ladder. `stair` indexes `fac.stairs` on the storey the climb started on. `height` is metres up
-/// the shaft from its lower end: 0 at the bottom, `STOREY` at the top.
+/// One runner on one ladder, in the absolute frame: it knows no level, only the shaft's cell, its step cell's way
+/// (`run`), the rails' `side`, and the absolute floors `y_top` and `y_bottom` it spans. `y` is the absolute y of the
+/// feet on the shaft. The same cell and run are valid on both levels, so a relabel mid-shaft changes nothing here.
 #[derive(Clone, Copy, Debug)]
 pub struct Climb {
-    pub stair: usize,
     pub cell: Cell,
-    pub dir: i32,
+    /// The unit step from the hatch cell to its one clear step cell.
+    pub run: (i32, i32),
+    /// The side of the cell the rails stand on (away from the step cell).
     pub side: (i32, i32),
+    /// The direction of the ladder the climb started on (-1 mounted at the top of a shaft going down, +1 at the foot).
+    pub dir: i32,
+    pub y_top: f32,
+    pub y_bottom: f32,
+    pub y: f32,
     pub phase: Phase,
-    /// Seconds into the mount or the dismount.
+    /// Seconds into the mount or the dismount (0 to 1 over its length).
     pub t: f32,
-    pub height: f32,
     pub end: End,
-    /// Whether the dismount at `end` leaves this storey (decided when the dismount starts).
-    pub changes: bool,
-    /// The storey the dismount at `end` reaches (the storey this one when it does not change).
-    next: i32,
     from: (f32, f32),
     from_yaw: f32,
-    from_lift: f32,
-    /// Where a dismount lands on this storey; None when it changes storey (the change takes the body at once).
-    exit: Option<(f32, f32)>,
+    /// Where a dismount lands: the centre of the step cell.
+    exit: (f32, f32),
 }
 
 impl Climb {
-    /// A mount onto the ladder at `cell` (its direction `dir`, rails on `side`), from the body's place now. A shaft going
-    /// down is mounted at its top, one going up at its bottom: the storey the runner stands on is that end.
-    fn mount(stair: usize, cell: Cell, dir: i32, side: (i32, i32), from: (f32, f32), yaw: f32, lift: f32) -> Climb {
+    /// A mount onto the shaft at `cell` going `dir` from the body's place now: a shaft going down is mounted at its top
+    /// (the upper floor, from the step cell), one going up at its bottom (the lower floor, from the foot).
+    fn mount(
+        cell: Cell,
+        run: (i32, i32),
+        dir: i32,
+        (y_top, y_bottom): (f32, f32),
+        from: (f32, f32),
+        yaw: f32,
+    ) -> Climb {
         Climb {
-            stair,
             cell,
+            run,
+            side: (-run.0, -run.1),
             dir,
-            side,
+            y_top,
+            y_bottom,
+            y: if dir < 0 { y_top } else { y_bottom },
             phase: Phase::Mount,
             t: 0.0,
-            height: if dir < 0 { STOREY } else { 0.0 },
-            end: End::Bottom,
-            changes: false,
-            next: 0,
+            end: if dir < 0 { End::Top } else { End::Bottom },
             from,
             from_yaw: yaw,
-            from_lift: lift,
-            exit: None,
+            exit: step_center(cell, run),
         }
     }
-}
 
-/// The eye height of a body at `height` on the shaft, relative to the floor of the storey it started on: a shaft going
-/// down runs from `-STOREY` to 0, one going up from 0 to `STOREY`.
-pub fn lift_at(height: f32, dir: i32) -> f32 {
-    height + (dir as f32 * STOREY).min(0.0)
-}
-
-fn end_height(end: End) -> f32 {
-    match end {
-        End::Top => STOREY,
-        End::Bottom => 0.0,
+    /// Metres up the shaft from its lower end.
+    pub fn height(&self) -> f32 {
+        self.y - self.y_bottom
     }
 }
 
-/// The side of a ladder cell the rails are fixed to: the first wall next to it, north first (render/stairs.rs
-/// `ladder_side`, which draws the same rails).
+/// The unit step from a ladder's hatch to its one clear step cell: away from the rails (`Stair::rails_side`).
+pub fn run_of(s: &crate::world::facility::Stair) -> (i32, i32) {
+    let side = s.rails_side();
+    (-side.0, -side.1)
+}
+
+/// The centre of the step cell beside the hatch: where a dismount at either end lands.
+pub fn step_center(cell: Cell, run: (i32, i32)) -> (f32, f32) {
+    let (cx, cy) = cell.center();
+    (cx + run.0 as f32, cy + run.1 as f32)
+}
+
+/// The side of a ladder cell a wall is on: the first wall next to it, north first (a fallback for a ladder record that
+/// carries no `run`; the rails' side now comes from `Stair::rails_side`).
 pub fn wall_side(cell: Cell, is_wall: impl Fn(i32, i32) -> bool) -> (i32, i32) {
     [(0, -1), (1, 0), (0, 1), (-1, 0)]
         .into_iter()
@@ -110,7 +171,7 @@ pub fn wall_side(cell: Cell, is_wall: impl Fn(i32, i32) -> bool) -> (i32, i32) {
         .unwrap_or((0, -1))
 }
 
-/// The body's line on the rungs: `LADDER_RAIL_REACH` out from the rails, which stand against the wall side of the cell.
+/// The body's line on the rungs: `LADDER_RAIL_REACH` out from the rails, which stand against the `side` of the cell.
 pub fn stand(cell: Cell, side: (i32, i32)) -> (f32, f32) {
     let (cx, cy) = cell.center();
     let d = 0.5 - LADDER_RAIL_REACH;
@@ -118,7 +179,7 @@ pub fn stand(cell: Cell, side: (i32, i32)) -> (f32, f32) {
 }
 
 /// The yaw that faces `dir` (the convention of `Player::forward2`: forward is `(-sin yaw, -cos yaw)`). The body faces
-/// the wall: `facing(side)`.
+/// the rails: `facing(side)`.
 pub fn facing(dir: (i32, i32)) -> f32 {
     (-dir.0 as f32).atan2(-dir.1 as f32)
 }
@@ -140,88 +201,78 @@ impl Game {
         self.inf.as_ref().map_or(0, |inf| inf.level)
     }
 
-    fn ladder_side(&self, cell: Cell) -> (i32, i32) {
-        wall_side(cell, |x, y| self.fac.is_wall_cell(x, y))
-    }
-
-    /// The open floor beside a ladder's foot on the storey the runner is on: away from the wall first, then the other
-    /// three sides, and the nearest open floor if all four are shut.
-    fn beside(&self, cell: Cell, side: (i32, i32)) -> (f32, f32) {
-        let (cx, cy) = cell.center();
-        let away = (-side.0, -side.1);
-        let sides = [away, (1, 0), (-1, 0), (0, 1), (0, -1)];
-        for d in sides {
-            let (x, y) = (cx + d.0 as f32 * BESIDE, cy + d.1 as f32 * BESIDE);
-            if self.fac.body_fits(x, y, PLAYER_RADIUS) {
-                return (x, y);
-            }
-        }
-        self.fac.nearest_open_or(cx + away.0 as f32 * BESIDE, cy + away.1 as f32 * BESIDE, PLAYER_RADIUS)
-    }
-
-    /// Mounts the ladder `i` of this storey (interact, or walking into its rung point). Refused while another climb
-    /// runs (one climber), or when the storey beyond may not be entered. Returns true on a mount.
+    /// Mounts the ladder `i` of this storey's `fac.stairs` (interact, or walking into its hatch). Refused while another
+    /// climb runs (one climber), or when the storey beyond may not be entered. Returns true on a mount.
     pub(super) fn start_ladder(&mut self, i: usize) -> bool {
         let s = self.fac.stairs[i];
-        if !s.is_ladder() || self.ladder.is_some() {
+        if !s.is_ladder() || self.ladder.is_some() || self.p.falling() {
             return false;
         }
-        if !infinite::level_allowed(self.storey() + s.dir) {
+        let level = self.storey();
+        if !infinite::level_allowed(level + s.dir) {
             return false;
         }
-        let side = self.ladder_side(s.cell);
+        let (upper, lower) = if s.dir < 0 { (level, level - 1) } else { (level + 1, level) };
+        let floors = (floor_y_of(upper), floor_y_of(lower));
         self.focus = None;
         self.p.moving = false;
-        self.ladder = Some(Climb::mount(i, s.cell, s.dir, side, self.p.pos, self.p.yaw, self.p.climb_lift));
+        self.ladder = Some(Climb::mount(s.cell, run_of(&s), s.dir, floors, self.p.pos, self.p.yaw));
         true
     }
 
-    /// The runner walked into a rung point: mount that ladder without interact. Called while the body moves.
+    /// The runner walked into a hatch from its step cell: mount that ladder without interact. Called while the body
+    /// moves: it must be on the ground, on the step cell's side, face the hatch, and be within the data reach of the
+    /// hatch edge facing the step cell (cell centre + run * 0.5).
     pub(super) fn ladder_walk_in(&mut self) {
-        if !self.p.moving || self.ladder.is_some() || self.p.stun > 0.0 {
+        if !self.p.moving || self.ladder.is_some() || self.p.stun > 0.0 || self.p.falling() || !self.p.grounded {
             return;
         }
+        let (fx, fy) = self.p.forward2();
+        let rules = rules();
         let hit = (0..self.fac.stairs.len()).find(|&i| {
             let s = self.fac.stairs[i];
-            s.is_ladder() && pdist(stand(s.cell, self.ladder_side(s.cell)), self.p.pos) <= WALK_IN_REACH
+            s.is_ladder() && rules.walks_in(s.cell, run_of(&s), self.p.pos, (fx, fy))
         });
         if let Some(i) = hit {
             self.start_ladder(i);
         }
     }
 
-    /// Begins a dismount at `end`: the body goes to the open floor beside that end, or, when that end is on another
-    /// storey, the storey changes at once on the frame the end is reached (`advance_ladder`).
+    /// Begins a dismount at the end the body is at: it lerps to the centre of the step cell, its y fixed.
     fn dismount(&self, k: &mut Climb, end: End) {
         k.phase = Phase::Dismount;
         k.t = 0.0;
         k.end = end;
+        k.y = match end {
+            End::Top => k.y_top,
+            End::Bottom => k.y_bottom,
+        };
         k.from = self.p.pos;
-        k.from_lift = self.p.climb_lift;
-        let level = self.storey();
-        let next = level_from_height(level as f32 * STOREY + lift_at(end_height(end), k.dir), level);
-        k.changes = self.inf.is_some() && next != level;
-        k.next = next;
-        k.exit = if k.changes { None } else { Some(self.beside(k.cell, k.side)) };
+        k.from_yaw = self.p.yaw;
     }
 
-    /// Ends a dismount onto the floor of this storey: the body is beside that end.
+    /// Ends a dismount: the body stands in the step cell at the end it went off.
     fn finish_ladder(&mut self, k: Climb) {
         self.ladder = None;
-        self.p.pos = k.exit.unwrap_or(self.p.pos);
-        self.p.climb_lift = 0.0;
+        self.p.pos = k.exit;
+        self.p.yaw = facing(k.run);
+        self.p.set_abs_y(k.y);
     }
 
-    /// Lands the runner beside the ladder on the storey the change just loaded (`Game::change_storey`).
-    pub(super) fn place_beside_ladder(&mut self, cell: Cell, _side: (i32, i32)) {
-        let side = self.ladder_side(cell);
-        self.p.pos = self.beside(cell, side);
-        self.p.yaw = facing((-side.0, -side.1));
-        self.p.climb_lift = 0.0;
+    /// Lets go of the rungs where the body is: the climb ends, and the normal movement takes the body, which falls to the
+    /// floor below if there is more than a step of air under it.
+    pub(super) fn let_go_ladder(&mut self) {
+        let Some(k) = self.ladder.take() else {
+            return;
+        };
+        self.p.set_abs_y(k.y);
+        self.p.moving = false;
+        self.p.noise = 0.0;
     }
 
-    /// One frame of the climb (mount, climb or dismount). Replaces the movement while mounted.
-    pub(super) fn advance_ladder(&mut self, dt: f32, c: &Controls, content: &Content, catalog: &Catalog) {
+    /// One frame of the climb (mount, climb or dismount). Replaces the movement while mounted. The level label follows
+    /// the height by `walk_relabel` (the caller's hook), never by this code.
+    pub(super) fn advance_ladder(&mut self, dt: f32, c: &Controls, _content: &Content, _catalog: &Catalog) {
         let Some(mut k) = self.ladder else {
             return;
         };
@@ -232,8 +283,7 @@ impl Game {
                 let e = smooth(k.t);
                 self.p.pos = lerp2(k.from, stand(k.cell, k.side), e);
                 self.p.yaw = k.from_yaw + turn(k.from_yaw, facing(k.side)) * e;
-                let to_lift = lift_at(k.height, k.dir);
-                self.p.climb_lift = k.from_lift + (to_lift - k.from_lift) * e;
+                self.p.set_abs_y(k.y);
                 if k.t >= 1.0 {
                     k.phase = Phase::Climb;
                 }
@@ -242,38 +292,30 @@ impl Game {
                 // forward climbs up, back climbs down; jump at or below the let-go height drops off the bottom
                 let stopped = self.p.stun > 0.0;
                 let axis = if stopped { 0.0 } else { c.fwd };
-                let h = k.height;
-                if c.jump && h <= LADDER_LET_GO_HEIGHT {
-                    self.dismount(&mut k, End::Bottom);
-                } else if axis > 0.2 && h >= STOREY {
+                if c.jump && k.height() <= LADDER_LET_GO_HEIGHT {
+                    self.let_go_ladder();
+                    return;
+                } else if axis > 0.2 && k.y >= k.y_top {
                     self.dismount(&mut k, End::Top);
-                } else if axis < -0.2 && h <= 0.0 {
+                } else if axis < -0.2 && k.y <= k.y_bottom {
                     self.dismount(&mut k, End::Bottom);
                 } else if axis.abs() > 0.2 {
-                    k.height = (h + axis.signum() * LADDER_CLIMB_SPEED * dt).clamp(0.0, STOREY);
+                    k.y = (k.y + axis.signum() * LADDER_CLIMB_SPEED * dt).clamp(k.y_bottom, k.y_top);
                     moving = true;
-                }
-                if k.phase == Phase::Dismount && k.changes {
-                    // the shaft's end is the connection: the storey changes on this frame, with no hold and no fade
-                    self.ladder = None;
-                    self.p.moving = false;
-                    self.change_storey(k.next, content, catalog, |g| g.place_beside_ladder(k.cell, k.side));
-                    self.autosave("level");
-                    return;
                 }
                 if k.phase == Phase::Climb {
                     self.p.pos = stand(k.cell, k.side);
                     self.p.yaw = facing(k.side);
-                    self.p.climb_lift = lift_at(k.height, k.dir);
+                    self.p.set_abs_y(k.y);
                 }
             }
             Phase::Dismount => {
                 k.t = (k.t + dt / LADDER_DISMOUNT_SECONDS).min(1.0);
                 let e = smooth(k.t);
-                let to = k.exit.unwrap_or(k.from);
-                self.p.pos = lerp2(k.from, to, e);
-                let to_lift = lift_at(end_height(k.end), k.dir);
-                self.p.climb_lift = k.from_lift + (to_lift - k.from_lift) * e;
+                self.p.pos = lerp2(k.from, k.exit, e);
+                // turn to face away from the hatch, so holding forward does not climb straight back on
+                self.p.yaw = k.from_yaw + turn(k.from_yaw, facing(k.run)) * e;
+                self.p.set_abs_y(k.y);
                 moving = true;
                 if k.t >= 1.0 {
                     self.finish_ladder(k);
@@ -293,10 +335,10 @@ mod tests {
     use super::*;
     use crate::audio::Sounds;
     use crate::config::Difficulty;
-    use crate::content::Content;
+    use crate::game::level_stack::ground_y;
     use crate::world::catalog::Catalog;
-    use crate::world::facility::Cover;
-    use crate::world::vertical::{LADDER_LET_GO_HEIGHT as LET_GO, LADDER_MOUNT_SECONDS as MOUNT};
+    use crate::world::facility::{Cover, Stair};
+    use crate::world::vertical::{LADDER_LET_GO_HEIGHT as LET_GO, LADDER_MOUNT_SECONDS as MOUNT, STOREY};
 
     const DT: f32 = 0.05;
 
@@ -316,54 +358,98 @@ mod tests {
         Controls { jump: true, ..Controls::default() }
     }
 
-    /// The start window's ladder going down from the maze (the origin chunk always has one).
+    /// The start window's ladder going down from the maze (the origin chunk always has one), the level below kept
+    /// resident beside it (the climb itself builds nothing).
     fn ladder_game(content: &Content, catalog: &Catalog) -> (Game, usize) {
-        let g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-TEST-7", 0, content, catalog);
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-TEST-7", 0, content, catalog);
         let i = g
             .fac
             .stairs
             .iter()
             .position(|s| s.is_ladder() && s.dir < 0)
             .expect("the start window has a ladder down");
+        g.p.pos = step_center(g.fac.stairs[i].cell, run_of(&g.fac.stairs[i]));
+        g.keep_stack(content, catalog);
+        assert!(g.inf.as_ref().unwrap().stack.has(-1), "the sewer is resident beside the hatch");
         (g, i)
     }
 
-    /// The ladder cell of this storey nearest the runner (read back after a re-centre moves the window's coordinates).
-    fn nearest_ladder(g: &Game) -> Cell {
+    /// The ladder of this storey nearest the runner (read back after a re-centre moves the window's coordinates).
+    fn nearest_ladder(g: &Game) -> Stair {
         g.fac
             .stairs
             .iter()
+            .copied()
             .filter(|s| s.is_ladder())
-            .map(|s| s.cell)
-            .min_by(|a, b| pdist(a.center(), g.p.pos).total_cmp(&pdist(b.center(), g.p.pos)))
+            .min_by(|a, b| pdist(a.cell.center(), g.p.pos).total_cmp(&pdist(b.cell.center(), g.p.pos)))
             .expect("this storey has a ladder")
+    }
+
+    fn step_center_of(s: Stair) -> (f32, f32) {
+        step_center(s.cell, run_of(&s))
+    }
+
+    /// One frame of play.
+    fn frame(g: &mut Game, c: &Controls, content: &Content, catalog: &Catalog) {
+        g.step(DT, c, content, catalog, &Sounds::default());
     }
 
     /// Runs `c` for `secs` of play, one step at a time.
     fn run(g: &mut Game, c: &Controls, secs: f32, content: &Content, catalog: &Catalog) {
-        let sounds = Sounds::default();
         let mut t = 0.0;
         while t < secs {
-            g.step(DT, c, content, catalog, &sounds);
+            frame(g, c, content, catalog);
             t += DT;
         }
     }
 
     #[test]
-    fn walking_into_the_rung_point_mounts_and_a_second_mount_is_refused() {
+    fn mounting_lerps_to_the_rails_and_a_second_mount_is_refused() {
         let content = Content::load();
         let catalog = Catalog::load();
         let (mut g, i) = ladder_game(&content, &catalog);
+        let from = g.p.pos;
         assert!(g.start_ladder(i), "interact mounts the ladder");
         let k = g.ladder.expect("the climb runs");
         assert_eq!(k.phase, Phase::Mount);
+        assert_eq!(k.side, g.fac.stairs[i].rails_side(), "the rails stand away from the step cell");
         assert!(!g.start_ladder(i), "one climber: a second mount is refused while the first runs");
+        run(&mut g, &quiet(), MOUNT * 0.5, &content, &catalog);
+        let mid = g.p.pos;
+        let rungs = stand(k.cell, k.side);
+        assert!(pdist(mid, from) > 1e-3 && pdist(mid, rungs) > 1e-3, "half way along the lerp: {mid:?}");
         run(&mut g, &quiet(), MOUNT + DT, &content, &catalog);
         let k = g.ladder.expect("still on the rungs");
         assert_eq!(k.phase, Phase::Climb, "the mount ends on the rungs");
-        assert_eq!(k.height, STOREY, "a ladder down is mounted at its top");
-        let stand = stand(k.cell, k.side);
-        assert!(pdist(g.p.pos, stand) < 1e-3, "the body is on the rung line");
+        assert_eq!(k.y, k.y_top, "a ladder down is mounted at its top");
+        assert!(pdist(g.p.pos, rungs) < 1e-3, "the body is on the rung line");
+        assert!((g.p.y() - k.y_top).abs() < 1e-4, "the feet stay at the end entered");
+        let ahead = g.p.forward2();
+        assert!(ahead.0 * k.side.0 as f32 + ahead.1 * k.side.1 as f32 > 0.99, "facing the rails");
+    }
+
+    #[test]
+    fn walking_into_the_hatch_from_the_step_cell_mounts() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let (mut g, i) = ladder_game(&content, &catalog);
+        let s = g.fac.stairs[i];
+        g.p.pos = step_center_of(s);
+        g.p.yaw = facing((-run_of(&s).0, -run_of(&s).1));
+        let mut frames = 0;
+        while g.ladder.is_none() {
+            frame(&mut g, &forward(), &content, &catalog);
+            frames += 1;
+            assert!(frames < 60, "walking at the hatch never mounted; at {:?}", g.p.pos);
+        }
+        assert_eq!(g.ladder.unwrap().phase, Phase::Mount);
+        // walking away from the hatch does not
+        let (mut g, i) = ladder_game(&content, &catalog);
+        let s = g.fac.stairs[i];
+        g.p.pos = step_center_of(s);
+        g.p.yaw = facing(run_of(&s));
+        run(&mut g, &forward(), 0.4, &content, &catalog);
+        assert!(g.ladder.is_none(), "walking the other way mounts nothing");
     }
 
     #[test]
@@ -374,13 +460,13 @@ mod tests {
         g.start_ladder(i);
         run(&mut g, &quiet(), MOUNT + DT, &content, &catalog);
         // the top of a ladder down: back climbs down
-        let before = g.ladder.unwrap().height;
+        let before = g.ladder.unwrap().y;
         run(&mut g, &back(), 1.0, &content, &catalog);
-        let after = g.ladder.unwrap().height;
+        let after = g.ladder.unwrap().y;
         assert!((before - after - LADDER_CLIMB_SPEED).abs() < 0.1, "down 1 s at the climb speed: {before} -> {after}");
-        assert!((g.p.climb_lift - lift_at(after, -1)).abs() < 1e-4, "the camera drops with the body");
+        assert!((g.p.y() - after).abs() < 1e-3, "the body drops with the climb");
         run(&mut g, &forward(), 1.0, &content, &catalog);
-        assert!((g.ladder.unwrap().height - before).abs() < 0.1, "forward climbs back up");
+        assert!((g.ladder.unwrap().y - before).abs() < 0.1, "forward climbs back up");
     }
 
     #[test]
@@ -391,37 +477,88 @@ mod tests {
         g.start_ladder(i);
         run(&mut g, &quiet(), MOUNT + DT, &content, &catalog);
         run(&mut g, &back(), 0.3, &content, &catalog);
-        let h = g.ladder.unwrap().height;
+        let y = g.ladder.unwrap().y;
         run(&mut g, &quiet(), 2.0, &content, &catalog);
-        assert_eq!(g.ladder.unwrap().height, h, "hanging keeps the height");
+        assert_eq!(g.ladder.unwrap().y, y, "hanging keeps the height");
         assert_eq!(g.p.noise, 0.0, "no clank while still");
         run(&mut g, &back(), DT, &content, &catalog);
         assert_eq!(g.p.noise, CLANK_NOISE, "the rungs clank while the body moves");
     }
 
     #[test]
-    fn jump_at_the_let_go_height_drops_off_the_bottom() {
+    fn climbing_is_continuous_in_y_and_the_label_flips_with_no_side_effect() {
         let content = Content::load();
         let catalog = Catalog::load();
         let (mut g, i) = ladder_game(&content, &catalog);
         g.start_ladder(i);
         run(&mut g, &quiet(), MOUNT + DT, &content, &catalog);
-        // high on the ladder a jump does nothing
-        run(&mut g, &jump(), DT, &content, &catalog);
-        assert_eq!(g.ladder.unwrap().phase, Phase::Climb, "a jump high up does not let go");
-        // down to the let-go height, then jump
-        g.ladder.as_mut().unwrap().height = LET_GO * 0.5;
-        let level = g.inf.as_ref().unwrap().level;
         g.fade = 0.0;
-        run(&mut g, &jump(), DT, &content, &catalog);
-        // the bottom of this shaft is the storey below: the jump lets go and the storey changes on that frame, no hold, no fade
-        assert!(g.ladder.is_none(), "low jump lets go, and the change ends the climb");
-        assert_eq!(g.inf.as_ref().unwrap().level, level - 1, "the storey below");
-        assert_eq!(g.fade, 0.0, "no fade");
+        let step = LADDER_CLIMB_SPEED * DT;
+        let (mut flips, mut frames) = (0, 0);
+        loop {
+            let (level, pos, y) = (g.inf.as_ref().unwrap().level, g.p.pos, g.p.y());
+            let builds = g.inf.as_ref().unwrap().builds;
+            let phase = g.ladder.map(|k| k.phase);
+            frame(&mut g, &back(), &content, &catalog);
+            frames += 1;
+            assert!(frames < 2000, "the climb never ended");
+            assert_eq!(g.fade, 0.0, "a ladder creates no fade");
+            assert!((g.p.y() - y).abs() <= step + 1e-3, "frame step in y: {} -> {}", y, g.p.y());
+            if phase == Some(Phase::Climb) && g.ladder.is_some_and(|k| k.phase == Phase::Climb) {
+                assert!(pdist(g.p.pos, pos) < 1e-4, "x and z stay on the rails while climbing");
+            }
+            let now = g.inf.as_ref().unwrap().level;
+            if now != level {
+                flips += 1;
+                assert_eq!((level, now), (0, -1), "the label goes from the maze to the sewer");
+                assert!(pdist(g.p.pos, pos) < 1e-4, "the flip frame did not move the body in x and z");
+                assert!((y - g.p.y()).abs() > step * 0.5 && (y - g.p.y()).abs() <= step + 1e-3, "y moved one climb step");
+                assert_eq!(g.inf.as_ref().unwrap().builds, builds, "the flip built no window");
+                assert!(g.ladder.is_some_and(|k| k.phase == Phase::Climb), "the climb goes on");
+            }
+            if g.ladder.is_none() {
+                break;
+            }
+        }
+        assert_eq!(flips, 1, "the label flips exactly once");
+        assert!((g.p.y() + STOREY).abs() < 0.01, "at the sewer floor: {}", g.p.y());
+        let low = nearest_ladder(&g);
+        let want = step_center_of(low);
+        assert!(pdist(g.p.pos, want) < 0.05, "on the lower step cell: {:?} want {want:?}", g.p.pos);
+        assert!(g.p.grounded && !g.p.falling());
     }
 
     #[test]
-    fn a_dismount_at_the_top_lands_beside_the_ladder_on_the_same_storey() {
+    fn climbing_up_from_the_sewer_foot_reaches_the_maze_beside_the_hatch() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-TEST-7", -1, &content, &catalog);
+        let i = g.fac.stairs.iter().position(|s| s.is_ladder() && s.dir > 0).expect("the sewer window has a ladder foot");
+        let s = g.fac.stairs[i];
+        g.p.pos = step_center_of(s);
+        g.p.set_abs_y(g.p.floor_y);
+        g.keep_stack(&content, &catalog);
+        assert!(g.start_ladder(i));
+        run(&mut g, &quiet(), MOUNT + DT, &content, &catalog);
+        assert_eq!(g.ladder.unwrap().y, g.ladder.unwrap().y_bottom, "mounted at the foot");
+        let mut flips = 0;
+        let mut frames = 0;
+        while g.ladder.is_some() {
+            let level = g.inf.as_ref().unwrap().level;
+            frame(&mut g, &forward(), &content, &catalog);
+            flips += (g.inf.as_ref().unwrap().level != level) as i32;
+            frames += 1;
+            assert!(frames < 2000, "the climb never ended");
+        }
+        assert_eq!(flips, 1);
+        assert_eq!(g.inf.as_ref().unwrap().level, 0);
+        assert!(g.p.y().abs() < 0.01, "on the maze floor: {}", g.p.y());
+        let top = nearest_ladder(&g);
+        assert!(pdist(g.p.pos, step_center_of(top)) < 0.05, "beside the hatch on the step cell");
+    }
+
+    #[test]
+    fn a_dismount_at_the_top_lands_on_the_step_cell_and_stands() {
         let content = Content::load();
         let catalog = Catalog::load();
         let (mut g, i) = ladder_game(&content, &catalog);
@@ -431,60 +568,157 @@ mod tests {
         // a ladder down is mounted at the top; forward there is a dismount onto the maze floor
         run(&mut g, &forward(), DT, &content, &catalog);
         let k = g.ladder.unwrap();
-        assert_eq!((k.phase, k.end, k.changes), (Phase::Dismount, End::Top, false));
+        assert_eq!((k.phase, k.end), (Phase::Dismount, End::Top));
         run(&mut g, &quiet(), LADDER_DISMOUNT_SECONDS + DT, &content, &catalog);
         assert!(g.ladder.is_none(), "the climb is over");
         assert_eq!(g.inf.as_ref().unwrap().level, level, "no storey changed");
-        assert_eq!(g.p.climb_lift, 0.0);
         // the window may have re-centred since the dismount: the ladder is read back from this storey's own list
-        let cell = nearest_ladder(&g);
-        let beside = g.beside(cell, g.ladder_side(cell));
-        assert!(pdist(g.p.pos, beside) < 1e-3, "on the open floor beside the top: {:?}", g.p.pos);
-        assert!(pdist(g.p.pos, cell.center()) > 0.5, "not in the shaft");
+        let s = nearest_ladder(&g);
+        assert!(pdist(g.p.pos, step_center_of(s)) < 0.05, "on the step cell: {:?}", g.p.pos);
+        assert!(g.p.grounded && !g.p.falling(), "standing");
+        let stack = &g.inf.as_ref().unwrap().stack;
+        let ground = ground_y(&g.fac, stack, g.p.pos.0, g.p.pos.1, g.p.y());
+        assert!((ground.y - g.p.y()).abs() < 1e-3, "the feet are on the ground: {} vs {}", g.p.y(), ground.y);
     }
 
     #[test]
-    fn climbing_down_to_the_bottom_changes_storey_on_that_frame_with_no_fade() {
+    fn jump_at_the_let_go_height_lets_go_and_a_high_jump_does_not() {
         let content = Content::load();
         let catalog = Catalog::load();
         let (mut g, i) = ladder_game(&content, &catalog);
-        let level = g.inf.as_ref().unwrap().level;
         g.start_ladder(i);
         run(&mut g, &quiet(), MOUNT + DT, &content, &catalog);
-        g.fade = 0.0;
-        // back down the whole shaft: the bottom is the storey below (level_from_height)
-        let mut frames = 0;
-        while g.inf.as_ref().unwrap().level == level {
-            g.step(DT, &back(), &content, &catalog, &Sounds::default());
-            assert_eq!(g.fade, 0.0, "a ladder creates no fade");
-            frames += 1;
-            assert!(frames < 2000, "the climb never reached the bottom");
-        }
-        // the change came on the frame the shaft's end was reached: no dismount hold, no fade, the climb is over
-        assert!(g.ladder.is_none(), "the climb ends on the change frame");
-        assert_eq!(g.inf.as_ref().unwrap().level, level - 1, "the storey below");
-        assert_eq!(g.fade, 0.0);
-        assert_eq!(g.p.climb_lift, 0.0);
-        // the runner lands beside the ladder's foot on the storey below. The window re-centres on the runner after the
-        // change, so the foot is read back from this storey's own list (the old cell's coordinates no longer apply)
-        let foot = nearest_ladder(&g);
-        let d = pdist(g.p.pos, foot.center());
-        assert!((0.6..1.2).contains(&d), "beside the ladder's foot, not in it: {d}");
+        run(&mut g, &jump(), DT, &content, &catalog);
+        assert_eq!(g.ladder.unwrap().phase, Phase::Climb, "a jump high up does not let go");
+        let bottom = g.ladder.unwrap().y_bottom;
+        g.ladder.as_mut().unwrap().y = bottom + LET_GO * 0.5;
+        run(&mut g, &jump(), DT, &content, &catalog);
+        assert!(g.ladder.is_none(), "a low jump lets go of the rungs");
     }
 
     #[test]
-    fn a_ladder_is_climbed_only_on_its_own_rung_point_and_its_cover_still_reads() {
+    fn falling_off_a_ladder_lands_on_ground_y_below() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let (mut g, i) = ladder_game(&content, &catalog);
+        g.start_ladder(i);
+        run(&mut g, &quiet(), MOUNT + DT, &content, &catalog);
+        // part way down, let go of the rungs
+        let bottom = g.ladder.unwrap().y_bottom;
+        g.ladder.as_mut().unwrap().y = bottom + LET_GO * 0.9;
+        run(&mut g, &jump(), DT, &content, &catalog);
+        assert!(g.ladder.is_none());
+        // `Game::step` takes the landing itself and applies the landing rule (`apply_landing`), so the test watches the
+        // fall end (falling, then not) and reads the rule's effect rather than `Player::take_landing`
+        let from_y = g.p.y();
+        let mut frames = 0;
+        while frames == 0 || g.p.falling() {
+            frame(&mut g, &quiet(), &content, &catalog);
+            frames += 1;
+            assert!(frames < 200, "the body never landed: y {}", g.p.y());
+        }
+        let drop = from_y - g.p.y();
+        let stack = &g.inf.as_ref().unwrap().stack;
+        let ground = ground_y(&g.fac, stack, g.p.pos.0, g.p.pos.1, g.p.y());
+        assert!((g.p.y() - ground.y).abs() < 1e-3, "standing on the ground below: {} vs {}", g.p.y(), ground.y);
+        assert!((g.p.y() - bottom).abs() < 1e-3, "on the lower floor");
+        assert!(drop > 0.0 && drop < LET_GO, "dropped {drop} from the let-go height");
+        assert!(g.p.take_landing().is_none(), "the step already took the landing");
+        if drop >= crate::game::swim::fall_rules().min_height {
+            assert!(g.p.noise_burst_timer > 0.0, "the landing rule ran on the touchdown frame (stun, noise or splash)");
+        }
+        assert!(!g.p.falling() && g.ladder.is_none());
+    }
+
+    #[test]
+    fn the_camera_eye_never_jumps_more_than_a_climb_step_per_frame() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let (mut g, i) = ladder_game(&content, &catalog);
+        let step = LADDER_CLIMB_SPEED * DT;
+        let mut last = g.p.eye_y();
+        g.start_ladder(i);
+        let mut frames = 0;
+        let c = back();
+        while g.ladder.is_some() {
+            frame(&mut g, &c, &content, &catalog);
+            let eye = g.p.eye_y();
+            assert!((eye - last).abs() <= step + 1e-3, "eye y {last} -> {eye}");
+            last = eye;
+            frames += 1;
+            assert!(frames < 2000, "the climb never ended");
+        }
+    }
+
+    #[test]
+    fn a_ladder_is_refused_when_the_storey_beyond_is_not_allowed() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let (mut g, i) = ladder_game(&content, &catalog);
+        // the route ends at the lowest storey: from there no ladder goes down
+        let lowest = (-10..=0).rev().find(|l| !infinite::level_allowed(*l - 1)).expect("the route has a lowest storey");
+        g.inf.as_mut().unwrap().level = lowest;
+        assert!(!g.start_ladder(i), "a ladder down from the lowest storey is refused");
+        assert!(g.ladder.is_none());
+    }
+
+    #[test]
+    fn a_ladder_stands_on_the_rails_side_away_from_its_step_cell() {
         let content = Content::load();
         let catalog = Catalog::load();
         let (g, i) = ladder_game(&content, &catalog);
         let s = g.fac.stairs[i];
         assert!(matches!(s.kind, crate::world::facility::LinkKind::Ladder(Cover::Manhole | Cover::Grate)));
+        assert_eq!((s.step_cell().x - s.cell.x, s.step_cell().y - s.cell.y), run_of(&s), "the step cell is across from the rails");
+        assert!(pdist(stand(s.cell, s.rails_side()), step_center_of(s)) > 1.0, "the rungs are across the cell from the step");
         assert_eq!(wall_side(s.cell, |_, _| false), (0, -1), "no wall next to it: north");
         assert_eq!(wall_side(s.cell, |x, y| (x, y) == (s.cell.x + 1, s.cell.y)), (1, 0), "the first wall, east");
     }
 
     #[test]
-    fn facing_the_wall_points_the_body_at_it() {
+    fn the_shipped_walk_in_numbers_parse_and_match_the_defaults() {
+        let r = LadderRules::parse(include_str!("../data/ladders.json")).expect("the shipped file parses");
+        assert_eq!(r, LadderRules::default());
+        assert_eq!(*rules(), r, "the embedded file is the one in the tree");
+        assert_eq!((r.walk_in_reach_margin, r.walk_in_facing), (0.2, 0.5));
+    }
+
+    #[test]
+    fn a_bad_ladders_file_is_refused() {
+        assert!(LadderRules::parse("not json").is_err());
+        assert!(LadderRules::parse(r#"{"walk_in_facing": 0.5}"#).is_err(), "missing reach");
+        assert!(LadderRules::parse(r#"{"walk_in_reach_margin": 0.2}"#).is_err(), "missing facing");
+        assert!(LadderRules::parse(r#"{"walk_in_reach_margin": -1, "walk_in_facing": 0.5}"#).is_err());
+        assert!(LadderRules::parse(r#"{"walk_in_reach_margin": 0.2, "walk_in_facing": 2}"#).is_err());
+        assert!(LadderRules::parse(r#"{"walk_in_reach_margin": "x", "walk_in_facing": 0.5}"#).is_err());
+    }
+
+    #[test]
+    fn changing_the_data_changes_when_the_walk_in_mounts() {
+        let cell = Cell { x: 5, y: 5 };
+        let run = (1, 0);
+        let (cx, cy) = cell.center();
+        // on the step side, `gap` beyond the hatch edge, facing the hatch (forward points along -run)
+        let at = |gap: f32| (cx + 0.5 + gap, cy);
+        let toward = (-1.0, 0.0);
+        let base = LadderRules::default();
+        let reach = PLAYER_RADIUS + base.walk_in_reach_margin;
+        assert!(base.walks_in(cell, run, at(reach - 0.01), toward));
+        assert!(!base.walks_in(cell, run, at(reach + 0.01), toward), "just out of reach");
+        let wider = LadderRules { walk_in_reach_margin: base.walk_in_reach_margin + 0.3, ..base };
+        assert!(wider.walks_in(cell, run, at(reach + 0.1), toward), "a bigger margin mounts from further");
+        let tighter = LadderRules { walk_in_reach_margin: 0.0, ..base };
+        assert!(!tighter.walks_in(cell, run, at(PLAYER_RADIUS + 0.1), toward), "no margin mounts only up close");
+        // facing: 45 degrees off the hatch has a dot of about 0.71
+        let a45 = (-(0.5f32).sqrt(), (0.5f32).sqrt());
+        assert!(base.walks_in(cell, run, at(0.1), a45));
+        let strict = LadderRules { walk_in_facing: 0.9, ..base };
+        assert!(!strict.walks_in(cell, run, at(0.1), a45), "a stricter facing refuses the oblique walk");
+        assert!(!base.walks_in(cell, run, at(0.1), (1.0, 0.0)), "facing away never mounts");
+    }
+
+    #[test]
+    fn facing_the_rails_points_the_body_at_them() {
         for side in [(0, -1), (1, 0), (0, 1), (-1, 0)] {
             let yaw = facing(side);
             let ahead = (-yaw.sin(), -yaw.cos());

@@ -43,3 +43,7 @@ In `src/bin/last_route/world/facility.rs`:
 - **Rendering:** taller halls, the railed deck edges and the catwalk grating.
 
 Related code: [facility.rs](../src/bin/last_route/world/facility.rs).
+
+## Ladders to a deck (continuous levels, phase 6)
+
+Catwalk links use the Ladder `Flight` footprint for cells only: the step cell and the rail side follow the same rule as sewer ladders (see [SEWERS.md](SEWERS.md)). The deck height stays the catwalk's `walk_surface` height. See [STAIRS_CONTINUOUS_DESIGN.md](STAIRS_CONTINUOUS_DESIGN.md).

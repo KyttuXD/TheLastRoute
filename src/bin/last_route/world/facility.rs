@@ -215,6 +215,13 @@ pub struct Facility {
     /// The level this facility is (0 ground, -1 sewer); its floor sits at `level * STOREY` in absolute y
     /// (`body_fits_at_y`). Set by the game when it loads a window; 0 until then.
     pub level: i32,
+    /// Waterfall voids: cells with no floor at all (open air down to the level below), but no wall either. Sorted;
+    /// set by `set_drop_cells`, indexed into `drop` by `rebuild_grids`.
+    drop_list: Vec<Cell>,
+    /// Cells with no ceiling because a drop on the level above falls through them (`set_air_above_cells`). Sorted.
+    air_list: Vec<Cell>,
+    drop: Vec<bool>,
+    air: Vec<bool>,
 }
 
 /// How far a door is open (0 closed, 1 open) and whether it is meant to be open. `open` chases `want_open` at
@@ -260,7 +267,8 @@ pub struct Stair {
     pub cell: Cell,
     /// -1 leads down a level, +1 up.
     pub dir: i32,
-    /// The flight's own run (A toward the well), the same on both levels; (0, 0) for a ladder.
+    /// The flight's own run (A toward the well), the same on both levels. A ladder: the unit step from the hatch to the
+    /// one clear step cell beside it, the same on both levels (`flight_links::ladder_flight`).
     pub run: (i32, i32),
     pub kind: LinkKind,
     /// How the flight is laid out (a ladder: Switchback, unused).
@@ -279,36 +287,33 @@ impl Stair {
         Stair { cell, dir, run, kind: LinkKind::Stairs, shape, clockwise }
     }
 
-    /// A ladder record: `cell` is the hatch.
+    /// A ladder record: `cell` is the hatch, stepping off to the north (`(0, -1)`). Use `ladder_with_run` for the
+    /// step direction `flight_links::ladder_flight` picked.
     pub fn ladder(cell: Cell, dir: i32, cover: Cover) -> Stair {
+        Stair::ladder_with_run(cell, dir, cover, (0, -1))
+    }
+
+    /// A ladder record: `cell` is the hatch and `run` the unit step to the one clear step cell beside it.
+    pub fn ladder_with_run(cell: Cell, dir: i32, cover: Cover, run: (i32, i32)) -> Stair {
         Stair {
             cell,
             dir,
-            run: (0, 0),
+            run,
             kind: LinkKind::Ladder(cover),
             shape: FlightShape::Switchback,
             clockwise: false,
         }
     }
 
-    /// The flight this record is one end of, seen from `level`, the level of the facility holding it. `None` for a
-    /// ladder.
+    /// The flight this record is one end of, seen from `level`, the level of the facility holding it. A ladder is a
+    /// `FlightKind::Ladder` flight: the hatch is its anchor and `run` leads to the step cell.
     pub fn flight(&self, level: i32) -> Option<Flight> {
-        if self.is_ladder() {
-            return None;
-        }
+        let kind = if self.is_ladder() { FlightKind::Ladder } else { FlightKind::Stairs };
+        let run = if self.is_ladder() && self.run == (0, 0) { (0, -1) } else { self.run };
         Some(if self.dir < 0 {
-            Flight::new(FlightKind::Stairs, self.shape, level, self.cell, self.run).with_clockwise(self.clockwise)
+            Flight::new(kind, self.shape, level, self.cell, run).with_clockwise(self.clockwise)
         } else {
-            Flight::from_foot_with(
-                flights(),
-                FlightKind::Stairs,
-                self.shape,
-                level,
-                self.cell,
-                self.run,
-                self.clockwise,
-            )
+            Flight::from_foot_with(flights(), kind, self.shape, level, self.cell, run, self.clockwise)
         })
     }
 
@@ -317,14 +322,10 @@ impl Stair {
         self.flight(if self.dir < 0 { 0 } else { -1 }).map(|f| well_footprint(&f))
     }
 
-    /// The cells that are a hole on the upper level and open ceiling on the lower. A ladder: its hatch on the upper
-    /// level only.
+    /// The cells that are a hole on the upper level and open ceiling on the lower. A ladder: its one hatch cell, the
+    /// same from both records (the lower level's foot is an ordinary floor cell under it, see `rebuild_grids`).
     pub fn well_cells(&self) -> Vec<Cell> {
-        match self.footprint() {
-            Some(fp) => fp.upper_hole,
-            None if self.dir < 0 => vec![self.cell],
-            None => vec![],
-        }
+        self.footprint().map_or_else(|| vec![self.cell], |fp| fp.upper_hole)
     }
 
     /// The walls between the lanes of this flight (grid coordinates; the same list from the upper and the lower record,
@@ -333,14 +334,30 @@ impl Stair {
         self.flight(level).map(|f| lane_dividers(&f)).unwrap_or_default()
     }
 
-    /// The landing A (upper level). A ladder: its hatch.
+    /// The landing A (upper level). A ladder: its step cell, the floor cell beside the hatch.
     pub fn landing(&self) -> Cell {
         self.footprint().map_or(self.cell, |fp| fp.landing)
     }
 
-    /// The foot B (lower level). A ladder: its hatch.
+    /// The foot B (lower level). A ladder: its hatch cell (the floor under the shaft).
     pub fn foot(&self) -> Cell {
         self.footprint().map_or(self.cell, |fp| fp.foot)
+    }
+
+    /// A ladder's one clear step cell beside the hatch (the same cell as `landing()`); for a stair, its landing A.
+    pub fn step_cell(&self) -> Cell {
+        self.landing()
+    }
+
+    /// The side of a ladder's cell its rails stand on: opposite the step cell, so a climber steps off away from the
+    /// rails. `(0, 0)` for a stair.
+    pub fn rails_side(&self) -> (i32, i32) {
+        if self.is_ladder() {
+            let run = if self.run == (0, 0) { (0, -1) } else { self.run };
+            (-run.0, -run.1)
+        } else {
+            (0, 0)
+        }
     }
 
     /// The end of the flight on the other level: the foot for an upper stair, the landing for a lower one.
@@ -369,6 +386,10 @@ impl Stair {
     /// absolute surface minus `level * STOREY`, so it is continuous across the level change. `Some` only over the
     /// well and this stair's own end (A for dir < 0, B for dir > 0), never on the other end.
     pub fn surface_rel(&self, level: i32, x: f32, z: f32) -> Option<f32> {
+        // a ladder is climbed, not walked: it has no tread surface
+        if self.is_ladder() {
+            return None;
+        }
         let flight = self.flight(level)?;
         let fp = well_footprint(&flight);
         // The cell holding the point, by the flight's own frame (each cell is half-open towards the well: u in
@@ -495,6 +516,10 @@ impl Facility {
             catwalk_links: vec![],
             maze_variant: None,
             level: 0,
+            drop_list: vec![],
+            air_list: vec![],
+            drop: vec![],
+            air: vec![],
         };
         let room_count = opt.room_count.max(5);
         f.carve_facility_rooms(room_count, cat);
@@ -703,16 +728,37 @@ impl Facility {
         self.room_lights.retain(|l| !inside(l.switch_cell));
     }
 
+    /// Removes the props of cell `c` and every solid prop whose footprint reaches into it, so a body fills the cell
+    /// (a ladder's hatch and step cell, a catwalk link). Room doors are never removed, and relays, batteries, pickups
+    /// and lockers stay: they are objectives, not furniture. Call `rebuild_grids` afterwards.
+    pub fn clear_props_at(&mut self, c: Cell) {
+        self.props.retain(|p| {
+            if p.door.is_some() {
+                return true;
+            }
+            let (px, py) = (p.cell.x as f32 + 0.5 + p.offset.0, p.cell.y as f32 + 0.5 + p.offset.1);
+            let reaches = p.solid
+                && (c.x as f32 + 0.5 - px).abs() < p.half.0 + 0.5
+                && (c.y as f32 + 0.5 - py).abs() < p.half.1 + 0.5;
+            p.cell != c && !reaches
+        });
+    }
+
     /// Recomputes the solid-prop index and the hunters' walkable grid after edits.
     pub fn rebuild_grids(&mut self) {
         self.hole = vec![false; (self.cols * self.rows) as usize];
         for s in self.stairs.clone() {
+            // a ladder's foot (dir > 0) is an ordinary floor cell: the hatch above it is the hole
+            if s.is_ladder() && s.dir > 0 {
+                continue;
+            }
             for c in s.well_cells() {
                 if c.x >= 0 && c.y >= 0 && c.x < self.cols && c.y < self.rows {
                     self.hole[(c.y * self.cols + c.x) as usize] = true;
                 }
             }
         }
+        self.index_drops();
         self.prop_grid = vec![vec![]; (self.cols * self.rows) as usize];
         for i in 0..self.props.len() {
             if self.props[i].solid {
@@ -763,6 +809,10 @@ impl Facility {
             catwalk_links: vec![],
             maze_variant: None,
             level: parts.first().map_or(0, |p| p.0.level),
+            drop_list: vec![],
+            air_list: vec![],
+            drop: vec![],
+            air: vec![],
         };
         for (p, ox, oy, region) in parts {
             let sh = |c: Cell| Cell::new(c.x + ox, c.y + oy);
@@ -810,6 +860,8 @@ impl Facility {
                     ..l
                 }));
             f.stairs.extend(p.stairs.into_iter().map(|s| s.shifted(ox, oy)));
+            f.drop_list.extend(p.drop_list.iter().map(|c| sh(*c)));
+            f.air_list.extend(p.air_list.iter().map(|c| sh(*c)));
             // catwalk decks and their links ride along with the chunk they belong to
             for (c, s) in p.walk_surface {
                 f.walk_surface.insert(sh(c), s);
@@ -1163,6 +1215,20 @@ impl Facility {
 
     /// The generator's can_occupy: five footprint samples on floor, clear of solid props.
     pub fn can_occupy(&self, x: f64, y: f64, r: f64) -> bool {
+        if !self.drop_list.is_empty() {
+            // a drop has no floor to stand on: nothing is placed, spawned or routed over one
+            for (a, b) in [(x, y), (x - r, y - r), (x + r, y - r), (x - r, y + r), (x + r, y + r)] {
+                if self.is_drop(Cell::new(a.floor() as i32, b.floor() as i32)) {
+                    return false;
+                }
+            }
+        }
+        self.clear_of_solids(x, y, r)
+    }
+
+    /// `can_occupy` without the drop rule: five footprint samples on floor (a drop is floor-less but wall-less, so a
+    /// body may enter it), clear of solid props. What `fits` builds on.
+    fn clear_of_solids(&self, x: f64, y: f64, r: f64) -> bool {
         for (a, b) in [
             (x, y),
             (x - r, y - r),
@@ -1194,8 +1260,14 @@ impl Facility {
         true
     }
 
-    /// Movement test for bodies: the generator's rule plus the solid hiding lockers.
+    /// Whether the cell has no floor: a stairwell or ladder hatch (not walkable except on its flight) or a drop (open
+    /// air a body may enter and fall through).
     pub fn is_hole(&self, x: i32, y: i32) -> bool {
+        self.is_stair_hole(x, y) || self.is_drop(Cell::new(x, y))
+    }
+
+    /// A stairwell or ladder-hatch cell: the hole rule keeps a walking body out of it unless it is on the flight.
+    fn is_stair_hole(&self, x: i32, y: i32) -> bool {
         x >= 0
             && y >= 0
             && x < self.cols
@@ -1205,6 +1277,79 @@ impl Facility {
                 .get((y * self.cols + x) as usize)
                 .copied()
                 .unwrap_or(false)
+    }
+
+    fn index_drops(&mut self) {
+        let n = (self.cols * self.rows) as usize;
+        let (cols, rows) = (self.cols, self.rows);
+        let index = |list: &[Cell]| {
+            let mut v = vec![false; n];
+            for c in list {
+                if c.x >= 0 && c.y >= 0 && c.x < cols && c.y < rows {
+                    v[(c.y * cols + c.x) as usize] = true;
+                }
+            }
+            v
+        };
+        self.drop = index(&self.drop_list);
+        self.air = index(&self.air_list);
+    }
+
+    /// Makes `cells` this level's drops (a waterfall void): no floor and no wall, open air down to the level below.
+    /// A body at or above the floor may enter one (`fits`), then falls; hunters never walk in (`hunter_open`), and
+    /// nothing is placed on one (`can_occupy`, `floor_cells`). Replaces any earlier drops.
+    pub fn set_drop_cells(&mut self, cells: &[Cell]) {
+        self.drop_list = cells.to_vec();
+        self.drop_list.sort();
+        self.drop_list.dedup();
+        self.index_drops();
+    }
+
+    /// Makes `cells` this level's air-above cells: no ceiling, because a drop on the level above falls through them.
+    pub fn set_air_above_cells(&mut self, cells: &[Cell]) {
+        self.air_list = cells.to_vec();
+        self.air_list.sort();
+        self.air_list.dedup();
+        self.index_drops();
+    }
+
+    /// Whether `c` is a drop cell (open air, no floor).
+    pub fn is_drop(&self, c: Cell) -> bool {
+        c.x >= 0
+            && c.y >= 0
+            && c.x < self.cols
+            && c.y < self.rows
+            && self.drop.get((c.y * self.cols + c.x) as usize).copied().unwrap_or(false)
+    }
+
+    /// Every drop cell (sorted).
+    pub fn drop_cells(&self) -> &[Cell] {
+        &self.drop_list
+    }
+
+    /// Whether a drop cell lies within `radius` cells of the point `(x, z)` (grid cells): a cheap test for whether the
+    /// level below must be resident (`keep_stack`). The distance is taken to the nearest point of the cell.
+    pub fn drop_within(&self, x: f32, z: f32, radius: f32) -> bool {
+        self.drop_list.iter().any(|c| {
+            let dx = (x - (c.x as f32 + 0.5)).abs() - 0.5;
+            let dz = (z - (c.y as f32 + 0.5)).abs() - 0.5;
+            dx.max(0.0).hypot(dz.max(0.0)) <= radius
+        })
+    }
+
+    /// Whether `c` is open to the sky of the level below it: a drop on the level above falls through it, so it has no
+    /// ceiling (the pool under a waterfall).
+    pub fn is_air_above(&self, c: Cell) -> bool {
+        c.x >= 0
+            && c.y >= 0
+            && c.x < self.cols
+            && c.y < self.rows
+            && self.air.get((c.y * self.cols + c.x) as usize).copied().unwrap_or(false)
+    }
+
+    /// Every air-above cell (sorted).
+    pub fn air_above_cells(&self) -> &[Cell] {
+        &self.air_list
     }
 
     /// The region name of a cell's chunk.
@@ -1241,14 +1386,16 @@ impl Facility {
         v
     }
 
-    /// Whether the cell is part of a stair's well that is open to the level above (a lower-level record, dir > 0).
+    /// Whether the cell has no ceiling: part of a stair's well or a ladder's shaft that is open to the level above (a
+    /// lower-level record, dir > 0; a ladder's foot is its hatch cell), or air under a drop (`is_air_above`).
     pub fn open_above(&self, c: Cell) -> bool {
-        self.stairs.iter().any(|s| s.dir > 0 && s.well_cells().contains(&c))
+        self.is_air_above(c) || self.stairs.iter().any(|s| s.dir > 0 && s.well_cells().contains(&c))
     }
 
-    /// Whether the cell is part of a stair's well that is open to the level below (an upper-level record, dir < 0).
+    /// Whether the cell has no floor: part of a stair's well or a ladder's hatch that is open to the level below (an
+    /// upper-level record, dir < 0), or a drop.
     pub fn open_below(&self, c: Cell) -> bool {
-        self.stairs.iter().any(|s| s.dir < 0 && s.well_cells().contains(&c))
+        self.is_drop(c) || self.stairs.iter().any(|s| s.dir < 0 && s.well_cells().contains(&c))
     }
 
     /// Whether a body of radius `r` at `(x, z)` overlaps the wall between the lanes of any switchback.
@@ -1296,7 +1443,8 @@ impl Facility {
     /// The shared body of `body_fits_at` and `body_fits_at_y`. `by_height`: a corner on a flight at the body's height is
     /// exempt from the deck-height and hole rules; otherwise any tread of a flight is exempt from the hole rule.
     fn fits(&self, x: f32, y: f32, r: f32, height: f32, by_height: bool) -> bool {
-        if !self.can_occupy(x as f64, y as f64, r as f64) {
+        // a drop has no wall, so a body may enter it (the hole rule below does not apply to a drop either)
+        if !self.clear_of_solids(x as f64, y as f64, r as f64) {
             return false;
         }
         if self.divider_blocks(x, y, r) {
@@ -1304,9 +1452,12 @@ impl Facility {
         }
         if !self.walk_surface.is_empty() || height != 0.0 {
             for (sx, sy) in [(x - r, y - r), (x + r, y - r), (x - r, y + r), (x + r, y + r)] {
-                if (self.height_at(Cell::new(sx.floor() as i32, sy.floor() as i32)) - height).abs() > 0.01
-                    && !(by_height && self.on_flight_at(sx, sy, height))
-                {
+                let cell = Cell::new(sx.floor() as i32, sy.floor() as i32);
+                // open air holds a body at any height: only the cells around it say whether it is below the floor
+                if self.is_drop(cell) {
+                    continue;
+                }
+                if (self.height_at(cell) - height).abs() > 0.01 && !(by_height && self.on_flight_at(sx, sy, height)) {
                     return false;
                 }
             }
@@ -1318,7 +1469,7 @@ impl Facility {
             (x + r, y + r),
             (x, y),
         ] {
-            if self.is_hole(sx.floor() as i32, sy.floor() as i32) {
+            if self.is_stair_hole(sx.floor() as i32, sy.floor() as i32) {
                 let on = if by_height { self.on_flight_at(sx, sy, height) } else { self.on_stair_flight(sx, sy) };
                 if !on {
                     return false;
@@ -1480,6 +1631,18 @@ impl Facility {
     /// connected, so the ground floor stays walkable. Only the decks a link reaches are kept. Returns the number of
     /// deck cells set (0 when the chunk has no catwalk).
     pub fn apply_catwalks(&mut self, seed: &str, key: ChunkKey, region: &str) -> usize {
+        self.apply_catwalks_with(seed, key, region, &catwalk_links::rules())
+    }
+
+    /// `apply_catwalks` with explicit rules. The link clearance (`rules.link_clearance`, the half side of the footprint
+    /// that must be free of solid props on a link's ground cell and its deck landing) decides which catwalks survive.
+    pub(crate) fn apply_catwalks_with(
+        &mut self,
+        seed: &str,
+        key: ChunkKey,
+        region: &str,
+        rules: &catwalk_links::CatwalkRules,
+    ) -> usize {
         self.catwalk_links.clear();
         if key.level != 0 || !catwalk_links::allowed_in(region) {
             return 0;
@@ -1531,17 +1694,22 @@ impl Facility {
                 }
             }
         }
+        // A link needs its own ground cell and the deck cell it steps onto clear of solid props (the deck grid ignores
+        // props): a cell whose body-sized footprint touches a solid prop is refused.
+        let clear = |c: Cell| self.clear_of_solids(c.x as f64 + 0.5, c.y as f64 + 0.5, rules.link_clearance);
         let mut candidates: Vec<Cell> = Vec::new();
         for c in &deck {
+            if !clear(*c) {
+                continue;
+            }
             for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
                 let g = Cell::new(c.x + dx, c.y + dy);
-                if g.x >= 0 && g.y >= 0 && g.x < n && g.y < n && ground[idx(g)] && !keep_clear.contains(&g) {
+                if g.x >= 0 && g.y >= 0 && g.x < n && g.y < n && ground[idx(g)] && !keep_clear.contains(&g) && clear(g) {
                     candidates.push(g);
                 }
             }
         }
-        let rules = catwalk_links::rules();
-        let links = catwalk_links::links_for(seed, key, &candidates, Some(params.height), &rules);
+        let mut links = catwalk_links::links_for(seed, key, &candidates, Some(params.height), rules);
         if links.is_empty() {
             return 0;
         }
@@ -1572,12 +1740,36 @@ impl Facility {
         if Self::ground_pieces(&after, n) > Self::ground_pieces(&open, n) {
             return 0;
         }
+        // each link steps from its ground cell onto an adjacent kept deck cell with no solid prop on it (the deck landing)
+        for l in &mut links {
+            let landing = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                .into_iter()
+                .find(|(dx, dy)| {
+                    let d = Cell::new(l.cell.x + dx, l.cell.y + dy);
+                    kept.contains(&d) && clear(d)
+                })
+                .unwrap_or((1, 0));
+            l.run = landing;
+        }
         for c in &kept {
             self.set_walk_surface(*c, DeckKind::Catwalk, params.height);
         }
+        // the two cells of a link hold no prop at all (a rug or lamp the clearance test let through)
+        for l in &links {
+            self.clear_props_in(l.cell.x, l.cell.y, 1, 1);
+            self.clear_props_in(l.cell.x + l.run.0, l.cell.y + l.run.1, 1, 1);
+        }
         self.catwalk_links = links;
-        self.build_hunter_grid();
+        self.rebuild_grids();
         kept.len()
+    }
+
+    /// The flight of a catwalk link, for its cells only: a ladder whose foot is the link's ground cell and whose landing
+    /// is the deck cell it steps onto (`CatwalkLink::run`), with the footprint's clear margins. Its heights are not
+    /// the flight's: a deck is `link.deck_height` above the same floor, never a storey.
+    pub fn catwalk_flight(link: &CatwalkLink) -> Flight {
+        let run = if link.run == (0, 0) { (1, 0) } else { link.run };
+        Flight::new(FlightKind::Ladder, FlightShape::Switchback, 1, link.cell, run)
     }
 
     /// Whether closing `c` leaves its open 4-neighbours joined through the ring of cells around it.
@@ -1679,7 +1871,7 @@ impl Facility {
         let mut v = vec![];
         for y in 1..self.rows - 1 {
             for x in 1..self.cols - 1 {
-                if !self.wall[y as usize][x as usize] {
+                if !self.wall[y as usize][x as usize] && !self.is_drop(Cell::new(x, y)) {
                     v.push(Cell::new(x, y));
                 }
             }
@@ -2235,8 +2427,9 @@ impl Facility {
         let mut open = vec![false; (self.cols * self.rows) as usize];
         for y in 0..self.rows {
             for x in 0..self.cols {
-                open[(y * self.cols + x) as usize] =
-                    self.body_fits(x as f32 + 0.5, y as f32 + 0.5, DEFAULT_AGENT_RADIUS as f32);
+                // a hunter never walks into a drop: it has no floor
+                open[(y * self.cols + x) as usize] = !self.is_drop(Cell::new(x, y))
+                    && self.body_fits(x as f32 + 0.5, y as f32 + 0.5, DEFAULT_AGENT_RADIUS as f32);
             }
         }
         self.hunter_open = open;
@@ -2691,6 +2884,28 @@ mod tests {
     }
 
     #[test]
+    fn the_link_clearance_is_data_and_changing_it_changes_which_catwalks_survive() {
+        let std = catwalk_links::rules();
+        assert_eq!(std.link_clearance, 0.45, "the shipped value");
+        let run = |clearance: f64| -> Vec<(ChunkKey, usize, Vec<Cell>)> {
+            let rules = catwalk_links::CatwalkRules { link_clearance: clearance, ..std };
+            maze_chunks()
+                .into_iter()
+                .map(|(k, mut f)| {
+                    f.walk_surface.clear();
+                    let decks = f.apply_catwalks_with(WORLD, k, "maze", &rules);
+                    (k, decks, f.catwalk_links.iter().map(|l| l.cell).collect())
+                })
+                .collect()
+        };
+        let shipped = run(std.link_clearance);
+        assert_eq!(shipped, run(std.link_clearance), "deterministic for one value");
+        assert!(shipped.iter().any(|(_, d, _)| *d > 0), "no maze chunk got a catwalk");
+        assert_ne!(shipped, run(0.0), "no clearance admits cells the shipped value refuses");
+        assert_ne!(shipped, run(0.5), "a whole-cell clearance refuses cells the shipped value admits");
+    }
+
+    #[test]
     fn merging_chunks_keeps_their_decks_and_links_shifted() {
         let (key, mut f) = maze_chunks().into_iter().find(|(k, f)| {
             let mut g = f.clone();
@@ -2940,5 +3155,187 @@ mod tests {
             assert_eq!(merged.level, level);
             assert_eq!(merged.stairs, vec![s.shifted(3, 2)]);
         }
+    }
+
+    /// A generated facility with a 24x24 block of plain open floor (cells 4..28) and no props, lockers or walls in it.
+    fn open_block() -> Facility {
+        let cat = Catalog::load();
+        let mut f = Facility::generate("DROP-1", &Options::default(), &cat);
+        for z in 4..28usize {
+            for x in 4..28usize {
+                f.wall[z][x] = false;
+            }
+        }
+        let inside = |c: Cell| (3..29).contains(&c.x) && (3..29).contains(&c.y);
+        f.props.retain(|p| !inside(p.cell));
+        f.hiding.retain(|h| !inside(h.cell));
+        f.rebuild_grids();
+        f
+    }
+
+    /// The `n` by `n` block of cells from `(x, y)`, sorted as `set_drop_cells` stores them.
+    fn square(x: i32, y: i32, n: i32) -> Vec<Cell> {
+        let mut v: Vec<Cell> = (0..n).flat_map(|dy| (0..n).map(move |dx| Cell::new(x + dx, y + dy))).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn a_drop_cell_is_enterable_but_not_walkable_ground() {
+        use crate::world::vertical::STOREY;
+        let mut f = open_block();
+        f.level = -1;
+        let drops = square(14, 14, 2);
+        f.set_drop_cells(&drops);
+        f.rebuild_grids();
+        assert_eq!(f.drop_cells(), &drops[..], "sorted, as set");
+        for c in &drops {
+            assert!(f.is_drop(*c) && f.is_hole(c.x, c.y) && f.open_below(*c), "{c:?} is a hole");
+            assert!(!f.is_wall_cell(c.x, c.y), "{c:?}: a drop is open air, not a wall");
+            assert!(!f.open_above(*c) && !f.is_air_above(*c));
+        }
+        assert!(!f.is_drop(Cell::new(13, 14)) && !f.is_hole(13, 14));
+        // a body at or above the floor may walk in: the hole rule does not keep it out, no wall does either
+        let (x, z) = Cell::new(14, 14).center();
+        assert!(f.body_fits_at(x, z, 0.3, 0.0));
+        assert!(f.body_fits_at_y(x, z, f.level as f32 * STOREY, 0.3));
+        let edge = Cell::new(13, 14).center();
+        assert!(f.body_fits_at(edge.0 + 0.45, edge.1, 0.3, 0.0), "straddling the lip of the drop");
+        // once below the floor it is inside the void and stays in it: only the drop cells let it be there
+        let below = f.level as f32 * STOREY - 2.0;
+        assert!(f.body_fits_at_y(x, z, below, 0.3), "falling through the void");
+        let (gx, gz) = Cell::new(10, 10).center();
+        assert!(!f.body_fits_at_y(gx, gz, below, 0.3), "a body that deep beside the void is inside the ground");
+        assert!(!f.body_fits_at_y(edge.0 + 0.45, edge.1, below, 0.3), "half in the void, half in the ground");
+        // nothing stands, spawns or is placed on it
+        assert!(!f.can_occupy(x as f64, z as f64, 0.2));
+        assert!(f.can_occupy(gx as f64, gz as f64, 0.2));
+        assert!(!f.floor_cells().contains(&Cell::new(14, 14)) && f.floor_cells().contains(&Cell::new(13, 14)));
+        // the residency test: near a drop within the radius, far from it not
+        assert!(f.drop_within(14.5, 14.5, 0.1));
+        assert!(f.drop_within(17.0, 14.5, 1.6) && !f.drop_within(17.0, 14.5, 0.9));
+        assert!(!f.drop_within(24.5, 24.5, 3.0));
+        // and the cells of a merge keep their place
+        let merged = Facility::merge(vec![(f.clone(), 45, 45, 0)], 135, 135, vec!["maze".into()], "DROP-1");
+        assert!(merged.is_drop(Cell::new(59, 59)) && !merged.is_drop(Cell::new(14, 14)));
+        assert_eq!(merged.drop_cells().len(), drops.len());
+    }
+
+    #[test]
+    fn air_above_cells_open_the_ceiling_only() {
+        let mut f = open_block();
+        f.level = -2;
+        let air = square(14, 14, 3);
+        f.set_air_above_cells(&air);
+        f.rebuild_grids();
+        for c in &air {
+            assert!(f.is_air_above(*c) && f.open_above(*c), "{c:?} has no ceiling");
+            assert!(!f.open_below(*c) && !f.is_drop(*c) && !f.is_hole(c.x, c.y), "{c:?} is still ordinary floor");
+            let (x, z) = c.center();
+            assert!(f.body_fits(x, z, 0.3) && f.hunter_open(*c));
+        }
+        assert!(!f.is_air_above(Cell::new(13, 13)) && !f.open_above(Cell::new(13, 13)));
+        assert_eq!(f.air_above_cells(), &air[..]);
+    }
+
+    #[test]
+    fn hunters_never_path_into_a_drop() {
+        let mut f = open_block();
+        f.level = -1;
+        let drops = square(14, 14, 3);
+        f.set_drop_cells(&drops);
+        f.rebuild_grids();
+        for c in &drops {
+            assert!(!f.hunter_open(*c), "{c:?}: a hunter cannot stand in a drop");
+        }
+        // there is a way round the void, and none of it goes through the void
+        let (from, to) = (Cell::new(10, 15), Cell::new(20, 15));
+        assert!(f.hunter_open(from) && f.hunter_open(to));
+        let path = f.find_path(from, to);
+        assert!(!path.is_empty(), "the void can be walked round");
+        for c in &path {
+            assert!(!f.is_drop(*c), "the path crosses the drop at {c:?}");
+        }
+        // a goal inside the void is unreachable
+        assert!(f.find_path(from, Cell::new(15, 15)).is_empty());
+        // and the reachable set of the start never includes a drop
+        let reach = f.distance_map(from);
+        assert!(drops.iter().all(|c| !reach.contains_key(c)));
+    }
+
+    #[test]
+    fn a_ladder_hatch_is_a_hole_and_its_step_cell_is_not() {
+        let hatch = Cell::new(15, 15);
+        for run in [(0, -1), (0, 1), (1, 0), (-1, 0)] {
+            let step = Cell::new(hatch.x + run.0, hatch.y + run.1);
+            // the upper level: the hatch is a hole a walking body cannot enter, the step cell is plain floor
+            let mut up = open_block();
+            up.level = 0;
+            let top = Stair::ladder_with_run(hatch, -1, Cover::Manhole, run);
+            up.stairs.push(top);
+            up.rebuild_grids();
+            assert_eq!(top.step_cell(), step);
+            assert!(up.is_hole(hatch.x, hatch.y) && up.open_below(hatch) && !up.open_above(hatch), "{run:?}");
+            assert!(!up.is_hole(step.x, step.y) && !up.open_below(step), "{run:?}: the step cell is no hole");
+            assert!(!up.body_fits(hatch.center().0, hatch.center().1, 0.3), "{run:?}: walking into the hatch is refused");
+            assert!(up.body_fits(step.center().0, step.center().1, 0.3), "{run:?}: the step cell is walkable");
+            assert!(!up.hunter_open(hatch) && up.hunter_open(step));
+            // the lower level: the foot is an ordinary cell with no ceiling over it, the step cell beside it too
+            let mut lo = open_block();
+            lo.level = -1;
+            let foot = Stair::ladder_with_run(hatch, 1, Cover::Manhole, run);
+            lo.stairs.push(foot);
+            lo.rebuild_grids();
+            assert!(!lo.is_hole(hatch.x, hatch.y), "{run:?}: the foot is an ordinary floor cell");
+            assert!(lo.open_above(hatch) && !lo.open_below(hatch), "{run:?}: the shaft is open above the foot");
+            assert!(lo.body_fits(hatch.center().0, hatch.center().1, 0.3), "{run:?}: a body stands on the foot");
+            assert!(lo.hunter_open(hatch) && lo.body_fits(step.center().0, step.center().1, 0.3));
+            assert!(!lo.open_above(step));
+            assert_eq!(top.well_cells(), foot.well_cells());
+        }
+    }
+
+    #[test]
+    fn every_catwalk_link_steps_onto_a_kept_deck_cell_with_no_prop_on_it() {
+        let mut seen = 0;
+        for (key, mut f) in maze_chunks() {
+            if f.apply_catwalks(WORLD, key, "maze") == 0 {
+                continue;
+            }
+            for l in f.catwalk_links.clone() {
+                seen += 1;
+                assert_eq!(l.run.0.abs() + l.run.1.abs(), 1, "{:?}: run {:?} is a unit step", l.cell, l.run);
+                let deck = Cell::new(l.cell.x + l.run.0, l.cell.y + l.run.1);
+                assert_eq!(f.walk_surface_at(deck).kind, DeckKind::Catwalk, "{:?} leads to a deck cell", l.cell);
+                assert_eq!(f.walk_surface_at(l.cell).kind, DeckKind::Floor);
+                for c in [l.cell, deck] {
+                    let (x, z) = c.center();
+                    assert!(f.can_occupy(x as f64, z as f64, 0.3), "{c:?}: a solid prop on the link");
+                }
+                // the link as a flight, for its cells: foot on the ground cell, landing on the deck cell
+                let fp = well_footprint(&Facility::catwalk_flight(&l));
+                assert_eq!((fp.foot, fp.landing), (l.cell, deck));
+                assert_eq!(fp.upper_hole, vec![l.cell]);
+            }
+        }
+        assert!(seen > 0, "no catwalk link in the sweep");
+    }
+
+    #[test]
+    fn the_stair_record_of_a_ladder_is_the_ladder_flight() {
+        let hatch = Cell::new(20, 20);
+        for run in [(0, -1), (0, 1), (1, 0), (-1, 0)] {
+            let top = Stair::ladder_with_run(hatch, -1, Cover::Grate, run);
+            let flight = top.flight(0).expect("ladders are flights");
+            assert_eq!((flight.kind, flight.anchor_cell, flight.run, flight.upper_level), (FlightKind::Ladder, hatch, run, 0));
+            let foot = Stair::ladder_with_run(hatch, 1, Cover::Grate, run);
+            assert_eq!(foot.flight(-1), Some(flight), "{run:?}");
+            assert_eq!(top.rails_side(), (-run.0, -run.1));
+            assert_eq!(top.step_cell(), Cell::new(hatch.x + run.0, hatch.y + run.1));
+        }
+        // the plain constructor steps north, and a flight has no rails side
+        assert_eq!(Stair::ladder(hatch, -1, Cover::Manhole).run, (0, -1));
+        let stairs = Stair::stairs(hatch, -1, (0, 1), FlightShape::Switchback, false);
+        assert_eq!(stairs.rails_side(), (0, 0));
     }
 }

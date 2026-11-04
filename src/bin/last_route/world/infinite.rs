@@ -189,7 +189,7 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -
         None
     };
     match &sewer_floor {
-        Some(sc) => apply_sewer_floor(&mut f, sc),
+        Some(sc) => apply_sewer_floor(&mut f, sc, seed, k),
         None => f.apply_godot_streamed_layout(&text, region, cat),
     }
     // level -3: carve the caverns, halls and crevices (world::inferno) over the maze layout
@@ -333,9 +333,17 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -
             f.stairs.push(lower_stair(&flight));
         }
     }
-    // the sewer's ladder bottoms: the same cells as the maze's ladder tops, so both levels agree
+    // the sewer's ladder bottoms: the same cells as the maze's ladder tops, so both levels agree. A ladder is the hatch
+    // cell and one step cell beside it (`Stair::run`), the same on both levels: the sewer opens the foot, the step cell
+    // and their clear margins; the maze (the legacy builder only) opens the hatch and the step cell and clears them.
     for s in crate::world::level_links::ladders(seed, k) {
-        f.open_cells(s.cell.x - 1, s.cell.y - 1, 3, 3);
+        let cells = if k.level == 0 { vec![s.cell, s.step_cell()] } else { s.carve_cells() };
+        for c in cells {
+            f.open_cells(c.x, c.y, 1, 1);
+            if k.level == 0 {
+                f.clear_props_at(c);
+            }
+        }
         f.stairs.push(s);
     }
     f.level = k.level;
@@ -415,13 +423,29 @@ fn apply_sewer_dressing(f: &mut Facility, seed: &str, sc: &super::route::sewer::
     coins
 }
 
-/// Overwrites `f`'s floor with the sewer chunk: SOLID and FALL are walls, every other code (dry, water, bridge, ramp,
-/// shaft) is open. The sewer's rooms replace the facility's; props start empty. The start is the junction.
-fn apply_sewer_floor(f: &mut Facility, sc: &super::route::sewer::SewerChunk) {
-    use super::route::sewer::core::{FALL, SOLID};
+/// Overwrites `f`'s floor with the sewer chunk: SOLID is wall, every other code (dry, water, bridge, ramp, shaft, and
+/// the waterfall void FALL) is open. A FALL cell is not a wall: on level -1 it is a drop (`Facility::set_drop_cells`),
+/// open air a body may walk into and fall through, that hunters never enter and nothing is placed on; the spur, the
+/// overlook and the lip round it stay floor. On level -2 the same x/z cells are the air above the landing pool
+/// (`set_air_above_cells`). The sewer's rooms replace the facility's; props start empty. The start is the junction.
+fn apply_sewer_floor(f: &mut Facility, sc: &super::route::sewer::SewerChunk, seed: &str, k: ChunkKey) {
+    use super::route::sewer::core::{FALL, LEVEL, LOWER_LEVEL, SOLID};
     f.wall = (0..CHUNK as usize)
-        .map(|z| (0..CHUNK as usize).map(|x| matches!(sc.sewer_grid[z][x], SOLID | FALL)).collect())
+        .map(|z| (0..CHUNK as usize).map(|x| sc.sewer_grid[z][x] == SOLID).collect())
         .collect();
+    if k.level == LEVEL {
+        let mut falls = vec![];
+        for z in 0..CHUNK as usize {
+            for x in 0..CHUNK as usize {
+                if sc.sewer_grid[z][x] == FALL {
+                    falls.push(Cell::new(x as i32, z as i32));
+                }
+            }
+        }
+        f.set_drop_cells(&falls);
+    } else if k.level == LOWER_LEVEL {
+        f.set_air_above_cells(&super::flight_links::fall_cells(seed, k.cx, k.cy));
+    }
     f.rooms = sc
         .rooms
         .iter()

@@ -1,6 +1,6 @@
 # Continuous levels: stairs, ladders and drops as one space
 
-Status: phase 1 implemented: flights span 5.0 m in three shapes, level swap kept. Owner request (KT, repeated): levels must connect "like they are together", not through a player teleport, a storey swap, or a fake connection.
+Status: phases 0-7 implemented (flights, absolute y, resident stack, rendered wells, walked stairs, continuous ladders, physical falls). Phases 8 (hunters, bots, net) and 9 (swap machinery removal) remain. Owner request (KT, repeated): levels must connect "like they are together", not through a player teleport, a storey swap, or a fake connection.
 
 All line numbers come from five read-only investigator reports on a working tree that other agents were editing. Re-check each one with `git show HEAD:path` before editing. Paths are under `src/bin/last_route/` unless noted.
 
@@ -20,9 +20,9 @@ Every level is its own coordinate space (floor at y = 0) and only one level's `F
 |---|-------|--------------|
 | 1 | `game/endless.rs:1165-1178` `Game::change_storey` | `sync_out`, store hunters (`store_level0_hunters` 1442, `store_floor_hunters` 1468), `inf.level = to`, `load_window` (706-771; `self.fac`/`self.fix` replaced at 764-765), `arrive` closure, `restore_level_hunters` (1488), `announce("LEVEL n")`. The core swap. Every connection type calls it. |
 | 2 | `game/endless.rs:1216-1236` `walked_level_change` | Walking a flight is a real ramp, but when `level_from_height` flips (`world/vertical.rs:144-150`, threshold 2.9375 m) it calls `change_storey`. The `arrive` closure (1228-1234) may snap the body with `nearest_open_or` and then hard-sets `g.p.height = stair_height_at(new fac).unwrap_or(0.0)` (1233). Absolute y pops by about 1.7 to 3 m. |
-| 3 | `game/transition.rs:82-90` `start_stairs`, `game/interact.rs:50-56` `take_flight`, `game/endless.rs:1182-1208` `take_stairs` | Interact on a stairwell changes level on the pressed frame. The body is teleported to `nearest_open_or(far_cell - run*landing_offset)` (1197-1201), yaw reset (1202), fallback `fac.start.center()` (1204). The far cell is found by arithmetic: `cell + run * flight_steps` (1189-1190). |
-| 4 | `game/ladder.rs:256-262` + `216-221` `place_beside_ladder` | At the end of a climb it calls `change_storey` and puts the body 0.75 m beside the shaft with `climb_lift = 0`. The eye drops 5 m and x/z jumps in one frame. The climb itself (`lift_at` 93-95, `player.rs:208`) is only a camera offset on a single-level world. x/z is pinned to the rung line (`ladder.rs:265`). |
-| 5 | `game/swim_effects.rs:334-386` `try_begin_plunge` / `advance_plunge` | The waterfall is a scripted arc with input and collision off (`game/mod.rs:776-779`). On the splash frame it calls `change_storey(LOWER_LEVEL, ..., \|_\| {})` (372) and then rewrites `p.pos` from the arc (377). |
+| 3 | **Fixed (phase 5).** `game/transition.rs:82-90` `start_stairs`, `game/interact.rs:50-56` `take_flight`, `game/endless.rs:1182-1208` `take_stairs` | Interact on a stairwell changes level on the pressed frame. The body is teleported to `nearest_open_or(far_cell - run*landing_offset)` (1197-1201), yaw reset (1202), fallback `fac.start.center()` (1204). The far cell is found by arithmetic: `cell + run * flight_steps` (1189-1190). |
+| 4 | **Fixed (phase 6).** `game/ladder.rs:256-262` + `216-221` `place_beside_ladder` | At the end of a climb it calls `change_storey` and puts the body 0.75 m beside the shaft with `climb_lift = 0`. The eye drops 5 m and x/z jumps in one frame. The climb itself (`lift_at` 93-95, `player.rs:208`) is only a camera offset on a single-level world. x/z is pinned to the rung line (`ladder.rs:265`). |
+| 5 | **Fixed (phase 7).** `game/swim_effects.rs:334-386` `try_begin_plunge` / `advance_plunge` | The waterfall is a scripted arc with input and collision off (`game/mod.rs:776-779`). On the splash frame it calls `change_storey(LOWER_LEVEL, ..., \|_\| {})` (372) and then rewrites `p.pos` from the arc (377). |
 | 6 | `game/endless.rs:878-913` `prefetch_connections` | Builds the other level's `Facility` ahead (`inf.prefetched`, radius `prefetch_distance` 8 in `stairs_links.json`). It is a cache for the swap. It is never drawn or simulated alongside the current level. |
 
 ### 1.2 Geometry that does not span a storey
@@ -223,11 +223,11 @@ These answer D1 to D8 below and override the recommendations where they differ.
 |---|----------|--------------------|
 | D1 | Use all three flight shapes: switchback, longer straight flight and spiral. | `Flight` carries a `shape` (data: `flights.json`); each stairwell picks one from the seed and region. Phase 0 defines all three, and the generation contract test covers every shape. The 2x4 footprint is the switchback; the straight and spiral shapes need their own footprints (`well_footprint` per shape) and generation clearance. |
 | D2 | Floors are 5.0 m apart (`y = level * 5.0`). | As designed. |
-| D3 | No interact prompt on stairs. | `Focus::Stairs` and its strings are removed in phase 5. |
+| D3 | No interact prompt on stairs. **Done (phase 5).** | `Focus::Stairs` and its strings are removed in phase 5. |
 | D4 | Ladder top: step onto the real floor cell beside the hatch. | One clear cell per hatch is part of the generation contract. |
 | D5 | Simulate hunters on all loaded floors, not only adjacent ones. | Hunters on every resident floor keep moving. This raises the cost on the old Intel Airs, so the resident-floor count and a per-floor hunter cap are data (`stairs_links.json`), and phase 8 measures frame time on KT-MBA. |
 | D6 | Hunters use stairs and ladders at normal speed. | No slow-down or climb pose. |
-| D7 | Waterfall: free fall with damage. | Phase 7 adds a data-driven landing rule (stun or hurt when the player lands outside the pool); inside the pool it stays the splash. Damage numbers go in `data/swim/`. |
+| D7 | Waterfall: free fall with damage. **Done (phase 7).** | Phase 7 adds a data-driven landing rule (stun or hurt when the player lands outside the pool); inside the pool it stays the splash. Damage numbers go in `data/swim/`. |
 | D8 | Ship every phase to main as it passes the tests. | Each phase is its own commit, pushed after the CI-equivalent suites pass. |
 
 ## 6. Risks and decisions for KT
@@ -331,3 +331,33 @@ Ordering: 1 and 2 first (parallel). Then 3 and 4. Then 5. Then 6 and 7 (7 after 
 - Level-0 wells keep Godot's layout boxes: stairs give Switchback, spiral gives Spiral. Straight therefore appears only on the -1/-2 bay links. A spiral falls back to Switchback when its foot is blocked on the sewer side.
 - `interact` `take_stairs` still swaps the level (teleport) until phase 5. Pit and shaft closure fakes in the renderer stay until phase 4.
 - Contract tests: `world/stack_contract_tests.rs` (landing and foot, footprint clearance, seed 40490470 chunk (3,2) walk). The ladder, catwalk and drop contract tests stay ignored until their phases.
+
+## Phase 5 as built
+
+- A flight has no focus and no prompt. `Focus::Ladder` is for ladders only; `Focus::Stairs` and `take_flight` are gone (D3). The runner just walks the flight.
+- `data/stairs_links.json` keeps `prefetch_distance` and the preload keys (`preload_levels_up`, `preload_levels_down`, `preload_max_windows`, `preload_memory_cap_mb`, `preload_builds_per_frame`). `landing_offset` and the `arrival` block are removed.
+- The headless runner walks flights like the player does, so the headless suites cover every flight.
+- Named tests: `stairs_cannot_be_used_to_teleport` and the end-to-end flight walk with y continuity (no jump over 0.25 m per frame).
+
+## Phase 6 as built
+
+- A climb moves the body in absolute y along the shaft at `LADDER_CLIMB_SPEED`. There is no `change_storey` and no `place_beside_ladder`.
+- The step cell (where you step on and off) comes from the `Flight` of kind Ladder: one clear cell per hatch (D4).
+- The rails stand on the side opposite the step cell.
+- The hatch is a hole in the upper floor, with a propped cover model beside it. The lower level has no ceiling over the shaft.
+- `ladder_flight` is the producer of the Ladder `Flight` for both ends, so the two levels cannot disagree.
+- Catwalk links use Ladder footprints for cells only; the deck height stays the catwalk model's.
+- The ladder contract tests are no longer ignored.
+
+## Phase 7 as built
+
+- Void cells (waterfall drop cells) are open: no floor, no ceiling, so the body falls through them.
+- Free fall uses `PLAYER_GRAVITY` 12 (`config/mod.rs`), so one storey (5.0 m) takes 0.913 s. Steering in the air is scaled by `AIR_CONTROL`.
+- `Landing` decides the result by what is below: the pool gives the splash and swim, anything else is a hard landing (the pool and ground rule).
+- `data/swim/fall.json` holds the fall rule, scaled by drop height (fields and limits in [DATA_FILES.md](DATA_FILES.md)). The game has no hit points, so damage is stun + stamina loss + exposure + noise (KT D7).
+- The scripted plunge machinery (`try_begin_plunge`, `advance_plunge`, the input and collision gate) is deleted. `movement.json` `plunge` keeps only the pool-landing numbers.
+
+## Still open: phases 8 and 9
+
+- Phase 8: hunters, bots and remote players crossing: absolute y and derived level on brains and bots, flight, ladder and drop edges, 3D line of sight, no NPC freeze, `h` in net samples.
+- Phase 9: delete the swap machinery: `store_*` and `restore_*` hunter functions, the `respawn_outside_window` level path, and reduce `change_storey` callers to respawn, checkpoint and new run.
