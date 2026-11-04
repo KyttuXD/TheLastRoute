@@ -1,7 +1,7 @@
 //! End-to-end walks of every flight shape, down and back up, through the game's own frame (`Game::step`) with the
 //! steered walker (steer.rs): one continuous space, so no y pop, one level change, no fade.
 
-use super::steer::{walk_flight, walk_flight_until, FlightWalk};
+use super::steer::{walk_flight, walk_flight_abs_y, walk_flight_until, FlightWalk};
 use crate::audio::Sounds;
 use crate::config::Difficulty;
 use crate::content::Content;
@@ -116,4 +116,26 @@ fn the_swap_keeps_absolute_y_continuous() {
         );
         assert!(at_swap.max_step_dy < MAX_STEP_DY, "{shape:?}: no frame before the swap pops: {at_swap:?}");
     }
+}
+
+/// The absolute y trace of a whole walk is continuous (no frame above MAX_STEP_DY, no NaN) and ends one storey from
+/// where it started, down and back up.
+#[test]
+fn the_abs_y_trace_is_continuous_down_and_up() {
+    let (content, catalog) = (Content::load(), Catalog::load());
+    let (mut g, s) = window_with(FlightShape::Switchback, 0, &content, &catalog);
+    let down = walk_flight_abs_y(&mut g, s, &content, &catalog, FRAMES);
+    assert!(down.len() > 10, "the walk stepped frames");
+    assert!(down.iter().all(|y| y.is_finite()));
+    for w in down.windows(2) {
+        assert!((w[1] - w[0]).abs() <= MAX_STEP_DY, "y pops {} -> {}", w[0], w[1]);
+    }
+    let (first, last) = (down[0], *down.last().unwrap());
+    assert!(((first - last).abs() - 5.0).abs() <= 0.35, "one storey: {first} -> {last}");
+    let up_stair = nearest(&g, 1, Some(FlightShape::Switchback)).expect("the flight below leads back up");
+    let up = walk_flight_abs_y(&mut g, up_stair, &content, &catalog, FRAMES);
+    for w in up.windows(2) {
+        assert!((w[1] - w[0]).abs() <= MAX_STEP_DY, "y pops going up {} -> {}", w[0], w[1]);
+    }
+    assert!(*up.last().unwrap() > up[0] + 4.0, "up gains a storey");
 }

@@ -1,8 +1,10 @@
-//! Keeps the built windows of every level near the runner, so going up and down is instant. Pure keep and evict logic;
-//! the numbers are data (data/stairs_links.json, `preload_*`). Called every frame by `Game::prefetch_connections`
-//! (game/endless.rs): `keep_levels` names the storeys held, `to_evict` drops the rest and the farthest over the memory cap,
-//! `to_build` meters the builds per frame.
+//! Keeps the resident neighbours of the active level built beside it (game/level_stack.rs `LevelStack`), so a flight is
+//! one continuous space. Pure keep and evict logic; the numbers are data (data/stairs_links.json, `preload_*`). Called
+//! every frame by `Game::keep_stack` (game/endless.rs): `keep_levels` names the neighbour levels held (never the active
+//! one), `to_evict` drops the rest and the farthest over the memory cap (counting `Resident::bytes`), `to_build` meters
+//! the builds per frame.
 
+use super::level_stack::LevelStack;
 use crate::content::embedded;
 use std::sync::OnceLock;
 
@@ -51,10 +53,10 @@ pub fn preload() -> Preload {
     })
 }
 
-/// The levels worth keeping built around `current`, nearest first (current, then alternating up and down), cut to
-/// `max_windows`. `allowed` filters levels the run may not enter.
+/// The neighbour levels worth keeping resident around `current`, nearest first (alternating up and down), cut to
+/// `max_windows`. `current` itself is never listed. `allowed` filters levels the run may not enter.
 pub fn keep_levels(current: i32, cfg: &Preload, allowed: impl Fn(i32) -> bool) -> Vec<i32> {
-    let mut out = vec![current];
+    let mut out = Vec::new();
     let reach = cfg.levels_up.max(cfg.levels_down);
     for d in 1..=reach {
         if d <= cfg.levels_up && allowed(current + d) {
@@ -68,13 +70,19 @@ pub fn keep_levels(current: i32, cfg: &Preload, allowed: impl Fn(i32) -> bool) -
     out
 }
 
-/// The levels to build this frame: kept levels not held yet, nearest first, at most `builds_per_frame`.
+/// The neighbour levels to build this frame: kept levels not resident yet, nearest first, at most `builds_per_frame`.
+/// The active level is never in `keep`, so it is never built.
 pub fn to_build(keep: &[i32], held: &[i32], cfg: &Preload) -> Vec<i32> {
     keep.iter().copied().filter(|l| !held.contains(l)).take(cfg.builds_per_frame).collect()
 }
 
-/// The held levels to drop: all not in `keep`, then, while the held bytes pass the memory cap, the farthest from
-/// `current` among the rest (never `current`). `held` is (level, bytes).
+/// The (level, bytes) of every resident in the stack, the `held` input of `to_evict`.
+pub fn held_bytes(stack: &LevelStack) -> Vec<(i32, usize)> {
+    stack.residents.iter().map(|r| (r.level, r.bytes())).collect()
+}
+
+/// The resident levels to drop: all not in `keep`, then, while the resident bytes pass the memory cap, the farthest from
+/// `current` among the rest (never `current`). `held` is (level, bytes), see `held_bytes`.
 pub fn to_evict(held: &[(i32, usize)], keep: &[i32], current: i32, cfg: &Preload) -> Vec<i32> {
     let mut out: Vec<i32> = held.iter().map(|h| h.0).filter(|l| !keep.contains(l)).collect();
     let cap = (cfg.memory_cap_mb * 1024.0 * 1024.0) as usize;
@@ -111,30 +119,31 @@ mod tests {
     #[test]
     fn keep_is_nearest_first_and_capped() {
         let k = keep_levels(0, &cfg(), |_| true);
-        assert_eq!(k, vec![0, 1, -1, 2, -2]);
+        assert_eq!(k, vec![1, -1, 2, -2], "neighbours only, the active level is never listed");
         let small = Preload { max_windows: 3, ..cfg() };
-        assert_eq!(keep_levels(0, &small, |_| true), vec![0, 1, -1]);
+        assert_eq!(keep_levels(0, &small, |_| true), vec![1, -1, 2]);
     }
 
     #[test]
     fn keep_skips_levels_not_allowed() {
         let k = keep_levels(0, &cfg(), |l| l <= 0);
-        assert_eq!(k, vec![0, -1, -2]);
+        assert_eq!(k, vec![-1, -2]);
     }
 
     #[test]
     fn a_changed_value_changes_the_levels_kept() {
         let down_only = Preload { levels_up: 0, ..cfg() };
-        assert_eq!(keep_levels(3, &down_only, |_| true), vec![3, 2, 1]);
+        assert_eq!(keep_levels(3, &down_only, |_| true), vec![2, 1]);
     }
 
     #[test]
     fn builds_are_budgeted_per_frame() {
-        let keep = [0, 1, -1];
-        assert_eq!(to_build(&keep, &[0], &cfg()), vec![1]);
+        let keep = [1, -1];
+        assert_eq!(to_build(&keep, &[], &cfg()), vec![1]);
         let two = Preload { builds_per_frame: 2, ..cfg() };
-        assert_eq!(to_build(&keep, &[0], &two), vec![1, -1]);
-        assert!(to_build(&keep, &[0, 1, -1], &cfg()).is_empty());
+        assert_eq!(to_build(&keep, &[], &two), vec![1, -1]);
+        assert_eq!(to_build(&keep, &[1], &cfg()), vec![-1]);
+        assert!(to_build(&keep, &[1, -1], &cfg()).is_empty());
     }
 
     #[test]
@@ -153,6 +162,34 @@ mod tests {
         let tight = Preload { memory_cap_mb: 0.1, ..cfg() };
         let out = to_evict(&held, &[0, 1, -2], 0, &tight);
         assert!(!out.contains(&0), "the current level is never evicted");
+    }
+
+    #[test]
+    fn the_memory_cap_counts_resident_bytes() {
+        use crate::game::level_stack::Resident;
+        use crate::world::catalog::Catalog;
+        use crate::world::facility::Options;
+        use crate::world::fixtures::Fixtures;
+        use crate::world::Facility;
+        let cat = Catalog::load();
+        let mut st = LevelStack::default();
+        for level in [1, -1, -2] {
+            let mut fac = Facility::generate("PRELOAD-MEM", &Options::default(), &cat);
+            fac.level = level;
+            st.put(Resident { level, center: (0, 0), fac, fix: Fixtures::default() });
+        }
+        let held = held_bytes(&st);
+        assert_eq!(held.len(), 3);
+        assert!(held.iter().all(|h| h.1 > 0), "a resident holds memory");
+        let keep = [1, -1, -2];
+        let roomy = Preload { memory_cap_mb: 1000.0, ..cfg() };
+        assert!(to_evict(&held, &keep, 0, &roomy).is_empty());
+        // a cap below the three residents' bytes drops the farthest first and never the active level
+        let total: usize = held.iter().map(|h| h.1).sum();
+        let tight = Preload { memory_cap_mb: (total as f32 * 0.7) / (1024.0 * 1024.0), ..cfg() };
+        let out = to_evict(&held, &keep, 0, &tight);
+        assert_eq!(out.first(), Some(&-2), "the farthest resident goes first");
+        assert!(!out.contains(&0));
     }
 
     #[test]

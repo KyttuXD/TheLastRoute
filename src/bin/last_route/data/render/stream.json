@@ -3,5 +3,8 @@
   "per_queued_ms": 1.0,
   "max_budget_ms": 9.0,
   "chunks_per_frame": 4,
-  "jump_steps": 1
+  "jump_steps": 1,
+  "neighbour_chunks_per_frame": 2,
+  "neighbour_max_parts": 12,
+  "neighbour_cull_radius": 14.0
 }

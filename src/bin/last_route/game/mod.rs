@@ -13,6 +13,8 @@ pub mod pipes;
 pub mod swim;
 #[cfg(test)]
 mod ladder_tests;
+#[cfg(test)]
+mod stack_walk_tests;
 mod items;
 pub mod meters;
 pub mod swim_effects;
@@ -137,6 +139,8 @@ pub struct Game {
     /// kept current either way.
     pub world: WorldMeshes,
     world_dirty: bool,
+    /// The resident neighbour levels' meshes beside `world` (render/world_stack.rs), synced by `sync_world`.
+    pub world_nb: crate::render::world_stack::NeighbourWorlds,
     pub relays_taken: Vec<bool>,
     pub sabotage: Option<crate::hunters::sabotage::Tracker>,
     /// Guest: the host simulates the hunters and its frames set them (hunting.rs `apply_hunter_frame`), so this game
@@ -222,7 +226,7 @@ pub struct Game {
     /// `self.pipes.depth_at_step(..)`); wading uses the deeper of this and the sewer water.
     pub flood_depth: f32,
     // preload.rs is pure (preload::preload() config, keep_levels, to_build, to_evict): the held windows live in
-    // `InfState::prefetched`, so no preload cache field is needed here.
+    // `InfState::stack`, so no preload cache field is needed here.
 }
 
 pub fn pdist(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -337,6 +341,7 @@ impl Game {
             fix,
             world,
             world_dirty: true,
+            world_nb: Default::default(),
         };
         g.p.floor_y = level_stack::floor_y_of(0);
         g.start_floor_sim(content, catalog);
@@ -463,6 +468,7 @@ impl Game {
             flood_depth: 0.0,
             world: WorldMeshes::default(),
             world_dirty: true,
+            world_nb: Default::default(),
             fac,
             fix,
         }
@@ -679,6 +685,11 @@ impl Game {
             // parts the frame budget left for later keep the floor dirty until every part is built
             self.world_dirty = self.world.has_pending();
         }
+        // the resident neighbour levels (the other side of a stairwell), kept every frame: the eye decides what is built
+        let e = self.eye();
+        let empty = level_stack::LevelStack::EMPTY;
+        let stack = self.inf.as_ref().map_or(&empty, |i| &i.stack);
+        self.world_nb.sync(&self.fac, stack, (e.x, e.y, e.z), assets, content);
     }
 
     /// One frame of the run, then the render meshes for any floor it entered.
@@ -795,12 +806,14 @@ impl Game {
             // the soaked state (swim_effects.json); the real runner only
             let water = self.runner_water_depth();
             self.p.speed_scale = admin.run_speed * Game::wade_scale(water);
+            let empty = level_stack::LevelStack::EMPTY;
+            let stack = self.inf.as_ref().map_or(&empty, |i| &i.stack);
             self.p
-                .update_movement(dt, c, &prof, &self.fac, &mut self.meters, sounds);
+                .update_movement(dt, c, &prof, &self.fac, stack, &mut self.meters, sounds);
             self.update_swim(dt, water, admin.god);
             self.try_begin_plunge(c);
             self.ladder_walk_in();
-            self.walked_level_change(content, catalog);
+            self.walk_relabel(content, catalog);
             if admin.noclip {
                 self.p.pos.0 = self.p.pos.0.clamp(0.5, self.fac.cols as f32 - 0.5);
                 self.p.pos.1 = self.p.pos.1.clamp(0.5, self.fac.rows as f32 - 0.5);

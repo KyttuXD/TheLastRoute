@@ -16,9 +16,9 @@
       "name": "stairs down to level -1",
       "start_run": { "no_target": true },
       "steps": [
-        { "cmd": "teleport", "to": "stairs_down", "expect": [ { "path": "last.focus.kind", "value": "stairs" } ] },
-        { "cmd": "interact", "kind": "STAIRS" },
-        { "cmd": "step", "frames": 150, "observe": false },
+        { "cmd": "teleport", "to": "stairs_down" },
+        { "cmd": "walk_flight", "dir": "down", "frames": 900, "stop_on_level_change": true },
+        { "cmd": "step", "frames": 30, "observe": false },
         { "expect": [
           { "path": "run.level", "value": -1 }, { "path": "run.depth", "value": 2 }, { "path": "run.level_seed", "value": "40490470:L-1" },
           { "any": "events", "where": [ { "path": "type", "value": "floor_changed" }, { "path": "level", "value": -1 } ] },

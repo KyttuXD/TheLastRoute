@@ -44,6 +44,48 @@ pub struct WorldMeshes {
     pending: usize,
     /// The window frame the last window rebuild was for: a jump from it (a level change or a teleport) builds in one step.
     last_frame: Option<ChunkFrame>,
+    /// The level these meshes are of (set from the facility in every rebuild). An instance keeps its own level: the
+    /// active/neighbour swap is `relabel`'s, so a rebuild never sees a level change.
+    pub level: i32,
+    /// How far above the active level's floor the vertices are placed (0 for the active level, +-STOREY for a neighbour).
+    pub dy: f32,
+}
+
+/// A stairwell's opening seen from its upper level: the hole cells, their centre and the level that holds the hole.
+#[derive(Clone, Debug)]
+pub struct Opening {
+    pub cells: Vec<Cell>,
+    pub centre: (f32, f32),
+    pub upper_level: i32,
+}
+
+/// The openings of the stairs of `f`, the UPPER level's facility (one per stair with dir < 0). A neighbour below the
+/// active level is scoped with the openings of the active facility; one above, with those of its own.
+pub fn openings(f: &Facility) -> Vec<Opening> {
+    f.stairs
+        .iter()
+        .filter(|s| s.dir < 0)
+        .filter_map(|s| {
+            let cells = s.well_cells();
+            if cells.is_empty() {
+                return None;
+            }
+            let n = cells.len() as f32;
+            let sum = cells.iter().map(|c| c.center()).fold((0.0, 0.0), |a, c| (a.0 + c.0, a.1 + c.1));
+            Some(Opening { centre: (sum.0 / n, sum.1 / n), cells, upper_level: f.level })
+        })
+        .collect()
+}
+
+/// What a neighbour level builds: where it stands, the openings it is seen through and the data limits.
+#[derive(Clone, Debug)]
+pub struct NeighbourScope {
+    pub dy: f32,
+    pub openings: Vec<Opening>,
+    /// Only chunk parts this close (metres) to an opening are built.
+    pub radius: f32,
+    pub max_parts: usize,
+    pub chunks_per_frame: usize,
 }
 
 /// A room door to draw each frame: its threshold cell (the key of `Facility::door_open_amount`), the model it uses and
@@ -96,6 +138,8 @@ struct Part {
     meshes: Vec<Mesh>,
     /// The window origin the vertices are placed for.
     origin: (i32, i32),
+    /// The height offset the vertices are placed for (see `WorldMeshes::dy`).
+    dy: f32,
     used: u64,
 }
 
@@ -218,11 +262,23 @@ fn reframe(meshes: &mut [Mesh], from: (i32, i32), to: (i32, i32)) {
     }
 }
 
-/// Whether a move of the window from `from` to `to` is a jump (a level change, or a centre more than `jump_steps`
-/// chunks away) rather than a step. streamed_facility_view_3d.gd 726-727.
+/// Moves every vertex of `meshes` up by `dy`.
+fn lift(meshes: &mut [Mesh], dy: f32) {
+    if dy == 0.0 {
+        return;
+    }
+    for m in meshes {
+        for v in &mut m.vertices {
+            v.position.y += dy;
+        }
+    }
+}
+
+/// Whether a move of the window from `from` to `to` is a jump (a centre more than `jump_steps` chunks away) rather than
+/// a step. streamed_facility_view_3d.gd 726-727. A level change is not a jump: a `WorldMeshes` keeps its own level and
+/// the level swap is `relabel`'s, so the meshes never see one.
 fn is_jump(from: ChunkFrame, to: ChunkFrame, jump_steps: i32) -> bool {
-    from.level != to.level
-        || (from.center.0 - to.center.0).abs() > jump_steps
+    (from.center.0 - to.center.0).abs() > jump_steps
         || (from.center.1 - to.center.1).abs() > jump_steps
 }
 
@@ -254,7 +310,17 @@ impl WorldMeshes {
         assets: &Assets,
         content: &Content,
     ) {
+        // defensive: meshes of another level are not this level's (the swap is `relabel`'s)
+        if self.level != f.level {
+            if !self.parts.is_empty() || !self.meshes.is_empty() {
+                self.clear_geometry();
+            }
+            self.level = f.level;
+        }
         self.lamps = lamps(f, lights_on, content);
+        for l in &mut self.lamps {
+            l.pos.y += self.dy;
+        }
         // The hinge leaves are drawn each frame apart from the meshes, whose frames are built part by part. The
         // leaves therefore follow the meshes: they are published only with the drawn set (below), and on a
         // streamed floor only for the parts that are built, so a leaf never stands without its frame.
@@ -276,7 +342,9 @@ impl WorldMeshes {
                 pad: true,
             };
             self.meshes = build_meshes(f, &pick, &mut choices, assets, content);
+            lift(&mut self.meshes, self.dy);
             self.doors = doors;
+            self.lift_doors();
             self.drawn = vec![None; self.meshes.len()];
             self.bounds = mesh_bounds(&self.meshes);
             return;
@@ -304,8 +372,9 @@ impl WorldMeshes {
                 continue;
             }
             built += 1;
-            let meshes = build_meshes(f, pick, &mut choices, assets, content);
-            self.parts.insert(*key, Part { meshes, origin: f.origin, used: build_no });
+            let mut meshes = build_meshes(f, pick, &mut choices, assets, content);
+            lift(&mut meshes, self.dy);
+            self.parts.insert(*key, Part { meshes, origin: f.origin, dy: self.dy, used: build_no });
         }
         self.pending = pending;
         // with something drawn, the drawn set waits for the window to be whole; with nothing drawn yet (the first
@@ -321,6 +390,7 @@ impl WorldMeshes {
             .filter_map(|(_, pick)| pick.fixtures)
             .collect();
         self.doors = doors_in_rects(doors, &built);
+        self.lift_doors();
         // Phase 2: the drawn set goes back into the parts it came from, then every wanted part is drawn in order.
         for (m, key) in std::mem::take(&mut self.meshes).into_iter().zip(std::mem::take(&mut self.drawn)) {
             if let Some(p) = key.and_then(|k| self.parts.get_mut(&k)) {
@@ -334,9 +404,17 @@ impl WorldMeshes {
                 reframe(&mut part.meshes, part.origin, f.origin);
                 part.origin = f.origin;
             }
+            // a part built before a shift is reframed in height the same way
+            if part.dy != self.dy {
+                lift(&mut part.meshes, self.dy - part.dy);
+                part.dy = self.dy;
+            }
             out.extend(part.meshes.drain(..).map(|m| (Some(key), m)));
         }
-        out.extend(safe_pad(f, assets).into_iter().map(|m| (None, m)));
+        out.extend(safe_pad(f, assets).into_iter().map(|mut m| {
+            lift(std::slice::from_mut(&mut m), self.dy);
+            (None, m)
+        }));
         // the window's last two builds stay, so a step back or a flight straight back up builds nothing
         let builds = self.builds;
         self.parts.retain(|_, p| p.used + 1 >= builds);
@@ -365,6 +443,208 @@ impl WorldMeshes {
     pub fn has_pending(&self) -> bool {
         self.pending > 0
     }
+
+    /// Drops everything built (parts, the drawn set, doors); the level and height offset stay.
+    fn clear_geometry(&mut self) {
+        self.parts.clear();
+        self.meshes.clear();
+        self.drawn.clear();
+        self.bounds.clear();
+        self.doors.clear();
+        self.last_frame = None;
+        self.pending = 0;
+    }
+
+    /// Raises the door leaves (built at height 0) by this instance's `dy`.
+    fn lift_doors(&mut self) {
+        if self.dy != 0.0 {
+            let up = Mat4::from_translation(vec3(0.0, self.dy, 0.0));
+            for d in &mut self.doors {
+                d.xf = up * d.xf;
+            }
+        }
+    }
+
+    /// Moves everything this instance holds up by `delta` metres: the drawn vertices, the cached parts (so a part
+    /// reused after a level swap stands at the right height), the bounds, the lamps and the door leaves. `dy` follows.
+    pub fn shift_y(&mut self, delta: f32) {
+        if delta == 0.0 {
+            return;
+        }
+        lift(&mut self.meshes, delta);
+        for p in self.parts.values_mut() {
+            lift(&mut p.meshes, delta);
+            p.dy += delta;
+        }
+        for (lo, hi) in &mut self.bounds {
+            // an empty mesh keeps its inverted box
+            if lo.y <= hi.y {
+                lo.y += delta;
+                hi.y += delta;
+            }
+        }
+        for l in &mut self.lamps {
+            l.pos.y += delta;
+        }
+        let up = Mat4::from_translation(vec3(0.0, delta, 0.0));
+        for d in &mut self.doors {
+            d.xf = up * d.xf;
+        }
+        self.dy += delta;
+    }
+
+    /// The triangles currently drawn.
+    pub fn triangle_count(&self) -> usize {
+        self.meshes.iter().map(|m| m.indices.len() / 3).sum()
+    }
+
+    /// How many window parts this instance holds (cached parts; the drawn ones stay in `parts` as empty shells).
+    pub fn held_parts(&self) -> usize {
+        self.parts.len()
+    }
+
+    /// Builds the neighbour level `f` (a window sharing the active window's centre and origin) for drawing at
+    /// `scope.dy`: only the chunk parts within `scope.radius` of an opening, at most `scope.max_parts` of them, through
+    /// the stream budget with `scope.chunks_per_frame`. Lamps are all on and offset by dy, doors are left empty, no
+    /// safe pad. The drawn set swaps only once every wanted part is built (the same rule as `rebuild`); call again
+    /// while `has_pending`.
+    pub fn rebuild_neighbour(
+        &mut self,
+        f: &Facility,
+        frame: ChunkFrame,
+        scope: &NeighbourScope,
+        assets: &Assets,
+        content: &Content,
+    ) {
+        if self.level != f.level {
+            if !self.parts.is_empty() || !self.meshes.is_empty() {
+                self.clear_geometry();
+            }
+            self.level = f.level;
+        }
+        if self.dy != scope.dy {
+            self.shift_y(scope.dy - self.dy);
+        }
+        self.lamps = lamps(f, &[], content);
+        for l in &mut self.lamps {
+            l.pos.y += self.dy;
+        }
+        self.doors.clear();
+        let size = CHUNK * WINDOW;
+        let ours = f.cols == size && f.rows == size && f.origin == ((frame.center.0 - 1) * CHUNK, (frame.center.1 - 1) * CHUNK);
+        if !ours {
+            self.clear_geometry();
+            return;
+        }
+        self.last_frame = Some(frame);
+        let wanted = neighbour_wanted(window_parts(f, frame), frame, &scope.openings, scope.radius, scope.max_parts);
+        // the hard cap: nothing outside the wanted set is kept
+        self.parts.retain(|k, _| wanted.iter().any(|(w, _)| w == k));
+        let table = stream_table();
+        let started = Instant::now();
+        let build_no = self.builds + 1;
+        let queued = wanted.iter().filter(|(k, _)| !self.parts.contains_key(k)).count();
+        let mut choices = HashMap::new();
+        let (mut built, mut pending) = (0, 0);
+        for (key, pick) in &wanted {
+            if let Some(p) = self.parts.get_mut(key) {
+                p.used = build_no;
+                continue;
+            }
+            if !neighbour_allows(table, scope.chunks_per_frame, built, started.elapsed().as_secs_f64() * 1000.0, queued) {
+                pending += 1;
+                continue;
+            }
+            built += 1;
+            let mut meshes = build_meshes(f, pick, &mut choices, assets, content);
+            lift(&mut meshes, self.dy);
+            self.parts.insert(*key, Part { meshes, origin: f.origin, dy: self.dy, used: build_no });
+        }
+        self.pending = pending;
+        if pending > 0 && !self.drawn.is_empty() {
+            return;
+        }
+        self.builds = build_no;
+        for (m, key) in std::mem::take(&mut self.meshes).into_iter().zip(std::mem::take(&mut self.drawn)) {
+            if let Some(p) = key.and_then(|k| self.parts.get_mut(&k)) {
+                p.meshes.push(m);
+            }
+        }
+        let mut out: Vec<(Option<PartKey>, Mesh)> = vec![];
+        for key in drawable_keys(&wanted, |k| self.parts.contains_key(k)) {
+            let part = self.parts.get_mut(&key).expect("drawable_keys returns only built parts");
+            if part.origin != f.origin {
+                reframe(&mut part.meshes, part.origin, f.origin);
+                part.origin = f.origin;
+            }
+            if part.dy != self.dy {
+                lift(&mut part.meshes, self.dy - part.dy);
+                part.dy = self.dy;
+            }
+            out.extend(part.meshes.drain(..).map(|m| (Some(key), m)));
+        }
+        let (drawn, meshes) = group_by_texture(out);
+        self.drawn = drawn;
+        self.meshes = meshes;
+        self.bounds = mesh_bounds(&self.meshes);
+    }
+}
+
+/// Whether one more neighbour part may be built after `built` this frame (the first always may).
+fn neighbour_allows(table: &StreamBudget, per_frame: usize, built: usize, elapsed_ms: f64, queued: usize) -> bool {
+    built == 0 || (built < per_frame && elapsed_ms < table.budget_ms(queued))
+}
+
+/// The meshes with one texture's side by side (so the batcher joins them), and the part each came from.
+fn group_by_texture(out: Vec<(Option<PartKey>, Mesh)>) -> (Vec<Option<PartKey>>, Vec<Mesh>) {
+    let mut textures: Vec<Option<Texture2D>> = vec![];
+    let mut sorted: Vec<(usize, (Option<PartKey>, Mesh))> = out
+        .into_iter()
+        .map(|km| {
+            let i = match textures.iter().position(|t| *t == km.1.texture) {
+                Some(i) => i,
+                None => {
+                    textures.push(km.1.texture.clone());
+                    textures.len() - 1
+                }
+            };
+            (i, km)
+        })
+        .collect();
+    sorted.sort_by_key(|(t, _)| *t);
+    sorted.into_iter().map(|(_, km)| km).unzip()
+}
+
+/// The distance from point `p` to the box (x0, z0, x1, z1); 0 inside it.
+fn rect_distance(p: (f32, f32), r: (f32, f32, f32, f32)) -> f32 {
+    let dx = (r.0 - p.0).max(0.0).max(p.0 - r.2);
+    let dz = (r.1 - p.1).max(0.0).max(p.1 - r.3);
+    (dx * dx + dz * dz).sqrt()
+}
+
+/// The window parts a neighbour draws: those holding cells or rooms whose chunk lies within `radius` metres of an
+/// opening centre, nearest first, at most `max_parts`.
+fn neighbour_wanted(
+    parts: Vec<(PartKey, Pick)>,
+    frame: ChunkFrame,
+    openings: &[Opening],
+    radius: f32,
+    max_parts: usize,
+) -> Vec<(PartKey, Pick)> {
+    let mut near: Vec<(f32, (PartKey, Pick))> = parts
+        .into_iter()
+        .filter(|(_, p)| !p.cells.is_empty() || !p.rooms.is_empty())
+        .filter_map(|(k, p)| {
+            let x0 = ((k.cx - (frame.center.0 - 1)) * CHUNK) as f32;
+            let z0 = ((k.cy - (frame.center.1 - 1)) * CHUNK) as f32;
+            let rect = (x0, z0, x0 + CHUNK as f32, z0 + CHUNK as f32);
+            let d = openings.iter().map(|o| rect_distance(o.centre, rect)).fold(f32::MAX, f32::min);
+            (d <= radius).then_some((d, (k, p)))
+        })
+        .collect();
+    near.sort_by(|a, b| a.0.total_cmp(&b.0));
+    near.truncate(max_parts);
+    near.into_iter().map(|(_, kp)| kp).collect()
 }
 
 /// Path of the streaming budget under data/ (the embedded file's name).
@@ -380,10 +660,16 @@ pub struct StreamBudget {
     pub chunks_per_frame: usize,
     /// A window centre more than this many chunks from the last one in a frame is a jump (a teleport): built in one step.
     pub jump_steps: i32,
+    /// A neighbour level builds at most this many chunk parts in a frame.
+    pub neighbour_chunks_per_frame: usize,
+    /// A neighbour level holds at most this many chunk parts.
+    pub neighbour_max_parts: usize,
+    /// A neighbour level builds only chunk parts this many metres (or less) from a stairwell opening.
+    pub neighbour_cull_radius: f32,
 }
 
 impl StreamBudget {
-    /// Parses `{ "frame_budget_ms", "per_queued_ms", "max_budget_ms", "chunks_per_frame", "jump_steps" }`; the times
+    /// Parses `{ "frame_budget_ms", "per_queued_ms", "max_budget_ms", "chunks_per_frame", "jump_steps", "neighbour_chunks_per_frame", "neighbour_max_parts", "neighbour_cull_radius" }`; the times
     /// must be positive, chunks_per_frame a whole number of at least 1 and jump_steps one of at least 1.
     pub fn parse(text: &str) -> Result<StreamBudget, String> {
         let value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
@@ -405,12 +691,23 @@ impl StreamBudget {
             .and_then(|v| i32::try_from(v).ok())
             .filter(|v| *v >= 1)
             .ok_or_else(|| "jump_steps: must be a whole number of at least 1".to_string())?;
+        let whole = |key: &str| -> Result<usize, String> {
+            value
+                .get(key)
+                .and_then(|v| v.as_u64())
+                .filter(|v| *v >= 1)
+                .map(|v| v as usize)
+                .ok_or_else(|| format!("{key}: must be a whole number of at least 1"))
+        };
         Ok(StreamBudget {
             frame_budget_ms: num("frame_budget_ms")?,
             per_queued_ms: num("per_queued_ms")?,
             max_budget_ms: num("max_budget_ms")?,
             chunks_per_frame: chunks as usize,
             jump_steps,
+            neighbour_chunks_per_frame: whole("neighbour_chunks_per_frame")?,
+            neighbour_max_parts: whole("neighbour_max_parts")?,
+            neighbour_cull_radius: num("neighbour_cull_radius")? as f32,
         })
     }
 
@@ -443,6 +740,9 @@ pub fn stream_table() -> &'static StreamBudget {
                 max_budget_ms: 9.0,
                 chunks_per_frame: 4,
                 jump_steps: 1,
+                neighbour_chunks_per_frame: 2,
+                neighbour_max_parts: 12,
+                neighbour_cull_radius: 14.0,
             }
         })
     })
@@ -1012,6 +1312,12 @@ fn catwalk_boxes(c: Cell, deck_height: f32, deck_at: &dyn Fn(i32, i32) -> bool) 
         .collect()
 }
 
+/// Whether a cell draws its ceiling quad: not over the well of a flight up (the lower level's well is open to the level
+/// above, whose floor has the matching hole).
+fn draws_ceiling(step: Option<Stair>) -> bool {
+    !matches!(step, Some(s) if s.dir > 0)
+}
+
 fn build_meshes(
     f: &Facility,
     pick: &Pick,
@@ -1089,7 +1395,7 @@ fn build_meshes(
             stairs::ladder_up(&mut bits, (c.x, c.y), &site);
         }
         add_stairs(bits, &mut surf, &mut plain, &mut glow, floor_kind, wall_kind, assets, set);
-        if !matches!(step, Some(s) if s.dir > 0) {
+        if draws_ceiling(step) {
             let corners = [
                 vec3(x, wall_h, z + 1.),
                 vec3(x + 1., wall_h, z + 1.),
@@ -1663,7 +1969,10 @@ mod stream_budget_tests {
   "per_queued_ms": 1.0,
   "max_budget_ms": 9.0,
   "chunks_per_frame": 4,
-  "jump_steps": 1
+  "jump_steps": 1,
+  "neighbour_chunks_per_frame": 2,
+  "neighbour_max_parts": 12,
+  "neighbour_cull_radius": 14.0
 }"#;
 
     #[test]
@@ -1674,6 +1983,9 @@ mod stream_budget_tests {
         assert_eq!(t.max_budget_ms, 9.0, "streamed_facility_view_3d.gd STREAM_BUDGET_MAX_MS");
         assert_eq!(t.chunks_per_frame, 4, "streamed_facility_view_3d.gd STARTUP_CHUNKS_PER_FRAME");
         assert_eq!(t.jump_steps, 1, "streamed_facility_view_3d.gd 726-727: more than one chunk away is a jump");
+        assert_eq!(t.neighbour_chunks_per_frame, 2);
+        assert_eq!(t.neighbour_max_parts, 12);
+        assert_eq!(t.neighbour_cull_radius, 14.0);
     }
 
     #[test]
@@ -1721,13 +2033,20 @@ mod stream_budget_tests {
     }
 
     #[test]
-    fn a_jump_is_more_than_one_chunk_away_or_a_level_change_as_in_godot() {
+    fn a_jump_is_more_than_one_chunk_away_as_in_godot() {
         let t = StreamBudget::parse(STANDARD).unwrap();
         let at = |level: i32, x: i32, z: i32| ChunkFrame { level, center: (x, z) };
         assert!(!is_jump(at(0, 5, 5), at(0, 6, 6), t.jump_steps), "a diagonal step to the next chunk is a step");
         assert!(is_jump(at(0, 5, 5), at(0, 7, 5), t.jump_steps), "two chunks in one frame is a teleport");
         assert!(is_jump(at(0, 5, 5), at(0, 5, 2), t.jump_steps), "a teleport along z is a jump too");
-        assert!(is_jump(at(0, 5, 5), at(1, 5, 5), t.jump_steps), "a level change is a jump");
+    }
+
+    #[test]
+    fn a_level_change_is_not_a_jump() {
+        let t = StreamBudget::parse(STANDARD).unwrap();
+        let at = |level: i32, x: i32, z: i32| ChunkFrame { level, center: (x, z) };
+        assert!(!is_jump(at(0, 5, 5), at(1, 5, 5), t.jump_steps), "the level swap is relabel's, not a rebuild");
+        assert!(!is_jump(at(0, 5, 5), at(-1, 6, 5), t.jump_steps));
     }
 
     #[test]
@@ -1740,14 +2059,21 @@ mod stream_budget_tests {
     }
 
     #[test]
-    fn a_teleport_or_a_level_change_builds_its_window_in_one_step_and_a_step_streams() {
+    fn a_teleport_builds_its_window_in_one_step_and_a_step_streams() {
         let t = StreamBudget::parse(STANDARD).unwrap();
         let at = |level: i32, x: i32, z: i32| ChunkFrame { level, center: (x, z) };
         assert!(!builds_in_one_step(None, at(0, 5, 5), 0, t.jump_steps), "the first load of a run streams");
         assert!(builds_in_one_step(None, at(0, 5, 5), 3, t.jump_steps), "back onto the window after leaving the floor");
         assert!(!builds_in_one_step(Some(at(0, 5, 5)), at(0, 6, 5), 3, t.jump_steps), "a step streams");
         assert!(builds_in_one_step(Some(at(0, 5, 5)), at(0, 9, 5), 3, t.jump_steps), "a teleport builds in one step");
-        assert!(builds_in_one_step(Some(at(0, 5, 5)), at(2, 5, 5), 3, t.jump_steps), "a level change builds in one step");
+    }
+
+    #[test]
+    fn a_teleport_still_builds_in_one_step() {
+        let t = StreamBudget::parse(STANDARD).unwrap();
+        let at = |level: i32, x: i32, z: i32| ChunkFrame { level, center: (x, z) };
+        assert!(builds_in_one_step(Some(at(0, 5, 5)), at(0, 9, 5), 3, t.jump_steps));
+        assert!(!builds_in_one_step(Some(at(0, 5, 5)), at(2, 5, 5), 3, t.jump_steps), "a level change streams");
     }
 
     #[test]
@@ -1761,5 +2087,211 @@ mod stream_budget_tests {
         assert!(StreamBudget::parse(&STANDARD.replace("\"max_budget_ms\": 9.0", "\"max_budget_ms\": 0")).is_err());
         assert!(StreamBudget::parse(&STANDARD.replace("\"chunks_per_frame\": 4", "\"chunks_per_frame\": 0")).is_err());
         assert!(StreamBudget::parse(&STANDARD.replace("\"per_queued_ms\": 1.0,", "")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod stack_mesh_tests {
+    use super::*;
+    use crate::render::stairs::{Face, Parts, Site};
+    use crate::world::facility::{Cell, Stair};
+    use crate::world::flight::FlightShape;
+
+    fn mesh(ys: &[f32]) -> Mesh {
+        let vertices = ys
+            .iter()
+            .map(|&y| Vertex {
+                position: vec3(1.0, y, 2.0),
+                uv: vec2(0., 0.),
+                color: [255; 4],
+                normal: vec4(0., 1., 0., 0.),
+            })
+            .collect::<Vec<_>>();
+        let n = vertices.len() as u16;
+        Mesh { vertices, indices: (0..n).collect(), texture: None }
+    }
+
+    fn lamp(y: f32) -> Lamp {
+        Lamp { pos: vec3(0., y, 0.), range: 5.0, color: WHITE, energy: 1.0 }
+    }
+
+    fn min_y(m: &WorldMeshes) -> f32 {
+        m.meshes.iter().flat_map(|m| m.vertices.iter()).map(|v| v.position.y).fold(f32::MAX, f32::min)
+    }
+
+    #[test]
+    fn shift_y_moves_bounds_lamps_and_doors() {
+        let mut w = WorldMeshes::default();
+        w.meshes = vec![mesh(&[0.0, 5.0, 0.0])];
+        w.bounds = mesh_bounds(&w.meshes);
+        w.lamps = vec![lamp(4.0)];
+        w.doors = vec![DoorInstance {
+            cell: Cell::new(1, 1),
+            model: String::new(),
+            xf: Mat4::from_translation(vec3(3.0, 1.0, 3.0)),
+            fit: door::DoorFit { sx: 1.0, sy: 1.0, shift: 0.0, from: 0.0, jamb: 0.5 },
+        }];
+        w.shift_y(5.0);
+        assert_eq!(w.dy, 5.0);
+        assert_eq!(min_y(&w), 5.0, "neighbour_vertices_are_offset_by_storey");
+        assert_eq!((w.bounds[0].0.y, w.bounds[0].1.y), (5.0, 10.0));
+        assert_eq!(w.lamps[0].pos.y, 9.0);
+        assert_eq!(w.doors[0].xf.w_axis.y, 6.0);
+        assert_eq!(w.doors[0].xf.w_axis.x, 3.0, "only the height moves");
+        w.shift_y(-5.0);
+        assert_eq!(min_y(&w), 0.0);
+        assert_eq!(w.dy, 0.0);
+        assert_eq!(w.lamps[0].pos.y, 4.0);
+    }
+
+    #[test]
+    fn shift_y_reframes_cached_parts_too() {
+        let mut w = WorldMeshes::default();
+        let key = PartKey { level: 0, cx: 0, cy: 0, needs: 0, open: 0 };
+        w.parts.insert(key, Part { meshes: vec![mesh(&[0.0])], origin: (0, 0), dy: 0.0, used: 1 });
+        w.shift_y(-5.0);
+        let p = &w.parts[&key];
+        assert_eq!(p.dy, -5.0);
+        assert_eq!(p.meshes[0].vertices[0].position.y, -5.0);
+        assert_eq!(w.held_parts(), 1);
+    }
+
+    #[test]
+    fn an_empty_mesh_keeps_its_inverted_box_through_a_shift() {
+        let mut w = WorldMeshes::default();
+        w.meshes = vec![Mesh { vertices: vec![], indices: vec![], texture: None }];
+        w.bounds = mesh_bounds(&w.meshes);
+        w.shift_y(5.0);
+        assert!(w.bounds[0].0.y > w.bounds[0].1.y);
+    }
+
+    #[test]
+    fn triangle_count_counts_the_drawn_indices() {
+        let mut w = WorldMeshes::default();
+        w.meshes = vec![mesh(&[0.0; 6]), mesh(&[0.0; 3])];
+        assert_eq!(w.triangle_count(), 3);
+    }
+
+    #[test]
+    fn lift_places_vertices_at_the_neighbour_height() {
+        let mut ms = vec![mesh(&[0.0, 0.0])];
+        lift(&mut ms, 5.0);
+        assert_eq!(ms[0].vertices[0].position.y, 5.0);
+        lift(&mut ms, -5.0);
+        assert_eq!(ms[0].vertices[0].position.y, 0.0);
+    }
+
+    fn flight(dir: i32) -> Stair {
+        Stair::stairs(Cell::new(20, 20), dir, (0, 1), FlightShape::Switchback, false)
+    }
+
+    fn parts_of(s: Stair, level: i32) -> Parts {
+        let well: HashSet<(i32, i32)> = s.well_cells().iter().map(|c| (c.x, c.y)).collect();
+        let solid = |_: i32, _: i32| false;
+        let in_well = move |x: i32, z: i32| well.contains(&(x, z));
+        let site = Site { h: 5.0, wall_h: 5.0, tiers: 1.0, well: &in_well, solid: &solid };
+        let mut out = Parts::default();
+        for c in s.well_cells() {
+            stairs::flight_cell(&mut out, (c.x, c.y), s, level, &site);
+        }
+        out
+    }
+
+    #[test]
+    fn no_ceiling_over_a_well() {
+        let s = flight(1);
+        assert!(!draws_ceiling(Some(s)), "the lower level's well cell has no ceiling quad");
+        assert!(draws_ceiling(None));
+        assert!(draws_ceiling(Some(flight(-1))), "the upper level keeps its own ceiling");
+        let p = parts_of(s, -1);
+        assert!(!p.quads.iter().any(|q| q.n.y < -0.5), "the flight adds no cap under the level above");
+        assert!(!p.quads.is_empty(), "the lower level draws its treads");
+    }
+
+    #[test]
+    fn no_floor_over_a_well_on_the_upper_level() {
+        let p = parts_of(flight(-1), 0);
+        assert!(
+            !p.quads.iter().any(|q| q.n.y > 0.5 && q.c.iter().all(|v| v.y.abs() < 0.01)),
+            "no floor quad at y = 0 over the hole"
+        );
+        assert!(p.quads.iter().all(|q| q.face != Face::Plain || q.n.y.abs() < 0.5), "no treads on the upper level");
+    }
+
+    fn sample_window() -> (Facility, ChunkFrame) {
+        use crate::content::loot::LootTables;
+        use crate::world::catalog::Catalog;
+        use crate::world::infinite::window;
+        let (cat, loot) = (Catalog::load(), LootTables::default());
+        let mut cache = HashMap::new();
+        for cx in -4..4 {
+            for cy in -4..4 {
+                let (f, _) = window("1426541270", (cx, cy), 0, &cat, &loot, &mut cache);
+                if f.stairs.iter().any(|s| s.dir < 0 && !s.is_ladder()) {
+                    return (f, ChunkFrame { level: 0, center: (cx, cy) });
+                }
+            }
+        }
+        panic!("no level 0 window with a flight down near the origin");
+    }
+
+    fn cells_of(parts: &[(PartKey, Pick)]) -> usize {
+        parts.iter().map(|(_, p)| p.cells.len()).sum()
+    }
+
+    fn dist(k: &PartKey, frame: ChunkFrame, ops: &[Opening]) -> f32 {
+        let x0 = ((k.cx - (frame.center.0 - 1)) * CHUNK) as f32;
+        let z0 = ((k.cy - (frame.center.1 - 1)) * CHUNK) as f32;
+        ops.iter().map(|o| rect_distance(o.centre, (x0, z0, x0 + CHUNK as f32, z0 + CHUNK as f32))).fold(f32::MAX, f32::min)
+    }
+
+    #[test]
+    fn neighbour_builds_only_parts_near_an_opening() {
+        let (f, frame) = sample_window();
+        let ops = openings(&f);
+        assert!(!ops.is_empty());
+        assert!(ops.iter().all(|o| o.upper_level == 0 && !o.cells.is_empty()));
+        let all = window_parts(&f, frame);
+        let total = cells_of(&all);
+        let near = neighbour_wanted(all, frame, &ops, 14.0, 99);
+        assert!(!near.is_empty() && cells_of(&near) < total, "a radius cuts the window down");
+        assert!(near.iter().all(|(k, _)| dist(k, frame, &ops) <= 14.0));
+        let tight = neighbour_wanted(window_parts(&f, frame), frame, &ops, 0.0, 99);
+        assert!(!tight.is_empty(), "the part holding the opening is always wanted");
+    }
+
+    #[test]
+    fn neighbour_max_parts_is_a_hard_cap() {
+        let (f, frame) = sample_window();
+        let ops = openings(&f);
+        let many = neighbour_wanted(window_parts(&f, frame), frame, &ops, 1000.0, 99);
+        assert!(many.len() > 3);
+        assert_eq!(neighbour_wanted(window_parts(&f, frame), frame, &ops, 1000.0, 3).len(), 3);
+        assert!(neighbour_wanted(window_parts(&f, frame), frame, &ops, 1000.0, 0).is_empty());
+    }
+
+    /// Cells stand in for triangles here (they need no GL textures to build); `triangle_count` is the real count.
+    #[test]
+    fn neighbour_triangles_at_most_35_percent_of_the_active_level() {
+        let (f, frame) = sample_window();
+        let ops = openings(&f);
+        let all = cells_of(&window_parts(&f, frame));
+        let t = stream_table();
+        let near = cells_of(&neighbour_wanted(window_parts(&f, frame), frame, &ops, t.neighbour_cull_radius, t.neighbour_max_parts));
+        assert!((near as f32) <= all as f32 * 0.35, "{near} of {all} cells");
+    }
+
+    #[test]
+    fn the_neighbour_budget_follows_the_data() {
+        let t = StreamBudget::parse(
+            r#"{"frame_budget_ms":4.0,"per_queued_ms":1.0,"max_budget_ms":9.0,"chunks_per_frame":4,"jump_steps":1,
+            "neighbour_chunks_per_frame":2,"neighbour_max_parts":12,"neighbour_cull_radius":14.0}"#,
+        )
+        .unwrap();
+        assert!(neighbour_allows(&t, 2, 0, 999.0, 5), "the first always builds");
+        assert!(neighbour_allows(&t, 2, 1, 0.0, 5));
+        assert!(!neighbour_allows(&t, 2, 2, 0.0, 5), "the per-frame cap");
+        let old = r#"{"frame_budget_ms":4.0,"per_queued_ms":1.0,"max_budget_ms":9.0,"chunks_per_frame":4,"jump_steps":1}"#;
+        assert!(StreamBudget::parse(old).is_err(), "the neighbour keys are required");
     }
 }

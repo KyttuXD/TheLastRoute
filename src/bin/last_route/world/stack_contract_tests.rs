@@ -491,8 +491,11 @@ fn the_todo_stairwell_at_seed_40490470_chunk_3_2_is_walkable_end_to_end() {
         let t = lower.f.stairs.iter().find(|t| t.dir > 0 && !t.is_ladder() && t.flight(-1) == Some(fl));
         let mut last = f32::INFINITY;
         for (x, z) in &path {
-            // the foot cell B belongs to the lower level: there the surface comes from the lower level's own stair
-            let on_foot = Cell::new(x.floor() as i32, z.floor() as i32) == fp.foot;
+            // the foot cell B belongs to the lower level: there the surface comes from the lower level's own stair. A
+            // sample on the foot's edge that already stands on the lower floor is the lower level's too (the label has
+            // flipped there), so it is checked against the lower level's facility, not the upper one.
+            let on_foot = Cell::new(x.floor() as i32, z.floor() as i32) == fp.foot
+                || s.surface_rel(0, *x, *z).is_some_and(|rel| rel <= -STOREY + 1e-3);
             let (lvl, fac, stair) = if on_foot { (-1, &lower, t) } else { (0, &b, Some(s)) };
             let Some(rel) = stair.and_then(|st| st.surface_rel(lvl, *x, *z)) else {
                 fails.push(format!("no surface at ({x:.2}, {z:.2}) on the flight from {:?}", s.cell));
@@ -557,4 +560,27 @@ fn every_flight_walk_path_has_a_surface_at_every_sample() {
     }
     assert!(walked > 200, "only {walked} samples walked");
     report("flight walk paths", &fails);
+}
+
+/// The lane dividers of a flight are one list: the upper level's record and the lower level's record of the same
+/// flight give the same segments (grid coordinates, so the divider is the same wall seen from both storeys), and only
+/// switchbacks have any.
+#[test]
+fn both_levels_agree_on_the_lane_dividers() {
+    let mut fails = vec![];
+    let mut pairs = 0;
+    for p in stair_pairs() {
+        let Some(t) = p.t else { continue };
+        let u = p.up.f.level;
+        let (upper, lower) = (p.s.dividers(u), t.dividers(u - 1));
+        if upper != lower {
+            fails.push(format!("{}: dividers differ, upper {upper:?}, lower {lower:?}", p.tag));
+        }
+        if (p.s.shape == FlightShape::Switchback) == upper.is_empty() {
+            fails.push(format!("{}: {:?} has {} dividers", p.tag, p.s.shape, upper.len()));
+        }
+        pairs += 1;
+    }
+    assert!(pairs > 0, "no stair pair found");
+    report("lane dividers", &fails);
 }

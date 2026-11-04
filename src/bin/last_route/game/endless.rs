@@ -17,8 +17,8 @@ use crate::world::infinite::{self, ChunkKey, CHUNK};
 use crate::world::route::hunter_spawns::HunterSpawn;
 use crate::world::route::live;
 use crate::world::rng::Rng;
-use crate::world::vertical::{level_from_height, STOREY};
 use crate::world::Cell;
+use super::level_stack::{floor_y_of, level_at, levels_to_keep, LevelStack, Resident};
 use super::player::stair_height_at;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -186,25 +186,13 @@ pub struct InfState {
     /// The routes to the waypoint, planned when `route_key` changes (`refresh_waypoint`).
     routes: WaypointRoutes,
     route_key: Option<RouteKey>,
-    /// The windows built ahead for the storeys the connections near the runner lead to (`prefetch_connections`).
-    prefetched: Vec<Prefetch>,
+    /// The levels resident beside the active one (`keep_stack`): built at the window's centre, swapped in by `relabel`.
+    pub stack: LevelStack,
     /// The windows built so far (`infinite::window` calls), so a test can see that a change builds none.
-    builds: u32,
-}
-
-/// A storey's window built ahead of a change to it (`Game::prefetch_connections`): the level and centre it was built for,
-/// and the window. `change_storey` swaps it in rather than building it on the connection's frame.
-struct Prefetch {
-    level: i32,
-    center: (i32, i32),
-    window: (Facility, Fixtures),
-}
-
-impl Prefetch {
-    /// The memory the window holds, estimated from its grids and lists (the input to the preload memory cap).
-    fn bytes(&self) -> usize {
-        window_bytes(&self.window.0, &self.window.1)
-    }
+    pub(super) builds: u32,
+    /// Set by `relabel`: the keep set of the new level is topped up from the next frame, so the frame of the change loads
+    /// nothing (`keep_stack` clears it).
+    relabelled: bool,
 }
 
 /// An estimate of the bytes a built window holds: the per-cell grids and the entries of its lists.
@@ -219,24 +207,6 @@ pub(super) fn window_bytes(fac: &Facility, fix: &Fixtures) -> usize {
         + fac.pickups.len() * size_of::<(Cell, Pickup)>()
         + fac.stairs.len() * size_of::<Stair>()
         + (fac.relays.len() + fac.batteries.len() + fix.vents.len() + fix.coins.len()) * size_of::<Cell>()
-}
-
-/// The storeys the stairs and ladders within `reach` of `pos` lead to, from `level`: a flight to the storey its `dir`
-/// names, a ladder to both neighbours. Only storeys the run may enter.
-pub(super) fn connection_targets(level: i32, pos: (f32, f32), reach: f32, stairs: &[Stair]) -> Vec<i32> {
-    let mut out: Vec<i32> = Vec::new();
-    for s in stairs {
-        if pdist(pos, s.cell.center()) > reach {
-            continue;
-        }
-        let offsets: Vec<i32> = if s.is_ladder() { vec![-1, 1] } else { vec![s.dir] };
-        for t in offsets.into_iter().map(|d| level + d) {
-            if t != level && infinite::level_allowed(t) && !out.contains(&t) {
-                out.push(t);
-            }
-        }
-    }
-    out
 }
 
 /// Godot `WaypointState.ARRIVAL_RADIUS`: the runner within this many cells (XZ) of the waypoint clears it.
@@ -603,8 +573,9 @@ impl InfState {
             waypoint: None,
             routes: WaypointRoutes::default(),
             route_key: None,
-            prefetched: Vec::new(),
+            stack: LevelStack::default(),
             builds: 0,
+            relabelled: false,
         }
     }
 
@@ -703,22 +674,49 @@ impl Game {
     /// Builds the window around the current centre chunk and level.
     fn load_window(&mut self, content: &Content, catalog: &Catalog) {
         let Some(inf) = self.inf.as_mut() else { return };
-        // the storey's window is the one built ahead for it (`prefetch_connections`) when there is one, so the change to
+        // the storey's window is the resident one (`keep_stack`) when it was built for this centre, so the change to
         // that storey builds nothing on its frame; otherwise it is built here
-        let ahead = inf.prefetched.iter().position(|p| p.level == inf.level && p.center == inf.center);
+        let ahead = inf.stack.take(inf.level).filter(|r| r.center == inf.center);
         let (fac, fix) = match ahead {
-            Some(i) => inf.prefetched.swap_remove(i).window,
+            Some(r) => (r.fac, r.fix),
             None => {
                 inf.builds += 1;
                 infinite::window(&inf.seed, inf.center, inf.level, catalog, &content.loot, &mut inf.cache)
             }
         };
+        self.adopt_window(fac, fix, content);
+    }
+
+    /// Everything after a window is obtained: the window becomes the live one (`self.fac`, `self.fix`) and the runner's
+    /// claims, discovery, depth, focus, floor and safe zone follow it.
+    fn adopt_window(&mut self, fac: Facility, fix: Fixtures, content: &Content) {
+        if self.inf.is_none() {
+            return;
+        }
+        self.fac = fac;
+        self.fix = fix;
+        let level = self.inf.as_ref().map_or(0, |i| i.level);
+        self.fac.level = level;
+        self.claim_window();
+        // the focus is a prop index of the window just replaced: it would name another door in this one
+        self.focus = None;
+        self.adopt_floor(content);
+        self.sync_in();
+        self.sync_safe_zone();
+    }
+
+    /// Claims the ids of the live window (`self.fac`, `self.fix`), records the chunks it covers and reads the map
+    /// discovery: shared by a loaded window and a relabelled one.
+    fn claim_window(&mut self) {
+        let Some(inf) = self.inf.as_mut() else { return };
+        let fac = &self.fac;
+        let fix = &self.fix;
         // claim ids for the new window: the layout's on level 0, else by absolute cell
         let (level, origin) = (inf.level, inf.origin());
         let lens = [fac.relays.len(), fac.batteries.len(), fac.pickups.len(), fix.coins.len()];
         let live_ids = live::window_ids(&mut inf.layout_pickups, &inf.seed, inf.center, level, lens);
         inf.live = live_ids.is_some();
-        inf.ids = live_ids.unwrap_or_else(|| cell_ids(level, origin, &fac, &fix));
+        inf.ids = live_ids.unwrap_or_else(|| cell_ids(level, origin, fac, fix));
         // the middle chunk is the runner's, so its safe room is the only one the runner's rules read (Godot
         // `_safe_context` reads the runner's chunk); the other rooms of the window are only held in `inf.safe`
         inf.room = if inf.live {
@@ -759,14 +757,6 @@ impl Game {
         }
         inf.route_key = None;
         self.depth = 1 - inf.level;
-        self.fac = fac;
-        self.fac.level = level;
-        self.fix = fix;
-        // the focus is a prop index of the window just replaced: it would name another door in this one
-        self.focus = None;
-        self.adopt_floor(content);
-        self.sync_in();
-        self.sync_safe_zone();
     }
 
     /// Puts the runner's safe room on the window's safe zone (`Facility.safe_zone`) while it is intact.
@@ -813,7 +803,7 @@ impl Game {
         }
         self.sync_out();
         if let Some(inf) = self.inf.as_mut() {
-            inf.prefetched.clear();
+            inf.stack.residents.clear();
             let (cx, cy, level) = (inf.center.0, inf.center.1, inf.level);
             for dy in -1..=1 {
                 for dx in -1..=1 {
@@ -852,7 +842,7 @@ impl Game {
         self.discover_map();
         self.clear_reached_waypoint();
         self.refresh_waypoint();
-        self.prefetch_connections(content, catalog);
+        self.keep_stack(content, catalog);
         self.pipes_tick();
         let dt = self.safe_room_dt();
         let before = self.active_checkpoint().to_string();
@@ -864,21 +854,24 @@ impl Game {
         }
     }
 
-    /// Builds ahead the storeys the stairs and ladders the runner is near lead to, within the data's `prefetch_distance`
-    /// of a landing (game/transition.rs). A flight leads to the storey its `dir` names; a ladder either way, so both
-    /// neighbours. The change on the connection's frame then only relocates the runner and swaps the window in
-    /// (`change_storey`). A window built for another centre, or for a storey no longer near, is dropped.
-    ///
-    /// Beyond the connections in reach, the storeys within the data's preload reach (game/preload.rs) are kept built too,
-    /// nearest first and at most `builds_per_frame` a frame, so every adjacent storey of the runner's window is resident
-    /// for an instant change either way. Windows outside that set, and the farthest ones while the held bytes pass the
-    /// memory cap, are dropped. Catwalk links join the same level-0 window (a deck is a walk surface, not a storey), so
-    /// they need no window of their own.
-    fn prefetch_connections(&mut self, content: &Content, catalog: &Catalog) {
+    /// Keeps the neighbour levels resident beside the active one (`LevelStack`): the storey a flight or ladder within the
+    /// data's `prefetch_distance` of the runner leads to, both sides of the active level while the runner is on a flight
+    /// (`levels_to_keep`), and the storeys of the data's preload reach (game/preload.rs), nearest first and at most
+    /// `builds_per_frame` a frame. Every resident shares the window's centre, so a walked change of storey is a relabel
+    /// (`relabel`), not a load. The connections in reach are built this frame. Residents of another centre, or no longer
+    /// kept, are dropped, and the farthest go while the held bytes pass the memory cap; none is dropped while the runner
+    /// is on a flight. Catwalk links join the same level-0 window, so they need no resident.
+    pub(super) fn keep_stack(&mut self, content: &Content, catalog: &Catalog) {
+        if let Some(inf) = self.inf.as_mut() {
+            if std::mem::take(&mut inf.relabelled) {
+                return;
+            }
+        }
         let Some(inf) = self.inf.as_ref() else { return };
         let (level, center) = (inf.level, inf.center);
         let reach = super::transition::links().prefetch_distance;
-        let near = connection_targets(level, self.p.pos, reach, &self.fac.stairs);
+        let on_flight = stair_height_at(&self.fac, self.p.pos).is_some();
+        let near = levels_to_keep(level, self.p.pos, reach, &self.fac.stairs, on_flight, infinite::level_allowed);
         let cfg = super::preload::preload();
         let mut keep = super::preload::keep_levels(level, &cfg, infinite::level_allowed);
         for t in &near {
@@ -887,14 +880,23 @@ impl Game {
             }
         }
         let Some(inf) = self.inf.as_mut() else { return };
-        inf.prefetched.retain(|p| p.center == center && keep.contains(&p.level));
-        let held: Vec<(i32, usize)> = inf.prefetched.iter().map(|p| (p.level, p.bytes())).collect();
-        let drop = super::preload::to_evict(&held, &keep, level, &cfg);
-        inf.prefetched.retain(|p| !drop.contains(&p.level));
+        inf.stack.retain_center(center);
+        let mut drop: Vec<i32> = Vec::new();
+        if on_flight {
+            // nothing resident is evicted while a flight is walked (only the active level's own label can not be resident)
+            let kept: Vec<i32> = inf.stack.levels().into_iter().filter(|l| *l != level).collect();
+            inf.stack.retain_levels(&kept);
+        } else {
+            let kept: Vec<i32> = inf.stack.levels().into_iter().filter(|l| keep.contains(l)).collect();
+            inf.stack.retain_levels(&kept);
+            let held: Vec<(i32, usize)> = inf.stack.residents.iter().map(|r| (r.level, r.bytes())).collect();
+            drop = super::preload::to_evict(&held, &keep, level, &cfg);
+            let kept: Vec<i32> = inf.stack.levels().into_iter().filter(|l| !drop.contains(l)).collect();
+            inf.stack.retain_levels(&kept);
+        }
         // the connections in reach are built now; the rest of the keep set at the per-frame budget
-        let near_set = near.clone();
-        let mut build: Vec<i32> = near.into_iter().filter(|t| !inf.prefetched.iter().any(|p| p.level == *t)).collect();
-        let held_levels: Vec<i32> = inf.prefetched.iter().map(|p| p.level).chain(build.iter().copied()).collect();
+        let mut build: Vec<i32> = near.iter().copied().filter(|t| !inf.stack.has(*t)).collect();
+        let held_levels: Vec<i32> = inf.stack.levels().into_iter().chain(build.iter().copied()).collect();
         build.extend(super::preload::to_build(
             &keep.iter().copied().filter(|l| *l != level).collect::<Vec<_>>(),
             &held_levels,
@@ -902,12 +904,12 @@ impl Game {
         ));
         for t in build {
             // a level the memory cap just dropped is not built again at once
-            if drop.contains(&t) && !near_set.contains(&t) {
+            if drop.contains(&t) && !near.contains(&t) {
                 continue;
             }
             inf.builds += 1;
-            let window = infinite::window(&inf.seed, center, t, catalog, &content.loot, &mut inf.cache);
-            inf.prefetched.push(Prefetch { level: t, center, window });
+            let (fac, fix) = infinite::window(&inf.seed, center, t, catalog, &content.loot, &mut inf.cache);
+            inf.stack.put(Resident { level: t, center, fac, fix });
         }
     }
 
@@ -1094,7 +1096,7 @@ impl Game {
         self.inf.as_ref().map_or("", |i| i.safe.active_checkpoint())
     }
 
-    fn recentre_window(&mut self, content: &Content, catalog: &Catalog) {
+    pub(super) fn recentre_window(&mut self, content: &Content, catalog: &Catalog) {
         let rx = (self.p.pos.0 / CHUNK as f32).floor() as i32 - 1;
         let ry = (self.p.pos.1 / CHUNK as f32).floor() as i32 - 1;
         if rx == 0 && ry == 0 {
@@ -1120,7 +1122,15 @@ impl Game {
         for n in self.npcs.iter_mut() {
             n.shift((-sx, -sy));
         }
+        if let Some(inf) = self.inf.as_mut() {
+            // a resident built for the old centre is stale: dropped, and rebuilt below on a flight
+            inf.stack.retain_center(inf.center);
+        }
         self.load_window(content, catalog);
+        if stair_height_at(&self.fac, self.p.pos).is_some() {
+            // on a flight the neighbour is built at the new centre this frame (one hitch; the chunk cache makes it cheap)
+            self.keep_stack(content, catalog);
+        }
         if self.inf.as_ref().is_some_and(|i| i.level == 0) {
             // level 0: residency decides who is in the window; a hunter that leaves it is stored, not respawned
             self.residency(content);
@@ -1159,8 +1169,8 @@ impl Game {
 
     /// Moves the run to storey `to` on the frame it is asked for: the hunters of the storey left are stored, the window
     /// loads the storey entered, `arrive` places the body on it, and that storey's hunters come back. No fade and no
-    /// hold: the connection is the change (game/transition.rs). The window was built ahead of the
-    /// connection (`prefetch_connections`), so the load only swaps it in.
+    /// hold: the connection is the change (game/transition.rs). Used by ladders, drops, respawn, checkpoint and a new
+    /// run; a walked flight is a `relabel`. A resident window of the storey (`keep_stack`) is swapped in by the load.
     pub(super) fn change_storey(&mut self, to: i32, content: &Content, catalog: &Catalog, arrive: impl FnOnce(&mut Game)) {
         self.sync_out();
         // the level being left keeps its hunters at their absolute cells, to be found again on the way back
@@ -1177,11 +1187,11 @@ impl Game {
         self.announce(&format!("LEVEL {to}"));
     }
 
-    /// Takes a stairwell to the level above or below, to its far landing (interact's `take_flight`, on the frame the
-    /// runner takes it). The far cell and the landing offset are data (game/transition.rs `links`, `landing_offset`).
+    /// Test shim for the tests that move between levels by a connection (ladder_tests.rs, the hunter tests here): the
+    /// level change the old interact made, to the stair's far landing, through `change_storey`. Nothing in the game calls it.
+    #[cfg(test)]
     pub(super) fn take_stairs(&mut self, i: usize, content: &Content, catalog: &Catalog) {
         let s = self.fac.stairs[i];
-        // the level stack ends at 0 and at the Inferno (-3): a flight past either end is not taken
         let to = self.inf.as_ref().map_or(0, |inf| inf.level) + s.dir;
         if !infinite::level_allowed(to) {
             return;
@@ -1193,35 +1203,67 @@ impl Game {
             g.p.yaw = yaw;
             g.p.height = 0.0;
         });
-        // the save is the caller's: interact's `autosave("level")` on a flight taken (no double write)
     }
 
-    /// A walked flight changes storey with no fade and no hold (`step` calls this every frame the body is on the walk).
-    /// The body's absolute height is its storey's floor plus the walking surface under it, and `level_from_height`
-    /// decides the storey from that, with the midpoint and hysteresis of world/vertical.rs: that hysteresis is what
-    /// keeps a body on the line from bouncing back, so there is no lockout. The body keeps its cell (the window's origin
-    /// does not move), and on the new storey it stands on that storey's surface at the cell, or on the floor (the
-    /// nearest open cell if the floor there is a well).
-    pub(super) fn walked_level_change(&mut self, content: &Content, catalog: &Catalog) {
-        if self.inf.is_none() {
-            return;
+    /// Relabels the active level to the resident neighbour `to` (continuous stairs, docs/STAIRS_CONTINUOUS_DESIGN.md): the
+    /// two windows swap roles, the body keeps its x, z, absolute y, velocity and facing, and nothing is loaded. False and
+    /// no change when `to` is not resident at the window's centre.
+    pub(super) fn relabel(&mut self, to: i32, content: &Content, _catalog: &Catalog) -> bool {
+        let Some(inf) = self.inf.as_ref() else { return false };
+        if to == inf.level || !inf.stack.get(to).is_some_and(|r| r.center == inf.center) {
+            return false;
         }
-        let Some(surface) = stair_height_at(&self.fac, self.p.pos) else {
-            return;
+        self.sync_out();
+        // the level being left keeps its hunters at their absolute cells, to be found again on the way back
+        self.store_level0_hunters();
+        self.store_floor_hunters();
+        let Some(inf) = self.inf.as_mut() else { return false };
+        let Some(r) = inf.stack.take(to) else { return false };
+        let old = Resident {
+            level: inf.level,
+            center: inf.center,
+            fac: std::mem::replace(&mut self.fac, r.fac),
+            fix: std::mem::replace(&mut self.fix, r.fix),
         };
-        let cur = self.inf.as_ref().map_or(0, |i| i.level);
-        let to = level_from_height(cur as f32 * STOREY + surface, cur);
-        if to == cur || !infinite::level_allowed(to) {
+        inf.stack.put(old);
+        inf.relabelled = true;
+        inf.level = to;
+        self.fac.level = to;
+        self.p.rebase_floor(floor_y_of(to));
+        self.claim_window();
+        self.focus = None;
+        self.adopt_floor(content);
+        self.sync_in();
+        self.sync_safe_zone();
+        let level = self.runner_level();
+        let bodies: Vec<(f32, f32)> = std::iter::once(self.p.pos)
+            .chain(self.hunters.iter().filter(|h| h.active).map(|h| h.pos))
+            .chain(self.npcs.iter().filter(|n| n.level == level).map(|n| n.at))
+            .collect();
+        self.fac.update_doors(&[], &bodies, 0.0);
+        self.focus = self.find_focus();
+        self.restore_level_hunters(content);
+        self.world_nb.relabel(&mut self.world, to);
+        // cheap: the parts are cached, and a level change is not a jump for the render
+        self.world_dirty = true;
+        self.announce(&format!("LEVEL {to}"));
+        self.autosave("level");
+        true
+    }
+
+    /// A walked flight changes the level label on the frame the body's absolute height crosses into the neighbour
+    /// (`level_at`, the hysteresis of world/vertical.rs): once per crossing, with no fade, no hold and no move of the body.
+    pub(super) fn walk_relabel(&mut self, content: &Content, catalog: &Catalog) {
+        // a ladder climb or a plunge changes the storey by `change_storey`; the label is never also read from its height
+        if self.ladder.is_some() || self.plunge.is_some() {
             return;
         }
-        self.change_storey(to, content, catalog, |g| {
-            let (x, y) = g.p.pos;
-            if stair_height_at(&g.fac, g.p.pos).is_none() && !g.fac.body_fits_at(x, y, PLAYER_RADIUS, 0.0) {
-                g.p.pos = g.fac.nearest_open_or(x, y, PLAYER_RADIUS);
-            }
-            g.p.height = stair_height_at(&g.fac, g.p.pos).unwrap_or(0.0);
-        });
-        self.autosave("level");
+        let Some(inf) = self.inf.as_ref() else { return };
+        let cur = inf.level;
+        let to = level_at(self.p.y(), cur);
+        if to != cur && infinite::level_allowed(to) {
+            self.relabel(to, content, catalog);
+        }
     }
 
     fn spawn_spot(&self, rng: &mut Rng) -> Option<(f32, f32)> {
@@ -2771,8 +2813,8 @@ mod waypoint_tests {
     }
 }
 
-/// A walked flight changes storey on the frame the body crosses (`walked_level_change`): once per crossing, with the
-/// cell kept, no fade, and no hold after it.
+/// A walked flight relabels the level on the frame the body crosses (`walk_relabel`): once per crossing, with the body
+/// not moved, no fade, no load and no hold after it.
 #[cfg(test)]
 mod walked_stair_tests {
     use super::*;
@@ -2847,23 +2889,174 @@ mod walked_stair_tests {
         changes
     }
 
-    /// A flight's storey is built ahead: once the runner is at the landing the window of the storey beyond exists, and the
-    /// change to it on that frame builds no window (the change only relocates the runner and swaps the window in).
+    /// Stands the body a quarter of the way down the flight `s` (on the active level's side of the midpoint), on its tread.
+    fn on_flight(g: &mut Game, s: Stair) {
+        let path = s.walk_path(g.fac.level, 0.25);
+        let p = path[path.len() / 4];
+        g.p.pos = p;
+        g.p.height = stair_height_at(&g.fac, p).expect("on the flight");
+    }
+
+    /// A window with the neighbour of a flight going `dir` resident and the body on the flight: (game, flight, neighbour).
+    fn with_neighbour(dir: i32, content: &Content, catalog: &Catalog) -> (Game, Stair, i32) {
+        let (mut g, s) = on_landing(dir, content, catalog);
+        let to = g.fac.level + s.dir;
+        on_flight(&mut g, s);
+        g.keep_stack(content, catalog);
+        assert!(g.inf.as_ref().unwrap().stack.has(to), "the neighbour of the flight the body is on is resident");
+        (g, s, to)
+    }
+
     #[test]
-    fn the_storey_a_flight_leads_to_is_built_before_the_change_frame() {
+    fn relabel_keeps_x_z_y_velocity_and_facing() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let (mut g, _, to) = with_neighbour(-1, &content, &catalog);
+        g.p.move_vel = (0.7, -0.3);
+        g.p.yaw = 1.2;
+        g.p.pitch = 0.1;
+        let (pos, y, eye, vel, yaw, pitch) = (g.p.pos, g.p.y(), g.p.eye_y(), g.p.move_vel, g.p.yaw, g.p.pitch);
+        assert!(g.relabel(to, &content, &catalog), "a resident neighbour is relabelled");
+        assert_eq!(g.inf.as_ref().unwrap().level, to);
+        assert_eq!(g.fac.level, to);
+        assert_eq!(g.p.floor_y, floor_y_of(to));
+        assert_eq!(g.p.pos, pos, "x and z are untouched");
+        assert!((g.p.y() - y).abs() < 1e-5, "the absolute height is untouched: {} -> {}", y, g.p.y());
+        assert!((g.p.eye_y() - eye).abs() < 1e-5, "so the eye does not move: a level change is 0 m");
+        assert_eq!((g.p.move_vel, g.p.yaw, g.p.pitch), (vel, yaw, pitch), "velocity and facing are untouched");
+        assert_eq!(g.depth, 1 - to);
+    }
+
+    #[test]
+    fn relabel_calls_no_load_window() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let (mut g, _, to) = with_neighbour(-1, &content, &catalog);
+        g.fade = 0.0;
+        let (builds, pos, hidden) = (g.inf.as_ref().unwrap().builds, g.p.pos, g.p.hidden);
+        assert!(g.relabel(to, &content, &catalog));
+        assert_eq!(g.inf.as_ref().unwrap().builds, builds, "no window was built");
+        assert_eq!(g.fade, 0.0, "no fade");
+        assert_eq!(g.p.pos, pos, "the body was not placed");
+        assert_eq!(g.p.hidden, hidden);
+        let inf = g.inf.as_ref().unwrap();
+        assert!(inf.stack.has(0), "the level left is now the resident neighbour");
+        assert!(!inf.stack.has(to), "the level entered is the live window");
+    }
+
+    #[test]
+    fn relabel_refuses_a_level_that_is_not_resident() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let (mut g, _, to) = with_neighbour(-1, &content, &catalog);
+        let pos = g.p.pos;
+        assert!(!g.relabel(to - 5, &content, &catalog), "no resident, no relabel");
+        assert!(!g.relabel(0, &content, &catalog), "the active level is not a neighbour");
+        g.inf.as_mut().unwrap().stack.residents.clear();
+        assert!(!g.relabel(to, &content, &catalog), "an emptied stack relabels nothing");
+        assert_eq!(g.inf.as_ref().unwrap().level, 0);
+        assert_eq!(g.p.pos, pos);
+        assert_eq!(g.p.floor_y, floor_y_of(0));
+    }
+
+    #[test]
+    fn a_relabel_swaps_the_two_windows_and_back_restores_them() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let (mut g, _, to) = with_neighbour(-1, &content, &catalog);
+        let upper = (g.fac.stairs.len(), g.fac.cols, g.fac.rows);
+        let lower = g.inf.as_ref().unwrap().stack.get(to).map(|r| (r.fac.stairs.len(), r.fac.cols, r.fac.rows)).unwrap();
+        assert!(g.relabel(to, &content, &catalog));
+        assert_eq!((g.fac.stairs.len(), g.fac.cols, g.fac.rows), lower, "the live window is the one that was resident");
+        assert!(g.relabel(0, &content, &catalog));
+        assert_eq!((g.fac.stairs.len(), g.fac.cols, g.fac.rows), upper, "and back");
+    }
+
+    #[test]
+    fn a_walked_relabel_happens_on_the_frame_the_height_crosses_and_not_before() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let (mut g, s, _) = with_neighbour(-1, &content, &catalog);
+        // a quarter of the way down is still the upper level: stepping in place relabels nothing
+        let before = g.inf.as_ref().unwrap().level;
+        g.walk_relabel(&content, &catalog);
+        assert_eq!(g.inf.as_ref().unwrap().level, before, "above the crossing the label stays");
+        let w = walk_flight(&mut g, s, &content, &catalog, 900);
+        assert_eq!(w.level_changes, 1);
+    }
+
+    #[test]
+    fn stack_residents_all_share_the_window_centre() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let (mut g, s, _) = with_neighbour(-1, &content, &catalog);
+        walk_flight(&mut g, s, &content, &catalog, 900);
+        for _ in 0..4 {
+            g.keep_stack(&content, &catalog);
+        }
+        let inf = g.inf.as_ref().unwrap();
+        assert!(!inf.stack.residents.is_empty());
+        assert!(inf.stack.residents.iter().all(|r| r.center == inf.center), "every resident is at the window's centre");
+        assert!(!inf.stack.has(inf.level), "the active level is never also a resident");
+    }
+
+    #[test]
+    fn recentre_drops_stale_residents_and_rebuilds_the_neighbour_on_a_flight() {
         let (content, catalog) = (Content::load(), Catalog::load());
         let (mut g, s) = on_landing(-1, &content, &catalog);
-        let from = g.inf.as_ref().map_or(0, |i| i.level);
-        let to = from + s.dir;
-        g.prefetch_connections(&content, &catalog);
-        let ahead = g.inf.as_ref().unwrap().prefetched.iter().any(|p| p.level == to);
-        assert!(ahead, "the storey beyond the landing is built before the change frame");
+        let to = g.fac.level + s.dir;
+        on_flight(&mut g, s);
+        // the window one chunk west of where it was, the body in its east chunk: the same spot, about to recentre
+        {
+            let inf = g.inf.as_mut().unwrap();
+            inf.center.0 -= 1;
+            inf.stack.residents.clear();
+        }
+        g.p.pos.0 += CHUNK as f32;
+        g.load_window(&content, &catalog);
+        let on = stair_height_at(&g.fac, g.p.pos);
+        assert!(on.is_some(), "the body is still on the flight in the shifted window");
+        g.p.height = on.unwrap();
+        g.keep_stack(&content, &catalog);
+        let stale = g.inf.as_ref().unwrap().center;
+        assert!(g.inf.as_ref().unwrap().stack.has(to));
+        let builds = g.inf.as_ref().unwrap().builds;
+        g.recentre_window(&content, &catalog);
+        let inf = g.inf.as_ref().unwrap();
+        assert_eq!(inf.center, (stale.0 + 1, stale.1), "the window moved");
+        assert!(inf.stack.residents.iter().all(|r| r.center == inf.center), "no resident of the old centre is kept");
+        assert!(inf.builds > builds, "the neighbour was built again at the new centre");
+        if stair_height_at(&g.fac, g.p.pos).is_some() {
+            assert!(inf.stack.has(to), "on a flight the neighbour is back on the frame of the recentre");
+        }
+    }
+
+    #[test]
+    fn keep_stack_keeps_neighbour_while_on_a_flight() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let (mut g, _s, to) = with_neighbour(-1, &content, &catalog);
+        // a far-away marker is not evicted while a flight is walked, and the neighbour stays through any number of frames
+        let mut marker = g.inf.as_mut().unwrap().stack.take(to).expect("the neighbour");
+        marker.level = 40;
+        g.inf.as_mut().unwrap().stack.put(marker);
+        for _ in 0..6 {
+            g.keep_stack(&content, &catalog);
+            let st = &g.inf.as_ref().unwrap().stack;
+            assert!(st.has(to), "the flight's neighbour is resident on every frame");
+            assert!(st.has(40), "nothing is evicted while on a flight");
+        }
+        // off the flight the same marker goes
+        g.p.pos = g.fac.start.center();
+        g.p.height = 0.0;
+        assert!(stair_height_at(&g.fac, g.p.pos).is_none());
+        g.keep_stack(&content, &catalog);
+        assert!(!g.inf.as_ref().unwrap().stack.has(40), "a level far away is evicted off the flight");
+    }
+
+    #[test]
+    fn change_storey_takes_the_resident_neighbour_without_a_build() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let (mut g, _, to) = with_neighbour(-1, &content, &catalog);
         let built = g.inf.as_ref().unwrap().builds;
         g.change_storey(to, &content, &catalog, |g| g.p.pos = g.fac.start.center());
         let inf = g.inf.as_ref().unwrap();
         assert_eq!(inf.level, to, "the change lands on the storey beyond");
         assert_eq!(inf.builds, built, "the change itself builds no window");
-        assert!(!inf.prefetched.iter().any(|p| p.level == to), "the window built ahead is the one swapped in");
+        assert!(!inf.stack.has(to), "the window held ready is the one swapped in");
     }
 
     #[test]
@@ -2930,22 +3123,6 @@ mod walked_stair_tests {
         assert!(pdist(g.p.pos, at_change) > 1e-4, "the body halted after the change");
     }
 
-    #[test]
-    fn a_stairwell_taken_by_interact_changes_storey_on_that_frame_with_no_fade() {
-        let (content, catalog) = (Content::load(), Catalog::load());
-        let (mut g, _) = on_landing(-1, &content, &catalog);
-        let i = g
-            .fac
-            .stairs
-            .iter()
-            .position(|s| s.dir == -1 && matches!(s.kind, LinkKind::Stairs))
-            .expect("a stairwell down");
-        g.fade = 0.0;
-        g.take_stairs(i, &content, &catalog);
-        assert_eq!(g.inf.as_ref().unwrap().level, -1, "the storey changes at once");
-        assert_eq!(g.fade, 0.0, "no fade");
-    }
-
     fn flight(cell: (i32, i32), dir: i32, ladder: bool) -> Stair {
         let at = Cell::new(cell.0, cell.1);
         if ladder {
@@ -2959,34 +3136,42 @@ mod walked_stair_tests {
     fn connections_in_reach_name_the_storeys_they_lead_to() {
         let near = (10.5, 10.5);
         let stairs = [flight((10, 10), -1, false), flight((11, 10), 0, true), flight((40, 40), 1, false)];
+        let keep = |level: i32, reach: f32, st: &[Stair], on_flight: bool| {
+            let mut v = levels_to_keep(level, near, reach, st, on_flight, infinite::level_allowed);
+            v.sort();
+            v
+        };
         // a flight goes where its dir says, a ladder both ways; level 0 has nothing above it; the far flight is out of reach
-        assert_eq!(connection_targets(0, near, 8.0, &stairs), vec![-1]);
-        assert_eq!(connection_targets(-1, near, 8.0, &stairs), vec![-2, 0]);
-        assert!(connection_targets(0, near, 0.2, &stairs[2..]).is_empty());
+        assert_eq!(keep(0, 8.0, &stairs, false), vec![-1]);
+        assert_eq!(keep(-1, 8.0, &stairs, false), vec![-2, 0]);
+        assert!(keep(0, 0.2, &stairs[2..], false).is_empty());
         // a wider reach from data takes the far flight in (up from -1 is 0)
-        assert!(connection_targets(-1, near, 80.0, &stairs).contains(&0));
+        assert!(keep(-1, 80.0, &stairs, false).contains(&0));
+        // on a flight both sides of the active level are kept, whatever is in reach
+        assert_eq!(keep(-1, 0.2, &[], true), vec![-2, 0]);
+        assert_eq!(keep(0, 0.2, &[], true), vec![-1]);
     }
 
     #[test]
-    fn the_levels_near_the_runner_are_all_built_ahead_within_the_frame_budget() {
+    fn the_levels_near_the_runner_are_all_kept_within_the_frame_budget() {
         let (content, catalog) = (Content::load(), Catalog::load());
         let (mut g, _) = on_landing(-1, &content, &catalog);
         let level = g.inf.as_ref().unwrap().level;
         let cfg = super::super::preload::preload();
         let keep = super::super::preload::keep_levels(level, &cfg, infinite::level_allowed);
-        assert!(keep.len() > 2, "more than the adjacent storey is kept");
+        assert!(keep.len() > 1, "more than the adjacent storey is kept (the active level is not listed)");
         for _ in 0..=keep.len() {
-            g.prefetch_connections(&content, &catalog);
+            g.keep_stack(&content, &catalog);
         }
         let inf = g.inf.as_ref().unwrap();
         for l in keep.iter().filter(|l| **l != level) {
-            assert!(inf.prefetched.iter().any(|p| p.level == *l), "level {l} is resident");
+            assert!(inf.stack.has(*l), "level {l} is resident");
         }
-        assert!(inf.prefetched.len() <= cfg.max_windows, "the window count stays within the cap");
+        assert!(inf.stack.residents.len() <= cfg.max_windows, "the window count stays within the cap");
         // the first call builds the connection in reach plus at most the per-frame budget
         let (mut g2, _) = on_landing(-1, &content, &catalog);
         let before = g2.inf.as_ref().unwrap().builds;
-        g2.prefetch_connections(&content, &catalog);
+        g2.keep_stack(&content, &catalog);
         let built = g2.inf.as_ref().unwrap().builds - before;
         assert!(built as usize <= 1 + cfg.builds_per_frame + 1, "a frame builds a bounded number of windows: {built}");
     }
@@ -2995,14 +3180,19 @@ mod walked_stair_tests {
     fn a_window_outside_the_kept_levels_is_dropped_and_counted_in_bytes() {
         let (content, catalog) = (Content::load(), Catalog::load());
         let (mut g, _) = on_landing(-1, &content, &catalog);
-        g.prefetch_connections(&content, &catalog);
+        g.keep_stack(&content, &catalog);
         let inf = g.inf.as_mut().unwrap();
-        let mut p = inf.prefetched.pop().expect("a window was built ahead");
-        assert!(p.bytes() > 0, "a built window has a byte size");
-        p.level = 40;
-        inf.prefetched.push(p);
-        g.prefetch_connections(&content, &catalog);
-        assert!(!g.inf.as_ref().unwrap().prefetched.iter().any(|p| p.level == 40), "a level far away is evicted");
+        let mut r = inf.stack.residents.pop().expect("a window was kept");
+        assert!(r.bytes() > 0, "a built window has a byte size");
+        r.level = 40;
+        inf.stack.put(r);
+        // nothing resident is dropped while the body is on a flight (the landing counts), so step off it first
+        g.keep_stack(&content, &catalog);
+        assert!(g.inf.as_ref().unwrap().stack.has(40), "no resident is dropped while the body is on a flight");
+        g.p.pos = g.fac.start.center();
+        assert!(stair_height_at(&g.fac, g.p.pos).is_none(), "the start is off every flight");
+        g.keep_stack(&content, &catalog);
+        assert!(!g.inf.as_ref().unwrap().stack.has(40), "a level far away is evicted");
     }
 
     #[test]

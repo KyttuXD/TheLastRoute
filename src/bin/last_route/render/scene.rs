@@ -11,7 +11,7 @@ use super::builder::{submit_all, Builder};
 use super::hunter_cache::{self, HunterMeshCache};
 use super::prop_model::{draw_builders, Placement, PropModel, StaticCache};
 use super::shader::{self, Lamp, Lighting};
-use super::{catwalk, inferno_deco, waterfall};
+use super::{catwalk, inferno_deco, waterfall, world_stack};
 use crate::shared::assets::Assets;
 use crate::config::*;
 use crate::game::{Game, Heater, Item};
@@ -178,13 +178,15 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     let fx = level_fx(g, light.eye);
     let mut extra = fx.lamps.clone();
     extra.extend(grab_fill(g.escape.is_some(), grab::camera()));
-    if extra.is_empty() {
-        shader::apply(mat, &light, &g.world.lamps);
+    // the resident neighbour's lamps join the room's (the stairwell lamp and the two nearest), see world_stack::merge_lamps
+    let mut lamps = if g.world_nb.items.is_empty() {
+        g.world.lamps.clone()
     } else {
-        let mut lamps = g.world.lamps.clone();
-        lamps.extend(extra);
-        shader::apply(mat, &light, &lamps);
-    }
+        let nb = g.world_nb.lamps(&g.fac);
+        world_stack::merge_lamps(&g.world.lamps, &nb, light.eye, shader::MAX_LAMPS)
+    };
+    lamps.extend(extra);
+    shader::apply(mat, &light, &lamps);
     // the falls' loop plays from the nearest fall in range, and stops on a storey without one
     {
         let (_, fwd, right, up) = view(g);
@@ -203,6 +205,27 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
             .is_some_and(|(lo, hi)| box_fully_fogged(light.eye, *lo, *hi, WORLD_CULL_RANGE));
         if !fogged {
             draw_mesh(m);
+        }
+    }
+    // the resident neighbour level, in the same frame (baked at its offset), with the same fog cull and a slab-plane test
+    // that skips it unless the eye is near an opening (nothing of it is visible through the slab otherwise)
+    if !g.world_nb.items.is_empty() {
+        let reach = crate::game::transition::links().prefetch_distance;
+        for nb in &g.world_nb.items {
+            let openings = super::world_mesh::openings(&g.fac);
+            let near_opening = world_stack::wants_neighbour((light.eye.x, light.eye.y, light.eye.z), &openings, reach, world_stack::eye_on_flight(light.eye.y));
+            if !near_opening && world_stack::behind_slab(light.eye.y, nb.dy, &nb.bounds) {
+                continue;
+            }
+            for (i, m) in nb.meshes.iter().enumerate() {
+                let fogged = nb
+                    .bounds
+                    .get(i)
+                    .is_some_and(|(lo, hi)| box_fully_fogged(light.eye, *lo, *hi, WORLD_CULL_RANGE));
+                if !fogged {
+                    draw_mesh(m);
+                }
+            }
         }
     }
     drop(t_world);

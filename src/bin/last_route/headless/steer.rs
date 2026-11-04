@@ -91,10 +91,28 @@ pub fn walk_flight_until(
     max_frames: usize,
     stop_on_level_change: bool,
 ) -> FlightWalk {
+    walk_flight_trace(g, s, content, catalog, max_frames, stop_on_level_change).0
+}
+
+/// As `walk_flight`, returning the absolute feet y after every stepped frame (the first entry is the start y). The walk
+/// is the walked relabel of the continuous levels: no interact press, the level label flips by itself.
+pub fn walk_flight_abs_y(g: &mut Game, s: Stair, content: &Content, catalog: &Catalog, max_frames: usize) -> Vec<f32> {
+    walk_flight_trace(g, s, content, catalog, max_frames, false).1
+}
+
+fn walk_flight_trace(
+    g: &mut Game,
+    s: Stair,
+    content: &Content,
+    catalog: &Catalog,
+    max_frames: usize,
+    stop_on_level_change: bool,
+) -> (FlightWalk, Vec<f32>) {
     let path = absolute_path(g, s);
     let mut w = FlightWalk::default();
+    let mut trace: Vec<f32> = Vec::new();
     let Some(first) = path.first().copied() else {
-        return w;
+        return (w, trace);
     };
     let level = level_of(g);
     let o = origin_of(g);
@@ -107,6 +125,7 @@ pub fn walk_flight_until(
     w.start_y = g.p.y();
     w.start_level = level;
     w.end_level = level;
+    trace.push(w.start_y);
     let mut prev_y = w.start_y;
     let mut prev_level = level;
     let mut idx = 1.min(path.len() - 1);
@@ -138,6 +157,7 @@ pub fn walk_flight_until(
         let y = g.p.y();
         w.max_step_dy = w.max_step_dy.max((y - prev_y).abs());
         prev_y = y;
+        trace.push(y);
         let now = level_of(g);
         if now != prev_level {
             w.level_changes += 1;
@@ -152,5 +172,5 @@ pub fn walk_flight_until(
     }
     w.end_y = g.p.y();
     w.end_level = level_of(g);
-    w
+    (w, trace)
 }

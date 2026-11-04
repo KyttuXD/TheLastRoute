@@ -111,6 +111,15 @@ Sources: the website game at KyttusLab/games/night-watch (src/modes, docs/ROADMA
 - [ ] Each night type reviewed in a run against the website for timing, power and AI levels (website is the reference for feel; Godot for numbers)
 - [ ] Night Watch save migration: website saves read into the Rust app without loss
 
+## Hunters and pathfinding adapt to the new mechanics (KT, 2026-11-04, next code pass)
+
+- [ ] Water-aware pathfinding: path cost by water depth (shore, wading, deep) with per-hunter swim ability and speed from data (`data/hunters/water.json`, speeds from `data/swim/`); most hunters route around deep water unless chasing and able to swim; a hunter that wades makes splash noise the runner can hear; flooded cells (pipe burst, open sluice) change the cost live and force a replan.
+- [ ] Hunters and bots react to pipes and valves: a burst or a turned valve is a noise event they investigate; a sluice gate opening makes its channel passable; closed gates and flooded dead ends do not trap them (stuck-time give-up already in data).
+- [ ] Hunters react to the runner's water and fall noise: plunge splash, soaked footsteps (x1.45) and a hard landing are heard at their data ranges and start a search at the sound.
+- [ ] Catwalk decks: hunters path on deck cells (walk surface) and use the catwalk links; a hunter never plans through a deck rail.
+- [ ] Hunters use flights, ladders and drops between floors at normal speed (phase 8 of the stairs project): edges between the resident levels, line of sight across the open stairwell, no freeze for a hunter on another loaded floor (KT decision D5).
+- [ ] Tests: a hunter paths around deep water, wades when chasing, replans when a valve floods its route, cannot be trapped by a closed gate, hears a plunge, and follows a runner up a flight.
+
 ## Multiplayer (Last Route)
 
 - [ ] Nearby-player text to speech comes first (KT, 2026-11-04): a chat line from a player near you is spoken aloud (volume and range by distance, a per-player mute and a speech toggle in Settings, rate and voice in data). Voice chat (capture, IMA ADPCM codec, playback) is a later step and builds on the same range and mute rules.

@@ -116,6 +116,8 @@ pub struct Bot {
     hidden_clear: f32,
     flash_cd: f32,
     level_since: f32,
+    /// Bot time a walk along a flight began (Kind::Stairs on a flight: no interact, the flight is walked).
+    walk_since: Option<f32>,
     level_budget: f32,
     last_level: Option<i32>,
     window_center: Option<(i32, i32)>,
@@ -218,6 +220,7 @@ impl Bot {
             hidden_clear: 0.0,
             flash_cd: 0.0,
             level_since: 0.0,
+            walk_since: None,
             level_budget: 200.0,
             last_level: None,
             window_center: None,
@@ -512,7 +515,8 @@ impl Bot {
                 return Some(Goal {
                     kind: Kind::Stairs(i),
                     at,
-                    focus: Some(Focus::Stairs(i)),
+                    // a flight is walked (no focus); only a ladder is an interact
+                    focus: if s.is_ladder() { Some(Focus::Stairs(i)) } else { None },
                     since: t,
                 });
             }
@@ -602,6 +606,7 @@ impl Bot {
             }
         }
         self.goal = None;
+        self.walk_since = None;
         self.path.clear();
         self.path_goal = None;
     }
@@ -649,6 +654,7 @@ impl Bot {
             self.window_center = center;
             self.last_level = Some(level);
             self.goal = None;
+            self.walk_since = None;
             self.path.clear();
             self.path_goal = None;
             self.forced = None;
@@ -768,7 +774,7 @@ impl Bot {
         // 3. goals
         let threat_changed =
             threat.is_some() != self.goal.map(|g| g.kind.threat_goal()).unwrap_or(false);
-        if self.goal.is_none() || self.pick_t <= 0.0 || threat_changed {
+        if self.goal.is_none() || (self.walk_since.is_none() && self.pick_t <= 0.0) || threat_changed {
             self.pick_t = 0.25;
             let keep_safe = self.goal.map(|g| g.kind == Kind::Safe).unwrap_or(false)
                 && threat.is_none()
@@ -780,6 +786,40 @@ impl Bot {
             }
         }
         let Some(goal) = self.goal else { return c };
+
+        // a flight is walked, not used: stand on the landing, then follow its walk path until the level flips
+        if let Kind::Stairs(i) = goal.kind {
+            if let Some(s) = g.fac.stairs.get(i).copied().filter(|s| !s.is_ladder()) {
+                let at_landing = pdist(goal.at, g.p.pos) <= 1.1;
+                if self.walk_since.is_none() && at_landing {
+                    self.walk_since = Some(self.time);
+                }
+                if let Some(t0) = self.walk_since {
+                    let path = super::steer::absolute_path(g, s);
+                    let o = g.inf.as_ref().map_or((0.0, 0.0), |i| {
+                        let o = i.origin();
+                        (o.0 as f32, o.1 as f32)
+                    });
+                    let me = (g.p.pos.0 + o.0, g.p.pos.1 + o.1);
+                    let nearest = (0..path.len())
+                        .min_by(|&a, &b| pdist(path[a], me).partial_cmp(&pdist(path[b], me)).unwrap())
+                        .unwrap_or(0);
+                    let last = path.len().saturating_sub(1);
+                    // the walk ends when the path ends; the level flip clears the goal; a timeout never lets it stall
+                    if path.is_empty() || (nearest == last && pdist(path[last], me) < 0.3) || self.time - t0 > 25.0 {
+                        self.drop_goal(g, 25.0);
+                        return c;
+                    }
+                    let t = path[(nearest + 2).min(last)];
+                    let y = yaw_to(t.0 - me.0, t.1 - me.1);
+                    let err = Bot::aim(&mut c, g, y, 0.0, dt);
+                    if err.abs() < 0.5 {
+                        c.fwd = 1.0;
+                    }
+                    return c;
+                }
+            }
+        }
 
         // completion by focus: press [E] as soon as the crosshair is on the goal
         if let Some(want) = goal.focus {

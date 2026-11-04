@@ -1033,6 +1033,11 @@ impl Session {
         let before = self.sim.focus_value();
         if let Some(k) = &want {
             let g = self.sim.game.as_ref().unwrap();
+            // a flight has no focus (it is walked); only a ladder is a STAIRS focus
+            let ladder_focus = matches!(g.focus, Some(Focus::Stairs(i)) if g.fac.stairs.get(i).map_or(false, |s| s.is_ladder()));
+            if k == "STAIRS" && !ladder_focus {
+                return json!({ "ok": false, "error": "stairs are walked: use walk_flight (a flight is no interactable; only a ladder is)", "focus": before });
+            }
             let have = g.focus.map(kind_name);
             if have != Some(k.as_str()) {
                 return json!({ "ok": false, "error": format!("focus is {} not {k}", have.unwrap_or("nothing")), "focus": before });

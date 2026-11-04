@@ -3,7 +3,7 @@
 //! and the eye-aligned bobbing camera.
 
 use super::meters::Meters;
-use super::level_stack::local_ground;
+use super::level_stack::{body_fits_at_y, floor_y_of, ground_y, LevelStack, STEP_UP};
 use super::Controls;
 use crate::audio::Sounds;
 use crate::config::*;
@@ -28,24 +28,10 @@ pub fn stair_height_at(fac: &Facility, pos: (f32, f32)) -> Option<f32> {
         .find_map(|s| s.surface_rel(fac.level, pos.0, pos.1))
 }
 
-/// Whether a body of `PLAYER_RADIUS` centred at (x, y) and standing at `h` fits. Off the stairs this is the facility's
-/// rule at the floor. The flight's wells are holes to that rule, so a body whose centre is on a flight stands on it:
-/// each corner must be on the stair or on a cell that is not a hole, and the walls and props must still clear.
+/// Whether a body of `PLAYER_RADIUS` centred at (x, y) and standing at `h` above the level floor fits, with no neighbour
+/// level resident. The facility rule (`body_fits_at_y`) covers the flight wells and the lane dividers.
 pub(crate) fn body_fits(fac: &Facility, x: f32, y: f32, h: f32) -> bool {
-    let on_stair = stair_height_at(fac, (x, y)).is_some();
-    if fac.body_fits_at(x, y, PLAYER_RADIUS, if on_stair { h } else { 0.0 }) {
-        return true;
-    }
-    if !on_stair {
-        return false;
-    }
-    let r = PLAYER_RADIUS;
-    [(x, y), (x - r, y - r), (x + r, y - r), (x - r, y + r), (x + r, y + r)]
-        .into_iter()
-        .all(|(px, py)| {
-            stair_height_at(fac, (px, py)).is_some() || !fac.is_hole(px.floor() as i32, py.floor() as i32)
-        })
-        && fac.can_occupy(x as f64, y as f64, r as f64)
+    body_fits_at_y(fac, &LevelStack::EMPTY, x, y, floor_y_of(fac.level) + h, PLAYER_RADIUS)
 }
 
 pub struct Player {
@@ -284,21 +270,34 @@ impl Player {
         }
     }
 
-    fn move_body(&mut self, fac: &Facility, dx: f32, dy: f32) {
+    /// Relabels the floor the body is measured from without moving it: `y()` is unchanged (the height absorbs the
+    /// difference), and the jump offset, vertical speed, grounded flag, position, facing, bob and velocity carry over.
+    pub fn rebase_floor(&mut self, new_floor_y: f32) {
+        let y = self.y();
+        self.floor_y = new_floor_y;
+        self.height = y - new_floor_y;
+    }
+
+    fn move_body(&mut self, fac: &Facility, stack: &LevelStack, dx: f32, dy: f32) {
         let total = (dx * dx + dy * dy).sqrt();
         let steps = ((total / 0.08).ceil() as i32).max(1);
         let start = self.pos;
         for _ in 0..steps {
             let nx = self.pos.0 + dx / steps as f32;
-            if self.noclip || body_fits(fac, nx, self.pos.1, self.height) {
+            if self.noclip || self.fits(fac, stack, nx, self.pos.1) {
                 self.pos.0 = nx;
             }
             let ny = self.pos.1 + dy / steps as f32;
-            if self.noclip || body_fits(fac, self.pos.0, ny, self.height) {
+            if self.noclip || self.fits(fac, stack, self.pos.0, ny) {
                 self.pos.1 = ny;
             }
         }
         self.walked += ((self.pos.0 - start.0).powi(2) + (self.pos.1 - start.1).powi(2)).sqrt();
+    }
+
+    /// Whether the body fits at (x, z) standing on its current surface (feet y = floor + height, not the jump offset).
+    fn fits(&self, fac: &Facility, stack: &LevelStack, x: f32, z: f32) -> bool {
+        body_fits_at_y(fac, stack, x, z, self.floor_y + self.height, PLAYER_RADIUS)
     }
 
     pub fn update_movement(
@@ -307,6 +306,7 @@ impl Player {
         c: &Controls,
         prof: &Profile,
         fac: &Facility,
+        stack: &LevelStack,
         meters: &mut Meters,
         _sounds: &Sounds,
     ) {
@@ -413,18 +413,25 @@ impl Player {
         if moving {
             self.move_body(
                 fac,
+                stack,
                 (rx * input.x + fx * input.y) * speed * dt,
                 (ry * input.x + fy * input.y) * speed * dt,
             );
         }
-        let ground = ((self.pos.0 - before.0).powi(2) + (self.pos.1 - before.1).powi(2)).sqrt()
+        let speed_now = ((self.pos.0 - before.0).powi(2) + (self.pos.1 - before.1).powi(2)).sqrt()
             / dt.max(1e-4);
         self.move_vel = ((self.pos.0 - before.0) / dt.max(1e-4), (self.pos.1 - before.1) / dt.max(1e-4));
 
-        // The lowest the jump offset can go: the ground under the body (`ground_y`, made relative to its own level's floor)
-        // less the stair lift `height` already carries. On the floor and on a flight this is 0, as before.
-        let stand = stair_height_at(fac, self.pos).unwrap_or(0.0);
-        let min_feet = local_ground(fac, self.pos.0, self.pos.1) - stand;
+        // The ground under the body in the absolute frame (the active level, else a resident neighbour). On a flight, or
+        // past its end on the neighbour's floor, the body's height follows it; on the level's own deck the deck is the
+        // lowest the jump offset can go (`min_feet`) and the height stays 0.
+        let under = ground_y(fac, stack, self.pos.0, self.pos.1, self.y() + self.feet_y);
+        let rel = under.y - self.floor_y;
+        // a neighbour's surface is followed only when it is within a step of the feet (the flight's own continuation);
+        // a floor far below the feet is a hole or a shaft (a ladder's), which the body does not drop into by easing
+        let neighbour = under.level != fac.level && (under.y - self.y()).abs() <= STEP_UP;
+        let lifted = neighbour || stair_height_at(fac, self.pos).is_some();
+        let (surface, min_feet) = if lifted { (rel, 0.0) } else { (0.0, rel) };
         if self.feet_y <= min_feet {
             self.feet_y = min_feet;
             self.vy = 0.0;
@@ -435,13 +442,12 @@ impl Player {
         self.vy -= PLAYER_GRAVITY * dt;
         self.feet_y = (self.feet_y + self.vy * dt).max(min_feet);
         self.grounded = self.feet_y <= min_feet;
-        // The body rises and sinks with the flight under it: the height eases toward the tread it now stands on, and back
-        // to the floor off the stairs, so it never snaps through a tread.
-        let surface = stair_height_at(fac, self.pos).unwrap_or(0.0);
+        // The body rises and sinks with the flight under it: the height eases toward the surface it now stands on, and
+        // back to the floor off the stairs, so it never snaps through a tread.
         self.height += (surface - self.height) * (1.0 - (-STAIR_FOLLOW_RATE * dt).exp());
 
-        if moving && self.grounded && ground > 0.3 {
-            self.bob_phase += dt * ground * 1.9;
+        if moving && self.grounded && speed_now > 0.3 {
+            self.bob_phase += dt * speed_now * 1.9;
         }
         // Sound.footstep every frame on the floor (player_controller_3d.gd 1987-1993): the cadence is stride / ground
         // speed, no step under 0.3 m/s, feet alternate
@@ -453,7 +459,7 @@ impl Player {
             } else {
                 "walk"
             };
-            crate::audio::sound::footstep(gait, "", ground.min(speed * 1.5));
+            crate::audio::sound::footstep(gait, "", speed_now.min(speed * 1.5));
         }
     }
 }
@@ -578,7 +584,7 @@ mod tests {
         let prof = g.prof();
         let sounds = Sounds::default();
         for _ in 0..(secs / FRAME).round() as i32 {
-            g.p.update_movement(FRAME, c, &prof, &g.fac, &mut g.meters, &sounds);
+            g.p.update_movement(FRAME, c, &prof, &g.fac, &LevelStack::EMPTY, &mut g.meters, &sounds);
         }
     }
 
@@ -781,5 +787,104 @@ mod tests {
         assert!(seen.keys().any(|(sh, _)| sh == "Spiral"), "the sweep met a spiral: {seen:?}");
         assert!(seen.keys().any(|(sh, _)| sh == "Switchback") && seen.keys().any(|(sh, _)| sh == "Straight"), "{seen:?}");
         assert!(bad.is_empty(), "the body is blocked on the walk path ({seen:?}): {bad:#?}");
+    }
+
+    #[test]
+    fn rebase_keeps_y_velocity_and_facing() {
+        let mut p = Player::new((3.0, 4.0));
+        p.floor_y = -5.0;
+        p.height = 0.6;
+        p.feet_y = 0.3;
+        p.vy = 1.5;
+        p.grounded = false;
+        p.yaw = 0.7;
+        p.bob_phase = 2.0;
+        p.move_vel = (1.0, -2.0);
+        let (y, eye) = (p.y(), p.eye_y());
+        p.rebase_floor(0.0);
+        assert!((p.y() - y).abs() < 1e-5 && (p.eye_y() - eye).abs() < 1e-5);
+        assert_eq!(p.floor_y, 0.0);
+        assert!((p.height - (-4.4)).abs() < 1e-5);
+        assert_eq!((p.feet_y, p.vy, p.grounded), (0.3, 1.5, false));
+        assert_eq!((p.pos, p.yaw, p.bob_phase, p.move_vel), ((3.0, 4.0), 0.7, 2.0, (1.0, -2.0)));
+    }
+
+    #[test]
+    fn rebase_up_then_down_is_identity() {
+        let mut p = Player::new((1.0, 1.0));
+        p.floor_y = -5.0;
+        p.height = 1.25;
+        let (f, h) = (p.floor_y, p.height);
+        p.rebase_floor(0.0);
+        p.rebase_floor(f);
+        assert_eq!(p.floor_y, f);
+        assert!((p.height - h).abs() < 1e-5);
+    }
+
+    /// Walks the flight of `s` along its path: every frame's change of y(), whether the body stayed grounded, and the
+    /// worst lag of the height behind the tread under it.
+    fn climb_steps(g: &mut Game, s: Stair) -> (Vec<f32>, bool, f32) {
+        start_on_flight(g, s);
+        let prof = g.prof();
+        let sounds = Sounds::default();
+        let c = Controls { fwd: 1.0, ..Default::default() };
+        let p = path(g, s);
+        let (mut steps, mut grounded, mut worst_lag) = (Vec::new(), true, 0.0_f32);
+        let mut last = g.p.y();
+        for _ in 0..(p.len() * 40) {
+            let here = g.p.pos;
+            let k = p
+                .iter()
+                .enumerate()
+                .min_by(|a, b| {
+                    let da = (a.1 .0 - here.0).hypot(a.1 .1 - here.1);
+                    let db = (b.1 .0 - here.0).hypot(b.1 .1 - here.1);
+                    da.total_cmp(&db)
+                })
+                .map_or(0, |(i, _)| i);
+            if k + 3 >= p.len() {
+                break;
+            }
+            let t = p[k + 3];
+            g.p.yaw = yaw_along((t.0 - here.0, t.1 - here.1));
+            g.p.update_movement(FRAME, &c, &prof, &g.fac, &LevelStack::EMPTY, &mut g.meters, &sounds);
+            steps.push((g.p.y() - last).abs());
+            last = g.p.y();
+            grounded &= g.p.grounded;
+            if let Some(h) = stair_height_at(&g.fac, g.p.pos) {
+                worst_lag = worst_lag.max((h - g.p.height).abs());
+            }
+        }
+        (steps, grounded, worst_lag)
+    }
+
+    #[test]
+    fn a_body_climbing_a_flight_never_steps_more_than_a_quarter_metre_per_frame() {
+        use crate::world::flight::FlightShape::*;
+        let mut checked = 0;
+        for (shape, level) in [(Switchback, 0), (Straight, -1), (Spiral, 0)] {
+            let Some((mut g, s)) = shape_game(shape, level) else { continue };
+            let (steps, grounded, lag) = climb_steps(&mut g, s);
+            assert!(steps.len() > 20, "{shape:?}: the body walked the flight");
+            let worst = steps.iter().cloned().fold(0.0, f32::max);
+            assert!(worst < 0.25, "{shape:?}: a frame step of {worst} m");
+            assert!(lag < 0.25, "{shape:?}: the height lags the tread by {lag} m");
+            assert!(grounded, "{shape:?}: the body left the ground on the flight");
+            checked += 1;
+        }
+        assert!(checked >= 1, "at least one shape was found");
+    }
+
+    #[test]
+    fn a_jump_over_the_well_does_not_teleport() {
+        let mut p = Player::new((2.0, 2.0));
+        p.floor_y = 0.0;
+        p.height = 0.0;
+        p.feet_y = 0.8;
+        p.vy = 2.0;
+        let (y, eye) = (p.y(), p.eye_y());
+        p.rebase_floor(-5.0);
+        assert_eq!(p.feet_y, 0.8, "the jump offset survives the relabel");
+        assert!((p.y() - y).abs() < 1e-5 && (p.eye_y() - eye).abs() < 1e-5);
     }
 }

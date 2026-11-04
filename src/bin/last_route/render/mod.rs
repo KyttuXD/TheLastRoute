@@ -20,3 +20,4 @@ pub mod water;
 pub mod viewmodel;
 pub mod waterfall;
 pub mod world_mesh;
+pub mod world_stack;

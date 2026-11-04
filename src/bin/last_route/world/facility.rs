@@ -6,7 +6,7 @@
 //! unstable sort are reproduced where they decide placement).
 
 use super::catalog::Catalog;
-use super::flight::{flight_surface_y, flights, walk_path as flight_walk_path, well_footprint, Flight, FlightKind, FlightShape, Footprint};
+use super::flight::{flight_surface_y, flights, lane_dividers, walk_path as flight_walk_path, well_footprint, Flight, FlightKind, FlightShape, Footprint, Segment};
 use super::godot_sort::sort_custom;
 use super::vertical::STOREY;
 use super::infinite::ChunkKey;
@@ -236,6 +236,8 @@ pub const DOOR_OPENER_REACH: f32 = 1.15;
 pub const DOOR_SWING_RATE: f32 = 4.0;
 /// Half the thickness of a closed door's blocking slab, in metres.
 const DOOR_HALF_DEPTH: f32 = 0.1;
+/// How far (metres) a body's walk height may be from a flight's surface for it to stand on the flight.
+const FLIGHT_FIT_TOL: f32 = 0.6;
 /// A door passes a body once the gap the swung leaf leaves is this much wider than the body.
 const DOOR_GAP_MARGIN: f32 = 0.04;
 /// How far past the door's slab, on every side, a body stands in the leaf's sweep: the leaf's clearance plus a body
@@ -323,6 +325,12 @@ impl Stair {
             None if self.dir < 0 => vec![self.cell],
             None => vec![],
         }
+    }
+
+    /// The walls between the lanes of this flight (grid coordinates; the same list from the upper and the lower record,
+    /// `level` is the level of the facility holding this record). Empty for straight and spiral flights and ladders.
+    pub fn dividers(&self, level: i32) -> Vec<Segment> {
+        self.flight(level).map(|f| lane_dividers(&f)).unwrap_or_default()
     }
 
     /// The landing A (upper level). A ladder: its hatch.
@@ -1225,23 +1233,80 @@ impl Facility {
         self.body_fits_at(x, y, r, 0.0)
     }
 
+    /// Every cell of every stair's well (sorted, no repeats).
+    pub fn well_cells_all(&self) -> Vec<Cell> {
+        let mut v: Vec<Cell> = self.stairs.iter().flat_map(|s| s.well_cells()).collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    /// Whether the cell is part of a stair's well that is open to the level above (a lower-level record, dir > 0).
+    pub fn open_above(&self, c: Cell) -> bool {
+        self.stairs.iter().any(|s| s.dir > 0 && s.well_cells().contains(&c))
+    }
+
+    /// Whether the cell is part of a stair's well that is open to the level below (an upper-level record, dir < 0).
+    pub fn open_below(&self, c: Cell) -> bool {
+        self.stairs.iter().any(|s| s.dir < 0 && s.well_cells().contains(&c))
+    }
+
+    /// Whether a body of radius `r` at `(x, z)` overlaps the wall between the lanes of any switchback.
+    pub fn divider_blocks(&self, x: f32, z: f32, r: f32) -> bool {
+        if self.stairs.is_empty() {
+            return false;
+        }
+        let reach = r + flights().divider_thickness * 0.5;
+        self.stairs.iter().any(|s| {
+            s.dividers(self.level).iter().any(|seg| {
+                let (dx, dz) = (seg.b.0 - seg.a.0, seg.b.1 - seg.a.1);
+                let len2 = dx * dx + dz * dz;
+                let t = if len2 > 0.0 { (((x - seg.a.0) * dx + (z - seg.a.1) * dz) / len2).clamp(0.0, 1.0) } else { 0.0 };
+                let (px, pz) = (seg.a.0 + dx * t, seg.a.1 + dz * t);
+                let (ex, ez) = (x - px, z - pz);
+                ex * ex + ez * ez < reach * reach
+            })
+        })
+    }
+
+    /// Whether `(x, z)` is on a flight of this facility with its surface within `FLIGHT_FIT_TOL` of the walk height
+    /// `height` (relative to this facility's floor).
+    fn on_flight_at(&self, x: f32, z: f32, height: f32) -> bool {
+        self.stairs
+            .iter()
+            .any(|s| s.surface_rel(self.level, x, z).is_some_and(|rel| (rel - height).abs() <= FLIGHT_FIT_TOL))
+    }
+
     /// `body_fits_at` for a body whose feet are at absolute height `y_abs`: the walk height is `y_abs` minus this
-    /// facility's own floor (`level * STOREY`), so the result equals `body_fits_at` at that relative height.
+    /// facility's own floor (`level * STOREY`), so the result equals `body_fits_at` at that relative height. Over a
+    /// stair well the hole rule holds unless the body is on the flight at its surface (within `FLIGHT_FIT_TOL`), so a
+    /// body at the wrong height over a well is over a hole.
     pub fn body_fits_at_y(&self, x: f32, z: f32, y_abs: f32, r: f32) -> bool {
         let floor_y = self.level as f32 * crate::world::vertical::STOREY;
-        self.body_fits_at(x, z, r, y_abs - floor_y)
+        self.fits(x, z, r, y_abs - floor_y, true)
     }
 
     /// `body_fits` for a body standing at walk height `height`: every cell the body touches must have a
     /// walk surface at that same height, so a body on the floor cannot enter a deck and a body on a deck
     /// cannot step onto the floor.
     pub fn body_fits_at(&self, x: f32, y: f32, r: f32, height: f32) -> bool {
+        self.fits(x, y, r, height, false)
+    }
+
+    /// The shared body of `body_fits_at` and `body_fits_at_y`. `by_height`: a corner on a flight at the body's height is
+    /// exempt from the deck-height and hole rules; otherwise any tread of a flight is exempt from the hole rule.
+    fn fits(&self, x: f32, y: f32, r: f32, height: f32, by_height: bool) -> bool {
         if !self.can_occupy(x as f64, y as f64, r as f64) {
+            return false;
+        }
+        if self.divider_blocks(x, y, r) {
             return false;
         }
         if !self.walk_surface.is_empty() || height != 0.0 {
             for (sx, sy) in [(x - r, y - r), (x + r, y - r), (x - r, y + r), (x + r, y + r)] {
-                if (self.height_at(Cell::new(sx.floor() as i32, sy.floor() as i32)) - height).abs() > 0.01 {
+                if (self.height_at(Cell::new(sx.floor() as i32, sy.floor() as i32)) - height).abs() > 0.01
+                    && !(by_height && self.on_flight_at(sx, sy, height))
+                {
                     return false;
                 }
             }
@@ -1253,8 +1318,11 @@ impl Facility {
             (x + r, y + r),
             (x, y),
         ] {
-            if self.is_hole(sx.floor() as i32, sy.floor() as i32) && !self.on_stair_flight(sx, sy) {
-                return false;
+            if self.is_hole(sx.floor() as i32, sy.floor() as i32) {
+                let on = if by_height { self.on_flight_at(sx, sy, height) } else { self.on_stair_flight(sx, sy) };
+                if !on {
+                    return false;
+                }
             }
         }
         if self.door_blocks(x, y, r) {
@@ -2693,6 +2761,160 @@ mod tests {
                 }
             }
             assert!(checked > 0);
+        }
+    }
+
+    /// A generated facility on `level` with one stair of `shape` (run (0, 1)) placed in a wall-free block, and the stair.
+    fn with_stair(level: i32, dir: i32, shape: crate::world::flight::FlightShape) -> (Facility, Stair) {
+        let cat = Catalog::load();
+        let mut f = Facility::generate("DIV-1", &Options::default(), &cat);
+        f.level = level;
+        // A generated maze has no wall-free block of a flight's size, so carve one: the flight's block becomes open
+        // floor with no props, and the rest of the facility stays as generated.
+        let (ax, az) = (8, 8);
+        for z in az - 2..az + 12 {
+            for x in ax - 2..ax + 8 {
+                f.wall[z as usize][x as usize] = false;
+            }
+        }
+        f.props.retain(|p| !((ax - 3..ax + 9).contains(&p.cell.x) && (az - 3..az + 13).contains(&p.cell.y)));
+        let upper = Stair::stairs(Cell::new(ax, az), -1, (0, 1), shape, false);
+        let s = if dir < 0 {
+            upper
+        } else {
+            Stair::stairs(upper.foot(), 1, (0, 1), shape, false)
+        };
+        f.stairs.push(s);
+        f.rebuild_grids();
+        (f, s)
+    }
+
+    #[test]
+    fn divider_blocks_only_the_switchback_divider() {
+        use crate::world::flight::FlightShape::*;
+        let (f, s) = with_stair(0, -1, Switchback);
+        let seg = s.dividers(0)[0];
+        let mid = ((seg.a.0 + seg.b.0) * 0.5, (seg.a.1 + seg.b.1) * 0.5);
+        assert!(f.divider_blocks(mid.0, mid.1, 0.2));
+        // half a metre to either side is a lane, not the divider (the divider runs along z for run (0, 1))
+        assert!(!f.divider_blocks(mid.0 - 0.5, mid.1, 0.2));
+        assert!(!f.divider_blocks(mid.0 + 0.5, mid.1, 0.2));
+        assert!(!f.body_fits(mid.0, mid.1, 0.2) && !f.body_fits_at_y(mid.0, mid.1, 0.0, 0.2));
+        // a facility without stairs, and the other shapes, have no divider
+        let cat = Catalog::load();
+        let plain = Facility::generate("DIV-1", &Options::default(), &cat);
+        assert!(!plain.divider_blocks(mid.0, mid.1, 0.2));
+        for shape in [Straight, Spiral] {
+            let (g, t) = with_stair(0, -1, shape);
+            assert!(t.dividers(0).is_empty());
+            let c = t.cell.center();
+            for (dx, dz) in [(0.0, 0.0), (0.5, 1.0), (1.0, 2.0), (1.0, 3.0)] {
+                assert!(!g.divider_blocks(c.0 + dx, c.1 + dz, 0.2), "{shape:?} {dx} {dz}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_body_cannot_cross_between_lanes() {
+        use crate::world::flight::FlightShape::Switchback;
+        for (level, dir) in [(0, -1), (-1, 1)] {
+            let (f, s) = with_stair(level, dir, Switchback);
+            let seg = s.dividers(level)[0];
+            let (dx, dz) = (seg.b.0 - seg.a.0, seg.b.1 - seg.a.1);
+            let len = (dx * dx + dz * dz).sqrt();
+            let (nx, nz) = (-dz / len, dx / len);
+            let r = 0.05;
+            let mut crossings = 0;
+            for i in 0..=20 {
+                let t = i as f32 / 20.0;
+                let (px, pz) = (seg.a.0 + dx * t, seg.a.1 + dz * t);
+                // a sideways walk from one lane to the other in 0.02 m steps: some step must be blocked
+                let blocked = (-25..=25).any(|k| {
+                    let d = k as f32 * 0.02;
+                    f.divider_blocks(px + nx * d, pz + nz * d, r)
+                });
+                assert!(blocked, "level {level} u-sample {i}: a body crossed the divider");
+                // and the blocked samples form one unbroken band, so it cannot hop over
+                let band: Vec<bool> = (-25..=25).map(|k| f.divider_blocks(px + nx * k as f32 * 0.02, pz + nz * k as f32 * 0.02, r)).collect();
+                let first = band.iter().position(|b| *b).unwrap();
+                let last = band.iter().rposition(|b| *b).unwrap();
+                assert!(band[first..=last].iter().all(|b| *b), "level {level} u-sample {i}: gap in the band");
+                crossings += 1;
+            }
+            assert_eq!(crossings, 21);
+        }
+    }
+
+    #[test]
+    fn body_at_wrong_height_over_a_well_is_blocked() {
+        use crate::world::flight::FlightShape::Switchback;
+        use crate::world::vertical::STOREY;
+        let (f, s) = with_stair(0, -1, Switchback);
+        let mut checked = 0;
+        for (x, z) in s.walk_path(0, 0.25) {
+            let cell = Cell::new(x.floor() as i32, z.floor() as i32);
+            let Some(rel) = s.surface_rel(0, x, z) else { continue };
+            if !f.is_hole(cell.x, cell.y) {
+                continue;
+            }
+            assert!(!f.body_fits_at_y(x, z, rel + 2.0, 0.2), "({x}, {z}) 2 m above the surface is over a hole");
+            assert!(!f.body_fits_at_y(x, z, rel - 2.0, 0.2), "({x}, {z}) 2 m below the surface is over a hole");
+            let _ = STOREY;
+            checked += 1;
+        }
+        assert!(checked > 3, "only {checked} well samples");
+    }
+
+    #[test]
+    fn body_on_the_flight_at_its_surface_fits() {
+        use crate::world::flight::FlightShape::{Spiral, Straight, Switchback};
+        for shape in [Switchback, Straight, Spiral] {
+            for (level, dir) in [(0, -1), (-1, 1)] {
+                let (f, s) = with_stair(level, dir, shape);
+                let mut checked = 0;
+                for (x, z) in s.walk_path(level, 0.25) {
+                    let Some(rel) = s.surface_rel(level, x, z) else { continue };
+                    let cell = Cell::new(x.floor() as i32, z.floor() as i32);
+                    if !f.well_cells_all().contains(&cell) {
+                        continue;
+                    }
+                    // The far end of the walk is the other storey's floor: that body stands in the neighbour's foot cell
+                    // (the label flips there), which this facility does not own, so it is not this level's fit to check.
+                    if rel.abs() > crate::world::vertical::STOREY - FLIGHT_FIT_TOL {
+                        continue;
+                    }
+                    let y_abs = level as f32 * crate::world::vertical::STOREY + rel;
+                    assert!(f.body_fits_at_y(x, z, y_abs, 0.1), "{shape:?} level {level}: ({x}, {z}) at {rel} on the flight");
+                    checked += 1;
+                }
+                assert!(checked > 3, "{shape:?} level {level}: only {checked} samples");
+            }
+        }
+    }
+
+    #[test]
+    fn well_cells_all_matches_each_stairs_cells() {
+        use crate::world::flight::FlightShape::*;
+        let (mut f, s) = with_stair(0, -1, Switchback);
+        let mut want = s.well_cells();
+        want.sort();
+        want.dedup();
+        assert_eq!(f.well_cells_all(), want);
+        for c in &want {
+            assert!(f.open_below(*c) && !f.open_above(*c));
+        }
+        assert!(!f.open_below(Cell::new(0, 0)));
+        // a second stair on the same facility adds its cells
+        let other = Stair::stairs(Cell::new(s.cell.x + 4, s.cell.y), -1, (0, 1), Straight, false);
+        f.stairs.push(other);
+        let mut both: Vec<Cell> = s.well_cells().into_iter().chain(other.well_cells()).collect();
+        both.sort();
+        both.dedup();
+        assert_eq!(f.well_cells_all(), both);
+        // the lower level's record opens upwards
+        let (g, t) = with_stair(-1, 1, Switchback);
+        for c in t.well_cells() {
+            assert!(g.open_above(c) && !g.open_below(c));
         }
     }
 

@@ -45,16 +45,6 @@ impl Game {
         true
     }
 
-    /// The change of level for a flight taken (game/transition.rs, no fade): a flight taken saves the run on its new
-    /// level (Godot `_update_run_statistics`: autosave("level")).
-    pub(super) fn take_flight(&mut self, i: usize, content: &Content, catalog: &Catalog) {
-        let from = self.inf.as_ref().map(|inf| inf.level);
-        self.take_stairs(i, content, catalog);
-        if self.inf.as_ref().map(|inf| inf.level) != from {
-            self.autosave("level");
-        }
-    }
-
     pub fn shop_open(&self) -> bool {
         self.hunters
             .iter()
@@ -121,7 +111,11 @@ impl Game {
             consider(self.fac.exit.center(), 1.2, 1.8, Focus::Lift);
         }
         for (i, s) in self.fac.stairs.iter().enumerate() {
-            // the flight's first step, just past the landing
+            // a stair flight is walked, never asked for (D3 of docs/STAIRS_CONTINUOUS_DESIGN.md): no focus, no prompt
+            if !s.is_ladder() {
+                continue;
+            }
+            // the ladder's first step, just past the landing
             let (cx, cy) = s.cell.center();
             consider(
                 (cx + s.run.0 as f32 * 0.9, cy + s.run.1 as f32 * 0.9),
@@ -206,8 +200,8 @@ impl Game {
                     (LinkKind::Ladder(Cover::Manhole), true) => "[E] OPEN THE MANHOLE // CLIMB DOWN".into(),
                     (LinkKind::Ladder(Cover::Grate), true) => "[E] LIFT THE GRATE // CLIMB DOWN".into(),
                     (LinkKind::Ladder(_), false) => "[E] CLIMB THE LADDER UP".into(),
-                    (LinkKind::Stairs, true) => "[E] TAKE STAIRS DOWN".into(),
-                    (LinkKind::Stairs, false) => "[E] TAKE STAIRS UP".into(),
+                    // a flight is walked: it never holds the focus, so it has no prompt
+                    (LinkKind::Stairs, _) => String::new(),
                 }
             }
             Focus::LightSwitch(_) => "[E] TOGGLE ROOM LIGHT".into(),
@@ -339,10 +333,9 @@ impl Game {
                 self.say("Safe zone: lamp and stamina restored.");
             }
             Focus::Stairs(i) => {
+                // only a ladder is interacted with; a flight is walked
                 if self.fac.stairs[i].is_ladder() {
                     self.start_ladder(i);
-                } else {
-                    self.start_stairs(i, content, catalog);
                 }
             }
             Focus::Lift => {
@@ -679,7 +672,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stairwell_taken_by_interact_changes_storey_at_once_with_no_fade() {
+    fn a_stair_flight_never_holds_the_focus_and_interact_on_it_does_nothing() {
         let content = Content::load();
         let catalog = Catalog::load();
         // not every start window has a stairwell (the origin chunk always has a ladder), so the first room seed that does
@@ -690,11 +683,18 @@ mod tests {
                 Some((g, i))
             })
             .expect("a start window has a stairwell down");
+        // stood on the flight's landing looking along it, the stairs are not the focus
+        let s = g.fac.stairs[i];
+        g.p.pos = s.cell.center();
+        g.p.yaw = (-(s.run.0 as f32)).atan2(-(s.run.1 as f32));
+        g.p.pitch = 0.0;
+        assert!(!matches!(g.find_focus(), Some(Focus::Stairs(j)) if !g.fac.stairs[j].is_ladder()), "a flight is no focus");
         g.fade = 0.0;
+        g.last_autosave = "";
         g.interact(Focus::Stairs(i), &content, &catalog, &Sounds::default());
-        assert_eq!(g.inf.as_ref().unwrap().level, -1, "the level changes on the frame the stairs are taken");
+        assert_eq!(g.inf.as_ref().unwrap().level, 0, "interact does not change the level of a flight");
         assert_eq!(g.fade, 0.0, "no fade");
-        assert_eq!(g.last_autosave, "level", "a new level saves the run");
+        assert_ne!(g.last_autosave, "level");
     }
 
     #[test]

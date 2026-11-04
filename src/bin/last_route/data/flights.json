@@ -1,10 +1,11 @@
 {
   "schema": "lr.flights/1",
-  "_about": "The flight definition (world/flight.rs): one stair, ladder or drop between two floors, in one vertical frame (floor y = level * storey). Lengths are cells (1 cell = 1 m of run), heights are metres. storey and rise_total must equal the game's STOREY (world/vertical.rs, 5.0) or the file is refused; slab is the floor/ceiling slab thickness between two storeys. max_riser is the tallest step the walked surface may have: the rise per tread, with steps_per_cell treads per metre of run; a shape that would exceed it is refused. margin_cells is the clear cells kept beyond the landing (upper level) and the foot (lower level). switchback: a well length x (2 * lane_width) cells with a mid landing mid_landing_rise above the lower floor, mid_landing_len cells deep at the far end of the well. straight: a longer flight, length cells long and width cells wide. spiral: a flight around a centre column, radius (cells, a whole number) to the middle of the walkway, lane_width (odd) cells wide, turns of a full circle (0.25, 0.5 or 0.75). limits are the inclusive bounds the checks hold each tunable to (a missing or inverted limit refuses the file; slab max is half a storey). steps_per_cell must equal STEPS_PER_CELL in world/vertical.rs, the one source for treads per cell (checked on load and by a test); slab and margin_cells live only here. shape_weights pick the shape of a stairwell (shape_for, keyed on the UPPER level of the connection); region_weights replace them for the listed upper levels (key = level number).",
+  "_about": "The flight definition (world/flight.rs): one stair, ladder or drop between two floors, in one vertical frame (floor y = level * storey). Lengths are cells (1 cell = 1 m of run), heights are metres. storey and rise_total must equal the game's STOREY (world/vertical.rs, 5.0) or the file is refused; slab is the floor/ceiling slab thickness between two storeys. max_riser is the tallest step the walked surface may have: the rise per tread, with steps_per_cell treads per metre of run; a shape that would exceed it is refused. divider_thickness is the width in metres of the wall between the two switchback lanes (bodies cannot cross it). margin_cells is the clear cells kept beyond the landing (upper level) and the foot (lower level). switchback: a well length x (2 * lane_width) cells with a mid landing mid_landing_rise above the lower floor, mid_landing_len cells deep at the far end of the well. straight: a longer flight, length cells long and width cells wide. spiral: a flight around a centre column, radius (cells, a whole number) to the middle of the walkway, lane_width (odd) cells wide, turns of a full circle (0.25, 0.5 or 0.75). limits are the inclusive bounds the checks hold each tunable to (a missing or inverted limit refuses the file; slab max is half a storey). steps_per_cell must equal STEPS_PER_CELL in world/vertical.rs, the one source for treads per cell (checked on load and by a test); slab and margin_cells live only here. shape_weights pick the shape of a stairwell (shape_for, keyed on the UPPER level of the connection); region_weights replace them for the listed upper levels (key = level number).",
   "limits": {
     "slab": { "min": 0.0, "max": 2.5 },
     "max_riser": { "min": 0.05, "max": 0.5 },
     "margin_cells": { "min": 0, "max": 4 },
+    "divider_thickness": { "min": 0.05, "max": 0.5 },
     "switchback_length": { "min": 3, "max": 8 },
     "switchback_lane_width": { "min": 1, "max": 3 },
     "straight_length": { "min": 4, "max": 16 },
@@ -18,6 +19,7 @@
   "max_riser": 0.3,
   "steps_per_cell": 3,
   "margin_cells": 1,
+  "divider_thickness": 0.12,
   "switchback": {
     "length": 4,
     "lane_width": 1,

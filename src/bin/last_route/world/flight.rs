@@ -149,6 +149,7 @@ pub struct FlightLimits {
     pub slab: Limit,
     pub max_riser: Limit,
     pub margin_cells: Limit,
+    pub divider_thickness: Limit,
     pub sb_length: Limit,
     pub sb_lane_width: Limit,
     pub st_length: Limit,
@@ -167,6 +168,8 @@ pub struct FlightRules {
     pub max_riser: f32,
     pub steps_per_cell: f32,
     pub margin_cells: i32,
+    /// Width of the wall between the two switchback lanes (metres).
+    pub divider_thickness: f32,
     pub sb_length: i32,
     pub sb_lane_width: i32,
     pub sb_mid_rise: f32,
@@ -255,6 +258,7 @@ impl FlightRules {
             slab: jlimit(&v, "slab")?,
             max_riser: jlimit(&v, "max_riser")?,
             margin_cells: jlimit(&v, "margin_cells")?,
+            divider_thickness: jlimit(&v, "divider_thickness")?,
             sb_length: jlimit(&v, "switchback_length")?,
             sb_lane_width: jlimit(&v, "switchback_lane_width")?,
             st_length: jlimit(&v, "straight_length")?,
@@ -270,6 +274,7 @@ impl FlightRules {
             max_riser: jnum(&v, &["max_riser"])?,
             steps_per_cell: jnum(&v, &["steps_per_cell"])?,
             margin_cells: jint(&v, &["margin_cells"])?,
+            divider_thickness: jnum(&v, &["divider_thickness"])?,
             sb_length: jint(&v, &["switchback", "length"])?,
             sb_lane_width: jint(&v, &["switchback", "lane_width"])?,
             sb_mid_rise: jnum(&v, &["switchback", "mid_landing_rise"])?,
@@ -318,6 +323,7 @@ impl FlightRules {
             ));
         }
         ranged("margin_cells", self.margin_cells as f32, &l.margin_cells)?;
+        ranged("divider_thickness", self.divider_thickness, &l.divider_thickness)?;
         ranged("switchback.length", self.sb_length as f32, &l.sb_length)?;
         ranged("switchback.lane_width", self.sb_lane_width as f32, &l.sb_lane_width)?;
         if self.sb_mid_rise <= 0.0 || self.sb_mid_rise >= self.rise_total {
@@ -631,6 +637,34 @@ fn spiral_progress(rules: &FlightRules, f: &Flight, u: f32, v: f32) -> Option<f3
     None
 }
 
+/// A line segment in grid coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Segment {
+    pub a: (f32, f32),
+    pub b: (f32, f32),
+}
+
+/// The wall between the two lanes of a switchback: the line on `v = lane_width` from the landing end of the run to where
+/// the two lanes are no more than `max_riser` apart (just before they join on the mid landing). Empty for the other
+/// shapes, ladders and drops. Grid coordinates, the same list whichever level's record asks.
+pub fn lane_dividers_with(rules: &FlightRules, f: &Flight) -> Vec<Segment> {
+    if f.kind != FlightKind::Stairs || f.shape != FlightShape::Switchback {
+        return vec![];
+    }
+    let lw = rules.sb_lane_width as f32;
+    let ramp = rules.sb_length as f32 - rules.sb_mid_len;
+    // the lanes differ by rise_total * (1 - u / ramp)
+    let end = (ramp * (1.0 - rules.max_riser / rules.rise_total)).max(0.0);
+    if end <= 0.0 {
+        return vec![];
+    }
+    vec![Segment { a: to_world(f, 0.0, lw), b: to_world(f, end, lw) }]
+}
+
+pub fn lane_dividers(f: &Flight) -> Vec<Segment> {
+    lane_dividers_with(flights(), f)
+}
+
 /// The absolute y of the walking surface at `(x, z)` (grid cells), or `None` off the flight. Exactly the upper floor at
 /// the landing cell A and exactly the lower floor at the foot cell B; between them a smooth monotone rise (flat on a
 /// mid landing). A ladder or drop has only its two ends: the step cell / bank at the upper floor, the shaft or hole
@@ -819,6 +853,54 @@ mod tests {
         let (x, z) = to_world(&f, u, v);
         assert!((flight_surface_y(&f, x, z).unwrap() - 2.5).abs() < 1e-4);
         assert_eq!(well_footprint(&f).upper_hole.len(), 8, "the 2x4 well");
+    }
+
+    #[test]
+    fn lane_dividers_are_empty_for_straight_and_spiral() {
+        for run in RUNS {
+            for cw in [false, true] {
+                assert!(lane_dividers(&stairs(FlightShape::Straight, run, cw)).is_empty());
+                assert!(lane_dividers(&stairs(FlightShape::Spiral, run, cw)).is_empty());
+            }
+        }
+        let ladder = Flight::new(FlightKind::Ladder, FlightShape::Switchback, 1, Cell::new(20, 20), (0, 1));
+        assert!(lane_dividers(&ladder).is_empty());
+    }
+
+    #[test]
+    fn the_switchback_divider_runs_between_the_lanes_where_they_differ() {
+        let rules = flights();
+        for run in RUNS {
+            let f = stairs(FlightShape::Switchback, run, false);
+            let d = lane_dividers(&f);
+            assert_eq!(d.len(), 1);
+            let (a, b) = (d[0].a, d[0].b);
+            let (ua, va) = to_local(&f, a.0, a.1);
+            let (ub, vb) = to_local(&f, b.0, b.1);
+            assert!(ua.abs() < 1e-4 && (va - rules.sb_lane_width as f32).abs() < 1e-4);
+            assert!((vb - va).abs() < 1e-4 && ub > 0.5 && ub < rules.sb_length as f32 - rules.sb_mid_len);
+            // across the divider the two lanes differ by more than a riser at its start and by about a riser at its end
+            let lane_gap = |u: f32| {
+                let lw = rules.sb_lane_width as f32;
+                let (x1, z1) = to_world(&f, u, lw - 0.5);
+                let (x2, z2) = to_world(&f, u, lw + 0.5);
+                (flight_surface_y(&f, x1, z1).unwrap() - flight_surface_y(&f, x2, z2).unwrap()).abs()
+            };
+            assert!(lane_gap(0.05) > rules.max_riser);
+            assert!((lane_gap(ub) - rules.max_riser).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn divider_thickness_is_data_and_validated() {
+        let rules = flights();
+        assert!(rules.divider_thickness >= rules.limits.divider_thickness.min);
+        assert!(rules.divider_thickness <= rules.limits.divider_thickness.max);
+        let mut bad = rules.clone();
+        bad.divider_thickness = 0.01;
+        assert!(bad.validate().unwrap_err().contains("divider_thickness"));
+        bad.divider_thickness = 0.9;
+        assert!(bad.validate().is_err());
     }
 }
 

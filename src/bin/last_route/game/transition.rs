@@ -1,8 +1,7 @@
 //! The connection between levels (a stair flight or a sewer ladder): the data behind it. Nothing here fades or holds.
-//! A stairwell taken by interact changes the level on the frame it is taken (`start_stairs`, which lands the runner on
-//! the far landing through `take_flight`). A walked flight and a ladder's shaft change storey on the frame the runner
-//! reaches the connection (game/endless.rs `walked_level_change`, game/ladder.rs `advance_ladder`), through the same
-//! `change_storey` load, with the momentum and the cell kept.
+//! A stair flight is walked and relabelled (game/endless.rs `relabel`; it is never interacted with, and takes no
+//! landing). A ladder's shaft changes storey on the frame the runner reaches the connection (game/ladder.rs
+//! `advance_ladder`), through the `change_storey` load, with the momentum and the cell kept.
 //!
 //! The landing offset and the prefetch distance are data (data/stairs_links.json, `links()`). Where the runner arrives
 //! is `arrival`: the far end of the flight (foot B going down, landing A going up), put `landing_offset` in along the
@@ -10,12 +9,15 @@
 //! flight from the same connection (world/flight_links.rs), so the far end is the stair's own `far_end()`.
 //! Godot reference: game/infinite_route/infinite_route_test.gd (`_update_player_ladder`, `_on_player_ladder_finished`).
 
-use super::Game;
 use crate::content::embedded;
+#[cfg(test)]
+use super::Game;
+#[cfg(test)]
 use crate::content::Content;
+#[cfg(test)]
 use crate::world::catalog::Catalog;
+#[cfg(test)]
 use crate::world::facility::Stair;
-use crate::world::infinite;
 use std::sync::OnceLock;
 
 /// The data file (under the embedded data root, see build.rs).
@@ -27,7 +29,7 @@ pub struct StairsLinks {
     /// How far in from the far landing's cell, along the flight, the runner stands on arrival (cells).
     pub landing_offset: f32,
     /// How close (cells) the runner gets to a stair or ladder landing before the storey it leads to is built ahead
-    /// (`Game::prefetch_connections`), so the change on the connection's frame builds no window.
+    /// (`Game::keep_stack`), so the change on the connection's frame builds no window.
     pub prefetch_distance: f32,
 }
 
@@ -66,7 +68,8 @@ pub fn links() -> StairsLinks {
     })
 }
 
-/// The offset (cells) the runner is put in from a landing on arrival, for `Game::take_stairs`.
+/// The offset (cells) the runner is put in from a landing on arrival, for the ladder tests' `Game::take_stairs` shim.
+#[cfg(test)]
 pub fn landing_offset() -> f32 {
     links().landing_offset
 }
@@ -76,6 +79,7 @@ pub fn landing_offset() -> f32 {
 /// leaves that end by, facing along it. At the landing A that direction is `-run` (away from the flight, into the
 /// room); at the foot B it is the unit vector of the last segment of the walk path (a switchback gives `-run`, a
 /// straight flight `+run`, a spiral sideways). The yaw faces along that direction (Player forward is (-sin, -cos)).
+#[cfg(test)]
 pub fn arrival(s: &Stair, from_level: i32) -> ((f32, f32), f32) {
     let target = s.far_end();
     let landing = s.dir > 0;
@@ -98,20 +102,6 @@ pub fn arrival(s: &Stair, from_level: i32) -> ((f32, f32), f32) {
     let (cx, cz) = target.center();
     let off = landing_offset();
     ((cx + e.0 * off, cz + e.1 * off), (-e.0).atan2(-e.1))
-}
-
-impl Game {
-    /// Takes stairwell `i` (interact's `Focus::Stairs`) on this frame: the level changes and the runner is on the far
-    /// landing at once, with no fade and no climb. A level the run may not enter is refused here.
-    pub(super) fn start_stairs(&mut self, i: usize, content: &Content, catalog: &Catalog) {
-        let s = self.fac.stairs[i];
-        let to_level = self.inf.as_ref().map_or(0, |inf| inf.level) + s.dir;
-        if !infinite::level_allowed(to_level) {
-            return;
-        }
-        self.focus = None;
-        self.take_flight(i, content, catalog);
-    }
 }
 
 #[cfg(test)]
