@@ -16,6 +16,12 @@ try {
   manifest = {};
 }
 manifest[channel] = manifest[channel] || {};
+// Never replace an entry with a lower build: a stale CI run must not downgrade a newer (e.g. local) publish.
+const existing = manifest[channel][platform];
+if (existing && Number(existing.build) > Number(build)) {
+  console.log(`manifest: kept build ${existing.build} (new build ${build} is lower)`);
+  process.exit(0);
+}
 manifest[channel][platform] = { version, build: Number(build), revision, file, sha256 };
 writeFileSync(MANIFEST, `${JSON.stringify(manifest, null, 2)}\n`);
 console.log(`manifest: ${channel}/${platform} -> ${file} (build ${build})`);

@@ -38,3 +38,6 @@ accounts.json
 
 # Runtime data folder (moderation, reserved rooms, saves): never commit
 .data/
+
+# Local builds and logs from packaging/local/publish-local.sh
+dist-local/
