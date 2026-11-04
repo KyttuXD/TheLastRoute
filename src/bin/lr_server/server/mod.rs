@@ -6,8 +6,8 @@
 //! thread locks the same mutex, so relay callbacks (`roomByCode`, `promoteRoomHost`, `onRoomClosed`) see exactly
 //! the directory the HTTP routes see.
 //!
-//! Not ported: skins (`/api/skins/*`, `/api/v1/skins/*` answer `503 SKINS_UNAVAILABLE` after the same size and
-//! moderation checks), city maps (`/api/city-maps/*`, a different game: 404 `CITY_MAPS_UNAVAILABLE`) and the
+//! Not ported: the legacy skins (`/api/skins/*` answer `503 SKINS_UNAVAILABLE` after the same size and
+//! moderation checks; the v1 skin routes live in `skins/`), city maps (`/api/city-maps/*`, a different game: 404 `CITY_MAPS_UNAVAILABLE`) and the
 //! browser WebSocket relay (`ws_relay.mjs`; `transport: "ws"` rooms still register/resolve; health reports
 //! `wsRelay.enabled: false`).
 
@@ -22,6 +22,7 @@ use crate::account_service::{AccountService, AccountServiceOptions};
 use crate::crash_reports::{CrashReports, CrashReportsOptions};
 use crate::enet_relay::{self, EnetRelay, EnetRelayOptions, RelayDriver, RelayEvent, RelayRoom, RelayRooms};
 use crate::game_saves::{GameSaves, GameSavesOptions};
+use crate::skins::skins::{Skins, SkinsOptions};
 use crate::guest_names::{GuestNames, GuestNamesOptions};
 use crate::mod_packs::{ModPacks, ModPacksOptions};
 use crate::moderation::{Moderation, ModerationHost, ModerationOptions};
@@ -248,6 +249,8 @@ pub struct ServerOptions {
     pub public_directory: Option<PathBuf>,
     pub custom_map_directory: Option<PathBuf>,
     pub save_directory: Option<PathBuf>,
+    /// Skins stored without an upstream (`<data dir>/skins`).
+    pub skin_directory: Option<PathBuf>,
     pub update_directory: Option<PathBuf>,
     /// When set, update files need this key in the `X-Download-Key` header (LASTROUTE_UPDATE_KEY).
     pub update_key: String,
@@ -291,6 +294,7 @@ impl Default for ServerOptions {
             public_directory: None,
             custom_map_directory: None,
             save_directory: None,
+            skin_directory: None,
             update_directory: None,
             update_key: String::new(),
             admin_password: String::new(),
@@ -353,7 +357,8 @@ pub struct State {
     pub(crate) regions: Regions,
     pub(crate) spawn_tickets: HashMap<String, (String, i64)>,
     pub(crate) mod_packs: ModPacks,
-    pub(crate) game_saves: GameSaves,
+    pub(crate) game_saves: Arc<Mutex<GameSaves>>,
+    pub(crate) skins: Skins,
     pub(crate) dev_tokens: HashMap<String, i64>,
     pub(crate) request_rates: HashMap<String, (u32, i64)>,
     pub(crate) reload_id: i64,
@@ -364,6 +369,8 @@ pub struct LastRouteServer {
     pub(crate) config: Config,
     pub(crate) state: Arc<Mutex<State>>,
     relay_driver: Mutex<Option<RelayDriver>>,
+    /// When the server was built: `uptimeSeconds` on /api/health.
+    started: std::time::Instant,
 }
 
 impl LastRouteServer {
@@ -437,12 +444,13 @@ impl LastRouteServer {
                 now: now.clone(),
                 ..Default::default()
             }),
-            game_saves: GameSaves::new(GameSavesOptions {
+            game_saves: Arc::new(Mutex::new(GameSaves::new(GameSavesOptions {
                 directory: opts.save_directory.clone(),
                 now: now.clone(),
                 upstream: opts.account_upstream.clone(),
                 ..Default::default()
-            }),
+            }))),
+            skins: Skins::new(SkinsOptions { directory: opts.skin_directory.clone(), upstream: opts.account_upstream.clone() }),
             dev_tokens: HashMap::new(),
             request_rates: HashMap::new(),
             reload_id: 0,
@@ -451,6 +459,7 @@ impl LastRouteServer {
             opts.instance.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-').take(32).collect();
         LastRouteServer {
             now,
+            started: std::time::Instant::now(),
             config: Config {
                 enet_room_ttl_ms: opts.enet_room_ttl_ms,
                 admin_ticket_ttl_ms: opts.admin_ticket_ttl_ms,
@@ -732,6 +741,7 @@ pub fn options_from_environment(env: &HashMap<String, String>, cwd: &Path) -> Re
         ),
         moderation_salt: env.get("LASTROUTE_MODERATION_SALT").cloned().unwrap_or_default(),
         save_directory: Some(path_of("LASTROUTE_SAVES_DIR").unwrap_or_else(|| data.join("saves"))),
+        skin_directory: Some(data.join("skins")),
         mod_pack_store_path: Some(path_of("LASTROUTE_MOD_INDEX_STORE").unwrap_or_else(|| data.join("mod_packs.json"))),
         crash_report_directory: Some(path_of("LASTROUTE_CRASH_REPORTS_DIR").unwrap_or_else(|| data.join("crash-reports"))),
         reserved_room_store_path: Some(path_of("LASTROUTE_RESERVED_ROOMS_STORE").unwrap_or_else(|| data.join("reserved_rooms.json"))),
@@ -744,7 +754,10 @@ pub fn options_from_environment(env: &HashMap<String, String>, cwd: &Path) -> Re
             .map(|c| c.trim().to_string())
             .filter(|c| !c.is_empty())
             .collect(),
-        mod_download_base: get("LASTROUTE_MOD_DOWNLOAD_BASE").unwrap_or_default(),
+        mod_download_base: crate::mod_packs::download_base_setting(
+            get("LASTROUTE_MODS_BASE").as_deref(),
+            get("LASTROUTE_MOD_DOWNLOAD_BASE").as_deref(),
+        ),
         public_directory: existing(path_of("LASTROUTE_PUBLIC_DIR")),
         custom_map_directory: existing(custom),
         update_directory: existing(path_of("LASTROUTE_UPDATE_DIR")),

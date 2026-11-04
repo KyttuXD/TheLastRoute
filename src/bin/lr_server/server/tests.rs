@@ -570,3 +570,72 @@ fn the_service_token_reaches_the_server_options_only_with_an_upstream_and_a_long
     assert_eq!(base(Some("x".repeat(31))), None, "a short token is unset");
     assert_eq!(base(Some("x".repeat(40))), Some("x".repeat(40)));
 }
+
+#[test]
+fn health_reports_status_revision_and_uptime_only() {
+    let server = app(|_| {});
+    let (status, health) = get(&server, "/api/health");
+    assert_eq!(status, 200);
+    assert_eq!(health["status"], json!("ok"));
+    assert!(health["uptimeSeconds"].as_u64().is_some(), "uptime is whole seconds");
+    assert!(health["revision"].is_null() || health["revision"].is_string());
+    assert!(health.get("token").is_none() && health.get("path").is_none() && health.get("dataDir").is_none());
+}
+
+#[test]
+fn mods_base_from_the_environment_becomes_the_pack_download_base() {
+    let base = |pairs: &[(&str, &str)]| {
+        let env: HashMap<String, String> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        options_from_environment(&env, Path::new(".")).unwrap().options.mod_download_base
+    };
+    assert_eq!(base(&[]), "", "unset: the catalogue has no download links, as before");
+    assert_eq!(base(&[("LASTROUTE_MODS_BASE", "https://files.test/mods/")]), "https://files.test/mods");
+    assert_eq!(base(&[("LASTROUTE_MOD_DOWNLOAD_BASE", "https://old.test/")]), "https://old.test");
+    assert_eq!(
+        base(&[("LASTROUTE_MODS_BASE", "https://new.test/mods"), ("LASTROUTE_MOD_DOWNLOAD_BASE", "https://old.test/")]),
+        "https://new.test/mods",
+        "LASTROUTE_MODS_BASE wins over the older name"
+    );
+}
+
+// --- admin JOIN ROOM: an owner's unknown code is reserved and hosted; a guest is refused; a live code is joined, not recreated
+#[test]
+fn admin_join_room_reserves_and_hosts_an_unknown_code_only_for_owners() {
+    let root = temp_root("admin_join");
+    let r = root.clone();
+    let server = app(move |o| {
+        o.account_store_path = Some(r.join("accounts.json"));
+        o.moderation_store_path = Some(r.join("moderation.json"));
+        o.reserved_room_store_path = Some(r.join("reserved_rooms.json"));
+        o.admin_password = "server setup proof".into();
+        o.account_rate_limit_max = 10_000;
+        o.api_rate_limit_max = 10_000;
+    });
+    let owner = sign_up(&server, "KYTTU", json!({ "adminProof": "server setup proof" }));
+    let ayttu = sign_up(&server, "AYTTU", json!({ "adminProof": "server setup proof" }));
+    let guest = sign_up(&server, "GUESTY", json!({}));
+    let create = |token: &str, code: &str| post(&server, "/api/admin/reserved-rooms", json!({ "sessionToken": token, "action": "create", "code": code }));
+
+    // a guest cannot reserve a code, so the code stays unknown to them
+    assert_eq!(create(&guest, "ADMN1").0, 403);
+    assert_eq!(get(&server, "/api/enet/rooms/ADMN1").0, 404);
+
+    // an owner reserves the unknown code once, and the owner hosts it
+    assert_eq!(create(&owner, "ADMN1").0, 201);
+    assert_eq!(create(&ayttu, "ADMN1").1["code"], json!("ROOM_ALREADY_RESERVED"));
+    let (status, hosted) = post(&server, "/api/enet/rooms/register", json!({ "code": "ADMN1", "port": 7000, "sessionToken": owner }));
+    assert_eq!(status, 201, "{hosted}");
+    assert!(hosted["token"].as_str().is_some_and(|t| !t.is_empty()), "{hosted}");
+    assert!(hosted["reserved"].is_object(), "{hosted}");
+
+    // a guest is still refused the hosted reserved code
+    assert_eq!(post(&server, "/api/enet/rooms/register", json!({ "code": "ADMN1", "port": 7001, "sessionToken": guest })).1["code"], json!("ROOM_RESERVED"));
+
+    // a code already live (hosted publicly) is joined, not recreated: the owner's create is refused
+    let (status, live) = post(&server, "/api/enet/rooms/register", json!({ "code": "KAT29", "port": 7002 }));
+    assert_eq!(status, 201, "{live}");
+    assert_eq!(create(&owner, "KAT29").1["code"], json!("ROOM_ALREADY_HOSTED"));
+    assert_eq!(get(&server, "/api/enet/rooms/KAT29").1["room"]["port"], json!(7002));
+    assert_eq!(post(&server, "/api/rooms/reserved/resolve", json!({ "code": "KAT29", "sessionToken": owner })).0, 404);
+    let _ = std::fs::remove_dir_all(&root);
+}

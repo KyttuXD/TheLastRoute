@@ -97,6 +97,16 @@ pub fn is_pack_id(id: &str) -> bool {
     patterns().id.is_match(id)
 }
 
+/// The public mod folder URL from settings: `LASTROUTE_MODS_BASE`, else the older `LASTROUTE_MOD_DOWNLOAD_BASE`.
+/// Blank or unset in both gives "", which means the catalogue has no download links (today's behaviour). A
+/// trailing slash is dropped so `<base>/<pack>/<version>/<path>` never gets a double slash.
+pub fn download_base_setting(mods_base: Option<&str>, legacy_base: Option<&str>) -> String {
+    let clean = |value: Option<&str>| {
+        value.map(str::trim).filter(|v| !v.is_empty()).map(|v| v.trim_end_matches('/').to_string())
+    };
+    clean(mods_base).or_else(|| clean(legacy_base)).unwrap_or_default()
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // JavaScript string helpers shared by this module, `pack_kinds` and `city_maps`.
 
@@ -431,7 +441,7 @@ pub fn validate_pack_manifest(input: &Value, limits: &ModLimits) -> Result<Value
 pub struct ModPacksOptions {
     /// `mod_packs.json`; None keeps the index in memory only.
     pub store_path: Option<PathBuf>,
-    /// public URL of the VPS 2 mod folder (`LASTROUTE_MOD_DOWNLOAD_BASE`); "" = not configured
+    /// public URL of the VPS 2 mod folder (`LASTROUTE_MODS_BASE`, see `download_base_setting`); "" = not configured
     pub download_base: String,
     pub limits: ModLimits,
     pub now: Clock,
@@ -788,6 +798,37 @@ mod tests {
             now: clock,
             ..Default::default()
         })
+    }
+
+    #[test]
+    fn mods_base_setting_rewrites_download_links_and_unset_keeps_today_behaviour() {
+        assert_eq!(download_base_setting(None, None), "");
+        assert_eq!(download_base_setting(Some("   "), Some("")), "");
+        assert_eq!(download_base_setting(Some("https://files.example.test/lr3d/mods/"), None), "https://files.example.test/lr3d/mods");
+        assert_eq!(download_base_setting(Some("https://a.test/mods"), Some("https://b.test/old/")), "https://a.test/mods");
+        assert_eq!(download_base_setting(None, Some("https://b.test/old/")), "https://b.test/old");
+
+        let store = temp_store("mod-packs-base");
+        let (clock, _) = util::manual_clock(1_700_000_000_000);
+        let mut linked = ModPacks::new(ModPacksOptions {
+            store_path: Some(store.clone()),
+            download_base: download_base_setting(Some("https://mods.kyttuslab.org/"), None),
+            now: clock.clone(),
+            ..Default::default()
+        });
+        assert_eq!(linked.list().1["downloadConfigured"], json!(true));
+        let registered = linked.register(&json!({ "pack": manifest(json!({})) }), "KYTTU");
+        assert_eq!(registered.0, 200, "{}", registered.1);
+        assert_eq!(registered.1["pack"]["downloadBase"], json!("https://mods.kyttuslab.org/neon_halls/1.0.0/"));
+        let hall = registered.1["pack"]["files"].as_array().unwrap().iter().find(|f| f["path"] == "props/hall.json").unwrap().clone();
+        assert_eq!(hall["sha256"], json!(sha("hall")), "the sha256 is kept with the rewritten link");
+        assert_eq!(hall["size"], json!(4), "the size is kept with the rewritten link");
+        let _ = std::fs::remove_dir_all(store.parent().unwrap());
+
+        let mut unset = ModPacks::new(ModPacksOptions { download_base: download_base_setting(None, None), now: clock, ..Default::default() });
+        assert_eq!(unset.list(), (200, json!({ "ok": true, "packs": [], "downloadConfigured": false })));
+        let plain = unset.register(&json!({ "pack": manifest(json!({})) }), "KYTTU");
+        assert_eq!(plain.1["pack"]["downloadBase"], json!(""), "no base means no download links");
     }
 
     // Node's version of this test goes through server.mjs (owner/player 403s are the router's); this covers the

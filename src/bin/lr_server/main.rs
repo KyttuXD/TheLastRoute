@@ -25,6 +25,7 @@ mod packs;
 mod relay;
 mod rooms;
 mod saves;
+mod skins;
 
 // Re-exports keep the flat `crate::module` paths short.
 use accounts::{account_service, guest_names};

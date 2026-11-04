@@ -72,6 +72,14 @@ impl Upstream {
         parse_reply(&raw)
     }
 
+    /// GETs `path` and answers with the status and the body bytes as they came (a PNG, for a skin). Connection
+    /// failures are `UpstreamError::Unavailable`; the caller decides the reply.
+    pub fn get_raw(&self, path: &str) -> Result<(u16, Vec<u8>), UpstreamError> {
+        let request = format!("GET {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n", self.authority).into_bytes();
+        let raw = self.exchange(&request)?;
+        parse_raw_reply(&raw)
+    }
+
     fn exchange(&self, request: &[u8]) -> Result<Vec<u8>, UpstreamError> {
         let unavailable = |error: std::io::Error| UpstreamError::Unavailable(error.to_string());
         let mut stream = self.connect().map_err(unavailable)?;
@@ -106,6 +114,13 @@ fn request_bytes(authority: &str, path: &str, payload: &str) -> Vec<u8> {
 /// Parses one HTTP/1.x reply into its status and JSON body. The body is read by Content-Length, by chunked
 /// transfer-coding, or to the end of the reply.
 pub fn parse_reply(raw: &[u8]) -> Result<(u16, Value), UpstreamError> {
+    let (status, payload) = parse_raw_reply(raw)?;
+    let value: Value = serde_json::from_slice(&payload).map_err(|_| UpstreamError::BadReply("the body is not JSON".into()))?;
+    Ok((status, value))
+}
+
+/// [`parse_reply`] without the JSON step: the status and the body bytes.
+pub fn parse_raw_reply(raw: &[u8]) -> Result<(u16, Vec<u8>), UpstreamError> {
     let bad = |detail: &str| UpstreamError::BadReply(detail.to_string());
     if raw.len() > UPSTREAM_REPLY_MAX_BYTES {
         return Err(bad("the reply is over 1 MB"));
@@ -134,8 +149,7 @@ pub fn parse_reply(raw: &[u8]) -> Result<(u16, Value), UpstreamError> {
             None => body.to_vec(),
         }
     };
-    let value: Value = serde_json::from_slice(&payload).map_err(|_| bad("the body is not JSON"))?;
-    Ok((status, value))
+    Ok((status, payload))
 }
 
 fn parse_status(line: &str) -> Result<u16, UpstreamError> {
@@ -267,6 +281,23 @@ pub(crate) mod test_website {
                 let _ = stream.write_all(response.as_bytes());
             }
             seen
+        });
+        (upstream, handle)
+    }
+
+    /// A stand-in website that answers one connection with `reply` (raw bytes, so a PNG can be served). The join handle
+    /// returns the request line's path.
+    pub(crate) fn fake_website_bytes(reply: Vec<u8>) -> (Upstream, JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let upstream = Upstream::parse(&format!("http://127.0.0.1:{port}")).unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(UPSTREAM_TIMEOUT)).unwrap();
+            let raw = read_request(&mut stream);
+            let path = raw.lines().next().unwrap_or("").split(' ').nth(1).unwrap_or("").to_string();
+            let _ = stream.write_all(&reply);
+            path
         });
         (upstream, handle)
     }

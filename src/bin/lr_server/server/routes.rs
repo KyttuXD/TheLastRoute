@@ -17,6 +17,25 @@ fn skins_unavailable() -> Response {
     json_response(503, &json!({ "ok": false, "code": "SKINS_UNAVAILABLE", "error": "Skins are not available on this server" }), &[])
 }
 
+/// The skin id of a `GET /api/v1/skins/<id>` request.
+fn skin_read_id(method: &str, path: &str) -> Option<String> {
+    if method != "GET" {
+        return None;
+    }
+    regex!(r"^/api/v1/skins/([^/]{1,128})$").captures(path).map(|caps| caps[1].to_string())
+}
+
+/// A stored skin: the PNG bytes, cached for good (the id is the hash of the bytes, so it never changes).
+fn png_response(png: Vec<u8>) -> Response {
+    let length = png.len().to_string();
+    let extra = [
+        ("content-type", "image/png".to_string()),
+        ("content-length", length),
+        ("cache-control", "public, max-age=31536000, immutable".to_string()),
+    ];
+    Response { status: 200, headers: merge_headers(response_headers(), &extra), body: png }
+}
+
 fn unknown_endpoint() -> Reply {
     (404, json!({ "ok": false, "code": "UNKNOWN_ENDPOINT", "error": "Unknown endpoint" }))
 }
@@ -78,6 +97,9 @@ fn owner_identity(accounts: &AccountService, body: &Value) -> bool {
         .map(|identity| identity.get("adminOwner") == Some(&Value::Bool(true)))
         .unwrap_or(false)
 }
+
+/// The build revision baked in at compile time from `LASTROUTE_BUILD_REVISION`; null when the build did not set it.
+const BUILD_REVISION: Option<&str> = option_env!("LASTROUTE_BUILD_REVISION");
 
 impl LastRouteServer {
     fn rate_limit(&self, state: &mut State, request: &Request, pathname: &str) -> i64 {
@@ -169,6 +191,29 @@ impl LastRouteServer {
                 &[("retry-after", retry_after.to_string())],
             );
         }
+        // Skin GET: the store may forward to the website, so the state lock is released before it runs.
+        if let Some(caps) = skin_read_id(method, path) {
+            let skins = state.skins.clone();
+            drop(guard);
+            return match skins.read(&caps) {
+                Ok(png) => png_response(png),
+                Err(refused) => reply(refused),
+            };
+        }
+        // Save routes: the state lock is released first, because a save writes files and may wait on the website.
+        if method == "GET" || method == "PUT" {
+            if let Some((game_id, slot)) = match_save_path(path) {
+                let saves = state.game_saves.clone();
+                let accounts = state.accounts.clone();
+                drop(guard);
+                return self.save_route(&saves, &accounts, request, &game_id, &slot);
+            }
+        }
+        // Skin checks: the website session lookup runs with the state lock released (see `skin_put_checks`).
+        if (method == "PUT" && regex!(r"^/api/v1/skins/([A-Za-z0-9_]{1,32})$").is_match(path)) || (method == "POST" && path == "/api/skins/upload") {
+            let (refused, _guard) = self.skin_put_checks(guard, request);
+            return refused.unwrap_or_else(skins_unavailable);
+        }
         if let Some(response) = self.route_reads(state, request) {
             return response;
         }
@@ -181,9 +226,6 @@ impl LastRouteServer {
                     "staticFiles": self.config.public_directory.is_some() }), &[]);
             }
             return json_response(404, &json!({ "ok": false, "code": "NOT_FOUND", "error": "Not found" }), &[]);
-        }
-        if path == "/api/skins/upload" {
-            return self.skin_put_checks(state, request).unwrap_or_else(skins_unavailable);
         }
         if path == "/api/regions/report" {
             let raw = String::from_utf8_lossy(&request.body).to_string();
@@ -213,6 +255,13 @@ impl LastRouteServer {
                 _ => return json_response(400, &json!({ "ok": false, "error": "INVALID JSON BODY" }), &[]),
             }
         };
+        // Skin upload: forwarded to the website when one is set, so the state lock is released before it runs.
+        if path == "/api/v1/skins" {
+            let skins = state.skins.clone();
+            let accounts = state.accounts.clone();
+            drop(guard);
+            return reply(skins.upload(&*accounts, &body));
+        }
         if let Some(response) = self.route_posts(state, request, &body) {
             return response;
         }
@@ -221,13 +270,30 @@ impl LastRouteServer {
         reply(result)
     }
 
-    /// The size and moderation checks a skin upload passes before the (unported) skin store.
-    fn skin_put_checks(&self, state: &State, request: &Request) -> Option<Response> {
-        if request.body_overflow || request.body.len() > SKIN_MAX_BYTES {
-            return Some(json_response(413, &json!({ "ok": false, "code": "BAD_SKIN", "error": "Skin refused: the file is too large" }), &[]));
+    /// GET/PUT `/api/v1/saves/:gameId/:slot`, run without the state lock. Only the save store's own lock is held.
+    fn save_route(&self, saves: &Mutex<GameSaves>, accounts: &AccountService, request: &Request, game_id: &str, slot: &str) -> Response {
+        let token = request.header("x-session-token");
+        if request.method == "GET" {
+            return reply(saves.lock().unwrap().get(accounts, &token, game_id, slot));
         }
-        let user = state.accounts.session_username(&request.header(SKIN_TOKEN_HEADER)).unwrap_or_default();
-        state.moderation.check_skin_upload(&user).map(reply)
+        if request.body_overflow || request.body.len() > SAVE_MAX_BYTES {
+            return json_response(413, &json!({ "ok": false, "code": "SAVE_TOO_LARGE",
+                "error": format!("A save is at most {} KB", SAVE_MAX_BYTES / 1024) }), &[]);
+        }
+        let Ok(body) = serde_json::from_slice::<Value>(&request.body) else {
+            return json_response(400, &json!({ "ok": false, "code": "BAD_SAVE", "error": "INVALID JSON BODY" }), &[]);
+        };
+        reply(saves.lock().unwrap().put(accounts, &token, game_id, slot, &body))
+    }
+
+    /// The size and moderation checks a skin upload passes before the (unported) skin store. The session lookup can
+    /// forward to the website, so it runs with the state lock released; the moderation check takes the lock again.
+    fn skin_put_checks<'a>(&'a self, guard: MutexGuard<'a, State>, request: &Request) -> (Option<Response>, MutexGuard<'a, State>) {
+        if request.body_overflow || request.body.len() > SKIN_MAX_BYTES {
+            return (Some(json_response(413, &json!({ "ok": false, "code": "BAD_SKIN", "error": "Skin refused: the file is too large" }), &[])), guard);
+        }
+        let (user, guard) = self.with_accounts(guard, |accounts| accounts.session_username(&request.header(SKIN_TOKEN_HEADER)).unwrap_or_default());
+        (guard.moderation.check_skin_upload(&user).map(reply), guard)
     }
 
     /// GET/HEAD/PUT routes that come before the POST-only section.
@@ -241,7 +307,8 @@ impl LastRouteServer {
         if method == "GET" && path == "/api/health" {
             let relay = state.relay.as_ref().map(|r| r.relay_status()).unwrap_or(json!({ "enabled": false }));
             return Some(json_response(200, &json!({
-                "ok": true, "runtime": "rust", "service": "last-route-backend", "instance": self.config.instance,
+                "ok": true, "status": "ok", "revision": BUILD_REVISION, "uptimeSeconds": self.started.elapsed().as_secs(),
+                "runtime": "rust", "service": "last-route-backend", "instance": self.config.instance,
                 "port": request.local_port, "rooms": state.dir.enet_rooms.len(), "relay": relay,
                 "wsRelay": { "enabled": false, "path": WS_PATH, "rooms": 0, "guests": 0, "packets": 0, "bytes": 0 },
                 "webRooms": state.room_service.rooms_len(), "reloadId": state.reload_id,
@@ -262,31 +329,6 @@ impl LastRouteServer {
             if let Some(caps) = regex!(r"^/api/mods/packs/([a-z0-9][a-z0-9_]{2,31})$").captures(path) {
                 let result = state.mod_packs.get(&caps[1], request.query_param("version").as_deref());
                 return Some(json_response(result.0, &result.1, &[("cache-control", "public, max-age=60".into())]));
-            }
-        }
-        if (method == "GET" || method == "PUT") && regex!(r"^/api/v1/skins/([A-Za-z0-9_]{1,32})$").is_match(path) {
-            if method == "PUT" {
-                if let Some(refused) = self.skin_put_checks(state, request) {
-                    return Some(refused);
-                }
-            }
-            return Some(skins_unavailable());
-        }
-        if method == "GET" || method == "PUT" {
-            if let Some((game_id, slot)) = match_save_path(path) {
-                let token = request.header("x-session-token");
-                if method == "GET" {
-                    return Some(reply(state.game_saves.get(&*state.accounts, &token, &game_id, &slot)));
-                }
-                if request.body_overflow || request.body.len() > SAVE_MAX_BYTES {
-                    return Some(json_response(413, &json!({ "ok": false, "code": "SAVE_TOO_LARGE",
-                        "error": format!("A save is at most {} KB", SAVE_MAX_BYTES / 1024) }), &[]));
-                }
-                let Ok(body) = serde_json::from_slice::<Value>(&request.body) else {
-                    return Some(json_response(400, &json!({ "ok": false, "code": "BAD_SAVE", "error": "INVALID JSON BODY" }), &[]));
-                };
-                let State { game_saves, accounts, .. } = state;
-                return Some(reply(game_saves.put(&**accounts, &token, &game_id, &slot, &body)));
             }
         }
         if get_or_head {
@@ -454,6 +496,13 @@ impl LastRouteServer {
                 let live = state.dir.enet_rooms.get(&normalize_enet_code(body.get("code")));
                 if live.map(|l| now - l.last_seen > RESERVED_TAKEOVER_MS).unwrap_or(true) {
                     return Some(json_response(409, &json!({ "ok": false, "code": "ROOM_NOT_LIVE", "error": "Nobody is hosting that room right now" }), &[]));
+                }
+            }
+            // an owner's JOIN ROOM on a code someone is already hosting joins that room: never reserve over it
+            if body.get("action").and_then(Value::as_str) == Some("create") {
+                let live = state.dir.enet_rooms.get(&normalize_enet_code(body.get("code"))).filter(|l| now - l.last_seen <= RESERVED_TAKEOVER_MS);
+                if live.is_some() {
+                    return Some(json_response(409, &json!({ "ok": false, "code": "ROOM_ALREADY_HOSTED", "error": "Someone is hosting that code" }), &[]));
                 }
             }
             let mut result = state.dir.reserved.as_mut().unwrap().admin(body, &owner);
@@ -854,5 +903,119 @@ impl LastRouteServer {
             }
         }
         json_response(201, &Value::Object(out), &[])
+    }
+}
+
+#[cfg(test)]
+mod skin_lock_tests {
+    use super::*;
+    use crate::upstream::UPSTREAM_TIMEOUT;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// A website that holds its first reply until `release` fires, so a forwarded skin call stays in flight.
+    fn slow_website(release: mpsc::Receiver<()>, reply: &'static str) -> Upstream {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(UPSTREAM_TIMEOUT)).unwrap();
+            let mut buffer = [0u8; 4096];
+            let _ = stream.read(&mut buffer);
+            let _ = release.recv();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                reply.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        });
+        Upstream::parse(&format!("http://127.0.0.1:{port}")).unwrap()
+    }
+
+    #[test]
+    fn a_save_load_in_flight_on_the_website_does_not_block_another_request() {
+        let (release, released) = mpsc::channel();
+        let upstream = slow_website(released, r#"{"ok":false,"code":"NO_SAVE"}"#);
+        let server = Arc::new(LastRouteServer::new(ServerOptions { account_upstream: Some(upstream), ..Default::default() }));
+
+        let loading = {
+            let server = server.clone();
+            std::thread::spawn(move || server.handle(&Request::new("GET", "/api/v1/saves/last-route-rust/run")))
+        };
+        std::thread::sleep(Duration::from_millis(200));
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let health_server = server.clone();
+        std::thread::spawn(move || {
+            let response = health_server.handle(&Request::new("GET", "/api/health"));
+            let _ = done_tx.send(response.status);
+        });
+        let status = done_rx.recv_timeout(Duration::from_secs(2)).expect("the health request waited on a save load");
+        assert_eq!(status, 200);
+
+        release.send(()).unwrap();
+        let _ = loading.join().unwrap();
+    }
+
+    #[test]
+    fn a_forwarded_skin_upload_in_flight_does_not_block_another_request() {
+        let (release, released) = mpsc::channel();
+        let upstream = slow_website(released, r#"{"ok":true,"id":"stored-by-website"}"#);
+        let server = Arc::new(LastRouteServer::new(ServerOptions { account_upstream: Some(upstream), ..Default::default() }));
+
+        let uploading = {
+            let server = server.clone();
+            std::thread::spawn(move || {
+                let request = Request::json("POST", "/api/v1/skins", &json!({ "sessionToken": "token", "png": "AAAA" }));
+                server.handle(&request)
+            })
+        };
+        // Give the upload time to reach the slow website and sit there.
+        std::thread::sleep(Duration::from_millis(200));
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let health_server = server.clone();
+        std::thread::spawn(move || {
+            let response = health_server.handle(&Request::new("GET", "/api/health"));
+            let _ = done_tx.send(response.status);
+        });
+        let status = done_rx.recv_timeout(Duration::from_secs(2)).expect("the health request waited on the skin upload");
+        assert_eq!(status, 200);
+
+        release.send(()).unwrap();
+        let upload = uploading.join().unwrap();
+        assert_eq!((upload.status, upload.json_body()["id"].clone()), (200, json!("stored-by-website")));
+    }
+
+    #[test]
+    fn a_skin_upload_session_lookup_in_flight_does_not_block_another_request() {
+        let (release, released) = mpsc::channel();
+        let upstream = slow_website(released, r#"{"ok":true,"username":"KYTTU"}"#);
+        let server = Arc::new(LastRouteServer::new(ServerOptions { account_upstream: Some(upstream), ..Default::default() }));
+
+        let uploading = {
+            let server = server.clone();
+            std::thread::spawn(move || {
+                let request = Request::new("POST", "/api/skins/upload").with_header(SKIN_TOKEN_HEADER, "token");
+                server.handle(&request)
+            })
+        };
+        // Give the session lookup time to reach the slow website and sit there.
+        std::thread::sleep(Duration::from_millis(200));
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let health_server = server.clone();
+        std::thread::spawn(move || {
+            let response = health_server.handle(&Request::new("GET", "/api/health"));
+            let _ = done_tx.send(response.status);
+        });
+        let status = done_rx.recv_timeout(Duration::from_secs(2)).expect("the health request waited on the skin session lookup");
+        assert_eq!(status, 200);
+
+        release.send(()).unwrap();
+        let upload = uploading.join().unwrap();
+        assert_eq!((upload.status, upload.json_body()["code"].clone()), (503, json!("SKINS_UNAVAILABLE")));
     }
 }
