@@ -37,7 +37,7 @@ pub fn start(mode_id: &str, seed: i64, calls: &CallsData) -> Option<Session> {
         "story" => Session::Story(facility::Facility::start(facility::FacilityOptions::new(1, seed))),
         "descent" => Session::Descent(descent::DescentShift::start(1, seed, None, calls)),
         "dayshift" => Session::Dayshift(salvage_run::SalvageRun::new(1, seed, salvage_run::Options::default())),
-        "extra" => Session::Extra(open_air::OpenAir::new(open_air::Watch::from_level(1), seed, open_air::Levels::LISTED, false)),
+        "extra" => Session::Extra(open_air::OpenAir::new(open_air::Watch::from_level(1), seed, open_air::Levels::listed(), false)),
         "mixed" => Session::Mixed(mixed_shift::MixedShift::start(seed, 0)),
         _ => return None,
     })

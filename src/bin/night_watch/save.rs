@@ -10,13 +10,10 @@ use std::path::{Path, PathBuf};
 pub const NIGHTS: u32 = 7;
 pub const CLASSIC: &str = "classic";
 
-/// The Night Watch game id on the server's save routes (/api/v1/saves/night-watch-rust/progress).
-pub const SERVER_GAME_ID: &str = "night-watch-rust";
-/// The slot that holds all nights' progress on the server.
-pub const SERVER_SLOT: &str = "progress";
 
 const FOLDER: &str = "night-watch";
 const FILE: &str = "progress.json";
+#[cfg(test)]
 const SCARES: [&str; 3] = ["full", "short", "off"];
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -162,6 +159,27 @@ impl NightWatchSave {
         }
     }
 
+    /// The best score on record for one night of a mode (`night_best_<mode>` maps night number to score).
+    pub fn night_best(&self, mode: &str, night: u32) -> Option<u32> {
+        self.root
+            .get(&format!("night_best_{mode}"))
+            .and_then(Value::as_object)
+            .and_then(|m| m.get(&night.to_string()))
+            .and_then(Value::as_u64)
+            .map(|n| n.min(u32::MAX as u64) as u32)
+    }
+
+    /// Keeps `score` for a night when it beats the one on record.
+    pub fn record_night_best(&mut self, mode: &str, night: u32, score: u32) {
+        if night < 1 || self.night_best(mode, night).is_some_and(|best| best >= score) {
+            return;
+        }
+        let key = format!("night_best_{mode}");
+        let mut map = self.root.get(&key).and_then(Value::as_object).cloned().unwrap_or_default();
+        map.insert(night.to_string(), json!(score));
+        self.root.insert(key, Value::Object(map));
+    }
+
     /// The Custom Night sliders last used in a mode: hunter id to 0..=20.
     pub fn custom_values(&self, mode: &str) -> Vec<(String, u32)> {
         self.root
@@ -183,6 +201,7 @@ impl NightWatchSave {
         self.root.insert(format!("custom_{mode}"), Value::Object(map));
     }
 
+    #[cfg(test)]
     pub fn subtitles(&self) -> bool {
         self.root
             .get("subtitles")
@@ -190,19 +209,7 @@ impl NightWatchSave {
             .unwrap_or(true)
     }
 
-    pub fn set_subtitles(&mut self, on: bool) {
-        self.root.insert("subtitles".into(), json!(on));
-    }
-
-    /// Calm mode: no lamp flicker or glitching.
-    pub fn calm(&self) -> bool {
-        self.root.get("calm").and_then(Value::as_bool).unwrap_or(false)
-    }
-
-    pub fn set_calm(&mut self, on: bool) {
-        self.root.insert("calm".into(), json!(on));
-    }
-
+    #[cfg(test)]
     /// Scare setting: "full", "short" or "off".
     pub fn scare(&self) -> &str {
         self.root
@@ -212,20 +219,29 @@ impl NightWatchSave {
             .unwrap_or("full")
     }
 
+    #[cfg(test)]
     pub fn set_scare(&mut self, value: &str) {
         if SCARES.contains(&value) {
             self.root.insert("scare".into(), json!(value));
         }
-    }
-
-    pub fn reset(&mut self) {
-        self.root.clear();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn night_best_keeps_the_highest_score_per_night() {
+        let mut save = NightWatchSave::from_json("{}");
+        assert_eq!(save.night_best("classic", 2), None);
+        save.record_night_best("classic", 2, 300);
+        save.record_night_best("classic", 2, 120);
+        assert_eq!(save.night_best("classic", 2), Some(300));
+        save.record_night_best("classic", 2, 450);
+        assert_eq!(save.night_best("classic", 2), Some(450));
+        assert_eq!(save.night_best("classic", 1), None);
+    }
 
     #[test]
     fn clearing_a_night_unlocks_the_next() {

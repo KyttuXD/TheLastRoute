@@ -1,0 +1,12 @@
+{
+	"mode": "facility",
+	"version": 1,
+	"rooms": [
+		{ "id": "breaker", "label": "BREAKER ROOM", "exits": { "left": "", "right": "gallery", "lift": "" } },
+		{ "id": "gallery", "label": "GALLERY", "exits": { "left": "breaker", "right": "control", "lift": "" } },
+		{ "id": "control", "label": "CONTROL", "exits": { "left": "gallery", "right": "workshop", "lift": "lift" } },
+		{ "id": "workshop", "label": "WORKSHOP", "exits": { "left": "control", "right": "auditorium", "lift": "" } },
+		{ "id": "auditorium", "label": "AUDITORIUM", "exits": { "left": "workshop", "right": "", "lift": "" } },
+		{ "id": "lift", "label": "LIFT", "exits": { "left": "", "right": "", "lift": "control" } }
+	]
+}

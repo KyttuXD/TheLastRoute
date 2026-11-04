@@ -4,43 +4,124 @@
 //! The shell drives `DescentShift::step` with the clock and the door hold, `DescentShift::act` with the panel presses and
 //! `DescentShift::call_update` with Zellia's call. Art and sound are left to the shell.
 
-use crate::data::CallsData;
+use crate::data::{self, CallsData};
 use crate::framework::{jitter, CallEvent, CallScript, NightWatchStream};
 
 const MODE_ID: &str = "descent";
-/// Highest AI level a hunter takes on a Custom Night (Godot `NightWatchModesData.MAX_AI`).
-pub const MAX_AI: i32 = 20;
-/// Score per AI level on a Custom Night (Godot `NightWatchModesData.POINTS_PER_LEVEL`).
-pub const POINTS_PER_LEVEL: i32 = 10;
 
-const DESCENTS: usize = 5;
-/// Elise's AI level for each descent; descent 1 keeps her away.
-const LEVELS: [i32; DESCENTS] = [0, 5, 8, 11, 14];
+/// Every tunable of the mode, read once from `data/rules/descent.json` when a shift starts. Tables run per descent.
+#[derive(Clone, Debug)]
+struct Tuning {
+    /// Elise's AI level for each descent; descent 1 keeps her away.
+    levels: Vec<i32>,
+    /// Highest AI level on a Custom Night.
+    max_ai: i32,
+    /// Score per AI level on a Custom Night.
+    points_per_level: i32,
+    /// The stages of each descent before the order is drawn; the door hold always comes last.
+    runs: Vec<Vec<StageKind>>,
+    wires_lit: Vec<usize>,
+    wires_buttons: Vec<usize>,
+    lit_spread: i64,
+    lit_min: i64,
+    memory_length: Vec<usize>,
+    length_spread: i64,
+    length_min: i64,
+    show_on_ms: f64,
+    show_off_ms: f64,
+    show_lead_ms: f64,
+    replay_lead_factor: f64,
+    show_pace_spread: f64,
+    pipes_grid: Vec<usize>,
+    pipes_detours: Vec<usize>,
+    pipes_turns: Vec<usize>,
+    rate_per_level: f64,
+    wrong_bump: f64,
+    stage_relief: f64,
+    pipe_rate: f64,
+    surge_spread: f64,
+    surge_every_ms: f64,
+    surge_every_spread: f64,
+    hold_ms: f64,
+    hold_slip: f64,
+    hold_rate: f64,
+    ride_ms: f64,
+}
 
-const WIRES_LIT: [usize; DESCENTS] = [3, 3, 4, 4, 5];
-const WIRES_BUTTONS: [usize; DESCENTS] = [4, 4, 5, 6, 6];
-const MEMORY_LENGTH: [usize; DESCENTS] = [3, 3, 4, 4, 5];
-const PIPES_GRID: [usize; DESCENTS] = [4, 4, 4, 5, 5];
-const PIPES_DETOURS: [usize; DESCENTS] = [0, 0, 0, 1, 1];
-const PIPES_TURNS: [usize; DESCENTS] = [2, 2, 2, 2, 2];
+impl Tuning {
+    fn load() -> Tuning {
+        let r = data::rules(MODE_ID);
+        let table = |path: &str| {
+            data::list(r, path)
+                .iter()
+                .map(|v| v.as_i64().unwrap_or_else(|| panic!("night_watch data for mode '{MODE_ID}': '{path}' holds a non-integer")))
+                .collect::<Vec<i64>>()
+        };
+        let sizes = |path: &str| table(path).into_iter().map(|n| n as usize).collect::<Vec<usize>>();
+        let tuning = Tuning {
+            levels: table("elise_levels").into_iter().map(|n| n as i32).collect(),
+            max_ai: data::int(r, "max_ai") as i32,
+            points_per_level: data::int(r, "points_per_level") as i32,
+            runs: data::list(r, "runs")
+                .iter()
+                .map(|run| run.as_array().map(Vec::as_slice).unwrap_or(&[]).iter().map(|k| StageKind::from_key(k.as_str().unwrap_or(""))).collect())
+                .collect(),
+            wires_lit: sizes("wires.lit"),
+            wires_buttons: sizes("wires.buttons"),
+            lit_spread: data::int(r, "wires.lit_spread"),
+            lit_min: data::int(r, "wires.lit_min"),
+            memory_length: sizes("memory.length"),
+            length_spread: data::int(r, "memory.length_spread"),
+            length_min: data::int(r, "memory.length_min"),
+            show_on_ms: data::num(r, "memory.show_on_ms"),
+            show_off_ms: data::num(r, "memory.show_off_ms"),
+            show_lead_ms: data::num(r, "memory.show_lead_ms"),
+            replay_lead_factor: data::num(r, "memory.replay_lead_factor"),
+            show_pace_spread: data::num(r, "memory.pace_spread"),
+            pipes_grid: sizes("pipes.grid"),
+            pipes_detours: sizes("pipes.detours"),
+            pipes_turns: sizes("pipes.turns"),
+            rate_per_level: data::num(r, "threat.rate_per_level"),
+            wrong_bump: data::num(r, "threat.wrong_bump"),
+            stage_relief: data::num(r, "threat.stage_relief"),
+            pipe_rate: data::num(r, "threat.pipe_rate"),
+            surge_spread: data::num(r, "threat.surge_spread"),
+            surge_every_ms: data::num(r, "threat.surge_every_ms"),
+            surge_every_spread: data::num(r, "threat.surge_every_spread"),
+            hold_ms: data::num(r, "hold.ms"),
+            hold_slip: data::num(r, "hold.slip"),
+            hold_rate: data::num(r, "hold.rate"),
+            ride_ms: data::num(r, "ride_ms"),
+        };
+        let n = tuning.levels.len();
+        let rows = [
+            tuning.runs.len(),
+            tuning.wires_lit.len(),
+            tuning.wires_buttons.len(),
+            tuning.memory_length.len(),
+            tuning.pipes_grid.len(),
+            tuning.pipes_detours.len(),
+            tuning.pipes_turns.len(),
+        ];
+        assert!(n > 0 && rows.iter().all(|len| *len == n), "night_watch data for mode '{MODE_ID}': the per-descent tables must all have {n} rows");
+        tuning
+    }
 
-const LIT_SPREAD: i64 = 1;
-const LENGTH_SPREAD: i64 = 1;
-const RATE_PER_LEVEL: f64 = 0.22;
-const WRONG_BUMP: f64 = 13.0;
-const STAGE_RELIEF: f64 = 34.0;
-const RIDE_MS: f64 = 1800.0;
-const SHOW_ON_MS: f64 = 520.0;
-const SHOW_OFF_MS: f64 = 260.0;
-const SHOW_LEAD_MS: f64 = 700.0;
-const SHOW_PACE_SPREAD: f64 = 0.15;
-const HOLD_MS: f64 = 3200.0;
-const HOLD_SLIP: f64 = 22.0;
-const HOLD_RATE: f64 = 2.6;
-const PIPE_RATE: f64 = 0.5;
-const SURGE_SPREAD: f64 = 0.2;
-const SURGE_EVERY_MS: f64 = 9000.0;
-const SURGE_EVERY_SPREAD: f64 = 0.33;
+    /// How many descents the mode has.
+    fn descents(&self) -> usize {
+        self.levels.len()
+    }
+
+    fn draw_lit(&self, base: usize, rng: &mut NightWatchStream) -> usize {
+        let offset = draw_index(rng, (2 * self.lit_spread + 1) as usize) as i64 - self.lit_spread;
+        (base as i64 + offset).max(self.lit_min) as usize
+    }
+
+    fn draw_length(&self, base: usize, rng: &mut NightWatchStream) -> usize {
+        let offset = draw_index(rng, (2 * self.length_spread + 1) as usize) as i64 - self.length_spread;
+        (base as i64 + offset).max(self.length_min) as usize
+    }
+}
 
 /// Pipe grid steps as (row, col) for N, E, S and W.
 const STEP: [(isize, isize); 4] = [(-1, 0), (0, 1), (1, 0), (0, -1)];
@@ -58,25 +139,26 @@ pub enum StageKind {
 }
 
 impl StageKind {
+    /// The panel's title, from `stage_titles` in the rules file.
     pub fn title(self) -> &'static str {
+        data::text(data::rules(MODE_ID), &format!("stage_titles.{}", self.key()))
+    }
+
+    /// The key the rules file uses for this stage.
+    fn key(self) -> &'static str {
         match self {
-            StageKind::Wires => "FUSE BOXES",
-            StageKind::Memory => "SIGNAL PANEL",
-            StageKind::Pipes => "PIPEWORK",
-            StageKind::Hold => "DOOR",
+            StageKind::Wires => "wires",
+            StageKind::Memory => "memory",
+            StageKind::Pipes => "pipes",
+            StageKind::Hold => "hold",
         }
     }
-}
 
-/// The stages of each descent before the order is drawn; the door hold always comes last.
-fn runs(descent: usize) -> &'static [StageKind] {
-    use StageKind::*;
-    match descent {
-        1 => &[Wires],
-        2 => &[Wires, Memory],
-        3 => &[Wires, Memory, Pipes],
-        4 => &[Wires, Memory, Pipes, Hold],
-        _ => &[Wires, Memory, Pipes, Wires, Hold],
+    fn from_key(key: &str) -> StageKind {
+        [StageKind::Wires, StageKind::Memory, StageKind::Pipes, StageKind::Hold]
+            .into_iter()
+            .find(|kind| kind.key() == key)
+            .unwrap_or_else(|| panic!("night_watch data for mode '{MODE_ID}': unknown stage '{key}' in runs"))
     }
 }
 
@@ -176,14 +258,30 @@ pub struct Memory {
     pub phase: MemoryPhase,
     pub t: f64,
     pub lit: Option<usize>,
+    on_ms: f64,
+    off_ms: f64,
+    lead_ms: f64,
+    replay_lead_factor: f64,
 }
 
 impl Memory {
-    fn new(length: usize, rng: &mut NightWatchStream) -> Memory {
+    fn new(length: usize, tune: &Tuning, rng: &mut NightWatchStream) -> Memory {
         let seq = (0..length).map(|_| draw_index(rng, 4)).collect();
-        let pace = jitter(1.0, SHOW_PACE_SPREAD, rng);
+        let pace = jitter(1.0, tune.show_pace_spread, rng);
         let hues = shuffle(range_vec(4), rng);
-        Memory { seq, pace, hues, step: 0, phase: MemoryPhase::Show, t: -SHOW_LEAD_MS, lit: None }
+        Memory {
+            seq,
+            pace,
+            hues,
+            step: 0,
+            phase: MemoryPhase::Show,
+            t: -tune.show_lead_ms,
+            lit: None,
+            on_ms: tune.show_on_ms,
+            off_ms: tune.show_off_ms,
+            lead_ms: tune.show_lead_ms,
+            replay_lead_factor: tune.replay_lead_factor,
+        }
     }
 
     fn advance_show(&mut self, dt_ms: f64) {
@@ -195,8 +293,8 @@ impl Memory {
             self.lit = None;
             return;
         }
-        let on_ms = SHOW_ON_MS * self.pace;
-        let cycle = (SHOW_ON_MS + SHOW_OFF_MS) * self.pace;
+        let on_ms = self.on_ms * self.pace;
+        let cycle = (self.on_ms + self.off_ms) * self.pace;
         let k = (self.t / cycle).floor() as usize;
         if k >= self.seq.len() {
             self.phase = MemoryPhase::Input;
@@ -217,7 +315,7 @@ impl Memory {
             return if self.step == self.seq.len() { Press::Done } else { Press::Ok };
         }
         self.phase = MemoryPhase::Show;
-        self.t = -SHOW_LEAD_MS * 1.3;
+        self.t = -self.lead_ms * self.replay_lead_factor;
         self.step = 0;
         self.lit = None;
         Press::Wrong
@@ -231,7 +329,7 @@ pub enum PipeKind {
 }
 
 impl PipeKind {
-    fn pairs(self) -> &'static [[usize; 2]] {
+    pub fn pairs(self) -> &'static [[usize; 2]] {
         match self {
             PipeKind::Straight => &STRAIGHT_PAIRS,
             PipeKind::Corner => &CORNER_PAIRS,
@@ -246,7 +344,7 @@ pub struct Tile {
 }
 
 impl Tile {
-    fn opening(&self) -> [usize; 2] {
+    pub fn opening(&self) -> [usize; 2] {
         self.kind.pairs()[self.rot]
     }
 }
@@ -320,6 +418,7 @@ impl Puzzle {
 
 /// One Descent shift. Built by `DescentShift::start`, the shell's only entry point.
 pub struct DescentShift {
+    tune: Tuning,
     descent: usize,
     custom: bool,
     level: i32,
@@ -343,23 +442,26 @@ impl DescentShift {
     /// Starts descent `descent` (1 to 5) from `seed`. `custom_level` is the Custom Night's AI level for Elise and turns
     /// off Zellia's call, as in Godot. Zellia's call comes from `calls` (mode `descent`).
     pub fn start(descent: usize, seed: i64, custom_level: Option<i32>, calls: &CallsData) -> DescentShift {
-        let descent = descent.clamp(1, DESCENTS);
+        let tune = Tuning::load();
+        let descent = descent.clamp(1, tune.descents());
         let mut rng = NightWatchStream::seeded(seed);
         let level = match custom_level {
-            Some(n) => n.clamp(0, MAX_AI),
-            None => LEVELS[descent - 1],
+            Some(n) => n.clamp(0, tune.max_ai),
+            None => tune.levels[descent - 1],
         };
         let side = draw_side(&mut rng);
-        let stages = draw_stages(descent, &mut rng);
-        let surge_mult = jitter(1.0, SURGE_SPREAD, &mut rng);
-        let surge_left = jitter(SURGE_EVERY_MS, SURGE_EVERY_SPREAD, &mut rng);
-        let puzzle = build(stages[0], descent, &mut rng);
+        let stages = draw_stages(descent, &tune, &mut rng);
+        let surge_mult = jitter(1.0, tune.surge_spread, &mut rng);
+        let surge_left = jitter(tune.surge_every_ms, tune.surge_every_spread, &mut rng);
+        let puzzle = build(stages[0], descent, &tune, &mut rng);
         let call = if custom_level.is_some() {
             CallScript::new(Vec::new(), 0.0)
         } else {
             CallScript::for_level(calls, MODE_ID, descent as i32)
         };
+        let ride = tune.ride_ms;
         DescentShift {
+            tune,
             descent,
             custom: custom_level.is_some(),
             level,
@@ -368,7 +470,7 @@ impl DescentShift {
             stages,
             stage_idx: 0,
             puzzle,
-            ride: RIDE_MS,
+            ride,
             threat: 0.0,
             wrong: 0,
             held: 0.0,
@@ -399,25 +501,25 @@ impl DescentShift {
         if kind != Some(StageKind::Hold) {
             self.surge_left -= dt_ms;
             if self.surge_left <= 0.0 {
-                self.surge_mult = jitter(1.0, SURGE_SPREAD, &mut self.rng);
-                self.surge_left = jitter(SURGE_EVERY_MS, SURGE_EVERY_SPREAD, &mut self.rng);
+                self.surge_mult = jitter(1.0, self.tune.surge_spread, &mut self.rng);
+                self.surge_left = jitter(self.tune.surge_every_ms, self.tune.surge_every_spread, &mut self.rng);
             }
         }
         if self.level > 0 {
             let rate = match kind {
-                Some(StageKind::Hold) => HOLD_RATE,
-                Some(StageKind::Pipes) => PIPE_RATE * self.surge_mult,
+                Some(StageKind::Hold) => self.tune.hold_rate,
+                Some(StageKind::Pipes) => self.tune.pipe_rate * self.surge_mult,
                 _ => self.surge_mult,
             };
-            self.threat = (self.threat + f64::from(self.level) * RATE_PER_LEVEL * dt * rate).min(100.0);
+            self.threat = (self.threat + f64::from(self.level) * self.tune.rate_per_level * dt * rate).min(100.0);
         }
         if kind == Some(StageKind::Hold) {
             if hold {
                 self.held += dt_ms;
             } else if self.level > 0 {
-                self.threat = (self.threat + HOLD_SLIP * dt).min(100.0);
+                self.threat = (self.threat + self.tune.hold_slip * dt).min(100.0);
             }
-            if self.held >= HOLD_MS {
+            if self.held >= self.tune.hold_ms {
                 self.finish_stage(&mut events);
             }
         }
@@ -459,7 +561,7 @@ impl DescentShift {
     }
 
     fn finish_stage(&mut self, events: &mut Vec<DescentEvent>) {
-        self.threat = (self.threat - STAGE_RELIEF).max(0.0);
+        self.threat = (self.threat - self.tune.stage_relief).max(0.0);
         events.push(DescentEvent::StageCleared { number: self.stage_idx + 1 });
         self.stage_idx += 1;
         if self.stage_idx >= self.stages.len() {
@@ -469,8 +571,8 @@ impl DescentShift {
             return;
         }
         let kind = self.stages[self.stage_idx];
-        self.puzzle = build(kind, self.descent, &mut self.rng);
-        self.ride = RIDE_MS;
+        self.puzzle = build(kind, self.descent, &self.tune, &mut self.rng);
+        self.ride = self.tune.ride_ms;
         self.held = 0.0;
         self.side = draw_side(&mut self.rng);
         events.push(DescentEvent::Ride { index: self.stage_idx });
@@ -479,7 +581,7 @@ impl DescentShift {
     fn record_wrong(&mut self, events: &mut Vec<DescentEvent>) {
         self.wrong += 1;
         if self.level > 0 {
-            self.threat = (self.threat + WRONG_BUMP).min(100.0);
+            self.threat = (self.threat + self.tune.wrong_bump).min(100.0);
         }
         events.push(DescentEvent::Wrong);
     }
@@ -509,6 +611,26 @@ impl DescentShift {
         &self.puzzle
     }
 
+    /// Milliseconds the door hold has been down on the last stage.
+    pub fn held_ms(&self) -> f64 {
+        self.held
+    }
+
+    /// Milliseconds the door hold needs down on the last stage.
+    pub fn hold_target_ms(&self) -> f64 {
+        self.tune.hold_ms
+    }
+
+    /// Milliseconds of the car's ride still to go before the next stage can be worked.
+    pub fn ride_left_ms(&self) -> f64 {
+        self.ride
+    }
+
+    /// The whole ride between two stages, in milliseconds.
+    pub fn ride_total_ms(&self) -> f64 {
+        self.tune.ride_ms
+    }
+
     /// True while the car is still moving between stages.
     pub fn riding(&self) -> bool {
         self.ride > 0.0
@@ -533,7 +655,7 @@ impl DescentShift {
     /// A Custom Night's score for a win (Godot `record_win`); zero on a normal descent.
     pub fn score(&self) -> i32 {
         if self.custom {
-            self.level * POINTS_PER_LEVEL
+            self.level * self.tune.points_per_level
         } else {
             0
         }
@@ -564,18 +686,8 @@ fn shuffle<T>(mut items: Vec<T>, rng: &mut NightWatchStream) -> Vec<T> {
     items
 }
 
-fn draw_lit(base: usize, rng: &mut NightWatchStream) -> usize {
-    let offset = draw_index(rng, (2 * LIT_SPREAD + 1) as usize) as i64 - LIT_SPREAD;
-    (base as i64 + offset).max(2) as usize
-}
-
-fn draw_length(base: usize, rng: &mut NightWatchStream) -> usize {
-    let offset = draw_index(rng, (2 * LENGTH_SPREAD + 1) as usize) as i64 - LENGTH_SPREAD;
-    (base as i64 + offset).max(3) as usize
-}
-
-fn draw_stages(descent: usize, rng: &mut NightWatchStream) -> Vec<StageKind> {
-    let list = runs(descent);
+fn draw_stages(descent: usize, tune: &Tuning, rng: &mut NightWatchStream) -> Vec<StageKind> {
+    let list = &tune.runs[descent - 1];
     let rest: Vec<StageKind> = list.iter().copied().filter(|kind| *kind != StageKind::Hold).collect();
     let mut order = shuffle(rest, rng);
     if list.contains(&StageKind::Hold) {
@@ -584,18 +696,18 @@ fn draw_stages(descent: usize, rng: &mut NightWatchStream) -> Vec<StageKind> {
     order
 }
 
-fn build(kind: StageKind, descent: usize, rng: &mut NightWatchStream) -> Puzzle {
+fn build(kind: StageKind, descent: usize, tune: &Tuning, rng: &mut NightWatchStream) -> Puzzle {
     let i = descent - 1;
     match kind {
         StageKind::Wires => {
-            let lit = draw_lit(WIRES_LIT[i], rng);
-            Puzzle::Wires(Wires::new(WIRES_BUTTONS[i], WIRES_BUTTONS[i], lit, rng))
+            let lit = tune.draw_lit(tune.wires_lit[i], rng);
+            Puzzle::Wires(Wires::new(tune.wires_buttons[i], tune.wires_buttons[i], lit, rng))
         }
         StageKind::Memory => {
-            let length = draw_length(MEMORY_LENGTH[i], rng);
-            Puzzle::Memory(Memory::new(length, rng))
+            let length = tune.draw_length(tune.memory_length[i], rng);
+            Puzzle::Memory(Memory::new(length, tune, rng))
         }
-        StageKind::Pipes => Puzzle::Pipes(make_pipes(PIPES_GRID[i], rng, PIPES_DETOURS[i], PIPES_TURNS[i])),
+        StageKind::Pipes => Puzzle::Pipes(make_pipes(tune.pipes_grid[i], rng, tune.pipes_detours[i], tune.pipes_turns[i])),
         StageKind::Hold => Puzzle::Hold,
     }
 }
@@ -705,5 +817,46 @@ mod tests {
         let mut dealt = wires.wire.clone();
         dealt.sort_unstable();
         assert_eq!(dealt, vec![0, 1, 2, 3]);
+    }
+
+    /// The values the mode used to hard-code, to prove the JSON carries them over unchanged.
+    #[test]
+    fn the_rules_file_carries_the_old_constants() {
+        let t = Tuning::load();
+        assert_eq!(t.levels, vec![0, 5, 8, 11, 14]);
+        assert_eq!((t.max_ai, t.points_per_level), (20, 10));
+        assert_eq!(t.wires_lit, vec![3, 3, 4, 4, 5]);
+        assert_eq!(t.wires_buttons, vec![4, 4, 5, 6, 6]);
+        assert_eq!(t.memory_length, vec![3, 3, 4, 4, 5]);
+        assert_eq!(t.pipes_grid, vec![4, 4, 4, 5, 5]);
+        assert_eq!(t.pipes_detours, vec![0, 0, 0, 1, 1]);
+        assert_eq!(t.pipes_turns, vec![2, 2, 2, 2, 2]);
+        assert_eq!((t.lit_spread, t.lit_min, t.length_spread, t.length_min), (1, 2, 1, 3));
+        assert_eq!((t.rate_per_level, t.wrong_bump, t.stage_relief, t.ride_ms), (0.22, 13.0, 34.0, 1800.0));
+        assert_eq!(
+            (t.show_on_ms, t.show_off_ms, t.show_lead_ms, t.replay_lead_factor, t.show_pace_spread),
+            (520.0, 260.0, 700.0, 1.3, 0.15)
+        );
+        assert_eq!((t.hold_ms, t.hold_slip, t.hold_rate, t.pipe_rate), (3200.0, 22.0, 2.6, 0.5));
+        assert_eq!((t.surge_spread, t.surge_every_ms, t.surge_every_spread), (0.2, 9000.0, 0.33));
+        use StageKind::*;
+        assert_eq!(t.runs[0], vec![Wires]);
+        assert_eq!(t.runs[4], vec![Wires, Memory, Pipes, Wires, Hold]);
+        assert_eq!(t.descents(), 5);
+    }
+
+    #[test]
+    fn stage_titles_come_from_the_rules_file() {
+        assert_eq!(StageKind::Wires.title(), "FUSE BOXES");
+        assert_eq!(StageKind::Memory.title(), "SIGNAL PANEL");
+        assert_eq!(StageKind::Pipes.title(), "PIPEWORK");
+        assert_eq!(StageKind::Hold.title(), "DOOR");
+    }
+
+    #[test]
+    fn a_custom_night_scores_its_level_times_the_points() {
+        let shift = DescentShift::start(3, 1, Some(99), &CallsData::load());
+        assert_eq!(shift.level(), 20);
+        assert_eq!(shift.score(), 200);
     }
 }

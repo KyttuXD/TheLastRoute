@@ -2,43 +2,211 @@
 //! You walk the six rooms and do each night's tasks at their stations while Opalie, Porcelle and Quenelle close in.
 //! Pure rules: the shell draws the building, feeds `Input` each frame and forwards doors and station presses.
 
+use crate::data;
 use crate::framework::{pick_index, spread_ms, tempo, NightWatchStream};
+use std::sync::OnceLock;
 
 pub const MODE_ID: &str = "story";
+/// The id of this mode's files under `data/` (the mode id above is the Godot one).
+const MODE_NAME: &str = "facility";
 
-const SPREAD: f64 = 0.2;
-const VARIETY_STEP_TEMPO: f64 = 0.1;
-const VARIETY_START_NEARER: f64 = 0.1;
-const VARIETY_START_FARTHER: f64 = 0.05;
-const VARIETY_LIFT_GAP_SPREAD: f64 = 0.3;
+/// Every tunable of the mode, read once from `data/{rules,cast,buildings}/facility.json` (Godot `story_data.gd` / `story_logic.gd`).
+struct Rules {
+    spread: f64,
+    step_tempo: f64,
+    start_nearer: f64,
+    start_farther: f64,
+    lift_gap_spread: f64,
+    recover_ms: f64,
+    walk_ms: f64,
+    crawl_ms: f64,
+    door_ms: f64,
+    beacon_push_ms: f64,
+    combo_ms: f64,
+    noise_max: f64,
+    walk_noise: f64,
+    crawl_noise: f64,
+    work_noise_per_sec: f64,
+    noise_decay_per_sec: f64,
+    wrong_noise: f64,
+    /// Indexed by `StepKind` (Code, Dials, Collect, Crank, Switches).
+    step_noise: [f64; 5],
+    charge_max: f64,
+    beacon_drain_per_sec: f64,
+    beacon_regen_per_sec: f64,
+    dial_steps: usize,
+    code_digits: usize,
+    combo_level: i32,
+    max_level: i32,
+    custom_list_night: usize,
+    #[cfg(test)]
+    max_slider: u32,
+    points_per_level: u32,
+    god_reset_dist: i32,
+    slip_dist: i32,
+    task_level_every: usize,
+    task_level_cap: usize,
+    window_base_ms: f64,
+    window_per_level_ms: f64,
+    window_min_ms: f64,
+    window_width_ms: f64,
+    lift_base_ms: f64,
+    lift_per_level_ms: f64,
+    lift_min_ms: f64,
+    bell_ms: f64,
+    open_ms: f64,
+    expose_ms: f64,
+    /// Each hunter's level per night 1 to 6 (Opalie, Porcelle, Quenelle).
+    levels: [Vec<i32>; 3],
+    nights: Vec<Tune>,
+    tasks: Vec<Vec<Task>>,
+    orders: Vec<Vec<Vec<usize>>>,
+    names: [&'static str; 3],
+    room_labels: [&'static str; 6],
+    /// Per room, the room behind its Left, Right and Lift door.
+    exits: [[Option<Room>; 3]; 6],
+}
 
-const RECOVER_MS: f64 = 6000.0;
-const WALK_MS: f64 = 1800.0;
-const CRAWL_MS: f64 = 3600.0;
-const DOOR_MS: f64 = 500.0;
-const WALK_NOISE: f64 = 35.0;
-const CRAWL_NOISE: f64 = 6.0;
-const WORK_NOISE_PER_SEC: f64 = 6.0;
-const NOISE_DECAY_PER_SEC: f64 = 12.0;
-const WRONG_NOISE: f64 = 16.0;
-const DIAL_STEPS: usize = 6;
-const BEACON_DRAIN_PER_SEC: f64 = 18.0;
-const BEACON_REGEN_PER_SEC: f64 = 3.0;
-const BEACON_PUSH_MS: f64 = 1500.0;
-const COMBO_LEVEL: i32 = 5;
-const COMBO_MS: f64 = 1500.0;
-const LIFT_BASE_MS: f64 = 30000.0;
-const LIFT_PER_LEVEL_MS: f64 = 1000.0;
-const LIFT_MIN_MS: f64 = 14000.0;
-const BELL_MS: f64 = 3500.0;
-const OPEN_MS: f64 = 5000.0;
-const EXPOSE_MS: f64 = 1500.0;
-const MAX_LEVEL: i32 = 20;
-const MAX_SLIDER: u32 = 20;
-const POINTS_PER_LEVEL: u32 = 10;
+fn rules() -> &'static Rules {
+    static RULES: OnceLock<Rules> = OnceLock::new();
+    RULES.get_or_init(Rules::load)
+}
 
-/// Each hunter's level per night 1 to 6 (Opalie, Porcelle, Quenelle).
-const LEVELS: [[i32; 6]; 3] = [[0, 8, 10, 10, 11, 13], [0, 0, 10, 10, 10, 12], [0, 0, 0, 6, 9, 12]];
+impl Rules {
+    fn load() -> Rules {
+        let r = data::rules(MODE_NAME);
+        let n = |path: &str| data::num(r, path);
+        let nights_col = |key: &str| -> Vec<f64> { (0..data::list(r, &format!("nights.{key}")).len()).map(|k| n(&format!("nights.{key}.{k}"))).collect() };
+        let start_dist = nights_col("start_dist");
+        let pace_x = nights_col("pace_x");
+        let hear = nights_col("hear");
+        let quiet_x = nights_col("quiet_x");
+        let recover_x = nights_col("recover_x");
+        let away_pace_x = nights_col("away_pace_x");
+        let strike_ms = nights_col("strike_ms");
+        let drain_x = nights_col("drain_x");
+        let keen_ms = nights_col("keen_ms");
+        let keen_cap = nights_col("keen_cap");
+        let lift_gap_x = nights_col("lift_gap_x");
+        let open_x = nights_col("open_x");
+        let lift_sees = data::list(r, "nights.lift_sees");
+        let nights: Vec<Tune> = (0..start_dist.len())
+            .map(|k| Tune {
+                start_dist: start_dist[k] as i32,
+                pace_x: pace_x[k],
+                hear: hear[k],
+                quiet_x: quiet_x[k],
+                recover_x: recover_x[k],
+                away_pace_x: away_pace_x[k],
+                strike_ms: strike_ms[k],
+                drain_x: drain_x[k],
+                keen_ms: keen_ms[k],
+                keen_cap: keen_cap[k] as i32,
+                lift_gap_x: lift_gap_x[k],
+                open_x: open_x[k],
+                lift_sees: lift_sees[k].as_bool().expect("night_watch data for mode 'facility': nights.lift_sees holds booleans"),
+            })
+            .collect();
+        let level_row = |h: usize| -> Vec<i32> { (0..nights.len()).map(|k| data::int(r, &format!("levels.{h}.{k}")) as i32).collect() };
+        let tasks = (0..data::list(r, "tasks").len())
+            .map(|l| {
+                data::list(r, &format!("tasks.{l}"))
+                    .iter()
+                    .map(|t| {
+                        let kind = match data::text(t, "kind") {
+                            "code" => TaskKind::Code(data::int(t, "n") as usize),
+                            "dials" => TaskKind::Dials(data::int(t, "n") as usize),
+                            "collect" => TaskKind::Collect(data::int(t, "n") as usize),
+                            "crank" => TaskKind::Crank(data::int(t, "n") as usize),
+                            "switches" => TaskKind::Switches(data::int(t, "n") as usize),
+                            "hold" => TaskKind::Hold(data::int(t, "ms") as u32),
+                            other => panic!("night_watch data for mode 'facility': unknown task kind '{other}'"),
+                        };
+                        task(Room::from_key(data::text(t, "room")), data::text(t, "label"), kind)
+                    })
+                    .collect()
+            })
+            .collect();
+        let orders = (0..data::list(r, "task_orders").len())
+            .map(|l| {
+                data::list(r, &format!("task_orders.{l}"))
+                    .iter()
+                    .map(|order| order.as_array().expect("night_watch data for mode 'facility': a task order is a list").iter().map(|i| i.as_u64().expect("task order index") as usize).collect())
+                    .collect()
+            })
+            .collect();
+        let cast = data::cast(MODE_NAME);
+        let mut names = [""; 3];
+        for hunter in Hunter::ALL {
+            let entry = &data::list(cast, "hunters")[hunter.index()];
+            names[hunter.index()] = data::text(entry, "name");
+        }
+        let mut room_labels = [""; 6];
+        let mut exits = [[None; 3]; 6];
+        for room in data::list(data::building(MODE_NAME), "rooms") {
+            let at = Room::from_key(data::text(room, "id")) as usize;
+            room_labels[at] = data::text(room, "label");
+            for (door, key) in ["left", "right", "lift"].into_iter().enumerate() {
+                let to = data::text(room, &format!("exits.{key}"));
+                if !to.is_empty() {
+                    exits[at][door] = Some(Room::from_key(to));
+                }
+            }
+        }
+        Rules {
+            spread: n("spread"),
+            step_tempo: n("variety.step_tempo"),
+            start_nearer: n("variety.start_nearer"),
+            start_farther: n("variety.start_farther"),
+            lift_gap_spread: n("variety.lift_gap_spread"),
+            recover_ms: n("timing_ms.recover"),
+            walk_ms: n("timing_ms.walk"),
+            crawl_ms: n("timing_ms.crawl"),
+            door_ms: n("timing_ms.door"),
+            beacon_push_ms: n("timing_ms.beacon_push"),
+            combo_ms: n("timing_ms.combo"),
+            noise_max: n("noise.max"),
+            walk_noise: n("noise.walk"),
+            crawl_noise: n("noise.crawl"),
+            work_noise_per_sec: n("noise.work_per_sec"),
+            noise_decay_per_sec: n("noise.decay_per_sec"),
+            wrong_noise: n("noise.wrong"),
+            step_noise: ["code", "dials", "collect", "crank", "switches"].map(|k| n(&format!("noise.step.{k}"))),
+            charge_max: n("beacon.max"),
+            beacon_drain_per_sec: n("beacon.drain_per_sec"),
+            beacon_regen_per_sec: n("beacon.regen_per_sec"),
+            dial_steps: data::int(r, "puzzle.dial_steps") as usize,
+            code_digits: data::int(r, "puzzle.code_digits") as usize,
+            combo_level: data::int(r, "combo_level") as i32,
+            max_level: data::int(r, "max_level") as i32,
+            custom_list_night: data::int(r, "custom.list_night") as usize,
+            #[cfg(test)]
+            max_slider: data::int(r, "custom.max_slider") as u32,
+            points_per_level: data::int(r, "custom.points_per_level") as u32,
+            god_reset_dist: data::int(r, "god_reset_dist") as i32,
+            slip_dist: data::int(r, "slip_dist") as i32,
+            task_level_every: data::int(r, "task_level.every_tasks") as usize,
+            task_level_cap: data::int(r, "task_level.cap") as usize,
+            window_base_ms: n("move_window.base_ms"),
+            window_per_level_ms: n("move_window.per_level_ms"),
+            window_min_ms: n("move_window.min_ms"),
+            window_width_ms: n("move_window.width_ms"),
+            lift_base_ms: n("lift.base_ms"),
+            lift_per_level_ms: n("lift.per_level_ms"),
+            lift_min_ms: n("lift.min_ms"),
+            bell_ms: n("lift.bell_ms"),
+            open_ms: n("lift.open_ms"),
+            expose_ms: n("lift.expose_ms"),
+            levels: [level_row(0), level_row(1), level_row(2)],
+            nights,
+            tasks,
+            orders,
+            names,
+            room_labels,
+            exits,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hunter {
@@ -51,11 +219,7 @@ impl Hunter {
     pub const ALL: [Hunter; 3] = [Hunter::Opalie, Hunter::Porcelle, Hunter::Quenelle];
 
     pub fn name(self) -> &'static str {
-        match self {
-            Hunter::Opalie => "Opalie",
-            Hunter::Porcelle => "Porcelle",
-            Hunter::Quenelle => "Quenelle",
-        }
+        rules().names[self.index()]
     }
 
     fn index(self) -> usize {
@@ -82,31 +246,25 @@ pub enum Door {
 }
 
 impl Room {
-    pub fn label(self) -> &'static str {
-        match self {
-            Room::Breaker => "BREAKER ROOM",
-            Room::Gallery => "GALLERY",
-            Room::Control => "CONTROL",
-            Room::Workshop => "WORKSHOP",
-            Room::Auditorium => "AUDITORIUM",
-            Room::Lift => "LIFT",
+    /// The room ids of `data/buildings/facility.json`.
+    fn from_key(key: &str) -> Room {
+        match key {
+            "breaker" => Room::Breaker,
+            "gallery" => Room::Gallery,
+            "control" => Room::Control,
+            "workshop" => Room::Workshop,
+            "auditorium" => Room::Auditorium,
+            "lift" => Room::Lift,
+            other => panic!("night_watch data for mode 'facility': unknown room '{other}'"),
         }
     }
 
+    pub fn label(self) -> &'static str {
+        rules().room_labels[self as usize]
+    }
+
     pub fn exit(self, door: Door) -> Option<Room> {
-        match (self, door) {
-            (Room::Breaker, Door::Right) => Some(Room::Gallery),
-            (Room::Gallery, Door::Left) => Some(Room::Breaker),
-            (Room::Gallery, Door::Right) => Some(Room::Control),
-            (Room::Control, Door::Left) => Some(Room::Gallery),
-            (Room::Control, Door::Right) => Some(Room::Workshop),
-            (Room::Control, Door::Lift) => Some(Room::Lift),
-            (Room::Workshop, Door::Left) => Some(Room::Control),
-            (Room::Workshop, Door::Right) => Some(Room::Auditorium),
-            (Room::Auditorium, Door::Left) => Some(Room::Workshop),
-            (Room::Lift, Door::Lift) => Some(Room::Control),
-            _ => None,
-        }
+        rules().exits[self as usize][door as usize]
     }
 }
 
@@ -148,64 +306,14 @@ fn task(room: Room, label: &'static str, kind: TaskKind) -> Task {
 
 /// One night's full task list (the 1-based list number 6 is also the Custom Night's list).
 fn night_tasks(list_night: usize) -> Vec<Task> {
-    match list_night {
-        1 => vec![
-            task(Room::Control, "Log in", TaskKind::Code(3)),
-            task(Room::Gallery, "Calibrate the lamps", TaskKind::Dials(3)),
-            task(Room::Workshop, "Collect the parts", TaskKind::Collect(4)),
-            task(Room::Control, "Sign off", TaskKind::Code(3)),
-        ],
-        2 => vec![
-            task(Room::Control, "Log in", TaskKind::Code(3)),
-            task(Room::Gallery, "Calibrate the lamps", TaskKind::Dials(3)),
-            task(Room::Breaker, "Reset the breaker", TaskKind::Switches(4)),
-            task(Room::Gallery, "Check the lamps", TaskKind::Dials(4)),
-            task(Room::Control, "Sign off", TaskKind::Code(4)),
-        ],
-        3 => vec![
-            task(Room::Control, "Log in", TaskKind::Code(3)),
-            task(Room::Workshop, "Collect the parts", TaskKind::Collect(5)),
-            task(Room::Auditorium, "Service the stage", TaskKind::Crank(14)),
-            task(Room::Gallery, "Check the lamps", TaskKind::Dials(4)),
-            task(Room::Control, "Sign off", TaskKind::Code(4)),
-        ],
-        4 => vec![
-            task(Room::Control, "Log in", TaskKind::Code(4)),
-            task(Room::Lift, "Check the floor above", TaskKind::Hold(4500)),
-            task(Room::Breaker, "Reset the breaker", TaskKind::Switches(5)),
-            task(Room::Gallery, "Check the lamps", TaskKind::Dials(4)),
-            task(Room::Control, "Sign off", TaskKind::Code(4)),
-        ],
-        5 => vec![
-            task(Room::Control, "Log in", TaskKind::Code(4)),
-            task(Room::Auditorium, "Service the stage", TaskKind::Crank(14)),
-            task(Room::Breaker, "Reset the breaker", TaskKind::Switches(5)),
-            task(Room::Lift, "Check the floor above", TaskKind::Hold(4500)),
-            task(Room::Gallery, "Calibrate the lamps", TaskKind::Dials(4)),
-            task(Room::Control, "Sign off", TaskKind::Code(4)),
-        ],
-        _ => vec![
-            task(Room::Control, "Log in", TaskKind::Code(5)),
-            task(Room::Workshop, "Collect the parts", TaskKind::Collect(6)),
-            task(Room::Auditorium, "Service the stage", TaskKind::Crank(16)),
-            task(Room::Breaker, "Reset the breaker", TaskKind::Switches(6)),
-            task(Room::Lift, "Check the floor above", TaskKind::Hold(5000)),
-            task(Room::Gallery, "Calibrate the lamps", TaskKind::Dials(5)),
-            task(Room::Control, "Sign off", TaskKind::Code(5)),
-        ],
-    }
+    let tasks = &rules().tasks;
+    tasks[list_night.clamp(1, tasks.len()) - 1].clone()
 }
 
 /// The orders a night's list may be done in, as indexes into `night_tasks`. Log in stays first and Sign off last.
-fn task_orders(list_night: usize) -> &'static [&'static [usize]] {
-    match list_night {
-        1 => &[&[0, 1, 2, 3]],
-        2 => &[&[0, 1, 2, 3, 4], &[0, 1, 3, 2, 4], &[0, 2, 1, 3, 4]],
-        3 => &[&[0, 1, 2, 3, 4], &[0, 2, 1, 3, 4]],
-        4 => &[&[0, 1, 2, 3, 4]],
-        5 => &[&[0, 1, 2, 3, 4, 5], &[0, 1, 4, 3, 2, 5]],
-        _ => &[&[0, 1, 2, 3, 4, 5, 6], &[0, 1, 2, 5, 4, 3, 6]],
-    }
+fn task_orders(list_night: usize) -> &'static [Vec<usize>] {
+    let orders = &rules().orders;
+    &orders[list_night.clamp(1, orders.len()) - 1]
 }
 
 /// Per-night tuning, one row per night 1 to 6; row 6 is also used for Custom Night.
@@ -226,34 +334,21 @@ struct Tune {
     lift_sees: bool,
 }
 
-const NIGHTS: [Tune; 6] = [
-    Tune { start_dist: 3, pace_x: 1.0, hear: 24.0, quiet_x: 0.0, recover_x: 1.0, away_pace_x: 0.0, strike_ms: 1200.0, drain_x: 1.0, keen_ms: 0.0, keen_cap: 0, lift_gap_x: 1.0, open_x: 1.0, lift_sees: false },
-    Tune { start_dist: 2, pace_x: 2.2, hear: 15.0, quiet_x: 1.2, recover_x: 1.5, away_pace_x: 0.8, strike_ms: 1200.0, drain_x: 1.4, keen_ms: 30000.0, keen_cap: 2, lift_gap_x: 1.0, open_x: 1.0, lift_sees: false },
-    Tune { start_dist: 2, pace_x: 2.7, hear: 12.0, quiet_x: 1.5, recover_x: 1.6, away_pace_x: 0.9, strike_ms: 1200.0, drain_x: 1.5, keen_ms: 25000.0, keen_cap: 3, lift_gap_x: 1.0, open_x: 1.0, lift_sees: false },
-    Tune { start_dist: 2, pace_x: 2.75, hear: 11.5, quiet_x: 1.55, recover_x: 1.7, away_pace_x: 1.0, strike_ms: 1150.0, drain_x: 1.6, keen_ms: 22000.0, keen_cap: 3, lift_gap_x: 0.9, open_x: 1.0, lift_sees: true },
-    Tune { start_dist: 2, pace_x: 2.8, hear: 11.0, quiet_x: 1.6, recover_x: 1.8, away_pace_x: 1.1, strike_ms: 1150.0, drain_x: 1.7, keen_ms: 20000.0, keen_cap: 4, lift_gap_x: 0.8, open_x: 1.15, lift_sees: true },
-    Tune { start_dist: 2, pace_x: 3.2, hear: 9.0, quiet_x: 2.6, recover_x: 2.0, away_pace_x: 1.4, strike_ms: 1100.0, drain_x: 1.9, keen_ms: 18000.0, keen_cap: 4, lift_gap_x: 0.7, open_x: 1.3, lift_sees: true },
-];
-
 fn tune_for(night: u32, custom: bool) -> Tune {
-    let index = if custom { 5 } else { (night.clamp(1, 6) - 1) as usize };
-    NIGHTS[index]
+    let nights = &rules().nights;
+    let index = if custom { rules().custom_list_night - 1 } else { (night.clamp(1, nights.len() as u32) - 1) as usize };
+    nights[index]
 }
 
 fn step_noise(kind: StepKind) -> f64 {
-    match kind {
-        StepKind::Code => 4.0,
-        StepKind::Dials => 8.0,
-        StepKind::Collect => 10.0,
-        StepKind::Crank => 12.0,
-        StepKind::Switches => 7.0,
-    }
+    rules().step_noise[kind as usize]
 }
 
 /// How long a hunter waits between steps at a level: a window that slides down with the level (the 2D `move_window`).
 fn move_window(level: i32) -> (f64, f64) {
-    let lo = (13000.0 - f64::from(level) * 500.0).max(2500.0);
-    (lo, lo + 3000.0)
+    let k = rules();
+    let lo = (k.window_base_ms - f64::from(level) * k.window_per_level_ms).max(k.window_min_ms);
+    (lo, lo + k.window_width_ms)
 }
 
 fn move_draw(level: i32, rng: &mut NightWatchStream) -> f64 {
@@ -314,9 +409,9 @@ fn start_offset(night_index: usize, custom: bool, vr: &mut NightWatchStream) -> 
     if vr.is_neutral() || (night_index == 0 && !custom) {
         return 0;
     }
-    if u < VARIETY_START_NEARER {
+    if u < rules().start_nearer {
         -1
-    } else if u >= 1.0 - VARIETY_START_FARTHER {
+    } else if u >= 1.0 - rules().start_farther {
         1
     } else {
         0
@@ -324,7 +419,7 @@ fn start_offset(night_index: usize, custom: bool, vr: &mut NightWatchStream) -> 
 }
 
 fn recover_draw(tune: &Tune, rng: &mut NightWatchStream) -> f64 {
-    spread_ms(RECOVER_MS * tune.recover_x, rng, SPREAD)
+    spread_ms(rules().recover_ms * tune.recover_x, rng, rules().spread)
 }
 
 fn new_creeper(tune: &Tune, night_index: usize, custom: bool, rng: &mut NightWatchStream, vr: &mut NightWatchStream) -> Creeper {
@@ -338,12 +433,12 @@ fn new_creeper(tune: &Tune, night_index: usize, custom: bool, rng: &mut NightWat
         recover,
         push: 0.0,
         alert: 0.0,
-        tempo: tempo(vr, VARIETY_STEP_TEMPO),
+        tempo: tempo(vr, rules().step_tempo),
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Puzzle {
+pub enum Puzzle {
     None,
     Code { code: Vec<usize>, entered: usize },
     Dials { target: Vec<usize>, pos: Vec<usize> },
@@ -407,7 +502,7 @@ pub struct Walk {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum LiftPhase {
+pub enum LiftPhase {
     Away,
     Bell,
     Open,
@@ -442,9 +537,25 @@ impl FacilityOptions {
     }
 }
 
+#[cfg(test)]
 /// Custom Night score: each hunter's slider (0 to 20) summed, times 10 points per level.
 pub fn custom_score(sliders: [u32; 3]) -> u32 {
-    sliders.iter().map(|s| (*s).min(MAX_SLIDER)).sum::<u32>() * POINTS_PER_LEVEL
+    sliders.iter().map(|s| (*s).min(rules().max_slider)).sum::<u32>() * rules().points_per_level
+}
+
+/// How many nights the Facility has in its data.
+pub fn night_count() -> u32 {
+    rules().nights.len() as u32
+}
+
+/// The top of the noise meter (the noise a shift can build to).
+pub fn noise_max() -> f64 {
+    rules().noise_max
+}
+
+/// The top of the beacon's charge.
+pub fn charge_max() -> f64 {
+    rules().charge_max
 }
 
 #[derive(Clone, Debug)]
@@ -481,12 +592,13 @@ pub struct Facility {
 
 impl Facility {
     pub fn start(options: FacilityOptions) -> Self {
-        let night = options.night.clamp(1, 6);
+        let k = rules();
+        let night = options.night.clamp(1, k.nights.len() as u32);
         let night_index = (night - 1) as usize;
         let custom = options.custom;
         let mut rng = NightWatchStream::seeded(options.seed);
         let mut vr = NightWatchStream::variety_of(&rng, options.variety);
-        let list_night = if custom { 6 } else { night_index + 1 };
+        let list_night = if custom { k.custom_list_night } else { night_index + 1 };
         let orders = task_orders(list_night);
         let drawn = pick_index(&mut vr, orders.len());
         let order_idx = match options.order {
@@ -508,7 +620,7 @@ impl Facility {
             light: false,
             working: false,
             noise: 0.0,
-            charge: 100.0,
+            charge: k.charge_max,
             task_idx: 0,
             tasks,
             god: false,
@@ -524,7 +636,7 @@ impl Facility {
             puzzle: Puzzle::None,
             opalie,
             porcelle,
-            lift: Lift { phase: LiftPhase::Away, t: 0.0, clock: 0.0, gap: None, expose: 0.0, open_for: OPEN_MS },
+            lift: Lift { phase: LiftPhase::Away, t: 0.0, clock: 0.0, gap: None, expose: 0.0, open_for: k.open_ms },
         };
         let first = sim.tasks[0];
         sim.puzzle = sim.make_puzzle(first);
@@ -535,22 +647,67 @@ impl Facility {
         self.tasks.get(self.task_idx).copied()
     }
 
+    /// The station puzzle of the current task, for the driver to show and press.
+    pub fn puzzle(&self) -> &Puzzle {
+        &self.puzzle
+    }
+
+    /// A hunter's distance in steps from the player; None for Quenelle, who works the lift.
+    pub fn distance(&self, hunter: Hunter) -> Option<i32> {
+        match hunter {
+            Hunter::Opalie => Some(self.opalie.dist),
+            Hunter::Porcelle => Some(self.porcelle.dist),
+            Hunter::Quenelle => None,
+        }
+    }
+
+    /// The noise at which Opalie hears you on this night.
+    pub fn hear(&self) -> f64 {
+        self.tune.hear
+    }
+
+    /// How many steps a creeping hunter starts from you on this night.
+    pub fn start_distance(&self) -> i32 {
+        self.tune.start_dist
+    }
+
+    pub fn lift_phase(&self) -> LiftPhase {
+        self.lift.phase
+    }
+
+    /// How long Quenelle has seen you at the open lift, 0 to 1 (you are taken at 1).
+    pub fn lift_exposure(&self) -> f64 {
+        (self.lift.expose / rules().expose_ms).clamp(0.0, 1.0)
+    }
+
+    /// Milliseconds the current hold task has been held so far.
+    pub fn hold_ms(&self) -> f64 {
+        self.task_ms
+    }
+
+    /// The score of a shift: 10 points per task on the list (read it on a win).
+    pub fn score(&self) -> u32 {
+        self.tasks.len() as u32 * rules().points_per_level
+    }
+
     pub fn level(&self, hunter: Hunter) -> i32 {
         let base = self.base_level(hunter);
         if base <= 0 {
             return 0;
         }
-        (base + (self.task_idx / 2).min(2) as i32 + self.keen()).min(MAX_LEVEL)
+        (base + (self.task_idx / rules().task_level_every).min(rules().task_level_cap) as i32 + self.keen()).min(rules().max_level)
     }
 
+    #[cfg(test)]
     pub fn active_hunters(level_idx: usize) -> Vec<Hunter> {
-        Hunter::ALL.into_iter().filter(|h| LEVELS[h.index()][level_idx.min(5)] > 0).collect()
+        let levels = &rules().levels;
+        Hunter::ALL.into_iter().filter(|h| levels[h.index()][level_idx.min(levels[h.index()].len() - 1)] > 0).collect()
     }
 
     fn base_level(&self, hunter: Hunter) -> i32 {
         match self.levels[hunter.index()] {
             Some(level) if level >= 0 => level,
-            _ => LEVELS[hunter.index()][self.night_index],
+            _ => rules().levels[hunter.index()][self.night_index],
         }
     }
 
@@ -569,12 +726,13 @@ impl Facility {
     fn make_puzzle(&mut self, task: Task) -> Puzzle {
         match task.kind {
             TaskKind::Code(n) => {
-                let code = (0..n).map(|_| self.pick(10)).collect();
+                let code = (0..n).map(|_| self.pick(rules().code_digits)).collect();
                 Puzzle::Code { code, entered: 0 }
             }
             TaskKind::Dials(n) => {
-                let target: Vec<usize> = (0..n).map(|_| self.pick(DIAL_STEPS)).collect();
-                let pos = target.iter().map(|&x| (x + 1 + self.pick(DIAL_STEPS - 1)) % DIAL_STEPS).collect();
+                let steps = rules().dial_steps;
+                let target: Vec<usize> = (0..n).map(|_| self.pick(steps)).collect();
+                let pos = target.iter().map(|&x| (x + 1 + self.pick(steps - 1)) % steps).collect();
                 Puzzle::Dials { target, pos }
             }
             TaskKind::Collect(n) => Puzzle::Collect { n, taken: Vec::new() },
@@ -599,6 +757,7 @@ impl Facility {
         }
         self.elapsed += dt_ms;
         let dts = dt_ms / 1000.0;
+        let k = rules();
 
         let mut through = false;
         let mut arrived = None;
@@ -624,13 +783,13 @@ impl Facility {
         self.light = input.light && still && self.charge > 0.0;
         if self.light {
             if !self.infinite_beacon {
-                self.charge = (self.charge - BEACON_DRAIN_PER_SEC * self.tune.drain_x * dts).max(0.0);
+                self.charge = (self.charge - k.beacon_drain_per_sec * self.tune.drain_x * dts).max(0.0);
             }
         } else {
-            self.charge = (self.charge + BEACON_REGEN_PER_SEC * dts).min(100.0);
+            self.charge = (self.charge + k.beacon_regen_per_sec * dts).min(k.charge_max);
         }
 
-        self.noise = (self.noise - NOISE_DECAY_PER_SEC * dts).max(0.0);
+        self.noise = (self.noise - k.noise_decay_per_sec * dts).max(0.0);
         let task = self.current_task();
         self.working = still
             && !self.hidden
@@ -638,7 +797,7 @@ impl Facility {
             && task.is_some_and(|t| t.room == self.room && matches!(t.kind, TaskKind::Hold(_)));
         if self.working {
             self.task_ms += dt_ms;
-            self.noise = (self.noise + WORK_NOISE_PER_SEC * dts).min(100.0);
+            self.noise = (self.noise + k.work_noise_per_sec * dts).min(k.noise_max);
             if let Some(Task { kind: TaskKind::Hold(ms), .. }) = task {
                 if self.task_ms >= f64::from(ms) {
                     self.complete_task(&mut ev);
@@ -655,8 +814,8 @@ impl Facility {
             return self.finish(ev, Hunter::Opalie);
         }
         let closed = ev[before..].iter().any(|e| matches!(e, Event::Close { hunter: Hunter::Opalie, .. }));
-        if closed && self.level(Hunter::Opalie) >= COMBO_LEVEL && self.level(Hunter::Porcelle) >= COMBO_LEVEL {
-            self.porcelle.alert = COMBO_MS;
+        if closed && self.level(Hunter::Opalie) >= k.combo_level && self.level(Hunter::Porcelle) >= k.combo_level {
+            self.porcelle.alert = k.combo_ms;
             ev.push(Event::Alert(Hunter::Porcelle));
         }
 
@@ -680,12 +839,13 @@ impl Facility {
         if q_level <= 0 {
             return false;
         }
+        let k = rules();
         self.lift.clock += dt_ms;
         let gap = match self.lift.gap {
             Some(gap) => gap,
             None => {
-                let base = (LIFT_BASE_MS - f64::from(q_level) * LIFT_PER_LEVEL_MS).max(LIFT_MIN_MS);
-                let draw = 1.0 - VARIETY_LIFT_GAP_SPREAD + 2.0 * VARIETY_LIFT_GAP_SPREAD * self.rng.next();
+                let base = (k.lift_base_ms - f64::from(q_level) * k.lift_per_level_ms).max(k.lift_min_ms);
+                let draw = 1.0 - k.lift_gap_spread + 2.0 * k.lift_gap_spread * self.rng.next();
                 let gap = base * self.tune.lift_gap_x * draw;
                 self.lift.gap = Some(gap);
                 gap
@@ -703,11 +863,11 @@ impl Facility {
             }
             LiftPhase::Bell => {
                 self.lift.t += dt_ms;
-                if self.lift.t >= BELL_MS {
+                if self.lift.t >= k.bell_ms {
                     self.lift.phase = LiftPhase::Open;
                     self.lift.t = 0.0;
                     self.lift.expose = 0.0;
-                    self.lift.open_for = spread_ms(OPEN_MS * self.tune.open_x, &mut self.rng, SPREAD);
+                    self.lift.open_for = spread_ms(k.open_ms * self.tune.open_x, &mut self.rng, k.spread);
                     ev.push(Event::Open(Hunter::Quenelle));
                 }
             }
@@ -716,7 +876,7 @@ impl Facility {
                 let seen = there
                     && ((self.room == Room::Control && !self.hidden) || (self.room == Room::Lift && self.tune.lift_sees));
                 self.lift.expose = if seen { self.lift.expose + dt_ms } else { (self.lift.expose - dt_ms).max(0.0) };
-                if self.lift.expose >= EXPOSE_MS {
+                if self.lift.expose >= k.expose_ms {
                     return true;
                 }
                 if self.lift.t >= self.lift.open_for {
@@ -741,6 +901,7 @@ impl Facility {
         let tune = self.tune;
         let speed = self.hunter_speed;
         let is_opalie = hunter == Hunter::Opalie;
+        let (step_tempo, push_ms) = (rules().step_tempo, rules().beacon_push_ms);
         let noticed_by_noise = !is_opalie || noise > tune.hear;
         let c = if is_opalie { &mut self.opalie } else { &mut self.porcelle };
 
@@ -753,7 +914,7 @@ impl Facility {
                     && c.pacer.step(dt_ms * tune.away_pace_x * c.tempo * speed, level, &mut self.rng)
                 {
                     c.dist -= 1;
-                    c.tempo = tempo(&mut self.vr, VARIETY_STEP_TEMPO);
+                    c.tempo = tempo(&mut self.vr, step_tempo);
                     ev.push(Event::Close { hunter, dist: c.dist, kind: CloseKind::Away });
                 }
                 return false;
@@ -776,7 +937,7 @@ impl Facility {
         if light {
             if hunter == Hunter::Porcelle {
                 c.push += dt_ms;
-                if c.push >= BEACON_PUSH_MS {
+                if c.push >= push_ms {
                     c.push = 0.0;
                     if c.dist < tune.start_dist {
                         c.dist += 1;
@@ -789,7 +950,7 @@ impl Facility {
             let pace = if noticed_by_noise { tune.pace_x } else { tune.quiet_x };
             if c.dist > 0 && pace > 0.0 && c.pacer.step(dt_ms * pace * c.tempo * speed, level, &mut self.rng) {
                 c.dist -= 1;
-                c.tempo = tempo(&mut self.vr, VARIETY_STEP_TEMPO);
+                c.tempo = tempo(&mut self.vr, step_tempo);
                 let kind = if noticed_by_noise { CloseKind::Noticed } else { CloseKind::Quiet };
                 ev.push(Event::Close { hunter, dist: c.dist, kind });
             }
@@ -813,7 +974,7 @@ impl Facility {
                 }
                 _ => {
                     let c = if who == Hunter::Opalie { &mut self.opalie } else { &mut self.porcelle };
-                    c.dist = 2;
+                    c.dist = rules().god_reset_dist;
                     c.strike = 0.0;
                 }
             }
@@ -827,10 +988,10 @@ impl Facility {
     /// Slipping out of a room with a hunter at your throat gives you a step of room.
     fn slip(&mut self) {
         if self.room == Room::Gallery && self.opalie.dist == 0 {
-            self.opalie.dist = 1;
+            self.opalie.dist = rules().slip_dist;
         }
         if matches!(self.room, Room::Workshop | Room::Auditorium) && self.porcelle.dist == 0 {
-            self.porcelle.dist = 1;
+            self.porcelle.dist = rules().slip_dist;
         }
     }
 
@@ -871,7 +1032,7 @@ impl Facility {
                 if i >= pos.len() {
                     return vec![Event::Deny];
                 }
-                pos[i] = (pos[i] + 1) % DIAL_STEPS;
+                pos[i] = (pos[i] + 1) % rules().dial_steps;
                 (StepKind::Dials, true, *pos == *target)
             }
             (Puzzle::Collect { n, taken }, Press::Index(i)) => {
@@ -900,8 +1061,8 @@ impl Facility {
             _ => return vec![Event::Deny],
         };
         let mut ev = Vec::new();
-        let added = if ok { step_noise(kind) } else { WRONG_NOISE };
-        self.noise = (self.noise + added).min(100.0);
+        let added = if ok { step_noise(kind) } else { rules().wrong_noise };
+        self.noise = (self.noise + added).min(rules().noise_max);
         ev.push(Event::Station { kind, ok });
         if done {
             self.complete_task(&mut ev);
@@ -918,9 +1079,10 @@ impl Facility {
             return false;
         };
         self.hidden = false;
-        let (noise, left) = if self.crawl { (CRAWL_NOISE, CRAWL_MS) } else { (WALK_NOISE, WALK_MS) };
-        self.noise = (self.noise + noise).min(100.0);
-        self.moving = Some(Walk { to, left, door: DOOR_MS });
+        let k = rules();
+        let (noise, left) = if self.crawl { (k.crawl_noise, k.crawl_ms) } else { (k.walk_noise, k.walk_ms) };
+        self.noise = (self.noise + noise).min(k.noise_max);
+        self.moving = Some(Walk { to, left, door: k.door_ms });
         true
     }
 }
@@ -938,7 +1100,43 @@ mod tests {
         let wrong = (code[0] + 1) % 10;
         let events = sim.interact(Press::Digit(wrong));
         assert_eq!(events, vec![Event::Station { kind: StepKind::Code, ok: false }]);
-        assert_eq!(sim.noise, WRONG_NOISE);
+        assert_eq!(sim.noise, rules().wrong_noise);
         assert_eq!(sim.puzzle, Puzzle::Code { code, entered: 0 });
+    }
+
+    #[test]
+    fn the_json_carries_every_key_the_mode_reads() {
+        // Loading panics naming the key when one is missing.
+        let k = rules();
+        assert_eq!(k.nights.len(), 6);
+        assert_eq!(k.tasks.len(), 6);
+        assert_eq!(k.orders.len(), 6);
+        assert!(k.tasks.iter().zip(&k.orders).all(|(tasks, orders)| orders.iter().all(|o| o.iter().all(|&i| i < tasks.len()))));
+        assert!(k.room_labels.iter().all(|l| !l.is_empty()));
+    }
+
+    #[test]
+    fn loaded_values_equal_the_old_constants() {
+        let k = rules();
+        assert_eq!((k.recover_ms, k.walk_ms, k.crawl_ms, k.door_ms), (6000.0, 1800.0, 3600.0, 500.0));
+        assert_eq!((k.walk_noise, k.crawl_noise, k.wrong_noise, k.dial_steps), (35.0, 6.0, 16.0, 6));
+        assert_eq!((k.lift_base_ms, k.lift_min_ms, k.bell_ms, k.open_ms, k.expose_ms), (30000.0, 14000.0, 3500.0, 5000.0, 1500.0));
+        assert_eq!((k.max_level, k.max_slider, k.points_per_level, k.combo_level), (20, 20, 10, 5));
+        assert_eq!(k.levels[2], vec![0, 0, 0, 6, 9, 12]);
+        assert_eq!(k.step_noise, [4.0, 8.0, 10.0, 12.0, 7.0]);
+        let last = tune_for(6, false);
+        assert_eq!((last.pace_x, last.hear, last.strike_ms, last.keen_cap, last.lift_sees), (3.2, 9.0, 1100.0, 4, true));
+        assert_eq!(tune_for(1, true), last);
+        assert_eq!(move_window(0), (13000.0, 16000.0));
+        assert_eq!(move_window(40), (2500.0, 5500.0));
+        assert_eq!(custom_score([20, 5, 100]), 450);
+        assert_eq!(night_tasks(4)[1].kind, TaskKind::Hold(4500));
+        assert_eq!(night_tasks(6).len(), 7);
+        assert_eq!(Room::Control.exit(Door::Lift), Some(Room::Lift));
+        assert_eq!(Room::Lift.exit(Door::Left), None);
+        assert_eq!(Room::Breaker.label(), "BREAKER ROOM");
+        assert_eq!(Hunter::Quenelle.name(), "Quenelle");
+        assert_eq!(Facility::active_hunters(3), Hunter::ALL.to_vec());
+        assert!(Facility::active_hunters(0).is_empty());
     }
 }

@@ -1,0 +1,22 @@
+{
+	"mode": "mixed_shift",
+	"version": 1,
+	"cam_rooms": ["stage", "dining", "backstage", "westhall", "closet", "kitchen", "easthall", "corner", "vent"],
+	"box_rooms": ["stage", "dining", "backstage", "westhall", "closet", "kitchen", "easthall", "corner"],
+	"room_labels": { "vent": "VENT RUN", "ventL": "LEFT VENT", "ventR": "RIGHT VENT", "ventT": "TOP VENT" },
+	"vent_links": [["closet", "vent"], ["corner", "vent"], ["vent", "ventL"], ["vent", "ventR"], ["vent", "ventT"]],
+	"routes": [
+		{ "id": "L-stage", "side": "L", "rooms": ["stage", "backstage", "westhall", "doorL"] },
+		{ "id": "L-kitchen", "side": "L", "rooms": ["kitchen", "dining", "westhall", "doorL"] },
+		{ "id": "L-closet", "side": "L", "rooms": ["closet", "westhall", "doorL"] },
+		{ "id": "R-stage", "side": "R", "rooms": ["stage", "dining", "easthall", "doorR"] },
+		{ "id": "R-kitchen", "side": "R", "rooms": ["kitchen", "dining", "easthall", "doorR"] },
+		{ "id": "R-corner", "side": "R", "rooms": ["corner", "easthall", "doorR"] }
+	],
+	"vent_routes": [
+		{ "id": "V-L", "side": "L", "rooms": ["vent", "vent", "vent", "vent", "ventL"], "spots": [0, 1, 2, 3] },
+		{ "id": "V-R", "side": "R", "rooms": ["vent", "vent", "vent", "vent", "ventR"], "spots": [0, 1, 2, 4] },
+		{ "id": "V-T", "side": "T", "rooms": ["vent", "vent", "vent", "ventT"], "spots": [0, 1, 2] }
+	],
+	"vent_near": { "L": 3, "R": 4, "T": 2 }
+}

@@ -4,91 +4,208 @@
 //! art and sound are the shell's; the cue and art parts of the Godot scene are not ported here.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::OnceLock;
 
+use serde_json::Value;
+
+use crate::data;
 use crate::framework::Mulberry;
 use crate::mask::{VentLightActive, VentSide};
 
 pub const MODE_ID: &str = "mask";
+/// The data folder's name for this mode (`data/rules/masked_hours.json`).
+const MODE_DATA: &str = "masked_hours";
 
-const NIGHT_MS: f64 = 270_000.0;
-const HOUR_MS: f64 = NIGHT_MS / 6.0;
-const TUNED_NIGHT_MS: f64 = 480_000.0;
-const POINTS_PER_LEVEL: u32 = 10;
+/// Every tunable of the mode, read once from data/{rules,cast,buildings}/masked_hours.json; the rest of the file reads these fields.
+struct Cfg {
+    night_ms: f64,
+    hour_ms: f64,
+    hours: i32,
+    tuned_night_ms: f64,
+    box_decay: [f64; 6],
+    flash_seconds: [f64; 6],
+    box_starts_hour_night1: f64,
+    levels: Vec<(&'static str, [i32; 6])>,
+    hour_bumps: [i32; 6],
+    vent_from_hours: [f64; 3],
+    hall_steps: u32,
+    ilyra_steps: u32,
+    step_ms: f64,
+    step_jitter: f64,
+    hall_window_ms: f64,
+    leave_ms: f64,
+    off_grace_ms: f64,
+    cool_ms: f64,
+    cool_spread: f64,
+    off_drain: f64,
+    vent_wait_ms: f64,
+    vent_need_ms: f64,
+    vent_cool_ms: f64,
+    box_grace_ms: f64,
+    vent_mask_rate: f64,
+    wind_per_sec: f64,
+    room_ms: f64,
+    room_jitter: f64,
+    duct_ms: f64,
+    duct_jitter: f64,
+    vent_cool0_ms: f64,
+    rush_cool_ms: f64,
+    rush_cool0_ms: f64,
+    haelith_duct_ms: f64,
+    haelith_duct_jitter: f64,
+    haelith_wait_ms: f64,
+    haelith_need_ms: f64,
+    haelith_fetch_ms: f64,
+    haelith_cool_ms: f64,
+    ilyra_step_ms: f64,
+    ilyra_step_jitter: f64,
+    ilyra_vent_ms: f64,
+    ilyra_need_ms: f64,
+    ilyra_cool_ms: f64,
+    lit_decay: f64,
+    ilyra_lit_decay: f64,
+    flash_cost: f64,
+    lamp_drain: f64,
+    cam_drain: f64,
+    pacer_base_ms: f64,
+    pacer_per_level_ms: f64,
+    pacer_min_ms: f64,
+    pacer_spread_ms: f64,
+    variety_salt: u32,
+    rest_spread_varied: f64,
+    rest_spread_plain: f64,
+    kill_spread: f64,
+    kill_floor: f64,
+    side_bias: [f64; 2],
+    plain_side_bias: f64,
+    phase_factors: Vec<f64>,
+    phase_ms: [f64; 2],
+    glyra_decay_base: f64,
+    glyra_decay_per_level: f64,
+    dark_grace: [f64; 3],
+    rush_flashes_base: u32,
+    rush_extra_flash_levels: [i32; 2],
+    rush_run: [f64; 3],
+    rush_door: [f64; 3],
+    homes: HashMap<&'static str, &'static str>,
+    graph: Vec<(&'static str, Vec<&'static str>)>,
+}
 
-const BOX_DECAY: [f64; 6] = [2.0, 2.0, 3.0, 4.0, 5.0, 6.0];
-const FLASH_SECONDS: [f64; 6] = [117.0, 100.0, 83.0, 67.0, 50.0, 50.0];
+/// The data's strings live for the whole run (rooms and ids travel in events as &'static str).
+fn leak(s: &str) -> &'static str {
+    Box::leak(s.to_string().into_boxed_str())
+}
 
-const LEVELS: [(&str, [i32; 6]); 6] = [
-    ("thessine", [3, 5, 9, 12, 14, 17]),
-    ("umbriel", [0, 0, 10, 11, 12, 12]),
-    ("verrine", [0, 3, 5, 7, 9, 11]),
-    ("haelith", [0, 0, 0, 6, 4, 3]),
-    ("ilyra", [0, 0, 0, 0, 3, 3]),
-    ("nyxie", [3, 4, 6, 8, 10, 12]),
-];
+fn nums<const N: usize>(v: &Value, path: &str) -> [f64; N] {
+    let items = data::list(v, path);
+    assert_eq!(items.len(), N, "night_watch data for mode 'masked_hours': '{path}' needs {N} entries");
+    std::array::from_fn(|i| items[i].as_f64().unwrap_or_else(|| panic!("night_watch data for mode 'masked_hours': '{path}.{i}' is not a number")))
+}
 
-const VARIETY_SALT: u32 = 0x3d1f_8a57;
-const REST_SPREAD_VARIED: f64 = 0.3;
-const REST_SPREAD_PLAIN: f64 = 0.2;
-const KILL_SPREAD: f64 = 0.2;
-const KILL_FLOOR: f64 = 0.9;
-const SIDE_BIAS: [f64; 2] = [0.35, 0.65];
-const PHASE_FACTORS: [f64; 3] = [0.88, 1.0, 1.12];
-const PHASE_MS: [f64; 2] = [30_000.0, 60_000.0];
+fn ints<const N: usize>(v: &Value, path: &str) -> [i32; N] {
+    nums::<N>(v, path).map(|n| n as i32)
+}
 
-const HALL_STEPS: u32 = 4;
-const STEP_MS: f64 = 2300.0;
-const STEP_JITTER: f64 = 0.4;
-const HALL_WINDOW_MS: f64 = 3500.0;
-const LEAVE_MS: f64 = 2500.0;
-const OFF_GRACE_MS: f64 = 1200.0;
-const COOL_MS: f64 = 4000.0;
-const COOL_SPREAD: f64 = 0.05;
-const OFF_DRAIN: f64 = 0.5;
-const VENT_WAIT_MS: f64 = 6000.0;
-const VENT_NEED_MS: f64 = 1400.0;
-const VENT_COOL_MS: f64 = 6000.0;
-const BOX_GRACE_MS: f64 = 6000.0;
-const VENT_MASK_RATE: f64 = 0.9;
-const WIND_PER_SEC: f64 = 12.0;
-const ROOM_MS: f64 = 4000.0;
-const ROOM_JITTER: f64 = 0.5;
-const DUCT_MS: f64 = 4000.0;
-const DUCT_JITTER: f64 = 0.5;
-const VENT_COOL0_MS: f64 = 2000.0;
-const RUSH_COOL_MS: f64 = 12000.0;
-const RUSH_COOL0_MS: f64 = 8000.0;
-const FLASH_COST: f64 = 0.25;
-const HAELITH_DUCT_MS: f64 = 1900.0;
-const HAELITH_DUCT_JITTER: f64 = 0.3;
-const HAELITH_WAIT_MS: f64 = 3400.0;
-const HAELITH_NEED_MS: f64 = 500.0;
-const HAELITH_FETCH_MS: f64 = 1500.0;
-const HAELITH_COOL_MS: f64 = 6000.0;
-const ILYRA_STEP_MS: f64 = 2600.0;
-const ILYRA_STEP_JITTER: f64 = 0.3;
-const ILYRA_STEPS: u32 = 3;
-const ILYRA_VENT_MS: f64 = 3000.0;
-const ILYRA_NEED_MS: f64 = 1200.0;
-const ILYRA_COOL_MS: f64 = 8000.0;
-const LAMP_DRAIN: f64 = 0.1;
-const CAM_DRAIN: f64 = 0.025;
+/// The keys of the object at `path`.
+fn keys<'a>(v: &'a Value, path: &str) -> Vec<&'a str> {
+    let mut at = v;
+    for key in path.split('.') {
+        at = &at[key];
+    }
+    at.as_object().unwrap_or_else(|| panic!("night_watch data for mode 'masked_hours': '{path}' is not an object")).keys().map(String::as_str).collect()
+}
 
-/// The wing's walkable connections (undirected).
-const GRAPH: &[(&str, &[&str])] = &[
-    ("music", &["ballroom"]),
-    ("costume", &["ballroom"]),
-    ("gallery", &["ballroom"]),
-    ("ballroom", &["music", "costume", "gallery", "hall"]),
-    ("hall", &["ballroom", "office"]),
-    ("office", &["hall", "ventL", "ventR"]),
-    ("crawl", &["ductL", "ductR"]),
-    ("ductL", &["crawl", "ventL"]),
-    ("ductR", &["crawl", "ventR"]),
-    ("ventL", &["ductL", "office"]),
-    ("ventR", &["ductR", "office"]),
-];
-
+fn cfg() -> &'static Cfg {
+    static CFG: OnceLock<Cfg> = OnceLock::new();
+    CFG.get_or_init(|| {
+        let r = data::rules("masked_hours");
+        let cast = data::cast("masked_hours");
+        let building = data::building("masked_hours");
+        let night_ms = data::num(r, "night_ms");
+        let hours = data::int(r, "hours") as i32;
+        let levels = keys(r, "levels").into_iter().map(|id| (leak(id), ints::<6>(r, &format!("levels.{id}")))).collect();
+        let vent_from = |id: &str| data::num(r, &format!("vent_from_hours.{id}"));
+        let graph = keys(building, "graph")
+            .into_iter()
+            .map(|id| (leak(id), data::list(building, &format!("graph.{id}")).iter().map(|n| leak(n.as_str().unwrap_or_default())).collect()))
+            .collect();
+        let homes = keys(cast, "homes").into_iter().map(|id| (leak(id), leak(data::text(cast, &format!("homes.{id}"))))).collect();
+        let t = |key: &str| data::num(r, &format!("timings.{key}"));
+        Cfg {
+            night_ms,
+            hour_ms: night_ms / f64::from(hours),
+            hours,
+            tuned_night_ms: data::num(r, "tuned_night_ms"),
+            box_decay: nums(r, "box_decay"),
+            flash_seconds: nums(r, "flash_seconds"),
+            box_starts_hour_night1: data::num(r, "box_starts_hour_night1"),
+            levels,
+            hour_bumps: ints(r, "hour_bumps"),
+            vent_from_hours: [vent_from("verrine"), vent_from("haelith"), vent_from("ilyra")],
+            hall_steps: data::int(r, "timings.hall_steps") as u32,
+            ilyra_steps: data::int(r, "timings.ilyra_steps") as u32,
+            step_ms: t("step_ms"),
+            step_jitter: t("step_jitter"),
+            hall_window_ms: t("hall_window_ms"),
+            leave_ms: t("leave_ms"),
+            off_grace_ms: t("off_grace_ms"),
+            cool_ms: t("cool_ms"),
+            cool_spread: t("cool_spread"),
+            off_drain: t("off_drain"),
+            vent_wait_ms: t("vent_wait_ms"),
+            vent_need_ms: t("vent_need_ms"),
+            vent_cool_ms: t("vent_cool_ms"),
+            box_grace_ms: t("box_grace_ms"),
+            vent_mask_rate: t("vent_mask_rate"),
+            wind_per_sec: t("wind_per_sec"),
+            room_ms: t("room_ms"),
+            room_jitter: t("room_jitter"),
+            duct_ms: t("duct_ms"),
+            duct_jitter: t("duct_jitter"),
+            vent_cool0_ms: t("vent_cool0_ms"),
+            rush_cool_ms: t("rush_cool_ms"),
+            rush_cool0_ms: t("rush_cool0_ms"),
+            haelith_duct_ms: t("haelith_duct_ms"),
+            haelith_duct_jitter: t("haelith_duct_jitter"),
+            haelith_wait_ms: t("haelith_wait_ms"),
+            haelith_need_ms: t("haelith_need_ms"),
+            haelith_fetch_ms: t("haelith_fetch_ms"),
+            haelith_cool_ms: t("haelith_cool_ms"),
+            ilyra_step_ms: t("ilyra_step_ms"),
+            ilyra_step_jitter: t("ilyra_step_jitter"),
+            ilyra_vent_ms: t("ilyra_vent_ms"),
+            ilyra_need_ms: t("ilyra_need_ms"),
+            ilyra_cool_ms: t("ilyra_cool_ms"),
+            lit_decay: t("lit_decay"),
+            ilyra_lit_decay: t("ilyra_lit_decay"),
+            flash_cost: data::num(r, "battery.flash_cost"),
+            lamp_drain: data::num(r, "battery.lamp_drain"),
+            cam_drain: data::num(r, "battery.cam_drain"),
+            pacer_base_ms: data::num(r, "pacer.base_ms"),
+            pacer_per_level_ms: data::num(r, "pacer.per_level_ms"),
+            pacer_min_ms: data::num(r, "pacer.min_ms"),
+            pacer_spread_ms: data::num(r, "pacer.spread_ms"),
+            variety_salt: data::int(r, "variety.salt") as u32,
+            rest_spread_varied: data::num(r, "variety.rest_spread_varied"),
+            rest_spread_plain: data::num(r, "variety.rest_spread_plain"),
+            kill_spread: data::num(r, "variety.kill_spread"),
+            kill_floor: data::num(r, "variety.kill_floor"),
+            side_bias: nums(r, "variety.side_bias"),
+            plain_side_bias: data::num(r, "variety.plain_side_bias"),
+            phase_factors: nums::<3>(r, "variety.phase_factors").to_vec(),
+            phase_ms: nums(r, "variety.phase_ms"),
+            glyra_decay_base: data::num(r, "glyra_decay.base"),
+            glyra_decay_per_level: data::num(r, "glyra_decay.per_level"),
+            dark_grace: [data::num(r, "dark_grace.base_ms"), data::num(r, "dark_grace.per_level_ms"), data::num(r, "dark_grace.min_ms")],
+            rush_flashes_base: data::int(r, "rush.flashes_base") as u32,
+            rush_extra_flash_levels: ints(r, "rush.extra_flash_levels"),
+            rush_run: [data::num(r, "rush.run_ms.base"), data::num(r, "rush.run_ms.per_level"), data::num(r, "rush.run_ms.min")],
+            rush_door: [data::num(r, "rush.door_ms.base"), data::num(r, "rush.door_ms.per_level"), data::num(r, "rush.door_ms.min")],
+            homes,
+            graph,
+        }
+    })
+}
 /// Who the player is watching by camera, and what the lights and mask do this tick.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MaskInput {
@@ -131,10 +248,25 @@ pub enum Outcome {
     Caught(&'static str),
 }
 
+/// Length of one shift in ms (`night_ms` in the rules).
+pub fn night_ms() -> f64 {
+    data::num(data::rules(MODE_DATA), "night_ms")
+}
+
+/// In-game hours in one shift (`hours`); the clock shows one step per hour.
+pub fn hours() -> u32 {
+    data::int(data::rules(MODE_DATA), "hours") as u32
+}
+
+/// How many nights the mode plays (`nights` in the rules).
+pub fn nights() -> u32 {
+    data::int(data::rules(MODE_DATA), "nights") as u32
+}
+
 /// The score for a finished night: a win clears the level, a caught night scores nothing.
 pub fn points_for(outcome: Outcome) -> u32 {
     match outcome {
-        Outcome::Win => POINTS_PER_LEVEL,
+        Outcome::Win => data::int(data::rules("masked_hours"), "points_per_level") as u32,
         Outcome::Caught(_) => 0,
     }
 }
@@ -189,10 +321,11 @@ impl Vent {
     }
 
     fn vent_from_ms(self) -> f64 {
+        let hours = &cfg().vent_from_hours;
         match self {
-            Vent::Verrine => 0.0,
-            Vent::Haelith => HOUR_MS,
-            Vent::Ilyra => 2.0 * HOUR_MS,
+            Vent::Verrine => hours[0] * cfg().hour_ms,
+            Vent::Haelith => hours[1] * cfg().hour_ms,
+            Vent::Ilyra => hours[2] * cfg().hour_ms,
         }
     }
 }
@@ -227,8 +360,9 @@ impl Pacer {
 }
 
 fn move_draw(level: i32, rng: &mut Mulberry) -> f64 {
-    let lo = (13000.0 - f64::from(level) * 500.0).max(2500.0);
-    lo + rng.next() * 3000.0
+    let c = cfg();
+    let lo = (c.pacer_base_ms - f64::from(level) * c.pacer_per_level_ms).max(c.pacer_min_ms);
+    lo + rng.next() * c.pacer_spread_ms
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -346,22 +480,22 @@ impl MaskedHours {
         let night_idx = (night.clamp(1, 6) - 1) as usize;
         let box_decay = match options.levels.get("glyra") {
             Some(&level) if level >= 0 => box_decay_for_level(level),
-            _ => BOX_DECAY[night_idx],
+            _ => cfg().box_decay[night_idx],
         };
-        let box_starts_ms = if !options.custom && night_idx == 0 { 2.0 * HOUR_MS } else { 0.0 };
+        let box_starts_ms = if !options.custom && night_idx == 0 { cfg().box_starts_hour_night1 * cfg().hour_ms } else { 0.0 };
         let flash_per_sec = 100.0 / flash_seconds(night_idx);
-        let mut variety = options.variety.then(|| Mulberry::new(i64::from(rng.state() ^ VARIETY_SALT)));
+        let mut variety = options.variety.then(|| Mulberry::new(i64::from(rng.state() ^ cfg().variety_salt)));
 
-        let rest_spread = if variety.is_some() { REST_SPREAD_VARIED } else { REST_SPREAD_PLAIN };
-        let vent_cool = spread(&mut rng, VENT_COOL0_MS, rest_spread);
-        let rush_cool = spread(&mut rng, RUSH_COOL0_MS, rest_spread);
+        let rest_spread = if variety.is_some() { cfg().rest_spread_varied } else { cfg().rest_spread_plain };
+        let vent_cool = spread(&mut rng, cfg().vent_cool0_ms, rest_spread);
+        let rush_cool = spread(&mut rng, cfg().rush_cool0_ms, rest_spread);
         let (side_bias, moods) = match variety.as_mut() {
             Some(vr) => {
-                let bias = SIDE_BIAS[0] + vr.next() * (SIDE_BIAS[1] - SIDE_BIAS[0]);
+                let bias = cfg().side_bias[0] + vr.next() * (cfg().side_bias[1] - cfg().side_bias[0]);
                 let moods = Moods { hall: draw_phase(vr), rush: draw_phase(vr), vent: draw_phase(vr) };
                 (bias, moods)
             }
-            None => (0.5, Moods { hall: CALM, rush: CALM, vent: CALM }),
+            None => (cfg().plain_side_bias, Moods { hall: CALM, rush: CALM, vent: CALM }),
         };
 
         let home = |id: &str| home_room(id);
@@ -394,7 +528,7 @@ impl MaskedHours {
                 step: 0,
                 fooled: 0.0,
                 off: 0.0,
-                window: HALL_WINDOW_MS,
+                window: cfg().hall_window_ms,
                 cool: 0.0,
                 pacer: Pacer::default(),
             },
@@ -411,9 +545,9 @@ impl MaskedHours {
             },
             vent_cool,
             vent_pacer: Pacer::default(),
-            verrine: VentHunter::at_rest(home("verrine"), VentSide::L, 6000.0),
-            haelith: VentHunter::at_rest(home("haelith"), VentSide::L, HAELITH_WAIT_MS),
-            ilyra: VentHunter::at_rest(home("ilyra"), VentSide::L, ILYRA_VENT_MS),
+            verrine: VentHunter::at_rest(home("verrine"), VentSide::L, cfg().vent_wait_ms),
+            haelith: VentHunter::at_rest(home("haelith"), VentSide::L, cfg().haelith_wait_ms),
+            ilyra: VentHunter::at_rest(home("ilyra"), VentSide::L, cfg().ilyra_vent_ms),
             frozen: Vec::new(),
             outcome: None,
         }
@@ -421,6 +555,18 @@ impl MaskedHours {
 
     pub fn outcome(&self) -> Option<Outcome> {
         self.outcome
+    }
+
+    /// Where each room-bound hunter is on the wing's map: `(hunter id, room id)`. Glyra (the music box) and Nyxie
+    /// (the dark) have no room, so they are not listed.
+    pub fn hunter_rooms(&self) -> [(&'static str, &'static str); 5] {
+        [
+            ("thessine", self.walker.room),
+            ("umbriel", self.rusher.room),
+            ("verrine", self.verrine.room),
+            ("haelith", self.haelith.room),
+            ("ilyra", self.ilyra.room),
+        ]
     }
 
     pub fn elapsed_ms(&self) -> f64 {
@@ -440,10 +586,6 @@ impl MaskedHours {
         &self.frozen
     }
 
-    pub fn side_bias(&self) -> f64 {
-        self.side_bias
-    }
-
     /// Advances the shift by `dt_ms` with the player's inputs. Once the night is over, `step` returns nothing.
     pub fn step(&mut self, dt_ms: f64, input: MaskInput) -> Vec<MaskEvent> {
         if self.outcome.is_some() {
@@ -455,7 +597,7 @@ impl MaskedHours {
                 self.outcome = Some(Outcome::Caught(by));
                 ev.push(MaskEvent::Caught { by });
             }
-            None if self.elapsed_ms >= NIGHT_MS => {
+            None if self.elapsed_ms >= cfg().night_ms => {
                 self.outcome = Some(Outcome::Win);
                 ev.push(MaskEvent::Win);
             }
@@ -515,8 +657,8 @@ impl MaskedHours {
         let lamp = self.battery > 0.0 && input.lamp;
         if !self.infinite_battery {
             let light_want = if using { self.flash_per_sec * dt } else { 0.0 };
-            let lamp_want = if lamp { self.flash_per_sec * LAMP_DRAIN * dt } else { 0.0 };
-            let cam_want = if input.monitor && self.battery > 0.0 { self.flash_per_sec * CAM_DRAIN * dt } else { 0.0 };
+            let lamp_want = if lamp { self.flash_per_sec * cfg().lamp_drain * dt } else { 0.0 };
+            let cam_want = if input.monitor && self.battery > 0.0 { self.flash_per_sec * cfg().cam_drain * dt } else { 0.0 };
             for want in [light_want, lamp_want, cam_want] {
                 self.battery -= want.min(self.battery);
             }
@@ -540,7 +682,7 @@ impl MaskedHours {
 
     fn charge_flash(&mut self) {
         if !self.infinite_battery {
-            self.battery -= FLASH_COST.min(self.battery);
+            self.battery -= cfg().flash_cost.min(self.battery);
         }
     }
 
@@ -560,14 +702,14 @@ impl MaskedHours {
             ev.push(MaskEvent::BoxStart);
         }
         let drain = if self.elapsed_ms >= self.box_starts_ms { self.box_decay } else { 0.0 };
-        let wind = if winding { WIND_PER_SEC * dt } else { 0.0 };
+        let wind = if winding { cfg().wind_per_sec * dt } else { 0.0 };
         self.music_box = (self.music_box - drain * dt + wind).clamp(0.0, 100.0);
         if self.music_box <= 0.0 {
             if self.box_zero_ms == 0.0 {
                 ev.push(MaskEvent::BoxEmpty);
             }
             self.box_zero_ms += dt_ms;
-            if self.box_zero_ms >= BOX_GRACE_MS {
+            if self.box_zero_ms >= cfg().box_grace_ms {
                 return Some("glyra");
             }
         } else if self.box_zero_ms > 0.0 {
@@ -620,27 +762,27 @@ impl MaskedHours {
                 }
             }
             Phase::Hall => {
-                let on_cam = tick.watched == Some("hall") && self.walker.step >= HALL_STEPS - 1;
+                let on_cam = tick.watched == Some("hall") && self.walker.step >= cfg().hall_steps - 1;
                 if on_cam {
                     self.frozen.push(ID);
                 }
                 if !tick.lights.hall && !on_cam {
                     self.walker.t += dt_ms;
                 }
-                if self.walker.t >= self.walker.need && self.walker.step < HALL_STEPS {
+                if self.walker.t >= self.walker.need && self.walker.step < cfg().hall_steps {
                     self.walker.t = 0.0;
                     self.walker.step += 1;
                     self.walker.need = self.step_need();
                     ev.push(MaskEvent::Step { id: ID, step: self.walker.step });
                 }
-                if self.walker.step >= HALL_STEPS {
+                if self.walker.step >= cfg().hall_steps {
                     self.walker.phase = Phase::Office;
                     self.walker.room = "office";
                     self.walker.t = 0.0;
                     self.walker.step = 0;
                     self.walker.fooled = 0.0;
                     self.walker.off = 0.0;
-                    self.walker.window = HALL_WINDOW_MS;
+                    self.walker.window = cfg().hall_window_ms;
                     self.walker.pacer.reset();
                     ev.push(MaskEvent::Office { id: ID });
                 }
@@ -648,9 +790,9 @@ impl MaskedHours {
             Phase::Office => {
                 if tick.mask {
                     self.walker.fooled += dt_ms;
-                    self.walker.off = (self.walker.off - dt_ms * OFF_DRAIN).max(0.0);
-                    if self.walker.fooled >= LEAVE_MS {
-                        self.walker.cool = spread(&mut self.rng, COOL_MS, COOL_SPREAD);
+                    self.walker.off = (self.walker.off - dt_ms * cfg().off_drain).max(0.0);
+                    if self.walker.fooled >= cfg().leave_ms {
+                        self.walker.cool = spread(&mut self.rng, cfg().cool_ms, cfg().cool_spread);
                         self.walker.phase = Phase::Away;
                         self.walker.room = home_room(ID);
                         self.walker.pacer.reset();
@@ -663,7 +805,7 @@ impl MaskedHours {
                     }
                 } else {
                     self.walker.off += dt_ms;
-                    if self.walker.off >= OFF_GRACE_MS {
+                    if self.walker.off >= cfg().off_grace_ms {
                         return Some(ID);
                     }
                 }
@@ -712,7 +854,7 @@ impl MaskedHours {
                 }
                 self.rusher.t += dt_ms;
                 if self.rusher.flashes >= self.rusher.goal {
-                    self.rusher.cool = self.rest_spread_ms(RUSH_COOL_MS);
+                    self.rusher.cool = self.rest_spread_ms(cfg().rush_cool_ms);
                     self.rusher.phase = Phase::Away;
                     self.rusher.room = home_room(ID);
                     self.rusher.pacer.reset();
@@ -754,19 +896,19 @@ impl MaskedHours {
         let side = if self.rng.next() < self.side_bias { VentSide::L } else { VentSide::R };
         match who {
             Vent::Verrine => {
-                let need = jitter(&mut self.rng, DUCT_MS, DUCT_JITTER);
+                let need = jitter(&mut self.rng, cfg().duct_ms, cfg().duct_jitter);
                 let room = side.duct_cam();
                 self.verrine = VentHunter { phase: Phase::Duct, room, side, t: 0.0, need, lit: self.verrine.lit, step: 0, wait: self.verrine.wait };
                 ev.push(MaskEvent::Duct { id: who.id(), side, room });
             }
             Vent::Haelith => {
-                let need = jitter(&mut self.rng, HAELITH_DUCT_MS, HAELITH_DUCT_JITTER);
+                let need = jitter(&mut self.rng, cfg().haelith_duct_ms, cfg().haelith_duct_jitter);
                 let room = side.duct_cam();
                 self.haelith = VentHunter { phase: Phase::Duct, room, side, t: 0.0, need, lit: 0.0, step: 0, wait: self.haelith.wait };
                 ev.push(MaskEvent::Duct { id: who.id(), side, room });
             }
             Vent::Ilyra => {
-                let need = jitter(&mut self.rng, ILYRA_STEP_MS, ILYRA_STEP_JITTER);
+                let need = jitter(&mut self.rng, cfg().ilyra_step_ms, cfg().ilyra_step_jitter);
                 let room = side.duct_cam();
                 self.ilyra = VentHunter { phase: Phase::Duct, room, side, t: 0.0, need, lit: 0.0, step: 1, wait: self.ilyra.wait };
                 ev.push(MaskEvent::Duct { id: who.id(), side, room });
@@ -800,7 +942,7 @@ impl MaskedHours {
                 }
                 if self.verrine.t >= self.verrine.need {
                     let room = self.next_toward(self.verrine.room);
-                    let wait = self.kill_wait(VENT_WAIT_MS);
+                    let wait = self.kill_wait(cfg().vent_wait_ms);
                     let side = self.verrine.side;
                     self.verrine.phase = Phase::Vent;
                     self.verrine.room = room;
@@ -813,15 +955,15 @@ impl MaskedHours {
             Phase::Vent => {
                 let side = self.verrine.side;
                 if tick.mask {
-                    self.verrine.t += dt_ms * VENT_MASK_RATE;
+                    self.verrine.t += dt_ms * cfg().vent_mask_rate;
                 } else if tick.lights.vent_lit(side) {
                     self.verrine.lit += dt_ms;
                 } else {
-                    self.verrine.lit = (self.verrine.lit - dt_ms * 0.5).max(0.0);
+                    self.verrine.lit = (self.verrine.lit - dt_ms * cfg().lit_decay).max(0.0);
                     self.verrine.t += dt_ms;
                 }
-                if self.verrine.lit >= VENT_NEED_MS {
-                    self.retreat(Vent::Verrine, VENT_COOL_MS, ev);
+                if self.verrine.lit >= cfg().vent_need_ms {
+                    self.retreat(Vent::Verrine, cfg().vent_cool_ms, ev);
                 } else if self.verrine.t >= self.verrine.wait {
                     return Some(ID);
                 }
@@ -843,7 +985,7 @@ impl MaskedHours {
                 }
                 if self.haelith.t >= self.haelith.need {
                     let room = self.next_toward(self.haelith.room);
-                    let wait = self.kill_wait(HAELITH_WAIT_MS);
+                    let wait = self.kill_wait(cfg().haelith_wait_ms);
                     let side = self.haelith.side;
                     self.haelith.phase = Phase::Vent;
                     self.haelith.room = room;
@@ -855,9 +997,9 @@ impl MaskedHours {
             }
             Phase::Fetch => {
                 self.haelith.t += dt_ms;
-                if self.haelith.t >= HAELITH_FETCH_MS {
+                if self.haelith.t >= cfg().haelith_fetch_ms {
                     let side = self.haelith.side.opposite();
-                    let need = jitter(&mut self.rng, HAELITH_DUCT_MS, HAELITH_DUCT_JITTER);
+                    let need = jitter(&mut self.rng, cfg().haelith_duct_ms, cfg().haelith_duct_jitter);
                     let room = side.duct_cam();
                     self.haelith.side = side;
                     self.haelith.phase = Phase::Duct;
@@ -873,10 +1015,10 @@ impl MaskedHours {
                 if !tick.mask && tick.lights.vent_lit(side) {
                     self.haelith.lit += dt_ms;
                 } else {
-                    self.haelith.lit = (self.haelith.lit - dt_ms * 0.5).max(0.0);
+                    self.haelith.lit = (self.haelith.lit - dt_ms * cfg().lit_decay).max(0.0);
                     self.haelith.t += dt_ms;
                 }
-                if self.haelith.lit >= HAELITH_NEED_MS {
+                if self.haelith.lit >= cfg().haelith_need_ms {
                     if self.haelith.step == 0 {
                         let to = side.opposite();
                         self.haelith.step = 1;
@@ -889,7 +1031,7 @@ impl MaskedHours {
                         self.haelith.step = 0;
                         self.haelith.t = 0.0;
                         self.haelith.lit = 0.0;
-                        self.retreat(Vent::Haelith, HAELITH_COOL_MS, ev);
+                        self.retreat(Vent::Haelith, cfg().haelith_cool_ms, ev);
                     }
                 } else if self.haelith.t >= self.haelith.wait {
                     return Some(ID);
@@ -910,23 +1052,23 @@ impl MaskedHours {
         if !tick.mask && tick.lights.vent_lit(side) {
             self.ilyra.lit += dt_ms;
         } else {
-            self.ilyra.lit = (self.ilyra.lit - dt_ms).max(0.0);
+            self.ilyra.lit = (self.ilyra.lit - dt_ms * cfg().ilyra_lit_decay).max(0.0);
             self.ilyra.t += dt_ms;
         }
-        if self.ilyra.lit >= ILYRA_NEED_MS {
+        if self.ilyra.lit >= cfg().ilyra_need_ms {
             self.ilyra.step = 0;
             self.ilyra.t = 0.0;
             self.ilyra.lit = 0.0;
-            self.retreat(Vent::Ilyra, ILYRA_COOL_MS, ev);
+            self.retreat(Vent::Ilyra, cfg().ilyra_cool_ms, ev);
         } else if self.ilyra.phase == Phase::Duct && self.ilyra.t >= self.ilyra.need {
             self.ilyra.step += 1;
             self.ilyra.t = 0.0;
-            if self.ilyra.step <= ILYRA_STEPS {
-                self.ilyra.need = jitter(&mut self.rng, ILYRA_STEP_MS, ILYRA_STEP_JITTER);
+            if self.ilyra.step <= cfg().ilyra_steps {
+                self.ilyra.need = jitter(&mut self.rng, cfg().ilyra_step_ms, cfg().ilyra_step_jitter);
                 ev.push(MaskEvent::Creep { id: ID, side, step: self.ilyra.step });
             } else {
                 let room = self.next_toward(self.ilyra.room);
-                let wait = self.kill_wait(ILYRA_VENT_MS);
+                let wait = self.kill_wait(cfg().ilyra_vent_ms);
                 self.ilyra.phase = Phase::Vent;
                 self.ilyra.room = room;
                 self.ilyra.wait = wait;
@@ -972,7 +1114,7 @@ impl MaskedHours {
     fn base_level(&self, id: &str) -> i32 {
         match self.levels.get(id) {
             Some(&level) if level >= 0 => level,
-            _ => LEVELS.iter().find(|entry| entry.0 == id).map_or(0, |entry| entry.1[self.night_idx]),
+            _ => cfg().levels.iter().find(|entry| entry.0 == id).map_or(0, |entry| entry.1[self.night_idx]),
         }
     }
 
@@ -997,21 +1139,21 @@ impl MaskedHours {
     fn kill_wait(&mut self, ms: f64) -> f64 {
         match self.variety.as_mut() {
             None => ms,
-            Some(vr) => (ms * KILL_FLOOR).max(ms * (1.0 - KILL_SPREAD + 2.0 * KILL_SPREAD * vr.next())),
+            Some(vr) => (ms * cfg().kill_floor).max(ms * (1.0 - cfg().kill_spread + 2.0 * cfg().kill_spread * vr.next())),
         }
     }
 
     fn rest_spread_ms(&mut self, ms: f64) -> f64 {
-        let rest_spread = if self.variety.is_some() { REST_SPREAD_VARIED } else { REST_SPREAD_PLAIN };
+        let rest_spread = if self.variety.is_some() { cfg().rest_spread_varied } else { cfg().rest_spread_plain };
         spread(&mut self.rng, ms, rest_spread)
     }
 
     fn step_need(&mut self) -> f64 {
-        jitter(&mut self.rng, STEP_MS, STEP_JITTER)
+        jitter(&mut self.rng, cfg().step_ms, cfg().step_jitter)
     }
 
     fn room_need(&mut self) -> f64 {
-        jitter(&mut self.rng, ROOM_MS, ROOM_JITTER)
+        jitter(&mut self.rng, cfg().room_ms, cfg().room_jitter)
     }
 }
 
@@ -1031,17 +1173,12 @@ impl VentSide {
 }
 
 fn home_room(id: &str) -> &'static str {
-    match id {
-        "thessine" => "costume",
-        "umbriel" => "gallery",
-        "verrine" | "haelith" | "ilyra" => "crawl",
-        _ => "music",
-    }
+    cfg().homes.get(id).copied().unwrap_or_else(|| panic!("night_watch data for mode 'masked_hours': no home for '{id}'"))
 }
 
 fn neighbors(room: &str) -> &'static [&'static str] {
-    match GRAPH.iter().find(|entry| entry.0 == room) {
-        Some(entry) => entry.1,
+    match cfg().graph.iter().find(|entry| entry.0 == room) {
+        Some(entry) => entry.1.as_slice(),
         None => &[],
     }
 }
@@ -1076,9 +1213,9 @@ fn set_vent_lit(lit: &mut VentLightActive, side: VentSide, on: bool) {
 }
 
 fn draw_phase(vr: &mut Mulberry) -> Mood {
-    let idx = ((vr.next() * PHASE_FACTORS.len() as f64).floor() as usize).min(PHASE_FACTORS.len() - 1);
-    let v = PHASE_FACTORS[idx];
-    let left = PHASE_MS[0] + vr.next() * (PHASE_MS[1] - PHASE_MS[0]);
+    let idx = ((vr.next() * cfg().phase_factors.len() as f64).floor() as usize).min(cfg().phase_factors.len() - 1);
+    let v = cfg().phase_factors[idx];
+    let left = cfg().phase_ms[0] + vr.next() * (cfg().phase_ms[1] - cfg().phase_ms[0]);
     Mood { v, left }
 }
 
@@ -1091,49 +1228,46 @@ fn jitter(rng: &mut Mulberry, ms: f64, fraction: f64) -> f64 {
 }
 
 fn flash_seconds(night_idx: usize) -> f64 {
-    (FLASH_SECONDS[night_idx] * (NIGHT_MS / TUNED_NIGHT_MS)).round()
+    (cfg().flash_seconds[night_idx] * (cfg().night_ms / cfg().tuned_night_ms)).round()
 }
 
 fn hour_index(elapsed_ms: f64) -> i32 {
-    ((elapsed_ms / HOUR_MS).floor() as i32).min(5)
+    ((elapsed_ms / cfg().hour_ms).floor() as i32).min(cfg().hours - 1)
 }
 
 fn effective_level(base: i32, hour: i32) -> i32 {
     if base <= 0 {
         return 0;
     }
-    let bump = if hour >= 4 {
-        2
-    } else if hour >= 3 {
-        1
-    } else {
-        0
-    };
-    base + bump
+    base + cfg().hour_bumps[hour.clamp(0, cfg().hours - 1) as usize]
 }
 
 fn box_decay_for_level(level: i32) -> f64 {
     if level > 0 {
-        0.3 + f64::from(level) * 0.25
+        cfg().glyra_decay_base + f64::from(level) * cfg().glyra_decay_per_level
     } else {
         0.0
     }
 }
 
 fn dark_grace_ms(level: i32) -> f64 {
-    (12500.0 - f64::from(level) * 450.0).max(4000.0)
+    let [base, per_level, min] = cfg().dark_grace;
+    (base - f64::from(level) * per_level).max(min)
 }
 
 fn rush_flashes(level: i32) -> u32 {
-    3 + u32::from(level >= 10) + u32::from(level >= 16)
+    let [first, second] = cfg().rush_extra_flash_levels;
+    cfg().rush_flashes_base + u32::from(level >= first) + u32::from(level >= second)
 }
 
 fn rush_run_ms(level: i32) -> f64 {
-    (3000.0 - f64::from(level) * 90.0).max(1200.0)
+    let [base, per_level, min] = cfg().rush_run;
+    (base - f64::from(level) * per_level).max(min)
 }
 
 fn rush_door_ms(level: i32) -> f64 {
-    (2400.0 - f64::from(level) * 70.0).max(1000.0)
+    let [base, per_level, min] = cfg().rush_door;
+    (base - f64::from(level) * per_level).max(min)
 }
 
 #[cfg(test)]
@@ -1165,5 +1299,48 @@ mod tests {
         let at = caught_at.expect("the music box catches the player");
         assert!((70_000.0..=71_000.0).contains(&at), "caught at {at} ms");
         assert_eq!(shift.outcome(), Some(Outcome::Caught("glyra")));
+    }
+
+    #[test]
+    fn the_json_carries_every_key_the_mode_reads() {
+        // cfg() panics naming the mode and key when one is missing.
+        let c = cfg();
+        assert_eq!(c.levels.len(), 6);
+        assert_eq!(c.graph.len(), 11);
+        for id in ["thessine", "umbriel", "verrine", "haelith", "ilyra", "glyra"] {
+            assert!(!home_room(id).is_empty());
+        }
+        for (room, next) in &c.graph {
+            for n in next {
+                assert!(neighbors(n).contains(room), "{room} -> {n} is not undirected");
+            }
+        }
+    }
+
+    #[test]
+    fn loaded_values_equal_the_old_constants() {
+        let c = cfg();
+        assert_eq!(c.night_ms, 270_000.0);
+        assert_eq!(c.hour_ms, 45_000.0);
+        assert_eq!(c.box_decay, [2.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(c.variety_salt, 0x3d1f_8a57);
+        assert_eq!(c.step_ms, 2300.0);
+        assert_eq!(c.hall_steps, 4);
+        assert_eq!(c.ilyra_steps, 3);
+        assert_eq!(c.phase_factors, vec![0.88, 1.0, 1.12]);
+        assert_eq!(MaskedHours::new(1, Mulberry::new(1), MaskOptions::default()).base_level("thessine"), 3);
+        assert_eq!(points_for(Outcome::Win), 10);
+        assert_eq!(home_room("umbriel"), "gallery");
+        assert_eq!(neighbors("office"), &["hall", "ventL", "ventR"]);
+        assert_eq!(Vent::Ilyra.vent_from_ms(), 90_000.0);
+        assert_eq!(effective_level(5, 3), 6);
+        assert_eq!(effective_level(5, 5), 7);
+        assert_eq!(effective_level(0, 5), 0);
+        assert_eq!(dark_grace_ms(10), 8000.0);
+        assert_eq!(rush_flashes(16), 5);
+        assert_eq!(rush_run_ms(100), 1200.0);
+        assert_eq!(rush_door_ms(10), 1700.0);
+        assert_eq!(box_decay_for_level(4), 1.3);
+        assert_eq!(flash_seconds(0), 66.0);
     }
 }

@@ -1,0 +1,50 @@
+{
+	"schema": "nw.map/1",
+	"mode": "dead_air",
+	"version": 1,
+	"theme": "radio station: reception on top of a plus-shaped floor, studio A and studio B either side of the live room, the transmitter room with the tape library beside it, and two crawlspaces out to the broadcast booth",
+	"source": "Godot lure/lure_map.gd (ROOMS rects and EDGES, metres from ORIGIN); the booth and its two vent openings are placed south of the crawlspaces. Room ids are the sim ids of data/buildings/dead_air.json",
+	"floors": [{ "id": "main", "label": "STATION" }],
+	"rooms": [
+		{ "id": "lobby", "label": "RECEPTION", "rect": [-4.0, 0.0, 4.0, 5.0] },
+		{ "id": "arcade", "label": "STUDIO A", "rect": [-10.0, 0.0, -4.0, 11.0] },
+		{ "id": "party", "label": "STUDIO B", "rect": [4.0, 0.0, 10.0, 11.0] },
+		{ "id": "ballpit", "label": "LIVE ROOM", "rect": [-4.0, 5.0, 4.0, 11.0] },
+		{ "id": "prize", "label": "TAPE LIBRARY", "rect": [4.0, 11.0, 10.0, 17.0] },
+		{ "id": "storage", "label": "TRANSMITTER ROOM", "rect": [-4.0, 11.0, 4.0, 17.0] },
+		{ "id": "ventl", "label": "LEFT CRAWLSPACE", "kind": "vent", "rect": [-9.0, 12.0, -4.0, 15.0] },
+		{ "id": "ventr", "label": "RIGHT CRAWLSPACE", "kind": "vent", "rect": [-2.0, 17.0, 2.0, 20.0] },
+		{ "id": "officeL", "label": "LEFT VENT OPENING","kind": "vent", "rect": [-7.0, 22.0, -3.0, 24.0] },
+		{ "id": "booth", "label": "BROADCAST BOOTH", "kind": "office", "rect": [-3.0, 22.0, 3.0, 28.0] },
+		{ "id": "officeR", "label": "RIGHT VENT OPENING","kind": "vent", "rect": [3.0, 22.0, 7.0, 24.0] }
+	],
+	"links": [
+		{ "a": "lobby", "b": "arcade", "kind": "door" },
+		{ "a": "lobby", "b": "party", "kind": "door" },
+		{ "a": "arcade", "b": "ballpit", "kind": "door" },
+		{ "a": "party", "b": "ballpit", "kind": "door" },
+		{ "a": "party", "b": "prize", "kind": "door" },
+		{ "a": "ballpit", "b": "storage", "kind": "door" },
+		{ "a": "prize", "b": "storage", "kind": "door" },
+		{ "a": "storage", "b": "ventl", "kind": "vent" },
+		{ "a": "storage", "b": "ventr", "kind": "vent" },
+		{ "a": "ventl", "b": "officeL", "kind": "vent" },
+		{ "a": "ventr", "b": "officeR", "kind": "vent" },
+		{ "a": "officeL", "b": "booth", "kind": "vent" },
+		{ "a": "officeR", "b": "booth", "kind": "vent" }
+	],
+	"cameras": [
+		{ "id": 1, "label": "RECEPTION", "covers": ["lobby"] },
+		{ "id": 2, "label": "STUDIO A", "covers": ["arcade"] },
+		{ "id": 3, "label": "STUDIO B", "covers": ["party"] },
+		{ "id": 4, "label": "LIVE ROOM", "covers": ["ballpit"] },
+		{ "id": 5, "label": "TAPE LIBRARY", "covers": ["prize"] },
+		{ "id": 6, "label": "TRANSMITTER ROOM", "covers": ["storage"] },
+		{ "id": 7, "label": "LEFT CRAWLSPACE", "covers": ["ventl"] },
+		{ "id": 8, "label": "RIGHT CRAWLSPACE", "covers": ["ventr"] }
+	],
+	"offices": ["booth"],
+	"spawns": [
+		{ "id": "xivvy", "room": "lobby" }
+	]
+}

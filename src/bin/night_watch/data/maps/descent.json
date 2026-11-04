@@ -1,0 +1,43 @@
+{
+	"schema": "nw.map/1",
+	"mode": "descent",
+	"version": 1,
+	"theme": "service elevator shaft seen in plan: the car with two caged windows, sills, a stairwell of landings down the left, a pipe gallery and fuse closet on the right, a signal hall at the bottom. Levels are 3 m apart",
+	"source": "Godot descent/descent_map.gd (room centres in metres, y = level, edges, entrances sill_l / sill_r) with the rects sized around those centres",
+	"floors": [
+		{ "id": "l0", "label": "LEVEL 0 (CAR)" },
+		{ "id": "l1", "label": "LEVEL -1" },
+		{ "id": "l2", "label": "LEVEL -2" },
+		{ "id": "l3", "label": "LEVEL -3" }
+	],
+	"rooms": [
+		{ "id": "car", "label": "CAR", "kind": "office", "floor": "l0", "rect": [-1.5, -1.5, 1.5, 1.5] },
+		{ "id": "sill_l", "label": "L SILL", "kind": "outdoor", "floor": "l0", "rect": [-2.4, -4.2, -0.2, -3.0] },
+		{ "id": "sill_r", "label": "R SILL", "kind": "outdoor", "floor": "l0", "rect": [0.2, -4.2, 2.4, -3.0] },
+		{ "id": "stair_1", "label": "LANDING 1", "floor": "l0", "rect": [-8.5, -7.5, -3.5, -4.5] },
+		{ "id": "shaft", "label": "SHAFT", "floor": "l1", "rect": [-2.5, -8.5, 2.5, -3.5] },
+		{ "id": "stair_2", "label": "LANDING 2", "floor": "l1", "rect": [-8.5, -12.0, -3.5, -8.0] },
+		{ "id": "pipe_gallery", "label": "PIPE GALLERY", "kind": "hall", "floor": "l1", "rect": [3.5, -9.5, 8.5, -4.5] },
+		{ "id": "stair_3", "label": "LANDING 3", "floor": "l2", "rect": [-8.5, -16.0, -3.5, -12.0] },
+		{ "id": "fuse_closet", "label": "FUSE CLOSET", "floor": "l2", "rect": [4.5, -14.5, 9.5, -9.5] },
+		{ "id": "stair_4", "label": "LANDING 4", "floor": "l3", "rect": [-8.5, -20.0, -3.5, -16.0] },
+		{ "id": "signal_hall", "label": "SIGNAL HALL", "floor": "l3", "poly": [[-3.0, -17.0], [-1.5, -19.5], [1.5, -19.5], [3.0, -17.0], [1.5, -14.5], [-1.5, -14.5]] }
+	],
+	"links": [
+		{ "a": "car", "b": "sill_l", "kind": "window" },
+		{ "a": "car", "b": "sill_r", "kind": "window" },
+		{ "a": "sill_l", "b": "shaft", "kind": "stairs" },
+		{ "a": "sill_r", "b": "shaft", "kind": "stairs" },
+		{ "a": "sill_l", "b": "stair_1", "kind": "path" },
+		{ "a": "stair_1", "b": "stair_2", "kind": "stairs" },
+		{ "a": "stair_2", "b": "stair_3", "kind": "stairs" },
+		{ "a": "stair_3", "b": "stair_4", "kind": "stairs" },
+		{ "a": "stair_4", "b": "signal_hall", "kind": "door" },
+		{ "a": "sill_r", "b": "pipe_gallery", "kind": "stairs" },
+		{ "a": "pipe_gallery", "b": "fuse_closet", "kind": "stairs" },
+		{ "a": "fuse_closet", "b": "signal_hall", "kind": "stairs" }
+	],
+	"cameras": [],
+	"offices": ["car"],
+	"spawns": []
+}

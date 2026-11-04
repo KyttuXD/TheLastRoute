@@ -1,0 +1,7 @@
+{
+	"mode": "bedtime",
+	"version": 1,
+	"rooms": [
+		{ "id": "bedroom", "label": "Bedroom", "cameras": false, "exits": ["closet", "hall"] }
+	]
+}

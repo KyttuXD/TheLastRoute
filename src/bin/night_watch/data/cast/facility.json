@@ -1,0 +1,9 @@
+{
+	"mode": "facility",
+	"version": 1,
+	"hunters": [
+		{ "id": "opalie", "name": "Opalie" },
+		{ "id": "porcelle", "name": "Porcelle" },
+		{ "id": "quenelle", "name": "Quenelle" }
+	]
+}

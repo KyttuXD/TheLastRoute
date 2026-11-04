@@ -3,136 +3,31 @@
 //! the shell feeds `Input` each frame and draws the returned `Event`s. The same seed gives the same night.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::OnceLock;
 
-use crate::data::CallsData;
+use serde_json::Value;
+
+use crate::building_map;
+use crate::data::{building, cast, int, list, num, rules, text, CallsData};
 use crate::framework::{chance, pick_index, CallEvent, CallScript, NightWatchStream};
 
-pub const NIGHTS: u32 = 7;
-pub const POINTS_PER_LEVEL: u32 = 10;
-pub const MAX_SCORE: u32 = POINTS_PER_LEVEL * NIGHTS;
-
-const NIGHT_MS: f64 = 270_000.0;
-const HOUR_MS: f64 = NIGHT_MS / 6.0;
-const TUNED_NIGHT_MS: f64 = 480_000.0;
-const TIME_SCALE: f64 = NIGHT_MS / TUNED_NIGHT_MS;
-const POWER_BASE: f64 = 0.1 / TIME_SCALE;
-const POWER_PER_DEVICE: f64 = 0.07 / TIME_SCALE;
-
-const TUNED_NIGHTS: u32 = 6;
-const KATHY_NIGHT: u32 = 7;
-const DOOR_CAPACITY: usize = 2;
-const T_CLOSED_MS: f64 = 450.0;
-const FOCUS: f64 = 0.75;
-const DOOR_GRACE_MS: [f64; 6] = [9000.0, 8200.0, 7500.0, 6900.0, 6400.0, 5800.0];
-const NIGHT_PACE: [f64; 6] = [1.3, 1.24, 1.18, 1.12, 1.06, 1.03];
-const LIGHT_PUSH_MS: [f64; 6] = [2000.0, 2500.0, 3000.0, 3500.0, 4000.0, 4500.0];
-const NYXIE_LEVELS: [i32; 6] = [3, 5, 7, 9, 11, 13];
-
-const KATHY_LEVEL: i32 = 20;
-const KATHY_PACE_SCALE: f64 = 0.65;
-const KATHY_GRACE_SCALE: f64 = 0.45;
-const KATHY_HOLD_MS: (f64, f64) = (2500.0, 20000.0);
-const KATHY_HOLD_TAIL_MS: f64 = 4500.0;
-const KATHY_HUM_MS: f64 = 1100.0;
-const KATHY_DIP_CYCLE_MS: f64 = 2600.0;
-const KATHY_DIPS: [(f64, f64); 3] = [(0.0, 180.0), (780.0, 900.0), (1500.0, 1760.0)];
-const KATHY_MISS_LOCK_MS: f64 = 2000.0;
-const KATHY_MEET_ROOMS: [&str; 2] = ["westhall", "easthall"];
-
 const DOORS: [&str; 2] = ["doorL", "doorR"];
-
-static GRAPH: [(&str, &[&str]); 10] = [
-    ("stage", &["dining", "backstage"]),
-    ("backstage", &["stage", "westhall"]),
-    ("dining", &["stage", "westhall", "kitchen", "easthall"]),
-    ("kitchen", &["dining"]),
-    ("westhall", &["dining", "backstage", "closet", "doorL"]),
-    ("closet", &["westhall"]),
-    ("easthall", &["dining", "corner", "doorR"]),
-    ("corner", &["easthall"]),
-    ("doorL", &["westhall"]),
-    ("doorR", &["easthall"]),
-];
 
 #[derive(Debug)]
 struct Def {
     id: &'static str,
-    doors: &'static [&'static str],
+    doors: Vec<&'static str>,
     start: &'static str,
     retreat_to: &'static str,
     push_to: &'static str,
-    fade_to: &'static [&'static str],
+    fade_to: Vec<&'static str>,
     alternate: bool,
     only_when_cams_down: bool,
     freezes_when_watched: bool,
-    levels: [i32; 6],
+    levels: Vec<i32>,
 }
 
-/// The floor's hunters in the order the floor wakes them (cast floor slots 0 to 3).
-static DEFS: [Def; 4] = [
-    Def {
-        id: "dovelle",
-        doors: &["doorL"],
-        start: "stage",
-        retreat_to: "dining",
-        push_to: "stage",
-        fade_to: &[],
-        alternate: false,
-        only_when_cams_down: false,
-        freezes_when_watched: false,
-        levels: [2, 4, 6, 9, 12, 16],
-    },
-    Def {
-        id: "ravelle",
-        doors: &["doorR", "doorL"],
-        start: "kitchen",
-        retreat_to: "dining",
-        push_to: "kitchen",
-        fade_to: &[],
-        alternate: true,
-        only_when_cams_down: false,
-        freezes_when_watched: false,
-        levels: [0, 3, 5, 7, 10, 14],
-    },
-    Def {
-        id: "aki",
-        doors: &["doorR"],
-        start: "closet",
-        retreat_to: "corner",
-        push_to: "closet",
-        fade_to: &[],
-        alternate: false,
-        only_when_cams_down: true,
-        freezes_when_watched: false,
-        levels: [0, 0, 4, 6, 9, 13],
-    },
-    Def {
-        id: "ilyra",
-        doors: &["doorL"],
-        start: "backstage",
-        retreat_to: "closet",
-        push_to: "stage",
-        fade_to: &[],
-        alternate: false,
-        only_when_cams_down: false,
-        freezes_when_watched: true,
-        levels: [0, 0, 0, 5, 8, 12],
-    },
-];
-
-static KATHY: Def = Def {
-    id: "kathy",
-    doors: &["doorL", "doorR"],
-    start: "stage",
-    retreat_to: "stage",
-    push_to: "stage",
-    fade_to: &["stage", "kitchen"],
-    alternate: false,
-    only_when_cams_down: false,
-    freezes_when_watched: false,
-    levels: [KATHY_LEVEL; 6],
-};
-
+#[derive(Debug)]
 struct Combo {
     a: &'static str,
     b: &'static str,
@@ -140,7 +35,167 @@ struct Combo {
     patience_ms: f64,
 }
 
-static COMBOS: [Combo; 1] = [Combo { a: "dovelle", b: "ravelle", min_level: 8, patience_ms: 1400.0 }];
+/// Night 7's Kathy knobs (`rules/classic.json` "kathy", `buildings/classic.json` "paths.kathy").
+#[derive(Debug)]
+struct KathyTune {
+    level: i32,
+    pace_scale: f64,
+    grace_scale: f64,
+    hold_ms: (f64, f64),
+    hold_tail_ms: f64,
+    hum_ms: f64,
+    dip_cycle_ms: f64,
+    dips: Vec<(f64, f64)>,
+    miss_lock_ms: f64,
+    meet_rooms: Vec<&'static str>,
+}
+
+/// Every Classic tunable, read once from the rules, cast and building JSON.
+#[derive(Debug)]
+struct Tuning {
+    nights: u32,
+    tuned_nights: u32,
+    kathy_night: u32,
+    points_per_level: u32,
+    night_ms: f64,
+    hour_ms: f64,
+    power_base: f64,
+    power_per_device: f64,
+    door_capacity: usize,
+    t_closed_ms: f64,
+    focus: f64,
+    door_grace_ms: Vec<f64>,
+    night_pace: Vec<f64>,
+    light_push_ms: Vec<f64>,
+    ai_bump: Vec<i32>,
+    move_window: (f64, f64, f64, f64),
+    blackout: (f64, f64, f64),
+    nyxie_levels: Vec<i32>,
+    /// The floor's hunters in the order the floor wakes them (cast floor slots 0 to 3).
+    defs: Vec<Def>,
+    kathy_def: Def,
+    kathy: KathyTune,
+    combos: Vec<Combo>,
+    graph: HashMap<&'static str, Vec<&'static str>>,
+}
+
+fn nums(v: &'static Value, path: &str) -> Vec<f64> {
+    list(v, path).iter().map(|x| x.as_f64().unwrap_or_else(|| panic!("night_watch classic: '{path}' holds a non-number"))).collect()
+}
+
+fn ints(v: &'static Value, path: &str) -> Vec<i32> {
+    list(v, path).iter().map(|x| x.as_i64().unwrap_or_else(|| panic!("night_watch classic: '{path}' holds a non-integer")) as i32).collect()
+}
+
+fn strs(v: &'static Value, path: &str) -> Vec<&'static str> {
+    list(v, path).iter().map(|x| x.as_str().unwrap_or_else(|| panic!("night_watch classic: '{path}' holds a non-string"))).collect()
+}
+
+fn flag(v: &Value, key: &str) -> bool {
+    v.get(key).and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn def_from(h: &'static Value, levels: Vec<i32>) -> Def {
+    Def {
+        id: h.get("id").and_then(Value::as_str).unwrap_or("kathy"),
+        doors: strs(h, "doors"),
+        start: text(h, "start"),
+        retreat_to: text(h, "retreat_to"),
+        push_to: text(h, "push_to"),
+        fade_to: Vec::new(),
+        alternate: flag(h, "alternate"),
+        only_when_cams_down: flag(h, "only_when_cams_down"),
+        freezes_when_watched: flag(h, "freezes_when_watched"),
+        levels,
+    }
+}
+
+impl Tuning {
+    fn load() -> Tuning {
+        let (rules, cast, building) = (rules("classic"), cast("classic"), building("classic"));
+        let night_ms = num(rules, "night_ms");
+        let time_scale = night_ms / num(rules, "tuned_night_ms");
+        let hunters = list(cast, "hunters");
+        let mut floor: Vec<(i64, &'static Value)> =
+            hunters.iter().filter(|h| h.get("floor").is_some()).map(|h| (int(h, "floor"), h)).collect();
+        floor.sort_by_key(|(slot, _)| *slot);
+        let defs: Vec<Def> = floor.iter().map(|(_, h)| def_from(h, ints(h, "levels"))).collect();
+        let combos = floor
+            .iter()
+            .filter_map(|(_, h)| h.get("combo").map(|c| (*h, c)))
+            .map(|(h, c)| Combo {
+                a: text(h, "id"),
+                b: text(c, "with"),
+                min_level: int(c, "min_level") as i32,
+                patience_ms: num(c, "patience_ms"),
+            })
+            .collect();
+        let nyxie = hunters.iter().find(|h| text(h, "id") == "nyxie").expect("night_watch classic: cast has no nyxie");
+        let path = building.get("paths").and_then(|p| p.get("kathy")).expect("night_watch classic: building has no paths.kathy");
+        let mut kathy_def = def_from(path, vec![int(rules, "kathy.level") as i32; 6]);
+        kathy_def.fade_to = strs(path, "fade_to");
+        let hold = nums(rules, "kathy.hold_ms");
+        let kathy = KathyTune {
+            level: int(rules, "kathy.level") as i32,
+            pace_scale: num(rules, "kathy.pace_scale"),
+            grace_scale: num(rules, "kathy.grace_scale"),
+            hold_ms: (hold[0], hold[1]),
+            hold_tail_ms: num(rules, "kathy.hold_tail_ms"),
+            hum_ms: num(rules, "kathy.hum_ms"),
+            dip_cycle_ms: num(rules, "kathy.dip_cycle_ms"),
+            dips: list(rules, "kathy.dips").iter().map(|d| (num(d, "0"), num(d, "1"))).collect(),
+            miss_lock_ms: num(rules, "kathy.miss_lock_ms"),
+            meet_rooms: strs(path, "meet_rooms"),
+        };
+        // The hunters' graph is the building map's walkable links; the office is where they end, not a room they walk to.
+        let map = building_map::load("classic").expect("night_watch classic: no data/maps/classic.json");
+        let graph = map
+            .rooms
+            .iter()
+            .filter(|r| !map.is_office(&r.id))
+            .map(|r| (r.id.as_str(), map.neighbours(&r.id).into_iter().filter(|n| !map.is_office(n)).collect()))
+            .collect();
+        Tuning {
+            nights: int(rules, "nights") as u32,
+            tuned_nights: int(rules, "tuned_nights") as u32,
+            kathy_night: int(rules, "kathy_night") as u32,
+            points_per_level: int(rules, "points_per_level") as u32,
+            night_ms,
+            hour_ms: night_ms / 6.0,
+            power_base: num(rules, "power_base_tuned") / time_scale,
+            power_per_device: num(rules, "power_per_device_tuned") / time_scale,
+            door_capacity: int(rules, "door_capacity") as usize,
+            t_closed_ms: num(rules, "t_closed_ms"),
+            focus: num(rules, "focus"),
+            door_grace_ms: nums(rules, "door_grace_ms"),
+            night_pace: nums(rules, "night_pace"),
+            light_push_ms: nums(rules, "light_push_ms"),
+            ai_bump: ints(rules, "ai_bump_by_hour"),
+            move_window: (
+                num(rules, "move_window.base_ms"),
+                num(rules, "move_window.per_level_ms"),
+                num(rules, "move_window.min_ms"),
+                num(rules, "move_window.spread_ms"),
+            ),
+            blackout: (num(rules, "blackout.base_ms"), num(rules, "blackout.per_level_ms"), num(rules, "blackout.min_ms")),
+            nyxie_levels: ints(nyxie, "levels"),
+            defs,
+            kathy_def,
+            kathy,
+            combos,
+            graph,
+        }
+    }
+
+    fn neighbours(&self, room: &str) -> &[&'static str] {
+        self.graph.get(room).map_or(&[], Vec::as_slice)
+    }
+}
+
+fn tuning() -> &'static Tuning {
+    static TUNING: OnceLock<Tuning> = OnceLock::new();
+    TUNING.get_or_init(Tuning::load)
+}
 
 /// What the player can do this frame. `cam_room` is the room on the monitor, when the monitor is up.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -199,6 +254,7 @@ struct Snap {
 
 #[derive(Debug)]
 struct Stalker {
+    t: &'static Tuning,
     id: &'static str,
     def: &'static Def,
     room: &'static str,
@@ -223,9 +279,10 @@ struct Stalker {
 }
 
 impl Stalker {
-    fn new(def: &'static Def, base: i32, attack_ms: f64, pace: f64, push_ms: f64) -> Stalker {
+    fn new(t: &'static Tuning, def: &'static Def, base: i32, attack_ms: f64, pace: f64, push_ms: f64) -> Stalker {
         let door = def.doors[0];
         Stalker {
+            t,
             id: def.id,
             def,
             room: def.start,
@@ -240,23 +297,23 @@ impl Stalker {
             closed_ms: 0.0,
             lit_ms: 0.0,
             behind: false,
-            need_ms: T_CLOSED_MS,
+            need_ms: t.t_closed_ms,
             need_range: None,
             need_tail: 0.0,
             unseen: false,
-            dist: distances_to(door),
+            dist: distances_to(t, door),
             pacer_t: 0.0,
             pacer_next: None,
         }
     }
 
-    fn kathy(rng: &mut NightWatchStream, base: i32, attack_ms: f64, pace: f64) -> Stalker {
-        let mut s = Stalker::new(&KATHY, base, attack_ms, pace, f64::INFINITY);
+    fn kathy(t: &'static Tuning, rng: &mut NightWatchStream, base: i32, attack_ms: f64, pace: f64) -> Stalker {
+        let mut s = Stalker::new(t, &t.kathy_def, base, attack_ms, pace, f64::INFINITY);
         s.unseen = true;
-        s.need_range = Some(KATHY_HOLD_MS);
-        s.need_ms = KATHY_HOLD_MS.0;
-        s.need_tail = KATHY_HOLD_TAIL_MS;
-        s.aim(pick_index(rng, KATHY.doors.len()));
+        s.need_range = Some(t.kathy.hold_ms);
+        s.need_ms = t.kathy.hold_ms.0;
+        s.need_tail = t.kathy.hold_tail_ms;
+        s.aim(pick_index(rng, t.kathy_def.doors.len()));
         s
     }
 
@@ -267,7 +324,7 @@ impl Stalker {
     fn aim(&mut self, index: usize) {
         self.door_index = index;
         self.door = self.def.doors[index];
-        self.dist = distances_to(self.door);
+        self.dist = distances_to(self.t, self.door);
     }
 
     fn reset_waiting(&mut self) {
@@ -294,7 +351,7 @@ impl Stalker {
         }
         let wait = match self.pacer_next {
             Some(wait) => wait,
-            None => draw_wait(self.level, rng),
+            None => draw_wait(self.t, self.level, rng),
         };
         self.pacer_t += dt;
         if self.pacer_t < wait {
@@ -302,7 +359,7 @@ impl Stalker {
             return false;
         }
         self.pacer_t = 0.0;
-        self.pacer_next = Some(draw_wait(self.level, rng));
+        self.pacer_next = Some(draw_wait(self.t, self.level, rng));
         true
     }
 
@@ -315,14 +372,14 @@ impl Stalker {
 
     fn next_room(&self, rng: &mut NightWatchStream, blocked: &dyn Fn(&str) -> bool) -> &'static str {
         let here = self.dist_of(self.room);
-        let around: Vec<&'static str> = neighbours(self.room).iter().copied().filter(|r| !blocked(*r)).collect();
+        let around: Vec<&'static str> = self.t.neighbours(self.room).iter().copied().filter(|r| !blocked(*r)).collect();
         let closer: Vec<&'static str> = around.iter().copied().filter(|r| self.dist_of(*r) < here).collect();
         let sideways: Vec<&'static str> = around
             .iter()
             .copied()
             .filter(|r| !closer.contains(r) && *r != self.door && !r.starts_with("door"))
             .collect();
-        let keep_closer = !closer.is_empty() && (chance(rng, FOCUS) || sideways.is_empty());
+        let keep_closer = !closer.is_empty() && (chance(rng, self.t.focus) || sideways.is_empty());
         let pool = if !keep_closer && !sideways.is_empty() { sideways } else { closer };
         if pool.is_empty() {
             return self.room;
@@ -413,6 +470,7 @@ impl Stalker {
 /// One Classic night in progress. Feed `step` the frame's input; read `outcome`, `points` and the call.
 #[derive(Debug)]
 pub struct ClassicNight {
+    t: &'static Tuning,
     pub night: u32,
     pub call: CallScript,
     rng: NightWatchStream,
@@ -434,30 +492,32 @@ pub struct ClassicNight {
 
 /// Starts a Classic night. `levels` overrides hunters' AI levels by id (Custom Night); `custom` turns off Night 7's Kathy.
 pub fn start(calls: &CallsData, night: u32, seed: i64, levels: &[(&str, i32)], custom: bool) -> ClassicNight {
-    let night = night.clamp(1, NIGHTS);
+    let t = tuning();
+    let night = night.clamp(1, t.nights);
     let mut rng = NightWatchStream::seeded(seed);
-    let index = night_index(night);
+    let index = night_index(t, night);
     let level_of = |id: &str, default: i32| levels.iter().find(|(k, _)| *k == id).map_or(default, |(_, v)| *v);
-    let kathy_night = night == KATHY_NIGHT && !custom;
-    let grace = DOOR_GRACE_MS[index];
-    let pace = NIGHT_PACE[index];
-    let push = LIGHT_PUSH_MS[index];
+    let kathy_night = night == t.kathy_night && !custom;
+    let grace = t.door_grace_ms[index];
+    let pace = t.night_pace[index];
+    let push = t.light_push_ms[index];
 
     let mut hunters = Vec::new();
     let mut nyxie_level = 0;
     if kathy_night {
-        let grace_k = (grace * KATHY_GRACE_SCALE).round();
-        let pace_k = (pace * KATHY_PACE_SCALE * 1000.0).round() / 1000.0;
-        hunters.push(Stalker::kathy(&mut rng, level_of("kathy", KATHY_LEVEL), grace_k, pace_k));
+        let grace_k = (grace * t.kathy.grace_scale).round();
+        let pace_k = (pace * t.kathy.pace_scale * 1000.0).round() / 1000.0;
+        hunters.push(Stalker::kathy(t, &mut rng, level_of("kathy", t.kathy.level), grace_k, pace_k));
     } else {
-        for def in DEFS.iter() {
-            let base = level_of(def.id, level_for(def, night));
-            hunters.push(Stalker::new(def, base, grace, pace, push));
+        for def in t.defs.iter() {
+            let base = level_of(def.id, level_for(t, def, night));
+            hunters.push(Stalker::new(t, def, base, grace, pace, push));
         }
-        nyxie_level = level_of("nyxie", nyxie_level_for(night));
+        nyxie_level = level_of("nyxie", nyxie_level_for(t, night));
     }
 
     ClassicNight {
+        t,
         night,
         call: CallScript::for_level(calls, "classic", night as i32),
         rng,
@@ -486,14 +546,14 @@ impl ClassicNight {
     /// Ten points for a won night, none otherwise.
     pub fn points(&self) -> u32 {
         if self.over == Some(Outcome::Win) {
-            POINTS_PER_LEVEL
+            self.t.points_per_level
         } else {
             0
         }
     }
 
     pub fn hour(&self) -> u32 {
-        ((self.elapsed / HOUR_MS).floor() as u32).min(5)
+        ((self.elapsed / self.t.hour_ms).floor() as u32).min(5)
     }
 
     pub fn power(&self) -> f64 {
@@ -523,7 +583,7 @@ impl ClassicNight {
         self.kathy_night
             && self.lit[slot]
             && self.hunter_room("kathy") == Some(DOORS[slot])
-            && kathy_dip_on(self.elapsed)
+            && kathy_dip_on(self.t, self.elapsed)
     }
 
     /// Meet Kathy's eyes on the monitor (Night 7 only). A hit on her hall feed sends her away; anything else locks the key briefly.
@@ -539,12 +599,12 @@ impl ClassicNight {
             return Meet::None;
         };
         let k = &mut self.hunters[index];
-        if cam && !lost && !out && cam_room == Some(k.room) && KATHY_MEET_ROOMS.contains(&k.room) {
+        if cam && !lost && !out && cam_room == Some(k.room) && self.t.kathy.meet_rooms.contains(&k.room) {
             let from = k.room;
             k.fade(&mut self.rng);
             return Meet::Met(Event::Repelled { id: "kathy", from, room: k.room });
         }
-        self.meet_lock_ms = KATHY_MISS_LOCK_MS;
+        self.meet_lock_ms = self.t.kathy.miss_lock_ms;
         Meet::Miss
     }
 
@@ -560,7 +620,7 @@ impl ClassicNight {
         if self.out {
             self.out_ms += dt;
         } else {
-            let drain = POWER_BASE + POWER_PER_DEVICE * usage(input) as f64;
+            let drain = self.t.power_base + self.t.power_per_device * usage(input) as f64;
             self.power = (self.power - drain * dt / 1000.0).max(0.0);
             if self.power <= 0.0 {
                 self.out = true;
@@ -579,10 +639,10 @@ impl ClassicNight {
                 .map(|h| Snap { id: h.id, room: h.room, level: h.level })
                 .collect();
             let id = self.hunters[i].id;
-            let level = effective_level(self.hunters[i].base, hour);
+            let level = effective_level(self.t, self.hunters[i].base, hour);
             self.hunters[i].level = level;
             if !self.kathy_night {
-                self.hunters[i].attack_ms = self.grace_ms - patience(id, level, &snap);
+                self.hunters[i].attack_ms = self.grace_ms - patience(self.t, id, level, &snap);
             }
             self.refresh_lines();
 
@@ -591,9 +651,10 @@ impl ClassicNight {
             let door = self.hunters[i].door;
             let slot = door_slot(door).unwrap_or(0);
             let ctx = Ctx { cam, cam_room: input.cam_room, lit: self.lit[slot], behind };
+            let door_capacity = self.t.door_capacity;
             let blocked = |r: &str| {
                 r.starts_with("door")
-                    && snap.iter().filter(|s| s.id != id && s.room == r).count() >= DOOR_CAPACITY
+                    && snap.iter().filter(|s| s.id != id && s.room == r).count() >= door_capacity
             };
             let stepped = self.hunters[i].step(dt, self.shut[slot], ctx, &mut self.rng, &blocked);
             for e in stepped {
@@ -606,7 +667,7 @@ impl ClassicNight {
             }
         }
 
-        if self.out && self.nyxie_level > 0 && self.out_ms >= blackout_ms(self.nyxie_level) {
+        if self.out && self.nyxie_level > 0 && self.out_ms >= blackout_ms(self.t, self.nyxie_level) {
             self.over = Some(Outcome::Caught("nyxie"));
             events.push(Event::Caught { id: "nyxie", darkness: true });
             return events;
@@ -616,7 +677,7 @@ impl ClassicNight {
             self.tick_hum(dt, &mut events);
         }
         self.refresh_lines();
-        if self.elapsed >= NIGHT_MS {
+        if self.elapsed >= self.t.night_ms {
             self.over = Some(Outcome::Win);
             events.push(Event::Win);
         }
@@ -630,7 +691,7 @@ impl ClassicNight {
             return;
         }
         self.hum_ms += dt;
-        if self.hum_ms >= KATHY_HUM_MS {
+        if self.hum_ms >= self.t.kathy.hum_ms {
             self.hum_ms = 0.0;
             let slot = door_slot(k.door).unwrap_or(0);
             events.push(Event::Hum { id: "kathy", door: k.door, muffled: self.shut[slot] });
@@ -667,49 +728,47 @@ fn door_slot(room: &str) -> Option<usize> {
     DOORS.iter().position(|d| *d == room)
 }
 
-fn night_index(night: u32) -> usize {
-    (night.clamp(1, TUNED_NIGHTS) - 1) as usize
+fn night_index(t: &Tuning, night: u32) -> usize {
+    (night.clamp(1, t.tuned_nights) - 1) as usize
 }
 
-fn level_for(def: &Def, night: u32) -> i32 {
-    def.levels[night_index(night)]
+fn level_for(t: &Tuning, def: &Def, night: u32) -> i32 {
+    def.levels[night_index(t, night)]
 }
 
-fn nyxie_level_for(night: u32) -> i32 {
-    if night == KATHY_NIGHT {
+fn nyxie_level_for(t: &Tuning, night: u32) -> i32 {
+    if night == t.kathy_night {
         0
     } else {
-        NYXIE_LEVELS[night_index(night)]
+        t.nyxie_levels[night_index(t, night)]
     }
 }
 
-fn ai_bump(hour: u32) -> i32 {
-    match hour {
-        h if h >= 4 => 2,
-        3 => 1,
-        _ => 0,
-    }
+fn ai_bump(t: &Tuning, hour: u32) -> i32 {
+    t.ai_bump[(hour as usize).min(t.ai_bump.len() - 1)]
 }
 
-fn effective_level(base: i32, hour: u32) -> i32 {
+fn effective_level(t: &Tuning, base: i32, hour: u32) -> i32 {
     if base > 0 {
-        base + ai_bump(hour)
+        base + ai_bump(t, hour)
     } else {
         0
     }
 }
 
-fn blackout_ms(level: i32) -> f64 {
-    (11500.0 - f64::from(level) * 400.0).max(4000.0)
+fn blackout_ms(t: &Tuning, level: i32) -> f64 {
+    let (base, per_level, min) = t.blackout;
+    (base - f64::from(level) * per_level).max(min)
 }
 
-fn move_window(level: i32) -> (f64, f64) {
-    let lo = (13000.0 - f64::from(level) * 500.0).max(2500.0);
-    (lo, lo + 3000.0)
+fn move_window(t: &Tuning, level: i32) -> (f64, f64) {
+    let (base, per_level, min, spread) = t.move_window;
+    let lo = (base - f64::from(level) * per_level).max(min);
+    (lo, lo + spread)
 }
 
-fn draw_wait(level: i32, rng: &mut NightWatchStream) -> f64 {
-    let (lo, hi) = move_window(level);
+fn draw_wait(t: &Tuning, level: i32, rng: &mut NightWatchStream) -> f64 {
+    let (lo, hi) = move_window(t, level);
     lo + rng.next() * (hi - lo)
 }
 
@@ -720,15 +779,15 @@ fn roll_hold(u: f64, lo: f64, hi: f64, tail: f64) -> f64 {
     (lo - tail * (1.0 - u * (1.0 - (-(hi - lo) / tail).exp())).ln()).round()
 }
 
-fn kathy_dip_on(elapsed: f64) -> bool {
-    let t = elapsed % KATHY_DIP_CYCLE_MS;
-    KATHY_DIPS.iter().any(|&(a, b)| t >= a && t < b)
+fn kathy_dip_on(t: &Tuning, elapsed: f64) -> bool {
+    let at = elapsed % t.kathy.dip_cycle_ms;
+    t.kathy.dips.iter().any(|&(a, b)| at >= a && at < b)
 }
 
 /// The hunter who works with her partner loses patience sooner while the partner waits at a door.
-fn patience(id: &str, level: i32, snap: &[Snap]) -> f64 {
+fn patience(t: &Tuning, id: &str, level: i32, snap: &[Snap]) -> f64 {
     let mut best = 0.0_f64;
-    for c in COMBOS.iter() {
+    for c in t.combos.iter() {
         let partner = if c.a == id {
             c.b
         } else if c.b == id {
@@ -744,19 +803,12 @@ fn patience(id: &str, level: i32, snap: &[Snap]) -> f64 {
     best
 }
 
-fn neighbours(room: &str) -> &'static [&'static str] {
-    match GRAPH.iter().find(|(r, _)| *r == room) {
-        Some((_, n)) => n,
-        None => &[],
-    }
-}
-
-fn distances_to(target: &'static str) -> HashMap<&'static str, u32> {
+fn distances_to(t: &Tuning, target: &'static str) -> HashMap<&'static str, u32> {
     let mut dist = HashMap::from([(target, 0_u32)]);
     let mut queue = VecDeque::from([target]);
     while let Some(room) = queue.pop_front() {
         let d = dist.get(room).copied().unwrap_or(0);
-        for &next in neighbours(room) {
+        for &next in t.neighbours(room) {
             if !dist.contains_key(next) {
                 dist.insert(next, d + 1);
                 queue.push_back(next);
@@ -782,5 +834,71 @@ mod tests {
         }
         assert!(events.contains(&Event::Repelled { id: "dovelle", from: "doorL", room: "dining" }));
         assert!(!events.iter().any(|e| matches!(e, Event::Caught { .. })));
+    }
+
+    #[test]
+    fn the_json_carries_every_key_the_mode_reads() {
+        // Loading panics naming the mode and key when one is missing.
+        let t = tuning();
+        assert_eq!(t.defs.iter().map(|d| d.id).collect::<Vec<_>>(), ["dovelle", "ravelle", "aki", "ilyra"]);
+        assert_eq!(t.kathy_def.id, "kathy");
+        assert_eq!(t.kathy_def.fade_to, ["stage", "kitchen"]);
+        assert_eq!(t.graph.len(), 10);
+    }
+
+    #[test]
+    fn the_graph_from_the_building_map_equals_the_old_table() {
+        // The table the mode used to carry (and data/buildings/classic.json still lists): same rooms, same neighbours.
+        let old: [(&str, &[&str]); 10] = [
+            ("stage", &["dining", "backstage"]),
+            ("backstage", &["stage", "westhall"]),
+            ("dining", &["stage", "westhall", "kitchen", "easthall"]),
+            ("kitchen", &["dining"]),
+            ("westhall", &["dining", "backstage", "closet", "doorL"]),
+            ("closet", &["westhall"]),
+            ("easthall", &["dining", "corner", "doorR"]),
+            ("corner", &["easthall"]),
+            ("doorL", &["westhall"]),
+            ("doorR", &["easthall"]),
+        ];
+        let t = tuning();
+        assert_eq!(t.graph.len(), old.len());
+        for (room, next) in old {
+            let (mut got, mut want) = (t.neighbours(room).to_vec(), next.to_vec());
+            got.sort_unstable();
+            want.sort_unstable();
+            assert_eq!(got, want, "neighbours of {room}");
+        }
+    }
+
+    #[test]
+    fn the_loaded_values_equal_the_old_constants() {
+        let t = tuning();
+        assert_eq!((t.nights, t.points_per_level, t.tuned_nights, t.kathy_night), (7, 10, 6, 7));
+        assert_eq!(t.night_ms, 270_000.0);
+        assert_eq!(t.hour_ms, 270_000.0 / 6.0);
+        assert_eq!(t.power_base, 0.1 / (270_000.0 / 480_000.0));
+        assert_eq!(t.power_per_device, 0.07 / (270_000.0 / 480_000.0));
+        assert_eq!((t.door_capacity, t.t_closed_ms, t.focus), (2, 450.0, 0.75));
+        assert_eq!(t.door_grace_ms, [9000.0, 8200.0, 7500.0, 6900.0, 6400.0, 5800.0]);
+        assert_eq!(t.night_pace, [1.3, 1.24, 1.18, 1.12, 1.06, 1.03]);
+        assert_eq!(t.light_push_ms, [2000.0, 2500.0, 3000.0, 3500.0, 4000.0, 4500.0]);
+        assert_eq!(t.nyxie_levels, [3, 5, 7, 9, 11, 13]);
+        assert_eq!(t.defs[0].levels, [2, 4, 6, 9, 12, 16]);
+        assert_eq!(t.defs[2].levels, [0, 0, 4, 6, 9, 13]);
+        assert!(t.defs[1].alternate && t.defs[2].only_when_cams_down && t.defs[3].freezes_when_watched);
+        assert_eq!((t.combos[0].a, t.combos[0].b, t.combos[0].min_level, t.combos[0].patience_ms), ("dovelle", "ravelle", 8, 1400.0));
+        assert_eq!((t.kathy.level, t.kathy.hold_ms, t.kathy.hold_tail_ms, t.kathy.hum_ms), (20, (2500.0, 20000.0), 4500.0, 1100.0));
+        assert_eq!(t.kathy.dips, [(0.0, 180.0), (780.0, 900.0), (1500.0, 1760.0)]);
+        assert_eq!((t.kathy.pace_scale, t.kathy.grace_scale, t.kathy.miss_lock_ms, t.kathy.dip_cycle_ms), (0.65, 0.45, 2000.0, 2600.0));
+        assert_eq!(t.kathy.meet_rooms, ["westhall", "easthall"]);
+        assert_eq!(blackout_ms(t, 3), 10_300.0);
+        assert_eq!(blackout_ms(t, 40), 4000.0);
+        assert_eq!(move_window(t, 0), (13_000.0, 16_000.0));
+        assert_eq!(move_window(t, 40), (2500.0, 5500.0));
+        assert_eq!([0, 3, 4, 5].map(|h| ai_bump(t, h)), [0, 1, 2, 2]);
+        let mut west = t.neighbours("westhall").to_vec();
+        west.sort_unstable();
+        assert_eq!(west, ["backstage", "closet", "dining", "doorL"]);
     }
 }

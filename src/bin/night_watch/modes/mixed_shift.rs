@@ -3,246 +3,428 @@
 //! the beats. This file holds the rules only. The shell draws the building and plays the `Event`s that `step` returns.
 //! Draws come from the shared `NightWatchStream` in the same order as the GDScript, so a seed plays the same night.
 
+use crate::data::{self, int, list, num, text};
 use crate::framework::{jitter, NightWatchStream};
+use serde_json::Value;
+use std::sync::OnceLock;
 
-const HOUR_MS: f64 = 45_000.0;
-const NIGHT_MS: f64 = 270_000.0;
-/// The shared per-level points (`POINTS_PER_LEVEL` in Godot's `night_watch_modes_data.gd`).
-pub const POINTS_PER_LEVEL: u32 = 10;
+/// Every number the mode tunes, read once from `data/rules/mixed_shift.json`, `cast/mixed_shift.json` and
+/// `buildings/mixed_shift.json` (the Godot `mixed_data.gd` constants). The logic below only reads this struct.
+struct Tuning {
+    hour_ms: f64,
+    night_ms: f64,
+    points_per_level: u32,
+    dawn_hour: u32,
 
-const TELL_FLOOR_MS: f64 = 1_500.0;
-const TELL_JITTER: f64 = 0.2;
-const JITTER: f64 = 0.3;
-const COOLDOWN_MS: f64 = 1_200.0;
-const GIVE_UP_MS: f64 = 1_200.0;
-const CHOKE_MS: f64 = 2_000.0;
-const END_CLEAR_MS: f64 = 10_000.0;
-const MIN_DWELL_MS: f64 = 2_500.0;
-const MAX_WALKERS: usize = 4;
-const DECOY_QUIET_MS: f64 = 3_000.0;
-const CHAOS_HOURS: (u32, u32) = (1, 5);
-const FEINT_QUIET_MS: f64 = 2_500.0;
+    tell_floor_ms: f64,
+    tell_jitter: f64,
+    jitter: f64,
+    cooldown_ms: f64,
+    give_up_ms: f64,
+    choke_ms: f64,
+    end_clear_ms: f64,
+    min_dwell_ms: f64,
+    max_walkers: usize,
+    feint_quiet_ms: f64,
+    feint_retry_ms: f64,
+    idle_scare_ms: f64,
 
-const SEAL_MAX: f64 = 20_000.0;
-const SEAL_REGEN: f64 = 0.3;
-const SEAL_MIN_TO_SHUT: f64 = 1_500.0;
-const SEAL_RESERVE: f64 = 2_600.0;
-const DOOR_HOLD_MS: f64 = 8_000.0;
-const POP_COOL_MS: f64 = 900.0;
+    seal_max: f64,
+    seal_regen: f64,
+    seal_min_to_shut: f64,
+    seal_reserve: f64,
+    door_hold_ms: f64,
+    pop_cool_ms: f64,
 
-const VENT_SEAL_MAX: f64 = 9_000.0;
-const VENT_SEAL_REGEN: f64 = 0.35;
-const VENT_MIN_TO_SEAL: f64 = 1_200.0;
-const VENT_RESERVE: f64 = 2_600.0;
-const VENT_HOLD_MS: f64 = 6_000.0;
-const VENT_LINGER_MS: f64 = 2_200.0;
-const VENT_POP_COOL_MS: f64 = 1_100.0;
-const VENT_LIGHT_MS: f64 = 700.0;
-const VENT_LIGHT_COOL_MS: f64 = 2_400.0;
+    vent_seal_max: f64,
+    vent_seal_regen: f64,
+    vent_min_to_seal: f64,
+    vent_reserve: f64,
+    vent_hold_ms: f64,
+    vent_linger_ms: f64,
+    vent_pop_cool_ms: f64,
+    vent_light_ms: f64,
+    vent_light_cool_ms: f64,
 
-const MOOD_MS: (f64, f64) = (30_000.0, 60_000.0);
-const MOOD_CUE_MS: (f64, f64) = (14_000.0, 24_000.0);
-const SPIKE_LEN_MS: (f64, f64) = (10_000.0, 13_000.0);
-const SPIKE_WARN_MS: f64 = 2_500.0;
-const SPIKE_START_PAD_MS: f64 = 8_000.0;
-const BREATHER_MS: (f64, f64) = (8_000.0, 11_000.0);
-const BEAT_LULL_MS: (f64, f64) = (12_000.0, 20_000.0);
-const BEAT_BUILD_MS: (f64, f64) = (10_000.0, 16_000.0);
-const FEINT_LULL_MS: (f64, f64) = (9_000.0, 16_000.0);
-const FEINT_BUILD_MS: (f64, f64) = (16_000.0, 26_000.0);
-const TENSION_FLOOR_FROM: f64 = 5.0 * HOUR_MS;
-const TENSION_FLOOR: (f64, f64) = (0.35, 0.85);
+    mood_ms: (f64, f64),
+    mood_cue_ms: (f64, f64),
+    mood_speed: [f64; 4],
+    mood_tell: [f64; 4],
 
-const COUNTER_GRACE_MS: f64 = 7_000.0;
-const COUNTER_SPAN_MS: f64 = 22_000.0;
-const COUNTER_ARM_AT: f64 = 0.65;
-const COUNTER_CALM_DECAY: f64 = 3.0;
-const MONITOR_ARRIVE_MS: f64 = 30_000.0;
-const MONITOR_IDLE_LEAVE_MS: f64 = 16_000.0;
-const MONITOR_STEPS_TO_ARM: u32 = 3;
-const MONITOR_DECAY_MS: f64 = 8_000.0;
-const MONITOR_STEP_LATE_MS: f64 = 1_500.0;
-const WALKER_STEP_LATE_MS: f64 = 2_500.0;
+    spike_len_ms: (f64, f64),
+    spike_warn_ms: f64,
+    spike_start_pad_ms: f64,
+    spike_end_pad_ms: f64,
+    spike_slot_pad_ms: f64,
+    breather_ms: (f64, f64),
+    beat_rate: [f64; 4],
+    beat_lull_ms: (f64, f64),
+    beat_build_ms: (f64, f64),
+    feint_lull_ms: (f64, f64),
+    feint_build_ms: (f64, f64),
+    tension_start: f64,
+    tension_speed_base: f64,
+    tension_speed_scale: f64,
+    tension_floor_from: f64,
+    tension_floor: (f64, f64),
+    build_again_above: f64,
+    build_again_p: f64,
+    build_again_p_last: f64,
+    scare_arm: f64,
+    scare_away: f64,
+    scare_turn: f64,
+    scare_idle_per_min: f64,
 
-const TUNE_SPAN_MS: f64 = 50_000.0;
-const TUNE_WIND_PER_SEC: f64 = 0.12;
-const TUNE_RESTART_AT: f64 = 0.12;
-const TUNE_GRACE_FLOOR: f64 = 0.25;
-const CRANKY_MS: f64 = 7_000.0;
-const BOX_ROOMS: [Room; 8] = [
-    Room::Stage,
-    Room::Dining,
-    Room::Backstage,
-    Room::WestHall,
-    Room::Closet,
-    Room::Kitchen,
-    Room::EastHall,
-    Room::Corner,
+    side_decay: f64,
+    side_floor: f64,
+    mem_cap: u32,
+
+    walker_step_late_ms: f64,
+    step_ms: [f64; 6],
+    rest_ms: [f64; 6],
+    counter_grace_ms: f64,
+    counter_span_ms: f64,
+    counter_arm_at: f64,
+    counter_calm_decay: f64,
+    monitor_arrive_ms: f64,
+    monitor_idle_leave_ms: f64,
+    monitor_steps_to_arm: u32,
+    monitor_decay_ms: f64,
+    monitor_step_late_ms: f64,
+    cranky_ms: f64,
+    tune_span_ms: f64,
+    tune_wind_per_sec: f64,
+    tune_restart_at: f64,
+    tune_grace_floor: f64,
+
+    chaos_hours: (u32, u32),
+    chaos_order: Vec<ChaosKind>,
+    chaos_weight: [f64; 6],
+    chaos_needs: [Option<Kind>; 6],
+    decoy_quiet_ms: f64,
+    decoy_kinds: Vec<Kind>,
+    wake_late_ms: f64,
+    chaos_pad_start_ms: f64,
+    chaos_pad_end_ms: f64,
+    strain_ms: f64,
+    strain_hold_ms: f64,
+    strain_regen: f64,
+    flicker_ms: f64,
+    boxfast_ms: f64,
+    boxfast_factor: f64,
+
+    endless_seal_max: f64,
+    endless_seal_regen: f64,
+    endless_budget_ms: f64,
+    rotate_ms: f64,
+    ramp_roster: Vec<(usize, usize)>,
+    ramp_event_from: u32,
+    ramp_event_p: f64,
+    ramp_floor_from: f64,
+    ramp_floor_max: f64,
+    ramp_floor_span: f64,
+    pace_from: u32,
+    pace_step: f64,
+    pace_cap: f64,
+    tell_from: u32,
+    tell_step: f64,
+    tell_min: f64,
+    tell_base: f64,
+    gap_start: f64,
+    gap_step: f64,
+    gap_min: f64,
+    gap_jitter: f64,
+    budget_from: u32,
+    budget_step: f64,
+    budget_min: f64,
+    first_spike_span_ms: f64,
+
+    pool: Vec<PoolEntry>,
+    shifts: Vec<Difficulty>,
+    routes: Vec<Route>,
+    vent_routes: Vec<Route>,
+    cam_rooms: Vec<Room>,
+    box_rooms: Vec<Room>,
+    vent_near: [u8; 3],
+}
+
+const KIND_KEYS: [&str; 6] = ["counter", "watched", "monitor", "path", "vent", "winder"];
+const KINDS: [Kind; 6] = [Kind::Counter, Kind::Watched, Kind::Monitor, Kind::Path, Kind::Vent, Kind::Winder];
+const MOOD_KEYS: [&str; 4] = ["patient", "hungry", "shy", "reckless"];
+const BEAT_KEYS: [&str; 4] = ["lull", "build", "spike", "breather"];
+const CHAOS_KEYS: [&str; 6] = ["mood", "wake", "strain", "flicker", "decoy", "boxfast"];
+const CHAOS_KINDS: [ChaosKind; 6] =
+    [ChaosKind::Mood, ChaosKind::Wake, ChaosKind::Strain, ChaosKind::Flicker, ChaosKind::Decoy, ChaosKind::Boxfast];
+const ROOM_KEYS: [(&str, Room); 14] = [
+    ("stage", Room::Stage),
+    ("dining", Room::Dining),
+    ("backstage", Room::Backstage),
+    ("westhall", Room::WestHall),
+    ("closet", Room::Closet),
+    ("kitchen", Room::Kitchen),
+    ("easthall", Room::EastHall),
+    ("corner", Room::Corner),
+    ("vent", Room::Vent),
+    ("doorL", Room::DoorL),
+    ("doorR", Room::DoorR),
+    ("ventL", Room::VentL),
+    ("ventR", Room::VentR),
+    ("ventT", Room::VentT),
 ];
 
-const STRAIN_MS: f64 = 60_000.0;
-const STRAIN_HOLD_MS: f64 = 5_000.0;
-const STRAIN_REGEN: f64 = 0.5;
-const FLICKER_MS: f64 = 20_000.0;
-const BOXFAST_MS: f64 = 30_000.0;
-const BOXFAST_FACTOR: f64 = 2.0;
+fn tn() -> &'static Tuning {
+    static TUNING: OnceLock<Tuning> = OnceLock::new();
+    TUNING.get_or_init(Tuning::load)
+}
 
-const ENDLESS_SEAL_MAX: f64 = 8_000.0;
-const ENDLESS_SEAL_REGEN: f64 = 0.25;
-const ENDLESS_BUDGET_MS: f64 = 2_400.0;
-const ROTATE_MS: f64 = 3.0 * HOUR_MS;
-const RAMP_ROSTER: [(usize, usize); 4] = [(3, 4), (4, 5), (4, 5), (5, 6)];
-const RAMP_EVENT_FROM: u32 = 4;
-const RAMP_EVENT_P: f64 = 0.5;
-const RAMP_FLOOR_MAX: f64 = 0.85;
-const RAMP_FLOOR_SPAN: f64 = 5.0;
+fn pair(v: &Value, path: &str) -> (f64, f64) {
+    (num(v, &format!("{path}.0")), num(v, &format!("{path}.1")))
+}
 
-const CAM_ROOMS: [Room; 9] = [
-    Room::Stage,
-    Room::Dining,
-    Room::Backstage,
-    Room::WestHall,
-    Room::Closet,
-    Room::Kitchen,
-    Room::EastHall,
-    Room::Corner,
-    Room::Vent,
-];
+fn key_ix(keys: &[&str], key: &str, what: &str) -> usize {
+    keys.iter().position(|k| *k == key).unwrap_or_else(|| panic!("night_watch mixed_shift data: unknown {what} '{key}'"))
+}
 
-/// Pool index of the two threats that CHAOS always draws.
-const VERRINE: usize = 6;
-const GLYRA: usize = 7;
+fn kind_named(key: &str) -> Kind {
+    KINDS[key_ix(&KIND_KEYS, key, "threat type")]
+}
 
-/// The eight threats, in the Godot pool's order (the roster keeps this order too).
-pub const POOL: [PoolEntry; 8] = [
-    PoolEntry { id: "haelith", name: "Haelith", kind: Kind::Counter },
-    PoolEntry { id: "ilyra", name: "Ilyra", kind: Kind::Watched },
-    PoolEntry { id: "aki", name: "Aki", kind: Kind::Watched },
-    PoolEntry { id: "opalie", name: "Opalie", kind: Kind::Monitor },
-    PoolEntry { id: "dovelle", name: "Dovelle", kind: Kind::Path },
-    PoolEntry { id: "ravelle", name: "Ravelle", kind: Kind::Path },
-    PoolEntry { id: "verrine", name: "Verrine", kind: Kind::Vent },
-    PoolEntry { id: "glyra", name: "Glyra", kind: Kind::Winder },
-];
+fn room_named(key: &str) -> Room {
+    ROOM_KEYS[key_ix(&ROOM_KEYS.map(|(k, _)| k), key, "room")].1
+}
 
-/// The five shifts in board order: three paces, CHAOS (random events) and ENDLESS (no dawn).
-pub static SHIFTS: [Difficulty; 5] = [
-    Difficulty {
-        name: "QUIET",
-        speed: 0.8,
-        tell_ms: 3600.0,
-        min_tell_ms: 3000.0,
-        start_ms: 50_000.0,
-        roster: (3, 3),
-        spikes: (2, 2),
-        grace_ms: 90_000.0,
-        new_max: 1,
-        min_types: 3,
-        must: &[],
-        breather: None,
-        chaos: false,
-        endless: false,
-    },
-    Difficulty {
-        name: "STEADY",
-        speed: 1.0,
-        tell_ms: 1900.0,
-        min_tell_ms: 0.0,
-        start_ms: 32_000.0,
-        roster: (3, 5),
-        spikes: (2, 3),
-        grace_ms: 75_000.0,
-        new_max: 2,
-        min_types: 3,
-        must: &[],
-        breather: None,
-        chaos: false,
-        endless: false,
-    },
-    Difficulty {
-        name: "RESTLESS",
-        speed: 1.15,
-        tell_ms: 1750.0,
-        min_tell_ms: 0.0,
-        start_ms: 24_000.0,
-        roster: (4, 5),
-        spikes: (3, 3),
-        grace_ms: 75_000.0,
-        new_max: 2,
-        min_types: 3,
-        must: &[],
-        breather: None,
-        chaos: false,
-        endless: false,
-    },
-    Difficulty {
-        name: "CHAOS",
-        speed: 1.3,
-        tell_ms: 1650.0,
-        min_tell_ms: 0.0,
-        start_ms: 15_000.0,
-        roster: (6, 7),
-        spikes: (4, 6),
-        grace_ms: 75_000.0,
-        new_max: 2,
-        min_types: 4,
-        must: &[VERRINE, GLYRA],
-        breather: Some((4500.0, 6500.0)),
-        chaos: true,
-        endless: false,
-    },
-    Difficulty {
-        name: "ENDLESS",
-        speed: 1.0,
-        tell_ms: 1900.0,
-        min_tell_ms: 0.0,
-        start_ms: 32_000.0,
-        roster: (3, 4),
-        spikes: (1, 1),
-        grace_ms: 75_000.0,
-        new_max: 2,
-        min_types: 3,
-        must: &[],
-        breather: None,
-        chaos: false,
-        endless: true,
-    },
-];
+fn side_named(key: &str) -> Side {
+    match key {
+        "L" => Side::L,
+        "R" => Side::R,
+        "T" => Side::T,
+        _ => panic!("night_watch mixed_shift data: unknown side '{key}'"),
+    }
+}
 
-/// The routes through Classic's building; the last room before a door is the choke point.
-static ROUTES: [Route; 6] = [
-    Route { side: Side::L, rooms: &[Room::Stage, Room::Backstage, Room::WestHall, Room::DoorL], spots: &[] },
-    Route { side: Side::L, rooms: &[Room::Kitchen, Room::Dining, Room::WestHall, Room::DoorL], spots: &[] },
-    Route { side: Side::L, rooms: &[Room::Closet, Room::WestHall, Room::DoorL], spots: &[] },
-    Route { side: Side::R, rooms: &[Room::Stage, Room::Dining, Room::EastHall, Room::DoorR], spots: &[] },
-    Route { side: Side::R, rooms: &[Room::Kitchen, Room::Dining, Room::EastHall, Room::DoorR], spots: &[] },
-    Route { side: Side::R, rooms: &[Room::Corner, Room::EastHall, Room::DoorR], spots: &[] },
-];
+fn rooms_of(ids: &[Value]) -> Vec<Room> {
+    ids.iter().map(|r| room_named(r.as_str().unwrap_or("?"))).collect()
+}
 
-/// The vent run (CAM 9) to the three office vents; `spots` are the branch points a vent light can catch.
-static VENT_ROUTES: [Route; 3] = [
-    Route {
-        side: Side::L,
-        rooms: &[Room::Vent, Room::Vent, Room::Vent, Room::Vent, Room::VentL],
-        spots: &[0, 1, 2, 3],
-    },
-    Route {
-        side: Side::R,
-        rooms: &[Room::Vent, Room::Vent, Room::Vent, Room::Vent, Room::VentR],
-        spots: &[0, 1, 2, 4],
-    },
-    Route { side: Side::T, rooms: &[Room::Vent, Room::Vent, Room::Vent, Room::VentT], spots: &[0, 1, 2] },
-];
+fn routes_of(b: &Value, path: &str) -> Vec<Route> {
+    list(b, path)
+        .iter()
+        .map(|e| Route {
+            side: side_named(text(e, "side")),
+            rooms: rooms_of(list(e, "rooms")),
+            spots: e.get("spots").and_then(Value::as_array).map_or_else(Vec::new, |s| s.iter().filter_map(|x| x.as_u64().map(|x| x as u8)).collect()),
+        })
+        .collect()
+}
 
-const DECOY_KINDS: [Kind; 5] = [Kind::Path, Kind::Watched, Kind::Monitor, Kind::Vent, Kind::Winder];
-const CHAOS_ORDER: [ChaosKind; 6] = [
-    ChaosKind::Mood,
-    ChaosKind::Wake,
-    ChaosKind::Strain,
-    ChaosKind::Flicker,
-    ChaosKind::Decoy,
-    ChaosKind::Boxfast,
-];
+fn opt_num(v: &Value, key: &str) -> Option<f64> {
+    v.get(key).and_then(Value::as_f64)
+}
+
+impl Tuning {
+    fn load() -> Self {
+        let r = data::rules("mixed_shift");
+        let cast = data::cast("mixed_shift");
+        let b = data::building("mixed_shift");
+        let n = |p: &str| num(r, p);
+        let hour_ms = n("hour_ms");
+        let by_key = |keys: &[&str], prefix: &str, suffix: &str| -> Vec<f64> {
+            keys.iter().map(|k| n(&format!("{prefix}.{k}{suffix}"))).collect()
+        };
+        let step_of = |k: &str| n(&format!("timing.{k}.step_ms"));
+        let rest_of = |k: &str| n(&format!("timing.{k}.rest_ms"));
+
+        let pool: Vec<PoolEntry> = list(cast, "pool")
+            .iter()
+            .map(|e| PoolEntry { id: text(e, "id").to_string(), name: text(e, "name").to_string(), kind: kind_named(text(e, "type")) })
+            .collect();
+        let shifts: Vec<Difficulty> = list(r, "shifts")
+            .iter()
+            .map(|s| {
+                let (roster_lo, roster_hi) = pair(s, "roster");
+                let (spikes_lo, spikes_hi) = pair(s, "spikes");
+                Difficulty {
+                    name: text(s, "name").to_string(),
+                    speed: num(s, "speed"),
+                    tell_ms: num(s, "tell_ms"),
+                    min_tell_ms: opt_num(s, "min_tell_ms").unwrap_or(0.0),
+                    start_ms: num(s, "start_ms"),
+                    roster: (roster_lo as usize, roster_hi as usize),
+                    spikes: (spikes_lo as usize, spikes_hi as usize),
+                    grace_ms: num(s, "grace_ms"),
+                    new_max: num(s, "new_max") as usize,
+                    min_types: num(s, "min_types") as usize,
+                    must: s.get("must").and_then(Value::as_array).map_or_else(Vec::new, |ids| {
+                        ids.iter()
+                            .map(|id| {
+                                let id = id.as_str().unwrap_or("?");
+                                pool.iter().position(|p| p.id == id).unwrap_or_else(|| panic!("night_watch mixed_shift data: unknown pool id '{id}'"))
+                            })
+                            .collect()
+                    }),
+                    breather: s.get("breather_ms").map(|_| pair(s, "breather_ms")),
+                    chaos: s.get("chaos").and_then(Value::as_bool).unwrap_or(false),
+                    endless: s.get("endless").and_then(Value::as_bool).unwrap_or(false),
+                }
+            })
+            .collect();
+        let tell_base = shifts.iter().find(|d| d.endless).map_or(0.0, |d| d.tell_ms);
+        let weights = by_key(&CHAOS_KEYS, "chaos.events", ".weight");
+        let (chaos_lo, chaos_hi) = pair(r, "chaos.hours");
+        let needs_of = |k: &str| match text(r, &format!("chaos.events.{k}.needs")) {
+            "" => None,
+            kind => Some(kind_named(kind)),
+        };
+        let mood_speed = by_key(&MOOD_KEYS, "moods.speed", "");
+        let mood_tell = by_key(&MOOD_KEYS, "moods.tell", "");
+        let beat_rate = by_key(&BEAT_KEYS, "director.beat_rate", "");
+        let mut step_ms = [0.0; 6];
+        let mut rest_ms = [0.0; 6];
+        for k in [Kind::Watched, Kind::Path, Kind::Vent, Kind::Winder] {
+            step_ms[k.ix()] = step_of(KIND_KEYS[k.ix()]);
+        }
+        for k in [Kind::Watched, Kind::Monitor, Kind::Path, Kind::Vent, Kind::Winder] {
+            rest_ms[k.ix()] = rest_of(KIND_KEYS[k.ix()]);
+        }
+        Self {
+            hour_ms,
+            night_ms: n("night_ms"),
+            points_per_level: int(r, "points_per_level") as u32,
+            dawn_hour: int(r, "dawn_hour") as u32,
+
+            tell_floor_ms: n("fairness.tell_floor_ms"),
+            tell_jitter: n("fairness.tell_jitter"),
+            jitter: n("fairness.jitter"),
+            cooldown_ms: n("fairness.cooldown_ms"),
+            give_up_ms: n("fairness.give_up_ms"),
+            choke_ms: n("fairness.choke_ms"),
+            end_clear_ms: n("fairness.end_clear_ms"),
+            min_dwell_ms: n("fairness.min_dwell_ms"),
+            max_walkers: int(r, "fairness.max_walkers") as usize,
+            feint_quiet_ms: n("fairness.feint_quiet_ms"),
+            feint_retry_ms: n("fairness.feint_retry_ms"),
+            idle_scare_ms: n("fairness.idle_scare_ms"),
+
+            seal_max: n("doors.seal_max"),
+            seal_regen: n("doors.seal_regen"),
+            seal_min_to_shut: n("doors.seal_min_to_shut"),
+            seal_reserve: n("doors.seal_reserve"),
+            door_hold_ms: n("doors.hold_ms"),
+            pop_cool_ms: n("doors.pop_cool_ms"),
+
+            vent_seal_max: n("vents.seal_max"),
+            vent_seal_regen: n("vents.seal_regen"),
+            vent_min_to_seal: n("vents.min_to_seal"),
+            vent_reserve: n("vents.reserve"),
+            vent_hold_ms: n("vents.hold_ms"),
+            vent_linger_ms: n("vents.linger_ms"),
+            vent_pop_cool_ms: n("vents.pop_cool_ms"),
+            vent_light_ms: n("vents.light_ms"),
+            vent_light_cool_ms: n("vents.light_cool_ms"),
+
+            mood_ms: pair(r, "moods.duration_ms"),
+            mood_cue_ms: pair(r, "moods.cue_ms"),
+            mood_speed: mood_speed.try_into().expect("four moods"),
+            mood_tell: mood_tell.try_into().expect("four moods"),
+
+            spike_len_ms: pair(r, "director.spike_len_ms"),
+            spike_warn_ms: n("director.spike_warn_ms"),
+            spike_start_pad_ms: n("director.spike_start_pad_ms"),
+            spike_end_pad_ms: n("director.spike_end_pad_ms"),
+            spike_slot_pad_ms: n("director.spike_slot_pad_ms"),
+            breather_ms: pair(r, "director.breather_ms"),
+            beat_rate: beat_rate.try_into().expect("four beats"),
+            beat_lull_ms: pair(r, "director.beat_len_ms.lull"),
+            beat_build_ms: pair(r, "director.beat_len_ms.build"),
+            feint_lull_ms: pair(r, "director.feint_ms.lull"),
+            feint_build_ms: pair(r, "director.feint_ms.build"),
+            tension_start: n("director.tension_start"),
+            tension_speed_base: n("director.tension_speed_base"),
+            tension_speed_scale: n("director.tension_speed_scale"),
+            tension_floor_from: n("director.tension_floor_from_hour") * hour_ms,
+            tension_floor: pair(r, "director.tension_floor"),
+            build_again_above: n("director.build_again_above"),
+            build_again_p: n("director.build_again_p"),
+            build_again_p_last: n("director.build_again_p_last"),
+            scare_arm: n("director.scare.arm"),
+            scare_away: n("director.scare.away"),
+            scare_turn: n("director.scare.turn"),
+            scare_idle_per_min: n("director.scare.idle_per_min"),
+
+            side_decay: n("routing.side_decay"),
+            side_floor: n("routing.side_floor"),
+            mem_cap: int(r, "routing.mem_cap") as u32,
+
+            walker_step_late_ms: n("timing.walker_step_late_ms"),
+            step_ms,
+            rest_ms,
+            counter_grace_ms: n("timing.counter.grace_ms"),
+            counter_span_ms: n("timing.counter.span_ms"),
+            counter_arm_at: n("timing.counter.arm_at"),
+            counter_calm_decay: n("timing.counter.calm_decay"),
+            monitor_arrive_ms: n("timing.monitor.arrive_ms"),
+            monitor_idle_leave_ms: n("timing.monitor.idle_leave_ms"),
+            monitor_steps_to_arm: int(r, "timing.monitor.steps_to_arm") as u32,
+            monitor_decay_ms: n("timing.monitor.decay_ms"),
+            monitor_step_late_ms: n("timing.monitor.step_late_ms"),
+            cranky_ms: n("timing.winder.cranky_ms"),
+            tune_span_ms: n("tune.span_ms"),
+            tune_wind_per_sec: n("tune.wind_per_sec"),
+            tune_restart_at: n("tune.restart_at"),
+            tune_grace_floor: n("tune.grace_floor"),
+
+            chaos_hours: (chaos_lo as u32, chaos_hi as u32),
+            chaos_order: list(r, "chaos.order").iter().map(|k| CHAOS_KINDS[key_ix(&CHAOS_KEYS, k.as_str().unwrap_or("?"), "chaos event")]).collect(),
+            chaos_weight: weights.try_into().expect("six chaos events"),
+            chaos_needs: CHAOS_KEYS.map(needs_of),
+            decoy_quiet_ms: n("chaos.decoy_quiet_ms"),
+            decoy_kinds: list(r, "chaos.decoy_kinds").iter().map(|k| kind_named(k.as_str().unwrap_or("?"))).collect(),
+            wake_late_ms: n("chaos.wake_late_ms"),
+            chaos_pad_start_ms: n("chaos.at_pad_start_ms"),
+            chaos_pad_end_ms: n("chaos.at_pad_end_ms"),
+            strain_ms: n("chaos.events.strain.ms"),
+            strain_hold_ms: n("chaos.events.strain.hold_ms"),
+            strain_regen: n("chaos.events.strain.regen"),
+            flicker_ms: n("chaos.events.flicker.ms"),
+            boxfast_ms: n("chaos.events.boxfast.ms"),
+            boxfast_factor: n("chaos.events.boxfast.factor"),
+
+            endless_seal_max: n("endless.seal.max"),
+            endless_seal_regen: n("endless.seal.regen"),
+            endless_budget_ms: n("endless.seal.budget"),
+            rotate_ms: n("endless.rotate_hours") * hour_ms,
+            ramp_roster: list(r, "endless.roster_by_gen").iter().map(|e| (num(e, "0") as usize, num(e, "1") as usize)).collect(),
+            ramp_event_from: int(r, "endless.event_from") as u32,
+            ramp_event_p: n("endless.event_p"),
+            ramp_floor_from: n("endless.floor_from_hours") * hour_ms,
+            ramp_floor_max: n("endless.floor_max"),
+            ramp_floor_span: n("endless.floor_span"),
+            pace_from: int(r, "endless.pace_from") as u32,
+            pace_step: n("endless.pace_step"),
+            pace_cap: n("endless.pace_cap"),
+            tell_from: int(r, "endless.tell_from") as u32,
+            tell_step: n("endless.tell_step"),
+            tell_min: n("endless.tell_min"),
+            tell_base,
+            gap_start: n("endless.gap_start"),
+            gap_step: n("endless.gap_step"),
+            gap_min: n("endless.gap_min"),
+            gap_jitter: n("endless.gap_jitter"),
+            budget_from: int(r, "endless.budget_from") as u32,
+            budget_step: n("endless.budget_step"),
+            budget_min: n("endless.budget_min"),
+            first_spike_span_ms: n("endless.first_spike_hours") * hour_ms,
+
+            pool,
+            shifts,
+            routes: routes_of(b, "routes"),
+            vent_routes: routes_of(b, "vent_routes"),
+            cam_rooms: rooms_of(list(b, "cam_rooms")),
+            box_rooms: rooms_of(list(b, "box_rooms")),
+            vent_near: [num(b, "vent_near.L") as u8, num(b, "vent_near.R") as u8, num(b, "vent_near.T") as u8],
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -255,6 +437,10 @@ pub enum Kind {
 }
 
 impl Kind {
+    fn ix(self) -> usize {
+        self as usize
+    }
+
     fn is_walker(self) -> bool {
         matches!(self, Kind::Path | Kind::Watched | Kind::Winder)
     }
@@ -281,11 +467,7 @@ impl Side {
 
     /// The one branch spot a vent light must catch for a crawler in this vent.
     fn vent_near(self) -> u8 {
-        match self {
-            Side::L => 3,
-            Side::R => 4,
-            Side::T => 2,
-        }
+        tn().vent_near[self.ix()]
     }
 }
 
@@ -309,7 +491,7 @@ pub enum Room {
 
 impl Room {
     pub fn is_camera(self) -> bool {
-        CAM_ROOMS.contains(&self)
+        tn().cam_rooms.contains(&self)
     }
 
     /// The side of the door or vent opening this room is, if it is one.
@@ -336,21 +518,11 @@ const MOODS: [Mood; 4] = [Mood::Patient, Mood::Hungry, Mood::Shy, Mood::Reckless
 
 impl Mood {
     fn speed(self) -> f64 {
-        match self {
-            Mood::Patient => 0.8,
-            Mood::Hungry => 1.25,
-            Mood::Shy => 1.0,
-            Mood::Reckless => 1.4,
-        }
+        tn().mood_speed[self as usize]
     }
 
     fn tell(self) -> f64 {
-        match self {
-            Mood::Patient => 1.0,
-            Mood::Hungry => 0.85,
-            Mood::Shy => 1.0,
-            Mood::Reckless => 1.3,
-        }
+        tn().mood_tell[self as usize]
     }
 }
 
@@ -364,12 +536,7 @@ pub enum Beat {
 
 impl Beat {
     fn rate(self) -> f64 {
-        match self {
-            Beat::Lull => 0.65,
-            Beat::Build => 1.0,
-            Beat::Spike => 1.8,
-            Beat::Breather => 0.0,
-        }
+        tn().beat_rate[self as usize]
     }
 }
 
@@ -384,23 +551,16 @@ pub enum ChaosKind {
 }
 
 fn chaos_weight(k: ChaosKind) -> f64 {
-    match k {
-        ChaosKind::Mood | ChaosKind::Flicker | ChaosKind::Decoy => 3.0,
-        ChaosKind::Wake | ChaosKind::Strain | ChaosKind::Boxfast => 2.0,
-    }
+    tn().chaos_weight[k as usize]
 }
 
 fn chaos_needs(k: ChaosKind) -> Option<Kind> {
-    match k {
-        ChaosKind::Wake => Some(Kind::Vent),
-        ChaosKind::Boxfast => Some(Kind::Winder),
-        _ => None,
-    }
+    tn().chaos_needs[k as usize]
 }
 
 /// One shift: the numbers the board sets. Endless reads its pace, tell, budget and gaps from the hour instead.
 pub struct Difficulty {
-    pub name: &'static str,
+    pub name: String,
     speed: f64,
     tell_ms: f64,
     min_tell_ms: f64,
@@ -410,22 +570,22 @@ pub struct Difficulty {
     grace_ms: f64,
     new_max: usize,
     min_types: usize,
-    must: &'static [usize],
+    must: Vec<usize>,
     breather: Option<(f64, f64)>,
     chaos: bool,
     endless: bool,
 }
 
 pub struct PoolEntry {
-    pub id: &'static str,
-    pub name: &'static str,
+    pub id: String,
+    pub name: String,
     kind: Kind,
 }
 
 struct Route {
     side: Side,
-    rooms: &'static [Room],
-    spots: &'static [u8],
+    rooms: Vec<Room>,
+    spots: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -537,11 +697,11 @@ pub struct Threat {
 
 impl Threat {
     pub fn name(&self) -> &'static str {
-        POOL[self.pool].name
+        tn().pool[self.pool].name.as_str()
     }
 
     pub fn kind(&self) -> Kind {
-        POOL[self.pool].kind
+        tn().pool[self.pool].kind
     }
 
     pub fn mood(&self) -> Mood {
@@ -625,7 +785,7 @@ fn between(range: (f64, f64), u: f64) -> f64 {
 }
 
 fn jit(base: f64, rng: &mut NightWatchStream) -> f64 {
-    jitter(base, JITTER, rng)
+    jitter(base, tn().jitter, rng)
 }
 
 fn xor_seed(seed: i64, salt: u32) -> i64 {
@@ -633,69 +793,58 @@ fn xor_seed(seed: i64, salt: u32) -> i64 {
 }
 
 fn side_weights(mem: [u32; 3]) -> [f64; 3] {
-    mem.map(|m| (1.0 / (1.0 + 0.8 * f64::from(m))).max(0.2))
+    mem.map(|m| (1.0 / (1.0 + tn().side_decay * f64::from(m))).max(tn().side_floor))
 }
 
 /// The tell a threat gives before it can kill: the shift's, scaled by mood, never under the floor or the shift's minimum.
 fn tell_for(tell_ms: f64, min_tell: f64, mood: Mood, u: f64) -> f64 {
-    let raw = (tell_ms * mood.tell() * (1.0 + TELL_JITTER * (2.0 * u - 1.0))).round();
-    TELL_FLOOR_MS.max(min_tell.max(raw))
+    let raw = (tell_ms * mood.tell() * (1.0 + tn().tell_jitter * (2.0 * u - 1.0))).round();
+    tn().tell_floor_ms.max(min_tell.max(raw))
 }
 
 fn step_ms(kind: Kind) -> f64 {
-    match kind {
-        Kind::Path => 11_000.0,
-        Kind::Watched => 9_000.0,
-        Kind::Vent => 9_500.0,
-        Kind::Winder => 12_000.0,
-        Kind::Counter | Kind::Monitor => 0.0,
-    }
+    tn().step_ms[kind.ix()]
 }
 
 fn rest_ms(kind: Kind) -> f64 {
-    match kind {
-        Kind::Path | Kind::Winder => 16_000.0,
-        Kind::Watched | Kind::Vent => 18_000.0,
-        Kind::Monitor => 20_000.0,
-        Kind::Counter => 0.0,
-    }
+    tn().rest_ms[kind.ix()]
 }
 
 fn tension_floor_at(t: f64) -> f64 {
-    if t < TENSION_FLOOR_FROM {
+    if t < tn().tension_floor_from {
         return 0.0;
     }
-    let k = ((t - TENSION_FLOOR_FROM) / (NIGHT_MS - TENSION_FLOOR_FROM)).clamp(0.0, 1.0);
-    TENSION_FLOOR.0 + (TENSION_FLOOR.1 - TENSION_FLOOR.0) * k
+    let k = ((t - tn().tension_floor_from) / (tn().night_ms - tn().tension_floor_from)).clamp(0.0, 1.0);
+    tn().tension_floor.0 + (tn().tension_floor.1 - tn().tension_floor.0) * k
 }
 
 fn endless_pace(hr: u32) -> f64 {
-    (1.0 + 0.04 * f64::from(hr.saturating_sub(2))).min(2.0)
+    (1.0 + tn().pace_step * f64::from(hr.saturating_sub(tn().pace_from))).min(tn().pace_cap)
 }
 
 fn endless_tell(hr: u32) -> f64 {
-    (1900.0 - 45.0 * f64::from(hr.saturating_sub(3))).max(1600.0)
+    (tn().tell_base - tn().tell_step * f64::from(hr.saturating_sub(tn().tell_from))).max(tn().tell_min)
 }
 
 fn endless_budget(hr: u32) -> f64 {
-    (ENDLESS_BUDGET_MS - 100.0 * f64::from(hr.saturating_sub(10))).max(1400.0)
+    (tn().endless_budget_ms - tn().budget_step * f64::from(hr.saturating_sub(tn().budget_from))).max(tn().budget_min)
 }
 
 fn endless_gap(hr: u32) -> f64 {
-    (46_000.0 - 3000.0 * f64::from(hr)).max(10_000.0)
+    (tn().gap_start - tn().gap_step * f64::from(hr)).max(tn().gap_min)
 }
 
 fn endless_floor_at(t: f64) -> f64 {
-    if t < HOUR_MS {
+    if t < tn().ramp_floor_from {
         return 0.0;
     }
-    RAMP_FLOOR_MAX * (1.0 - (-(t - HOUR_MS) / HOUR_MS / RAMP_FLOOR_SPAN).exp())
+    tn().ramp_floor_max * (1.0 - (-(t - tn().ramp_floor_from) / tn().hour_ms / tn().ramp_floor_span).exp())
 }
 
 fn kinds_of(ids: &[usize]) -> Vec<Kind> {
     let mut out: Vec<Kind> = Vec::new();
     for &p in ids {
-        let k = POOL[p].kind;
+        let k = tn().pool[p].kind;
         if !out.contains(&k) {
             out.push(k);
         }
@@ -704,20 +853,20 @@ fn kinds_of(ids: &[usize]) -> Vec<Kind> {
 }
 
 fn allowed(have: &[usize], p: usize, d: &Difficulty) -> bool {
-    let kind = POOL[p].kind;
-    let new_count = have.iter().filter(|&&x| POOL[x].kind.is_new()).count();
-    let walker_count = have.iter().filter(|&&x| POOL[x].kind.is_walker()).count();
-    !(kind.is_new() && new_count >= d.new_max) && !(kind.is_walker() && walker_count >= MAX_WALKERS)
+    let kind = tn().pool[p].kind;
+    let new_count = have.iter().filter(|&&x| tn().pool[x].kind.is_new()).count();
+    let walker_count = have.iter().filter(|&&x| tn().pool[x].kind.is_walker()).count();
+    !(kind.is_new() && new_count >= d.new_max) && !(kind.is_walker() && walker_count >= tn().max_walkers)
 }
 
 /// The night's roster, drawn from its own generator: 3 to 7 threats of the pool, at least `min_types` kinds.
 fn draw_roster(seed: i64, d: &Difficulty, gen: u32) -> Vec<usize> {
     let base = (u64::from((seed as u32) ^ 0x524f_5354) + u64::from(gen) * 0x9e37_79b1) as u32;
     let mut r = NightWatchStream::seeded(i64::from(base));
-    let range = if d.endless { RAMP_ROSTER[(gen as usize).min(RAMP_ROSTER.len() - 1)] } else { d.roster };
+    let range = if d.endless { tn().ramp_roster[(gen as usize).min(tn().ramp_roster.len() - 1)] } else { d.roster };
     let n = d.must.len().max(range.0 + (r.next() * (range.1 - range.0 + 1) as f64).floor() as usize);
 
-    let mut bag: Vec<usize> = (0..POOL.len()).collect();
+    let mut bag: Vec<usize> = (0..tn().pool.len()).collect();
     let mut i = bag.len() - 1;
     while i > 0 {
         let j = (r.next() * (i + 1) as f64).floor() as usize;
@@ -741,39 +890,39 @@ fn draw_roster(seed: i64, d: &Difficulty, gen: u32) -> Vec<usize> {
         let have = kinds_of(&pick);
         let mut at = pick.len().saturating_sub(1);
         for k in (0..pick.len()).rev() {
-            let kind = POOL[pick[k]].kind;
-            if pick.iter().filter(|&&x| POOL[x].kind == kind).count() > 1 {
+            let kind = tn().pool[pick[k]].kind;
+            if pick.iter().filter(|&&x| tn().pool[x].kind == kind).count() > 1 {
                 at = k;
                 break;
             }
         }
         let rest: Vec<usize> = pick.iter().enumerate().filter(|(j, _)| *j != at).map(|(_, &x)| x).collect();
-        match bag.iter().copied().find(|&p| !have.contains(&POOL[p].kind) && allowed(&rest, p, d)) {
+        match bag.iter().copied().find(|&p| !have.contains(&tn().pool[p].kind) && allowed(&rest, p, d)) {
             Some(add) => pick[at] = add,
             None => break,
         }
     }
-    (0..POOL.len()).filter(|p| pick.contains(p)).collect()
+    (0..tn().pool.len()).filter(|p| pick.contains(p)).collect()
 }
 
 /// A threat's whole state. `k` is its place in the roster and staggers the first move.
 fn new_threat(p: usize, d: &Difficulty, rng: &mut NightWatchStream, toggles: u32, k: usize) -> Threat {
     let mut t = Threat { pool: p, seen_toggles: toggles, ..Threat::default() };
     t.mood = MOODS[(rng.next() * MOODS.len() as f64).floor() as usize];
-    t.mood_left = between(MOOD_MS, rng.next());
-    t.mood_cue = between(MOOD_CUE_MS, rng.next());
-    match POOL[p].kind {
+    t.mood_left = between(tn().mood_ms, rng.next());
+    t.mood_cue = between(tn().mood_cue_ms, rng.next());
+    match tn().pool[p].kind {
         Kind::Counter => {
-            t.grace = jit(COUNTER_GRACE_MS, rng);
-            t.span = jit(COUNTER_SPAN_MS, rng);
+            t.grace = jit(tn().counter_grace_ms, rng);
+            t.span = jit(tn().counter_span_ms, rng);
             t.active = true;
         }
-        Kind::Monitor => t.wait = jit(MONITOR_ARRIVE_MS, rng) + k as f64 * MONITOR_STEP_LATE_MS,
+        Kind::Monitor => t.wait = jit(tn().monitor_arrive_ms, rng) + k as f64 * tn().monitor_step_late_ms,
         Kind::Winder => {
-            t.box_room = Some(BOX_ROOMS[(rng.next() * BOX_ROOMS.len() as f64).floor() as usize]);
-            t.span = jit(TUNE_SPAN_MS, rng);
+            t.box_room = Some(tn().box_rooms[(rng.next() * tn().box_rooms.len() as f64).floor() as usize]);
+            t.span = jit(tn().tune_span_ms, rng);
         }
-        Kind::Path | Kind::Watched | Kind::Vent => t.wait = jit(d.start_ms, rng) + k as f64 * WALKER_STEP_LATE_MS,
+        Kind::Path | Kind::Watched | Kind::Vent => t.wait = jit(d.start_ms, rng) + k as f64 * tn().walker_step_late_ms,
     }
     t
 }
@@ -781,14 +930,14 @@ fn new_threat(p: usize, d: &Difficulty, rng: &mut NightWatchStream, toggles: u32
 /// The spikes of a night: each at a jittered time inside its own slot, never in the first hour, ending before dawn.
 fn plan_spikes(rng: &mut NightWatchStream, d: &Difficulty) -> Vec<Spike> {
     let count = d.spikes.0 + (rng.next() * (d.spikes.1 - d.spikes.0 + 1) as f64).floor() as usize;
-    let start = HOUR_MS + SPIKE_START_PAD_MS;
-    let end_ms = NIGHT_MS - END_CLEAR_MS - SPIKE_LEN_MS.1 - 6000.0;
+    let start = tn().hour_ms + tn().spike_start_pad_ms;
+    let end_ms = tn().night_ms - tn().end_clear_ms - tn().spike_len_ms.1 - tn().spike_end_pad_ms;
     let width = (end_ms - start) / count as f64;
-    let breather = d.breather.unwrap_or(BREATHER_MS);
+    let breather = d.breather.unwrap_or(tn().breather_ms);
     let mut out = Vec::with_capacity(count);
     for k in 0..count {
-        let len = between(SPIKE_LEN_MS, rng.next()).round();
-        let room = width - len - breather.1 - 2000.0;
+        let len = between(tn().spike_len_ms, rng.next()).round();
+        let room = width - len - breather.1 - tn().spike_slot_pad_ms;
         let at = (start + k as f64 * width + rng.next() * room).round();
         out.push(Spike { at, len });
     }
@@ -796,27 +945,27 @@ fn plan_spikes(rng: &mut NightWatchStream, d: &Difficulty) -> Vec<Spike> {
 }
 
 fn first_endless_spike(rng: &mut NightWatchStream) -> Spike {
-    let at = (HOUR_MS + SPIKE_START_PAD_MS + rng.next() * 0.8 * HOUR_MS).round();
-    let len = between(SPIKE_LEN_MS, rng.next()).round();
+    let at = (tn().hour_ms + tn().spike_start_pad_ms + rng.next() * tn().first_spike_span_ms).round();
+    let len = between(tn().spike_len_ms, rng.next()).round();
     Spike { at, len }
 }
 
 impl MixedShift {
     /// Starts a night from `seed` on shift `shift` (0 QUIET, 1 STEADY, 2 RESTLESS, 3 CHAOS, 4 ENDLESS).
     pub fn start(seed: i64, shift: usize) -> Self {
-        let diff: &'static Difficulty = &SHIFTS[shift.min(SHIFTS.len() - 1)];
+        let diff: &'static Difficulty = &tn().shifts[shift.min(tn().shifts.len() - 1)];
         let mut dir = NightWatchStream::seeded(xor_seed(seed, 0x4449_5243));
         let mut th_rng = NightWatchStream::seeded(xor_seed(seed, 0x5448_5254));
         let mut fx = NightWatchStream::seeded(xor_seed(seed, 0x4658_5f31));
         let roster = draw_roster(seed, diff, 0);
         let plan = if diff.endless { vec![first_endless_spike(&mut dir)] } else { plan_spikes(&mut dir, diff) };
-        let beat_left = between(BEAT_LULL_MS, dir.next());
-        let feint_left = between(FEINT_LULL_MS, fx.next());
-        let mut threats: Vec<Threat> = (0..POOL.len()).map(|p| Threat { pool: p, ..Threat::default() }).collect();
+        let beat_left = between(tn().beat_lull_ms, dir.next());
+        let feint_left = between(tn().feint_lull_ms, fx.next());
+        let mut threats: Vec<Threat> = (0..tn().pool.len()).map(|p| Threat { pool: p, ..Threat::default() }).collect();
         for (k, &p) in roster.iter().enumerate() {
             threats[p] = new_threat(p, diff, &mut th_rng, 0, k);
         }
-        let seal_max = if diff.endless { ENDLESS_SEAL_MAX } else { SEAL_MAX };
+        let seal_max = if diff.endless { tn().endless_seal_max } else { tn().seal_max };
         Self {
             seed,
             diff,
@@ -831,7 +980,7 @@ impl MixedShift {
             lock: None,
             beat: Beat::Lull,
             beat_left,
-            tension: 0.3,
+            tension: tn().tension_start,
             plan,
             spike_idx: 0,
             spike_end: 0.0,
@@ -839,7 +988,7 @@ impl MixedShift {
             feint_left,
             seal: seal_max,
             doors: [Gate::default(); 3],
-            vent_seal: VENT_SEAL_MAX,
+            vent_seal: tn().vent_seal_max,
             vents: [Gate::default(); 3],
             lamp_cool: 0.0,
             wind: false,
@@ -847,7 +996,7 @@ impl MixedShift {
             roster,
             threats,
             chaos: ChaosState::new(),
-            run: Run { gen: 0, rotate_at: ROTATE_MS, budget: ENDLESS_BUDGET_MS },
+            run: Run { gen: 0, rotate_at: tn().rotate_ms, budget: tn().endless_budget_ms },
         }
     }
 
@@ -860,7 +1009,7 @@ impl MixedShift {
         self.elapsed += dt;
         self.since_act += dt;
         self.cool = (self.cool - dt).max(0.0);
-        if self.elapsed >= NIGHT_MS && !self.diff.endless {
+        if self.elapsed >= tn().night_ms && !self.diff.endless {
             self.over = Outcome::Win;
             ev.push(Event::Win);
             return ev;
@@ -887,15 +1036,15 @@ impl MixedShift {
                 break;
             }
             self.step_mood(p, dt, &mut ev);
-            match POOL[p].kind {
+            match tn().pool[p].kind {
                 Kind::Counter => self.step_counter(p, dt, &mut ev),
                 Kind::Monitor => self.step_monitor(p, dt, &mut ev),
                 Kind::Winder => self.step_winder(p, dt, &mut ev),
                 Kind::Path | Kind::Watched | Kind::Vent => self.step_walker(p, dt, &mut ev),
             }
         }
-        if self.lock.is_none() && self.since_act > 6000.0 {
-            self.scare(dt / 60000.0);
+        if self.lock.is_none() && self.since_act > tn().idle_scare_ms {
+            self.scare(dt * tn().scare_idle_per_min / 60_000.0);
         }
         self.apply_floor();
         ev
@@ -910,7 +1059,7 @@ impl MixedShift {
         if !want {
             self.doors[ix].shut = false;
             self.doors[ix].held = 0.0;
-        } else if !self.doors[ix].shut && self.doors[ix].cool <= 0.0 && self.seal >= SEAL_MIN_TO_SHUT {
+        } else if !self.doors[ix].shut && self.doors[ix].cool <= 0.0 && self.seal >= tn().seal_min_to_shut {
             self.doors[ix].shut = true;
             self.doors[ix].held = 0.0;
         }
@@ -930,13 +1079,13 @@ impl MixedShift {
         if want {
             if self.vents[ix].shut {
                 self.vents[ix].linger = 0.0;
-            } else if self.vents[ix].cool <= 0.0 && self.vent_seal >= VENT_MIN_TO_SEAL {
+            } else if self.vents[ix].cool <= 0.0 && self.vent_seal >= tn().vent_min_to_seal {
                 self.vents[ix].shut = true;
                 self.vents[ix].held = 0.0;
                 self.vents[ix].linger = 0.0;
             }
         } else if self.vents[ix].shut {
-            self.vents[ix].linger = VENT_LINGER_MS;
+            self.vents[ix].linger = tn().vent_linger_ms;
         }
         self.vents[ix].shut
     }
@@ -953,11 +1102,11 @@ impl MixedShift {
         if self.lamp_cool > 0.0 {
             return Err(VentLightError::Cooling);
         }
-        self.lamp_cool = VENT_LIGHT_COOL_MS;
-        self.vents[ix].flash = VENT_LIGHT_MS;
+        self.lamp_cool = tn().vent_light_cool_ms;
+        self.vents[ix].flash = tn().vent_light_ms;
         let mut seen = Vec::new();
         for &p in &self.roster {
-            if POOL[p].kind != Kind::Vent {
+            if tn().pool[p].kind != Kind::Vent {
                 continue;
             }
             let t = &self.threats[p];
@@ -1000,8 +1149,18 @@ impl MixedShift {
         self.over
     }
 
+    /// The door and vent seal budgets as 0..=1, for the HUD bars.
+    pub fn seal_levels(&self) -> (f64, f64) {
+        (self.seal / self.seal_max.max(1.0), self.vent_seal / tn().vent_seal_max.max(1.0))
+    }
+
+    /// True while the music box is being wound.
+    pub fn winding(&self) -> bool {
+        self.wind
+    }
+
     pub fn shift_name(&self) -> &'static str {
-        self.diff.name
+        self.diff.name.as_str()
     }
 
     pub fn elapsed_ms(&self) -> f64 {
@@ -1035,7 +1194,7 @@ impl MixedShift {
             .copied()
             .filter(|&p| {
                 let t = &self.threats[p];
-                let kind = POOL[p].kind;
+                let kind = tn().pool[p].kind;
                 (kind.is_walker() || kind == Kind::Vent) && t.active && !t.armed && t.rooms.get(t.i) == Some(&room)
             })
             .collect()
@@ -1046,14 +1205,14 @@ impl MixedShift {
         if self.diff.endless {
             self.hour_of()
         } else {
-            self.hour_of().min(6)
+            self.hour_of().min(tn().dawn_hour)
         }
     }
 
     /// Points for a shift won (the timed shifts only; ENDLESS has no dawn to win).
     pub fn points(&self) -> u32 {
         match self.over {
-            Outcome::Win if !self.diff.endless => POINTS_PER_LEVEL,
+            Outcome::Win if !self.diff.endless => tn().points_per_level,
             _ => 0,
         }
     }
@@ -1067,7 +1226,7 @@ impl MixedShift {
     }
 
     fn hour_of(&self) -> u32 {
-        (self.elapsed / HOUR_MS).floor() as u32
+        (self.elapsed / tn().hour_ms).floor() as u32
     }
 
     fn live_speed(&self) -> f64 {
@@ -1087,7 +1246,7 @@ impl MixedShift {
     }
 
     fn breather(&self) -> (f64, f64) {
-        self.diff.breather.unwrap_or(BREATHER_MS)
+        self.diff.breather.unwrap_or(tn().breather_ms)
     }
 
     fn chaos_on(&self) -> bool {
@@ -1107,7 +1266,7 @@ impl MixedShift {
     }
 
     fn speed_of(&self, p: usize) -> f64 {
-        self.beat.rate() * (0.8 + 0.5 * self.tension) * self.threats[p].mood.speed() * self.live_speed()
+        self.beat.rate() * (tn().tension_speed_base + tn().tension_speed_scale * self.tension) * self.threats[p].mood.speed() * self.live_speed()
     }
 
     fn grace_ok(&self) -> bool {
@@ -1127,7 +1286,7 @@ impl MixedShift {
     }
 
     fn act(&mut self, ev: &mut Vec<Event>, events: Vec<Event>) {
-        self.cool = COOLDOWN_MS;
+        self.cool = tn().cooldown_ms;
         self.since_act = 0.0;
         ev.extend(events);
     }
@@ -1147,12 +1306,12 @@ impl MixedShift {
 
     fn remember(&mut self, p: usize, side: Side) {
         let m = &mut self.threats[p].mem[side.ix()];
-        *m = (*m + 1).min(6);
+        *m = (*m + 1).min(tn().mem_cap);
     }
 
     fn gate_shut(&self, p: usize) -> bool {
         let Some(side) = self.threats[p].side else { return false };
-        if POOL[p].kind == Kind::Vent {
+        if tn().pool[p].kind == Kind::Vent {
             self.vents[side.ix()].shut
         } else {
             self.doors[side.ix()].shut
@@ -1162,7 +1321,7 @@ impl MixedShift {
     fn apply_floor(&mut self) {
         let floor = if self.diff.endless {
             endless_floor_at(self.elapsed)
-        } else if self.elapsed >= TENSION_FLOOR_FROM {
+        } else if self.elapsed >= tn().tension_floor_from {
             tension_floor_at(self.elapsed)
         } else {
             0.0
@@ -1171,7 +1330,7 @@ impl MixedShift {
     }
 
     fn wind_jump(&mut self) {
-        let Some(p) = self.roster.iter().copied().find(|&p| POOL[p].kind == Kind::Winder) else { return };
+        let Some(p) = self.roster.iter().copied().find(|&p| tn().pool[p].kind == Kind::Winder) else { return };
         if let Some(box_room) = self.threats[p].box_room {
             if self.wind && self.mon.up && self.mon.room != box_room {
                 self.set_room(box_room);
@@ -1192,20 +1351,20 @@ impl MixedShift {
         t.give_ms = 0.0;
         t.side = side;
         t.tell_need = need;
-        if POOL[p].kind == Kind::Vent {
-            if self.vent_seal < VENT_RESERVE {
-                self.vent_seal = VENT_RESERVE;
+        if tn().pool[p].kind == Kind::Vent {
+            if self.vent_seal < tn().vent_reserve {
+                self.vent_seal = tn().vent_reserve;
             }
-        } else if side.is_some() && self.seal < SEAL_RESERVE {
+        } else if side.is_some() && self.seal < tn().seal_reserve {
             if self.diff.endless {
-                let g = (SEAL_RESERVE - self.seal).min(self.run.budget);
+                let g = (tn().seal_reserve - self.seal).min(self.run.budget);
                 self.seal += g;
                 self.run.budget -= g;
             } else {
-                self.seal = SEAL_RESERVE;
+                self.seal = tn().seal_reserve;
             }
         }
-        self.scare(-0.15);
+        self.scare(tn().scare_arm);
     }
 
     fn start_tell(&mut self, p: usize, rearm: bool, ev: &mut Vec<Event>) {
@@ -1219,7 +1378,7 @@ impl MixedShift {
 
     fn kill(&mut self, p: usize, ev: &mut Vec<Event>) {
         let lead = self.elapsed - self.threats[p].armed_at;
-        if lead < TELL_FLOOR_MS {
+        if lead < tn().tell_floor_ms {
             return;
         }
         self.act(ev, vec![Event::Kill { pool: p, lead }]);
@@ -1228,7 +1387,7 @@ impl MixedShift {
 
     /// The threat leaves the gate: answered by the player, or it gave up.
     fn send_away(&mut self, p: usize, how: &'static str, ev: &mut Vec<Event>) {
-        let kind = POOL[p].kind;
+        let kind = tn().pool[p].kind;
         let side = self.threats[p].side;
         {
             let t = &mut self.threats[p];
@@ -1261,13 +1420,13 @@ impl MixedShift {
         } else {
             t.wait = wait;
         }
-        self.scare(-0.25);
+        self.scare(tn().scare_away);
         self.act(ev, vec![Event::Answered { pool: p, how }, Event::Gone { pool: p }]);
     }
 
     fn step_doors(&mut self, dt: f64, ev: &mut Vec<Event>) {
         let strained = self.chaos.strain > 0.0;
-        let hold_ms = if strained { STRAIN_HOLD_MS } else { DOOR_HOLD_MS };
+        let hold_ms = if strained { tn().strain_hold_ms } else { tn().door_hold_ms };
         let mut open = 0;
         for ix in 0..2 {
             let side = Side::ALL[ix];
@@ -1280,10 +1439,10 @@ impl MixedShift {
                     d.shut = false;
                     d.want = false;
                     d.held = 0.0;
-                    d.cool = POP_COOL_MS;
+                    d.cool = tn().pop_cool_ms;
                     ev.push(Event::Strain { side });
                 }
-            } else if self.doors[ix].want && self.doors[ix].cool <= 0.0 && self.seal >= SEAL_MIN_TO_SHUT {
+            } else if self.doors[ix].want && self.doors[ix].cool <= 0.0 && self.seal >= tn().seal_min_to_shut {
                 self.doors[ix].shut = true;
                 self.doors[ix].held = 0.0;
                 ev.push(Event::DoorShut { side });
@@ -1293,8 +1452,8 @@ impl MixedShift {
             }
         }
         if open > 0 {
-            let base = if self.diff.endless { ENDLESS_SEAL_REGEN } else { SEAL_REGEN };
-            let rate = base * if strained { STRAIN_REGEN } else { 1.0 };
+            let base = if self.diff.endless { tn().endless_seal_regen } else { tn().seal_regen };
+            let rate = base * if strained { tn().strain_regen } else { 1.0 };
             let mut gain = rate * dt * (open as f64 / 2.0);
             if self.diff.endless {
                 gain = gain.min(self.run.budget.min((self.seal_max - self.seal).max(0.0)));
@@ -1318,20 +1477,20 @@ impl MixedShift {
                 } else {
                     self.vents[ix].linger = (self.vents[ix].linger - dt).max(0.0);
                 }
-                if self.vents[ix].held >= VENT_HOLD_MS || self.vent_seal <= 0.0 {
+                if self.vents[ix].held >= tn().vent_hold_ms || self.vent_seal <= 0.0 {
                     let v = &mut self.vents[ix];
                     v.shut = false;
                     v.want = false;
                     v.held = 0.0;
                     v.linger = 0.0;
-                    v.cool = VENT_POP_COOL_MS;
+                    v.cool = tn().vent_pop_cool_ms;
                     ev.push(Event::VentStrain { side });
                 } else if !self.vents[ix].want && self.vents[ix].linger <= 0.0 {
                     self.vents[ix].shut = false;
                     self.vents[ix].held = 0.0;
                     ev.push(Event::VentOpen { side });
                 }
-            } else if self.vents[ix].want && self.vents[ix].cool <= 0.0 && self.vent_seal >= VENT_MIN_TO_SEAL {
+            } else if self.vents[ix].want && self.vents[ix].cool <= 0.0 && self.vent_seal >= tn().vent_min_to_seal {
                 let v = &mut self.vents[ix];
                 v.shut = true;
                 v.held = 0.0;
@@ -1343,8 +1502,8 @@ impl MixedShift {
             }
         }
         if open > 0 {
-            let gain = VENT_SEAL_REGEN * dt * (open as f64 / 3.0);
-            self.vent_seal = (self.vent_seal + gain).min(VENT_SEAL_MAX);
+            let gain = tn().vent_seal_regen * dt * (open as f64 / 3.0);
+            self.vent_seal = (self.vent_seal + gain).min(tn().vent_seal_max);
         }
     }
 
@@ -1358,11 +1517,11 @@ impl MixedShift {
             Beat::Spike => self.next_spike().map_or(0.0, |s| s.len),
             Beat::Lull => {
                 let u = self.dir.next();
-                between(BEAT_LULL_MS, u)
+                between(tn().beat_lull_ms, u)
             }
             Beat::Build => {
                 let u = self.dir.next();
-                between(BEAT_BUILD_MS, u)
+                between(tn().beat_build_ms, u)
             }
         };
         ev.push(Event::Beat(beat));
@@ -1373,9 +1532,9 @@ impl MixedShift {
             if !self.plan.is_empty() {
                 self.plan.remove(0);
             }
-            let gap = jitter(endless_gap(self.hour_of()), 0.25, &mut self.dir);
-            let at = (self.elapsed + BREATHER_MS.1 + gap).round();
-            let len = between(SPIKE_LEN_MS, self.dir.next()).round();
+            let gap = jitter(endless_gap(self.hour_of()), tn().gap_jitter, &mut self.dir);
+            let at = (self.elapsed + tn().breather_ms.1 + gap).round();
+            let len = between(tn().spike_len_ms, self.dir.next()).round();
             self.plan.push(Spike { at, len });
         }
         self.spike_idx += 1;
@@ -1399,7 +1558,7 @@ impl MixedShift {
             }
             Beat::Lull | Beat::Build => {
                 if let Some(n) = nxt {
-                    if !self.warned && self.elapsed >= n.at - SPIKE_WARN_MS {
+                    if !self.warned && self.elapsed >= n.at - tn().spike_warn_ms {
                         self.warned = true;
                         ev.push(Event::Spike(SpikePhase::Warn));
                     }
@@ -1412,17 +1571,17 @@ impl MixedShift {
                     ev.push(Event::Spike(SpikePhase::Start));
                     for p in self.roster.clone() {
                         let t = &self.threats[p];
-                        if t.active && !t.armed && POOL[p].kind != Kind::Counter {
-                            let late = jitter(WALKER_STEP_LATE_MS, JITTER, &mut self.dir);
+                        if t.active && !t.armed && tn().pool[p].kind != Kind::Counter {
+                            let late = jitter(tn().walker_step_late_ms, tn().jitter, &mut self.dir);
                             self.threats[p].wait = self.threats[p].wait.min(late);
                         }
                     }
                 } else if self.beat_left <= 0.0 {
-                    let last = self.elapsed >= TENSION_FLOOR_FROM;
+                    let last = self.elapsed >= tn().tension_floor_from;
                     let mut again = false;
-                    if self.beat == Beat::Build && self.tension > 0.5 {
+                    if self.beat == Beat::Build && self.tension > tn().build_again_above {
                         let u = self.dir.next();
-                        again = u < if last { 0.8 } else { 0.35 };
+                        again = u < if last { tn().build_again_p_last } else { tn().build_again_p };
                     }
                     let next = if self.beat == Beat::Lull || again { Beat::Build } else { Beat::Lull };
                     self.start_beat(next, ev);
@@ -1433,21 +1592,21 @@ impl MixedShift {
 
     fn step_feints(&mut self, dt: f64, ev: &mut Vec<Event>) {
         let range = match self.beat {
-            Beat::Lull => FEINT_LULL_MS,
-            Beat::Build => FEINT_BUILD_MS,
+            Beat::Lull => tn().feint_lull_ms,
+            Beat::Build => tn().feint_build_ms,
             _ => return,
         };
         self.feint_left -= dt;
         if self.feint_left > 0.0 {
             return;
         }
-        if self.lock.is_some() || self.since_act < FEINT_QUIET_MS || self.cool > 0.0 {
-            self.feint_left = 1000.0;
+        if self.lock.is_some() || self.since_act < tn().feint_quiet_ms || self.cool > 0.0 {
+            self.feint_left = tn().feint_retry_ms;
             return;
         }
         if self.fx.next() < 0.5 {
             let u = self.fx.next();
-            let room = CAM_ROOMS[(u * CAM_ROOMS.len() as f64).floor() as usize];
+            let room = tn().cam_rooms[(u * tn().cam_rooms.len() as f64).floor() as usize];
             ev.push(Event::Feint { room: Some(room), side: None });
         } else {
             let side = if self.fx.next() < 0.5 { Side::L } else { Side::R };
@@ -1462,7 +1621,7 @@ impl MixedShift {
             let cur = self.threats[p].mood;
             let others: Vec<Mood> = MOODS.iter().copied().filter(|&m| m != cur).collect();
             let m = others[(self.th_rng.next() * others.len() as f64).floor() as usize];
-            let left = between(MOOD_MS, self.th_rng.next());
+            let left = between(tn().mood_ms, self.th_rng.next());
             let t = &mut self.threats[p];
             t.mood = m;
             t.mood_left = left;
@@ -1470,17 +1629,17 @@ impl MixedShift {
         }
         self.threats[p].mood_cue -= dt;
         if self.threats[p].mood_cue <= 0.0 {
-            self.threats[p].mood_cue = between(MOOD_CUE_MS, self.th_rng.next());
+            self.threats[p].mood_cue = between(tn().mood_cue_ms, self.th_rng.next());
         }
     }
 
     fn choose_route(&mut self, p: usize) {
-        let kind = POOL[p].kind;
+        let kind = tn().pool[p].kind;
         let bx = self.threats[p].box_room;
         let table: Vec<&'static Route> = match kind {
-            Kind::Vent => VENT_ROUTES.iter().collect(),
-            Kind::Winder => ROUTES.iter().filter(|r| bx.map_or(false, |b| r.rooms.contains(&b))).collect(),
-            _ => ROUTES.iter().collect(),
+            Kind::Vent => tn().vent_routes.iter().collect(),
+            Kind::Winder => tn().routes.iter().filter(|r| bx.map_or(false, |b| r.rooms.contains(&b))).collect(),
+            _ => tn().routes.iter().collect(),
         };
         if table.is_empty() {
             return;
@@ -1495,14 +1654,14 @@ impl MixedShift {
             k += 1;
         }
         let r = table[k];
-        let all: &'static [Room] = r.rooms;
+        let all: &'static [Room] = &r.rooms;
         let start = match (kind, bx.and_then(|b| all.iter().position(|&x| x == b))) {
             (Kind::Winder, Some(at)) if at + 3 <= all.len() => at,
             _ => 0,
         };
         let t = &mut self.threats[p];
         t.route_side = r.side;
-        t.spots = r.spots;
+        t.spots = &r.spots;
         t.rooms = &all[start..];
         t.i = 0;
         t.seen = 0.0;
@@ -1514,7 +1673,7 @@ impl MixedShift {
             self.step_armed(p, dt, ev);
             return;
         }
-        let kind = POOL[p].kind;
+        let kind = tn().pool[p].kind;
         if !self.threats[p].active {
             if !self.time_runs(p) {
                 return;
@@ -1552,7 +1711,7 @@ impl MixedShift {
 
         if kind == Kind::Vent
             && self.threats[p].flinch
-            && self.threats[p].dwell >= MIN_DWELL_MS
+            && self.threats[p].dwell >= tn().min_dwell_ms
             && self.can_act()
         {
             let wait = jit(step_ms(kind), &mut self.th_rng);
@@ -1563,7 +1722,7 @@ impl MixedShift {
             t.wait = wait;
             let side = t.route_side;
             self.remember(p, side);
-            self.scare(-0.1);
+            self.scare(tn().scare_turn);
             self.act(ev, vec![Event::Turned { pool: p, room }]);
             return;
         }
@@ -1571,7 +1730,7 @@ impl MixedShift {
         if kind == Kind::Path && room == hall && self.time_runs(p) {
             if seen_now {
                 self.threats[p].seen += dt;
-                if self.threats[p].seen >= CHOKE_MS && self.can_act() {
+                if self.threats[p].seen >= tn().choke_ms && self.can_act() {
                     let to = i.saturating_sub(2);
                     let wait = jit(step_ms(kind), &mut self.th_rng);
                     let t = &mut self.threats[p];
@@ -1582,7 +1741,7 @@ impl MixedShift {
                     if let Some(side) = rooms[rooms.len() - 1].gate() {
                         self.remember(p, side);
                     }
-                    self.scare(-0.1);
+                    self.scare(tn().scare_turn);
                     self.act(ev, vec![Event::Turned { pool: p, room: rooms[to] }]);
                     return;
                 }
@@ -1601,7 +1760,7 @@ impl MixedShift {
         let speed = self.speed_of(p);
         self.threats[p].wait -= dt * speed;
         let t = &self.threats[p];
-        if t.wait > 0.0 || t.dwell < MIN_DWELL_MS || !self.can_act() {
+        if t.wait > 0.0 || t.dwell < tn().min_dwell_ms || !self.can_act() {
             return;
         }
         if i + 1 >= rooms.len() {
@@ -1629,7 +1788,7 @@ impl MixedShift {
     }
 
     fn step_armed(&mut self, p: usize, dt: f64, ev: &mut Vec<Event>) {
-        let kind = POOL[p].kind;
+        let kind = tn().pool[p].kind;
         if kind == Kind::Vent && self.threats[p].flinch && self.can_act() {
             self.send_away(p, "light", ev);
             return;
@@ -1643,7 +1802,7 @@ impl MixedShift {
             t.tell_on = false;
             t.armed_ms = 0.0;
             t.give_ms += dt;
-            let give_up = t.give_ms >= GIVE_UP_MS;
+            let give_up = t.give_ms >= tn().give_up_ms;
             if give_up && self.can_act() {
                 let how = if kind == Kind::Vent { "seal" } else { "door" };
                 self.send_away(p, how, ev);
@@ -1671,18 +1830,18 @@ impl MixedShift {
             self.threats[p].c = (c + dt / span_eff).min(1.0);
         } else if !holding {
             let c = self.threats[p].c;
-            self.threats[p].c = (c - COUNTER_CALM_DECAY * dt / span).max(0.0);
+            self.threats[p].c = (c - tn().counter_calm_decay * dt / span).max(0.0);
         }
         if self.threats[p].c > 0.0 {
             self.threats[p].hot = true;
         } else if self.threats[p].hot {
             self.threats[p].hot = false;
-            self.threats[p].grace = jit(COUNTER_GRACE_MS, &mut self.th_rng);
-            self.threats[p].span = jit(COUNTER_SPAN_MS, &mut self.th_rng);
+            self.threats[p].grace = jit(tn().counter_grace_ms, &mut self.th_rng);
+            self.threats[p].span = jit(tn().counter_span_ms, &mut self.th_rng);
         }
 
         if !self.threats[p].armed {
-            if self.threats[p].c >= COUNTER_ARM_AT && holding {
+            if self.threats[p].c >= tn().counter_arm_at && holding {
                 if self.lock.is_none() && self.can_act() && self.grace_ok() {
                     self.arm(p, None);
                     let room = Some(self.mon.room);
@@ -1690,7 +1849,7 @@ impl MixedShift {
                     self.start_tell(p, false, ev);
                 } else {
                     let c = self.threats[p].c;
-                    self.threats[p].c = c.min(COUNTER_ARM_AT);
+                    self.threats[p].c = c.min(tn().counter_arm_at);
                 }
             }
             return;
@@ -1706,9 +1865,9 @@ impl MixedShift {
             if self.lock == Some(p) {
                 self.lock = None;
             }
-            self.threats[p].grace = jit(COUNTER_GRACE_MS, &mut self.th_rng);
-            self.threats[p].span = jit(COUNTER_SPAN_MS, &mut self.th_rng);
-            self.scare(-0.25);
+            self.threats[p].grace = jit(tn().counter_grace_ms, &mut self.th_rng);
+            self.threats[p].span = jit(tn().counter_span_ms, &mut self.th_rng);
+            self.scare(tn().scare_away);
             let how = if self.mon.up { "switch" } else { "monitor" };
             self.act(ev, vec![Event::Answered { pool: p, how }]);
             return;
@@ -1735,7 +1894,7 @@ impl MixedShift {
             }
             let w = side_weights(self.threats[p].mem);
             let side = if self.th_rng.next() * (w[0] + w[1]) < w[0] { Side::L } else { Side::R };
-            let idle_max = jit(MONITOR_IDLE_LEAVE_MS, &mut self.th_rng);
+            let idle_max = jit(tn().monitor_idle_leave_ms, &mut self.th_rng);
             let t = &mut self.threats[p];
             t.present = true;
             t.active = true;
@@ -1761,7 +1920,7 @@ impl MixedShift {
         let Some(side) = self.threats[p].side else { return };
         if self.doors[side.ix()].shut {
             self.threats[p].give_ms += dt;
-            if self.threats[p].give_ms >= GIVE_UP_MS && self.can_act() {
+            if self.threats[p].give_ms >= tn().give_up_ms && self.can_act() {
                 self.send_away(p, "door", ev);
                 return;
             }
@@ -1777,7 +1936,7 @@ impl MixedShift {
             self.threats[p].pend = 0;
             self.threats[p].idle = 0.0;
             self.threats[p].decay = 0.0;
-            if self.threats[p].steps < MONITOR_STEPS_TO_ARM {
+            if self.threats[p].steps < tn().monitor_steps_to_arm {
                 self.threats[p].steps += 1;
                 let level = self.threats[p].steps;
                 self.act(ev, vec![Event::Echo { pool: p, level }]);
@@ -1792,7 +1951,7 @@ impl MixedShift {
             }
             return;
         }
-        if self.threats[p].decay >= MONITOR_DECAY_MS && self.threats[p].steps > 0 {
+        if self.threats[p].decay >= tn().monitor_decay_ms && self.threats[p].steps > 0 {
             self.threats[p].steps -= 1;
             self.threats[p].decay = 0.0;
         }
@@ -1811,7 +1970,7 @@ impl MixedShift {
         let before = self.threats[p].tune;
 
         if !was && self.time_runs(p) {
-            let boxfast = if self.chaos.boxfast > 0.0 { BOXFAST_FACTOR } else { 1.0 };
+            let boxfast = if self.chaos.boxfast > 0.0 { tn().boxfast_factor } else { 1.0 };
             let speed = self.speed_of(p);
             let t = &self.threats[p];
             let next = (t.tune - dt * speed * boxfast / t.span).max(0.0);
@@ -1819,10 +1978,10 @@ impl MixedShift {
         }
 
         if winding {
-            let next = (self.threats[p].tune + TUNE_WIND_PER_SEC * dt / 1000.0).min(1.0);
+            let next = (self.threats[p].tune + tn().tune_wind_per_sec * dt / 1000.0).min(1.0);
             self.threats[p].tune = next;
-            if was && next >= TUNE_RESTART_AT {
-                let span = jit(TUNE_SPAN_MS, &mut self.th_rng);
+            if was && next >= tn().tune_restart_at {
+                let span = jit(tn().tune_span_ms, &mut self.th_rng);
                 let t = &mut self.threats[p];
                 t.stopped = false;
                 t.span = span;
@@ -1834,18 +1993,18 @@ impl MixedShift {
                 }
                 ev.push(Event::Wound { pool: p });
             } else if !was && before < 1.0 && next >= 1.0 {
-                self.threats[p].span = jit(TUNE_SPAN_MS, &mut self.th_rng);
+                self.threats[p].span = jit(tn().tune_span_ms, &mut self.th_rng);
             }
         }
 
         if !self.threats[p].stopped {
             if self.elapsed < self.diff.grace_ms {
                 let t = self.threats[p].tune;
-                self.threats[p].tune = t.max(TUNE_GRACE_FLOOR);
+                self.threats[p].tune = t.max(tn().tune_grace_floor);
             }
             if self.threats[p].tune <= 0.0005 && self.threats[p].wind_ms == 0.0 {
                 if self.can_act() && self.grace_ok() && self.time_runs(p) {
-                    let wait = jit(CRANKY_MS, &mut self.th_rng);
+                    let wait = jit(tn().cranky_ms, &mut self.th_rng);
                     let t = &mut self.threats[p];
                     t.tune = 0.0;
                     t.stopped = true;
@@ -1872,19 +2031,20 @@ impl MixedShift {
                 ev.push(Event::Hour(hr));
             }
             let roll = if self.diff.chaos {
-                (CHAOS_HOURS.0..=CHAOS_HOURS.1).contains(&hr)
+                (tn().chaos_hours.0..=tn().chaos_hours.1).contains(&hr)
             } else {
-                self.diff.endless && hr >= RAMP_EVENT_FROM && self.dir.next() < RAMP_EVENT_P
+                self.diff.endless && hr >= tn().ramp_event_from && self.dir.next() < tn().ramp_event_p
             };
             if roll && self.chaos.at < 0.0 {
-                self.schedule_event(f64::from(hr) * HOUR_MS);
+                self.schedule_event(f64::from(hr) * tn().hour_ms);
             }
         }
     }
 
     fn schedule_event(&mut self, hour_start: f64) {
-        let have: Vec<Kind> = self.roster.iter().map(|&p| POOL[p].kind).collect();
-        let kinds: Vec<ChaosKind> = CHAOS_ORDER
+        let have: Vec<Kind> = self.roster.iter().map(|&p| tn().pool[p].kind).collect();
+        let kinds: Vec<ChaosKind> = tn()
+            .chaos_order
             .iter()
             .copied()
             .filter(|&k| chaos_needs(k).map_or(true, |n| have.contains(&n)))
@@ -1901,8 +2061,8 @@ impl MixedShift {
         }
         let u = self.dir.next();
         self.chaos.kind = Some(kind);
-        self.chaos.until = hour_start + HOUR_MS;
-        self.chaos.at = (hour_start + 5000.0 + u * (HOUR_MS - 15000.0)).max(self.diff.grace_ms);
+        self.chaos.until = hour_start + tn().hour_ms;
+        self.chaos.at = (hour_start + tn().chaos_pad_start_ms + u * (tn().hour_ms - tn().chaos_pad_end_ms)).max(self.diff.grace_ms);
         if self.chaos.at >= self.chaos.until {
             self.chaos.kind = None;
             self.chaos.at = -1.0;
@@ -1935,7 +2095,7 @@ impl MixedShift {
         if self.lock.is_some() || self.fx_running() || self.over != Outcome::Ongoing {
             return;
         }
-        let decoy_wait = self.since_act < DECOY_QUIET_MS
+        let decoy_wait = self.since_act < tn().decoy_quiet_ms
             || self.cool > 0.0
             || !matches!(self.beat, Beat::Lull | Beat::Build);
         if kind == ChaosKind::Decoy && decoy_wait {
@@ -1961,7 +2121,7 @@ impl MixedShift {
                 let u3 = self.dir.next();
                 let t = &mut self.threats[p];
                 t.mood = m;
-                t.mood_left = between(MOOD_MS, u3);
+                t.mood_left = between(tn().mood_ms, u3);
                 ev.push(Event::Chaos { kind, start: true, room: None });
                 ev.push(Event::Mood { pool: p, mood: m });
             }
@@ -1970,17 +2130,17 @@ impl MixedShift {
                     .roster
                     .iter()
                     .copied()
-                    .find(|&p| POOL[p].kind == Kind::Vent && !self.threats[p].active && !self.threats[p].armed);
+                    .find(|&p| tn().pool[p].kind == Kind::Vent && !self.threats[p].active && !self.threats[p].armed);
                 let Some(p) = found else { return };
-                let late = jit(2500.0, &mut self.dir);
+                let late = jit(tn().wake_late_ms, &mut self.dir);
                 self.threats[p].wait = self.threats[p].wait.min(late);
                 ev.push(Event::Chaos { kind, start: true, room: None });
             }
             ChaosKind::Decoy => {
-                let types: Vec<Kind> = DECOY_KINDS
+                let types: Vec<Kind> = tn().decoy_kinds
                     .iter()
                     .copied()
-                    .filter(|&k| self.roster.iter().any(|&p| POOL[p].kind == k))
+                    .filter(|&k| self.roster.iter().any(|&p| tn().pool[p].kind == k))
                     .collect();
                 let mut tkind = Kind::Path;
                 if !types.is_empty() {
@@ -1995,22 +2155,22 @@ impl MixedShift {
                 } else {
                     Side::R
                 };
-                self.cool = self.cool.max(DECOY_QUIET_MS);
+                self.cool = self.cool.max(tn().decoy_quiet_ms);
                 ev.push(Event::Chaos { kind, start: true, room: None });
                 ev.push(Event::Decoy { kind: tkind, side });
             }
             ChaosKind::Flicker => {
                 let u = self.dir.next();
-                let room = CAM_ROOMS[(u * CAM_ROOMS.len() as f64).floor() as usize];
-                self.chaos.flicker = FLICKER_MS;
+                let room = tn().cam_rooms[(u * tn().cam_rooms.len() as f64).floor() as usize];
+                self.chaos.flicker = tn().flicker_ms;
                 ev.push(Event::Chaos { kind, start: true, room: Some(room) });
             }
             ChaosKind::Strain => {
-                self.chaos.strain = STRAIN_MS;
+                self.chaos.strain = tn().strain_ms;
                 ev.push(Event::Chaos { kind, start: true, room: None });
             }
             ChaosKind::Boxfast => {
-                self.chaos.boxfast = BOXFAST_MS;
+                self.chaos.boxfast = tn().boxfast_ms;
                 ev.push(Event::Chaos { kind, start: true, room: None });
             }
         }
@@ -2025,7 +2185,7 @@ impl MixedShift {
             return;
         }
         self.run.gen += 1;
-        self.run.rotate_at += ROTATE_MS;
+        self.run.rotate_at += tn().rotate_ms;
         let gen = self.run.gen;
         let next = draw_roster(self.seed, self.diff, gen);
         let removed: Vec<usize> = self.roster.iter().copied().filter(|p| !next.contains(p)).collect();
@@ -2045,8 +2205,56 @@ mod tests {
 
     #[test]
     fn a_tell_never_drops_below_its_floor() {
-        assert_eq!(tell_for(1000.0, 0.0, Mood::Hungry, 0.5), TELL_FLOOR_MS);
+        assert_eq!(tell_for(1000.0, 0.0, Mood::Hungry, 0.5), tn().tell_floor_ms);
         assert_eq!(tell_for(1000.0, 3000.0, Mood::Patient, 0.5), 3000.0);
-        assert_eq!(tell_for(SHIFTS[1].tell_ms, 0.0, Mood::Patient, 0.5), 1900.0);
+        assert_eq!(tell_for(tn().shifts[1].tell_ms, 0.0, Mood::Patient, 0.5), 1900.0);
+    }
+
+    #[test]
+    fn the_rules_file_carries_every_key_the_mode_reads() {
+        // Loading reads (and panics on a missing key of) every rules, cast and building key; then spot-check the tables.
+        let t = tn();
+        assert_eq!(t.pool.len(), 8);
+        assert_eq!(t.shifts.len(), 5);
+        assert_eq!(t.routes.len(), 6);
+        assert_eq!(t.vent_routes.len(), 3);
+        assert_eq!(t.cam_rooms.len(), 9);
+        assert_eq!(t.box_rooms.len(), 8);
+        assert_eq!(t.chaos_order.len(), 6);
+        assert_eq!(t.ramp_roster.len(), 4);
+        assert!(t.shifts[3].chaos && t.shifts[4].endless);
+        assert_eq!(t.shifts[3].must, vec![6, 7]);
+        assert_eq!(t.pool[0].kind, Kind::Counter);
+        assert_eq!(t.pool[7].kind, Kind::Winder);
+        assert_eq!(t.pool[4].name, "Dovelle");
+        for route in t.routes.iter().chain(&t.vent_routes) {
+            assert!(route.rooms.last().and_then(|r| r.gate()).is_some());
+        }
+    }
+
+    #[test]
+    fn loaded_values_equal_the_old_constants() {
+        let t = tn();
+        assert_eq!((t.hour_ms, t.night_ms, t.points_per_level, t.dawn_hour), (45_000.0, 270_000.0, 10, 6));
+        assert_eq!((t.tell_floor_ms, t.cooldown_ms, t.give_up_ms, t.choke_ms), (1_500.0, 1_200.0, 1_200.0, 2_000.0));
+        assert_eq!((t.seal_max, t.seal_regen, t.door_hold_ms), (20_000.0, 0.3, 8_000.0));
+        assert_eq!((t.vent_seal_max, t.vent_hold_ms, t.vent_light_cool_ms), (9_000.0, 6_000.0, 2_400.0));
+        assert_eq!(t.mood_ms, (30_000.0, 60_000.0));
+        assert_eq!(t.tension_floor_from, 225_000.0);
+        assert_eq!(t.rotate_ms, 135_000.0);
+        assert_eq!(t.vent_near, [3, 4, 2]);
+        assert_eq!((Mood::Reckless.speed(), Mood::Hungry.tell(), Beat::Spike.rate(), Beat::Breather.rate()), (1.4, 0.85, 1.8, 0.0));
+        assert_eq!((step_ms(Kind::Winder), rest_ms(Kind::Monitor), step_ms(Kind::Counter)), (12_000.0, 20_000.0, 0.0));
+        assert_eq!((chaos_weight(ChaosKind::Flicker), chaos_weight(ChaosKind::Wake)), (3.0, 2.0));
+        assert_eq!((chaos_needs(ChaosKind::Wake), chaos_needs(ChaosKind::Boxfast), chaos_needs(ChaosKind::Mood)), (Some(Kind::Vent), Some(Kind::Winder), None));
+        assert_eq!(t.shifts[0].min_tell_ms, 3_000.0);
+        assert_eq!(t.shifts[3].breather, Some((4_500.0, 6_500.0)));
+        assert_eq!(t.shifts[1].breather, None);
+        assert_eq!(t.shifts[2].roster, (4, 5));
+        assert_eq!((endless_pace(10), endless_tell(0), endless_tell(20), endless_gap(0), endless_gap(20)), (1.32, 1_900.0, 1_600.0, 46_000.0, 10_000.0));
+        assert_eq!((endless_budget(0), endless_budget(30)), (2_400.0, 1_400.0));
+        assert_eq!(endless_floor_at(0.0), 0.0);
+        assert_eq!(tension_floor_at(225_000.0), 0.35);
+        assert_eq!(Side::T.vent_near(), 2);
     }
 }

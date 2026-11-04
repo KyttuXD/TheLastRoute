@@ -1,0 +1,36 @@
+{
+	"schema": "nw.map/1",
+	"mode": "bedtime",
+	"version": 1,
+	"theme": "a house wing: the bedroom with its wardrobe and a long hall to a kids' room, bathroom, stair landing and living room with the galley beyond. No cameras: the rest of the house is heard, never watched",
+	"source": "Godot bedroom/bedroom_map.gd (ROOMS rects and EDGES, metres in the bedroom's space)",
+	"floors": [{ "id": "main", "label": "HOUSE" }],
+	"rooms": [
+		{ "id": "bedroom", "label": "BEDROOM", "kind": "office", "rect": [-2.7, -2.6, 2.7, 2.6] },
+		{ "id": "wardrobe", "label": "WARDROBE", "rect": [-3.8, -1.7, -2.7, -0.1] },
+		{ "id": "hall", "label": "HALL", "kind": "hall", "rect": [2.7, -2.0, 10.7, 0.2] },
+		{ "id": "kids_room", "label": "KIDS' ROOM", "rect": [4.0, 0.2, 8.0, 4.2] },
+		{ "id": "bathroom", "label": "BATHROOM", "rect": [3.5, -6.0, 7.5, -2.0] },
+		{ "id": "landing", "label": "LANDING", "rect": [8.0, -5.0, 10.6, -2.0] },
+		{ "id": "stairs", "label": "STAIRS", "rect": [8.0, -9.0, 10.6, -5.0] },
+		{ "id": "living_room", "label": "LIVING ROOM", "rect": [10.7, -4.5, 17.7, 2.5] },
+		{ "id": "galley", "label": "GALLEY KITCHEN", "rect": [10.7, -9.5, 17.7, -4.5] }
+	],
+	"links": [
+		{ "a": "bedroom", "b": "wardrobe", "kind": "door" },
+		{ "a": "bedroom", "b": "hall", "kind": "door" },
+		{ "a": "hall", "b": "kids_room", "kind": "door" },
+		{ "a": "hall", "b": "bathroom", "kind": "door" },
+		{ "a": "hall", "b": "landing", "kind": "door" },
+		{ "a": "landing", "b": "stairs", "kind": "door" },
+		{ "a": "hall", "b": "living_room", "kind": "door" },
+		{ "a": "living_room", "b": "galley", "kind": "door" }
+	],
+	"cameras": [],
+	"offices": ["bedroom"],
+	"spawns": [
+		{ "id": "loxelle", "room": "wardrobe" },
+		{ "id": "javelle", "room": "living_room" },
+		{ "id": "haelith", "room": "bedroom" }
+	]
+}

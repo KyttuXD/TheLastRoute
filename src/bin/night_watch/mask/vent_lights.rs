@@ -2,9 +2,11 @@
 //! shines (`MaskControls.control_input`), the battery gate (`MaskLogic`, mask_logic.gd:351) and where the
 //! office puts the vent hatch, its station, the beam and the glint (`MaskOffice._build_vents`).
 
+#[cfg(test)]
 use macroquad::prelude::{Color, Vec3};
 
 /// Half the office's width (`MaskOffice.HALF_W`); the vents sit in the side walls.
+#[cfg(test)]
 pub const HALF_W: f32 = 3.4;
 
 /// Which side wall's vent.
@@ -18,6 +20,7 @@ impl VentSide {
     pub const ALL: [VentSide; 2] = [VentSide::L, VentSide::R];
 
     /// -1 for the left wall, +1 for the right (`side` in `_build_vents`).
+    #[cfg(test)]
     pub fn sign(self) -> f32 {
         match self {
             VentSide::L => -1.0,
@@ -26,6 +29,7 @@ impl VentSide {
     }
 
     /// The `"L"` / `"R"` key Godot uses for `vent_beams`, `lit` and `DUCT_CAM`.
+    #[cfg(test)]
     pub fn key(self) -> &'static str {
         match self {
             VentSide::L => "L",
@@ -34,6 +38,7 @@ impl VentSide {
     }
 
     /// The control action held for this light.
+    #[cfg(test)]
     pub fn action(self) -> &'static str {
         match self {
             VentSide::L => "lightL",
@@ -50,6 +55,7 @@ impl VentSide {
     }
 
     /// The duct camera's number on the monitor (`MaskData.ROOMS[duct]["cam"]`).
+    #[cfg(test)]
     pub fn duct_cam_number(self) -> u8 {
         match self {
             VentSide::L => 6,
@@ -58,17 +64,11 @@ impl VentSide {
     }
 
     /// The physical station's id in the office (`_station("ventL" / "ventR", ...)`).
+    #[cfg(test)]
     pub fn station_id(self) -> &'static str {
         match self {
             VentSide::L => "ventL",
             VentSide::R => "ventR",
-        }
-    }
-
-    pub fn station_label(self) -> &'static str {
-        match self {
-            VentSide::L => "LEFT VENT // HOLD FOR LIGHT",
-            VentSide::R => "RIGHT VENT // HOLD FOR LIGHT",
         }
     }
 }
@@ -103,13 +103,6 @@ impl VentLightHeld {
         }
     }
 
-    pub fn held(&self, side: VentSide) -> bool {
-        match side {
-            VentSide::L => self.l,
-            VentSide::R => self.r,
-        }
-    }
-
     /// A held light works with both panels down (`clear()`), or with the monitor fully up on that side's
     /// duct camera. `monitor_up` is `is_up("monitor")`; `cam` is the monitor's current room.
     pub fn active(&self, panels_clear: bool, monitor_up: bool, cam: &str) -> VentLightActive {
@@ -130,6 +123,7 @@ impl VentLightActive {
     }
 
     /// What actually shines: nothing on a flat battery, and never both (`lit` in `MaskLogic.step`).
+    #[cfg(test)]
     pub fn lit(&self, battery: f32) -> VentLightActive {
         if battery > 0.0 {
             VentLightActive {
@@ -142,11 +136,13 @@ impl VentLightActive {
     }
 
     /// Whether either vent light draws on the battery this frame (part of `using`).
+    #[cfg(test)]
     pub fn any(&self) -> bool {
         self.l || self.r
     }
 }
 
+#[cfg(test)]
 /// A vent's SpotLight3D (`VentBeamL` / `VentBeamR`), hidden until its light is lit.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VentBeam {
@@ -160,6 +156,7 @@ pub struct VentBeam {
     pub angle_deg: f32,
 }
 
+#[cfg(test)]
 /// Where one side's vent pieces sit in the office.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VentPlacement {
@@ -168,14 +165,11 @@ pub struct VentPlacement {
     /// The hold-for-light station (`ventL` / `ventR`).
     pub station: Vec3,
     pub beam: VentBeam,
-    /// The glowing eyes shown in a lit vent (`VentGlintL` / `VentGlintR`); its two eyes sit at
-    /// `GLINT_EYE_Z` along z, each `GLINT_EYE_SIZE`.
+    /// The glowing eyes shown in a lit vent (`VentGlintL` / `VentGlintR`).
     pub glint: Vec3,
 }
 
-pub const GLINT_EYE_Z: [f32; 2] = [-0.12, 0.12];
-pub const GLINT_EYE_SIZE: Vec3 = Vec3::new(0.04, 0.04, 0.06);
-
+#[cfg(test)]
 impl VentSide {
     pub fn placement(self) -> VentPlacement {
         let s = self.sign();

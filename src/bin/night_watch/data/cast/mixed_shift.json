@@ -1,0 +1,22 @@
+{
+	"mode": "mixed_shift",
+	"version": 1,
+	"pool": [
+		{ "id": "haelith", "type": "counter", "name": "Haelith" },
+		{ "id": "ilyra", "type": "watched", "name": "Ilyra" },
+		{ "id": "aki", "type": "watched", "name": "Aki" },
+		{ "id": "opalie", "type": "monitor", "name": "Opalie" },
+		{ "id": "dovelle", "type": "path", "name": "Dovelle" },
+		{ "id": "ravelle", "type": "path", "name": "Ravelle" },
+		{ "id": "verrine", "type": "vent", "name": "Verrine" },
+		{ "id": "glyra", "type": "winder", "name": "Glyra" }
+	],
+	"types": {
+		"counter": { "label": "Counter", "does": "builds while you stay on one camera", "answer": "switch camera, or lower the monitor" },
+		"watched": { "label": "Watched", "does": "moves only when no camera is on her", "answer": "keep a camera on her, or shut the door when she is at it" },
+		"monitor": { "label": "Monitor-gated", "does": "waits in the office and steps closer as you raise or lower the monitor", "answer": "stop touching the monitor, or shut her side's door" },
+		"path": { "label": "Path walker", "does": "walks a route through the building one room at a time", "answer": "shut the door she is at, or hold a camera on her at the hall to turn her back" },
+		"vent": { "label": "Vent crawler", "does": "crawls the vent run (CAM 9) to one of the three office vents", "answer": "seal that vent before she arrives, or flash the vent light when she is at its branch" },
+		"winder": { "label": "Winder", "does": "hums with a music box on one camera; when it runs down she walks to a door", "answer": "view the box's camera and hold wind, or shut the door she is at" }
+	}
+}

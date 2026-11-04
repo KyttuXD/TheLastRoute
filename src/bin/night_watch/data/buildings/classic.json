@@ -1,0 +1,38 @@
+{
+	"mode": "classic",
+	"version": 1,
+	"rooms": {
+		"stage": { "cam": 1, "label": "SHOWSTAGE", "pan": 0.0, "grid": [1, 0], "map": [50, 12] },
+		"dining": { "cam": 2, "label": "DININGAREA", "pan": -0.2, "grid": [1, 1], "map": [50, 44] },
+		"backstage": { "cam": 3, "label": "BACKSTAGE", "pan": -0.5, "grid": [0, 0], "map": [15, 12] },
+		"westhall": { "cam": 4, "label": "WESTHALL", "pan": -0.8, "grid": [0, 1], "map": [15, 44] },
+		"closet": { "cam": 5, "label": "SUPPLYCLOSET", "pan": -0.9, "grid": [0, 2], "map": [15, 76] },
+		"kitchen": { "cam": 6, "label": "KITCHEN", "pan": 0.5, "grid": [2, 0], "map": [85, 12] },
+		"easthall": { "cam": 7, "label": "EASTHALL", "pan": 0.8, "grid": [2, 1], "map": [85, 44] },
+		"corner": { "cam": 8, "label": "EASTCORNER", "pan": 0.9, "grid": [2, 2], "map": [85, 76] },
+		"doorL": { "cam": 0, "label": "LEFTDOOR", "pan": -1.0, "grid": [-1, -1], "map": [40, 79] },
+		"doorR": { "cam": 0, "label": "RIGHTDOOR", "pan": 1.0, "grid": [-1, -1], "map": [60, 79] }
+	},
+	"graph": {
+		"stage": ["dining", "backstage"],
+		"backstage": ["stage", "westhall"],
+		"dining": ["stage", "westhall", "kitchen", "easthall"],
+		"kitchen": ["dining"],
+		"westhall": ["dining", "backstage", "closet", "doorL"],
+		"closet": ["westhall"],
+		"easthall": ["dining", "corner", "doorR"],
+		"corner": ["easthall"],
+		"doorL": ["westhall"],
+		"doorR": ["easthall"]
+	},
+	"paths": {
+		"kathy": {
+			"start": "stage",
+			"retreat_to": "stage",
+			"push_to": "stage",
+			"fade_to": ["stage", "kitchen"],
+			"doors": ["doorL", "doorR"],
+			"meet_rooms": ["westhall", "easthall"]
+		}
+	}
+}

@@ -1,0 +1,26 @@
+{
+	"schema": "nw.map/1",
+	"mode": "facility",
+	"version": 1,
+	"theme": "industrial complex: breaker room, gallery, control, workshop and auditorium in one production line, the lift north of control. Control is the player's room; the shift has no cameras",
+	"source": "Godot story/story_map.gd (CELL 6, five rooms in a line, lift at z -4.1)",
+	"floors": [{ "id": "main", "label": "PRODUCTION LINE" }],
+	"rooms": [
+		{ "id": "breaker", "label": "BREAKER ROOM", "rect": [-15.0, -3.0, -9.0, 3.0] },
+		{ "id": "gallery", "label": "GALLERY", "rect": [-9.0, -3.0, -3.0, 3.0] },
+		{ "id": "control", "label": "CONTROL", "kind": "office", "rect": [-3.0, -3.0, 3.0, 3.0] },
+		{ "id": "workshop", "label": "WORKSHOP", "rect": [3.0, -3.0, 9.0, 3.0] },
+		{ "id": "auditorium", "label": "AUDITORIUM", "rect": [9.0, -3.0, 15.0, 3.0] },
+		{ "id": "lift", "label": "LIFT", "rect": [-1.5, -6.5, 1.5, -3.0] }
+	],
+	"links": [
+		{ "a": "breaker", "b": "gallery", "kind": "door" },
+		{ "a": "gallery", "b": "control", "kind": "door" },
+		{ "a": "control", "b": "workshop", "kind": "door" },
+		{ "a": "workshop", "b": "auditorium", "kind": "door" },
+		{ "a": "control", "b": "lift", "kind": "door" }
+	],
+	"cameras": [],
+	"offices": ["control"],
+	"spawns": []
+}

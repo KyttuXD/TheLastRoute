@@ -1,8 +1,10 @@
 # Night Watch modes: Godot to Rust mapping
 
-This page maps the nine Night Watch modes from the TODO "Night Watch port" section onto the Godot 3D project at `LastRoute Godot/KyttusLabApp/game/night_watch`, and records what the Rust binary at `src/bin/night_watch` already has and what it still lacks. The Godot tree is the read-only reference. All new Rust code goes under `src/bin/night_watch`, and shared core items come from `last_route_core` only.
+This page maps the nine Night Watch modes onto the Godot 3D project at `LastRoute Godot/KyttusLabApp/game/night_watch` and records where each one stands in the Rust binary at `src/bin/night_watch`. The Godot tree is the read-only reference. All Night Watch code goes under `src/bin/night_watch`, and shared core items come from `last_route_core` only.
 
-Mode ids follow the TODO and the brief. The Godot mode id and the current Rust module name are shown where they differ.
+State on 2026-11-03: all nine modes have their rules ported as pure logic (no window, no input) and all nine are on the hub. Classic, Masked Hours, The Facility and Mixed Shift are playable, each with a picture, controls, a call box and its own driver (`classic_play.rs`, `modes_play/masked_hours.rs`, `modes_play/facility.rs`, `modes_play/mixed_shift.rs`); Classic also has the monitor with the building map. The other seven are started and ticked by `modes::start` and `Session::tick`, but have no controls or picture yet. The numbers and the content live in a data layer (see below), not in the Rust files.
+
+Mode ids follow the hub (`shell.rs`), and each night type opens through the Night Select screen (`select.rs`). The Godot mode id and the Rust module name are shown where they differ.
 
 ## Folder inventory
 
@@ -31,21 +33,43 @@ Mode tables and data live in `LastRoute Godot/KyttusLabApp/data/night_watch/`:
 
 The Godot validators that cover the modes are `tests/validate_night_watch_<mode>.gd`, plus `validate_night_watch_modes.gd`, `validate_night_watch_calls.gd`, `validate_night_watch_sounds.gd` and `validate_night_watch_menus.gd`. Their headless replays are the best oracle for porting each rules file.
 
+## Data layer
+
+Every tunable number, cast list, room graph and map is JSON under `src/bin/night_watch/data`, embedded in the executable and parsed once. Loading panics with the mode and key when a key is missing, so a content break shows up in the tests. `data.rs` is the reader (`rules`, `cast`, `building`, with dotted-path helpers `num`, `int`, `text`, `list`).
+
+| Folder | Content | Modes |
+| --- | --- | --- |
+| `data/rules/<mode>.json` | Timings, level tables, scoring, pacing | all nine |
+| `data/cast/<mode>.json` | Hunters, phantoms and their per-night levels | classic, bedtime, masked_hours, dead_air, facility, open_air, mixed_shift |
+| `data/buildings/<mode>.json` | Room cameras, labels and the hunters' room graph | classic, bedtime, masked_hours, dead_air, facility, mixed_shift |
+| `data/maps/<mode>.json` (schema `nw.map/1`) | The whole building as a floor plan: rooms with outlines in metres, links, cameras, offices, spawns | all nine |
+| `data/calls_ui.json` (schema `nw.calls_ui/1`) | Typewriter speed, punctuation pauses, blip voices | shared |
+| `calls/<id>.json` (schema `nw.calls/1`) | The headset call scripts, copied from Godot | all except mixed (its call is the `call` block of `rules/mixed_shift.json`) |
+
+Rules for the data layer:
+
+- A mode file has no number a data file also holds. Open Air's listed levels come from `levels.listed` in `rules/open_air.json` (`Levels::listed()`), and its test checks the table names the four hunters in Godot's order.
+- Classic's hunter graph is derived from the building map's walkable links (`building_map::neighbours`, minus the office); a test holds it equal to the old table. `buildings/classic.json` still lists the graph as the cross-check used by the map tests.
+- The Godot rules and cast for Classic are also kept, unembedded, in `src/bin/night_watch/assets` as a reference copy.
+- Code: `typewriter.rs` (call text reveal), `building_map.rs` (map queries and drawing, used by Classic's monitor), `calls_view.rs` and `blip.rs` (call box and sound).
+
 ## Mapping table
 
-| Mode id | TODO name | Godot id and folder | Main Godot scene script | Rules script | Rust today | Rust gap |
+| Hub id | Name | Godot id and folder | Main Godot scene script | Rules script | Rust module | Rust state |
 | --- | --- | --- | --- | --- | --- | --- |
-| classic | Classic | `classic`, root | `night_watch_classic.gd` (rules); shift scene `night_watch.tscn` | `night_watch_classic.gd` (212 lines), `data/night_watch/rules/classic.json` | Hub entry, `calls/classic.json`, `modes/classic.rs` stub, save and call framework | No rules, no scene, no monitor, doors, lights or power port |
-| bedtime | Bedtime | `bedroom`, `bedroom/` | `bedroom/bedroom_game.gd` (580 lines) | `bedroom/bedroom_logic.gd` (216 lines) | Hub entry, `calls/bedroom.json`, `modes/bedroom.rs` stub | No rules, no scene, no bed, closet or hall logic |
-| salvage_run | Salvage Run | `dayshift`, `dayshift/` | `dayshift/dayshift_game.gd` (728 lines) | `dayshift/dayshift_logic.gd` (357 lines), `dayshift_shop.gd`, `dayshift_data.gd` | Hub entry, `calls/dayshift.json`, `modes/dayshift.rs` stub | No day shop, budget, rack or night rules |
-| descent | The Descent | `descent`, `descent/` | `descent/descent_game.gd` (485 lines), `descent_world.gd`, `descent_panel.gd` | `descent/descent_logic.gd` (476 lines) | Hub entry, `calls/descent.json`, `modes/descent.rs` stub | No wires, signal-pad or pipe puzzles, no elevator view |
-| masked_hours | Masked Hours | `mask`, `mask/` | `mask/mask_game.gd` (947 lines), `mask_world.gd`, `mask_controls.gd` | `mask/mask_logic.gd` (679 lines) | Hub entry, `calls/mask.json`, `mask/vent_lights.rs` (299 lines), `modes/mask.rs` stub | Vent-light part exists; no mask, monitor, music box, flashlight or hall-hunter logic |
-| dead_air | Dead Air | `lure`, `lure/` | `lure/lure_game.gd` (864 lines), `lure_world.gd`, `lure_panel.gd` | `lure/lure_logic.gd` (434 lines) | Hub entry, `calls/lure.json`, `modes/lure.rs` stub | No Xivvy walk, phantoms, climate, reboots or lure monitor |
-| facility | The Facility | `story`, `story/` | `story/story_game.gd` (695 lines), `story_world.gd`, `story_panel.gd` | `story/story_logic.gd` (441 lines) | Hub entry, `calls/story.json`, `modes/story.rs` stub | No rooms, task list, noise, beacon, lift or the three hunters |
-| open_air | Open Air | `extra`, `openair/` (scene root `night_watch_extra.tscn`) | `openair/openair_game.gd` (668 lines), `openair_world.gd` | `openair/openair_logic.gd` (668 lines), `openair_pacer.gd`, `openair_data.gd`, `openair_paths.gd` | Hub entry, `calls/extra.json`, `modes/extra.rs` stub | No three watches, torch, lantern oil, hatch or campfire logic |
-| mixed_shift | Mixed Shift | `mixed`, `mixed/` | `mixed/mixed_game.gd` (872 lines), `mixed_world.gd`, `mixed_map.gd`, `mixed_skin.gd` | `mixed/mixed_logic.gd` (1283 lines) | `modes/mixed.rs` stub only. Not in `HUB_ENTRIES` and no `calls/mixed.json`. | Hub entry, call table, threat roster, director and five shifts all missing |
+| classic | Classic | `classic`, root | `night_watch_classic.gd`; shift scene `night_watch.tscn` | `night_watch_classic.gd`, `rules/classic.json` | `modes/classic.rs`, `classic_play.rs` | Rules and play: doors, lights, monitor with building map, power, call box, Kathy night |
+| mask | Masked Hours | `mask`, `mask/` | `mask/mask_game.gd` | `mask/mask_logic.gd` | `modes/masked_hours.rs`, `mask/vent_lights.rs`, `modes_play/masked_hours.rs` | Playable: mask, monitor, music box, flashlight, vents, call box, six nights |
+| lure | Dead Air | `lure`, `lure/` | `lure/lure_game.gd` | `lure/lure_logic.gd` | `modes/dead_air.rs` (rules), `modes_play/dead_air.rs` (play) | Rules and play: booth seals, heater and fan, monitor with the station map, lure, reboots, phantoms, climate, call box, endings, save on a win |
+| bedroom | Bedtime | `bedroom`, `bedroom/` | `bedroom/bedroom_game.gd` | `bedroom/bedroom_logic.gd` | `modes/bedtime.rs`, `modes_play/bedtime.rs` | Rules and play |
+| story | The Facility | `story`, `story/` | `story/story_game.gd` | `story/story_logic.gd` | `modes/facility.rs`, `modes_play/facility.rs` | Rules and play: rooms, task list, station puzzles, noise, beacon, lift, call box, sign-off and catch screens |
+| descent | The Descent | `descent`, `descent/` | `descent/descent_game.gd` | `descent/descent_logic.gd` | `modes/descent.rs`, `modes_play/descent.rs` | Playable |
+| dayshift | Salvage Run | `dayshift`, `dayshift/` | `dayshift/dayshift_game.gd` | `dayshift/dayshift_logic.gd` | `modes/salvage_run.rs`, `modes_play/salvage_run.rs` | Playable: day shop, rack, window, quota, call, endings |
+| extra | Open Air | `extra`, `openair/` (scene root `night_watch_extra.tscn`) | `openair/openair_game.gd` | `openair/openair_logic.gd` | `modes/open_air.rs` | Rules only |
+| mixed | Mixed Shift | `mixed`, `mixed/` | `mixed/mixed_game.gd` | `mixed/mixed_logic.gd` | `modes/mixed_shift.rs`, `modes_play/mixed_shift.rs` | Playable: shift select (five shifts, ENDLESS last), threat roster and director, vents, doors, monitor with the building map, call box, endings, save |
 
-Hub order in Godot is 1 Classic, 2 Masked Hours, 3 Dead Air, 4 Bedtime, 5 The Facility, 6 The Descent, 7 Salvage Run, 8 Open Air, 9 Mixed Shift. The Rust hub in `shell.rs` lists only eight entries and omits Mixed Shift.
+Hub order (Godot and `shell.rs`, nine entries): 1 Classic, 2 Masked Hours, 3 Dead Air, 4 Bedtime, 5 The Facility, 6 The Descent, 7 Salvage Run, 8 Open Air, 9 Mixed Shift.
+
+The one-line files `modes/{bedroom,dayshift,extra,lure,mask,mixed,story}.rs` are old stubs that `modes/mod.rs` no longer declares; they are not compiled.
 
 ## Per-mode notes
 
@@ -55,7 +79,7 @@ Hub order in Godot is 1 Classic, 2 Masked Hours, 3 Dead Air, 4 Bedtime, 5 The Fa
 - Rules and scoring: seven nights, two steel doors and two lights, eight cameras, one power meter, 6 AM win, power loss opens doors and kills lights. Points per level are 10 (`POINTS_PER_LEVEL` in `night_watch_modes_data.gd`). Custom Night sliders run 0 to 20 per hunter.
 - Hunters: Dovelle, Nyxie, Ravelle, Ilyra, Aki (cast). Night 7 has Kathy alone (TODO).
 - Assets and sounds: `nw_door_left` and `nw_door_right`, `nw_light_left` and `nw_light_right`, `nw_lamp`, `nw_name`, plus the Night Watch cue family. Building data is in `data/night_watch/buildings/classic.json`.
-- Rust cannot port yet: the classic rules, the power budget, camera feeds, the walkable eight-room building, the security room and the Night 7 scene. The call script `calls/classic.json` and the save clear rule (`NIGHTS` in `save.rs`) already exist.
+- Rust: rules and play are done (see the table above). The call script and the save clear rule exist.
 
 ### bedtime (Bedtime)
 
@@ -63,7 +87,7 @@ Hub order in Godot is 1 Classic, 2 Masked Hours, 3 Dead Air, 4 Bedtime, 5 The Fa
 - Rules: no cameras. Hold A to shut the closet door (Loxelle breathes behind it), D to light the hall (Javelle waits there), F to light the foot of the bed (Haelith creeps in while the room is dark). One hand, so one action at a time. The flashlight battery never recharges. Holding the door uses both hands. Presets: Closet Door, Hall Watch, Lights Out, All Twenty.
 - Scoring: the shared 10 points per level and the rating table.
 - Assets and sounds: `bedroom_sounds.gd` (`BedroomSounds.breath`, `step_in`), a dark bedroom, the pillow-view look controls, the shared Sound autoload and the walker.
-- Rust cannot port yet: the pillow view and look controls, the closet, hall and bed hunters, the battery, and the breathing check. The call script `calls/bedroom.json` exists.
+- Rust: rules and scoring are in `modes/bedtime.rs`. Play is in `modes_play/bedtime.rs`: hold A (closet door, no light while held), hold D (hall light) or F (bed light), TAB for the floor plan (the house by sound: a marker shows the room a hunter's sound comes from), the call box from `calls/bedroom.json`, the battery, the win at 6 AM (saved as `bedroom` in the progress file) and the caught endings. Not done: the pillow view and look controls, the Custom Night, the score and rating on the result screen, and the breathing audio.
 
 ### salvage_run (Salvage Run)
 
@@ -72,7 +96,7 @@ Hub order in Godot is 1 Classic, 2 Masked Hours, 3 Dead Air, 4 Bedtime, 5 The Fa
 - Hunters: Ravelle, Ceryth and Ysolde (cast). Presets: Left Door, Right Door, After Hours, All Twenty.
 - Scoring: the rack value per salvage event (`salvage {slot, value}`), the quota, and the shared 10 points per level.
 - Assets and sounds: `theme_nightwatch.tres`, `night_watch_player.tscn`, the shared art, and the nw cues. The rules use the same Mulberry stream as the 2D game.
-- Rust cannot port yet: the day shop, the upgrade budget, the rack and slot logic, the salvage loop, the window and the quota. Mulberry and the call script are shared and ready.
+- Rust: the rules and scoring are in `modes/salvage_run.rs`; the playable driver is `modes_play/salvage_run.rs` (hub id `dayshift`, in `shell::PLAYABLE`). Shop: 1 to 5 or a click buys and drops an upgrade, ENTER starts the shift. Night: A and D shut the side doors, Q and E hold the lights, 1 to 4 pick a rack slot and SPACE (held) or a held click salvages it, M mutes the call. Each week's call is `calls/dayshift.json`. A cleared week saves `cleared_salvage_run`, a short or caught week is tried again with the same carry, and week 5 ends the schedule. The room is `assets/offices/dayshift.png` with `dayshift-fg.png` over it, and every number and label is in `data/rules/salvage_run.json` (`ui` holds the timings of the screen). Test: `cargo test --bin night_watch salvage` (a scripted campaign reaches an ending, the shop keeps to the budget, the call plays to its end). Screenshot: `night_watch --mode dayshift --screenshot PATH --week N --frames N` (add `--shop` for the shop). Still missing: the Custom Night from the hub, and the window's own picture (Ysolde is a figure at the glass).
 
 ### descent (The Descent)
 
@@ -81,7 +105,7 @@ Hub order in Godot is 1 Classic, 2 Masked Hours, 3 Dead Air, 4 Bedtime, 5 The Fa
 - Hunter: Elise only. Presets: Slow Ride (5), Service Run (10), Express (15), Free Fall (20).
 - Scoring: stage clears and the 10 points per level.
 - Assets and sounds: `descent_data.gd`, `descent_world.gd`, the shared Sound autoload and the HUD call box and end card.
-- Rust cannot port yet: the three puzzles, the closeness bar, the elevator view and the Elise walk. The call script `calls/descent.json` exists.
+- Rust: playable. The driver is `modes_play/descent.rs` (menu, car and window with Elise, the service panel, HUD, call box, result). Controls: keys 1 to 6 or a click press a wire button or a signal pad, arrows and ENTER (or a click) turn pipe pieces, SPACE (or the door button) holds the door. The menu lists Descents 1 to 5 (each opens once the one before is cleared) and the four presets from `presets` in `data/rules/descent.json` (Descent 5 at the preset's Elise level, no call, opens once Descent 5 is cleared). A win saves `cleared_descent` (campaign) or the best and star (preset). Labels, presets and the menu levels are in the rules file. The bot in the driver's tests solves the puzzles to check each run reaches an end. `--descent-shot PATH [--descent N] [--solve K] [--frames F]` writes a picture (`--descent 0` for the menu). Art: the Godot project has no `classic.png` or `classic-fg.png`, so the car is drawn with primitives.
 
 ### masked_hours (Masked Hours)
 
@@ -90,14 +114,14 @@ Hub order in Godot is 1 Classic, 2 Masked Hours, 3 Dead Air, 4 Bedtime, 5 The Fa
 - Hunters: Verrine, Thessine, Glyra, Nyxie, Umbriel, Haelith, Ilyra (cast). The events include `room`, `hall`, `step`, `leave`, `rush`, `flashHit`, `duct`, `vent`, `fetch`, `creep` and `dark`.
 - Scoring: the shared 10 points per level and the rating table.
 - Assets and sounds: `night_watch_mask.tscn`, `night_watch_player.tscn`, the music box cue and the vent cues. The validator `validate_night_watch_mask.gd` and `tests/fixtures/gen_night_watch_mask_golden.mjs` give golden output.
-- Rust cannot port yet: the mask, monitor, music box, flashlight, the hall and duct hunters, and the rules in `mask_logic.gd`. Rust already has `mask/vent_lights.rs` (299 lines), which covers the vent-light part.
+- Rust: rules and scoring are ported in `modes/masked_hours.rs`, and the vent lights in `mask/vent_lights.rs`. The driver in `modes_play/masked_hours.rs` puts it on screen: hold S for the mask (not with the monitor up), F the flashlight, L the desk lamp, R the music box, Q and E the vent lights, SPACE or W the monitor, arrows and 1-8 the cameras. Its tunables are in `data/rules/masked_hours.json` (including the `ui` block). A win is saved; a loss retries the night. Open: the vent lights work from the desk, since this wing has no panels to clear.
 
 ### dead_air (Dead Air)
 
 - Godot: `lure/lure_game.gd` is the broadcast booth with two door buttons (vent seals), two light buttons (heater and fan) and a monitor onto the radio station. `lure_logic.gd` holds the rules. The hall walk for Xivvy uses `lure_paths.gd` and `NightWatchWalker`. `lure_world.gd` and `lure_map.gd` give the layout.
 - Rules: one real hunter, Xivvy, crawls the building toward the office vents from night 2. Three phantoms (Ferryn, Briselle, Mavrine) knock out systems. Climate is driven by Solyth and Wynelle. Below 60 F Wynelle freezes the office, and from 95 F Solyth cooks it. The heater and fan fix the number but strain the air. Keys in the monitor: 1 to 8 for cameras, L to lure Xivvy to the room on screen, Q, W, E, R and T to reboot audio, cameras, vents, heater and fan, N to mute Zellia. One more hunter each night, never more than five at once. Presets: Maintenance Only, The Real One, Climate Control, All Twenty.
 - Assets and sounds: `lure_sounds.gd` (`LureSounds.moved`, `at_vent`), `night_watch_lure.tscn`, the heater and fan cues, and the shared player.
-- Rust cannot port yet: the lure monitor, reboots, climate model, phantoms, the Xivvy walk and the vent seals. The call script `calls/lure.json` exists.
+- Rust: rules in `modes/dead_air.rs`; the driver `modes_play/dead_air.rs` is playable. Booth: A and D seal the vents, H heater, G fan (art from `assets/offices/lure.png` with `lure-fg.png`, vent quads from `data/rules/dead_air.json` `art`). Monitor (SPACE): 1-8 cameras, L lure, Q, W, E, R, T reboot audio, cameras, vents, heater, fan; M or N mutes the call. Every label and number is in `data/rules/dead_air.json` (`play`). Still missing: custom night from the hub, and the Xivvy walk on the booth floor (she is only shown on the map).
 
 ### facility (The Facility)
 
@@ -105,7 +129,7 @@ Hub order in Godot is 1 Classic, 2 Masked Hours, 3 Dead Air, 4 Bedtime, 5 The Fa
 - Rules: finish the night's task list in order at each room's station. Moving loudly makes noise, crawling is slow and quiet, and each action is a little noisy. Walking through a door takes 1.8 s (3.6 s crawling, hold C), and the rules count it as the 2D `move`. Hold F for the beacon. Hold H to hide under the desk in Control. Hold E on the lift's call button. Presets: Quiet Gallery, Behind the Steel, Lift Schedule, All Twenty.
 - Hunters: Opalie (gallery, closes in on noise), Porcelle (workshop and auditorium, closes in while dark, held back by the beacon), Quenelle (rides the lift and opens at Control).
 - Assets and sounds: `story_sounds.gd` (`StorySounds.hunter_close`, `hunter_back`), `night_watch_story.tscn`, and the shared player.
-- Rust cannot port yet: the five rooms, the task list, the noise model, the beacon, the lift, the three hunters and the walk-through door timing. The call script `calls/story.json` exists.
+- Rust: the rules are in `modes/facility.rs` and the playable driver is `modes_play/facility.rs` (hub id `story`, in `shell::PLAYABLE`). Controls: A, D and W walk the left, right and lift doors (C held to crawl), F holds the beacon, H hides in Control, E holds the lift call button. Digits (the code) and 1 to 9 (dials, parts, breakers) press the station, and SPACE turns the crank; a mouse works on every button. The note on the station shows the code, the dial marks and the breaker order, and the list on the left ticks off each task. The room pictures are Godot's `story` art (`assets/offices/story*.png`). A signed-off night is saved under `story` with 10 points per task. Test: `cargo test --bin night_watch facility` (the bot signs off all six nights in god mode, and a shift without god mode always ends). Screenshot: `night_watch --mode facility --screenshot PATH --night N --frames N`. Still missing: the Custom Night from the hub, the walk-through sounds, and the lift's own room picture for Quenelle's ride.
 
 ### open_air (Open Air)
 
@@ -114,26 +138,36 @@ Hub order in Godot is 1 Classic, 2 Masked Hours, 3 Dead Air, 4 Bedtime, 5 The Fa
 - Hunters: Ysolde, Verrine, Wynelle, Quenelle (cast).
 - Scoring: the watch win and the shared 10 points per level, with the last win recorded.
 - Assets and sounds: `openair_data.gd`, the shared art and the Sound autoload. The Godot check is `validate_night_watch_extra.gd`.
-- Rust cannot port yet: the three watches, the torch, the lantern oil, the hatch and winches, the campfire, and the Custom Night chain. The call script `calls/extra.json` exists. The Rust id is `extra`, the TODO name is Open Air.
+- Rust: rules and scoring are ported in the mode file. Still missing: the picture and the controls (the three watches, the torch, the lantern oil, the hatch and winches, the campfire, and the Custom Night chain).
 
 ### mixed_shift (Mixed Shift)
 
 - Godot: `mixed/mixed_game.gd` is the shift scene, a transit hub (`mixed_map.gd`) around the security room with three permanent vents and a vent run above the building (CAM 9). `mixed_logic.gd` (1283 lines) holds the threat roster and the pacing director. `mixed_skin.gd` covers the look. Hunters walk on `NightWatchPaths` and `NightWatchWalker`.
 - Rules: three to seven threats are drawn each night from a pool of eight. Each has a tell before it can kill and an answer (`a` and `beat`). Threat types are counter, watched, monitor, path, vent and winder. The director paces the beats, spikes and moods. There are no captions, only sounds, lights, figures and pulsing camera buttons. The five shifts are QUIET, STEADY, RESTLESS, CHAOS (random events) and ENDLESS (no 6 AM, best hour saved by `NightWatchSave.record_best`). Controls: Z and X toggle doors, V, B and N hold to seal the left, top and right vents, G, Y and H tap the vent light, R winds the music box, U is the monitor, 1 to 9 pick cameras.
 - Assets and sounds: `night_watch_player.tscn`, `night_watch_art.gd`, the shared cue family, and the vent and door cues. The golden fixture is `tests/fixtures/gen_night_watch_mixed_golden.mjs`.
-- Rust cannot port yet: nothing beyond the `modes/mixed.rs` stub. The threat roster, the director, the five shifts, the transit map, the call table and the hub entry are all missing. The Rust hub lists eight modes and omits this one.
+- Rust: rules in `modes/mixed_shift.rs`; the driver is `modes_play/mixed_shift.rs` (hub id `mixed`, in `shell::PLAYABLE`). The shift select lists the five shifts from `shifts` in `data/rules/mixed_shift.json`, ENDLESS last. Night: Z and X shut the left and right doors (a door pops open when its hold runs out), V, N and B hold the left, right and top vent seals, G, H and Y tap the vent lights, R winds the box, U raises the monitor, and 1 to 9 or the arrows pick a camera. The picture is `art/mixed` (copied from the KyttusLab offices folder: `mixed.png` with `mixed-fg.png` over it, and the vent overlays). The call is the `call` block of the rules file: two lines, marked as pitch until KT approves them, since Godot's mixed shift has no call. Tests: `cargo test --bin night_watch mixed` (every shift reaches an end under a scripted presser and a reactive bot, and the call plays). Screenshot: `night_watch --mixed-screenshot PATH --shift N --frames N [--cam N]`. Still missing: the Custom Night, sound for the tells, and a scripted win. The bot loses every shift it plays, so the win and save path is not yet run live.
 
-## Shared framework work
+## Night Select (`select.rs`)
 
-These items serve every mode and sit in `src/bin/night_watch` (framework, data, save, shell). They do not belong to any one mode.
+Choosing a night type on the hub opens its night list: Classic, Masked Hours, Dead Air, Bedtime, The Facility, The Descent, Salvage Run and Mixed Shift. Open Air keeps its own watch select.
 
-- Mode table and registry: the Godot `night_watch_modes_data.gd` and `night_watch_mode_registry.gd` read `data/night_watch/modes/`. Rust needs the same nine entries in `shell.rs` and a mode trait (the Godot `night_watch_mode.gd` base).
-- Calls: Rust already loads `calls/*.json` through `data.rs`, which lacks `mixed.json`.
-- RNG: `framework.rs` has the Mulberry and stream code that matches the 2D game. Each mode port must use the same draw order to stay in step with the 2D and Godot goldens.
-- Scoring: `POINTS_PER_LEVEL` 10 and the rating table in `night_watch_modes_data.gd` are shared. The per-mode scoring is in each `*_logic.gd`.
-- Assets: the nw_ cue family, `night_watch_art.gd` and `night_watch_hunter_scale.gd` are the shared art and scale path. The Godot `sounds/` and `scares/` folders are empty in this checkout, so the audio source for the cues is the Godot Sound autoload and must be confirmed before porting.
-- Save: `save.rs` already keeps `cleared_<mode>` and `NIGHTS`. Mixed Shift needs the endless best-hour record.
+- Nights: the count comes from each mode's rules JSON, through the path in `data/select.json` (`nights`). Names come from the rules too where they have them (Descent's levels, Mixed Shift's shifts).
+- Locked and cleared: night 1 is open, and a night opens once the one before it is cleared (Classic keeps its own unlock). The best score per night is `night_best_<mode>` in the progress file, written when a campaign night is won (Bedtime does not write one yet).
+- Custom Night: the C key or the last row. Its sliders, max and points per level are in `data/select.json`; each slider clamps to `max`, and the score is the sum times `points_per_level`. It unlocks once `unlock_night` is cleared. The slider values are saved per mode (`custom_<mode>`). A Custom Night writes no clear and no score.
+- Custom Night exists for Classic (sliders on night 7), Masked Hours (night 6), Dead Air (night 5), Bedtime (night 5) and The Facility (night 6). Not wired yet: Salvage Run and Open Air (their Godot sliders exist, the Rust drivers do not take them), The Descent (its Godot slider is Elise, the Rust driver starts from presets) and Mixed Shift (no sliders).
+- Screenshot: `night_watch --select-shot PATH --select-mode classic [--custom]`. Tests: `cargo test --bin night_watch select::`.
+
+## Shared framework
+
+These items serve every mode and sit in `src/bin/night_watch` (framework, data, save, shell).
+
+- Hub and modes: `shell.rs` lists the nine entries; `modes/mod.rs` holds `Session`, one variant per mode, started by hub id.
+- Calls: `data.rs` loads `calls/*.json` (eight files; Mixed Shift's call sits in its rules file). The call box is `typewriter.rs` plus `calls_view.rs` and `blip.rs`. In Classic's play screen the call box sits under the HUD bar, above the monitor panels.
+- RNG: `framework.rs` has the Mulberry and stream code that matches the 2D game. Each mode keeps the same draw order to stay in step with the 2D and Godot goldens.
+- Scoring: the 10 points per level and the rating table are shared; per-mode scoring is in each rules file.
+- Assets: the Godot `sounds/` and `scares/` folders are empty in this checkout, so the audio source for the cues is the Godot Sound autoload and must be confirmed before the shell plays them.
+- Save: `save.rs` keeps `cleared_<mode>` and `NIGHTS`. Mixed Shift saves a cleared shift as `cleared_mixed_shift` and its best points under `mixed_shift`; the ENDLESS best hour is kept under `mixed_shift_endless`.
 
 ## Verification
 
-This page is documentation only. No Rust code changed, so no build was run. The Godot line counts and mode values were taken from the files listed above on 2026-11-03.
+`cargo test --locked --bin night_watch` runs the mode and data tests (113 at this writing). `night_watch --screenshot PATH --call-chars 20` renders a Classic frame with a call open (add `--cam 1` for the monitor view). The Godot line counts and mode values were taken from the files listed above on 2026-11-03.

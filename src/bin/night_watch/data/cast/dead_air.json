@@ -1,0 +1,48 @@
+{
+	"mode": "dead_air",
+	"version": 1,
+	"order": ["wynelle", "xivvy", "mavrine", "briselle", "solyth", "ferryn"],
+	"hunters": {
+		"xivvy": { "name": "Xivvy", "levels": [0, 3, 5, 7, 9, 11] },
+		"solyth": { "name": "Solyth", "levels": [0, 0, 0, 0, 0, 12] },
+		"wynelle": { "name": "Wynelle", "levels": [0, 0, 0, 5, 8, 13] },
+		"ferryn": { "name": "Ferryn", "levels": [2, 3, 5, 7, 9, 0] },
+		"briselle": { "name": "Briselle", "levels": [0, 0, 3, 5, 8, 10] },
+		"mavrine": { "name": "The air", "levels": [0, 0, 0, 0, 3, 9] }
+	},
+	"phantoms": {
+		"ferryn": {
+			"system": "cams",
+			"extras": [
+				[],
+				[],
+				[{ "system": "audio", "chance": 0.3 }],
+				[{ "system": "audio", "chance": 0.3 }, { "system": "vent", "chance": 0.1 }],
+				[{ "system": "audio", "chance": 0.4 }, { "system": "vent", "chance": 0.1 }],
+				[{ "system": "audio", "chance": 0.45 }, { "system": "vent", "chance": 0.35 }]
+			]
+		},
+		"briselle": {
+			"system": "audio",
+			"extras": [
+				[],
+				[],
+				[],
+				[{ "system": "cams", "chance": 0.35 }],
+				[{ "system": "cams", "chance": 0.35 }],
+				[{ "system": "cams", "chance": 0.45 }, { "system": "vent", "chance": 0.3 }]
+			]
+		},
+		"mavrine": {
+			"system": "vent",
+			"extras": [
+				[],
+				[],
+				[],
+				[],
+				[{ "system": "audio", "chance": 0.4 }],
+				[{ "system": "audio", "chance": 0.45 }, { "system": "cams", "chance": 0.4 }]
+			]
+		}
+	}
+}

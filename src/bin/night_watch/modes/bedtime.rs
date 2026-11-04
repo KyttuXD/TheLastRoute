@@ -1,5 +1,5 @@
-//! Bedtime night type (Godot `game/night_watch/bedroom`, rules from `bedroom_logic.gd`). Pure rules and scoring: the
-//! pillow view, the closet, hall and bed set pieces, the look controls and the breathing cues belong to the shell.
+//! Bedtime night type (Godot `game/night_watch/bedroom`, rules from `bedroom_logic.gd`). Pure rules and scoring. The
+//! picture, the controls and the call box are the driver in `modes_play/bedtime.rs`, which reads this state.
 //!
 //! You are in bed with one free hand. Three things come for you, each from its own side:
 //!   Loxelle  breathes behind the closet door. Hold the closet door shut until she leaves.
@@ -8,44 +8,153 @@
 //! Holding the door uses both hands, so no light while holding, and only one light at a time. The battery never
 //! recharges. Sitting still for a while makes the house restless.
 
+use crate::data::{int, list, num, rules};
 use crate::framework::{chance, spread_ms, tempo, NightWatchStream};
+use serde_json::Value;
 
-/// The classic rules' night length and tuned night (`night_ms`, `tuned_night_ms`). Shared with the other shifts.
-const NIGHT_MS: f64 = 270_000.0;
-const TUNED_NIGHT_MS: f64 = 480_000.0;
-const HOUR_MS: f64 = NIGHT_MS / 6.0;
-const TIME_SCALE: f64 = NIGHT_MS / TUNED_NIGHT_MS;
-const FLASH_SECONDS: [f64; 6] = [120.0, 105.0, 90.0, 75.0, 60.0, 50.0];
+/// Every tunable of the mode, read once from `data/rules/bedtime.json` (the 2D numbers; that file documents the keys).
+#[derive(Clone, Debug)]
+struct Rules {
+    night_ms: f64,
+    hours: i32,
+    time_scale: f64,
+    flash_seconds: Vec<f64>,
+    max_ai: i32,
+    points_per_level: i32,
+    custom_battery_night: u32,
+    battery_full: f64,
+    creep_full: f64,
+    #[cfg(test)]
+    /// [minimum share of the top score, rating], best first.
+    ratings: Vec<(f64, String)>,
+    var_wait_spread: f64,
+    var_door_tempo: f64,
+    var_haelith_tempo: f64,
+    var_swap_first: f64,
+    wait: WaitRule,
+    /// [first hour, bump], latest hour first.
+    level_bumps: Vec<(i32, i32)>,
+    stage_jitter: f64,
+    hold_need_ms: f64,
+    light_need_ms: f64,
+    need_decay: f64,
+    afk_ms: f64,
+    afk_bonus: i32,
+    afk_speed: f64,
+    keen_cap: i32,
+    bed_gain: f64,
+    bed_gain_per_level: f64,
+    bed_lit_drain_per_sec: f64,
+    nights: Vec<NightRow>,
+    custom_row: NightRow,
+}
 
-const MAX_AI: i32 = 20;
-const POINTS_PER_LEVEL: i32 = 10;
+/// The wait between moves: a window that slides down with the hunter's level.
+#[derive(Clone, Copy, Debug)]
+struct WaitRule {
+    base_ms: f64,
+    per_level_ms: f64,
+    floor_ms: f64,
+    window_ms: f64,
+}
+
+/// One night's pace. Doors use `first` and `rest` (Haelith has no door timing, so her slots are 0).
+#[derive(Clone, Copy, Debug)]
+struct NightRow {
+    ai: [i32; 3],
+    breath_ms: f64,
+    near_ms: f64,
+    first: [f64; 3],
+    rest: [f64; 3],
+}
+
+fn night_row_of(v: &Value) -> NightRow {
+    let at = |key: &str, i: usize| num(v, &format!("{key}.{i}"));
+    NightRow {
+        ai: [0, 1, 2].map(|i| int(v, &format!("ai.{i}")) as i32),
+        breath_ms: num(v, "breath_ms"),
+        near_ms: num(v, "near_ms"),
+        first: [at("first_ms", 0), at("first_ms", 1), 0.0],
+        rest: [at("rest_ms", 0), at("rest_ms", 1), 0.0],
+    }
+}
+
+impl Rules {
+    fn load() -> Self {
+        let r = rules("bedtime");
+        let night_ms = num(r, "night_ms");
+        Self {
+            night_ms,
+            hours: int(r, "hours") as i32,
+            time_scale: night_ms / num(r, "tuned_night_ms"),
+            flash_seconds: list(r, "flash_seconds").iter().filter_map(Value::as_f64).collect(),
+            max_ai: int(r, "max_ai") as i32,
+            points_per_level: int(r, "points_per_level") as i32,
+            custom_battery_night: int(r, "custom_battery_night") as u32,
+            battery_full: num(r, "battery_full"),
+            creep_full: num(r, "creep_full"),
+            #[cfg(test)]
+            ratings: (0..list(r, "ratings").len())
+                .map(|i| (num(r, &format!("ratings.{i}.min_share")), crate::data::text(r, &format!("ratings.{i}.name")).to_string()))
+                .collect(),
+            var_wait_spread: num(r, "variety.wait_spread"),
+            var_door_tempo: num(r, "variety.door_tempo"),
+            var_haelith_tempo: num(r, "variety.haelith_tempo"),
+            var_swap_first: num(r, "variety.swap_first"),
+            wait: WaitRule {
+                base_ms: num(r, "wait.base_ms"),
+                per_level_ms: num(r, "wait.per_level_ms"),
+                floor_ms: num(r, "wait.floor_ms"),
+                window_ms: num(r, "wait.window_ms"),
+            },
+            level_bumps: (0..list(r, "level_bumps").len())
+                .map(|i| (int(r, &format!("level_bumps.{i}.from_hour")) as i32, int(r, &format!("level_bumps.{i}.bump")) as i32))
+                .collect(),
+            stage_jitter: num(r, "stage_jitter"),
+            hold_need_ms: num(r, "hold_need_ms"),
+            light_need_ms: num(r, "light_need_ms"),
+            need_decay: num(r, "need_decay"),
+            afk_ms: num(r, "afk_ms"),
+            afk_bonus: int(r, "afk_bonus") as i32,
+            afk_speed: num(r, "afk_speed"),
+            keen_cap: int(r, "keen_cap") as i32,
+            bed_gain: num(r, "bed_gain"),
+            bed_gain_per_level: num(r, "bed_gain_per_level"),
+            bed_lit_drain_per_sec: num(r, "bed_lit_drain_per_sec"),
+            nights: list(r, "nights").iter().map(night_row_of).collect(),
+            custom_row: night_row_of(&r["custom_night"]),
+        }
+    }
+
+    fn hour_index(&self, elapsed_ms: f64) -> i32 {
+        ((elapsed_ms / (self.night_ms / f64::from(self.hours))).floor() as i32).clamp(0, self.hours - 1)
+    }
+
+    /// The hunters step up at 3 AM and 4 AM. A hunter at level 0 never wakes.
+    fn effective_level(&self, base: i32, hour: i32) -> i32 {
+        if base <= 0 {
+            return 0;
+        }
+        let bump = self.level_bumps.iter().find(|(from, _)| hour >= *from).map_or(0, |(_, bump)| *bump);
+        base + bump
+    }
+
+    fn flash_seconds(&self, night_index: usize) -> f64 {
+        (self.flash_seconds[night_index] * self.time_scale).round()
+    }
+}
+
+/// How many campaign nights the mode has (its rules file lists one row per night).
+pub fn night_count() -> u32 {
+    Rules::load().nights.len() as u32
+}
+
+#[cfg(test)]
 /// The most a hunter can be pushed to on a Custom Night: the three sliders at full.
-pub const CUSTOM_MAX_SCORE: i32 = 3 * MAX_AI * POINTS_PER_LEVEL;
-/// [minimum share of the top score, rating], best first.
-const RATINGS: [(f64, &str); 6] = [
-    (1.0, "Unbeatable!"),
-    (0.8, "Perfect!"),
-    (0.6, "Stupendous!"),
-    (0.4, "Amazing!"),
-    (0.2, "Fantastic!"),
-    (0.0, "Great Job!"),
-];
-
-const VAR_WAIT_SPREAD: f64 = 0.25;
-const VAR_DOOR_TEMPO: f64 = 0.1;
-const VAR_HAELITH_TEMPO: f64 = 0.2;
-const VAR_SWAP_FIRST: f64 = 0.3;
-
-const STAGE_JITTER: f64 = 0.4;
-const HOLD_NEED_MS: f64 = 700.0;
-const LIGHT_NEED_MS: f64 = 600.0;
-const AFK_MS: f64 = 14_000.0;
-const AFK_BONUS: i32 = 4;
-const AFK_SPEED: f64 = 1.5;
-const KEEN_CAP: i32 = 20;
-const BED_GAIN: f64 = 8.0;
-const BED_GAIN_PER_LEVEL: f64 = 0.9;
-const BED_LIT_DRAIN_PER_SEC: f64 = 35.0;
+pub fn custom_max_score() -> i32 {
+    let r = Rules::load();
+    3 * r.max_ai * r.points_per_level
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hunter {
@@ -59,38 +168,6 @@ impl Hunter {
         self as usize
     }
 }
-
-/// One night's pace. Doors use `first` and `rest` (Haelith has no door timing, so her slots are 0).
-#[derive(Clone, Copy, Debug)]
-struct NightRow {
-    ai: [i32; 3],
-    breath_ms: f64,
-    near_ms: f64,
-    first: [f64; 3],
-    rest: [f64; 3],
-}
-
-const fn row(ai: [i32; 3], breath_ms: f64, near_ms: f64, javelle_first: f64, loxelle_rest: f64, javelle_rest: f64) -> NightRow {
-    NightRow {
-        ai,
-        breath_ms,
-        near_ms,
-        first: [3000.0, javelle_first, 0.0],
-        rest: [loxelle_rest, javelle_rest, 0.0],
-    }
-}
-
-const NIGHTS: [NightRow; 6] = [
-    row([3, 0, 0], 3200.0, 4200.0, 3000.0, 7000.0, 7000.0),
-    row([7, 7, 0], 2560.0, 3360.0, 4500.0, 5000.0, 5000.0),
-    row([9, 9, 5], 2560.0, 3360.0, 4000.0, 5000.0, 5000.0),
-    row([16, 11, 7], 2560.0, 3360.0, 3000.0, 2500.0, 5000.0),
-    row([18, 12, 9], 2560.0, 3360.0, 3000.0, 2000.0, 5000.0),
-    row([20, 12, 9], 2560.0, 3360.0, 3000.0, 1500.0, 5000.0),
-];
-
-/// Custom Night keeps Night 1's timings.
-const CUSTOM_ROW: NightRow = row([0, 0, 0], 3200.0, 4200.0, 3000.0, 7000.0, 7000.0);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Light {
@@ -140,18 +217,22 @@ impl BedtimeOptions {
 
     /// A Custom Night uses Night 5's battery, as in the 2D menu.
     pub fn custom(sliders: [i32; 3], seed: i64) -> Self {
-        Self { night: 5, seed, custom: Some(sliders), infinite_battery: false, var_rng: None }
+        Self { night: Rules::load().custom_battery_night, seed, custom: Some(sliders), infinite_battery: false, var_rng: None }
     }
 }
 
 /// Points for a Custom Night's sliders. A campaign night scores nothing here; the clear is saved by the shell.
 pub fn custom_score(sliders: [i32; 3]) -> i32 {
-    sliders.into_iter().map(|s| s.clamp(0, MAX_AI)).sum::<i32>() * POINTS_PER_LEVEL
+    let r = Rules::load();
+    sliders.into_iter().map(|s| s.clamp(0, r.max_ai)).sum::<i32>() * r.points_per_level
 }
 
-pub fn rating_of(score: i32, max_score: i32) -> &'static str {
+#[cfg(test)]
+pub fn rating_of(score: i32, max_score: i32) -> String {
     let share = if max_score > 0 { f64::from(score) / f64::from(max_score) } else { 0.0 };
-    RATINGS.iter().find(|(min, _)| share >= *min).map_or("Great Job!", |(_, name)| *name)
+    let r = Rules::load();
+    let found = r.ratings.iter().find(|(min, _)| share >= *min).or(r.ratings.last());
+    found.map_or("", |(_, name)| name.as_str()).to_string()
 }
 
 /// Wait between moves: a random time from a three-second window that slides down with the hunter's level.
@@ -161,26 +242,26 @@ struct Pacer {
     next: Option<f64>,
 }
 
-fn draw_wait(rng: &mut NightWatchStream, level: i32) -> f64 {
-    let lo = (13_000.0 - f64::from(level) * 500.0).max(2500.0);
-    lo + rng.next() * 3000.0
+fn draw_wait(rng: &mut NightWatchStream, level: i32, wait: &WaitRule) -> f64 {
+    let lo = (wait.base_ms - f64::from(level) * wait.per_level_ms).max(wait.floor_ms);
+    lo + rng.next() * wait.window_ms
 }
 
 impl Pacer {
     /// Advances by `dt_ms`; true when the hunter is due to move.
-    fn step(&mut self, rng: &mut NightWatchStream, dt_ms: f64, level: i32) -> bool {
+    fn step(&mut self, rng: &mut NightWatchStream, dt_ms: f64, level: i32, rule: &WaitRule) -> bool {
         if level <= 0 {
             self.reset();
             return false;
         }
-        let wait = self.next.unwrap_or_else(|| draw_wait(rng, level));
+        let wait = self.next.unwrap_or_else(|| draw_wait(rng, level, rule));
         self.t += dt_ms;
         if self.t < wait {
             self.next = Some(wait);
             return false;
         }
         self.t = 0.0;
-        self.next = Some(draw_wait(rng, level));
+        self.next = Some(draw_wait(rng, level, rule));
         true
     }
 
@@ -191,7 +272,7 @@ impl Pacer {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DoorState {
+pub enum DoorState {
     Away,
     Breath,
     Near,
@@ -209,7 +290,8 @@ struct Door {
 }
 
 /// One frame's inputs for a door hunter.
-struct DoorTick {
+struct DoorTick<'a> {
+    rules: &'a Rules,
     dt_ms: f64,
     speed: f64,
     hunter_speed: f64,
@@ -223,8 +305,8 @@ struct DoorTick {
     near_ms: f64,
 }
 
-fn stage_jitter(rng: &mut NightWatchStream) -> f64 {
-    1.0 - STAGE_JITTER / 2.0 + rng.next() * STAGE_JITTER
+fn stage_jitter(rng: &mut NightWatchStream, spread: f64) -> f64 {
+    1.0 - spread / 2.0 + rng.next() * spread
 }
 
 impl Door {
@@ -245,14 +327,14 @@ impl Door {
             self.cool = (self.cool - tick.dt_ms).max(0.0);
             let mut keen = tick.level;
             if keen > 0 && tick.restless {
-                keen = (keen + AFK_BONUS).min(KEEN_CAP);
+                keen = (keen + tick.rules.afk_bonus).min(tick.rules.keen_cap);
             }
-            if self.cool <= 0.0 && self.pacer.step(rng, tick.dt_ms * self.tempo * tick.hunter_speed, keen) {
+            if self.cool <= 0.0 && self.pacer.step(rng, tick.dt_ms * self.tempo * tick.hunter_speed, keen, &tick.rules.wait) {
                 self.state = DoorState::Breath;
                 self.t = 0.0;
                 self.need = 0.0;
-                self.jitter = stage_jitter(rng);
-                self.tempo = tempo(vr, VAR_DOOR_TEMPO);
+                self.jitter = stage_jitter(rng, tick.rules.stage_jitter);
+                self.tempo = tempo(vr, tick.rules.var_door_tempo);
                 ev.push(BedtimeEvent::Breath(who));
             }
             return false;
@@ -260,17 +342,17 @@ impl Door {
         if !tick.freezes_t {
             self.t += tick.dt_ms * tick.speed;
         }
-        self.need = if tick.answered { self.need + tick.dt_ms } else { (self.need - tick.dt_ms * 0.5).max(0.0) };
+        self.need = if tick.answered { self.need + tick.dt_ms } else { (self.need - tick.dt_ms * tick.rules.need_decay).max(0.0) };
         if self.need >= tick.need_ms {
             self.state = DoorState::Away;
-            self.cool = spread_ms(tick.rest_ms, rng, VAR_WAIT_SPREAD);
+            self.cool = spread_ms(tick.rest_ms, rng, tick.rules.var_wait_spread);
             self.pacer.reset();
             self.need = 0.0;
             ev.push(BedtimeEvent::Leave(who));
         } else if self.state == DoorState::Breath && self.t >= tick.breath_ms * self.jitter {
             self.state = DoorState::Near;
             self.t = 0.0;
-            self.jitter = stage_jitter(rng);
+            self.jitter = stage_jitter(rng, tick.rules.stage_jitter);
             ev.push(BedtimeEvent::Near(who));
         } else if self.state == DoorState::Near && self.t >= tick.near_ms * self.jitter {
             return true;
@@ -286,25 +368,6 @@ struct Creep {
     tempo: f64,
 }
 
-fn hour_index(elapsed_ms: f64) -> i32 {
-    ((elapsed_ms / HOUR_MS).floor() as i32).clamp(0, 5)
-}
-
-/// The hunters step up at 3 AM and 4 AM. A hunter at level 0 never wakes.
-fn effective_level(base: i32, hour: i32) -> i32 {
-    if base <= 0 {
-        return 0;
-    }
-    let bump = if hour >= 4 {
-        2
-    } else if hour >= 3 {
-        1
-    } else {
-        0
-    };
-    base + bump
-}
-
 fn base_level(levels: Option<[i32; 3]>, row: &NightRow, who: Hunter) -> i32 {
     if let Some(levels) = levels {
         let v = levels[who.index()];
@@ -315,11 +378,8 @@ fn base_level(levels: Option<[i32; 3]>, row: &NightRow, who: Hunter) -> i32 {
     row.ai[who.index()]
 }
 
-fn flash_seconds(night_index: usize) -> f64 {
-    (FLASH_SECONDS[night_index] * TIME_SCALE).round()
-}
-
 pub struct Bedtime {
+    rules: Rules,
     row: NightRow,
     rng: NightWatchStream,
     vr: NightWatchStream,
@@ -344,13 +404,14 @@ pub struct Bedtime {
 
 impl Bedtime {
     pub fn new(opts: BedtimeOptions) -> Self {
-        let night_index = (opts.night.clamp(1, 6) - 1) as usize;
-        let row = if opts.custom.is_some() { CUSTOM_ROW } else { NIGHTS[night_index] };
+        let rules = Rules::load();
+        let night_index = (opts.night.clamp(1, rules.nights.len() as u32) - 1) as usize;
+        let row = if opts.custom.is_some() { rules.custom_row } else { rules.nights[night_index] };
         let levels = opts.custom;
         let mut rng = NightWatchStream::seeded(opts.seed);
         let mut vr = NightWatchStream::variety_of(&rng, opts.var_rng);
 
-        let swap_roll = chance(&mut vr, VAR_SWAP_FIRST);
+        let swap_roll = chance(&mut vr, rules.var_swap_first);
         let swapped = swap_roll
             && base_level(levels, &row, Hunter::Loxelle) > 0
             && base_level(levels, &row, Hunter::Javelle) > 0;
@@ -360,26 +421,29 @@ impl Bedtime {
             let source = if swapped { other } else { who };
             row.first[source.index()]
         };
-        let loxelle_cool = spread_ms(first_of(Hunter::Loxelle), &mut rng, VAR_WAIT_SPREAD);
-        let loxelle_tempo = tempo(&mut vr, VAR_DOOR_TEMPO);
-        let javelle_cool = spread_ms(first_of(Hunter::Javelle), &mut rng, VAR_WAIT_SPREAD);
-        let javelle_tempo = tempo(&mut vr, VAR_DOOR_TEMPO);
-        let creep_tempo = tempo(&mut vr, VAR_HAELITH_TEMPO);
+        let loxelle_cool = spread_ms(first_of(Hunter::Loxelle), &mut rng, rules.var_wait_spread);
+        let loxelle_tempo = tempo(&mut vr, rules.var_door_tempo);
+        let javelle_cool = spread_ms(first_of(Hunter::Javelle), &mut rng, rules.var_wait_spread);
+        let javelle_tempo = tempo(&mut vr, rules.var_door_tempo);
+        let creep_tempo = tempo(&mut vr, rules.var_haelith_tempo);
+        let flash_per_sec = rules.battery_full / rules.flash_seconds(night_index);
+        let battery = rules.battery_full;
 
         Self {
+            rules,
             row,
             rng,
             vr,
             levels,
             infinite_battery: opts.infinite_battery,
-            flash_per_sec: 100.0 / flash_seconds(night_index),
+            flash_per_sec,
             loxelle: Door::new(loxelle_cool, loxelle_tempo),
             javelle: Door::new(javelle_cool, javelle_tempo),
             creep: Creep { p: 0.0, pacer: Pacer::default(), tempo: creep_tempo },
             idle: 0.0,
             restless: false,
             elapsed: 0.0,
-            battery: 100.0,
+            battery,
             light: Light::Off,
             hold: false,
             over: None,
@@ -389,7 +453,47 @@ impl Bedtime {
     }
 
     pub fn level(&self, who: Hunter) -> i32 {
-        effective_level(base_level(self.levels, &self.row, who), hour_index(self.elapsed))
+        self.rules.effective_level(base_level(self.levels, &self.row, who), self.rules.hour_index(self.elapsed))
+    }
+
+    /// The clock hour: 0 at the start (12 AM), `hours` at the win (6 AM).
+    pub fn hour(&self) -> u32 {
+        let per_hour = self.rules.night_ms / f64::from(self.rules.hours);
+        ((self.elapsed / per_hour).floor().max(0.0) as u32).min(self.rules.hours as u32)
+    }
+
+    /// Where a hunter is in her approach. Haelith has no door, so she is always away from one.
+    pub fn door_state(&self, who: Hunter) -> DoorState {
+        match who {
+            Hunter::Loxelle => self.loxelle.state,
+            Hunter::Javelle => self.javelle.state,
+            Hunter::Haelith => DoorState::Away,
+        }
+    }
+
+    /// The share (0 to 1) of the hold or light a door hunter needs answered before she leaves.
+    pub fn answer_share(&self, who: Hunter) -> f64 {
+        let share = match who {
+            Hunter::Loxelle => self.loxelle.need / self.rules.hold_need_ms,
+            Hunter::Javelle => self.javelle.need / self.rules.light_need_ms,
+            Hunter::Haelith => 0.0,
+        };
+        share.clamp(0.0, 1.0)
+    }
+
+    /// How far Haelith has got toward the bed (0 to 1). She only moves while the room is dark.
+    pub fn creep_share(&self) -> f64 {
+        (self.creep.p / self.rules.creep_full).clamp(0.0, 1.0)
+    }
+
+    /// The battery left (0 to 1).
+    pub fn battery_share(&self) -> f64 {
+        (self.battery / self.rules.battery_full).clamp(0.0, 1.0)
+    }
+
+    /// True while the house has gone still long enough to make them restless.
+    pub fn restless(&self) -> bool {
+        self.restless
     }
 
     /// The Custom Night total, or None for a campaign night.
@@ -415,15 +519,16 @@ impl Bedtime {
         }
 
         self.idle = if input.hold || lit != Light::Off { 0.0 } else { self.idle + dt_ms };
-        let restless = self.idle >= AFK_MS && (self.level(Hunter::Loxelle) > 0 || self.level(Hunter::Javelle) > 0);
+        let restless = self.idle >= self.rules.afk_ms && (self.level(Hunter::Loxelle) > 0 || self.level(Hunter::Javelle) > 0);
         if restless && !self.restless {
             ev.push(BedtimeEvent::Restless);
         }
         self.restless = restless;
-        let speed = if restless { AFK_SPEED } else { 1.0 };
+        let speed = if restless { self.rules.afk_speed } else { 1.0 };
 
         for who in [Hunter::Loxelle, Hunter::Javelle] {
             let tick = DoorTick {
+                rules: &self.rules,
                 dt_ms,
                 speed,
                 hunter_speed: self.hunter_speed,
@@ -431,7 +536,7 @@ impl Bedtime {
                 restless,
                 answered: if who == Hunter::Loxelle { input.hold } else { lit == Light::Hall },
                 freezes_t: who == Hunter::Javelle && lit == Light::Hall,
-                need_ms: if who == Hunter::Loxelle { HOLD_NEED_MS } else { LIGHT_NEED_MS },
+                need_ms: if who == Hunter::Loxelle { self.rules.hold_need_ms } else { self.rules.light_need_ms },
                 rest_ms: self.row.rest[who.index()],
                 breath_ms: self.row.breath_ms,
                 near_ms: self.row.near_ms,
@@ -445,21 +550,21 @@ impl Bedtime {
 
         let creep_level = self.level(Hunter::Haelith);
         if lit == Light::Off
-            && self.creep.pacer.step(&mut self.rng, dt_ms * self.creep.tempo * self.hunter_speed, creep_level)
+            && self.creep.pacer.step(&mut self.rng, dt_ms * self.creep.tempo * self.hunter_speed, creep_level, &self.rules.wait)
         {
-            self.creep.p = (self.creep.p + BED_GAIN + BED_GAIN_PER_LEVEL * f64::from(creep_level)).min(100.0);
-            self.creep.tempo = tempo(&mut self.vr, VAR_HAELITH_TEMPO);
+            self.creep.p = (self.creep.p + self.rules.bed_gain + self.rules.bed_gain_per_level * f64::from(creep_level)).min(self.rules.creep_full);
+            self.creep.tempo = tempo(&mut self.vr, self.rules.var_haelith_tempo);
             ev.push(BedtimeEvent::Stir { p: self.creep.p });
         }
         if lit == Light::Bed {
-            self.creep.p = (self.creep.p - BED_LIT_DRAIN_PER_SEC * dt).max(0.0);
+            self.creep.p = (self.creep.p - self.rules.bed_lit_drain_per_sec * dt).max(0.0);
         }
-        if self.creep.p >= 100.0 {
+        if self.creep.p >= self.rules.creep_full {
             self.finish(Hunter::Haelith, &mut ev);
             return ev;
         }
 
-        if self.elapsed >= NIGHT_MS {
+        if self.elapsed >= self.rules.night_ms {
             self.over = Some(Outcome::Win);
             ev.push(BedtimeEvent::Win);
         }
@@ -503,5 +608,38 @@ mod tests {
         assert!(events.contains(&BedtimeEvent::Leave(Hunter::Loxelle)));
         assert_eq!(game.loxelle.state, DoorState::Away);
         assert_eq!(game.over, None);
+    }
+
+    #[test]
+    fn the_rules_file_carries_every_key_the_mode_reads() {
+        let r = Rules::load();
+        assert_eq!(r.nights.len(), 6);
+        assert_eq!(r.flash_seconds.len(), 6);
+        assert_eq!(r.ratings.len(), 6);
+        assert_eq!(r.level_bumps.len(), 2);
+    }
+
+    #[test]
+    fn loaded_values_equal_the_old_constants() {
+        let r = Rules::load();
+        assert_eq!(r.night_ms, 270_000.0);
+        assert!((r.time_scale - 270_000.0 / 480_000.0).abs() < 1e-12);
+        assert_eq!(r.flash_seconds(0), (120.0_f64 * 270_000.0 / 480_000.0).round());
+        assert_eq!((r.hold_need_ms, r.light_need_ms, r.afk_ms, r.afk_bonus, r.keen_cap), (700.0, 600.0, 14_000.0, 4, 20));
+        assert_eq!((r.bed_gain, r.bed_gain_per_level, r.bed_lit_drain_per_sec), (8.0, 0.9, 35.0));
+        assert_eq!(r.nights[3].ai, [16, 11, 7]);
+        assert_eq!(r.nights[5].rest, [1500.0, 5000.0, 0.0]);
+        assert_eq!(r.nights[1].first, [3000.0, 4500.0, 0.0]);
+        assert_eq!(r.custom_row.near_ms, 4200.0);
+        assert_eq!(r.effective_level(10, 2), 10);
+        assert_eq!(r.effective_level(10, 3), 11);
+        assert_eq!(r.effective_level(10, 5), 12);
+        assert_eq!(r.effective_level(0, 5), 0);
+        assert_eq!(custom_max_score(), 600);
+        assert_eq!(custom_score([20, 25, -3]), 400);
+        assert_eq!(BedtimeOptions::custom([1, 2, 3], 0).night, 5);
+        assert_eq!(rating_of(600, 600), "Unbeatable!");
+        assert_eq!(rating_of(0, 600), "Great Job!");
+        assert_eq!(rating_of(250, 600), "Amazing!");
     }
 }

@@ -13,6 +13,10 @@ const PANEL: Color = Color::new(0.024, 0.020, 0.016, 0.72);
 /// Seconds of wall time per in-game hour on the drifting title clock.
 const CLOCK_SECONDS_PER_HOUR: f32 = 12.0;
 
+/// The night types with a playable driver (a screen, controls and a save). The others are ticked with no input.
+/// `main.rs` starts each of these with its own driver instead of `modes::start`.
+pub const PLAYABLE: [&str; 7] = ["classic", "mask", "bedroom", "dayshift", "mixed", "story", "descent"];
+
 pub struct HubEntry {
     pub id: &'static str,
     pub label: &'static str,
@@ -230,6 +234,13 @@ mod tests {
         let mut shell = Shell::new();
         assert_eq!(shell.handle(ShellInput::Pick(QUIT_ROW)), ShellAction::Quit);
         assert_eq!(shell.handle(ShellInput::Back), ShellAction::Quit);
+    }
+
+    #[test]
+    fn every_playable_night_is_on_the_hub() {
+        for id in PLAYABLE {
+            assert!(HUB_ENTRIES.iter().any(|entry| entry.id == id), "{id} is not on the hub");
+        }
     }
 
     #[test]

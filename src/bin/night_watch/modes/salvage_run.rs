@@ -1,60 +1,183 @@
 //! Salvage Run, the day-shop and rack night of Night Watch (Godot `game/night_watch/dayshift`).
 //! The rules and scoring of `dayshift_logic.gd`, with the data of `dayshift_data.gd`, number for number. The shell
 //! builds a `SalvageRun` for the week, feeds `step` the doors, the lights and the rack each frame, and reads back the
-//! events. Art, sound, the shop screen and the window view are left to the shell.
+//! events. The screens, the controls and the save are the driver in `modes_play/salvage_run.rs`.
 
+use crate::data::{self, int, list, num, text};
 use crate::framework::{jitter, pick_index, spread_ms, NightWatchStream};
+use serde_json::Value;
+use std::sync::OnceLock;
 
-const NIGHT_MS: f64 = 270_000.0;
-const HOUR_MS: f64 = NIGHT_MS / 6.0;
-const TIME_SCALE: f64 = NIGHT_MS / 480_000.0;
+const KIND_IDS: [&str; 3] = ["scrap", "parts", "prize"];
+const UPGRADE_IDS: [&str; 5] = ["hinges", "cell", "soles", "gloves", "bench"];
+const HUNTER_IDS: [&str; 3] = ["ravelle", "ceryth", "ysolde"];
 
-const COMBO_LEVEL: i32 = 6;
-const COMBO_MS: f64 = 2200.0;
-const AT_DOOR_MS: f64 = 5200.0;
-const AT_DOOR_BY_WEEK_MS: [f64; 5] = [8000.0, 7000.0, 6200.0, 5600.0, 5200.0];
-const LEAVE_MS: f64 = 450.0;
-const START_DIST: i32 = 3;
-const LEAD_STEPS: i32 = 1;
-const REPELLED_DIST: i32 = 2;
+/// Every tunable of the mode, read once from `data/rules/salvage_run.json` (not on the hot path).
+struct Tuning {
+    night_ms: f64,
+    hour_ms: f64,
+    hours: i32,
+    combo_level: i32,
+    combo_ms: f64,
+    at_door_by_week_ms: [f64; 5],
+    at_door_ms: f64,
+    leave_ms: f64,
+    start_dist: i32,
+    lead_steps: i32,
+    repelled_dist: i32,
+    wait_base_ms: f64,
+    wait_per_level_ms: f64,
+    wait_min_ms: f64,
+    wait_spread_ms: f64,
+    noise_per_sec: f64,
+    noise_decay_per_sec: f64,
+    noise_max: f64,
+    loud: f64,
+    uneasy: f64,
+    loud_bonus: i32,
+    uneasy_bonus: i32,
+    bump_hour_1: i32,
+    bump_1: i32,
+    bump_hour_2: i32,
+    bump_2: i32,
+    power_start: f64,
+    power_base: f64,
+    power_per_device: f64,
+    out_attack_ms: f64,
+    slots: usize,
+    spawn_ms: f64,
+    spawn_spread: f64,
+    first_spawn_ms: f64,
+    first_spawn_spread: f64,
+    expire_ms: f64,
+    kind_value: [u32; 3],
+    kind_hold_ms: [f64; 3],
+    decks: Vec<DeckSpec>,
+    upgrade_cost: [u32; 5],
+    upgrade_name: [&'static str; 5],
+    hinges_factor: f64,
+    cell_factor: f64,
+    soles_levels: i32,
+    gloves_factor: f64,
+    bench_factor: f64,
+    window_gap_ms: f64,
+    window_gap_per_level_ms: f64,
+    window_gap_min_ms: f64,
+    window_gap_spread: f64,
+    knock_min_ms: f64,
+    knock_max_ms: f64,
+    present_ms: f64,
+    present_spread: f64,
+    expose_ms: f64,
+    carry_cap: u32,
+    budget: [u32; 5],
+    quota: [u32; 5],
+    max_level: i32,
+    week_levels: [[i32; 5]; 3],
+}
 
-const NOISE_PER_SEC: f64 = 14.0;
-const NOISE_DECAY_PER_SEC: f64 = 10.0;
-const NOISE_MAX: f64 = 100.0;
-const LOUD: f64 = 40.0;
-const UNEASY: f64 = 20.0;
+fn week_row<T>(r: &Value, path: &str, read: impl Fn(&Value) -> T) -> [T; 5] {
+    let rows = list(r, path);
+    assert!(rows.len() == 5, "night_watch data for mode 'salvage_run': '{path}' needs one entry per week");
+    std::array::from_fn(|i| read(&rows[i]))
+}
 
-const POWER_START: f64 = 100.0;
-const POWER_BASE: f64 = 0.10 / TIME_SCALE;
-const POWER_PER_DEVICE: f64 = 0.07 / TIME_SCALE;
-const OUT_ATTACK_MS: f64 = 9000.0;
+fn number(v: &Value) -> f64 {
+    v.as_f64().expect("night_watch data for mode 'salvage_run': a week entry is not a number")
+}
 
-const SLOTS: usize = 4;
-const SPAWN_MS: f64 = 11000.0;
-const SPAWN_SPREAD: f64 = 0.2;
-const FIRST_SPAWN_MS: f64 = 2000.0;
-const FIRST_SPAWN_SPREAD: f64 = 0.5;
-const EXPIRE_MS: f64 = 30000.0;
-const GLOVES_FACTOR: f64 = 0.7;
-const BENCH_FACTOR: f64 = 0.5;
-const HINGES_FACTOR: f64 = 0.5;
-const CELL_FACTOR: f64 = 0.75;
-const SOLES_LEVELS: i32 = 2;
+fn whole(v: &Value) -> u32 {
+    v.as_u64().and_then(|n| u32::try_from(n).ok()).expect("night_watch data for mode 'salvage_run': a week entry is not a whole number")
+}
 
-const WINDOW_GAP_MS: f64 = 42000.0;
-const WINDOW_GAP_PER_LEVEL_MS: f64 = 1800.0;
-const WINDOW_GAP_MIN_MS: f64 = 14000.0;
-const WINDOW_GAP_SPREAD: f64 = 0.3;
-const KNOCK_MIN_MS: f64 = 3000.0;
-const KNOCK_MAX_MS: f64 = 4200.0;
-const PRESENT_MS: f64 = 6000.0;
-const PRESENT_SPREAD: f64 = 0.2;
-const EXPOSE_MS: f64 = 1500.0;
+fn level_of(v: &Value) -> i32 {
+    v.as_i64().and_then(|n| i32::try_from(n).ok()).expect("night_watch data for mode 'salvage_run': a level is not an integer")
+}
 
-const CARRY_CAP: u32 = 40;
-const BUDGET: [u32; 5] = [90, 100, 110, 120, 130];
-const QUOTA: [u32; 5] = [140, 210, 280, 340, 380];
-const MAX_LEVEL: i32 = 20;
+impl Tuning {
+    fn load() -> Tuning {
+        let r = data::rules("salvage_run");
+        let night_ms = num(r, "night_ms");
+        let hours = int(r, "hours") as i32;
+        // Power was tuned for a longer night (Classic's eight minutes), so the draw is scaled to this one.
+        let time_scale = night_ms / num(r, "power_scale_night_ms");
+        let kind = |k: &str, field: &str| num(r, &format!("rack.kinds.{k}.{field}"));
+        let upgrade = |u: &str, field: &str| format!("upgrades.{u}.{field}");
+        Tuning {
+            night_ms,
+            hour_ms: night_ms / f64::from(hours),
+            hours,
+            combo_level: int(r, "doors.combo_level") as i32,
+            combo_ms: num(r, "doors.combo_ms"),
+            at_door_by_week_ms: week_row(r, "doors.at_door_by_week_ms", number),
+            at_door_ms: num(r, "doors.at_door_ms"),
+            leave_ms: num(r, "doors.leave_ms"),
+            start_dist: int(r, "doors.start_dist") as i32,
+            lead_steps: int(r, "doors.lead_steps") as i32,
+            repelled_dist: int(r, "doors.repelled_dist") as i32,
+            wait_base_ms: num(r, "pacer.wait_base_ms"),
+            wait_per_level_ms: num(r, "pacer.wait_per_level_ms"),
+            wait_min_ms: num(r, "pacer.wait_min_ms"),
+            wait_spread_ms: num(r, "pacer.wait_spread_ms"),
+            noise_per_sec: num(r, "noise.per_sec"),
+            noise_decay_per_sec: num(r, "noise.decay_per_sec"),
+            noise_max: num(r, "noise.max"),
+            loud: num(r, "noise.loud"),
+            uneasy: num(r, "noise.uneasy"),
+            loud_bonus: int(r, "noise.loud_bonus") as i32,
+            uneasy_bonus: int(r, "noise.uneasy_bonus") as i32,
+            bump_hour_1: int(r, "ai_bump.hour_1") as i32,
+            bump_1: int(r, "ai_bump.bump_1") as i32,
+            bump_hour_2: int(r, "ai_bump.hour_2") as i32,
+            bump_2: int(r, "ai_bump.bump_2") as i32,
+            power_start: num(r, "power.start"),
+            power_base: num(r, "power.base") / time_scale,
+            power_per_device: num(r, "power.per_device") / time_scale,
+            out_attack_ms: num(r, "power.out_attack_ms"),
+            slots: int(r, "rack.slots") as usize,
+            spawn_ms: num(r, "rack.spawn_ms"),
+            spawn_spread: num(r, "rack.spawn_spread"),
+            first_spawn_ms: num(r, "rack.first_spawn_ms"),
+            first_spawn_spread: num(r, "rack.first_spawn_spread"),
+            expire_ms: num(r, "rack.expire_ms"),
+            kind_value: KIND_IDS.map(|k| kind(k, "value") as u32),
+            kind_hold_ms: KIND_IDS.map(|k| kind(k, "hold_ms")),
+            decks: list(r, "rack.decks")
+                .iter()
+                .map(|d| DeckSpec {
+                    weight: whole(&d["weight"]),
+                    counts: KIND_IDS.map(|k| d[k].as_u64().expect("night_watch data for mode 'salvage_run': a deck count is not a whole number") as usize),
+                })
+                .collect(),
+            upgrade_cost: UPGRADE_IDS.map(|u| int(r, &upgrade(u, "cost")) as u32),
+            upgrade_name: UPGRADE_IDS.map(|u| text(r, &upgrade(u, "name"))),
+            hinges_factor: num(r, "upgrades.hinges.factor"),
+            cell_factor: num(r, "upgrades.cell.factor"),
+            soles_levels: int(r, "upgrades.soles.levels") as i32,
+            gloves_factor: num(r, "upgrades.gloves.factor"),
+            bench_factor: num(r, "upgrades.bench.factor"),
+            window_gap_ms: num(r, "window.gap_ms"),
+            window_gap_per_level_ms: num(r, "window.gap_per_level_ms"),
+            window_gap_min_ms: num(r, "window.gap_min_ms"),
+            window_gap_spread: num(r, "window.gap_spread"),
+            knock_min_ms: num(r, "window.knock_min_ms"),
+            knock_max_ms: num(r, "window.knock_max_ms"),
+            present_ms: num(r, "window.present_ms"),
+            present_spread: num(r, "window.present_spread"),
+            expose_ms: num(r, "window.expose_ms"),
+            carry_cap: int(r, "carry_cap") as u32,
+            budget: week_row(r, "budget", whole),
+            quota: week_row(r, "quota", whole),
+            max_level: int(r, "max_level") as i32,
+            week_levels: HUNTER_IDS.map(|h| week_row(r, &format!("hunters.{h}.week_levels"), level_of)),
+        }
+    }
+}
+
+fn tuning() -> &'static Tuning {
+    static TUNING: OnceLock<Tuning> = OnceLock::new();
+    TUNING.get_or_init(Tuning::load)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Upgrade {
@@ -69,23 +192,11 @@ impl Upgrade {
     pub const ALL: [Upgrade; 5] = [Upgrade::Hinges, Upgrade::Cell, Upgrade::Soles, Upgrade::Gloves, Upgrade::Bench];
 
     pub fn cost(self) -> u32 {
-        match self {
-            Upgrade::Hinges => 30,
-            Upgrade::Cell => 40,
-            Upgrade::Soles => 35,
-            Upgrade::Gloves => 45,
-            Upgrade::Bench => 40,
-        }
+        tuning().upgrade_cost[self as usize]
     }
 
     pub fn name(self) -> &'static str {
-        match self {
-            Upgrade::Hinges => "Sturdy hinges",
-            Upgrade::Cell => "Extra cell",
-            Upgrade::Soles => "Soft soles",
-            Upgrade::Gloves => "Salvage gloves",
-            Upgrade::Bench => "Padded bench",
-        }
+        tuning().upgrade_name[self as usize]
     }
 }
 
@@ -104,11 +215,7 @@ impl Hunter {
     }
 
     fn week_levels(self) -> [i32; 5] {
-        match self {
-            Hunter::Ravelle => [4, 7, 10, 13, 15],
-            Hunter::Ceryth => [0, 5, 8, 12, 14],
-            Hunter::Ysolde => [0, 0, 6, 10, 13],
-        }
+        tuning().week_levels[self.index()]
     }
 
     fn other_door(self) -> Hunter {
@@ -130,19 +237,11 @@ impl Kind {
     const ALL: [Kind; 3] = [Kind::Scrap, Kind::Parts, Kind::Prize];
 
     pub fn value(self) -> u32 {
-        match self {
-            Kind::Scrap => 10,
-            Kind::Parts => 25,
-            Kind::Prize => 60,
-        }
+        tuning().kind_value[self as usize]
     }
 
     fn hold_ms(self) -> f64 {
-        match self {
-            Kind::Scrap => 2000.0,
-            Kind::Parts => 3500.0,
-            Kind::Prize => 5500.0,
-        }
+        tuning().kind_hold_ms[self as usize]
     }
 }
 
@@ -152,12 +251,6 @@ struct DeckSpec {
     counts: [usize; 3],
 }
 
-const DECKS: [DeckSpec; 3] = [
-    DeckSpec { weight: 2, counts: [5, 3, 1] },
-    DeckSpec { weight: 1, counts: [7, 0, 2] },
-    DeckSpec { weight: 1, counts: [3, 6, 0] },
-];
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct Item {
     pub slot: usize,
@@ -166,6 +259,18 @@ pub struct Item {
     need_ms: f64,
     progress_ms: f64,
     age_ms: f64,
+}
+
+impl Item {
+    /// The share of the hold done so far, 0 to 1.
+    pub fn progress(&self) -> f64 {
+        (self.progress_ms / self.need_ms.max(1.0)).clamp(0.0, 1.0)
+    }
+
+    /// The share of the time before the piece slips off the rack, 0 to 1.
+    pub fn age(&self) -> f64 {
+        (self.age_ms / tuning().expire_ms).clamp(0.0, 1.0)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -271,8 +376,9 @@ impl Pacer {
 }
 
 fn draw_wait(rng: &mut NightWatchStream, level: i32) -> f64 {
-    let lo = (13000.0 - f64::from(level) * 500.0).max(2500.0);
-    lo + rng.next() * 3000.0
+    let t = tuning();
+    let lo = (t.wait_base_ms - f64::from(level) * t.wait_per_level_ms).max(t.wait_min_ms);
+    lo + rng.next() * t.wait_spread_ms
 }
 
 /// A hunter who comes to a side door: how far she is from the steel door, her move timer, and how long she has stood
@@ -312,7 +418,7 @@ struct Window {
 
 impl Window {
     fn new() -> Self {
-        Self { state: WindowState::Away, t: 0.0, clock: 0.0, gap: None, expose: 0.0, stay: PRESENT_MS, knock: KNOCK_MIN_MS }
+        Self { state: WindowState::Away, t: 0.0, clock: 0.0, gap: None, expose: 0.0, stay: tuning().present_ms, knock: tuning().knock_min_ms }
     }
 }
 
@@ -354,15 +460,14 @@ pub struct SalvageRun {
     ravelle: Visitor,
     ceryth: Visitor,
     window: Window,
-    lead: Option<Hunter>,
     outcome: Option<Outcome>,
 }
 
 impl SalvageRun {
     pub fn new(week: u32, seed: i64, options: Options) -> Self {
         let week = week_index(week);
-        let quota = options.quota.unwrap_or(QUOTA[week]);
-        let door_ms = if options.custom { AT_DOOR_MS } else { AT_DOOR_BY_WEEK_MS[week] };
+        let quota = options.quota.unwrap_or(tuning().quota[week]);
+        let door_ms = if options.custom { tuning().at_door_ms } else { tuning().at_door_by_week_ms[week] };
         let mut run = Self {
             week,
             rng: NightWatchStream::seeded(seed),
@@ -375,28 +480,26 @@ impl SalvageRun {
             elapsed_ms: 0.0,
             spawn_timer_ms: 0.0,
             spawn_at_ms: 0.0,
-            power: POWER_START,
+            power: tuning().power_start,
             out: false,
             out_ms: 0.0,
             noise: 0.0,
             money: 0,
             items: Vec::new(),
             deck: Deck { spec: 0, left: Vec::new() },
-            ravelle: Visitor::new(START_DIST),
-            ceryth: Visitor::new(START_DIST),
+            ravelle: Visitor::new(tuning().start_dist),
+            ceryth: Visitor::new(tuning().start_dist),
             window: Window::new(),
-            lead: None,
             outcome: None,
         };
         run.deck.spec = pick_deck(&mut run.rng);
         let lead_draw = run.rng.next();
         if run.base_level(Hunter::Ravelle) > 0 && run.base_level(Hunter::Ceryth) > 0 {
             let (lead, other) = if lead_draw < 0.5 { (Hunter::Ravelle, Hunter::Ceryth) } else { (Hunter::Ceryth, Hunter::Ravelle) };
-            run.visitor_mut(lead).dist = START_DIST - LEAD_STEPS;
-            run.visitor_mut(other).dist = START_DIST + LEAD_STEPS;
-            run.lead = Some(lead);
+            run.visitor_mut(lead).dist = tuning().start_dist - tuning().lead_steps;
+            run.visitor_mut(other).dist = tuning().start_dist + tuning().lead_steps;
         }
-        run.spawn_at_ms = jitter(FIRST_SPAWN_MS, FIRST_SPAWN_SPREAD, &mut run.rng);
+        run.spawn_at_ms = jitter(tuning().first_spawn_ms, tuning().first_spawn_spread, &mut run.rng);
         run
     }
 
@@ -428,8 +531,26 @@ impl SalvageRun {
         &self.items
     }
 
-    pub fn lead(&self) -> Option<Hunter> {
-        self.lead
+    /// Whole hours into the night (0 is 12 AM), capped at the last hour.
+    pub fn hour(&self) -> u32 {
+        let t = tuning();
+        let hour = (self.elapsed_ms / t.hour_ms).floor().max(0.0) as u32;
+        hour.min((t.hours - 1).max(0) as u32)
+    }
+
+    /// Steps left before a side-door visitor reaches her door (0 is at the door). Ravelle and Ceryth only.
+    pub fn distance(&self, hunter: Hunter) -> i32 {
+        self.visitor(hunter).dist
+    }
+
+    /// The share of a side-door visitor's wait at the door that is done, 0 to 1. Ravelle and Ceryth only.
+    pub fn door_wait(&self, hunter: Hunter) -> f64 {
+        (self.visitor(hunter).at_ms / self.door_ms.max(1.0)).clamp(0.0, 1.0)
+    }
+
+    /// Where Ysolde is: away, knocking, or at the glass.
+    pub fn window(&self) -> WindowState {
+        self.window.state
     }
 
     /// Advances the night by `dt_ms` with the shell's input and returns what happened this step.
@@ -444,16 +565,16 @@ impl SalvageRun {
 
         if self.out {
             self.out_ms += dt_ms;
-            if self.out_ms >= OUT_ATTACK_MS {
+            if self.out_ms >= tuning().out_attack_ms {
                 return self.finish(events, Hunter::Ravelle);
             }
         } else {
             let doors = u32::from(dev.door_l) + u32::from(dev.door_r);
             let lights = u32::from(dev.light_l) + u32::from(dev.light_r);
-            let door_factor = if self.has(Upgrade::Hinges) { HINGES_FACTOR } else { 1.0 };
-            let mut draw = POWER_BASE + POWER_PER_DEVICE * (f64::from(doors) * door_factor + f64::from(lights));
+            let door_factor = if self.has(Upgrade::Hinges) { tuning().hinges_factor } else { 1.0 };
+            let mut draw = tuning().power_base + tuning().power_per_device * (f64::from(doors) * door_factor + f64::from(lights));
             if self.has(Upgrade::Cell) {
-                draw *= CELL_FACTOR;
+                draw *= tuning().cell_factor;
             }
             if !self.infinite_power {
                 self.power = (self.power - draw * dt).max(0.0);
@@ -464,14 +585,14 @@ impl SalvageRun {
             }
         }
 
-        self.noise = (self.noise - NOISE_DECAY_PER_SEC * dt).max(0.0);
+        self.noise = (self.noise - tuning().noise_decay_per_sec * dt).max(0.0);
         self.spawn_timer_ms += dt_ms;
         if self.spawn_timer_ms >= self.spawn_at_ms {
             self.spawn_timer_ms = 0.0;
             if let Some(slot) = self.spawn_item() {
                 events.push(Event::Item { slot });
             }
-            self.spawn_at_ms = jitter(SPAWN_MS, SPAWN_SPREAD, &mut self.rng);
+            self.spawn_at_ms = jitter(tuning().spawn_ms, tuning().spawn_spread, &mut self.rng);
         }
         self.expire_items(dt_ms, &mut events);
 
@@ -481,8 +602,8 @@ impl SalvageRun {
         };
         if let Some(idx) = working {
             self.items[idx].progress_ms += dt_ms;
-            let bench = if self.has(Upgrade::Bench) { BENCH_FACTOR } else { 1.0 };
-            self.noise = (self.noise + NOISE_PER_SEC * bench * dt + NOISE_DECAY_PER_SEC * dt).min(NOISE_MAX);
+            let bench = if self.has(Upgrade::Bench) { tuning().bench_factor } else { 1.0 };
+            self.noise = (self.noise + tuning().noise_per_sec * bench * dt + tuning().noise_decay_per_sec * dt).min(tuning().noise_max);
             if self.items[idx].progress_ms >= self.items[idx].need_ms {
                 let done = self.items.remove(idx);
                 self.money += done.value;
@@ -508,8 +629,8 @@ impl SalvageRun {
             .collect();
         for id in turned {
             let other = id.other_door();
-            if self.visitor(other).dist > 0 && self.level(Hunter::Ravelle) >= COMBO_LEVEL && self.level(Hunter::Ceryth) >= COMBO_LEVEL {
-                self.visitor_mut(other).pacer.skip(COMBO_MS);
+            if self.visitor(other).dist > 0 && self.level(Hunter::Ravelle) >= tuning().combo_level && self.level(Hunter::Ceryth) >= tuning().combo_level {
+                self.visitor_mut(other).pacer.skip(tuning().combo_ms);
                 events.push(Event::Warned { id: other });
             }
         }
@@ -519,7 +640,7 @@ impl SalvageRun {
             return self.finish(events, Hunter::Ysolde);
         }
 
-        if self.elapsed_ms >= NIGHT_MS {
+        if self.elapsed_ms >= tuning().night_ms {
             let (money, quota) = (self.money, self.quota);
             if money >= quota {
                 self.outcome = Some(Outcome::Win);
@@ -549,15 +670,15 @@ impl SalvageRun {
         if base <= 0 {
             return 0;
         }
-        let bonus = if self.noise >= LOUD {
-            3
-        } else if self.noise >= UNEASY {
-            1
+        let bonus = if self.noise >= tuning().loud {
+            tuning().loud_bonus
+        } else if self.noise >= tuning().uneasy {
+            tuning().uneasy_bonus
         } else {
             0
         };
-        let soles = if self.has(Upgrade::Soles) { SOLES_LEVELS } else { 0 };
-        (base + ai_bump(self.elapsed_ms) + bonus - soles).clamp(1, MAX_LEVEL)
+        let soles = if self.has(Upgrade::Soles) { tuning().soles_levels } else { 0 };
+        (base + ai_bump(self.elapsed_ms) + bonus - soles).clamp(1, tuning().max_level)
     }
 
     fn visitor(&self, hunter: Hunter) -> &Visitor {
@@ -580,7 +701,7 @@ impl SalvageRun {
 
     fn deal(&mut self) -> Kind {
         if self.deck.left.is_empty() {
-            let counts = DECKS[self.deck.spec].counts;
+            let counts = tuning().decks[self.deck.spec].counts;
             let mut bag = Vec::new();
             for kind in Kind::ALL {
                 for _ in 0..counts[kind as usize] {
@@ -597,13 +718,13 @@ impl SalvageRun {
     }
 
     fn spawn_item(&mut self) -> Option<usize> {
-        let free: Vec<usize> = (0..SLOTS).filter(|slot| self.items.iter().all(|it| it.slot != *slot)).collect();
+        let free: Vec<usize> = (0..tuning().slots).filter(|slot| self.items.iter().all(|it| it.slot != *slot)).collect();
         if free.is_empty() {
             return None;
         }
         let kind = self.deal();
         let slot = free[pick_index(&mut self.rng, free.len())];
-        let gloves = if self.has(Upgrade::Gloves) { GLOVES_FACTOR } else { 1.0 };
+        let gloves = if self.has(Upgrade::Gloves) { tuning().gloves_factor } else { 1.0 };
         self.items.push(Item { slot, kind, value: kind.value(), need_ms: kind.hold_ms() * gloves, progress_ms: 0.0, age_ms: 0.0 });
         Some(slot)
     }
@@ -612,7 +733,7 @@ impl SalvageRun {
         let mut i = 0;
         while i < self.items.len() {
             self.items[i].age_ms += dt_ms;
-            if self.items[i].age_ms >= EXPIRE_MS {
+            if self.items[i].age_ms >= tuning().expire_ms {
                 let gone = self.items.remove(i);
                 events.push(Event::Expire { slot: gone.slot });
             } else {
@@ -629,14 +750,14 @@ impl SalvageRun {
                 let gap = match self.window.gap {
                     Some(gap) => gap,
                     None => {
-                        let base = (WINDOW_GAP_MS - f64::from(level) * WINDOW_GAP_PER_LEVEL_MS).max(WINDOW_GAP_MIN_MS);
-                        let gap = jitter(base, WINDOW_GAP_SPREAD, &mut self.rng);
+                        let base = (tuning().window_gap_ms - f64::from(level) * tuning().window_gap_per_level_ms).max(tuning().window_gap_min_ms);
+                        let gap = jitter(base, tuning().window_gap_spread, &mut self.rng);
                         self.window.gap = Some(gap);
                         gap
                     }
                 };
                 if self.window.clock >= gap {
-                    let (lo, hi) = (KNOCK_MIN_MS, KNOCK_MAX_MS);
+                    let (lo, hi) = (tuning().knock_min_ms, tuning().knock_max_ms);
                     self.window.state = WindowState::Knock;
                     self.window.t = 0.0;
                     self.window.clock = 0.0;
@@ -651,7 +772,7 @@ impl SalvageRun {
                     self.window.state = WindowState::Here;
                     self.window.t = 0.0;
                     self.window.expose = 0.0;
-                    self.window.stay = spread_ms(PRESENT_MS, &mut self.rng, PRESENT_SPREAD);
+                    self.window.stay = spread_ms(tuning().present_ms, &mut self.rng, tuning().present_spread);
                     events.push(Event::Window);
                 }
             }
@@ -659,7 +780,7 @@ impl SalvageRun {
                 self.window.t += dt_ms;
                 let hears = dev.light_l || dev.light_r || working;
                 self.window.expose = if hears { self.window.expose + dt_ms } else { (self.window.expose - dt_ms).max(0.0) };
-                if self.window.expose >= EXPOSE_MS {
+                if self.window.expose >= tuning().expose_ms {
                     return true;
                 }
                 if self.window.t >= self.window.stay {
@@ -693,8 +814,8 @@ fn visit(v: &mut Visitor, rng: &mut NightWatchStream, id: Hunter, at: Visit, eve
     if at.shut {
         v.at_ms = 0.0;
         v.leave_ms += at.dt_ms;
-        if v.leave_ms >= LEAVE_MS {
-            v.dist = REPELLED_DIST;
+        if v.leave_ms >= tuning().leave_ms {
+            v.dist = tuning().repelled_dist;
             v.leave_ms = 0.0;
             v.pacer.reset();
             events.push(Event::Repelled { id });
@@ -709,9 +830,9 @@ fn visit(v: &mut Visitor, rng: &mut NightWatchStream, id: Hunter, at: Visit, eve
 }
 
 fn pick_deck(rng: &mut NightWatchStream) -> usize {
-    let total: u32 = DECKS.iter().map(|d| d.weight).sum();
+    let total: u32 = tuning().decks.iter().map(|d| d.weight).sum();
     let mut r = rng.next() * f64::from(total);
-    for (i, deck) in DECKS.iter().enumerate() {
+    for (i, deck) in tuning().decks.iter().enumerate() {
         r -= f64::from(deck.weight);
         if r < 0.0 {
             return i;
@@ -726,11 +847,12 @@ fn week_index(week: u32) -> usize {
 
 /// AI steps up with the hour: nothing before 3 AM, +1 at 3 AM, +2 from 4 AM (Godot `NightWatchData.ai_bump`).
 fn ai_bump(elapsed_ms: f64) -> i32 {
-    let hour = ((elapsed_ms / HOUR_MS).floor() as i32).min(5);
-    if hour >= 4 {
-        2
-    } else if hour >= 3 {
-        1
+    let t = tuning();
+    let hour = ((elapsed_ms / t.hour_ms).floor() as i32).min(t.hours - 1);
+    if hour >= t.bump_hour_2 {
+        t.bump_2
+    } else if hour >= t.bump_hour_1 {
+        t.bump_1
     } else {
         0
     }
@@ -742,16 +864,16 @@ pub fn total_cost(upgrades: &[Upgrade]) -> u32 {
 
 /// The week's budget plus the carried surplus (capped).
 pub fn budget_for(week: u32, carry: u32) -> u32 {
-    BUDGET[week_index(week)] + carry.min(CARRY_CAP)
+    tuning().budget[week_index(week)] + carry.min(tuning().carry_cap)
 }
 
 pub fn quota_for(week: u32) -> u32 {
-    QUOTA[week_index(week)]
+    tuning().quota[week_index(week)]
 }
 
 /// Last week's surplus brought forward, capped.
 pub fn carry_from(money: u32, quota: u32) -> u32 {
-    money.saturating_sub(quota).min(CARRY_CAP)
+    money.saturating_sub(quota).min(tuning().carry_cap)
 }
 
 /// Whether a basket of upgrades fits the budget, with no upgrade twice.
@@ -801,5 +923,34 @@ mod tests {
         let events = run.step(2000.0, input);
         assert!(events.contains(&Event::Salvage { slot: 0, value: 10 }));
         assert_eq!(run.money(), 10);
+    }
+
+    #[test]
+    fn the_rules_file_carries_every_key_the_mode_reads() {
+        // Loading panics naming the mode and key when one is missing.
+        let t = Tuning::load();
+        assert_eq!(t.decks.len(), 3);
+        assert_eq!(t.week_levels.len(), HUNTER_IDS.len());
+    }
+
+    #[test]
+    fn the_loaded_values_equal_the_old_constants() {
+        let t = tuning();
+        assert_eq!(t.night_ms, 270_000.0);
+        assert_eq!(t.hour_ms, 45_000.0);
+        assert_eq!(t.power_base, 0.10 / (270_000.0 / 480_000.0));
+        assert_eq!(t.power_per_device, 0.07 / (270_000.0 / 480_000.0));
+        assert_eq!(t.at_door_by_week_ms, [8000.0, 7000.0, 6200.0, 5600.0, 5200.0]);
+        assert_eq!(t.budget, [90, 100, 110, 120, 130]);
+        assert_eq!(t.quota, [140, 210, 280, 340, 380]);
+        assert_eq!(Upgrade::Gloves.cost(), 45);
+        assert_eq!(Upgrade::Soles.name(), "Soft soles");
+        assert_eq!(Kind::Prize.hold_ms(), 5500.0);
+        assert_eq!(Hunter::Ysolde.week_levels(), [0, 0, 6, 10, 13]);
+        assert_eq!(t.decks[0].counts, [5, 3, 1]);
+        assert_eq!(t.decks[2].weight, 1);
+        assert_eq!((t.knock_min_ms, t.knock_max_ms), (3000.0, 4200.0));
+        assert_eq!((t.carry_cap, t.max_level, t.slots), (40, 20, 4));
+        assert_eq!((ai_bump(0.0), ai_bump(3.0 * 45_000.0), ai_bump(5.5 * 45_000.0)), (0, 1, 2));
     }
 }

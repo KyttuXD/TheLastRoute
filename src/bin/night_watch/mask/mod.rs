@@ -2,4 +2,4 @@
 
 pub mod vent_lights;
 
-pub use vent_lights::{VentBeam, VentLightActive, VentLightHeld, VentPlacement, VentSide};
+pub use vent_lights::{VentLightActive, VentLightHeld, VentSide};

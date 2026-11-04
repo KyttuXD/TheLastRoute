@@ -1,0 +1,150 @@
+{
+	"mode": "salvage_run",
+	"version": 1,
+	"night_ms": 270000,
+	"hours": 6,
+	"power_scale_night_ms": 480000,
+	"weeks": 5,
+	"ui": {
+		"max_step_ms": 100,
+		"note_ms": 3200,
+		"flash_ms": 700,
+		"result_lock_ms": 900,
+		"shot_step_ms": 16.6667,
+		"labels": {
+			"shop_title": "DAY SHOP",
+			"week_of": "WEEK {week} OF {weeks}",
+			"budget_line": "BUDGET  {spent} SPENT OF {budget}",
+			"carried_line": "CARRIED FROM LAST WEEK  {carry}     QUOTA  {quota}",
+			"visitors_line": "VISITORS THIS WEEK  {names}",
+			"start_shift": "ENTER  START THE SHIFT",
+			"shop_hint": "1 TO 5 OR CLICK TO BUY OR DROP   ENTER START   ESC HUB",
+			"over_budget": "That is over the day's budget.",
+			"knock": "KNOCK",
+			"window_label": "YSOLDE",
+			"door_left": "A  LEFT DOOR",
+			"door_right": "D  RIGHT DOOR",
+			"shut": "SHUT",
+			"empty": "EMPTY",
+			"power_out": "POWER OUT",
+			"btn_door_a": "A  DOOR",
+			"btn_door_d": "D  DOOR",
+			"btn_light_q": "Q  LIGHT",
+			"btn_light_e": "E  LIGHT",
+			"hud_week": "WEEK {week}",
+			"hour_midnight": "12 AM",
+			"hour_format": "{hour} AM",
+			"hud_salvage": "SALVAGE {money} / {quota}",
+			"hud_power": "POWER {power}%",
+			"hud_noise": "NOISE {noise}",
+			"hud_hint": "A / D DOORS   Q / E LIGHTS (HOLD)   1-4 PICK A PIECE   SPACE SALVAGE (HOLD)   M MUTE CALL   ESC HUB",
+			"note_salvaged": "Salvaged: +{value}.",
+			"note_expire": "A piece slips off the rack.",
+			"note_at_door": "{name} is at her door.",
+			"note_turned_away": "{name} is turned away.",
+			"note_warned": "{name} is warned. She is coming.",
+			"note_knock": "Knock. Someone is at the window.",
+			"note_window": "Ysolde is at the glass.",
+			"note_gone": "Ysolde leaves the window.",
+			"note_out": "POWER OUT. The doors are open.",
+			"note_call_muted": "Call muted.",
+			"note_save_failed": "Could not save your progress.",
+			"cleared_title": "WEEK {week} CLEARED",
+			"cleared_line": "{money} salvaged against a quota of {quota}.",
+			"cleared_next": "ENTER  NEXT WEEK",
+			"finished_title": "SCHEDULE COMPLETE",
+			"finished_line": "{weeks} weeks on the rack. {money} salvaged this week.",
+			"finished_next": "ENTER  BACK TO THE HUB",
+			"short_title": "SHORT OF QUOTA",
+			"short_line": "{money} salvaged, and the quota is {quota}. Try the week again.",
+			"try_next": "ENTER  TRY AGAIN",
+			"dark_title": "THE DARK GOT YOU",
+			"dark_line": "The power ran out and {name} came in.",
+			"caught_title": "CAUGHT",
+			"caught_line": "{name} reached you.",
+			"hub_hint": "ESC  HUB"
+		}
+	},
+	"budget": [90, 100, 110, 120, 130],
+	"quota": [140, 210, 280, 340, 380],
+	"carry_cap": 40,
+	"max_level": 20,
+	"doors": {
+		"combo_level": 6,
+		"combo_ms": 2200,
+		"at_door_ms": 5200,
+		"at_door_by_week_ms": [8000, 7000, 6200, 5600, 5200],
+		"leave_ms": 450,
+		"start_dist": 3,
+		"lead_steps": 1,
+		"repelled_dist": 2
+	},
+	"pacer": {
+		"wait_base_ms": 13000,
+		"wait_per_level_ms": 500,
+		"wait_min_ms": 2500,
+		"wait_spread_ms": 3000
+	},
+	"noise": {
+		"per_sec": 14,
+		"decay_per_sec": 10,
+		"max": 100,
+		"loud": 40,
+		"uneasy": 20,
+		"loud_bonus": 3,
+		"uneasy_bonus": 1
+	},
+	"ai_bump": {
+		"hour_1": 3,
+		"bump_1": 1,
+		"hour_2": 4,
+		"bump_2": 2
+	},
+	"power": {
+		"start": 100,
+		"base": 0.10,
+		"per_device": 0.07,
+		"out_attack_ms": 9000
+	},
+	"rack": {
+		"slots": 4,
+		"spawn_ms": 11000,
+		"spawn_spread": 0.2,
+		"first_spawn_ms": 2000,
+		"first_spawn_spread": 0.5,
+		"expire_ms": 30000,
+		"kinds": {
+			"scrap": { "label": "Scrap", "value": 10, "hold_ms": 2000 },
+			"parts": { "label": "Parts", "value": 25, "hold_ms": 3500 },
+			"prize": { "label": "Prize", "value": 60, "hold_ms": 5500 }
+		},
+		"decks": [
+			{ "id": "steady", "weight": 2, "scrap": 5, "parts": 3, "prize": 1 },
+			{ "id": "lumpy", "weight": 1, "scrap": 7, "parts": 0, "prize": 2 },
+			{ "id": "parts", "weight": 1, "scrap": 3, "parts": 6, "prize": 0 }
+		]
+	},
+	"upgrades": {
+		"hinges": { "name": "Sturdy hinges", "cost": 30, "blurb": "Doors cost half as much power while shut.", "factor": 0.5 },
+		"cell": { "name": "Extra cell", "cost": 40, "blurb": "Power drains a quarter slower.", "factor": 0.75 },
+		"soles": { "name": "Soft soles", "cost": 35, "blurb": "The doors' visitors are two levels less keen.", "levels": 2 },
+		"gloves": { "name": "Salvage gloves", "cost": 45, "blurb": "Salvaging is 30% faster.", "factor": 0.7 },
+		"bench": { "name": "Padded bench", "cost": 40, "blurb": "Salvaging makes half the noise.", "factor": 0.5 }
+	},
+	"window": {
+		"gap_ms": 42000,
+		"gap_per_level_ms": 1800,
+		"gap_min_ms": 14000,
+		"gap_spread": 0.3,
+		"knock_min_ms": 3000,
+		"knock_max_ms": 4200,
+		"present_ms": 6000,
+		"present_spread": 0.2,
+		"expose_ms": 1500
+	},
+	"hunters": {
+		"ravelle": { "name": "Ravelle", "pan": -0.8, "week_levels": [4, 7, 10, 13, 15] },
+		"ceryth": { "name": "Ceryth", "pan": 0.8, "week_levels": [0, 5, 8, 12, 14] },
+		"ysolde": { "name": "Ysolde", "pan": 0.0, "week_levels": [0, 0, 6, 10, 13] }
+	}
+}
