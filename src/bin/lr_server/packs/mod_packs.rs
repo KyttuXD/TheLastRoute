@@ -80,7 +80,7 @@ fn patterns() -> &'static Patterns {
             version: Regex::new(MOD_VERSION_PATTERN).unwrap(),
             sha256: Regex::new(r"^[a-f0-9]{64}$").unwrap(),
             file_path: Regex::new(&format!(
-                r"^(?:pack\.json|(?:{kind_group})/{SEGMENT}\.json|assets/(?:{SEGMENT}/){{0,6}}{SEGMENT}\.(?:glb|png|ogg))$"
+                r"^(?:pack\.json|(?:{kind_group})/{SEGMENT}\.json|assets/(?:{SEGMENT}/){{0,6}}{SEGMENT}\.(?:bbmodel|glb|png|ogg))$"
             ))
             .unwrap(),
             // "<kind>/<id>"; only ambience ids may contain ":" (e.g. "ambience/room:chapel"), never at either end
@@ -716,9 +716,14 @@ mod tests {
         for bad in ["props/room:chapel", "ambience/:chapel", "ambience/room:", "ceilings/a b", "basements/x"] {
             assert_eq!(error_of(manifest(json!({ "overrides": [bad] }))), "INVALID_PACK_OVERRIDES", "{bad}");
         }
-        for path in ["props/sub/x.json", "assets/a.GLB", "maps/x.json", "assets/a.gd", "props/x.png"] {
+        for path in ["props/sub/x.json", "assets/a.GLB", "assets/a.BBMODEL", "assets/a.bbmodel.json", "assets/a.bbmodel/", "maps/x.json", "assets/a.gd", "props/x.png"] {
             let bad = manifest(json!({ "files": [{ "path": "pack.json", "sha256": sha("{}"), "size": 2 }, { "path": path, "sha256": sha("x"), "size": 1 }] }));
             assert_eq!(error_of(bad), "INVALID_FILE_PATH", "{path}");
+        }
+        // models are Blockbench .bbmodel (preferred) or legacy .glb; textures .png, sounds .ogg
+        for path in ["assets/lamp.bbmodel", "assets/props/lamp.bbmodel", "assets/props/lamp.glb", "assets/props/lamp.png", "assets/a/b/c/d/e/f/lamp.bbmodel", "assets/s.ogg"] {
+            let good = manifest(json!({ "files": [{ "path": "pack.json", "sha256": sha("{}"), "size": 2 }, { "path": path, "sha256": sha("x"), "size": 1 }] }));
+            assert!(ok(good), "{path}");
         }
         assert_eq!(error_of(manifest(json!({ "version": "1/../2" }))), "INVALID_PACK_VERSION");
         for path in ["../x.gd", "/abs.gd", "a/../b.gd", "a\\b.gd", ".hidden", "a//b"] {

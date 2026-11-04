@@ -205,11 +205,20 @@ pub struct AccountServiceOptions {
     pub session_ttl_ms: i64,
     /// `LASTROUTE_ACCOUNT_UPSTREAM`: the website that owns the accounts. When set, `store_path` is neither read nor written.
     pub upstream: Option<Upstream>,
+    /// `LASTROUTE_SERVICE_TOKEN` (already checked to be 32+ characters): sent as `serviceToken` on the forwarded
+    /// `/api/account/exists`, the one call the website only answers to a server that proves it. None sends no token.
+    pub service_token: Option<String>,
 }
 
 impl Default for AccountServiceOptions {
     fn default() -> Self {
-        AccountServiceOptions { store_path: None, now: util::system_clock(), session_ttl_ms: DEFAULT_SESSION_TTL_MS, upstream: None }
+        AccountServiceOptions {
+            store_path: None,
+            now: util::system_clock(),
+            session_ttl_ms: DEFAULT_SESSION_TTL_MS,
+            upstream: None,
+            service_token: None,
+        }
     }
 }
 
@@ -232,6 +241,7 @@ pub struct AccountService {
     now: Clock,
     session_ttl_ms: i64,
     upstream: Option<Upstream>,
+    service_token: Option<String>,
     state: Mutex<State>,
     #[cfg(test)]
     load_warning: Option<String>,
@@ -261,6 +271,7 @@ impl AccountService {
             now: opts.now,
             session_ttl_ms: opts.session_ttl_ms,
             upstream: opts.upstream,
+            service_token: opts.service_token,
             state: Mutex::new(state),
             #[cfg(test)]
             load_warning,
@@ -737,7 +748,12 @@ impl AccountService {
     pub fn account_exists(&self, name: &str) -> bool {
         // With an upstream the website answers; a refused or unreachable answer is no account, never a guess from the
         // empty local store.
-        if let Some((status, reply)) = self.forward("/api/account/exists", &json!({ "username": name })) {
+        // Without a configured token the body stays exactly { username }, as before the website began asking for one.
+        let mut body = json!({ "username": name });
+        if let Some(token) = &self.service_token {
+            body["serviceToken"] = json!(token);
+        }
+        if let Some((status, reply)) = self.forward("/api/account/exists", &body) {
             return status == 200 && reply.get("exists") == Some(&json!(true));
         }
         self.lock().accounts.contains_key(&username_of_str(name))
@@ -1048,6 +1064,30 @@ mod tests {
         assert!(!accounts.account_exists("ada"));
         assert!(!store_path.exists(), "accounts.json was written while the upstream is set");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_account_check_sends_the_service_token_only_when_one_is_configured() {
+        use crate::upstream::test_website::fake_website;
+        // No token: the forwarded body is exactly { username } (today's behaviour).
+        let (upstream, seen) = fake_website(vec![r#"{"ok":true,"exists":true}"#]);
+        let accounts = AccountService::new(AccountServiceOptions { upstream: Some(upstream), ..Default::default() });
+        assert!(accounts.account_exists("ada"));
+        let seen = seen.join().unwrap();
+        assert_eq!(seen, vec![("/api/account/exists".to_string(), json!({ "username": "ada" }))]);
+        assert!(seen[0].1.get("serviceToken").is_none());
+
+        // A token: the forwarded body carries it as serviceToken.
+        let token = "t".repeat(32);
+        let (upstream, seen) = fake_website(vec![r#"{"ok":true,"exists":false}"#]);
+        let accounts = AccountService::new(AccountServiceOptions {
+            upstream: Some(upstream),
+            service_token: Some(token.clone()),
+            ..Default::default()
+        });
+        assert!(!accounts.account_exists("ada"));
+        let seen = seen.join().unwrap();
+        assert_eq!(seen, vec![("/api/account/exists".to_string(), json!({ "username": "ada", "serviceToken": token }))]);
     }
 
     #[test]

@@ -18,28 +18,22 @@
 //! exits 0 when the folder is clean and 1 when it has errors.
 
 
-mod upstream;
-mod util;
+mod accounts;
+mod common;
+mod ops;
+mod packs;
+mod relay;
+mod rooms;
+mod saves;
 
-mod account_service;
-mod game_saves;
-mod guest_names;
-
-mod hunter_id_aliases;
-mod public_route;
-mod room_service;
-
-mod crash_reports;
-mod moderation;
-mod reserved_rooms;
-
-mod env_file;
-mod mod_packs;
-mod pack_check;
-mod pack_kinds;
-mod regions;
-
-mod enet_relay;
+// Re-exports keep the flat `crate::module` paths short.
+use accounts::{account_service, guest_names};
+use common::{upstream, util};
+use ops::{crash_reports, env_file, moderation};
+use packs::{mod_packs, pack_check, pack_kinds, regions};
+use relay::enet_relay;
+use rooms::{hunter_id_aliases, public_route, reserved_rooms, room_service};
+use saves::game_saves;
 
 mod server;
 

@@ -549,6 +549,27 @@ mod tests {
     }
 
     #[test]
+    fn a_superseded_run_world_is_deleted_on_the_website_with_the_session_game_and_slot() {
+        use crate::upstream::test_website::fake_website;
+        let (upstream, seen) = fake_website(vec![
+            r#"{"ok":true,"slots":[{"slotId":"run-world-1"},{"slotId":"run-world-2"},{"slotId":"run-world-3"}]}"#,
+            r#"{"ok":true}"#,
+        ]);
+        prune_older_revisions(&upstream, "session-token", "last-route-godot", "run-world-3");
+        // Only run-world-1 goes: run-world-2 is the newest older revision and stays beside the one just saved.
+        assert_eq!(
+            seen.join().unwrap(),
+            vec![
+                ("/api/v1/saves/list".to_string(), json!({ "sessionToken": "session-token", "gameId": "last-route-godot" })),
+                (
+                    "/api/v1/saves/delete".to_string(),
+                    json!({ "sessionToken": "session-token", "gameId": "last-route-godot", "slotId": "run-world-1" })
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn with_an_upstream_saves_go_to_the_website_and_an_unreachable_one_answers_503() {
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let upstream = crate::upstream::Upstream::parse(&format!("http://127.0.0.1:{port}")).unwrap();

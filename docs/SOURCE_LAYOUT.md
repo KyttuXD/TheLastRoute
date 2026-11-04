@@ -18,8 +18,15 @@ One package, `last_route` ([Cargo.toml](../Cargo.toml)), builds a small shared l
 - `app/`, `ui/`, `headless/`, `net/`, `updater/`, `story/`: the front end, menus, test and agent modes, networking and the in-game updater.
 - `audio/`, `config/`, `content/`, `game/`, `hunters/`, `render/`, `world/`: the game's own modules. They declare themselves in [main.rs](../src/bin/last_route/main.rs), so code inside the game writes `crate::world::...` as before.
 - `shared/`: the game-only shared items (`assets`, `checkpoint`, `admin_flags`, `safe_room`). It re-exports `paths` from the library, so `crate::shared::paths` keeps working.
-- `assets/` (pictures, Blockbench and Blender models) and `data/` (JSON content): embedded into the executable by [build.rs](../build.rs), under the same keys as before (`hunters/aki.bbmodel`, `props/...`).
+- `assets/` (pictures and Blockbench models; the Blender GLB sources they were converted from are in `tools/props/source_glb`, not embedded) and `data/` (JSON content): embedded into the executable by [build.rs](../build.rs), under the same keys as before (`hunters/aki.bbmodel`, `props/...`).
 - `audio/quad-snd` is a vendored, patched crate (`[patch.crates-io]` in Cargo.toml).
+
+## Inside `src/bin/lr_server`
+
+- `accounts/` (`account_service`, `guest_names`), `rooms/` (`room_service`, `reserved_rooms`, `public_route`, `hunter_id_aliases`), `saves/` (`game_saves`), `packs/` (`mod_packs`, `pack_kinds`, `pack_check`, `regions`), `relay/` (`enet_relay`), `ops/` (`moderation`, `crash_reports`, `env_file`), `common/` (`util`, `upstream`), and `server/` (the HTTP router: `mod`, `routes`, `support`, `tests`). Each folder has a `mod.rs`; `main.rs` stays at the root.
+- `main.rs` re-exports the modules (`use accounts::account_service;` and so on), so code still writes `crate::account_service::...`. Tests live in their module files.
+- The folder is called `common`, not `core`, so it does not shadow Rust's `core` crate.
+- Runtime data: `LASTROUTE_DATA_DIR` (or `KYTTU_DATA_DIR`) sets the folder; the default is `.data` under the working directory (`server/mod.rs`), not `data/`.
 
 ## Data and assets
 

@@ -548,3 +548,25 @@ fn http_transport_end_to_end_over_tiny_http() {
         thread.join().unwrap();
     }
 }
+
+#[test]
+fn the_service_token_counts_only_at_32_characters_and_is_trimmed() {
+    let with = |value: &str| HashMap::from([("LASTROUTE_SERVICE_TOKEN".to_string(), value.to_string())]);
+    assert_eq!(service_token_from(&HashMap::new()), None);
+    assert_eq!(service_token_from(&with(&"s".repeat(31))), None, "a 31-character token is treated as unset");
+    assert_eq!(service_token_from(&with(&format!("  {}  ", "s".repeat(32)))), Some("s".repeat(32)));
+}
+
+#[test]
+fn the_service_token_reaches_the_server_options_only_with_an_upstream_and_a_long_enough_token() {
+    let base = |token: Option<String>| {
+        let mut env = HashMap::from([("LASTROUTE_ACCOUNT_UPSTREAM".to_string(), "http://127.0.0.1:1".to_string())]);
+        if let Some(token) = token {
+            env.insert("LASTROUTE_SERVICE_TOKEN".to_string(), token);
+        }
+        options_from_environment(&env, Path::new(".")).unwrap().options.account_service_token
+    };
+    assert_eq!(base(None), None, "no token: the account check sends none");
+    assert_eq!(base(Some("x".repeat(31))), None, "a short token is unset");
+    assert_eq!(base(Some("x".repeat(40))), Some("x".repeat(40)));
+}

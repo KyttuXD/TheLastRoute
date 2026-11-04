@@ -142,6 +142,19 @@ mod tests {
     }
 
     #[test]
+    fn a_pack_with_bbmodel_and_legacy_glb_props_checks_clean() {
+        let dir = temp_pack("pack-check-models");
+        write(&dir, "pack.json", r#"{"schema":"lr.pack/1","id":"neon_halls","name":"Neon Halls","version":"1.0.0","author":"KT"}"#);
+        write(&dir, "props/hall.json", "{}");
+        write(&dir, "assets/props/lamp.bbmodel", r#"{"meta":{},"elements":[],"textures":[]}"#);
+        write(&dir, "assets/props/old_lamp.glb", "glTF");
+        write(&dir, "assets/props/lamp.png", "png");
+        let check = check_pack_folder(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(check.errors.is_empty(), "{:?}", check.errors);
+    }
+
+    #[test]
     fn a_bad_pack_folder_reports_each_error_with_its_file_and_key() {
         let dir = temp_pack("pack-check-bad");
         write(&dir, "pack.json", r#"{"schema":"lr.pack/1","id":"neon_halls","name":"Neon Halls","version":"1.0.0","author":"KT","scripts":["x.gd"]}"#);

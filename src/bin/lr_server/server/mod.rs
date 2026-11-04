@@ -241,6 +241,8 @@ pub struct ServerOptions {
     pub account_store_path: Option<PathBuf>,
     /// `LASTROUTE_ACCOUNT_UPSTREAM`: the website that owns the accounts and saves. When set, the local store is unused.
     pub account_upstream: Option<Upstream>,
+    /// `LASTROUTE_SERVICE_TOKEN` (32+ characters, else None): the server-to-server proof sent with the account check.
+    pub account_service_token: Option<String>,
     pub moderation_store_path: Option<PathBuf>,
     pub moderation_salt: String,
     pub public_directory: Option<PathBuf>,
@@ -283,6 +285,7 @@ impl Default for ServerOptions {
             player_ttl_ms: 120_000,
             account_store_path: None,
             account_upstream: None,
+            account_service_token: None,
             moderation_store_path: None,
             moderation_salt: String::new(),
             public_directory: None,
@@ -392,6 +395,7 @@ impl LastRouteServer {
                 store_path: opts.account_store_path.clone(),
                 now: now.clone(),
                 upstream: opts.account_upstream.clone(),
+                service_token: opts.account_service_token.clone(),
                 ..Default::default()
             });
         let guest_names = GuestNames::new(GuestNamesOptions {
@@ -663,11 +667,22 @@ pub struct EnvironmentConfig {
     pub account_store_path: PathBuf,
 }
 
+/// `LASTROUTE_SERVICE_TOKEN` as the account check uses it: trimmed, and only when it is at least 32 characters (a shorter
+/// value counts as unset). Read from the environment only; never logged.
+pub fn service_token_from(env: &HashMap<String, String>) -> Option<String> {
+    env.get("LASTROUTE_SERVICE_TOKEN").map(|value| value.trim()).filter(|value| value.chars().count() >= 32).map(str::to_string)
+}
+
 pub fn options_from_environment(env: &HashMap<String, String>, cwd: &Path) -> Result<EnvironmentConfig, String> {
     let get = |name: &str| env.get(name).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
     let account_upstream = get("LASTROUTE_ACCOUNT_UPSTREAM")
         .map(|url| Upstream::parse(&url).map_err(|error| format!("LASTROUTE_ACCOUNT_UPSTREAM {error}")))
         .transpose()?;
+    let account_service_token = service_token_from(env);
+    if account_upstream.is_some() && account_service_token.is_none() {
+        // The value itself is never printed.
+        log_info("Account existence check is off: LASTROUTE_SERVICE_TOKEN is unset or shorter than 32 characters");
+    }
     let path_of = |name: &str| get(name).map(|v| cwd.join(v));
     let (http_port, relay_port) = deployment_ports(env);
     let host = env.get("HOST").cloned().filter(|h| !h.is_empty()).unwrap_or_else(|| "0.0.0.0".into());
@@ -711,6 +726,7 @@ pub fn options_from_environment(env: &HashMap<String, String>, cwd: &Path) -> Re
         enet_room_ttl_ms: (number("ENET_ROOM_TTL_SECONDS", 60.0).max(15.0) * 1000.0) as i64,
         account_store_path: Some(accounts.clone()),
         account_upstream,
+        account_service_token,
         moderation_store_path: Some(
             path_of("LASTROUTE_MODERATION_STORE").unwrap_or_else(|| accounts.parent().unwrap_or(&data).join("moderation.json")),
         ),

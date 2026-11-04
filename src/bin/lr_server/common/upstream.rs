@@ -238,3 +238,61 @@ mod tests {
         assert_eq!(response.json_body()["code"], "UPSTREAM_UNAVAILABLE");
     }
 }
+
+/// A stand-in website for tests: serves one connection per entry of `replies` (in order), each answering 200 with that
+/// JSON text. The join handle returns `(path, parsed body)` for every request it got, in order.
+#[cfg(test)]
+pub(crate) mod test_website {
+    use super::*;
+    use std::net::TcpListener;
+    use std::thread::JoinHandle;
+
+    pub(crate) fn fake_website(replies: Vec<&'static str>) -> (Upstream, JoinHandle<Vec<(String, Value)>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let upstream = Upstream::parse(&format!("http://127.0.0.1:{port}")).unwrap();
+        let handle = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for reply in replies {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(UPSTREAM_TIMEOUT)).unwrap();
+                let raw = read_request(&mut stream);
+                let (head, body) = raw.split_once("\r\n\r\n").unwrap_or((raw.as_str(), ""));
+                let path = head.lines().next().unwrap_or("").split(' ').nth(1).unwrap_or("").to_string();
+                seen.push((path, serde_json::from_str(body).unwrap_or(Value::Null)));
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                    reply.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+            seen
+        });
+        (upstream, handle)
+    }
+
+    /// Reads one request: the headers, then as many bytes as Content-Length names.
+    fn read_request(stream: &mut std::net::TcpStream) -> String {
+        let mut raw = Vec::new();
+        let mut buf = [0u8; 1024];
+        loop {
+            let n = stream.read(&mut buf).unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            raw.extend_from_slice(&buf[..n]);
+            if let Some(split) = find(&raw, b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&raw[..split]).to_string();
+                let length = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Content-Length: "))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if raw.len() >= split + 4 + length {
+                    break;
+                }
+            }
+        }
+        String::from_utf8_lossy(&raw).to_string()
+    }
+}
