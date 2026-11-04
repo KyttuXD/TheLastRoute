@@ -118,6 +118,113 @@ fn shape_for_is_deterministic() {
     }
 }
 
+#[test]
+fn both_sides_of_a_stairwell_get_the_same_shape_and_spin() {
+    let rules = flights();
+    for seed in 0..60u64 {
+        for upper in [1, 0, -1, -2, -3] {
+            for c in [Cell::new(0, 0), Cell::new(-7, 12), Cell::new(33, 41), Cell::new(300, -40)] {
+                let shape = shape_for_with(rules, seed, upper, c);
+                let cw = spiral_clockwise_for(seed, upper, c);
+                let top = Flight::new(FlightKind::Stairs, shape, upper, c, (0, 1)).with_clockwise(cw);
+                let fp = well_footprint_with(rules, &top);
+                // the lower side rebuilds the flight from its foot, then asks with the upper level and anchor it finds
+                let low = Flight::from_foot_with(rules, FlightKind::Stairs, shape, upper - 1, fp.foot, (0, 1), cw);
+                assert_eq!(low.upper_level, upper);
+                assert_eq!(shape_for_with(rules, seed, low.upper_level, low.anchor_cell), shape, "seed {seed} upper {upper} {c:?}");
+                assert_eq!(spiral_clockwise_for(seed, low.upper_level, low.anchor_cell), cw, "seed {seed} upper {upper} {c:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn steps_per_cell_has_one_source() {
+    assert_eq!(flights().steps_per_cell, STEPS_PER_CELL as f32);
+    let e = tweak(|v| v["steps_per_cell"] = serde_json::json!(4)).expect_err("a drifted table is refused");
+    assert!(e.contains("STEPS_PER_CELL"), "{e}");
+}
+
+#[test]
+fn the_limits_are_data_and_each_one_bites() {
+    let r = flights();
+    // the shipped values are the old hard-coded bounds
+    assert_eq!((r.limits.st_length.min, r.limits.st_length.max), (4.0, 16.0));
+    assert_eq!((r.limits.margin_cells.min, r.limits.margin_cells.max), (0.0, 4.0));
+    assert_eq!((r.limits.sp_radius.min, r.limits.sp_radius.max), (1.0, 6.0));
+    assert_eq!((r.limits.max_riser.min, r.limits.max_riser.max), (0.05, 0.5));
+    // (field path, a value past max, a value below min, label in the message)
+    let cases: [(&[&str], f64, f64, &str); 7] = [
+        (&["margin_cells"], 5.0, -1.0, "margin_cells"),
+        (&["switchback", "length"], 9.0, 2.0, "switchback.length"),
+        (&["switchback", "lane_width"], 4.0, 0.0, "switchback.lane_width"),
+        (&["straight", "length"], 17.0, 3.0, "straight.length"),
+        (&["straight", "width"], 5.0, 0.0, "straight.width"),
+        (&["spiral", "lane_width"], 5.0, -1.0, "spiral.lane_width"),
+        (&["spiral", "radius"], 7.0, 0.0, "spiral.radius"),
+    ];
+    let set = |v: &mut serde_json::Value, path: &[&str], n: f64| {
+        let mut cur = v;
+        for k in &path[..path.len() - 1] {
+            cur = &mut cur[*k];
+        }
+        cur[path[path.len() - 1]] = serde_json::json!(n);
+    };
+    for (path, hi, lo, label) in cases {
+        for n in [hi, lo] {
+            let e = tweak(|v| set(v, path, n)).expect_err(label);
+            assert!(e.contains(label), "{n}: {e:?} should mention {label:?}");
+        }
+    }
+    for n in [2.6, -0.1] {
+        let e = tweak(|v| v["slab"] = serde_json::json!(n)).expect_err("slab outside its limit");
+        assert!(e.contains("slab"), "{e}");
+    }
+    for n in [0.6, 0.01] {
+        let e = tweak(|v| v["max_riser"] = serde_json::json!(n)).expect_err("max_riser");
+        assert!(e.contains("max_riser"), "{e}");
+    }
+    // data decides: a widened limit lets a longer straight flight through
+    let longer = tweak(|v| {
+        v["limits"]["straight_length"]["max"] = serde_json::json!(20);
+        v["straight"]["length"] = serde_json::json!(18);
+    });
+    assert!(longer.is_ok(), "{longer:?}");
+}
+
+#[test]
+fn a_missing_or_inverted_limit_is_refused() {
+    let e = tweak(|v| {
+        v.as_object_mut().unwrap().remove("limits");
+    })
+    .expect_err("no limits block");
+    assert!(e.contains("limits"), "{e}");
+    for name in [
+        "slab",
+        "max_riser",
+        "margin_cells",
+        "switchback_length",
+        "switchback_lane_width",
+        "straight_length",
+        "straight_width",
+        "spiral_lane_width",
+        "spiral_radius",
+    ] {
+        let e = tweak(|v| {
+            v["limits"].as_object_mut().unwrap().remove(name);
+        })
+        .expect_err(name);
+        assert!(e.contains(name), "{e}");
+        let e = tweak(|v| {
+            v["limits"][name].as_object_mut().unwrap().remove("max");
+        })
+        .expect_err(name);
+        assert!(e.contains(name), "{e}");
+        let e = tweak(|v| v["limits"][name] = serde_json::json!({"min": 9, "max": 1})).expect_err(name);
+        assert!(e.contains("inverted") && e.contains(name), "{e}");
+    }
+}
+
 fn share(rules: &FlightRules, level: i32) -> [f32; 3] {
     let mut count = [0u32; 3];
     let total = 6000;

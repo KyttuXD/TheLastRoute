@@ -210,6 +210,9 @@ pub struct Facility {
     pub catwalk_links: Vec<CatwalkLink>,
     /// The id of the level 0 maze variant that dresses this chunk (`apply_maze_variant`); `None` is the plain maze.
     pub maze_variant: Option<String>,
+    /// The level this facility is (0 ground, -1 sewer); its floor sits at `level * STOREY` in absolute y
+    /// (`body_fits_at_y`). Set by the game when it loads a window; 0 until then.
+    pub level: i32,
 }
 
 /// How far a door is open (0 closed, 1 open) and whether it is meant to be open. `open` chases `want_open` at
@@ -349,6 +352,7 @@ impl Facility {
             walk_surface: HashMap::new(),
             catwalk_links: vec![],
             maze_variant: None,
+            level: 0,
         };
         let room_count = opt.room_count.max(5);
         f.carve_facility_rooms(room_count, cat);
@@ -618,6 +622,7 @@ impl Facility {
             walk_surface: HashMap::new(),
             catwalk_links: vec![],
             maze_variant: None,
+            level: 0,
         };
         for (p, ox, oy, region) in parts {
             let sh = |c: Cell| Cell::new(c.x + ox, c.y + oy);
@@ -1090,6 +1095,13 @@ impl Facility {
 
     pub fn body_fits(&self, x: f32, y: f32, r: f32) -> bool {
         self.body_fits_at(x, y, r, 0.0)
+    }
+
+    /// `body_fits_at` for a body whose feet are at absolute height `y_abs`: the walk height is `y_abs` minus this
+    /// facility's own floor (`level * STOREY`), so the result equals `body_fits_at` at that relative height.
+    pub fn body_fits_at_y(&self, x: f32, z: f32, y_abs: f32, r: f32) -> bool {
+        let floor_y = self.level as f32 * crate::world::vertical::STOREY;
+        self.body_fits_at(x, z, r, y_abs - floor_y)
     }
 
     /// `body_fits` for a body standing at walk height `height`: every cell the body touches must have a
@@ -2521,5 +2533,31 @@ mod tests {
         let mut f = Facility::generate("V", &Options::default(), &cat);
         assert!(f.apply_maze_variant(WORLD, ChunkKey { cx: 0, cy: 0, level: -1 }).is_none());
         assert!(f.maze_variant.is_none());
+    }
+
+    #[test]
+    fn body_fits_at_y_matches_body_fits_at_on_level_zero_and_minus_one() {
+        use crate::world::vertical::STOREY;
+        let cat = Catalog::load();
+        for level in [0, -1] {
+            let mut f = Facility::generate("FITY", &Options::default(), &cat);
+            f.level = level;
+            let floor_y = level as f32 * STOREY;
+            let mut checked = 0;
+            for cy in 0..f.rows.min(24) {
+                for cx in 0..f.cols.min(24) {
+                    let (x, z) = (cx as f32 + 0.5, cy as f32 + 0.5);
+                    for h in [0.0_f32, 0.75] {
+                        assert_eq!(
+                            f.body_fits_at_y(x, z, floor_y + h, 0.3),
+                            f.body_fits_at(x, z, 0.3, h),
+                            "level {level} cell ({cx},{cy}) h {h}"
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+            assert!(checked > 0);
+        }
     }
 }

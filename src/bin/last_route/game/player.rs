@@ -3,6 +3,7 @@
 //! and the eye-aligned bobbing camera.
 
 use super::meters::Meters;
+use super::level_stack::local_ground;
 use super::Controls;
 use crate::audio::Sounds;
 use crate::config::*;
@@ -49,7 +50,13 @@ fn body_fits(fac: &Facility, x: f32, y: f32, h: f32) -> bool {
 
 pub struct Player {
     pub pos: (f32, f32),
+    /// Height of the jump above the walking surface (0 on the ground).
     pub feet_y: f32,
+    /// Absolute y of the current level's floor (`level * STOREY`, `level_stack::floor_y_of`); the game sets it whenever
+    /// the level changes. Everything the renderer sees stays relative to it, so it moves nothing on screen.
+    pub floor_y: f32,
+    /// Whether the feet are on the ground (set by `update_movement`); footsteps, head bob and landing read it.
+    pub grounded: bool,
     vy: f32,
     pub yaw: f32,
     pub pitch: f32,
@@ -105,6 +112,8 @@ impl Player {
         Player {
             pos,
             feet_y: 0.0,
+            floor_y: 0.0,
+            grounded: true,
             vy: 0.0,
             yaw: 0.0,
             pitch: 0.0,
@@ -193,6 +202,7 @@ impl Player {
     pub fn place(&mut self, start: (f32, f32)) {
         self.pos = (start.0, start.1 + 1.0);
         self.feet_y = 0.0;
+        self.grounded = true;
         self.height = 0.0;
         self.vy = 0.0;
         self.move_vel = (0.0, 0.0);
@@ -206,6 +216,16 @@ impl Player {
 
     pub fn eye_height(&self) -> f32 {
         CAMERA_HEIGHT + (CAMERA_HEIGHT * CROUCH_EYE_RATIO - CAMERA_HEIGHT) * self.crouch_t + self.climb_lift
+    }
+
+    /// Absolute y of the feet' walking surface: the level's floor plus the stair or deck lift (`height`).
+    pub fn y(&self) -> f32 {
+        self.floor_y + self.height
+    }
+
+    /// Absolute y of the eye without head bob: `y()` plus the jump and the standing or crouched eye height.
+    pub fn eye_y(&self) -> f32 {
+        self.y() + self.feet_y + self.eye_height()
     }
 
     /// Facing on the grid: (-sin yaw, -cos yaw), as the original's controller.
@@ -234,14 +254,15 @@ impl Player {
         } else {
             CAMERA_BOB_WALK
         };
-        let bob = if self.moving && self.feet_y <= 0.0 {
+        let bob = if self.moving && self.grounded {
             (self.bob_phase * 2.0).sin() * amp
         } else {
             0.0
         };
+        // View-relative: `eye_y()` minus the floor, so the level's offset never moves the picture.
         vec3(
             self.pos.0,
-            self.feet_y + self.height + self.eye_height() + bob,
+            self.eye_y() - self.floor_y + bob,
             self.pos.1,
         )
     }
@@ -400,26 +421,31 @@ impl Player {
             / dt.max(1e-4);
         self.move_vel = ((self.pos.0 - before.0) / dt.max(1e-4), (self.pos.1 - before.1) / dt.max(1e-4));
 
-        if self.feet_y <= 0.0 {
-            self.feet_y = 0.0;
+        // The lowest the jump offset can go: the ground under the body (`ground_y`, made relative to its own level's floor)
+        // less the stair lift `height` already carries. On the floor and on a flight this is 0, as before.
+        let stand = stair_height_at(fac, self.pos).unwrap_or(0.0);
+        let min_feet = local_ground(fac, self.pos.0, self.pos.1) - stand;
+        if self.feet_y <= min_feet {
+            self.feet_y = min_feet;
             self.vy = 0.0;
             if c.jump && !self.crouching && self.stun <= 0.0 && !on_stair {
                 self.vy = PLAYER_JUMP_VELOCITY;
             }
         }
         self.vy -= PLAYER_GRAVITY * dt;
-        self.feet_y = (self.feet_y + self.vy * dt).max(0.0);
+        self.feet_y = (self.feet_y + self.vy * dt).max(min_feet);
+        self.grounded = self.feet_y <= min_feet;
         // The body rises and sinks with the flight under it: the height eases toward the tread it now stands on, and back
         // to the floor off the stairs, so it never snaps through a tread.
         let surface = stair_height_at(fac, self.pos).unwrap_or(0.0);
         self.height += (surface - self.height) * (1.0 - (-STAIR_FOLLOW_RATE * dt).exp());
 
-        if moving && self.feet_y <= 0.0 && ground > 0.3 {
+        if moving && self.grounded && ground > 0.3 {
             self.bob_phase += dt * ground * 1.9;
         }
         // Sound.footstep every frame on the floor (player_controller_3d.gd 1987-1993): the cadence is stride / ground
         // speed, no step under 0.3 m/s, feet alternate
-        if moving && self.feet_y <= 0.0 {
+        if moving && self.grounded {
             let gait = if self.crouching {
                 "crouch"
             } else if sprinting {
@@ -620,5 +646,52 @@ mod tests {
         g.p.pos = off_stair(s);
         run_body(&mut g, 2.0, &Controls::default());
         assert!(g.p.height.abs() < 1e-3, "back on the floor: {}", g.p.height);
+    }
+    #[test]
+    fn y_is_the_floor_plus_the_height_and_the_eye_sits_on_it() {
+        let mut p = Player::new((1.0, 1.0));
+        p.floor_y = -5.0;
+        p.height = 0.75;
+        assert_eq!(p.y(), -5.0 + 0.75);
+        p.feet_y = 0.2;
+        assert!((p.eye_y() - (p.y() + 0.2 + p.eye_height())).abs() < 1e-6);
+    }
+
+    #[test]
+    fn changing_the_floor_moves_the_absolute_eye_but_not_the_view() {
+        let mut p = Player::new((1.0, 1.0));
+        p.height = 0.5;
+        let (abs0, view0) = (p.eye_y(), p.eye().y);
+        p.floor_y = -10.0;
+        assert!((p.eye_y() - (abs0 - 10.0)).abs() < 1e-5, "the absolute eye moved by the floor");
+        assert!((p.eye().y - view0).abs() < 1e-5, "the picture did not move");
+    }
+
+    #[test]
+    fn grounded_follows_the_hop() {
+        let (mut g, s) = flight_game();
+        g.p.pos = off_stair(s);
+        run_body(&mut g, 0.1, &Controls::default());
+        assert!(g.p.grounded);
+        run_body(&mut g, FRAME, &Controls { jump: true, ..Default::default() });
+        assert!(!g.p.grounded && g.p.feet_y > 0.0, "in the air after the press");
+        run_body(&mut g, 3.0, &Controls::default());
+        assert!(g.p.grounded && g.p.feet_y == 0.0, "landed");
+    }
+
+    #[test]
+    fn a_floor_offset_does_not_change_the_walk() {
+        let (mut a, s) = flight_game();
+        let (mut b, _) = flight_game();
+        b.p.floor_y = -5.0;
+        for g in [&mut a, &mut b] {
+            g.p.pos = s.cell.center();
+            g.p.yaw = (-(s.run.0 as f32)).atan2(-(s.run.1 as f32));
+            run_body(g, 0.5, &Controls { fwd: 1.0, jump: true, ..Default::default() });
+        }
+        assert_eq!(a.p.pos, b.p.pos);
+        assert_eq!(a.p.feet_y, b.p.feet_y);
+        assert_eq!(a.p.height, b.p.height);
+        assert!((a.p.eye().y - b.p.eye().y).abs() < 1e-5);
     }
 }

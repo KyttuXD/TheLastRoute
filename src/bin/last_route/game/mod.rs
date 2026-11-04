@@ -8,6 +8,7 @@ mod guest_gate;
 mod guest_apply;
 mod interact;
 pub mod ladder;
+pub mod level_stack;
 pub mod pipes;
 pub mod swim;
 #[cfg(test)]
@@ -337,6 +338,7 @@ impl Game {
             world,
             world_dirty: true,
         };
+        g.p.floor_y = level_stack::floor_y_of(0);
         g.start_floor_sim(content, catalog);
         g
     }
@@ -377,6 +379,7 @@ impl Game {
         let fac = crate::world::infinite::placeholder(&seed, catalog);
         let mut g = Game::new_shell(difficulty, run_seed, fac, Fixtures::default());
         g.room_text = room_text.to_string();
+        g.p.floor_y = level_stack::floor_y_of(level);
         g.inf = Some(endless::InfState::new(&seed, level));
         g.enter_infinite(content, catalog);
         g

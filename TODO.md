@@ -113,6 +113,7 @@ Sources: the website game at KyttusLab/games/night-watch (src/modes, docs/ROADMA
 
 ## Multiplayer (Last Route)
 
+- [ ] Nearby-player text to speech comes first (KT, 2026-11-04): a chat line from a player near you is spoken aloud (volume and range by distance, a per-player mute and a speech toggle in Settings, rate and voice in data). Voice chat (capture, IMA ADPCM codec, playback) is a later step and builds on the same range and mute rules.
 - [ ] Two-window room test: one host and one guest on this laptop, room code join, both see each other move (still needs a person at the screen, KT-MBA)
 - [ ] Two-machine test: the Mac on KT-MBA joins a room hosted on this laptop, and the reverse
 - [ ] Nightly server build: deploy the nightly-server Linux build to the VPS (194.156.90.219) after a check on a test port
@@ -264,6 +265,10 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [ ] Port XR (OpenXR headset) mode: comfort and fade, gaze pointer, hand tracking, and the route and menu panels in 3D (effort L; game/xr/xr_comfort.gd)
 
 ## Known bugs (2026-11-03)
+- [ ] Skin menu is missing two things (KT, 2026-11-04): (1) the TEMPLATE button only says "not in this build yet" (ui/settings_panel.rs ~line 676); it must save `lastroute_skin_template.png`, the 64x64 template (Godot `PlayerSkin.template_png()`, `skin_panel.gd` _save_template / write_template), to the Downloads folder or through a save dialog and report the path. (2) the preview is a flat 2D stand-in (`draw_preview`); it must show the skin on the rotating 3D mannequin (`assets/player/player_mannequin.bbmodel`, scaled to the 1.60 m runner as in `skin_panel.gd`), turning on its own and with the chosen or picked skin applied live.
+- [ ] Locker hiding must be a real 3D view, not a 2D overlay (KT, 2026-11-04). Today ui/hud.rs paints black bars with four slits over the screen and render/scene.rs skips drawing the locker while hidden. Godot (`player_controller_3d.gd` enter_hiding / _begin_hide_move, `route_interactable_3d.gd` hiding_inside_position, hiding_eye_height, hiding_outward_yaw, _build_hide_seal, set_local_hiding_view): the camera moves into the locker (behind the vent band, eye centred on the vent band, yaw = the locker's facing), the player sees out through the real door louvres of the 3D model, and a dark two-sided shell just inside the prop bounds stops the hider seeing out through back faces. Remove the HUD bars; keep the LEAVE / LOCKED IN text. Wardrobes and beds get the same treatment (bed: lie flat, slit under the foot). Runs after the stairs phases 1 and 2 (both touch game/player.rs and render/scene.rs).
+  - [ ] The locker is physical with the player inside: the runner's body stays in the locker (visible to other players, hunters and bots) so the hunter locker animations (search tell, open, reach in, pull out; Javelle, Loxelle and the others) play against a real occupant. Hunters and co-op peers see the hider's figure in the locker, not an empty locker.
+  - [ ] Look limits while hidden (KT, 2026-11-04): the camera must not be rigidly tied to the locker so that free look is lost or broken. Keep the camera independent of the locker's shake (search tell, door swing) and limit the look to a small yaw and pitch cone through the vents (cone sizes in data/ JSON), or lock the look while the locker moves. No free look through the walls.
 
 - [ ] Beds stick out of rooms into the hallway behind them (in progress: workflow bed-placement-fix; see furnished.rs bed placement)
 - [ ] Dossier: the mouse wheel scroll jumps back to the top. Not reproduced from the code; needs the tab and steps from the person testing it

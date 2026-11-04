@@ -762,6 +762,7 @@ impl Game {
         inf.route_key = None;
         self.depth = 1 - inf.level;
         self.fac = fac;
+        self.fac.level = level;
         self.fix = fix;
         // the focus is a prop index of the window just replaced: it would name another door in this one
         self.focus = None;
@@ -1170,6 +1171,7 @@ impl Game {
         if let Some(inf) = self.inf.as_mut() {
             inf.level = to;
         }
+        self.p.floor_y = super::level_stack::floor_y_of(to);
         self.load_window(content, catalog);
         arrive(&mut *self);
         // the level's own hunters come back where they were; a level not visited before gets its lineup

@@ -12,7 +12,7 @@
 //! always on that side, as in `facility::stair_well_cells`). The anchor cell is the landing A at `u` in `-1..0`.
 
 use super::facility::Cell;
-use super::vertical::STOREY;
+use super::vertical::{STEPS_PER_CELL, STOREY};
 use std::f32::consts::{PI, TAU};
 use std::sync::OnceLock;
 
@@ -129,9 +129,38 @@ impl ShapeWeights {
     }
 }
 
+/// An inclusive range a tunable must stay inside (`limits` in data/flights.json).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Limit {
+    pub min: f32,
+    pub max: f32,
+}
+
+impl Limit {
+    fn holds(&self, n: f32) -> bool {
+        n >= self.min && n <= self.max
+    }
+}
+
+/// The bounds `validate` holds the tunables to (the `limits` block of data/flights.json).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlightLimits {
+    /// Slab thickness in metres.
+    pub slab: Limit,
+    pub max_riser: Limit,
+    pub margin_cells: Limit,
+    pub sb_length: Limit,
+    pub sb_lane_width: Limit,
+    pub st_length: Limit,
+    pub st_width: Limit,
+    pub sp_lane_width: Limit,
+    pub sp_radius: Limit,
+}
+
 /// Every flight tunable (data/flights.json).
 #[derive(Clone, Debug, PartialEq)]
 pub struct FlightRules {
+    pub limits: FlightLimits,
     pub storey: f32,
     pub slab: f32,
     pub rise_total: f32,
@@ -177,6 +206,16 @@ fn jint(v: &Json, path: &[&str]) -> Result<i32, String> {
     Ok(n as i32)
 }
 
+/// A `{ "min": a, "max": b }` limit; a missing or inverted one is refused.
+fn jlimit(v: &Json, name: &str) -> Result<Limit, String> {
+    let min = jnum(v, &["limits", name, "min"])?;
+    let max = jnum(v, &["limits", name, "max"])?;
+    if min > max {
+        return Err(format!("flights.json: limits.{name} is inverted: min {min} is above max {max}"));
+    }
+    Ok(Limit { min, max })
+}
+
 fn jweights(v: &Json, label: &str) -> Result<ShapeWeights, String> {
     let get = |k: &str| -> Result<f32, String> {
         let n = v
@@ -212,7 +251,19 @@ impl FlightRules {
             }
             region_weights.sort_by_key(|(l, _)| *l);
         }
+        let limits = FlightLimits {
+            slab: jlimit(&v, "slab")?,
+            max_riser: jlimit(&v, "max_riser")?,
+            margin_cells: jlimit(&v, "margin_cells")?,
+            sb_length: jlimit(&v, "switchback_length")?,
+            sb_lane_width: jlimit(&v, "switchback_lane_width")?,
+            st_length: jlimit(&v, "straight_length")?,
+            st_width: jlimit(&v, "straight_width")?,
+            sp_lane_width: jlimit(&v, "spiral_lane_width")?,
+            sp_radius: jlimit(&v, "spiral_radius")?,
+        };
         let rules = FlightRules {
+            limits,
             storey: jnum(&v, &["storey"])?,
             slab: jnum(&v, &["slab"])?,
             rise_total: jnum(&v, &["rise_total"])?,
@@ -247,24 +298,28 @@ impl FlightRules {
                 self.rise_total, self.storey
             ));
         }
-        if !(0.0..self.storey * 0.5).contains(&self.slab) {
-            return Err(format!("flights.json: slab {} must be from 0 to half a storey", self.slab));
-        }
-        if !(0.05..=0.5).contains(&self.max_riser) {
-            return Err(format!("flights.json: max_riser {} must be from 0.05 to 0.5", self.max_riser));
-        }
+        let l = &self.limits;
+        let ranged = |label: &str, n: f32, r: &Limit| -> Result<(), String> {
+            if r.holds(n) {
+                Ok(())
+            } else {
+                Err(format!("flights.json: {label} {n} must be from {} to {} (limits)", r.min, r.max))
+            }
+        };
+        ranged("slab", self.slab, &l.slab)?;
+        ranged("max_riser", self.max_riser, &l.max_riser)?;
         if self.steps_per_cell < 1.0 || self.steps_per_cell.fract() != 0.0 {
             return Err(format!("flights.json: steps_per_cell {} must be a whole number of 1 or more", self.steps_per_cell));
         }
-        if !(0..=4).contains(&self.margin_cells) {
-            return Err(format!("flights.json: margin_cells {} must be from 0 to 4", self.margin_cells));
+        if !near(self.steps_per_cell, STEPS_PER_CELL as f32) {
+            return Err(format!(
+                "flights.json: steps_per_cell {} must equal the game's STEPS_PER_CELL {STEPS_PER_CELL} (world/vertical.rs)",
+                self.steps_per_cell
+            ));
         }
-        if !(3..=8).contains(&self.sb_length) {
-            return Err(format!("flights.json: switchback.length {} must be from 3 to 8", self.sb_length));
-        }
-        if !(1..=3).contains(&self.sb_lane_width) {
-            return Err(format!("flights.json: switchback.lane_width {} must be from 1 to 3", self.sb_lane_width));
-        }
+        ranged("margin_cells", self.margin_cells as f32, &l.margin_cells)?;
+        ranged("switchback.length", self.sb_length as f32, &l.sb_length)?;
+        ranged("switchback.lane_width", self.sb_lane_width as f32, &l.sb_lane_width)?;
         if self.sb_mid_rise <= 0.0 || self.sb_mid_rise >= self.rise_total {
             return Err(format!(
                 "flights.json: switchback.mid_landing_rise {} must be above 0 and below rise_total {}",
@@ -277,21 +332,16 @@ impl FlightRules {
                 self.sb_mid_len, self.sb_length
             ));
         }
-        if !(4..=16).contains(&self.st_length) {
-            return Err(format!("flights.json: straight.length {} must be from 4 to 16", self.st_length));
+        ranged("straight.length", self.st_length as f32, &l.st_length)?;
+        ranged("straight.width", self.st_width as f32, &l.st_width)?;
+        ranged("spiral.lane_width", self.sp_lane_width as f32, &l.sp_lane_width)?;
+        if self.sp_lane_width % 2 == 0 {
+            return Err(format!("flights.json: spiral.lane_width {} must be odd", self.sp_lane_width));
         }
-        if !(1..=4).contains(&self.st_width) {
-            return Err(format!("flights.json: straight.width {} must be from 1 to 4", self.st_width));
+        if self.sp_radius.fract() != 0.0 {
+            return Err(format!("flights.json: spiral.radius {} must be a whole number of cells", self.sp_radius));
         }
-        if self.sp_lane_width % 2 == 0 || !(1..=3).contains(&self.sp_lane_width) {
-            return Err(format!("flights.json: spiral.lane_width {} must be 1 or 3", self.sp_lane_width));
-        }
-        if self.sp_radius.fract() != 0.0 || self.sp_radius < 1.0 || self.sp_radius > 6.0 {
-            return Err(format!(
-                "flights.json: spiral.radius {} must be a whole number of cells from 1 to 6",
-                self.sp_radius
-            ));
-        }
+        ranged("spiral.radius", self.sp_radius, &l.sp_radius)?;
         if self.sp_radius - self.sp_lane_width as f32 * 0.5 < 0.5 {
             return Err("flights.json: spiral.radius leaves no centre column inside the lane".to_string());
         }
@@ -354,9 +404,9 @@ pub fn max_riser_of(rules: &FlightRules, shape: FlightShape) -> f32 {
 // Shape choice
 // ---------------------------------------------------------------------------------------------------------------------
 
-fn mix(seed: u64, level: i32, cell: Cell, salt: u64) -> u64 {
+fn mix(seed: u64, upper_level: i32, cell: Cell, salt: u64) -> u64 {
     let mut z = seed ^ salt;
-    z = z.wrapping_add((level as i64 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    z = z.wrapping_add((upper_level as i64 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
     z ^= (cell.x as i64 as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
     z ^= (cell.y as i64 as u64).wrapping_mul(0x1656_67B1_9E37_79F9);
     z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -369,11 +419,14 @@ fn unit(h: u64) -> f64 {
     (h >> 11) as f64 / (1u64 << 53) as f64
 }
 
-/// The shape of the stairwell at `cell` on `level` of world `seed`: a pure function, weighted by the data (the
-/// region's weights when `level` has its own, else the default).
-pub fn shape_for_with(rules: &FlightRules, seed: u64, level: i32, cell: Cell) -> FlightShape {
-    let w = rules.weights_for(level);
-    let x = unit(mix(seed, level, cell, 0xF11_6847)) as f32 * w.total();
+/// The shape of the stairwell at `cell` of world `seed`: a pure function, weighted by the data (the region's weights
+/// when `upper_level` has its own, else the default). Callers pass the UPPER level of the connection (the level whose
+/// floor the top reaches, `Flight::upper_level`) and the landing cell A on it, so both sides of one stairwell, which
+/// know the same flight, get the same shape. The lower side passes `lower_level + 1` and the anchor that
+/// `Flight::from_foot_with` finds.
+pub fn shape_for_with(rules: &FlightRules, seed: u64, upper_level: i32, cell: Cell) -> FlightShape {
+    let w = rules.weights_for(upper_level);
+    let x = unit(mix(seed, upper_level, cell, 0xF11_6847)) as f32 * w.total();
     if x < w.switchback {
         FlightShape::Switchback
     } else if x < w.switchback + w.straight || w.spiral <= 0.0 {
@@ -387,13 +440,14 @@ pub fn shape_for_with(rules: &FlightRules, seed: u64, level: i32, cell: Cell) ->
     }
 }
 
-pub fn shape_for(seed: u64, level: i32, cell: Cell) -> FlightShape {
-    shape_for_with(flights(), seed, level, cell)
+pub fn shape_for(seed: u64, upper_level: i32, cell: Cell) -> FlightShape {
+    shape_for_with(flights(), seed, upper_level, cell)
 }
 
-/// Which way a spiral at `cell` turns: a pure function of the seed, level and cell.
-pub fn spiral_clockwise_for(seed: u64, level: i32, cell: Cell) -> bool {
-    mix(seed, level, cell, 0x5B1_7A15) & 1 == 1
+/// Which way a spiral at `cell` turns: a pure function of the seed, the UPPER level and the anchor cell (see
+/// [`shape_for_with`]), so both sides of one stairwell agree.
+pub fn spiral_clockwise_for(seed: u64, upper_level: i32, cell: Cell) -> bool {
+    mix(seed, upper_level, cell, 0x5B1_7A15) & 1 == 1
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
