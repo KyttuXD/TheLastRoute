@@ -694,3 +694,27 @@ fn both_levels_agree_on_the_lane_dividers() {
     assert!(pairs > 0, "no stair pair found");
     report("lane dividers", &fails);
 }
+
+/// Level-0 maze stairwells are sparse, as in Godot (`Stairwells.CHANCE[0] = .12` before its fit veto): about 7 to 10 %
+/// of chunks here. A window with no maze stair at all is normal, the way down is mostly the sewer ladders; this test
+/// pins the rate so a change to it is a decision, not an accident (the owner's "stairs do not link" report was in part
+/// this, see docs/OPEN_QUESTIONS.md).
+#[test]
+fn level0_maze_wells_are_sparse_like_godot() {
+    use super::route::live::layout_stairwells;
+    const SPAN: i32 = 10;
+    const MIN_SHARE: f32 = 0.05;
+    const MAX_SHARE: f32 = 0.12;
+    for seed in ["1426541270", "4157433391", "2899547009", "77"] {
+        let mut wells = 0usize;
+        let mut chunks = 0usize;
+        for cx in -SPAN..=SPAN {
+            for cy in -SPAN..=SPAN {
+                chunks += 1;
+                wells += layout_stairwells(seed, ChunkKey { cx, cy, level: 0 }).len();
+            }
+        }
+        let share = wells as f32 / chunks as f32;
+        assert!((MIN_SHARE..=MAX_SHARE).contains(&share), "seed {seed}: {wells} wells in {chunks} chunks ({share:.3})");
+    }
+}

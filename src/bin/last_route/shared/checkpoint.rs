@@ -33,13 +33,12 @@ impl Checkpoint {
         }
     }
 
-    /// The absolute y to resume at: the stored y, or (a legacy save carrying only the label) the
-    /// floor of its level, local pose 0.
+    /// The absolute y to resume at: always the floor of the resumed level. A run resumes at the level's start cell (the
+    /// save stores no x/z), and the start cell is on the floor: a saved y taken mid-flight (the relabel autosaves a
+    /// couple of metres off the old floor) would hang the body in the air over the start cell and drop it with a hard
+    /// landing. `y` still decides the label through `level()`.
     pub fn migrated_y(&self) -> f32 {
-        match self.y {
-            Some(y) if y.is_finite() => y,
-            _ => crate::game::level_stack::floor_y_of(self.level()),
-        }
+        crate::game::level_stack::floor_y_of(self.level())
     }
 }
 
@@ -187,7 +186,7 @@ mod tests {
         assert_eq!(v["depth"], -2);
         let c = from_json(&v).expect("round trip");
         assert_eq!(c.y, Some(y));
-        assert_eq!(c.migrated_y(), y);
+        assert_eq!(c.migrated_y(), crate::game::level_stack::floor_y_of(-2), "a resume stands on the floor of its level");
     }
 
     #[test]

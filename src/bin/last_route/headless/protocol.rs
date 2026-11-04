@@ -55,6 +55,7 @@ pub const COMMANDS: &[&str] = &[
     "step_until",
     "walk",
     "walk_flight",
+    "stairs_report",
     "bot",
     "hash",
     "help",
@@ -334,6 +335,10 @@ impl Session {
             "step_until" => self.step_until(c),
             "walk" => self.walk(c),
             "walk_flight" => self.walk_flight(c),
+            "stairs_report" => match self.sim.game.as_ref() {
+                Some(g) => json!({ "ok": true, "stairs_report": stairs_report(g) }),
+                None => err("no active game"),
+            },
             "ui" => {
                 json!({ "ok": true, "ui": { "buttons": [], "focus": "" }, "scene": self.scene() })
             }
@@ -1716,6 +1721,65 @@ impl Session {
     }
 }
 
+/// How many flights `stairs_report` lists.
+const REPORT_FLIGHTS: usize = 3;
+
+/// The diagnostic of the stair links around the runner: the window origin and label, the resident levels, and for the
+/// nearest `REPORT_FLIGHTS` flights of the active level (ladders included, marked) their absolute landing and foot cells,
+/// run, shape, well size, the walking surface at both ends, and whether the neighbour level holds the matching record
+/// (`twin`: the other level's stair whose end cell is this flight's far end). `twin` is null while that level is not
+/// resident. Cells are absolute (the window origin added); `surface_rel` is the tread height above the active floor, or
+/// null off the flight.
+pub(crate) fn stairs_report(g: &crate::game::Game) -> Value {
+    use crate::world::facility::LinkKind;
+    let inf = g.inf.as_ref();
+    let (ox, oy) = inf.map_or((0, 0), |i| i.origin());
+    let level = g.fac.level;
+    let abs = |c: crate::world::Cell| json!([c.x + ox, c.y + oy]);
+    let mut near: Vec<_> = g.fac.stairs.iter().copied().collect();
+    near.sort_by(|a, b| pdist(a.cell.center(), g.p.pos).total_cmp(&pdist(b.cell.center(), g.p.pos)));
+    let flights: Vec<Value> = near
+        .iter()
+        .take(REPORT_FLIGHTS)
+        .map(|s| {
+            let (landing, foot) = (s.landing(), s.foot());
+            let to = level + s.dir;
+            let twin = inf.and_then(|i| i.stack.get(to)).map(|r| {
+                r.fac.stairs.iter().any(|t| {
+                    t.dir == -s.dir && t.kind == s.kind && if s.dir < 0 { t.cell == foot } else { t.cell == landing }
+                })
+            });
+            let surface = |c: crate::world::Cell| {
+                let (x, z) = c.center();
+                s.surface_rel(level, x, z).map_or(Value::Null, |h| json!(r2(h)))
+            };
+            json!({
+                "kind": if matches!(s.kind, LinkKind::Stairs) { "stairs" } else { "ladder" },
+                "dir": s.dir,
+                "to_level": to,
+                "shape": format!("{:?}", s.shape).to_lowercase(),
+                "run": [s.run.0, s.run.1],
+                "landing": abs(landing),
+                "foot": abs(foot),
+                "distance": r2(pdist(s.cell.center(), g.p.pos)),
+                "well_cells": s.well_cells().len(),
+                "surface_rel_landing": surface(landing),
+                "surface_rel_foot": surface(foot),
+                "neighbour_resident": inf.is_some_and(|i| i.stack.has(to)),
+                "twin": twin,
+            })
+        })
+        .collect();
+    json!({
+        "level": level,
+        "origin": [ox, oy],
+        "center": inf.map(|i| json!([i.center.0, i.center.1])),
+        "resident_levels": inf.map(|i| i.stack.levels()).unwrap_or_default(),
+        "player": { "cell": [g.p.pos.0.floor() as i32 + ox, g.p.pos.1.floor() as i32 + oy], "y": r2(g.p.y()), "on_flight": crate::game::player::stair_height_at(&g.fac, g.p.pos).is_some() },
+        "flights": flights,
+    })
+}
+
 fn snap(v: &Value) -> Value {
     match v {
         Value::Number(n) if n.is_f64() => {
@@ -1725,5 +1789,41 @@ fn snap(v: &Value) -> Value {
         Value::Array(a) => Value::Array(a.iter().map(snap).collect()),
         Value::Object(o) => Value::Object(o.iter().map(|(k, v)| (k.clone(), snap(v))).collect()),
         other => other.clone(),
+    }
+}
+
+#[cfg(test)]
+mod stairs_report_tests {
+    use super::*;
+    use crate::audio::Sounds;
+    use crate::content::Content;
+    use crate::game::{Controls, Game};
+    use crate::world::catalog::Catalog;
+
+    #[test]
+    fn the_stairs_report_lists_the_nearest_flights_with_their_twins() {
+        let (c, cat) = (Content::load(), Catalog::load());
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-STACK-6", 0, &c, &cat);
+        let first = g.fac.stairs.first().copied().expect("ROOM-STACK-6 has a stair on level 0");
+        g.p.pos = first.cell.center();
+        g.step(1.0 / 60.0, &Controls::default(), &c, &cat, &Sounds::default());
+        let r = stairs_report(&g);
+        assert_eq!(r["level"], 0);
+        let origin = g.inf.as_ref().unwrap().origin();
+        assert_eq!(r["origin"], json!([origin.0, origin.1]));
+        let flights = r["flights"].as_array().unwrap();
+        assert!(!flights.is_empty() && flights.len() <= REPORT_FLIGHTS);
+        let d: Vec<f64> = flights.iter().map(|f| f["distance"].as_f64().unwrap()).collect();
+        assert!(d.windows(2).all(|w| w[0] <= w[1]), "nearest first: {d:?}");
+        let f = &flights[0];
+        assert_eq!(f["to_level"].as_i64(), f["dir"].as_i64());
+        assert!(f["well_cells"].as_u64().unwrap() > 0);
+        assert_eq!(f["twin"], json!(true), "the level beneath is resident beside a flight and holds the matching record: {f}");
+        assert!(f["surface_rel_landing"].is_number() || f["kind"] == "ladder", "the landing is a tread: {f}");
+    }
+
+    #[test]
+    fn the_stairs_report_is_a_listed_command() {
+        assert!(COMMANDS.contains(&"stairs_report"));
     }
 }

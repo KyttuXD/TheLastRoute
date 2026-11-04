@@ -698,6 +698,9 @@ pub struct StreamBudget {
     pub jump_steps: i32,
     /// A neighbour level builds at most this many chunk parts in a frame.
     pub neighbour_chunks_per_frame: usize,
+    /// While the eye is within the prefetch distance of an opening of the active floor a neighbour builds this many
+    /// chunk parts in a frame instead, so the well never shows an unbuilt pit for long.
+    pub neighbour_near_chunks_per_frame: usize,
     /// A neighbour level holds at most this many chunk parts.
     pub neighbour_max_parts: usize,
     /// A neighbour level builds only chunk parts this many metres (or less) from a stairwell opening.
@@ -705,7 +708,7 @@ pub struct StreamBudget {
 }
 
 impl StreamBudget {
-    /// Parses `{ "frame_budget_ms", "per_queued_ms", "max_budget_ms", "chunks_per_frame", "jump_steps", "neighbour_chunks_per_frame", "neighbour_max_parts", "neighbour_cull_radius" }`; the times
+    /// Parses `{ "frame_budget_ms", "per_queued_ms", "max_budget_ms", "chunks_per_frame", "jump_steps", "neighbour_chunks_per_frame", "neighbour_near_chunks_per_frame", "neighbour_max_parts", "neighbour_cull_radius" }`; the times
     /// must be positive, chunks_per_frame a whole number of at least 1 and jump_steps one of at least 1.
     pub fn parse(text: &str) -> Result<StreamBudget, String> {
         let value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
@@ -742,6 +745,7 @@ impl StreamBudget {
             chunks_per_frame: chunks as usize,
             jump_steps,
             neighbour_chunks_per_frame: whole("neighbour_chunks_per_frame")?,
+            neighbour_near_chunks_per_frame: whole("neighbour_near_chunks_per_frame")?,
             neighbour_max_parts: whole("neighbour_max_parts")?,
             neighbour_cull_radius: num("neighbour_cull_radius")? as f32,
         })
@@ -777,6 +781,7 @@ pub fn stream_table() -> &'static StreamBudget {
                 chunks_per_frame: 4,
                 jump_steps: 1,
                 neighbour_chunks_per_frame: 2,
+                neighbour_near_chunks_per_frame: 4,
                 neighbour_max_parts: 12,
                 neighbour_cull_radius: 14.0,
             }
@@ -2040,6 +2045,7 @@ mod stream_budget_tests {
   "chunks_per_frame": 4,
   "jump_steps": 1,
   "neighbour_chunks_per_frame": 2,
+  "neighbour_near_chunks_per_frame": 4,
   "neighbour_max_parts": 12,
   "neighbour_cull_radius": 14.0
 }"#;
@@ -2053,6 +2059,8 @@ mod stream_budget_tests {
         assert_eq!(t.chunks_per_frame, 4, "streamed_facility_view_3d.gd STARTUP_CHUNKS_PER_FRAME");
         assert_eq!(t.jump_steps, 1, "streamed_facility_view_3d.gd 726-727: more than one chunk away is a jump");
         assert_eq!(t.neighbour_chunks_per_frame, 2);
+        assert_eq!(t.neighbour_near_chunks_per_frame, 4);
+        assert!(t.neighbour_near_chunks_per_frame >= t.neighbour_chunks_per_frame, "near an opening the neighbour builds faster");
         assert_eq!(t.neighbour_max_parts, 12);
         assert_eq!(t.neighbour_cull_radius, 14.0);
     }
@@ -2424,6 +2432,20 @@ mod stack_mesh_tests {
         assert!(!tight.is_empty(), "the part holding the opening is always wanted");
     }
 
+    /// The part holding the well is built first (nearest first, distance 0 inside the opening's own part), so the pit is
+    /// filled before the rest of the neighbour.
+    #[test]
+    fn the_first_wanted_part_holds_the_well() {
+        let (f, frame) = sample_window();
+        let ops = openings(&f);
+        let wanted = neighbour_wanted(window_parts(&f, frame), frame, &ops, 1000.0, 99);
+        assert!(wanted.len() > 1);
+        assert_eq!(dist(&wanted[0].0, frame, &ops), 0.0, "the first part contains an opening centre");
+        for w in wanted.windows(2) {
+            assert!(dist(&w[0].0, frame, &ops) <= dist(&w[1].0, frame, &ops), "nearest first");
+        }
+    }
+
     #[test]
     fn neighbour_max_parts_is_a_hard_cap() {
         let (f, frame) = sample_window();
@@ -2449,7 +2471,7 @@ mod stack_mesh_tests {
     fn the_neighbour_budget_follows_the_data() {
         let t = StreamBudget::parse(
             r#"{"frame_budget_ms":4.0,"per_queued_ms":1.0,"max_budget_ms":9.0,"chunks_per_frame":4,"jump_steps":1,
-            "neighbour_chunks_per_frame":2,"neighbour_max_parts":12,"neighbour_cull_radius":14.0}"#,
+            "neighbour_chunks_per_frame":2,"neighbour_near_chunks_per_frame":4,"neighbour_max_parts":12,"neighbour_cull_radius":14.0}"#,
         )
         .unwrap();
         assert!(neighbour_allows(&t, 2, 0, 999.0, 5), "the first always builds");

@@ -43,6 +43,23 @@ pub fn wants_neighbour(eye: (f32, f32, f32), openings: &[Opening], reach: f32, o
         })
 }
 
+/// How many neighbour chunk parts may be built this frame: the data's raised count while the eye is within `reach`
+/// metres of an opening of the active floor (or on a link), whose well must not show an unbuilt pit, else the
+/// steady-state count.
+pub fn neighbour_parts_per_frame(
+    eye: (f32, f32, f32),
+    own_openings: &[Opening],
+    reach: f32,
+    on_link: bool,
+    table: &world_mesh::StreamBudget,
+) -> usize {
+    if wants_neighbour(eye, own_openings, reach, on_link) {
+        table.neighbour_near_chunks_per_frame.max(table.neighbour_chunks_per_frame)
+    } else {
+        table.neighbour_chunks_per_frame
+    }
+}
+
 /// Whether the eye is between the floors (below the active floor, or above a standing eye on a way up).
 pub fn eye_on_flight(eye_y: f32) -> bool {
     eye_y < -0.05 || eye_y > STOREY * 0.5
@@ -148,7 +165,7 @@ impl NeighbourWorlds {
                     openings,
                     radius: table.neighbour_cull_radius,
                     max_parts: table.neighbour_max_parts,
-                    chunks_per_frame: table.neighbour_chunks_per_frame,
+                    chunks_per_frame: neighbour_parts_per_frame(eye, &own_openings, reach, on_flight, table),
                 };
                 m.level = r.level;
                 m.dy = dy;
@@ -282,6 +299,18 @@ mod tests {
         assert!(behind_slab(1.6, STOREY, &[near, far]));
         assert!(!behind_slab(STOREY + 1.0, STOREY, &[near]));
         assert!(behind_slab(1.6, -STOREY, &[(vec3(0.0, -STOREY, 0.0), vec3(1.0, -0.5, 1.0))]));
+    }
+
+    #[test]
+    fn a_neighbour_builds_faster_near_an_opening_of_the_active_floor() {
+        let t = world_mesh::stream_table();
+        let o = Opening { cells: Vec::new(), centre: (10.0, 10.0), upper_level: 0 };
+        let near = neighbour_parts_per_frame((10.0, 1.6, 12.0), std::slice::from_ref(&o), 8.0, false, t);
+        let far = neighbour_parts_per_frame((60.0, 1.6, 12.0), std::slice::from_ref(&o), 8.0, false, t);
+        assert_eq!(near, t.neighbour_near_chunks_per_frame);
+        assert_eq!(far, t.neighbour_chunks_per_frame);
+        assert!(near > far, "the raised budget is real");
+        assert_eq!(neighbour_parts_per_frame((60.0, -2.0, 12.0), &[], 8.0, true, t), near, "on a flight it is raised");
     }
 
     #[test]

@@ -96,3 +96,15 @@ Short answers are fine. Where there is a default, the work goes ahead with it if
 ## Stairs project decisions D1-D8
 
 The stairs questions D1 to D8 in the old list are answered in the Decisions table of [STAIRS_CONTINUOUS_DESIGN.md](STAIRS_CONTINUOUS_DESIGN.md) and implemented (phases 0-9).
+
+## Stairs: flights or Godot ramps (owner call)
+
+27. Godot links levels -1 to -2 and -2 to -3 with 12-cell RAMP tunnels (`sewer_route_generator.gd` 134-186, `docs/SEWERS.md` 12-16), and
+    its maze-to-sewer wells use `Stairwells.CHANCE[0] = .12`, `SPIRAL_SHARE[0] = .5` and the 8 `MAZE_AREAS` (`stairwells.gd` 20-37), vetoed
+    by `_maze_stairwell_fits` (`streamed_route_generator.gd` 567). Rust links -1 to -2 and -2 to -3 with walked flights
+    (`infinite::stair_link`, `STAIR_CHANCE` 0.3) and has maze wells in about 7 to 10 % of level-0 chunks (pinned by
+    `level0_maze_wells_are_sparse_like_godot`), so many level-0 windows have no stairwell and the way down is mostly the sewer ladders. When
+    you say "stairs do not link to the other floors", do you mean (a) a flight you walked that did not connect (then run the protocol command
+    `stairs_report` standing there and send the seed, the level and its output; `docs/AGENT_CLI.md`), (b) that there are too few
+    stairs on level 0, or (c) that you expect Godot's ramps below the first sewer? Keep the flights, or port the ramps?
+    **Default:** keep the flights (decision D1 chose the three shapes); no ramps.
