@@ -1,0 +1,5 @@
+# Stable-safe build settings. Linker stays the platform default (no lld assumed).
+# Jobs are left to cargo. Release and ci profiles are unaffected.
+
+[target.'cfg(target_os = "macos")']
+rustflags = ["-C", "split-debuginfo=unpacked"]

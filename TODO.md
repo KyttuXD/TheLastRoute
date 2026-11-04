@@ -431,7 +431,7 @@ Godot references are `game/...` under the KyttusLabApp folder.
 
 - [ ] In-game check of mouse vertical look. `docs/PARITY.md` item 1 reports an inverted sign, but macroquad 0.4.16 `input.rs` 75 gives `last - current` and `src/bin/last_route/app/mod.rs` 113-120 flips it back, which matches Godot's `player_controller_3d.gd` 1116. Item 1 looks wrong (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Update `docs/PARITY.md` items 2 and 3. Keyboard look already scales by sensitivity and normalises diagonals (`app/mod.rs` 124-127, tested at 916-940) (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [ ] `src/bin/last_route/app/settings.rs` line 7 says graphics quality changes nothing, but `targets()` in `app/mod.rs` scales the render target by quality. Fix the comment or the code
+- [x] `src/bin/last_route/app/settings.rs` line 7 says graphics quality changes nothing, but `targets()` in `app/mod.rs` scales the render target by quality. Fix the comment or the code
 
 ## Godot feature audit workflow (2026-11-01): full feature audit
 
@@ -930,3 +930,38 @@ Source: `LastRoute Godot\KyttusLabApp` (re-synced from the other computer) compa
 - [ ] Rust compile speed on the laptop: dev and CI profiles with trimmed debug info, linker choice per platform, split debug info, incremental builds. Record the cold and warm times before and after
 - [ ] CI speed plan for every platform (macOS and Windows first, then Linux): per-target parallel jobs, sccache, pinned toolchain, thin debug info, cargo-nextest. Aim for a reasonable compile time and record the time per job
 - [ ] Agent workflow efficiency: the reusable pass (.claude/workflows/edit-pass.js) runs sonnet low edit agents with no cargo, QA and format checks, one build, up to three test instances, then a review. Keep it current as the process changes
+
+## Audit follow-ups (2026-11-04)
+
+Source: the 2026-11-04 repo audit. Items that need a design decision are in `docs/TODO_AUDIT_2026-11-04.md`.
+
+### Security
+- [ ] Move the primary and test origins in `src/bin/last_route/net/config.rs` (lines 21-23) from http to https, and refuse http for non-loopback hosts; reconcile with the https refusal in `net/http.rs` line 134
+- [ ] Mod-pack downloads: verify every file against the manifest sha256 and size on the client before writing or loading it (`lr_server/packs/mod_packs.rs` line 4 promises it; no client check was found)
+- [ ] Replace the unwraps in `src/bin/lr_server/server/routes.rs` (`reserved.as_mut().unwrap()` at 466, 530, 867, 923 and `state.lock().unwrap()` at 161, 199, 298, 307) with error replies and poisoned-lock handling
+- [ ] Validate save `game_id` and `slot` in `lr_server/saves/game_saves.rs` line 31: allow only [A-Za-z0-9_-]{1,64}
+- [ ] Route-table test: every POST route in `routes.rs` has a body limit
+
+### Godot gaps (with Godot file and line)
+- [ ] Waterfall plunge and swim (`player_controller_3d.gd` 1154-1229, swim speed 1.5 at 357) into `game/player.rs`
+- [ ] Flood wading: per-cell depth, speed, noise and tiring (`player_controller_3d.gd` 336-338, 365-372, 1237-1256)
+- [ ] Soaked status and drip noise (`player_controller_3d.gd` 362-364, 1255 on): 30 s, noise scale 1.45, drip every 1.1-2.4 s
+- [ ] Water depth and surface height in the sewer mesh and collision (`sewer_route_generator.gd` 95-96; Rust `world/route/sewer/core.rs` 47-53)
+- [ ] Test flood reach 12 and cap 160 cells (`sewer_route_generator.gd` 910-911; `world/route/sewer/breach.rs` 49-50)
+- [ ] Wire `data/loot/sewer.json` into the pickup roll (`sewer_route_generator.gd` 662)
+- [ ] Sewer level ambience bed mapping (`game/audio/level_ambience.gd`) and the missing lava loop (`audio/emitter_loops.gd` 29, 44-45)
+- [ ] Check sewer extra relay chance .55 (`sewer_route_generator.gd` 27) and the hunter affinity lists (`sewer_route_generator.gd` 388 vs `world/route/sewer/hunters.rs` 43-45)
+- [ ] Inferno lava pits and the player following inferno floor heights (`world/inferno.rs`, `Inferno::height_at`)
+- [ ] Inferno cages and spider lair, with the -3 spider spawn rule (`config/secret_creatures.gd`)
+- [ ] Level-0 catwalk geometry and the see-through breakables list (`streamed_hunter_navigation.gd` 548-576)
+- [ ] Shared HardAbilities: burst, intercept, slam (`hunters/ai/hard_abilities.gd` 55, 60, 65, 179); confirm the Nyxie data file matches 15-19, 51-53
+- [ ] Check hunter constants against Godot: brain stuck/centre/give-up (`hunter_brain.gd` 30-43), hearing and sight (`hunter_seats.gd` 14-16), void sight 2.5 (`void_cyan_gimmick.gd` 7), relay rush 7 and delay (`hunter_director.gd` 10-13, 39)
+- [ ] NPC teammates: storey crossing (`npc_teammates.gd` 34, 396-567), chat with 30 s cooldown (52, 637), down and revive (235, 261), remaining command ops (47-51), 12 Hz sync (35)
+- [ ] Teammate waypoint overlay (`hud/teammate_waypoints.gd`, `hud/waypoint_overlay.gd`); the setting is saved and does nothing
+- [ ] Interactable diff: vent, lift, heater station against `assets/interactables/`
+- [ ] Remove the "did you hear that?" line (`game/hunting.rs` 253) and the STUNNED messages (`game/items.rs` 156, 196)
+
+### Docs
+- [ ] Update `docs/GIMMICKS.md` line 9 and 341, 368, 419: Nightmare is ported
+- [ ] Update `docs/GODOT_FEATURE_AUDIT.md` line 595: the Skin tab exists (`ui/settings_panel.rs` 612, 872)
+- [ ] Add a one-line note on direct stairs (no fade, no lockout) to the stairs docs

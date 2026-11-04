@@ -7,7 +7,7 @@
 export const meta = {
   name: 'edit-pass',
   description: 'Standard Last Route pass: parallel edit agents (sonnet low, no cargo), QA and format checks, one build, up to three test instances, then an adversarial review. Args: { label, extraRules, tasks: [{ n, files, task }] }',
-  phases: [{ title: 'Edit' }, { title: 'QA' }, { title: 'Build' }, { title: 'Test' }, { title: 'Review' }],
+  phases: [{ title: 'Edit' }, { title: 'Integrate' }, { title: 'QA' }, { title: 'Build' }, { title: 'Test' }, { title: 'Review' }],
 }
 
 const REPO = 'C:\\Users\\Kyttu\\Documents\\Projects\\LR Game Stuff\\LastRoute Rust'
@@ -30,22 +30,42 @@ ${extra}`
 
 const NO_CARGO = `Do NOT run cargo (no build, check or test) in this stage. Check by reading and by git diff on your own files.`
 
+// Shared hub files: many features need a line in them. Edit agents never touch them (two agents editing one file at the
+// same time is what broke braces in game/hunting.rs). They list each needed change under "hooks"; one Integrate agent
+// applies all hooks in a single pass.
+const HUBS = 'game/mod.rs, game/hunting.rs, game/endless.rs, game/interact.rs, game/npc.rs (unless it is your named file), net/world_sync.rs, ui/menus.rs, app/mod.rs, content/mod.rs, hunters/brain.rs, hunters/mod.rs, world/mod.rs, render/scene.rs, render/world_mesh.rs, config/mod.rs (all under src/bin/last_route/) unless a hub file is named in your own task'
+const HUB_RULE = `HUB FILES: do NOT edit these shared files unless your task names them: ${HUBS}. Put your feature in NEW files (new module, new data JSON, new tests) and list every change you need in a hub file under "hooks", as "file | anchor (the function or line to place it next to) | the exact code to add". An Integrate agent applies all hooks after the edit stage.`
+
 const SCHEMA = {
   type: 'object',
-  properties: { done: { type: 'string' }, files: { type: 'array', items: { type: 'string' } }, tests_written: { type: 'string' }, open: { type: 'string' } },
-  required: ['done', 'files', 'tests_written', 'open'],
+  properties: { done: { type: 'string' }, files: { type: 'array', items: { type: 'string' } }, tests_written: { type: 'string' }, hooks: { type: 'array', items: { type: 'string' } }, open: { type: 'string' } },
+  required: ['done', 'files', 'tests_written', 'hooks', 'open'],
 }
 
 phase('Edit')
 const built = await parallel(tasks.map(t => () => agent(`${RULES}
 ${NO_CARGO}
+${HUB_RULE}
 
 Task ${t.n} of ${tasks.length}. Own these files only: ${t.files}.
 ${t.task}
 
 Steps: git diff your files; implement; update tests your change breaks; write new tests; do not run cargo. Return what you did, the files and lines, the tests, and what is still open.`, { label: `task ${t.n}`, phase: 'Edit', model: 'sonnet', effort: 'low', schema: SCHEMA })))
 
-const reports = JSON.stringify(built)
+phase('Integrate')
+const allHooks = built.filter(Boolean).flatMap(b => (b.hooks || []).map(h => `task result: ${h}`))
+const integrate = await agent(`${RULES}
+${NO_CARGO}
+You are the single integrator. The edit agents did not touch the shared hub files (${HUBS}); they listed the changes they need. Apply every hook below to its file in ONE pass, in this order: declarations and module lists first (mod lines, pub use, struct fields and constructors), then function bodies, then tests. Resolve overlaps between hooks (two agents asking for the same line, or the same function). Keep each file's line endings and brace balance: after each file, re-read the edited region and count braces. If a hook is unclear or its anchor is gone, skip it and list it under "skipped". Add nothing that is not in a hook, except the minimal glue to make hooks compile together (imports, a missing field in a constructor).
+Return: files edited, hooks applied, hooks skipped with the reason.
+
+Hooks (${allHooks.length}):
+${allHooks.join('\n') || '(none)'}
+
+Task reports (for context):
+${JSON.stringify(built)}`, { label: 'integrate hooks', phase: 'Integrate', model: 'sonnet', effort: 'low' })
+
+const reports = JSON.stringify(built) + '\nIntegrate: ' + String(integrate)
 
 phase('QA')
 const [dataQa, compileQa, testQa] = await parallel([

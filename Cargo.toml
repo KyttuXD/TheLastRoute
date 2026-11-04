@@ -66,5 +66,15 @@ panic = "abort"
 inherits = "dev"
 debug = "line-tables-only"
 
+# Fast local iteration (cargo build --profile fast): cheaper than dev, still debuggable.
+[profile.fast]
+inherits = "dev"
+opt-level = 1
+debug = "line-tables-only"
+incremental = true
+
+[profile.fast.package."*"]
+opt-level = 2
+
 [patch.crates-io]
 quad-snd = { path = "src/bin/last_route/audio/quad-snd" }
