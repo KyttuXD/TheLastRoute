@@ -26,9 +26,19 @@ pub const MAX_ROOM_SIZE: i32 = 26;
 
 /// The built-in region files, `(file name, text)`. The game embeds the same files from data/regions/ at
 /// build time; a test in `content::regions` keeps the two lists equal.
-pub const BUILTIN_FILES: [(&str, &str); 3] = [
+pub const BUILTIN_FILES: [(&str, &str); 13] = [
+    ("regions/apartment.json", include_str!("../../data/regions/apartment.json")),
+    ("regions/beach.json", include_str!("../../data/regions/beach.json")),
+    ("regions/carnival.json", include_str!("../../data/regions/carnival.json")),
+    ("regions/gothic.json", include_str!("../../data/regions/gothic.json")),
+    ("regions/greenhouse.json", include_str!("../../data/regions/greenhouse.json")),
     ("regions/hospital.json", include_str!("../../data/regions/hospital.json")),
+    ("regions/hotel.json", include_str!("../../data/regions/hotel.json")),
+    ("regions/lab.json", include_str!("../../data/regions/lab.json")),
     ("regions/mall.json", include_str!("../../data/regions/mall.json")),
+    ("regions/mansion.json", include_str!("../../data/regions/mansion.json")),
+    ("regions/maze.json", include_str!("../../data/regions/maze.json")),
+    ("regions/prison.json", include_str!("../../data/regions/prison.json")),
     ("regions/sewer.json", include_str!("../../data/regions/sewer.json")),
 ];
 
@@ -39,7 +49,7 @@ pub const BUILTIN: &str = "builtin";
 
 /// Every top-level key of `lr.region/1` (Godot REGION_FIELDS). Any other key is an error. `geometry` and
 /// `safe_light` are optional: they were added to /1 before the first full release, so /1 stays the schema name.
-const KEYS: [&str; 12] = [
+const KEYS: [&str; 13] = [
     "schema",
     "id",
     "hall_floor",
@@ -52,6 +62,8 @@ const KEYS: [&str; 12] = [
     "prop_set",
     "geometry",
     "safe_light",
+    // the sewer level generator's layout rules (world/route/sewer/core.rs `Rules`); not read here
+    "layout",
 ];
 /// The keys of the optional `geometry` block.
 const GEOMETRY_KEYS: [&str; 3] = ["wall_height", "room_min", "room_max"];
@@ -572,8 +584,15 @@ mod tests {
         let mut warnings = vec![];
         let t = RegionTable::builtin(&mut warnings);
         assert!(warnings.is_empty(), "{warnings:?}");
+        // the built-in set grows as regions move to data, so check the known ones are there, not the whole list
         let ids: Vec<&str> = t.defs.iter().map(|d| d.id.as_str()).collect();
-        assert_eq!(ids, ["hospital", "mall"]);
+        for id in ["hospital", "mall"] {
+            assert!(ids.contains(&id), "built-in region {id} is missing from {ids:?}");
+        }
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), ids.len(), "duplicate region ids in {ids:?}");
         assert!(t.defs.iter().all(|d| d.source == BUILTIN));
     }
 
