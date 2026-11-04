@@ -96,7 +96,7 @@ jobs:
         with:
           key: macos
       - run: sh packaging/macos/build_app.sh
-      - run: cd dist && zip -qry last_route-macos-universal.zip "KYTTU The Last Route.app"
+      - run: sh packaging/macos/universal.sh
       - uses: actions/upload-artifact@v4
         continue-on-error: true
         with: { name: last_route-macos-universal, path: dist/last_route-macos-universal.zip, retention-days: 3 }
