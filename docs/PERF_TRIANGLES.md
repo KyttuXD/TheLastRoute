@@ -4,7 +4,7 @@ Measured for the Intel Mac FPS task. Source of truth for the counts is the glTF 
 
 ## Method
 
-- Scope: all 430 `.glb` files under `assets/`. Every one of them is parsed at startup by `Assets::load` in `src/shared/assets.rs` (the `props/` and `interactables/` trees, plus `pack:` props from content packs). Nothing else under `assets/` is a GLB.
+- Scope: all 430 `.glb` files under `assets/` (now `tools/props/source_glb/`). Every one of them is parsed at startup by `Assets::load` in `src/bin/last_route/shared/assets.rs` (the `props/` and `interactables/` trees, plus `pack:` props from content packs). Nothing else under `assets/` is a GLB.
 - Triangles per primitive: mode 4 (or unset) is index count / 3, mode 5 and 6 are count - 2. The count is the sum over the file's meshes, taken once per mesh.
 - Each heavy file has one mesh root, so the drawn count per instance equals the file count. Per-level instance counts were not measured.
 - Script: `C:\Users\Kyttu\AppData\Local\Temp\claude\C--Users-Kyttu-Documents-Projects-LR-Game-Stuff\a43ede59-bd7c-4884-aa74-987bb6181833\scratchpad\glb_tris.mjs` (output in the same folder as `glb_tris.json`).
@@ -19,16 +19,16 @@ Measured for the Intel Mac FPS task. Source of truth for the counts is the glTF 
 
 | # | File | Triangles | Where it is drawn |
 |---|------|----------:|-------------------|
-| 1 | `assets/interactables/hiding_spot.glb` | 1,144 | `src/render/scene.rs:244`, once per hiding locker |
+| 1 | `assets/interactables/hiding_spot.glb` | 1,144 | `src/bin/last_route/render/scene.rs:244`, once per hiding locker |
 | 2 | `assets/interactables/boarded_hallway.glb` | 1,100 | No Rust draw call; loaded into `Assets.glb` only |
-| 3 | `assets/interactables/lift.glb` | 732 | `src/render/scene.rs:369`, once per lift |
+| 3 | `assets/interactables/lift.glb` | 732 | `src/bin/last_route/render/scene.rs:369`, once per lift |
 | 4 | `assets/interactables/revive_kit.glb` | 712 | No Rust draw call; `item_file` has no revive kit |
 | 5 | `assets/interactables/boarded_door.glb` | 704 | No Rust draw call; loaded into `Assets.glb` only |
-| 6 | `assets/interactables/vent.glb` | 616 | `src/render/scene.rs:342`, once per vent |
+| 6 | `assets/interactables/vent.glb` | 616 | `src/bin/last_route/render/scene.rs:342`, once per vent |
 | 7 | `assets/interactables/backpack_large.glb` | 572 | No Rust draw call; loaded into `Assets.glb` only |
 | 8 | `assets/interactables/locked_relay_barrel.glb` | 544 | No Rust draw call; loaded into `Assets.glb` only |
-| 9 | `assets/interactables/music_box.glb` | 536 | `src/render/scene.rs:322`, once per music box |
-| 10 | `assets/props/maze/office_crt_security_console.glb` | 520 | Prop `officeCrtSecurityConsole` (`data/props/office.json`), one variant per room via `src/render/world_mesh.rs:336-345` |
+| 9 | `assets/interactables/music_box.glb` | 536 | `src/bin/last_route/render/scene.rs:322`, once per music box |
+| 10 | `assets/props/maze/office_crt_security_console.glb` | 520 | Prop `officeCrtSecurityConsole` (`data/props/office.json`), one variant per room via `src/bin/last_route/render/world_mesh.rs:336-345` |
 | 11 | `assets/props/maze/office_crt_security_console_charcoal.glb` | 520 | Same prop, variant |
 | 12 | `assets/props/maze/office_crt_security_console_teal.glb` | 520 | Same prop, variant |
 | 13 | `assets/props/sewer/sewer_bridge.glb` | 520 | Prop `sewerBridge` (`data/props/p11.json`) |

@@ -7,8 +7,8 @@ How agent workflows run on this project. Read this before writing a workflow scr
 - Two workflows may run together only if their file sets do not overlap. Write the file list in each
   script's batch description, and check it against the other running workflows first.
 - Shared hot files, never split across workflows: `src/bin/last_route/app/mod.rs`,
-  `src/bin/last_route/net/world_sync.rs`, `src/render/world_mesh.rs`, `src/render/shader.rs`,
-  `src/world/route/furnished.rs`, `TODO.md`.
+  `src/bin/last_route/net/world_sync.rs`, `src/bin/last_route/render/world_mesh.rs`, `src/bin/last_route/render/shader.rs`,
+  `src/bin/last_route/world/route/furnished.rs`, `TODO.md`.
 - Inside one workflow, batches run in order. Within a batch, agents run in parallel only when their
   files are disjoint.
 - Agents do not run cargo while other workflows are editing. Each workflow ends with a read-only report.

@@ -25,7 +25,7 @@ Read from `game/world/generation/` in the Godot project (`LastRoute Godot/Kyttus
 
 ## What the Rust port has (step 1)
 
-In `src/world/facility.rs`:
+In `src/bin/last_route/world/facility.rs`:
 
 - `DeckKind` (`Floor`, `Catwalk`) and `WalkSurface` (kind plus `height` in metres). The default is `Floor` at 0.0.
 - `Facility` keeps a sparse `walk_surface` map, the same style as `door_state`. A cell with no entry is `Floor` at 0.0 m.
@@ -42,4 +42,4 @@ In `src/world/facility.rs`:
   walk off a deck cell into a lower one.
 - **Rendering:** taller halls, the railed deck edges and the catwalk grating.
 
-Related code: [facility.rs](../src/world/facility.rs).
+Related code: [facility.rs](../src/bin/last_route/world/facility.rs).

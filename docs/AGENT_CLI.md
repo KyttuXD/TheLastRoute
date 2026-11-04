@@ -94,7 +94,7 @@ frame: `interact`, `flashlight`, `taser`, `tool_use`, `drop_item`, `hotbar_previ
 
 **admin**: `god` {on}, `no_target` {on}, `noclip` {on}, `speed` {scale 0.25..3}, `teleport` {x, y, z}
 (x/z grid, y ignored), plus port helpers `give` {item: flashlight|taser|crowbar|axe|battery|stim,
-count}, `set` {lamp, stamina, temperature, ambient, exposure, noise, coins, yaw, pitch}, `wake`
+count}, `set` {lamp, stamina, temperature, ambient, exposure, noise, coins, yaw, pitch}, `summon` {id, count} (the admin summon: hunters on the ring round you), `wake`
 {index, state: "wander"|"idle"} (activate a hunter), `hunter_to` {index, x, z | near: metres in
 front of you}, `flicker` {seconds, default 1.4} (force_flashlight_flicker: the beam strobes and [F] is locked). `god`/`no_target` mean no capture and nothing ends the run (no_target: hunters do
 not sense you at all); the in-game admin overlay's switches (`ui::admin::flags()`) act the same.
@@ -107,6 +107,7 @@ not sense you at all); the in-game admin overlay's switches (`ui::admin::flags()
 | `player` | | position, `cell`, `yaw`, `pitch`, `stamina`, `exhausted`, `lamp`, `flashlight_on`, `crouching`, `sprinting`, `noise`, `hidden` (locker index or null), `in_vent`, `stun`, `stim`, `walked`, `in_safe_zone`, `room`, `local_climate` |
 | `meters` | | `stamina`, `lamp`, `exposure`, `noise`, `temperature`, `ambient`, `heat_locked`, `overheating`, `freezing` |
 | `hotbar` | | `selected`, `slots` [{item, label, count} or null] x5, `taser_cooldown`, `melee_cooldown` |
+| `npcs` | | [{id, name, slot, level, pos, distance, smart, joined, walking}] (NPC teammates) |
 | `hunters` | | [{index, id, name, tier, active, state (idle/wander/investigate/chase/search), pos, facing, distance, visible, stun, slow, speed, last_known, taser_immune, melee_immune}] |
 | `relays` | | [{index, cell, pos, taken, distance}] |
 | `focus` | | what [E] would hit now: {kind, index, pos, distance, prompt} or null |
@@ -145,7 +146,7 @@ player {pos [x,h,z], cell [x,z], yaw, pitch, vel, hidden, stamina, lamp, flashli
 focus {kind, index, pos, distance, prompt} | {},
 world {chunk [cx, level, cz], level, loaded_chunks, region, relays[8], batteries[4], safe_zones[4], hiding_spots[6]  (each {id, x, y, dist, capacity}, nearest first; y is the grid z),
        origin, size},
-hunters [{entity, id, state (IDLE/WANDER/INVESTIGATE/CHASE/SEARCH), pos [x,z], dist, los, stuck, stun, active, visible}]  (nearest first),
+hunters [{entity, id, state (IDLE/WANDER/INVESTIGATE/CHASE/SEARCH/PEEK), pos [x,z], dist, los, stuck, stun, active, visible}]  (nearest first),
 interactables [{kind, pos [x,h,z], dist, completed}]  (<= 30 within 45 m),
 online {...}, meters {...}, hotbar {...}, escape {remaining, progress, needed, hunter} | null, message, toast, director {...}
 ```

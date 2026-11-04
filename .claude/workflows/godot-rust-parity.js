@@ -68,23 +68,23 @@ Rust port: ${RUST}`
 const DOMAINS = [
   {
     key: 'mouse-camera',
-    prompt: `Domain: mouse look and camera. Godot: game/player/player_controller_3d.gd (mouse look, _unhandled_input, _update_controller_look), game/autoload/settings.gd (DEFAULT_MOUSE_SENSITIVITY, MIN/MAX). Rust: src/app/mod.rs (look_radians, read_controls, MOUSE_LOOK_MULTIPLIER use), src/config/mod.rs (MOUSE_SENSITIVITY, SENSITIVITY_MIN/MAX, MOUSE_LOOK_MULTIPLIER, FIELD_OF_VIEW_DEG, CAMERA_HEIGHT), src/game/player.rs (look, pitch clamp). Note that Godot's relative mouse motion is in physical pixels and macroquad's is in logical pixels (physical divided by the display scale). Compare the effective radians per physical pixel at default settings on both sides, and the pitch clamp limits.`,
+    prompt: `Domain: mouse look and camera. Godot: game/player/player_controller_3d.gd (mouse look, _unhandled_input, _update_controller_look), game/autoload/settings.gd (DEFAULT_MOUSE_SENSITIVITY, MIN/MAX). Rust: src/bin/last_route/app/mod.rs (look_radians, read_controls, MOUSE_LOOK_MULTIPLIER use), src/bin/last_route/config/mod.rs (MOUSE_SENSITIVITY, SENSITIVITY_MIN/MAX, MOUSE_LOOK_MULTIPLIER, FIELD_OF_VIEW_DEG, CAMERA_HEIGHT), src/bin/last_route/game/player.rs (look, pitch clamp). Note that Godot's relative mouse motion is in physical pixels and macroquad's is in logical pixels (physical divided by the display scale). Compare the effective radians per physical pixel at default settings on both sides, and the pitch clamp limits.`,
   },
   {
     key: 'movement-meters',
-    prompt: `Domain: player movement, stamina, meters, lamp and crouch. Godot: game/player/player_controller_3d.gd, game/player/player_meters.gd. Rust: src/config/mod.rs, src/game/player.rs, src/game/meters.rs. Compare walk, sprint and crouch speeds, stamina drain and recovery, the lamp and battery numbers, and the camera bob amounts.`,
+    prompt: `Domain: player movement, stamina, meters, lamp and crouch. Godot: game/player/player_controller_3d.gd, game/player/player_meters.gd. Rust: src/bin/last_route/config/mod.rs, src/bin/last_route/game/player.rs, src/bin/last_route/game/meters.rs. Compare walk, sprint and crouch speeds, stamina drain and recovery, the lamp and battery numbers, and the camera bob amounts.`,
   },
   {
     key: 'hunters-difficulty',
-    prompt: `Domain: hunters and difficulty profiles. Godot: game/hunters/ (brains, speeds, sight and hearing ranges), the difficulty profile definitions (search for relaxed, standard, hard, nightmare). Rust: src/config/difficulty.rs, src/hunters/brain.rs, src/hunters/director.rs, data/hunters/*.json, src/content/hunters.rs. Compare hunter speeds, sight and hearing radii, capture distances, and difficulty multipliers.`,
+    prompt: `Domain: hunters and difficulty profiles. Godot: game/hunters/ (brains, speeds, sight and hearing ranges), the difficulty profile definitions (search for relaxed, standard, hard, nightmare). Rust: src/bin/last_route/config/difficulty.rs, src/bin/last_route/hunters/brain.rs, src/bin/last_route/hunters/director.rs, src/bin/last_route/data/hunters/*.json, src/bin/last_route/content/hunters.rs. Compare hunter speeds, sight and hearing radii, capture distances, and difficulty multipliers.`,
   },
   {
     key: 'route-generation',
-    prompt: `Domain: the Infinite route generation and layout. Godot: game/infinite_route/streamed_route_generator.gd (CHUNK_SIZE, REGION_SIZE_CHUNKS, SPAWN_MAZE_SHARE, stair chances, relay and battery counts per chunk, hunter population steps). Rust: src/world/infinite.rs, src/world/facility.rs, src/game/endless.rs, src/world/fixtures.rs, mechanics.json (cites Godot constants). Compare each constant, plus the chunk window size (3x3 chunks of 45 cells) and the stair rules.`,
+    prompt: `Domain: the Infinite route generation and layout. Godot: game/infinite_route/streamed_route_generator.gd (CHUNK_SIZE, REGION_SIZE_CHUNKS, SPAWN_MAZE_SHARE, stair chances, relay and battery counts per chunk, hunter population steps). Rust: src/bin/last_route/world/infinite.rs, src/bin/last_route/world/facility.rs, src/bin/last_route/game/endless.rs, src/bin/last_route/world/fixtures.rs, mechanics.json (cites Godot constants). Compare each constant, plus the chunk window size (3x3 chunks of 45 cells) and the stair rules.`,
   },
   {
     key: 'items-audio',
-    prompt: `Domain: items, loot weights and audio cue tuning. Godot: game/items/ (or wherever item definitions live), game/autoload/sound.gd, the audio cue tables. Rust: src/game/items.rs, src/content/loot.rs, data/loot/*.json, src/audio/sound.rs, src/audio/cues/table.rs. Compare item counts and loot weights, cue volumes and durations for the shared cues (footsteps, heartbeat, breath).`,
+    prompt: `Domain: items, loot weights and audio cue tuning. Godot: game/items/ (or wherever item definitions live), game/autoload/sound.gd, the audio cue tables. Rust: src/bin/last_route/game/items.rs, src/bin/last_route/content/loot.rs, src/bin/last_route/data/loot/*.json, src/bin/last_route/audio/sound.rs, src/bin/last_route/audio/cues/table.rs. Compare item counts and loot weights, cue volumes and durations for the shared cues (footsteps, heartbeat, breath).`,
   },
 ]
 

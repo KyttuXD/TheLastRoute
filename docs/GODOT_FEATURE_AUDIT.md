@@ -902,7 +902,7 @@ Verification
 - Night Watch Part B folders (lure, mask, mixed, story, openair, office) were not audited in depth. The 2D Night Watch source is not in this workspace, so Night Watch parity comes from the Godot docs.
 - Not located: Godot's streamed heater and coin placement, and the docs `REVIVE.md` and `SCALE_FIT.md`, which are referenced but missing from `docs/`.
 - Not read: the Godot catch, vent-transit and shop handlers in `main_3d.gd` and `player_controller_3d.gd`.
-- Not verified: the Night Watch pose JSON (`assets/hunters_blocky/night_watch_poses.json`), `data/night_watch/` scares, Godot golden fixtures, and the Rust golden audio tests in `src/audio/cues/tests.rs`.
+- Not verified: the Night Watch pose JSON (`assets/hunters_blocky/night_watch_poses.json`), `data/night_watch/` scares, Godot golden fixtures, and the Rust golden audio tests in `src/bin/last_route/audio/cues/tests.rs`.
 
 Stale or inconsistent docs
 - `docs/PARITY.md` items 2 and 3 (keyboard look sensitivity and diagonal) are already implemented in `src/bin/last_route/app/mod.rs` lines 124-127. Item 1 (mouse vertical sign) needs an in-game check.
@@ -913,7 +913,7 @@ Conflicts to resolve
 - TODO.md marks four items done that the code contradicts: the auto-updater from GitHub releases (no download code), the game hub carousel (no hub screen, only the skip rule), Night Watch mode (placeholder binary), and the round-1 "server system ... and its client" (`src/bin/last_route/net/` is not compiled; `main.rs` declares only app, headless and ui). Text-to-speech chat is marked in progress with no speech code.
 - Admin tools are enabled when the player name is `KYTTU` (`src/bin/last_route/app/mod.rs` line 517). Godot's `admin_menu.gd` says a display name is never proof of admin. This is security-relevant before any public build.
 - FULLBRIGHT key: F7 in Godot (`game/admin/debug_view.gd` line 11), F6 in Rust (`src/bin/last_route/ui/admin/mod.rs` line 291 and `hub.rs` line 69).
-- FOV maximum: 105 in Godot's settings, 110 in Rust's `src/config/mod.rs`.
+- FOV maximum: 105 in Godot's settings, 110 in Rust's `src/bin/last_route/config/mod.rs`.
 - Graphics quality: the header of `app/settings.rs` says it changes nothing, but `targets()` in `app/mod.rs` scales the render target by quality.
 - Settings for vsync, FPS limit, quality, ADS, focus pause and teammate waypoints are stored but unused.
 - Godot's mod downloader is described as built in `docs/DATA_DRIVEN_CONTENT.md` (line 397), but the Godot code assigns no download provider outside tests.

@@ -1,0 +1,107 @@
+{
+  "suite": "doors",
+  "description": "Room doors: a shut door never opens for the runner and blocks the body; [E] opens and closes it; a leaf does not close on a body standing in the doorway.",
+  "ported_from": "route_interactable_3d.gd (ROOM_DOOR get_prompt / activate), infinite_route_test.gd _operate_hunter_room_door",
+  "defaults": { "seed": 12345, "difficulty": "standard", "mode": "infinite", "no_target": true },
+  "tests": [
+    {
+      "name": "a shut door stays shut and blocks the runner",
+      "steps": [
+        { "cmd": "step", "frames": 2, "observe": false },
+        { "cmd": "teleport", "to": "door", "expect": [ { "path": "last.focus.kind", "value": "door" } ] },
+        { "cmd": "step", "frames": 1, "observe": false },
+        { "cmd": "focus", "expect": [ { "path": "last.focus.prompt", "value": "[E] OPEN DOOR" } ] },
+        { "cmd": "act", "move": [0, 1] },
+        { "cmd": "step", "frames": 120, "observe": false },
+        { "cmd": "act", "move": [0, 0] },
+        { "cmd": "objects" },
+        { "expect": [
+          { "count": "objects.doors", "where": [ { "path": "distance", "op": "<", "value": 1.5 }, { "path": "open", "value": 0 }, { "path": "want_open", "value": false } ], "op": "==", "value": 1 },
+          { "count": "objects.doors", "where": [ { "path": "distance", "op": "<", "value": 0.3 } ], "op": "==", "value": 0 } ] }
+      ]
+    },
+    {
+      "name": "standing at a shut door does not open it",
+      "steps": [
+        { "cmd": "step", "frames": 2, "observe": false },
+        { "cmd": "teleport", "to": "door" },
+        { "cmd": "step", "frames": 180, "observe": false },
+        { "cmd": "objects" },
+        { "expect": [ { "count": "objects.doors", "where": [ { "path": "distance", "op": "<", "value": 1.5 }, { "path": "open", "op": ">", "value": 0 } ], "op": "==", "value": 0 } ] }
+      ]
+    },
+    {
+      "name": "interact opens the door, the runner walks through, interact closes it",
+      "steps": [
+        { "cmd": "step", "frames": 2, "observe": false },
+        { "cmd": "teleport", "to": "door" },
+        { "cmd": "player", "save_as": "before" },
+        { "cmd": "interact", "kind": "ROOM_DOOR", "expect": [ { "path": "last.focus_after.prompt", "value": "[E] CLOSE DOOR" } ] },
+        { "cmd": "step", "frames": 30, "observe": false },
+        { "cmd": "objects" },
+        { "expect": [ { "count": "objects.doors", "where": [ { "path": "distance", "op": "<", "value": 1.5 }, { "path": "open", "value": 1 }, { "path": "want_open", "value": true } ], "op": "==", "value": 1 } ] },
+        { "cmd": "act", "move": [0, 1] },
+        { "cmd": "step", "frames": 90, "observe": false },
+        { "cmd": "act", "move": [0, 0] },
+        { "cmd": "player" },
+        { "expect": [ { "path": "player.cell", "op": "!=", "var": "before.player.cell" } ] },
+        { "cmd": "teleport", "to": "door" },
+        { "cmd": "interact", "kind": "ROOM_DOOR", "expect": [ { "path": "last.focus_after.prompt", "value": "[E] OPEN DOOR" } ] },
+        { "cmd": "step", "frames": 30, "observe": false },
+        { "cmd": "objects" },
+        { "expect": [ { "count": "objects.doors", "where": [ { "path": "distance", "op": "<", "value": 1.5 }, { "path": "open", "value": 0 } ], "op": "==", "value": 1 } ] }
+      ]
+    },
+    {
+      "name": "a door will not close on the runner standing in the doorway",
+      "steps": [
+        { "cmd": "step", "frames": 2, "observe": false },
+        { "cmd": "teleport", "to": "door" },
+        { "cmd": "interact", "kind": "ROOM_DOOR" },
+        { "cmd": "step", "frames": 30, "observe": false },
+        { "cmd": "act", "move": [0, 1] },
+        { "cmd": "step", "frames": 14, "observe": false },
+        { "cmd": "act", "move": [0, 0] },
+        { "cmd": "look", "pitch": -1.45 },
+        { "cmd": "interact", "kind": "ROOM_DOOR", "expect": [ { "any": "last.events", "where": { "path": "text", "value": "SOMETHING IS IN THE DOORWAY" } } ] },
+        { "cmd": "step", "frames": 30, "observe": false },
+        { "cmd": "objects" },
+        { "expect": [ { "count": "objects.doors", "where": [ { "path": "distance", "op": "<", "value": 1.5 }, { "path": "open", "value": 1 } ], "op": "==", "value": 1 } ] }
+      ]
+    },
+    {
+      "name": "interact reaches a shut door the runner stands flush against, eyes level",
+      "steps": [
+        { "cmd": "step", "frames": 2, "observe": false },
+        { "cmd": "teleport", "to": "door" },
+        { "cmd": "act", "move": [0, 1] },
+        { "cmd": "step", "frames": 60, "observe": false },
+        { "cmd": "act", "move": [0, 0] },
+        { "cmd": "look", "pitch": 0, "expect": [ { "path": "last.focus.prompt", "value": "[E] OPEN DOOR" } ] }
+      ]
+    },
+    {
+      "name": "a teleport that moves the window names the door at the runner, with the prompt its state calls for",
+      "steps": [
+        { "cmd": "teleport", "to": "door", "index": 0 },
+        { "cmd": "teleport", "to": "door", "index": 1 },
+        { "cmd": "teleport", "to": "door", "index": 2 },
+        { "cmd": "teleport", "to": "door", "index": 3 },
+        { "cmd": "teleport", "to": "door", "index": 4 },
+        { "cmd": "teleport", "to": "door", "index": 5 },
+        { "cmd": "teleport", "to": "door", "index": 6 },
+        { "cmd": "teleport", "to": "door", "index": 7 },
+        { "cmd": "teleport", "to": "door", "index": 8 },
+        { "cmd": "teleport", "to": "door", "index": 9 },
+        { "cmd": "focus", "expect": [
+          { "path": "last.focus.kind", "value": "door" },
+          { "path": "last.focus.distance", "op": "<", "value": 3 },
+          { "path": "last.focus.prompt", "value": "[E] OPEN DOOR" } ] },
+        { "cmd": "objects" },
+        { "expect": [
+          { "count": "objects.doors", "where": [ { "path": "distance", "op": "<", "value": 1.5 }, { "path": "open", "value": 0 }, { "path": "want_open", "value": false } ], "op": "==", "value": 1 } ] },
+        { "cmd": "interact", "kind": "ROOM_DOOR", "expect": [ { "path": "last.focus_after.prompt", "value": "[E] CLOSE DOOR" } ] }
+      ]
+    }
+  ]
+}

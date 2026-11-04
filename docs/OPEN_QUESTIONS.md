@@ -43,7 +43,7 @@ Short answers are fine. Where there is a default, the work goes ahead with it if
 
 ## NPC teammates
 
-13. Hunters ignore the NPCs for now. Is that right for this stage?
+13. Hunters ignore the player bots (NPC teammates) for now. Is that right for this stage?
     **Default:** yes.
 14. Which NPC commands come next: teleport, follow, freeze, down and revive, chat, or spectate?
     **Default:** teleport and remove-per-NPC first.

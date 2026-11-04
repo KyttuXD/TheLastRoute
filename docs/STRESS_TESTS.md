@@ -20,7 +20,7 @@ The stress mode plays a fixed-length run with a fixed seed and writes the frame 
 - npcs: noclip off, walks the same route at normal speed, 8 NPCs kept near the runner (spawned with the admin spawn when fewer, the farthest removed when more).
 - hunters: noclip off, walks the route, 6 active hunters kept up with the admin summon placement. A catch still ends the run.
 - interact: noclip off, walks the route and presses interact every 3 s when the crosshair is on something. The tool swing is not driven: the swing in `game/items.rs` only hits hunters, there is no barrier or prop swing to call.
-- mixed: fly for 20 s, then npcs, hunters and interact in turn, 10 s each. NPCs and hunters stay once spawned.
+- mixed: fly for 20 s, then npcs, hunters and interact in turn, 10 s each. The player bots (NPCs) and hunters stay once spawned.
 
 ## The flight
 

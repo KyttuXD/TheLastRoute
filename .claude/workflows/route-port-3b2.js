@@ -1,7 +1,7 @@
 export const meta = {
   name: 'route-port-3b2',
   description: 'Route port stage 3b-ii: the region-props placement driver and its helpers (placement, wall mounts, orientation, seats, ceiling families, colliders, hiding props, surface scaling), checked against the golden props that have no room template',
-  whenToUse: 'Use to continue stage 3b of the infinite-route port (src/world/route), after the 3b-i tables',
+  whenToUse: 'Use to continue stage 3b of the infinite-route port (src/bin/last_route/world/route), after the 3b-i tables',
   phases: [
     { title: 'Port', detail: 'one agent ports the driver and its non-template helpers and writes the golden check' },
     { title: 'Verify', detail: 'build, tests, suites and the prop parity count' },
@@ -51,7 +51,7 @@ const VERIFY = {
 phase('Port')
 const port = await agent(`${CONTEXT}
 
-Task: stage 3b-ii in ${RUST}. Owner files: src\\world\\route\\props.rs (new), src\\world\\route\\mod.rs (only "pub mod props;"), tests\\parity\\props-*.json (new, compact: for each level-0 chunk, the props without room_template, with id, type, cell, yaw, occupied_cells, doorway_cells), and tests in props.rs. Edit layout.rs or grid.rs only where the driver needs a value they do not expose yet, and say so.
+Task: stage 3b-ii in ${RUST}. Owner files: src\\bin\\last_route\\world\\route\\props.rs (new), src\\bin\\last_route\\world\\route\\mod.rs (only "pub mod props;"), tests\\parity\\props-*.json (new, compact: for each level-0 chunk, the props without room_template, with id, type, cell, yaw, occupied_cells, doorway_cells), and tests in props.rs. Edit layout.rs or grid.rs only where the driver needs a value they do not expose yet, and say so.
 1. Port the driver and the helpers listed above with their Godot names and line numbers in the doc comments. Reproduce the RNG draws in order (the DRESSING and VARIETY streams and the per-helper streams the study notes name). If you find a draw you cannot place, stop and report it.
 2. Write the extraction of the compact golden files, then a Rust test that compares the non-template props per chunk.
 3. Run cargo test --lib and report the counts. Report the prop parity per seed, the matched chunks, and the first mismatches with ids. Do not weaken the test.

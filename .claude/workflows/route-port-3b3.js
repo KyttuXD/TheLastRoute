@@ -24,7 +24,7 @@ Godot (read-only): ${GODOT}\\game\\world\\generation\\streamed_route_generator.g
 - Helpers: _vary_specs 3607, _table_grid_specs 3582, _claim_order 3509, _nudge_seat_clear 3532, _collider_clear 3554, _collider_rects 3569, _fallback_bed 3255, _keep_entrance_clear 4297, even_ceiling_fixtures 3285, one_ceiling_family 3479, orient_props 3357 with ORIENT_PAIRS 3331, seat_in_front_of_screens 3386, nearest_anchor 3423, back_to_wall 3440, back_extent 3461, wall_behind 3469, scale_surface_mounts 3233, _frame_type_for_region 4825, _rug_type_for_region 4835, _cardinal_toward 4959, _collider_size 5007, _prop_hiding_fixtures 5307.
 The study notes are at ${STUDY}\\region-props-notes.txt.
 
-Rust (verified): src\\world\\route\\props.rs has the non-template driver (the seam is furnished_room_props, which returns Vec::new()). src\\world\\route\\prop_tables.rs has the generated tables (TEMPLATE_PROP_SIZES, ROOM_SIZE_PROFILES, ORIENT_PAIRS, CEILING_FIXTURE_FAMILY, BED_TEMPLATES, FALLBACK_BEDS, HIDING_PROP_STYLES, EMPTY_FRAME_TYPES, WALL_MOUNTED_TYPES, PROP_COLLIDER_*). Circulation is in layout.rs.
+Rust (verified): src\\bin\\last_route\\world\\route\\props.rs has the non-template driver (the seam is furnished_room_props, which returns Vec::new()). src\\bin\\last_route\\world\\route\\prop_tables.rs has the generated tables (TEMPLATE_PROP_SIZES, ROOM_SIZE_PROFILES, ORIENT_PAIRS, CEILING_FIXTURE_FAMILY, BED_TEMPLATES, FALLBACK_BEDS, HIDING_PROP_STYLES, EMPTY_FRAME_TYPES, WALL_MOUNTED_TYPES, PROP_COLLIDER_*). Circulation is in layout.rs.
 
 Goldens (correct, do NOT regenerate): ${GOLD}\\golden-parity.json (world seed 1426541270), golden-k7qxm.json (4157433391), golden-demo.json (2899547009), golden-mansion1.json (3833121725), golden-apt1.json (2477555712), golden-beach1.json (223482559), golden-gothic1.json (938954303). The first three cover levels 0..-3 and the other four are level 0. Each chunk has data.region_props. Props with a room_template field are this stage's scope.
 
@@ -58,7 +58,7 @@ const VERIFY = {
 phase('Port A')
 const portA = await agent(`${CONTEXT}
 
-Task: stage 3b-iii part A in ${RUST}. Owner files: src\\world\\route\\furnished.rs (new), src\\world\\route\\props.rs (only to replace the seam with a call into furnished.rs and to share types), src\\world\\route\\mod.rs (only "pub mod furnished;").
+Task: stage 3b-iii part A in ${RUST}. Owner files: src\\bin\\last_route\\world\\route\\furnished.rs (new), src\\bin\\last_route\\world\\route\\props.rs (only to replace the seam with a call into furnished.rs and to share types), src\\bin\\last_route\\world\\route\\mod.rs (only "pub mod furnished;").
 1. Port the furnished driver _furnished_room_props, _room_template_basis, _template_prop_entry, and every helper listed above that the driver reaches. Keep the Godot names in doc comments with line numbers. Reproduce the TEMPLATE and VARIETY streams and each draw in Godot order.
 2. Port the template arms for the room types that appear in the goldens. Find them first: count the room_template values on the props in each golden (the template name) and list them in your report. Port those arms fully.
 3. Un-ignore props::tests::region_props_match_godot_goldens only if the golden props with room_template now match. Otherwise keep it ignored and report the mismatches by room type and by seed.
@@ -72,7 +72,7 @@ const portB = await agent(`${CONTEXT}
 
 Part A report (JSON): ${JSON.stringify(portA)}
 
-Task: stage 3b-iii part B in ${RUST}. Owner files: src\\world\\route\\furnished.rs (the remaining arms only) and its tests.
+Task: stage 3b-iii part B in ${RUST}. Owner files: src\\bin\\last_route\\world\\route\\furnished.rs (the remaining arms only) and its tests.
 1. Port the template arms that part A did not port (see arms_left in the report), in the Godot order, with doc comments and line numbers.
 2. These arms have no golden coverage. Check each one by reading it against the Godot source line by line, and say in the report which arms you checked that way.
 3. Run cargo test --lib and report the counts. Do not un-ignore the golden test unless it passes.

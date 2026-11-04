@@ -10,10 +10,10 @@ references were followed into `native_function_pseudocode`.
 
 | Native address | Role and recovered rule | Port usage |
 |---|---|---|
-| `0x14008a600` | Main frame/state update. Timers and meters are advanced by `dt`; values are clamped at zero/max. The function contains the `contactsrc\\game\\hunting.rs` path and emits `RELAY ONLINE`, `INVENTORY FULL`, `AXE`, and `CROWBAR` messages. | `src/game/player.rs`, `src/game/hunting.rs`, `src/game/interact.rs` |
-| `0x140084810` | Interaction dispatcher. It scans the interaction list, selects the active interaction, and routes it through the state jump table. The store branch is gated by item state and exposes `COOL`, `WARM`, `REPAIR`, and `PESTICIDE`. | `src/game/interact.rs` |
-| `0x1400979b0` | Run/settings parser. `mode` accepts `finite`/`infinite`; `minutes`, `target`, `deadline`, and `max_stuck` are parsed with defaults and bounded numeric values. | `src/headless/runner.rs`, `src/app/settings.rs` |
-| `0x140067e40` | Player/item presentation and interaction effects. It uses the flashlight/taser/crowbar/axe/battery/stim inventory key and keeps the flashlight attachment drain on the per-frame path. | `src/render/viewmodel.rs`, `src/game/player.rs` |
+| `0x14008a600` | Main frame/state update. Timers and meters are advanced by `dt`; values are clamped at zero/max. The function contains the `contactsrc\\game\\hunting.rs` path and emits `RELAY ONLINE`, `INVENTORY FULL`, `AXE`, and `CROWBAR` messages. | `src/bin/last_route/game/player.rs`, `src/bin/last_route/game/hunting.rs`, `src/bin/last_route/game/interact.rs` |
+| `0x140084810` | Interaction dispatcher. It scans the interaction list, selects the active interaction, and routes it through the state jump table. The store branch is gated by item state and exposes `COOL`, `WARM`, `REPAIR`, and `PESTICIDE`. | `src/bin/last_route/game/interact.rs` |
+| `0x1400979b0` | Run/settings parser. `mode` accepts `finite`/`infinite`; `minutes`, `target`, `deadline`, and `max_stuck` are parsed with defaults and bounded numeric values. | `src/bin/last_route/headless/runner.rs`, `src/bin/last_route/app/settings.rs` |
+| `0x140067e40` | Player/item presentation and interaction effects. It uses the flashlight/taser/crowbar/axe/battery/stim inventory key and keeps the flashlight attachment drain on the per-frame path. | `src/bin/last_route/render/viewmodel.rs`, `src/bin/last_route/game/player.rs` |
 | `0x14001dc8a` | `escape` string reference in the struggle/capture path. | `ESCAPE_PRESSES = 6`, `ESCAPE_DURATION = 3.2` |
 | `0x14008fb3b`, `0x14008c626`, `0x14008c694` | References to the item labels and `FLASHLIGHT RECHARGED` / `FLASHLIGHT ALREADY FULL`. | `BATTERY_RECHARGE = 25`, lamp charge clamps to `100` |
 
@@ -26,7 +26,7 @@ references were followed into `native_function_pseudocode`.
 - Capture: struggle requires `6` presses inside `3.2 s`; failed struggle ends the run, while a successful escape applies the configured knockback/stun and `16 s` re-grab cooldown.
 - Safe zone: stamina and lamp charge move back toward `100`; all meter updates are `dt`-scaled and clamped.
 
-The constants in `src/config/mod.rs` are the single source of truth for these recovered
+The constants in `src/bin/last_route/config/mod.rs` are the single source of truth for these recovered
 values. The comments beside the player/tool constants retain the native function addresses
 so later changes can be checked against the trace.
 
@@ -76,7 +76,7 @@ were found with `native_strings_find`; each referenced function below was then r
 | Settings load/save | `settings.json`, `master_volume`, `SETTINGS` | `0x14008ad10`, `0x14008bc60` | Settings are read/written from JSON; numeric fields clamp and invalid/missing fields use defaults. |
 | Safe-zone restoration | `stamina restored`, `FLASHLIGHT RECHARGED` | `0x14017bde0` | Restoration/recharge messages are emitted; the port restores stamina/lamp toward `100`. |
 
-The build now names the recovered taser constants in `src/config/mod.rs`:
+The build now names the recovered taser constants in `src/bin/last_route/config/mod.rs`:
 `TASER_SLOW_FACTOR = 0.5` and `TASER_SLOW_SECONDS = 3.0`; all difficulty profiles use those
 constants rather than duplicated literals.
 
@@ -98,7 +98,7 @@ followed through the returned string references into `native_function_pseudocode
 The Deep engine returned complete pseudocode for `0x14008a590`. A subsequent pseudocode
 request for `0x14008cc90` exceeded the engine's 300-second limit; that timeout is recorded
 here rather than treated as a discovered rule. The verified settings bounds above are now
-named constants in `src/config/mod.rs` and are used by `src/app/settings.rs`.
+named constants in `src/bin/last_route/config/mod.rs` and are used by `src/bin/last_route/app/settings.rs`.
 
 Every number that shapes how the run plays, with where it came from. Paths are in the
 original Godot project (`LastRoute Godot/KyttusLabApp`). "estimated" means it was looked for
@@ -133,7 +133,7 @@ which paints the original's textures: its multiplier 6364136223846793005 (0x5851
 sits in engine code at 0x14381bc02, 0x14381bc42, 0x14381bc73, 0x143847992, 0x1438479f3,
 0x143847a22, 0x143847cf7 and 0x143847f8f
 (`ev_13f21830bf76c48748516708b68b211169fc61ef6dea17fb5ba1f2d9bbefebb6`), the same constant the
-port uses (`src/render/textures/rng.rs` PCG_MULT). The lifter does not discover a function around
+port uses (`src/bin/last_route/render/textures/rng.rs` PCG_MULT). The lifter does not discover a function around
 those addresses (`ev_f38fa50b…`, `ev_74a94387…`), and asking native_function_pseudocode for
 0x14381bc02 and 0x143847992 never returned on this 181 MB binary (both calls ended the session
 before a result), so the PCG step is confirmed a stronger way: the
@@ -227,7 +227,7 @@ Holds: directed 9 s, scatter 16 s; hunters within 12 m of a runner don't scatter
 | Value | Number | Source |
 |---|---|---|
 | Size | 45 × 45 cells, 3 × 3 sectors, 11 × 11 lobby | FACILITY_COLS/ROWS, LOBBY_SIZE |
-| Rooms | 9 (lobby + 8 catalogue rooms) | FACILITY_ROOM_COUNT, data/rooms/catalog.json |
+| Rooms | 9 (lobby + 8 catalogue rooms) | FACILITY_ROOM_COUNT, src/bin/last_route/data/rooms/catalog.json |
 | Halls | 3 wide, Kruskal + up to 4 loops ≤ 24 apart | HALL_WIDTH |
 | Relays / batteries | 5 / 7 | FACILITY_RELAY_COUNT / BATTERY_COUNT |
 | Score | +100 per relay | route_interactable_3d.gd _take |

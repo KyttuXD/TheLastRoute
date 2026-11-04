@@ -74,4 +74,4 @@ Game modules (all under `src/bin/last_route/`; the layout is in [SOURCE_LAYOUT.m
   models, scene and held item
 - `audio` — the synthesised sound cues (`cues/`)
 - `data/` and `assets/` — the game's JSON content, textures and models (`data/regions` stays at the top level)
-- `tools/prop_convert` — converts the blocky prop GLBs to .bbmodel
+- `tools/prop_convert` — the first converter (the blocky `_0` GLBs to one-per-prop .bbmodel, now unused by the game); `tools/props/glb_to_bbmodel.mjs` is the current one (see docs/PROPS_BBMODEL.md)

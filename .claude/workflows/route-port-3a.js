@@ -18,7 +18,7 @@ const CONTEXT = `Goal: the Rust Infinite route makes the same grid as the live G
 
 Godot generator: ${GODOT}\\game\\world\\generation\\streamed_route_generator.gd (5,725 lines). The grid steps of _build_chunk are at lines 916-1074. The study notes are in ${STUDY}\\grid-carve-study.txt and ${STUDY}\\region-props-notes.txt. Read them first.
 
-Already in Rust (stage 1 and 2): src\\world\\route\\regions.rs (region), src\\world\\route\\layout.rs (rooms, corridors, suites, edges, the level-0 stairwell carve). layout.rs chunk_layout returns the grid after the edge carve and the stairwell carve.
+Already in Rust (stage 1 and 2): src\\bin\\last_route\\world\\route\\regions.rs (region), src\\bin\\last_route\\world\\route\\layout.rs (rooms, corridors, suites, edges, the level-0 stairwell carve). layout.rs chunk_layout returns the grid after the edge carve and the stairwell carve.
 
 Stage 3a scope: the grid-writing passes that read no furniture:
 1. _room_door_props (streamed_route_generator.gd 5047-5143) with its helpers _find_room_door_threshold (5190-5282), _door_faces_hall_end (5153), _is_major_room (5144), _stair_door_exclusion (5177), and the region door tables (_CODE_REGION_ROOM_DOORS and _CODE_REGION_DOUBLE_ROOM_DOORS, lines 249-266, and whatever they reference). It writes shoulder cells to 1 and doorway cells to 0. It uses no RNG.
@@ -56,7 +56,7 @@ const VERIFY = {
 phase('Port')
 const port = await agent(`${CONTEXT}
 
-Task: stage 3a in ${RUST}. Owner files: src\\world\\route\\grid.rs (new), src\\world\\route\\mod.rs (only "pub mod grid;"), src\\world\\route\\layout.rs (only to hand the grid and the rooms to grid.rs and to call it from chunk_layout for level 0), tests\\parity\\grid-*.json (new, compact: per seed, level 0, the 49 grids as strings of 45 characters per row), and the test in grid.rs.
+Task: stage 3a in ${RUST}. Owner files: src\\bin\\last_route\\world\\route\\grid.rs (new), src\\bin\\last_route\\world\\route\\mod.rs (only "pub mod grid;"), src\\bin\\last_route\\world\\route\\layout.rs (only to hand the grid and the rooms to grid.rs and to call it from chunk_layout for level 0), tests\\parity\\grid-*.json (new, compact: per seed, level 0, the 49 grids as strings of 45 characters per row), and the test in grid.rs.
 1. Port the four passes as Rust functions with the Godot names in doc comments and the Godot line numbers. Keep the RNG out of these passes (they have none); if you find a draw, stop and report it.
 2. Port the region door tables exactly as data (a Rust const table is fine).
 3. Wire them in the Godot order. The chunk_layout for level 0 should return the grid that the golden shows.

@@ -1,7 +1,7 @@
 export const meta = {
   name: 'route-port',
   description: 'Port the Godot Infinite route generator into Rust, one stage at a time, checked chunk by chunk against Godot dumps. Stage 1: seed text and region selection',
-  whenToUse: 'Use to continue the infinite-route port (src/world/route) or to check it against the Godot parity dumps',
+  whenToUse: 'Use to continue the infinite-route port (src/bin/last_route/world/route) or to check it against the Godot parity dumps',
   phases: [
     { title: 'Port', detail: 'one agent ports the region stage in Rust, rebuilds the region golden files and tests them' },
     { title: 'Verify', detail: 'build, run the region parity test and the existing test suites' },
@@ -19,11 +19,11 @@ Seed rules (verified):
 - The room seed text is "ROOM-<code>-<20 hex uppercase>" (room_state.gd lines 565 and 1342).
 - run_seed = maxi(1, abs(int(text.hash()))). Godot's String.hash() is djb2 (h = h*33 + c, starting at 5381, 32-bit) (room_state.gd run_seed(), line 1353).
 - The live Infinite route's world seed is str(run_seed) (infinite_route_test.gd line 280: facility.begin(str(RoomState.run_seed()), ...)). Not the raw text.
-- Inside the generator, every draw is SeededRandom.new("<world_seed>:<TAG>...") (seeded_random.gd: FNV-1a 32 hash, mulberry32). src/world/rng.rs already matches this bit for bit.
+- Inside the generator, every draw is SeededRandom.new("<world_seed>:<TAG>...") (seeded_random.gd: FNV-1a 32 hash, mulberry32). src/bin/last_route/world/rng.rs already matches this bit for bit.
 - Region rule (stage 1): StreamedRouteGenerator.region_for (streamed_route_generator.gd lines 1210-1264), biome_for (1207-1208, an alias), _pick_region (1269-1277), region_allowed_at (1279), is_chunk_allowed (1436-1442), spawn region (1239), SPAWN_MAZE_SHARE (68). Void regions and the mezzanine are disabled in Godot (VoidRegion.ENABLED false, MEZZANINE_ENABLED false). The dual-level spec is dead (_dual_level_pair_active returns false).
 
 Godot generator: ${GODOT}\\game\\world\\generation\\streamed_route_generator.gd (5,725 lines).
-Rust today: src\\world\\infinite.rs (353 lines). It uses different seed strings and rules, and it is fed the decimal run number (src\\game\\endless.rs InfState::new, src\\game\\mod.rs new_infinite_sim). It is not Godot's layout.
+Rust today: src\\bin\\last_route\\world\\infinite.rs (353 lines). It uses different seed strings and rules, and it is fed the decimal run number (src\\bin\\last_route\\game\\endless.rs InfState::new, src\\bin\\last_route\\game\\mod.rs new_infinite_sim). It is not Godot's layout.
 
 Golden dumps (correct, made by the scene-based harness, zero script errors; do NOT regenerate):
 - ${GOLD}\\golden-parity.json  (room text ROOM-PARITY-0000000000000001, world seed 1426541270)
@@ -32,7 +32,7 @@ Golden dumps (correct, made by the scene-based harness, zero script errors; do N
 Each has levels 0,-1,-2,-3 and radius 3 (196 chunks). Each chunk is {coord:[x,y,z], data:{...}} where data is the full chunk dictionary; data.region is the region name.
 The harness is ${GODOT}\\tests\\parity\\dump.tscn with dump_node.gd (run: Godot_v4.7.2-stable_win64_console.exe --headless --path <KyttusLabApp> res://tests/parity/dump.tscn -- ROOM_TEXT OUT.json LEVELS RADIUS).
 
-Stale files to REPLACE (made from the wrong seed in an earlier run): ${RUST}\\src\\world\\route\\ (mod.rs, regions.rs), and ${RUST}\\tests\\parity\\regions-demo.json, regions-k7qxm.json, regions-parity.json. Rebuild them from the golden dumps above.
+Stale files to REPLACE (made from the wrong seed in an earlier run): ${RUST}\\src\\bin\\last_route\\world\\route\\ (mod.rs, regions.rs), and ${RUST}\\tests\\parity\\regions-demo.json, regions-k7qxm.json, regions-parity.json. Rebuild them from the golden dumps above.
 
 Rules: do not edit Godot except nothing (the harness already exists). Do not commit. Use Node 24 on PATH for JSON work. Report every file you change.`
 
@@ -61,12 +61,12 @@ phase('Port')
 const port = await agent(`${CONTEXT}
 
 Task: stage 1 port in the Rust project at ${RUST}.
-1. Seed plumbing: the infinite route's world seed must be str(run_seed) with run_seed = maxi(1, abs(djb2(room text))), using the same djb2 as Godot (32-bit). Add a helper for it (src\\world\\rng.rs or src\\world\\route\\mod.rs). Thread the room text through the run start so the infinite route can get it. Find where the run starts (src\\bin\\last_route\\app\\mod.rs, src\\game\\mod.rs new_infinite and new_infinite_sim, src\\game\\endless.rs). Keep the decimal run seed for everything else (saves, hunters). The room text the Rust port shows is currently "ROOM-{code}-{8 hex}"; change it to the Godot format "ROOM-<code>-<20 hex>" only if you can do it without breaking the menus, otherwise keep the room text and say so.
-2. Region module: rebuild src\\world\\route\\regions.rs (and mod.rs) as a Rust port of the Godot region rules above, reproducing the same RNG draws in the same order. Route the infinite route's region choice through it.
+1. Seed plumbing: the infinite route's world seed must be str(run_seed) with run_seed = maxi(1, abs(djb2(room text))), using the same djb2 as Godot (32-bit). Add a helper for it (src\\bin\\last_route\\world\\rng.rs or src\\bin\\last_route\\world\\route\\mod.rs). Thread the room text through the run start so the infinite route can get it. Find where the run starts (src\\bin\\last_route\\app\\mod.rs, src\\bin\\last_route\\game\\mod.rs new_infinite and new_infinite_sim, src\\bin\\last_route\\game\\endless.rs). Keep the decimal run seed for everything else (saves, hunters). The room text the Rust port shows is currently "ROOM-{code}-{8 hex}"; change it to the Godot format "ROOM-<code>-<20 hex>" only if you can do it without breaking the menus, otherwise keep the room text and say so.
+2. Region module: rebuild src\\bin\\last_route\\world\\route\\regions.rs (and mod.rs) as a Rust port of the Godot region rules above, reproducing the same RNG draws in the same order. Route the infinite route's region choice through it.
 3. Golden test data: from each golden dump, extract a small file tests\\parity\\regions-<tag>.json with the list of {coord, region} for levels 0,-1,-2,-3 and radius 3 (tags: parity, k7qxm, demo). Keep each file small. Overwrite the stale ones.
 4. Parity test: a Rust test reads each regions-<tag>.json and checks the Rust region for each coord, using the world seed for that tag (the decimal of djb2 of its room text). Report matches per seed and level, and list any mismatch with coordinates.
 5. Run cargo test --lib and report the counts.
-Owner files: src\\world\\route\\* , src\\world\\infinite.rs, src\\world\\mod.rs, src\\world\\rng.rs (only to add the seed helper), src\\game\\endless.rs and src\\game\\mod.rs where the seed plumbing needs it, src\\bin\\last_route\\app\\mod.rs where the run start passes the room text, tests\\parity\\*.`, {
+Owner files: src\\bin\\last_route\\world\\route\\* , src\\bin\\last_route\\world\\infinite.rs, src\\bin\\last_route\\world\\mod.rs, src\\bin\\last_route\\world\\rng.rs (only to add the seed helper), src\\bin\\last_route\\game\\endless.rs and src\\bin\\last_route\\game\\mod.rs where the seed plumbing needs it, src\\bin\\last_route\\app\\mod.rs where the run start passes the room text, tests\\parity\\*.`, {
   label: 'port-regions', phase: 'Port', schema: PORT,
 })
 

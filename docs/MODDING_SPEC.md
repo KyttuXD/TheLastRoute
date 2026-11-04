@@ -2,8 +2,8 @@
 
 This spec is written from the parsers, not from the Godot notes. The sources are:
 
-- `src/content/regions.rs` for `lr.region/1` (region files)
-- `src/content/packs.rs` for the pack folder layout and the local loader
+- `src/bin/last_route/content/regions.rs` for `lr.region/1` (region files)
+- `src/bin/last_route/content/packs.rs` for the pack folder layout and the local loader
 - `src/bin/lr_server/mod_packs.rs` for the server-side pack index and its limits
 - `src/bin/lr_server/pack_kinds.rs` for the list of allowed pack folders
 
@@ -55,10 +55,11 @@ Only the top-level `*.json` files in each folder are read. Subfolders are not sc
 |---|---|---|
 | `regions/` | `content/regions.rs` | `lr.region/1` files. Section 3. |
 | `hunters/` | `content/packs.rs` | `lr.hunter/1` files. A hunter may bring a `.bbmodel` with its atlas and a portrait PNG. A model in another format falls back to the base body. |
-| `props/` | `content/packs.rs` | A `props` array. Model paths are pack-relative and are stored as `pack:<pack id>:<path>`. |
+| `props/` | `content/packs.rs` | A `props` array. Model paths are pack-relative and are stored as `pack:<pack id>:<path>`. A model is a Blockbench `.bbmodel` (the format to use) or a legacy `.glb`; see section 2.6. |
 | `loot/` | `content/packs.rs` | Only the file with `"id": "route"` is read, and only when `overrides` contains `"route"`. |
 
 Other folders are not part of the local loader. The index accepts more folder kinds (section 4.4).
+
 
 ### 2.4 Adding and replacing content
 
@@ -70,6 +71,14 @@ Other folders are not part of the local loader. The index accepts more folder ki
 ### 2.5 Path safety
 
 Pack file reads are resolved inside the pack folder. A path that canonicalises outside the pack folder is refused.
+
+### 2.6 Prop models
+
+A pack prop model is a Blockbench `.bbmodel`. It goes through the same loader as the built-in props (`src/bin/last_route/assets/props/*.bbmodel`, see [PROPS_BBMODEL.md](PROPS_BBMODEL.md)): cubes and mesh elements, the outliner groups the door and locker props use, and one texture per model. The texture is either embedded in the model as a `data:image/png;base64,` URI (what Blockbench writes), or a pack `.png` the model names in `relative_path` / `name`, looked up beside the model first. Put both the model and the png under `assets/`, and list both in `files`.
+
+A `.glb` model still loads (static triangle meshes, base colour textures, vertex colours; no skins or animation), but it is the legacy format: convert it with `node tools/props/glb_to_bbmodel.mjs <in.glb> <out.bbmodel>`. A model in any other format is ignored. A `.bbmodel` is JSON and counts against the same 16 MiB per-file limit as every other file.
+
+`--check-pack <folder>` accepts both extensions.
 
 ## 3. Region files: `lr.region/1`
 
@@ -193,7 +202,7 @@ Path rule. A path must be one of:
 
 - `pack.json`
 - `<kind>/<segment>.json`, where `<kind>` is one of the pack kinds in section 4.4
-- `assets/<up to 6 folders>/<segment>.glb`, `.png` or `.ogg`
+- `assets/<up to 6 folders>/<segment>.bbmodel`, `.glb`, `.png` or `.ogg` (`.bbmodel` is the model format; `.glb` is still accepted so older packs keep working)
 
 Where `<segment>` is `[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}`.
 
@@ -227,7 +236,7 @@ A pack's `sha256` is the SHA-256 of the file lines `"<file sha256> <path>"`, sor
 
 ## 5. Keys checked against the source
 
-Every key in this spec was taken from `src/content/regions.rs` (`KEYS`, `REQUIRED`, `PROP_KEYS`, `GEOMETRY_KEYS`), `src/content/packs.rs` (`load_pack`) or `src/bin/lr_server/mod_packs.rs` (`MANIFEST_KEYS`, `validate_pack_manifest`). Nothing here comes from the Godot files. The `geometry` ranges and defaults come from `WALL_HEIGHT_RANGE`, the `4..=MAX_AUTHORED_ROOM_SIZE` check, `config::WALL_HEIGHT` and `world::facility::MIN_AUTHORED_ROOM_SIZE` and `MAX_AUTHORED_ROOM_SIZE`.
+Every key in this spec was taken from `src/bin/last_route/content/regions.rs` (`KEYS`, `REQUIRED`, `PROP_KEYS`, `GEOMETRY_KEYS`), `src/bin/last_route/content/packs.rs` (`load_pack`) or `src/bin/lr_server/mod_packs.rs` (`MANIFEST_KEYS`, `validate_pack_manifest`). Nothing here comes from the Godot files. The `geometry` ranges and defaults come from `WALL_HEIGHT_RANGE`, the `4..=MAX_AUTHORED_ROOM_SIZE` check, `config::WALL_HEIGHT` and `world::facility::MIN_AUTHORED_ROOM_SIZE` and `MAX_AUTHORED_ROOM_SIZE`.
 
 ## 6. Known mismatches
 
