@@ -14,7 +14,7 @@ rm -rf "$OUT"
 mkdir -p "$OUT/share/applications" "$OUT/share/icons/hicolor/256x256/apps" "$OUT/bin"
 cp target/release/last_route "$OUT/bin/last_route"
 cp packaging/linux/last-route.desktop "$OUT/share/applications/"
-cp assets/branding/logo_256.png "$OUT/share/icons/hicolor/256x256/apps/last-route.png"
+cp src/bin/last_route/assets/branding/logo_256.png "$OUT/share/icons/hicolor/256x256/apps/last-route.png"
 tar -C dist -czf dist/last-route-linux-x86_64.tar.gz last-route-linux
 echo "built $OUT and dist/last-route-linux-x86_64.tar.gz"
 echo "install for this user: cp -r $OUT/* ~/.local/ (puts last_route on ~/.local/bin)"

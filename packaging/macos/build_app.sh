@@ -23,10 +23,10 @@ mkdir -p "$ICONSET"
 for s in 16 32 64 128 256; do
     cp "src/bin/last_route/assets/branding/logo_$s.png" "$ICONSET/icon_${s}x${s}.png"
 done
-cp assets/branding/logo_32.png "$ICONSET/icon_16x16@2x.png"
-cp assets/branding/logo_64.png "$ICONSET/icon_32x32@2x.png"
-cp assets/branding/logo_256.png "$ICONSET/icon_128x128@2x.png"
-sips -z 512 512 assets/branding/logo_256.png --out "$ICONSET/icon_256x256@2x.png" >/dev/null
+cp src/bin/last_route/assets/branding/logo_32.png "$ICONSET/icon_16x16@2x.png"
+cp src/bin/last_route/assets/branding/logo_64.png "$ICONSET/icon_32x32@2x.png"
+cp src/bin/last_route/assets/branding/logo_256.png "$ICONSET/icon_128x128@2x.png"
+sips -z 512 512 src/bin/last_route/assets/branding/logo_256.png --out "$ICONSET/icon_256x256@2x.png" >/dev/null
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/last_route.icns"
 
 # unsigned local build: clear the quarantine flag so it opens on this Mac
