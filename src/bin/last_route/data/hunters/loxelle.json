@@ -1,7 +1,7 @@
 {
 	"schema": "lr.hunter/1",
 	"id": "loxelle",
-	"name": "Loxelle",
+	"name": "L",
 	"tier": "easy",
 	"speed": 0.8,
 	"chase": 3.555,

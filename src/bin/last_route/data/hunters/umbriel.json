@@ -1,7 +1,7 @@
 {
 	"schema": "lr.hunter/1",
 	"id": "umbriel",
-	"name": "Umbriel",
+	"name": "U",
 	"tier": "difficult",
 	"speed": 0.82,
 	"chase": 3.46,

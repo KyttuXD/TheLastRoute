@@ -1,7 +1,7 @@
 {
 	"schema": "lr.hunter/1",
 	"id": "ravelle",
-	"name": "Ravelle",
+	"name": "R",
 	"tier": "difficult",
 	"speed": 0.81,
 	"chase": 3.15,

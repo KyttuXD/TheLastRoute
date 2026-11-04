@@ -1,7 +1,7 @@
 {
 	"schema": "lr.hunter/1",
 	"id": "haelith",
-	"name": "Haelith",
+	"name": "H",
 	"tier": "easy",
 	"speed": 0.83,
 	"chase": 3.6,

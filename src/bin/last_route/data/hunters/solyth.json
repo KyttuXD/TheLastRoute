@@ -1,7 +1,7 @@
 {
 	"schema": "lr.hunter/1",
 	"id": "solyth",
-	"name": "Solyth",
+	"name": "S",
 	"tier": "special",
 	"speed": 0.8,
 	"chase": 3.0,

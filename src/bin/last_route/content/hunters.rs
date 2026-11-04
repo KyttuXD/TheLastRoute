@@ -243,6 +243,20 @@ mod tests {
         assert!(checked >= 36, "only {checked} built-in hunters checked");
     }
 
+    /// The A to Z hunters are shown by letter (KT, 2026-11-04: players refer to them by letter): the id keeps the
+    /// old name for saves, mods and the wire, the display name is just that letter.
+    #[test]
+    fn the_a_to_z_hunters_are_shown_by_letter() {
+        let content = crate::content::Content::load();
+        let mut seen = std::collections::BTreeSet::new();
+        for h in content.hunters.iter().filter(|h| !h.is_pack() && h.category == "az") {
+            let letter = h.id.chars().next().unwrap().to_ascii_uppercase();
+            assert_eq!(h.name, letter.to_string(), "{}", h.id);
+            seen.insert(letter);
+        }
+        assert_eq!(seen.len(), 26, "one hunter per letter: {seen:?}");
+    }
+
     #[test]
     fn a_bad_id_is_rejected_whatever_the_source() {
         let bad = json!({ "schema": "lr.hunter/1", "id": "Bad Id" });
