@@ -1,0 +1,17 @@
+{
+  "schema": "lr.hunters.decks/1",
+  "_note": "Per-hunter rules for the catwalk decks over level 0 (hunters/decks.rs). A hunter row overrides single keys of default. can_climb: the hunter walks to a catwalk ladder and climbs it, up to a deck and back down. can_jump_down: the hunter may jump off a deck to chase or investigate a target on the floor below (never while wandering or searching; it takes the ladder then). landing_stun_seconds (0 to 10): stun after a landing. fall_damage: only \"none\" exists, a landing never hurts a hunter. The ground-only gimmick hunters (nyxie, solyth, ysolde, void_blue, void_green) teleport or lunge on the floor and stay off decks until their gimmicks are deck-aware. The edge costs and the jump arc are in flights.json.",
+  "default": {
+    "can_climb": true,
+    "can_jump_down": true,
+    "landing_stun_seconds": 0.0,
+    "fall_damage": "none"
+  },
+  "hunters": {
+    "nyxie": { "can_climb": false, "can_jump_down": false },
+    "solyth": { "can_climb": false, "can_jump_down": false },
+    "ysolde": { "can_climb": false, "can_jump_down": false },
+    "void_blue": { "can_climb": false, "can_jump_down": false },
+    "void_green": { "can_climb": false, "can_jump_down": false }
+  }
+}

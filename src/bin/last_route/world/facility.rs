@@ -199,6 +199,8 @@ pub struct Facility {
     /// Stairwell cells: open to the level below (or above), not walkable.
     hole: Vec<bool>,
     hunter_open: Vec<bool>,
+    /// Deck cells a body stands on (their own walk height): `deck_open`. Kept apart from `hunter_open`, which is ground only.
+    deck_open: Vec<bool>,
     random: Rng,
     /// Solid props by cell, for fast footprint tests.
     prop_grid: Vec<Vec<usize>>,
@@ -509,6 +511,7 @@ impl Facility {
             origin: (0, 0),
             hole: vec![false; (cols * rows) as usize],
             hunter_open: vec![],
+            deck_open: vec![],
             random: Rng::new(seed_text),
             prop_grid: vec![vec![]; (cols * rows) as usize],
             door_state: HashMap::new(),
@@ -802,6 +805,7 @@ impl Facility {
             origin: (0, 0),
             hole: vec![false; (cols * rows) as usize],
             hunter_open: vec![],
+            deck_open: vec![],
             random: Rng::new(seed_text),
             prop_grid: vec![],
             door_state: HashMap::new(),
@@ -2433,6 +2437,18 @@ impl Facility {
             }
         }
         self.hunter_open = open;
+        // a deck cell is open to a body at the deck's own height (never to a ground hunter: `hunter_open` stays false)
+        let mut deck = vec![false; (self.cols * self.rows) as usize];
+        let mut cells: Vec<Cell> = self.walk_surface.iter().filter(|(_, s)| s.height > 0.0).map(|(c, _)| *c).collect();
+        cells.sort();
+        for c in cells {
+            if c.x < 0 || c.y < 0 || c.x >= self.cols || c.y >= self.rows {
+                continue;
+            }
+            deck[(c.y * self.cols + c.x) as usize] =
+                !self.is_drop(c) && self.body_fits_at(c.x as f32 + 0.5, c.y as f32 + 0.5, DEFAULT_AGENT_RADIUS as f32, self.height_at(c));
+        }
+        self.deck_open = deck;
     }
 
     /// place_hunter_spawn: >20 steps from the start, in the start's open component, 7 cells
@@ -2486,6 +2502,35 @@ impl Facility {
             && c.x < self.cols
             && c.y < self.rows
             && self.hunter_open[(c.y * self.cols + c.x) as usize]
+    }
+
+    /// Whether a body of the hunters' nav radius stands on the deck cell `c` at the deck's own walk height. False for a
+    /// ground cell: `hunter_open` is the ground, this is the decks, and `nav_open` is either.
+    pub fn deck_open(&self, c: Cell) -> bool {
+        c.x >= 0
+            && c.y >= 0
+            && c.x < self.cols
+            && c.y < self.rows
+            && self.deck_open.get((c.y * self.cols + c.x) as usize).copied().unwrap_or(false)
+    }
+
+    /// A cell a hunter can stand in: open ground or an open deck cell.
+    pub fn nav_open(&self, c: Cell) -> bool {
+        self.hunter_open(c) || self.deck_open(c)
+    }
+
+    /// Every open deck cell, in scan order (row by row).
+    pub fn deck_cells(&self) -> Vec<Cell> {
+        let mut v = Vec::new();
+        for y in 0..self.rows {
+            for x in 0..self.cols {
+                let c = Cell::new(x, y);
+                if self.deck_open(c) {
+                    v.push(c);
+                }
+            }
+        }
+        v
     }
 
     /// Whether a sight line may pass `(x, z)` on this level: open floor, or a well / hatch / drop / air cell (an opening

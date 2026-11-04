@@ -24,16 +24,19 @@ pub enum NoiseKind {
     PipeBurst,
     ValveTurn,
     SluiceOpen,
+    /// A hunter landing from a catwalk jump (heard by the bots and the runner, never by the other hunters).
+    HunterLanding,
 }
 
 impl NoiseKind {
-    pub const ALL: [NoiseKind; 6] = [
+    pub const ALL: [NoiseKind; 7] = [
         NoiseKind::PlungeSplash,
         NoiseKind::HardLanding,
         NoiseKind::WadingSplash,
         NoiseKind::PipeBurst,
         NoiseKind::ValveTurn,
         NoiseKind::SluiceOpen,
+        NoiseKind::HunterLanding,
     ];
 
     /// The key in the data file.
@@ -45,6 +48,7 @@ impl NoiseKind {
             NoiseKind::PipeBurst => "pipe_burst",
             NoiseKind::ValveTurn => "valve_turn",
             NoiseKind::SluiceOpen => "sluice_open",
+            NoiseKind::HunterLanding => "hunter_landing",
         }
     }
 
@@ -112,7 +116,9 @@ pub struct Rules {
     pub bot_look_seconds: f32,
     pub hunter_wade_min_depth: f32,
     pub hunter_wade_splash_every: f32,
-    kinds: [KindRule; 6],
+    /// Scales the runner's heard step volume for the thud of a hunter landing from a catwalk jump.
+    pub landing_thud_volume_scale: f32,
+    kinds: [KindRule; 7],
 }
 
 fn positive(v: &Value, key: &str) -> Result<f32, String> {
@@ -152,7 +158,8 @@ impl Rules {
             bot_look_seconds: positive(&v, "bot_look_seconds")?,
             hunter_wade_min_depth: positive(&v, "hunter_wade_min_depth")?,
             hunter_wade_splash_every: positive(&v, "hunter_wade_splash_every")?,
-            kinds: [kinds[0], kinds[1], kinds[2], kinds[3], kinds[4], kinds[5]],
+            landing_thud_volume_scale: positive(&v, "landing_thud_volume_scale")?,
+            kinds: [kinds[0], kinds[1], kinds[2], kinds[3], kinds[4], kinds[5], kinds[6]],
         })
     }
 

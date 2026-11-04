@@ -276,6 +276,10 @@ impl Game {
                 caught = Some(self.adopt_resident(level, i));
             }
         }
+        // a hunter that landed from a catwalk jump: the bots and the runner hear the thud, the other hunters do not
+        let landings = self.hunter_landing_events();
+        self.npc_hear(&landings);
+        self.play_landing_thuds(&landings);
         // hunter footsteps, heartbeat, chase_start and Nyxie's wake cue: crate::audio::world::update (Game::update)
         if let Some(i) = caught {
             self.resolve_capture(i, &admin);
@@ -664,6 +668,34 @@ impl Game {
         out
     }
 
+    /// One `HunterLanding` event for every hunter, active or resident, that landed from a catwalk jump this frame
+    /// (`Brain::landed`, set once when the jump ends).
+    pub(super) fn hunter_landing_events(&self) -> Vec<NoiseEvent> {
+        let active = self.hunters.iter().filter_map(|h| h.landed.map(|p| NoiseEvent::new(NoiseKind::HunterLanding, p, h.level)));
+        let resident = self
+            .resident_hunters
+            .iter_all()
+            .filter_map(|h| h.landed.map(|p| NoiseEvent::new(NoiseKind::HunterLanding, p, h.level)));
+        active.chain(resident).collect()
+    }
+
+    /// The runner hears a landing on her own level within the kind's radius, as a heavy step (the nearest hunter step's
+    /// pan and falloff, scaled by `noise_events.json landing_thud_volume_scale`).
+    pub(super) fn play_landing_thuds(&self, events: &[NoiseEvent]) {
+        let rules = noise_events::rules();
+        let level = self.runner_level();
+        for e in events.iter().filter(|e| e.kind == NoiseKind::HunterLanding && e.level == level) {
+            let offset = ((e.pos.0 - self.p.pos.0) as f64, (e.pos.1 - self.p.pos.1) as f64);
+            let facing = self.forward2();
+            if pdist(e.pos, self.p.pos) > rules.radius_of(e, 1.0) {
+                continue;
+            }
+            if let Some((pan, volume)) = crate::audio::cues::rules::hunter_step_pan_volume(offset, (facing.0 as f64, facing.1 as f64)) {
+                crate::audio::sound::hunter_footstep(pan as f32, volume as f32 * rules.landing_thud_volume_scale);
+            }
+        }
+    }
+
     /// The host's hunters and the bots hear this frame's noise events (`hearing` is the difficulty's `hunter_hearing`):
     /// a hunter in range investigates or searches from the sound (`noise_events::react`), a bot turns toward it. Returns
     /// how many hunters reacted. A guest changes nothing: its hunters only display the host's frames. No event ever
@@ -763,6 +795,34 @@ mod noise_react_tests {
         let events = std::mem::take(&mut g.noise_events);
         assert_eq!(g.hunters_hear_noise(&events, 1.0), 0);
         assert_eq!(g.hunters[0].state, State::Wander);
+    }
+
+    #[test]
+    fn a_catwalk_landing_is_an_event_for_the_bots_and_the_runner_and_never_queued_for_hunters() {
+        let (mut g, content) = game();
+        let mut other = Brain::new(content.hunters[1].clone(), (6.5, 5.5), "L", Difficulty::Standard);
+        other.active = true;
+        other.state = State::Wander;
+        g.hunters.push(other);
+        assert!(g.hunter_landing_events().is_empty(), "nothing landed");
+        g.hunters[0].landed = Some((7.5, 5.5));
+        let ev = g.hunter_landing_events();
+        assert_eq!(ev.len(), 1);
+        assert_eq!((ev[0].kind, ev[0].pos, ev[0].level), (NoiseKind::HunterLanding, (7.5, 5.5), g.hunters[0].level));
+        // the hunters' own queue (what hunters_hear_noise reads) is untouched: only bots and the runner get the event
+        assert!(g.noise_events.is_empty());
+        g.play_landing_thuds(&ev); // the runner's thud: no panic with no audio engine
+        let rule = noise_events::rules().kind(NoiseKind::HunterLanding);
+        assert_eq!(rule.response, noise_events::Response::Investigate);
+        assert!(rule.radius > 0.0 && noise_events::rules().landing_thud_volume_scale > 0.0);
+        assert_eq!(g.hunters[1].state, State::Wander, "the other hunter does not react");
+        frames_one(&mut g);
+        assert!(g.hunters[0].landed.is_none(), "the next frame clears it");
+    }
+
+    fn frames_one(g: &mut Game) {
+        let prof = g.prof();
+        g.update_hunters(1.0 / 60.0, &prof, &Sounds::default());
     }
 
     #[test]

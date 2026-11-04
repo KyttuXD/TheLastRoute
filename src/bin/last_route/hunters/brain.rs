@@ -3,7 +3,8 @@
 //! search state machine, with each hunter's gimmick hooked in at the original's points.
 //! Positions are grid cells (1 cell = 1 m).
 
-use super::flight_edges::{self, EdgeWalk, Hop, Node, StackNav};
+use super::decks::{DeckRules, HunterDeck};
+use super::flight_edges::{self, EdgePermit, EdgeWalk, Hop, Node, StackNav};
 use super::gimmicks::{Ctx, Event, Gimmick};
 use super::peek::{self, Corner, Style};
 use crate::config::*;
@@ -437,6 +438,10 @@ pub struct Brain {
     hop: Option<Hop>,
     /// Seconds spent on the current edge.
     edge_clock: f32,
+    /// This hunter's catwalk-deck rules (data/hunters/decks.json).
+    deck_rules: HunterDeck,
+    /// Where the hunter landed from a catwalk jump this frame (the host reads it once to make the thud and clears it).
+    pub landed: Option<(f32, f32)>,
 }
 
 const ARRIVAL_DISTANCE: f32 = 0.65;
@@ -537,6 +542,8 @@ impl Brain {
             nav: Arc::new(StackNav::empty()),
             hop: None,
             edge_clock: 0.0,
+            deck_rules: DeckRules::get().for_hunter(&def_id),
+            landed: None,
         }
     }
 
@@ -773,6 +780,7 @@ impl Brain {
         prof: &Profile,
     ) -> (bool, Vec<Event>) {
         let mut events = vec![];
+        self.landed = None;
         self.tick_slow(dt);
         let state_before = self.state;
         self.moving_speed = 0.0;
@@ -1182,16 +1190,36 @@ impl Brain {
             if level != own {
                 return Some(1.0);
             }
-            if !(fac.hunter_open(c) || gates.contains(&c)) {
+            if !(fac.nav_open(c) || gates.contains(&c)) {
                 return None;
             }
             plan.step_factor((c.x, c.y))
         };
-        self.nav.next_hop(
+        let goal_cell = cell_of(goal);
+        self.nav.next_hop_with(
             Node { level: self.level, cell: cell_of(self.pos) },
-            Node { level: goal_level, cell: cell_of(goal) },
+            Node { level: goal_level, cell: goal_cell },
             &step_cost,
+            self.edge_permit(goal_level, goal_cell),
         )
+    }
+
+    /// Which catwalk edges this hunter may plan through toward `goal_cell` on `goal_level`. The ladder follows
+    /// `decks.json can_climb`. The jump follows `can_jump_down` and only a chasing or investigating hunter heading for a
+    /// goal lower than itself (a runner or a noise below), so a wanderer or searcher never hops off a deck and takes the
+    /// ladder home instead.
+    fn edge_permit(&self, goal_level: i32, goal_cell: Cell) -> EdgePermit {
+        let rules = self.nav.rules();
+        let goal_abs = crate::game::level_stack::floor_y_of(goal_level)
+            + self.nav.grid(goal_level).map_or(0.0, |g| g.height_of(goal_cell));
+        let lower = goal_abs < self.y - rules.same_layer_eps;
+        EdgePermit {
+            catwalk_ladder: self.deck_rules.can_climb && rules.catwalk_ladder_enabled,
+            catwalk_jump: self.deck_rules.can_jump_down
+                && rules.catwalk_jump_enabled
+                && matches!(self.state, State::Chase | State::Investigate)
+                && lower,
+        }
     }
 
     /// One frame on an edge: the walk alone moves the body (at the hunter's own speed, no climb animation), the level
@@ -1200,6 +1228,7 @@ impl Brain {
         let Some(walk) = self.walk.as_ref() else { return };
         let len = walk.len;
         let (from, to) = (walk.from, walk.to);
+        let (start_y, end_y) = (walk.start_point()[2], walk.end_point()[2]);
         let limit_speed = walk.speed(speed, self.nav.rules());
         // The footprint test is for a flight's treads. A ladder shaft and a drop's fall are vertical paths built by
         // the graph (there is no walk surface between the floors to test), so only a flight is checked.
@@ -1211,8 +1240,15 @@ impl Brain {
         let prev = self.pos;
         if done {
             self.pos = to.cell.center();
-            self.y = crate::game::level_stack::floor_y_of(to.level);
+            // the walk's own end height: a floor for every flight, ladder and drop, a deck for a catwalk ladder
+            self.y = next.end_point()[2];
             self.level = to.level;
+            if next.kind == flight_edges::EdgeKind::CatwalkJump {
+                self.landed = Some(self.pos);
+                if self.deck_rules.landing_stun_seconds > 0.0 {
+                    self.apply_stun(self.deck_rules.landing_stun_seconds, false);
+                }
+            }
             self.walk = None;
             self.hop = None;
             self.edge_clock = 0.0;
@@ -1239,10 +1275,10 @@ impl Brain {
         }
         let limit = len / limit_speed.max(0.2) + self.nav.rules().edge_stuck_seconds;
         if self.edge_clock > limit {
-            let (from_y, to_y) = (crate::game::level_stack::floor_y_of(from.level), crate::game::level_stack::floor_y_of(to.level));
+            let (from_y, to_y) = (start_y, end_y);
             let end = if (self.y - from_y).abs() <= (to_y - self.y).abs() { from } else { to };
             self.pos = end.cell.center();
-            self.y = crate::game::level_stack::floor_y_of(end.level);
+            self.y = if end == from { from_y } else { to_y };
             self.level = end.level;
             self.walk = None;
             self.hop = None;
@@ -2992,6 +3028,139 @@ mod wiring_tests {
         assert_eq!(changes, 1, "Idle to Chase once, then it keeps watching from the foot");
         assert_eq!(b.state, State::Chase);
         assert!(dist(b.pos, deck2.center()) <= 3.5, "it stands near the deck, at {:?}", b.pos);
+    }
+
+    fn deck_nav(fac: &Facility) -> Arc<StackNav> {
+        use crate::game::level_stack::LevelStack;
+        Arc::new(StackNav::build(fac, &LevelStack::default(), flight_edges::rules()))
+    }
+
+    fn at(c: Cell) -> flight_edges::Node {
+        flight_edges::Node { level: 0, cell: c }
+    }
+
+    #[test]
+    fn a_catwalk_jump_sets_landed_once_and_the_fall_never_outruns_the_fall_speed() {
+        let (fac, [_, deck1, _]) = deck_row();
+        let nav = deck_nav(&fac);
+        let jump = nav.edges_from(at(deck1)).find(|e| e.key.kind == flight_edges::EdgeKind::CatwalkJump).expect("a jump").clone();
+        let mut b = watcher(deck1.center(), deck_h());
+        b.set_nav(nav.clone());
+        b.walk = Some(EdgeWalk::start(&jump));
+        let far = Target { pos: (-500.0, -500.0), hidden: true, ..Default::default() };
+        let prof = Difficulty::Standard.profile();
+        let c = ctx(&fac);
+        let (mut last_y, mut landings, mut frames) = (b.y, 0, 0);
+        let cap = flight_edges::rules().drop_fall_speed / 60.0 + 1e-3;
+        while b.walk.is_some() && frames < 600 {
+            b.update(1.0 / 60.0, &c, &far, 1, 0, &prof);
+            frames += 1;
+            assert!(b.y <= last_y + 1e-5, "a fall never rises");
+            assert!(last_y - b.y <= cap, "frame {frames}: fell {} in a frame", last_y - b.y);
+            assert_eq!(b.level, 0, "a deck hunter stays on level 0");
+            if b.landed.is_some() {
+                landings += 1;
+            }
+            last_y = b.y;
+        }
+        assert!(b.walk.is_none(), "the jump ended");
+        assert_eq!(b.y, 0.0, "landed on the floor");
+        assert_eq!(landings, 1, "landed is set on the landing frame only");
+        let spot = b.landed.expect("set by the frame the jump ended");
+        assert_eq!(cell_of(spot), cell_of(b.pos));
+        b.update(1.0 / 60.0, &c, &far, 1, 0, &prof);
+        assert!(b.landed.is_none(), "the host reads it once: the next frame clears it");
+        assert!(b.stun <= 0.0, "landing_stun_seconds is 0 in the data");
+    }
+
+    #[test]
+    fn a_catwalk_ladder_walk_puts_the_hunter_on_the_deck_at_the_deck_height() {
+        let (mut fac, [ground, deck1, _]) = deck_row();
+        fac.catwalk_links.push(crate::world::route::catwalk_links::CatwalkLink {
+            cell: ground,
+            kind: crate::world::route::catwalk_links::CatwalkKind::Ladder,
+            deck_height: deck_h(),
+            run: (1, 0),
+        });
+        let nav = deck_nav(&fac);
+        let up = nav.edges_from(at(ground)).find(|e| e.key.kind == flight_edges::EdgeKind::CatwalkLadder).expect("a ladder").clone();
+        let mut b = watcher(ground.center(), 0.0);
+        b.set_nav(nav.clone());
+        b.walk = Some(EdgeWalk::start(&up));
+        let far = Target { pos: (-500.0, -500.0), hidden: true, ..Default::default() };
+        let prof = Difficulty::Standard.profile();
+        let c = ctx(&fac);
+        let mut frames = 0;
+        while b.walk.is_some() && frames < 1200 {
+            b.update(1.0 / 60.0, &c, &far, 1, 0, &prof);
+            frames += 1;
+            assert_eq!(b.level, 0);
+        }
+        assert!(b.walk.is_none());
+        assert_eq!(cell_of(b.pos), deck1);
+        assert!((b.y - deck_h()).abs() < 1e-4 && b.on_deck());
+        assert!(b.landed.is_none(), "a climb makes no thud");
+        let secs = frames as f32 / 60.0;
+        assert!((secs - up.len / flight_edges::rules().ladder_speed()).abs() < 0.1, "climbed at the ladder speed: {secs} s");
+    }
+
+    fn brain_with(id: &str, nav: &Arc<StackNav>, y: f32) -> Brain {
+        let mut def = aki();
+        def.id = id.into();
+        let mut b = Brain::new(def, (5.5, 5.5), "PERMIT", Difficulty::Standard);
+        b.set_nav(nav.clone());
+        b.y = y;
+        b
+    }
+
+    #[test]
+    fn the_permit_follows_the_decks_row_the_state_and_the_goal_height() {
+        let (fac, [ground, deck1, _]) = deck_row();
+        let nav = deck_nav(&fac);
+        // an ordinary hunter on a deck, chasing a goal on the floor: ladder and jump
+        let mut b = brain_with("aki", &nav, deck_h());
+        b.state = State::Chase;
+        let p = b.edge_permit(0, ground);
+        assert!(p.catwalk_ladder && p.catwalk_jump);
+        b.state = State::Investigate;
+        assert!(b.edge_permit(0, ground).catwalk_jump, "investigating a noise below counts");
+        for s in [State::Wander, State::Search, State::Idle] {
+            b.state = s;
+            let p = b.edge_permit(0, ground);
+            assert!(p.catwalk_ladder && !p.catwalk_jump, "{s:?}: it takes the ladder home, never jumps");
+        }
+        // heading for a goal at its own height or above: no jump
+        b.state = State::Chase;
+        assert!(!b.edge_permit(0, deck1).catwalk_jump, "a goal on the same deck needs no jump");
+        let mut low = brain_with("aki", &nav, 0.0);
+        low.state = State::Chase;
+        assert!(!low.edge_permit(0, deck1).catwalk_jump, "a goal above is not a jump");
+        assert!(low.edge_permit(0, deck1).catwalk_ladder);
+        // the ground-only gimmick hunters take neither
+        let mut nyx = brain_with("nyxie", &nav, deck_h());
+        nyx.state = State::Chase;
+        assert_eq!(nyx.edge_permit(0, ground), EdgePermit::NONE);
+    }
+
+    #[test]
+    fn a_hunter_with_the_permit_off_in_the_data_plans_no_catwalk_hop() {
+        let (mut fac, [ground, deck1, deck2]) = deck_row();
+        fac.catwalk_links.push(crate::world::route::catwalk_links::CatwalkLink {
+            cell: ground,
+            kind: crate::world::route::catwalk_links::CatwalkKind::Ladder,
+            deck_height: deck_h(),
+            run: (1, 0),
+        });
+        let nav = deck_nav(&fac);
+        let mut aki_b = brain_with("aki", &nav, 0.0);
+        aki_b.pos = ground.center();
+        aki_b.state = State::Chase;
+        assert_eq!(aki_b.hop_to(&fac, deck2.center(), 0).map(|h| h.edge.kind), Some(flight_edges::EdgeKind::CatwalkLadder));
+        let mut nyx = brain_with("nyxie", &nav, 0.0);
+        nyx.pos = ground.center();
+        nyx.state = State::Chase;
+        assert!(nyx.hop_to(&fac, deck2.center(), 0).is_none(), "a ground-only hunter has no way up");
+        let _ = deck1;
     }
 }
 
