@@ -1,8 +1,10 @@
 //! Hunters on every resident floor (docs/STAIRS_CONTINUOUS_DESIGN.md D5, phase 8). `Game::hunters` is the list of the active
 //! level; this module keeps one more list per resident neighbour level, in the same window frame, and moves a hunter
-//! between lists when its own derived level changes (it walked a flight or a ladder). A level that leaves the stack hands
-//! its hunters back to the stores of `game/endless.rs` at absolute cells (`InfState::floor_hunters` for ids-less hunters,
-//! `InfState::stored` for the level-0 hunters residency owns), and a level that joins pulls them out again.
+//! between lists when its own derived level changes (it walked a flight or a ladder). Resident lists are simulated. The
+//! two maps of `InfState` are the shelf of the floors that are not resident (nothing simulates there): `stored` for the
+//! level-0 hunters residency owns, `floor_hunters` for every other, at absolute cells. A level that leaves the stack
+//! hands its hunters to the shelf (`store_slots`), one that joins pulls them out (`pull_slots`), and
+//! `shelve_active_hunters` / `unshelve_active_hunters` do the same for the active list around a floor rebuild.
 //!
 //! Everything here is behaviour. The numbers are data: the resident hunter cap, the capture height and the adjacent
 //! hearing and sight rules are in `data/hunters/flights.json` (`hunters/flight_edges.rs`), the hunter's eye height in
@@ -483,8 +485,8 @@ impl Game {
 
     /// `relabel` from level `from` to `to` (already `inf.level`): the active list becomes the list of `from` and the
     /// list of `to` becomes the active one. No brain is shifted or reset, and the residency ids travel with the slots.
-    /// When `to` was somehow not synced the old store and restore pair runs instead (they read `inf.level`, so it is
-    /// put back to `from` for the store).
+    /// When `to` was not synced its list alone is made (`pull_slots`: its shelf, its lineup, or empty when it has no
+    /// window); no other list moves, and nothing is swapped.
     pub(super) fn relabel_hunters(&mut self, from: i32, to: i32, content: &Content) {
         let n = self.hunters.len();
         let ids: Vec<String> = match self.inf.as_mut() {
@@ -500,26 +502,13 @@ impl Game {
             None => vec![String::new(); n],
         };
         let brains = std::mem::take(&mut self.hunters);
-        if !self.resident_hunters.has(to) && !self.remote_hunters {
-            self.hunters = brains;
-            if let Some(inf) = self.inf.as_mut() {
-                if from == 0 {
-                    *inf.loaded_mut() = ids;
-                }
-                inf.level = from;
-            }
-            self.store_level0_hunters();
-            self.store_floor_hunters();
-            if let Some(inf) = self.inf.as_mut() {
-                inf.level = to;
-            }
-            self.restore_level_hunters(content);
-            if to == 0 {
-                self.adopt_kept_level0();
-            }
-            return;
-        }
         self.resident_hunters.put(from, join(ids, brains));
+        if !self.resident_hunters.has(to) {
+            // `to` was not synced: make its list alone from the shelf (or its lineup); no other list is touched, so the
+            // list of `from` just put stays whatever the stack holds, and nothing is swapped
+            let slots = self.pull_slots(to, content);
+            self.resident_hunters.put(to, slots);
+        }
         let (ids, brains) = split(self.resident_hunters.take(to));
         self.hunters = brains;
         if let Some(inf) = self.inf.as_mut() {
@@ -528,6 +517,65 @@ impl Game {
         self.reset_director();
         // a level with fewer hunters than its population is topped up; level 0 runs its residency
         self.ensure_hunters(content);
+    }
+
+    /// Puts the active hunters on the shelf (the two maps of `InfState`) at absolute cells, before the window is
+    /// replaced: level-0 hunters with a residency id to `stored`, every other to `floor_hunters` under the level. A guest
+    /// shelves nothing.
+    pub(super) fn shelve_active_hunters(&mut self) {
+        if super::guest_gate::is_display_only(self) {
+            return;
+        }
+        let n = self.hunters.len();
+        let Some(inf) = self.inf.as_mut() else { return };
+        let level = inf.level;
+        let mut ids = std::mem::take(inf.loaded_mut());
+        ids.resize(n, String::new());
+        if level != 0 {
+            ids = vec![String::new(); n];
+        }
+        let brains = std::mem::take(&mut self.hunters);
+        self.store_slots(level, join(ids, brains));
+    }
+
+    /// Takes the active level's hunters off the shelf after the window is replaced. Level 0: residency loads the
+    /// window's share and the kept id-less ones come back. Another level: the hunters it kept, fitted into the window,
+    /// or its lineup when never visited. A guest does nothing.
+    pub(super) fn unshelve_active_hunters(&mut self, content: &Content) {
+        if super::guest_gate::is_display_only(self) {
+            return;
+        }
+        let Some(level) = self.inf.as_ref().map(|i| i.level) else { return };
+        if level == 0 {
+            self.hunters.clear();
+            if let Some(inf) = self.inf.as_mut() {
+                inf.loaded_mut().clear();
+            }
+            self.reset_director();
+            self.residency(content);
+            self.adopt_kept_level0();
+            return;
+        }
+        let (_, brains) = split(self.pull_slots(level, content));
+        self.hunters = brains;
+        if let Some(inf) = self.inf.as_mut() {
+            inf.loaded_mut().clear();
+        }
+        self.reset_director();
+        self.ensure_hunters(content);
+    }
+
+    /// A recentre may push a resident floor's hunter outside its window: every non-zero resident list is fitted back in,
+    /// out of sight. A guest's hunters stay where the host's frames put them.
+    pub(super) fn fit_resident_lists_into_window(&mut self) {
+        if self.remote_hunters {
+            return;
+        }
+        for l in self.resident_hunters.levels().into_iter().filter(|l| *l != 0) {
+            let mut slots = self.resident_hunters.take(l);
+            self.fit_into_window(l, &mut slots);
+            self.resident_hunters.put(l, slots);
+        }
     }
 
     /// The id-less level-0 hunters the stores kept while level 0 was not resident come back into the active list.
@@ -898,5 +946,120 @@ mod tests {
         assert!(r.take(7).is_empty(), "taking a level with no list is empty");
         r.list_mut(2);
         assert!(r.has(2), "list_mut makes the list");
+    }
+}
+
+#[cfg(test)]
+mod shelf_tests {
+    use super::*;
+    use crate::world::catalog::Catalog;
+
+    fn run(room: &str) -> (Game, Content, Catalog) {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let g = Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, room, 0, &content, &catalog);
+        (g, content, catalog)
+    }
+
+    fn brain(content: &Content, at: (f32, f32), seed: &str) -> Brain {
+        let mut b = Brain::new(content.hunters[0].clone(), at, seed, crate::config::Difficulty::Standard);
+        b.activate_at(at);
+        b
+    }
+
+    #[test]
+    fn shelve_then_unshelve_level0_keeps_ids_and_absolute_cells() {
+        let (mut g, content, _) = run("ROOM-SHELF-0");
+        let at = g.p.pos;
+        g.hunters.clear();
+        g.hunters.push(brain(&content, at, "S0"));
+        *g.inf.as_mut().unwrap().loaded_mut() = vec!["SHELF-ID-A".to_string()];
+        let o = g.inf.as_ref().unwrap().origin();
+        g.shelve_active_hunters();
+        assert!(g.hunters.is_empty() && g.inf.as_mut().unwrap().loaded_mut().is_empty());
+        let kept = g.inf.as_mut().unwrap().stored_mut().get("SHELF-ID-A").map(|b| b.pos).expect("on the shelf by id");
+        assert!((kept.0 - (at.0 + o.0 as f32)).abs() < 1e-3 && (kept.1 - (at.1 + o.1 as f32)).abs() < 1e-3, "absolute cells");
+        g.unshelve_active_hunters(&content);
+        let ids = g.inf.as_mut().unwrap().loaded_mut().clone();
+        assert_eq!(ids.len(), g.hunters.len(), "ids and hunters stay paired");
+        if let Some(i) = ids.iter().position(|id| id == "SHELF-ID-A") {
+            let p = g.hunters[i].pos;
+            assert!((p.0 - at.0).abs() < 1e-3 && (p.1 - at.1).abs() < 1e-3, "back in the window frame");
+        }
+    }
+
+    #[test]
+    fn shelve_then_unshelve_a_sewer_floor_keeps_positions_and_count() {
+        let (mut g, content, catalog) = run("ROOM-SHELF-1");
+        let at = g.p.pos;
+        g.go_to_level(-1, at, 0.0, &content, &catalog);
+        let count = g.hunters.len();
+        let pos: Vec<(f32, f32)> = g.hunters.iter().map(|h| h.pos).collect();
+        g.shelve_active_hunters();
+        assert!(g.hunters.is_empty());
+        let shelved = g.inf.as_mut().unwrap().floor_hunters_mut().get(&-1).map_or(0, Vec::len);
+        assert_eq!(shelved, count, "every hunter of the floor is on the shelf");
+        g.unshelve_active_hunters(&content);
+        assert!(g.hunters.len() >= count, "nothing is lost");
+        for p in pos {
+            assert!(g.hunters.iter().any(|h| (h.pos.0 - p.0).abs() < 1e-2 && (h.pos.1 - p.1).abs() < 1e-2), "{p:?} returns");
+        }
+    }
+
+    #[test]
+    fn a_never_visited_floor_gets_its_lineup_on_unshelve() {
+        let (mut g, content, catalog) = run("ROOM-SHELF-2");
+        let at = g.p.pos;
+        g.go_to_level(-2, at, 0.0, &content, &catalog);
+        g.hunters.clear();
+        g.inf.as_mut().unwrap().floor_hunters_mut().remove(&-2);
+        g.unshelve_active_hunters(&content);
+        assert!(!g.hunters.is_empty(), "Nyxie, Solyth and the route hunters");
+    }
+
+    #[test]
+    fn a_guest_shelves_and_unshelves_nothing() {
+        let (mut g, content, _) = run("ROOM-SHELF-3");
+        g.remote_hunters = true;
+        g.hunters.clear();
+        let b = brain(&content, g.p.pos, "S3");
+        g.hunters.push(b);
+        g.shelve_active_hunters();
+        assert_eq!(g.hunters.len(), 1, "a guest keeps what the host shows");
+        assert!(g.inf.as_mut().unwrap().floor_hunters_mut().is_empty());
+        g.unshelve_active_hunters(&content);
+        assert_eq!(g.hunters.len(), 1);
+    }
+
+    #[test]
+    fn relabel_to_an_unsynced_level_takes_an_empty_list_and_swaps_nothing() {
+        let (mut g, content, _) = run("ROOM-SHELF-4");
+        let from = g.inf.as_ref().unwrap().level;
+        let to = from - 7;
+        g.hunters.clear();
+        let b = brain(&content, g.p.pos, "S4");
+        g.hunters.push(b);
+        *g.inf.as_mut().unwrap().loaded_mut() = vec![String::new()];
+        g.inf.as_mut().unwrap().level = to;
+        g.resident_hunters.take(to);
+        g.relabel_hunters(from, to, &content);
+        assert_eq!(g.inf.as_ref().unwrap().level, to, "the label is not put back");
+        assert_eq!(g.resident_hunters.list(from).len(), 1, "the hunter stays in the list of the level left");
+        assert!(g.inf.as_mut().unwrap().floor_hunters_mut().get(&from).is_none(), "nothing was stored by a swap");
+    }
+
+    #[test]
+    fn a_recentre_brings_an_outside_resident_hunter_back_in_the_window() {
+        let (mut g, content, catalog) = run("ROOM-SHELF-5");
+        let at = g.p.pos;
+        g.go_to_level(-1, at, 0.0, &content, &catalog);
+        g.keep_stack(&content, &catalog);
+        let Some(l) = g.resident_hunters.levels().into_iter().find(|l| *l != 0) else { return };
+        let b = brain(&content, (-500.0, -500.0), "S5");
+        g.resident_hunters.list_mut(l).push(Slot { id: String::new(), brain: b });
+        g.fit_resident_lists_into_window();
+        let size = (CHUNK * 3) as f32;
+        let p = g.resident_hunters.list(l).last().unwrap().brain.pos;
+        assert!(p.0 >= 0.0 && p.1 >= 0.0 && p.0 < size && p.1 < size, "back inside: {p:?}");
     }
 }

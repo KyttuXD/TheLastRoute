@@ -100,7 +100,7 @@ pub struct Player {
     /// The landing the last fall left, until `take_landing` takes it.
     landing: Option<Landing>,
     /// The body's velocity over the last frame, in metres a second, from the displacement `update_movement` made. It is
-    /// not cleared by a storey change (game/endless.rs `change_storey`), so the momentum carries onto the next floor.
+    /// not cleared by a label change or by `respawn_on_level`, so the momentum carries onto the next floor.
     pub move_vel: (f32, f32),
     /// Seconds left in a forced flicker (a pool landing or a hunter event); the
     /// beam strobes until it runs out and the player's own switch cannot override it.
@@ -690,8 +690,8 @@ mod tests {
         assert!(v.0.hypot(v.1) > 0.5, "the walk left a velocity: {v:?}");
         // the change to the storey below (flight_game's levels are 0 and -1, so `level - 1` is always allowed)
         let to = g.inf.as_ref().map_or(0, |i| i.level) - 1;
-        g.change_storey(to, &content, &catalog, |_g| {});
-        assert_eq!(g.p.move_vel, v, "the momentum is carried across the storey change");
+        g.go_to_level(to, g.p.pos, g.p.yaw, &content, &catalog);
+        assert_eq!(g.p.move_vel, v, "the momentum is carried across the level change");
     }
 
     #[test]

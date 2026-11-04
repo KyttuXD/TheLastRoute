@@ -1137,6 +1137,7 @@ impl Game {
                 h.clear_path();
             }
             self.shift_resident_hunters((-sx, -sy));
+            self.fit_resident_lists_into_window();
         }
         // NPC teammates share the window frame, so they shift with it (game/npc.rs)
         for n in self.npcs.iter_mut() {
@@ -1187,18 +1188,15 @@ impl Game {
         }
     }
 
-    /// Moves the run to storey `to` on the frame it is asked for: the hunters of the storey left are stored, the window
-    /// hold: the connection is the change (game/transition.rs). After phases 6 and 7 the only caller is the test helper
-    /// `go_to_level` (and tests); ladders, drops and falls move the body in absolute y and `walk_relabel` changes the
-    /// label, and respawn, checkpoint and a new run rebuild the floor (`start_floor_sim`). A resident window is swapped in by the load.
-    #[cfg_attr(not(test), allow(dead_code))]
-    /// absolute y and `walk_relabel` changes the label). A resident window of the storey (`keep_stack`) is swapped in by the load.
+    /// Moves the run to storey `to` on the frame it is asked for: the active hunters go to the shelf, the window of `to`
+    /// is loaded, `arrive` places the body, and the shelf gives the level's hunters back. The callers are `respawn_on_level`
+    /// (admin jump) and the test helper `go_to_level`; ladders, drops and flights move the body in absolute y and the label
+    /// follows by `relabel` (`walk_relabel`).
     pub(super) fn change_storey(&mut self, to: i32, content: &Content, catalog: &Catalog, arrive: impl FnOnce(&mut Game)) {
         self.drain_resident_hunters();
         self.sync_out();
         // the level being left keeps its hunters at their absolute cells, to be found again on the way back
-        self.store_level0_hunters();
-        self.store_floor_hunters();
+        self.shelve_active_hunters();
         if let Some(inf) = self.inf.as_mut() {
             inf.level = to;
         }
@@ -1206,8 +1204,25 @@ impl Game {
         self.load_window(content, catalog);
         arrive(&mut *self);
         // the level's own hunters come back where they were; a level not visited before gets its lineup
-        self.restore_level_hunters(content);
+        self.unshelve_active_hunters(content);
         self.announce(&format!("LEVEL {to}"));
+    }
+
+    /// Respawn semantics on level `to` (admin level jump): the floor is rebuilt, the body stands on the start cell of
+    /// that level, one label change, one announce, one autosave. False and no change for a guest, a finite route, a
+    /// level that is not allowed or the level already active.
+    pub fn respawn_on_level(&mut self, to: i32, content: &Content, catalog: &Catalog) -> bool {
+        if self.remote_hunters || !self.inf.as_ref().is_some_and(|i| i.level != to) || !infinite::level_allowed(to) {
+            return false;
+        }
+        self.change_storey(to, content, catalog, |g| {
+            let s = g.fac.start.center();
+            g.p.pos = g.fac.nearest_open_or(s.0, s.1, PLAYER_RADIUS);
+            g.p.height = 0.0;
+            g.p.set_abs_y(floor_y_of(to));
+        });
+        self.autosave("level");
+        true
     }
 
     /// Test helper: the level change of a ladder, a drop or a respawn, to storey `to`, the body put on the open cell
@@ -1378,7 +1393,7 @@ impl Game {
     /// stored. A new hunter is created dormant at its spawn cell (Godot `ensure_hunter`), and wakes at the runner on its
     /// first load, where the relay activation used to wake a spawn. A change in who is loaded resets the director, whose
     /// ids are indices into `hunters`.
-    fn residency(&mut self, content: &Content) {
+    pub(super) fn residency(&mut self, content: &Content) {
         if super::guest_gate::is_display_only(self) {
             return;
         }
@@ -1485,84 +1500,12 @@ impl Game {
         }
     }
 
-    /// Leaving level 0 by a stairwell: the loaded hunters go to the store at their absolute cells, so the level
-    /// they were on keeps them (Godot keeps every hunter in world_state).
-    pub(super) fn store_level0_hunters(&mut self) {
-        if super::guest_gate::is_display_only(self) {
-            return;
-        }
-        let Some(inf) = self.inf.as_mut() else { return };
-        if inf.level != 0 {
-            return;
-        }
-        inf.loaded.resize(self.hunters.len(), String::new());
-        let o = inf.origin();
-        let o = (o.0 as f32, o.1 as f32);
-        let old_hunters = std::mem::take(&mut self.hunters);
-        let old_ids = std::mem::take(&mut inf.loaded);
-        for (mut b, id) in old_hunters.into_iter().zip(old_ids) {
-            if !id.is_empty() {
-                shift_brain(&mut b, o);
-                inf.stored.insert(id, b);
-            }
-        }
-    }
-
-    /// Leaving a level off level 0 by a stairwell: its hunters are kept at their absolute cells under the level (the
-    /// level-0 hunters go to `stored`, see `store_level0_hunters`).
-    pub(super) fn store_floor_hunters(&mut self) {
-        if super::guest_gate::is_display_only(self) {
-            return;
-        }
-        let Some(inf) = self.inf.as_mut() else { return };
-        if inf.level == 0 {
-            return;
-        }
-        let o = inf.origin();
-        let o = (o.0 as f32, o.1 as f32);
-        let mut kept = std::mem::take(&mut self.hunters);
-        for b in kept.iter_mut() {
-            shift_brain(b, o);
-        }
-        inf.floor_hunters.insert(inf.level, kept);
-    }
-
-    /// Arriving on a level by a stairwell. Level 0 loads its stored hunters by residency. Another level the runner has
-    /// been on gets back the hunters it kept, in the new window's frame (one now outside the window comes back in out of
-    /// sight, as on a window move), topped up to the population. A level not visited before gets its lineup.
-    pub(super) fn restore_level_hunters(&mut self, content: &Content) {
-        if super::guest_gate::is_display_only(self) {
-            return;
-        }
-        let Some(inf) = self.inf.as_mut() else { return };
-        if inf.level == 0 {
-            // the loaded set was emptied into `stored` on the way out; residency loads the window's share again
-            self.hunters.clear();
-            inf.loaded.clear();
-            self.reset_director();
-            self.residency(content);
-            return;
-        }
-        let Some(mut kept) = inf.floor_hunters.remove(&inf.level) else {
-            self.reset_hunters(content);
-            return;
-        };
-        let o = inf.origin();
-        let o = (-(o.0 as f32), -(o.1 as f32));
-        for b in kept.iter_mut() {
-            shift_brain(b, o);
-        }
-        self.hunters = kept;
-        self.reset_director();
-        self.respawn_outside_window();
-        self.ensure_hunters(content);
-    }
-
     pub fn save_checkpoint(&self) {
         crate::shared::checkpoint::save(&crate::shared::checkpoint::Checkpoint {
             run_seed: self.run_seed,
             room_text: self.room_text.clone(),
             depth: self.inf.as_ref().map(|i| i.level).unwrap_or(self.depth),
+            y: self.inf.as_ref().map(|_| self.p.y()),
             score: self.score,
             coins: self.coins,
             difficulty: self.difficulty,
@@ -2524,20 +2467,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn leaving_level_zero_stores_the_loaded_hunters_at_their_cells() {
-        let (mut g, _, _) = populated();
-        let before = absolute(&g);
-        assert!(!g.hunters.is_empty());
-        g.store_level0_hunters();
-        assert!(g.hunters.is_empty());
-        let after = absolute(&g);
-        assert_eq!(after.len(), before.len());
-        for (id, pos) in &before {
-            assert_eq!(after.get(id), Some(pos), "{id} is stored where it stood");
-        }
-    }
-
     /// Moves the run across stairwell `i` as the old swap did (to the far end of its flight, one level over), through
     /// `go_to_level`: for the tests that need the hunters of two levels stored and restored.
     fn take(g: &mut Game, i: usize, content: &Content, catalog: &Catalog) {
@@ -3287,7 +3216,8 @@ mod walked_stair_tests {
         let (content, catalog) = (Content::load(), Catalog::load());
         let (mut g, _, to) = with_neighbour(-1, &content, &catalog);
         let built = g.inf.as_ref().unwrap().builds;
-        g.change_storey(to, &content, &catalog, |g| g.p.pos = g.fac.start.center());
+        let at = g.p.pos;
+        g.go_to_level(to, at, 0.0, &content, &catalog);
         let inf = g.inf.as_ref().unwrap();
         assert_eq!(inf.level, to, "the change lands on the storey beyond");
         assert_eq!(inf.builds, built, "the change itself builds no window");
@@ -3438,8 +3368,9 @@ mod walked_stair_tests {
         g.hunters = vec![Brain::new(content.hunters[0].clone(), (5.5, 5.5), "GUEST-HUNTER", g.difficulty)];
         let before: Vec<(f32, f32)> = g.hunters.iter().map(|h| h.pos).collect();
         let stored = g.inf.as_ref().unwrap().stored.len();
-        g.change_storey(-1, &content, &catalog, |g| g.p.pos = g.fac.start.center());
-        g.change_storey(0, &content, &catalog, |g| g.p.pos = g.fac.start.center());
+        let at = g.p.pos;
+        g.go_to_level(-1, at, 0.0, &content, &catalog);
+        g.go_to_level(0, at, 0.0, &content, &catalog);
         let after: Vec<(f32, f32)> = g.hunters.iter().map(|h| h.pos).collect();
         assert_eq!(before, after, "the host's frames set a guest's hunters, a level change does not");
         assert_eq!(g.inf.as_ref().unwrap().stored.len(), stored, "a guest stores no hunter");

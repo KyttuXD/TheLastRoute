@@ -1,6 +1,6 @@
 {
   "schema": "lr.stairs_links/1",
-  "_about": "Level-link numbers. A stair flight is walked and relabelled (game/endless.rs relabel), never interacted with; a sewer ladder is climbed by hand (game/ladder.rs). Read by game/transition.rs. prefetch_distance is the residency radius (cells): how close the runner gets to a stair or ladder landing before the storey it leads to is kept resident (Game::keep_stack), so crossing builds nothing. Godot reference: game/world/generation/stairwells.gd, game/infinite_route/infinite_route_test.gd (_update_player_ladder).",
+  "_about": "Level-link numbers. A stair flight is walked and relabelled (game/endless.rs relabel), never interacted with; a sewer ladder is climbed by hand (game/ladder.rs). Read by game/transition.rs. prefetch_distance (the key keeps its historic name) is the residency radius (cells): how close the runner gets to a stair or ladder landing before the storey it leads to is kept resident (Game::keep_stack), so crossing builds nothing. Godot reference: game/world/generation/stairwells.gd, game/infinite_route/infinite_route_test.gd (_update_player_ladder).",
   "prefetch_distance": 8,
   "preload_levels_up": 2,
   "preload_levels_down": 2,

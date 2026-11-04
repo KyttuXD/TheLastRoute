@@ -92,3 +92,7 @@ Short answers are fine. Where there is a default, the work goes ahead with it if
 26. CI: the build workflows were failing because of artifact storage and the self-test. Should the
     artifacts keep 3 days, or go back to the default 90?
     **Default:** 3 days.
+
+## Stairs project decisions D1-D8
+
+The stairs questions D1 to D8 in the old list are answered in the Decisions table of [STAIRS_CONTINUOUS_DESIGN.md](STAIRS_CONTINUOUS_DESIGN.md) and implemented (phases 0-9).

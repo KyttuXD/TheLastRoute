@@ -1,7 +1,7 @@
 //! Stairs and ladders from the level 0 floor up to the catwalk decks and back down (`data/regions/catwalk_links.json`,
-//! `lr.catwalk_links/1`, embedded by build.rs). They are direct connections like every other level link: no fade and
-//! no halt. The landing offset and the prefetch distance are not repeated here, they come from
-//! `data/stairs_links.json` (`game::transition::links`), so a link is arrived at and prefetched the same way as a stair.
+//! `lr.catwalk_links/1`, embedded by build.rs). They are direct connections like every other level link: no
+//! halt. The residency radius is not repeated here, it comes from `data/stairs_links.json`
+//! (`game::transition::links`); links are that radius plus one `Flight` each.
 //!
 //! Where links appear and how many are data: a chunk with a deck draws once from `"<world>:CATWALK-LINKS:<cx>:<cy>"`
 //! (a pure function of the world text and the chunk), takes `chance`, then places between `min_per_chunk` and

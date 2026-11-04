@@ -5,7 +5,7 @@
 //! about 55 % of sewer chunks (the origin always) take up to two `LevelLink`s of kind `ladder`, with `cover` set to
 //! `manhole` or `grate`. The top end is a clear maze hallway cell and the bottom the same cell in the sewer. Rust reads
 //! them from the ported generator (`route::sewer::chunk`), so both levels agree on every ladder.
-//! A ladder is climbed by hand (game/ladder.rs), not taken with a fade.
+//! A ladder is climbed by hand (game/ladder.rs), the links are the residency radius plus one Flight each.
 //!
 //! Each ladder is one `Flight` (`flight_links::ladder_flight`) with the hatch as its anchor and one clear step cell
 //! beside it (`run`): both levels build their record from that single flight, so the step cell is the same cell on

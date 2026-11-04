@@ -1,6 +1,6 @@
 # Continuous levels: stairs, ladders and drops as one space
 
-Status: phases 0-7 implemented (flights, absolute y, resident stack, rendered wells, walked stairs, continuous ladders, physical falls). Phases 8 (hunters, bots, net) and 9 (swap machinery removal) remain. Owner request (KT, repeated): levels must connect "like they are together", not through a player teleport, a storey swap, or a fake connection.
+Status: implemented (phases 0-9). Owner request (KT, repeated): levels must connect "like they are together", not through a player teleport, a storey swap, or a fake connection.
 
 All line numbers come from five read-only investigator reports on a working tree that other agents were editing. Re-check each one with `git show HEAD:path` before editing. Paths are under `src/bin/last_route/` unless noted.
 
@@ -11,6 +11,8 @@ Source files referred to: [vertical.rs](../src/bin/last_route/world/vertical.rs)
 ---
 
 ## 1. What is fake today
+
+This table is the history: every row is fixed (phases 1-9, see the "as built" sections at the end).
 
 Every level is its own coordinate space (floor at y = 0) and only one level's `Facility` (`Game.fac`) exists at a time. Every connection is a storey swap.
 
@@ -225,7 +227,7 @@ These answer D1 to D8 below and override the recommendations where they differ.
 | D2 | Floors are 5.0 m apart (`y = level * 5.0`). | As designed. |
 | D3 | No interact prompt on stairs. **Done (phase 5).** | `Focus::Stairs` and its strings are removed in phase 5. |
 | D4 | Ladder top: step onto the real floor cell beside the hatch. | One clear cell per hatch is part of the generation contract. |
-| D5 | Simulate hunters on all loaded floors, not only adjacent ones. | Hunters on every resident floor keep moving. This raises the cost on the old Intel Airs, so the resident-floor count and a per-floor hunter cap are data (`stairs_links.json`), and phase 8 measures frame time on KT-MBA. |
+| D5 | Simulate hunters on all loaded floors, not only adjacent ones. **Done (phase 8).** | Hunters on every resident floor keep moving. This raises the cost on the old Intel Airs, so the resident-floor count and a per-floor hunter cap are data (`stairs_links.json`), and phase 8 measures frame time on KT-MBA. |
 | D6 | Hunters use stairs and ladders at normal speed. | No slow-down or climb pose. |
 | D7 | Waterfall: free fall with damage. **Done (phase 7).** | Phase 7 adds a data-driven landing rule (stun or hurt when the player lands outside the pool); inside the pool it stays the splash. Damage numbers go in `data/swim/`. |
 | D8 | Ship every phase to main as it passes the tests. | Each phase is its own commit, pushed after the CI-equivalent suites pass. |
@@ -238,7 +240,7 @@ Risks:
 - **Inferno (-3).** The cave floor is non-flat (`world_mesh.rs:776-815 InfernoFloor::corner`). The flight foot needs a flat pad; otherwise add the corner height into the flight.
 - **Hunter behaviour change.** Chases will now follow across levels; difficulty and Night Watch pacing change. Needs playtest.
 - **Network.** Guests render host frames only (`guest_gate`). Old clients ignore `h` and filter by `depth`; a mixed session may see players pop at the depth flip.
-- **Saves.** Checkpoints and `autosave("level")` store level plus local pose. Absolute y needs a migration (`level*STOREY + local`). Autosave on a derived level change moves from the walk and ladder code into the label change.
+- **Saves.** The checkpoint stores `depth` (the label) plus optional `y_abs` (absolute feet y). A legacy save loads at `level*STOREY`, resume starts at the level's start cell, and autosave fires on the label change only.
 - **Lighting.** Neighbour lamps through an opening may darken a room if the cap is not respected.
 - **Code size.** About 433 stair/ladder/storey hits across 44 files; many tests pin the swap.
 - **Memory and meshing.** Double meshing cost is the main performance risk.
@@ -357,19 +359,26 @@ Ordering: 1 and 2 first (parallel). Then 3 and 4. Then 5. Then 6 and 7 (7 after 
 - `data/swim/fall.json` holds the fall rule, scaled by drop height (fields and limits in [DATA_FILES.md](DATA_FILES.md)). The game has no hit points, so damage is stun + stamina loss + exposure + noise (KT D7).
 - The scripted plunge machinery (`try_begin_plunge`, `advance_plunge`, the input and collision gate) is deleted. `movement.json` `plunge` keeps only the pool-landing numbers.
 
-## Still open: phases 8 and 9
+## Phase 8 as built
 
-- Phase 8: hunters, bots and remote players crossing: absolute y and derived level on brains and bots, flight, ladder and drop edges, 3D line of sight, no NPC freeze, `h` in net samples.
-- Phase 9: delete the swap machinery: `store_*` and `restore_*` hunter functions, the `respawn_outside_window` level path, and reduce `change_storey` callers to respawn, checkpoint and new run.
+Hunters, bots and remote players cross floors on the same geometry as the runner.
 
-## Phase 8 status (integration stage)
+- `hunters/flight_edges.rs`: `StackNav` plans over the union of the resident levels' `hunter_open` grids plus flight edges; `EdgeWalk` walks one edge. Flight and Ladder edges are two-way; Drop edges (waterfall, hole) are one-way and off unless `drop_allowed` in `data/hunters/flights.json`. Ladders use `ladder_speed_scale`; a stairs flight is walked at normal speed (D6).
+- `game/resident_hunters.rs`: one hunter list per resident floor (D5), capped by `resident_hunter_cap`. Every resident floor keeps simulating.
+- Line of sight: `sight_clear_3d` sees through an open well but not through a slab (`see_adjacent`, `hunter_eye_height` in `data/resident_hunters.json`).
+- Net: `Sample.h` is optional (absolute y); `depth` is kept for old clients. Hunter frames carry `level` and `presentation_y`.
+- `render/stack_actors.rs` draws hunters, bots and remote players at their absolute y.
+- Noise: `NoiseEvent` carries a level; a sound one storey away is scaled by `hear_adjacent_scale`.
+- Sewer water and valve floods reach hunters (`game/hunter_pipes.rs`).
 
-Integration is not done: at the time of this stage the files of tasks 1 to 7 were not in the tree (no `hunters/flight_edges.rs`, `data/hunters/flights.json`, `game/resident_hunters.rs`, `game/hunter_pipes.rs`; no `edge_clock`, `EdgeWalk` or `StackNav` anywhere), so no hub HOOK line could be applied and nothing was built or run.
+## Phase 9 as built
 
-Landed in this stage:
+The swap machinery is deleted.
 
-- `hunters/bench.rs`: `resident_floor_step_cost` (ignored) steps 1, 2 and 3 floors of 12 hunters and prints ms per tick against the 1.0 ms p95 budget. Not measured yet (no cargo this stage); KT-MBA numbers still to record.
-- `tests/determinism.json`: `the host sim replays exactly with a resident floor` (level -1 start, 1800 bot frames, hash equal across a restart, other seed differs) and `a flight chase replays exactly`. Existing single-level cases keep their hashes.
-- `tests/bot.json`: the bot explores from level -1 without soft locks.
-
-Still open: hub hooks (`hunters/mod.rs` `pub mod flight_edges;`, `content/mod.rs` FLIGHTS_PATH exclusion, `game/mod.rs` fields and `mod hunter_pipes;`, `interact.rs` `push_noise_at`, `endless.rs` accessors, `render/scene.rs`), `observe()` fields `level`, `y`, `resident` (`headless/protocol.rs`, needs `Brain.y`/`level`), the `--stack` bot mode, the soak `no_hunter_or_bot_gets_stuck_on_a_flight`, the benchmark run, and the full gate. Known limit: the swap machinery stays until phase 9.
+- `store_level0_hunters`, `store_floor_hunters` and `restore_level_hunters` are gone. `shelve_active_hunters` and `unshelve_active_hunters` replace them; `stored` and `floor_hunters` are the shelf of non-resident floors only. Resident floors are simulated.
+- `relabel_hunters` lost its swap fallback; a recentre fits resident lists back into the window.
+- `change_storey` remains for `respawn_on_level` (the admin level jump, which now rebuilds the floor with one label change and one autosave instead of refusing) and the `cfg(test)` `go_to_level`. The label changes at runtime only by `relabel`, which never touches x, y or z.
+- `LEVEL_CHANGE_HEIGHT` and the unused vertical constants are gone. `is_jump` is level-blind. `prefetch_distance` keeps its key name; it is the residency radius.
+- The `walk_flight` and `teleport` `stairs_down` / `stairs_up` headless commands stay: `tests/*.json` and the bots use them.
+- Save format: the checkpoint stores `depth` (the level label) and an optional `y_abs` (absolute feet y). A legacy save without `y_abs` loads at `level * STOREY`. Resume starts at the level's start cell. Autosave fires on the label change only.
+- Audit tests (task 5): `change_storey` has only the allowed callers, the retired names are absent, `relabel` and `walk_relabel` never change x, z or y, and one label change autosaves once.

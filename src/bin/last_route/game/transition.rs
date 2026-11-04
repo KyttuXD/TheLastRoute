@@ -1,8 +1,8 @@
 //! The data behind the connections between levels. Nothing here fades, holds or places the runner.
 //! A stair flight is walked and relabelled (game/endless.rs `relabel`): it is never interacted with and has no landing
-//! step. A ladder is climbed by hand (game/ladder.rs) and changes storey through `change_storey`.
+//! step. A ladder is climbed by hand (game/ladder.rs): it moves the body in absolute y; the label follows through `relabel`.
 //!
-//! `prefetch_distance` (data/stairs_links.json, `links()`) is the residency radius: how close (cells) the runner gets
+//! `prefetch_distance` (data/stairs_links.json, `links()`) is the residency radius (the key keeps its historic name): how close (cells) the runner gets
 //! to a connection before the storey it leads to is kept resident by `Game::keep_stack`.
 //! Godot reference: game/infinite_route/infinite_route_test.gd (`_update_player_ladder`, `_on_player_ladder_finished`).
 

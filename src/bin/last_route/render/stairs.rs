@@ -626,9 +626,8 @@ mod tests {
 
     #[test]
     fn the_mesh_has_a_tread_per_tile_and_stays_inside_the_storey() {
-        // (replaces the old per-lane tread count, monotone tread and landing tests, which described the straight
-        // run of RISE_DOWN / RISE_UP treads that no longer exists: the heights now come from the flight surface and
-        // are checked by flight_tiles_follow_the_surface and no_riser_exceeds_the_max_riser)
+        // (heights come from the flight surface, checked by flight_tiles_follow_the_surface and
+        // no_riser_exceeds_the_max_riser)
         for shape in SHAPES {
             for dir in [-1, 1] {
                 for run in RUNS {

@@ -290,7 +290,7 @@ impl Admin {
             Cmd::Field(i) => {
                 let text = self.fields[i].trim().to_string();
                 match i {
-                    0 => self.teleport_coordinates(g, &text),
+                    0 => self.teleport_coordinates(g, content, &text),
                     _ => g.say(&format!(
                         "ADMIN ROSTER FAILED // {} NEEDS THE PRIMARY SERVER",
                         menu().fields[i].0
@@ -563,7 +563,10 @@ impl Admin {
     }
 
     /// SAFE TELEPORT "X,Z" or "X,Z,LEVEL" in world cells (the route's absolute coordinates).
-    fn teleport_coordinates(&mut self, g: &mut Game, text: &str) {
+    /// A different LEVEL uses respawn semantics (`Game::respawn_on_level`): the floor is rebuilt
+    /// round the window centre, the body lands on that level's start cell, the label changes once.
+    /// This is an explicit teleport, on the change_storey audit allow list (not a walk).
+    fn teleport_coordinates(&mut self, g: &mut Game, content: &Content, text: &str) {
         let parts: Vec<&str> = text
             .split(|ch: char| ch == ',' || ch == ';' || ch == ' ')
             .filter(|s| !s.is_empty())
@@ -579,7 +582,7 @@ impl Admin {
             g.say("ADMIN // TELEPORT NEEDS X,Z");
             return;
         }
-        let (ox, oy, level) = match g.inf.as_ref() {
+        let origin = |g: &Game| match g.inf.as_ref() {
             Some(inf) => (
                 ((inf.center.0 - 1) * CHUNK) as f32,
                 ((inf.center.1 - 1) * CHUNK) as f32,
@@ -587,14 +590,31 @@ impl Admin {
             ),
             None => (0.0, 0.0, 0),
         };
+        let (mut ox, mut oy, level) = origin(g);
+        let mut jumped = None;
         if let Some(l) = parts.get(2).and_then(|s| s.parse::<f32>().ok()) {
-            if l as i32 != level {
-                g.say("ADMIN // ANOTHER LEVEL: TAKE THE STAIRS (LEVEL TELEPORT NOT IN THIS BUILD)");
-                return;
+            let l = l as i32;
+            if l != level {
+                if !crate::world::infinite::level_allowed(l) {
+                    g.say("ADMIN // NO SUCH LEVEL");
+                    return;
+                }
+                let catalog = crate::world::catalog::Catalog::load();
+                if !g.respawn_on_level(l, content, &catalog) {
+                    g.say("ADMIN // CANNOT CHANGE LEVEL HERE");
+                    return;
+                }
+                let o = origin(g);
+                ox = o.0;
+                oy = o.1;
+                jumped = Some(l);
             }
         }
         self.teleport_to(g, x - ox, z - oy);
-        g.say(&format!("ADMIN // SAFE TELEPORT // {x:.0}, {z:.0}"));
+        match jumped {
+            Some(l) => g.say(&format!("ADMIN // LEVEL {l} // SAFE TELEPORT {x:.0}, {z:.0}")),
+            None => g.say(&format!("ADMIN // SAFE TELEPORT // {x:.0}, {z:.0}")),
+        }
     }
 
     /// _admin_spawn_hunters: one brain per id on the golden-angle ring round the runner, awake and

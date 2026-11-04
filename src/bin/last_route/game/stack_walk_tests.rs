@@ -117,6 +117,11 @@ fn place_on(g: &mut Game, s: Stair, first: (f32, f32)) {
 /// Steers along the walk path of `s` from `from_idx`, holding forward, until the last waypoint or `max` frames. The
 /// first record is the state before any step.
 fn walk_recorded(g: &mut Game, s: Stair, content: &Content, catalog: &Catalog, max: usize) -> Vec<Rec> {
+    walk_recorded_with(g, s, content, catalog, max, |_| {})
+}
+
+/// As `walk_recorded`, with `before_step` called on the game right before every step.
+fn walk_recorded_with(g: &mut Game, s: Stair, content: &Content, catalog: &Catalog, max: usize, mut before_step: impl FnMut(&mut Game)) -> Vec<Rec> {
     let path = absolute_path(g, s);
     place_on(g, s, path[0]);
     let mut recs = vec![snap(g, g.p.yaw)];
@@ -144,6 +149,7 @@ fn walk_recorded(g: &mut Game, s: Stair, content: &Content, catalog: &Catalog, m
         }
         g.p.yaw = (-dx).atan2(-dz);
         let yaw_set = g.p.yaw;
+        before_step(g);
         g.step(FRAME, &c, content, catalog, &Sounds::default());
         recs.push(snap(g, yaw_set));
     }
@@ -485,4 +491,213 @@ fn walking_a_flight_never_calls_load_window() {
         assert_eq!(r.builds, builds, "frame {i}: no window was built up to and on the crossing");
         assert_eq!(r.center, center, "frame {i}: the window did not move");
     }
+}
+
+// ---- phase 9 audit tests: the level-swap machinery is gone ----------------------------------------------------------
+//
+// Behavioural proof that no path moves the body on a label change is the existing continuity tests, kept as the gate:
+// relabel_keeps_x_z_y_velocity_and_facing_exactly, every_flight_in_the_golden_seeds_walks_up_and_down_with_y_continuity,
+// walking_a_flight_never_calls_load_window, endless::a_ladder_climb_down_calls_no_load_window and
+// endless::a_walk_off_the_lip_falls_through_the_relabel_with_no_pos_rewrite. The tests below add the source audits.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+/// Every `.rs` file under src/bin/last_route as (path relative to it with `/`, lines with `//` comment lines blanked).
+fn sources() -> Vec<(String, Vec<String>)> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir).expect("readable source dir").flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n == "target") {
+                    continue;
+                }
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/last_route");
+    let mut files = Vec::new();
+    walk(&root, &mut files);
+    files.sort();
+    files
+        .into_iter()
+        .map(|p| {
+            let rel = p.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+            let text = std::fs::read_to_string(&p).expect("readable source file");
+            let lines = text
+                .lines()
+                .map(|l| if l.trim_start().starts_with("//") { String::new() } else { l.to_string() })
+                .collect();
+            (rel, lines)
+        })
+        .collect()
+}
+
+/// The name of the fn enclosing line `i`: the nearest `fn ` at or above it.
+fn enclosing_fn(lines: &[String], i: usize) -> String {
+    for j in (0..=i).rev() {
+        let l = &lines[j];
+        if let Some(at) = l.find("fn ") {
+            let name: String = l[at + 3..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            if !name.is_empty() && (at == 0 || !l[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_')) {
+                return name;
+            }
+        }
+    }
+    String::new()
+}
+
+/// Callers of the storey change. Allowed: `respawn_on_level` (the admin jump and any future respawn: an explicit
+/// teleport, not a walk) and `go_to_level` (the cfg(test) helper of the tests). Checkpoint resume and a new run use
+/// `enter_infinite` / `load_window`, which the load_window audit covers.
+#[test]
+fn change_storey_has_only_the_allowed_callers() {
+    let needle = concat!("change_", "storey", "(");
+    let mut found: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
+    for (file, lines) in sources() {
+        for (i, l) in lines.iter().enumerate() {
+            if l.contains(needle) {
+                found.entry((file.clone(), enclosing_fn(&lines, i))).or_default().push(i + 1);
+            }
+        }
+    }
+    let mut by_fn: BTreeMap<String, usize> = BTreeMap::new();
+    for ((file, f), at) in &found {
+        *by_fn.entry(f.clone()).or_default() += at.len();
+        if f == "change_storey" {
+            assert_eq!(file, "game/endless.rs", "the definition lives in game/endless.rs");
+        }
+    }
+    let want: BTreeMap<String, usize> = ["change_storey", "go_to_level", "respawn_on_level"].iter().map(|s| (s.to_string(), 1)).collect();
+    assert_eq!(by_fn, want, "unexpected callers, (file, fn) -> lines: {found:?}");
+}
+
+/// The retired swap machinery has no code left, only (at most) comments.
+#[test]
+fn no_swap_machinery_names_are_left() {
+    let names = [
+        concat!("take_", "stairs"),
+        concat!("walked_", "level_change"),
+        concat!("place_beside_", "ladder"),
+        concat!("start_", "stairs"),
+        concat!("take_", "flight"),
+        concat!("prefetch_", "connections"),
+        concat!("pre", "fetched"),
+        concat!("store_level0_", "hunters"),
+        concat!("store_floor_", "hunters"),
+        concat!("restore_level_", "hunters"),
+        concat!("LEVEL_CHANGE_", "HEIGHT"),
+        concat!("flight_", "steps"),
+        concat!("landing_", "offset"),
+        concat!("climb_", "lift"),
+    ];
+    let mut hits = Vec::new();
+    for (file, lines) in sources() {
+        for (i, l) in lines.iter().enumerate() {
+            for n in names {
+                if l.contains(n) {
+                    hits.push(format!("{file}:{} {n}", i + 1));
+                }
+            }
+        }
+    }
+    assert!(hits.is_empty(), "retired names still in code: {hits:?}");
+}
+
+/// The body of `fn name(` in `file`: from its line to the next line that is exactly four spaces and `}`.
+fn body_of(sources: &[(String, Vec<String>)], file: &str, name: &str) -> Vec<String> {
+    let (_, lines) = sources.iter().find(|(f, _)| f == file).unwrap_or_else(|| panic!("{file} exists"));
+    let head = format!("fn {name}(");
+    let start = lines.iter().position(|l| l.contains(&head)).unwrap_or_else(|| panic!("{file} has {head}"));
+    let end = lines[start..].iter().position(|l| l.trim_end() == "    }").map_or(lines.len(), |k| start + k);
+    lines[start..end].to_vec()
+}
+
+/// `load_window` is called only by enter_infinite, regen_window, recentre_window, change_storey and tests, and the
+/// relabel functions never move the body or build anything (`rebase_floor` is allowed: it re-expresses the same y).
+#[test]
+fn load_window_has_only_the_allowed_callers() {
+    let src = sources();
+    let allowed = ["enter_infinite", "regen_window", "recentre_window", "change_storey"];
+    let mut bad = Vec::new();
+    for (file, lines) in &src {
+        let in_tests_file = file.ends_with("tests.rs");
+        let tests_from = lines.iter().position(|l| l.trim_start().starts_with("mod tests"));
+        for (i, l) in lines.iter().enumerate() {
+            if !(l.contains("self.load_window(") || l.contains("g.load_window(")) {
+                continue;
+            }
+            let in_tests = in_tests_file || tests_from.is_some_and(|t| i > t);
+            if !in_tests && !allowed.contains(&enclosing_fn(lines, i).as_str()) {
+                bad.push(format!("{file}:{}", i + 1));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "load_window called outside the allowed callers: {bad:?}");
+    let banned = ["p.pos =", ".place(", "set_abs_y", "nearest_open", "load_window", concat!("change_", "storey")];
+    for (file, name) in [("game/endless.rs", "relabel"), ("game/endless.rs", "walk_relabel"), ("game/resident_hunters.rs", "relabel_hunters")] {
+        for l in body_of(&src, file, name) {
+            for b in banned {
+                assert!(!l.contains(b), "{file} fn {name} must not touch the body or build a window, but has {b:?}: {l}");
+            }
+        }
+    }
+}
+
+/// A label change saves the run once, on the relabel frame, and nothing else on the way (the ladder start, a climb, a
+/// fall or the walk) does.
+#[test]
+fn a_label_change_autosaves_once_and_nothing_else_does() {
+    let (content, catalog) = (Content::load(), Catalog::load());
+    let Some((mut g, s)) = window_with(FlightShape::Switchback, 0, &content, &catalog) else { return };
+    g.last_autosave = "";
+    let mut saves: Vec<&'static str> = Vec::new();
+    let recs = walk_recorded_with(&mut g, s, &content, &catalog, MAX_FRAMES, |g| {
+        saves.push(g.last_autosave);
+        g.last_autosave = "";
+    });
+    saves.push(g.last_autosave);
+    assert_eq!(saves.len(), recs.len(), "one autosave reading per record");
+    let mut changes = 0;
+    for i in 0..recs.len() {
+        let relabelled = i > 0 && recs[i].level != recs[i - 1].level;
+        changes += relabelled as usize;
+        let want = if relabelled { "level" } else { "" };
+        assert_eq!(saves[i], want, "frame {i}: autosave only on the relabel frame");
+    }
+    assert_eq!(changes, 1, "the walk relabelled exactly once");
+}
+
+/// An admin jump (and any respawn) rebuilds the floor: the body lands on the start cell of that level, standing on
+/// its floor, the label changes once, one announce, one autosave.
+#[test]
+fn respawn_on_level_moves_the_body_to_the_start_and_changes_the_label_once() {
+    let (content, catalog) = (Content::load(), Catalog::load());
+    let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-RESPAWN", 0, &content, &catalog);
+    g.last_autosave = "";
+    g.toast.clear();
+    let to = -1;
+    assert!(g.respawn_on_level(to, &content, &catalog), "a host respawns on an allowed level");
+    assert_eq!(g.inf.as_ref().unwrap().level, to, "the label is the new level");
+    let start = g.fac.start.center();
+    assert!(pdist(g.p.pos, start) < 0.75, "the body is on the start cell: {:?} vs {:?}", g.p.pos, start);
+    assert!((g.p.y() - floor_y_of(to)).abs() < FLOOR_TOL, "the body stands on the floor of {to}: y {}", g.p.y());
+    assert_eq!(g.toast, format!("LEVEL {to}"), "one relabel announce");
+    assert_eq!(g.last_autosave, "level", "one autosave for the label change");
+}
+
+#[test]
+fn a_guest_cannot_respawn_on_a_level() {
+    let (content, catalog) = (Content::load(), Catalog::load());
+    let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-RESPAWN-GUEST", 0, &content, &catalog);
+    g.remote_hunters = true;
+    g.last_autosave = "";
+    let (pos, level) = (g.p.pos, g.inf.as_ref().unwrap().level);
+    assert!(!g.respawn_on_level(-1, &content, &catalog), "a guest is refused");
+    assert_eq!(g.inf.as_ref().unwrap().level, level, "the label did not change");
+    assert_eq!(g.p.pos, pos, "the body did not move");
+    assert_eq!(g.last_autosave, "", "nothing was saved");
 }

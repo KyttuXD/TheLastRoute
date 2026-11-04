@@ -122,10 +122,12 @@ not sense you at all); the in-game admin overlay's switches (`ui::admin::flags()
 | `hash` | | `hash` (PlaytestObserver.state_hash: frame, scene, run, player, world, hunters, floats snapped to 0.01; FNV-1a 64) |
 | `look` | `yaw`, `pitch`, `dyaw`, `dpitch`, `at` [x,z] + `height`, `face` north/south/east/west | `player`, `focus` (after 1 settle frame) |
 | `teleport` | `{x, z}`, `{cell:[x,z]}`, or `{to, index}` with to = relay, battery, locker, lift, stairs, stairs_down, stairs_up, safe_zone, heater, music_box, vent, light_switch, coin, pickup, hunter, start | `player`, `focus` (placed beside the object, facing it: the next `interact` hits it) |
+| `teleport` `stairs_down` / `stairs_up` | `{to: "stairs_down"}` or `{to: "stairs_up"}` | places you beside the nearest flight end (kept for tests and bots); you then walk the flight, there is no swap |
 | `interact` | `kind` (refuse unless the focus is that kind, e.g. "RELAY"), `hold_frames` | `focus_before`, `focus_after`, `events`, `run` |
 | `goto` | `{x, z}` or `{to, index}`, `max_frames` (1800), `radius` | walks there with the bot's A* navigator: `arrived`, `frames`, `distance`, `player`, `focus` |
 | `step_until` | `expect` (list, see Expectations), `max_frames` (600), `act`, `bot` (let the bot drive), `check_every` | `met`, `frames`, `unmet` |
 | `bot` | `frames`, `bot_seed`, `reset`, `debug`, `bot_events`, `observe` | the bot plays N frames: `bot` stats (+ `bot_events`) |
+| `walk_flight` | `dir` (`down` default, `up`), `frames` (default 900), `stop_on_level_change` | walks the nearest flight end to end along its walk path. `stop_on_level_change: true` stops on the frame the level label changes (the walk never rebuilds or moves the body; only an admin level jump does). Kept for `tests/*.json` and the bots |
 | `help` | | command and pulse lists |
 
 Focus / interactable kinds (the original's `RouteInteractable3D.Kind` names): `RELAY`, `BATTERY`,
@@ -147,6 +149,7 @@ focus {kind, index, pos, distance, prompt} | {},
 world {chunk [cx, level, cz], level, loaded_chunks, region, relays[8], batteries[4], safe_zones[4], hiding_spots[6]  (each {id, x, y, dist, capacity}, nearest first; y is the grid z),
        origin, size},
 hunters [{entity, id, state (IDLE/WANDER/INVESTIGATE/CHASE/SEARCH/PEEK), pos [x,z], dist, los, stuck, stun, active, visible}]  (nearest first),
+observe also reports `level` (derived label), `y` (absolute feet y) and `resident` (the floors simulated in the stack) for the player and each hunter.
 interactables [{kind, pos [x,h,z], dist, completed}]  (<= 30 within 45 m),
 online {...}, meters {...}, hotbar {...}, escape {remaining, progress, needed, hunter} | null, message, toast, director {...}
 ```

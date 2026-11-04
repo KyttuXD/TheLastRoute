@@ -1247,8 +1247,8 @@ impl Game {
     }
 
     /// Re-places every NPC beside the runner after the floor is rebuilt (a new finite floor replaces the
-    /// facility, so old positions mean nothing). Ring rule as at spawn. The only way a bot changes level
-    /// other than walking an edge: its y becomes the runner's and any edge walk is dropped.
+    /// facility, so old positions mean nothing). Ring rule as at spawn. Only a floor rebuild (`start_floor_sim`)
+    /// calls it: each bot's y becomes the runner's and any edge walk is dropped.
     pub(super) fn npc_place_beside_runner(&mut self) {
         let level = self.runner_level();
         let spot = self.p.pos;
@@ -1276,7 +1276,8 @@ impl Game {
 
     /// The per-frame tick: an NPC on a resident level tries its intents in order (data `intents`): it hides or runs
     /// from a chasing hunter, goes on a relay or locker errand, or follows the runner. A run NPC not yet joined waits
-    /// until the runner is close and in sight. A bot on another resident level follows over the flights and ladders; one on a level that is not resident stands still.
+    /// until the runner is close and in sight. A bot on another resident level follows over the flights and ladders; a bot on a non-resident level stands still.
+    /// Bots are re-placed beside the runner only by a floor rebuild (`start_floor_sim`), never by a level change.
     /// `t` is the tuning, so the tests can vary one value of the data.
     pub(super) fn update_npcs_with(&mut self, dt: f32, t: &Tuning) {
         if self.npcs.is_empty() {

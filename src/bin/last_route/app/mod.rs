@@ -306,6 +306,8 @@ struct Loading {
     /// Infinite level to enter (0 = top), or None for a finite route at `depth`.
     level: Option<i32>,
     depth: i32,
+    /// Absolute feet y to resume at (a saved infinite run), or None for the floor of `level`.
+    y: Option<f32>,
     score: i32,
     coins: i32,
     frames: u32,
@@ -321,6 +323,7 @@ impl Loading {
             room,
             level,
             depth: 1,
+            y: None,
             score: 0,
             coins: 0,
             frames: 0,
@@ -345,9 +348,10 @@ impl Loading {
             c.difficulty,
             c.run_seed,
             c.room_text.clone(),
-            if c.infinite { Some(c.depth) } else { None },
+            if c.infinite { Some(c.level()) } else { None },
         );
         l.depth = c.depth.max(1);
+        l.y = if c.infinite { Some(c.migrated_y()) } else { None };
         l.score = c.score;
         l.coins = c.coins;
         l
@@ -374,6 +378,10 @@ impl Loading {
                 g
             }
         };
+        if let (Some(y), true) = (self.y, g.inf.is_some()) {
+            // a saved run resumes at its absolute height (a legacy save at the floor of its level)
+            g.p.set_abs_y(y);
+        }
         g.score = self.score;
         g.coins = self.coins;
         g

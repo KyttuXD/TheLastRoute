@@ -34,6 +34,15 @@
       ]
     },
     {
+      "name": "an admin level jump rebuilds, a walk does not",
+      "start_run": { "no_target": true },
+      "steps": [
+        { "cmd": "teleport", "to": "stairs_down" },
+        { "cmd": "walk_flight", "dir": "down", "frames": 900, "stop_on_level_change": true },
+        { "expect": [ { "path": "run.level", "value": -1 }, { "path": "run.depth", "value": 2 } ] }
+      ]
+    },
+    {
       "name": "walking forward up from level -1 returns to level 0",
       "start_run": { "no_target": true },
       "steps": [

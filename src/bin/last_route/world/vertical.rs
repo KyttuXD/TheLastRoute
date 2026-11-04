@@ -24,16 +24,6 @@ pub const STOREY: f32 = WALL_HEIGHT;
 /// `world/flight.rs`).
 pub const STEPS_PER_CELL: i32 = 3;
 
-/// The level change: a body this far above or below its storey's floor changes level (`LEVEL_MIDPOINT` plus the
-/// hysteresis margin, `level_from_height`). A flight spans the whole storey, so the swap happens near its middle and
-/// absolute height stays continuous.
-pub const LEVEL_CHANGE_HEIGHT: f32 = LEVEL_MIDPOINT + LEVEL_TRANSITION_MARGIN;
-
-/// Godot's FLOOR_SNAP (`player_controller_3d.gd:45`): .28 of the player's model scale (`player_models.gd` SCALE 1.067),
-/// how far a grounded body is pulled down onto a ramp. Scaled to our storey like every distance.
-pub const GODOT_FLOOR_SNAP: f32 = 0.28 * 1.067;
-pub const FLOOR_SNAP: f32 = GODOT_FLOOR_SNAP * GODOT_TO_OURS;
-
 // ---------------------------------------------------------------------------------------------------------------------
 // Storeys: which level a body is on
 // ---------------------------------------------------------------------------------------------------------------------
@@ -43,7 +33,7 @@ pub const GODOT_LEVEL_TRANSITION_MARGIN: f32 = 0.35;
 pub const LEVEL_TRANSITION_MARGIN: f32 = GODOT_LEVEL_TRANSITION_MARGIN * GODOT_TO_OURS;
 
 /// The storey midpoint, 2.5 m here (Godot's 2 m at its 4 m storey): a body must be this far from its floor, plus the
-/// hysteresis margin, before the level changes.
+/// hysteresis margin, before its level label changes (nothing swaps; absolute height stays continuous).
 pub const LEVEL_MIDPOINT: f32 = STOREY * 0.5;
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -114,8 +104,6 @@ mod tests {
         assert!((GODOT_TO_OURS - 1.25).abs() < 1e-6);
         assert!((LEVEL_MIDPOINT - 2.5).abs() < 1e-6, "2 m at Godot's 4 m storey is 2.5 m here");
         assert!((LEVEL_TRANSITION_MARGIN - 0.4375).abs() < 1e-6);
-        assert!((FLOOR_SNAP - 0.28 * 1.067 * 1.25).abs() < 1e-6);
-        assert!((LEVEL_CHANGE_HEIGHT - 2.9375).abs() < 1e-6);
     }
 
     #[test]

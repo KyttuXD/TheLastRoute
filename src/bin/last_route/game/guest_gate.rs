@@ -1,15 +1,13 @@
-//! Guest gate for the level-change hunter storage in game/endless.rs.
+//! Guest gate for the hunter shelf in game/resident_hunters.rs.
 //!
 //! A guest runs no hunter simulation: the host's frames set every hunter (hunting.rs `apply_hunter_frame`), so the
-//! guest's hunters are display only. The residency pass and the store / restore on a stairwell or ladder would
+//! guest's hunters are display only. The residency pass and the shelve / unshelve around a floor rebuild would
 //! otherwise admit, store or respawn hunters on the guest and fight the host's frames. `is_display_only` is the one
-//! test; the hooks list in the module doc of the integrator note says where endless.rs asks it.
+//! test.
 //!
-//! Hooks for game/endless.rs (each is the first line of the function body):
-//!   residency            `if super::guest_gate::is_display_only(self) { return; }`
-//!   store_level0_hunters `if super::guest_gate::is_display_only(self) { return; }`
-//!   store_floor_hunters  `if super::guest_gate::is_display_only(self) { return; }`
-//!   restore_level_hunters `if super::guest_gate::is_display_only(self) { return; }`
+//! Hooks (each is the first line of the function body):
+//!   residency (game/endless.rs)  `if super::guest_gate::is_display_only(self) { return; }`
+//!   shelve_active_hunters, unshelve_active_hunters, store_slots, pull_slots (game/resident_hunters.rs) ask the same.
 //! and in game/mod.rs next to the other `mod` lines: `mod guest_gate;`.
 //! Bots and chased fake players never reach the player's danger readout, heartbeat or chase cue from here.
 

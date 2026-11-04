@@ -8,10 +8,15 @@ Changing a value in a file changes behaviour after a rebuild. The task rule is o
 
 | File | Read by | Controls |
 |---|---|---|
-| `data/stairs_links.json` (`lr.stairs_links/1`) | `game/transition.rs` (`links()`) | Level links, stair flights and sewer ladders. `prefetch_distance` (8 cells, residency radius) and the preload keys. No `landing_offset`: flights are walked. See [MECHANICS.md](../MECHANICS.md) for the rule. |
+| `data/stairs_links.json` (`lr.stairs_links/1`) | `game/transition.rs` (`links()`) | Level links, stair flights and sewer ladders. `prefetch_distance` (8 cells; keeps its historic key name, it is the residency radius) and the preload keys. No `landing_offset`: flights are walked. See [MECHANICS.md](../MECHANICS.md) for the rule. |
 | `data/swim/fall.json` | `game/swim_effects.rs`, `game/player.rs` | Free-fall rule, scaled by drop height: the minimum drop that hurts, stun seconds, stamina loss, exposure and noise per metre, and a cap on each. The game has no hit points, so a hard landing is stun + stamina + exposure + noise. Every field is range-checked when parsed (none negative, caps at or above the base). The pool landing is not in this file. |
 | `data/swim/movement.json` `plunge` | `game/swim_effects.rs` | Pool-landing numbers only (splash seconds, swim speed, bob, climb-out, splash noise, soaked seconds). The scripted arc is gone. |
-| `data/flights.json` | `world/flight.rs` | Continuous-level flights: storey, slab, rise, max riser, steps per cell, margin, switchback/straight/spiral settings, shape and per-region weights. Drives the walked flights and ladder flights. |
+| `data/flights.json` | `world/flight.rs`; also `hunters/flight_edges.rs` for hunter edge geometry | Continuous-level flights: storey, slab, rise, max riser, steps per cell, margin, switchback/straight/spiral settings, shape and per-region weights. Drives the walked flights and ladder flights. |
+| `data/ladders.json` (`lr.ladders/1`) | `game/ladder.rs` | Ladder walk-in: `walk_in_reach_margin` (m added to the player radius) and `walk_in_facing` (least dot of facing and the way to the hatch). Ranges are refused on parse. |
+| `data/hunters/water.json` (`lr.hunters.water/1`) | `hunters/water.rs` | Hunter water rules: a `default` plus per-hunter `can_wade`, `can_swim`, cost multipliers and `avoids_when_idle`. A null speed scale takes the wade value from `data/swim/movement.json`. |
+| `data/hunters/noise_events.json` (`lr.noise_events/1`) | `hunters/noise_events.rs` | Per-kind noise event radius and priority. `NoiseEvent` carries a level; hearing one storey away uses `hear_adjacent_scale`. |
+| `data/hunters/flights.json` (`lr.hunter_flights/1`) | `hunters/flight_edges.rs` | Hunters on flights, ladders and drops: `ladder_speed_scale`, `drop_allowed` (false), `drop_fall_speed`, `edge_cost_scale`, `reference_speed`, `hear_adjacent_scale`, `see_adjacent`, `capture_height`, `edge_enter_radius`, `edge_fit_radius`, `edge_stuck_seconds`, `resident_hunter_cap`. Exact ranges are in the file `_note`. |
+| `data/resident_hunters.json` (`lr.resident_hunters/1`) | `game/resident_hunters.rs` | `hunter_eye_height`: where a hunter looks from at a runner on another storey. |
 | `data/hunters/search.json` (`lr.search/1`) | `hunters/brain.rs`, via `content/mod.rs` | Hunter search after a lost sighting: `reach`, `memory`, the search `offsets`, and per-difficulty `hiding_spot_chance`, `last_seen_spot_first`, `unchecked_first`. Standard keeps `hiding_spot_chance` at 0.0, so hunters keep searching beside the runner and the relay rush is not starved. |
 | `data/hunters/sabotage.json` (`lr.hunter_sabotage/1`) | `hunters/sabotage.rs`, via `content/mod.rs` | Relay sabotage: `near_cells`, `dwell_s`, `resecure_s`, and per-difficulty `enabled` (false on every difficulty today), `target`, `chance`. |
 | `data/hunters/charge.json` (`lr.charge/1`) | `hunters/gimmicks/charge.rs` | Per-hunter charge (Loxelle): passive chance and timings, the charge windup, speed and distances, and the door-charge stun. |
@@ -21,6 +26,8 @@ Changing a value in a file changes behaviour after a rebuild. The task rule is o
 | `data/hud.json` (`lr.hud/1`) | `ui/hud.rs` | Danger meter thresholds and pulse timing, meter minimum width, and HUD label templates. |
 | `data/perf.json` (`lr.perf/1`) | `app/perf.rs` | Frame-time history length, spike threshold and logging, graph range, guide lines, colour bands, and the names of the timed parts. |
 | `data/regions/*.json` (`lr.region/1`) | `packs/regions.rs` | One file per built-in region: floor sets, room roles, prop set and sizes. Current files: apartment, beach, carnival, gothic, greenhouse, hospital, hotel, lab, mall, mansion, maze, prison, sewer. |
+
+`data/hunters/water.json`, `noise_events.json` and `hunters/flights.json` are rule tables skipped by the hunter-definition loader in `content/mod.rs`.
 
 ## Rules for these files
 

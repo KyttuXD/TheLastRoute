@@ -706,7 +706,7 @@ pub fn save_summary(save: Option<&Checkpoint>) -> Option<String> {
     save.map(|c| {
         format!(
             "DEPTH {} // SCORE {} // {}",
-            if c.infinite { 1 - c.depth } else { c.depth },
+            if c.infinite { 1 - c.level() } else { c.depth },
             c.score,
             c.difficulty.name()
         )

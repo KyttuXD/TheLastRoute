@@ -1,6 +1,7 @@
 //! A steered walker for stair flights. A flight is no longer a straight ramp (switchback, spiral), so walking forward
 //! does not follow it: the walker faces the next point of the flight's own walk path (`Stair::walk_path`) and holds
-//! forward, through the game's own frame (`Game::step`). Used by the `walk_flight` protocol command and the flight
+//! forward, through the game's own frame (`Game::step`). The levels are one continuous space: the walk never rebuilds the
+//! floor or moves the body, and `stop_on_level_change` stops on the frame the derived label changes. Used by the `walk_flight` protocol command and the flight
 //! tests (flight_tests.rs).
 
 use crate::audio::Sounds;

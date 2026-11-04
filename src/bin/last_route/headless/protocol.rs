@@ -620,7 +620,8 @@ impl Session {
 
     /// Walks the nearest flight of stairs going `dir` ("down", default, or "up") end to end, steered along its walk path
     /// (headless/steer.rs), for at most `frames` (default 900) frames; reports the walk. `stop_on_level_change: true`
-    /// ends it on the frame the level changes.
+    /// stops on the frame the derived label changes (the walk never rebuilds or moves the body; only
+    /// an admin level jump does, and the protocol has no command for it).
     fn walk_flight(&mut self, c: &Value) -> Value {
         if let Err(e) = self.need_game() {
             return e;
@@ -1036,7 +1037,7 @@ impl Session {
             // a flight has no focus (it is walked); only a ladder is a STAIRS focus
             // (a ladder is the LADDER focus; the kind STAIRS is always refused)
             if k == "STAIRS" {
-                return json!({ "ok": false, "error": "stairs are walked: use walk_flight (a flight is no interactable; only a ladder is)", "focus": before });
+                return json!({ "ok": false, "error": "stairs are walked, never taken: use walk_flight (a flight is no interactable; only a ladder is, and a ladder is climbed as part of one continuous level)", "focus": before });
             }
             let have = g.focus.map(kind_name);
             if have != Some(k.as_str()) {

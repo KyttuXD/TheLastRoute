@@ -117,8 +117,8 @@ Sources: the website game at KyttusLab/games/night-watch (src/modes, docs/ROADMA
 - [ ] Hunters and bots react to pipes and valves: a burst or a turned valve is a noise event they investigate; a sluice gate opening makes its channel passable; closed gates and flooded dead ends do not trap them (stuck-time give-up already in data).
 - [ ] Hunters react to the runner's water and fall noise: plunge splash, soaked footsteps (x1.45) and a hard landing are heard at their data ranges and start a search at the sound.
 - [ ] Catwalk decks: hunters path on deck cells (walk surface) and use the catwalk links; a hunter never plans through a deck rail.
-- [ ] Hunters use flights, ladders and drops between floors at normal speed (phase 8 of the stairs project): edges between the resident levels, line of sight across the open stairwell, no freeze for a hunter on another loaded floor (KT decision D5).
-- [ ] Tests: a hunter paths around deep water, wades when chasing, replans when a valve floods its route, cannot be trapped by a closed gate, hears a plunge, and follows a runner up a flight.
+- [x] Hunters use flights, ladders and drops between floors at normal speed (phase 8 of the stairs project): edges between the resident levels, line of sight across the open stairwell, no freeze for a hunter on another loaded floor (KT decision D5). (commit )
+- [x] Tests: a hunter paths around deep water, wades when chasing, replans when a valve floods its route, cannot be trapped by a closed gate, hears a plunge, and follows a runner up a flight. (commit )
 
 ## Multiplayer (Last Route)
 
@@ -396,11 +396,11 @@ Godot references are `game/...` under the KyttusLabApp folder.
 - [~] Infinite district layout matches Godot's streamed route generator (see the round 4 map item). `src/bin/last_route/world/infinite.rs` and the chunk RNG tags differ, so seeds will not match
 - [x] Stairs are walked in Godot; Rust teleports to the landing (`src/bin/last_route/game/endless.rs` `take_stairs`). Fade and hold removed 2026-11-04: the level changes on the connection's frame, numbers in `data/stairs_links.json`. Godot's `game/world/generation/stairwells.gd` also has spiral and switchback flights (done, stairs project phases 5-7: flights are walked, no teleport)
 - [ ] Level links other than stairs: ladders, ramps, manholes, grates, elevators and drops (`docs/SEWERS.md`, `game/world/generation/sewer_route_generator.gd`) (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [~] Natural stairs and ladders: port the Godot slope system so stairs are walked as slopes and ladders are climbed, and hunters cross stairs between floors (stairs and ladders done in phases 5-6; hunters crossing is phase 8)
+- [x] Natural stairs and ladders: port the Godot slope system so stairs are walked as slopes and ladders are climbed, and hunters cross stairs between floors (stairs and ladders done in phases 5-6; hunters crossing is phase 8) (commit )
 - [ ] Sewer levels -1 to -3, with the cistern, collector and Inferno maze. `src/bin/last_route/world/infinite.rs` picks regions by level, but no sewer geometry exists and `src/bin/last_route/data/loot/sewer.json` is unused (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [~] Hunters persist across chunks and floors and walk the stairs in Godot. Rust rebuilds the lineup on every level change (`reset_hunters` in `endless.rs`) and respawns out-of-window hunters (`stream_window`)
+- [x] Hunters persist across chunks and floors and walk the stairs in Godot. Rust rebuilds the lineup on every level change (`reset_hunters` in `endless.rs`) and respawns out-of-window hunters (`stream_window`) (commit )
 - [ ] Safe rooms with breach and checkpoints (`_update_checkpoint`, `_request_breach` in `game/infinite_route/infinite_route_test.gd`). Rust has one rest-only safe zone per floor (`interact.rs` 266-272) (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [~] Autosave on relays, level changes, safe-room checkpoints and quit. Rust saves only on stairs and the lift (`endless.rs` 248, `interact.rs` 284)
+- [~] Autosave on relays, level changes, safe-room checkpoints and quit. Rust saves only on stairs and the lift (`endless.rs` 248, `interact.rs` 284) Note: level changes now autosave once on the label change; safe-room checkpoints and quit still pending as written.
 - [ ] Anti-AFK void pressure on idle parties (`game/player/anti_idle.gd`, `_update_anti_idle_pressure` at `infinite_route_test.gd` 2388) (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [ ] Void player powers: Gray's signal route, Orange's outages, Purple's radar static and Pink's false footsteps (`game/player/void_player_effects.gd`). Every `void_*` id maps to `Gimmick::None` (`src/bin/last_route/hunters/gimmicks/mod.rs` 115-142) (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [~] Run statistics on the run card: time, distance, rooms, levels and hunters met (`_update_run_statistics`, `infinite_route_test.gd` 1351). Rust shows depth, score, relays, coins, difficulty and seed (`src/bin/last_route/ui/report.rs` 236-247)
@@ -603,7 +603,7 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [ ] Port Taser stun versus taser-immune slow: Godot's escape and taser stun divergence not revisited (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Crowbar and axe strikes: Rust prints a STUNNED callout that Godot has switched off (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Hunters use ducts on Hard and Nightmare: no vent path or duct model
-- [ ] Port Hunters take ladders and stairs to other levels: no level roaming in Rust
+- [x] Port Hunters take ladders and stairs to other levels: no level roaming in Rust (commit )
 - [ ] Port Hunter navigation on streamed grid windows: only the fixed Facility grid is used (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Director share: flank and cover roles partial and no Nightmare profile (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Relay rush: partial, verify timings and targets against Godot (status note: [~] in the parity-gaps audit; the less complete status is kept)
@@ -650,7 +650,7 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [ ] Port Dossier descriptions: no text for the Void gimmick chart (status note: [~] in the parity-gaps audit; the less complete status is kept)
 ### World and generation
 - [ ] Port Level stack: sewer (-1), lower sewer (-2) and Inferno (-3) with a depth floor at -3 (partial) (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [ ] Port Stairwells: spiral and switchback flights, placement and access halls; Rust uses straight 4-cell flights (status note: [~] in the parity-gaps audit; the less complete status is kept)
+- [x] Port Stairwells: spiral and switchback flights, placement and access halls; Rust uses straight 4-cell flights (status note: [~] in the parity-gaps audit; the less complete status is kept) (commit )
 - [ ] Port Chunk seams: centre-cross openings and wide hall openings; Rust draws random offsets (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port District selection: weighted districts, deeper-level extras and a sewer district (status note: [x] in the full audit 2026-11-01; the less complete status is kept)
 - [ ] Port Sewer layer: separate generator, ramps, falls, ladders and floods (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
