@@ -56,6 +56,9 @@ pub struct FlightEdgeRules {
     pub see_adjacent: bool,
     /// Largest height difference (m) at which a hunter captures.
     pub capture_height: f32,
+    /// Largest height difference (m) at which a hunter and a target count as standing on the same layer (floor or deck),
+    /// so a straight dash at the target is allowed. A deck runner is on another layer and is reached by a ladder or a jump.
+    pub same_layer_eps: f32,
     /// How close (m) to the entrance of an edge a walker must be to start it.
     pub edge_enter_radius: f32,
     /// Body radius (m) of the footprint test while a walker follows an edge. The routes of the flights are validated for
@@ -104,6 +107,7 @@ impl FlightEdgeRules {
             hear_adjacent_scale: num(&v, "hear_adjacent_scale", 0.0, 1.0)?,
             see_adjacent: flag(&v, "see_adjacent")?,
             capture_height: num(&v, "capture_height", 0.1, 3.0)?,
+            same_layer_eps: num(&v, "same_layer_eps", 0.1, 2.0)?,
             edge_enter_radius: num(&v, "edge_enter_radius", 0.05, 2.0)?,
             edge_fit_radius: num(&v, "edge_fit_radius", 0.05, 0.6)?,
             edge_stuck_seconds: num(&v, "edge_stuck_seconds", 0.5, 60.0)?,
@@ -1054,6 +1058,7 @@ mod tests {
         assert!(r.capture_height > 0.0 && r.edge_stuck_seconds > 0.0 && r.resident_hunter_cap > 0);
         let bad = [
             ("\"capture_height\": 1.2", "\"capture_height\": 99.0"),
+            ("\"same_layer_eps\": 0.5", "\"same_layer_eps\": 5.0"),
             ("\"edge_cost_scale\": 1.0", "\"edge_cost_scale\": 0.5"),
             ("\"hear_adjacent_scale\": 0.5", "\"hear_adjacent_scale\": -0.1"),
             ("\"resident_hunter_cap\": 8", "\"resident_hunter_cap\": 2.5"),

@@ -2642,6 +2642,11 @@ impl Facility {
     }
 
     /// has_line_of_sight: samples the segment at ceil(distance*6) points; walls only.
+    ///
+    /// Deliberately 2D (Godot parity): it has no height term. A catwalk deck is a see-through grating with 1.1 m rails
+    /// and the walls are a full storey (5 m), well above any eye, so a wall test alone is exact between a deck and the
+    /// floor below it. A ground hunter therefore sees a deck runner and a deck hunter sees the floor; what a deck changes
+    /// is whether the hunter can reach her (the deck is another layer, see `hunters::brain` and `hunters::flight_edges`).
     pub fn has_line_of_sight(&self, a: (f32, f32), b: (f32, f32)) -> bool {
         let d = ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt();
         let steps = ((d * 6.0).ceil() as i32).max(1);

@@ -440,6 +440,8 @@ pub struct Brain {
 }
 
 const ARRIVAL_DISTANCE: f32 = 0.65;
+/// Heights (m) closer than this are the same walk surface (the same epsilon `Facility::fits` uses between cells).
+const DECK_EPS: f32 = 0.01;
 const WAYPOINT_DISTANCE: f32 = 0.18;
 /// How long a cell a step was blocked by stays out of a hunter's route.
 const BLOCKED_AVOID_SECONDS: f32 = 2.0;
@@ -536,6 +538,39 @@ impl Brain {
             hop: None,
             edge_clock: 0.0,
         }
+    }
+
+    /// Feet height above this hunter's own level floor (m): 0 on the floor, the deck height on a catwalk deck.
+    pub fn layer_h(&self) -> f32 {
+        self.y - crate::game::level_stack::floor_y_of(self.level)
+    }
+
+    /// True while the hunter stands on a catwalk deck rather than the floor.
+    pub fn on_deck(&self) -> bool {
+        self.layer_h() > DECK_EPS
+    }
+
+    /// Whether a target at absolute height `y` is on the hunter's own layer (floor or deck), within
+    /// `flights.json same_layer_eps`.
+    fn same_layer_as(&self, y: f32) -> bool {
+        (self.y - y).abs() <= flight_edges::rules().same_layer_eps
+    }
+
+    /// Where a hunter heads for `goal` when the goal stands on another layer than the hunter (a runner on a deck while the
+    /// hunter is on the floor, or the other way round) and no hop leads there: the nearest floor spot to it (the foot of
+    /// the deck), so the hunter does not thrash between a route that does not exist and giving up. None when the goal is
+    /// on the hunter's own layer.
+    fn stalk_goal(&self, fac: &Facility, goal: (f32, f32)) -> Option<(f32, f32)> {
+        if !self.goal_on_other_layer(fac, goal) {
+            return None;
+        }
+        fac.nearest_open(goal.0, goal.1, HUNTER_RADIUS)
+    }
+
+    /// Whether `goal` (on the hunter's own level) stands on a different walk surface than the hunter: a deck cell against
+    /// a hunter on the floor, or a floor cell against a hunter on a deck.
+    fn goal_on_other_layer(&self, fac: &Facility, goal: (f32, f32)) -> bool {
+        self.goal_level() == self.level && (fac.height_at(cell_of(goal)) - self.layer_h()).abs() > DECK_EPS
     }
 
     /// Stand on `level`'s floor (a spawn, a respawn or a list swap): level and y together, and no edge in progress.
@@ -1009,7 +1044,8 @@ impl Brain {
             self.set_known_level(target.pos, target_level);
             self.lost_sight = 0.0;
             // The straight dash needs the same floor; across levels the hunter walks the flight.
-            self.direct_visible = cross.is_none();
+            // and the same layer: a runner on a deck is seen (sight is 2D, the grating is see-through) but not dashed at.
+            self.direct_visible = cross.is_none() && self.same_layer_as(target.y);
         } else if hears {
             self.set_known_level(target.pos, target_level);
             self.direct_visible = false;
@@ -1123,9 +1159,16 @@ impl Brain {
         };
         let Some(goal) = goal else { return };
         let speed = self.current_speed(depth, relays, prof, gscale);
+        // a goal on another layer that no edge leads to is stalked from its foot (see `stalk_goal`)
+        let stalk = self.stalk_goal(fac, goal);
+        let goal = stalk.unwrap_or(goal);
         self.pursue(goal, speed, dt, fac, prof);
         if self.walk.is_none() && self.level == self.goal_level() && dist(self.pos, goal) <= ARRIVAL_DISTANCE {
-            self.handle_arrival(fac, prof);
+            // at the foot of a deck with the runner still in mind: keep watching her rather than search and re-sight
+            let watching = stalk.is_some() && self.state == State::Chase && self.lost_sight <= 0.0;
+            if !watching {
+                self.handle_arrival(fac, prof);
+            }
         }
     }
 
@@ -1312,6 +1355,7 @@ impl Brain {
         if !cross
             && self.state == State::Chase
             && self.direct_visible
+            && !self.goal_on_other_layer(fac, goal)
             && self.clear_sweep(fac, self.pos, goal)
             && self.water_line_ok(goal)
         {
@@ -2798,9 +2842,9 @@ mod wiring_tests {
         assert_eq!(br.current_speed(1, 0, &prof, 1.0), dry, "dry ground keeps full speed");
     }
 
-    #[test]
-    fn a_hunter_never_plans_through_a_catwalk_rail() {
-        use crate::world::route::catwalk_links::{CatwalkKind, CatwalkLink};
+    /// A generated floor with a row of three open cells: a ground cell and two deck cells (2.5 m up), the grids rebuilt
+    /// so the planner sees the real hunter grid (a deck cell is not a ground hunter's cell).
+    fn deck_row() -> (Facility, [Cell; 3]) {
         let mut fac = facility();
         let mut triple = None;
         'scan: for y in 1..fac.rows - 1 {
@@ -2813,13 +2857,141 @@ mod wiring_tests {
             }
         }
         let [ground, deck1, deck2] = triple.expect("a generated floor has three open cells in a row");
-        fac.set_walk_surface(deck1, crate::world::facility::DeckKind::Catwalk, 4.0);
-        fac.set_walk_surface(deck2, crate::world::facility::DeckKind::Catwalk, 4.0);
+        let h = deck_h();
+        fac.set_walk_surface(deck1, crate::world::facility::DeckKind::Catwalk, h);
+        fac.set_walk_surface(deck2, crate::world::facility::DeckKind::Catwalk, h);
+        fac.rebuild_grids();
+        (fac, [ground, deck1, deck2])
+    }
+
+    fn deck_h() -> f32 {
+        crate::world::route::catwalk::params().height
+    }
+
+    #[test]
+    fn a_hunter_never_plans_through_a_catwalk_rail() {
+        let (fac, [ground, deck1, _]) = deck_row();
+        assert!(!fac.hunter_open(deck1), "the real grid keeps a ground hunter off a deck cell");
         assert!(plan_route(&fac, ground.center(), deck1, &[], &[]).is_empty(), "the deck edge is a rail");
-        assert!(plan_route(&fac, deck1.center(), ground, &[], &[]).is_empty(), "and a hunter does not step off it");
-        assert_eq!(plan_route(&fac, deck1.center(), deck2, &[], &[]).last(), Some(&deck2), "decks are walked on deck cells");
-        fac.catwalk_links.push(CatwalkLink { cell: ground, kind: CatwalkKind::Ladder, deck_height: 4.0, run: (1, 0) });
-        assert_eq!(plan_route(&fac, ground.center(), deck1, &[], &[]).last(), Some(&deck1), "a link is the way on");
+        assert!(
+            plan_route(&fac, deck1.center(), ground, &[], &[]).iter().all(|c| fac.height_at(*c) == 0.0),
+            "and a hunter does not step off it"
+        );
+    }
+
+    #[test]
+    fn deck_height_stays_level_zero() {
+        // a deck above level_from_height's midpoint plus margin would read as level 1 and swap lists under a deck body
+        assert_eq!(crate::game::level_stack::level_at(deck_h() + 0.1, 0), 0);
+        assert_eq!(crate::game::level_stack::level_at(deck_h(), 0), 0);
+    }
+
+    fn ctx(fac: &Facility) -> Ctx<'_> {
+        Ctx {
+            fac,
+            relays_taken: &[],
+            batteries_taken: &[],
+            hiding_disabled: &[],
+            vents: &[],
+            heater_on: false,
+            heater_thawed: true,
+            diff: Difficulty::Standard,
+            music_box_left: 0.0,
+            exposure: 0.0,
+        }
+    }
+
+    fn run(b: &mut Brain, fac: &Facility, t: &Target, seconds: f32) {
+        let prof = Difficulty::Standard.profile();
+        let c = ctx(fac);
+        for _ in 0..(seconds * 60.0).round() as i32 {
+            b.update(1.0 / 60.0, &c, t, 1, 0, &prof);
+        }
+    }
+
+    fn watcher(at: (f32, f32), y: f32) -> Brain {
+        let mut b = Brain::new(aki(), at, "DECK", Difficulty::Standard);
+        b.active = true;
+        b.y = y;
+        b
+    }
+
+    fn deck_runner(p: (f32, f32), y: f32) -> Target {
+        Target { pos: p, y, facing: (1.0, 0.0), flashlight_on: true, ..Default::default() }
+    }
+
+    #[test]
+    fn a_ground_hunter_sees_a_runner_on_a_deck() {
+        let (fac, [ground, _, deck2]) = deck_row();
+        let mut b = watcher(ground.center(), 0.0);
+        run(&mut b, &fac, &deck_runner(deck2.center(), deck_h()), 0.5);
+        assert_eq!(b.state, State::Chase, "sight is 2D: the deck is a grating");
+        assert!(!b.direct_visible, "but a runner on another layer is not dashed at");
+        // the same runner on the floor is dashed at
+        let mut b = watcher(ground.center(), 0.0);
+        run(&mut b, &fac, &deck_runner(deck2.center(), 0.0), 0.5);
+        assert!(b.state == State::Chase && b.direct_visible);
+    }
+
+    #[test]
+    fn a_deck_hunter_sees_a_ground_runner_and_walls_still_block() {
+        let (fac, [ground, deck1, deck2]) = deck_row();
+        let mut b = watcher(deck2.center(), deck_h());
+        run(&mut b, &fac, &deck_runner(ground.center(), 0.0), 0.5);
+        assert_eq!(b.state, State::Chase);
+        assert!(!b.direct_visible);
+        // a wall cell between the two: no sight
+        let blocked = (1..fac.rows - 1).flat_map(|y| (1..fac.cols - 6).map(move |x| (x, y))).find_map(|(x, y)| {
+            let a = Cell::new(x, y);
+            (3..=5).find_map(|k| {
+                let c = Cell::new(x + k, y);
+                (fac.hunter_open(a) && fac.hunter_open(c) && !fac.has_line_of_sight(a.center(), c.center())).then_some((a, c))
+            })
+        });
+        let (a, c) = blocked.expect("a floor has a wall cell between two open cells");
+        assert!(![ground, deck1, deck2].contains(&a));
+        let mut fac = fac;
+        fac.set_walk_surface(a, crate::world::facility::DeckKind::Catwalk, deck_h());
+        fac.rebuild_grids();
+        let mut b = watcher(a.center(), deck_h());
+        run(&mut b, &fac, &deck_runner(c.center(), 0.0), 0.5);
+        assert_eq!(b.state, State::Idle, "a wall between them hides her");
+    }
+
+    #[test]
+    fn a_hunter_cannot_capture_across_a_deck_height() {
+        let (fac, [ground, ..]) = deck_row();
+        let prof = Difficulty::Standard.profile();
+        let c = ctx(&fac);
+        let mut b = watcher(ground.center(), 0.0);
+        let above = deck_runner(ground.center(), deck_h());
+        let (caught, _) = b.update(1.0 / 60.0, &c, &above, 1, 0, &prof);
+        assert!(!caught, "a runner on a deck is out of reach");
+        let level = deck_runner(ground.center(), 0.0);
+        let (caught, _) = b.update(1.0 / 60.0, &c, &level, 1, 0, &prof);
+        assert!(caught, "the same spot at the same height is a capture");
+    }
+
+    #[test]
+    fn a_hunter_that_cannot_climb_stalks_the_foot_of_the_deck_and_does_not_thrash() {
+        let (fac, [ground, _, deck2]) = deck_row();
+        let mut b = watcher(ground.center(), 0.0);
+        let t = deck_runner(deck2.center(), deck_h());
+        let prof = Difficulty::Standard.profile();
+        let c = ctx(&fac);
+        let mut changes = 0;
+        let mut last = b.state;
+        for _ in 0..(20.0 * 60.0) as i32 {
+            b.update(1.0 / 60.0, &c, &t, 1, 0, &prof);
+            if b.state != last {
+                changes += 1;
+                last = b.state;
+            }
+            assert_eq!(b.y, 0.0, "a ground hunter never leaves the floor");
+        }
+        assert_eq!(changes, 1, "Idle to Chase once, then it keeps watching from the foot");
+        assert_eq!(b.state, State::Chase);
+        assert!(dist(b.pos, deck2.center()) <= 3.5, "it stands near the deck, at {:?}", b.pos);
     }
 }
 
