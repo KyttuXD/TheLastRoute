@@ -44,20 +44,32 @@ struct Offer {
     sha256: String,
 }
 
-fn offer() -> Option<Offer> {
+/// Asks the server for this platform's newest build. The Err text says why there is no offer, for the log.
+fn offer() -> Result<Offer, String> {
     let url = format!("{PRIMARY_BASE_URL}/api/updates/debug/{PLATFORM}");
-    let reply = Request::new(Method::Get, url).timeout(Duration::from_secs(5)).send().ok()?;
+    let reply = Request::new(Method::Get, url).timeout(Duration::from_secs(5)).send().map_err(|e| format!("the request failed ({e:?})"))?;
     if !reply.ok() {
-        return None;
+        return Err("the server did not answer OK".into());
     }
     let body = http::parse_body(&reply.body);
-    let update = body.get("update")?.as_object()?;
-    Some(Offer {
-        build: update.get("build")?.as_u64()?,
-        revision: update.get("revision")?.as_str()?.to_string(),
-        file: update.get("file")?.as_str()?.to_string(),
-        sha256: update.get("sha256")?.as_str()?.to_string(),
+    let update = body.get("update").and_then(|u| u.as_object()).ok_or("the server reply has no update entry")?;
+    let text = |key: &str| update.get(key).and_then(|v| v.as_str()).map(str::to_string).ok_or(format!("the update entry has no {key}"));
+    Ok(Offer {
+        build: update.get("build").and_then(|v| v.as_u64()).ok_or("the update entry has no build number")?,
+        revision: text("revision")?,
+        file: text("file")?,
+        sha256: text("sha256")?,
     })
+}
+
+/// The log line for a check that finds nothing to install: which build this is, and what the server offers.
+fn current_line(build: u64, revision: &str, offered_build: u64, offered_revision: &str) -> String {
+    let short = |r: &str| r.chars().take(7).collect::<String>();
+    format!(
+        "update: no update to install (this is build {build} of {}; the server offers build {offered_build} of {})",
+        short(revision),
+        short(offered_revision)
+    )
 }
 
 fn download_key() -> Option<String> {
@@ -225,16 +237,22 @@ fn same_commit(a: &str, b: &str) -> bool {
 pub fn check_on_start() {
     remove_leftover();
     if BUILD == 0 {
+        crate::lr_info!("update: this is a local build (no CI build number), so no update check");
         return;
     }
     let Some(key) = download_key() else {
         crate::lr_info!("update: no download key in the game folder, so no update check");
         return;
     };
-    let Some(offer) = offer() else {
-        return;
+    let offer = match offer() {
+        Ok(offer) => offer,
+        Err(why) => {
+            crate::lr_info!("update: could not read the offer from the server: {why} (this is build {BUILD})");
+            return;
+        }
     };
     if !should_update(BUILD, REVISION, offer.build, &offer.revision) {
+        crate::lr_info!("{}", current_line(BUILD, REVISION, offer.build, &offer.revision));
         return;
     }
     crate::lr_info!("update: build {} is available (this is {}); downloading", offer.build, BUILD);
@@ -255,6 +273,12 @@ mod tests {
     fn build_number_parses_from_the_build_environment() {
         assert_eq!(parse_build("0"), 0);
         assert_eq!(parse_build("9001"), 9001);
+    }
+
+    #[test]
+    fn a_check_with_nothing_to_install_says_which_builds_it_compared() {
+        let line = current_line(27, "1b5e3c2e23d40e1ba1cc69b917dd10efc81b3e1a", 27, "1b5e3c2e23d40e1b");
+        assert!(line.contains("build 27 of 1b5e3c2") && line.contains("offers build 27"), "{line}");
     }
 
     #[test]
