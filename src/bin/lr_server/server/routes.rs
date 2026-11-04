@@ -77,9 +77,13 @@ fn log_account_event(now: i64, path: &str, body: &Value, result: &Reply, address
     }
 }
 
-fn owner_of(state: &State, body: &Value) -> Option<String> {
-    let owner = state.accounts.session_username(&str_or_empty(body.get("sessionToken")))?;
-    state.accounts.is_admin_owner(&owner).then_some(owner)
+/// The caller's session for the admin and moderation routes, resolved before the state lock is taken (see
+/// `resolve_caller`). `username` is `sessionUsername(token) || ""` (empty unless the body carries a token); `owner` is
+/// that name when it is a full admin owner, else None (the old `owner_of`).
+#[derive(Default)]
+struct Caller {
+    username: String,
+    owner: Option<String>,
 }
 
 /// `body.sessionToken ? accountService.sessionUsername(body.sessionToken) || "" : ""`.
@@ -155,6 +159,19 @@ impl LastRouteServer {
         drop(guard);
         let value = call(&accounts);
         (value, self.state.lock().unwrap())
+    }
+
+    /// Resolves the caller's session for the admin and moderation routes with the state lock released, so a slow website
+    /// session lookup does not block other requests. The values match `session_user` and the old `owner_of`.
+    fn resolve_caller<'a>(&'a self, guard: MutexGuard<'a, State>, body: &Value) -> (Caller, MutexGuard<'a, State>) {
+        let token = str_or_empty(body.get("sessionToken"));
+        let ((session, owner), guard) = self.with_accounts(guard, |accounts| {
+            let session = accounts.session_username(&token);
+            let owner = session.clone().filter(|name| accounts.is_admin_owner(name));
+            (session, owner)
+        });
+        let username = if truthy(body.get("sessionToken")) { session.unwrap_or_default() } else { String::new() };
+        (Caller { username, owner }, guard)
     }
 
     /// `developerRequest` for the account routes: the upstream session lookup runs without the state lock.
@@ -262,7 +279,11 @@ impl LastRouteServer {
             drop(guard);
             return reply(skins.upload(&*accounts, &body));
         }
-        if let Some(response) = self.route_posts(state, request, &body) {
+        // Admin and moderation routes resolve the caller's session with the state lock released, then retake it.
+        let scoped = path.starts_with("/api/admin/") || path.starts_with("/api/moderation/");
+        let (caller, mut guard) = if scoped { self.resolve_caller(guard, &body) } else { (Caller::default(), guard) };
+        let state = &mut *guard;
+        if let Some(response) = self.route_posts(state, request, &body, &caller) {
             return response;
         }
         let result = self.route_accounts(guard, &body, path);
@@ -381,7 +402,8 @@ impl LastRouteServer {
     }
 
     /// POST routes with a parsed JSON body, up to the account section.
-    fn route_posts(&self, state: &mut State, request: &Request, body: &Value) -> Option<Response> {
+    /// `caller` is only meaningful for the admin and moderation branches (resolved in `route`).
+    fn route_posts(&self, state: &mut State, request: &Request, body: &Value, caller: &Caller) -> Option<Response> {
         let path = request.path.as_str();
         let now = self.now();
         let (relay_address, relay_port) = (self.config.relay_address.as_str(), self.config.relay_port);
@@ -394,7 +416,7 @@ impl LastRouteServer {
             return Some(reply(crash.submit(body, &client)));
         }
         if path == "/api/admin/crash-reports" {
-            if owner_of(state, body).is_none() {
+            if caller.owner.is_none() {
                 return Some(not_owner());
             }
             return Some(match state.crash_reports.as_ref() {
@@ -457,7 +479,7 @@ impl LastRouteServer {
         }
 
         if path == "/api/admin/regions" {
-            if owner_of(state, body).is_none() {
+            if caller.owner.is_none() {
                 return Some(not_owner());
             }
             let action = or_default(str_or_empty(body.get("action")), "list");
@@ -488,7 +510,7 @@ impl LastRouteServer {
         }
 
         if path == "/api/admin/reserved-rooms" {
-            let Some(owner) = owner_of(state, body) else { return Some(not_owner()) };
+            let Some(owner) = caller.owner.clone() else { return Some(not_owner()) };
             if state.dir.reserved.is_none() {
                 return Some(reply(unknown_endpoint()));
             }
@@ -543,16 +565,16 @@ impl LastRouteServer {
             return Some(reply(state.moderation.report_kick(&ctx, body, &code, &host)));
         }
         if path == "/api/moderation/integrity" {
-            let username = session_user(state, body);
+            let username = caller.username.clone();
             let ctx = ModCtx { accounts: &state.accounts, updates: self.current_updates() };
             return Some(reply(state.moderation.integrity(&ctx, body, &username, &address)));
         }
         if path == "/api/moderation/status" {
-            let who = Who { username: session_user(state, body), device_id: body.get("deviceId").cloned(), address: address.clone() };
+            let who = Who { username: caller.username.clone(), device_id: body.get("deviceId").cloned(), address: address.clone() };
             return Some(json_response(200, &json!({ "ok": true, "status": state.moderation.status(&who) }), &[]));
         }
         if path.starts_with("/api/admin/mods/") {
-            let Some(owner) = owner_of(state, body) else { return Some(not_owner()) };
+            let Some(owner) = caller.owner.clone() else { return Some(not_owner()) };
             return Some(reply(match path {
                 "/api/admin/mods/register" => state.mod_packs.register(body, &owner),
                 "/api/admin/mods/block" => state.mod_packs.block(body, &owner),
@@ -561,7 +583,7 @@ impl LastRouteServer {
             }));
         }
         if path.starts_with("/api/admin/flags") || path.starts_with("/api/admin/builds/") {
-            let Some(owner) = owner_of(state, body) else { return Some(not_owner()) };
+            let Some(owner) = caller.owner.clone() else { return Some(not_owner()) };
             let ctx = ModCtx { accounts: &state.accounts, updates: self.current_updates() };
             return Some(reply(match path {
                 "/api/admin/flags" => state.moderation.admin_list(),
@@ -1017,5 +1039,52 @@ mod skin_lock_tests {
         release.send(()).unwrap();
         let upload = uploading.join().unwrap();
         assert_eq!((upload.status, upload.json_body()["code"].clone()), (503, json!("SKINS_UNAVAILABLE")));
+    }
+
+    #[test]
+    fn an_admin_session_lookup_in_flight_does_not_block_another_request() {
+        let (release, released) = mpsc::channel();
+        let upstream = slow_website(released, r#"{"ok":true,"username":"PLAYERONE"}"#);
+        let server = Arc::new(LastRouteServer::new(ServerOptions { account_upstream: Some(upstream), ..Default::default() }));
+
+        let admin_call = {
+            let server = server.clone();
+            std::thread::spawn(move || {
+                let request = Request::json("POST", "/api/admin/flags", &json!({ "sessionToken": "token" }));
+                server.handle(&request)
+            })
+        };
+        // Give the admin route's session lookup time to reach the slow website and sit there.
+        std::thread::sleep(Duration::from_millis(200));
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let health_server = server.clone();
+        std::thread::spawn(move || {
+            let response = health_server.handle(&Request::new("GET", "/api/health"));
+            let _ = done_tx.send(response.status);
+        });
+        let status = done_rx.recv_timeout(Duration::from_secs(2)).expect("the health request waited on the admin session lookup");
+        assert_eq!(status, 200);
+
+        release.send(()).unwrap();
+        let admin = admin_call.join().unwrap();
+        // A non-owner session keeps the same refusal the lock-held path gave.
+        assert_eq!((admin.status, admin.json_body()["code"].clone()), (403, json!("ADMIN_OWNER_REQUIRED")));
+    }
+
+    #[test]
+    fn an_owner_session_passes_the_admin_check_and_a_missing_session_is_refused() {
+        // An owner session (KYTTU is in ADMIN_OWNER_USERNAMES) gets past the owner check on the flags route.
+        let (release, released) = mpsc::channel();
+        release.send(()).unwrap();
+        let upstream = slow_website(released, r#"{"ok":true,"username":"KYTTU"}"#);
+        let owner_server = LastRouteServer::new(ServerOptions { account_upstream: Some(upstream), ..Default::default() });
+        let owner = owner_server.handle(&Request::json("POST", "/api/admin/flags", &json!({ "sessionToken": "token" })));
+        assert_ne!(owner.json_body()["code"], json!("ADMIN_OWNER_REQUIRED"));
+
+        // No session token at all is refused with the same owner-required code, without any website call.
+        let anonymous_server = LastRouteServer::new(ServerOptions::default());
+        let anonymous = anonymous_server.handle(&Request::json("POST", "/api/admin/flags", &json!({})));
+        assert_eq!((anonymous.status, anonymous.json_body()["code"].clone()), (403, json!("ADMIN_OWNER_REQUIRED")));
     }
 }
