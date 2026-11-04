@@ -20,7 +20,8 @@ pub enum Focus {
     Locker(usize),
     Safe,
     Lift,
-    Stairs(usize),
+    /// A sewer ladder, by its index in `Facility::stairs` (a stair flight is walked and is never a focus).
+    Ladder(usize),
     LightSwitch(usize),
     Heater,
     MusicBox,
@@ -121,7 +122,7 @@ impl Game {
                 (cx + s.run.0 as f32 * 0.9, cy + s.run.1 as f32 * 0.9),
                 0.3,
                 2.0,
-                Focus::Stairs(i),
+                Focus::Ladder(i),
             );
         }
         for (i, l) in self.fac.room_lights.iter().enumerate() {
@@ -194,14 +195,14 @@ impl Game {
                     "[E] USE SERVICE LIFT".into()
                 }
             }
-            Focus::Stairs(i) => {
+            Focus::Ladder(i) => {
                 let s = self.fac.stairs[i];
                 match (s.kind, s.dir < 0) {
                     (LinkKind::Ladder(Cover::Manhole), true) => "[E] OPEN THE MANHOLE // CLIMB DOWN".into(),
                     (LinkKind::Ladder(Cover::Grate), true) => "[E] LIFT THE GRATE // CLIMB DOWN".into(),
                     (LinkKind::Ladder(_), false) => "[E] CLIMB THE LADDER UP".into(),
-                    // a flight is walked: it never holds the focus, so it has no prompt
-                    (LinkKind::Stairs, _) => String::new(),
+                    // a flight is walked: it is never a focus, so this arm cannot be reached
+                    (LinkKind::Stairs, _) => String::new(), // a stair flight is never a focus (D3): no prompt
                 }
             }
             Focus::LightSwitch(_) => "[E] TOGGLE ROOM LIGHT".into(),
@@ -237,7 +238,7 @@ impl Game {
             Focus::Locker(i) => self.fac.hiding[i].cell.center(),
             Focus::Safe => self.safe_beacon().unwrap_or(self.p.pos),
             Focus::Lift => self.fac.exit.center(),
-            Focus::Stairs(i) => self.fac.stairs[i].cell.center(),
+            Focus::Ladder(i) => self.fac.stairs[i].cell.center(),
             Focus::LightSwitch(i) => self.fac.room_lights[i].switch_cell.center(),
             Focus::Heater => self.fix.heater.map(|c| c.center()).unwrap_or(self.p.pos),
             Focus::MusicBox => self.fix.music_box.map(|c| c.center()).unwrap_or(self.p.pos),
@@ -332,7 +333,7 @@ impl Game {
                 crate::audio::sound::recharge(20.0);
                 self.say("Safe zone: lamp and stamina restored.");
             }
-            Focus::Stairs(i) => {
+            Focus::Ladder(i) => {
                 // only a ladder is interacted with; a flight is walked
                 if self.fac.stairs[i].is_ladder() {
                     self.start_ladder(i);
@@ -529,6 +530,11 @@ impl Game {
         match self.pipes.turn(q) {
             Ok(ev) => {
                 self.pipes.apply(&ev, self.time);
+                let at = self.p.pos;
+                self.push_noise(crate::hunters::noise_events::NoiseKind::ValveTurn, at);
+                if !ev.gate.is_empty() && ev.turns % 2 == 1 {
+                    self.push_noise(crate::hunters::noise_events::NoiseKind::SluiceOpen, at);
+                }
                 if !self.remote_hunters {
                     self.hunter_out.emit(
                         crate::net::hunter_events::rules(),
@@ -658,7 +664,7 @@ mod tests {
             .expect("the start window has a ladder down");
         let dir = g.fac.stairs[i].dir;
         // a ladder is climbed by hand (game/ladder.rs): hold back to go down the shaft until the storey changes
-        g.interact(Focus::Stairs(i), &content, &catalog, &Sounds::default());
+        g.interact(Focus::Ladder(i), &content, &catalog, &Sounds::default());
         let back = crate::game::Controls { fwd: -1.0, ..Default::default() };
         for _ in 0..400 {
             if g.last_autosave == "level" {
@@ -671,30 +677,89 @@ mod tests {
         assert_eq!(g.last_autosave, "level", "a new level saves the run");
     }
 
-    #[test]
-    fn a_stair_flight_never_holds_the_focus_and_interact_on_it_does_nothing() {
+    /// The room texts of the golden seeds (world/stack_contract_tests.rs GOLDEN).
+    const GOLDEN: [&str; 3] = ["1426541270", "k7qxm", "demo"];
+
+    /// Every stair-record focus to ask `interact` for: the old stairs focus was an index into `Facility::stairs`, so a
+    /// regression would show as `interact(Focus::Ladder(j))` on a FLIGHT index moving the body. (Other focus kinds, such as the
+    /// lift, move the body by design and are not what this test is about.)
+    fn every_focus(g: &Game) -> Vec<Focus> {
+        (0..g.fac.stairs.len()).map(Focus::Ladder).collect()
+    }
+
+    /// Both ends of every walked flight of the golden windows, each with the body standing there.
+    fn for_each_flight_end(mut check: impl FnMut(&mut Game, &Content, &Catalog, &str)) {
         let content = Content::load();
         let catalog = Catalog::load();
-        // not every start window has a stairwell (the origin chunk always has a ladder), so the first room seed that does
-        let (mut g, i) = (0..60)
-            .find_map(|n| {
-                let g = Game::new_infinite_sim(Difficulty::Standard, 7, &format!("ROOM-STAIRS-{n}"), 0, &content, &catalog);
-                let i = g.fac.stairs.iter().position(|s| s.dir == -1 && matches!(s.kind, LinkKind::Stairs))?;
-                Some((g, i))
-            })
-            .expect("a start window has a stairwell down");
-        // stood on the flight's landing looking along it, the stairs are not the focus
-        let s = g.fac.stairs[i];
-        g.p.pos = s.cell.center();
-        g.p.yaw = (-(s.run.0 as f32)).atan2(-(s.run.1 as f32));
-        g.p.pitch = 0.0;
-        assert!(!matches!(g.find_focus(), Some(Focus::Stairs(j)) if !g.fac.stairs[j].is_ladder()), "a flight is no focus");
-        g.fade = 0.0;
-        g.last_autosave = "";
-        g.interact(Focus::Stairs(i), &content, &catalog, &Sounds::default());
-        assert_eq!(g.inf.as_ref().unwrap().level, 0, "interact does not change the level of a flight");
-        assert_eq!(g.fade, 0.0, "no fade");
-        assert_ne!(g.last_autosave, "level");
+        let mut checked = 0;
+        for text in GOLDEN {
+            for level in [0, -1, -2] {
+                let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, text, level, &content, &catalog);
+                let flights: Vec<_> = g.fac.stairs.iter().copied().filter(|s| !s.is_ladder()).collect();
+                for s in flights {
+                    // the stair record sits on this level (A above, B below); its far end is one level over
+                    for (cell, lvl) in [(s.cell, level), (s.far_end(), level + s.dir)] {
+                        if !crate::world::infinite::level_allowed(lvl) {
+                            continue;
+                        }
+                        g.go_to_level(lvl, cell.center(), 0.0, &content, &catalog);
+                        g.fade = 0.0;
+                        check(&mut g, &content, &catalog, text);
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 0, "the golden windows have a walked flight");
+    }
+
+    #[test]
+    fn stairs_cannot_be_used_to_teleport() {
+        for_each_flight_end(|g, content, catalog, text| {
+            let level = g.inf.as_ref().unwrap().level;
+            assert!(
+                !matches!(g.find_focus(), Some(Focus::Ladder(j)) if !g.fac.stairs[j].is_ladder()),
+                "{text}: a flight is no focus"
+            );
+            // absolute cells: the window origin can shift on a step, which moves the window-relative position
+            let at = |g: &Game| (g.p.pos.0 + g.fac.origin.0 as f32, g.p.pos.1 + g.fac.origin.1 as f32);
+            let (pos, y) = (at(g), g.p.y());
+            for f in every_focus(g) {
+                if let Focus::Ladder(j) = f {
+                    // a ladder may be mounted; the check is about flights
+                    if g.fac.stairs[j].is_ladder() {
+                        continue;
+                    }
+                }
+                g.interact(f, content, catalog, &Sounds::default());
+                let now = at(g);
+                let moved = (now.0 - pos.0).hypot(now.1 - pos.1);
+                assert!(moved < PLAYER_SPRINT_SPEED / 60.0, "{text}: interact({f:?}) moved the body {moved} m");
+            }
+            let c = crate::game::Controls { interact: true, ..Default::default() };
+            let dt = 1.0 / 60.0;
+            g.step(dt, &c, content, catalog, &Sounds::default());
+            let now = at(g);
+            let moved = (now.0 - pos.0).hypot(now.1 - pos.1);
+            assert!(moved < PLAYER_SPRINT_SPEED * dt, "{text}: the body moved {moved} m in one frame with only interact held");
+            assert_eq!(g.inf.as_ref().unwrap().level, level, "{text}: interact changed the level");
+            // the body is set down at height 0 on a cell that may be a tread, so it eases onto the surface (a fraction of a metre in one
+            // frame, up to about a metre on a steep tread); a teleport to the other floor would be a whole storey (5 m)
+            assert!((g.p.y() - y).abs() < crate::world::vertical::STOREY * 0.5, "{text}: interact changed the height by {} m", g.p.y() - y);
+        });
+    }
+
+    #[test]
+    fn a_flight_has_no_prompt_at_either_end() {
+        for_each_flight_end(|g, _, _, text| {
+            assert!(g.find_focus().map_or(true, |f| !matches!(f, Focus::Ladder(j) if !g.fac.stairs[j].is_ladder())), "{text}");
+            g.focus = g.find_focus();
+            if let Some(Focus::Ladder(_)) = g.focus {
+                return; // a ladder prompt near the flight is the ladder's own
+            }
+            let prompt = g.focus_prompt().unwrap_or_default();
+            assert!(!prompt.to_uppercase().contains("STAIR"), "{text}: prompt {prompt:?} at a flight end");
+        });
     }
 
     #[test]

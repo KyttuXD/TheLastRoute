@@ -6,10 +6,12 @@ pub mod director;
 pub mod emotes;
 pub mod gimmicks;
 pub mod navigation;
+pub mod noise_events;
 pub mod peek;
 pub mod residency;
 pub mod sabotage;
 pub mod target_filter;
+pub mod water;
 
 use crate::config::{tier_weights_for, Difficulty};
 use crate::content::Content;

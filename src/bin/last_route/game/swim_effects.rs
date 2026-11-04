@@ -366,6 +366,8 @@ impl Game {
             self.p.force_flashlight_flicker(self.swim_cfg.flicker_seconds);
             self.p.noise_burst = rules.splash_noise;
             self.p.noise_burst_timer = rules.splash_noise_seconds;
+            let at = self.p.pos;
+            self.push_noise(crate::hunters::noise_events::NoiseKind::PlungeSplash, at);
             if !a.switched {
                 a.switched = true;
                 if self.sewer_level() == Some(sewer_core::LEVEL) {

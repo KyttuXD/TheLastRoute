@@ -153,11 +153,6 @@ pub fn prefetch_distance() -> f32 {
     crate::game::transition::links().prefetch_distance
 }
 
-/// How far in from the far end the runner stands on arrival (cells): the stair data's, so no link feels different.
-pub fn landing_offset() -> f32 {
-    crate::game::transition::links().landing_offset
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,9 +252,8 @@ mod tests {
     }
 
     #[test]
-    fn arrival_and_prefetch_use_the_stair_data() {
+    fn prefetch_uses_the_stair_data() {
         let s = crate::game::transition::links();
-        assert_eq!(landing_offset(), s.landing_offset);
         assert_eq!(prefetch_distance(), s.prefetch_distance);
     }
 

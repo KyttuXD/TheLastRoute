@@ -158,7 +158,7 @@ pub fn kind_name(f: Focus) -> &'static str {
         Focus::Locker(_) => "HIDING_SPOT",
         Focus::Safe => "SAFE_ZONE",
         Focus::Lift => "LIFT",
-        Focus::Stairs(_) => "STAIRS",
+        Focus::Ladder(_) => "LADDER",
         Focus::LightSwitch(_) => "LIGHT_SWITCH",
         Focus::Heater => "HEATER_STATION",
         Focus::MusicBox => "MUSIC_BOX",
@@ -1034,8 +1034,8 @@ impl Session {
         if let Some(k) = &want {
             let g = self.sim.game.as_ref().unwrap();
             // a flight has no focus (it is walked); only a ladder is a STAIRS focus
-            let ladder_focus = matches!(g.focus, Some(Focus::Stairs(i)) if g.fac.stairs.get(i).map_or(false, |s| s.is_ladder()));
-            if k == "STAIRS" && !ladder_focus {
+            // (a ladder is the LADDER focus; the kind STAIRS is always refused)
+            if k == "STAIRS" {
                 return json!({ "ok": false, "error": "stairs are walked: use walk_flight (a flight is no interactable; only a ladder is)", "focus": before });
             }
             let have = g.focus.map(kind_name);
@@ -1485,7 +1485,8 @@ impl Session {
             add("LIFT", g.fac.exit.center(), 1.2, false);
         }
         for s in &g.fac.stairs {
-            add("STAIRS", s.cell.center(), 0.3, false);
+            // a ladder is an interactable; a flight is only a steer target (walked, never interacted with)
+            add(if s.is_ladder() { "LADDER" } else { "STAIRS_FLIGHT" }, s.cell.center(), 0.3, false);
         }
         for (i, l) in g.fac.room_lights.iter().enumerate() {
             add("LIGHT_SWITCH", l.switch_cell.center(), 1.2, !g.lights_on[i]);

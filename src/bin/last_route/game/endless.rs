@@ -919,6 +919,9 @@ impl Game {
         let id = format!("{}{n}", super::pipes::flow_prefix(chunk));
         let now = self.time;
         self.pipes.start_flow(&id, now);
+        // the breach is the runner's own Axe swing, so the runner's place is the breach point
+        let at = self.p.pos;
+        self.push_noise(crate::hunters::noise_events::NoiseKind::PipeBurst, at);
         if !self.remote_hunters {
             self.hunter_out.emit(
                 crate::net::hunter_events::rules(),
@@ -1187,19 +1190,12 @@ impl Game {
         self.announce(&format!("LEVEL {to}"));
     }
 
-    /// Test shim for the tests that move between levels by a connection (ladder_tests.rs, the hunter tests here): the
-    /// level change the old interact made, to the stair's far landing, through `change_storey`. Nothing in the game calls it.
+    /// Test helper: the level change of a ladder, a drop or a respawn, to storey `to`, the body put on the open cell
+    /// nearest `at` facing `yaw`, standing on the floor. Through `change_storey`; nothing in the game calls it.
     #[cfg(test)]
-    pub(super) fn take_stairs(&mut self, i: usize, content: &Content, catalog: &Catalog) {
-        let s = self.fac.stairs[i];
-        let to = self.inf.as_ref().map_or(0, |inf| inf.level) + s.dir;
-        if !infinite::level_allowed(to) {
-            return;
-        }
-        let from_level = self.inf.as_ref().map_or(0, |inf| inf.level);
-        let (target, yaw) = super::transition::arrival(&s, from_level);
+    pub(super) fn go_to_level(&mut self, to: i32, at: (f32, f32), yaw: f32, content: &Content, catalog: &Catalog) {
         self.change_storey(to, content, catalog, |g| {
-            g.p.pos = g.fac.nearest_open_or(target.0, target.1, PLAYER_RADIUS);
+            g.p.pos = g.fac.nearest_open_or(at.0, at.1, PLAYER_RADIUS);
             g.p.yaw = yaw;
             g.p.height = 0.0;
         });
@@ -2011,7 +2007,7 @@ mod tests {
             if let Some(i) = g.pickups.len().checked_sub(1) { v.push(Focus::Pickup(i)); }
             if let Some(i) = g.fix.coins.len().checked_sub(1) { v.push(Focus::Coin(i)); }
             if let Some(i) = g.fac.hiding.len().checked_sub(1) { v.push(Focus::Locker(i)); }
-            if let Some(i) = g.fac.stairs.len().checked_sub(1) { v.push(Focus::Stairs(i)); }
+            if let Some(i) = g.fac.stairs.iter().rposition(|s| s.is_ladder()) { v.push(Focus::Ladder(i)); }
             if let Some(i) = g.fac.room_lights.len().checked_sub(1) { v.push(Focus::LightSwitch(i)); }
             if let Some(i) = g.fix.vents.len().checked_sub(1) { v.push(Focus::Vent(i)); }
             if let Some((i, _)) = g.fac.doors().last() { v.push(Focus::Door(i)); }
@@ -2524,12 +2520,20 @@ mod tests {
         }
     }
 
+    /// Moves the run across stairwell `i` as the old swap did (to the far end of its flight, one level over), through
+    /// `go_to_level`: for the tests that need the hunters of two levels stored and restored.
+    fn take(g: &mut Game, i: usize, content: &Content, catalog: &Catalog) {
+        let s = g.fac.stairs[i];
+        let to = g.inf.as_ref().map_or(0, |inf| inf.level) + s.dir;
+        g.go_to_level(to, s.far_end().center(), 0.0, content, catalog);
+    }
+
     /// The stairwell of the window going `dir` (-1 down, +1 up), if it has one.
     fn stair(g: &Game, dir: i32) -> Option<usize> {
         g.fac.stairs.iter().position(|s| s.dir == dir)
     }
 
-    /// The stairwell back: the landing the last `take_stairs` arrived on.
+    /// The stairwell back: the landing the last `take` arrived on.
     fn stair_back(g: &Game, dir: i32) -> usize {
         let at = g.p.pos;
         let mut best = None;
@@ -2553,10 +2557,10 @@ mod tests {
         let dir = g.fac.stairs[down].dir;
         let before = absolute(&g);
         assert!(!before.is_empty());
-        g.take_stairs(down, &content, &catalog);
+        take(&mut g, down, &content, &catalog);
         assert_eq!(g.inf.as_ref().unwrap().level, dir);
         let back = stair_back(&g, -dir);
-        g.take_stairs(back, &content, &catalog);
+        take(&mut g, back, &content, &catalog);
         assert_eq!(g.inf.as_ref().unwrap().level, 0);
         let after = absolute(&g);
         for (id, pos) in &before {
@@ -2571,7 +2575,7 @@ mod tests {
         let (mut g, content, catalog) = populated();
         let i = stair(&g, -1).or_else(|| stair(&g, 1)).expect("the start window has a stairwell");
         let dir = g.fac.stairs[i].dir;
-        g.take_stairs(i, &content, &catalog);
+        take(&mut g, i, &content, &catalog);
         assert_eq!(g.inf.as_ref().unwrap().level, dir);
         assert!(!g.hunters.is_empty(), "the floor has its lineup");
         // mark the floor's hunters: one moves to another open cell and one goes to sleep, which a rebuild would undo
@@ -2593,10 +2597,10 @@ mod tests {
         };
         let before = mark(&g);
         let back = stair_back(&g, -dir);
-        g.take_stairs(back, &content, &catalog);
+        take(&mut g, back, &content, &catalog);
         assert_eq!(g.inf.as_ref().unwrap().level, 0);
         let again = stair_back(&g, dir);
-        g.take_stairs(again, &content, &catalog);
+        take(&mut g, again, &content, &catalog);
         assert_eq!(g.inf.as_ref().unwrap().level, dir);
         assert_eq!(g.inf.as_ref().unwrap().origin(), o, "the same window");
         assert_eq!(mark(&g), before, "the floor's hunters are the ones it kept");

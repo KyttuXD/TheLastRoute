@@ -251,6 +251,8 @@ pub struct Npc {
     pub deep_cells: Vec<(i32, i32)>,
     /// True while this frame's walk is a flight from a chasing hunter: deep water is then fine.
     pub fleeing: bool,
+    /// A noise event the bot heard (hunters/noise_events.rs): where, and the seconds it still turns toward it.
+    pub heard: Option<((f32, f32), f32)>,
 }
 
 impl Npc {
@@ -274,6 +276,7 @@ impl Npc {
         self.clear_time = 0.0;
         self.searched.clear();
         self.deep_cells.clear();
+        self.heard = None;
         self.last_door = None;
     }
 }
@@ -385,6 +388,39 @@ fn sweep(fac: &Facility, a: (f32, f32), b: (f32, f32)) -> Sweep {
 /// The cells of `depths` (cell, metres of water over the bed) a bot keeps out of: at least `avoid_depth` deep.
 pub fn deep_cells_of(depths: &[((i32, i32), f32)], avoid_depth: f32) -> Vec<(i32, i32)> {
     depths.iter().filter(|(_, d)| *d >= avoid_depth).map(|(c, _)| *c).collect()
+}
+
+/// How many cells round a bot it reads the water field over (a bot plans short routes).
+const WATER_LOOK: i32 = 12;
+
+/// The cells within `WATER_LOOK` of `at` whose water (`depth_of`, metres) is at least `avoid_depth`: a bot's deep cells,
+/// read from the shared water field.
+pub fn deep_cells_near(at: (f32, f32), avoid_depth: f32, depth_of: impl Fn(Cell) -> f32) -> Vec<(i32, i32)> {
+    let (cx, cy) = (at.0.floor() as i32, at.1.floor() as i32);
+    let mut out = vec![];
+    for y in cy - WATER_LOOK..=cy + WATER_LOOK {
+        for x in cx - WATER_LOOK..=cx + WATER_LOOK {
+            if depth_of(Cell::new(x, y)) >= avoid_depth {
+                out.push((x, y));
+            }
+        }
+    }
+    out
+}
+
+/// The noise-event hearing of the bots with explicit rules (see `Game::npc_hear`).
+pub fn bots_hear(
+    npcs: &mut [Npc],
+    events: &[crate::hunters::noise_events::NoiseEvent],
+    r: &crate::hunters::noise_events::Rules,
+) {
+    for n in npcs.iter_mut() {
+        let here: Vec<crate::hunters::noise_events::NoiseEvent> =
+            events.iter().filter(|e| e.level == n.level).cloned().collect();
+        if let Some(ear) = crate::hunters::noise_events::heard_with(r, &here, n.at, r.bot_hearing_scale) {
+            n.heard = Some((ear.at, r.bot_look_seconds));
+        }
+    }
 }
 
 /// A dry route: 8-way breadth-first over the hunter-open cells, with no corner cutting, never entering a `deep` cell.
@@ -928,6 +964,7 @@ impl Game {
             last_door: None,
             deep_cells: Vec::new(),
             fleeing: false,
+            heard: None,
         });
         self.npc_next += 1;
         id
@@ -1031,6 +1068,7 @@ impl Game {
         if self.npcs.is_empty() {
             return;
         }
+        self.npc_sync_water(t);
         let level = self.runner_level();
         let leader = self.p.pos;
         let seen: Vec<Seen> = self
@@ -1083,6 +1121,17 @@ impl Game {
                 n.walking = false;
                 n.path.clear();
             }
+            // a bot that heard a noise event turns toward the sound while it stands (hunters/noise_events.rs)
+            if let Some((p, left)) = n.heard {
+                if left <= dt {
+                    n.heard = None;
+                } else {
+                    n.heard = Some((p, left - dt));
+                    if !n.walking {
+                        turn(n, (-(p.0 - n.at.0)).atan2(-(p.1 - n.at.1)), dt);
+                    }
+                }
+            }
             // a bot clear of the door it last passed shuts it (the runner's press refuses a shut leaf on a body)
             if let Some(d) = n.last_door {
                 let clear = sc.fac.door_centre(d).map_or(true, |c| pdist(n.at, c) >= t.close_clear);
@@ -1096,6 +1145,27 @@ impl Game {
         }
         self.npc_press_doors(presses);
         self.npc_close_doors(closes);
+    }
+
+    /// The bots on the events' level hear this frame's noise events (hunters/noise_events.rs `heard`, at the data
+    /// `bot_hearing_scale`): the event heard by the widest margin is remembered for `bot_look_seconds`, and the bot
+    /// turns toward it while it stands. A bot never changes any hunter, meter or cue because of a sound.
+    pub(super) fn npc_hear(&mut self, events: &[crate::hunters::noise_events::NoiseEvent]) {
+        if events.is_empty() || self.npcs.is_empty() {
+            return;
+        }
+        bots_hear(&mut self.npcs, events, crate::hunters::noise_events::rules());
+    }
+
+    /// Fills each bot's `deep_cells` from the hunters' water field (the same field the hunter brains read): the cells
+    /// round the bot with at least `water_avoid_depth` of water. Left as it was with no field yet.
+    pub(super) fn npc_sync_water(&mut self, t: &Tuning) {
+        let Some(hw) = self.hunter_water.as_ref() else { return };
+        let field = hw.field.clone();
+        let level = self.runner_level();
+        for n in self.npcs.iter_mut().filter(|n| n.level == level) {
+            n.deep_cells = deep_cells_near(n.at, t.water_avoid_depth, |c| field.depth_at((c.x, c.y)));
+        }
     }
 
     /// The bots' interact presses, through the runner's path (`press_door`). A door already open (another bot or the
@@ -1359,7 +1429,7 @@ mod tests {
     }
 
     /// A normal Infinite run (the pattern of the endless tests): level 0, seed text fixed.
-    fn run_game(diff: Difficulty, run_seed: u32, text: &str) -> (Game, Content) {
+    pub(super) fn run_game(diff: Difficulty, run_seed: u32, text: &str) -> (Game, Content) {
         let content = Content::load();
         let catalog = Catalog::load();
         let g = Game::new_infinite_sim(diff, run_seed, text, 0, &content, &catalog);
@@ -1443,7 +1513,7 @@ mod tests {
 
     /// The pursuit inputs `audio::world::update` derives from the hunter list (world.rs 86-96): the nearest active
     /// hunter's distance to the listener, and whether an active chaser pursues the listener.
-    fn pursuit_inputs(g: &Game) -> (Option<f64>, bool) {
+    pub(super) fn pursuit_inputs(g: &Game) -> (Option<f64>, bool) {
         let mut nearest: Option<f64> = None;
         let mut pursued = false;
         for h in g.hunters.iter().filter(|h| h.active) {
@@ -1721,6 +1791,7 @@ mod tests {
             last_door: None,
             deep_cells: Vec::new(),
             fleeing: false,
+            heard: None,
         };
         n.shift((-16.0, 32.0));
         assert_eq!(n.at, (-13.0, 36.0));
@@ -2046,7 +2117,9 @@ mod tests {
 
 #[cfg(test)]
 mod water_tests {
+    use super::tests::{pursuit_inputs, run_game};
     use super::*;
+    use crate::config::Difficulty;
     use crate::world::facility::Options;
 
     fn facility() -> Facility {
@@ -2103,7 +2176,7 @@ mod water_tests {
             id: 0, name: String::new(), slot: 1, at: a.center(), level: 0, facing: 0.0, turn_v: 0.0, heading: (0.0, 0.0),
             path: vec![], path_age: 0.0, walking: false, stride: 0.0, smart: 50, key: None, joined: true,
             join_radius: 0.0, door: None, hidden: None, errand: None, dwell: 0.0, visited: vec![], clear_time: 0.0,
-            searched: vec![], last_door: None, deep_cells: vec![mid], fleeing: false,
+            searched: vec![], last_door: None, deep_cells: vec![mid], fleeing: false, heard: None,
         };
         plan(&mut n, &fac, b.center());
         assert!(!n.path.contains(&mid), "the planned route keeps out of the deep cell");
@@ -2121,5 +2194,56 @@ mod water_tests {
         let all: Vec<(i32, i32)> = cells.iter().filter(|c| **c != a && **c != b).map(|c| (c.x, c.y)).collect();
         let r = route_for(&fac, a, b, &all, false);
         assert_eq!(r, fac.find_path(a, b));
+    }
+
+    #[test]
+    fn deep_cells_near_reads_the_water_field_and_the_threshold_decides() {
+        let deep = |c: Cell| if c.x == 5 && c.y == 5 { 0.7 } else if c.x == 6 && c.y == 5 { 0.2 } else { 0.0 };
+        assert_eq!(deep_cells_near((5.5, 5.5), 0.5, deep), vec![(5, 5)]);
+        assert_eq!(deep_cells_near((5.5, 5.5), 0.1, deep), vec![(5, 5), (6, 5)]);
+        assert!(deep_cells_near((5.5, 5.5), 0.9, deep).is_empty());
+        assert!(deep_cells_near((500.5, 5.5), 0.5, deep).is_empty(), "far from the water, nothing is near");
+    }
+
+    #[test]
+    fn a_valve_turn_is_heard_by_a_bot_in_range_and_not_out_of_it() {
+        use crate::hunters::noise_events::{NoiseEvent, NoiseKind};
+        let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        let at = g.npcs[0].at;
+        let level = g.npcs[0].level;
+        g.npc_hear(&[NoiseEvent::new(NoiseKind::ValveTurn, (at.0 + 2.0, at.1), level)]);
+        let (p, left) = g.npcs[0].heard.expect("the bot heard the valve");
+        assert_eq!(p, (at.0 + 2.0, at.1));
+        assert!((left - crate::hunters::noise_events::rules().bot_look_seconds).abs() < 1e-6);
+
+        g.npcs[0].heard = None;
+        g.npc_hear(&[NoiseEvent::new(NoiseKind::ValveTurn, (at.0 + 300.0, at.1), level)]);
+        assert!(g.npcs[0].heard.is_none());
+        g.npc_hear(&[NoiseEvent::new(NoiseKind::ValveTurn, (at.0 + 2.0, at.1), level + 1)]);
+        assert!(g.npcs[0].heard.is_none(), "another level's sound is not heard");
+    }
+
+    #[test]
+    fn a_heard_noise_fades_and_never_changes_a_hunter_or_the_danger_inputs() {
+        use crate::hunters::noise_events::{NoiseEvent, NoiseKind};
+        let (mut g, content) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        let at = g.npcs[0].at;
+        let level = g.npcs[0].level;
+        let mut h = crate::hunters::brain::Brain::new(content.hunters[0].clone(), (at.0 + 3.0, at.1), "T", Difficulty::Standard);
+        h.active = true;
+        h.state = State::Wander;
+        g.hunters.push(h);
+        let danger = g.danger();
+        let (nearest, pursued) = pursuit_inputs(&g);
+        g.npc_hear(&[NoiseEvent::new(NoiseKind::PipeBurst, (at.0 + 2.0, at.1), level)]);
+        assert_eq!(g.hunters.last().unwrap().state, State::Wander, "a bot hearing a sound moves no hunter");
+        assert_eq!(g.danger(), danger);
+        assert_eq!(pursuit_inputs(&g), (nearest, pursued));
+        let look = crate::hunters::noise_events::rules().bot_look_seconds;
+        let t = Tuning::get();
+        for _ in 0..((look * 60.0) as usize + 10) {
+            g.update_npcs_with(1.0 / 60.0, t);
+        }
+        assert!(g.npcs[0].heard.is_none(), "the look lasts bot_look_seconds and then ends");
     }
 }

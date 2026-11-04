@@ -1,0 +1,18 @@
+{
+  "schema": "lr.hunters.water/1",
+  "_note": "Per-hunter water rules. A hunter row overrides single keys of default. A null wade_speed_scale or swim_speed_scale takes the runner's value from data/swim/movement.json (wade.speed_scale). Cost fields are path cost multipliers per cell (at least 1). path_cost_deep 0 means path_cost_wade is used when deep water is allowed (can_swim and chasing, or can_swim and not avoids_when_idle).",
+  "default": {
+    "can_wade": true,
+    "can_swim": false,
+    "wade_speed_scale": null,
+    "swim_speed_scale": null,
+    "shallow_below_m": 0.25,
+    "deep_from_m": 0.9,
+    "path_cost_shallow": 1.2,
+    "path_cost_wade": 2.5,
+    "path_cost_deep": 0.0,
+    "avoids_when_idle": true,
+    "splash_noise_per_step": 6.0
+  },
+  "hunters": {}
+}

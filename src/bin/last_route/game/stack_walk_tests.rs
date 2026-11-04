@@ -377,3 +377,112 @@ fn switchback_divider_stops_a_sideways_cross() {
         }
     }
 }
+
+/// The golden seeds of world/stack_contract_tests.rs (the room texts the contract is pinned on).
+const GOLDEN: [&str; 3] = ["1426541270", "k7qxm", "demo"];
+/// The most flights walked per seed and direction (the walk of one flight costs a window build and a stack).
+const FLIGHTS_PER_SEED_DIR: usize = 4;
+/// A walked step is no faster than the walking speed (m/s) times the frame, plus slack.
+const SPEED_SLACK_Y: f32 = 0.02;
+
+/// Absolute cell of a stair in the window of `g` (window origin added), so it is found again after a recentre.
+fn abs_cell(g: &Game, s: &Stair) -> (i32, i32) {
+    let o = g.inf.as_ref().map_or((0, 0), |i| i.origin());
+    (s.cell.x + o.0, s.cell.y + o.1)
+}
+
+/// The non-ladder flights of a fresh window of `seed` on `level` going `dir`, as absolute cells.
+fn flights_of(seed: &str, level: i32, dir: i32, content: &Content, catalog: &Catalog) -> Vec<(i32, i32)> {
+    let g = Game::new_infinite_sim(Difficulty::Standard, 7, seed, level, content, catalog);
+    g.fac.stairs.iter().filter(|s| s.dir == dir && !s.is_ladder() && matches!(s.kind, LinkKind::Stairs)).map(|s| abs_cell(&g, s)).collect()
+}
+
+/// A fresh window of `seed` on `level` with the body primed on the flight at absolute cell `at`, the recentre done and
+/// the whole keep set resident (as a runner standing at a landing has it). `None` when the flight is gone after the recentre.
+fn primed(seed: &str, level: i32, dir: i32, at: (i32, i32), content: &Content, catalog: &Catalog) -> Option<(Game, Stair)> {
+    let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, seed, level, content, catalog);
+    let o = origin(&g);
+    g.p.pos = (at.0 as f32 - o.0 + 0.5, at.1 as f32 - o.1 + 0.5);
+    g.step(FRAME, &Controls::default(), content, catalog, &Sounds::default());
+    for _ in 0..8 {
+        g.keep_stack(content, catalog);
+    }
+    let pick = g
+        .fac
+        .stairs
+        .iter()
+        .copied()
+        .filter(|s| s.dir == dir && !s.is_ladder() && matches!(s.kind, LinkKind::Stairs) && abs_cell(&g, s) == at)
+        .next()?;
+    Some((g, pick))
+}
+
+/// Every non-ladder flight of the golden seeds (start window and levels -1, -2; up to 4 per seed and direction) is
+/// walked down from its landing and up from its foot: absolute y never pops, the body moves at walking speed, the two
+/// ends sit on the two floors, and the label flips exactly once per crossing.
+#[test]
+fn every_flight_in_the_golden_seeds_walks_up_and_down_with_y_continuity() {
+    let started = std::time::Instant::now();
+    let (content, catalog) = (Content::load(), Catalog::load());
+    let max_h = crate::config::PLAYER_WALK_SPEED * FRAME * 1.5 + 1e-3;
+    let max_dy = crate::config::PLAYER_WALK_SPEED * FRAME + SPEED_SLACK_Y;
+    let mut walked = 0usize;
+    for seed in GOLDEN {
+        for dir in [-1, 1] {
+            let mut n = 0;
+            'levels: for level in [0, -1, -2] {
+                for at in flights_of(seed, level, dir, &content, &catalog) {
+                    if n >= FLIGHTS_PER_SEED_DIR {
+                        break 'levels;
+                    }
+                    let Some((mut g, s)) = primed(seed, level, dir, at, &content, &catalog) else {
+                        eprintln!("flight {at:?} of {seed} level {level} gone after the recentre; skipped");
+                        continue;
+                    };
+                    let what = format!("seed {seed} level {level} dir {dir} flight at {at:?} ({:?})", s.shape);
+                    let center0 = g.inf.as_ref().unwrap().center;
+                    let recs = walk_recorded(&mut g, s, &content, &catalog, MAX_FRAMES);
+                    assert!(recs.len() > 20, "{what}: the walk stepped frames");
+                    let end_level = level + dir;
+                    let (first, last) = (recs[0], recs[recs.len() - 1]);
+                    assert!((first.y - floor_y_of(level)).abs() <= FLOOR_TOL, "{what}: starts on its floor: {}", first.y);
+                    assert!((last.y - floor_y_of(end_level)).abs() <= FLOOR_TOL, "{what}: ends on the floor it reaches: {}", last.y);
+                    let mut flips = Vec::new();
+                    for (i, w) in recs.windows(2).enumerate() {
+                        let (a, b) = (&w[0], &w[1]);
+                        assert!((b.y - a.y).abs() <= MAX_STEP_DY, "{what}: frame {i}: y pops {} -> {}", a.y, b.y);
+                        assert!((b.y - a.y).abs() <= max_dy, "{what}: frame {i}: dy {} exceeds walking speed * dt", (b.y - a.y).abs());
+                        assert!(hstep(a, b) <= max_h, "{what}: frame {i}: x/z step {} exceeds walking speed * 1.5", hstep(a, b));
+                        if b.level != a.level {
+                            flips.push(i + 1);
+                        }
+                    }
+                    assert_eq!(flips.len(), 1, "{what}: the label flips exactly once: {flips:?}");
+                    assert_eq!(recs[flips[0]].level, end_level, "{what}: the label moves one level the right way");
+                    assert_eq!(g.inf.as_ref().unwrap().center, center0, "{what}: the window never moves for a walked flight");
+                    n += 1;
+                    walked += 1;
+                }
+            }
+            eprintln!("seed {seed} dir {dir}: walked {n} flights");
+        }
+    }
+    eprintln!("walked {walked} flights in {:.1}s", started.elapsed().as_secs_f32());
+    assert!(walked > 0, "at least one flight was walked");
+}
+
+/// Walking a flight with its neighbour resident builds no window: `inf.builds` is the same on the crossing frame as at
+/// the start, and the window does not move.
+#[test]
+fn walking_a_flight_never_calls_load_window() {
+    let (content, catalog) = (Content::load(), Catalog::load());
+    let Some((mut g, s)) = window_with(FlightShape::Switchback, 0, &content, &catalog) else { return };
+    let builds = g.inf.as_ref().unwrap().builds;
+    let center = g.inf.as_ref().unwrap().center;
+    let recs = walk_recorded(&mut g, s, &content, &catalog, MAX_FRAMES);
+    let k = recs.iter().position(|r| r.level != recs[0].level).expect("the walk relabelled");
+    for (i, r) in recs[..=k].iter().enumerate() {
+        assert_eq!(r.builds, builds, "frame {i}: no window was built up to and on the crossing");
+        assert_eq!(r.center, center, "frame {i}: the window did not move");
+    }
+}

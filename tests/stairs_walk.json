@@ -19,7 +19,7 @@
       "steps": [
         { "cmd": "teleport", "to": "stairs_down" },
         { "cmd": "walk_flight", "dir": "down", "frames": 900 },
-        { "expect": [ { "path": "run.level", "value": -1 }, { "path": "run.depth", "value": 2 } ] }
+        { "expect": [ { "path": "run.level", "value": -1 }, { "path": "run.depth", "value": 2 }, { "path": "player.y", "op": "approx", "value": -5, "tol": 0.1 }, { "path": "player.climbing", "value": false } ] }
       ]
     },
     {
@@ -42,7 +42,7 @@
         { "expect": [ { "path": "run.level", "value": -1 } ] },
         { "cmd": "teleport", "to": "stairs_up" },
         { "cmd": "walk_flight", "dir": "up", "frames": 900 },
-        { "expect": [ { "path": "run.level", "value": 0 } ] }
+        { "expect": [ { "path": "run.level", "value": 0 }, { "path": "player.y", "op": "approx", "value": 0, "tol": 0.1 } ] }
       ]
     }
   ]

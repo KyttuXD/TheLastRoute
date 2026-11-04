@@ -516,7 +516,7 @@ impl Bot {
                     kind: Kind::Stairs(i),
                     at,
                     // a flight is walked (no focus); only a ladder is an interact
-                    focus: if s.is_ladder() { Some(Focus::Stairs(i)) } else { None },
+                    focus: if s.is_ladder() { Some(Focus::Ladder(i)) } else { None },
                     since: t,
                 });
             }
@@ -1066,7 +1066,7 @@ impl Bot {
     fn focus_target(&self, g: &Game, goal: &Goal) -> (f32, f32) {
         match goal.focus {
             Some(Focus::Locker(i)) => g.fac.locker_center(&g.fac.hiding[i]),
-            Some(Focus::Stairs(i)) => {
+            Some(Focus::Ladder(i)) => {
                 let s = g.fac.stairs[i];
                 let (cx, cy) = s.cell.center();
                 (cx + s.run.0 as f32 * 0.9, cy + s.run.1 as f32 * 0.9)
@@ -1085,7 +1085,7 @@ impl Bot {
             Some(Focus::Battery(_)) | Some(Focus::Pickup(_)) => 0.15,
             Some(Focus::Locker(_)) => 1.0,
             Some(Focus::Lift) => 1.2,
-            Some(Focus::Stairs(_)) => 0.3,
+            Some(Focus::Ladder(_)) => 0.3,
             _ => 0.8,
         }
     }

@@ -62,6 +62,10 @@ impl Content {
             if path == "hunters/director.json" {
                 continue;
             }
+            // hunters/water.json and hunters/noise_events.json are rule tables, not hunter definitions
+            if path == crate::hunters::water::WATER_PATH || path == "hunters/noise_events.json" {
+                continue;
+            }
             // hunters/charge.json is the per-hunter charge table (hunters/gimmicks/charge.rs), not a hunter definition
             if path == crate::hunters::gimmicks::charge::CHARGE_PATH {
                 continue;

@@ -11,7 +11,8 @@ use crate::world::rng::Rng;
 use crate::world::{Cell, Facility};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
-use std::sync::OnceLock;
+use super::water::{HunterWater, WaterField, WaterPlan, WaterRules};
+use std::sync::{Arc, OnceLock};
 
 #[cfg(test)]
 #[path = "bench.rs"]
@@ -202,8 +203,31 @@ impl Ord for OpenCell {
 /// cells in `avoid` (ones a step has just been blocked by) are left out. A closed start cell (the body stands
 /// off-centre in it) starts from the nearest open cell beside it.
 fn plan_route(fac: &Facility, from: (f32, f32), to: Cell, avoid: &[(Cell, f32)], gates: &[Cell]) -> Vec<Cell> {
+    plan_route_wet(fac, from, to, avoid, gates, None)
+}
+
+/// A step from `a` to `b` crosses a catwalk rail when the two cells stand at different walk heights and neither is the
+/// foot or head of a catwalk link (the stairs and ladders are the only way on and off a deck). The rails stand on the
+/// open edges of a deck (render/catwalk.rs `OpenSides`: no deck neighbour there); the facility has no per-edge rail
+/// flag, and a height change between neighbours is exactly such an edge.
+fn crosses_deck_rail(fac: &Facility, a: Cell, b: Cell) -> bool {
+    (fac.height_at(a) - fac.height_at(b)).abs() > 0.01 && !fac.catwalk_links.iter().any(|l| l.cell == a || l.cell == b)
+}
+
+/// `plan_route` with water: each step costs its cell's path cost multiplier (`WaterPlan`), and a cell the hunter will
+/// not enter (deep water for a hunter that cannot or will not swim) is closed like a wall. A deck is walked on deck
+/// cells only, never through a rail.
+fn plan_route_wet(
+    fac: &Facility,
+    from: (f32, f32),
+    to: Cell,
+    avoid: &[(Cell, f32)],
+    gates: &[Cell],
+    water: Option<&WaterPlan>,
+) -> Vec<Cell> {
     let avoided = |c: Cell| avoid.iter().any(|(a, _)| *a == c);
-    let open = |c: Cell| (fac.hunter_open(c) || gates.contains(&c)) && !avoided(c);
+    let wet = |c: Cell| water.map_or(Some(1.0), |w| w.step_factor((c.x, c.y)));
+    let open = |c: Cell| (fac.hunter_open(c) || gates.contains(&c)) && !avoided(c) && wet(c).is_some();
     let here = cell_of(from);
     let start = if open(here) {
         here
@@ -254,7 +278,7 @@ fn plan_route(fac: &Facility, from: (f32, f32), to: Cell, avoid: &[(Cell, f32)],
                     continue;
                 }
                 let n = Cell::new(c.x + dx, c.y + dy);
-                if closed.contains(&n) || (n != to && !open(n)) {
+                if closed.contains(&n) || (n != to && !open(n)) || crosses_deck_rail(fac, c, n) {
                     continue;
                 }
                 if dx != 0
@@ -263,7 +287,8 @@ fn plan_route(fac: &Facility, from: (f32, f32), to: Cell, avoid: &[(Cell, f32)],
                 {
                     continue;
                 }
-                let ng = gc + if dx != 0 && dy != 0 { std::f32::consts::SQRT_2 } else { 1.0 };
+                let step = if dx != 0 && dy != 0 { std::f32::consts::SQRT_2 } else { 1.0 };
+                let ng = gc + step * wet(n).unwrap_or(1.0);
                 if ng < *g.get(&n).unwrap_or(&f32::INFINITY) {
                     g.insert(n, ng);
                     came.insert(n, c);
@@ -360,6 +385,11 @@ pub struct Brain {
     blocked_time: f32,
     /// Seconds without a route before the goal is given up (data/hunters/search.json, unreachable_give_up).
     give_up_after: f32,
+    /// The water the planner and the speed read (set each frame by game/hunting.rs); dry until set.
+    water: Arc<WaterField>,
+    water_rules: HunterWater,
+    /// The field version the current route was planned against.
+    water_seen: u64,
     /// A guest shows the host's emote index and never starts one.
     pub display_only: bool,
 }
@@ -381,6 +411,7 @@ const LIGHT_LIT_SIGHT_SCALE: f32 = 1.6;
 impl Brain {
     pub fn new(def: HunterDef, spawn: (f32, f32), seed: &str, diff: Difficulty) -> Brain {
         let gimmick = Gimmick::for_id(&def.id, diff);
+        let def_id = def.id.clone();
         Brain {
             hearing_scale: def.hearing,
             def,
@@ -446,6 +477,9 @@ impl Brain {
             emote_pending: None,
             blocked_time: 0.0,
             give_up_after: search_rules().unreachable_give_up,
+            water: Arc::new(WaterField::default()),
+            water_rules: WaterRules::get().for_hunter(&def_id),
+            water_seen: 0,
             display_only: false,
         }
     }
@@ -460,6 +494,37 @@ impl Brain {
 
     pub fn capture_reach(&self, prof: &Profile) -> f32 {
         (PLAYER_RADIUS + HUNTER_RADIUS + HUNTER_GRAB_REACH) * prof.capture_distance
+    }
+
+    /// The water this brain plans and moves through. A changed field version drops the route timer at once, so a valve
+    /// that floods the way, or a sluice that drains it, is planned again on the next step.
+    pub fn set_water(&mut self, w: Arc<WaterField>) {
+        if w.version() != self.water.version() {
+            self.path_timer = 0.0;
+        }
+        self.water = w;
+    }
+
+    /// The splash noise of this hunter's step where it stands (0 on dry ground), for the caller to emit as a sound.
+    pub fn water_splash_noise(&self) -> f32 {
+        let c = cell_of(self.pos);
+        self.water_rules.splash_noise(&self.water, (c.x, c.y))
+    }
+
+    /// True when the straight line to `goal` crosses no cell this hunter will not enter (so a chase may walk it
+    /// directly instead of following the planned route round the water).
+    fn water_line_ok(&self, goal: (f32, f32)) -> bool {
+        if self.water.is_dry() {
+            return true;
+        }
+        let plan = WaterPlan { field: &self.water, rules: &self.water_rules, chasing: self.state == State::Chase };
+        let d = dist(self.pos, goal);
+        let n = (d / 0.4).ceil().max(1.0) as i32;
+        (0..=n).all(|i| {
+            let t = i as f32 / n as f32;
+            let c = cell_of((self.pos.0 + (goal.0 - self.pos.0) * t, self.pos.1 + (goal.1 - self.pos.1) * t));
+            plan.step_factor((c.x, c.y)).is_some()
+        })
     }
 
     pub fn clear_path(&mut self) {
@@ -883,7 +948,8 @@ impl Brain {
         if self.slow_timer > 0.0 {
             speed *= self.slow_factor;
         }
-        speed * prof.hunter_speed
+        let c = cell_of(self.pos);
+        speed * prof.hunter_speed * self.water_rules.speed_scale(&self.water, (c.x, c.y))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1038,6 +1104,7 @@ impl Brain {
         if self.state == State::Chase
             && self.direct_visible
             && self.clear_sweep(fac, self.pos, goal)
+            && self.water_line_ok(goal)
         {
             self.clear_path();
             self.step_toward(goal, speed * HUNTER_VISIBLE_CHASE_SPEED_SCALE * dt, fac, dt);
@@ -1048,8 +1115,13 @@ impl Brain {
         } else {
             HUNTER_REPATH_WANDER
         };
+        if self.water.version() != self.water_seen {
+            self.water_seen = self.water.version();
+            self.path_timer = 0.0;
+        }
         if self.path_timer <= 0.0 || self.path.is_empty() || self.path_goal.is_none() {
-            self.path = plan_route(fac, self.pos, target_cell, &self.avoid, &self.gate_floor);
+            let plan = WaterPlan { field: &self.water, rules: &self.water_rules, chasing: self.state == State::Chase };
+            self.path = plan_route_wet(fac, self.pos, target_cell, &self.avoid, &self.gate_floor, Some(&plan));
             self.path_timer = interval;
             self.path_goal = Some(target_cell);
         }
@@ -2340,5 +2412,166 @@ mod wiring_tests {
             assert_eq!(b.state, to);
             assert_eq!(b.blocked_time, 0.0);
         }
+    }
+
+    // -- water and catwalk rails ---------------------------------------------------------------------------------------
+
+    fn long_route(fac: &Facility) -> (Cell, Cell, Vec<Cell>) {
+        let cells = fac.floor_cells();
+        for a in cells.iter().step_by(7) {
+            for b in cells.iter().rev().step_by(11) {
+                let p = fac.find_path(*a, *b);
+                if p.len() >= 14 {
+                    return (*a, *b, p);
+                }
+            }
+        }
+        panic!("a generated floor has a long route");
+    }
+
+    fn field_on(cells: &[Cell], depth: f32) -> WaterField {
+        let d: Vec<((i32, i32), f32)> = cells.iter().map(|c| ((c.x, c.y), depth)).collect();
+        WaterField::from_depths(&d, &[])
+    }
+
+    fn everywhere_but(fac: &Facility, keep: &[Cell], depth: f32) -> WaterField {
+        let cells: Vec<Cell> = fac.floor_cells().into_iter().filter(|c| !keep.contains(c)).collect();
+        field_on(&cells, depth)
+    }
+
+    fn wet_route(fac: &Facility, a: Cell, b: Cell, rules: &HunterWater, field: &WaterField, chasing: bool) -> Vec<Cell> {
+        let plan = WaterPlan { field, rules, chasing };
+        plan_route_wet(fac, a.center(), b, &[], &[], Some(&plan))
+    }
+
+    #[test]
+    fn a_hunter_paths_around_deep_water_when_idle() {
+        let fac = facility();
+        let (a, b, p) = long_route(&fac);
+        let deep: Vec<Cell> = p[3..p.len() - 3].to_vec();
+        let field = field_on(&deep, 2.0);
+        let rules = HunterWater::default();
+        let dry = wet_route(&fac, a, b, &rules, &WaterField::default(), false);
+        assert!(dry.iter().any(|c| deep.contains(c)), "the dry route runs through the water cells");
+        let wet = wet_route(&fac, a, b, &rules, &field, false);
+        assert!(wet.iter().all(|c| !deep.contains(c)), "no step into deep water");
+        assert!(wet.is_empty() || wet.last() == Some(&b));
+    }
+
+    #[test]
+    fn a_hunter_wades_through_shallow_and_wading_depth() {
+        let fac = facility();
+        let (a, b, p) = long_route(&fac);
+        let rules = HunterWater::default();
+        for depth in [rules.shallow_below_m * 0.5, (rules.shallow_below_m + rules.deep_from_m) * 0.5] {
+            let field = everywhere_but(&fac, &[a, b], depth);
+            let route = wet_route(&fac, a, b, &rules, &field, false);
+            assert_eq!(route.last(), Some(&b), "wades at depth {depth}");
+            assert!(route.len() >= p.len().saturating_sub(2), "and still takes a real route");
+        }
+    }
+
+    #[test]
+    fn deep_water_is_crossed_only_when_chasing_and_able_to_swim() {
+        let fac = facility();
+        let (a, b, _) = long_route(&fac);
+        let field = everywhere_but(&fac, &[a, b], 2.0);
+        let walker = HunterWater::default();
+        let swimmer = HunterWater { can_swim: true, ..walker };
+        assert!(wet_route(&fac, a, b, &walker, &field, false).is_empty());
+        assert!(wet_route(&fac, a, b, &walker, &field, true).is_empty(), "a walker never swims, chasing or not");
+        assert!(wet_route(&fac, a, b, &swimmer, &field, false).is_empty(), "an idle swimmer still avoids it");
+        assert_eq!(wet_route(&fac, a, b, &swimmer, &field, true).last(), Some(&b));
+    }
+
+    #[test]
+    fn changing_the_water_data_changes_the_route() {
+        let fac = facility();
+        let (a, b, _) = long_route(&fac);
+        let field = everywhere_but(&fac, &[a, b], 2.0);
+        let mut v: serde_json::Value = serde_json::from_str(include_str!("../data/hunters/water.json")).unwrap();
+        let std = WaterRules::parse(&v.to_string(), 0.45).unwrap().default;
+        v["default"]["can_swim"] = serde_json::json!(true);
+        let swims = WaterRules::parse(&v.to_string(), 0.45).unwrap().default;
+        assert!(wet_route(&fac, a, b, &std, &field, true).is_empty());
+        assert!(!wet_route(&fac, a, b, &swims, &field, true).is_empty());
+    }
+
+    #[test]
+    fn a_hunter_replans_when_the_water_version_changes() {
+        let fac = facility();
+        let prof = Difficulty::Standard.profile();
+        let (a, b, _) = long_route(&fac);
+        let mut br = Brain::new(aki(), a.center(), "WET", Difficulty::Standard);
+        br.active = true;
+        br.state = State::Investigate;
+        let dt = 1.0 / 30.0;
+        br.pursue(b.center(), 2.0, dt, &fac, &prof);
+        assert!(!br.path.is_empty(), "a dry route");
+        let flooded: Vec<(i32, i32)> =
+            fac.floor_cells().into_iter().filter(|c| *c != a && *c != b).map(|c| (c.x, c.y)).collect();
+        br.set_water(Arc::new(WaterField::from_depths(&[], &flooded)));
+        br.pursue(b.center(), 2.0, dt, &fac, &prof);
+        assert!(br.path.is_empty(), "a valve floods the way: the route was dropped and planned again on the next step");
+        assert!(br.unreachable > 0.0);
+        br.set_water(Arc::new(WaterField::default()));
+        br.pursue(b.center(), 2.0, dt, &fac, &prof);
+        assert!(!br.path.is_empty(), "the water drains: a route again, without waiting for the repath timer");
+    }
+
+    #[test]
+    fn a_hunter_walled_in_by_water_gives_up_within_the_data_time() {
+        let fac = facility();
+        let prof = Difficulty::Standard.profile();
+        let (a, b, _) = long_route(&fac);
+        let mut br = Brain::new(aki(), a.center(), "DROWN", Difficulty::Standard);
+        br.active = true;
+        br.state = State::Investigate;
+        br.set_water(Arc::new(everywhere_but(&fac, &[a, b], 2.0)));
+        let dt = 1.0 / 30.0;
+        let mut t = 0.0;
+        while br.state == State::Investigate && t < UNREACHABLE_GIVE_UP + 1.0 {
+            br.pursue(b.center(), 2.0, dt, &fac, &prof);
+            t += dt;
+        }
+        assert_eq!(br.state, State::Search, "water makes the goal unreachable: it stops and searches");
+        assert!(t <= br.give_up_after + 2.0 * dt, "within the give-up time, took {t}");
+    }
+
+    #[test]
+    fn a_hunter_standing_in_water_is_slower_and_splashes() {
+        let prof = Difficulty::Standard.profile();
+        let mut br = Brain::new(aki(), (4.5, 4.5), "SLOW", Difficulty::Standard);
+        let dry = br.current_speed(1, 0, &prof, 1.0);
+        assert_eq!(br.water_splash_noise(), 0.0);
+        br.set_water(Arc::new(WaterField::from_depths(&[((4, 4), 0.5)], &[])));
+        assert!(br.current_speed(1, 0, &prof, 1.0) < dry);
+        assert!(br.water_splash_noise() > 0.0);
+        br.pos = (9.5, 9.5);
+        assert_eq!(br.current_speed(1, 0, &prof, 1.0), dry, "dry ground keeps full speed");
+    }
+
+    #[test]
+    fn a_hunter_never_plans_through_a_catwalk_rail() {
+        use crate::world::route::catwalk_links::{CatwalkKind, CatwalkLink};
+        let mut fac = facility();
+        let mut triple = None;
+        'scan: for y in 1..fac.rows - 1 {
+            for x in 1..fac.cols - 3 {
+                let t = [Cell::new(x, y), Cell::new(x + 1, y), Cell::new(x + 2, y)];
+                if t.iter().all(|c| fac.hunter_open(*c)) {
+                    triple = Some(t);
+                    break 'scan;
+                }
+            }
+        }
+        let [ground, deck1, deck2] = triple.expect("a generated floor has three open cells in a row");
+        fac.set_walk_surface(deck1, crate::world::facility::DeckKind::Catwalk, 4.0);
+        fac.set_walk_surface(deck2, crate::world::facility::DeckKind::Catwalk, 4.0);
+        assert!(plan_route(&fac, ground.center(), deck1, &[], &[]).is_empty(), "the deck edge is a rail");
+        assert!(plan_route(&fac, deck1.center(), ground, &[], &[]).is_empty(), "and a hunter does not step off it");
+        assert_eq!(plan_route(&fac, deck1.center(), deck2, &[], &[]).last(), Some(&deck2), "decks are walked on deck cells");
+        fac.catwalk_links.push(CatwalkLink { cell: ground, kind: CatwalkKind::Ladder, deck_height: 4.0 });
+        assert_eq!(plan_route(&fac, ground.center(), deck1, &[], &[]).last(), Some(&deck1), "a link is the way on");
     }
 }

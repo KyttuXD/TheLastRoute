@@ -9,6 +9,62 @@ use crate::hunters::brain::{choose_target, State, Target, TargetRules};
 use crate::net::hunter_events;
 use serde_json::{json, Value};
 use crate::hunters::gimmicks::{nyxie::Wake, Ctx, Event, Gimmick};
+use crate::hunters::noise_events::{self, NoiseEvent, NoiseKind};
+use crate::hunters::water::WaterField;
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+/// What decides whether the hunters' water field must be rebuilt: the sewer chunk it was read from, the window origin,
+/// the level, a time bucket while a pipe flow runs, and how many pipe cells and hunters there are.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WaterKey {
+    pub chunk: Option<(i32, i32, i32)>,
+    pub origin: (i32, i32),
+    pub level: i32,
+    pub bucket: i64,
+    pub pipe_cells: usize,
+    pub hunters: usize,
+}
+
+/// The water field every hunter brain reads (`Brain::set_water`), the key it was built for, and the per-hunter state of
+/// the wading splashes.
+#[derive(Clone)]
+pub struct HunterWater {
+    pub key: WaterKey,
+    pub field: Arc<WaterField>,
+    /// Seconds to the next wading splash, per hunter (indexed as `Game::hunters`).
+    pub splash_in: Vec<f32>,
+    /// Each hunter's position last frame, to tell a wading hunter from a standing one.
+    pub last_pos: Vec<(f32, f32)>,
+}
+
+/// The window cells a pipe flow reaches: `(cell, steps from the pipe)`, on outlet `outlet` of flow `id`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PipeCells {
+    pub id: String,
+    pub outlet: usize,
+    pub cells: Vec<((i32, i32), i32)>,
+}
+
+/// Merges the sewer's water and the pipe floods into the field's two inputs: the deepest water per cell, and the cells
+/// a pipe or gate has flooded to at least `flooded_depth` (the cells that change cost live and force a replan).
+pub fn water_layers(
+    sewer: &[((i32, i32), f32)],
+    pipes: &[((i32, i32), f32)],
+    flooded_depth: f32,
+) -> (Vec<((i32, i32), f32)>, Vec<(i32, i32)>) {
+    let mut depth: BTreeMap<(i32, i32), f32> = BTreeMap::new();
+    for (c, d) in sewer.iter().chain(pipes.iter()) {
+        if *d > 0.0 {
+            let e = depth.entry(*c).or_insert(0.0);
+            *e = e.max(*d);
+        }
+    }
+    let mut flooded: Vec<(i32, i32)> = pipes.iter().filter(|(_, d)| *d >= flooded_depth).map(|(c, _)| *c).collect();
+    flooded.sort();
+    flooded.dedup();
+    (depth.into_iter().collect(), flooded)
+}
 
 impl Game {
     /// The host's hunter frame (Godot `_collect_hunter_report`): one object per hunter, indexed as `hunters` is, with
@@ -100,6 +156,8 @@ impl Game {
     }
 
     pub(super) fn update_hunters(&mut self, dt: f32, prof: &Profile, _sounds: &Sounds) {
+        // this frame's noise events (plunge, landing, valve, burst, gate): drained here whoever simulates, so none piles up
+        let noise = std::mem::take(&mut self.noise_events);
         // a guest's hunters only display: they never start emotes of their own
         let display_only = self.remote_hunters;
         for h in &mut self.hunters {
@@ -143,6 +201,12 @@ impl Game {
         if self.inf.is_some() {
             crate::hunters::director::separate(dt, &mut self.hunters, &self.fac);
         }
+        // the shared water field for every brain, the hunters' own wading splashes, and the sounds of this frame
+        self.sync_hunter_water();
+        self.hunters_hear_noise(&noise, prof.hunter_hearing);
+        // a hunter's wading splash is heard by the bots only: hunters do not call each other
+        let wading = self.hunter_wading_events(dt);
+        self.npc_hear(&wading);
         // the NPC bots on the runner's level are candidate targets too (data/hunters/targets.json); the runner stays the
         // default target, and a bot is chased only where the rules allow it (hunters::brain::choose_target)
         let runner_level = self.runner_level();
@@ -464,6 +528,242 @@ fn ability_held(b: &crate::hunters::brain::Brain) -> Option<(&'static str, &'sta
         Gimmick::Loxelle(_) if b.gimmick.holds_position(b) => Some(("hunter_charge", "lunge")),
         Gimmick::Nyxie(_) | Gimmick::Solyth(_) if b.gimmick.holds_position(b) => Some(("hunter_ability", "pounce")),
         _ => None,
+    }
+}
+
+impl Game {
+    /// The sewer water of the runner's level in window cells, from the chunk `water_cache` holds (the source the swim
+    /// code reads): `(cell, metres of water)`. Empty off the sewer or with no chunk loaded.
+    fn sewer_water_cells(&self) -> Vec<((i32, i32), f32)> {
+        use crate::world::route::sewer::{core as sewer_core, water};
+        let level = self.runner_level();
+        let Some((key, Some(ch))) = &self.water_cache else { return vec![] };
+        if key.1 != level {
+            return vec![];
+        }
+        let o = self.window_origin();
+        let mut out = vec![];
+        for y in 0..sewer_core::CHUNK {
+            for x in 0..sewer_core::CHUNK {
+                let d = water::water_depth_at_level(&ch.sewer_grid, x, y, level);
+                if d > 0.0 {
+                    out.push(((key.0 * sewer_core::CHUNK + x - o.0, key.2 * sewer_core::CHUNK + y - o.1), d));
+                }
+            }
+        }
+        out
+    }
+
+    /// The window cells each running pipe flow reaches. Empty until the pipe geometry is wired (the pipes' step cells
+    /// are not stored by `PipeNetwork`; the integrator maps a flow id to its walkway cells).
+    pub(super) fn hunter_pipe_cells(&self) -> Vec<PipeCells> {
+        vec![]
+    }
+
+    /// Builds the hunters' water field when something changed, and gives it to every brain (`Brain::set_water`).
+    /// The sewer layer and the pipe floods are merged by `water_layers`; while a pipe flow runs the field is rebuilt
+    /// every `water_rebuild_seconds`, otherwise only when the chunk, origin, level or hunter count changes. A guest
+    /// runs no hunters and builds nothing.
+    pub(super) fn sync_hunter_water(&mut self) {
+        if self.remote_hunters {
+            return;
+        }
+        let rules = noise_events::rules();
+        let pipes = self.hunter_pipe_cells();
+        let level = self.runner_level();
+        let chunk = match &self.water_cache {
+            Some((k, Some(_))) if k.1 == level => Some(*k),
+            _ => None,
+        };
+        let bucket = if pipes.is_empty() { 0 } else { (self.time / rules.water_rebuild_seconds).floor() as i64 + 1 };
+        let key = WaterKey {
+            chunk,
+            origin: self.window_origin(),
+            level,
+            bucket,
+            pipe_cells: pipes.iter().map(|p| p.cells.len()).sum(),
+            hunters: self.hunters.len(),
+        };
+        if self.hunter_water.as_ref().is_some_and(|w| w.key == key) {
+            return;
+        }
+        let sewer = self.sewer_water_cells();
+        let mut flood: Vec<((i32, i32), f32)> = vec![];
+        for p in &pipes {
+            for (cell, step) in &p.cells {
+                let d = self.pipe_depth(&p.id, *step, p.outlet);
+                if d > 0.0 {
+                    flood.push((*cell, d));
+                }
+            }
+        }
+        let (depths, flooded) = water_layers(&sewer, &flood, rules.flooded_depth);
+        let field = Arc::new(WaterField::from_depths(&depths, &flooded));
+        for h in self.hunters.iter_mut() {
+            h.set_water(field.clone());
+        }
+        let n = self.hunters.len();
+        let (splash_in, last_pos) = match self.hunter_water.take() {
+            Some(w) if w.splash_in.len() == n => (w.splash_in, w.last_pos),
+            _ => (vec![0.0; n], self.hunters.iter().map(|h| h.pos).collect()),
+        };
+        self.hunter_water = Some(HunterWater { key, field, splash_in, last_pos });
+    }
+
+    /// The wading splashes of the hunters this frame: a hunter that moved while standing in at least
+    /// `hunter_wade_min_depth` of water makes one every `hunter_wade_splash_every` seconds. Only the bots hear them.
+    pub(super) fn hunter_wading_events(&mut self, dt: f32) -> Vec<NoiseEvent> {
+        let rules = noise_events::rules();
+        let level = self.runner_level();
+        let Some(w) = self.hunter_water.as_mut() else { return vec![] };
+        if w.splash_in.len() != self.hunters.len() {
+            return vec![];
+        }
+        let mut out = vec![];
+        for (i, h) in self.hunters.iter().enumerate() {
+            let moved = pdist(h.pos, w.last_pos[i]) > 0.001;
+            w.last_pos[i] = h.pos;
+            let depth = { let c = crate::hunters::brain::cell_of(h.pos); w.field.depth_at((c.x, c.y)) };
+            if !h.active || !moved || depth < rules.hunter_wade_min_depth {
+                w.splash_in[i] = 0.0;
+                continue;
+            }
+            w.splash_in[i] -= dt;
+            if w.splash_in[i] <= 0.0 {
+                w.splash_in[i] = rules.hunter_wade_splash_every;
+                out.push(NoiseEvent::new(NoiseKind::WadingSplash, h.pos, level));
+            }
+        }
+        out
+    }
+
+    /// The host's hunters and the bots hear this frame's noise events (`hearing` is the difficulty's `hunter_hearing`):
+    /// a hunter in range investigates or searches from the sound (`noise_events::react`), a bot turns toward it. Returns
+    /// how many hunters reacted. A guest changes nothing: its hunters only display the host's frames. No event ever
+    /// chases, raises the danger readout or starts the heartbeat or chase cue.
+    pub(super) fn hunters_hear_noise(&mut self, events: &[NoiseEvent], hearing: f32) -> usize {
+        if self.remote_hunters || events.is_empty() {
+            return 0;
+        }
+        self.npc_hear(events);
+        let level = self.runner_level();
+        noise_events::react(&mut self.hunters, events, level, hearing, &self.fac)
+    }
+
+    /// Producer accessor for the integrator: a noise event at `pos` on the runner's level, from the host's own
+    /// simulation. A guest's runner never causes an event for the host's hunters (the host sees only its own).
+    pub fn push_noise(&mut self, kind: NoiseKind, pos: (f32, f32)) {
+        if self.remote_hunters {
+            return;
+        }
+        let level = self.runner_level();
+        self.noise_events.push(NoiseEvent::new(kind, pos, level));
+    }
+}
+
+#[cfg(test)]
+mod noise_react_tests {
+    use super::*;
+    use crate::config::Difficulty;
+    use crate::content::Content;
+    use crate::hunters::brain::Brain;
+    use crate::world::catalog::Catalog;
+
+    fn game() -> (Game, Content) {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let mut g = Game::new_sim(Difficulty::Standard, 4242, &content, &catalog);
+        g.hunters.clear();
+        let mut h = Brain::new(content.hunters[0].clone(), (5.5, 5.5), "T", Difficulty::Standard);
+        h.active = true;
+        h.state = State::Wander;
+        g.hunters.push(h);
+        (g, content)
+    }
+
+    #[test]
+    fn layers_take_the_deepest_water_and_flood_only_pipe_cells_past_the_threshold() {
+        let (depths, flooded) = water_layers(&[((1, 1), 0.7), ((2, 1), 0.7)], &[((2, 1), 0.9), ((3, 1), 0.1), ((4, 1), 0.4)], 0.25);
+        assert_eq!(depths, vec![((1, 1), 0.7), ((2, 1), 0.9), ((3, 1), 0.1), ((4, 1), 0.4)]);
+        assert_eq!(flooded, vec![(2, 1), (4, 1)]);
+        let (_, none) = water_layers(&[((1, 1), 0.7)], &[], 0.25);
+        assert!(none.is_empty(), "the sewer's own water is not a flood");
+        let (_, all) = water_layers(&[], &[((3, 1), 0.1)], 0.05);
+        assert_eq!(all, vec![(3, 1)], "a changed threshold changes what is flooded");
+    }
+
+    #[test]
+    fn the_water_field_is_built_once_and_rebuilt_when_the_hunters_change() {
+        let (mut g, content) = game();
+        g.sync_hunter_water();
+        let first = g.hunter_water.as_ref().expect("a field was built").field.clone();
+        g.sync_hunter_water();
+        assert!(Arc::ptr_eq(&first, &g.hunter_water.as_ref().unwrap().field), "nothing changed: no rebuild");
+        let mut h = Brain::new(content.hunters[0].clone(), (6.5, 5.5), "U", Difficulty::Standard);
+        h.active = true;
+        g.hunters.push(h);
+        g.sync_hunter_water();
+        assert!(!Arc::ptr_eq(&first, &g.hunter_water.as_ref().unwrap().field), "a new hunter gets the field");
+    }
+
+    #[test]
+    fn a_plunge_splash_in_range_makes_the_host_hunter_search_the_point() {
+        let (mut g, _) = game();
+        g.push_noise(NoiseKind::PlungeSplash, (6.5, 5.5));
+        let events = std::mem::take(&mut g.noise_events);
+        assert_eq!(events.len(), 1);
+        assert_eq!(g.hunters_hear_noise(&events, 1.0), 1);
+        assert_eq!(g.hunters[0].state, State::Search);
+        assert_eq!(g.hunters[0].last_known, Some((6.5, 5.5)));
+    }
+
+    #[test]
+    fn a_splash_out_of_range_changes_nothing() {
+        let (mut g, _) = game();
+        g.push_noise(NoiseKind::PlungeSplash, (500.5, 5.5));
+        let events = std::mem::take(&mut g.noise_events);
+        assert_eq!(g.hunters_hear_noise(&events, 1.0), 0);
+        assert_eq!(g.hunters[0].state, State::Wander);
+    }
+
+    #[test]
+    fn a_guest_never_changes_a_host_hunter_through_noise_events() {
+        let (mut g, _) = game();
+        g.remote_hunters = true;
+        g.push_noise(NoiseKind::PipeBurst, (6.5, 5.5));
+        assert!(g.noise_events.is_empty(), "a guest records no events");
+        let ev = NoiseEvent::new(NoiseKind::PipeBurst, (6.5, 5.5), g.runner_level());
+        assert_eq!(g.hunters_hear_noise(&[ev], 1.0), 0);
+        assert_eq!(g.hunters[0].state, State::Wander);
+        g.sync_hunter_water();
+        assert!(g.hunter_water.is_none(), "a guest builds no hunter water field");
+    }
+
+    #[test]
+    fn a_noise_event_never_raises_the_danger_readout_or_starts_a_chase() {
+        let (mut g, _) = game();
+        let danger = g.danger();
+        for k in NoiseKind::ALL {
+            g.hunters[0].state = State::Wander;
+            let ev = NoiseEvent::new(k, (6.0, 5.5), g.runner_level());
+            g.hunters_hear_noise(&[ev], 1.0);
+            assert_ne!(g.hunters[0].state, State::Chase, "{}", k.id());
+        }
+        // A hunter that goes to look at a noise is Investigating, which the readout rates as before (base 0.4 plus
+        // proximity); the events never put a hunter in Chase, which is what would push it past that.
+        assert!(g.danger() >= danger);
+        assert!(g.hunters.iter().all(|h| h.state != State::Chase));
+    }
+
+    #[test]
+    fn a_data_change_to_the_radius_changes_who_reacts() {
+        let (mut g, _) = game();
+        let far = NoiseEvent::new(NoiseKind::ValveTurn, (5.5 + 8.0, 5.5), g.runner_level());
+        let normal = noise_events::rules().radius_of(&far, g.hunters[0].hearing_scale);
+        let reacts = normal >= 8.0;
+        assert_eq!(g.hunters_hear_noise(&[far.clone()], 1.0) == 1, reacts);
+        g.hunters[0].state = State::Wander;
+        assert_eq!(g.hunters_hear_noise(&[far.with_loudness(0.0)], 1.0), 0, "a silent event is not heard");
     }
 }
 

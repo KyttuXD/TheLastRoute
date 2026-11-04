@@ -4,8 +4,8 @@
 //! Godot places them in `SewerRouteGenerator._build_chunk` (sewer_route_generator.gd, see docs/SEWERS.md "Ladders"):
 //! about 55 % of sewer chunks (the origin always) take up to two `LevelLink`s of kind `ladder`, with `cover` set to
 //! `manhole` or `grate`. The top end is a clear maze hallway cell and the bottom the same cell in the sewer. Rust reads
-//! them from the ported generator (`route::sewer::chunk`), so both levels agree on every ladder. The climb itself is not
-//! ported: a ladder is taken like a stairwell, with the fade (`Game::take_stairs`).
+//! them from the ported generator (`route::sewer::chunk`), so both levels agree on every ladder.
+//! A ladder is climbed by hand (game/ladder.rs), not taken with a fade.
 
 use super::facility::{Cell, Cover, Stair};
 use super::infinite::ChunkKey;

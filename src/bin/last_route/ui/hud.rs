@@ -348,8 +348,8 @@ pub fn draw_hud_with_runners(
         if let Some(pr) = g.focus_prompt() {
             let size = fs(10.0);
             let x = c.x - tw(a, F::Body, &pr, size) * 0.5;
-            // a stairwell prompt rides high, so it does not cover the steps the crosshair is on
-            let dy = if matches!(g.focus, Some(Focus::Stairs(_))) { -v.y * 0.22 } else { 16.0 };
+            // a ladder prompt rides high, so it does not cover the rungs the crosshair is on
+            let dy = if matches!(g.focus, Some(Focus::Ladder(_))) { -v.y * 0.22 } else { 16.0 };
             shadowed(a, &pr, x, c.y + dy, size, p.ink);
         }
         if g.focus == Some(Focus::MusicBox) {

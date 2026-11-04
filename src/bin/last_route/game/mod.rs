@@ -215,6 +215,10 @@ pub struct Game {
     pub ladder: Option<ladder::Climb>,
     /// The sewer valves and the flows they open or shut (game/pipes.rs).
     pub pipes: pipes::PipeNetwork,
+    /// Sounds made this frame for the host hunters and bots to hear (game/hunting.rs).
+    pub noise_events: Vec<crate::hunters::noise_events::NoiseEvent>,
+    /// The water field every hunter brain reads, and what it was built for (game/hunting.rs).
+    pub hunter_water: Option<hunting::HunterWater>,
     /// The real runner's wet and swimming state and its numbers (game/swim_effects.rs).
     pub swim: swim_effects::SwimState,
     pub swim_cfg: swim_effects::SwimConfig,
@@ -332,6 +336,8 @@ impl Game {
             last_autosave: "",
             ladder: None,
             pipes: pipes::PipeNetwork::new(),
+            noise_events: Vec::new(),
+            hunter_water: None,
             swim: swim_effects::SwimState::default(),
             swim_cfg: swim_effects::SwimConfig::load(),
             plunge: None,
@@ -461,6 +467,8 @@ impl Game {
             last_autosave: "",
             ladder: None,
             pipes: pipes::PipeNetwork::new(),
+            noise_events: Vec::new(),
+            hunter_water: None,
             swim: swim_effects::SwimState::default(),
             swim_cfg: swim_effects::SwimConfig::load(),
             plunge: None,
@@ -529,6 +537,8 @@ impl Game {
         crate::audio::world::reset(); // a new floor: new hunter views, no hum, nothing queued
         self.plunge = None; // a new floor: no plunge in flight, no cached sewer chunk, dry again
         self.water_cache = None;
+        self.hunter_water = None;
+        self.noise_events.clear();
         self.flood_depth = 0.0;
         self.swim = swim_effects::SwimState::default();
         let seed = self.level_seed();

@@ -153,7 +153,7 @@ pub fn focus_json(g: &Game, f: Focus) -> Value {
             g.fac.safe_zone.map(|c| c.center()).unwrap_or(g.p.pos),
         ),
         Focus::Lift => ("lift", None, g.fac.exit.center()),
-        Focus::Stairs(i) => ("stairs", Some(i), g.fac.stairs[i].cell.center()),
+        Focus::Ladder(i) => ("ladder", Some(i), g.fac.stairs[i].cell.center()),
         Focus::LightSwitch(i) => (
             "light_switch",
             Some(i),
@@ -523,6 +523,8 @@ impl Sim {
             "pitch": r2(p.pitch),
             "forward": pt((fx, fy)),
             "feet_y": r2(p.feet_y),
+            "y": r2(p.y() + p.feet_y),
+            "climbing": g.ladder.is_some(),
             "stamina": r2(p.stamina),
             "exhausted": p.exhausted,
             "lamp": r2(p.lamp),
