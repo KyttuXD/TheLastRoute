@@ -234,6 +234,11 @@ A kind name matches `^[a-z][a-z0-9_]{0,31}$`.
 
 A pack's `sha256` is the SHA-256 of the file lines `"<file sha256> <path>"`, sorted by path and joined with newlines. It covers every file, including `pack.json`. The client uses it as a cache key and in the room handshake.
 
+### 4.7 Download links and the mods folder
+
+- `LASTROUTE_MODS_BASE` is the public URL of the mod folder on VPS 2 (for example `https://mods.kyttuslab.org`). When it is set, each pack's `downloadBase` in the catalogue is `<base>/<pack_id>/<version>/`, and each file is `downloadBase + path`, checked against its listed `sha256` and `size`. A trailing slash is dropped. The older name `LASTROUTE_MOD_DOWNLOAD_BASE` is still read when `LASTROUTE_MODS_BASE` is unset. When neither is set, the catalogue has no download links and `downloadConfigured` is `false`.
+- The folder layout is `<pack_id>/<version>/pack.json` plus the pack's files. `tools/mods/publish-index.mjs <modsRoot>` writes `index.json` at the root, listing every pack, version, file path, `sha256` and `size`. It writes only where it is told, and it never uploads. Run it with `--stdout` to review first. Test with `node --test tools/mods/publish-index.test.mjs`.
+
 ## 5. Keys checked against the source
 
 Every key in this spec was taken from `src/bin/last_route/content/regions.rs` (`KEYS`, `REQUIRED`, `PROP_KEYS`, `GEOMETRY_KEYS`), `src/bin/last_route/content/packs.rs` (`load_pack`) or `src/bin/lr_server/mod_packs.rs` (`MANIFEST_KEYS`, `validate_pack_manifest`). Nothing here comes from the Godot files. The `geometry` ranges and defaults come from `WALL_HEIGHT_RANGE`, the `4..=MAX_AUTHORED_ROOM_SIZE` check, `config::WALL_HEIGHT` and `world::facility::MIN_AUTHORED_ROOM_SIZE` and `MAX_AUTHORED_ROOM_SIZE`.

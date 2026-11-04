@@ -93,9 +93,9 @@ Sources: the website game at KyttusLab/games/night-watch (src/modes, docs/ROADMA
 ### The eight night types
 
 - [x] 1. Classic: static office, 12 to 6 AM, two doors, two lights, cameras, power budget (website: src/modes/classic; Godot: night_watch_classic.gd) (session 2026-11-03: Classic is playable)
-- [ ] 2. Masked Hours: mask to fool attackers, flashlight, one resource to keep alive, vents (website: src/modes/mask; Godot: mask/)
-- [ ] 3. Dead Air: audio lures, reboot subsystems, hallucinations, vent seal, temperature (website: src/modes/lure; Godot: lure/)
-- [ ] 4. Bedtime: bedroom with no cameras, listen at doors, breathing check (website: src/modes/bedroom; Godot: bedroom/)
+- [x] 2. Masked Hours: mask to fool attackers, flashlight, one resource to keep alive, vents (website: src/modes/mask; Godot: mask/) (session 2026-11-04: mechanics present and tested; Ilyra's creep now shows a note. Not yet checked in a running window)
+- [~] 3. Dead Air: audio lures, reboot subsystems, hallucinations, vent seal, temperature (website: src/modes/lure; Godot: lure/) (session 2026-11-04: lures, reboots, vent seal and temperature are playable and tested. Hallucinations are not in any source and need a design decision from KT first)
+- [~] 4. Bedtime: bedroom with no cameras, listen at doors, breathing check (website: src/modes/bedroom; Godot: bedroom/) (session 2026-11-04: repeating door breaths and Haelith's exhale added and tested. Breathing is shown as notes and visuals only, with no sound yet)
 - [ ] 5. The Facility: scripted nights with guided hallway, vent and crawl sections, and a shock button (website: src/modes/story; Godot: night_watch_story or the admin story scenes)
 - [ ] 6. The Descent: elevator shaft repair puzzles under a hunter's eye (website: src/modes/descent; Godot: descent/)
 - [ ] 7. Salvage Run: day management and night salvage with an upgrade layer (website: src/modes/dayshift; Godot: dayshift/)
@@ -564,7 +564,7 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [ ] Port Transit hub map and vent run (effort M)
 - [ ] Port Hub office with two doors and three vents (effort M)
 ### Hunters
-- [ ] Port Per-floor draw Nightmare weights: only Relaxed, Standard and Hard weights exist
+- [x] Port Per-floor draw Nightmare weights: only Relaxed, Standard and Hard weights exist. Done 2026-11-03: see the hunter draw pool item above.
 - [ ] Port Per-hunter tuning: numeric values not compared with Godot's roster tuning (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Special hunters Nyxie and Solyth: Nightmare pounce branches absent (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Void incursions: void_*.json hunters are never drawn and no incursion chance exists (status note: [~] in the parity-gaps audit; the less complete status is kept)
@@ -603,7 +603,7 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [ ] Port Kathy search beam: affected-summon is unported in both trees (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Loxelle passive incinerator: chase-only room-door breach missing (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Nyxie darkness stalker: Nightmare pounce missing (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Quenelle flashlight tracker: Nightmare lock time and speed ramp constant (status note: [~] in the parity-gaps audit; the less complete status is kept)
+- [x] Port Quenelle flashlight tracker: Nightmare lock time and speed ramp constant (status note: [~] in the parity-gaps audit; the less complete status is kept). Done 2026-11-03: `Quenelle::for_difficulty` gives a 5 s lock on Nightmare (wired in `hunters/gimmicks/mod.rs`); Standard keeps 8 s and the x1.45 ramp.
 - [ ] Port Ravelle tripwire trapper: wire radius and trap stun hard-coded (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Thessine sound mimic: Rust prints a callout where Godot plays sound only (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Umbriel shapeshifter: disguise pool hard-coded and Nightmare ability copy absent (status note: [~] in the parity-gaps audit; the less complete status is kept)
@@ -744,8 +744,8 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [ ] Port Server update manifests client flow (server side is ported) (effort M)
 
 ### Configuration
-- [ ] Port Difficulty profiles: Nightmare profile missing (effort S)
-- [ ] Port Hunter draw pool: Nightmare weights missing (effort S)
+- [x] Port Difficulty profiles: Nightmare profile missing (effort S). Done 2026-11-03: `Difficulty::Nightmare` in `config/difficulty.rs`, lobby row `LOBBY` in `ui/menus.rs`, profile = Godot nightmare block (game_config.gd:50-72).
+- [x] Port Hunter draw pool: Nightmare weights missing (effort S). Done 2026-11-03: `tier_weights_for("nightmare")` returns .175/.525/.30 and Nightmare is in `LOBBY`.
 - [ ] Port Movement, camera and look tuning: pitch clamp, FOV maximum and bob rates differ from Godot (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [ ] Port Stamina and tool tuning: overheat multiplier applied to sprint, and the troll drain missing (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [ ] Port Rebindable controls: fixed labels, no rebinding or saved bindings (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
@@ -899,3 +899,20 @@ Source: `LastRoute Godot\KyttusLabApp` (re-synced from the other computer) compa
 
 - [ ] Discord Rich Presence: show the game and the current state (menu, in a run, depth, room size) on the player's profile. Needs a Discord application ID and the local IPC client (no server round-trip). Off by default, with a setting to turn it off.
 - [ ] Discord bot: post room and run events to a server channel (room opened, run finished, new release) through the website's server, not from the game client. Needs a bot token in the server env only, never in source.
+
+- [ ] Server-synced skins: the room carries only the skin id (`world_sync.rs` `profile_message`). Remote runners draw the default mannequin unless they already have that skin, because the PNG never leaves the local `skins/` folder (`src/bin/last_route/shared/skins.rs`). Needs an upload or download path through the server before other players see custom skins.
+
+## Gameplay progression and hunter mechanics (requested 2026-11-04)
+
+- [ ] Hunter sabotage: hunters disable or damage relays, lights, doors or the lift, as the Godot sabotage code does (game/autoload/game_state.gd, game/autoload/run_saves.gd, game/config/game_config.gd mention sabotage; check the Godot version before porting)
+- [ ] Progression items: relays to collect and activate in a run (count, order, what each unlocks), with the Godot rules
+- [ ] Hunter-specific charge abilities (2026-11-03 pass A: not started; no shared charge constant was found in Rust, Loxelle's windup and charge timers are inline in `hunters/gimmicks/loxelle.rs`): each hunter has its own charge (Quenelle is one example, game/hunters/gimmicks/quenelle_gimmick.gd; the charge timing is in hunter_brain.gd); defined per hunter in data, not shared across all hunters
+- [~] Nightmare mode (2026-11-03: selectable in the lobby, profile, Zellia 12 percent and Quenelle 5 s applied; still open: the room wire name in `net/world_sync.rs` `difficulty_from_name` has no NIGHTMARE arm, so a hosted room reads Nightmare back as STANDARD, and the director uses the Hard profile): difficulty profile from game/config/game_config.gd (nightmare block at line ~50: lowered footprint, Zellia death chance 12 percent), selectable in the port, with hunter-specific Nightmare abilities (for example Quenelle locks on after 5 s, game_config.gd line ~277) defined per hunter in data
+- [ ] NPC bots run away from hunters (fleeing like players do), with the same reaction rules as the runner
+- [ ] NPC bots use player-like models and abilities: the same mannequin body as players, and the same tasks (relays, doors, lockers)
+- [ ] Player mannequin model with bends like the hunters, imported from the Godot player model (assets/hunters_blocky/player_mannequin, the rig with joints and clips), replacing the plain Minecraft-style skin model
+- [ ] Smarter hunters: at higher difficulties, hunters open and check lockers (and other hiding spots) during a search, not only walk past them. Searches should cover dead ends and rooms they have not checked, with the check rate set by difficulty. Other smarter-search behaviour (for example opening doors on the way and checking the last-seen spot first) is part of this item
+
+## Memory (noted 2026-11-04)
+
+- [ ] Both T480 laptops show a "memory shortage avoided" message during play: find what triggers it (the game, the system, or the stress runs), and whether it lines up with the frame drops and the memory caps in the memory pass

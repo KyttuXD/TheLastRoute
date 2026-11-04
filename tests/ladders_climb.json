@@ -1,0 +1,30 @@
+{
+  "suite": "ladders_climb",
+  "description": "Sewer ladders climbed by hand (game/ladder.rs, Godot player_controller_3d.gd 1265-1386): walking into the rung point mounts, back climbs down, the bottom changes the storey through the fade; forward at the top dismounts onto the floor.",
+  "ported_from": "game/player/player_controller_3d.gd begin_ladder_climb, _update_ladder_climb",
+  "defaults": { "seed": 12345, "difficulty": "standard", "mode": "infinite" },
+  "tests": [
+    {
+      "name": "a ladder down is climbed by hand to the storey below",
+      "start_run": { "no_target": true },
+      "steps": [
+        { "cmd": "teleport", "to": "ladder_down" },
+        { "cmd": "step", "frames": 1, "act": { "move": [0, 0.5] }, "observe": false },
+        { "cmd": "step", "frames": 30, "act": { "move": [0, 0] }, "observe": false },
+        { "cmd": "step", "frames": 400, "act": { "move": [0, -1] }, "observe": false },
+        { "expect": [ { "path": "run.level", "value": -1 } ] }
+      ]
+    },
+    {
+      "name": "forward at the top of a ladder down lands on the floor of the same storey",
+      "start_run": { "no_target": true },
+      "steps": [
+        { "cmd": "teleport", "to": "ladder_down" },
+        { "cmd": "step", "frames": 1, "act": { "move": [0, 0.5] }, "observe": false },
+        { "cmd": "step", "frames": 30, "act": { "move": [0, 0] }, "observe": false },
+        { "cmd": "step", "frames": 60, "act": { "move": [0, 1] }, "observe": false },
+        { "expect": [ { "path": "run.level", "value": 0 } ] }
+      ]
+    }
+  ]
+}

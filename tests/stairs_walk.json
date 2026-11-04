@@ -1,0 +1,38 @@
+{
+  "suite": "stairs_walk",
+  "description": "Walking onto a stair flight (world/vertical.rs, the body walks the treads of render/stairs.rs): walking forward down the nearest flight reaches the storey below, and walking forward up from there returns to the storey above. The level changes only through the shared hysteresis (level_from_height). Standing still on the landing does not change the level.",
+  "ported_from": "game/player/player_controller_3d.gd floor snap and stairs; world/vertical.rs stair_surface_y, level_from_height",
+  "defaults": { "seed": 12345, "difficulty": "standard", "mode": "infinite" },
+  "tests": [
+    {
+      "name": "standing on the landing of a flight down keeps the storey",
+      "start_run": { "no_target": true },
+      "steps": [
+        { "cmd": "teleport", "to": "stairs_down" },
+        { "cmd": "walk", "frames": 30, "fwd": 0, "observe": false },
+        { "expect": [ { "path": "run.level", "value": 0 }, { "path": "run.depth", "value": 1 } ] }
+      ]
+    },
+    {
+      "name": "walking forward down a flight reaches level -1 at depth 2",
+      "start_run": { "no_target": true },
+      "steps": [
+        { "cmd": "teleport", "to": "stairs_down" },
+        { "cmd": "walk", "frames": 300, "fwd": 1, "observe": false },
+        { "expect": [ { "path": "run.level", "value": -1 }, { "path": "run.depth", "value": 2 } ] }
+      ]
+    },
+    {
+      "name": "walking forward up from level -1 returns to level 0",
+      "start_run": { "no_target": true },
+      "steps": [
+        { "cmd": "teleport", "to": "stairs_down" },
+        { "cmd": "walk", "frames": 300, "fwd": 1, "observe": false },
+        { "expect": [ { "path": "run.level", "value": -1 } ] },
+        { "cmd": "teleport", "to": "stairs_up" },
+        { "cmd": "walk", "frames": 300, "fwd": 1, "observe": false },
+        { "expect": [ { "path": "run.level", "value": 0 } ] }
+      ]
+    }
+  ]
+}
