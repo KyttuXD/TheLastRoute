@@ -8,6 +8,7 @@
     "join_radius": 6
   },
   "smart": [30, 50, 70, 90],
+  "intents": ["hide", "flee", "relay", "locker", "follow"],
   "follow": {
     "radius": 5.0,
     "_source": "Godot game/player/npc_teammates.gd 24 FOLLOW_RADIUS"
@@ -19,6 +20,31 @@
     "flee_running": true,
     "min_away": 0.1,
     "_source": "Godot npc_teammates.gd 25 THREAT_RANGE, 307 smart scale (.5 + smart/100), 311 away > .1, 312 flee 12 m, 324-326 running"
+  },
+  "hide": {
+    "chase_range": 14.0,
+    "reach": 8.0,
+    "enter_radius": 1.0,
+    "leave_range": 16.0,
+    "leave_delay": 3.0,
+    "_source": "Rust-only figures: a bot hides when a chase is seen at the threat range, from a locker within 8 m, and comes out 3 s after no chaser is within 16 m"
+  },
+  "errand": {
+    "safe_range": 14.0,
+    "reach": 1.2,
+    "relay": { "leash": 12.0, "dwell": 4.0 },
+    "locker": { "leash": 10.0, "dwell": 6.0 },
+    "_source": "Rust-only figures: a relay or locker errand is taken within the leash of the runner, when no hunter is within safe_range of it"
+  },
+  "searched": {
+    "memory": 8,
+    "avoid_radius": 4.0,
+    "_source": "Rust-only figures: the last 8 points hunters searched, and no errand spot within 4 m of one"
+  },
+  "doors": {
+    "near": 1.5,
+    "close_clear": 2.5,
+    "_source": "Rust-only figures: a bot is at a door within 1.5 m, and shuts it once 2.5 m clear of the threshold"
   },
   "door": {
     "think": 0.25,

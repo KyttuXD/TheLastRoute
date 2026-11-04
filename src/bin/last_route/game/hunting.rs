@@ -5,7 +5,7 @@
 use super::{pdist, Escape, Game, Heater, Report};
 use crate::audio::Sounds;
 use crate::config::*;
-use crate::hunters::brain::{State, Target};
+use crate::hunters::brain::{choose_target, State, Target, TargetRules};
 use crate::net::hunter_events;
 use serde_json::{json, Value};
 use crate::hunters::gimmicks::{nyxie::Wake, Ctx, Event, Gimmick};
@@ -138,9 +138,32 @@ impl Game {
         if self.inf.is_some() {
             crate::hunters::director::separate(dt, &mut self.hunters, &self.fac);
         }
+        // the NPC bots on the runner's level are candidate targets too (data/hunters/targets.json); the runner stays the
+        // default target, and a bot is chased only where the rules allow it (hunters::brain::choose_target)
+        let runner_level = self.runner_level();
+        let bot_targets: Vec<Target> = self
+            .npcs
+            .iter()
+            .filter(|n| n.level == runner_level)
+            .map(|n| Target { pos: n.at, facing: n.heading, ..Default::default() })
+            .collect();
+        let bot_pos: Vec<(f32, f32)> = bot_targets.iter().map(|t| t.pos).collect();
+        let rules = TargetRules::get();
         let mut all_events: Vec<(usize, Event)> = vec![];
         let mut caught: Option<usize> = None;
         for i in 0..self.hunters.len() {
+            let chosen = choose_target(
+                rules,
+                self.difficulty,
+                self.hunters[i].pos,
+                target.pos,
+                &bot_pos,
+                |a, b| self.fac.has_line_of_sight(a, b),
+            );
+            let hunter_target = match chosen {
+                Some(b) => &bot_targets[b],
+                None => &target,
+            };
             if let Gimmick::Solyth(s) = &mut self.hunters[i].gimmick {
                 s.heat_locked = self.meters.heat_locked;
             }
@@ -156,9 +179,22 @@ impl Game {
                 music_box_left: self.music_box_left,
                 exposure: self.meters.exposure,
             };
+            let held_before = ability_held(&self.hunters[i]);
             let (c, ev) =
-                self.hunters[i].update(dt, &ctx, &target, self.depth, self.relays_collected, prof);
-            if c && caught.is_none() {
+                self.hunters[i].update(dt, &ctx, hunter_target, self.depth, self.relays_collected, prof);
+            // the host tells the guests when a hunter starts a lunge or a pounce (the rising edge only)
+            if let (None, Some((kind, ability))) = (held_before, ability_held(&self.hunters[i])) {
+                let id = self.hunters[i].def.id.clone();
+                self.hunter_out.emit(
+                    hunter_events::rules(),
+                    self.difficulty,
+                    kind,
+                    vec![("index", json!(i)), ("hunter_id", json!(id)), ("ability", json!(ability))],
+                    std::time::Instant::now(),
+                );
+            }
+            // a capture ends the run only when the runner was the target: a bot caught is no run end
+            if c && chosen.is_none() && caught.is_none() {
                 caught = Some(i);
             }
             all_events.extend(ev.into_iter().map(|e| (i, e)));
@@ -333,6 +369,14 @@ impl Game {
                     self.leave_locker(None);
                     let n = self.hunters[h].def.name.to_uppercase();
                     self.say(&format!("{n} PULLED THE DOOR OPEN"));
+                    let id = self.hunters[h].def.id.clone();
+                    self.hunter_out.emit(
+                        hunter_events::rules(),
+                        self.difficulty,
+                        "hunter_door",
+                        vec![("index", json!(h)), ("hunter_id", json!(id)), ("action", json!("open")), ("spot", json!(li))],
+                        std::time::Instant::now(),
+                    );
                 } else {
                     self.hide_check = Some((spot, h, t));
                 }
@@ -354,6 +398,14 @@ impl Game {
                 });
                 if let Some(h) = found {
                     self.hide_check = Some((li, h, prof.hide_tell));
+                    let id = self.hunters[h].def.id.clone();
+                    self.hunter_out.emit(
+                        hunter_events::rules(),
+                        self.difficulty,
+                        "hunter_locker",
+                        vec![("index", json!(h)), ("hunter_id", json!(id)), ("spot", json!(li))],
+                        std::time::Instant::now(),
+                    );
                     // her breath at the slats (hunter_view_3d.gd 1537-1558): within 3.5 m of the camera
                     let (eye, (_, right, _)) = (self.eye(), self.camera_basis());
                     let hp = self.hunters[h].pos;
@@ -395,6 +447,17 @@ impl Game {
             seed: self.run_seed,
             difficulty: self.difficulty,
         });
+    }
+}
+
+/// The ability a hunter is using right now, for the host's world events: a Loxelle lunge (`hunter_charge`) or a Nightmare
+/// pounce (`hunter_ability`, Nyxie and Solyth). None for every other hunter and while it is idle. The names are the
+/// event kinds in `data/net/hunter_events.json`, so their difficulties and gaps come from the data.
+fn ability_held(b: &crate::hunters::brain::Brain) -> Option<(&'static str, &'static str)> {
+    match &b.gimmick {
+        Gimmick::Loxelle(_) if b.gimmick.holds_position(b) => Some(("hunter_charge", "lunge")),
+        Gimmick::Nyxie(_) | Gimmick::Solyth(_) if b.gimmick.holds_position(b) => Some(("hunter_ability", "pounce")),
+        _ => None,
     }
 }
 
@@ -527,5 +590,61 @@ mod remote_hunter_tests {
         let t1 = t0 + Duration::from_millis(60);
         assert!(a.frame_due(&standard, t1), "20 Hz: a frame every 50 ms");
         assert!(!b.frame_due(&slow, t1), "10 Hz: no frame before 100 ms");
+    }
+
+    #[test]
+    fn a_guest_queues_no_host_world_events() {
+        let (mut guest, content, catalog) = run();
+        guest.remote_hunters = true;
+        let sounds = crate::audio::Sounds::default();
+        for _ in 0..300 {
+            guest.step(1.0 / 60.0, &Controls::default(), &content, &catalog, &sounds);
+        }
+        assert!(guest.hunter_out.take().is_empty(), "a guest never raises the host's events");
+    }
+
+    #[test]
+    fn a_hunter_at_a_locker_queues_the_locker_check_and_the_door_pull() {
+        let (mut g, _, _) = run();
+        let li = 0usize;
+        let centre = g.fac.hiding[li].cell.center();
+        g.p.hidden = Some(li);
+        g.hide_check = None;
+        g.locker_cooldown[li] = 0.0;
+        g.hunters[0].active = true;
+        g.hunters[0].stun = 0.0;
+        g.hunters[0].state = State::Chase;
+        g.hunters[0].pos = centre;
+        g.hunters[0].last_known = Some(centre);
+        let prof = g.prof();
+        let sounds = crate::audio::Sounds::default();
+        // a hunter that tracked the runner to this locker starts the check (the locker event)
+        g.update_hidden(0.0, &Controls::default(), &prof, &sounds);
+        let queued = g.hunter_out.take();
+        assert!(
+            queued.iter().any(|e| e["what"] == json!("hunter_locker") && e["index"] == json!(0) && e["spot"] == json!(li)),
+            "the check queues hunter_locker: {queued:?}"
+        );
+        // the check's tell runs out and the hunter pulls the door (the door event, action open)
+        g.hide_check = Some((li, 0, 0.0));
+        g.update_hidden(0.0, &Controls::default(), &prof, &sounds);
+        let queued = g.hunter_out.take();
+        assert!(
+            queued.iter().any(|e| e["what"] == json!("hunter_door") && e["action"] == json!("open")),
+            "the pull queues hunter_door: {queued:?}"
+        );
+    }
+
+    #[test]
+    fn only_a_lunge_or_a_pounce_counts_as_an_ability() {
+        use crate::hunters::gimmicks::loxelle::Loxelle;
+        let (g, _, _) = run();
+        // an idle hunter holds no ability, and a Loxelle that has not wound up holds none either
+        for h in g.hunters.iter() {
+            assert_eq!(ability_held(h), None, "{} is idle", h.def.id);
+        }
+        let mut g = g;
+        g.hunters[0].gimmick = Gimmick::Loxelle(Loxelle::default());
+        assert_eq!(ability_held(&g.hunters[0]), None, "a Loxelle that has not wound up is not lunging");
     }
 }

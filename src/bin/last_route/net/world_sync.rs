@@ -27,7 +27,7 @@ use crate::game::Game;
 use crate::shared::assets::Assets;
 use macroquad::prelude::*;
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 /// A runner's sample goes out this often (the original's 20 Hz `_place`).
@@ -59,6 +59,9 @@ const PEER_COLOURS: [Color; 4] = [
 pub const SKIN_DEFAULT: &str = "DEFAULT";
 /// Longest skin id a profile or the settings keep.
 const MAX_SKIN: usize = 24;
+
+/// The highest inventory slot a guest's taser report may name (Godot `clampi(slot, -1, 63)`). Protocol bound, not tuning.
+const MAX_TASER_SLOT: i64 = 63;
 /// The skins by id, each with its figure colours by peer id. DEFAULT is the only one so far; an id no skin has
 /// is drawn as DEFAULT (see [`skin_colour`]).
 const SKINS: [(&str, [Color; 4]); 1] = [(SKIN_DEFAULT, PEER_COLOURS)];
@@ -350,6 +353,21 @@ pub fn published_skin(skin: &str, uploaded: &[String]) -> String {
     }
 }
 
+/// The skin id a runner publishes for its chosen skin, read against the website's uploaded list now: the id once the
+/// website holds it, else DEFAULT.
+fn publishable_skin(skin: &str) -> String {
+    let uploaded = if is_skin_hash(&clean_skin(skin)) { crate::shared::skins::uploaded_ids() } else { Vec::new() };
+    published_skin(skin, &uploaded)
+}
+
+/// The skin a republish sends: `Some(new id)` when the chosen skin, read against `uploaded`, publishes as a different id
+/// than `current`; `None` when nothing changes (the room needs no new profile). A host that uploads after opening stays
+/// on DEFAULT until this returns the hash.
+pub fn republished_skin(current: &str, chosen: &str, uploaded: &[String]) -> Option<String> {
+    let next = published_skin(chosen, uploaded);
+    (next != current).then_some(next)
+}
+
 /// An open room, host or guest. Call [`NetSession::tick`] once per frame.
 pub struct NetSession {
     pub cfg: BackendConfig,
@@ -393,6 +411,16 @@ pub struct NetSession {
     backlog: Vec<NetEvent>,
     /// Host: the hunter event state (last states, grab, frame timing), see [`hunter_events::Tracker`].
     hunter_tracker: Tracker,
+    /// Host: guests the host captured and has not yet heard back from (Godot `_pending_captures`). A guest's escaped,
+    /// caught or capture_blocked report is accepted only from one of these, and only once.
+    pending_captures: HashSet<u32>,
+    /// Host: guest hunter events accepted this tick (taser, or a resolved capture with `peer_id`), taken by the app.
+    guest_events: Vec<Map<String, Value>>,
+    /// Host: the hunter frame last sent, and the sabotaged relay count, for the snapshot a late joiner is sent.
+    hunters_now: Vec<Value>,
+    relays_sabotaged: u32,
+    /// Guest: the snapshot the host sent on join, until the app takes it ([`NetSession::take_snapshot`]).
+    snapshot: Option<hunter_events::Snapshot>,
 }
 
 /// CREATE a room on the directory and open its relay. The request blocks, so the frame loop polls the result.
@@ -430,8 +458,7 @@ fn open_host(
     }
     let link = RelayLink::host(&code, &reg.token, &reg.room.address, reg.room.port)
         .map_err(|e| NetError::Transport(e.to_string()))?;
-    let uploaded = if is_skin_hash(&clean_skin(&skin)) { crate::shared::skins::uploaded_ids() } else { Vec::new() };
-    let skin = published_skin(&skin, &uploaded);
+    let skin = publishable_skin(&skin);
     // Godot `_take_reserved(payload.reserved, true)`: a fresh registration takes the commands it lists
     let mut owner = OwnerCursor::default();
     let backlog = reg.reserved.as_ref().map(|view| owner.take(view)).unwrap_or_default();
@@ -451,7 +478,7 @@ pub fn join_room(cfg: BackendConfig, code: String, name: String, skin: String, s
             return Err(NetError::Offline);
         }
         match lookup_outcome(api::lookup_room(&cfg, &code), is_admin, &session_token)? {
-            JoinStep::Found(room) => join_found(cfg, code, room, name),
+            JoinStep::Found(room) => join_found(cfg, code, room, name, skin),
             JoinStep::Reserve => reserve_and_host(cfg, code, name, skin, session_token),
         }
     })
@@ -477,8 +504,10 @@ fn lookup_outcome(lookup: Result<api::RoomEndpoint, NetError>, is_admin: bool, s
 }
 
 /// The guest join to a live room: it must be on the relay and run this build's protocol, then the relay joins.
-/// A guest publishes no skin: the guest's own skin stays on its own screen (Godot "Local-only", `PLAYER_SKINS.md`).
-fn join_found(cfg: BackendConfig, code: String, room: api::RoomEndpoint, name: String) -> Result<NetSession, NetError> {
+/// A guest publishes its chosen skin id in its profile, the same as a host (only once the website holds it, see
+/// [`publishable_skin`]); remote runners fetch the skin by id. The guest's own screen keeps its local skin (Godot
+/// "Local-only", `PLAYER_SKINS.md`).
+fn join_found(cfg: BackendConfig, code: String, room: api::RoomEndpoint, name: String, skin: String) -> Result<NetSession, NetError> {
     if room.transport != "relay" || room.address.is_empty() {
         return Err(NetError::Refused("THAT ROOM CANNOT BE JOINED FROM THIS BUILD".into()));
     }
@@ -487,7 +516,7 @@ fn join_found(cfg: BackendConfig, code: String, room: api::RoomEndpoint, name: S
         return Err(NetError::Refused(refused));
     }
     let link = RelayLink::guest(&code, &room.address, room.port, "").map_err(|e| NetError::Transport(e.to_string()))?;
-    Ok(NetSession::new(cfg, code, Role::Guest, CoopSession::new(link), String::new(), String::new(), name, SKIN_DEFAULT.into()))
+    Ok(NetSession::new(cfg, code, Role::Guest, CoopSession::new(link), String::new(), String::new(), name, publishable_skin(&skin)))
 }
 
 /// An owner's miss: reserve the typed code for her session, then register and open it as the host (the same open as
@@ -497,7 +526,7 @@ fn reserve_and_host(cfg: BackendConfig, code: String, name: String, skin: String
         Ok(()) => {}
         Err(NetError::Http { code: c, .. }) if c == "ROOM_ALREADY_HOSTED" => {
             let room = api::lookup_room(&cfg, &code)?;
-            return join_found(cfg, code, room, name);
+            return join_found(cfg, code, room, name, skin);
         }
         Err(e) => return Err(e),
     }
@@ -551,6 +580,11 @@ impl NetSession {
             owner: OwnerCursor::default(),
             backlog: Vec::new(),
             hunter_tracker: Tracker::default(),
+            pending_captures: HashSet::new(),
+            guest_events: Vec::new(),
+            hunters_now: Vec::new(),
+            relays_sabotaged: 0,
+            snapshot: None,
         }
     }
 
@@ -582,6 +616,29 @@ impl NetSession {
             self.difficulty = difficulty.name().to_string();
             self.send_room_and_roster();
         }
+    }
+
+    /// Sets this runner's chosen skin id and publishes it at once. The published id is the chosen one only when the
+    /// website holds it (`uploaded`, the list `shared::skins::uploaded_ids` gives), else DEFAULT. A host sends the new
+    /// profile to every guest; a guest sends it to the host, which relays it. Nothing is sent when the published id
+    /// stays the same, so a host that uploads after opening is re-published the moment the caller passes the new list.
+    pub fn set_skin(&mut self, chosen: &str, uploaded: &[String]) {
+        let Some(next) = republished_skin(&self.skin, chosen, uploaded) else { return };
+        self.skin = next;
+        if self.is_host() {
+            let profile = profile_message(HOST_PEER_ID, &self.name, &self.skin);
+            for peer in self.coop.peers() {
+                self.coop.send(peer, &profile);
+            }
+        } else {
+            let profile = profile_message(self.coop.link.session(), &self.name, &self.skin);
+            self.coop.send(HOST_PEER_ID, &profile);
+        }
+    }
+
+    /// This runner's published skin id (DEFAULT until a chosen skin the website holds is set).
+    pub fn published_skin(&self) -> &str {
+        &self.skin
     }
 
     /// The room's difficulty name (host: the one it set; guest: the host's). Read it with [`difficulty_from_name`].
@@ -720,6 +777,7 @@ impl NetSession {
         if !self.is_host() {
             return;
         }
+        self.hunters_now.clone_from(&frame);
         let rules = hunter_events::rules();
         for event in self.hunter_tracker.events(rules, diff, &frame, grab, now) {
             let message = Message::Event { event };
@@ -739,6 +797,88 @@ impl NetSession {
         for peer in self.coop.peers() {
             self.coop.send(peer, &message);
         }
+    }
+
+    /// Host: sends the world events the game queued this frame (see [`hunter_events::Outbox`], which applied each kind's
+    /// difficulty and gap) to every guest, in order. Nothing is sent by a guest.
+    /// Host: the host captured this guest, so its next escaped, caught or capture_blocked report is expected (Godot
+    /// `_pending_captures[peer_id]` set where the host sends a capture). Does nothing on a guest.
+    pub fn expect_capture(&mut self, peer: u32) {
+        if self.is_host() {
+            self.pending_captures.insert(peer);
+        }
+    }
+
+    /// Host: takes the guest hunter events accepted since the last call, oldest first. Each taser has `what`, `peer_id`
+    /// and `slot`; each resolved capture report keeps its fields and gets `peer_id`. A guest always gets nothing.
+    pub fn take_guest_events(&mut self) -> Vec<Map<String, Value>> {
+        std::mem::take(&mut self.guest_events)
+    }
+
+    /// Host: checks a guest's hunter event. A taser is only an intent (the host re-checks position, facing and line of
+    /// sight from its own state), so it is passed on with the sender and a slot clamped to -1..=63 like Godot does. The
+    /// three report kinds are accepted only when the host expects that guest's capture, and that expectation is used up.
+    /// Host-only senders (peer 1 or lower) and other kinds are dropped.
+    fn accept_guest_event(&mut self, from: u32, event: Map<String, Value>) {
+        if from <= HOST_PEER_ID {
+            return;
+        }
+        let what = event.get("what").and_then(Value::as_str).unwrap_or_default().to_string();
+        match what.as_str() {
+            "taser" => {
+                let slot = event.get("slot").and_then(Value::as_f64).map_or(-1, |v| v as i64);
+                let slot = slot.clamp(-1, MAX_TASER_SLOT);
+                let mut out = Map::new();
+                out.insert("what".into(), json!("taser"));
+                out.insert("peer_id".into(), json!(from));
+                out.insert("slot".into(), json!(slot));
+                self.guest_events.push(out);
+            }
+            "escaped" | "caught" | "capture_blocked" => {
+                if !self.pending_captures.remove(&from) {
+                    return;
+                }
+                let mut received = event;
+                received.insert("peer_id".into(), json!(from));
+                self.guest_events.push(received);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn send_world_events(&mut self, events: Vec<Map<String, Value>>) {
+        if !self.is_host() {
+            return;
+        }
+        for event in events {
+            let message = Message::Event { event };
+            for peer in self.coop.peers() {
+                self.coop.send(peer, &message);
+            }
+        }
+    }
+
+    /// Host: the sabotaged relay count the snapshot for a late joiner carries (Godot `_build_snapshot`). A guest's call does nothing.
+    pub fn set_relays_sabotaged(&mut self, count: u32) {
+        if self.is_host() {
+            self.relays_sabotaged = count;
+        }
+    }
+
+    /// Guest: takes the snapshot the host sent on join, once. The app applies its relays; the hunters came as
+    /// `NetEvent::Hunters` already.
+    pub fn take_snapshot(&mut self) -> Option<hunter_events::Snapshot> {
+        self.snapshot.take()
+    }
+
+    /// Host: the hunter state as the snapshot carries it: the last hunter frame and the sabotaged relay count.
+    fn snapshot_message(&self) -> Message {
+        Message::Snapshot { state: hunter_events::snapshot_state(&self.hunters_now, self.relays_sabotaged) }
+    }
+
+    /// Host: the snapshot a runner joining now is sent. Only while a route runs: with none there are no hunters to show.
+    fn join_snapshot(&self) -> Option<Message> {
+        (self.is_host() && self.run.is_some()).then(|| self.snapshot_message())
     }
 
     /// Host: ends the route for every guest (Godot `end_session` and `_receive_end`). The room stays open, and no run is
@@ -901,6 +1041,9 @@ impl NetSession {
                     self.coop.send(from, &start_message(&self.code, &seed, &difficulty));
                 }
                 self.send_profiles_to(from);
+                if let Some(snapshot) = self.join_snapshot() {
+                    self.coop.send(from, &snapshot);
+                }
             }
             Message::WireProfile { profile } if self.is_host() => {
                 let skin = profile_skin(&profile);
@@ -927,6 +1070,7 @@ impl NetSession {
             Message::PeerLeave if self.is_host() => {
                 self.remotes.remove(&from);
                 self.skins.remove(&from);
+                self.pending_captures.remove(&from);
                 if let Some(guest) = self.guests.remove(&from) {
                     out.push(NetEvent::GuestLeft(guest.name));
                     self.send_room_and_roster();
@@ -945,6 +1089,13 @@ impl NetSession {
                 for peer in others {
                     self.coop.send(peer, &Message::PeerPlace { peer_id: from as i64, packet: packet.clone() });
                 }
+            }
+            // a guest's taser, escape or capture report (Godot `_submit_hunter_event`): the host alone resolves it
+            Message::SubmitHunterEvent { event } if self.is_host() => {
+                if let Some(guest) = self.guests.get_mut(&from) {
+                    guest.last_seen = now;
+                }
+                self.accept_guest_event(from, event);
             }
             Message::Room { seed, rest, .. } if !self.is_host() => {
                 self.room_seed = seed.clone();
@@ -977,6 +1128,13 @@ impl NetSession {
             // the host's hunters and world events (Godot `_hunters` and `_event`): display only, a guest never sends them
             Message::Hunters { data } | Message::HuntersLarge { data } if !self.is_host() => {
                 out.push(NetEvent::Hunters(data));
+            }
+            // the host's snapshot on join (Godot `_snapshot`): the hunters now, and the relay count kept for the app
+            Message::Snapshot { state } if !self.is_host() => {
+                if let Some(snapshot) = hunter_events::parse_snapshot(&state) {
+                    out.push(NetEvent::Hunters(snapshot.hunters.clone()));
+                    self.snapshot = Some(snapshot);
+                }
             }
             Message::Event { event } if !self.is_host() => out.push(NetEvent::WorldEvent(event)),
             Message::Start { seed, rest, .. } if !self.is_host() => {
@@ -1037,6 +1195,7 @@ impl NetSession {
             for peer in gone {
                 self.remotes.remove(&peer);
                 self.skins.remove(&peer);
+                self.pending_captures.remove(&peer);
                 if let Some(guest) = self.guests.remove(&peer) {
                     out.push(NetEvent::GuestLeft(guest.name));
                 }
@@ -1309,6 +1468,46 @@ mod tests {
     }
 
     #[test]
+    fn a_republish_happens_only_when_the_published_skin_changes() {
+        let hash = "b".repeat(64);
+        assert_eq!(republished_skin(SKIN_DEFAULT, &hash, &[]), None, "an unuploaded skin stays DEFAULT: no change");
+        assert_eq!(republished_skin(SKIN_DEFAULT, &hash, &[hash.clone()]), Some(hash.clone()), "uploaded: republish the id");
+        assert_eq!(republished_skin(&hash, &hash, &[hash.clone()]), None, "the same id is not sent again");
+        assert_eq!(republished_skin(&hash, SKIN_DEFAULT, &[hash.clone()]), Some(SKIN_DEFAULT.to_string()), "back to DEFAULT");
+        assert_eq!(republished_skin(SKIN_DEFAULT, "night-owl", &["NIGHTOWL".into()]), None, "only a skin hash republishes");
+    }
+
+    #[test]
+    fn a_chosen_skin_is_published_only_as_a_skin_hash_the_website_holds() {
+        assert_eq!(publishable_skin("night-owl"), SKIN_DEFAULT, "a non-hash id is never published");
+        assert_eq!(publishable_skin(SKIN_DEFAULT), SKIN_DEFAULT);
+    }
+
+    #[test]
+    fn a_host_that_uploads_after_opening_republishes_its_skin() {
+        let hash = "f".repeat(64);
+        let mut host = offline_session(true, "HOST");
+        host.skin = SKIN_DEFAULT.into();
+        host.set_skin(&hash, &[]);
+        assert_eq!(host.published_skin(), SKIN_DEFAULT, "not uploaded yet: still DEFAULT");
+        host.set_skin(&hash, &[hash.clone()]);
+        assert_eq!(host.published_skin(), hash, "uploaded: the new id is published");
+        host.set_skin(SKIN_DEFAULT, &[hash.clone()]);
+        assert_eq!(host.published_skin(), SKIN_DEFAULT, "a DEFAULT choice publishes DEFAULT");
+    }
+
+    #[test]
+    fn a_guest_publishes_its_chosen_skin_id_once_the_website_holds_it() {
+        let hash = "9".repeat(64);
+        let mut guest = offline_session(false, "GUEST");
+        guest.skin = SKIN_DEFAULT.into();
+        guest.set_skin(&hash, &[]);
+        assert_eq!(guest.published_skin(), SKIN_DEFAULT);
+        guest.set_skin(&hash, &[hash.clone()]);
+        assert_eq!(guest.published_skin(), hash);
+    }
+
+    #[test]
     fn skin_ids_are_cleaned_and_unknown_skins_draw_as_default() {
         assert_eq!(clean_skin(""), SKIN_DEFAULT);
         assert_eq!(clean_skin("  ??  "), SKIN_DEFAULT);
@@ -1432,6 +1631,51 @@ mod tests {
     }
 
     #[test]
+    fn a_late_joiner_is_sent_the_hosts_hunters_and_sabotaged_relays_during_a_run() {
+        let now = Instant::now();
+        let mut host = offline_session(true, "HOST");
+        assert!(host.join_snapshot().is_none(), "no route running: nothing to send on join");
+        host.start_run("ROOM-ABCDE-0123", "STANDARD");
+        let frame = vec![json!({"index": 0, "id": "aki", "state": "CHASE", "position": [1.0, 2.0]})];
+        host.send_hunter_frame(frame.clone(), Difficulty::Standard, None, now);
+        host.set_relays_sabotaged(2);
+        let sent = host.join_snapshot().expect("a run is on: the joiner is sent the snapshot");
+        let mut guest = offline_session(false, "LATE");
+        let mut out = Vec::new();
+        guest.on_message(HOST_PEER_ID, sent, now, &mut out);
+        assert_eq!(out, vec![NetEvent::Hunters(frame.clone())], "the hunters now show at once");
+        assert_eq!(
+            guest.take_snapshot(),
+            Some(hunter_events::Snapshot { hunters: frame, relays_sabotaged: 2 }),
+            "the relay count is kept for the app"
+        );
+        assert_eq!(guest.take_snapshot(), None, "a snapshot is taken once");
+    }
+
+    #[test]
+    fn only_a_host_sends_a_snapshot_and_only_a_guest_takes_one() {
+        let now = Instant::now();
+        let mut host = offline_session(true, "HOST");
+        host.start_run("ROOM-ABCDE-0123", "STANDARD");
+        let mut out = Vec::new();
+        host.on_message(2, host.snapshot_message(), now, &mut out);
+        assert!(out.is_empty(), "a host ignores a snapshot sent to it");
+        assert!(host.take_snapshot().is_none());
+        let mut guest = offline_session(false, "GUEST");
+        assert!(guest.join_snapshot().is_none(), "a guest never sends a snapshot");
+        guest.on_message(HOST_PEER_ID, Message::Snapshot { state: Map::new() }, now, &mut out);
+        assert!(out.is_empty(), "a snapshot without its schema is ignored");
+        assert!(guest.take_snapshot().is_none());
+    }
+
+    #[test]
+    fn a_guests_relay_count_is_not_set_by_the_guest() {
+        let mut guest = offline_session(false, "GUEST");
+        guest.set_relays_sabotaged(5);
+        assert_eq!(guest.snapshot_message(), Message::Snapshot { state: hunter_events::snapshot_state(&[], 0) });
+    }
+
+    #[test]
     fn the_hosts_difficulty_reaches_the_guest_and_a_guest_cannot_set_it() {
         let now = Instant::now();
         let mut host = offline_session(true, "HOST");
@@ -1468,6 +1712,117 @@ mod tests {
     }
 
     /// A session on a discarded relay address: only its in-memory state is used.
+    fn guest_report(what: &str) -> Map<String, Value> {
+        let mut m = Map::new();
+        m.insert("what".into(), json!(what));
+        m
+    }
+
+    #[test]
+    fn a_guests_taser_reaches_the_host_with_its_peer_and_a_clamped_slot() {
+        let now = Instant::now();
+        let mut host = offline_session(true, "HOST");
+        let mut out = Vec::new();
+        let mut high = guest_report("taser");
+        high.insert("slot".into(), json!(99));
+        host.on_message(2, Message::SubmitHunterEvent { event: high }, now, &mut out);
+        let mut low = guest_report("taser");
+        low.insert("slot".into(), json!(-7));
+        host.on_message(3, Message::SubmitHunterEvent { event: low }, now, &mut out);
+        let mut none = guest_report("taser");
+        none.insert("slot".into(), json!("nope"));
+        host.on_message(2, Message::SubmitHunterEvent { event: none }, now, &mut out);
+        let got = host.take_guest_events();
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[0]["what"], json!("taser"));
+        assert_eq!(got[0]["peer_id"], json!(2));
+        assert_eq!(got[0]["slot"], json!(63), "the slot is clamped to the top of the inventory");
+        assert_eq!(got[1]["peer_id"], json!(3));
+        assert_eq!(got[1]["slot"], json!(-1), "a low slot clamps to -1");
+        assert_eq!(got[2]["slot"], json!(-1), "a slot that is not a number is -1");
+        assert!(host.take_guest_events().is_empty(), "taking the events empties the queue");
+        assert!(out.is_empty(), "a guest submission is not a room event");
+    }
+
+    #[test]
+    fn a_capture_report_is_taken_only_for_a_guest_the_host_captured_and_only_once() {
+        let now = Instant::now();
+        let mut host = offline_session(true, "HOST");
+        let mut out = Vec::new();
+        // no capture was sent to peer 2: its escape report is dropped
+        host.on_message(2, Message::SubmitHunterEvent { event: guest_report("escaped") }, now, &mut out);
+        assert!(host.take_guest_events().is_empty());
+        host.expect_capture(2);
+        host.on_message(2, Message::SubmitHunterEvent { event: guest_report("caught") }, now, &mut out);
+        let got = host.take_guest_events();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0]["what"], json!("caught"));
+        assert_eq!(got[0]["peer_id"], json!(2));
+        // the expectation is used up: a second report is dropped
+        host.on_message(2, Message::SubmitHunterEvent { event: guest_report("caught") }, now, &mut out);
+        assert!(host.take_guest_events().is_empty(), "the report is one-shot");
+    }
+
+    #[test]
+    fn a_capture_expectation_belongs_to_its_guest_and_each_report_kind_uses_it() {
+        let now = Instant::now();
+        let mut host = offline_session(true, "HOST");
+        let mut out = Vec::new();
+        host.expect_capture(2);
+        // another guest cannot use peer 2's expectation
+        host.on_message(3, Message::SubmitHunterEvent { event: guest_report("escaped") }, now, &mut out);
+        assert!(host.take_guest_events().is_empty());
+        let mut blocked = guest_report("capture_blocked");
+        blocked.insert("hunter_id".into(), json!("aki"));
+        host.on_message(2, Message::SubmitHunterEvent { event: blocked }, now, &mut out);
+        let got = host.take_guest_events();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0]["what"], json!("capture_blocked"));
+        assert_eq!(got[0]["hunter_id"], json!("aki"), "the report keeps its own fields");
+        assert_eq!(got[0]["peer_id"], json!(2));
+    }
+
+    #[test]
+    fn an_unknown_report_kind_does_not_use_up_the_expectation() {
+        let now = Instant::now();
+        let mut host = offline_session(true, "HOST");
+        let mut out = Vec::new();
+        host.expect_capture(2);
+        host.on_message(2, Message::SubmitHunterEvent { event: guest_report("teleported") }, now, &mut out);
+        assert!(host.take_guest_events().is_empty());
+        host.on_message(2, Message::SubmitHunterEvent { event: guest_report("escaped") }, now, &mut out);
+        assert_eq!(host.take_guest_events().len(), 1, "the expectation is still there for a real report");
+    }
+
+    #[test]
+    fn a_guest_that_leaves_loses_its_pending_capture() {
+        let now = Instant::now();
+        let mut host = offline_session(true, "HOST");
+        let mut out = Vec::new();
+        host.expect_capture(2);
+        host.on_message(2, Message::PeerLeave, now, &mut out);
+        host.on_message(2, Message::SubmitHunterEvent { event: guest_report("caught") }, now, &mut out);
+        assert!(host.take_guest_events().is_empty(), "a left guest's report is not accepted");
+    }
+
+    #[test]
+    fn a_host_sender_and_a_guest_never_apply_a_submitted_event() {
+        let now = Instant::now();
+        let mut host = offline_session(true, "HOST");
+        let mut out = Vec::new();
+        host.on_message(1, Message::SubmitHunterEvent { event: guest_report("taser") }, now, &mut out);
+        host.expect_capture(1);
+        host.on_message(1, Message::SubmitHunterEvent { event: guest_report("caught") }, now, &mut out);
+        assert!(host.take_guest_events().is_empty(), "the host's own id is never a guest");
+
+        let mut guest = offline_session(false, "GUEST");
+        guest.expect_capture(2);
+        guest.on_message(2, Message::SubmitHunterEvent { event: guest_report("taser") }, now, &mut out);
+        guest.on_message(2, Message::SubmitHunterEvent { event: guest_report("caught") }, now, &mut out);
+        assert!(guest.take_guest_events().is_empty(), "a guest never resolves a submission");
+        assert!(out.is_empty());
+    }
+
     fn offline_session(host: bool, name: &str) -> NetSession {
         let (role, link, token) = if host {
             (Role::Host, RelayLink::host("ABCDE", "tok", "127.0.0.1", 9).unwrap(), "tok")

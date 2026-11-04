@@ -105,7 +105,11 @@ pub const HUNTER_VISIBLE_CHASE_SPEED_SCALE: f32 = 1.20;
 pub const UNLIT_SIGHT_SCALE: f32 = 0.5;
 pub const FLASHLIGHT_SIGHT_SCALE: f32 = 3.0;
 pub const FLASHLIGHT_SIGHT_MIN: f32 = 24.0;
+// Standard fallbacks for the relay numbers. The game reads data/progression.json through game::progression; these
+// stay for the admin constants list and the self-test, and a test in progression.rs keeps them equal to the data.
 pub const HUNTER_RELAY_SPEED_BONUS: f32 = 0.1;
+pub const FACILITY_RELAY_COUNT: usize = 5;
+pub const RELAY_SCORE: i32 = 100;
 pub const HUNTER_DEPTH_SPEED_BONUS_PER_LEVEL: f32 = 0.055;
 pub const HUNTER_DEPTH_SPEED_BONUS_MAX: f32 = 0.55;
 pub const HUNTER_ARRIVAL_DISTANCE: f32 = 0.65;
@@ -129,7 +133,6 @@ pub const ESCAPE_KNOCKBACK: f32 = 1.45;
 // -- facility (facility_generator.gd) ---------------------------------------------------------
 pub const FACILITY_COLS: i32 = 45;
 pub const FACILITY_ROWS: i32 = 45;
-pub const FACILITY_RELAY_COUNT: usize = 5;
 pub const FACILITY_BATTERY_COUNT: usize = 7;
 pub const FACILITY_ROOM_COUNT: usize = 9;
 pub const HIDING_SPOT_COUNT: usize = 6;
@@ -142,7 +145,6 @@ pub const ROOM_SECTOR_FILL: f32 = 0.86;
 pub const WALL_HEIGHT: f32 = 5.0;
 pub const SAFE_ZONE_RADIUS: f32 = 2.5;
 pub const SAFE_ZONE_BLOCK_RADIUS: f32 = 3.15;
-pub const RELAY_SCORE: i32 = 100;
 
 pub mod difficulty;
 pub use difficulty::*;

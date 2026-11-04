@@ -42,6 +42,11 @@ pub struct Progression {
     pub rush_relays: i32,
     /// ... once that has held this long, in seconds (RELAY_RUSH_DELAY).
     pub rush_delay: f32,
+    /// Hunters in Search that are at least `rush_search_clear` cells from every runner can also
+    /// be sent to a relay (relay_rush.include_searching).
+    pub rush_search: bool,
+    /// Minimum runner gap, in cells, for a searching hunter to join the rush (relay_rush.search_clear).
+    pub rush_search_clear: f32,
     pub milestones: Vec<Milestone>,
 }
 
@@ -61,6 +66,8 @@ impl Default for Progression {
             chase_speed_bonus_per_relay: 0.1,
             rush_relays: 7,
             rush_delay: 45.0,
+            rush_search: true,
+            rush_search_clear: 12.0,
             milestones: vec![
                 Milestone { relays: 5, unlocks: vec!["service_lift".into()] },
                 Milestone { relays: 7, unlocks: vec!["relay_rush".into()] },
@@ -113,6 +120,12 @@ impl Progression {
         }
         if let Some(x) = v["relay_rush"]["delay_seconds"].as_f64() {
             p.rush_delay = (x as f32).clamp(0.0, 3600.0);
+        }
+        if let Some(b) = v["relay_rush"]["include_searching"].as_bool() {
+            p.rush_search = b;
+        }
+        if let Some(x) = v["relay_rush"]["search_clear"].as_f64() {
+            p.rush_search_clear = (x as f32).clamp(0.0, 1000.0);
         }
         if let Some(list) = v["milestones"].as_array() {
             p.milestones = list
@@ -216,6 +229,19 @@ mod tests {
         assert_eq!(p.gate(Difficulty::Hard).streamed_step, 1);
         assert_eq!(p.gate(Difficulty::Nightmare).streamed_step, 1);
         assert_eq!(*p, Progression::parse(&json!({})), "an empty file keeps the defaults");
+    }
+
+    #[test]
+    fn repeated_loads_return_the_cached_rules() {
+        // load() is called every director tick; it must parse the embedded JSON once and hand
+        // back the same cached value, with the same numbers, on every call.
+        let first = Progression::load();
+        let second = Progression::load();
+        assert!(std::ptr::eq(first, second), "load() should return the one cached instance");
+        assert_eq!(first, second);
+        assert_eq!(first.rush_relays, second.rush_relays);
+        assert_eq!(first.rush_delay, second.rush_delay);
+        assert_eq!(first.relay_score, second.relay_score);
     }
 
     #[test]

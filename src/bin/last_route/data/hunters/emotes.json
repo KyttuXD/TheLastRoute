@@ -1,0 +1,163 @@
+{
+  "schema": "lr.hunter_emotes/1",
+  "note": "Hunter emotes and personalities (Godot: game/config/hunter_emote_catalog.gd, hunter_emote_personality.gd, hunters/ai/hunter_emoter.gd). emotes[] is the catalogue: the array index is the wire value (the hunter state emote), so only ever APPEND. triggers[] say when a hunter emotes (chance, cooldowns, which emotes). personalities[] group hunters by tag and set their emote weights (1 = default, 0 = never) and personal clips. Read by hunters/emotes.rs.",
+  "global_cooldown": 8.0,
+  "probability_scale": {
+    "relaxed": 1.0,
+    "standard": 1.0,
+    "hard": 1.0,
+    "nightmare": 1.0
+  },
+  "emotes": [
+    { "id": "taunt", "label": "Taunt", "clip": "emote_taunt", "fallbacks": [], "face": "scream", "seconds": 1.0, "noise": 0.0, "moving": true },
+    { "id": "laugh", "label": "Laugh", "clip": "emote_laugh", "fallbacks": ["emote_cheer"], "face": "happy", "seconds": 1.6, "noise": 7.0, "moving": false },
+    { "id": "point", "label": "Point", "clip": "emote_point", "fallbacks": [], "face": "chase", "seconds": 1.2, "noise": 0.0, "moving": true },
+    { "id": "beckon", "label": "Beckon", "clip": "emote_beckon", "fallbacks": [], "face": "happy", "seconds": 1.4, "noise": 0.0, "moving": true },
+    { "id": "shrug", "label": "Shrug", "clip": "emote_shrug", "fallbacks": [], "face": "blank", "seconds": 1.4, "noise": 0.0, "moving": false },
+    { "id": "look_around", "label": "Look around", "clip": "emote_look_around", "fallbacks": [], "face": "derp", "seconds": 2.2, "noise": 0.0, "moving": false },
+    { "id": "smug", "label": "Smug", "clip": "emote_smug", "fallbacks": ["emote_bow"], "face": "happy", "seconds": 2.2, "noise": 0.0, "moving": false },
+    { "id": "dance", "label": "Dance", "clip": "emote_dance", "fallbacks": ["emote_cheer"], "face": "happy", "seconds": 3.0, "noise": 5.0, "moving": false },
+    { "id": "flinch", "label": "Flinch", "clip": "emote_flinch", "fallbacks": [], "face": "stun", "seconds": 0.7, "noise": 0.0, "moving": false },
+    { "id": "stretch", "label": "Stretch", "clip": "emote_stretch", "fallbacks": [], "face": "blink", "seconds": 2.0, "noise": 0.0, "moving": false },
+    { "id": "yawn", "label": "Yawn", "clip": "emote_yawn", "fallbacks": [], "face": "blink", "seconds": 1.8, "noise": 0.0, "moving": false },
+    { "id": "hum", "label": "Hum", "clip": "emote_hum", "fallbacks": [], "face": "happy", "seconds": 2.4, "noise": 4.0, "moving": false },
+    { "id": "wave", "label": "Wave", "clip": "emote_wave", "fallbacks": [], "face": "happy", "seconds": 1.6, "noise": 0.0, "moving": false },
+    { "id": "victory", "label": "Victory", "clip": "emote_victory", "fallbacks": ["emote_cheer"], "face": "happy", "seconds": 3.5, "noise": 0.0, "moving": false }
+  ],
+  "void_fallbacks": {
+    "taunt": "emote_loom",
+    "point": "emote_stare",
+    "beckon": "emote_stare",
+    "shrug": "emote_tilt",
+    "look_around": "emote_tilt",
+    "smug": "emote_loom",
+    "flinch": "emote_twitch",
+    "victory": "emote_loom"
+  },
+  "triggers": [
+    {
+      "name": "spot",
+      "emotes": ["taunt", "laugh"],
+      "chance": 0.30,
+      "note": "CHASE begins (event)"
+    },
+    {
+      "name": "lose",
+      "emotes": ["shrug"],
+      "chance": 0.50,
+      "note": "CHASE ends (event)"
+    },
+    {
+      "name": "search",
+      "emotes": ["look_around"],
+      "chance": 0.35,
+      "min_seconds": 1.2,
+      "note": "SEARCH held for min_seconds, once per search (event)"
+    },
+    {
+      "name": "chase",
+      "emotes": ["point", "beckon"],
+      "chance": 0.035,
+      "per_second": true,
+      "cooldown": 14.0,
+      "min_distance": 3.5,
+      "note": "sprinting at the runner at least min_distance metres away, chance per second"
+    },
+    {
+      "name": "idle",
+      "emotes": ["stretch", "yawn", "hum", "wave"],
+      "chance": 0.035,
+      "per_second": true,
+      "cooldown": 20.0,
+      "min_seconds": 2.0,
+      "note": "standing in IDLE for min_seconds, chance per second"
+    },
+    {
+      "name": "catch",
+      "emotes": ["smug", "dance", "laugh"],
+      "chance": 0.85,
+      "note": "a runner was caught and others are still playing (queued after the stun)"
+    },
+    {
+      "name": "wipe",
+      "emotes": ["victory"],
+      "chance": 1.0,
+      "note": "everyone is down (queued)"
+    },
+    {
+      "name": "stun",
+      "emotes": ["flinch"],
+      "chance": 1.0,
+      "ignores_global_cooldown": true,
+      "note": "stun begins"
+    }
+  ],
+  "personalities": [
+    {
+      "tag": "protective",
+      "hunters": ["kathy"],
+      "weights": { "taunt": 0.0, "smug": 0.0, "dance": 0.0, "laugh": 0.3, "stretch": 0.3, "yawn": 0.2, "hum": 0.4, "wave": 1.5, "beckon": 1.8, "point": 1.2, "look_around": 2.0, "shrug": 0.5, "victory": 0.3 }
+    },
+    {
+      "tag": "shy",
+      "hunters": ["aki"],
+      "weights": { "stretch": 1.5, "wave": 1.5, "taunt": 0.2, "laugh": 0.3, "smug": 0.3 },
+      "clips": { "stretch": "emote_shy" }
+    },
+    {
+      "tag": "jumpy",
+      "hunters": ["ferryn"],
+      "weights": { "taunt": 0.0, "laugh": 0.0, "hum": 0.0, "smug": 0.0, "dance": 0.0, "victory": 0.0, "stretch": 0.2, "yawn": 0.3, "point": 0.4, "beckon": 0.3, "look_around": 2.0, "shrug": 2.5, "wave": 1.0, "flinch": 2.5 }
+    },
+    {
+      "tag": "music_box",
+      "hunters": ["glyra"],
+      "weights": { "hum": 3.0, "dance": 2.0, "wave": 0.5 }
+    },
+    {
+      "tag": "playful",
+      "hunters": ["xivvy"],
+      "weights": { "dance": 2.0, "laugh": 2.0, "wave": 1.5, "shrug": 0.5 }
+    },
+    {
+      "tag": "incinerator",
+      "hunters": ["loxelle"],
+      "weights": { "taunt": 1.5, "laugh": 1.5, "yawn": 0.5 }
+    },
+    {
+      "tag": "shadow",
+      "hunters": ["ilyra"],
+      "weights": { "point": 0.0, "beckon": 0.0, "look_around": 1.5, "stretch": 0.0 }
+    },
+    {
+      "tag": "pursuer",
+      "hunters": ["haelith"],
+      "weights": { "point": 2.0 }
+    },
+    {
+      "tag": "coach",
+      "hunters": ["javelle"],
+      "weights": { "smug": 0.0, "taunt": 0.6, "beckon": 2.0, "point": 2.0, "laugh": 0.5, "shrug": 0.8, "wave": 1.0 }
+    },
+    {
+      "tag": "hostess",
+      "hunters": ["briselle"],
+      "weights": { "smug": 0.0, "taunt": 0.3, "laugh": 0.8, "wave": 1.5, "beckon": 1.5, "shrug": 1.5, "dance": 1.0, "victory": 0.5 }
+    },
+    {
+      "tag": "riddle",
+      "hunters": ["ceryth"],
+      "weights": { "look_around": 2.0, "taunt": 0.0 }
+    },
+    {
+      "tag": "competitive",
+      "hunters": ["elise"],
+      "weights": { "hum": 0.0, "stretch": 0.5, "yawn": 0.3, "point": 1.3, "taunt": 1.3, "victory": 1.5 }
+    },
+    {
+      "tag": "void",
+      "hunter_prefix": "void_",
+      "weights": { "laugh": 0.0, "hum": 0.0, "dance": 0.0, "wave": 0.0, "yawn": 0.0, "stretch": 0.0, "smug": 0.5 }
+    }
+  ]
+}

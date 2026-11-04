@@ -880,8 +880,10 @@ impl Game {
             if fresh {
                 self.checkpoint_activated();
             }
+            // a guest's hunter states come from the host's frames, so the lure is the host's to make
+            let host = !self.remote_hunters;
             for h in self.hunters.iter_mut() {
-                if h.active && pdist(h.pos, centre) <= SAFE_ROOM_LURE_REACH {
+                if host && h.active && pdist(h.pos, centre) <= SAFE_ROOM_LURE_REACH {
                     h.state = State::Investigate;
                     h.last_known = Some(centre);
                 }
@@ -1003,12 +1005,15 @@ impl Game {
         }
         let (sx, sy) = ((rx * CHUNK) as f32, (ry * CHUNK) as f32);
         self.p.pos = (self.p.pos.0 - sx, self.p.pos.1 - sy);
-        for h in self.hunters.iter_mut() {
-            h.pos = (h.pos.0 - sx, h.pos.1 - sy);
-            h.last_known = h.last_known.map(|k| (k.0 - sx, k.1 - sy));
-            h.wander_target = h.wander_target.map(|k| (k.0 - sx, k.1 - sy));
-            h.search_target = h.search_target.map(|k| (k.0 - sx, k.1 - sy));
-            h.clear_path();
+        // a guest's hunters stay where the host's frames put them: the host shifts its own and sends the result
+        if !self.remote_hunters {
+            for h in self.hunters.iter_mut() {
+                h.pos = (h.pos.0 - sx, h.pos.1 - sy);
+                h.last_known = h.last_known.map(|k| (k.0 - sx, k.1 - sy));
+                h.wander_target = h.wander_target.map(|k| (k.0 - sx, k.1 - sy));
+                h.search_target = h.search_target.map(|k| (k.0 - sx, k.1 - sy));
+                h.clear_path();
+            }
         }
         // NPC teammates share the window frame, so they shift with it (game/npc.rs)
         for n in self.npcs.iter_mut() {
@@ -1025,6 +1030,10 @@ impl Game {
 
     /// Off level 0: the hunters that stand outside the window (or in a wall) come back in out of sight.
     fn respawn_outside_window(&mut self) {
+        // a guest's hunters are placed by the host's frames: it does not move them
+        if self.remote_hunters {
+            return;
+        }
         let size = (CHUNK * 3) as f32;
         let mut rng = Rng::new(&format!(
             "{}:RESPAWN:{}",
@@ -2174,6 +2183,45 @@ mod tests {
         if g.hunters.len() > 1 {
             assert_ne!(g.hunters[1].state, State::Investigate, "an inactive hunter is not lured");
         }
+    }
+
+    #[test]
+    fn a_guest_is_not_lured_by_the_safe_room_because_the_host_sets_its_hunters() {
+        let (mut g, _, _) = in_room();
+        g.remote_hunters = true;
+        let c = middle_safe_centre();
+        g.hunters[0].active = true;
+        g.hunters[0].pos = (c.0 + 10.0, c.1);
+        g.hunters[0].state = State::Wander;
+        g.hunters[0].last_known = None;
+        for _ in 0..30 {
+            g.safe_room_step(1.0 / 30.0);
+        }
+        assert_eq!(g.hunters[0].state, State::Wander, "the host's frames set a guest's hunter state");
+        assert_eq!(g.hunters[0].last_known, None);
+    }
+
+    #[test]
+    fn a_guest_keeps_its_hunter_positions_when_the_window_moves() {
+        let (mut g, content, catalog) = in_room();
+        // off level 0 the move does not run residency, so the only hunter writes are the shift and the respawn
+        g.inf.as_mut().unwrap().level = -1;
+        g.remote_hunters = true;
+        let before: Vec<(f32, f32)> = g.hunters.iter().map(|h| h.pos).collect();
+        assert!(!before.is_empty());
+        g.p.pos.0 += CHUNK as f32;
+        g.recentre_window(&content, &catalog);
+        let after: Vec<(f32, f32)> = g.hunters.iter().map(|h| h.pos).collect();
+        assert_eq!(after, before, "a guest does not shift or respawn hunters on a window move");
+    }
+
+    #[test]
+    fn a_guest_is_not_respawned_out_of_the_window() {
+        let (mut g, _, _) = in_room();
+        g.remote_hunters = true;
+        g.hunters[0].pos = (-5.0, 0.5);
+        g.respawn_outside_window();
+        assert_eq!(g.hunters[0].pos, (-5.0, 0.5), "the host respawns the hunter, not the guest");
     }
 
     #[test]

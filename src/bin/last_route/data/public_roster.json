@@ -14,5 +14,17 @@
     "fallback_radius_scale": 2.0,
     "dwell_msec": 20000,
     "speed_scale": 1.0
+  },
+  "messages": {
+    "unavailable": "PUBLIC ROUTE IS NOT AVAILABLE IN THIS BUILD YET",
+    "joining": "JOINING PUBLIC ROUTE",
+    "started": "PUBLIC ROUTE STARTED",
+    "join_rate_limited": "TOO MANY JOIN REQUESTS"
+  },
+  "limits": {
+    "join_grace_msec": 10000,
+    "join_per_minute": 20,
+    "player_ttl_msec": 20000,
+    "resume_ttl_msec": 21600000
   }
 }

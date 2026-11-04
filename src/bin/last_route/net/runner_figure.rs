@@ -42,6 +42,17 @@ pub struct Bone {
     pub max_rad: f32,
 }
 
+/// How NPC teammates (bots) wear the runner body, from the `bots` section of models.json.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BotSpec {
+    /// The skin ids a bot may wear. A bot picks one by a hash of its guest name; an empty list draws the atlas.
+    pub skins: Vec<String>,
+    /// Swing amplitude of a walking bot, the same units as a runner's `amp`.
+    pub walk_amp: f32,
+    /// Radians of swing per metre walked (a bot's stride is in metres).
+    pub stride_swing: f32,
+}
+
 /// The runner body and its pose, as models.json states them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunnerPose {
@@ -54,6 +65,8 @@ pub struct RunnerPose {
     pub standing_swing: f32,
     pub standing_amp: f32,
     pub bones: Vec<Bone>,
+    /// How NPC teammates wear and swing the same body.
+    pub bots: BotSpec,
 }
 
 impl RunnerPose {
@@ -78,6 +91,18 @@ impl RunnerPose {
             });
         }
         bones.sort_by(|a, b| a.name.cmp(&b.name));
+        let bots_v = &v["bots"];
+        let skins = bots_v["skins"]
+            .as_array()
+            .ok_or("bots.skins is missing or not a list")?
+            .iter()
+            .map(|s| s.as_str().map(str::to_string).ok_or("bots.skins holds a value that is not a string"))
+            .collect::<Result<Vec<_>, _>>()?;
+        let bots = BotSpec {
+            skins,
+            walk_amp: num(bots_v, "walk_amp")?,
+            stride_swing: num(bots_v, "stride_swing")?,
+        };
         Ok(RunnerPose {
             body,
             model,
@@ -85,6 +110,7 @@ impl RunnerPose {
             standing_swing,
             standing_amp,
             bones,
+            bots,
         })
     }
 
@@ -182,6 +208,68 @@ pub fn draw_runners(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, rem
     }
 }
 
+/// The skin a bot wears: one of `skins`, picked by an FNV-1a hash of its guest name, so the same name always gets the
+/// same skin. An empty list draws DEFAULT.
+pub fn bot_skin(name: &str, skins: &[String]) -> String {
+    if skins.is_empty() {
+        return SKIN_DEFAULT.to_string();
+    }
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in name.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    skins[(h % skins.len() as u64) as usize].clone()
+}
+
+/// The swing and amplitude of a bot at its stride. A bot that is not walking stands still (amplitude 0).
+pub fn bot_swing(bots: &BotSpec, stride: f32, walking: bool) -> (f32, f32) {
+    (stride * bots.stride_swing, if walking { bots.walk_amp } else { 0.0 })
+}
+
+/// One NPC teammate as the 3D view needs it: its guest name (the skin seed), its floor position and yaw, and its
+/// stride and walk state.
+pub struct BotView<'a> {
+    pub name: &'a str,
+    pub at: (f32, f32),
+    pub facing: f32,
+    pub stride: f32,
+    pub walking: bool,
+}
+
+/// Draws NPC teammates with the runner mannequin, bent the same way a runner's limbs bend, each wearing its skin (see
+/// [`bot_skin`]). The caller sets the camera and material, as for [`draw_runners`]. Draws nothing for an empty list.
+pub fn draw_bots(a: &Assets, bots: &[BotView]) {
+    if bots.is_empty() {
+        return;
+    }
+    let Some(body) = a.npc_body.as_ref() else {
+        return;
+    };
+    let pose = runner_pose();
+    let skins: &[String] = pose.map(|p| p.bots.skins.as_slice()).unwrap_or(&[]);
+    for b in bots {
+        let (swing, amp) = pose.map(|p| bot_swing(&p.bots, b.stride, b.walking)).unwrap_or((0.0, 0.0));
+        let bones = bone_transforms(pose, &body.groups, swing, amp);
+        let skin = bot_skin(b.name, skins);
+        let texture = match pick(&skin, &|id| a.skin_texture(id).is_some()) {
+            Pick::Skin(id) => a.skin_texture(&id).unwrap_or_else(|| body.texture.clone()),
+            Pick::Atlas => body.texture.clone(),
+        };
+        let root = Mat4::from_translation(vec3(b.at.0, 0.0, b.at.1))
+            * Mat4::from_rotation_y(b.facing)
+            * Mat4::from_scale(Vec3::splat(body.scale));
+        let mut verts = vec![];
+        let mut idx = vec![];
+        body.build_posed(&mut verts, &mut idx, root, &|k: usize| bones[k], Vec2::ZERO, WHITE);
+        draw_mesh(&Mesh {
+            vertices: verts,
+            indices: idx,
+            texture: Some(texture),
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,5 +359,55 @@ mod tests {
         assert!(RunnerPose::parse("{}").is_err());
         let text = shipped_text().replacen("\"side\": 1.0", "\"sde\": 1.0", 1);
         assert!(RunnerPose::parse(&text).is_err(), "a missing bone field is reported");
+        let no_bots = shipped_text().replacen("\"bots\": {", "\"bots_gone\": {", 1);
+        assert!(RunnerPose::parse(&no_bots).is_err(), "a missing bots section is reported");
+    }
+
+    #[test]
+    fn shipped_bots_wear_the_default_skin_and_swing_as_the_current_game() {
+        let pose = RunnerPose::parse(shipped_text()).unwrap();
+        assert_eq!(pose.bots.skins, vec![SKIN_DEFAULT.to_string()], "Standard bots draw the atlas, as before");
+        assert_eq!(pose.bots.walk_amp, 0.6, "the walking NPC swing scene.rs used");
+        assert_eq!(pose.bots.stride_swing, 2.4, "the stride scale scene.rs used");
+        // A standing bot does not swing; a walking bot bends its arms and legs like a runner does.
+        assert_eq!(bot_swing(&pose.bots, 1.0, false), (2.4, 0.0));
+        let (swing, amp) = bot_swing(&pose.bots, std::f32::consts::FRAC_PI_2 / 2.4, true);
+        let bent = pose.angle("R-Arm", swing, amp).unwrap();
+        assert!(bent.abs() > 0.1, "a walking bot's arm bends, got {bent}");
+        assert!((bent - 0.9 * 0.6).abs() < 1e-5, "the arm bends by its amp times the walk amp, got {bent}");
+    }
+
+    #[test]
+    fn a_bot_skin_is_stable_and_comes_from_the_data_list() {
+        let none: Vec<String> = vec![];
+        assert_eq!(bot_skin("K-04817", &none), SKIN_DEFAULT, "an empty list draws DEFAULT");
+        let two = vec!["SKIN_A".to_string(), "SKIN_B".to_string()];
+        let names = ["K-04817", "R-04821", "B-00001", "Q-99999", "M-12345", "T-54321", "D-20000", "F-30303"];
+        let picked: Vec<String> = names.iter().map(|n| bot_skin(n, &two)).collect();
+        for p in &picked {
+            assert!(two.contains(p), "{p} is not one of the data skins");
+        }
+        for (n, p) in names.iter().zip(&picked) {
+            assert_eq!(&bot_skin(n, &two), p, "the same guest name keeps its skin");
+        }
+        assert!(picked.iter().any(|p| p == "SKIN_A") && picked.iter().any(|p| p == "SKIN_B"), "the names spread over the list");
+        let one = vec!["ONLY".to_string()];
+        assert_eq!(bot_skin("K-04817", &one), "ONLY");
+    }
+
+    #[test]
+    fn changing_the_data_changes_the_bots() {
+        let text = shipped_text();
+        let swapped = text.replacen("\"skins\": [\"DEFAULT\"]", "\"skins\": [\"SKIN_A\", \"SKIN_B\"]", 1);
+        let pose = RunnerPose::parse(&swapped).unwrap();
+        assert_eq!(pose.bots.skins, vec!["SKIN_A".to_string(), "SKIN_B".to_string()], "the skin list comes from data");
+        let slower = text.replacen("\"walk_amp\": 0.6", "\"walk_amp\": 0.3", 1);
+        let pose = RunnerPose::parse(&slower).unwrap();
+        let (swing, amp) = bot_swing(&pose.bots, 1.0, true);
+        assert_eq!(amp, 0.3, "a new walk amplitude changes how far a bot bends");
+        assert_eq!(swing, 2.4);
+        let quicker = text.replacen("\"stride_swing\": 2.4", "\"stride_swing\": 4.0", 1);
+        let pose = RunnerPose::parse(&quicker).unwrap();
+        assert_eq!(bot_swing(&pose.bots, 1.0, true).0, 4.0, "a new stride scale changes the swing rate");
     }
 }

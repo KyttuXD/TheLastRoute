@@ -1,6 +1,6 @@
-//! Player bots (NPC teammates), phase one: the admin spawns bots in an offline room and they follow the runner.
-//! This is the offline core of Godot's `game/player/npc_teammates.gd` (spawn, the follow rule, the
-//! walk and the turn spring) and of the host's spawn spot rule (`infinite_route_test.gd` 6769-6779).
+//! Player bots (NPC teammates): the admin spawns bots in an offline room and they follow the runner, and a normal run
+//! starts with a few more. This is the offline core of Godot's `game/player/npc_teammates.gd` (spawn, the follow rule,
+//! the walk and the turn spring) and of the host's spawn spot rule (`infinite_route_test.gd` 6769-6779).
 //! No server is involved: the bots live on the `Game` for the run and nothing is sent anywhere.
 //!
 //! An NPC here is a bot standing in for a player, not an in-world character. It has the runner's body
@@ -8,8 +8,16 @@
 //! walking up to it (hunters do); it stops at a shut door, faces it, waits a short seeded think delay and presses
 //! interact through the same `press_door` path as the runner, then walks on once the opening fits its body.
 //!
+//! The bots play like fake players. Their choices come from data/npcs.json: `intents` lists what a bot tries, in
+//! order, and the first that applies this frame runs. "hide" sends a chased bot into a locker; "flee" runs it from a
+//! chasing hunter; "relay" and "locker" are errands that take a bot to a relay or locker near the runner when nothing
+//! is chasing it and no hunter is searching there; "follow" walks it back to the runner. A hidden bot comes out once
+//! the chase is over. A bot avoids the points hunters searched when it picks an errand spot, and it shuts an open door
+//! once it has walked clear of it.
+//!
 //! Deferred (see docs/NPC_TEAMMATES in the Godot tree): per-NPC commands, catching,
-//! chat, storey crossing, co-op packets, name tags, saves, and the mannequin body.
+//! chat, storey crossing, co-op packets, name tags, saves, and the mannequin body. A bot's relay errand stands at the
+//! relay but does not claim it.
 
 use super::pdist;
 use super::Game;
@@ -53,8 +61,9 @@ const LOOKAHEAD_CELLS: usize = 4;
 /// Metres between the body checks along a step. A body is 0.46 m across, so this never skips a wall corner.
 const SWEEP_STEP: f32 = 0.05;
 
-/// The bots' thresholds and task list, from the `threat`, `follow`, `door` and `tasks` keys of data/npcs.json. Every
-/// number the bot uses lives there; the code keeps only the behaviour.
+/// The bots' thresholds, priorities and errand list, from the `intents`, `threat`, `follow`, `door`, `tasks`, `hide`,
+/// `errand`, `searched` and `doors` keys of data/npcs.json. Every number the bot uses lives there; the code keeps only
+/// the behaviour.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tuning {
     /// Godot `THREAT_RANGE` (npc_teammates.gd 25): metres a chasing hunter is noticed at, before the smart scale.
@@ -73,7 +82,40 @@ pub struct Tuning {
     pub door_think: f32,
     /// The seeded spread added to `door_think`.
     pub door_think_jitter: f32,
-    /// The tasks a bot does. Only "door" (press shut doors for the runner) is built; relays and lockers are not.
+    /// The intents a bot tries, in order (data `intents`): "hide", "flee", "relay", "locker", "follow". The first that
+    /// applies this frame runs. A name the bot does not know is skipped. Only a joined bot runs an intent but "flee".
+    pub intents: Vec<String>,
+    /// Metres a chasing hunter is seen at for a bot to go and hide (data `hide.chase_range`).
+    pub hide_chase_range: f32,
+    /// Metres from a bot to the nearest locker it may run to and hide in when chased (data `hide.reach`).
+    pub hide_reach: f32,
+    /// Metres from a locker's centre at which the bot is inside it (data `hide.enter_radius`).
+    pub enter_radius: f32,
+    /// Metres from a hidden bot to a chasing hunter that keeps it in the locker (data `hide.leave_range`).
+    pub hide_leave_range: f32,
+    /// Seconds with no chaser within `hide_leave_range` before a hidden bot comes out (data `hide.leave_delay`).
+    pub hide_leave_delay: f32,
+    /// Metres from a relay or locker within which a hunter makes it unsafe for an errand (data `errand.safe_range`).
+    pub errand_safe_range: f32,
+    /// Metres from an errand's spot at which the bot is there (data `errand.reach`).
+    pub errand_reach: f32,
+    /// Metres from the runner a relay may be for a bot to go to it (data `errand.relay.leash`).
+    pub relay_leash: f32,
+    /// Seconds a bot stands at a relay (data `errand.relay.dwell`).
+    pub relay_dwell: f32,
+    /// Metres from the runner a locker may be for a bot to go to it (data `errand.locker.leash`).
+    pub locker_leash: f32,
+    /// Seconds a bot stays hidden in a locker on a locker errand (data `errand.locker.dwell`).
+    pub locker_dwell: f32,
+    /// Searched points a bot remembers (data `searched.memory`).
+    pub searched_memory: usize,
+    /// Metres round a searched point, or a hunter searching now, that a bot picks no spot in (data `searched.avoid_radius`).
+    pub searched_avoid: f32,
+    /// Metres from a door's centre at which a bot counts itself at that door (data `doors.near`).
+    pub door_near: f32,
+    /// Metres from a door's centre at which a bot is clear of it and shuts it behind itself (data `doors.close_clear`).
+    pub close_clear: f32,
+    /// The tasks a bot does. Only "door" (press shut doors for the runner) is built.
     pub tasks: Vec<String>,
 }
 
@@ -83,6 +125,10 @@ impl Tuning {
         let num = |node: &Value, key: &str| node[key].as_f64().map(|x| x as f32);
         let threat = &v["threat"];
         let door = &v["door"];
+        let hide = &v["hide"];
+        let errand = &v["errand"];
+        let searched = &v["searched"];
+        let doors = &v["doors"];
         Some(Tuning {
             threat_range: num(threat, "range")?,
             smart_base: num(threat, "smart_base")?,
@@ -92,6 +138,26 @@ impl Tuning {
             follow_radius: num(&v["follow"], "radius")?,
             door_think: num(door, "think")?,
             door_think_jitter: num(door, "think_jitter")?,
+            intents: v["intents"]
+                .as_array()?
+                .iter()
+                .filter_map(|t| t.as_str().map(str::to_string))
+                .collect(),
+            hide_chase_range: num(hide, "chase_range")?,
+            hide_reach: num(hide, "reach")?,
+            enter_radius: num(hide, "enter_radius")?,
+            hide_leave_range: num(hide, "leave_range")?,
+            hide_leave_delay: num(hide, "leave_delay")?,
+            errand_safe_range: num(errand, "safe_range")?,
+            errand_reach: num(errand, "reach")?,
+            relay_leash: num(&errand["relay"], "leash")?,
+            relay_dwell: num(&errand["relay"], "dwell")?,
+            locker_leash: num(&errand["locker"], "leash")?,
+            locker_dwell: num(&errand["locker"], "dwell")?,
+            searched_memory: num(searched, "memory")?.max(0.0) as usize,
+            searched_avoid: num(searched, "avoid_radius")?,
+            door_near: num(doors, "near")?,
+            close_clear: num(doors, "close_clear")?,
             tasks: v["tasks"]
                 .as_array()?
                 .iter()
@@ -106,7 +172,7 @@ impl Tuning {
         TUNING.get_or_init(|| {
             // Read through the content loader (content/npcs.rs), so the embedded default is the one place it lives
             let v = crate::content::npcs::embedded_json();
-            Tuning::parse(&v).expect("data/npcs.json has the threat, follow, door and tasks keys")
+            Tuning::parse(&v).expect("data/npcs.json has every key the bots read")
         })
     }
 
@@ -118,6 +184,13 @@ impl Tuning {
 
 /// A hunter as a bot sees it: its floor position and whether it is chasing.
 type Seen = ((f32, f32), bool);
+
+/// A relay or locker a bot goes to on an errand (data `errand`), by index into `fac.relays` or `fac.hiding`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Errand {
+    Relay(usize),
+    Locker(usize),
+}
 
 /// One player bot (NPC teammate). Fields for the deferred features (catch, revive, chat, admin commands) are
 /// added when those land.
@@ -157,6 +230,20 @@ pub struct Npc {
     pub join_radius: f32,
     /// The shut door the bot stands at and the think time left before it presses interact on it.
     pub door: Option<(Cell, f32)>,
+    /// The locker (an index into `fac.hiding`) the bot is inside, while it hides.
+    pub hidden: Option<usize>,
+    /// The relay or locker errand the bot is on.
+    pub errand: Option<Errand>,
+    /// Seconds the bot has stood at its errand spot (a relay) or hidden on its locker errand.
+    pub dwell: f32,
+    /// Relays and lockers this bot has already been to on this floor, so it does not loop on one spot.
+    pub visited: Vec<Errand>,
+    /// Seconds hidden with no chaser within `hide_leave_range`.
+    pub clear_time: f32,
+    /// Points hunters were searching, most recent last (at most `searched_memory`; a point near a kept one is not new).
+    pub searched: Vec<(f32, f32)>,
+    /// The door the bot last came near, which it shuts once it has walked clear of it.
+    pub last_door: Option<Cell>,
 }
 
 impl Npc {
@@ -164,9 +251,22 @@ impl Npc {
     /// replanned at once.
     pub fn shift(&mut self, d: (f32, f32)) {
         self.at = (self.at.0 + d.0, self.at.1 + d.1);
+        self.forget_frame();
+    }
+
+    /// Drops what the bot knew about the old frame: its route, its door, its hide, its errand, its visits and the points
+    /// it saw searched (all positions and indices in the old floor).
+    fn forget_frame(&mut self) {
         self.path.clear();
         self.path_age = REPATH;
         self.door = None;
+        self.hidden = None;
+        self.errand = None;
+        self.dwell = 0.0;
+        self.visited.clear();
+        self.clear_time = 0.0;
+        self.searched.clear();
+        self.last_door = None;
     }
 }
 
@@ -290,10 +390,18 @@ fn plan(n: &mut Npc, fac: &Facility, goal: (f32, f32)) {
     }
 }
 
+/// The door (its threshold cell) whose centre is nearer `p` than `r` metres, if there is one.
+fn door_near(fac: &Facility, p: (f32, f32), r: f32) -> Option<Cell> {
+    fac.doors()
+        .find(|&(_, c)| pdist(p, c) < r)
+        .map(|(i, _)| fac.props[i].cell)
+}
+
 /// Godot `_walk_toward`: one step toward `goal` along the planned route (`path`, replanned every `REPATH` seconds).
 /// The bot aims at the furthest of the next `LOOKAHEAD_CELLS` cells it reaches in a straight line its body fits on, so
 /// it follows the route round a corner and never cuts one. A shut door in the way stops it (`wait_at_door`). A step
 /// that runs into a wall is not slid along: the route is replanned at once and the bot waits for its next step.
+/// Passing a door records it as the bot's last door, to be shut once the bot is clear of it.
 fn walk_toward(n: &mut Npc, fac: &Facility, goal: (f32, f32), running: bool, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) {
     let here = n.at;
     n.path_age += dt;
@@ -304,14 +412,29 @@ fn walk_toward(n: &mut Npc, fac: &Facility, goal: (f32, f32), running: bool, t: 
         n.walking = false;
         return;
     }
+    if let Some(d) = door_near(fac, here, t.door_near) {
+        n.last_door = Some(d);
+    }
     // a bot already inside a door's slab is let out, and one inside a wall is not checked for walls (as before)
     let in_door = fac.door_in_way(here.0, here.1, NAV_RADIUS).is_some();
     let fits = fac.body_fits(here.0, here.1, NAV_RADIUS);
-    if fits && !in_door {
+    // the frame after a fresh route (a blocked step replans) aims at its first cell: cutting the route short again is what
+    // aimed a bot hugging a corner at the same blocked step every frame
+    let just_planned = n.path_age <= dt * 1.5;
+    if fits && !in_door && !just_planned {
         let reach = n.path.len().min(LOOKAHEAD_CELLS);
         let ahead = (1..reach).rev().find(|&k| {
             let c = (n.path[k].0 as f32 + 0.5, n.path[k].1 as f32 + 0.5);
-            matches!(sweep(fac, here, c), Sweep::Clear)
+            // the line must be clear, and so must the one step the bot is about to take along it: a long sweep can
+            // step over a corner that the short one clips, which would leave a bot hugging a wall frozen
+            let len = pdist(here, c);
+            let step_to = if len > 1e-6 {
+                let s = (if running { PLAYER_SPRINT_SPEED } else { PLAYER_WALK_SPEED } * dt).min(len);
+                (here.0 + (c.0 - here.0) / len * s, here.1 + (c.1 - here.1) / len * s)
+            } else {
+                c
+            };
+            matches!(sweep(fac, here, c), Sweep::Clear) && matches!(sweep(fac, here, step_to), Sweep::Clear)
         });
         if let Some(k) = ahead {
             n.path.drain(..k);
@@ -412,6 +535,227 @@ fn flee(n: &mut Npc, fac: &Facility, seen: &[Seen], t: &Tuning, dt: f32, presses
     true
 }
 
+/// What a bot sees on one frame: the facility, which lockers are burnt out, the runner, the hunters seen and the
+/// points hunters are searching now.
+struct Scene<'a> {
+    fac: &'a Facility,
+    disabled: &'a [bool],
+    leader: (f32, f32),
+    seen: &'a [Seen],
+    searching: &'a [(f32, f32)],
+}
+
+/// True when a chasing hunter is nearer `p` than `range` metres.
+fn chaser_within(seen: &[Seen], p: (f32, f32), range: f32) -> bool {
+    seen.iter().any(|&(c, chasing)| chasing && pdist(p, c) < range)
+}
+
+/// True when one of `points` is nearer `p` than `r` metres.
+fn near_any(points: &[(f32, f32)], p: (f32, f32), r: f32) -> bool {
+    points.iter().any(|&q| pdist(p, q) < r)
+}
+
+/// Records the points hunters are searching now. A point within `searched_avoid` of one already kept is not new. The
+/// newest `searched_memory` points are kept.
+fn note_searched(n: &mut Npc, searching: &[(f32, f32)], t: &Tuning) {
+    for &p in searching {
+        if !near_any(&n.searched, p, t.searched_avoid) {
+            n.searched.push(p);
+        }
+    }
+    let excess = n.searched.len().saturating_sub(t.searched_memory);
+    n.searched.drain(..excess);
+}
+
+/// The bot is inside locker `i`: hidden, at the locker's centre, not moving.
+fn hide_in(n: &mut Npc, centre: (f32, f32), i: usize) {
+    n.hidden = Some(i);
+    n.at = centre;
+    n.path.clear();
+    n.walking = false;
+    n.door = None;
+    n.clear_time = 0.0;
+}
+
+/// The bot comes out of locker `i` at its front (`hiding_exit`) and forgets the route it had. `i` must index `fac.hiding`.
+fn come_out(n: &mut Npc, fac: &Facility, i: usize) {
+    n.hidden = None;
+    n.clear_time = 0.0;
+    n.at = crate::hunters::gimmicks::hiding_exit(fac, i);
+    n.path.clear();
+    n.path_age = REPATH;
+}
+
+/// Walks to locker `i` (running when `running`). Once within `enter_radius` of its centre the bot is inside it.
+fn go_to_locker(n: &mut Npc, sc: &Scene, i: usize, running: bool, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) {
+    let centre = sc.fac.locker_center(&sc.fac.hiding[i]);
+    if pdist(n.at, centre) <= t.enter_radius {
+        hide_in(n, centre, i);
+    } else {
+        walk_toward(n, sc.fac, centre, running, t, dt, presses);
+    }
+}
+
+/// Hide (data `hide`): a chasing hunter within `chase_range` and a locker within `reach` send the bot running to the
+/// nearest such locker, not burnt out. True when the bot acted.
+fn hide(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -> bool {
+    if !chaser_within(sc.seen, n.at, t.hide_chase_range) {
+        return false;
+    }
+    let near = sc
+        .fac
+        .hiding
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !sc.disabled.get(*i).copied().unwrap_or(false))
+        .map(|(i, h)| (i, pdist(n.at, sc.fac.locker_center(h))))
+        .filter(|&(_, d)| d <= t.hide_reach)
+        .min_by(|a, b| a.1.total_cmp(&b.1));
+    let Some((i, _)) = near else { return false };
+    go_to_locker(n, sc, i, true, t, dt, presses);
+    true
+}
+
+/// A hidden bot stays put. On a locker errand it comes out once its dwell is up and no chaser is near. Otherwise it
+/// comes out once no chaser has been within `hide_leave_range` for `hide_leave_delay` seconds.
+fn hidden_tick(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32) {
+    n.walking = false;
+    let Some(i) = n.hidden else { return };
+    if i >= sc.fac.hiding.len() {
+        n.hidden = None;
+        return;
+    }
+    let chased = chaser_within(sc.seen, n.at, t.hide_leave_range);
+    n.clear_time = if chased { 0.0 } else { n.clear_time + dt };
+    let on_errand = n.errand == Some(Errand::Locker(i));
+    let leave = if on_errand {
+        n.dwell += dt;
+        n.dwell >= t.locker_dwell && !chased
+    } else {
+        n.clear_time >= t.hide_leave_delay
+    };
+    if leave {
+        if on_errand {
+            n.visited.push(Errand::Locker(i));
+            n.errand = None;
+            n.dwell = 0.0;
+        }
+        come_out(n, sc.fac, i);
+    }
+}
+
+/// The centre of an errand's spot, or None for an index the floor does not have.
+fn errand_spot(fac: &Facility, e: Errand) -> Option<(f32, f32)> {
+    match e {
+        Errand::Relay(i) => fac.relays.get(i).map(|c| c.center()),
+        Errand::Locker(i) => fac.hiding.get(i).map(|h| fac.locker_center(h)),
+    }
+}
+
+/// Whether a spot is safe for an errand: no chasing hunter within `errand_safe_range`, no hunter searching within
+/// `searched_avoid`, and no point the bot itself saw searched within `searched_avoid`.
+fn spot_safe(n: &Npc, sc: &Scene, spot: (f32, f32), t: &Tuning) -> bool {
+    !chaser_within(sc.seen, spot, t.errand_safe_range)
+        && !near_any(sc.searching, spot, t.searched_avoid)
+        && !near_any(&n.searched, spot, t.searched_avoid)
+}
+
+/// The nearest spot of the kind (a relay, or a locker not burnt out) the bot has not been to, within `leash` of the
+/// runner and safe to go to.
+fn pick_errand(n: &Npc, sc: &Scene, locker: bool, leash: f32, t: &Tuning) -> Option<Errand> {
+    let count = if locker { sc.fac.hiding.len() } else { sc.fac.relays.len() };
+    let mut best: Option<(Errand, f32)> = None;
+    for i in 0..count {
+        let e = if locker { Errand::Locker(i) } else { Errand::Relay(i) };
+        if n.visited.contains(&e) || (locker && sc.disabled.get(i).copied().unwrap_or(false)) {
+            continue;
+        }
+        let Some(spot) = errand_spot(sc.fac, e) else { continue };
+        if pdist(spot, sc.leader) > leash || !spot_safe(n, sc, spot, t) {
+            continue;
+        }
+        let d = pdist(n.at, spot);
+        if best.map_or(true, |(_, bd)| d < bd) {
+            best = Some((e, d));
+        }
+    }
+    best.map(|(e, _)| e)
+}
+
+/// A relay or locker errand (data `errand`; `locker` picks which). A joined bot with nothing chasing it heads for the
+/// nearest safe spot within the kind's leash of the runner, stands there for the kind's dwell and then goes back to
+/// following. A locker errand hides the bot in the locker for its dwell (`hidden_tick` keeps the time). True when the
+/// bot acted.
+fn errand(n: &mut Npc, sc: &Scene, locker: bool, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -> bool {
+    let (leash, dwell) = if locker {
+        (t.locker_leash, t.locker_dwell)
+    } else {
+        (t.relay_leash, t.relay_dwell)
+    };
+    let is_mine = |e: &Errand| matches!(e, Errand::Locker(_)) == locker;
+    match n.errand {
+        Some(e) if is_mine(&e) => {
+            let safe = match errand_spot(sc.fac, e) {
+                Some(spot) => spot_safe(n, sc, spot, t),
+                None => false,
+            };
+            if !safe {
+                n.errand = None;
+                n.dwell = 0.0;
+                return false;
+            }
+        }
+        // the other kind's errand is in hand; its own intent carries it on
+        Some(_) => return false,
+        None => match pick_errand(n, sc, locker, leash, t) {
+            Some(e) => {
+                n.errand = Some(e);
+                n.dwell = 0.0;
+            }
+            None => return false,
+        },
+    }
+    let Some(e) = n.errand else { return false };
+    let Some(spot) = errand_spot(sc.fac, e) else {
+        n.errand = None;
+        return false;
+    };
+    if pdist(n.at, spot) > t.errand_reach {
+        walk_toward(n, sc.fac, spot, false, t, dt, presses);
+        return true;
+    }
+    match e {
+        Errand::Locker(i) => hide_in(n, spot, i),
+        Errand::Relay(_) => {
+            n.walking = false;
+            n.dwell += dt;
+            if n.dwell >= dwell {
+                n.visited.push(e);
+                n.errand = None;
+                n.dwell = 0.0;
+            }
+        }
+    }
+    true
+}
+
+/// One intent of the bot's list (data `intents`). Returns true when it acted. "flee" acts on any bot. The others need
+/// the bot joined to the runner. A name the bot does not know does nothing.
+fn run_intent(n: &mut Npc, sc: &Scene, intent: &str, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -> bool {
+    match intent {
+        "flee" => flee(n, sc.fac, sc.seen, t, dt, presses),
+        _ if !n.joined => false,
+        "hide" => hide(n, sc, t, dt, presses),
+        "relay" => errand(n, sc, false, t, dt, presses),
+        "locker" => errand(n, sc, true, t, dt, presses),
+        "follow" => {
+            follow(n, sc.fac, sc.leader, t, dt, presses);
+            true
+        }
+        _ => false,
+    }
+}
+
 impl Game {
     /// The infinite level the runner stands on (0 on a finite route).
     pub fn runner_level(&self) -> i32 {
@@ -506,6 +850,13 @@ impl Game {
             key,
             join_radius,
             door: None,
+            hidden: None,
+            errand: None,
+            dwell: 0.0,
+            visited: vec![],
+            clear_time: 0.0,
+            searched: vec![],
+            last_door: None,
         });
         self.npc_next += 1;
         id
@@ -591,51 +942,89 @@ impl Game {
                 .or_else(|| fac.nearest_open(spot.0, spot.1, NAV_RADIUS))
                 .unwrap_or(spot);
             n.level = level;
-            n.path.clear();
-            n.path_age = REPATH;
+            n.forget_frame();
             n.walking = false;
-            n.door = None;
         }
     }
 
-    /// The per-frame tick: an NPC on the runner's level runs from a chasing hunter in range, else waits (a run NPC
-    /// not yet joined: it joins when the runner is close and in sight) or follows the runner. An NPC on another
-    /// level stands still (its level's storey crossing is deferred).
+    /// The per-frame tick with the embedded tuning (see `update_npcs_with`).
     pub(super) fn update_npcs(&mut self, dt: f32) {
+        self.update_npcs_with(dt, Tuning::get());
+    }
+
+    /// The per-frame tick: an NPC on the runner's level tries its intents in order (data `intents`): it hides or runs
+    /// from a chasing hunter, goes on a relay or locker errand, or follows the runner. A run NPC not yet joined waits
+    /// until the runner is close and in sight. An NPC on another level stands still (its level's storey crossing is
+    /// deferred). `t` is the tuning, so the tests can vary one value of the data.
+    pub(super) fn update_npcs_with(&mut self, dt: f32, t: &Tuning) {
         if self.npcs.is_empty() {
             return;
         }
         let level = self.runner_level();
         let leader = self.p.pos;
-        let fac = &self.fac;
-        let t = Tuning::get();
         let seen: Vec<Seen> = self
             .hunters
             .iter()
             .filter(|h| h.active)
             .map(|h| (h.pos, matches!(h.state, State::Chase)))
             .collect();
+        let searching: Vec<(f32, f32)> = self
+            .hunters
+            .iter()
+            .filter(|h| h.active && matches!(h.state, State::Search))
+            .map(|h| h.pos)
+            .collect();
+        let sc = Scene {
+            fac: &self.fac,
+            disabled: &self.hiding_disabled,
+            leader,
+            seen: &seen,
+            searching: &searching,
+        };
         let mut presses: Vec<Cell> = vec![];
+        let mut closes: Vec<Cell> = vec![];
         for n in self.npcs.iter_mut() {
             if n.level != level {
                 n.walking = false;
                 continue;
             }
-            if flee(n, fac, &seen, t, dt, &mut presses) {
+            note_searched(n, &searching, t);
+            if n.hidden.is_some() {
+                hidden_tick(n, &sc, t, dt);
                 continue;
             }
-            if !n.joined {
-                if pdist(n.at, leader) <= n.join_radius && fac.has_line_of_sight(n.at, leader) {
-                    n.joined = true;
-                } else {
-                    n.walking = false;
-                    n.path.clear();
-                    continue;
+            if !n.joined && pdist(n.at, leader) <= n.join_radius && sc.fac.has_line_of_sight(n.at, leader) {
+                n.joined = true;
+            }
+            let mut ran = false;
+            for intent in &t.intents {
+                ran = run_intent(n, &sc, intent, t, dt, &mut presses);
+                if ran {
+                    // any intent but an errand ends the errand: the bot hid, ran or followed instead
+                    if !matches!(intent.as_str(), "relay" | "locker") {
+                        n.errand = None;
+                        n.dwell = 0.0;
+                    }
+                    break;
                 }
             }
-            follow(n, fac, leader, t, dt, &mut presses);
+            if !ran {
+                n.walking = false;
+                n.path.clear();
+            }
+            // a bot clear of the door it last passed shuts it (the runner's press refuses a shut leaf on a body)
+            if let Some(d) = n.last_door {
+                let clear = sc.fac.door_centre(d).map_or(true, |c| pdist(n.at, c) >= t.close_clear);
+                if clear {
+                    n.last_door = None;
+                    if sc.fac.door_is_open(d) {
+                        closes.push(d);
+                    }
+                }
+            }
         }
         self.npc_press_doors(presses);
+        self.npc_close_doors(closes);
     }
 
     /// The bots' interact presses, through the runner's path (`press_door`). A door already open (another bot or the
@@ -643,6 +1032,16 @@ impl Game {
     fn npc_press_doors(&mut self, presses: Vec<Cell>) {
         for cell in presses {
             if !self.fac.door_is_open(cell) {
+                self.press_door(cell);
+            }
+        }
+    }
+
+    /// The bots shutting doors behind them: a press on an open door, through the same path, which a body in the
+    /// leaf's sweep refuses.
+    fn npc_close_doors(&mut self, closes: Vec<Cell>) {
+        for cell in closes {
+            if self.fac.door_is_open(cell) {
                 self.press_door(cell);
             }
         }
@@ -673,6 +1072,43 @@ mod tests {
     /// A ray pointing at the sky: the crosshair finds no floor.
     fn sky(p: (f32, f32)) -> ((f32, f32, f32), (f32, f32, f32)) {
         ((p.0, 1.6, p.1), (0.0, 1.0, 0.0))
+    }
+
+    /// The embedded data/npcs.json with one edit made to its JSON, parsed as the bots read it.
+    fn tuning_with(edit: impl Fn(&mut Value)) -> Tuning {
+        let (_, text) = crate::content::embedded::data_under("npcs.json")
+            .next()
+            .expect("data/npcs.json is embedded");
+        let mut v: Value = serde_json::from_str(text).expect("data/npcs.json parses");
+        edit(&mut v);
+        Tuning::parse(&v).expect("data/npcs.json still has every key")
+    }
+
+    /// A JSON array of strings.
+    fn names(list: &[&str]) -> Value {
+        Value::Array(list.iter().map(|s| Value::from(*s)).collect())
+    }
+
+    /// The embedded tuning with only these intents, in this order.
+    fn only(intents: &[&str]) -> Tuning {
+        tuning_with(|v| v["intents"] = names(intents))
+    }
+
+    /// The embedded tuning for a relay errand that is not cut short by distance: a long leash, a short dwell.
+    fn relay_trip() -> Tuning {
+        tuning_with(|v| {
+            v["intents"] = names(&["relay"]);
+            v["errand"]["relay"]["leash"] = Value::from(1000.0);
+            v["errand"]["relay"]["dwell"] = Value::from(0.5);
+        })
+    }
+
+    /// The cells reachable from `s` with their step counts, sorted by cell. `distance_map` is a HashMap, whose order
+    /// changes every process, so a pick from it must go through this instead.
+    fn sorted_reach(fac: &Facility, s: Cell) -> Vec<(Cell, i32)> {
+        let mut reach: Vec<(Cell, i32)> = fac.distance_map(s).into_iter().collect();
+        reach.sort_by_key(|(c, _)| (c.x, c.y));
+        reach
     }
 
     #[test]
@@ -788,13 +1224,14 @@ mod tests {
         let runner = g.p.pos;
         let (e, d) = sky(runner);
         g.npc_spawn(1, 70, e, d);
+        // only the follow intent here: the errands would send the bot off to a relay
+        let follow_only = only(&["follow"]);
         // put the NPC on an open cell reachable from the runner, about 9 m away
         let fac = &g.fac;
         let start = Cell::new(runner.0.floor() as i32, runner.1.floor() as i32);
-        let reach = fac.distance_map(start);
-        let far = reach
-            .iter()
-            .filter(|(c, dist)| **dist >= 8 && **dist <= 12 && fac.body_fits(c.center().0, c.center().1, NAV_RADIUS))
+        let far = sorted_reach(fac, start)
+            .into_iter()
+            .filter(|(c, dist)| *dist >= 8 && *dist <= 12 && fac.body_fits(c.center().0, c.center().1, NAV_RADIUS))
             .map(|(c, _)| c.center())
             .next();
         let Some(far) = far else {
@@ -805,7 +1242,7 @@ mod tests {
         assert!(before > Tuning::get().follow_radius, "starts out of follow range");
         // 40 simulated seconds at 60 Hz: long enough to walk ~9 m at 4 m/s, with room to spare
         for _ in 0..(40 * 60) {
-            g.update_npcs(1.0 / 60.0);
+            g.update_npcs_with(1.0 / 60.0, &follow_only);
         }
         let after = pdist(g.npcs[0].at, g.p.pos);
         assert!(after < before, "the NPC closed in: {before} -> {after}");
@@ -816,7 +1253,7 @@ mod tests {
         // once in range and not walking, it stands still
         let settled = g.npcs[0].at;
         for _ in 0..120 {
-            g.update_npcs(1.0 / 60.0);
+            g.update_npcs_with(1.0 / 60.0, &follow_only);
         }
         assert!(!g.npcs[0].walking, "idle once settled in range");
         assert_eq!(g.npcs[0].at, settled, "no drift while idle");
@@ -925,8 +1362,10 @@ mod tests {
         h.state = State::Chase;
         g.hunters.push(h);
         let before = pdist(g.npcs[i].at, g.hunters.last().unwrap().pos);
+        // only the flee intent: hiding is tested on its own
+        let flee_only = only(&["flee"]);
         for _ in 0..60 {
-            g.update_npcs(1.0 / 60.0);
+            g.update_npcs_with(1.0 / 60.0, &flee_only);
         }
         assert!(pdist(g.npcs[i].at, g.hunters.last().unwrap().pos) > before, "it ran away");
     }
@@ -951,6 +1390,7 @@ mod tests {
     #[test]
     fn a_bot_being_chased_does_not_change_the_danger_inputs() {
         // (danger, nearest hunter distance, pursued, heartbeat danger, bot moved, hunter position)
+        let flee_only = only(&["flee"]);
         let play = |with_bot: bool| {
             let (mut g, content) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
             let bot_before = g.npcs[0].at;
@@ -971,7 +1411,7 @@ mod tests {
             h.direct_visible = false;
             g.hunters.push(h);
             for _ in 0..60 {
-                g.update_npcs(1.0 / 60.0);
+                g.update_npcs_with(1.0 / 60.0, &flee_only);
             }
             let bot_moved = pdist(g.npcs[0].at, bot_before) > 0.5;
             let (nearest, pursued) = pursuit_inputs(&g);
@@ -1096,10 +1536,7 @@ mod tests {
             if !fac.body_fits(a.0, a.1, NAV_RADIUS) {
                 continue;
             }
-            // sorted: `distance_map` is a HashMap, whose order changes every process, so the pick must not follow it
-            let mut reach: Vec<(Cell, i32)> = fac.distance_map(s).into_iter().collect();
-            reach.sort_by_key(|(c, _)| (c.x, c.y));
-            for (c, steps) in reach {
+            for (c, steps) in sorted_reach(fac, s) {
                 let b = c.center();
                 if steps >= 6
                     && (4.0..=12.0).contains(&pdist(a, b))
@@ -1155,8 +1592,7 @@ mod tests {
                         .map(|w| (c, w))
                 })
                 .expect("an open cell beside a wall");
-            let goal = fac
-                .distance_map(open)
+            let goal = sorted_reach(fac, open)
                 .into_iter()
                 .filter(|&(c, steps)| steps >= 4 && fac.body_fits(c.center().0, c.center().1, NAV_RADIUS))
                 .map(|(c, _)| c.center())
@@ -1205,21 +1641,23 @@ mod tests {
             joined: true,
             join_radius: 0.0,
             door: None,
+            hidden: Some(2),
+            errand: Some(Errand::Relay(1)),
+            dwell: 1.0,
+            visited: vec![Errand::Relay(0)],
+            clear_time: 1.0,
+            searched: vec![(0.0, 0.0)],
+            last_door: None,
         };
         n.shift((-16.0, 32.0));
         assert_eq!(n.at, (-13.0, 36.0));
         assert!(n.path.is_empty());
         assert!(n.path_age >= REPATH);
-    }
-
-    /// The embedded data/npcs.json with one edit made to its JSON, parsed as the bots read it.
-    fn tuning_with(edit: impl Fn(&mut Value)) -> Tuning {
-        let (_, text) = crate::content::embedded::data_under("npcs.json")
-            .next()
-            .expect("data/npcs.json is embedded");
-        let mut v: Value = serde_json::from_str(text).expect("data/npcs.json parses");
-        edit(&mut v);
-        Tuning::parse(&v).expect("data/npcs.json still has every key")
+        assert_eq!(
+            (n.hidden, n.errand, n.visited.len(), n.searched.len()),
+            (None, None, 0, 0),
+            "the old frame's hides, trips and memory are gone"
+        );
     }
 
     #[test]
@@ -1234,6 +1672,21 @@ mod tests {
         assert_eq!(t.door_think, 0.25, "DOOR_THINK, the first port's figure");
         assert_eq!(t.door_think_jitter, 0.1, "DOOR_THINK_JITTER, the first port's figure");
         assert_eq!(t.tasks, vec!["door".to_string()]);
+        let intents: Vec<String> = ["hide", "flee", "relay", "locker", "follow"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(t.intents, intents, "the order the bots try their intents in");
+        assert_eq!(t.hide_chase_range, 14.0, "a chase is seen at the threat range");
+        assert_eq!(t.hide_reach, 8.0);
+        assert_eq!(t.enter_radius, 1.0);
+        assert_eq!(t.hide_leave_range, 16.0);
+        assert_eq!(t.hide_leave_delay, 3.0);
+        assert_eq!(t.errand_safe_range, 14.0);
+        assert_eq!(t.errand_reach, 1.2);
+        assert_eq!((t.relay_leash, t.relay_dwell), (12.0, 4.0));
+        assert_eq!((t.locker_leash, t.locker_dwell), (10.0, 6.0));
+        assert_eq!(t.searched_memory, 8);
+        assert_eq!(t.searched_avoid, 4.0);
+        assert_eq!(t.door_near, 1.5);
+        assert_eq!(t.close_clear, 2.5);
         assert_eq!(*t, tuning_with(|_| {}), "the cached tuning is the embedded file");
     }
 
@@ -1261,9 +1714,7 @@ mod tests {
         let (g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
         let runner = g.p.pos;
         let start = Cell::new(runner.0.floor() as i32, runner.1.floor() as i32);
-        let far = g
-            .fac
-            .distance_map(start)
+        let far = sorted_reach(&g.fac, start)
             .into_iter()
             .filter(|(c, steps)| *steps >= 8 && *steps <= 12 && g.fac.body_fits(c.center().0, c.center().1, NAV_RADIUS))
             .map(|(c, _)| c.center())
@@ -1326,5 +1777,196 @@ mod tests {
             wait_at_door(&mut g.npcs[0], &g.fac, cell, &idle, dt, &mut presses);
         }
         assert!(presses.is_empty(), "no door task, no press");
+    }
+
+    /// A run game with a bot joined 2 m in front of locker 0 and a hunter chasing the bot from 4 m. Returns the game,
+    /// the content, the bot's start and the locker's centre.
+    fn locker_case() -> (Game, Content, (f32, f32), (f32, f32)) {
+        let (mut g, content) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        assert!(!g.fac.hiding.is_empty(), "the test floor has a locker");
+        let h = g.fac.hiding[0].clone();
+        let centre = g.fac.locker_center(&h);
+        let front = (centre.0 + h.facing.0 as f32 * 2.0, centre.1 + h.facing.1 as f32 * 2.0);
+        let at = g.fac.nearest_open(front.0, front.1, NAV_RADIUS).expect("an open cell in front of the locker");
+        assert!(pdist(at, centre) < 3.0, "the bot starts near the locker");
+        g.npcs[0].joined = true;
+        g.npcs[0].at = at;
+        let mut hunter = crate::hunters::brain::Brain::new(
+            content.hunters[0].clone(),
+            (at.0 - 4.0, at.1),
+            "T",
+            Difficulty::Standard,
+        );
+        hunter.active = true;
+        hunter.state = State::Chase;
+        g.hunters.push(hunter);
+        (g, content, at, centre)
+    }
+
+    #[test]
+    fn a_chased_bot_hides_in_a_locker_and_comes_out_when_the_chase_is_over() {
+        let (mut g, _, _, _) = locker_case();
+        let dt = 1.0 / 60.0;
+        for _ in 0..(10 * 60) {
+            g.update_npcs(dt);
+            if g.npcs[0].hidden.is_some() {
+                break;
+            }
+        }
+        let li = g.npcs[0].hidden.expect("a chased bot with a locker in reach hides in it");
+        let centre = g.fac.locker_center(&g.fac.hiding[li]);
+        assert!(pdist(g.npcs[0].at, centre) < 0.01, "it stands at the locker's centre");
+        // the hunter is gone: once the leave delay (3 s) has passed the bot comes out
+        g.hunters.clear();
+        for _ in 0..(5 * 60) {
+            g.update_npcs(dt);
+        }
+        assert_eq!(g.npcs[0].hidden, None, "the bot came out once no hunter was near");
+    }
+
+    #[test]
+    fn the_hide_reach_in_data_decides_whether_a_bot_hides() {
+        let (mut g, _, _, _) = locker_case();
+        let dt = 1.0 / 60.0;
+        // no locker is within 0.5 m of a bot 2 m out: it never goes in
+        let short = tuning_with(|v| v["hide"]["reach"] = Value::from(0.5));
+        for _ in 0..(10 * 60) {
+            g.update_npcs_with(dt, &short);
+            assert_eq!(g.npcs[0].hidden, None, "no locker within 0.5 m");
+        }
+    }
+
+    #[test]
+    fn a_hidden_bot_stays_while_a_hunter_is_within_the_leave_range() {
+        let (mut g, _, _, _) = locker_case();
+        let dt = 1.0 / 60.0;
+        let centre = g.fac.locker_center(&g.fac.hiding[0]);
+        g.npcs[0].hidden = Some(0);
+        g.npcs[0].at = centre;
+        // the hunter stands 5 m off the locker, inside the 16 m leave range
+        g.hunters[0].pos = (centre.0 + 5.0, centre.1);
+        for _ in 0..(10 * 60) {
+            g.update_npcs(dt);
+        }
+        assert_eq!(g.npcs[0].hidden, Some(0), "still hidden with a hunter that near");
+    }
+
+    #[test]
+    fn the_leave_delay_in_data_sets_how_long_a_bot_stays_hidden() {
+        let (mut g, _, _, _) = locker_case();
+        let dt = 1.0 / 60.0;
+        g.hunters.clear();
+        g.npcs[0].hidden = Some(0);
+        g.npcs[0].at = g.fac.locker_center(&g.fac.hiding[0]);
+        let quick = tuning_with(|v| v["hide"]["leave_delay"] = Value::from(0.5));
+        for _ in 0..20 {
+            g.update_npcs_with(dt, &quick);
+        }
+        assert_eq!(g.npcs[0].hidden, Some(0), "a third of a second is short of the 0.5 s delay");
+        for _ in 0..60 {
+            g.update_npcs_with(dt, &quick);
+        }
+        assert_eq!(g.npcs[0].hidden, None, "past the 0.5 s delay it came out");
+    }
+
+    #[test]
+    fn a_bot_goes_to_a_relay_when_it_is_safe_and_then_goes_back_to_following() {
+        let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        assert!(!g.fac.relays.is_empty(), "the test floor has a relay");
+        g.npcs[0].joined = true;
+        let trip = relay_trip();
+        let dt = 1.0 / 60.0;
+        for _ in 0..(120 * 60) {
+            g.update_npcs_with(dt, &trip);
+            if !g.npcs[0].visited.is_empty() {
+                break;
+            }
+        }
+        assert!(matches!(g.npcs[0].visited.first(), Some(Errand::Relay(_))), "the bot reached a relay and stood there for its dwell");
+        assert_eq!(g.npcs[0].errand, None, "the trip is over");
+    }
+
+    #[test]
+    fn a_relay_leash_of_zero_sends_no_bot_to_a_relay() {
+        let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        g.npcs[0].joined = true;
+        let no_leash = tuning_with(|v| {
+            v["intents"] = names(&["relay"]);
+            v["errand"]["relay"]["leash"] = Value::from(0.0);
+        });
+        for _ in 0..(10 * 60) {
+            g.update_npcs_with(1.0 / 60.0, &no_leash);
+        }
+        assert!(g.npcs[0].visited.is_empty(), "no relay is within a zero leash of the runner");
+        assert_eq!(g.npcs[0].errand, None);
+    }
+
+    #[test]
+    fn a_hunter_searching_a_relay_keeps_the_bot_off_it() {
+        let (mut g, content) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        assert!(!g.fac.relays.is_empty(), "the test floor has a relay");
+        g.npcs[0].joined = true;
+        let relay0 = g.fac.relays[0].center();
+        let mut searcher = crate::hunters::brain::Brain::new(content.hunters[0].clone(), relay0, "T", Difficulty::Standard);
+        searcher.active = true;
+        searcher.state = State::Search;
+        g.hunters.push(searcher);
+        let trip = relay_trip();
+        for _ in 0..(20 * 60) {
+            g.update_npcs_with(1.0 / 60.0, &trip);
+            assert_ne!(g.npcs[0].errand, Some(Errand::Relay(0)), "a bot does not pick the relay a hunter is searching");
+        }
+        assert!(!g.npcs[0].visited.contains(&Errand::Relay(0)));
+    }
+
+    /// Whether the door a bot walked through is still open once the bot has stepped clear of it and the shut-behind
+    /// rule has run with `close_clear` (data `doors.close_clear`).
+    fn door_open_after_passing(close_clear: f32) -> bool {
+        let (mut g, cell, a, b) = door_case();
+        g.p.pos = (a.0 + 40.0, a.1 + 40.0);
+        g.npcs[0].joined = true;
+        g.npcs[0].at = a;
+        let dt = 1.0 / 60.0;
+        for _ in 0..(8 * 60) {
+            bot_frame(&mut g, b, dt);
+            if pdist(g.npcs[0].at, b) < 0.3 {
+                break;
+            }
+        }
+        // no errands or hides: the bot only runs the close-behind rule
+        let t = tuning_with(|v| {
+            v["intents"] = names(&[]);
+            v["doors"]["close_clear"] = Value::from(close_clear as f64);
+        });
+        g.update_npcs_with(dt, &t);
+        for _ in 0..(3 * 60) {
+            g.fac.update_doors(&[], &[], dt);
+        }
+        g.fac.door_is_open(cell)
+    }
+
+    #[test]
+    fn a_bot_shuts_the_door_behind_it_once_it_is_clear_of_it() {
+        assert!(!door_open_after_passing(0.5), "a bot 1 m past the door, clear at 0.5 m, shuts it");
+        assert!(door_open_after_passing(5.0), "the same bot is not clear at 5 m, so the door stays open");
+    }
+
+    #[test]
+    fn the_intent_order_in_data_decides_whether_a_chased_bot_hides_or_runs() {
+        let dt = 1.0 / 60.0;
+        // flee alone: the bot runs from the chaser and never reaches a locker
+        let (mut g, _, _, _) = locker_case();
+        let flee_only = only(&["flee"]);
+        for _ in 0..(5 * 60) {
+            g.update_npcs_with(dt, &flee_only);
+        }
+        assert_eq!(g.npcs[0].hidden, None, "with no hide intent the bot only runs");
+        // hide before flee: the chased bot hides instead
+        let (mut g, _, _, _) = locker_case();
+        let hide_first = only(&["hide", "flee"]);
+        for _ in 0..(10 * 60) {
+            g.update_npcs_with(dt, &hide_first);
+        }
+        assert!(g.npcs[0].hidden.is_some(), "with hide first the chased bot hides");
     }
 }

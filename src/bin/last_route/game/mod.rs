@@ -174,6 +174,8 @@ pub struct Game {
     escape_grace: f32,
     locker_cooldown: Vec<f32>,
     hide_check: Option<(usize, usize, f32)>,
+    /// Host: the world events the game raised this frame for the guests (game/hunting.rs), taken by the app.
+    pub hunter_out: crate::net::hunter_events::Outbox,
 
     pub focus: Option<Focus>,
     pub toast: String,
@@ -284,6 +286,7 @@ impl Game {
             escape_grace: 0.0,
             locker_cooldown: vec![],
             hide_check: None,
+            hunter_out: Default::default(),
             focus: None,
             toast: String::new(),
             toast_t: 0.0,
@@ -403,6 +406,7 @@ impl Game {
             escape_grace: 0.0,
             locker_cooldown: vec![],
             hide_check: None,
+            hunter_out: Default::default(),
             focus: None,
             toast: String::new(),
             toast_t: 0.0,

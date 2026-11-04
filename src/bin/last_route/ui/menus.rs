@@ -2766,6 +2766,21 @@ mod lobby_tests {
     }
 
     #[test]
+    fn a_guest_cannot_change_any_lobby_difficulty_including_nightmare() {
+        for d in lobby_row() {
+            assert_eq!(pick_difficulty(RoomMode::Guest, Difficulty::Hard, d), Difficulty::Hard, "{d:?}");
+        }
+    }
+
+    #[test]
+    fn a_guest_sees_a_nightmare_host_locked_in_the_row_title() {
+        assert_eq!(
+            difficulty_row_title(RoomMode::Guest, Difficulty::Nightmare),
+            "DIFFICULTY // HOST SETS NIGHTMARE"
+        );
+    }
+
+    #[test]
     fn guest_lobby_shows_the_hosts_difficulty_locked() {
         assert_eq!(difficulty_row_title(RoomMode::Guest, Difficulty::Hard), "DIFFICULTY // HOST SETS HARD");
         assert_eq!(difficulty_row_title(RoomMode::Guest, Difficulty::Standard), "DIFFICULTY // HOST SETS NORMAL");

@@ -289,6 +289,12 @@ pub fn uploaded_ids() -> Vec<String> {
         .collect()
 }
 
+/// True when `uploaded` (the list [`uploaded_ids`] gives) holds the skin `id`. Only a skin hash can be held. A host
+/// re-publishes its skin once the website holds it (see `net::world_sync::NetSession::set_skin`).
+pub fn holds(uploaded: &[String], id: &str) -> bool {
+    is_skin_hash(id) && uploaded.iter().any(|x| x == id)
+}
+
 fn uploaded_path() -> Option<PathBuf> {
     paths::user_dir().map(|d| d.join("skins-uploaded.json"))
 }
@@ -318,7 +324,7 @@ pub fn upload_in_background(cfg: BackendConfig, session_token: String, id: Strin
         return;
     }
     let Some((hash, bytes)) = skin_png(&id) else { return };
-    if uploaded_ids().contains(&hash) {
+    if holds(&uploaded_ids(), &hash) {
         return;
     }
     std::thread::spawn(move || {
@@ -614,6 +620,16 @@ mod tests {
         assert!(!png_is_skin_size(&png_head(64, 128)));
         assert!(!png_is_skin_size(b"GIF89a..............................."));
         assert!(!png_is_skin_size(&png_head(64, 64)[..20]));
+    }
+
+    #[test]
+    fn the_website_holds_only_a_listed_skin_hash() {
+        let hash = "d".repeat(64);
+        assert!(holds(&[hash.clone()], &hash), "a listed hash is held");
+        assert!(!holds(&[], &hash), "an empty list holds nothing");
+        assert!(!holds(&[hash.clone()], &"e".repeat(64)), "another hash is not held");
+        assert!(!holds(&["NIGHTOWL".into()], "NIGHTOWL"), "a non-hash id is never held");
+        assert!(!holds(&[hash.clone()], SKIN_DEFAULT), "DEFAULT is never held");
     }
 
     #[test]

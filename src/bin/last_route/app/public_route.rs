@@ -8,7 +8,7 @@
 //! Not called from the game yet (the hunter brain hook is a later task), so the pub items are unused for now.
 #![allow(dead_code)]
 
-use crate::content::public_roster::PublicPatrol;
+use crate::content::public_roster::{PublicLimits, PublicPatrol};
 use std::collections::HashMap;
 
 /// A position on the route grid, in cells.
@@ -93,6 +93,12 @@ pub fn patrol_speed(base: f32, patrol: &PublicPatrol, anchored: bool) -> f32 {
     } else {
         base
     }
+}
+
+/// Whether the client may send another PUBLIC route join, given the joins it sent in the last minute. The limit is
+/// `limits.join_per_minute` from data/public_roster.json "limits" (server JOIN_LIMIT_PER_MINUTE, 20 in Standard).
+pub fn join_allowed(limits: &PublicLimits, joins_last_minute: u32) -> bool {
+    joins_last_minute < limits.join_per_minute
 }
 
 fn within(candidates: &[Pos], anchor: Pos, radius: f32) -> Vec<Pos> {
@@ -210,6 +216,21 @@ mod tests {
         // A runner appearing later is picked up at once, because no entry was recorded.
         let r = runners(&[(7, (3.0, 4.0))]);
         assert_eq!(book.anchor(&p, "a", 1, &r), Some((3.0, 4.0)));
+    }
+
+    #[test]
+    fn the_standard_join_limit_is_twenty_a_minute() {
+        let l = PublicLimits::default();
+        assert!(join_allowed(&l, 0));
+        assert!(join_allowed(&l, 19));
+        assert!(!join_allowed(&l, 20));
+    }
+
+    #[test]
+    fn changing_the_join_limit_in_data_changes_who_is_refused() {
+        let l = PublicLimits::parse(&serde_json::json!({ "join_per_minute": 3 }));
+        assert!(join_allowed(&l, 2));
+        assert!(!join_allowed(&l, 3));
     }
 
     #[test]

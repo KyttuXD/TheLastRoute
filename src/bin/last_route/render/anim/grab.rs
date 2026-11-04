@@ -19,23 +19,80 @@
 use super::clip::{gd_slerp, Rig};
 use super::hunter::{model_space_stretched, HunterView, Output};
 
-/// HunterGrab.arm_stretch and STRETCH_STYLES: the reaching styles lengthen her arms up to 1.6x, eased in with the reach.
-const ARM_STRETCH: f32 = 1.6;
-const STRETCH_STYLES: [&str; 9] = [
-    "neck_lift",
-    "shoulder_grab",
-    "wrist_yank",
-    "wall_pin",
-    "wrap",
-    "collar_drag",
-    "leg_grab",
-    "upside_down",
-    "tackle",
-];
+/// The style table and the arm stretch, from assets/hunters/grabs/_styles.json (HunterGrab.arm_stretch, STRETCH_STYLES
+/// and GrabStyles.STYLES). The reaching styles lengthen her arms up to `arm_stretch`, eased in with the reach.
+const STYLES_ID: &str = "_styles";
+
+/// One row of GrabStyles.STYLES: the room needs before the style fits (0 = the style needs nothing of that).
+#[derive(Clone, Debug, PartialEq)]
+pub struct StyleRule {
+    pub id: String,
+    pub ceiling: f32,
+    pub back: f32,
+    pub hunter_back: f32,
+    pub wall: f32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StyleTable {
+    /// GrabStyles.FALLBACK: picked when no style of a pool fits the room, and the pool of a hunter with no grab file.
+    pub fallback: String,
+    pub arm_stretch: f32,
+    pub stretch_styles: Vec<String>,
+    pub styles: Vec<StyleRule>,
+}
+
+/// Reads `lr.grab_styles/1`; missing numbers read as 0 (no stretch, no room needed) and a missing row list as no styles.
+pub fn parse_styles(v: &serde_json::Value) -> StyleTable {
+    let num = |x: &serde_json::Value, k: &str| x[k].as_f64().map(|n| n as f32).unwrap_or(0.0);
+    StyleTable {
+        fallback: v["fallback"].as_str().unwrap_or_default().to_string(),
+        arm_stretch: num(v, "arm_stretch"),
+        stretch_styles: v["stretch_styles"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+            .unwrap_or_default(),
+        styles: v["styles"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| {
+                        Some(StyleRule {
+                            id: s["id"].as_str()?.to_string(),
+                            ceiling: num(s, "ceiling"),
+                            back: num(s, "back"),
+                            hunter_back: num(s, "hunter_back"),
+                            wall: num(s, "wall"),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }
+}
+
+/// The shipped style table (assets/hunters/grabs/_styles.json), read once.
+pub fn style_table() -> &'static StyleTable {
+    static TABLE: std::sync::OnceLock<StyleTable> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let v = data(STYLES_ID).unwrap_or(serde_json::Value::Null);
+        parse_styles(&v)
+    })
+}
+
+/// True when `style` is one the data's style table knows.
+pub fn is_style(style: &str) -> bool {
+    style_table().styles.iter().any(|s| s.id == style)
+}
+
+/// True when the style's arms stretch (the data's stretch_styles).
+pub fn stretches(style: &str) -> bool {
+    style_table().stretch_styles.iter().any(|s| s == style)
+}
 
 pub fn stretch_for(style: &str, t: f32) -> f32 {
-    if STRETCH_STYLES.contains(&style) {
-        1.0 + (ARM_STRETCH - 1.0) * smooth(t / REACH_SECONDS)
+    if stretches(style) {
+        1.0 + (style_table().arm_stretch - 1.0) * smooth(t / REACH_SECONDS)
     } else {
         1.0
     }
@@ -62,20 +119,6 @@ const FLIP_SWAY: f32 = 0.17;
 const WAIST_BEND: f32 = 1.2;
 const SQUAT_BEND: f32 = 1.45;
 const PLAYER_MODELS_SCALE: f32 = 1.067;
-
-/// (style, ceiling, back, hunter_back, wall) -- GrabStyles.STYLES needs (99 = none)
-const STYLES: [(&str, f32, f32, f32, f32); 10] = [
-    ("neck_lift", 2.5, 0.0, 0.0, 0.0),
-    ("shoulder_grab", 0.0, 0.0, 0.0, 0.0),
-    ("tackle", 0.0, 1.7, 0.0, 0.0),
-    ("wrist_yank", 0.0, 0.0, 0.0, 0.0),
-    ("wrap", 0.0, 0.0, 0.0, 0.0),
-    ("leg_grab", 0.0, 1.8, 0.0, 0.0),
-    ("upside_down", 2.4, 1.5, 0.0, 0.0),
-    ("shoulder_carry", 2.75, 2.8, 0.0, 0.0),
-    ("collar_drag", 0.0, 0.0, 1.6, 0.0),
-    ("wall_pin", 0.0, 0.0, 0.0, 1.3),
-];
 
 /// GrabStyles.BODY_POINTS: on the runner body, facing -Z, +X its right, feet at 0.
 fn body_point(name: &str) -> Vec3 {
@@ -110,20 +153,20 @@ pub struct Room {
     pub hunter_back: f32,
 }
 
-fn fits(style: &str, room: &Room) -> bool {
-    let Some(&(_, ceiling, back, hunter_back, wall)) = STYLES.iter().find(|s| s.0 == style) else {
+fn fits(table: &StyleTable, style: &str, room: &Room) -> bool {
+    let Some(rule) = table.styles.iter().find(|s| s.id == style) else {
         return false;
     };
-    if ceiling > 0.0 && room.ceiling < ceiling {
+    if rule.ceiling > 0.0 && room.ceiling < rule.ceiling {
         return false;
     }
-    if back > 0.0 && room.back < back {
+    if rule.back > 0.0 && room.back < rule.back {
         return false;
     }
-    if hunter_back > 0.0 && room.hunter_back < hunter_back {
+    if rule.hunter_back > 0.0 && room.hunter_back < rule.hunter_back {
         return false;
     }
-    if wall > 0.0 && (room.back > wall || room.back < 0.25) {
+    if rule.wall > 0.0 && (room.back > rule.wall || room.back < 0.25) {
         return false;
     }
     true
@@ -160,7 +203,7 @@ pub fn pool_of(id: &str) -> Vec<(String, f32)> {
                     .collect()
             })
         })
-        .unwrap_or_else(|| vec![("shoulder_grab".into(), 1.0)])
+        .unwrap_or_else(|| vec![(style_table().fallback.clone(), 1.0)])
 }
 
 /// GrabStyles.pick
@@ -169,14 +212,19 @@ pub fn pick(id: &str, roll: f32, room: &Room) -> String {
 }
 
 /// GrabStyles.pick over a given pool: the styles the room rules out drop out, then a weighted pick with `roll`.
-pub fn pick_in(mut pool: Vec<(String, f32)>, roll: f32, room: &Room) -> String {
+pub fn pick_in(pool: Vec<(String, f32)>, roll: f32, room: &Room) -> String {
+    pick_with(style_table(), pool, roll, room)
+}
+
+/// The same pick against a given style table (the shipped one in play; a changed table in tests).
+pub fn pick_with(table: &StyleTable, mut pool: Vec<(String, f32)>, roll: f32, room: &Room) -> String {
     pool.sort_by(|a, b| a.0.cmp(&b.0));
     let fitting: Vec<&(String, f32)> = pool
         .iter()
-        .filter(|(s, w)| *w > 0.0 && fits(s, room))
+        .filter(|(s, w)| *w > 0.0 && fits(table, s, room))
         .collect();
     if fitting.is_empty() {
-        return "shoulder_grab".into();
+        return table.fallback.clone();
     }
     let total: f32 = fitting.iter().map(|p| p.1).sum();
     let mut at = roll.clamp(0.0, 0.999999) * total;
@@ -663,7 +711,7 @@ impl Grab {
         // HunterGrab.play's force_style (admin_force_grab): LR_GRAB_STYLE=<style> forces one for testing
         let style = std::env::var("LR_GRAB_STYLE")
             .ok()
-            .filter(|s| STYLES.iter().any(|x| x.0 == s))
+            .filter(|s| is_style(s))
             .unwrap_or_else(|| pick(&id, roll, &room));
         // HunterGrab.context: her right shoulder and arm, in the frame from her to the runner
         let rig = view.rig();
@@ -686,8 +734,8 @@ impl Grab {
             ctx.shoulder_y = off.y;
             ctx.arm = (hand - arm).length().max(0.4);
         }
-        if STRETCH_STYLES.contains(&style.as_str()) {
-            ctx.arm *= ARM_STRETCH; // she holds the runner at her (stretched) arm's length
+        if stretches(&style) {
+            ctx.arm *= style_table().arm_stretch; // she holds the runner at her (stretched) arm's length
         }
         // turned square to the runner: from where her body faces to `along`
         let fwd = vec3(-view.yaw.sin(), 0.0, -view.yaw.cos());
@@ -1134,5 +1182,94 @@ mod tests {
         assert_eq!(pick_in(vec![("tackle".to_string(), 1.0)], 0.5, &cramped), "shoulder_grab");
         // and the shipped void_brown pool (tackle 6, shoulder_grab 2) still picks shoulder_grab in the cramped spot
         assert_eq!(pick("void_brown", 0.5, &cramped), "shoulder_grab");
+    }
+
+    /// Every hunter the game ships (data/hunters/<id>.json with the lr.hunter/1 schema) has its own grab file.
+    #[test]
+    fn every_shipped_hunter_resolves_a_grab_file() {
+        let mut ids = vec![];
+        for (path, text) in embedded::data_under("hunters/") {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+                continue;
+            };
+            if v["schema"].as_str() != Some("lr.hunter/1") {
+                continue;
+            }
+            let id = v["id"].as_str().unwrap_or_else(|| panic!("{path} has no id"));
+            assert!(
+                embedded::asset(&format!("hunters/grabs/{id}.json")).is_some(),
+                "shipped hunter {id} has no grab file assets/hunters/grabs/{id}.json"
+            );
+            ids.push(id.to_string());
+        }
+        assert!(ids.len() >= 30, "found only {} shipped hunters", ids.len());
+    }
+
+    /// Every style a shipped grab pool names is a row of the data's style table, and the fallback is one too.
+    #[test]
+    fn every_shipped_grab_pool_style_is_in_the_style_table() {
+        let table = style_table();
+        assert!(is_style(&table.fallback), "fallback {} is not a style", table.fallback);
+        for (path, _) in embedded::assets_under("hunters/grabs/") {
+            let id = path.trim_start_matches("hunters/grabs/").trim_end_matches(".json");
+            if id.starts_with('_') {
+                continue;
+            }
+            for (style, _) in pool_of(id) {
+                assert!(is_style(&style), "grab pool for {id} names unknown style {style}");
+            }
+        }
+    }
+
+    /// A hunter with no grab file (or an unreadable one) draws the data's fallback pool and picks the fallback style.
+    #[test]
+    fn missing_grab_file_falls_back_to_the_default_pool() {
+        let fallback = style_table().fallback.clone();
+        assert_eq!(pool_of("no_such_hunter"), vec![(fallback.clone(), 1.0)]);
+        assert_eq!(pick("no_such_hunter", 0.3, &open_room()), fallback);
+        assert_eq!(look_for("no_such_hunter").delay, 0.0);
+    }
+
+    /// The shipped _styles.json holds the Standard values the code used before the data move.
+    #[test]
+    fn standard_style_table_matches_the_original() {
+        let table = style_table();
+        assert_eq!(table.fallback, "shoulder_grab");
+        assert_eq!(table.arm_stretch, 1.6);
+        assert_eq!(table.styles.len(), 11, "the ten humanoid rows plus the creature pounce_pin");
+        assert_eq!(table.stretch_styles.len(), 9);
+        assert!(stretches("wrap") && !stretches("shoulder_carry"));
+        let rule = |id: &str| table.styles.iter().find(|s| s.id == id).cloned().unwrap();
+        assert_eq!(rule("neck_lift").ceiling, 2.5);
+        assert_eq!(rule("upside_down").back, 1.5);
+        assert_eq!(rule("shoulder_carry").ceiling, 2.75);
+        assert_eq!(rule("shoulder_carry").back, 2.8);
+        assert_eq!(rule("collar_drag").hunter_back, 1.6);
+        assert_eq!(rule("wall_pin").wall, 1.3);
+    }
+
+    /// Changing a value in the style data changes the parsed table and the pick it drives.
+    #[test]
+    fn style_data_changes_the_pick() {
+        let doc = serde_json::json!({
+            "fallback": "shoulder_grab",
+            "arm_stretch": 2.0,
+            "stretch_styles": ["wrap"],
+            "styles": [
+                { "id": "wrap", "ceiling": 0.0, "back": 0.0, "hunter_back": 0.0, "wall": 0.0 },
+                { "id": "tackle", "ceiling": 0.0, "back": 3.0, "hunter_back": 0.0, "wall": 0.0 }
+            ]
+        });
+        let table = parse_styles(&doc);
+        assert_eq!(table.arm_stretch, 2.0);
+        assert_eq!(table.stretch_styles, vec!["wrap".to_string()]);
+        let pool = vec![("wrap".to_string(), 1.0), ("tackle".to_string(), 1.0)];
+        // with 2.5 m behind the runner tackle needs 3.0, so only wrap fits
+        let room = Room { ceiling: 99.0, back: 2.5, hunter_back: 99.0 };
+        assert_eq!(pick_with(&table, pool.clone(), 0.9, &room), "wrap");
+        // with 3.5 m both fit and the roll decides (sorted: tackle, then wrap, each weight 1)
+        let room = Room { ceiling: 99.0, back: 3.5, hunter_back: 99.0 };
+        assert_eq!(pick_with(&table, pool.clone(), 0.3, &room), "tackle");
+        assert_eq!(pick_with(&table, pool, 0.9, &room), "wrap");
     }
 }

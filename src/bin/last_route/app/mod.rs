@@ -685,6 +685,13 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
                 n.send_hunter_frame(g.hunter_frame(), g.difficulty, grab, std::time::Instant::now());
             }
         }
+        // the world events the host's game raised this frame go to the guests; a solo run only drops them
+        if let Some(g) = playing.as_mut() {
+            let out = g.hunter_out.take();
+            if let Some(n) = net.as_mut().filter(|n| n.is_host()) {
+                n.send_world_events(out);
+            }
+        }
         let mut room_closed: Option<String> = None;
         for event in room_events {
             match event {

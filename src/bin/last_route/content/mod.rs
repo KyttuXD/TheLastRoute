@@ -53,9 +53,13 @@ impl Content {
                 Err(e) => c.warnings.push(format!("{path}: {e}")),
             }
         }
-        for (path, text) in embedded::data_under("hunters/").filter(|(p, _)| !p.ends_with("sabotage.json") && !p.ends_with("nightmare_pounce.json")) {
+        for (path, text) in embedded::data_under("hunters/").filter(|(p, _)| !p.ends_with("sabotage.json") && !p.ends_with("nightmare_pounce.json") && *p != "hunters/targets.json" && *p != "hunters/emotes.json") {
             // hunters/search.json is the search rules (hunters/brain.rs), not a hunter definition
             if path == "hunters/search.json" {
+                continue;
+            }
+            // hunters/director.json is the squad rules (hunters/director.rs), not a hunter definition
+            if path == "hunters/director.json" {
                 continue;
             }
             // hunters/charge.json is the per-hunter charge table (hunters/gimmicks/charge.rs), not a hunter definition

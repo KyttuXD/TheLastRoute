@@ -9,6 +9,11 @@
 //! The "patrol" block is the PUBLIC route patrol around a live runner (Godot twin: game/hunters/ai/hunter_brain.gd
 //! PATROL_RADIUS L142 and _pick_wander_target L1120-1126; game/infinite_route/infinite_route_test.gd
 //! PUBLIC_PATROL_DWELL_MSEC L5869 and _assign_public_patrol L5874). The behaviour lives in app/public_route.rs.
+//!
+//! The "messages" block holds the player-facing PUBLIC route notices, and the "limits" block the join and
+//! session timings that mirror the server (lr_server rooms/public_route.rs PUBLIC_JOIN_GRACE_MS,
+//! JOIN_LIMIT_PER_MINUTE, PUBLIC_PLAYER_TTL_MS, PUBLIC_RESUME_TTL_MS). The server stays authoritative; these
+//! values let the client show the same notices and pace its own requests.
 
 use crate::world::rng::Rng;
 use serde_json::Value;
@@ -54,6 +59,94 @@ impl PublicPatrol {
     }
 }
 
+/// The player-facing PUBLIC route notices (the "messages" block). Shown as plain title-screen notices.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PublicMessages {
+    /// Shown when the PUBLIC ROUTE button cannot start the route in this build.
+    pub unavailable: String,
+    /// Shown while the client joins the persistent route.
+    pub joining: String,
+    /// Shown once the route has been started or joined.
+    pub started: String,
+    /// Shown when the server refuses a join for its per-minute limit (the server's own 429 text).
+    pub join_rate_limited: String,
+}
+
+impl Default for PublicMessages {
+    fn default() -> PublicMessages {
+        PublicMessages {
+            unavailable: "PUBLIC ROUTE IS NOT AVAILABLE IN THIS BUILD YET".to_string(),
+            joining: "JOINING PUBLIC ROUTE".to_string(),
+            started: "PUBLIC ROUTE STARTED".to_string(),
+            join_rate_limited: "TOO MANY JOIN REQUESTS".to_string(),
+        }
+    }
+}
+
+impl PublicMessages {
+    /// Reads the "messages" object. A missing or non-text key keeps its Standard text.
+    pub fn parse(v: &Value) -> PublicMessages {
+        let mut m = PublicMessages::default();
+        if let Some(s) = v["unavailable"].as_str() {
+            m.unavailable = s.to_string();
+        }
+        if let Some(s) = v["joining"].as_str() {
+            m.joining = s.to_string();
+        }
+        if let Some(s) = v["started"].as_str() {
+            m.started = s.to_string();
+        }
+        if let Some(s) = v["join_rate_limited"].as_str() {
+            m.join_rate_limited = s.to_string();
+        }
+        m
+    }
+}
+
+/// Join and session timings for the PUBLIC route (the "limits" block). Mirrors the server constants.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PublicLimits {
+    /// Milliseconds a freshly joined runner is protected before it can be dropped (server: 10 000).
+    pub join_grace_msec: u64,
+    /// Join requests allowed per minute before the server refuses (server: 20).
+    pub join_per_minute: u32,
+    /// Milliseconds without a heartbeat before a runner is dropped from the route (server: 20 000).
+    pub player_ttl_msec: u64,
+    /// Milliseconds a departed runner can resume the same place on the route (server: 6 hours).
+    pub resume_ttl_msec: u64,
+}
+
+impl Default for PublicLimits {
+    fn default() -> PublicLimits {
+        PublicLimits {
+            join_grace_msec: 10_000,
+            join_per_minute: 20,
+            player_ttl_msec: 20_000,
+            resume_ttl_msec: 6 * 60 * 60 * 1000,
+        }
+    }
+}
+
+impl PublicLimits {
+    /// Reads the "limits" object. A missing or non-numeric key keeps its Standard value.
+    pub fn parse(v: &Value) -> PublicLimits {
+        let mut l = PublicLimits::default();
+        if let Some(ms) = v["join_grace_msec"].as_u64() {
+            l.join_grace_msec = ms;
+        }
+        if let Some(n) = v["join_per_minute"].as_u64() {
+            l.join_per_minute = n.min(u32::MAX as u64) as u32;
+        }
+        if let Some(ms) = v["player_ttl_msec"].as_u64() {
+            l.player_ttl_msec = ms;
+        }
+        if let Some(ms) = v["resume_ttl_msec"].as_u64() {
+            l.resume_ttl_msec = ms;
+        }
+        l
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PublicRoster {
     /// Draw weight per hunter tier name ("easy", "intermediate", "difficult").
@@ -68,6 +161,10 @@ pub struct PublicRoster {
     pub cap: usize,
     /// Patrol around a live runner (the "patrol" block of data/public_roster.json).
     pub patrol: PublicPatrol,
+    /// Player-facing PUBLIC route notices (the "messages" block of data/public_roster.json).
+    pub messages: PublicMessages,
+    /// Join and session timings (the "limits" block of data/public_roster.json).
+    pub limits: PublicLimits,
 }
 
 impl Default for PublicRoster {
@@ -83,6 +180,8 @@ impl Default for PublicRoster {
             players_per_extra_hunter: 2,
             cap: 8,
             patrol: PublicPatrol::default(),
+            messages: PublicMessages::default(),
+            limits: PublicLimits::default(),
         }
     }
 }
@@ -111,6 +210,12 @@ impl PublicRoster {
         }
         if v["patrol"].is_object() {
             r.patrol = PublicPatrol::parse(&v["patrol"]);
+        }
+        if v["messages"].is_object() {
+            r.messages = PublicMessages::parse(&v["messages"]);
+        }
+        if v["limits"].is_object() {
+            r.limits = PublicLimits::parse(&v["limits"]);
         }
         r
     }
@@ -287,6 +392,49 @@ mod tests {
         assert_eq!(r.cap, 8);
         // A missing or broken key keeps the Standard patrol.
         assert_eq!(parse(r#"{"patrol":"nope"}"#).patrol, PublicPatrol::default());
+    }
+
+    #[test]
+    fn standard_messages_match_the_title_and_server_text() {
+        let m = PublicRoster::default().messages;
+        assert_eq!(m.unavailable, "PUBLIC ROUTE IS NOT AVAILABLE IN THIS BUILD YET");
+        assert_eq!(m.joining, "JOINING PUBLIC ROUTE");
+        assert_eq!(m.started, "PUBLIC ROUTE STARTED");
+        assert_eq!(m.join_rate_limited, "TOO MANY JOIN REQUESTS");
+    }
+
+    #[test]
+    fn changing_a_message_changes_only_that_text() {
+        let r = parse(r#"{"messages":{"joining":"CONNECTING","started":""}}"#);
+        assert_eq!(r.messages.joining, "CONNECTING");
+        assert_eq!(r.messages.started, "");
+        assert_eq!(r.messages.unavailable, PublicMessages::default().unavailable);
+        assert_eq!(r.messages.join_rate_limited, PublicMessages::default().join_rate_limited);
+        // A non-text value keeps the Standard text.
+        assert_eq!(parse(r#"{"messages":{"joining":5}}"#).messages.joining, "JOINING PUBLIC ROUTE");
+        // A broken block keeps every Standard message.
+        assert_eq!(parse(r#"{"messages":"nope"}"#).messages, PublicMessages::default());
+    }
+
+    #[test]
+    fn standard_limits_match_the_server_constants() {
+        let l = PublicRoster::default().limits;
+        assert_eq!(l.join_grace_msec, 10_000);
+        assert_eq!(l.join_per_minute, 20);
+        assert_eq!(l.player_ttl_msec, 20_000);
+        assert_eq!(l.resume_ttl_msec, 6 * 60 * 60 * 1000);
+    }
+
+    #[test]
+    fn changing_a_limit_changes_the_parsed_value() {
+        let r = parse(r#"{"limits":{"join_per_minute":5,"join_grace_msec":0,"resume_ttl_msec":1000}}"#);
+        assert_eq!(r.limits.join_per_minute, 5);
+        assert_eq!(r.limits.join_grace_msec, 0);
+        assert_eq!(r.limits.resume_ttl_msec, 1_000);
+        // Untouched limits keep their Standard values.
+        assert_eq!(r.limits.player_ttl_msec, 20_000);
+        assert_eq!(parse(r#"{"limits":{"join_per_minute":"many"}}"#).limits, PublicLimits::default());
+        assert_eq!(parse(r#"{"limits":[1,2]}"#).limits, PublicLimits::default());
     }
 
     #[test]

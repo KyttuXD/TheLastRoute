@@ -88,6 +88,9 @@ pub struct Player {
     pub speed_scale: f32,
     /// Eye height change on a stair flight or a ladder shaft (game/ladder.rs, the stairs walk), in metres: negative going down.
     pub climb_lift: f32,
+    /// The body's velocity over the last frame, in metres a second, from the displacement `update_movement` made. It is
+    /// not cleared by a storey change (game/endless.rs `change_storey`), so the momentum carries onto the next floor.
+    pub move_vel: (f32, f32),
     /// Seconds left in a forced flicker (a plunge splash or a hunter event); the
     /// beam strobes until it runs out and the player's own switch cannot override it.
     flicker_remaining: f32,
@@ -132,6 +135,7 @@ impl Player {
             height: 0.0,
             speed_scale: 1.0,
             climb_lift: 0.0,
+            move_vel: (0.0, 0.0),
             flicker_remaining: 0.0,
             flicker_next_toggle: 0.0,
             flicker_dark: false,
@@ -191,6 +195,7 @@ impl Player {
         self.feet_y = 0.0;
         self.height = 0.0;
         self.vy = 0.0;
+        self.move_vel = (0.0, 0.0);
         self.yaw = 0.0;
         self.pitch = 0.0;
         self.hidden = None;
@@ -393,6 +398,7 @@ impl Player {
         }
         let ground = ((self.pos.0 - before.0).powi(2) + (self.pos.1 - before.1).powi(2)).sqrt()
             / dt.max(1e-4);
+        self.move_vel = ((self.pos.0 - before.0) / dt.max(1e-4), (self.pos.1 - before.1) / dt.max(1e-4));
 
         if self.feet_y <= 0.0 {
             self.feet_y = 0.0;
@@ -536,6 +542,29 @@ mod tests {
         for _ in 0..(secs / FRAME).round() as i32 {
             g.p.update_movement(FRAME, c, &prof, &g.fac, &mut g.meters, &sounds);
         }
+    }
+
+    #[test]
+    fn walking_records_a_velocity_and_a_storey_change_keeps_it() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let (mut g, s) = flight_game();
+        g.p.pos = s.cell.center();
+        g.p.yaw = (-(s.run.0 as f32)).atan2(-(s.run.1 as f32));
+        run_body(&mut g, 0.5, &Controls { fwd: 1.0, ..Default::default() });
+        let v = g.p.move_vel;
+        assert!(v.0.hypot(v.1) > 0.5, "the walk left a velocity: {v:?}");
+        // the change to the storey below (flight_game's levels are 0 and -1, so `level - 1` is always allowed)
+        let to = g.inf.as_ref().map_or(0, |i| i.level) - 1;
+        g.change_storey(to, &content, &catalog, |_g| {});
+        assert_eq!(g.p.move_vel, v, "the momentum is carried across the storey change");
+    }
+
+    #[test]
+    fn a_body_standing_still_has_no_velocity() {
+        let (mut g, s) = flight_game();
+        g.p.pos = off_stair(s);
+        run_body(&mut g, 0.2, &Controls::default());
+        assert_eq!(g.p.move_vel, (0.0, 0.0));
     }
 
     #[test]

@@ -5,6 +5,12 @@
     "body": "blocky",
     "standing": { "swing": 0.0, "amp": 0.0 }
   },
+  "bots": {
+    "_source": "Rust-only: NPC teammates (game/npc.rs) wear the runner mannequin with the same bends; the skin is picked from `skins` by a hash of the guest name, so bots look like fake players. Standard walk amp 0.6 is the swing scene.rs used for NPCs before.",
+    "skins": ["DEFAULT"],
+    "walk_amp": 0.6,
+    "stride_swing": 2.4
+  },
   "bodies": {
     "blocky": {
       "model": "player/player_mannequin.bbmodel",

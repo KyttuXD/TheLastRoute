@@ -9,8 +9,9 @@
 //!   applies the event rules. The host calls it once per frame and sends what it returns on the EVENTS channel.
 //! * the state names the frames carry (`IDLE`, `WANDER`, `INVESTIGATE`, `CHASE`, `SEARCH`, `PEEK`).
 //!
-//! Event kinds listed in the data but not yet emitted by the port (`hunter_door`, `hunter_locker`, `hunter_charge`,
-//! `hunter_ability`, `sabotage`) are parsed and checked here, so their tuning is ready when their source is ported.
+//! The host's other world events (`hunter_door`, `hunter_locker`, `hunter_charge`, `hunter_ability`) are raised by the
+//! game (game/hunting.rs) into an [`Outbox`], which applies the same rules and hands the events to the net session.
+//! `sabotage` is parsed and checked here, so its tuning is ready when its source is ported.
 
 use crate::config::Difficulty;
 use crate::hunters::brain::State;
@@ -318,6 +319,81 @@ impl Tracker {
     }
 }
 
+/// The host's world events raised by the game this frame, waiting for the net session. The game queues an event with
+/// [`Outbox::emit`], which applies the rule's difficulties and gap; the app takes the queue with [`Outbox::take`] and
+/// sends it. A guest never queues, and a solo run queues nothing it is not told to take.
+#[derive(Debug, Default)]
+pub struct Outbox {
+    gate: Tracker,
+    queue: Vec<Map<String, Value>>,
+}
+
+impl Outbox {
+    /// Queues an event of `kind` with `fields` when the rules send that kind on this difficulty and its gap has passed.
+    /// Returns whether it was queued. A kind with no rule is never queued.
+    pub fn emit(
+        &mut self,
+        rules: &Rules,
+        diff: Difficulty,
+        kind: &'static str,
+        fields: Vec<(&str, Value)>,
+        now: Instant,
+    ) -> bool {
+        if !self.gate.allow(rules, diff, kind, now) {
+            return false;
+        }
+        let mut o = Map::new();
+        o.insert("what".into(), json!(kind));
+        for (k, v) in fields {
+            o.insert(k.into(), v);
+        }
+        self.queue.push(o);
+        true
+    }
+
+    /// Takes the queued events, oldest first.
+    pub fn take(&mut self) -> Vec<Map<String, Value>> {
+        std::mem::take(&mut self.queue)
+    }
+}
+
+/// The schema of a late joiner's snapshot (Godot `_snapshot` from `main_3d.gd` `_build_snapshot`, hunter part only).
+pub const SNAPSHOT_SCHEMA: &str = "lr.hunter_snapshot/1";
+
+/// A late joiner's hunter state: the hunters as the host's last frame carried them, and the sabotaged relay count.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Snapshot {
+    pub hunters: Vec<Value>,
+    pub relays_sabotaged: u32,
+}
+
+/// The snapshot object the host sends: `schema`, `hunters` (the frame's objects) and `relays_sabotaged`.
+pub fn snapshot_state(hunters: &[Value], relays_sabotaged: u32) -> Map<String, Value> {
+    let mut o = Map::new();
+    o.insert("schema".into(), json!(SNAPSHOT_SCHEMA));
+    o.insert("hunters".into(), json!(hunters));
+    o.insert("relays_sabotaged".into(), json!(relays_sabotaged));
+    o
+}
+
+/// Reads a snapshot object. Without this schema it is not a snapshot (None). Missing fields read as none, hunter entries
+/// that are not objects are dropped, and a relay count that is negative reads as 0 and one too large as u32::MAX.
+pub fn parse_snapshot(o: &Map<String, Value>) -> Option<Snapshot> {
+    if o.get("schema").and_then(Value::as_str) != Some(SNAPSHOT_SCHEMA) {
+        return None;
+    }
+    let hunters = o
+        .get("hunters")
+        .and_then(Value::as_array)
+        .map(|list| list.iter().filter(|h| h.is_object()).cloned().collect())
+        .unwrap_or_default();
+    let relays_sabotaged = o
+        .get("relays_sabotaged")
+        .and_then(Value::as_u64)
+        .map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX));
+    Some(Snapshot { hunters, relays_sabotaged })
+}
+
 fn event<const N: usize>(what: &str, fields: [(&str, Value); N]) -> Map<String, Value> {
     let mut o = Map::new();
     o.insert("what".into(), json!(what));
@@ -330,9 +406,15 @@ fn event<const N: usize>(what: &str, fields: [(&str, Value); N]) -> Map<String, 
 /// The notice a guest shows for a world event, or None when the event needs no notice (its state arrives in the frames).
 pub fn notice(event: &Map<String, Value>) -> Option<String> {
     let id = event.get("hunter_id").and_then(Value::as_str).unwrap_or("HUNTER").to_uppercase();
+    let action = event.get("action").and_then(Value::as_str);
     match (event.get("what")?.as_str()?, event.get("phase").and_then(Value::as_str)) {
         ("hunter_grab", Some("start")) => Some(format!("{id} HAS THE HOST")),
         ("hunter_grab", Some("end")) => Some(format!("{id} LET THE HOST GO")),
+        ("hunter_door", _) if action == Some("close") => Some(format!("{id} SHUT THE DOOR")),
+        ("hunter_door", _) => Some(format!("{id} PULLED THE DOOR OPEN")),
+        ("hunter_locker", _) => Some(format!("{id} IS CHECKING A LOCKER")),
+        ("hunter_charge", _) => Some(format!("{id} CHARGES")),
+        ("hunter_ability", _) => Some(format!("{id} POUNCES")),
         _ => None,
     }
 }
@@ -449,10 +531,118 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_carries_the_hunters_and_the_sabotaged_relays_and_reads_back() {
+        let hunters = frame(&[("aki", "CHASE"), ("bo", "IDLE")]);
+        let state = snapshot_state(&hunters, 3);
+        assert_eq!(state.get("schema").and_then(Value::as_str), Some(SNAPSHOT_SCHEMA));
+        assert_eq!(parse_snapshot(&state), Some(Snapshot { hunters, relays_sabotaged: 3 }));
+    }
+
+    #[test]
+    fn a_snapshot_without_its_schema_is_ignored_and_missing_fields_read_as_none() {
+        assert_eq!(parse_snapshot(&Map::new()), None, "no schema: not a snapshot");
+        let mut other = snapshot_state(&[], 0);
+        other.insert("schema".into(), json!("lr.hunter_snapshot/0"));
+        assert_eq!(parse_snapshot(&other), None, "another schema is not read");
+        let mut bare = Map::new();
+        bare.insert("schema".into(), json!(SNAPSHOT_SCHEMA));
+        assert_eq!(parse_snapshot(&bare), Some(Snapshot::default()));
+    }
+
+    #[test]
+    fn a_snapshot_drops_hunters_that_are_not_objects_and_clamps_the_relay_count() {
+        let mut state = snapshot_state(&[], 0);
+        state.insert("hunters".into(), json!([{"id": "aki"}, 7, "bo", null]));
+        state.insert("relays_sabotaged".into(), json!(-4));
+        let read = parse_snapshot(&state).unwrap();
+        assert_eq!(read.hunters, vec![json!({"id": "aki"})]);
+        assert_eq!(read.relays_sabotaged, 0, "a negative count reads as none");
+        state.insert("relays_sabotaged".into(), json!(u64::MAX));
+        assert_eq!(parse_snapshot(&state).unwrap().relays_sabotaged, u32::MAX);
+    }
+
+    #[test]
     fn state_names_round_trip() {
         for s in [State::Idle, State::Wander, State::Investigate, State::Chase, State::Search, State::Peek] {
             assert_eq!(state_from_name(state_name(s)), Some(s));
         }
         assert_eq!(state_from_name("NOPE"), None);
+    }
+
+    #[test]
+    fn the_standard_host_events_match_the_ported_difficulties_and_gaps() {
+        let r = parse(include_str!("../data/net/hunter_events.json")).unwrap();
+        assert!(event_on(&r, "hunter_door", Difficulty::Standard));
+        assert!(event_on(&r, "hunter_locker", Difficulty::Relaxed));
+        assert!(event_on(&r, "hunter_charge", Difficulty::Hard));
+        assert!(!event_on(&r, "hunter_charge", Difficulty::Relaxed), "charge is standard and hard only");
+        assert!(!event_on(&r, "hunter_ability", Difficulty::Hard), "ability is nightmare only");
+        assert!(event_on(&r, "hunter_ability", Difficulty::Nightmare));
+        assert_eq!(r.events["hunter_door"].min_gap, Duration::from_millis(250), "max_per_s 4");
+        assert_eq!(r.events["hunter_locker"].min_gap, Duration::from_secs(1), "cooldown_s 1.0");
+        assert_eq!(r.events["hunter_charge"].min_gap, Duration::ZERO);
+    }
+
+    #[test]
+    fn the_outbox_queues_a_kind_only_on_its_difficulties_and_gaps() {
+        let r = parse(include_str!("../data/net/hunter_events.json")).unwrap();
+        let t0 = Instant::now();
+        let mut out = Outbox::default();
+        assert!(!out.emit(&r, Difficulty::Nightmare, "hunter_door", vec![], t0), "door is not on nightmare");
+        assert!(out.emit(&r, Difficulty::Standard, "hunter_door", vec![("index", json!(0))], t0));
+        assert!(
+            !out.emit(&r, Difficulty::Standard, "hunter_door", vec![], t0 + Duration::from_millis(100)),
+            "max_per_s 4 holds a second door event back for 0.25 s"
+        );
+        assert!(out.emit(&r, Difficulty::Standard, "hunter_door", vec![], t0 + Duration::from_millis(250)));
+        let sent = out.take();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0]["what"], json!("hunter_door"));
+        assert_eq!(sent[0]["index"], json!(0));
+        assert!(out.take().is_empty(), "take empties the queue");
+    }
+
+    #[test]
+    fn a_kind_with_no_rule_is_never_queued() {
+        let r = parse(r#"{"schema":"lr.hunter_events/1","frame":{},"events":{}}"#).unwrap();
+        let mut out = Outbox::default();
+        assert!(!out.emit(&r, Difficulty::Standard, "hunter_charge", vec![], Instant::now()));
+        assert!(out.take().is_empty());
+    }
+
+    #[test]
+    fn changing_the_data_changes_which_host_events_are_queued() {
+        let text = include_str!("../data/net/hunter_events.json");
+        let hard_charge = text.replace(r#""difficulties": ["standard", "hard"]"#, r#""difficulties": ["hard"]"#);
+        assert_ne!(hard_charge, text, "the replacement must apply to the embedded file");
+        let r = parse(&hard_charge).unwrap();
+        let t = Instant::now();
+        let mut out = Outbox::default();
+        assert!(!out.emit(&r, Difficulty::Standard, "hunter_charge", vec![], t));
+        assert!(out.emit(&r, Difficulty::Hard, "hunter_charge", vec![], t));
+
+        let slow_door = text.replace(r#""max_per_s": 4"#, r#""max_per_s": 1"#);
+        assert_ne!(slow_door, text);
+        let r = parse(&slow_door).unwrap();
+        let mut out = Outbox::default();
+        assert!(out.emit(&r, Difficulty::Standard, "hunter_door", vec![], t));
+        assert!(!out.emit(&r, Difficulty::Standard, "hunter_door", vec![], t + Duration::from_millis(500)));
+        assert!(out.emit(&r, Difficulty::Standard, "hunter_door", vec![], t + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn each_host_event_has_a_guest_notice_that_names_the_hunter() {
+        let door = json!({"what": "hunter_door", "hunter_id": "aki", "action": "open"});
+        assert_eq!(notice(door.as_object().unwrap()).as_deref(), Some("AKI PULLED THE DOOR OPEN"));
+        let shut = json!({"what": "hunter_door", "hunter_id": "aki", "action": "close"});
+        assert_eq!(notice(shut.as_object().unwrap()).as_deref(), Some("AKI SHUT THE DOOR"));
+        let locker = json!({"what": "hunter_locker", "hunter_id": "aki", "spot": 2});
+        assert_eq!(notice(locker.as_object().unwrap()).as_deref(), Some("AKI IS CHECKING A LOCKER"));
+        let charge = json!({"what": "hunter_charge", "hunter_id": "loxelle"});
+        assert_eq!(notice(charge.as_object().unwrap()).as_deref(), Some("LOXELLE CHARGES"));
+        let pounce = json!({"what": "hunter_ability", "hunter_id": "nyxie", "ability": "pounce"});
+        assert_eq!(notice(pounce.as_object().unwrap()).as_deref(), Some("NYXIE POUNCES"));
+        let state = json!({"what": "hunter_state", "hunter_id": "aki", "state": "CHASE"});
+        assert_eq!(notice(state.as_object().unwrap()), None, "state arrives in the frames, not as a notice");
     }
 }

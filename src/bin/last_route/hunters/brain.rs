@@ -72,6 +72,82 @@ pub fn cell_of(p: (f32, f32)) -> Cell {
     Cell::new(p.0.floor() as i32, p.1.floor() as i32)
 }
 
+/// The hunter target rules (data/hunters/targets.json): the weights, the bot sight rule and which difficulties let a
+/// hunter chase an NPC bot. The runner is always a candidate.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TargetRules {
+    /// Divides the runner's distance when a hunter ranks its candidates (a larger weight is preferred).
+    pub runner_weight: f32,
+    /// Divides a bot's distance when a hunter ranks its candidates.
+    pub bot_weight: f32,
+    /// Metres a hunter can pick a bot out at.
+    pub bot_range: f32,
+    /// Whether a bot must also be in line of sight to be a candidate.
+    pub bot_line_of_sight: bool,
+    /// Per difficulty id ("relaxed", "standard", ...): whether bots are candidates there.
+    pub bot_targets: HashMap<String, bool>,
+}
+
+impl TargetRules {
+    /// Reads the rules from a parsed data/hunters/targets.json. None when a key is missing or has the wrong type.
+    pub fn parse(v: &serde_json::Value) -> Option<TargetRules> {
+        let num = |key: &str| v[key].as_f64().map(|x| x as f32);
+        let bots = v["bot_targets"].as_object()?;
+        Some(TargetRules {
+            runner_weight: num("runner_weight").filter(|w| *w > 0.0)?,
+            bot_weight: num("bot_weight").filter(|w| *w > 0.0)?,
+            bot_range: num("bot_range")?,
+            bot_line_of_sight: v["bot_line_of_sight"].as_bool()?,
+            bot_targets: bots.iter().filter_map(|(k, x)| Some((k.clone(), x.as_bool()?))).collect(),
+        })
+    }
+
+    /// The rules of the embedded data/hunters/targets.json, read once.
+    pub fn get() -> &'static TargetRules {
+        static RULES: OnceLock<TargetRules> = OnceLock::new();
+        RULES.get_or_init(|| {
+            let (_, text) = crate::content::embedded::data_under("hunters/targets.json")
+                .next()
+                .expect("data/hunters/targets.json is embedded");
+            let v: serde_json::Value = serde_json::from_str(text).expect("data/hunters/targets.json is JSON");
+            TargetRules::parse(&v).expect("data/hunters/targets.json has the target keys")
+        })
+    }
+
+    /// Whether hunters on `diff` may chase a bot. A difficulty with no entry allows none.
+    pub fn bots_allowed(&self, diff: Difficulty) -> bool {
+        self.bot_targets.get(diff.id()).copied().unwrap_or(false)
+    }
+}
+
+/// Which target a hunter at `from` chases: None is the runner, Some(i) is `bots[i]`. The runner is always a candidate.
+/// A bot is one only when bots are allowed on `diff`, it is within `bot_range`, and `los` clears it (when the rule asks
+/// for line of sight). The candidate with the smallest distance over its weight wins; a tie keeps the runner.
+pub fn choose_target(
+    rules: &TargetRules,
+    diff: Difficulty,
+    from: (f32, f32),
+    runner: (f32, f32),
+    bots: &[(f32, f32)],
+    los: impl Fn((f32, f32), (f32, f32)) -> bool,
+) -> Option<usize> {
+    if !rules.bots_allowed(diff) || bots.is_empty() {
+        return None;
+    }
+    let mut best: (f32, Option<usize>) = (dist(from, runner) / rules.runner_weight, None);
+    for (i, bot) in bots.iter().enumerate() {
+        let d = dist(from, *bot);
+        if d > rules.bot_range || (rules.bot_line_of_sight && !los(from, *bot)) {
+            continue;
+        }
+        let score = d / rules.bot_weight;
+        if score < best.0 {
+            best = (score, Some(i));
+        }
+    }
+    best.1
+}
+
 /// Whether a body of HUNTER_RADIUS can sweep the straight line from `from` to `to` (sampled every 0.15 m).
 fn sweep_clear(fac: &Facility, from: (f32, f32), to: (f32, f32)) -> bool {
     let d = dist(from, to);
@@ -1884,5 +1960,94 @@ mod search_rules_tests {
         assert_eq!(least_recently_checked(&cands, &[(0.0, 0.0)]), Some((9.0, 0.0)));
         assert_eq!(least_recently_checked(&cands, &[]), Some((0.0, 0.0)), "nothing searched: first candidate");
         assert_eq!(least_recently_checked(&[], &[(0.0, 0.0)]), None);
+    }
+}
+
+#[cfg(test)]
+mod target_choice_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn rules_from(runner_weight: f64, bot_weight: f64, range: f64, los: bool) -> TargetRules {
+        let v = json!({
+            "schema": "lr.hunter_targets/1",
+            "runner_weight": runner_weight,
+            "bot_weight": bot_weight,
+            "bot_range": range,
+            "bot_line_of_sight": los,
+            "bot_targets": { "relaxed": false, "standard": false, "hard": true, "nightmare": true }
+        });
+        TargetRules::parse(&v).expect("test rules parse")
+    }
+
+    fn clear(_: (f32, f32), _: (f32, f32)) -> bool {
+        true
+    }
+
+    #[test]
+    fn embedded_standard_keeps_bots_off() {
+        let r = TargetRules::get();
+        assert!(!r.bots_allowed(Difficulty::Standard), "Standard chases the runner only, as before");
+        assert!(!r.bots_allowed(Difficulty::Relaxed));
+        assert!(r.bots_allowed(Difficulty::Hard));
+        assert!(r.bots_allowed(Difficulty::Nightmare));
+        assert_eq!(r.bot_range, 7.0);
+        assert!(r.bot_line_of_sight);
+    }
+
+    #[test]
+    fn standard_ignores_a_bot_right_beside_the_hunter() {
+        let r = TargetRules::get();
+        let got = choose_target(r, Difficulty::Standard, (0.0, 0.0), (9.0, 0.0), &[(0.5, 0.0)], clear);
+        assert_eq!(got, None, "Standard: the runner stays the only target");
+    }
+
+    #[test]
+    fn hard_chases_the_nearer_bot() {
+        let r = TargetRules::get();
+        let got = choose_target(r, Difficulty::Hard, (0.0, 0.0), (5.0, 0.0), &[(2.0, 0.0)], clear);
+        assert_eq!(got, Some(0), "a bot 2 m off beats the runner 5 m off");
+    }
+
+    #[test]
+    fn a_bot_beyond_range_is_not_a_candidate() {
+        let r = rules_from(1.0, 1.0, 7.0, true);
+        let got = choose_target(&r, Difficulty::Hard, (0.0, 0.0), (5.0, 0.0), &[(0.0, 9.0)], clear);
+        assert_eq!(got, None, "9 m is past the 7 m bot range");
+    }
+
+    #[test]
+    fn line_of_sight_gates_a_bot_when_the_rule_asks() {
+        let blocked = |_: (f32, f32), _: (f32, f32)| false;
+        let on = rules_from(1.0, 1.0, 7.0, true);
+        assert_eq!(choose_target(&on, Difficulty::Hard, (0.0, 0.0), (5.0, 0.0), &[(2.0, 0.0)], blocked), None);
+        let off = rules_from(1.0, 1.0, 7.0, false);
+        assert_eq!(
+            choose_target(&off, Difficulty::Hard, (0.0, 0.0), (5.0, 0.0), &[(2.0, 0.0)], blocked),
+            Some(0),
+            "with the rule off, a wall does not hide the bot"
+        );
+    }
+
+    #[test]
+    fn bot_weight_moves_the_choice() {
+        // runner 3 m off, bot 2.5 m off
+        let heavy = rules_from(1.0, 0.9, 7.0, true);
+        assert_eq!(choose_target(&heavy, Difficulty::Hard, (0.0, 0.0), (3.0, 0.0), &[(2.5, 0.0)], clear), Some(0));
+        let light = rules_from(1.0, 0.5, 7.0, true);
+        assert_eq!(choose_target(&light, Difficulty::Hard, (0.0, 0.0), (3.0, 0.0), &[(2.5, 0.0)], clear), None);
+    }
+
+    #[test]
+    fn a_tie_keeps_the_runner() {
+        let r = rules_from(1.0, 1.0, 7.0, true);
+        let got = choose_target(&r, Difficulty::Hard, (0.0, 0.0), (2.0, 0.0), &[(0.0, 2.0)], clear);
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn no_bots_is_the_runner() {
+        let r = TargetRules::get();
+        assert_eq!(choose_target(r, Difficulty::Nightmare, (0.0, 0.0), (4.0, 0.0), &[], clear), None);
     }
 }

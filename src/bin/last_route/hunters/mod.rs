@@ -3,6 +3,7 @@
 
 pub mod brain;
 pub mod director;
+pub mod emotes;
 pub mod gimmicks;
 pub mod navigation;
 pub mod peek;
