@@ -115,6 +115,7 @@ fn state_id(s: State) -> &'static str {
         State::Investigate => "investigate",
         State::Chase => "chase",
         State::Search => "search",
+        State::Peek => "peek",
     }
 }
 
@@ -169,6 +170,11 @@ pub fn focus_json(g: &Game, f: Focus) -> Value {
         ),
         Focus::Vent(i) => ("vent", Some(i), g.fix.vents[i].center()),
         Focus::Shop(i) => ("shop", Some(i), g.hunters[i].pos),
+        Focus::Door(i) => (
+            "door",
+            Some(i),
+            g.fac.doors().find(|d| d.0 == i).map_or(g.p.pos, |d| d.1),
+        ),
     };
     json!({ "kind": kind, "index": index, "pos": pt(at), "distance": r2(crate::game::pdist(at, g.p.pos)) })
 }
@@ -566,6 +572,25 @@ impl Sim {
         })
     }
 
+    pub fn npcs_json(&self) -> Value {
+        let Some(g) = self.game.as_ref() else {
+            return Value::Null;
+        };
+        Value::Array(g.npcs.iter().map(|n| {
+            json!({
+                "id": n.id,
+                "name": n.name,
+                "slot": n.slot,
+                "level": n.level,
+                "pos": pt(n.at),
+                "distance": r2(crate::game::pdist(n.at, g.p.pos)),
+                "smart": n.smart,
+                "joined": n.joined,
+                "walking": n.walking,
+            })
+        }).collect())
+    }
+
     pub fn hunters_json(&self) -> Value {
         let Some(g) = self.game.as_ref() else {
             return Value::Null;
@@ -639,6 +664,10 @@ impl Sim {
             "heater": g.fix.heater.map(cell),
             "music_box": g.fix.music_box.map(cell),
             "vents": g.fix.vents.iter().map(|c| cell(*c)).collect::<Vec<_>>(),
+            "doors": g.fac.doors().enumerate().map(|(i, (prop, at))| {
+                let c = g.fac.props[prop].cell;
+                json!({ "index": i, "prop": prop, "cell": cell(c), "open": r2(g.fac.door_open_amount(c)), "want_open": g.fac.door_is_open(c), "distance": d(at), "type": g.fac.props[prop].ptype, "span": g.fac.props[prop].door.map(|d| d.span), "pos": pt(at) })
+            }).collect::<Vec<_>>(),
         })
     }
 

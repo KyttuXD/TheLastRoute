@@ -68,6 +68,8 @@ pub struct BotStats {
     pub stuck_events: i32,
     pub soft_locks: i32,
     pub interact_failures: i32,
+    /// Closed doors the bot pressed interact on to get through.
+    pub door_opens: i32,
     pub unreachable_goals: i32,
     pub chase_frames: u64,
     pub relays: i32,
@@ -287,6 +289,7 @@ impl Bot {
             "stuck_events": s.stuck_events,
             "soft_locks": s.soft_locks,
             "interact_failures": s.interact_failures,
+            "door_opens": s.door_opens,
             "unreachable_goals": s.unreachable_goals,
             "chase_frames": s.chase_frames,
             "relays": s.relays,
@@ -918,6 +921,12 @@ impl Bot {
             0.0
         };
         c.sprint = threat.is_some() && g.p.stamina > 15.0 && !g.p.exhausted;
+        // a shut door on the way: doors never open by themselves for the runner, so the crosshair on one is a press
+        if g.closed_door_in_focus() && self.interact_cd <= 0.0 {
+            c.interact = true;
+            self.interact_cd = 0.7;
+            self.stats.door_opens += 1;
+        }
 
         // 5. stuck and soft-lock recovery
         if self.time - self.stuck_ref.1 >= 1.5 {

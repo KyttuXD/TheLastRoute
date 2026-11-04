@@ -10,7 +10,6 @@
 	"sight": 9.2,
 	"hearing": 1.24,
 	"spawn": 14,
-	"model": "res://assets/hunters_blocky/void_orange/void_orange.glb",
 	"chase_style": "reach2",
 	"taser_immune": true,
 	"melee_immune": false

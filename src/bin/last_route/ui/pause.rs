@@ -10,8 +10,16 @@ use crate::app::assets::Assets;
 use crate::app::settings::Settings;
 use crate::content::Content;
 use crate::game::Game;
-use crate::net::world_sync::{skin_colour, RosterEntry};
+use crate::net::world_sync::{skin_colour, RosterEntry, RunnerState, QUIET_DISCONNECT};
 use macroquad::prelude::*;
+use std::time::Duration;
+
+/// PLAYERS statuses (Godot `room_player_list.gd` `STATUS_*`).
+pub const STATUS_ALIVE: &str = "ALIVE";
+pub const STATUS_CAUGHT: &str = "CAUGHT";
+pub const STATUS_SPECTATING: &str = "SPECTATING";
+pub const STATUS_DISCONNECTED: &str = "DISCONNECTED";
+pub const STATUS_LOBBY: &str = "IN LOBBY";
 
 /// The pause panel (pause_menu.gd): 380x236 with a 16 inset on every side.
 pub const PANEL_W: f32 = 380.0;
@@ -119,40 +127,53 @@ pub fn escape(pz: &mut Pause) -> Out {
     }
 }
 
-/// The PLAYERS rows for the other runners in the room: each one's name, whether it is the host, its ping, its floor and
-/// its figure colour. A runner that sends no samples shows NO SIGNAL; a ping not measured yet shows --.
-pub fn remote_rows(entries: &[RosterEntry], infinite: bool) -> Vec<PlayerRow> {
-    entries
-        .iter()
-        .map(|e| PlayerRow {
-            name: if e.name.is_empty() { "RUNNER".into() } else { e.name.clone() },
-            host: e.host,
-            you: false,
-            ping: e.ping.map_or("--".into(), |ms| format!("{ms} MS")),
-            status: if e.sending { "ALIVE" } else { "NO SIGNAL" }.into(),
-            floor: e.depth.map_or("--".into(), |d| floor_label(d, infinite)),
-            colour: skin_colour(&e.skin, e.peer),
-        })
-        .collect()
-}
-
-/// A floor as the PLAYERS list shows it: below the start on the infinite route, above it on a finite run.
-fn floor_label(depth: i32, infinite: bool) -> String {
-    if infinite {
-        format!("{:+}", -(depth - 1))
-    } else {
-        format!("+{}", depth - 1)
+/// PLAYERS status (Godot `room_player_list.gd` `_status`). Outside a run every row is IN LOBBY. With no state yet the
+/// runner just joined, so ALIVE. Another runner quiet for longer than [`QUIET_DISCONNECT`] is DISCONNECTED; then
+/// SPECTATING; then CAUGHT once the route has ended or the escape struggle is on.
+pub fn status_of(state: Option<&RunnerState>, you: bool, in_run: bool) -> &'static str {
+    if !in_run {
+        return STATUS_LOBBY;
     }
+    let Some(state) = state else {
+        return STATUS_ALIVE;
+    };
+    if !you && state.quiet > QUIET_DISCONNECT {
+        return STATUS_DISCONNECTED;
+    }
+    if state.spectating {
+        return STATUS_SPECTATING;
+    }
+    if state.game_over || state.escape_active {
+        return STATUS_CAUGHT;
+    }
+    STATUS_ALIVE
 }
 
-/// Hold-O overlay (Godot `player_list`): the PLAYERS panel without pause chrome.
-pub fn draw_hold_player_list(
-    a: &Assets,
-    g: &Game,
-    username: &str,
-    room: Vec<PlayerRow>,
-    local_host: bool,
-) {
+/// The floor column (Godot `room_player_list.gd` `floor_text`): the row's level, `-depth`, with its sign; `-` with no state.
+pub fn floor_text(level: Option<i32>) -> String {
+    level.map_or("-".into(), |l| format!("{l:+}"))
+}
+
+/// The ping column (Godot `ping_text`): `N MS`, or `-` until a round trip is measured.
+pub fn ping_text(ping: Option<u32>) -> String {
+    ping.map_or("-".into(), |ms| format!("{ms} MS"))
+}
+
+/// Godot `room_player_list.gd` `build` order: the host first, then by name.
+pub fn order(rows: &mut [PlayerRow]) {
+    rows.sort_by(|a, b| b.host.cmp(&a.host).then_with(|| a.name.cmp(&b.name)));
+}
+
+/// The PLAYERS rows: this runner and the others in the room (Godot `RoomPlayerList.build`), in [`order`]. The local row
+/// reads this runner's own run state; a remote one reads its last sample's state.
+pub fn player_rows(g: &Game, username: &str, local_host: bool, roster: &[RosterEntry]) -> Vec<PlayerRow> {
+    let local = RunnerState {
+        depth: g.depth,
+        spectating: false,
+        game_over: g.report.is_some(),
+        escape_active: g.escape.is_some(),
+        quiet: Duration::ZERO,
+    };
     let me = PlayerRow {
         name: if username.is_empty() {
             "RUNNER".into()
@@ -161,13 +182,28 @@ pub fn draw_hold_player_list(
         },
         host: local_host,
         you: true,
-        ping: "0 MS".into(),
-        status: "ALIVE".into(),
-        floor: floor_label(g.depth, g.is_infinite()),
+        ping: ping_text(Some(0)),
+        status: status_of(Some(&local), true, true).into(),
+        floor: floor_text(Some(-local.depth)),
         colour: menus::coop_blue(),
     };
     let mut rows = vec![me];
-    rows.extend(room);
+    rows.extend(roster.iter().map(|e| PlayerRow {
+        name: if e.name.is_empty() { "RUNNER".into() } else { e.name.clone() },
+        host: e.host,
+        you: false,
+        ping: ping_text(e.ping),
+        status: status_of(e.state.as_ref(), false, true).into(),
+        floor: floor_text(e.state.map(|s| -s.depth)),
+        colour: skin_colour(&e.skin, e.peer),
+    }));
+    order(&mut rows);
+    rows
+}
+
+/// Hold-O overlay (Godot `player_list`): the PLAYERS panel without pause chrome.
+pub fn draw_hold_player_list(a: &Assets, g: &Game, username: &str, roster: &[RosterEntry], local_host: bool) {
+    let rows = player_rows(g, username, local_host, roster);
     let sw = screen_width();
     let sh = screen_height();
     let r = Rect::new(
@@ -187,7 +223,7 @@ pub fn draw_pause(
     content: &Content,
     g: &Game,
     username: &str,
-    room: Vec<PlayerRow>,
+    roster: &[RosterEntry],
     local_host: bool,
 ) -> Out {
     let p = pal();
@@ -305,21 +341,7 @@ pub fn draw_pause(
         }
         1 => draw_statistics(a, pz, view_r, g),
         _ => {
-            let me = PlayerRow {
-                name: if username.is_empty() {
-                    "RUNNER".into()
-                } else {
-                    username.to_uppercase()
-                },
-                host: local_host,
-                you: true,
-                ping: "0 MS".into(),
-                status: "ALIVE".into(),
-                floor: floor_label(g.depth, g.is_infinite()),
-                colour: menus::coop_blue(),
-            };
-            let mut rows = vec![me];
-            rows.extend(room);
+            let rows = player_rows(g, username, local_host, roster);
             menus::player_list(a, view_r, &rows);
         }
     }
@@ -544,6 +566,70 @@ mod tests {
             );
             assert!(t + h <= panel.y + PANEL_H - PANEL_INSET + EPS);
         }
+    }
+
+    fn runner(depth: i32, quiet_s: u64, spectating: bool, game_over: bool, escape_active: bool) -> RunnerState {
+        RunnerState {
+            depth,
+            spectating,
+            game_over,
+            escape_active,
+            quiet: Duration::from_secs(quiet_s),
+        }
+    }
+
+    fn row(name: &str, host: bool) -> PlayerRow {
+        PlayerRow {
+            name: name.into(),
+            host,
+            you: false,
+            ping: String::new(),
+            status: String::new(),
+            floor: String::new(),
+            colour: WHITE,
+        }
+    }
+
+    #[test]
+    fn status_follows_the_godot_order_of_checks() {
+        // outside a run every row is IN LOBBY, whatever its state
+        assert_eq!(status_of(Some(&runner(1, 0, false, true, false)), false, false), STATUS_LOBBY);
+        // no state packet yet: just joined
+        assert_eq!(status_of(None, false, true), STATUS_ALIVE);
+        assert_eq!(status_of(Some(&runner(1, 0, false, false, false)), false, true), STATUS_ALIVE);
+        // quiet for more than 8 s is DISCONNECTED, exactly 8 s is not (Godot `>`)
+        assert_eq!(status_of(Some(&runner(1, 9, false, false, false)), false, true), STATUS_DISCONNECTED);
+        assert_eq!(status_of(Some(&runner(1, 8, false, false, false)), false, true), STATUS_ALIVE);
+        // the viewer's own row never goes DISCONNECTED: its state is local
+        assert_eq!(status_of(Some(&runner(1, 99, false, false, false)), true, true), STATUS_ALIVE);
+        // DISCONNECTED wins over SPECTATING and CAUGHT
+        assert_eq!(status_of(Some(&runner(1, 9, true, true, true)), false, true), STATUS_DISCONNECTED);
+        // SPECTATING wins over CAUGHT
+        assert_eq!(status_of(Some(&runner(1, 0, true, true, false)), false, true), STATUS_SPECTATING);
+        // a route ended or an escape struggle on: CAUGHT
+        assert_eq!(status_of(Some(&runner(1, 0, false, true, false)), false, true), STATUS_CAUGHT);
+        assert_eq!(status_of(Some(&runner(1, 0, false, false, true)), true, true), STATUS_CAUGHT);
+    }
+
+    #[test]
+    fn order_puts_the_host_first_then_by_name() {
+        let mut rows = vec![row("ZED", false), row("MAX", false), row("HOST", true), row("ANA", false)];
+        order(&mut rows);
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["HOST", "ANA", "MAX", "ZED"]);
+    }
+
+    #[test]
+    fn floor_and_ping_text_match_the_godot_list() {
+        // level is -depth; the sign is always shown; no state is "-"
+        assert_eq!(floor_text(Some(-1)), "-1");
+        assert_eq!(floor_text(Some(0)), "+0");
+        assert_eq!(floor_text(Some(-4)), "-4");
+        assert_eq!(floor_text(None), "-");
+        // a ping not measured yet is "-", a measured one is "N MS"
+        assert_eq!(ping_text(None), "-");
+        assert_eq!(ping_text(Some(0)), "0 MS");
+        assert_eq!(ping_text(Some(42)), "42 MS");
     }
 
     #[test]

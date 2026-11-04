@@ -5,6 +5,7 @@ pub mod brain;
 pub mod director;
 pub mod gimmicks;
 pub mod navigation;
+pub mod peek;
 pub mod residency;
 
 use crate::config::{tier_weights_for, Difficulty};

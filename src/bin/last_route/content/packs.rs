@@ -190,3 +190,78 @@ fn load_pack(c: &mut Content, dir: &Path) {
     }
     c.packs.push(pack);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::embedded::base64_decode;
+    use crate::content::loot::LootTables;
+    use crate::content::npcs::NpcRules;
+    use crate::content::regions::RegionTable;
+    use crate::render::bbmodel;
+    use std::collections::HashMap;
+
+    /// A 1x1 PNG.
+    const PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+    fn empty_content() -> Content {
+        Content {
+            hunters: vec![],
+            props: HashMap::new(),
+            loot: LootTables::default(),
+            npcs: NpcRules::default(),
+            regions: RegionTable::default(),
+            packs: vec![],
+            warnings: vec![],
+        }
+    }
+
+    fn write(dir: &Path, rel: &str, text: &str) {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    fn tiny_bbmodel(texture: &str) -> String {
+        format!(
+            r#"{{"meta":{{"format_version":"4.10","model_format":"free","box_uv":false}},"name":"lamp","resolution":{{"width":16,"height":16}},"elements":[{{"name":"base","type":"cube","from":[0,0,0],"to":[8,8,8],"origin":[0,0,0],"faces":{{"north":{{"uv":[0,0,8,8],"texture":0}}}}}}],"textures":[{texture}]}}"#
+        )
+    }
+
+    /// A pack bbmodel prop: the prop is registered with its pack-qualified model path, and the model and its texture
+    /// read back through the same pack-file reader load_models uses (an embedded data URI, or a pack png the model names).
+    #[test]
+    fn a_pack_bbmodel_prop_reads_its_own_texture() {
+        let dir = std::env::temp_dir().join(format!("lr-pack-bbmodel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        write(&dir, "pack.json", r#"{"schema":"lr.pack/1","id":"lamp_pack","name":"Lamps","version":"1.0.0","author":"t"}"#);
+        write(
+            &dir,
+            "props/lamps.json",
+            r#"{"props":[{"id":"mod_lamp","models":["assets/props/lamp.bbmodel","assets/props/lamp2.bbmodel"]}]}"#,
+        );
+        write(
+            &dir,
+            "assets/props/lamp.bbmodel",
+            &tiny_bbmodel(&format!(r#"{{"name":"lamp.png","source":"data:image/png;base64,{PNG_B64}"}}"#)),
+        );
+        write(&dir, "assets/props/lamp2.bbmodel", &tiny_bbmodel(r#"{"name":"lamp2.png","relative_path":"lamp2.png"}"#));
+        std::fs::write(dir.join("assets/props/lamp2.png"), base64_decode(PNG_B64)).unwrap();
+        let mut c = empty_content();
+        load_pack(&mut c, &dir);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        let def = &c.props["mod_lamp"];
+        assert_eq!(def.models, ["pack:lamp_pack:assets/props/lamp.bbmodel", "pack:lamp_pack:assets/props/lamp2.bbmodel"]);
+        for (rel, from_file) in [("assets/props/lamp.bbmodel", false), ("assets/props/lamp2.bbmodel", true)] {
+            let text = String::from_utf8(read_pack_file(&dir, rel).expect(rel)).unwrap();
+            let sibling = |file: &str| read_pack_file(&dir, &format!("assets/props/{file}"));
+            let j: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let (found, bytes) = bbmodel::texture_bytes(&j, &sibling).expect(rel);
+            assert_eq!(found.is_some(), from_file, "{rel}");
+            assert_eq!(bytes, base64_decode(PNG_B64), "{rel}");
+        }
+        // a pack file path cannot climb out of the pack
+        assert!(read_pack_file(&dir, "../outside.bbmodel").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

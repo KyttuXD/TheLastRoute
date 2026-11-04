@@ -33,7 +33,7 @@ use crate::render::{scene, shader, viewmodel};
 use crate::ui::menus::{self, Action, Screen, Ui};
 use crate::ui::pause::{self, Pause, Sub};
 use crate::ui::{hud, map, report, settings_panel, style};
-use crate::net::world_sync::{self, NetEvent, NetSession, RemoteView};
+use crate::net::world_sync::{self, NetEvent, NetSession, RemoteView, RouteCommand};
 use crate::net::{Backend, BackendConfig, BackendEvent, Pending};
 use crate::world::catalog::Catalog;
 use crate::world::route;
@@ -639,7 +639,10 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
 
         // the open room: pump it, send this runner's sample while a route runs, and act on what the others sent
         let sample = match (playing.as_ref(), loading.is_none()) {
-            (Some(g), true) => Some(world_sync::Sample::of(&g.p, g.depth, g.window_origin())),
+            (Some(g), true) => Some(
+                world_sync::Sample::of(&g.p, g.depth, g.window_origin())
+                    .with_run_state(g.report.is_some(), g.escape.is_some()),
+            ),
             _ => None,
         };
         let room_events = match net.as_mut() {
@@ -678,6 +681,62 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
                 NetEvent::GuestLeft(name) => show_room_notice(playing.as_mut(), &mut ui, &format!("{name} LEFT THE ROOM")),
                 NetEvent::HostLeft(reason) => room_closed = Some(reason),
                 NetEvent::Problem(text) => show_room_notice(playing.as_mut(), &mut ui, &text),
+                NetEvent::RouteCommand(RouteCommand::Restart { same_seed, seed, difficulty }) => {
+                    // the owner's RESTART ROUTE (Godot carry_out_route_command "restart"): a running route ends for
+                    // everyone (ROUTE RESTARTING), then a new run starts on the new seed that the guests enter
+                    let current = playing.as_ref().map_or_else(|| room.clone(), |g| g.room_text.clone());
+                    room = RouteCommand::restart_seed(same_seed, &seed, &current, &route::new_room_text());
+                    if let Some(d) = difficulty {
+                        diff = d;
+                    }
+                    if let Some(n) = net.as_mut().filter(|n| n.is_host()) {
+                        if playing.is_some() {
+                            n.end_run("ROUTE RESTARTING");
+                        }
+                        n.start_run(&room, diff.name());
+                    }
+                    playing = None;
+                    death = None;
+                    pz = Pause::default();
+                    map_open = false;
+                    set_cursor_grab(false);
+                    show_mouse(true);
+                    grabbed = false;
+                    loading = Some(Loading::for_room(diff, room.clone(), Some(0)));
+                }
+                NetEvent::RouteCommand(RouteCommand::End) => {
+                    // the owner's END ROUTE (Godot "end"): only a running route ends, and everyone waits in the room's lobby
+                    if playing.is_some() {
+                        let reason = "PRIVATE ROOM // THE OWNER ENDED THE ROUTE";
+                        if let Some(n) = net.as_mut().filter(|n| n.is_host()) {
+                            n.end_run(reason);
+                        }
+                        playing = None;
+                        death = None;
+                        pz = Pause::default();
+                        map_open = false;
+                        set_cursor_grab(false);
+                        show_mouse(true);
+                        grabbed = false;
+                        ui.go(Screen::Lobby);
+                        flash(&mut ui, reason);
+                    }
+                }
+                NetEvent::RouteEnded(reason) => {
+                    // the host ended the route: this guest's run is over and it waits in the room's lobby
+                    if playing.is_some() || loading.is_some() {
+                        playing = None;
+                        loading = None;
+                        death = None;
+                        pz = Pause::default();
+                        map_open = false;
+                        set_cursor_grab(false);
+                        show_mouse(true);
+                        grabbed = false;
+                        ui.go(Screen::Lobby);
+                        flash(&mut ui, &reason);
+                    }
+                }
             }
         }
         if let Some(reason) = room_closed {
@@ -825,6 +884,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
             admin.before_update(g);
             if !pz.open {
                 let _t = perf::section("update");
+                g.map_open = map_open; // Void Yellow reads the full-screen map (main_3d.gd:444)
                 g.update(gdt, &c, &w.content, &w.catalog, &w.assets, &w.sounds);
             }
             admin.after_update(g, &c, &w.content, gdt);
@@ -952,16 +1012,13 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
                     }
                     // Hold O: player list overlay (Godot player_list; Tab/T are labels until inventory/chat UI land).
                     if !stress_on && !pz.open && !in_report && is_key_down(KeyCode::O) {
-                        let room = net
-                            .as_ref()
-                            .map(|n| pause::remote_rows(&n.roster(), g.is_infinite()))
-                            .unwrap_or_default();
+                        let roster = net.as_ref().map(|n| n.roster()).unwrap_or_default();
                         let local_host = net.as_ref().map_or(true, |n| n.is_host());
                         pause::draw_hold_player_list(
                             &w.assets,
                             g,
                             &settings.username,
-                            room,
+                            &roster,
                             local_host,
                         );
                     }
@@ -991,7 +1048,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
                     }
                     if pz.open {
                         let name = settings.username.clone();
-                        let room = net.as_ref().map(|n| pause::remote_rows(&n.roster(), g.is_infinite())).unwrap_or_default();
+                        let roster = net.as_ref().map(|n| n.roster()).unwrap_or_default();
                         let local_host = net.as_ref().map_or(true, |n| n.is_host());
                         if let pause::Out::Abandon = pause::draw_pause(
                             &w.assets,
@@ -1001,7 +1058,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>)
                             &w.content,
                             g,
                             &name,
-                            room,
+                            &roster,
                             local_host,
                         ) {
                             // leaving the route saves it first (Godot `_leave_test`: autosave("quit")); a guest never saves

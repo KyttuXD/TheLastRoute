@@ -1,14 +1,21 @@
-//! NPC teammates, phase one: the admin spawns NPCs in an offline room and they follow the runner.
+//! Player bots (NPC teammates), phase one: the admin spawns bots in an offline room and they follow the runner.
 //! This is the offline core of Godot's `game/player/npc_teammates.gd` (spawn, the follow rule, the
 //! walk and the turn spring) and of the host's spawn spot rule (`infinite_route_test.gd` 6769-6779).
-//! No server is involved: the NPCs live on the `Game` for the run and nothing is sent anywhere.
+//! No server is involved: the bots live on the `Game` for the run and nothing is sent anywhere.
+//!
+//! An NPC here is a bot standing in for a player, not an in-world character. It has the runner's body
+//! (`PLAYER_RADIUS`) and speed (`PLAYER_WALK_SPEED`) and obeys the runner's rules: it does not open a door by
+//! walking up to it (hunters do); it stops at a shut door, faces it, waits a short seeded think delay and presses
+//! interact through the same `press_door` path as the runner, then walks on once the opening fits its body.
 //!
 //! Deferred (see docs/NPC_TEAMMATES in the Godot tree): per-NPC commands, catching and fleeing,
 //! chat, storey crossing, co-op packets, name tags, saves, and the mannequin body.
 
 use super::pdist;
 use super::Game;
-use crate::config::PLAYER_WALK_SPEED;
+use crate::hunters::brain::State;
+use crate::world::rng::Rng;
+use crate::config::{INTERACT_REACH, PLAYER_RADIUS, PLAYER_WALK_SPEED};
 use crate::render::textures::rng::GodotRng;
 use crate::world::route::run_seed_of_text;
 use crate::world::{Cell, Facility};
@@ -30,18 +37,27 @@ pub const HEADING_SMOOTH: f32 = 0.3;
 pub const TURN_SPRING: f32 = 60.0;
 /// Godot `npc_teammates.gd` 41: rad/s cap on the body turn.
 pub const TURN_RATE: f32 = 5.0;
-/// Godot literal `.23` (npc_teammates.gd 190, 348): the body radius the nav cells must fit.
-pub const NAV_RADIUS: f32 = 0.23;
+/// The bot's body radius: the runner's (Godot's nav literal was `.23`, npc_teammates.gd 190, 348). Nav cells must
+/// fit it, and the doors block a bot with it.
+pub const NAV_RADIUS: f32 = PLAYER_RADIUS;
+/// Seconds a bot waits at a shut door before it presses interact: this base plus up to `DOOR_THINK_JITTER`, seeded.
+pub const DOOR_THINK: f32 = 0.25;
+/// The seeded spread added to `DOOR_THINK`.
+pub const DOOR_THINK_JITTER: f32 = 0.1;
 /// Godot literal `2.39996` (npc_teammates.gd 76, 187, 329): the golden angle between slots.
 pub const SLOT_ANGLE: f32 = 2.39996;
 /// Godot `admin_npc_panel.gd` 155: the crosshair ray that picks the spawn point, in metres.
 pub const SPAWN_RAY_RANGE: f32 = 30.0;
 /// Godot `infinite_route_test.gd` 6772: a crosshair point farther than this from the admin is not used.
 pub const SPAWN_NEAR_ADMIN: f32 = 40.0;
+/// Godot `npc_teammates.gd` 25: a chasing hunter this close (scaled by smartness) makes the NPC run.
+pub const THREAT_RANGE: f32 = 14.0;
+/// How far ahead of itself a fleeing NPC aims, in metres.
+const FLEE_STEP: f32 = 8.0;
 /// Godot `admin_npc_panel.gd` 149-160: the ray's step while it looks for the floor (the window's quarter cell).
 const RAY_STEP: f32 = 0.25;
 
-/// One NPC teammate. Fields for the deferred features (catch, revive, chat, admin commands) are
+/// One player bot (NPC teammate). Fields for the deferred features (catch, revive, chat, admin commands) are
 /// added when those land.
 #[derive(Clone, Debug)]
 pub struct Npc {
@@ -69,8 +85,16 @@ pub struct Npc {
     pub walking: bool,
     /// Metres walked: drives the stride swing of the drawn body.
     pub stride: f32,
-    /// Smartness, 0..100, as set at spawn (stored for the deferred flee).
+    /// Smartness, 0..100, as set at spawn: scales how far off a chasing hunter makes the NPC run.
     pub smart: i32,
+    /// The run-seed key of a run NPC (`{level seed}:NPC:{n}`), so a rebuild never makes it twice. Admin NPCs have none.
+    pub key: Option<String>,
+    /// False while a run NPC waits where it spawned; true once it has joined the runner (admin NPCs start joined).
+    pub joined: bool,
+    /// A waiting NPC joins once the runner is this close and in sight (data/npcs.json `join_radius`).
+    pub join_radius: f32,
+    /// The shut door the bot stands at and the think time left before it presses interact on it.
+    pub door: Option<(Cell, f32)>,
 }
 
 impl Npc {
@@ -80,6 +104,7 @@ impl Npc {
         self.at = (self.at.0 + d.0, self.at.1 + d.1);
         self.path.clear();
         self.path_age = REPATH;
+        self.door = None;
     }
 }
 
@@ -130,8 +155,37 @@ fn turn(n: &mut Npc, want: f32, dt: f32) {
     n.facing = wrapf(n.facing + n.turn_v * dt, -PI, PI);
 }
 
-/// Godot `_walk_toward`: one grid step toward `goal`, replanning every `REPATH` seconds.
-fn walk_toward(n: &mut Npc, fac: &Facility, goal: (f32, f32), dt: f32) {
+/// The bot stands at the door `door` that blocks its next step. A door still swinging open (or one the bot is too far
+/// from to reach) is waited out; a shut one is faced, and after the seeded think delay its cell is queued in
+/// `presses` for the interact press (`Game::update_npcs` makes it through `press_door`, the runner's path).
+fn wait_at_door(n: &mut Npc, fac: &Facility, door: Cell, dt: f32, presses: &mut Vec<Cell>) {
+    n.walking = false;
+    let Some(centre) = fac.door_centre(door) else { return };
+    let (dx, dz) = (centre.0 - n.at.0, centre.1 - n.at.1);
+    turn(n, (-dx).atan2(-dz), dt);
+    let reach = pdist(n.at, fac.door_nearest_to(door, n.at).unwrap_or(centre)) <= INTERACT_REACH;
+    if fac.door_is_open(door) || !reach {
+        n.door = None;
+        return;
+    }
+    let left = match n.door {
+        Some((c, t)) if c == door => t - dt,
+        _ => {
+            let mut rng = Rng::new(&format!("{}:door:{}:{}", n.name, door.x, door.y));
+            DOOR_THINK + DOOR_THINK_JITTER * rng.next_f32() - dt
+        }
+    };
+    if left <= 0.0 {
+        n.door = None;
+        presses.push(door);
+    } else {
+        n.door = Some((door, left));
+    }
+}
+
+/// Godot `_walk_toward`: one grid step toward `goal`, replanning every `REPATH` seconds. A shut door in the way
+/// stops the bot (`wait_at_door`).
+fn walk_toward(n: &mut Npc, fac: &Facility, goal: (f32, f32), dt: f32, presses: &mut Vec<Cell>) {
     let here = n.at;
     n.path_age += dt;
     if n.path_age >= REPATH {
@@ -179,15 +233,24 @@ fn walk_toward(n: &mut Npc, fac: &Facility, goal: (f32, f32), dt: f32) {
         }
     }
     let speed = PLAYER_WALK_SPEED;
-    let moved;
-    if len <= speed * dt {
-        n.path.remove(0);
-        n.at = target;
-        moved = len;
+    let arrives = len <= speed * dt;
+    let (moved, to) = if arrives {
+        (len, target)
     } else {
-        moved = speed * dt;
-        n.at = (here.0 + dir.0 * moved, here.1 + dir.1 * moved);
+        (speed * dt, (here.0 + dir.0 * speed * dt, here.1 + dir.1 * speed * dt))
+    };
+    // a shut door in the way stops the bot, as it stops the runner (a bot already inside a leaf's slab is let out)
+    if fac.door_in_way(here.0, here.1, NAV_RADIUS).is_none() {
+        if let Some(door) = fac.door_in_way(to.0, to.1, NAV_RADIUS) {
+            wait_at_door(n, fac, door, dt, presses);
+            return;
+        }
     }
+    n.door = None;
+    if arrives {
+        n.path.remove(0);
+    }
+    n.at = to;
     let heading = n.heading;
     turn(n, (-heading.0).atan2(-heading.1), dt);
     n.stride += moved;
@@ -196,14 +259,33 @@ fn walk_toward(n: &mut Npc, fac: &Facility, goal: (f32, f32), dt: f32) {
 
 /// Godot `_think` for phase one, same-level only: follow the runner to the NPC's slot when it has
 /// drifted past `FOLLOW_RADIUS + ring - SLOT_RADIUS` (or is mid-walk), else stand still.
-fn follow(n: &mut Npc, fac: &Facility, leader: (f32, f32), dt: f32) {
+fn follow(n: &mut Npc, fac: &Facility, leader: (f32, f32), dt: f32, presses: &mut Vec<Cell>) {
     let ring = slot_radius(n.slot);
     if pdist(n.at, leader) > FOLLOW_RADIUS + ring - SLOT_RADIUS || !n.path.is_empty() {
         let goal = slot_point(leader, n.slot, ring);
-        walk_toward(n, fac, goal, dt);
+        walk_toward(n, fac, goal, dt, presses);
     } else {
         n.walking = false;
     }
+}
+
+/// Runs from the nearest hunter in `chasers` that is inside the smart-scaled threat range. True when it ran.
+fn flee(n: &mut Npc, fac: &Facility, chasers: &[(f32, f32)], dt: f32, presses: &mut Vec<Cell>) -> bool {
+    let range = THREAT_RANGE * (0.5 + n.smart as f32 / 100.0);
+    let near = chasers
+        .iter()
+        .map(|&c| (c, pdist(n.at, c)))
+        .filter(|&(_, d)| d < range)
+        .min_by(|a, b| a.1.total_cmp(&b.1));
+    let Some((c, d)) = near else { return false };
+    let away = if d > 1e-3 {
+        ((n.at.0 - c.0) / d, (n.at.1 - c.1) / d)
+    } else {
+        (1.0, 0.0)
+    };
+    let goal = (n.at.0 + away.0 * FLEE_STEP, n.at.1 + away.1 * FLEE_STEP);
+    walk_toward(n, fac, goal, dt, presses);
+    true
 }
 
 impl Game {
@@ -261,8 +343,7 @@ impl Game {
         };
         let level = self.runner_level();
         for _ in 0..count {
-            let id = self.npc_next;
-            let slot = id + 1;
+            let slot = self.npc_next + 1;
             // Godot: one NPC stands on the spot itself, more fan out round it
             let ring = if count == 1 { 0.0 } else { slot_radius(slot) };
             let want = slot_point(spot, slot, ring);
@@ -271,26 +352,83 @@ impl Game {
                 .nearest_open(want.0, want.1, NAV_RADIUS)
                 .or_else(|| self.fac.nearest_open(spot.0, spot.1, NAV_RADIUS))
                 .unwrap_or(spot);
-            let phase = (slot as f32 * PATH_STAGGER) % REPATH;
-            let name = self.npc_name(id);
-            self.npcs.push(Npc {
-                id,
-                name,
-                slot,
-                at,
-                level,
-                facing: 0.0,
-                turn_v: 0.0,
-                heading: (0.0, 0.0),
-                path: vec![],
-                path_age: REPATH - phase,
-                walking: false,
-                stride: 0.0,
-                smart: smart.clamp(0, 100),
-            });
-            self.npc_next += 1;
+            self.push_npc(at, level, smart, None, 0.0);
         }
         count as usize
+    }
+
+    /// Makes one NPC at `at` (id, slot, name and repath phase as Godot's `spawn`) and returns its id. A `key` marks a
+    /// run NPC that waits until the runner comes within `join_radius`; no key means the admin's, which follows at once.
+    fn push_npc(&mut self, at: (f32, f32), level: i32, smart: i32, key: Option<String>, join_radius: f32) -> u32 {
+        let id = self.npc_next;
+        let slot = id + 1;
+        let phase = (slot as f32 * PATH_STAGGER) % REPATH;
+        let name = self.npc_name(id);
+        self.npcs.push(Npc {
+            id,
+            name,
+            slot,
+            at,
+            level,
+            facing: 0.0,
+            turn_v: 0.0,
+            heading: (0.0, 0.0),
+            path: vec![],
+            path_age: REPATH - phase,
+            walking: false,
+            stride: 0.0,
+            smart: smart.clamp(0, 100),
+            joined: key.is_none(),
+            key,
+            join_radius,
+            door: None,
+        });
+        self.npc_next += 1;
+        id
+    }
+
+    /// A normal run's NPCs (data/npcs.json): on level 0 the first `count(difficulty)` homes are drawn from the level seed
+    /// (`{seed}:NPC:{n}`), each on an open cell `min_distance`..`max_distance` from the runner and out of its sight. They
+    /// wait there until the runner comes close, then follow. An NPC whose key already exists is not made again, so the
+    /// same seed always gives the same NPCs and a call after a rebuild adds nothing. Returns how many were made.
+    pub(super) fn npc_ensure_run(&mut self, content: &crate::content::Content) -> usize {
+        if self.runner_level() != 0 || self.inf.is_none() {
+            return 0;
+        }
+        let rules = &content.npcs;
+        let seed = self.level_seed();
+        let mut made = 0;
+        for n in 0..rules.count(self.difficulty) {
+            let key = format!("{seed}:NPC:{n}");
+            if self.npcs.iter().any(|x| x.key.as_deref() == Some(key.as_str())) {
+                continue;
+            }
+            let mut rng = Rng::new(&key);
+            let runner = self.p.pos;
+            let cands: Vec<Cell> = self
+                .fac
+                .floor_cells()
+                .into_iter()
+                .filter(|c| {
+                    let p = c.center();
+                    let d = pdist(p, runner);
+                    d >= rules.min_distance
+                        && d <= rules.max_distance
+                        && self.fac.body_fits(p.0, p.1, NAV_RADIUS)
+                        && !self.fac.has_line_of_sight(p, runner)
+                })
+                .collect();
+            let at = if cands.is_empty() {
+                // a window with no hidden open cell in range: stand beside the runner, still deterministic
+                self.fac.nearest_open(runner.0 + rules.min_distance, runner.1, NAV_RADIUS).unwrap_or(runner)
+            } else {
+                cands[rng.next_index(cands.len())].center()
+            };
+            let smart = rules.smart[rng.next_index(rules.smart.len())];
+            self.push_npc(at, 0, smart, Some(key), rules.join_radius);
+            made += 1;
+        }
+        made
     }
 
     /// Admin REMOVE NEAREST: the NPC nearest the runner, by distance on the floor. Returns its name.
@@ -332,11 +470,13 @@ impl Game {
             n.path.clear();
             n.path_age = REPATH;
             n.walking = false;
+            n.door = None;
         }
     }
 
-    /// The per-frame tick: every NPC on the runner's level follows the runner; an NPC on another level
-    /// stands still (its level's storey crossing is deferred).
+    /// The per-frame tick: an NPC on the runner's level runs from a chasing hunter in range, else waits (a run NPC
+    /// not yet joined: it joins when the runner is close and in sight) or follows the runner. An NPC on another
+    /// level stands still (its level's storey crossing is deferred).
     pub(super) fn update_npcs(&mut self, dt: f32) {
         if self.npcs.is_empty() {
             return;
@@ -344,12 +484,42 @@ impl Game {
         let level = self.runner_level();
         let leader = self.p.pos;
         let fac = &self.fac;
+        let chasers: Vec<(f32, f32)> = self
+            .hunters
+            .iter()
+            .filter(|h| h.active && matches!(h.state, State::Chase))
+            .map(|h| h.pos)
+            .collect();
+        let mut presses: Vec<Cell> = vec![];
         for n in self.npcs.iter_mut() {
             if n.level != level {
                 n.walking = false;
                 continue;
             }
-            follow(n, fac, leader, dt);
+            if flee(n, fac, &chasers, dt, &mut presses) {
+                continue;
+            }
+            if !n.joined {
+                if pdist(n.at, leader) <= n.join_radius && fac.has_line_of_sight(n.at, leader) {
+                    n.joined = true;
+                } else {
+                    n.walking = false;
+                    n.path.clear();
+                    continue;
+                }
+            }
+            follow(n, fac, leader, dt, &mut presses);
+        }
+        self.npc_press_doors(presses);
+    }
+
+    /// The bots' interact presses, through the runner's path (`press_door`). A door already open (another bot or the
+    /// runner got there first) is left alone, since a press would shut it.
+    fn npc_press_doors(&mut self, presses: Vec<Cell>) {
+        for cell in presses {
+            if !self.fac.door_is_open(cell) {
+                self.press_door(cell);
+            }
         }
     }
 }
@@ -360,6 +530,7 @@ mod tests {
     use crate::config::Difficulty;
     use crate::content::Content;
     use crate::world::catalog::Catalog;
+    use crate::world::facility::DoorToggle;
 
     /// A finite route (no server, no renderer, no assets): the offline game the admin plays.
     fn offline_game() -> (Game, Content, Catalog) {
@@ -554,6 +725,184 @@ mod tests {
         assert_eq!(g.npc_remove_all(), 4);
     }
 
+    /// A normal Infinite run (the pattern of the endless tests): level 0, seed text fixed.
+    fn run_game(diff: Difficulty, run_seed: u32, text: &str) -> (Game, Content) {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let g = Game::new_infinite_sim(diff, run_seed, text, 0, &content, &catalog);
+        (g, content)
+    }
+
+    #[test]
+    fn a_normal_run_starts_with_the_ruled_count_on_open_cells() {
+        for (diff, want) in [(Difficulty::Relaxed, 1), (Difficulty::Standard, 1), (Difficulty::Hard, 2)] {
+            let (g, content) = run_game(diff, 7, "ROOM-TEST-7");
+            assert_eq!(content.npcs.count(diff), want);
+            assert_eq!(g.npcs.len() as i32, want, "{diff:?}");
+            for n in &g.npcs {
+                assert!(g.fac.body_fits(n.at.0, n.at.1, NAV_RADIUS), "NPC {} stands in a wall at {:?}", n.name, n.at);
+                let d = pdist(n.at, g.p.pos);
+                assert!(d >= content.npcs.min_distance - 0.01, "NPC inside the start area: {d} m");
+                assert!(!n.joined && n.key.is_some(), "a run NPC waits for the runner");
+            }
+        }
+    }
+
+    #[test]
+    fn the_same_seed_gives_the_same_npcs() {
+        let (a, _) = run_game(Difficulty::Hard, 7, "ROOM-TEST-7");
+        let (b, _) = run_game(Difficulty::Hard, 7, "ROOM-TEST-7");
+        let key = |g: &Game| g.npcs.iter().map(|n| (n.name.clone(), n.at, n.smart, n.key.clone())).collect::<Vec<_>>();
+        assert_eq!(key(&a), key(&b));
+        let (c, _) = run_game(Difficulty::Hard, 8, "ROOM-TEST-8");
+        assert_ne!(key(&a), key(&c), "another seed, other NPCs");
+    }
+
+    #[test]
+    fn ensure_run_never_makes_an_npc_twice() {
+        let (mut g, content) = run_game(Difficulty::Hard, 7, "ROOM-TEST-7");
+        let before = g.npcs.len();
+        assert_eq!(g.npc_ensure_run(&content), 0);
+        assert_eq!(g.npcs.len(), before);
+        // a removed run NPC comes back on the next call
+        g.npc_remove_all();
+        assert_eq!(g.npc_ensure_run(&content), before);
+    }
+
+    #[test]
+    fn a_waiting_npc_stays_until_the_runner_is_close_and_then_follows() {
+        let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        let home = g.npcs[0].at;
+        for _ in 0..120 {
+            g.update_npcs(1.0 / 60.0);
+        }
+        assert_eq!(g.npcs[0].at, home, "it waits");
+        assert!(!g.npcs[0].joined);
+        // the runner steps beside it
+        g.p.pos = (home.0 + 1.0, home.1);
+        g.update_npcs(1.0 / 60.0);
+        assert!(g.npcs[0].joined, "close and in sight: joined");
+    }
+
+    #[test]
+    fn an_npc_runs_from_a_chasing_hunter() {
+        let (mut g, content) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        let i = 0;
+        g.npcs[i].joined = true;
+        let start = g.npcs[i].at;
+        let mut h = crate::hunters::brain::Brain::new(
+            content.hunters[0].clone(),
+            (start.0 + 3.0, start.1),
+            "T",
+            Difficulty::Standard,
+        );
+        h.active = true;
+        h.state = State::Chase;
+        g.hunters.push(h);
+        let before = pdist(g.npcs[i].at, g.hunters.last().unwrap().pos);
+        for _ in 0..60 {
+            g.update_npcs(1.0 / 60.0);
+        }
+        assert!(pdist(g.npcs[i].at, g.hunters.last().unwrap().pos) > before, "it ran away");
+    }
+
+    /// A game with a room door a bot can cross in a straight line: the door's threshold cell and the open points a
+    /// metre either side of it. Doors are registered (ticked) and shut.
+    fn door_case() -> (Game, Cell, (f32, f32), (f32, f32)) {
+        for seed in 1..60u32 {
+            let (mut g, _) = run_game(Difficulty::Standard, seed, &format!("ROOM-DOOR-{seed}"));
+            g.fac.update_doors(&[], &[], 0.0);
+            let doors: Vec<(usize, (f32, f32))> = g.fac.doors().collect();
+            for (i, c) in doors {
+                let cell = g.fac.props[i].cell;
+                if g.fac.door_is_open(cell) {
+                    continue;
+                }
+                for axis in [(1.0f32, 0.0f32), (0.0, 1.0)] {
+                    let a = (c.0 - axis.0, c.1 - axis.1);
+                    let b = (c.0 + axis.0, c.1 + axis.1);
+                    if !(g.fac.body_fits(a.0, a.1, NAV_RADIUS) && g.fac.body_fits(b.0, b.1, NAV_RADIUS)) {
+                        continue;
+                    }
+                    let cell_of = |p: (f32, f32)| Cell::new(p.0.floor() as i32, p.1.floor() as i32);
+                    // a doorway is a straight three-cell line a, door, b; a detour round the walls is longer
+                    if g.fac.find_path(cell_of(a), cell_of(b)).len() == 3 {
+                        return (g, cell, a, b);
+                    }
+                }
+            }
+        }
+        panic!("no crossable room door in 59 seeds");
+    }
+
+    /// One frame of a bot heading for `goal`: its step, its interact press and the door swing, as `Game::update` runs them.
+    fn bot_frame(g: &mut Game, goal: (f32, f32), dt: f32) {
+        let mut presses = vec![];
+        walk_toward(&mut g.npcs[0], &g.fac, goal, dt, &mut presses);
+        g.npc_press_doors(presses);
+        let bodies: Vec<(f32, f32)> = std::iter::once(g.p.pos).chain(g.npcs.iter().map(|n| n.at)).collect();
+        g.fac.update_doors(&[], &bodies, dt);
+    }
+
+    #[test]
+    fn a_bot_opens_a_shut_door_by_interact_and_then_passes() {
+        let (mut g, cell, a, b) = door_case();
+        g.p.pos = (a.0 + 40.0, a.1 + 40.0); // the runner is elsewhere
+        g.npcs[0].joined = true;
+        g.npcs[0].at = a;
+        let dt = 1.0 / 60.0;
+        let (mut stopped, mut pressed) = (None, None);
+        for f in 0..(8 * 60) {
+            bot_frame(&mut g, b, dt);
+            let n = &g.npcs[0];
+            if stopped.is_none() && n.door.is_some() {
+                stopped = Some(f);
+                assert!(!g.fac.door_is_open(cell), "it stops at a shut door");
+                assert!(!n.walking);
+            }
+            if pressed.is_none() && g.fac.door_is_open(cell) {
+                pressed = Some(f);
+            }
+        }
+        let (stopped, pressed) = (stopped.expect("the bot reached the door"), pressed.expect("the bot opened the door"));
+        let waited = (pressed - stopped) as f32 * dt;
+        assert!(waited >= DOOR_THINK - dt && waited <= DOOR_THINK + DOOR_THINK_JITTER + 2.0 * dt, "think delay {waited}");
+        assert!(g.fac.door_is_open(cell) && g.fac.door_in_way(b.0, b.1, NAV_RADIUS).is_none());
+        assert!(pdist(g.npcs[0].at, b) < 0.6, "it walked on through the door, got {:?} for {b:?}", g.npcs[0].at);
+    }
+
+    #[test]
+    fn a_bot_does_not_open_a_door_by_proximity() {
+        let (mut g, cell, a, _) = door_case();
+        g.npcs[0].joined = false; // it waits right at the door
+        g.npcs[0].at = a;
+        g.p.pos = (a.0 + 40.0, a.1 + 40.0);
+        for _ in 0..180 {
+            g.update_npcs(1.0 / 60.0);
+            // the openers are the hunters alone (game/mod.rs): none here
+            let bodies = [g.p.pos, g.npcs[0].at];
+            g.fac.update_doors(&[], &bodies, 1.0 / 60.0);
+        }
+        assert!(!g.fac.door_is_open(cell));
+        assert_eq!(g.fac.door_open_amount(cell), 0.0, "a bot beside a shut door leaves it shut");
+    }
+
+    #[test]
+    fn a_bot_press_refuses_to_close_on_someone_in_the_doorway() {
+        let (mut g, cell, a, _) = door_case();
+        g.p.pos = (a.0 + 40.0, a.1 + 40.0);
+        g.npcs[0].at = a;
+        assert_eq!(g.press_door(cell), Some(DoorToggle::Opened));
+        g.fac.update_doors(&[], &[], 1.0);
+        // a bot stands in the doorway: the same press as the runner's is refused
+        g.npcs[0].at = g.fac.door_centre(cell).unwrap();
+        assert_eq!(g.press_door(cell), Some(DoorToggle::Blocked));
+        assert!(g.fac.door_is_open(cell));
+        // and it treats the bot as a body: the leaf does not swing shut through it
+        g.fac.update_doors(&[], &[g.npcs[0].at], 1.0);
+        assert_eq!(g.fac.door_open_amount(cell), 1.0);
+    }
+
     #[test]
     fn shift_drops_the_path_and_forces_a_replan() {
         let mut n = Npc {
@@ -570,6 +919,10 @@ mod tests {
             walking: true,
             stride: 0.0,
             smart: 70,
+            key: None,
+            joined: true,
+            join_radius: 0.0,
+            door: None,
         };
         n.shift((-16.0, 32.0));
         assert_eq!(n.at, (-13.0, 36.0));

@@ -695,6 +695,8 @@ impl Game {
         self.depth = 1 - inf.level;
         self.fac = fac;
         self.fix = fix;
+        // the focus is a prop index of the window just replaced: it would name another door in this one
+        self.focus = None;
         self.adopt_floor(content);
         self.sync_in();
         self.sync_safe_zone();
@@ -728,6 +730,7 @@ impl Game {
         self.p.place(start);
         self.p.pos = start;
         self.reset_hunters(content);
+        self.npc_ensure_run(content);
         self.fade = 1.0;
         self.reveal();
         self.discover_map();
@@ -765,7 +768,19 @@ impl Game {
         if self.inf.is_none() {
             return;
         }
+        let from = self.inf.as_ref().map(|i| (i.center, i.level));
         self.recentre_window(content, catalog);
+        if self.inf.as_ref().map(|i| (i.center, i.level)) != from && self.p.hidden.is_none() {
+            // a new window: its doors are registered shut and the crosshair target is read again, so the prompt
+            // names the door the runner is at now (the focus found before the recentre indexed the old props)
+            let level = self.runner_level();
+            let bodies: Vec<(f32, f32)> = std::iter::once(self.p.pos)
+                .chain(self.hunters.iter().filter(|h| h.active).map(|h| h.pos))
+                .chain(self.npcs.iter().filter(|n| n.level == level).map(|n| n.at))
+                .collect();
+            self.fac.update_doors(&[], &bodies, 0.0);
+            self.focus = self.find_focus();
+        }
         self.discover_map();
         self.clear_reached_waypoint();
         self.refresh_waypoint();
@@ -1709,6 +1724,76 @@ mod tests {
             .position(|x| *x == id)
             .expect("the relay is back in the window");
         assert!(g.relays_taken[i], "a claimed relay must stay claimed");
+    }
+
+    #[test]
+    fn a_window_move_drops_the_door_focus_of_the_old_window() {
+        use super::super::interact::Focus;
+        let (mut g, content, catalog) = run();
+        g.fac.update_doors(&[], &[], 0.0);
+        // a focus on a door of this window names a prop index: after the window moves it must not keep naming one
+        let (i, _) = g.fac.doors().next().expect("a door in the window");
+        g.focus = Some(Focus::Door(i));
+        g.p.pos.0 += CHUNK as f32;
+        g.stream_window(&content, &catalog);
+        match g.focus {
+            None => {}
+            Some(Focus::Door(j)) => {
+                let cell = g.fac.props[j].cell;
+                assert!(g.fac.door_centre(cell).is_some(), "the door is registered, so its prompt follows its state");
+                let at = g.fac.doors().find(|d| d.0 == j).unwrap().1;
+                assert!(pdist(at, g.p.pos) < 4.0, "the door focus is at the runner, not {} m away", pdist(at, g.p.pos));
+            }
+            Some(_) => {}
+        }
+    }
+
+    #[test]
+    fn no_focus_index_outlives_a_window_move_or_a_rebuild() {
+        use super::super::interact::Focus;
+        let (mut g, content, catalog) = run();
+        let sounds = crate::audio::Sounds::default();
+        // the last entry of every list a focus indexes: after the window is rebuilt these are the indices
+        // most likely to run off the end of a shorter list
+        let foci = |g: &Game| {
+            let mut v = vec![];
+            if let Some(i) = g.fac.relays.len().checked_sub(1) { v.push(Focus::Relay(i)); }
+            if let Some(i) = g.fac.batteries.len().checked_sub(1) { v.push(Focus::Battery(i)); }
+            if let Some(i) = g.pickups.len().checked_sub(1) { v.push(Focus::Pickup(i)); }
+            if let Some(i) = g.fix.coins.len().checked_sub(1) { v.push(Focus::Coin(i)); }
+            if let Some(i) = g.fac.hiding.len().checked_sub(1) { v.push(Focus::Locker(i)); }
+            if let Some(i) = g.fac.stairs.len().checked_sub(1) { v.push(Focus::Stairs(i)); }
+            if let Some(i) = g.fac.room_lights.len().checked_sub(1) { v.push(Focus::LightSwitch(i)); }
+            if let Some(i) = g.fix.vents.len().checked_sub(1) { v.push(Focus::Vent(i)); }
+            if let Some((i, _)) = g.fac.doors().last() { v.push(Focus::Door(i)); }
+            v
+        };
+        // far hops (the agent's teleport) and single-chunk steps, each with a focus set before the move
+        let hops = [(CHUNK as f32, 0.0), (0.0, -4.0 * CHUNK as f32), (-7.0 * CHUNK as f32, 3.0 * CHUNK as f32), (0.0, CHUNK as f32)];
+        for (dx, dy) in hops {
+            for f in foci(&g) {
+                g.focus = Some(f);
+                g.p.pos.0 += dx;
+                g.p.pos.1 += dy;
+                g.stream_window(&content, &catalog);
+                if let Some(f) = g.focus {
+                    // every consumer of the focus must still be in range
+                    let _ = g.focus_prompt();
+                    g.interact(f, &content, &catalog, &sounds);
+                }
+                g.p.pos = g.fac.start.center();
+                g.stream_window(&content, &catalog);
+            }
+        }
+        // a rebuild in place (regen_window) and a fresh floor drop the focus too
+        for f in foci(&g) {
+            g.focus = Some(f);
+            g.regen_window(&content, &catalog);
+            assert!(g.focus.is_none(), "{f:?} survived a rebuild of the window");
+            g.focus = Some(f);
+            g.start_floor_sim(&content, &catalog);
+            assert!(g.focus.is_none(), "{f:?} survived a new floor");
+        }
     }
 
     #[test]

@@ -22,6 +22,7 @@ pub mod solyth;
 pub mod thessine;
 pub mod umbriel;
 pub mod verrine;
+pub mod void;
 pub mod wynelle;
 pub mod xivvy;
 pub mod ysolde;
@@ -76,8 +77,27 @@ pub enum Event {
     TakeBattery(usize),
     /// A capture that skips the struggle (Nyxie's dead lamp, Wynelle's freeze).
     InescapableCapture,
+    /// Void Orange: one system goes offline for `seconds` (void_orange_gimmick.gd; the player side is game/void_player.rs).
+    SystemOutage(void::void_orange::Outage),
+    /// Void Purple: radar static or a full blackout (void_purple_gimmick.gd `radar_corrupt`).
+    RadarCorrupt(void::void_purple::RadarCorrupt),
+    /// Void Pink: a run of fake footsteps near the runner (void_pink_gimmick.gd `fake_footsteps`).
+    FakeFootsteps(void::void_pink::FakeFootsteps),
     /// Shown to the runner (only the ones the original shows).
     Message(String),
+}
+
+/// Godot `HunterBrain.ANNOUNCE_HUNTER_EVENTS` (hunters/ai/hunter_brain.gd:82): off on purpose, so players discover what the
+/// hunters do on their own. The hunters still act; only the callouts are dropped.
+pub const ANNOUNCE_HUNTER_EVENTS: bool = false;
+
+/// Godot `HunterBrain.emit_world_event` (hunter_brain.gd:88-95) with the flag off: a pure announcement (`Event::Message`) is
+/// dropped, so no toast is shown. Mechanic events stay, including `FacilityAlert` (the investigation the hunters raise), so
+/// the other hunters still react, and `Mimic` keeps its cue.
+pub fn silence_callouts(ev: &mut Vec<Event>) {
+    if !ANNOUNCE_HUNTER_EVENTS {
+        ev.retain(|e| !matches!(e, Event::Message(_)));
+    }
 }
 
 #[derive(Default)]
@@ -109,6 +129,18 @@ pub enum Gimmick {
     Xivvy(xivvy::Xivvy),
     Ysolde(ysolde::Ysolde),
     Zellia(Zellia),
+    VoidBlack(void::void_black::VoidBlack),
+    VoidBlue(void::void_blue::VoidBlue),
+    VoidBrown(void::void_brown::VoidBrown),
+    VoidCyan(void::void_cyan::VoidCyan),
+    VoidGray(void::void_gray::VoidGray),
+    VoidGreen(void::void_green::VoidGreen),
+    VoidOrange(void::void_orange::VoidOrange),
+    VoidPink(void::void_pink::VoidPink),
+    VoidPurple(void::void_purple::VoidPurple),
+    VoidRed(void::void_red::VoidRed),
+    VoidWhite(void::void_white::VoidWhite),
+    VoidYellow(void::void_yellow::VoidYellow),
 }
 
 impl Gimmick {
@@ -139,6 +171,19 @@ impl Gimmick {
             "xivvy" => Gimmick::Xivvy(Default::default()),
             "ysolde" => Gimmick::Ysolde(Default::default()),
             "zellia" => Gimmick::Zellia(Zellia::new(diff)),
+            "void_black" => Gimmick::VoidBlack(Default::default()),
+            "void_blue" => Gimmick::VoidBlue(Default::default()),
+            "void_brown" => Gimmick::VoidBrown(Default::default()),
+            "void_cyan" => Gimmick::VoidCyan(Default::default()),
+            // Godot void_gray_gimmick.gd: Nightmare is not a Rust difficulty yet, so the standard timings apply
+            "void_gray" => Gimmick::VoidGray(void::void_gray::VoidGray::new(false)),
+            "void_green" => Gimmick::VoidGreen(Default::default()),
+            "void_orange" => Gimmick::VoidOrange(Default::default()),
+            "void_pink" => Gimmick::VoidPink(Default::default()),
+            "void_purple" => Gimmick::VoidPurple(Default::default()),
+            "void_red" => Gimmick::VoidRed(Default::default()),
+            "void_white" => Gimmick::VoidWhite(Default::default()),
+            "void_yellow" => Gimmick::VoidYellow(Default::default()),
             _ => Gimmick::None,
         }
     }
@@ -171,8 +216,31 @@ impl Gimmick {
             Gimmick::Umbriel(g) => g.before(b, dt),
             Gimmick::Wynelle(g) => g.before(b, dt, c, t, ev),
             Gimmick::Xivvy(g) => g.before(b, dt, c, t),
+            Gimmick::VoidBlack(g) => g.before(b, c, t),
+            Gimmick::VoidBlue(g) => g.before(b, dt, c, t, ev),
+            Gimmick::VoidGray(g) => {
+                // Godot passes the runner's peer id (default 1); the Rust Target has none yet. The route prompt
+                // (signal_route) is not ported, so its events are dropped here for now.
+                g.before(b, dt, c, t, 1);
+                let _ = g.take_events();
+            }
+            Gimmick::VoidOrange(g) => {
+                if let Some(o) = g.before(b, dt, t) {
+                    ev.push(Event::SystemOutage(o));
+                }
+            }
+            Gimmick::VoidPurple(g) => {
+                // has_target: the Rust brain always has a runner Target (Godot `not target.is_empty()`)
+                if let Some(r) = g.before(b, dt, true) {
+                    ev.push(Event::RadarCorrupt(r));
+                }
+            }
+            Gimmick::VoidRed(g) => g.before(b, c),
+            Gimmick::VoidWhite(g) => g.before(b, c, t),
+            Gimmick::VoidYellow(g) => g.before(dt, t.map_open),
             _ => {}
         }
+        silence_callouts(ev);
     }
 
     pub fn after_perception(
@@ -196,8 +264,18 @@ impl Gimmick {
             Gimmick::Verrine(g) => g.after(b, t),
             Gimmick::Ysolde(g) => g.after(b, dt, c, t, ev),
             Gimmick::Zellia(g) => g.after(b, dt, c, t),
+            Gimmick::VoidBrown(g) => g.after(b, dt, c, t, ev),
+            Gimmick::VoidCyan(g) => g.after(b, dt, t, ev),
+            Gimmick::VoidGray(g) => g.after(b),
+            Gimmick::VoidGreen(g) => g.after(b, dt, c, t, ev),
+            Gimmick::VoidPink(g) => {
+                if let Some(f) = g.after(b, dt) {
+                    ev.push(Event::FakeFootsteps(f));
+                }
+            }
             _ => {}
         }
+        silence_callouts(ev);
     }
 
     pub fn speed_scale(&self, b: &Brain) -> f32 {
@@ -210,6 +288,10 @@ impl Gimmick {
             Gimmick::Verrine(g) => g.speed_scale,
             Gimmick::Xivvy(g) => g.speed_scale,
             Gimmick::Nyxie(g) => g.speed_scale(),
+            Gimmick::VoidBlack(g) => g.speed_scale(),
+            Gimmick::VoidRed(g) => g.speed_scale(),
+            Gimmick::VoidWhite(g) => g.speed_scale(),
+            Gimmick::VoidYellow(g) => g.speed_scale(),
             _ => 1.0,
         }
     }
@@ -230,7 +312,18 @@ impl Gimmick {
             Gimmick::Opalie(g) => g.on_station,
             Gimmick::Verrine(g) => !g.active_in_vent,
             Gimmick::Zellia(g) => g.holds_position(),
+            Gimmick::VoidGray(g) => g.holds_position(),
+            Gimmick::VoidGreen(g) => g.holds_position(),
             _ => false,
+        }
+    }
+
+    /// HunterGimmick.peek_chance: the odds of peeking at a corner, from the tuning's `base`.
+    pub fn peek_chance(&self, base: f32) -> f32 {
+        match self {
+            // calm she never peeks while her music plays (GlyraGimmick.peek_chance)
+            Gimmick::Glyra(g) if g.playing() => 0.0,
+            _ => base,
         }
     }
 
@@ -245,6 +338,10 @@ impl Gimmick {
             Gimmick::Opalie(g) => g.on_station,
             Gimmick::Verrine(g) => !g.active_in_vent,
             Gimmick::Zellia(g) => g.trading(),
+            Gimmick::VoidGray(g) => g.immune_to_capture(),
+            Gimmick::VoidGreen(g) => g.immune_to_capture(),
+            // void_pink_gimmick.gd:51-52: her footsteps can never catch the runner
+            Gimmick::VoidPink(_) => true,
             _ => false,
         }
     }
@@ -261,6 +358,9 @@ impl Gimmick {
         match self {
             Gimmick::Ceryth(g) => g.dispersed,
             Gimmick::Ilyra(g) => g.banished(),
+            Gimmick::VoidBlue(g) => g.hidden_from_view(),
+            Gimmick::VoidGray(g) => g.hidden_from_view(),
+            Gimmick::VoidGreen(g) => g.hidden_from_view(),
             Gimmick::Verrine(g) => !g.active_in_vent,
             _ => false,
         }
@@ -371,5 +471,24 @@ mod tests {
             assert!(!text.contains("mod pack"), "{id}");
         }
         assert!(describe("void_red").contains("155%"));
+    }
+
+    #[test]
+    fn hunter_callouts_are_silent_like_godot() {
+        // Godot validate_no_announcements.gd: the announcement goes, the mechanic keys stay.
+        assert!(!ANNOUNCE_HUNTER_EVENTS);
+        let mut ev = vec![
+            Event::Message("SOMETHING WAS STANDING THERE".into()),
+            Event::FacilityAlert { at: (1.0, 1.0), except_self: true },
+            Event::Stun(1.6),
+            Event::Message("BELLS RING DOWN THE HALL".into()),
+            Event::Mimic { rare: false },
+        ];
+        silence_callouts(&mut ev);
+        assert_eq!(ev.len(), 3);
+        assert!(!ev.iter().any(|e| matches!(e, Event::Message(_))));
+        assert!(matches!(ev[0], Event::FacilityAlert { at: (x, y), except_self: true } if x == 1.0 && y == 1.0));
+        assert!(matches!(ev[1], Event::Stun(s) if s == 1.6));
+        assert!(matches!(ev[2], Event::Mimic { rare: false }));
     }
 }

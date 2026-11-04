@@ -20,9 +20,6 @@ use std::rc::Rc;
 
 /// HunterRoster.MODEL_SCALE: humanoid hunters are drawn 1.5x their authored glb size.
 pub const MODEL_SCALE: f32 = 1.5;
-/// Xivvy's flight height as the port already drew it (xivvy_flight.gd's altitude / bank / pitch are not ported).
-const XIVVY_LIFT: f32 = 0.48;
-
 const STILL_CLIP_AFTER: f32 = 0.35;
 const STILL_SPEED: f32 = 0.15;
 const TELEPORT_DISTANCE: f32 = 4.0;
@@ -35,6 +32,11 @@ const HEAVY_STUN_LEAN: f32 = 0.32;
 const HEAVY_STUN_SWAY: f32 = 0.09;
 const HEAVY_STUN_SWAY_RATE: f32 = 0.0042;
 const HEAVY_STUN_EASE: f32 = 9.0;
+/// The corner-peek lean: the figure pitches 0.38 rad toward the edge and shifts 0.1 m with it, so the head (about
+/// 1.5 m up) ends 0.7 m ahead of the feet, the distance from her stand to the leaned eye (`hunters::peek`).
+const PEEK_LEAN_ANGLE: f32 = 0.38;
+const PEEK_LEAN_SHIFT: f32 = 0.1;
+const PEEK_LEAN_EASE: f32 = 10.0;
 
 // hunter_stride.gd
 const MIN_RATIO: f32 = 0.55;
@@ -55,6 +57,10 @@ pub struct Input<'a> {
     pub winded: bool,
     /// Xivvy airborne
     pub airborne: bool,
+    /// Xivvy's height above the floor, metres: her flight altitude plus the float bob (0 on foot)
+    pub lift: f32,
+    /// Xivvy's float sway, a world offset across her heading (zero on foot)
+    pub sway: (f32, f32),
     /// Loxelle's charge (windup + charge)
     pub charging: bool,
     /// brain.presentation_look_target(): last_known while chasing/investigating, the search point while searching
@@ -66,6 +72,9 @@ pub struct Input<'a> {
     pub camera: Vec3,
     /// A grab has hold of her this frame (chase layer and head look off, pinned).
     pub grabbing: bool,
+    /// Rust-side lean (the original plays a Night Watch pose, "corner_peek_left/right"): the way her head leans past a
+    /// corner edge while she peeks out (`Brain::peeking_out`), None otherwise.
+    pub peek_lean: Option<(f32, f32)>,
 }
 
 /// The posed model for this frame.
@@ -524,6 +533,9 @@ pub struct HunterView {
     was_stunned: bool,
     recover_left: f32,
     heavy_lean: f32,
+    /// 0..1 ease of the corner-peek lean, and the direction it leans in (kept while it eases back out).
+    peek_amount: f32,
+    peek_toward: (f32, f32),
     expression: String,
     blink_timer: f32,
     blink_left: f32,
@@ -560,6 +572,8 @@ impl HunterView {
             was_stunned: false,
             recover_left: 0.0,
             heavy_lean: 0.0,
+            peek_amount: 0.0,
+            peek_toward: (0.0, 0.0),
             expression: String::new(),
             blink_timer: 2.0,
             blink_left: 0.0,
@@ -701,7 +715,7 @@ impl HunterView {
                     }
                     .into()
                 }
-                State::Wander | State::Investigate | State::Search => clip = "walk".into(),
+                State::Wander | State::Investigate | State::Search | State::Peek => clip = "walk".into(),
                 State::Idle => {}
             }
         }
@@ -929,13 +943,36 @@ impl HunterView {
         if !reeling && self.heavy_lean.abs() <= 0.0005 {
             self.heavy_lean = 0.0;
         }
-        let at = vec3(i.pos.0, if i.airborne { XIVVY_LIFT } else { 0.0 }, i.pos.1);
+        // the corner-peek lean: tilt toward the edge, easing in and out
+        let leaning = i.peek_lean.filter(|_| i.active && i.stun <= 0.0 && !i.grabbing);
+        if let Some(d) = leaning {
+            self.peek_toward = d;
+        }
+        let goal = if leaning.is_some() { 1.0 } else { 0.0 };
+        self.peek_amount += (goal - self.peek_amount) * (1.0 - (-PEEK_LEAN_EASE * delta).exp());
+        if leaning.is_none() && self.peek_amount <= 0.002 {
+            self.peek_amount = 0.0;
+        }
+        let shift = PEEK_LEAN_SHIFT * self.peek_amount;
+        let at = vec3(
+            i.pos.0 + i.sway.0 + self.peek_toward.0 * shift,
+            i.lift,
+            i.pos.1 + i.sway.1 + self.peek_toward.1 * shift,
+        );
         (pose.clone(), self.finish(pose, at, clock))
     }
 
     /// Model-space bones and the root for a (possibly further edited) local pose.
     pub fn finish(&self, pose: Vec<Local>, at: Vec3, clock: f32) -> Output {
+        let toward = vec3(self.peek_toward.0, 0.0, self.peek_toward.1);
+        let lean = if self.peek_amount > 0.0 && toward.length_squared() > 0.0 {
+            // pitch the whole figure about her feet so the head swings out past the edge: Y x toward takes up to toward
+            Mat4::from_axis_angle(Vec3::Y.cross(toward).normalize(), PEEK_LEAN_ANGLE * self.peek_amount)
+        } else {
+            Mat4::IDENTITY
+        };
         let root = Mat4::from_translation(at)
+            * lean
             * Mat4::from_rotation_y(self.yaw)
             * Mat4::from_rotation_x(self.heavy_lean)
             * Mat4::from_scale(Vec3::splat(MODEL_SCALE / self.rig.unit));

@@ -37,6 +37,7 @@ pub const COMMANDS: &[&str] = &[
     "meters",
     "hotbar",
     "hunters",
+    "npcs",
     "relays",
     "focus",
     "objects",
@@ -141,6 +142,7 @@ fn state_upper(s: State) -> &'static str {
         State::Investigate => "INVESTIGATE",
         State::Chase => "CHASE",
         State::Search => "SEARCH",
+        State::Peek => "PEEK",
     }
 }
 
@@ -160,6 +162,7 @@ pub fn kind_name(f: Focus) -> &'static str {
         Focus::MusicBox => "MUSIC_BOX",
         Focus::Vent(_) => "VENT",
         Focus::Shop(_) => "SHOP",
+        Focus::Door(_) => "ROOM_DOOR",
     }
 }
 
@@ -389,6 +392,7 @@ impl Session {
             "meters" => self.section("meters", self.sim.meters_json()),
             "hotbar" => self.section("hotbar", self.sim.hotbar_json()),
             "hunters" => self.section("hunters", self.sim.hunters_json()),
+            "npcs" => self.section("npcs", self.sim.npcs_json()),
             "relays" => self.section("relays", self.sim.relays_json()),
             "focus" => self.section("focus", self.sim.focus_value()),
             "objects" => self.section("objects", self.sim.objects_json()),
@@ -827,6 +831,22 @@ impl Session {
                 }
                 json!({ "ok": true, "set": set })
             }
+            "summon" => {
+                // the admin's summon (ui/admin/actions.rs) for hunter `id`, `count` times, on the ring round the runner
+                let id = c.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let count = c.get("count").and_then(|v| v.as_u64()).unwrap_or(1).min(16) as usize;
+                let first = g.hunters.len();
+                let mut made = 0;
+                for slot in 0..count {
+                    if crate::app::stress::summon(g, id, &self.sim.content, (first + slot) as u32, slot) {
+                        made += 1;
+                    }
+                }
+                if made == 0 {
+                    return err(format!("no hunter '{id}' or no open floor"));
+                }
+                json!({ "ok": true, "summoned": made, "first_index": first })
+            }
             "wake" => {
                 let i = c.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                 if i >= g.hunters.len() {
@@ -875,7 +895,7 @@ impl Session {
                 g.admin.run_speed = k;
                 json!({ "ok": true, "scale": k })
             }
-            other => err(format!("unknown admin helper '{other}' (god, no_target, noclip, speed, teleport, give, set, wake, hunter_to)")),
+            other => err(format!("unknown admin helper '{other}' (god, no_target, noclip, speed, teleport, give, set, summon, wake, hunter_to)")),
         }
     }
 
@@ -1002,6 +1022,17 @@ impl Session {
                     None => return err(format!("no {to0} in this window")),
                 }
             }
+            if to0 == "door" && c.get("index").is_none() {
+                // no index: the room door nearest the runner
+                let me = g.p.pos;
+                let nearest = g.fac.doors().enumerate().min_by(|a, b| {
+                    pdist(a.1 .1, me).partial_cmp(&pdist(b.1 .1, me)).unwrap()
+                });
+                match nearest {
+                    Some((k, _)) => i = k,
+                    None => return err("no door in this window"),
+                }
+            }
             use crate::world::Cell;
             let cell = match to {
                 "relay" => g.fac.relays.get(i).copied(),
@@ -1019,6 +1050,7 @@ impl Session {
                 "vent" => g.fix.vents.get(i).copied(),
                 "light_switch" => g.fac.room_lights.get(i).map(|l| l.switch_cell),
                 "coin" => g.fix.coins.get(i).copied(),
+                "door" => g.fac.doors().nth(i).map(|(prop, _)| g.fac.props[prop].cell),
                 "pickup" => g
                     .pickups
                     .get(i)

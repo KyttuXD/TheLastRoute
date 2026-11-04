@@ -12,6 +12,7 @@ pub mod meters;
 pub mod npc;
 pub mod player;
 mod transition;
+mod void_player;
 
 pub use interact::Focus;
 pub use items::{Item, Slot};
@@ -134,6 +135,10 @@ pub struct Game {
     pub hiding_disabled: Vec<bool>,
     pub lights_on: Vec<bool>,
     pub heater: Heater,
+    /// Timed effects of the void hunters' powers on the runner (game/void_player.rs).
+    pub void_fx: void_player::VoidEffects,
+    /// The full-screen map is open this frame (the app sets it before `update`; Void Yellow reads it).
+    pub map_open: bool,
     pub music_box_left: f32,
     pub wind_hold: f32,
     pub relays_collected: i32,
@@ -238,6 +243,8 @@ impl Game {
             hiding_disabled: vec![],
             lights_on: vec![],
             heater: Heater::Frozen,
+            void_fx: Default::default(),
+            map_open: false,
             music_box_left: 45.0,
             wind_hold: 0.0,
             relays_collected: 0,
@@ -353,6 +360,8 @@ impl Game {
             hiding_disabled: vec![],
             lights_on: vec![],
             heater: Heater::Frozen,
+            void_fx: Default::default(),
+            map_open: false,
             music_box_left: 45.0,
             wind_hold: 0.0,
             relays_collected: 0,
@@ -419,9 +428,11 @@ impl Game {
     /// hunter on the floor while the admin HUNTER REVEAL is on. The maps dim the ones that are asleep.
     pub fn map_hunters(&self) -> impl Iterator<Item = &Brain> + '_ {
         let reveal = self.admin.hunter_reveal;
+        // a blanked radar (Void Orange outage, Void Purple blackout) shows nobody
+        let dark = self.radar_dark();
         self.hunters
             .iter()
-            .filter(move |h| reveal || (h.active && h.gimmick.on_radar()))
+            .filter(move |h| !dark && (reveal || (h.active && h.gimmick.on_radar())))
     }
 
     /// This run's admin switches merged with the admin overlay's (ui::admin::flags).
@@ -519,6 +530,8 @@ impl Game {
     /// Resets the per-floor arrays for whatever is in `fac`/`fix` now and marks the render
     /// meshes stale (rebuilt by `sync_world`; the simulation never reads them).
     fn adopt_floor(&mut self, content: &Content) {
+        // a focus indexes the floor just replaced (props, pickups, coins, ...): it must not outlive it
+        self.focus = None;
         self.lights_on = vec![true; self.fac.room_lights.len()];
         self.world.lamps = crate::render::world_mesh::lamps(&self.fac, &self.lights_on, content);
         self.world_dirty = true;
@@ -637,6 +650,9 @@ impl Game {
         catalog: &Catalog,
         sounds: &Sounds,
     ) {
+        // Void effect timers (outage, radar, fake steps) run here so the agent path (headless/sim.rs calls `step`
+        // directly) ticks them too, not only the window's `update`.
+        self.tick_void_effects(dt);
         self.time += dt;
         self.fade = (self.fade - dt * 1.5).max(0.0);
         self.toast_t = (self.toast_t - dt).max(0.0);
@@ -693,11 +709,14 @@ impl Game {
         // NPC teammates follow the runner through the escape struggle too (game/npc.rs)
         self.update_npcs(dt);
         let level = self.runner_level();
-        let actors: Vec<(f32, f32)> = std::iter::once(self.p.pos)
-            .chain(self.hunters.iter().filter(|h| h.active).map(|h| h.pos))
+        // hunters pull the doors they reach open; the runner and the player bots (NPC teammates) never do, they press
+        // interact on the door (Focus::Door, npc.rs), but every body keeps a leaf from swinging shut through it
+        let openers: Vec<(f32, f32)> = self.hunters.iter().filter(|h| h.active).map(|h| h.pos).collect();
+        let bodies: Vec<(f32, f32)> = std::iter::once(self.p.pos)
+            .chain(openers.iter().copied())
             .chain(self.npcs.iter().filter(|n| n.level == level).map(|n| n.at))
             .collect();
-        self.fac.update_doors(&actors, dt);
+        self.fac.update_doors(&openers, &bodies, dt);
         if self.escape.is_some() {
             self.update_escape(dt, c, sounds);
             return;
@@ -708,7 +727,7 @@ impl Game {
             self.update_hidden(dt, c, &prof, sounds);
         } else {
             self.hide_check = None;
-            let heater_on = self.heater == Heater::Powered;
+            let heater_on = self.heater_running();
             let in_safe = self.in_safe_zone();
             let local = self.local_climate();
             let admin = self.admin_flags();

@@ -1,0 +1,38 @@
+{
+  "schema": "lr.peek/1",
+  "geometry": {
+    "body_behind": 0.42,
+    "head_past": 0.28,
+    "lookahead": 4,
+    "cooldown": 6.0,
+    "settle": 0.25,
+    "max_per_hunter": 12
+  },
+  "default": { "chance": 0.35, "look": 1.4, "style": "burst" },
+  "never": ["wynelle", "haelith", "ysolde", "opalie", "verrine", "zellia", "void_gray", "mavrine", "ceryth", "briselle", "ferryn", "javelle", "aki"],
+  "hunters": {
+    "nyxie": { "chance": 0.9, "look": 2.0, "style": "ambush" },
+    "thessine": { "chance": 0.7, "look": 1.8, "style": "ambush" },
+    "glyra": { "chance": 0.8, "look": 1.8, "style": "ambush" },
+    "ilyra": { "chance": 0.65, "look": 1.5, "style": "burst" },
+    "quenelle": { "chance": 0.55, "look": 1.6, "style": "ambush" },
+    "umbriel": { "chance": 0.55, "look": 1.8, "style": "ambush" },
+    "dovelle": { "chance": 0.45, "look": 1.4, "style": "burst" },
+    "porcelle": { "chance": 0.45, "look": 2.0, "style": "ambush" },
+    "xivvy": { "chance": 0.3, "look": 1.0, "style": "burst" },
+    "ravelle": { "chance": 0.3, "look": 1.2, "style": "burst" },
+    "kathy": { "chance": 0.15, "look": 1.0, "style": "burst" },
+    "elise": { "chance": 0.12, "look": 1.0, "style": "burst" },
+    "loxelle": { "chance": 0.1, "look": 1.0, "style": "burst" },
+    "solyth": { "chance": 0.1, "look": 1.0, "style": "burst" },
+    "void_black": { "chance": 0.5, "look": 1.6, "style": "ambush" },
+    "void_purple": { "chance": 0.45, "look": 1.5, "style": "ambush" },
+    "void_red": { "chance": 0.2, "look": 1.0, "style": "burst" },
+    "void_orange": { "chance": 0.2, "look": 1.0, "style": "burst" }
+  },
+  "difficulty": {
+    "standard": { "chance": 1.0, "react": 0.45, "ambush": 2.5 },
+    "hard": { "chance": 1.15, "react": 0.25, "ambush": 2.0 },
+    "nightmare": { "chance": 1.3, "react": 0.12, "ambush": 1.6 }
+  }
+}

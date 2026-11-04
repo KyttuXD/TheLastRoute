@@ -36,6 +36,7 @@ impl Game {
             vent_time_in: self.p.vent_time,
             temperature: self.meters.temperature,
             pesticide: self.p.pesticide > 0.0,
+            map_open: self.map_open,
         }
     }
 
@@ -77,7 +78,7 @@ impl Game {
                 batteries_taken: &self.batteries_taken,
                 hiding_disabled: &self.hiding_disabled,
                 vents: &self.fix.vents,
-                heater_on: self.heater == Heater::Powered,
+                heater_on: self.heater_running(),
                 heater_thawed: self.heater != Heater::Frozen,
                 diff: self.difficulty,
                 music_box_left: self.music_box_left,
@@ -166,6 +167,9 @@ impl Game {
                 }
             }
             Event::Message(m) => self.say(&m),
+            Event::SystemOutage(o) => self.begin_system_outage(o),
+            Event::RadarCorrupt(r) => self.begin_radar_corrupt(r),
+            Event::FakeFootsteps(f) => self.queue_fake_footsteps(&f),
         }
     }
 
@@ -234,7 +238,7 @@ impl Game {
                 crouching: false,
                 hidden: true,
                 in_safe_zone: in_safe,
-                heater_on: self.heater == Heater::Powered,
+                heater_on: self.heater_running(),
                 local: self.local_climate(),
             },
         );

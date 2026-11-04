@@ -114,6 +114,21 @@ pub fn draw_map(g: &Game, r: Rect, full: bool, remotes: &[RemoteView]) {
         oy: b.oy - vy as f32 * b.cell,
     };
     draw_floor(g, xf, (vx, vy, vw, vh), full, remotes);
+    radar_state_overlay(g, r);
+}
+
+/// The radar state over a map panel (void_player_effects.gd `hud.set_radar_state`): a blackout or an offline radar blanks
+/// the panel; static flickers noise across it while the hunters still show.
+fn radar_state_overlay(g: &Game, r: Rect) {
+    if g.radar_dark() {
+        draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.0, 0.0, 0.0, 1.0));
+    } else if g.radar_static() {
+        let t = macroquad::time::get_time() as f32;
+        for i in 0..36 {
+            let f = ((i as f32 * 12.9898 + (t * 24.0).floor() * 78.233).sin() * 43758.5453).fract().abs();
+            draw_rectangle(r.x, r.y + f * r.h, r.w, 1.5, Color::new(0.85, 0.9, 0.9, 0.22));
+        }
+    }
 }
 
 /// Draws the floor cells `cells` (x, y, w, h) through `xf`: the floor, the safe zone, relays, batteries, the lift, the
@@ -763,6 +778,7 @@ fn draw_level0(g: &Game, feed: &FullMapFeed, plan: Rect, geo: &FullPlan, remotes
     draw_runner_pins(xf, (fit.x0, fit.y0, fit.w, fit.h), feed.origin, remotes, true);
     let q = xf.at(geo.runner);
     runner_wedge(g, vec2(q.0, q.1), cell, true);
+    radar_state_overlay(g, plan);
 }
 
 /// The fullscreen map overlay (hud.tscn MapOverlay): title, plan and legend. `map_view` is the view the input steps.

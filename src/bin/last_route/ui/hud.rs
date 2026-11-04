@@ -214,7 +214,9 @@ pub fn draw_hud_with_runners(
         if let Some(pr) = g.focus_prompt() {
             let size = fs(10.0);
             let x = c.x - tw(a, F::Body, &pr, size) * 0.5;
-            shadowed(a, &pr, x, c.y + 16.0, size, p.ink);
+            // a stairwell prompt rides high, so it does not cover the steps the crosshair is on
+            let dy = if matches!(g.focus, Some(Focus::Stairs(_))) { -v.y * 0.22 } else { 16.0 };
+            shadowed(a, &pr, x, c.y + dy, size, p.ink);
         }
         if g.focus == Some(Focus::MusicBox) {
             let pct = (g.music_box_left / 45.0 * 100.0).clamp(0.0, 100.0);
@@ -403,7 +405,8 @@ pub fn draw_hud_with_runners(
     drawn.hotbar = true;
 
     if let Some(e) = &g.escape {
-        let r = Rect::new(c.x - 90.0, c.y - 39.0, 180.0, 60.0);
+        // above the stamina bar, not over the middle of the screen, so the grab animation stays visible
+        let r = Rect::new(c.x - 90.0, v.y - 118.0, 180.0, 60.0);
         hud_box(r);
         let content = lh(F::Body, 11.0) + 5.0 + 8.0 + 5.0 + 4.0;
         let mut y = r.y + (r.h - content) * 0.5;

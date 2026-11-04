@@ -87,7 +87,7 @@ impl Glyra {
         }
         self.was_hunting = false;
         let drift = match b.state {
-            State::Chase | State::Investigate | State::Search => !close,
+            State::Chase | State::Investigate | State::Search | State::Peek => !close,
             State::Wander | State::Idle => dist(b.pos, box_pos) > 8.0,
         };
         if drift {

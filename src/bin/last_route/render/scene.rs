@@ -1,5 +1,5 @@
 //! The per-frame 3D scene: the floor, its fixtures and pickups drawn with the original's
-//! authored Blender models (assets/interactables/*.glb: relay, battery, coin, locker, lift,
+//! authored Blender models (assets/interactables/*.bbmodel: relay, battery, coin, locker, lift,
 //! safe zone, vent, music box, heater station, light switch, and the tools), Ravelle's wires,
 //! and the hunters in their Blockbench bodies. Simple shapes stand in if a model is missing.
 
@@ -8,7 +8,7 @@ use super::anim::{
     hunter::{HunterView, Input},
 };
 use super::builder::Builder;
-use super::glb::{draw_builders, GlbModel};
+use super::prop_model::{draw_builders, PropModel};
 use super::shader::{self, Lamp, Lighting};
 use crate::shared::assets::Assets;
 use crate::config::*;
@@ -101,9 +101,9 @@ pub fn grab_fill(held: bool, camera: Option<(Vec3, Vec3, Vec3)>) -> Option<Lamp>
     })
 }
 
-/// An interactable's model: assets/interactables/<name>.glb.
-pub fn item_model<'a>(a: &'a Assets, name: &str) -> Option<&'a GlbModel> {
-    a.glb.get(&format!("interactables/{name}.glb"))
+/// An interactable's model: assets/interactables/<name>.bbmodel.
+pub fn item_model<'a>(a: &'a Assets, name: &str) -> Option<&'a PropModel> {
+    a.models.get(&format!("interactables/{name}.bbmodel"))
 }
 
 /// The pickup model of an inventory item (route_interactable_3d.gd TOOL_PICKUP_MODELS).
@@ -474,15 +474,16 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
                 }
                 let yaw = (-h.facing.0).atan2(-h.facing.1);
                 let amp = (h.moving_speed / 3.0).min(1.0) * 0.6;
-                let lift = if matches!(&h.gimmick, Gimmick::Xivvy(x) if x.flying) {
-                    0.48
-                } else {
-                    0.0
+                // Xivvy's flight height and float (xivvy_flight.gd), on foot while a grab holds her
+                let grabbed = g.escape.as_ref().map(|e| e.hunter == slot).unwrap_or(false);
+                let (lift, sway) = match &h.gimmick {
+                    Gimmick::Xivvy(x) if !grabbed => (x.lift(), x.sway_offset(h.facing)),
+                    _ => (0.0, (0.0, 0.0)),
                 };
                 model.build(
                     &mut verts,
                     &mut idx,
-                    vec3(h.pos.0, lift, h.pos.1),
+                    vec3(h.pos.0 + sway.0, lift, h.pos.1 + sway.1),
                     yaw,
                     h.stride * 2.4,
                     amp,
@@ -522,13 +523,22 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
                 state: h.state,
                 direct_visible: h.direct_visible,
                 winded: h.winded,
-                airborne: matches!(&h.gimmick, Gimmick::Xivvy(x) if x.flying) && !held,
+                airborne: matches!(&h.gimmick, Gimmick::Xivvy(x) if x.airborne()) && !held,
+                lift: match &h.gimmick {
+                    Gimmick::Xivvy(x) if !held => x.lift(),
+                    _ => 0.0,
+                },
+                sway: match &h.gimmick {
+                    Gimmick::Xivvy(x) if !held => x.sway_offset(h.facing),
+                    _ => (0.0, 0.0),
+                },
                 charging: matches!(&h.gimmick, Gimmick::Loxelle(l) if l.holds_position()),
                 look_target,
                 path_ahead: Some(&|d| h.path_look_ahead(d)),
                 chase_style: &h.def.chase_style,
                 camera: g.eye(),
                 grabbing: held,
+                peek_lean: h.peeking_out().then_some(h.peek_lean),
             };
             let (pose, normal) = view.update(&input, dt, g.time);
             let out = grab::drive(
@@ -630,8 +640,8 @@ fn draw_doors(g: &Game, a: &Assets) {
         if (d.xf.w_axis.truncate() - eye).length_squared() > reach * reach {
             continue;
         }
-        if let Some(m) = a.glb.get(&d.model) {
-            m.add_hinges(&mut parts, d.xf, WHITE, g.fac.door_open_amount(d.cell));
+        if let Some(m) = a.models.get(&d.model) {
+            m.add_hinges(&mut parts, d.xf, WHITE, g.fac.door_open_amount(d.cell), &d.fit);
         }
     }
     draw_builders(parts);

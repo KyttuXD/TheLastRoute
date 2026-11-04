@@ -97,6 +97,10 @@ impl Game {
         if self.p.flashlight_seized() {
             return; // the flicker holds the beam; [F] does not fight it (player_controller_3d.gd 2407)
         }
+        if self.void_fx.offline(crate::hunters::gimmicks::void::void_orange::System::Flashlight) {
+            crate::audio::sound::light_switch(); // Void Orange: forced off and cannot be switched on (void_player_effects.gd:64-70)
+            return;
+        }
         self.select(i);
         if self.p.lamp <= 0.0 && !self.p.flashlight_on {
             crate::audio::sound::light_switch(); // an empty flashlight just clicks (player_controller_3d.gd 2442)
@@ -140,8 +144,12 @@ impl Game {
             Some(h) => {
                 self.hits += 1;
                 if self.hunters[h].def.taser_immune {
-                    // a taser-immune hunter is slowed, and no message is sent
-                    self.hunters[h].apply_slow(prof.taser_slow_seconds, prof.taser_slow_factor);
+                    // a taser-immune hunter is slowed, and no message is sent. Her own taser_slow_factor /
+                    // taser_slow_seconds (data file) override the profile values when set (hunter_roster.gd:243-248).
+                    let def = &self.hunters[h].def;
+                    let factor = def.taser_slow_factor.unwrap_or(prof.taser_slow_factor);
+                    let seconds = def.taser_slow_seconds.unwrap_or(prof.taser_slow_seconds);
+                    self.hunters[h].apply_slow(seconds, factor);
                 } else {
                     self.hunters[h].apply_stun(prof.escape_stun, false);
                     let n = self.hunters[h].def.name.to_uppercase();

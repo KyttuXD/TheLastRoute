@@ -9,7 +9,7 @@ use crate::config::*;
 use crate::content::Content;
 use crate::hunters::gimmicks::{ceryth::Entry, Gimmick};
 use crate::world::catalog::Catalog;
-use crate::world::facility::{Cover, LinkKind};
+use crate::world::facility::{Cover, DoorToggle, LinkKind};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Focus {
@@ -26,6 +26,8 @@ pub enum Focus {
     MusicBox,
     Vent(usize),
     Shop(usize),
+    /// A room door, by its index in `Facility::props`.
+    Door(usize),
 }
 
 impl Game {
@@ -148,6 +150,14 @@ impl Game {
                 consider(h.pos, 1.6, 1.35, Focus::Shop(i));
             }
         }
+        // a door is a wide target: the crosshair on its leaf, from the reach of a switch
+        for (i, c) in self.fac.doors() {
+            consider(c, 1.0, INTERACT_REACH, Focus::Door(i));
+            // flush against the leaf the centre is steeply above the crosshair: aim at the slab in front instead
+            if let Some(n) = self.fac.door_nearest(i, self.p.pos).filter(|n| pdist(*n, self.p.pos) < 0.75) {
+                consider(n, eye.y.clamp(0.3, 1.8), INTERACT_REACH, Focus::Door(i));
+            }
+        }
         best.map(|b| b.1)
     }
 
@@ -200,6 +210,14 @@ impl Game {
             Focus::MusicBox => "HOLD [E] // WIND MUSIC BOX".into(),
             Focus::Vent(_) => "[E] VENT".into(),
             Focus::Shop(_) => "[E] OPEN ZELLIA'S STORE".into(),
+            // Godot `route_interactable_3d.gd` get_prompt: "OPEN DOOR" / "CLOSE DOOR"
+            Focus::Door(i) => {
+                if self.fac.door_is_open(self.fac.props[i].cell) {
+                    "[E] CLOSE DOOR".into()
+                } else {
+                    "[E] OPEN DOOR".into()
+                }
+            }
         })
     }
 
@@ -218,6 +236,7 @@ impl Game {
             Focus::MusicBox => self.fix.music_box.map(|c| c.center()).unwrap_or(self.p.pos),
             Focus::Vent(i) => self.fix.vents[i].center(),
             Focus::Shop(i) => self.hunters[i].pos,
+            Focus::Door(i) => self.fac.doors().find(|d| d.0 == i).map_or(self.p.pos, |d| d.1),
         }
     }
 
@@ -352,6 +371,38 @@ impl Game {
                     z.shop_open = true;
                 }
             }
+            Focus::Door(i) => self.use_door(i),
+        }
+    }
+
+    /// Whether the focus is a room door that is shut (the playtest bot and the stress runner press interact on it).
+    pub fn closed_door_in_focus(&self) -> bool {
+        matches!(self.focus, Some(Focus::Door(i)) if !self.fac.door_is_open(self.fac.props[i].cell))
+    }
+
+    /// The interact press on the door at threshold `cell`, for the runner and for a player bot alike: it toggles the
+    /// door unless a body (the runner, a hunter or a bot) stands in a closing leaf's sweep.
+    pub(super) fn press_door(&mut self, cell: crate::world::Cell) -> Option<DoorToggle> {
+        let level = self.runner_level();
+        let bodies: Vec<(f32, f32)> = std::iter::once(self.p.pos)
+            .chain(self.hunters.iter().filter(|h| h.active).map(|h| h.pos))
+            .chain(self.npcs.iter().filter(|n| n.level == level).map(|n| n.at))
+            .collect();
+        self.fac.toggle_door(cell, &bodies)
+    }
+
+    /// The interact press on a room door (Godot `route_interactable_3d.gd` activate): it opens or closes with the
+    /// swing the renderer already plays. A leaf does not swing shut through a body standing in its sweep.
+    fn use_door(&mut self, i: usize) {
+        let cell = self.fac.props[i].cell;
+        match self.press_door(cell) {
+            Some(DoorToggle::Opened) => crate::audio::sound::door(true),
+            Some(DoorToggle::Closed) => crate::audio::sound::door(false),
+            Some(DoorToggle::Blocked) => {
+                crate::audio::sound::interaction_fail();
+                self.say("SOMETHING IS IN THE DOORWAY");
+            }
+            None => {}
         }
     }
 

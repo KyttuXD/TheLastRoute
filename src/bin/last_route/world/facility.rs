@@ -198,31 +198,46 @@ pub struct Facility {
     /// Solid props by cell, for fast footprint tests.
     prop_grid: Vec<Vec<usize>>,
     /// The swing of each room door, keyed by its threshold cell. A door with no entry has not been ticked yet
-    /// and counts as open, so a floor nobody calls `update_doors` on stays walkable.
+    /// and counts as open, so a floor nobody calls `update_doors` on stays walkable. Nothing here opens a door
+    /// for the runner or a player bot (NPC teammate): only `toggle_door` (the interact press) does; hunters pull the doors they reach.
     door_state: HashMap<Cell, DoorState>,
     /// The walk surface of each cell that is not plain ground floor; a cell with no entry is `Floor` at 0.0 m.
     walk_surface: HashMap<Cell, WalkSurface>,
 }
 
-/// How far a door is open (0 closed, 1 open) and how long it has stood clear of everyone.
+/// How far a door is open (0 closed, 1 open) and whether it is meant to be open. `open` chases `want_open` at
+/// `DOOR_SWING_RATE`, except that a leaf never swings shut with a body in its sweep (`update_doors`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DoorState {
     pub open: f32,
-    pub idle: f32,
+    pub want_open: bool,
+    /// The doorway's width in metres (its span in cells): the leaf's length.
+    span: f32,
     centre: (f32, f32),
     half: (f32, f32),
 }
 
-/// An actor this close to a door's centre swings it open.
-pub const DOOR_TRIGGER: f32 = 1.7;
-/// Seconds a door stays open after the last actor leaves its trigger range.
-pub const DOOR_CLOSE_DELAY: f32 = 1.2;
+/// A hunter this close to a door's edge pulls it open and leaves it open (the Godot hunter's
+/// `_operate_hunter_room_door` reaches 1.15 m from the door's centre; a wider doorway adds half its span).
+pub const DOOR_OPENER_REACH: f32 = 1.15;
 /// Open amount gained or lost per second.
 pub const DOOR_SWING_RATE: f32 = 4.0;
-/// A door at or past this open amount lets a body through.
-pub const DOOR_PASSABLE: f32 = 0.6;
 /// Half the thickness of a closed door's blocking slab, in metres.
 const DOOR_HALF_DEPTH: f32 = 0.1;
+/// A door passes a body once the gap the swung leaf leaves is this much wider than the body.
+const DOOR_GAP_MARGIN: f32 = 0.04;
+/// How far past the door's slab, on every side, a body stands in the leaf's sweep: the leaf's clearance plus a body
+/// radius. A leaf does not swing shut while any body is that near.
+const DOOR_SWEEP: f32 = 0.45;
+
+/// What pressing interact on a door did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DoorToggle {
+    Opened,
+    Closed,
+    /// A body stands in the leaf's sweep, so the door would not close.
+    Blocked,
+}
 
 /// Cells a flight runs down (or up) from its landing: 2 wide, this many long.
 pub const STAIR_FLIGHT: i32 = 4;
@@ -1097,19 +1112,85 @@ impl Facility {
         (c, half)
     }
 
-    /// Whether a closed door (open below `DOOR_PASSABLE`) overlaps a body of radius `r` at `(x, y)`.
+    /// The width of the opening a door leaves: its leaf, `span` metres long and hinged at one jamb, has swung
+    /// `open` of a quarter turn, so it covers `span * cos` of the doorway along the wall.
+    fn door_gap(open: f32, span: f32) -> f32 {
+        span * (1.0 - (open.clamp(0.0, 1.0) * std::f32::consts::FRAC_PI_2).cos())
+    }
+
+    /// Whether a door's slab overlaps a body of radius `r` at `(x, y)` while the opening it leaves is narrower
+    /// than the body (so a half-swung leaf is solid across the whole doorway: a body never clips through it).
     fn door_blocks(&self, x: f32, y: f32, r: f32) -> bool {
-        if self.door_state.is_empty() {
-            return false;
-        }
-        self.door_state.values().any(|s| {
-            s.open < DOOR_PASSABLE && (x - s.centre.0).abs() < s.half.0 + r && (y - s.centre.1).abs() < s.half.1 + r
-        })
+        self.door_in_way(x, y, r).is_some()
+    }
+
+    /// The threshold cell of the room door that blocks a body of radius `r` at `(x, y)` (see `door_blocks`).
+    pub fn door_in_way(&self, x: f32, y: f32, r: f32) -> Option<Cell> {
+        self.door_state
+            .iter()
+            .find(|(_, s)| {
+                Self::door_gap(s.open, s.span) < 2.0 * r + DOOR_GAP_MARGIN
+                    && (x - s.centre.0).abs() < s.half.0 + r
+                    && (y - s.centre.1).abs() < s.half.1 + r
+            })
+            .map(|(c, _)| *c)
+    }
+
+    /// The centre of the room door whose threshold cell is `cell` (None for a door not yet ticked).
+    pub fn door_centre(&self, cell: Cell) -> Option<(f32, f32)> {
+        self.door_state.get(&cell).map(|s| s.centre)
+    }
+
+    /// The point of the slab of the door at `cell` nearest to `from` (None for a door not yet ticked).
+    pub fn door_nearest_to(&self, cell: Cell, from: (f32, f32)) -> Option<(f32, f32)> {
+        let s = self.door_state.get(&cell)?;
+        Some((from.0.clamp(s.centre.0 - s.half.0, s.centre.0 + s.half.0), from.1.clamp(s.centre.1 - s.half.1, s.centre.1 + s.half.1)))
     }
 
     /// The open amount of the room door whose threshold cell is `cell`: 1 for a door not yet ticked.
     pub fn door_open_amount(&self, cell: Cell) -> f32 {
         self.door_state.get(&cell).map_or(1.0, |s| s.open)
+    }
+
+    /// Whether the door at `cell` is meant to be open (a door not yet ticked is open).
+    pub fn door_is_open(&self, cell: Cell) -> bool {
+        self.door_state.get(&cell).map_or(true, |s| s.want_open)
+    }
+
+    /// The prop index and centre of every room door.
+    pub fn doors(&self) -> impl Iterator<Item = (usize, (f32, f32))> + '_ {
+        self.props
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| p.door.map(|d| (i, Self::door_slab(p, d).0)))
+    }
+
+    /// The point of door `i`'s slab nearest to `from` (what the runner faces when standing flush against the leaf).
+    pub fn door_nearest(&self, i: usize, from: (f32, f32)) -> Option<(f32, f32)> {
+        let p = self.props.get(i)?;
+        let (c, h) = Self::door_slab(p, p.door?);
+        Some(((from.0).clamp(c.0 - h.0, c.0 + h.0), (from.1).clamp(c.1 - h.1, c.1 + h.1)))
+    }
+
+    /// Whether a body at `b` stands in the sweep of a door slab.
+    fn in_door_sweep(centre: (f32, f32), half: (f32, f32), b: (f32, f32)) -> bool {
+        (b.0 - centre.0).abs() < half.0 + DOOR_SWEEP && (b.1 - centre.1).abs() < half.1 + DOOR_SWEEP
+    }
+
+    /// An interact press (the runner's or a player bot's) on the door at threshold `cell`. An open door closes unless a body in `bodies` stands in
+    /// its sweep (`Blocked`: the leaf would swing through them); a closed door always opens. `None` for a cell that
+    /// is not a ticked room door.
+    pub fn toggle_door(&mut self, cell: Cell, bodies: &[(f32, f32)]) -> Option<DoorToggle> {
+        let s = self.door_state.get_mut(&cell)?;
+        if !s.want_open {
+            s.want_open = true;
+            return Some(DoorToggle::Opened);
+        }
+        if bodies.iter().any(|b| Self::in_door_sweep(s.centre, s.half, *b)) {
+            return Some(DoorToggle::Blocked);
+        }
+        s.want_open = false;
+        Some(DoorToggle::Closed)
     }
 
     /// The walk surface of `cell`: plain `Floor` at 0.0 m unless it was set with `set_walk_surface`.
@@ -1132,30 +1213,27 @@ impl Facility {
         }
     }
 
-    /// Swings every room door toward open when an actor in `actors` is within `DOOR_TRIGGER` of its centre,
-    /// and back to closed `DOOR_CLOSE_DELAY` seconds after the last one leaves. The first call registers
-    /// every door closed.
-    pub fn update_doors(&mut self, actors: &[(f32, f32)], dt: f32) {
+    /// Swings every room door toward its wanted state. `openers` (the hunters, never the runner or a player bot) open a
+    /// door they come within `DOOR_OPENER_REACH` of and leave it open. `bodies` is everyone with a body: a leaf
+    /// that is not shut never swings closed with one of them in its sweep, it swings back open until they clear.
+    /// The first call registers every door closed (open, when a body already stands in its sweep).
+    pub fn update_doors(&mut self, openers: &[(f32, f32)], bodies: &[(f32, f32)], dt: f32) {
         for p in &self.props {
             let Some(d) = p.door else { continue };
             let (c, half) = Self::door_slab(p, d);
-            let near = actors
-                .iter()
-                .any(|a| (a.0 - c.0).hypot(a.1 - c.1) < DOOR_TRIGGER + d.span as f32 * 0.5);
-            let s = self.door_state.entry(p.cell).or_insert(DoorState {
-                open: 0.0,
-                idle: DOOR_CLOSE_DELAY,
-                centre: c,
-                half,
+            let s = self.door_state.entry(p.cell).or_insert_with(|| {
+                let held = bodies.iter().any(|b| Self::in_door_sweep(c, half, *b));
+                DoorState { open: if held { 1.0 } else { 0.0 }, want_open: held, span: d.span as f32, centre: c, half }
             });
-            if near {
-                s.idle = 0.0;
+            let reach = DOOR_OPENER_REACH + d.span as f32 * 0.5;
+            if !s.want_open && openers.iter().any(|a| (a.0 - c.0).hypot(a.1 - c.1) < reach) {
+                s.want_open = true;
+            }
+            let held = s.open > 0.0 && bodies.iter().any(|b| Self::in_door_sweep(c, half, *b));
+            if s.want_open || held {
                 s.open = (s.open + DOOR_SWING_RATE * dt).min(1.0);
             } else {
-                s.idle += dt;
-                if s.idle >= DOOR_CLOSE_DELAY {
-                    s.open = (s.open - DOOR_SWING_RATE * dt).max(0.0);
-                }
+                s.open = (s.open - DOOR_SWING_RATE * dt).max(0.0);
             }
         }
     }
@@ -1902,28 +1980,119 @@ mod tests {
         f
     }
 
-    /// A door nobody ticked is open floor; once ticked it is closed and blocks, opens for a nearby actor,
-    /// and closes again after the delay.
+    /// A door nobody ticked is open floor; once ticked it is closed and blocks. A body beside it (the runner) does
+    /// not open it; only `toggle_door` does, and it closes again the same way.
     #[test]
-    fn a_closed_door_blocks_and_an_open_door_lets_a_body_through() {
+    fn a_closed_door_blocks_until_it_is_toggled_open() {
         let mut f = door_floor();
         let cell = f.props.last().unwrap().cell;
         let (cx, cy) = cell.center();
+        let far = (cx + 30.0, cy + 30.0);
         assert!(!f.door_blocks(cx, cy, 0.2), "an unticked door is open");
         assert_eq!(f.door_open_amount(cell), 1.0);
-        f.update_doors(&[], 0.0);
+        assert_eq!(f.toggle_door(cell, &[]), None, "an unticked door cannot be toggled");
+        f.update_doors(&[], &[far], 0.0);
         assert_eq!(f.door_open_amount(cell), 0.0);
+        assert!(!f.door_is_open(cell));
         assert!(f.door_blocks(cx, cy, 0.2), "a closed door blocks its slab");
         assert!(!f.door_blocks(cx, cy + 0.6, 0.2), "clear of the slab");
-        f.update_doors(&[(cx, cy + 1.0)], 0.1);
+        // the runner stands at the door for a second: nothing opens
+        let runner = (cx, cy + 0.8);
+        for _ in 0..10 {
+            f.update_doors(&[], &[runner], 0.1);
+        }
+        assert_eq!(f.door_open_amount(cell), 0.0, "the runner never opens a door by walking up");
+        assert!(f.door_blocks(cx, cy, 0.2));
+        assert_eq!(f.toggle_door(cell, &[runner]), Some(DoorToggle::Opened));
+        f.update_doors(&[], &[runner], 0.1);
         assert!(f.door_open_amount(cell) > 0.0);
-        f.update_doors(&[(cx, cy + 1.0)], 0.5);
+        f.update_doors(&[], &[runner], 0.5);
         assert_eq!(f.door_open_amount(cell), 1.0);
         assert!(!f.door_blocks(cx, cy, 0.2), "an open door is passable");
-        f.update_doors(&[], 0.5);
-        assert_eq!(f.door_open_amount(cell), 1.0, "it holds open for the delay");
-        f.update_doors(&[], DOOR_CLOSE_DELAY);
+        for _ in 0..30 {
+            f.update_doors(&[], &[runner], 0.1);
+        }
+        assert_eq!(f.door_open_amount(cell), 1.0, "an open door stays open");
+        assert_eq!(f.toggle_door(cell, &[runner]), Some(DoorToggle::Closed));
+        f.update_doors(&[], &[runner], 0.5);
         assert_eq!(f.door_open_amount(cell), 0.0);
+        assert!(f.door_blocks(cx, cy, 0.2));
+    }
+
+    /// A half-swung leaf is solid until the opening it leaves is wider than the body: a fat hunter needs the door
+    /// further open than the runner does.
+    #[test]
+    fn a_half_open_door_blocks_until_the_gap_fits_the_body() {
+        let mut f = door_floor();
+        let cell = f.props.last().unwrap().cell;
+        let (cx, cy) = cell.center();
+        f.update_doors(&[], &[], 0.0);
+        f.toggle_door(cell, &[]);
+        let (runner_r, hunter_r) = (0.24, 0.33);
+        f.update_doors(&[], &[], 0.1); // open 0.4: the leaf covers most of the doorway
+        assert!(f.door_open_amount(cell) < 0.5);
+        assert!(f.door_blocks(cx, cy, runner_r), "a barely open door still blocks the runner");
+        f.update_doors(&[], &[], 0.075); // open 0.7: the gap fits the runner, not the hunter
+        assert!(!f.door_blocks(cx, cy, runner_r), "the runner fits once the gap is wide enough");
+        assert!(f.door_blocks(cx, cy, hunter_r), "the hunter needs more of a gap");
+        f.update_doors(&[], &[], 0.5);
+        assert!(!f.door_blocks(cx, cy, hunter_r), "a fully open door passes the hunter");
+    }
+
+    /// A leaf never swings shut through a body: pressing close with someone in its sweep is refused, and a leaf
+    /// closing when someone steps into its sweep swings back open until they clear.
+    #[test]
+    fn a_door_never_closes_through_a_body_in_its_sweep() {
+        let mut f = door_floor();
+        let cell = f.props.last().unwrap().cell;
+        let (cx, cy) = cell.center();
+        f.update_doors(&[], &[], 0.0);
+        f.toggle_door(cell, &[]);
+        f.update_doors(&[], &[], 1.0);
+        assert_eq!(f.door_open_amount(cell), 1.0);
+        let in_doorway = (cx, cy + 0.2);
+        assert_eq!(f.toggle_door(cell, &[in_doorway]), Some(DoorToggle::Blocked));
+        assert!(f.door_is_open(cell), "a refused close leaves it open");
+        let clear = (cx, cy + 1.0);
+        assert_eq!(f.toggle_door(cell, &[clear]), Some(DoorToggle::Closed));
+        f.update_doors(&[], &[clear], 0.1);
+        let swung = f.door_open_amount(cell);
+        assert!(swung < 1.0 && swung > 0.0, "the leaf is mid swing");
+        // someone steps into the sweep: the leaf reverses
+        f.update_doors(&[], &[in_doorway], 0.1);
+        assert!(f.door_open_amount(cell) > swung);
+        f.update_doors(&[], &[in_doorway], 1.0);
+        assert_eq!(f.door_open_amount(cell), 1.0);
+        // once they clear, the close the runner asked for carries on
+        f.update_doors(&[], &[clear], 1.0);
+        assert_eq!(f.door_open_amount(cell), 0.0);
+    }
+
+    /// Hunters (the openers) pull a closed door open when they reach it and leave it open.
+    #[test]
+    fn an_opener_at_the_door_opens_it_and_leaves_it_open() {
+        let mut f = door_floor();
+        let cell = f.props.last().unwrap().cell;
+        let (cx, cy) = cell.center();
+        let far = (cx + 30.0, cy + 30.0);
+        f.update_doors(&[far], &[far], 0.0);
+        assert_eq!(f.door_open_amount(cell), 0.0);
+        let hunter = (cx, cy + 1.0);
+        f.update_doors(&[hunter], &[hunter], 0.5);
+        assert_eq!(f.door_open_amount(cell), 1.0);
+        f.update_doors(&[far], &[far], 2.0);
+        assert_eq!(f.door_open_amount(cell), 1.0, "it stays open behind them");
+    }
+
+    /// A door first ticked with a body in its sweep starts open, so nobody is born inside the leaf.
+    #[test]
+    fn a_door_registered_around_a_body_starts_open() {
+        let mut f = door_floor();
+        let cell = f.props.last().unwrap().cell;
+        let (cx, cy) = cell.center();
+        f.update_doors(&[], &[(cx, cy)], 0.0);
+        assert_eq!(f.door_open_amount(cell), 1.0);
+        assert!(f.door_is_open(cell));
     }
 
     /// A temporary region with a geometry block sets its room side range; without one the game-wide range stays.

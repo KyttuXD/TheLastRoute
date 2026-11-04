@@ -18,6 +18,10 @@ pub struct HunterDef {
     pub chase_style: String,
     pub taser_immune: bool,
     pub melee_immune: bool,
+    /// Her own taser slowdown (game/config/hunter_roster.gd taser_slow_factor / taser_slow_seconds, lines 243-248).
+    /// None means the difficulty profile's value applies.
+    pub taser_slow_factor: Option<f32>,
+    pub taser_slow_seconds: Option<f32>,
     pub category: String,
     /// The source: the pack that added or last overrode this hunter, or "" for the embedded
     /// base game.
@@ -65,6 +69,18 @@ fn s(v: &Value, k: &str, d: &str) -> String {
     v.get(k).and_then(|x| x.as_str()).unwrap_or(d).to_string()
 }
 
+/// An optional float field: absent keeps the base value, present must be a number (validate_data_hunters.gd
+/// rejects a non-float taser_slow_factor / taser_slow_seconds).
+fn opt_f(v: &Value, k: &str, base: Option<f32>) -> Result<Option<f32>, String> {
+    match v.get(k) {
+        None => Ok(base),
+        Some(x) => x
+            .as_f64()
+            .map(|n| Some(n as f32))
+            .ok_or_else(|| format!("{k} must be a number")),
+    }
+}
+
 /// Parses one `lr.hunter/1` document. `base` supplies defaults when a pack overrides an
 /// existing hunter with a partial document; fields left out keep the base value.
 pub fn parse(v: &Value, base: Option<&HunterDef>, pack: &str) -> Result<HunterDef, String> {
@@ -82,6 +98,8 @@ pub fn parse(v: &Value, base: Option<&HunterDef>, pack: &str) -> Result<HunterDe
         return Err(format!("bad hunter id {id:?}"));
     }
     let d = base.cloned();
+    let taser_slow_factor = opt_f(v, "taser_slow_factor", d.as_ref().and_then(|x| x.taser_slow_factor))?;
+    let taser_slow_seconds = opt_f(v, "taser_slow_seconds", d.as_ref().and_then(|x| x.taser_slow_seconds))?;
     let b =
         |k: &str, dv: f32, pick: fn(&HunterDef) -> f32| f(v, k, d.as_ref().map(pick).unwrap_or(dv));
     let def = HunterDef {
@@ -114,6 +132,8 @@ pub fn parse(v: &Value, base: Option<&HunterDef>, pack: &str) -> Result<HunterDe
             .get("melee_immune")
             .and_then(|x| x.as_bool())
             .unwrap_or(d.as_ref().map(|x| x.melee_immune).unwrap_or(false)),
+        taser_slow_factor,
+        taser_slow_seconds,
         category: s(
             v,
             "category",
@@ -186,6 +206,23 @@ mod tests {
             "fields the override leaves out keep the base value"
         );
         assert_eq!(h.speed, 1.1);
+    }
+
+    /// The void runners wear their own bbmodel (texture embedded in the model), not a path the loader would skip.
+    #[test]
+    fn every_void_hunter_has_an_embedded_bbmodel() {
+        let content = crate::content::Content::load();
+        let mut n = 0;
+        for h in content.hunters.iter().filter(|h| h.category == "void") {
+            n += 1;
+            let path = h.model.as_deref().unwrap_or_default();
+            assert!(path.ends_with(".bbmodel"), "{}: model {path:?}", h.id);
+            let text = crate::content::embedded::asset(path).unwrap_or_else(|| panic!("{path} is not embedded"));
+            let j: serde_json::Value = serde_json::from_slice(text).unwrap();
+            let none = |_: &str| None;
+            assert!(crate::render::bbmodel::texture_bytes(&j, &none).is_some(), "{}: no texture", h.id);
+        }
+        assert_eq!(n, 12);
     }
 
     #[test]

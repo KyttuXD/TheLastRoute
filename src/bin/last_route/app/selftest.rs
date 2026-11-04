@@ -189,20 +189,20 @@ pub async fn run(path: &str) {
             w.content
                 .props
                 .get(&p.ptype)
-                .map(|d| d.originals().iter().any(|m| w.assets.glb.contains_key(m)))
+                .map(|d| d.models.iter().any(|m| w.assets.models.contains_key(m)))
                 .unwrap_or(false)
         })
         .count();
     let items = w
         .assets
-        .glb
+        .models
         .keys()
         .filter(|k| k.starts_with("interactables/"))
         .count();
     steps.push(serde_json::json!({
         "step": "floor", "passed": !g.fac.props.is_empty() && g.fac.rooms.len() == 9 && authored > 0 && items >= 10,
-        "detail": format!("{} rooms ({}), {} props ({} drawn with the original Blender models; {} models loaded, {} item/fixture models), {} lockers, {} vents", g.fac.rooms.len(),
-            g.fac.rooms.iter().skip(1).map(|r| r.rtype.as_str()).collect::<Vec<_>>().join(", "), g.fac.props.len(), authored, w.assets.glb.len(), items, g.fac.hiding.len(), g.fix.vents.len())
+        "detail": format!("{} rooms ({}), {} props ({} drawn with their models; {} models loaded, {} item/fixture models), {} lockers, {} vents", g.fac.rooms.len(),
+            g.fac.rooms.iter().skip(1).map(|r| r.rtype.as_str()).collect::<Vec<_>>().join(", "), g.fac.props.len(), authored, w.assets.models.len(), items, g.fac.hiding.len(), g.fix.vents.len())
     }));
 
     // infinite: CREATE ROOM's route streams 3x3 chunks; take the origin's stairs down a level,

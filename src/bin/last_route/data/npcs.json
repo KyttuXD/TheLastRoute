@@ -1,0 +1,11 @@
+{
+  "schema": "lr.npcs/1",
+  "spawn": {
+    "per_run": { "relaxed": 1, "standard": 1, "hard": 2 },
+    "max": 4,
+    "min_distance": 6,
+    "max_distance": 20,
+    "join_radius": 6
+  },
+  "smart": [30, 50, 70, 90]
+}

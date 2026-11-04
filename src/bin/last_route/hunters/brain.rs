@@ -4,6 +4,7 @@
 //! Positions are grid cells (1 cell = 1 m).
 
 use super::gimmicks::{Ctx, Event, Gimmick};
+use super::peek::{self, Corner, Style};
 use crate::config::*;
 use crate::content::hunters::HunterDef;
 use crate::world::rng::Rng;
@@ -20,6 +21,18 @@ pub enum State {
     Investigate,
     Chase,
     Search,
+    /// Stopped behind a route corner, leaning out to look down the hall (`hunters::peek`).
+    Peek,
+}
+
+/// The beats of a corner peek (HunterBrain.Peek): slide into the lean spot, look round the edge, then either carry on
+/// (nothing there), burst into a chase (`Seen`, a "burst" hunter) or wait behind the corner (`Ambush`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PeekPhase {
+    Settle,
+    Look,
+    Seen,
+    Ambush,
 }
 
 /// What the brain knows about the runner this frame.
@@ -38,6 +51,8 @@ pub struct Target {
     pub vent_time_in: f32,
     pub temperature: f32,
     pub pesticide: bool,
+    /// The full-screen map is open (Godot target["map_open"], main_3d.gd:444). Read by Void Yellow.
+    pub map_open: bool,
 }
 
 /// LightField.unlit_scale: a runner in pitch dark is seen close, one in a lamp pool far.
@@ -99,6 +114,27 @@ pub struct Brain {
     pub self_exposure: Option<f32>,
     /// The runner's own lamp exposure for this target (None: the light rule is off).
     pub target_exposure: Option<f32>,
+    /// The difficulty her peek odds and reaction times are read at.
+    pub diff: Difficulty,
+    // corner peek (hunter_brain.gd 170-182); the renderer reads the pose fields
+    pub peek_phase: PeekPhase,
+    pub peek_timer: f32,
+    pub peek_body: (f32, f32),
+    pub peek_head: (f32, f32),
+    /// Down the hall (d2): the way she faces while she looks.
+    pub peek_dir: (f32, f32),
+    /// Toward the corner edge (d1): the way she leans.
+    pub peek_lean: (f32, f32),
+    /// +1 when the edge is on her left as she faces down the hall, -1 on her right.
+    pub peek_side: i32,
+    pub peek_cooldown: f32,
+    pub peeks_started: u32,
+    /// The state she picks up again when the look finds nothing.
+    peek_resume: State,
+    /// The corner cell she last stopped at (or rolled for), so one corner is never tried twice in a row.
+    peek_corner_cell: Option<Cell>,
+    /// A validator's fixed peek chance (peek_chance_override); None: the tuning's.
+    pub peek_chance_override: Option<f32>,
 }
 
 const ARRIVAL_DISTANCE: f32 = 0.65;
@@ -156,6 +192,19 @@ impl Brain {
             disguise: None,
             self_exposure: None,
             target_exposure: None,
+            diff,
+            peek_phase: PeekPhase::Settle,
+            peek_timer: 0.0,
+            peek_body: spawn,
+            peek_head: spawn,
+            peek_dir: (0.0, 1.0),
+            peek_lean: (0.0, 0.0),
+            peek_side: 1,
+            peek_cooldown: 0.0,
+            peeks_started: 0,
+            peek_resume: State::Search,
+            peek_corner_cell: None,
+            peek_chance_override: None,
         }
     }
 
@@ -185,9 +234,27 @@ impl Brain {
         self.direct_visible = false;
     }
 
+    /// Taser slowdown (game/hunters/ai/hunter_brain.gd apply_slow, lines 476-482): movement speed times `factor`
+    /// (clamped to 0..1) for `seconds`. A slow that is already running keeps the stronger (lower) factor, and the
+    /// longer time wins. A weaker hit never weakens an active slow.
     pub fn apply_slow(&mut self, seconds: f32, factor: f32) {
+        let factor = factor.clamp(0.0, 1.0);
+        if self.slow_timer <= 0.0 {
+            self.slow_factor = factor;
+        } else {
+            self.slow_factor = self.slow_factor.min(factor);
+        }
         self.slow_timer = self.slow_timer.max(seconds);
-        self.slow_factor = factor;
+    }
+
+    /// Runs the slow clock down (hunter_brain.gd _tick_slow, lines 484-490). When it runs out the factor resets to 1.0.
+    pub fn tick_slow(&mut self, dt: f32) {
+        if self.slow_timer > 0.0 {
+            self.slow_timer = (self.slow_timer - dt).max(0.0);
+            if self.slow_timer <= 0.0 {
+                self.slow_factor = 1.0;
+            }
+        }
     }
 
     pub fn investigate(&mut self, p: (f32, f32)) {
@@ -260,9 +327,7 @@ impl Brain {
         prof: &Profile,
     ) -> (bool, Vec<Event>) {
         let mut events = vec![];
-        if self.slow_timer > 0.0 {
-            self.slow_timer = (self.slow_timer - dt).max(0.0);
-        }
+        self.tick_slow(dt);
         self.moving_speed = 0.0;
         let mut g = std::mem::take(&mut self.gimmick);
         let self_summoning = g.runs_while_inactive();
@@ -290,6 +355,8 @@ impl Brain {
         g.after_perception(self, dt, ctx, target, &mut events);
         self.update_stamina(dt, prof);
         let holds = g.holds_position(self);
+        self.peek_cooldown = (self.peek_cooldown - dt).max(0.0);
+        self.consider_peek(ctx.fac, &g, holds);
         let speed_scale = g.speed_scale(self);
         self.update_movement(dt, ctx.fac, depth, relays, prof, holds, speed_scale);
         let breaches = g.breaches_hiding();
@@ -410,7 +477,8 @@ impl Brain {
     }
 
     fn perceive(&mut self, dt: f32, fac: &Facility, target: &Target, prof: &Profile, g: &Gimmick) {
-        let direct = dist(self.pos, target.pos);
+        let eye = self.sight_eye();
+        let direct = dist(eye, target.pos);
         let can_sense = !target.in_safe_zone && (!target.hidden || g.breaches_hiding());
         if !can_sense {
             self.direct_visible = false;
@@ -430,7 +498,7 @@ impl Brain {
         if can_sense {
             let ray = sight_limit.max(hearing_limit * HEARING_OPEN_AIR_SCALE);
             if direct < ray {
-                line_clear = fac.has_line_of_sight(self.pos, target.pos);
+                line_clear = fac.has_line_of_sight(eye, target.pos);
             }
             sees = direct < sight_limit && line_clear;
         }
@@ -447,6 +515,10 @@ impl Brain {
                     self.path_goal = Some(cell_of(target.pos));
                 }
             }
+        }
+        if self.state == State::Peek {
+            self.peek_perceive(sees, hears, target.pos);
+            return;
         }
         if sees {
             self.state = State::Chase;
@@ -524,6 +596,11 @@ impl Brain {
         gscale: f32,
     ) {
         match self.state {
+            State::Peek => {
+                let speed = self.current_speed(depth, relays, prof, gscale);
+                self.update_peek(dt, fac, prof, speed);
+                return;
+            }
             State::Idle => {
                 self.idle_timer -= dt;
                 if self.idle_timer <= 0.0 {
@@ -551,7 +628,7 @@ impl Brain {
             State::Wander => self.wander_target,
             State::Chase | State::Investigate => self.last_known,
             State::Search => self.search_target,
-            State::Idle => None,
+            State::Idle | State::Peek => None,
         };
         let Some(goal) = goal else { return };
         let speed = self.current_speed(depth, relays, prof, gscale);
@@ -578,7 +655,7 @@ impl Brain {
                 self.search_visits += 1;
                 self.search_target = Some(self.pick_search_target(fac));
             }
-            State::Idle => {}
+            State::Idle | State::Peek => {}
         }
     }
 
@@ -708,6 +785,169 @@ impl Brain {
             self.path_timer = 0.0;
             if self.path.len() > 1 {
                 self.path.remove(0);
+            }
+        }
+    }
+
+    // -- corner peek (hunter_brain.gd 1245-1363) ---------------------------------------------------------------------
+
+    /// Where her sight is taken from: the leaned-out head while she looks round a corner, her body otherwise.
+    pub fn sight_eye(&self) -> (f32, f32) {
+        if self.peeking_out() {
+            self.peek_head
+        } else {
+            self.pos
+        }
+    }
+
+    /// True while the lean pose shows (the head is past the edge).
+    pub fn peeking_out(&self) -> bool {
+        self.state == State::Peek && matches!(self.peek_phase, PeekPhase::Look | PeekPhase::Seen)
+    }
+
+    /// Searching or investigating and about to turn a real corner: maybe stop behind it and look first. Never
+    /// mid-chase, never for a hunter whose own rules hold her in place, and at most `max_per_hunter` times.
+    fn consider_peek(&mut self, fac: &Facility, g: &Gimmick, holds: bool) {
+        if self.state == State::Peek
+            || self.peek_cooldown > 0.0
+            || self.stun > 0.0
+            || self.direct_visible
+            || holds
+            || !matches!(self.state, State::Investigate | State::Search)
+            || self.path.is_empty()
+            || self.peeks_started >= peek::rules().max_per_hunter
+        {
+            return;
+        }
+        let mut odds = g.peek_chance(peek::rules().chance(&self.def.id, self.diff));
+        if let Some(o) = self.peek_chance_override {
+            odds = o;
+        }
+        if odds <= 0.0 {
+            return;
+        }
+        let mut route = vec![cell_of(self.pos)];
+        for c in &self.path {
+            if route.last() != Some(c) {
+                route.push(*c);
+            }
+        }
+        let Some(corner) = peek::find_corner(&route, fac) else { return };
+        if self.peek_corner_cell == Some(corner.c) {
+            return;
+        }
+        let spot = corner.body();
+        if dist(self.pos, spot) > 1.0 || !fac.body_fits(spot.0, spot.1, HUNTER_RADIUS) {
+            return; // not at the corner yet, or no room to stand behind it
+        }
+        self.peek_corner_cell = Some(corner.c);
+        if self.next_float() >= odds {
+            return;
+        }
+        self.start_peek(&corner);
+    }
+
+    /// Enters the peek at `corner` (`peek::find_corner`); the tests drive this directly too.
+    pub fn start_peek(&mut self, corner: &Corner) {
+        self.peek_resume = if matches!(self.state, State::Investigate | State::Search) { self.state } else { State::Search };
+        self.state = State::Peek;
+        self.peek_phase = PeekPhase::Settle;
+        self.peek_timer = peek::rules().settle;
+        self.peek_body = corner.body();
+        self.peek_head = corner.head();
+        self.peek_dir = (corner.d2.0 as f32, corner.d2.1 as f32);
+        self.peek_lean = (corner.d1.0 as f32, corner.d1.1 as f32);
+        self.peek_side = corner.side();
+        self.peek_corner_cell = Some(corner.c);
+        self.peeks_started += 1;
+        self.direct_visible = false;
+        self.moving_speed = 0.0;
+    }
+
+    fn update_peek(&mut self, dt: f32, fac: &Facility, prof: &Profile, speed: f32) {
+        let off = (self.peek_body.0 - self.pos.0, self.peek_body.1 - self.pos.1);
+        let len = (off.0 * off.0 + off.1 * off.1).sqrt();
+        if len > 0.01 {
+            let travel = len.min(speed * dt);
+            let moved = self.move_with_collision(off.0 / len * travel, off.1 / len * travel, fac);
+            self.stride += moved;
+            if dt > 0.0 {
+                self.moving_speed = moved / dt;
+            }
+        }
+        self.facing = self.peek_dir;
+        self.peek_timer -= dt;
+        let at_spot = dist(self.pos, self.peek_body) <= 0.05;
+        if self.peek_phase == PeekPhase::Settle && !at_spot && self.peek_timer > -1.5 {
+            return; // still sliding into the spot (gives up waiting after 1.5 s if something blocks it)
+        }
+        if self.peek_timer > 0.0 {
+            return;
+        }
+        match self.peek_phase {
+            PeekPhase::Settle => {
+                if dist(self.pos, self.peek_body) > 0.5 {
+                    // never reached the spot: the head would be somewhere she is not, so skip this corner
+                    self.end_peek(self.peek_resume, fac, prof);
+                    return;
+                }
+                self.peek_phase = PeekPhase::Look;
+                self.peek_timer = peek::rules().tuning(&self.def.id).look;
+                self.sense_timer = 0.0; // look the moment the head clears the edge
+            }
+            PeekPhase::Look => self.end_peek(self.peek_resume, fac, prof), // nothing there: pull back and carry on
+            PeekPhase::Seen => self.end_peek(State::Chase, fac, prof),     // burst
+            PeekPhase::Ambush => self.end_peek(State::Investigate, fac, prof), // they never came round: go to where she saw them
+        }
+    }
+
+    /// What the senses found while she peeks (`_peek_perceive`): remember where, then burst or duck back.
+    fn peek_perceive(&mut self, sees: bool, hears: bool, target: (f32, f32)) {
+        if sees || hears {
+            self.last_known = Some(target);
+        }
+        if !sees {
+            self.direct_visible = false;
+            return;
+        }
+        match self.peek_phase {
+            PeekPhase::Settle | PeekPhase::Look => {
+                let scale = peek::rules().scale(self.diff);
+                if peek::rules().tuning(&self.def.id).style == Style::Ambush {
+                    self.peek_phase = PeekPhase::Ambush; // duck back behind the corner and wait for them to come round
+                    self.peek_timer = scale.ambush;
+                } else {
+                    self.peek_phase = PeekPhase::Seen;
+                    self.peek_timer = scale.react;
+                }
+            }
+            PeekPhase::Ambush => {
+                self.state = State::Chase; // seen from cover: they came to her
+                self.finish_peek();
+                self.direct_visible = true;
+            }
+            PeekPhase::Seen => {}
+        }
+    }
+
+    /// The common tail of a peek: cooldown, a clean route and a fresh look next frame.
+    fn finish_peek(&mut self) {
+        self.peek_phase = PeekPhase::Settle;
+        self.peek_cooldown = peek::rules().cooldown;
+        self.lost_sight = 0.0;
+        self.sense_timer = 0.0;
+        self.clear_path();
+    }
+
+    fn end_peek(&mut self, next: State, fac: &Facility, prof: &Profile) {
+        self.state = next;
+        self.finish_peek();
+        if next == State::Search {
+            if self.search_target.is_none() {
+                self.search_target = Some(self.pick_search_target(fac));
+            }
+            if self.search_timer <= 0.0 {
+                self.search_timer = prof.search_time;
             }
         }
     }
@@ -903,5 +1143,321 @@ mod tests {
         b.self_exposure = Some(1.0);
         assert!((b.sight_limit(true, &prof, &b.gimmick) - beam).abs() < 1e-4);
         assert!(beam > b.sight_limit(false, &prof, &b.gimmick));
+    }
+
+    // -- corner peek ------------------------------------------------------------------------------------------------
+
+    use crate::hunters::peek::tests as peeks;
+
+    fn ctx(fac: &Facility) -> Ctx<'_> {
+        Ctx {
+            fac,
+            relays_taken: &[],
+            batteries_taken: &[],
+            hiding_disabled: &[],
+            vents: &[],
+            heater_on: false,
+            heater_thawed: true,
+            diff: Difficulty::Standard,
+            music_box_left: 0.0,
+            exposure: 0.0,
+        }
+    }
+
+    /// A corner with room for her to stand behind and a four-cell hall, and a runner standing down that hall whom
+    /// the leaned head sees and the body behind the edge does not.
+    fn setup() -> (Facility, Corner, (f32, f32)) {
+        let fac = peeks::facility();
+        for k in peeks::corners(&fac, 4) {
+            let (b, h) = (k.body(), k.head());
+            let (cx, cy) = k.c.center();
+            let runner = (cx + k.d2.0 as f32 * 3.0, cy + k.d2.1 as f32 * 3.0);
+            if fac.body_fits(b.0, b.1, HUNTER_RADIUS) && fac.has_line_of_sight(h, runner) && !fac.has_line_of_sight(b, runner) {
+                return (fac, k, runner);
+            }
+        }
+        panic!("the test maze has a corner with a hall");
+    }
+
+    fn peeker(id: &str, k: &Corner) -> Brain {
+        let mut b = Brain::new(aki(), k.body(), "PEEK", Difficulty::Standard);
+        b.def.id = id.into();
+        b.active = true;
+        b.state = State::Search;
+        b.search_timer = 60.0;
+        b.search_target = Some(k.body());
+        b
+    }
+
+    fn run(b: &mut Brain, fac: &Facility, t: &Target, seconds: f32) {
+        let prof = Difficulty::Standard.profile();
+        let ctx = ctx(fac);
+        for _ in 0..(seconds * 60.0).round() as i32 {
+            b.update(1.0 / 60.0, &ctx, t, 1, 0, &prof);
+        }
+    }
+
+    fn runner_at(p: (f32, f32), hidden: bool) -> Target {
+        Target { pos: p, facing: (1.0, 0.0), hidden, flashlight_on: true, ..Default::default() }
+    }
+
+    /// Settle (slide to the stand), look with the head past the edge, then pull back to what she was doing with the
+    /// route cleared and the cooldown running.
+    #[test]
+    fn a_peek_settles_looks_then_carries_on() {
+        let (fac, k, _) = setup();
+        let nobody = runner_at((-50.0, -50.0), true);
+        let mut b = peeker("kathy", &k);
+        b.start_peek(&k);
+        assert_eq!((b.state, b.peek_phase, b.peeks_started), (State::Peek, PeekPhase::Settle, 1));
+        assert_eq!(b.sight_eye(), b.pos, "the body sees until the head is out");
+        run(&mut b, &fac, &nobody, 0.1);
+        assert_eq!((b.state, b.peek_phase), (State::Peek, PeekPhase::Settle));
+        run(&mut b, &fac, &nobody, 0.3);
+        assert_eq!(b.peek_phase, PeekPhase::Look);
+        assert!(b.peeking_out());
+        assert_eq!(b.sight_eye(), k.head());
+        assert_eq!(b.facing, (k.d2.0 as f32, k.d2.1 as f32), "she faces down the hall");
+        run(&mut b, &fac, &nobody, 1.1);
+        assert_eq!(b.state, State::Search, "nothing there: back to the search");
+        assert!(!b.peeking_out());
+        assert!(b.peek_cooldown > 4.5 && b.peek_cooldown <= 6.0, "cooldown {}", b.peek_cooldown);
+        assert_eq!(b.sight_eye(), b.pos);
+    }
+
+    /// A runner down the hall is seen by the leaned head and not by the body: a burst hunter charges once the
+    /// reaction time has passed, remembering where she saw them.
+    #[test]
+    fn a_leaned_head_sees_down_the_hall_and_a_burst_hunter_charges() {
+        let (fac, k, runner) = setup();
+        let t = runner_at(runner, false);
+        let mut b = peeker("kathy", &k);
+        b.start_peek(&k);
+        run(&mut b, &fac, &t, 0.2);
+        assert_eq!(b.peek_phase, PeekPhase::Settle, "the body behind the edge cannot see the hall");
+        run(&mut b, &fac, &t, 0.2);
+        assert_eq!((b.state, b.peek_phase), (State::Peek, PeekPhase::Seen));
+        assert_eq!(b.last_known, Some(runner));
+        run(&mut b, &fac, &t, 0.3);
+        assert_eq!(b.state, State::Peek, "still reacting");
+        run(&mut b, &fac, &t, 0.4);
+        assert_eq!(b.state, State::Chase);
+        assert!(b.peek_cooldown > 5.0);
+    }
+
+    /// An ambusher ducks back when she sees them, waits behind the corner, charges the moment they come round, and
+    /// goes to where she saw them when they never do.
+    #[test]
+    fn an_ambusher_waits_in_cover_and_springs_when_they_come_round() {
+        let (fac, k, runner) = setup();
+        let mut b = peeker("quenelle", &k);
+        b.start_peek(&k);
+        run(&mut b, &fac, &runner_at(runner, false), 0.6);
+        assert_eq!((b.state, b.peek_phase), (State::Peek, PeekPhase::Ambush));
+        assert!(!b.peeking_out(), "she ducks back behind the corner");
+        run(&mut b, &fac, &runner_at(runner, true), 1.0);
+        assert_eq!(b.state, State::Peek, "nobody comes round yet");
+        // they step into the cell she watches: seen from cover
+        let round = k.c.center();
+        let (prof, ctx) = (Difficulty::Standard.profile(), ctx(&fac));
+        let t = runner_at(round, false);
+        for _ in 0..30 {
+            if b.state != State::Peek {
+                break;
+            }
+            b.update(1.0 / 60.0, &ctx, &t, 1, 0, &prof);
+        }
+        assert_eq!(b.state, State::Chase);
+        assert!(b.direct_visible);
+
+        let mut b = peeker("quenelle", &k);
+        b.start_peek(&k);
+        run(&mut b, &fac, &runner_at(runner, false), 0.6);
+        assert_eq!(b.peek_phase, PeekPhase::Ambush);
+        run(&mut b, &fac, &runner_at(runner, true), 2.6);
+        assert_eq!(b.state, State::Investigate, "they never came: go to where she saw them");
+        assert_eq!(b.last_known, Some(runner));
+    }
+
+    /// A runner hiding down the hall is not seen from the leaned head (can_sense), and a runner out of its line is not.
+    #[test]
+    fn a_hidden_or_out_of_line_runner_is_not_seen() {
+        let (fac, k, runner) = setup();
+        let mut b = peeker("kathy", &k);
+        b.start_peek(&k);
+        run(&mut b, &fac, &runner_at(runner, true), 2.0);
+        assert_eq!(b.state, State::Search);
+        // a runner close by but round another bend, out of line of both the body and the leaned head
+        let (b0, h0) = (k.body(), k.head());
+        let hidden_spot = fac
+            .floor_cells()
+            .iter()
+            .map(|c| c.center())
+            .find(|p| dist(*p, b0) < 6.0 && !fac.has_line_of_sight(b0, *p) && !fac.has_line_of_sight(h0, *p))
+            .expect("a spot out of line");
+        let mut b = peeker("kathy", &k);
+        b.start_peek(&k);
+        run(&mut b, &fac, &runner_at(hidden_spot, false), 1.8);
+        assert_eq!(b.state, State::Search, "never saw them, carried on");
+        assert_eq!(b.last_known, None);
+    }
+
+    /// The brain rolls the peek on its own at the corner on her route, once per corner, never in a chase, never
+    /// while her gimmick holds her, never for the hunters that cannot peek, and never past the cap or the cooldown.
+    #[test]
+    fn the_brain_peeks_at_a_route_corner_with_a_cooldown_and_a_cap() {
+        let (fac, k, runner) = setup();
+        let nobody = runner_at((-50.0, -50.0), true);
+        let hall = |n: i32| Cell::new(k.c.x + k.d2.0 * n, k.c.y + k.d2.1 * n);
+        let route = || vec![k.c, hall(1), hall(2)];
+        let mut b = peeker("kathy", &k);
+        b.peek_chance_override = Some(1.0);
+        b.path = route();
+        let g = std::mem::take(&mut b.gimmick);
+        b.consider_peek(&fac, &g, true);
+        assert_eq!(b.state, State::Search, "a gimmick that holds her place never peeks");
+        b.state = State::Chase;
+        b.consider_peek(&fac, &g, false);
+        assert_eq!(b.state, State::Chase, "never mid-chase");
+        b.state = State::Search;
+        b.direct_visible = true;
+        b.consider_peek(&fac, &g, false);
+        assert_eq!(b.state, State::Search, "never while the runner is in plain sight");
+        b.direct_visible = false;
+        b.pos = (k.body().0 - k.d1.0 as f32 * 2.0, k.body().1 - k.d1.1 as f32 * 2.0);
+        b.consider_peek(&fac, &g, false);
+        assert_eq!(b.state, State::Search, "not at the corner yet");
+        b.pos = k.body();
+        b.gimmick = g;
+        run(&mut b, &fac, &nobody, 0.02);
+        assert_eq!(b.state, State::Peek, "at the corner with certain odds");
+        assert_eq!(b.peeks_started, 1);
+        run(&mut b, &fac, &nobody, 2.0);
+        assert_eq!(b.state, State::Search);
+        // the same corner is not tried twice in a row, and the cooldown holds the next one back
+        b.path = route();
+        b.pos = k.body();
+        run(&mut b, &fac, &nobody, 0.1);
+        assert_ne!(b.state, State::Peek);
+        b.peek_corner_cell = None;
+        b.path = route();
+        b.pos = k.body();
+        run(&mut b, &fac, &nobody, 0.1);
+        assert_ne!(b.state, State::Peek, "the cooldown has not run out");
+        b.peek_cooldown = 0.0;
+        b.path = route();
+        b.pos = k.body();
+        b.peeks_started = peek::rules().max_per_hunter;
+        run(&mut b, &fac, &nobody, 0.1);
+        assert_ne!(b.state, State::Peek, "past the cap");
+        b.peeks_started = 0;
+        b.path = route();
+        b.pos = k.body();
+        run(&mut b, &fac, &nobody, 0.1);
+        assert_eq!(b.state, State::Peek);
+        // hunters that cannot peek never roll, whatever the corner
+        let mut aki_b = peeker("aki", &k);
+        for _ in 0..50 {
+            aki_b.peek_corner_cell = None;
+            aki_b.path = route();
+            aki_b.pos = k.body();
+            run(&mut aki_b, &fac, &nobody, 0.02);
+        }
+        assert_eq!(aki_b.peeks_started, 0);
+        let _ = runner;
+    }
+
+    /// Hunters sent across a real maze with certain odds do peek on the way, none stays in a peek longer than a
+    /// peek can last, and none peeks more than the cap.
+    #[test]
+    fn hunters_crossing_a_maze_peek_on_the_way_and_never_stick() {
+        let fac = peeks::facility();
+        let (prof, ctx) = (Difficulty::Standard.profile(), ctx(&fac));
+        let nobody = runner_at((-50.0, -50.0), true);
+        let cells = fac.floor_cells();
+        let (mut peeks_total, mut longest) = (0u32, 0.0f32);
+        for n in 0..6usize {
+            let from = cells[(n * 211) % cells.len()];
+            let mut b = Brain::new(aki(), from.center(), &format!("CROSS-{n}"), Difficulty::Standard);
+            b.def.id = ["kathy", "quenelle", "nyxie"][n % 3].into();
+            b.active = true;
+            b.peek_chance_override = Some(1.0);
+            let mut in_peek = 0.0f32;
+            for step in 0..(150 * 30) {
+                if step % (20 * 30) == 0 {
+                    let goal = cells[(n * 97 + step / 30 * 53 + 7) % cells.len()];
+                    b.direct_to(goal.center());
+                }
+                b.update(1.0 / 30.0, &ctx, &nobody, 1, 0, &prof);
+                in_peek = if b.state == State::Peek { in_peek + 1.0 / 30.0 } else { 0.0 };
+                longest = longest.max(in_peek);
+            }
+            assert!(b.peeks_started <= peek::rules().max_per_hunter);
+            peeks_total += b.peeks_started;
+        }
+        assert!(peeks_total > 0, "no hunter peeked in 150 s of walking");
+        assert!(longest < 4.5, "a peek lasted {longest} s");
+    }
+
+    /// However a peek goes, it ends: a hunter whose stand is walled in gives up after the settle timeout, and a
+    /// peek never lasts longer than settle + look.
+    #[test]
+    fn a_peek_always_ends() {
+        let (fac, k, _) = setup();
+        let nobody = runner_at((-50.0, -50.0), true);
+        let mut b = peeker("porcelle", &k);
+        b.start_peek(&k);
+        b.pos = (k.body().0 - k.d1.0 as f32 * 3.0, k.body().1 - k.d1.1 as f32 * 3.0);
+        b.peek_body = (b.pos.0 - k.d1.0 as f32 * 4.0, b.pos.1 - k.d1.1 as f32 * 4.0); // unreachable stand: a wall in the way
+        run(&mut b, &fac, &nobody, 2.5);
+        assert_ne!(b.state, State::Peek, "gave up on the stand");
+        assert_eq!(b.state, State::Search);
+        let mut b = peeker("porcelle", &k);
+        b.start_peek(&k);
+        run(&mut b, &fac, &nobody, 0.3 + 2.0 + 0.2);
+        assert_ne!(b.state, State::Peek);
+    }
+
+    /// Taser slow stacking (hunter_brain.gd apply_slow): a weaker hit does not weaken an active slow, the stronger
+    /// factor is kept, and the longer time wins. Same sequence as tests/validate_hunter_immunity.gd:120-124.
+    #[test]
+    fn a_weaker_slow_does_not_weaken_an_active_slow() {
+        let mut b = Brain::new(aki(), (0.0, 0.0), "SLOW", Difficulty::Standard);
+        b.apply_slow(2.0, 0.5);
+        b.apply_slow(1.0, 0.8);
+        assert_eq!(b.slow_factor, 0.5, "weaker hit must not raise the factor");
+        assert_eq!(b.slow_timer, 2.0, "shorter hit must not cut the time");
+        b.apply_slow(5.0, 0.3);
+        assert_eq!(b.slow_factor, 0.3, "stronger hit takes the lower factor");
+        assert_eq!(b.slow_timer, 5.0, "longer hit extends the time");
+    }
+
+    /// A hit with a longer time extends an active slow, but never shortens it.
+    #[test]
+    fn a_longer_slow_extends_the_active_one() {
+        let mut b = Brain::new(aki(), (0.0, 0.0), "SLOW", Difficulty::Standard);
+        b.apply_slow(3.0, 0.5);
+        b.tick_slow(2.0);
+        b.apply_slow(4.0, 0.5);
+        assert!((b.slow_timer - 4.0).abs() < 1e-6, "longer hit extends to 4 s, got {}", b.slow_timer);
+        b.tick_slow(1.0);
+        b.apply_slow(0.5, 0.5);
+        assert!((b.slow_timer - 3.0).abs() < 1e-6, "shorter hit must not cut the remaining 3 s, got {}", b.slow_timer);
+    }
+
+    /// Expiry resets the factor to 1.0 (the clock runs out inside tick_slow), and a fresh slow after expiry takes
+    /// its own factor rather than the old stronger one.
+    #[test]
+    fn expiry_resets_the_slow_factor() {
+        let mut b = Brain::new(aki(), (0.0, 0.0), "SLOW", Difficulty::Standard);
+        b.apply_slow(1.0, 0.3);
+        b.tick_slow(0.6);
+        assert_eq!(b.slow_factor, 0.3, "factor holds while the slow runs");
+        b.tick_slow(0.6);
+        assert_eq!(b.slow_timer, 0.0);
+        assert_eq!(b.slow_factor, 1.0, "expiry resets the factor");
+        b.apply_slow(2.0, 0.7);
+        assert_eq!(b.slow_factor, 0.7, "a new slow after expiry is not stacked on the old factor");
+        assert_eq!(b.slow_timer, 2.0);
     }
 }

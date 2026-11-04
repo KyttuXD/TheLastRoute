@@ -52,6 +52,8 @@ const STUCK_METRES: f32 = 0.5;
 const STUCK_SECONDS: f32 = 1.5;
 const AVOID_DEGREES: f32 = 150.0;
 const AVOID_SECONDS: f32 = 1.0;
+/// Seconds between presses on a shut door in the walking modes.
+const DOOR_PRESS_SECONDS: f32 = 0.7;
 /// Seconds over which a turn swings round, from its leg boundary.
 const TURN_SECONDS: f32 = 0.25;
 /// The NPCs the npcs scenario keeps near the runner, and their smartness (the admin's default).
@@ -161,6 +163,8 @@ pub struct Stress {
     progress: Option<((f32, f32), f32)>,
     /// While set, the runner turns away from a wall: the time the turn ends and its turn rate (rad per second).
     avoid: Option<(f32, f32)>,
+    /// When the runner last pressed interact on a shut door (seconds into the run).
+    door_press: f32,
 }
 
 /// The frames of one second: their times and the sum of each section's samples.
@@ -226,6 +230,7 @@ impl Stress {
             travel: Travel::default(),
             progress: None,
             avoid: None,
+            door_press: -DOOR_PRESS_SECONDS,
         })
     }
 
@@ -293,6 +298,14 @@ impl Stress {
                 Some(_) => {}
                 None => self.progress = Some((here, t)),
             }
+            // a shut door on the way never opens for the runner: the crosshair on one is a press, held off
+            // for DOOR_PRESS_SECONDS so the next press does not shut it again
+            if g.closed_door_in_focus() && t - self.door_press >= DOOR_PRESS_SECONDS {
+                self.door_press = t;
+                self.avoid = None;
+                self.progress = Some((here, t));
+                c.interact = true;
+            }
         }
         // every INTERACT_SECONDS in the interact mode: press interact when the crosshair is on
         // something (or to step out of a locker the last press hid the runner in)
@@ -329,6 +342,10 @@ impl Stress {
             }
         }
         self.last_mode = Some(mode);
+        if mode != Scenario::Npcs {
+            // the run's own NPCs (data/npcs.json) would skew the fly and hunters timings; only the admin's stay
+            g.npcs.retain(|n| n.key.is_none());
+        }
         match mode {
             Scenario::Npcs => keep_npcs(g),
             Scenario::Hunters => self.keep_hunters(g, content),
@@ -457,7 +474,7 @@ fn keep_npcs(g: &mut Game) {
 
 /// The admin's `summon` (ui/admin/actions.rs) for one hunter id: a brain on the golden-angle ring
 /// round the runner, awake and heading for the runner. Returns false when there is no open floor.
-fn summon(g: &mut Game, id: &str, content: &Content, seq: u32, slot: usize) -> bool {
+pub fn summon(g: &mut Game, id: &str, content: &Content, seq: u32, slot: usize) -> bool {
     let Some(def) = content.hunter(id) else {
         return false;
     };

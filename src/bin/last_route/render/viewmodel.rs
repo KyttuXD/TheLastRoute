@@ -1,4 +1,4 @@
-//! The tool in the runner's hand: the original's item models (assets/interactables/*.glb) placed by their grip exactly as
+//! The tool in the runner's hand: the original's item models (assets/interactables/*.bbmodel) placed by their grip exactly as
 //! held_item_poses.gd lays them out, moved by the player controller's tweens (render/anim/held.rs: the crowbar / axe swing,
 //! the taser kick, the torch click) and slid back from walls, drawn into their own layer so walls never cut through them.
 

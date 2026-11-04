@@ -13,7 +13,7 @@
 //!   host sends its own sample and each accepted guest sample to every guest as `PeerPlace` (the sender's peer id).
 //!   A sample is `null` while nothing is playing: that keeps the relay session alive, nothing else.
 
-use super::api::{self, Heartbeat, RegisterRoom, Registered};
+use super::api::{self, Heartbeat, RegisterRoom, Registered, ReservedHostView};
 use super::config::{self, BackendConfig};
 use super::protocol::{self, Message};
 use super::relay::{RelayEvent, RelayLink, Role};
@@ -33,6 +33,12 @@ use std::time::{Duration, Instant};
 pub const SEND_INTERVAL: Duration = Duration::from_millis(50);
 /// A remote runner with no sample for this long is neither drawn nor kept.
 pub const REMOTE_TIMEOUT: Duration = Duration::from_secs(2);
+/// A runner whose sample has been quiet this long is listed as DISCONNECTED (Godot `room_player_list.gd`
+/// `QUIET_DISCONNECT_USEC` = 8 s).
+pub const QUIET_DISCONNECT: Duration = Duration::from_secs(8);
+/// A runner's last state is kept this long for the PLAYERS list, so a silent one reads DISCONNECTED before it drops.
+/// Godot drops a silent peer "a little later" without a figure in `room_player_list.gd`; this is the guest idle time.
+const ROSTER_KEEP: Duration = GUEST_IDLE;
 /// The relay drops a guest session idle this long; the keep-alive sample is far more frequent than that.
 const GUEST_IDLE: Duration = Duration::from_secs(45);
 /// A guest whose relay join is not answered in this long is told so.
@@ -69,10 +75,16 @@ pub struct Sample {
     pub moving: bool,
     pub sprinting: bool,
     pub crouching: bool,
+    /// The runner's run state for the PLAYERS list (Godot `remote_players.gd` state: `spectating`, `game_over`,
+    /// `escape_active`). A runner that is not spectating sends `false`; see [`Sample::with_run_state`].
+    pub spectating: bool,
+    pub game_over: bool,
+    pub escape_active: bool,
 }
 
 impl Sample {
     /// The sample of a runner's body in the window whose origin is `origin`; `seq` is filled in when it is sent.
+    /// The run state flags start false: [`Sample::with_run_state`] sets them.
     pub fn of(p: &Player, depth: i32, origin: (i32, i32)) -> Sample {
         let (x, y) = to_absolute(p.pos, origin);
         Sample {
@@ -84,13 +96,25 @@ impl Sample {
             moving: p.moving,
             sprinting: p.sprinting,
             crouching: p.crouching,
+            spectating: false,
+            game_over: false,
+            escape_active: false,
         }
+    }
+
+    /// The sample with this runner's run state: `game_over` once its route has ended (a catch or an abandon),
+    /// `escape_active` while a hunter holds it in the escape struggle.
+    pub fn with_run_state(mut self, game_over: bool, escape_active: bool) -> Sample {
+        self.game_over = game_over;
+        self.escape_active = escape_active;
+        self
     }
 
     pub fn to_json(&self) -> Value {
         json!({
             "seq": self.seq, "depth": self.depth, "x": self.x, "y": self.y, "yaw": self.yaw,
             "moving": self.moving, "sprinting": self.sprinting, "crouching": self.crouching,
+            "spectating": self.spectating, "game_over": self.game_over, "escape_active": self.escape_active,
         })
     }
 
@@ -109,6 +133,9 @@ impl Sample {
             moving: flag("moving"),
             sprinting: flag("sprinting"),
             crouching: flag("crouching"),
+            spectating: flag("spectating"),
+            game_over: flag("game_over"),
+            escape_active: flag("escape_active"),
         })
     }
 }
@@ -128,8 +155,21 @@ pub fn newer(seq: u32, last: u32) -> bool {
     seq != last && seq.wrapping_sub(last) < u32::MAX / 2
 }
 
+/// What the PLAYERS list knows of a runner's state: its last sample's floor and run flags, and how long ago that sample
+/// arrived (Godot `room_player_list.gd` `states` entry: `{depth, spectating, game_over, escape_active, received_usec}`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RunnerState {
+    pub depth: i32,
+    pub spectating: bool,
+    pub game_over: bool,
+    pub escape_active: bool,
+    /// Time since the last sample, zero for the local runner.
+    pub quiet: Duration,
+}
+
 /// One other runner in the room, for the PLAYERS list. `depth` is its floor while it sends samples; `sending` is whether
-/// it has sent one lately; `ping` is its round trip in ms, None until one is measured.
+/// it has sent one lately; `ping` is its round trip in ms, None until one is measured; `state` is its last sample's
+/// state, None until one arrives (a runner that just joined).
 #[derive(Clone, Debug, PartialEq)]
 pub struct RosterEntry {
     pub peer: u32,
@@ -139,6 +179,7 @@ pub struct RosterEntry {
     pub depth: Option<i32>,
     pub sending: bool,
     pub ping: Option<u32>,
+    pub state: Option<RunnerState>,
 }
 
 /// A remote runner that is on this floor and fresh enough to draw.
@@ -170,6 +211,95 @@ pub enum NetEvent {
     HostLeft(String),
     /// Something to show the player.
     Problem(String),
+    /// The room's owner sent a route command (host side, reserved rooms only). The app carries it out, as Godot's
+    /// `RoomState._on_reserved_commands` does, and the command is acked when it is handed over.
+    RouteCommand(RouteCommand),
+    /// The host ended the route (guest side): the run is over, the room stays open. The text is the host's reason.
+    RouteEnded(String),
+}
+
+/// An owner route command for a reserved room, as Godot `RoomState.carry_out_route_command` carries it out.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RouteCommand {
+    /// RESTART ROUTE: a new run. `same_seed` keeps the room's seed (`args.sameSeed`). `seed` is `args.settings.seed`,
+    /// trimmed (empty when none). `difficulty` is `args.settings.difficulty` when the settings carry one.
+    Restart { same_seed: bool, seed: String, difficulty: Option<Difficulty> },
+    /// END ROUTE: the run ends for everyone and the room waits in its lobby.
+    End,
+}
+
+impl RouteCommand {
+    /// The route command an owner command names: `restart` or `end` (Godot `RoomState._on_reserved_commands`). None
+    /// for the others (kick, settings, transfer), which this build does not carry out.
+    pub fn parse(command: &str, args: &Map<String, Value>) -> Option<RouteCommand> {
+        match command {
+            "restart" => {
+                let same_seed = args.get("sameSeed").and_then(Value::as_bool).unwrap_or(false);
+                let settings = args.get("settings").and_then(Value::as_object);
+                let seed = settings
+                    .and_then(|s| s.get("seed"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                let difficulty = settings.and_then(|s| s.get("difficulty")).map(difficulty_from_index);
+                Some(RouteCommand::Restart { same_seed, seed, difficulty })
+            }
+            "end" => Some(RouteCommand::End),
+            _ => None,
+        }
+    }
+
+    /// The seed a restarted route runs on (Godot `_apply_reserved_settings` and `reroll_seed`): the room's own seed when
+    /// `same_seed`, else the stored `seed` when there is one, else `fresh`.
+    pub fn restart_seed(same_seed: bool, seed: &str, current: &str, fresh: &str) -> String {
+        if same_seed {
+            current.to_string()
+        } else if !seed.is_empty() {
+            seed.to_string()
+        } else {
+            fresh.to_string()
+        }
+    }
+}
+
+/// A settings difficulty index as Godot's `_selectable_difficulty_or_standard` reads it: 0 RELAXED, 1 STANDARD, 2 HARD.
+/// Nightmare (3) has no port in this build, so it, and any other value, is STANDARD.
+fn difficulty_from_index(v: &Value) -> Difficulty {
+    v.as_f64()
+        .map(|f| f as i64)
+        .and_then(|i| usize::try_from(i).ok())
+        .and_then(|i| ALL.get(i).copied())
+        .unwrap_or(Difficulty::Standard)
+}
+
+/// Godot's `_reserved_seen` and `_reserved_ack` (`backend_client.gd`): the highest owner-command seq seen, and the
+/// highest one handed on. They go out with each heartbeat as `commandSince` and `commandAck`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OwnerCursor {
+    pub seen: i64,
+    pub ack: i64,
+}
+
+impl OwnerCursor {
+    /// Godot `_take_reserved` and `_on_reserved_commands`: each command above the seen cursor, in order. A route command
+    /// becomes an event for the app. Any other command becomes a notice that this build does not carry it out. Each one
+    /// is acked as it is taken, so the next heartbeat stops the directory sending it.
+    pub fn take(&mut self, view: &ReservedHostView) -> Vec<NetEvent> {
+        let mut out = Vec::new();
+        for cmd in &view.commands {
+            if cmd.seq <= self.seen {
+                continue;
+            }
+            self.seen = cmd.seq;
+            match RouteCommand::parse(&cmd.command, &cmd.args) {
+                Some(route) => out.push(NetEvent::RouteCommand(route)),
+                None => out.push(NetEvent::Problem(format!("OWNER COMMAND {} IS NOT IN THIS BUILD", cmd.command.to_uppercase()))),
+            }
+            self.ack = self.ack.max(cmd.seq);
+        }
+        out
+    }
 }
 
 struct Remote {
@@ -238,6 +368,10 @@ pub struct NetSession {
     relist: Option<Pending<Registered>>,
     opened: Instant,
     timed_out: bool,
+    /// Host: the owner-command cursors of a reserved room (see [`OwnerCursor`]).
+    owner: OwnerCursor,
+    /// Host: owner events from the registration reply, handed to the app on the first tick.
+    backlog: Vec<NetEvent>,
 }
 
 /// CREATE a room on the directory and open its relay. The request blocks, so the frame loop polls the result.
@@ -275,7 +409,13 @@ fn open_host(
     }
     let link = RelayLink::host(&code, &reg.token, &reg.room.address, reg.room.port)
         .map_err(|e| NetError::Transport(e.to_string()))?;
-    Ok(NetSession::new(cfg, code, Role::Host, CoopSession::new(link), reg.token, route_seed, name, skin))
+    // Godot `_take_reserved(payload.reserved, true)`: a fresh registration takes the commands it lists
+    let mut owner = OwnerCursor::default();
+    let backlog = reg.reserved.as_ref().map(|view| owner.take(view)).unwrap_or_default();
+    let mut session = NetSession::new(cfg, code, Role::Host, CoopSession::new(link), reg.token, route_seed, name, skin);
+    session.owner = owner;
+    session.backlog = backlog;
+    Ok(session)
 }
 
 /// JOIN by code: the directory lookup, the build check, then the relay. Blocking, so polled like [`host_room`].
@@ -333,6 +473,8 @@ impl NetSession {
             relist: None,
             opened: now,
             timed_out: false,
+            owner: OwnerCursor::default(),
+            backlog: Vec::new(),
         }
     }
 
@@ -387,8 +529,10 @@ impl NetSession {
             .collect()
     }
 
-    /// The other runners for the PLAYERS list, the host first. A guest lists the host and each other runner that is
-    /// sending samples; the host lists each guest that registered. `depth` is None while a runner sends nothing.
+    /// The other runners for the PLAYERS list, the host first. A guest lists the host and each other runner it has a
+    /// state for; the host lists each guest that registered. `sending` is whether a sample came lately; `state` is the
+    /// last sample's state (None until one arrives), and it is kept until the runner drops, so a silent one reads
+    /// DISCONNECTED.
     pub fn roster(&self) -> Vec<RosterEntry> {
         let now = Instant::now();
         let fresh = |peer: u32| {
@@ -399,6 +543,13 @@ impl NetSession {
         };
         let entry = |peer: u32, name: String| {
             let depth = fresh(peer);
+            let state = self.remotes.get(&peer).map(|r| RunnerState {
+                depth: r.sample.depth,
+                spectating: r.sample.spectating,
+                game_over: r.sample.game_over,
+                escape_active: r.sample.escape_active,
+                quiet: now.duration_since(r.last_seen),
+            });
             RosterEntry {
                 peer,
                 name,
@@ -407,6 +558,7 @@ impl NetSession {
                 depth,
                 sending: depth.is_some(),
                 ping: self.coop.ping_ms(peer),
+                state,
             }
         };
         if self.is_host() {
@@ -421,7 +573,9 @@ impl NetSession {
         let mut others: Vec<(&u32, &String)> = self
             .names
             .iter()
-            .filter(|(peer, _)| **peer != HOST_PEER_ID && **peer != self.coop.link.session() && fresh(**peer).is_some())
+            .filter(|(peer, _)| {
+                **peer != HOST_PEER_ID && **peer != self.coop.link.session() && self.remotes.contains_key(*peer)
+            })
             .collect();
         others.sort_by_key(|(peer, _)| **peer);
         out.extend(others.into_iter().map(|(peer, name)| entry(*peer, name.clone())));
@@ -468,11 +622,22 @@ impl NetSession {
         }
     }
 
+    /// Host: ends the route for every guest (Godot `end_session` and `_receive_end`). The room stays open, and no run is
+    /// on until the next [`NetSession::start_run`].
+    pub fn end_run(&mut self, reason: &str) {
+        self.run = None;
+        if self.is_host() {
+            for peer in self.coop.peers() {
+                self.coop.send(peer, &Message::End { reason: reason.to_string() });
+            }
+        }
+    }
+
     /// Once per frame. Pumps the relay and the directory, applies what the others sent and returns the events for the
     /// app. `sample` is this runner's position while a route is running; `None` sends a keep-alive instead.
     pub fn tick(&mut self, sample: Option<Sample>) -> Vec<NetEvent> {
         let now = Instant::now();
-        let mut out = Vec::new();
+        let mut out = std::mem::take(&mut self.backlog);
         self.service_directory(now, &mut out);
         for event in self.coop.poll() {
             self.on_session_event(event, now, &mut out);
@@ -523,11 +688,16 @@ impl NetSession {
         if let Some(p) = self.heartbeat.as_mut() {
             if let Some(result) = p.poll() {
                 self.heartbeat = None;
-                if let Err(e) = result {
-                    // the directory forgot the room (restart or expiry): list it again under the same code
-                    if matches!(e.status(), Some(403) | Some(404)) {
-                        self.start_relist();
+                match result {
+                    // the owner's commands for this reserved room ride on the heartbeat answer
+                    Ok(reply) => {
+                        if let Some(view) = reply.reserved.as_ref() {
+                            out.extend(self.owner.take(view));
+                        }
                     }
+                    // the directory forgot the room (restart or expiry): list it again under the same code
+                    Err(e) if matches!(e.status(), Some(403) | Some(404)) => self.start_relist(),
+                    Err(_) => {}
                 }
             }
         }
@@ -538,6 +708,11 @@ impl NetSession {
                     Ok(reg) => {
                         self.token = reg.token;
                         self.coop.link.update_host_token(&self.token);
+                        // Godot `_take_reserved(..., true)`: a fresh registration starts the owner cursors again
+                        self.owner = OwnerCursor::default();
+                        if let Some(view) = reg.reserved.as_ref() {
+                            out.extend(self.owner.take(view));
+                        }
                     }
                     Err(_) => out.push(NetEvent::Problem("ROOM LOST // THE DIRECTORY FORGOT IT".into())),
                 }
@@ -545,17 +720,22 @@ impl NetSession {
         }
         if self.heartbeat.is_none() && self.relist.is_none() && now >= self.next_heartbeat {
             self.next_heartbeat = now + Duration::from_secs_f64(config::HEARTBEAT_SECONDS);
-            let beat = Heartbeat {
-                code: self.code.clone(),
-                token: self.token.clone(),
-                players: 1 + self.guests.len() as u32,
-                session_active: self.run.is_some(),
-                daytime: false,
-                command_since: 0,
-                command_ack: 0,
-            };
+            let beat = self.beat();
             let cfg = self.cfg.clone();
             self.heartbeat = Some(Pending::spawn(move || api::heartbeat(&cfg, &beat)));
+        }
+    }
+
+    /// The heartbeat this host sends now (Godot `_send_heartbeat`): its runners and route, and the owner-command cursors.
+    fn beat(&self) -> Heartbeat {
+        Heartbeat {
+            code: self.code.clone(),
+            token: self.token.clone(),
+            players: 1 + self.guests.len() as u32,
+            session_active: self.run.is_some(),
+            daytime: false,
+            command_since: self.owner.seen,
+            command_ack: self.owner.ack,
         }
     }
 
@@ -670,6 +850,8 @@ impl NetSession {
                     out.push(NetEvent::Packs(mods));
                 }
             }
+            // the host ended the route (Godot `_receive_end`): the run is over here too, the room stays open
+            Message::End { reason } if !self.is_host() => out.push(NetEvent::RouteEnded(reason)),
             Message::Start { seed, rest, .. } if !self.is_host() => {
                 let difficulty = rest.get("difficulty").and_then(Value::as_str).unwrap_or("STANDARD").to_string();
                 out.push(NetEvent::Start { seed, difficulty });
@@ -715,7 +897,8 @@ impl NetSession {
     }
 
     fn prune(&mut self, now: Instant, out: &mut Vec<NetEvent>) {
-        self.remotes.retain(|_, r| now.duration_since(r.last_seen) < REMOTE_TIMEOUT);
+        // a stale runner is not drawn (remotes_at checks REMOTE_TIMEOUT) but its state stays for the PLAYERS list
+        self.remotes.retain(|_, r| now.duration_since(r.last_seen) < ROSTER_KEEP);
         if self.is_host() {
             let gone: Vec<u32> = self
                 .guests
@@ -853,12 +1036,36 @@ mod tests {
     use std::net::UdpSocket;
 
     fn sample(seq: u32, x: f32, y: f32) -> Sample {
-        Sample { seq, depth: 1, x, y, yaw: 0.5, moving: true, sprinting: false, crouching: true }
+        Sample {
+            seq,
+            depth: 1,
+            x,
+            y,
+            yaw: 0.5,
+            moving: true,
+            sprinting: false,
+            crouching: true,
+            spectating: false,
+            game_over: false,
+            escape_active: false,
+        }
     }
 
     #[test]
     fn sample_json_round_trips_and_ignores_keep_alives() {
-        let s = Sample { seq: 9, depth: -2, x: 12.5, y: -3.25, yaw: 1.57, moving: true, sprinting: true, crouching: false };
+        let s = Sample {
+            seq: 9,
+            depth: -2,
+            x: 12.5,
+            y: -3.25,
+            yaw: 1.57,
+            moving: true,
+            sprinting: true,
+            crouching: false,
+            spectating: false,
+            game_over: true,
+            escape_active: true,
+        };
         assert_eq!(Sample::from_json(&s.to_json()), Some(s));
         assert_eq!(Sample::from_json(&Value::Null), None, "a keep-alive is not a sample");
         assert_eq!(Sample::from_json(&json!({"seq": 1, "depth": 0, "x": "far", "y": 0})), None);
@@ -1034,8 +1241,10 @@ mod tests {
         host.remotes.insert(42, Remote { sample: sample(1, 0.0, 0.0), last_seen: now });
         let roster = host.roster();
         assert_eq!(roster.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["QUIET", "NIGHTWALK"]);
-        assert!(!roster[0].sending && roster[0].depth.is_none(), "a guest with no fresh sample reads NO SIGNAL");
-        assert!(roster[1].sending && roster[1].depth == Some(1), "a guest sending samples is ALIVE on its floor");
+        assert!(!roster[0].sending && roster[0].depth.is_none(), "a guest with no fresh sample is not sending");
+        assert!(roster[0].state.is_none(), "a guest with no sample yet has no state (it just joined)");
+        assert!(roster[1].sending && roster[1].depth == Some(1), "a guest sending samples is on its floor");
+        assert!(roster[1].state.is_some_and(|s| s.depth == 1 && s.quiet < QUIET_DISCONNECT), "its state is fresh");
         assert!(roster.iter().all(|e| e.ping.is_none() && !e.host), "no round trip is measured yet");
         host.coop.close();
 
@@ -1044,12 +1253,19 @@ mod tests {
         guest.names.insert(9, "NEON".into());
         let silent = guest.roster();
         assert_eq!(silent.len(), 1, "a guest that is not sending is not listed");
-        assert!(silent[0].host && silent[0].name == "HOST" && !silent[0].sending, "the host is listed first, reading NO SIGNAL");
+        assert!(silent[0].host && silent[0].name == "HOST" && !silent[0].sending, "the host is listed first, not sending");
         guest.remotes.insert(HOST_PEER_ID, Remote { sample: sample(1, 3.0, -2.0), last_seen: now });
         guest.remotes.insert(9, Remote { sample: sample(1, 5.0, 5.0), last_seen: now });
         let roster = guest.roster();
         assert_eq!(roster.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["HOST", "NEON"]);
         assert!(roster[0].host && roster[0].sending, "the host sends samples");
+        // a runner quiet for longer than QUIET_DISCONNECT stays listed, with its quiet time for the DISCONNECTED status
+        let long_ago = now.checked_sub(QUIET_DISCONNECT + Duration::from_secs(1)).unwrap_or(now);
+        guest.remotes.insert(9, Remote { sample: sample(2, 5.0, 5.0), last_seen: long_ago });
+        let roster = guest.roster();
+        let quiet = roster.iter().find(|e| e.peer == 9).and_then(|e| e.state).map(|s| s.quiet);
+        assert!(quiet.is_some_and(|q| q > QUIET_DISCONNECT), "a silent runner is still listed, quiet for {quiet:?}");
+        assert!(!roster.iter().any(|e| e.peer == 9 && e.sending), "and it is not sending");
         guest.coop.close();
     }
 
@@ -1116,5 +1332,116 @@ mod tests {
         assert!(guest.guest_names().iter().any(|n| n == "HOST"), "the guest lists the host: {:?}", guest.guest_names());
         guest.leave();
         host.leave();
+    }
+}
+
+/// Owner route commands (RESTART ROUTE, END ROUTE): the parse, the seed a restart runs on, the ack cursors and the
+/// guest's end. Godot: `game/autoload/room_state.gd` `_on_reserved_commands` and `carry_out_route_command`, and
+/// `game/autoload/backend_client.gd` `_take_reserved`, `ack_reserved_command`, `_send_heartbeat`.
+#[cfg(test)]
+mod owner_route_tests {
+    use super::*;
+    use std::net::UdpSocket;
+
+    fn args(v: Value) -> Map<String, Value> {
+        v.as_object().expect("an object").clone()
+    }
+
+    fn view(commands: Value) -> ReservedHostView {
+        let o = json!({"commands": commands, "commandSeq": 4});
+        ReservedHostView::from_json(o.as_object().expect("an object"))
+    }
+
+    #[test]
+    fn owner_route_commands_parse_as_godot_reads_them() {
+        assert_eq!(
+            RouteCommand::parse("restart", &args(json!({"sameSeed": true, "settings": {"seed": "  ROOM-AB-1  ", "difficulty": 2}}))),
+            Some(RouteCommand::Restart { same_seed: true, seed: "ROOM-AB-1".into(), difficulty: Some(Difficulty::Hard) })
+        );
+        assert_eq!(
+            RouteCommand::parse("restart", &args(json!({}))),
+            Some(RouteCommand::Restart { same_seed: false, seed: String::new(), difficulty: None })
+        );
+        // `int(settings.difficulty)`: 0 RELAXED, 1 STANDARD; 3 is NIGHTMARE, which has no port here, and anything else is STANDARD
+        for (index, want) in [(0, Difficulty::Relaxed), (1, Difficulty::Standard), (3, Difficulty::Standard), (-1, Difficulty::Standard)] {
+            assert_eq!(
+                RouteCommand::parse("restart", &args(json!({"settings": {"difficulty": index}}))),
+                Some(RouteCommand::Restart { same_seed: false, seed: String::new(), difficulty: Some(want) })
+            );
+        }
+        assert_eq!(RouteCommand::parse("end", &args(json!({}))), Some(RouteCommand::End));
+        for other in ["kick", "settings", "transfer", "nothing"] {
+            assert_eq!(RouteCommand::parse(other, &args(json!({}))), None, "{other} is not a route command");
+        }
+    }
+
+    #[test]
+    fn owner_restart_keeps_the_seed_or_takes_the_stored_or_a_fresh_one() {
+        assert_eq!(RouteCommand::restart_seed(true, "STORED", "ROOM-NOW", "FRESH"), "ROOM-NOW");
+        assert_eq!(RouteCommand::restart_seed(false, "STORED", "ROOM-NOW", "FRESH"), "STORED");
+        assert_eq!(RouteCommand::restart_seed(false, "", "ROOM-NOW", "FRESH"), "FRESH");
+    }
+
+    #[test]
+    fn owner_cursor_hands_each_command_on_once_and_acks_it() {
+        let first = view(json!([
+            {"seq": 1, "command": "restart", "args": {"sameSeed": false}},
+            {"seq": 2, "command": "kick", "args": {"target": "GUEST"}},
+            {"seq": 3, "command": "end", "args": {}},
+        ]));
+        let mut cursor = OwnerCursor::default();
+        assert_eq!(
+            cursor.take(&first),
+            vec![
+                NetEvent::RouteCommand(RouteCommand::Restart { same_seed: false, seed: String::new(), difficulty: None }),
+                NetEvent::Problem("OWNER COMMAND KICK IS NOT IN THIS BUILD".into()),
+                NetEvent::RouteCommand(RouteCommand::End),
+            ]
+        );
+        assert_eq!(cursor, OwnerCursor { seen: 3, ack: 3 });
+        // the same answer again hands nothing on and moves nothing
+        assert!(cursor.take(&first).is_empty());
+        assert_eq!(cursor, OwnerCursor { seen: 3, ack: 3 });
+        // a later command is handed on and acked
+        let next = view(json!([{"seq": 4, "command": "end", "args": {}}]));
+        assert_eq!(cursor.take(&next), vec![NetEvent::RouteCommand(RouteCommand::End)]);
+        assert_eq!(cursor, OwnerCursor { seen: 4, ack: 4 });
+        // a fresh registration starts the cursors again, so what it lists is handed on again (Godot fresh=true)
+        cursor = OwnerCursor::default();
+        assert_eq!(cursor.take(&next), vec![NetEvent::RouteCommand(RouteCommand::End)]);
+    }
+
+    #[test]
+    fn host_heartbeat_sends_the_cursors_and_a_guest_applies_the_host_end() {
+        let relay = UdpSocket::bind("127.0.0.1:0").unwrap();
+        relay.set_nonblocking(true).unwrap();
+        let port = relay.local_addr().unwrap().port();
+        let mut host = NetSession::new(
+            BackendConfig::loopback(18106),
+            "ABCDE".into(),
+            Role::Host,
+            CoopSession::new(RelayLink::host("ABCDE", "tok", "127.0.0.1", port).unwrap()),
+            "tok".into(),
+            "ROOM-ABCDE-0123".into(),
+            "HOST".into(),
+            "DAWN".into(),
+        );
+        host.owner.take(&view(json!([{"seq": 7, "command": "end", "args": {}}])));
+        let beat = host.beat();
+        assert_eq!((beat.command_since, beat.command_ack), (7, 7));
+
+        let mut guest = NetSession::new(
+            BackendConfig::loopback(18106),
+            "ABCDE".into(),
+            Role::Guest,
+            CoopSession::new(RelayLink::guest("ABCDE", "127.0.0.1", port, "").unwrap()),
+            String::new(),
+            String::new(),
+            "GUEST".into(),
+            "NIGHT".into(),
+        );
+        let mut out = Vec::new();
+        guest.on_message(HOST_PEER_ID, Message::End { reason: "ROUTE RESTARTING".into() }, Instant::now(), &mut out);
+        assert_eq!(out, vec![NetEvent::RouteEnded("ROUTE RESTARTING".into())]);
     }
 }

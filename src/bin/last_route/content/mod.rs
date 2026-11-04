@@ -5,12 +5,14 @@
 pub mod embedded;
 pub mod hunters;
 pub mod loot;
+pub mod npcs;
 pub mod packs;
 pub mod props;
 pub mod regions;
 
 use hunters::HunterDef;
 use loot::{Loot, LootTables};
+use npcs::NpcRules;
 use packs::Pack;
 use props::PropDef;
 use regions::RegionTable;
@@ -20,6 +22,8 @@ pub struct Content {
     pub hunters: Vec<HunterDef>,
     pub props: HashMap<String, PropDef>,
     pub loot: LootTables,
+    /// How a normal run seeds NPC teammates (data/npcs.json).
+    pub npcs: NpcRules,
     /// The region catalogue (data/regions and packs' regions/), `lr.region/1`.
     pub regions: RegionTable,
     pub packs: Vec<Pack>,
@@ -33,6 +37,7 @@ impl Content {
             hunters: vec![],
             props: HashMap::new(),
             loot: LootTables::default(),
+            npcs: NpcRules::default(),
             regions: RegionTable::default(),
             packs: vec![],
             warnings: vec![],
@@ -69,6 +74,12 @@ impl Content {
                 if let Ok(v) = serde_json::from_str(text) {
                     *table = Loot::parse(&v);
                 }
+            }
+        }
+        if let Some((path, text)) = embedded::data_under("npcs.json").next() {
+            match serde_json::from_str::<serde_json::Value>(text) {
+                Ok(v) => c.npcs = NpcRules::parse(&v),
+                Err(e) => c.warnings.push(format!("{path}: {e}")),
             }
         }
         packs::load_all(&mut c);

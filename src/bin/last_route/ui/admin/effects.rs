@@ -61,7 +61,7 @@ impl Admin {
             return;
         }
         for h in g.hunters.iter_mut() {
-            if matches!(h.state, State::Chase | State::Investigate | State::Search) {
+            if matches!(h.state, State::Chase | State::Investigate | State::Search | State::Peek) {
                 h.state = State::Wander;
                 h.last_known = None;
                 h.wander_target = None;
