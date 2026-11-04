@@ -39,8 +39,10 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y pkg-config libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev xvfb
 
-      # The repo has no rust-toolchain file, so this is the runner's stable Rust.
-      - uses: dtolnay/rust-toolchain@stable
+      # The Rust version is pinned in rust-toolchain.toml; this installs the same version (keep both in step).
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
 
       - uses: Swatinem/rust-cache@v2
         with:

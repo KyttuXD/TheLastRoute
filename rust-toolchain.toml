@@ -1,0 +1,5 @@
+# Pins the Rust toolchain for local builds and CI, so a new stable release does not invalidate every
+# cache at once. Bump this deliberately, together with the version in .github/workflows/*.yml.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
