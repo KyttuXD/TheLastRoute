@@ -217,6 +217,13 @@ fn builds_in_one_step(last: Option<ChunkFrame>, next: ChunkFrame, builds_before:
     }
 }
 
+/// The wanted parts that are built when the window is drawn. The frame budget can leave some parts for a later
+/// frame (the caller rebuilds again while `has_pending`), so a first load on a slow machine draws what is built
+/// instead of asking for a part that was never built.
+fn drawable_keys<T>(wanted: &[(PartKey, T)], built: impl Fn(&PartKey) -> bool) -> Vec<PartKey> {
+    wanted.iter().map(|(k, _)| *k).filter(|k| built(k)).collect()
+}
+
 impl WorldMeshes {
     /// Rebuilds the meshes for `f`. On the Infinite window (`frame`) only the chunk parts that are new, or whose
     /// neighbour chunks changed, are built; the rest are moved to the new window origin. Any other floor is
@@ -292,13 +299,13 @@ impl WorldMeshes {
             }
         }
         let mut out: Vec<(Option<PartKey>, Mesh)> = vec![];
-        for (key, _) in &wanted {
-            let part = self.parts.get_mut(key).expect("phase 1 built or kept every wanted part");
+        for key in drawable_keys(&wanted, |k| self.parts.contains_key(k)) {
+            let part = self.parts.get_mut(&key).expect("drawable_keys returns only built parts");
             if part.origin != f.origin {
                 reframe(&mut part.meshes, part.origin, f.origin);
                 part.origin = f.origin;
             }
-            out.extend(part.meshes.drain(..).map(|m| (Some(*key), m)));
+            out.extend(part.meshes.drain(..).map(|m| (Some(key), m)));
         }
         out.extend(safe_pad(f, assets).into_iter().map(|m| (None, m)));
         // the window's last two builds stay, so a step back or a flight straight back up builds nothing
@@ -1297,6 +1304,18 @@ mod stream_budget_tests {
     fn the_first_part_of_a_rebuild_always_builds() {
         let t = StreamBudget::parse(STANDARD).unwrap();
         assert!(t.allows(0, 999.0, 9), "no stall: at least one part per rebuild");
+    }
+
+    /// Regression: a first load that the frame budget cut short (macOS, 2026-11-04 crash at world_mesh.rs:296)
+    /// has parts the budget did not reach. Drawing them must skip those parts, not ask for them.
+    #[test]
+    fn a_first_load_the_budget_cut_short_draws_only_the_parts_that_exist() {
+        let key = |cx: i32| PartKey { level: 0, cx, cy: 0, needs: 0, open: 0 };
+        let wanted: Vec<(PartKey, u8)> = (0..6).map(|cx| (key(cx), 0)).collect();
+        let built: std::collections::HashSet<PartKey> = [key(0), key(2), key(3)].into_iter().collect();
+        let drawn = drawable_keys(&wanted, |k| built.contains(k));
+        assert_eq!(drawn, vec![key(0), key(2), key(3)], "the built parts, in the window's order");
+        assert!(drawable_keys(&wanted, |_| false).is_empty(), "nothing built, nothing drawn, no panic");
     }
 
     #[test]
