@@ -5,6 +5,10 @@
 //   node tools/props/glb_to_bbmodel.mjs --dir <glb_dir> --out <out_dir> [--recursive] [--quiet]
 //   node tools/props/glb_to_bbmodel.mjs --all      (every GLB in tools/props/source_glb -> the game's assets folder)
 //   node tools/props/glb_to_bbmodel.mjs --check    (same, writes nothing, fails if a bbmodel on disk is not what the converter makes)
+//   add --no-simplify to any of these to keep chamfered boxes as bevelled mesh elements (the pre-simplification output)
+//
+// Chamfered boxes (a mesh element that is a plain box with bevelled edges, see chamferedBox) become cube elements
+// unless --no-simplify is given. Element names, uuids, group membership, export and visibility are unchanged.
 //
 // Dependency-free (Node built-ins only). Conventions copied from tools/prop_convert (the Rust converter that
 // produced assets/props/*.bbmodel): glTF metres * 16 = bbmodel units, Y up, no axis flip, node transforms baked
@@ -325,6 +329,82 @@ function asCube(comp) {
   return { from: f, to: t, faces };
 }
 
+// ---------- chamfered-box simplification ----------
+// A mesh element that is really a plain box with bevelled edges and corners (every vertex on the outer hull of its
+// bounding box, every box corner within CHAMFER_MAX_UNITS of a vertex, every side covered by a planar quad that
+// reaches the box edges to within CHAMFER_MAX_UNITS) is emitted as one bbmodel cube: 12 triangles instead of ~44.
+export const CHAMFER_MAX_UNITS = 0.25;
+const CHAMFER_MAX = CHAMFER_MAX_UNITS / UNITS_PER_METRE;
+const CHAMFER_UV_TOL = 0.5; // uv pixels a chamfer face may drift from the rectangle it is reduced to
+const polyArea = (p) => { let s = 0; for (let i = 1; i + 1 < p.length; i++) s += triArea(p[0], p[i], p[i + 1]); return s; };
+
+/** 3x3 linear solve (Gaussian elimination with partial pivoting); null when singular. */
+function solve3(M, r) {
+  const A = M.map((row, i) => [...row, r[i]]);
+  for (let i = 0; i < 3; i++) {
+    let p = i;
+    for (let k = i + 1; k < 3; k++) if (Math.abs(A[k][i]) > Math.abs(A[p][i])) p = k;
+    [A[i], A[p]] = [A[p], A[i]];
+    if (Math.abs(A[i][i]) < 1e-12) return null;
+    for (let k = 0; k < 3; k++) if (k !== i) { const m = A[k][i] / A[i][i]; for (let j = i; j < 4; j++) A[k][j] -= m * A[i][j]; }
+  }
+  return [A[0][3] / A[0][0], A[1][3] / A[1][1], A[2][3] / A[2][2]];
+}
+/** Like fitCubeFace, but accepts the rectangle whose corners are closest and within tol (uv pixels). */
+function fitCubeFaceApprox(cornerUvs, tol) {
+  const us = cornerUvs.map((c) => c[0]), vs = cornerUvs.map((c) => c[1]);
+  const lo = [Math.min(...us), Math.min(...vs)], hi = [Math.max(...us), Math.max(...vs)];
+  let best = null, bestErr = Infinity;
+  for (const sw of [[0, 0], [1, 0], [0, 1], [1, 1]]) for (let r = 0; r < 4; r++) {
+    const uv = [sw[0] ? hi[0] : lo[0], sw[1] ? hi[1] : lo[1], sw[0] ? lo[0] : hi[0], sw[1] ? lo[1] : hi[1]];
+    const got = cubeUvCorners(uv, r * 90);
+    const err = Math.max(...got.map((c, i) => Math.max(Math.abs(c[0] - cornerUvs[i][0]), Math.abs(c[1] - cornerUvs[i][1]))));
+    if (err < bestErr) { bestErr = err; best = { uv, rotation: r * 90 }; }
+  }
+  return bestErr <= tol ? best : null;
+}
+
+/** Leftover faces of one primitive ({p,uv}) -> {from, to, faces} cube spec in metres, or null when they are not a chamfered box. */
+export function chamferedBox(faces) {
+  const all = faces.flatMap((f) => f.p);
+  const f = [0, 1, 2].map((a) => Math.min(...all.map((p) => p[a])));
+  const t = [0, 1, 2].map((a) => Math.max(...all.map((p) => p[a])));
+  if ([0, 1, 2].some((a) => t[a] - f[a] < 1e-4)) return null;
+  const verts = [...new Map(all.map((p) => [key(p), p])).values()];
+  if (!verts.every((p) => [0, 1, 2].some((a) => Math.abs(p[a] - f[a]) < 1e-4 || Math.abs(p[a] - t[a]) < 1e-4))) return null;
+  for (const cx of [f[0], t[0]]) for (const cy of [f[1], t[1]]) for (const cz of [f[2], t[2]]) {
+    if (Math.min(...verts.map((p) => Math.hypot(p[0] - cx, p[1] - cy, p[2] - cz))) > CHAMFER_MAX) return null;
+  }
+  const out = {};
+  for (const side of SIDES) {
+    const n = SIDE_N[side];
+    const ax = [0, 1, 2].find((a) => n[a] !== 0);
+    const [a1, a2] = [0, 1, 2].filter((a) => a !== ax);
+    const onSide = faces.filter((face) => dot(norm(cross(sub(face.p[1], face.p[0]), sub(face.p[2], face.p[0]))), n) > 0.9999);
+    if (onSide.length !== 1) return null; // one flat face per side; several pieces on a side is detail, not a plain box
+    const big = onSide.reduce((best, face) => (polyArea(face.p) > polyArea(best.p) ? face : best));
+    if (big.p.length !== 4) return null;
+    const lo1 = Math.min(...big.p.map((p) => p[a1])), hi1 = Math.max(...big.p.map((p) => p[a1]));
+    const lo2 = Math.min(...big.p.map((p) => p[a2])), hi2 = Math.max(...big.p.map((p) => p[a2]));
+    if (lo1 - f[a1] > CHAMFER_MAX || t[a1] - hi1 > CHAMFER_MAX || lo2 - f[a2] > CHAMFER_MAX || t[a2] - hi2 > CHAMFER_MAX) return null;
+    // least-squares affine uv map of the largest face (its uv is a skewed quad, not an exact rectangle), extended to
+    // the box edges so the texel density stays what the mesh had
+    const P = big.p.map((p) => [p[a1], p[a2]]), U = big.uv;
+    const phi = P.map(([x, y]) => [x, y, 1]);
+    const N = [0, 1, 2].map((i) => [0, 1, 2].map((j) => phi.reduce((acc, ph) => acc + ph[i] * ph[j], 0)));
+    const au = solve3(N, [0, 1, 2].map((i) => phi.reduce((acc, ph, k) => acc + ph[i] * U[k][0], 0)));
+    const av = solve3(N, [0, 1, 2].map((i) => phi.reduce((acc, ph, k) => acc + ph[i] * U[k][1], 0)));
+    if (!au || !av) return null;
+    const toUv = (x, y) => [au[0] * x + au[1] * y + au[2], av[0] * x + av[1] * y + av[2]];
+    if (P.some(([x, y], k) => Math.abs(toUv(x, y)[0] - U[k][0]) > CHAMFER_UV_TOL || Math.abs(toUv(x, y)[1] - U[k][1]) > CHAMFER_UV_TOL)) return null;
+    const cuv = sideCorners(side, f, t).map((w) => toUv(w[a1], w[a2]));
+    const fit = fitCubeFaceApprox(cuv, CHAMFER_UV_TOL);
+    if (!fit) return null;
+    out[side] = fit;
+  }
+  return { from: f, to: t, faces: out };
+}
+
 // ---------- conversion ----------
 export function stableUuid(s) {
   const h = crypto.createHash('sha1').update(s).digest('hex');
@@ -333,10 +413,12 @@ export function stableUuid(s) {
 
 export function convert(buf, name, opts = {}) {
   const src = readGlb(buf);
+  src.simplifiedUuids = new Set();
+  const simplify = opts.simplify !== false;
   const atlasName = opts.atlasName || `${name}_atlas.png`;
   const elements = [], outliner = [], members = {};
   const stats = {
-    cubes: 0, meshElements: 0, meshFaces: 0, meshTriangles: 0, srcTriangles: 0,
+    cubes: 0, simplified: 0, meshElements: 0, meshFaces: 0, meshTriangles: 0, srcTriangles: 0,
     bboxMin: [1e9, 1e9, 1e9], bboxMax: [-1e9, -1e9, -1e9], imageCount: src.imageCount, width: src.width, height: src.height,
   };
   const cubesSpec = [], meshSpec = [];
@@ -355,12 +437,15 @@ export function convert(buf, name, opts = {}) {
     }));
     const comps = new Map();
     faces.forEach((f, i) => { const r = find(i); if (!comps.has(r)) comps.set(r, []); comps.get(r).push(f); });
-    const leftover = [];
+    const leftover = [], cubesBefore = cubesSpec.length;
     for (const comp of comps.values()) {
       const cube = asCube(comp);
       if (cube) cubesSpec.push({ cube, base: prim.name, group: prim.group }); else leftover.push(...comp);
     }
-    if (leftover.length) meshSpec.push({ name: prim.multi >= 0 ? `${prim.name}_${prim.multi}` : prim.name, faces: leftover, group: prim.group });
+    // a primitive whose leftover is a chamfered box (and that has no cube parts of its own) becomes one cube
+    const chamfer = simplify && leftover.length && cubesSpec.length === cubesBefore ? chamferedBox(leftover) : null;
+    if (chamfer) prim.simplified = true;
+    if (leftover.length) meshSpec.push({ name: prim.multi >= 0 ? `${prim.name}_${prim.multi}` : prim.name, faces: leftover, group: prim.group, cube: chamfer });
   }
   let n = 0;
   const colour = () => (n++) % 8;
@@ -387,6 +472,22 @@ export function convert(buf, name, opts = {}) {
   });
   meshSpec.forEach((m, mi) => {
     const uuid = stableUuid(`${name}/mesh/${mi}`);
+    if (m.cube) {
+      const c = m.cube, cf = {};
+      for (const s of SIDES) {
+        const f = c.faces[s];
+        cf[s] = f ? (f.rotation ? { uv: f.uv.map(r4), texture: 0, rotation: f.rotation } : { uv: f.uv.map(r4), texture: 0 }) : { uv: [0, 0, 0, 0], texture: null };
+      }
+      elements.push({
+        name: m.name, type: 'cube', uuid, box_uv: false, rescale: false, locked: false, export: true, visibility: true,
+        from: c.from.map((x) => r4(x * UNITS_PER_METRE)), to: c.to.map((x) => r4(x * UNITS_PER_METRE)), autouv: 0,
+        color: colour(), origin: [0, 0, 0], rotation: [0, 0, 0], render_order: 'default', allow_mirror_modeling: true, faces: cf,
+      });
+      (m.group ? (members[m.group] ??= []) : outliner).push(uuid);
+      src.simplifiedUuids.add(uuid);
+      stats.simplified++; grow(c.from); grow(c.to);
+      return;
+    }
     const vmap = new Map(), vertices = {}, faces = {};
     const vid = (p) => {
       const k = key(p);
@@ -475,9 +576,11 @@ const triArea = (a, b, c) => { const x = cross(sub(b, a), sub(c, a)); return 0.5
  * and the loader's total surface area must equal the source's (no extra or missing surface).
  */
 export function roundTrip(bb, source) {
-  const got = loadLikeRust(bb);
+  // chamfered boxes replaced by a cube are checked by chamferedBox() itself (their bevels are the intended loss)
+  const skip = source.simplifiedUuids || new Set();
+  const got = loadLikeRust({ ...bb, elements: bb.elements.filter((e) => !skip.has(e.uuid)) });
   let missing = 0, srcArea = 0, outArea = 0, srcTris = 0;
-  for (const prim of source.prims) for (const t of prim.tris) {
+  for (const prim of source.prims) for (const t of prim.simplified ? [] : prim.tris) {
     const p = t.map((v) => prim.pos[v].map((c) => c * UNITS_PER_METRE)), u = t.map((v) => prim.uv[v]);
     if (new Set(p.map(key)).size < 3 || triArea(p[0], p[1], p[2]) < 1e-6) continue; // zero-area slivers draw nothing
     srcTris++;
@@ -519,7 +622,7 @@ function main(argv) {
   const opt = { _: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--quiet' || a === '--recursive' || a === '--all' || a === '--check') opt[a.slice(2)] = true;
+    if (a === '--quiet' || a === '--recursive' || a === '--all' || a === '--check' || a === '--no-simplify') opt[a.slice(2)] = true;
     else if (a.startsWith('--')) opt[a.slice(2)] = argv[++i];
     else opt._.push(a);
   }
@@ -533,7 +636,7 @@ function main(argv) {
       const outp = path.join(ASSETS, rel + '.bbmodel');
       const name = path.basename(outp, '.bbmodel');
       try {
-        const r = convert(fs.readFileSync(f), name, { atlasName: atlasNameFor(rel + '.glb') });
+        const r = convert(fs.readFileSync(f), name, { atlasName: atlasNameFor(rel + '.glb'), simplify: !opt['no-simplify'] });
         const text = JSON.stringify(r.bbmodel);
         const rt = roundTrip(r.bbmodel, r.source);
         if (!rt.ok) { console.error(`ROUND TRIP ${rel}: missing ${rt.missing}, area ${rt.srcArea} vs ${rt.outArea}`); bad++; }
@@ -562,7 +665,7 @@ function main(argv) {
   for (const [inp, outp] of jobs) {
     try {
       const name = opt.name || path.basename(outp, '.bbmodel');
-      const r = convert(fs.readFileSync(inp), name, { atlasName: opt['atlas-name'] });
+      const r = convert(fs.readFileSync(inp), name, { atlasName: opt['atlas-name'], simplify: !opt['no-simplify'] });
       fs.mkdirSync(path.dirname(outp), { recursive: true });
       fs.writeFileSync(outp, JSON.stringify(r.bbmodel));
       const rt = roundTrip(r.bbmodel, r.source);
