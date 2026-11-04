@@ -288,8 +288,8 @@ mod tests {
         }
     }
 
-    /// The copies the consumers still hold in code: layout.rs HOSPITAL_ROOMS and MALL_ROOMS,
-    /// furnished.rs HOSPITAL_ROOMS and MALL_ROOMS, props.rs HOSPITAL_PROP_SET and MALL_PROP_SET,
+    /// The rows the consumers read from the catalogue (layout.rs room_type_choices, props.rs prop_set) and the
+    /// copies they still hold in code: furnished.rs HOSPITAL_ROOMS, LAB_ROOMS, GREENHOUSE_ROOMS and MALL_ROOMS,
     /// grid.rs ROOM_DOOR_TABLE (mall row) and render/textures/sets.rs District (hospital, mall).
     /// A change to data/regions must change these copies as well, until the consumers read the catalogue.
     #[test]
@@ -319,7 +319,7 @@ mod tests {
         assert_eq!(mall.room_door.as_deref(), Some("normalRoomDoor"));
         assert_eq!(mall.double_room_door.as_deref(), Some("normalDoubleRoomDoor"));
         assert_eq!(hospital.room_door, None);
-        // props.rs HOSPITAL_PROP_SET and MALL_PROP_SET (type, size, solid)
+        // the prop_set rows (type, size, solid), read by props.rs prop_set
         let hospital_set: Vec<(&str, [f32; 3], bool)> =
             hospital.prop_set.iter().map(|p| (p.prop_type.as_str(), p.size, p.solid)).collect();
         assert_eq!(
@@ -351,7 +351,45 @@ mod tests {
     #[test]
     fn region_def_reads_the_catalogue() {
         assert_eq!(region_def("mall").map(|d| d.id.as_str()), Some("mall"));
-        assert!(region_def("maze").is_none());
+        assert_eq!(region_def("maze").map(|d| d.id.as_str()), Some("maze"));
+        // inferno and office have no row: their lists stay in code
+        assert!(region_def("inferno").is_none());
+        assert!(region_def("office").is_none());
+    }
+
+    /// The regions whose rows moved from code into data/regions (the ten `lr.region/1` files that are not
+    /// hospital, mall or sewer).
+    const MOVED_REGIONS: [&str; 10] =
+        ["maze", "mansion", "hotel", "apartment", "beach", "gothic", "prison", "carnival", "lab", "greenhouse"];
+
+    /// The prop set of each moved row is the generated table's row (prop_tables.rs REGION_PROP_SETS), entry for
+    /// entry: type, size and solid, in order. The Standard values must not change.
+    #[test]
+    fn moved_region_prop_sets_match_the_generated_table() {
+        use crate::world::route::prop_tables::{lookup, REGION_PROP_SETS};
+        for id in MOVED_REGIONS {
+            let def = region_def(id).unwrap_or_else(|| panic!("{id} has a row"));
+            let code = lookup(REGION_PROP_SETS, id).unwrap_or_else(|| panic!("{id} has a code row"));
+            let data: Vec<(&str, [f32; 3], bool)> =
+                def.prop_set.iter().map(|p| (p.prop_type.as_str(), p.size, p.solid)).collect();
+            let want: Vec<(&str, [f32; 3], bool)> = code.iter().map(|p| (p.prop_type, p.size, p.solid)).collect();
+            assert_eq!(data, want, "{id}");
+        }
+    }
+
+    /// The floors of each moved row (hall floor, runner, room default) are the district rows of render/textures
+    /// (sets.rs DISTRICTS, Godot's FloorSets), which the renderer still reads from code.
+    #[test]
+    fn moved_region_floors_match_the_district_rows() {
+        use crate::render::textures::sets::district;
+        let own = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+        for id in MOVED_REGIONS {
+            let def = region_def(id).unwrap_or_else(|| panic!("{id} has a row"));
+            let d = district(id).unwrap_or_else(|| panic!("{id} has a district row"));
+            assert_eq!(def.hall_floor, own(d.hall_floor), "{id} hall floor");
+            assert_eq!(def.hall_runner, d.hall_runner, "{id} hall runner");
+            assert_eq!(def.room_default_floor, own(d.room_default), "{id} room default floor");
+        }
     }
 
     #[test]

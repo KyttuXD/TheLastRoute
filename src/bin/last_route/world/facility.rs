@@ -1157,9 +1157,9 @@ impl Facility {
         Some((from.0.clamp(s.centre.0 - s.half.0, s.centre.0 + s.half.0), from.1.clamp(s.centre.1 - s.half.1, s.centre.1 + s.half.1)))
     }
 
-    /// The open amount of the room door whose threshold cell is `cell`: 1 for a door not yet ticked.
+    /// The open amount of the room door whose threshold cell is `cell`: 0 (shut, the pose the world meshes hold it in) for a door not yet ticked.
     pub fn door_open_amount(&self, cell: Cell) -> f32 {
-        self.door_state.get(&cell).map_or(1.0, |s| s.open)
+        self.door_state.get(&cell).map_or(0.0, |s| s.open)
     }
 
     /// Whether the door at `cell` is meant to be open (a door not yet ticked is open).
@@ -1999,7 +1999,7 @@ mod tests {
         let (cx, cy) = cell.center();
         let far = (cx + 30.0, cy + 30.0);
         assert!(!f.door_blocks(cx, cy, 0.2), "an unticked door is open");
-        assert_eq!(f.door_open_amount(cell), 1.0);
+        assert_eq!(f.door_open_amount(cell), 0.0, "an unticked door is drawn shut until the first tick");
         assert_eq!(f.toggle_door(cell, &[]), None, "an unticked door cannot be toggled");
         f.update_doors(&[], &[far], 0.0);
         assert_eq!(f.door_open_amount(cell), 0.0);

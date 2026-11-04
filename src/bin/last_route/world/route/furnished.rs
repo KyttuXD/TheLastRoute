@@ -526,21 +526,13 @@ fn room_template_basis(room: &Room) -> Option<Basis> {
 // ----------------------------------------------------------------------------------------------------------
 // the template choice (`_furnished_room_props`, 3058-3154)
 
-/// The `HOSPITAL_ROOMS` of streamed_route_generator.gd:91 (data/regions/hospital.json room_roles).
-const HOSPITAL_ROOMS: &[&str] = &[
-    "ward", "nurses_station", "waiting_room", "operating_theatre", "icu", "morgue", "pharmacy", "imaging", "supply_closet",
-];
-/// `LAB_ROOMS` (streamed_route_generator.gd:92).
-const LAB_ROOMS: &[&str] = &[
-    "clean_room", "chem_lab", "control_room", "containment", "bio_lab", "decon", "server_hall", "cold_storage", "lab_office",
-];
-/// `GREENHOUSE_ROOMS` (streamed_route_generator.gd:94).
-const GREENHOUSE_ROOMS: &[&str] = &["glasshouse", "potting_shed", "palm_house", "cactus_room", "irrigation_room", "overgrown_room"];
-/// `MALL_ROOMS` (streamed_route_generator.gd:99; data/regions/mall.json room_roles).
-const MALL_ROOMS: &[&str] = &[
-    "donut_shop", "cinema", "corner_store", "food_court", "bakery", "laundromat", "electronics", "night_diner", "drugstore",
-    "florist", "barber", "pawn_shop", "stationery", "music_store",
-];
+/// Whether `room_type` is a room role of one of the four data-backed districts (`HOSPITAL_ROOMS`, `LAB_ROOMS`,
+/// `GREENHOUSE_ROOMS` and `MALL_ROOMS` of streamed_route_generator.gd:91-99): their `room_roles` in data/regions.
+fn is_district_room_role(room_type: &str) -> bool {
+    ["hospital", "lab", "greenhouse", "mall"]
+        .iter()
+        .any(|id| super::regions::region_def(id).is_some_and(|d| d.room_roles.iter().any(|r| r.as_str() == room_type)))
+}
 
 /// The template of a room type in a region (3070-3154). `None` when no template applies (or the type has only a
 /// data recipe, which is not ported: see the module doc).
@@ -597,10 +589,7 @@ fn template_for(room_type: &str, region: &str) -> Option<String> {
             } else if MUSIC_TEMPLATES.contains(&room_type) {
                 room_type.into()
             } else if ["hospital", "lab", "greenhouse", "mall"].contains(&region)
-                && (HOSPITAL_ROOMS.contains(&room_type)
-                    || LAB_ROOMS.contains(&room_type)
-                    || GREENHOUSE_ROOMS.contains(&room_type)
-                    || MALL_ROOMS.contains(&room_type)
+                && (is_district_room_role(room_type)
                     || room_type == "dome_atrium"
                     || room_type == "pod_room")
             {

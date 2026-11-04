@@ -1,0 +1,73 @@
+{
+	"schema": "lr.region/1",
+	"id": "greenhouse",
+	"hall_floor": [
+		"terracotta0",
+		"terracotta1",
+		"stone2"
+	],
+	"hall_runner": false,
+	"room_default_floor": [
+		"terracotta0",
+		"terracotta1"
+	],
+	"room_roles": [
+		"glasshouse",
+		"potting_shed",
+		"palm_house",
+		"cactus_room",
+		"irrigation_room",
+		"overgrown_room"
+	],
+	"prop_set": [
+		{
+			"type": "raisedPlanter",
+			"size": [
+				2,
+				1.05,
+				0.9
+			]
+		},
+		{
+			"type": "bananaPlant",
+			"size": [
+				1.1,
+				1.8,
+				1.1
+			]
+		},
+		{
+			"type": "cactusCluster",
+			"size": [
+				0.95,
+				1,
+				0.95
+			]
+		},
+		{
+			"type": "seedlingRack",
+			"size": [
+				1.2,
+				1.85,
+				0.5
+			]
+		},
+		{
+			"type": "wateringCart",
+			"size": [
+				1,
+				0.95,
+				0.6
+			]
+		},
+		{
+			"type": "overgrowthPatch",
+			"size": [
+				1.6,
+				0.35,
+				1.3
+			],
+			"solid": false
+		}
+	]
+}

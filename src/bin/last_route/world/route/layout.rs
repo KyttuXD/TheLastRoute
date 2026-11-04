@@ -137,41 +137,15 @@ fn bank_big_types(region: &str) -> &'static [&'static str] {
     }
 }
 
-/// `HOSPITAL_ROOMS`: data/regions/hospital.json room_roles (checked by a test).
-const HOSPITAL_ROOMS: [&str; 9] = [
-    "ward", "nurses_station", "waiting_room", "operating_theatre", "icu", "morgue", "pharmacy", "imaging",
-    "supply_closet",
-];
-/// `MALL_ROOMS`: data/regions/mall.json room_roles (checked by a test).
-const MALL_ROOMS: [&str; 14] = [
-    "donut_shop", "cinema", "corner_store", "food_court", "bakery", "laundromat", "electronics", "night_diner",
-    "drugstore", "florist", "barber", "pawn_shop", "stationery", "music_store",
-];
-/// `LAB_ROOMS` (lines 92-93).
-const LAB_ROOMS: [&str; 9] = [
-    "clean_room", "chem_lab", "control_room", "containment", "bio_lab", "decon", "server_hall", "cold_storage",
-    "lab_office",
-];
-/// `GREENHOUSE_ROOMS` (lines 94-95).
-const GREENHOUSE_ROOMS: [&str; 6] = [
-    "glasshouse", "potting_shed", "palm_house", "cactus_room", "irrigation_room", "overgrown_room",
-];
-
-/// `_room_type_choices` (line 2215): the room-type names of a district, duplicates kept.
+/// `_room_type_choices` (line 2215): the room-type names of a district, duplicates kept (they are weights). A region
+/// with a catalogue row (data/regions/<id>.json, `room_roles`) takes its list from the row; the inferno (no row yet)
+/// and any region with no row keep the code lists below.
 pub fn room_type_choices(region: &str) -> Vec<&'static str> {
+    if let Some(def) = regions::region_def(region) {
+        return def.room_roles.iter().map(String::as_str).collect();
+    }
     match region {
-        "mansion" => vec!["drawing_room", "bedroom", "dining_room", "luxury_bathroom"],
-        "beach" => vec!["cove", "beach_hut", "tide_pool", "boardwalk_room"],
         "inferno" => vec!["thermal_chamber", "forge", "altar_room", "lava_gallery"],
-        "gothic" => vec!["crypt", "chapel", "mourning_room", "archive"],
-        "apartment" => vec!["bedroom", "kitchen", "living_room", "house_bathroom"],
-        "carnival" => vec!["big_top", "midway", "game_stall", "backstage"],
-        "maze" => vec!["restaurant_dining", "arcade_room", "public_restroom", "storage"],
-        "prison" => vec!["prison_cell", "prison_cafeteria", "prison_cell", "prison_cell"],
-        "hospital" => HOSPITAL_ROOMS.to_vec(),
-        "lab" => LAB_ROOMS.to_vec(),
-        "greenhouse" => GREENHOUSE_ROOMS.to_vec(),
-        "mall" => MALL_ROOMS.to_vec(),
         _ => vec!["room"],
     }
 }
@@ -2376,8 +2350,48 @@ mod tests {
         let names = |v: &Value| -> Vec<String> {
             v["room_roles"].as_array().unwrap().iter().map(|r| r.as_str().unwrap().to_string()).collect()
         };
-        assert_eq!(names(&hospital), HOSPITAL_ROOMS.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-        assert_eq!(names(&mall), MALL_ROOMS.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let hospital_rooms = [
+            "ward", "nurses_station", "waiting_room", "operating_theatre", "icu", "morgue", "pharmacy", "imaging",
+            "supply_closet",
+        ];
+        let mall_rooms = [
+            "donut_shop", "cinema", "corner_store", "food_court", "bakery", "laundromat", "electronics", "night_diner",
+            "drugstore", "florist", "barber", "pawn_shop", "stationery", "music_store",
+        ];
+        assert_eq!(names(&hospital), hospital_rooms.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(names(&mall), mall_rooms.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        // the same lists come out of room_type_choices, now read from the catalogue rows
+        assert_eq!(room_type_choices("hospital"), hospital_rooms.to_vec());
+        assert_eq!(room_type_choices("mall"), mall_rooms.to_vec());
+    }
+
+    /// The rows moved from the code lists (mansion, beach, gothic, apartment, carnival, maze, prison, lab,
+    /// greenhouse, and hotel's "room") give the Standard lists, duplicates kept. Changing a row's room_roles
+    /// changes this list: the catalogue is the source.
+    #[test]
+    fn moved_room_roles_come_from_the_catalogue_rows() {
+        assert_eq!(room_type_choices("mansion"), ["drawing_room", "bedroom", "dining_room", "luxury_bathroom"]);
+        assert_eq!(room_type_choices("beach"), ["cove", "beach_hut", "tide_pool", "boardwalk_room"]);
+        assert_eq!(room_type_choices("gothic"), ["crypt", "chapel", "mourning_room", "archive"]);
+        assert_eq!(room_type_choices("apartment"), ["bedroom", "kitchen", "living_room", "house_bathroom"]);
+        assert_eq!(room_type_choices("carnival"), ["big_top", "midway", "game_stall", "backstage"]);
+        assert_eq!(room_type_choices("maze"), ["restaurant_dining", "arcade_room", "public_restroom", "storage"]);
+        assert_eq!(room_type_choices("prison"), ["prison_cell", "prison_cafeteria", "prison_cell", "prison_cell"]);
+        assert_eq!(room_type_choices("hotel"), ["room"]);
+        assert_eq!(
+            room_type_choices("lab"),
+            [
+                "clean_room", "chem_lab", "control_room", "containment", "bio_lab", "decon", "server_hall",
+                "cold_storage", "lab_office",
+            ]
+        );
+        assert_eq!(
+            room_type_choices("greenhouse"),
+            ["glasshouse", "potting_shed", "palm_house", "cactus_room", "irrigation_room", "overgrown_room"]
+        );
+        // inferno keeps its code list; a region with no row falls back to "room"
+        assert_eq!(room_type_choices("inferno"), ["thermal_chamber", "forge", "altar_room", "lava_gallery"]);
+        assert_eq!(room_type_choices("office"), ["room"]);
     }
 
     #[test]

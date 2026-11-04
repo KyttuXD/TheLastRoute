@@ -1,0 +1,77 @@
+{
+	"schema": "lr.region/1",
+	"id": "prison",
+	"hall_floor": [
+		"concrete0",
+		"concrete1"
+	],
+	"hall_runner": false,
+	"room_default_floor": [
+		"concrete0",
+		"concrete1"
+	],
+	"room_roles": [
+		"prison_cell",
+		"prison_cafeteria",
+		"prison_cell",
+		"prison_cell"
+	],
+	"prop_set": [
+		{
+			"type": "prisonBunk",
+			"size": [
+				0.55,
+				0.95,
+				1.75
+			]
+		},
+		{
+			"type": "supplyCrates",
+			"size": [
+				1.4,
+				1,
+				0.8
+			]
+		},
+		{
+			"type": "prisonCafeteriaTable",
+			"size": [
+				2.65,
+				0.78,
+				1.62
+			]
+		},
+		{
+			"type": "prisonServingCounter",
+			"size": [
+				2.46,
+				2.05,
+				0.88
+			]
+		},
+		{
+			"type": "prisonTrayReturn",
+			"size": [
+				1,
+				1.45,
+				0.72
+			]
+		},
+		{
+			"type": "prisonKitchenRack",
+			"size": [
+				1.35,
+				1.82,
+				0.62
+			]
+		},
+		{
+			"type": "ceilingLight",
+			"size": [
+				0.75,
+				0.3,
+				0.75
+			]
+		}
+	]
+}

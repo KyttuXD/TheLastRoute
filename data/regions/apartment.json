@@ -1,0 +1,105 @@
+{
+	"schema": "lr.region/1",
+	"id": "apartment",
+	"hall_floor": [
+		"parquet0",
+		"parquet1"
+	],
+	"hall_runner": true,
+	"room_default_floor": [
+		"parquet1",
+		"floral1"
+	],
+	"room_roles": [
+		"bedroom",
+		"kitchen",
+		"living_room",
+		"house_bathroom"
+	],
+	"prop_set": [
+		{
+			"type": "normalKitchenFridge",
+			"size": [
+				0.85,
+				2,
+				0.75
+			]
+		},
+		{
+			"type": "normalBookcase",
+			"size": [
+				1.25,
+				1.9,
+				0.45
+			]
+		},
+		{
+			"type": "loungeCouchWide",
+			"size": [
+				2.6,
+				1,
+				0.95
+			]
+		},
+		{
+			"type": "singleBed",
+			"size": [
+				1,
+				0.75,
+				2
+			]
+		},
+		{
+			"type": "bunkBed",
+			"size": [
+				1.06,
+				1.88,
+				2.1
+			]
+		},
+		{
+			"type": "woodenChair",
+			"size": [
+				0.65,
+				1,
+				0.65
+			]
+		},
+		{
+			"type": "apartmentCarpet",
+			"size": [
+				2,
+				0.03,
+				1.35
+			],
+			"solid": false
+		},
+		{
+			"type": "bathroomMirror",
+			"size": [
+				0.85,
+				1.4,
+				0.14
+			],
+			"solid": false
+		},
+		{
+			"type": "normalPictureFrameEmpty",
+			"size": [
+				0.7,
+				0.9,
+				0.12
+			],
+			"solid": false
+		},
+		{
+			"type": "normalPaintingFrameEmpty",
+			"size": [
+				1.2,
+				1.5,
+				0.12
+			],
+			"solid": false
+		}
+	]
+}

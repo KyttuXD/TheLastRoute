@@ -18,8 +18,8 @@
 //! (streamed_route_generator.gd:1024-1028): `GeometryResolve.push_out`, `scale_surface_mounts` (furnished.rs), then
 //! `PlacementClearance.clear` (clearance.rs). `layout::chunk_layout` calls it on the grid after
 //! `grid::level0_after_props`.
-//! The mall and hospital prop sets come from data/regions (`DATA_REGION_PROP_SETS`, which replaces the code table
-//! entry for those regions, as ContentRegistry resolves it).
+//! A region with a catalogue row (data/regions/<id>.json) takes its prop set from the row (`prop_set`); the code
+//! table in prop_tables.rs is the fallback for a region with no row.
 //! Not ported yet: `_stair_door_exclusion` (5177, empty on level 0: stair_links returns []), the dual-level activity
 //! entries (2841, behind `_dual_level_pair_active`, false at streamed_route_generator.gd:821), and
 //! `_prop_hiding_fixtures` (5307, a consumer after the post passes).
@@ -35,6 +35,8 @@ use super::furnished;
 use super::grid::DoorProp;
 use super::layout::{Circ, Coord, Grid, Room, Rect, CHUNK, V2};
 use super::prop_tables::{lookup, PropSetEntry, PROP_COLLIDER_SIZES, REGION_PROP_SETS, WALL_MOUNTED_TYPES};
+use super::regions::region_def;
+use crate::content::regions::RegionDef;
 use crate::world::rng::Rng;
 
 /// The reserved cells of a chunk (`reserved`, a Dictionary in Godot): `Plain` for doors, thresholds and beds
@@ -108,7 +110,7 @@ pub fn region_props(
     if rooms.is_empty() {
         return Some(Vec::new());
     }
-    let choices = prop_set(region)?;
+    let choices = prop_set(region);
     if choices.is_empty() {
         return Some(Vec::new());
     }
@@ -265,37 +267,23 @@ pub fn region_props(
     Some(result)
 }
 
-/// The `prop_set` of data/regions/hospital.json: every entry is solid unless its
-/// `solid` is false, and the size is the authored blocker box in metres.
-const HOSPITAL_PROP_SET: &[PropSetEntry] = &[
-    PropSetEntry { prop_type: "hospitalBed", size: [0.95, 1.05, 2.1], solid: true },
-    PropSetEntry { prop_type: "wheelchair", size: [0.65, 0.95, 0.95], solid: true },
-    PropSetEntry { prop_type: "ivDripStand", size: [0.45, 1.95, 0.45], solid: true },
-    PropSetEntry { prop_type: "medicalSupplyRack", size: [1.2, 1.9, 0.5], solid: true },
-    PropSetEntry { prop_type: "waitingChairs", size: [2.0, 0.86, 0.62], solid: true },
-    PropSetEntry { prop_type: "hospitalWardSign", size: [0.95, 0.36, 0.06], solid: false },
-    PropSetEntry { prop_type: "xrayLightbox", size: [1.3, 0.85, 0.08], solid: false },
-];
-
-/// The `prop_set` of data/regions/mall.json (the same reading as the hospital set).
-const MALL_PROP_SET: &[PropSetEntry] = &[
-    PropSetEntry { prop_type: "mallBench", size: [1.8, 0.5, 0.6], solid: true },
-    PropSetEntry { prop_type: "mallPlanter", size: [1.3, 2.4, 1.3], solid: true },
-    PropSetEntry { prop_type: "shopShelf", size: [1.2, 1.9, 0.5], solid: true },
-    PropSetEntry { prop_type: "vendingMachine", size: [0.85, 1.9, 0.6], solid: true },
-    PropSetEntry { prop_type: "menuBoard", size: [1.5, 0.9, 0.08], solid: false },
-];
-
-/// The data-backed region prop sets (`DATA_BACKED_REGION_PROP_SETS` in prop_tables.rs names the regions).
-const DATA_REGION_PROP_SETS: &[(&str, &[PropSetEntry])] = &[("hospital", HOSPITAL_PROP_SET), ("mall", MALL_PROP_SET)];
-
-/// `REGION_PROP_SETS.get(region, REGION_PROP_SETS["maze"])` (streamed_route_generator.gd:2828). A data-backed
-/// region (mall, hospital) takes its set from data/regions, which ContentRegistry puts over the code table.
-fn prop_set(region: &str) -> Option<&'static [PropSetEntry]> {
-    if let Some(set) = lookup(DATA_REGION_PROP_SETS, region) {
-        return Some(set);
+/// `REGION_PROP_SETS.get(region, REGION_PROP_SETS["maze"])` (streamed_route_generator.gd:2828). A region with a
+/// catalogue row (data/regions/<id>.json, read through ContentRegistry) takes its set from the row; a region with
+/// no row keeps the code table.
+fn prop_set(region: &str) -> Vec<PropSetEntry> {
+    if let Some(def) = region_def(region) {
+        return prop_set_of(def);
     }
-    Some(lookup(REGION_PROP_SETS, region).unwrap_or_else(|| lookup(REGION_PROP_SETS, "maze").unwrap_or(&[])))
+    lookup(REGION_PROP_SETS, region).unwrap_or_else(|| lookup(REGION_PROP_SETS, "maze").unwrap_or(&[])).to_vec()
+}
+
+/// The prop set of a catalogue row: one `PropSetEntry` per `prop_set` item, in file order (the draw indexes this
+/// list, so the order is part of the seed's output). Every entry is solid unless its `solid` is false.
+pub(super) fn prop_set_of(def: &'static RegionDef) -> Vec<PropSetEntry> {
+    def.prop_set
+        .iter()
+        .map(|p| PropSetEntry { prop_type: p.prop_type.as_str(), size: p.size, solid: p.solid })
+        .collect()
 }
 
 /// The post passes of `_build_chunk` after the hump pass (streamed_route_generator.gd:1024-1028), in the Godot
@@ -547,6 +535,29 @@ pub(super) fn chunk_tag(c: Coord) -> String {
 mod tests {
     use super::*;
     use crate::world::route::layout::chunk_layout;
+
+    /// The draw reads the row it is given: a changed size and solid flag in the data reach the entries, in file order.
+    #[test]
+    fn prop_set_of_reads_the_row_it_is_given() {
+        let text = r#"{"schema":"lr.region/1","id":"prison","hall_floor":["concrete0"],"hall_runner":false,"room_default_floor":["concrete0"],"room_roles":["prison_cell"],"prop_set":[{"type":"prisonBunk","size":[0.6,1.0,1.8]},{"type":"ceilingLight","size":[0.75,0.3,0.75],"solid":false}]}"#;
+        let def: &'static RegionDef = Box::leak(Box::new(crate::content::regions::parse_file("prison.json", text).unwrap()));
+        let set = prop_set_of(def);
+        assert_eq!(set.len(), 2);
+        assert_eq!(set[0].prop_type, "prisonBunk");
+        assert_eq!(set[0].size, [0.6, 1.0, 1.8]);
+        assert!(set[0].solid);
+        assert_eq!(set[1].prop_type, "ceilingLight");
+        assert!(!set[1].solid);
+    }
+
+    /// A region with no catalogue row (office) keeps the code table's fallback, the maze set.
+    #[test]
+    fn prop_set_falls_back_to_the_maze_table_without_a_row() {
+        let maze = lookup(REGION_PROP_SETS, "maze").expect("maze row");
+        let office = prop_set("office");
+        assert_eq!(office.len(), maze.len());
+        assert_eq!(office[0].prop_type, maze[0].prop_type);
+    }
 
     #[test]
     fn facing_yaw_snaps_to_eighths_of_a_turn() {

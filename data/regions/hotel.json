@@ -1,0 +1,101 @@
+{
+	"schema": "lr.region/1",
+	"id": "hotel",
+	"hall_floor": [
+		"carpet_teal"
+	],
+	"hall_runner": false,
+	"room_default_floor": [
+		"floral0",
+		"floral1"
+	],
+	"room_roles": [
+		"room"
+	],
+	"prop_set": [
+		{
+			"type": "singleBed",
+			"size": [
+				1,
+				0.75,
+				2
+			]
+		},
+		{
+			"type": "bunkBed",
+			"size": [
+				1.06,
+				1.88,
+				2.1
+			]
+		},
+		{
+			"type": "bedroomWardrobe",
+			"size": [
+				1.2,
+				2.1,
+				0.55
+			]
+		},
+		{
+			"type": "bedroomNightstand",
+			"size": [
+				0.65,
+				0.8,
+				0.55
+			]
+		},
+		{
+			"type": "loungeCouchWide",
+			"size": [
+				2.6,
+				1,
+				0.95
+			]
+		},
+		{
+			"type": "woodenChairCushion",
+			"size": [
+				0.65,
+				1,
+				0.65
+			]
+		},
+		{
+			"type": "hotelCarpet",
+			"size": [
+				2.2,
+				0.03,
+				1.4
+			],
+			"solid": false
+		},
+		{
+			"type": "bathroomMirror",
+			"size": [
+				0.85,
+				1.4,
+				0.14
+			],
+			"solid": false
+		},
+		{
+			"type": "luxuryPictureFrameEmpty",
+			"size": [
+				0.75,
+				1,
+				0.12
+			],
+			"solid": false
+		},
+		{
+			"type": "luxuryPaintingFrameEmpty",
+			"size": [
+				1.2,
+				1.55,
+				0.12
+			],
+			"solid": false
+		}
+	]
+}

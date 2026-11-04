@@ -1,0 +1,133 @@
+{
+	"schema": "lr.region/1",
+	"id": "carnival",
+	"hall_floor": [
+		"check0",
+		"check1"
+	],
+	"hall_runner": false,
+	"room_default_floor": [
+		"star0",
+		"star1"
+	],
+	"room_roles": [
+		"big_top",
+		"midway",
+		"game_stall",
+		"backstage"
+	],
+	"prop_set": [
+		{
+			"type": "carnivalTicketBooth",
+			"size": [
+				1.75,
+				2.45,
+				1.25
+			]
+		},
+		{
+			"type": "popcornCart",
+			"size": [
+				1.45,
+				1.9,
+				0.9
+			]
+		},
+		{
+			"type": "ringTossStall",
+			"size": [
+				2.6,
+				2.65,
+				1.55
+			]
+		},
+		{
+			"type": "strengthTester",
+			"size": [
+				1,
+				2.95,
+				0.8
+			]
+		},
+		{
+			"type": "shootingGallery",
+			"size": [
+				2.6,
+				2.65,
+				1.55
+			]
+		},
+		{
+			"type": "whackAMole",
+			"size": [
+				2.6,
+				2.65,
+				1.55
+			]
+		},
+		{
+			"type": "duckPond",
+			"size": [
+				1.7,
+				0.8,
+				1.7
+			]
+		},
+		{
+			"type": "prizeClawMachine",
+			"size": [
+				0.9,
+				2,
+				0.8
+			]
+		},
+		{
+			"type": "circusPedestal",
+			"size": [
+				1.7,
+				0.8,
+				1.7
+			]
+		},
+		{
+			"type": "arcadeCabinet",
+			"size": [
+				0.75,
+				1.85,
+				0.7
+			]
+		},
+		{
+			"type": "arcadeCabinetCyanMagenta",
+			"size": [
+				0.75,
+				1.85,
+				0.7
+			]
+		},
+		{
+			"type": "vendingMachine",
+			"size": [
+				0.85,
+				1.9,
+				0.6
+			]
+		},
+		{
+			"type": "privacyCurtain",
+			"size": [
+				0.9,
+				2.4,
+				0.5
+			]
+		},
+		{
+			"type": "floorLamp",
+			"size": [
+				0.55,
+				1.9,
+				0.55
+			]
+		}
+	]
+}

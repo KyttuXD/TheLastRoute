@@ -1,0 +1,64 @@
+{
+	"schema": "lr.region/1",
+	"id": "beach",
+	"hall_floor": [
+		"sand0",
+		"sand1",
+		"wetsand0"
+	],
+	"hall_runner": false,
+	"room_default_floor": [
+		"sand0",
+		"sand1"
+	],
+	"room_roles": [
+		"cove",
+		"beach_hut",
+		"tide_pool",
+		"boardwalk_room"
+	],
+	"prop_set": [
+		{
+			"type": "beachUmbrella",
+			"size": [
+				0.45,
+				2.35,
+				0.45
+			]
+		},
+		{
+			"type": "beachChair",
+			"size": [
+				0.75,
+				1,
+				1.2
+			]
+		},
+		{
+			"type": "surfboardRack",
+			"size": [
+				1.4,
+				1.7,
+				0.55
+			]
+		},
+		{
+			"type": "beachMat",
+			"size": [
+				1.4,
+				0.03,
+				0.85
+			],
+			"solid": false
+		},
+		{
+			"type": "frozenTidelinePool",
+			"size": [
+				6.2,
+				0.2,
+				5.2
+			],
+			"solid": false
+		}
+	]
+}

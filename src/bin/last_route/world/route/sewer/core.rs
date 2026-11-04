@@ -52,72 +52,232 @@ pub const RAMP: u8 = 4;
 pub const FALL: u8 = 5;
 pub const SHAFT: u8 = 6;
 
-/// About one chunk in four has falls from the sewer into the collector (sewer:44).
-pub const FALLS_CHANCE: f64 = 0.28;
-/// Ramps (sewer:48-49): a 12-cell slope. RAMP_CHANCE is {-1: .35, -2: .3}.
-pub const RAMP_RUN: i32 = 12;
+/// The layout rules of the sewer levels, read from the `layout` block of data/regions/sewer.json (see `rules`).
+/// Every number the generator uses is in that file. The Standard values are the Godot values, and each field's
+/// doc names its Godot line. Code holds only the behaviour.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Rules {
+    /// Chance that a chunk has falls into the collector (sewer:44).
+    pub falls_chance: f64,
+    /// Length of a ramp's slope in cells (sewer:48-49).
+    pub ramp_run: i32,
+    /// Chance of a ramp, by the level the ramp comes down from (-1, -2).
+    pub ramp_chance: Vec<(i32, f64)>,
+    /// Tunnel half-width (walkways and the water channel share the centre line, sewer:54-56).
+    pub tunnel_half: i32,
+    pub channel_half: i32,
+    pub junction_half: i32,
+    /// Bridge decks on each tunnel arm (sewer:59).
+    pub bridge_offsets: [i32; 2],
+    /// Quadrant centres (sewer:63), in the order 0 NW, 1 NE, 2 SW, 3 SE.
+    pub quadrant_centers: [V2; 4],
+    /// Utility room and shaft chamber half-widths (sewer:64-65).
+    pub room_half: i32,
+    pub shaft_half: i32,
+    /// The utility room kinds (sewer:69).
+    pub room_kinds: [String; 2],
+    /// Chance of a ladder link to the surface (sewer:70).
+    pub link_chance: f64,
+    /// CRAWL_CLEARANCE = the crouch height + this margin (sewer:77).
+    pub crawl_clearance_margin: f64,
+    /// CRAWL_PIPE_MOUNT_Y = CRAWL_CLEARANCE + this margin (sewer:78).
+    pub crawl_pipe_mount_margin: f64,
+    /// CRAWL_PIPE_SIZE (sewer:79), float32 in Godot.
+    pub crawl_pipe_size: [f32; 3],
+    /// rules().crawl_chance (sewer:80).
+    pub crawl_chance: f64,
+    pub outflow_chance: f64,
+    /// OUTFLOW_SIZE (sewer:87).
+    pub outflow_size: [f32; 3],
+    /// rules().outflow_offsets (sewer:90).
+    pub outflow_offsets: [i32; 4],
+    /// rules().tunnel_valve_offsets (sewer:992).
+    pub tunnel_valve_offsets: [i32; 4],
+    /// rules().gate_chance and rules().gate_offsets (sewer:1025-1026).
+    pub gate_chance: f64,
+    pub gate_offsets: [i32; 2],
+    /// rules().mount_slide (sewer:1185): how far a wall piece slides along its wall.
+    pub mount_slide: i32,
+    /// The mount height of each wall feature kind (FEATURE_MOUNT_Y, sewer:1233).
+    pub feature_mount_y: Vec<(String, f64)>,
+    /// The solid collider of the pump (sewer:1234).
+    pub pump_collider: [f32; 3],
+    /// The hall pilasters (game/look/ref_decor.gd:175-176): every `pilaster_every` cells, at `pilaster_phase`.
+    pub pilaster_every: i32,
+    pub pilaster_phase: i32,
+}
 
-fn ramp_chance(upper: i32) -> Option<f64> {
-    match upper {
-        -1 => Some(0.35),
-        -2 => Some(0.3),
-        _ => None,
+/// The layout rules from the built-in `regions/sewer.json` (`packs::regions::BUILTIN_FILES`), read once.
+pub fn rules() -> &'static Rules {
+    static RULES: std::sync::OnceLock<Rules> = std::sync::OnceLock::new();
+    RULES.get_or_init(|| {
+        let text = crate::packs::regions::BUILTIN_FILES
+            .iter()
+            .find(|(file, _)| *file == "regions/sewer.json")
+            .map(|(_, text)| *text)
+            .expect("regions/sewer.json is a built-in region file");
+        Rules::from_region_text(text).unwrap_or_else(|e| panic!("sewer layout rules: {e}"))
+    })
+}
+
+impl Rules {
+    /// Reads the `layout` block of a whole `sewer.json` text.
+    pub fn from_region_text(text: &str) -> Result<Rules, String> {
+        let root: Value = serde_json::from_str(text).map_err(|e| format!("sewer.json: {e}"))?;
+        let layout = root.get("layout").ok_or_else(|| "sewer.json has no \"layout\" block".to_string())?;
+        Rules::from_layout(layout)
+    }
+
+    /// Reads one `layout` object. Every key is required, and a wrong shape is an error that names the key.
+    pub fn from_layout(v: &Value) -> Result<Rules, String> {
+        let ramp_chance = field(v, "ramp_chance")?
+            .as_object()
+            .ok_or_else(|| "layout.ramp_chance must be an object".to_string())?
+            .iter()
+            .map(|(upper, chance)| -> Result<(i32, f64), String> {
+                let upper = upper.parse::<i32>().map_err(|_| format!("layout.ramp_chance key {upper} is not a level"))?;
+                Ok((upper, num_of(chance, "ramp_chance")?))
+            })
+            .collect::<Result<Vec<(i32, f64)>, String>>()?;
+        let feature_mount_y = field(v, "feature_mount_y")?
+            .as_object()
+            .ok_or_else(|| "layout.feature_mount_y must be an object".to_string())?
+            .iter()
+            .map(|(kind, y)| -> Result<(String, f64), String> { Ok((kind.clone(), num_of(y, "feature_mount_y")?)) })
+            .collect::<Result<Vec<(String, f64)>, String>>()?;
+        let quadrant_rows = field(v, "quadrant_centers")?
+            .as_array()
+            .filter(|rows| rows.len() == 4)
+            .ok_or_else(|| "layout.quadrant_centers must be an array of 4 pairs".to_string())?;
+        let mut quadrant_centers = [V2::new(0, 0); 4];
+        for (slot, row) in quadrant_centers.iter_mut().zip(quadrant_rows) {
+            let [x, y] = ints_of::<2>(row, "quadrant_centers")?;
+            *slot = V2::new(x, y);
+        }
+        let kind_names = field(v, "room_kinds")?
+            .as_array()
+            .filter(|names| names.len() == 2)
+            .ok_or_else(|| "layout.room_kinds must be an array of 2 names".to_string())?;
+        let mut room_kinds: [String; 2] = Default::default();
+        for (slot, name) in room_kinds.iter_mut().zip(kind_names) {
+            *slot = name.as_str().ok_or_else(|| "layout.room_kinds must hold strings".to_string())?.to_string();
+        }
+        Ok(Rules {
+            falls_chance: num(v, "falls_chance")?,
+            ramp_run: int(v, "ramp_run")?,
+            ramp_chance,
+            tunnel_half: int(v, "tunnel_half")?,
+            channel_half: int(v, "channel_half")?,
+            junction_half: int(v, "junction_half")?,
+            bridge_offsets: ints(v, "bridge_offsets")?,
+            quadrant_centers,
+            room_half: int(v, "room_half")?,
+            shaft_half: int(v, "shaft_half")?,
+            room_kinds,
+            link_chance: num(v, "link_chance")?,
+            crawl_clearance_margin: num(v, "crawl_clearance_margin")?,
+            crawl_pipe_mount_margin: num(v, "crawl_pipe_mount_margin")?,
+            crawl_pipe_size: floats(v, "crawl_pipe_size")?,
+            crawl_chance: num(v, "crawl_chance")?,
+            outflow_chance: num(v, "outflow_chance")?,
+            outflow_size: floats(v, "outflow_size")?,
+            outflow_offsets: ints(v, "outflow_offsets")?,
+            tunnel_valve_offsets: ints(v, "tunnel_valve_offsets")?,
+            gate_chance: num(v, "gate_chance")?,
+            gate_offsets: ints(v, "gate_offsets")?,
+            mount_slide: int(v, "mount_slide")?,
+            feature_mount_y,
+            pump_collider: floats(v, "pump_collider")?,
+            pilaster_every: int(v, "pilaster_every")?,
+            pilaster_phase: int(v, "pilaster_phase")?,
+        })
     }
 }
 
-/// Tunnels (sewer:54-56): walkways 18-20 and 24-26, water 21-23, junction 13 x 13.
-pub const TUNNEL_HALF: i32 = 4;
-pub const CHANNEL_HALF: i32 = 1;
-pub const JUNCTION_HALF: i32 = 6;
-/// Bridge decks on each tunnel arm (sewer:59).
-pub const BRIDGE_OFFSETS: [i32; 2] = [10, 34];
-/// Quadrant centres (sewer:63), in the order 0 NW, 1 NE, 2 SW, 3 SE.
-pub const QUADRANT_CENTERS: [V2; 4] = [V2::new(9, 9), V2::new(35, 9), V2::new(9, 35), V2::new(35, 35)];
-/// Utility rooms: 7 x 7 at the centres (sewer:64), 3 x 3 shaft chambers (sewer:65).
-pub const ROOM_HALF: i32 = 3;
-pub const SHAFT_HALF: i32 = 1;
-/// sewer:69.
+fn field<'a>(v: &'a Value, key: &str) -> Result<&'a Value, String> {
+    v.get(key).ok_or_else(|| format!("layout.{key} is missing"))
+}
+
+fn num_of(v: &Value, key: &str) -> Result<f64, String> {
+    v.as_f64().ok_or_else(|| format!("layout.{key} must be a number"))
+}
+
+fn num(v: &Value, key: &str) -> Result<f64, String> {
+    num_of(field(v, key)?, key)
+}
+
+fn int(v: &Value, key: &str) -> Result<i32, String> {
+    field(v, key)?
+        .as_i64()
+        .and_then(|n| i32::try_from(n).ok())
+        .ok_or_else(|| format!("layout.{key} must be an integer"))
+}
+
+fn ints_of<const N: usize>(v: &Value, key: &str) -> Result<[i32; N], String> {
+    let items = v
+        .as_array()
+        .filter(|items| items.len() == N)
+        .ok_or_else(|| format!("layout.{key} must be an array of {N} integers"))?;
+    let mut out = [0i32; N];
+    for (slot, item) in out.iter_mut().zip(items) {
+        *slot = item
+            .as_i64()
+            .and_then(|n| i32::try_from(n).ok())
+            .ok_or_else(|| format!("layout.{key} must be an array of {N} integers"))?;
+    }
+    Ok(out)
+}
+
+fn ints<const N: usize>(v: &Value, key: &str) -> Result<[i32; N], String> {
+    ints_of::<N>(field(v, key)?, key)
+}
+
+fn floats<const N: usize>(v: &Value, key: &str) -> Result<[f32; N], String> {
+    let items = field(v, key)?
+        .as_array()
+        .filter(|items| items.len() == N)
+        .ok_or_else(|| format!("layout.{key} must be an array of {N} numbers"))?;
+    let mut out = [0f32; N];
+    for (slot, item) in out.iter_mut().zip(items) {
+        *slot = item.as_f64().ok_or_else(|| format!("layout.{key} must be an array of {N} numbers"))? as f32;
+    }
+    Ok(out)
+}
+
+/// The quadrant centre (sewer:63) of quadrant 0 NW, 1 NE, 2 SW or 3 SE.
+pub fn quadrant_center(quadrant: usize) -> V2 {
+    rules().quadrant_centers[quadrant]
+}
+
+/// The ramp chance from the level the ramp comes down from (sewer:48-49), or None when that level has no ramps.
+fn ramp_chance(upper: i32) -> Option<f64> {
+    rules().ramp_chance.iter().find(|(level, _)| *level == upper).map(|(_, chance)| *chance)
+}
+
+/// Utility room kinds in the Standard data, pinned for `world/route/regions.rs` (see `rules().room_kinds`).
 pub const ROOM_KINDS: [&str; 2] = ["pump_room", "valve_room"];
-/// sewer:70.
-pub const LINK_CHANCE: f64 = 0.55;
 
 /// PlayerModels.SCALE (game/config/player_models.gd:14), the runner's body scale. The Godot float is a
 /// double; the product below is the same IEEE double operation.
 pub const PLAYER_MODEL_SCALE: f64 = 1.067;
 /// PlayerController3D.CROUCH_COLLISION_HEIGHT = 1.08 * PlayerModels.SCALE (player_controller_3d.gd:41).
 pub const CROUCH_COLLISION_HEIGHT: f64 = 1.08 * PLAYER_MODEL_SCALE;
-/// CRAWL_CLEARANCE = CROUCH_COLLISION_HEIGHT + 0.05 (sewer:77). Numerically 1.20236 (1.15236 + 0.05).
-pub const CRAWL_CLEARANCE: f64 = CROUCH_COLLISION_HEIGHT + 0.05;
-/// CRAWL_PIPE_MOUNT_Y = CRAWL_CLEARANCE + 0.11 (sewer:78).
-pub const CRAWL_PIPE_MOUNT_Y: f64 = CRAWL_CLEARANCE + 0.11;
-/// CRAWL_PIPE_SIZE (sewer:79), a Vector3 (float32 in Godot).
-pub const CRAWL_PIPE_SIZE: [f32; 3] = [2.0, 0.55, 0.5];
-/// CRAWL_CHANCE (sewer:80).
-pub const CRAWL_CHANCE: f64 = 0.6;
-/// OUTFLOW_CHANCE (sewer:85), OUTFLOW_SIZE (sewer:87), OUTFLOW_OFFSETS (sewer:90).
-pub const OUTFLOW_CHANCE: f64 = 0.35;
-pub const OUTFLOW_SIZE: [f32; 3] = [1.64, 1.64, 3.2];
-pub const OUTFLOW_OFFSETS: [i32; 4] = [13, 14, 30, 31];
-/// TUNNEL_VALVE_OFFSETS (sewer:992).
-pub const TUNNEL_VALVE_OFFSETS: [i32; 4] = [4, 40, 16, 28];
-/// GATE_CHANCE and GATE_OFFSETS (sewer:1025-1026).
-pub const GATE_CHANCE: f64 = 0.4;
-pub const GATE_OFFSETS: [i32; 2] = [5, 39];
-/// MOUNT_SLIDE (sewer:1185).
-pub const MOUNT_SLIDE: i32 = 3;
-/// FEATURE_MOUNT_Y (sewer:1233), and the solid collider of the pump (SOLID_FEATURES, sewer:1234).
-pub fn feature_mount_y(kind: &str) -> Option<f64> {
-    match kind {
-        "sewerLamp" => Some(2.35),
-        "sewerValveWheel" => Some(1.15),
-        "sewerPipeRun" => Some(2.55),
-        _ => None,
-    }
+/// CRAWL_CLEARANCE = CROUCH_COLLISION_HEIGHT + `layout.crawl_clearance_margin` (sewer:77). Standard 1.20236.
+pub fn crawl_clearance() -> f64 {
+    CROUCH_COLLISION_HEIGHT + rules().crawl_clearance_margin
 }
+/// CRAWL_PIPE_MOUNT_Y = CRAWL_CLEARANCE + `layout.crawl_pipe_mount_margin` (sewer:78). Standard 1.31236.
+pub fn crawl_pipe_mount_y() -> f64 {
+    crawl_clearance() + rules().crawl_pipe_mount_margin
+}
+/// FEATURE_MOUNT_Y (sewer:1233) from `layout.feature_mount_y`; None for a kind that has no mount height.
+pub fn feature_mount_y(kind: &str) -> Option<f64> {
+    rules().feature_mount_y.iter().find(|(name, _)| name.as_str() == kind).map(|(_, y)| *y)
+}
+/// OUTFLOW_SIZE (`layout.outflow_size`) and PUMP_COLLIDER (`layout.pump_collider`), kept as constants for
+/// `world/route/regions.rs`, which imports them. A test pins both to the data file.
+pub const OUTFLOW_SIZE: [f32; 3] = [1.64, 1.64, 3.2];
 pub const PUMP_COLLIDER: [f32; 3] = [1.3, 1.5, 0.9];
-/// The hall pilasters (game/look/ref_decor.gd:175-176, RefDecor.near_pilaster 185-190).
-pub const PILASTER_EVERY: i32 = 6;
-pub const PILASTER_PHASE: i32 = 3;
 
 /// A rectangle as Godot's Rect2i: position and size, end exclusive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -262,7 +422,7 @@ fn link_id(kind: &str, chunk: Coord, level: i32, cell: V2) -> String {
     format!("LINK:{}:{}:{}:{}:{}:{}", kind.to_uppercase(), chunk.x, level, chunk.z, cell.x, cell.y)
 }
 
-/// A ramp (sewer:136-180): one storey down over RAMP_RUN cells, in one quadrant. `top`, `ramp`, `bottom` and
+/// A ramp (sewer:136-180): one storey down over rules().ramp_run cells, in one quadrant. `top`, `ramp`, `bottom` and
 /// `connector` are Godot's Rect2i entries; `top_x` and `bottom_x` the slope's ends (chunk-local).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ramp {
@@ -341,20 +501,20 @@ pub fn ramp_between(inputs: &Inputs, x: i32, z: i32, upper: i32) -> Option<Ramp>
             }
         }
     }
-    let qc = QUADRANT_CENTERS[quadrant as usize];
+    let qc = quadrant_center(quadrant as usize);
     let west = qc.x < CENTER;
     let north = qc.y < CENTER;
-    let walkway = if west { CENTER - TUNNEL_HALF } else { CENTER + TUNNEL_HALF };
+    let walkway = if west { CENTER - rules().tunnel_half } else { CENTER + rules().tunnel_half };
     let top_x0 = if west { walkway - 3 } else { walkway + 1 };
-    let ramp_x0 = if west { top_x0 - RAMP_RUN } else { top_x0 + 3 };
-    let bottom_x0 = if west { ramp_x0 - 3 } else { ramp_x0 + RAMP_RUN };
+    let ramp_x0 = if west { top_x0 - rules().ramp_run } else { top_x0 + 3 };
+    let bottom_x0 = if west { ramp_x0 - 3 } else { ramp_x0 + rules().ramp_run };
     let row0 = qc.y - 1;
     // the lower level's halls: the collector's tunnel walkway, or the Inferno maze's central hall
     let hall_edge = if upper == LEVEL {
         if north {
-            CENTER - TUNNEL_HALF
+            CENTER - rules().tunnel_half
         } else {
-            CENTER + TUNNEL_HALF
+            CENTER + rules().tunnel_half
         }
     } else if north {
         CENTER - 1
@@ -371,13 +531,13 @@ pub fn ramp_between(inputs: &Inputs, x: i32, z: i32, upper: i32) -> Option<Ramp>
     let top_cell = V2::new(top_x0 + 1, qc.y);
     let bottom_cell = V2::new(bottom_x0 + 1, qc.y);
     let top_x = if west { top_x0 as f64 } else { (top_x0 + 3) as f64 };
-    let bottom_x = if west { ramp_x0 as f64 } else { (ramp_x0 + RAMP_RUN) as f64 };
+    let bottom_x = if west { ramp_x0 as f64 } else { (ramp_x0 + rules().ramp_run) as f64 };
     Some(Ramp {
         quadrant,
         upper,
         row: qc.y,
         top: Rect::new(top_x0, row0, 3, 3),
-        ramp: Rect::new(ramp_x0, row0, RAMP_RUN, 3),
+        ramp: Rect::new(ramp_x0, row0, rules().ramp_run, 3),
         bottom: Rect::new(bottom_x0, row0, 3, 3),
         connector: Rect::new(bottom_x0, conn_z0, 3, conn_z1 - conn_z0 + 1),
         top_x,
@@ -398,7 +558,7 @@ pub fn ramp_between(inputs: &Inputs, x: i32, z: i32, upper: i32) -> Option<Ramp>
 /// `falls_between(x, z)` (sewer:189). `None` is Godot's `{}`.
 pub fn falls_between(inputs: &Inputs, x: i32, z: i32) -> Option<Falls> {
     let mut rng = Rng::new(&format!("{}:FALLS:{}:{}", inputs.world, x, z));
-    if rng.next_float() >= FALLS_CHANCE {
+    if rng.next_float() >= rules().falls_chance {
         return None;
     }
     let mut free: Vec<i32> = vec![0, 1, 2, 3];
@@ -411,16 +571,16 @@ pub fn falls_between(inputs: &Inputs, x: i32, z: i32) -> Option<Falls> {
         return None;
     }
     let quadrant = free[rng.next_index(free.len())];
-    let qc = QUADRANT_CENTERS[quadrant as usize];
+    let qc = quadrant_center(quadrant as usize);
     let north = qc.y < CENTER;
-    let walk_lo = if north { CENTER - TUNNEL_HALF } else { CENTER + CHANNEL_HALF + 1 };
+    let walk_lo = if north { CENTER - rules().tunnel_half } else { CENTER + rules().channel_half + 1 };
     let void = Rect::new(qc.x - 3, qc.y - 3, 7, 7);
-    let spur_z0 = if north { qc.y + 4 } else { CENTER + CHANNEL_HALF + 1 };
-    let spur_z1 = if north { CENTER - CHANNEL_HALF - 1 } else { qc.y - 4 };
+    let spur_z0 = if north { qc.y + 4 } else { CENTER + rules().channel_half + 1 };
+    let spur_z1 = if north { CENTER - rules().channel_half - 1 } else { qc.y - 4 };
     let spur = Rect::new(qc.x - 1, spur_z0, 3, spur_z1 - spur_z0 + 1);
     let deck = Rect::new(qc.x - 1, walk_lo, 3, 3);
-    let ledge_z0 = if north { qc.y + 4 } else { CENTER + TUNNEL_HALF + 1 };
-    let ledge_z1 = if north { CENTER - TUNNEL_HALF - 1 } else { qc.y - 4 };
+    let ledge_z0 = if north { qc.y + 4 } else { CENTER + rules().tunnel_half + 1 };
+    let ledge_z1 = if north { CENTER - rules().tunnel_half - 1 } else { qc.y - 4 };
     let overlook = Rect::new(qc.x + 2, ledge_z0, 3, ledge_z1 - ledge_z0 + 1);
     let chamber_y = if north { qc.y - 5 } else { qc.y - 6 };
     let chamber = Rect::new(qc.x - 5, chamber_y, 11, 12);
@@ -491,8 +651,8 @@ pub fn trench_cells_below(inputs: &Inputs, x: i32, z: i32, level: i32) -> Vec<V2
         return Vec::new();
     }
     let mut rects = vec![
-        Rect::new(0, CENTER - CHANNEL_HALF, CHUNK, CHANNEL_HALF * 2 + 1),
-        Rect::new(CENTER - CHANNEL_HALF, 0, CHANNEL_HALF * 2 + 1, CHUNK),
+        Rect::new(0, CENTER - rules().channel_half, CHUNK, rules().channel_half * 2 + 1),
+        Rect::new(CENTER - rules().channel_half, 0, rules().channel_half * 2 + 1, CHUNK),
     ];
     if let Some(falls) = falls_between(inputs, x, z) {
         rects.push(if above == LEVEL { falls.spur } else { falls.pool });
@@ -676,8 +836,8 @@ fn room_features(kind: &str, rect: Rect, center: V2) -> Vec<Feature> {
 
 /// `_carve_branch` (sewer:618): a three-wide dry branch from a room or shaft centre to the nearer tunnel walkway.
 fn carve_branch(grid: &mut Grid, from: V2, half: i32) {
-    let walk_lo = CENTER - TUNNEL_HALF;
-    let walk_hi = CENTER + TUNNEL_HALF;
+    let walk_lo = CENTER - rules().tunnel_half;
+    let walk_hi = CENTER + rules().tunnel_half;
     let dx = (from.x - CENTER).abs();
     let dz = (from.y - CENTER).abs();
     if dx <= dz {
@@ -693,20 +853,20 @@ fn carve_branch(grid: &mut Grid, from: V2, half: i32) {
 
 /// `_carve_main_cross` (sewer:598).
 fn carve_main_cross(grid: &mut Grid) {
-    let lo = CENTER - TUNNEL_HALF;
-    let width = TUNNEL_HALF * 2 + 1;
+    let lo = CENTER - rules().tunnel_half;
+    let width = rules().tunnel_half * 2 + 1;
     carve_rect(grid, Rect::new(0, lo, CHUNK, width), DRY);
     carve_rect(grid, Rect::new(lo, 0, width, CHUNK), DRY);
     carve_rect(
         grid,
-        Rect::new(CENTER - JUNCTION_HALF, CENTER - JUNCTION_HALF, JUNCTION_HALF * 2 + 1, JUNCTION_HALF * 2 + 1),
+        Rect::new(CENTER - rules().junction_half, CENTER - rules().junction_half, rules().junction_half * 2 + 1, rules().junction_half * 2 + 1),
         DRY,
     );
-    let c_lo = CENTER - CHANNEL_HALF;
-    let c_w = CHANNEL_HALF * 2 + 1;
+    let c_lo = CENTER - rules().channel_half;
+    let c_w = rules().channel_half * 2 + 1;
     carve_rect(grid, Rect::new(0, c_lo, CHUNK, c_w), WATER);
     carve_rect(grid, Rect::new(c_lo, 0, c_w, CHUNK), WATER);
-    for offset in BRIDGE_OFFSETS {
+    for offset in rules().bridge_offsets {
         carve_rect(grid, Rect::new(offset - 1, c_lo, 3, c_w), BRIDGE);
         carve_rect(grid, Rect::new(c_lo, offset - 1, c_w, 3), BRIDGE);
     }
@@ -716,7 +876,7 @@ fn carve_main_cross(grid: &mut Grid) {
 /// recorded in `shaft_cells` with `upper` = (level == the well's upper level)).
 fn carve_stairwell(grid: &mut Grid, well: &SewerWell, level: i32, shaft_cells: &mut HashMap<V2, bool>) {
     carve_rect(grid, well.boxed, SOLID);
-    let hall_edge = if well.north { CENTER - TUNNEL_HALF } else { CENTER + TUNNEL_HALF };
+    let hall_edge = if well.north { CENTER - rules().tunnel_half } else { CENTER + rules().tunnel_half };
     carve_rect(grid, corridor(well.door, well.north, hall_edge), DRY);
     // Stairwells.cells_for (stairwells.gd:162): "walk" is the landing and the door row, "shaft" the open well
     let mut walk: Vec<V2> = well.landing.clone();
@@ -763,7 +923,7 @@ fn carve_ramp(grid: &mut Grid, ramp: &Ramp, level: i32) {
 fn crawl_features(rooms: &[SewerRoom], grid: &Grid, rng: &mut Rng) -> Vec<Feature> {
     let mut out = Vec::new();
     for room in rooms {
-        if rng.next_float() >= CRAWL_CHANCE {
+        if rng.next_float() >= rules().crawl_chance {
             continue;
         }
         let rect = room.rect;
@@ -812,12 +972,12 @@ fn crawl_features(rooms: &[SewerRoom], grid: &Grid, rng: &mut Rng) -> Vec<Featur
 fn tunnel_features() -> Vec<Feature> {
     let mut out = Vec::new();
     for offset in [7, 37] {
-        out.push(Feature::new("sewerLamp", V2::new(offset, CENTER - TUNNEL_HALF), V2::new(0, -1)));
-        out.push(Feature::new("sewerLamp", V2::new(CENTER + TUNNEL_HALF, offset), V2::new(1, 0)));
+        out.push(Feature::new("sewerLamp", V2::new(offset, CENTER - rules().tunnel_half), V2::new(0, -1)));
+        out.push(Feature::new("sewerLamp", V2::new(CENTER + rules().tunnel_half, offset), V2::new(1, 0)));
     }
     for offset in [14, 30] {
-        out.push(Feature::new("sewerPipeRun", V2::new(offset, CENTER + TUNNEL_HALF), V2::new(0, 1)));
-        out.push(Feature::new("sewerPipeRun", V2::new(CENTER - TUNNEL_HALF, offset), V2::new(-1, 0)));
+        out.push(Feature::new("sewerPipeRun", V2::new(offset, CENTER + rules().tunnel_half), V2::new(0, 1)));
+        out.push(Feature::new("sewerPipeRun", V2::new(CENTER - rules().tunnel_half, offset), V2::new(-1, 0)));
     }
     out
 }
@@ -825,7 +985,7 @@ fn tunnel_features() -> Vec<Feature> {
 /// `_crossing_features` (sewer:1223): the bridge decks over each channel.
 fn crossing_features() -> Vec<Feature> {
     let mut out = Vec::new();
-    for offset in BRIDGE_OFFSETS {
+    for offset in rules().bridge_offsets {
         let mut a = Feature::new("sewerBridge", V2::new(offset, CENTER), ZERO);
         a.yaw = Some(0.0);
         out.push(a);
@@ -894,7 +1054,7 @@ fn pair_tunnel_lamps(grid: &Grid, features: Vec<Feature>) -> Vec<Feature> {
         let along_x = wall.y != 0;
         let a = if along_x { cell.x } else { cell.y };
         let across = if along_x { cell.y } else { cell.x };
-        if a >= CENTER || (across - CENTER).abs() != TUNNEL_HALF {
+        if a >= CENTER || (across - CENTER).abs() != rules().tunnel_half {
             continue;
         }
         let mirror = if along_x {
@@ -927,7 +1087,7 @@ fn pair_tunnel_lamps(grid: &Grid, features: Vec<Feature>) -> Vec<Feature> {
     out
 }
 
-/// `_mount_on_walls` (sewer:1188): a wall piece slides along its wall (up to MOUNT_SLIDE cells) to a cell with
+/// `_mount_on_walls` (sewer:1188): a wall piece slides along its wall (up to rules().mount_slide cells) to a cell with
 /// brick behind it, or is dropped when none is in reach.
 fn mount_on_walls(grid: &Grid, features: Vec<Feature>) -> Vec<Feature> {
     let mut out = Vec::new();
@@ -939,7 +1099,7 @@ fn mount_on_walls(grid: &Grid, features: Vec<Feature>) -> Vec<Feature> {
         }
         let along = V2::new(wall.y.abs(), wall.x.abs());
         for k in [0i32, 1, -1, 2, -2, 3, -3] {
-            if k.abs() > MOUNT_SLIDE {
+            if k.abs() > rules().mount_slide {
                 continue;
             }
             let spot = add(feature.cell, scale(along, k));
@@ -957,7 +1117,7 @@ fn mount_on_walls(grid: &Grid, features: Vec<Feature>) -> Vec<Feature> {
 /// `_outflow_features` (sewer:862): at most one outflow main, from its own seed stream `OUTFLOW:x:y:z`.
 fn outflow_features(world: &str, coord: Coord, grid: &Grid, features: &[Feature], links: &[LadderLink]) -> Vec<Feature> {
     let mut rng = Rng::new(&format!("{}:OUTFLOW:{}:{}:{}", world, coord.x, coord.y, coord.z));
-    if rng.next_float() >= OUTFLOW_CHANCE {
+    if rng.next_float() >= rules().outflow_chance {
         return Vec::new();
     }
     let mut taken = HashSet::new();
@@ -968,11 +1128,11 @@ fn outflow_features(world: &str, coord: Coord, grid: &Grid, features: &[Feature]
         exclude_neighbourhood(&mut taken, link.to_cell, 2);
     }
     let mut options: Vec<(V2, V2, V2)> = Vec::new();
-    for offset in OUTFLOW_OFFSETS {
+    for offset in rules().outflow_offsets {
         for along_x in [true, false] {
             for side in [-1, 1] {
                 let wall = if along_x { V2::new(0, side) } else { V2::new(side, 0) };
-                let outer = CENTER + side * TUNNEL_HALF;
+                let outer = CENTER + side * rules().tunnel_half;
                 let middle = if along_x {
                     V2::new(offset, outer - side)
                 } else {
@@ -1034,10 +1194,10 @@ fn flood_valve_features(grid: &Grid, features: &[Feature], links: &[LadderLink])
     for link in links {
         exclude_neighbourhood(&mut taken, link.to_cell, 2);
     }
-    for offset in TUNNEL_VALVE_OFFSETS {
+    for offset in rules().tunnel_valve_offsets {
         for along_x in [true, false] {
             for side in [-1, 1] {
-                let outer = CENTER + side * TUNNEL_HALF;
+                let outer = CENTER + side * rules().tunnel_half;
                 let cell = if along_x { V2::new(offset, outer) } else { V2::new(outer, offset) };
                 let wall = if along_x { V2::new(0, side) } else { V2::new(side, 0) };
                 if !taken.contains(&cell) && wall_backed(grid, cell, wall) {
@@ -1054,7 +1214,7 @@ fn flood_valve_features(grid: &Grid, features: &[Feature], links: &[LadderLink])
 /// `_gate_features` (sewer:1029): at most one sluice gate, from its own stream `GATE:x:y:z`, with its valve.
 fn gate_features(world: &str, coord: Coord, grid: &Grid, features: &[Feature], links: &[LadderLink]) -> Vec<Feature> {
     let mut rng = Rng::new(&format!("{}:GATE:{}:{}:{}", world, coord.x, coord.y, coord.z));
-    if rng.next_float() >= GATE_CHANCE {
+    if rng.next_float() >= rules().gate_chance {
         return Vec::new();
     }
     let mut taken = HashSet::new();
@@ -1074,7 +1234,7 @@ fn gate_features(world: &str, coord: Coord, grid: &Grid, features: &[Feature], l
         exclude_neighbourhood(&mut taken, link.to_cell, 2);
     }
     let mut options: Vec<(i32, bool, i32)> = Vec::new();
-    for offset in GATE_OFFSETS {
+    for offset in rules().gate_offsets {
         for along_x in [true, false] {
             for side in [-1, 1] {
                 options.push((offset, along_x, side));
@@ -1088,8 +1248,8 @@ fn gate_features(world: &str, coord: Coord, grid: &Grid, features: &[Feature], l
         let across = if along_x { V2::new(0, side) } else { V2::new(side, 0) };
         let middle = if along_x { V2::new(offset, CENTER) } else { V2::new(CENTER, offset) };
         let cells = vec![sub(middle, across), middle, add(middle, across)];
-        let hinge_end = add(middle, scale(across, CHANNEL_HALF + 1));
-        let far_end = sub(middle, scale(across, CHANNEL_HALF + 1));
+        let hinge_end = add(middle, scale(across, rules().channel_half + 1));
+        let far_end = sub(middle, scale(across, rules().channel_half + 1));
         let mut fits = at(grid, hinge_end) == DRY && at(grid, far_end) == DRY;
         for c in cells.iter().copied().chain([hinge_end, far_end]) {
             fits = fits && !taken.contains(&c);
@@ -1100,7 +1260,7 @@ fn gate_features(world: &str, coord: Coord, grid: &Grid, features: &[Feature], l
         if !fits {
             continue;
         }
-        let outer = CENTER + side * TUNNEL_HALF;
+        let outer = CENTER + side * rules().tunnel_half;
         for shift in [2, -2, 3, -3] {
             let spot = if along_x {
                 V2::new(offset + shift, outer)
@@ -1235,9 +1395,9 @@ fn feature_props(coord: Coord, features: &[Feature]) -> Vec<SewerProp> {
                 p.crawl_under = true;
                 p.crawl_step = Some(crawl.step);
                 p.crawl_side = Some(crawl.side);
-                p.mount_y = Some(CRAWL_PIPE_MOUNT_Y);
-                p.collider_size = Some(CRAWL_PIPE_SIZE);
-                p.collider_y0 = Some(CRAWL_CLEARANCE);
+                p.mount_y = Some(crawl_pipe_mount_y());
+                p.collider_size = Some(rules().crawl_pipe_size);
+                p.collider_y0 = Some(crawl_clearance());
                 let half = (0.5 * crawl.side as f64) as f32;
                 p.placement_offset = Some([crawl.across.x as f32 * half, crawl.across.y as f32 * half]);
                 p.occupied_cells = Some(crawl.cells.clone());
@@ -1246,8 +1406,8 @@ fn feature_props(coord: Coord, features: &[Feature]) -> Vec<SewerProp> {
                 p.outflow = true;
                 p.outflow_wall = Some(outflow.wall);
                 p.crawl_step = Some(outflow.step);
-                p.collider_size = Some(OUTFLOW_SIZE);
-                p.collider_y0 = Some(CRAWL_CLEARANCE);
+                p.collider_size = Some(rules().outflow_size);
+                p.collider_y0 = Some(crawl_clearance());
                 p.occupied_cells = Some(outflow.cells.clone());
             } else if let Some(my) = feature_mount_y(f.kind) {
                 p.mount_y = Some(my);
@@ -1256,7 +1416,7 @@ fn feature_props(coord: Coord, features: &[Feature]) -> Vec<SewerProp> {
                 p.mount_offset = Some([wall.x as f32 * 0.05f32, wall.y as f32 * 0.05f32]);
             }
             if f.kind == "sewerPump" && f.crawl.is_none() {
-                p.collider_size = Some(PUMP_COLLIDER);
+                p.collider_size = Some(rules().pump_collider);
             }
             if let Some(link) = &f.link {
                 p.link = Some(link.clone());
@@ -1357,7 +1517,7 @@ fn ladder_wall(cell: V2) -> V2 {
 /// `RefDecor.near_pilaster(cell, wall)` with the default clearance 1 (ref_decor.gd:185-190).
 fn near_pilaster(cell: V2, wall: V2) -> bool {
     let along = if wall.y != 0 { cell.x } else { cell.y };
-    (-1..=1).any(|k| (along + k).rem_euclid(PILASTER_EVERY) == PILASTER_PHASE)
+    (-1..=1).any(|k| (along + k).rem_euclid(rules().pilaster_every) == rules().pilaster_phase)
 }
 
 /// `_shaft_cell` (sewer:762): the maze hallway cell nearest the quadrant centre where a ladder can stand flush against
@@ -1370,7 +1530,7 @@ fn shaft_cell(qc: V2, surface_grid: &Grid, blocked: &HashSet<V2>) -> Option<(V2,
         for x in (qc.x - 7)..=(qc.x + 7) {
             let cell = V2::new(x, z);
             // stay out of the tunnel band and off the chunk edge (the chamber reaches two cells out)
-            if (x - CENTER).abs() <= TUNNEL_HALF + SHAFT_HALF + 1 || (z - CENTER).abs() <= TUNNEL_HALF + SHAFT_HALF + 1 {
+            if (x - CENTER).abs() <= rules().tunnel_half + rules().shaft_half + 1 || (z - CENTER).abs() <= rules().tunnel_half + rules().shaft_half + 1 {
                 continue;
             }
             if x < 4 || z < 4 || x > CHUNK - 5 || z > CHUNK - 5 {
@@ -1451,8 +1611,8 @@ pub fn chunk(coord: Coord, inputs: &Inputs) -> Option<SewerChunk> {
     // Deterministic shuffle so rooms and shafts land in different quadrants per chunk.
     rng.shuffle(&mut order);
     let mut room_count = 1 + rng.next_index(2);
-    // `coord.x == 0 and coord.z == 0 or rng.next_float() < LINK_CHANCE`: the origin takes no draw
-    let mut wants_link = (coord.x == 0 && coord.z == 0) || rng.next_float() < LINK_CHANCE;
+    // `coord.x == 0 and coord.z == 0 or rng.next_float() < rules().link_chance`: the origin takes no draw
+    let mut wants_link = (coord.x == 0 && coord.z == 0) || rng.next_float() < rules().link_chance;
     // ladders come down from the maze only into the first sewer
     if coord.y != LEVEL {
         wants_link = false;
@@ -1503,13 +1663,14 @@ pub fn chunk(coord: Coord, inputs: &Inputs) -> Option<SewerChunk> {
     let covers = ["manhole", "grate"];
     for slot in 0..order.len() {
         let quadrant = order[slot] as usize;
-        let qc = QUADRANT_CENTERS[quadrant];
+        let qc = quadrant_center(quadrant);
         if slot < room_count {
-            let kind = ROOM_KINDS[rng.next_index(ROOM_KINDS.len())];
-            let side = ROOM_HALF * 2 + 1;
-            let rect = Rect::new(qc.x - ROOM_HALF, qc.y - ROOM_HALF, side, side);
+            let kinds = &rules().room_kinds;
+            let kind = kinds[rng.next_index(kinds.len())].as_str();
+            let side = rules().room_half * 2 + 1;
+            let rect = Rect::new(qc.x - rules().room_half, qc.y - rules().room_half, side, side);
             carve_rect(&mut grid, rect, DRY);
-            carve_branch(&mut grid, qc, ROOM_HALF);
+            carve_branch(&mut grid, qc, rules().room_half);
             let index = rooms.len();
             rooms.push(SewerRoom {
                 id: format!("{}:ROOM:{}", chunk_id(coord), index),
@@ -1524,8 +1685,8 @@ pub fn chunk(coord: Coord, inputs: &Inputs) -> Option<SewerChunk> {
             let cover = covers[rng.next_index(covers.len())];
             // the ladder hangs flush on a hallway wall; the 3 x 3 chamber opens away from it
             let chamber = sub(up, wall);
-            carve_rect(&mut grid, Rect::new(chamber.x - SHAFT_HALF, chamber.y - SHAFT_HALF, 3, 3), DRY);
-            carve_branch(&mut grid, chamber, SHAFT_HALF);
+            carve_rect(&mut grid, Rect::new(chamber.x - rules().shaft_half, chamber.y - rules().shaft_half, 3, 3), DRY);
+            carve_branch(&mut grid, chamber, rules().shaft_half);
             let id = link_id("LADDER", coord, SURFACE_LEVEL, up);
             links.push(LadderLink {
                 id: id.clone(),
@@ -2021,8 +2182,105 @@ mod tests {
     fn crawl_clearance_is_the_physics_crouch_height() {
         assert_eq!(PLAYER_MODEL_SCALE, 1.067);
         assert!((CROUCH_COLLISION_HEIGHT - 1.15236).abs() < 1e-12);
-        assert!((CRAWL_CLEARANCE - 1.20236).abs() < 1e-12);
-        assert!((CRAWL_PIPE_MOUNT_Y - 1.31236).abs() < 1e-12);
+        assert!((crawl_clearance() - 1.20236).abs() < 1e-12);
+        assert!((crawl_pipe_mount_y() - 1.31236).abs() < 1e-12);
+    }
+
+    fn builtin_sewer_text() -> &'static str {
+        crate::packs::regions::BUILTIN_FILES
+            .iter()
+            .find(|(file, _)| *file == "regions/sewer.json")
+            .map(|(_, text)| *text)
+            .expect("sewer.json is built in")
+    }
+
+    /// The Standard layout values in data/regions/sewer.json are the values the generator had as constants.
+    #[test]
+    fn standard_layout_rules_match_the_godot_values() {
+        let r = rules();
+        assert_eq!(r.falls_chance, 0.28);
+        assert_eq!(r.ramp_run, 12);
+        assert_eq!(r.ramp_chance, vec![(-1, 0.35), (-2, 0.3)]);
+        assert_eq!((r.tunnel_half, r.channel_half, r.junction_half), (4, 1, 6));
+        assert_eq!(r.bridge_offsets, [10, 34]);
+        assert_eq!(r.quadrant_centers, [V2::new(9, 9), V2::new(35, 9), V2::new(9, 35), V2::new(35, 35)]);
+        assert_eq!((r.room_half, r.shaft_half), (3, 1));
+        assert_eq!(r.room_kinds, ["pump_room".to_string(), "valve_room".to_string()]);
+        assert_eq!(r.link_chance, 0.55);
+        assert_eq!(r.crawl_clearance_margin, 0.05);
+        assert_eq!(r.crawl_pipe_mount_margin, 0.11);
+        assert_eq!(r.crawl_pipe_size, [2.0, 0.55, 0.5]);
+        assert_eq!(r.crawl_chance, 0.6);
+        assert_eq!(r.outflow_chance, 0.35);
+        assert_eq!(r.outflow_size, [1.64, 1.64, 3.2]);
+        assert_eq!(r.outflow_offsets, [13, 14, 30, 31]);
+        assert_eq!(r.tunnel_valve_offsets, [4, 40, 16, 28]);
+        assert_eq!(r.gate_chance, 0.4);
+        assert_eq!(r.gate_offsets, [5, 39]);
+        assert_eq!(r.mount_slide, 3);
+        assert_eq!(feature_mount_y("sewerLamp"), Some(2.35));
+        assert_eq!(feature_mount_y("sewerValveWheel"), Some(1.15));
+        assert_eq!(feature_mount_y("sewerPipeRun"), Some(2.55));
+        assert_eq!(feature_mount_y("sewerPump"), None);
+        assert_eq!(r.pump_collider, [1.3, 1.5, 0.9]);
+        assert_eq!((r.pilaster_every, r.pilaster_phase), (6, 3));
+        assert_eq!(ramp_chance(-1), Some(0.35));
+        assert_eq!(ramp_chance(-2), Some(0.3));
+        assert_eq!(ramp_chance(-3), None);
+    }
+
+    /// The constants other modules import (`world/route/regions.rs`) must equal the data they mirror.
+    #[test]
+    fn the_mirrored_constants_match_the_data() {
+        assert_eq!(OUTFLOW_SIZE, rules().outflow_size);
+        assert_eq!(PUMP_COLLIDER, rules().pump_collider);
+        assert_eq!(ROOM_KINDS.map(|k| k.to_string()), rules().room_kinds);
+    }
+
+    /// The layout values are data: a changed value in sewer.json is the value the generator reads.
+    #[test]
+    fn a_changed_data_value_changes_the_rules() {
+        let mut root: Value = serde_json::from_str(builtin_sewer_text()).expect("sewer.json parses");
+        root["layout"]["ramp_run"] = json!(10);
+        root["layout"]["ramp_chance"]["-1"] = json!(0.5);
+        root["layout"]["quadrant_centers"][0] = json!([8, 9]);
+        root["layout"]["feature_mount_y"]["sewerLamp"] = json!(2.0);
+        root["layout"]["crawl_clearance_margin"] = json!(0.1);
+        let changed = Rules::from_layout(&root["layout"]).expect("the changed layout is valid");
+        assert_eq!(changed.ramp_run, 10);
+        assert_eq!(changed.ramp_chance[0], (-1, 0.5));
+        assert_eq!(changed.quadrant_centers[0], V2::new(8, 9));
+        assert_eq!(changed.crawl_clearance_margin, 0.1);
+        assert_eq!(changed.feature_mount_y.iter().find(|(kind, _)| kind == "sewerLamp").map(|(_, y)| *y), Some(2.0));
+        assert_ne!(changed, *rules());
+    }
+
+    /// A wrong or missing key is refused with its name, so a bad edit cannot silently fall back.
+    #[test]
+    fn a_layout_with_a_wrong_or_missing_key_is_refused_by_name() {
+        let mut root: Value = serde_json::from_str(builtin_sewer_text()).expect("sewer.json parses");
+        root["layout"]["ramp_run"] = json!("twelve");
+        let err = Rules::from_layout(&root["layout"]).expect_err("a string ramp_run is refused");
+        assert!(err.contains("layout.ramp_run"), "{err}");
+
+        let mut root: Value = serde_json::from_str(builtin_sewer_text()).expect("sewer.json parses");
+        root["layout"].as_object_mut().expect("layout object").remove("tunnel_half");
+        let err = Rules::from_layout(&root["layout"]).expect_err("a missing key is refused");
+        assert!(err.contains("layout.tunnel_half"), "{err}");
+
+        let mut root: Value = serde_json::from_str(builtin_sewer_text()).expect("sewer.json parses");
+        root["layout"]["quadrant_centers"] = json!([[1, 2], [3, 4], [5, 6]]);
+        let err = Rules::from_layout(&root["layout"]).expect_err("three quadrants are refused");
+        assert!(err.contains("layout.quadrant_centers"), "{err}");
+    }
+
+    /// The region parser accepts the `layout` block (it is an extra key on the region file), and the region itself
+    /// still parses with its texture and prop facts.
+    #[test]
+    fn the_region_parser_accepts_the_layout_block() {
+        let def = crate::packs::regions::parse_file("regions/sewer.json", builtin_sewer_text()).expect("sewer region parses");
+        assert_eq!(def.id, "sewer");
+        assert_eq!(def.room_roles, ["pump_room".to_string(), "valve_room".to_string()]);
     }
 
     #[test]

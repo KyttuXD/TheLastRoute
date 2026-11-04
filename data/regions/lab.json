@@ -1,0 +1,84 @@
+{
+	"schema": "lr.region/1",
+	"id": "lab",
+	"hall_floor": [
+		"epoxy0",
+		"epoxy0",
+		"epoxy1"
+	],
+	"hall_runner": false,
+	"room_default_floor": [
+		"epoxy0"
+	],
+	"room_roles": [
+		"clean_room",
+		"chem_lab",
+		"control_room",
+		"containment",
+		"bio_lab",
+		"decon",
+		"server_hall",
+		"cold_storage",
+		"lab_office"
+	],
+	"prop_set": [
+		{
+			"type": "labBench",
+			"size": [
+				2,
+				1.45,
+				0.8
+			]
+		},
+		{
+			"type": "specimenTank",
+			"size": [
+				0.95,
+				2.3,
+				0.95
+			]
+		},
+		{
+			"type": "gasCylinderRack",
+			"size": [
+				0.95,
+				1.65,
+				0.45
+			]
+		},
+		{
+			"type": "biohazardBin",
+			"size": [
+				0.5,
+				0.82,
+				0.5
+			]
+		},
+		{
+			"type": "serverRack",
+			"size": [
+				0.8,
+				2,
+				0.55
+			]
+		},
+		{
+			"type": "hazardSign",
+			"size": [
+				0.6,
+				0.62,
+				0.05
+			],
+			"solid": false
+		},
+		{
+			"type": "labWhiteboard",
+			"size": [
+				1.8,
+				1.15,
+				0.08
+			],
+			"solid": false
+		}
+	]
+}
