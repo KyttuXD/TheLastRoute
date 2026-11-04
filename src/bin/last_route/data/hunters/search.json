@@ -7,7 +7,7 @@
   "default": { "hiding_spot_chance": 0.0, "last_seen_spot_first": false, "unchecked_first": false },
   "difficulty": {
     "relaxed": { "hiding_spot_chance": 0.0 },
-    "standard": { "hiding_spot_chance": 0.05 },
+    "standard": { "hiding_spot_chance": 0.0 },
     "hard": { "hiding_spot_chance": 0.25, "last_seen_spot_first": true, "unchecked_first": true },
     "nightmare": { "hiding_spot_chance": 0.45, "last_seen_spot_first": true, "unchecked_first": true }
   }

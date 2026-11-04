@@ -15,7 +15,7 @@
         { "cmd": "nope", "expect_ok": false, "expect": [ { "path": "last.error", "value": "unknown command 'nope'" } ] },
         { "cmd": "step", "frames": 5, "expect_ok": false, "expect": [ { "path": "last.error", "value": "no active game" } ] },
         { "cmd": "screenshot", "expect_ok": false, "expect": [ { "path": "last.error", "op": "matches", "value": "no rendered image" } ] },
-        { "cmd": "start_run", "difficulty": "nightmare", "expect_ok": false },
+        { "cmd": "start_run", "difficulty": "impossible", "expect_ok": false },
         { "cmd": "start_run", "game": "night_watch", "expect_ok": false, "expect": [ { "path": "last.error", "value": "no playtest adapter for 'night_watch'" } ] },
         { "cmd": "observe", "expect": [ { "path": "last.obs.run.active", "value": false } ] }
       ]
