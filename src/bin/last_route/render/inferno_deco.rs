@@ -321,11 +321,12 @@ mod tests {
 
     #[test]
     fn changing_the_data_changes_the_placement() {
-        let text = include_str!("../data/render/inferno.json");
+        // CRLF checkouts (Windows CI) must match the same text, so compare on LF.
+        let text = include_str!("../data/render/inferno.json").replace("\r\n", "\n");
         let off_text = text.replacen("\"chance\": 0.05,\n      \"min_spacing\": 2", "\"chance\": 0.0,\n      \"min_spacing\": 2", 1);
         assert_ne!(off_text, text);
         let off = InfernoDeco::parse(&off_text).unwrap();
-        let on = InfernoDeco::parse(text).unwrap();
+        let on = InfernoDeco::parse(&text).unwrap();
         let inf = Inferno::carve(SEED, key(0, 0));
         let count = |d: &InfernoDeco| d.place(SEED, key(0, 0), &inf).iter().filter(|x| x.kind == DecoKind::Stalactite).count();
         assert_eq!(count(&off), 0);
