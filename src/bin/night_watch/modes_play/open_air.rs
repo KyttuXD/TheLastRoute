@@ -38,6 +38,11 @@ fn script_step_ms() -> f64 {
     1000.0 / data::num(data::rules(DATA), "ui.script_fps")
 }
 
+/// A scripted-play threshold from `ui.script`.
+fn script_num(key: &str) -> f64 {
+    data::num(data::rules(DATA), &format!("ui.script.{key}"))
+}
+
 /// A label from the rules file's `ui.labels` block.
 fn label(key: &str) -> &'static str {
     data::text(data::rules(DATA), &format!("ui.labels.{key}"))
@@ -520,12 +525,12 @@ fn scripted(seen: &Seen, available: &[Control]) -> Controls {
                     want.push(if dist == 0 { bar } else { torch });
                 }
             }
-            if !*lantern && *oil >= 4.0 {
+            if !*lantern && *oil >= script_num("relight_min_oil") {
                 want.push(Control::Relight);
             }
         }
         SceneSeen::BusStop { warm, lamp, cans, .. } => {
-            if (*lamp && *warm > 90.0) || (!*lamp && *warm < 45.0) {
+            if (*lamp && *warm > script_num("lamp_off_above")) || (!*lamp && *warm < script_num("lamp_on_below")) {
                 c.press.push(Control::Lamp);
             }
             for &i in cans {
@@ -541,10 +546,10 @@ fn scripted(seen: &Seen, available: &[Control]) -> Controls {
             if seen.hunters.iter().any(|g| g.hunter == Hunter::Quenelle && g.dist <= 1) {
                 want.push(Control::Tent);
             }
-            if *fire < 40.0 && *logs > 0 {
+            if *fire < script_num("log_below_fire") && *logs > 0 {
                 c.press.push(Control::Log);
             }
-            if !*hidden && *logs < 3 && want.is_empty() {
+            if !*hidden && (*logs as f64) < script_num("gather_below_logs") && want.is_empty() {
                 want.push(Control::Gather);
             }
         }
@@ -1068,6 +1073,27 @@ mod tests {
         }
         assert_eq!(filled("custom_title", &[("at", "2"), ("of", "3")]), "OPEN AIR  CUSTOM NIGHT  2 OF 3");
         assert_eq!(filled("ctl_can", &[("n", "3")]), "3  CANISTER");
+    }
+
+    #[test]
+    fn the_scripted_thresholds_come_from_the_data_and_drive_the_lamp() {
+        assert!(script_num("lamp_on_below") < script_num("lamp_off_above"));
+        let bus = |warm: f64, lamp: bool| Seen {
+            watch: Watch::BusStop,
+            hour: 0,
+            torch: 100.0,
+            torch_side: None,
+            weather: None,
+            hunters: Vec::new(),
+            scene: SceneSeen::BusStop { warm, lamp, fuel: 100.0, cans: vec![], chill: 0.0 },
+        };
+        let avail = [Control::Lamp];
+        let cold = bus(script_num("lamp_on_below") - 1.0, false);
+        assert!(scripted(&cold, &avail).press.contains(&Control::Lamp));
+        let hot = bus(script_num("lamp_off_above") + 1.0, true);
+        assert!(scripted(&hot, &avail).press.contains(&Control::Lamp));
+        let mid = bus((script_num("lamp_on_below") + script_num("lamp_off_above")) * 0.5, false);
+        assert!(scripted(&mid, &avail).press.is_empty());
     }
 
     #[test]

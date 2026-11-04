@@ -10,6 +10,7 @@
 		"note_ms": 3200,
 		"flash_ms": 700,
 		"script_fps": 60,
+		"script": { "relight_min_oil": 4, "lamp_off_above": 90, "lamp_on_below": 45, "log_below_fire": 40, "gather_below_logs": 3 },
 		"labels": {
 			"title": "OPEN AIR",
 			"custom_title": "OPEN AIR  CUSTOM NIGHT  {at} OF {of}",

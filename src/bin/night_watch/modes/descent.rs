@@ -859,4 +859,41 @@ mod tests {
         assert_eq!(shift.level(), 20);
         assert_eq!(shift.score(), 200);
     }
+
+    #[test]
+    fn elise_closes_in_faster_at_a_higher_level_and_never_at_zero() {
+        let calls = CallsData::load();
+        let mut calm = DescentShift::start(1, 3, None, &calls);
+        let mut low = DescentShift::start(3, 3, Some(5), &calls);
+        let mut high = DescentShift::start(3, 3, Some(15), &calls);
+        for shift in [&mut calm, &mut low, &mut high] {
+            let ride = shift.ride_total_ms();
+            shift.step(ride, false);
+            shift.step(1000.0, false);
+        }
+        assert_eq!(calm.threat(), 0.0);
+        assert!(low.threat() > 0.0 && high.threat() > low.threat());
+    }
+
+    #[test]
+    fn a_wrong_wire_press_in_a_shift_counts_and_raises_the_threat() {
+        let calls = CallsData::load();
+        let mut shift = DescentShift::start(3, 9, Some(10), &calls);
+        let ride = shift.ride_total_ms();
+        shift.step(ride + 1.0, false);
+        let buttons = match shift.puzzle() {
+            Puzzle::Wires(w) => w.buttons,
+            _ => return,
+        };
+        let before = shift.threat();
+        let mut wrong = false;
+        for i in 0..buttons * 6 {
+            if shift.act(DescentAction::Wire { button: i % buttons }).contains(&DescentEvent::Wrong) {
+                wrong = true;
+                break;
+            }
+        }
+        assert!(wrong && shift.wrong_attempts() == 1);
+        assert!(shift.threat() > before);
+    }
 }

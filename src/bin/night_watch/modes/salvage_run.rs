@@ -925,6 +925,98 @@ mod tests {
         assert_eq!(run.money(), 10);
     }
 
+    fn quiet() -> Options {
+        Options { levels: [Some(0); 3], ..Options::default() }
+    }
+
+    fn drive(run: &mut SalvageRun, input: Input, limit_ms: f64) -> Vec<Event> {
+        let mut all = Vec::new();
+        let mut t = 0.0;
+        while run.outcome().is_none() && t < limit_ms {
+            all.extend(run.step(1000.0, input));
+            t += 1000.0;
+        }
+        all
+    }
+
+    #[test]
+    fn a_quiet_night_below_the_quota_ends_short_and_at_the_quota_ends_won() {
+        let mut short = SalvageRun::new(1, 3, quiet());
+        drive(&mut short, Input::default(), tuning().night_ms + 2000.0);
+        assert_eq!(short.outcome(), Some(Outcome::Short));
+        let mut won = SalvageRun::new(1, 3, Options { quota: Some(0), ..quiet() });
+        drive(&mut won, Input::default(), tuning().night_ms + 2000.0);
+        assert_eq!(won.outcome(), Some(Outcome::Win));
+    }
+
+    #[test]
+    fn the_shop_refuses_a_basket_over_the_budget_and_a_repeat() {
+        let all = Upgrade::ALL.to_vec();
+        assert!(total_cost(&all) > budget_for(1, 0));
+        assert!(shop_toggle(&[], Upgrade::Gloves, 1, 0).is_some());
+        let mut basket = Vec::new();
+        for u in Upgrade::ALL {
+            match shop_toggle(&basket, u, 1, 0) {
+                Some(next) => basket = next,
+                None => assert!(total_cost(&basket) + u.cost() > budget_for(1, 0)),
+            }
+        }
+        assert!(can_buy(&basket, 1, 0));
+        assert!(!can_buy(&[Upgrade::Cell, Upgrade::Cell], 5, 40));
+        // Taking an owned upgrade out of the basket always fits.
+        assert!(shop_toggle(&basket, basket[0], 1, 0).is_some());
+    }
+
+    #[test]
+    fn the_carry_is_the_surplus_and_it_is_capped() {
+        assert_eq!(carry_from(100, 140), 0);
+        assert_eq!(carry_from(150, 140), 10);
+        assert_eq!(carry_from(10_000, 140), tuning().carry_cap);
+        assert_eq!(budget_for(2, 10_000), tuning().budget[1] + tuning().carry_cap);
+    }
+
+    #[test]
+    fn gloves_shorten_the_hold_and_soft_soles_lower_the_hunters_level() {
+        let mut plain = SalvageRun::new(1, 9, quiet());
+        let mut gloved = SalvageRun::new(1, 9, Options { upgrades: vec![Upgrade::Gloves], ..quiet() });
+        plain.spawn_item();
+        gloved.spawn_item();
+        let (a, b) = (plain.items[0].need_ms, gloved.items[0].need_ms);
+        assert!(b < a);
+        assert!((b - a * tuning().gloves_factor).abs() < 1e-6);
+        let live = Options { levels: [None; 3], ..Options::default() };
+        let base = SalvageRun::new(3, 9, live.clone());
+        let soft = SalvageRun::new(3, 9, Options { upgrades: vec![Upgrade::Soles], ..live });
+        assert_eq!(base.level(Hunter::Ravelle) - soft.level(Hunter::Ravelle), tuning().soles_levels);
+    }
+
+    #[test]
+    fn running_out_of_power_opens_the_doors_and_then_the_dark_gets_you() {
+        let all_on = Devices { door_l: true, door_r: true, light_l: true, light_r: true };
+        let mut run = SalvageRun::new(1, 5, quiet());
+        let events = drive(&mut run, Input { devices: all_on, ..Input::default() }, tuning().night_ms);
+        assert!(events.contains(&Event::Out));
+        assert_eq!(run.outcome(), Some(Outcome::Caught(Hunter::Ravelle)));
+    }
+
+    #[test]
+    fn infinite_power_never_drains() {
+        let all_on = Devices { door_l: true, door_r: true, light_l: true, light_r: true };
+        let mut run = SalvageRun::new(1, 5, Options { infinite_power: true, ..quiet() });
+        drive(&mut run, Input { devices: all_on, ..Input::default() }, tuning().night_ms);
+        assert_eq!(run.power(), tuning().power_start);
+        assert!(!run.is_out());
+    }
+
+    #[test]
+    fn an_unattended_piece_slips_off_the_rack_after_its_time() {
+        let mut run = SalvageRun::new(1, 5, quiet());
+        run.items.push(Item { slot: 0, kind: Kind::Prize, value: 60, need_ms: 5500.0, progress_ms: 0.0, age_ms: 0.0 });
+        let events = drive(&mut run, Input::default(), tuning().expire_ms + 2000.0);
+        assert!(events.contains(&Event::Expire { slot: 0 }));
+        assert_eq!(run.money(), 0);
+    }
+
     #[test]
     fn the_rules_file_carries_every_key_the_mode_reads() {
         // Loading panics naming the mode and key when one is missing.

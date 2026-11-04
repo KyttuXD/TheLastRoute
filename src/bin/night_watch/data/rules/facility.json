@@ -96,6 +96,7 @@
 	},
 	"beacon": { "max": 100, "drain_per_sec": 18, "regen_per_sec": 3 },
 	"puzzle": { "dial_steps": 6, "code_digits": 10 },
+	"shock": { "enabled": 1, "cost": 40, "push_steps": 1, "noise": 20, "cooldown_ms": 8000 },
 	"combo_level": 5,
 	"max_level": 20,
 	"custom": { "list_night": 6, "max_slider": 20, "points_per_level": 10 },

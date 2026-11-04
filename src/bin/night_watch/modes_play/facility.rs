@@ -109,6 +109,8 @@ pub struct Controls {
     pub light: bool,
     pub hide: bool,
     pub work: bool,
+    /// The shock button (Q) fires once this frame.
+    pub shock: bool,
     pub skip_call: bool,
     pub mute_call: bool,
     pub confirm: bool,
@@ -206,6 +208,11 @@ impl FacilityRun {
         }
         if let Some(press) = c.press {
             for event in self.sim.interact(press) {
+                self.play(event);
+            }
+        }
+        if c.shock {
+            for event in self.sim.shock() {
                 self.play(event);
             }
         }
@@ -493,6 +500,7 @@ pub fn poll_controls(run: &FacilityRun) -> Controls {
         light: is_key_down(KeyCode::F),
         hide: is_key_down(KeyCode::H),
         work: is_key_down(KeyCode::E),
+        shock: is_key_pressed(KeyCode::Q),
         skip_call: is_key_pressed(KeyCode::Enter),
         mute_call: is_key_pressed(KeyCode::M),
         confirm: is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space),

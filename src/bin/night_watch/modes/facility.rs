@@ -36,6 +36,11 @@ struct Rules {
     beacon_regen_per_sec: f64,
     dial_steps: usize,
     code_digits: usize,
+    shock_enabled: bool,
+    shock_cost: f64,
+    shock_push: i32,
+    shock_noise: f64,
+    shock_cooldown_ms: f64,
     combo_level: i32,
     max_level: i32,
     custom_list_night: usize,
@@ -177,6 +182,11 @@ impl Rules {
             beacon_regen_per_sec: n("beacon.regen_per_sec"),
             dial_steps: data::int(r, "puzzle.dial_steps") as usize,
             code_digits: data::int(r, "puzzle.code_digits") as usize,
+            shock_enabled: n("shock.enabled") > 0.0,
+            shock_cost: n("shock.cost"),
+            shock_push: data::int(r, "shock.push_steps") as i32,
+            shock_noise: n("shock.noise"),
+            shock_cooldown_ms: n("shock.cooldown_ms"),
             combo_level: data::int(r, "combo_level") as i32,
             max_level: data::int(r, "max_level") as i32,
             custom_list_night: data::int(r, "custom.list_night") as usize,
@@ -570,6 +580,8 @@ pub struct Facility {
     pub working: bool,
     pub noise: f64,
     pub charge: f64,
+    /// Milliseconds until the shock button can fire again.
+    pub shock_cd: f64,
     pub task_idx: usize,
     pub tasks: Vec<Task>,
     /// Admin: the hunter that would have caught you is sent back instead.
@@ -621,6 +633,7 @@ impl Facility {
             working: false,
             noise: 0.0,
             charge: k.charge_max,
+            shock_cd: 0.0,
             task_idx: 0,
             tasks,
             god: false,
@@ -790,6 +803,7 @@ impl Facility {
         }
 
         self.noise = (self.noise - k.noise_decay_per_sec * dts).max(0.0);
+        self.shock_cd = (self.shock_cd - dt_ms).max(0.0);
         let task = self.current_task();
         self.working = still
             && !self.hidden
@@ -1070,6 +1084,38 @@ impl Facility {
         ev
     }
 
+    /// The shock button: spends beacon charge and makes noise to knock back the hunter in your room.
+    /// Denied when off, cooling down, moving, too weak, or nobody is here to shock.
+    pub fn shock(&mut self) -> Vec<Event> {
+        self.shock_with(rules())
+    }
+
+    fn shock_with(&mut self, k: &Rules) -> Vec<Event> {
+        if self.over.is_some() || !k.shock_enabled || self.shock_cd > 0.0 || self.moving.is_some() || self.charge < k.shock_cost {
+            return vec![Event::Deny];
+        }
+        let max = self.tune.start_dist;
+        let target = match self.room {
+            Room::Gallery => Some((Hunter::Opalie, &mut self.opalie)),
+            Room::Workshop | Room::Auditorium => Some((Hunter::Porcelle, &mut self.porcelle)),
+            _ => None,
+        };
+        let Some((hunter, c)) = target else {
+            return vec![Event::Deny];
+        };
+        if c.dist >= max {
+            return vec![Event::Deny];
+        }
+        c.dist = (c.dist + k.shock_push).min(max);
+        c.strike = 0.0;
+        if !self.infinite_beacon {
+            self.charge -= k.shock_cost;
+        }
+        self.shock_cd = k.shock_cooldown_ms;
+        self.noise = (self.noise + k.shock_noise).min(k.noise_max);
+        vec![Event::Pushed(hunter)]
+    }
+
     /// Starts walking through a door. False when there is no door that way or you are already walking.
     pub fn walk_through(&mut self, door: Door) -> bool {
         if self.over.is_some() || self.moving.is_some() {
@@ -1102,6 +1148,51 @@ mod tests {
         assert_eq!(events, vec![Event::Station { kind: StepKind::Code, ok: false }]);
         assert_eq!(sim.noise, rules().wrong_noise);
         assert_eq!(sim.puzzle, Puzzle::Code { code, entered: 0 });
+    }
+
+    #[test]
+    fn shock_pushes_back_the_hunter_here_and_costs_charge() {
+        let mut sim = Facility::start(FacilityOptions::new(2, 3));
+        sim.room = Room::Gallery;
+        sim.opalie.dist = 0;
+        let (charge, noise) = (sim.charge, sim.noise);
+        let mut on = Rules::load();
+        on.shock_enabled = true;
+        assert_eq!(sim.shock_with(&on), vec![Event::Pushed(Hunter::Opalie)]);
+        assert!(sim.opalie.dist > 0 && sim.opalie.dist <= sim.tune.start_dist);
+        assert!(sim.charge < charge && sim.noise > noise);
+        assert!(sim.shock_cd > 0.0);
+        assert_eq!(sim.shock_with(&on), vec![Event::Deny], "cooling down");
+        sim.step(rules().shock_cooldown_ms + 1.0, Input::default());
+        assert_eq!(sim.shock_cd, 0.0);
+    }
+
+    #[test]
+    fn shock_is_on_in_the_facility_rules_and_shipped_from_data() {
+        // The shock button belongs to The Facility (website src/modes/story); the switch and its numbers are data.
+        let r = rules();
+        assert!(r.shock_enabled, "the Facility ships the shock button; data/rules/facility.json shock.enabled");
+        let mut off = Rules::load();
+        off.shock_enabled = false;
+        let mut sim = Facility::start(FacilityOptions::new(2, 3));
+        sim.room = Room::Gallery;
+        sim.opalie.dist = 0;
+        let (charge, noise) = (sim.charge, sim.noise);
+        assert_eq!(sim.shock_with(&off), vec![Event::Deny], "turning the data switch off denies the shock");
+        assert_eq!((sim.charge, sim.noise, sim.opalie.dist), (charge, noise, 0));
+    }
+
+    #[test]
+    fn shock_is_denied_with_nobody_here_or_no_charge() {
+        let mut on = Rules::load();
+        on.shock_enabled = true;
+        let mut sim = Facility::start(FacilityOptions::new(2, 3));
+        sim.room = Room::Control;
+        assert_eq!(sim.shock_with(&on), vec![Event::Deny]);
+        sim.room = Room::Gallery;
+        sim.opalie.dist = 0;
+        sim.charge = 0.0;
+        assert_eq!(sim.shock_with(&on), vec![Event::Deny]);
     }
 
     #[test]
