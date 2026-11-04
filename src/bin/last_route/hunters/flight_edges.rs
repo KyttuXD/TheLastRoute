@@ -1463,6 +1463,48 @@ mod catwalk_tests {
         assert_eq!(nav.next_hop_with(near, goal, &free, both).map(|h| h.edge.kind), Some(EdgeKind::CatwalkLadder));
     }
 
+    /// The live level 0 maze chunks around the origin of the golden world, with their decks and links as the route builds them.
+    #[test]
+    fn every_generated_catwalk_link_has_a_ladder_edge_and_decks_have_jumps() {
+        const WORLD: &str = "1426541270";
+        let cat = crate::world::catalog::Catalog::load();
+        let (mut with_links, mut ladders, mut jumps) = (0, 0, 0);
+        for cx in -8..8 {
+            for cy in -8..8 {
+                if crate::world::route::regions::region_for(WORLD, cx, cy, 0) != "maze" {
+                    continue;
+                }
+                let key = crate::world::infinite::ChunkKey { cx, cy, level: 0 };
+                let Some((f, _)) = crate::world::route::live::chunk(WORLD, key, &cat) else { continue };
+                if f.catwalk_links.is_empty() {
+                    continue;
+                }
+                with_links += 1;
+                let nav = nav_of(&f, rules());
+                for l in &f.catwalk_links {
+                    let ladder = nav.edge(EdgeKey { upper_level: 0, cell: l.cell, kind: EdgeKind::CatwalkLadder });
+                    let e = ladder.unwrap_or_else(|| panic!("chunk {cx},{cy}: link at {:?} has no ladder edge", l.cell));
+                    assert!(f.hunter_open(e.from.cell) && f.deck_open(e.to.cell), "foot on the floor, landing on the deck");
+                    assert!((e.path.last().unwrap()[2] - l.deck_height).abs() < 1e-4);
+                    ladders += 1;
+                }
+                for d in f.deck_cells() {
+                    for e in nav.edges_from(node(d)).filter(|e| e.key.kind == EdgeKind::CatwalkJump) {
+                        assert!(f.hunter_open(e.to.cell) && e.one_way);
+                        jumps += 1;
+                    }
+                }
+                if with_links >= 3 {
+                    break;
+                }
+            }
+            if with_links >= 3 {
+                break;
+            }
+        }
+        assert!(with_links >= 1 && ladders >= 1 && jumps >= 1, "links {with_links}, ladders {ladders}, jumps {jumps}");
+    }
+
     #[test]
     fn the_graph_hashes_deck_heights_and_builds_the_same_twice() {
         let a = nav_of(&deck_level(true), rules());

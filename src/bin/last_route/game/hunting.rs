@@ -1612,4 +1612,73 @@ mod resident_floor_tests {
         assert!(guest.inf.as_mut().unwrap().floor_hunters_mut().is_empty(), "a guest stores nothing");
         assert!(guest.inf.as_mut().unwrap().stored_mut().is_empty());
     }
+
+    /// A level-0 window with a three-cell deck made on its floor (the deck cells at 2.5 m, no ladder), the runner on the
+    /// floor beside the deck, and one hunter standing on the deck's far cell, chasing her.
+    fn deck_chase() -> (Game, crate::world::Cell) {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-DECK-CHASE", 0, &content, &catalog);
+        let h = crate::world::route::catwalk::params().height;
+        let start = g.fac.start.center();
+        let row = g
+            .fac
+            .floor_cells()
+            .into_iter()
+            .find(|c| {
+                pdist(c.center(), start) > 25.0
+                    && (-1..=5).all(|k| g.fac.hunter_open(Cell::new(c.x + k, c.y)) && g.fac.hunter_open(Cell::new(c.x + k, c.y + 1)))
+            })
+            .expect("a roomy stretch of floor away from the start");
+        let deck = [Cell::new(row.x + 1, row.y), Cell::new(row.x + 2, row.y), Cell::new(row.x + 3, row.y)];
+        for c in deck {
+            g.fac.set_walk_surface(c, crate::world::facility::DeckKind::Catwalk, h);
+        }
+        g.fac.rebuild_grids();
+        g.resident_hunters.nav_key = None; // the graph was built before the deck: build it again
+        g.hunters.clear();
+        if let Some(inf) = g.inf.as_mut() {
+            inf.loaded_mut().clear();
+        }
+        for level in g.resident_hunters.levels() {
+            g.resident_hunters.list_mut(level).clear();
+        }
+        let mut hunter = Brain::new(content.hunters[0].clone(), deck[2].center(), "DECK-CHASE", Difficulty::Standard);
+        hunter.active = true;
+        hunter.y = h;
+        hunter.state = State::Chase;
+        g.hunters.push(hunter);
+        // the runner two cells below the deck's middle cell, in the row of floor beside it
+        let runner = Cell::new(row.x + 2, row.y + 1);
+        g.p.pos = runner.center();
+        (g, row)
+    }
+
+    #[test]
+    fn a_deck_hunter_chases_through_update_hunters_and_stays_in_the_level_zero_list() {
+        let (mut g, _) = deck_chase();
+        let h = crate::world::route::catwalk::params().height;
+        let (mut on_deck_dy, mut jumped, mut landings) = (None, false, 0);
+        let prof = g.prof();
+        let sounds = Sounds::default();
+        for _ in 0..900 {
+            g.update_hunters(FRAME, &prof, &sounds);
+            assert!(g.resident_hunters.levels().iter().all(|l| g.resident_hunters.list(*l).is_empty()), "never moved to another list");
+            assert_eq!(g.hunters.len(), 1, "it stays in the active list");
+            let b = &g.hunters[0];
+            assert_eq!(b.level, 0, "a deck is on level 0, so no crosser list swap");
+            if b.on_deck() && on_deck_dy.is_none() {
+                on_deck_dy = Some(crate::render::stack_actors::actor_dy(b.y, g.runner_level()));
+            }
+            jumped |= b.walk.as_ref().is_some_and(|w| w.kind == flight_edges::EdgeKind::CatwalkJump);
+            landings += b.landed.is_some() as i32;
+            if jumped && !b.on_deck() && b.walk.is_none() {
+                break;
+            }
+        }
+        assert_eq!(on_deck_dy, Some(h), "drawn at the deck height while on it");
+        assert!(jumped, "it jumped down after the runner (no ladder in this window)");
+        assert_eq!(landings, 1);
+        assert_eq!(g.hunters[0].y, 0.0);
+    }
 }
