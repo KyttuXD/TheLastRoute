@@ -99,7 +99,7 @@ fn motion_now(g: &Game, item: Item, eye: Vec3, fwd: Vec3) -> (Option<(HeldId, Mo
 pub fn draw_viewmodel(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     set_camera(&camera(g, rt));
     clear_background(Color::new(0.0, 0.0, 0.0, 0.0));
-    if hide::player_now().weight >= 1.0 || g.report.is_some() || g.escape.is_some() {
+    if hide::player_now().weight >= 1.0 || g.report.is_some() || g.escape.is_some() || g.ladder.is_some() {
         return;
     }
     let Some(item) = g.selected_item() else {

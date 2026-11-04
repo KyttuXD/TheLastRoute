@@ -472,12 +472,18 @@ mod tests {
     }
 
     #[test]
-    fn a_flight_down_is_shallow_enough_to_show_its_treads_past_the_lip() {
-        // the lip hides a tread when its drop per metre of run is steeper than the eye's line over the lip, so the
-        // flight stays at or under 0.25 a metre (about 14 degrees), and every riser is still a visible step
-        assert!(RISE_DOWN <= 0.25, "RISE_DOWN {RISE_DOWN}");
+    fn a_flight_down_is_steep_so_it_reaches_the_level_change_and_its_risers_still_read() {
+        // Readability cost, accepted by KT: the flight is 45 degrees (RISE_DOWN 1.0, down from 0.24 at about 14), so
+        // it has to be. An eye E above the floor, standing d metres back from the pit's lip, sees past the lip only
+        // when E >= RISE_DOWN * d. At E = 2 m that is d <= 2.0 m (it was 8.3 m at 0.24), so the first treads hide
+        // from a standing eye further back than 2 m. The risers are the check: each is still a clear step.
+        let eye = 2.0;
+        let sight = eye / RISE_DOWN;
+        assert!((sight - 2.0).abs() < 1e-5, "a 2 m eye sees past the lip only within {sight} m");
+        assert!(RISE_DOWN >= 0.979, "RISE_DOWN {RISE_DOWN} must sink the flight past the level change");
         let riser = RISE_DOWN / STEPS_PER_CELL as f32;
-        assert!(riser >= 0.06, "riser {riser} m");
+        assert!((riser - 1.0 / 3.0).abs() < 1e-5, "riser {riser} m");
+        assert!(riser >= 0.25, "riser {riser} m");
         let first = treads(-1)[0].top;
         assert!((first + riser).abs() < 1e-5, "the first step is one riser down: {first}");
     }

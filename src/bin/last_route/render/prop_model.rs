@@ -10,6 +10,7 @@ use super::builder::Builder;
 use super::door::{self, DoorMeasure};
 use macroquad::prelude::*;
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT_KEY: AtomicUsize = AtomicUsize::new(1);
@@ -398,6 +399,76 @@ impl PropModel {
         self.add_to(&mut builders, xf, tint);
         draw_builders(builders);
     }
+
+    /// The meshes `add_to` builds for this placement, built the first frame they are asked for and kept by `cache` while
+    /// the prop stays drawn (a static prop: its transform and tint do not move between frames).
+    pub fn static_meshes<'c>(
+        &self,
+        cache: &'c mut StaticCache<Placement, Vec<Mesh>>,
+        xf: Mat4,
+        tint: Color,
+    ) -> &'c Vec<Mesh> {
+        cache.get_or_build(Placement::of(self, xf, tint), || {
+            let mut builders = HashMap::new();
+            self.add_to(&mut builders, xf, tint);
+            builders.into_values().flat_map(|b| b.finish()).collect()
+        })
+    }
+}
+
+/// A static prop's drawn placement: the model (by address, which the asset map keeps fixed), its transform and its tint,
+/// as bits so the key compares exactly. A prop moved or re-tinted is a different key, so it is built again.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct Placement {
+    model: usize,
+    xf: [u32; 16],
+    tint: [u32; 4],
+}
+
+impl Placement {
+    fn of(model: &PropModel, xf: Mat4, tint: Color) -> Placement {
+        Placement {
+            model: model as *const PropModel as usize,
+            xf: xf.to_cols_array().map(f32::to_bits),
+            tint: [tint.r, tint.g, tint.b, tint.a].map(f32::to_bits),
+        }
+    }
+}
+
+/// Values kept across frames for what is drawn with a fixed placement. A value is built the first frame it is asked for
+/// and reused while it keeps being asked for; one not asked for during a whole frame is dropped at the next
+/// `begin_frame`, so the cache follows what is on screen.
+pub struct StaticCache<K, V> {
+    prev: HashMap<K, V>,
+    next: HashMap<K, V>,
+}
+
+impl<K, V> Default for StaticCache<K, V> {
+    fn default() -> Self {
+        StaticCache {
+            prev: HashMap::new(),
+            next: HashMap::new(),
+        }
+    }
+}
+
+impl<K: Hash + Eq + Clone, V> StaticCache<K, V> {
+    /// Starts a frame: what was asked for in the last frame stays, and what was not is dropped.
+    pub fn begin_frame(&mut self) {
+        self.prev = std::mem::take(&mut self.next);
+    }
+
+    /// The value for `key`: kept from an earlier frame if there is one, else built now.
+    pub fn get_or_build(&mut self, key: K, build: impl FnOnce() -> V) -> &V {
+        if !self.next.contains_key(&key) {
+            let v = match self.prev.remove(&key) {
+                Some(v) => v,
+                None => build(),
+            };
+            self.next.insert(key.clone(), v);
+        }
+        &self.next[&key]
+    }
 }
 
 fn add_parts(parts: &[Part], builders: &mut HashMap<usize, Builder>, xf: Mat4, tint: Color, pre: impl Fn(Vec3) -> Vec3) {
@@ -406,26 +477,40 @@ fn add_parts(parts: &[Part], builders: &mut HashMap<usize, Builder>, xf: Mat4, t
         let b = builders
             .entry(p.key)
             .or_insert_with(|| Builder::new(Some(p.tex.clone())));
-        for chunk in p.idx.chunks(3 * 6000) {
-            b.reserve(chunk.len());
-            let base = b.verts.len() as u16;
-            for (k, &i) in chunk.iter().enumerate() {
-                let v = p.verts[i as usize];
-                let n = (nm * v.normal.truncate()).normalize_or_zero();
-                let c = [
-                    (v.color[0] as f32 * tint.r) as u8,
-                    (v.color[1] as f32 * tint.g) as u8,
-                    (v.color[2] as f32 * tint.b) as u8,
-                    v.color[3],
-                ];
-                b.verts.push(Vertex {
-                    position: xf.transform_point3(pre(v.position)),
-                    uv: v.uv,
-                    color: c,
-                    normal: vec4(n.x, n.y, n.z, v.normal.w),
-                });
-                b.idx.push(base + k as u16);
-            }
+        add_verts(b, &p.verts, &p.idx, xf, nm, tint, &pre);
+    }
+}
+
+/// Appends triangles `idx` of `verts` to `b`, each vertex placed by `xf` (its normal by `nm`, the inverse transpose of
+/// `xf`) after `pre`, and tinted.
+fn add_verts(
+    b: &mut Builder,
+    verts: &[Vertex],
+    idx: &[u32],
+    xf: Mat4,
+    nm: Mat3,
+    tint: Color,
+    pre: &impl Fn(Vec3) -> Vec3,
+) {
+    for chunk in idx.chunks(3 * 6000) {
+        b.reserve(chunk.len());
+        let base = b.verts.len() as u16;
+        for (k, &i) in chunk.iter().enumerate() {
+            let v = verts[i as usize];
+            let n = (nm * v.normal.truncate()).normalize_or_zero();
+            let c = [
+                (v.color[0] as f32 * tint.r) as u8,
+                (v.color[1] as f32 * tint.g) as u8,
+                (v.color[2] as f32 * tint.b) as u8,
+                v.color[3],
+            ];
+            b.verts.push(Vertex {
+                position: xf.transform_point3(pre(v.position)),
+                uv: v.uv,
+                color: c,
+                normal: vec4(n.x, n.y, n.z, v.normal.w),
+            });
+            b.idx.push(base + k as u16);
         }
     }
 }
@@ -434,5 +519,102 @@ fn add_parts(parts: &[Part], builders: &mut HashMap<usize, Builder>, xf: Mat4, t
 pub fn draw_builders(builders: HashMap<usize, Builder>) {
     for (_, mut b) in builders {
         b.draw_and_clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// A unit box standing on the floor, as bare vertices (a model's parts, without a texture).
+    fn box_geometry() -> (Vec<Vertex>, Vec<u32>) {
+        let c = [
+            vec3(-0.5, 0.0, -0.5),
+            vec3(0.5, 0.0, -0.5),
+            vec3(0.5, 1.0, -0.5),
+            vec3(-0.5, 1.0, -0.5),
+            vec3(-0.5, 0.0, 0.5),
+            vec3(0.5, 0.0, 0.5),
+            vec3(0.5, 1.0, 0.5),
+            vec3(-0.5, 1.0, 0.5),
+        ];
+        let verts = c
+            .iter()
+            .map(|&p| white_vertex(p, vec2(p.x + 0.5, p.y), p.normalize_or_zero()))
+            .collect();
+        let idx = vec![
+            0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 4, 5, 0, 5, 1, 3, 2, 6, 3, 6, 7, 0, 3, 7, 0, 7, 4, 1, 5, 6, 1, 6, 2,
+        ];
+        (verts, idx)
+    }
+
+    /// The meshes a prop built from `box_geometry` draws with this placement (the same path `static_meshes` takes).
+    fn build(xf: Mat4, tint: Color) -> Vec<Mesh> {
+        let (verts, idx) = box_geometry();
+        let mut b = Builder::new(None);
+        let nm = Mat3::from_mat4(xf).inverse().transpose();
+        add_verts(&mut b, &verts, &idx, xf, nm, tint, &|p| p);
+        b.finish()
+    }
+
+    /// Positions, normals, colours and indices of each mesh, to compare two builds exactly.
+    fn signature(ms: &[Mesh]) -> Vec<(Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[u8; 4]>, Vec<u16>)> {
+        ms.iter()
+            .map(|m| {
+                (
+                    m.vertices.iter().map(|v| v.position.to_array()).collect(),
+                    m.vertices.iter().map(|v| [v.normal.x, v.normal.y, v.normal.z]).collect(),
+                    m.vertices.iter().map(|v| v.color).collect(),
+                    m.indices.clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cached_static_meshes_equal_a_fresh_build() {
+        let placements = [
+            (Mat4::from_translation(vec3(4.0, 0.0, 2.0)), WHITE),
+            (
+                Mat4::from_rotation_y(1.2) * Mat4::from_translation(vec3(-3.0, 0.0, 7.0)),
+                Color::new(0.25, 0.2, 0.18, 1.0),
+            ),
+            (Mat4::from_translation(Vec3::ZERO), Color::new(0.7, 1.0, 0.85, 1.0)),
+        ];
+        let mut cache: StaticCache<usize, Vec<Mesh>> = StaticCache::default();
+        let built = Cell::new(0);
+        for _frame in 0..3 {
+            cache.begin_frame();
+            for (i, (xf, tint)) in placements.iter().enumerate() {
+                let cached = cache.get_or_build(i, || {
+                    built.set(built.get() + 1);
+                    build(*xf, *tint)
+                });
+                assert!(signature(cached) == signature(&build(*xf, *tint)));
+            }
+        }
+        // three props over three frames: each built once, then kept
+        assert_eq!(built.get(), placements.len());
+    }
+
+    #[test]
+    fn a_prop_not_asked_for_a_whole_frame_is_built_again() {
+        let mut cache: StaticCache<usize, u32> = StaticCache::default();
+        let built = Cell::new(0);
+        let ask = |cache: &mut StaticCache<usize, u32>| {
+            cache.get_or_build(0, || {
+                built.set(built.get() + 1);
+                7
+            });
+        };
+        cache.begin_frame();
+        ask(&mut cache);
+        // a whole frame without it drops it, so the next ask builds it again
+        cache.begin_frame();
+        cache.begin_frame();
+        cache.begin_frame();
+        ask(&mut cache);
+        assert_eq!(built.get(), 2);
     }
 }

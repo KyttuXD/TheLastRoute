@@ -7,8 +7,8 @@ use super::anim::{
     self, grab, hide,
     hunter::{HunterView, Input},
 };
-use super::builder::Builder;
-use super::prop_model::{draw_builders, PropModel};
+use super::builder::{submit_all, Builder};
+use super::prop_model::{draw_builders, Placement, PropModel, StaticCache};
 use super::shader::{self, Lamp, Lighting};
 use crate::shared::assets::Assets;
 use crate::config::*;
@@ -16,7 +16,18 @@ use crate::game::{Game, Heater, Item};
 use crate::hunters::brain::State;
 use crate::hunters::gimmicks::Gimmick;
 use macroquad::prelude::*;
+use std::cell::RefCell;
 use std::collections::HashMap;
+
+thread_local! {
+    /// The meshes of the static props (relays, batteries, lockers' bodies and the like), kept while they stay drawn.
+    static STATIC_PROPS: RefCell<StaticCache<Placement, Vec<Mesh>>> = RefCell::new(StaticCache::default());
+}
+
+/// Draws a static prop with its placement: its meshes come from the cache, built on first use.
+fn draw_static(m: &PropModel, xf: Mat4, tint: Color) {
+    STATIC_PROPS.with(|c| submit_all(m.static_meshes(&mut c.borrow_mut(), xf, tint)));
+}
 
 /// How far the fog reaches, metres.
 const FOG_RANGE: f32 = 24.0;
@@ -124,6 +135,7 @@ fn at(x: f32, y: f32, z: f32, yaw: f32) -> Mat4 {
 
 pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     hide::tick(g.p.hidden, g.time);
+    STATIC_PROPS.with(|c| c.borrow_mut().begin_frame());
     set_camera(&camera(g, rt));
     clear_background(Color::new(FOG.x, FOG.y, FOG.z, 1.0));
     gl_use_material(mat);
@@ -137,10 +149,26 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         }
         None => shader::apply(mat, &light, &g.world.lamps),
     }
-    for m in &g.world.meshes {
-        draw_mesh(m);
+    // the floor's meshes wholly past the fog's full reach are skipped: they would paint the fog colour alone (see
+    // `box_fully_fogged`), which the clear colour already is
+    let t_world = crate::app::perf::section("world meshes");
+    for (i, m) in g.world.meshes.iter().enumerate() {
+        // a mesh without a box (never the case once `bounds` is kept in step) is drawn, so nothing vanishes
+        let fogged = g
+            .world
+            .bounds
+            .get(i)
+            .is_some_and(|(lo, hi)| box_fully_fogged(light.eye, *lo, *hi, WORLD_CULL_RANGE));
+        if !fogged {
+            draw_mesh(m);
+        }
     }
-    draw_doors(g, a);
+    drop(t_world);
+    {
+        let _t = crate::app::perf::section("doors");
+        draw_doors(g, a);
+    }
+    let t_items = crate::app::perf::section("scene items");
     let mut b = Builder::new(Some(a.white.clone()));
     let t = g.time;
     let f = &g.fac;
@@ -164,7 +192,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
             );
         }
         match item_model(a, "safe_zone") {
-            Some(m) => m.draw(at(sx, 0.0, sy, 0.0), WHITE),
+            Some(m) => draw_static(m, at(sx, 0.0, sy, 0.0), WHITE),
             // lit (mode 0), so the safe zone's checkpoint light falls on its pad
             None => b.cube(vec3(sx, 0.05, sy), vec3(0.8, 0.1, 0.8), 0.0, SAFE, 0.0),
         }
@@ -176,7 +204,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
             continue;
         }
         match item_model(a, "relay") {
-            Some(m) => m.draw(at(x, 0.0, y, 0.0), WHITE),
+            Some(m) => draw_static(m, at(x, 0.0, y, 0.0), WHITE),
             None => b.cube(
                 vec3(x, 0.32, y),
                 vec3(0.42, 0.64, 0.42),
@@ -206,7 +234,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         if !g.batteries_taken[i] {
             let (x, y) = c.center();
             match item_model(a, "battery") {
-                Some(m) => m.draw(at(x, 0.0, y, i as f32), WHITE),
+                Some(m) => draw_static(m, at(x, 0.0, y, i as f32), WHITE),
                 None => battery_shape(&mut b, vec3(x, 0.0, y), i as f32),
             }
         }
@@ -232,7 +260,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
                     * Mat4::from_rotation_y(25f32.to_radians() + i as f32 * 1.7)
                     * Mat4::from_rotation_x(-18f32.to_radians())
                     * Mat4::from_scale(Vec3::splat(s));
-                m.draw(xf, WHITE);
+                draw_static(m, xf, WHITE);
             }
             None => pickup_shape(&mut b, p.item, base, i as f32 * 1.7),
         }
@@ -263,14 +291,18 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         let burnt = g.hiding_disabled[i];
         match item_model(a, "hiding_spot") {
             Some(m) => {
+                if locker_fully_fogged(light.eye, cx, cy, (m.max - m.min).length() * 0.5) {
+                    continue;
+                }
                 let xf = at(cx, 0.0, cy, yaw);
                 let tint = if burnt {
                     Color::new(0.25, 0.2, 0.18, 1.0)
                 } else {
                     WHITE
                 };
+                // the body is fixed; only the door swings, so it is the one part built each frame
+                draw_static(m, xf, tint);
                 let mut parts = HashMap::new();
-                m.add_to(&mut parts, xf, tint);
                 m.add_locker_door(&mut parts, xf, tint, swing);
                 draw_builders(parts);
             }
@@ -282,7 +314,8 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         let on = g.lights_on.get(i).copied().unwrap_or(true);
         // facility_view_3d.gd: the switch sits .9 up and .34 back from its cell centre
         match item_model(a, "wall_light_switch") {
-            Some(m) => m.draw(
+            Some(m) => draw_static(
+                m,
                 at(x, 0.9, y - 0.34, 0.0),
                 if on {
                     WHITE
@@ -316,7 +349,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
             Heater::Powered => Color::new(1.0, 0.85, 0.7, 1.0),
         };
         match item_model(a, "heater_station") {
-            Some(m) => m.draw(at(x, 0.0, y, 0.0), tint),
+            Some(m) => draw_static(m, at(x, 0.0, y, 0.0), tint),
             None => b.cube(
                 vec3(x, 0.55, y),
                 vec3(0.7, 1.1, 0.4),
@@ -364,7 +397,8 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         let yaw = (-(wall.0 as f32)).atan2(-(wall.1 as f32));
         let active = g.p.in_vent && i == g.p.vent_entry;
         match item_model(a, "vent") {
-            Some(m) => m.draw(
+            Some(m) => draw_static(
+                m,
                 at(x + wall.0 as f32 * 0.42, 0.0, y + wall.1 as f32 * 0.42, yaw),
                 if active {
                     Color::new(0.7, 1.0, 0.85, 1.0)
@@ -392,7 +426,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         };
         let top = match item_model(a, "lift") {
             Some(m) => {
-                m.draw(at(x, 0.0, y, 0.0), WHITE);
+                draw_static(m, at(x, 0.0, y, 0.0), WHITE);
                 m.max.y
             }
             None => {
@@ -434,9 +468,11 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         }
     }
     b.draw_and_clear();
+    drop(t_items);
 
     // hunters: posed by their rig (render/anim, the original's clips + view layers). Dormant hunters are drawn too, slumped
     // in their slowed stun clip (HunterView3D.model_alpha: an inactive hunter shows whole).
+    let t_hunters = crate::app::perf::section("hunters");
     let (cam_fwd, _, _) = g.camera_basis();
     let runner_feet = vec3(g.p.pos.0, g.p.feet_y.max(0.0), g.p.pos.1);
     anim::with_views(g.time, |views, dt| {
@@ -627,6 +663,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
             e.draw_and_clear();
         }
     }
+    drop(t_hunters);
     gl_use_default_material();
 }
 
@@ -677,6 +714,28 @@ fn pickup_shape(b: &mut Builder, item: Item, p: Vec3, spin: f32) {
     }
 }
 
+/// Metres past the fog's full reach before a locker is skipped, so rounding never drops a visible one.
+const LOCKER_CULL_MARGIN: f32 = 1.0;
+
+/// Distance from the eye past which a world mesh is skipped: the unlit mode's full fog (FOG_RANGE * 1.6) plus the margin.
+/// Lit surfaces reach full fog sooner (FOG_RANGE), so every fragment this far is fog colour in both modes.
+const WORLD_CULL_RANGE: f32 = FOG_RANGE * 1.6 + LOCKER_CULL_MARGIN;
+
+/// True when the box `lo`..`hi` lies wholly `reach` metres or more from `eye`: every point of it is then fully fogged,
+/// and so is every triangle inside it (the fog is a function of distance from the eye, and a box is convex).
+fn box_fully_fogged(eye: Vec3, lo: Vec3, hi: Vec3, reach: f32) -> bool {
+    let gap = (lo - eye).max(eye - hi).max(Vec3::ZERO);
+    gap.length_squared() >= reach * reach
+}
+
+/// True when every point of a locker (a horizontal disc of `half_extent` about its centre) is past the fog's full
+/// reach from the eye: the shader then writes the fog colour alone, the same as the clear colour, so the locker
+/// draws nothing new. The unlit path (mode > 1.5) reaches full fog at `FOG_RANGE * 1.6` (shader.rs), the farther limit.
+fn locker_fully_fogged(eye: Vec3, cx: f32, cy: f32, half_extent: f32) -> bool {
+    let (dx, dz) = (cx - eye.x, cy - eye.z);
+    (dx * dx + dz * dz).sqrt() - half_extent >= FOG_RANGE * 1.6 + LOCKER_CULL_MARGIN
+}
+
 fn locker_shape(b: &mut Builder, p: Vec3, yaw: f32, burnt: bool, swing: f32) {
     let body = if burnt {
         Color::new(0.16, 0.13, 0.12, 1.0)
@@ -722,5 +781,30 @@ mod tests {
         assert!(grab_fill(false, Some(cam)).is_none());
         // the escape set before the grab camera exists (the first frame of a catch): off until the grab starts
         assert!(grab_fill(true, None).is_none());
+    }
+
+    #[test]
+    fn far_world_meshes_are_skipped_only_when_fully_fogged() {
+        let eye = vec3(0.0, 1.6, 0.0);
+        // a box 50 m off along x: its nearest face is past the reach, so it is skipped
+        assert!(box_fully_fogged(eye, vec3(50.0, 0.0, -2.0), vec3(60.0, 3.0, 2.0), WORLD_CULL_RANGE));
+        // a box straddling the eye is drawn
+        assert!(!box_fully_fogged(eye, vec3(-1.0, 0.0, -1.0), vec3(1.0, 3.0, 1.0), WORLD_CULL_RANGE));
+        // a box 30 m off is still in the fog ramp of the unlit mode, so drawn
+        assert!(!box_fully_fogged(eye, vec3(30.0, 0.0, 0.0), vec3(31.0, 3.0, 1.0), WORLD_CULL_RANGE));
+        // the vertical gap counts: a box 45 m straight up is past the reach
+        assert!(box_fully_fogged(eye, vec3(0.0, 46.0, 0.0), vec3(1.0, 47.0, 1.0), WORLD_CULL_RANGE));
+    }
+
+    #[test]
+    fn far_lockers_are_skipped_only_when_fully_fogged() {
+        let eye = vec3(0.0, 1.6, 0.0);
+        let half = 1.2;
+        // 45 m off: the nearest point of the locker is past the full fog reach, so it is skipped
+        assert!(locker_fully_fogged(eye, 45.0, 0.0, half));
+        // 30 m off: still inside the fog ramp, so it is drawn
+        assert!(!locker_fully_fogged(eye, 30.0, 0.0, half));
+        // the vertical offset never shortens the distance, so a locker straight below the eye is judged by its plan distance only
+        assert!(!locker_fully_fogged(eye, 0.0, 0.0, half));
     }
 }

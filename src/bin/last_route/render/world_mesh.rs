@@ -25,6 +25,9 @@ use std::collections::HashMap;
 #[derive(Default)]
 pub struct WorldMeshes {
     pub meshes: Vec<Mesh>,
+    /// Each of `meshes`' box over its vertices (min, max), kept in step with it, so the scene can skip a mesh that
+    /// lies wholly in the fog.
+    pub bounds: Vec<(Vec3, Vec3)>,
     pub lamps: Vec<Lamp>,
     /// The room doors of the floor, drawn each frame apart from `meshes` (which hold them shut) so their leaves swing.
     pub doors: Vec<DoorInstance>,
@@ -226,6 +229,7 @@ impl WorldMeshes {
             };
             self.meshes = build_meshes(f, &pick, &mut choices, assets, content);
             self.drawn = vec![None; self.meshes.len()];
+            self.bounds = mesh_bounds(&self.meshes);
             return;
         };
         self.builds += 1;
@@ -264,7 +268,21 @@ impl WorldMeshes {
         let (drawn, meshes) = sorted.into_iter().map(|(_, km)| km).unzip();
         self.drawn = drawn;
         self.meshes = meshes;
+        self.bounds = mesh_bounds(&self.meshes);
     }
+}
+
+/// Each mesh's box over its vertices (min, max). An empty mesh gets an inverted box, which the scene's cull treats as far.
+fn mesh_bounds(meshes: &[Mesh]) -> Vec<(Vec3, Vec3)> {
+    meshes
+        .iter()
+        .map(|m| {
+            m.vertices.iter().fold(
+                (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
+                |(lo, hi), v| (lo.min(v.position), hi.max(v.position)),
+            )
+        })
+        .collect()
 }
 
 /// The safe-zone pad over the window's floor (the chunk parts draw the floor under it as it is without one).

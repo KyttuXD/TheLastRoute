@@ -180,6 +180,28 @@ pub fn pick(id: &str, roll: f32, room: &Room) -> String {
     fitting.last().unwrap().0.clone()
 }
 
+/// The head's turn from where her face points (`facing`) toward `wanted`, limited to the neck (`limit`, radians):
+/// the GrabStyles.head_look rotation, clamped to the neck limit by slerping back toward identity.
+pub fn neck_turn(facing: Vec3, wanted: Vec3, limit: f32) -> Quat {
+    let full = if facing.angle_between(wanted) > 0.001 {
+        Quat::from_rotation_arc(facing, wanted)
+    } else {
+        Quat::IDENTITY
+    };
+    let angle = full.angle_between(Quat::IDENTITY);
+    if angle > limit {
+        gd_slerp(Quat::IDENTITY, full, limit / angle)
+    } else {
+        full
+    }
+}
+
+/// GrabStyles.head_look's easing: the turn eases toward `full` by 1 - e^(-7 delta) every frame, the catch frame
+/// included (Godot eases from identity there too; snapping to a full look-away in one frame reads as a broken neck).
+pub fn ease_head_turn(current: Quat, full: Quat, delta: f32) -> Quat {
+    gd_slerp(current, full, 1.0 - (-7.0 * delta).exp())
+}
+
 fn look_away(look: &Look, t: f32) -> f32 {
     if look.delay <= 0.0 {
         0.0
@@ -816,21 +838,8 @@ impl Grab {
             }
             .normalize_or_zero();
             let wanted = (target - hp).normalize_or_zero();
-            let mut full = if facing.angle_between(wanted) > 0.001 {
-                Quat::from_rotation_arc(facing, wanted)
-            } else {
-                Quat::IDENTITY
-            };
-            let angle = full.angle_between(Quat::IDENTITY);
-            if angle > self.look.yaw {
-                full = gd_slerp(Quat::IDENTITY, full, self.look.yaw / angle);
-            }
-            let k = 1.0 - (-7.0 * delta).exp();
-            self.head_turn = gd_slerp(
-                self.head_turn,
-                full,
-                if self.camera.is_none() { 1.0 } else { k },
-            );
+            let full = neck_turn(facing, wanted, self.look.yaw);
+            self.head_turn = ease_head_turn(self.head_turn, full, delta);
             let q = self.head_turn * body.rot(head);
             body.set_world_rot(head, q);
             self.face_point = Some(match eyes {
@@ -969,4 +978,73 @@ pub fn drive(
 /// The grab's first-person camera (eye, target, up), while a grab holds the runner.
 pub fn camera() -> Option<(Vec3, Vec3, Vec3)> {
     GRAB.with(|g| g.borrow().grab.as_ref().and_then(|x| x.camera))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A look-away grab (the head turned to the side and down, away from the runner) never turns the head past
+    /// Aki's neck limit, and the limit is Godot's default look yaw (2.0 radians, about 115 degrees).
+    #[test]
+    fn grab_head_look_stays_within_neck_limit() {
+        let look = look_for("aki");
+        let limit_deg = look.yaw.to_degrees();
+        assert!((look.yaw - 2.0).abs() < 1e-6, "aki neck limit {limit_deg}");
+        let facing = vec3(0.0, 0.0, -1.0);
+        // the look-away aim: far to one side and down
+        for side in [1.0_f32, -1.0] {
+            for (x, y, z) in [(1.5 * side, -0.8, 0.0), (3.0 * side, -2.0, 0.5), (1.5 * side, 0.0, 0.0)] {
+                let wanted = vec3(x, y, z).normalize();
+                let q = neck_turn(facing, wanted, look.yaw);
+                let turned = q.angle_between(Quat::IDENTITY);
+                assert!(
+                    turned <= look.yaw + 1e-4,
+                    "head turned {}deg, limit {limit_deg}deg",
+                    turned.to_degrees()
+                );
+            }
+        }
+        // a small aim is not clamped
+        let small = neck_turn(facing, vec3(0.1, 0.0, -1.0).normalize(), look.yaw);
+        assert!(small.angle_between(Quat::IDENTITY) < 0.2);
+    }
+
+    /// The look-away turn (Aki's delay: she looks away from the catch) eases in from the catch frame like Godot's, never
+    /// passes the neck limit on any frame, and reaches its aim.
+    #[test]
+    fn grab_head_turn_eases_within_neck_limit() {
+        let look = look_for("aki");
+        let along = vec3(0.0, 0.0, -1.0);
+        let facing = along;
+        // the look-away aim from grab.rs head_look: off to her side and down, a step back from the runner
+        let side = along.cross(Vec3::Y).normalize();
+        let off = side * 1.5 + Vec3::NEG_Y * 0.8 - along * 0.3;
+        let full = neck_turn(facing, off.normalize(), look.yaw);
+        let full_angle = full.angle_between(Quat::IDENTITY);
+        assert!(full_angle <= look.yaw + 1e-4);
+        let dt = 1.0 / 60.0;
+        let mut turn = Quat::IDENTITY;
+        let mut first = 0.0;
+        for frame in 0..120 {
+            turn = ease_head_turn(turn, full, dt);
+            let a = turn.angle_between(Quat::IDENTITY);
+            if frame == 0 {
+                first = a;
+            }
+            assert!(
+                a <= look.yaw + 1e-4,
+                "frame {frame}: head turned {}deg, limit {}deg",
+                a.to_degrees(),
+                look.yaw.to_degrees()
+            );
+        }
+        assert!(
+            first < full_angle * 0.5,
+            "catch frame turned {}deg of {}deg: the neck snaps",
+            first.to_degrees(),
+            full_angle.to_degrees()
+        );
+        assert!(turn.angle_between(full) < 1e-3, "head did not reach the look-away aim");
+    }
 }

@@ -26,6 +26,13 @@ fn submit(m: &Mesh) {
     draw_mesh(m);
 }
 
+/// Draws meshes built earlier (a static prop's cached geometry), counted as `draw_and_clear` counts its own.
+pub fn submit_all(meshes: &[Mesh]) {
+    for m in meshes {
+        submit(m);
+    }
+}
+
 impl Builder {
     pub fn new(tex: Option<Texture2D>) -> Builder {
         Builder {
