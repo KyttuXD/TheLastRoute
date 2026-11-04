@@ -475,9 +475,9 @@ pub struct MaskedHours {
 }
 
 impl MaskedHours {
-    /// A shift for `night` (clamped to 1 to 6). `rng` is the shift's stream: the variety stream is derived from its state.
+    /// A shift for `night` (clamped to 1 to the mode's nights). `rng` is the shift's stream: the variety stream is derived from its state.
     pub fn new(night: i32, mut rng: Mulberry, options: MaskOptions) -> Self {
-        let night_idx = (night.clamp(1, 6) - 1) as usize;
+        let night_idx = (night.clamp(1, nights() as i32) - 1) as usize;
         let box_decay = match options.levels.get("glyra") {
             Some(&level) if level >= 0 => box_decay_for_level(level),
             _ => cfg().box_decay[night_idx],

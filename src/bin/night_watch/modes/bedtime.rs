@@ -24,7 +24,6 @@ struct Rules {
     custom_battery_night: u32,
     battery_full: f64,
     creep_full: f64,
-    #[cfg(test)]
     /// [minimum share of the top score, rating], best first.
     ratings: Vec<(f64, String)>,
     var_wait_spread: f64,
@@ -45,6 +44,9 @@ struct Rules {
     bed_gain: f64,
     bed_gain_per_level: f64,
     bed_lit_drain_per_sec: f64,
+    /// Haelith's exhale is heard once she has got this far toward the bed (`bed_stir_at`).
+    bed_stir_at: f64,
+    cue: CueRule,
     nights: Vec<NightRow>,
     custom_row: NightRow,
 }
@@ -56,6 +58,15 @@ struct WaitRule {
     per_level_ms: f64,
     floor_ms: f64,
     window_ms: f64,
+}
+
+/// How often breathing is heard again while the hunter stays put: the door stages (near is the faster one) and Haelith's
+/// exhale at the foot of the bed.
+#[derive(Clone, Copy, Debug)]
+struct CueRule {
+    near_ms: f64,
+    far_ms: f64,
+    haelith_ms: f64,
 }
 
 /// One night's pace. Doors use `first` and `rest` (Haelith has no door timing, so her slots are 0).
@@ -93,7 +104,6 @@ impl Rules {
             custom_battery_night: int(r, "custom_battery_night") as u32,
             battery_full: num(r, "battery_full"),
             creep_full: num(r, "creep_full"),
-            #[cfg(test)]
             ratings: (0..list(r, "ratings").len())
                 .map(|i| (num(r, &format!("ratings.{i}.min_share")), crate::data::text(r, &format!("ratings.{i}.name")).to_string()))
                 .collect(),
@@ -121,6 +131,12 @@ impl Rules {
             bed_gain: num(r, "bed_gain"),
             bed_gain_per_level: num(r, "bed_gain_per_level"),
             bed_lit_drain_per_sec: num(r, "bed_lit_drain_per_sec"),
+            bed_stir_at: num(r, "bed_stir_at"),
+            cue: CueRule {
+                near_ms: num(r, "breath_cue.near_ms"),
+                far_ms: num(r, "breath_cue.far_ms"),
+                haelith_ms: num(r, "breath_cue.haelith_ms"),
+            },
             nights: list(r, "nights").iter().map(night_row_of).collect(),
             custom_row: night_row_of(&r["custom_night"]),
         }
@@ -149,7 +165,6 @@ pub fn night_count() -> u32 {
     Rules::load().nights.len() as u32
 }
 
-#[cfg(test)]
 /// The most a hunter can be pushed to on a Custom Night: the three sliders at full.
 pub fn custom_max_score() -> i32 {
     let r = Rules::load();
@@ -194,6 +209,8 @@ pub enum BedtimeEvent {
     Restless,
     Breath(Hunter),
     Near(Hunter),
+    /// Breathing heard again while a hunter stays at her door, or Haelith's exhale once she is close to the bed.
+    Breathing(Hunter),
     Leave(Hunter),
     Stir { p: f64 },
     Caught(Hunter),
@@ -227,7 +244,6 @@ pub fn custom_score(sliders: [i32; 3]) -> i32 {
     sliders.into_iter().map(|s| s.clamp(0, r.max_ai)).sum::<i32>() * r.points_per_level
 }
 
-#[cfg(test)]
 pub fn rating_of(score: i32, max_score: i32) -> String {
     let share = if max_score > 0 { f64::from(score) / f64::from(max_score) } else { 0.0 };
     let r = Rules::load();
@@ -391,6 +407,8 @@ pub struct Bedtime {
     creep: Creep,
     idle: f64,
     restless: bool,
+    /// When each hunter's breathing was last heard, in elapsed ms (the cadence of `breathing_cues`).
+    cue_ms: [f64; 3],
     pub elapsed: f64,
     pub battery: f64,
     pub light: Light,
@@ -442,6 +460,7 @@ impl Bedtime {
             creep: Creep { p: 0.0, pacer: Pacer::default(), tempo: creep_tempo },
             idle: 0.0,
             restless: false,
+            cue_ms: [0.0; 3],
             elapsed: 0.0,
             battery,
             light: Light::Off,
@@ -526,6 +545,7 @@ impl Bedtime {
         self.restless = restless;
         let speed = if restless { self.rules.afk_speed } else { 1.0 };
 
+        let start = ev.len();
         for who in [Hunter::Loxelle, Hunter::Javelle] {
             let tick = DoorTick {
                 rules: &self.rules,
@@ -548,6 +568,12 @@ impl Bedtime {
             }
         }
 
+        for e in &ev[start..] {
+            if let BedtimeEvent::Breath(who) | BedtimeEvent::Near(who) = *e {
+                self.cue_ms[who.index()] = self.elapsed;
+            }
+        }
+
         let creep_level = self.level(Hunter::Haelith);
         if lit == Light::Off
             && self.creep.pacer.step(&mut self.rng, dt_ms * self.creep.tempo * self.hunter_speed, creep_level, &self.rules.wait)
@@ -559,6 +585,7 @@ impl Bedtime {
         if lit == Light::Bed {
             self.creep.p = (self.creep.p - self.rules.bed_lit_drain_per_sec * dt).max(0.0);
         }
+        self.breathing_cues(&mut ev);
         if self.creep.p >= self.rules.creep_full {
             self.finish(Hunter::Haelith, &mut ev);
             return ev;
@@ -569,6 +596,28 @@ impl Bedtime {
             ev.push(BedtimeEvent::Win);
         }
         ev
+    }
+
+    /// The breathing a player listens for: a door hunter breathes again every so often while she waits at her door
+    /// (faster when she is near), and Haelith exhales at the foot of the bed once she has crept far enough.
+    fn breathing_cues(&mut self, ev: &mut Vec<BedtimeEvent>) {
+        let cue = self.rules.cue;
+        for who in [Hunter::Loxelle, Hunter::Javelle] {
+            let door = if who == Hunter::Loxelle { &self.loxelle } else { &self.javelle };
+            if door.state == DoorState::Away {
+                continue;
+            }
+            let gap = if door.state == DoorState::Near { cue.near_ms } else { cue.far_ms };
+            if self.elapsed - self.cue_ms[who.index()] > gap {
+                self.cue_ms[who.index()] = self.elapsed;
+                ev.push(BedtimeEvent::Breathing(who));
+            }
+        }
+        let haelith = Hunter::Haelith.index();
+        if self.creep.p >= self.rules.bed_stir_at && self.elapsed - self.cue_ms[haelith] > cue.haelith_ms {
+            self.cue_ms[haelith] = self.elapsed;
+            ev.push(BedtimeEvent::Breathing(Hunter::Haelith));
+        }
     }
 
     fn finish(&mut self, who: Hunter, ev: &mut Vec<BedtimeEvent>) {
@@ -595,6 +644,36 @@ impl Bedtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hunter_at_her_door_breathes_again_every_so_often() {
+        let opts = BedtimeOptions {
+            var_rng: Some(NightWatchStream::neutral()),
+            ..BedtimeOptions::campaign(1, 0)
+        };
+        let mut game = Bedtime::new(opts);
+        game.loxelle.state = DoorState::Breath;
+        let events = game.step(1800.0, BedtimeInput::default());
+        assert!(events.contains(&BedtimeEvent::Breathing(Hunter::Loxelle)), "{events:?}");
+        let quiet = game.step(800.0, BedtimeInput::default());
+        assert!(!quiet.contains(&BedtimeEvent::Breathing(Hunter::Loxelle)), "{quiet:?}");
+    }
+
+    #[test]
+    fn haelith_exhales_only_once_she_is_close_enough_to_the_bed() {
+        let opts = BedtimeOptions {
+            var_rng: Some(NightWatchStream::neutral()),
+            ..BedtimeOptions::campaign(1, 0)
+        };
+        let mut game = Bedtime::new(opts);
+        game.creep.p = 10.0;
+        game.elapsed = 3000.0;
+        let far = game.step(10.0, BedtimeInput::default());
+        assert!(!far.contains(&BedtimeEvent::Breathing(Hunter::Haelith)), "{far:?}");
+        game.creep.p = 50.0;
+        let close = game.step(10.0, BedtimeInput::default());
+        assert!(close.contains(&BedtimeEvent::Breathing(Hunter::Haelith)), "{close:?}");
+    }
 
     #[test]
     fn holding_the_closet_door_shut_sends_loxelle_away() {
@@ -631,6 +710,8 @@ mod tests {
         assert_eq!(r.nights[5].rest, [1500.0, 5000.0, 0.0]);
         assert_eq!(r.nights[1].first, [3000.0, 4500.0, 0.0]);
         assert_eq!(r.custom_row.near_ms, 4200.0);
+        assert_eq!(r.bed_stir_at, 45.0);
+        assert_eq!((r.cue.near_ms, r.cue.far_ms, r.cue.haelith_ms), (1100.0, 1700.0, 2400.0));
         assert_eq!(r.effective_level(10, 2), 10);
         assert_eq!(r.effective_level(10, 3), 11);
         assert_eq!(r.effective_level(10, 5), 12);

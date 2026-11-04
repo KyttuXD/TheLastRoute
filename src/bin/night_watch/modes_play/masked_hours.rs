@@ -33,7 +33,7 @@ const TEXT_KEYS: &[&str] = &[
     "hint", "monitor", "monitor_close", "desk", "hall_label", "left_vent", "right_vent", "mask_on", "battery_dead",
     "empty", "held_still", "cam_tag", "night", "hour", "midnight", "music_box", "battery", "side_left", "side_right",
     "muted", "save_failed", "note_hall", "note_office", "note_leave", "note_rush", "note_flash_hit", "note_duct",
-    "note_vent", "note_vent_retreat", "note_fetch", "note_dark", "note_box_start", "note_box_empty", "note_box_saved",
+    "note_vent", "note_vent_retreat", "note_fetch", "note_creep", "note_dark", "note_box_start", "note_box_empty", "note_box_saved",
     "caught_glyra", "caught_nyxie", "caught_other", "caught_title", "dark_title", "cleared", "win_line", "next_night",
     "last_night", "retry", "esc_hub",
 ];
@@ -310,6 +310,7 @@ impl MaskRun {
             MaskEvent::Vent { id, side } => self.note(with_side("note_vent", id, side)),
             MaskEvent::VentRetreat { id, side } => self.note(with_side("note_vent_retreat", id, side)),
             MaskEvent::Fetch { id, .. } => self.note(named("note_fetch", id)),
+            MaskEvent::Creep { id, side, .. } => self.note(with_side("note_creep", id, side)),
             MaskEvent::Dark { id } => self.note(named("note_dark", id)),
             MaskEvent::BoxStart => self.note(ui_text("note_box_start")),
             MaskEvent::BoxEmpty => self.note(ui_text("note_box_empty")),
@@ -1017,6 +1018,31 @@ mod tests {
             }
         }
         assert!(shown, "the call box opened with its first line");
+    }
+
+    #[test]
+    fn an_ilyra_creep_step_shows_a_note_naming_the_duct() {
+        // Ilyra creeps in the dark, so an idle player on night 1 sees her creep steps (no light, no mask).
+        let mut r = fresh(1);
+        let mut saw_creep = false;
+        for _ in 0..200_000 {
+            if r.outcome().is_some() {
+                break;
+            }
+            let events = r.night.step(16.0, MaskInput::default());
+            for event in events {
+                if let MaskEvent::Creep { id, side, .. } = event {
+                    saw_creep = true;
+                    let text = with_side("note_creep", id, side);
+                    assert!(text.starts_with("Ilyra") && text.contains(side_word(side)), "{text}");
+                    assert!(!text.contains('{'), "unfilled slot in {text}");
+                }
+                r.play(event);
+            }
+        }
+        if saw_creep {
+            assert!(r.notes.iter().any(|(text, _)| text.contains("creeps closer")), "a creep step leaves a note");
+        }
     }
 
     #[test]

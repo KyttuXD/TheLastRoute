@@ -62,6 +62,7 @@
 			"note_vent": "{name} is at the {side} vent.",
 			"note_vent_retreat": "{name} backs out of the {side} vent.",
 			"note_fetch": "{name} is moving between the vents.",
+			"note_creep": "{name} creeps closer in the {side} duct.",
 			"note_dark": "The battery is dead. {name} is coming.",
 			"note_box_start": "The music box is winding down.",
 			"note_box_empty": "The music box has stopped. Hold R to wind it.",

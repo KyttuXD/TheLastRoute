@@ -252,6 +252,7 @@ impl BedtimeRun {
             BedtimeEvent::Near(who) => self.note(fill(ui_text("notes.near"), "{name}", hunter_name(who))),
             BedtimeEvent::Leave(who) => self.note(fill(ui_text("notes.leave"), "{name}", hunter_name(who))),
             BedtimeEvent::Stir { .. } => self.note(ui_text("notes.stir")),
+            BedtimeEvent::Breathing(Hunter::Haelith) => self.note(ui_text("notes.exhale")),
             BedtimeEvent::Caught(who) => {
                 self.end = Some(End { outcome: Outcome::Caught(who) });
                 self.flash_ms = ui_ms("flash_ms");
@@ -565,6 +566,10 @@ fn draw_result(run: &BedtimeRun, end: End, sw: f32, sh: f32) {
     };
     text_centered(&title, sw * 0.5, sh * 0.40, 64.0, colour);
     text_centered(line, sw * 0.5, sh * 0.40 + 48.0, 28.0, INK);
+    if let Some(score) = run.night.score() {
+        let name = bedtime::rating_of(score, bedtime::custom_max_score());
+        text_centered(&name, sw * 0.5, sh * 0.40 + 84.0, 26.0, AMBER);
+    }
     let next = match end.outcome {
         Outcome::Win if run.number < bedtime::night_count() => ui_text("labels.next_night"),
         Outcome::Win => ui_text("labels.hub_night"),
@@ -706,6 +711,13 @@ mod tests {
     fn the_answering_player_clears_the_first_night() {
         let (end, _) = play(1, 11, answering);
         assert!(matches!(end, Some(End { outcome: Outcome::Win })), "{end:?}");
+    }
+
+    #[test]
+    fn haelith_exhale_is_noted_at_the_foot_of_the_bed() {
+        let mut r = run(1);
+        r.play(BedtimeEvent::Breathing(Hunter::Haelith));
+        assert!(r.notes.iter().any(|(text, _)| text == ui_text("notes.exhale")), "{:?}", r.notes);
     }
 
     #[test]

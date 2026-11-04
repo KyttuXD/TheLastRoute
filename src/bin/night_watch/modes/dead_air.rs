@@ -312,6 +312,11 @@ impl Cfg {
     }
 }
 
+/// The story nights the mode plays (`nights` in the rules file).
+fn night_count() -> i32 {
+    data::int(data::rules("dead_air"), "nights") as i32
+}
+
 fn cfg() -> &'static Cfg {
     static CFG: OnceLock<Cfg> = OnceLock::new();
     CFG.get_or_init(Cfg::load)
@@ -642,7 +647,7 @@ pub struct DeadAir {
 impl DeadAir {
     pub fn new(setup: DeadAirSetup) -> DeadAir {
         let cfg = cfg();
-        let n = (setup.night.clamp(1, 6) - 1) as usize;
+        let n = (setup.night.clamp(1, night_count()) - 1) as usize;
         // The variety stream is derived before the night's first draw.
         let vr = NightWatchStream::variety_of(&setup.rng, setup.var_rng);
         let climate = [Climate::Solyth, Climate::Wynelle].map(|c| base_level(cfg, c.hunter(), n, setup.climate_levels.as_ref()));

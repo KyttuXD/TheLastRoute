@@ -38,6 +38,7 @@
 	"bed_lit_drain_per_sec": 35.0,
 	"bed_visible_at": 80,
 	"bed_stir_at": 45,
+	"breath_cue": { "near_ms": 1100, "far_ms": 1700, "haelith_ms": 2400 },
 	"nights": [
 		{ "ai": [3, 0, 0], "breath_ms": 3200, "near_ms": 4200, "first_ms": [3000, 3000], "rest_ms": [7000, 7000] },
 		{ "ai": [7, 7, 0], "breath_ms": 2560, "near_ms": 3360, "first_ms": [3000, 4500], "rest_ms": [5000, 5000] },
@@ -70,6 +71,7 @@
 			"near": "{name} is at the door!",
 			"leave": "{name} backs away.",
 			"stir": "Something shifts at the foot of the bed.",
+			"exhale": "Something breathes slowly at the foot of the bed.",
 			"muted": "Call muted.",
 			"save_failed": "Could not save your progress."
 		},
