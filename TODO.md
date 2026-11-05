@@ -321,7 +321,9 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [ ] Account screen kicker still reads "KYTTU'S LAB // ACCOUNT"; change it to "KYTTU: THE LAST ROUTE"
 - [ ] Chairs face their tables: the code matches Godot, but no restaurant render has been checked (OPEN_QUESTIONS 21)
 - [ ] Ambient is 0.35 here against Godot's 0.035, a deliberate change; decide whether to keep it or match Godot
-- [ ] Mouse look speed is unchecked against Godot with the same swipe (OPEN_QUESTIONS 20)
+- [ ] Mouse look speed is unchecked against Godot with the same swipe (OPEN_QUESTIONS 20); macOS now 1/3 (data/player/look.json), unmeasured
+- [x] Mouse camera snapping (2026-11-04): a click while grabbed no longer freezes the look for 9 frames; the re-lock settle is time based (2 frames and 30 ms) with warp-spike rejection and a per-frame cap; per-platform multiplier in `data/player/look.json`; a frame gap over 0.25 s re-locks; the locker cone is a soft edge and the entry turn eases over the glide; the ladder keeps free yaw (100 deg, eased edge) and the dismount eases instead of overwriting; look stays free during a hunter's grab; pitch limit 1.4 like Godot
+- [ ] Mouse camera: verify on a real mouse (cannot be injected into --agent-window): 20 rapid right clicks while turning, pause and resume, Cmd-Tab away and back (miniquad macOS never reports focus loss, so only the gap heuristic and click re-grab cover it), flick into a locker edge, turn while climbing, the macOS swipe test against Godot
 - [x] lr_server: some helpers are only used by tests and are gated with cfg(test); delete the ones nothing needs
 - [x] God mode leaked to other players in a room (fixed 2026-11-03)
 - [ ] Peek lean is not visually confirmed: hunter hallway peeking works in the tests, but no screenshot has shown the lean yet

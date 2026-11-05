@@ -68,7 +68,8 @@ Short answers are fine. Where there is a default, the work goes ahead with it if
     **Default:** finish the web UI phases first.
 20. Mouse look: can you do one identical physical swipe in the Godot build and the Rust build, with the
     same sensitivity? That settles whether the current speed is right.
-    **Default:** keep the current speed until the swipe test is done.
+    **Default:** the Windows multiplier is unchanged (0.583); macOS now uses 1/3 (Godot's k = 3, points) from
+    `data/player/look.json` `mouse_multiplier_macos`, derived and not yet measured. The same swipe test settles it.
 
 ## Doors and props
 

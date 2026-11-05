@@ -119,6 +119,9 @@ pub struct Climb {
     exit_bottom: ((f32, f32), f32),
     /// The landing of the dismount that runs (set by `dismount`).
     exit: ((f32, f32), f32),
+    /// The eased share of the mount's or dismount's turn already applied (the turn is added in steps, so the mouse's
+    /// own yaw is never overwritten).
+    turn_done: f32,
 }
 
 impl Climb {
@@ -145,6 +148,7 @@ impl Climb {
             end: if dir < 0 { End::Top } else { End::Bottom },
             from,
             from_yaw: yaw,
+            turn_done: 0.0,
             exit_top: (step_center(cell, run), facing(run)),
             exit_bottom: (step_center(cell, run), facing(run)),
             exit: (step_center(cell, run), facing(run)),
@@ -181,6 +185,7 @@ impl Climb {
             end: if from_top { End::Top } else { End::Bottom },
             from,
             from_yaw: yaw,
+            turn_done: 0.0,
             exit_top: top,
             exit_bottom: bottom,
             exit: if from_top { top } else { bottom },
@@ -320,6 +325,29 @@ impl Game {
         true
     }
 
+    /// One frame of mouse look on the ladder (Godot never writes the yaw while climbing): free horizontal look within
+    /// `ladder_free_yaw_deg` of the rails' direction, easing into that edge, plus the normal pitch. Returns false when the
+    /// climb is not in its Climb phase (the mount and dismount add their own eased turn on top of the plain look).
+    pub(super) fn ladder_look(&mut self, c: &Controls) -> bool {
+        let Some(k) = self.ladder else {
+            return false;
+        };
+        if k.phase != Phase::Climb {
+            return false;
+        }
+        let look = crate::config::look::cfg();
+        let base = facing(k.side);
+        let o = crate::config::look::soft_step(
+            turn(base, self.p.yaw),
+            -c.look.x,
+            look.ladder_free_yaw_deg.to_radians(),
+            look.ladder_soft_zone_deg.to_radians(),
+        );
+        self.p.yaw = base + o;
+        self.p.look(macroquad::prelude::vec2(0.0, c.look.y));
+        true
+    }
+
     /// Begins a dismount at the end the body is at: it lerps to the centre of the step cell, its y fixed.
     fn dismount(&self, k: &mut Climb, end: End) {
         k.phase = Phase::Dismount;
@@ -335,13 +363,14 @@ impl Game {
             End::Top => k.exit_top,
             End::Bottom => k.exit_bottom,
         };
+        k.turn_done = 0.0;
     }
 
     /// Ends a dismount: the body stands in the step cell at the end it went off.
     fn finish_ladder(&mut self, k: Climb) {
         self.ladder = None;
+        // the yaw is not written: the dismount's eased turn has finished and the mouse's own turn stays
         self.p.pos = k.exit.0;
-        self.p.yaw = k.exit.1;
         self.p.set_abs_y(k.y);
     }
 
@@ -368,7 +397,8 @@ impl Game {
                 k.t = (k.t + dt / LADDER_MOUNT_SECONDS).min(1.0);
                 let e = smooth(k.t);
                 self.p.pos = lerp2(k.from, stand(k.cell, k.side), e);
-                self.p.yaw = k.from_yaw + turn(k.from_yaw, facing(k.side)) * e;
+                self.p.yaw += turn(k.from_yaw, facing(k.side)) * (e - k.turn_done);
+                k.turn_done = e;
                 self.p.set_abs_y(k.y);
                 if k.t >= 1.0 {
                     k.phase = Phase::Climb;
@@ -391,7 +421,6 @@ impl Game {
                 }
                 if k.phase == Phase::Climb {
                     self.p.pos = stand(k.cell, k.side);
-                    self.p.yaw = facing(k.side);
                     self.p.set_abs_y(k.y);
                 }
             }
@@ -400,7 +429,8 @@ impl Game {
                 let e = smooth(k.t);
                 self.p.pos = lerp2(k.from, k.exit.0, e);
                 // turn to the landing's yaw (away from a hatch), so holding forward does not climb straight back on
-                self.p.yaw = k.from_yaw + turn(k.from_yaw, k.exit.1) * e;
+                self.p.yaw += turn(k.from_yaw, k.exit.1) * (e - k.turn_done);
+                k.turn_done = e;
                 self.p.set_abs_y(k.y);
                 moving = true;
                 if k.t >= 1.0 {
@@ -801,6 +831,49 @@ mod tests {
         let strict = LadderRules { walk_in_facing: 0.9, ..base };
         assert!(!strict.walks_in(cell, run, at(0.1), a45), "a stricter facing refuses the oblique walk");
         assert!(!base.walks_in(cell, run, at(0.1), (1.0, 0.0)), "facing away never mounts");
+    }
+
+    #[test]
+    fn mouse_yaw_stays_free_on_the_ladder_and_is_never_overwritten() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let (mut g, i) = ladder_game(&content, &catalog);
+        let k0 = {
+            g.start_ladder(i);
+            g.ladder.unwrap()
+        };
+        let base = facing(k0.side);
+        run(&mut g, &quiet(), MOUNT + DT, &content, &catalog);
+        assert_eq!(g.ladder.unwrap().phase, Phase::Climb);
+        assert!(turn(base, g.p.yaw).abs() < 1e-3, "faces the rails after the mount");
+        // a mouse turn of +0.3 rad (yaw -= x) sticks, and holds with no further input
+        let look = Controls { look: macroquad::prelude::vec2(0.3, 0.0), ..Controls::default() };
+        frame(&mut g, &look, &content, &catalog);
+        assert!((turn(base, g.p.yaw) + 0.3).abs() < 1e-4, "yaw {}", turn(base, g.p.yaw));
+        let y = g.p.yaw;
+        run(&mut g, &quiet(), 0.5, &content, &catalog);
+        assert!((g.p.yaw - y).abs() < 1e-5, "nothing pulls it back while climbing");
+        // far past the data limit it slows into the edge and never passes it
+        let hard = Controls { look: macroquad::prelude::vec2(0.2, 0.0), ..Controls::default() };
+        let limit = crate::config::look::cfg().ladder_free_yaw_deg.to_radians();
+        for _ in 0..200 {
+            frame(&mut g, &hard, &content, &catalog);
+            assert!(turn(base, g.p.yaw).abs() <= limit + 1e-4);
+        }
+        // the dismount eases back out of the turn without a snap and keeps later mouse input
+        g.ladder.as_mut().unwrap().y = g.ladder.unwrap().y_top;
+        frame(&mut g, &forward(), &content, &catalog);
+        assert_eq!(g.ladder.unwrap().phase, Phase::Dismount);
+        let mut prev = g.p.yaw;
+        let mut max_step = 0.0f32;
+        while g.ladder.is_some() {
+            frame(&mut g, &quiet(), &content, &catalog);
+            max_step = max_step.max(turn(prev, g.p.yaw).abs());
+            prev = g.p.yaw;
+        }
+        assert!(max_step < 0.5, "no frame of the dismount snaps the view: {max_step}");
+        let run_yaw = facing(k0.run);
+        assert!(turn(run_yaw, g.p.yaw).abs() < 1e-3, "ends facing away from the hatch");
     }
 
     #[test]

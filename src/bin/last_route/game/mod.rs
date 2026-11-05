@@ -189,6 +189,8 @@ pub struct Game {
     escape_grace: f32,
     locker_cooldown: Vec<f32>,
     hide_check: Option<(usize, usize, f32)>,
+    /// The look the runner had on entering a hiding spot and the glide's progress 0..1: the view eases out of the spot.
+    hide_ease: Option<(f32, f32, f32)>,
     /// Host: the world events the game raised this frame for the guests (game/hunting.rs), taken by the app.
     pub hunter_out: crate::net::hunter_events::Outbox,
 
@@ -319,6 +321,7 @@ impl Game {
             escape_grace: 0.0,
             locker_cooldown: vec![],
             hide_check: None,
+            hide_ease: None,
             hunter_out: Default::default(),
             focus: None,
             toast: String::new(),
@@ -451,6 +454,7 @@ impl Game {
             escape_grace: 0.0,
             locker_cooldown: vec![],
             hide_check: None,
+            hide_ease: None,
             hunter_out: Default::default(),
             focus: None,
             toast: String::new(),
@@ -657,6 +661,40 @@ impl Game {
         self.p.camera_basis()
     }
 
+    /// One frame of mouse look. Plain turn in the open; eased at a limit and never overwritten by a scripted turn:
+    /// the locker's entry glide turns the view out of the spot (the mouse is ignored for that short glide), the locker
+    /// window's cone is a soft edge, the ladder keeps a free yaw around the rails.
+    fn apply_look(&mut self, dt: f32, c: &Controls) {
+        use crate::render::hiding_cam as hc;
+        if let (Some(li), None) = (self.p.hidden, self.ladder) {
+            let facing = self.fac.hiding.get(li).map_or((0.0, 1.0), |h| (h.facing.0 as f32, h.facing.1 as f32));
+            let base = hc::facing_yaw(facing);
+            if let Some((fy, fp, t)) = self.hide_ease {
+                let t = (t + dt / hc::glide_seconds(true)).min(1.0);
+                (self.p.yaw, self.p.pitch) = hc::entry_look((fy, fp), (base, 0.0), t);
+                self.hide_ease = if t >= 1.0 { None } else { Some((fy, fp, t)) };
+                return;
+            }
+            let shaking = matches!(self.hide_check, Some((spot, _, _)) if spot == li);
+            if !hc::look_locked(shaking) {
+                (self.p.yaw, self.p.pitch) = hc::soft_look(
+                    self.p.yaw,
+                    self.p.pitch,
+                    -c.look.x,
+                    -c.look.y,
+                    base,
+                    hc::cfg(),
+                    crate::config::look::cfg().hide_soft_zone_deg,
+                );
+            }
+            return;
+        }
+        self.hide_ease = None;
+        if !self.ladder_look(c) {
+            self.p.look(c.look);
+        }
+    }
+
     pub fn forward2(&self) -> (f32, f32) {
         self.p.forward2()
     }
@@ -798,12 +836,13 @@ impl Game {
             .chain(self.npcs.iter().filter(|n| n.level == level).map(|n| n.at))
             .collect();
         self.fac.update_doors(&openers, &bodies, dt);
+        // the mouse stays free through a hunter's grab (Godot adds only grab pitch and roll on top of the look)
+        self.apply_look(dt, c);
         if self.escape.is_some() {
             self.update_escape(dt, c, sounds);
             return;
         }
 
-        self.p.look(c.look);
         if self.ladder.is_some() {
             // a climb is continuous in y: the label follows the body's height every frame, like a walked flight
             self.advance_ladder(dt, c, content, catalog);

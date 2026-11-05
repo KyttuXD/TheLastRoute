@@ -23,18 +23,16 @@ pub const FIELD_OF_VIEW_DEG: f32 = 78.0;
 pub const MOUSE_SENSITIVITY: f32 = 0.0075;
 /// Mouse look is scaled so one physical mouse pixel turns the same as in the Godot original.
 /// Godot's `relative` is in viewport pixels: physical pixels divided by the window's integer scale
-/// k (480x270 base, canvas_items/expand, DPI-aware on Windows), so it turns `sens / k` radians per
-/// physical pixel. This window is not DPI-aware (`high_dpi: false` in main.rs), so Windows reports
-/// its mouse motion in logical pixels, and one physical pixel is `1 / display scale` logical pixels.
-/// Matching the two gives `display scale / k`.
-/// Measured on the target machine: a 2256x1504 panel at 175 % scale, Godot windowed (the default,
-/// `fullscreen=false` in its saved settings), so the window is 1440x810 physical, k = 3.
-/// Other machines need their own value (a 100 % display at k = 3 would use 1 / 3). Check with one
-/// identical physical swipe in both builds at the same sensitivity: multiply by Godot's turn over
-/// this build's turn.
+/// k (480x270 base, canvas_items/expand), so it turns `sens / k` radians per physical pixel.
+/// The multiplier lives in `data/player/look.json`, one per platform (`config::look::Cfg::multiplier`):
+/// * macOS reports raw deltas in points and Godot's window is 1440x810 points (k = 3), so `1 / k`.
+/// * Windows: this window is not DPI-aware (`high_dpi: false` in main.rs), so it reports logical pixels, and one
+///   physical pixel is `1 / display scale` logical pixels. Matching the two gives `display scale / k`. Measured on a
+///   2256x1504 panel at 175 % scale with Godot windowed, so k = 3.
+/// Other machines need their own value. Check with one identical physical swipe in both builds at the same
+/// sensitivity: multiply by Godot's turn over this build's turn.
 pub const MOUSE_LOOK_DISPLAY_SCALE: f32 = 1.75;
 pub const MOUSE_LOOK_GODOT_WINDOW_SCALE: f32 = 3.0;
-pub const MOUSE_LOOK_MULTIPLIER: f32 = MOUSE_LOOK_DISPLAY_SCALE / MOUSE_LOOK_GODOT_WINDOW_SCALE;
 /// Settings FOV bounds (Godot MAX_FIELD_OF_VIEW = 105 in game/autoload/settings.gd).
 pub const FOV_MIN_DEG: f32 = 60.0;
 pub const FOV_MAX_DEG: f32 = 105.0;
@@ -148,4 +146,5 @@ pub const SAFE_ZONE_RADIUS: f32 = 2.5;
 pub const SAFE_ZONE_BLOCK_RADIUS: f32 = 3.15;
 
 pub mod difficulty;
+pub mod look;
 pub use difficulty::*;

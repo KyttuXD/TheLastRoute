@@ -30,7 +30,7 @@ Logs and banners go to **stderr**; stdout carries only replies (and, for `--test
   `observe.world.origin` is the window's absolute offset and the window recentres as you walk
   (event `window_recentred`), shifting every position by 45.
 * **Facing.** `yaw` 0 faces north (-z); forward is `(-sin yaw, -cos yaw)`. Positive `look[0]` turns
-  right, positive `look[1]` looks down. `pitch` is radians, up positive, clamped to +-1.45.
+  right, positive `look[1]` looks down. `pitch` is radians, up positive, clamped to +-1.4 (`data/player/look.json`).
 * **Time.** One frame = 1/60 s (`start_run` `fixed_fps` changes it). Nothing advances unless you
   `step` (or `bot`, `goto`, `step_until`, `interact`, `look`, `teleport` which settle 1 frame).
 * **Replies.** Every reply has `"ok"`. Errors are `{"ok": false, "error": "..."}`. If the request has

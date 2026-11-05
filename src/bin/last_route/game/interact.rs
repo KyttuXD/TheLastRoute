@@ -440,8 +440,8 @@ impl Game {
         self.p.flashlight_on = false;
         let l = &self.fac.hiding[i];
         self.p.pos = self.fac.locker_center(l);
-        self.p.yaw = (-(l.facing.0 as f32)).atan2(-(l.facing.1 as f32));
-        self.p.pitch = 0.0;
+        // the view turns out of the spot over the entry glide (game/mod.rs `apply_look`), not in one frame
+        self.hide_ease = Some((self.p.yaw, self.p.pitch, 0.0));
         if trapped {
             self.p.hide_lock = 30.0;
             self.say("THE DOOR WON'T OPEN");
@@ -450,6 +450,7 @@ impl Game {
 
     pub(super) fn leave_locker(&mut self, forced_to: Option<(f32, f32)>) {
         if let Some(i) = self.p.hidden.take() {
+            self.hide_ease = None;
             self.p.hide_lock = 0.0;
             self.p.pos =
                 forced_to.unwrap_or_else(|| crate::hunters::gimmicks::hiding_exit(&self.fac, i));
@@ -684,6 +685,50 @@ mod tests {
         assert!(g.ladder.is_none(), "the climb ends by dismount");
         assert_eq!(g.inf.as_ref().unwrap().level, dir);
         assert_eq!(g.last_autosave, "level", "a new level saves the run");
+    }
+
+    #[test]
+    fn entering_a_locker_eases_the_view_out_instead_of_snapping_it() {
+        use crate::render::hiding_cam as hc;
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-TEST-7", 0, &content, &catalog);
+        g.remote_hunters = true;
+        let li = 0usize;
+        let facing = (g.fac.hiding[li].facing.0 as f32, g.fac.hiding[li].facing.1 as f32);
+        let base = hc::facing_yaw(facing);
+        let start = base + 2.0;
+        g.p.yaw = start;
+        g.p.pitch = 0.5;
+        g.enter_locker(li, &Sounds::default());
+        assert_eq!(g.p.yaw, start, "entering writes no yaw");
+        assert_eq!(g.p.pitch, 0.5, "nor pitch");
+        // the mouse is ignored while the glide runs; each frame turns a bounded step; the end looks out of the spot
+        let dt = 1.0 / 60.0;
+        let rate = 2.0 / (hc::glide_seconds(true) / dt);
+        let mouse = crate::game::Controls { look: macroquad::prelude::vec2(0.3, 0.3), ..Default::default() };
+        let mut prev = start;
+        let frames = (hc::glide_seconds(true) / dt).ceil() as usize + 2;
+        for _ in 0..frames {
+            if g.hide_ease.is_none() {
+                break;
+            }
+            g.apply_look(dt, &mouse);
+            let step = crate::config::look::turn(prev, g.p.yaw).abs();
+            assert!(step <= rate * 1.6 + 1e-4, "no frame snaps: {step}");
+            prev = g.p.yaw;
+        }
+        assert!(crate::config::look::turn(g.p.yaw, base).abs() < 1e-4 && g.p.pitch.abs() < 1e-4, "arrived");
+        assert!(g.hide_ease.is_none());
+        // after the glide the mouse is free again, with a soft edge at the cone
+        g.apply_look(dt, &crate::game::Controls { look: macroquad::prelude::vec2(-0.05, 0.0), ..Default::default() });
+        assert!((crate::config::look::turn(base, g.p.yaw) - 0.05).abs() < 1e-4, "1:1 inside the cone");
+        for _ in 0..200 {
+            g.apply_look(dt, &crate::game::Controls { look: macroquad::prelude::vec2(-0.1, 0.0), ..Default::default() });
+        }
+        let edge = hc::cfg().yaw_deg.to_radians();
+        let off = crate::config::look::turn(base, g.p.yaw);
+        assert!(off <= edge + 1e-4 && off > edge - 0.05, "slides to the edge without passing it: {off}");
     }
 
     /// The room texts of the golden seeds (world/stack_contract_tests.rs GOLDEN).
