@@ -240,7 +240,7 @@ Risks:
 - **Inferno (-3).** The cave floor is non-flat (`world_mesh.rs:776-815 InfernoFloor::corner`). The flight foot needs a flat pad; otherwise add the corner height into the flight.
 - **Hunter behaviour change.** Chases will now follow across levels; difficulty and Night Watch pacing change. Needs playtest.
 - **Network.** Guests render host frames only (`guest_gate`). Old clients ignore `h` and filter by `depth`; a mixed session may see players pop at the depth flip.
-- **Saves.** The checkpoint stores `depth` (the label) plus optional `y_abs` (absolute feet y). A legacy save loads at `level*STOREY`, resume starts at the level's start cell, and autosave fires on the label change only.
+- **Saves.** The checkpoint stores `depth` (the label) plus optional `y_abs` (absolute feet y). A legacy save loads at `level*STOREY`, resume starts at the level's start cell, and autosave fires on the label change only. `y_abs` decides the label through `level()` and the resume height through `Checkpoint::migrated_y`: a saved y within `standing_tolerance` (`data/app/resume.json`, 0.5 m) of the resumed level's floor is kept (a body that stood or crouched there), any other y is a mid-flight autosave and resumes on the floor, because the save stores no x/z and the start cell is on the floor (a kept mid-flight y would hang the body in the air and drop it with a hard landing). So absolute height is still stored and still used; it is just never used to start a fall.
 - **Lighting.** Neighbour lamps through an opening may darken a room if the cap is not respected.
 - **Code size.** About 433 stair/ladder/storey hits across 44 files; many tests pin the swap.
 - **Memory and meshing.** Double meshing cost is the main performance risk.

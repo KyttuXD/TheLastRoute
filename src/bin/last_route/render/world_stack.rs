@@ -60,6 +60,28 @@ pub fn neighbour_parts_per_frame(
     }
 }
 
+/// What one resident neighbour builds this frame: its own openings plus those of the active floor (the well is seen
+/// through both), the data limits, and the per-frame part budget raised near an opening of the active floor.
+/// `NeighbourWorlds::sync` builds exactly this scope.
+pub fn neighbour_scope(
+    dy: f32,
+    mut openings: Vec<Opening>,
+    own_openings: &[Opening],
+    eye: (f32, f32, f32),
+    reach: f32,
+    on_flight: bool,
+    table: &world_mesh::StreamBudget,
+) -> NeighbourScope {
+    openings.extend(own_openings.iter().map(|o| Opening { cells: o.cells.clone(), centre: o.centre, upper_level: o.upper_level }));
+    NeighbourScope {
+        dy,
+        openings,
+        radius: table.neighbour_cull_radius,
+        max_parts: table.neighbour_max_parts,
+        chunks_per_frame: neighbour_parts_per_frame(eye, own_openings, reach, on_flight, table),
+    }
+}
+
 /// Whether the eye is between the floors (below the active floor, or above a standing eye on a way up).
 pub fn eye_on_flight(eye_y: f32) -> bool {
     eye_y < -0.05 || eye_y > STOREY * 0.5
@@ -151,22 +173,10 @@ impl NeighbourWorlds {
             if !self.built.contains_key(&r.level) && !self.items[idx].meshes.is_empty() {
                 self.built.insert(r.level, r.center);
             }
-            let mut openings = world_mesh::openings(&r.fac);
-            openings.extend(own_openings.iter().map(|o| Opening {
-                cells: o.cells.clone(),
-                centre: o.centre,
-                upper_level: o.upper_level,
-            }));
             let m = &mut self.items[idx];
             let stale = self.built.get(&r.level) != Some(&r.center) || m.has_pending();
-            if stale && wants_neighbour(eye, &openings, reach, on_flight) {
-                let scope = NeighbourScope {
-                    dy,
-                    openings,
-                    radius: table.neighbour_cull_radius,
-                    max_parts: table.neighbour_max_parts,
-                    chunks_per_frame: neighbour_parts_per_frame(eye, &own_openings, reach, on_flight, table),
-                };
+            let scope = neighbour_scope(dy, world_mesh::openings(&r.fac), &own_openings, eye, reach, on_flight, table);
+            if stale && wants_neighbour(eye, &scope.openings, reach, on_flight) {
                 m.level = r.level;
                 m.dy = dy;
                 m.rebuild_neighbour(&r.fac, ChunkFrame { level: r.level, center: r.center }, &scope, assets, content);
@@ -311,6 +321,26 @@ mod tests {
         assert_eq!(far, t.neighbour_chunks_per_frame);
         assert!(near > far, "the raised budget is real");
         assert_eq!(neighbour_parts_per_frame((60.0, -2.0, 12.0), &[], 8.0, true, t), near, "on a flight it is raised");
+    }
+
+    /// The scope `sync` hands the build: near an opening of the active floor (or on a flight) the raised budget, and the
+    /// shipped reach is the prefetch distance. With `neighbour_near_chunks_per_frame` at the steady-state 2 the last assert
+    /// fails, so the test pins that the raised budget is real.
+    #[test]
+    fn the_neighbour_scope_carries_the_raised_budget_near_a_well() {
+        let t = world_mesh::stream_table();
+        let reach = crate::game::transition::links().prefetch_distance;
+        let own = Opening { cells: Vec::new(), centre: (10.0, 10.0), upper_level: 0 };
+        let theirs = Opening { cells: Vec::new(), centre: (30.0, 30.0), upper_level: 1 };
+        let near = neighbour_scope(STOREY, vec![theirs.clone()], std::slice::from_ref(&own), (10.0, 1.6, 10.5), reach, false, t);
+        assert_eq!(near.chunks_per_frame, t.neighbour_near_chunks_per_frame);
+        assert_eq!((near.max_parts, near.radius, near.dy), (t.neighbour_max_parts, t.neighbour_cull_radius, STOREY));
+        assert_eq!(near.openings.len(), 2, "the active floor's opening is added to the neighbour's own");
+        let far = neighbour_scope(STOREY, vec![theirs.clone()], std::slice::from_ref(&own), (10.0 + reach + 5.0, 1.6, 10.0), reach, false, t);
+        assert_eq!(far.chunks_per_frame, t.neighbour_chunks_per_frame);
+        let flight = neighbour_scope(STOREY, vec![theirs], &[], (90.0, -2.0, 90.0), reach, true, t);
+        assert_eq!(flight.chunks_per_frame, t.neighbour_near_chunks_per_frame, "on a flight the budget is raised");
+        assert!(reach > 0.0 && t.neighbour_near_chunks_per_frame > t.neighbour_chunks_per_frame);
     }
 
     #[test]

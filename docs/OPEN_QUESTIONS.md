@@ -113,3 +113,12 @@ The stairs questions D1 to D8 in the old list are answered in the Decisions tabl
 ## Inferno terrain (owner override of Godot parity)
 
 28. **Decided by the owner (2026-11-04): "add noisy floor height and ceiling height in the Inferno caverns".** Godot's Inferno floor is flat, and the heights track made it flat here too; this overrides that parity. Level -3 now has a smooth noisy floor (up to 0.5 m up or down) and ceiling (sagging up to 1.2 m under the slab line, never closer than 2.6 m to the floor, never above `STOREY - slab`). The player, hunters, bots, props, doors, pickups and decorations stand on it; the flat-floor contract is replaced by `world/inferno_terrain.rs` and its tests. The numbers are the `terrain` block of `data/inferno.json`. Stairwells keep a flat floor and a full-height ceiling (a pad that eases out over 8 cells). Open question: the noise covers the whole of level -3 (the maze rooms and halls too), not only the carved caves, because the terrain is a function of the world cell alone. **Default:** keep it everywhere; say if halls and rooms should stay flat.
+
+## Resume height and level -2 water (owner veto)
+
+29. Saves store absolute height (stairs phase 9). A resume stands at the level's start cell, so a save made mid-flight cannot be
+    resumed at its y without dropping the body. The rule now: a saved y within 0.5 m of the resumed level's floor is kept, any other
+    resumes on the floor (`data/app/resume.json`, `Checkpoint::migrated_y`). OK, or should a mid-flight save resume somewhere else
+    (for example at the flight's end cell)? **Default:** keep this rule.
+30. Level -2 sewer pools were 1.4 m deep and are now 0.7 m like level -1 (Godot has one depth). Keep 0.7 m, or restore 1.4 m for level -2?
+    **Default:** keep 0.7 m (parity).

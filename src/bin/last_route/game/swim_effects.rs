@@ -284,7 +284,12 @@ impl Game {
     /// Metres the runner's eye should be lowered: over a sewer WATER cell the eye drops by the channel depth (the
     /// render bed, the same for every sewer storey) as if the body sank into the water, capped and eased by
     /// data/swim/camera.json. Dry floor and a pipe flood over it give 0 with the shipped data.
+    /// Only a grounded, clipping body sinks: in the air (a jump, the free fall into a pool) the feet are not on the
+    /// walkway yet, and under admin noclip the body is not standing anywhere.
     pub(super) fn runner_water_sink_target(&mut self) -> f32 {
+        if !self.p.grounded || self.p.noclip || self.p.falling() {
+            return 0.0;
+        }
         let mut drop = 0.0;
         if let Some(level) = self.sewer_level() {
             if self.water_depth_on(level, self.p.pos) > 0.0 {
@@ -609,6 +614,50 @@ mod tests {
             g.update_water_sink(1.0 / 60.0, false);
         }
         assert_eq!(g.p.water_sink, 0.0);
+    }
+
+    /// The call sites in `Game::step`: the real frame sinks the eye in the water and lifts it on dry floor and while
+    /// hiding (a deleted call or a swapped `wet` flag fails here).
+    #[test]
+    fn the_real_step_sinks_the_eye_in_water_and_lifts_it_dry_and_hiding() {
+        let (mut g, content, catalog) = sewer_game(sewer_core::LEVEL);
+        let sounds = crate::audio::Sounds::default();
+        let controls = crate::game::Controls::default();
+        let step = |g: &mut Game, frames: usize| {
+            for _ in 0..frames {
+                g.step(1.0 / 60.0, &controls, &content, &catalog, &sounds);
+            }
+        };
+        g.p.pos = sewer_cell(&g, sewer_core::WATER);
+        step(&mut g, 90);
+        assert!(g.p.water_sink > 0.5, "the real step eased the eye down in the water: {}", g.p.water_sink);
+        g.p.hidden = Some(0);
+        step(&mut g, 200);
+        assert_eq!(g.p.water_sink, 0.0, "hiding lets the sunk eye rise");
+        g.p.hidden = None;
+        g.p.pos = sewer_cell(&g, sewer_core::WATER);
+        step(&mut g, 90);
+        assert!(g.p.water_sink > 0.5, "wading again sinks it");
+        g.p.pos = sewer_cell(&g, sewer_core::DRY);
+        step(&mut g, 200);
+        assert_eq!(g.p.water_sink, 0.0, "dry floor lifts it");
+    }
+
+    #[test]
+    fn an_airborne_or_noclip_runner_over_water_does_not_sink_the_eye() {
+        let (mut g, _, _) = sewer_game(sewer_core::LEVEL);
+        g.p.pos = sewer_cell(&g, sewer_core::WATER);
+        g.p.grounded = true;
+        assert!(g.runner_water_sink_target() > 0.5, "grounded in the water sinks");
+        g.p.grounded = false;
+        assert_eq!(g.runner_water_sink_target(), 0.0, "a jump over the pool keeps the eye up");
+        for _ in 0..120 {
+            g.update_water_sink(1.0 / 60.0, true);
+        }
+        assert_eq!(g.p.water_sink, 0.0);
+        g.p.grounded = true;
+        g.p.noclip = true;
+        assert_eq!(g.runner_water_sink_target(), 0.0, "noclip never sinks");
     }
 
     #[test]

@@ -376,6 +376,15 @@ impl Loading {
                 g
             }
         };
+        self.place_resumed(&mut g);
+        g.score = self.score;
+        g.coins = self.coins;
+        g
+    }
+
+    /// A resumed infinite run stands at `y` (`Checkpoint::migrated_y`: the saved height when it was standing near
+    /// its floor, the floor of the level otherwise).
+    fn place_resumed(&self, g: &mut Game) {
         if let (Some(y), true) = (self.y, g.inf.is_some()) {
             // a saved run resumes at its absolute height (a legacy save at the floor of its level)
             g.p.set_abs_y(y);
@@ -384,9 +393,6 @@ impl Loading {
                 g.p.stand_on_ground(&g.fac);
             }
         }
-        g.score = self.score;
-        g.coins = self.coins;
-        g
     }
 }
 
@@ -1572,6 +1578,53 @@ fn title_return_focus(from: Screen, who: &str) -> usize {
         Screen::Account => menus::title_focus(menus::TitleEntry::Account, who),
         Screen::Quit => menus::title_focus(menus::TitleEntry::Quit, who),
         _ => 0,
+    }
+}
+
+/// The real resume path: `Loading::from_checkpoint` then the placement `Loading::build` does.
+#[cfg(test)]
+mod resume_tests {
+    use super::*;
+    use crate::game::level_stack::floor_y_of;
+
+    fn save(depth: i32, y: Option<f32>, infinite: bool) -> checkpoint::Checkpoint {
+        checkpoint::Checkpoint {
+            run_seed: 7,
+            room_text: "ROOM-RESUME".into(),
+            depth,
+            score: 3,
+            coins: 4,
+            difficulty: Difficulty::Standard,
+            infinite,
+            y,
+        }
+    }
+
+    fn resumed_y(cp: &checkpoint::Checkpoint) -> (Option<i32>, f32) {
+        let l = Loading::from_checkpoint(cp);
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let mut g = Game::new_infinite_sim(cp.difficulty, cp.run_seed, &cp.room_text, l.level.unwrap_or(0), &content, &catalog);
+        l.place_resumed(&mut g);
+        (l.level, g.p.y())
+    }
+
+    #[test]
+    fn a_standing_save_resumes_at_its_saved_height_and_a_mid_flight_save_on_the_floor() {
+        let standing = floor_y_of(-1) + 0.25;
+        let (level, y) = resumed_y(&save(-1, Some(standing), true));
+        assert_eq!(level, Some(-1));
+        assert!((y - standing).abs() < 1e-4, "standing save resumed at {y}");
+        let (level, y) = resumed_y(&save(-1, Some(floor_y_of(-1) + 2.6), true));
+        assert_eq!(level, Some(-1));
+        assert!((y - floor_y_of(-1)).abs() < 1e-4, "a mid-flight save resumed in the air at {y}");
+        let (level, y) = resumed_y(&save(-2, None, true));
+        assert_eq!((level, y), (Some(-2), floor_y_of(-2)), "a legacy save stands on its floor");
+    }
+
+    #[test]
+    fn a_finite_route_resume_carries_no_height() {
+        let l = Loading::from_checkpoint(&save(3, Some(4.0), false));
+        assert_eq!((l.level, l.y), (None, None));
     }
 }
 

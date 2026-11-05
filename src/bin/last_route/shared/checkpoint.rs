@@ -17,7 +17,8 @@ pub struct Checkpoint {
     pub difficulty: Difficulty,
     pub infinite: bool,
     /// Absolute feet y (the body's world y in the one vertical frame, level * STOREY + local),
-    /// JSON `y_abs`. None for a legacy save or a finite route; `depth` stays the level label.
+    /// JSON `y_abs`. None for a legacy save or a finite route; `depth` stays the level label. It decides the label
+    /// (`level()`) and, when the body was standing near its floor, the resume height (`migrated_y()`).
     pub y: Option<f32>,
 }
 
@@ -33,13 +34,54 @@ impl Checkpoint {
         }
     }
 
-    /// The absolute y to resume at: always the floor of the resumed level. A run resumes at the level's start cell (the
-    /// save stores no x/z), and the start cell is on the floor: a saved y taken mid-flight (the relabel autosaves a
-    /// couple of metres off the old floor) would hang the body in the air over the start cell and drop it with a hard
-    /// landing. `y` still decides the label through `level()`.
+    /// The absolute y to resume at (saves store absolute height, owner decision of stairs phase 9). A saved y within
+    /// `standing_tolerance` (data/app/resume.json) of the resumed level's floor is kept: it is a body that stood or
+    /// crouched there. A y further off is a save made mid-flight (the relabel autosaves a couple of metres off the
+    /// old floor); the save stores no x/z, so the resume stands at the level's start cell, which is on the floor, and
+    /// keeping that y would hang the body in the air over it and drop it with a hard landing. Those, a legacy save
+    /// and a non-finite y resume on the floor of the level.
     pub fn migrated_y(&self) -> f32 {
-        crate::game::level_stack::floor_y_of(self.level())
+        let level = self.level();
+        let floor = crate::game::level_stack::floor_y_of(level);
+        match self.y {
+            Some(y) if self.infinite && y.is_finite() && (y - floor).abs() <= resume_rules().standing_tolerance => y,
+            _ => floor,
+        }
     }
+}
+
+/// How the resume treats a saved height (data/app/resume.json, `lr.app.resume/1`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResumeRules {
+    /// A saved y this close to the floor of the resumed level (metres) is a standing body and is kept.
+    pub standing_tolerance: f32,
+}
+
+impl Default for ResumeRules {
+    fn default() -> Self {
+        ResumeRules { standing_tolerance: 0.5 }
+    }
+}
+
+impl ResumeRules {
+    /// A missing, negative or non-finite tolerance keeps the default.
+    pub fn parse(v: &serde_json::Value) -> ResumeRules {
+        let d = ResumeRules::default();
+        let t = v["standing_tolerance"].as_f64().map(|t| t as f32).filter(|t| t.is_finite() && *t >= 0.0);
+        ResumeRules { standing_tolerance: t.unwrap_or(d.standing_tolerance) }
+    }
+}
+
+/// The embedded resume rules; the defaults when the file is missing or broken.
+pub fn resume_rules() -> &'static ResumeRules {
+    static RULES: std::sync::OnceLock<ResumeRules> = std::sync::OnceLock::new();
+    RULES.get_or_init(|| {
+        crate::content::embedded::data_under("app/resume.json")
+            .next()
+            .and_then(|(_, text)| serde_json::from_str::<serde_json::Value>(text).ok())
+            .map(|v| ResumeRules::parse(&v))
+            .unwrap_or_default()
+    })
 }
 
 fn path() -> Option<PathBuf> {
@@ -186,7 +228,47 @@ mod tests {
         assert_eq!(v["depth"], -2);
         let c = from_json(&v).expect("round trip");
         assert_eq!(c.y, Some(y));
-        assert_eq!(c.migrated_y(), crate::game::level_stack::floor_y_of(-2), "a resume stands on the floor of its level");
+        assert_eq!(c.migrated_y(), crate::game::level_stack::floor_y_of(-2), "a mid-flight y resumes on the floor");
+        let standing = crate::game::level_stack::floor_y_of(-2) + 0.25;
+        let c = from_json(&to_json(&cp(-2, true, Some(standing)))).unwrap();
+        assert_eq!(c.migrated_y(), standing, "a standing save keeps its absolute height");
+    }
+
+    #[test]
+    fn resume_json_is_embedded_and_range_checked() {
+        let (_, text) = crate::content::embedded::data_under("app/resume.json").next().expect("resume.json is embedded");
+        let v: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(v["schema"], "lr.app.resume/1");
+        assert_eq!(ResumeRules::parse(&v), *resume_rules());
+        assert!(resume_rules().standing_tolerance > 0.0 && resume_rules().standing_tolerance < crate::world::vertical::STOREY / 2.0);
+        let bad = ResumeRules::parse(&json!({"standing_tolerance": -1.0}));
+        assert_eq!(bad, ResumeRules::default());
+        assert_eq!(ResumeRules::parse(&json!({"standing_tolerance": 0.2})).standing_tolerance, 0.2);
+    }
+
+    /// (depth, saved y offset from that depth's floor) to (resolved label, resume offset from the resolved floor),
+    /// across the hysteresis edges and the standing tolerance.
+    #[test]
+    fn saved_heights_resolve_to_a_label_and_a_resume_height() {
+        use crate::game::level_stack::{floor_y_of, level_at};
+        let tol = resume_rules().standing_tolerance;
+        let cases = [
+            (-1, 0.0, -1, 0.0),
+            (-1, tol - 0.01, -1, tol - 0.01),
+            (-1, tol + 0.1, -1, 0.0),
+            (-1, 2.6, -1, 0.0),
+            (-1, -2.6, -1, 0.0),
+            (-1, -crate::world::vertical::STOREY, -2, 0.0),
+            (0, 0.2, 0, 0.2),
+        ];
+        for (depth, off, label, resume_off) in cases {
+            let y = floor_y_of(depth) + off;
+            let c = cp(depth, true, Some(y));
+            assert_eq!(c.level(), level_at(y, depth));
+            assert_eq!(c.level(), label, "depth {depth} off {off}");
+            assert!((c.migrated_y() - (floor_y_of(label) + resume_off)).abs() < 1e-4, "depth {depth} off {off}: {}", c.migrated_y());
+        }
+        assert_eq!(cp(-1, false, Some(floor_y_of(-1) + 0.2)).migrated_y(), floor_y_of(-1), "a finite route stores no height");
     }
 
     #[test]
