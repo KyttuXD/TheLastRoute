@@ -558,6 +558,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
     // whether this runner's chosen skin and ARMS setting give slim arms, sent in its sample so peers draw the same arms
     let mut room_uploaded_seen = usize::MAX;
     let mut room_skin_check = 0.0f64;
+    // when the SKIN tab's sharing line is next refreshed (it reads a small file)
+    let mut share_text_at = 0.0f64;
     let mut net: Option<NetSession> = None;
     let mut net_pending: Option<(NetIntent, Pending<NetSession>)> = None;
     if screenshot.is_some() {
@@ -736,6 +738,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             (Some(g), true) => Some(
                 world_sync::Sample::of(&g.p, g.depth, g.window_origin())
                     .with_run_state(g.report.is_some(), g.escape.is_some())
+                    .with_held(g.selected_item())
                     .with_body(
                         crate::net::runner_figure::local_state(g).pose(),
                         g.p.vy(),
@@ -772,6 +775,11 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             }
             // the arm style and OTHERS MAY COPY go with the id (Godot's skin_slim and skin_copy)
             n.set_skin_flags(world_sync::SkinFlags { slim: worn.get().slim, copy: settings.skin_copy });
+        }
+        // the SKIN tab says whether the worn skin is on its way to the other runners (shared, signing in, upload failing)
+        if get_time() >= share_text_at {
+            share_text_at = get_time() + 0.5;
+            crate::ui::skin_tab::set_share_text(skins::share_state(&worn.get().hash, backend.signed_in(), net_cfg.offline, &skins::uploaded_ids()).text());
         }
         // the SKIN tab's COPY SKIN row lists the runners in the open room who allow it
         crate::ui::skin_tab::set_copy_peers(
@@ -1709,7 +1717,7 @@ mod remote_level_tests {
     use super::*;
 
     fn view(peer: u32, h: f32, level: i32) -> RemoteView {
-        RemoteView { peer, x: 1.0, y: 2.0, yaw: 0.0, h, level, skin: String::new(), moving: false, sprinting: false, crouching: false, slim: false, speed: 0.0, vy: 0.0, clip: None, hide: None, hide_since: None }
+        RemoteView { peer, x: 1.0, y: 2.0, yaw: 0.0, h, level, skin: String::new(), moving: false, sprinting: false, crouching: false, slim: false, speed: 0.0, vy: 0.0, clip: None, held: None, hide: None, hide_since: None }
     }
 
     #[test]

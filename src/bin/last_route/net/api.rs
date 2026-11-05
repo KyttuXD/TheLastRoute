@@ -101,8 +101,31 @@ pub fn upload_skin(cfg: &BackendConfig, session_token: &str, png: &[u8]) -> Resu
     if let Err(why) = crate::shared::skin_validate::check_skin_png(png, SKIN_MAX_BYTES) {
         return Err(NetError::Refused(why));
     }
-    let p = post_with_timeout(cfg, "/api/v1/skins", &skin_upload_body(session_token, png), Duration::from_secs(10))?;
+    let p = match post_with_timeout(cfg, "/api/v1/skins", &skin_upload_body(session_token, png), Duration::from_secs(10)) {
+        Ok(p) => p,
+        // A server without the v1 route may still have the Godot one (lr_server keeps both: `POST /api/skins/upload`, raw PNG).
+        Err(e) if is_unknown_endpoint(&e) => upload_skin_legacy(cfg, session_token, png)?,
+        Err(e) => return Err(e),
+    };
     Ok(s(&p, "id"))
+}
+
+/// True for a 404 that means the route does not exist (lr_server's `UNKNOWN_ENDPOINT`, or a bare 404 with no JSON body),
+/// not one the route itself answered (an account that was not found).
+pub fn is_unknown_endpoint(error: &NetError) -> bool {
+    matches!(error, NetError::Http { status: 404, code, error, .. } if code == "UNKNOWN_ENDPOINT" || (code.is_empty() && error.is_empty()))
+}
+
+/// `POST /api/skins/upload`: the PNG as the raw body, the token in `x-session-token` (the Godot backend route).
+fn upload_skin_legacy(cfg: &BackendConfig, session_token: &str, png: &[u8]) -> Result<Json, NetError> {
+    guard(cfg)?;
+    let mut request = Request::new(Method::Post, cfg.url("/api/skins/upload"))
+        .header("Accept", "application/json")
+        .header("Content-Type", "image/png")
+        .header("x-session-token", session_token)
+        .timeout(Duration::from_secs(10));
+    request.body = Some(png.to_vec());
+    check(request.send()?)
 }
 
 /// `POST /api/v1/skins/clear {sessionToken}`: the account's stored skin is removed (a player chose DEFAULT; Godot
@@ -584,7 +607,7 @@ pub struct HeartbeatReply {
 /// `POST /api/enet/rooms/heartbeat` (every 20 s). 404 = the directory forgot the room (restart),
 /// 403 = the token is not this room's.
 pub fn heartbeat(cfg: &BackendConfig, h: &Heartbeat) -> Result<HeartbeatReply, NetError> {
-    let p = post(
+    let p = post_with_timeout(
         cfg,
         "/api/enet/rooms/heartbeat",
         &json!({
@@ -592,6 +615,7 @@ pub fn heartbeat(cfg: &BackendConfig, h: &Heartbeat) -> Result<HeartbeatReply, N
             "sessionActive": h.session_active, "daytime": h.daytime,
             "commandSince": h.command_since, "commandAck": h.command_ack,
         }),
+        Duration::from_secs(super::public_route::HEARTBEAT_TIMEOUT_SECONDS),
     )?;
     Ok(HeartbeatReply {
         room: obj(&p, "room").map(|r| RoomEndpoint::from_json(&r)).unwrap_or_default(),
@@ -880,6 +904,16 @@ pub fn cloud_put(cfg: &BackendConfig, path: &str, token: &str, data: Option<&Jso
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_unknown_route_404_falls_back_to_the_legacy_upload() {
+        let http = |status, code: &str, error: &str| NetError::Http { status, code: code.into(), error: error.into(), body: Value::Null };
+        assert!(is_unknown_endpoint(&http(404, "UNKNOWN_ENDPOINT", "Unknown endpoint")));
+        assert!(is_unknown_endpoint(&http(404, "", "")));
+        assert!(!is_unknown_endpoint(&http(404, "ACCOUNT_NOT_FOUND", "no such account")));
+        assert!(!is_unknown_endpoint(&http(404, "", "ACCOUNT NOT FOUND")));
+        assert!(!is_unknown_endpoint(&http(500, "UNKNOWN_ENDPOINT", "")));
+    }
 
     #[test]
     fn room_codes() {

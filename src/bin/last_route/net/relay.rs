@@ -32,6 +32,8 @@ pub mod frame {
     pub const HOST_MIGRATING: u8 = 9;
     pub const HOST_LEFT: u8 = 10;
     pub const HOST_ALIVE: u8 = 11;
+    /// relay -> would-be host of a hostless public code: a live host exists, join as a guest.
+    pub const HOST_JOIN_AS_GUEST: u8 = 12;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,6 +108,8 @@ pub enum RelayEvent {
     Promoted { token: String, epoch: i64 },
     /// HOST_MIGRATING: wait for the successor (`ready` once it registered).
     Migrating { epoch: i64, ready: bool },
+    /// HOST_JOIN_AS_GUEST: the public route already has a host; this host registration did not take.
+    JoinAsGuest,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -300,6 +304,7 @@ impl RelayLink {
             }
             frame::GUEST_DATA if self.role == Role::Host => events.push(RelayEvent::Data { session: f.session, payload: f.payload }),
             frame::HOST_DATA if self.role == Role::Guest => events.push(RelayEvent::Data { session: f.session, payload: f.payload }),
+            frame::HOST_JOIN_AS_GUEST if self.role == Role::Host => events.push(RelayEvent::JoinAsGuest),
             frame::ERROR => events.push(RelayEvent::Error(text())),
             frame::HOST_LEFT => events.push(RelayEvent::HostLeft(text())),
             frame::HOST_PROMOTE if self.role == Role::Guest && (f.session == self.session || f.session == 0) => {
@@ -345,6 +350,32 @@ mod tests {
         assert_eq!(parse_handoff(b"LRH1|7|tok"), Some((7, "tok".into())));
         assert_eq!(parse_handoff(b"LRH1|7"), Some((7, String::new())));
         assert_eq!(parse_handoff(b"LRH1|0|x"), None);
+    }
+
+    #[test]
+    fn a_host_told_to_join_as_a_guest_gets_the_event() {
+        let relay = UdpSocket::bind("127.0.0.1:0").unwrap();
+        relay.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        let mut host = RelayLink::host("PUBLC", "stale", "127.0.0.1", relay.local_addr().unwrap().port()).unwrap();
+        host.poll();
+        let mut buf = [0u8; 2048];
+        // a keep-alive can land before the register, so read until the register arrives
+        let from = loop {
+            let (n, from) = relay.recv_from(&mut buf).unwrap();
+            if decode(&buf[..n]).unwrap().kind == frame::HOST_REGISTER {
+                break from;
+            }
+            host.poll();
+        };
+        relay.send_to(&encode(frame::HOST_JOIN_AS_GUEST, 0, "PUBLC", &[]).unwrap(), from).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut seen = Vec::new();
+        while Instant::now() < deadline && seen.is_empty() {
+            seen = host.poll();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(seen, vec![RelayEvent::JoinAsGuest]);
+        host.close();
     }
 
     /// A fake relay on loopback: acks, then forwards guest data to the host.

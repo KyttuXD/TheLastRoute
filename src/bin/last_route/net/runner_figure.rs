@@ -13,10 +13,11 @@
 //! The local runner has no body here. The original hides it ("The body is hidden because you are inside it",
 //! player_controller_3d.gd) and draws no shadow or mirror of it, so first person keeps its hands only (render/fp_hands.rs).
 
+use super::held_wire;
 use super::hide_sync::{self, HideState};
 use super::world_sync::{HideSpot, RemoteView, SKIN_DEFAULT};
 use crate::content::embedded;
-use crate::game::Game;
+use crate::game::{Game, Item};
 use crate::render::anim::clip::Rig;
 use crate::render::anim::hide;
 use crate::render::anim::hunter::model_space_stretched;
@@ -311,7 +312,7 @@ fn body_root(look: &Look, unit: f32) -> Mat4 {
 }
 
 /// Builds and draws one figure. `pose` is the rig and its local bone pose; None leaves the body in its rest pose.
-fn draw_body(a: &Assets, look: Look, pick: &Pick, slim: bool, pose: Option<(&Rig, &[Local])>) {
+fn draw_body(a: &Assets, look: Look, pick: &Pick, slim: bool, pose: Option<(&Rig, &[Local])>, held: Option<Item>) {
     let Some(regular) = a.npc_body.as_ref() else {
         return;
     };
@@ -337,6 +338,12 @@ fn draw_body(a: &Assets, look: Look, pick: &Pick, slim: bool, pose: Option<(&Rig
     let mesh = Mesh { vertices: verts, indices: idx, texture: Some(texture) };
     draw_mesh(&mesh);
     SCRATCH.with(|s| *s.borrow_mut() = (mesh.vertices, mesh.indices));
+    // the held item rides the hand bone (no rig, no hand, no item)
+    if let (Some(item), Some((rig, m)), Some(d)) = (held, mats.as_ref(), held_wire::data()) {
+        if let (Some(b), Some(model)) = (rig.bone(&d.bone), scene::item_model(a, scene::item_file(item))) {
+            model.draw_faded(held_wire::item_transform(d, item, root, m[b], unit), tint);
+        }
+    }
 }
 
 /// Draws one still figure: the same body a runner wears, at `pos` (feet) and `yaw`, in `pose` at `phase` (0..1) of its
@@ -345,12 +352,12 @@ pub fn draw_figure(a: &Assets, pos: Vec3, yaw: f32, pick: Pick, slim: bool, pose
     let rig = driver::player_rig(slim);
     let locals = rig.as_ref().map(|r| still_pose(r, pose, phase));
     let posed = rig.as_ref().zip(locals.as_ref()).map(|(r, l)| (&**r, l.as_slice()));
-    draw_body(a, Look { pos, yaw, pitch: 0.0, alpha: 1.0 }, &pick, slim, posed);
+    draw_body(a, Look { pos, yaw, pitch: 0.0, alpha: 1.0 }, &pick, slim, posed, None);
 }
 
 /// Runs the driver of `key` for this frame and draws the figure.
 #[allow(clippy::too_many_arguments)]
-fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, pick: &Pick, slim: bool, state: &RunnerState, dt: f32, epoch: u64) {
+fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, pick: &Pick, slim: bool, state: &RunnerState, held: Option<Item>, dt: f32, epoch: u64) {
     let driven = FIGURES.with(|f| {
         let mut f = f.borrow_mut();
         let fig = f.1.entry(key).or_insert_with(|| Figure::new(epoch, slim));
@@ -365,9 +372,11 @@ fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, pick: &Pick, sli
     });
     match driven {
         Some((rig, locals, fade, pitch)) => {
-            draw_body(a, Look { pos, yaw, pitch, alpha: body_alpha(fade) }, pick, slim, Some((&rig, &locals)));
+            let alpha = body_alpha(fade);
+            let held = held_wire::shown(held, false, state.pose(), alpha);
+            draw_body(a, Look { pos, yaw, pitch, alpha }, pick, slim, Some((&rig, &locals)), held);
         }
-        None => draw_body(a, Look { pos, yaw, pitch: 0.0, alpha: 1.0 }, pick, slim, None),
+        None => draw_body(a, Look { pos, yaw, pitch: 0.0, alpha: 1.0 }, pick, slim, None, None),
     }
 }
 
@@ -473,7 +482,8 @@ pub fn draw_runners(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, rem
         }
         let tex = pick(&r.skin, &|id| a.skin_texture(id).is_some());
         let pos = vec3(r.x, runner_draw_y(r.h, active_y), r.y);
-        draw_driven(a, FigureKey::Peer(r.peer), pos, r.yaw, &tex, r.slim, &remote_state(r), dt, epoch);
+        let held = if r.hide.is_some() { None } else { r.held };
+        draw_driven(a, FigureKey::Peer(r.peer), pos, r.yaw, &tex, r.slim, &remote_state(r), held, dt, epoch);
     }
     prune(epoch, false);
     draw_occupants(g, a, remotes, active_y);
@@ -539,7 +549,7 @@ pub fn draw_bots(a: &Assets, bots: &[BotView]) {
         });
         let state = spec.map(|s| bot_state(&s.bots, speed, b.climbing, b.falling)).unwrap_or_default();
         let tex = pick(&bot_skin(b.name, skins), &|id| a.skin_texture(id).is_some());
-        draw_driven(a, key, vec3(b.at.0, b.y, b.at.1), b.facing, &tex, false, &state, dt, epoch);
+        draw_driven(a, key, vec3(b.at.0, b.y, b.at.1), b.facing, &tex, false, &state, None, dt, epoch);
     }
     prune(epoch, true);
 }
@@ -575,6 +585,7 @@ mod tests {
             speed: 0.0,
             vy,
             clip,
+            held: None,
             hide: None,
             hide_since: None,
         }
@@ -870,6 +881,32 @@ mod tests {
             assert!(!uvs.is_empty());
             for uv in uvs {
                 assert!(uv.iter().all(|c| (0.0..=64.0).contains(c)), "{what}: a face samples outside the 64x64 atlas: {uv:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_held_item_sits_in_the_real_rigs_hand_and_points_forward() {
+        let d = held_wire::data().expect("the pose table loads");
+        let unit = runner_spec().map(|s| s.metres_per_unit).expect("runner spec");
+        for slim in [false, true] {
+            let rig = player_rig(slim).expect("rig");
+            let rest: Vec<Local> = AnimPlayer::default().pose(&rig);
+            let mats = model_space_stretched(&rig, &rest, &[]);
+            let b = rig.bone(&d.bone).expect("the hand bone");
+            let root = body_root(&Look { pos: Vec3::ZERO, yaw: 0.0, pitch: 0.0, alpha: 1.0 }, unit);
+            // the hand matrix is the bone's world matrix in model space (not a skinning matrix): its origin is the pivot
+            let pivot = root.transform_point3(mats[b].transform_point3(Vec3::ZERO));
+            let grip_point = root.transform_point3(mats[b].transform_point3(d.anchor.offset_units));
+            assert!(pivot.y > 0.6 && pivot.y < 1.3, "slim={slim}: the hand pivot is at wrist height, got {pivot:?}");
+            assert!(pivot.x.abs() > 0.15, "slim={slim}: the right hand is out to the side, got {pivot:?}");
+            for item in [Item::Flashlight, Item::Taser, Item::Crowbar, Item::Axe, Item::Battery, Item::Stim] {
+                let xf = held_wire::item_transform(d, item, root, mats[b], unit);
+                let origin = xf.transform_point3(Vec3::ZERO);
+                let reach = d.pose(item).grip * d.pose(item).scale * d.anchor.rig_scale + 0.15;
+                assert!((origin - grip_point).length() < reach, "slim={slim} {item:?}: the item origin {origin:?} is far from the hand {grip_point:?}");
+                let tip = xf.transform_point3(Vec3::Y * 0.5);
+                assert!(tip.z < origin.z - 0.05, "slim={slim} {item:?}: the item points forward (-Z), origin {origin:?} tip {tip:?}");
             }
         }
     }

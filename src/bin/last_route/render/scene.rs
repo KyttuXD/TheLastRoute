@@ -163,8 +163,49 @@ fn at(x: f32, y: f32, z: f32, yaw: f32) -> Mat4 {
     Mat4::from_translation(vec3(x, y, z)) * Mat4::from_rotation_y(yaw)
 }
 
+/// The art a hunter is drawn with: its disguise when that has a model, else its own, else Dovelle's.
+fn hunter_art_id<'a>(a: &Assets, h: &'a crate::hunters::brain::Brain) -> &'a str {
+    let id = h.disguise.as_deref().filter(|d| a.hunters.contains_key(*d)).unwrap_or(&h.def.id);
+    if a.hunters.contains_key(id) {
+        id
+    } else {
+        "dovelle"
+    }
+}
+
+/// Every hunter to pose, as (level, index in that level's list, view slot, brain): the drawn floor's list (dormant ones
+/// too), then each resident floor's list.
+fn posed_hunters(g: &Game) -> Vec<(i32, usize, usize, &crate::hunters::brain::Brain)> {
+    let mut posed: Vec<_> = g.hunters.iter().enumerate().map(|(i, h)| (g.fac.level, i, i, h)).collect();
+    for l in g.resident_hunters.levels() {
+        for (i, s) in g.resident_hunters.list(l).iter().enumerate() {
+            // the view slot is past the drawn list's, so a rig view never clashes with another floor's
+            posed.push((l, i, RESIDENT_VIEW_BASE + posed.len(), &s.brain));
+        }
+    }
+    posed
+}
+
+/// Whether the held hunter is drawn (and so drives the grab camera): she needs a model, and a rig or, without one, to be
+/// active (the unrigged fallback draws only an active hunter).
+fn held_hunter_drawn(has_model: bool, has_rig: bool, active: bool) -> bool {
+    has_model && (has_rig || active)
+}
+
+/// Whether the hunter in view slot `slot` is drawn this frame; decided before the camera is built, so a held hunter that
+/// is not drawn never leaves a stale grab camera behind.
+fn held_slot_drawn(g: &Game, a: &Assets, slot: usize) -> bool {
+    posed_hunters(g).into_iter().find(|p| p.2 == slot).is_some_and(|(_, _, _, h)| {
+        let id = hunter_art_id(a, h);
+        held_hunter_drawn(a.hunter_model(id).is_some(), anim::clip::rig(id).is_some(), h.active)
+    })
+}
+
 pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     hide::tick(g.p.hidden, g.time);
+    if g.escape.as_ref().is_some_and(|e| !held_slot_drawn(g, a, e.hunter)) {
+        grab::abandon();
+    }
     STATIC_PROPS.with(|c| c.borrow_mut().begin_frame());
     set_camera(&camera(g, rt));
     clear_background(Color::new(FOG.x, FOG.y, FOG.z, 1.0));
@@ -546,38 +587,27 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     let cull = crate::render::stack_actors::ActorCull::new(g);
     let cull_eye = g.eye();
     let mut lists: Vec<(i32, usize)> = vec![(g.fac.level, g.hunters.len() + UNRIGGED_SLOT_BASE)];
-    let mut posed: Vec<(i32, usize, usize, &crate::hunters::brain::Brain)> =
-        g.hunters.iter().enumerate().map(|(i, h)| (g.fac.level, i, i, h)).collect();
     for l in g.resident_hunters.levels() {
-        let list = g.resident_hunters.list(l);
-        lists.push((l, list.len() + UNRIGGED_SLOT_BASE));
-        for (i, s) in list.iter().enumerate() {
-            // the view slot is past the drawn list's, so a rig view never clashes with another floor's
-            posed.push((l, i, RESIDENT_VIEW_BASE + posed.len(), &s.brain));
-        }
+        lists.push((l, g.resident_hunters.list(l).len() + UNRIGGED_SLOT_BASE));
     }
+    let posed = posed_hunters(g);
     HUNTER_MESHES.with(|m| m.borrow_mut().cache.sync(&lists, g.run_seed));
     anim::with_views(g.time, |views, dt| {
         let mut stars = Builder::new(Some(a.white.clone()));
+        // the hunter that holds the runner is always posed: the grab camera comes from her
+        let held_slot = g.escape.as_ref().map(|e| e.hunter);
+        let mut held_driven = false;
         for &(lvl, cslot, slot, h) in posed.iter() {
-            if !cull.visible(g, lvl, h.y, h.pos, cull_eye) {
+            let is_held = held_slot == Some(slot);
+            if !is_held && !cull.visible(g, lvl, h.y, h.pos, cull_eye) {
                 continue;
             }
             let dy = crate::render::stack_actors::actor_dy(h.y, g.fac.level);
             let faded = h.gimmick.hidden_from_view();
-            if faded && !matches!(h.gimmick, Gimmick::Ilyra(_)) {
+            if faded && !is_held && !matches!(h.gimmick, Gimmick::Ilyra(_)) {
                 continue;
             }
-            let id = h
-                .disguise
-                .as_deref()
-                .filter(|d| a.hunters.contains_key(*d))
-                .unwrap_or(&h.def.id);
-            let id = if a.hunters.contains_key(id) {
-                id
-            } else {
-                "dovelle"
-            };
+            let id = hunter_art_id(a, h);
             let Some(model) = a.hunter_model(id) else {
                 continue;
             };
@@ -590,18 +620,28 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
             };
             let Some(rig) = anim::clip::rig(id) else {
                 crate::render::hunter_cache::warn_unrigged_once(id);
-                if !h.active {
+                if !held_hunter_drawn(true, false, h.active) {
                     continue;
                 }
+                held_driven |= is_held;
                 let yaw = (-h.facing.0).atan2(-h.facing.1);
                 let amp = (h.moving_speed / 3.0).min(1.0) * 0.6;
                 // Xivvy's flight height and float (xivvy_flight.gd), on foot while a grab holds her
-                let grabbed = g.escape.as_ref().map(|e| e.hunter == slot).unwrap_or(false);
+                let grabbed = is_held;
                 let (lift, sway) = match &h.gimmick {
                     Gimmick::Xivvy(x) if !grabbed => (x.lift(), x.sway_offset(h.facing)),
                     _ => (0.0, (0.0, 0.0)),
                 };
-                let at = vec3(h.pos.0 + sway.0, lift + dy, h.pos.1 + sway.1);
+                let mut at = vec3(h.pos.0 + sway.0, lift + dy, h.pos.1 + sway.1);
+                let mut yaw = yaw;
+                if grabbed {
+                    // no rig, no grab pose: hold her in front of the runner's eyes at the runner's standing height,
+                    // turned to face the runner, so the held view is never empty
+                    let flat = vec3(cam_fwd.x, 0.0, cam_fwd.z).normalize_or_zero();
+                    let flat = if flat == Vec3::ZERO { Vec3::NEG_Z } else { flat };
+                    at = vec3(runner_feet.x, runner_feet.y, runner_feet.z) + flat * 0.9;
+                    yaw = (-flat.x).atan2(-flat.z) + std::f32::consts::PI;
+                }
                 let (swing, amp_scale) = (h.stride * 2.4, amp);
                 let pose = hunter_cache::pose_key(
                     tune,
@@ -632,7 +672,8 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
                 *entry = (id.to_string(), HunterView::new(id, rig.clone()));
             }
             let view = &mut entry.1;
-            let held = g.escape.as_ref().map(|e| e.hunter == slot).unwrap_or(false);
+            let held = is_held;
+            held_driven |= held;
             let look_target = if !h.active || h.stun > 0.0 {
                 None
             } else {
@@ -709,6 +750,9 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
             for (p, rot) in view.stars(&input, &out, g.time) {
                 stars.cube_basis(p, Vec3::splat(0.09), rot, star, 2.0);
             }
+        }
+        if held_slot.is_some() && !held_driven {
+            grab::abandon();
         }
         stars.draw_and_clear();
     });
@@ -1129,6 +1173,14 @@ mod tests {
         assert!(grab_fill(false, Some(cam)).is_none());
         // the escape set before the grab camera exists (the first frame of a catch): off until the grab starts
         assert!(grab_fill(true, None).is_none());
+    }
+
+    #[test]
+    fn a_held_hunter_is_drawn_with_a_model_and_a_rig_or_while_active() {
+        assert!(held_hunter_drawn(true, true, false), "a rigged hunter is posed even when dormant");
+        assert!(held_hunter_drawn(true, false, true), "an unrigged active one takes the fallback draw");
+        assert!(!held_hunter_drawn(true, false, false), "an unrigged dormant one is skipped");
+        assert!(!held_hunter_drawn(false, true, true), "no model, no draw");
     }
 
     fn deck_floor() -> Facility {

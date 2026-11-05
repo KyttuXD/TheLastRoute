@@ -306,6 +306,16 @@ impl Game {
             self.end_run(i, cause);
         } else {
             self.p.flashlight_on = false;
+            // a runner pulled out of a locker is out of it: the grab view, not the hidden view, takes the camera
+            self.hide_check = None;
+            if let Some(li) = self.p.hidden {
+                // the pulled-out runner cannot slip straight back in once the struggle is over
+                self.locker_cooldown[li] = self.prof().hide_cooldown;
+                let exit = capture_exit(&self.fac, li, self.hunters[i].pos);
+                self.leave_locker(Some(exit));
+            } else {
+                self.leave_locker(None);
+            }
             self.escape = Some(Escape {
                 remaining: ESCAPE_DURATION,
                 progress: 0,
@@ -1136,6 +1146,51 @@ mod remote_hunter_tests {
     }
 
     #[test]
+    fn a_locker_breacher_pulls_the_hidden_runner_out_before_the_struggle() {
+        let (mut g, content, _) = run();
+        let li = 0usize;
+        let centre = g.fac.hiding[li].cell.center();
+        g.p.hidden = Some(li);
+        g.p.pos = centre;
+        g.hunters.clear();
+        assert!(crate::app::stress::summon(&mut g, "elise", &content, 0, 0));
+        g.hunters[0].pos = centre;
+        g.hide_check = Some((li, 0, 5.0));
+        let admin = Admin::default();
+        g.resolve_capture(0, &admin);
+        assert!(g.escape.is_some(), "the struggle starts");
+        assert!(g.p.hidden.is_none(), "the runner left the locker");
+        assert!(g.hide_check.is_none());
+        assert_eq!(g.locker_cooldown[li], g.prof().hide_cooldown, "the locker cools down as after a door pull");
+        let sounds = crate::audio::Sounds::default();
+        g.update_escape(1.0 / 60.0, &Controls::default(), &sounds);
+        assert!(g.p.hidden.is_none(), "the runner stays out while the struggle runs");
+    }
+
+    #[test]
+    fn a_pulled_out_runner_does_not_stand_inside_the_hunter() {
+        let (mut g, _, _) = run();
+        let li = 0usize;
+        let usual = crate::hunters::gimmicks::hiding_exit(&g.fac, li);
+        let apart = HUNTER_RADIUS + PLAYER_RADIUS;
+        // the hunter standing on the usual exit
+        let exit = capture_exit(&g.fac, li, usual);
+        assert!(pdist(exit, usual) > 0.0, "the runner moved off the hunter's spot");
+        assert!(g.fac.body_fits(exit.0, exit.1, PLAYER_RADIUS), "and onto open floor");
+        assert!(pdist(exit, usual) >= apart || pdist(exit, usual) > 0.5, "clear of the hunter: {}", pdist(exit, usual));
+        // a hunter elsewhere leaves the usual exit alone
+        let far = (usual.0 + 5.0, usual.1 + 5.0);
+        assert_eq!(capture_exit(&g.fac, li, far), usual);
+        g.p.hidden = Some(li);
+        g.hunters.clear();
+        let content = crate::content::Content::load();
+        assert!(crate::app::stress::summon(&mut g, "elise", &content, 0, 0));
+        g.hunters[0].pos = usual;
+        g.resolve_capture(0, &Admin::default());
+        assert!(pdist(g.p.pos, usual) > 0.0, "pulled out beside the hunter, not inside it");
+    }
+
+    #[test]
     fn a_guest_in_a_locker_starts_no_check_and_leaves_every_hunter_alone() {
         let (mut g, _, _) = run();
         let li = 0usize;
@@ -1186,6 +1241,28 @@ mod remote_hunter_tests {
         g.hunters[0].gimmick = Gimmick::Loxelle(Loxelle::default());
         assert_eq!(ability_held(&g.hunters[0]), None, "a Loxelle that has not wound up is not lunging");
     }
+}
+
+/// Where a runner pulled out of locker `spot` stands: the usual exit, or, when the hunter that pulled her out is on it,
+/// the open spot round the locker that is farthest from the hunter (a body inside the hunter would push out unpredictably).
+fn capture_exit(fac: &crate::world::facility::Facility, spot: usize, hunter: (f32, f32)) -> (f32, f32) {
+    let usual = crate::hunters::gimmicks::hiding_exit(fac, spot);
+    let apart = HUNTER_RADIUS + PLAYER_RADIUS;
+    if pdist(usual, hunter) >= apart {
+        return usual;
+    }
+    let (cx, cy) = fac.hiding[spot].cell.center();
+    let mut best = usual;
+    for reach in [0.75_f32, 1.2] {
+        for k in 0..8 {
+            let a = k as f32 * std::f32::consts::FRAC_PI_4;
+            let (x, y) = (cx + a.cos() * reach, cy + a.sin() * reach);
+            if fac.body_fits(x, y, PLAYER_RADIUS) && pdist((x, y), hunter) > pdist(best, hunter) {
+                best = (x, y);
+            }
+        }
+    }
+    best
 }
 
 #[cfg(test)]

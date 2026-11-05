@@ -15,7 +15,8 @@
 
 use super::api::{self, Heartbeat, RegisterRoom, Registered, ReservedHostView};
 use super::hunter_events::{self, Tracker};
-use super::config::{self, BackendConfig};
+use super::interp::{self, SendClock, Track};
+use super::config::BackendConfig;
 use super::protocol::{self, Message};
 use super::relay::{RelayEvent, RelayLink, Role};
 use super::session::{CoopSession, SessionEvent, HOST_PEER_ID};
@@ -24,6 +25,7 @@ use super::{store, NetError, Pending};
 use crate::config::difficulty::{ALL, LOBBY};
 use crate::config::Difficulty;
 use crate::game::player::Player;
+use crate::game::Item;
 use crate::game::Game;
 use crate::render::anim::runner::Pose;
 use crate::world::vertical::STOREY;
@@ -33,10 +35,26 @@ use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-/// A runner's sample goes out this often (the original's 20 Hz `_place`).
-pub const SEND_INTERVAL: Duration = Duration::from_millis(50);
-/// A remote runner with no sample for this long is neither drawn nor kept.
-pub const REMOTE_TIMEOUT: Duration = Duration::from_secs(2);
+/// A remote runner with no sample for this long is not drawn (`data/net/sync.json` `remote_timeout_s`, 2 s). The send
+/// rate is `send_hz` there (30; the original sends 20 Hz `_place`).
+/// When the next directory heartbeat is due after one failed: at once for the public room (its entry lives 15 s),
+/// otherwise as already scheduled.
+fn retry_beat_at(code: &str, now: Instant, scheduled: Instant) -> Instant {
+    if code == super::public_route::rules().code {
+        now.min(scheduled)
+    } else {
+        scheduled
+    }
+}
+
+/// A heartbeat goes out when none is in flight, no relist runs, and the schedule has come.
+fn beat_due(in_flight: bool, relisting: bool, now: Instant, next: Instant) -> bool {
+    !in_flight && !relisting && now >= next
+}
+
+fn remote_timeout() -> Duration {
+    Duration::from_secs_f32(interp::rules().remote_timeout_s)
+}
 /// A runner whose sample has been quiet this long is listed as DISCONNECTED (Godot `room_player_list.gd`
 /// `QUIET_DISCONNECT_USEC` = 8 s).
 pub const QUIET_DISCONNECT: Duration = Duration::from_secs(8);
@@ -102,10 +120,16 @@ pub struct Sample {
     pub clip: Option<Pose>,
     /// Vertical speed in metres per second (0 on the ground and from an older client).
     pub vy: f32,
+    /// Ground velocity in cells per second, measured by the sender (0 from an older client or a standing runner).
+    pub vx: f32,
+    pub vz: f32,
     /// The runner wears slim arms (its ARMS setting resolved for its skin).
     pub slim: bool,
     /// The locker the runner is hidden in, if any (Godot `hidden` + `hiding_spot`).
     pub hide: Option<HideSpot>,
+    /// The item the runner holds (`held`, see `net::held_wire`); None when it holds nothing, from an older client, or
+    /// when the id is one this build does not know.
+    pub held: Option<Item>,
 }
 
 impl Sample {
@@ -128,9 +152,18 @@ impl Sample {
             escape_active: false,
             clip: None,
             vy: 0.0,
+            vx: 0.0,
+            vz: 0.0,
             slim: false,
             hide: None,
+            held: None,
         }
+    }
+
+    /// The sample with the item the runner holds.
+    pub fn with_held(mut self, held: Option<Item>) -> Sample {
+        self.held = held;
+        self
     }
 
     /// The sample with the runner's body state: its pose, vertical speed, slim arms and locker.
@@ -167,11 +200,18 @@ impl Sample {
             if self.vy != 0.0 {
                 o.insert("vy".into(), json!(self.vy));
             }
+            if self.vx != 0.0 || self.vz != 0.0 {
+                o.insert("vx".into(), json!(self.vx));
+                o.insert("vz".into(), json!(self.vz));
+            }
             if self.slim {
                 o.insert("slim".into(), json!(true));
             }
             if let Some(h) = self.hide {
                 o.insert("hide".into(), json!([h.cell.0, h.cell.1, h.facing.0, h.facing.1]));
+            }
+            if let Some(i) = self.held {
+                o.insert("held".into(), json!(super::held_wire::wire(i)));
             }
         }
         v
@@ -183,6 +223,8 @@ impl Sample {
         let o = v.as_object()?;
         let num = |k: &str| o.get(k).and_then(Value::as_f64).map(|f| f as f32).filter(|f| f.is_finite());
         let flag = |k: &str| o.get(k).and_then(Value::as_bool).unwrap_or(false);
+        // a hostile or broken peer's velocity is scaled down to the speed cap, never trusted as sent
+        let (vx, vz) = interp::clamp_velocity(num("vx").unwrap_or(0.0), num("vz").unwrap_or(0.0), interp::rules().max_speed_mps);
         Some(Sample {
             seq: o.get("seq")?.as_u64()? as u32,
             depth: o.get("depth")?.as_i64()? as i32,
@@ -198,8 +240,11 @@ impl Sample {
             escape_active: flag("escape_active"),
             clip: o.get("clip").and_then(Value::as_str).and_then(Pose::from_wire),
             vy: num("vy").unwrap_or(0.0),
+            vx,
+            vz,
             slim: flag("slim"),
             hide: o.get("hide").and_then(hide_spot_from_json),
+            held: o.get("held").and_then(Value::as_str).and_then(super::held_wire::from_wire),
         })
     }
 }
@@ -282,6 +327,8 @@ pub struct RemoteView {
     pub clip: Option<Pose>,
     /// The locker the runner is hidden in, in this window's cells; None when it is out in the open.
     pub hide: Option<HideSpot>,
+    /// The item the runner holds in its hand, if any.
+    pub held: Option<Item>,
     /// Whether the runner was out in the open `HIDE_MOVE_SECONDS` ago: a runner going into a locker stays visible while
     /// it slides in (Godot remote_players.gd 542-563). Set by [`NetSession::remotes_at`].
     pub hide_since: Option<std::time::Duration>,
@@ -289,33 +336,38 @@ pub struct RemoteView {
 
 /// What the figure code needs of a remote runner's last sample, moved into the window whose origin is `origin`.
 fn remote_view(peer: u32, r: &Remote, skin: String, origin: (i32, i32), now: Instant) -> RemoteView {
-    let (x, y) = to_window((r.sample.x, r.sample.y), origin);
-    let h = r.sample.h.unwrap_or(r.sample.depth as f32 * STOREY);
+    let shown = r.shown(now);
+    let (x, y) = to_window((shown.x, shown.y), origin);
+    let h = shown.h.unwrap_or(shown.depth as f32 * STOREY);
     RemoteView {
         peer,
         x,
         y,
-        yaw: r.sample.yaw,
+        yaw: shown.yaw,
         h,
         level: crate::game::level_stack::owning_level(h),
         skin,
-        moving: r.sample.moving,
-        sprinting: r.sample.sprinting,
-        crouching: r.sample.crouching,
-        slim: r.sample.slim,
-        clip: r.sample.clip,
-        hide: r.sample.hide.map(|h| HideSpot { cell: (h.cell.0 - origin.0, h.cell.1 - origin.1), facing: h.facing }),
+        moving: shown.moving,
+        sprinting: shown.sprinting,
+        crouching: shown.crouching,
+        slim: shown.slim,
+        clip: shown.clip,
+        held: shown.held,
+        hide: shown.hide.map(|h| HideSpot { cell: (h.cell.0 - origin.0, h.cell.1 - origin.1), facing: h.facing }),
         hide_since: r.hide_since.map(|t| now.duration_since(t)),
-        speed: if !r.sample.moving {
+        speed: if !shown.moving {
             0.0
-        } else if r.sample.sprinting {
+        } else if shown.vx != 0.0 || shown.vz != 0.0 {
+            let (vx, vz) = interp::clamp_velocity(shown.vx, shown.vz, interp::rules().max_speed_mps);
+            vx.hypot(vz)
+        } else if shown.sprinting {
             crate::config::PLAYER_SPRINT_SPEED
-        } else if r.sample.crouching {
+        } else if shown.crouching {
             crate::config::PLAYER_CROUCH_SPEED
         } else {
             crate::config::PLAYER_WALK_SPEED
         },
-        vy: r.sample.vy,
+        vy: shown.vy,
     }
 }
 
@@ -441,10 +493,27 @@ struct PendingCapture {
 }
 
 struct Remote {
+    /// The newest sample kept.
     sample: Sample,
     last_seen: Instant,
     /// When this runner's samples first said it was hidden in a locker (None while it is in the open).
     hide_since: Option<Instant>,
+    /// Its recent samples, played back late so the figure moves smoothly (see `net::interp`).
+    track: Track,
+}
+
+impl Remote {
+    fn new(sample: Sample, last_seen: Instant, hide_since: Option<Instant>) -> Remote {
+        let rules = interp::rules();
+        let mut track = Track::new(rules);
+        track.push(interp::secs(last_seen), sample, rules);
+        Remote { sample, last_seen, hide_since, track }
+    }
+
+    /// The runner as it is drawn at `now`: the buffered samples played back late.
+    fn shown(&self, now: Instant) -> Sample {
+        self.track.shown(interp::secs(now), interp::rules()).unwrap_or(self.sample)
+    }
 }
 
 struct Guest {
@@ -562,7 +631,9 @@ pub struct NetSession {
     guests: HashMap<u32, Guest>,
     remotes: HashMap<u32, Remote>,
     seq: u32,
-    next_send: Instant,
+    /// The fixed-step clock of this runner's samples and the last one sent (its time in seconds), for the velocity.
+    send_clock: SendClock,
+    last_sent: Option<(f64, Sample)>,
     next_heartbeat: Instant,
     heartbeat: Option<Pending<api::HeartbeatReply>>,
     relist: Option<Pending<Registered>>,
@@ -670,7 +741,17 @@ pub fn join_public_room(cfg: BackendConfig, name: String, skin: String) -> Pendi
                     ..RegisterRoom::default()
                 };
                 match api::register_room(&cfg, &request) {
-                    Ok(reg) => open_host(cfg, code, crate::world::route::new_room_text(), name, skin, reg),
+                    Ok(reg) => {
+                        let mut session = open_host(cfg.clone(), code.clone(), crate::world::route::new_room_text(), name.clone(), skin.clone(), reg)?;
+                        // somebody opened the public room in the same moment: the relay says so, and this runner joins
+                        match probe_public_host(&mut session.coop.link, PUBLIC_HOST_PROBE) {
+                            HostProbe::Hosting => Ok(session),
+                            HostProbe::HasHost => {
+                                session.coop.link.close();
+                                join_found(cfg.clone(), code.clone(), api::lookup_room(&cfg, &code)?, name, skin)
+                            }
+                        }
+                    }
                     Err(first) => match api::lookup_room(&cfg, &code) {
                         Ok(room) => join_found(cfg, code, room, name, skin),
                         Err(_) => Err(first),
@@ -679,6 +760,40 @@ pub fn join_public_room(cfg: BackendConfig, name: String, skin: String) -> Pendi
             }
         }
     })
+}
+
+/// How long a runner that just opened the public room waits for the relay to say it already has a host.
+const PUBLIC_HOST_PROBE: Duration = Duration::from_millis(1500);
+
+/// The relay's first word to a public host registration.
+#[derive(Debug, PartialEq, Eq)]
+enum HostProbe {
+    /// An ack, or no answer in time: this runner holds the route.
+    Hosting,
+    /// The public route has a live host (`HOST_JOIN_AS_GUEST`, or the old host-authorization refusal): join it.
+    HasHost,
+}
+
+/// Polls a fresh host link until the relay acks or sends the host away, or `wait` passes.
+fn probe_public_host(link: &mut RelayLink, wait: Duration) -> HostProbe {
+    let deadline = Instant::now() + wait;
+    while Instant::now() < deadline {
+        for event in link.poll() {
+            match event {
+                RelayEvent::JoinAsGuest => return HostProbe::HasHost,
+                RelayEvent::Error(text) if is_host_refusal(&text) => return HostProbe::HasHost,
+                RelayEvent::Ready { .. } => return HostProbe::Hosting,
+                _ => {}
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    HostProbe::Hosting
+}
+
+/// An older relay refuses a public host with this text: for the public route it means "join as a guest", never a failure.
+fn is_host_refusal(text: &str) -> bool {
+    text.to_uppercase().contains("HOST AUTHORIZATION")
 }
 
 /// What a JOIN ROOM does with its directory lookup.
@@ -749,6 +864,7 @@ impl NetSession {
         skin: String,
     ) -> NetSession {
         let now = Instant::now();
+        let first_beat = Duration::from_secs_f64(super::public_route::heartbeat_seconds(&code));
         NetSession {
             cfg,
             code,
@@ -771,8 +887,9 @@ impl NetSession {
             guests: HashMap::new(),
             remotes: HashMap::new(),
             seq: 0,
-            next_send: now,
-            next_heartbeat: now + Duration::from_secs_f64(config::HEARTBEAT_SECONDS),
+            send_clock: SendClock::default(),
+            last_sent: None,
+            next_heartbeat: now + first_beat,
             heartbeat: None,
             relist: None,
             opened: now,
@@ -931,7 +1048,7 @@ impl NetSession {
         let fresh = |peer: u32| {
             self.remotes
                 .get(&peer)
-                .filter(|r| now.duration_since(r.last_seen) < REMOTE_TIMEOUT)
+                .filter(|r| now.duration_since(r.last_seen) < remote_timeout())
                 .map(|r| r.sample.depth)
         };
         let entry = |peer: u32, name: String| {
@@ -1091,13 +1208,13 @@ impl NetSession {
 
     /// Host: where a guest last stood (absolute cell and depth), for the checks on its requests: the host's own copy
     /// of the last accepted sample, never a place the request itself carries. `None` for a peer with no fresh sample
-    /// (older than [`REMOTE_TIMEOUT`]), or on a guest.
+    /// (older than [`remote_timeout`]), or on a guest.
     pub fn guest_position(&self, peer: u32) -> Option<(f32, f32, i32)> {
         let now = Instant::now();
         self.is_host()
             .then(|| self.remotes.get(&peer))
             .flatten()
-            .filter(|r| now.duration_since(r.last_seen) < REMOTE_TIMEOUT)
+            .filter(|r| now.duration_since(r.last_seen) < remote_timeout())
             .map(|r| (r.sample.x, r.sample.y, r.sample.depth))
     }
 
@@ -1262,7 +1379,7 @@ impl NetSession {
                     Some(h) => (h - viewer_h).abs() <= STOREY + 0.05,
                     None => r.sample.depth == depth,
                 };
-                near && now.duration_since(r.last_seen) < REMOTE_TIMEOUT
+                near && now.duration_since(r.last_seen) < remote_timeout()
             })
             .map(|(peer, r)| {
                 let mut v = remote_view(*peer, r, self.skins.get(peer).cloned().unwrap_or_else(|| SKIN_DEFAULT.into()), origin, now);
@@ -1302,7 +1419,8 @@ impl NetSession {
                     }
                     // the directory forgot the room (restart or expiry): list it again under the same code
                     Err(e) if matches!(e.status(), Some(403) | Some(404)) => self.start_relist(),
-                    Err(_) => {}
+                    // a public beat that failed is tried again at once: the directory forgets the entry after 15 s
+                    Err(_) => self.next_heartbeat = retry_beat_at(&self.code, now, self.next_heartbeat),
                 }
             }
         }
@@ -1319,12 +1437,14 @@ impl NetSession {
                             out.extend(self.owner.take(view));
                         }
                     }
+                    // the public route is hostless: the relay hello keeps its entry alive, so a failed relist is no problem
+                    Err(_) if super::public_route::is_public(&self.code) => {}
                     Err(_) => out.push(NetEvent::Problem("ROOM LOST // THE DIRECTORY FORGOT IT".into())),
                 }
             }
         }
-        if self.heartbeat.is_none() && self.relist.is_none() && now >= self.next_heartbeat {
-            self.next_heartbeat = now + Duration::from_secs_f64(config::HEARTBEAT_SECONDS);
+        if beat_due(self.heartbeat.is_some(), self.relist.is_some(), now, self.next_heartbeat) {
+            self.next_heartbeat = now + Duration::from_secs_f64(super::public_route::heartbeat_seconds(&self.code));
             let beat = self.beat();
             let cfg = self.cfg.clone();
             self.heartbeat = Some(Pending::spawn(move || api::heartbeat(&cfg, &beat)));
@@ -1369,6 +1489,10 @@ impl NetSession {
             }
             SessionEvent::Message { from, message } => self.on_message(from, message, now, out),
             SessionEvent::Relay(RelayEvent::HostLeft(reason)) => out.push(NetEvent::HostLeft(reason)),
+            SessionEvent::Relay(RelayEvent::JoinAsGuest) => out.push(NetEvent::HostLeft("THE PUBLIC ROUTE HAS A HOST // JOIN IT".into())),
+            SessionEvent::Relay(RelayEvent::Error(text)) if self.is_host() && super::public_route::is_public(&self.code) && is_host_refusal(&text) => {
+                out.push(NetEvent::HostLeft("THE PUBLIC ROUTE HAS A HOST // JOIN IT".into()))
+            }
             SessionEvent::Relay(RelayEvent::Error(text)) => out.push(NetEvent::Problem(text)),
             SessionEvent::Relay(_) => {}
         }
@@ -1545,12 +1669,22 @@ impl NetSession {
             (Some(_), Some(r)) if r.hide_since.is_some() => r.hide_since,
             (Some(_), _) => Some(now),
         };
-        self.remotes.insert(peer, Remote { sample, last_seen: now, hide_since });
+        match self.remotes.get_mut(&peer) {
+            Some(r) => {
+                r.track.push(interp::secs(now), sample, interp::rules());
+                r.sample = sample;
+                r.last_seen = now;
+                r.hide_since = hide_since;
+            }
+            None => {
+                self.remotes.insert(peer, Remote::new(sample, now, hide_since));
+            }
+        }
         true
     }
 
     fn prune(&mut self, now: Instant, out: &mut Vec<NetEvent>) {
-        // a stale runner is not drawn (remotes_at checks REMOTE_TIMEOUT) but its state stays for the PLAYERS list
+        // a stale runner is not drawn (remotes_at checks the timeout) but its state stays for the PLAYERS list
         self.remotes.retain(|_, r| now.duration_since(r.last_seen) < ROSTER_KEEP);
         if self.is_host() {
             let gone: Vec<u32> = self
@@ -1578,17 +1712,46 @@ impl NetSession {
     }
 
     fn send_due(&mut self, sample: Option<Sample>, now: Instant) {
-        if now < self.next_send {
+        let rules = interp::rules();
+        let t = interp::secs(now);
+        let early = match (&sample, &self.last_sent) {
+            (Some(s), Some((_, last))) => {
+                (s.x - last.x).hypot(s.y - last.y) > rules.send_early_move_m
+                    || ((s.yaw - last.yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI).abs() > rules.send_early_yaw_rad
+                    || s.clip != last.clip
+                    || s.hide.is_some() != last.hide.is_some()
+                    || s.held != last.held
+            }
+            (Some(_), None) => true,
+            _ => false,
+        };
+        if !self.send_clock.due(t, early, rules) {
             return;
         }
-        self.next_send = now + SEND_INTERVAL;
+        let sample = sample.map(|mut s| {
+            // the measured ground velocity: the move since the last sample over the time between them
+            if let Some((lt, last)) = &self.last_sent {
+                let dt = (t - lt) as f32;
+                let step = (s.x - last.x).hypot(s.y - last.y);
+                // a respawn, ladder snap or teleport is a jump, not a speed: it carries no velocity
+                if last.depth == s.depth && dt > 1e-3 && dt < 0.5 && step <= rules.snap_distance_m && step / dt <= rules.max_speed_mps {
+                    s.vx = (s.x - last.x) / dt;
+                    s.vz = (s.y - last.y) / dt;
+                }
+            }
+            s
+        });
         self.seq = self.seq.wrapping_add(1);
         let packet = match sample {
             Some(mut s) => {
                 s.seq = self.seq;
+                self.last_sent = Some((t, s));
                 s.to_json()
             }
-            None => Value::Null,
+            None => {
+                self.last_sent = None;
+                Value::Null
+            }
         };
         if self.is_host() {
             for peer in self.coop.peers() {
@@ -1709,6 +1872,26 @@ pub fn draw_remotes(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, rem
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_failed_public_beat_retries_at_once_and_a_stalled_beat_delays_the_next_by_its_timeout_only() {
+        let t0 = Instant::now();
+        let public = super::super::public_route::rules().code.clone();
+        let interval = Duration::from_secs_f64(super::super::public_route::heartbeat_seconds(&public));
+        let timeout = Duration::from_secs(super::super::public_route::HEARTBEAT_TIMEOUT_SECONDS);
+        // beat sent at t0 stalls until its timeout: the schedule has passed, so the next goes out the moment it ends
+        let next = t0 + interval;
+        assert!(!beat_due(true, false, t0 + interval, next), "one beat at a time");
+        assert!(beat_due(false, false, t0 + timeout.max(interval), next));
+        // worst case gap between two beats reaching the directory stays under its 15 s TTL
+        let gap = interval.max(timeout) + timeout;
+        assert!(gap.as_secs_f64() < super::super::public_route::DIRECTORY_PUBLIC_TTL_SECONDS, "{gap:?}");
+        // a failure retries now for the public code, and leaves a private room on its schedule
+        assert_eq!(retry_beat_at(&public, t0 + timeout, t0 + interval), t0 + timeout);
+        assert_eq!(retry_beat_at("ABCDE", t0 + timeout, t0 + interval), t0 + interval);
+        assert_eq!(retry_beat_at(&public.to_lowercase(), t0 + timeout, t0 + interval), t0 + interval, "exact match");
+        assert!(!beat_due(false, true, t0 + interval, next), "no beat during a relist");
+    }
+
     use super::*;
     use crate::net::relay::{decode, encode, frame};
     use std::net::UdpSocket;
@@ -1729,9 +1912,78 @@ mod tests {
             escape_active: false,
             clip: None,
             vy: 0.0,
+            vx: 0.0,
+            vz: 0.0,
             slim: false,
             hide: None,
+            held: None,
         }
+    }
+
+    #[test]
+    fn send_due_attaches_the_velocity_and_drops_it_after_a_jump() {
+        // the shared timeline starts before `base`, so no sample time is negative
+        interp::secs(Instant::now());
+        let base = Instant::now();
+        let ms = |n: u64| base + Duration::from_millis(n);
+        let mut s = offline_session(false, "GUEST");
+        let sent = |s: &NetSession| s.last_sent.unwrap().1;
+        s.send_due(Some(sample(0, 0.0, 0.0)), ms(0));
+        assert_eq!((s.seq, sent(&s).vx), (1, 0.0), "the first sample has nothing to measure");
+        s.send_due(Some(sample(0, 0.17, 0.0)), ms(34));
+        assert!((sent(&s).vx - 5.0).abs() < 0.1, "5 m/s: {}", sent(&s).vx);
+        s.send_due(Some(sample(0, 20.0, 0.0)), ms(68));
+        assert_eq!((s.seq, sent(&s).vx), (3, 0.0), "a teleport carries no velocity");
+        let mut up = sample(0, 20.1, 0.0);
+        up.depth = 2;
+        s.send_due(Some(up), ms(102));
+        assert_eq!((s.seq, sent(&s).vx), (4, 0.0), "another floor carries none either");
+        s.send_due(Some(sample(0, 20.8, 0.0)), ms(104));
+        assert_eq!(s.seq, 4, "an early send keeps the minimum gap");
+        s.send_due(Some(sample(0, 20.8, 0.0)), ms(122));
+        assert_eq!(s.seq, 5, "and goes out once the gap has passed");
+        s.send_due(Some(sample(0, 20.9, 0.0)), ms(155));
+        assert_eq!(s.seq, 6);
+        assert!((sent(&s).vx - 3.0).abs() < 0.2, "{}", sent(&s).vx);
+    }
+
+    #[test]
+    fn send_due_sends_early_when_the_held_item_changes() {
+        // the shared timeline starts before `base`, so no sample time is negative
+        interp::secs(Instant::now());
+        let base = Instant::now();
+        let ms = |n: u64| base + Duration::from_millis(n);
+        let mut s = offline_session(false, "GUEST");
+        s.send_due(Some(sample(0, 0.0, 0.0)), ms(0));
+        assert_eq!(s.seq, 1);
+        s.send_due(Some(sample(0, 0.0, 0.0)), ms(20));
+        assert_eq!(s.seq, 1, "nothing changed, so the step is not due yet");
+        s.send_due(Some(sample(0, 0.0, 0.0).with_held(Some(Item::Axe))), ms(20));
+        assert_eq!(s.seq, 2, "a new item goes out ahead of the step");
+        assert_eq!(s.last_sent.unwrap().1.held, Some(Item::Axe));
+        s.send_due(Some(sample(0, 0.0, 0.0).with_held(None)), ms(25));
+        assert_eq!(s.seq, 2, "the minimum gap still holds");
+        s.send_due(Some(sample(0, 0.0, 0.0).with_held(None)), ms(45));
+        assert_eq!(s.seq, 3, "putting it away is an early send too");
+        assert_eq!(s.last_sent.unwrap().1.held, None);
+    }
+
+    #[test]
+    fn a_held_item_rides_the_sample_and_an_unknown_one_is_none() {
+        for item in [Item::Flashlight, Item::Taser, Item::Crowbar, Item::Axe, Item::Battery, Item::Stim] {
+            let s = sample(2, 1.0, 2.0).with_held(Some(item));
+            assert_eq!(Sample::from_json(&s.to_json()), Some(s), "{item:?} round trips");
+        }
+        let none = sample(2, 1.0, 2.0).to_json();
+        assert!(none.get("held").is_none(), "nothing held sends no key, so an older peer sees the old packet");
+        let mut v = sample(3, 1.0, 2.0).to_json();
+        v["held"] = json!("lockpick");
+        let s = Sample::from_json(&v).expect("an unknown item never refuses the sample");
+        assert_eq!((s.held, s.x), (None, 1.0));
+        v["held"] = json!(7);
+        assert_eq!(Sample::from_json(&v).map(|s| s.held), Some(None), "a non-string is no item");
+        let host_view = Sample::from_json(&sample(4, 1.0, 2.0).with_held(Some(Item::Axe)).to_json()).unwrap();
+        assert_eq!(host_view.held, Some(Item::Axe));
     }
 
     #[test]
@@ -1751,13 +2003,18 @@ mod tests {
             escape_active: true,
             clip: Some(Pose::Climb),
             vy: -3.5,
+            vx: 2.5,
+            vz: -1.0,
             slim: true,
             hide: Some(HideSpot { cell: (-40, 17), facing: (0, -1) }),
+            held: Some(Item::Crowbar),
         };
         assert_eq!(Sample::from_json(&s.to_json()), Some(s));
         assert_eq!(Sample::from_json(&Value::Null), None, "a keep-alive is not a sample");
         assert_eq!(Sample::from_json(&json!({"seq": 1, "depth": 0, "x": "far", "y": 0})), None);
         assert_eq!(Sample::from_json(&json!({"seq": 1, "depth": 0, "x": 1e39, "y": 0})), None, "infinity is refused");
+        let hostile = Sample::from_json(&json!({"seq": 1, "depth": 0, "x": 0.0, "y": 0.0, "vx": 1e38, "vz": -1e38})).unwrap();
+        assert!(hostile.vx.hypot(hostile.vz) <= interp::rules().max_speed_mps + 1e-3, "a hostile velocity is capped");
         assert_eq!(Sample::from_json(&json!({"seq": 1, "depth": 0, "x": 0.0, "y": 0.0}))
             .map(|s| (s.yaw, s.moving)), Some((0.0, false)), "missing flags read as false");
     }
@@ -1768,7 +2025,7 @@ mod tests {
         let s = Sample::from_json(&old).expect("an older client's sample still parses");
         assert_eq!((s.clip, s.vy, s.slim, s.hide), (None, 0.0, false, None));
         let v = sample(1, 0.0, 0.0).to_json();
-        for key in ["clip", "vy", "slim", "hide"] {
+        for key in ["clip", "vy", "vx", "vz", "slim", "hide"] {
             assert!(v.get(key).is_none(), "a sample with no body state sends no {key}");
         }
         let newer = json!({"seq": 4, "depth": 1, "x": 2.0, "y": 3.0, "clip": "backflip", "hide": [1, 2]});
@@ -1784,7 +2041,7 @@ mod tests {
     fn the_body_state_reaches_the_remote_view() {
         let now = Instant::now();
         let smp = sample(1, 13.0, 14.0).with_body(Pose::Climb, 1.5, true, Some(HideSpot { cell: (13, 14), facing: (1, 0) }));
-        let r = Remote { sample: smp, last_seen: now, hide_since: Some(now) };
+        let r = Remote::new(smp, now, Some(now));
         let v = remote_view(5, &r, "DEFAULT".into(), (10, 10), now);
         assert_eq!((v.clip, v.vy, v.slim), (Some(Pose::Climb), 1.5, true));
         assert_eq!((v.x, v.y), (3.0, 4.0), "the position moves into this window");
@@ -1899,7 +2156,7 @@ mod tests {
         let hash = "d".repeat(64);
         let mut host = offline_session(true, "HOST");
         host.skins.insert(7, hash.clone());
-        host.remotes.insert(7, Remote { sample: sample(1, 0.0, 0.0), last_seen: Instant::now(), hide_since: None });
+        host.remotes.insert(7, Remote::new(sample(1, 0.0, 0.0), Instant::now(), None));
         assert!(!host.remotes_at(0.0, 1, (0, 0))[0].slim, "no word and no picture: classic");
         host.note_peer_slim(7, Some(true));
         assert!(host.remotes_at(0.0, 1, (0, 0))[0].slim, "the profile says slim");
@@ -2072,6 +2329,156 @@ mod tests {
         assert_eq!(guest.room_mods(), ["neon_halls".to_string()]);
         assert!(events.contains(&NetEvent::GuestJoined("GUEST".into())));
         assert!(host.is_host() && !guest.is_host());
+    }
+
+    /// A tiny http server for the skin fetch: the first `misses` requests are answered 404 (the file is not uploaded yet),
+    /// every later one serves `body`. Stops when the returned flag is set.
+    fn skin_server(body: Vec<u8>, misses: usize) -> (u16, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let stop2 = stop.clone();
+        std::thread::spawn(move || {
+            let mut served = 0usize;
+            while !stop2.load(Ordering::SeqCst) {
+                let Ok((mut conn, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                };
+                conn.set_nonblocking(false).unwrap();
+                conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let (mut got, mut b) = (Vec::new(), [0u8; 2048]);
+                while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match conn.read(&mut b) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => got.extend_from_slice(&b[..n]),
+                    }
+                }
+                served += 1;
+                let reply = if served <= misses {
+                    b"HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}".to_vec()
+                } else {
+                    [format!("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes(), body.clone()].concat()
+                };
+                let _ = conn.write_all(&reply);
+            }
+        });
+        (port, stop)
+    }
+
+    /// Two peers over one fake relay: each announces its skin id once the website holds it, the other sees the id on the
+    /// remote body, fetches the picture (the first try finds nothing, the retry finds it), verifies and decodes it.
+    #[test]
+    fn two_peers_announce_fetch_and_apply_a_skin() {
+        use crate::shared::skins;
+        let rgba: Vec<u8> = (0..64 * 64).flat_map(|i| [(i % 251) as u8, 90, 160, 255]).collect();
+        let png = skins::encode_png(&rgba, 64, 64);
+        let hash = skins::sha256_hex(&png);
+        let relay = UdpSocket::bind("127.0.0.1:0").unwrap();
+        relay.set_nonblocking(true).unwrap();
+        let port = relay.local_addr().unwrap().port();
+        let mut host = NetSession::new(
+            BackendConfig::loopback(18105),
+            "ABCDE".into(),
+            Role::Host,
+            CoopSession::new(RelayLink::host("ABCDE", "tok", "127.0.0.1", port).unwrap()),
+            "tok".into(),
+            "ROOM-ABCDE-0123".into(),
+            "HOST".into(),
+            SKIN_DEFAULT.into(),
+        );
+        let mut guest = NetSession::new(
+            BackendConfig::loopback(18105),
+            "ABCDE".into(),
+            Role::Guest,
+            CoopSession::new(RelayLink::guest("ABCDE", "127.0.0.1", port, "").unwrap()),
+            String::new(),
+            String::new(),
+            "GUEST".into(),
+            SKIN_DEFAULT.into(),
+        );
+        // the guest's upload has not finished: it still announces DEFAULT; the host's has
+        guest.set_skin(&hash, &[]);
+        host.set_skin(&hash, &[hash.clone()]);
+        assert_eq!((host.published_skin(), guest.published_skin()), (hash.as_str(), SKIN_DEFAULT));
+        let (mut host_addr, mut guest_addr) = (None, None);
+        let mut buf = [0u8; 2048];
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut guest_sees_host, mut host_sees_guest_default, mut guest_republished) = (false, false, false);
+        while Instant::now() < deadline && !(guest_sees_host && guest_republished) {
+            while let Ok((n, from)) = relay.recv_from(&mut buf) {
+                let f = decode(&buf[..n]).unwrap();
+                match f.kind {
+                    frame::HOST_REGISTER => {
+                        host_addr = Some(from);
+                        relay.send_to(&encode(frame::HOST_ACK, 0, "ABCDE", &[]).unwrap(), from).unwrap();
+                    }
+                    frame::GUEST_JOIN => {
+                        guest_addr = Some(from);
+                        relay.send_to(&encode(frame::GUEST_ACK, 42, "ABCDE", &[]).unwrap(), from).unwrap();
+                    }
+                    frame::GUEST_DATA => {
+                        relay.send_to(&encode(frame::GUEST_DATA, 42, "ABCDE", &f.payload).unwrap(), host_addr.unwrap()).unwrap();
+                    }
+                    frame::HOST_DATA => {
+                        relay.send_to(&encode(frame::HOST_DATA, 42, "ABCDE", &f.payload).unwrap(), guest_addr.unwrap()).unwrap();
+                    }
+                    _ => {}
+                }
+            }
+            host.tick(Some(sample(0, 3.0, -2.0)));
+            guest.tick(Some(sample(0, 7.5, 1.25)));
+            guest_sees_host = guest_sees_host || guest.remotes_at(5.0, 1, (0, 0)).iter().any(|r| r.peer == HOST_PEER_ID && r.skin == hash);
+            host_sees_guest_default = host_sees_guest_default || host.remotes_at(5.0, 1, (0, 0)).iter().any(|r| r.peer == 42 && r.skin == SKIN_DEFAULT);
+            if host_sees_guest_default && !guest_republished {
+                // the upload finishes: the guest announces the id (the app's periodic check does this)
+                guest.set_skin(&hash, &[hash.clone()]);
+                guest_republished = guest.published_skin() == hash;
+                assert!(guest_republished, "an uploaded skin is announced");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(host_sees_guest_default, "before its upload the guest shows as DEFAULT on the host");
+        assert!(guest_sees_host, "the guest sees the host's skin id on the remote body");
+        // the host sees the guest's id after the republish
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut host_sees_guest = false;
+        while Instant::now() < deadline && !host_sees_guest {
+            while let Ok((n, from)) = relay.recv_from(&mut buf) {
+                let f = decode(&buf[..n]).unwrap();
+                if f.kind == frame::GUEST_DATA {
+                    relay.send_to(&encode(frame::GUEST_DATA, 42, "ABCDE", &f.payload).unwrap(), host_addr.unwrap()).unwrap();
+                } else if f.kind == frame::HOST_DATA {
+                    relay.send_to(&encode(frame::HOST_DATA, 42, "ABCDE", &f.payload).unwrap(), guest_addr.unwrap()).unwrap();
+                }
+                let _ = from;
+            }
+            host.tick(Some(sample(0, 3.0, -2.0)));
+            guest.tick(Some(sample(0, 7.5, 1.25)));
+            host_sees_guest = host.remotes_at(5.0, 1, (0, 0)).iter().any(|r| r.peer == 42 && r.skin == hash);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(host_sees_guest, "the host sees the guest's skin id once it is announced");
+
+        // fetch: the first try finds nothing (not uploaded yet), the retry gets the picture; verified, cached, decoded
+        let cfg = skins::SkinConfig { host_base: "https://skins.invalid".to_string(), ..skins::config().unwrap() };
+        let (server_port, stop) = skin_server(png.clone(), 2);
+        let base = format!("http://127.0.0.1:{server_port}");
+        let dir = std::env::temp_dir().join(format!("lr_two_peer_skin_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!skins::fetch_skin_blocking(&cfg, &base, &dir, &hash), "not on the server yet: nothing cached");
+        assert!(skins::read_skin_in(&[Some(dir.clone())], &hash).is_none());
+        assert!(skins::fetch_skin_blocking(&cfg, &base, &dir, &hash), "the retry finds it");
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let cached = skins::read_skin_in(&[Some(dir.clone())], &hash).expect("the verified file is cached");
+        let pixels = skins::remote_skin_rgba(&cached).expect("the cached skin decodes");
+        assert_eq!(pixels.len(), 64 * 64 * 4);
+        let _ = std::fs::remove_dir_all(&dir);
+        host.coop.close();
+        guest.coop.close();
     }
 
     #[test]
@@ -2342,7 +2749,7 @@ mod tests {
         let mut host = offline_session(true, "HOST");
         host.guests.insert(42, Guest { name: "NIGHTWALK".into(), last_seen: now });
         host.guests.insert(7, Guest { name: "QUIET".into(), last_seen: now });
-        host.remotes.insert(42, Remote { sample: sample(1, 0.0, 0.0), last_seen: now, hide_since: None });
+        host.remotes.insert(42, Remote::new(sample(1, 0.0, 0.0), now, None));
         let roster = host.roster();
         assert_eq!(roster.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["QUIET", "NIGHTWALK"]);
         assert!(!roster[0].sending && roster[0].depth.is_none(), "a guest with no fresh sample is not sending");
@@ -2358,14 +2765,14 @@ mod tests {
         let silent = guest.roster();
         assert_eq!(silent.len(), 1, "a guest that is not sending is not listed");
         assert!(silent[0].host && silent[0].name == "HOST" && !silent[0].sending, "the host is listed first, not sending");
-        guest.remotes.insert(HOST_PEER_ID, Remote { sample: sample(1, 3.0, -2.0), last_seen: now, hide_since: None });
-        guest.remotes.insert(9, Remote { sample: sample(1, 5.0, 5.0), last_seen: now, hide_since: None });
+        guest.remotes.insert(HOST_PEER_ID, Remote::new(sample(1, 3.0, -2.0), now, None));
+        guest.remotes.insert(9, Remote::new(sample(1, 5.0, 5.0), now, None));
         let roster = guest.roster();
         assert_eq!(roster.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["HOST", "NEON"]);
         assert!(roster[0].host && roster[0].sending, "the host sends samples");
         // a runner quiet for longer than QUIET_DISCONNECT stays listed, with its quiet time for the DISCONNECTED status
         let long_ago = now.checked_sub(QUIET_DISCONNECT + Duration::from_secs(1)).unwrap_or(now);
-        guest.remotes.insert(9, Remote { sample: sample(2, 5.0, 5.0), last_seen: long_ago, hide_since: None });
+        guest.remotes.insert(9, Remote::new(sample(2, 5.0, 5.0), long_ago, None));
         let roster = guest.roster();
         let quiet = roster.iter().find(|e| e.peer == 9).and_then(|e| e.state).map(|s| s.quiet);
         assert!(quiet.is_some_and(|q| q > QUIET_DISCONNECT), "a silent runner is still listed, quiet for {quiet:?}");
@@ -2486,6 +2893,7 @@ mod admin_join_tests {
 mod owner_route_tests {
     use super::tests::{guest_report, offline_session, sample};
     use super::*;
+    use crate::net::relay::{decode, encode, frame};
     use std::net::UdpSocket;
 
     fn args(v: Value) -> Map<String, Value> {
@@ -2554,6 +2962,36 @@ mod owner_route_tests {
         // a fresh registration starts the cursors again, so what it lists is handed on again (Godot fresh=true)
         cursor = OwnerCursor::default();
         assert_eq!(cursor.take(&next), vec![NetEvent::RouteCommand(RouteCommand::End)]);
+    }
+
+    /// A fake relay that answers the first HOST_REGISTER with `answer`.
+    fn probe_against(answer: u8) -> HostProbe {
+        let relay = UdpSocket::bind("127.0.0.1:0").unwrap();
+        relay.set_read_timeout(Some(Duration::from_millis(1000))).unwrap();
+        let port = relay.local_addr().unwrap().port();
+        let mut link = RelayLink::host("PUBLC", "stale-token", "127.0.0.1", port).unwrap();
+        let answering = std::thread::spawn(move || {
+            let mut buf = [0u8; 2048];
+            let from = loop {
+                let (n, from) = relay.recv_from(&mut buf).unwrap();
+                if decode(&buf[..n]).unwrap().kind == frame::HOST_REGISTER {
+                    break from;
+                }
+            };
+            let payload: &[u8] = if answer == frame::ERROR { b"HOST AUTHORIZATION FAILED" } else { b"" };
+            relay.send_to(&encode(answer, 0, "PUBLC", payload).unwrap(), from).unwrap();
+        });
+        let out = probe_public_host(&mut link, Duration::from_secs(2));
+        answering.join().unwrap();
+        link.close();
+        out
+    }
+
+    #[test]
+    fn a_public_host_the_relay_sends_away_joins_as_a_guest_instead_of_failing() {
+        assert_eq!(probe_against(frame::HOST_JOIN_AS_GUEST), HostProbe::HasHost);
+        assert_eq!(probe_against(frame::ERROR), HostProbe::HasHost, "an older relay's refusal is a join, not a failure");
+        assert_eq!(probe_against(frame::HOST_ACK), HostProbe::Hosting);
     }
 
     #[test]
@@ -2698,7 +3136,7 @@ mod owner_route_tests {
         assert_eq!(valve_events::parse_turn(&event).map(|t| t.turns), Some(1));
         let mut host = offline_session(true, "HOST");
         assert!(host.guest_position(2).is_none());
-        host.remotes.insert(2, Remote { sample: sample(1, 3.0, 4.0), last_seen: now, hide_since: None });
+        host.remotes.insert(2, Remote::new(sample(1, 3.0, 4.0), now, None));
         assert_eq!(host.guest_position(2), Some((3.0, 4.0, 1)));
     }
 }
@@ -2749,7 +3187,7 @@ mod height_tests {
         old.h = None;
         old.depth = -1;
         for (peer, smp) in [(2, near), (3, far), (4, old)] {
-            s.remotes.insert(peer, Remote { sample: smp, last_seen: now, hide_since: None });
+            s.remotes.insert(peer, Remote::new(smp, now, None));
         }
         let seen: Vec<u32> = s.remotes_at(0.0, 0, (0, 0)).iter().map(|r| r.peer).collect();
         assert_eq!(seen, vec![2], "h=-4.2 shown, h=-6.0 not, an old sample on depth -1 not for depth 0");

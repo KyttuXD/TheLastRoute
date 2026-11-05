@@ -244,3 +244,99 @@ fn using_a_tool_marks_the_run_as_a_debug_run() {
     a.run_row_for_test("god_mode", 0, &mut g, &content);
     assert!(a.debug_run());
 }
+
+/// A level-0 window with a three-cell deck (2.5 m) made on its floor; returns the game and the deck's middle cell.
+fn deck_game() -> (Game, Content, crate::world::Cell) {
+    use crate::world::Cell;
+    let content = Content::load();
+    let catalog = Catalog::load();
+    let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-DECK-SUMMON", 0, &content, &catalog);
+    let h = crate::world::route::catwalk::params().height;
+    let start = g.fac.start.center();
+    let row = g
+        .fac
+        .floor_cells()
+        .into_iter()
+        .find(|c| {
+            pdist(c.center(), start) > 25.0
+                && (-1..=5).all(|k| g.fac.hunter_open(Cell::new(c.x + k, c.y)) && g.fac.hunter_open(Cell::new(c.x + k, c.y + 1)))
+        })
+        .expect("a roomy stretch of floor away from the start");
+    for k in 1..=3 {
+        g.fac.set_walk_surface(Cell::new(row.x + k, row.y), crate::world::facility::DeckKind::Catwalk, h);
+    }
+    g.fac.rebuild_grids();
+    g.hunters.clear();
+    for level in g.resident_hunters.levels() {
+        g.resident_hunters.list_mut(level).clear();
+    }
+    (g, content, Cell::new(row.x + 2, row.y))
+}
+
+fn summon_first(g: &mut Game, content: &Content) {
+    let list = hunter_list(content);
+    Admin::new().run_cmd(Cmd::Hunter(0, 0, 0), g, content, &list);
+}
+
+/// Summons one hunter, then stands it on the runner's cell (under the deck when she is on it) and steps the hunters.
+fn grab_attempt(deck: bool) -> Game {
+    let (mut g, content, mid) = deck_game();
+    let h = crate::world::route::catwalk::params().height;
+    g.p.pos = mid.center();
+    if deck {
+        g.p.set_abs_y(h);
+    }
+    summon_first(&mut g, &content);
+    assert_eq!(g.hunters.len(), 1);
+    assert_eq!(g.hunters[0].y, 0.0, "a summon stands on the floor, never on a deck");
+    g.hunters[0].pos = (g.p.pos.0 + 0.2, g.p.pos.1);
+    let sounds = crate::audio::Sounds::default();
+    let catalog = Catalog::load();
+    for _ in 0..30 {
+        if deck {
+            g.p.set_abs_y(h); // the test deck has no support of its own: hold her on it
+            g.p.pos = mid.center();
+        }
+        g.step(1.0 / 60.0, &crate::game::Controls::default(), &content, &catalog, &sounds);
+    }
+    g
+}
+
+#[test]
+fn a_summoned_hunter_below_a_deck_cannot_grab_the_runner_on_it() {
+    let g = grab_attempt(true);
+    assert!(g.escape.is_none() && g.report.is_none(), "no grab through the deck");
+}
+
+#[test]
+fn a_summoned_hunter_at_the_runners_height_grabs() {
+    let g = grab_attempt(false);
+    assert!(g.escape.is_some() || g.report.is_some(), "the same height grabs");
+}
+
+#[test]
+fn a_summon_on_the_level_below_stands_on_that_level() {
+    use crate::world::route::sewer::core::LOWER_LEVEL;
+    let content = Content::load();
+    let catalog = Catalog::load();
+    let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-LOWER-SUMMON", LOWER_LEVEL, &content, &catalog);
+    g.hunters.clear();
+    summon_first(&mut g, &content);
+    let b = g.hunters.last().expect("a hunter was summoned");
+    assert_eq!(b.level, g.runner_level());
+    assert!((b.y - crate::game::level_stack::floor_y_of(g.runner_level())).abs() < 1e-4);
+    assert_eq!(b.last_known_level, g.runner_level());
+}
+
+#[test]
+fn a_summon_on_the_inferno_stands_on_the_terrain() {
+    use crate::world::infinite::INFERNO_LEVEL;
+    let content = Content::load();
+    let catalog = Catalog::load();
+    let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-INFERNO-SUMMON", INFERNO_LEVEL, &content, &catalog);
+    g.hunters.clear();
+    summon_first(&mut g, &content);
+    let b = g.hunters.last().expect("a hunter was summoned");
+    let want = crate::game::level_stack::floor_y_of(INFERNO_LEVEL) + g.fac.terrain().expect("terrain").floor_at(b.pos.0, b.pos.1);
+    assert!((b.y - want).abs() < 1e-4, "feet {} over ground {want}", b.y);
+}

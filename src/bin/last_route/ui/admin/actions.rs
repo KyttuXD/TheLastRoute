@@ -711,10 +711,18 @@ impl Admin {
                 &format!("{}:ADMIN:{id}:{seq}", g.level_seed()),
                 g.difficulty,
             );
+            // stand on the runner's level: a Brain starts on level 0 at y 0. On the ground (the Inferno's floor follows the
+            // terrain on its first step), never on a deck: a runner on a catwalk deck gets a hunter on the floor below it
+            let level = g.runner_level();
+            b.set_level(level);
+            if let Some(t) = g.fac.terrain().filter(|_| g.fac.level == level) {
+                b.y += t.floor_at(at.0, at.1);
+            }
             if let Gimmick::Solyth(s) = &mut b.gimmick {
                 s.heat_locked = g.meters.heat_locked;
             }
             b.activate_at(g.p.pos);
+            b.last_known_level = level;
             g.hunters.push(b);
             self.summoned.push(id.clone());
             placed += 1;

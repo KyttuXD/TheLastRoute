@@ -639,3 +639,340 @@ fn admin_join_room_reserves_and_hosts_an_unknown_code_only_for_owners() {
     assert_eq!(post(&server, "/api/rooms/reserved/resolve", json!({ "code": "KAT29", "sessionToken": owner })).0, 404);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A relay hello on `code` from `socket`: the kind of the answer.
+fn relay_hello(socket: &UdpSocket, relay_port: u16, code: &str, token: &str) -> u8 {
+    socket.send_to(&encode_relay_frame(RelayFrame::HOST_REGISTER, 0, code, token.as_bytes()).unwrap(), ("127.0.0.1", relay_port)).unwrap();
+    let mut buf = [0u8; 1500];
+    let n = socket.recv(&mut buf).unwrap();
+    decode_relay_frame(&buf[..n]).unwrap().kind
+}
+
+fn relay_socket() -> UdpSocket {
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    socket
+}
+
+#[test]
+fn the_public_route_host_registers_on_the_relay_with_no_token_or_a_wrong_one() {
+    let (clock, time) = manual_clock(10_000);
+    let server = app(|o| {
+        o.account_rate_limit_max = 10_000;
+        o.api_rate_limit_max = 10_000;
+        o.now = clock;
+    });
+    let relay_port = server.start_enet_relay("127.0.0.1", 0).unwrap();
+    // an address that never passed the HTTP host check cannot make the entry; once it did, the relay hello recreates it
+    assert_eq!(get(&server, "/api/enet/rooms/PUBLC").0, 404);
+    let host = relay_socket();
+    assert_eq!(relay_hello(&host, relay_port, "PUBLC", ""), RelayFrame::ERROR);
+    assert_eq!(post(&server, "/api/enet/rooms/register", json!({ "code": "PUBLC", "port": 7000 })).0, 201);
+    time.advance(16_000);
+    assert_eq!(get(&server, "/api/enet/rooms/PUBLC").0, 404);
+    assert_eq!(relay_hello(&host, relay_port, "PUBLC", ""), RelayFrame::HOST_ACK);
+    assert_eq!(get(&server, "/api/enet/rooms/PUBLC").0, 200);
+    // a wrong token is no longer an authorization failure
+    assert_eq!(relay_hello(&host, relay_port, "PUBLC", "wrong-token"), RelayFrame::HOST_ACK);
+    // the entry expires, the host registers on: the entry is back and lives 15 s from this hello
+    time.advance(120_000);
+    assert_eq!(relay_hello(&host, relay_port, "PUBLC", "stale-token"), RelayFrame::HOST_ACK);
+    assert_eq!(get(&server, "/api/enet/rooms/PUBLC").0, 200);
+    time.advance(14_000);
+    assert_eq!(get(&server, "/api/enet/rooms/PUBLC").0, 200);
+    time.advance(2_000);
+    assert_eq!(get(&server, "/api/enet/rooms/PUBLC").0, 404);
+}
+
+#[test]
+fn an_expired_public_entry_with_a_registered_token_does_not_block_a_tokenless_host() {
+    let (clock, time) = manual_clock(10_000);
+    let server = app(|o| {
+        o.account_rate_limit_max = 10_000;
+        o.api_rate_limit_max = 10_000;
+        o.now = clock;
+    });
+    let relay_port = server.start_enet_relay("127.0.0.1", 0).unwrap();
+    let (status, reg) = post(&server, "/api/enet/rooms/register", json!({ "code": "PUBLC", "port": 7000 }));
+    assert_eq!(status, 201, "{reg}");
+    time.advance(16_000);
+    let host = relay_socket();
+    assert_eq!(relay_hello(&host, relay_port, "PUBLC", "not-the-token"), RelayFrame::HOST_ACK);
+    assert_eq!(get(&server, "/api/enet/rooms/PUBLC").0, 200);
+}
+
+#[test]
+fn a_second_public_registrant_is_told_to_join_as_a_guest() {
+    let server = app(|o| {
+        o.account_rate_limit_max = 10_000;
+        o.api_rate_limit_max = 10_000;
+    });
+    let relay_port = server.start_enet_relay("127.0.0.1", 0).unwrap();
+    assert_eq!(post(&server, "/api/enet/rooms/register", json!({ "code": "PUBLC", "port": 7000 })).0, 201);
+    let first = relay_socket();
+    // another address (macOS has no 127.0.0.2 by default: the case is then covered by the relay unit test only)
+    let Ok(second) = UdpSocket::bind("127.0.0.2:0") else { return };
+    second.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    assert_eq!(relay_hello(&first, relay_port, "PUBLC", ""), RelayFrame::HOST_ACK);
+    assert_eq!(relay_hello(&second, relay_port, "PUBLC", "anything"), RelayFrame::HOST_JOIN_AS_GUEST);
+    // the holder is unaffected
+    assert_eq!(relay_hello(&first, relay_port, "PUBLC", ""), RelayFrame::HOST_ACK);
+}
+
+#[test]
+fn a_private_room_still_refuses_a_wrong_host_token() {
+    let server = app(|o| {
+        o.account_rate_limit_max = 10_000;
+        o.api_rate_limit_max = 10_000;
+    });
+    let relay_port = server.start_enet_relay("127.0.0.1", 0).unwrap();
+    let (status, reg) = post(&server, "/api/enet/rooms/register", json!({ "code": "BCDEF", "port": 7000 }));
+    assert_eq!(status, 201, "{reg}");
+    let token = reg["token"].as_str().unwrap().to_string();
+    let host = relay_socket();
+    assert_eq!(relay_hello(&host, relay_port, "BCDEF", "wrong-token"), RelayFrame::ERROR);
+    assert_eq!(relay_hello(&host, relay_port, "BCDEF", ""), RelayFrame::ERROR);
+    assert_eq!(relay_hello(&host, relay_port, "BCDEF", &token), RelayFrame::HOST_ACK);
+    // an unregistered private code has no room to host
+    assert_eq!(relay_hello(&host, relay_port, "GHJKM", ""), RelayFrame::ERROR);
+}
+
+#[test]
+fn a_late_host_of_a_reserved_public_code_revives_the_gated_entry_only_with_its_token() {
+    let root = temp_root("late_reserved");
+    let (clock, time) = manual_clock(1_793_188_800_000);
+    let r = root.clone();
+    let server = app(move |o| {
+        o.account_store_path = Some(r.join("accounts.json"));
+        o.moderation_store_path = Some(r.join("moderation.json"));
+        o.reserved_room_store_path = Some(r.join("reserved_rooms.json"));
+        o.reserved_room_codes = vec!["PUBLC".into()];
+        o.admin_password = "server setup proof".into();
+        o.account_rate_limit_max = 10_000;
+        o.api_rate_limit_max = 10_000;
+        o.now = clock;
+    });
+    let relay_port = server.start_enet_relay("127.0.0.1", 0).unwrap();
+    let owner = sign_up(&server, "KYTTU", json!({ "adminProof": "server setup proof" }));
+    let (status, reg) = post(&server, "/api/enet/rooms/register", json!({ "code": "PUBLC", "port": 7000, "sessionToken": owner }));
+    assert_eq!(status, 201, "{reg}");
+    let token = reg["token"].as_str().unwrap().to_string();
+    let host = UdpSocket::bind("127.0.0.1:0").unwrap();
+    host.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let register = |token: &str| {
+        host.send_to(&encode_relay_frame(RelayFrame::HOST_REGISTER, 0, "PUBLC", token.as_bytes()).unwrap(), ("127.0.0.1", relay_port)).unwrap();
+        let mut buf = [0u8; 1500];
+        let n = host.recv(&mut buf).unwrap();
+        decode_relay_frame(&buf[..n]).unwrap().kind
+    };
+    // a wrong token leaves the entry expired: once the directory pruned it, even the right token finds nothing
+    time.advance(16_000);
+    assert_eq!(register("wrong-token"), RelayFrame::ERROR);
+    let _ = get(&server, "/api/enet/rooms/PUBLC");
+    assert_eq!(register(&token), RelayFrame::ERROR);
+    // the host registers again, comes late, and the right token revives the gated entry (hidden without access)
+    let (status, reg) = post(&server, "/api/enet/rooms/register", json!({ "code": "PUBLC", "port": 7000, "sessionToken": owner }));
+    assert_eq!(status, 201, "{reg}");
+    let token = reg["token"].as_str().unwrap().to_string();
+    time.advance(16_000);
+    assert_eq!(register(&token), RelayFrame::HOST_ACK);
+    assert_eq!(get(&server, "/api/enet/rooms/PUBLC").0, 403);
+    // the revived entry still carries the reserved flag, and the reservation is intact
+    let (_, listed) = post(&server, "/api/admin/reserved-rooms", json!({ "sessionToken": owner, "action": "list" }));
+    assert_eq!(listed["rooms"][0]["code"], json!("PUBLC"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// --- hostless public route: who may beat, create, unregister and replace the relay host
+const PUBLIC_HOSTLESS: &str = "PUBLC";
+
+fn public_hello(host: &UdpSocket, relay_port: u16, kind: u8) -> u8 {
+    host.send_to(&encode_relay_frame(kind, 0, PUBLIC_HOSTLESS, b"").unwrap(), ("127.0.0.1", relay_port)).unwrap();
+    let mut buf = [0u8; 1500];
+    let n = host.recv(&mut buf).unwrap();
+    decode_relay_frame(&buf[..n]).unwrap().kind
+}
+
+fn hostless_app() -> (LastRouteServer, ManualClock, u16) {
+    let (clock, time) = manual_clock(1_793_188_800_000);
+    let server = app(move |o| {
+        o.account_rate_limit_max = 10_000;
+        o.api_rate_limit_max = 10_000;
+        o.now = clock;
+    });
+    let relay_port = server.start_enet_relay("127.0.0.1", 0).unwrap();
+    (server, time, relay_port)
+}
+
+fn udp_host() -> UdpSocket {
+    let host = UdpSocket::bind("127.0.0.1:0").unwrap();
+    host.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    host
+}
+
+/// An expired directory entry whose address passed the HTTP host check: the relay may now recreate it.
+fn vouched_and_expired(server: &LastRouteServer, time: &ManualClock) {
+    assert_eq!(post(server, "/api/enet/rooms/register", json!({ "code": PUBLIC_HOSTLESS, "port": 7000 })).0, 201);
+    time.advance(16_000);
+    assert_eq!(get(server, "/api/enet/rooms/PUBLC").0, 404);
+}
+
+#[test]
+fn a_spoofed_hostless_keep_alive_from_another_endpoint_does_not_keep_a_dead_host_fresh() {
+    let (server, time, relay_port) = hostless_app();
+    assert_eq!(post(&server, "/api/enet/rooms/register", json!({ "code": PUBLIC_HOSTLESS, "port": 7000 })).0, 201);
+    let (host, spoofer) = (udp_host(), udp_host());
+    assert_eq!(public_hello(&host, relay_port, RelayFrame::HOST_REGISTER), RelayFrame::HOST_ACK);
+    host.send_to(&encode_relay_frame(RelayFrame::HOST_ALIVE, 0, PUBLIC_HOSTLESS, b"").unwrap(), ("127.0.0.1", relay_port)).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    time.advance(900);
+    spoofer.send_to(&encode_relay_frame(RelayFrame::HOST_ALIVE, 0, PUBLIC_HOSTLESS, b"").unwrap(), ("127.0.0.1", relay_port)).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    time.advance(200);
+    let mut gone = false;
+    for _ in 0..40 {
+        if get(&server, "/api/enet/rooms/PUBLC").0 == 404 {
+            gone = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    server.close();
+    assert!(gone, "a keep-alive from another endpoint kept the dead host's route listed");
+}
+
+#[test]
+fn a_banned_registrant_cannot_create_or_take_the_hostless_public_route() {
+    let root = temp_root("hostless_ban");
+    let (server, _time) = moderation_app(&root);
+    let relay_port = server.start_enet_relay("127.0.0.1", 0).unwrap();
+    let owner = sign_up(&server, "KYTTU", json!({ "adminProof": "server setup proof" }));
+    let player = sign_up(&server, "MODDER", json!({}));
+    post(&server, "/api/admin/flags/set", json!({ "sessionToken": owner, "username": "MODDER", "action": "ban" }));
+    let (status, result) = post(&server, "/api/enet/rooms/register", json!({ "code": PUBLIC_HOSTLESS, "port": 9000, "sessionToken": player }));
+    assert_eq!((status, result["code"].clone()), (403, json!("FLAGGED")));
+    let host = udp_host();
+    assert_eq!(public_hello(&host, relay_port, RelayFrame::HOST_REGISTER), RelayFrame::ERROR);
+    assert_eq!(get(&server, "/api/enet/rooms/PUBLC").0, 404);
+    // an address nobody vouched for cannot create the entry either
+    let other = UdpSocket::bind("127.0.0.2:0");
+    if let Ok(other) = other {
+        other.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        other.send_to(&encode_relay_frame(RelayFrame::HOST_REGISTER, 0, PUBLIC_HOSTLESS, b"").unwrap(), ("127.0.0.1", relay_port)).unwrap();
+        let mut buf = [0u8; 1500];
+        let n = other.recv(&mut buf).unwrap();
+        assert_eq!(decode_relay_frame(&buf[..n]).unwrap().kind, RelayFrame::ERROR);
+    }
+    server.close();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_relay_host_unregisters_its_relay_made_entry_and_a_tokenless_beat_only_refreshes_expiry() {
+    let (server, time, relay_port) = hostless_app();
+    vouched_and_expired(&server, &time);
+    let host = udp_host();
+    assert_eq!(public_hello(&host, relay_port, RelayFrame::HOST_REGISTER), RelayFrame::HOST_ACK);
+    assert_eq!(get(&server, "/api/enet/rooms/PUBLC").0, 200);
+    let as_other = |path: &str, body: Value| {
+        server.handle(&Request::json("POST", path, &body).with_header("x-forwarded-for", "9.9.9.9")).status
+    };
+    // a tokenless beat from the relay host's address refreshes expiry only: no player count
+    let (status, beat) = post(&server, "/api/enet/rooms/heartbeat", json!({ "code": PUBLIC_HOSTLESS, "players": 9, "sessionActive": true }));
+    assert_eq!((status, beat["room"]["players"].clone(), beat["room"]["sessionActive"].clone()), (200, json!(1), json!(false)));
+    // other addresses can neither beat nor unregister it
+    assert_eq!(as_other("/api/enet/rooms/heartbeat", json!({ "code": PUBLIC_HOSTLESS })), 403);
+    assert_eq!(as_other("/api/enet/rooms/unregister", json!({ "code": PUBLIC_HOSTLESS })), 403);
+    assert_eq!(get(&server, "/api/enet/rooms/PUBLC").0, 200);
+    let (status, result) = post(&server, "/api/enet/rooms/unregister", json!({ "code": PUBLIC_HOSTLESS }));
+    assert_eq!((status, result["removed"].clone()), (200, json!(true)));
+    assert_eq!(get(&server, "/api/enet/rooms/PUBLC").0, 404);
+    server.close();
+}
+
+#[test]
+fn hostless_entry_creation_is_rate_limited_per_source_address() {
+    let (server, time, relay_port) = hostless_app();
+    vouched_and_expired(&server, &time);
+    let host = udp_host();
+    for round in 0..HOSTLESS_CREATE_LIMIT {
+        assert_eq!(public_hello(&host, relay_port, RelayFrame::HOST_REGISTER), RelayFrame::HOST_ACK, "round {round}");
+        assert_eq!(post(&server, "/api/enet/rooms/unregister", json!({ "code": PUBLIC_HOSTLESS })).0, 200);
+    }
+    assert_eq!(public_hello(&host, relay_port, RelayFrame::HOST_REGISTER), RelayFrame::ERROR);
+    time.advance(HOSTLESS_CREATE_WINDOW_MS + 1);
+    assert_eq!(public_hello(&host, relay_port, RelayFrame::HOST_REGISTER), RelayFrame::HOST_ACK);
+    server.close();
+}
+
+#[test]
+fn a_real_host_re_registering_from_the_same_address_on_a_new_port_replaces_the_old_host() {
+    let (server, _time, relay_port) = hostless_app();
+    assert_eq!(post(&server, "/api/enet/rooms/register", json!({ "code": PUBLIC_HOSTLESS, "port": 7000 })).0, 201);
+    let (old, new) = (udp_host(), udp_host());
+    assert_eq!(public_hello(&old, relay_port, RelayFrame::HOST_REGISTER), RelayFrame::HOST_ACK);
+    old.send_to(&encode_relay_frame(RelayFrame::HOST_ALIVE, 0, PUBLIC_HOSTLESS, b"").unwrap(), ("127.0.0.1", relay_port)).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(public_hello(&new, relay_port, RelayFrame::HOST_REGISTER), RelayFrame::HOST_ACK);
+    server.close();
+}
+
+fn register_from(server: &LastRouteServer, forwarded: &str) -> Value {
+    let request = Request::json("POST", "/api/enet/rooms/register", &json!({ "code": PUBLIC_HOSTLESS, "port": 7000 })).with_header("x-forwarded-for", forwarded);
+    let response = server.handle(&request);
+    assert_eq!(response.status, 201);
+    response.json_body()
+}
+
+fn public_hello_with(host: &UdpSocket, relay_port: u16, payload: &[u8]) -> u8 {
+    host.send_to(&encode_relay_frame(RelayFrame::HOST_REGISTER, 0, PUBLIC_HOSTLESS, payload).unwrap(), ("127.0.0.1", relay_port)).unwrap();
+    let mut buf = [0u8; 1500];
+    let n = host.recv(&mut buf).unwrap();
+    decode_relay_frame(&buf[..n]).unwrap().kind
+}
+
+#[test]
+fn a_registered_public_host_with_the_entry_token_is_accepted_from_a_different_ip_string() {
+    let (server, _time, relay_port) = hostless_app();
+    let token = register_from(&server, "9.9.9.9")["token"].as_str().unwrap().to_string();
+    let host = udp_host();
+    // no token: this address was never vouched, so the relay refuses it
+    assert_eq!(public_hello_with(&host, relay_port, b""), RelayFrame::ERROR);
+    assert_eq!(public_hello_with(&host, relay_port, b"wrong"), RelayFrame::ERROR);
+    assert_eq!(public_hello_with(&host, relay_port, token.as_bytes()), RelayFrame::HOST_ACK);
+    server.close();
+}
+
+#[test]
+fn a_v4_mapped_http_address_matches_the_relay_sources_plain_ipv4() {
+    assert_eq!(canonical_address("::ffff:127.0.0.1"), "127.0.0.1");
+    assert_eq!(canonical_address("127.0.0.1"), "127.0.0.1");
+    assert_eq!(canonical_address("not an ip"), "not an ip");
+    let (server, _time, relay_port) = hostless_app();
+    register_from(&server, "::ffff:127.0.0.1");
+    let host = udp_host();
+    assert_eq!(public_hello_with(&host, relay_port, b""), RelayFrame::HOST_ACK);
+    server.close();
+}
+
+#[test]
+fn a_keep_alive_from_the_relay_host_keeps_its_relay_made_entry_past_the_ttl_and_another_endpoint_does_not() {
+    let alive = |frame_from_host: bool| {
+        let (server, time, relay_port) = hostless_app();
+        vouched_and_expired(&server, &time);
+        let (host, other) = (udp_host(), udp_host());
+        assert_eq!(public_hello(&host, relay_port, RelayFrame::HOST_REGISTER), RelayFrame::HOST_ACK);
+        let beat = if frame_from_host { &host } else { &other };
+        // 16.2 s in steps under the relay's own 1 s host timeout
+        for _ in 0..18 {
+            beat.send_to(&encode_relay_frame(RelayFrame::HOST_ALIVE, 0, PUBLIC_HOSTLESS, b"").unwrap(), ("127.0.0.1", relay_port)).unwrap();
+            std::thread::sleep(Duration::from_millis(60));
+            time.advance(900);
+        }
+        let listed = get(&server, "/api/enet/rooms/PUBLC").0;
+        server.close();
+        listed
+    };
+    assert_eq!(alive(true), 200, "the live relay host's entry lapsed");
+    assert_eq!(alive(false), 404, "a keep-alive from another endpoint refreshed the entry");
+}

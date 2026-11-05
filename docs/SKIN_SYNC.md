@@ -92,6 +92,35 @@ the whole Mojang chain and FROM URL with a fake getter (`fetch_minecraft_skin_vi
 the profile's slim model, a profile that names another host), a skin PNG over real TLS on loopback through the client's own limit
 and content types (`net::http` tests), and an ignored live test (`cargo test --bin last_route live_ -- --ignored`).
 
+## Room announce, retries and visible state
+
+- A runner (host or guest, direct or relay) announces its skin in its wire profile only once the server holds it
+  (`world_sync::published_skin`, `skins-uploaded.json`); until then peers see DEFAULT. The app re-checks every 2 s and republishes
+  as soon as the upload is accepted, so peers fetch at once. Peers fetch, verify, cache and apply by id (`Assets::skin_texture`).
+- Uploads and downloads that fail are retried with a growing wait: 5 s, 10 s, 20 s, 40 s, then the config's 60 s
+  (`skins::backoff`; the old fixed 60 s made a skin that was only late to appear wait a full minute). The upload offer is checked every 5 s.
+- Visible state: the SKIN tab's "Your skin" line adds `skins::ShareState::text()` (sign in so other runners see it, sharing...,
+  `not shared yet: <why>`, e.g. "server needs an update" or "the server did not accept this sign-in"; "sharing" only while an upload
+  job runs, "waiting to share" before the first try, "offline: ..." when the game is offline). The failure bookkeeping keeps at most
+  64 failed download keys (peer-announced ids are untrusted); the runner's own upload is never dropped.
+  Failed uploads and downloads also log one line to stderr.
+- Test: `net::world_sync::tests::two_peers_announce_fetch_and_apply_a_skin` (two sessions over a fake relay: DEFAULT before the
+  upload, the id after it, the other side sees it on the remote body, then a fetch that misses once, retries, verifies and decodes).
+
+### Server deploy needed (VPS 3, lr_server at 194.156.90.219:8105)
+
+**The real fix for skins in rooms is deploying `lr_server` to VPS 3.** Nothing in the client can make an old server store a skin:
+until it is deployed, uploads fail and rooms show DEFAULT. The client only tells the truth meanwhile: it tries
+`POST /api/v1/skins` and, on a 404, the Godot route `POST /api/skins/upload` (a supported contract of `lr_server`, see the table
+above); if both answer 404 the SKIN tab says "not shared yet: server needs an update" and the retry waits the full 60 s.
+
+The deployed build predates the skin routes, which is why no client could ever upload and every room showed DEFAULT. Deploy the
+current `lr_server` with at least: `POST /api/v1/skins` (JSON `{sessionToken, png}`), `GET /api/v1/skins/<id>`,
+`POST /api/v1/skins/mine` and `/clear`, and the Godot-compatible `POST /api/skins/upload` and `GET /api/skins/files/<id>.png`.
+`LASTROUTE_ACCOUNT_UPSTREAM` must be unset or point at a reachable website, and player sessions must be valid on that server.
+Check afterwards: `GET /api/v1/skins/<64 a's>` answers 404 `SKIN_NOT_FOUND` and `POST /api/v1/skins` with a bad token answers
+401/403, not 404 `UNKNOWN_ENDPOINT`. Not deployed from here.
+
 ## Open
 
 Nothing that can be done in code. Measuring the release binary size increase of rustls still needs a release build (`docs/NET_HTTPS.md`).

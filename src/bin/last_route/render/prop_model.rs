@@ -403,6 +403,20 @@ impl PropModel {
         draw_builders(builders);
     }
 
+    /// [`Self::draw`] for a model that rides a runner: `tint.a` below 1 blends it the way the runner's body blends
+    /// (`shader::GHOST_MODE`), so a faded runner does not leave an opaque item in the air. The runner's lighting and fog
+    /// come from the material the caller set, as for the body.
+    pub fn draw_faded(&self, xf: Mat4, tint: Color) {
+        let mut builders = HashMap::new();
+        self.add_to(&mut builders, xf, tint);
+        if tint.a < 1.0 {
+            for b in builders.values_mut() {
+                fade_verts(&mut b.verts, tint.a);
+            }
+        }
+        draw_builders(builders);
+    }
+
     /// The meshes `add_to` builds for this placement, built the first frame they are asked for and kept by `cache` while
     /// the prop stays drawn (a static prop: its transform and tint do not move between frames).
     pub fn static_meshes<'c>(
@@ -518,6 +532,14 @@ fn add_verts(
     }
 }
 
+/// Scales the vertices' alpha by `alpha` and switches them to the blended lit mode.
+fn fade_verts(verts: &mut [Vertex], alpha: f32) {
+    for v in verts {
+        v.color[3] = (v.color[3] as f32 * alpha.clamp(0.0, 1.0)) as u8;
+        v.normal.w = crate::render::shader::GHOST_MODE;
+    }
+}
+
 /// Draws the builders' triangles now, one call per texture.
 pub fn draw_builders(builders: HashMap<usize, Builder>) {
     for (_, mut b) in builders {
@@ -599,6 +621,15 @@ mod tests {
         }
         // three props over three frames: each built once, then kept
         assert_eq!(built.get(), placements.len());
+    }
+
+    #[test]
+    fn a_faded_item_blends_like_the_body() {
+        use crate::render::shader::{GHOST_MODE, LIT_MODE};
+        let (mut verts, _) = box_geometry();
+        assert!(verts.iter().all(|v| v.normal.w == LIT_MODE && v.color[3] == 255));
+        fade_verts(&mut verts, 0.5);
+        assert!(verts.iter().all(|v| v.normal.w == GHOST_MODE && (126..=128).contains(&v.color[3])));
     }
 
     #[test]

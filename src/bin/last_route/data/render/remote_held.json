@@ -1,0 +1,19 @@
+{
+  "schema": "lr.remote_held/1",
+  "_note": "The item another runner holds, drawn on its mannequin hand (net/held_wire.rs). Ported from Godot held_item_poses.gd THIRD_PERSON and remote_players.gd REMOTE_HELD_SCALES. upright items (the melee tools) stand with their handle along the hand's forward and tilt about X by tilt_deg; the others point along the hand's forward. grip is metres along the model's +Y from the hand to the model origin.",
+  "anchor": {
+    "bone": "R-Hand",
+    "offset_units": [0.0, -3.56, 0.0],
+    "roll_deg": -8.0,
+    "shift_m": [0.0, -0.02, -0.08],
+    "rig_scale": 1.067
+  },
+  "items": {
+    "flashlight": { "scale": 0.34, "upright": false, "tilt_deg": 0.0, "grip": 0.20 },
+    "taser": { "scale": 0.32, "upright": false, "tilt_deg": 0.0, "grip": 0.16 },
+    "crowbar": { "scale": 0.58, "upright": true, "tilt_deg": -52.0, "grip": 0.17 },
+    "rescue_axe": { "scale": 0.62, "upright": true, "tilt_deg": -55.0, "grip": 0.08 },
+    "battery": { "scale": 0.40, "upright": false, "tilt_deg": 0.0, "grip": 0.23 },
+    "stim_pack": { "scale": 0.40, "upright": false, "tilt_deg": 0.0, "grip": 0.18 }
+  }
+}

@@ -506,7 +506,25 @@ pub fn download_error_text(error: &NetError) -> String {
 struct Book {
     running: std::collections::HashSet<String>,
     retry_at: std::collections::HashMap<String, std::time::Instant>,
+    /// Failures in a row per key, and the words of the last one (shown to the player, never an address).
+    fails: std::collections::HashMap<String, u32>,
+    why: std::collections::HashMap<String, String>,
+    /// When the recent downloads were started, newest last (see [`Book::fetch_allowed`]).
+    fetches: std::collections::VecDeque<std::time::Instant>,
 }
+
+/// The wait after the `fails`-th failure in a row: 5 s, 10 s, 20 s, ... never more than `cap` (the config's `retry_secs`,
+/// Godot's 60 s). A skin the server was only late to hold is picked up in seconds instead of a minute.
+fn backoff(fails: u32, cap: std::time::Duration) -> std::time::Duration {
+    let step = std::time::Duration::from_secs(5u64.saturating_mul(1u64 << fails.saturating_sub(1).min(10)));
+    step.min(cap)
+}
+
+/// How many failed download keys the book remembers at once.
+const MAX_TRACKED_DOWNLOADS: usize = 64;
+/// At most this many downloads start per [`FETCH_WINDOW`], whatever ids other runners announce.
+const MAX_FETCHES_PER_WINDOW: usize = 8;
+const FETCH_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl Book {
     /// True (and `key` is now running) when it is not running, not cooling down, and fewer than `max` jobs run.
@@ -518,14 +536,70 @@ impl Book {
         true
     }
 
-    /// Ends a job: a failure cools `key` down for `retry`, a success clears it.
-    fn finish(&mut self, key: &str, ok: bool, now: std::time::Instant, retry: std::time::Duration) {
+    /// [`Book::begin`] for a download, also held back by the global start rate (a flood of announced ids cannot start a flood
+    /// of requests, and a key that is only refused for the rate is not marked as failed).
+    fn begin_download(&mut self, key: &str, now: std::time::Instant, max: usize) -> bool {
+        while self.fetches.front().is_some_and(|t| now.duration_since(*t) >= FETCH_WINDOW) {
+            self.fetches.pop_front();
+        }
+        if self.fetches.len() >= MAX_FETCHES_PER_WINDOW || !self.begin(key, now, max) {
+            return false;
+        }
+        self.fetches.push_back(now);
+        true
+    }
+
+    /// Forgets everything about `key` unless it is running.
+    fn forget(&mut self, key: &str) {
+        if !self.running.contains(key) {
+            self.retry_at.remove(key);
+            self.fails.remove(key);
+            self.why.remove(key);
+        }
+    }
+
+    /// Ends a job: a failure cools `key` down for `retry` (with `ramp`, a short wait that doubles per failure in a row up
+    /// to `retry`), a success clears it. `why` is what a failure says.
+    fn finish_with(&mut self, key: &str, ok: bool, now: std::time::Instant, retry: std::time::Duration, ramp: bool, why: &str) {
         self.running.remove(key);
         if ok {
             self.retry_at.remove(key);
+            self.fails.remove(key);
+            self.why.remove(key);
         } else {
-            self.retry_at.insert(key.to_string(), now + retry);
+            let n = self.fails.entry(key.to_string()).or_insert(0);
+            *n += 1;
+            let wait = if ramp { backoff(*n, retry) } else { retry };
+            self.retry_at.insert(key.to_string(), now + wait);
+            self.why.insert(key.to_string(), why.to_string());
+            self.prune_downloads(now);
         }
+    }
+
+    /// Keeps at most [`MAX_TRACKED_DOWNLOADS`] failed download keys where it can (their ids are announced by other runners,
+    /// so they are not to be trusted to stay few): the oldest whose cool-down is over go first. A key still cooling down is
+    /// never forgotten (that would let it be asked for again at once; the start rate bounds how fast new ones appear), and
+    /// neither is a running job or the runner's own upload.
+    fn prune_downloads(&mut self, now: std::time::Instant) {
+        let tracked = self.retry_at.keys().filter(|k| k.starts_with("down:")).count();
+        if tracked <= MAX_TRACKED_DOWNLOADS {
+            return;
+        }
+        let mut over: Vec<(std::time::Instant, String)> = self
+            .retry_at
+            .iter()
+            .filter(|(k, at)| k.starts_with("down:") && !self.running.contains(*k) && **at <= now)
+            .map(|(k, at)| (*at, k.clone()))
+            .collect();
+        over.sort();
+        for (_, key) in over.into_iter().take(tracked - MAX_TRACKED_DOWNLOADS) {
+            self.forget(&key);
+        }
+    }
+
+    #[cfg(test)]
+    fn finish(&mut self, key: &str, ok: bool, now: std::time::Instant, retry: std::time::Duration) {
+        self.finish_with(key, ok, now, retry, false, "");
     }
 }
 
@@ -534,22 +608,94 @@ fn book() -> std::sync::MutexGuard<'static, Book> {
     BOOK.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Where this runner's own skin is on its way to the other runners.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ShareState {
+    /// DEFAULT is worn: nothing to share.
+    Default,
+    /// The website holds the skin: runners in a room fetch it by its id.
+    Shared,
+    /// A skin is worn but nobody is signed in to upload it: others see the default one.
+    SignedOut,
+    /// This game is offline: nothing is sent.
+    Offline,
+    /// The upload job is running right now.
+    Uploading,
+    /// Nothing has failed and nothing runs yet: the upload is offered every few seconds.
+    Waiting,
+    /// The last upload failed (the words say why); it is tried again on its own.
+    Retrying(String),
+}
+
+impl ShareState {
+    /// The line the SKIN tab shows; empty when there is nothing to say.
+    pub fn text(&self) -> String {
+        match self {
+            ShareState::Default | ShareState::Shared => String::new(),
+            ShareState::SignedOut => "sign in so other runners see it".to_string(),
+            ShareState::Offline => "offline: other runners see the default skin".to_string(),
+            ShareState::Uploading => "sharing with other runners...".to_string(),
+            ShareState::Waiting => "waiting to share with other runners".to_string(),
+            ShareState::Retrying(why) => format!("not shared yet: {why}"),
+        }
+    }
+}
+
+/// Where the worn skin `hash` stands: see [`ShareState`].
+pub fn share_state(hash: &str, signed_in: bool, offline: bool, uploaded: &[String]) -> ShareState {
+    if !is_skin_hash(hash) {
+        return ShareState::Default;
+    }
+    if holds(uploaded, hash) {
+        return ShareState::Shared;
+    }
+    if !signed_in {
+        return ShareState::SignedOut;
+    }
+    if offline {
+        return ShareState::Offline;
+    }
+    let b = book();
+    let key = format!("up:{hash}");
+    if b.running.contains(&key) {
+        ShareState::Uploading
+    } else if let Some(why) = b.why.get(&key) {
+        ShareState::Retrying(why.clone())
+    } else {
+        ShareState::Waiting
+    }
+}
+
 /// Downloads skin `id` from the first address that serves a fully verified copy and writes it into `dir`. Returns
 /// whether the skin is now cached. Blocking (see [`fetch_skin_in_background`]).
 pub fn fetch_skin_blocking(cfg: &SkinConfig, backend_base: &str, dir: &Path, id: &str) -> bool {
-    let urls = fetch_urls(cfg, backend_base, id);
+    fetch_skin_why(cfg, backend_base, dir, id).is_ok()
+}
+
+/// [`fetch_skin_blocking`] with the words of the failure (never an address): the first reason that is more than a plain
+/// 404, since a 404 from one of the addresses is the ordinary "not there yet".
+pub fn fetch_skin_why(cfg: &SkinConfig, backend_base: &str, dir: &Path, id: &str) -> Result<(), String> {
     let limit = read_limit();
-    let fetched = first_verified_skin(&urls, id, |url| download(url, cfg.timeout_secs, limit, &PNG_TYPES).ok());
-    match fetched {
-        Some(bytes) => {
-            let wrote = write_skin_file(dir, id, &bytes).is_ok();
-            if wrote {
-                prune_cache(dir, cfg.cache_max);
-            }
-            wrote
+    let mut why: Option<String> = None;
+    let mut note = |text: String| {
+        if why.as_ref().is_none_or(|old| old.ends_with("404")) {
+            why = Some(text);
         }
-        None => false,
+    };
+    for url in fetch_urls(cfg, backend_base, id) {
+        match download(&url, cfg.timeout_secs, limit, &PNG_TYPES) {
+            Ok(bytes) if verify_skin(id, &bytes) => {
+                if write_skin_file(dir, id, &bytes).is_err() {
+                    return Err("the skin could not be saved".to_string());
+                }
+                prune_cache(dir, cfg.cache_max);
+                return Ok(());
+            }
+            Ok(_) => note("the server sent a file that is not this skin".to_string()),
+            Err(e) => note(download_error_text(&e)),
+        }
     }
+    Err(why.unwrap_or_else(|| "no server has this skin yet".to_string()))
 }
 
 /// Cleans the download cache with the configured temp-file age: see [`prune_cache_with`].
@@ -633,7 +779,7 @@ pub fn fetch_skin_in_background(id: &str) {
         return;
     }
     let key = format!("down:{id}");
-    if !book().begin(&key, std::time::Instant::now(), cfg.max_concurrent) {
+    if !book().begin_download(&key, std::time::Instant::now(), cfg.max_concurrent) {
         return;
     }
     let id = id.to_string();
@@ -643,8 +789,13 @@ pub fn fetch_skin_in_background(id: &str) {
         PURGED.call_once(|| {
             prune_cache(&dir, cfg.cache_max);
         });
-        let ok = fetch_skin_blocking(&cfg, &base, &dir, &id);
-        book().finish(&key, ok, std::time::Instant::now(), std::time::Duration::from_secs(cfg.retry_secs));
+        let result = fetch_skin_why(&cfg, &base, &dir, &id);
+        let ok = result.is_ok();
+        let why = result.err().unwrap_or_default();
+        if !ok {
+            eprintln!("skins: {id} could not be fetched ({why}); trying again shortly");
+        }
+        book().finish_with(&key, ok, std::time::Instant::now(), std::time::Duration::from_secs(cfg.retry_secs), true, &why);
     });
 }
 
@@ -696,6 +847,8 @@ fn remember_uploaded_at(path: &Path, id: &str) {
 pub struct UploadPlan {
     hash: String,
     next_at: f64,
+    /// The ids the website holds, read once per hash (and again after an offer, which may have uploaded it).
+    uploaded: Option<Vec<String>>,
 }
 
 impl UploadPlan {
@@ -704,14 +857,23 @@ impl UploadPlan {
     /// `uploaded` lists the ids the website holds; it is only asked for when an upload could be due, because it reads a file.
     pub fn due(&mut self, now: f64, hash: &str, signed_in: bool, uploaded: impl FnOnce() -> Vec<String>, retry_secs: f64) -> bool {
         if self.hash != hash {
+            if is_skin_hash(&self.hash) {
+                book().forget(&format!("up:{}", self.hash));
+            }
             self.hash = hash.to_string();
             self.next_at = 0.0;
+            self.uploaded = None;
         }
         if !signed_in || !is_skin_hash(hash) || now < self.next_at {
             return false;
         }
         self.next_at = now + retry_secs;
-        !holds(&uploaded(), hash)
+        let ids = self.uploaded.get_or_insert_with(uploaded);
+        if holds(ids, hash) {
+            return false;
+        }
+        self.uploaded = None;
+        true
     }
 }
 
@@ -745,6 +907,9 @@ impl WornTracker {
     }
 }
 
+/// What a server that answers 404 to both skin upload routes is told apart by.
+const SERVER_NEEDS_UPDATE: &str = "server needs an update";
+
 /// Uploads the skin known by `hash` (its verified copy in the skins folder or the cache) to the website in the
 /// background, when signed in (`session_token` set) and not offline. Returns true when an upload was started; a skin the
 /// website already has (see [`uploaded_ids`]) is not sent again. A failure is dropped here: the caller's [`UploadPlan`]
@@ -753,20 +918,36 @@ pub fn upload_in_background(cfg: BackendConfig, session_token: String, hash: Str
     if session_token.is_empty() || cfg.offline || !is_skin_hash(&hash) || holds(&uploaded_ids(), &hash) {
         return false;
     }
-    let Some(bytes) = read_skin(&hash) else { return false };
     let Some(settings) = config() else { return false };
+    let key = format!("up:{hash}");
+    let Some(bytes) = read_skin(&hash) else {
+        // The picture is gone from the skins folder and the cache: say so instead of looking like an upload on its way.
+        let retry = std::time::Duration::from_secs(settings.retry_secs);
+        book().finish_with(&key, false, std::time::Instant::now(), retry, true, "the skin file could not be read");
+        return false;
+    };
     // One upload per skin at a time, and a failed one waits `retry_secs` before the next try (Godot `RETRY_SECONDS`), so a
     // caller may ask again every frame.
-    let key = format!("up:{hash}");
     if !book().begin(&key, std::time::Instant::now(), settings.max_concurrent) {
         return false;
     }
     std::thread::spawn(move || {
-        let ok = matches!(api::upload_skin(&cfg, &session_token, &bytes), Ok(server_id) if server_id == hash);
+        let result = api::upload_skin(&cfg, &session_token, &bytes);
+        let ok = matches!(&result, Ok(server_id) if *server_id == hash);
+        let why = match &result {
+            Ok(_) => "the server answered with another skin".to_string(),
+            Err(e) if api::is_unknown_endpoint(e) => SERVER_NEEDS_UPDATE.to_string(),
+            Err(NetError::Http { status: 401 | 403, .. }) => "the server did not accept this sign-in".to_string(),
+            Err(e) => download_error_text(e).replace("the download", "the upload"),
+        };
         if ok {
             remember_uploaded(&hash);
+        } else {
+            eprintln!("skins: the upload of {hash} failed ({why}); trying again shortly");
         }
-        book().finish(&key, ok, std::time::Instant::now(), std::time::Duration::from_secs(settings.retry_secs));
+        // A server without the skin routes will not grow them in seconds: wait the full delay instead of ramping up.
+        let ramp = why != SERVER_NEEDS_UPDATE;
+        book().finish_with(&key, ok, std::time::Instant::now(), std::time::Duration::from_secs(settings.retry_secs), ramp, &why);
     });
     true
 }
@@ -789,7 +970,7 @@ pub fn clear_in_background(cfg: BackendConfig, session_token: String) {
         if ok {
             forget_uploaded();
         }
-        book().finish(&key, ok, std::time::Instant::now(), std::time::Duration::from_secs(settings.retry_secs));
+        book().finish_with(&key, ok, std::time::Instant::now(), std::time::Duration::from_secs(settings.retry_secs), false, "the website could not clear the skin");
     });
 }
 
@@ -1825,6 +2006,120 @@ mod tests {
         assert!(book.begin("down:a", start + retry, 2), "tried again after the cool-down");
         book.finish("down:a", true, start + retry, retry);
         assert!(book.begin("down:a", start + retry, 3), "a success clears the cool-down");
+    }
+
+    #[test]
+    fn failed_jobs_are_retried_after_a_short_wait_that_grows_to_the_cap() {
+        use std::time::{Duration, Instant};
+        let (start, cap) = (Instant::now(), Duration::from_secs(60));
+        let secs = |s| Duration::from_secs(s);
+        assert_eq!([1, 2, 3, 4, 5, 6, 40].map(|n| backoff(n, cap)), [secs(5), secs(10), secs(20), secs(40), secs(60), secs(60), secs(60)]);
+        let mut book = Book::default();
+        assert!(book.begin("up:a", start, 2));
+        book.finish_with("up:a", false, start, cap, true, "the server has no skin upload (it needs an update)");
+        assert!(!book.begin("up:a", start + secs(4), 2));
+        assert!(book.begin("up:a", start + secs(5), 2), "the first retry comes after 5 s");
+        book.finish_with("up:a", false, start + secs(5), cap, true, "x");
+        assert!(!book.begin("up:a", start + secs(14), 2));
+        assert!(book.begin("up:a", start + secs(15), 2), "the second after 10 s more");
+        book.finish_with("up:a", true, start + secs(15), cap, true, "");
+        assert!(book.fails.is_empty() && book.why.is_empty(), "a success forgets the failures");
+    }
+
+    #[test]
+    fn the_share_state_tells_the_player_where_the_worn_skin_stands() {
+        let id = "ab".repeat(32);
+        assert_eq!(share_state(SKIN_DEFAULT, true, false, &[]), ShareState::Default);
+        assert_eq!(share_state(&id, true, false, &[id.clone()]), ShareState::Shared);
+        assert_eq!(share_state(&id, false, false, &[]), ShareState::SignedOut);
+        assert!(ShareState::SignedOut.text().contains("sign in"));
+        assert_eq!(ShareState::Shared.text(), "");
+        let unique = "cd".repeat(32);
+        assert_eq!(share_state(&unique, true, true, &[]), ShareState::Offline);
+        assert_eq!(share_state(&unique, true, false, &[]), ShareState::Waiting, "nothing runs and nothing failed: not 'sharing'");
+        book().running.insert(format!("up:{unique}"));
+        assert_eq!(share_state(&unique, true, false, &[]), ShareState::Uploading, "only while the job runs");
+        book().running.remove(&format!("up:{unique}"));
+        book().finish_with(&format!("up:{unique}"), false, std::time::Instant::now(), std::time::Duration::from_secs(60), true, "the server did not accept this sign-in");
+        let state = share_state(&unique, true, false, &[]);
+        assert_eq!(state, ShareState::Retrying("the server did not accept this sign-in".into()));
+        assert!(state.text().starts_with("not shared yet: "));
+    }
+
+    #[test]
+    fn failed_download_keys_stay_bounded_once_cooled_and_keep_their_cooldown_before() {
+        let (start, cap) = (std::time::Instant::now(), std::time::Duration::from_secs(60));
+        let mut book = Book::default();
+        book.finish_with("up:own", false, start, cap, true, "x");
+        for n in 0..(MAX_TRACKED_DOWNLOADS * 3) {
+            book.finish_with(&format!("down:{n}"), false, start + std::time::Duration::from_millis(n as u64), cap, true, "no");
+        }
+        let downs = |b: &Book| b.retry_at.keys().filter(|k| k.starts_with("down:")).count();
+        assert_eq!(downs(&book), MAX_TRACKED_DOWNLOADS * 3, "every key is still cooling down: none is forgotten");
+        assert!(!book.begin("down:0", start + std::time::Duration::from_secs(1), 99), "the cool-down of an old key holds");
+        // once the cool-downs are over the oldest go, the newest stay, the own upload is kept
+        let later = start + std::time::Duration::from_secs(600);
+        book.finish_with("down:late", false, later, cap, true, "no");
+        assert_eq!(downs(&book), MAX_TRACKED_DOWNLOADS);
+        assert!(book.why.contains_key("up:own") && !book.retry_at.contains_key("down:0") && book.retry_at.contains_key("down:late"));
+    }
+
+    #[test]
+    fn downloads_start_at_a_bounded_rate_whatever_ids_are_announced() {
+        let (start, cap) = (std::time::Instant::now(), std::time::Duration::from_secs(60));
+        let mut book = Book::default();
+        let mut started = 0;
+        for n in 0..100 {
+            let key = format!("down:{n}");
+            if book.begin_download(&key, start, 1000) {
+                started += 1;
+                book.finish_with(&key, false, start, cap, true, "no");
+            }
+        }
+        assert_eq!(started, MAX_FETCHES_PER_WINDOW);
+        assert!(!book.running.iter().any(|k| k == "down:99") && !book.retry_at.contains_key("down:99"), "a key refused for the rate is not marked failed");
+        assert!(book.begin_download("down:99", start + FETCH_WINDOW, 1000), "the next window allows more");
+    }
+
+    #[test]
+    fn a_failed_fetch_says_why_and_a_plain_404_stays_the_default_words() {
+        use std::sync::atomic::Ordering;
+        let (id, hostile) = hostile_skin();
+        let cfg = offline_host_config();
+        let dir = temp_cache("why");
+        let (port, _seen, stop) = serve_routes(Vec::new());
+        let base = format!("http://127.0.0.1:{port}");
+        let why = fetch_skin_why(&cfg, &base, &dir, &id).unwrap_err();
+        assert!(!why.is_empty() && !why.contains("127.0.0.1"), "{why}");
+        stop.store(true, Ordering::SeqCst);
+        let (port, _seen, stop) = serve_routes(vec![(format!("/api/v1/skins/{id}"), hostile, "image/png")]);
+        let why = fetch_skin_why(&cfg, &format!("http://127.0.0.1:{port}"), &dir, &id).unwrap_err();
+        stop.store(true, Ordering::SeqCst);
+        assert_eq!(why, "the server sent a file that is not this skin", "the real reason, not a fixed sentence");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_new_worn_hash_forgets_the_old_upload_entries() {
+        let (a, b) = ("d".repeat(64), "e".repeat(64));
+        let mut plan = UploadPlan::default();
+        assert!(plan.due(1.0, &a, true, Vec::new, 60.0));
+        book().finish_with(&format!("up:{a}"), false, std::time::Instant::now(), std::time::Duration::from_secs(60), true, "boom");
+        assert!(matches!(share_state(&a, true, false, &[]), ShareState::Retrying(_)));
+        assert!(plan.due(2.0, &b, true, Vec::new, 60.0));
+        assert_eq!(share_state(&a, true, false, &[]), ShareState::Waiting, "the old skin's failure no longer lingers");
+    }
+
+    #[test]
+    fn the_uploaded_ids_are_read_once_per_hash_while_the_website_holds_it() {
+        let a = "f".repeat(64);
+        let mut plan = UploadPlan::default();
+        let mut reads = 0;
+        for t in 0..5 {
+            let due = plan.due(1.0 + 100.0 * t as f64, &a, true, || { reads += 1; vec![a.clone()] }, 60.0);
+            assert!(!due);
+        }
+        assert_eq!(reads, 1);
     }
 
     #[test]

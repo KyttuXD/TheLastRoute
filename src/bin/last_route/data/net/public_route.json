@@ -1,6 +1,7 @@
 {
   "schema": "lr.public_route/1",
-  "_about": "The PUBLIC ROUTE title button joins the always-open room under this code, or opens it when no runner holds it yet (Godot room_state.gd PUBLIC_CODE, public_route.gd). The code is five letters like any room code.",
+  "_about": "The PUBLIC ROUTE title button joins the always-open room under this code, or opens it when no runner holds it yet (Godot room_state.gd PUBLIC_CODE, public_route.gd). The code is five letters like any room code. heartbeat_seconds is the directory heartbeat of the public room: the directory forgets a public entry 15 s after its last beat, so it is capped at 10 s (a heartbeat request times out after 4 s; private rooms keep 20 s). The code is matched exactly, like the server does.",
   "code": "PUBLC",
-  "start_when_hosting": true
+  "start_when_hosting": true,
+  "heartbeat_seconds": 5
 }

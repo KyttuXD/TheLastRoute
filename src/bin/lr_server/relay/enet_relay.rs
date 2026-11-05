@@ -20,6 +20,10 @@
 //! | 9 | HOST_MIGRATING | relay -> other guests | session or 0 | empty, `LRH1|<epoch>` or `LRH1|<epoch>|ready` |
 //! | 10 | HOST_LEFT | relay -> guests | session | reason (`HOST LEFT // ROOM CLOSED`) |
 //! | 11 | HOST_ALIVE | host keep-alive thread -> relay | 0 | host token, every ~250 ms |
+//! | 12 | HOST_JOIN_AS_GUEST | relay -> would-be host | 0 | empty (hostless public code: a live host exists, join as a guest) |
+//!
+//! A hostless public code (`RelayRooms::hostless_room`) takes HOST_REGISTER and HOST_ALIVE without a token, but HOST_ALIVE only
+//! from the current host's endpoint, and a registrant must pass `hostless_host_allowed`.
 //!
 //! Timers: a host that sends HOST_ALIVE is closed 1 s after the last one (older hosts: 15 s after the last
 //! HOST_REGISTER); guest sessions expire after 45 s idle; a deliberate handoff whose successor never registers closes
@@ -58,6 +62,7 @@ pub mod RelayFrame {
     pub const HOST_MIGRATING: u8 = 9;
     pub const HOST_LEFT: u8 = 10;
     pub const HOST_ALIVE: u8 = 11;
+    pub const HOST_JOIN_AS_GUEST: u8 = 12;
 }
 
 pub const HOST_LEFT_MESSAGE: &str = "HOST LEFT // ROOM CLOSED";
@@ -126,6 +131,29 @@ pub struct RelayRoom {
 /// The Node relay's injected callbacks.
 pub trait RelayRooms {
     fn room_by_code(&mut self, code: &str) -> Option<RelayRoom>;
+    /// The room a HOST_REGISTER checks its token against: like `room_by_code`, but a directory may still know a room
+    /// that expired a moment ago (the host's heartbeat was late). It revives such an entry only when `token` matches.
+    fn room_for_host_register(&mut self, code: &str, _token: &str) -> Option<RelayRoom> {
+        self.room_by_code(code)
+    }
+    /// A hostless code (the public route) needs no host token: its entry is returned, created when missing, so a
+    /// HOST_REGISTER from `host` always finds a room. None = a normal room, whose token is checked.
+    fn hostless_room(&mut self, _code: &str, _host: SocketAddr) -> Option<RelayRoom> {
+        None
+    }
+    /// Whether `host` may become the relay host of the hostless `code` (moderation and vouching live in the directory).
+    /// `token` is the HOST_REGISTER payload: the entry's own token always passes.
+    fn hostless_host_allowed(&mut self, _code: &str, _host: SocketAddr, _token: &str) -> bool {
+        true
+    }
+    /// The current relay host of the hostless `code` sent HOST_ALIVE: the directory may refresh a relay-made entry.
+    fn hostless_host_alive(&mut self, _code: &str) {}
+    /// Whether `code` is hostless (HOST_ALIVE is then accepted without the token).
+    fn is_hostless(&mut self, _code: &str) -> bool {
+        false
+    }
+    /// A host proved its token (HOST_REGISTER): the directory may keep the entry alive.
+    fn host_registered(&mut self, _code: &str) {}
     /// `promoteRoomHost(code)` -> the new host token. None = unavailable.
     fn promote_room_host(&mut self, _code: &str) -> Option<String> {
         None
@@ -525,15 +553,37 @@ impl EnetRelay {
             return;
         };
         let code = frame.code.clone();
-        let room = rooms.room_by_code(&code);
         let payload_text = String::from_utf8_lossy(&frame.payload).to_string();
+        let hostless = if frame.kind == RelayFrame::HOST_REGISTER { rooms.hostless_room(&code, remote) } else { None };
+        let room = if hostless.is_some() {
+            hostless.clone()
+        } else if frame.kind == RelayFrame::HOST_REGISTER {
+            rooms.room_for_host_register(&code, &payload_text)
+        } else {
+            rooms.room_by_code(&code)
+        };
 
         if frame.kind == RelayFrame::HOST_REGISTER {
-            let authorised = room.as_ref().map(|r| safe_equal(&payload_text, &r.token)).unwrap_or(false);
+            if hostless.is_some() {
+                let holder = self.hosts.get(&code).map(|h| h.endpoint).filter(|_| self.host_fresh(&code));
+                // somebody else already holds the public route: the registrant joins as a guest. The same address on a
+                // new port is the holder restarting (a new NAT mapping) and replaces it.
+                if holder.is_some_and(|h| h != remote && h.ip() != remote.ip()) {
+                    self.send(RelayFrame::HOST_JOIN_AS_GUEST, 0, &code, &[], remote);
+                    return;
+                }
+                if !rooms.hostless_host_allowed(&code, remote, &payload_text) {
+                    self.send_error(&code, remote, "HOST AUTHORIZATION FAILED");
+                    return;
+                }
+            }
+            let authorised =
+                hostless.is_some() || room.as_ref().map(|r| safe_equal(&payload_text, &r.token)).unwrap_or(false);
             if !authorised {
                 self.send_error(&code, remote, "HOST AUTHORIZATION FAILED");
                 return;
             }
+            rooms.host_registered(&code);
             let alive = self.hosts.get(&code).map(|h| h.alive).unwrap_or(false);
             let now = self.now();
             self.hosts.insert(code.clone(), Host { endpoint: remote, last_seen: now, alive });
@@ -551,6 +601,17 @@ impl EnetRelay {
                 }
             }
             self.send(RelayFrame::HOST_ACK, 0, &code, &[], remote);
+            return;
+        }
+
+        if frame.kind == RelayFrame::HOST_ALIVE && rooms.is_hostless(&code) {
+            // only the current relay host's endpoint keeps the route fresh: the code is public, so nothing else vouches
+            let now = self.now();
+            if let Some(host) = self.hosts.get_mut(&code).filter(|h| h.endpoint == remote) {
+                host.last_seen = now;
+                host.alive = true;
+                rooms.hostless_host_alive(&code);
+            }
             return;
         }
 
@@ -850,15 +911,22 @@ mod tests {
         promotions: u32,
         promote_to: Option<String>,
         ticket: Option<Vec<u8>>,
+        hostless: bool,
     }
 
     impl Rooms {
         fn new(code: &str, token: &str) -> Rooms {
-            Rooms { code: code.into(), token: token.into(), closed: Vec::new(), promotions: 0, promote_to: None, ticket: None }
+            Rooms { code: code.into(), token: token.into(), closed: Vec::new(), promotions: 0, promote_to: None, ticket: None, hostless: false }
         }
     }
 
     impl RelayRooms for Rooms {
+        fn hostless_room(&mut self, code: &str, _host: SocketAddr) -> Option<RelayRoom> {
+            (self.hostless && code == self.code).then(|| RelayRoom { token: self.token.clone(), gated: false })
+        }
+        fn is_hostless(&mut self, code: &str) -> bool {
+            self.hostless && code == self.code
+        }
         fn room_by_code(&mut self, code: &str) -> Option<RelayRoom> {
             (code == self.code && !self.closed.contains(&code.to_string()))
                 .then(|| RelayRoom { token: self.token.clone(), gated: self.ticket.is_some() })
@@ -950,6 +1018,63 @@ mod tests {
         exchange_raw(&mut relay, &mut rooms, attacker, b"not a relay packet");
         let c = &relay.counters;
         assert_eq!((c.dropped_wrong_endpoint, c.dropped_unknown_session, c.dropped_invalid, c.forwarded_guest), (1, 1, 1, 1));
+    }
+
+    #[test]
+    fn a_hostless_code_registers_without_a_token_and_a_second_registrant_is_told_to_join() {
+        let (clock, time) = manual_clock(0);
+        let mut relay = relay_with(clock, |_| {});
+        let mut rooms = Rooms::new("PUBLC", "server-made");
+        rooms.hostless = true;
+        let (first, second) = (addr(4101), SocketAddr::from(([127, 0, 0, 2], 4102)));
+        let out = exchange(&mut relay, &mut rooms, first, frame(RelayFrame::HOST_REGISTER, 0, "PUBLC", b"stale-token"));
+        assert_eq!(to(&out, first)[0].kind, RelayFrame::HOST_ACK);
+        let out = exchange(&mut relay, &mut rooms, first, frame(RelayFrame::HOST_REGISTER, 0, "PUBLC", b""));
+        assert_eq!(to(&out, first)[0].kind, RelayFrame::HOST_ACK, "the holder may re-register");
+        let out = exchange(&mut relay, &mut rooms, second, frame(RelayFrame::HOST_REGISTER, 0, "PUBLC", b"x"));
+        assert_eq!(to(&out, second)[0].kind, RelayFrame::HOST_JOIN_AS_GUEST);
+        // the keep-alive carries no token either
+        exchange_raw(&mut relay, &mut rooms, first, &frame(RelayFrame::HOST_ALIVE, 0, "PUBLC", b"whatever"));
+        time.advance(900);
+        let out = exchange(&mut relay, &mut rooms, second, frame(RelayFrame::HOST_REGISTER, 0, "PUBLC", b"x"));
+        assert_eq!(to(&out, second)[0].kind, RelayFrame::HOST_JOIN_AS_GUEST);
+        // the holder went quiet: the next registrant becomes the host
+        time.advance(2_000);
+        let out = exchange(&mut relay, &mut rooms, second, frame(RelayFrame::HOST_REGISTER, 0, "PUBLC", b"x"));
+        assert_eq!(to(&out, second)[0].kind, RelayFrame::HOST_ACK);
+    }
+
+    #[test]
+    fn a_hostless_keep_alive_counts_only_from_the_current_hosts_endpoint() {
+        let (clock, time) = manual_clock(0);
+        let mut relay = relay_with(clock, |_| {});
+        let mut rooms = Rooms::new("PUBLC", "server-made");
+        rooms.hostless = true;
+        let (host, spoofer) = (addr(4101), SocketAddr::from(([127, 0, 0, 2], 4102)));
+        exchange(&mut relay, &mut rooms, host, frame(RelayFrame::HOST_REGISTER, 0, "PUBLC", b""));
+        exchange_raw(&mut relay, &mut rooms, host, &frame(RelayFrame::HOST_ALIVE, 0, "PUBLC", b""));
+        time.advance(900);
+        exchange_raw(&mut relay, &mut rooms, spoofer, &frame(RelayFrame::HOST_ALIVE, 0, "PUBLC", b""));
+        time.advance(200);
+        // the host's last beat is 1.1 s old: the spoofed one did not refresh it
+        relay.prune(&mut rooms);
+        assert_eq!(relay.host_count(), 0);
+        assert_eq!(rooms.closed.first().map(String::as_str), Some("PUBLC"));
+    }
+
+    #[test]
+    fn the_same_address_on_a_new_port_replaces_a_fresh_hostless_host() {
+        let (clock, _time) = manual_clock(0);
+        let mut relay = relay_with(clock, |_| {});
+        let mut rooms = Rooms::new("PUBLC", "server-made");
+        rooms.hostless = true;
+        let (old, new) = (addr(4101), addr(4102));
+        exchange(&mut relay, &mut rooms, old, frame(RelayFrame::HOST_REGISTER, 0, "PUBLC", b""));
+        exchange_raw(&mut relay, &mut rooms, old, &frame(RelayFrame::HOST_ALIVE, 0, "PUBLC", b""));
+        let out = exchange(&mut relay, &mut rooms, new, frame(RelayFrame::HOST_REGISTER, 0, "PUBLC", b""));
+        assert_eq!(to(&out, new)[0].kind, RelayFrame::HOST_ACK);
+        // the old endpoint no longer keeps the route fresh; the new one does
+        assert_eq!(relay.hosts.get("PUBLC").map(|h| h.endpoint), Some(new));
     }
 
     fn exchange_raw(relay: &mut EnetRelay, rooms: &mut Rooms, from: SocketAddr, data: &[u8]) {

@@ -39,6 +39,31 @@ Caddy (`caddy.service`) serves two sites from `/etc/caddy/Caddyfile`:
 
 Other things on VPS 2 (not part of this project's docs): `/srv/osm`, `/opt/lastroute-host`, `/opt/node`.
 
+## Public route: no host token, but not open to everyone
+
+The public codes (`PUBLC`, `CTYPR`; `is_public_code`) are hostless: a relay `HOST_REGISTER` on them carries no host token.
+Reserved codes (even a reserved public code) keep the full token check. What replaces the token:
+
+- **Vouching.** An address that passed `check_host_public` (the moderation ban and flag check) on an HTTP register is
+  vouched for 5 minutes (`HOSTLESS_VOUCH_MS`); one that was refused is refused for the same time. The register check now
+  runs before the "already registered" 409. A UDP hello cannot name an account, so the relay uses the address instead:
+  a refused address gets `HOST AUTHORIZATION FAILED`, and only a vouched address may create a missing entry or become
+  the relay host (the address that made a relay entry keeps that right). A vouched host's token heartbeats keep its vouch.
+- **Rate limit.** At most 5 relay-created entries per source address per minute (`HOSTLESS_CREATE_LIMIT`).
+- **No address from the datagram.** The UDP source is the relay socket, not a game address, so a relay-created entry has
+  address `""` and port 0; guests reach it through the relay. It remembers the creating address (`relay_made`).
+- **Keep-alive.** `HOST_ALIVE` on a public code counts only from the current relay host's endpoint. The HTTP heartbeat
+  without a token is accepted only from the address that hosts the entry (its HTTP register, or the relay host that made
+  it) and only refreshes the expiry; players, `sessionActive` and `daytime` need the token.
+- **Release.** The relay host that made an entry may unregister it over HTTP without a token (same address). The entry is
+  also forgotten when the relay host goes quiet (about 1 s after its last keep-alive) or its session closes.
+- **Second registrant.** If a live host (fresh by the relay's timers) holds the code, a registrant from another address gets
+  frame 12 `HOST_JOIN_AS_GUEST` and joins as a guest. The same address on a new port (a new NAT mapping, a restart) replaces
+  the holder. An HTTP register from the address that made the entry replaces it too (no 409).
+
+Tradeoff: the vouch is by address, so a flagged account behind a shared address that someone else vouched can still host;
+anyone who can send from the holder's address can replace it. The route is a public room, so nothing private is exposed.
+
 ## Open
 
 - What `vps1` is for.

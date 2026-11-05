@@ -50,6 +50,14 @@ pub const DEFAULT_ADMIN_TICKET_TTL_MS: i64 = 5 * 60 * 1000;
 pub const DEFAULT_RATE_LIMIT_WINDOW_MS: i64 = 60 * 1000;
 pub const DEFAULT_DEV_TOKEN_TTL_MS: i64 = 12 * 60 * 60 * 1000;
 pub const PUBLIC_ENET_TTL_MS: i64 = 15_000;
+/// How long after its expiry a public room's host may still HOST_REGISTER on the relay with its token.
+pub const PUBLIC_HOST_REGISTER_GRACE_MS: i64 = 60_000;
+/// How long an address that passed (or failed) the public-host moderation check on HTTP register stays vouched (refused).
+pub const HOSTLESS_VOUCH_MS: i64 = 300_000;
+/// A source address may make this many relay-created public entries per window.
+pub const HOSTLESS_CREATE_LIMIT: usize = 5;
+pub const HOSTLESS_CREATE_WINDOW_MS: i64 = 60_000;
+const HOSTLESS_ADDRESS_CAP: usize = 1024;
 pub const RESERVED_TAKEOVER_MS: i64 = 30_000;
 pub const WS_PATH: &str = "/api/ws";
 /// The biggest skin PNG: 64 KB, the one number of `skins/skins.rs` (and of the game's validator).
@@ -159,9 +167,72 @@ pub struct Directory {
     pub(crate) admin_tickets: IndexMap<String, AdminTicket>,
     pub(crate) public_routes: Vec<(String, PublicRoute)>,
     pub(crate) reserved: Option<ReservedRooms>,
+    /// Addresses whose HTTP register passed `check_host_public`: the only ones the relay lets create a public entry.
+    pub(crate) vouched: IndexMap<String, i64>,
+    /// Addresses whose HTTP register was refused by moderation (banned or flagged).
+    pub(crate) refused: IndexMap<String, i64>,
+    /// Relay-created public entries: code -> the address of the relay host that made it.
+    pub(crate) relay_made: IndexMap<String, String>,
+    /// Recent relay-created entries per source address (the rate limit).
+    pub(crate) hostless_hits: Vec<(String, i64)>,
+}
+
+/// An address in one canonical text form (IPv4-mapped and dual-stack forms become plain IPv4), so the HTTP side and the
+/// relay side compare the same string. Anything that is not an IP stays as it is.
+pub(crate) fn canonical_address(address: &str) -> String {
+    address.trim().parse::<std::net::IpAddr>().map(|ip| ip.to_canonical().to_string()).unwrap_or_else(|_| address.to_string())
 }
 
 impl Directory {
+    /// Whether `address` is the relay host that made the relay-made entry `code`.
+    pub(crate) fn made_by(&self, code: &str, address: &str) -> bool {
+        let address = canonical_address(address);
+        self.relay_made.get(code).is_some_and(|made| *made == address)
+    }
+
+    /// Records the outcome of a public-host moderation check for `address` (an HTTP register).
+    pub(crate) fn note_host_check(&mut self, address: &str, allowed: bool) {
+        let address = canonical_address(address);
+        let address = address.as_str();
+        let now = (self.now)();
+        self.vouched.retain(|_, until| *until > now);
+        self.refused.retain(|_, until| *until > now);
+        let (set, other) = if allowed { (&mut self.vouched, &mut self.refused) } else { (&mut self.refused, &mut self.vouched) };
+        other.shift_remove(address);
+        set.shift_remove(address);
+        set.insert(address.to_string(), now + HOSTLESS_VOUCH_MS);
+        while set.len() > HOSTLESS_ADDRESS_CAP {
+            set.shift_remove_index(0);
+        }
+    }
+
+    pub(crate) fn is_vouched(&self, address: &str) -> bool {
+        self.vouched.get(&canonical_address(address)).is_some_and(|until| *until > (self.now)())
+    }
+
+    pub(crate) fn is_refused(&self, address: &str) -> bool {
+        self.refused.get(&canonical_address(address)).is_some_and(|until| *until > (self.now)())
+    }
+
+    /// A vouched host's later HTTP traffic keeps its vouch alive (never creates one).
+    pub(crate) fn refresh_vouch(&mut self, address: &str) {
+        let now = (self.now)();
+        if let Some(until) = self.vouched.get_mut(&canonical_address(address)).filter(|until| **until > now) {
+            *until = now + HOSTLESS_VOUCH_MS;
+        }
+    }
+
+    /// Whether `address` may create another relay-made entry now; counts the attempt when it may.
+    fn allow_hostless_create(&mut self, address: &str) -> bool {
+        let now = (self.now)();
+        self.hostless_hits.retain(|(_, at)| now - at < HOSTLESS_CREATE_WINDOW_MS);
+        if self.hostless_hits.iter().filter(|(a, _)| a == address).count() >= HOSTLESS_CREATE_LIMIT {
+            return false;
+        }
+        self.hostless_hits.push((address.to_string(), now));
+        true
+    }
+
     /// `pruneEnetRooms()`.
     pub fn prune(&mut self) {
         let timestamp = (self.now)();
@@ -172,6 +243,8 @@ impl Directory {
             }
         }
         self.enet_rooms.retain(|_, room| room.expires_at > timestamp);
+        let rooms = &self.enet_rooms;
+        self.relay_made.retain(|code, _| rooms.contains_key(code));
         if let Some(reserved) = self.reserved.as_mut() {
             let live: std::collections::HashSet<String> = self.enet_rooms.keys().cloned().collect();
             for code in reserved.sweep(&|code| live.contains(code)) {
@@ -184,6 +257,7 @@ impl Directory {
 
     /// `forgetEnetRoom(code)`.
     pub fn forget(&mut self, code: &str) {
+        self.relay_made.shift_remove(code);
         let Some(room) = self.enet_rooms.shift_remove(code) else { return };
         self.admin_tickets.retain(|_, proof| !(proof.code == code && safe_equal(&proof.host_token, &room.token)));
     }
@@ -207,7 +281,114 @@ impl Directory {
     }
 }
 
+impl Directory {
+    /// A public code whose host the relay takes without a token (a reserved code keeps its token check).
+    fn is_hostless_code(&self, code: &str) -> bool {
+        is_public_code(code) && !self.reserved.as_ref().is_some_and(|r| r.is_reserved(code))
+    }
+}
+
 impl RelayRooms for Directory {
+    fn hostless_room(&mut self, code: &str, host: std::net::SocketAddr) -> Option<RelayRoom> {
+        if !self.is_hostless_code(code) {
+            return None;
+        }
+        self.prune();
+        let now = (self.now)();
+        let source = host.ip().to_canonical().to_string();
+        if self.is_refused(&source) {
+            return None;
+        }
+        if !self.enet_rooms.contains_key(code) {
+            // no live entry (expired, or never registered over HTTP): only an address that passed the HTTP host check
+            // (moderation) may recreate it, and only a few times a minute
+            if !self.is_vouched(&source) || !self.allow_hostless_create(&source) {
+                return None;
+            }
+            // the datagram's source is not a game address: the entry carries none, guests reach the room through the relay
+            let room = EnetRoom {
+                code: code.to_string(),
+                token: base64url(&random_bytes(24)),
+                address: String::new(),
+                port: 0,
+                transport: "enet".into(),
+                host_user: String::new(),
+                instance: base64url(&random_bytes(9)),
+                players: 1.0,
+                session_active: false,
+                daytime: false,
+                game: PUBLIC_CODES.iter().find(|(_, c)| *c == code).map(|(g, _)| g.to_string()).unwrap_or_default(),
+                expires_at: now + PUBLIC_ENET_TTL_MS,
+                last_seen: now,
+                protocol: String::new(),
+                dedicated: false,
+                region: String::new(),
+                reserved: false,
+            };
+            self.enet_rooms.insert(code.to_string(), room);
+            self.relay_made.insert(code.to_string(), source);
+        }
+        self.enet_rooms.get(code).map(|room| RelayRoom { token: room.token.clone(), gated: false })
+    }
+    fn hostless_host_allowed(&mut self, code: &str, host: std::net::SocketAddr, token: &str) -> bool {
+        let source = host.ip().to_canonical().to_string();
+        if !self.is_hostless_code(code) || self.is_refused(&source) {
+            return false;
+        }
+        // the registered host of the entry holds its token, whatever address string its HTTP register came from
+        let tokened = self.enet_rooms.get(code).is_some_and(|room| !token.is_empty() && safe_equal(token, &room.token));
+        tokened || self.is_vouched(&source) || self.made_by(code, &source)
+    }
+    fn hostless_host_alive(&mut self, code: &str) {
+        // the relay host of a relay-made entry is live: the entry must not lapse under it
+        if !self.relay_made.contains_key(code) {
+            return;
+        }
+        let expires = (self.now)() + PUBLIC_ENET_TTL_MS;
+        if let Some(room) = self.enet_rooms.get_mut(code) {
+            room.expires_at = expires;
+        }
+    }
+    fn is_hostless(&mut self, code: &str) -> bool {
+        self.is_hostless_code(code)
+    }
+    fn room_for_host_register(&mut self, code: &str, token: &str) -> Option<RelayRoom> {
+        // the public room's host registers on the relay right after its directory heartbeat; one that came a little
+        // late still finds its entry. The lookup changes nothing: the expired clone is checked against the token, and
+        // only a match puts the entry back (a wrong token leaves it expired).
+        let now = (self.now)();
+        let late = self
+            .enet_rooms
+            .get(code)
+            .filter(|room| is_public_code(code) && room.expires_at <= now && room.expires_at + PUBLIC_HOST_REGISTER_GRACE_MS > now)
+            .cloned();
+        if late.as_ref().is_some_and(|room| !safe_equal(token, &room.token)) {
+            // not the host: the lookup must not prune or revive anything
+            return None;
+        }
+        let authority_was_stale = self.public_routes.iter().any(|(game, route)| public_code(game) == code && route.authority_stale());
+        let found = self.room_by_code(code);
+        if found.is_some() {
+            return found;
+        }
+        let room = late?;
+        // the prune above may have dropped the entry for good: a stale route authority, or a reserved room it swept
+        let reserved_gone = room.reserved && !self.reserved.as_ref().is_some_and(|r| r.is_reserved(code));
+        if authority_was_stale || reserved_gone {
+            return None;
+        }
+        let relay_room = RelayRoom { token: room.token.clone(), gated: room.reserved };
+        self.enet_rooms.insert(code.to_string(), room);
+        Some(relay_room)
+    }
+    fn host_registered(&mut self, code: &str) {
+        let now = (self.now)();
+        if is_public_code(code) {
+            if let Some(room) = self.enet_rooms.get_mut(code) {
+                room.expires_at = now + PUBLIC_ENET_TTL_MS;
+            }
+        }
+    }
     fn room_by_code(&mut self, code: &str) -> Option<RelayRoom> {
         self.prune();
         self.enet_rooms.get(code).map(|room| RelayRoom { token: room.token.clone(), gated: room.reserved })
@@ -446,6 +627,10 @@ impl LastRouteServer {
                 admin_tickets: IndexMap::new(),
                 public_routes,
                 reserved,
+                vouched: IndexMap::new(),
+                refused: IndexMap::new(),
+                relay_made: IndexMap::new(),
+                hostless_hits: Vec::new(),
             },
             relay: None,
             room_service: RoomService::new(RoomServiceOptions {

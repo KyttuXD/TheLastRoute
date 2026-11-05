@@ -34,7 +34,9 @@ pub mod api;
 pub mod backend;
 /// Co-op chat lines (team / nearby, spoken aloud in the original) and their host-side moderation.
 pub mod chat;
+pub mod held_wire;
 pub mod hide_sync;
+pub mod interp;
 pub mod config;
 pub mod http;
 pub mod pending;

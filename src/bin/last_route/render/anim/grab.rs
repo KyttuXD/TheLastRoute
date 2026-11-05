@@ -783,7 +783,7 @@ impl Grab {
         } else {
             vec3(-view.yaw.sin(), 0.0, -view.yaw.cos())
         };
-        let side = along.cross(Vec3::Y).normalize();
+        let side = along.cross(Vec3::Y).normalize_or_zero();
         let room = probe_room(fac, runner_feet, origin, along, ceiling);
         let id = view.shown_id.clone();
         // HunterGrab.play's force_style (admin_force_grab): LR_GRAB_STYLE=<style> forces one for testing
@@ -990,8 +990,10 @@ impl Grab {
         let eye = self.camera_from.0.lerp(eye, e);
         let dir =
             (self.camera_from.1.lerp((face - eye).normalize_or_zero(), e)).normalize_or_zero();
+        // a zero or NaN look (the face on the eye, a bad blend) would give a degenerate view: look along her instead
+        let dir = if dir.is_finite() && dir.length_squared() > 0.5 { dir } else { self.along };
         let up = Quat::from_axis_angle(dir, roll * e) * Vec3::Y;
-        self.camera = Some((eye, eye + dir, up));
+        self.camera = (eye.is_finite() && dir.is_finite() && up.is_finite()).then_some((eye, eye + dir, up));
         let locals = body.pose.clone();
         let stretched = body.stretch.clone();
         let out = view.finish_with_root(body.pose, body.root, clock, &stretched);
@@ -1110,14 +1112,46 @@ pub fn drive(
     })
 }
 
-/// The grab's first-person camera (eye, target, up), while a grab holds the runner.
+/// The grab's first-person camera (eye, target, up), while a grab holds the runner. None when no grab runs or its
+/// camera is not usable (see `usable_camera`): the caller then keeps the runner's own view.
 pub fn camera() -> Option<(Vec3, Vec3, Vec3)> {
-    GRAB.with(|g| g.borrow().grab.as_ref().and_then(|x| x.camera))
+    GRAB.with(|g| g.borrow().grab.as_ref().and_then(|x| x.camera)).filter(|c| usable_camera(*c))
+}
+
+/// A camera (eye, target, up) a view matrix can be built from: every part finite, a real look distance, an up that is
+/// not along the look.
+pub fn usable_camera((eye, target, up): (Vec3, Vec3, Vec3)) -> bool {
+    let look = target - eye;
+    eye.is_finite()
+        && target.is_finite()
+        && up.is_finite()
+        && look.length_squared() > 1.0e-6
+        && up.cross(look).length_squared() > 1.0e-8
+}
+
+/// Drops the running grab and its release ease: the held hunter was not drawn this frame (culled, hidden or without a
+/// model), so its camera would be stale. The grab starts again when she is drawn.
+pub fn abandon() {
+    GRAB.with(|g| {
+        let mut g = g.borrow_mut();
+        g.grab = None;
+        g.release = None;
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_degenerate_grab_camera_is_not_usable() {
+        let ok = (vec3(0.0, 1.6, 0.0), vec3(0.0, 1.6, -1.0), Vec3::Y);
+        assert!(usable_camera(ok));
+        assert!(!usable_camera((ok.0, ok.0, Vec3::Y)), "no look");
+        assert!(!usable_camera((vec3(f32::NAN, 1.0, 0.0), ok.1, Vec3::Y)), "NaN eye");
+        assert!(!usable_camera((ok.0, ok.1, Vec3::ZERO)), "no up");
+        assert!(!usable_camera((ok.0, vec3(0.0, 2.6, 0.0), Vec3::Y)), "up along the look");
+    }
 
     #[test]
     fn grab_timing_data_matches_standard_and_drives_behaviour() {
@@ -1180,7 +1214,7 @@ mod tests {
         let along = vec3(0.0, 0.0, -1.0);
         let facing = along;
         // the look-away aim from grab.rs head_look: off to her side and down, a step back from the runner
-        let side = along.cross(Vec3::Y).normalize();
+        let side = along.cross(Vec3::Y).normalize_or_zero();
         let off = side * 1.5 + Vec3::NEG_Y * 0.8 - along * 0.3;
         let full = neck_turn(facing, off.normalize(), look.yaw);
         let full_angle = full.angle_between(Quat::IDENTITY);

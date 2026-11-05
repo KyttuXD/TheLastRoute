@@ -1,0 +1,19 @@
+{
+  "schema": "lr.net_sync/1",
+  "_note": "Remote runner position sync. Every key is optional; a missing key keeps the default shown. Godot sends at 20 Hz and lerps each body toward its target at INTERPOLATION_SPEED 14 (remote_players.gd _interpolate_bodies); this port sends faster and plays the samples back from a short buffer.",
+  "send_hz": 30,
+  "send_early_min_gap_factor": 0.5,
+  "send_early_move_m": 0.6,
+  "send_early_yaw_rad": 0.6,
+  "interp_delay_min_s": 0.08,
+  "interp_delay_max_s": 0.25,
+  "interval_factor": 2.0,
+  "jitter_factor": 1.5,
+  "max_extrapolation_s": 0.15,
+  "snap_distance_m": 8.0,
+  "gap_hold_s": 0.5,
+  "buffer_len": 8,
+  "remote_timeout_s": 2.0,
+  "max_speed_mps": 12.5,
+  "burst_gap_factor": 0.25
+}

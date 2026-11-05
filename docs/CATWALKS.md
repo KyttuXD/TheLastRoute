@@ -74,7 +74,7 @@ Rust design, with no Godot parity: Godot's hunters are 2D and cannot reach a dec
   the floor. What differs is reach: a target on another layer is
   never dashed at (the layer is the walk surface under the target's cell against the hunter's own, so a runner part-way up
   a flight or ladder, or in a fall, over a floor cell is still on the floor layer; `same_layer_eps` = 0.5 m now only
-  gates the jump permit and the director), and capture needs the same height (`capture_height` 1.2 m).
+  gates the jump permit and the director), and capture needs the same height (`capture_height` 1.2 m). Godot has no decks, so this is a Rust-only rule: a hunter on the floor under a deck cannot grab a runner standing on it (the grab cutscene would put the hunter below the camera). The admin summon stands the hunter on the runner's level and on the floor (`Brain::set_level`), never on a deck.
 - **Layers.** A cell has one walk height, so (level, cell) names a node. `hunter_open` stays ground only (spawns, wander
   and search picks and the director read it); a separate `Facility::deck_open` marks the deck cells a body stands on at the
   deck's height, `nav_open` is either. A grid step never changes height; the only ways across are two edges, built by

@@ -327,6 +327,8 @@ impl Default for SkinUi {
 thread_local! {
     static SKIN: RefCell<SkinUi> = RefCell::new(SkinUi::default());
     static COPY_PEERS: RefCell<Vec<CopyPeer>> = const { RefCell::new(Vec::new()) };
+    /// Where the worn skin stands on its way to other runners (the app sets it each frame; empty says nothing).
+    static SHARE_TEXT: RefCell<String> = const { RefCell::new(String::new()) };
     /// The rotating 3D mannequin in the preview box (ui/skin_preview.rs).
     static SKIN_PREVIEW: RefCell<crate::ui::skin_preview::SkinPreview> = RefCell::new(crate::ui::skin_preview::SkinPreview::new());
 }
@@ -342,6 +344,11 @@ pub fn take_escape() -> bool {
 /// The co-op runners whose skins the COPY SKIN row offers (the app sets it each frame from the open room).
 pub fn set_copy_peers(peers: Vec<CopyPeer>) {
     COPY_PEERS.with(|p| *p.borrow_mut() = peers);
+}
+
+/// What the SKIN tab says about sharing the worn skin with other runners (see `skins::ShareState::text`).
+pub fn set_share_text(text: String) {
+    SHARE_TEXT.with(|t| *t.borrow_mut() = text);
 }
 
 /// The tab is not showing: a focused text box or an open picker is dropped, so a hidden tab never holds the keyboard.
@@ -995,7 +1002,9 @@ pub fn draw(a: &Assets, st: &mut Settings, ox: f32, oy: f32, changed: &mut bool)
         if !s.detail.is_empty() {
             label(a, F::Body, &fit_tail(&s.detail, g.full, &measure), g.cx, y, STATUS_SIZE, p.muted);
         }
-        label(a, F::Body, &ellipsize(a, F::Body, &mine_text(st, &s), g.full, 7.0), g.cx, g.mine_top(), 7.0, p.muted);
+        let share = SHARE_TEXT.with(|t| t.borrow().clone());
+        let mine = if share.is_empty() { mine_text(st, &s) } else { format!("{} - {share}", mine_text(st, &s)) };
+        label(a, F::Body, &ellipsize(a, F::Body, &mine, g.full, 7.0), g.cx, g.mine_top(), 7.0, p.muted);
     });
 }
 

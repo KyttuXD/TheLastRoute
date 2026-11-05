@@ -951,6 +951,7 @@ impl Session {
                     speed: f(c, "speed").unwrap_or(0.0),
                     vy: f(c, "vy").unwrap_or(0.0),
                     clip: c.get("clip").and_then(|v| v.as_str()).and_then(crate::render::anim::runner::Pose::from_wire),
+                    held: c.get("held").and_then(|v| v.as_str()).and_then(crate::net::held_wire::from_wire),
                     hide,
                     hide_since: hide.map(|_| std::time::Duration::from_secs_f32(f(c, "hide_for").unwrap_or(10.0))),
                 };

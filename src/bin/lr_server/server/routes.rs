@@ -600,7 +600,7 @@ impl LastRouteServer {
             return Some(self.register_room(state, request, body, &address, caller));
         }
         if path.starts_with("/api/enet/") {
-            if let Some(response) = self.route_enet(state, body, path) {
+            if let Some(response) = self.route_enet(state, body, path, &address) {
                 return Some(response);
             }
         }
@@ -668,25 +668,42 @@ impl LastRouteServer {
     }
 
     /// heartbeat, unregister, release-host and the admin tickets.
-    fn route_enet(&self, state: &mut State, body: &Value, path: &str) -> Option<Response> {
+    fn route_enet(&self, state: &mut State, body: &Value, path: &str, address: &str) -> Option<Response> {
         let now = self.now();
         let (relay_address, relay_port) = (self.config.relay_address.as_str(), self.config.relay_port);
         let code = normalize_enet_code(body.get("code"));
         let token_ok = |room: &EnetRoom, key: &str| safe_equal(&str_or_empty(body.get(key)), &room.token);
+        // the host address of a relay-made public entry (its relay host may unregister it, and beat it, without a token)
+        let made_by_caller = |dir: &Directory, room: &EnetRoom| {
+            is_public_code(&room.code) && !room.reserved && dir.made_by(&room.code, address)
+        };
         match path {
             "/api/enet/rooms/heartbeat" => {
                 let ttl = self.config.enet_room_ttl_ms;
-                let Some(room) = state.dir.enet_rooms.get_mut(&code) else {
+                let Some(found) = state.dir.enet_rooms.get(&code) else {
                     return Some(json_response(404, &json!({ "ok": false, "error": "ROOM NOT FOUND" }), &[]));
                 };
-                if !token_ok(room, "token") {
+                let tokened = token_ok(found, "token");
+                // the public route is hostless: a tokenless beat only refreshes the expiry, and only from the address that
+                // hosts the entry (its HTTP register, or the relay host that made it)
+                let tokenless_ok = !tokened
+                    && is_public_code(&found.code)
+                    && !found.reserved
+                    && (made_by_caller(&state.dir, found) || (!found.address.is_empty() && found.address == address));
+                if !tokened && !tokenless_ok {
                     return Some(json_response(403, &json!({ "ok": false, "error": "INVALID HOST TOKEN" }), &[]));
                 }
-                room.players = finite_players(body.get("players"), room.players).trunc();
-                room.session_active = truthy(body.get("sessionActive"));
-                room.daytime = truthy(body.get("daytime"));
+                if tokened {
+                    state.dir.refresh_vouch(address);
+                }
+                let Some(room) = state.dir.enet_rooms.get_mut(&code) else { return Some(internal_error()) };
+                if tokened {
+                    room.players = finite_players(body.get("players"), room.players).trunc();
+                    room.session_active = truthy(body.get("sessionActive"));
+                    room.daytime = truthy(body.get("daytime"));
+                    room.last_seen = now;
+                }
                 room.expires_at = now + if is_public_code(&room.code) { PUBLIC_ENET_TTL_MS } else { ttl };
-                room.last_seen = now;
                 let room = room.clone();
                 let mut out = Map::new();
                 out.insert("ok".into(), json!(true));
@@ -703,7 +720,7 @@ impl LastRouteServer {
                 let Some(room) = state.dir.enet_rooms.get(&code) else {
                     return Some(json_response(200, &json!({ "ok": true, "removed": false }), &[]));
                 };
-                if !token_ok(room, "token") {
+                if !token_ok(room, "token") && !made_by_caller(&state.dir, room) {
                     return Some(json_response(403, &json!({ "ok": false, "error": "INVALID HOST TOKEN" }), &[]));
                 }
                 // an explicit quit: guests are told now and the code stops resolving now
@@ -920,17 +937,20 @@ impl LastRouteServer {
                     "error": "THAT ROOM CODE IS RESERVED // INVITE OR ROOM PASSWORD REQUIRED" }), &[]);
             }
         }
-        if let Some(live) = state.dir.enet_rooms.get(&code) {
-            // a reserved room's crashed host is replaced by the next invited player once its heartbeat has gone quiet
-            if !(reserved && now - live.last_seen > RESERVED_TAKEOVER_MS) {
-                return json_response(409, &json!({ "ok": false, "error": "ROOM CODE ALREADY REGISTERED" }), &[]);
-            }
-        }
         let public = is_public_code(&code);
         if public {
             let who = Who { username: host_user.clone(), device_id: body.get("deviceId").cloned(), address: address.to_string() };
             if let Some(refused) = state.moderation.check_host_public(&who) {
+                state.dir.note_host_check(address, false);
                 return reply(refused);
+            }
+            state.dir.note_host_check(address, true);
+        }
+        if let Some(live) = state.dir.enet_rooms.get(&code) {
+            // a reserved room's crashed host is replaced by the next invited player once its heartbeat has gone quiet
+            let own_relay_made = state.dir.made_by(&code, address);
+            if !(reserved && now - live.last_seen > RESERVED_TAKEOVER_MS) && !own_relay_made {
+                return json_response(409, &json!({ "ok": false, "error": "ROOM CODE ALREADY REGISTERED" }), &[]);
             }
         }
         let token = base64url(&random_bytes(24));
