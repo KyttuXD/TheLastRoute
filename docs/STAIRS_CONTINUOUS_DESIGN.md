@@ -64,7 +64,7 @@ Every level is its own coordinate space (floor at y = 0) and only one level's `F
 
 ### 2.1 One vertical frame
 
-- World y of a level's floor is `level * STOREY` (STOREY = 5.0 m, kept; Godot's is 4 m scaled 1.25). Level 0 is y = 0, level -1 (sewer) is y = -5, Inferno (-3) is y = -15. Going down is negative y. The sign is `+level`, not `-level`, because levels below ground are already negative integers. A level's ceiling is `level*STOREY + wall_h`, which coincides with the floor of the level above. A visible slab thickness (`SLAB`, data) separates them.
+- World y of a level's floor is `level * STOREY` (STOREY = 5.0 m, kept; Godot's is 4 m scaled 1.25). Level 0 is y = 0, level -1 (sewer) is y = -5, Inferno (-3) is y = -15. Going down is negative y. The sign is `+level`, not `-level`, because levels below ground are already negative integers. A level's ceiling is `level*STOREY + wall_h`, which coincides with the floor of the level above. A visible slab thickness (`slab` in `data/flights.json`) separates them: the drawn ceiling is capped at `STOREY - slab - ceiling_inset` (see item 6 below).
 - `Player` gets an absolute `y` (feet). `height`, `climb_lift` and the `feet_y.max(0.0)` clamp are removed as the source of truth. The camera eases for smoothing only. Gravity runs against `ground_y(x, z, y)`.
 - The current level is derived: `current_level = level_from_height(y, previous)` (the existing hysteresis shape, `vertical.rs:144-150`). It is a label for HUD, save, audio bus, `inf.level` bookkeeping and hunter residency. Changing it must have no side effect on the body and no load or fade.
 
@@ -213,7 +213,7 @@ What to cull:
 3. A neighbour part is skipped when the eye cannot see its opening: test the opening's bounding box against the camera frustum and a plane test (eye above or below the slab plane).
 4. Doors, props, items, relays, pickups, water and level fx are drawn for the current level only, except hunters, bots and remote players in the opening's view cone.
 5. Lamps: neighbour lamps are limited to the stairwell lamp plus 2 nearest. The 16-lamp cap (`shader.rs:13`) keeps the 8 nearest own lamps reserved.
-6. z-fighting: a slab of `SLAB` thickness between floor and ceiling, drawn double-sided only at the opening rim; coplanar faces are not emitted.
+6. z-fighting (built, `render/seams.rs`): a level's ceiling used to be the same rectangle as the floor of the level above. Now the slab is `data/flights.json` `slab` (0.15 m, the one slab number), every region wall height is capped at `STOREY - slab` (`geometry_wall_height`), the ceiling quad is drawn `ceiling_inset` (0.02, `data/render/seams.json`) under that, and the air gap is `slab + inset`. An opening through the slab is lined across the gap: a cell with no ceiling (flight well, ladder foot, the pool under the falls void) takes its walls and its flight side walls, divider and ladder rails up to the storey (`Site::shaft_top`), and a ceilinged cell beside such a cell draws a slab rim from its ceiling to the storey (`EdgeFill::Rim`). The camera near plane is 0.06 (Godot FIRST_PERSON_NEAR). A test builds stacked windows and asserts no two surfaces of different levels are coplanar, and that the gap is wider than one 16-bit depth step at the fog range (the scene is drawn into a 16-bit GL depth target; Metal has 32-bit float).
 
 ---
 

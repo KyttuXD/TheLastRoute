@@ -1,0 +1,9 @@
+{
+  "schema": "lr.seams/1",
+  "_about": "Where two storeys meet (render/seams.rs). The slab between a level's ceiling and the next level's floor is data/flights.json `slab` (the one slab thickness); this file holds the rest. ceiling_inset: how far under the slab's underside the ceiling quad is drawn, so it never shares a plane with anything of the level above (Godot CEILING_INSET .02). camera_near / camera_far: the first-person camera's clip planes in metres (Godot FIRST_PERSON_NEAR .06; our far is the fog range with headroom). depth_bits: the depth buffer the scene is drawn into, 16 on the GL path (macroquad's render target depth is DEPTH_COMPONENT16; Metal gets 32-bit float), so the seam is sized for the worst case. seam_range_m: the farthest distance a storey seam must still resolve (the fog range, scene.rs FOG_RANGE): the slab plus the inset must be at least one depth step wide there, a test holds it.",
+  "ceiling_inset": 0.02,
+  "camera_near": 0.06,
+  "camera_far": 80.0,
+  "depth_bits": 16,
+  "seam_range_m": 24.0
+}

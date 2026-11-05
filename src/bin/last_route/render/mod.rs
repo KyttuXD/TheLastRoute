@@ -16,6 +16,7 @@ pub mod locker_shell;
 pub mod prop_model;
 pub mod prop_scale;
 pub mod scene;
+pub mod seams;
 pub mod shader;
 pub mod stairs;
 pub mod stack_actors;

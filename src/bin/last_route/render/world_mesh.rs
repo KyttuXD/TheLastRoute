@@ -7,6 +7,7 @@ use super::builder::Builder;
 use super::door;
 use super::prop_scale;
 use super::shader::Lamp;
+use super::seams;
 use super::stairs;
 use super::surfaces;
 use super::textures::{self, TexRef, TextureChoice};
@@ -847,7 +848,7 @@ pub fn lamps(f: &Facility, lights_on: &[bool], content: &Content) -> Vec<Lamp> {
         if lights_on.get(i).copied().unwrap_or(true) {
             let (x, z) = l.center.center();
             out.push(Lamp {
-                pos: vec3(x, WALL_HEIGHT - 0.34, z),
+                pos: vec3(x, fixture_ceiling(f, l.center) - 0.34, z),
                 range: l.range * 1.4,
                 color: Color::new(l.color.0, l.color.1, l.color.2, 1.0),
                 energy: l.energy,
@@ -859,7 +860,7 @@ pub fn lamps(f: &Facility, lights_on: &[bool], content: &Content) -> Vec<Lamp> {
         let (x, z) = s.center();
         let light = safe_light_for(f, s.x, s.y);
         out.push(Lamp {
-            pos: vec3(x, WALL_HEIGHT - 0.6, z),
+            pos: vec3(x, fixture_ceiling(f, s) - 0.6, z),
             range: 7.0,
             color: Color::new(light.color[0], light.color[1], light.color[2], 1.0),
             energy: light.energy,
@@ -880,7 +881,7 @@ pub fn lamps(f: &Facility, lights_on: &[bool], content: &Content) -> Vec<Lamp> {
         let (x, z) = (cx + p.offset.0, cz + p.offset.1);
         let yaw = p.rotation as f32 * std::f32::consts::FRAC_PI_2;
         let off = Mat3::from_rotation_y(yaw) * vec3(light.offset.0, 0.0, light.offset.2);
-        let y = visual_y(&p.ptype, WALL_HEIGHT, p.mount_y.unwrap_or(0.0) as f32) + light.offset.1;
+        let y = visual_y(&p.ptype, fixture_ceiling(f, p.cell), p.mount_y.unwrap_or(0.0) as f32) + light.offset.1;
         out.push(Lamp {
             pos: vec3(x + off.x, y, z + off.z),
             range: light.range,
@@ -978,9 +979,16 @@ fn cell_surfaces<'c>(
 }
 
 /// A region's wall height in metres: its `geometry.wall_height`, or WALL_HEIGHT when the region has no block
-/// (or no region).
+/// (or no region), capped under the slab (`seams::wall_top`, Godot's `LEVEL_HEIGHT - SLAB`), so no cell's wall or
+/// ceiling ever reaches the floor of the level above.
 fn geometry_wall_height(def: Option<&RegionDef>) -> f32 {
-    def.and_then(|d| d.geometry).map_or(WALL_HEIGHT, |g| g.wall_height)
+    seams::wall_top(def.and_then(|d| d.geometry).map_or(WALL_HEIGHT, |g| g.wall_height))
+}
+
+/// Where a ceiling-hung fixture or prop is seated in the cell `c`: the underside of that cell's ceiling quad (a lamp's
+/// top sits flush with the ceiling, never inside the slab or above a lower sewer ceiling).
+fn fixture_ceiling(f: &Facility, c: Cell) -> f32 {
+    seams::ceiling_y(cell_wall_height(f, c.x, c.y))
 }
 
 /// The wall height of the region named `region` (its installed `lr.region/1` definition), else WALL_HEIGHT.
@@ -1108,7 +1116,7 @@ fn door_instances(f: &Facility, assets: &Assets, content: &Content) -> Vec<DoorI
             Some(DoorInstance {
                 cell: p.cell,
                 model: key.clone(),
-                xf: door_xf(f, p, d, &fit, WALL_HEIGHT),
+                xf: door_xf(f, p, d, &fit, fixture_ceiling(f, p.cell)),
                 fit,
             })
         })
@@ -1426,6 +1434,35 @@ fn cell_draws(f: &Facility, c: Cell, step: Option<Stair>) -> CellDraws {
     }
 }
 
+/// What fills one side of a cell between its floor and the storey above (`edge_fill`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum EdgeFill {
+    None,
+    /// A wall column up to `top`: the cell's wall height, or the storey for a shaft cell that has no ceiling.
+    Wall { top: f32 },
+    /// The side of the slab round an opening: from this cell's ceiling up to the underside of the floor above, facing
+    /// the open neighbour. Without it the gap between the ceiling and the next floor shows as a slit round the opening.
+    Rim { lo: f32, hi: f32 },
+}
+
+/// The fill of the side of cell `c` facing `(dx, dz)`. A stairwell's shaft is open to its landing and the other lane,
+/// whatever its cells' wall flags say; the falls void has no wall columns, on either side of its edge. A cell with no
+/// ceiling (a shaft, a ladder foot, the pool under the void) lines its walls to the storey instead of its wall height,
+/// so the gap the slab cap leaves is closed where the shaft rises through it.
+fn edge_fill(f: &Facility, steps: &HashMap<(i32, i32), Stair>, c: Cell, (dx, dz): (i32, i32), draw: CellDraws, wall_h: f32) -> EdgeFill {
+    let n = Cell::new(c.x + dx, c.y + dz);
+    if f.is_wall_cell(n.x, n.y) {
+        if !draw.walls || steps.contains_key(&(n.x, n.y)) || f.is_drop(n) {
+            return EdgeFill::None;
+        }
+        return EdgeFill::Wall { top: if draw.ceiling { wall_h } else { seams::shaft_top() } };
+    }
+    if draw.ceiling && f.open_above(n) {
+        return EdgeFill::Rim { lo: seams::ceiling_y(wall_h), hi: seams::shaft_top() };
+    }
+    EdgeFill::None
+}
+
 fn build_meshes(
     f: &Facility,
     pick: &Pick,
@@ -1448,7 +1485,8 @@ fn build_meshes(
     let bed = water_params.bed_offset();
     let mut water = Builder::new(Some(assets.white.clone()));
     // one painted storey stretched floor to ceiling, cornice at the top (RefSurfaceMesh.add_wall)
-    let tiers = textures::wall_tiers(h) as f32;
+    let cap = seams::wall_top(h);
+    let tiers = textures::wall_tiers(cap) as f32;
     for &c in &pick.cells {
         let (x, z) = (c.x as f32, c.y as f32);
         let set = room_set(f, c.x, c.y);
@@ -1510,8 +1548,10 @@ fn build_meshes(
         }
         add_stairs(bits, &mut surf, &mut plain, &mut glow, floor_kind, wall_kind, assets, set);
         if draw.ceiling {
-            // the caverns hang their ceiling at the noisy corner heights, everything else is flat
-            let at_top = |i: i32, j: i32| inferno.as_ref().map_or(wall_h, |s| s.ceiling(i, j));
+            // inset under the slab's underside: no plane shared with the floor of the level above. The caverns hang
+            // their ceiling at the noisy corner heights (which stay under the same line), everything else is flat
+            let ceil_y = seams::ceiling_y(wall_h);
+            let at_top = |i: i32, j: i32| inferno.as_ref().map_or(ceil_y, |s| s.ceiling(i, j));
             let corners = [
                 vec3(x, at_top(c.x, c.y + 1), z + 1.),
                 vec3(x + 1., at_top(c.x + 1, c.y + 1), z + 1.),
@@ -1576,36 +1616,47 @@ fn build_meshes(
             {
                 painted(&mut surf, floor_kind, assets.floor(set)).quad([a, b, b + up * bed, a + up * bed], UV1, n, WHITE, 0.0);
             }
-            // a stairwell's shaft is open to its landing and the other lane, whatever its cells' wall flags say; the
-            // falls void has no wall columns, on either side of its edge
-            if !draw.walls
-                || !f.is_wall_cell(c.x + dx, c.y + dz)
-                || steps.contains_key(&(c.x + dx, c.y + dz))
-                || f.is_drop(Cell::new(c.x + dx, c.y + dz))
-            {
-                continue;
-            }
-            // in the caverns a wall runs from the noisy floor corner to the noisy ceiling corner
-            let (a, b, top_a, top_b) = match inferno.as_ref() {
-                Some(s) => {
-                    let (ai, aj, bi, bj) = (a.x as i32, a.z as i32, b.x as i32, b.z as i32);
-                    (
-                        vec3(a.x, s.corner(ai, aj), a.z),
-                        vec3(b.x, s.corner(bi, bj), b.z),
-                        vec3(a.x, s.ceiling(ai, aj), a.z),
-                        vec3(b.x, s.ceiling(bi, bj), b.z),
-                    )
-                }
-                None => (a, b, a + up * wall_h, b + up * wall_h),
+            let fill = edge_fill(f, &steps, c, (dx, dz), draw, wall_h);
+            let wall_v = |y: f32| wall_tiers * (1.0 - y / wall_h);
+            // in the caverns the wall's ends follow the noisy floor and ceiling corners
+            let corner_at = |p: Vec3, y: f32| match inferno.as_ref() {
+                Some(s) => vec3(p.x, y.max(s.corner(p.x as i32, p.z as i32)), p.z),
+                None => vec3(p.x, y, p.z),
             };
-            // the painted wall carries its own cornice, chair rail and skirting
-            painted(&mut surf, wall_kind, assets.wall(set)).quad(
-                [top_a, top_b, b, a],
-                [vec2(0., 0.), vec2(1., 0.), vec2(1., wall_tiers), vec2(0., wall_tiers)],
-                n,
-                WHITE,
-                0.0,
-            );
+            let floor_at = |p: Vec3| match inferno.as_ref() {
+                Some(s) => vec3(p.x, s.corner(p.x as i32, p.z as i32), p.z),
+                None => p,
+            };
+            let ceil_at = |p: Vec3, flat: f32| match inferno.as_ref() {
+                Some(s) => vec3(p.x, s.ceiling(p.x as i32, p.z as i32), p.z),
+                None => vec3(p.x, flat, p.z),
+            };
+            match fill {
+                EdgeFill::None => {}
+                EdgeFill::Wall { top } => {
+                    // a cell with a ceiling hangs its wall to the (noisy) ceiling corner; a shaft cell rises to the storey
+                    let (lo_a, lo_b) = (floor_at(a), floor_at(b));
+                    let (top_a, top_b) = if draw.ceiling { (ceil_at(a, top), ceil_at(b, top)) } else { (corner_at(a, top), corner_at(b, top)) };
+                    // the painted wall carries its own cornice, chair rail and skirting
+                    painted(&mut surf, wall_kind, assets.wall(set)).quad(
+                        [top_a, top_b, lo_b, lo_a],
+                        [vec2(0., wall_v(top)), vec2(1., wall_v(top)), vec2(1., wall_tiers), vec2(0., wall_tiers)],
+                        n,
+                        WHITE,
+                        0.0,
+                    );
+                }
+                EdgeFill::Rim { lo, hi } => {
+                    let (lo_a, lo_b) = (ceil_at(a, lo), ceil_at(b, lo));
+                    painted(&mut surf, wall_kind, assets.wall(set)).quad(
+                        [corner_at(a, hi), corner_at(b, hi), lo_b, lo_a],
+                        [vec2(0., wall_v(hi)), vec2(1., wall_v(hi)), vec2(1., wall_v(lo)), vec2(0., wall_v(lo))],
+                        -n,
+                        WHITE,
+                        0.0,
+                    );
+                }
+            }
         }
     }
     // the picked cells by chunk, for the sewer water and the cave decoration, which are made per chunk
@@ -1655,7 +1706,8 @@ fn build_meshes(
         };
         // on the Inferno's noisy floor every prop stands on the ground under its centre
         let lift = f.terrain().map_or(0.0, |t| t.floor_at(x, z));
-        let mut y = lift + visual_y(&p.ptype, h, p.mount_y.unwrap_or(0.0) as f32);
+        let hung = fixture_ceiling(f, p.cell);
+        let mut y = lift + visual_y(&p.ptype, hung, p.mount_y.unwrap_or(0.0) as f32);
         let yaw = p.rotation as f32 * std::f32::consts::FRAC_PI_2;
         // the model's drawn turn: a room door keeps the gameplay yaw, every other prop gets the half turn
         let visual_yaw = prop_visual_yaw(yaw, p.door.is_some());
@@ -1675,15 +1727,15 @@ fn build_meshes(
                 Some((d, dims)) => {
                     let fit = door::DoorFit::new(dims, &p.ptype, d.span);
                     // the wall over the opening, from the raised frame's top up to the ceiling (Godot's door header)
-                    let bottom = door::header_bottom(dims, fit.sy, h);
-                    if bottom < h {
+                    let bottom = door::header_bottom(dims, fit.sy, cap);
+                    if bottom < cap {
                         let (choice, _) = cell_surfaces(f, p.cell.x, p.cell.y, pick.pad, choices);
                         let wall = choice.wall_at((p.cell.x + f.origin.0) as i64, (p.cell.y + f.origin.1) as i64);
                         let fallback = assets.wall(room_set(f, p.cell.x, p.cell.y));
                         let filler = door::filler_from(dims, fit.sy);
-                        door_header(&mut surf, wall, fallback, vec3(x, lift, z), yaw, d.span as f32, (bottom, filler), h, tiers);
+                        door_header(&mut surf, wall, fallback, vec3(x, lift, z), yaw, d.span as f32, (bottom, filler), cap, tiers);
                     }
-                    let xf = door_xf(f, p, d, &fit, h);
+                    let xf = door_xf(f, p, d, &fit, hung);
                     model.add_door_body(&mut authored, xf, WHITE, &fit);
                     continue;
                 }
@@ -1698,7 +1750,7 @@ fn build_meshes(
     for l in f.room_lights.iter().filter(|l| fixture(l.center)) {
         let (x, z) = l.center.center();
         plain.cube(
-            vec3(x, h - 0.04, z),
+            vec3(x, fixture_ceiling(f, l.center) - 0.04, z),
             vec3(0.7, 0.08, 0.7),
             0.0,
             Color::new(l.color.0, l.color.1, l.color.2, 1.0),
@@ -1807,11 +1859,16 @@ mod tests {
         use crate::content::regions::parse_file;
         let tall = r#"{"schema":"lr.region/1","id":"tmp_tall","hall_floor":["a"],"hall_runner":false,"room_default_floor":["a"],"room_roles":["r"],"prop_set":[],"geometry":{"wall_height":6.5}}"#;
         let plain = r#"{"schema":"lr.region/1","id":"tmp_plain","hall_floor":["a"],"hall_runner":false,"room_default_floor":["a"],"room_roles":["r"],"prop_set":[]}"#;
+        let low = plain.replace("\"prop_set\":[]", "\"prop_set\":[],\"geometry\":{\"wall_height\":3.0}").replace("tmp_plain", "tmp_low");
         let tall = parse_file("tmp_tall.json", tall).unwrap();
         let plain = parse_file("tmp_plain.json", plain).unwrap();
-        assert_eq!(geometry_wall_height(Some(&tall)), 6.5);
-        assert_eq!(geometry_wall_height(Some(&plain)), WALL_HEIGHT);
-        assert_eq!(geometry_wall_height(None), WALL_HEIGHT);
+        let low = parse_file("tmp_low.json", &low).unwrap();
+        let cap = seams::wall_top(WALL_HEIGHT);
+        assert_eq!(geometry_wall_height(Some(&tall)), cap, "a region taller than the storey is clamped under the slab");
+        assert_eq!(geometry_wall_height(Some(&low)), 3.0, "a lower ceiling is its own");
+        assert_eq!(geometry_wall_height(Some(&plain)), cap, "no block: the storey less the slab, not 5.0");
+        assert_eq!(geometry_wall_height(None), cap);
+        assert!(cap < WALL_HEIGHT);
     }
 
     /// A region's safe-zone light comes from its `safe_light` block. A region without the block, or no region,
@@ -2549,5 +2606,291 @@ mod stack_mesh_tests {
         assert!(!neighbour_allows(&t, 2, 2, 0.0, 5), "the per-frame cap");
         let old = r#"{"frame_budget_ms":4.0,"per_queued_ms":1.0,"max_budget_ms":9.0,"chunks_per_frame":4,"jump_steps":1}"#;
         assert!(StreamBudget::parse(old).is_err(), "the neighbour keys are required");
+    }
+
+    // -----------------------------------------------------------------------------------------------------------
+    // The slab: no two surfaces of different levels share a plane (render/seams.rs)
+    // -----------------------------------------------------------------------------------------------------------
+
+    /// One axis-aligned rectangle of a level's drawn shell, in absolute y. `axis` is the normal's axis (0 x, 1 y,
+    /// 2 z); `lo`/`hi` span the other two axes in x, y, z order.
+    #[derive(Clone, Copy, Debug)]
+    struct Rect {
+        level: i32,
+        what: &'static str,
+        axis: usize,
+        at: f32,
+        lo: (f32, f32),
+        hi: (f32, f32),
+    }
+
+    /// Godot's `coplanar_scan.gd` tolerance (metres) and the least overlap (per side) that counts as a shared surface.
+    const COPLANAR_TOL: f32 = 0.002;
+    const MIN_OVERLAP: f32 = 0.02;
+
+    fn rect_of_points(level: i32, what: &'static str, pts: &[Vec3], lift: f32) -> Option<Rect> {
+        let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        for p in pts {
+            let p = vec3(p.x, p.y + lift, p.z);
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+        let ext = hi - lo;
+        let axis = (0..3).find(|&a| ext[a] < 1e-4)?;
+        let (u, v) = match axis {
+            0 => ((lo.y, lo.z), (hi.y, hi.z)),
+            1 => ((lo.x, lo.z), (hi.x, hi.z)),
+            _ => ((lo.x, lo.y), (hi.x, hi.y)),
+        };
+        Some(Rect { level, what, axis, at: lo[axis], lo: u, hi: v })
+    }
+
+    /// The shell of the facility's drawn cells as rectangles: floors, ceilings, wall columns and slab rims through
+    /// the same `cell_draws` / `edge_fill` / `seams` the mesh build uses, plus the quads of its flights and ladders.
+    fn shell(f: &Facility) -> Vec<Rect> {
+        let lift = f.level as f32 * crate::world::vertical::STOREY;
+        let steps = stair_steps(f);
+        let mut out = vec![];
+        for c in drawn_cells(f) {
+            let (x, z) = (c.x as f32, c.y as f32);
+            let wall_h = cell_wall_height(f, c.x, c.y);
+            let step = steps.get(&(c.x, c.y)).copied();
+            let draw = cell_draws(f, c, step);
+            let foot = step.filter(|s| s.is_ladder() && s.dir > 0);
+            let step = step.filter(|s| !(s.is_ladder() && s.dir > 0));
+            let flat = |y: f32| [vec3(x, y, z), vec3(x + 1., y, z), vec3(x + 1., y, z + 1.), vec3(x, y, z + 1.)];
+            if draw.floor && step.is_none() {
+                out.extend(rect_of_points(f.level, "floor", &flat(0.0), lift));
+            }
+            if draw.ceiling {
+                out.extend(rect_of_points(f.level, "ceiling", &flat(seams::ceiling_y(wall_h)), lift));
+            }
+            for (dx, dz) in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
+                // the edge's two ground points
+                let (a, b) = match (dx, dz) {
+                    (0, -1) => (vec3(x + 1., 0., z), vec3(x, 0., z)),
+                    (0, 1) => (vec3(x, 0., z + 1.), vec3(x + 1., 0., z + 1.)),
+                    (-1, 0) => (vec3(x, 0., z), vec3(x, 0., z + 1.)),
+                    _ => (vec3(x + 1., 0., z + 1.), vec3(x + 1., 0., z)),
+                };
+                let (lo, hi, what) = match edge_fill(f, &steps, c, (dx, dz), draw, wall_h) {
+                    EdgeFill::None => continue,
+                    EdgeFill::Wall { top } => (0.0, top, "wall"),
+                    EdgeFill::Rim { lo, hi } => (lo, hi, "rim"),
+                };
+                out.extend(rect_of_points(
+                    f.level,
+                    what,
+                    &[vec3(a.x, lo, a.z), vec3(b.x, lo, b.z), vec3(a.x, hi, a.z), vec3(b.x, hi, b.z)],
+                    lift,
+                ));
+            }
+            let site = Site {
+                h: crate::world::vertical::STOREY,
+                wall_h,
+                tiers: 1.0,
+                well: &|x, z| steps.contains_key(&(x, z)),
+                solid: &|x, z| f.is_wall_cell(x, z),
+            };
+            let mut bits = Parts::default();
+            match step {
+                Some(s) if s.is_ladder() => stairs::ladder_down(&mut bits, (c.x, c.y), s, &site),
+                Some(s) => stairs::flight_cell(&mut bits, (c.x, c.y), s, f.level, &site),
+                None => {}
+            }
+            if let Some(s) = foot {
+                stairs::ladder_up(&mut bits, (c.x, c.y), s, &site);
+            }
+            for q in &bits.quads {
+                out.extend(rect_of_points(f.level, "stairs", &q.c, lift));
+            }
+        }
+        out
+    }
+
+    /// Every pair of rectangles from different levels that lie in one plane (within Godot's tolerance) and overlap.
+    fn coplanar_pairs(a: &[Rect], b: &[Rect]) -> Vec<(Rect, Rect)> {
+        let mut hits = vec![];
+        for p in a {
+            for q in b {
+                if p.axis != q.axis || (p.at - q.at).abs() > COPLANAR_TOL {
+                    continue;
+                }
+                let du = p.hi.0.min(q.hi.0) - p.lo.0.max(q.lo.0);
+                let dv = p.hi.1.min(q.hi.1) - p.lo.1.max(q.lo.1);
+                if du > MIN_OVERLAP && dv > MIN_OVERLAP {
+                    hits.push((*p, *q));
+                }
+            }
+        }
+        hits
+    }
+
+    fn window_at(level: i32, centre: (i32, i32)) -> Facility {
+        use crate::content::loot::LootTables;
+        use crate::world::catalog::Catalog;
+        let (cat, loot) = (Catalog::load(), LootTables::default());
+        crate::world::infinite::window("1426541270", centre, level, &cat, &loot, &mut HashMap::new()).0
+    }
+
+    /// The stacked pairs the seam is checked on: (the upper window, the window right under it).
+    fn stacked_samples() -> Vec<(&'static str, Facility, Facility)> {
+        let mut out = vec![];
+        let (up, centre) = find_window(0, |f| f.stairs.iter().any(|s| s.dir < 0 && !s.is_ladder()));
+        out.push(("flight", up, window_at(SEWER_LEVEL, centre)));
+        let (up, centre) = find_window(0, |f| f.stairs.iter().any(|s| s.dir < 0 && s.is_ladder()));
+        out.push(("ladder", up, window_at(SEWER_LEVEL, centre)));
+        let (up, centre) = find_window(SEWER_LEVEL, |f| !f.drop_cells().is_empty());
+        out.push(("drop", up, window_at(SEWER_LOWER_LEVEL, centre)));
+        out
+    }
+
+    /// The headline: with both levels of a stack built, no surface of the upper level shares a plane with a surface of
+    /// the lower one. On HEAD the lower ceiling (y = 5.0) and the upper floor (y = 5.0) were the same rectangle.
+    #[test]
+    fn no_two_surfaces_of_different_levels_are_coplanar() {
+        for (what, up, low) in stacked_samples() {
+            let (a, b) = (shell(&up), shell(&low));
+            assert!(a.iter().any(|r| r.what == "floor") && b.iter().any(|r| r.what == "ceiling"), "{what}: both shells have surfaces");
+            let hits = coplanar_pairs(&a, &b);
+            assert!(hits.is_empty(), "{what}: {} coplanar pairs, first {:?}", hits.len(), hits.first());
+        }
+    }
+
+    /// The seam in numbers: every ceiling of the lower level is at least slab + inset under every floor of the upper
+    /// one that lies over it.
+    #[test]
+    fn ceilings_sit_the_slab_and_inset_under_the_floor_above() {
+        for (what, up, low) in stacked_samples() {
+            let (a, b) = (shell(&up), shell(&low));
+            let mut over = 0;
+            for floor in a.iter().filter(|r| r.what == "floor") {
+                for ceil in b.iter().filter(|r| r.what == "ceiling") {
+                    let du = floor.hi.0.min(ceil.hi.0) - floor.lo.0.max(ceil.lo.0);
+                    let dv = floor.hi.1.min(ceil.hi.1) - floor.lo.1.max(ceil.lo.1);
+                    if du > MIN_OVERLAP && dv > MIN_OVERLAP {
+                        over += 1;
+                        assert!(
+                            floor.at - ceil.at >= seams::seam_gap() - 1e-4,
+                            "{what}: ceiling {} under floor {} leaves under the {} gap",
+                            ceil.at,
+                            floor.at,
+                            seams::seam_gap()
+                        );
+                    }
+                }
+            }
+            assert!(over > 0, "{what}: some floor lies over some ceiling");
+        }
+    }
+
+    /// An opening through the slab is lined from the floor of its level to the floor above on every side: a cell with
+    /// no ceiling (a shaft, a ladder foot, the pool under the void) takes its walls to the storey, and a ceilinged
+    /// neighbour of one has a slab rim from its ceiling to the storey. No opening edge leaves the gap bare.
+    #[test]
+    fn every_opening_edge_is_lined_through_the_slab() {
+        use crate::world::vertical::STOREY;
+        let (flight_up, _) = find_window(0, |f| f.stairs.iter().any(|s| s.dir < 0 && !s.is_ladder()));
+        let lows: Vec<Facility> = stacked_samples().into_iter().map(|(_, _, low)| low).chain([flight_up]).collect();
+        let (mut walls, mut rims) = (0, 0);
+        for f in &lows {
+            let steps = stair_steps(f);
+            for c in drawn_cells(f) {
+                let step = steps.get(&(c.x, c.y)).copied();
+                let draw = cell_draws(f, c, step);
+                let wall_h = cell_wall_height(f, c.x, c.y);
+                for d in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
+                    let n = Cell::new(c.x + d.0, c.y + d.1);
+                    match edge_fill(f, &steps, c, d, draw, wall_h) {
+                        EdgeFill::Wall { top } if !draw.ceiling => {
+                            assert_eq!(top, STOREY, "{c:?} {d:?}: a shaft wall rises to the floor above");
+                            walls += 1;
+                        }
+                        EdgeFill::Wall { top } => assert_eq!(top, wall_h),
+                        EdgeFill::Rim { lo, hi } => {
+                            assert!(draw.ceiling && f.open_above(n), "{c:?} {d:?}: a rim only over an open neighbour");
+                            assert_eq!((lo, hi), (seams::ceiling_y(wall_h), STOREY));
+                            rims += 1;
+                        }
+                        EdgeFill::None => {
+                            // bare only where there is nothing to see: no opening beside it
+                            let beside = draw.ceiling && f.open_above(n) && !f.is_wall_cell(n.x, n.y);
+                            assert!(!beside, "{c:?} {d:?}: a ceilinged cell beside an opening has its rim");
+                        }
+                    }
+                }
+            }
+        }
+        assert!(walls > 0 && rims > 0, "the samples have shaft walls ({walls}) and slab rims ({rims})");
+    }
+
+    /// The falls void on level -1: the pool cells under it (level -2, air above) line their walls to the storey, so
+    /// the opening between the ceiling of -2 and the lip of -1 is closed all round (the sewer ceiling may be lower
+    /// than the storey, and the gap then is wide).
+    #[test]
+    fn the_pool_under_the_falls_void_is_lined_to_the_floor_above() {
+        use crate::world::vertical::STOREY;
+        let (_, centre) = find_window(SEWER_LEVEL, |f| !f.drop_cells().is_empty());
+        let low = window_at(SEWER_LOWER_LEVEL, centre);
+        let steps = stair_steps(&low);
+        let air: Vec<Cell> = drawn_cells(&low).into_iter().filter(|c| low.is_air_above(*c)).collect();
+        assert!(!air.is_empty());
+        let (mut lined, mut rimmed) = (0, 0);
+        for c in air {
+            let draw = cell_draws(&low, c, None);
+            assert!(!draw.ceiling);
+            for d in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
+                let n = Cell::new(c.x + d.0, c.y + d.1);
+                if low.is_wall_cell(n.x, n.y) {
+                    assert_eq!(edge_fill(&low, &steps, c, d, draw, STOREY), EdgeFill::Wall { top: STOREY }, "{c:?} {d:?}");
+                    lined += 1;
+                } else if !low.is_air_above(n) {
+                    // an open cell with its own ceiling beside the pool: its rim closes the gap
+                    let wall_h = cell_wall_height(&low, n.x, n.y);
+                    let back = (-d.0, -d.1);
+                    let fill = edge_fill(&low, &steps, n, back, cell_draws(&low, n, steps.get(&(n.x, n.y)).copied()), wall_h);
+                    assert!(matches!(fill, EdgeFill::Rim { hi, .. } if hi == STOREY), "{n:?} -> {c:?}: {fill:?}");
+                    rimmed += 1;
+                }
+            }
+        }
+        assert!(lined + rimmed > 0, "the pool has a perimeter");
+    }
+
+    /// Flights, ladders and their rails never rise above the floor above, nor sink below their own floor. (The glow
+    /// nosing of the top tread sits 1 to 3.5 cm on the tread, a box well clear of any plane, and is not held to it.)
+    #[test]
+    fn stair_parts_stay_between_their_floor_and_the_floor_above() {
+        use crate::world::vertical::STOREY;
+        for (what, up, low) in stacked_samples() {
+            for f in [&up, &low] {
+                let steps = stair_steps(f);
+                for c in drawn_cells(f).into_iter().filter(|c| steps.contains_key(&(c.x, c.y))) {
+                    let s = steps[&(c.x, c.y)];
+                    let wall_h = cell_wall_height(f, c.x, c.y);
+                    let site = Site {
+                        h: STOREY,
+                        wall_h,
+                        tiers: 1.0,
+                        well: &|x, z| steps.contains_key(&(x, z)),
+                        solid: &|x, z| f.is_wall_cell(x, z),
+                    };
+                    let mut bits = Parts::default();
+                    match s {
+                        s if s.is_ladder() && s.dir > 0 => stairs::ladder_up(&mut bits, (c.x, c.y), s, &site),
+                        s if s.is_ladder() => stairs::ladder_down(&mut bits, (c.x, c.y), s, &site),
+                        s => stairs::flight_cell(&mut bits, (c.x, c.y), s, f.level, &site),
+                    }
+                    let ys = bits
+                        .quads
+                        .iter()
+                        .flat_map(|q| q.c.iter().map(|v| v.y))
+                        .chain(bits.boxes.iter().flat_map(|(c, s, _)| [c.y - s.y * 0.5, c.y + s.y * 0.5]));
+                    for y in ys {
+                        assert!((-1e-4..=STOREY + 1e-4).contains(&y), "{what} {:?}: a part at y {y}", s.cell);
+                    }
+                }
+            }
+        }
     }
 }
