@@ -57,7 +57,7 @@ impl Default for SwimRules {
                 noise: 12.0,
                 deep_noise: 17.0,
                 splash_every: 0.42,
-                splash_gain: 0.6,
+                splash_gain: 0.3,
                 soaked_floor_fraction: 0.5,
             },
             plunge: PlungeRules {
@@ -590,6 +590,17 @@ mod tests {
         // the pool splash is the old plunge splash
         assert_eq!(r.pool.noise, rules().plunge.splash_noise);
         assert_eq!(r.pool.noise_seconds, rules().plunge.splash_noise_seconds);
+    }
+
+    #[test]
+    fn the_pool_splash_is_quieter_than_before_and_still_audible() {
+        const OLD_POOL_GAIN: f32 = 1.0;
+        const OLD_WADE_GAIN: f32 = 0.6;
+        let r = FallRules::parse(&fall_json()).unwrap();
+        assert!(r.pool.splash_gain < OLD_POOL_GAIN && r.pool.splash_gain >= 0.2);
+        assert!(rules().wade.splash_gain < OLD_WADE_GAIN && rules().wade.splash_gain >= 0.1);
+        // the gameplay noise is untouched
+        assert_eq!(r.pool.noise, 3.0);
     }
 
     #[test]

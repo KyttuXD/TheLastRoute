@@ -50,7 +50,7 @@ pub(super) fn labels(list: &[(&str, &str)]) -> Vec<String> {
     list.iter().map(|(_, label)| label.to_string()).collect()
 }
 
-/// Hunter picker order: the A-Z roster, then everything else (Void, pack hunters), by id.
+/// Hunter picker order: the A-Z roster, then everything else (Void, the secret creatures, pack hunters), by id, then the wolf spider pair.
 pub(super) fn hunter_list(content: &Content) -> Vec<(String, String)> {
     let mut az: Vec<(String, String)> = content
         .hunters
@@ -67,6 +67,8 @@ pub(super) fn hunter_list(content: &Content) -> Vec<(String, String)> {
     az.sort();
     rest.sort();
     az.extend(rest);
+    // the secret wolf spiders are in the list above (category "secret"); this picker is their only listing, plus the pair entry
+    az.push((crate::hunters::secret_creatures::PAIR_ID.to_string(), crate::hunters::secret_creatures::PAIR_LABEL.to_string()));
     az
 }
 

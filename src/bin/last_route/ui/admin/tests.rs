@@ -340,3 +340,70 @@ fn a_summon_on_the_inferno_stands_on_the_terrain() {
     let want = crate::game::level_stack::floor_y_of(INFERNO_LEVEL) + g.fac.terrain().expect("terrain").floor_at(b.pos.0, b.pos.1);
     assert!((b.y - want).abs() < 1e-4, "feet {} over ground {want}", b.y);
 }
+
+// -- the secret wolf spiders (docs/SECRET_WOLF_SPIDER.md): the picker is their only listing --------------------------------
+
+fn picker_index(content: &Content, id: &str) -> usize {
+    hunter_list(content).iter().position(|(i, _)| i == id).unwrap_or_else(|| panic!("{id} is not in the picker"))
+}
+
+fn inferno_game(content: &Content) -> Game {
+    Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-ADMIN-SPIDER", crate::world::infinite::INFERNO_LEVEL, content, &Catalog::load())
+}
+
+#[test]
+fn the_picker_lists_both_wolf_spiders_and_the_pair() {
+    use crate::hunters::secret_creatures as secret;
+    let content = Content::load();
+    let list = hunter_list(&content);
+    for id in [secret::WHITE, secret::BLACK, secret::PAIR_ID] {
+        assert!(list.iter().any(|(i, _)| i == id), "{id}");
+    }
+    assert_eq!(list.last().map(|(i, _)| i.as_str()), Some(secret::PAIR_ID));
+    assert_eq!(list.iter().filter(|(i, _)| i == secret::WHITE).count(), 1);
+}
+
+#[test]
+fn a_wolf_spider_is_refused_off_its_home_level() {
+    let (mut g, content) = game();
+    let mut a = Admin::new();
+    let list = hunter_list(&content);
+    for id in ["white_wolf_spider", "black_wolf_spider", "wolf_spider_pair"] {
+        a.run_cmd(Cmd::Hunter(picker_index(&content, id), 0, 0), &mut g, &content, &list);
+        assert!(g.hunters.iter().all(|h| !h.def.id.ends_with("wolf_spider")), "{id} was summoned on level 0");
+        assert!(g.message.contains("LIVES ON LEVEL -3"), "{id}: {}", g.message);
+    }
+}
+
+#[test]
+fn the_summon_works_on_the_inferno_and_the_pair_is_linked_with_the_difficulty_knobs() {
+    use crate::hunters::gimmicks::Gimmick;
+    let content = Content::load();
+    let list = hunter_list(&content);
+    let mut g = inferno_game(&content);
+    let mut a = Admin::new();
+    a.run_cmd(Cmd::Hunter(picker_index(&content, "black_wolf_spider"), 0, 0), &mut g, &content, &list);
+    let black = g.hunters.iter().filter(|h| h.def.id == "black_wolf_spider").count();
+    assert_eq!(black, 1, "{}", g.message);
+    assert_eq!(g.hunters.iter().find(|h| h.def.id == "black_wolf_spider").unwrap().level, crate::world::infinite::INFERNO_LEVEL);
+    // the pair entry brings both, linked
+    let mut g = inferno_game(&content);
+    let chase_before = content.hunter("white_wolf_spider").unwrap().chase;
+    a.run_cmd(Cmd::Hunter(picker_index(&content, "wolf_spider_pair"), 0, 0), &mut g, &content, &list);
+    let both: Vec<_> = g.hunters.iter().filter(|h| h.def.id.ends_with("wolf_spider")).collect();
+    assert_eq!(both.len(), 2, "{}", g.message);
+    assert!(both.iter().all(|h| matches!(&h.gimmick, Gimmick::WolfSpider(s) if s.in_pack())), "linked");
+    let _ = chase_before;
+    // and REMOVE takes both out again
+    a.run_cmd(Cmd::Hunter(picker_index(&content, "wolf_spider_pair"), 1, 0), &mut g, &content, &list);
+    assert!(g.hunters.iter().all(|h| !h.def.id.ends_with("wolf_spider")));
+}
+
+#[test]
+fn summon_all_leaves_the_wolf_spiders_to_their_own_level() {
+    let (mut g, content) = game();
+    let before = g.hunters.len();
+    Admin::new().run_cmd(Cmd::Run("act_hunters", 5), &mut g, &content, &hunter_list(&content));
+    assert!(g.hunters.len() > before);
+    assert!(g.hunters.iter().all(|h| !h.def.id.ends_with("wolf_spider")), "summon all never brings them to level 0");
+}

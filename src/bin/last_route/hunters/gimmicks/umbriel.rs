@@ -42,6 +42,11 @@ const POOL: [&str; 35] = [
     "zellia",
 ];
 
+/// The bodies she may wear (the secret creatures are not among them).
+pub fn pool() -> &'static [&'static str] {
+    &POOL
+}
+
 pub struct Umbriel {
     timer: f32,
 }

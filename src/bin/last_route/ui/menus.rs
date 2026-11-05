@@ -1814,12 +1814,17 @@ fn is_void_hunter(h: &HunterDef) -> bool {
     h.category == "void"
 }
 
+/// The Inferno's secret creatures: out of every list until the runner has met one (then a FOUND section lists it).
+fn is_secret_hunter(h: &HunterDef) -> bool {
+    h.category == "secret"
+}
+
 /// The Route tab's category lock: built-in members only, so a pack hunter never unlocks a
 /// built-in category header.
 fn route_category_locked(hs: &[HunterDef], found: &[String], void: bool) -> bool {
     category_locked(
         hs.iter()
-            .filter(|h| !h.is_pack() && is_void_hunter(h) == void)
+            .filter(|h| !h.is_pack() && !is_secret_hunter(h) && is_void_hunter(h) == void)
             .map(|h| h.id.as_str()),
         found,
     )
@@ -1838,7 +1843,7 @@ pub fn dossier_rows(hs: &[HunterDef], tab: usize) -> Vec<DossierRow> {
     }
     let built_in = |void: bool| -> Vec<DossierRow> {
         let mut ids: Vec<usize> = (0..hs.len())
-            .filter(|&i| !hs[i].is_pack() && is_void_hunter(&hs[i]) == void)
+            .filter(|&i| !hs[i].is_pack() && !is_secret_hunter(&hs[i]) && is_void_hunter(&hs[i]) == void)
             .collect();
         ids.sort_by_cached_key(|&i| hs[i].name.to_lowercase());
         ids.into_iter().map(|i| (None, Some(i))).collect()
@@ -1847,6 +1852,22 @@ pub fn dossier_rows(hs: &[HunterDef], tab: usize) -> Vec<DossierRow> {
     rows.extend(built_in(false));
     rows.push((Some("VOID".to_string()), None));
     rows.extend(built_in(true));
+    rows
+}
+
+/// The Route tab's rows with the FOUND section after VOID: the secret creatures the account has met, and no header, row or
+/// counter at all while it has met none (nothing says they exist).
+pub fn dossier_rows_found(hs: &[HunterDef], tab: usize, found: &[String]) -> Vec<DossierRow> {
+    let mut rows = dossier_rows(hs, tab);
+    if tab == CUSTOM_TAB {
+        return rows;
+    }
+    let mut met: Vec<usize> = (0..hs.len()).filter(|&i| !hs[i].is_pack() && is_secret_hunter(&hs[i]) && found.iter().any(|d| *d == hs[i].id)).collect();
+    if !met.is_empty() {
+        met.sort_by_cached_key(|&i| hs[i].name.to_lowercase());
+        rows.push((Some("FOUND".to_string()), None));
+        rows.extend(met.into_iter().map(|i| (None, Some(i))));
+    }
     rows
 }
 
@@ -1891,7 +1912,7 @@ pub fn roster_lines(rows: &[DossierRow]) -> Vec<RosterLine> {
 pub fn dossier_open(hs: &[HunterDef], tab: usize, found: &[String], i: usize) -> bool {
     let h = &hs[i];
     let known = found.iter().any(|d| *d == h.id);
-    if tab == CUSTOM_TAB {
+    if tab == CUSTOM_TAB || is_secret_hunter(h) {
         known
     } else {
         known && !route_category_locked(hs, found, is_void_hunter(h))
@@ -1954,7 +1975,7 @@ pub fn draw_dossier(a: &Assets, ui: &mut Ui, content: &Content, username: &str) 
         ui.dossier_sel = 0;
         ui.dossier_scroll = 0.0;
     }
-    let rows = dossier_rows(hs, tab);
+    let rows = dossier_rows_found(hs, tab, &found);
     let roster = roster_lines(&rows);
     let ids: Vec<usize> = rows.iter().filter_map(|r| r.1).collect();
     // the web's keys: Up/Down and Left/Right step one, PageUp/PageDown five, Home/End jump
@@ -2154,6 +2175,8 @@ pub fn draw_dossier(a: &Assets, ui: &mut Ui, content: &Content, username: &str) 
                 Some(pk) => format!("MOD PACK // {}", pk.name.to_uppercase()),
                 None => "MOD PACK".to_string(),
             }
+        } else if is_secret_hunter(h) {
+            "FOUND // UNLISTED".to_string()
         } else if h.category == "void" {
             "VOID INCURSION // EXTRA HUNTER".to_string()
         } else if crate::content::hunters::SPECIAL_IDS.contains(&h.id.as_str()) {
@@ -2373,6 +2396,28 @@ mod tests {
             let sum: f64 = w(d).iter().sum();
             assert!((sum - 1.0).abs() < 1e-9, "{d} weights sum to {sum}");
         }
+    }
+
+    #[test]
+    fn a_secret_creature_has_no_row_header_or_counter_until_it_is_found() {
+        let mut hs = mixed_roster();
+        hs.push(hunter("white_wolf_spider", "secret", ""));
+        let spider = hs.len() - 1;
+        // nothing met: the Route tab is what it was, with no FOUND header and no spider row
+        assert_eq!(dossier_rows_found(&hs, 0, &found(&[])), dossier_rows(&hs, 0));
+        assert!(!listed(&dossier_rows(&hs, 0)).contains(&spider));
+        assert!(dossier_rows(&hs, 0).iter().all(|r| r.0.as_deref() != Some("FOUND")));
+        // met one: a FOUND section after VOID lists it
+        let rows = dossier_rows_found(&hs, 0, &found(&["white_wolf_spider"]));
+        let at = rows.iter().position(|r| r.0.as_deref() == Some("FOUND")).expect("a FOUND header");
+        assert_eq!(rows[at + 1].1, Some(spider));
+        assert!(at > rows.iter().position(|r| r.0.as_deref() == Some("VOID")).unwrap());
+        // it opens on its own, and meeting it unlocks no A-Z or VOID category
+        assert!(dossier_open(&hs, 0, &found(&["white_wolf_spider"]), spider));
+        assert!(!dossier_open(&hs, 0, &found(&["white_wolf_spider"]), 0), "aki stays locked");
+        assert!(!dossier_open(&hs, 0, &found(&[]), spider));
+        // the Custom tab never shows it
+        assert!(!listed(&dossier_rows_found(&hs, 1, &found(&["white_wolf_spider"]))).contains(&spider));
     }
 
     #[test]

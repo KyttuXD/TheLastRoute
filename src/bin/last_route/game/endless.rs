@@ -1360,7 +1360,7 @@ impl Game {
         let have = self
             .hunters
             .iter()
-            .filter(|h| !matches!(h.def.id.as_str(), "nyxie" | "solyth"))
+            .filter(|h| !matches!(h.def.id.as_str(), "nyxie" | "solyth") && h.def.category != "secret")
             .count() as i32;
         let seed = self.level_seed();
         for n in have..want {
@@ -1677,6 +1677,9 @@ pub(super) fn shift_brain(b: &mut Brain, d: (f32, f32)) {
     b.last_known = b.last_known.map(s);
     b.wander_target = b.wander_target.map(s);
     b.search_target = b.search_target.map(s);
+    if let crate::hunters::gimmicks::Gimmick::WolfSpider(spider) = &mut b.gimmick {
+        spider.shift(d);
+    }
     b.clear_path();
 }
 

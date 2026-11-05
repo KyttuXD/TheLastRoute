@@ -120,6 +120,11 @@ impl Game {
             if entry.get("disguise").is_some() {
                 h.disguise = entry["disguise"].as_str().map(str::to_string);
             }
+            if let crate::hunters::gimmicks::Gimmick::WolfSpider(s) = &mut h.gimmick {
+                if let (Some(phase), Some(bark)) = (entry["phase"].as_i64(), entry["bark_seq"].as_u64()) {
+                    s.apply_network_state(phase, bark.min(u32::MAX as u64) as u32);
+                }
+            }
             h.level = level.unwrap_or(viewer);
             h.y = finite(&entry["presentation_y"]).unwrap_or_else(|| floor_y_of(h.level));
         }
@@ -179,6 +184,8 @@ impl Game {
         }
         // one navigation graph over the active and resident levels, given to every brain of every list
         self.sync_stack_nav();
+        // the Inferno's secret creatures: the dwell clock on level -3 and their spawn (game/inferno_secrets.rs)
+        self.update_inferno_secrets(dt);
         // _direct_hunters: the director runs every frame before the brains, in every mode
         // (relay rush on); the Infinite route then pushes crowded hunters apart
         let target = self.target();
@@ -1531,6 +1538,22 @@ mod resident_floor_tests {
         g.resident_hunters.list_mut(-1)[0].brain.state = State::Wander;
         assert_eq!(g.hunters_hear_noise(&[far], 1.0), 0);
         assert_eq!(g.resident_hunters.list(-1)[0].brain.state, State::Wander);
+    }
+
+    /// The secret wolf spiders never leave their home level: a noise a storey above sends an ordinary hunter to the flight, and
+    /// a spider on the same floor, next to it, plans no way there and does not stir.
+    #[test]
+    fn a_wolf_spider_plans_no_way_to_another_level() {
+        let (mut g, content, _) = stacked();
+        let spot = open_spots(&g, -1, 1, g.p.pos, 6.0)[0];
+        let spider = content.hunter_index("white_wolf_spider").expect("the spider has a definition");
+        let ev = NoiseEvent::new(NoiseKind::PlungeSplash, (spot.0 + 1.0, spot.1), 0);
+        g.resident_hunters.list_mut(-1).push(slot(hunter(&content, spider, spot, -1, 1.0)));
+        assert_eq!(g.hunters_hear_noise(&[ev.clone()], 1.0), 0, "a spider does not hear a floor above through the flight");
+        assert_eq!(g.resident_hunters.list(-1)[0].brain.state, State::Wander);
+        g.resident_hunters.list_mut(-1).clear();
+        g.resident_hunters.list_mut(-1).push(slot(hunter(&content, 0, spot, -1, 1.0)));
+        assert!(g.hunters_hear_noise(&[ev], 1.0) >= 1, "the control: an ordinary hunter does");
     }
 
     #[test]

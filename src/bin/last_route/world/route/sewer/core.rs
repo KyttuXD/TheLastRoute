@@ -2587,4 +2587,41 @@ mod tests {
             assert_eq!(a.room.map(|r| (r.def.id.clone(), r.origin)), b.room.map(|r| (r.def.id.clone(), r.origin)));
         }
     }
+
+    /// No prop (feature, room or extra-room prop) stands on a water cell, and no pickup either, whatever the seed.
+    #[test]
+    fn no_prop_or_pickup_stands_in_water() {
+        let mut bad: Vec<String> = Vec::new();
+        let mut props = 0;
+        for world in ["wired-sewer", "1426541270", "water-a", "water-b"] {
+            for y in [LEVEL, LOWER_LEVEL] {
+                for x in -6..6 {
+                    for z in -6..6 {
+                        let Some(c) = chunk(Coord::new(x, y, z), &Inputs { world }) else { continue };
+                        let wet = |cell: V2| c.sewer_grid[cell.y as usize][cell.x as usize] == WATER;
+                        for p in &c.region_props {
+                            props += 1;
+                            if p.gate.is_some() || p.prop_type == "sewerSluiceGate" {
+                                continue; // the gates close the channel on purpose
+                            }
+                            let footprint = p.occupied_cells.iter().flatten().copied().chain([p.cell]);
+                            if footprint.into_iter().any(wet) {
+                                bad.push(format!("{world} {x},{y},{z} {} {} at {:?}", p.id, p.prop_type, p.cell));
+                            }
+                        }
+                        for pk in super::super::pickups::chunk_pickups(world, &c, false) {
+                            if wet(pk.cell) {
+                                bad.push(format!("{world} {x},{y},{z} pickup {} at {:?}", pk.id, pk.cell));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(props > 100, "scanned {props} props");
+        let mut kinds: Vec<&str> = bad.iter().map(|b| b.split(' ').nth(3).unwrap_or("")).collect();
+        kinds.sort();
+        kinds.dedup();
+        assert!(bad.is_empty(), "{} on water, kinds {kinds:?}; first: {:?}", bad.len(), &bad[..bad.len().min(8)]);
+    }
 }

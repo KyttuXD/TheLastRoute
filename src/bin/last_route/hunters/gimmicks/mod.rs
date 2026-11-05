@@ -24,6 +24,7 @@ pub mod thessine;
 pub mod umbriel;
 pub mod verrine;
 pub mod void;
+pub mod wolf_spider;
 pub mod wynelle;
 pub mod xivvy;
 pub mod ysolde;
@@ -126,6 +127,7 @@ pub enum Gimmick {
     Thessine(thessine::Thessine),
     Umbriel(umbriel::Umbriel),
     Verrine(Verrine),
+    WolfSpider(wolf_spider::WolfSpider),
     Wynelle(wynelle::Wynelle),
     Xivvy(xivvy::Xivvy),
     Ysolde(ysolde::Ysolde),
@@ -168,6 +170,7 @@ impl Gimmick {
             "thessine" => Gimmick::Thessine(thessine::Thessine::new()),
             "umbriel" => Gimmick::Umbriel(umbriel::Umbriel::new()),
             "verrine" => Gimmick::Verrine(Default::default()),
+            "white_wolf_spider" | "black_wolf_spider" => Gimmick::WolfSpider(wolf_spider::WolfSpider::new(id)),
             "wynelle" => Gimmick::Wynelle(Default::default()),
             "xivvy" => Gimmick::Xivvy(Default::default()),
             "ysolde" => Gimmick::Ysolde(Default::default()),
@@ -215,6 +218,7 @@ impl Gimmick {
             Gimmick::Solyth(g) => g.before(b, dt, c, t, ev),
             Gimmick::Thessine(g) => g.before(b, dt, ev),
             Gimmick::Umbriel(g) => g.before(b, dt),
+            Gimmick::WolfSpider(g) => g.before(b, dt, c, t),
             Gimmick::Wynelle(g) => g.before(b, dt, c, t, ev),
             Gimmick::Xivvy(g) => g.before(b, dt, c, t),
             Gimmick::VoidBlack(g) => g.before(b, c, t),
@@ -264,6 +268,7 @@ impl Gimmick {
             Gimmick::Opalie(g) => g.after(b, c, t),
             Gimmick::Verrine(g) => g.after(b, t),
             Gimmick::Ysolde(g) => g.after(b, dt, c, t, ev),
+            Gimmick::WolfSpider(g) => g.after(b),
             Gimmick::Zellia(g) => g.after(b, dt, c, t),
             Gimmick::VoidBrown(g) => g.after(b, dt, c, t, ev),
             Gimmick::VoidCyan(g) => g.after(b, dt, t, ev),
@@ -294,6 +299,7 @@ impl Gimmick {
             Gimmick::VoidRed(g) => g.speed_scale(),
             Gimmick::VoidWhite(g) => g.speed_scale(),
             Gimmick::VoidYellow(g) => g.speed_scale(),
+            Gimmick::WolfSpider(g) => g.speed_scale(),
             _ => 1.0,
         }
     }
@@ -318,6 +324,7 @@ impl Gimmick {
             Gimmick::Zellia(g) => g.holds_position(),
             Gimmick::VoidGray(g) => g.holds_position(),
             Gimmick::VoidGreen(g) => g.holds_position(),
+            Gimmick::WolfSpider(g) => g.holds_position(),
             _ => false,
         }
     }
@@ -429,6 +436,7 @@ pub fn describe(id: &str) -> &'static str {
         "void_red" => "This speedster moves at 155% speed in corridors and 78% speed inside rooms. Leave long hallways and cut through rooms whenever she begins chasing.",
         "void_white" => "This hunter moves 35% faster unless your flashlight beam is directly hitting her. A beam within 10 cells stops her completely. Hold the beam long enough to create distance, but watch your remaining battery charge.",
         "void_yellow" => "This hunter gains 6% movement speed for every second the full-screen map remains open, up to 70% faster. The increase lasts for the run. Use the map only in short checks.",
+        id if super::secret_creatures::is_secret(id) => super::secret_creatures::Rules::get().dossier_text(id).unwrap_or(""),
         _ => "A hunter added by a mod pack. She runs the shared brain on her own tuning.",
     }
 }

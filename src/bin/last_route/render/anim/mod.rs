@@ -13,6 +13,8 @@
 //! carry, so they live here, keyed by the hunter's slot, and advance on the game clock.
 
 pub mod clip;
+#[cfg(test)]
+mod creature_tests;
 pub mod grab;
 pub mod held;
 pub mod hide;

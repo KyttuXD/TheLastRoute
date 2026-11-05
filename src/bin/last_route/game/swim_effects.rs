@@ -45,7 +45,7 @@ impl Default for SwimConfig {
             wade_noise: 12.0,
             wade_deep_noise: 17.0,
             splash_every: 0.42,
-            splash_gain: 0.6,
+            splash_gain: 0.3,
             tiring_depth: 0.6,
             wade_stamina_drain: 6.0,
             swim_noise: 0.8,

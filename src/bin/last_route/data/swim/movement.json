@@ -9,7 +9,7 @@
     "noise": 12.0,
     "deep_noise": 17.0,
     "splash_every": 0.42,
-    "splash_gain": 0.6,
+    "splash_gain": 0.3,
     "soaked_floor_fraction": 0.5
   },
   "plunge": {

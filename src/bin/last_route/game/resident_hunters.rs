@@ -170,7 +170,7 @@ thread_local! {
 }
 
 /// The definition of hunter `id`, for a guest that is shown a hunter its own lineup never built.
-fn hunter_def(id: &str) -> Option<HunterDef> {
+pub(super) fn hunter_def(id: &str) -> Option<HunterDef> {
     DEFS.with(|d| {
         let mut d = d.borrow_mut();
         d.get_or_insert_with(|| Content::load().hunters).iter().find(|h| h.id == id).cloned()
@@ -796,7 +796,7 @@ impl Game {
 
 /// One hunter of a host frame (see `Game::hunter_frame`): the old keys plus `level` and `presentation_y` (absolute feet).
 pub(super) fn frame_entry(index: usize, h: &Brain) -> Value {
-    json!({
+    let mut entry = json!({
         "index": index,
         "id": h.def.id,
         "position": [h.pos.0, h.pos.1],
@@ -808,7 +808,14 @@ pub(super) fn frame_entry(index: usize, h: &Brain) -> Value {
         "disguise": h.disguise,
         "level": h.level,
         "presentation_y": h.y,
-    })
+    });
+    // a wolf spider's phase and bark counter: the guest plays the bark clip and cue from them (the secret creature's wire state)
+    if let crate::hunters::gimmicks::Gimmick::WolfSpider(s) = &h.gimmick {
+        let (phase, bark_seq) = s.network_state();
+        entry["phase"] = json!(phase);
+        entry["bark_seq"] = json!(bark_seq);
+    }
+    entry
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

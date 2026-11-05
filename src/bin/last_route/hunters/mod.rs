@@ -12,6 +12,7 @@ pub mod noise_events;
 pub mod peek;
 pub mod residency;
 pub mod sabotage;
+pub mod secret_creatures;
 pub mod target_filter;
 pub mod water;
 

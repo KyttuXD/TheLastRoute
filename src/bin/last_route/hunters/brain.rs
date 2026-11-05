@@ -1277,6 +1277,10 @@ impl Brain {
     /// The first hop of the cheapest way to `goal` on `goal_level`, costing own-level cells like `plan_route_wet`
     /// (water and gates); cells on other levels cost 1.
     fn hop_to(&self, fac: &Facility, goal: (f32, f32), goal_level: i32) -> Option<Hop> {
+        // the secret wolf spiders never leave their home level: no flight, ladder or drop is planned for them
+        if goal_level != self.level && super::secret_creatures::stays_home(&self.def.id) {
+            return None;
+        }
         let plan = WaterPlan { field: &self.water, rules: &self.water_rules, chasing: self.state == State::Chase };
         let own = self.level;
         let gates = &self.gate_floor;

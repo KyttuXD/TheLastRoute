@@ -268,7 +268,10 @@ pub fn react(hunters: &mut [Brain], events: &[NoiseEvent], level: i32, hearing_m
                 Response::Search => h.enter_search_from(ear.at, ear.search_seconds, fac),
             }
         } else {
-            // Another floor: walk there first; on arrival the brain searches the spot.
+            // Another floor: walk there first; on arrival the brain searches the spot. The secret wolf spiders never leave theirs.
+            if super::secret_creatures::stays_home(&h.def.id) {
+                continue;
+            }
             h.investigate_on(ear.at, ear.level);
         }
         n += 1;

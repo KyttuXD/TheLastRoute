@@ -110,6 +110,7 @@ thread_local! {
 /// edge, and stop the loops and queued cues.
 pub fn reset() {
     WORLD.with(|w| *w.borrow_mut() = WorldState::default());
+    super::creature::reset();
     super::stop_all();
 }
 
@@ -134,7 +135,8 @@ pub fn update(dt: f32, l: &Listener, hunters: &[HunterAudio]) {
                 let d = ((h.pos.0 - l.pos.0).powi(2) + (h.pos.1 - l.pos.1).powi(2)).sqrt();
                 let was = w.was_active.get(h.id).copied().unwrap_or(false);
                 if h.active {
-                    if !h.idle && stepping.map(|s| d < s.1).unwrap_or(true) {
+                    // the wolf spiders skitter (audio/creature.rs) instead of walking in a humanoid's boots
+                    if !h.idle && !crate::hunters::secret_creatures::is_secret(h.id) && stepping.map(|s| d < s.1).unwrap_or(true) {
                         stepping = Some((i, d));
                     }
                     if h.id == "nyxie" && !was {

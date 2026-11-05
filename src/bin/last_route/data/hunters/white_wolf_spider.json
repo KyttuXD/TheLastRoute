@@ -1,0 +1,16 @@
+{
+	"schema": "lr.hunter/1",
+	"id": "white_wolf_spider",
+	"name": "White Wolf Spider",
+	"tier": "difficult",
+	"category": "secret",
+	"speed": 0.95,
+	"chase": 4.9,
+	"prog": 0.0,
+	"sight": 7.0,
+	"hearing": 1.9,
+	"spawn": 20,
+	"chase_style": "pump",
+	"taser_immune": true,
+	"melee_immune": false
+}

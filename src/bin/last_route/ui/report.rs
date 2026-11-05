@@ -46,6 +46,19 @@ pub fn pick_line(
     depth: i32,
     category: &str,
 ) -> Option<(String, bool)> {
+    pick_line_with(hunter_id, cause, seed_text, depth, category, cfg!(debug_assertions))
+}
+
+/// `pick_line` with the placeholder rule explicit: lines starting with [PLACEHOLDER] render only in debug builds (DeathLines
+/// `allow_placeholders`); a release build falls back to the generic copy until real ones are written.
+pub fn pick_line_with(
+    hunter_id: &str,
+    cause: &str,
+    seed_text: &str,
+    depth: i32,
+    category: &str,
+    allow_placeholders: bool,
+) -> Option<(String, bool)> {
     if category == "void" {
         return None;
     }
@@ -82,7 +95,7 @@ pub fn pick_line(
         pool.push((l.0, l.1 || caption_hunter));
     }
     pool.retain(|(t, _)| {
-        !t.trim().is_empty() && !t.trim().to_uppercase().starts_with("[PLACEHOLDER]")
+        !t.trim().is_empty() && (allow_placeholders || !t.trim().to_uppercase().starts_with("[PLACEHOLDER]"))
     });
     if pool.is_empty() {
         return None;
@@ -326,4 +339,24 @@ pub fn draw_card(a: &Assets, c: &Card, focus: usize) -> Option<usize> {
         hit = Some(1);
     }
     hit
+}
+
+#[cfg(test)]
+mod secret_line_tests {
+    use super::*;
+
+    #[test]
+    fn the_wolf_spiders_have_caption_placeholder_lines_that_only_a_debug_build_shows() {
+        for id in ["white_wolf_spider", "black_wolf_spider"] {
+            assert_eq!(pick_line_with(id, "", "ROOM-X", 3, "secret", false), None, "{id}: a release build shows the generic line");
+            let (text, caption) = pick_line_with(id, "", "ROOM-X", 3, "secret", true).unwrap_or_else(|| panic!("{id}: no placeholder line"));
+            assert!(text.starts_with("[PLACEHOLDER]") && caption, "{id}: {text}");
+        }
+    }
+
+    #[test]
+    fn an_ordinary_hunter_is_unchanged_by_the_placeholder_rule() {
+        let release = pick_line_with("aki", "", "ROOM-X", 3, "az", false);
+        assert!(release.is_some() && release == pick_line_with("aki", "", "ROOM-X", 3, "az", true));
+    }
 }

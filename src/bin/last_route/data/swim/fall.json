@@ -6,7 +6,7 @@
   "landing_report_gap": 1.2,
   "pool": {
     "min_depth": 0.3,
-    "splash_gain": 1.0,
+    "splash_gain": 0.5,
     "noise": 3.0,
     "noise_seconds": 1.2,
     "flicker_seconds": 1.4,

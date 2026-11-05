@@ -24,6 +24,7 @@ Changing a value in a file changes behaviour after a rebuild. The task rule is o
 | `data/hunters/search.json` (`lr.search/1`) | `hunters/brain.rs`, via `content/mod.rs` | Hunter search after a lost sighting: `reach`, `memory`, the search `offsets`, and per-difficulty `hiding_spot_chance`, `last_seen_spot_first`, `unchecked_first`. Standard keeps `hiding_spot_chance` at 0.0, so hunters keep searching beside the runner and the relay rush is not starved. |
 | `data/hunters/sabotage.json` (`lr.hunter_sabotage/1`) | `hunters/sabotage.rs`, via `content/mod.rs` | Relay sabotage: `near_cells`, `dwell_s`, `resecure_s`, and per-difficulty `enabled` (false on every difficulty today), `target`, `chance`. |
 | `data/hunters/charge.json` (`lr.charge/1`) | `hunters/gimmicks/charge.rs` | Per-hunter charge (Loxelle): passive chance and timings, the charge windup, speed and distances, and the door-charge stun. |
+| `data/hunters/secret_creatures.json` (`lr.secret_creatures/1`) | `hunters/secret_creatures.rs`, `hunters/gimmicks/wolf_spider.rs`, `game/inferno_secrets.rs`, `audio/creature.rs`, `render/anim/hunter.rs` | The Inferno's secret wolf spiders (docs/SECRET_WOLF_SPIDER.md): `home_level` (-3), `trigger` ("inferno" or "off"), `relationship`, `dwell_seconds`, spawn distances, lair rules, pair rules, the white and black `behaviour` rows, the `view` (animation and sound) numbers, the per-difficulty `difficulty` plan and the placeholder `dossier` text. The hunters themselves are `white_wolf_spider.json` and `black_wolf_spider.json` here (category `secret`: never drawn, never listed before they are met). |
 | `data/hunters/nightmare_pounce.json` (`lr.nightmare_pounce/1`) | `hunters/gimmicks/nyxie.rs`, `solyth.rs` | Nightmare pounce for Nyxie and Solyth: `difficulties` (nightmare only), `numbers` (range, rate per eligible second, cooldown, per-chase cap, stumble, stun), party-wide `budget.seconds`, and the wall-sweep `sweep.step`. |
 | `data/inferno.json` `terrain` | `world/inferno_terrain.rs` (via `world/inferno.rs`) | The noisy Inferno floor and ceiling (owner override of Godot's flat floor): `floor` and `ceiling` noise (`amplitude`, `scale`, `octaves`, `persistence`), `ceiling.min_headroom` (at least 2.4 m), `pad_blend` (flat stairwell pad), `max_step_per_cell` and `ground_snap`. Refused on parse: a floor whose slope bound is above `max_step_per_cell` or the step-up, headroom the slab line cannot hold, bad ranges. |
 | `data/skins/config.json` (`lr.skin_config/1`) | `shared/skins.rs` | Skin limits and download: `max_bytes`, `upload_max_bytes` (both 64 KB, the server cap), `upload_retry_secs` (a changed skin retries its upload), `png.max_chunks` (the shared strict PNG check), the skins host, the `/api/v1/skins/{id}` and legacy backend paths, `timeout_secs`, `retry_secs` (a failed skin waits before the next try), `tmp_stale_secs` (a `<id>.tmp` younger than this in the cache is a running download and is never pruned), `max_concurrent` (skin jobs at once) and `cache_max` (downloaded skins kept, 16; the client's old `peer_cache_max` is this key now). |
@@ -37,7 +38,7 @@ Changing a value in a file changes behaviour after a rebuild. The task rule is o
 | `data/perf.json` (`lr.perf/1`) | `app/perf.rs` | Frame-time history length, spike threshold and logging, graph range, guide lines, colour bands, and the names of the timed parts. |
 | `data/regions/*.json` (`lr.region/1`) | `packs/regions.rs` | One file per built-in region: floor sets, room roles, prop set and sizes. Current files: apartment, beach, carnival, gothic, greenhouse, hospital, hotel, lab, mall, mansion, maze, prison, sewer. |
 
-`data/hunters/water.json`, `noise_events.json`, `decks.json` and `hunters/flights.json` are rule tables skipped by the hunter-definition loader in `content/mod.rs`.
+`data/hunters/water.json`, `noise_events.json`, `decks.json`, `secret_creatures.json` and `hunters/flights.json` are rule tables skipped by the hunter-definition loader in `content/mod.rs`.
 
 ## Rules for these files
 
@@ -45,3 +46,9 @@ Changing a value in a file changes behaviour after a rebuild. The task rule is o
 - Keep a `_about` or `_note` line that cites the Godot source for the Standard numbers.
 - A value the code depends on is checked when the file is parsed. `stairs_links.json` no longer has `flight_steps`: a flight now spans one storey (5.0 m) and its length comes from the flight rules.
 - Do not add a number to a `.rs` file. Add it to the nearest data file and read it through the loader.
+
+## Water splash loudness
+
+Audible volume only; the hunter-alert noise (`pool.noise`, `splash_noise`, `noise_events.json` radii) is unchanged.
+`data/swim/fall.json` `pool.splash_gain` (pool landing): 1.0 -> 0.5. `data/swim/effects.json` and `movement.json`
+`wade.splash_gain` (wading splash): 0.6 -> 0.3. Distance falloff is untouched. Test: `the_pool_splash_is_quieter_than_before_and_still_audible`.

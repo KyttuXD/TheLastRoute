@@ -3,6 +3,7 @@
 #![allow(dead_code)] // ported API kept ahead of its callers (these items were the lib's pub API); prune as the port settles
 
 pub mod endless;
+pub mod inferno_secrets;
 mod hunting;
 mod hunter_pipes;
 mod resident_hunters;
@@ -218,6 +219,8 @@ pub struct Game {
     /// Hunters met this run (within 7.5 m, in line of sight) not yet handed to the dossier.
     sightings: Vec<String>,
     sighted: std::collections::HashSet<String>,
+    /// The Inferno's secret wolf spiders: the dwell clock on level -3 and what has been spawned (game/inferno_secrets.rs).
+    pub inferno_secrets: inferno_secrets::InfernoSecrets,
     /// Why the run last autosaved ("relay", "checkpoint", "quit"), "" before any (Godot `_last_autosave_reason`).
     pub last_autosave: &'static str,
     /// The manual climb of a sewer ladder (game/ladder.rs): the one climber, while it runs input is the climb.
@@ -343,6 +346,7 @@ impl Game {
             npc_next: 0,
             sightings: vec![],
             sighted: Default::default(),
+            inferno_secrets: Default::default(),
             last_autosave: "",
             ladder: None,
             pipes: pipes::PipeNetwork::new(),
@@ -476,6 +480,7 @@ impl Game {
             npc_next: 0,
             sightings: vec![],
             sighted: Default::default(),
+            inferno_secrets: Default::default(),
             last_autosave: "",
             ladder: None,
             pipes: pipes::PipeNetwork::new(),
@@ -825,6 +830,24 @@ impl Game {
                 targets_runner: !h.target_is_bot && !h.shadow,
             }).collect();
             crate::audio::world::update(dt, &listener, &hunters);
+            // the wolf spiders' tell, skitter and lair crackle (audio/creature.rs)
+            let creatures: Vec<crate::audio::creature::CreatureAudio> = self
+                .hunters
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, h)| match &h.gimmick {
+                    Gimmick::WolfSpider(s) => Some(crate::audio::creature::CreatureAudio {
+                        slot,
+                        pos: h.pos,
+                        active: h.active,
+                        hunting: s.phase == crate::hunters::gimmicks::wolf_spider::Phase::Hunt,
+                        bark_seq: s.bark_seq,
+                        hiss: s.hiss,
+                    }),
+                    _ => None,
+                })
+                .collect();
+            crate::audio::creature::update(dt, &listener, &creatures);
         }
         // NPC teammates follow the runner through the escape struggle too (game/npc.rs)
         self.update_npcs(dt);
@@ -928,7 +951,13 @@ impl Game {
     /// HUNTER_DISCOVERY_RANGE 7.5 cells in line of sight is met; Umbriel shows the face she wears.
     fn note_sightings(&mut self) {
         for h in self.hunters.iter().filter(|h| h.active) {
-            if pdist(self.p.pos, h.pos) > 7.5 || !self.fac.has_line_of_sight(self.p.pos, h.pos) {
+            // the secret wolf spiders are met from further off (inferno_secrets.gd DISCOVER_RANGE)
+            let range = if crate::hunters::secret_creatures::is_secret(&h.def.id) {
+                crate::hunters::secret_creatures::Rules::get().discover_range
+            } else {
+                7.5
+            };
+            if pdist(self.p.pos, h.pos) > range || !self.fac.has_line_of_sight(self.p.pos, h.pos) {
                 continue;
             }
             let id = h.disguise.clone().unwrap_or_else(|| h.def.id.clone());

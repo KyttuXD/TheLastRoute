@@ -14,6 +14,8 @@
 use super::clip::{key_quat, Rig};
 use super::player::{AnimPlayer, Local};
 use crate::hunters::brain::State;
+use crate::hunters::gimmicks::wolf_spider::Phase;
+use crate::hunters::secret_creatures::Rules as SecretRules;
 use macroquad::prelude::*;
 use std::f32::consts::{PI, TAU};
 use std::rc::Rc;
@@ -75,6 +77,18 @@ pub struct Input<'a> {
     /// Rust-side lean (the original plays a Night Watch pose, "corner_peek_left/right"): the way her head leans past a
     /// corner edge while she peeks out (`Brain::peeking_out`), None otherwise.
     pub peek_lean: Option<(f32, f32)>,
+    /// The wolf spiders' gimmick state (a creature rig reads it instead of the humanoid clip choice), None for every other hunter.
+    pub creature: Option<CreatureInput>,
+}
+
+/// What a creature rig's presentation reads from its gimmick (creature_view.gd): the phase picks the clip, a new bark
+/// number starts the bark clip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CreatureInput {
+    pub phase: Phase,
+    pub bark_seq: u32,
+    /// The runner is within the lunge range of it while it hunts (the attack clip).
+    pub target_in_reach: bool,
 }
 
 /// The posed model for this frame.
@@ -543,6 +557,11 @@ pub struct HunterView {
     scream_latched: bool,
     derp_started: f32,
     blink_rng: u32,
+    /// Creature rigs: the bark number last seen, the one-shot clip playing (bark / attack) and its seconds left.
+    bark_seen: Option<u32>,
+    oneshot: &'static str,
+    oneshot_left: f32,
+    attack_cooldown: f32,
 }
 
 impl HunterView {
@@ -581,6 +600,10 @@ impl HunterView {
             scream_latched: false,
             derp_started: 0.0,
             blink_rng: gd_hash(shown_id) | 1,
+            bark_seen: None,
+            oneshot: "",
+            oneshot_left: 0.0,
+            attack_cooldown: 0.0,
         }
     }
 
@@ -612,7 +635,7 @@ impl HunterView {
             .map(|s| s.0)
             .unwrap_or(fallback)
             .max(0.3)
-            * MODEL_SCALE
+            * if self.rig.is_creature() { 1.0 } else { MODEL_SCALE }
     }
 
     /// HunterStride.choose
@@ -753,6 +776,82 @@ impl HunterView {
         self.player.speed_scale = speed;
     }
 
+    /// CreatureView.tick: the clip comes from the gimmick's phase (idle, walk, sprint on a hunt, a one-shot bark when a new
+    /// bark number arrives, an attack lunge at a runner within reach), the legs play at the clip's measured stride speed.
+    fn update_creature_animation(&mut self, i: &Input, delta: f32) {
+        let view = &SecretRules::get().view;
+        self.attack_cooldown = (self.attack_cooldown - delta).max(0.0);
+        self.oneshot_left = (self.oneshot_left - delta).max(0.0);
+        let Some(c) = i.creature.filter(|_| i.active) else {
+            self.play_if_available("idle");
+            self.player.speed_scale = 1.0;
+            return;
+        };
+        // a bark that arrived since the last frame (the first sight of a spider already barking plays it too)
+        let fresh = match self.bark_seen {
+            Some(seen) => seen != c.bark_seq,
+            None => c.phase == Phase::Bark,
+        };
+        self.bark_seen = Some(c.bark_seq);
+        if fresh {
+            self.start_oneshot("bark");
+        }
+        let moving = self.move_speed > view.moving_speed && self.still_time < STILL_CLIP_AFTER;
+        let mut clip = "idle";
+        match c.phase {
+            Phase::Hunt => {
+                if moving {
+                    clip = "sprint";
+                }
+                if self.attack_cooldown <= 0.0 && c.target_in_reach && self.oneshot_left <= 0.0 {
+                    self.start_oneshot("attack");
+                    self.attack_cooldown = view.attack_cooldown;
+                }
+            }
+            Phase::Lurk | Phase::Retreat => {
+                if moving {
+                    clip = "walk";
+                }
+            }
+            Phase::Bark => {}
+        }
+        if self.oneshot_left > 0.0 {
+            let rig = self.rig.clone();
+            if self.player.current_animation() != self.oneshot || !self.player.playing {
+                self.player.play(&rig, self.oneshot, -1.0);
+            }
+            self.player.speed_scale = 1.0;
+            return;
+        }
+        let mut speed = 1.0;
+        if clip == "walk" || clip == "sprint" {
+            // legs at real ground speed over the clip's stride speed (HunterStride), so they do not skate
+            let (pick, scale) = self.choose(clip, self.move_speed);
+            let pick = if self.rig.has_clip(&pick) { pick } else { clip.to_string() };
+            self.stride_scale += (scale - self.stride_scale) * (1.0 - (-10.0 * delta).exp());
+            speed = self.stride_scale;
+            self.play_travel(&pick);
+        } else {
+            self.play_if_available(clip);
+        }
+        self.player.speed_scale = speed;
+    }
+
+    fn start_oneshot(&mut self, clip: &'static str) {
+        if !self.rig.has_clip(clip) {
+            return;
+        }
+        self.oneshot = clip;
+        self.oneshot_left = self.rig.length(clip);
+        let rig = self.rig.clone();
+        self.player.play(&rig, clip, -1.0);
+    }
+
+    /// The clip playing now (tests and the audio cues read it).
+    pub fn clip(&self) -> &str {
+        self.player.current_animation()
+    }
+
     fn desired_expression(&mut self, i: &Input) -> String {
         if !i.active {
             return "neutral".into();
@@ -837,7 +936,11 @@ impl HunterView {
             self.facing.track(i.pos, delta);
             self.update_body_yaw(i, delta);
         }
-        self.update_animation(i, delta);
+        if self.rig.is_creature() {
+            self.update_creature_animation(i, delta);
+        } else {
+            self.update_animation(i, delta);
+        }
         let rig = self.rig.clone();
         self.player.advance(&rig, delta);
         let mut pose = self.player.pose(&rig);
@@ -975,7 +1078,7 @@ impl HunterView {
             * lean
             * Mat4::from_rotation_y(self.yaw)
             * Mat4::from_rotation_x(self.heavy_lean)
-            * Mat4::from_scale(Vec3::splat(MODEL_SCALE / self.rig.unit));
+            * Mat4::from_scale(Vec3::splat(self.rig.draw_scale()));
         self.finish_with_root(pose, root, clock, &[])
     }
 

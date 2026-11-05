@@ -9,7 +9,7 @@
     "max_per_hunter": 12
   },
   "default": { "chance": 0.35, "look": 1.4, "style": "burst" },
-  "never": ["wynelle", "haelith", "ysolde", "opalie", "verrine", "zellia", "void_gray", "mavrine", "ceryth", "briselle", "ferryn", "javelle", "aki"],
+  "never": ["wynelle", "haelith", "ysolde", "opalie", "verrine", "zellia", "void_gray", "mavrine", "ceryth", "briselle", "ferryn", "javelle", "aki", "white_wolf_spider", "black_wolf_spider"],
   "hunters": {
     "nyxie": { "chance": 0.9, "look": 2.0, "style": "ambush" },
     "thessine": { "chance": 0.7, "look": 1.8, "style": "ambush" },

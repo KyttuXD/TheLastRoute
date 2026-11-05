@@ -74,6 +74,10 @@ impl Content {
             if path == crate::hunters::gimmicks::charge::CHARGE_PATH {
                 continue;
             }
+            // hunters/secret_creatures.json is the secret wolf spiders' rule table (hunters/secret_creatures.rs)
+            if path == crate::hunters::secret_creatures::SECRET_PATH {
+                continue;
+            }
             match serde_json::from_str::<serde_json::Value>(text)
                 .map_err(|e| e.to_string())
                 .and_then(|v| hunters::parse(&v, None, ""))

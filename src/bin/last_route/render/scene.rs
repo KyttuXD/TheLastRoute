@@ -5,7 +5,7 @@
 
 use super::anim::{
     self, grab, hide,
-    hunter::{HunterView, Input},
+    hunter::{CreatureInput, HunterView, Input},
 };
 use super::builder::{submit_all, Builder};
 use super::hunter_cache::{self, HunterMeshCache};
@@ -708,6 +708,16 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
                 camera: g.eye(),
                 grabbing: held,
                 peek_lean: h.peeking_out().then_some(h.peek_lean),
+                creature: match &h.gimmick {
+                    Gimmick::WolfSpider(s) => Some(CreatureInput {
+                        phase: s.phase,
+                        bark_seq: s.bark_seq,
+                        target_in_reach: look_target.is_some_and(|t| {
+                            crate::hunters::brain::dist(t, h.pos) < crate::hunters::secret_creatures::Rules::get().view.attack_range
+                        }),
+                    }),
+                    _ => None,
+                },
             };
             let (pose, normal) = view.update(&input, dt, g.time);
             let out = grab::drive(

@@ -284,10 +284,18 @@ pub fn pool_of(id: &str) -> Vec<(String, f32)> {
         .unwrap_or_else(|| vec![(style_table().fallback.clone(), 1.0)])
 }
 
-/// GrabStyles.pick
+/// GrabStyles.pick. A creature rig whose pool no longer fits the room falls back to the pounce, not the shoulder grab
+/// (GrabStyles.CREATURE_FALLBACK).
 pub fn pick(id: &str, roll: f32, room: &Room) -> String {
-    pick_in(pool_of(id), roll, room)
+    let picked = pick_in(pool_of(id), roll, room);
+    if picked == style_table().fallback && super::clip::rig(id).is_some_and(|r| r.is_creature()) {
+        return CREATURE_FALLBACK.to_string();
+    }
+    picked
 }
+
+/// The style a creature rig falls back to.
+pub const CREATURE_FALLBACK: &str = "pounce_pin";
 
 /// GrabStyles.pick over a given pool: the styles the room rules out drop out, then a weighted pick with `roll`.
 pub fn pick_in(pool: Vec<(String, f32)>, roll: f32, room: &Room) -> String {
@@ -482,6 +490,13 @@ pub fn pose(style: &str, t: f32, c: &Ctx) -> Pose {
                 0.3 * a,
                 0.35 * a,
             ];
+        }
+        "pounce_pin" => {
+            // creature rigs: knocked flat on the back, not snapped flat, the creature leaning over the runner
+            let down = smooth((t - grab_timing().reach_seconds) / (grab_timing().act_seconds + 0.4));
+            o.at = vec3(0.0, 0.0, lerp(0.9, 1.2, down));
+            o.tilt = lerp(0.0, PI * 0.5 - 0.1, down);
+            o.hunter = [lerp(0.0, 0.3, a), 0.0, 0.15 * a];
         }
         "wall_pin" => {
             let to_wall = (c.back - 0.2).clamp(0.0, 1.1);
@@ -871,7 +886,7 @@ impl Grab {
             .iter()
             .map(|(s, n, k)| (*s, body_feet + basis * body_point(n), *k))
             .collect();
-        let scale = super::hunter::MODEL_SCALE / rig.unit;
+        let scale = rig.draw_scale();
         let turn_k = smooth(t / grab_timing().reach_seconds);
         let yaw = self.yaw0 + self.turn * turn_k;
         let mut offsets = p.hunter;
@@ -950,7 +965,7 @@ impl Grab {
             }
         }
         // head_look: at the camera (lifted toward her head), or ahead for the carry; Aki looks away first
-        if let Some(head) = body.idx("Head") {
+        if let Some(head) = body.idx("Head").or_else(|| body.idx("head")) {
             let hp = body.pos(head);
             let mut target = match self.camera {
                 Some((eye, _, _)) => vec3(eye.x, eye.y.max(hp.y - 0.12), eye.z),

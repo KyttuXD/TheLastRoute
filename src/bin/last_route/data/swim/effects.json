@@ -13,7 +13,7 @@
     "noise": 12.0,
     "deep_noise": 17.0,
     "splash_every": 0.42,
-    "splash_gain": 0.6,
+    "splash_gain": 0.3,
     "tiring_depth": 0.6,
     "stamina_drain": 6.0
   },

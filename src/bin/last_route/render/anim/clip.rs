@@ -79,6 +79,9 @@ pub struct Bone {
 
 pub struct Rig {
     pub unit: f32,
+    /// A creature rig (the secret wolf spiders, extract_creature.py): the metres one bbmodel unit is drawn at. Without
+    /// it a rig is a humanoid hunter, drawn at `MODEL_SCALE / unit`.
+    pub metres: Option<f32>,
     pub bones: Vec<Bone>,
     pub clips: HashMap<String, Clip>,
     /// HunterStride table entries: clip -> (reference speed at authored size, reverse)
@@ -132,6 +135,7 @@ impl Rig {
     pub fn parse(id: &str, text: &str) -> Option<Rig> {
         let j: serde_json::Value = serde_json::from_str(text).ok()?;
         let unit = j["unit"].as_f64().unwrap_or(65.0) as f32;
+        let metres = j["metres"].as_f64().map(|m| m as f32).filter(|m| *m > 0.0);
         let mut bones = vec![];
         for b in j["bones"].as_array()? {
             let r = floats(&b[3]);
@@ -218,10 +222,21 @@ impl Rig {
         let _ = id;
         Some(Rig {
             unit,
+            metres,
             bones,
             clips,
             stride,
         })
+    }
+
+    /// Metres per bbmodel unit when the rig is drawn: a creature's own, else the humanoid scale (HunterRoster.MODEL_SCALE) over the glb's unit.
+    pub fn draw_scale(&self) -> f32 {
+        self.metres.unwrap_or(super::hunter::MODEL_SCALE / self.unit)
+    }
+
+    /// A creature rig: not the humanoid bone set, so the humanoid layers (head look, chase style, grab arms) find nothing to move.
+    pub fn is_creature(&self) -> bool {
+        self.metres.is_some()
     }
 
     pub fn bone(&self, name: &str) -> Option<usize> {
