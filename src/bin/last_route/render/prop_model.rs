@@ -96,7 +96,10 @@ fn repeat(t: &Texture2D) {
 }
 
 fn new_texture(bytes: &[u8]) -> Texture2D {
-    let t = Texture2D::from_file_with_format(bytes, None);
+    // a picture that does not decode draws white instead of panicking
+    let t = Image::from_file_with_format(bytes, None)
+        .map(|img| Texture2D::from_image(&img))
+        .unwrap_or_else(|_| super::builder::white_texture());
     t.set_filter(FilterMode::Nearest);
     repeat(&t);
     t

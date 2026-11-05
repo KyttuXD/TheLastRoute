@@ -114,25 +114,27 @@ pub fn item_pose(name: &str) -> Option<PoseRow> {
     data().and_then(|d| d.pose(name)).cloned()
 }
 
-/// The skin and arm style the local runner wears. Set by the app whenever the settings change (see the hook).
+/// The skin and arm style the local runner wears. Set by the app whenever the worn skin changes: `skin` is the wire id
+/// (the canonical hash the texture cache knows, or DEFAULT), `slim` is the arm style already resolved from the ARMS
+/// setting and the skin's layout (see `skins::worn_skin`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Look {
     pub skin: String,
-    pub arms: String,
+    pub slim: bool,
 }
 
 thread_local! {
-    static LOOK: RefCell<Look> = RefCell::new(Look { skin: "DEFAULT".into(), arms: "auto".into() });
+    static LOOK: RefCell<Look> = RefCell::new(Look { skin: "DEFAULT".into(), slim: false });
 }
 
-#[allow(dead_code)]
-pub fn set_look(skin: &str, arms: &str) {
-    LOOK.with(|l| *l.borrow_mut() = Look { skin: skin.into(), arms: arms.into() });
+/// Sets the look of the local hand: the worn skin's hash and whether it wears slim arms.
+pub fn set_look(skin: &str, slim: bool) {
+    LOOK.with(|l| *l.borrow_mut() = Look { skin: skin.into(), slim });
 }
 
-/// Slim only when the saved ARMS says so (auto and classic wear the classic arm).
-pub fn is_slim(arms: &str) -> bool {
-    arms.eq_ignore_ascii_case("slim")
+/// The look the hand draws with now.
+pub fn look() -> Look {
+    LOOK.with(|l| l.borrow().clone())
 }
 
 /// The outliner group of the forearm to draw: the slim group when slim is wanted and the model has one, else the classic.
@@ -227,7 +229,7 @@ pub fn hand_mesh(model: &Model, d: &HandData, slim: bool, xf: Mat4, mirror: bool
 
 fn draw_hand(a: &Assets, d: &HandData, look: &Look, xf: Mat4, mirror: bool) {
     let Some(body) = a.npc_body.as_ref() else { return };
-    let (vertices, indices) = hand_mesh(body, d, is_slim(&look.arms), xf, mirror);
+    let (vertices, indices) = hand_mesh(body, d, look.slim, xf, mirror);
     if indices.is_empty() {
         return;
     }
@@ -350,7 +352,19 @@ mod tests {
         // a model without a slim group wears the classic one (narrowed when drawn)
         assert_eq!(hand_group(&groups[..2], true, &d), Some(1));
         assert!(!has_slim_group(&groups[..2], &d));
-        assert!(is_slim("slim") && !is_slim("auto") && !is_slim("classic"));
+    }
+
+    #[test]
+    fn the_hand_wears_the_resolved_skin_and_arm_style() {
+        // the app resolves hash and slim once (skins::worn_skin); the hand takes both as given, so an Alex skin under
+        // ARMS: AUTO gives a slim hand, which the old "slim only when forced" rule never did
+        set_look("abc", true);
+        assert_eq!(look(), Look { skin: "abc".into(), slim: true });
+        set_look("DEFAULT", false);
+        assert_eq!(look(), Look { skin: "DEFAULT".into(), slim: false });
+        let slim_auto = crate::shared::skins::ArmsSetting::Auto.resolve(true);
+        let slim_forced_off = crate::shared::skins::ArmsSetting::Classic.resolve(true);
+        assert!(slim_auto && !slim_forced_off);
     }
 
     #[test]

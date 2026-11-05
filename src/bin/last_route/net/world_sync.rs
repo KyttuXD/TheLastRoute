@@ -352,14 +352,33 @@ struct Guest {
     last_seen: Instant,
 }
 
-/// The wire profile of a runner: `{peer_id, name, skin}`. A guest sends its own (the host reads the sender from the
-/// relay); the host forwards each profile with its `peer_id`, and sends a new guest every profile in the room.
-fn profile_message(peer: u32, name: &str, skin: &str) -> Message {
+/// What a runner says about its skin next to the id: the arm style it wears and whether others may copy the skin.
+/// Godot sends both with the hash (`skin_slim`, `skin_copy`, docs/PLAYER_SKINS.md); an older client sends neither, which
+/// reads as classic arms and not copyable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SkinFlags {
+    /// Slim (Alex) arms: the runner's ARMS setting resolved for its skin.
+    pub slim: bool,
+    /// OTHERS MAY COPY.
+    pub copy: bool,
+}
+
+/// The wire profile of a runner: `{peer_id, name, skin, skin_slim, skin_copy}`. A guest sends its own (the host reads the
+/// sender from the relay); the host forwards each profile with its `peer_id`, and sends a new guest every profile in the room.
+fn profile_message(peer: u32, name: &str, skin: &str, flags: SkinFlags) -> Message {
     let mut profile = Map::new();
     profile.insert("peer_id".into(), json!(peer));
     profile.insert("name".into(), json!(name));
     profile.insert("skin".into(), json!(skin));
+    profile.insert("skin_slim".into(), json!(flags.slim));
+    profile.insert("skin_copy".into(), json!(flags.copy));
     Message::WireProfile { profile }
+}
+
+/// The skin flags a received profile carries (a missing flag is false).
+fn profile_flags(profile: &Map<String, Value>) -> SkinFlags {
+    let flag = |key: &str| profile.get(key).and_then(Value::as_bool).unwrap_or(false);
+    SkinFlags { slim: flag("skin_slim"), copy: flag("skin_copy") }
 }
 
 /// The host's room mod packs as the wire carries them: `{ids: [...]}`.
@@ -426,6 +445,10 @@ pub struct NetSession {
     difficulty: String,
     /// The skin id of each other runner, by peer id, from its wire profile.
     skins: HashMap<u32, String>,
+    /// This runner's own skin flags, sent in its wire profile.
+    flags: SkinFlags,
+    /// The skin flags of each other runner, by peer id, from its wire profile.
+    peer_flags: HashMap<u32, SkinFlags>,
     /// The name of each other runner, by peer id, from its wire profile (a guest keeps the others' names too).
     names: HashMap<u32, String>,
     guests: HashMap<u32, Guest>,
@@ -633,6 +656,8 @@ impl NetSession {
             mods: Vec::new(),
             difficulty: Difficulty::Standard.name().to_string(),
             skins: HashMap::new(),
+            flags: SkinFlags::default(),
+            peer_flags: HashMap::new(),
             names: HashMap::new(),
             guests: HashMap::new(),
             remotes: HashMap::new(),
@@ -693,15 +718,42 @@ impl NetSession {
     pub fn set_skin(&mut self, chosen: &str, uploaded: &[String]) {
         let Some(next) = republished_skin(&self.skin, chosen, uploaded) else { return };
         self.skin = next;
+        self.publish_profile();
+    }
+
+    /// Sets this runner's skin flags (the arm style it wears, whether others may copy the skin) and publishes them at once
+    /// when they changed.
+    pub fn set_skin_flags(&mut self, flags: SkinFlags) {
+        if flags == self.flags {
+            return;
+        }
+        self.flags = flags;
+        self.publish_profile();
+    }
+
+    /// Sends this runner's profile: a host to every guest, a guest to the host (which relays it).
+    fn publish_profile(&mut self) {
         if self.is_host() {
-            let profile = profile_message(HOST_PEER_ID, &self.name, &self.skin);
+            let profile = profile_message(HOST_PEER_ID, &self.name, &self.skin, self.flags);
             for peer in self.coop.peers() {
                 self.coop.send(peer, &profile);
             }
         } else {
-            let profile = profile_message(self.coop.link.session(), &self.name, &self.skin);
+            let profile = profile_message(self.coop.link.session(), &self.name, &self.skin, self.flags);
             self.coop.send(HOST_PEER_ID, &profile);
         }
+    }
+
+    /// The other runners whose skin can be copied (COPY SKIN): they allow it, publish a real skin id, and are in the room.
+    /// The arm style is the owner's, since the pixels were normalised.
+    pub fn copy_candidates(&self) -> Vec<(String, String, bool)> {
+        self.roster()
+            .into_iter()
+            .filter_map(|e| {
+                let flags = self.peer_flags.get(&e.peer).copied().unwrap_or_default();
+                (flags.copy && is_skin_hash(&e.skin)).then(|| (e.name, e.skin, flags.slim))
+            })
+            .collect()
     }
 
     /// This runner's published skin id (DEFAULT until a chosen skin the website holds is set).
@@ -1100,7 +1152,7 @@ impl NetSession {
                     moving: r.sample.moving,
                     sprinting: r.sample.sprinting,
                     crouching: r.sample.crouching,
-                    slim: false,
+                    slim: self.peer_flags.get(peer).is_some_and(|f| f.slim),
                     speed: if !r.sample.moving {
                         0.0
                     } else if r.sample.sprinting {
@@ -1203,7 +1255,7 @@ impl NetSession {
                 if !self.is_host() {
                     let hello = Message::RegisterPeer { requested_name: self.name.clone() };
                     self.coop.send(HOST_PEER_ID, &hello);
-                    let profile = profile_message(self.coop.link.session(), &self.name, &self.skin);
+                    let profile = profile_message(self.coop.link.session(), &self.name, &self.skin, self.flags);
                     self.coop.send(HOST_PEER_ID, &profile);
                 }
             }
@@ -1237,8 +1289,10 @@ impl NetSession {
             Message::WireProfile { profile } if self.is_host() => {
                 let skin = profile_skin(&profile);
                 let name = clean_name(profile.get("name").and_then(Value::as_str).unwrap_or_default());
+                let flags = profile_flags(&profile);
                 self.skins.insert(from, skin.clone());
-                let forward = profile_message(from, &name, &skin);
+                self.peer_flags.insert(from, flags);
+                let forward = profile_message(from, &name, &skin, flags);
                 let others: Vec<u32> = self.coop.peers().into_iter().filter(|p| *p != from).collect();
                 for peer in others {
                     self.coop.send(peer, &forward);
@@ -1253,12 +1307,14 @@ impl NetSession {
                     return;
                 }
                 self.skins.insert(peer, profile_skin(&profile));
+                self.peer_flags.insert(peer, profile_flags(&profile));
                 let name = clean_name(profile.get("name").and_then(Value::as_str).unwrap_or_default());
                 self.names.insert(peer, name);
             }
             Message::PeerLeave if self.is_host() => {
                 self.remotes.remove(&from);
                 self.skins.remove(&from);
+                self.peer_flags.remove(&from);
                 self.pending_captures.remove(&from);
                 self.last_taser.remove(&from);
                 if let Some(guest) = self.guests.remove(&from) {
@@ -1356,11 +1412,12 @@ impl NetSession {
     /// Host: sends a guest that just registered every runner's profile in the room, the host's first, then each
     /// other guest's. Those that have not sent a profile yet are DEFAULT (their own profile follows).
     fn send_profiles_to(&mut self, to: u32) {
-        let mut profiles = vec![profile_message(HOST_PEER_ID, &self.name, &self.skin)];
+        let mut profiles = vec![profile_message(HOST_PEER_ID, &self.name, &self.skin, self.flags)];
         for (peer, guest) in &self.guests {
             if *peer != to {
                 let skin = self.skins.get(peer).map_or(SKIN_DEFAULT, String::as_str);
-                profiles.push(profile_message(*peer, &guest.name, skin));
+                let flags = self.peer_flags.get(peer).copied().unwrap_or_default();
+                profiles.push(profile_message(*peer, &guest.name, skin, flags));
             }
         }
         for profile in &profiles {
@@ -1392,6 +1449,7 @@ impl NetSession {
             for peer in gone {
                 self.remotes.remove(&peer);
                 self.skins.remove(&peer);
+                self.peer_flags.remove(&peer);
                 self.pending_captures.remove(&peer);
                 self.last_taser.remove(&peer);
                 if let Some(guest) = self.guests.remove(&peer) {
@@ -1649,7 +1707,7 @@ mod tests {
     #[test]
     fn the_wire_profile_carries_the_skin_id_and_a_peer_reads_it_back() {
         let hash = "c".repeat(64);
-        match profile_message(3, "RUNNER", &hash) {
+        match profile_message(3, "RUNNER", &hash, SkinFlags::default()) {
             Message::WireProfile { profile } => {
                 assert_eq!(profile.get("skin").and_then(Value::as_str), Some(hash.as_str()));
                 assert_eq!(profile_skin(&profile), hash);
@@ -1657,6 +1715,25 @@ mod tests {
             }
             _ => panic!("a profile message is a WireProfile"),
         }
+    }
+
+    #[test]
+    fn the_profile_carries_skin_slim_and_skin_copy_and_a_peer_reads_them_back() {
+        let hash = "d".repeat(64);
+        for flags in [
+            SkinFlags { slim: true, copy: true },
+            SkinFlags { slim: true, copy: false },
+            SkinFlags { slim: false, copy: true },
+            SkinFlags::default(),
+        ] {
+            let Message::WireProfile { profile } = profile_message(4, "ALEX", &hash, flags) else {
+                panic!("a profile message is a WireProfile")
+            };
+            assert_eq!(profile.get("skin_slim").and_then(Value::as_bool), Some(flags.slim), "the wire names Godot's skin_slim");
+            assert_eq!(profile.get("skin_copy").and_then(Value::as_bool), Some(flags.copy), "the wire names Godot's skin_copy");
+            assert_eq!(profile_flags(&profile), flags);
+        }
+        assert_eq!(profile_flags(&Map::new()), SkinFlags::default(), "an old client's profile reads as classic and not copyable");
     }
 
     #[test]
@@ -1706,6 +1783,24 @@ mod tests {
         assert_eq!(guest.published_skin(), SKIN_DEFAULT);
         guest.set_skin(&hash, &[hash.clone()]);
         assert_eq!(guest.published_skin(), hash);
+    }
+
+    #[test]
+    fn copy_skin_offers_only_runners_who_allow_it_with_their_arm_style() {
+        let (hash, other) = ("7".repeat(64), "6".repeat(64));
+        let mut host = offline_session(true, "HOST");
+        host.guests.insert(7, Guest { name: "BOB".into(), last_seen: Instant::now() });
+        host.guests.insert(8, Guest { name: "EVE".into(), last_seen: Instant::now() });
+        host.skins.insert(7, hash.clone());
+        host.skins.insert(8, other);
+        host.peer_flags.insert(7, SkinFlags { slim: true, copy: true });
+        host.peer_flags.insert(8, SkinFlags { slim: false, copy: false });
+        assert_eq!(host.copy_candidates(), vec![("BOB".to_string(), hash.clone(), true)], "EVE does not allow copies");
+        host.peer_flags.insert(8, SkinFlags { slim: false, copy: true });
+        host.skins.insert(8, SKIN_DEFAULT.into());
+        assert_eq!(host.copy_candidates().len(), 1, "the default skin is nothing to copy");
+        host.set_skin_flags(SkinFlags { slim: true, copy: false });
+        assert_eq!(host.flags, SkinFlags { slim: true, copy: false }, "the runner's own flags are kept for its profile");
     }
 
     #[test]

@@ -910,6 +910,40 @@ pub fn line_edit(
     secret: bool,
     t: f32,
 ) {
+    line_edit_caret(a, r, text, None, placeholder, size, focused, secret, t);
+}
+
+/// The part of `text` (as char indices `start..end`) to show in a box `avail` units wide so that the caret at char index
+/// `caret` stays inside it: the text scrolls just far enough to the left to keep the caret visible, and shows as much as
+/// fits after the start. `width_of` measures a string in units.
+pub fn visible_window(text: &str, caret: usize, avail: f32, width_of: &dyn Fn(&str) -> f32) -> (usize, usize) {
+    let chars: Vec<char> = text.chars().collect();
+    let caret = caret.min(chars.len());
+    let slice = |a: usize, b: usize| chars[a..b].iter().collect::<String>();
+    let mut start = 0;
+    while start < caret && width_of(&slice(start, caret)) > avail {
+        start += 1;
+    }
+    let mut end = caret;
+    while end < chars.len() && width_of(&slice(start, end + 1)) <= avail {
+        end += 1;
+    }
+    (start, end)
+}
+
+/// [`line_edit`] with the caret at char index `caret` (None: at the end). The text is clipped to the box and scrolls to
+/// keep the caret in view, so a long link never spills over the buttons beside the box.
+pub fn line_edit_caret(
+    a: &Assets,
+    r: Rect,
+    text: &str,
+    caret: Option<usize>,
+    placeholder: &str,
+    size: f32,
+    focused: bool,
+    secret: bool,
+    t: f32,
+) {
     let p = pal();
     sbox(
         r,
@@ -923,16 +957,27 @@ pub fn line_edit(
     } else {
         text.to_string()
     };
-    let x = r.x + 6.0;
+    let pad = 6.0;
+    let x = r.x + pad;
     if shown.is_empty() {
-        label_vc(a, F::Body, placeholder, x, r.y, r.h, size, p.muted);
+        let note = clip(a, F::Body, placeholder, r.w - 2.0 * pad, size);
+        label_vc(a, F::Body, &note, x, r.y, r.h, size, p.muted);
     } else {
-        label_vc(a, F::Body, &shown, x, r.y, r.h, size, p.ink);
+        let caret = caret.unwrap_or_else(|| shown.chars().count());
+        let (start, end) = visible_window(&shown, caret, r.w - 2.0 * pad, &|s| tw(a, F::Body, s, size));
+        let part: String = shown.chars().skip(start).take(end - start).collect();
+        label_vc(a, F::Body, &part, x, r.y, r.h, size, p.ink);
+        if focused && (t * 1.6).fract() < 0.6 {
+            let before: String = shown.chars().skip(start).take(caret.min(shown.chars().count()) - start).collect();
+            let cx = x + tw(a, F::Body, &before, size);
+            let h = F::Body.height() * size;
+            fill(Rect::new(cx, r.y + (r.h - h) * 0.5, 1.0, h), focus_edge_colour());
+        }
+        return;
     }
     if focused && (t * 1.6).fract() < 0.6 {
-        let cx = x + tw(a, F::Body, &shown, size);
         let h = F::Body.height() * size;
-        fill(Rect::new(cx, r.y + (r.h - h) * 0.5, 1.0, h), focus_edge_colour());
+        fill(Rect::new(x, r.y + (r.h - h) * 0.5, 1.0, h), focus_edge_colour());
     }
 }
 

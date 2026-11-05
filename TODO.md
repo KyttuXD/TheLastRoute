@@ -984,7 +984,7 @@ Source: `LastRoute Godot\KyttusLabApp` (re-synced from the other computer) compa
 - [ ] Discord Rich Presence: show the game and the current state (menu, in a run, depth, room size) on the player's profile. Needs a Discord application ID and the local IPC client (no server round-trip). Off by default, with a setting to turn it off.
 - [ ] Discord bot: post room and run events to a server channel (room opened, run finished, new release) through the website's server, not from the game client. Needs a bot token in the server env only, never in source.
 
-- [ ] Server-synced skins: the room carries only the skin id (`world_sync.rs` `profile_message`). Remote runners draw the default mannequin unless they already have that skin, because the PNG never leaves the local `skins/` folder (`src/bin/last_route/shared/skins.rs`). Needs an upload or download path through the server before other players see custom skins.
+- [~] Server-synced skins: client side done on the skins-client track (strict PNG check of every chunk before any decode, opaque base layer, 64 KB cap, upload keyed on the canonical hash with a 60 s retry, fetch tries `/api/v1/skins/{id}` then the skins host then the legacy route, memory/disk cache capped at 16, `skin_slim` and `skin_copy` on the wire, own first-person hand wears the skin, catalogue pictures, preview in menu units, paste, drag and drop, OPEN FOLDER, slim template). Still open and owned elsewhere: https for FROM URL and FROM MC NAME needs a TLS dependency (`net/http.rs`), and the server's own validation of uploads (`lr_server/`, skins-net track).
 
 ## Gameplay progression and hunter mechanics (requested 2026-11-04)
 

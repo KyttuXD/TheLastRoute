@@ -8,6 +8,10 @@
 		"blocked_hosts": ["localhost"],
 		"blocked_suffixes": [".localhost", ".local", ".internal", ".lan"]
 	},
+	"input": {
+		"repeat_delay_secs": 0.4,
+		"repeat_per_sec": 30
+	},
 	"minecraft": {
 		"name_max": 16,
 		"name_chars": "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",

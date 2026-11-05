@@ -27,7 +27,8 @@ pub struct Config {
     pub distance: f32,
     pub look_height_frac: f32,
     pub fov_deg: f32,
-    pub background: [f32; 3],
+    /// The clear colour of the offscreen target, red, green, blue and alpha (alpha 0 lets the menu show through).
+    pub background: [f32; 4],
     pub resolution_scale: f32,
 }
 
@@ -45,8 +46,8 @@ impl Config {
         let v: serde_json::Value = serde_json::from_str(src).map_err(|e| e.to_string())?;
         let cam = &v["camera"];
         let bg = v["background"].as_array().ok_or("background is missing")?;
-        if bg.len() != 3 {
-            return Err("background needs three numbers".into());
+        if bg.len() != 4 {
+            return Err("background needs four numbers (red, green, blue, alpha)".into());
         }
         let ch = |i: usize| bg[i].as_f64().map(|n| n as f32).ok_or("background holds a non-number");
         let c = Config {
@@ -60,7 +61,7 @@ impl Config {
             distance: num(cam, "distance")?,
             look_height_frac: num(cam, "look_height_frac")?,
             fov_deg: num(cam, "fov_deg")?,
-            background: [ch(0)?, ch(1)?, ch(2)?],
+            background: [ch(0)?, ch(1)?, ch(2)?, ch(3)?],
             resolution_scale: num(&v, "resolution_scale")?,
         };
         if c.height_m <= 0.0 || c.distance <= 0.0 || c.fov_deg <= 0.0 || c.resolution_scale <= 0.0 {
@@ -89,6 +90,14 @@ pub fn advance_angle(angle: f32, deg_per_sec: f32, dt: f32) -> f32 {
 /// The render target size wanted for a menu rectangle of `w` x `h` at `scale` (at least 16 px each way).
 pub fn target_size(w: f32, h: f32, scale: f32) -> (u32, u32) {
     (((w * scale).round() as u32).max(16), ((h * scale).round() as u32).max(16))
+}
+
+/// The preview box in window pixels. The menu lays everything out in design units, and one unit is `unit` window pixels
+/// (`style::unit()` inside a menu), so a box placed at (x, y) of w x h units is this rectangle on screen. The offscreen
+/// target is blitted after `set_default_camera()`, which works in window pixels, so the unscaled area would land far to
+/// the left of its spot and at the wrong size.
+pub fn screen_rect(area: Rect, unit: f32) -> Rect {
+    Rect::new(area.x * unit, area.y * unit, area.w * unit, area.h * unit)
 }
 
 /// True when the target must be (re)made: there is none yet, or its size differs from the wanted one.
@@ -140,12 +149,14 @@ impl SkinPreview {
         }
     }
 
-    /// Draws the mannequin into `area`: `skin` is the texture to wear (None draws the atlas), `slim` picks the slim body.
+    /// Draws the mannequin into `area`, given in menu design units like every other menu rectangle (it is scaled by
+    /// `style::unit()` here): `skin` is the texture to wear (None draws the atlas), `slim` picks the slim body.
     /// `dt` advances the turn and the idle clip.
     pub fn draw(&mut self, a: &Assets, area: Rect, skin: Option<&Texture2D>, slim: bool, dt: f32) {
         let Some(cfg) = self.cfg.clone() else {
             return;
         };
+        let area = screen_rect(area, crate::ui::style::unit());
         self.angle = advance_angle(self.angle, cfg.turn_deg_per_sec, dt);
         if !self.rig_tried {
             self.rig_tried = true;
@@ -180,7 +191,7 @@ impl SkinPreview {
         let (Some((rt, _)), Some(mat)) = (self.target.as_ref(), self.mat.as_ref()) else {
             return;
         };
-        let bg = Color::new(cfg.background[0], cfg.background[1], cfg.background[2], 1.0);
+        let bg = Color::new(cfg.background[0], cfg.background[1], cfg.background[2], cfg.background[3]);
         let look = vec3(0.0, cfg.height_m * cfg.look_height_frac, 0.0);
         let eye = look + vec3(0.0, 0.0, cfg.distance);
         set_camera(&Camera3D {
@@ -266,11 +277,39 @@ mod tests {
     }
 
     #[test]
+    fn the_preview_rect_scales_with_the_menu_unit_at_every_window_size() {
+        use crate::ui::style::unit_for;
+        // the skin panel puts the box at (ox + 20, top) of 150 x 150 units; the panel is 440 x 254 units, centred
+        for (w, h) in [(1280.0f32, 720.0f32), (1920.0, 1080.0), (844.0, 390.0), (640.0, 360.0)] {
+            let u = unit_for(w, h, true);
+            let view = (w / u, h / u);
+            let (ox, oy) = ((view.0 - 440.0) * 0.5, (view.1 - 254.0) * 0.5);
+            let area = Rect::new(ox + 20.0, oy + 66.0, 150.0, 150.0);
+            let px = screen_rect(area, u);
+            assert!((px.w - 150.0 * u).abs() < 1e-3 && (px.h - 150.0 * u).abs() < 1e-3, "{w}x{h}: size scales");
+            // inside the panel on screen: the panel's pixel box is (ox*u, oy*u, 440u, 254u)
+            assert!(px.x >= ox * u - 1e-3 && px.right() <= (ox + 440.0) * u + 1e-3, "{w}x{h}: inside the panel across");
+            assert!(px.y >= oy * u - 1e-3 && px.bottom() <= (oy + 254.0) * u + 1e-3, "{w}x{h}: inside the panel down");
+            assert!(px.x > ox * u + 10.0 * u, "{w}x{h}: right of the panel edge, in the left column");
+            assert!(px.right() <= (ox + 20.0 + 150.0 + 4.0) * u, "{w}x{h}: left of the buttons (they start at ox + 180 units)");
+            assert_eq!(target_size(px.w, px.h, 1.0), ((150.0 * u).round() as u32, (150.0 * u).round() as u32));
+        }
+        // unscaled, the 1280x720 box would sit at x = 159 pixels, left of the panel (the defect)
+        let u = unit_for(1280.0, 720.0, true);
+        assert!(screen_rect(Rect::new(159.0 / u, 0.0, 1.0, 1.0), u).x > 158.0);
+        assert!(u > 1.5, "a menu unit is more than a pixel at 1280x720 ({u})");
+    }
+
+    #[test]
     fn json_parses_with_standard_values() {
         let c = Config::parse(DATA).expect("skin_preview.json parses");
         assert!((c.height_m - 1.60).abs() < 1e-6, "the runner is 1.60 m");
         assert!(c.turn_deg_per_sec > 0.0 && c.distance > 0.0 && c.fov_deg > 0.0);
         assert!(c.background.iter().all(|x| (0.0..=1.0).contains(x)));
+        assert_eq!(c.turn_deg_per_sec, 28.0, "Godot SPIN_DEGREES_PER_SECOND (skin_panel.gd:10)");
+        assert_eq!(c.fov_deg, 38.0, "the Godot preview camera's field of view");
+        assert_eq!(c.start_deg, 180.0, "the front faces the viewer first");
+        assert_eq!(c.background[3], 0.0, "a transparent background, like the Godot preview");
         assert!(Config::parse("{}").is_err());
         assert!(Config::parse(&DATA.replace("\"height_m\": 1.60", "\"height_m\": 0")).is_err());
     }

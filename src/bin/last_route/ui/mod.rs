@@ -10,5 +10,6 @@ pub mod menus;
 pub mod pause;
 pub mod report;
 pub mod skin_preview;
+pub mod skin_tab;
 pub mod settings_panel;
 pub mod style;

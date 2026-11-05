@@ -8,5 +8,6 @@ pub mod admin_flags;
 pub mod assets;
 pub mod checkpoint;
 pub mod safe_room;
+pub mod skin_png;
 pub mod skin_template;
 pub mod skins;

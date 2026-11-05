@@ -14,10 +14,8 @@ use crate::net::config::BackendConfig;
 use crate::net::http::{Method, Request};
 use crate::net::world_sync::{clean_skin, is_skin_hash, SKIN_DEFAULT};
 use crate::shared::paths;
-
-/// The side length every skin PNG must have.
-pub const SKIN_SIZE: u32 = 64;
-const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+pub use crate::shared::skin_png::SKIN_SIZE;
+use crate::shared::skin_png::{self, Limits, Shape, PNG_SIGNATURE};
 
 /// The folder skins are read from (`<user dir>/skins`), when the user folder is known.
 pub fn skin_dir() -> Option<PathBuf> {
@@ -35,32 +33,96 @@ pub fn png_is_skin_size(head: &[u8]) -> bool {
     width == SKIN_SIZE && (height == SKIN_SIZE || height == SKIN_SIZE / 2)
 }
 
-/// Reads the first 24 bytes of `path` and checks them with [`png_is_skin_size`].
+/// Reads a regular file of at most `cap` bytes. A file that is not a regular file (a FIFO or a device would hang the
+/// open) or is over the cap is an error, and a big file is never loaded whole: at most `cap + 1` bytes are read
+/// (Godot `PlayerSkin.read_file`, which reads at most MAX_BYTES + 1).
+pub fn read_capped(path: &Path, cap: usize) -> std::io::Result<Vec<u8>> {
+    let meta = std::fs::metadata(path)?;
+    if !meta.is_file() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file"));
+    }
+    if meta.len() > cap as u64 {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "the file is too big"));
+    }
+    let mut out = Vec::new();
+    File::open(path)?.take(cap as u64 + 1).read_to_end(&mut out)?;
+    if out.len() > cap {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "the file is too big"));
+    }
+    Ok(out)
+}
+
+/// Reads the first 24 bytes of a regular file and checks them with [`png_is_skin_size`].
 fn file_is_skin(path: &Path) -> bool {
     let mut head = [0u8; 24];
+    if !std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= max_bytes() as u64) {
+        return false;
+    }
     match File::open(path).and_then(|mut f| f.read_exact(&mut head)) {
         Ok(()) => png_is_skin_size(&head),
         Err(_) => false,
     }
 }
 
-/// Skin ids for a folder: DEFAULT first, then the valid `.png` stems in name order.
-/// A missing folder gives just DEFAULT. Files that are not 64x64 PNGs are skipped.
-pub fn list_skins(dir: Option<&Path>) -> Vec<String> {
-    let mut ids = vec![SKIN_DEFAULT.to_string()];
-    let Some(dir) = dir else { return ids };
-    let Ok(entries) = std::fs::read_dir(dir) else { return ids };
-    let mut found: Vec<String> = entries
+/// One skin file in the skins folder: its list id (unique), the file name as the player typed it, and its path.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkinFile {
+    pub id: String,
+    /// The file name without `.png`, as on disk (shown in the picker).
+    pub name: String,
+    pub path: PathBuf,
+}
+
+/// The longest list id (`world_sync::clean_skin` cuts a skin id to 24 characters).
+const ID_MAX_CHARS: usize = 24;
+
+/// The skin files of a folder in name order, each with a list id that no other file has: the cleaned stem (a-b.png and
+/// ab.png both clean to AB), with `_2`, `_3`, ... on the later ones. DEFAULT is never an id. Files that are not 64x64 PNGs,
+/// are not regular files, or are links that leave the folder are skipped.
+pub fn list_skin_files(dir: &Path) -> Vec<SkinFile> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let root = dir.canonicalize().ok();
+    let mut files: Vec<(String, PathBuf)> = entries
         .filter_map(Result::ok)
         .map(|e| e.path())
         .filter(|p| p.extension().and_then(|x| x.to_str()).is_some_and(|x| x.eq_ignore_ascii_case("png")))
+        .filter(|p| match (&root, p.canonicalize()) {
+            (Some(root), Ok(real)) => real.starts_with(root),
+            _ => false,
+        })
         .filter(|p| file_is_skin(p))
-        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(clean_skin))
-        .filter(|id| id != SKIN_DEFAULT && !id.is_empty())
+        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(|s| (s.to_string(), p.clone())))
         .collect();
-    found.sort();
-    found.dedup();
-    ids.extend(found);
+    files.sort_by(|a, b| a.0.to_ascii_lowercase().cmp(&b.0.to_ascii_lowercase()).then_with(|| a.0.cmp(&b.0)));
+    let mut taken: std::collections::HashSet<String> = std::collections::HashSet::new();
+    taken.insert(SKIN_DEFAULT.to_string());
+    let mut out = Vec::new();
+    for (name, path) in files {
+        let base = clean_skin(&name);
+        if base.is_empty() {
+            continue;
+        }
+        let mut id = base.clone();
+        let mut n = 2;
+        while taken.contains(&id) {
+            let suffix = format!("_{n}");
+            let keep: String = base.chars().take(ID_MAX_CHARS.saturating_sub(suffix.len())).collect();
+            id = format!("{keep}{suffix}");
+            n += 1;
+        }
+        taken.insert(id.clone());
+        out.push(SkinFile { id, name, path });
+    }
+    out
+}
+
+/// Skin ids for a folder: DEFAULT first, then the valid `.png` files in name order, each with its own id.
+/// A missing folder gives just DEFAULT. Files that are not 64x64 PNGs are skipped.
+pub fn list_skins(dir: Option<&Path>) -> Vec<String> {
+    let mut ids = vec![SKIN_DEFAULT.to_string()];
+    if let Some(dir) = dir {
+        ids.extend(list_skin_files(dir).into_iter().map(|f| f.id));
+    }
     ids
 }
 
@@ -78,39 +140,67 @@ pub fn resolve_skin(saved: &str, ids: &[String]) -> String {
 /// valid, else DEFAULT. The chosen file is also kept in the cache, so this client draws its own runner the same way
 /// the other clients will.
 pub fn chosen_skin(saved: &str) -> String {
-    let id = resolve_skin(saved, &list_skins(skin_dir().as_deref()));
-    match skin_png(&id) {
-        Some((hash, bytes)) => {
-            if let Some(dir) = cache_dir() {
-                if fetch_needed(&dir, &hash) {
-                    let _ = write_skin_file(&dir, &hash, &bytes);
+    worn_skin(saved, false, ArmsSetting::Auto).hash
+}
+
+/// The skin the local runner wears, resolved once: the wire id and whether the arms are slim.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Worn {
+    /// The SHA-256 of the canonical PNG, or DEFAULT when the saved skin is the default or its file is gone.
+    pub hash: String,
+    /// True when the model should draw slim arms (the arm setting applied to the layout read when the skin was applied).
+    pub slim: bool,
+}
+
+/// Resolves the saved skin id (a list id) and arm style into what the first-person hands, the preview and the room use.
+/// `detected_slim` is the layout read when the skin was applied (`Settings::skin_slim`): the canonical PNG has its base
+/// layer made opaque, so the layout cannot be read from it again. The file is kept in the fetch cache under its hash,
+/// where the texture cache finds it by that hash, the same way it finds every other runner's skin.
+pub fn worn_skin(saved: &str, detected_slim: bool, arms: ArmsSetting) -> Worn {
+    worn_skin_in(skin_dir().as_deref(), cache_dir().as_deref(), saved, detected_slim, arms)
+}
+
+/// [`worn_skin`] with the skins folder and the cache folder given.
+pub fn worn_skin_in(skins: Option<&Path>, cache: Option<&Path>, saved: &str, detected_slim: bool, arms: ArmsSetting) -> Worn {
+    let id = resolve_skin(saved, &list_skins(skins));
+    match skins.and_then(|dir| load_skin_in(dir, &id)) {
+        Some(valid) => {
+            if let Some(dir) = cache {
+                if fetch_needed(dir, &valid.hash) {
+                    let _ = write_skin_file(dir, &valid.hash, &valid.png);
                 }
             }
-            hash
+            Worn { hash: valid.hash, slim: arms.resolve(detected_slim) }
         }
-        None => SKIN_DEFAULT.to_string(),
+        None => Worn { hash: SKIN_DEFAULT.to_string(), slim: arms.resolve(false) },
     }
 }
 
-/// The skin file a list id (a cleaned file stem) names in the skins folder, when it is a valid skin.
-fn skin_file(id: &str) -> Option<PathBuf> {
-    let dir = skin_dir()?;
-    std::fs::read_dir(dir).ok()?.filter_map(Result::ok).map(|e| e.path()).find(|p| {
-        p.extension().and_then(|x| x.to_str()).is_some_and(|x| x.eq_ignore_ascii_case("png"))
-            && p.file_stem().and_then(|s| s.to_str()).map(clean_skin).as_deref() == Some(id)
-            && file_is_skin(p)
-    })
+/// The skin file a list id names in a skins folder, when it is a valid skin.
+fn skin_file_in(dir: &Path, id: &str) -> Option<PathBuf> {
+    list_skin_files(dir).into_iter().find(|f| f.id == id).map(|f| f.path)
 }
 
-/// The wire id and bytes of the skin a list id names. The id is the SHA-256 of the PNG. DEFAULT, unknown ids and
-/// files over the website's size cap give None.
-pub fn skin_png(id: &str) -> Option<(String, Vec<u8>)> {
+/// The validated skin a list id names in the skins folder: read with the size cap, checked and canonicalised. DEFAULT,
+/// unknown ids and files that fail the check give None.
+pub fn load_skin(id: &str) -> Option<ValidSkin> {
+    load_skin_in(&skin_dir()?, id)
+}
+
+/// [`load_skin`] for a given skins folder.
+pub fn load_skin_in(dir: &Path, id: &str) -> Option<ValidSkin> {
     if id == SKIN_DEFAULT {
         return None;
     }
-    let bytes = std::fs::read(skin_file(id)?).ok()?;
+    let bytes = read_capped(&skin_file_in(dir, id)?, max_bytes()).ok()?;
+    validate_skin(&bytes, max_bytes()).ok()
+}
+
+/// The wire id and bytes of the skin a list id names. The id is the SHA-256 of the PNG. DEFAULT, unknown ids and
+/// files over the size cap give None.
+pub fn skin_png(id: &str) -> Option<(String, Vec<u8>)> {
     // The canonical re-encoding is what is hashed, cached and uploaded, so every client agrees on the id.
-    skin_from_png(bytes).ok()
+    load_skin(id).map(|v| (v.hash, v.png))
 }
 
 /// The lowercase hex SHA-256 of `bytes`: the id a skin PNG is known by (64 hex characters).
@@ -119,9 +209,40 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// True when `bytes` is a 64x64 PNG whose SHA-256 is `id`. Both the disk cache and fetched skins are checked this way.
+/// The limits of the strict PNG check, from data/skins/config.json (zero when the config is missing: everything is refused).
+pub fn png_limits() -> Limits {
+    Limits { max_bytes: max_bytes(), max_chunks: config().map_or(0, |c| c.png_max_chunks) }
+}
+
+/// True when `bytes` is a skin PNG whose SHA-256 is `id`: the hash matches and the whole file passes the strict check
+/// (every chunk checksum, a 64x64 header, a legal format, pixel data of exactly the promised size). Both the disk
+/// cache and fetched skins are checked this way, and only a skin that passes is ever decoded.
 pub fn verify_skin(id: &str, bytes: &[u8]) -> bool {
-    png_is_skin_size(bytes) && sha256_hex(bytes) == id
+    sha256_hex(bytes) == id && skin_png::check_png(bytes, png_limits(), Shape::Remote).is_ok()
+}
+
+/// The 64x64 RGBA pixels a verified remote skin is drawn with: decoded through the fallible decoder, with the base layer
+/// made opaque (only the second layer may be transparent), exactly as the Godot game repairs a downloaded skin
+/// (`PlayerSkin.validate`). An `Err` means the file must not be used.
+pub fn remote_skin_rgba(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let layout = layout().ok_or_else(|| "the skin rules are missing".to_string())?;
+    let (w, h, mut px) = skin_png::decode_rgba(bytes, png_limits(), Shape::Remote)?;
+    if w != SKIN_SIZE || h != SKIN_SIZE {
+        return Err("a skin must be 64x64 pixels".to_string());
+    }
+    force_opaque_base(&layout, &mut px);
+    Ok(px)
+}
+
+/// Makes every pixel outside the second-layer rectangles opaque.
+fn force_opaque_base(layout: &SkinLayout, px: &mut [u8]) {
+    for y in 0..SKIN_SIZE {
+        for x in 0..SKIN_SIZE {
+            if !is_overlay_pixel(layout, x, y) {
+                px[((y * SKIN_SIZE + x) * 4 + 3) as usize] = 255;
+            }
+        }
+    }
 }
 
 /// The folder skins fetched from the website are cached in (`<user dir>/skins-cache`).
@@ -129,14 +250,18 @@ pub fn cache_dir() -> Option<PathBuf> {
     paths::user_dir().map(|d| d.join("skins-cache"))
 }
 
-/// The bytes of a skin known by `id` from the user's own folder or the fetch cache, when they verify.
+/// The bytes of a skin known by `id` from the user's own folder or the fetch cache, when they verify. Files are read
+/// with the size cap, so a huge or special file there is never loaded.
 pub fn read_skin(id: &str) -> Option<Vec<u8>> {
+    if !is_skin_hash(id) {
+        return None;
+    }
     let file = format!("{id}.png");
     [skin_dir(), cache_dir()]
         .into_iter()
         .flatten()
         .map(|dir| dir.join(&file))
-        .filter_map(|path| std::fs::read(path).ok())
+        .filter_map(|path| read_capped(&path, max_bytes()).ok())
         .find(|bytes| verify_skin(id, bytes))
 }
 
@@ -145,9 +270,10 @@ pub fn cached_path(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}.png"))
 }
 
-/// True when the folder has no verified copy of skin `id`, so it has to be fetched. A cached skin is never fetched again.
+/// True when the folder has no verified copy of skin `id`, so it has to be fetched. A cached skin is never fetched again;
+/// a copy that no longer passes the check (damaged, or cached by an older build that checked less) is fetched again.
 pub fn fetch_needed(dir: &Path, id: &str) -> bool {
-    !std::fs::read(cached_path(dir, id)).is_ok_and(|bytes| verify_skin(id, &bytes))
+    !read_capped(&cached_path(dir, id), max_bytes()).is_ok_and(|bytes| verify_skin(id, &bytes))
 }
 
 /// The skin fetch settings from data/skins/config.json. Standard values match the Godot game: the size cap is
@@ -157,15 +283,23 @@ pub fn fetch_needed(dir: &Path, id: &str) -> bool {
 pub struct SkinConfig {
     /// The largest skin file accepted, in bytes.
     pub max_bytes: usize,
-    /// The largest canonical PNG the website stores, in bytes (the server's SKIN_MAX_BYTES, 16 KB). A skin whose canonical
-    /// re-encoding is bigger is refused before upload.
+    /// The largest canonical PNG the website stores, in bytes (the server's SKIN_MAX_BYTES, 64 KB like Godot's skins.mjs).
+    /// A skin whose canonical re-encoding is bigger is refused before upload.
     pub upload_max_bytes: usize,
+    /// The most chunks a skin PNG may hold (the strict check reads every chunk, so this bounds its work).
+    pub png_max_chunks: usize,
+    /// Seconds before a failed or unanswered upload is tried again (Godot skin_sync.gd RETRY_SECONDS).
+    pub upload_retry_secs: f64,
+    /// The most skins of other runners kept (on the GPU and in the disk cache; Godot PEER_CACHE_MAX, player_skin.gd).
+    pub peer_cache_max: usize,
     /// The skins host base, tried first when fetching (no trailing slash).
     pub host_base: String,
     /// The path on the skins host, with `{id}` for the skin hash.
     pub host_path: String,
-    /// The backend route, with `{id}` for the skin hash. Relative to the backend base.
+    /// The Godot backend route, with `{id}` for the skin hash. Relative to the backend base.
     pub backend_path: String,
+    /// The lr_server route (`GET /api/v1/skins/<id>`), with `{id}` for the skin hash. Relative to the backend base.
+    pub v1_path: String,
     /// The timeout of one skin download, in seconds.
     pub timeout_secs: u64,
 }
@@ -183,9 +317,13 @@ pub fn parse_config(text: &str) -> Option<SkinConfig> {
     Some(SkinConfig {
         max_bytes: v["max_bytes"].as_u64()? as usize,
         upload_max_bytes: v["upload_max_bytes"].as_u64()? as usize,
+        png_max_chunks: v["png"]["max_chunks"].as_u64()? as usize,
+        upload_retry_secs: v["upload_retry_secs"].as_f64()?,
+        peer_cache_max: (v["peer_cache_max"].as_u64()? as usize).max(1),
         host_base: fetch["host_base"].as_str()?.trim_end_matches('/').to_string(),
         host_path: fetch["host_path"].as_str()?.to_string(),
         backend_path: fetch["backend_path"].as_str()?.to_string(),
+        v1_path: fetch["v1_path"].as_str()?.to_string(),
         timeout_secs: fetch["timeout_secs"].as_u64()?,
     })
 }
@@ -228,9 +366,15 @@ pub fn skin_backend_url(cfg: &SkinConfig, backend_base: &str, id: &str) -> Strin
     format!("{}{}", backend_base.trim_end_matches('/'), cfg.backend_path.replace("{id}", id))
 }
 
-/// The URLs a skin is tried at, in order: the skins host first, then the backend route ([`skin_backend_url`]).
+/// The URL a skin is fetched from on lr_server: `GET <backend base>/api/v1/skins/<id>`.
+pub fn skin_v1_url(cfg: &SkinConfig, backend_base: &str, id: &str) -> String {
+    format!("{}{}", backend_base.trim_end_matches('/'), cfg.v1_path.replace("{id}", id))
+}
+
+/// The URLs a skin is tried at, in order: lr_server's own route (plain http to the backend the game talks to), then the
+/// skins host, then the Godot backend route ([`skin_backend_url`]).
 pub fn fetch_urls(cfg: &SkinConfig, backend_base: &str, id: &str) -> Vec<String> {
-    vec![skin_host_url(cfg, id), skin_backend_url(cfg, backend_base, id)]
+    vec![skin_v1_url(cfg, backend_base, id), skin_host_url(cfg, id), skin_backend_url(cfg, backend_base, id)]
 }
 
 /// Tries each URL in order with `get` and returns the first body that verifies as skin `id`. A reply that fails or does
@@ -245,6 +389,34 @@ pub fn write_skin_file(dir: &Path, id: &str, bytes: &[u8]) -> std::io::Result<()
     let tmp = dir.join(format!("{id}.tmp"));
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, cached_path(dir, id))
+}
+
+/// How many skins of other runners are kept (the config's `peer_cache_max`).
+pub fn peer_cache_max() -> usize {
+    config().map_or(16, |c| c.peer_cache_max)
+}
+
+/// Keeps the `keep` newest skin files of the cache folder and deletes the rest (a runner's skin is fetched again when it
+/// is next seen). Only `<64 hex>.png` files are touched.
+pub fn prune_cache(dir: &Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            let stem = path.file_stem()?.to_str()?.to_string();
+            let is_png = path.extension().is_some_and(|x| x == "png");
+            let meta = e.metadata().ok().filter(|m| m.is_file())?;
+            (is_png && is_skin_hash(&stem)).then(|| (meta.modified().unwrap_or(std::time::UNIX_EPOCH), path))
+        })
+        .collect();
+    if files.len() <= keep {
+        return;
+    }
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, path) in files.into_iter().skip(keep) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// The website the runners' skins are fetched from, set once at startup (see `app`). Empty means fetching is off.
@@ -279,6 +451,7 @@ pub fn fetch_skin_in_background(id: &str) {
         });
         if let Some(bytes) = fetched {
             let _ = write_skin_file(&dir, &id, &bytes);
+            prune_cache(&dir, cfg.peer_cache_max);
         }
     });
 }
@@ -323,23 +496,86 @@ fn remember_uploaded(id: &str) {
     }
 }
 
-/// Uploads the skin `id` (a list id, not DEFAULT) to the website in the background, when signed in (`session_token`
-/// set) and not offline. A skin the website already has (see [`uploaded_ids`]) is not sent again.
-pub fn upload_in_background(cfg: BackendConfig, session_token: String, id: String) {
-    if session_token.is_empty() || cfg.offline {
-        return;
+/// When the worn skin is next offered to the website. A new skin is offered at once; one the website has not taken
+/// (not signed in yet, a failed upload) is offered again after the retry delay (Godot skin_sync.gd RETRY_SECONDS).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UploadPlan {
+    hash: String,
+    next_at: f64,
+}
+
+impl UploadPlan {
+    /// True when `hash` should be uploaded now: signed in, a real skin hash the website does not hold yet, and either
+    /// a hash not offered before or past the retry time. Answering true starts the retry clock.
+    /// `uploaded` lists the ids the website holds; it is only asked for when an upload could be due, because it reads a file.
+    pub fn due(&mut self, now: f64, hash: &str, signed_in: bool, uploaded: impl FnOnce() -> Vec<String>, retry_secs: f64) -> bool {
+        if self.hash != hash {
+            self.hash = hash.to_string();
+            self.next_at = 0.0;
+        }
+        if !signed_in || !is_skin_hash(hash) || now < self.next_at {
+            return false;
+        }
+        self.next_at = now + retry_secs;
+        !holds(&uploaded(), hash)
     }
-    let Some((hash, bytes)) = skin_png(&id) else { return };
-    if holds(&uploaded_ids(), &hash) {
-        return;
+}
+
+/// Resolves the worn skin ([`worn_skin`]) once per change instead of once per frame. The key is what the result depends
+/// on: the saved list id, the layout read at APPLY, the ARMS setting, and [`generation`] (an APPLY rewrites custom.png
+/// under the same list id).
+#[derive(Debug, Default)]
+pub struct WornTracker {
+    key: Option<(String, bool, String, u64)>,
+    worn: Option<Worn>,
+}
+
+impl WornTracker {
+    /// Makes sure the worn skin matches the settings; `resolve` runs only when the key changed. True when the worn hash or
+    /// arm style differs from before (the first call is always a change).
+    pub fn update(&mut self, skin: &str, skin_slim: bool, arms: &str, generation: u64, resolve: impl FnOnce() -> Worn) -> bool {
+        let key = (skin.to_string(), skin_slim, arms.to_string(), generation);
+        if self.key.as_ref() == Some(&key) {
+            return false;
+        }
+        self.key = Some(key);
+        let next = resolve();
+        let changed = self.worn.as_ref() != Some(&next);
+        self.worn = Some(next);
+        changed
+    }
+
+    /// The worn skin; DEFAULT and classic until the first [`WornTracker::update`].
+    pub fn get(&self) -> Worn {
+        self.worn.clone().unwrap_or(Worn { hash: SKIN_DEFAULT.to_string(), slim: false })
+    }
+}
+
+/// True while an upload thread runs, so a slow upload is never doubled.
+static UPLOADING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Uploads the skin known by `hash` (its verified copy in the skins folder or the cache) to the website in the
+/// background, when signed in (`session_token` set) and not offline. Returns true when an upload was started; a skin the
+/// website already has (see [`uploaded_ids`]) is not sent again. A failure is dropped here: the caller's [`UploadPlan`]
+/// offers the skin again after its retry delay.
+pub fn upload_in_background(cfg: BackendConfig, session_token: String, hash: String) -> bool {
+    use std::sync::atomic::Ordering;
+    if session_token.is_empty() || cfg.offline || !is_skin_hash(&hash) || holds(&uploaded_ids(), &hash) {
+        return false;
+    }
+    let Some(bytes) = read_skin(&hash) else { return false };
+    if UPLOADING.swap(true, Ordering::SeqCst) {
+        return false;
     }
     std::thread::spawn(move || {
-        if let Ok(server_id) = api::upload_skin(&cfg, &session_token, &bytes) {
-            if server_id == hash {
-                remember_uploaded(&hash);
-            }
+        match api::upload_skin(&cfg, &session_token, &bytes) {
+            Ok(server_id) if server_id == hash => remember_uploaded(&hash),
+            Ok(_) => eprintln!("skins: the website stored a different id for {hash}"),
+            Err(e) => eprintln!("skins: upload of {hash} failed: {e:?}"),
         }
+        UPLOADING.store(false, Ordering::SeqCst);
     });
+    true
 }
 
 /// The schema of a catalogue entry (data/skins/*.json), the Godot `lr.skin/1` format.
@@ -404,6 +640,10 @@ pub struct SkinRules {
     pub url_port: u16,
     pub blocked_hosts: Vec<String>,
     pub blocked_suffixes: Vec<String>,
+    /// Seconds a key is held in a SKIN text box before it repeats.
+    pub repeat_delay_secs: f64,
+    /// How many times a second a held key repeats once it has started.
+    pub repeat_per_sec: f64,
     pub name_max: usize,
     pub name_chars: String,
     pub lookup_url: String,
@@ -433,6 +673,8 @@ pub fn parse_rules(text: &str) -> Option<SkinRules> {
         url_port: url["port"].as_u64()? as u16,
         blocked_hosts: strings(&url["blocked_hosts"]),
         blocked_suffixes: strings(&url["blocked_suffixes"]),
+        repeat_delay_secs: v["input"]["repeat_delay_secs"].as_f64()?,
+        repeat_per_sec: v["input"]["repeat_per_sec"].as_f64()?,
         name_max: mc["name_max"].as_u64()? as usize,
         name_chars: mc["name_chars"].as_str()?.to_string(),
         lookup_url: mc["lookup_url"].as_str()?.to_string(),
@@ -498,6 +740,17 @@ pub fn url_refusal(url: &str, rules: &SkinRules, allowed_hosts: &[&str]) -> Opti
     None
 }
 
+/// What the SKIN tab says when a download fails: the real reason, not a blanket "the download failed".
+pub fn fetch_error_text(e: &crate::net::NetError) -> String {
+    use crate::net::NetError;
+    match e {
+        NetError::Unsupported(_) => "this build cannot make https connections yet".to_string(),
+        NetError::Timeout => "the server did not answer in time".to_string(),
+        NetError::Offline => "the game is offline".to_string(),
+        _ => "the download failed".to_string(),
+    }
+}
+
 /// GET `url` over https with the rules' timeout and `limit` bytes. Only a 200 reply's body is returned.
 pub fn fetch_https(url: &str, rules: &SkinRules, allowed_hosts: &[&str], limit: usize) -> Result<Vec<u8>, String> {
     if let Some(why) = url_refusal(url, rules, allowed_hosts) {
@@ -507,7 +760,7 @@ pub fn fetch_https(url: &str, rules: &SkinRules, allowed_hosts: &[&str], limit: 
         .timeout(std::time::Duration::from_secs(rules.url_timeout_secs))
         .limit(limit)
         .send()
-        .map_err(|_| "the download failed".to_string())?;
+        .map_err(|e| fetch_error_text(&e))?;
     if reply.status != 200 {
         return Err(format!("the server answered {}", reply.status));
     }
@@ -537,6 +790,8 @@ pub struct ValidSkin {
     pub slim: bool,
     /// The 64x64 RGBA pixels of `png` (16384 bytes).
     pub rgba: Vec<u8>,
+    /// True when the file was the old 64x32 format, upgraded to 64x64 (such a skin has only classic arms).
+    pub legacy: bool,
 }
 
 /// The pixel rectangles of data/skins/rules.json `layout`: [x, y, w, h].
@@ -643,9 +898,15 @@ fn mirror_box(px: &mut [u8], from: [u32; 2], to: [u32; 2]) {
 }
 
 /// Validates and normalises a skin file, never trusting the bytes (player_skin.gd `validate`): size cap, PNG signature,
-/// header dimensions (64x64 or the old 64x32, checked before decoding), a real decode, the old format upgraded to
-/// 64x64, the slim layout read, the base layer forced opaque, and a canonical re-encoding that is hashed.
+/// header dimensions (64x64 or the old 64x32, checked before decoding), the strict structure check (every chunk checksum,
+/// a legal format, pixel data of exactly the promised size), a real decode through the fallible decoder, the old format
+/// upgraded to 64x64, the slim layout read, the base layer forced opaque, and a canonical re-encoding that is hashed.
 pub fn validate_skin(bytes: &[u8], cap: usize) -> Result<ValidSkin, String> {
+    validate_skin_with(bytes, cap, upload_max_bytes())
+}
+
+/// [`validate_skin`] with the website's size cap for the canonical PNG given too.
+pub fn validate_skin_with(bytes: &[u8], cap: usize, upload_cap: usize) -> Result<ValidSkin, String> {
     if bytes.is_empty() {
         return Err("the file is empty".to_string());
     }
@@ -659,34 +920,24 @@ pub fn validate_skin(bytes: &[u8], cap: usize) -> Result<ValidSkin, String> {
         return Err("a skin must be 64x64 pixels".to_string());
     }
     let layout = layout().ok_or_else(|| "the skin rules are missing".to_string())?;
-    let img = macroquad::prelude::Image::from_file_with_format(bytes, Some(macroquad::prelude::ImageFormat::Png))
-        .map_err(|_| "the PNG could not be read".to_string())?;
-    let (w, h) = (img.width as u32, img.height as u32);
+    let limits = Limits { max_bytes: cap, ..png_limits() };
+    let (w, h, decoded) = skin_png::decode_rgba(bytes, limits, Shape::Local)?;
     let legacy = w == SKIN_SIZE && h == SKIN_SIZE / 2;
-    if w != SKIN_SIZE || (h != SKIN_SIZE && !legacy) || img.bytes.len() != (w * h * 4) as usize {
-        return Err("a skin must be 64x64 pixels".to_string());
-    }
     let mut px = vec![0u8; (SKIN_SIZE * SKIN_SIZE * 4) as usize];
-    px[..img.bytes.len()].copy_from_slice(&img.bytes);
+    px[..decoded.len()].copy_from_slice(&decoded);
     if legacy {
         for (from, to) in &layout.legacy_mirror {
             mirror_box(&mut px, *from, *to);
         }
     }
     let slim = !legacy && slim_with(&layout, &px, SKIN_SIZE, SKIN_SIZE);
-    for y in 0..SKIN_SIZE {
-        for x in 0..SKIN_SIZE {
-            if !is_overlay_pixel(&layout, x, y) {
-                px[((y * SKIN_SIZE + x) * 4 + 3) as usize] = 255;
-            }
-        }
-    }
+    force_opaque_base(&layout, &mut px);
     let png = encode_png(&px, SKIN_SIZE, SKIN_SIZE);
     // The canonical bytes are what is uploaded and hashed, and the website refuses more than its cap.
-    if png.len() > upload_max_bytes() {
-        return Err(format!("the skin is too detailed to upload (over {} KB once saved)", upload_max_bytes() / 1024));
+    if png.len() > upload_cap {
+        return Err(format!("the skin is too detailed to upload (over {} KB once saved)", upload_cap / 1024));
     }
-    Ok(ValidSkin { hash: sha256_hex(&png), png, slim, rgba: px })
+    Ok(ValidSkin { hash: sha256_hex(&png), png, slim, rgba: px, legacy })
 }
 
 /// The arm style setting of the SKIN tab (ids as `settings_panel.rs` ARMS).
@@ -752,16 +1003,7 @@ pub fn resolve_arms(setting: ArmsSetting, is_slim: bool) -> bool {
 // A small PNG writer: Sub filter, LZ77 and one fixed-Huffman deflate block. Dependency-free and deterministic, so two
 // clients that normalise the same pixels get the same bytes and the same id.
 
-fn crc32(data: &[u8]) -> u32 {
-    let mut crc = !0u32;
-    for &b in data {
-        crc ^= b as u32;
-        for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
-        }
-    }
-    !crc
-}
+use crate::shared::skin_png::crc32;
 
 fn adler32(data: &[u8]) -> u32 {
     let (mut a, mut b) = (1u32, 0u32);
@@ -898,10 +1140,10 @@ pub fn encode_png(rgba: &[u8], w: u32, h: u32) -> Vec<u8> {
     out
 }
 
-/// FROM URL: a 64x64 PNG downloaded from an https link. Returns the validated bytes.
-pub fn fetch_url_skin(url: &str, rules: &SkinRules) -> Result<Vec<u8>, String> {
+/// FROM URL: a 64x64 PNG downloaded from an https link. Returns the validated skin (canonical bytes and arm layout).
+pub fn fetch_url_skin(url: &str, rules: &SkinRules) -> Result<ValidSkin, String> {
     let bytes = fetch_https(url, rules, &[], read_limit())?;
-    skin_from_png(bytes).map(|(_, b)| b)
+    validate_skin(&bytes, max_bytes())
 }
 
 /// True when `name` is a Minecraft username by the rules: 1 to `name_max` characters, all from `name_chars`.
@@ -911,17 +1153,26 @@ pub fn valid_minecraft_name(name: &str, rules: &SkinRules) -> bool {
 
 /// The skin URL in a Mojang profile: the `textures` property (base64 JSON) with a SKIN url on the textures host.
 pub fn profile_skin_url(profile: &serde_json::Value, rules: &SkinRules) -> Option<String> {
+    profile_skin(profile, rules).map(|(url, _)| url)
+}
+
+/// The skin URL in a Mojang profile and whether the profile says the model is slim (Alex): the SKIN texture's
+/// `metadata.model` (Godot `PlayerSkin` reads the same field and lets it win over the pixel detection).
+pub fn profile_skin(profile: &serde_json::Value, rules: &SkinRules) -> Option<(String, bool)> {
     let props = profile["properties"].as_array()?;
     let prop = props.iter().find(|p| p["name"].as_str() == Some("textures"))?;
     let raw = crate::content::embedded::base64_decode(prop["value"].as_str()?);
     let decoded: serde_json::Value = serde_json::from_slice(&raw).ok()?;
-    let url = decoded["textures"]["SKIN"]["url"].as_str()?;
-    url_refusal(url, rules, &[rules.textures_host.as_str()]).is_none().then(|| url.to_string())
+    let skin = &decoded["textures"]["SKIN"];
+    let url = skin["url"].as_str()?;
+    let slim = skin["metadata"]["model"].as_str() == Some("slim");
+    url_refusal(url, rules, &[rules.textures_host.as_str()]).is_none().then(|| (url.to_string(), slim))
 }
 
 /// FROM MC NAME: the name's skin through Mojang's APIs (name to uuid, uuid to profile, then the textures host). Returns
-/// the validated PNG bytes.
-pub fn fetch_minecraft_skin(name: &str, rules: &SkinRules) -> Result<Vec<u8>, String> {
+/// the validated skin; the profile's slim model wins over the pixel detection, except for an old 64x32 skin, which has
+/// only classic arms.
+pub fn fetch_minecraft_skin(name: &str, rules: &SkinRules) -> Result<ValidSkin, String> {
     let name = name.trim();
     if !valid_minecraft_name(name, rules) {
         return Err("a Minecraft name is 1-16 letters, numbers or underscores".to_string());
@@ -938,13 +1189,24 @@ pub fn fetch_minecraft_skin(name: &str, rules: &SkinRules) -> Result<Vec<u8>, St
     let body = fetch_https(&profile_url, rules, &[rules.profile_host.as_str()], read_limit())?;
     let profile: serde_json::Value =
         serde_json::from_slice(&body).map_err(|_| "the profile could not be read".to_string())?;
-    let url = profile_skin_url(&profile, rules).ok_or_else(|| "that player has no skin".to_string())?;
+    let (url, slim_model) = profile_skin(&profile, rules).ok_or_else(|| "that player has no skin".to_string())?;
     let file = fetch_https(&url, rules, &[rules.textures_host.as_str()], read_limit())?;
-    skin_from_png(file).map(|(_, b)| b)
+    let mut valid = validate_skin(&file, max_bytes())?;
+    valid.slim = (valid.slim || slim_model) && !valid.legacy;
+    Ok(valid)
 }
 
 /// The list id a picked skin is saved under: `custom.png` in the skins folder.
 pub const CUSTOM_STEM: &str = "custom";
+
+/// Counts the skins saved with [`save_custom_skin`], so a caller that resolved the worn skin once knows to resolve it
+/// again after an APPLY even though the list id (always CUSTOM) did not change.
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The number of skins saved as the user's own so far this run.
+pub fn generation() -> u64 {
+    GENERATION.load(std::sync::atomic::Ordering::SeqCst)
+}
 
 /// Saves validated skin bytes as the user's own skin (`<skins folder>/custom.png`), replacing it in one step. Returns
 /// the list id ([`clean_skin`] of the stem).
@@ -954,6 +1216,7 @@ pub fn save_custom_skin(bytes: &[u8]) -> std::io::Result<String> {
     let tmp = dir.join(format!("{CUSTOM_STEM}.tmp"));
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, dir.join(format!("{CUSTOM_STEM}.png")))?;
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     Ok(clean_skin(CUSTOM_STEM))
 }
 
@@ -965,12 +1228,14 @@ mod tests {
     fn skin_id_is_the_sha256_of_the_png_bytes() {
         assert_eq!(sha256_hex(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
         assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-        let bytes = png_head(64, 64);
+        let bytes = fixture_png(false);
         let id = sha256_hex(&bytes);
         assert_eq!(id.len(), 64);
         assert!(verify_skin(&id, &bytes));
         assert!(!verify_skin(&id, &png_head(32, 32)), "a wrong-size PNG never verifies");
         assert!(!verify_skin(&sha256_hex(b"other"), &bytes), "bytes must hash to the id");
+        let header_only = png_head(64, 64);
+        assert!(!verify_skin(&sha256_hex(&header_only), &header_only), "a header with the right hash is still no skin");
     }
 
     fn png_head(w: u32, h: u32) -> Vec<u8> {
@@ -1057,18 +1322,20 @@ mod tests {
     }
 
     #[test]
-    fn skins_host_is_tried_before_the_backend_route() {
+    fn the_servers_route_is_tried_first_then_the_host_then_the_legacy_route() {
         let id = sha256_hex(b"skin");
         let cfg = shipped_config();
         let urls = fetch_urls(&cfg, "http://host:8105/", &id);
-        assert_eq!(urls.len(), 2);
-        assert_eq!(urls[0], skin_host_url(&cfg, &id));
-        assert_eq!(urls[1], skin_backend_url(&cfg, "http://host:8105/", &id));
+        assert_eq!(urls.len(), 3);
+        assert_eq!(urls[0], skin_v1_url(&cfg, "http://host:8105/", &id), "lr_server's route first: it is plain http");
+        assert_eq!(urls[1], skin_host_url(&cfg, &id));
+        assert_eq!(urls[2], skin_backend_url(&cfg, "http://host:8105/", &id));
+        assert_eq!(urls[0], format!("http://host:8105/api/v1/skins/{id}"));
     }
 
     #[test]
-    fn fetch_uses_the_host_when_it_answers_with_a_verified_skin() {
-        let bytes = png_head(64, 64);
+    fn fetch_stops_at_the_first_route_that_answers_with_a_verified_skin() {
+        let bytes = fixture_png(false);
         let id = sha256_hex(&bytes);
         let cfg = shipped_config();
         let urls = fetch_urls(&cfg, "http://host:8105", &id);
@@ -1078,47 +1345,47 @@ mod tests {
             Some(bytes.clone())
         });
         assert_eq!(got, Some(bytes));
-        assert_eq!(asked, vec![skin_host_url(&cfg, &id)], "the backend is not asked once the host answers");
+        assert_eq!(asked, vec![skin_v1_url(&cfg, "http://host:8105", &id)], "nothing else is asked once a route answers");
     }
 
     #[test]
-    fn a_failing_host_falls_back_to_the_backend() {
-        let bytes = png_head(64, 64);
+    fn a_failing_route_falls_through_to_the_next() {
+        let bytes = fixture_png(false);
         let id = sha256_hex(&bytes);
         let cfg = shipped_config();
         let urls = fetch_urls(&cfg, "http://host:8105", &id);
         let mut asked = Vec::new();
         let got = first_verified_skin(&urls, &id, |url| {
             asked.push(url.to_string());
-            if url.starts_with(&cfg.host_base) {
+            if url.starts_with(&cfg.host_base) || url.contains("/api/v1/") {
                 None
             } else {
                 Some(bytes.clone())
             }
         });
         assert_eq!(got, Some(bytes));
-        assert_eq!(asked, vec![skin_host_url(&cfg, &id), skin_backend_url(&cfg, "http://host:8105", &id)]);
+        assert_eq!(asked, fetch_urls(&cfg, "http://host:8105", &id));
     }
 
     #[test]
-    fn a_host_reply_that_does_not_verify_falls_back_to_the_backend() {
-        let bytes = png_head(64, 64);
+    fn a_reply_that_does_not_verify_falls_through_to_the_next_route() {
+        let bytes = fixture_png(false);
         let id = sha256_hex(&bytes);
         let cfg = shipped_config();
         let urls = fetch_urls(&cfg, "http://host:8105", &id);
         let got = first_verified_skin(&urls, &id, |url| {
-            if url.starts_with(&cfg.host_base) {
-                Some(png_head(32, 32))
+            if url.starts_with(&cfg.host_base) || url.contains("/api/v1/") {
+                Some(png_head(64, 64))
             } else {
                 Some(bytes.clone())
             }
         });
-        assert_eq!(got, Some(bytes), "a wrong-hash or wrong-size host reply is not used");
+        assert_eq!(got, Some(bytes), "a header-only or wrong-hash reply is not used");
     }
 
     #[test]
-    fn nothing_verifies_when_both_routes_fail() {
-        let bytes = png_head(64, 64);
+    fn nothing_verifies_when_every_route_fails() {
+        let bytes = fixture_png(false);
         let id = sha256_hex(&bytes);
         let urls = fetch_urls(&shipped_config(), "http://host:8105", &id);
         assert_eq!(first_verified_skin(&urls, &id, |_| None), None);
@@ -1128,7 +1395,7 @@ mod tests {
     fn a_cached_skin_is_not_fetched_again() {
         let dir = std::env::temp_dir().join(format!("lr_skins_cache_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let bytes = png_head(64, 64);
+        let bytes = fixture_png(false);
         let id = sha256_hex(&bytes);
         assert!(fetch_needed(&dir, &id), "nothing cached yet");
         write_skin_file(&dir, &id, &bytes).unwrap();
@@ -1204,9 +1471,8 @@ mod tests {
     #[test]
     fn from_url_rejects_non_64_by_64_and_non_png() {
         assert!(skin_from_png(fixture_png(false)).is_ok());
-        assert_eq!(
-            skin_from_png(png_head(64, 64)).unwrap_err(),
-            "the PNG could not be read",
+        assert!(
+            skin_from_png(png_head(64, 64)).unwrap_err().starts_with("the PNG could not be read"),
             "a bare header is not a skin: the pixels must decode"
         );
         assert_eq!(skin_from_png(png_head(32, 32)).unwrap_err(), "a skin must be 64x64 pixels");
@@ -1220,7 +1486,11 @@ mod tests {
     #[test]
     fn config_holds_the_godot_standard_values() {
         let c = shipped_config();
-        assert_eq!(c.upload_max_bytes, 16 * 1024, "the website's SKIN_MAX_BYTES (lr_server skins.rs)");
+        assert_eq!(c.upload_max_bytes, 65536, "the website's SKIN_MAX_BYTES, 64 KB like Godot's skins.mjs:16");
+        assert_eq!(c.png_max_chunks, 64);
+        assert_eq!(c.upload_retry_secs, 60.0, "RETRY_SECONDS (game/autoload/skin_sync.gd:18)");
+        assert_eq!(c.peer_cache_max, 16, "PEER_CACHE_MAX (game/player/player_skin.gd)");
+        assert_eq!(c.v1_path, "/api/v1/skins/{id}", "lr_server routes.rs");
         assert_eq!(c.max_bytes, 65536, "PlayerSkin.MAX_BYTES (game/player/player_skin.gd:16), not the old 16 KB");
         assert_eq!(read_limit(), 65537, "FETCH_LIMIT_BYTES = MAX_BYTES + 1 (game/autoload/skin_sync.gd:23)");
         assert_eq!(c.host_base, "https://skins.kyttuslab.org");
@@ -1354,7 +1624,7 @@ mod tests {
         let old = encode_png(&fixture_rgba(false)[..64 * 32 * 4], 64, 32);
         let (_, canonical) = skin_from_png(old).expect("an old skin upgrades");
         assert!(png_is_skin_size(&canonical));
-        // Pure noise cannot compress: it is refused with a message, never uploaded over the cap.
+        // Pure noise cannot compress: it is 16 KB of pixels, and a 16 KB website cap would refuse it with a message.
         let mut state = 12345u32;
         let noise: Vec<u8> = (0..64 * 64 * 4)
             .map(|_| {
@@ -1362,8 +1632,10 @@ mod tests {
                 (state >> 24) as u8
             })
             .collect();
-        let err = skin_from_png(encode_png(&noise, 64, 64)).unwrap_err();
+        let noisy = encode_png(&noise, 64, 64);
+        let err = validate_skin_with(&noisy, 65536, 16 * 1024).unwrap_err();
         assert!(err.contains("too detailed"), "{err}");
+        assert!(skin_from_png(noisy).is_ok(), "a detailed skin is fine under the 64 KB cap Godot uses");
     }
 
     #[test]
@@ -1435,7 +1707,7 @@ mod tests {
         assert_eq!(validate_skin(&fixture_png(false), 100).unwrap_err(), "the file is too big");
         let mut broken = fixture_png(false);
         broken.truncate(60);
-        assert_eq!(validate_skin(&broken, 65536).unwrap_err(), "the PNG could not be read", "pixels must really decode");
+        assert!(validate_skin(&broken, 65536).unwrap_err().starts_with("the PNG could not be read"), "pixels must really decode");
     }
 
     #[test]
@@ -1449,6 +1721,251 @@ mod tests {
         let edited = parse_layout(&text.replace("[[32, 0, 32, 16], ", "[")).expect("edited layout parses");
         assert!(!is_overlay_pixel(&edited, 40, 5), "a changed rect in data changes what is overlay");
         assert!(parse_layout(&text.replace("\"overlay_rects\"", "\"nope\"")).is_none(), "a missing list is refused");
+    }
+
+    // ---- hostile skins, bounded reads, collision-free ids, the worn skin, the catalogue ----
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("lr_skins_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_peer_cache_keeps_only_the_newest_skins_and_only_skin_files() {
+        let dir = temp_dir("prune");
+        let ids: Vec<String> = (0..5).map(|i| format!("{:064x}", i + 1)).collect();
+        for (i, id) in ids.iter().enumerate() {
+            let path = dir.join(format!("{id}.png"));
+            std::fs::write(&path, b"x").unwrap();
+            let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000 + i as u64);
+            std::fs::File::options().write(true).open(&path).unwrap().set_modified(when).unwrap();
+        }
+        std::fs::write(dir.join("notes.png"), b"x").unwrap();
+        prune_cache(&dir, 2);
+        for (i, id) in ids.iter().enumerate() {
+            assert_eq!(dir.join(format!("{id}.png")).exists(), i >= 3, "skin {i}: only the two newest stay");
+        }
+        assert!(dir.join("notes.png").exists(), "a file that is not a skin hash is never touched");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A PNG with the base layer fully transparent: every pixel clear.
+    fn transparent_png() -> Vec<u8> {
+        encode_png(&vec![0u8; 64 * 64 * 4], 64, 64)
+    }
+
+    #[test]
+    fn a_header_only_skin_never_verifies_and_never_reaches_a_decoder() {
+        let head = png_head(64, 64);
+        let id = sha256_hex(&head);
+        assert!(!verify_skin(&id, &head));
+        let dir = temp_dir("hostile_cache");
+        write_skin_file(&dir, &id, &head).unwrap();
+        assert!(fetch_needed(&dir, &id), "a hostile cached file is fetched again, not trusted");
+        assert!(remote_skin_rgba(&head).is_err(), "the texture path refuses it with an Err, not a panic");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_hostile_remote_shape_is_an_error_not_a_panic() {
+        let good = fixture_png(false);
+        let mut bad_crc = good.clone();
+        bad_crc[40] ^= 1;
+        let mut truncated_idat = good.clone();
+        truncated_idat.truncate(good.len() / 2);
+        let wrong_size = encode_png(&vec![255u8; 32 * 32 * 4], 32, 32);
+        let old_shape = encode_png(&fixture_rgba(false)[..64 * 32 * 4], 64, 32);
+        for (what, bytes) in [
+            ("bad crc", bad_crc),
+            ("truncated", truncated_idat),
+            ("32x32", wrong_size),
+            ("64x32 is not stored", old_shape),
+            ("header only", png_head(64, 64)),
+            ("not a png", b"GIF89a not a png at all".to_vec()),
+            ("empty", Vec::new()),
+        ] {
+            assert!(remote_skin_rgba(&bytes).is_err(), "{what}");
+            assert!(!verify_skin(&sha256_hex(&bytes), &bytes), "{what}");
+        }
+        assert!(remote_skin_rgba(&good).is_ok());
+    }
+
+    #[test]
+    fn a_transparent_remote_base_is_repaired_to_opaque_like_godot() {
+        let px = remote_skin_rgba(&transparent_png()).expect("the structure is fine, the base is repaired");
+        assert_eq!(px.len(), 64 * 64 * 4);
+        let layout = shipped_layout();
+        for y in 0..64 {
+            for x in 0..64 {
+                let alpha = px[px_at(x, y, 64) + 3];
+                if is_overlay_pixel(&layout, x, y) {
+                    assert_eq!(alpha, 0, "overlay pixel {x},{y} may stay clear");
+                } else {
+                    assert_eq!(alpha, 255, "base pixel {x},{y} is forced opaque, so the runner is never invisible");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_noisy_skin_under_64_kb_is_accepted_with_its_real_size() {
+        let mut state = 7u32;
+        let noise: Vec<u8> = (0..64 * 64 * 4)
+            .map(|_| {
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                (state >> 24) as u8
+            })
+            .collect();
+        let png = encode_png(&noise, 64, 64);
+        assert!(png.len() > 16 * 1024 && png.len() <= 64 * 1024, "{} bytes", png.len());
+        let (hash, canonical) = skin_from_png(png).expect("a detailed skin is valid (Godot MAX_BYTES 64 KB)");
+        assert!(verify_skin(&hash, &canonical), "and the canonical bytes pass the strict remote check");
+    }
+
+    #[test]
+    fn reads_never_load_more_than_the_cap() {
+        let dir = temp_dir("capped_reads");
+        let big = dir.join("huge.png");
+        let mut head = png_head(64, 64);
+        head.resize(max_bytes() + 1, 0);
+        std::fs::write(&big, &head).unwrap();
+        assert!(read_capped(&big, max_bytes()).is_err(), "one byte over the cap is refused");
+        assert!(!file_is_skin(&big), "a file over the cap is not listed as a skin");
+        assert!(list_skins(Some(&dir)).len() == 1, "only DEFAULT");
+        let ok = dir.join("ok.png");
+        std::fs::write(&ok, fixture_png(false)).unwrap();
+        assert_eq!(read_capped(&ok, max_bytes()).unwrap(), fixture_png(false));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_named_png_is_ignored_and_never_opened() {
+        let dir = temp_dir("fifo");
+        let fifo = dir.join("x.png");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status().map(|s| s.success()).unwrap_or(false);
+        if made {
+            assert_eq!(list_skins(Some(&dir)), vec![SKIN_DEFAULT.to_string()], "a FIFO is not a skin and does not hang the listing");
+            assert!(read_capped(&fifo, max_bytes()).is_err());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_that_leaves_the_folder_is_not_listed() {
+        let dir = temp_dir("links");
+        let outside = temp_dir("links_outside");
+        std::fs::write(outside.join("secret.png"), fixture_png(false)).unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.png"), dir.join("linked.png")).unwrap();
+        std::fs::write(dir.join("mine.png"), fixture_png(false)).unwrap();
+        assert_eq!(list_skins(Some(&dir)), vec!["DEFAULT".to_string(), "MINE".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn files_with_the_same_cleaned_id_stay_distinct_and_resolve_by_exact_file() {
+        let dir = temp_dir("ids");
+        let a = fixture_png(false);
+        let b = fixture_png(true);
+        std::fs::write(dir.join("a-b.png"), &a).unwrap();
+        std::fs::write(dir.join("ab.png"), &b).unwrap();
+        let files = list_skin_files(&dir);
+        let ids: Vec<&str> = files.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(ids, vec!["AB", "AB_2"], "the later file gets a suffix, in name order, not directory order");
+        assert_eq!(files[0].name, "a-b");
+        assert_eq!(files[1].name, "ab");
+        assert_eq!(load_skin_in(&dir, "AB").unwrap().hash, skin_from_png(a).unwrap().0, "AB is a-b.png");
+        assert_eq!(load_skin_in(&dir, "AB_2").unwrap().hash, skin_from_png(b).unwrap().0, "AB_2 is ab.png");
+        let long = "x".repeat(40);
+        std::fs::write(dir.join(format!("{long}1.png")), fixture_png(false)).unwrap();
+        std::fs::write(dir.join(format!("{long}2.png")), fixture_png(false)).unwrap();
+        for f in list_skin_files(&dir) {
+            assert!(f.id.chars().count() <= 24, "{} fits an id", f.id);
+        }
+        assert_eq!(list_skins(Some(&dir)).len(), 1 + 4, "all four are listed with distinct ids");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_worn_skin_resolves_hash_and_slim_once_and_follows_the_applied_file() {
+        let skins = temp_dir("worn_skins");
+        let cache = temp_dir("worn_cache");
+        let first = fixture_png(true);
+        std::fs::write(skins.join("custom.png"), &first).unwrap();
+        let w = worn_skin_in(Some(&skins), Some(&cache), "CUSTOM", true, ArmsSetting::Auto);
+        let (hash, canonical) = skin_from_png(first).unwrap();
+        assert_eq!(w.hash, hash, "the worn id is the canonical hash, not the list id");
+        assert!(w.slim, "AUTO follows the layout read when the skin was applied");
+        assert_eq!(read_capped(&cached_path(&cache, &hash), max_bytes()).unwrap(), canonical, "the file is cached under its hash");
+        assert!(worn_skin_in(Some(&skins), Some(&cache), "CUSTOM", true, ArmsSetting::Classic).slim == false, "CLASSIC forces classic");
+        assert!(worn_skin_in(Some(&skins), Some(&cache), "CUSTOM", false, ArmsSetting::Slim).slim, "SLIM forces slim");
+        // a second picture under the same list id is a different worn skin
+        let mut other = fixture_rgba(false);
+        other[px_at(10, 10, 64)] ^= 0xff; // a visible pixel of the head
+        std::fs::write(skins.join("custom.png"), encode_png(&other, 64, 64)).unwrap();
+        let w2 = worn_skin_in(Some(&skins), Some(&cache), "CUSTOM", false, ArmsSetting::Auto);
+        assert_ne!(w2.hash, w.hash, "applying a second skin changes the hash even though the id stayed CUSTOM");
+        assert!(!w2.slim);
+        let gone = worn_skin_in(Some(&skins), Some(&cache), "MISSING", true, ArmsSetting::Auto);
+        assert_eq!(gone.hash, SKIN_DEFAULT, "an unknown or deleted skin falls back to the default");
+        assert_eq!(worn_skin_in(None, None, "CUSTOM", false, ArmsSetting::Auto).hash, SKIN_DEFAULT);
+        let _ = std::fs::remove_dir_all(&skins);
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn a_new_hash_uploads_at_once_and_a_failed_one_is_retried_after_the_delay() {
+        let (a, b) = ("a".repeat(64), "b".repeat(64));
+        let mut plan = UploadPlan::default();
+        assert!(!plan.due(0.0, &a, false, Vec::new, 60.0), "not signed in: nothing is sent");
+        assert!(plan.due(1.0, &a, true, Vec::new, 60.0), "signed in: the new skin goes at once");
+        assert!(!plan.due(30.0, &a, true, Vec::new, 60.0), "not again before the retry delay");
+        assert!(plan.due(61.5, &a, true, Vec::new, 60.0), "a skin the website still lacks is offered again");
+        assert!(!plan.due(200.0, &a, true, || vec![a.clone()], 60.0), "a skin the website holds is never sent again");
+        assert!(plan.due(201.0, &b, true, || vec![a.clone()], 60.0), "a second skin in the same session uploads too");
+        assert!(!plan.due(202.0, SKIN_DEFAULT, true, Vec::new, 60.0), "the default skin is never uploaded");
+    }
+
+    #[test]
+    fn the_worn_skin_is_resolved_once_per_change_not_per_frame() {
+        let mut t = WornTracker::default();
+        let mut calls = 0;
+        let mut worn = |hash: &str, slim: bool| {
+            calls += 1;
+            Worn { hash: hash.into(), slim }
+        };
+        assert!(t.update("CUSTOM", true, "auto", 1, || worn("h1", true)), "the first call is a change");
+        assert_eq!(t.get(), Worn { hash: "h1".into(), slim: true });
+        for _ in 0..100 {
+            assert!(!t.update("CUSTOM", true, "auto", 1, || panic!("resolved again with nothing changed")));
+        }
+        assert!(t.update("CUSTOM", true, "auto", 2, || worn("h2", true)), "an APPLY (a new generation) resolves again, same list id");
+        assert!(t.update("CUSTOM", true, "classic", 2, || worn("h2", false)), "ARMS changes the arm style");
+        assert!(!t.update("CUSTOM", false, "classic", 2, || worn("h2", false)), "nothing visible changed: not reported as a change");
+        assert_eq!(calls, 4);
+    }
+
+    #[test]
+    fn download_errors_say_what_went_wrong() {
+        use crate::net::NetError;
+        assert!(fetch_error_text(&NetError::Unsupported("x".into())).contains("https"));
+        assert!(fetch_error_text(&NetError::Timeout).contains("in time"));
+        assert_eq!(fetch_error_text(&NetError::Transport("x".into())), "the download failed");
+    }
+
+    #[test]
+    fn every_catalogue_picture_is_in_the_build_and_is_a_valid_skin() {
+        let list = catalog();
+        assert!(list.len() >= 2);
+        for skin in &list {
+            let png = catalog_png(skin).unwrap_or_else(|| panic!("{} has no picture in the build", skin.image));
+            let valid = validate_skin(&png, max_bytes()).unwrap_or_else(|e| panic!("{}: {e}", skin.id));
+            assert_eq!(valid.slim, skin.arms == "slim", "{}: the arm style in the data matches the picture", skin.id);
+        }
     }
 
     #[test]

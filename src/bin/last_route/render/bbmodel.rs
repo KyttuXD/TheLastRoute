@@ -90,9 +90,8 @@ pub fn texture_bytes(j: &serde_json::Value, find: &dyn Fn(&str) -> Option<Vec<u8
 /// The model's first texture, nearest-sampled.
 fn texture_of(j: &serde_json::Value, find: &dyn Fn(&str) -> Option<Vec<u8>>) -> Option<Texture2D> {
     let (_, bytes) = texture_bytes(j, find)?;
-    let tex = Texture2D::from_file_with_format(&bytes, Some(ImageFormat::Png));
-    tex.set_filter(FilterMode::Nearest);
-    Some(tex)
+    // a texture that does not decode is no texture (the model draws plain), never a panic
+    crate::shared::assets::try_tex(&bytes)
 }
 
 impl Model {
