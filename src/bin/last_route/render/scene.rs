@@ -11,7 +11,7 @@ use super::builder::{submit_all, Builder};
 use super::hunter_cache::{self, HunterMeshCache};
 use super::prop_model::{draw_builders, Placement, PropModel, StaticCache};
 use super::shader::{self, Lamp, Lighting};
-use super::{catwalk, inferno_deco, waterfall, world_stack};
+use super::{catwalk, inferno_deco, seams, waterfall, world_stack};
 use crate::shared::assets::Assets;
 use crate::config::*;
 use crate::game::{Game, Heater, Item};
@@ -99,8 +99,8 @@ pub fn camera(g: &Game, rt: &RenderTarget) -> Camera3D {
         fovy: g.fov_deg.to_radians(),
         aspect: Some(rt.texture.width() / rt.texture.height()),
         render_target: Some(rt.clone()),
-        z_near: 0.04,
-        z_far: 80.0,
+        z_near: seams::seams().camera_near,
+        z_far: seams::seams().camera_far,
         ..Default::default()
     }
 }
@@ -682,7 +682,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
                 g.p.eye_height(),
                 (g.eye(), cam_fwd),
                 &g.fac,
-                WALL_HEIGHT,
+                seams::wall_top(WALL_HEIGHT),
             );
             let bone_of = |k: usize| rig.bone(&model.groups[k].name).map(|b| out.bones[b]);
             let bones: Vec<Mat4> = (0..model.groups.len()).filter_map(|k| bone_of(k)).collect();

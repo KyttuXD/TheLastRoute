@@ -18,7 +18,7 @@
 //! Lava cells are closed (`InfernoChunk::open_cells`): they are never walkable, so the floor under them is only ever
 //! seen as the decoration height; the terrain is defined everywhere.
 
-use super::flight::{flights, well_footprint};
+use super::flight::well_footprint;
 use super::flight_links::bay_flight;
 use super::infinite::CHUNK;
 use super::rng::Rng;
@@ -100,9 +100,10 @@ pub struct TerrainRules {
 }
 
 impl TerrainRules {
-    /// The ceiling line: the underside of the slab between this storey and the one above.
+    /// The ceiling line: the underside of the slab between this storey and the one above, less the ceiling inset, so
+    /// no cavern ceiling shares a plane with the slab (the same line as `render::seams::ceiling_y(STOREY)`).
     pub fn slab_line() -> f32 {
-        STOREY - flights().slab
+        crate::render::seams::ceiling_y(STOREY)
     }
 
     /// The steepest floor change over one cell the noise and the stairwell blend can make.

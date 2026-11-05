@@ -13,6 +13,12 @@ items rather than left in an ambiguous in-progress state.
 - Next: wire the locker body and nearby-player TTS into the game, cleanup Tier B (needs KT), mod packs with mechanics, the Godot parity batches.
 - Waiting on KT: hallucinations design for Dead Air, Descent sounds, Standard-visible hunter changes, the Mac Mini GitHub login.
 
+## Floors and ceilings merging (2026-11-04)
+
+- [x] Level floors and ceilings z-fought where two storeys are drawn together: slab + ceiling inset, capped region wall heights, lined shafts and rims, near plane 0.06 (`render/seams.rs`, `data/render/seams.json`, `docs/STAIRS_CONTINUOUS_DESIGN.md` item 6)
+- [ ] A coplanar scan over props, decals, rugs and door frames (Godot `coplanar_scan.gd`) is not ported; the slab test covers the level shell, flights and ladders only
+- [ ] The scene's GL depth target is 16-bit (macroquad `render_target_ex`); a 32-bit target needs a macroquad or miniquad change
+
 ## Godot parity gaps (audit 2026-11-03)
 
 From a read-only audit of every open and partial item against the Rust code (539 distinct gaps; 38 remain here, because gaps that also appear in the topical audit sections below were merged into those sections and carry an (effort S/M/L) tag). [~] partial, [ ] open. Effort S is under half a day, M a day or two, L more. 47 audit items were marked implemented and are not listed here; their old TODO entries may be stale. Where the audits disagreed on status, the less complete one is kept with a note.
