@@ -105,6 +105,9 @@ pub fn water_depth_at(grid: &Grid, x: i32, y: i32) -> f32 {
 
 /// Metres of water over the bed on a storey: the same on every sewer storey (Godot has one `CHANNEL_DEPTH` and one
 /// `WATER_SURFACE`), so the swim physics, the hunters and the landing agree with the drawn bed.
+///
+/// The `level` argument is kept on purpose: level -2 used to have its own 1.4 m depth, and a per-storey depth is one
+/// match arm here if the owner wants it back (docs/SEWERS.md, "Behaviour change").
 pub fn full_depth_for_level(_level: i32) -> f32 {
     params().full_depth()
 }

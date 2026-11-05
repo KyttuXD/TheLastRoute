@@ -671,30 +671,40 @@ impl Game {
 
     /// One `HunterLanding` event for every hunter, active or resident, that landed from a catwalk jump this frame
     /// (`Brain::landed`, set once when the jump ends).
-    pub(super) fn hunter_landing_events(&self) -> Vec<NoiseEvent> {
-        let active = self.hunters.iter().filter_map(|h| h.landed.map(|p| NoiseEvent::new(NoiseKind::HunterLanding, p, h.level)));
+    ///
+    /// The host takes the landing (`Option::take`): a resident that landed and then fell out of the nearest-within-cap
+    /// set is not updated again, and its `landed` would otherwise raise the event every frame.
+    pub(super) fn hunter_landing_events(&mut self) -> Vec<NoiseEvent> {
+        let active = self.hunters.iter_mut().filter_map(|h| h.landed.take().map(|p| NoiseEvent::new(NoiseKind::HunterLanding, p, h.level)));
         let resident = self
             .resident_hunters
-            .iter_all()
-            .filter_map(|h| h.landed.map(|p| NoiseEvent::new(NoiseKind::HunterLanding, p, h.level)));
+            .iter_all_mut()
+            .filter_map(|h| h.landed.take().map(|p| NoiseEvent::new(NoiseKind::HunterLanding, p, h.level)));
         active.chain(resident).collect()
     }
 
     /// The runner hears a landing on her own level within the kind's radius, as a heavy step (the nearest hunter step's
     /// pan and falloff, scaled by `noise_events.json landing_thud_volume_scale`).
     pub(super) fn play_landing_thuds(&self, events: &[NoiseEvent]) {
-        let rules = noise_events::rules();
         let level = self.runner_level();
         for e in events.iter().filter(|e| e.kind == NoiseKind::HunterLanding && e.level == level) {
-            let offset = ((e.pos.0 - self.p.pos.0) as f64, (e.pos.1 - self.p.pos.1) as f64);
-            let facing = self.forward2();
-            if pdist(e.pos, self.p.pos) > rules.radius_of(e, 1.0) {
-                continue;
-            }
-            if let Some((pan, volume)) = crate::audio::cues::rules::hunter_step_pan_volume(offset, (facing.0 as f64, facing.1 as f64)) {
-                crate::audio::sound::hunter_footstep(pan as f32, volume as f32 * rules.landing_thud_volume_scale);
+            if let Some((pan, volume)) = self.landing_thud(e) {
+                crate::audio::sound::hunter_footstep(pan, volume);
             }
         }
+    }
+
+    /// The pan and volume of the runner's thud for one landing: the footstep falloff of the hunter step cue at that
+    /// offset, scaled by `landing_thud_volume_scale`; None beyond the kind's radius or past the footstep's range.
+    pub(super) fn landing_thud(&self, e: &NoiseEvent) -> Option<(f32, f32)> {
+        let rules = noise_events::rules();
+        if pdist(e.pos, self.p.pos) > rules.radius_of(e, 1.0) {
+            return None;
+        }
+        let offset = ((e.pos.0 - self.p.pos.0) as f64, (e.pos.1 - self.p.pos.1) as f64);
+        let facing = self.forward2();
+        let (pan, volume) = crate::audio::cues::rules::hunter_step_pan_volume(offset, (facing.0 as f64, facing.1 as f64))?;
+        Some((pan as f32, volume as f32 * rules.landing_thud_volume_scale))
     }
 
     /// The host's hunters and the bots hear this frame's noise events (`hearing` is the difficulty's `hunter_hearing`):
@@ -808,11 +818,23 @@ mod noise_react_tests {
         assert!(g.hunter_landing_events().is_empty(), "nothing landed");
         g.hunters[0].landed = Some((7.5, 5.5));
         let ev = g.hunter_landing_events();
+        assert!(g.hunters[0].landed.is_none(), "the host took the landing");
+        assert!(g.hunter_landing_events().is_empty(), "a landing is read once");
         assert_eq!(ev.len(), 1);
         assert_eq!((ev[0].kind, ev[0].pos, ev[0].level), (NoiseKind::HunterLanding, (7.5, 5.5), g.hunters[0].level));
         // the hunters' own queue (what hunters_hear_noise reads) is untouched: only bots and the runner get the event
         assert!(g.noise_events.is_empty());
         g.play_landing_thuds(&ev); // the runner's thud: no panic with no audio engine
+        // the computed level: the footstep falloff at that offset times the data scale, nothing past the radius
+        let scale = noise_events::rules().landing_thud_volume_scale;
+        let (here, near) = (g.p.pos, ev[0].clone());
+        let at = |d: f32| NoiseEvent::new(NoiseKind::HunterLanding, (here.0 + d, here.1), near.level);
+        let (_, v0) = g.landing_thud(&at(0.0)).expect("a landing on top of the runner is heard");
+        let (_, v4) = g.landing_thud(&at(4.0)).expect("a landing 4 m away is heard");
+        let step = |d: f64| crate::audio::cues::rules::hunter_step_pan_volume((d, 0.0), (0.0, 1.0)).unwrap().1 as f32;
+        assert!((v0 - step(0.0) * scale).abs() < 1e-6 && (v4 - step(4.0) * scale).abs() < 1e-6);
+        assert!(v4 < v0, "the thud falls off with distance");
+        assert!(g.landing_thud(&at(1000.0)).is_none(), "beyond the radius nothing is heard");
         let rule = noise_events::rules().kind(NoiseKind::HunterLanding);
         assert_eq!(rule.response, noise_events::Response::Investigate);
         assert!(rule.radius > 0.0 && noise_events::rules().landing_thud_volume_scale > 0.0);
@@ -1659,7 +1681,7 @@ mod resident_floor_tests {
     fn a_deck_hunter_chases_through_update_hunters_and_stays_in_the_level_zero_list() {
         let (mut g, _) = deck_chase();
         let h = crate::world::route::catwalk::params().height;
-        let (mut on_deck_dy, mut jumped, mut landings) = (None, false, 0);
+        let (mut on_deck_dy, mut jumped, mut landings, mut was_jumping) = (None, false, 0, false);
         let prof = g.prof();
         let sounds = Sounds::default();
         for _ in 0..900 {
@@ -1671,8 +1693,11 @@ mod resident_floor_tests {
             if b.on_deck() && on_deck_dy.is_none() {
                 on_deck_dy = Some(crate::render::stack_actors::actor_dy(b.y, g.runner_level()));
             }
-            jumped |= b.walk.as_ref().is_some_and(|w| w.kind == flight_edges::EdgeKind::CatwalkJump);
-            landings += b.landed.is_some() as i32;
+            let jumping = b.walk.as_ref().is_some_and(|w| w.kind == flight_edges::EdgeKind::CatwalkJump);
+            jumped |= jumping;
+            // the host takes `landed` inside the frame (one noise event), so a landing is the jump ending
+            landings += (was_jumping && !jumping) as i32;
+            was_jumping = jumping;
             if jumped && !b.on_deck() && b.walk.is_none() {
                 break;
             }

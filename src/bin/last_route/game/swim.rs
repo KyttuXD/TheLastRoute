@@ -473,6 +473,14 @@ mod tests {
         assert_eq!(v["schema"], "lr.swim.camera/1");
         assert_eq!(CameraRules::parse(&v), CameraRules::default());
         assert_eq!(*camera_rules(), CameraRules::default());
+        assert!(
+            crate::content::embedded::data_under("swim/camera.json").next().is_some(),
+            "camera.json must be embedded, or editing it would silently do nothing"
+        );
+        let custom: Value = serde_json::from_str(r#"{"max_sink": 0.4, "ease_down_per_s": 9, "flood_sink_fraction": 0.25}"#).unwrap();
+        let c = CameraRules::parse(&custom);
+        assert_eq!((c.max_sink, c.ease_down_per_s, c.flood_sink_fraction), (0.4, 9.0, 0.25));
+        assert_eq!(c.sink_fraction, CameraRules::default().sink_fraction, "unset fields keep their defaults");
         let bad: Value = serde_json::from_str(r#"{"max_sink": -1, "ease_down_per_s": 0, "sink_fraction": "x"}"#).unwrap();
         assert_eq!(CameraRules::parse(&bad), CameraRules::default(), "bad values keep their defaults");
     }

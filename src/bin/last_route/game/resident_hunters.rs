@@ -403,15 +403,22 @@ impl Game {
 
     /// A hunter that stands outside the window of `level`, or in a wall of it, comes back in out of sight (as on a window
     /// move). One that is walking an edge is left alone.
-    /// The footprint is tested at the hunter's own height, so a hunter standing on a catwalk deck is not taken for one
-    /// inside a deck cell and put on the floor.
+    /// The footprint is tested at the hunter's own height when it stands on a catwalk deck, so it is not taken for one
+    /// inside a deck cell and put on the floor; a hunter on the floor keeps the plain test, which exempts the treads
+    /// of a stair well beside it.
     fn fit_into_window(&self, level: i32, slots: &mut [Slot]) {
         let (Some(inf), Some((fac, _))) = (self.inf.as_ref(), self.level_parts(level)) else { return };
         let size = (CHUNK * 3) as f32;
         let mut rng = Rng::new(&format!("{}:L{}:RESIDENT:{}", inf.seed, level, self.time as i32));
         for s in slots.iter_mut() {
             let p = s.brain.pos;
-            let out = p.0 < 0.0 || p.1 < 0.0 || p.0 >= size || p.1 >= size || !fac.body_fits_at_y(p.0, p.1, s.brain.y, HUNTER_RADIUS);
+            let fits = if s.brain.on_deck() {
+                fac.body_fits_at_y(p.0, p.1, s.brain.y, HUNTER_RADIUS)
+            } else {
+                // on the floor the plain footprint test: a hunter beside a stair well is not over its hole
+                fac.body_fits(p.0, p.1, HUNTER_RADIUS)
+            };
+            let out = p.0 < 0.0 || p.1 < 0.0 || p.0 >= size || p.1 >= size || !fits;
             if out && !s.brain.on_edge() {
                 if let Some(spot) = spawn_spot_in(fac, self.p.pos, &mut rng) {
                     s.brain.pos = spot;
@@ -1026,6 +1033,53 @@ mod shelf_tests {
         assert!((slots[0].brain.y - (floor_y_of(level) + h)).abs() < 1e-4);
         assert_ne!(slots[1].brain.pos, spot, "a floor-height body inside a deck cell is still put back on the floor");
         assert_eq!(slots[1].brain.y, floor_y_of(level));
+    }
+
+    /// A floor hunter whose footprint touches a stair well keeps the plain test (the old `body_fits`, which exempts the
+    /// treads): it is not taken for one inside the well and teleported to a spawn spot.
+    #[test]
+    fn a_floor_hunter_beside_a_stair_well_is_not_teleported_by_fit_into_window() {
+        let (mut g, content, catalog) = run("ROOM-WELL-FIT");
+        let at = g.p.pos;
+        g.go_to_level(-1, at, 0.0, &content, &catalog);
+        let level = g.runner_level();
+        let r = HUNTER_RADIUS;
+        let mut spot = None;
+        'scan: for s in &g.fac.stairs {
+            for c in s.well_cells() {
+                for i in 0..=20 {
+                    for j in 0..=20 {
+                        let (x, z) = (c.x as f32 - 1.0 + i as f32 * 0.15, c.y as f32 - 1.0 + j as f32 * 0.15);
+                        if g.fac.body_fits(x, z, r) && !g.fac.body_fits_at_y(x, z, floor_y_of(level), r) {
+                            spot = Some((x, z));
+                            break 'scan;
+                        }
+                    }
+                }
+            }
+        }
+        let spot = spot.expect("a floor spot at the edge of a well where the two footprint tests differ");
+        let mut b = brain(&content, spot, "WELL-FIT");
+        b.level = level;
+        b.y = floor_y_of(level);
+        let mut slots = vec![Slot { id: String::new(), brain: b }];
+        g.fit_into_window(level, &mut slots);
+        assert_eq!(slots[0].brain.pos, spot, "a floor hunter beside a well stays put");
+    }
+
+    /// A resident that landed and then dropped out of the nearest-within-cap set is not updated again: its `landed`
+    /// must still raise the event only once.
+    #[test]
+    fn a_resident_landing_is_one_event_even_when_the_hunter_is_not_updated_again() {
+        let (mut g, content, _) = run("ROOM-RESIDENT-LAND");
+        let mut b = brain(&content, (6.5, 6.5), "RES-LAND");
+        b.landed = Some((6.5, 6.5));
+        g.resident_hunters.list_mut(-1).push(Slot { id: "RES-LAND".into(), brain: b });
+        let first = g.hunter_landing_events();
+        assert_eq!(first.len(), 1, "the landing is heard");
+        for _ in 0..5 {
+            assert!(g.hunter_landing_events().is_empty(), "never again without a new landing");
+        }
     }
 
     #[test]
