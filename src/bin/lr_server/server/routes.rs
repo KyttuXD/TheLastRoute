@@ -1076,7 +1076,9 @@ mod skin_lock_tests {
         let uploading = {
             let server = server.clone();
             std::thread::spawn(move || {
-                let request = Request::new("POST", "/api/skins/upload").with_header(SKIN_TOKEN_HEADER, "token");
+                let mut request = Request::new("POST", "/api/skins/upload").with_header(SKIN_TOKEN_HEADER, "token");
+                // With an upstream the raw route forwards (after the full check) instead of answering 503.
+                request.body = last_route_core::shared::skin_validate::encode_png_stored(&vec![255u8; 64 * 64 * 4], 64, 64);
                 server.handle(&request)
             })
         };
@@ -1094,7 +1096,8 @@ mod skin_lock_tests {
 
         release.send(()).unwrap();
         let upload = uploading.join().unwrap();
-        assert_eq!((upload.status, upload.json_body()["code"].clone()), (503, json!("SKINS_UNAVAILABLE")));
+        // The one-shot fake served the session lookup, so the forward itself finds no website: it was forwarded, not stored locally.
+        assert_eq!((upload.status, upload.json_body()["code"].clone()), (503, json!("UPSTREAM_UNAVAILABLE")));
     }
 
     #[test]

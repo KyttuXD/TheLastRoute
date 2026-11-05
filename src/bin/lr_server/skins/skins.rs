@@ -17,8 +17,10 @@
 //! `<data dir>/skins/<id>.png` (temp file + rename), the session is checked against the local accounts, and the store
 //! keeps the rules of `skins.mjs`:
 //!
-//! * one skin per account (`index.json` maps account to id); replacing it deletes the old file unless another account
-//!   still uses it, and `clear` removes it;
+//! * one skin per account (`index.json` maps account to id). Files are content-addressed and are NOT deleted the moment
+//!   an account switches or clears: peers in a room still name the old id, so a file nobody holds any more is kept for
+//!   a grace period (`SkinsOptions::grace_ms`, `LASTROUTE_SKIN_GRACE_SECONDS`, 7 days by default) and then
+//!   garbage-collected. The time an id became unreferenced is kept in `index.json`, so a restart does not reset it;
 //! * at most 5 uploads per account in 10 minutes (separate from the per-address request limit);
 //! * an owner can `remove` a skin by id or by account name: the id is blocked from ever being uploaded again;
 //! * a stored picture is served only while it is still the file its name claims, with `nosniff`, a
@@ -42,6 +44,9 @@ pub const SKIN_JSON_BODY_BYTES: usize = (SKIN_MAX_BYTES + 2) / 3 * 4 + 1024;
 pub const UPLOAD_LIMIT: usize = 5;
 /// The length of that window, in milliseconds (`skins.mjs` `uploadWindowMs`: 10 minutes).
 pub const UPLOAD_WINDOW_MS: i64 = 10 * 60 * 1000;
+/// How long a skin file that no account holds any more is kept before it is deleted: 7 days. Peers that still name an
+/// old id (a room that was published before its host switched) can keep fetching it meanwhile.
+pub const UNUSED_SKIN_GRACE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 /// The file the owners and the blocked ids are kept in, inside the skin directory.
 const INDEX_FILE: &str = "index.json";
 
@@ -50,15 +55,17 @@ pub struct SkinsOptions {
     pub directory: Option<PathBuf>,
     /// `LASTROUTE_ACCOUNT_UPSTREAM`: the website that stores the skins.
     pub upstream: Option<Upstream>,
-    /// The clock the upload limit runs on.
+    /// The clock the upload limit and the grace period run on.
     pub now: Clock,
+    /// How long an unreferenced skin file is kept (see [`UNUSED_SKIN_GRACE_MS`]).
+    pub grace_ms: i64,
 }
 
 #[cfg(test)]
 impl SkinsOptions {
     /// Options on the system clock.
     pub fn new(directory: Option<PathBuf>, upstream: Option<Upstream>) -> SkinsOptions {
-        SkinsOptions { directory, upstream, now: system_clock() }
+        SkinsOptions { directory, upstream, now: system_clock(), grace_ms: UNUSED_SKIN_GRACE_MS }
     }
 }
 
@@ -71,6 +78,8 @@ struct Book {
     blocked: HashSet<String>,
     /// Account name to the times of its recent uploads.
     uploads: HashMap<String, Vec<i64>>,
+    /// Ids no account holds, and the time (ms) each stopped being held: their files go once the grace period is over.
+    released: HashMap<String, i64>,
 }
 
 /// Who may call the account routes: a session check, and the full-admin check `remove` needs.
@@ -109,6 +118,7 @@ pub struct Skins {
     directory: Option<PathBuf>,
     upstream: Option<Upstream>,
     now: Clock,
+    grace_ms: i64,
     book: Arc<Mutex<Book>>,
 }
 
@@ -189,7 +199,55 @@ fn too_many_uploads() -> Reply {
 impl Skins {
     pub fn new(options: SkinsOptions) -> Skins {
         let book = options.directory.as_deref().map(load_index).unwrap_or_default();
-        Skins { directory: options.directory, upstream: options.upstream, now: options.now, book: Arc::new(Mutex::new(book)) }
+        let skins = Skins { directory: options.directory, upstream: options.upstream, now: options.now, grace_ms: options.grace_ms, book: Arc::new(Mutex::new(book)) };
+        skins.adopt_orphans();
+        skins
+    }
+
+    /// At start: a skin file that no account holds and that has no release time (left by an older build, which deleted at
+    /// once, or by a crash) starts its grace period now, and files whose grace is over are collected.
+    fn adopt_orphans(&self) {
+        let Some(directory) = &self.directory else { return };
+        let now = (self.now)();
+        let mut book = self.book();
+        let mut changed = false;
+        if let Ok(entries) = std::fs::read_dir(directory) {
+            for entry in entries.filter_map(Result::ok) {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let Some(id) = name.strip_suffix(".png").filter(|id| is_skin_id(id)) else { continue };
+                if !book.owners.values().any(|owned| owned == id) && !book.released.contains_key(id) {
+                    book.released.insert(id.to_string(), now);
+                    changed = true;
+                }
+            }
+        }
+        if self.collect_garbage(&mut book, now) > 0 || changed {
+            self.persist(&book);
+        }
+    }
+
+    /// Starts the grace period of `id` when no account holds it.
+    fn release(&self, book: &mut Book, id: &str, now: i64) {
+        if !book.owners.values().any(|owned| owned == id) {
+            book.released.entry(id.to_string()).or_insert(now);
+        }
+    }
+
+    /// Deletes the files whose grace period is over and that no account holds. Returns how many were deleted.
+    fn collect_garbage(&self, book: &mut Book, now: i64) -> usize {
+        let Some(directory) = &self.directory else { return 0 };
+        let due: Vec<String> = book.released.iter().filter(|(_, since)| now - **since >= self.grace_ms).map(|(id, _)| id.clone()).collect();
+        let mut removed = 0;
+        for id in due {
+            book.released.remove(&id);
+            if book.owners.values().any(|owned| *owned == id) {
+                continue;
+            }
+            if std::fs::remove_file(directory.join(format!("{id}.png"))).is_ok() {
+                removed += 1;
+            }
+        }
+        removed
     }
 
     /// True when the website owns the skins (uploads and reads are forwarded to it).
@@ -208,7 +266,10 @@ impl Skins {
         let mut blocked: Vec<&String> = book.blocked.iter().collect();
         blocked.sort();
         let owners: serde_json::Map<String, Value> = owners.into_iter().map(|(who, id)| (who.clone(), json!(id))).collect();
-        let text = json!({ "owners": owners, "blocked": blocked }).to_string();
+        let mut released: Vec<(&String, &i64)> = book.released.iter().collect();
+        released.sort();
+        let released: serde_json::Map<String, Value> = released.into_iter().map(|(id, at)| (id.clone(), json!(at))).collect();
+        let text = json!({ "owners": owners, "blocked": blocked, "released": released }).to_string();
         if let Err(error) = write_atomic(&directory.join(INDEX_FILE), text.as_bytes()) {
             log_error(&format!("[KYTTU SKIN] could not save the skin index: {error}"));
         }
@@ -250,6 +311,17 @@ impl Skins {
 
     /// `POST /api/skins/upload`: the same upload with the raw PNG as the body (the Godot backend route).
     pub fn upload_raw(&self, accounts: &dyn SessionLookup, token: &str, bytes: &[u8]) -> Reply {
+        if let Some(upstream) = &self.upstream {
+            // The website owns the skins: the same check, then the same forward as `POST /api/v1/skins` (never the local
+            // directory, which nothing would read from in this mode).
+            if bytes.is_empty() || bytes.len() > SKIN_MAX_BYTES {
+                return bad_skin("png must be base64 of a 64x64 PNG up to 64 KB");
+            }
+            if let Some(problem) = skin_problem(bytes) {
+                return bad_skin(&problem);
+            }
+            return upstream.call("/api/v1/skins", &json!({ "sessionToken": token, "png": base64(bytes) }));
+        }
         if self.directory.is_none() {
             return unavailable();
         }
@@ -261,7 +333,7 @@ impl Skins {
 
     /// The raw-body upload for the account `user` (already signed in and moderation-checked).
     pub fn upload_raw_as(&self, user: &str, bytes: &[u8]) -> Reply {
-        if self.directory.is_none() {
+        if self.upstream.is_some() || self.directory.is_none() {
             return unavailable();
         }
         self.store(user, bytes)
@@ -291,27 +363,30 @@ impl Skins {
             return (500, json!({ "ok": false, "code": "SKIN_STORE_FAILED", "error": "Could not store skin" }));
         }
         book.uploads.entry(user.to_string()).or_default().push(now);
+        book.released.remove(&id);
         let previous = book.owners.insert(user.to_string(), id.clone());
         if let Some(previous) = previous.filter(|old| *old != id) {
-            self.drop_file_if_unused(&book, &previous);
+            // The old file stays (content-addressed, and peers may still name it) until its grace period is over.
+            self.release(&mut book, &previous, now);
         }
+        self.collect_garbage(&mut book, now);
         self.persist(&book);
         (200, json!({ "ok": true, "id": id, "hash": id }))
     }
 
-    /// Deletes a skin file when no account holds it any more.
-    fn drop_file_if_unused(&self, book: &Book, id: &str) {
-        if book.owners.values().any(|owned| owned == id) {
-            return;
-        }
-        if let Some(directory) = &self.directory {
-            let _ = std::fs::remove_file(directory.join(format!("{id}.png")));
-        }
-    }
-
-    /// `mine`, `clear` and `remove`. Only the local store has them: with an upstream the website owns the skins.
+    /// `mine`, `clear` and `remove`. With an upstream the website owns the skins and the accounts, so `mine` and `clear` are
+    /// forwarded to it with only the session (like upload and read); `remove` needs the local owner check and stays local.
     pub fn account_action(&self, accounts: &dyn SkinAccounts, action: SkinAction, body: &Value) -> Reply {
-        if self.upstream.is_some() || self.directory.is_none() {
+        if let Some(upstream) = &self.upstream {
+            let path = match action {
+                SkinAction::Mine => "/api/v1/skins/mine",
+                SkinAction::Clear => "/api/v1/skins/clear",
+                SkinAction::Remove => return unavailable(),
+            };
+            let forwarded = json!({ "sessionToken": body.get("sessionToken").cloned().unwrap_or(Value::Null) });
+            return upstream.call(path, &forwarded);
+        }
+        if self.directory.is_none() {
             return unavailable();
         }
         let token = body.get("sessionToken").and_then(Value::as_str).unwrap_or("");
@@ -327,10 +402,12 @@ impl Skins {
             SkinAction::Clear => match user {
                 None => not_signed_in("Sign in first"),
                 Some(user) => {
+                    let now = (self.now)();
                     let mut book = self.book();
                     if let Some(previous) = book.owners.remove(&user) {
-                        self.drop_file_if_unused(&book, &previous);
+                        self.release(&mut book, &previous, now);
                     }
+                    self.collect_garbage(&mut book, now);
                     self.persist(&book);
                     (200, json!({ "ok": true }))
                 }
@@ -349,6 +426,7 @@ impl Skins {
                     return skin_not_found();
                 }
                 book.owners.retain(|_, owned| *owned != id);
+                book.released.remove(&id);
                 book.blocked.insert(id.clone());
                 if let Some(directory) = &self.directory {
                     let _ = std::fs::remove_file(directory.join(format!("{id}.png")));
@@ -403,6 +481,9 @@ fn load_index(directory: &std::path::Path) -> Book {
     };
     if let Some(owners) = saved.get("owners").and_then(Value::as_object) {
         book.owners = owners.iter().filter_map(|(who, id)| id.as_str().filter(|id| is_skin_id(id)).map(|id| (who.clone(), id.to_string()))).collect();
+    }
+    if let Some(released) = saved.get("released").and_then(Value::as_object) {
+        book.released = released.iter().filter_map(|(id, at)| at.as_i64().filter(|_| is_skin_id(id)).map(|at| (id.clone(), at))).collect();
     }
     if let Some(blocked) = saved.get("blocked").and_then(Value::as_array) {
         book.blocked = blocked.iter().filter_map(|id| id.as_str().filter(|id| is_skin_id(id)).map(str::to_string)).collect();
@@ -488,7 +569,7 @@ mod tests {
 
     fn timed(directory: &PathBuf) -> (Skins, ManualClock) {
         let (clock, handle) = manual_clock(1_000_000);
-        (Skins::new(SkinsOptions { directory: Some(directory.clone()), upstream: None, now: clock }), handle)
+        (Skins::new(SkinsOptions { directory: Some(directory.clone()), upstream: None, now: clock, grace_ms: UNUSED_SKIN_GRACE_MS }), handle)
     }
 
     fn upload_as(skins: &Skins, token: &str, png: &[u8]) -> Reply {
@@ -664,7 +745,7 @@ mod tests {
     }
 
     #[test]
-    fn an_account_keeps_one_skin_and_replacing_it_deletes_the_old_file_unless_someone_else_has_it() {
+    fn an_account_keeps_one_skin_and_replacing_it_keeps_the_old_file_for_the_grace_period() {
         let dir = temp_dir("replace");
         let skins = local(&dir);
         let (first, second) = (skin(1), skin(2));
@@ -675,7 +756,7 @@ mod tests {
         assert!(dir.join(format!("{first_id}.png")).exists(), "BOB still uses the first skin");
         assert!(dir.join(format!("{second_id}.png")).exists());
         upload_as(&skins, "other-token", &second);
-        assert!(!dir.join(format!("{first_id}.png")).exists(), "nobody uses the first skin any more");
+        assert!(dir.join(format!("{first_id}.png")).exists(), "nobody uses the first skin, but its file is kept for the grace period");
         let mine = skins.account_action(&Sessions, SkinAction::Mine, &json!({ "sessionToken": "good-token" }));
         assert_eq!(mine.1["id"], json!(second_id));
     }
@@ -694,7 +775,7 @@ mod tests {
         assert_eq!(skins.account_action(&Sessions, SkinAction::Clear, &json!({})).0, 401);
         assert_eq!(skins.account_action(&Sessions, SkinAction::Clear, &json!({ "sessionToken": "good-token" })).0, 200);
         assert_eq!(skins.account_action(&Sessions, SkinAction::Mine, &json!({ "sessionToken": "good-token" })).1["id"], json!(""));
-        assert_eq!(skins.read(&id).unwrap_err().0, 404, "clearing deletes the file");
+        assert_eq!(skins.read(&id), Ok(good), "clearing keeps the file for the grace period (peers may still name the id)");
     }
 
     #[test]
@@ -741,6 +822,117 @@ mod tests {
         let big = "c".repeat(64);
         std::fs::write(dir.join(format!("{big}.png")), vec![0u8; SKIN_MAX_BYTES + 10]).unwrap();
         assert_eq!(skins.read(&big).unwrap_err().0, 404);
+    }
+
+    #[test]
+    fn a_switched_away_skin_is_still_served_during_the_grace_period_and_collected_after_it() {
+        let dir = temp_dir("grace");
+        let (skins, clock) = timed(&dir);
+        let (first, second) = (skin(1), skin(2));
+        let (first_id, second_id) = (skin_id_for(&first), skin_id_for(&second));
+        assert_eq!(upload_as(&skins, "good-token", &first).0, 200);
+        clock.advance(1_000);
+        assert_eq!(upload_as(&skins, "good-token", &second).0, 200);
+        // A peer in a room published before the switch still fetches the old id.
+        assert_eq!(skins.read(&first_id), Ok(first.clone()), "the old id is served right after the switch");
+        clock.advance(UNUSED_SKIN_GRACE_MS - 1_500);
+        assert_eq!(upload_as(&skins, "other-token", &skin(3)).0, 200);
+        assert_eq!(skins.read(&first_id), Ok(first.clone()), "still inside the grace period");
+        clock.advance(2_000);
+        assert_eq!(upload_as(&skins, "other-token", &skin(4)).0, 200);
+        assert_eq!(skins.read(&first_id).unwrap_err().0, 404, "collected once the grace period is over");
+        assert_eq!(skins.read(&second_id), Ok(second), "the skin an account holds is never collected");
+    }
+
+    #[test]
+    fn the_grace_clock_survives_a_restart_and_a_re_upload_cancels_it() {
+        let dir = temp_dir("grace_restart");
+        let (skins, clock) = timed(&dir);
+        let (first, second) = (skin(1), skin(2));
+        let first_id = skin_id_for(&first);
+        upload_as(&skins, "good-token", &first);
+        upload_as(&skins, "good-token", &second); // first is released now
+        clock.advance(UNUSED_SKIN_GRACE_MS / 2);
+        drop(skins);
+        // A new process over the same directory: the release time was saved, so the grace period does not start over.
+        let (restarted, clock2) = (|| {
+            let (now, handle) = manual_clock(clock.get());
+            (Skins::new(SkinsOptions { directory: Some(dir.clone()), upstream: None, now, grace_ms: UNUSED_SKIN_GRACE_MS }), handle)
+        })();
+        assert_eq!(restarted.read(&first_id), Ok(first.clone()));
+        // Choosing the old picture again before the grace is over keeps it for good.
+        assert_eq!(upload_as(&restarted, "good-token", &first).0, 200);
+        clock2.advance(UNUSED_SKIN_GRACE_MS * 2);
+        assert_eq!(upload_as(&restarted, "other-token", &skin(5)).0, 200);
+        assert_eq!(restarted.read(&first_id), Ok(first), "an account holds it again");
+    }
+
+    #[test]
+    fn files_an_older_build_left_unreferenced_start_their_grace_period_at_startup_then_go() {
+        let dir = temp_dir("grace_orphan");
+        let orphan = skin(9);
+        let orphan_id = skin_id_for(&orphan);
+        std::fs::write(dir.join(format!("{orphan_id}.png")), &orphan).unwrap();
+        let (now, clock) = manual_clock(5_000_000);
+        let options = |now: &Clock| SkinsOptions { directory: Some(dir.clone()), upstream: None, now: now.clone(), grace_ms: 60_000 };
+        let skins = Skins::new(options(&now));
+        assert_eq!(skins.read(&orphan_id), Ok(orphan.clone()), "not deleted at startup");
+        clock.advance(61_000);
+        let later = Skins::new(options(&now));
+        assert_eq!(later.read(&orphan_id).unwrap_err().0, 404, "collected at the next start after the grace period");
+        assert!(!dir.join(format!("{orphan_id}.png")).exists());
+    }
+
+    #[test]
+    fn the_grace_period_is_configurable_and_a_short_one_deletes_sooner() {
+        let dir = temp_dir("grace_short");
+        let (now, clock) = manual_clock(1_000_000);
+        let skins = Skins::new(SkinsOptions { directory: Some(dir.clone()), upstream: None, now, grace_ms: 10_000 });
+        let first_id = skin_id_for(&skin(1));
+        upload_as(&skins, "good-token", &skin(1));
+        upload_as(&skins, "good-token", &skin(2));
+        assert!(dir.join(format!("{first_id}.png")).exists());
+        clock.advance(10_001);
+        upload_as(&skins, "other-token", &skin(3));
+        assert!(!dir.join(format!("{first_id}.png")).exists());
+    }
+
+    #[test]
+    fn with_an_upstream_the_raw_godot_upload_is_forwarded_like_the_json_one_and_never_stored_locally() {
+        let dir = temp_dir("raw_upstream");
+        let good = skin(1);
+        let (upstream, seen) = fake_website(vec![r#"{"ok":true,"id":"stored-by-website"}"#]);
+        let skins = Skins::new(SkinsOptions::new(Some(dir.clone()), Some(upstream)));
+        assert_eq!(skins.upload_raw(&Sessions, "good-token", &good), (200, json!({ "ok": true, "id": "stored-by-website" })));
+        assert_eq!(
+            seen.join().unwrap(),
+            vec![("/api/v1/skins".to_string(), json!({ "sessionToken": "good-token", "png": encode(&good) }))]
+        );
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "nothing was stored in the local directory");
+        // A hostile file is refused before any forward.
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let dead = Skins::new(SkinsOptions::new(Some(dir), Some(Upstream::parse(&format!("http://127.0.0.1:{port}")).unwrap())));
+        assert_eq!(dead.upload_raw(&Sessions, "good-token", &header_only()).0, 400);
+        assert_eq!(dead.upload_raw(&Sessions, "good-token", &[]).0, 400);
+        assert_eq!(dead.upload_raw(&Sessions, "good-token", &good).1["code"], json!("UPSTREAM_UNAVAILABLE"));
+    }
+
+    #[test]
+    fn with_an_upstream_mine_and_clear_go_to_the_website_with_only_the_session() {
+        let (upstream, seen) = fake_website(vec![r#"{"ok":true,"id":"abc","hash":"abc"}"#, r#"{"ok":true}"#]);
+        let skins = Skins::new(SkinsOptions::new(None, Some(upstream)));
+        let body = json!({ "sessionToken": "good-token", "extra": true });
+        assert_eq!(skins.account_action(&Sessions, SkinAction::Mine, &body).0, 200);
+        assert_eq!(skins.account_action(&Sessions, SkinAction::Clear, &body), (200, json!({ "ok": true })));
+        assert_eq!(
+            seen.join().unwrap(),
+            vec![
+                ("/api/v1/skins/mine".to_string(), json!({ "sessionToken": "good-token" })),
+                ("/api/v1/skins/clear".to_string(), json!({ "sessionToken": "good-token" })),
+            ]
+        );
+        // `remove` needs the local owner list, which the website's accounts do not feed.
+        assert_eq!(skins.account_action(&Sessions, SkinAction::Remove, &json!({ "sessionToken": "owner-token", "hash": "a".repeat(64) })).0, 503);
     }
 
     #[test]
@@ -890,8 +1082,11 @@ mod tests {
         assert_eq!(mine_v1.json_body()["id"], json!(skin_id_for(&second)));
         let cleared = server.handle(&Request::json("POST", "/api/v1/skins/clear", &json!({ "sessionToken": token })));
         assert_eq!(cleared.status, 200);
-        let gone = server.handle(&Request::new("GET", &format!("/api/v1/skins/{}", skin_id_for(&second))));
-        assert_eq!(gone.status, 404);
+        // The file is kept for the grace period (peers may still name the id), but the account no longer holds it.
+        let kept = server.handle(&Request::new("GET", &format!("/api/v1/skins/{}", skin_id_for(&second))));
+        assert_eq!(kept.status, 200);
+        let mine_after = server.handle(&Request::json("POST", "/api/v1/skins/mine", &json!({ "sessionToken": token })));
+        assert_eq!(mine_after.json_body()["id"], json!(""));
     }
 
     #[test]

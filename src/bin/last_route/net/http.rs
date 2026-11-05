@@ -316,15 +316,36 @@ fn transport(error: std::io::Error) -> NetError {
 }
 
 /// True for an address a download may connect to: not this machine, not a private or link-local network, not a
-/// reserved range. An IPv4 address inside an IPv6 one (`::ffff:a.b.c.d`) is judged as the IPv4 address.
+/// reserved range. An IPv4 address inside an IPv6 one is judged as the IPv4 address, in every form that carries one:
+/// v4-mapped `::ffff:a.b.c.d`, v4-compatible `::a.b.c.d`, NAT64 `64:ff9b::/96`, 6to4 `2002::/16` and Teredo
+/// `2001::/32` (both its server and its client address). The NAT64 local-use prefix `64:ff9b:1::/48` is refused outright.
 pub fn is_public_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(a) => is_public_v4(a),
         IpAddr::V6(a) => match a.to_ipv4_mapped() {
             Some(v4) => is_public_v4(v4),
-            None => is_public_v6(a),
+            None => is_public_v6(a) && embedded_v4(a).into_iter().all(is_public_v4),
         },
     }
+}
+
+/// The IPv4 addresses an IPv6 address carries inside it (see [`is_public_ip`]); none for a plain IPv6 address.
+fn embedded_v4(a: Ipv6Addr) -> Vec<Ipv4Addr> {
+    let s = a.segments();
+    let v4 = |hi: u16, lo: u16| Ipv4Addr::new((hi >> 8) as u8, hi as u8, (lo >> 8) as u8, lo as u8);
+    if s[..6] == [0, 0, 0, 0, 0, 0] {
+        return vec![v4(s[6], s[7])]; // v4-compatible, ::a.b.c.d
+    }
+    if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+        return vec![v4(s[6], s[7])]; // NAT64, 64:ff9b::/96
+    }
+    if s[0] == 0x2002 {
+        return vec![v4(s[1], s[2])]; // 6to4
+    }
+    if s[0] == 0x2001 && s[1] == 0 {
+        return vec![v4(s[2], s[3]), v4(!s[6], !s[7])]; // Teredo: the server, and the client (obfuscated by NOT)
+    }
+    Vec::new()
 }
 
 fn is_public_v4(a: Ipv4Addr) -> bool {
@@ -348,7 +369,8 @@ fn is_public_v6(a: Ipv6Addr) -> bool {
         || a.is_multicast()
         || segments[0] & 0xfe00 == 0xfc00 // unique local, fc00::/7
         || segments[0] & 0xffc0 == 0xfe80 // link-local, fe80::/10
-        || (segments[0] == 0x2001 && segments[1] == 0x0db8)) // documentation
+        || (segments[0] == 0x2001 && segments[1] == 0x0db8) // documentation
+        || (segments[0] == 0x64 && segments[1] == 0xff9b && segments[2] == 1)) // NAT64 local use, 64:ff9b:1::/48
 }
 
 /// True for `localhost` and the loopback addresses: the only place plain http may be used for a redirect.
@@ -357,8 +379,30 @@ fn is_loopback_host(host: &str) -> bool {
     host.eq_ignore_ascii_case("localhost") || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
+/// Resolves `host` within the request deadline. The system resolver has no timeout of its own and can hang, so it runs on a
+/// helper thread and the caller waits only until the deadline (the thread is left to finish on its own). An IP literal needs
+/// no lookup.
+fn resolve(host: &str, port: u16, deadline: Instant) -> Result<Vec<SocketAddr>, NetError> {
+    if let Ok(ip) = host.trim_matches(['[', ']']).parse::<IpAddr>() {
+        return Ok(vec![SocketAddr::new(ip, port)]);
+    }
+    let host = host.to_string();
+    resolve_with(move || (host.as_str(), port).to_socket_addrs().map(|a| a.collect()), deadline)
+}
+
+fn resolve_with(lookup: impl FnOnce() -> std::io::Result<Vec<SocketAddr>> + Send + 'static, deadline: Instant) -> Result<Vec<SocketAddr>, NetError> {
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = send.send(lookup());
+    });
+    match receive.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok(result) => result.map_err(transport),
+        Err(_) => Err(NetError::Timeout),
+    }
+}
+
 fn connect(url: &Url, deadline: Instant, public_only: bool) -> Result<TcpStream, NetError> {
-    let mut addrs: Vec<SocketAddr> = (url.host.as_str(), url.port).to_socket_addrs().map_err(transport)?.collect();
+    let mut addrs: Vec<SocketAddr> = resolve(&url.host, url.port, deadline)?;
     if public_only {
         let before = addrs.len();
         addrs.retain(|a| is_public_ip(a.ip()));
@@ -833,6 +877,51 @@ mod tests {
         }
     }
 
+    #[test]
+    fn ipv6_forms_that_carry_an_ipv4_address_are_judged_by_it() {
+        let public = |s: &str| is_public_ip(s.parse().unwrap());
+        // NAT64 64:ff9b::/96 of loopback, private, link-local and carrier-grade addresses
+        for ip in ["64:ff9b::7f00:1", "64:ff9b::a00:1", "64:ff9b::c0a8:101", "64:ff9b::a9fe:1", "64:ff9b::6440:1", "64:ff9b::127.0.0.1"] {
+            assert!(!public(ip), "NAT64 {ip}");
+        }
+        assert!(public("64:ff9b::808:808"), "NAT64 of 8.8.8.8 is public");
+        assert!(!public("64:ff9b:1::1"), "the NAT64 local-use prefix is refused outright");
+        // 6to4 2002:AABB:CCDD::/48 carries AA.BB.CC.DD
+        for ip in ["2002:7f00:1::1", "2002:a00:1::", "2002:c0a8:101::5", "2002:a9fe:1::1"] {
+            assert!(!public(ip), "6to4 {ip}");
+        }
+        assert!(public("2002:808:808::1"), "6to4 of 8.8.8.8 is public");
+        // IPv4-compatible ::a.b.c.d
+        for ip in ["::7f00:1", "::a00:1", "::c0a8:101", "::127.0.0.1", "::10.1.2.3"] {
+            assert!(!public(ip), "v4-compatible {ip}");
+        }
+        // Teredo 2001:0:SSSS:SSSS:flags:port:CCCC:CCCC, the client address is the last 32 bits inverted
+        assert!(!public("2001:0:7f00:1::1"), "Teredo server 127.0.0.1");
+        assert!(!public("2001:0:808:808:0:0:80ff:fffe"), "Teredo client 127.0.0.1 (inverted) behind a public server");
+        assert!(public("2001:0:808:808:0:0:f7f7:f7f7"), "Teredo with a public server and a public client (8.8.8.8)");
+        // a v4-mapped address is still judged as its v4
+        assert!(!public("::ffff:7f00:1") && public("::ffff:808:808"));
+    }
+
+    #[test]
+    fn a_slow_dns_lookup_cannot_outlast_the_request_deadline() {
+        let started = Instant::now();
+        let result = resolve_with(
+            || {
+                std::thread::sleep(Duration::from_secs(3));
+                Ok(Vec::new())
+            },
+            Instant::now() + Duration::from_millis(150),
+        );
+        assert_eq!(result, Err(NetError::Timeout));
+        assert!(started.elapsed() < Duration::from_secs(2), "the caller did not wait for the resolver");
+        // a quick lookup is returned, and an IP literal is not looked up at all
+        let quick = resolve_with(|| Ok(vec!["1.2.3.4:80".parse().unwrap()]), Instant::now() + Duration::from_secs(2)).unwrap();
+        assert_eq!(quick.len(), 1);
+        assert_eq!(resolve("[::1]", 9, Instant::now()).unwrap()[0].port(), 9);
+        assert_eq!(resolve("127.0.0.1", 9, Instant::now()).unwrap()[0].ip(), "127.0.0.1".parse::<IpAddr>().unwrap());
+    }
+
     /// Serves one canned reply per connection, in order; returns the port and the request heads it saw.
     fn serve_script(replies: Vec<Vec<u8>>) -> (u16, std::thread::JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1023,6 +1112,41 @@ mod tests {
             }
         });
         (port, handle)
+    }
+
+    #[test]
+    fn a_skin_png_comes_over_https_through_the_client_and_verifies_while_a_hostile_one_does_not() {
+        use crate::shared::skins;
+        // Loopback stands in for the skins host: real TLS, the skin download's own limit and content types, then the shared check.
+        let mut px: Vec<u8> = (0..64 * 64 * 4).map(|i| (i * 7 % 251) as u8).collect();
+        for pixel in px.chunks_mut(4) {
+            pixel[3] = 255;
+        }
+        let good = skins::encode_png(&px, 64, 64);
+        let id = skins::sha256_hex(&good);
+        let mut png_reply = format!("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\n\r\n", good.len()).into_bytes();
+        png_reply.extend_from_slice(&good);
+        // a header-only body served as image/png with the hash of its own bytes
+        let mut head = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13];
+        head.extend_from_slice(b"IHDR");
+        head.extend_from_slice(&[0, 0, 0, 64, 0, 0, 0, 64, 8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        let mut hostile_reply = format!("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\n\r\n", head.len()).into_bytes();
+        hostile_reply.extend_from_slice(&head);
+        let (port, _h) = serve_tls(vec![png_reply, hostile_reply, ok("<html>", "text/html")]);
+        let get = |path: &str| {
+            let req = Request::new(Method::Get, format!("https://127.0.0.1:{port}/{path}"))
+                .timeout(Duration::from_secs(5))
+                .limit(skins::read_limit())
+                .content_types(&["image/png", "image/x-png", "application/octet-stream", "binary/octet-stream"]);
+            send_with(&req, &trusting_test_cert())
+        };
+        let body = get(&format!("{id}.png")).unwrap().body;
+        assert_eq!(body, good);
+        assert!(skins::verify_skin(&id, &body), "a skin over https passes the one shared check");
+        let body = get("hostile.png").unwrap().body;
+        assert_eq!(body, head);
+        assert!(!skins::verify_skin(&skins::sha256_hex(&body), &body), "the right hash is not enough: the full check refuses it");
+        assert!(get("page.png").is_err(), "an html page is not a picture");
     }
 
     #[test]

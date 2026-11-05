@@ -30,7 +30,8 @@ Measured on macOS arm64 (aarch64-apple-darwin), `cargo build --release --bin las
 
 ## Rules every request follows
 
-- One request per connection, `Connection: close`, one deadline for connect, handshake, redirects and body.
+- One request per connection, `Connection: close`, one deadline for DNS, connect, handshake, redirects and body. The system
+  resolver has no timeout of its own, so the lookup runs on a helper thread and the request waits for it only until the deadline.
 - `https://` and `http://` only. Any other scheme in a redirect is refused.
 - A response body is never read past `Request::limit` (the announced `Content-Length` is judged before reading; chunked and
   close-delimited bodies are cut off when they pass the cap).
@@ -47,7 +48,9 @@ Measured on macOS arm64 (aarch64-apple-darwin), `cargo build --release --bin las
   6. the redirect's own body is never read.
 - `Request::public_only` (downloads from an address a player typed or a server told us): after the name is resolved, loopback,
   private (10/8, 172.16/12, 192.168/16), link-local, carrier-grade NAT, multicast, reserved and documentation addresses, and IPv6
-  unique-local and link-local ones are refused, on every hop, and the socket connects to the address that was checked (no second
+  unique-local and link-local ones are refused, as is any IPv6 address that carries a non-public IPv4 address (v4-mapped
+  `::ffff:a.b.c.d`, v4-compatible `::a.b.c.d`, NAT64 `64:ff9b::/96`, 6to4 `2002::/16`, Teredo; the NAT64 local-use prefix is refused
+  outright), on every hop, and the socket connects to the address that was checked (no second
   lookup), so a public name that points at the LAN or at this machine cannot be used to reach it.
 - Backend calls (accounts, rooms, saves, the update manifest) keep their old behaviour: plain http to the configured origin, no
   redirects, no address filtering (a LAN or loopback server is legitimate).

@@ -260,6 +260,9 @@ pub struct ServerOptions {
     pub save_directory: Option<PathBuf>,
     /// Skins stored without an upstream (`<data dir>/skins`).
     pub skin_directory: Option<PathBuf>,
+    /// How long a skin file that no account holds is kept before it is deleted, in milliseconds
+    /// (`LASTROUTE_SKIN_GRACE_SECONDS`, 7 days by default).
+    pub skin_grace_ms: i64,
     pub update_directory: Option<PathBuf>,
     /// When set, update files need this key in the `X-Download-Key` header (LASTROUTE_UPDATE_KEY).
     pub update_key: String,
@@ -306,6 +309,7 @@ impl Default for ServerOptions {
             custom_map_directory: None,
             save_directory: None,
             skin_directory: None,
+            skin_grace_ms: crate::skins::skins::UNUSED_SKIN_GRACE_MS,
             update_directory: None,
             update_key: String::new(),
             admin_password: String::new(),
@@ -467,7 +471,7 @@ impl LastRouteServer {
                 upstream: opts.account_upstream.clone(),
                 ..Default::default()
             }))),
-            skins: Skins::new(SkinsOptions { directory: opts.skin_directory.clone(), upstream: opts.account_upstream.clone(), now: now.clone() }),
+            skins: Skins::new(SkinsOptions { directory: opts.skin_directory.clone(), upstream: opts.account_upstream.clone(), now: now.clone(), grace_ms: opts.skin_grace_ms }),
             dev_tokens: HashMap::new(),
             request_rates: HashMap::new(),
             reload_id: 0,
@@ -760,6 +764,7 @@ pub fn options_from_environment(env: &HashMap<String, String>, cwd: &Path) -> Re
         moderation_salt: env.get("LASTROUTE_MODERATION_SALT").cloned().unwrap_or_default(),
         save_directory: Some(path_of("LASTROUTE_SAVES_DIR").unwrap_or_else(|| data.join("saves"))),
         skin_directory: Some(data.join("skins")),
+        skin_grace_ms: (number("LASTROUTE_SKIN_GRACE_SECONDS", (crate::skins::skins::UNUSED_SKIN_GRACE_MS / 1000) as f64).max(0.0) * 1000.0) as i64,
         mod_pack_store_path: Some(path_of("LASTROUTE_MOD_INDEX_STORE").unwrap_or_else(|| data.join("mod_packs.json"))),
         crash_report_directory: Some(path_of("LASTROUTE_CRASH_REPORTS_DIR").unwrap_or_else(|| data.join("crash-reports"))),
         reserved_room_store_path: Some(path_of("LASTROUTE_RESERVED_ROOMS_STORE").unwrap_or_else(|| data.join("reserved_rooms.json"))),

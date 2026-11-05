@@ -13,6 +13,7 @@
 		"v1_path": "/api/v1/skins/{id}",
 		"timeout_secs": 8,
 		"retry_secs": 60,
+		"tmp_stale_secs": 60,
 		"max_concurrent": 4,
 		"cache_max": 16
 	}

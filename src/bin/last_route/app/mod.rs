@@ -540,6 +540,9 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
     // the skin the local runner wears, resolved once per change to (wire hash, slim arms); the first-person hands, the
     // upload and the room all take it from here, never from the list id (which is CUSTOM for every applied picture)
     let mut worn = skins::WornTracker::default();
+    // a skin was worn and DEFAULT was chosen since: the website's copy is cleared once the account is signed in
+    let mut had_skin = false;
+    let mut clear_pending = false;
     // when the worn skin is next offered to the website (a new hash at once, a refused one again after a delay)
     let mut upload_plan = skins::UploadPlan::default();
     let upload_retry = skins::config().map_or(60.0, |c| c.upload_retry_secs);
@@ -591,6 +594,13 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
         }) {
             let w = worn.get();
             crate::render::fp_hands::set_look(&w.hash, w.slim);
+            if w.hash == world_sync::SKIN_DEFAULT {
+                clear_pending = had_skin;
+                had_skin = false;
+            } else {
+                had_skin = true;
+                clear_pending = false;
+            }
         }
         ui.t += dt;
         ui.notice_t = (ui.notice_t - dt).max(0.0);
@@ -628,6 +638,11 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
         // second picture applied in the same session uploads too, and a refused upload is offered again after a delay
         if !net_cfg.offline && upload_plan.due(get_time(), &worn.get().hash, backend.signed_in(), skins::uploaded_ids, upload_retry) {
             skins::upload_in_background(net_cfg.clone(), backend.account.session_token.clone(), worn.get().hash);
+        }
+        // DEFAULT was picked: the website stops holding the old skin (the call is retried on later frames until it is accepted)
+        if clear_pending && !net_cfg.offline && backend.signed_in() {
+            clear_pending = false;
+            skins::clear_in_background(net_cfg.clone(), backend.account.session_token.clone());
         }
 
         // the account answers: the profile name is set only when the server confirms it

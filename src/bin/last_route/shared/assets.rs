@@ -332,6 +332,8 @@ impl Assets {
                     let t = Texture2D::from_rgba8(skins::SKIN_SIZE as u16, skins::SKIN_SIZE as u16, &px);
                     t.set_filter(FilterMode::Nearest);
                     slots.insert(id.to_string(), SkinSlot::Ready(t.clone(), tick));
+                    // a skin that is on the GPU is in use: its cache file is not pruned from under it
+                    skins::mark_in_use(id);
                     evict_skin_textures(&mut slots, id);
                     Some(t)
                 }
@@ -369,6 +371,7 @@ fn evict_skin_textures(slots: &mut HashMap<String, SkinSlot>, keep: &str) {
         let Some(key) = oldest else { return };
         // dropping the last handle frees the GPU texture (macroquad textures are reference counted)
         slots.remove(&key);
+        skins::unmark_in_use(&key);
     }
 }
 

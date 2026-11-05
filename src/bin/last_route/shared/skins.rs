@@ -172,7 +172,15 @@ pub fn worn_skin_in(skins: Option<&Path>, cache: Option<&Path>, saved: &str, det
                     let _ = write_skin_file(dir, &valid.hash, &valid.png);
                 }
             }
-            Worn { hash: valid.hash, slim: arms.resolve(detected_slim) }
+            // The cache is only a cache: pruning (or a wiped folder) must never take the runner's own skin away, so the
+            // verified bytes are also kept in memory ([`read_skin`] finds them there) and the file is never evicted.
+            remember_own(&valid.hash, &valid.png);
+            mark_in_use(&valid.hash);
+            // The saved `skin_slim` is the layout read when a file was picked and saved as CUSTOM (its canonical PNG has an
+            // opaque base, so the layout cannot be read from it again). Any other file still has its layout, so it is
+            // read from the file just validated, whatever an old or hand-edited settings file says.
+            let layout_slim = if id == clean_skin(CUSTOM_STEM) { detected_slim } else { valid.slim };
+            Worn { hash: valid.hash, slim: arms.resolve(layout_slim) }
         }
         None => Worn { hash: SKIN_DEFAULT.to_string(), slim: arms.resolve(false) },
     }
@@ -255,16 +263,61 @@ pub fn cache_dir() -> Option<PathBuf> {
 /// ([`verify_skin`]), so a hostile file that an older build cached, or one dropped into the folder by hand, can never
 /// reach the image decoder.
 pub fn read_skin(id: &str) -> Option<Vec<u8>> {
+    read_skin_in(&[skin_dir(), cache_dir()], id)
+}
+
+/// [`read_skin`] over the given folders; the runner's own worn skin is also found in memory ([`remember_own`]).
+pub fn read_skin_in(dirs: &[Option<PathBuf>], id: &str) -> Option<Vec<u8>> {
     if !is_skin_hash(id) {
         return None;
     }
     let file = format!("{id}.png");
-    [skin_dir(), cache_dir()]
-        .into_iter()
+    dirs.iter()
         .flatten()
         .map(|dir| dir.join(&file))
         .filter_map(|path| read_capped(&path, max_bytes()).ok())
         .find(|bytes| verify_skin(id, bytes))
+        .or_else(|| own_skin(id))
+}
+
+/// How many worn skins are kept in memory (one per run is normal; a few more cover a picker that is changed often).
+const OWN_SKINS_MAX: usize = 4;
+
+fn own_skins() -> std::sync::MutexGuard<'static, Vec<(String, Vec<u8>)>> {
+    static OWN: std::sync::OnceLock<std::sync::Mutex<Vec<(String, Vec<u8>)>>> = std::sync::OnceLock::new();
+    OWN.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Keeps the verified PNG of the runner's own worn skin in memory under its hash, so a pruned or wiped cache folder cannot
+/// take it away (the upload and the texture both read it through [`read_skin`]).
+pub fn remember_own(hash: &str, png: &[u8]) {
+    let mut own = own_skins();
+    own.retain(|(h, _)| h != hash);
+    own.push((hash.to_string(), png.to_vec()));
+    let extra = own.len().saturating_sub(OWN_SKINS_MAX);
+    own.drain(..extra);
+}
+
+/// The remembered worn skin `id`, re-verified (hash and the full check) before it is handed out.
+fn own_skin(id: &str) -> Option<Vec<u8>> {
+    let bytes = own_skins().iter().find(|(h, _)| h == id).map(|(_, b)| b.clone())?;
+    verify_skin(id, &bytes).then_some(bytes)
+}
+
+fn in_use() -> std::sync::MutexGuard<'static, std::collections::HashSet<String>> {
+    static IN_USE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    IN_USE.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Marks skin `id` as being drawn (a texture is on the GPU for it, or it is the runner's own), so [`prune_cache`] does not
+/// delete its file while it is in use.
+pub fn mark_in_use(id: &str) {
+    in_use().insert(id.to_string());
+}
+
+/// Ends [`mark_in_use`] (the texture was dropped).
+pub fn unmark_in_use(id: &str) {
+    in_use().remove(id);
 }
 
 /// The path of a skin id inside a cache folder: `<dir>/<id>.png`.
@@ -307,6 +360,9 @@ pub struct SkinConfig {
     pub retry_secs: u64,
     /// The most skin downloads and uploads running at once.
     pub max_concurrent: usize,
+    /// How old a `<id>.tmp` file in the cache must be before the prune treats it as a leftover (a younger one is a download
+    /// running on another thread).
+    pub tmp_stale_secs: u64,
     /// The most downloaded skins kept in the cache folder and on the GPU; the oldest go first (Godot `PEER_CACHE_MAX`, 16).
     pub cache_max: usize,
 }
@@ -333,6 +389,7 @@ pub fn parse_config(text: &str) -> Option<SkinConfig> {
         timeout_secs: fetch["timeout_secs"].as_u64()?,
         retry_secs: fetch["retry_secs"].as_u64()?,
         max_concurrent: fetch["max_concurrent"].as_u64()? as usize,
+        tmp_stale_secs: fetch["tmp_stale_secs"].as_u64()?,
         cache_max: (fetch["cache_max"].as_u64()? as usize).max(1),
     })
 }
@@ -495,30 +552,50 @@ pub fn fetch_skin_blocking(cfg: &SkinConfig, backend_base: &str, dir: &Path, id:
     }
 }
 
-/// Cleans the download cache: leftovers of half-written files, any `<64 hex>.png` that fails the full check (a hostile or
-/// broken file from an older build), and then the oldest skins beyond `keep`. Returns how many files were removed. Only
-/// files named like a cached skin or its temp file are ever touched.
+/// Cleans the download cache with the configured temp-file age: see [`prune_cache_with`].
 pub fn prune_cache(dir: &Path, keep: usize) -> usize {
+    let stale = std::time::Duration::from_secs(config().map_or(60, |c| c.tmp_stale_secs));
+    prune_cache_with(dir, keep, stale, &in_use().clone())
+}
+
+/// Cleans the download cache: stale leftovers of half-written files, any `<64 hex>.png` that fails the full check (a hostile
+/// or broken file from an older build), and then the oldest skins beyond `keep`. Returns how many files were removed.
+/// Only files named like a cached skin or its temp file are ever touched. A `<id>.tmp` younger than `tmp_stale` belongs to
+/// a download running on another thread and is left alone (removing it would make that download's rename fail), and an id
+/// in `protected` (drawn right now, or the runner's own skin) is never evicted by the age rule.
+pub fn prune_cache_with(dir: &Path, keep: usize, tmp_stale: std::time::Duration, protected: &std::collections::HashSet<String>) -> usize {
     let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    let now = std::time::SystemTime::now();
     let mut removed = 0;
-    let mut kept: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    let mut kept: Vec<(std::time::SystemTime, PathBuf, bool)> = Vec::new();
     for path in entries.filter_map(Result::ok).map(|e| e.path()) {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
         let stem = name.strip_suffix(".png").or_else(|| name.strip_suffix(".tmp"));
         let Some(stem) = stem.filter(|s| is_skin_hash(s)) else { continue };
-        let good = name.ends_with(".png") && read_capped(&path, max_bytes()).is_ok_and(|bytes| verify_skin(stem, &bytes));
+        let modified = std::fs::metadata(&path).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+        if name.ends_with(".tmp") {
+            // A temp file is a download in flight until it is old enough to be a leftover.
+            if now.duration_since(modified).is_ok_and(|age| age >= tmp_stale) && std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+            continue;
+        }
+        let good = read_capped(&path, max_bytes()).is_ok_and(|bytes| verify_skin(stem, &bytes));
         if good {
-            let age = std::fs::metadata(&path).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
-            kept.push((age, path));
+            kept.push((modified, path, protected.contains(stem)));
         } else if std::fs::remove_file(&path).is_ok() {
             removed += 1;
         }
     }
-    kept.sort();
-    let extra = kept.len().saturating_sub(keep);
-    for (_, path) in kept.into_iter().take(extra) {
-        if std::fs::remove_file(path).is_ok() {
+    kept.sort_by_key(|(age, _, _)| *age);
+    let mut extra = kept.len().saturating_sub(keep);
+    for (_, path, is_protected) in kept {
+        if extra == 0 {
+            break;
+        }
+        if !is_protected && std::fs::remove_file(path).is_ok() {
             removed += 1;
+            extra -= 1;
         }
     }
     removed
@@ -571,7 +648,7 @@ pub fn fetch_skin_in_background(id: &str) {
     });
 }
 
-/// The ids the website has accepted, from `<user dir>/skins-uploaded.json`. A missing or unreadable file is empty.
+/// The id the website holds for this account (it keeps one skin per account), from `<user dir>/skins-uploaded.json`. A missing or unreadable file is empty.
 pub fn uploaded_ids() -> Vec<String> {
     let Some(path) = uploaded_path() else { return Vec::new() };
     std::fs::read_to_string(path)
@@ -593,21 +670,23 @@ fn uploaded_path() -> Option<PathBuf> {
     paths::user_dir().map(|d| d.join("skins-uploaded.json"))
 }
 
-/// Adds an id to the uploaded list (once) so it is never uploaded again.
+/// Records the id the website now holds for this account: the list becomes just `[id]`. The website keeps one skin per
+/// account, so an earlier id is no longer something to rely on (it is only kept for a grace period): picking it again
+/// uploads it again, and the room's published skin never names a file the website has dropped.
 fn remember_uploaded(id: &str) {
-    let Some(path) = uploaded_path() else { return };
-    let mut ids = uploaded_ids();
-    if ids.iter().any(|x| x == id) {
-        return;
+    if let Some(path) = uploaded_path() {
+        remember_uploaded_at(&path, id);
     }
-    ids.push(id.to_string());
-    let Ok(text) = serde_json::to_string(&ids) else { return };
+}
+
+fn remember_uploaded_at(path: &Path, id: &str) {
+    let Ok(text) = serde_json::to_string(&[id]) else { return };
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     let tmp = path.with_extension("json.tmp");
     if std::fs::write(&tmp, text).is_ok() {
-        let _ = std::fs::rename(&tmp, &path);
+        let _ = std::fs::rename(&tmp, path);
     }
 }
 
@@ -704,12 +783,23 @@ pub fn clear_in_background(cfg: BackendConfig, session_token: String) {
         return;
     }
     std::thread::spawn(move || {
-        let ok = api::clear_skin(&cfg, &session_token).is_ok();
+        let result = api::clear_skin(&cfg, &session_token);
+        // A server with no skin store of its own (SKINS_UNAVAILABLE) holds nothing the game could clear either.
+        let ok = clear_succeeded(&result);
         if ok {
             forget_uploaded();
         }
         book().finish(&key, ok, std::time::Instant::now(), std::time::Duration::from_secs(settings.retry_secs));
     });
+}
+
+/// True when a clear request ended with the website holding no skin for the account: it said so, or it has no skin store at all.
+fn clear_succeeded<T>(result: &Result<T, NetError>) -> bool {
+    match result {
+        Ok(_) => true,
+        Err(NetError::Http { status: 503, code, .. }) => code == "SKINS_UNAVAILABLE",
+        Err(_) => false,
+    }
 }
 
 /// Empties the uploaded list: the website holds none of the skins any more.
@@ -1328,7 +1418,16 @@ pub fn encode_png(rgba: &[u8], w: u32, h: u32) -> Vec<u8> {
 
 /// FROM URL: a 64x64 PNG downloaded from an https link. Returns the validated skin (canonical bytes and arm layout).
 pub fn fetch_url_skin(url: &str, rules: &SkinRules) -> Result<ValidSkin, String> {
-    let bytes = fetch_https(url, rules, &[], read_limit(), &PNG_TYPES)?;
+    fetch_url_skin_via(url, &mut |url, hosts, types| fetch_https(url, rules, hosts, read_limit(), types))
+}
+
+/// What fetches one address for the FROM URL and FROM MC NAME chains: `(url, allowed hosts, accepted content types)` to the
+/// body. The real one is [`fetch_https`]; a test supplies its own.
+pub type Getter<'a> = &'a mut dyn FnMut(&str, &[&str], &[&str]) -> Result<Vec<u8>, String>;
+
+/// [`fetch_url_skin`] over a given getter.
+pub fn fetch_url_skin_via(url: &str, get: Getter) -> Result<ValidSkin, String> {
+    let bytes = get(url, &[], &PNG_TYPES)?;
     validate_skin(&bytes, max_bytes())
 }
 
@@ -1359,12 +1458,17 @@ pub fn profile_skin(profile: &serde_json::Value, rules: &SkinRules) -> Option<(S
 /// the validated skin; the profile's slim model wins over the pixel detection, except for an old 64x32 skin, which has
 /// only classic arms.
 pub fn fetch_minecraft_skin(name: &str, rules: &SkinRules) -> Result<ValidSkin, String> {
+    fetch_minecraft_skin_via(name, rules, &mut |url, hosts, types| fetch_https(url, rules, hosts, read_limit(), types))
+}
+
+/// [`fetch_minecraft_skin`] over a given getter.
+pub fn fetch_minecraft_skin_via(name: &str, rules: &SkinRules, get: Getter) -> Result<ValidSkin, String> {
     let name = name.trim();
     if !valid_minecraft_name(name, rules) {
         return Err("a Minecraft name is 1-16 letters, numbers or underscores".to_string());
     }
     let lookup_url = rules.lookup_url.replace("{name}", name);
-    let lookup = fetch_https(&lookup_url, rules, &[rules.lookup_host.as_str()], read_limit(), &JSON_TYPES)?;
+    let lookup = get(&lookup_url, &[rules.lookup_host.as_str()], &JSON_TYPES)?;
     let found: serde_json::Value =
         serde_json::from_slice(&lookup).map_err(|_| "no Minecraft player was found".to_string())?;
     let uuid = found["id"].as_str().unwrap_or("");
@@ -1372,11 +1476,11 @@ pub fn fetch_minecraft_skin(name: &str, rules: &SkinRules) -> Result<ValidSkin, 
         return Err("no Minecraft player was found".to_string());
     }
     let profile_url = rules.profile_url.replace("{uuid}", uuid);
-    let body = fetch_https(&profile_url, rules, &[rules.profile_host.as_str()], read_limit(), &JSON_TYPES)?;
+    let body = get(&profile_url, &[rules.profile_host.as_str()], &JSON_TYPES)?;
     let profile: serde_json::Value =
         serde_json::from_slice(&body).map_err(|_| "the profile could not be read".to_string())?;
     let (url, slim_model) = profile_skin(&profile, rules).ok_or_else(|| "that player has no skin".to_string())?;
-    let file = fetch_https(&url, rules, &[rules.textures_host.as_str()], read_limit(), &PNG_TYPES)?;
+    let file = get(&url, &[rules.textures_host.as_str()], &PNG_TYPES)?;
     let mut valid = validate_skin(&file, max_bytes())?;
     valid.slim = (valid.slim || slim_model) && !valid.legacy;
     Ok(valid)
@@ -1853,6 +1957,8 @@ mod tests {
         assert_eq!(c.retry_secs, 60, "skin_sync.gd RETRY_SECONDS");
         assert_eq!(c.max_concurrent, 4);
         assert_eq!(c.cache_max, 16, "Godot PEER_CACHE_MAX");
+        assert_eq!(c.tmp_stale_secs, 60, "a download in flight is never pruned inside its timeout");
+        assert!(c.tmp_stale_secs > c.timeout_secs, "the temp file of a running download is younger than the prune limit");
         assert_eq!(c.timeout_secs, 8, "the timeout this client has always used for a skin download");
     }
 
@@ -2326,6 +2432,212 @@ mod tests {
         assert_eq!(ArmsSetting::Slim.label(), "SLIM");
     }
 
+    /// Standard base64 with padding (tests only).
+    fn test_base64(bytes: &[u8]) -> String {
+        const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let n = (chunk[0] as u32) << 16 | (*chunk.get(1).unwrap_or(&0) as u32) << 8 | *chunk.get(2).unwrap_or(&0) as u32;
+            for i in 0..4 {
+                if i <= chunk.len() {
+                    out.push(T[(n >> (18 - 6 * i) & 63) as usize] as char);
+                } else {
+                    out.push('=');
+                }
+            }
+        }
+        out
+    }
+
+    /// A Mojang profile whose `textures` property names `url` (base64 JSON, as the session server sends it).
+    fn profile_json(url: &str, slim: bool) -> Vec<u8> {
+        let model = if slim { r#","metadata":{"model":"slim"}"# } else { "" };
+        let textures = format!(r#"{{"textures":{{"SKIN":{{"url":"{url}"{model}}}}}}}"#);
+        let value = test_base64(textures.as_bytes());
+        format!(r#"{{"id":"{}","name":"Notch","properties":[{{"name":"textures","value":"{value}"}}]}}"#, "a".repeat(32)).into_bytes()
+    }
+
+    #[test]
+    fn from_mc_name_walks_the_three_hosts_and_the_profile_model_wins() {
+        let rules = shipped_rules();
+        let png = fixture_png(false);
+        let textures_url = "https://textures.minecraft.net/texture/abc";
+        let mut asked: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
+        let mut get = |url: &str, hosts: &[&str], types: &[&str]| -> Result<Vec<u8>, String> {
+            asked.push((url.to_string(), hosts.iter().map(|h| h.to_string()).collect(), types.iter().map(|t| t.to_string()).collect()));
+            if url.contains("api.mojang.com") {
+                Ok(format!(r#"{{"id":"{}","name":"Notch"}}"#, "a".repeat(32)).into_bytes())
+            } else if url.contains("sessionserver.mojang.com") {
+                Ok(profile_json(textures_url, true))
+            } else {
+                Ok(png.clone())
+            }
+        };
+        let valid = fetch_minecraft_skin_via("Notch", &rules, &mut get).expect("the chain works");
+        assert!(valid.slim, "the profile's slim model wins over the pixels (a classic picture)");
+        assert_eq!(skin_validate::check_skin_png(&valid.png, max_bytes()), Ok(()));
+        assert!(verify_skin(&valid.hash, &valid.png));
+        assert_eq!(asked.len(), 3);
+        assert!(asked[0].0.contains("api.mojang.com/users/profiles/minecraft/Notch") && asked[0].1 == ["api.mojang.com"]);
+        assert!(asked[1].0.contains(&"a".repeat(32)) && asked[1].1 == ["sessionserver.mojang.com"]);
+        assert_eq!((asked[2].0.as_str(), asked[2].1.as_slice()), (textures_url, ["textures.minecraft.net".to_string()].as_slice()));
+        assert!(asked[2].2.iter().any(|t| t == "image/png") && asked[0].2 == ["application/json"]);
+        // a name that is not a Minecraft name never reaches a host
+        let mut never = |_: &str, _: &[&str], _: &[&str]| -> Result<Vec<u8>, String> { panic!("no request for a bad name") };
+        assert!(fetch_minecraft_skin_via("not a name!", &rules, &mut never).is_err());
+        // a profile that names a skin on another host is refused by the rules, so the third request is never made
+        let mut elsewhere = |url: &str, _: &[&str], _: &[&str]| -> Result<Vec<u8>, String> {
+            if url.contains("api.mojang.com") {
+                Ok(format!(r#"{{"id":"{}"}}"#, "b".repeat(32)).into_bytes())
+            } else if url.contains("sessionserver") {
+                Ok(profile_json("https://evil.example/skin.png", false))
+            } else {
+                panic!("the skin of another host was fetched: {url}")
+            }
+        };
+        assert_eq!(fetch_minecraft_skin_via("Notch", &rules, &mut elsewhere).unwrap_err(), "that player has no skin");
+    }
+
+    #[test]
+    fn from_url_validates_what_the_getter_returns_and_asks_for_a_picture() {
+        let png = fixture_png(true);
+        let mut types = Vec::new();
+        let mut get = |url: &str, hosts: &[&str], accept: &[&str]| -> Result<Vec<u8>, String> {
+            assert_eq!(url, "https://example.org/skin.png");
+            assert!(hosts.is_empty(), "a player's link may be any public host");
+            types = accept.iter().map(|t| t.to_string()).collect();
+            Ok(png.clone())
+        };
+        let valid = fetch_url_skin_via("https://example.org/skin.png", &mut get).expect("a valid skin");
+        assert!(valid.slim && skin_validate::check_skin_png(&valid.png, max_bytes()).is_ok());
+        assert!(types.iter().any(|t| t == "image/png"));
+        // a hostile body (header only) is refused, and a failed download keeps its words
+        let mut hostile = |_: &str, _: &[&str], _: &[&str]| Ok(png_head(64, 64));
+        assert!(fetch_url_skin_via("https://example.org/a.png", &mut hostile).is_err());
+        let mut down = |_: &str, _: &[&str], _: &[&str]| Err("the download timed out".to_string());
+        assert_eq!(fetch_url_skin_via("https://example.org/a.png", &mut down).unwrap_err(), "the download timed out");
+    }
+
+    #[test]
+    fn the_cache_prune_leaves_a_download_in_flight_alone_and_removes_stale_temp_files() {
+        let dir = temp_dir("prune_tmp");
+        let (young, old) = (format!("{:064x}", 1), format!("{:064x}", 2));
+        std::fs::write(dir.join(format!("{young}.tmp")), b"half").unwrap();
+        let old_tmp = dir.join(format!("{old}.tmp"));
+        std::fs::write(&old_tmp, b"half").unwrap();
+        let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(&old_tmp).unwrap().set_modified(long_ago).unwrap();
+        let none = std::collections::HashSet::new();
+        let removed = prune_cache_with(&dir, 16, std::time::Duration::from_secs(60), &none);
+        assert_eq!(removed, 1);
+        assert!(dir.join(format!("{young}.tmp")).exists(), "a running download's temp file survives a prune on another thread");
+        assert!(!old_tmp.exists(), "a leftover older than the limit is removed");
+        // the download that was running can still finish its rename
+        let (id, bytes) = good_skin();
+        std::fs::write(dir.join(format!("{id}.tmp")), &bytes).unwrap();
+        prune_cache_with(&dir, 16, std::time::Duration::from_secs(60), &none);
+        assert!(std::fs::rename(dir.join(format!("{id}.tmp")), cached_path(&dir, &id)).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_skin_in_use_is_not_evicted_by_the_age_rule() {
+        let dir = temp_dir("prune_use");
+        let skins: Vec<(String, Vec<u8>)> = (0..4u8)
+            .map(|i| {
+                let mut px = fixture_rgba(false);
+                px[0] = i;
+                let png = encode_png(&px, 64, 64);
+                (sha256_hex(&png), png)
+            })
+            .collect();
+        for (i, (id, png)) in skins.iter().enumerate() {
+            write_skin_file(&dir, id, png).unwrap();
+            let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000 + i as u64);
+            std::fs::File::options().write(true).open(cached_path(&dir, id)).unwrap().set_modified(when).unwrap();
+        }
+        let protected: std::collections::HashSet<String> = [skins[0].0.clone()].into();
+        prune_cache_with(&dir, 2, std::time::Duration::from_secs(60), &protected);
+        assert!(cached_path(&dir, &skins[0].0).exists(), "the oldest file is in use: kept");
+        assert!(!cached_path(&dir, &skins[1].0).exists());
+        assert!(!cached_path(&dir, &skins[2].0).exists());
+        assert!(cached_path(&dir, &skins[3].0).exists(), "the newest stays");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_runners_own_skin_survives_a_pruned_cache_and_stays_readable_and_uploadable() {
+        let skins_dir = temp_dir("own_skins");
+        let cache = temp_dir("own_cache");
+        let png = fixture_png(false);
+        std::fs::write(skins_dir.join("mine.png"), &png).unwrap();
+        let worn = worn_skin_in(Some(&skins_dir), Some(&cache), "MINE", false, ArmsSetting::Auto);
+        assert!(is_skin_hash(&worn.hash));
+        assert!(cached_path(&cache, &worn.hash).exists(), "the cache copy is written");
+        // 20 peer skins arrive and the prune keeps 16: the cache copy of the own skin is the oldest
+        std::fs::File::options().write(true).open(cached_path(&cache, &worn.hash)).unwrap().set_modified(std::time::UNIX_EPOCH).unwrap();
+        for i in 0..20u8 {
+            let mut px = fixture_rgba(false);
+            px[1] = i + 1;
+            let peer = encode_png(&px, 64, 64);
+            write_skin_file(&cache, &sha256_hex(&peer), &peer).unwrap();
+        }
+        prune_cache_with(&cache, 16, std::time::Duration::from_secs(60), &std::collections::HashSet::new());
+        assert!(!cached_path(&cache, &worn.hash).exists(), "the disk copy was evicted");
+        let found = read_skin_in(&[None, Some(cache.clone())], &worn.hash).expect("the own skin is still found, from memory");
+        assert!(verify_skin(&worn.hash, &found));
+        // it is not handed out for another id, and a damaged memory copy would not verify
+        assert_eq!(read_skin_in(&[None, Some(cache.clone())], &sha256_hex(b"other")), None);
+        let _ = std::fs::remove_dir_all(&skins_dir);
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn the_worn_arm_style_comes_from_the_validated_file_except_for_the_custom_file() {
+        let skins_dir = temp_dir("worn_slim");
+        // a slim picture under a folder name, and the same picture saved as CUSTOM (whose layout settings remember)
+        std::fs::write(skins_dir.join("alex.png"), fixture_png(true)).unwrap();
+        std::fs::write(skins_dir.join("custom.png"), fixture_png(true)).unwrap();
+        // settings.json says skin_slim=false (an old or hand-edited save): the file's own layout still wins for ALEX
+        let alex = worn_skin_in(Some(&skins_dir), None, "ALEX", false, ArmsSetting::Auto);
+        assert!(alex.slim, "a slim folder skin draws slim arms in AUTO whatever the saved flag says");
+        let alex_forced = worn_skin_in(Some(&skins_dir), None, "ALEX", true, ArmsSetting::Classic);
+        assert!(!alex_forced.slim, "CLASSIC still forces classic");
+        // CUSTOM trusts the layout read when it was picked
+        let custom_false = worn_skin_in(Some(&skins_dir), None, "CUSTOM", false, ArmsSetting::Auto);
+        let custom_true = worn_skin_in(Some(&skins_dir), None, "CUSTOM", true, ArmsSetting::Auto);
+        assert!(!custom_false.slim && custom_true.slim);
+        // a classic folder skin is classic even when the saved flag says slim
+        std::fs::write(skins_dir.join("steve.png"), fixture_png(false)).unwrap();
+        assert!(!worn_skin_in(Some(&skins_dir), None, "STEVE", true, ArmsSetting::Auto).slim);
+        let _ = std::fs::remove_dir_all(&skins_dir);
+    }
+
+    #[test]
+    fn only_the_latest_upload_counts_as_held_because_the_website_keeps_one_skin_per_account() {
+        let dir = temp_dir("uploaded_list");
+        let path = dir.join("skins-uploaded.json");
+        let (a, b) = (sha256_hex(b"a"), sha256_hex(b"b"));
+        let held = || -> Vec<String> { serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap() };
+        remember_uploaded_at(&path, &a);
+        assert!(holds(&held(), &a));
+        remember_uploaded_at(&path, &b);
+        assert!(holds(&held(), &b));
+        assert!(!holds(&held(), &a), "after A then B the website no longer relies on A, so choosing A again uploads it again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_clear_with_no_skin_store_on_the_server_still_forgets_the_upload() {
+        use crate::net::NetError;
+        let http = |status: u16, code: &str| NetError::Http { status, code: code.into(), error: String::new(), body: serde_json::Value::Null };
+        assert!(clear_succeeded(&Ok::<(), NetError>(())));
+        assert!(clear_succeeded::<()>(&Err(http(503, "SKINS_UNAVAILABLE"))), "nothing to clear there");
+        assert!(!clear_succeeded::<()>(&Err(http(503, "UPSTREAM_UNAVAILABLE"))), "a website that is down is retried");
+        assert!(!clear_succeeded::<()>(&Err(http(401, "NO_SESSION"))));
+        assert!(!clear_succeeded::<()>(&Err(NetError::Timeout)));
+    }
+
     /// Needs the internet: `cargo test --bin last_route live_ -- --ignored`. The whole FROM MC NAME chain (name to id,
     /// id to profile, textures host) over real https, then the validation: proves the download, the roots and the checks agree.
     #[test]
@@ -2345,11 +2657,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(cached_path(&dir, &good_id), &good).unwrap();
         std::fs::write(cached_path(&dir, &bad_id), &bad).unwrap();
-        std::fs::write(dir.join(format!("{}.tmp", "a".repeat(64))), b"half").unwrap();
+        let leftover = dir.join(format!("{}.tmp", "a".repeat(64)));
+        std::fs::write(&leftover, b"half").unwrap();
+        std::fs::File::options().write(true).open(&leftover).unwrap().set_modified(std::time::UNIX_EPOCH).unwrap();
         std::fs::write(dir.join("notes.txt"), b"not ours").unwrap();
         assert!(!fetch_needed(&dir, &good_id));
         assert!(fetch_needed(&dir, &bad_id), "a header-only file with the right hash is not a cached skin");
-        assert_eq!(prune_cache(&dir, 16), 2, "the hostile file and the half-written one go");
+        assert_eq!(prune_cache(&dir, 16), 2, "the hostile file and the stale half-written one go");
         assert!(cached_path(&dir, &good_id).exists());
         assert!(!cached_path(&dir, &bad_id).exists());
         assert!(dir.join("notes.txt").exists(), "files that are not cache entries are never touched");

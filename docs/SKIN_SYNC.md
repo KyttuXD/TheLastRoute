@@ -7,10 +7,13 @@ A skin is a 64x64 PNG known on the wire by its id: the lowercase hex SHA-256 of 
 ## The pipeline
 
 1. **Pick** (SKIN tab): the file, URL, Minecraft name or catalogue picture is validated and re-encoded canonically
-   (`skins::validate_skin`: 64x64, 64x32 upgraded, base layer made opaque). The id is the hash of those canonical bytes.
+   (`skins::validate_skin`: the picked file goes through the one shared structural check in the shape `Local` (64x64 or the old
+   64x32, interlaced allowed), then the fallible decoder, the old format upgraded to 64x64, the base layer made opaque). The id
+   is the hash of those canonical bytes.
 2. **Upload by hash** (signed in, not offline): `skins::upload_in_background` sends `POST /api/v1/skins {sessionToken, png}`
    (`net::api::upload_skin`). One upload per skin runs at a time and a failed one waits 60 s (`retry_secs`) before the next try.
-   The server answers `{ok, id, hash}`; the client remembers the id in `skins-uploaded.json`.
+   The server answers `{ok, id, hash}`; the client remembers that id, and only that one, in `skins-uploaded.json` (the website
+   keeps one skin per account, so choosing an earlier skin again uploads it again).
 3. **Publish**: once the id is held by the server, the host publishes it in its profile; other clients see the id.
 4. **Download by hash**: `skins::fetch_skin_in_background(id)`, tried in this order, first fully verified copy wins:
    1. `GET <backend>/api/v1/skins/<id>` (lr_server's own route, the store the uploads go to),
@@ -18,8 +21,11 @@ A skin is a 64x64 PNG known on the wire by its id: the lowercase hex SHA-256 of 
    3. `GET <backend>/api/skins/files/<id>.png` (the Godot backend's route; lr_server answers it as well).
    At most 4 downloads and uploads run at once, a skin that failed is left alone for 60 s, the timeout is 8 s, the size limit
    is the cap + 1 byte, the content type must be an image or a generic binary type.
-5. **Validate** (both ends, the same code): `last_route_core::shared::skin_validate::check_skin_png`, used by the game
-   (`skins::verify_download`, the upload check in `api::upload_skin`) and by `lr_server` (`skin_problem`).
+5. **Validate** (both ends, the same code): `last_route_core::shared::skin_validate`. Its structural check (`check_png`, shapes
+   `Remote` and `Local`, chunk limit from `data/skins/config.json` `png.max_chunks`) and its full check (`check_skin_png_with`,
+   `Remote` only plus decode and the opaque base) are the only validators: the game uses them through `skins::verify_skin` (hash
+   plus full check, for downloads, cache and disk files), `skins::validate_skin` (picked files) and the upload check in
+   `api::upload_skin`, and `lr_server` through `skin_problem`. `shared/skin_png.rs` only decodes what that check accepted.
    Every chunk CRC, IHDR first and exactly 64x64, a legal colour type and depth, no unknown critical chunk, IEND last with
    nothing after it, no interlace, a zlib stream that inflates to exactly the promised number of bytes (bounded: a
    decompression bomb stops at that number) with a matching Adler-32, filter bytes 0 to 4, and every pixel outside the
@@ -27,8 +33,11 @@ A skin is a 64x64 PNG known on the wire by its id: the lowercase hex SHA-256 of 
    the old check, let a hostile PNG panic the decoder on every teammate and a transparent one hide the runner.
    The file is **not** required to equal the game's canonical encoding (Godot clients hash their own encoder's bytes).
 6. **Cache**: a verified download is written to `<user dir>/skins-cache/<id>.png` (temp file then rename) and never fetched again.
-   At most `cache_max` (16, Godot `PEER_CACHE_MAX`) files are kept, the oldest go first. Before the first download of a run the
-   folder is cleaned: half-written files and any file that fails the full check (a hostile one an older build stored) are deleted.
+   At most `cache_max` (16, Godot `PEER_CACHE_MAX`) files are kept, the oldest go first, except a skin that is on the GPU or is the
+   runner's own (`skins::mark_in_use`). Before the first download of a run the folder is cleaned: any file that fails the full check
+   (a hostile one an older build stored) and any `<id>.tmp` older than `tmp_stale_secs` (60) are deleted; a younger temp file is a
+   download running on another thread and is never touched. The runner's own worn skin is also kept in memory
+   (`skins::remember_own`), so a pruned or wiped cache folder never takes it away from the hand, the body or the upload.
    A cached file is read at most cap + 1 bytes and only if it is a regular file, and it counts as cached only when it passes the
    full check (`fetch_needed`, `read_skin`).
 7. **Fallback**: no skin yet, a failed or refused download: the runner wears the default mannequin and the fetch is retried
@@ -44,12 +53,18 @@ A skin is a 64x64 PNG known on the wire by its id: the lowercase hex SHA-256 of 
 | `POST /api/v1/skins/mine`, `/clear` (and `/api/skins/...`) | the account's own skin id; remove it |
 | `POST /api/v1/skins/remove` (and `/api/skins/remove`) | full admin only, by `hash` or `username`; the id is blocked from ever being uploaded again |
 
-Rules (same as `skins.mjs`): cap 64 KB, one skin per account (`<data dir>/skins/index.json` keeps owners and blocked ids),
-replacing or clearing deletes the old file unless another account holds it, at most 5 uploads per account per 10 minutes
+Rules (same as `skins.mjs`, except the file lifetime): cap 64 KB, one skin per account (`<data dir>/skins/index.json` keeps
+owners, blocked ids and the time each unreferenced id was released). Files are content-addressed and are **not** deleted when an
+account switches or clears: peers in a room still name the old id. A file nobody holds is kept for a grace period
+(`LASTROUTE_SKIN_GRACE_SECONDS`, 7 days by default) and then collected; the release time is saved, so a restart does not reset it, a
+re-upload of the id cancels it, and files an older build left unreferenced start their grace at the next start. Only an owner's
+`remove` deletes a file at once. At most 5 uploads per account per 10 minutes
 (a refused picture does not use a slot; this is separate from the per-address request limit), the account's moderation flags
 apply, a stored file is served only while it is still valid and still hashes to its name, and it is never read past the cap.
-With `LASTROUTE_ACCOUNT_UPSTREAM` the website stores the skins: upload and read are forwarded (an upload that fails the
-check is refused here first), and `mine`, `clear` and `remove` answer 503.
+With `LASTROUTE_ACCOUNT_UPSTREAM` the website stores the skins: upload (both the JSON route and the raw Godot route), read, `mine`
+and `clear` are forwarded (an upload that fails the check is refused here first, and the raw route never writes the local
+directory), and `remove` answers 503 (its owner check is the local account list). A client treats a 503 `SKINS_UNAVAILABLE` from
+`clear` as "nothing held there" and forgets its uploaded id.
 
 Tests: `cargo test --features server --bin lr_server skins` (includes upload, fetch and validate over a real loopback socket),
 `cargo test --lib skin_validate`, `cargo test --bin last_route skin` and `net::http`.
@@ -57,16 +72,26 @@ Tests: `cargo test --features server --bin lr_server skins` (includes upload, fe
 ## Arm style on the wire
 
 The profile message carries `skin_slim` (boolean) with the hash, like Godot. The host relays it with each guest's profile.
-A sender writes it when it knows the style (the skin was validated here this run, `skins::skin_is_slim`); a receiver uses the
-profile's value, else reads the style from the downloaded picture once it is in the cache, else classic.
+The sender writes `skin_slim` and `skin_copy` with the id (`world_sync::SkinFlags`: the resolved ARMS setting and OTHERS MAY COPY);
+a receiver uses the profile's value when the profile has one, else reads the style from the downloaded picture once it is in the
+cache, else classic. The worn style comes from the validated file, except for the CUSTOM file (its canonical PNG has an opaque
+base, so the layout read when it was picked is kept in the settings).
 
 ## Reset to DEFAULT
 
 `net::api::clear_skin` (`POST /api/v1/skins/clear`) and `skins::clear_in_background` remove the account's stored skin and
-forget the uploaded list.
+forget the uploaded id. `app/mod.rs` calls it when the worn skin goes from a real one to DEFAULT and the account is signed in
+(retried on later frames until accepted).
+
+## FROM URL, FROM MC NAME and the skins host
+
+They go through `net/http.rs` over https (`docs/NET_HTTPS.md`): `skins::fetch_https` with the rules' url checks, at most 3
+redirects each re-checked, loopback, private and other non-public addresses refused after the name is resolved (IPv6 forms that
+carry an IPv4 address, such as NAT64, 6to4, v4-compatible and Teredo, are judged by it), and DNS inside the request deadline. Tests:
+the whole Mojang chain and FROM URL with a fake getter (`fetch_minecraft_skin_via`, `fetch_url_skin_via`: hosts, content types,
+the profile's slim model, a profile that names another host), a skin PNG over real TLS on loopback through the client's own limit
+and content types (`net::http` tests), and an ignored live test (`cargo test --bin last_route live_ -- --ignored`).
 
 ## Open
 
-See TODO.md "Server-synced skins, still open": the calls that live in `app/mod.rs` and `ui/` (calling
-`clear_in_background` when a player picks DEFAULT, a re-APPLY uploading by hash, COPY SKIN with `skin_copy`, evicting GPU
-textures in `shared/assets.rs`) belong to the skins-client track, which owns those files.
+Nothing that can be done in code. Measuring the release binary size increase of rustls still needs a release build (`docs/NET_HTTPS.md`).

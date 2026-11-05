@@ -34,7 +34,8 @@ Caddy (`caddy.service`) serves two sites from `/etc/caddy/Caddyfile`:
   (`<data dir>/skins/<hash>.png`, `GET /api/v1/skins/<hash>`), and the game asks `lr_server` first, then this host over https
   (`https://skins.kyttuslab.org/<hash>.png`, a copy someone puts there by hand), then the legacy `/api/skins/files/<hash>.png`
   route. Every answer is checked by the full shared skin check before it is used, so a wrong or hostile file in this folder
-  cannot hurt a player. See docs/SKIN_SYNC.md.
+  cannot hurt a player. A skin file nobody holds any more is kept for `LASTROUTE_SKIN_GRACE_SECONDS` (default 604800, 7 days)
+  before it is collected, so peers that still name an old id can fetch it. See docs/SKIN_SYNC.md.
 
 Other things on VPS 2 (not part of this project's docs): `/srv/osm`, `/opt/lastroute-host`, `/opt/node`.
 
