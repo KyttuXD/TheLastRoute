@@ -1,5 +1,5 @@
 {
-  "schema": "lr.player_models/2",
+  "schema": "lr.player_models/3",
   "_source": "Godot: LastRoute Godot/KyttusLabApp/game/config/player_models.gd (one body for every runner); rig and bone names from assets/hunters_blocky/player_mannequin/player_mannequin.bbmodel. Poses come from the player rig's clips (render/anim/clip.rs), not from a swing table.",
   "runner": {
     "body": "blocky",
@@ -7,16 +7,7 @@
     "_height": "audit P13: the head top is head_top_units up and one unit is 1.067/64 m, so the figure is 1.90 m tall.",
     "head_top_units": 113.92,
     "metres_per_unit": 0.016671875,
-    "rig": "player_mannequin",
-    "blend_s": 0.15,
-    "states": {
-      "idle": { "clip": "idle", "speed": 1.0 },
-      "walk": { "clip": "walk", "speed": 1.0, "ref_mps": 3.0 },
-      "sprint": { "clip": "sprint", "speed": 1.0, "ref_mps": 5.5 },
-      "crouch": { "clip": "idle", "speed": 0.55 }
-    },
-    "speed_scale_min": 0.6,
-    "speed_scale_max": 1.6
+    "_clips": "Which clip each state plays, its pace, the crouch fade and the swim lean are data/player/anim.json (render/anim/runner.rs); this file holds the body, its height and the bots."
   },
   "bots": {
     "_source": "Rust-only: NPC teammates (game/npc.rs) wear the runner mannequin and the same clips; the skin is picked from `skins` by a hash of the guest name. state_for_speed: a bot's state comes from how fast its position changed (metres per second).",

@@ -25,6 +25,7 @@ use crate::config::difficulty::{ALL, LOBBY};
 use crate::config::Difficulty;
 use crate::game::player::Player;
 use crate::game::Game;
+use crate::render::anim::runner::Pose;
 use crate::world::vertical::STOREY;
 use crate::shared::assets::Assets;
 use macroquad::prelude::*;
@@ -68,6 +69,14 @@ const MAX_TASER_SLOT: i64 = 63;
 /// is drawn as DEFAULT (see [`skin_colour`]).
 pub(crate) const SKINS: [(&str, [Color; 4]); 1] = [(SKIN_DEFAULT, PEER_COLOURS)];
 
+/// The locker a hidden runner is in, in absolute cells like the rest of a sample, so a peer in another streamed window
+/// finds the same locker: its cell and the way its front faces (from the back wall into the room).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HideSpot {
+    pub cell: (i32, i32),
+    pub facing: (i32, i32),
+}
+
 /// One runner's sample: the `_place` packet `{seq, depth, x, y, yaw, moving, sprinting, crouching}`.
 /// `x` and `y` are the runner's absolute ground cell (its window position moved by the window's origin, see
 /// [`to_absolute`]), so runners in different streamed windows agree on where each one stands. `depth` is its floor.
@@ -89,6 +98,14 @@ pub struct Sample {
     pub spectating: bool,
     pub game_over: bool,
     pub escape_active: bool,
+    /// The pose the runner shows (Godot `clip`). `None` from an older client: its flags then pick the pose.
+    pub clip: Option<Pose>,
+    /// Vertical speed in metres per second (0 on the ground and from an older client).
+    pub vy: f32,
+    /// The runner wears slim arms (its ARMS setting resolved for its skin).
+    pub slim: bool,
+    /// The locker the runner is hidden in, if any (Godot `hidden` + `hiding_spot`).
+    pub hide: Option<HideSpot>,
 }
 
 impl Sample {
@@ -109,7 +126,20 @@ impl Sample {
             spectating: false,
             game_over: false,
             escape_active: false,
+            clip: None,
+            vy: 0.0,
+            slim: false,
+            hide: None,
         }
+    }
+
+    /// The sample with the runner's body state: its pose, vertical speed, slim arms and locker.
+    pub fn with_body(mut self, clip: Pose, vy: f32, slim: bool, hide: Option<HideSpot>) -> Sample {
+        self.clip = Some(clip);
+        self.vy = vy;
+        self.slim = slim;
+        self.hide = hide;
+        self
     }
 
     /// The sample with this runner's run state: `game_over` once its route has ended (a catch or an abandon),
@@ -126,8 +156,23 @@ impl Sample {
             "moving": self.moving, "sprinting": self.sprinting, "crouching": self.crouching,
             "spectating": self.spectating, "game_over": self.game_over, "escape_active": self.escape_active,
         });
-        if let (Some(h), Some(o)) = (self.h, v.as_object_mut()) {
-            o.insert("h".into(), json!(h));
+        if let Some(o) = v.as_object_mut() {
+            if let Some(h) = self.h {
+                o.insert("h".into(), json!(h));
+            }
+            // the body state is optional on the wire: an older client never sends it and ignores it
+            if let Some(c) = self.clip {
+                o.insert("clip".into(), json!(c.wire()));
+            }
+            if self.vy != 0.0 {
+                o.insert("vy".into(), json!(self.vy));
+            }
+            if self.slim {
+                o.insert("slim".into(), json!(true));
+            }
+            if let Some(h) = self.hide {
+                o.insert("hide".into(), json!([h.cell.0, h.cell.1, h.facing.0, h.facing.1]));
+            }
         }
         v
     }
@@ -151,8 +196,22 @@ impl Sample {
             spectating: flag("spectating"),
             game_over: flag("game_over"),
             escape_active: flag("escape_active"),
+            clip: o.get("clip").and_then(Value::as_str).and_then(Pose::from_wire),
+            vy: num("vy").unwrap_or(0.0),
+            slim: flag("slim"),
+            hide: o.get("hide").and_then(hide_spot_from_json),
         })
     }
+}
+
+/// `[cell x, cell y, facing x, facing y]`; anything else is no locker.
+fn hide_spot_from_json(v: &Value) -> Option<HideSpot> {
+    let a = v.as_array()?;
+    if a.len() != 4 {
+        return None;
+    }
+    let n = |i: usize| a[i].as_i64().and_then(|n| i32::try_from(n).ok());
+    Some(HideSpot { cell: (n(0)?, n(1)?), facing: (n(2)?.clamp(-1, 1), n(3)?.clamp(-1, 1)) })
 }
 
 /// A window position in absolute cells: what a sample carries, so every runner's sample means the same cell.
@@ -219,6 +278,45 @@ pub struct RemoteView {
     /// Ground speed and vertical speed in metres per second, from the sample's gait.
     pub speed: f32,
     pub vy: f32,
+    /// The pose the sample names (None from an older client).
+    pub clip: Option<Pose>,
+    /// The locker the runner is hidden in, in this window's cells; None when it is out in the open.
+    pub hide: Option<HideSpot>,
+    /// Whether the runner was out in the open `HIDE_MOVE_SECONDS` ago: a runner going into a locker stays visible while
+    /// it slides in (Godot remote_players.gd 542-563). Set by [`NetSession::remotes_at`].
+    pub hide_since: Option<std::time::Duration>,
+}
+
+/// What the figure code needs of a remote runner's last sample, moved into the window whose origin is `origin`.
+fn remote_view(peer: u32, r: &Remote, skin: String, origin: (i32, i32), now: Instant) -> RemoteView {
+    let (x, y) = to_window((r.sample.x, r.sample.y), origin);
+    let h = r.sample.h.unwrap_or(r.sample.depth as f32 * STOREY);
+    RemoteView {
+        peer,
+        x,
+        y,
+        yaw: r.sample.yaw,
+        h,
+        level: crate::game::level_stack::owning_level(h),
+        skin,
+        moving: r.sample.moving,
+        sprinting: r.sample.sprinting,
+        crouching: r.sample.crouching,
+        slim: r.sample.slim,
+        clip: r.sample.clip,
+        hide: r.sample.hide.map(|h| HideSpot { cell: (h.cell.0 - origin.0, h.cell.1 - origin.1), facing: h.facing }),
+        hide_since: r.hide_since.map(|t| now.duration_since(t)),
+        speed: if !r.sample.moving {
+            0.0
+        } else if r.sample.sprinting {
+            crate::config::PLAYER_SPRINT_SPEED
+        } else if r.sample.crouching {
+            crate::config::PLAYER_CROUCH_SPEED
+        } else {
+            crate::config::PLAYER_WALK_SPEED
+        },
+        vy: r.sample.vy,
+    }
 }
 
 /// What the room tells the game. The app acts on these between frames.
@@ -345,6 +443,8 @@ struct PendingCapture {
 struct Remote {
     sample: Sample,
     last_seen: Instant,
+    /// When this runner's samples first said it was hidden in a locker (None while it is in the open).
+    hide_since: Option<Instant>,
 }
 
 struct Guest {
@@ -1086,33 +1186,7 @@ impl NetSession {
                 };
                 near && now.duration_since(r.last_seen) < REMOTE_TIMEOUT
             })
-            .map(|(peer, r)| {
-                let (x, y) = to_window((r.sample.x, r.sample.y), origin);
-                let h = r.sample.h.unwrap_or(r.sample.depth as f32 * STOREY);
-                RemoteView {
-                    peer: *peer,
-                    x,
-                    y,
-                    yaw: r.sample.yaw,
-                    h,
-                    level: crate::game::level_stack::owning_level(h),
-                    skin: self.skins.get(peer).cloned().unwrap_or_else(|| SKIN_DEFAULT.into()),
-                    moving: r.sample.moving,
-                    sprinting: r.sample.sprinting,
-                    crouching: r.sample.crouching,
-                    slim: false,
-                    speed: if !r.sample.moving {
-                        0.0
-                    } else if r.sample.sprinting {
-                        crate::config::PLAYER_SPRINT_SPEED
-                    } else if r.sample.crouching {
-                        crate::config::PLAYER_CROUCH_SPEED
-                    } else {
-                        crate::config::PLAYER_WALK_SPEED
-                    },
-                    vy: 0.0,
-                }
-            })
+            .map(|(peer, r)| remote_view(*peer, r, self.skins.get(peer).cloned().unwrap_or_else(|| SKIN_DEFAULT.into()), origin, now))
             .collect();
         out.sort_by_key(|r| r.peer);
         out
@@ -1375,7 +1449,12 @@ impl NetSession {
                 return false;
             }
         }
-        self.remotes.insert(peer, Remote { sample, last_seen: now });
+        let hide_since = match (sample.hide, self.remotes.get(&peer)) {
+            (None, _) => None,
+            (Some(_), Some(r)) if r.hide_since.is_some() => r.hide_since,
+            (Some(_), _) => Some(now),
+        };
+        self.remotes.insert(peer, Remote { sample, last_seen: now, hide_since });
         true
     }
 
@@ -1528,6 +1607,7 @@ pub fn skin_colour(skin: &str, peer: u32) -> Color {
 /// Draws the remote runners in the 3D view (the figures are drawn by `net::runner_figure`). Draws nothing when `remotes`
 /// is empty, so a single-player frame is unchanged.
 pub fn draw_remotes(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, remotes: &[RemoteView]) {
+    crate::net::runner_figure::update_remote_doors(g, remotes);
     if remotes.is_empty() {
         return;
     }
@@ -1554,6 +1634,10 @@ mod tests {
             spectating: false,
             game_over: false,
             escape_active: false,
+            clip: None,
+            vy: 0.0,
+            slim: false,
+            hide: None,
         }
     }
 
@@ -1572,6 +1656,10 @@ mod tests {
             spectating: false,
             game_over: true,
             escape_active: true,
+            clip: Some(Pose::Climb),
+            vy: -3.5,
+            slim: true,
+            hide: Some(HideSpot { cell: (-40, 17), facing: (0, -1) }),
         };
         assert_eq!(Sample::from_json(&s.to_json()), Some(s));
         assert_eq!(Sample::from_json(&Value::Null), None, "a keep-alive is not a sample");
@@ -1579,6 +1667,36 @@ mod tests {
         assert_eq!(Sample::from_json(&json!({"seq": 1, "depth": 0, "x": 1e39, "y": 0})), None, "infinity is refused");
         assert_eq!(Sample::from_json(&json!({"seq": 1, "depth": 0, "x": 0.0, "y": 0.0}))
             .map(|s| (s.yaw, s.moving)), Some((0.0, false)), "missing flags read as false");
+    }
+
+    #[test]
+    fn an_older_sample_has_no_body_state_and_a_newer_one_survives_unknown_names() {
+        let old = json!({"seq": 4, "depth": 1, "x": 2.0, "y": 3.0, "moving": true, "sprinting": true});
+        let s = Sample::from_json(&old).expect("an older client's sample still parses");
+        assert_eq!((s.clip, s.vy, s.slim, s.hide), (None, 0.0, false, None));
+        let v = sample(1, 0.0, 0.0).to_json();
+        for key in ["clip", "vy", "slim", "hide"] {
+            assert!(v.get(key).is_none(), "a sample with no body state sends no {key}");
+        }
+        let newer = json!({"seq": 4, "depth": 1, "x": 2.0, "y": 3.0, "clip": "backflip", "hide": [1, 2]});
+        let s = Sample::from_json(&newer).expect("an unknown pose name never rejects a packet");
+        assert_eq!((s.clip, s.hide), (None, None), "an unknown pose and a short locker are ignored");
+        for p in Pose::ALL {
+            let s = sample(1, 0.0, 0.0).with_body(p, 0.0, false, None);
+            assert_eq!(Sample::from_json(&s.to_json()).and_then(|s| s.clip), Some(p), "{p:?} round trips");
+        }
+    }
+
+    #[test]
+    fn the_body_state_reaches_the_remote_view() {
+        let now = Instant::now();
+        let smp = sample(1, 13.0, 14.0).with_body(Pose::Climb, 1.5, true, Some(HideSpot { cell: (13, 14), facing: (1, 0) }));
+        let r = Remote { sample: smp, last_seen: now, hide_since: Some(now) };
+        let v = remote_view(5, &r, "DEFAULT".into(), (10, 10), now);
+        assert_eq!((v.clip, v.vy, v.slim), (Some(Pose::Climb), 1.5, true));
+        assert_eq!((v.x, v.y), (3.0, 4.0), "the position moves into this window");
+        assert_eq!(v.hide, Some(HideSpot { cell: (3, 4), facing: (1, 0) }), "so does the locker");
+        assert!(v.hide_since.is_some());
     }
 
     #[test]
@@ -2074,7 +2192,7 @@ mod tests {
         let mut host = offline_session(true, "HOST");
         host.guests.insert(42, Guest { name: "NIGHTWALK".into(), last_seen: now });
         host.guests.insert(7, Guest { name: "QUIET".into(), last_seen: now });
-        host.remotes.insert(42, Remote { sample: sample(1, 0.0, 0.0), last_seen: now });
+        host.remotes.insert(42, Remote { sample: sample(1, 0.0, 0.0), last_seen: now, hide_since: None });
         let roster = host.roster();
         assert_eq!(roster.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["QUIET", "NIGHTWALK"]);
         assert!(!roster[0].sending && roster[0].depth.is_none(), "a guest with no fresh sample is not sending");
@@ -2090,14 +2208,14 @@ mod tests {
         let silent = guest.roster();
         assert_eq!(silent.len(), 1, "a guest that is not sending is not listed");
         assert!(silent[0].host && silent[0].name == "HOST" && !silent[0].sending, "the host is listed first, not sending");
-        guest.remotes.insert(HOST_PEER_ID, Remote { sample: sample(1, 3.0, -2.0), last_seen: now });
-        guest.remotes.insert(9, Remote { sample: sample(1, 5.0, 5.0), last_seen: now });
+        guest.remotes.insert(HOST_PEER_ID, Remote { sample: sample(1, 3.0, -2.0), last_seen: now, hide_since: None });
+        guest.remotes.insert(9, Remote { sample: sample(1, 5.0, 5.0), last_seen: now, hide_since: None });
         let roster = guest.roster();
         assert_eq!(roster.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["HOST", "NEON"]);
         assert!(roster[0].host && roster[0].sending, "the host sends samples");
         // a runner quiet for longer than QUIET_DISCONNECT stays listed, with its quiet time for the DISCONNECTED status
         let long_ago = now.checked_sub(QUIET_DISCONNECT + Duration::from_secs(1)).unwrap_or(now);
-        guest.remotes.insert(9, Remote { sample: sample(2, 5.0, 5.0), last_seen: long_ago });
+        guest.remotes.insert(9, Remote { sample: sample(2, 5.0, 5.0), last_seen: long_ago, hide_since: None });
         let roster = guest.roster();
         let quiet = roster.iter().find(|e| e.peer == 9).and_then(|e| e.state).map(|s| s.quiet);
         assert!(quiet.is_some_and(|q| q > QUIET_DISCONNECT), "a silent runner is still listed, quiet for {quiet:?}");
@@ -2430,7 +2548,7 @@ mod owner_route_tests {
         assert_eq!(valve_events::parse_turn(&event).map(|t| t.turns), Some(1));
         let mut host = offline_session(true, "HOST");
         assert!(host.guest_position(2).is_none());
-        host.remotes.insert(2, Remote { sample: sample(1, 3.0, 4.0), last_seen: now });
+        host.remotes.insert(2, Remote { sample: sample(1, 3.0, 4.0), last_seen: now, hide_since: None });
         assert_eq!(host.guest_position(2), Some((3.0, 4.0, 1)));
     }
 }
@@ -2481,7 +2599,7 @@ mod height_tests {
         old.h = None;
         old.depth = -1;
         for (peer, smp) in [(2, near), (3, far), (4, old)] {
-            s.remotes.insert(peer, Remote { sample: smp, last_seen: now });
+            s.remotes.insert(peer, Remote { sample: smp, last_seen: now, hide_since: None });
         }
         let seen: Vec<u32> = s.remotes_at(0.0, 0, (0, 0)).iter().map(|r| r.peer).collect();
         assert_eq!(seen, vec![2], "h=-4.2 shown, h=-6.0 not, an old sample on depth -1 not for depth 0");

@@ -17,6 +17,8 @@ pub struct Config {
     pub max_capacity: i32,
     pub max_spot_index: i32,
     pub max_style_len: usize,
+    /// The style a facility locker has (data/render/locker_shell.json `occupant.bed_styles` lists the lying ones).
+    pub locker_style: String,
     pub tell_duration_s: f32,
     pub tell_amplitude: f32,
     pub tell_rate_hz: f32,
@@ -36,6 +38,12 @@ pub fn parse(text: &str) -> Result<Config, String> {
         max_capacity: num(&v, "max_capacity", "max_capacity")? as i32,
         max_spot_index: num(&v, "max_spot_index", "max_spot_index")? as i32,
         max_style_len: num(&v, "max_style_len", "max_style_len")? as usize,
+        locker_style: v
+            .get("locker_style")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .ok_or("hide_sync.json: key 'locker_style' missing or not a name")?
+            .to_string(),
         tell_duration_s: num(tell, "duration_s", "search_tell.duration_s")? as f32,
         tell_amplitude: num(tell, "amplitude", "search_tell.amplitude")? as f32,
         tell_rate_hz: num(tell, "rate_hz", "search_tell.rate_hz")? as f32,
@@ -242,6 +250,8 @@ mod tests {
         assert!(parse(TEXT).is_ok());
         let e = parse(&TEXT.replace("\"max_capacity\": 2,", "")).unwrap_err();
         assert!(e.contains("max_capacity"), "{e}");
+        let e = parse(&TEXT.replace("\"locker_style\"", "\"style\"")).unwrap_err();
+        assert!(e.contains("locker_style"), "{e}");
         let e = parse(&TEXT.replace("\"amplitude\"", "\"amp\"")).unwrap_err();
         assert!(e.contains("amplitude"), "{e}");
         let e = parse(&TEXT.replace("\"max_capacity\": 2", "\"max_capacity\": 0")).unwrap_err();

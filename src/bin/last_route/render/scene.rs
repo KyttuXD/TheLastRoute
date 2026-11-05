@@ -346,7 +346,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         }
     }
     for (i, l) in f.hiding.iter().enumerate() {
-        let swing = hide::door_for(i, t);
+        let swing = hide::door_for(i, t).max(hide::remote_door_for((l.cell.x, l.cell.y), t));
         if g.p.hidden == Some(i) && swing == 0.0 {
             continue;
         }
@@ -718,8 +718,11 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         .iter()
         .filter(|r| r.kind == crate::render::stack_actors::ActorKind::Bot)
         .filter(|r| cull.visible(g, r.level, r.y, r.pos, cull_eye))
+        // a bot inside a locker is out of sight
+        .filter(|r| g.npcs[r.index].hidden.is_none())
         .map(|r| {
             let n = &g.npcs[r.index];
+            let edge = n.walk.as_ref().map(|w| w.kind);
             runner_figure::BotView {
                 name: &n.name,
                 at: n.at,
@@ -727,6 +730,8 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
                 stride: n.stride,
                 walking: n.walking,
                 y: crate::render::stack_actors::actor_dy(r.y, g.fac.level),
+                climbing: edge == Some(crate::hunters::flight_edges::EdgeKind::Ladder),
+                falling: edge == Some(crate::hunters::flight_edges::EdgeKind::Drop),
             }
         })
         .collect();

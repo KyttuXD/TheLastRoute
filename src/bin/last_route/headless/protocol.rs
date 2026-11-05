@@ -200,6 +200,8 @@ pub struct Session {
     /// Window mode: advance the run in real time with the held inputs between commands.
     pub realtime: bool,
     pub last: Value,
+    /// Other runners the window draws (`admin remote`), to check how a peer looks without a room.
+    pub remotes: Vec<crate::net::world_sync::RemoteView>,
 }
 
 impl Session {
@@ -219,6 +221,7 @@ impl Session {
             time_scale: 1.0,
             realtime: false,
             last: Value::Null,
+            remotes: vec![],
         }
     }
 
@@ -906,6 +909,54 @@ impl Session {
                     set.insert(k.clone(), json!(x));
                 }
                 json!({ "ok": true, "set": set })
+            }
+            "npc" => {
+                // the admin's NPC spawn (ui/admin/actions.rs): `count` bots round the crosshair spot
+                let count = c.get("count").and_then(|v| v.as_i64()).unwrap_or(1) as i32;
+                let smart = c.get("smart").and_then(|v| v.as_i64()).unwrap_or(70) as i32;
+                let eye = g.eye();
+                let (fwd, _, _) = g.camera_basis();
+                let made = g.npc_spawn(count, smart, (eye.x, eye.y, eye.z), (fwd.x, fwd.y, fwd.z));
+                json!({ "ok": true, "spawned": made })
+            }
+            "remote" => {
+                // a made-up other runner for the window to draw (agent window only): `peer`, `x`/`z` (default two metres
+                // ahead), `yaw`, `h`, the pose name `clip` (anim.json wire names), `moving`/`sprinting`/`crouching`,
+                // `slim`, `vy`, `skin`, and `hide` [cell x, cell y, facing x, facing y] with `hide_for` seconds.
+                // `clear: true` removes every made-up runner.
+                if c.get("clear").and_then(|v| v.as_bool()) == Some(true) {
+                    self.remotes.clear();
+                    return json!({ "ok": true, "remotes": 0 });
+                }
+                let peer = c.get("peer").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+                let fwd = g.p.forward2();
+                let h = f(c, "h").unwrap_or(g.p.y());
+                let flag = |k: &str| c.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+                let hide = c.get("hide").and_then(|v| v.as_array()).filter(|a| a.len() == 4).map(|a| {
+                    let n = |i: usize| a[i].as_i64().unwrap_or(0) as i32;
+                    crate::net::world_sync::HideSpot { cell: (n(0), n(1)), facing: (n(2), n(3)) }
+                });
+                let view = crate::net::world_sync::RemoteView {
+                    peer,
+                    x: f(c, "x").unwrap_or(g.p.pos.0 + fwd.0 * 2.0),
+                    y: f(c, "z").unwrap_or(g.p.pos.1 + fwd.1 * 2.0),
+                    yaw: f(c, "yaw").unwrap_or(g.p.yaw + std::f32::consts::PI),
+                    h,
+                    level: crate::game::level_stack::owning_level(h),
+                    skin: c.get("skin").and_then(|v| v.as_str()).unwrap_or("DEFAULT").to_string(),
+                    moving: flag("moving"),
+                    sprinting: flag("sprinting"),
+                    crouching: flag("crouching"),
+                    slim: flag("slim"),
+                    speed: f(c, "speed").unwrap_or(0.0),
+                    vy: f(c, "vy").unwrap_or(0.0),
+                    clip: c.get("clip").and_then(|v| v.as_str()).and_then(crate::render::anim::runner::Pose::from_wire),
+                    hide,
+                    hide_since: hide.map(|_| std::time::Duration::from_secs_f32(f(c, "hide_for").unwrap_or(10.0))),
+                };
+                self.remotes.retain(|r| r.peer != peer);
+                self.remotes.push(view);
+                json!({ "ok": true, "remotes": self.remotes.len() })
             }
             "summon" => {
                 // the admin's summon (ui/admin/actions.rs) for hunter `id`, `count` times, on the ring round the runner

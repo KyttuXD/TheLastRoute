@@ -298,6 +298,11 @@ impl Player {
         self.fall_top = None;
     }
 
+    /// Vertical speed in metres a second (up positive): the jump and the fall; 0 on the ground.
+    pub fn vy(&self) -> f32 {
+        self.vy
+    }
+
     /// Whether the body is in a fall (no ground under it, `update_movement` integrates its height).
     pub fn falling(&self) -> bool {
         self.fall_top.is_some()

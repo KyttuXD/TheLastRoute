@@ -106,8 +106,65 @@ impl HideView {
     }
 }
 
+/// The doors of the lockers other runners hide in: a door swings once when the number of hiders in a locker changes
+/// (one goes in, one comes out). Keyed by the locker's cell in the window's cells.
+#[derive(Default)]
+pub struct RemoteDoors {
+    inside: std::collections::HashMap<(i32, i32), usize>,
+    /// locker cell -> the game time its door began to swing
+    cycles: std::collections::HashMap<(i32, i32), f32>,
+    last_time: f32,
+    primed: bool,
+}
+
+impl RemoteDoors {
+    /// Advance to `time` with the lockers (one entry per hider) the remote runners are in. The first call only learns
+    /// who is already inside, so a runner met mid-hide does not swing a door; a clock that ran backwards resets.
+    pub fn update(&mut self, spots: &[(i32, i32)], time: f32) {
+        if self.primed && time < self.last_time {
+            *self = RemoteDoors::default();
+        }
+        let mut now: std::collections::HashMap<(i32, i32), usize> = std::collections::HashMap::new();
+        for s in spots {
+            *now.entry(*s).or_insert(0) += 1;
+        }
+        if self.primed {
+            for (cell, n) in &now {
+                if self.inside.get(cell) != Some(n) {
+                    self.cycles.insert(*cell, time);
+                }
+            }
+            for cell in self.inside.keys() {
+                if !now.contains_key(cell) {
+                    self.cycles.insert(*cell, time);
+                }
+            }
+        }
+        self.cycles.retain(|_, t0| time - *t0 < DOOR_CYCLE_TIME);
+        self.inside = now;
+        self.last_time = time;
+        self.primed = true;
+    }
+
+    /// The door angle of the locker at `cell` at `time`.
+    pub fn door(&self, cell: (i32, i32), time: f32) -> f32 {
+        self.cycles.get(&cell).map_or(0.0, |t0| door_angle(time - t0))
+    }
+}
+
 thread_local! {
     static HIDE: RefCell<HideView> = RefCell::new(HideView::new());
+    static REMOTE: RefCell<RemoteDoors> = RefCell::new(RemoteDoors::default());
+}
+
+/// Advance the remote runners' locker doors with where they hide now; call once per drawn frame.
+pub fn tick_remote(spots: &[(i32, i32)], time: f32) {
+    REMOTE.with(|r| r.borrow_mut().update(spots, time));
+}
+
+/// The door angle of the locker at window cell `cell` from the remote runners' hiding.
+pub fn remote_door_for(cell: (i32, i32), time: f32) -> f32 {
+    REMOTE.with(|r| r.borrow().door(cell, time))
 }
 
 /// Advance the shared view with this frame's hiding state; call once per drawn frame.
@@ -153,6 +210,29 @@ mod tests {
             v.update(None, t);
         }
         assert_eq!(v.player(), PlayerHide::default());
+    }
+
+    #[test]
+    fn a_remote_hider_swings_its_lockers_door_going_in_and_coming_out() {
+        let mut d = RemoteDoors::default();
+        let cell = (4, 7);
+        d.update(&[], 0.0);
+        d.update(&[], 1.0);
+        assert_eq!(d.door(cell, 1.0 + DOOR_SWING_TIME), 0.0, "an empty locker stays shut");
+        d.update(&[cell], 2.0);
+        assert!(d.door(cell, 2.0 + DOOR_SWING_TIME) > 0.0, "going in swings the door");
+        d.update(&[cell], 2.0 + DOOR_CYCLE_TIME + 0.5);
+        assert_eq!(d.door(cell, 3.5 + DOOR_CYCLE_TIME), 0.0, "and it shuts again");
+        d.update(&[], 10.0);
+        assert!(d.door(cell, 10.0 + DOOR_SWING_TIME) > 0.0, "coming out swings it again");
+        assert_eq!(d.door((0, 0), 10.0 + DOOR_SWING_TIME), 0.0, "another locker is unaffected");
+    }
+
+    #[test]
+    fn a_runner_already_inside_when_first_seen_does_not_swing_a_door() {
+        let mut d = RemoteDoors::default();
+        d.update(&[(1, 1)], 5.0);
+        assert_eq!(d.door((1, 1), 5.0 + DOOR_SWING_TIME), 0.0);
     }
 
     #[test]
