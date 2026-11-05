@@ -144,6 +144,9 @@ pub struct Config {
     pub scenario: Scenario,
     /// The vsync for the run, at window creation and live (`--stress-vsync`).
     pub vsync: bool,
+    /// The frame cap for the run in frames per second (`--stress-limit N`); None is uncapped. Measures the FPS
+    /// LIMIT row's pacer above the display's refresh rate.
+    pub fps_limit: Option<u32>,
 }
 
 /// The stress run: its clock, the open log, the second being counted and every frame time.

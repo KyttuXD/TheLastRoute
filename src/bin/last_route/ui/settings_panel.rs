@@ -51,8 +51,32 @@ const OFF_PANEL_KEYS: [&str; 3] = ["username", "scheme", "skin"];
 
 /// The GRAPHICS API row: the saved choice and the API this run opened with (they differ until a restart, or when
 /// AUTO or a safeguard picked).
-fn graphics_api_label(setting: &str, metal_now: bool) -> String {
+fn graphics_api_label(setting: &str, metal_now: bool, marker_forced: bool) -> String {
+    if marker_forced && !metal_now {
+        return format!("GRAPHICS API: {setting} (OPENGL: LAST METAL START DID NOT FINISH)");
+    }
     format!("GRAPHICS API: {setting} (NOW {})", if metal_now { "METAL" } else { "OPENGL" })
+}
+
+/// The two lines under the VSYNC and FPS LIMIT rows. VSYNC ON waits for the screen's refresh, so the frame rate
+/// stops there and FPS LIMIT cannot raise it; VSYNC OFF lets FPS LIMIT (or UNLIMITED) decide. Plain statements of
+/// how the two rows work, with no measured numbers.
+const VSYNC_NOTES: [&str; 2] = [
+    "VSYNC ON: LOCKED TO YOUR SCREEN'S REFRESH (60 OR 75 FPS)",
+    "VSYNC OFF: THE FPS LIMIT DECIDES; UNLIMITED = AS FAST AS IT RUNS",
+];
+
+/// The two lines under the GRAPHICS API row (macOS). The numbers are the stress-fly measurements on an Apple M4,
+/// 75 Hz display, vsync off (docs/GRAPHICS_API.md); change them there and here together.
+const METAL_NOTES: [&str; 2] = [
+    "NEXT START. METAL IS EXPERIMENTAL: FULLSCREEN ABOUT 340 FPS VS",
+    "OPENGL 190-260, BUT IN A WINDOW METAL STOPS AT THE REFRESH RATE",
+];
+
+/// A one-line note in the VIDEO tab, shrunk to fit the 400-wide column.
+fn video_note(a: &Assets, text: &str, x: f32, top: f32, col: Color) {
+    let size = 7.0_f32.min(7.0 * 400.0 / tw(a, F::Body, text, 7.0).max(1.0));
+    label_vc(a, F::Body, text, x, top, 12.0, size, col);
 }
 
 /// MOVEMENT / ACTIONS / SYSTEM (ControlsRegistry.LAST_ROUTE_TABS) with Godot/web defaults
@@ -1145,17 +1169,24 @@ pub fn draw_settings(
                 _ => "AUTO: picks for this device, eases off if frames drop",
             };
             label_vc(a, F::Body, hint, x, oy + 144.0, 12.0, 7.0, p.muted);
+            video_note(a, VSYNC_NOTES[0], x, oy + 156.0, p.muted);
+            video_note(a, VSYNC_NOTES[1], x, oy + 168.0, p.muted);
             // Metal or OpenGL: macOS only, read when the game starts (app/gfx.rs)
             if cfg!(target_os = "macos") {
-                let label = graphics_api_label(&st.graphics_api, crate::app::platform::is_metal());
-                if button(a, Rect::new(x, oy + 164.0, 400.0, 16.0), &label, 8.0, Kind::Secondary, plain()) {
+                let label = graphics_api_label(
+                    &st.graphics_api,
+                    crate::app::platform::is_metal(),
+                    crate::app::gfx::chosen().marker_forced,
+                );
+                if button(a, Rect::new(x, oy + 184.0, 400.0, 16.0), &label, 8.0, Kind::Secondary, plain()) {
                     let next = crate::app::gfx::Choice::parse(&st.graphics_api)
                         .unwrap_or(crate::app::gfx::Choice::Auto)
                         .next();
                     st.graphics_api = next.id().into();
                     changed = true;
                 }
-                label_vc(a, F::Body, "TAKES EFFECT THE NEXT TIME THE GAME STARTS", x, oy + 184.0, 12.0, 7.0, p.muted);
+                video_note(a, METAL_NOTES[0], x, oy + 202.0, p.muted);
+                video_note(a, METAL_NOTES[1], x, oy + 214.0, p.muted);
             }
         }
         _ => {
@@ -1256,9 +1287,28 @@ mod tests {
 
     #[test]
     fn graphics_api_row_names_the_running_api() {
-        assert_eq!(graphics_api_label("AUTO", true), "GRAPHICS API: AUTO (NOW METAL)");
-        assert_eq!(graphics_api_label("OPENGL", false), "GRAPHICS API: OPENGL (NOW OPENGL)");
-        assert_eq!(graphics_api_label("METAL", false), "GRAPHICS API: METAL (NOW OPENGL)");
+        assert_eq!(graphics_api_label("AUTO", true, false), "GRAPHICS API: AUTO (NOW METAL)");
+        assert_eq!(graphics_api_label("OPENGL", false, false), "GRAPHICS API: OPENGL (NOW OPENGL)");
+        assert_eq!(graphics_api_label("METAL", false, false), "GRAPHICS API: METAL (NOW OPENGL)");
+    }
+
+    #[test]
+    fn the_label_says_when_a_crashed_metal_start_forced_opengl() {
+        let l = graphics_api_label("METAL", false, true);
+        assert!(l.contains("DID NOT FINISH"), "{l}");
+        // a run that is on Metal needs no warning, whatever the marker said
+        assert_eq!(graphics_api_label("METAL", true, true), "GRAPHICS API: METAL (NOW METAL)");
+    }
+
+    #[test]
+    fn the_video_tab_notes_explain_vsync_and_say_metal_is_experimental() {
+        assert!(VSYNC_NOTES[0].starts_with("VSYNC ON") && VSYNC_NOTES[1].starts_with("VSYNC OFF"));
+        assert!(VSYNC_NOTES[1].contains("FPS LIMIT"));
+        assert!(METAL_NOTES.iter().any(|l| l.contains("EXPERIMENTAL")));
+        // the notes are drawn in capitals only
+        for l in VSYNC_NOTES.iter().chain(METAL_NOTES.iter()) {
+            assert_eq!(l.to_uppercase(), *l);
+        }
     }
 
     #[test]

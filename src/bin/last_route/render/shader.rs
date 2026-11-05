@@ -452,6 +452,60 @@ mod tests {
         assert_eq!(MAX_LAMPS, 16);
     }
 
+    /// Compiles the MSL twin with the system's Metal compiler and looks up both entry points. This is the one Metal
+    /// check that runs in `cargo test` (no window is needed): a typo in the twin otherwise only shows as a panic at
+    /// the first Metal start. Skipped, with a line on stderr, where no Metal device exists (a CI VM).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn msl_source_compiles_with_the_metal_compiler() {
+        use core::ffi::{c_char, c_void};
+        #[link(name = "Metal", kind = "framework")]
+        extern "C" {
+            fn MTLCreateSystemDefaultDevice() -> *mut c_void;
+        }
+        #[link(name = "Foundation", kind = "framework")]
+        extern "C" {}
+        #[link(name = "objc")]
+        extern "C" {
+            fn objc_getClass(name: *const c_char) -> *mut c_void;
+            fn sel_registerName(name: *const c_char) -> *mut c_void;
+            fn objc_msgSend();
+        }
+        type Msg0 = unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void;
+        type Msg1 = unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_char) -> *mut c_void;
+        type MsgLib = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void, *mut *mut c_void) -> *mut c_void;
+        type MsgFn = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> *mut c_void;
+        unsafe {
+            let device = MTLCreateSystemDefaultDevice();
+            if device.is_null() {
+                eprintln!("no Metal device here: MSL compile check skipped");
+                return;
+            }
+            let sel = |n: &str| sel_registerName(format!("{n}\0").as_ptr() as *const c_char);
+            let msg = objc_msgSend as *const ();
+            let string_with: Msg1 = std::mem::transmute(msg);
+            let src = std::ffi::CString::new(MSL).unwrap();
+            let ns_src = string_with(objc_getClass(b"NSString\0".as_ptr() as *const c_char), sel("stringWithUTF8String:"), src.as_ptr());
+            assert!(!ns_src.is_null());
+            let mut error: *mut c_void = std::ptr::null_mut();
+            let new_lib: MsgLib = std::mem::transmute(msg);
+            let lib = new_lib(device, sel("newLibraryWithSource:options:error:"), ns_src, std::ptr::null_mut(), &mut error);
+            if lib.is_null() {
+                let describe: Msg0 = std::mem::transmute(msg);
+                let text = describe(error, sel("localizedDescription"));
+                let utf8: Msg0 = std::mem::transmute(msg);
+                let c = utf8(text, sel("UTF8String")) as *const c_char;
+                panic!("the MSL twin does not compile: {}", std::ffi::CStr::from_ptr(c).to_string_lossy());
+            }
+            let named: MsgFn = std::mem::transmute(msg);
+            for entry in ["vertexShader", "fragmentShader"] {
+                let c = std::ffi::CString::new(entry).unwrap();
+                let ns = string_with(objc_getClass(b"NSString\0".as_ptr() as *const c_char), sel("stringWithUTF8String:"), c.as_ptr());
+                assert!(!named(lib, sel("newFunctionWithName:"), ns).is_null(), "entry point {entry} missing");
+            }
+        }
+    }
+
     #[test]
     fn msl_and_glsl_share_the_same_lighting_constants() {
         for k in ["0.80", "0.93", "0.955", "0.985", "16.0", "1.9", "0.001", "0.7 + 0.3", "0.25 + 0.75", "(FogFar * 1.6)", "1.0, 0.95, 0.86", "0.6 *"] {

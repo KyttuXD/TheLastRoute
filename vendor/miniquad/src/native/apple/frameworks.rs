@@ -641,6 +641,10 @@ pub enum MTLPixelFormat {
     RGBA16Float = 115,
 }
 
+/// Last Route patch: the depth format of the window, every pipeline and every render target. Depth only: the
+/// stencil aspect was never used (the backend's stencil state is commented out) and costs memory bandwidth.
+pub const DEPTH_FORMAT: MTLPixelFormat = MTLPixelFormat::Depth32Float;
+
 /// See <https://developer.apple.com/documentation/metal/mtlsamplerminmagfilter>
 #[repr(u64)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]

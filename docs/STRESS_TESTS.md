@@ -12,7 +12,8 @@ The stress mode plays a fixed-length run with a fixed seed and writes the frame 
 - `--stress-log <path>` sets the CSV file. The header row names the columns; that row is the reference for them.
 - `--stress-scenario <name>` picks what the run does: fly (default), npcs, hunters, interact or mixed. See below.
 - `--stress-vsync on|off` sets vsync for the window and the live setting (default off, so the frame rate is not capped at the display refresh rate). The saved settings file is never written.
-- On macOS, `--stress-vsync off` also drops the run loop's display-link wait, so it is not capped at the refresh rate (see docs/GRAPHICS_API.md). `LR_GFX=metal` or `LR_GFX=gl` (or `--gfx metal|gl`) picks the graphics API; the default is Metal on Apple Silicon and OpenGL on Intel.
+- `--stress-limit <fps>` caps the run at that frame rate through the FPS LIMIT row's pacer (default: none; a stress run otherwise ignores the saved FPS LIMIT). Use it to check the cap above the display refresh.
+- On macOS, `--stress-vsync off` also drops the run loop's display-link wait, so it is not capped at the refresh rate (see docs/GRAPHICS_API.md). `LR_GFX=metal` or `LR_GFX=gl` (or `--gfx metal|gl`) picks the graphics API; AUTO is OpenGL everywhere until Metal is measured faster for windowed play (see docs/GRAPHICS_API.md for the numbers: a Metal window is held to the refresh rate, Metal fullscreen is faster than OpenGL).
 - The summary line ends with `scenario=` and `vsync=`. The CSV columns are the same for every scenario.
 
 ## Scenarios

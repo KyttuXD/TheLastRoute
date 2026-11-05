@@ -1,6 +1,7 @@
 {
   "schema": "lr.gfx/1",
-  "_note": "Graphics API choice (app/gfx.rs). No Godot counterpart: the Godot project uses the engine's own renderer. boot_marker is a file in the per-user folder written before a Metal window opens and deleted after good_frames drawn frames; if it is still there at the next launch, the Metal start crashed and AUTO uses OpenGL.",
+  "_note": "Graphics API choice (app/gfx.rs). No Godot counterpart: the Godot project uses the engine's own renderer. boot_marker is a file in the per-user folder, holding a process id, written before a Metal window opens and removed by a clean end (after good_frames drawn frames, or at a normal exit); a marker whose process is gone at the next launch means the Metal start crashed and AUTO uses OpenGL. auto_metal_on_apple_silicon: AUTO gives OpenGL everywhere until Metal is measured faster than OpenGL on a device (docs/GRAPHICS_API.md has the numbers); set it to true to give Apple Silicon Metal under AUTO.",
   "boot_marker": "gfx_boot.marker",
-  "good_frames": 120
+  "good_frames": 120,
+  "auto_metal_on_apple_silicon": false
 }

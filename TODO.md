@@ -208,11 +208,14 @@ Measure first: the Intel build has not been timed yet. Every item below should b
 Target: 100+ FPS on the Intel MacBook Air with vsync off, measured with the F7 overlay in the same 60-second walk through a run.
 
 - [ ] Baseline on KT-MBA: F7 overlay frame time, the update / render 3d / hud split, draw calls and spikes, in the same 60-second walk through a run, recorded in this list
-- [ ] Renderer check on the Intel GPU: Metal and OpenGL are both built in now (docs/GRAPHICS_API.md); AUTO uses OpenGL on Intel until `LR_GFX=metal target/release/last_route --stress 60 --stress-vsync off` is compared with `LR_GFX=gl` on KT-MBA, then pick the faster one for AUTO. Metal read-back (screenshots) is not implemented, so screenshots stay on OpenGL
-- [x] Metal renderer for macOS (graphics API setting AUTO / METAL / OPENGL, `--gfx`, `LR_GFX`, vendored miniquad with three Metal fixes, MSL twin of the world shader, crash-guard marker). On the M4 it ran slower than OpenGL unlimited (GPU-bound about 8-11 ms per frame, cause not found); both sit at the refresh rate with vsync on
-- [ ] Metal GPU time: find why the world pass costs 8-11 ms of GPU on the M4 under Metal when OpenGL finishes the whole frame in about 5 ms (try a Depth32Float depth target instead of Depth32Float_Stencil8, count passes per frame, the Xcode GPU capture, the 16-lamp loop unrolled)
+- [ ] Renderer check on the Intel GPU: Metal and OpenGL are both built in now (docs/GRAPHICS_API.md); AUTO is OpenGL everywhere until `LR_GFX=metal target/release/last_route --stress 60 --stress-vsync off` is compared with `LR_GFX=gl` on KT-MBA (not reachable over ssh on 2026-11-05, so unmeasured), then pick the faster one for AUTO. Metal read-back (screenshots) is not implemented, so screenshots stay on OpenGL
+- [x] Metal renderer for macOS (graphics API setting AUTO / METAL / OPENGL, `--gfx`, `LR_GFX`, vendored miniquad with the Metal fixes in vendor/miniquad/LAST_ROUTE_PATCHES.md, MSL twin of the world shader, crash-guard marker). AUTO is OpenGL everywhere (owner decision); the settings row says Metal is experimental
+- [x] Metal GPU time (2026-11-05, M4): the 8-12 ms was the command buffer waiting on the compositor's drawable, not shading (0.9 ms without present). Merging render encoders took Metal fullscreen from 131 to 341 FPS (OpenGL fullscreen 188-261); depth format and the lamp loop made no difference. A Metal window stays held to the refresh rate with vsync off (OpenGL window 264 FPS). Numbers in docs/GRAPHICS_API.md
+- [ ] Metal in a window: find a way to present faster than the refresh rate in a window (the layer's displaySyncEnabled NO does not do it; fullscreen does), then re-measure and flip `auto_metal_on_apple_silicon` in data/app/gfx.json
+- [ ] Metal on a Retina display: the Metal view draws at backing resolution, OpenGL at 1x (`high_dpi: false`); measure on a 2x panel and match the drawable size if Metal pays four times the pixels
+- [ ] Metal checklist: run the manual checklist at the end of docs/GRAPHICS_API.md (menus, skin preview, locker camera, props filters) on Metal once before AUTO may pick it
 - [ ] Metal screenshots: implement `texture_read_pixels` in the vendored miniquad Metal backend and a Metal branch of macroquad's `grab_screen` (it is `unimplemented!()` for non-OpenGL ids), so `--screenshot`, `--self-test` and the F-key capture work without `--gfx gl`
-- [x] The 60-75 FPS cap on macOS was not OpenGL: miniquad's macOS run loop waits on a CVDisplayLink every iteration (75 Hz display here, both backends). With VSYNC off the wait is now skipped, live, through `window::set_frame_pacer` in the vendored miniquad; with vsync on it stays
+- [x] The 60-75 FPS cap on macOS was not OpenGL: miniquad's macOS run loop waits on a CVDisplayLink every iteration (75 Hz display here, both backends). With VSYNC off the wait is now skipped, live, through `window::set_frame_pacer` in the vendored miniquad; with vsync on it stays. Verified 2026-11-05 on the M4 with `LR_FRAME_PACER`: OpenGL window, vsync off, pacer on 74.1 FPS, pacer off 264 FPS. The default (VSYNC on, as in Godot) is the refresh rate by design; the Settings text now says so, and FPS LIMIT works above the refresh with vsync off (`--stress-limit` 120 gave 117.7, 200 gave 194.0)
 - [ ] Quality AUTO picks a tier from the GPU and the first second of frames on this Mac, instead of a fixed 50% render scale for every Mac
 - [ ] Quality governor: step the render scale down on slow frames and back up when there is headroom (Godot quality_governor.gd: 40/50/60 targets, four notches)
 - [ ] Lamp shader cost: the fragment shader loops over 16 lamps plus the flashlight for every pixel; test 8 lamps and distance culling on Intel
@@ -220,7 +223,7 @@ Target: 100+ FPS on the Intel MacBook Air with vsync off, measured with the F7 o
 - [ ] Draw calls: count meshes per floor and per frame in a run, and merge meshes that share a material
 - [ ] Triangle budget: GLB prop and character models, measured on this Mac; decimate or swap the heaviest ones
 - [ ] Texture sizes and count: check the atlas and floor set sizes against the Intel GPU memory budget
-- [ ] Vsync and frame cap: the window starts with vsync on; with vsync off the loop now runs uncapped on macOS (no display-link wait), so check tearing, CPU use and whether the FPS limit setting (0 = off) helps both on this Mac
+- [ ] Vsync and frame cap: the window starts with vsync on; with vsync off and no limit the loop runs flat out on macOS (one core, may tear), so check tearing and CPU use on the laptops and consider sleeping while the window is unfocused
 - [ ] Release profile: test codegen-units = 1 and lto = "thin" in [profile.release] for speed, with the build time recorded
 - [ ] Startup on Intel: assets and sounds load time on KT-MBA, measured against the boot card
 - [ ] Mesh rebuild on floor change (see Performance and FPS): the Intel frame cost of a chunk recentre, measured here before and after the fix
@@ -404,7 +407,7 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [ ] Map looping report: retest on the current build; batch 12 is in git stash (batch 12 paused: map looping report) and needs a bisect or redo
 
 ### Settings
-- [ ] vsync is on by default, so the frame rate stops at the refresh rate; decide whether the default should be off
+- [x] vsync is on by default (as in Godot), so the frame rate stops at the refresh rate; kept, and the VIDEO tab now explains VSYNC against FPS LIMIT (2026-11-05)
 - [ ] Add a reduced motion setting (the radar ping reads a constant for it)
 
 ## Movies, trailers and cutscenes (Rust port)
