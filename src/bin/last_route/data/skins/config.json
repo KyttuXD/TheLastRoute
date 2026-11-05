@@ -1,11 +1,17 @@
 {
 	"schema": "lr.skin_config/1",
 	"max_bytes": 65536,
-	"upload_max_bytes": 16384,
+	"upload_max_bytes": 65536,
+	"upload_retry_secs": 60,
+	"peer_cache_max": 16,
+	"png": {
+		"max_chunks": 64
+	},
 	"fetch": {
 		"host_base": "https://skins.kyttuslab.org",
 		"host_path": "/{id}.png",
 		"backend_path": "/api/skins/files/{id}.png",
+		"v1_path": "/api/v1/skins/{id}",
 		"timeout_secs": 8
 	}
 }

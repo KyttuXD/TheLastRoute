@@ -12,11 +12,7 @@ use crate::app::assets::Assets;
 use crate::app::settings::Settings;
 use crate::config::{FOV_MAX_DEG, FOV_MIN_DEG};
 use crate::content::Content;
-use crate::net::world_sync::SKIN_DEFAULT;
-use crate::shared::skins;
 use macroquad::prelude::*;
-use std::cell::RefCell;
-use std::sync::mpsc::{Receiver, TryRecvError};
 
 /// The web overlay's tabs, in its order (index.html `data-settings-tab`).
 const TABS: [&str; 7] = [
@@ -39,15 +35,15 @@ const TAB_KEYS: [&[&str]; 7] = [
     ],
     &["fullscreen", "ads", "vsync", "quality", "fps_limit", "fov", "graphics_api"],
     &["sensitivity"],
+    &["arms", "skin_copy"],
     &[],
-    &["arms"],
     &[],
 ];
 
 /// Saved keys with no row in this panel: `username` is edited on the account screens, `scheme` comes
-/// from LR_SCHEME or the saved file, and `skin` is chosen from the title screen.
+/// from LR_SCHEME or the saved file, and `skin` and `skin_slim` are set by APPLY on the SKIN tab (a picture, not a row).
 #[allow(dead_code)]
-const OFF_PANEL_KEYS: [&str; 3] = ["username", "scheme", "skin"];
+const OFF_PANEL_KEYS: [&str; 4] = ["username", "scheme", "skin", "skin_slim"];
 
 /// The GRAPHICS API row: the saved choice and the API this run opened with (they differ until a restart, or when
 /// AUTO or a safeguard picked).
@@ -325,502 +321,7 @@ fn scroll_text(a: &Assets, ui: &mut Ui, x: f32, area: Rect, lines: &[TextLine]) 
     clip_end();
 }
 
-// ------------------------------------------------------------------------------------------- SKIN tab
-
-/// Which SKIN text box has the keyboard.
-#[derive(Clone, Copy, PartialEq)]
-enum Field {
-    Url,
-    Minecraft,
-}
-
-/// The arm styles ARMS cycles through (skin_panel.gd `_cycle_arms`).
-const ARMS: [&str; 3] = ["auto", "classic", "slim"];
-
-/// The SKIN tab's state between frames. It lives here rather than in Settings: a picked skin waits for APPLY, and a
-/// download runs on a thread that reports back through `fetch`.
-struct SkinUi {
-    /// A validated 64x64 PNG waiting for APPLY. None keeps APPLY greyed.
-    pick: Option<Vec<u8>>,
-    /// The preview texture. Rebuilt (set to None) when the pick or the chosen skin changes; inside None means no picture.
-    shown: Option<Option<Texture2D>>,
-    status: String,
-    url: String,
-    minecraft: String,
-    field: Option<Field>,
-    /// A download in progress; its result arrives here.
-    fetch: Option<Receiver<Result<Vec<u8>, String>>>,
-    rules: Option<skins::SkinRules>,
-    catalog: Option<Vec<skins::CatalogSkin>>,
-    catalog_index: usize,
-    folder_cursor: usize,
-    /// OTHERS MAY COPY: on by default (Godot settings.gd `skin_copyable`). Not saved by this build yet.
-    copyable: bool,
-}
-
-impl Default for SkinUi {
-    fn default() -> Self {
-        SkinUi {
-            pick: None,
-            shown: None,
-            status: String::new(),
-            url: String::new(),
-            minecraft: String::new(),
-            field: None,
-            fetch: None,
-            rules: None,
-            catalog: None,
-            catalog_index: 0,
-            folder_cursor: 0,
-            copyable: true,
-        }
-    }
-}
-
-thread_local! {
-    static SKIN: RefCell<SkinUi> = RefCell::new(SkinUi::default());
-}
-
-/// A button that is greyed (and does nothing) when `on` is false.
-fn gate(on: bool) -> BtnState {
-    if on {
-        plain()
-    } else {
-        disabled()
-    }
-}
-
-/// APPLY is greyed until a skin is picked (skin_panel.gd `_refresh`).
-fn apply_enabled(s: &SkinUi) -> bool {
-    s.pick.is_some()
-}
-
-/// DEFAULT restores the built-in skin and drops any picked one (skin_panel.gd `_reset`).
-fn reset_to_default(st: &mut Settings, s: &mut SkinUi) {
-    st.skin = SKIN_DEFAULT.to_string();
-    s.pick = None;
-    s.shown = None;
-    s.status = "Back to the default skin.".to_string();
-}
-
-/// What ARMS shows: the setting, and for auto the arm style the skin in the preview resolves to.
-fn arms_label(arms: &str, slim: bool) -> String {
-    if arms == "auto" {
-        format!("ARMS: AUTO ({})", if slim { "SLIM" } else { "CLASSIC" })
-    } else {
-        format!("ARMS: {}", arms.to_uppercase())
-    }
-}
-
-/// True when the preview should wear slim arms. HOOK: the integrator points this at ArmsSetting::resolve (task 6).
-fn preview_slim(arms: &str, png: Option<&[u8]>) -> bool {
-    crate::app::settings::ArmsSetting::resolve(arms, png)
-}
-
-/// TEMPLATE: saves the skin template to Downloads and reports where, or why not.
-fn save_template_status(s: &mut SkinUi) {
-    s.status = match crate::shared::skin_template::save_template_to_downloads() {
-        Ok(path) => format!("Saved template to {}", path.display()),
-        Err(e) => format!("Could not save the template: {e}"),
-    };
-}
-
-/// The ARMS setting after `cur`: auto, classic, slim, then auto again.
-fn next_arms(cur: &str) -> &'static str {
-    let i = ARMS.iter().position(|a| *a == cur).unwrap_or(0);
-    ARMS[(i + 1) % ARMS.len()]
-}
-
-/// Puts a validated skin into the preview, waiting for APPLY (skin_panel.gd `_preview`).
-fn set_pick(s: &mut SkinUi, bytes: Vec<u8>) {
-    s.pick = Some(bytes);
-    s.shown = None;
-    s.status = "Preview only. Press APPLY to wear it.".to_string();
-}
-
-/// A refused source: nothing is picked and the reason is shown (skin_panel.gd "Not applied: ...").
-fn refuse(s: &mut SkinUi, why: &str) {
-    s.pick = None;
-    s.shown = None;
-    s.status = format!("Not applied: {why}.");
-}
-
-/// A PNG as a preview texture, drawn with nearest-neighbour filtering so the pixels stay sharp.
-fn texture_of(png: &[u8]) -> Texture2D {
-    let tex = Texture2D::from_file_with_format(png, Some(ImageFormat::Png));
-    tex.set_filter(FilterMode::Nearest);
-    tex
-}
-
-/// Starts a download on a thread. `poll_fetch` takes the result on a later frame, so the UI never waits for the network.
-fn start_fetch(s: &mut SkinUi, job: impl FnOnce() -> Result<Vec<u8>, String> + Send + 'static) {
-    if s.fetch.is_some() {
-        return;
-    }
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(job());
-    });
-    s.fetch = Some(rx);
-    s.status = "Downloading...".to_string();
-}
-
-/// Takes a finished download, when there is one, into the preview or the refusal.
-fn poll_fetch(s: &mut SkinUi) {
-    let Some(rx) = s.fetch.as_ref() else { return };
-    let done = match rx.try_recv() {
-        Ok(result) => result,
-        Err(TryRecvError::Empty) => return,
-        Err(TryRecvError::Disconnected) => Err("the download stopped".to_string()),
-    };
-    s.fetch = None;
-    match done {
-        Ok(bytes) => set_pick(s, bytes),
-        Err(why) => refuse(s, &why),
-    }
-}
-
-/// PICK A PNG. This build has no file dialog, so it offers the 64x64 PNGs in the skins folder one at a time.
-fn pick_from_folder(s: &mut SkinUi) {
-    let ids: Vec<String> = skins::list_skins(skins::skin_dir().as_deref())
-        .into_iter()
-        .skip(1)
-        .collect();
-    if ids.is_empty() {
-        s.status = "No 64x64 PNG is in the skins folder yet.".to_string();
-        return;
-    }
-    let id = ids[s.folder_cursor % ids.len()].clone();
-    s.folder_cursor += 1;
-    match skins::skin_png(&id) {
-        Some((_, bytes)) => set_pick(s, bytes),
-        None => refuse(s, "that file can no longer be read"),
-    }
-}
-
-/// FROM URL: the link is checked by the rules and downloaded on a thread, then validated like a picked file.
-fn from_url(s: &mut SkinUi) {
-    let Some(rules) = s.rules.clone() else {
-        refuse(s, "the skin rules are missing from this build");
-        return;
-    };
-    let url = s.url.trim().to_string();
-    start_fetch(s, move || skins::fetch_url_skin(&url, &rules));
-}
-
-/// FROM MC NAME: the name's skin through Mojang's APIs, on a thread (see `skins::fetch_minecraft_skin`).
-fn from_minecraft(s: &mut SkinUi) {
-    let Some(rules) = s.rules.clone() else {
-        refuse(s, "the skin rules are missing from this build");
-        return;
-    };
-    let name = s.minecraft.trim().to_string();
-    start_fetch(s, move || skins::fetch_minecraft_skin(&name, &rules));
-}
-
-/// FROM CATALOG: the chosen catalogue skin goes to the preview, then APPLY like any other source.
-fn from_catalog(s: &mut SkinUi) {
-    let Some(entry) = s
-        .catalog
-        .as_ref()
-        .and_then(|list| list.get(s.catalog_index))
-        .cloned()
-    else {
-        return;
-    };
-    match skins::catalog_png(&entry) {
-        None => refuse(s, &format!("the picture for {} is not in this build", entry.name)),
-        Some(png) => match skins::skin_from_png(png) {
-            Ok((_, bytes)) => set_pick(s, bytes),
-            Err(why) => refuse(s, &why),
-        },
-    }
-}
-
-/// APPLY: the picked skin is saved as the user's own file and becomes the chosen skin.
-fn apply_pick(s: &mut SkinUi, st: &mut Settings, changed: &mut bool) {
-    let Some(bytes) = s.pick.take() else { return };
-    match skins::save_custom_skin(&bytes) {
-        Ok(id) => {
-            st.skin = id;
-            *changed = true;
-            s.shown = None;
-            s.status = "Skin applied.".to_string();
-        }
-        Err(e) => {
-            s.pick = Some(bytes);
-            s.status = format!("Not applied: the skin could not be saved ({e}).");
-        }
-    }
-}
-
-/// Keys for the focused SKIN text box: printable characters (the name box takes only the rules' name characters) and
-/// Backspace. Returns true when Enter was pressed.
-fn type_into(s: &mut SkinUi) -> bool {
-    let Some(field) = s.field else {
-        while get_char_pressed().is_some() {}
-        return false;
-    };
-    let Some(rules) = s.rules.as_ref() else {
-        return false;
-    };
-    let (text, cap) = match field {
-        Field::Url => (&mut s.url, rules.max_url_length),
-        Field::Minecraft => (&mut s.minecraft, rules.name_max),
-    };
-    while let Some(ch) = get_char_pressed() {
-        let allowed = match field {
-            Field::Url => ch.is_ascii_graphic(),
-            Field::Minecraft => rules.name_chars.contains(ch),
-        };
-        if allowed && text.len() < cap {
-            text.push(ch);
-        }
-    }
-    if is_key_pressed(KeyCode::Backspace) {
-        text.pop();
-    }
-    is_key_pressed(KeyCode::Enter)
-}
-
-/// The skin's front (head and hat, body, arms, legs) at 4 screen pixels to a skin pixel, centred in `area`. This is
-/// the 2D stand-in for the 3D mannequin preview.
-fn draw_front(tex: &Texture2D, area: Rect) {
-    let k = 4.0;
-    let cx = area.x + area.w * 0.5;
-    let top = area.y + (area.h - 32.0 * k) * 0.5;
-    let part = |src: (f32, f32), size: (f32, f32), x: f32, y: f32| {
-        draw_texture_ex(
-            tex,
-            x,
-            y,
-            WHITE,
-            DrawTextureParams {
-                source: Some(Rect::new(src.0, src.1, size.0, size.1)),
-                dest_size: Some(vec2(size.0 * k, size.1 * k)),
-                ..Default::default()
-            },
-        );
-    };
-    part((4.0, 20.0), (4.0, 12.0), cx - 8.0 * k, top + 20.0 * k);
-    part((20.0, 52.0), (4.0, 12.0), cx, top + 20.0 * k);
-    part((44.0, 20.0), (4.0, 12.0), cx + 4.0 * k, top + 8.0 * k);
-    part((36.0, 52.0), (4.0, 12.0), cx - 8.0 * k, top + 8.0 * k);
-    part((20.0, 20.0), (8.0, 12.0), cx - 4.0 * k, top + 8.0 * k);
-    part((8.0, 8.0), (8.0, 8.0), cx - 4.0 * k, top);
-    part((40.0, 8.0), (8.0, 8.0), cx - 4.0 * k, top);
-}
-
-thread_local! {
-    /// The rotating 3D mannequin in the preview box (ui/skin_preview.rs).
-    static SKIN_PREVIEW: RefCell<crate::ui::skin_preview::SkinPreview> = RefCell::new(crate::ui::skin_preview::SkinPreview::new());
-}
-
-/// The preview box: the chosen skin (or the pick waiting for APPLY), else the word DEFAULT.
-fn draw_preview(a: &Assets, s: &mut SkinUi, st: &Settings, area: Rect) {
-    if s.shown.is_none() {
-        let png = match &s.pick {
-            Some(bytes) => Some(bytes.clone()),
-            None if st.skin == SKIN_DEFAULT => None,
-            None => skins::skin_png(&st.skin).map(|(_, bytes)| bytes),
-        };
-        s.shown = Some(png.map(|bytes| texture_of(&bytes)));
-    }
-    let png: Option<Vec<u8>> = match &s.pick {
-        Some(bytes) => Some(bytes.clone()),
-        None if st.skin == SKIN_DEFAULT => None,
-        None => skins::skin_png(&st.skin).map(|(_, bytes)| bytes),
-    };
-    let slim = preview_slim(&st.arms, png.as_deref());
-    if a.npc_body.is_some() {
-        let tex = s.shown.as_ref().and_then(Option::as_ref);
-        SKIN_PREVIEW.with(|p| p.borrow_mut().draw(a, area, tex, slim, get_frame_time()));
-        return;
-    }
-    // Fallback: the flat front, when the 3D preview target cannot be made.
-    match s.shown.as_ref().and_then(Option::as_ref) {
-        Some(tex) => draw_front(tex, area),
-        None => label_c(
-            a,
-            F::Body,
-            "DEFAULT",
-            area.x + area.w * 0.5,
-            area.y + area.h * 0.5 - 4.0,
-            7.0,
-            pal().muted,
-        ),
-    }
-}
-
-/// The SKIN tab, laid out as the Godot skin panel (game/menus/skin_panel.gd): the preview on the left; on the right
-/// PICK A PNG and APPLY, DEFAULT and TEMPLATE, the FROM URL and FROM MC NAME boxes, the copy row, the catalogue row,
-/// OTHERS MAY COPY and ARMS, then the status line and "Your skin".
-fn skin_tab(a: &Assets, st: &mut Settings, ox: f32, oy: f32, changed: &mut bool) {
-    let p = pal();
-    SKIN.with(|cell| {
-        let mut s = cell.borrow_mut();
-        if s.rules.is_none() {
-            s.rules = skins::rules();
-        }
-        if s.catalog.is_none() {
-            s.catalog = Some(skins::catalog());
-        }
-        poll_fetch(&mut s);
-
-        let top = oy + 66.0;
-        let cx = ox + 180.0;
-        let bw = 158.0;
-        let bx = cx + bw + 2.0;
-        let gw = 80.0;
-        let half = (240.0 - 2.0) * 0.5;
-        let url_box = Rect::new(cx, top + 36.0, bw, 16.0);
-        let mc_box = Rect::new(cx, top + 54.0, bw, 16.0);
-
-        if is_mouse_button_pressed(MouseButton::Left) {
-            if hovered(url_box) {
-                s.field = Some(Field::Url);
-            } else if hovered(mc_box) {
-                s.field = Some(Field::Minecraft);
-            }
-        }
-        if type_into(&mut s) {
-            match s.field {
-                Some(Field::Url) => from_url(&mut s),
-                Some(Field::Minecraft) => from_minecraft(&mut s),
-                None => {}
-            }
-        }
-        let busy = s.fetch.is_some();
-
-        draw_preview(a, &mut s, st, Rect::new(ox + 20.0, top, 150.0, 150.0));
-
-        // Rows 1-2: PICK A PNG | APPLY, DEFAULT | TEMPLATE
-        if button(a, Rect::new(cx, top, half, 16.0), "PICK A PNG", 7.0, Kind::Secondary, gate(!busy)) {
-            pick_from_folder(&mut s);
-        }
-        if button(
-            a,
-            Rect::new(cx + half + 2.0, top, half, 16.0),
-            "APPLY",
-            7.0,
-            Kind::Secondary,
-            gate(!busy && apply_enabled(&s)),
-        ) {
-            apply_pick(&mut s, st, changed);
-        }
-        let default_on = !busy && (st.skin != SKIN_DEFAULT || s.pick.is_some());
-        if button(a, Rect::new(cx, top + 18.0, half, 16.0), "DEFAULT", 7.0, Kind::Secondary, gate(default_on)) {
-            reset_to_default(st, &mut s);
-            *changed = true;
-        }
-        if button(
-            a,
-            Rect::new(cx + half + 2.0, top + 18.0, half, 16.0),
-            "TEMPLATE",
-            7.0,
-            Kind::Secondary,
-            gate(!busy),
-        ) {
-            save_template_status(&mut s);
-        }
-
-        // Row 3: the https link box and FROM URL
-        line_edit(
-            a,
-            url_box,
-            &s.url,
-            "https:// link to a 64x64 PNG skin",
-            7.0,
-            s.field == Some(Field::Url),
-            false,
-            get_time() as f32,
-        );
-        if button(a, Rect::new(bx, top + 36.0, gw, 16.0), "FROM URL", 7.0, Kind::Secondary, gate(!busy)) {
-            from_url(&mut s);
-        }
-
-        // Row 4: the Minecraft name box and FROM MC NAME
-        line_edit(
-            a,
-            mc_box,
-            &s.minecraft,
-            "Minecraft username",
-            7.0,
-            s.field == Some(Field::Minecraft),
-            false,
-            get_time() as f32,
-        );
-        if button(a, Rect::new(bx, top + 54.0, gw, 16.0), "FROM MC NAME", 7.0, Kind::Secondary, gate(!busy)) {
-            from_minecraft(&mut s);
-        }
-
-        // Row 5: the co-op player list (no one is listed in this build) and COPY SKIN, greyed
-        let copy_row = top + 72.0;
-        sbox(Rect::new(cx, copy_row, bw, 16.0), p.inset, p.field_edge, 1.0, p.corner);
-        label_vc(a, F::Body, "(no one to copy)", cx + 6.0, copy_row, 16.0, 7.0, p.muted);
-        button(a, Rect::new(bx, copy_row, gw, 16.0), "COPY SKIN", 7.0, Kind::Secondary, disabled());
-
-        // Row 6: the catalogue (cycles through the entries) and FROM CATALOG
-        let catalog_row = top + 90.0;
-        let (list_len, catalog_label) = match s.catalog.as_ref() {
-            Some(list) if !list.is_empty() => {
-                let i = s.catalog_index % list.len();
-                (list.len(), list[i].name.clone())
-            }
-            _ => (0, "(no catalog skins)".to_string()),
-        };
-        if button(
-            a,
-            Rect::new(cx, catalog_row, bw, 16.0),
-            &catalog_label,
-            7.0,
-            Kind::Secondary,
-            gate(list_len > 0),
-        ) {
-            s.catalog_index = (s.catalog_index + 1) % list_len.max(1);
-        }
-        if button(
-            a,
-            Rect::new(bx, catalog_row, gw, 16.0),
-            "FROM CATALOG",
-            7.0,
-            Kind::Secondary,
-            gate(!busy && list_len > 0),
-        ) {
-            from_catalog(&mut s);
-        }
-
-        // Row 7: OTHERS MAY COPY and ARMS
-        let options_row = top + 108.0;
-        if state_toggle(
-            a,
-            Rect::new(cx, options_row, bw, 16.0),
-            "OTHERS MAY COPY",
-            s.copyable,
-            false,
-            plain(),
-        ) {
-            s.copyable = !s.copyable;
-        }
-        let shown_png: Option<Vec<u8>> = match &s.pick {
-            Some(bytes) => Some(bytes.clone()),
-            None if st.skin == SKIN_DEFAULT => None,
-            None => skins::skin_png(&st.skin).map(|(_, bytes)| bytes),
-        };
-        let label_text = arms_label(&st.arms, preview_slim(&st.arms, shown_png.as_deref()));
-        if button(a, Rect::new(bx, options_row, gw, 16.0), &label_text, 7.0, Kind::Secondary, plain()) {
-            st.arms = next_arms(&st.arms).to_string();
-            *changed = true;
-        }
-
-        // Status, then the skin in use
-        for (i, line) in wrap(a, F::Body, &s.status, 240.0, 6.0).iter().enumerate() {
-            label(a, F::Body, line, cx, top + 126.0 + i as f32 * 8.0, 6.0, p.body);
-        }
-        let mine = if st.skin == SKIN_DEFAULT { "default" } else { "custom" };
-        label(a, F::Body, &format!("Your skin: {mine}"), cx, top + 150.0, 7.0, p.muted);
-    });
-}
+// The SKIN tab lives in ui/skin_tab.rs.
 
 /// Draws the overlay; returns true when it closes. `in_run` shows a note for SKIN and MODS.
 pub fn draw_settings(
@@ -846,15 +347,18 @@ pub fn draw_settings(
         15.0,
         p.ink,
     );
-    label_c(
-        a,
-        F::Body,
-        "PRESS REBIND, THEN A KEY  //  ESC CANCELS A REBIND IN PROGRESS",
-        ox + 220.0,
-        oy + 25.0,
-        7.0,
-        p.muted,
-    );
+    // the rebind hint belongs to the CONTROLS tab only; the SKIN tab has its own status line
+    if ui.settings_tab == 3 {
+        label_c(
+            a,
+            F::Body,
+            "PRESS REBIND, THEN A KEY  //  ESC CANCELS A REBIND IN PROGRESS",
+            ox + 220.0,
+            oy + 25.0,
+            7.0,
+            p.muted,
+        );
+    }
     let mut pos = ui.settings_tab.min(TABS.len() - 1);
     if let Some(i) = tab_bar(
         a,
@@ -876,6 +380,10 @@ pub fn draw_settings(
         ui.scroll = 0.0;
     }
     ui.settings_tab = pos;
+    if ui.settings_tab != 4 || in_run {
+        // a hidden SKIN tab never keeps a text box focused or the picker open
+        super::skin_tab::blur();
+    }
     let x = ox + 20.0;
     let mut changed = false;
     match ui.settings_tab {
@@ -919,7 +427,7 @@ pub fn draw_settings(
         }
         4 if !in_run => {
             // SKIN: the Godot skin panel (game/menus/skin_panel.gd), see skin_tab
-            skin_tab(a, st, ox, oy, &mut changed);
+            super::skin_tab::draw(a, st, ox, oy, &mut changed);
         }
         4 | 5 | 6 => {
             // SKIN (during a run), VOICE and MODS each scroll their text below the tab bar
@@ -1234,7 +742,9 @@ pub fn draw_settings(
         st.save();
     }
     let close = esc_close(a, Rect::new(ox + 193.0, oy + 234.0, 54.0, 16.0));
-    close || is_key_pressed(KeyCode::Escape)
+    // Escape first leaves a SKIN text box or the picker; only a second press closes the panel
+    let skin_took_escape = super::skin_tab::take_escape();
+    close || (is_key_pressed(KeyCode::Escape) && !skin_took_escape)
 }
 
 #[cfg(test)]
@@ -1306,54 +816,10 @@ mod tests {
     }
 
     #[test]
-    fn apply_is_greyed_until_a_skin_is_picked() {
-        let mut s = SkinUi::default();
-        assert!(!apply_enabled(&s), "nothing picked: APPLY is off");
-        set_pick(&mut s, vec![1, 2, 3]);
-        assert!(apply_enabled(&s), "a picked skin turns APPLY on");
-    }
-
-    #[test]
-    fn default_restores_the_default_skin() {
-        let mut st = Settings::default();
-        st.skin = "CUSTOM".to_string();
-        let mut s = SkinUi::default();
-        set_pick(&mut s, vec![9]);
-        reset_to_default(&mut st, &mut s);
-        assert_eq!(st.skin, SKIN_DEFAULT);
-        assert!(!apply_enabled(&s), "DEFAULT drops the picked skin too");
-    }
-
-    #[test]
-    fn arms_cycle_auto_classic_slim() {
-        assert_eq!(next_arms("auto"), "classic");
-        assert_eq!(next_arms("classic"), "slim");
-        assert_eq!(next_arms("slim"), "auto");
-    }
-
-    #[test]
-    fn skin_tab_defaults_match_godot() {
-        let s = SkinUi::default();
-        assert!(s.copyable, "OTHERS MAY COPY is on by default (settings.gd skin_copyable)");
-        assert_eq!(Settings::default().arms, "auto");
-    }
-
-    #[test]
-    fn arms_persists_through_the_settings_struct() {
-        let mut st = Settings::default();
-        let mut seen = vec![st.arms.clone()];
-        for _ in 0..3 {
-            st.arms = next_arms(&st.arms).to_string();
-            seen.push(st.arms.clone());
-        }
-        assert_eq!(seen, ["auto", "classic", "slim", "auto"]);
-    }
-
-    #[test]
-    fn arms_label_shows_the_effective_style_for_auto() {
-        assert_eq!(arms_label("auto", true), "ARMS: AUTO (SLIM)");
-        assert_eq!(arms_label("auto", false), "ARMS: AUTO (CLASSIC)");
-        assert_eq!(arms_label("slim", false), "ARMS: SLIM");
+    fn the_skin_tab_has_its_own_tests_in_skin_tab_rs() {
+        // the skin rows, their state and their layout are tested next to the code in ui/skin_tab.rs
+        assert_eq!(TABS[4], "SKIN");
+        assert_eq!(TAB_KEYS[4], ["arms", "skin_copy"]);
     }
 
     #[test]

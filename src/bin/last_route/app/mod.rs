@@ -5,7 +5,7 @@
 //!   LR_SHOT_SIZE=WxH        window size (e.g. 1920x1080, 844x390)
 //!   LR_SCHEME=city          the City colour scheme (palette.gd SCHEMES)
 //!   LR_SHOT_SCREEN=...      title | create | join | quit | account | settings | lobby | dossier | admin
-//!   LR_SHOT_TAB=n           the settings tab (0 AUDIO .. 5 MODS)
+//!   LR_SHOT_TAB=n           the settings tab (0 GAMEPLAY, 1 AUDIO, 2 VIDEO, 3 CONTROLS, 4 SKIN, 5 VOICE, 6 MODS)
 //!   LR_SHOT_DOSSIER_TAB=n   the dossier tab (0 ROUTE DOSSIER, 1 CUSTOM HUNTERS)
 //!   LR_SHOT_ACCOUNT=1       the account panel (same as LR_SHOT_SCREEN=account)
 //!   LR_SHOT_RUN=1           start a run (LR_SHOT_INF=1: the Infinite route)
@@ -537,8 +537,12 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
         }
     }
     backend.restore_session();
-    // the skin last sent to the website (see the upload check in the frame loop)
-    let mut uploaded_skin_seen = String::new();
+    // the skin the local runner wears, resolved once per change to (wire hash, slim arms); the first-person hands, the
+    // upload and the room all take it from here, never from the list id (which is CUSTOM for every applied picture)
+    let mut worn = skins::WornTracker::default();
+    // when the worn skin is next offered to the website (a new hash at once, a refused one again after a delay)
+    let mut upload_plan = skins::UploadPlan::default();
+    let upload_retry = skins::config().map_or(60.0, |c| c.upload_retry_secs);
     // the skin last offered to the open room, the uploaded count it was judged against, and when to look again
     let mut room_skin_seen = String::new();
     // whether this runner's chosen skin and ARMS setting give slim arms, sent in its sample so peers draw the same arms
@@ -583,7 +587,13 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
         }
         let raw_dt = get_frame_time();
         let dt = raw_dt.min(0.05);
-        crate::render::fp_hands::set_look(&settings.skin, &settings.arms);
+        let arms = skins::ArmsSetting::parse(&settings.arms).unwrap_or(skins::ArmsSetting::Auto);
+        if worn.update(&settings.skin, settings.skin_slim, &settings.arms, skins::generation(), || {
+            skins::worn_skin(&settings.skin, settings.skin_slim, arms)
+        }) {
+            let w = worn.get();
+            crate::render::fp_hands::set_look(&w.hash, w.slim);
+        }
         ui.t += dt;
         ui.notice_t = (ui.notice_t - dt).max(0.0);
         fps_t += dt;
@@ -616,10 +626,10 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
         let shot_key = is_key_pressed(KeyCode::F2);
         let s = style::ui_scale();
 
-        // a chosen skin goes to the website once the account is signed in (in the background; once per id)
-        if backend.signed_in() && !net_cfg.offline && settings.skin != uploaded_skin_seen {
-            uploaded_skin_seen = settings.skin.clone();
-            skins::upload_in_background(net_cfg.clone(), backend.account.session_token.clone(), settings.skin.clone());
+        // the worn skin goes to the website once the account is signed in (in the background): keyed on its hash, so a
+        // second picture applied in the same session uploads too, and a refused upload is offered again after a delay
+        if !net_cfg.offline && upload_plan.due(get_time(), &worn.get().hash, backend.signed_in(), skins::uploaded_ids, upload_retry) {
+            skins::upload_in_background(net_cfg.clone(), backend.account.session_token.clone(), worn.get().hash);
         }
 
         // the account answers: the profile name is set only when the server confirms it
@@ -735,16 +745,30 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
         // the chosen skin goes to the room: at once on a setting change or a new room, and again when the website
         // accepts the upload (set_skin sends nothing when the published id stays the same)
         if let Some(n) = net.as_mut() {
-            if settings.skin != room_skin_seen || get_time() >= room_skin_check {
+            let hash = worn.get().hash;
+            if hash != room_skin_seen || get_time() >= room_skin_check {
                 room_skin_check = get_time() + crate::net::hunter_events::rules().skin_recheck.as_secs_f64();
                 let uploaded = skins::uploaded_ids();
-                if settings.skin != room_skin_seen || uploaded.len() != room_uploaded_seen {
-                    room_skin_seen = settings.skin.clone();
+                if hash != room_skin_seen || uploaded.len() != room_uploaded_seen {
                     room_uploaded_seen = uploaded.len();
-                    n.set_skin(&skins::chosen_skin(&settings.skin), &uploaded);
+                    n.set_skin(&hash, &uploaded);
+                    room_skin_seen = hash;
                 }
             }
+            // the arm style and OTHERS MAY COPY go with the id (Godot's skin_slim and skin_copy)
+            n.set_skin_flags(world_sync::SkinFlags { slim: worn.get().slim, copy: settings.skin_copy });
         }
+        // the SKIN tab's COPY SKIN row lists the runners in the open room who allow it
+        crate::ui::skin_tab::set_copy_peers(
+            net.as_ref()
+                .map(|n| {
+                    n.copy_candidates()
+                        .into_iter()
+                        .map(|(name, hash, slim)| crate::ui::skin_tab::CopyPeer { name, hash, slim })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        );
         // a guest's game runs no hunter simulation: the host's frames drive the hunters (game/hunting.rs)
         if let Some(g) = playing.as_mut() {
             g.remote_hunters = net.as_ref().is_some_and(|n| !n.is_host());
@@ -1381,7 +1405,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     if net.is_none() && net_pending.is_none() {
                         flash(&mut ui, "OPENING A ROOM ON THE SERVER...");
                         let name = world_sync::clean_name(&settings.username);
-                        let skin = skins::chosen_skin(&settings.skin);
+                        let skin = worn.get().hash;
                         net_pending = Some((NetIntent::Host, world_sync::host_room(net_cfg.clone(), route::new_room_text(), name, skin)));
                     }
                 }
@@ -1393,7 +1417,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                         } else {
                             flash(&mut ui, &messages.joining);
                             let name = world_sync::clean_name(&settings.username);
-                            let skin = skins::chosen_skin(&settings.skin);
+                            let skin = worn.get().hash;
                             net_pending = Some((NetIntent::Public, world_sync::join_public_room(net_cfg.clone(), name, skin)));
                         }
                     }
@@ -1402,7 +1426,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     if net.is_none() && net_pending.is_none() {
                         ui.join_status = format!("JOINING ROOM {code}...");
                         let name = world_sync::clean_name(&settings.username);
-                        let skin = skins::chosen_skin(&settings.skin);
+                        let skin = worn.get().hash;
                         // an owner's miss reserves the typed code and hosts it (world_sync::join_room); everyone else joins as a guest
                         let owner = backend.signed_in() && crate::ui::admin::is_admin_owner(&backend.account.username);
                         net_pending = Some((NetIntent::Join, world_sync::join_room(net_cfg.clone(), code, name, skin, backend.account.session_token.clone(), owner)));

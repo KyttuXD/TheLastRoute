@@ -40,11 +40,16 @@ pub struct Assets {
     pub caption_font: Option<Font>,
     /// Runner skin textures by skin id, read from the skin folders when first needed (see [`Assets::skin_texture`]).
     skin_textures: RefCell<HashMap<String, SkinSlot>>,
+    /// Counts skin texture requests (the clock of the least-recently-used drop).
+    skin_tick: std::cell::Cell<u64>,
 }
 
 /// One skin id's texture: loaded, or still waiting for a file (checked again later, and fetched from the website once in a while).
 enum SkinSlot {
-    Ready(Texture2D),
+    /// The texture and the tick of its last use (the oldest is dropped when more than `skins::peer_cache_max` are held).
+    Ready(Texture2D, u64),
+    /// A file that passed the hash and structure check but would not decode: never read again, the default skin is drawn.
+    Bad,
     Waiting { check_at: Instant, fetch_at: Instant },
 }
 
@@ -53,10 +58,22 @@ const SKIN_RECHECK: Duration = Duration::from_secs(2);
 /// How often a missing skin is asked for again from the website.
 const SKIN_REFETCH: Duration = Duration::from_secs(30);
 
-pub fn tex(bytes: &[u8]) -> Texture2D {
-    let t = Texture2D::from_file_with_format(bytes, Some(ImageFormat::Png));
+/// A PNG as a nearest-filtered texture, or None when it does not decode. This is the one place a picture is decoded:
+/// the decoder is the fallible one, so a bad file (a damaged pack picture, a hostile skin) is an `Err` here and never the
+/// panic that `Texture2D::from_file_with_format` raises.
+pub fn try_tex(bytes: &[u8]) -> Option<Texture2D> {
+    let img = Image::from_file_with_format(bytes, Some(ImageFormat::Png)).ok()?;
+    let t = Texture2D::from_image(&img);
     t.set_filter(FilterMode::Nearest);
-    t
+    Some(t)
+}
+
+/// [`try_tex`], with a white texture (and a line in the log) for a picture that does not decode.
+pub fn tex(bytes: &[u8]) -> Texture2D {
+    try_tex(bytes).unwrap_or_else(|| {
+        eprintln!("assets: a picture could not be decoded; drawing it white");
+        white_texture()
+    })
 }
 
 fn asset_tex(path: &str) -> Option<Texture2D> {
@@ -260,6 +277,7 @@ impl Assets {
                 "LiberationMono-Italic.ttf",
             ]),
             skin_textures: RefCell::new(HashMap::new()),
+            skin_tick: std::cell::Cell::new(0),
         }
     }
 
@@ -290,8 +308,15 @@ impl Assets {
         }
         let now = Instant::now();
         let mut slots = self.skin_textures.borrow_mut();
-        if let Some(SkinSlot::Ready(t)) = slots.get(id) {
-            return Some(t.clone());
+        let tick = self.skin_tick.get() + 1;
+        self.skin_tick.set(tick);
+        match slots.get_mut(id) {
+            Some(SkinSlot::Ready(t, used)) => {
+                *used = tick;
+                return Some(t.clone());
+            }
+            Some(SkinSlot::Bad) => return None,
+            _ => {}
         }
         let (check_at, fetch_at) = match slots.get(id) {
             Some(SkinSlot::Waiting { check_at, fetch_at }) => (*check_at, *fetch_at),
@@ -301,9 +326,21 @@ impl Assets {
             return None;
         }
         if let Some(bytes) = skins::read_skin(id) {
-            let t = tex(&bytes);
-            slots.insert(id.to_string(), SkinSlot::Ready(t.clone()));
-            return Some(t);
+            // verified (hash, every chunk checksum, 64x64), then decoded through the fallible path with the base layer opaque
+            return match skins::remote_skin_rgba(&bytes) {
+                Ok(px) => {
+                    let t = Texture2D::from_rgba8(skins::SKIN_SIZE as u16, skins::SKIN_SIZE as u16, &px);
+                    t.set_filter(FilterMode::Nearest);
+                    slots.insert(id.to_string(), SkinSlot::Ready(t.clone(), tick));
+                    evict_skin_textures(&mut slots, id);
+                    Some(t)
+                }
+                Err(why) => {
+                    eprintln!("skins: {id} was refused ({why}); the default skin is drawn");
+                    slots.insert(id.to_string(), SkinSlot::Bad);
+                    None
+                }
+            };
         }
         let fetch_at = if now >= fetch_at {
             skins::fetch_skin_in_background(id);
@@ -313,6 +350,25 @@ impl Assets {
         };
         slots.insert(id.to_string(), SkinSlot::Waiting { check_at: now + SKIN_RECHECK, fetch_at });
         None
+    }
+}
+
+/// Keeps at most `skins::peer_cache_max()` skin textures on the GPU (Godot PEER_CACHE_MAX): the least recently used one
+/// is freed and asked for again from the disk cache if it is needed later. `keep` is the one just loaded.
+fn evict_skin_textures(slots: &mut HashMap<String, SkinSlot>, keep: &str) {
+    let max = skins::peer_cache_max();
+    while slots.values().filter(|s| matches!(s, SkinSlot::Ready(..))).count() > max {
+        let oldest = slots
+            .iter()
+            .filter_map(|(k, s)| match s {
+                SkinSlot::Ready(_, used) if k != keep => Some((*used, k.clone())),
+                _ => None,
+            })
+            .min()
+            .map(|(_, k)| k);
+        let Some(key) = oldest else { return };
+        // dropping the last handle frees the GPU texture (macroquad textures are reference counted)
+        slots.remove(&key);
     }
 }
 

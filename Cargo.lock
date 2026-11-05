@@ -373,6 +373,7 @@ dependencies = [
  "hmac",
  "indexmap",
  "macroquad",
+ "miniz_oxide 0.8.9",
  "regex",
  "scrypt",
  "serde",

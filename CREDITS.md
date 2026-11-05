@@ -17,6 +17,7 @@ port is also by Kyttu and uses the files of that Godot project, for private use 
 | `assets/interactables/*.glb` (relay, battery, coin, hiding_spot, lift, safe_zone, vent, music_box, heater_station, wall_light_switch, flashlight_item, taser_item, crowbar, rescue_axe, stim_pack, lockpick_set, revive_kit, backpacks, boarded doors, locked relay crate/barrel, service ladder), converted the same way | `src/bin/last_route/assets/interactables/*.bbmodel` (sources in `tools/props/source_glb/interactables/`) | fixtures, floor pickups and the tool in hand |
 | `data/props/*.json` | `src/bin/last_route/data/props/` | prop model variants and lamp lights (lr.prop/1) |
 | `assets/branding/logo_{16,32,64,128,256}.png`, `logo.svg` | `src/bin/last_route/assets/branding/` | window and executable icon |
+| `docs/player_skin_steve_reference.png`, `docs/player_skin_alex_reference.png` (the Godot2 project's reference skins, 64x64) | `src/bin/last_route/assets/skins/ref_classic.png`, `ref_slim.png` | the skin catalogue (FROM CATALOG) |
 | `data/hunters/*.json` | `src/bin/last_route/data/hunters/` | hunter tuning (lr.hunter/1) |
 | `data/regions/*.json` | `data/regions/` | region data (lr.region/1) |
 | `data/loot/*.json` | `src/bin/last_route/data/loot/` | loot tables (lr.loot/1) |

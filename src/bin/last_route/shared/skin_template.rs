@@ -1,12 +1,17 @@
-//! The skin template a player paints over (Godot PlayerSkin.template_png, player_skin.gd): the 64x64 default skin with
-//! every overlay rectangle cleared. The rectangles are data (data/skins/rules.json `overlay_rects`, each [x, y, w, h]).
+//! The skin templates a player paints over (Godot PlayerSkin.template_png, player_skin.gd, and the slim twin in
+//! docs/player_skin_template_slim.png): the 64x64 default skin with every overlay rectangle cleared. The slim one also
+//! clears the arms' 4th texture column, which is how a skin says "slim arms" (Alex). The rectangles are data
+//! (data/skins/rules.json `overlay_rects` and `slim_probe_rects`, each [x, y, w, h]).
 
 use crate::shared::paths;
+use crate::shared::skins::{encode_png, layout};
 use macroquad::prelude::{Image, ImageFormat};
 use std::path::{Path, PathBuf};
 
 /// The file the SKIN tab's TEMPLATE button writes.
 pub const TEMPLATE_FILE: &str = "lastroute_skin_template.png";
+/// The file the SLIM TEMPLATE button writes.
+pub const TEMPLATE_SLIM_FILE: &str = "lastroute_skin_template_slim.png";
 const SIZE: usize = 64;
 const DEFAULT_ATLAS: &[u8] = include_bytes!("../assets/player/player_mannequin_atlas.png");
 const RULES: &str = include_str!("../data/skins/rules.json");
@@ -42,18 +47,38 @@ fn default_rgba() -> Vec<u8> {
     [158u8, 128, 82, 255].repeat(SIZE * SIZE)
 }
 
-/// The template: the default skin with every overlay rectangle fully transparent, as a PNG.
-pub fn template_png() -> Vec<u8> {
-    let mut px = default_rgba();
-    for (x, y, w, h) in overlay_rects() {
-        for yy in y..(y + h).min(SIZE) {
-            for xx in x..(x + w).min(SIZE) {
-                let i = (yy * SIZE + xx) * 4;
-                px[i..i + 4].copy_from_slice(&[0, 0, 0, 0]);
-            }
+fn clear_rect(px: &mut [u8], (x, y, w, h): (usize, usize, usize, usize)) {
+    for yy in y..(y + h).min(SIZE) {
+        for xx in x..(x + w).min(SIZE) {
+            let i = (yy * SIZE + xx) * 4;
+            px[i..i + 4].copy_from_slice(&[0, 0, 0, 0]);
         }
     }
-    encode_png(&px, SIZE as u32, SIZE as u32)
+}
+
+/// The template pixels: the default skin with every overlay rectangle fully transparent; `slim` also clears the arms'
+/// 4th column in both arm bases.
+pub fn template_rgba(slim: bool) -> Vec<u8> {
+    let mut px = default_rgba();
+    for r in overlay_rects() {
+        clear_rect(&mut px, r);
+    }
+    if slim {
+        for r in layout().map(|l| l.slim_probe_rects).unwrap_or_default() {
+            clear_rect(&mut px, (r[0] as usize, r[1] as usize, r[2] as usize, r[3] as usize));
+        }
+    }
+    px
+}
+
+/// The template as a PNG (written with the game's own small encoder).
+pub fn template_png() -> Vec<u8> {
+    encode_png(&template_rgba(false), SIZE as u32, SIZE as u32)
+}
+
+/// The slim template as a PNG.
+pub fn template_slim_png() -> Vec<u8> {
+    encode_png(&template_rgba(true), SIZE as u32, SIZE as u32)
 }
 
 /// The Downloads folder, else the user data folder.
@@ -67,69 +92,45 @@ pub fn downloads_dir() -> Option<PathBuf> {
         .or_else(paths::user_dir)
 }
 
-/// Writes the template into `dir` (created if missing) and returns the file path.
-pub fn save_template(dir: &Path) -> Result<PathBuf, String> {
+/// A file name in `dir` that is not taken: `name.png`, else `name-2.png`, `name-3.png`, ... A template is never
+/// written over a file that is already there (it may be the player's painted skin).
+pub fn free_name(dir: &Path, file: &str) -> PathBuf {
+    let first = dir.join(file);
+    if !first.exists() {
+        return first;
+    }
+    let (stem, ext) = file.rsplit_once('.').unwrap_or((file, "png"));
+    (2..)
+        .map(|n| dir.join(format!("{stem}-{n}.{ext}")))
+        .find(|p| !p.exists())
+        .unwrap_or(first)
+}
+
+fn write_template(dir: &Path, file: &str, png: Vec<u8>) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("could not open {}: {e}", dir.display()))?;
-    let path = dir.join(TEMPLATE_FILE);
-    std::fs::write(&path, template_png()).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    let path = free_name(dir, file);
+    std::fs::write(&path, png).map_err(|e| format!("could not write {}: {e}", path.display()))?;
     Ok(path)
 }
 
+/// Writes the classic template into `dir` (created if missing) and returns the file path.
+pub fn save_template(dir: &Path) -> Result<PathBuf, String> {
+    write_template(dir, TEMPLATE_FILE, template_png())
+}
+
+/// Writes the slim template into `dir` (created if missing) and returns the file path.
+pub fn save_template_slim(dir: &Path) -> Result<PathBuf, String> {
+    write_template(dir, TEMPLATE_SLIM_FILE, template_slim_png())
+}
+
 /// Saves the template to the Downloads folder (user folder fallback).
-pub fn save_template_to_downloads() -> Result<PathBuf, String> {
+pub fn save_template_to_downloads(slim: bool) -> Result<PathBuf, String> {
     let dir = downloads_dir().ok_or_else(|| "no folder to save into".to_string())?;
-    save_template(&dir)
-}
-
-fn crc32(data: &[u8]) -> u32 {
-    let mut c = 0xFFFF_FFFFu32;
-    for &b in data {
-        c ^= b as u32;
-        for _ in 0..8 {
-            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
-        }
+    if slim {
+        save_template_slim(&dir)
+    } else {
+        save_template(&dir)
     }
-    !c
-}
-
-fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], body: &[u8]) {
-    out.extend_from_slice(&(body.len() as u32).to_be_bytes());
-    let mut tagged = kind.to_vec();
-    tagged.extend_from_slice(body);
-    out.extend_from_slice(&tagged);
-    out.extend_from_slice(&crc32(&tagged).to_be_bytes());
-}
-
-/// A minimal RGBA8 PNG (stored deflate blocks; a skin is tiny).
-fn encode_png(rgba: &[u8], w: u32, h: u32) -> Vec<u8> {
-    let mut raw = Vec::with_capacity((w as usize * 4 + 1) * h as usize);
-    for row in rgba.chunks(w as usize * 4) {
-        raw.push(0);
-        raw.extend_from_slice(row);
-    }
-    let mut z = vec![0x78, 0x01];
-    let mut blocks = raw.chunks(65535).peekable();
-    while let Some(b) = blocks.next() {
-        z.push(if blocks.peek().is_none() { 1 } else { 0 });
-        z.extend_from_slice(&(b.len() as u16).to_le_bytes());
-        z.extend_from_slice(&(!(b.len() as u16)).to_le_bytes());
-        z.extend_from_slice(b);
-    }
-    let (mut a, mut s) = (1u32, 0u32);
-    for &b in &raw {
-        a = (a + b as u32) % 65521;
-        s = (s + a) % 65521;
-    }
-    z.extend_from_slice(&((s << 16) | a).to_be_bytes());
-    let mut out = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
-    let mut ihdr = Vec::new();
-    ihdr.extend_from_slice(&w.to_be_bytes());
-    ihdr.extend_from_slice(&h.to_be_bytes());
-    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
-    chunk(&mut out, b"IHDR", &ihdr);
-    chunk(&mut out, b"IDAT", &z);
-    chunk(&mut out, b"IEND", &[]);
-    out
 }
 
 #[cfg(test)]
@@ -167,18 +168,68 @@ mod tests {
     }
 
     #[test]
+    fn the_slim_template_clears_the_arms_fourth_column_and_reads_as_slim() {
+        let classic = template_rgba(false);
+        let slim = template_rgba(true);
+        let probes = layout().expect("layout").slim_probe_rects;
+        assert!(!probes.is_empty());
+        let mut changed = 0;
+        for i in (3..classic.len()).step_by(4) {
+            if classic[i] != slim[i] {
+                changed += 1;
+            }
+        }
+        assert!(changed > 0, "the slim template differs from the classic one");
+        for r in &probes {
+            for y in r[1]..r[1] + r[3] {
+                for x in r[0]..r[0] + r[2] {
+                    assert_eq!(slim[((y * 64 + x) * 4 + 3) as usize], 0, "slim probe pixel {x},{y} is clear");
+                }
+            }
+        }
+        let classic_v = crate::shared::skins::validate_skin(&template_png(), 65536).expect("the classic template is a valid skin");
+        let slim_v = crate::shared::skins::validate_skin(&template_slim_png(), 65536).expect("the slim template is a valid skin");
+        assert!(!classic_v.slim, "the classic template reads as classic arms");
+        assert!(slim_v.slim, "the slim template reads as slim arms (Alex)");
+    }
+
+    #[test]
+    fn templates_are_small_pngs_through_the_shared_encoder() {
+        // the old private encoder stored the pixels uncompressed (16.5 KB); the shared one compresses them like Godot's
+        assert!(template_png().len() < 4096, "{} bytes", template_png().len());
+        assert!(template_slim_png().len() < 4096);
+        assert!(crate::shared::skin_png::check_png(
+            &template_png(),
+            crate::shared::skin_png::Limits { max_bytes: 65536, max_chunks: 64 },
+            crate::shared::skin_png::Shape::Remote
+        )
+        .is_ok());
+    }
+
+    #[test]
     fn saved_file_has_the_name_and_the_same_bytes() {
         let dir = std::env::temp_dir().join(format!("lr_skin_template_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         let path = save_template(&dir).expect("saves");
         assert_eq!(path.file_name().unwrap().to_str().unwrap(), "lastroute_skin_template.png");
         assert_eq!(std::fs::read(&path).unwrap(), template_png());
+        let slim = save_template_slim(&dir).expect("saves");
+        assert_eq!(slim.file_name().unwrap().to_str().unwrap(), "lastroute_skin_template_slim.png");
+        assert_eq!(std::fs::read(&slim).unwrap(), template_slim_png());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn encoder_round_trips_pixels() {
-        let px: Vec<u8> = (0..SIZE * SIZE * 4).map(|i| (i * 7 % 256) as u8).collect();
-        let img = decode(&encode_png(&px, 64, 64));
-        assert_eq!(img.bytes, px);
+    fn a_template_never_overwrites_an_existing_file() {
+        let dir = std::env::temp_dir().join(format!("lr_skin_template_keep_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let first = save_template(&dir).unwrap();
+        std::fs::write(&first, b"my painted skin").unwrap();
+        let second = save_template(&dir).unwrap();
+        assert_eq!(second.file_name().unwrap().to_str().unwrap(), "lastroute_skin_template-2.png");
+        assert_eq!(std::fs::read(&first).unwrap(), b"my painted skin", "the first file is untouched");
+        let third = save_template(&dir).unwrap();
+        assert_eq!(third.file_name().unwrap().to_str().unwrap(), "lastroute_skin_template-3.png");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

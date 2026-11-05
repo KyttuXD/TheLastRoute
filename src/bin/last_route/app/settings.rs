@@ -44,6 +44,11 @@ pub struct Settings {
     pub scheme: String,
     /// The runner's skin id, sent to the room in the wire profile (`world_sync::clean_skin`).
     pub skin: String,
+    /// Whether the applied skin has the slim (Alex) arm layout, read when it was applied. The saved skin is the canonical
+    /// PNG with its base layer made opaque, so the layout cannot be read from it again (Godot `Settings.skin_slim`).
+    pub skin_slim: bool,
+    /// OTHERS MAY COPY: other runners may copy this skin (sent in the wire profile; Godot `Settings.skin_copyable`).
+    pub skin_copy: bool,
     /// Arm style for the runner body and the first-person hands: auto, classic or slim.
     pub arms: String,
     /// Speak nearby chat lines aloud (audio/tts.rs).
@@ -76,6 +81,8 @@ impl Default for Settings {
             username: String::new(),
             scheme: "last_route".into(),
             skin: SKIN_DEFAULT.into(),
+            skin_slim: false,
+            skin_copy: true,
             arms: "auto".into(),
             speech_enabled: true,
             muted_peers: Default::default(),
@@ -87,12 +94,11 @@ impl Default for Settings {
 pub struct ArmsSetting;
 
 impl ArmsSetting {
-    /// True when slim arms are worn: the saved setting `arms`, and for auto the layout of the picked skin `png`.
-    pub fn resolve(arms: &str, png: Option<&[u8]>) -> bool {
+    /// True when slim arms are worn: the saved setting `arms`, and for auto the skin's layout (`skin_slim`, read when the
+    /// skin was validated; the canonical PNG cannot be asked again).
+    pub fn resolve(arms: &str, skin_slim: bool) -> bool {
         use crate::shared::skins;
-        let setting = skins::ArmsSetting::parse(arms).unwrap_or(skins::ArmsSetting::Auto);
-        let slim = png.and_then(|b| skins::validate_skin(b, skins::max_bytes()).ok()).map_or(false, |v| v.slim);
-        setting.resolve(slim)
+        skins::ArmsSetting::parse(arms).unwrap_or(skins::ArmsSetting::Auto).resolve(skin_slim)
     }
 }
 
@@ -152,6 +158,8 @@ impl Settings {
         if let Some(k) = v["skin"].as_str() {
             s.skin = clean_skin(k);
         }
+        s.skin_slim = b("skin_slim", false);
+        s.skin_copy = b("skin_copy", true);
         if let Some(a) = v["arms"].as_str().and_then(crate::shared::skins::ArmsSetting::parse) {
             s.arms = a.id().into();
         }
@@ -176,7 +184,7 @@ impl Settings {
             "fullscreen": self.fullscreen, "vsync": self.vsync, "fps_limit": self.fps_limit,
             "quality": self.quality, "ads": self.ads, "graphics_api": self.graphics_api, "pause_on_focus_loss": self.pause_on_focus_loss,
             "teammate_waypoints": self.teammate_waypoints, "reduced_motion": self.reduced_motion, "username": self.username, "scheme": self.scheme,
-            "skin": self.skin,
+            "skin": self.skin, "skin_slim": self.skin_slim, "skin_copy": self.skin_copy,
             "arms": self.arms, "speech_enabled": self.speech_enabled,
         })
     }
@@ -288,6 +296,8 @@ mod tests {
             "username",
             "scheme",
             "skin",
+            "skin_slim",
+            "skin_copy",
             "arms",
             "speech_enabled",
         ]
@@ -321,6 +331,8 @@ mod tests {
             username: "ALICE".into(),
             scheme: "city".into(),
             skin: "NIGHT".into(),
+            skin_slim: true,
+            skin_copy: false,
             arms: "slim".into(),
             speech_enabled: false,
             muted_peers: Default::default(),
