@@ -2,17 +2,28 @@
 //! mesh, `Assets::npc_body` for the regular), textured with the mannequin atlas by default or with the runner's skin
 //! PNG (see `Assets::skin_texture`). A skin that is DEFAULT, or not known yet, draws the atlas.
 //!
-//! The pose comes from the player rig's clips (render/anim/clip.rs, rig id in models.json): each figure owns an
-//! `AnimPlayer` keyed by peer id (runners) or guest name (bots), and its state (idle, walk, sprint, crouch) picks the
-//! clip. Everything tunable is data: `data/player/models.json` (clip per state, speeds, figure height, bot thresholds).
+//! The pose comes from the player rig's clips through the one driver, `render/anim/runner.rs`: each figure owns a
+//! `RunnerView` keyed by peer id (runners) or guest name (bots). Its `RunnerState` (idle, walk, sprint, chase,
+//! crouch, jump, fall, climb, swim, stun, down) picks the clip, paces it to the real ground speed, fades the body while
+//! it crouches and leans it while it swims. A remote runner's state comes from its net sample (`Sample::clip`, or the
+//! moving, sprinting and crouching flags of an older client), a bot's from its movement, and the sender builds its own
+//! with [`local_state`]. Everything tunable is data: `data/player/anim.json` (clips, pace, fade, wire names) and
+//! `data/player/models.json` (body, atlas, height, bots).
+//!
+//! The local runner has no body here. The original hides it ("The body is hidden because you are inside it",
+//! player_controller_3d.gd) and draws no shadow or mirror of it, so first person keeps its hands only (render/fp_hands.rs).
 
-use super::world_sync::{RemoteView, SKIN_DEFAULT};
+use super::hide_sync::{self, HideState};
+use super::world_sync::{HideSpot, RemoteView, SKIN_DEFAULT};
 use crate::content::embedded;
 use crate::game::Game;
-use crate::render::anim::clip::{self, Rig};
+use crate::render::anim::clip::Rig;
+use crate::render::anim::hide;
 use crate::render::anim::hunter::model_space_stretched;
 use crate::render::anim::player::{AnimPlayer, Local};
+use crate::render::anim::runner::{self as driver, Pose, RunnerState, RunnerView};
 use crate::render::bbmodel::Model;
+use crate::render::locker_occupant::{self, BodyState};
 use crate::render::scene;
 use crate::render::shader;
 use crate::shared::assets::Assets;
@@ -22,7 +33,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
-/// The data file (under src/bin/last_route/data) that holds the runner body, its clips and its height.
+/// The data file (under src/bin/last_route/data) that holds the runner body and its height.
 const MODELS_FILE: &str = "player/models.json";
 
 /// Which texture a runner's body draws with.
@@ -32,81 +43,6 @@ pub enum Pick {
     Atlas,
     /// The cached skin with this id.
     Skin(String),
-}
-
-/// What a figure is doing, which picks its clip.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum RunnerState {
-    Idle,
-    Walk,
-    Sprint,
-    Crouch,
-}
-
-impl RunnerState {
-    fn index(self) -> usize {
-        self as usize
-    }
-
-    /// The state a remote runner's flags describe: crouching wins, then sprinting while moving, then walking.
-    pub fn from_flags(moving: bool, sprinting: bool, crouching: bool) -> RunnerState {
-        if crouching {
-            RunnerState::Crouch
-        } else if moving && sprinting {
-            RunnerState::Sprint
-        } else if moving {
-            RunnerState::Walk
-        } else {
-            RunnerState::Idle
-        }
-    }
-}
-
-/// The per-frame facts about a remote runner the figure needs. `RemoteView` carries these after the integrator's hook
-/// (world_sync.rs); until then [`RemoteFigure`] answers with the default (idle, regular arms).
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
-pub struct FigureFlags {
-    pub moving: bool,
-    pub sprinting: bool,
-    pub crouching: bool,
-    /// The slim arm mesh (ArmsSetting resolved for the runner's skin).
-    pub slim: bool,
-    /// Ground speed in metres per second (0 when unknown).
-    pub speed: f32,
-    /// Vertical speed in metres per second.
-    pub vy: f32,
-}
-
-impl FigureFlags {
-    /// The constructor the integrator calls when building a `RemoteView` from a `Sample`.
-    pub fn new(moving: bool, sprinting: bool, crouching: bool, slim: bool, speed: f32, vy: f32) -> Self {
-        FigureFlags { moving, sprinting, crouching, slim, speed, vy }
-    }
-
-    pub fn state(&self) -> RunnerState {
-        RunnerState::from_flags(self.moving, self.sprinting, self.crouching)
-    }
-}
-
-/// How the figure code reads a remote runner. HOOK: once `RemoteView` has the fields, return them here.
-pub trait RemoteFigure {
-    fn figure_flags(&self) -> FigureFlags;
-}
-
-impl RemoteFigure for RemoteView {
-    fn figure_flags(&self) -> FigureFlags {
-        FigureFlags::new(self.moving, self.sprinting, self.crouching, self.slim, self.speed, self.vy)
-    }
-}
-
-/// The clip and playback speed of one state, from models.json.
-#[derive(Clone, Debug, PartialEq)]
-pub struct StateSpec {
-    pub clip: String,
-    /// Playback speed scale of the clip.
-    pub speed: f32,
-    /// The ground speed the clip's stride was authored for; 0 plays at `speed` whatever the runner's speed.
-    pub ref_mps: f32,
 }
 
 /// How NPC teammates (bots) wear the runner body, from the `bots` section of models.json.
@@ -135,14 +71,6 @@ pub struct RunnerSpec {
     /// Model units from the feet to the top of the head, and metres per unit (audit P13).
     pub head_top_units: f32,
     pub metres_per_unit: f32,
-    /// The rig id (render/anim/clip.rs `rig`).
-    pub rig: String,
-    /// Cross-fade between clips, seconds.
-    pub blend_s: f32,
-    /// Indexed by [`RunnerState`].
-    pub states: [StateSpec; 4],
-    pub scale_min: f32,
-    pub scale_max: f32,
     pub bots: BotSpec,
 }
 
@@ -169,15 +97,6 @@ impl RunnerSpec {
         let r = &v["runner"];
         let body = body_spec(&v, string(r, "body").map_err(|e| format!("runner.{e}"))?)?;
         let slim_body = body_spec(&v, string(r, "slim_body").map_err(|e| format!("runner.{e}"))?)?;
-        let mut states = Vec::with_capacity(4);
-        for name in ["idle", "walk", "sprint", "crouch"] {
-            let s = &r["states"][name];
-            states.push(StateSpec {
-                clip: string(s, "clip").map_err(|e| format!("runner.states.{name}: {e}"))?.to_string(),
-                speed: num(s, "speed").map_err(|e| format!("runner.states.{name}: {e}"))?,
-                ref_mps: s["ref_mps"].as_f64().unwrap_or(0.0) as f32,
-            });
-        }
         let b = &v["bots"];
         let skins = b["skins"]
             .as_array()
@@ -191,11 +110,6 @@ impl RunnerSpec {
             slim_body,
             head_top_units: num(r, "head_top_units").map_err(|e| format!("runner.{e}"))?,
             metres_per_unit: num(r, "metres_per_unit").map_err(|e| format!("runner.{e}"))?,
-            rig: string(r, "rig").map_err(|e| format!("runner.{e}"))?.to_string(),
-            blend_s: num(r, "blend_s").map_err(|e| format!("runner.{e}"))?,
-            states: states.try_into().map_err(|_| "runner.states is incomplete".to_string())?,
-            scale_min: num(r, "speed_scale_min").map_err(|e| format!("runner.{e}"))?,
-            scale_max: num(r, "speed_scale_max").map_err(|e| format!("runner.{e}"))?,
             bots: BotSpec {
                 skins,
                 walk_min_mps: num(t, "walk_min_mps").map_err(|e| format!("bots.state_for_speed.{e}"))?,
@@ -209,17 +123,6 @@ impl RunnerSpec {
         self.head_top_units * self.metres_per_unit
     }
 
-    /// The clip a state plays and its playback speed for a figure moving at `speed` m/s.
-    pub fn clip_for(&self, state: RunnerState, speed: f32) -> (&str, f32) {
-        let s = &self.states[state.index()];
-        let scale = if s.ref_mps > 0.0 && speed > 0.0 {
-            (speed / s.ref_mps).clamp(self.scale_min, self.scale_max) * s.speed
-        } else {
-            s.speed
-        };
-        (&s.clip, scale)
-    }
-
     /// The body to draw: the slim mesh when `slim`, the regular otherwise.
     pub fn body_for(&self, slim: bool) -> &BodySpec {
         if slim {
@@ -230,15 +133,50 @@ impl RunnerSpec {
     }
 }
 
-/// The state of a bot that moved at `speed` metres per second.
-pub fn state_for_speed(bots: &BotSpec, speed: f32) -> RunnerState {
-    if speed >= bots.sprint_min_mps {
-        RunnerState::Sprint
-    } else if speed >= bots.walk_min_mps {
-        RunnerState::Walk
-    } else {
-        RunnerState::Idle
+/// The state of a bot that moved at `speed` metres per second, on foot, on a ladder (`climbing`) or in a drop (`falling`).
+pub fn bot_state(bots: &BotSpec, speed: f32, climbing: bool, falling: bool) -> RunnerState {
+    RunnerState {
+        moving: speed >= bots.walk_min_mps,
+        sprinting: speed >= bots.sprint_min_mps,
+        climbing,
+        airborne_down: falling,
+        speed,
+        ..RunnerState::default()
     }
+}
+
+/// What a remote runner's sample says it is doing: the pose it names, or an older client's three flags.
+pub fn remote_state(r: &RemoteView) -> RunnerState {
+    RunnerState::from_sample(r.clip, r.moving, r.sprinting, r.crouching, r.vy, r.speed)
+}
+
+/// The state of this runner's own body, for the sample it sends (`Sample::with_body`) and for anything that draws it.
+/// Down once its route has ended, stunned while locked, on a ladder (a shaft or a catwalk ladder, `game/ladder.rs`),
+/// airborne with the sign of its vertical speed, swimming in water as deep as the swim rules say, chased while a
+/// hunter is in the chase.
+pub fn local_state(g: &Game) -> RunnerState {
+    let p = &g.p;
+    let airborne = !p.grounded;
+    RunnerState {
+        moving: p.moving,
+        sprinting: p.sprinting,
+        crouching: p.crouching,
+        airborne_up: airborne && p.vy() >= 0.0,
+        airborne_down: airborne && p.vy() < 0.0,
+        climbing: g.ladder.is_some(),
+        chased: g.hunters.iter().any(|h| h.active && h.state == crate::hunters::brain::State::Chase),
+        swimming: crate::game::swim_effects::SwimState::is_swimming(&g.swim_cfg, g.swim.depth),
+        stunned: p.stun > 0.0,
+        down: g.report.is_some(),
+        speed: p.move_vel.0.hypot(p.move_vel.1),
+    }
+}
+
+/// The locker this runner is hidden in, in absolute cells, for its sample.
+pub fn local_hide(g: &Game) -> Option<HideSpot> {
+    let l = g.fac.hiding.get(g.p.hidden?)?;
+    let o = g.window_origin();
+    Some(HideSpot { cell: (l.cell.x + o.0, l.cell.y + o.1), facing: l.facing })
 }
 
 /// The spec from data/player/models.json, read once. None when the file is missing or invalid: the figures then stand
@@ -274,6 +212,26 @@ pub fn runner_draw_y(h: f32, active_floor_y: f32) -> f32 {
     h - active_floor_y
 }
 
+/// The body alpha a fade amount draws with: Godot's `transparency = fade`, so 0 is opaque and 0.55 is 45% opaque.
+pub fn body_alpha(fade: f32) -> f32 {
+    (1.0 - fade).clamp(0.0, 1.0)
+}
+
+/// The shader mode a body draws in: opaque and lit, or lit and blended once it is faded (a crouch).
+pub fn body_mode(alpha: f32) -> f32 {
+    if alpha < 1.0 {
+        shader::GHOST_MODE
+    } else {
+        shader::LIT_MODE
+    }
+}
+
+/// Whether a remote runner that is hidden has finished sliding into its locker: from then on its body is gone
+/// (Godot remote_players.gd 542-563 keeps it visible for the length of the local hide move).
+pub fn hidden_for_good(r: &RemoteView) -> bool {
+    r.hide.is_some() && r.hide_since.map_or(true, |t| t.as_secs_f32() >= crate::render::hiding_cam::glide_seconds(true))
+}
+
 /// Who a running clip belongs to.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum FigureKey {
@@ -283,16 +241,17 @@ enum FigureKey {
 }
 
 struct Figure {
-    player: AnimPlayer,
-    state: Option<RunnerState>,
+    /// The driver state; None when the player rig asset is missing (the body then stands in its rest pose).
+    view: Option<RunnerView>,
+    slim: bool,
     /// A bot's last floor position, for its speed.
     last_at: Option<(f32, f32)>,
     seen: u64,
 }
 
 impl Figure {
-    fn new(epoch: u64) -> Figure {
-        Figure { player: AnimPlayer::default(), state: None, last_at: None, seen: epoch }
+    fn new(epoch: u64, slim: bool) -> Figure {
+        Figure { view: RunnerView::load(slim), slim, last_at: None, seen: epoch }
     }
 }
 
@@ -300,25 +259,16 @@ thread_local! {
     /// (the draw pass counter, every figure with a running clip)
     static FIGURES: RefCell<(u64, HashMap<FigureKey, Figure>)> = RefCell::new((0, HashMap::new()));
     static SLIM: RefCell<Option<Option<Rc<Model>>>> = const { RefCell::new(None) };
+    /// The vertex and index buffers every figure is built into, so a frame allocates none per figure.
+    static SCRATCH: RefCell<(Vec<Vertex>, Vec<u16>)> = const { RefCell::new((Vec::new(), Vec::new())) };
 }
 
-/// Advances a figure's clip player by `dt` at `state` and returns its local pose.
-fn step_figure(fig: &mut Figure, spec: &RunnerSpec, rig: &Rig, state: RunnerState, speed: f32, dt: f32) -> Vec<Local> {
-    let (clip_name, scale) = spec.clip_for(state, speed);
-    // The clip restarts only when the state changes; a speed change just retimes it.
-    if fig.state != Some(state) {
-        fig.player.play(rig, clip_name, spec.blend_s);
-        fig.state = Some(state);
-    }
-    fig.player.speed_scale = scale;
-    fig.player.advance(rig, dt);
-    fig.player.pose(rig)
-}
-
-/// The still pose of `state` (the first frame of its clip), for a figure with no clip player of its own.
-fn still_pose(spec: &RunnerSpec, rig: &Rig, state: RunnerState) -> Vec<Local> {
+/// The still pose of `pose` (its clip at `phase` of its length), for a figure with no view of its own.
+fn still_pose(rig: &Rig, pose: Pose, phase: f32) -> Vec<Local> {
+    let clip = driver::config().clips.get(pose.key()).map(String::as_str).unwrap_or(pose.key());
     let mut p = AnimPlayer::default();
-    p.play(rig, spec.clip_for(state, 0.0).0, 0.0);
+    p.play(rig, clip, 0.0);
+    p.seek(phase.clamp(0.0, 1.0) * rig.length(clip));
     p.advance(rig, 0.0);
     p.pose(rig)
 }
@@ -339,8 +289,29 @@ fn slim_body(a: &Assets, spec: Option<&RunnerSpec>) -> Option<Rc<Model>> {
     })
 }
 
+/// How one figure is placed and shown: where it stands, which way it faces, how far it leans forward (a swimmer) and how
+/// transparent it is (a crouch).
+#[derive(Clone, Copy, Debug)]
+struct Look {
+    pos: Vec3,
+    yaw: f32,
+    pitch: f32,
+    alpha: f32,
+}
+
+/// The root transform of a figure: feet at `pos`, turned by `yaw`, leaning forward by `pitch` about the hips.
+fn body_root(look: &Look, unit: f32) -> Mat4 {
+    let pivot = Vec3::Y * driver::config().swim_pivot;
+    let lean = if look.pitch.abs() > 1e-4 {
+        Mat4::from_translation(pivot) * Mat4::from_rotation_x(look.pitch) * Mat4::from_translation(-pivot)
+    } else {
+        Mat4::IDENTITY
+    };
+    Mat4::from_translation(look.pos) * Mat4::from_rotation_y(look.yaw) * lean * Mat4::from_scale(Vec3::splat(unit))
+}
+
 /// Builds and draws one figure. `pose` is the rig and its local bone pose; None leaves the body in its rest pose.
-fn draw_body(a: &Assets, pos: Vec3, yaw: f32, pick: &Pick, slim: bool, pose: Option<(&Rig, &[Local])>) {
+fn draw_body(a: &Assets, look: Look, pick: &Pick, slim: bool, pose: Option<(&Rig, &[Local])>) {
     let Some(regular) = a.npc_body.as_ref() else {
         return;
     };
@@ -352,58 +323,52 @@ fn draw_body(a: &Assets, pos: Vec3, yaw: f32, pick: &Pick, slim: bool, pose: Opt
         Pick::Atlas => body.texture.clone(),
     };
     let unit = spec.map(|s| s.metres_per_unit).unwrap_or(body.scale);
-    let root = Mat4::from_translation(pos) * Mat4::from_rotation_y(yaw) * Mat4::from_scale(Vec3::splat(unit));
+    let root = body_root(&look, unit);
     let mats = pose.map(|(rig, locals)| (rig, model_space_stretched(rig, locals, &[])));
     let bone_of = |k: usize| {
         let (rig, m) = mats.as_ref()?;
         rig.bone(&body.groups[k].name).map(|b| m[b])
     };
-    let mut verts = vec![];
-    let mut idx = vec![];
-    body.build_posed(&mut verts, &mut idx, root, &bone_of, Vec2::ZERO, WHITE);
-    draw_mesh(&Mesh { vertices: verts, indices: idx, texture: Some(texture) });
+    let (mut verts, mut idx) = SCRATCH.with(|s| std::mem::take(&mut *s.borrow_mut()));
+    verts.clear();
+    idx.clear();
+    let tint = Color::new(1.0, 1.0, 1.0, look.alpha);
+    body.build_posed_mode(&mut verts, &mut idx, root, &bone_of, Vec2::ZERO, tint, body_mode(look.alpha));
+    let mesh = Mesh { vertices: verts, indices: idx, texture: Some(texture) };
+    draw_mesh(&mesh);
+    SCRATCH.with(|s| *s.borrow_mut() = (mesh.vertices, mesh.indices));
 }
 
-/// Draws one still figure: the same body a runner wears, at `pos` (feet) and `yaw`, in the pose of `state`. The caller
-/// sets the camera and material, as for [`draw_runners`]. The locker occupant uses this.
-pub fn draw_figure(a: &Assets, pos: Vec3, yaw: f32, pick: Pick, slim: bool, state: RunnerState) {
-    let spec = runner_spec();
-    let rig = spec.and_then(|s| clip::rig(&s.rig));
-    let locals = match (spec, rig.as_ref()) {
-        (Some(s), Some(r)) => Some(still_pose(s, r, state)),
-        _ => None,
-    };
-    let pose = rig.as_ref().zip(locals.as_ref()).map(|(r, l)| (&**r, l.as_slice()));
-    draw_body(a, pos, yaw, &pick, slim, pose);
+/// Draws one still figure: the same body a runner wears, at `pos` (feet) and `yaw`, in `pose` at `phase` (0..1) of its
+/// clip. The caller sets the camera and material, as for [`draw_runners`]. The locker occupant uses this.
+pub fn draw_figure(a: &Assets, pos: Vec3, yaw: f32, pick: Pick, slim: bool, pose: Pose, phase: f32) {
+    let rig = driver::player_rig(slim);
+    let locals = rig.as_ref().map(|r| still_pose(r, pose, phase));
+    let posed = rig.as_ref().zip(locals.as_ref()).map(|(r, l)| (&**r, l.as_slice()));
+    draw_body(a, Look { pos, yaw, pitch: 0.0, alpha: 1.0 }, &pick, slim, posed);
 }
 
-/// Runs the clip player of `key` for this frame and draws the figure.
+/// Runs the driver of `key` for this frame and draws the figure.
 #[allow(clippy::too_many_arguments)]
-fn draw_driven(
-    a: &Assets,
-    key: FigureKey,
-    pos: Vec3,
-    yaw: f32,
-    pick: &Pick,
-    slim: bool,
-    state: RunnerState,
-    speed: f32,
-    dt: f32,
-    epoch: u64,
-) {
-    let spec = runner_spec();
-    let rig = spec.and_then(|s| clip::rig(&s.rig));
-    let locals = match (spec, rig.as_ref()) {
-        (Some(s), Some(r)) => Some(FIGURES.with(|f| {
-            let mut f = f.borrow_mut();
-            let fig = f.1.entry(key).or_insert_with(|| Figure::new(epoch));
-            fig.seen = epoch;
-            step_figure(fig, s, r, state, speed, dt)
-        })),
-        _ => None,
-    };
-    let pose = rig.as_ref().zip(locals.as_ref()).map(|(r, l)| (&**r, l.as_slice()));
-    draw_body(a, pos, yaw, pick, slim, pose);
+fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, pick: &Pick, slim: bool, state: &RunnerState, dt: f32, epoch: u64) {
+    let driven = FIGURES.with(|f| {
+        let mut f = f.borrow_mut();
+        let fig = f.1.entry(key).or_insert_with(|| Figure::new(epoch, slim));
+        if fig.slim != slim {
+            *fig = Figure { last_at: fig.last_at, ..Figure::new(epoch, slim) };
+        }
+        fig.seen = epoch;
+        fig.view.as_mut().map(|v| {
+            v.update(state, dt);
+            (v.rig.clone(), v.locals(), v.fade, v.pitch)
+        })
+    });
+    match driven {
+        Some((rig, locals, fade, pitch)) => {
+            draw_body(a, Look { pos, yaw, pitch, alpha: body_alpha(fade) }, pick, slim, Some((&rig, &locals)));
+        }
+        None => draw_body(a, Look { pos, yaw, pitch: 0.0, alpha: 1.0 }, pick, slim, None),
+    }
 }
 
 /// Starts a draw pass and returns its number.
@@ -422,8 +387,66 @@ fn prune(epoch: u64, bots_pass: bool) {
     });
 }
 
+/// Tells the locker doors which lockers the remote runners are in, so a door swings when one goes in or comes out
+/// (`render/anim/hide.rs`). Call once per drawn frame, with an empty list when no runner is in the room.
+pub fn update_remote_doors(g: &Game, remotes: &[RemoteView]) {
+    let cells: Vec<(i32, i32)> = remotes.iter().filter_map(|r| r.hide.map(|h| h.cell)).collect();
+    hide::tick_remote(&cells, g.time);
+}
+
+/// Draws the runners that are inside a locker whose door is swinging: the door opens and the body is seen for that
+/// moment ([`locker_occupant`] places it, [`hide_sync::occupancy`] gives each hider its slot).
+fn draw_occupants(g: &Game, a: &Assets, remotes: &[RemoteView], active_y: f32) {
+    let hidden: Vec<&RemoteView> = remotes.iter().filter(|r| hidden_for_good(r)).collect();
+    let mut cells: Vec<(i32, i32)> = vec![];
+    for r in &hidden {
+        let c = r.hide.map(|h| h.cell).unwrap_or_default();
+        if !cells.contains(&c) {
+            cells.push(c);
+        }
+    }
+    if cells.is_empty() {
+        return;
+    }
+    let style = &hide_sync::config().locker_style;
+    let capacity = hide_sync::config().max_capacity;
+    let states: Vec<HideState> = hidden
+        .iter()
+        .map(|r| {
+            let cell = r.hide.map(|h| h.cell).unwrap_or_default();
+            HideState::hiding(cells.iter().position(|c| *c == cell).unwrap_or(0) as i32, style, 0)
+        })
+        .collect();
+    let spots = hide_sync::occupancy(&vec![capacity; cells.len()], &states);
+    let data = locker_occupant::data();
+    for (ci, spot) in spots.iter().enumerate() {
+        if spot.occupants.is_empty() || hide::remote_door_for(cells[ci], g.time) <= 0.0 {
+            continue;
+        }
+        let who: Vec<&RemoteView> = spot.occupants.iter().map(|&(i, _)| hidden[i]).collect();
+        let facing = who[0].hide.map(|h| h.facing).unwrap_or((0, 1));
+        let locker = crate::world::facility::Hiding {
+            cell: crate::world::facility::Cell::new(cells[ci].0, cells[ci].1),
+            facing,
+            room: None,
+        };
+        let centre = g.fac.locker_center(&locker);
+        locker_occupant::draw(data, style, who.len(), capacity as usize, centre, facing, &mut |slot, p| {
+            let r = who[slot];
+            let tex = pick(&r.skin, &|id| a.skin_texture(id).is_some());
+            let (pose, phase) = match p.state {
+                BodyState::Standing => (Pose::Idle, p.idle_phase),
+                BodyState::Lying => (Pose::Down, 0.0),
+            };
+            let pos = vec3(p.pos[0], runner_draw_y(r.h, active_y) + p.pos[1], p.pos[2]);
+            draw_figure(a, pos, p.yaw, tex, r.slim, pose, phase);
+        });
+    }
+}
+
 /// Draws the remote runners in the 3D view, lit like the scene. Each one is the mannequin at its position and yaw,
-/// wearing its skin's texture, posed by its state. Draws nothing for an empty list, so a single-player frame is unchanged.
+/// wearing its skin's texture, posed by its state. A runner that has slid into a locker is gone from the open (its body
+/// shows only while the locker door swings). Draws nothing for an empty list, so a single-player frame is unchanged.
 pub fn draw_runners(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, remotes: &[RemoteView]) {
     let epoch = next_epoch();
     if remotes.is_empty() {
@@ -445,12 +468,15 @@ pub fn draw_runners(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, rem
     }
     let dt = get_frame_time().clamp(0.0, 0.1);
     for r in remotes {
-        let f = r.figure_flags();
+        if hidden_for_good(r) {
+            continue;
+        }
         let tex = pick(&r.skin, &|id| a.skin_texture(id).is_some());
         let pos = vec3(r.x, runner_draw_y(r.h, active_y), r.y);
-        draw_driven(a, FigureKey::Peer(r.peer), pos, r.yaw, &tex, f.slim, f.state(), f.speed, dt, epoch);
+        draw_driven(a, FigureKey::Peer(r.peer), pos, r.yaw, &tex, r.slim, &remote_state(r), dt, epoch);
     }
     prune(epoch, false);
+    draw_occupants(g, a, remotes, active_y);
 }
 
 /// The skin a bot wears: one of `skins`, picked by an FNV-1a hash of its guest name, so the same name always gets the
@@ -476,7 +502,8 @@ pub fn bot_speed(last: Option<(f32, f32)>, now: (f32, f32), dt: f32) -> f32 {
 }
 
 /// One NPC teammate as the 3D view needs it: its guest name (the skin seed and figure key), its floor position and yaw.
-/// `stride` and `walking` stay for the callers that fill them; the figure derives its state from its movement.
+/// `stride` and `walking` stay for the callers that fill them; the figure derives its state from its movement and from
+/// the edge it walks (`climbing` on a ladder, `falling` down a drop).
 pub struct BotView<'a> {
     pub name: &'a str,
     pub at: (f32, f32),
@@ -485,10 +512,12 @@ pub struct BotView<'a> {
     pub walking: bool,
     /// Draw offset of the feet from the drawn floor (render::stack_actors::actor_dy); 0 on the drawn floor.
     pub y: f32,
+    pub climbing: bool,
+    pub falling: bool,
 }
 
-/// Draws NPC teammates with the runner mannequin and the same clips, each wearing its skin (see [`bot_skin`]). A bot's
-/// state comes from how far it moved since the last frame ([`state_for_speed`]). The caller sets the camera and
+/// Draws NPC teammates with the runner mannequin and the same driver, each wearing its skin (see [`bot_skin`]). A bot's
+/// state comes from how far it moved since the last frame ([`bot_state`]). The caller sets the camera and
 /// material, as for [`draw_runners`]. Draws nothing for an empty list.
 pub fn draw_bots(a: &Assets, bots: &[BotView]) {
     let dt = get_frame_time().clamp(0.0, 0.1);
@@ -503,14 +532,14 @@ pub fn draw_bots(a: &Assets, bots: &[BotView]) {
         let key = FigureKey::Bot(b.name.to_string());
         let speed = FIGURES.with(|f| {
             let mut f = f.borrow_mut();
-            let fig = f.1.entry(key.clone()).or_insert_with(|| Figure::new(epoch));
+            let fig = f.1.entry(key.clone()).or_insert_with(|| Figure::new(epoch, false));
             let speed = bot_speed(fig.last_at, b.at, dt);
             fig.last_at = Some(b.at);
             speed
         });
-        let state = spec.map(|s| state_for_speed(&s.bots, speed)).unwrap_or(RunnerState::Idle);
+        let state = spec.map(|s| bot_state(&s.bots, speed, b.climbing, b.falling)).unwrap_or_default();
         let tex = pick(&bot_skin(b.name, skins), &|id| a.skin_texture(id).is_some());
-        draw_driven(a, key, vec3(b.at.0, b.y, b.at.1), b.facing, &tex, false, state, speed, dt, epoch);
+        draw_driven(a, key, vec3(b.at.0, b.y, b.at.1), b.facing, &tex, false, &state, dt, epoch);
     }
     prune(epoch, true);
 }
@@ -518,6 +547,8 @@ pub fn draw_bots(a: &Assets, bots: &[BotView]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::anim::player::AnimPlayer;
+    use crate::render::anim::runner::player_rig;
 
     /// The models.json text the game embeds.
     fn shipped_text() -> &'static str {
@@ -526,6 +557,27 @@ mod tests {
 
     fn shipped() -> RunnerSpec {
         RunnerSpec::parse(shipped_text()).expect("models.json parses")
+    }
+
+    fn remote(clip: Option<Pose>, moving: bool, sprinting: bool, crouching: bool, vy: f32) -> RemoteView {
+        RemoteView {
+            peer: 3,
+            x: 0.0,
+            y: 0.0,
+            yaw: 0.0,
+            h: 0.0,
+            level: 0,
+            skin: String::new(),
+            moving,
+            sprinting,
+            crouching,
+            slim: false,
+            speed: 0.0,
+            vy,
+            clip,
+            hide: None,
+            hide_since: None,
+        }
     }
 
     #[test]
@@ -545,51 +597,41 @@ mod tests {
     }
 
     #[test]
-    fn flags_map_to_states() {
-        assert_eq!(RunnerState::from_flags(true, false, false), RunnerState::Walk);
-        assert_eq!(RunnerState::from_flags(true, true, false), RunnerState::Sprint);
-        assert_eq!(RunnerState::from_flags(false, false, false), RunnerState::Idle);
-        assert_eq!(RunnerState::from_flags(false, true, false), RunnerState::Idle, "sprint without moving is idle");
-        assert_eq!(RunnerState::from_flags(true, true, true), RunnerState::Crouch, "crouching wins");
-        assert_eq!(FigureFlags::new(true, true, false, false, 5.0, 0.0).state(), RunnerState::Sprint);
-        assert_eq!(FigureFlags::default().state(), RunnerState::Idle);
+    fn an_older_clients_flags_pick_the_pose() {
+        let pose = |m, s, c| remote_state(&remote(None, m, s, c, 0.0)).pose();
+        assert_eq!(pose(true, false, false), Pose::Walk);
+        assert_eq!(pose(true, true, false), Pose::Sprint);
+        assert_eq!(pose(false, false, false), Pose::Idle);
+        assert_eq!(pose(false, true, false), Pose::Idle, "sprint without moving is idle");
+        assert_eq!(pose(true, true, true), Pose::Crouch, "crouching wins");
     }
 
     #[test]
-    fn states_pick_their_clips() {
-        let spec = shipped();
-        assert_eq!(spec.clip_for(RunnerState::Walk, 0.0).0, "walk");
-        assert_eq!(spec.clip_for(RunnerState::Sprint, 0.0).0, "sprint");
-        assert_eq!(spec.clip_for(RunnerState::Idle, 0.0).0, "idle");
-        let (clip, speed) = spec.clip_for(RunnerState::Crouch, 0.0);
-        assert_eq!(clip, "idle", "a crouch plays the idle clip");
-        assert_eq!(speed, 0.55, "slowed to 0.55");
+    fn a_named_pose_is_the_pose_shown() {
+        for p in Pose::ALL {
+            let shown = remote_state(&remote(Some(p), false, false, false, if p == Pose::Fall { -3.0 } else { 1.0 })).pose();
+            assert_eq!(shown, p, "{p:?} survives the sample");
+        }
+        // an airborne sample is a jump while rising and a fall while sinking, whichever of the two it names
+        assert_eq!(remote_state(&remote(Some(Pose::Jump), true, false, false, -2.0)).pose(), Pose::Fall);
+        assert_eq!(remote_state(&remote(Some(Pose::Fall), true, false, false, 2.0)).pose(), Pose::Jump);
     }
 
     #[test]
-    fn a_walk_clip_follows_the_runners_speed_within_the_clamp() {
-        let spec = shipped();
-        let at_ref = spec.clip_for(RunnerState::Walk, spec.states[1].ref_mps).1;
-        assert!((at_ref - spec.states[1].speed).abs() < 1e-5, "the authored speed plays at its authored rate");
-        let fast = spec.clip_for(RunnerState::Walk, 100.0).1;
-        let slow = spec.clip_for(RunnerState::Walk, 0.01).1;
-        assert!((fast - spec.scale_max * spec.states[1].speed).abs() < 1e-5, "the top of the range is clamped");
-        assert!((slow - spec.scale_min * spec.states[1].speed).abs() < 1e-5, "the bottom of the range is clamped");
-    }
-
-    #[test]
-    fn a_stationary_bot_idles_and_a_moving_bot_walks() {
+    fn a_bot_state_follows_its_speed_and_its_edge() {
         let spec = shipped();
         let dt = 1.0 / 60.0;
         let still = bot_speed(Some((3.0, 4.0)), (3.0, 4.0), dt);
-        assert_eq!(state_for_speed(&spec.bots, still), RunnerState::Idle);
+        assert_eq!(bot_state(&spec.bots, still, false, false).pose(), Pose::Idle);
         let first = bot_speed(None, (3.0, 4.0), dt);
-        assert_eq!(state_for_speed(&spec.bots, first), RunnerState::Idle, "no earlier frame means no speed");
+        assert_eq!(bot_state(&spec.bots, first, false, false).pose(), Pose::Idle, "no earlier frame means no speed");
         let moved = bot_speed(Some((3.0, 4.0)), (3.05, 4.0), dt);
         assert!((moved - 3.0).abs() < 1e-3, "0.05 m in a 60 Hz frame is 3 m/s, got {moved}");
-        assert_eq!(state_for_speed(&spec.bots, moved), RunnerState::Walk);
+        assert_eq!(bot_state(&spec.bots, moved, false, false).pose(), Pose::Walk);
         let fast = bot_speed(Some((0.0, 0.0)), (0.1, 0.0), dt);
-        assert_eq!(state_for_speed(&spec.bots, fast), RunnerState::Sprint, "6 m/s sprints");
+        assert_eq!(bot_state(&spec.bots, fast, false, false).pose(), Pose::Sprint, "6 m/s sprints");
+        assert_eq!(bot_state(&spec.bots, 0.0, true, false).pose(), Pose::Climb, "a ladder climbs");
+        assert_eq!(bot_state(&spec.bots, 0.0, false, true).pose(), Pose::Fall, "a drop falls");
     }
 
     #[test]
@@ -609,11 +651,12 @@ mod tests {
     }
 
     #[test]
-    fn models_json_parses_without_the_old_swing_table() {
+    fn models_json_parses_without_the_old_state_table() {
         let src = shipped_text();
         assert!(RunnerSpec::parse(src).is_ok());
         assert!(!src.contains("\"bones\""), "the swing amplitude table is gone");
         assert!(!src.contains("\"amp\""), "no swing amplitude is left");
+        assert!(!src.contains("\"states\""), "the clip per state is data/player/anim.json now");
         let spec = shipped();
         assert!(embedded::asset(&spec.body.model).is_some(), "the runner model {} is embedded", spec.body.model);
         assert!(embedded::asset(&spec.body.atlas).is_some(), "the runner atlas {} is embedded", spec.body.atlas);
@@ -622,21 +665,19 @@ mod tests {
     #[test]
     fn changing_the_data_changes_the_figure() {
         let text = shipped_text();
-        let slower = RunnerSpec::parse(&text.replacen("\"speed\": 0.55", "\"speed\": 0.25", 1)).unwrap();
-        assert_eq!(slower.clip_for(RunnerState::Crouch, 0.0).1, 0.25, "a new crouch speed retimes the clip");
         let taller = RunnerSpec::parse(&text.replacen("113.92", "120.0", 1)).unwrap();
         assert!(taller.height_m() > shipped().height_m());
         let lazier = RunnerSpec::parse(&text.replacen("\"walk_min_mps\": 0.3", "\"walk_min_mps\": 3.5", 1)).unwrap();
-        assert_eq!(state_for_speed(&lazier.bots, 3.0), RunnerState::Idle, "a higher walk threshold keeps a slow bot idle");
-        assert_eq!(state_for_speed(&shipped().bots, 3.0), RunnerState::Walk);
+        assert_eq!(bot_state(&lazier.bots, 3.0, false, false).pose(), Pose::Idle, "a higher walk threshold keeps a slow bot idle");
+        assert_eq!(bot_state(&shipped().bots, 3.0, false, false).pose(), Pose::Walk);
     }
 
     #[test]
     fn bad_data_is_an_error_not_a_silent_default() {
         assert!(RunnerSpec::parse("not json").is_err());
         assert!(RunnerSpec::parse("{}").is_err());
-        let no_clip = shipped_text().replacen("\"clip\": \"walk\"", "\"clp\": \"walk\"", 1);
-        assert!(RunnerSpec::parse(&no_clip).is_err(), "a state without a clip is reported");
+        let no_body = shipped_text().replacen("\"slim_body\": \"blocky_slim\"", "\"slim_bdy\": \"blocky_slim\"", 1);
+        assert!(RunnerSpec::parse(&no_body).is_err(), "a missing body is reported");
         let no_bots = shipped_text().replacen("\"bots\": {", "\"bots_gone\": {", 1);
         assert!(RunnerSpec::parse(&no_bots).is_err(), "a missing bots section is reported");
     }
@@ -669,5 +710,178 @@ mod tests {
         let swapped = shipped_text().replacen("\"skins\": [\"DEFAULT\"]", "\"skins\": [\"SKIN_A\", \"SKIN_B\"]", 1);
         let spec = RunnerSpec::parse(&swapped).unwrap();
         assert_eq!(spec.bots.skins, vec!["SKIN_A".to_string(), "SKIN_B".to_string()]);
+    }
+
+    #[test]
+    fn the_crouch_fade_is_the_transparency_godot_sets() {
+        assert_eq!(body_alpha(0.0), 1.0, "a standing body is opaque");
+        assert!((body_alpha(driver::config().crouch_alpha) - 0.45).abs() < 1e-6, "a crouch fades to 0.55 transparency");
+        let mut view = RunnerView::load(false).expect("rig");
+        let crouch = RunnerState { crouching: true, ..RunnerState::default() };
+        for _ in 0..60 {
+            view.update(&crouch, 0.1);
+        }
+        assert!(body_alpha(view.fade) < 1.0, "the drawn alpha follows the view's fade");
+    }
+
+    #[test]
+    fn a_faded_body_is_drawn_in_the_translucent_lit_mode() {
+        use crate::render::shader::{GHOST_MODE, LIT_MODE};
+        assert_eq!(body_mode(1.0), LIT_MODE, "a standing body stays opaque");
+        assert_eq!(body_mode(body_alpha(driver::config().crouch_alpha)), GHOST_MODE, "a crouching body blends");
+        assert!(GHOST_MODE > 3.5 && LIT_MODE < 1.5, "the shader reads these as ghost and lit");
+    }
+
+    #[test]
+    fn a_runner_vanishes_once_it_has_slid_into_its_locker() {
+        let mut r = remote(None, false, false, false, 0.0);
+        assert!(!hidden_for_good(&r), "in the open it is drawn");
+        r.hide = Some(HideSpot { cell: (4, 5), facing: (0, 1) });
+        r.hide_since = Some(std::time::Duration::ZERO);
+        assert!(!hidden_for_good(&r), "it stays visible while it slides in");
+        r.hide_since = Some(std::time::Duration::from_secs_f32(crate::render::hiding_cam::glide_seconds(true) + 0.1));
+        assert!(hidden_for_good(&r), "then it is inside the locker");
+    }
+
+    // ---- the rig: bind pose, bends, clips, skin UVs
+
+    /// (group name, origin in model units) of every outliner group of a bbmodel, parents first.
+    fn bb_groups(path: &str) -> (Vec<(String, Vec3)>, Vec<[f32; 4]>) {
+        let src = std::str::from_utf8(embedded::asset(path).expect("embedded model")).unwrap();
+        let j: serde_json::Value = serde_json::from_str(src).unwrap();
+        fn walk(n: &serde_json::Value, out: &mut Vec<(String, Vec3)>) {
+            if let Some(name) = n["name"].as_str() {
+                if n.get("origin").is_some() && n.get("children").is_some() {
+                    let o = &n["origin"];
+                    let c = |i: usize| o[i].as_f64().unwrap_or(0.0) as f32;
+                    out.push((name.to_string(), vec3(c(0), c(1), c(2))));
+                }
+            }
+            for c in n["children"].as_array().into_iter().flatten() {
+                walk(c, out);
+            }
+        }
+        let mut groups = vec![];
+        for n in j["outliner"].as_array().unwrap() {
+            walk(n, &mut groups);
+        }
+        let mut uvs = vec![];
+        for e in j["elements"].as_array().unwrap() {
+            for f in e["faces"].as_object().into_iter().flat_map(|f| f.values()) {
+                if let Some(a) = f["uv"].as_array() {
+                    let u = |i: usize| a[i].as_f64().unwrap_or(f64::NAN) as f32;
+                    uvs.push([u(0), u(1), u(2), u(3)]);
+                }
+            }
+        }
+        (groups, uvs)
+    }
+
+    fn clip_pose(rig: &Rig, clip: &str, t: f32) -> Vec<Local> {
+        let mut p = AnimPlayer::default();
+        p.play(rig, clip, 0.0);
+        p.seek(t);
+        p.advance(rig, 0.0);
+        p.pose(rig)
+    }
+
+    fn bone_angle(rig: &Rig, pose: &[Local], name: &str) -> f32 {
+        let b = rig.bone(name).unwrap_or_else(|| panic!("no bone {name}"));
+        (pose[b].r.angle_between(rig.bones[b].rest_r)).to_degrees()
+    }
+
+    fn peak(rig: &Rig, clip: &str, bones: &[&str]) -> f32 {
+        let len = rig.length(clip);
+        (0..=20)
+            .map(|i| {
+                let pose = clip_pose(rig, clip, len * i as f32 / 20.0);
+                bones.iter().map(|b| bone_angle(rig, &pose, b)).fold(0.0f32, f32::max)
+            })
+            .fold(0.0f32, f32::max)
+    }
+
+    /// How far (model units) the rig's forearm origin sits from the model's forearm group at rest; the hand's is twice it.
+    const ARM_CHAIN_UNITS: f32 = 1.25;
+
+    #[test]
+    fn rest_pose_is_the_bind_pose() {
+        for (slim, path) in [(false, "player/player_mannequin.bbmodel"), (true, "player/player_mannequin_slim.bbmodel")] {
+            let rig = player_rig(slim).expect("rig");
+            let rest: Vec<Local> = AnimPlayer::default().pose(&rig);
+            let mats = model_space_stretched(&rig, &rest, &[]);
+            let (groups, _) = bb_groups(path);
+            assert_eq!(groups.len(), 16, "{path}: 16 outliner groups (pelvis, belly, chest, head, two arms and two legs of three)");
+            let mut off = vec![];
+            for (name, origin) in groups {
+                let b = rig.bone(&name).unwrap_or_else(|| panic!("{path}: the rig has no bone {name}"));
+                off.push((name, (mats[b].transform_point3(Vec3::ZERO) - origin).length()));
+            }
+            // The torso, head and legs rest exactly on their group origins. The arm chain is authored in the glb with its
+            // forearm and hand origins ARM_CHAIN_UNITS further along the limb per segment than the model's groups (the
+            // same data Godot imports); the joint plugs close that gap, so it is the one allowed deviation.
+            for (name, d) in &off {
+                let limit = if name.ends_with("Forearm") {
+                    ARM_CHAIN_UNITS
+                } else if name.ends_with("Hand") {
+                    2.0 * ARM_CHAIN_UNITS
+                } else {
+                    1e-3
+                };
+                assert!(*d <= limit + 1e-3, "{path}: {name} rests {d} units off its group origin (allowed {limit}): {off:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn clips_bend_the_joints() {
+        let rig = player_rig(false).expect("rig");
+        let knees = ["L-Calf", "R-Calf"];
+        let elbows = ["L-Forearm", "R-Forearm"];
+        assert!(peak(&rig, "walk", &knees) >= 40.0, "a walking knee bends");
+        assert!(peak(&rig, "walk", &elbows) >= 15.0, "a walking elbow bends");
+        assert!(peak(&rig, "sprint", &knees) >= 60.0, "a sprinting knee bends");
+        assert!(peak(&rig, "sprint", &elbows) >= 70.0, "a sprinting elbow bends");
+        assert!(peak(&rig, "crouch", &knees) >= 100.0, "a crouching knee folds");
+        assert!(peak(&rig, "climb", &["L-Arm", "R-Arm"]) >= 150.0, "a climbing arm reaches up");
+        let all: Vec<String> = rig.bones.iter().map(|b| b.name.clone()).collect();
+        let all: Vec<&str> = all.iter().map(String::as_str).collect();
+        assert!(peak(&rig, "idle", &all) <= 10.0, "the idle clip barely moves any joint");
+    }
+
+    #[test]
+    fn every_runner_pose_has_a_clip_in_both_rigs() {
+        for slim in [false, true] {
+            let rig = player_rig(slim).expect("rig");
+            for pose in Pose::ALL {
+                let clip = driver::config().clips.get(pose.key()).unwrap_or_else(|| panic!("no clip for {pose:?}"));
+                assert!(rig.has_clip(clip), "slim={slim}: {pose:?} plays {clip}, which the rig lacks");
+                assert_eq!(Pose::from_wire(pose.wire()), Some(pose), "{pose:?} has its own wire name");
+            }
+        }
+    }
+
+    #[test]
+    fn skin_uvs_stay_valid_and_both_bodies_share_their_bones() {
+        let (regular, regular_uv) = bb_groups("player/player_mannequin.bbmodel");
+        let (slim, slim_uv) = bb_groups("player/player_mannequin_slim.bbmodel");
+        let names = |g: &[(String, Vec3)]| g.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&regular), names(&slim), "bone lookup by group name needs the same groups");
+        for (what, uvs) in [("regular", regular_uv), ("slim", slim_uv)] {
+            assert!(!uvs.is_empty());
+            for uv in uvs {
+                assert!(uv.iter().all(|c| (0.0..=64.0).contains(c)), "{what}: a face samples outside the 64x64 atlas: {uv:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_swim_lean_pivots_at_the_hips_and_a_standing_body_does_not_lean() {
+        let look = |pitch| Look { pos: Vec3::ZERO, yaw: 0.0, pitch, alpha: 1.0 };
+        let hips = Vec3::Y * driver::config().swim_pivot;
+        let upright = body_root(&look(0.0), 1.0);
+        let leaning = body_root(&look(0.6), 1.0);
+        assert!((upright.transform_point3(hips) - hips).length() < 1e-5);
+        assert!((leaning.transform_point3(hips) - hips).length() < 1e-5, "the hips stay put");
+        assert!((leaning.transform_point3(Vec3::Y * 1.9) - Vec3::Y * 1.9).length() > 0.3, "the head swings");
     }
 }

@@ -41,7 +41,7 @@ pub fn transition_rule(prev: &str, next: &str) -> Option<&'static str> {
 pub fn bot_views(npcs: &[Npc], level: i32) -> Vec<BotView<'_>> {
     npcs.iter()
         .filter(|n| n.level == level)
-        .map(|n| BotView { name: &n.name, at: n.at, facing: n.facing, stride: n.stride, walking: n.walking, y: 0.0 })
+        .map(|n| BotView { name: &n.name, at: n.at, facing: n.facing, stride: n.stride, walking: n.walking, y: 0.0, climbing: false, falling: false })
         .collect()
 }
 
@@ -67,7 +67,7 @@ mod tests {
     }
 
     fn remote(peer: u32) -> RemoteView {
-        RemoteView { peer, x: 3.5, y: 4.5, yaw: 1.25, h: 0.0, level: 0, skin: String::new(), moving: false, sprinting: false, crouching: false, slim: false, speed: 0.0, vy: 0.0 }
+        RemoteView { peer, x: 3.5, y: 4.5, yaw: 1.25, h: 0.0, level: 0, skin: String::new(), moving: false, sprinting: false, crouching: false, slim: false, speed: 0.0, vy: 0.0, clip: None, hide: None, hide_since: None }
     }
 
     #[test]

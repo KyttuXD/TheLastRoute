@@ -537,6 +537,9 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
     let mut uploaded_skin_seen = String::new();
     // the skin last offered to the open room, the uploaded count it was judged against, and when to look again
     let mut room_skin_seen = String::new();
+    // whether this runner's chosen skin and ARMS setting give slim arms, sent in its sample so peers draw the same arms
+    let mut local_slim = false;
+    let mut slim_seen: (String, String) = Default::default();
     let mut room_uploaded_seen = usize::MAX;
     let mut room_skin_check = 0.0f64;
     let mut net: Option<NetSession> = None;
@@ -695,10 +698,21 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
         }
 
         // the open room: pump it, send this runner's sample while a route runs, and act on what the others sent
+        if (settings.skin.as_str(), settings.arms.as_str()) != (slim_seen.0.as_str(), slim_seen.1.as_str()) {
+            slim_seen = (settings.skin.clone(), settings.arms.clone());
+            let png = skins::skin_png(&skins::chosen_skin(&settings.skin)).map(|(_, b)| b);
+            local_slim = crate::app::settings::ArmsSetting::resolve(&settings.arms, png.as_deref());
+        }
         let sample = match (playing.as_ref(), loading.is_none()) {
             (Some(g), true) => Some(
                 world_sync::Sample::of(&g.p, g.depth, g.window_origin())
-                    .with_run_state(g.report.is_some(), g.escape.is_some()),
+                    .with_run_state(g.report.is_some(), g.escape.is_some())
+                    .with_body(
+                        crate::net::runner_figure::local_state(g).pose(),
+                        g.p.vy(),
+                        local_slim,
+                        crate::net::runner_figure::local_hide(g),
+                    ),
             ),
             _ => None,
         };
@@ -1606,7 +1620,7 @@ mod remote_level_tests {
     use super::*;
 
     fn view(peer: u32, h: f32, level: i32) -> RemoteView {
-        RemoteView { peer, x: 1.0, y: 2.0, yaw: 0.0, h, level, skin: String::new(), moving: false, sprinting: false, crouching: false, slim: false, speed: 0.0, vy: 0.0 }
+        RemoteView { peer, x: 1.0, y: 2.0, yaw: 0.0, h, level, skin: String::new(), moving: false, sprinting: false, crouching: false, slim: false, speed: 0.0, vy: 0.0, clip: None, hide: None, hide_since: None }
     }
 
     #[test]

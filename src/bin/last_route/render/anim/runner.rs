@@ -48,6 +48,13 @@ pub struct Config {
     pub hard_max: f32,
     pub paced_clips: Vec<String>,
     pub swap_clips: Vec<String>,
+    /// state key -> the pose name a net sample carries
+    pub wire: HashMap<String, String>,
+    /// forward lean of a swimming body, radians, and how fast it eases (per second)
+    pub swim_pitch: f32,
+    pub swim_pitch_rate: f32,
+    /// height above the feet the swim lean pivots about, metres
+    pub swim_pivot: f32,
 }
 
 fn at<'a>(j: &'a serde_json::Value, path: &str) -> Result<&'a serde_json::Value, String> {
@@ -142,10 +149,18 @@ impl Config {
             hard_max: num(&j, "stride.hard_max")?,
             paced_clips: strings(&j, "stride.paced_clips")?,
             swap_clips: strings(&j, "stride.swap_clips")?,
+            wire: map_of(&j, "wire", |v| v.as_str().map(str::to_string), "a string")?,
+            swim_pitch: num(&j, "swim.pitch_deg")?.to_radians(),
+            swim_pitch_rate: num(&j, "swim.pitch_rate")?,
+            swim_pivot: num(&j, "swim.pivot_m")?,
         };
-        for key in ["idle", "walk", "sprint", "chased", "crouch", "jump", "fall", "climb"] {
+        for pose in Pose::ALL {
+            let key = pose.key();
             if !cfg.clips.contains_key(key) {
                 return Err(format!("anim.json: missing key \"clips.{key}\""));
+            }
+            if !cfg.wire.contains_key(key) {
+                return Err(format!("anim.json: missing key \"wire.{key}\""));
             }
         }
         Ok(cfg)
@@ -164,8 +179,71 @@ pub fn config() -> &'static Config {
 
 // ------------------------------------------------------------------------------------------------ clip choice
 
+/// The poses a runner shows. One per state key of anim.json `clips`; also the pose name a net sample carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Pose {
+    Idle,
+    Walk,
+    Sprint,
+    /// The sprint while a hunter chases the runner (the chase clip).
+    Chased,
+    Crouch,
+    Jump,
+    Fall,
+    Climb,
+    /// Deep water (no clip of its own in the Godot rig: the walk clip, leaning forward).
+    Swim,
+    /// Taser or pounce stun.
+    Stun,
+    /// Caught and down (the lay clip).
+    Down,
+}
+
+impl Pose {
+    pub const ALL: [Pose; 11] = [
+        Pose::Idle,
+        Pose::Walk,
+        Pose::Sprint,
+        Pose::Chased,
+        Pose::Crouch,
+        Pose::Jump,
+        Pose::Fall,
+        Pose::Climb,
+        Pose::Swim,
+        Pose::Stun,
+        Pose::Down,
+    ];
+
+    /// The state key in anim.json (`clips` and `wire` are keyed by it).
+    pub fn key(self) -> &'static str {
+        match self {
+            Pose::Idle => "idle",
+            Pose::Walk => "walk",
+            Pose::Sprint => "sprint",
+            Pose::Chased => "chased",
+            Pose::Crouch => "crouch",
+            Pose::Jump => "jump",
+            Pose::Fall => "fall",
+            Pose::Climb => "climb",
+            Pose::Swim => "swim",
+            Pose::Stun => "stun",
+            Pose::Down => "down",
+        }
+    }
+
+    /// The name this pose travels under in a net sample (anim.json `wire`).
+    pub fn wire(self) -> &'static str {
+        config().wire.get(self.key()).map(String::as_str).unwrap_or(self.key())
+    }
+
+    /// The pose a sample's name stands for; None for a name this build does not know (a newer client).
+    pub fn from_wire(name: &str) -> Option<Pose> {
+        Pose::ALL.into_iter().find(|p| p.wire() == name)
+    }
+}
+
 /// What a runner is doing, as the clip choice reads it (local controller state, or a remote's replicated flags).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct RunnerState {
     pub moving: bool,
     pub sprinting: bool,
@@ -175,8 +253,68 @@ pub struct RunnerState {
     pub climbing: bool,
     /// a hunter is chasing this runner: the sprint becomes the chase clip
     pub chased: bool,
+    /// in water deep enough to swim (wading is the walk clip at the slowed pace)
+    pub swimming: bool,
+    /// locked by a taser or a pounce
+    pub stunned: bool,
+    /// caught: the runner lies down
+    pub down: bool,
     /// real ground speed, metres per second
     pub speed: f32,
+}
+
+impl RunnerState {
+    /// The pose these flags show. Down beats stunned beats a ladder beats the air beats swimming beats a crouch.
+    pub fn pose(&self) -> Pose {
+        if self.down {
+            Pose::Down
+        } else if self.stunned {
+            Pose::Stun
+        } else if self.climbing {
+            Pose::Climb
+        } else if self.airborne_down {
+            Pose::Fall
+        } else if self.airborne_up {
+            Pose::Jump
+        } else if self.swimming && self.moving {
+            Pose::Swim
+        } else if self.crouching {
+            Pose::Crouch
+        } else if self.moving && self.sprinting {
+            if self.chased {
+                Pose::Chased
+            } else {
+                Pose::Sprint
+            }
+        } else if self.moving {
+            Pose::Walk
+        } else {
+            Pose::Idle
+        }
+    }
+
+    /// The state a net sample describes. A sample that names its pose gets exactly that pose (`vy` picks jump or fall
+    /// for an airborne one); an older client's sample has no name, so its three flags decide. `speed` is the ground speed.
+    pub fn from_sample(pose: Option<Pose>, moving: bool, sprinting: bool, crouching: bool, vy: f32, speed: f32) -> RunnerState {
+        let base = RunnerState { moving, sprinting, crouching, speed, ..RunnerState::default() };
+        let Some(pose) = pose else {
+            return base;
+        };
+        let airborne = matches!(pose, Pose::Jump | Pose::Fall);
+        RunnerState {
+            moving: moving || matches!(pose, Pose::Walk | Pose::Sprint | Pose::Chased | Pose::Swim),
+            sprinting: sprinting || matches!(pose, Pose::Sprint | Pose::Chased),
+            crouching: crouching || pose == Pose::Crouch,
+            airborne_up: airborne && vy >= 0.0,
+            airborne_down: airborne && vy < 0.0,
+            climbing: pose == Pose::Climb,
+            chased: pose == Pose::Chased,
+            swimming: pose == Pose::Swim,
+            stunned: pose == Pose::Stun,
+            down: pose == Pose::Down,
+            ..base
+        }
+    }
 }
 
 /// The clip to play and how the body looks while it plays.
@@ -189,32 +327,30 @@ pub struct ClipChoice {
     pub blend: f32,
     /// walk / sprint / chase: played at ground-speed pace
     pub paced: bool,
+    /// forward lean target of the body, radians (a swimmer)
+    pub pitch: f32,
 }
 
 /// player_controller_3d.gd 1923-1935 / remote_players.gd 736-763.
 pub fn clip_for(state: &RunnerState) -> ClipChoice {
     let c = config();
-    let (key, alpha, blend) = if state.climbing {
-        ("climb", 0.0, c.blend_climb)
-    } else if state.airborne_down {
-        ("fall", 0.0, c.blend_air)
-    } else if state.airborne_up {
-        ("jump", 0.0, c.blend_air)
-    } else if state.crouching {
-        ("crouch", c.crouch_alpha, c.blend_idle)
-    } else if state.moving && state.sprinting {
-        (if state.chased { "chased" } else { "sprint" }, 0.0, c.blend_travel)
-    } else if state.moving {
-        ("walk", 0.0, c.blend_travel)
-    } else {
-        ("idle", 0.0, c.blend_idle)
+    let pose = state.pose();
+    let (alpha, blend, pitch) = match pose {
+        Pose::Climb => (0.0, c.blend_climb, 0.0),
+        Pose::Fall | Pose::Jump => (0.0, c.blend_air, 0.0),
+        Pose::Crouch => (c.crouch_alpha, c.blend_idle, 0.0),
+        Pose::Swim => (0.0, c.blend_travel, c.swim_pitch),
+        Pose::Sprint | Pose::Chased | Pose::Walk => (0.0, c.blend_travel, 0.0),
+        Pose::Idle => (0.0, c.blend_idle, 0.0),
+        Pose::Stun | Pose::Down => (0.0, c.blend_default, 0.0),
     };
-    let clip = c.clip(key);
+    let clip = c.clip(pose.key());
     ClipChoice {
         paced: c.paced_clips.contains(&clip),
         clip,
         alpha,
         blend,
+        pitch,
     }
 }
 
@@ -290,6 +426,8 @@ pub struct RunnerView {
     pace: Option<f32>,
     /// body fade, 0 opaque .. crouch_alpha
     pub fade: f32,
+    /// forward lean of the body now, radians (eases toward the swim pitch)
+    pub pitch: f32,
     primed: bool,
 }
 
@@ -302,6 +440,7 @@ impl RunnerView {
             speed: 0.0,
             pace: None,
             fade: 0.0,
+            pitch: 0.0,
             primed: false,
         }
     }
@@ -334,6 +473,7 @@ impl RunnerView {
         let choice = clip_for(state);
         let step = dt * c.fade_rate;
         self.fade += (choice.alpha - self.fade).clamp(-step, step);
+        self.pitch += (choice.pitch - self.pitch) * (1.0 - (-c.swim_pitch_rate * dt).exp());
         let rig = self.rig.clone();
         if choice.paced {
             let (clip, goal) = pick(Some(&rig), &choice.clip, self.speed);
@@ -356,7 +496,9 @@ impl RunnerView {
 
     /// ModelSlot.play_if_available; a switch between walk / sprint / chase keeps the stride phase.
     fn play(&mut self, rig: &Rig, clip: &str, blend: f32, paced: bool) {
-        if !rig.has_clip(clip) || (self.player.assigned == clip && self.player.playing) {
+        // a one-shot clip (the jump) that has run out holds its last frame until the state changes
+        let held = !self.player.playing && rig.clips.get(clip).is_some_and(|c| !c.looping);
+        if !rig.has_clip(clip) || (self.player.assigned == clip && (self.player.playing || held)) {
             return;
         }
         let mut phase = None;

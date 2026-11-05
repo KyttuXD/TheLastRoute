@@ -12,6 +12,12 @@ use macroquad::prelude::*;
 
 pub const MAX_LAMPS: usize = 16;
 
+/// The vertex mode (normal.w) of an ordinary lit, opaque surface.
+pub const LIT_MODE: f32 = 1.0;
+/// The vertex mode of a lit surface that blends by its colour alpha (a crouching runner's faded body): lit like
+/// `LIT_MODE`, but the alpha it draws with is the texture times the vertex colour, not 1.
+pub const GHOST_MODE: f32 = 4.0;
+
 const VERTEX: &str = r#"#version 100
 attribute vec3 position;
 attribute vec2 texcoord;
@@ -50,9 +56,11 @@ uniform vec4 Lamps[16];
 uniform vec4 LampColors[16];
 void main() {
     float mode = nrm.w;
+    float ghost = mode > 3.5 ? 1.0 : 0.0;
+    if (ghost > 0.5) mode = 1.0;
     vec2 tuv = mode < 0.5 ? fract(uv) : uv;
     vec4 tex = texture2D(Texture, tuv) * color;
-    if (mode < 2.5 && tex.a < 0.5) discard;
+    if (mode < 2.5 && tex.a < (ghost > 0.5 ? 0.02 : 0.5)) discard;
     float fd = length(wpos - CamPos);
     if (mode > 1.5) {
         float f = clamp(fd / (FogFar * 1.6), 0.0, 1.0);
@@ -83,7 +91,7 @@ void main() {
     }
     vec3 col = tex.rgb * light;
     float f = clamp(fd / FogFar, 0.0, 1.0);
-    gl_FragColor = vec4(mix(col, FogColor, f * f), 1.0);
+    gl_FragColor = vec4(mix(col, FogColor, f * f), ghost > 0.5 ? tex.a : 1.0);
 }"#;
 
 /// The Metal twin of VERTEX and FRAGMENT. It must stay line for line with them (the test below checks the
@@ -135,9 +143,11 @@ vertex VOut vertexShader(Vertex v [[stage_in]], constant Uniforms& u [[buffer(0)
 fragment float4 fragmentShader(VOut in [[stage_in]], constant Uniforms& u [[buffer(0)]],
                                texture2d<float> Texture [[texture(0)]], sampler TextureSmplr [[sampler(0)]]) {
     float mode = in.nrm.w;
+    float ghost = mode > 3.5 ? 1.0 : 0.0;
+    if (ghost > 0.5) mode = 1.0;
     float2 tuv = mode < 0.5 ? fract(in.uv) : in.uv;
     float4 tex = Texture.sample(TextureSmplr, tuv) * in.color;
-    if (mode < 2.5 && tex.a < 0.5) discard_fragment();
+    if (mode < 2.5 && tex.a < (ghost > 0.5 ? 0.02 : 0.5)) discard_fragment();
     float fd = length(in.wpos - float3(u.CamPos));
     if (mode > 1.5) {
         float f = clamp(fd / (u.FogFar * 1.6), 0.0, 1.0);
@@ -169,7 +179,7 @@ fragment float4 fragmentShader(VOut in [[stage_in]], constant Uniforms& u [[buff
     }
     float3 col = tex.rgb * light;
     float f = clamp(fd / u.FogFar, 0.0, 1.0);
-    return float4(mix(col, float3(u.FogColor), f * f), 1.0);
+    return float4(mix(col, float3(u.FogColor), f * f), ghost > 0.5 ? tex.a : 1.0);
 }
 "#;
 
@@ -460,7 +470,7 @@ mod tests {
             assert!(MSL.contains(&msl_k), "MSL lost {k}");
         }
         // the modes and the lamp loop bound
-        for k in ["mode < 0.5", "mode < 2.5", "mode > 1.5", "mode > 2.5", "i < 16"] {
+        for k in ["mode < 0.5", "mode < 2.5", "mode > 1.5", "mode > 2.5", "mode > 3.5", "ghost > 0.5 ? tex.a : 1.0", "i < 16"] {
             assert!(FRAGMENT.contains(k) && MSL.contains(k), "{k}");
         }
     }

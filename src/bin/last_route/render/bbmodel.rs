@@ -371,6 +371,22 @@ impl Model {
         face_uv: Vec2,
         tint: Color,
     ) {
+        self.build_posed_mode(out, idx, root, bone_of, face_uv, tint, crate::render::shader::LIT_MODE);
+    }
+
+    /// [`Self::build_posed`] with the shader mode written into every vertex (`shader::LIT_MODE`, or `shader::GHOST_MODE`
+    /// for a body that fades by its tint alpha, like a crouching runner).
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_posed_mode(
+        &self,
+        out: &mut Vec<Vertex>,
+        idx: &mut Vec<u16>,
+        root: Mat4,
+        bone_of: &dyn Fn(usize) -> Option<Mat4>,
+        face_uv: Vec2,
+        tint: Color,
+        mode: f32,
+    ) {
         let col: [u8; 4] = tint.into();
         let mut group_m: Vec<Mat4> = Vec::with_capacity(self.groups.len());
         for (k, g) in self.groups.iter().enumerate() {
@@ -403,7 +419,7 @@ impl Model {
                         position: m.transform_point3(*c - origin),
                         uv,
                         color: col,
-                        normal: vec4(n.x, n.y, n.z, 1.0),
+                        normal: vec4(n.x, n.y, n.z, mode),
                     });
                 }
                 for k in 1..(f.corners.len() as u16 - 1) {

@@ -3,6 +3,7 @@
   "max_capacity": 2,
   "max_spot_index": 4096,
   "max_style_len": 24,
+  "locker_style": "wardrobe",
   "search_tell": {
     "duration_s": 1.2,
     "amplitude": 0.03,

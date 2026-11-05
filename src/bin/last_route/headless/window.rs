@@ -5,7 +5,7 @@
 
 use super::protocol::{err, Session};
 use super::{respond, spawn_inputs, Args, Reply};
-use crate::app::{load_world, render_play, save_screen, targets, World};
+use crate::app::{load_world, render_play_with, save_screen, targets, World};
 use crate::ui::{hud, style};
 use macroquad::prelude::*;
 
@@ -84,7 +84,7 @@ pub async fn run() {
             g.sync_world(&assets, &s.sim.content);
         }
         if let Some(g) = s.sim.game.as_ref() {
-            render_play(g, &assets, &mat, &tg);
+            render_play_with(g, &assets, &mat, &tg, &s.remotes);
             hud::draw_hud(g, &assets, 60, style::ui_scale());
         } else {
             set_default_camera();

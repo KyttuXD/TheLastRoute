@@ -40,3 +40,7 @@ Rows 2, 4, 5, 7 and 8 are parsed at startup but no Rust code draws them. Godot m
 ## Recommendation
 
 No single model is expensive: the heaviest is 1,144 triangles and the library median is 440, so the frame cost comes from how many copies are drawn, not from any one file. The per-frame wins are in the models that repeat. The hiding locker (1,144) draws once per locker and the office consoles and beach or carnival props (518 to 520) are placed per room, so decimating those to about 500 triangles or less is the first step. Measure instance counts per level on the Intel Mac before changing any file, and confirm the Godot side for the five unused interactables. Those five are a startup and memory cost, not a frame cost, so lazy parsing would help load time but not FPS.
+
+## Runner figures (the player mannequin)
+
+The runner mannequin (`assets/player/player_mannequin.bbmodel`, 43 cubes, about 516 triangles; the slim-arm twin is the same size) is drawn once per other runner, bot and locker occupant by `net/runner_figure.rs`. A full room of 8 runners and 6 bots is 14 figures, about 7,200 triangles, one `draw_mesh` each, built into a reused scratch buffer (no per-frame allocation). `Model::build_posed` stops at 64,000 vertices (u16 indices), far above one figure. A crouching figure draws in the lit translucent shader mode (`GHOST_MODE`) at 45% opacity, as Godot fades it to 0.55 transparency. The local runner has no body (Godot hides it in first person and has no shadow or mirror of it), so first person draws only the hands.

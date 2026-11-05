@@ -138,6 +138,8 @@ pub struct SwimOutput {
 
 #[derive(Clone, Debug, Default)]
 pub struct SwimState {
+    /// Metres of water at the runner's feet as of the last update (the figure's swim pose reads it).
+    pub depth: f32,
     pub soaked_left: f32,
     drip_left: f32,
     splash_left: f32,
@@ -177,6 +179,7 @@ impl SwimState {
     /// Advance one frame. `rnd` yields uniform 0..1 values.
     pub fn update(&mut self, cfg: &SwimConfig, dt: f32, i: SwimInput, rnd: &mut dyn FnMut() -> f32) -> SwimOutput {
         let mut out = SwimOutput::default();
+        self.depth = i.depth;
         if i.depth > 0.0 {
             self.soaked_left = self.soaked_left.max(cfg.soaked_seconds * cfg.wade_floor_fraction);
             let swimming = Self::is_swimming(cfg, i.depth);

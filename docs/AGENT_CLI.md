@@ -92,7 +92,7 @@ frame: `interact`, `flashlight`, `taser`, `tool_use`, `drop_item`, `hotbar_previ
 `jump`, `slot_1`..`slot_5`, `shop_1`..`shop_4` (Zellia's store); `inventory`, `toggle_map`,
 `pause`, `ui_*` are accepted and ignored. `hold.interact` is "hold [E]" (winding the music box).
 
-**admin**: `god` {on}, `no_target` {on}, `noclip` {on}, `speed` {scale 0.25..3}, `teleport` {x, y, z}
+**admin** (also `npc` {count, smart}: bots round the crosshair spot, and, in `--agent-window` only, `remote` {peer, x, z, yaw, h, clip: idle|walk|sprint|chase|crouch|jump|fall|climb|swim|stun|down, moving, sprinting, crouching, slim, vy, skin, hide: [cell x, cell y, facing x, facing y], hide_for} to draw a made-up other runner and check its pose, `clear: true` removes them): `god` {on}, `no_target` {on}, `noclip` {on}, `speed` {scale 0.25..3}, `teleport` {x, y, z}
 (x/z grid, y ignored), plus port helpers `give` {item: flashlight|taser|crowbar|axe|battery|stim,
 count}, `set` {lamp, stamina, temperature, ambient, exposure, noise, coins, yaw, pitch}, `summon` {id, count} (the admin summon: hunters on the ring round you), `wake`
 {index, state: "wander"|"idle"} (activate a hunter), `hunter_to` {index, x, z | near: metres in
