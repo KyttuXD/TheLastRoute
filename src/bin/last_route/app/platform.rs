@@ -22,11 +22,15 @@ pub fn attach_console() {
 }
 
 /// True when this run draws through Metal (macOS with the Metal window; see `app::gfx`). Reads what miniquad
-/// opened, so it is right once the window exists.
+/// opened, once (the API cannot change after the window exists), so it is right once the window exists and costs
+/// an atomic load afterwards. Call it only after the window is open: miniquad's accessor locks the native display.
 pub fn is_metal() -> bool {
     #[cfg(target_os = "macos")]
     {
-        macroquad::miniquad::window::apple_gfx_api() == macroquad::miniquad::conf::AppleGfxApi::Metal
+        static METAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *METAL.get_or_init(|| {
+            macroquad::miniquad::window::apple_gfx_api() == macroquad::miniquad::conf::AppleGfxApi::Metal
+        })
     }
     #[cfg(not(target_os = "macos"))]
     {

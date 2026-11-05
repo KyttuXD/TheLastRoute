@@ -71,7 +71,7 @@ fn arg(name: &str) -> Option<String> {
         .and_then(|i| v.get(i + 1).cloned())
 }
 
-/// `--stress [SECONDS] [--stress-log PATH] [--stress-scenario NAME] [--stress-vsync on|off]`
+/// `--stress [SECONDS] [--stress-log PATH] [--stress-scenario NAME] [--stress-vsync on|off] [--stress-limit FPS]`
 /// (app/stress.rs): a performance run that exits when done. Exits the process on a bad value, before
 /// any window exists.
 fn stress_config() -> Option<app::stress::Config> {
@@ -104,7 +104,17 @@ fn stress_config() -> Option<app::stress::Config> {
             std::process::exit(2);
         }
     };
-    Some(app::stress::Config { seconds, log, scenario, vsync })
+    let fps_limit = match arg("--stress-limit").as_deref() {
+        None | Some("0") => None,
+        Some(v) => match v.parse::<u32>() {
+            Ok(n) if n > 0 => Some(n),
+            _ => {
+                eprintln!("--stress-limit needs a whole number of frames per second (0 for none), not {v}");
+                std::process::exit(2);
+            }
+        },
+    };
+    Some(app::stress::Config { seconds, log, scenario, vsync, fps_limit })
 }
 
 /// What `#[macroquad::main(window_conf)]` expanded to, with the windowless modes picked first

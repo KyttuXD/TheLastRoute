@@ -69,13 +69,13 @@ impl Screenshots {
 
 /// Writes what the window shows to a new file in the captures folder. None when nothing could be written.
 fn save_capture() -> Option<PathBuf> {
-    let dir = paths::user_dir()?.join("screenshots");
-    std::fs::create_dir_all(&dir).ok()?;
-    let path = unused_path(&dir, &file_stem(stamp_now()));
     if super::platform::is_metal() {
         crate::lr_warn!("screenshot skipped: the Metal window cannot be read back (use --gfx gl)");
         return None;
     }
+    let dir = paths::user_dir()?.join("screenshots");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = unused_path(&dir, &file_stem(stamp_now()));
     let mut img = get_screen_data();
     // the swapchain's alpha is not reliable, so the picture is opaque (as `save_screen` does)
     for px in img.bytes.chunks_mut(4) {

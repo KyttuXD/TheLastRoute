@@ -160,7 +160,7 @@ impl From<TextureFormat> for MTLPixelFormat {
         match format {
             TextureFormat::RGBA8 => MTLPixelFormat::RGBA8Unorm,
             //TODO: Depth16Unorm ?
-            TextureFormat::Depth => MTLPixelFormat::Depth32Float_Stencil8,
+            TextureFormat::Depth => DEPTH_FORMAT,
             TextureFormat::RGBA16F => MTLPixelFormat::RGBA16Float,
             _ => todo!(),
         }
@@ -281,6 +281,12 @@ pub struct MetalContext {
     current_ub_offset: u64,
     // Height of the pass being encoded, for the scissor rect's y flip (Last Route patch).
     pass_height: f64,
+    // Last Route patch: the render encoder kept open between passes onto the same target (see `begin_pass`):
+    // the pass id (None is the window), the encoder, and the pass height.
+    open_encoder: Option<(Option<usize>, ObjcId, f64)>,
+    // Last Route patch: LR_METAL_TIMING (aarch64 only): GPU milliseconds summed over the frames since the last line
+    // [commit to GPU start, GPU run, GPU end to wait return, window drawable acquire, frames] in ms
+    gpu_timing: Option<[f64; 7]>,
 }
 
 impl Default for MetalContext {
@@ -376,7 +382,31 @@ impl MetalContext {
                 current_frame_index: 1,
                 current_ub_offset: 0,
                 pass_height: 0.0,
+                open_encoder: None,
+                gpu_timing: if cfg!(target_arch = "aarch64") && std::env::var_os("LR_METAL_TIMING").is_some() {
+                    Some([0.0; 7])
+                } else {
+                    None
+                },
             }
+        }
+    }
+}
+
+/// Seconds on the clock the command buffer's GPU timestamps use (mach absolute time).
+fn now_seconds() -> f64 {
+    extern "C" {
+        fn clock_gettime_nsec_np(clock_id: u32) -> u64;
+    }
+    // CLOCK_UPTIME_RAW
+    unsafe { clock_gettime_nsec_np(8) as f64 * 1e-9 }
+}
+
+impl MetalContext {
+    /// Last Route patch: ends the render encoder kept open between passes (Metal allows one encoder at a time).
+    fn flush_encoder(&mut self) {
+        if let Some((_, encoder, _)) = self.open_encoder.take() {
+            unsafe { msg_send_![encoder, endEncoding] };
         }
     }
 }
@@ -444,13 +474,15 @@ impl RenderingBackend for MetalContext {
             MipmapFilterMode::Linear => MTLSamplerMipFilter::Linear,
         };
 
+        // Last Route patch: edit the texture's stored descriptor (as the mag filter and wrap setters do) instead
+        // of building a fresh one that was never kept. Otherwise a later mag-filter or wrap call rebuilt the
+        // sampler from the creation-time descriptor and undid this call (Nearest min became Linear again).
         texture.sampler = unsafe {
-            let sampler_descriptor = msg_send_![class!(MTLSamplerDescriptor), new];
-            msg_send_![sampler_descriptor, setMinFilter: filter];
-            msg_send_![sampler_descriptor, setMipFilter: mipmap_filter];
+            msg_send_![texture.sampler_descriptor, setMinFilter: filter];
+            msg_send_![texture.sampler_descriptor, setMipFilter: mipmap_filter];
             msg_send_![
                 self.device,
-                newSamplerStateWithDescriptor: sampler_descriptor
+                newSamplerStateWithDescriptor: texture.sampler_descriptor
             ]
         };
     }
@@ -502,6 +534,7 @@ impl RenderingBackend for MetalContext {
         unimplemented!()
     }
     fn texture_generate_mipmaps(&mut self, texture: TextureId) {
+        self.flush_encoder();
         unsafe {
             if self.command_buffer.is_none() {
                 self.command_buffer = Some(msg_send![self.command_queue, commandBuffer]);
@@ -567,8 +600,7 @@ impl RenderingBackend for MetalContext {
                 msg_send_![depth_attachment, setStoreAction: MTLStoreAction::Store];
                 msg_send_![depth_attachment, setClearDepth:1.];
 
-                let stencil_attachment = msg_send_![render_pass_desc, stencilAttachment];
-                msg_send_![stencil_attachment, setTexture: depth_texture];
+                // Last Route patch: depth only (see DEPTH_FORMAT), so no stencil attachment
             }
             let pass = RenderPassInternal {
                 render_pass_desc,
@@ -583,6 +615,7 @@ impl RenderingBackend for MetalContext {
     }
 
     fn delete_render_pass(&mut self, render_pass: RenderPass) {
+        self.flush_encoder();
         let render_pass = &self.passes[render_pass.0];
         unsafe {
             msg_send_![render_pass.render_pass_desc, release];
@@ -989,12 +1022,9 @@ impl RenderingBackend for MetalContext {
             }
             msg_send_![
                 descriptor,
-                setDepthAttachmentPixelFormat: MTLPixelFormat::Depth32Float_Stencil8
+                setDepthAttachmentPixelFormat: DEPTH_FORMAT
             ];
-            msg_send_![
-                descriptor,
-                setStencilAttachmentPixelFormat: MTLPixelFormat::Depth32Float_Stencil8
-            ];
+
 
             let mut error: ObjcId = nil;
             let pipeline_state: ObjcId = msg_send![
@@ -1163,6 +1193,22 @@ impl RenderingBackend for MetalContext {
     }
 
     fn begin_pass(&mut self, pass: Option<RenderPass>, action: PassAction) {
+        // Last Route patch: macroquad draws every batch as its own pass with PassAction::Nothing. A render
+        // encoder per draw makes the GPU load and store the whole colour and depth target for each of them
+        // (a tile GPU does that at every encoder boundary), which was the Metal backend's frame time. A pass
+        // that continues the previous one onto the same target without clearing reuses its encoder; the
+        // encoder ends when another target starts, a pass clears, or the frame is committed.
+        let key = pass.map(|p| p.0);
+        if matches!(action, PassAction::Nothing) {
+            if let Some((open_key, encoder, height)) = self.open_encoder {
+                if open_key == key {
+                    self.pass_height = height;
+                    self.render_encoder = Some(encoder);
+                    return;
+                }
+            }
+        }
+        self.flush_encoder();
         unsafe {
             if self.command_buffer.is_none() {
                 self.command_buffer = Some(msg_send![self.command_queue, commandBuffer]);
@@ -1171,8 +1217,13 @@ impl RenderingBackend for MetalContext {
             let (descriptor, _, pass_h) = match pass {
                 None => {
                     let (screen_width, screen_height) = crate::window::screen_size();
+                    let t0 = now_seconds();
+                    let desc = msg_send_![self.view, currentRenderPassDescriptor];
+                    if let Some(t) = self.gpu_timing.as_mut() {
+                        t[3] += (now_seconds() - t0) * 1000.0;
+                    }
                     (
-                        msg_send_![self.view, currentRenderPassDescriptor],
+                        desc,
                         screen_width as f64,
                         screen_height as f64,
                     )
@@ -1248,6 +1299,7 @@ impl RenderingBackend for MetalContext {
             // });
 
             self.render_encoder = Some(render_encoder);
+            self.open_encoder = Some((key, render_encoder, self.pass_height));
         }
     }
 
@@ -1257,9 +1309,7 @@ impl RenderingBackend for MetalContext {
             "end_render_pass unpaired with begin_render_pass!"
         );
 
-        let render_encoder = self.render_encoder.unwrap();
-        unsafe { msg_send_!(render_encoder, endEncoding) };
-
+        // Last Route patch: the encoder stays open in `open_encoder` for the next pass onto the same target
         self.render_encoder = None;
         self.index_buffer = None;
     }
@@ -1292,13 +1342,45 @@ impl RenderingBackend for MetalContext {
     }
 
     fn commit_frame(&mut self) {
+        self.flush_encoder();
         unsafe {
             assert!(!self.command_queue.is_null());
             let drawable: ObjcId = msg_send!(self.view, currentDrawable);
             //msg_send_![drawable, retain];
             msg_send_![self.command_buffer.unwrap(), presentDrawable: drawable];
+            let t_commit = now_seconds();
+            if let Some(t) = self.gpu_timing.as_mut() {
+                // time outside commit_frame since the last one returned (event loop, game update, encoding)
+                if t[6] > 0.0 {
+                    t[5] += (t_commit - t[6]) * 1000.0;
+                }
+            }
             msg_send_![self.command_buffer.unwrap(), commit];
             msg_send_![self.command_buffer.unwrap(), waitUntilCompleted];
+            let t_done = now_seconds();
+            if let Some(t) = self.gpu_timing.as_mut() {
+                // Last Route patch: where the frame's time goes, from the command buffer's own timestamps
+                let start: f64 = msg_send![self.command_buffer.unwrap(), GPUStartTime];
+                let end: f64 = msg_send![self.command_buffer.unwrap(), GPUEndTime];
+                t[0] += (start - t_commit) * 1000.0;
+                t[1] += (end - start) * 1000.0;
+                t[2] += (t_done - end) * 1000.0;
+                t[4] += 1.0;
+                t[6] = t_done;
+                if t[4] >= 120.0 {
+                    eprintln!(
+                        "metal ms/frame (120 frames): commit-to-gpu-start {:.2}, gpu {:.2}, end-to-wait-return {:.2}, drawable acquire {:.2}, outside commit {:.2}",
+                        t[0] / t[4],
+                        t[1] / t[4],
+                        t[2] / t[4],
+                        t[3] / t[4],
+                        t[5] / t[4]
+                    );
+                    let keep = t[6];
+                    *t = [0.0; 7];
+                    t[6] = keep;
+                }
+            }
         }
         for buffer in &mut self.buffers {
             buffer.next_value = 0;

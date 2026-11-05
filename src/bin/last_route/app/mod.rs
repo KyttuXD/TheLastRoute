@@ -448,6 +448,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
     // a stress run (`--stress`) opens its log before the load, so a bad --stress-log path fails at once
     let stress_on = stress_cfg.is_some();
     let stress_vsync = stress_cfg.as_ref().map(|c| c.vsync);
+    let stress_cap = stress_cfg.as_ref().and_then(|c| c.fps_limit);
     let mut stress_run = match stress_cfg.map(stress::Stress::open) {
         Some(Ok(s)) => Some(s),
         Some(Err(e)) => {
@@ -1548,10 +1549,9 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             shots.capture();
         }
         shots.draw(&w.assets, dt);
-        // the FPS LIMIT would cap the numbers a stress run measures, so it does not pace one
-        if !stress_on {
-            pacer.wait(settings.frame_cap_fps());
-        }
+        // the FPS LIMIT row would cap the numbers a stress run measures, so a stress run is paced only by
+        // --stress-limit (none by default)
+        pacer.wait(if stress_on { stress_cap } else { settings.frame_cap_fps() });
         next_frame().await;
     }
     // quitting the game closes an open room, so the guests get HOST_LEFT now and not after the directory's TTL

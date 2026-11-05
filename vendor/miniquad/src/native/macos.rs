@@ -993,7 +993,7 @@ unsafe fn create_metal_view(_: &mut MacosDisplay, sample_count: i32, _: bool) ->
     let () = msg_send![view, setColorPixelFormat: MTLPixelFormat::BGRA8Unorm];
     let () = msg_send![
         view,
-        setDepthStencilPixelFormat: MTLPixelFormat::Depth32Float_Stencil8
+        setDepthStencilPixelFormat: crate::native::apple::frameworks::DEPTH_FORMAT
     ];
     let () = msg_send![view, setSampleCount: sample_count];
     let () = msg_send![view, setPaused: true];

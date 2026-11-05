@@ -36,7 +36,7 @@ pub fn apply_vsync(on: bool) -> bool {
     let state = if on { "on" } else { "off" };
     let applied = set_swap_interval(interval);
     #[cfg(target_os = "macos")]
-    macroquad::miniquad::window::set_frame_pacer(frame_pacer_for(on));
+    macroquad::miniquad::window::set_frame_pacer(frame_pacer_for(on, pacer_override(std::env::var("LR_FRAME_PACER").ok().as_deref())));
     if applied {
         crate::lr_info!("vsync {state} (swap interval {interval})");
     } else {
@@ -45,10 +45,22 @@ pub fn apply_vsync(on: bool) -> bool {
     applied
 }
 
-/// Whether the macOS run loop waits on the display link: only while VSYNC is on.
+/// Whether the macOS run loop waits on the display link: while VSYNC is on, unless `forced` (from
+/// `LR_FRAME_PACER`, a measuring switch) says otherwise.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn frame_pacer_for(vsync_on: bool) -> bool {
-    vsync_on
+pub fn frame_pacer_for(vsync_on: bool, forced: Option<bool>) -> bool {
+    forced.unwrap_or(vsync_on)
+}
+
+/// Reads `LR_FRAME_PACER`: `on` or `off` force the display-link wait whatever VSYNC says (to measure the pacer
+/// apart from vsync); anything else, or unset, follows VSYNC.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn pacer_override(env: Option<&str>) -> Option<bool> {
+    match env.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+        Some("on") => Some(true),
+        Some("off") => Some(false),
+        _ => None,
+    }
 }
 
 #[cfg(windows)]
@@ -310,9 +322,21 @@ mod tests {
     }
 
     #[test]
-    fn macos_display_link_wait_follows_the_vsync_row() {
-        assert!(frame_pacer_for(true));
-        assert!(!frame_pacer_for(false));
+    fn macos_display_link_wait_follows_the_vsync_row_unless_forced() {
+        assert!(frame_pacer_for(true, None));
+        assert!(!frame_pacer_for(false, None));
+        // the measuring switch decides the pacer apart from vsync
+        assert!(frame_pacer_for(false, Some(true)));
+        assert!(!frame_pacer_for(true, Some(false)));
+    }
+
+    #[test]
+    fn the_pacer_switch_reads_on_and_off_and_ignores_the_rest() {
+        assert_eq!(pacer_override(Some("on")), Some(true));
+        assert_eq!(pacer_override(Some(" OFF ")), Some(false));
+        assert_eq!(pacer_override(Some("auto")), None);
+        assert_eq!(pacer_override(Some("")), None);
+        assert_eq!(pacer_override(None), None);
     }
 
     #[test]

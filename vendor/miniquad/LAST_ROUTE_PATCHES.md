@@ -1,7 +1,17 @@
 # Last Route patches to miniquad 0.4.11
 
-This is the crates.io miniquad 0.4.11 source with four small changes, all marked "Last Route patch" in the code.
-Nothing outside macOS (and the Metal backend, which only macOS and iOS build) behaves differently.
+This is the crates.io miniquad 0.4.11 source (crate checksum `dcbaea978d741f3b60ced666b06a2a1e4a2bc81cb8b9dd29f4a40965e1f59e65`)
+with six small changes, all marked "Last Route patch" in the code. They are three Metal fixes, two Metal speed
+changes, one Metal diagnostic and the pacer switch. Nothing outside macOS (and the Metal backend, which only macOS and
+iOS build) behaves differently. The tree also holds the Linux, Windows and wasm backends untouched; they are kept so the
+folder stays a faithful copy of the crate.
+
+`last_route.patch` in this folder is the exact `diff -ruN` of upstream `src/` against `vendor/miniquad/src/`. To check or
+upgrade: unpack the crate, apply `last_route.patch` (`patch -p1 -d <crate>/src < last_route.patch`) and compare with
+`vendor/miniquad/src`; regenerate it with `diff -ruN <crate>/src vendor/miniquad/src` after any edit here. Cargo.lock has
+no source or checksum line for miniquad because it is a path dependency; the checksum above is the pin.
+
+Fixes (needed for the game to draw on Metal):
 
 1. `src/graphics/metal.rs`, `new_texture`: an RGBA8 render target is created as BGRA8, because every Metal
    pipeline is built for the view's BGRA8 colour format. Without this, drawing into a macroquad render target fails.
@@ -11,10 +21,32 @@ Nothing outside macOS (and the Metal backend, which only macOS and iOS build) be
 3. `src/graphics/metal.rs`, `begin_pass`: a custom pass clears depth only when the pass action is Clear (it
    was always Clear). macroquad draws each call as its own pass with PassAction::Nothing, so depth was wiped
    between draws.
-4. `src/native/macos.rs` and `src/lib.rs`: `window::set_frame_pacer(bool)`. The macOS run loop waits on a
+4. `src/graphics/metal.rs`, `texture_set_min_filter`: edits the texture's stored sampler descriptor, as
+   `texture_set_mag_filter` and `texture_set_wrap` do, instead of building a fresh one that was never kept. Before, the
+   later mag-filter or wrap call rebuilt the sampler from the creation-time descriptor and undid the min filter (a
+   `set_filter(Nearest)` then `repeat()` left min Linear, so minified pixel-art was blurred on Metal only). Min, mag, mip
+   and wrap now all live in the one stored descriptor.
+
+Speed (see docs/GRAPHICS_API.md, measured fullscreen 131 to 341 FPS from the first):
+
+5. `src/graphics/metal.rs`, `begin_pass` / `end_render_pass` / `commit_frame`: macroquad begins a new pass for every
+   batch with PassAction::Nothing; the stock backend ended and restarted a render encoder for each, which made the GPU
+   load and store the whole colour and depth target every time. A pass that continues the previous one onto the same
+   target without clearing now reuses its encoder; the encoder ends when another target starts, a pass clears, a
+   mipmap or pass is deleted, or the frame commits. Depth is Depth32Float (`DEPTH_FORMAT` in
+   `src/native/apple/frameworks.rs`) instead of Depth32Float_Stencil8: the stencil aspect was never used.
+
+Diagnostic:
+
+6. `src/graphics/metal.rs`, `commit_frame`: `LR_METAL_TIMING=1` (aarch64) prints per-frame GPU, wait and encode
+   times every 120 frames. Off by default.
+
+Pacer switch:
+
+7. `src/native/macos.rs` and `src/lib.rs`: `window::set_frame_pacer(bool)`. The macOS run loop waits on a
    CVDisplayLink at the top of every iteration, which caps it at the display's refresh rate even with the swap
    interval at 0. The static `FRAME_PACER_ENABLED` (default true, the stock behaviour) is read every iteration.
 
 Not implemented in the Metal backend: `texture_read_pixels` (macroquad's `grab_screen` is OpenGL only too), so
-screenshots need OpenGL. When miniquad or macroquad is upgraded, check whether upstream fixed 1 to 3 and drop
-the ones it did.
+screenshots need OpenGL. A Metal window is also held to the refresh rate by the compositor (docs/GRAPHICS_API.md). When
+miniquad or macroquad is upgraded, check whether upstream fixed 1 to 5 and drop the ones it did.
