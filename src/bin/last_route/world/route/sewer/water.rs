@@ -26,6 +26,8 @@ pub struct WaterParams {
     pub deep: [u8; 4],
     /// Shape of the shallow-to-deep blend (1 = linear, above 1 = stays pale longer).
     pub deepen_power: f32,
+    /// How far the sewers' ambient light leans toward the water's shallow tint (0..=1; the optional `glow_mix`, 0 if absent).
+    pub glow_mix: f32,
 }
 
 fn num(v: &Value, key: &str) -> Result<f32, String> {
@@ -53,7 +55,11 @@ impl WaterParams {
             shallow: rgba(tint, "shallow")?,
             deep: rgba(tint, "deep")?,
             deepen_power: num(tint, "deepen_power")?,
+            glow_mix: if root.get("glow_mix").is_some() { num(&root, "glow_mix")? } else { 0.0 },
         };
+        if !(0.0..=1.0).contains(&p.glow_mix) {
+            return Err("sewer_water.json: glow_mix is 0..=1".into());
+        }
         if p.channel_depth <= 0.0 || p.water_surface >= 0.0 || p.water_surface <= -p.channel_depth {
             return Err("sewer_water.json: the surface must lie below the floor and above the bed".into());
         }
@@ -66,6 +72,16 @@ impl WaterParams {
     /// Metres of water over the bed in a water cell (surface above bed): 1.0 + -0.3 = 0.7 in Standard.
     pub fn full_depth(&self) -> f32 {
         self.channel_depth + self.water_surface
+    }
+
+    /// `base` (an ambient colour, 0..1) moved `glow_mix` of the way toward the shallow tint's colour: the water's glow
+    /// on the sewer walls.
+    pub fn glow_ambient(&self, base: [f32; 3]) -> [f32; 3] {
+        let mut out = base;
+        for (o, s) in out.iter_mut().zip(self.shallow) {
+            *o += (s as f32 / 255.0 - *o) * self.glow_mix;
+        }
+        out
     }
 
     /// The bed's height relative to the floor.
@@ -177,6 +193,18 @@ mod tests {
         let p = WaterParams::from_text(text).unwrap();
         assert!((depth_of_code(WATER, &p) - 1.5).abs() < 1e-6);
         assert_eq!(depth_of_code(DRY, &p), 0.0);
+    }
+
+    #[test]
+    fn the_glow_leans_the_ambient_toward_the_shallow_tint() {
+        let p = params();
+        assert!(p.glow_mix > 0.0 && p.glow_mix <= 1.0);
+        let out = p.glow_ambient([0.0, 0.0, 0.0]);
+        for (o, s) in out.iter().zip(p.shallow) {
+            assert!((o - s as f32 / 255.0 * p.glow_mix).abs() < 1e-6);
+        }
+        let bare = WaterParams { glow_mix: 0.0, ..p.clone() };
+        assert_eq!(bare.glow_ambient([0.2, 0.3, 0.4]), [0.2, 0.3, 0.4]);
     }
 
     #[test]

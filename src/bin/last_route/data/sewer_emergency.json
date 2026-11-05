@@ -1,0 +1,9 @@
+{
+  "schema": "lr.sewer_emergency/1",
+  "_about": "Sewer emergency lights (world/sewer_emergency.rs): pulsing red and amber wall lights added to the live sewer chunks over the generator's own props, so the Godot sewer layout and its goldens do not change. per_chunk: how many to place per chunk on level -1 and -2 (a level missing here gets none). min_gap_cells: the least distance between two of them; lamp_gap_cells: the least distance to a sewerLamp. mount_y: height of the fixture over the floor in metres. types: the prop ids drawn in turn (their light, pulse rate and depth are in data/props/p11.json). Places are drawn from the world seed, the chunk and the level.",
+  "per_chunk": { "level.-1": 2, "level.-2": 3 },
+  "min_gap_cells": 10,
+  "lamp_gap_cells": 3,
+  "mount_y": 2.7,
+  "types": ["sewerEmergencyRed", "sewerEmergencyAmber"]
+}

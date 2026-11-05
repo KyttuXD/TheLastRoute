@@ -33,6 +33,13 @@ pub enum Focus {
     Valve(usize),
 }
 
+/// Who does an interact effect: the player, or a bot by its `Npc::id` (game/npc.rs). The effects are shared.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Actor {
+    Player,
+    Npc(u32),
+}
+
 impl Game {
     /// One automatic save of the run (Godot `autosave`, infinite_route_test.gd): a relay, a newly active checkpoint or
     /// a level change (the stairs and the lift) or leaving the route. A finished run never saves (Godot
@@ -260,12 +267,7 @@ impl Game {
     ) {
         // Opalie's guard: anything near her post is refused and every hunter searches here
         let at = self.focus_point(f);
-        if let Some(name) = self
-            .hunters
-            .iter()
-            .find(|h| h.active && matches!(&h.gimmick, Gimmick::Opalie(o) if o.blocks(at)))
-            .map(|h| h.def.name.to_uppercase())
-        {
+        if let Some(name) = self.opalie_guarding(at) {
             let pos = self.p.pos;
             for h in self.hunters.iter_mut().filter(|h| h.active) {
                 h.enter_search_from(pos, 1.8, &self.fac);
@@ -276,50 +278,13 @@ impl Game {
         }
         match f {
             Focus::Relay(i) => {
-                if self.relays_taken.get(i).copied().unwrap_or(true) {
-                    return;
-                }
-                self.relays_taken[i] = true;
-                self.relays_collected += 1;
-                self.score += crate::game::progression::Progression::load().relay_score;
-                crate::audio::sound::collect();
-                self.announce("RELAY ONLINE");
-                // a recovered relay saves the run (Godot `_sync_stream_progress`: autosave("relay"))
-                self.autosave("relay");
-                let need = crate::game::progression::Progression::load()
-                    .activation_relays(self.difficulty)
-                    .min(self.fac.relays.len() as i32);
-                if self.is_infinite() {
-                    // the streamed population grows instead (ensure_hunters)
-                    self.ensure_hunters(content);
-                } else if !self.hunters[0].active
-                    && self.relays_collected >= need
-                    && !self.hunters[0].gimmick.runs_while_inactive()
-                {
-                    let p = self.p.pos;
-                    self.hunters[0].activate_at(p);
-                }
+                self.claim_relay(i, Actor::Player, content);
             }
             Focus::Battery(i) => {
-                if self.grant(Item::Battery, 1) {
-                    self.batteries_taken[i] = true;
-                    crate::audio::sound::collect();
-                    self.say("FLASHLIGHT BATTERY");
-                } else {
-                    crate::audio::sound::interaction_fail();
-                    self.say("INVENTORY FULL");
-                }
+                self.take_battery(i, Actor::Player);
             }
             Focus::Pickup(i) => {
-                let (item, n) = (self.pickups[i].item, self.pickups[i].n);
-                if self.grant(item, n) {
-                    self.pickups[i].taken = true;
-                    crate::audio::sound::collect();
-                    self.say(item.label());
-                } else {
-                    crate::audio::sound::interaction_fail();
-                    self.say("INVENTORY FULL");
-                }
+                self.take_pickup(i, Actor::Player);
             }
             Focus::Coin(i) => {
                 self.coins_taken[i] = true;
@@ -393,6 +358,120 @@ impl Game {
     }
 
     /// Whether the focus is a room door that is shut (the playtest bot and the stress runner press interact on it).
+    /// The name of the awake Opalie whose guard covers `at`, if any.
+    fn opalie_guarding(&self, at: (f32, f32)) -> Option<String> {
+        self.hunters
+            .iter()
+            .find(|h| h.active && matches!(&h.gimmick, Gimmick::Opalie(o) if o.blocks(at)))
+            .map(|h| h.def.name.to_uppercase())
+    }
+
+    /// Recovers relay `i` for `actor`: the relay count and score, the saved run and the hunter activation are the same
+    /// whoever stands at it. A bot's loot and score go to the team (the runner's). True when the relay was claimed.
+    pub(super) fn claim_relay(&mut self, i: usize, actor: Actor, content: &Content) -> bool {
+        if self.relays_taken.get(i).copied().unwrap_or(true) {
+            return false;
+        }
+        let Some(at) = self.fac.relays.get(i).map(|c| c.center()) else {
+            return false;
+        };
+        if actor != Actor::Player && self.opalie_guarding(at).is_some() {
+            return false;
+        }
+        self.relays_taken[i] = true;
+        self.relays_collected += 1;
+        self.score += crate::game::progression::Progression::load().relay_score;
+        crate::audio::sound::collect();
+        match self.actor_name(actor) {
+            Some(name) => self.announce(&format!("{name} RECOVERED A RELAY")),
+            None => self.announce("RELAY ONLINE"),
+        }
+        // a bot far from the runner changes the team's count only: no save and no population pass (the next claim near
+        // the runner catches both up)
+        let far = actor != Actor::Player && pdist(at, self.p.pos) > crate::game::npc::Tuning::get().goals.leash_distance;
+        if !far {
+            // a recovered relay saves the run (Godot `_sync_stream_progress`: autosave("relay"))
+            self.autosave("relay");
+        }
+        let need = crate::game::progression::Progression::load()
+            .activation_relays(self.difficulty)
+            .min(self.fac.relays.len() as i32);
+        if self.is_infinite() {
+            // the streamed population grows instead (ensure_hunters)
+            if !far {
+                self.ensure_hunters(content);
+            }
+        } else if !self.hunters[0].active
+            && self.relays_collected >= need
+            && !self.hunters[0].gimmick.runs_while_inactive()
+        {
+            let p = self.p.pos;
+            self.hunters[0].activate_at(p);
+        }
+        true
+    }
+
+    /// Takes flashlight battery `i` for `actor` into the team's inventory. True when it was taken.
+    pub(super) fn take_battery(&mut self, i: usize, actor: Actor) -> bool {
+        if self.batteries_taken.get(i).copied().unwrap_or(true) {
+            return false;
+        }
+        if actor != Actor::Player && self.opalie_guarding(self.fac.batteries[i].center()).is_some() {
+            return false;
+        }
+        if self.grant(Item::Battery, 1) {
+            self.batteries_taken[i] = true;
+            crate::audio::sound::collect();
+            self.notice_taken(actor, "FLASHLIGHT BATTERY");
+            true
+        } else {
+            self.notice_full(actor);
+            false
+        }
+    }
+
+    /// Takes floor item `i` for `actor` into the team's inventory. True when it was taken.
+    pub(super) fn take_pickup(&mut self, i: usize, actor: Actor) -> bool {
+        let Some(p) = self.pickups.get(i).filter(|p| !p.taken) else {
+            return false;
+        };
+        let (item, n, at) = (p.item, p.n, p.pos);
+        if actor != Actor::Player && self.opalie_guarding(at).is_some() {
+            return false;
+        }
+        if self.grant(item, n) {
+            self.pickups[i].taken = true;
+            crate::audio::sound::collect();
+            self.notice_taken(actor, item.label());
+            true
+        } else {
+            self.notice_full(actor);
+            false
+        }
+    }
+
+    /// The guest name of a bot actor (None for the player).
+    fn actor_name(&self, actor: Actor) -> Option<String> {
+        match actor {
+            Actor::Player => None,
+            Actor::Npc(id) => self.npcs.iter().find(|n| n.id == id).map(|n| n.name.clone()),
+        }
+    }
+
+    fn notice_taken(&mut self, actor: Actor, label: &str) {
+        match self.actor_name(actor) {
+            Some(name) => self.say(&format!("{name} TOOK {label}")),
+            None => self.say(label),
+        }
+    }
+
+    fn notice_full(&mut self, actor: Actor) {
+        if actor == Actor::Player {
+            crate::audio::sound::interaction_fail();
+            self.say("INVENTORY FULL");
+        }
+    }
+
     pub fn closed_door_in_focus(&self) -> bool {
         matches!(self.focus, Some(Focus::Door(i)) if !self.fac.door_is_open(self.fac.props[i].cell))
     }

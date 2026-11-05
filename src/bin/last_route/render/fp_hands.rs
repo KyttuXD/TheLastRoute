@@ -256,7 +256,7 @@ pub fn draw_ladder_hands(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget
     let look = LOOK.with(|l| l.borrow().clone());
     set_camera(&camera(g, rt));
     gl_use_material(mat);
-    shader::apply(mat, &lighting(g), &g.world.lamps);
+    shader::apply(mat, &lighting(g), &super::scene::flickered(g, &g.world.lamps));
     let (eye, fwd, right, up) = view(g);
     let cam = Mat4::from_cols(right.extend(0.0), up.extend(0.0), (-fwd).extend(0.0), eye.extend(1.0));
     for side in [-1.0f32, 1.0] {

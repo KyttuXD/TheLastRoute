@@ -6,7 +6,8 @@
 use super::builder::Builder;
 use super::door;
 use super::prop_scale;
-use super::shader::Lamp;
+use super::lamp_flicker::{self, Tint};
+use super::shader::{Flicker, Lamp};
 use super::seams;
 use super::stairs;
 use super::surfaces;
@@ -842,16 +843,33 @@ const UV1: [Vec2; 4] = [vec2(0., 0.), vec2(1., 0.), vec2(1., 1.), vec2(0., 1.)];
 
 /// The room lights plus each lamp prop's `light` from data/props (the original's fixture lights,
 /// budget 10 per floor, offset turning with the prop).
+///
+/// Every room lamp takes its room's tint (`lamp_flicker` `room_tint`: its type, else its region). On a level 0
+/// Infinite window about a quarter of the rooms start dark (`room_starts_dark`, Godot's `default_room_light`), and the
+/// lamps of a dark room are left out of the list, as a switched-off room's lamps are zeroed.
 pub fn lamps(f: &Facility, lights_on: &[bool], content: &Content) -> Vec<Lamp> {
+    lamps_with(f, lights_on, content, &dark_rooms(f))
+}
+
+fn lamps_with(f: &Facility, lights_on: &[bool], content: &Content, dark: &[bool]) -> Vec<Lamp> {
     let mut out = vec![];
+    let table = lamp_flicker::table();
     for (i, l) in f.room_lights.iter().enumerate() {
         if lights_on.get(i).copied().unwrap_or(true) {
             let (x, z) = l.center.center();
+            let tint = f.rooms.get(l.room).map_or(Tint::NONE, |r| table.room_tint(&r.region, &r.rtype));
+            let pos = vec3(x, fixture_ceiling(f, l.center) - 0.34, z);
+            let (hz, depth) = f
+                .rooms
+                .get(l.room)
+                .and_then(|r| lamp_flicker::table().room_flicker(&r.region))
+                .unwrap_or((0.0, 0.0));
             out.push(Lamp {
-                pos: vec3(x, fixture_ceiling(f, l.center) - 0.34, z),
+                pos,
                 range: l.range * 1.4,
-                color: Color::new(l.color.0, l.color.1, l.color.2, 1.0),
-                energy: l.energy,
+                color: tinted(l.color, tint),
+                energy: l.energy * tint.energy,
+                flicker: lamp_flicker::make(hz, depth, world_place(f, pos)),
             });
         }
     }
@@ -864,11 +882,12 @@ pub fn lamps(f: &Facility, lights_on: &[bool], content: &Content) -> Vec<Lamp> {
             range: 7.0,
             color: Color::new(light.color[0], light.color[1], light.color[2], 1.0),
             energy: light.energy,
+            flicker: Flicker::NONE,
         });
     }
     // each stairwell and ladder well carries a light, so its steps and rungs read in the dark
     out.extend(f.stairs.iter().map(|s| stairs::lamp(*s, WALL_HEIGHT)));
-    let mut budget = 10;
+    let mut budget = lamp_flicker::table().prop_budget(f.level);
     for p in &f.props {
         if budget == 0 {
             break;
@@ -876,21 +895,51 @@ pub fn lamps(f: &Facility, lights_on: &[bool], content: &Content) -> Vec<Lamp> {
         let Some(light) = content.props.get(&p.ptype).and_then(|d| d.light.clone()) else {
             continue;
         };
+        let room = f.room_at(p.cell.x as f64 + 0.5, p.cell.y as f64 + 0.5).filter(|i| !f.rooms[*i].lobby());
+        if room.is_some_and(|i| dark[i]) {
+            continue;
+        }
         budget -= 1;
+        let tint = match room {
+            Some(i) => table.room_tint(&f.rooms[i].region, &f.rooms[i].rtype),
+            None => table.room_tint(f.region_at(p.cell.x, p.cell.y), ""),
+        };
         let (cx, cz) = p.cell.center();
         let (x, z) = (cx + p.offset.0, cz + p.offset.1);
         let yaw = p.rotation as f32 * std::f32::consts::FRAC_PI_2;
         let off = Mat3::from_rotation_y(yaw) * vec3(light.offset.0, 0.0, light.offset.2);
         let y = visual_y(&p.ptype, fixture_ceiling(f, p.cell), p.mount_y.unwrap_or(0.0) as f32) + light.offset.1;
+        let pos = vec3(x + off.x, y, z + off.z);
         out.push(Lamp {
-            pos: vec3(x + off.x, y, z + off.z),
+            pos,
             range: light.range,
-            color: Color::new(light.color.0, light.color.1, light.color.2, 1.0),
+            color: tinted(light.color, tint),
             // Godot's omni energy reads brighter than this shader's linear falloff; doubled to match
-            energy: light.energy * 2.0,
+            energy: light.energy * 2.0 * tint.energy,
+            flicker: lamp_flicker::make(light.flicker_hz, light.flicker_depth, world_place(f, pos)),
         });
     }
     out
+}
+
+/// A lamp colour under a room tint.
+fn tinted(c: (f32, f32, f32), t: Tint) -> Color {
+    Color::new(c.0 * t.color[0], c.1 * t.color[1], c.2 * t.color[2], 1.0)
+}
+
+/// Per room: whether it starts dark. Only the rooms of a level 0 Infinite window (no service lift) can; the lobby never.
+fn dark_rooms(f: &Facility) -> Vec<bool> {
+    dark_rooms_with(f, lamp_flicker::table())
+}
+
+fn dark_rooms_with(f: &Facility, table: &lamp_flicker::Lamps) -> Vec<bool> {
+    let streamed = f.level == 0 && !f.has_lift;
+    f.rooms.iter().map(|r| streamed && !r.lobby() && table.room_starts_dark(&r.id)).collect()
+}
+
+/// A window-space point in world cells, so a lamp's flicker phase does not change when the window moves.
+fn world_place(f: &Facility, p: Vec3) -> [f32; 3] {
+    [p.x + f.origin.0 as f32, p.y, p.z + f.origin.1 as f32]
 }
 
 fn room_set(f: &Facility, x: i32, y: i32) -> &'static str {
@@ -2330,7 +2379,7 @@ mod stack_mesh_tests {
     }
 
     fn lamp(y: f32) -> Lamp {
-        Lamp { pos: vec3(0., y, 0.), range: 5.0, color: WHITE, energy: 1.0 }
+        Lamp { pos: vec3(0., y, 0.), range: 5.0, color: WHITE, energy: 1.0, flicker: Flicker::NONE }
     }
 
     fn min_y(m: &WorldMeshes) -> f32 {
@@ -2906,5 +2955,143 @@ mod stack_mesh_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod sewer_lamp_tests {
+    use super::*;
+    use crate::content::loot::LootTables;
+    use crate::render::{lamp_flicker, shader, world_stack};
+    use crate::world::catalog::Catalog;
+    use crate::world::infinite;
+
+    fn sewer_lamps(level: i32) -> (Facility, Vec<Lamp>) {
+        let content = Content::load();
+        let cat = Catalog::load();
+        let mut cache = HashMap::new();
+        let (f, _) = infinite::window("wired-sewer", (0, 0), level, &cat, &LootTables::default(), &mut cache);
+        let lamps = lamps(&f, &[], &content);
+        (f, lamps)
+    }
+
+    fn level_0(seed: &str) -> Facility {
+        let cat = Catalog::load();
+        let mut cache = HashMap::new();
+        infinite::window(seed, (0, 0), 0, &cat, &LootTables::default(), &mut cache).0
+    }
+
+    /// The shipped lamp table with the dark-room share a quarter (it ships at 0 until streamed windows have a light switch).
+    fn quarter_dark() -> lamp_flicker::Lamps {
+        let text = include_str!("../data/render/lamps.json").replacen("\"dark_rooms\": { \"fraction\": 0 }", "\"dark_rooms\": { \"fraction\": 0.25 }", 1);
+        lamp_flicker::Lamps::parse(&text).unwrap()
+    }
+
+    #[test]
+    fn the_shipped_table_starts_no_room_dark() {
+        let f = level_0("dark-a");
+        assert!(dark_rooms(&f).iter().all(|d| !d));
+    }
+
+    #[test]
+    fn about_a_quarter_of_level_0_rooms_start_dark_the_same_way_every_build() {
+        let q = quarter_dark();
+        let (mut rooms, mut dark_n) = (0, 0);
+        for seed in ["dark-a", "dark-b", "dark-c"] {
+            let f = level_0(seed);
+            let dark = dark_rooms_with(&f, &q);
+            assert_eq!(dark, dark_rooms_with(&level_0(seed), &q), "{seed}: same rooms dark on a rebuild");
+            assert!(f.rooms.iter().zip(&dark).all(|(r, d)| !(r.lobby() && *d)), "the lobby is always lit");
+            rooms += f.rooms.iter().filter(|r| !r.lobby()).count();
+            dark_n += dark.iter().filter(|d| **d).count();
+        }
+        let share = dark_n as f32 / rooms as f32;
+        assert!(rooms >= 30 && (0.12..=0.40).contains(&share), "{dark_n} of {rooms} rooms dark");
+    }
+
+    #[test]
+    fn a_dark_level_0_room_has_no_lamps_and_a_lit_one_keeps_them() {
+        let content = Content::load();
+        let q = quarter_dark();
+        let (mut hidden, mut lit_kept) = (0, 0);
+        for seed in ["dark-a", "dark-b", "dark-c"] {
+            let f = level_0(seed);
+            let dark = dark_rooms_with(&f, &q);
+            let all = lamps_with(&f, &[], &content, &dark);
+            for (i, r) in f.rooms.iter().enumerate() {
+                let inside = |l: &Lamp| {
+                    l.pos.x > r.x as f32 + 1.0 && l.pos.x < (r.x + r.w) as f32 - 1.0 && l.pos.z > r.y as f32 + 1.0 && l.pos.z < (r.y + r.h) as f32 - 1.0
+                };
+                let n = all.iter().filter(|l| inside(l)).count();
+                if dark[i] {
+                    assert_eq!(n, 0, "{seed}: a dark room's lamps are zeroed");
+                    hidden += f.props.iter().filter(|p| content.props.get(&p.ptype).is_some_and(|d| d.light.is_some()) && f.room_at(p.cell.x as f64 + 0.5, p.cell.y as f64 + 0.5) == Some(i)).count();
+                } else {
+                    lit_kept += n;
+                }
+            }
+        }
+        assert!(hidden > 0, "some dark room held lit props that were left out");
+        assert!(lit_kept > 0, "lit rooms keep their lamps");
+    }
+
+    #[test]
+    fn the_sewers_and_finite_floors_have_no_dark_rooms() {
+        let q = quarter_dark();
+        let f = level_0("dark-a");
+        assert!(dark_rooms_with(&f, &q).iter().any(|d| *d));
+        let mut finite = f.clone();
+        finite.has_lift = true;
+        assert!(dark_rooms_with(&finite, &q).iter().all(|d| !d));
+        let mut below = f;
+        below.level = -1;
+        assert!(dark_rooms_with(&below, &q).iter().all(|d| !d));
+    }
+
+    fn near(a: Color, rgb: (f32, f32, f32)) -> bool {
+        (a.r - rgb.0).abs() < 0.01 && (a.g - rgb.1).abs() < 0.01 && (a.b - rgb.2).abs() < 0.01
+    }
+
+    #[test]
+    fn a_sewer_window_holds_dim_flickering_lamps_and_pulsing_emergency_lights() {
+        for level in [-1, -2] {
+            let (f, lamps) = sewer_lamps(level);
+            let steady: Vec<&Lamp> = lamps.iter().filter(|l| near(l.color, (1.0, 0.635, 0.29))).collect();
+            let red: Vec<&Lamp> = lamps.iter().filter(|l| near(l.color, (1.0, 0.165, 0.102))).collect();
+            let amber: Vec<&Lamp> = lamps.iter().filter(|l| near(l.color, (1.0, 0.69, 0.125))).collect();
+            assert!(steady.len() > 10, "level {level}: the sewer lamps are all kept, not cut at 10 ({})", steady.len());
+            assert!(!red.is_empty() && !amber.is_empty(), "level {level}: emergency lights of both colours");
+            assert!(lamps.len() <= lamp_flicker::table().prop_budget(f.level) + f.stairs.len() + f.room_lights.len() + 1);
+            for l in &steady {
+                assert!(l.energy > 0.5 && l.energy <= 1.5 && l.range >= 6.0, "a dim sewer lamp: {} at {}", l.energy, l.range);
+                assert!(l.flicker.hz > 0.0 && l.flicker.depth > 0.0 && l.flicker.depth <= 0.25, "{:?}", l.flicker);
+            }
+            for l in red.iter().chain(&amber) {
+                assert!(l.flicker.depth >= 0.5 && l.flicker.depth <= 1.0 && l.flicker.hz > 0.0, "{:?}", l.flicker);
+            }
+            for l in &lamps {
+                for i in 0..400 {
+                    let k = lamp_flicker::factor(i as f32 * 0.05, l.flicker);
+                    assert!(k >= 1.0 - l.flicker.depth - 1e-5 && k <= 1.0 + l.flicker.depth + 1e-5);
+                }
+            }
+            let phases: HashSet<u32> = steady.iter().map(|l| l.flicker.phase.to_bits()).collect();
+            assert!(phases.len() > steady.len() / 2, "lamps start at different phases");
+        }
+    }
+
+    #[test]
+    fn the_lamp_list_is_the_same_every_build_and_merges_within_the_cap() {
+        let (_, a) = sewer_lamps(-1);
+        let (_, b) = sewer_lamps(-1);
+        assert_eq!(a.len(), b.len());
+        assert!(a.iter().zip(&b).all(|(x, y)| x.pos == y.pos && x.flicker == y.flicker && x.energy == y.energy));
+        let eye = a[a.len() / 2].pos;
+        for cap in [4, 8, 16, 100] {
+            assert!(world_stack::merge_lamps(&a, &[], eye, cap).len() <= cap.min(shader::MAX_LAMPS));
+        }
+        let applied = lamp_flicker::applied(&a, 3.7, false);
+        assert_eq!(applied.len(), a.len());
+        assert!(shader::nearest_lamps(eye, &applied) == shader::nearest_lamps(eye, &applied));
     }
 }

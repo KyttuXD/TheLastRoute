@@ -130,3 +130,5 @@ Once converted, the values agree for standard difficulty with admin speed scale 
 ## How to re-run
 
 Run the workflow `godot-rust-parity` from the project folder (`C:\Users\Kyttu\Documents\Projects\LR Game Stuff\LastRoute Rust`).
+
+- Dark rooms on level 0 (`data/render/lamps.json` `dark_rooms.fraction`): shipped at 0. Godot starts about 1 in 4 rooms dark and lights them with the wall switch; streamed windows clear `room_lights`, so a dark room would stay dim all run. Raise the fraction once a switch exists for streamed rooms.

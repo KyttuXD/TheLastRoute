@@ -467,6 +467,8 @@ fn apply_sewer_floor(f: &mut Facility, sc: &super::route::sewer::SewerChunk, see
     // the sewer's own props (pipes, valves, pump, outflow, gates, lamps, decks), indexed now for the loot rolls' `can_occupy`
     // and again by the `rebuild_grids` at the end of the chunk, which builds the hunters' grid from them
     f.props = super::sewer_props::props(sc, &f.rooms, cat);
+    // the pulsing emergency lights are their own layer over the generator's props (they are not in the golden layout)
+    f.props.extend(super::sewer_emergency::props(sc, seed, k.cx, k.cy, k.level, &f.rooms));
     f.rebuild_grids();
     f.hiding.clear();
     f.room_lights.clear();

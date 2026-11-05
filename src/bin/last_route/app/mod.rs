@@ -492,6 +492,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
         set_fullscreen(true);
     }
     let mut tg = targets(None, &settings.quality);
+    shader::set_lamp_cap_for(&settings.quality);
     let mut ui = Ui::default();
     // a stress run starts its route at once, with no title
     let mut playing: Option<Game> = if stress_on {
@@ -622,6 +623,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             fps_n = 0;
         }
         tg = targets(Some(tg), &settings.quality);
+        shader::set_lamp_cap_for(&settings.quality);
         let next_audio_volumes = (
             settings.master_volume,
             settings.gameplay_volume,

@@ -10,6 +10,7 @@ pub mod inferno;
 pub mod inferno_caves;
 pub mod inferno_terrain;
 pub mod infinite;
+pub mod sewer_emergency;
 pub mod sewer_props;
 pub mod level_links;
 pub mod rng;

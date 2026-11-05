@@ -10,8 +10,8 @@ use super::anim::{
 use super::builder::{submit_all, Builder};
 use super::hunter_cache::{self, HunterMeshCache};
 use super::prop_model::{draw_builders, Placement, PropModel, StaticCache};
-use super::shader::{self, Lamp, Lighting};
-use super::{catwalk, inferno_deco, seams, waterfall, world_stack};
+use super::shader::{self, Flicker, Lamp, Lighting};
+use super::{ambient, catwalk, inferno_deco, lamp_flicker, seams, waterfall, world_stack};
 use crate::shared::assets::Assets;
 use crate::config::*;
 use crate::game::{Game, Heater, Item};
@@ -20,6 +20,7 @@ use crate::hunters::gimmicks::Gimmick;
 use crate::net::runner_figure;
 use crate::world::facility::{Cell, DeckKind, Facility};
 use crate::world::infinite::INFERNO_LEVEL;
+use crate::world::route::sewer::core as sewer_core;
 use macroquad::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -105,17 +106,31 @@ pub fn camera(g: &Game, rt: &RenderTarget) -> Camera3D {
     }
 }
 
+/// `lamps` with the flicker of this frame (steady while the reduced motion setting is on).
+pub fn flickered(g: &Game, lamps: &[Lamp]) -> Vec<Lamp> {
+    lamp_flicker::applied(lamps, g.time, crate::ui::style::reduced_motion())
+}
+
 pub fn lighting(g: &Game) -> Lighting {
     let (eye, fwd, right, up) = view(g);
+    let (x, y) = g.p.pos;
+    let level = g.runner_level();
+    // a region's look is a level 0 thing: the sewers and the Inferno keep their level rows under any district
+    let region = if level == 0 { g.fac.region_at(x.floor() as i32, y.floor() as i32) } else { "" };
+    let mut look = ambient::table().look(region, level);
+    if level == sewer_core::LEVEL || level == sewer_core::LOWER_LEVEL {
+        look.ambient_color = crate::world::route::sewer::water::params().glow_ambient(look.ambient_color);
+    }
+    let look = ambient::table().blended(look, g.time);
     Lighting {
         eye,
         flashlight_pos: eye + right * 0.08 - up * 0.05 + fwd * 0.12,
         flashlight_dir: fwd,
         flashlight_on: g.p.beam_lit(),
-        // rooms are dark unless something lights them: Godot's RefLook ambient (shader::AMBIENT_COLOR x AMBIENT_ENERGY)
-        ambient: shader::AMBIENT_COLOR * shader::AMBIENT_ENERGY,
-        fog: FOG,
-        fog_far: FOG_RANGE,
+        // rooms are dark unless something lights them: the ambient of the runner's region and level (data/render/ambient.json)
+        ambient: Vec3::from(look.ambient_color) * look.ambient_energy,
+        fog: Vec3::from(look.fog_color),
+        fog_far: look.fog_far,
     }
 }
 
@@ -139,6 +154,7 @@ pub fn grab_fill(held: bool, camera: Option<(Vec3, Vec3, Vec3)>) -> Option<Lamp>
         range: GRAB_FILL_RANGE,
         color: Color::new(1.0, 0.95, 0.86, 1.0),
         energy: GRAB_FILL_ENERGY,
+        flicker: Flicker::NONE,
     })
 }
 
@@ -208,10 +224,10 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     }
     STATIC_PROPS.with(|c| c.borrow_mut().begin_frame());
     set_camera(&camera(g, rt));
-    clear_background(Color::new(FOG.x, FOG.y, FOG.z, 1.0));
+    let light = lighting(g);
+    clear_background(Color::new(light.fog.x, light.fog.y, light.fog.z, 1.0));
     gl_use_material(mat);
     // the grab's fill joins the room's lamps while the struggle holds the runner (grab_fill); the flashlight is unchanged
-    let light = lighting(g);
     // this storey's own lights join the room's lamps: the falls' pool lights, the inferno's lava and cracks, the catwalks' lamps
     let fx = level_fx(g, light.eye);
     let mut extra = fx.lamps.clone();
@@ -221,16 +237,17 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         g.world.lamps.clone()
     } else {
         let nb = g.world_nb.lamps(&g.fac);
-        world_stack::merge_lamps(&g.world.lamps, &nb, light.eye, shader::MAX_LAMPS)
+        world_stack::merge_lamps(&g.world.lamps, &nb, light.eye, shader::lamp_cap())
     };
     lamps.extend(extra);
-    shader::apply(mat, &light, &lamps);
+    shader::apply(mat, &light, &flickered(g, &lamps));
     // the falls' loop plays from the nearest fall in range, and stops on a storey without one
     {
         let (_, fwd, right, up) = view(g);
         let near = waterfall::nearest_sound(waterfall::config(), &fx.sites, (light.eye.x, light.eye.z), g.time);
         crate::audio::falls::update(near, light.eye.to_array(), right.to_array(), up.to_array(), fwd.to_array());
     }
+    let cull_range = world_cull_range(light.fog_far);
     // the floor's meshes wholly past the fog's full reach are skipped: they would paint the fog colour alone (see
     // `box_fully_fogged`), which the clear colour already is
     let t_world = crate::app::perf::section("world meshes");
@@ -240,7 +257,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
             .world
             .bounds
             .get(i)
-            .is_some_and(|(lo, hi)| box_fully_fogged(light.eye, *lo, *hi, WORLD_CULL_RANGE));
+            .is_some_and(|(lo, hi)| box_fully_fogged(light.eye, *lo, *hi, cull_range));
         if !fogged {
             draw_mesh(m);
         }
@@ -259,7 +276,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
                 let fogged = nb
                     .bounds
                     .get(i)
-                    .is_some_and(|(lo, hi)| box_fully_fogged(light.eye, *lo, *hi, WORLD_CULL_RANGE));
+                    .is_some_and(|(lo, hi)| box_fully_fogged(light.eye, *lo, *hi, cull_range));
                 if !fogged {
                     draw_mesh(m);
                 }
@@ -396,7 +413,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         let burnt = g.hiding_disabled[i];
         match item_model(a, "hiding_spot") {
             Some(m) => {
-                if locker_fully_fogged(light.eye, cx, cy, locker_reach(m), locker_cull().margin_m) {
+                if locker_fully_fogged(light.eye, cx, cy, locker_reach(m), locker_cull().margin_m, light.fog_far) {
                     continue;
                 }
                 let xf = at(cx, 0.0, cy, yaw);
@@ -846,6 +863,7 @@ pub fn catwalk_lamps(fac: &Facility, eye: (f32, f32), radius: f32, cfg: &catwalk
                     range: l.range_m,
                     color: Color::new(l.color[0], l.color[1], l.color[2], 1.0),
                     energy: l.energy,
+                    flicker: Flicker::NONE,
                 });
             }
         }
@@ -861,6 +879,7 @@ pub fn splash_lamp(cfg: &waterfall::WaterfallCfg, site: &waterfall::Site, w: &wa
         range: cfg.splash.light_range_m,
         color: Color::new(c[0], c[1], c[2], 1.0),
         energy: cfg.splash.light_energy,
+        flicker: Flicker::NONE,
     }
 }
 
@@ -890,6 +909,7 @@ fn level_fx(g: &Game, eye: Vec3) -> LevelFx {
                     range: gl.range_m,
                     color: Color::new(gl.color[0], gl.color[1], gl.color[2], 1.0),
                     energy: gl.energy,
+                    flicker: Flicker::NONE,
                 });
             }
         });
@@ -1102,10 +1122,17 @@ pub fn locker_cull() -> &'static LockerCull {
 
 /// Metres past the fog's full reach before a world mesh is skipped, so rounding never drops a visible one.
 const WORLD_CULL_MARGIN: f32 = 1.0;
+/// The unlit mode reaches full fog at this multiple of `fog_far` (shader.rs).
+const UNLIT_FOG_SCALE: f32 = 1.6;
+/// The world cull range never drops below or rises above these, whatever a data row says.
+const WORLD_CULL_FLOOR: f32 = 16.0;
+const WORLD_CULL_CEIL: f32 = 80.0;
 
-/// Distance from the eye past which a world mesh is skipped: the unlit mode's full fog (FOG_RANGE * 1.6) plus the margin.
-/// Lit surfaces reach full fog sooner (FOG_RANGE), so every fragment this far is fog colour in both modes.
-const WORLD_CULL_RANGE: f32 = FOG_RANGE * 1.6 + WORLD_CULL_MARGIN;
+/// Distance from the eye past which a world mesh is skipped: the unlit mode's full fog (1.6 x the current `fog_far`)
+/// plus the margin. Lit surfaces reach full fog sooner (`fog_far`), so every fragment this far is fog colour in both modes.
+fn world_cull_range(fog_far: f32) -> f32 {
+    (fog_far * UNLIT_FOG_SCALE).clamp(WORLD_CULL_FLOOR, WORLD_CULL_CEIL) + WORLD_CULL_MARGIN
+}
 
 /// True when the box `lo`..`hi` lies wholly `reach` metres or more from `eye`: every point of it is then fully fogged,
 /// and so is every triangle inside it (the fog is a function of distance from the eye, and a box is convex).
@@ -1132,10 +1159,10 @@ fn locker_reach(m: &PropModel) -> f32 {
 
 /// True when every point of a locker, a sphere of `reach` metres about its origin at (`cx`, `cy`), is past the fog's
 /// full reach from the eye by `margin` metres: the shader then writes the fog colour alone, the same as the clear
-/// colour, so the locker draws nothing new. The unlit path (mode > 1.5) reaches full fog at `FOG_RANGE * 1.6` (shader.rs).
-fn locker_fully_fogged(eye: Vec3, cx: f32, cy: f32, reach: f32, margin: f32) -> bool {
+/// colour, so the locker draws nothing new. The unlit path (mode > 1.5) reaches full fog at 1.6 x `fog_far` (shader.rs).
+fn locker_fully_fogged(eye: Vec3, cx: f32, cy: f32, reach: f32, margin: f32, fog_far: f32) -> bool {
     let (dx, dz) = (cx - eye.x, cy - eye.z);
-    (dx * dx + dz * dz).sqrt() - reach >= FOG_RANGE * 1.6 + margin
+    (dx * dx + dz * dz).sqrt() - reach >= (fog_far * UNLIT_FOG_SCALE).clamp(WORLD_CULL_FLOOR, WORLD_CULL_CEIL) + margin
 }
 
 fn locker_shape(b: &mut Builder, p: Vec3, yaw: f32, burnt: bool, swing: f32) {
@@ -1294,13 +1321,13 @@ mod tests {
     fn far_world_meshes_are_skipped_only_when_fully_fogged() {
         let eye = vec3(0.0, 1.6, 0.0);
         // a box 50 m off along x: its nearest face is past the reach, so it is skipped
-        assert!(box_fully_fogged(eye, vec3(50.0, 0.0, -2.0), vec3(60.0, 3.0, 2.0), WORLD_CULL_RANGE));
+        assert!(box_fully_fogged(eye, vec3(50.0, 0.0, -2.0), vec3(60.0, 3.0, 2.0), world_cull_range(FOG_RANGE)));
         // a box straddling the eye is drawn
-        assert!(!box_fully_fogged(eye, vec3(-1.0, 0.0, -1.0), vec3(1.0, 3.0, 1.0), WORLD_CULL_RANGE));
+        assert!(!box_fully_fogged(eye, vec3(-1.0, 0.0, -1.0), vec3(1.0, 3.0, 1.0), world_cull_range(FOG_RANGE)));
         // a box 30 m off is still in the fog ramp of the unlit mode, so drawn
-        assert!(!box_fully_fogged(eye, vec3(30.0, 0.0, 0.0), vec3(31.0, 3.0, 1.0), WORLD_CULL_RANGE));
+        assert!(!box_fully_fogged(eye, vec3(30.0, 0.0, 0.0), vec3(31.0, 3.0, 1.0), world_cull_range(FOG_RANGE)));
         // the vertical gap counts: a box 45 m straight up is past the reach
-        assert!(box_fully_fogged(eye, vec3(0.0, 46.0, 0.0), vec3(1.0, 47.0, 1.0), WORLD_CULL_RANGE));
+        assert!(box_fully_fogged(eye, vec3(0.0, 46.0, 0.0), vec3(1.0, 47.0, 1.0), world_cull_range(FOG_RANGE)));
     }
 
     #[test]
@@ -1309,11 +1336,11 @@ mod tests {
         let reach = 1.2;
         let margin = locker_cull().margin_m;
         // 45 m off: the nearest point of the locker is past the full fog reach, so it is skipped
-        assert!(locker_fully_fogged(eye, 45.0, 0.0, reach, margin));
+        assert!(locker_fully_fogged(eye, 45.0, 0.0, reach, margin, FOG_RANGE));
         // 30 m off: still inside the fog ramp, so it is drawn
-        assert!(!locker_fully_fogged(eye, 30.0, 0.0, reach, margin));
+        assert!(!locker_fully_fogged(eye, 30.0, 0.0, reach, margin, FOG_RANGE));
         // the vertical offset never shortens the distance, so a locker straight below the eye is judged by its plan distance only
-        assert!(!locker_fully_fogged(eye, 0.0, 0.0, reach, margin));
+        assert!(!locker_fully_fogged(eye, 0.0, 0.0, reach, margin, FOG_RANGE));
     }
 
     #[test]
@@ -1331,8 +1358,8 @@ mod tests {
         let tight = LockerCull::parse(r#"{"margin_m": 0.0, "door_swing_rad": 1.75}"#).unwrap();
         let wide = LockerCull::parse(r#"{"margin_m": 5.0, "door_swing_rad": 1.75}"#).unwrap();
         // 41 m off with a 1.2 m reach: 39.8 m clear of the eye, past the 38.4 m fog reach by 1.4 m
-        assert!(locker_fully_fogged(eye, 41.0, 0.0, 1.2, tight.margin_m));
-        assert!(!locker_fully_fogged(eye, 41.0, 0.0, 1.2, wide.margin_m));
+        assert!(locker_fully_fogged(eye, 41.0, 0.0, 1.2, tight.margin_m, FOG_RANGE));
+        assert!(!locker_fully_fogged(eye, 41.0, 0.0, 1.2, wide.margin_m, FOG_RANGE));
     }
 
     #[test]

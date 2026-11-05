@@ -29,6 +29,7 @@
 use super::level_stack::{floor_y_of, level_at, local_ground};
 use super::pdist;
 use super::Game;
+use super::Item;
 use crate::hunters::brain::State;
 use crate::hunters::flight_edges::{self, EdgeWalk, Hop, Node, StackNav};
 use crate::world::rng::Rng;
@@ -92,7 +93,7 @@ pub struct Tuning {
     pub door_think: f32,
     /// The seeded spread added to `door_think`.
     pub door_think_jitter: f32,
-    /// The intents a bot tries, in order (data `intents`): "hide", "flee", "relay", "locker", "follow". The first that
+    /// The intents a bot tries, in order (data `intents`): "hide", "flee", "relay", "pickup", "locker", "follow". The first that
     /// applies this frame runs. A name the bot does not know is skipped. Only a joined bot runs an intent but "flee".
     pub intents: Vec<String>,
     /// Metres a chasing hunter is seen at for a bot to go and hide (data `hide.chase_range`).
@@ -113,6 +114,12 @@ pub struct Tuning {
     pub relay_leash: f32,
     /// Seconds a bot stands at a relay (data `errand.relay.dwell`).
     pub relay_dwell: f32,
+    /// Seconds a bot stands at a relay before it recovers it (data `errand.relay.claim_time`, optional: the dwell).
+    pub relay_claim_time: f32,
+    /// Metres from the runner a loose item or battery may be for a bot to go and take it (data `pickup.leash`).
+    pub pickup_leash: f32,
+    /// The item ids (net/held_wire.rs `wire`) a bot takes (data `pickup.useful`); any other item is left lying.
+    pub pickup_useful: Vec<String>,
     /// Metres from the runner a locker may be for a bot to go to it (data `errand.locker.leash`).
     pub locker_leash: f32,
     /// Seconds a bot stays hidden in a locker on a locker errand (data `errand.locker.dwell`).
@@ -132,6 +139,238 @@ pub struct Tuning {
     pub close_clear: f32,
     /// The tasks a bot does. Only "door" (press shut doors for the runner) is built.
     pub tasks: Vec<String>,
+    /// The level-wide goal planner of the "goal" intent (data `goals`).
+    pub goals: GoalTuning,
+    /// Sight, hearing and the route of a bot running from a hunter (data `flee`).
+    pub flee: FleeTuning,
+}
+
+/// The "goal" intent's numbers (data `goals`). A bot scores every relay, battery, heal item, pickup and the exit on the
+/// resident levels as `weight - min(path_cost * distance_weight, distance_cap)`, so a kind with a higher weight always
+/// beats a lower one while `distance_cap` is smaller than the gap between weights. Missing keys keep the defaults.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GoalTuning {
+    pub relay: f32,
+    /// A loose or fixed battery, wanted while the team's lamp is under `low_lamp`.
+    pub battery: f32,
+    /// The `heal_item` lying about, wanted while the runner's stamina is under `low_stamina`.
+    pub heal: f32,
+    pub pickup: f32,
+    /// The exit, wanted once the relays of the level are recovered.
+    pub exit: f32,
+    /// Score lost per path step.
+    pub distance_weight: f32,
+    /// The most the path steps take off a score.
+    pub distance_cap: f32,
+    /// Path cost of one step into a cell a hunter is searching (a plain step is 1).
+    pub search_cost: f32,
+    /// Path steps one flight or ladder counts for when a goal is scored.
+    pub edge_cost: f32,
+    /// Seconds a bot waits before it picks a goal again after it found none or dropped one.
+    pub replan: f32,
+    /// Seconds after which a goal that is not reached is given up for good.
+    pub give_up: f32,
+    /// How many of the nearest spots are scored with a path search.
+    pub candidates: usize,
+    /// Metres of straight distance one storey counts for when the nearest spots are picked.
+    pub level_metres: f32,
+    /// Lamp charge fraction (0..1) under which a battery is wanted.
+    pub low_lamp: f32,
+    /// Stamina fraction (0..1) under which the heal item is wanted.
+    pub low_stamina: f32,
+    /// The item id (net/held_wire.rs `wire`) that heals.
+    pub heal_item: String,
+    /// The stuck recovery of a bot walking to a goal (data `goals.stuck`).
+    pub stuck: StuckTuning,
+    /// Metres from the runner beyond which a bot walking to a goal counts as away (data `goals.leash.max_distance`).
+    pub leash_distance: f32,
+    /// Seconds a bot may be away before it drops its goal and goes back to the runner (data `goals.leash.max_away`).
+    pub leash_away: f32,
+}
+
+/// How a bot walking to a goal notices it is stuck and gets free (data `goals.stuck`; Rust-only figures, the ladder of
+/// steps is `headless/bot.rs` stuck recovery): after `seconds` without moving `progress` metres it repaths, then presses
+/// a shut door within `door_reach`, then steps aside for `aside_seconds`, then gives the goal up for `ban_seconds`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StuckTuning {
+    pub seconds: f32,
+    pub progress: f32,
+    pub aside_seconds: f32,
+    pub door_reach: f32,
+    pub ban_seconds: f32,
+}
+
+impl Default for StuckTuning {
+    fn default() -> StuckTuning {
+        StuckTuning { seconds: 3.0, progress: 0.3, aside_seconds: 0.8, door_reach: 2.5, ban_seconds: 30.0 }
+    }
+}
+
+impl StuckTuning {
+    pub fn parse(v: &Value) -> StuckTuning {
+        let d = StuckTuning::default();
+        let num = |key: &str, d: f32| v[key].as_f64().map_or(d, |x| x as f32).max(0.0);
+        StuckTuning {
+            seconds: num("seconds", d.seconds).max(0.1),
+            progress: num("progress", d.progress),
+            aside_seconds: num("aside_seconds", d.aside_seconds),
+            door_reach: num("door_reach", d.door_reach),
+            ban_seconds: num("ban_seconds", d.ban_seconds),
+        }
+    }
+}
+
+/// A bot's stuck watch while it walks to a goal.
+#[derive(Clone, Debug, Default)]
+pub struct StuckState {
+    /// Where the bot was when it last made progress.
+    pub anchor: (f32, f32),
+    /// Seconds without progress.
+    pub still: f32,
+    /// Steps taken so far in this jam (0 repath, 1 door, 2 aside, 3 give up are the next).
+    pub stage: u32,
+    /// Seconds of stepping aside left, and the way.
+    pub aside: f32,
+    pub aside_dir: (f32, f32),
+    /// Jams recovered from or given up on, for the seed of the aside direction.
+    pub count: u32,
+}
+
+/// How a bot notices a hunter and runs from it (data `flee`; Rust-only figures, Godot reacts to a chase inside the threat range only).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FleeTuning {
+    /// Metres a hunter of any state is seen at, inside the view cone and with a clear line.
+    pub sight_range: f32,
+    /// Degrees either side of the bot's heading that it sees (2D).
+    pub sight_half_angle: f32,
+    /// Metres at which a hunter in the clear is noticed from any direction.
+    pub sense_range: f32,
+    /// Metres from a bot that heard a noise within which a hunter alarms it (a sound tells it a hunter is about).
+    pub hear_range: f32,
+    /// Metres a flight route keeps off every hunter.
+    pub clearance: f32,
+    /// Least seconds between two flight plans while a hunter crosses the route.
+    pub replan: f32,
+    /// Longest flight route, in cells.
+    pub depth: usize,
+    /// Most cells one flight plan looks at (the cost cap of the search).
+    pub max_cells: usize,
+    /// Seconds a bot stays alarmed after it last saw or heard a hunter (it keeps running or hiding as the view turns).
+    pub alert: f32,
+}
+
+impl Default for FleeTuning {
+    fn default() -> FleeTuning {
+        FleeTuning { sight_range: 18.0, sight_half_angle: 70.0, sense_range: 4.0, hear_range: 20.0, clearance: 3.0, replan: 0.4, depth: 18, max_cells: 600, alert: 3.0 }
+    }
+}
+
+impl FleeTuning {
+    pub fn parse(v: &Value) -> FleeTuning {
+        let d = FleeTuning::default();
+        let num = |key: &str, d: f32| v[key].as_f64().map_or(d, |x| x as f32).max(0.0);
+        FleeTuning {
+            sight_range: num("sight_range", d.sight_range),
+            sight_half_angle: num("sight_half_angle", d.sight_half_angle).min(180.0),
+            sense_range: num("sense_range", d.sense_range),
+            hear_range: num("hear_range", d.hear_range),
+            clearance: num("clearance", d.clearance),
+            replan: num("replan", d.replan),
+            depth: v["depth"].as_u64().map_or(d.depth, |n| n.clamp(1, 200) as usize),
+            max_cells: v["max_cells"].as_u64().map_or(d.max_cells, |n| n.clamp(1, 20000) as usize),
+            alert: num("alert", d.alert),
+        }
+    }
+}
+
+/// What a fleeing bot has settled on: the cell it runs to and the seconds since it last planned.
+#[derive(Clone, Debug)]
+pub struct FleeState {
+    pub goal: Option<(i32, i32)>,
+    /// Seconds since the last plan, found or not (a bot that has not planned yet plans at once).
+    pub since: f32,
+    /// Seconds of alarm left after the bot last saw or heard a hunter.
+    pub alert: f32,
+}
+
+impl Default for FleeState {
+    fn default() -> FleeState {
+        FleeState { goal: None, since: f32::MAX, alert: 0.0 }
+    }
+}
+
+impl FleeState {
+    /// Ends the flight in progress but keeps the alarm.
+    fn stop(&mut self) {
+        self.goal = None;
+        self.since = f32::MAX;
+    }
+}
+
+impl Default for GoalTuning {
+    fn default() -> GoalTuning {
+        GoalTuning {
+            relay: 100.0,
+            battery: 70.0,
+            heal: 70.0,
+            pickup: 40.0,
+            exit: 20.0,
+            distance_weight: 0.1,
+            distance_cap: 25.0,
+            search_cost: 12.0,
+            edge_cost: 6.0,
+            replan: 4.0,
+            give_up: 120.0,
+            candidates: 8,
+            level_metres: 40.0,
+            low_lamp: 0.3,
+            low_stamina: 0.35,
+            heal_item: "stim_pack".to_string(),
+            stuck: StuckTuning::default(),
+            leash_distance: 30.0,
+            leash_away: 40.0,
+        }
+    }
+}
+
+impl GoalTuning {
+    pub fn parse(v: &Value) -> GoalTuning {
+        let d = GoalTuning::default();
+        let num = |key: &str, d: f32| v[key].as_f64().map_or(d, |x| x as f32);
+        let w = &v["weights"];
+        let wnum = |key: &str, d: f32| w[key].as_f64().map_or(d, |x| x as f32);
+        GoalTuning {
+            relay: wnum("relay", d.relay),
+            battery: wnum("battery", d.battery),
+            heal: wnum("heal", d.heal),
+            pickup: wnum("pickup", d.pickup),
+            exit: wnum("exit", d.exit),
+            distance_weight: num("distance_weight", d.distance_weight).max(0.0),
+            distance_cap: num("distance_cap", d.distance_cap).max(0.0),
+            search_cost: num("search_cost", d.search_cost),
+            edge_cost: num("edge_cost", d.edge_cost),
+            replan: num("replan", d.replan).max(0.0),
+            give_up: num("give_up", d.give_up),
+            candidates: v["candidates"].as_u64().map_or(d.candidates, |n| n.clamp(1, 64) as usize),
+            level_metres: num("level_metres", d.level_metres),
+            low_lamp: num("low_lamp", d.low_lamp),
+            low_stamina: num("low_stamina", d.low_stamina),
+            heal_item: v["heal_item"].as_str().map_or(d.heal_item, str::to_string),
+            stuck: StuckTuning::parse(&v["stuck"]),
+            leash_distance: v["leash"]["max_distance"].as_f64().map_or(d.leash_distance, |x| x as f32).max(0.0),
+            leash_away: v["leash"]["max_away"].as_f64().map_or(d.leash_away, |x| x as f32).max(0.0),
+        }
+    }
+
+    fn weight(&self, kind: SpotKind) -> f32 {
+        match kind {
+            SpotKind::Relay => self.relay,
+            SpotKind::Battery => self.battery,
+            SpotKind::Heal => self.heal,
+            SpotKind::Pickup => self.pickup,
+            SpotKind::Exit => self.exit,
+        }
+    }
 }
 
 impl Tuning {
@@ -167,6 +406,12 @@ impl Tuning {
             errand_reach: num(errand, "reach")?,
             relay_leash: num(&errand["relay"], "leash")?,
             relay_dwell: num(&errand["relay"], "dwell")?,
+            relay_claim_time: num(&errand["relay"], "claim_time").map_or(num(&errand["relay"], "dwell")?, |c| c.min(num(&errand["relay"], "dwell").unwrap_or(c))),
+            pickup_leash: num(&v["pickup"], "leash").unwrap_or(0.0),
+            pickup_useful: v["pickup"]["useful"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect())
+                .unwrap_or_default(),
             locker_leash: num(&errand["locker"], "leash")?,
             locker_dwell: num(&errand["locker"], "dwell")?,
             searched_memory: num(searched, "memory")?.max(0.0) as usize,
@@ -180,6 +425,8 @@ impl Tuning {
                 .iter()
                 .filter_map(|t| t.as_str().map(str::to_string))
                 .collect(),
+            goals: GoalTuning::parse(&v["goals"]),
+            flee: FleeTuning::parse(&v["flee"]),
         })
     }
 
@@ -263,6 +510,67 @@ pub enum Errand {
     Locker(usize),
 }
 
+/// What a bot claims once it stands at it, by index into `fac.relays`, `fac.batteries` or `Game::pickups`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Claim {
+    Relay(usize),
+    Battery(usize),
+    Pickup(usize),
+}
+
+/// What a level-wide goal is (data `goals.weights` names).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpotKind {
+    Relay,
+    Battery,
+    Heal,
+    Pickup,
+    Exit,
+}
+
+/// A place a bot may make its goal, on any resident level.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spot {
+    pub kind: SpotKind,
+    pub level: i32,
+    /// The open cell nearest the spot on its level (where the route ends).
+    pub cell: Cell,
+    pub pos: (f32, f32),
+    /// What reaching it claims (the active level only).
+    pub claim: Option<Claim>,
+}
+
+impl Spot {
+    fn same(&self, o: &Spot) -> bool {
+        self.kind == o.kind && self.level == o.level && self.cell == o.cell
+    }
+
+    fn key(&self) -> (i32, i32, i32) {
+        (self.level, self.cell.x, self.cell.y)
+    }
+}
+
+/// A bot's level-wide goal (the "goal" intent).
+#[derive(Clone, Debug, Default)]
+pub struct GoalState {
+    pub spot: Option<Spot>,
+    /// Seconds before the bot picks a goal again.
+    pub cool: f32,
+    /// Seconds since the goal was picked.
+    pub age: f32,
+    /// Seconds stood at a relay.
+    pub dwell: f32,
+    /// Spots reached or given up, as (level, cell x, cell y).
+    pub done: Vec<(i32, i32, i32)>,
+    /// Goals picked so far.
+    pub picks: u32,
+    /// Spots given up on after a jam, with the seconds before the bot may pick them again.
+    pub banned: Vec<((i32, i32, i32), f32)>,
+    pub stuck: StuckState,
+    /// Seconds spent farther than `goals.leash.max_distance` from the runner.
+    pub away: f32,
+}
+
 /// One player bot (NPC teammate). Fields for the deferred features (catch, revive, chat, admin commands) are
 /// added when those land.
 #[derive(Clone, Debug)]
@@ -313,6 +621,8 @@ pub struct Npc {
     pub hidden: Option<usize>,
     /// The relay or locker errand the bot is on.
     pub errand: Option<Errand>,
+    /// A relay or item the bot reached this frame; `Game::npc_claims` applies it through the player's interact effects.
+    pub claim: Option<Claim>,
     /// Seconds the bot has stood at its errand spot (a relay) or hidden on its locker errand.
     pub dwell: f32,
     /// Relays and lockers this bot has already been to on this floor, so it does not loop on one spot.
@@ -329,6 +639,10 @@ pub struct Npc {
     pub fleeing: bool,
     /// A noise event the bot heard (hunters/noise_events.rs): where, and the seconds it still turns toward it.
     pub heard: Option<((f32, f32), f32)>,
+    /// The level-wide goal and what it has reached (the "goal" intent).
+    pub goal: GoalState,
+    /// The flight in progress (the "flee" intent).
+    pub flee: FleeState,
 }
 
 impl Npc {
@@ -340,7 +654,7 @@ impl Npc {
     }
 
     /// Drops what the bot knew about the old frame: its route, its door, its hide, its errand, its visits and the points
-    /// it saw searched (all positions and indices in the old floor).
+    /// it saw searched, its goal and flight and its claim (all positions and indices in the old floor).
     fn forget_frame(&mut self) {
         self.path.clear();
         self.path_age = REPATH;
@@ -357,6 +671,14 @@ impl Npc {
         self.walk = None;
         self.edge_clock = 0.0;
         self.hop = None;
+        self.goal.spot = None;
+        self.goal.done.clear();
+        self.goal.banned.clear();
+        self.goal.stuck = StuckState::default();
+        self.goal.cool = 0.0;
+        self.goal.away = 0.0;
+        self.flee.stop();
+        self.claim = None;
     }
 }
 
@@ -611,7 +933,8 @@ fn door_near(fac: &Facility, p: (f32, f32), r: f32) -> Option<Cell> {
 fn walk_toward(n: &mut Npc, fac: &Facility, goal: (f32, f32), running: bool, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) {
     let here = n.at;
     n.path_age += dt;
-    if n.path_age >= REPATH {
+    // a flight keeps the route `flee_route` chose: a replan here would run the shortest way, past the hunter
+    if n.path_age >= REPATH && !(n.flee.goal.is_some() && !n.path.is_empty()) {
         plan(n, fac, goal);
     }
     if n.path.is_empty() {
@@ -719,27 +1042,134 @@ fn follow(n: &mut Npc, fac: &Facility, leader: (f32, f32), t: &Tuning, dt: f32, 
     }
 }
 
-/// Godot `_think`'s flee (npc_teammates.gd 305-315): the nearest hunter of any state; when it is chasing and inside
-/// the smart-scaled threat range the bot runs straight away from it, `flee_step` ahead. True when it ran.
+/// True when the bot stands on a catwalk deck. Hunters of the floor cannot reach it, so a deck bot neither hides nor
+/// runs: it stays where it is.
+fn on_deck(fac: &Facility, p: (f32, f32)) -> bool {
+    fac.height_at(cell_at(p)) > 0.1
+}
+
+/// True when a hunter of any state is in the bot's view: inside `sight_range` with a clear line and either inside the
+/// view cone about the bot's heading (2D) or inside `sense_range`. A bot that has not moved yet sees all round.
+fn sees(n: &Npc, fac: &Facility, seen: &[Seen], f: &FleeTuning) -> bool {
+    let cos_half = f.sight_half_angle.to_radians().cos();
+    seen.iter().any(|&(c, _)| {
+        let d = pdist(n.at, c);
+        if d > f.sight_range || !fac.has_line_of_sight(n.at, c) {
+            return false;
+        }
+        if d <= f.sense_range || n.heading == (0.0, 0.0) {
+            return true;
+        }
+        ((c.0 - n.at.0) * n.heading.0 + (c.1 - n.at.1) * n.heading.1) / d >= cos_half
+    })
+}
+
+/// True when the bot heard a noise event and a hunter is within `hear_range` of it.
+fn hears_hunter(n: &Npc, seen: &[Seen], f: &FleeTuning) -> bool {
+    n.heard.is_some() && seen.iter().any(|&(c, _)| pdist(n.at, c) < f.hear_range)
+}
+
+/// The flight route (cells, the bot's own first): a breadth-first walk over the open dry cells of the bot's level, never
+/// within `clearance` of a hunter (a bot already closer never steps nearer), at most `depth` cells long, ending on the
+/// cell farthest from the hunters. A flight never leaves the level: no link is taken. None when no cell is farther
+/// from the hunters than the bot stands.
+fn flee_route(n: &Npc, fac: &Facility, threats: &[(f32, f32)], f: &FleeTuning) -> Option<Vec<(i32, i32)>> {
+    let start = cell_at(n.at);
+    let far = |c: Cell| threats.iter().map(|&p| pdist(c.center(), p)).fold(f32::MAX, f32::min);
+    let d0 = far(start);
+    let floor = f.clearance.min(d0);
+    let ok = |c: Cell| fac.hunter_open(c) && !n.deep_cells.contains(&(c.x, c.y)) && far(c) >= floor;
+    let mut came: std::collections::HashMap<Cell, Cell> = std::collections::HashMap::new();
+    let mut depth_of: std::collections::HashMap<Cell, usize> = std::collections::HashMap::from([(start, 0)]);
+    let mut queue = std::collections::VecDeque::from([start]);
+    let mut best: Option<(Cell, f32)> = None;
+    while let Some(c) = queue.pop_front() {
+        if depth_of.len() > f.max_cells {
+            break;
+        }
+        let depth = depth_of[&c];
+        let score = far(c) - 0.05 * depth as f32;
+        if c != start && far(c) > d0 && best.map_or(true, |(_, s)| score > s) {
+            best = Some((c, score));
+        }
+        if depth >= f.depth {
+            continue;
+        }
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let nb = Cell::new(c.x + dx, c.y + dy);
+                if (dx == 0 && dy == 0) || depth_of.contains_key(&nb) || !ok(nb) {
+                    continue;
+                }
+                if dx != 0 && dy != 0 && (!ok(Cell::new(c.x + dx, c.y)) || !ok(Cell::new(c.x, c.y + dy))) {
+                    continue;
+                }
+                depth_of.insert(nb, depth + 1);
+                came.insert(nb, c);
+                queue.push_back(nb);
+            }
+        }
+    }
+    let (end, _) = best?;
+    let mut path = vec![end];
+    let mut at = end;
+    while let Some(&p) = came.get(&at) {
+        at = p;
+        path.push(at);
+    }
+    path.reverse();
+    Some(path.into_iter().map(|c| (c.x, c.y)).collect())
+}
+
+/// Godot `_think`'s flee (npc_teammates.gd 305-315), widened: a bot runs from a chasing hunter inside the smart-scaled
+/// threat range, from a hunter it sees (`sees`) and from a hunter near a noise it heard (`hears_hunter`). It runs the
+/// route `flee_route` picks, and keeps it until the goal is reached, the route is blocked, or a hunter comes within
+/// `clearance` of what is left of it (then it re-plans, at most every `flee.replan` seconds). A bot on a deck stays. A
+/// bot with nowhere farther to go stands. True when the bot acted.
 fn flee(n: &mut Npc, fac: &Facility, seen: &[Seen], t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -> bool {
+    let f = &t.flee;
     let range = t.threat_range * (t.smart_base + n.smart as f32 / 100.0);
-    let near = seen
-        .iter()
-        .map(|&(c, chasing)| (c, chasing, pdist(n.at, c)))
-        .min_by(|a, b| a.2.total_cmp(&b.2));
-    let Some((c, chasing, d)) = near else { return false };
-    if !chasing || d >= range {
+    let alarmed = !on_deck(fac, n.at)
+        && (seen.iter().any(|&(c, chasing)| chasing && pdist(n.at, c) < range)
+            || sees(n, fac, seen, f)
+            || hears_hunter(n, seen, f)
+            || (n.flee.alert > 0.0 && !seen.is_empty()));
+    if !alarmed {
+        if n.flee.goal.is_some() {
+            n.path.clear();
+        }
+        n.flee.stop();
         return false;
     }
-    let away = if d > t.min_away {
-        ((n.at.0 - c.0) / d, (n.at.1 - c.1) / d)
-    } else {
-        (1.0, 0.0)
+    let threats: Vec<(f32, f32)> = seen.iter().map(|s| s.0).collect();
+    n.flee.since += dt;
+    let near_route = |n: &Npc| {
+        let floor = f.clearance.min(threats.iter().map(|&p| pdist(n.at, p)).fold(f32::MAX, f32::min));
+        n.path.iter().any(|&(x, y)| threats.iter().any(|&p| pdist(Cell::new(x, y).center(), p) < floor))
     };
-    let goal = (n.at.0 + away.0 * t.flee_step, n.at.1 + away.1 * t.flee_step);
-    n.fleeing = true;
-    walk_toward(n, fac, goal, t.flee_running, t, dt, presses);
-    n.fleeing = false;
+    let stuck = match n.flee.goal {
+        None => true,
+        Some(g) => n.path.is_empty() || cell_at(n.at) == Cell::new(g.0, g.1) || near_route(n),
+    };
+    if stuck && n.flee.since >= f.replan {
+        n.flee.since = 0.0;
+        match flee_route(n, fac, &threats, f) {
+            Some(route) => {
+                n.flee.goal = route.last().copied();
+                n.path = route.into_iter().skip(1).collect();
+                n.path_age = 0.0;
+            }
+            None => {
+                n.flee.goal = None;
+                n.path.clear();
+            }
+        }
+    }
+    let Some(g) = n.flee.goal else {
+        n.walking = false;
+        return true;
+    };
+    walk_toward(n, fac, Cell::new(g.0, g.1).center(), t.flee_running, t, dt, presses);
     true
 }
 
@@ -755,28 +1185,52 @@ struct Scene<'a> {
     runner_level: i32,
     /// The graph of flights, ladders and drops between the resident levels (None on a finite floor).
     nav: Option<&'a StackNav>,
+    /// The batteries and loose items on the active level a bot may take: what it is, and where.
+    loot: &'a [(Claim, (f32, f32))],
+    /// The places a bot may make its goal, on every resident level.
+    spots: &'a [Spot],
+    /// The points hunters are searching, with their level.
+    search_all: &'a [(i32, (f32, f32))],
+}
+
+/// The step cost a bot plans across levels with: deep water on its own level, and with `avoid_search` the cells within
+/// `searched_avoid` of a point a hunter is searching (data `goals.search_cost`).
+fn step_cost<'a>(n: &'a Npc, sc: &'a Scene, t: &'a Tuning, avoid_search: bool) -> impl Fn(i32, Cell, Cell) -> Option<f32> + 'a {
+    move |level: i32, _from: Cell, to: Cell| {
+        let mut c = 1.0f32;
+        if level == n.level && n.deep_cells.contains(&(to.x, to.y)) {
+            c = c.max(t.deep_step_cost);
+        }
+        if avoid_search {
+            let p = to.center();
+            if sc.search_all.iter().any(|(l, s)| *l == level && pdist(*s, p) < t.searched_avoid) {
+                c = c.max(t.goals.search_cost);
+            }
+        }
+        Some(c)
+    }
 }
 
 /// Sets the bot's cross-level walk going: the flight or ladder it takes toward the runner's level. It plans to the
 /// hop's entrance on its own level, walks there (`walk_toward`), and starts the `EdgeWalk` once it is there. With no
 /// route the bot stands and asks again in `REPATH` seconds.
 fn follow_across(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) {
+    let target = Node { level: sc.runner_level, cell: cell_at(sc.leader) };
+    cross_to(n, sc, target, false, t, dt, presses);
+}
+
+/// Walks the bot toward `target` on another level: the hop it takes, its entrance, then the edge. `avoid_search` makes
+/// cells hunters are searching costly on the route.
+fn cross_to(n: &mut Npc, sc: &Scene, target: Node, avoid_search: bool, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) {
     let Some(nav) = sc.nav else {
         n.walking = false;
         return;
     };
     if n.hop.is_none() || n.path_age >= REPATH {
-        let deep_cost = t.deep_step_cost;
-        let (level, deep) = (n.level, &n.deep_cells);
-        let cost = move |step_level: i32, _from: Cell, to: Cell| {
-            Some(if step_level == level && deep.contains(&(to.x, to.y)) { deep_cost } else { 1.0 })
+        let hop = {
+            let cost = step_cost(n, sc, t, avoid_search);
+            next_hop(nav, Node { level: n.level, cell: cell_at(n.at) }, target, &cost)
         };
-        let hop = next_hop(
-            nav,
-            Node { level: n.level, cell: cell_at(n.at) },
-            Node { level: sc.runner_level, cell: cell_at(sc.leader) },
-            &cost,
-        );
         // a fresh hop is planned to on this frame; with no route the next ask waits a full repath
         n.path_age = if hop.is_some() { REPATH } else { 0.0 };
         n.hop = hop;
@@ -880,6 +1334,7 @@ fn note_searched(n: &mut Npc, searching: &[(f32, f32)], t: &Tuning) {
 
 /// The bot is inside locker `i`: hidden, at the locker's centre, not moving.
 fn hide_in(n: &mut Npc, centre: (f32, f32), i: usize) {
+    n.flee.stop();
     n.hidden = Some(i);
     n.at = centre;
     n.path.clear();
@@ -907,22 +1362,32 @@ fn go_to_locker(n: &mut Npc, sc: &Scene, i: usize, running: bool, t: &Tuning, dt
     }
 }
 
-/// Hide (data `hide`): a chasing hunter within `chase_range` and a locker within `reach` send the bot running to the
-/// nearest such locker, not burnt out. True when the bot acted.
+/// Hide (data `hide`): a chasing hunter within `chase_range`, a hunter in view, or a hunter near a noise the bot heard,
+/// and a locker within `reach` that the bot gets to before any hunter and that is clear of them, send the bot running to
+/// the nearest such locker, not burnt out. A deck bot stays. True when the bot acted.
 fn hide(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -> bool {
-    if !chaser_within(sc.seen, n.at, t.hide_chase_range) {
+    let f = &t.flee;
+    if on_deck(sc.fac, n.at)
+        || !(chaser_within(sc.seen, n.at, t.hide_chase_range)
+            || sees(n, sc.fac, sc.seen, f)
+            || hears_hunter(n, sc.seen, f)
+            || (n.flee.alert > 0.0 && !sc.seen.is_empty()))
+    {
         return false;
     }
+    let hunter_to = |p: (f32, f32)| sc.seen.iter().map(|&(c, _)| pdist(p, c)).fold(f32::MAX, f32::min);
     let near = sc
         .fac
         .hiding
         .iter()
         .enumerate()
         .filter(|(i, _)| !sc.disabled.get(*i).copied().unwrap_or(false))
-        .map(|(i, h)| (i, pdist(n.at, sc.fac.locker_center(h))))
-        .filter(|&(_, d)| d <= t.hide_reach)
+        .map(|(i, h)| (i, sc.fac.locker_center(h)))
+        .map(|(i, c)| (i, pdist(n.at, c), hunter_to(c)))
+        .filter(|&(_, d, hd)| d <= t.hide_reach && hd > d && hd >= f.clearance)
         .min_by(|a, b| a.1.total_cmp(&b.1));
-    let Some((i, _)) = near else { return false };
+    let Some((i, _, _)) = near else { return false };
+    n.flee.stop();
     go_to_locker(n, sc, i, true, t, dt, presses);
     true
 }
@@ -936,7 +1401,7 @@ fn hidden_tick(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32) {
         n.hidden = None;
         return;
     }
-    let chased = chaser_within(sc.seen, n.at, t.hide_leave_range);
+    let chased = sc.seen.iter().any(|&(c, _)| pdist(n.at, c) < t.hide_leave_range);
     n.clear_time = if chased { 0.0 } else { n.clear_time + dt };
     let on_errand = n.errand == Some(Errand::Locker(i));
     let leave = if on_errand {
@@ -1040,6 +1505,11 @@ fn errand(n: &mut Npc, sc: &Scene, locker: bool, t: &Tuning, dt: f32, presses: &
         Errand::Relay(_) => {
             n.walking = false;
             n.dwell += dt;
+            if n.dwell >= t.relay_claim_time {
+                if let Errand::Relay(i) = e {
+                    n.claim = Some(Claim::Relay(i));
+                }
+            }
             if n.dwell >= dwell {
                 n.visited.push(e);
                 n.errand = None;
@@ -1050,14 +1520,271 @@ fn errand(n: &mut Npc, sc: &Scene, locker: bool, t: &Tuning, dt: f32, presses: &
     true
 }
 
+/// The pickup intent (data `pickup`): a joined bot with nothing chasing it walks to the nearest useful battery or item
+/// within `pickup_leash` of the runner, safe by the errand rules, and claims it once it stands within `errand_reach`.
+/// True when the bot acted.
+fn fetch(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -> bool {
+    let mut best: Option<(Claim, (f32, f32), f32)> = None;
+    for &(claim, pos) in sc.loot {
+        if pdist(pos, sc.leader) > t.pickup_leash || !spot_safe(n, sc, pos, t) {
+            continue;
+        }
+        let d = pdist(n.at, pos);
+        if best.map_or(true, |b| d < b.2) {
+            best = Some((claim, pos, d));
+        }
+    }
+    let Some((claim, pos, d)) = best else { return false };
+    if d > t.errand_reach {
+        walk_toward(n, sc.fac, pos, false, t, dt, presses);
+    } else {
+        n.walking = false;
+        n.claim = Some(claim);
+    }
+    true
+}
+
+/// The path cost of a route (a plain step is the step cost, an edge `goals.edge_cost`), None when there is none.
+fn route_cost(n: &Npc, sc: &Scene, t: &Tuning, from: Node, to: Node) -> Option<f32> {
+    // the same level: the straight search of the facility needs no stack, and is all a finite floor (an empty graph) has
+    let direct = if from.level == to.level { sc.fac.find_path(from.cell, to.cell) } else { vec![] };
+    let direct_cost = (!direct.is_empty()).then(|| direct.len() as f32);
+    let Some(nav) = sc.nav else { return direct_cost };
+    let cost = step_cost(n, sc, t, true);
+    // a same-level route that meets no deep water or searched cell is the nav search's answer too: skip the second search
+    if direct_cost.is_some() && direct.windows(2).all(|w| cost(from.level, w[0], w[1]).map_or(false, |c| c <= 1.0)) {
+        return Some((direct.len() - 1) as f32);
+    }
+    let route = nav.find_path(from, to, &cost);
+    if route.is_empty() {
+        return direct_cost;
+    }
+    let mut total = 0.0;
+    for w in route.windows(2) {
+        total += if w[1].via.is_some() {
+            t.goals.edge_cost
+        } else {
+            cost(w[1].node.level, w[0].node.cell, w[1].node.cell).unwrap_or(1.0).max(1.0)
+        };
+    }
+    Some(total)
+}
+
+/// The best spot for the bot: the nearest `goals.candidates` by straight distance (a storey counts `level_metres`),
+/// scored `weight - min(cost * distance_weight, distance_cap)`; a spot the bot has done, that is unsafe on its own level
+/// or that has no route is left out. The first of equal scores wins, so a pick is the same on every run.
+fn pick_goal(n: &Npc, sc: &Scene, t: &Tuning) -> Option<Spot> {
+    let g = &t.goals;
+    let mut near: Vec<(f32, &Spot)> = sc
+        .spots
+        .iter()
+        .filter(|s| g.weight(s.kind) > 0.0 && !n.goal.done.contains(&s.key()) && !n.goal.banned.iter().any(|(k, _)| *k == s.key()))
+        .filter(|s| s.level != n.level || spot_safe(n, sc, s.pos, t))
+        .map(|s| (pdist(n.at, s.pos) + (s.level - n.level).abs() as f32 * g.level_metres, s))
+        .collect();
+    near.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let from = Node { level: n.level, cell: sc.fac.nearest_open(n.at.0, n.at.1, NAV_RADIUS).map_or(cell_at(n.at), cell_at) };
+    let mut best: Option<(f32, Spot)> = None;
+    for (_, s) in near.into_iter().take(g.candidates) {
+        let Some(cost) = route_cost(n, sc, t, from, Node { level: s.level, cell: s.cell }) else { continue };
+        let score = g.weight(s.kind) - (cost * g.distance_weight).min(g.distance_cap);
+        if best.map_or(true, |(b, _)| score > b) {
+            best = Some((score, *s));
+        }
+    }
+    best.map(|(_, s)| s)
+}
+
+/// The "goal" intent (data `goals`): a joined bot with nothing chasing it picks a goal anywhere on the resident levels
+/// (relay, then battery or heal when low, then useful pickups, then the exit once the relays are done) and walks to it
+/// across stairs and ladders. It picks again only when it has no goal and `replan` seconds have passed since it found
+/// none or dropped one, and a goal not reached in `give_up` seconds is dropped for good. A goal that stops being
+/// available, or becomes unsafe on the bot's own level, is dropped. True when the bot acted.
+fn run_goal(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -> bool {
+    n.goal.cool = (n.goal.cool - dt).max(0.0);
+    n.goal.age += dt;
+    for b in n.goal.banned.iter_mut() {
+        b.1 -= dt;
+    }
+    n.goal.banned.retain(|b| b.1 > 0.0);
+    // the leash: a bot farther than `leash_distance` from the runner for more than `leash_away` seconds drops its goal
+    // and takes no new one until it is back within the distance (the follow intent brings it)
+    n.goal.away = if pdist(n.at, sc.leader) > t.goals.leash_distance { n.goal.away + dt } else { 0.0 };
+    if n.goal.away > t.goals.leash_away {
+        if n.goal.spot.take().is_some() {
+            n.goal.cool = t.goals.replan;
+            n.goal.stuck = StuckState::default();
+            n.path.clear();
+            n.hop = None;
+        }
+        return false;
+    }
+    let mut cur = None;
+    if let Some(s) = n.goal.spot {
+        cur = sc.spots.iter().find(|x| x.same(&s)).copied().filter(|x| x.level != n.level || spot_safe(n, sc, x.pos, t));
+        if cur.is_none() {
+            n.goal.spot = None;
+            n.goal.cool = t.goals.replan;
+        } else if n.goal.age > t.goals.give_up {
+            n.goal.done.push(s.key());
+            n.goal.spot = None;
+            n.goal.cool = t.goals.replan;
+            cur = None;
+        }
+    }
+    let spot = match cur {
+        Some(s) => s,
+        None => {
+            if n.goal.cool > 0.0 {
+                return false;
+            }
+            let Some(s) = pick_goal(n, sc, t) else {
+                n.goal.cool = t.goals.replan;
+                return false;
+            };
+            n.goal = GoalState {
+                spot: Some(s),
+                picks: n.goal.picks + 1,
+                done: std::mem::take(&mut n.goal.done),
+                banned: std::mem::take(&mut n.goal.banned),
+                ..GoalState::default()
+            };
+            n.hop = None;
+            n.path_age = REPATH;
+            s
+        }
+    };
+    n.goal.spot = Some(spot);
+    if spot.level != n.level || pdist(n.at, spot.pos) > t.errand_reach {
+        if stuck_watch(n, sc, spot, t, dt, presses) {
+            return true;
+        }
+    } else {
+        n.goal.stuck = StuckState::default();
+    }
+    if spot.level != n.level {
+        cross_to(n, sc, Node { level: spot.level, cell: spot.cell }, true, t, dt, presses);
+        return true;
+    }
+    if pdist(n.at, spot.pos) > t.errand_reach {
+        walk_toward(n, sc.fac, spot.pos, false, t, dt, presses);
+        return true;
+    }
+    n.walking = false;
+    n.path.clear();
+    match spot.kind {
+        SpotKind::Exit => {}
+        SpotKind::Relay => {
+            n.goal.dwell += dt;
+            if n.goal.dwell >= t.relay_claim_time {
+                n.claim = spot.claim;
+            }
+            if n.goal.dwell >= t.relay_dwell {
+                n.goal.done.push(spot.key());
+                n.goal.spot = None;
+            }
+        }
+        _ => {
+            n.claim = spot.claim;
+            n.goal.done.push(spot.key());
+            n.goal.spot = None;
+        }
+    }
+    true
+}
+
+/// The bot's stuck watch while it walks to `spot` (data `goals.stuck`). No progress for `seconds` steps up one rung of
+/// the ladder each window: a fresh route, a press on a shut door beside it, a step aside (a seeded direction), and last
+/// the goal given up for `ban_seconds`. Progress ends the jam. True when the bot used this frame (a step aside, or the
+/// give-up).
+fn stuck_watch(n: &mut Npc, sc: &Scene, spot: Spot, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -> bool {
+    let s = &t.goals.stuck;
+    if n.goal.stuck.aside > 0.0 {
+        let dir = n.goal.stuck.aside_dir;
+        n.goal.stuck.aside -= dt;
+        let to = (n.at.0 + dir.0 * PLAYER_WALK_SPEED * dt, n.at.1 + dir.1 * PLAYER_WALK_SPEED * dt);
+        if matches!(sweep(sc.fac, n.at, to), Sweep::Clear) {
+            n.at = to;
+            n.heading = dir;
+            let heading = n.heading;
+            turn(n, heading_yaw(heading), dt);
+            n.stride += PLAYER_WALK_SPEED * dt;
+            n.walking = true;
+        } else {
+            n.goal.stuck.aside = 0.0;
+        }
+        if n.goal.stuck.aside <= 0.0 {
+            n.goal.stuck.anchor = n.at;
+            n.goal.stuck.still = 0.0;
+            n.path.clear();
+            n.hop = None;
+            n.path_age = REPATH;
+        }
+        return true;
+    }
+    let st = &mut n.goal.stuck;
+    if pdist(n.at, st.anchor) >= s.progress {
+        *st = StuckState { anchor: n.at, count: st.count, ..StuckState::default() };
+        return false;
+    }
+    st.still += dt;
+    if st.still < s.seconds {
+        return false;
+    }
+    st.still = 0.0;
+    st.stage += 1;
+    st.count += 1;
+    match st.stage {
+        1 => {
+            n.path.clear();
+            n.hop = None;
+            n.path_age = REPATH;
+        }
+        2 => {
+            if let Some(d) = door_near(sc.fac, n.at, s.door_reach) {
+                if !sc.fac.door_is_open(d) && t.does("door") {
+                    presses.push(d);
+                }
+            }
+        }
+        3 => {
+            let mut rng = Rng::new(&format!("{}:aside:{}:{}", n.name, n.goal.picks, n.goal.stuck.count));
+            let a0 = rng.next_f32() * 2.0 * PI;
+            for k in 0..8 {
+                let a = a0 + k as f32 * PI / 4.0;
+                let dir = (a.sin(), a.cos());
+                let to = (n.at.0 + dir.0 * 0.5, n.at.1 + dir.1 * 0.5);
+                if sc.fac.body_fits(to.0, to.1, NAV_RADIUS) && matches!(sweep(sc.fac, n.at, to), Sweep::Clear) {
+                    n.goal.stuck.aside = s.aside_seconds;
+                    n.goal.stuck.aside_dir = dir;
+                    break;
+                }
+            }
+        }
+        _ => {
+            n.goal.banned.push((spot.key(), s.ban_seconds));
+            n.goal.spot = None;
+            n.goal.cool = t.goals.replan;
+            n.goal.stuck = StuckState { anchor: n.at, count: n.goal.stuck.count, ..StuckState::default() };
+            n.path.clear();
+            n.hop = None;
+            n.walking = false;
+            return true;
+        }
+    }
+    false
+}
+
 /// One intent of the bot's list (data `intents`). Returns true when it acted. "flee" acts on any bot. The others need
 /// the bot joined to the runner. A name the bot does not know does nothing.
 fn run_intent(n: &mut Npc, sc: &Scene, intent: &str, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -> bool {
     match intent {
         "flee" => flee(n, sc.fac, sc.seen, t, dt, presses),
         _ if !n.joined => false,
+        "goal" => run_goal(n, sc, t, dt, presses),
         // hiding and errands are own-level intents: they only run on the runner's level
-        "hide" | "relay" | "locker" if n.level != sc.runner_level => false,
+        "hide" | "relay" | "locker" | "pickup" if n.level != sc.runner_level => false,
+        "pickup" => fetch(n, sc, t, dt, presses),
         "hide" => hide(n, sc, t, dt, presses),
         "relay" => errand(n, sc, false, t, dt, presses),
         "locker" => errand(n, sc, true, t, dt, presses),
@@ -1173,6 +1900,7 @@ impl Game {
             door: None,
             hidden: None,
             errand: None,
+            claim: None,
             dwell: 0.0,
             visited: vec![],
             clear_time: 0.0,
@@ -1181,6 +1909,7 @@ impl Game {
             deep_cells: Vec::new(),
             fleeing: false,
             heard: None,
+            goal: GoalState::default(), flee: FleeState::default(),
         });
         self.npc_next += 1;
         id
@@ -1318,6 +2047,9 @@ impl Game {
         let no_points: &[(f32, f32)] = &[];
         let mut presses: Vec<Cell> = vec![];
         let mut closes: Vec<Cell> = vec![];
+        let loot = self.npc_loot(t);
+        let spots = self.npc_spots(t, &facs);
+        let search_all: Vec<(i32, (f32, f32))> = by_level.iter().flat_map(|e| e.2.iter().map(move |p| (e.0, *p))).collect();
         for n in self.npcs.iter_mut() {
             let Some(&(_, fac)) = facs.iter().find(|(l, _)| *l == n.level) else {
                 // a level that is not resident: the bot stands (it follows the runner, so this is a rebuild's leftover)
@@ -1337,6 +2069,9 @@ impl Game {
                 searching,
                 runner_level: level,
                 nav,
+                loot: if own { &loot[..] } else { &[] },
+                spots: &spots,
+                search_all: &search_all,
             };
             // a bot on a flight or ladder finishes the edge before it thinks about anything else
             if n.walk.is_some() {
@@ -1348,6 +2083,7 @@ impl Game {
             let mut sink: Vec<Cell> = vec![];
             let door_presses = if own { &mut presses } else { &mut sink };
             note_searched(n, searching, t);
+            n.flee.alert = if sees(n, fac, seen, &t.flee) || hears_hunter(n, seen, &t.flee) { t.flee.alert } else { (n.flee.alert - dt).max(0.0) };
             if n.hidden.is_some() {
                 hidden_tick(n, &sc, t, dt);
                 continue;
@@ -1395,6 +2131,112 @@ impl Game {
         }
         self.npc_press_doors(presses);
         self.npc_close_doors(closes);
+        self.npc_claims();
+    }
+
+    /// The places the bots may make their goal (data `goals`): every relay of every resident level (the active level's
+    /// not yet recovered), the active level's batteries and floor items the team has room for (a battery while the
+    /// lamp is low, the heal item while stamina is low, any other useful item as a pickup) and its exit once its relays
+    /// are all recovered.
+    fn npc_spots(&self, t: &Tuning, facs: &[(i32, &Facility)]) -> Vec<Spot> {
+        let g = &t.goals;
+        let active = self.fac.level;
+        let open = |fac: &Facility, p: (f32, f32)| fac.nearest_open(p.0, p.1, NAV_RADIUS).map_or(cell_at(p), cell_at);
+        let mut v = vec![];
+        for &(level, fac) in facs {
+            for (i, c) in fac.relays.iter().enumerate() {
+                if level == active && self.relays_taken.get(i).copied().unwrap_or(true) {
+                    continue;
+                }
+                let pos = c.center();
+                let claim = (level == active).then_some(Claim::Relay(i));
+                v.push(Spot { kind: SpotKind::Relay, level, cell: open(fac, pos), pos, claim });
+            }
+        }
+        let lamp_low = self.p.lamp < g.low_lamp * crate::config::MAX_LAMP_CHARGE;
+        let stamina_low = self.p.stamina < g.low_stamina * crate::config::MAX_STAMINA;
+        let useful = |item: Item| {
+            t.pickup_useful.iter().any(|w| w == crate::net::held_wire::wire(item)) && self.can_grant(item)
+        };
+        let kind_of = |item: Item| {
+            let wire = crate::net::held_wire::wire(item);
+            if wire == g.heal_item && stamina_low {
+                SpotKind::Heal
+            } else if item == Item::Battery && lamp_low {
+                SpotKind::Battery
+            } else {
+                SpotKind::Pickup
+            }
+        };
+        if useful(Item::Battery) {
+            for (i, c) in self.fac.batteries.iter().enumerate() {
+                if !self.batteries_taken.get(i).copied().unwrap_or(true) {
+                    let pos = c.center();
+                    let kind = kind_of(Item::Battery);
+                    v.push(Spot { kind, level: active, cell: open(&self.fac, pos), pos, claim: Some(Claim::Battery(i)) });
+                }
+            }
+        }
+        for (i, p) in self.pickups.iter().enumerate() {
+            if !p.taken && useful(p.item) {
+                v.push(Spot { kind: kind_of(p.item), level: active, cell: open(&self.fac, p.pos), pos: p.pos, claim: Some(Claim::Pickup(i)) });
+            }
+        }
+        if self.fac.has_lift && self.relays_collected >= self.fac.relays.len() as i32 {
+            let pos = self.fac.exit.center();
+            v.push(Spot { kind: SpotKind::Exit, level: active, cell: open(&self.fac, pos), pos, claim: None });
+        }
+        v
+    }
+
+    /// The untaken batteries and floor items of the active level that the bots take (data `pickup.useful`) and that the
+    /// team has room for.
+    fn npc_loot(&self, t: &Tuning) -> Vec<(Claim, (f32, f32))> {
+        let useful = |item: Item| {
+            t.pickup_useful.iter().any(|w| w == crate::net::held_wire::wire(item)) && self.can_grant(item)
+        };
+        let mut v = vec![];
+        if useful(Item::Battery) {
+            for (i, c) in self.fac.batteries.iter().enumerate() {
+                if !self.batteries_taken.get(i).copied().unwrap_or(true) {
+                    v.push((Claim::Battery(i), c.center()));
+                }
+            }
+        }
+        for (i, p) in self.pickups.iter().enumerate() {
+            if !p.taken && useful(p.item) {
+                v.push((Claim::Pickup(i), p.pos));
+            }
+        }
+        v
+    }
+
+    /// Applies what the bots reached this frame, through the same functions as the player's interact (`claim_relay`,
+    /// `take_battery`, `take_pickup`). A claim on a level the bot has left is dropped.
+    fn npc_claims(&mut self) {
+        let active = self.fac.level;
+        let claims: Vec<(u32, Claim)> = self
+            .npcs
+            .iter_mut()
+            .filter_map(|n| n.claim.take().filter(|_| n.level == active).map(|c| (n.id, c)))
+            .collect();
+        if claims.is_empty() {
+            return;
+        }
+        for (id, claim) in claims {
+            let actor = super::interact::Actor::Npc(id);
+            match claim {
+                Claim::Relay(i) => {
+                    self.claim_relay(i, actor, &crate::content::Content::load());
+                }
+                Claim::Battery(i) => {
+                    self.take_battery(i, actor);
+                }
+                Claim::Pickup(i) => {
+                    self.take_pickup(i, actor);
+                }
+            }
+        }
     }
 
     /// The bots on the events' level, and one storey away at the data `hear_adjacent_scale`, hear this frame's noise
@@ -2042,6 +2884,7 @@ mod tests {
             door: None,
             hidden: Some(2),
             errand: Some(Errand::Relay(1)),
+            claim: None,
             dwell: 1.0,
             visited: vec![Errand::Relay(0)],
             clear_time: 1.0,
@@ -2050,6 +2893,7 @@ mod tests {
             deep_cells: Vec::new(),
             fleeing: false,
             heard: None,
+            goal: GoalState::default(), flee: FleeState::default(),
         };
         n.shift((-16.0, 32.0));
         assert_eq!(n.at, (-13.0, 36.0));
@@ -2060,6 +2904,99 @@ mod tests {
             (None, None, 0, 0),
             "the old frame's hides, trips and memory are gone"
         );
+    }
+
+    #[test]
+    fn a_bot_with_no_flight_route_backs_off_instead_of_planning_every_frame() {
+        let (mut g, content) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        g.npcs[0].joined = true;
+        let start = g.npcs[0].at;
+        let mut h = crate::hunters::brain::Brain::new(content.hunters[0].clone(), (start.0 + 3.0, start.1), "T", Difficulty::Standard);
+        h.active = true;
+        h.state = State::Chase;
+        g.hunters.push(h);
+        // a search of one cell finds no route: the plan fails
+        let capped = tuning_with(|v| {
+            v["intents"] = names(&["flee"]);
+            v["flee"]["max_cells"] = Value::from(1);
+        });
+        for _ in 0..10 {
+            g.update_npcs_with(1.0 / 60.0, &capped);
+        }
+        assert_eq!(g.npcs[0].flee.goal, None, "the capped search found nothing");
+        assert!(g.npcs[0].flee.since > 0.1, "the failed plan started the replan wait: {}", g.npcs[0].flee.since);
+    }
+
+    #[test]
+    fn a_world_shift_clears_the_goal_the_flight_and_the_claim() {
+        let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        let n = &mut g.npcs[0];
+        n.goal.done.push((0, 1, 2));
+        n.goal.banned.push(((0, 3, 4), 9.0));
+        n.goal.stuck.anchor = (5.0, 6.0);
+        n.goal.stuck.still = 2.0;
+        n.goal.away = 5.0;
+        n.flee.goal = Some((7, 8));
+        n.flee.since = 0.0;
+        n.claim = Some(Claim::Relay(0));
+        n.shift((10.0, 10.0));
+        assert!(n.goal.spot.is_none() && n.goal.done.is_empty() && n.goal.banned.is_empty());
+        assert_eq!((n.goal.stuck.anchor, n.goal.stuck.still, n.goal.away), ((0.0, 0.0), 0.0, 0.0));
+        assert_eq!(n.flee.goal, None);
+        assert!(n.flee.since >= 1.0e9, "the next alarm plans at once");
+        assert_eq!(n.claim, None);
+    }
+
+    #[test]
+    fn a_bot_drops_its_goal_after_the_away_time_and_takes_none_until_it_is_back() {
+        let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        g.hunters.clear();
+        g.npcs[0].joined = true;
+        let leash = tuning_with(|v| {
+            v["intents"] = names(&["goal"]);
+            v["goals"]["leash"] = serde_json::json!({ "max_distance": 0.0, "max_away": 1.0 });
+        });
+        let dt = 1.0 / 60.0;
+        for _ in 0..(3 * 60) {
+            g.npcs[0].at = (g.p.pos.0 + 3.0, g.p.pos.1);
+            g.update_npcs_with(dt, &leash);
+        }
+        let picks = g.npcs[0].goal.picks;
+        assert!(g.npcs[0].goal.spot.is_none(), "the goal was dropped once the bot was away for over a second");
+        for _ in 0..(3 * 60) {
+            g.npcs[0].at = (g.p.pos.0 + 3.0, g.p.pos.1);
+            g.update_npcs_with(dt, &leash);
+        }
+        assert_eq!(g.npcs[0].goal.picks, picks, "a bot that is away takes no new goal");
+    }
+
+    #[test]
+    fn a_short_batteries_taken_list_does_not_panic_the_bots() {
+        let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        g.npcs[0].joined = true;
+        g.batteries_taken.clear();
+        for _ in 0..30 {
+            g.update_npcs_with(1.0 / 60.0, Tuning::get());
+        }
+    }
+
+    #[test]
+    fn a_far_bot_claim_counts_but_neither_saves_nor_grows_the_population() {
+        let (mut g, content) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        g.hunters.clear();
+        let far = g.fac.relays.iter().position(|c| pdist(c.center(), g.p.pos) > Tuning::get().goals.leash_distance);
+        let (near, near_i) = (g.fac.relays.iter().position(|c| pdist(c.center(), g.p.pos) <= Tuning::get().goals.leash_distance), far);
+        let Some(i) = near_i else { return };
+        g.last_autosave = "";
+        let bot = super::super::interact::Actor::Npc(g.npcs[0].id);
+        assert!(g.claim_relay(i, bot, &content));
+        assert_eq!(g.relays_collected, 1, "the team's count and flags are the same as a player's claim");
+        assert!(g.relays_taken[i]);
+        assert_eq!(g.last_autosave, "", "a claim far from the runner does not save");
+        if let Some(j) = near {
+            assert!(g.claim_relay(j, bot, &content));
+            assert_eq!(g.last_autosave, "relay", "a claim near the runner saves as before");
+        }
     }
 
     #[test]
@@ -2074,7 +3011,7 @@ mod tests {
         assert_eq!(t.door_think, 0.25, "DOOR_THINK, the first port's figure");
         assert_eq!(t.door_think_jitter, 0.1, "DOOR_THINK_JITTER, the first port's figure");
         assert_eq!(t.tasks, vec!["door".to_string()]);
-        let intents: Vec<String> = ["hide", "flee", "relay", "locker", "follow"].iter().map(|s| s.to_string()).collect();
+        let intents: Vec<String> = ["hide", "flee", "goal", "locker", "follow"].iter().map(|s| s.to_string()).collect();
         assert_eq!(t.intents, intents, "the order the bots try their intents in");
         assert_eq!(t.hide_chase_range, 14.0, "a chase is seen at the threat range");
         assert_eq!(t.hide_reach, 8.0);
@@ -2083,7 +3020,9 @@ mod tests {
         assert_eq!(t.hide_leave_delay, 3.0);
         assert_eq!(t.errand_safe_range, 14.0);
         assert_eq!(t.errand_reach, 1.2);
-        assert_eq!((t.relay_leash, t.relay_dwell), (12.0, 4.0));
+        assert_eq!((t.relay_leash, t.relay_dwell, t.relay_claim_time), (12.0, 4.0, 2.0));
+        assert_eq!(t.pickup_leash, 10.0);
+        assert_eq!(t.pickup_useful, vec!["battery".to_string(), "stim_pack".to_string()]);
         assert_eq!((t.locker_leash, t.locker_dwell), (10.0, 6.0));
         assert_eq!(t.searched_memory, 8);
         assert_eq!(t.searched_avoid, 4.0);
@@ -2106,9 +3045,206 @@ mod tests {
             assert!(flee(&mut g.npcs[0], fac, &chasing_5m, &wide, dt, &mut presses), "5 m is inside a 14 m range");
             assert!(!flee(&mut g.npcs[0], fac, &chasing_5m, &narrow, dt, &mut presses), "5 m is outside a 1 m range");
         }
-        // the nearest hunter must be chasing: a nearer hunter that is only wandering stops the run, as Godot's _nearest_hunter
-        let nearer_wandering = vec![((start.0 + 2.0, start.1), false), ((start.0 + 5.0, start.1), true)];
-        assert!(!flee(&mut g.npcs[0], &g.fac, &nearer_wandering, &wide, dt, &mut presses));
+        // a hunter that is only wandering and beyond sight range does not start a run
+        let far_wandering = vec![((start.0 + 30.0, start.1), false)];
+        assert!(!flee(&mut g.npcs[0], &g.fac, &far_wandering, &wide, dt, &mut presses));
+    }
+
+    /// An open cell 7 to 12 m from `at` with a clear line to it, for scripted hunter positions.
+    fn sight_cell(fac: &Facility, at: (f32, f32)) -> (f32, f32) {
+        fac.floor_cells()
+            .into_iter()
+            .map(|c| c.center())
+            .find(|&p| (7.0..12.0).contains(&pdist(at, p)) && fac.has_line_of_sight(at, p) && fac.has_line_of_sight(p, at))
+            .expect("an open cell in sight of the bot")
+    }
+
+    fn unit(a: (f32, f32), b: (f32, f32)) -> (f32, f32) {
+        let d = pdist(a, b);
+        ((b.0 - a.0) / d, (b.1 - a.1) / d)
+    }
+
+    #[test]
+    fn a_bot_flees_a_hunter_it_sees_and_not_one_behind_it() {
+        let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        let t = Tuning::get();
+        let at = g.npcs[0].at;
+        let h = sight_cell(&g.fac, at);
+        let dt = 1.0 / 60.0;
+        let mut presses = vec![];
+        let wandering = vec![(h, false)];
+        g.npcs[0].heading = unit(at, h);
+        assert!(flee(&mut g.npcs[0], &g.fac, &wandering, t, dt, &mut presses), "a wandering hunter in the view cone is a threat");
+        assert!(g.npcs[0].flee.goal.is_some());
+        // the same hunter behind the bot, beyond the sense range, is not seen
+        let mut behind = g.npcs[0].clone();
+        behind.flee = FleeState::default();
+        behind.heading = (-unit(at, h).0, -unit(at, h).1);
+        assert!(pdist(at, h) > t.flee.sense_range);
+        assert!(!flee(&mut behind, &g.fac, &wandering, t, dt, &mut presses), "outside the cone and out of sense range");
+        let narrow = tuning_with(|v| v["flee"]["sight_range"] = Value::from(2.0));
+        let mut blind = g.npcs[0].clone();
+        blind.flee = FleeState::default();
+        assert!(!flee(&mut blind, &g.fac, &wandering, &narrow, dt, &mut presses), "the sight range is data");
+    }
+
+    #[test]
+    fn a_bot_that_heard_a_noise_runs_from_a_hunter_beyond_sight() {
+        let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        let t = Tuning::get();
+        let at = g.npcs[0].at;
+        let dt = 1.0 / 60.0;
+        let mut presses = vec![];
+        let hunter = vec![((at.0 + 19.0, at.1), false)];
+        assert!(!flee(&mut g.npcs[0], &g.fac, &hunter, t, dt, &mut presses), "19 m is beyond sight and nothing was heard");
+        g.npcs[0].heard = Some((at, 2.0));
+        assert!(flee(&mut g.npcs[0], &g.fac, &hunter, t, dt, &mut presses), "a heard noise with a hunter within 20 m");
+    }
+
+    #[test]
+    fn the_flight_route_keeps_clear_of_the_hunter_and_never_wades() {
+        let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        let t = Tuning::get();
+        let at = g.npcs[0].at;
+        let h = sight_cell(&g.fac, at);
+        let d0 = pdist(at, h);
+        let route = flee_route(&g.npcs[0], &g.fac, &[h], &t.flee).expect("a route away from the hunter");
+        let floor = t.flee.clearance.min(d0);
+        for &(x, y) in &route {
+            assert!(pdist(Cell::new(x, y).center(), h) >= floor - 1e-3 || (x, y) == route[0], "cell {x},{y} is clear of the hunter");
+        }
+        let end = *route.last().unwrap();
+        assert!(pdist(Cell::new(end.0, end.1).center(), h) > d0, "it ends farther off than it began");
+        // the cells of that route turn to deep water: the next route uses none of them
+        g.npcs[0].deep_cells = route.iter().skip(1).copied().collect();
+        if let Some(dry) = flee_route(&g.npcs[0], &g.fac, &[h], &t.flee) {
+            assert!(dry.iter().skip(1).all(|c| !g.npcs[0].deep_cells.contains(c)), "no flight cell is deep water");
+        }
+    }
+
+    #[test]
+    fn a_bot_replans_when_the_hunter_crosses_its_route() {
+        let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        let t = Tuning::get();
+        let dt = 1.0 / 60.0;
+        let at = g.npcs[0].at;
+        let h = sight_cell(&g.fac, at);
+        let hunters = vec![(h, true)];
+        let mut presses = vec![];
+        assert!(flee(&mut g.npcs[0], &g.fac, &hunters, t, dt, &mut presses));
+        let first = g.npcs[0].flee.goal.expect("a flight goal");
+        assert!(g.npcs[0].path.len() >= 3, "a route of some length");
+        // the hunter steps onto the route ahead of the bot: the route is dropped for one that avoids it
+        let onto = g.npcs[0].path[2];
+        let crossing = vec![(Cell::new(onto.0, onto.1).center(), true)];
+        for _ in 0..60 {
+            flee(&mut g.npcs[0], &g.fac, &crossing, t, dt, &mut presses);
+        }
+        let d = pdist(g.npcs[0].at, crossing[0].0);
+        let floor = t.flee.clearance.min(d);
+        assert!(
+            g.npcs[0].path.iter().all(|&(x, y)| pdist(Cell::new(x, y).center(), crossing[0].0) >= floor - 1e-3),
+            "the new route keeps off the hunter (first goal {first:?})"
+        );
+    }
+
+    #[test]
+    fn a_bot_hides_in_a_close_locker_from_a_hunter_it_sees() {
+        let (mut g, _, at, centre) = locker_case();
+        g.hunters[0].state = State::Wander;
+        g.hunters[0].pos = g
+            .fac
+            .floor_cells()
+            .into_iter()
+            .map(|c| c.center())
+            .find(|&p| (5.0..10.0).contains(&pdist(at, p)) && g.fac.has_line_of_sight(at, p) && pdist(p, centre) > pdist(at, centre) + 3.0)
+            .expect("an open cell in sight, farther from the locker than the bot");
+        g.npcs[0].heading = unit(at, g.hunters[0].pos);
+        let dt = 1.0 / 60.0;
+        for _ in 0..(10 * 60) {
+            g.update_npcs(dt);
+            if g.npcs[0].hidden.is_some() {
+                break;
+            }
+        }
+        assert!(g.npcs[0].hidden.is_some(), "a wandering hunter in view sends the bot into the locker beside it");
+    }
+
+    #[test]
+    fn a_hidden_bot_stays_the_leave_delay_after_the_hunter_goes() {
+        let (mut g, _, _, _) = locker_case();
+        let dt = 1.0 / 60.0;
+        for _ in 0..(10 * 60) {
+            g.update_npcs(dt);
+            if g.npcs[0].hidden.is_some() {
+                break;
+            }
+        }
+        assert!(g.npcs[0].hidden.is_some());
+        g.hunters.clear();
+        for _ in 0..(2.5 * 60.0) as usize {
+            g.update_npcs(dt);
+        }
+        assert!(g.npcs[0].hidden.is_some(), "still in the locker 2.5 s after the hunter left (delay 3 s)");
+        for _ in 0..(1.5 * 60.0) as usize {
+            g.update_npcs(dt);
+        }
+        assert!(g.npcs[0].hidden.is_none(), "out once the delay is up");
+    }
+
+    #[test]
+    fn a_fleeing_bot_does_not_flip_direction_back_and_forth() {
+        let (mut g, content) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        let dt = 1.0 / 60.0;
+        let at = g.npcs[0].at;
+        let h = sight_cell(&g.fac, at);
+        let mut hunter = crate::hunters::brain::Brain::new(content.hunters[0].clone(), h, "T", Difficulty::Standard);
+        hunter.active = true;
+        hunter.state = State::Chase;
+        g.hunters.push(hunter);
+        g.npcs[0].joined = true;
+        let flee_only = only(&["flee"]);
+        let mut last = g.npcs[0].at;
+        let mut last_dir: Option<(f32, f32)> = None;
+        let mut flips = 0;
+        let seconds = 6;
+        for frame in 0..(seconds * 60) {
+            // the hunter closes in on the bot at a walk
+            let p = g.hunters[0].pos;
+            let to = g.npcs[0].at;
+            if pdist(p, to) > 1.0 {
+                let u = unit(p, to);
+                g.hunters[0].pos = (p.0 + u.0 * 1.5 * dt, p.1 + u.1 * 1.5 * dt);
+            }
+            g.update_npcs_with(dt, &flee_only);
+            let now = g.npcs[0].at;
+            if frame % 6 == 5 {
+                let d = (now.0 - last.0, now.1 - last.1);
+                if d.0.hypot(d.1) > 0.05 {
+                    if let Some(l) = last_dir {
+                        if l.0 * d.0 + l.1 * d.1 < 0.0 {
+                            flips += 1;
+                        }
+                    }
+                    last_dir = Some(d);
+                }
+                last = now;
+            }
+        }
+        assert!(flips <= seconds, "{flips} reversals in {seconds} s: at most one a second");
+    }
+
+    #[test]
+    fn a_bot_on_a_deck_stays_when_a_hunter_comes() {
+        let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        let t = Tuning::get();
+        let at = g.npcs[0].at;
+        let h = sight_cell(&g.fac, at);
+        g.fac.set_walk_surface(cell_at(at), crate::world::facility::DeckKind::Catwalk, 3.0);
+        let chasing = vec![(h, true)];
+        let mut presses = vec![];
+        assert!(!flee(&mut g.npcs[0], &g.fac, &chasing, t, 1.0 / 60.0, &mut presses), "a floor hunter cannot reach a deck bot");
+        assert_eq!(g.npcs[0].at, at, "the bot did not move");
     }
 
     #[test]
@@ -2288,6 +3424,103 @@ mod tests {
         assert_eq!(g.npcs[0].errand, None, "the trip is over");
     }
 
+    /// The bot on the runner's spot, joined, with a pickup of `item` at its feet.
+    fn bot_with_loot(items: &[Item]) -> Game {
+        let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        g.npcs[0].joined = true;
+        g.hunters.clear();
+        g.npcs[0].at = g.p.pos;
+        g.pickups.clear();
+        g.fac.batteries.clear();
+        g.batteries_taken.clear();
+        for &item in items {
+            g.pickups.push(super::super::FloorPickup { pos: g.p.pos, item, n: 1, taken: false });
+        }
+        g
+    }
+
+    #[test]
+    fn a_bot_at_a_relay_recovers_it_once() {
+        let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        g.npcs[0].joined = true;
+        g.hunters.clear();
+        let trip = tuning_with(|v| {
+            v["intents"] = names(&["relay"]);
+            v["errand"]["relay"]["leash"] = Value::from(1000.0);
+            v["errand"]["relay"]["dwell"] = Value::from(1.0);
+            v["errand"]["relay"]["claim_time"] = Value::from(0.5);
+        });
+        assert_eq!(g.relays_collected, 0);
+        for _ in 0..(120 * 60) {
+            g.update_npcs_with(1.0 / 60.0, &trip);
+            if !g.npcs[0].visited.is_empty() {
+                break;
+            }
+        }
+        let Some(Errand::Relay(i)) = g.npcs[0].visited.first().copied() else { panic!("the bot reached a relay") };
+        assert!(g.relays_taken[i], "the relay is claimed");
+        assert_eq!(g.relays_collected, 1, "the relay count went up once");
+        for _ in 0..(5 * 60) {
+            g.update_npcs_with(1.0 / 60.0, &trip);
+        }
+        assert_eq!(g.relays_collected, 1, "standing on, or going to another relay, never counts the first twice");
+        assert!(g.relays_taken.iter().filter(|t| **t).count() as i32 == g.relays_collected);
+    }
+
+    #[test]
+    fn a_bot_takes_useful_items_and_leaves_junk() {
+        let mut g = bot_with_loot(&[Item::Taser, Item::Stim]);
+        let t = only(&["pickup"]);
+        for _ in 0..120 {
+            g.update_npcs_with(1.0 / 60.0, &t);
+        }
+        assert!(!g.pickups[0].taken, "a taser is junk to a bot");
+        assert!(g.pickups[1].taken, "a stim pack is useful");
+        assert!(g.slots.iter().flatten().any(|s| s.item == Item::Stim));
+        assert!(!g.slots.iter().flatten().any(|s| s.item == Item::Taser));
+    }
+
+    #[test]
+    fn a_bot_leaves_an_item_the_team_has_no_room_for() {
+        let mut g = bot_with_loot(&[Item::Stim]);
+        for s in g.slots.iter_mut() {
+            *s = Some(super::super::items::Slot { item: Item::Axe, n: 1 });
+        }
+        for _ in 0..120 {
+            g.update_npcs_with(1.0 / 60.0, &only(&["pickup"]));
+        }
+        assert!(!g.pickups[0].taken);
+    }
+
+    #[test]
+    fn a_bot_s_claims_equal_the_player_s_interact() {
+        use super::super::interact::{Actor, Focus};
+        let content = Content::load();
+        let sounds = crate::audio::Sounds::default();
+        let (mut a, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        let (mut b, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        for g in [&mut a, &mut b] {
+            g.hunters.clear();
+            g.pickups.push(super::super::FloorPickup { pos: g.p.pos, item: Item::Stim, n: 1, taken: false });
+        }
+        let catalog = Catalog::load();
+        let bot = Actor::Npc(b.npcs[0].id);
+        assert!(!a.fac.relays.is_empty() && !a.fac.batteries.is_empty());
+        a.interact(Focus::Relay(0), &content, &catalog, &sounds);
+        a.interact(Focus::Battery(0), &content, &catalog, &sounds);
+        a.interact(Focus::Pickup(a.pickups.len() - 1), &content, &catalog, &sounds);
+        assert!(b.claim_relay(0, bot, &content));
+        assert!(b.take_battery(0, bot));
+        let last = b.pickups.len() - 1;
+        assert!(b.take_pickup(last, bot));
+        assert!(!b.claim_relay(0, bot, &content), "a claimed relay is not claimed twice");
+        assert_eq!((a.relays_collected, a.score), (b.relays_collected, b.score));
+        assert_eq!(a.relays_taken, b.relays_taken);
+        assert_eq!(a.batteries_taken, b.batteries_taken);
+        let held = |g: &Game| g.slots.iter().map(|s| s.map(|s| (s.item, s.n))).collect::<Vec<_>>();
+        assert_eq!(held(&a), held(&b));
+    }
+
     #[test]
     fn a_relay_leash_of_zero_sends_no_bot_to_a_relay() {
         let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
@@ -2380,6 +3613,198 @@ mod water_tests {
     use crate::config::Difficulty;
     use crate::world::facility::Options;
 
+    /// A bot on the first cell of the facility's reach, with the reachable cells by step count (nearest first).
+    fn goal_field() -> (Facility, Npc, Vec<Cell>) {
+        let fac = facility();
+        let start = fac.floor_cells()[0];
+        let mut reach: Vec<(Cell, i32)> = fac.distance_map(start).into_iter().filter(|(_, d)| *d >= 3).collect();
+        reach.sort_by_key(|(c, d)| (*d, c.x, c.y));
+        assert!(reach.len() >= 8, "a facility with room for four spots");
+        let cells: Vec<Cell> = reach.iter().map(|(c, _)| *c).collect();
+        let n = Npc {
+            id: 0, name: String::new(), slot: 1, at: start.center(), level: 0, y: 0.0, walk: None, edge_clock: 0.0, hop: None, facing: 0.0, turn_v: 0.0, heading: (0.0, 0.0),
+            path: vec![], path_age: 0.0, walking: false, stride: 0.0, smart: 50, key: None, joined: true,
+            join_radius: 0.0, door: None, hidden: None, errand: None, dwell: 0.0, visited: vec![], clear_time: 0.0,
+            claim: None,
+            searched: vec![], last_door: None, deep_cells: vec![], fleeing: false, heard: None, goal: GoalState::default(), flee: FleeState::default(),
+        };
+        (fac, n, cells)
+    }
+
+    fn spot(kind: SpotKind, c: Cell) -> Spot {
+        Spot { kind, level: 0, cell: c, pos: c.center(), claim: None }
+    }
+
+    fn goal_scene<'a>(fac: &'a Facility, spots: &'a [Spot]) -> Scene<'a> {
+        Scene { fac, disabled: &[], leader: (0.0, 0.0), seen: &[], searching: &[], runner_level: 0, nav: None, loot: &[], spots, search_all: &[] }
+    }
+
+    #[test]
+    fn goals_are_picked_relay_then_battery_then_pickup_then_exit_whatever_the_distance() {
+        let (fac, n, cells) = goal_field();
+        let t = Tuning::get();
+        let last = cells.len() - 1;
+        // the relay is the farthest and the pickup the nearest: the kind still decides
+        let mut spots = vec![
+            spot(SpotKind::Pickup, cells[0]),
+            spot(SpotKind::Exit, cells[last / 2]),
+            spot(SpotKind::Battery, cells[last / 3]),
+            spot(SpotKind::Relay, cells[last]),
+        ];
+        let mut order = vec![];
+        while !spots.is_empty() {
+            let sc = goal_scene(&fac, &spots);
+            let pick = pick_goal(&n, &sc, t).expect("a goal");
+            order.push(pick.kind);
+            spots.retain(|s| s.kind != pick.kind);
+        }
+        assert_eq!(order, vec![SpotKind::Relay, SpotKind::Battery, SpotKind::Pickup, SpotKind::Exit]);
+        let heal = [spot(SpotKind::Pickup, cells[0]), spot(SpotKind::Heal, cells[last])];
+        assert_eq!(pick_goal(&n, &goal_scene(&fac, &heal), t).map(|s| s.kind), Some(SpotKind::Heal));
+        let mut weights = t.clone();
+        weights.goals.pickup = 90.0;
+        let two = [spot(SpotKind::Pickup, cells[0]), spot(SpotKind::Battery, cells[last])];
+        assert_eq!(pick_goal(&n, &goal_scene(&fac, &two), &weights).map(|s| s.kind), Some(SpotKind::Pickup), "the order is the data's weights");
+        assert_eq!(pick_goal(&n, &goal_scene(&fac, &two), t).map(|s| s.kind), Some(SpotKind::Battery));
+    }
+
+    #[test]
+    fn a_bot_picks_a_goal_again_only_after_the_replan_wait() {
+        let (fac, mut n, cells) = goal_field();
+        let t = Tuning::get();
+        let (a, b) = (spot(SpotKind::Relay, cells[4]), spot(SpotKind::Relay, cells[5]));
+        let mut presses = vec![];
+        let dt = 1.0 / 60.0;
+        let first = [a];
+        assert!(run_goal(&mut n, &goal_scene(&fac, &first), t, dt, &mut presses));
+        assert_eq!((n.goal.picks, n.goal.spot.map(|s| s.cell)), (1, Some(a.cell)));
+        // the goal vanishes and another stands: the bot drops it and waits, acting as the follow fallback would
+        let second = [b];
+        for _ in 0..((t.goals.replan - 0.5) / dt) as usize {
+            let acted = run_goal(&mut n, &goal_scene(&fac, &second), t, dt, &mut presses);
+            assert!(!acted, "no goal while the replan wait runs");
+        }
+        assert_eq!(n.goal.picks, 1, "no goal spam inside the wait");
+        for _ in 0..(1.0 / dt) as usize {
+            run_goal(&mut n, &goal_scene(&fac, &second), t, dt, &mut presses);
+        }
+        assert_eq!((n.goal.picks, n.goal.spot.map(|s| s.cell)), (2, Some(b.cell)), "and picks again once it is over");
+        // nothing to do at all: no pick is made and the bot does not act, so "follow" runs
+        let (fac2, mut idle, _) = goal_field();
+        for _ in 0..600 {
+            assert!(!run_goal(&mut idle, &goal_scene(&fac2, &[]), t, dt, &mut presses));
+        }
+        assert_eq!(idle.goal.picks, 0);
+    }
+
+    /// A bot held on its start cell (a body wedged in a corner) for `pinned` seconds while it works towards a relay, then
+    /// let go: the frames it took to reach the relay (None when it did not in 150 s), where it ended and its jam count.
+    fn boxed_in_run(pinned: f32) -> (Option<usize>, (f32, f32), u32) {
+        let (fac, mut n, cells) = goal_field();
+        let t = Tuning::get();
+        let start = n.at;
+        let spots = [spot(SpotKind::Relay, cells[cells.len() - 1])];
+        let dt = 1.0 / 60.0;
+        let mut presses = vec![];
+        for f in 0..(150 * 60) {
+            run_goal(&mut n, &goal_scene(&fac, &spots), t, dt, &mut presses);
+            if (f as f32) * dt < pinned {
+                n.at = start;
+            } else if pdist(n.at, spots[0].pos) <= t.errand_reach {
+                return (Some(f), n.at, n.goal.stuck.count);
+            }
+        }
+        (None, n.at, n.goal.stuck.count)
+    }
+
+    #[test]
+    fn a_boxed_in_bot_recovers_and_reaches_its_goal() {
+        let s = &Tuning::get().goals.stuck;
+        let (done, _, jams) = boxed_in_run(s.seconds * 2.5);
+        assert!(done.is_some(), "the bot reached the relay after the jam");
+        assert!(jams >= 2, "it noticed the jam and climbed the ladder: {jams}");
+    }
+
+    #[test]
+    fn a_bot_that_stays_boxed_in_gives_the_goal_up_for_a_while() {
+        let (fac, mut n, cells) = goal_field();
+        let t = Tuning::get();
+        let s = &t.goals.stuck;
+        let (start, dt) = (n.at, 1.0 / 60.0);
+        let spots = [spot(SpotKind::Relay, cells[cells.len() - 1])];
+        let mut presses = vec![];
+        let frames = |secs: f32| (secs / dt) as usize;
+        for _ in 0..frames(s.seconds * 5.0 + 2.0) {
+            run_goal(&mut n, &goal_scene(&fac, &spots), t, dt, &mut presses);
+            n.at = start;
+        }
+        assert_eq!(n.goal.picks, 1);
+        assert!(n.goal.spot.is_none(), "the goal is given up");
+        assert_eq!(n.goal.banned.len(), 1, "and kept off the list for now");
+        assert!(!n.goal.done.contains(&spots[0].key()), "it is not given up for good");
+        for _ in 0..frames(s.ban_seconds - 8.0) {
+            run_goal(&mut n, &goal_scene(&fac, &spots), t, dt, &mut presses);
+            n.at = start;
+        }
+        assert_eq!(n.goal.picks, 1, "no pick while the ban runs");
+        for _ in 0..frames(8.0) {
+            run_goal(&mut n, &goal_scene(&fac, &spots), t, dt, &mut presses);
+            n.at = start;
+        }
+        assert!(n.goal.picks >= 2, "the spot is wanted again once the ban is over");
+    }
+
+    #[test]
+    fn a_jammed_bot_does_the_same_on_every_run_of_a_seed() {
+        let a = boxed_in_run(Tuning::get().goals.stuck.seconds * 3.5);
+        let b = boxed_in_run(Tuning::get().goals.stuck.seconds * 3.5);
+        assert_eq!(a, b);
+        assert!(a.0.is_some());
+    }
+
+    #[test]
+    fn a_bot_reaches_the_exit_once_the_relays_are_claimed() {
+        let (content, catalog) = (crate::content::Content::load(), crate::world::catalog::Catalog::load());
+        let mut g = Game::new_sim(Difficulty::Standard, 4242, &content, &catalog);
+        let t = {
+            let mut t = Tuning::get().clone();
+            t.intents = vec!["goal".to_string()];
+            t
+        };
+        g.hunters.clear();
+        g.fac.has_lift = true;
+        let exit = g.fac.nearest_open(g.fac.exit.center().0, g.fac.exit.center().1, NAV_RADIUS).map_or(g.fac.exit.center(), |p| p);
+        let from = cell_at(exit);
+        let mut reach: Vec<(Cell, i32)> = g.fac.distance_map(from).into_iter().collect();
+        reach.sort_by_key(|(c, d)| (*d, c.x, c.y));
+        let start = reach
+            .into_iter()
+            .filter(|&(c, steps)| steps >= 12 && g.fac.body_fits(c.center().0, c.center().1, NAV_RADIUS))
+            .map(|(c, _)| c.center())
+            .next()
+            .expect("a start away from the exit");
+        let (e, d) = ((g.p.pos.0, 1.6, g.p.pos.1), (0.0, 1.0, 0.0));
+        g.npc_spawn(1, 70, e, d);
+        g.npcs[0].joined = true;
+        g.npcs[0].at = start;
+        g.p.pos = start;
+        let all = g.fac.relays.len();
+        g.relays_taken = vec![true; all];
+        g.relays_collected = all as i32;
+        let dt = 1.0 / 60.0;
+        let mut reached = false;
+        for _ in 0..(150 * 60) {
+            g.update_npcs_with(dt, &t);
+            let bodies: Vec<(f32, f32)> = std::iter::once(g.p.pos).chain(g.npcs.iter().map(|n| n.at)).collect();
+            g.fac.update_doors(&[], &bodies, dt);
+            if pdist(g.npcs[0].at, g.fac.exit.center()) <= t.errand_reach + 0.5 {
+                reached = true;
+                break;
+            }
+        }
+        assert!(reached, "the bot walked to the exit: at {:?}, exit {:?}, start {start:?} goal {:?} banned {:?} done {:?} path {:?} stuck {:?}", g.npcs[0].at, g.fac.exit.center(), g.npcs[0].goal.spot, g.npcs[0].goal.banned, g.npcs[0].goal.done, g.npcs[0].path, g.npcs[0].goal.stuck);
+    }
+
     fn facility() -> Facility {
         let cat = crate::world::catalog::Catalog::load();
         Facility::generate("BOTWATER-1", &Options::default(), &cat)
@@ -2434,7 +3859,8 @@ mod water_tests {
             id: 0, name: String::new(), slot: 1, at: a.center(), level: 0, y: 0.0, walk: None, edge_clock: 0.0, hop: None, facing: 0.0, turn_v: 0.0, heading: (0.0, 0.0),
             path: vec![], path_age: 0.0, walking: false, stride: 0.0, smart: 50, key: None, joined: true,
             join_radius: 0.0, door: None, hidden: None, errand: None, dwell: 0.0, visited: vec![], clear_time: 0.0,
-            searched: vec![], last_door: None, deep_cells: vec![mid], fleeing: false, heard: None,
+            claim: None,
+            searched: vec![], last_door: None, deep_cells: vec![mid], fleeing: false, heard: None, goal: GoalState::default(), flee: FleeState::default(),
         };
         plan(&mut n, &fac, b.center());
         assert!(!n.path.contains(&mid), "the planned route keeps out of the deep cell");
@@ -2692,6 +4118,16 @@ mod level_tests {
                 if dir < 0 { *path.last().unwrap() } else { path[0] }
             };
             g.npcs.clear();
+            // these scenes test following: no relay, item or exit anywhere gives the bot a goal of its own
+            g.fac.relays.clear();
+            g.relays_taken.clear();
+            g.fac.batteries.clear();
+            g.batteries_taken.clear();
+            g.pickups.clear();
+            g.fac.has_lift = false;
+            for r in g.inf.as_mut().unwrap().stack.residents.iter_mut() {
+                r.fac.relays.clear();
+            }
             let at = {
                 let r = g.inf.as_ref().unwrap().stack.get(other).unwrap();
                 r.fac.nearest_open(end.0, end.1, NAV_RADIUS).unwrap_or(end)
@@ -2734,6 +4170,61 @@ mod level_tests {
             assert_eq!(n.level, c.g.runner_level(), "{what}");
             assert!((n.y - floor).abs() < 0.05, "{what}: the bot stands on the floor it reached: y {} floor {floor}", n.y);
         }
+    }
+
+    /// The case of `a_bot_follows_down_a_flight`: the bot on level 0, the runner one storey down, and a relay put on the
+    /// runner's level at least `GOAL_STEPS` steps from the runner (a goal, since a follower stands within 5 m).
+    fn relay_case() -> Option<(Case, usize)> {
+        let mut c = case(-1, 1, |s| !s.is_ladder())?;
+        let from = cell_at(c.g.p.pos);
+        let mut far: Vec<(Cell, i32)> = c.g.fac.distance_map(from).into_iter().filter(|(_, d)| *d >= GOAL_STEPS && *d <= GOAL_STEPS + 12).collect();
+        far.sort_by_key(|(c, d)| (*d, c.x, c.y));
+        let relay = far.first()?.0;
+        c.g.fac.relays.push(relay);
+        c.g.relays_taken.push(false);
+        assert_eq!(c.g.npcs[0].level, 0);
+        Some((c, 0))
+    }
+
+    /// Steps of the relay from the runner in `relay_case`.
+    const GOAL_STEPS: i32 = 14;
+
+    fn relay_run(c: &mut Case, i: usize) -> Option<f32> {
+        run(c, 120.0, |g| g.relays_taken[i])
+    }
+
+    #[test]
+    fn a_bot_on_level_0_reaches_a_relay_on_another_level() {
+        let Some((mut c, i)) = relay_case() else { return };
+        let t = relay_run(&mut c, i);
+        assert!(t.is_some(), "the bot recovered the relay a storey down, away from the runner");
+        let n = &c.g.npcs[0];
+        assert_eq!(n.level, -1);
+        assert!(n.goal.picks >= 1, "by a goal, not by following");
+        assert!(pdist(n.at, c.g.p.pos) > 5.0, "the runner never came to it");
+        assert_eq!(c.g.relays_collected, 1);
+    }
+
+    #[test]
+    fn a_bot_goes_back_to_following_when_the_goals_are_done() {
+        let Some((mut c, i)) = relay_case() else { return };
+        assert!(relay_run(&mut c, i).is_some());
+        run(&mut c, 60.0, |g| g.npcs[0].goal.spot.is_none() && pdist(g.npcs[0].at, g.p.pos) <= 6.0);
+        let n = &c.g.npcs[0];
+        assert!(n.goal.spot.is_none());
+        assert!(pdist(n.at, c.g.p.pos) <= 6.0, "with nothing left to do it stays with the runner: {}", pdist(n.at, c.g.p.pos));
+    }
+
+    #[test]
+    fn the_goal_walk_is_the_same_on_every_run() {
+        let go = || {
+            let (mut c, i) = relay_case()?;
+            let t = relay_run(&mut c, i);
+            let n = &c.g.npcs[0];
+            Some((t, n.at, n.level, n.goal.picks, n.goal.done.clone()))
+        };
+        let (a, b) = (go(), go());
+        assert_eq!(a, b);
     }
 
     #[test]

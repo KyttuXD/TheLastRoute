@@ -2,6 +2,7 @@
 //! painted surfaces, the floor's static geometry, the per-frame scene and the held item.
 #![allow(dead_code)] // ported API kept ahead of its callers (these items were the lib's pub API); prune as the port settles
 
+pub mod ambient;
 pub mod anim;
 pub mod bbmodel;
 pub mod builder;
@@ -11,6 +12,7 @@ pub mod fp_hands;
 pub mod hiding_cam;
 pub mod hunter_cache;
 pub mod inferno_deco;
+pub mod lamp_flicker;
 pub mod locker_occupant;
 pub mod locker_shell;
 pub mod prop_model;

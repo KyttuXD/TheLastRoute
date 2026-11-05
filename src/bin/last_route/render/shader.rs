@@ -4,6 +4,7 @@
 //! 0 tiled texture (fract UVs), 1 atlas texture, 2 unlit/emissive.
 
 use std::cell::RefCell;
+use std::sync::atomic::AtomicUsize;
 
 use macroquad::miniquad::{
     BlendFactor, BlendState, BlendValue, Comparison, Equation, PipelineParams, UniformType,
@@ -240,11 +241,26 @@ pub struct Lamp {
     pub range: f32,
     pub color: Color,
     pub energy: f32,
+    /// A slow wobble of `energy` with time (render/lamp_flicker.rs); `Flicker::NONE` is steady.
+    pub flicker: Flicker,
+}
+
+/// How a lamp's energy wobbles: `hz` cycles a second, swinging the energy by `depth` (0..1) either way, started at
+/// `phase` (0..1 of a cycle, drawn from the lamp's place so a row of lamps does not pulse together).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Flicker {
+    pub hz: f32,
+    pub depth: f32,
+    pub phase: f32,
+}
+
+impl Flicker {
+    pub const NONE: Flicker = Flicker { hz: 0.0, depth: 0.0, phase: 0.0 };
 }
 
 /// The global ambient, Godot's RefLook environment (game/look/ref_look.gd make_environment): colour #5a3550 at
-/// energy AMBIENT_ENERGY. Godot has no player setting for it and no per-region or per-level ambient (the night-watch
-/// office moods are their own scenes), so neither does this. Lit surfaces get `AMBIENT_COLOR * AMBIENT_ENERGY` added
+/// energy AMBIENT_ENERGY. These are the fallback if data/render/ambient.json (render/ambient.rs) fails to load; the live values
+/// are per region and level there, and Godot has neither (the night-watch office moods are their own scenes). Lit surfaces get `AMBIENT_COLOR * AMBIENT_ENERGY` added
 /// before the lamps and the flashlight. Godot's 0.035 leaves this shader's rooms black, so the port uses 0.35: a faint
 /// plum floor and walls away from the lamps, with the flashlight still the main light.
 pub const AMBIENT_COLOR: Vec3 = Vec3::new(0.352941, 0.207843, 0.313725);
@@ -269,8 +285,27 @@ pub struct NearLamps {
     col: [Vec4; MAX_LAMPS],
 }
 
-/// The up to MAX_LAMPS lamps nearest `eye`, nearest first. Equal distances keep their input order (stable sort).
+static LAMP_CAP: AtomicUsize = AtomicUsize::new(MAX_LAMPS);
+
+/// The most lamps a frame is lit with (`lamp_flicker` `lamp_cap`, by graphics quality): 8 on the slowest tier.
+pub fn lamp_cap() -> usize {
+    LAMP_CAP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Sets the lamp cap for the graphics quality tier; the shader's array stays MAX_LAMPS long and the rest read as no lamp.
+pub fn set_lamp_cap_for(quality: &str) {
+    LAMP_CAP.store(super::lamp_flicker::table().lamp_cap(quality).min(MAX_LAMPS), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The up to `lamp_cap()` lamps nearest `eye`, nearest first. Equal distances keep their input order (stable sort).
 pub fn nearest_lamps(eye: Vec3, lamps: &[Lamp]) -> NearLamps {
+    nearest_lamps_capped(eye, lamps, lamp_cap())
+}
+
+/// The up to `cap` (at most MAX_LAMPS) lamps nearest `eye`, nearest first.
+pub fn nearest_lamps_capped(eye: Vec3, lamps: &[Lamp], cap: usize) -> NearLamps {
+    #[cfg(test)]
+    SORTS.with(|c| c.set(c.get() + 1));
     let mut near: Vec<(f32, &Lamp)> = lamps
         .iter()
         .map(|lp| ((lp.pos - eye).length_squared(), lp))
@@ -280,11 +315,16 @@ pub fn nearest_lamps(eye: Vec3, lamps: &[Lamp]) -> NearLamps {
         pos: [Vec4::ZERO; MAX_LAMPS],
         col: [Vec4::ZERO; MAX_LAMPS],
     };
-    for (i, (_, lp)) in near.iter().take(MAX_LAMPS).enumerate() {
+    for (i, (_, lp)) in near.iter().take(cap.min(MAX_LAMPS)).enumerate() {
         out.pos[i] = vec4(lp.pos.x, lp.pos.y, lp.pos.z, lp.range);
         out.col[i] = vec4(lp.color.r, lp.color.g, lp.color.b, lp.energy);
     }
     out
+}
+
+#[cfg(test)]
+thread_local! {
+    static SORTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// True when two lamp lists hold the same lamps in the same order.
@@ -301,34 +341,37 @@ fn same_lamps(a: &[Lamp], b: &[Lamp]) -> bool {
         })
 }
 
-/// The last `nearest_lamps` result and the inputs it came from.
+/// One cached `nearest_lamps` result and the inputs it came from.
 struct LampCache {
     eye: Vec3,
+    cap: usize,
     lamps: Vec<Lamp>,
     near: NearLamps,
 }
 
+/// A frame lights with a few distinct lamp lists (the room's merged list, the figures' and the hands'), so the cache
+/// keeps one entry for each rather than one that every other list evicts.
+const LAMP_CACHE_SLOTS: usize = 4;
+
 thread_local! {
-    static LAMP_CACHE: RefCell<Option<LampCache>> = const { RefCell::new(None) };
+    static LAMP_CACHE: RefCell<Vec<LampCache>> = const { RefCell::new(Vec::new()) };
 }
 
-/// `nearest_lamps`, reused while the eye and the lamp list are unchanged. Every material is drawn with the same
-/// lighting in a frame, so the sort runs once per frame rather than once per material. Any change to the eye or to
-/// a lamp (position, reach, colour or energy, or order) is a miss, so the result never goes stale.
+/// `nearest_lamps`, reused while the eye, the cap and the lamp list are unchanged. Every material is drawn with the
+/// same lighting in a frame, so each distinct list is sorted once per frame rather than once per material. Any change
+/// to the eye, the cap or a lamp (position, reach, colour or energy, or order) is a miss, so the result never goes stale.
 fn cached_nearest_lamps(eye: Vec3, lamps: &[Lamp]) -> NearLamps {
-    LAMP_CACHE.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        if let Some(hit) = &*slot {
-            if hit.eye == eye && same_lamps(&hit.lamps, lamps) {
-                return hit.near;
-            }
+    let cap = lamp_cap();
+    LAMP_CACHE.with(|slots| {
+        let mut slots = slots.borrow_mut();
+        if let Some(hit) = slots.iter().find(|h| h.eye == eye && h.cap == cap && same_lamps(&h.lamps, lamps)) {
+            return hit.near;
         }
-        let near = nearest_lamps(eye, lamps);
-        *slot = Some(LampCache {
-            eye,
-            lamps: lamps.to_vec(),
-            near,
-        });
+        let near = nearest_lamps_capped(eye, lamps, cap);
+        if slots.len() >= LAMP_CACHE_SLOTS {
+            slots.remove(0);
+        }
+        slots.push(LampCache { eye, cap, lamps: lamps.to_vec(), near });
         near
     })
 }
@@ -357,6 +400,7 @@ mod tests {
             range,
             color: Color::new(1.0, 0.5, 0.25, 1.0),
             energy: 2.0,
+            flicker: Flicker::NONE,
         }
     }
 
@@ -413,6 +457,37 @@ mod tests {
         let got = cached_nearest_lamps(moved, &b);
         assert_eq!(got, nearest_lamps(moved, &b));
         assert_eq!(got.pos[0].w, 1.0);
+    }
+
+    #[test]
+    fn each_distinct_lamp_list_is_sorted_once_however_many_materials_ask() {
+        let eye = Vec3::ZERO;
+        let room = [lamp_at(4.0, 1.0), lamp_at(1.0, 2.0)];
+        let hands = [lamp_at(2.0, 3.0)];
+        let before = SORTS.with(|c| c.get());
+        for _ in 0..30 {
+            cached_nearest_lamps(eye, &room);
+            cached_nearest_lamps(eye, &hands);
+            cached_nearest_lamps(eye, &room);
+        }
+        assert_eq!(SORTS.with(|c| c.get()) - before, 2, "two lists, two sorts, over 90 material uploads");
+        // a new frame with a moved eye sorts each again, once
+        cached_nearest_lamps(vec3(1.0, 0.0, 0.0), &room);
+        cached_nearest_lamps(vec3(1.0, 0.0, 0.0), &room);
+        assert_eq!(SORTS.with(|c| c.get()) - before, 3);
+    }
+
+    #[test]
+    fn the_cap_limits_how_many_lamps_light_the_frame() {
+        let lamps: Vec<Lamp> = (0..20).map(|i| lamp_at(i as f32, 5.0)).collect();
+        for cap in [0usize, 1, 8, 16, 100] {
+            let near = nearest_lamps_capped(Vec3::ZERO, &lamps, cap);
+            let lit = near.pos.iter().filter(|p| p.w > 0.0).count();
+            assert_eq!(lit, cap.min(MAX_LAMPS), "cap {cap}");
+        }
+        let eight = nearest_lamps_capped(Vec3::ZERO, &lamps, 8);
+        assert_eq!(eight.pos[7].x, 7.0, "the eight kept are the nearest");
+        assert_eq!(eight.pos[8], Vec4::ZERO);
     }
 
     /// The byte size of an MSL field type used in the Uniforms struct.

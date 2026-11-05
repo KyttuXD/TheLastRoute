@@ -87,8 +87,46 @@
 			],
 			"light": {
 				"color": "ffa24a",
-				"energy": 0.42,
-				"range": 5.0,
+				"energy": 0.5,
+				"range": 6.5,
+				"flicker_hz": 2.3,
+				"flicker_depth": 0.12,
+				"offset": [
+					0,
+					0.0,
+					0
+				]
+			}
+		},
+		{
+			"id": "sewerEmergencyRed",
+			"models": [
+				"res://assets/props/sewer/sewer_lamp.bbmodel"
+			],
+			"light": {
+				"color": "ff2a1a",
+				"energy": 0.55,
+				"range": 6.0,
+				"flicker_hz": 0.8,
+				"flicker_depth": 0.85,
+				"offset": [
+					0,
+					0.0,
+					0
+				]
+			}
+		},
+		{
+			"id": "sewerEmergencyAmber",
+			"models": [
+				"res://assets/props/sewer/sewer_lamp.bbmodel"
+			],
+			"light": {
+				"color": "ffb020",
+				"energy": 0.5,
+				"range": 6.0,
+				"flicker_hz": 0.8,
+				"flicker_depth": 0.85,
 				"offset": [
 					0,
 					0.0,

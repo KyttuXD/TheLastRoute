@@ -8,7 +8,8 @@
     "join_radius": 6
   },
   "smart": [30, 50, 70, 90],
-  "intents": ["hide", "flee", "relay", "locker", "follow"],
+  "intents": ["hide", "flee", "goal", "locker", "follow"],
+  "_intents_note": "relay and pickup are still valid intent names, but the goal intent already takes every relay and useful item, so the standard list leaves them out",
   "follow": {
     "radius": 5.0,
     "_source": "Godot game/player/npc_teammates.gd 24 FOLLOW_RADIUS"
@@ -29,12 +30,29 @@
     "leave_delay": 3.0,
     "_source": "Rust-only figures: a bot hides when a chase is seen at the threat range, from a locker within 8 m, and comes out 3 s after no chaser is within 16 m"
   },
+  "flee": {
+    "sight_range": 18.0,
+    "sight_half_angle": 70.0,
+    "sense_range": 4.0,
+    "hear_range": 20.0,
+    "clearance": 3.0,
+    "replan": 0.4,
+    "depth": 18,
+    "max_cells": 600,
+    "alert": 3.0,
+    "_source": "Rust-only figures: a bot sees a hunter of any state within 18 m, 70 degrees either side of its heading with a clear line, or within 4 m all round; a bot that heard a noise runs from a hunter within 20 m; its flight route keeps 3 m off every hunter, is at most 18 cells long, and is re-planned at most every 0.4 s when a hunter crosses it (also after a plan that found no route) and looks at 600 cells at most; a bot stays alarmed 3 s after it last saw or heard a hunter. Godot only flees a chasing hunter inside the threat range"
+  },
   "errand": {
     "safe_range": 14.0,
     "reach": 1.2,
-    "relay": { "leash": 12.0, "dwell": 4.0 },
+    "relay": { "leash": 12.0, "dwell": 4.0, "claim_time": 2.0 },
     "locker": { "leash": 10.0, "dwell": 6.0 },
     "_source": "Rust-only figures: a relay or locker errand is taken within the leash of the runner, when no hunter is within safe_range of it"
+  },
+  "pickup": {
+    "leash": 10.0,
+    "useful": ["battery", "stim_pack"],
+    "_source": "Rust-only figures: a bot takes a battery or stim pack within 10 m of the runner when the team has room; tools and other items are left lying"
   },
   "searched": {
     "memory": 8,
@@ -54,6 +72,23 @@
   "water": {
     "avoid_depth": 0.5,
     "_source": "Rust-only figure: a bot keeps out of sewer water at least this deep (metres over the bed) unless it is fleeing a chasing hunter"
+  },
+  "goals": {
+    "weights": { "relay": 100, "battery": 70, "heal": 70, "pickup": 40, "exit": 20 },
+    "distance_weight": 0.1,
+    "distance_cap": 25,
+    "search_cost": 12,
+    "edge_cost": 6,
+    "replan": 4,
+    "give_up": 120,
+    "leash": { "max_distance": 30.0, "max_away": 40.0 },
+    "candidates": 8,
+    "level_metres": 40,
+    "low_lamp": 0.3,
+    "low_stamina": 0.35,
+    "heal_item": "stim_pack",
+    "stuck": { "seconds": 3.0, "progress": 0.3, "aside_seconds": 0.8, "door_reach": 2.5, "ban_seconds": 30.0 },
+    "_source": "Rust-only figures: a bot scores relays 100, a battery or heal item 70 while the lamp is under 30 percent or stamina under 35 percent, a useful pickup 40 and the exit 20 (once the level's relays are done), less 0.1 per path step up to 25, so a kind never loses to a lower one; a hunter-searched cell costs 12 steps; it picks again at most every 4 s and gives a goal up after 120 s; leash: a bot more than 30 m from the runner for 40 s drops its goal and takes none until it is back within 30 m. The follow intent stays last as the fallback. stuck (headless/bot.rs recovery ladder): after 3 s without moving 0.3 m a bot repaths, then presses a shut door within 2.5 m, then steps aside 0.8 s in a seeded direction, then gives the goal up for 30 s"
   },
   "tasks": ["door"]
 }

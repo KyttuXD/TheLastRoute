@@ -1,0 +1,30 @@
+{
+  "schema": "lr.lamps/1",
+  "_about": "Lamp upload rules (render/lamp_flicker.rs, read by world_mesh::lamps()). prop_budget: how many lit props one floor's lamp list keeps; `default` is the baseline (the original's 10) and `level.<n>` raises it on a storey whose window holds many lamps (the sewers). The shader still lights each frame with the 16 nearest (shader::MAX_LAMPS). room_flicker: region id -> { hz, depth } for the switchable room lights of rooms in that region (hz: cycles a second, depth: 0..1 swing of the energy either way; a missing region is steady). A prop's own light takes flicker_hz and flicker_depth in data/props/*.json. Each lamp's start phase is drawn from its place in the world, so neighbours do not pulse together. Nothing flickers while the reduced motion setting is on. room_tint: `region.<id>` or `type.<room type>` -> { color \"#rrggbb\" (multiplies the lamp's colour: near white keeps it, so this is a temperature shift), energy (multiplies its energy, default 1) } for every lamp in a room of that region or type; a type row wins over its region's. dark_rooms.fraction: the share of level 0 rooms (Infinite route) that start with their lamps off, chosen by room id (Godot's default_room_light, about 1 in 4); 0 turns it off. It ships at 0: streamed windows have no light switch, so a dark room would stay dim for the whole run. lamp_cap: the most lamps the shader lights with, by graphics quality (`default`, or LOW / MEDIUM / HIGH / AUTO), at most 16.",
+  "prop_budget": {
+    "default": 10,
+    "level.-1": 40,
+    "level.-2": 40
+  },
+  "room_flicker": {
+    "maintenance": { "hz": 3.1, "depth": 0.1 }
+  },
+  "room_tint": {
+    "region.hospital": { "color": "#d4eef2", "energy": 1.0 },
+    "region.mall": { "color": "#fff0d8", "energy": 1.05 },
+    "region.office": { "color": "#e4ecff", "energy": 0.95 },
+    "region.mansion": { "color": "#ffdca8", "energy": 0.9 },
+    "region.maze": { "color": "#fff2d6", "energy": 1.0 },
+    "region.lab": { "color": "#d8ecff", "energy": 1.0 },
+    "region.prison": { "color": "#e8e4c8", "energy": 0.85 },
+    "region.maintenance": { "color": "#ffe0b0", "energy": 0.9 },
+    "type.operatingTheatre": { "color": "#ecfbff", "energy": 1.3 },
+    "type.hospitalMorgue": { "color": "#c0dcee", "energy": 0.8 },
+    "type.diningRoom": { "color": "#ffc888", "energy": 0.95 },
+    "type.ballroom": { "color": "#ffd8a0", "energy": 1.1 },
+    "type.foodCourt": { "color": "#fff6e4", "energy": 1.1 },
+    "type.mallCinema": { "color": "#e8c8c0", "energy": 0.7 }
+  },
+  "dark_rooms": { "fraction": 0 },
+  "lamp_cap": { "default": 16, "LOW": 8 }
+}

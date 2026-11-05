@@ -106,7 +106,7 @@ pub fn draw_viewmodel(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         return;
     };
     gl_use_material(mat);
-    shader::apply(mat, &lighting(g), &g.world.lamps);
+    shader::apply(mat, &lighting(g), &super::scene::flickered(g, &g.world.lamps));
     let (eye, fwd, right, up) = view(g);
     let (motion, push) = motion_now(g, item, eye, fwd);
     // the taser kick shows the taser whatever was held (_animate_taser_fire makes its view visible)

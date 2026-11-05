@@ -10,6 +10,10 @@ pub struct Light {
     pub energy: f32,
     pub range: f32,
     pub offset: (f32, f32, f32),
+    /// Optional wobble of the energy with time (render/lamp_flicker.rs): cycles a second and 0..1 swing either way.
+    /// Zero for either is steady.
+    pub flicker_hz: f32,
+    pub flicker_depth: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -53,6 +57,8 @@ pub fn parse_file(v: &Value) -> Vec<PropDef> {
                 energy: l["energy"].as_f64().unwrap_or(0.4) as f32,
                 range: l["range"].as_f64().unwrap_or(3.5) as f32,
                 offset: (g(0, 0.0), g(1, 0.5), g(2, 0.0)),
+                flicker_hz: l["flicker_hz"].as_f64().unwrap_or(0.0).max(0.0) as f32,
+                flicker_depth: l["flicker_depth"].as_f64().unwrap_or(0.0).clamp(0.0, 1.0) as f32,
             }
         });
         out.push(PropDef {

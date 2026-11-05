@@ -2,7 +2,7 @@
 //! resident level, drawn in the same pass as the active floor at dy = (level - active) * STOREY, plus the lamp merge
 //! and the pure predicates that decide when a neighbour is built or drawn.
 
-use super::shader::{Lamp, MAX_LAMPS};
+use super::shader::{Flicker, Lamp, MAX_LAMPS};
 use super::world_mesh::{self, ChunkFrame, NeighbourScope, Opening, WorldMeshes};
 use crate::game::level_stack::LevelStack;
 use crate::shared::assets::Assets;
@@ -226,7 +226,7 @@ mod tests {
     use super::*;
 
     fn lamp(x: f32, y: f32, z: f32) -> Lamp {
-        Lamp { pos: vec3(x, y, z), range: 8.0, color: WHITE, energy: 1.0 }
+        Lamp { pos: vec3(x, y, z), range: 8.0, color: WHITE, energy: 1.0, flicker: Flicker::NONE }
     }
 
     fn own_row(n: usize) -> Vec<Lamp> {

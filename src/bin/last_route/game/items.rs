@@ -46,6 +46,12 @@ pub struct Slot {
 }
 
 impl Game {
+    /// True when `grant(item, _)` would find room: a stack with space, or an empty slot.
+    pub(super) fn can_grant(&self, item: Item) -> bool {
+        (item.stack_max() > 1 && self.slots.iter().flatten().any(|s| s.item == item && s.n < item.stack_max()))
+            || self.slots.iter().any(|s| s.is_none())
+    }
+
     pub(super) fn grant(&mut self, item: Item, n: i32) -> bool {
         if item.stack_max() > 1 {
             for s in self.slots.iter_mut().flatten() {

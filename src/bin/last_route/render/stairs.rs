@@ -4,7 +4,7 @@
 //! picture. The flight's footprint, surface and walk code live in `world::facility` / `world::flight`: this is only
 //! what is drawn.
 
-use super::shader::Lamp;
+use super::shader::{Flicker, Lamp};
 use crate::world::facility::{Cover, LinkKind, Stair};
 use crate::world::flight::{flights, max_riser_of};
 use crate::world::vertical::{STEPS_PER_CELL, STOREY};
@@ -467,9 +467,9 @@ pub fn lamp(s: Stair, h: f32) -> Lamp {
     if s.is_ladder() {
         return if s.dir < 0 {
             // never pushed; a dim placeholder just over the hatch
-            Lamp { pos: vec3(cx, 1.2, cz), range: 4.0, color: Color::new(1.0, 0.72, 0.42, 1.0), energy: 1.0 }
+            Lamp { pos: vec3(cx, 1.2, cz), range: 4.0, color: Color::new(1.0, 0.72, 0.42, 1.0), energy: 1.0, flicker: Flicker::NONE }
         } else {
-            Lamp { pos: vec3(cx, h * 0.45, cz), range: 7.0, color: Color::new(0.8, 0.88, 1.0, 1.0), energy: 1.7 }
+            Lamp { pos: vec3(cx, h * 0.45, cz), range: 7.0, color: Color::new(0.8, 0.88, 1.0, 1.0), energy: 1.7, flicker: Flicker::NONE }
         };
     }
     // over the middle of the footprint: the middle of the well cell nearest the cells' centroid
@@ -486,7 +486,7 @@ pub fn lamp(s: Stair, h: f32) -> Lamp {
         })
         .unwrap_or((cx, cz));
     let y = if s.dir < 0 { 0.3 } else { h * 0.5 };
-    Lamp { pos: vec3(x, y, z), range: 13.0, color: Color::new(1.0, 0.74, 0.45, 1.0), energy: 5.0 }
+    Lamp { pos: vec3(x, y, z), range: 13.0, color: Color::new(1.0, 0.74, 0.45, 1.0), energy: 5.0, flicker: Flicker::NONE }
 }
 
 #[cfg(test)]
