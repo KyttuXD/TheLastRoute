@@ -6,13 +6,15 @@
 //! thread locks the same mutex, so relay callbacks (`roomByCode`, `promoteRoomHost`, `onRoomClosed`) see exactly
 //! the directory the HTTP routes see.
 //!
-//! Not ported: the legacy skins (`/api/skins/*` answer `503 SKINS_UNAVAILABLE` after the same size and
-//! moderation checks; the v1 skin routes live in `skins/`), city maps (`/api/city-maps/*`, a different game: 404 `CITY_MAPS_UNAVAILABLE`) and the
+//! Skins: the v1 routes and the Godot backend's (`/api/skins/upload`, `/mine`, `/clear`, `/remove`, `/files/<id>.png`)
+//! all live in `skins/`. Not ported: `PUT /api/v1/skins/<name>` (503 after the size and moderation checks), city maps (`/api/city-maps/*`, a different game: 404 `CITY_MAPS_UNAVAILABLE`) and the
 //! browser WebSocket relay (`ws_relay.mjs`; `transport: "ws"` rooms still register/resolve; health reports
 //! `wsRelay.enabled: false`).
 
 pub mod support;
 mod routes;
+#[cfg(test)]
+pub(crate) use routes::body_limit;
 #[cfg(test)]
 mod tests;
 
@@ -50,7 +52,8 @@ pub const DEFAULT_DEV_TOKEN_TTL_MS: i64 = 12 * 60 * 60 * 1000;
 pub const PUBLIC_ENET_TTL_MS: i64 = 15_000;
 pub const RESERVED_TAKEOVER_MS: i64 = 30_000;
 pub const WS_PATH: &str = "/api/ws";
-pub const SKIN_MAX_BYTES: usize = 65_536;
+/// The biggest skin PNG: 64 KB, the one number of `skins/skins.rs` (and of the game's validator).
+pub const SKIN_MAX_BYTES: usize = crate::skins::skins::SKIN_MAX_BYTES;
 pub const ACCOUNT_RATE_LIMIT_PATHS: [&str; 17] = [
     "/api/guest/name",
     "/api/account/register",
@@ -464,7 +467,7 @@ impl LastRouteServer {
                 upstream: opts.account_upstream.clone(),
                 ..Default::default()
             }))),
-            skins: Skins::new(SkinsOptions { directory: opts.skin_directory.clone(), upstream: opts.account_upstream.clone() }),
+            skins: Skins::new(SkinsOptions { directory: opts.skin_directory.clone(), upstream: opts.account_upstream.clone(), now: now.clone() }),
             dev_tokens: HashMap::new(),
             request_rates: HashMap::new(),
             reload_id: 0,

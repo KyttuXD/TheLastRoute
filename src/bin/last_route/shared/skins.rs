@@ -12,8 +12,10 @@ use std::path::{Path, PathBuf};
 use crate::net::api;
 use crate::net::config::BackendConfig;
 use crate::net::http::{Method, Request};
+use crate::net::NetError;
 use crate::net::world_sync::{clean_skin, is_skin_hash, SKIN_DEFAULT};
 use crate::shared::paths;
+use crate::shared::skin_validate;
 
 /// The side length every skin PNG must have.
 pub const SKIN_SIZE: u32 = 64;
@@ -129,7 +131,9 @@ pub fn cache_dir() -> Option<PathBuf> {
     paths::user_dir().map(|d| d.join("skins-cache"))
 }
 
-/// The bytes of a skin known by `id` from the user's own folder or the fetch cache, when they verify.
+/// The bytes of a skin known by `id` from the user's own folder or the fetch cache, when they verify: the hash matches AND
+/// the whole file passes the shared check ([`verify_download`]), so a hostile file that an older build cached, or one
+/// dropped into the folder by hand, can never reach the image decoder (which panics on a broken body).
 pub fn read_skin(id: &str) -> Option<Vec<u8>> {
     let file = format!("{id}.png");
     [skin_dir(), cache_dir()]
@@ -137,7 +141,7 @@ pub fn read_skin(id: &str) -> Option<Vec<u8>> {
         .flatten()
         .map(|dir| dir.join(&file))
         .filter_map(|path| std::fs::read(path).ok())
-        .find(|bytes| verify_skin(id, bytes))
+        .find(|bytes| verify_download(id, bytes))
 }
 
 /// The path of a skin id inside a cache folder: `<dir>/<id>.png`.
@@ -145,9 +149,21 @@ pub fn cached_path(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}.png"))
 }
 
+/// The bytes of a cache file, never more than the cap plus one byte, and only from a regular file (a FIFO or a device
+/// named like a skin would block the reader).
+fn read_cached_file(path: &Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    if !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).ok()?.take(read_limit() as u64).read_to_end(&mut bytes).ok()?;
+    Some(bytes)
+}
+
 /// True when the folder has no verified copy of skin `id`, so it has to be fetched. A cached skin is never fetched again.
 pub fn fetch_needed(dir: &Path, id: &str) -> bool {
-    !std::fs::read(cached_path(dir, id)).is_ok_and(|bytes| verify_skin(id, &bytes))
+    !read_cached_file(&cached_path(dir, id)).is_some_and(|bytes| verify_download(id, &bytes))
 }
 
 /// The skin fetch settings from data/skins/config.json. Standard values match the Godot game: the size cap is
@@ -164,10 +180,19 @@ pub struct SkinConfig {
     pub host_base: String,
     /// The path on the skins host, with `{id}` for the skin hash.
     pub host_path: String,
-    /// The backend route, with `{id}` for the skin hash. Relative to the backend base.
+    /// The backend route of the legacy Godot backend (`skin_sync.gd`), with `{id}` for the skin hash. Relative to the
+    /// backend base. Kept so a server that only has the old route still serves skins.
     pub backend_path: String,
+    /// The backend route of `lr_server` (`GET /api/v1/skins/<id>`), with `{id}` for the skin hash. Relative to the backend base.
+    pub v1_path: String,
     /// The timeout of one skin download, in seconds.
     pub timeout_secs: u64,
+    /// How long a skin whose download (or upload) failed is left alone before it is tried again (Godot `RETRY_SECONDS`).
+    pub retry_secs: u64,
+    /// The most skin downloads and uploads running at once.
+    pub max_concurrent: usize,
+    /// The most downloaded skins kept in the cache folder; the oldest go first (Godot `PEER_CACHE_MAX`, 16).
+    pub cache_max: usize,
 }
 
 /// The schema of data/skins/config.json.
@@ -186,7 +211,11 @@ pub fn parse_config(text: &str) -> Option<SkinConfig> {
         host_base: fetch["host_base"].as_str()?.trim_end_matches('/').to_string(),
         host_path: fetch["host_path"].as_str()?.to_string(),
         backend_path: fetch["backend_path"].as_str()?.to_string(),
+        v1_path: fetch["v1_path"].as_str()?.to_string(),
         timeout_secs: fetch["timeout_secs"].as_u64()?,
+        retry_secs: fetch["retry_secs"].as_u64()?,
+        max_concurrent: fetch["max_concurrent"].as_u64()? as usize,
+        cache_max: fetch["cache_max"].as_u64()? as usize,
     })
 }
 
@@ -223,20 +252,165 @@ pub fn skin_host_url(cfg: &SkinConfig, id: &str) -> String {
     format!("{}{}", cfg.host_base, cfg.host_path.replace("{id}", id))
 }
 
-/// The URL a skin is fetched from on the backend: `<backend base><backend_path>`, e.g. `GET <base>/api/skins/files/<id>.png`.
+/// The URL a skin is fetched from on the legacy Godot backend route: `<backend base><backend_path>`, e.g.
+/// `GET <base>/api/skins/files/<id>.png`. `lr_server` answers it too, but its own route is [`skin_v1_url`].
 pub fn skin_backend_url(cfg: &SkinConfig, backend_base: &str, id: &str) -> String {
     format!("{}{}", backend_base.trim_end_matches('/'), cfg.backend_path.replace("{id}", id))
 }
 
-/// The URLs a skin is tried at, in order: the skins host first, then the backend route ([`skin_backend_url`]).
-pub fn fetch_urls(cfg: &SkinConfig, backend_base: &str, id: &str) -> Vec<String> {
-    vec![skin_host_url(cfg, id), skin_backend_url(cfg, backend_base, id)]
+/// The URL a skin is fetched from on `lr_server`: `<backend base><v1_path>`, i.e. `GET <base>/api/v1/skins/<id>`.
+pub fn skin_v1_url(cfg: &SkinConfig, backend_base: &str, id: &str) -> String {
+    format!("{}{}", backend_base.trim_end_matches('/'), cfg.v1_path.replace("{id}", id))
 }
 
-/// Tries each URL in order with `get` and returns the first body that verifies as skin `id`. A reply that fails or does
-/// not verify moves on to the next URL.
+/// The URLs a skin is tried at, in order: the backend's own route ([`skin_v1_url`], the store the uploads go to), then
+/// the skins host (immutable static copies behind Caddy), then the legacy Godot route ([`skin_backend_url`]).
+pub fn fetch_urls(cfg: &SkinConfig, backend_base: &str, id: &str) -> Vec<String> {
+    vec![skin_v1_url(cfg, backend_base, id), skin_host_url(cfg, id), skin_backend_url(cfg, backend_base, id)]
+}
+
+/// True when `bytes` are the skin `id` AND safe to draw: the hash matches ([`verify_skin`]) and the whole file passes the
+/// shared check ([`skin_validate::check_skin_png`]: every chunk CRC, 64x64, a real inflate, an opaque base layer). A
+/// header that merely looks right is not enough: decoding a broken body panics the image decoder.
+pub fn verify_download(id: &str, bytes: &[u8]) -> bool {
+    verify_skin(id, bytes) && skin_validate::check_skin_png(bytes, max_bytes()).is_ok()
+}
+
+/// Tries each URL in order with `get` and returns the first body that fully verifies as skin `id`
+/// ([`verify_download`]). A reply that fails or does not verify moves on to the next URL.
 fn first_verified_skin(urls: &[String], id: &str, mut get: impl FnMut(&str) -> Option<Vec<u8>>) -> Option<Vec<u8>> {
-    urls.iter().find_map(|url| get(url).filter(|bytes| verify_skin(id, bytes)))
+    urls.iter().find_map(|url| get(url).filter(|bytes| verify_download(id, bytes)))
+}
+
+/// The content types a skin picture may be served as. Plain servers and CDNs often send the generic ones.
+const PNG_TYPES: [&str; 4] = ["image/png", "image/x-png", "application/octet-stream", "binary/octet-stream"];
+/// The content type of Mojang's lookup answers.
+const JSON_TYPES: [&str; 1] = ["application/json"];
+
+/// Downloads one address. The backend (plain http, possibly on a LAN) is asked once. An https address (the skins host,
+/// a player's link, Mojang) may redirect up to the client's cap, each hop re-checked by the skin URL rules, and never
+/// connects to a non-public address. Only a 200 answer's body comes back.
+fn download(url: &str, timeout_secs: u64, limit: usize, accept: &[&str]) -> Result<Vec<u8>, NetError> {
+    let mut request = Request::new(Method::Get, url.trim().to_string())
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .limit(limit)
+        .content_types(accept);
+    if url.trim().to_ascii_lowercase().starts_with("https://") {
+        request = request.public_only().redirects(crate::net::http::MAX_REDIRECTS).hop_guard(|hop| match rules() {
+            Some(rules) => url_refusal(hop, &rules, &[]).map(str::to_string),
+            None => Some("the skin rules are missing from this build".to_string()),
+        });
+    }
+    let reply = request.send()?;
+    if reply.status != 200 {
+        return Err(NetError::Http { status: reply.status, code: String::new(), error: String::new(), body: serde_json::Value::Null });
+    }
+    Ok(reply.body)
+}
+
+/// The words a player sees for a failed download. Never an address.
+pub fn download_error_text(error: &NetError) -> String {
+    match error {
+        NetError::Offline => "this game is offline".to_string(),
+        NetError::Timeout => "the download timed out".to_string(),
+        NetError::Refused(why) | NetError::Unsupported(why) => why.to_ascii_lowercase(),
+        NetError::Transport(why) => {
+            let why = why.to_ascii_lowercase();
+            if why.contains("tls") || why.contains("certificate") || why.contains("handshake") || why.contains("alert") {
+                "the secure connection could not be verified".to_string()
+            } else {
+                "the download failed: could not connect".to_string()
+            }
+        }
+        NetError::Protocol(why) => match why.as_str() {
+            "RESPONSE TOO LARGE" => "the file is too big".to_string(),
+            "UNEXPECTED CONTENT TYPE" => "that address is not a PNG picture".to_string(),
+            "TOO MANY REDIRECTS" => "the address redirects too many times".to_string(),
+            _ => "the download failed: the server sent something unusable".to_string(),
+        },
+        NetError::Http { status, .. } => format!("the server answered {status}"),
+    }
+}
+
+/// Which skin downloads and uploads are running or cooling down after a failure, so a skin nobody can serve is not
+/// asked for every frame and a flood of unknown ids cannot start a flood of threads.
+#[derive(Default)]
+struct Book {
+    running: std::collections::HashSet<String>,
+    retry_at: std::collections::HashMap<String, std::time::Instant>,
+}
+
+impl Book {
+    /// True (and `key` is now running) when it is not running, not cooling down, and fewer than `max` jobs run.
+    fn begin(&mut self, key: &str, now: std::time::Instant, max: usize) -> bool {
+        if self.running.contains(key) || self.running.len() >= max || self.retry_at.get(key).is_some_and(|at| now < *at) {
+            return false;
+        }
+        self.running.insert(key.to_string());
+        true
+    }
+
+    /// Ends a job: a failure cools `key` down for `retry`, a success clears it.
+    fn finish(&mut self, key: &str, ok: bool, now: std::time::Instant, retry: std::time::Duration) {
+        self.running.remove(key);
+        if ok {
+            self.retry_at.remove(key);
+        } else {
+            self.retry_at.insert(key.to_string(), now + retry);
+        }
+    }
+}
+
+fn book() -> std::sync::MutexGuard<'static, Book> {
+    static BOOK: std::sync::OnceLock<std::sync::Mutex<Book>> = std::sync::OnceLock::new();
+    BOOK.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Downloads skin `id` from the first address that serves a fully verified copy and writes it into `dir`. Returns
+/// whether the skin is now cached. Blocking (see [`fetch_skin_in_background`]).
+pub fn fetch_skin_blocking(cfg: &SkinConfig, backend_base: &str, dir: &Path, id: &str) -> bool {
+    let urls = fetch_urls(cfg, backend_base, id);
+    let limit = read_limit();
+    let fetched = first_verified_skin(&urls, id, |url| download(url, cfg.timeout_secs, limit, &PNG_TYPES).ok());
+    match fetched {
+        Some(bytes) => {
+            let wrote = write_skin_file(dir, id, &bytes).is_ok();
+            if wrote {
+                prune_cache(dir, cfg.cache_max);
+            }
+            wrote
+        }
+        None => false,
+    }
+}
+
+/// Cleans the download cache: leftovers of half-written files, any `<64 hex>.png` that fails the full check (a hostile or
+/// broken file from an older build), and then the oldest skins beyond `keep`. Returns how many files were removed. Only
+/// files named like a cached skin or its temp file are ever touched.
+pub fn prune_cache(dir: &Path, keep: usize) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    let mut removed = 0;
+    let mut kept: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    for path in entries.filter_map(Result::ok).map(|e| e.path()) {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        let stem = name.strip_suffix(".png").or_else(|| name.strip_suffix(".tmp"));
+        let Some(stem) = stem.filter(|s| is_skin_hash(s)) else { continue };
+        let good = name.ends_with(".png") && read_cached_file(&path).is_some_and(|bytes| verify_download(stem, &bytes));
+        if good {
+            let age = std::fs::metadata(&path).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+            kept.push((age, path));
+        } else if std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    kept.sort();
+    let extra = kept.len().saturating_sub(keep);
+    for (_, path) in kept.into_iter().take(extra) {
+        if std::fs::remove_file(path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// Writes a skin into `dir` as `<id>.png`. The bytes go to a temporary name first so a half-written file is never read.
@@ -250,7 +424,7 @@ pub fn write_skin_file(dir: &Path, id: &str, bytes: &[u8]) -> std::io::Result<()
 /// The website the runners' skins are fetched from, set once at startup (see `app`). Empty means fetching is off.
 static BACKEND_BASE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-/// Sets the base URL skins are fetched from (`GET <base>/api/skins/files/<id>.png`). Only the first call counts.
+/// Sets the base URL skins are fetched from (`GET <base>/api/v1/skins/<id>`, see [`fetch_urls`]). Only the first call counts.
 pub fn set_backend_base(base: &str) {
     let _ = BACKEND_BASE.set(base.trim_end_matches('/').to_string());
 }
@@ -265,21 +439,19 @@ pub fn fetch_skin_in_background(id: &str) {
     if !is_skin_hash(id) || !fetch_needed(&dir, id) {
         return;
     }
+    let key = format!("down:{id}");
+    if !book().begin(&key, std::time::Instant::now(), cfg.max_concurrent) {
+        return;
+    }
     let id = id.to_string();
-    let limit = read_limit();
     std::thread::spawn(move || {
-        let urls = fetch_urls(&cfg, &base, &id);
-        let fetched = first_verified_skin(&urls, &id, |url| {
-            let reply = Request::new(Method::Get, url.to_string())
-                .timeout(std::time::Duration::from_secs(cfg.timeout_secs))
-                .limit(limit)
-                .send()
-                .ok()?;
-            (reply.status == 200).then_some(reply.body)
+        // Once per run, before the first download: drop what an older build cached that fails the full check.
+        static PURGED: std::sync::Once = std::sync::Once::new();
+        PURGED.call_once(|| {
+            prune_cache(&dir, cfg.cache_max);
         });
-        if let Some(bytes) = fetched {
-            let _ = write_skin_file(&dir, &id, &bytes);
-        }
+        let ok = fetch_skin_blocking(&cfg, &base, &dir, &id);
+        book().finish(&key, ok, std::time::Instant::now(), std::time::Duration::from_secs(cfg.retry_secs));
     });
 }
 
@@ -333,13 +505,74 @@ pub fn upload_in_background(cfg: BackendConfig, session_token: String, id: Strin
     if holds(&uploaded_ids(), &hash) {
         return;
     }
+    let Some(settings) = config() else { return };
+    // One upload per skin at a time, and a failed one waits `retry_secs` before the next try (Godot `RETRY_SECONDS`), so a
+    // caller may ask again every frame.
+    let key = format!("up:{hash}");
+    if !book().begin(&key, std::time::Instant::now(), settings.max_concurrent) {
+        return;
+    }
     std::thread::spawn(move || {
-        if let Ok(server_id) = api::upload_skin(&cfg, &session_token, &bytes) {
-            if server_id == hash {
-                remember_uploaded(&hash);
-            }
+        let ok = matches!(api::upload_skin(&cfg, &session_token, &bytes), Ok(server_id) if server_id == hash);
+        if ok {
+            remember_uploaded(&hash);
         }
+        book().finish(&key, ok, std::time::Instant::now(), std::time::Duration::from_secs(settings.retry_secs));
     });
+}
+
+/// Removes the account's stored skin from the website in the background (a player chose DEFAULT), and forgets that the
+/// old skins were uploaded so choosing one again uploads it again. Does nothing offline or signed out.
+pub fn clear_in_background(cfg: BackendConfig, session_token: String) {
+    if session_token.is_empty() || cfg.offline {
+        return;
+    }
+    let Some(settings) = config() else { return };
+    let key = "clear".to_string();
+    if !book().begin(&key, std::time::Instant::now(), settings.max_concurrent) {
+        return;
+    }
+    std::thread::spawn(move || {
+        let ok = api::clear_skin(&cfg, &session_token).is_ok();
+        if ok {
+            forget_uploaded();
+        }
+        book().finish(&key, ok, std::time::Instant::now(), std::time::Duration::from_secs(settings.retry_secs));
+    });
+}
+
+/// Empties the uploaded list: the website holds none of the skins any more.
+fn forget_uploaded() {
+    if let Some(path) = uploaded_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Whether the skin known by wire id `id` uses slim arms, read from its picture when it is in the skins folder or the
+/// cache. None while the picture is not here yet (it is being fetched) or does not pass the full check.
+pub fn skin_is_slim(id: &str) -> Option<bool> {
+    if let Some(known) = slim_table().get(id) {
+        return Some(*known);
+    }
+    // A picture that is not here yet, or fails the check, is looked for again only every two seconds: this is asked
+    // for every remote runner on every frame.
+    static MISSES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> = std::sync::OnceLock::new();
+    let misses = MISSES.get_or_init(Default::default);
+    let now = std::time::Instant::now();
+    {
+        let mut m = misses.lock().unwrap_or_else(|p| p.into_inner());
+        if m.get(id).is_some_and(|at| now.duration_since(*at) < std::time::Duration::from_secs(2)) {
+            return None;
+        }
+        if m.len() > 256 {
+            m.clear();
+        }
+        m.insert(id.to_string(), now);
+    }
+    let bytes = read_skin(id)?;
+    let slim = validate_skin(&bytes, max_bytes()).ok()?.slim;
+    note_slim(id, slim);
+    Some(slim)
 }
 
 /// The schema of a catalogue entry (data/skins/*.json), the Godot `lr.skin/1` format.
@@ -498,16 +731,27 @@ pub fn url_refusal(url: &str, rules: &SkinRules, allowed_hosts: &[&str]) -> Opti
     None
 }
 
-/// GET `url` over https with the rules' timeout and `limit` bytes. Only a 200 reply's body is returned.
-pub fn fetch_https(url: &str, rules: &SkinRules, allowed_hosts: &[&str], limit: usize) -> Result<Vec<u8>, String> {
+/// GET `url` over https with the rules' timeout and `limit` bytes. The address is checked by the rules first, a redirect
+/// is followed at most three times with every hop checked again, the connection is refused if the name resolves to a
+/// non-public address, and an answer whose content type is not in `accept` is dropped unread. Only a 200 reply's body
+/// is returned; a failure is described in words a player can read ([`download_error_text`]).
+pub fn fetch_https(url: &str, rules: &SkinRules, allowed_hosts: &[&str], limit: usize, accept: &[&str]) -> Result<Vec<u8>, String> {
     if let Some(why) = url_refusal(url, rules, allowed_hosts) {
         return Err(why.to_string());
     }
+    let (guard_rules, guard_hosts) = (rules.clone(), allowed_hosts.iter().map(|h| h.to_string()).collect::<Vec<_>>());
     let reply = Request::new(Method::Get, url.trim().to_string())
         .timeout(std::time::Duration::from_secs(rules.url_timeout_secs))
         .limit(limit)
+        .content_types(accept)
+        .public_only()
+        .redirects(crate::net::http::MAX_REDIRECTS)
+        .hop_guard(move |hop| {
+            let hosts: Vec<&str> = guard_hosts.iter().map(String::as_str).collect();
+            url_refusal(hop, &guard_rules, &hosts).map(str::to_string)
+        })
         .send()
-        .map_err(|_| "the download failed".to_string())?;
+        .map_err(|e| download_error_text(&e))?;
     if reply.status != 200 {
         return Err(format!("the server answered {}", reply.status));
     }
@@ -522,7 +766,25 @@ pub fn skin_from_png(bytes: Vec<u8>) -> Result<(String, Vec<u8>), String> {
 
 /// [`skin_from_png`] with the size cap given (the shipped cap is data/skins/config.json `max_bytes`).
 pub fn skin_from_png_capped(bytes: Vec<u8>, cap: usize) -> Result<(String, Vec<u8>), String> {
-    validate_skin(&bytes, cap).map(|s| (s.hash, s.png))
+    validate_skin(&bytes, cap).map(|s| {
+        note_slim(&s.hash, s.slim);
+        (s.hash, s.png)
+    })
+}
+
+/// The arm style of each skin this run has validated, by wire id, so the wire profile can say it and a remote runner's
+/// arms can be chosen without reading the picture again.
+fn slim_table() -> std::sync::MutexGuard<'static, std::collections::HashMap<String, bool>> {
+    static TABLE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, bool>>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Remembers that skin `id` has slim (or classic) arms.
+pub fn note_slim(id: &str, slim: bool) {
+    let mut table = slim_table();
+    if table.len() < 256 || table.contains_key(id) {
+        table.insert(id.to_string(), slim);
+    }
 }
 
 #[allow(dead_code)]
@@ -900,7 +1162,7 @@ pub fn encode_png(rgba: &[u8], w: u32, h: u32) -> Vec<u8> {
 
 /// FROM URL: a 64x64 PNG downloaded from an https link. Returns the validated bytes.
 pub fn fetch_url_skin(url: &str, rules: &SkinRules) -> Result<Vec<u8>, String> {
-    let bytes = fetch_https(url, rules, &[], read_limit())?;
+    let bytes = fetch_https(url, rules, &[], read_limit(), &PNG_TYPES)?;
     skin_from_png(bytes).map(|(_, b)| b)
 }
 
@@ -927,7 +1189,7 @@ pub fn fetch_minecraft_skin(name: &str, rules: &SkinRules) -> Result<Vec<u8>, St
         return Err("a Minecraft name is 1-16 letters, numbers or underscores".to_string());
     }
     let lookup_url = rules.lookup_url.replace("{name}", name);
-    let lookup = fetch_https(&lookup_url, rules, &[rules.lookup_host.as_str()], read_limit())?;
+    let lookup = fetch_https(&lookup_url, rules, &[rules.lookup_host.as_str()], read_limit(), &JSON_TYPES)?;
     let found: serde_json::Value =
         serde_json::from_slice(&lookup).map_err(|_| "no Minecraft player was found".to_string())?;
     let uuid = found["id"].as_str().unwrap_or("");
@@ -935,11 +1197,11 @@ pub fn fetch_minecraft_skin(name: &str, rules: &SkinRules) -> Result<Vec<u8>, St
         return Err("no Minecraft player was found".to_string());
     }
     let profile_url = rules.profile_url.replace("{uuid}", uuid);
-    let body = fetch_https(&profile_url, rules, &[rules.profile_host.as_str()], read_limit())?;
+    let body = fetch_https(&profile_url, rules, &[rules.profile_host.as_str()], read_limit(), &JSON_TYPES)?;
     let profile: serde_json::Value =
         serde_json::from_slice(&body).map_err(|_| "the profile could not be read".to_string())?;
     let url = profile_skin_url(&profile, rules).ok_or_else(|| "that player has no skin".to_string())?;
-    let file = fetch_https(&url, rules, &[rules.textures_host.as_str()], read_limit())?;
+    let file = fetch_https(&url, rules, &[rules.textures_host.as_str()], read_limit(), &PNG_TYPES)?;
     skin_from_png(file).map(|(_, b)| b)
 }
 
@@ -1041,9 +1303,13 @@ mod tests {
         assert_eq!(
             skin_backend_url(&cfg, "http://host:8105/", &id),
             format!("http://host:8105/api/skins/files/{id}.png"),
-            "the Godot route (game/autoload/skin_sync.gd:152), not the account JSON route"
+            "the legacy Godot route (game/autoload/skin_sync.gd:152) still answers on a Godot backend"
         );
-        assert!(!skin_backend_url(&cfg, "http://host:8105/", &id).contains("/api/v1/"));
+        assert_eq!(
+            skin_v1_url(&cfg, "http://host:8105/", &id),
+            format!("http://host:8105/api/v1/skins/{id}"),
+            "lr_server's own route (src/bin/lr_server/skins/skins.rs)"
+        );
         let dir = Path::new("cache");
         assert_eq!(cached_path(dir, &id), dir.join(format!("{id}.png")));
     }
@@ -1057,19 +1323,50 @@ mod tests {
     }
 
     #[test]
-    fn skins_host_is_tried_before_the_backend_route() {
+    fn fetch_urls_lists_v1_then_host_then_legacy() {
         let id = sha256_hex(b"skin");
         let cfg = shipped_config();
         let urls = fetch_urls(&cfg, "http://host:8105/", &id);
-        assert_eq!(urls.len(), 2);
-        assert_eq!(urls[0], skin_host_url(&cfg, &id));
-        assert_eq!(urls[1], skin_backend_url(&cfg, "http://host:8105/", &id));
+        assert_eq!(urls.len(), 3);
+        assert_eq!(urls[0], skin_v1_url(&cfg, "http://host:8105/", &id));
+        assert_eq!(urls[1], skin_host_url(&cfg, &id));
+        assert_eq!(urls[2], skin_backend_url(&cfg, "http://host:8105/", &id));
+    }
+
+    /// A canonical, fully valid skin and its id.
+    fn good_skin() -> (String, Vec<u8>) {
+        skin_from_png(fixture_png(false)).expect("the fixture is a valid skin")
+    }
+
+    /// A PNG with a good 64x64 header and no body: the old check accepted it, and decoding it panics.
+    fn hostile_skin() -> (String, Vec<u8>) {
+        let bytes = png_head(64, 64);
+        (sha256_hex(&bytes), bytes)
     }
 
     #[test]
-    fn fetch_uses_the_host_when_it_answers_with_a_verified_skin() {
-        let bytes = png_head(64, 64);
-        let id = sha256_hex(&bytes);
+    fn the_games_own_encoder_output_passes_the_shared_check() {
+        let (id, bytes) = good_skin();
+        assert_eq!(skin_validate::check_skin_png(&bytes, max_bytes()), Ok(()));
+        assert!(verify_download(&id, &bytes));
+        assert!(verify_skin(&id, &bytes));
+        // A skin with a clear hat layer (the usual case) passes too.
+        let mut px = fixture_rgba(false);
+        px[px_at(40, 5, 64) + 3] = 0;
+        let png = encode_png(&px, 64, 64);
+        assert_eq!(skin_validate::check_skin_png(&png, max_bytes()), Ok(()));
+    }
+
+    #[test]
+    fn a_header_only_download_matches_its_hash_but_is_not_a_verified_download() {
+        let (id, bytes) = hostile_skin();
+        assert!(verify_skin(&id, &bytes), "the old header check is fooled");
+        assert!(!verify_download(&id, &bytes), "the full check is not");
+    }
+
+    #[test]
+    fn fetch_uses_the_first_route_that_answers_with_a_verified_skin() {
+        let (id, bytes) = good_skin();
         let cfg = shipped_config();
         let urls = fetch_urls(&cfg, "http://host:8105", &id);
         let mut asked = Vec::new();
@@ -1078,58 +1375,192 @@ mod tests {
             Some(bytes.clone())
         });
         assert_eq!(got, Some(bytes));
-        assert_eq!(asked, vec![skin_host_url(&cfg, &id)], "the backend is not asked once the host answers");
+        assert_eq!(asked, vec![skin_v1_url(&cfg, "http://host:8105", &id)], "nothing else is asked once the backend answers");
     }
 
     #[test]
-    fn a_failing_host_falls_back_to_the_backend() {
-        let bytes = png_head(64, 64);
-        let id = sha256_hex(&bytes);
+    fn a_failing_route_falls_through_to_the_next_one() {
+        let (id, bytes) = good_skin();
         let cfg = shipped_config();
         let urls = fetch_urls(&cfg, "http://host:8105", &id);
         let mut asked = Vec::new();
         let got = first_verified_skin(&urls, &id, |url| {
             asked.push(url.to_string());
-            if url.starts_with(&cfg.host_base) {
-                None
-            } else {
-                Some(bytes.clone())
-            }
+            (url == skin_backend_url(&cfg, "http://host:8105", &id)).then(|| bytes.clone())
         });
         assert_eq!(got, Some(bytes));
-        assert_eq!(asked, vec![skin_host_url(&cfg, &id), skin_backend_url(&cfg, "http://host:8105", &id)]);
+        assert_eq!(asked, urls, "all three routes were tried in order");
     }
 
     #[test]
-    fn a_host_reply_that_does_not_verify_falls_back_to_the_backend() {
-        let bytes = png_head(64, 64);
-        let id = sha256_hex(&bytes);
+    fn a_reply_that_does_not_fully_verify_falls_through_to_the_next_route() {
+        let (id, bytes) = good_skin();
         let cfg = shipped_config();
         let urls = fetch_urls(&cfg, "http://host:8105", &id);
         let got = first_verified_skin(&urls, &id, |url| {
             if url.starts_with(&cfg.host_base) {
-                Some(png_head(32, 32))
-            } else {
                 Some(bytes.clone())
+            } else {
+                Some(png_head(32, 32))
             }
         });
-        assert_eq!(got, Some(bytes), "a wrong-hash or wrong-size host reply is not used");
+        assert_eq!(got, Some(bytes), "a wrong-hash or wrong-size reply is not used");
+        // A hostile file whose hash is right is not used either, even from the only route that answers.
+        let (hostile_id, hostile) = hostile_skin();
+        let urls = fetch_urls(&cfg, "http://host:8105", &hostile_id);
+        assert_eq!(first_verified_skin(&urls, &hostile_id, |_| Some(hostile.clone())), None);
     }
 
     #[test]
-    fn nothing_verifies_when_both_routes_fail() {
-        let bytes = png_head(64, 64);
-        let id = sha256_hex(&bytes);
+    fn nothing_verifies_when_every_route_fails() {
+        let (id, _) = good_skin();
         let urls = fetch_urls(&shipped_config(), "http://host:8105", &id);
         assert_eq!(first_verified_skin(&urls, &id, |_| None), None);
+    }
+
+    /// A tiny http server for the download tests: answers `GET <path>` from `routes` (404 otherwise) and records every
+    /// request line. Stops when the returned flag is set.
+    fn serve_routes(routes: Vec<(String, Vec<u8>, &'static str)>) -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let (seen2, stop2) = (seen.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !stop2.load(Ordering::SeqCst) {
+                let Ok((mut conn, _)) = listener.accept() else {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    continue;
+                };
+                conn.set_nonblocking(false).unwrap();
+                conn.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+                let mut got = Vec::new();
+                let mut b = [0u8; 2048];
+                while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match conn.read(&mut b) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => got.extend_from_slice(&b[..n]),
+                    }
+                }
+                let line = String::from_utf8_lossy(&got).lines().next().unwrap_or("").to_string();
+                seen2.lock().unwrap().push(line.clone());
+                let path = line.split(' ').nth(1).unwrap_or("").to_string();
+                let reply = match routes.iter().find(|(p, _, _)| *p == path) {
+                    Some((_, body, kind)) => [format!("HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes(), body.clone()].concat(),
+                    None => b"HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}".to_vec(),
+                };
+                let _ = conn.write_all(&reply);
+            }
+        });
+        (port, seen, stop)
+    }
+
+    /// The shipped config with the skins host pointed at a name that never resolves, so a test never touches the internet.
+    fn offline_host_config() -> SkinConfig {
+        SkinConfig { host_base: "https://skins.invalid".to_string(), ..shipped_config() }
+    }
+
+    fn temp_cache(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("lr_skins_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn a_download_walks_the_routes_checks_the_skin_and_caches_it() {
+        use std::sync::atomic::Ordering;
+        let (id, bytes) = good_skin();
+        let cfg = offline_host_config();
+        // lr_server has no copy (404 on its v1 route); the legacy route serves it. The skins host is unreachable.
+        let (port, seen, stop) = serve_routes(vec![(format!("/api/skins/files/{id}.png"), bytes.clone(), "image/png")]);
+        let dir = temp_cache("walk");
+        assert!(fetch_skin_blocking(&cfg, &format!("http://127.0.0.1:{port}"), &dir, &id));
+        stop.store(true, Ordering::SeqCst);
+        assert_eq!(std::fs::read(cached_path(&dir, &id)).unwrap(), bytes);
+        assert!(!fetch_needed(&dir, &id));
+        let asked = seen.lock().unwrap().clone();
+        assert_eq!(asked, vec![format!("GET /api/v1/skins/{id} HTTP/1.1"), format!("GET /api/skins/files/{id}.png HTTP/1.1")]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_hostile_download_with_the_right_hash_is_never_written_to_the_cache() {
+        use std::sync::atomic::Ordering;
+        let (id, hostile) = hostile_skin();
+        let cfg = offline_host_config();
+        let (port, _seen, stop) = serve_routes(vec![
+            (format!("/api/v1/skins/{id}"), hostile.clone(), "image/png"),
+            (format!("/api/skins/files/{id}.png"), hostile, "image/png"),
+        ]);
+        let dir = temp_cache("hostile");
+        assert!(!fetch_skin_blocking(&cfg, &format!("http://127.0.0.1:{port}"), &dir, &id));
+        stop.store(true, Ordering::SeqCst);
+        assert!(!cached_path(&dir, &id).exists(), "a skin that would crash the decoder never reaches the cache");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_download_that_is_not_a_picture_by_its_content_type_is_dropped() {
+        use std::sync::atomic::Ordering;
+        let (id, bytes) = good_skin();
+        let cfg = offline_host_config();
+        let (port, _seen, stop) = serve_routes(vec![
+            (format!("/api/v1/skins/{id}"), bytes.clone(), "text/html"),
+            (format!("/api/skins/files/{id}.png"), bytes, "text/html"),
+        ]);
+        let dir = temp_cache("html");
+        assert!(!fetch_skin_blocking(&cfg, &format!("http://127.0.0.1:{port}"), &dir, &id));
+        stop.store(true, Ordering::SeqCst);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_download_is_not_retried_before_the_cool_down_and_the_number_of_jobs_is_capped() {
+        use std::time::{Duration, Instant};
+        let (start, retry) = (Instant::now(), Duration::from_secs(60));
+        let mut book = Book::default();
+        assert!(book.begin("down:a", start, 2));
+        assert!(!book.begin("down:a", start, 2), "already running");
+        assert!(book.begin("down:b", start, 2));
+        assert!(!book.begin("down:c", start, 2), "two jobs already run");
+        book.finish("down:a", false, start, retry);
+        assert!(!book.begin("down:a", start + Duration::from_secs(59), 2), "cooling down");
+        assert!(book.begin("down:a", start + retry, 2), "tried again after the cool-down");
+        book.finish("down:a", true, start + retry, retry);
+        assert!(book.begin("down:a", start + retry, 3), "a success clears the cool-down");
+    }
+
+    #[test]
+    fn download_failures_are_described_without_an_address() {
+        let said = |e: NetError| download_error_text(&e);
+        assert_eq!(said(NetError::Timeout), "the download timed out");
+        assert_eq!(said(NetError::Protocol("RESPONSE TOO LARGE".into())), "the file is too big");
+        assert_eq!(said(NetError::Protocol("UNEXPECTED CONTENT TYPE".into())), "that address is not a PNG picture");
+        assert_eq!(said(NetError::Transport("invalid peer certificate: UnknownIssuer".into())), "the secure connection could not be verified");
+        assert_eq!(said(NetError::Transport("connection refused (os error 61)".into())), "the download failed: could not connect");
+        assert_eq!(said(NetError::Refused("THAT ADDRESS IS NOT PUBLIC".into())), "that address is not public");
+        assert_eq!(said(NetError::Http { status: 404, code: String::new(), error: String::new(), body: serde_json::Value::Null }), "the server answered 404");
+        assert!(!said(NetError::Transport("tcp connect error to http://secret.example:81".into())).contains("secret"));
+    }
+
+    #[test]
+    fn from_url_and_from_mc_name_refuse_what_the_rules_refuse_before_any_connection() {
+        let rules = rules().expect("rules load");
+        for url in ["http://example.org/a.png", "https://localhost/a.png", "https://127.0.0.1/a.png", "https://user@example.org/a.png", "https://example.org:8443/a.png"] {
+            assert!(fetch_url_skin(url, &rules).is_err(), "{url}");
+        }
+        assert!(fetch_minecraft_skin("not a name!", &rules).is_err());
+        assert!(fetch_minecraft_skin("", &rules).is_err());
     }
 
     #[test]
     fn a_cached_skin_is_not_fetched_again() {
         let dir = std::env::temp_dir().join(format!("lr_skins_cache_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let bytes = png_head(64, 64);
-        let id = sha256_hex(&bytes);
+        let (id, bytes) = good_skin();
         assert!(fetch_needed(&dir, &id), "nothing cached yet");
         write_skin_file(&dir, &id, &bytes).unwrap();
         assert!(!fetch_needed(&dir, &id), "a verified cached copy is kept");
@@ -1220,12 +1651,17 @@ mod tests {
     #[test]
     fn config_holds_the_godot_standard_values() {
         let c = shipped_config();
-        assert_eq!(c.upload_max_bytes, 16 * 1024, "the website's SKIN_MAX_BYTES (lr_server skins.rs)");
+        assert_eq!(c.upload_max_bytes, 64 * 1024, "the website's SKIN_MAX_BYTES (lr_server skins.rs, skins.mjs)");
+        assert_eq!(c.upload_max_bytes, skin_validate::SKIN_MAX_BYTES, "the client and the server share one cap");
         assert_eq!(c.max_bytes, 65536, "PlayerSkin.MAX_BYTES (game/player/player_skin.gd:16), not the old 16 KB");
         assert_eq!(read_limit(), 65537, "FETCH_LIMIT_BYTES = MAX_BYTES + 1 (game/autoload/skin_sync.gd:23)");
         assert_eq!(c.host_base, "https://skins.kyttuslab.org");
         assert_eq!(c.host_path, "/{id}.png");
         assert_eq!(c.backend_path, "/api/skins/files/{id}.png", "game/autoload/skin_sync.gd:152");
+        assert_eq!(c.v1_path, "/api/v1/skins/{id}", "lr_server's own skin route");
+        assert_eq!(c.retry_secs, 60, "skin_sync.gd RETRY_SECONDS");
+        assert_eq!(c.max_concurrent, 4);
+        assert_eq!(c.cache_max, 16, "Godot PEER_CACHE_MAX");
         assert_eq!(c.timeout_secs, 8, "the timeout this client has always used for a skin download");
     }
 
@@ -1354,7 +1790,8 @@ mod tests {
         let old = encode_png(&fixture_rgba(false)[..64 * 32 * 4], 64, 32);
         let (_, canonical) = skin_from_png(old).expect("an old skin upgrades");
         assert!(png_is_skin_size(&canonical));
-        // Pure noise cannot compress: it is refused with a message, never uploaded over the cap.
+        // Pure noise cannot compress (about 17 KB with this encoder, 16 KB raw): a detailed skin like that was refused
+        // under the old 16 KB cap, but the Godot and server cap is 64 KB, so it is accepted and passes the shared check.
         let mut state = 12345u32;
         let noise: Vec<u8> = (0..64 * 64 * 4)
             .map(|_| {
@@ -1362,8 +1799,11 @@ mod tests {
                 (state >> 24) as u8
             })
             .collect();
-        let err = skin_from_png(encode_png(&noise, 64, 64)).unwrap_err();
-        assert!(err.contains("too detailed"), "{err}");
+        let noisy = encode_png(&noise, 64, 64);
+        assert!(noisy.len() > 16 * 1024, "the old cap would have refused it ({} bytes)", noisy.len());
+        assert_uploadable(&noisy, "noise");
+        let (_, canonical) = skin_from_png(noisy).expect("a noisy skin under 64 KB is accepted");
+        assert_eq!(skin_validate::check_skin_png(&canonical, max_bytes()), Ok(()));
     }
 
     #[test]
@@ -1465,5 +1905,64 @@ mod tests {
         assert!(!resolve_arms(ArmsSetting::Classic, true), "classic forces classic");
         assert!(resolve_arms(ArmsSetting::Slim, false), "slim forces slim");
         assert_eq!(ArmsSetting::Slim.label(), "SLIM");
+    }
+
+    /// Needs the internet: `cargo test --bin last_route live_ -- --ignored`. The whole FROM MC NAME chain (name to id,
+    /// id to profile, textures host) over real https, then the validation: proves the download, the roots and the checks agree.
+    #[test]
+    #[ignore]
+    fn live_from_mc_name_fetches_and_validates_a_real_skin() {
+        let rules = rules().expect("rules load");
+        let bytes = fetch_minecraft_skin("Notch", &rules).expect("Mojang's chain works over https");
+        assert_eq!(skin_validate::check_skin_png(&bytes, max_bytes()), Ok(()), "the canonical result passes the shared check");
+        assert!(verify_download(&sha256_hex(&bytes), &bytes));
+    }
+
+    #[test]
+    fn a_cached_hostile_file_counts_as_not_cached_and_is_purged() {
+        let (good_id, good) = good_skin();
+        let (bad_id, bad) = hostile_skin();
+        let dir = temp_cache("purge");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(cached_path(&dir, &good_id), &good).unwrap();
+        std::fs::write(cached_path(&dir, &bad_id), &bad).unwrap();
+        std::fs::write(dir.join(format!("{}.tmp", "a".repeat(64))), b"half").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"not ours").unwrap();
+        assert!(!fetch_needed(&dir, &good_id));
+        assert!(fetch_needed(&dir, &bad_id), "a header-only file with the right hash is not a cached skin");
+        assert_eq!(prune_cache(&dir, 16), 2, "the hostile file and the half-written one go");
+        assert!(cached_path(&dir, &good_id).exists());
+        assert!(!cached_path(&dir, &bad_id).exists());
+        assert!(dir.join("notes.txt").exists(), "files that are not cache entries are never touched");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_cache_keeps_only_the_newest_skins() {
+        let dir = temp_cache("cap");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut ids = Vec::new();
+        for n in 0..5u8 {
+            let mut px = fixture_rgba(false);
+            px[px_at(1, 1, 64)] = n.wrapping_mul(40);
+            let (id, bytes) = skin_from_png(encode_png(&px, 64, 64)).unwrap();
+            std::fs::write(cached_path(&dir, &id), bytes).unwrap();
+            let file = std::fs::File::options().write(true).open(cached_path(&dir, &id)).unwrap();
+            file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1000 + n as u64)).unwrap();
+            ids.push(id);
+        }
+        assert_eq!(prune_cache(&dir, 3), 2);
+        assert!(!cached_path(&dir, &ids[0]).exists() && !cached_path(&dir, &ids[1]).exists(), "the oldest two are evicted");
+        assert!(ids[2..].iter().all(|id| cached_path(&dir, id).exists()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_skin_that_was_validated_here_has_a_known_arm_style() {
+        let (id, _) = good_skin();
+        assert_eq!(skin_is_slim(&id), Some(false), "the classic fixture");
+        note_slim(&id, true);
+        assert_eq!(skin_is_slim(&id), Some(true));
+        assert_eq!(skin_is_slim(&"e".repeat(64)), None, "an unknown picture has no style");
     }
 }

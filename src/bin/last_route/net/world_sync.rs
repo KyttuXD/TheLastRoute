@@ -352,14 +352,32 @@ struct Guest {
     last_seen: Instant,
 }
 
-/// The wire profile of a runner: `{peer_id, name, skin}`. A guest sends its own (the host reads the sender from the
+/// The wire profile of a runner: `{peer_id, name, skin, skin_slim}`. A guest sends its own (the host reads the sender from the
 /// relay); the host forwards each profile with its `peer_id`, and sends a new guest every profile in the room.
-fn profile_message(peer: u32, name: &str, skin: &str) -> Message {
+fn profile_message(peer: u32, name: &str, skin: &str, slim: Option<bool>) -> Message {
     let mut profile = Map::new();
     profile.insert("peer_id".into(), json!(peer));
     profile.insert("name".into(), json!(name));
     profile.insert("skin".into(), json!(skin));
+    // Godot sends the arm style with the hash (PLAYER_SKINS.md `skin_slim`); only a real skin has one.
+    if let (true, Some(slim)) = (is_skin_hash(skin), slim) {
+        profile.insert("skin_slim".into(), json!(slim));
+    }
     Message::WireProfile { profile }
+}
+
+/// The arm style of this runner's own skin, when it is known here (the skin was validated this run).
+fn own_slim(skin: &str) -> Option<bool> {
+    if is_skin_hash(skin) {
+        crate::shared::skins::skin_is_slim(skin)
+    } else {
+        None
+    }
+}
+
+/// The `skin_slim` a received profile carries; None when it has none (an old client) or it is not a boolean.
+fn profile_slim(profile: &Map<String, Value>) -> Option<bool> {
+    profile.get("skin_slim").and_then(Value::as_bool)
 }
 
 /// The host's room mod packs as the wire carries them: `{ids: [...]}`.
@@ -426,6 +444,8 @@ pub struct NetSession {
     difficulty: String,
     /// The skin id of each other runner, by peer id, from its wire profile.
     skins: HashMap<u32, String>,
+    /// The arm style each other runner's profile named (`skin_slim`), by peer id.
+    skin_slims: HashMap<u32, bool>,
     /// The name of each other runner, by peer id, from its wire profile (a guest keeps the others' names too).
     names: HashMap<u32, String>,
     guests: HashMap<u32, Guest>,
@@ -633,6 +653,7 @@ impl NetSession {
             mods: Vec::new(),
             difficulty: Difficulty::Standard.name().to_string(),
             skins: HashMap::new(),
+            skin_slims: HashMap::new(),
             names: HashMap::new(),
             guests: HashMap::new(),
             remotes: HashMap::new(),
@@ -694,12 +715,12 @@ impl NetSession {
         let Some(next) = republished_skin(&self.skin, chosen, uploaded) else { return };
         self.skin = next;
         if self.is_host() {
-            let profile = profile_message(HOST_PEER_ID, &self.name, &self.skin);
+            let profile = profile_message(HOST_PEER_ID, &self.name, &self.skin, own_slim(&self.skin));
             for peer in self.coop.peers() {
                 self.coop.send(peer, &profile);
             }
         } else {
-            let profile = profile_message(self.coop.link.session(), &self.name, &self.skin);
+            let profile = profile_message(self.coop.link.session(), &self.name, &self.skin, own_slim(&self.skin));
             self.coop.send(HOST_PEER_ID, &profile);
         }
     }
@@ -1100,7 +1121,8 @@ impl NetSession {
                     moving: r.sample.moving,
                     sprinting: r.sample.sprinting,
                     crouching: r.sample.crouching,
-                    slim: false,
+                    // the profile's own word first (a Godot peer sends it), else read from the picture once it is here
+                    slim: self.skin_slims.get(peer).copied().or_else(|| self.skins.get(peer).filter(|s| is_skin_hash(s)).and_then(|s| crate::shared::skins::skin_is_slim(s))).unwrap_or(false),
                     speed: if !r.sample.moving {
                         0.0
                     } else if r.sample.sprinting {
@@ -1203,7 +1225,7 @@ impl NetSession {
                 if !self.is_host() {
                     let hello = Message::RegisterPeer { requested_name: self.name.clone() };
                     self.coop.send(HOST_PEER_ID, &hello);
-                    let profile = profile_message(self.coop.link.session(), &self.name, &self.skin);
+                    let profile = profile_message(self.coop.link.session(), &self.name, &self.skin, own_slim(&self.skin));
                     self.coop.send(HOST_PEER_ID, &profile);
                 }
             }
@@ -1238,7 +1260,12 @@ impl NetSession {
                 let skin = profile_skin(&profile);
                 let name = clean_name(profile.get("name").and_then(Value::as_str).unwrap_or_default());
                 self.skins.insert(from, skin.clone());
-                let forward = profile_message(from, &name, &skin);
+                let slim = profile_slim(&profile);
+                match slim {
+                    Some(slim) => self.skin_slims.insert(from, slim),
+                    None => self.skin_slims.remove(&from),
+                };
+                let forward = profile_message(from, &name, &skin, slim);
                 let others: Vec<u32> = self.coop.peers().into_iter().filter(|p| *p != from).collect();
                 for peer in others {
                     self.coop.send(peer, &forward);
@@ -1253,6 +1280,10 @@ impl NetSession {
                     return;
                 }
                 self.skins.insert(peer, profile_skin(&profile));
+                match profile_slim(&profile) {
+                    Some(slim) => self.skin_slims.insert(peer, slim),
+                    None => self.skin_slims.remove(&peer),
+                };
                 let name = clean_name(profile.get("name").and_then(Value::as_str).unwrap_or_default());
                 self.names.insert(peer, name);
             }
@@ -1356,11 +1387,11 @@ impl NetSession {
     /// Host: sends a guest that just registered every runner's profile in the room, the host's first, then each
     /// other guest's. Those that have not sent a profile yet are DEFAULT (their own profile follows).
     fn send_profiles_to(&mut self, to: u32) {
-        let mut profiles = vec![profile_message(HOST_PEER_ID, &self.name, &self.skin)];
+        let mut profiles = vec![profile_message(HOST_PEER_ID, &self.name, &self.skin, own_slim(&self.skin))];
         for (peer, guest) in &self.guests {
             if *peer != to {
                 let skin = self.skins.get(peer).map_or(SKIN_DEFAULT, String::as_str);
-                profiles.push(profile_message(*peer, &guest.name, skin));
+                profiles.push(profile_message(*peer, &guest.name, skin, self.skin_slims.get(peer).copied()));
             }
         }
         for profile in &profiles {
@@ -1649,7 +1680,7 @@ mod tests {
     #[test]
     fn the_wire_profile_carries_the_skin_id_and_a_peer_reads_it_back() {
         let hash = "c".repeat(64);
-        match profile_message(3, "RUNNER", &hash) {
+        match profile_message(3, "RUNNER", &hash, None) {
             Message::WireProfile { profile } => {
                 assert_eq!(profile.get("skin").and_then(Value::as_str), Some(hash.as_str()));
                 assert_eq!(profile_skin(&profile), hash);
@@ -1657,6 +1688,33 @@ mod tests {
             }
             _ => panic!("a profile message is a WireProfile"),
         }
+    }
+
+    #[test]
+    fn the_profile_carries_skin_slim_for_a_real_skin_and_a_peer_reads_it_back() {
+        let hash = "c".repeat(64);
+        for slim in [true, false] {
+            let Message::WireProfile { profile } = profile_message(3, "RUNNER", &hash, Some(slim)) else { panic!("a WireProfile") };
+            assert_eq!(profile_slim(&profile), Some(slim));
+        }
+        let Message::WireProfile { profile } = profile_message(3, "RUNNER", &hash, None) else { panic!("a WireProfile") };
+        assert_eq!(profile_slim(&profile), None, "an unknown arm style is left out, not guessed");
+        let Message::WireProfile { profile } = profile_message(3, "RUNNER", SKIN_DEFAULT, Some(true)) else { panic!("a WireProfile") };
+        assert_eq!(profile_slim(&profile), None, "DEFAULT has no arm style on the wire");
+        let mut odd = Map::new();
+        odd.insert("skin_slim".into(), json!("yes"));
+        assert_eq!(profile_slim(&odd), None, "only a boolean counts");
+    }
+
+    #[test]
+    fn a_remote_runners_arm_style_follows_its_profile_else_its_picture() {
+        let hash = "d".repeat(64);
+        let mut host = offline_session(true, "HOST");
+        host.skins.insert(7, hash.clone());
+        host.remotes.insert(7, Remote { sample: sample(1, 0.0, 0.0), last_seen: Instant::now() });
+        assert!(!host.remotes_at(0.0, 1, (0, 0))[0].slim, "no word and no picture: classic");
+        host.skin_slims.insert(7, true);
+        assert!(host.remotes_at(0.0, 1, (0, 0))[0].slim, "the profile says slim");
     }
 
     #[test]

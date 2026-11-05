@@ -1,11 +1,28 @@
 //! A minimal HTTP/1.1 client over `std::net::TcpStream`, standing in for Godot's `HTTPRequest`
 //! node that `game/autoload/backend_client.gd` and `run_saves.gd` use. The Last Route backend
-//! (`backend/server.mjs`) is plain HTTP on its Pterodactyl allocation, so no TLS is needed; an
-//! `https://` origin is refused with a clear error (the original only uses https on its web build).
+//! (`backend/server.mjs`) is plain HTTP on its Pterodactyl allocation, so the backend calls need no TLS;
+//! downloads (player skins from an https link, from Mojang and from `skins.kyttuslab.org`) do, so
+//! `https://` origins are served over rustls.
 //!
 //! What it does: one request per connection (`Connection: close`), connect / read / write
 //! timeouts plus an overall deadline, `Content-Length`, `Transfer-Encoding: chunked` and
 //! read-until-close bodies, and a response size cap.
+//!
+//! HTTPS (see `docs/NET_HTTPS.md` for the reasoning): rustls 0.23 with the `ring` crypto provider and the
+//! Mozilla root list from `webpki-roots`. rustls is pure Rust and `ring` carries its own C and assembly, so
+//! the build needs no system OpenSSL and no system certificate store on macOS (arm64 and x86_64), Windows
+//! or Linux, and a download behaves the same on all of them. TLS 1.2 and 1.3 only, the server name is always
+//! checked against the certificate, there is no way to switch verification off.
+//!
+//! Redirects are off unless a request asks for them with [`Request::redirects`] (a backend never redirects
+//! and a 3xx must reach the caller unchanged). A download that asks for them gets at most the number of
+//! hops it names (never more than [`MAX_REDIRECTS`]), and every hop is checked again before anything is sent
+//! to it: the scheme must be https (plain http only for a loopback host, and never after an https hop: no
+//! downgrade), the caller's [`HopGuard`] must accept the new address, a non-public address is refused when the
+//! request is `public_only`, and the headers that were sent are cut down to `Accept` and `User-Agent` as soon
+//! as the host, port or scheme changes, so a session token or any other credential is never forwarded to
+//! another site. The redirect's own body is never read. The size cap, the content-type list and the timeout
+//! (one deadline for the whole chain) apply to the final answer.
 //!
 //! Headers: the original sends `Accept: application/json` and `Content-Type: application/json`
 //! (`_headers()`), plus whatever Godot's HTTPClient adds itself (`Host`, `User-Agent:
@@ -17,7 +34,8 @@
 
 use super::NetError;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Godot's HTTPRequest has no timeout by default (`timeout = 0`), which is fine for a node that
@@ -26,6 +44,14 @@ use std::time::{Duration, Instant};
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 /// The biggest response accepted (the largest real one is a 64 KB cloud save plus framing).
 pub const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+/// The most redirect hops any request may be given, whatever the caller asks for.
+pub const MAX_REDIRECTS: u8 = 3;
+/// The biggest header block accepted from a server.
+const MAX_HEADER_BYTES: usize = 64 * 1024;
+/// Slack past the size cap while reading (the end of the headers and chunk framing).
+const FRAMING_SLACK: usize = 64 * 1024;
+/// The headers that survive a hop to another origin. Everything else (a session token, Authorization, Cookie) stays behind.
+const CROSS_ORIGIN_HEADERS: [&str; 2] = ["accept", "user-agent"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Method {
@@ -44,6 +70,16 @@ impl Method {
     }
 }
 
+/// A check run on every redirect target before it is followed: `Some(reason)` refuses the hop.
+#[derive(Clone)]
+pub struct HopGuard(pub Arc<dyn Fn(&str) -> Option<String> + Send + Sync>);
+
+impl std::fmt::Debug for HopGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HopGuard")
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Request {
     pub method: Method,
@@ -53,11 +89,32 @@ pub struct Request {
     pub timeout: Duration,
     /// The biggest response this request accepts (the default is MAX_RESPONSE_BYTES; downloads raise it).
     pub limit: usize,
+    /// How many redirect hops are followed (0, the default, hands a 3xx to the caller). At most [`MAX_REDIRECTS`].
+    pub redirects: u8,
+    /// The check every redirect target passes first (the first address is the caller's own to check).
+    pub hop_guard: Option<HopGuard>,
+    /// True for downloads from an address a player typed: loopback, private, link-local and other non-public
+    /// addresses are refused after the name is resolved, on every hop, so a public name cannot point at the LAN.
+    pub public_only: bool,
+    /// The content types a 2xx answer may have (the part before `;`, lower case). Empty: any. An answer without
+    /// a Content-Type header passes; one with another type is refused before its body is read.
+    pub content_types: Vec<String>,
 }
 
 impl Request {
     pub fn new(method: Method, url: impl Into<String>) -> Request {
-        Request { method, url: url.into(), headers: Vec::new(), body: None, timeout: DEFAULT_TIMEOUT, limit: MAX_RESPONSE_BYTES }
+        Request {
+            method,
+            url: url.into(),
+            headers: Vec::new(),
+            body: None,
+            timeout: DEFAULT_TIMEOUT,
+            limit: MAX_RESPONSE_BYTES,
+            redirects: 0,
+            hop_guard: None,
+            public_only: false,
+            content_types: Vec::new(),
+        }
     }
 
     pub fn header(mut self, name: &str, value: &str) -> Request {
@@ -77,6 +134,30 @@ impl Request {
 
     pub fn limit(mut self, bytes: usize) -> Request {
         self.limit = bytes;
+        self
+    }
+
+    /// Follow up to `hops` redirects (capped at [`MAX_REDIRECTS`]), each one re-checked.
+    pub fn redirects(mut self, hops: u8) -> Request {
+        self.redirects = hops.min(MAX_REDIRECTS);
+        self
+    }
+
+    /// The check every redirect target passes before it is followed (`Some(reason)` refuses it).
+    pub fn hop_guard(mut self, guard: impl Fn(&str) -> Option<String> + Send + Sync + 'static) -> Request {
+        self.hop_guard = Some(HopGuard(Arc::new(guard)));
+        self
+    }
+
+    /// Refuse non-public addresses on every hop (see the field).
+    pub fn public_only(mut self) -> Request {
+        self.public_only = true;
+        self
+    }
+
+    /// The content types a 2xx answer may have (see the field).
+    pub fn content_types(mut self, types: &[&str]) -> Request {
+        self.content_types = types.iter().map(|t| t.to_ascii_lowercase()).collect();
         self
     }
 
@@ -121,48 +202,106 @@ pub fn parse_body(body: &[u8]) -> serde_json::Map<String, serde_json::Value> {
     }
 }
 
-/// `http://host[:port]/path?query` split into its parts.
+/// `http(s)://host[:port]/path?query` split into its parts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Url {
+    /// True for `https://`.
+    pub https: bool,
     pub host: String,
     pub port: u16,
     pub path: String,
 }
 
-pub fn parse_url(url: &str) -> Result<Url, NetError> {
-    let lower = url.to_ascii_lowercase();
-    if lower.starts_with("https://") {
-        return Err(NetError::Unsupported("HTTPS IS NOT SUPPORTED BY THIS BUILD".into()));
+impl Url {
+    /// True when the port is the scheme's default (80 or 443).
+    fn default_port(&self) -> bool {
+        self.port == if self.https { 443 } else { 80 }
     }
-    let rest = url
-        .get(..7)
-        .filter(|p| p.eq_ignore_ascii_case("http://"))
-        .map(|_| &url[7..])
-        .ok_or_else(|| NetError::Unsupported("ONLY HTTP ORIGINS ARE SUPPORTED".into()))?;
-    let (authority, path) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, "/"),
+
+    /// The URL as text again (the host in brackets when it is an IPv6 literal).
+    pub fn to_text(&self) -> String {
+        let host = if self.host.contains(':') { format!("[{}]", self.host) } else { self.host.clone() };
+        let port = if self.default_port() { String::new() } else { format!(":{}", self.port) };
+        format!("{}://{host}{port}{}", if self.https { "https" } else { "http" }, self.path)
+    }
+
+    /// The same scheme, host and port: the only case a redirect may keep the caller's headers.
+    fn same_origin(&self, other: &Url) -> bool {
+        self.https == other.https && self.port == other.port && self.host.eq_ignore_ascii_case(&other.host)
+    }
+}
+
+pub fn parse_url(url: &str) -> Result<Url, NetError> {
+    let invalid = || NetError::Unsupported("INVALID SERVER ADDRESS".into());
+    let (https, rest) = if url.get(..8).is_some_and(|p| p.eq_ignore_ascii_case("https://")) {
+        (true, &url[8..])
+    } else if url.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("http://")) {
+        (false, &url[7..])
+    } else {
+        return Err(NetError::Unsupported("ONLY HTTP AND HTTPS ADDRESSES ARE SUPPORTED".into()));
     };
-    if authority.is_empty() || authority.contains('@') {
-        return Err(NetError::Unsupported("INVALID SERVER ADDRESS".into()));
+    let default_port = if https { 443 } else { 80 };
+    // A fragment is never sent to a server.
+    let rest = rest.split('#').next().unwrap_or("");
+    let (authority, path) = match rest.find(['/', '?']) {
+        Some(i) if rest.as_bytes()[i] == b'/' => (&rest[..i], rest[i..].to_string()),
+        Some(i) => (&rest[..i], format!("/{}", &rest[i..])),
+        None => (rest, "/".to_string()),
+    };
+    if authority.is_empty() || authority.contains('@') || path.bytes().any(|b| b <= b' ' || b == 0x7f) {
+        return Err(invalid());
     }
     let (host, port) = if let Some(stripped) = authority.strip_prefix('[') {
         // [ipv6]:port
-        let end = stripped.find(']').ok_or_else(|| NetError::Unsupported("INVALID SERVER ADDRESS".into()))?;
+        let end = stripped.find(']').ok_or_else(invalid)?;
         let host = &stripped[..end];
         let after = &stripped[end + 1..];
         let port = match after.strip_prefix(':') {
             Some(p) => p.parse::<u16>().map_err(|_| NetError::Unsupported("INVALID SERVER PORT".into()))?,
-            None => 80,
+            None if after.is_empty() => default_port,
+            None => return Err(invalid()),
         };
         (host.to_string(), port)
     } else {
         match authority.rsplit_once(':') {
             Some((h, p)) => (h.to_string(), p.parse::<u16>().map_err(|_| NetError::Unsupported("INVALID SERVER PORT".into()))?),
-            None => (authority.to_string(), 80),
+            None => (authority.to_string(), default_port),
         }
     };
-    Ok(Url { host, port, path: path.to_string() })
+    if host.is_empty() || host.bytes().any(|b| b <= b' ' || b == 0x7f) {
+        return Err(invalid());
+    }
+    Ok(Url { https, host, port, path })
+}
+
+/// The address a `Location` header names, resolved against the URL it came from: an absolute URL, `//host/path`,
+/// `/path` or a path relative to the current one.
+pub fn resolve_location(base: &Url, location: &str) -> Result<String, NetError> {
+    let location = location.trim();
+    if location.is_empty() || location.bytes().any(|b| b <= b' ' || b == 0x7f) {
+        return Err(NetError::Protocol("BAD REDIRECT".into()));
+    }
+    let lower = location.to_ascii_lowercase();
+    if lower.starts_with("https://") || lower.starts_with("http://") {
+        return Ok(location.to_string());
+    }
+    let scheme = if base.https { "https" } else { "http" };
+    if location.starts_with("//") {
+        return Ok(format!("{scheme}:{location}"));
+    }
+    // Anything else with a scheme (ftp:, data:, javascript:) is not a path.
+    if let Some(colon) = location.find(':') {
+        if !location[..colon].contains(['/', '?', '#']) {
+            return Err(NetError::Unsupported("REDIRECT TO AN UNSUPPORTED ADDRESS".into()));
+        }
+    }
+    let origin = Url { path: String::new(), ..base.clone() }.to_text();
+    if location.starts_with('/') {
+        return Ok(format!("{origin}{location}"));
+    }
+    let directory = base.path.split('?').next().unwrap_or("/");
+    let directory = &directory[..directory.rfind('/').map_or(0, |i| i + 1)];
+    Ok(format!("{origin}{directory}{location}"))
 }
 
 fn user_agent() -> String {
@@ -176,8 +315,57 @@ fn transport(error: std::io::Error) -> NetError {
     }
 }
 
-fn connect(url: &Url, deadline: Instant) -> Result<TcpStream, NetError> {
-    let addrs: Vec<SocketAddr> = (url.host.as_str(), url.port).to_socket_addrs().map_err(transport)?.collect();
+/// True for an address a download may connect to: not this machine, not a private or link-local network, not a
+/// reserved range. An IPv4 address inside an IPv6 one (`::ffff:a.b.c.d`) is judged as the IPv4 address.
+pub fn is_public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(a) => is_public_v4(a),
+        IpAddr::V6(a) => match a.to_ipv4_mapped() {
+            Some(v4) => is_public_v4(v4),
+            None => is_public_v6(a),
+        },
+    }
+}
+
+fn is_public_v4(a: Ipv4Addr) -> bool {
+    let o = a.octets();
+    !(a.is_loopback()
+        || a.is_private()
+        || a.is_link_local()
+        || a.is_unspecified()
+        || a.is_broadcast()
+        || a.is_multicast()
+        || a.is_documentation()
+        || o[0] == 0
+        || (o[0] == 100 && (64..128).contains(&o[1])) // carrier-grade NAT, 100.64.0.0/10
+        || o[0] >= 240) // reserved, 240.0.0.0/4
+}
+
+fn is_public_v6(a: Ipv6Addr) -> bool {
+    let segments = a.segments();
+    !(a.is_loopback()
+        || a.is_unspecified()
+        || a.is_multicast()
+        || segments[0] & 0xfe00 == 0xfc00 // unique local, fc00::/7
+        || segments[0] & 0xffc0 == 0xfe80 // link-local, fe80::/10
+        || (segments[0] == 0x2001 && segments[1] == 0x0db8)) // documentation
+}
+
+/// True for `localhost` and the loopback addresses: the only place plain http may be used for a redirect.
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim_matches(['[', ']']);
+    host.eq_ignore_ascii_case("localhost") || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+fn connect(url: &Url, deadline: Instant, public_only: bool) -> Result<TcpStream, NetError> {
+    let mut addrs: Vec<SocketAddr> = (url.host.as_str(), url.port).to_socket_addrs().map_err(transport)?.collect();
+    if public_only {
+        let before = addrs.len();
+        addrs.retain(|a| is_public_ip(a.ip()));
+        if addrs.is_empty() && before > 0 {
+            return Err(NetError::Refused("THAT ADDRESS IS NOT PUBLIC".into()));
+        }
+    }
     if addrs.is_empty() {
         return Err(NetError::Transport("NO ADDRESS".into()));
     }
@@ -195,47 +383,184 @@ fn connect(url: &Url, deadline: Instant) -> Result<TcpStream, NetError> {
     Err(last)
 }
 
+// ---- TLS ----------------------------------------------------------------------------------------------------------
+
+/// The rustls client settings every https request uses: the `ring` provider, TLS 1.2 and 1.3, the Mozilla roots.
+fn tls_config() -> Arc<rustls::ClientConfig> {
+    static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            let mut roots = rustls::RootCertStore::empty();
+            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            Arc::new(client_config(roots))
+        })
+        .clone()
+}
+
+fn client_config(roots: rustls::RootCertStore) -> rustls::ClientConfig {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .expect("ring supports the default TLS versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth()
+}
+
+/// A connection, plain or inside TLS.
+enum Stream {
+    Plain(TcpStream),
+    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
+}
+
+impl Stream {
+    fn open(tcp: TcpStream, url: &Url, tls: &Arc<rustls::ClientConfig>) -> Result<Stream, NetError> {
+        if !url.https {
+            return Ok(Stream::Plain(tcp));
+        }
+        let name = rustls::pki_types::ServerName::try_from(url.host.clone()).map_err(|_| NetError::Unsupported("INVALID SERVER ADDRESS".into()))?;
+        let connection = rustls::ClientConnection::new(tls.clone(), name).map_err(|e| NetError::Transport(format!("TLS: {e}")))?;
+        Ok(Stream::Tls(Box::new(rustls::StreamOwned::new(connection, tcp))))
+    }
+
+    fn tcp(&self) -> &TcpStream {
+        match self {
+            Stream::Plain(s) => s,
+            Stream::Tls(s) => &s.sock,
+        }
+    }
+}
+
+impl Read for Stream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Stream::Plain(s) => s.read(buf),
+            // A server that closes the socket without a TLS close_notify is common; the body framing (length or
+            // chunks) is checked by the caller, so a cut-off body is still caught.
+            Stream::Tls(s) => match s.read(buf) {
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(0),
+                other => other,
+            },
+        }
+    }
+}
+
+impl Write for Stream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Stream::Plain(s) => s.write(buf),
+            Stream::Tls(s) => s.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Stream::Plain(s) => s.flush(),
+            Stream::Tls(s) => s.flush(),
+        }
+    }
+}
+
 /// Sends one request and reads the whole response (blocking; run it on a worker thread from
 /// the frame loop, see [`super::Pending`]).
 pub fn send(req: &Request) -> Result<Response, NetError> {
-    let url = parse_url(&req.url)?;
+    send_with(req, &tls_config())
+}
+
+fn is_redirect(status: u16) -> bool {
+    matches!(status, 301 | 302 | 303 | 307 | 308)
+}
+
+/// [`send`] with the TLS settings given (tests trust their own certificate this way).
+fn send_with(req: &Request, tls: &Arc<rustls::ClientConfig>) -> Result<Response, NetError> {
     let deadline = Instant::now() + req.timeout;
-    let mut stream = connect(&url, deadline)?;
-    let _ = stream.set_nodelay(true);
+    let mut url = parse_url(&req.url)?;
+    let (mut method, mut body, mut headers) = (req.method, req.body.clone(), req.headers.clone());
+    let follow = req.redirects.min(MAX_REDIRECTS);
+    let mut hops = 0u8;
+    loop {
+        let response = exchange(req, &url, method, &headers, body.as_deref(), deadline, follow > 0, tls)?;
+        if follow == 0 || !is_redirect(response.status) {
+            return Ok(response);
+        }
+        if hops >= follow {
+            return Err(NetError::Protocol("TOO MANY REDIRECTS".into()));
+        }
+        hops += 1;
+        let location = response.header("location").ok_or_else(|| NetError::Protocol("REDIRECT WITHOUT A LOCATION".into()))?;
+        let next_text = resolve_location(&url, location)?;
+        if let Some(guard) = &req.hop_guard {
+            if let Some(why) = (guard.0)(&next_text) {
+                return Err(NetError::Refused(why));
+            }
+        }
+        let next = parse_url(&next_text)?;
+        if !next.https && (url.https || !is_loopback_host(&next.host)) {
+            return Err(NetError::Refused("A REDIRECT TO PLAIN HTTP IS REFUSED".into()));
+        }
+        // 303 always becomes a GET; 301 and 302 do too (what every client does); 307 and 308 keep the method.
+        let keeps_method = matches!(response.status, 307 | 308);
+        let origin_changed = !url.same_origin(&next);
+        if !keeps_method {
+            method = Method::Get;
+            body = None;
+        } else if origin_changed && body.is_some() {
+            return Err(NetError::Refused("A REDIRECT WITH A BODY TO ANOTHER SITE IS REFUSED".into()));
+        }
+        if origin_changed {
+            headers.retain(|(k, _)| CROSS_ORIGIN_HEADERS.iter().any(|keep| k.eq_ignore_ascii_case(keep)));
+        }
+        url = next;
+    }
+}
+
+/// One request on one connection. With `stop_at_redirect` a 3xx answer comes back with an empty body: it is never read.
+#[allow(clippy::too_many_arguments)]
+fn exchange(
+    req: &Request,
+    url: &Url,
+    method: Method,
+    request_headers: &[(String, String)],
+    request_body: Option<&[u8]>,
+    deadline: Instant,
+    stop_at_redirect: bool,
+    tls: &Arc<rustls::ClientConfig>,
+) -> Result<Response, NetError> {
+    let tcp = connect(url, deadline, req.public_only)?;
+    let _ = tcp.set_nodelay(true);
+    let mut stream = Stream::open(tcp, url, tls)?;
     let host_header = if url.host.contains(':') { format!("[{}]", url.host) } else { url.host.clone() };
-    let host_header = if url.port == 80 { host_header } else { format!("{host_header}:{}", url.port) };
-    let mut head = format!("{} {} HTTP/1.1\r\nHost: {}\r\n", req.method.as_str(), url.path, host_header);
-    let has = |name: &str| req.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(name));
+    let host_header = if url.default_port() { host_header } else { format!("{host_header}:{}", url.port) };
+    let mut head = format!("{} {} HTTP/1.1\r\nHost: {}\r\n", method.as_str(), url.path, host_header);
+    let has = |name: &str| request_headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(name));
     if !has("user-agent") {
         head.push_str(&format!("User-Agent: {}\r\n", user_agent()));
     }
     if !has("accept") {
         head.push_str("Accept: */*\r\n");
     }
-    for (k, v) in &req.headers {
+    for (k, v) in request_headers {
         if k.contains(['\r', '\n']) || v.contains(['\r', '\n']) {
             return Err(NetError::Protocol("INVALID HEADER".into()));
         }
         head.push_str(&format!("{k}: {v}\r\n"));
     }
-    if let Some(body) = &req.body {
+    if let Some(body) = request_body {
         head.push_str(&format!("Content-Length: {}\r\n", body.len()));
-    } else if matches!(req.method, Method::Post | Method::Put) {
+    } else if matches!(method, Method::Post | Method::Put) {
         head.push_str("Content-Length: 0\r\n");
     }
     head.push_str("Connection: close\r\n\r\n");
-    let set_timeouts = |s: &TcpStream| -> Result<(), NetError> {
+    let set_timeouts = |s: &Stream| -> Result<(), NetError> {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return Err(NetError::Timeout);
         }
-        s.set_read_timeout(Some(left)).map_err(transport)?;
-        s.set_write_timeout(Some(left)).map_err(transport)?;
+        s.tcp().set_read_timeout(Some(left)).map_err(transport)?;
+        s.tcp().set_write_timeout(Some(left)).map_err(transport)?;
         Ok(())
     };
     set_timeouts(&stream)?;
     stream.write_all(head.as_bytes()).map_err(transport)?;
-    if let Some(body) = &req.body {
+    if let Some(body) = request_body {
         stream.write_all(body).map_err(transport)?;
     }
     stream.flush().map_err(transport)?;
@@ -247,7 +572,7 @@ pub fn send(req: &Request) -> Result<Response, NetError> {
         if let Some(i) = find(&buf, b"\r\n\r\n") {
             break i;
         }
-        if buf.len() > 64 * 1024 {
+        if buf.len() > MAX_HEADER_BYTES {
             return Err(NetError::Protocol("RESPONSE HEADERS TOO LARGE".into()));
         }
         set_timeouts(&stream)?;
@@ -269,8 +594,20 @@ pub fn send(req: &Request) -> Result<Response, NetError> {
     let headers: Vec<(String, String)> = lines
         .filter_map(|l| l.split_once(':').map(|(k, v)| (k.trim().to_string(), v.trim().to_string())))
         .collect();
-    let mut rest = buf[header_end + 4..].to_vec();
     let header = |name: &str| headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone());
+    if stop_at_redirect && is_redirect(status) {
+        return Ok(Response { status, headers, body: Vec::new() });
+    }
+    // The type is judged before a single body byte is read.
+    if (200..300).contains(&status) && !req.content_types.is_empty() {
+        if let Some(kind) = header("content-type") {
+            let kind = kind.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+            if !req.content_types.contains(&kind) {
+                return Err(NetError::Protocol("UNEXPECTED CONTENT TYPE".into()));
+            }
+        }
+    }
+    let mut rest = buf[header_end + 4..].to_vec();
     let no_body = status == 204 || status == 304 || (100..200).contains(&status);
     let mut read_more = |rest: &mut Vec<u8>| -> Result<bool, NetError> {
         set_timeouts(&stream)?;
@@ -279,7 +616,7 @@ pub fn send(req: &Request) -> Result<Response, NetError> {
             return Ok(false);
         }
         rest.extend_from_slice(&chunk[..n]);
-        if rest.len() > req.limit + 64 * 1024 {
+        if rest.len() > req.limit + FRAMING_SLACK {
             return Err(NetError::Protocol("RESPONSE TOO LARGE".into()));
         }
         Ok(true)
@@ -306,7 +643,7 @@ pub fn send(req: &Request) -> Result<Response, NetError> {
             if size == 0 {
                 break;
             }
-            if out.len() + size > req.limit {
+            if out.len().saturating_add(size) > req.limit {
                 return Err(NetError::Protocol("RESPONSE TOO LARGE".into()));
             }
             while rest.len() < pos + size + 2 {
@@ -352,11 +689,11 @@ mod tests {
     #[test]
     fn parses_urls() {
         let u = parse_url("http://lastroute.kyttuslab.org:8105/api/health").unwrap();
-        assert_eq!(u, Url { host: "lastroute.kyttuslab.org".into(), port: 8105, path: "/api/health".into() });
+        assert_eq!(u, Url { https: false, host: "lastroute.kyttuslab.org".into(), port: 8105, path: "/api/health".into() });
         let u = parse_url("http://127.0.0.1:18105").unwrap();
         assert_eq!(u.path, "/");
         assert_eq!(parse_url("http://example.org/x").unwrap().port, 80);
-        assert!(matches!(parse_url("https://kyttuslab.org/godot2-api"), Err(NetError::Unsupported(_))));
+        assert!(parse_url("https://kyttuslab.org/godot2-api").unwrap().https);
         assert!(parse_url("ftp://x").is_err());
     }
 
@@ -450,5 +787,285 @@ mod tests {
         let e = Request::new(Method::Get, format!("http://127.0.0.1:{port}/")).timeout(Duration::from_millis(400)).send().unwrap_err();
         assert!(matches!(e, NetError::Timeout), "{e:?}");
         assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    // ---- https, redirects and the download limits ----------------------------------------------------------------
+
+    #[test]
+    fn parses_https_urls_with_their_default_port() {
+        let u = parse_url("https://skins.kyttuslab.org/abc.png").unwrap();
+        assert_eq!(u, Url { https: true, host: "skins.kyttuslab.org".into(), port: 443, path: "/abc.png".into() });
+        assert_eq!(parse_url("HTTPS://x.org:8443/a?b=1#frag").unwrap(), Url { https: true, host: "x.org".into(), port: 8443, path: "/a?b=1".into() });
+        assert_eq!(parse_url("https://x.org?q=1").unwrap().path, "/?q=1");
+        assert_eq!(parse_url("https://x.org/a").unwrap().to_text(), "https://x.org/a");
+        assert_eq!(parse_url("http://x.org:81/a").unwrap().to_text(), "http://x.org:81/a");
+        assert!(parse_url("https://user@x.org/").is_err());
+        assert!(parse_url("https://x.org/a b").is_err());
+        assert!(parse_url("https:///x").is_err());
+    }
+
+    #[test]
+    fn locations_resolve_against_the_url_they_came_from() {
+        let base = parse_url("https://a.example/dir/file.png?x=1").unwrap();
+        assert_eq!(resolve_location(&base, "https://b.example/z").unwrap(), "https://b.example/z");
+        assert_eq!(resolve_location(&base, "//c.example/z").unwrap(), "https://c.example/z");
+        assert_eq!(resolve_location(&base, "/root.png").unwrap(), "https://a.example/root.png");
+        assert_eq!(resolve_location(&base, "other.png").unwrap(), "https://a.example/dir/other.png");
+        assert_eq!(resolve_location(&base, "?y=2").unwrap(), "https://a.example/dir/?y=2");
+        assert!(resolve_location(&base, "ftp://a.example/x").is_err());
+        assert!(resolve_location(&base, "data:image/png;base64,AAAA").is_err());
+        assert!(resolve_location(&base, "").is_err());
+        assert!(resolve_location(&base, "/a b").is_err());
+    }
+
+    #[test]
+    fn only_public_addresses_are_public() {
+        let public = |s: &str| is_public_ip(s.parse().unwrap());
+        for ip in ["8.8.8.8", "1.1.1.1", "93.184.216.34", "2606:4700:4700::1111"] {
+            assert!(public(ip), "{ip}");
+        }
+        for ip in [
+            "127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.1.1", "0.0.0.0", "100.64.0.1", "224.0.0.1",
+            "255.255.255.255", "240.0.0.1", "192.0.2.1", "::1", "::", "fe80::1", "fc00::1", "fd12:3456::1", "ff02::1", "::ffff:127.0.0.1",
+            "::ffff:10.0.0.1", "2001:db8::1",
+        ] {
+            assert!(!public(ip), "{ip}");
+        }
+    }
+
+    /// Serves one canned reply per connection, in order; returns the port and the request heads it saw.
+    fn serve_script(replies: Vec<Vec<u8>>) -> (u16, std::thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for reply in replies {
+                let Ok((mut s, _)) = listener.accept() else { break };
+                s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut got = Vec::new();
+                let mut b = [0u8; 4096];
+                while find(&got, b"\r\n\r\n").is_none() {
+                    let n = s.read(&mut b).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    got.extend_from_slice(&b[..n]);
+                }
+                seen.push(String::from_utf8_lossy(&got).to_string());
+                let _ = s.write_all(&reply);
+            }
+            seen
+        });
+        (port, handle)
+    }
+
+    fn redirect(status: u16, location: &str) -> Vec<u8> {
+        format!("HTTP/1.1 {status} Found\r\nLocation: {location}\r\nContent-Length: 4\r\n\r\nmove").into_bytes()
+    }
+
+    fn ok(body: &str, content_type: &str) -> Vec<u8> {
+        format!("HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n{body}", body.len()).into_bytes()
+    }
+
+    #[test]
+    fn a_redirect_is_handed_back_unless_the_request_asks_to_follow_it() {
+        let (port, _h) = serve_script(vec![redirect(302, "/elsewhere")]);
+        let r = Request::new(Method::Get, format!("http://127.0.0.1:{port}/a")).send().unwrap();
+        assert_eq!((r.status, r.header("location")), (302, Some("/elsewhere")));
+    }
+
+    #[test]
+    fn redirects_are_followed_each_hop_is_sent_and_three_hops_are_the_most() {
+        let (port, h) = serve_script(vec![redirect(302, "/b"), redirect(301, "c"), redirect(307, "/d"), ok("done", "text/plain")]);
+        let r = Request::new(Method::Get, format!("http://127.0.0.1:{port}/a")).redirects(3).send().unwrap();
+        assert_eq!((r.status, r.body.as_slice()), (200, b"done".as_slice()));
+        let seen = h.join().unwrap();
+        let paths: Vec<&str> = seen.iter().map(|s| s.lines().next().unwrap()).collect();
+        assert_eq!(paths, ["GET /a HTTP/1.1", "GET /b HTTP/1.1", "GET /c HTTP/1.1", "GET /d HTTP/1.1"]);
+
+        let (port, _h) = serve_script(vec![redirect(302, "/1"), redirect(302, "/2"), redirect(302, "/3"), redirect(302, "/4")]);
+        let e = Request::new(Method::Get, format!("http://127.0.0.1:{port}/a")).redirects(3).send().unwrap_err();
+        assert_eq!(e, NetError::Protocol("TOO MANY REDIRECTS".into()));
+        // A caller cannot ask for more than the cap.
+        assert_eq!(Request::new(Method::Get, "http://x").redirects(50).redirects, MAX_REDIRECTS);
+    }
+
+    #[test]
+    fn a_redirect_to_plain_http_elsewhere_or_to_another_scheme_is_refused_and_never_connected_to() {
+        for location in ["http://example.org/x", "ftp://example.org/x", "file:///etc/passwd", "javascript:alert(1)"] {
+            let (port, _h) = serve_script(vec![redirect(302, location)]);
+            let e = Request::new(Method::Get, format!("http://127.0.0.1:{port}/a")).redirects(3).send().unwrap_err();
+            assert!(matches!(e, NetError::Refused(_) | NetError::Unsupported(_)), "{location}: {e:?}");
+        }
+    }
+
+    #[test]
+    fn the_hop_guard_can_refuse_a_target() {
+        let (port, _h) = serve_script(vec![redirect(302, "/forbidden")]);
+        let e = Request::new(Method::Get, format!("http://127.0.0.1:{port}/a"))
+            .redirects(3)
+            .hop_guard(|url| url.ends_with("/forbidden").then(|| "that host is not allowed here".to_string()))
+            .send()
+            .unwrap_err();
+        assert_eq!(e, NetError::Refused("that host is not allowed here".into()));
+    }
+
+    #[test]
+    fn credentials_stay_with_their_origin_across_a_redirect() {
+        // Same origin keeps the header, another origin (localhost is not the same host as 127.0.0.1) loses it.
+        let (port_b, hb) = serve_script(vec![ok("b", "text/plain")]);
+        let (port_a, ha) = serve_script(vec![redirect(302, "/same"), redirect(302, &format!("http://localhost:{port_b}/other"))]);
+        let r = Request::new(Method::Get, format!("http://127.0.0.1:{port_a}/start"))
+            .header("X-Session-Token", "secret-token")
+            .header("Accept", "image/png")
+            .redirects(3)
+            .send()
+            .unwrap();
+        assert_eq!(r.body, b"b");
+        let a = ha.join().unwrap();
+        assert!(a[0].contains("X-Session-Token: secret-token"));
+        assert!(a[1].contains("X-Session-Token: secret-token"), "same origin keeps it");
+        let b = &hb.join().unwrap()[0];
+        assert!(!b.to_ascii_lowercase().contains("secret-token") && !b.to_ascii_lowercase().contains("x-session-token"), "{b}");
+        assert!(b.contains("Accept: image/png") && b.contains("User-Agent: LastRouteRust/"));
+    }
+
+    #[test]
+    fn a_redirect_turns_a_post_into_a_get_and_drops_the_body() {
+        let (port, h) = serve_script(vec![redirect(303, "/result"), ok("fine", "text/plain")]);
+        let r = Request::new(Method::Post, format!("http://127.0.0.1:{port}/form"))
+            .json_body(&serde_json::json!({"a": 1}))
+            .redirects(1)
+            .send()
+            .unwrap();
+        assert_eq!(r.status, 200);
+        let seen = h.join().unwrap();
+        assert!(seen[0].starts_with("POST /form") && seen[1].starts_with("GET /result"));
+        assert!(!seen[1].to_ascii_lowercase().contains("content-length"));
+    }
+
+    #[test]
+    fn the_content_type_the_length_and_the_size_cap_are_enforced_before_a_body_is_kept() {
+        let (port, _h) = serve_script(vec![ok("<html>nope</html>", "text/html; charset=utf-8")]);
+        let e = Request::new(Method::Get, format!("http://127.0.0.1:{port}/")).content_types(&["image/png", "application/octet-stream"]).send().unwrap_err();
+        assert_eq!(e, NetError::Protocol("UNEXPECTED CONTENT TYPE".into()));
+        let (port, _h) = serve_script(vec![ok("PNGDATA", "Image/PNG; x=y")]);
+        let r = Request::new(Method::Get, format!("http://127.0.0.1:{port}/")).content_types(&["image/png"]).send().unwrap();
+        assert_eq!(r.body, b"PNGDATA");
+        // No Content-Type at all passes (a server may omit it); the caller validates the bytes.
+        let (port, _h) = serve_script(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi".to_vec()]);
+        assert_eq!(Request::new(Method::Get, format!("http://127.0.0.1:{port}/")).content_types(&["image/png"]).send().unwrap().body, b"hi");
+        // A body announced above the cap is refused without reading it.
+        let (port, _h) = serve_script(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 999999\r\n\r\nhi".to_vec()]);
+        let e = Request::new(Method::Get, format!("http://127.0.0.1:{port}/")).limit(100).send().unwrap_err();
+        assert_eq!(e, NetError::Protocol("RESPONSE TOO LARGE".into()));
+        // A close-delimited body that runs past the cap is cut off.
+        let (port, _h) = serve_script(vec![[b"HTTP/1.0 200 OK\r\n\r\n".to_vec(), vec![b'x'; 300_000]].concat()]);
+        let e = Request::new(Method::Get, format!("http://127.0.0.1:{port}/")).limit(100).send().unwrap_err();
+        assert_eq!(e, NetError::Protocol("RESPONSE TOO LARGE".into()));
+    }
+
+    #[test]
+    fn a_public_only_request_never_connects_to_this_machine() {
+        let (port, _h) = serve_script(vec![ok("secret", "text/plain")]);
+        let e = Request::new(Method::Get, format!("http://127.0.0.1:{port}/")).public_only().send().unwrap_err();
+        assert_eq!(e, NetError::Refused("THAT ADDRESS IS NOT PUBLIC".into()));
+        let e = Request::new(Method::Get, format!("http://localhost:{port}/")).public_only().send().unwrap_err();
+        assert!(matches!(e, NetError::Refused(_)), "{e:?}");
+    }
+
+    // ---- real TLS on loopback: a throwaway self-signed certificate (testdata/, for 127.0.0.1 and localhost only) ----
+
+    const TEST_CERT: &[u8] = include_bytes!("testdata/test_cert.der");
+    const TEST_KEY: &[u8] = include_bytes!("testdata/test_key.der");
+
+    fn trusting_test_cert() -> Arc<rustls::ClientConfig> {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(rustls::pki_types::CertificateDer::from(TEST_CERT.to_vec())).unwrap();
+        Arc::new(client_config(roots))
+    }
+
+    /// An https server on loopback answering each connection with the next reply. Returns the port.
+    fn serve_tls(replies: Vec<Vec<u8>>) -> (u16, std::thread::JoinHandle<()>) {
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![rustls::pki_types::CertificateDer::from(TEST_CERT.to_vec())],
+                rustls::pki_types::PrivatePkcs8KeyDer::from(TEST_KEY.to_vec()).into(),
+            )
+            .unwrap();
+        let config = Arc::new(config);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            for reply in replies {
+                let Ok((tcp, _)) = listener.accept() else { break };
+                tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let connection = rustls::ServerConnection::new(config.clone()).unwrap();
+                let mut tls = rustls::StreamOwned::new(connection, tcp);
+                let mut got = Vec::new();
+                let mut b = [0u8; 4096];
+                while find(&got, b"\r\n\r\n").is_none() {
+                    match tls.read(&mut b) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => got.extend_from_slice(&b[..n]),
+                    }
+                }
+                if find(&got, b"\r\n\r\n").is_some() {
+                    let _ = tls.write_all(&reply);
+                    let _ = tls.flush();
+                    tls.conn.send_close_notify();
+                    let _ = tls.flush();
+                }
+            }
+        });
+        (port, handle)
+    }
+
+    #[test]
+    fn https_works_end_to_end_when_the_certificate_is_trusted() {
+        let (port, _h) = serve_tls(vec![ok("hello over tls", "text/plain")]);
+        let req = Request::new(Method::Get, format!("https://127.0.0.1:{port}/skin.png"));
+        let r = send_with(&req, &trusting_test_cert()).unwrap();
+        assert_eq!((r.status, r.body.as_slice()), (200, b"hello over tls".as_slice()));
+    }
+
+    #[test]
+    fn https_refuses_a_certificate_the_built_in_roots_do_not_vouch_for() {
+        let (port, _h) = serve_tls(vec![ok("never read", "text/plain")]);
+        // `send` uses the Mozilla roots only: the test certificate is not among them.
+        let e = Request::new(Method::Get, format!("https://127.0.0.1:{port}/")).timeout(Duration::from_secs(5)).send().unwrap_err();
+        match e {
+            NetError::Transport(m) => assert!(m.to_ascii_lowercase().contains("certificate") || m.to_ascii_lowercase().contains("unknownissuer") || m.contains("invalid"), "{m}"),
+            other => panic!("expected a transport error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn https_follows_a_redirect_over_tls_but_never_down_to_plain_http() {
+        let (plain_port, _p) = serve_script(vec![ok("downgraded", "text/plain")]);
+        let (port, _h) = serve_tls(vec![redirect(302, &format!("http://127.0.0.1:{plain_port}/x"))]);
+        let req = Request::new(Method::Get, format!("https://127.0.0.1:{port}/a")).redirects(3);
+        let e = send_with(&req, &trusting_test_cert()).unwrap_err();
+        assert_eq!(e, NetError::Refused("A REDIRECT TO PLAIN HTTP IS REFUSED".into()));
+
+        let (port, _h) = serve_tls(vec![redirect(302, "/b"), ok("second", "text/plain")]);
+        // Both hops need their own connection; the second one is accepted by the same listener.
+        let req = Request::new(Method::Get, format!("https://127.0.0.1:{port}/a")).redirects(3);
+        assert_eq!(send_with(&req, &trusting_test_cert()).unwrap().body, b"second");
+    }
+
+    /// Needs the internet: `cargo test --bin last_route live_ -- --ignored`. Proves the built-in roots reach the real hosts.
+    #[test]
+    #[ignore]
+    fn live_https_reaches_the_real_skin_hosts() {
+        for url in ["https://api.mojang.com/users/profiles/minecraft/Notch", "https://sessionserver.mojang.com/session/minecraft/profile/069a79f444e94726a5befca90e38aaf5", "https://skins.kyttuslab.org/"] {
+            let r = Request::new(Method::Get, url).timeout(Duration::from_secs(10)).public_only().redirects(3).send();
+            eprintln!("{url} -> {:?}", r.as_ref().map(|r| (r.status, r.body.len())));
+            assert!(r.is_ok(), "{url}: {r:?}");
+        }
     }
 }

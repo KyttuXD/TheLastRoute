@@ -25,6 +25,8 @@ scrypt = { version = "0.11", default-features = false, optional = true }
 getrandom = { version = "0.2", optional = true }
 regex = { version = "1", optional = true }
 tiny_http = { version = "0.12", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
 
 [features]
 default = []

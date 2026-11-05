@@ -86,8 +86,9 @@ pub fn post_with_timeout(cfg: &BackendConfig, path: &str, body: &Value, timeout:
 
 // ---- skins --------------------------------------------------------------------------------------
 
-/// The largest PNG the website takes for a skin (`skins.mjs`: 16 KB).
-pub const SKIN_MAX_BYTES: usize = 16 * 1024;
+/// The largest PNG the website takes for a skin (`skins.mjs` SKIN_MAX_BYTES: 64 KB; the one number lives in the shared
+/// validator, so the client and `lr_server` cannot drift apart).
+pub const SKIN_MAX_BYTES: usize = crate::shared::skin_validate::SKIN_MAX_BYTES;
 
 /// The body of `POST /api/v1/skins`: the session token and the PNG as standard base64.
 pub fn skin_upload_body(session_token: &str, png: &[u8]) -> Value {
@@ -96,8 +97,18 @@ pub fn skin_upload_body(session_token: &str, png: &[u8]) -> Value {
 
 /// `POST /api/v1/skins {sessionToken, png}`. The website answers `{ok, id}` with the id it computed (the SHA-256 of the PNG).
 pub fn upload_skin(cfg: &BackendConfig, session_token: &str, png: &[u8]) -> Result<String, NetError> {
+    // The server refuses these too; not sending them saves the round trip and the rate-limit slot.
+    if let Err(why) = crate::shared::skin_validate::check_skin_png(png, SKIN_MAX_BYTES) {
+        return Err(NetError::Refused(why));
+    }
     let p = post_with_timeout(cfg, "/api/v1/skins", &skin_upload_body(session_token, png), Duration::from_secs(10))?;
     Ok(s(&p, "id"))
+}
+
+/// `POST /api/v1/skins/clear {sessionToken}`: the account's stored skin is removed (a player chose DEFAULT; Godot
+/// `SkinSync.clear_own`). The website answers `{ok}`.
+pub fn clear_skin(cfg: &BackendConfig, session_token: &str) -> Result<(), NetError> {
+    post_with_timeout(cfg, "/api/v1/skins/clear", &json!({"sessionToken": session_token}), Duration::from_secs(10)).map(|_| ())
 }
 
 // ---- health -------------------------------------------------------------------------------------
@@ -900,7 +911,7 @@ mod tests {
     fn skin_upload_request_body() {
         let b = skin_upload_body("tok", b"abc");
         assert_eq!(b, json!({"sessionToken": "tok", "png": "YWJj"}));
-        assert_eq!(SKIN_MAX_BYTES, 16 * 1024);
+        assert_eq!(SKIN_MAX_BYTES, 64 * 1024, "skins.mjs SKIN_MAX_BYTES");
     }
 
     #[test]
