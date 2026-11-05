@@ -537,6 +537,10 @@ pub fn window(
     f.exit = f.start;
     f.has_lift = false;
     f.origin = ((center.0 - 1) * CHUNK, (center.1 - 1) * CHUNK);
+    // the caverns' noisy floor and ceiling: a pure function of the world text and the world cell
+    if level == INFERNO_LEVEL {
+        f.set_terrain(seed, WINDOW);
+    }
     (f, fix)
 }
 

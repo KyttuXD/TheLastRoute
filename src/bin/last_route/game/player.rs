@@ -528,7 +528,7 @@ impl Player {
         let on_flight = stair_height_at(fac, self.pos).is_some();
         // a catwalk deck of the level's own window is a raised surface like a tread: the height is its absolute y (the
         // collision and the ladder read `y()`), never a jump offset left over the floor
-        let on_deck = under.level == fac.level && rel > 0.01;
+        let on_deck = under.level == fac.level && rel.abs() > 0.01;
         let lifted = neighbour || on_flight || on_deck;
         // No ground within a step under a standing body (a drop cell, a ladder shaft, a hole): the body falls. A jump in
         // the air over such a place falls too, from the height of its walking surface.
@@ -554,12 +554,25 @@ impl Player {
                 self.vy = PLAYER_JUMP_VELOCITY;
             }
         }
+        // On the Inferno's noisy floor a grounded body walking downhill sticks to the surface instead of dropping in
+        // small hops behind it (the data's `ground_snap`); a jump (vy above 0) or a real drop is left alone.
+        if let Some(t) = fac.terrain() {
+            if self.grounded && self.vy <= 0.0 && self.feet_y - min_feet <= t.rules().ground_snap {
+                self.feet_y = min_feet;
+                self.vy = 0.0;
+            }
+        }
         self.vy -= PLAYER_GRAVITY * dt;
         self.feet_y = (self.feet_y + self.vy * dt).max(min_feet);
         self.grounded = self.feet_y <= min_feet;
         // The body rises and sinks with the flight under it: the height eases toward the surface it now stands on, and
         // back to the floor off the stairs, so it never snaps through a tread.
         self.height += (surface - self.height) * (1.0 - (-STAIR_FOLLOW_RATE * dt).exp());
+        // a deck or a noisy cave floor is continuous by construction (the slope per cell is capped), so the body stands
+        // on it exactly: only a flight's treads are eased
+        if on_deck && !neighbour && !on_flight {
+            self.height = surface;
+        }
 
         self.after_move(dt, moving, sprinting, speed, speed_now);
     }

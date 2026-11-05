@@ -50,6 +50,8 @@ pub struct InfernoRules {
     pub lava_y: f32,
     /// Floor of a lava pit (Godot BASIN_Y -1.6 x 1.25). Lava cells are closed and never walkable. Not drawn yet.
     pub lava_basin_y: f32,
+    /// The noisy floor and ceiling (`inferno_terrain`).
+    pub terrain: super::inferno_terrain::TerrainRules,
 }
 
 impl InfernoRules {
@@ -80,6 +82,7 @@ impl InfernoRules {
             walk_height: f(&v["floor"], "walk_height") as f32,
             lava_y: f(&v["floor"], "lava_y") as f32,
             lava_basin_y: f(&v["floor"], "lava_basin_y") as f32,
+            terrain: super::inferno_terrain::TerrainRules::parse(&v["terrain"]).unwrap_or_else(|e| panic!("{e}")),
         }
     }
 

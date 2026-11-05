@@ -861,6 +861,7 @@ impl Brain {
         }
         let speed_scale = g.speed_scale(self);
         self.update_movement(dt, ctx.fac, depth, relays, prof, holds, speed_scale);
+        self.follow_terrain(ctx.fac);
         self.tick_emotes(dt, state_before, dist(self.pos, target.pos));
         let breaches = g.breaches_hiding();
         let immune = g.immune_to_capture(self);
@@ -877,6 +878,14 @@ impl Brain {
             && dist(self.pos, target.pos) < self.capture_reach(prof)
             && (self.y - target.y).abs() <= flight_edges::rules().capture_height;
         (caught, events)
+    }
+
+    /// On the Inferno's noisy floor (`world/inferno_terrain.rs`) a hunter on foot stands on the ground under it, so its
+    /// feet follow the surface the player walks on. An edge walk (a flight, a ladder, a drop) owns its own height.
+    fn follow_terrain(&mut self, fac: &Facility) {
+        if self.walk.is_none() && fac.level == self.level && fac.terrain().is_some() {
+            self.y = crate::game::level_stack::floor_y_of(self.level) + fac.ground_height(self.pos.0, self.pos.1);
+        }
     }
 
     /// Set the open sluice-gate channel cells: `cells` become floor for this hunter while `gate_down` (the valve
@@ -3718,5 +3727,77 @@ mod edge_tests {
         let give_up = search_rules().unreachable_give_up;
         let took = run_until(&mut b, &s, &t, give_up + 3.0, |_| {}, |h| h.state == State::Search).expect("gives up");
         assert!(took <= give_up + 1.0, "{took} vs {give_up}");
+    }
+}
+
+/// A hunter on the Inferno's noisy floor (`world/inferno_terrain.rs`).
+#[cfg(test)]
+mod inferno_floor_tests {
+    use super::*;
+    use crate::content::loot::LootTables;
+    use crate::world::catalog::Catalog;
+    use crate::world::infinite::{window, INFERNO_LEVEL};
+
+    #[test]
+    fn a_hunter_path_across_the_noisy_floor_keeps_its_feet_on_the_surface() {
+        let v: serde_json::Value = serde_json::from_str(include_str!("../data/hunters/aki.json")).unwrap();
+        let def = crate::content::hunters::parse(&v, None, "").unwrap();
+        let (cat, loot) = (Catalog::load(), LootTables::default());
+        let mut cache = HashMap::new();
+        let (fac, _) = window("1426541270", (0, 0), INFERNO_LEVEL, &cat, &loot, &mut cache);
+        assert_eq!(fac.level, INFERNO_LEVEL);
+        let terrain = fac.terrain().expect("terrain");
+        // a route of 40 or more cells between two open cells
+        let cells = fac.floor_cells();
+        let mut route = None;
+        'search: for a in cells.iter().step_by(61) {
+            for b in cells.iter().step_by(53) {
+                if (a.x - b.x).abs() + (a.y - b.y).abs() >= 40 && fac.find_path(*a, *b).len() >= 40 {
+                    route = Some((*a, *b));
+                    break 'search;
+                }
+            }
+        }
+        let (from, to) = route.expect("a long route on the Inferno floor");
+        let ctx = Ctx {
+            fac: &fac,
+            relays_taken: &[],
+            batteries_taken: &[],
+            hiding_disabled: &[],
+            vents: &[],
+            heater_on: false,
+            heater_thawed: true,
+            diff: Difficulty::Standard,
+            music_box_left: 0.0,
+            exposure: 0.0,
+        };
+        let prof = Difficulty::Standard.profile();
+        let mut b = Brain::new(def, from.center(), "PIN", Difficulty::Standard);
+        b.active = true;
+        b.set_level(INFERNO_LEVEL);
+        b.chase(to.center());
+        let far = Target { pos: to.center(), facing: (1.0, 0.0), level: INFERNO_LEVEL, ..Default::default() };
+        let floor = crate::game::level_stack::floor_y_of(INFERNO_LEVEL);
+        let (mut walked, mut prev, mut lo, mut hi) = (0.0_f32, (b.pos, b.y), f32::MAX, f32::MIN);
+        for _ in 0..1200 {
+            b.update(1.0 / 60.0, &ctx, &far, 1, 0, &prof);
+            // the feet are exactly on the surface under the hunter, and a frame never moves them like a step
+            assert!(
+                (b.y - (floor + terrain.floor_at(b.pos.0, b.pos.1))).abs() < 1e-4,
+                "feet {} over ground {} at {:?}",
+                b.y,
+                floor + terrain.floor_at(b.pos.0, b.pos.1),
+                b.pos
+            );
+            assert!(fac.body_fits(b.pos.0, b.pos.1, HUNTER_RADIUS), "the hunter walked into a wall at {:?}", b.pos);
+            assert!((b.y - prev.1).abs() < 0.05, "a {} m jump in one frame", b.y - prev.1);
+            walked += dist(prev.0, b.pos);
+            prev = (b.pos, b.y);
+            lo = lo.min(b.y);
+            hi = hi.max(b.y);
+        }
+        assert!(walked > 20.0, "the hunter walked {walked} cells");
+        assert!(hi - lo > 0.05, "its route crossed no height ({lo}..{hi})");
+        assert_eq!(b.level, INFERNO_LEVEL);
     }
 }

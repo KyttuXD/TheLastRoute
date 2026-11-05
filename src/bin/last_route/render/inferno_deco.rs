@@ -64,7 +64,8 @@ pub struct Deco {
     pub size_m: f32,
     pub yaw: f32,
     pub color: [f32; 3],
-    /// Floor height from the carve (0 on a ledge, negative in the basin).
+    /// Floor height under the piece: the carve's tier height from `place` (0 on a ledge, negative in the basin), set to
+    /// the noisy terrain height by the window placement and the mesh.
     pub floor_y: f32,
     /// Per-piece phase for flicker and ember timing, 0..1.
     pub phase: f32,
@@ -302,13 +303,17 @@ pub struct Placed {
 /// metres (the window's (0, 0) is the corner of chunk (centre - 1)).
 pub fn window_decos(deco: &InfernoDeco, seed: &str, center: (i32, i32)) -> Vec<Placed> {
     let mut out = Vec::new();
+    // the window's noisy floor (world/inferno_terrain.rs): every piece stands on it
+    let terrain = crate::world::inferno_terrain::Terrain::new(seed, ((center.0 - 1) * CHUNK, (center.1 - 1) * CHUNK), 3);
     for dy in -1..=1 {
         for dx in -1..=1 {
             let key = ChunkKey { cx: center.0 + dx, cy: center.1 + dy, level: crate::world::infinite::INFERNO_LEVEL };
             let inf = InfernoChunk::carve(seed, key);
             let (ox, oy) = (((dx + 1) * CHUNK) as f32, ((dy + 1) * CHUNK) as f32);
-            for d in deco.place(seed, key, &inf) {
-                let pos = [ox + d.cell.x as f32 + 0.5 + d.offset[0], d.floor_y, oy + d.cell.y as f32 + 0.5 + d.offset[1]];
+            for mut d in deco.place(seed, key, &inf) {
+                let (px, pz) = (ox + d.cell.x as f32 + 0.5 + d.offset[0], oy + d.cell.y as f32 + 0.5 + d.offset[1]);
+                d.floor_y = terrain.floor_at(px, pz);
+                let pos = [px, d.floor_y, pz];
                 out.push(Placed { deco: d, pos });
             }
         }

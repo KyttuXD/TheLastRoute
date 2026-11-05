@@ -327,7 +327,7 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [x] lr_server: some helpers are only used by tests and are gated with cfg(test); delete the ones nothing needs
 - [x] God mode leaked to other players in a room (fixed 2026-11-03)
 - [ ] Peek lean is not visually confirmed: hunter hallway peeking works in the tests, but no screenshot has shown the lean yet
-- [x] Inferno floor heights: Godot's Inferno floor is flat, so the player standing at the base height is parity and the Rust-only drop (0 / -0.6 / -1.2 m, drawn from the old carve) is gone; the drawn floor, walls and decorations read the carve the open cells use (`InfernoChunk::height_at`: walkable 0, lava `floor.lava_basin_y`, data/inferno.json) (done 2026-11-04). Not Inferno parity yet: layout, ceilings, lava pit render and cages are open (see the lava pit line below)
+- [x] Inferno floor heights are followed by the player, hunters, bots, props and items: the caverns now have a noisy floor and ceiling (`world/inferno_terrain.rs`, owner override of Godot parity, 2026-11-04; docs/OPEN_QUESTIONS.md 27)
 - [x] Stairwell with only 2 walk rows at seed 40490470, chunk (3,2): check that the flight is walkable end to end (covered by the contract test `the_todo_stairwell_at_seed_40490470_chunk_3_2_is_walkable_end_to_end` in world/stack_contract_tests.rs, stairs phase 1)
 
 ## Performance and FPS
@@ -1019,7 +1019,8 @@ Source: the 2026-11-04 repo audit. Items that need a design decision are in `doc
 - [ ] Wire `data/loot/sewer.json` into the pickup roll (`sewer_route_generator.gd` 662)
 - [ ] Sewer level ambience bed mapping (`game/audio/level_ambience.gd`) and the missing lava loop (`audio/emitter_loops.gd` 29, 44-45)
 - [ ] Check sewer extra relay chance .55 (`sewer_route_generator.gd` 27) and the hunter affinity lists (`sewer_route_generator.gd` 388 vs `world/route/sewer/hunters.rs` 43-45)
-- [ ] Inferno lava pits and ceilings (`world/inferno.rs`): the floor is flat as in Godot (done) and the data numbers are in data/inferno.json (`floor.lava_y` -0.875, `floor.lava_basin_y` -2.0 = Godot -0.7 and -1.6 x 1.25), but nothing draws a lava surface, basin or lip walls yet, and ceilings are a flat 5.0 m. Godot ceilings x 1.25 for the later work: tunnels 3.875-4.625 (3.1 + 0.2 x pick(0..3)), chambers and halls 4.875, seam ring 4.25 (`streamed_facility_view_3d.gd` 1244-1259, `inferno_pit_view.gd` 9-10); the Inferno layout (margin, hall width, carve) is also not a port of `inferno_caverns.gd`
+- [ ] Inferno lava pits (`world/inferno.rs`) (update 2026-11-04: inferno caves are in and the player, hunters and bots follow the noisy cavern floor; lava cells stay closed walls, no damage or stun rule, and the floor does not dip toward lava)
+- [ ] Inferno terrain: the noise covers the whole level -3 window, maze rooms and halls included, not only the carved caves; confine it to the caves if the owner wants flat halls (docs/OPEN_QUESTIONS.md 27)
 - [ ] Inferno cages and spider lair, with the -3 spider spawn rule (`config/secret_creatures.gd`)
 - [ ] Water camera leftovers: `grab::drive` (render/scene.rs) still reads the standing eye, so a grabbed runner in water keeps the standing eye; a pipe flood over dry floor gives no sink with the shipped data (`flood_sink_fraction` 0); the sewer wall collider is still the full storey (Godot 3.9 x 1.25) and the under-trench vault (Godot 2.9 x 1.25) is not drawn; no rendered check of the sunk eye or the 4 m ceiling was done
 - [~] Level-0 catwalk geometry and the see-through breakables list (`streamed_hunter_navigation.gd` 548-576) (update 2026-11-04: catwalks above level 0 are in; the see-through breakables list is open)

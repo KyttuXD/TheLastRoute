@@ -17,6 +17,7 @@ use crate::content::regions::{RegionDef, RegionSafeLight};
 use crate::content::Content;
 use crate::world::facility::{Cell, DeckKind, DoorDraw, Prop, Stair};
 use crate::world::inferno::InfernoChunk;
+use crate::world::inferno_terrain::Terrain;
 use crate::world::infinite::{ChunkKey, CHUNK, INFERNO_LEVEL, WINDOW};
 use crate::world::route::sewer::core::{Grid, LEVEL as SEWER_LEVEL, LOWER_LEVEL as SEWER_LOWER_LEVEL, WATER};
 use crate::world::{region_texture, Facility, TEXTURE_SETS};
@@ -1086,9 +1087,11 @@ fn prop_model_key<'c>(f: &Facility, p: &Prop, assets: &Assets, content: &'c Cont
 }
 
 /// Where a room door stands: raised to the hunter's opening and widened to its doorway, on its doorway's centre.
-fn door_xf(p: &Prop, d: DoorDraw, fit: &door::DoorFit, h: f32) -> Mat4 {
+fn door_xf(f: &Facility, p: &Prop, d: DoorDraw, fit: &door::DoorFit, h: f32) -> Mat4 {
     let (x, z) = p.cell.center();
-    let y = visual_y(&p.ptype, h, p.mount_y.unwrap_or(0.0) as f32);
+    // on the Inferno's noisy floor the door stands on the ground under its doorway
+    let lift = f.terrain().map_or(0.0, |t| t.floor_at(x + d.offset[0], z + d.offset[1]));
+    let y = lift + visual_y(&p.ptype, h, p.mount_y.unwrap_or(0.0) as f32);
     let yaw = p.rotation as f32 * std::f32::consts::FRAC_PI_2;
     door::door_transform(vec3(x + d.offset[0], y, z + d.offset[1]), yaw, fit.sx, fit.sy, prop_scale::draw_scale(&p.ptype))
 }
@@ -1105,27 +1108,31 @@ fn door_instances(f: &Facility, assets: &Assets, content: &Content) -> Vec<DoorI
             Some(DoorInstance {
                 cell: p.cell,
                 model: key.clone(),
-                xf: door_xf(p, d, &fit, WALL_HEIGHT),
+                xf: door_xf(f, p, d, &fit, WALL_HEIGHT),
                 fit,
             })
         })
         .collect()
 }
 
-/// The level -3 floor heights of a window: each chunk's carve, made once, read per corner.
+/// The level -3 window as the renderer sees it: the noisy floor and ceiling of the facility's terrain (corners are
+/// facility grid corners) and each chunk's cavern carve, made once, which the decoration placement reads.
 struct InfernoFloor {
     seed: String,
     origin: (i32, i32),
     chunks: HashMap<(i32, i32), InfernoChunk>,
+    terrain: Terrain,
 }
 
 impl InfernoFloor {
-    /// The window floor's heights, or None when `f` is not a level -3 window (its text is `<seed>:L<level>`).
+    /// The window floor, or None when `f` is not a level -3 window (it has no terrain; its text is `<seed>:L<level>`).
     fn of(f: &Facility) -> Option<InfernoFloor> {
         let (seed, level) = f.seed_text.rsplit_once(":L")?;
+        let terrain = f.terrain()?.clone();
         (level.parse::<i32>().ok()? == INFERNO_LEVEL).then(|| InfernoFloor {
             seed: seed.to_string(),
             origin: f.origin,
+            terrain,
             chunks: HashMap::new(),
         })
     }
@@ -1139,26 +1146,16 @@ impl InfernoFloor {
         (chunk.height_at(c), chunk.is_lava(c))
     }
 
-    /// The height of the grid corner (`i`, `j`): the mean of the walkable cells that share it (flat, as in Godot; the
-    /// carve the open cells use). A corner of lava cells only keeps the walk height.
-    fn corner(&mut self, i: i32, j: i32) -> f32 {
-        let (mut sum, mut n) = (0.0, 0);
-        for (x, y) in [(i - 1, j - 1), (i, j - 1), (i - 1, j), (i, j)] {
-            let (h, lava) = self.cell(x, y);
-            if !lava {
-                sum += h;
-                n += 1;
-            }
-        }
-        if n == 0 {
-            crate::world::inferno::InfernoRules::builtin().walk_height
-        } else {
-            sum / n as f32
-        }
+    /// The height of the floor at the grid corner (`i`, `j`).
+    fn corner(&self, i: i32, j: i32) -> f32 {
+        self.terrain.floor_corner(i, j)
     }
-}
 
-impl InfernoFloor {
+    /// The height of the ceiling at the grid corner (`i`, `j`).
+    fn ceiling(&self, i: i32, j: i32) -> f32 {
+        self.terrain.ceiling_corner(i, j)
+    }
+
     /// The carve of the chunk `key`, made once.
     fn carve(&mut self, key: (i32, i32)) -> &InfernoChunk {
         let seed = &self.seed;
@@ -1492,13 +1489,13 @@ fn build_meshes(
             ),
             None => {
                 let (i, j) = (c.x, c.y);
-                let drop = |inf: &mut Option<InfernoFloor>, i: i32, j: i32| inf.as_mut().map_or(0.0, |s| s.corner(i, j));
+                let drop = |inf: &Option<InfernoFloor>, i: i32, j: i32| inf.as_ref().map_or(0.0, |s| s.corner(i, j));
                 painted(&mut surf, floor_kind, assets.floor(set)).quad(
                     [
-                        vec3(x, drop(&mut inferno, i, j), z),
-                        vec3(x + 1., drop(&mut inferno, i + 1, j), z),
-                        vec3(x + 1., drop(&mut inferno, i + 1, j + 1), z + 1.),
-                        vec3(x, drop(&mut inferno, i, j + 1), z + 1.),
+                        vec3(x, drop(&inferno, i, j), z),
+                        vec3(x + 1., drop(&inferno, i + 1, j), z),
+                        vec3(x + 1., drop(&inferno, i + 1, j + 1), z + 1.),
+                        vec3(x, drop(&inferno, i, j + 1), z + 1.),
                     ],
                     UV1,
                     up,
@@ -1513,11 +1510,13 @@ fn build_meshes(
         }
         add_stairs(bits, &mut surf, &mut plain, &mut glow, floor_kind, wall_kind, assets, set);
         if draw.ceiling {
+            // the caverns hang their ceiling at the noisy corner heights, everything else is flat
+            let at_top = |i: i32, j: i32| inferno.as_ref().map_or(wall_h, |s| s.ceiling(i, j));
             let corners = [
-                vec3(x, wall_h, z + 1.),
-                vec3(x + 1., wall_h, z + 1.),
-                vec3(x + 1., wall_h, z),
-                vec3(x, wall_h, z),
+                vec3(x, at_top(c.x, c.y + 1), z + 1.),
+                vec3(x + 1., at_top(c.x + 1, c.y + 1), z + 1.),
+                vec3(x + 1., at_top(c.x + 1, c.y), z),
+                vec3(x, at_top(c.x, c.y), z),
             ];
             match ceil_kind {
                 Some(k) => painted(&mut surf, k, &assets.white).quad(
@@ -1586,16 +1585,22 @@ fn build_meshes(
             {
                 continue;
             }
-            let (a, b) = match inferno.as_mut() {
-                Some(s) => (
-                    vec3(a.x, s.corner(a.x as i32, a.z as i32), a.z),
-                    vec3(b.x, s.corner(b.x as i32, b.z as i32), b.z),
-                ),
-                None => (a, b),
+            // in the caverns a wall runs from the noisy floor corner to the noisy ceiling corner
+            let (a, b, top_a, top_b) = match inferno.as_ref() {
+                Some(s) => {
+                    let (ai, aj, bi, bj) = (a.x as i32, a.z as i32, b.x as i32, b.z as i32);
+                    (
+                        vec3(a.x, s.corner(ai, aj), a.z),
+                        vec3(b.x, s.corner(bi, bj), b.z),
+                        vec3(a.x, s.ceiling(ai, aj), a.z),
+                        vec3(b.x, s.ceiling(bi, bj), b.z),
+                    )
+                }
+                None => (a, b, a + up * wall_h, b + up * wall_h),
             };
             // the painted wall carries its own cornice, chair rail and skirting
             painted(&mut surf, wall_kind, assets.wall(set)).quad(
-                [a + up * wall_h, b + up * wall_h, b, a],
+                [top_a, top_b, b, a],
                 [vec2(0., 0.), vec2(1., 0.), vec2(1., wall_tiers), vec2(0., wall_tiers)],
                 n,
                 WHITE,
@@ -1621,14 +1626,17 @@ fn build_meshes(
     }
     // level -3 cave decoration (render/inferno_deco.rs): the pieces of the picked cells
     if let Some(inf) = inferno.as_mut() {
-        let (seed, cfg) = (inf.seed.clone(), decor_cfg());
+        let (seed, cfg, terrain) = (inf.seed.clone(), decor_cfg(), inf.terrain.clone());
         for (&key, owned) in &chunk_cells {
             let at = (key.0 * CHUNK - f.origin.0, key.1 * CHUNK - f.origin.1);
             let carved = inf.carve(key);
-            for d in crate::render::inferno_deco::inferno_deco().place(&seed, ChunkKey { cx: key.0, cy: key.1, level: INFERNO_LEVEL }, carved) {
+            for mut d in crate::render::inferno_deco::inferno_deco().place(&seed, ChunkKey { cx: key.0, cy: key.1, level: INFERNO_LEVEL }, carved) {
                 let cell = (at.0 + d.cell.x, at.1 + d.cell.y);
                 if owned.contains(&cell) {
-                    add_deco(&mut plain, &mut glow, &d, at, cell_wall_height(f, cell.0, cell.1), cfg);
+                    // a piece stands on the noisy floor and hangs from the noisy ceiling under it
+                    let (px, pz) = (cell.0 as f32 + 0.5 + d.offset[0], cell.1 as f32 + 0.5 + d.offset[1]);
+                    d.floor_y = terrain.floor_at(px, pz);
+                    add_deco(&mut plain, &mut glow, &d, at, terrain.ceiling_at(px, pz), cfg);
                 }
             }
         }
@@ -1645,7 +1653,9 @@ fn build_meshes(
             Some(d) => (x + d.offset[0], z + d.offset[1]),
             None => (x + p.offset.0, z + p.offset.1),
         };
-        let mut y = visual_y(&p.ptype, h, p.mount_y.unwrap_or(0.0) as f32);
+        // on the Inferno's noisy floor every prop stands on the ground under its centre
+        let lift = f.terrain().map_or(0.0, |t| t.floor_at(x, z));
+        let mut y = lift + visual_y(&p.ptype, h, p.mount_y.unwrap_or(0.0) as f32);
         let yaw = p.rotation as f32 * std::f32::consts::FRAC_PI_2;
         // the model's drawn turn: a room door keeps the gameplay yaw, every other prop gets the half turn
         let visual_yaw = prop_visual_yaw(yaw, p.door.is_some());
@@ -1671,9 +1681,9 @@ fn build_meshes(
                         let wall = choice.wall_at((p.cell.x + f.origin.0) as i64, (p.cell.y + f.origin.1) as i64);
                         let fallback = assets.wall(room_set(f, p.cell.x, p.cell.y));
                         let filler = door::filler_from(dims, fit.sy);
-                        door_header(&mut surf, wall, fallback, vec3(x, 0.0, z), yaw, d.span as f32, (bottom, filler), h, tiers);
+                        door_header(&mut surf, wall, fallback, vec3(x, lift, z), yaw, d.span as f32, (bottom, filler), h, tiers);
                     }
-                    let xf = door_xf(p, d, &fit, h);
+                    let xf = door_xf(f, p, d, &fit, h);
                     model.add_door_body(&mut authored, xf, WHITE, &fit);
                     continue;
                 }
@@ -1919,20 +1929,6 @@ mod tests {
             color: [0.5, 0.2, 0.1],
             floor_y: -0.4,
             phase: 0.0,
-        }
-    }
-
-    #[test]
-    fn the_drawn_inferno_floor_is_flat_on_every_corner_of_an_open_cell() {
-        let r = crate::world::inferno::InfernoRules::builtin();
-        let mut floor = InfernoFloor { seed: "ROOM-FLAT-1".into(), origin: (0, 0), chunks: HashMap::new() };
-        let key = ChunkKey { cx: 0, cy: 0, level: INFERNO_LEVEL };
-        let open = crate::world::inferno::InfernoChunk::carve("ROOM-FLAT-1", key).open_cells();
-        assert!(!open.is_empty());
-        for c in open {
-            for (i, j) in [(c.x, c.y), (c.x + 1, c.y), (c.x, c.y + 1), (c.x + 1, c.y + 1)] {
-                assert_eq!(floor.corner(i, j), r.walk_height, "corner {i},{j} of open cell {c:?}");
-            }
         }
     }
 
