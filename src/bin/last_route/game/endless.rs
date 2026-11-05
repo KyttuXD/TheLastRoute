@@ -1218,8 +1218,8 @@ impl Game {
         self.change_storey(to, content, catalog, |g| {
             let s = g.fac.start.center();
             g.p.pos = g.fac.nearest_open_or(s.0, s.1, PLAYER_RADIUS);
-            g.p.height = 0.0;
             g.p.set_abs_y(floor_y_of(to));
+            g.p.stand_on_ground(&g.fac);
         });
         self.autosave("level");
         true

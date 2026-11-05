@@ -448,6 +448,8 @@ pub struct Brain {
     hop: Option<Hop>,
     /// Seconds spent on the current edge.
     edge_clock: f32,
+    /// Height of the noisy Inferno floor under the feet above the level floor line (0 elsewhere); the datum of `layer_h`.
+    ground_rel: f32,
     /// This hunter's catwalk-deck rules (data/hunters/decks.json).
     deck_rules: HunterDeck,
     /// While the goal stands on another layer that no permitted edge leads to: the nearest floor spot to it (the foot of
@@ -556,6 +558,7 @@ impl Brain {
             nav: Arc::new(StackNav::empty()),
             hop: None,
             edge_clock: 0.0,
+            ground_rel: 0.0,
             deck_rules: DeckRules::get().for_hunter(&def_id),
             landed: None,
             stalk: None,
@@ -564,8 +567,10 @@ impl Brain {
     }
 
     /// Feet height above this hunter's own level floor (m): 0 on the floor, the deck height on a catwalk deck.
+    /// On the Inferno's noisy floor the floor itself is the datum (`ground_rel`, the terrain under the feet), so walking
+    /// uphill is no deck.
     pub fn layer_h(&self) -> f32 {
-        self.y - crate::game::level_stack::floor_y_of(self.level)
+        self.y - crate::game::level_stack::floor_y_of(self.level) - self.ground_rel
     }
 
     /// True while the hunter stands on a catwalk deck rather than the floor.
@@ -631,6 +636,7 @@ impl Brain {
         self.walk = None;
         self.hop = None;
         self.edge_clock = 0.0;
+        self.ground_rel = 0.0;
         self.last_known_level = level;
         self.last_known_stamp = None;
     }
@@ -884,7 +890,10 @@ impl Brain {
     /// feet follow the surface the player walks on. An edge walk (a flight, a ladder, a drop) owns its own height.
     fn follow_terrain(&mut self, fac: &Facility) {
         if self.walk.is_none() && fac.level == self.level && fac.terrain().is_some() {
-            self.y = crate::game::level_stack::floor_y_of(self.level) + fac.ground_height(self.pos.0, self.pos.1);
+            self.ground_rel = fac.ground_height(self.pos.0, self.pos.1);
+            self.y = crate::game::level_stack::floor_y_of(self.level) + self.ground_rel;
+        } else {
+            self.ground_rel = 0.0;
         }
     }
 

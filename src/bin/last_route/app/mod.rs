@@ -379,6 +379,10 @@ impl Loading {
         if let (Some(y), true) = (self.y, g.inf.is_some()) {
             // a saved run resumes at its absolute height (a legacy save at the floor of its level)
             g.p.set_abs_y(y);
+            // a window with a noisy floor (the Inferno) puts the body on the real surface, not on the flat floor line
+            if g.fac.terrain().is_some() {
+                g.p.stand_on_ground(&g.fac);
+            }
         }
         g.score = self.score;
         g.coins = self.coins;
