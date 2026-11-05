@@ -20,6 +20,10 @@ pub struct Cfg {
     /// Frames after a re-lock in which a single huge move is a warp spike and is dropped.
     pub spike_window_frames: u32,
     pub spike_reject_px: f32,
+    /// After a re-lock the FIRST move that arrives is dropped when it is larger than this: the pointer may have been
+    /// moved while the cursor was free (Escape, a menu, another window), and the first absolute position event after the
+    /// capture reports that whole trip as one turn, however late the mouse is touched.
+    pub first_motion_max_px: f32,
     /// Hard cap on one frame's move at any time (guards junk values, never scales a normal move).
     pub per_frame_max_px: f32,
     pub mouse_multiplier_macos: f32,
@@ -74,6 +78,7 @@ impl Cfg {
             gap_relock_s: positive(&v, "gap_relock_s")?,
             spike_window_frames: count(&v, "spike_window_frames")?,
             spike_reject_px: positive(&v, "spike_reject_px")?,
+            first_motion_max_px: positive(&v, "first_motion_max_px")?,
             per_frame_max_px: positive(&v, "per_frame_max_px")?,
             mouse_multiplier_macos: positive(&v, "mouse_multiplier_macos")?,
             mouse_multiplier_windows: positive(&v, "mouse_multiplier_windows")?,
@@ -158,6 +163,8 @@ pub struct LookFilter {
     frames: u32,
     clock: f32,
     since: u32,
+    /// The first move after a re-lock has not arrived yet.
+    first_pending: bool,
 }
 
 impl LookFilter {
@@ -166,6 +173,7 @@ impl LookFilter {
         self.frames = c.relock_drop_frames;
         self.clock = c.relock_drop_min_s;
         self.since = 0;
+        self.first_pending = true;
     }
 
     /// Whether the settle is still running.
@@ -184,6 +192,12 @@ impl LookFilter {
         let len = px.length();
         if !len.is_finite() {
             return Vec2::ZERO;
+        }
+        if self.first_pending && len > 0.0 {
+            self.first_pending = false;
+            if len > c.first_motion_max_px {
+                return Vec2::ZERO;
+            }
         }
         if self.since <= c.spike_window_frames && len > c.spike_reject_px {
             return Vec2::ZERO;
@@ -406,5 +420,58 @@ mod tests {
     fn turn_takes_the_short_way() {
         assert!((turn(3.0, -3.0) - (std::f32::consts::TAU - 6.0)).abs() < 1e-5);
         assert!(turn(0.5, 0.5).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod first_motion_tests {
+    use super::*;
+    use macroquad::prelude::vec2;
+
+    fn cfg() -> Cfg {
+        Cfg::parse(include_str!("../data/player/look.json")).unwrap()
+    }
+
+    /// The pointer was moved far while the cursor was free; the first move after the re-lock reports the whole trip.
+    #[test]
+    fn the_first_big_move_after_a_relock_is_dropped_however_late_it_comes() {
+        let c = cfg();
+        let mut f = LookFilter::default();
+        f.relock(&c);
+        for _ in 0..40 {
+            assert_eq!(f.apply(Vec2::ZERO, 0.016, &c), Vec2::ZERO);
+        }
+        // 300 px is under the spike limit: it used to turn the camera by the whole trip
+        assert_eq!(f.apply(vec2(300.0, 0.0), 0.016, &c), Vec2::ZERO);
+        // and the next real move is kept
+        assert_eq!(f.apply(vec2(12.0, 3.0), 0.016, &c), vec2(12.0, 3.0));
+    }
+
+    #[test]
+    fn a_small_first_move_is_kept() {
+        let c = cfg();
+        let mut f = LookFilter::default();
+        f.relock(&c);
+        for _ in 0..10 {
+            f.apply(Vec2::ZERO, 0.016, &c);
+        }
+        assert_eq!(f.apply(vec2(8.0, -2.0), 0.016, &c), vec2(8.0, -2.0));
+        assert_eq!(f.apply(vec2(200.0, 0.0), 0.016, &c), vec2(200.0, 0.0), "after the first move a flick is a flick");
+    }
+
+    #[test]
+    fn every_relock_arms_the_guard_again() {
+        let c = cfg();
+        let mut f = LookFilter::default();
+        f.relock(&c);
+        for _ in 0..10 {
+            f.apply(Vec2::ZERO, 0.016, &c);
+        }
+        f.apply(vec2(5.0, 0.0), 0.016, &c);
+        f.relock(&c);
+        for _ in 0..10 {
+            f.apply(Vec2::ZERO, 0.016, &c);
+        }
+        assert_eq!(f.apply(vec2(250.0, 0.0), 0.016, &c), Vec2::ZERO);
     }
 }

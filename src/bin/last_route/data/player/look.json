@@ -5,6 +5,7 @@
   "gap_relock_s": 0.25,
   "spike_window_frames": 6,
   "spike_reject_px": 500.0,
+  "first_motion_max_px": 60.0,
   "per_frame_max_px": 700.0,
   "mouse_multiplier_macos": 0.3333333,
   "mouse_multiplier_windows": 0.5833333,

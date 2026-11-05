@@ -122,7 +122,7 @@ pub fn decide(i: &Inputs) -> Decision {
     }
     match choice {
         Choice::Metal => metal("Metal chosen in settings"),
-        _ if i.apple_silicon => metal("AUTO on Apple Silicon"),
+        _ if i.apple_silicon => gl("AUTO on Apple Silicon: OpenGL, Metal measured slower (docs/GRAPHICS_API.md)"),
         _ => gl("AUTO on Intel: OpenGL until Metal is measured there"),
     }
 }
@@ -280,9 +280,10 @@ mod tests {
     }
 
     #[test]
-    fn auto_is_metal_on_apple_silicon_and_opengl_on_intel() {
-        assert_eq!(pick(&mac()), Gfx::Metal);
+    fn auto_is_opengl_everywhere_until_metal_measures_faster_and_metal_stays_selectable() {
+        assert_eq!(pick(&mac()), Gfx::Gl, "Metal measured slower on the M4 (docs/GRAPHICS_API.md)");
         assert_eq!(pick(&Inputs { apple_silicon: false, ..mac() }), Gfx::Gl);
+        assert_eq!(pick(&Inputs { setting: "METAL".into(), ..mac() }), Gfx::Metal);
     }
 
     #[test]
