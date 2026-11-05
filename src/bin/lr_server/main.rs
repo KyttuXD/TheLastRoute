@@ -1,7 +1,7 @@
 //! Rust port of the Last Route Node.js backend (`KyttusLabApp/backend/*.mjs`).
 //!
 //! One module per original `.mjs` file; `server` is the HTTP router (`server.mjs`) and `main.rs` the `index.js`
-//! entry point. Not ported: skins.mjs, city_maps.mjs, ws_relay.mjs, github_*.mjs, deploy_mod_pack.mjs,
+//! entry point. Skins (skins.mjs) live in `skins/`. Not ported: city_maps.mjs, ws_relay.mjs, github_*.mjs, deploy_mod_pack.mjs,
 //! region_agent.mjs, zip_archive.mjs (see `server/mod.rs` and `main.rs`).
 //!
 //! `lr_server`: the Rust port of the Last Route backend entry point (`index.js` + `startLastRouteServerFromEnvironment`).

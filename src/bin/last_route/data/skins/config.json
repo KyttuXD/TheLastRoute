@@ -3,7 +3,6 @@
 	"max_bytes": 65536,
 	"upload_max_bytes": 65536,
 	"upload_retry_secs": 60,
-	"peer_cache_max": 16,
 	"png": {
 		"max_chunks": 64
 	},
@@ -12,6 +11,9 @@
 		"host_path": "/{id}.png",
 		"backend_path": "/api/skins/files/{id}.png",
 		"v1_path": "/api/v1/skins/{id}",
-		"timeout_secs": 8
+		"timeout_secs": 8,
+		"retry_secs": 60,
+		"max_concurrent": 4,
+		"cache_max": 16
 	}
 }

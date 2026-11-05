@@ -8,7 +8,7 @@
 //!
 //! Layout:
 //! * [`config`]   origin policy (primary origin, loopback dev exception, TEST instance), timeouts.
-//! * [`http`]     a std-only HTTP/1.1 client (TcpStream, timeouts, Content-Length / chunked).
+//! * [`http`]     an HTTP/1.1 client (TcpStream, timeouts, Content-Length / chunked, https over rustls, checked redirects; see docs/NET_HTTPS.md).
 //! * [`pending`]  [`Pending<T>`]: requests on worker threads, polled from the frame loop.
 //! * [`api`]      one blocking function per server route, typed request/response shapes.
 //! * [`backend`]  [`Backend`]: the stateful `Backend` autoload (session, heartbeat, events).
@@ -72,7 +72,7 @@ pub enum NetError {
     Transport(String),
     /// No answer in time.
     Timeout,
-    /// Something this client cannot do (an https origin).
+    /// Something this client cannot do (an address that is not http or https, a malformed address).
     Unsupported(String),
     /// Not a usable HTTP/JSON answer.
     Protocol(String),

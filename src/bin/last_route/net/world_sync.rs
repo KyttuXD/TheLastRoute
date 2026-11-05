@@ -481,6 +481,12 @@ fn profile_flags(profile: &Map<String, Value>) -> SkinFlags {
     SkinFlags { slim: flag("skin_slim"), copy: flag("skin_copy") }
 }
 
+/// The `skin_slim` a received profile carries; None when it has none (an old client) or it is not a boolean. Unlike
+/// [`profile_flags`] this tells "classic" from "not said", so a missing word can fall back to the downloaded picture.
+fn profile_slim(profile: &Map<String, Value>) -> Option<bool> {
+    profile.get("skin_slim").and_then(Value::as_bool)
+}
+
 /// The host's room mod packs as the wire carries them: `{ids: [...]}`.
 fn packs_message(ids: &[String]) -> Message {
     let mut packs = Map::new();
@@ -549,6 +555,8 @@ pub struct NetSession {
     flags: SkinFlags,
     /// The skin flags of each other runner, by peer id, from its wire profile.
     peer_flags: HashMap<u32, SkinFlags>,
+    /// The arm style each other runner's profile explicitly named (`skin_slim`), by peer id; absent when it named none.
+    skin_slims: HashMap<u32, bool>,
     /// The name of each other runner, by peer id, from its wire profile (a guest keeps the others' names too).
     names: HashMap<u32, String>,
     guests: HashMap<u32, Guest>,
@@ -758,6 +766,7 @@ impl NetSession {
             skins: HashMap::new(),
             flags: SkinFlags::default(),
             peer_flags: HashMap::new(),
+            skin_slims: HashMap::new(),
             names: HashMap::new(),
             guests: HashMap::new(),
             remotes: HashMap::new(),
@@ -842,6 +851,23 @@ impl NetSession {
             let profile = profile_message(self.coop.link.session(), &self.name, &self.skin, self.flags);
             self.coop.send(HOST_PEER_ID, &profile);
         }
+    }
+
+    /// Records (or forgets) the arm style a peer's profile named.
+    fn note_peer_slim(&mut self, peer: u32, slim: Option<bool>) {
+        match slim {
+            Some(slim) => self.skin_slims.insert(peer, slim),
+            None => self.skin_slims.remove(&peer),
+        };
+    }
+
+    /// Whether a peer's arms are slim by its profile, else by its picture once it is here (classic until then).
+    fn peer_slim(&self, peer: u32) -> bool {
+        self.skin_slims
+            .get(&peer)
+            .copied()
+            .or_else(|| self.skins.get(&peer).filter(|s| is_skin_hash(s)).and_then(|s| crate::shared::skins::skin_is_slim(s)))
+            .unwrap_or(false)
     }
 
     /// The other runners whose skin can be copied (COPY SKIN): they allow it, publish a real skin id, and are in the room.
@@ -1240,8 +1266,8 @@ impl NetSession {
             })
             .map(|(peer, r)| {
                 let mut v = remote_view(*peer, r, self.skins.get(peer).cloned().unwrap_or_else(|| SKIN_DEFAULT.into()), origin, now);
-                // arm style: the sample's own flag, else the profile flags the skin system keeps per peer
-                v.slim = v.slim || self.peer_flags.get(peer).is_some_and(|f| f.slim);
+                // arm style: the sample's own flag, else the profile's word, else read from the picture once it is here
+                v.slim = v.slim || self.peer_slim(*peer);
                 v
             })
             .collect();
@@ -1371,6 +1397,7 @@ impl NetSession {
                 let flags = profile_flags(&profile);
                 self.skins.insert(from, skin.clone());
                 self.peer_flags.insert(from, flags);
+                self.note_peer_slim(from, profile_slim(&profile));
                 let forward = profile_message(from, &name, &skin, flags);
                 let others: Vec<u32> = self.coop.peers().into_iter().filter(|p| *p != from).collect();
                 for peer in others {
@@ -1387,6 +1414,7 @@ impl NetSession {
                 }
                 self.skins.insert(peer, profile_skin(&profile));
                 self.peer_flags.insert(peer, profile_flags(&profile));
+                self.note_peer_slim(peer, profile_slim(&profile));
                 let name = clean_name(profile.get("name").and_then(Value::as_str).unwrap_or_default());
                 self.names.insert(peer, name);
             }
@@ -1394,6 +1422,7 @@ impl NetSession {
                 self.remotes.remove(&from);
                 self.skins.remove(&from);
                 self.peer_flags.remove(&from);
+                self.skin_slims.remove(&from);
                 self.pending_captures.remove(&from);
                 self.last_taser.remove(&from);
                 if let Some(guest) = self.guests.remove(&from) {
@@ -1534,6 +1563,7 @@ impl NetSession {
                 self.remotes.remove(&peer);
                 self.skins.remove(&peer);
                 self.peer_flags.remove(&peer);
+                self.skin_slims.remove(&peer);
                 self.pending_captures.remove(&peer);
                 self.last_taser.remove(&peer);
                 if let Some(guest) = self.guests.remove(&peer) {
@@ -1855,8 +1885,28 @@ mod tests {
             assert_eq!(profile.get("skin_slim").and_then(Value::as_bool), Some(flags.slim), "the wire names Godot's skin_slim");
             assert_eq!(profile.get("skin_copy").and_then(Value::as_bool), Some(flags.copy), "the wire names Godot's skin_copy");
             assert_eq!(profile_flags(&profile), flags);
+            assert_eq!(profile_slim(&profile), Some(flags.slim));
         }
         assert_eq!(profile_flags(&Map::new()), SkinFlags::default(), "an old client's profile reads as classic and not copyable");
+        assert_eq!(profile_slim(&Map::new()), None, "an old client's profile names no arm style");
+        let mut odd = Map::new();
+        odd.insert("skin_slim".into(), json!("yes"));
+        assert_eq!(profile_slim(&odd), None, "only a boolean counts");
+    }
+
+    #[test]
+    fn a_remote_runners_arm_style_follows_its_profile_else_its_picture() {
+        let hash = "d".repeat(64);
+        let mut host = offline_session(true, "HOST");
+        host.skins.insert(7, hash.clone());
+        host.remotes.insert(7, Remote { sample: sample(1, 0.0, 0.0), last_seen: Instant::now(), hide_since: None });
+        assert!(!host.remotes_at(0.0, 1, (0, 0))[0].slim, "no word and no picture: classic");
+        host.note_peer_slim(7, Some(true));
+        assert!(host.remotes_at(0.0, 1, (0, 0))[0].slim, "the profile says slim");
+        host.note_peer_slim(7, Some(false));
+        assert!(!host.remotes_at(0.0, 1, (0, 0))[0].slim, "the profile says classic");
+        host.note_peer_slim(7, None);
+        assert!(!host.skin_slims.contains_key(&7), "a profile that names none clears the old word");
     }
 
     #[test]

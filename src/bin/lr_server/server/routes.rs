@@ -6,6 +6,7 @@ use crate::crash_reports::CRASH_MAX_BODY_BYTES;
 use crate::game_saves::{match_save_path, SAVE_MAX_BYTES};
 use crate::lr_regex as regex;
 use crate::moderation::Who;
+use crate::skins::skins::{SkinAction, SKIN_JSON_BODY_BYTES};
 use crate::public_route::JoinOptions;
 use crate::util::{hex, iso_time, js_number, log_info, log_warn, str_nullish, str_or_empty, timing_safe_equal, truthy, Reply};
 
@@ -17,21 +18,39 @@ fn skins_unavailable() -> Response {
     json_response(503, &json!({ "ok": false, "code": "SKINS_UNAVAILABLE", "error": "Skins are not available on this server" }), &[])
 }
 
-/// The skin id of a `GET /api/v1/skins/<id>` request.
+/// The skin id of a `GET /api/v1/skins/<id>` request, or of the Godot backend's `GET /api/skins/files/<id>.png`.
+/// The id is not checked here: the store answers a malformed one with 400.
 fn skin_read_id(method: &str, path: &str) -> Option<String> {
-    if method != "GET" {
+    if method != "GET" && method != "HEAD" {
         return None;
     }
-    regex!(r"^/api/v1/skins/([^/]{1,128})$").captures(path).map(|caps| caps[1].to_string())
+    regex!(r"^/api/v1/skins/([^/]{1,128})$")
+        .captures(path)
+        .or_else(|| regex!(r"^/api/skins/files/([^/]{1,128})\.png$").captures(path))
+        .map(|caps| caps[1].to_string())
 }
 
-/// A stored skin: the PNG bytes, cached for good (the id is the hash of the bytes, so it never changes).
+/// The biggest request body each POST route reads (`readJson(request, maxBytes)`): the default is `MAX_BODY_BYTES`;
+/// the mod registration, the crash reports and the skin upload (the base64 of a full-size skin) have their own.
+pub(crate) fn body_limit(path: &str) -> usize {
+    match path {
+        "/api/admin/mods/register" => MOD_REGISTER_MAX_BODY_BYTES,
+        "/api/v1/crash-reports" => CRASH_MAX_BODY_BYTES,
+        "/api/v1/skins" => SKIN_JSON_BODY_BYTES,
+        _ => MAX_BODY_BYTES,
+    }
+}
+
+/// A stored skin: the PNG bytes, cached for good (the id is the hash of the bytes, so it never changes). It is served
+/// as an image only: no sniffing into another type, and a policy that lets nothing load or run if it is ever opened as a page.
 fn png_response(png: Vec<u8>) -> Response {
     let length = png.len().to_string();
     let extra = [
         ("content-type", "image/png".to_string()),
         ("content-length", length),
         ("cache-control", "public, max-age=31536000, immutable".to_string()),
+        ("x-content-type-options", "nosniff".to_string()),
+        ("content-security-policy", "default-src 'none'".to_string()),
     ];
     Response { status: 200, headers: merge_headers(response_headers(), &extra), body: png }
 }
@@ -237,9 +256,21 @@ impl LastRouteServer {
             }
         }
         // Skin checks: the website session lookup runs with the state lock released (see `skin_put_checks`).
-        if (method == "PUT" && regex!(r"^/api/v1/skins/([A-Za-z0-9_]{1,32})$").is_match(path)) || (method == "POST" && path == "/api/skins/upload") {
+        // `PUT /api/v1/skins/<name>` has no store behind it (it answers 503 after the checks).
+        if method == "PUT" && regex!(r"^/api/v1/skins/([A-Za-z0-9_]{1,32})$").is_match(path) {
             let (refused, _guard) = self.skin_put_checks(guard, request);
             return refused.unwrap_or_else(skins_unavailable);
+        }
+        // `POST /api/skins/upload`: the Godot backend's raw-PNG upload, over the same store as `POST /api/v1/skins`.
+        if method == "POST" && path == "/api/skins/upload" {
+            let skins = state.skins.clone();
+            let accounts = state.accounts.clone();
+            let (refused, guard) = self.skin_put_checks(guard, request);
+            drop(guard);
+            return match refused {
+                Some(response) => response,
+                None => reply(skins.upload_raw(&*accounts, &request.header(SKIN_TOKEN_HEADER), &request.body)),
+            };
         }
         if let Some(response) = self.route_reads(state, request) {
             return response;
@@ -266,11 +297,7 @@ impl LastRouteServer {
             return json_response(200, &json!({ "ok": true, "actions": state.regions.report(&region, &report) }), &[]);
         }
         // readJson(request, maxBytes)
-        let max = match path {
-            "/api/admin/mods/register" => MOD_REGISTER_MAX_BODY_BYTES,
-            "/api/v1/crash-reports" => CRASH_MAX_BODY_BYTES,
-            _ => MAX_BODY_BYTES,
-        };
+        let max = body_limit(path);
         if request.body_overflow || request.body.len() > max {
             return json_response(413, &json!({ "ok": false, "error": "REQUEST BODY TOO LARGE" }), &[]);
         }
@@ -282,12 +309,29 @@ impl LastRouteServer {
                 _ => return json_response(400, &json!({ "ok": false, "error": "INVALID JSON BODY" }), &[]),
             }
         };
-        // Skin upload: forwarded to the website when one is set, so the state lock is released before it runs.
+        // Skin upload: forwarded to the website when one is set, so the state lock is released before it runs. Without a
+        // website the account's moderation flags apply here, as on the raw upload route.
         if path == "/api/v1/skins" {
             let skins = state.skins.clone();
             let accounts = state.accounts.clone();
+            let mut guard = guard;
+            if !skins.is_upstream() {
+                let token = str_or_empty(body.get("sessionToken"));
+                let (user, g) = self.with_accounts(guard, |accounts| accounts.session_username(&token).unwrap_or_default());
+                guard = g;
+                if let Some(refused) = guard.moderation.check_skin_upload(&user) {
+                    return reply(refused);
+                }
+            }
             drop(guard);
             return reply(skins.upload(&*accounts, &body));
+        }
+        // The account's own skin: look it up, clear it, or (owners) remove one and block its id.
+        if let Some(action) = SkinAction::from_path(path) {
+            let skins = state.skins.clone();
+            let accounts = state.accounts.clone();
+            drop(guard);
+            return reply(skins.account_action(&*accounts, action, &body));
         }
         // Admin and moderation routes resolve the caller's session with the state lock released, then retake it.
         let scoped = resolves_caller_first(path);
@@ -350,9 +394,6 @@ impl LastRouteServer {
         }
         if get_or_head && path.starts_with("/api/city-maps/files/") {
             return Some(json_response(404, &json!({ "ok": false, "code": "CITY_MAPS_UNAVAILABLE", "error": "City maps are not part of this server" }), &[]));
-        }
-        if get_or_head && path.starts_with("/api/skins/files/") {
-            return Some(skins_unavailable());
         }
         if method == "GET" && path == "/api/mods/packs" {
             let result = state.mod_packs.list();
@@ -760,9 +801,6 @@ impl LastRouteServer {
             "/api/rooms/custom-map" => guard.room_service.set_custom_map(body),
             "/api/rooms/dialog-start" => guard.room_service.start_dialog(body),
             "/api/rooms/dialog-advance" => guard.room_service.advance_dialog(body),
-            "/api/skins/mine" | "/api/skins/clear" | "/api/skins/remove" => {
-                (503, json!({ "ok": false, "code": "SKINS_UNAVAILABLE", "error": "Skins are not available on this server" }))
-            }
             "/api/city-maps/list" | "/api/city-maps/ticket" => {
                 (404, json!({ "ok": false, "code": "CITY_MAPS_UNAVAILABLE", "error": "City maps are not part of this server" }))
             }
@@ -959,6 +997,9 @@ mod skin_lock_tests {
             stream.set_read_timeout(Some(UPSTREAM_TIMEOUT)).unwrap();
             let mut buffer = [0u8; 4096];
             let _ = stream.read(&mut buffer);
+            // Take the rest of the request (a skin is tens of kilobytes) so closing the socket cannot reset the client.
+            stream.set_read_timeout(Some(Duration::from_millis(150))).unwrap();
+            while stream.read(&mut buffer).is_ok_and(|n| n > 0) {}
             let _ = release.recv();
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
@@ -1003,7 +1044,9 @@ mod skin_lock_tests {
         let uploading = {
             let server = server.clone();
             std::thread::spawn(move || {
-                let request = Request::json("POST", "/api/v1/skins", &json!({ "sessionToken": "token", "png": "AAAA" }));
+                // A real skin: the server refuses a picture that fails the full check before it forwards anything.
+                let skin = last_route_core::shared::skin_validate::encode_png_stored(&vec![255u8; 64 * 64 * 4], 64, 64);
+                let request = Request::json("POST", "/api/v1/skins", &json!({ "sessionToken": "token", "png": crate::util::base64(&skin) }));
                 server.handle(&request)
             })
         };

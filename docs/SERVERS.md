@@ -30,8 +30,11 @@ Caddy (`caddy.service`) serves two sites from `/etc/caddy/Caddyfile`:
   The server reads the public URL from `LASTROUTE_MODS_BASE` (see docs/MODDING_SPEC.md section 4.7).
 - `skins.kyttuslab.org` serves `/srv/skins` (cache one year, `immutable`, CORS `*`, `nosniff`). Because of `immutable`, a skin file
   must never be replaced under the same name: publish a new name (a content hash).
-  On 2026-11-04 the folder was empty, and the Rust client does not download skins yet (a room carries only the skin id;
-  see TODO.md "Server-synced skins").
+  On 2026-11-04 the folder was empty. Nothing uploads there: `lr_server` stores uploaded skins itself
+  (`<data dir>/skins/<hash>.png`, `GET /api/v1/skins/<hash>`), and the game asks `lr_server` first, then this host over https
+  (`https://skins.kyttuslab.org/<hash>.png`, a copy someone puts there by hand), then the legacy `/api/skins/files/<hash>.png`
+  route. Every answer is checked by the full shared skin check before it is used, so a wrong or hostile file in this folder
+  cannot hurt a player. See docs/SKIN_SYNC.md.
 
 Other things on VPS 2 (not part of this project's docs): `/srv/osm`, `/opt/lastroute-host`, `/opt/node`.
 
