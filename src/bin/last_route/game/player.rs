@@ -282,6 +282,12 @@ impl Player {
         self.y() + self.feet_y + self.eye_height() - self.water_sink
     }
 
+    /// Puts the feet on the walking surface under the body (the floor, a deck, a flight tread, the Inferno's noisy floor):
+    /// `height` is the surface relative to the level floor and `feet_y` stays 0. A spawn, a resume and a level change use it.
+    pub fn stand_on_ground(&mut self, fac: &Facility) {
+        self.set_abs_y(self.floor_y + super::level_stack::local_ground(fac, self.pos.0, self.pos.1));
+    }
+
     /// Puts the feet at absolute `y` on the spot (a ladder holds the body on its shaft): the height absorbs the difference to
     /// the level floor, and the jump offset, vertical speed and any fall end; the body is grounded.
     pub fn set_abs_y(&mut self, y: f32) {
@@ -526,9 +532,10 @@ impl Player {
         // a floor far below the feet is a hole or a shaft (a ladder's), which the body does not drop into by easing
         let neighbour = under.level != fac.level && (under.y - self.y()).abs() <= STEP_UP;
         let on_flight = stair_height_at(fac, self.pos).is_some();
-        // a catwalk deck of the level's own window is a raised surface like a tread: the height is its absolute y (the
-        // collision and the ladder read `y()`), never a jump offset left over the floor
-        let on_deck = under.level == fac.level && rel.abs() > 0.01;
+        // any surface of the level's own window (the floor, a catwalk deck, the Inferno's noisy floor, above or below the
+        // level floor) is carried in `height` (relative to the level floor); `feet_y` is only the jump offset, so `y()` is
+        // the true absolute y and the collision and the ladder read the same number
+        let on_deck = under.level == fac.level;
         let lifted = neighbour || on_flight || on_deck;
         // No ground within a step under a standing body (a drop cell, a ladder shaft, a hole): the body falls. A jump in
         // the air over such a place falls too, from the height of its walking surface.

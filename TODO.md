@@ -342,6 +342,7 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [x] God mode leaked to other players in a room (fixed 2026-11-03)
 - [ ] Peek lean is not visually confirmed: hunter hallway peeking works in the tests, but no screenshot has shown the lean yet
 - [x] Inferno floor heights are followed by the player, hunters, bots, props and items: the caverns now have a noisy floor and ceiling (`world/inferno_terrain.rs`, owner override of Godot parity, 2026-11-04; docs/OPEN_QUESTIONS.md 27)
+- [x] One body-height model: a body on any own-level surface (floor, deck, noisy Inferno floor, above or below the level floor) has `height` = the surface relative to the level floor and `feet_y` = 0 (the jump offset only); resume and level change use `Player::stand_on_ground`; hunters measure their layer from the terrain under them (`ground_rel`) (2026-11-05)
 - [x] Stairwell with only 2 walk rows at seed 40490470, chunk (3,2): check that the flight is walkable end to end (covered by the contract test `the_todo_stairwell_at_seed_40490470_chunk_3_2_is_walkable_end_to_end` in world/stack_contract_tests.rs, stairs phase 1)
 
 ## Performance and FPS

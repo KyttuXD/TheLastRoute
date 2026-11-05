@@ -57,8 +57,8 @@ fn the_body_stands_on_the_noisy_surface_at_sampled_cells() {
             for (ox, oz) in [(0.5, 0.5), (0.2, 0.8)] {
                 g.p.pos = (c.x as f32 + ox, c.y as f32 + oz);
                 g.p.floor_y = floor_y_of(INFERNO_LEVEL);
-                g.p.height = 0.0;
-                g.p.feet_y = local_ground(&g.fac, g.p.pos.0, g.p.pos.1);
+                g.p.height = local_ground(&g.fac, g.p.pos.0, g.p.pos.1);
+                g.p.feet_y = 0.0;
                 for _ in 0..3 {
                     g.step(FRAME, &Controls::default(), &content, &catalog, &Sounds::default());
                 }
@@ -97,8 +97,8 @@ fn walking_the_caves_follows_the_surface_without_hops_or_sinking() {
     g.p.pos = (run.x as f32 + 0.5, run.y as f32 + 0.5);
     g.p.yaw = -std::f32::consts::FRAC_PI_2;
     g.p.floor_y = floor_y_of(INFERNO_LEVEL);
-    g.p.height = 0.0;
-    g.p.feet_y = local_ground(&g.fac, g.p.pos.0, g.p.pos.1);
+    g.p.height = local_ground(&g.fac, g.p.pos.0, g.p.pos.1);
+    g.p.feet_y = 0.0;
     let start = g.p.pos;
     let c = Controls { fwd: 1.0, ..Default::default() };
     let (mut worst, mut lo, mut hi) = (0.0_f32, f32::MAX, f32::MIN);
@@ -121,7 +121,8 @@ fn a_jump_lands_back_on_the_surface() {
     let c = g.fac.floor_cells().into_iter().find(|c| g.fac.body_fits(c.x as f32 + 0.5, c.y as f32 + 0.5, PLAYER_RADIUS + 0.3)).unwrap();
     g.p.pos = (c.x as f32 + 0.5, c.y as f32 + 0.5);
     g.p.floor_y = floor_y_of(INFERNO_LEVEL);
-    g.p.feet_y = local_ground(&g.fac, g.p.pos.0, g.p.pos.1);
+    g.p.height = local_ground(&g.fac, g.p.pos.0, g.p.pos.1);
+    g.p.feet_y = 0.0;
     g.step(FRAME, &Controls::default(), &content, &catalog, &Sounds::default());
     let jump = Controls { jump: true, ..Default::default() };
     g.step(FRAME, &jump, &content, &catalog, &Sounds::default());

@@ -295,6 +295,8 @@ fn resume(depth: i32, y: Option<f32>, secs: f32, c: &Content, cat: &Catalog) -> 
     };
     let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, &cp.room_text, cp.level(), c, cat);
     g.p.set_abs_y(cp.migrated_y());
+    // the Inferno's floor is noisy: a resume stands on the real surface, as app/mod.rs does
+    g.p.stand_on_ground(&g.fac);
     let mut ys = vec![];
     for _ in 0..(secs * 60.0) as usize {
         g.step(1.0 / 60.0, &Controls::default(), c, cat, &Sounds::default());
@@ -310,7 +312,8 @@ fn a_resumed_save_without_y_abs_stands_on_its_floor() {
     for depth in [0, -1, -2, -3] {
         let (g, ys) = resume(depth, None, 1.0, &c, &cat);
         assert_eq!(g.inf.as_ref().unwrap().level, depth);
-        assert!(ys.iter().all(|y| (y - floor_y_of(depth)).abs() <= FLOOR_TOL), "level {depth}: stays on its floor");
+        let ground = floor_y_of(depth) + crate::game::level_stack::local_ground(&g.fac, g.p.pos.0, g.p.pos.1);
+        assert!(ys.iter().all(|y| (y - ground).abs() <= FLOOR_TOL), "level {depth}: stays on its floor surface {ground}: {ys:?}");
         assert!(!g.p.falling());
     }
 }
