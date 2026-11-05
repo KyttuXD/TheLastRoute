@@ -98,6 +98,19 @@ pub struct Prop {
     pub offset: (f32, f32),
     /// A room door's doorway (draw only: the span and the centre offset from `cell`); `None` for other props.
     pub door: Option<DoorDraw>,
+    /// A sewer valve wheel's or sluice gate's keys; `None` for every other prop.
+    pub sewer: Option<SewerKeys>,
+}
+
+/// The prop type of a sewer sluice gate (`world::route::sewer`).
+pub const SLUICE_GATE: &str = "sewerSluiceGate";
+
+/// What a sewer valve wheel or sluice gate prop carries from the sewer chunk (`valve_effect` and `gate`): the effect
+/// name is one of data/pipes.json `effects`, the gate id ties a gate valve to its sluice (`GATE:x:y:z:n`).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct SewerKeys {
+    pub effect: String,
+    pub gate: String,
 }
 
 /// How a room door is drawn: the doorway's width in cells (`door_span`) and the offset of the doorway's centre
@@ -776,6 +789,23 @@ impl Facility {
             }
         }
         self.build_hunter_grid();
+    }
+
+    /// A sewer sluice gate is a wall across its channel cells while closed and floor while open (its valve turned an odd
+    /// number of times). Sets every gate prop named `gate` and rebuilds the solid index and the hunters' grid when a gate
+    /// changed. Returns whether one did.
+    pub fn set_gate_open(&mut self, gate: &str, open: bool) -> bool {
+        let mut changed = false;
+        for p in self.props.iter_mut() {
+            if p.ptype == SLUICE_GATE && p.sewer.as_ref().is_some_and(|k| k.gate == gate) && p.solid == open {
+                p.solid = !open;
+                changed = true;
+            }
+        }
+        if changed {
+            self.rebuild_grids();
+        }
+        changed
     }
 
     /// Joins chunks into one window grid (Infinite's 3x3 live window). Each part is placed at its
@@ -2054,6 +2084,7 @@ impl Facility {
                             half,
                             offset: (0.0, 0.0),
                             door: None,
+                            sewer: None,
                         });
                     }
                     continue;
@@ -2092,6 +2123,7 @@ impl Facility {
                     half: cat.footprint(t, rotation),
                     offset: (0.0, 0.0),
                     door: None,
+                    sewer: None,
                 });
             }
         }
@@ -2759,6 +2791,7 @@ mod tests {
             half: (0.5, 0.1),
             offset: (0.0, 0.0),
             door: Some(DoorDraw { span: 1, offset: [0.0, 0.0] }),
+            sewer: None,
         });
         f
     }

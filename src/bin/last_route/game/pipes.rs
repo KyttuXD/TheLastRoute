@@ -208,6 +208,15 @@ pub fn flow_prefix(chunk: Chunk) -> String {
     format!("BRK:{}:{}:{}:", chunk.0, chunk.1, chunk.2)
 }
 
+/// The chunk and pipe number of a burst flow id `BRK:x:y:z:n`; `None` for anything else.
+pub fn parse_burst_id(id: &str) -> Option<(Chunk, usize)> {
+    let parts: Vec<&str> = id.split(':').collect();
+    if parts.len() != 5 || parts[0] != "BRK" {
+        return None;
+    }
+    Some(((parts[1].parse().ok()?, parts[2].parse().ok()?, parts[3].parse().ok()?), parts[4].parse().ok()?))
+}
+
 /// 0 when the flow settles, 1 after the creep (Godot `worsening`).
 pub fn worsening(r: &FlowRules, scale: DifficultyScale, age: f32) -> f32 {
     let rise = r.rise_seconds * scale.rise;
@@ -384,6 +393,12 @@ impl PipeNetwork {
     /// hunters), a flow valve is open.
     pub fn is_open(&self, valve_id: &str) -> bool {
         self.turns(valve_id) % 2 == 1
+    }
+
+    /// Whether the gate `gate` is down (a crossing): some gate valve naming it has been turned an odd number of times.
+    /// The valve need not be in the loaded window; a valve this network never saw leaves its gate closed.
+    pub fn gate_open(&self, gate: &str) -> bool {
+        self.valves.values().any(|v| v.effect == "gate" && v.gate == gate && v.turns % 2 == 1)
     }
 
     /// The host's decision for a turn.

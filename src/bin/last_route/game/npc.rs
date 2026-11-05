@@ -398,6 +398,11 @@ fn wrapf(value: f32, min: f32, max: f32) -> f32 {
     value - range * ((value - min) / range).floor()
 }
 
+/// The body yaw that faces `heading` on the floor: the inverse of `Player::forward2`, (-sin, -cos).
+pub fn heading_yaw(heading: (f32, f32)) -> f32 {
+    (-heading.0).atan2(-heading.1)
+}
+
 /// Godot `_turn`: the body yaw through a critically damped spring, its rate capped at `TURN_RATE`.
 fn turn(n: &mut Npc, want: f32, dt: f32) {
     let error = wrapf(want - n.facing, -PI, PI);
@@ -697,7 +702,7 @@ fn walk_toward(n: &mut Npc, fac: &Facility, goal: (f32, f32), running: bool, t: 
     }
     n.at = to;
     let heading = n.heading;
-    turn(n, (-heading.0).atan2(-heading.1), dt);
+    turn(n, heading_yaw(heading), dt);
     n.stride += moved;
     n.walking = true;
 }
@@ -833,7 +838,7 @@ fn advance_edge(n: &mut Npc, dt: f32) {
     if moved > 1e-4 {
         n.heading = ((at.0 - from.0) / moved, (at.1 - from.1) / moved);
         let heading = n.heading;
-        turn(n, (-heading.0).atan2(-heading.1), dt);
+        turn(n, heading_yaw(heading), dt);
     }
     n.stride += moved + (y - n.y).abs();
     n.at = at;

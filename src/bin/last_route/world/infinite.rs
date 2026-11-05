@@ -189,7 +189,7 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -
         None
     };
     match &sewer_floor {
-        Some(sc) => apply_sewer_floor(&mut f, sc, seed, k),
+        Some(sc) => apply_sewer_floor(&mut f, sc, seed, k, cat),
         None => f.apply_godot_streamed_layout(&text, region, cat),
     }
     // level -3: carve the caverns, halls and crevices (world::inferno) over the maze layout
@@ -427,8 +427,8 @@ fn apply_sewer_dressing(f: &mut Facility, seed: &str, sc: &super::route::sewer::
 /// the waterfall void FALL) is open. A FALL cell is not a wall: on level -1 it is a drop (`Facility::set_drop_cells`),
 /// open air a body may walk into and fall through, that hunters never enter and nothing is placed on; the spur, the
 /// overlook and the lip round it stay floor. On level -2 the same x/z cells are the air above the landing pool
-/// (`set_air_above_cells`). The sewer's rooms replace the facility's; props start empty. The start is the junction.
-fn apply_sewer_floor(f: &mut Facility, sc: &super::route::sewer::SewerChunk, seed: &str, k: ChunkKey) {
+/// (`set_air_above_cells`). The sewer's rooms and props (`sewer_props`) replace the facility's. The start is the junction.
+fn apply_sewer_floor(f: &mut Facility, sc: &super::route::sewer::SewerChunk, seed: &str, k: ChunkKey, cat: &Catalog) {
     use super::route::sewer::core::{FALL, LEVEL, LOWER_LEVEL, SOLID};
     f.wall = (0..CHUNK as usize)
         .map(|z| (0..CHUNK as usize).map(|x| sc.sewer_grid[z][x] == SOLID).collect())
@@ -464,7 +464,10 @@ fn apply_sewer_floor(f: &mut Facility, sc: &super::route::sewer::SewerChunk, see
             prop_types: vec![],
         })
         .collect();
-    f.props.clear();
+    // the sewer's own props (pipes, valves, pump, outflow, gates, lamps, decks), indexed now for the loot rolls' `can_occupy`
+    // and again by the `rebuild_grids` at the end of the chunk, which builds the hunters' grid from them
+    f.props = super::sewer_props::props(sc, &f.rooms, cat);
+    f.rebuild_grids();
     f.hiding.clear();
     f.room_lights.clear();
     f.relays.clear();

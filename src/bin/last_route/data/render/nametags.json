@@ -1,0 +1,15 @@
+{
+  "schema": "lr.nametags/1",
+  "_note": "Nametags over other runners and bots, and how their map pins treat another level (ui/markers.rs). height_m is above the feet; the tag is full strength up to fade_start_m, fades out by fade_end_m and is gone past it. font_size is in design units. screen_margin is the fraction of the screen a tag may sit past the edge before it is left out. Pins on another level are left off the minimap and dimmed on the full map (Godot facility_map.gd draws only the marks of the shown floor).",
+  "height_m": 2.1,
+  "fade_start_m": 8.0,
+  "fade_end_m": 26.0,
+  "font_size": 6.5,
+  "outline_width": 1.4,
+  "screen_margin": 0.05,
+  "bot_colour": [0.56, 0.91, 1.0],
+  "map": {
+    "other_level_alpha_minimap": 0.0,
+    "other_level_alpha_full": 0.35
+  }
+}

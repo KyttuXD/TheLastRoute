@@ -1315,7 +1315,8 @@ struct SewerFloor {
     seed: String,
     origin: (i32, i32),
     level: i32,
-    chunks: HashMap<(i32, i32), Option<Grid>>,
+    /// Each chunk's grid and its falls' jump cell (the railing gap), None off the generated chunks.
+    chunks: HashMap<(i32, i32), Option<(Grid, Option<(i32, i32)>)>>,
 }
 
 /// The chunk (cx, cy) and the cell inside it of facility cell (`x`, `y`) of a window that starts at `origin`.
@@ -1333,6 +1334,10 @@ impl SewerFloor {
     }
 
     fn grid(&mut self, key: (i32, i32)) -> Option<&Grid> {
+        self.grid_and_gap(key).map(|(g, _)| g)
+    }
+
+    fn grid_and_gap(&mut self, key: (i32, i32)) -> Option<&(Grid, Option<(i32, i32)>)> {
         let (seed, level) = (&self.seed, self.level);
         self.chunks
             .entry(key)
@@ -1341,7 +1346,7 @@ impl SewerFloor {
                     crate::world::route::layout::Coord::new(key.0, level, key.1),
                     &crate::world::route::sewer::Inputs { world: seed },
                 )
-                .map(|c| c.sewer_grid)
+                .map(|c| (c.sewer_grid, c.falls.as_ref().map(|f| (f.jump.cell.x, f.jump.cell.y))))
             })
             .as_ref()
     }
@@ -1673,6 +1678,15 @@ fn build_meshes(
             let origin = (key.0 * CHUNK - f.origin.0, key.1 * CHUNK - f.origin.1);
             let keep = |lx: i32, lz: i32| owned.contains(&(origin.0 + lx, origin.1 + lz));
             super::water::add_water_cells(&mut water, &grid, vec2(origin.0 as f32, origin.1 as f32), 1.0, 0.0, &keep);
+            // the iron railings along the banks (render/sewer_rails.rs), left open at the waterfall jump
+            let gap = s.grid_and_gap(key).and_then(|(_, g)| *g);
+            let rails = super::sewer_rails::config();
+            let iron = rgb(rails.color);
+            for seg in super::sewer_rails::channel_rail_segments(&grid, gap).into_iter().filter(|g| keep(g.x, g.z)) {
+                for (c, size) in super::sewer_rails::rail_boxes(seg, rails) {
+                    plain.cube(vec3(origin.0 as f32 + seg.x as f32 + c[0], c[1], origin.1 as f32 + seg.z as f32 + c[2]), Vec3::from(size), 0.0, iron, 0.0);
+                }
+            }
         }
     }
     // level -3 cave decoration (render/inferno_deco.rs): the pieces of the picked cells

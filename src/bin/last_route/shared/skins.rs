@@ -794,21 +794,84 @@ pub fn fetch_skin_in_background(id: &str) {
         let why = result.err().unwrap_or_default();
         if !ok {
             eprintln!("skins: {id} could not be fetched ({why}); trying again shortly");
+            note_download_failed(&id, &why);
         }
         book().finish_with(&key, ok, std::time::Instant::now(), std::time::Duration::from_secs(cfg.retry_secs), true, &why);
     });
 }
 
-/// The id the website holds for this account (it keeps one skin per account), from `<user dir>/skins-uploaded.json`. A missing or unreadable file is empty.
+/// The server origin the uploaded record is for: the backend skins are fetched from (empty when fetching is off).
+fn server_origin() -> String {
+    BACKEND_BASE.get().cloned().unwrap_or_default()
+}
+
+/// What this session knows about the recorded skins: true once the server was seen holding the hash (or it was uploaded
+/// this session), false once it was found missing. An absent hash is not checked yet.
+fn checked() -> std::sync::MutexGuard<'static, std::collections::HashMap<String, bool>> {
+    lock_checked(checked_map())
+}
+
+type Checked = std::sync::Mutex<std::collections::HashMap<String, bool>>;
+
+fn checked_map() -> &'static Checked {
+    static CHECKED: std::sync::OnceLock<Checked> = std::sync::OnceLock::new();
+    CHECKED.get_or_init(Default::default)
+}
+
+fn lock_checked(map: &Checked) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, bool>> {
+    map.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The ids recorded in `<user dir>/skins-uploaded.json` for the server `origin`. The file is `{"server": origin, "ids":
+/// [...]}`; an old plain list `[id, ...]` (written before the origin was stored) is read as belonging to this server, and
+/// a record of another server is ignored. A missing or unreadable file is empty.
+fn read_record_at(path: &Path, origin: &str) -> Vec<String> {
+    let Some(value) = std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok()) else {
+        return Vec::new();
+    };
+    let ids = match &value {
+        serde_json::Value::Array(ids) => ids,
+        serde_json::Value::Object(map) if map.get("server").and_then(|v| v.as_str()) == Some(origin) => match map.get("ids") {
+            Some(serde_json::Value::Array(ids)) => ids,
+            _ => return Vec::new(),
+        },
+        _ => return Vec::new(),
+    };
+    ids.iter().filter_map(|v| v.as_str()).filter(|id| is_skin_hash(id)).map(str::to_string).collect()
+}
+
+/// Writes the record for `origin`; an empty list removes the file.
+fn write_record_at(path: &Path, origin: &str, ids: &[String]) {
+    if ids.is_empty() {
+        let _ = std::fs::remove_file(path);
+        return;
+    }
+    let Ok(text) = serde_json::to_string(&serde_json::json!({"server": origin, "ids": ids})) else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
+}
+
+/// The recorded ids that were checked against the server this session (or uploaded this session): the ids the website
+/// holds for this account. The record alone is not trusted, since the server may have dropped the file since.
 pub fn uploaded_ids() -> Vec<String> {
     let Some(path) = uploaded_path() else { return Vec::new() };
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| serde_json::from_str::<Vec<String>>(&text).ok())
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|id| is_skin_hash(id))
-        .collect()
+    uploaded_ids_in(&path, &server_origin(), checked_map())
+}
+
+/// [`uploaded_ids`] for a record file, server origin and checked map. With no origin there is no server to ask (see
+/// [`verify_held_in`]), so the record is trusted as it is.
+fn uploaded_ids_in(path: &Path, origin: &str, known: &Checked) -> Vec<String> {
+    let recorded = read_record_at(path, origin);
+    if origin.is_empty() {
+        return recorded;
+    }
+    let known = lock_checked(known);
+    recorded.into_iter().filter(|id| known.get(id) == Some(&true)).collect()
 }
 
 /// True when `uploaded` (the list [`uploaded_ids`] gives) holds the skin `id`. Only a skin hash can be held. A host
@@ -826,18 +889,77 @@ fn uploaded_path() -> Option<PathBuf> {
 /// uploads it again, and the room's published skin never names a file the website has dropped.
 fn remember_uploaded(id: &str) {
     if let Some(path) = uploaded_path() {
-        remember_uploaded_at(&path, id);
+        write_record_at(&path, &server_origin(), &[id.to_string()]);
     }
+    checked().insert(id.to_string(), true);
 }
 
-fn remember_uploaded_at(path: &Path, id: &str) {
-    let Ok(text) = serde_json::to_string(&[id]) else { return };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+/// Looks up whether the server holds the recorded skin `hash` (`GET <base>/api/v1/skins/<hash>`, which the server
+/// re-validates). `Some(true)` when it serves a verified copy; `Some(false)` when it does not (a 404, or a file that
+/// fails the check), and then the record drops the hash so the canonical PNG is uploaded again; `None` when the server
+/// could not be asked (try again later). A hash that is not recorded for `origin` is `Some(false)` without asking.
+fn verify_held_at(cfg: &SkinConfig, path: &Path, origin: &str, hash: &str) -> Option<bool> {
+    let recorded = read_record_at(path, origin);
+    if !recorded.iter().any(|id| id == hash) {
+        return Some(false);
     }
-    let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, text).is_ok() {
-        let _ = std::fs::rename(&tmp, path);
+    let missing = match download(&format!("{origin}/api/v1/skins/{hash}"), cfg.timeout_secs, read_limit(), &PNG_TYPES) {
+        Ok(bytes) => !verify_skin(hash, &bytes),
+        Err(NetError::Http { status: 404, .. }) => true,
+        Err(_) => return None,
+    };
+    if !missing {
+        return Some(true);
+    }
+    // The GET was slow: another skin may have been recorded meanwhile, so drop only this hash from a fresh read.
+    let fresh = read_record_at(path, origin);
+    if fresh.iter().any(|id| id == hash) {
+        let rest: Vec<String> = fresh.into_iter().filter(|id| id != hash).collect();
+        write_record_at(path, origin, &rest);
+    }
+    Some(false)
+}
+
+/// True once it is known whether the server holds the worn skin `hash`; until then a background check runs (once per
+/// session per hash, retried after a failure) and this answers false. Only a settled hash is offered for upload, and
+/// [`uploaded_ids`] lists it only when the server was seen holding it.
+pub fn verify_held(hash: &str) -> bool {
+    let (Some(path), Some(settings)) = (uploaded_path(), config()) else { return true };
+    verify_held_in(hash, server_origin(), path, settings, checked_map())
+}
+
+/// [`verify_held`] for a record file, origin, config and checked map. With no origin there is no server to ask, so the
+/// hash counts as settled and [`uploaded_ids_in`] trusts the record.
+fn verify_held_in(hash: &str, origin: String, path: PathBuf, settings: SkinConfig, known: &'static Checked) -> bool {
+    if !is_skin_hash(hash) || origin.is_empty() || lock_checked(known).contains_key(hash) {
+        return true;
+    }
+    let key = format!("verify:{hash}");
+    if !book().begin(&key, std::time::Instant::now(), settings.max_concurrent) {
+        return false;
+    }
+    let hash = hash.to_string();
+    std::thread::spawn(move || {
+        let answer = verify_held_at(&settings, &path, &origin, &hash);
+        if let Some(held) = answer {
+            lock_checked(known).insert(hash.clone(), held);
+        }
+        let retry = std::time::Duration::from_secs(settings.retry_secs);
+        book().finish_with(&key, answer.is_some(), std::time::Instant::now(), retry, true, "the server could not be asked");
+    });
+    false
+}
+
+/// A download of `id` ended with `why`. When that was the 404 of a skin this client recorded as uploaded (its own hash,
+/// announced to the room), the server no longer holds it: check again.
+fn note_download_failed(id: &str, why: &str) {
+    if !why.ends_with("404") {
+        return;
+    }
+    let mut known = checked();
+    if known.get(id) == Some(&true) {
+        known.remove(id);
+        book().forget(&format!("verify:{id}"));
     }
 }
 
@@ -988,6 +1110,7 @@ fn forget_uploaded() {
     if let Some(path) = uploaded_path() {
         let _ = std::fs::remove_file(path);
     }
+    checked().clear();
 }
 
 /// Whether the skin known by wire id `id` uses slim arms, read from its picture when it is in the skins folder or the
@@ -2913,12 +3036,72 @@ mod tests {
         let dir = temp_dir("uploaded_list");
         let path = dir.join("skins-uploaded.json");
         let (a, b) = (sha256_hex(b"a"), sha256_hex(b"b"));
-        let held = || -> Vec<String> { serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap() };
-        remember_uploaded_at(&path, &a);
+        let held = || read_record_at(&path, "http://s");
+        write_record_at(&path, "http://s", &[a.clone()]);
         assert!(holds(&held(), &a));
-        remember_uploaded_at(&path, &b);
+        write_record_at(&path, "http://s", &[b.clone()]);
         assert!(holds(&held(), &b));
         assert!(!holds(&held(), &a), "after A then B the website no longer relies on A, so choosing A again uploads it again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_recorded_skin_the_server_dropped_is_reuploaded_and_announced_as_default_meanwhile() {
+        use crate::net::world_sync::published_skin;
+        use std::sync::atomic::Ordering;
+        let (id, bytes) = good_skin();
+        let dir = temp_dir("verify_held");
+        let path = dir.join("skins-uploaded.json");
+        let cfg = shipped_config();
+        // 404: the server answers nothing for the hash
+        let (port, seen, stop) = serve_routes(Vec::new());
+        let origin = format!("http://127.0.0.1:{port}");
+        write_record_at(&path, &origin, &[id.clone()]);
+        let known: &'static Checked = Box::leak(Box::default());
+        let ids = || uploaded_ids_in(&path, &origin, known);
+        assert!(!verify_held_in(&id, origin.clone(), path.clone(), cfg.clone(), known), "unsettled while the check runs");
+        let settled = |known: &Checked| { for _ in 0..200 { if lock_checked(known).contains_key(&id) { return true; } std::thread::sleep(std::time::Duration::from_millis(25)); } false };
+        assert!(settled(known));
+        assert_eq!(seen.lock().unwrap().clone(), vec![format!("GET /api/v1/skins/{id} HTTP/1.1")]);
+        assert!(read_record_at(&path, &origin).is_empty(), "the stale record is dropped");
+        assert!(verify_held_in(&id, origin.clone(), path.clone(), cfg.clone(), known), "settled, so the skin is offered");
+        let mut plan = UploadPlan::default();
+        assert!(plan.due(1.0, &id, true, ids, 60.0), "the canonical PNG is offered again");
+        assert_eq!(published_skin(&id, &ids()), SKIN_DEFAULT, "DEFAULT until the re-upload");
+        write_record_at(&path, &origin, &[id.clone()]);
+        lock_checked(known).insert(id.clone(), true);
+        assert_eq!(published_skin(&id, &ids()), id, "announced after the re-upload");
+        // no origin: nothing to ask, the record is trusted
+        write_record_at(&path, "", &[id.clone()]);
+        let fresh: &'static Checked = Box::leak(Box::default());
+        assert!(verify_held_in(&id, String::new(), path.clone(), cfg.clone(), fresh));
+        assert_eq!(uploaded_ids_in(&path, "", fresh), vec![id.clone()]);
+        // another skin recorded during the slow GET survives the drop of the stale one
+        let other = sha256_hex(b"other");
+        write_record_at(&path, &origin, &[other.clone()]);
+        assert_eq!(verify_held_at(&cfg, &path, &origin, &id), Some(false));
+        assert_eq!(read_record_at(&path, &origin), vec![other.clone()]);
+        stop.store(true, Ordering::SeqCst);
+        // 200: the server still holds it, the record stays
+        let (port, _seen, stop) = serve_routes(vec![(format!("/api/v1/skins/{id}"), bytes, "image/png")]);
+        let origin = format!("http://127.0.0.1:{port}");
+        write_record_at(&path, &origin, &[id.clone()]);
+        assert_eq!(verify_held_at(&cfg, &path, &origin, &id), Some(true));
+        assert_eq!(read_record_at(&path, &origin), vec![id.clone()]);
+        stop.store(true, Ordering::SeqCst);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_old_plain_list_still_loads_and_another_servers_record_is_ignored() {
+        let dir = temp_dir("record_format");
+        let path = dir.join("skins-uploaded.json");
+        let a = sha256_hex(b"a");
+        std::fs::write(&path, format!("[\"{a}\", \"not a hash\"]")).unwrap();
+        assert_eq!(read_record_at(&path, "http://one"), vec![a.clone()], "the old format reads for any server");
+        write_record_at(&path, "http://one", &[a.clone()]);
+        assert_eq!(read_record_at(&path, "http://one"), vec![a.clone()]);
+        assert!(read_record_at(&path, "http://two").is_empty(), "a record of another server is ignored");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -159,7 +159,9 @@ impl Game {
         let valve_type = super::pipes::rules().valve.prop_type.as_str();
         for (i, p) in self.fac.props.iter().enumerate() {
             if p.ptype == valve_type {
-                consider(p.cell.center(), 1.0, INTERACT_REACH, Focus::Valve(i));
+                // a wall-mounted wheel stands at its mount offset and height
+                let (x, z) = p.cell.center();
+                consider((x + p.offset.0, z + p.offset.1), p.mount_y.map_or(1.0, |y| y as f32), INTERACT_REACH, Focus::Valve(i));
             }
         }
         best.map(|b| b.1)
@@ -519,19 +521,36 @@ impl Game {
         let Some(prop) = self.fac.props.get(i) else { return false };
         let (effect, gate) = valve_keys(prop);
         let valve_id = prop.id.clone();
+        let valve_at = prop.cell.center();
         let q = super::pipes::TurnAt {
             valve_id: &prop.id,
             effect: &effect,
             gate: &gate,
-            valve_at: prop.cell.center(),
+            valve_at,
             valve_storey: level,
             at: self.p.pos,
             storey: level,
             by_player: true,
         };
         match self.pipes.turn(q) {
+            // a guest only asks: the host decides the turn and publishes it (net/valve_events.rs), every machine applies it
+            Ok(ev) if self.remote_hunters => {
+                let absolute = Self::window_to_abs(self.window_origin(), valve_at);
+                if let Some((radius, seconds)) = ev.noise {
+                    self.p.noise_burst = radius;
+                    self.p.noise_burst_timer = seconds;
+                }
+                let spin = super::pipes::rules().valve.turn_seconds;
+                if let Some(inf) = self.inf.as_mut() {
+                    inf.valve_spin = spin;
+                    inf.valve_requests.push(ValveAsk { valve_id, effect, gate, valve_at: absolute });
+                }
+                crate::audio::sound::door(true);
+                true
+            }
             Ok(ev) => {
                 self.pipes.apply(&ev, self.time);
+                self.sync_sewer_gates();
                 self.start_authored_floods(&valve_id, super::hunter_pipes::authored_floods());
                 let at = self.p.pos;
                 self.push_valve_events(&ev, at, level);
@@ -568,9 +587,37 @@ impl Game {
         self.inf.as_mut().map(|inf| std::mem::take(&mut inf.valve_outbox)).unwrap_or_default()
     }
 
+    /// The valve turns a guest asked for since the last call, for the net layer to send to the host; the queue is emptied.
+    pub fn take_valve_requests(&mut self) -> Vec<ValveAsk> {
+        self.inf.as_mut().map(|inf| std::mem::take(&mut inf.valve_requests)).unwrap_or_default()
+    }
+
     /// A valve turn published by the host (or echoed to this machine): applied here the same way. Replaying one is harmless.
     pub fn apply_valve_event(&mut self, ev: &super::pipes::TurnEvent) {
         self.pipes.apply(ev, self.time);
+        self.sync_sewer_gates();
+    }
+
+    /// Puts every sluice gate of the window where its valve's turn count says: a gate is a crossing while its valve has
+    /// been turned an odd number of times (`PipeNetwork::gate_open`), a wall across its channel otherwise. The network
+    /// keeps the state by gate id, so a gate whose valve is in another window, or was turned before this window
+    /// loaded, still opens. Called after a turn is applied and when a window is adopted (a new window builds every gate
+    /// closed).
+    pub(super) fn sync_sewer_gates(&mut self) {
+        let gates: Vec<(String, bool)> = self
+            .fac
+            .props
+            .iter()
+            .filter(|p| p.ptype == crate::world::facility::SLUICE_GATE)
+            .filter_map(|g| {
+                let gate = g.sewer.as_ref().map(|k| k.gate.clone()).filter(|k| !k.is_empty())?;
+                let open = self.pipes.gate_open(&gate);
+                Some((gate, open))
+            })
+            .collect();
+        for (gate, open) in gates {
+            self.fac.set_gate_open(&gate, open);
+        }
     }
 
     /// Held interactions: winding the music box, and Zellia's store choices.
@@ -640,10 +687,19 @@ impl Game {
     }
 }
 
-/// The `valve_effect` and `gate` keys of a valve wheel prop. The facility prop does not carry them yet, so a wheel is a
-/// flood valve with no gate until it does (`""` is the flood effect, game/pipes.rs).
-fn valve_keys(_prop: &crate::world::facility::Prop) -> (String, String) {
-    (String::new(), String::new())
+/// A guest's turn of a valve wheel, as it asks the host: the valve's id, effect and gate, and its absolute cell.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValveAsk {
+    pub valve_id: String,
+    pub effect: String,
+    pub gate: String,
+    pub valve_at: (f32, f32),
+}
+
+/// The `valve_effect` and `gate` keys of a valve wheel prop (the sewer chunk's own); a wheel without keys is a flood
+/// valve with no gate (`""` is the flood effect, game/pipes.rs).
+pub(super) fn valve_keys(prop: &crate::world::facility::Prop) -> (String, String) {
+    prop.sewer.as_ref().map(|k| (k.effect.clone(), k.gate.clone())).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -869,6 +925,7 @@ mod tests {
             half: (0.3, 0.3),
             offset: (0.0, 0.0),
             door: None,
+            sewer: None,
         }
     }
 
@@ -922,6 +979,118 @@ mod tests {
         assert!(!g.turn_valve(i));
         assert_eq!(g.pipes.turns(&id), 0);
         assert!(g.take_valve_events().is_empty());
+    }
+
+    /// A game on the first sewer level whose window holds a gate valve (`want_gate`) or any valve, and that valve's index.
+    fn sewer_game(want_gate: bool) -> (Game, usize) {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        for seed in 1..60 {
+            let g = Game::new_infinite_sim(Difficulty::Standard, seed, &format!("ROOM-SEWER-{seed}"), crate::world::route::sewer::core::LEVEL, &content, &catalog);
+            let found = g.fac.props.iter().position(|p| {
+                p.ptype == "sewerValveWheel" && p.sewer.as_ref().is_some_and(|k| !want_gate || k.effect == "gate")
+            });
+            if let Some(i) = found {
+                return (g, i);
+            }
+        }
+        panic!("no sewer window with a {} valve in 60 seeds", if want_gate { "gate" } else { "flood" });
+    }
+
+    fn stand_at_valve(g: &mut Game, i: usize) {
+        let p = &g.fac.props[i];
+        g.p.pos = (p.cell.center().0 + p.offset.0, p.cell.center().1 + p.offset.1);
+        g.focus = Some(Focus::Valve(i));
+    }
+
+    #[test]
+    fn holding_interact_on_a_sewer_valve_turns_it_and_queues_the_stream_valve_event() {
+        let (mut g, i) = sewer_game(false);
+        stand_at_valve(&mut g, i);
+        let id = g.fac.props[i].id.clone();
+        assert!(id.starts_with("SEWER:") && id.contains(":PROP:"), "{id}");
+        g.hunter_out.take();
+        let hold = crate::game::pipes::rules().valve.hold_seconds;
+        assert!(g.update_valve_hold(hold + 0.1, true), "the hold turns the wheel");
+        assert_eq!(g.pipes.turns(&id), 1);
+        let events = g.hunter_out.take();
+        let ev = events.iter().find(|e| e["what"] == crate::net::valve_events::VALVE).expect("a stream_valve world event");
+        assert_eq!(ev["valve_id"], id.as_str());
+        assert_eq!(ev["effect"], "flood");
+    }
+
+    #[test]
+    fn a_gate_valve_opens_and_closes_its_sluice_for_the_runner_and_hunters() {
+        let (mut g, i) = sewer_game(true);
+        stand_at_valve(&mut g, i);
+        let (id, gate) = (g.fac.props[i].id.clone(), g.fac.props[i].sewer.clone().unwrap().gate);
+        let sluice = g.fac.props.iter().position(|p| p.ptype == "sewerSluiceGate" && p.sewer.as_ref().is_some_and(|k| k.gate == gate)).expect("the gate's sluice");
+        let at = (g.fac.props[sluice].cell.x as f64 + 0.5, g.fac.props[sluice].cell.y as f64 + 0.5);
+        assert!(g.fac.props[sluice].solid && !g.fac.can_occupy(at.0, at.1, 0.23), "closed: a wall");
+        assert!(!g.fac.nav_open(g.fac.props[sluice].cell), "closed: no hunter route");
+        let hold = crate::game::pipes::rules().valve.hold_seconds;
+        assert!(g.update_valve_hold(hold + 0.1, true));
+        assert!(g.pipes.is_open(&id));
+        assert!(!g.fac.props[sluice].solid && g.fac.can_occupy(at.0, at.1, 0.23), "open: a crossing");
+        assert!(g.fac.nav_open(g.fac.props[sluice].cell), "open: a hunter route");
+        g.focus = Some(Focus::Valve(i));
+        assert!(g.update_valve_hold(hold + 0.1, true));
+        assert!(g.fac.props[sluice].solid, "an even turn lowers it back");
+    }
+
+    #[test]
+    fn a_gate_opens_from_a_valve_turn_in_another_window() {
+        let (mut g, i) = sewer_game(true);
+        let gate = g.fac.props[i].sewer.clone().unwrap().gate;
+        let sluice = g.fac.props.iter().position(|p| p.ptype == "sewerSluiceGate" && p.sewer.as_ref().is_some_and(|k| k.gate == gate)).expect("the gate's sluice");
+        assert!(g.fac.props[sluice].solid);
+        // the turn was made where this window's props do not include the valve (another chunk, or before the window loaded)
+        let far = "SEWER:90:-1:90:PROP:1".to_string();
+        assert!(!g.fac.props.iter().any(|p| p.id == far));
+        let ev = crate::game::pipes::TurnEvent { valve_id: far.clone(), chunk: (90, -1, 90), effect: "gate".into(), shut: false, turns: 1, gate: gate.clone(), noise: None };
+        g.apply_valve_event(&ev);
+        assert!(!g.fac.props[sluice].solid, "the gate follows its id, not the valve prop");
+        g.fac.set_gate_open(&gate, false);
+        g.sync_sewer_gates();
+        assert!(!g.fac.props[sluice].solid, "a window built closed is synced from the network when adopted");
+        g.apply_valve_event(&crate::game::pipes::TurnEvent { turns: 2, ..ev });
+        assert!(g.fac.props[sluice].solid, "an even count closes it again");
+    }
+
+    #[test]
+    fn a_guest_asks_and_the_host_turn_comes_back_as_a_stream_valve_event() {
+        let (mut guest, i) = sewer_game(true);
+        guest.remote_hunters = true;
+        stand_at_valve(&mut guest, i);
+        let (id, gate) = (guest.fac.props[i].id.clone(), guest.fac.props[i].sewer.clone().unwrap().gate);
+        let hold = crate::game::pipes::rules().valve.hold_seconds;
+        assert!(guest.update_valve_hold(hold + 0.1, true));
+        assert_eq!(guest.pipes.turns(&id), 0, "a guest does not decide the turn");
+        let asks = guest.take_valve_requests();
+        assert_eq!(asks.len(), 1);
+        assert_eq!((asks[0].valve_id.as_str(), asks[0].effect.as_str(), asks[0].gate.as_str()), (id.as_str(), "gate", gate.as_str()));
+        // the host holds the same window: the ask names a valve it has
+        let (mut host, hi) = sewer_game(true);
+        assert_eq!(host.fac.props[hi].id, id);
+        let req = crate::net::valve_events::ValveRequest {
+            peer: 2,
+            valve_id: asks[0].valve_id.clone(),
+            effect: asks[0].effect.clone(),
+            gate: asks[0].gate.clone(),
+            valve_at: asks[0].valve_at,
+        };
+        let at = host.fac.props[hi].cell.center();
+        let fields = host.host_turn_valve(&req, at, 1).expect("the host turns it");
+        assert!(host.pipes.is_open(&id), "the first turn of a gate valve opens it on the host");
+        let mut event = serde_json::Map::new();
+        event.insert("what".into(), serde_json::json!(crate::net::valve_events::VALVE));
+        for (k, v) in fields {
+            event.insert(k.into(), v);
+        }
+        assert!(guest.apply_pipe_event(&event));
+        assert!(guest.pipes.is_open(&id), "the guest applies the host's turn");
+        let sluice = guest.fac.props.iter().find(|p| p.ptype == "sewerSluiceGate" && p.sewer.as_ref().is_some_and(|k| k.gate == gate)).unwrap();
+        assert!(!sluice.solid, "and its gate opens");
     }
 
     #[test]

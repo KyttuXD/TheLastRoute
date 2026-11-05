@@ -119,6 +119,7 @@ pub fn render_play_with(g: &Game, a: &Assets, mat: &Material, t: &Targets, remot
     };
     draw_texture_ex(&t.scene.texture, 0.0, 0.0, WHITE, p.clone());
     draw_texture_ex(&t.view.texture, 0.0, 0.0, WHITE, p);
+    crate::ui::markers::draw_nametags(g, a, &t.scene, &crate::ui::markers::all_markers(g, remotes));
 }
 
 pub struct World {
@@ -645,7 +646,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
 
         // the worn skin goes to the website once the account is signed in (in the background): keyed on its hash, so a
         // second picture applied in the same session uploads too, and a refused upload is offered again after a delay
-        if !net_cfg.offline && upload_plan.due(get_time(), &worn.get().hash, backend.signed_in(), skins::uploaded_ids, upload_retry) {
+        if !net_cfg.offline && skins::verify_held(&worn.get().hash) && upload_plan.due(get_time(), &worn.get().hash, backend.signed_in(), skins::uploaded_ids, upload_retry) {
             skins::upload_in_background(net_cfg.clone(), backend.account.session_token.clone(), worn.get().hash);
         }
         // DEFAULT was picked: the website stops holding the old skin (the call is retried on later frames until it is accepted)
@@ -802,6 +803,13 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 if let Some(s) = n.take_snapshot() {
                     g.apply_relay_snapshot(s.relays_sabotaged);
                 }
+                // the valves this guest turned are asks: the host decides each one and publishes the turn
+                for ask in g.take_valve_requests() {
+                    n.request_valve(&ask.valve_id, &ask.effect, &ask.gate, ask.valve_at);
+                }
+                for flow_id in g.take_burst_requests() {
+                    n.request_burst(&flow_id);
+                }
             }
         }
         // the host's game resolves what the guests reported (taser, escape, caught) and the valves they asked to turn;
@@ -815,10 +823,17 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 }
                 for req in n.take_valve_requests() {
                     if let Some((x, y, depth)) = n.guest_position(req.peer) {
-                        if let Some(fields) = g.host_turn_valve(&req, (x, y), depth) {
+                        // the guest's sample is an absolute cell; the host's valve props are in its window
+                        let at = crate::game::Game::abs_to_window(g.window_origin(), (x, y));
+                        if let Some(fields) = g.host_turn_valve(&req, at, depth) {
                             let rules = crate::net::hunter_events::rules();
                             g.hunter_out.emit(rules, g.difficulty, crate::net::valve_events::VALVE, fields, std::time::Instant::now());
                         }
+                    }
+                }
+                for req in n.take_burst_requests() {
+                    if let Some((x, y, depth)) = n.guest_position(req.peer) {
+                        g.host_burst_pipe(&req, (x, y), depth);
                     }
                 }
                 n.set_relays_sabotaged(g.relays_sabotaged_count());
@@ -1001,6 +1016,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
         } else if let Some(g) = playing.as_mut() {
             let in_report = g.report.is_some();
             let remotes = net.as_ref().map(|n| n.remotes_at(g.p.y(), g.depth, g.window_origin())).unwrap_or_default();
+            let marks = crate::ui::markers::all_markers(g, &remotes);
             // the admin tools follow the server's admin flag for the signed-in account, never the local name
             admin.enabled = (backend.admin || (screenshot.is_some() && env("LR_SHOT_ADMIN").is_some())) && !stress_on;
             let admin_esc = if in_report || pz.open {
@@ -1213,7 +1229,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     }
                     if !hud_hidden || g.escape.is_some() {
                         let _t = perf::section("hud");
-                        hud::draw_hud(g, &w.assets, fps, s);
+                        hud::draw_hud_with_runners(g, &w.assets, fps, s, &marks);
                     }
                     if !hud_hidden {
                         hud::draw_crosshair(g, grabbed);
@@ -1231,7 +1247,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                         );
                     }
                     if map_open {
-                        map::draw_full_map(g, &w.assets, &map_view);
+                        map::draw_full_map_with_runners(g, &w.assets, &map_view, &marks);
                     }
                     admin.draw(g, &w.assets, &w.content);
                     match admin.take_request() {
@@ -1717,7 +1733,7 @@ mod remote_level_tests {
     use super::*;
 
     fn view(peer: u32, h: f32, level: i32) -> RemoteView {
-        RemoteView { peer, x: 1.0, y: 2.0, yaw: 0.0, h, level, skin: String::new(), moving: false, sprinting: false, crouching: false, slim: false, speed: 0.0, vy: 0.0, clip: None, held: None, hide: None, hide_since: None }
+        RemoteView { peer, name: String::new(), x: 1.0, y: 2.0, yaw: 0.0, h, level, skin: String::new(), moving: false, sprinting: false, crouching: false, slim: false, speed: 0.0, vy: 0.0, clip: None, held: None, hide: None, hide_since: None }
     }
 
     #[test]

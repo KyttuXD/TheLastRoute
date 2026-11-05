@@ -23,6 +23,16 @@ fn num(ev: &Map<String, Value>, key: &str) -> Option<f32> {
 }
 
 impl Game {
+    /// A window cell position as an absolute one (what a guest sends the host).
+    pub fn window_to_abs(origin: (i32, i32), at: (f32, f32)) -> (f32, f32) {
+        (at.0 + origin.0 as f32, at.1 + origin.1 as f32)
+    }
+
+    /// An absolute cell position (a guest's sample) in this window's cells.
+    pub fn abs_to_window(origin: (i32, i32), at: (f32, f32)) -> (f32, f32) {
+        (at.0 - origin.0 as f32, at.1 - origin.1 as f32)
+    }
+
     /// Host: applies one accepted guest event (`NetSession::take_guest_events`). The app adds the guest's place to a
     /// taser or escape event as `x`, `y` (this window's cells) and `yaw` before it calls this, because the game does
     /// not track remote runners; an event without them cannot be placed and does nothing.
@@ -122,6 +132,7 @@ impl Game {
         let now = self.time;
         if let Some(turn) = valve_events::parse_turn(ev) {
             self.pipes.apply(&turn, now);
+            self.sync_sewer_gates();
             return true;
         }
         if let Some(flow) = valve_events::parse_burst(ev) {
@@ -144,10 +155,10 @@ impl Game {
         let storey = super::pipes::parse_valve_id(&req.valve_id, rules.valve.max_id_length)?.1;
         let prop = self.fac.props.iter().find(|p| p.id == req.valve_id && p.ptype == rules.valve.prop_type)?;
         let valve_at = prop.cell.center();
-        let (effect, gate) = self.pipes.valve(&req.valve_id).map(|v| (v.effect.clone(), v.gate.clone())).unwrap_or_default();
+        let (effect, gate) = super::interact::valve_keys(prop);
         let q = super::pipes::TurnAt {
             valve_id: &req.valve_id,
-            effect: if effect == "flood" { "" } else { &effect },
+            effect: &effect,
             gate: &gate,
             valve_at,
             valve_storey: storey,
@@ -157,6 +168,7 @@ impl Game {
         };
         let ev = self.pipes.turn(q).ok()?;
         self.pipes.apply(&ev, self.time);
+        self.sync_sewer_gates();
         // the turn is a sound the hunters can hear, whoever made it: it sounds at the valve, on the valve's storey. The
         // runner's meter noise is the turner's own (none here), so only the positioned event is pushed.
         self.push_valve_events(&ev, valve_at, storey);
@@ -180,6 +192,15 @@ mod tests {
         g.relays_collected = 1;
         g.ensure_hunters(&content);
         g
+    }
+
+    #[test]
+    fn window_and_absolute_cells_convert_both_ways() {
+        let origin = (-96, 64);
+        assert_eq!(Game::window_to_abs(origin, (10.5, 3.5)), (-85.5, 67.5));
+        assert_eq!(Game::abs_to_window(origin, (-85.5, 67.5)), (10.5, 3.5));
+        let at = (12.25, 40.75);
+        assert_eq!(Game::abs_to_window(origin, Game::window_to_abs(origin, at)), at);
     }
 
     fn event(what: &str, fields: Vec<(&str, Value)>) -> Map<String, Value> {
@@ -327,6 +348,7 @@ mod tests {
             half: (0.3, 0.3),
             offset: (0.0, 0.0),
             door: None,
+            sewer: None,
         });
     }
 

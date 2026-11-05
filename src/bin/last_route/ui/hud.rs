@@ -8,7 +8,7 @@ use super::style::*;
 use crate::app::assets::Assets;
 use crate::config::*;
 use crate::game::{Focus, Game, Item};
-use crate::net::world_sync::RemoteView;
+use super::markers::Marker;
 use macroquad::prelude::*;
 
 /// Records what the HUD drew this frame (the self-test reads it).
@@ -201,13 +201,13 @@ pub fn draw_hud(g: &Game, a: &Assets, fps: i32, s: f32) -> HudDrawn {
     draw_hud_with_runners(g, a, fps, s, &[])
 }
 
-/// The HUD with the teammates in `remotes` (the same runners the 3D view draws) as pins on the minimap.
+/// The HUD with the players and bots in `marks` as pins on the minimap.
 pub fn draw_hud_with_runners(
     g: &Game,
     a: &Assets,
     fps: i32,
     _s: f32,
-    remotes: &[RemoteView],
+    marks: &[Marker],
 ) -> HudDrawn {
     let mut drawn = HudDrawn::default();
     let p = pal();
@@ -230,7 +230,7 @@ pub fn draw_hud_with_runners(
     let mm = Rect::new(right - 88.0, SAFE, 88.0, 72.0);
     hud_box(mm);
     clip_begin(Rect::new(mm.x + 1.0, mm.y + 1.0, mm.w - 2.0, mm.h - 2.0));
-    draw_map(g, mm, false, remotes);
+    draw_map(g, mm, false, marks);
     clip_end();
     drawn.minimap = true;
 

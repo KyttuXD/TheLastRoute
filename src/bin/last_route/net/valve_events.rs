@@ -14,6 +14,8 @@ use serde_json::{json, Map, Value};
 
 /// The `what` of a guest's request to turn a valve.
 pub const REQUEST: &str = "stream_valve_request";
+/// The `what` of a guest's request to burst a pipe with the Axe.
+pub const BURST_REQUEST: &str = "stream_pipe_burst_request";
 /// The `what` of the host's published valve turn.
 pub const VALVE: &str = "stream_valve";
 /// The `what` of the host's published pipe burst.
@@ -41,6 +43,32 @@ pub fn request_message(valve_id: &str, effect: &str, gate: &str, valve_at: (f32,
     o.insert("x".into(), json!(valve_at.0));
     o.insert("y".into(), json!(valve_at.1));
     o
+}
+
+/// A guest's Axe breach request as the host holds it until its game answers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BurstRequest {
+    pub peer: u32,
+    /// The flow id the breach opens (`BRK:x:y:z:n`).
+    pub flow_id: String,
+}
+
+/// The breach request a guest sends.
+pub fn burst_request_message(flow_id: &str) -> Map<String, Value> {
+    let mut o = Map::new();
+    o.insert("what".into(), json!(BURST_REQUEST));
+    o.insert("flow_id".into(), json!(flow_id));
+    o
+}
+
+/// Reads a guest's breach request: `None` for another kind or a flow id that is not a burst id, or is too long.
+pub fn parse_burst_request(peer: u32, o: &Map<String, Value>) -> Option<BurstRequest> {
+    if o.get("what").and_then(Value::as_str) != Some(BURST_REQUEST) {
+        return None;
+    }
+    let flow_id = text(o, "flow_id", pipes::rules().valve.max_id_length)?;
+    pipes::parse_burst_id(&flow_id)?;
+    Some(BurstRequest { peer, flow_id })
 }
 
 fn text(o: &Map<String, Value>, key: &str, max: usize) -> Option<String> {
@@ -115,6 +143,17 @@ pub fn parse_burst(o: &Map<String, Value>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_burst_request_round_trips_and_a_bad_id_is_refused() {
+        let o = burst_request_message("BRK:2:-1:3:4");
+        assert_eq!(parse_burst_request(5, &o), Some(BurstRequest { peer: 5, flow_id: "BRK:2:-1:3:4".into() }));
+        assert!(parse_burst_request(5, &burst_request_message("BRK:2:-1:3:x")).is_none());
+        assert!(parse_burst_request(5, &burst_request_message("SEWER:0:-1:0:PROP:3")).is_none());
+        let mut other = o.clone();
+        other.insert("what".into(), json!(BURST));
+        assert!(parse_burst_request(5, &other).is_none());
+    }
 
     const VALVE_ID: &str = "SEWER:0:-1:0:PROP:7";
 

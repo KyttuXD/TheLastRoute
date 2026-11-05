@@ -183,6 +183,12 @@ impl Game {
             },
             target.is_some(),
         );
+        if axe && target.is_none() {
+            if let Some((chunk, n)) = self.axe_pipe_target(MELEE_STRIKE_RANGE, MELEE_STRIKE_HALF_ANGLE) {
+                self.burst_pipe(chunk, n);
+                self.say("PIPE BURST");
+            }
+        }
         if let Some(h) = target {
             if !self.hunters[h].def.melee_immune {
                 let s = if axe {

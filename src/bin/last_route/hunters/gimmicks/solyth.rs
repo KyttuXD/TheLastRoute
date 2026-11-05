@@ -66,6 +66,57 @@ mod tests {
     use crate::config::Difficulty;
 
     #[test]
+    fn solyth_wakes_only_when_the_heat_is_locked() {
+        use crate::content::Content;
+        use crate::hunters::gimmicks::{Ctx, Gimmick};
+        use crate::world::catalog::Catalog;
+        use crate::world::facility::{Facility, Options};
+        let fac = Facility::generate("SOLYTH-1", &Options::default(), &Catalog::load());
+        let at = fac.start.center();
+        let def = Content::load().hunter("solyth").unwrap().clone();
+        let mut b = Brain::new(def, at, "SOLYTH", Difficulty::Standard);
+        let t = Target { pos: at, facing: (1.0, 0.0), ..Default::default() };
+        let ctx = Ctx {
+            fac: &fac,
+            relays_taken: &[],
+            batteries_taken: &[],
+            hiding_disabled: &[],
+            vents: &[],
+            heater_on: true,
+            heater_thawed: true,
+            diff: Difficulty::Standard,
+            music_box_left: 0.0,
+            exposure: 0.0,
+        };
+        for _ in 0..60 {
+            b.update(1.0 / 30.0, &ctx, &t, 1, 0, &Difficulty::Standard.profile());
+        }
+        assert!(!b.active, "a running heater alone does not wake her");
+        // a running heater warms the facility and the body until the temperature reaches 100 and latches
+        let mut meters = crate::game::meters::Meters::default();
+        let calm = crate::game::meters::Situation {
+            flashlight_on: false,
+            noise: 0.0,
+            crouching: false,
+            hidden: false,
+            in_safe_zone: false,
+            heater_on: true,
+            local: 0.0,
+        };
+        for _ in 0..30 * 120 {
+            meters.update(1.0 / 30.0, &calm);
+            if meters.heat_locked {
+                break;
+            }
+        }
+        assert!(meters.heat_locked, "a running heater heats the runner to 100 and latches");
+        let Gimmick::Solyth(s) = &mut b.gimmick else { panic!("not solyth") };
+        s.heat_locked = meters.heat_locked;
+        b.update(1.0 / 30.0, &ctx, &t, 1, 0, &Difficulty::Standard.profile());
+        assert!(b.active, "the latched heat wakes her");
+    }
+
+    #[test]
     fn solyth_pounce_gate_is_sixty_degrees_from_data() {
         // Godot hard_abilities.gd _pounce_allowed_for_hunter "solyth": temperature >= 60 (line 215-216).
         let v: serde_json::Value =

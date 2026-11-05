@@ -52,6 +52,38 @@ fn near_start(
     }
 }
 
+/// A heater station 3-7 cells from the start of `f`, on the stream `<stream>:HEATER`. The live level 0 chunks use it
+/// (their window takes the centre chunk's station), so each chunk has one to reach.
+/// It stays off the safe room (`safe`: its 5x5 opening and the ring round it, where the checkpoint stands), the stair
+/// doorways and wells, and every door's threshold.
+pub fn heater_for(f: &Facility, stream: &str, safe: bool) -> Option<Cell> {
+    let mut t = taken(f);
+    let mut avoid = |c: Cell, r: i32| {
+        for dy in -r..=r {
+            for dx in -r..=r {
+                t.insert(Cell::new(c.x + dx, c.y + dy));
+            }
+        }
+    };
+    if safe {
+        avoid(f.start, 3);
+    }
+    for s in &f.stairs {
+        for c in s.well_cells() {
+            avoid(c, 1);
+        }
+        avoid(s.cell, 1);
+        avoid(s.landing(), 1);
+        avoid(s.step_cell(), 1);
+    }
+    for p in &f.props {
+        if let Some(d) = p.door {
+            avoid(p.cell, d.span.max(1));
+        }
+    }
+    near_start(f, &t, &mut Rng::new(&format!("{stream}:HEATER")), 3.0, 7.0)
+}
+
 pub fn place(f: &Facility) -> Fixtures {
     let mut t = taken(f);
     let heater = near_start(

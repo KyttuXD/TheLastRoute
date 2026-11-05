@@ -572,6 +572,7 @@ mod tests {
     fn remote(clip: Option<Pose>, moving: bool, sprinting: bool, crouching: bool, vy: f32) -> RemoteView {
         RemoteView {
             peer: 3,
+            name: String::new(),
             x: 0.0,
             y: 0.0,
             yaw: 0.0,

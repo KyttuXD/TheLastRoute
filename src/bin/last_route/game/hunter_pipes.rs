@@ -6,8 +6,12 @@ use super::hunting::PipeCells;
 use super::pipes::{self, TurnEvent};
 use super::Game;
 use crate::hunters::noise_events::{NoiseEvent, NoiseKind};
-use crate::world::route::sewer::breach::Extras;
+use crate::net::valve_events::BurstRequest;
+use crate::config::MELEE_STRIKE_RANGE;
+use crate::world::route::layout::{Coord, V2};
+use crate::world::route::sewer::breach::{BreachSpec, Extras};
 use crate::world::route::sewer::core as sewer_core;
+use crate::world::route::sewer;
 
 impl Game {
     /// A noise event at `pos` on storey `level` (the place the sound happens, not the runner's label). A guest
@@ -156,10 +160,122 @@ impl Game {
         let q = pipes::TurnAt { by_player: false, ..q };
         let ev = self.pipes.turn(q).ok()?;
         self.pipes.apply(&ev, self.time);
+        self.sync_sewer_gates();
         self.start_authored_floods(q.valve_id, authored_floods());
         self.push_valve_events(&ev, q.at, q.storey);
         Some(ev)
     }
+
+    /// The unburst pipe of the runner's sewer chunk an axe swing reaches: the breakable `n` (`BRK:x:y:z:n`) with a pipe
+    /// cell within `range` of the runner and inside the cone of `half_angle` in front. The breach hit points and tool
+    /// damage tables (`Breach.TOOL_DAMAGE`) are not ported, so one swing of the axe bursts it.
+    ///
+    /// The swing must reach the pipe cell in a straight line over open floor (the pipe's own wall cell aside) and the
+    /// runner's feet must be within `AXE_PIPE_REACH_Y` of the storey floor, so a swing never bursts a pipe through a
+    /// wall or on another deck.
+    pub(super) fn axe_pipe_target(&self, range: f32, half_angle: f32) -> Option<(pipes::Chunk, usize)> {
+        let (key, Some(ch)) = self.water_cache.as_ref()? else { return None };
+        if key.1 != self.fac.level || !same_height(self.p.y() + self.p.feet_y, super::level_stack::floor_y_of(key.1)) {
+            return None;
+        }
+        let origin = self.window_origin();
+        let base = (key.0 * sewer_core::CHUNK - origin.0, key.2 * sewer_core::CHUNK - origin.1);
+        let f = self.forward2();
+        let running: Vec<usize> = self.pipes.flows_in(*key).into_iter().map(|(_, _, n)| n).collect();
+        let mut best: Option<(f32, usize)> = None;
+        for (n, spec) in ch.breakables.iter().enumerate() {
+            let Extras::Pipe(p) = &spec.extras else { continue };
+            if running.contains(&n) {
+                continue;
+            }
+            for c in &p.cells {
+                let at = ((base.0 + c.x) as f32 + 0.5, (base.1 + c.y) as f32 + 0.5);
+                let (dx, dz) = (at.0 - self.p.pos.0, at.1 - self.p.pos.1);
+                let d = (dx * dx + dz * dz).sqrt();
+                if d > range || (d > 0.3 && (dx * f.0 + dz * f.1) / d < half_angle.cos()) {
+                    continue;
+                }
+                if !sight_to_cell(|x, z| self.fac.is_floor(x, z), self.p.pos, (base.0 + c.x, base.1 + c.y)) {
+                    continue;
+                }
+                if best.is_none_or(|b| d < b.0) {
+                    best = Some((d, n));
+                }
+            }
+        }
+        best.map(|b| (*key, b.1))
+    }
+
+    /// Host: a guest's Axe breach (`NetSession::take_burst_requests`). `at` and `depth` are the guest's last sample
+    /// (absolute cells). The flow opens, sounds and is published (`open_burst`) only when the id names a pipe of the
+    /// guest's own storey that is not already running and a cell of it is within the swing's reach of the guest.
+    /// Returns whether it burst.
+    pub fn host_burst_pipe(&mut self, req: &BurstRequest, at: (f32, f32), depth: i32) -> bool {
+        if super::guest_gate::is_display_only(self) {
+            return false;
+        }
+        let Some((chunk, n)) = pipes::parse_burst_id(&req.flow_id) else { return false };
+        if chunk.1 != -depth || self.pipes.run(&req.flow_id).is_some() {
+            return false;
+        }
+        let Some(cells) = self.pipe_cells_abs(chunk, n) else { return false };
+        if !pipe_in_reach(&cells, at, MELEE_STRIKE_RANGE + GUEST_REACH_SLACK) {
+            return false;
+        }
+        let at = Self::abs_to_window(self.window_origin(), at);
+        self.open_burst(&req.flow_id, at, chunk.1);
+        true
+    }
+
+    /// The absolute cell centres of pipe `n` of sewer chunk `chunk`: from the runner's water chunk when it is that
+    /// one, else the chunk built from the run's seed.
+    fn pipe_cells_abs(&self, chunk: pipes::Chunk, n: usize) -> Option<Vec<(f32, f32)>> {
+        let cells = match &self.water_cache {
+            Some((key, Some(ch))) if *key == chunk => pipe_cells(&ch.breakables, n)?,
+            _ => {
+                let seed = &self.inf.as_ref()?.seed;
+                let ch = sewer::chunk(Coord::new(chunk.0, chunk.1, chunk.2), &sewer::Inputs { world: seed })?;
+                pipe_cells(&ch.breakables, n)?
+            }
+        };
+        let base = (chunk.0 * sewer_core::CHUNK, chunk.2 * sewer_core::CHUNK);
+        Some(cells.iter().map(|c| ((base.0 + c.x) as f32 + 0.5, (base.1 + c.y) as f32 + 0.5)).collect())
+    }
+}
+
+/// How far the runner's feet may be above or below the storey floor and still swing at a pipe on it (metres).
+const AXE_PIPE_REACH_Y: f32 = 1.5;
+/// What the host adds to the swing's reach for a guest's sample being a little behind its swing (cells).
+const GUEST_REACH_SLACK: f32 = 1.0;
+
+fn same_height(feet_y: f32, floor_y: f32) -> bool {
+    (feet_y - floor_y).abs() <= AXE_PIPE_REACH_Y
+}
+
+/// The cells of breakable `n` when it is a pipe.
+fn pipe_cells(breakables: &[BreachSpec], n: usize) -> Option<Vec<V2>> {
+    match &breakables.get(n)?.extras {
+        Extras::Pipe(p) => Some(p.cells.clone()),
+        _ => None,
+    }
+}
+
+/// Whether some pipe cell centre is within `range` of `at`.
+fn pipe_in_reach(cells: &[(f32, f32)], at: (f32, f32), range: f32) -> bool {
+    cells.iter().any(|c| super::pdist(*c, at) <= range)
+}
+
+/// Whether the straight line from `from` to the centre of `cell` runs over floor only, the samples inside `cell`
+/// itself aside (a pipe hangs on the wall beside the walkway).
+fn sight_to_cell(is_floor: impl Fn(f64, f64) -> bool, from: (f32, f32), cell: (i32, i32)) -> bool {
+    let to = (cell.0 as f32 + 0.5, cell.1 as f32 + 0.5);
+    let d = super::pdist(from, to);
+    let steps = ((d * 6.0).ceil() as i32).max(1);
+    (0..=steps).all(|i| {
+        let t = i as f32 / steps as f32;
+        let (x, z) = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+        (x.floor() as i32, z.floor() as i32) == cell || is_floor(x as f64, z as f64)
+    })
 }
 
 #[cfg(test)]
@@ -382,6 +498,73 @@ mod tests {
         assert!(g.noise_events.iter().any(|e| e.kind == NoiseKind::ValveTurn && e.level == -1));
         assert!(g.noise_events.iter().any(|e| e.kind == NoiseKind::SluiceOpen), "an odd gate turn also sounds the sluice");
         assert_eq!(g.p.noise_burst, 0.0);
+    }
+
+    /// The window position of the middle of local cell `c` of the fabricated pipe's chunk.
+    fn pipe_cell_at(g: &Game, c: (i32, i32)) -> (f32, f32) {
+        let key = g.water_cache.as_ref().unwrap().0;
+        let o = g.window_origin();
+        ((key.0 * sewer_core::CHUNK - o.0 + c.0) as f32 + 0.5, (key.2 * sewer_core::CHUNK - o.1 + c.1) as f32 + 0.5)
+    }
+
+    #[test]
+    fn sight_to_cell_stops_at_a_wall_but_not_at_the_pipes_own_cell() {
+        let open = |x: f64, _z: f64| x < 5.0 || x >= 6.0;
+        // the wall column 5 is between the runner and cell (7, 0)
+        assert!(!sight_to_cell(open, (2.5, 0.5), (7, 0)));
+        // the target cell itself may be wall
+        let wall_target = |x: f64, _z: f64| x < 7.0;
+        assert!(sight_to_cell(wall_target, (2.5, 0.5), (7, 0)));
+        assert!(!sight_to_cell(|_, _| false, (2.5, 0.5), (7, 0)));
+    }
+
+    #[test]
+    fn the_axe_needs_the_pipe_on_its_floor_and_in_the_open() {
+        assert!(same_height(-3.0, -3.0) && same_height(-3.0 + 1.0, -3.0));
+        assert!(!same_height(-3.0 + 4.0, -3.0) && !same_height(-3.0 - 4.0, -3.0), "another deck of the storey");
+        let (mut g, _) = game_with_pipe(&[(3, 3)]);
+        let at = pipe_cell_at(&g, (3, 3));
+        g.p.pos = (at.0 - 1.0, at.1);
+        g.p.yaw = -std::f32::consts::FRAC_PI_2;
+        let key = g.water_cache.as_ref().unwrap().0;
+        g.p.floor_y = super::super::level_stack::floor_y_of(key.1) + 6.0;
+        assert!(g.axe_pipe_target(MELEE_STRIKE_RANGE, 0.9).is_none(), "a swing from another deck bursts nothing");
+    }
+
+    #[test]
+    fn a_guests_breach_is_checked_by_the_host_against_the_guests_place_and_storey() {
+        let (mut g, id) = game_with_pipe(&[(3, 3), (4, 3)]);
+        let key = g.water_cache.as_ref().unwrap().0;
+        let o = g.window_origin();
+        let near = Game::window_to_abs(o, pipe_cell_at(&g, (3, 3)));
+        let req = BurstRequest { peer: 2, flow_id: id.clone() };
+        assert!(!g.host_burst_pipe(&req, (near.0 + 30.0, near.1), 1), "too far");
+        assert!(!g.host_burst_pipe(&req, near, 2), "wrong storey");
+        assert!(!g.host_burst_pipe(&BurstRequest { peer: 2, flow_id: "BRK:x".into() }, near, 1), "not a burst id");
+        let not_a_pipe = BurstRequest { peer: 2, flow_id: format!("{}{}", pipes::flow_prefix(key), 9999) };
+        assert!(!g.host_burst_pipe(&not_a_pipe, near, 1), "no such breakable");
+        assert!(g.pipes.run(&id).is_none());
+        g.noise_events.clear();
+        assert!(g.host_burst_pipe(&req, near, 1), "at the pipe on its storey");
+        assert!(g.pipes.run(&id).is_some());
+        assert!(g.noise_events.iter().any(|e| e.kind == NoiseKind::PipeBurst && e.level == key.1));
+        assert!(!g.host_burst_pipe(&req, near, 1), "a flow already running is not burst again");
+        g.remote_hunters = true;
+        assert!(!g.host_burst_pipe(&BurstRequest { peer: 2, flow_id: id }, near, 1), "a guest never decides");
+    }
+
+    #[test]
+    fn a_guests_axe_breach_starts_the_flow_and_asks_the_host() {
+        let (mut g, _) = game_with_pipe(&[(3, 3)]);
+        g.remote_hunters = true;
+        let key = g.water_cache.as_ref().unwrap().0;
+        let id = g.burst_pipe(key, 0);
+        assert!(g.pipes.run(&id).is_some(), "the guest shows the flow at once");
+        assert_eq!(g.take_burst_requests(), vec![id]);
+        assert!(g.take_burst_requests().is_empty());
+        g.remote_hunters = false;
+        g.burst_pipe(key, 1);
+        assert!(g.take_burst_requests().is_empty(), "the host asks nobody");
     }
 
     #[test]

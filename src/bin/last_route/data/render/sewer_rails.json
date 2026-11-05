@@ -1,0 +1,12 @@
+{
+  "schema": "lr.sewer_rails/1",
+  "_about": "Iron railings along every walkable sewer cell edge next to channel water or the falls' drop (render/sewer_rails.rs; Godot _spawn_channel_railings, RAIL_INSET 0.06, RAIL_HEIGHT 1.0). inset_m: how far in from the cell edge the rail line sits. height_m: the post and top-rail height. top_rail_drop_m: the top rail's centre below height_m; mid_rail_fraction: the mid rail's centre as a fraction of height_m. rail_thickness_m: the square section of both rails. post_size_m and post_spacing_m: a post every spacing metres along the edge, starting at the segment's start corner. The cell facing the deliberate waterfall jump gets no rail.",
+  "inset_m": 0.06,
+  "height_m": 1.0,
+  "top_rail_drop_m": 0.03,
+  "mid_rail_fraction": 0.5,
+  "rail_thickness_m": 0.055,
+  "post_size_m": 0.07,
+  "post_spacing_m": 1.0,
+  "color": [0.231, 0.247, 0.259]
+}

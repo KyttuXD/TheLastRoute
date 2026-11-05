@@ -938,6 +938,7 @@ impl Session {
                 });
                 let view = crate::net::world_sync::RemoteView {
                     peer,
+                    name: c.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
                     x: f(c, "x").unwrap_or(g.p.pos.0 + fwd.0 * 2.0),
                     y: f(c, "z").unwrap_or(g.p.pos.1 + fwd.1 * 2.0),
                     yaw: f(c, "yaw").unwrap_or(g.p.yaw + std::f32::consts::PI),

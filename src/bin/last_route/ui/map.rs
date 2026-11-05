@@ -15,7 +15,7 @@ use crate::app::assets::Assets;
 use crate::game::endless::{FullMapFeed, MapChunk};
 use crate::game::Game;
 use crate::hunters::brain::Brain;
-use crate::net::world_sync::RemoteView;
+use super::markers::{self, Marker};
 use crate::world::infinite::CHUNK;
 use macroquad::prelude::*;
 
@@ -104,8 +104,8 @@ fn fit_box(plan: Rect, w: i32, h: i32) -> Xf {
     }
 }
 
-/// Draws the minimap or a floor map into `r` (units), with the teammates in `remotes` as pins.
-pub fn draw_map(g: &Game, r: Rect, full: bool, remotes: &[RemoteView]) {
+/// Draws the minimap or a floor map into `r` (units), with the players and bots in `marks` as pins.
+pub fn draw_map(g: &Game, r: Rect, full: bool, marks: &[Marker]) {
     let (vx, vy, vw, vh) = view_cells(g, full);
     let b = fit_box(r, vw, vh);
     let xf = Xf {
@@ -113,7 +113,7 @@ pub fn draw_map(g: &Game, r: Rect, full: bool, remotes: &[RemoteView]) {
         ox: b.ox - vx as f32 * b.cell,
         oy: b.oy - vy as f32 * b.cell,
     };
-    draw_floor(g, xf, (vx, vy, vw, vh), full, remotes);
+    draw_floor(g, xf, (vx, vy, vw, vh), full, marks);
     radar_state_overlay(g, r);
 }
 
@@ -133,7 +133,7 @@ fn radar_state_overlay(g: &Game, r: Rect) {
 
 /// Draws the floor cells `cells` (x, y, w, h) through `xf`: the floor, the safe zone, relays, batteries, the lift, the
 /// stairs, the waypoint, the hunters on the map, the teammates and the runner.
-fn draw_floor(g: &Game, xf: Xf, cells: (i32, i32, i32, i32), full: bool, remotes: &[RemoteView]) {
+fn draw_floor(g: &Game, xf: Xf, cells: (i32, i32, i32, i32), full: bool, marks: &[Marker]) {
     let p = pal();
     let (vx, vy, vw, vh) = cells;
     let cell = xf.cell;
@@ -216,7 +216,7 @@ fn draw_floor(g: &Game, xf: Xf, cells: (i32, i32, i32, i32), full: bool, remotes
             (cell * 0.55).max(if full { 3.0 } else { 1.2 }),
         );
     }
-    draw_runner_pins(xf, cells, (0, 0), remotes, full);
+    draw_runner_pins(xf, cells, (0, 0), marks, g.fac.level, full);
     let q = xf.at(g.p.pos);
     runner_wedge(g, vec2(q.0, q.1), cell, full);
 }
@@ -275,15 +275,18 @@ pub fn runner_pin_at(xf: Xf, origin: (i32, i32), at: (f32, f32)) -> (f32, f32) {
     xf.at(runner_cell(origin, at))
 }
 
-/// Draws the teammates as arrows on a map (Godot `_draw_remote_player`): each along its runner's facing, ringed in ink, in its
-/// peer's colour. Radius is the larger of 3.4 (the full map) or 3.0 (the minimap) and half a cell, as Godot takes it. `remotes`
-/// are the runners on this floor, `origin` moves them into the frame of `xf` and `cells` (x, y, w, h) is what is shown, in that
-/// same frame. A runner outside `cells` is not drawn; Godot's border arrows are not ported yet.
+/// Draws the players and bots as arrows on a map (Godot `_draw_remote_player`): each along its facing, ringed in ink, in its
+/// own colour. Radius is the larger of 3.4 (the full map) or 3.0 (the minimap) and half a cell, as Godot takes it. `marks`
+/// are the markers from [`markers::remote_markers`] and [`markers::bot_markers`], `origin` moves them into the frame of `xf`
+/// and `cells` (x, y, w, h) is what is shown, in that same frame. A marker on `shown_level` is drawn whole; one on another
+/// level is dimmed on the full map and left off the minimap ([`markers::pin_alpha`]). A marker outside `cells` is not drawn;
+/// Godot's border arrows are not ported yet.
 pub fn draw_runner_pins(
     xf: Xf,
     cells: (i32, i32, i32, i32),
     origin: (i32, i32),
-    remotes: &[RemoteView],
+    marks: &[Marker],
+    shown_level: i32,
     full: bool,
 ) {
     let (vx, vy, vw, vh) = cells;
@@ -292,7 +295,8 @@ pub fn draw_runner_pins(
     let radius = floor.max(cell * 0.5);
     let len = radius * 1.55;
     let half = radius * 1.05;
-    for r in remotes {
+    for r in marks {
+        let Some(alpha_k) = markers::pin_alpha(r.level, shown_level, full) else { continue };
         let c = runner_cell(origin, (r.x, r.y));
         let inside = c.0 >= vx as f32
             && c.1 >= vy as f32
@@ -302,7 +306,7 @@ pub fn draw_runner_pins(
             continue;
         }
         // Player::forward2, as the runner's wedge takes it; a zero heading points up
-        let facing = vec2(-r.yaw.sin(), -r.yaw.cos()).normalize_or_zero();
+        let facing = super::markers::facing_dir(r.yaw).normalize_or_zero();
         let f = if facing == Vec2::ZERO { vec2(0.0, -1.0) } else { facing };
         let side = vec2(-f.y, f.x);
         let p = runner_pin_at(xf, origin, (r.x, r.y));
@@ -316,8 +320,8 @@ pub fn draw_runner_pins(
             tri(tip, left, notch, col);
             tri(tip, notch, right, col);
         };
-        arrow(1.1, TEAMMATE_INK);
-        arrow(0.0, teammate_colour(r.peer));
+        arrow(1.1, alpha(TEAMMATE_INK, TEAMMATE_INK.a * alpha_k));
+        arrow(0.0, alpha(r.colour, r.colour.a * alpha_k));
     }
 }
 
@@ -672,7 +676,7 @@ pub fn full_map_input(g: &mut Game, map_view: &mut FullView) {
 /// The level-0 full map: every discovered chunk (`feed`), drawn through the frame `geo`. The floor is drawn per chunk in runs
 /// of cells, then the solid props, the relays and batteries, the stairs, the waypoint, the hunters on the map and the runner.
 /// Off the discovered area nothing is drawn.
-fn draw_level0(g: &Game, feed: &FullMapFeed, plan: Rect, geo: &FullPlan, remotes: &[RemoteView]) {
+fn draw_level0(g: &Game, feed: &FullMapFeed, plan: Rect, geo: &FullPlan, marks: &[Marker]) {
     let p = pal();
     let keys: Vec<(i32, i32)> = feed.chunks.iter().map(|(k, _)| (k.cx, k.cy)).collect();
     let Some(fit) = fit_discovered(plan, &keys) else { return };
@@ -775,19 +779,15 @@ fn draw_level0(g: &Game, feed: &FullMapFeed, plan: Rect, geo: &FullPlan, remotes
     for h in g.map_hunters() {
         dot((h.pos.0 + o.0, h.pos.1 + o.1), hunter_colour(h), (cell * 0.55).max(3.0));
     }
-    draw_runner_pins(xf, (fit.x0, fit.y0, fit.w, fit.h), feed.origin, remotes, true);
+    draw_runner_pins(xf, (fit.x0, fit.y0, fit.w, fit.h), feed.origin, marks, g.fac.level, true);
     let q = xf.at(geo.runner);
     runner_wedge(g, vec2(q.0, q.1), cell, true);
     radar_state_overlay(g, plan);
 }
 
-/// The fullscreen map overlay (hud.tscn MapOverlay): title, plan and legend. `map_view` is the view the input steps.
-pub fn draw_full_map(g: &Game, a: &Assets, map_view: &FullView) {
-    draw_full_map_with_runners(g, a, map_view, &[]);
-}
-
-/// The fullscreen map overlay with the teammates in `remotes` drawn as pins (see `draw_full_map`).
-pub fn draw_full_map_with_runners(g: &Game, a: &Assets, map_view: &FullView, remotes: &[RemoteView]) {
+/// The fullscreen map overlay (hud.tscn MapOverlay): title, plan and legend, with the players and bots in `marks` drawn as
+/// pins. `map_view` is the view the input steps.
+pub fn draw_full_map_with_runners(g: &Game, a: &Assets, map_view: &FullView, marks: &[Marker]) {
     let p = pal();
     let v = view();
     fill(
@@ -813,8 +813,8 @@ pub fn draw_full_map_with_runners(g: &Game, a: &Assets, map_view: &FullView, rem
     let geo = full_plan(g, plan, map_view);
     clip_begin(plan);
     match g.full_map_feed() {
-        Some(feed) => draw_level0(g, &feed, plan, &geo, remotes),
-        None => draw_floor(g, geo.xf, (0, 0, g.fac.cols, g.fac.rows), true, remotes),
+        Some(feed) => draw_level0(g, &feed, plan, &geo, marks),
+        None => draw_floor(g, geo.xf, (0, 0, g.fac.cols, g.fac.rows), true, marks),
     }
     clip_end();
     let legend = if is_last_route() {

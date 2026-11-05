@@ -20,7 +20,7 @@ use super::config::BackendConfig;
 use super::protocol::{self, Message};
 use super::relay::{RelayEvent, RelayLink, Role};
 use super::session::{CoopSession, SessionEvent, HOST_PEER_ID};
-use super::valve_events::{self, ValveRequest};
+use super::valve_events::{self, BurstRequest, ValveRequest};
 use super::{store, NetError, Pending};
 use crate::config::difficulty::{ALL, LOBBY};
 use crate::config::Difficulty;
@@ -305,6 +305,8 @@ pub struct RosterEntry {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RemoteView {
     pub peer: u32,
+    /// The runner's name from its profile (empty until the profile arrives).
+    pub name: String,
     pub x: f32,
     pub y: f32,
     pub yaw: f32,
@@ -335,12 +337,13 @@ pub struct RemoteView {
 }
 
 /// What the figure code needs of a remote runner's last sample, moved into the window whose origin is `origin`.
-fn remote_view(peer: u32, r: &Remote, skin: String, origin: (i32, i32), now: Instant) -> RemoteView {
+fn remote_view(peer: u32, name: String, r: &Remote, skin: String, origin: (i32, i32), now: Instant) -> RemoteView {
     let shown = r.shown(now);
     let (x, y) = to_window((shown.x, shown.y), origin);
     let h = shown.h.unwrap_or(shown.depth as f32 * STOREY);
     RemoteView {
         peer,
+        name,
         x,
         y,
         yaw: shown.yaw,
@@ -653,6 +656,8 @@ pub struct NetSession {
     last_taser: HashMap<u32, Instant>,
     /// Host: guests' sewer valve turn requests waiting for the game ([`NetSession::take_valve_requests`]).
     valve_requests: Vec<ValveRequest>,
+    /// Host: guests' Axe pipe breach requests waiting for the game ([`NetSession::take_burst_requests`]).
+    burst_requests: Vec<BurstRequest>,
     /// Host: guest hunter events accepted this tick (taser, or a resolved capture with `peer_id`), taken by the app.
     guest_events: Vec<Map<String, Value>>,
     /// Host: the hunter frame last sent, and the sabotaged relay count, for the snapshot a late joiner is sent.
@@ -900,6 +905,7 @@ impl NetSession {
             pending_captures: HashMap::new(),
             last_taser: HashMap::new(),
             valve_requests: Vec::new(),
+            burst_requests: Vec::new(),
             guest_events: Vec::new(),
             hunters_now: Vec::new(),
             relays_sabotaged: 0,
@@ -1206,6 +1212,11 @@ impl NetSession {
         std::mem::take(&mut self.valve_requests)
     }
 
+    /// Host: the guests' Axe pipe breach requests since the last call, oldest first. A guest always gets nothing.
+    pub fn take_burst_requests(&mut self) -> Vec<BurstRequest> {
+        std::mem::take(&mut self.burst_requests)
+    }
+
     /// Host: where a guest last stood (absolute cell and depth), for the checks on its requests: the host's own copy
     /// of the last accepted sample, never a place the request itself carries. `None` for a peer with no fresh sample
     /// (older than [`remote_timeout`]), or on a guest.
@@ -1238,12 +1249,30 @@ impl NetSession {
         }
     }
 
-    /// Host: checks a guest's valve request and queues it for the game (bounded by `guest.max_valve_requests`).
+    /// Guest: asks the host to burst a sewer pipe the guest's Axe breached (the host checks the guest's place and
+    /// publishes a `stream_pipe_burst` event). Does nothing on the host, which bursts pipes itself.
+    pub fn request_burst(&mut self, flow_id: &str) {
+        if !self.is_host() {
+            let event = valve_events::burst_request_message(flow_id);
+            self.coop.send(HOST_PEER_ID, &Message::RequestInteraction { event });
+        }
+    }
+
+    /// Host: checks a guest's valve or breach request and queues it for the game (bounded by `guest.max_valve_requests`).
     fn accept_valve_request(&mut self, from: u32, event: &Map<String, Value>) {
         if from <= HOST_PEER_ID || !self.guests.contains_key(&from) {
             return;
         }
-        if self.valve_requests.len() >= hunter_events::rules().max_valve_requests {
+        let max = hunter_events::rules().max_valve_requests;
+        if event.get("what").and_then(Value::as_str) == Some(valve_events::BURST_REQUEST) {
+            if self.burst_requests.len() < max {
+                if let Some(request) = valve_events::parse_burst_request(from, event) {
+                    self.burst_requests.push(request);
+                }
+            }
+            return;
+        }
+        if self.valve_requests.len() >= max {
             return;
         }
         if let Some(request) = valve_events::parse_request(from, event) {
@@ -1366,6 +1395,26 @@ impl NetSession {
         out
     }
 
+    /// The name a peer's profile gave (a guest's own on the host, the host's on a guest); empty when none arrived yet.
+    /// The name over a peer's figure, cleaned like a profile name (the host's room message and the guest list are not).
+    /// Empty stays empty: no name, no tag.
+    fn peer_name(&self, peer: u32) -> String {
+        let raw = if let Some(n) = self.names.get(&peer).filter(|n| !n.is_empty()) {
+            n.clone()
+        } else if self.is_host() {
+            self.guests.get(&peer).map(|g| g.name.clone()).unwrap_or_default()
+        } else if peer == HOST_PEER_ID {
+            self.host_name.clone()
+        } else {
+            String::new()
+        };
+        if raw.is_empty() {
+            raw
+        } else {
+            clean_name(&raw)
+        }
+    }
+
     /// The other runners near the viewer that are fresh enough to draw, in peer order: with a height, those within
     /// one storey of `viewer_h`; from an old client (no height), those on `depth`. `origin` is this runner's window
     /// origin: the samples are absolute cells, so they are moved into this window before they are returned.
@@ -1382,7 +1431,7 @@ impl NetSession {
                 near && now.duration_since(r.last_seen) < remote_timeout()
             })
             .map(|(peer, r)| {
-                let mut v = remote_view(*peer, r, self.skins.get(peer).cloned().unwrap_or_else(|| SKIN_DEFAULT.into()), origin, now);
+                let mut v = remote_view(*peer, self.peer_name(*peer), r, self.skins.get(peer).cloned().unwrap_or_else(|| SKIN_DEFAULT.into()), origin, now);
                 // arm style: the sample's own flag, else the profile's word, else read from the picture once it is here
                 v.slim = v.slim || self.peer_slim(*peer);
                 v
@@ -2042,7 +2091,7 @@ mod tests {
         let now = Instant::now();
         let smp = sample(1, 13.0, 14.0).with_body(Pose::Climb, 1.5, true, Some(HideSpot { cell: (13, 14), facing: (1, 0) }));
         let r = Remote::new(smp, now, Some(now));
-        let v = remote_view(5, &r, "DEFAULT".into(), (10, 10), now);
+        let v = remote_view(5, "Ann".into(), &r, "DEFAULT".into(), (10, 10), now);
         assert_eq!((v.clip, v.vy, v.slim), (Some(Pose::Climb), 1.5, true));
         assert_eq!((v.x, v.y), (3.0, 4.0), "the position moves into this window");
         assert_eq!(v.hide, Some(HideSpot { cell: (3, 4), facing: (1, 0) }), "so does the locker");
@@ -2744,6 +2793,25 @@ mod tests {
     }
 
     #[test]
+    fn the_name_over_a_figure_is_cleaned_whatever_its_source() {
+        let mut guest = offline_session(false, "GUEST");
+        guest.host_name = "ho\u{202e}st \u{1F600}".to_string() + &"x".repeat(60);
+        let host = guest.peer_name(HOST_PEER_ID);
+        assert!(host.len() <= MAX_NAME && host.starts_with("HOST "), "{host}");
+        assert!(host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '-' | '_')));
+        guest.names.insert(9, "n\u{e9}on".into());
+        assert_eq!(guest.peer_name(9), "NON");
+        assert_eq!(guest.peer_name(77), "", "unknown peer: no name, no tag");
+        guest.host_name.clear();
+        assert_eq!(guest.peer_name(HOST_PEER_ID), "");
+        guest.coop.close();
+        let mut host = offline_session(true, "HOST");
+        host.guests.insert(5, Guest { name: "a".repeat(50), last_seen: Instant::now() });
+        assert_eq!(host.peer_name(5).len(), MAX_NAME);
+        host.coop.close();
+    }
+
+    #[test]
     fn the_roster_lists_the_guests_for_the_host_and_the_host_first_for_a_guest() {
         let now = Instant::now();
         let mut host = offline_session(true, "HOST");
@@ -3110,6 +3178,26 @@ mod owner_route_tests {
         let mut guest = offline_session(false, "GUEST");
         guest.on_message(2, Message::RequestInteraction { event: request }, now, &mut out);
         assert!(guest.take_valve_requests().is_empty(), "a guest never queues requests");
+    }
+
+    #[test]
+    fn a_guests_breach_request_reaches_the_host_burst_queue_bounded_by_data() {
+        let now = Instant::now();
+        let mut host = offline_session(true, "HOST");
+        let mut out = Vec::new();
+        let request = valve_events::burst_request_message("BRK:0:-1:0:3");
+        host.on_message(2, Message::RequestInteraction { event: request.clone() }, now, &mut out);
+        assert!(host.take_burst_requests().is_empty(), "a peer that never registered is ignored");
+        registered(&mut host, 2, now);
+        for _ in 0..hunter_events::rules().max_valve_requests + 5 {
+            host.on_message(2, Message::RequestInteraction { event: request.clone() }, now, &mut out);
+        }
+        let got = host.take_burst_requests();
+        assert_eq!((got.len(), got[0].peer, got[0].flow_id.as_str()), (hunter_events::rules().max_valve_requests, 2, "BRK:0:-1:0:3"));
+        assert!(host.take_valve_requests().is_empty(), "a breach is not a valve turn");
+        let mut guest = offline_session(false, "GUEST");
+        guest.on_message(2, Message::RequestInteraction { event: request }, now, &mut out);
+        assert!(guest.take_burst_requests().is_empty(), "a guest never queues requests");
     }
 
     #[test]
