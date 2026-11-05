@@ -56,6 +56,7 @@ mod owner_gate_tests {
 
 use crate::app::assets::Assets;
 use crate::content::Content;
+use menu_data::menu;
 use crate::game::{Controls, Game};
 use macroquad::prelude::*;
 use std::collections::{HashMap, VecDeque};
@@ -81,6 +82,16 @@ pub enum View {
 }
 
 pub use crate::shared::admin_flags::{FULLBRIGHT, GOD, NOCLIP, NO_TARGET, RUN_SPEED, WIREFRAME};
+
+/// Keyboard scrolling of a page, in canvas units: Up / Down, PgUp / PgDn, Home / End (to either end).
+const SCROLL_LINE: f32 = 20.0;
+const SCROLL_PAGE: f32 = 120.0;
+const SCROLL_ALL: f32 = 100_000.0;
+
+/// The tab `step` places from `tab`, stopping at the first and the last (Tab and the arrows do not wrap).
+fn step_tab(tab: usize, step: isize) -> usize {
+    (tab as isize + step).clamp(0, TABS.len() as isize - 1) as usize
+}
 
 pub const TABS: [&str; 10] = [
     "STATUS",
@@ -129,6 +140,8 @@ pub struct Admin {
     /// Keyboard focus (a widget key); the first action control gets it when the menu opens.
     focus: Option<String>,
     fields: [String; 3],
+    /// Keyboard scrolling asked for this frame, in canvas units (the menu applies it when it draws).
+    scroll_keys: f32,
     field_focus: Option<usize>,
     prefs: prefs::Prefs,
 
@@ -175,7 +188,7 @@ impl Default for Admin {
 impl Admin {
     pub fn new() -> Admin {
         let prefs = prefs::Prefs::load();
-        Admin {
+        let mut admin = Admin {
             enabled: true,
             open: false,
             tab: 0,
@@ -187,6 +200,7 @@ impl Admin {
             pending_popup: None,
             focus: None,
             fields: Default::default(),
+            scroll_keys: 0.0,
             field_focus: None,
             no_target: false,
             god_mode: false,
@@ -214,6 +228,56 @@ impl Admin {
             frame_ms: VecDeque::new(),
             clock: 0.0,
             prefs,
+        };
+        admin.sync_speed_rows();
+        admin
+    }
+
+    /// The RUN SPEED and GAME SPEED dropdowns show the speed in force (they used to start on their
+    /// first entry, so GAME SPEED read PAUSE while the game ran at 1X and RUN would pause it).
+    fn sync_speed_rows(&mut self) {
+        let at = |list: &[(f32, &'static str)], v: f32| {
+            list.iter().position(|(s, _)| (s - v).abs() < 1e-6).unwrap_or(0)
+        };
+        self.sel.insert("run_speed", at(&menu().run_speeds, self.run_speed));
+        self.sel.insert("game_speed", at(&menu().game_speeds, self.game_speed));
+    }
+
+    /// RESET ALL: every admin switch, speed and text field back to its default, the saved
+    /// preferences included. The run is not touched beyond the switches themselves.
+    pub(super) fn reset_all(&mut self) {
+        self.no_target = false;
+        self.god_mode = false;
+        self.noclip = false;
+        self.map_reveal = false;
+        self.hunter_reveal = false;
+        self.region_map = false;
+        self.show_collision = false;
+        self.perf_overlay = false;
+        self.show_traps = false;
+        self.light_sight = true;
+        self.run_speed = 1.0;
+        self.game_speed = 1.0;
+        self.step_frames = 0;
+        self.view = View::Off;
+        self.fields = Default::default();
+        self.field_focus = None;
+        self.prefs.reset_all();
+        self.sync_speed_rows();
+    }
+
+    /// The value in force for a dropdown row, for its caption ("NOW 2X"), or None for rows that run an action.
+    pub(super) fn current_of(&self, key: &str) -> Option<String> {
+        let name = |list: &[(f32, &'static str)], v: f32| {
+            list.iter()
+                .find(|(s, _)| (s - v).abs() < 1e-6)
+                .map_or_else(|| format!("{v}X"), |(_, l)| l.to_string())
+        };
+        match key {
+            "run_speed" => Some(name(&menu().run_speeds, self.run_speed)),
+            "game_speed" if self.game_speed == 0.0 => Some("PAUSE".to_string()),
+            "game_speed" => Some(name(&menu().game_speeds, self.game_speed)),
+            _ => None,
         }
     }
 
@@ -302,6 +366,11 @@ impl Admin {
     pub fn input(&mut self, g: &mut Game) -> bool {
         self.track_run(g);
         if !self.enabled {
+            // signed out (or not the admin any more) with the menu open: close it, or the run would
+            // keep waiting for a menu that no longer draws and the mouse would stay free
+            if self.open {
+                self.set_open(false);
+            }
             return false;
         }
         if is_key_pressed(KeyCode::F6) {
@@ -352,12 +421,30 @@ impl Admin {
             0
         };
         if step != 0 {
-            let next = (self.tab as isize + step).clamp(0, TABS.len() as isize - 1) as usize;
+            let next = step_tab(self.tab, step);
             if next != self.tab {
                 self.tab = next;
                 self.popup = None;
                 self.field_focus = None;
             }
+        }
+        if self.popup.is_none() && !(self.tab == 9 && self.field_focus.is_some()) {
+            let wheel = if is_key_pressed(KeyCode::Down) {
+                SCROLL_LINE
+            } else if is_key_pressed(KeyCode::Up) {
+                -SCROLL_LINE
+            } else if is_key_pressed(KeyCode::PageDown) {
+                SCROLL_PAGE
+            } else if is_key_pressed(KeyCode::PageUp) {
+                -SCROLL_PAGE
+            } else if is_key_pressed(KeyCode::End) {
+                SCROLL_ALL
+            } else if is_key_pressed(KeyCode::Home) {
+                -SCROLL_ALL
+            } else {
+                0.0
+            };
+            self.scroll_keys += wheel;
         }
         if self.tab == 9 {
             if let Some(i) = self.field_focus {
@@ -402,6 +489,7 @@ impl Admin {
         self.run_speed = 1.0;
         self.game_speed = 1.0;
         self.step_frames = 0;
+        self.sync_speed_rows();
         self.debug_run = false;
         self.summoned.clear();
         self.pending_landing = false;
@@ -482,6 +570,9 @@ impl Admin {
         self.sel.get(key).copied().unwrap_or(0)
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 #[cfg(test)]
 mod publish_tests {

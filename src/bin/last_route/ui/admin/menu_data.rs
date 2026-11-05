@@ -28,6 +28,8 @@ pub(super) struct MenuData {
     pub npc_ops: Vec<(&'static str, &'static str)>,
     pub npc_all: Vec<(&'static str, &'static str)>,
     pub npc_smarts: Vec<i32>,
+    /// The most NPCs one SPAWN NPC press makes (the count stepper stops here).
+    pub npc_spawn_max: i32,
     pub fields: Vec<(&'static str, &'static str)>,
 }
 
@@ -116,6 +118,19 @@ pub(super) fn parse(v: &Value) -> Result<MenuData, String> {
                 .ok_or_else(|| "npc_smarts: an entry is not a whole number".to_string())
         })
         .collect::<Result<Vec<i32>, String>>()?;
+    let npc_spawn_max = v
+        .get("npc_spawn_max")
+        .and_then(Value::as_i64)
+        .filter(|n| *n >= 1)
+        .ok_or("npc_spawn_max is not a whole number of at least 1")? as i32;
+    if npc_smarts.len() != 4 {
+        return Err("npc_smarts needs exactly 4 entries (the SMART dropdown)".to_string());
+    }
+    if v.get("run_speeds").and_then(Value::as_array).map_or(0, Vec::len) < 1
+        || v.get("game_speeds").and_then(Value::as_array).map_or(0, Vec::len) < 1
+    {
+        return Err("run_speeds and game_speeds need at least one entry".to_string());
+    }
     Ok(MenuData {
         items: pairs(v, "items", "id", "label")?,
         teleports: pairs(v, "teleports", "id", "label")?,
@@ -133,6 +148,7 @@ pub(super) fn parse(v: &Value) -> Result<MenuData, String> {
         npc_ops: pairs(v, "npc_ops", "id", "label")?,
         npc_all: pairs(v, "npc_all", "id", "label")?,
         npc_smarts,
+        npc_spawn_max,
         fields: pairs(v, "fields", "label", "placeholder")?,
     })
 }
@@ -173,6 +189,7 @@ mod tests {
         assert_eq!(m.npc_all.len(), 11);
         assert_eq!(m.npc_all[10], ("all_smart", "ALL SMART"));
         assert_eq!(m.npc_smarts, vec![30, 50, 70, 90]);
+        assert_eq!(m.npc_spawn_max, 32);
         assert_eq!(m.fields.len(), 3);
         assert_eq!(m.fields[0], ("SAFE TELEPORT", "X,Z or X,Z,LEVEL"));
         assert_eq!(m.fields[2], ("REMOVE LIMITED ADMIN", "USERNAME"));
@@ -190,6 +207,48 @@ mod tests {
         assert_eq!(m.act_general[0].0, "roster_refresh");
         assert_eq!(m.npc_smarts, vec![10, 20, 40, 80]);
         assert_eq!(m.run_speeds[3].0, 5.0);
+    }
+
+    /// Every id is a bare lowercase word and every label is shown capitalised or lowercase text the
+    /// player can read: the lists are (id, label), so a swapped order shows ids on the buttons.
+    #[test]
+    fn ids_are_ids_and_labels_are_labels() {
+        let m = menu();
+        let lists = [&m.items, &m.teleports, &m.stories, &m.act_general, &m.act_player, &m.act_hunters,
+            &m.act_world, &m.act_story, &m.act_visual, &m.npc_ops, &m.npc_all];
+        for list in lists {
+            for (id, label) in list.iter() {
+                assert!(id.chars().all(|c| c.is_ascii_lowercase() || c == '_'), "id {id:?}");
+                assert!(label.chars().any(|c| c.is_ascii_uppercase()), "label {label:?} reads as an id");
+                assert_ne!(id, label);
+            }
+        }
+    }
+
+    #[test]
+    fn ids_are_unique_within_a_list() {
+        let m = menu();
+        for list in [&m.items, &m.teleports, &m.act_general, &m.act_hunters, &m.act_world, &m.npc_ops, &m.npc_all] {
+            let mut ids: Vec<&str> = list.iter().map(|(id, _)| *id).collect();
+            ids.sort();
+            let n = ids.len();
+            ids.dedup();
+            assert_eq!(ids.len(), n);
+        }
+    }
+
+    #[test]
+    fn bad_limits_in_the_data_are_errors() {
+        let base: Value = serde_json::from_str(embedded::data_under("admin/menu.json").next().unwrap().1).unwrap();
+        let mut v = base.clone();
+        v["npc_spawn_max"] = json!(0);
+        assert!(parse(&v).is_err());
+        let mut v = base.clone();
+        v["npc_smarts"] = json!([30, 50]);
+        assert!(parse(&v).is_err());
+        let mut v = base;
+        v["game_speeds"] = json!([]);
+        assert!(parse(&v).is_err());
     }
 
     #[test]

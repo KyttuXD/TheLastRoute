@@ -138,6 +138,7 @@
     { "id": "all_smart", "label": "ALL SMART" }
   ],
   "npc_smarts": [30, 50, 70, 90],
+  "npc_spawn_max": 32,
   "fields": [
     { "label": "SAFE TELEPORT", "placeholder": "X,Z or X,Z,LEVEL" },
     { "label": "ADD / UPDATE LIMITED ADMIN", "placeholder": "USERNAME:player,world,hunters,visual,inventory" },

@@ -40,8 +40,14 @@ impl Col {
     }
 }
 
-fn labels(list: &[(&str, &str)]) -> Vec<String> {
-    list.iter().map(|(l, _)| l.to_string()).collect()
+/// The NPC spawn count after one click of the left or right arrow, kept within 1 and the data's maximum.
+pub(super) fn step_count(count: i32, up: bool) -> i32 {
+    let next = if up { count + 1 } else { count - 1 };
+    next.clamp(1, menu().npc_spawn_max)
+}
+
+pub(super) fn labels(list: &[(&str, &str)]) -> Vec<String> {
+    list.iter().map(|(_, label)| label.to_string()).collect()
 }
 
 /// Hunter picker order: the A-Z roster, then everything else (Void, pack hunters), by id.
@@ -221,8 +227,13 @@ impl Admin {
         // body and hint
         let body = Rect::new(cx, panel.y + 46.0 * u, cw, (size.y - 64.0) * u);
         ui.boxed(body, INSET, PANEL_EDGE);
+        let hint = if self.tab == 9 {
+            "ENTER RUNS A FIELD  //  UP/DOWN MOVES  //  ESC CLOSES"
+        } else {
+            "0 OR ESC CLOSES  //  TAB SWITCHES  //  UP/DOWN SCROLLS"
+        };
         ui.text(
-            "0 OR ESC CLOSES  //  DROPDOWN, THEN RUN",
+            hint,
             cx,
             panel.y + (size.y - 15.0) * u,
             6.0,
@@ -240,6 +251,10 @@ impl Admin {
         if wheel != 0.0 && self.popup.is_none() && page.contains(ui.mouse) {
             self.scroll[tab] -= wheel.signum() * 20.0 * u;
         }
+        if self.popup.is_none() {
+            self.scroll[tab] += self.scroll_keys * u;
+        }
+        self.scroll_keys = 0.0;
         self.scroll[tab] = self.scroll[tab].clamp(0.0, max_scroll);
         let mut col = Col {
             x: page.x,
@@ -285,6 +300,7 @@ impl Admin {
                     "ACTION",
                     labels(&menu().act_general),
                 );
+                self.reset_row(&mut ui, &mut col, g);
             }
             2 => {
                 self.dd_row(
@@ -318,6 +334,7 @@ impl Admin {
                     "ACTION",
                     labels(&menu().act_player),
                 );
+                self.reset_row(&mut ui, &mut col, g);
             }
             3 => {
                 self.hunter_tool(&mut ui, &mut col, &mut cmds, &hunters);
@@ -430,10 +447,12 @@ impl Admin {
                     "ACTION",
                     labels(&menu().act_visual),
                 );
+                self.reset_row(&mut ui, &mut col, g);
             }
             8 => {
                 self.toggle_row(&mut ui, &mut col, &mut cmds, "fullbright", "FULLBRIGHT");
                 self.toggle_row(&mut ui, &mut col, &mut cmds, "wireframe", "WIREFRAME");
+                self.reset_row(&mut ui, &mut col, g);
             }
             _ => self.fields_page(&mut ui, &mut col, &mut cmds, content),
         }
@@ -442,6 +461,14 @@ impl Admin {
             get_internal_gl().quad_gl.scissor(None);
         }
         ui.clip = None;
+        // a page taller than the body shows where it is (it scrolls by wheel, keys and PgUp/PgDn)
+        if self.content_h[tab] > page.h + 0.5 {
+            let track = Rect::new(body.x + body.w - 4.0 * u, page.y, 2.0 * u, page.h);
+            let thumb_h = (track.h * page.h / self.content_h[tab]).max(8.0 * u).min(track.h);
+            let frac = self.scroll[tab] / (self.content_h[tab] - page.h).max(1.0);
+            draw_rectangle(track.x, track.y, track.w, track.h, PANEL_EDGE);
+            draw_rectangle(track.x, track.y + (track.h - thumb_h) * frac.clamp(0.0, 1.0), track.w, thumb_h, ACCENT);
+        }
         // a click anywhere else takes the focus off a text field
         if had_click && ui.click && tab == 9 {
             self.field_focus = None;
@@ -455,6 +482,21 @@ impl Admin {
 
         for c in cmds {
             self.run_cmd(c, g, content, &hunters);
+        }
+    }
+
+    /// RESET ALL SETTINGS: the switches, speeds and fields back to their defaults (and the saved
+    /// preferences with them). On every tab that holds switches.
+    fn reset_row(&mut self, ui: &mut Ui, col: &mut Col, g: &mut Game) {
+        let r = col.take(17.0, 4.0);
+        let label = "RESET ALL SETTINGS";
+        let w = ui.tw(label, 7.0) + 20.0 * col.u;
+        let focus = self.focus.as_deref() == Some("reset_all");
+        if ui.button(Rect::new(r.x, r.y, w, r.h), label, 7.0, false, focus) {
+            self.focus = Some("reset_all".into());
+            self.reset_all();
+            crate::lr_info!("admin: reset all settings");
+            g.say("ADMIN // ALL ADMIN SETTINGS RESET");
         }
     }
 
@@ -494,7 +536,10 @@ impl Admin {
         let u = col.u;
         let c = col.take(line_h(7.0), 4.0);
         if ui.visible(c) {
-            ui.text(caption, c.x, c.y, 7.0, AMBER);
+            match self.current_of(key) {
+                Some(now) => ui.text(&format!("{caption} // NOW {now}"), c.x, c.y, 7.0, AMBER),
+                None => ui.text(caption, c.x, c.y, 7.0, AMBER),
+            }
         }
         let r = col.take(18.0, 4.0);
         let dd = Rect::new(r.x, r.y, r.w - 50.0 * u, r.h);
@@ -598,7 +643,7 @@ impl Admin {
                 ui.text(s, r.x, r.y, 7.0, MUTED);
             }
         };
-        cap(ui, col, "SPAWN");
+        cap(ui, col, &format!("SPAWN // 1 TO {} AT ONCE", menu().npc_spawn_max));
         let row = col.take(19.5, 2.0);
         let less = Rect::new(row.x, row.y, 26.6 * u, row.h);
         let count = Rect::new(less.x + less.w + 4.0 * u, row.y, 20.0 * u, row.h);
@@ -610,12 +655,8 @@ impl Admin {
                 let col = if ui.hover(r) { INK } else { BODY };
                 ui.triangle(vec2(r.x + r.w / 2.0, r.y + r.h / 2.0), 4.6 * u, col, right);
                 if ui.clicked(r) {
-                    // no upper limit, as the original
-                    self.npc_count = if right {
-                        self.npc_count + 1
-                    } else {
-                        (self.npc_count - 1).max(1)
-                    };
+                    // the original has no upper limit; a stray hold of the arrow would spawn thousands
+                    self.npc_count = step_count(self.npc_count, right);
                 }
             }
         }
@@ -676,7 +717,7 @@ impl Admin {
     ) {
         let u = col.u;
         let mut widths = [0.0f32; 3];
-        for (i, (l, _)) in list.iter().enumerate() {
+        for (i, (_, l)) in list.iter().enumerate() {
             widths[i % 3] = widths[i % 3].max(ui.tw(l, 7.0) + 20.0 * u);
         }
         let rows = (list.len() + 2) / 3;
@@ -684,14 +725,14 @@ impl Admin {
             let row = col.take(17.0, if r + 1 == rows { 2.0 } else { 4.0 });
             let mut x = row.x;
             for c in 0..3 {
-                if let Some((label, op)) = list.get(r * 3 + c) {
-                    if ui.button(
-                        Rect::new(x, row.y, widths[c], row.h),
-                        label,
-                        7.0,
-                        false,
-                        false,
-                    ) {
+                if let Some((op, label)) = list.get(r * 3 + c) {
+                    let rect = Rect::new(x, row.y, widths[c], row.h);
+                    let pressed = if super::actions::npc_op_live(op) {
+                        ui.button(rect, label, 7.0, false, false)
+                    } else {
+                        ui.button_muted(rect, label, 7.0)
+                    };
+                    if pressed {
                         cmds.push(Cmd::Npc(op));
                     }
                 }
