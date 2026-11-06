@@ -640,6 +640,9 @@ miniquad_add_plugin({
       const pressedAt = now();
       setTimeout(function () {
         if (pasteSeen >= pressedAt) return;
+        // only while a text field is focused (the game offers its text every frame then): a Ctrl+V pressed anywhere else
+        // must not make the browser ask for the clipboard
+        if (!offer || now() - offer.at > OFFER_FRESH_MS) return;
         try {
           if (navigator.clipboard && navigator.clipboard.readText) {
             navigator.clipboard.readText().then(keepPaste, function () {});

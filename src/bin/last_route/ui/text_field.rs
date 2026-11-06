@@ -82,10 +82,24 @@ pub fn pasted(kind: Kind, raw: &str, room: usize) -> String {
         Kind::Username => raw.chars().filter(|c| !c.is_whitespace()).filter_map(|c| kind.typed(c)).take(room).collect(),
         Kind::Code => code_from_paste(raw).chars().take(room).collect(),
         Kind::Password | Kind::Free => {
-            let line = raw.trim().split(['\r', '\n']).next().unwrap_or("").trim_end();
+            // invisible marks (zero-width spaces and joiners-of-nothing, BOM, bidi overrides) that a copy from a web page or
+            // a chat carries along are not part of any password the player typed, and would make a right password wrong
+            let clean: String = raw.chars().filter(|&c| !invisible_mark(c)).collect();
+            let line = clean.trim().split(['\r', '\n', '\u{2028}', '\u{2029}']).next().unwrap_or("").trim_end();
             line.chars().filter_map(|c| kind.typed(c)).take(room).collect()
         }
     }
+}
+
+/// A character that shows nothing: zero-width space, soft hyphen, word joiner, BOM, and the left-to-right / right-to-left
+/// marks, embeddings and overrides (a pasted right-to-left override could reverse how a text reads). The joiner and
+/// non-joiner (U+200C, U+200D) stay: emoji are built with them.
+pub fn invisible_mark(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}' | '\u{061C}' | '\u{200B}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}' | '\u{FEFF}'
+    )
 }
 
 /// The room code in pasted text. A paste of one word (the code, with or without spaces or a line break around it) is
@@ -331,6 +345,9 @@ mod tests {
         assert_eq!(pasted(Kind::Password, "a\u{0}b\u{7f}c", 200), "abc", "control characters go");
         assert_eq!(pasted(Kind::Password, "Ünï€", 200), "Ünï€", "non-ASCII printable characters stay");
         assert_eq!(pasted(Kind::Password, &"p".repeat(300), 200).len(), 200);
+        assert_eq!(pasted(Kind::Password, "\u{FEFF}Tmp\u{200B}Pass\u{202E}9\u{200F}", 200), "TmpPass9", "invisible and bidi marks go");
+        assert_eq!(pasted(Kind::Password, "ab\u{2028}cd", 200), "ab", "a Unicode line separator ends the line too");
+        assert_eq!(pasted(Kind::Password, "\u{FEFF}  pw  ", 200), "pw", "a BOM in front does not stop the trim");
     }
 
     #[test]
