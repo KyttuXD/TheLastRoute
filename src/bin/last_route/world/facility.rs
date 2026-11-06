@@ -987,6 +987,14 @@ impl Facility {
                 f.safe_zone = Some(sh(s));
             }
         }
+        // A chunk with props and no room of its own (the sewer props find no room and carry 0) had `room_base` added to that
+        // 0: the first room of a later chunk, or one past the last room of the window. Every index names a room of the
+        // window again (a window with no room at all keeps none; readers use `rooms.get`).
+        if let Some(last) = f.rooms.len().checked_sub(1) {
+            for p in &mut f.props {
+                p.room = p.room.min(last);
+            }
+        }
         f.rebuild_grids();
         f
     }

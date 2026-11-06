@@ -302,6 +302,37 @@ impl Assets {
         }
     }
 
+    /// Test only: assets with no GL behind them. Every texture is a distinct raw handle that is never uploaded or drawn
+    /// (a wall and a floor per set, and the white one), no model, font or icon. The world mesh builders only clone and
+    /// compare these handles, so `Game::update` and `WorldMeshes::rebuild` run in a test with no window.
+    #[cfg(test)]
+    pub fn headless() -> Assets {
+        use macroquad::miniquad::{RawId, TextureId};
+        let fake = |n: u32| Texture2D::from_miniquad_texture(TextureId::from_raw_id(RawId::OpenGl(n)));
+        let mut walls = HashMap::new();
+        let mut floors = HashMap::new();
+        for (i, set) in TEXTURE_SETS.iter().enumerate() {
+            walls.insert(*set, fake(100 + i as u32));
+            floors.insert(*set, fake(200 + i as u32));
+        }
+        Assets {
+            walls,
+            floors,
+            white: fake(1),
+            hunters: HashMap::new(),
+            npc_body: None,
+            portraits: HashMap::new(),
+            models: HashMap::new(),
+            icons: Vec::new(),
+            logo: None,
+            font: None,
+            title_font: None,
+            caption_font: None,
+            skin_textures: RefCell::new(HashMap::new()),
+            skin_tick: std::cell::Cell::new(0),
+        }
+    }
+
     pub fn wall(&self, set: &str) -> &Texture2D {
         self.walls
             .get(set)

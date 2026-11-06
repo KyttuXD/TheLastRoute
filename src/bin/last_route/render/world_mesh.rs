@@ -28,6 +28,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use crate::shared::clock::Instant;
 
+/// Test only: every frame behaves as a slow one (a web build on a slow machine), so a part build overruns the frame budget
+/// and each rebuild makes just the one part it always may.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static SLOW_FRAMES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 #[derive(Default)]
 pub struct WorldMeshes {
     pub meshes: Vec<Mesh>,
@@ -676,6 +683,10 @@ impl WorldMeshes {
 
 /// Whether one more neighbour part may be built after `built` this frame (the first always may).
 fn neighbour_allows(table: &StreamBudget, per_frame: usize, built: usize, elapsed_ms: f64, queued: usize) -> bool {
+    #[cfg(test)]
+    if SLOW_FRAMES.with(|s| s.get()) {
+        return built == 0;
+    }
     built == 0 || (built < per_frame && elapsed_ms < table.budget_ms(queued))
 }
 
@@ -846,6 +857,10 @@ impl StreamBudget {
     /// Whether one more part may be built after `built` this frame, `elapsed_ms` into the frame. The first part of
     /// a rebuild always builds, so the queue never stalls.
     pub fn allows(&self, built: usize, elapsed_ms: f64, queued: usize) -> bool {
+        #[cfg(test)]
+        if SLOW_FRAMES.with(|s| s.get()) {
+            return built == 0;
+        }
         built == 0 || (built < self.chunks_per_frame && elapsed_ms < self.budget_ms(queued))
     }
 }
@@ -1209,8 +1224,15 @@ pub fn build_world(
 
 /// The room a prop's model variant is picked by. A window room's id carries its chunk's place in the window
 /// (`Facility::merge`), so it is put on the absolute cell instead and the variant holds as the window moves.
-fn variant_key(f: &Facility, room: usize) -> String {
-    let r = &f.rooms[room];
+///
+/// A prop whose room index names no room of the window (a chunk with props and no room of its own: the sewer props
+/// find none and carry room 0, which the merge turns into the first room of a later chunk, or one past the last) is
+/// picked by its own id. Indexing `f.rooms` there panicked in `build_meshes`, which in the browser build stops the
+/// frame loop at the first sewer part that held such a prop: a black screen on reaching the sewers in those rooms.
+fn variant_key(f: &Facility, room: usize, prop_id: &str) -> String {
+    let Some(r) = f.rooms.get(room) else {
+        return prop_id.to_string();
+    };
     match r.id.rsplit_once('@') {
         Some((id, _)) => format!("{id}@{},{}", r.x + f.origin.0, r.y + f.origin.1),
         None => r.id.clone(),
@@ -1220,7 +1242,7 @@ fn variant_key(f: &Facility, room: usize) -> String {
 /// The model a prop is drawn with: the variant its room picks, else the first one that is loaded.
 fn prop_model_key<'c>(f: &Facility, p: &Prop, assets: &Assets, content: &'c Content) -> Option<&'c String> {
     let models = content.props.get(&p.ptype).map(|d| d.models.as_slice()).filter(|m| !m.is_empty())?;
-    let picked = &models[stable_index(&variant_key(f, p.room), models.len())];
+    let picked = &models[stable_index(&variant_key(f, p.room, &p.id), models.len())];
     if assets.models.contains_key(picked) {
         Some(picked)
     } else {
@@ -3324,5 +3346,122 @@ mod manhole_tests {
         }
         assert!(checked > 40, "only {checked} hatch-in-reach checks in the sweep");
         assert!(failures.is_empty(), "{} windows leave a shaft unbuilt: {:#?}", failures.len(), failures);
+    }
+}
+
+/// The sewer under a manhole, seen from its ladder foot (the web build showed a black screen on reaching it in some
+/// rooms): over many seeds and window centres, the foot and its step cell are drawn cells of the sewer window, the
+/// neighbour build near the eye holds the parts that carry them, a lamp lights the foot, and every lamp of the three
+/// storeys round it is a finite, positive-range light (a NaN lamp in the shader's lamp loop blacks out every surface).
+#[cfg(test)]
+mod ladder_arrival_tests {
+    use super::*;
+    use crate::content::loot::LootTables;
+    use crate::render::world_stack;
+    use crate::world::catalog::Catalog;
+    use crate::world::infinite::window;
+
+    const NUMERIC: u32 = 6;
+    const NAMED: [&str; 4] = ["ROOM-TEST-7", "SEWER", "KYTTU", "ABCDE"];
+    const CENTRES: [(i32, i32); 3] = [(0, 0), (1, 0), (-1, 1)];
+
+    fn world_seeds() -> Vec<(String, String)> {
+        (1..=NUMERIC)
+            .map(|n| n.to_string())
+            .chain(NAMED.iter().map(|s| s.to_string()))
+            .map(|text| (crate::world::route::world_seed(&text), text))
+            .collect()
+    }
+
+    fn lamp_problem(l: &Lamp) -> Option<String> {
+        let finite3 = |v: Vec3| v.x.is_finite() && v.y.is_finite() && v.z.is_finite();
+        if !finite3(l.pos) {
+            return Some(format!("position {:?}", l.pos));
+        }
+        if !(l.range.is_finite() && l.range > 0.0) {
+            return Some(format!("range {}", l.range));
+        }
+        if !(l.energy.is_finite() && l.energy >= 0.0) {
+            return Some(format!("energy {}", l.energy));
+        }
+        let c = l.color;
+        if ![c.r, c.g, c.b, c.a].iter().all(|v| v.is_finite()) {
+            return Some(format!("colour {c:?}"));
+        }
+        let fl = l.flicker;
+        if ![fl.hz, fl.depth, fl.phase].iter().all(|v| v.is_finite()) {
+            return Some(format!("flicker {fl:?}"));
+        }
+        for t in [0.0f32, 3.7, 1234.5, 86_400.0] {
+            let k = lamp_flicker::factor(t, fl);
+            if !(k.is_finite() && k >= 0.0) {
+                return Some(format!("flicker factor {k} at {t}"));
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn the_sewer_under_every_manhole_is_drawn_lit_and_made_of_finite_lamps() {
+        let content = Content::load();
+        let assets = Assets::headless();
+        let (cat, loot) = (Catalog::load(), LootTables::default());
+        let reach = crate::game::transition::links().prefetch_distance;
+        let (mut hatches, mut problems) = (0, vec![]);
+        for (seed, text) in world_seeds() {
+            for centre in CENTRES {
+                let mut cache = HashMap::new();
+                let (up, _) = window(&seed, centre, 0, &cat, &loot, &mut cache);
+                let (low, _) = window(&seed, centre, SEWER_LEVEL, &cat, &loot, &mut cache);
+                let (low2, _) = window(&seed, centre, SEWER_LOWER_LEVEL, &cat, &loot, &mut cache);
+                for (name, f) in [("maze", &up), ("sewer", &low), ("lower sewer", &low2)] {
+                    // every prop names a room of its window, and picking its model never indexes past the rooms
+                    // (`variant_key` panicked on a sewer prop of a chunk with no room, in `build_meshes`)
+                    for p in &f.props {
+                        if !f.rooms.is_empty() && p.room >= f.rooms.len() {
+                            problems.push(format!("{text} {centre:?} {name}: prop {} names room {} of {}", p.id, p.room, f.rooms.len()));
+                        }
+                        let _ = prop_model_key(f, p, &assets, &content);
+                    }
+                    for (i, l) in lamps(f, &[], &content).iter().enumerate() {
+                        if let Some(p) = lamp_problem(l) {
+                            problems.push(format!("{text} {centre:?} {name}: lamp {i} has a bad {p}"));
+                        }
+                    }
+                }
+                let sewer_lamps = lamps(&low, &[], &content);
+                let frame = ChunkFrame { level: SEWER_LEVEL, center: centre };
+                let drawn_cells: HashSet<Cell> = drawn_cells(&low).into_iter().collect();
+                for s in up.stairs.iter().filter(|s| s.dir < 0 && s.is_ladder()) {
+                    hatches += 1;
+                    let (foot, step) = (s.cell, s.step_cell());
+                    for (what, c) in [("foot", foot), ("step", step)] {
+                        if !drawn_cells.contains(&c) {
+                            problems.push(format!("{text} {centre:?}: the sewer's {what} cell {c:?} is not a drawn cell"));
+                        }
+                    }
+                    // the neighbour build for an eye on the ladder (a link: on_flight) and on the step cell
+                    for (at, on_link) in [(step, false), (foot, true)] {
+                        let (cx, cz) = at.center();
+                        let eye = (cx, 1.6, cz);
+                        let scope = world_stack::neighbour_scope(-crate::world::vertical::STOREY, openings(&low), &openings(&up), eye, reach, on_link, stream_table());
+                        let wanted = neighbour_wanted_from(window_parts(&low, frame), frame, &scope.openings, scope.radius, scope.max_parts, Some(scope.eye));
+                        let held: HashSet<Cell> = wanted.iter().flat_map(|(_, p)| p.cells.iter().copied()).collect();
+                        for (what, c) in [("foot", foot), ("step", step)] {
+                            if !held.contains(&c) {
+                                problems.push(format!("{text} {centre:?}: with the eye at {at:?} the neighbour build leaves out the {what} cell {c:?}"));
+                            }
+                        }
+                    }
+                    let (fx, fz) = foot.center();
+                    let lit = sewer_lamps.iter().any(|l| (l.pos.x - fx).hypot(l.pos.z - fz) < l.range * 0.8);
+                    if !lit {
+                        problems.push(format!("{text} {centre:?}: no lamp of the sewer reaches the ladder foot {foot:?}"));
+                    }
+                }
+            }
+        }
+        assert!(hatches > 100, "only {hatches} hatches in the sweep");
+        assert!(problems.is_empty(), "{} problems in {hatches} hatches:\n{}", problems.len(), problems.join("\n"));
     }
 }
