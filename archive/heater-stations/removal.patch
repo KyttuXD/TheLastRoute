@@ -1,0 +1,992 @@
+diff --git a/src/bin/last_route/assets/ui/death_lines.json b/src/bin/last_route/assets/ui/death_lines.json
+index e09b7b8..b73de11 100644
+--- a/src/bin/last_route/assets/ui/death_lines.json
++++ b/src/bin/last_route/assets/ui/death_lines.json
+@@ -377,7 +377,7 @@
+     ],
+     "cold": [
+       {
+-        "text": "The cold got there before the heater did.",
++        "text": "The cold got there before the warmth did.",
+         "style": "caption"
+       },
+       {
+diff --git a/src/bin/last_route/content/props.rs b/src/bin/last_route/content/props.rs
+index b15bc67..e7dae57 100644
+--- a/src/bin/last_route/content/props.rs
++++ b/src/bin/last_route/content/props.rs
+@@ -174,10 +174,12 @@ mod tests {
+                 assert!(embedded::asset(m).is_some(), "{}: {m} is not embedded", def.id);
+             }
+         }
+-        for name in ["relay", "battery", "coin", "hiding_spot", "lift", "vent", "safe_zone", "music_box", "heater_station", "wall_light_switch", "flashlight_item", "taser_item", "crowbar", "rescue_axe", "stim_pack"] {
++        for name in ["relay", "battery", "coin", "hiding_spot", "lift", "vent", "safe_zone", "music_box", "wall_light_switch", "flashlight_item", "taser_item", "crowbar", "rescue_axe", "stim_pack"] {
+             assert!(embedded::asset(&format!("interactables/{name}.bbmodel")).is_some(), "{name}");
+         }
+         assert!(!embedded::assets_under("").any(|(p, _)| p.ends_with(".glb")), "a .glb is embedded");
++        // the heater station is retired and archived (archive/heater-stations/): its model is no longer embedded
++        assert!(embedded::asset("interactables/heater_station.bbmodel").is_none(), "the retired heater model is embedded");
+     }
+ 
+     /// The two models the game splits by outliner group name carry those groups, with the pivots door.rs and the
+diff --git a/src/bin/last_route/data/ui/specialty_slots.json b/src/bin/last_route/data/ui/specialty_slots.json
+index 4b07d2b..8c6f786 100644
+--- a/src/bin/last_route/data/ui/specialty_slots.json
++++ b/src/bin/last_route/data/ui/specialty_slots.json
+@@ -1,6 +1,6 @@
+ {
+   "schema": "lr.specialty_slots/1",
+-  "_note": "The hunter specialty bar (game/specialty.rs, ui/hud.rs): four slots numbered 6 to 9, separate from the five common hotbar slots (HOTBAR_SIZE). A slot is visible while one of its `hunters` exists on the current floor (whatever the hunter's state); its item is granted when it becomes visible and REMOVED (not returned to the pack) when it stops being visible. `key` is the macroquad key code name that selects the slot (browser digit row Digit6..Digit9 arrive as Key6..Key9). `kind`: music_box (the wound box, Glyra), temperature (ONE shared heat/cold item for Wynelle and Solyth), empty (a reserved slot, drawn empty, no item). `temperature` is the real effect of the shared item: heat warms the body toward `target_offset` degrees up to `cap` and counts as a heater for Wynelle (she cannot gather and a materialised Wynelle thaws away); cold cools the body by `target_offset` down to `floor`, slows Solyth by `solyth_slow_factor` and reads the runner below `solyth_pounce_reading` degrees so her pounce gate (60) stays shut. Design: KT 2026-11-06.",
++  "_note": "The hunter specialty bar (game/specialty.rs, ui/hud.rs): four slots numbered 6 to 9, separate from the five common hotbar slots (HOTBAR_SIZE). A slot is visible while one of its `hunters` exists on the current floor (whatever the hunter's state); its item is granted when it becomes visible and REMOVED (not returned to the pack) when it stops being visible. `key` is the macroquad key code name that selects the slot (browser digit row Digit6..Digit9 arrive as Key6..Key9). `kind`: music_box (the wound box, Glyra), temperature (ONE shared heat/cold item for Wynelle and Solyth), empty (a reserved slot, drawn empty, no item). `temperature` is the real effect of the shared item: heat warms the body toward `target_offset` degrees up to `cap` and counts as the only heater Wynelle knows (the heater stations are retired; she cannot gather and a materialised Wynelle thaws away); cold cools the body by `target_offset` down to `floor`, slows Solyth by `solyth_slow_factor` and reads the runner below `solyth_pounce_reading` degrees so her pounce gate (60) stays shut. Design: KT 2026-11-06.",
+   "slots": [
+     { "id": "music_box", "number": 6, "key": "Key6", "label": "MUSIC", "kind": "music_box", "hunters": ["glyra"] },
+     { "id": "temperature", "number": 7, "key": "Key7", "label": "TEMP", "kind": "temperature", "hunters": ["wynelle", "solyth"] },
+diff --git a/src/bin/last_route/game/endless.rs b/src/bin/last_route/game/endless.rs
+index 7367df2..d103323 100644
+--- a/src/bin/last_route/game/endless.rs
++++ b/src/bin/last_route/game/endless.rs
+@@ -3,7 +3,7 @@
+ //! coins and pickups taken, cells discovered), and the hunter population that grows with
+ //! recovered relays (GameConfig.streamed_hunter_population).
+ 
+-use super::{pdist, FloorPickup, Game, Heater, Item};
++use super::{pdist, FloorPickup, Game, Item};
+ use crate::config::*;
+ use crate::content::Content;
+ use crate::hunters::brain::{Brain, State};
+@@ -197,11 +197,6 @@ pub struct InfState {
+     /// Set by `relabel`: the keep set of the new level is topped up from the next frame, so the frame of the change loads
+     /// nothing (`keep_stack` clears it).
+     relabelled: bool,
+-    /// The heater state of every station the runner has used, by (level, centre chunk x, y): a powered one stays powered
+-    /// while the runner is far away and is found again on the way back (`stash_heater`, `restore_heater`).
+-    heaters: HashMap<(i32, i32, i32), Heater>,
+-    /// The key of the station whose state `Game::heater` holds.
+-    heater_key: Option<(i32, i32, i32)>,
+ }
+ 
+ /// An estimate of the bytes a built window holds: the per-cell grids and the entries of its lists.
+@@ -597,8 +592,6 @@ impl InfState {
+             stack: LevelStack::default(),
+             builds: 0,
+             relabelled: false,
+-            heaters: HashMap::new(),
+-            heater_key: None,
+         }
+     }
+ 
+@@ -710,41 +703,14 @@ impl Game {
+         self.adopt_window(fac, fix, content);
+     }
+ 
+-    /// Keeps the live heater state under the station it belongs to, before the window or level changes. A window with no
+-    /// station holds nothing to keep.
+-    fn stash_heater(&mut self) {
+-        let Some(inf) = self.inf.as_mut() else { return };
+-        if let (Some(key), Some(_)) = (inf.heater_key, self.fix.heater) {
+-            if self.heater == Heater::Frozen {
+-                inf.heaters.remove(&key);
+-            } else {
+-                inf.heaters.insert(key, self.heater);
+-            }
+-        }
+-    }
+-
+-    /// The live heater state of the window just adopted: the stored one of its centre chunk's station, frozen when it has
+-    /// none stored or no station at all (so nothing runs that the runner cannot power down).
+-    fn restore_heater(&mut self) {
+-        let Some(inf) = self.inf.as_mut() else { return };
+-        let key = (inf.level, inf.center.0, inf.center.1);
+-        inf.heater_key = Some(key);
+-        self.heater = match self.fix.heater {
+-            Some(_) => inf.heaters.get(&key).copied().unwrap_or(Heater::Frozen),
+-            None => Heater::Frozen,
+-        };
+-    }
+-
+     /// Everything after a window is obtained: the window becomes the live one (`self.fac`, `self.fix`) and the runner's
+     /// claims, discovery, depth, focus, floor and safe zone follow it.
+     fn adopt_window(&mut self, fac: Facility, fix: Fixtures, content: &Content) {
+         if self.inf.is_none() {
+             return;
+         }
+-        self.stash_heater();
+         self.fac = fac;
+         self.fix = fix;
+-        self.restore_heater();
+         let level = self.inf.as_ref().map_or(0, |i| i.level);
+         self.fac.level = level;
+         self.claim_window();
+@@ -1307,7 +1273,6 @@ impl Game {
+         // the level being left keeps its hunters at their absolute cells, to be found again on the way back
+         let Some(inf) = self.inf.as_mut() else { return false };
+         let Some(r) = inf.stack.take(to) else { return false };
+-        self.stash_heater();
+         let Some(inf) = self.inf.as_mut() else { return false };
+         let old = Resident {
+             level: inf.level,
+@@ -1323,7 +1288,6 @@ impl Game {
+         self.p.rebase_floor(floor_y_of(to));
+         self.claim_window();
+         self.focus = None;
+-        self.restore_heater();
+         self.adopt_floor(content);
+         self.sync_in();
+         self.sync_safe_zone();
+@@ -3021,61 +2985,6 @@ mod walked_stair_tests {
+         assert!(!inf.stack.has(inf.level), "the active level is never also a resident");
+     }
+ 
+-    fn heater_run() -> (Game, Content, Catalog) {
+-        let content = Content::load();
+-        let catalog = Catalog::load();
+-        let g = Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, "ROOM-TEST-7", 0, &content, &catalog);
+-        (g, content, catalog)
+-    }
+-
+-    #[test]
+-    fn level_zero_live_has_a_heater_to_reach() {
+-        let (g, _, _) = heater_run();
+-        let h = g.fix.heater.expect("the centre chunk has a heater station");
+-        assert!(g.fac.can_occupy(h.x as f64 + 0.5, h.y as f64 + 0.5, 0.23));
+-        let d = h.len_to(g.fac.start);
+-        assert!((3.0..=7.0).contains(&d), "3-7 cells from the start, got {d}");
+-    }
+-
+-    #[test]
+-    fn a_powered_heater_keeps_its_state_per_station() {
+-        let (content, catalog) = (Content::load(), Catalog::load());
+-        let (mut g, _, _) = heater_run();
+-        let home = g.inf.as_ref().unwrap().center;
+-        g.heater = Heater::Powered;
+-        assert!(g.heater_running());
+-        g.p.pos.0 += CHUNK as f32;
+-        g.recentre_window(&content, &catalog);
+-        assert_ne!(g.inf.as_ref().unwrap().center, home);
+-        assert!(g.fix.heater.is_some(), "the new centre chunk has a station to use");
+-        assert!(g.heater == Heater::Frozen, "the new station is its own, still frozen");
+-        assert!(!g.heater_running(), "only the active station decides");
+-        g.heater = Heater::Thawed;
+-        g.p.pos.0 -= CHUNK as f32;
+-        g.recentre_window(&content, &catalog);
+-        assert_eq!(g.inf.as_ref().unwrap().center, home);
+-        assert!(g.heater == Heater::Powered, "the first station was kept powered while far away");
+-        assert!(g.heater_running());
+-        // the other one was kept too
+-        g.p.pos.0 += CHUNK as f32;
+-        g.recentre_window(&content, &catalog);
+-        assert!(g.heater == Heater::Thawed);
+-    }
+-
+-    #[test]
+-    fn a_powered_heater_survives_a_level_change_and_powers_down_where_it_stands() {
+-        let (content, catalog) = (Content::load(), Catalog::load());
+-        let (mut g, _, _) = heater_run();
+-        g.heater = Heater::Powered;
+-        let at = g.p.pos;
+-        g.go_to_level(-1, (at.0, at.1), 0.0, &content, &catalog);
+-        assert!(!g.heater_running(), "the level below starts with its own, unpowered station");
+-        g.go_to_level(0, (at.0, at.1), 0.0, &content, &catalog);
+-        assert!(g.heater == Heater::Powered);
+-        assert!(g.heater_running());
+-        assert!(g.fix.heater.is_some(), "the active station is there to power down");
+-    }
+-
+     #[test]
+     fn recentre_drops_stale_residents_and_rebuilds_the_neighbour_on_a_flight() {
+         let (content, catalog) = (Content::load(), Catalog::load());
+diff --git a/src/bin/last_route/game/hunting.rs b/src/bin/last_route/game/hunting.rs
+index fdbb299..62772ae 100644
+--- a/src/bin/last_route/game/hunting.rs
++++ b/src/bin/last_route/game/hunting.rs
+@@ -2,7 +2,7 @@
+ //! events, captures and the escape struggle (mash [E] 6 times in 3.2 s), the hide check at a
+ //! locker, and the run report.
+ 
+-use super::{pdist, Admin, Escape, Game, Heater, Item, Report};
++use super::{pdist, Admin, Escape, Game, Item, Report};
+ use crate::audio::Sounds;
+ use crate::config::*;
+ use super::level_stack::floor_y_of;
+@@ -259,9 +259,10 @@ impl Game {
+                 batteries_taken: &self.batteries_taken,
+                 hiding_disabled: &self.hiding_disabled,
+                 vents: &self.fix.vents,
+-                // the temperature item's heat source is a heater to Wynelle (specialty.rs)
+-                heater_on: self.heater_running() || heat_source,
+-                heater_thawed: self.heater != Heater::Frozen || heat_source,
++                // the temperature item's heat source is the only heater Wynelle knows (specialty.rs; the heater
++                // stations are retired, archive/heater-stations/)
++                heater_on: heat_source,
++                heater_thawed: heat_source,
+                 diff: self.difficulty,
+                 music_box_left: self.music_box_left,
+                 music_boxes: &music_boxes,
+@@ -481,7 +482,6 @@ impl Game {
+                 crouching: false,
+                 hidden: true,
+                 in_safe_zone: in_safe,
+-                heater_on: self.heater_running(),
+                 local: self.felt_climate(),
+             },
+         );
+diff --git a/src/bin/last_route/game/interact.rs b/src/bin/last_route/game/interact.rs
+index af8064b..ec259f0 100644
+--- a/src/bin/last_route/game/interact.rs
++++ b/src/bin/last_route/game/interact.rs
+@@ -1,10 +1,10 @@
+ //! What the crosshair is on and what [E] does to it (route_interactable_3d.gd): relays,
+ //! batteries, equipment, coins, lockers, the safe zone, the service lift, room light switches,
+-//! the heater station, vent grates and Zellia's store. The music box is a collectable (take it, then wind it from the
++//! vent grates and Zellia's store (the heater station is retired: archive/heater-stations/). The music box is a collectable (take it, then wind it from the
+ //! pack: game/music_box.rs, game/items.rs). Opalie's
+ //! guard vetoes anything near her post.
+ 
+-use super::{pdist, Game, Heater, Item};
++use super::{pdist, Game, Item};
+ use crate::audio::Sounds;
+ use crate::config::*;
+ use crate::content::Content;
+@@ -24,7 +24,6 @@ pub enum Focus {
+     /// A sewer ladder, by its index in `Facility::stairs` (a stair flight is walked and is never a focus).
+     Ladder(usize),
+     LightSwitch(usize),
+-    Heater,
+     Vent(usize),
+     Shop(usize),
+     /// A room door, by its index in `Facility::props`.
+@@ -140,9 +139,6 @@ impl Game {
+                 Focus::LightSwitch(i),
+             );
+         }
+-        if let Some(c) = self.fix.heater {
+-            consider(c.center(), 0.6, INTERACT_REACH, Focus::Heater);
+-        }
+         for (i, c) in self.fix.vents.iter().enumerate() {
+             consider(c.center(), 0.4, INTERACT_REACH, Focus::Vent(i));
+         }
+@@ -212,11 +208,6 @@ impl Game {
+                 }
+             }
+             Focus::LightSwitch(_) => "[E] TOGGLE ROOM LIGHT".into(),
+-            Focus::Heater => match self.heater {
+-                Heater::Frozen => "[E] THAW HEATER STATION".into(),
+-                Heater::Thawed => "[E] POWER HEATER STATION".into(),
+-                Heater::Powered => "[E] POWER DOWN HEATER".into(),
+-            },
+             Focus::Vent(_) => "[E] VENT".into(),
+             Focus::Valve(i) => {
+                 let p = &self.fac.props[i];
+@@ -245,7 +236,6 @@ impl Game {
+             Focus::Lift => self.fac.exit.center(),
+             Focus::Ladder(i) => self.fac.stairs[i].cell.center(),
+             Focus::LightSwitch(i) => self.fac.room_lights[i].switch_cell.center(),
+-            Focus::Heater => self.fix.heater.map(|c| c.center()).unwrap_or(self.p.pos),
+             Focus::Vent(i) => self.fix.vents[i].center(),
+             Focus::Valve(i) => self.fac.props[i].cell.center(),
+             Focus::Shop(i) => self.hunters[i].pos,
+@@ -323,22 +313,6 @@ impl Game {
+                     "ROOM LIGHT OFF"
+                 });
+             }
+-            Focus::Heater => {
+-                self.heater = match self.heater {
+-                    Heater::Frozen => {
+-                        self.say("Heater station thawed.");
+-                        Heater::Thawed
+-                    }
+-                    Heater::Thawed => {
+-                        self.say("Heater station powered. The facility is warming.");
+-                        Heater::Powered
+-                    }
+-                    Heater::Powered => {
+-                        self.say("Heater station powered down.");
+-                        Heater::Thawed
+-                    }
+-                };
+-            }
+             Focus::Vent(i) => self.use_vent(i),
+             Focus::Shop(i) => {
+                 if let Gimmick::Zellia(z) = &mut self.hunters[i].gimmick {
+diff --git a/src/bin/last_route/game/meters.rs b/src/bin/last_route/game/meters.rs
+index 074722c..24db026 100644
+--- a/src/bin/last_route/game/meters.rs
++++ b/src/bin/last_route/game/meters.rs
+@@ -19,7 +19,6 @@ pub struct Situation {
+     pub crouching: bool,
+     pub hidden: bool,
+     pub in_safe_zone: bool,
+-    pub heater_on: bool,
+     /// The room's climate offset (hot and cold spots; 0 in halls).
+     pub local: f32,
+ }
+@@ -101,16 +100,12 @@ impl Meters {
+         }
+         self.noise_meter = (self.noise_meter + rise - 5.0 * dt).clamp(0.0, 100.0);
+         // ambient drift
+-        if s.heater_on {
+-            self.ambient = (self.ambient + 3.0 * dt).min(100.0);
+-        } else {
+-            let step = ((self.ambient - 60.0) / 5.0).floor().max(0.0);
+-            let interval = (5.0 - step * 0.5).max(0.5);
+-            self.rise_timer += dt;
+-            if self.rise_timer >= interval {
+-                self.rise_timer -= interval;
+-                self.ambient = (self.ambient + 0.85).clamp(0.0, 100.0);
+-            }
++        let step = ((self.ambient - 60.0) / 5.0).floor().max(0.0);
++        let interval = (5.0 - step * 0.5).max(0.5);
++        self.rise_timer += dt;
++        if self.rise_timer >= interval {
++            self.rise_timer -= interval;
++            self.ambient = (self.ambient + 0.85).clamp(0.0, 100.0);
+         }
+         // body
+         let local_ambient = (self.ambient + s.local).clamp(0.0, 100.0);
+diff --git a/src/bin/last_route/game/mod.rs b/src/bin/last_route/game/mod.rs
+index a584a26..91fc5fe 100644
+--- a/src/bin/last_route/game/mod.rs
++++ b/src/bin/last_route/game/mod.rs
+@@ -111,13 +111,6 @@ pub struct FloorPickup {
+     pub taken: bool,
+ }
+ 
+-#[derive(Clone, Copy, PartialEq)]
+-pub enum Heater {
+-    Frozen,
+-    Thawed,
+-    Powered,
+-}
+-
+ pub struct Escape {
+     pub remaining: f32,
+     pub progress: i32,
+@@ -163,7 +156,6 @@ pub struct Game {
+     pub pickups: Vec<FloorPickup>,
+     pub hiding_disabled: Vec<bool>,
+     pub lights_on: Vec<bool>,
+-    pub heater: Heater,
+     /// Timed effects of the void hunters' powers on the runner (game/void_player.rs).
+     pub void_fx: void_player::VoidEffects,
+     /// The full-screen map is open this frame (the app sets it before `update`; Void Yellow reads it).
+@@ -301,7 +293,6 @@ impl Game {
+             pickups: vec![],
+             hiding_disabled: vec![],
+             lights_on: vec![],
+-            heater: Heater::Frozen,
+             void_fx: Default::default(),
+             map_open: false,
+             music_box_left: music_box::wound_seconds(difficulty.id()),
+@@ -435,7 +426,6 @@ impl Game {
+             pickups: vec![],
+             hiding_disabled: vec![],
+             lights_on: vec![],
+-            heater: Heater::Frozen,
+             void_fx: Default::default(),
+             map_open: false,
+             music_box_left: music_box::wound_seconds(difficulty.id()),
+@@ -578,7 +568,6 @@ impl Game {
+         self.fix = fix;
+         self.fac.pickups.extend(box_cell.map(|c| (c, Pickup::MusicBox)));
+         self.adopt_floor(content);
+-        self.heater = Heater::Frozen;
+         self.music_box_left = music_box::wound_seconds(self.difficulty.id());
+         self.relays_collected = 0;
+         self.p.place(self.fac.start.center());
+@@ -908,7 +897,6 @@ impl Game {
+             self.update_water_sink(dt, false);
+         } else {
+             self.hide_check = None;
+-            let heater_on = self.heater_running();
+             let in_safe = self.in_safe_zone();
+             let local = self.felt_climate();
+             let admin = self.admin_flags();
+@@ -937,7 +925,6 @@ impl Game {
+                     crouching: self.p.crouching,
+                     hidden: false,
+                     in_safe_zone: in_safe,
+-                    heater_on,
+                     local,
+                 },
+             );
+diff --git a/src/bin/last_route/game/resident_hunters.rs b/src/bin/last_route/game/resident_hunters.rs
+index 2f1906b..210f0a1 100644
+--- a/src/bin/last_route/game/resident_hunters.rs
++++ b/src/bin/last_route/game/resident_hunters.rs
+@@ -13,7 +13,7 @@
+ use super::endless::shift_brain;
+ use super::hunting::ability_held;
+ use super::level_stack::floor_y_of;
+-use super::{pdist, Game, Heater, Item};
++use super::{pdist, Game, Item};
+ use crate::config::*;
+ use crate::content::hunters::HunterDef;
+ use crate::content::Content;
+@@ -879,8 +879,8 @@ impl Game {
+                         batteries_taken: &[],
+                         hiding_disabled: &[],
+                         vents: &fix.vents,
+-                        heater_on: self.heater_running() || heat_source,
+-                        heater_thawed: self.heater != Heater::Frozen || heat_source,
++                        heater_on: heat_source,
++                        heater_thawed: heat_source,
+                         diff: self.difficulty,
+                         music_box_left: self.music_box_left,
+                         music_boxes: &music_boxes,
+diff --git a/src/bin/last_route/game/specialty.rs b/src/bin/last_route/game/specialty.rs
+index 7a721e8..5d637e3 100644
+--- a/src/bin/last_route/game/specialty.rs
++++ b/src/bin/last_route/game/specialty.rs
+@@ -533,8 +533,13 @@ impl Game {
+     }
+ 
+     /// A heat source counts as a running, thawed heater to Wynelle (she cannot gather, and a materialised one thaws away).
++    /// It is the ONLY heater there is: the heater stations are retired (archive/heater-stations/). Void Orange's climate
++    /// outage switches it off for the length of the outage, as it used to switch the station off.
+     pub(super) fn heat_source_for_hunters(&self) -> bool {
+         self.specialty.heat_on()
++            && !self
++                .void_fx
++                .offline(crate::hunters::gimmicks::void::void_orange::System::Climate)
+     }
+ 
+     /// The room climate offset with the temperature item's source on it (what the meters chase).
+@@ -890,7 +895,6 @@ mod tests {
+                         crouching: false,
+                         hidden: false,
+                         in_safe_zone: false,
+-                        heater_on: false,
+                         local,
+                     },
+                 );
+@@ -968,4 +972,20 @@ mod tests {
+         sp.deter(&mut g.hunters[si]);
+         assert_eq!(g.hunters[si].slow_timer, 0.0);
+     }
++
++    #[test]
++    fn the_heat_source_is_the_only_heater_and_a_climate_outage_switches_it_off() {
++        use crate::hunters::gimmicks::void::void_orange::System;
++        let (mut g, content) = sim();
++        add(&mut g, &content, "wynelle");
++        g.sync_specialty();
++        g.specialty.items[1] = Some(SpecItem::Temperature(Mode::Cold));
++        assert!(!g.heat_source_for_hunters(), "no station is left to count as a heater: cold means no heater at all");
++        g.specialty.items[1] = Some(SpecItem::Temperature(Mode::Heat));
++        assert!(g.heat_source_for_hunters());
++        g.void_fx.outage = Some((System::Climate, 1.0));
++        assert!(!g.heat_source_for_hunters(), "Void Orange's climate outage takes the heat source offline");
++        g.void_fx.outage = Some((System::Radar, 1.0));
++        assert!(g.heat_source_for_hunters(), "another system's outage leaves it running");
++    }
+ }
+diff --git a/src/bin/last_route/game/void_player.rs b/src/bin/last_route/game/void_player.rs
+index 11fac0f..a56d3e1 100644
+--- a/src/bin/last_route/game/void_player.rs
++++ b/src/bin/last_route/game/void_player.rs
+@@ -2,7 +2,7 @@
+ //! radar static or blackout (Void Purple) and Void Pink's fake footsteps. The gimmicks only emit events
+ //! (hunters/gimmicks/void/*.rs); the timers and the HUD state live here.
+ 
+-use super::{Game, Heater};
++use super::Game;
+ use crate::audio::cues::rules::fake_step_volume;
+ use crate::audio::sound;
+ use crate::hunters::gimmicks::void::void_orange::{Outage, System};
+@@ -135,11 +135,6 @@ impl Game {
+         }
+     }
+ 
+-    /// Climate: the heater runs only while it is powered and the climate system is not offline (Void Orange).
+-    pub fn heater_running(&self) -> bool {
+-        self.heater == Heater::Powered && !self.void_fx.offline(System::Climate)
+-    }
+-
+     /// The minimap and the full map are blanked (Void Orange radar outage, Void Purple blackout).
+     pub fn radar_dark(&self) -> bool {
+         self.void_fx.radar_dark()
+diff --git a/src/bin/last_route/headless/protocol.rs b/src/bin/last_route/headless/protocol.rs
+index 99291bb..cfec34d 100644
+--- a/src/bin/last_route/headless/protocol.rs
++++ b/src/bin/last_route/headless/protocol.rs
+@@ -165,7 +165,6 @@ pub fn kind_name(f: Focus) -> &'static str {
+         Focus::Lift => "LIFT",
+         Focus::Ladder(_) => "LADDER",
+         Focus::LightSwitch(_) => "LIGHT_SWITCH",
+-        Focus::Heater => "HEATER_STATION",
+         Focus::Vent(_) => "VENT",
+         Focus::Shop(_) => "SHOP",
+         Focus::Door(_) => "ROOM_DOOR",
+@@ -1227,7 +1226,6 @@ impl Session {
+                 "lift" | "exit" => Some(g.fac.exit),
+                 "stairs" => g.fac.stairs.get(i).map(|s| s.cell),
+                 "safe_zone" => g.fac.safe_zone,
+-                "heater" => g.fix.heater,
+                 "music_box" => g
+                     .pickups
+                     .iter()
+@@ -1338,7 +1336,6 @@ impl Session {
+                     "safe_zone" => g.fac.safe_zone.map(|c| (c.center(), 0.7)),
+                     "locker" => g.fac.hiding.get(i).map(|h| (g.fac.locker_center(h), 1.0)),
+                     "pickup" => g.pickups.get(i).map(|p| (p.pos, 0.15)),
+-                    "heater" => g.fix.heater.map(|c| (c.center(), 0.6)),
+                     "music_box" => g
+                         .pickups
+                         .iter()
+@@ -1588,14 +1585,6 @@ impl Session {
+         for (i, l) in g.fac.room_lights.iter().enumerate() {
+             add("LIGHT_SWITCH", l.switch_cell.center(), 1.2, !g.lights_on[i]);
+         }
+-        if let Some(c) = g.fix.heater {
+-            add(
+-                "HEATER_STATION",
+-                c.center(),
+-                0.6,
+-                g.heater == crate::game::Heater::Powered,
+-            );
+-        }
+         for p in g.pickups.iter().filter(|p| !p.taken && p.item == Item::MusicBox) {
+             add("MUSIC_BOX_PICKUP", p.pos, 0.5, false);
+         }
+diff --git a/src/bin/last_route/headless/sim.rs b/src/bin/last_route/headless/sim.rs
+index 19f7ec0..3626133 100644
+--- a/src/bin/last_route/headless/sim.rs
++++ b/src/bin/last_route/headless/sim.rs
+@@ -5,7 +5,7 @@
+ use crate::audio::Sounds;
+ use crate::config::*;
+ use crate::content::Content;
+-use crate::game::{Controls, Focus, Game, Heater};
++use crate::game::{Controls, Focus, Game};
+ use crate::hunters::brain::State;
+ use crate::world::catalog::Catalog;
+ use crate::world::Cell;
+@@ -82,7 +82,6 @@ struct Watch {
+     toast_t: f32,
+     slots: Vec<Option<(&'static str, i32)>>,
+     flashlight: bool,
+-    heater: Option<Heater>,
+     stairs_center: Option<(i32, i32)>,
+ }
+ 
+@@ -120,14 +119,6 @@ fn state_id(s: State) -> &'static str {
+     }
+ }
+ 
+-fn heater_id(h: Heater) -> &'static str {
+-    match h {
+-        Heater::Frozen => "frozen",
+-        Heater::Thawed => "thawed",
+-        Heater::Powered => "powered",
+-    }
+-}
+-
+ pub fn r2(v: f32) -> f64 {
+     ((v as f64) * 1000.0).round() / 1000.0
+ }
+@@ -159,11 +150,6 @@ pub fn focus_json(g: &Game, f: Focus) -> Value {
+             Some(i),
+             g.fac.room_lights[i].switch_cell.center(),
+         ),
+-        Focus::Heater => (
+-            "heater",
+-            None,
+-            g.fix.heater.map(|c| c.center()).unwrap_or(g.p.pos),
+-        ),
+         Focus::Vent(i) => ("vent", Some(i), g.fix.vents[i].center()),
+         Focus::Shop(i) => ("shop", Some(i), g.hunters[i].pos),
+         Focus::Door(i) => (
+@@ -338,7 +324,6 @@ impl Sim {
+                 .map(|s| s.map(|s| (s.item.label(), s.n)))
+                 .collect(),
+             flashlight: g.p.flashlight_on,
+-            heater: Some(g.heater),
+             stairs_center: g.inf.as_ref().map(|i| i.center),
+         }
+     }
+@@ -369,9 +354,6 @@ impl Sim {
+         if now.flashlight != was.flashlight {
+             out.push(("flashlight", json!({ "on": now.flashlight })));
+         }
+-        if now.heater != was.heater && !floor_changed {
+-            out.push(("heater", json!({ "state": now.heater.map(heater_id) })));
+-        }
+         if now.hidden != was.hidden {
+             match now.hidden {
+                 Some(i) => out.push(("hid", json!({ "locker": i }))),
+@@ -493,7 +475,6 @@ impl Sim {
+             "message": if g.message_t > 0.0 { Value::from(g.message.clone()) } else { Value::Null },
+             "toast": if g.toast_t > 0.0 { Value::from(g.toast.clone()) } else { Value::Null },
+             "danger": r2(g.danger()),
+-            "heater": heater_id(g.heater),
+             "music_box_left": r2(g.music_box_left),
+             "chunks_visited": g.chunks_visited(),
+             "window_center": g.inf.as_ref().map(|i| json!([i.center.0, i.center.1])),
+@@ -675,7 +656,6 @@ impl Sim {
+             "stairs": g.fac.stairs.iter().enumerate().map(|(i, s)| json!({ "index": i, "cell": cell(s.cell), "dir": s.dir, "run": [s.run.0, s.run.1], "shape": format!("{:?}", s.shape), "kind": format!("{:?}", s.kind), "clockwise": s.clockwise, "distance": d(s.cell.center()) })).collect::<Vec<_>>(),
+             "catwalk_links": g.fac.catwalk_links.iter().enumerate().map(|(i, l)| json!({ "index": i, "cell": cell(l.cell), "run": [l.run.0, l.run.1], "deck_height": l.deck_height, "distance": d(l.cell.center()) })).collect::<Vec<_>>(),
+             "light_switches": g.fac.room_lights.iter().enumerate().map(|(i, l)| json!({ "index": i, "room": l.room, "cell": cell(l.switch_cell), "on": g.lights_on[i] })).collect::<Vec<_>>(),
+-            "heater": g.fix.heater.map(cell),
+             "music_box": g
+                 .pickups
+                 .iter()
+diff --git a/src/bin/last_route/hunters/gimmicks/mod.rs b/src/bin/last_route/hunters/gimmicks/mod.rs
+index 66eaa5f..a15f1d7 100644
+--- a/src/bin/last_route/hunters/gimmicks/mod.rs
++++ b/src/bin/last_route/hunters/gimmicks/mod.rs
+@@ -48,6 +48,8 @@ pub struct Ctx<'a> {
+     pub batteries_taken: &'a [bool],
+     pub hiding_disabled: &'a [bool],
+     pub vents: &'a [Cell],
++    /// A heat source is running: the temperature item set to heat (game/specialty.rs). Wynelle's counterplay. There is
++    /// no heater station any more, so the game feeds this and `heater_thawed` from that one source.
+     pub heater_on: bool,
+     pub heater_thawed: bool,
+     pub diff: Difficulty,
+@@ -425,7 +427,7 @@ pub fn describe(id: &str) -> &'static str {
+         "thessine" => "Mimics sounds that are not there.",
+         "umbriel" => "Wears another hunter's body every thirty seconds.",
+         "verrine" => "Lives in the vents. Enter them and she hunts you there, faster the longer you stay.",
+-        "wynelle" => "Cold calls her. Stay chilled too long and she appears beside you; thaw the heater or reach the safe zone before you freeze.",
++        "wynelle" => "Cold calls her. Stay chilled too long and she appears beside you; switch the temperature item (7) to heat or reach the safe zone before you freeze.",
+         "xivvy" => "Locks on at arm's length without needing to see you, and only gets faster the longer a chase runs.",
+         "ysolde" => "Steals batteries off the floor and keeps her distance from you.",
+         "zellia" => "A merchant in the middle of the floor. Coins buy warmth, cold, light or pesticide, but every deal carries a price.",
+diff --git a/src/bin/last_route/hunters/gimmicks/solyth.rs b/src/bin/last_route/hunters/gimmicks/solyth.rs
+index 6225ac5..ad6673c 100644
+--- a/src/bin/last_route/hunters/gimmicks/solyth.rs
++++ b/src/bin/last_route/hunters/gimmicks/solyth.rs
+@@ -131,16 +131,17 @@ mod tests {
+         for _ in 0..60 {
+             b.update(1.0 / 30.0, &ctx, &t, 1, 0, &Difficulty::Standard.profile());
+         }
+-        assert!(!b.active, "a running heater alone does not wake her");
+-        // a running heater warms the facility and the body until the temperature reaches 100 and latches
++        assert!(!b.active, "a heat source alone does not wake her");
++        // the facility warms with time (no heater station any more) and the body follows until the temperature reaches
++        // 100 and latches
+         let mut meters = crate::game::meters::Meters::default();
++        meters.ambient = 95.0;
+         let calm = crate::game::meters::Situation {
+             flashlight_on: false,
+             noise: 0.0,
+             crouching: false,
+             hidden: false,
+             in_safe_zone: false,
+-            heater_on: true,
+             local: 0.0,
+         };
+         for _ in 0..30 * 120 {
+@@ -149,7 +150,7 @@ mod tests {
+                 break;
+             }
+         }
+-        assert!(meters.heat_locked, "a running heater heats the runner to 100 and latches");
++        assert!(meters.heat_locked, "the warm facility heats the runner to 100 and latches");
+         let Gimmick::Solyth(s) = &mut b.gimmick else { panic!("not solyth") };
+         s.heat_locked = meters.heat_locked;
+         b.update(1.0 / 30.0, &ctx, &t, 1, 0, &Difficulty::Standard.profile());
+diff --git a/src/bin/last_route/hunters/gimmicks/wynelle.rs b/src/bin/last_route/hunters/gimmicks/wynelle.rs
+index 0aa84da..cd8a165 100644
+--- a/src/bin/last_route/hunters/gimmicks/wynelle.rs
++++ b/src/bin/last_route/hunters/gimmicks/wynelle.rs
+@@ -1,6 +1,7 @@
+ //! Wynelle: cold materializer. Below 60 degrees a hidden meter fills (faster the colder, up to
+-//! 100); then she appears on you and you have 10 s to thaw the heater or reach the safe zone
+-//! before you freeze. Dormant on Relaxed (wynelle_gimmick.gd).
++//! 100); then she appears on you and you have 10 s to switch the temperature item to heat or reach
++//! the safe zone before you freeze. The only heater she knows is that item's heat source (game/specialty.rs
++//! `heat_source_for_hunters`; the heater stations are retired, archive/heater-stations/). Dormant on Relaxed (wynelle_gimmick.gd).
+ 
+ use super::{Ctx, Event};
+ use crate::hunters::brain::{Brain, State, Target};
+diff --git a/src/bin/last_route/render/bbmodel.rs b/src/bin/last_route/render/bbmodel.rs
+index 403fa54..679b900 100644
+--- a/src/bin/last_route/render/bbmodel.rs
++++ b/src/bin/last_route/render/bbmodel.rs
+@@ -668,7 +668,8 @@ mod tests {
+ 
+     /// One fold of the digests of every other embedded model that has a decodable texture (props, doors, the player
+     /// mannequins, the A to Z hunters), recorded the same way, and how many went into it.
+-    const GOLDEN_ALL: (usize, u64) = (685, 0x110d2bc3d03dea9c);
++    /// (685 -> 684 on 2026-11-06: the retired heater station model left the embedded set, see archive/heater-stations.)
++    const GOLDEN_ALL: (usize, u64) = (684, 0xfbac92f6c2cbbbfc);
+ 
+     /// The shape of a model read with the game's UV rule.
+     fn shape_now(path: &str, j: &serde_json::Value) -> Option<Shape> {
+diff --git a/src/bin/last_route/render/scene.rs b/src/bin/last_route/render/scene.rs
+index 36b480a..9d7c9a7 100644
+--- a/src/bin/last_route/render/scene.rs
++++ b/src/bin/last_route/render/scene.rs
+@@ -1,6 +1,6 @@
+ //! The per-frame 3D scene: the floor, its fixtures and pickups drawn with the original's
+ //! authored Blender models (assets/interactables/*.bbmodel: relay, battery, coin, locker, lift,
+-//! safe zone, vent, music box, heater station, light switch, and the tools), Ravelle's wires,
++//! safe zone, vent, music box, light switch, and the tools), Ravelle's wires,
+ //! and the hunters in their Blockbench bodies. Simple shapes stand in if a model is missing.
+ 
+ use super::anim::{
+@@ -14,7 +14,7 @@ use super::shader::{self, Flicker, Lamp, Lighting};
+ use super::{ambient, catwalk, inferno_deco, lamp_flicker, seams, waterfall, world_stack};
+ use crate::shared::assets::Assets;
+ use crate::config::*;
+-use crate::game::{Game, Heater, Item};
++use crate::game::{Game, Item};
+ use crate::hunters::brain::State;
+ use crate::hunters::gimmicks::Gimmick;
+ use crate::net::runner_figure;
+@@ -470,33 +470,6 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
+             );
+         }
+     }
+-    if let Some(c) = g.fix.heater {
+-        let (x, y) = c.center();
+-        let tint = match g.heater {
+-            Heater::Frozen => Color::new(0.7, 0.85, 1.0, 1.0),
+-            Heater::Thawed => WHITE,
+-            Heater::Powered => Color::new(1.0, 0.85, 0.7, 1.0),
+-        };
+-        match item_model(a, "heater_station") {
+-            Some(m) => draw_static(m, at(x, 0.0, y, 0.0), tint),
+-            None => b.cube(
+-                vec3(x, 0.55, y),
+-                vec3(0.7, 1.1, 0.4),
+-                0.0,
+-                Color::new(0.3, 0.28, 0.27, 1.0),
+-                0.0,
+-            ),
+-        }
+-        if g.heater == Heater::Powered {
+-            b.cube(
+-                vec3(x, 0.06, y + 0.3),
+-                vec3(0.4, 0.02, 0.08),
+-                0.0,
+-                Color::new(0.98, 0.55, 0.25, 1.0),
+-                2.0,
+-            );
+-        }
+-    }
+     for (i, c) in g.fix.vents.iter().enumerate() {
+         let (x, y) = c.center();
+         let wall = [(0, -1), (0, 1), (-1, 0), (1, 0)]
+diff --git a/src/bin/last_route/world/fixtures.rs b/src/bin/last_route/world/fixtures.rs
+index 76b82dd..06e9ee5 100644
+--- a/src/bin/last_route/world/fixtures.rs
++++ b/src/bin/last_route/world/fixtures.rs
+@@ -1,6 +1,5 @@
+ //! The floor fixtures some hunters depend on, each on its own seeded stream like the
+-//! original's on-demand placements: the heater station (Wynelle's counterplay, 3-7 cells from
+-//! the start), the ring of four vent grates (Verrine's, one per room, "<seed>:VENT-NETWORK") and five
++//! original's on-demand placements: the ring of four vent grates (Verrine's, one per room, "<seed>:VENT-NETWORK") and five
+ //! coins for Zellia's store ("<seed>:COINS", one per random room centre). The music box (Glyra's, 1-4 cells
+ //! from the start) is a collectable pickup, not a fixture: `place_with_box` returns its cell for the caller to
+ //! put on the floor. Exact cells are estimated where the original places them in presentation code.
+@@ -12,7 +11,6 @@ use std::collections::HashSet;
+ 
+ #[derive(Clone, Default)]
+ pub struct Fixtures {
+-    pub heater: Option<Cell>,
+     pub vents: Vec<Cell>,
+     pub coins: Vec<Cell>,
+ }
+@@ -52,38 +50,6 @@ fn near_start(
+     }
+ }
+ 
+-/// A heater station 3-7 cells from the start of `f`, on the stream `<stream>:HEATER`. The live level 0 chunks use it
+-/// (their window takes the centre chunk's station), so each chunk has one to reach.
+-/// It stays off the safe room (`safe`: its 5x5 opening and the ring round it, where the checkpoint stands), the stair
+-/// doorways and wells, and every door's threshold.
+-pub fn heater_for(f: &Facility, stream: &str, safe: bool) -> Option<Cell> {
+-    let mut t = taken(f);
+-    let mut avoid = |c: Cell, r: i32| {
+-        for dy in -r..=r {
+-            for dx in -r..=r {
+-                t.insert(Cell::new(c.x + dx, c.y + dy));
+-            }
+-        }
+-    };
+-    if safe {
+-        avoid(f.start, 3);
+-    }
+-    for s in &f.stairs {
+-        for c in s.well_cells() {
+-            avoid(c, 1);
+-        }
+-        avoid(s.cell, 1);
+-        avoid(s.landing(), 1);
+-        avoid(s.step_cell(), 1);
+-    }
+-    for p in &f.props {
+-        if let Some(d) = p.door {
+-            avoid(p.cell, d.span.max(1));
+-        }
+-    }
+-    near_start(f, &t, &mut Rng::new(&format!("{stream}:HEATER")), 3.0, 7.0)
+-}
+-
+ pub fn place(f: &Facility) -> Fixtures {
+     place_with_box(f).0
+ }
+@@ -93,14 +59,16 @@ pub fn place(f: &Facility) -> Fixtures {
+ /// cell is still reserved here, so the vents and coins keep the cells they had as a fixture.
+ pub fn place_with_box(f: &Facility) -> (Fixtures, Option<Cell>) {
+     let mut t = taken(f);
+-    let heater = near_start(
++    // The retired heater station's cell (archive/heater-stations/) stays reserved, though nothing is placed on it, so the
++    // music box, the vents and the coins keep the exact cells they had when the station existed: a seed's floor does not
++    // move, and the host and a guest on either side of this change place the same fixtures.
++    t.extend(near_start(
+         f,
+         &t,
+         &mut Rng::new(&format!("{}:HEATER", f.seed_text)),
+         3.0,
+         7.0,
+-    );
+-    t.extend(heater);
++    ));
+     let music_box = near_start(
+         f,
+         &t,
+@@ -160,7 +128,6 @@ pub fn place_with_box(f: &Facility) -> (Fixtures, Option<Cell>) {
+     }
+     (
+         Fixtures {
+-            heater,
+             vents,
+             coins,
+         },
+diff --git a/src/bin/last_route/world/infinite.rs b/src/bin/last_route/world/infinite.rs
+index 23c85c0..c363733 100644
+--- a/src/bin/last_route/world/infinite.rs
++++ b/src/bin/last_route/world/infinite.rs
+@@ -493,7 +493,7 @@ fn apply_sewer_floor(f: &mut Facility, sc: &super::route::sewer::SewerChunk, see
+ }
+ 
+ /// The live window: 3x3 chunks around `center` on `level`, merged into one floor, plus the
+-/// fixtures of the window (heater and vent ring from the centre chunk, every
++/// fixtures of the window (the vent ring from the centre chunk, every
+ /// chunk's coins).
+ pub fn window(
+     seed: &str,
+@@ -505,7 +505,6 @@ pub fn window(
+ ) -> (Facility, Fixtures) {
+     let mut parts = vec![];
+     let mut fix = Fixtures {
+-        heater: None,
+         vents: vec![],
+         coins: vec![],
+     };
+@@ -520,7 +519,6 @@ pub fn window(
+             let (ox, oy) = ((dx + 1) * CHUNK, (dy + 1) * CHUNK);
+             let sh = |c: Cell| Cell::new(c.x + ox, c.y + oy);
+             if dx == 0 && dy == 0 {
+-                fix.heater = entry.1.heater.map(sh);
+                 fix.vents = entry.1.vents.iter().map(|c| sh(*c)).collect();
+             }
+             fix.coins.extend(entry.1.coins.iter().map(|c| sh(*c)));
+diff --git a/src/bin/last_route/world/route/live.rs b/src/bin/last_route/world/route/live.rs
+index 029d8e4..a6e64aa 100644
+--- a/src/bin/last_route/world/route/live.rs
++++ b/src/bin/last_route/world/route/live.rs
+@@ -177,7 +177,6 @@ pub fn from_layout(seed: &str, k: ChunkKey, lay: &ChunkLayout, cat: &Catalog) ->
+         .collect();
+ 
+     let mut fixtures = Fixtures {
+-        heater: None,
+         vents: wall_fixtures
+             .iter()
+             .filter(|x| x.kind == "vent")
+@@ -202,7 +201,6 @@ pub fn from_layout(seed: &str, k: ChunkKey, lay: &ChunkLayout, cat: &Catalog) ->
+     f.rebuild_grids();
+     f.apply_catwalks(seed, k, crate::world::route::regions::region_for(seed, k.cx, k.cy, k.level));
+     f.rebuild_grids();
+-    fixtures.heater = crate::world::fixtures::heater_for(&f, &format!("{seed}:{}:{}", k.cx, k.cy), is_safe_chunk(seed, k.cx, k.cy));
+     (f, fixtures)
+ }
+ 
+@@ -536,35 +534,6 @@ mod tests {
+     const WORLDS: [&str; 3] = ["1426541270", "4157433391", "2899547009"];
+     const CHUNKS: [(i32, i32); 6] = [(0, 0), (1, 0), (0, 1), (-2, 3), (5, -4), (7, 7)];
+ 
+-    #[test]
+-    fn heaters_keep_off_the_safe_room_stairs_and_doors_in_every_golden_chunk() {
+-        let mut seen = 0;
+-        for world in WORLDS {
+-            for cz in -3..=3 {
+-                for cx in -3..=3 {
+-                    let k = ChunkKey { cx, cy: cz, level: 0 };
+-                    let Some((f, fix)) = chunk(world, k, cat()) else { continue };
+-                    let Some(h) = fix.heater else { continue };
+-                    seen += 1;
+-                    let near = |c: Cell, r: i32| (c.x - h.x).abs() <= r && (c.y - h.y).abs() <= r;
+-                    let at = format!("{world} {cx},{cz}");
+-                    assert!(f.can_occupy(h.x as f64 + 0.5, h.y as f64 + 0.5, 0.23), "{at}: heater is blocked");
+-                    if is_safe_chunk(world, cx, cz) {
+-                        assert!(!near(f.start, 3), "{at}: heater in the safe room or on its checkpoint");
+-                    }
+-                    for s in &f.stairs {
+-                        assert!(!s.well_cells().into_iter().any(|c| near(c, 1)), "{at}: heater at a stair well");
+-                        assert!(![s.cell, s.landing(), s.step_cell()].into_iter().any(|c| near(c, 1)), "{at}: heater at a stair doorway");
+-                    }
+-                    for p in f.props.iter().filter(|p| p.door.is_some()) {
+-                        assert!(!near(p.cell, 1), "{at}: heater on a door threshold");
+-                    }
+-                }
+-            }
+-        }
+-        assert!(seen > 100, "most golden chunks have a heater, got {seen}");
+-    }
+-
+     #[test]
+     fn only_level_zero_is_adapted() {
+         let k = ChunkKey { cx: 0, cy: 0, level: -1 };
+@@ -600,7 +569,7 @@ mod tests {
+                 let Some(lay) = layout::chunk_layout(world, Coord::new(cx, 0, cz)) else {
+                     continue;
+                 };
+-                let (f, fix) = chunk(world, k, cat()).expect("level 0 is adapted");
++                let (f, _) = chunk(world, k, cat()).expect("level 0 is adapted");
+                 assert_eq!(f.cols, CHUNK);
+                 assert_eq!(f.rows, CHUNK);
+                 assert_eq!(f.start, Cell::new(CENTRE, CENTRE));
+@@ -619,9 +588,6 @@ mod tests {
+                 let batteries = lay.pickups.iter().filter(|p| p.kind == "battery").count();
+                 assert_eq!(f.relays.len(), relays, "{world} {cx},{cz}: relays");
+                 assert_eq!(f.batteries.len(), batteries, "{world} {cx},{cz}: batteries");
+-                if let Some(h) = fix.heater {
+-                    assert!(f.can_occupy(h.x as f64 + 0.5, h.y as f64 + 0.5, 0.23), "{world} {cx},{cz}: heater is blocked");
+-                }
+                 // a stair flight clears the props it crosses (clear_props_in); without one, every solid prop stays
+                 // a prop low enough to walk over is floor (navigation::walk_over), so it is not solid here
+                 let solid = lay
+diff --git a/tests/interactables.json b/tests/interactables.json
+index 44623c7..fb9f459 100644
+--- a/tests/interactables.json
++++ b/tests/interactables.json
+@@ -1,6 +1,6 @@
+ {
+   "suite": "interactables",
+-  "description": "What [E] does: room light switches, the heater station, lockers, tool pickups, coins, vents and the music box.",
++  "description": "What [E] does: room light switches, lockers, tool pickups, coins, vents and the music box.",
+   "ported_from": "tests/validate_light_switches.gd, validate_hiding_props.gd, validate_vents.gd, validate_glyra_music.gd, route_interactable_3d.gd",
+   "defaults": { "seed": 12345, "difficulty": "standard", "mode": "finite", "no_target": true },
+   "tests": [
+@@ -15,14 +15,10 @@
+       ]
+     },
+     {
+-      "name": "the heater thaws, powers and powers down",
++      "name": "no heater station is placed: the temperature item is the only heater",
+       "steps": [
+-        { "cmd": "teleport", "to": "heater" },
+-        { "cmd": "interact", "kind": "HEATER_STATION", "expect": [ { "path": "run.heater", "value": "thawed" } ] },
+-        { "cmd": "interact", "kind": "HEATER_STATION", "expect": [ { "path": "run.heater", "value": "powered" } ] },
+-        { "cmd": "step", "frames": 120, "observe": false },
+-        { "expect": [ { "path": "meters.ambient", "op": ">", "value": 65 } ] },
+-        { "cmd": "interact", "kind": "HEATER_STATION", "expect": [ { "path": "run.heater", "value": "thawed" } ] }
++        { "cmd": "objects" },
++        { "expect": [ { "path": "objects.heater", "op": "missing" }, { "path": "objects.vents.0.0", "op": ">=", "value": 0 } ] }
+       ]
+     },
+     {

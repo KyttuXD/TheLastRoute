@@ -1,6 +1,7 @@
 //! Wynelle: cold materializer. Below 60 degrees a hidden meter fills (faster the colder, up to
-//! 100); then she appears on you and you have 10 s to thaw the heater or reach the safe zone
-//! before you freeze. Dormant on Relaxed (wynelle_gimmick.gd).
+//! 100); then she appears on you and you have 10 s to switch the temperature item to heat or reach
+//! the safe zone before you freeze. The only heater she knows is that item's heat source (game/specialty.rs
+//! `heat_source_for_hunters`; the heater stations are retired, archive/heater-stations/). Dormant on Relaxed (wynelle_gimmick.gd).
 
 use super::{Ctx, Event};
 use crate::hunters::brain::{Brain, State, Target};

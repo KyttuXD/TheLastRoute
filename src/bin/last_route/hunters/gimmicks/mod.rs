@@ -48,6 +48,8 @@ pub struct Ctx<'a> {
     pub batteries_taken: &'a [bool],
     pub hiding_disabled: &'a [bool],
     pub vents: &'a [Cell],
+    /// A heat source is running: the temperature item set to heat (game/specialty.rs). Wynelle's counterplay. There is
+    /// no heater station any more, so the game feeds this and `heater_thawed` from that one source.
     pub heater_on: bool,
     pub heater_thawed: bool,
     pub diff: Difficulty,
@@ -425,7 +427,7 @@ pub fn describe(id: &str) -> &'static str {
         "thessine" => "Mimics sounds that are not there.",
         "umbriel" => "Wears another hunter's body every thirty seconds.",
         "verrine" => "Lives in the vents. Enter them and she hunts you there, faster the longer you stay.",
-        "wynelle" => "Cold calls her. Stay chilled too long and she appears beside you; thaw the heater or reach the safe zone before you freeze.",
+        "wynelle" => "Cold calls her. Stay chilled too long and she appears beside you; switch the temperature item (7) to heat or reach the safe zone before you freeze.",
         "xivvy" => "Locks on at arm's length without needing to see you, and only gets faster the longer a chase runs.",
         "ysolde" => "Steals batteries off the floor and keeps her distance from you.",
         "zellia" => "A merchant in the middle of the floor. Coins buy warmth, cold, light or pesticide, but every deal carries a price.",

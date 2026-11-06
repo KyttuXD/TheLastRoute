@@ -111,13 +111,6 @@ pub struct FloorPickup {
     pub taken: bool,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum Heater {
-    Frozen,
-    Thawed,
-    Powered,
-}
-
 pub struct Escape {
     pub remaining: f32,
     pub progress: i32,
@@ -163,7 +156,6 @@ pub struct Game {
     pub pickups: Vec<FloorPickup>,
     pub hiding_disabled: Vec<bool>,
     pub lights_on: Vec<bool>,
-    pub heater: Heater,
     /// Timed effects of the void hunters' powers on the runner (game/void_player.rs).
     pub void_fx: void_player::VoidEffects,
     /// The full-screen map is open this frame (the app sets it before `update`; Void Yellow reads it).
@@ -301,7 +293,6 @@ impl Game {
             pickups: vec![],
             hiding_disabled: vec![],
             lights_on: vec![],
-            heater: Heater::Frozen,
             void_fx: Default::default(),
             map_open: false,
             music_box_left: music_box::wound_seconds(difficulty.id()),
@@ -435,7 +426,6 @@ impl Game {
             pickups: vec![],
             hiding_disabled: vec![],
             lights_on: vec![],
-            heater: Heater::Frozen,
             void_fx: Default::default(),
             map_open: false,
             music_box_left: music_box::wound_seconds(difficulty.id()),
@@ -578,7 +568,6 @@ impl Game {
         self.fix = fix;
         self.fac.pickups.extend(box_cell.map(|c| (c, Pickup::MusicBox)));
         self.adopt_floor(content);
-        self.heater = Heater::Frozen;
         self.music_box_left = music_box::wound_seconds(self.difficulty.id());
         self.relays_collected = 0;
         self.p.place(self.fac.start.center());
@@ -908,7 +897,6 @@ impl Game {
             self.update_water_sink(dt, false);
         } else {
             self.hide_check = None;
-            let heater_on = self.heater_running();
             let in_safe = self.in_safe_zone();
             let local = self.felt_climate();
             let admin = self.admin_flags();
@@ -937,7 +925,6 @@ impl Game {
                     crouching: self.p.crouching,
                     hidden: false,
                     in_safe_zone: in_safe,
-                    heater_on,
                     local,
                 },
             );

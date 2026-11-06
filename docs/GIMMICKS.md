@@ -124,7 +124,7 @@ These sit outside the gimmicks. They are mentioned per hunter only so they don't
 
 ### 0.7 Player meters (`player_meters.gd`), as they matter to gimmicks
 
-Updated by the player controller every frame with `{flashlight_on, noise, crouching, hidden, in_safe_zone, heater_on}`.
+Updated by the player controller every frame with `{flashlight_on, noise, crouching, hidden, in_safe_zone, heater_on}`. (Rust: the meters no longer take `heater_on`; the temperature item moves the target instead, see section 27 and the note under Wynelle.)
 
 - **Exposure** 0-100 (the port does not track it yet; Aki and Xivvy read it):
   `target = hidden ? 0 : (18 + (flashlight ? 55 : 0) + clamp(noise / 10.5, 0, 1) * 40) * (crouching ? 0.55 : 1)`, clamped to 0-100.
@@ -776,6 +776,8 @@ Wynelle is in the ordinary draw, but she wakes herself.
 - set the death cause to `"cold"`;
 - call `_capture_target(view, target, inescapable = true)`, an instant death;
 - call `consume_frozen_player()`, which sets `progress = 50`, `materialized = false` and makes her inactive.
+
+**Rust port: the heater station is retired (2026-11-06).** The temperature item (hotbar slot 7, `game/specialty.rs`) replaced it: heat set on the item is the only heater Wynelle knows (`Ctx.heater_on` and `heater_thawed` are fed from `heat_source_for_hunters` alone). The Godot description below stays as the original's reference; see [archive/heater-stations](../archive/heater-stations/README.md).
 
 **Heater station** (one per floor, 3-7 cells from start): the interact cycle is FROZEN, UNFROZEN, POWERED, UNFROZEN, POWERED and so on.
 - POWERED also sets `player.heater_on`, so the ambient temperature rises 3/s (see section 27).

@@ -749,7 +749,7 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [ ] Port Chunk fixtures: six target spots per chunk, every third a vent, five-cell spacing (status note: [x] in the full audit 2026-11-01; the less complete status is kept)
 - [ ] Port Hiding occupancy: capacity and front and beside slots (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [ ] Port Music boxes: two per 4x4 region block with a shared tune (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Heater station placement: Godot's streamed placement is not located, so parity is unconfirmed (status note: [~] in the parity-gaps audit; the less complete status is kept)
+- [x] Heater station placement: retired 2026-11-06, replaced by the temperature hotbar item (archive/heater-stations/README.md)
 - [ ] Port Coins for Zellia's store: Godot's streamed coin source is unconfirmed (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Chunk loot and objectives: placement rules differ (stair flights and sealed cells) (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Hunter spawn points per chunk: per-chunk spawn rules differ (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
@@ -1060,7 +1060,7 @@ Source: the 2026-11-04 repo audit. Items that need a design decision are in `doc
 - [ ] Check hunter constants against Godot: brain stuck/centre/give-up (`hunter_brain.gd` 30-43), hearing and sight (`hunter_seats.gd` 14-16), void sight 2.5 (`void_cyan_gimmick.gd` 7), relay rush 7 and delay (`hunter_director.gd` 10-13, 39)
 - [ ] NPC teammates: storey crossing (`npc_teammates.gd` 34, 396-567), chat with 30 s cooldown (52, 637), down and revive (235, 261), remaining command ops (47-51), 12 Hz sync (35) (update 2026-11-04: storey crossing is done (bots cross flights and ladders); chat, down and revive, command ops and sync are open)
 - [ ] Teammate waypoint overlay (`hud/teammate_waypoints.gd`, `hud/waypoint_overlay.gd`); the setting is saved and does nothing
-- [ ] Interactable diff: vent, lift, heater station against `assets/interactables/`
+- [ ] Interactable diff: vent, lift against `assets/interactables/`
 - [ ] Remove the "did you hear that?" line (`game/hunting.rs` 253) and the STUNNED messages (`game/items.rs` 156, 196)
 
 ### Docs

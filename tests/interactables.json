@@ -1,6 +1,6 @@
 {
   "suite": "interactables",
-  "description": "What [E] does: room light switches, the heater station, lockers, tool pickups, coins, vents and the music box.",
+  "description": "What [E] does: room light switches, lockers, tool pickups, coins, vents and the music box.",
   "ported_from": "tests/validate_light_switches.gd, validate_hiding_props.gd, validate_vents.gd, validate_glyra_music.gd, route_interactable_3d.gd",
   "defaults": { "seed": 12345, "difficulty": "standard", "mode": "finite", "no_target": true },
   "tests": [
@@ -15,14 +15,10 @@
       ]
     },
     {
-      "name": "the heater thaws, powers and powers down",
+      "name": "no heater station is placed: the temperature item is the only heater",
       "steps": [
-        { "cmd": "teleport", "to": "heater" },
-        { "cmd": "interact", "kind": "HEATER_STATION", "expect": [ { "path": "run.heater", "value": "thawed" } ] },
-        { "cmd": "interact", "kind": "HEATER_STATION", "expect": [ { "path": "run.heater", "value": "powered" } ] },
-        { "cmd": "step", "frames": 120, "observe": false },
-        { "expect": [ { "path": "meters.ambient", "op": ">", "value": 65 } ] },
-        { "cmd": "interact", "kind": "HEATER_STATION", "expect": [ { "path": "run.heater", "value": "thawed" } ] }
+        { "cmd": "objects" },
+        { "expect": [ { "path": "objects.heater", "op": "missing" }, { "path": "objects.vents.0.0", "op": ">=", "value": 0 } ] }
       ]
     },
     {
