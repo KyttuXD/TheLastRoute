@@ -13,6 +13,7 @@
 
 use super::clip::{key_quat, Rig};
 use super::player::{AnimPlayer, Local};
+use super::profile::{self, Profile, StateDef, Weights};
 use crate::hunters::brain::State;
 use crate::hunters::gimmicks::wolf_spider::Phase;
 use crate::hunters::secret_creatures::Rules as SecretRules;
@@ -46,6 +47,8 @@ const MAX_RATIO: f32 = 1.9;
 const HARD_MIN: f32 = 0.2;
 const HARD_MAX: f32 = 2.6;
 const TRAVEL_CLIPS: [&str; 3] = ["walk", "chase", "sprint"];
+/// Every clip that is a gait for the profile's stride / arm swing / lean layers (Kathy's scythe walk included).
+const TRAVEL_CLIP_NAMES: [&str; 4] = ["walk", "chase", "sprint", "scythe_walk"];
 
 /// What the view reads from the brain each frame (all replicated / public state in the original too).
 pub struct Input<'a> {
@@ -79,6 +82,9 @@ pub struct Input<'a> {
     pub peek_lean: Option<(f32, f32)>,
     /// The wolf spiders' gimmick state (a creature rig reads it instead of the humanoid clip choice), None for every other hunter.
     pub creature: Option<CreatureInput>,
+    /// A named mechanic state the hunter is in (`profile::mechanic_of`: "climb", later "steal_battery", "lunge"...). The
+    /// hunter's profile (data/render/hunter_anims.json `states`) says what it looks like; a name it has no row for does nothing.
+    pub mechanic: Option<&'a str>,
 }
 
 /// What a creature rig's presentation reads from its gimmick (creature_view.gd): the phase picks the clip, a new bark
@@ -309,31 +315,37 @@ fn style_base(style: &str) -> &str {
 }
 
 /// Bone access by name on the frame's local pose, with the bind-time rest rotations.
-struct Bones<'a> {
-    rig: &'a Rig,
-    pose: &'a mut [Local],
+pub(super) struct Bones<'a> {
+    pub(super) rig: &'a Rig,
+    pub(super) pose: &'a mut [Local],
+}
+
+impl<'a> Bones<'a> {
+    pub(super) fn new(rig: &'a Rig, pose: &'a mut [Local]) -> Bones<'a> {
+        Bones { rig, pose }
+    }
 }
 
 impl Bones<'_> {
-    fn now(&self, b: &str) -> Quat {
+    pub(super) fn now(&self, b: &str) -> Quat {
         self.rig
             .bone(b)
             .map(|i| self.pose[i].r)
             .unwrap_or(Quat::IDENTITY)
     }
-    fn rest(&self, b: &str) -> Quat {
+    pub(super) fn rest(&self, b: &str) -> Quat {
         self.rig
             .bone(b)
             .map(|i| self.rig.bones[i].rest_r)
             .unwrap_or(Quat::IDENTITY)
     }
-    fn put(&mut self, b: &str, q: Quat) {
+    pub(super) fn put(&mut self, b: &str, q: Quat) {
         if let Some(i) = self.rig.bone(b) {
             self.pose[i].r = q;
         }
     }
     /// HunterChaseStyle._swing: scales how far the clip has swung a bone from its rest.
-    fn swing(&self, b: &str, scale: f32) -> Quat {
+    pub(super) fn swing(&self, b: &str, scale: f32) -> Quat {
         let rest = self.rest(b);
         let now = self.now(b);
         let mut delta = now * rest.inverse();
@@ -562,6 +574,13 @@ pub struct HunterView {
     oneshot: &'static str,
     oneshot_left: f32,
     attack_cooldown: f32,
+    /// This hunter's animation profile (data/render/hunter_anims.json).
+    profile: &'static Profile,
+    /// Layer weights: the gait / idle / live layers follow the clip playing, the state layer its mechanic.
+    layers: Weights,
+    /// The mechanic state last on (kept while its pose eases out) and how far it is in, 0..1.
+    mech: Option<&'static StateDef>,
+    mech_w: f32,
 }
 
 impl HunterView {
@@ -604,11 +623,28 @@ impl HunterView {
             oneshot: "",
             oneshot_left: 0.0,
             attack_cooldown: 0.0,
+            profile: profile::profile(shown_id),
+            layers: Weights::default(),
+            mech: None,
+            mech_w: 0.0,
         }
     }
 
     pub fn rig(&self) -> &Rig {
         &self.rig
+    }
+
+    /// This view with another animation profile (tests; the shipped one comes from data/render/hunter_anims.json).
+    #[cfg(test)]
+    pub fn with_profile(mut self, p: &'static Profile) -> HunterView {
+        self.profile = p;
+        self
+    }
+
+    /// The speed scale the clip plays at now (tests read it).
+    #[cfg(test)]
+    pub fn playback_speed(&self) -> f32 {
+        self.player.speed_scale
     }
 
     fn randf(&mut self) -> f32 {
@@ -693,6 +729,9 @@ impl HunterView {
 
     fn update_animation(&mut self, i: &Input, delta: f32) {
         let mut clip = "idle".to_string();
+        // a mechanic state with a clip of this rig takes the place of the locomotion clips (not of stun / waking)
+        let mech = self.mechanic_def(i);
+        let mech_clip = mech.and_then(|m| m.clip.as_deref()).filter(|c| self.rig.has_clip(c));
         if !i.active {
             self.was_dormant = true;
             let hold = if self.rig.has_clip("stun") {
@@ -724,6 +763,8 @@ impl HunterView {
             self.recover_left -= delta;
             clip = "stun_recover".into();
         } else if i.stun > 0.0 {
+        } else if let Some(c) = mech_clip {
+            clip = c.to_string();
         } else if i.airborne {
             clip = "flight".into();
         } else if i.charging {
@@ -742,7 +783,7 @@ impl HunterView {
                 State::Idle => {}
             }
         }
-        if TRAVEL_CLIPS.contains(&clip.as_str()) {
+        if mech_clip.is_none() && TRAVEL_CLIPS.contains(&clip.as_str()) {
             if self.gait_moving && self.still_time > STILL_CLIP_AFTER {
                 self.gait_moving = false;
             } else if !self.gait_moving && self.move_speed > GAIT_ENTER_SPEED {
@@ -759,21 +800,39 @@ impl HunterView {
         if clip == "flight" {
             speed = (0.85 + self.move_speed * 0.22).clamp(0.85, 2.3); // XivvyFlight.flight_clip_speed
         }
-        let travelling = TRAVEL_CLIPS.contains(&clip.as_str());
+        let travelling = mech_clip.is_none() && TRAVEL_CLIPS.contains(&clip.as_str());
         if travelling {
             let (pick, scale) = self.choose(&clip, self.move_speed);
             if self.rig.has_clip(&pick) {
                 clip = pick;
             }
             self.stride_scale += (scale - self.stride_scale) * (1.0 - (-10.0 * delta).exp());
-            speed = self.stride_scale;
+            // the profile's gait speed: 1.0 keeps the legs matched to the ground
+            let gait = if clip == "walk" { self.profile.walk_speed } else { self.profile.chase_speed };
+            speed = self.stride_scale * gait;
         }
         if travelling {
             self.play_travel(&clip);
+        } else if let Some(m) = mech.filter(|_| mech_clip.is_some()) {
+            if self.player.current_animation() != clip || !self.player.playing {
+                let rig = self.rig.clone();
+                self.player.play(&rig, &clip, m.blend);
+            }
+            speed = m.speed;
         } else {
             self.play_if_available(&clip);
         }
         self.player.speed_scale = speed;
+    }
+
+    /// The profile state the input names, while the hunter is up and about (a stunned, dormant or held one shows none).
+    fn mechanic_def(&self, i: &Input) -> Option<&'static StateDef> {
+        let name = i.mechanic?;
+        if !i.active || i.stun > 0.0 || i.grabbing {
+            return None;
+        }
+        let p: &'static Profile = self.profile;
+        p.states.get(name)
     }
 
     /// CreatureView.tick: the clip comes from the gimmick's phase (idle, walk, sprint on a hunt, a one-shot bark when a new
@@ -995,6 +1054,22 @@ impl HunterView {
                 pose[h].r = look * pose[h].r;
             }
         }
+        // the profile's pose layers (stride, arm swing, idle sway, lean, crouch, head tilt) under the chase layer, which
+        // sets the arms of its own style afterwards
+        if !self.rig.is_creature() {
+            let k = 1.0 - (-profile::LAYER_RATE * delta).exp();
+            let clip = self.player.current_animation();
+            let on = |names: &[&str]| if self.player.playing && names.contains(&clip) { 1.0 } else { 0.0 };
+            let (gait, idle) = (on(&TRAVEL_CLIP_NAMES), on(&["idle", "scythe_idle"]));
+            let l = &mut self.layers;
+            l.gait += (gait - l.gait) * k;
+            l.idle += (idle - l.idle) * k;
+            l.live += ((live as i32 as f32) - l.live) * k;
+            l.chase = self.chase.weight;
+            if !self.profile.is_identity_pose() {
+                profile::apply(self.profile, &mut Bones::new(&rig, &mut pose), self.layers);
+            }
+        }
         let chasing = i.active
             && i.state == State::Chase
             && i.stun <= 0.0
@@ -1033,6 +1108,21 @@ impl HunterView {
             -aim,
             clock,
         );
+        // a mechanic state's bone pose over everything the clips and the chase layer did, eased in and out
+        let want = self.mechanic_def(i);
+        if let Some(m) = want {
+            self.mech = Some(m);
+        }
+        let goal = if want.is_some() { 1.0 } else { 0.0 };
+        let secs = self.mech.map(|m| if goal > 0.0 { m.blend_in } else { m.blend_out }).unwrap_or(0.0);
+        self.mech_w = if secs <= 0.0 { goal } else { move_toward(self.mech_w, goal, delta / secs) };
+        if let Some(m) = self.mech {
+            if self.mech_w <= 0.0 && want.is_none() {
+                self.mech = None;
+            } else {
+                profile::apply_state(m, &mut Bones::new(&rig, &mut pose), smoothstep01(self.mech_w));
+            }
+        }
         self.update_expression(i, delta, clock);
 
         // _update_heavy_stun_pose (model root pitch)

@@ -3,6 +3,7 @@
 //! * `clip`   -- the hunters' Blockbench rig + clips (extracted from the original's GLBs by `extract.py` into
 //!              assets/hunters/anim/<id>.json), baked and sampled exactly like Godot's glTF import + Animation tracks.
 //! * `player` -- AnimationPlayer / AnimationMixer: play with cross-fade, speed scale, loop / one-shot, deterministic blend.
+//! * `profile` -- the per-hunter animation profile (data/render/hunter_anims.json): gait speed, stride, lean, crouch, mechanic states.
 //! * `hunter` -- HunterView3D's clip choice, HunterStride, HunterFacing (body yaw, head look), HunterChaseStyle, the
 //!              heavy-stun reel, BlockyFace expressions and the stun stars.
 //! * `grab`   -- HunterGrab / GrabStyles: the hunter's hold on a caught runner (style pick, body points, two-bone arm IK).
@@ -20,6 +21,7 @@ pub mod held;
 pub mod hide;
 pub mod hunter;
 pub mod player;
+pub mod profile;
 pub mod runner;
 
 use hunter::HunterView;

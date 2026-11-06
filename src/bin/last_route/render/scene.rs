@@ -703,6 +703,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
                     }),
                     _ => None,
                 },
+                mechanic: anim::profile::mechanic_of(h),
             };
             let (pose, normal) = view.update(&input, dt, g.time);
             let out = grab::drive(
