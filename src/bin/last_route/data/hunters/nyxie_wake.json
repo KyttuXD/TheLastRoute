@@ -1,0 +1,11 @@
+{
+	"schema": "lr.nyxie_wake/1",
+	"_note": "How Nyxie wakes (hunters/gimmicks/nyxie.rs). Godot game/config/game_config.gd: NYXIE_TIMER_DELAY 120, NYXIE_EMPTY_DELAY 10, NYXIE_DESPAWN_RANGE 7, NYXIE_DISPEL_HALF_ANGLE 0.33, NYXIE_SPAWN_DISTANCE 10. dead_delay and dead_spawn_distance are ours (owner request): once the flashlight is dead (charge empty, the lamp cannot light) she appears after dead_delay seconds, dead_spawn_distance cells from the runner, instead of waiting timer_delay. A live beam within despawn_range sends her back, as for the timer wake. A lamp that stays dead until empty_delay still ends in the inescapable catch. dead_delay must not exceed empty_delay. The wake is the same on every difficulty.",
+	"timer_delay": 120.0,
+	"empty_delay": 10.0,
+	"dead_delay": 3.0,
+	"spawn_distance": 10.0,
+	"dead_spawn_distance": 10.0,
+	"despawn_range": 7.0,
+	"dispel_half_angle": 0.33
+}

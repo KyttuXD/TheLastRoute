@@ -236,7 +236,7 @@ Holds: directed 9 s, scatter 16 s; hunters within 12 m of a runner don't scatter
 | Room lights | 3 seeded rooms, switchable; everything else dark | facility_view_3d.gd _spawn_room_lights |
 | Wall height | 3.6 m | facility_view_3d.gd WALL_HEIGHT |
 | Climate | room offsets: nether +28, kitchens +12, arcades/beach +8, garden −12, maintenance −22, server/cargo −30, ±5 seeded | estimated (per-room climate never ported in Godot) |
-| Heater / music box / vents / coins | 3-7 cells / 1.5-4 cells from start, 4 grates, 5 coins | estimated placement (GIMMICKS.md) |
+| Music box / vents / coins | 1.5-4 cells from start, 4 grates, 5 coins | estimated placement (GIMMICKS.md); the heater station is retired (archive/heater-stations/) |
 
 ## Infinite route (streamed_route_generator.gd; CREATE ROOM's default "DEFAULT // INFINITE")
 | Value | Number | Source |
@@ -264,7 +264,8 @@ synthesised cue (sound.gd), sample for sample; the solo route has no ambience an
 
 ## Temperature (player_meters.gd)
 Ambient starts at 60, rises 0.85 per tick on an interval shortening from 5 s to 0.5 s; body
-follows at 1.6/s (clamped ±6.4); safe zone pulls to 60 at 14/s; heater +3/s; 100 latches the
+follows at 1.6/s (clamped ±6.4); safe zone pulls to 60 at 14/s; the temperature item (slot 7) moves the target the body chases (the
+heater station's +3/s ambient is retired); 100 latches the
 heat (Solyth); ≥ 90 overheats (drain ×1.35); ≤ 10 freezes (movement ×0.72).
 
 ## Controls

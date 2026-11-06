@@ -2,7 +2,7 @@
 //! events, captures and the escape struggle (mash [E] 6 times in 3.2 s), the hide check at a
 //! locker, and the run report.
 
-use super::{pdist, Admin, Escape, Game, Heater, Item, Report};
+use super::{pdist, Admin, Escape, Game, Item, Report};
 use crate::audio::Sounds;
 use crate::config::*;
 use super::level_stack::floor_y_of;
@@ -308,13 +308,15 @@ impl Game {
                 batteries_taken: &self.batteries_taken,
                 hiding_disabled: &self.hiding_disabled,
                 vents: &self.fix.vents,
-                // the temperature item's heat source is a heater to Wynelle (specialty.rs)
-                heater_on: self.heater_running() || heat_source,
-                heater_thawed: self.heater != Heater::Frozen || heat_source,
+                // the temperature item's heat source is the only heater Wynelle knows (specialty.rs; the heater
+                // stations are retired, archive/heater-stations/)
+                heater_on: heat_source,
+                heater_thawed: heat_source,
                 diff: self.difficulty,
                 music_box_left: self.music_box_left,
                 music_boxes: &music_boxes,
                 exposure: self.meters.exposure,
+                flashlight_dead: self.p.lamp <= 0.0,
             };
             let held_before = ability_held(&self.hunters[i]);
             let (c, ev) =
@@ -537,7 +539,6 @@ impl Game {
                 crouching: false,
                 hidden: true,
                 in_safe_zone: in_safe,
-                heater_on: self.heater_running(),
                 local: self.felt_climate(),
             },
         );

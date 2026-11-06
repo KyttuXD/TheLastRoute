@@ -127,20 +127,22 @@ mod tests {
             music_box_left: 0.0,
             music_boxes: &[],
             exposure: 0.0,
+            flashlight_dead: false,
         };
         for _ in 0..60 {
             b.update(1.0 / 30.0, &ctx, &t, 1, 0, &Difficulty::Standard.profile());
         }
-        assert!(!b.active, "a running heater alone does not wake her");
-        // a running heater warms the facility and the body until the temperature reaches 100 and latches
+        assert!(!b.active, "a heat source alone does not wake her");
+        // the facility warms with time (no heater station any more) and the body follows until the temperature reaches
+        // 100 and latches
         let mut meters = crate::game::meters::Meters::default();
+        meters.ambient = 95.0;
         let calm = crate::game::meters::Situation {
             flashlight_on: false,
             noise: 0.0,
             crouching: false,
             hidden: false,
             in_safe_zone: false,
-            heater_on: true,
             local: 0.0,
         };
         for _ in 0..30 * 120 {
@@ -149,7 +151,7 @@ mod tests {
                 break;
             }
         }
-        assert!(meters.heat_locked, "a running heater heats the runner to 100 and latches");
+        assert!(meters.heat_locked, "the warm facility heats the runner to 100 and latches");
         let Gimmick::Solyth(s) = &mut b.gimmick else { panic!("not solyth") };
         s.heat_locked = meters.heat_locked;
         b.update(1.0 / 30.0, &ctx, &t, 1, 0, &Difficulty::Standard.profile());

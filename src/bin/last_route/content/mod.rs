@@ -65,7 +65,7 @@ impl Content {
                 Err(e) => c.warnings.push(format!("{path}: {e}")),
             }
         }
-        for (path, text) in embedded::data_under("hunters/").filter(|(p, _)| !p.ends_with("sabotage.json") && !p.ends_with("nightmare_pounce.json") && *p != "hunters/targets.json" && *p != "hunters/emotes.json") {
+        for (path, text) in embedded::data_under("hunters/").filter(|(p, _)| !p.ends_with("sabotage.json") && !p.ends_with("nightmare_pounce.json") && !p.ends_with("nyxie_wake.json") && *p != "hunters/targets.json" && *p != "hunters/emotes.json") {
             // hunters/search.json is the search rules (hunters/brain.rs), not a hunter definition
             if path == "hunters/search.json" {
                 continue;

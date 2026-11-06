@@ -533,8 +533,13 @@ impl Game {
     }
 
     /// A heat source counts as a running, thawed heater to Wynelle (she cannot gather, and a materialised one thaws away).
+    /// It is the ONLY heater there is: the heater stations are retired (archive/heater-stations/). Void Orange's climate
+    /// outage switches it off for the length of the outage, as it used to switch the station off.
     pub(super) fn heat_source_for_hunters(&self) -> bool {
         self.specialty.heat_on()
+            && !self
+                .void_fx
+                .offline(crate::hunters::gimmicks::void::void_orange::System::Climate)
     }
 
     /// The room climate offset with the temperature item's source on it (what the meters chase).
@@ -890,7 +895,6 @@ mod tests {
                         crouching: false,
                         hidden: false,
                         in_safe_zone: false,
-                        heater_on: false,
                         local,
                     },
                 );
@@ -926,6 +930,7 @@ mod tests {
                 music_box_left: 0.0,
                 music_boxes: &[],
                 exposure: 0.0,
+                flashlight_dead: false,
             };
             let mut came = false;
             for _ in 0..30 * 30 {
@@ -967,5 +972,21 @@ mod tests {
         let sp = g.specialty.clone();
         sp.deter(&mut g.hunters[si]);
         assert_eq!(g.hunters[si].slow_timer, 0.0);
+    }
+
+    #[test]
+    fn the_heat_source_is_the_only_heater_and_a_climate_outage_switches_it_off() {
+        use crate::hunters::gimmicks::void::void_orange::System;
+        let (mut g, content) = sim();
+        add(&mut g, &content, "wynelle");
+        g.sync_specialty();
+        g.specialty.items[1] = Some(SpecItem::Temperature(Mode::Cold));
+        assert!(!g.heat_source_for_hunters(), "no station is left to count as a heater: cold means no heater at all");
+        g.specialty.items[1] = Some(SpecItem::Temperature(Mode::Heat));
+        assert!(g.heat_source_for_hunters());
+        g.void_fx.outage = Some((System::Climate, 1.0));
+        assert!(!g.heat_source_for_hunters(), "Void Orange's climate outage takes the heat source offline");
+        g.void_fx.outage = Some((System::Radar, 1.0));
+        assert!(g.heat_source_for_hunters(), "another system's outage leaves it running");
     }
 }

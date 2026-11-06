@@ -1,7 +1,7 @@
 //! Who a revealed hunter is on the maps (KT, 2026-11-05: "hunter reveal should be more specific about which hunter it is").
 //! A hunter that the maps already show (`Game::map_hunters`: Porcelle's radar ping, the admin HUNTER REVEAL) is drawn as a
 //! dot that names it:
-//!   * an A to Z hunter keeps the red danger dot and wears its capital letter (the display name is that letter),
+//!   * an A to Z hunter keeps the red danger dot and wears the capital letter its name starts with (Aki -> A; the dot is too small for the full name),
 //!   * a void hunter has no letter: its dot is filled with its colour (black, blue, brown, ...), ringed so white, black and
 //!     gray stay visible on the dark map,
 //!   * a mod-pack hunter, or any other hunter, gets a neutral dot with the first letter of its name.
@@ -189,7 +189,7 @@ impl MarkerColors {
     }
 }
 
-/// The capital letter that names a hunter: the first letter of its display name (the A to Z hunters' name is that letter),
+/// The capital letter that names a hunter: the first letter of its display name (Aki -> A; the dot is too small for the full name),
 /// else the first letter of its id, else "?".
 pub fn first_letter(name: &str, id: &str) -> char {
     name.chars()

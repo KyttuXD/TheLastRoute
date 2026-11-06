@@ -4,6 +4,7 @@
 pub mod admin;
 pub mod boot;
 pub mod hud;
+pub mod hud_bars;
 pub mod map;
 pub mod markers;
 pub mod radar_ping;

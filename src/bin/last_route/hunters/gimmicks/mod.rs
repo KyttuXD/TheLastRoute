@@ -48,6 +48,8 @@ pub struct Ctx<'a> {
     pub batteries_taken: &'a [bool],
     pub hiding_disabled: &'a [bool],
     pub vents: &'a [Cell],
+    /// A heat source is running: the temperature item set to heat (game/specialty.rs). Wynelle's counterplay. There is
+    /// no heater station any more, so the game feeds this and `heater_thawed` from that one source.
     pub heater_on: bool,
     pub heater_thawed: bool,
     pub diff: Difficulty,
@@ -56,6 +58,9 @@ pub struct Ctx<'a> {
     /// Centres of the music box floor pickups still uncollected in this window (Glyra guards the nearest).
     pub music_boxes: &'a [(f32, f32)],
     pub exposure: f32,
+    /// The runner's flashlight is dead: its charge is empty, so the lamp cannot light (Nyxie's dead-lamp wake, nyxie.rs).
+    /// Fed from the game each frame; not the same as the lamp merely being switched off.
+    pub flashlight_dead: bool,
 }
 
 /// What a gimmick asks the game to do (main_3d's world_events and player effects).
@@ -416,7 +421,7 @@ pub fn describe(id: &str) -> &'static str {
         "kathy" => "A narrow search beam along her gaze spots you in any darkness.",
         "loxelle" => "Burns lockers in her room: an empty one is ruined for a while, an occupied one throws you out hot.",
         "mavrine" => "Pauses, then lays an invisible mark nearby. Cross it and she knows exactly where.",
-        "nyxie" => "Two minutes of darkness wake her. A dead lamp for ten seconds wakes her on top of you. Shine your beam on her to send her back.",
+        "nyxie" => "Two minutes of darkness wake her. A dead flashlight brings her in within seconds, and ten seconds of it wakes her on top of you. Shine your beam on her to send her back.",
         "opalie" => "Guards a relay. Nothing near her post can be used while she holds it; draw her off.",
         "porcelle" => "The only hunter your map shows.",
         "quenelle" => "Keep your light on for eight seconds and she locks onto you for good, faster every time you flick it.",
@@ -425,7 +430,7 @@ pub fn describe(id: &str) -> &'static str {
         "thessine" => "Mimics sounds that are not there.",
         "umbriel" => "Wears another hunter's body every thirty seconds.",
         "verrine" => "Lives in the vents. Enter them and she hunts you there, faster the longer you stay.",
-        "wynelle" => "Cold calls her. Stay chilled too long and she appears beside you; thaw the heater or reach the safe zone before you freeze.",
+        "wynelle" => "Cold calls her. Stay chilled too long and she appears beside you; switch the temperature item (7) to heat or reach the safe zone before you freeze.",
         "xivvy" => "Locks on at arm's length without needing to see you, and only gets faster the longer a chase runs.",
         "ysolde" => "Steals batteries off the floor and keeps her distance from you.",
         "zellia" => "A merchant in the middle of the floor. Coins buy warmth, cold, light or pesticide, but every deal carries a price.",

@@ -155,7 +155,7 @@ not sense you at all); the in-game admin overlay's switches (`ui::admin::flags()
 | `hunters` | | [{index, id, name, tier, active, state (idle/wander/investigate/chase/search), pos, facing, distance, visible, stun, slow, speed, last_known, taser_immune, melee_immune}] |
 | `relays` | | [{index, cell, pos, taken, distance}] |
 | `focus` | | what [E] would hit now: {kind, index, pos, distance, prompt} or null |
-| `objects` | | start, exit, has_lift, safe_zone, hunter_spawn, relays, batteries, pickups, coins, lockers, stairs, light_switches, heater, music_box, vents |
+| `objects` | | start, exit, has_lift, safe_zone, hunter_spawn, relays, batteries, pickups, coins, lockers, stairs, light_switches, music_box, vents |
 | `rooms` | | [{index, type, label, region, rect [x,z,w,h], center, climate}] |
 | `map` | `radius` (around you), `discovered_only` (default true) | `rows_text` (one string per z row): `#` wall `.` floor `?` unseen `P` you `H` hunter `R` relay `B` battery `L` locker `X` lift `S` safe zone `>`/`<` stairs down/up; `origin` [x,z] of the first char |
 | `discovered` | `cells` (bool) | `count` (+ `cells` [[x,z]...]) |
@@ -165,7 +165,7 @@ not sense you at all); the in-game admin overlay's switches (`ui::admin::flags()
 | `nav` | | reachability from the start: relays/batteries/lockers reachable, exit_reachable, unreachable list |
 | `hash` | | `hash` (PlaytestObserver.state_hash: frame, scene, run, player, world, hunters, floats snapped to 0.01; FNV-1a 64) |
 | `look` | `yaw`, `pitch`, `dyaw`, `dpitch`, `at` [x,z] + `height`, `face` north/south/east/west | `player`, `focus` (after 1 settle frame) |
-| `teleport` | `{x, z}`, `{cell:[x,z]}`, or `{to, index}` with to = relay, battery, locker, lift, stairs, stairs_down, stairs_up, safe_zone, heater, music_box, vent, light_switch, coin, pickup, hunter, start | `player`, `focus` (placed beside the object, facing it: the next `interact` hits it) |
+| `teleport` | `{x, z}`, `{cell:[x,z]}`, or `{to, index}` with to = relay, battery, locker, lift, stairs, stairs_down, stairs_up, safe_zone, music_box, vent, light_switch, coin, pickup, hunter, start | `player`, `focus` (placed beside the object, facing it: the next `interact` hits it) |
 | `teleport` `stairs_down` / `stairs_up` | `{to: "stairs_down"}` or `{to: "stairs_up"}` | places you beside the nearest flight end (kept for tests and bots); you then walk the flight, there is no swap |
 | `interact` | `kind` (refuse unless the focus is that kind, e.g. "RELAY"), `hold_frames` | `focus_before`, `focus_after`, `events`, `run` |
 | `goto` | `{x, z}` or `{to, index}`, `max_frames` (1800), `radius` | walks there with the bot's A* navigator: `arrived`, `frames`, `distance`, `player`, `focus` |
@@ -177,7 +177,7 @@ not sense you at all); the in-game admin overlay's switches (`ui::admin::flags()
 
 Focus / interactable kinds (the original's `RouteInteractable3D.Kind` names): `RELAY`, `BATTERY`,
 `TOOL_PICKUP`, `COIN`, `HIDING_SPOT`, `SAFE_ZONE`, `LIFT`, `STAIRS`, `LIGHT_SWITCH`,
-`HEATER_STATION`, `MUSIC_BOX`, `VENT`, `SHOP`.
+`MUSIC_BOX`, `VENT`, `SHOP` (`HEATER_STATION` is retired: [archive/heater-stations](../archive/heater-stations/README.md)).
 
 ### The observation (`observe`, `step`)
 
@@ -203,7 +203,7 @@ online {...}, meters {...}, hotbar {...}, escape {remaining, progress, needed, h
 
 Each event: `{seq, frame, type, ...}`. Types: `run_started`, `floor_changed` {depth, level,
 level_seed}, `window_recentred` {center}, `relay_collected` {relays_collected, relays_total, score},
-`coins_changed`, `hotbar_changed` {slots}, `flashlight` {on}, `heater` {state}, `hid` {locker},
+`coins_changed`, `hotbar_changed` {slots}, `flashlight` {on}, `hid` {locker},
 `left_hiding`, `entered_vent`, `left_vent`, `hunter_activated`, `hunter_spawned`, `hunter_state`
 {id, from, to}, `hunter_encounter` {hunter, state, dist}, `captured` {hunter, presses_needed,
 seconds}, `escaped`, `message` {text}, `toast` {text}, `run_ended` {report}.
@@ -275,7 +275,7 @@ Globs are expanded by the program (PowerShell does not); a directory runs all it
 | run_flow | relay scoring, activation per difficulty, lift, capture -> struggle -> escape / report, god / no_target (run_report) |
 | hunters | director (relays mirrored, relay rush), taser on immune hunters, crowbar stun + durability, noclip, run speed |
 | infinite | 135x135 window, stairs, recentring, population growth (streamed_world, level_links) |
-| interactables | light switch, heater, locker, pickups, coins, vents, music box |
+| interactables | light switch, locker, pickups, coins, vents, music box |
 | bot | collect_relays, reach_depth, explore_coverage, goto (playtest_scenarios.gd) |
 
 ## The bot (`--bot` / `--playtest-runner`, or the `bot` command)

@@ -177,7 +177,6 @@ pub fn from_layout(seed: &str, k: ChunkKey, lay: &ChunkLayout, cat: &Catalog) ->
         .collect();
 
     let mut fixtures = Fixtures {
-        heater: None,
         vents: wall_fixtures
             .iter()
             .filter(|x| x.kind == "vent")
@@ -202,7 +201,6 @@ pub fn from_layout(seed: &str, k: ChunkKey, lay: &ChunkLayout, cat: &Catalog) ->
     f.rebuild_grids();
     f.apply_catwalks(seed, k, crate::world::route::regions::region_for(seed, k.cx, k.cy, k.level));
     f.rebuild_grids();
-    fixtures.heater = crate::world::fixtures::heater_for(&f, &format!("{seed}:{}:{}", k.cx, k.cy), is_safe_chunk(seed, k.cx, k.cy));
     (f, fixtures)
 }
 
@@ -537,35 +535,6 @@ mod tests {
     const CHUNKS: [(i32, i32); 6] = [(0, 0), (1, 0), (0, 1), (-2, 3), (5, -4), (7, 7)];
 
     #[test]
-    fn heaters_keep_off_the_safe_room_stairs_and_doors_in_every_golden_chunk() {
-        let mut seen = 0;
-        for world in WORLDS {
-            for cz in -3..=3 {
-                for cx in -3..=3 {
-                    let k = ChunkKey { cx, cy: cz, level: 0 };
-                    let Some((f, fix)) = chunk(world, k, cat()) else { continue };
-                    let Some(h) = fix.heater else { continue };
-                    seen += 1;
-                    let near = |c: Cell, r: i32| (c.x - h.x).abs() <= r && (c.y - h.y).abs() <= r;
-                    let at = format!("{world} {cx},{cz}");
-                    assert!(f.can_occupy(h.x as f64 + 0.5, h.y as f64 + 0.5, 0.23), "{at}: heater is blocked");
-                    if is_safe_chunk(world, cx, cz) {
-                        assert!(!near(f.start, 3), "{at}: heater in the safe room or on its checkpoint");
-                    }
-                    for s in &f.stairs {
-                        assert!(!s.well_cells().into_iter().any(|c| near(c, 1)), "{at}: heater at a stair well");
-                        assert!(![s.cell, s.landing(), s.step_cell()].into_iter().any(|c| near(c, 1)), "{at}: heater at a stair doorway");
-                    }
-                    for p in f.props.iter().filter(|p| p.door.is_some()) {
-                        assert!(!near(p.cell, 1), "{at}: heater on a door threshold");
-                    }
-                }
-            }
-        }
-        assert!(seen > 100, "most golden chunks have a heater, got {seen}");
-    }
-
-    #[test]
     fn only_level_zero_is_adapted() {
         let k = ChunkKey { cx: 0, cy: 0, level: -1 };
         assert!(chunk(WORLDS[0], k, cat()).is_none());
@@ -600,7 +569,7 @@ mod tests {
                 let Some(lay) = layout::chunk_layout(world, Coord::new(cx, 0, cz)) else {
                     continue;
                 };
-                let (f, fix) = chunk(world, k, cat()).expect("level 0 is adapted");
+                let (f, _) = chunk(world, k, cat()).expect("level 0 is adapted");
                 assert_eq!(f.cols, CHUNK);
                 assert_eq!(f.rows, CHUNK);
                 assert_eq!(f.start, Cell::new(CENTRE, CENTRE));
@@ -619,9 +588,6 @@ mod tests {
                 let batteries = lay.pickups.iter().filter(|p| p.kind == "battery").count();
                 assert_eq!(f.relays.len(), relays, "{world} {cx},{cz}: relays");
                 assert_eq!(f.batteries.len(), batteries, "{world} {cx},{cz}: batteries");
-                if let Some(h) = fix.heater {
-                    assert!(f.can_occupy(h.x as f64 + 0.5, h.y as f64 + 0.5, 0.23), "{world} {cx},{cz}: heater is blocked");
-                }
                 // a stair flight clears the props it crosses (clear_props_in); without one, every solid prop stays
                 // a prop low enough to walk over is floor (navigation::walk_over), so it is not solid here
                 let solid = lay

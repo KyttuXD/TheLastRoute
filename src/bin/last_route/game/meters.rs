@@ -19,7 +19,6 @@ pub struct Situation {
     pub crouching: bool,
     pub hidden: bool,
     pub in_safe_zone: bool,
-    pub heater_on: bool,
     /// The room's climate offset (hot and cold spots; 0 in halls).
     pub local: f32,
 }
@@ -101,16 +100,12 @@ impl Meters {
         }
         self.noise_meter = (self.noise_meter + rise - 5.0 * dt).clamp(0.0, 100.0);
         // ambient drift
-        if s.heater_on {
-            self.ambient = (self.ambient + 3.0 * dt).min(100.0);
-        } else {
-            let step = ((self.ambient - 60.0) / 5.0).floor().max(0.0);
-            let interval = (5.0 - step * 0.5).max(0.5);
-            self.rise_timer += dt;
-            if self.rise_timer >= interval {
-                self.rise_timer -= interval;
-                self.ambient = (self.ambient + 0.85).clamp(0.0, 100.0);
-            }
+        let step = ((self.ambient - 60.0) / 5.0).floor().max(0.0);
+        let interval = (5.0 - step * 0.5).max(0.5);
+        self.rise_timer += dt;
+        if self.rise_timer >= interval {
+            self.rise_timer -= interval;
+            self.ambient = (self.ambient + 0.85).clamp(0.0, 100.0);
         }
         // body
         let local_ambient = (self.ambient + s.local).clamp(0.0, 100.0);

@@ -124,7 +124,7 @@ These sit outside the gimmicks. They are mentioned per hunter only so they don't
 
 ### 0.7 Player meters (`player_meters.gd`), as they matter to gimmicks
 
-Updated by the player controller every frame with `{flashlight_on, noise, crouching, hidden, in_safe_zone, heater_on}`.
+Updated by the player controller every frame with `{flashlight_on, noise, crouching, hidden, in_safe_zone, heater_on}`. (Rust: the meters no longer take `heater_on`; the temperature item moves the target instead, see section 27 and the note under Wynelle.)
 
 - **Exposure** 0-100 (the port does not track it yet; Aki and Xivvy read it):
   `target = hidden ? 0 : (18 + (flashlight ? 55 : 0) + clamp(noise / 10.5, 0, 1) * 40) * (crouching ? 0.55 : 1)`, clamped to 0-100.
@@ -777,6 +777,8 @@ Wynelle is in the ordinary draw, but she wakes herself.
 - call `_capture_target(view, target, inescapable = true)`, an instant death;
 - call `consume_frozen_player()`, which sets `progress = 50`, `materialized = false` and makes her inactive.
 
+**Rust port: the heater station is retired (2026-11-06).** The temperature item (hotbar slot 7, `game/specialty.rs`) replaced it: heat set on the item is the only heater Wynelle knows (`Ctx.heater_on` and `heater_thawed` are fed from `heat_source_for_hunters` alone). The Godot description below stays as the original's reference; see [archive/heater-stations](../archive/heater-stations/README.md).
+
 **Heater station** (one per floor, 3-7 cells from start): the interact cycle is FROZEN, UNFROZEN, POWERED, UNFROZEN, POWERED and so on.
 - POWERED also sets `player.heater_on`, so the ambient temperature rises 3/s (see section 27).
 - Messages: "Heater station thawed." / "Heater station powered. The facility is warming." / "Heater station powered down."
@@ -920,6 +922,8 @@ She is always spawned, inert: `_extra_hunter_spawn` index 0, `angle = 0.8`, dist
 6. If `state == INSPECT`, return. Otherwise: `state = CHASE`, `last_known = player`, `lost_sight_timer = 0`. That is an omniscient chase; her hearing is 0.
 
 A TIMER capture is a normal escapable grab (death cause "darkness").
+
+**Port addition (owner request, 2026-11): dead flashlight.** The game feeds `Ctx::flashlight_dead` (the runner's lamp charge is empty, so it cannot light; a lamp merely switched off is not dead). A third wake, DEAD, fires after `dead_delay` (3 s, data/hunters/nyxie_wake.json) of that: she spawns `dead_spawn_distance` (10) cells away like TIMER and a live beam dispels her the same way (a battery, then the flashlight on, aimed). The 120 s darkness rule still covers the lamp-off case. A lamp that stays dead until `empty_delay` (10 s) still ends in EMPTY (she moves onto the runner, inescapable), so DEAD can escalate to EMPTY. The wake is the same on every difficulty.
 
 **Same on relaxed, standard and hard.** Pounce on nightmare only.
 **World needs:** lamp charge, flashlight toggle and facing (all present). Fully portable.

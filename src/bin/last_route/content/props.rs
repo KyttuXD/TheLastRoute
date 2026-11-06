@@ -174,10 +174,12 @@ mod tests {
                 assert!(embedded::asset(m).is_some(), "{}: {m} is not embedded", def.id);
             }
         }
-        for name in ["relay", "battery", "coin", "hiding_spot", "lift", "vent", "safe_zone", "music_box", "heater_station", "wall_light_switch", "flashlight_item", "taser_item", "crowbar", "rescue_axe", "stim_pack"] {
+        for name in ["relay", "battery", "coin", "hiding_spot", "lift", "vent", "safe_zone", "music_box", "wall_light_switch", "flashlight_item", "taser_item", "crowbar", "rescue_axe", "stim_pack"] {
             assert!(embedded::asset(&format!("interactables/{name}.bbmodel")).is_some(), "{name}");
         }
         assert!(!embedded::assets_under("").any(|(p, _)| p.ends_with(".glb")), "a .glb is embedded");
+        // the heater station is retired and archived (archive/heater-stations/): its model is no longer embedded
+        assert!(embedded::asset("interactables/heater_station.bbmodel").is_none(), "the retired heater model is embedded");
     }
 
     /// The two models the game splits by outliner group name carry those groups, with the pivots door.rs and the

@@ -1,53 +1,70 @@
 {
   "schema": "lr.ambient/1",
-  "_about": "Ambient light and fog per place (render/ambient.rs, read by scene.rs lighting()). `default` is the baseline and needs all four keys. An override row, `region.<region id>` (the region of the cell the runner stands in) or `level.<n>` (-1, -2, -3: the sewers, the nether, the Inferno), may carry any of the four; a missing key falls back to `default`. A region row wins over a level row (scene.rs lighting() only looks up the region on level 0, so a region row never overrides a sewer or Inferno level row). Level 0 region rows: hospital cold teal, mall warm and open, office grey blue, mansion dark warm and tight, maze the baseline. ambient_color: \"#rrggbb\" or [r, g, b] in 0..1. ambient_energy: 0 or more; the shader adds ambient_color x ambient_energy to every lit surface. The sewer rows (-1, -2) are greener, darker and tighter; scene.rs lighting() also leans their ambient_color toward the water tint by sewer_water.json `glow_mix`. Godot's RefLook is #5a3550 at 0.035, which leaves this shader's rooms black, so the port keeps 0.35: change `default.ambient_energy` to 0.035 for Godot's value. fog_color: [r, g, b] in 0..1, also the clear colour. fog_far: metres to full fog on lit surfaces (the world cull in scene.rs follows the current fog_far, 1.6 x of it, kept between 16 and 80 m). blend_seconds: time constant of the ease toward a new place's look when the runner crosses a region border or changes level (0: the look jumps; default 0.5).",
+  "_about": "Ambient light, fog and the flashlight per place (render/ambient.rs, read by scene.rs lighting()). `default` is the baseline and needs ambient_color, ambient_energy, fog_color and fog_far. An override row, `region.<region id>` (the region of the cell the runner stands in) or `level.<n>` (-1, -2, -3: the sewers, the nether, the Inferno), may carry any of the five keys; a missing key falls back to `default`. A region row wins over a level row (scene.rs lighting() only looks up the region on level 0, so a region row never overrides a sewer or Inferno level row). Level 0 region rows: hospital cold teal, mall warm and open, office grey blue, mansion dark warm and tight, maze the baseline. ambient_color: \"#rrggbb\" or [r, g, b] in 0..1. ambient_energy: 0 or more; the shader adds ambient_color x ambient_energy to every lit surface. The sewer rows (-1, -2) are greener, darker and tighter; scene.rs lighting() also leans their ambient_color toward the water tint by sewer_water.json `glow_mix`. Godot's RefLook is #5a3550 at 0.035, which leaves this shader's rooms black, so the port keeps about 0.3: change `default.ambient_energy` to 0.035 for Godot's value. fog_color: [r, g, b] in 0..1, also the clear colour. fog_far: metres to full fog on surfaces the building lamps light (the world cull in scene.rs follows the current fog_far, 1.6 x of it, kept between 16 and 80 m). dark_far: metres to full fog for the AMBIENT light alone (a missing key falls back to the default row, and a default without one to fog_far): past it a surface no lamp or beam lights is black, so the maze shows a few cells in the dark and the lit rooms (fog_far) keep their reach. Level 0 is dark (8 to 13 m); the sewers and the Inferno keep dark_far = fog_far, their old look. blend_seconds: time constant of the ease toward a new place's look when the runner crosses a region border or changes level (0: the look jumps; default 0.5). flashlight: the held beam. range: metres the cone throws (Godot's SpotLight3D is 16 m at energy 7.5; the port's cone falls off as a plain square, so the nominal range is longer for the same readable throw). intensity: multiplier on the cone light. fog_reach: metres to full fog for the beam-lit light, longer than every dark_far, so the beam reveals what the ambient fog hides (the world cull widens to it while the beam is lit).",
   "blend_seconds": 0.5,
+  "flashlight": {
+    "range": 26.0,
+    "intensity": 2.4,
+    "fog_reach": 30.0
+  },
   "default": {
     "ambient_color": "#5a3550",
-    "ambient_energy": 0.35,
+    "ambient_energy": 0.30,
     "fog_color": [0.012, 0.008, 0.014],
-    "fog_far": 24.0
+    "fog_far": 24.0,
+    "dark_far": 8.0
   },
   "region.hospital": {
     "ambient_color": "#5c8084",
-    "ambient_energy": 0.38,
+    "ambient_energy": 0.33,
     "fog_color": [0.012, 0.020, 0.022],
-    "fog_far": 26.0
+    "fog_far": 26.0,
+    "dark_far": 12.0
   },
   "region.mall": {
     "ambient_color": "#6e5a48",
-    "ambient_energy": 0.40,
+    "ambient_energy": 0.35,
     "fog_color": [0.020, 0.015, 0.010],
-    "fog_far": 30.0
+    "fog_far": 30.0,
+    "dark_far": 13.0
   },
   "region.office": {
     "ambient_color": "#4c5666",
-    "ambient_energy": 0.33,
+    "ambient_energy": 0.29,
     "fog_color": [0.009, 0.011, 0.017],
-    "fog_far": 22.0
+    "fog_far": 22.0,
+    "dark_far": 10.0
   },
   "region.mansion": {
     "ambient_color": "#5e3a2c",
-    "ambient_energy": 0.30,
+    "ambient_energy": 0.26,
     "fog_color": [0.017, 0.008, 0.006],
-    "fog_far": 18.0
+    "fog_far": 18.0,
+    "dark_far": 8.0
   },
   "region.maze": {
     "ambient_color": "#5a3550",
-    "ambient_energy": 0.35,
+    "ambient_energy": 0.30,
     "fog_color": [0.012, 0.008, 0.014],
-    "fog_far": 24.0
+    "fog_far": 24.0,
+    "dark_far": 8.0
   },
   "level.-1": {
     "ambient_color": "#2c4a38",
     "ambient_energy": 0.22,
     "fog_color": [0.005, 0.012, 0.009],
-    "fog_far": 16.0
+    "fog_far": 16.0,
+    "dark_far": 16.0
   },
   "level.-2": {
     "ambient_color": "#254a3c",
     "ambient_energy": 0.17,
     "fog_color": [0.004, 0.010, 0.008],
-    "fog_far": 13.0
+    "fog_far": 13.0,
+    "dark_far": 13.0
+  },
+  "level.-3": {
+    "ambient_energy": 0.35,
+    "dark_far": 24.0
   }
 }

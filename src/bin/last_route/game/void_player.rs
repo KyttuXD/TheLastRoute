@@ -2,7 +2,7 @@
 //! radar static or blackout (Void Purple) and Void Pink's fake footsteps. The gimmicks only emit events
 //! (hunters/gimmicks/void/*.rs); the timers and the HUD state live here.
 
-use super::{Game, Heater};
+use super::Game;
 use crate::audio::cues::rules::fake_step_volume;
 use crate::audio::sound;
 use crate::hunters::gimmicks::void::void_orange::{Outage, System};
@@ -133,11 +133,6 @@ impl Game {
         if self.void_fx.steps.is_empty() {
             self.void_fx.steps = fake_footstep_plan(f);
         }
-    }
-
-    /// Climate: the heater runs only while it is powered and the climate system is not offline (Void Orange).
-    pub fn heater_running(&self) -> bool {
-        self.heater == Heater::Powered && !self.void_fx.offline(System::Climate)
     }
 
     /// The minimap and the full map are blanked (Void Orange radar outage, Void Purple blackout).
