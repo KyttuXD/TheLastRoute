@@ -76,7 +76,7 @@ Once converted, the values agree for standard difficulty with admin speed scale 
 
 ### hunters-difficulty (no confirmed items in this run)
 - Nightmare is absent in Rust (`difficulty.rs` has Relaxed, Standard, Hard only).
-- Rust lacks Godot's day-mode sight, LightField exposure sight, troll speed, hard-ability speed, patrol anchor, spawn-distance rule and NORMAL_HUNTER_EXTREME scale.
+- Rust lacks Godot's day-mode sight, troll speed, hard-ability speed, patrol anchor, spawn-distance rule and NORMAL_HUNTER_EXTREME scale.
 - Latent divergence: Rust's non-taser-immune branch uses `escape_stun` (`src\bin\last_route\game\items.rs:133`) where Godot uses `taser_stun`. No hunter in `src/bin/last_route/data/hunters` currently has `taser_immune` false, so it has no effect on current content.
 - Godot `game\hunters\gimmicks\ceryth_gimmick.gd` is missing from the tree (only the `.uid` file exists), so the Ceryth retreat speed could not be confirmed.
 - Not compared: hide profile values, hunter seats, naps, peek, inspect and level roam, hard-ability frequencies, emote values, streamed hunter population, escape and struggle constants, and the Nyxie and Solyth spawn rules.

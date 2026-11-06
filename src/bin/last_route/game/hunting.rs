@@ -276,6 +276,7 @@ impl Game {
             self.pickups.iter().filter(|p| p.item == Item::MusicBox && !p.taken).map(|p| p.pos).collect();
         let mut all_events: Vec<(usize, Event)> = vec![];
         let mut caught: Option<usize> = None;
+        let mut light = super::light_sight::LightFrame::default();
         for i in 0..self.hunters.len() {
             let (hunter_target, chose_bot, guest_peer) = if self.no_local_runner {
                 match self.target_for_guests(&self.hunters[i], list_level, &guests, &bot_targets) {
@@ -293,6 +294,8 @@ impl Game {
                 n.runner = chose_bot.then(|| target.clone());
             }
             let hunter_target = &hunter_target;
+            // mutual light sight: how lit this hunter stands and how lit its target stands (game/light_sight.rs)
+            self.refresh_light_sight(i, dt, hunter_target, &mut light);
             if let Gimmick::Solyth(s) = &mut self.hunters[i].gimmick {
                 s.heat_locked = self.meters.heat_locked;
             }

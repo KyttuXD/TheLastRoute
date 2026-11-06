@@ -16,6 +16,8 @@ pub struct Flags {
     pub run_speed: f32,
     pub fullbright: bool,
     pub wireframe: bool,
+    /// The admin MUTUAL LIGHT SIGHT switch (hunters/light_field.rs): on unless the admin turned it off.
+    pub light_sight: bool,
 }
 
 pub static GOD: AtomicBool = AtomicBool::new(false);
@@ -23,6 +25,7 @@ pub static NO_TARGET: AtomicBool = AtomicBool::new(false);
 pub static NOCLIP: AtomicBool = AtomicBool::new(false);
 pub static FULLBRIGHT: AtomicBool = AtomicBool::new(false);
 pub static WIREFRAME: AtomicBool = AtomicBool::new(false);
+pub static LIGHT_SIGHT: AtomicBool = AtomicBool::new(true);
 pub static RUN_SPEED: AtomicU32 = AtomicU32::new(0x3f80_0000); // 1.0f32
 
 #[allow(dead_code)]
@@ -34,6 +37,7 @@ pub fn flags() -> Flags {
         run_speed: f32::from_bits(RUN_SPEED.load(Ordering::Relaxed)),
         fullbright: FULLBRIGHT.load(Ordering::Relaxed),
         wireframe: WIREFRAME.load(Ordering::Relaxed),
+        light_sight: LIGHT_SIGHT.load(Ordering::Relaxed),
     }
 }
 
