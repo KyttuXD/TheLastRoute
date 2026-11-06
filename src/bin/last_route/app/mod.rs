@@ -1195,6 +1195,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 loading = None;
                 death = None;
                 pz = Pause::default();
+                // a lock given up in the last run (a hand-back on a grab) must not hold the new run's first capture
+                pointer_wait = run_gate::PointerWait::default();
                 map_open = false;
                 last_save = checkpoint::load();
             }
@@ -1250,6 +1252,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             );
             let click = is_mouse_button_pressed(MouseButton::Left) || is_mouse_button_pressed(MouseButton::Right);
             // no lock request until a click when the last close had no gesture to take the lock with
+            let relock_click = pointer_wait.relock_click(click) && want_grab;
             want_grab = pointer_wait.allows_grab(want_grab, click, pz.open || in_report);
             // a long frame (a hitch, or the window was in the background) may have left the capture half-undone and
             // the cursor warp pending: settle again, re-issue the capture now and again on the next click
@@ -1322,6 +1325,10 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             };
             if pz.open || map_open || admin.is_open() || update_screen.is_shown() {
                 c = Controls::default();
+            }
+            // the click that took the pointer lock back after a hand-back is a gesture, not a use of the held item
+            if relock_click {
+                c.use_item = false;
             }
             // the open map takes the mouse and the keys (pan, zoom, waypoints) while the run itself is still
             if map_open && !pz.open && !in_report && !admin.is_open() {

@@ -67,9 +67,14 @@ pub fn hand_back_on_grab(pz: &mut Pause, online: bool, held_by_hunter: bool, loc
 pub struct PointerWait(bool);
 
 impl PointerWait {
-    #[cfg(test)]
     pub fn waiting(self) -> bool {
         self.0
+    }
+
+    /// Whether this frame's click is the one that takes the lock back (call before [`Self::allows_grab`]): it is a
+    /// gesture for the browser, not a use of the held item, so the caller drops the frame's `use_item`.
+    pub fn relock_click(self, click: bool) -> bool {
+        self.0 && click
     }
 
     pub fn start(&mut self) {
@@ -471,5 +476,60 @@ mod tests {
             assert!(!hb.closed);
         }
         assert!(pz.open && pz.tab == 1 && !wait.waiting());
+    }
+
+    #[test]
+    fn the_hand_back_fires_once_per_open_menu_so_a_relock_click_is_never_undone() {
+        // the loop's per-frame order: hand back, then the wait decides the capture. The runner stays held for many frames.
+        let mut pz = open_menu(Sub::Settings, 1);
+        let mut wait = PointerWait::default();
+        let mut grabs = Vec::new();
+        for frame in 0..300 {
+            let hb = hand_back_on_grab(&mut pz, true, true, false);
+            if hb.wait_for_click {
+                wait.start();
+            }
+            assert_eq!(hb.closed, frame == 0, "only the first frame closes the menu");
+            // a click on frame 100 takes the lock; nothing after it may put the wait back while still held
+            let click = frame == 100;
+            grabs.push(wait.allows_grab(true, click, pz.open));
+        }
+        assert!(grabs[..100].iter().all(|g| !*g), "no capture before the click");
+        assert!(grabs[100..].iter().all(|g| *g), "captured from the click on and never lost again while held");
+        assert!(!wait.waiting());
+    }
+
+    #[test]
+    fn the_click_that_relocks_is_not_a_use_of_the_held_item() {
+        let mut wait = PointerWait::default();
+        assert!(!wait.relock_click(true), "not waiting: a click is an ordinary click");
+        wait.start();
+        assert!(!wait.relock_click(false), "waiting, no click");
+        assert!(wait.relock_click(true), "the click that ends the wait is a gesture only");
+        assert!(wait.allows_grab(true, true, false));
+        assert!(!wait.relock_click(true), "the next click is an ordinary click again");
+    }
+
+    #[test]
+    fn a_new_wait_after_a_lost_lock_during_the_grab_keeps_the_menu_shut_and_the_struggle_alive() {
+        // the web drops the lock (Escape) in the middle of the struggle: no menu (Escape is ignored while held), the cursor
+        // stays free, nothing asks for the lock, and the keys still struggle
+        let (mut g, content, catalog) = staged(1.5);
+        let mut pz = Pause::default();
+        let mut wait = PointerWait::default();
+        let mut n = 0;
+        while g.escape.is_none() && g.report.is_none() && n < 600 {
+            room_frame(&mut g, &content, &catalog, &mut pz, &mut wait, true, false);
+            n += 1;
+        }
+        assert!(g.escape.is_some());
+        assert!(!pause_allowed(true, g.escape.is_some()), "the lost lock may not open the menu");
+        wait.start();
+        for _ in 0..6 {
+            assert!(!wait.allows_grab(true, false, false));
+            room_frame(&mut g, &content, &catalog, &mut pz, &mut wait, false, true);
+        }
+        assert!(!pz.open && g.escape.is_none() && g.report.is_none(), "free again, menu still shut");
+        assert!(pause_allowed(true, g.escape.is_some()), "once free, Escape pauses as always");
     }
 }
