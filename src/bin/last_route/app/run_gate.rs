@@ -195,4 +195,38 @@ mod tests {
         assert_eq!(off.host_catch_up_steps, 0);
         assert!(crate::net::interp::Rules::parse(r#"{"schema":"lr.net_sync/1","host_catch_up_steps":-1}"#).is_err());
     }
+
+    #[test]
+    fn a_paused_room_world_is_the_same_world_as_an_unpaused_one_with_nobody_at_the_keys() {
+        // the menu must change nothing but the runner's input: same hunters, same clock, same runner, frame for frame
+        let (mut a, content, catalog) = staged(6.0);
+        let (mut b, _, _) = staged(6.0);
+        frames(&mut a, &content, &catalog, 120, true, true);
+        frames_with(&mut b, &content, &catalog, 120, false, true, Controls::default());
+        assert_eq!(a.hunters[0].pos, b.hunters[0].pos, "paused and idle hunters agree");
+        assert_eq!(a.p.pos, b.p.pos, "and so does the runner");
+        assert_eq!(a.time, b.time);
+    }
+
+    #[test]
+    fn the_catch_up_never_exceeds_the_cap_for_any_frame_length_and_never_shrinks_as_the_stall_grows() {
+        let mut last = 0;
+        for i in 0..4000 {
+            let raw = i as f32 * 0.01;
+            let n = extra_steps(raw, true, 4);
+            assert!(n <= 4 && n >= last, "{raw}: {n} after {last}");
+            last = n;
+        }
+        for bad in [f32::NEG_INFINITY, -1.0, -0.0, 0.0, f32::MIN, f32::MAX] {
+            assert!(extra_steps(bad, true, 20) <= 20, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_hostile_catch_up_value_is_bounded_or_refused() {
+        let parse = |v: &str| crate::net::interp::Rules::parse(&format!(r#"{{"schema":"lr.net_sync/1","host_catch_up_steps":{v}}}"#));
+        assert_eq!(parse("1000000").unwrap().host_catch_up_steps, 20, "a huge value is clamped, never a stall of its own");
+        assert_eq!(parse("2.9").unwrap().host_catch_up_steps, 2);
+        assert!(parse("1e999").is_err() && parse("\"4\"").is_err() && parse("null").is_err());
+    }
 }
