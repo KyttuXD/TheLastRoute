@@ -75,6 +75,10 @@ pub const PULSES: &[&str] = &[
     "slot_3",
     "slot_4",
     "slot_5",
+    "slot_6",
+    "slot_7",
+    "slot_8",
+    "slot_9",
     "shop_1",
     "shop_2",
     "shop_3",
@@ -580,11 +584,13 @@ impl Session {
                     "hotbar_next" => c.wheel = 1,
                     "jump" => c.jump = true,
                     s if s.starts_with("slot_") => {
-                        c.slot = s[5..]
-                            .parse::<usize>()
-                            .ok()
-                            .filter(|n| (1..=HOTBAR_SIZE).contains(n))
-                            .map(|n| n - 1)
+                        let n = s[5..].parse::<usize>().ok();
+                        c.slot = n.filter(|n| (1..=HOTBAR_SIZE).contains(n)).map(|n| n - 1);
+                        // slots 6 to 9 are the hunter specialty bar (game/specialty.rs), not hotbar slots
+                        let first = crate::game::specialty::FIRST_NUMBER as usize;
+                        c.specialty = n
+                            .filter(|n| (first..first + crate::game::specialty::SLOT_COUNT).contains(n))
+                            .map(|n| n - first);
                     }
                     s if s.starts_with("shop_") => {
                         c.shop_choice = s[5..]

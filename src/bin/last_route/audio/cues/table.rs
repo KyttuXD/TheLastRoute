@@ -269,25 +269,19 @@ pub fn components(cue: &str, pan: f64, intensity: f64) -> Option<Vec<Component>>
                 .collect()
         }
         "music_box_tune" => {
-            // the music box's loop (MusicBoxTune): a phrase, four notes more, then four that turn around and come home
-            let tune = [
-                1046.5, 1318.5, 1568.0, 1318.5, 1760.0, 1568.0, 1318.5, 1174.7, 1318.5, 1568.0,
-                1396.9, 1174.7, 1046.5, 1174.7, 1318.5, 1046.5,
-            ];
-            let mut c: Vec<Component> = tune
+            // the music box's loop (MusicBoxTune): Night Watch's Masked Hours tune, 13 sine notes 380 ms apart, each ringing
+            // 0.5 s (music_box.rs holds the notes and the spacing). Each note starts on a whole frame of the grid (the half
+            // frame keeps `delay * rate` from truncating one frame early), so the spacing is exactly constant. No breath:
+            // `music_box::tune` folds the last note's ring onto the start so the loop has no seam.
+            use super::music_box::{NOTE_RING_SECONDS, NOTE_STEP_FRAMES, TUNE_NOTES};
+            TUNE_NOTES
                 .iter()
                 .enumerate()
-                .map(|(k, f)| t(*f, 0.34, 0.14, k as f64 * 0.27, "triangle", 0.0))
-                .collect();
-            c.push(t(
-                0.0,
-                0.01,
-                0.0,
-                tune.len() as f64 * 0.27 + 0.3,
-                "sine",
-                0.0,
-            )); // breath before the loop
-            c
+                .map(|(k, f)| {
+                    let at = ((k * NOTE_STEP_FRAMES) as f64 + 0.5) / super::SAMPLE_RATE as f64;
+                    t(*f, NOTE_RING_SECONDS, 0.14, at, "sine", 0.0)
+                })
+                .collect()
         }
         "glyra_hum" => {
             // Glyra humming along, low and soft (HunterView3D, only while her music plays)

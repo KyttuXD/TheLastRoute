@@ -568,6 +568,20 @@ impl Sim {
             "slots": g.slots.iter().map(|s| s.map(|s| json!({ "item": item_id(s.item), "label": s.item.label(), "count": s.n }))).collect::<Vec<_>>(),
             "taser_cooldown": r2(g.taser_cd),
             "melee_cooldown": r2(g.melee_cd),
+            // the hunter specialty bar, slots 6 to 9 (game/specialty.rs): shown while the owning hunter is on the floor
+            "specialty": {
+                "selected": g.specialty.selected.map(|i| i + crate::game::specialty::FIRST_NUMBER as usize),
+                "slots": crate::game::specialty::rules().slots.iter().enumerate().map(|(i, d)| json!({
+                    "number": d.number,
+                    "id": d.id,
+                    "visible": g.specialty.visible[i],
+                    "item": g.specialty.items[i].map(|it| match it {
+                        crate::game::specialty::SpecItem::MusicBox => "music_box",
+                        crate::game::specialty::SpecItem::Temperature(crate::game::specialty::Mode::Heat) => "heat",
+                        crate::game::specialty::SpecItem::Temperature(crate::game::specialty::Mode::Cold) => "cold",
+                    }),
+                })).collect::<Vec<_>>(),
+            },
         })
     }
 

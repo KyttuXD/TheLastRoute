@@ -370,3 +370,89 @@ impl Backend {
         all
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("lr_backend_session_{name}_{}", crate::shared::task::process_id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn http(status: u16) -> NetError {
+        NetError::Http { status, code: String::new(), error: String::new(), body: serde_json::Value::Null }
+    }
+
+    fn signed(dir: &Path, cfg: &BackendConfig) -> Backend {
+        AccountStore::new(dir, cfg).save(cfg, &StoredSession { username: "KYTTU".into(), session_token: "tok".into() });
+        Backend::new(cfg.clone(), dir)
+    }
+
+    #[test]
+    fn saved_session_is_loaded_but_not_trusted_until_the_server_answers() {
+        let dir = scratch("load");
+        let cfg = BackendConfig::loopback(18105);
+        let backend = signed(&dir, &cfg);
+        assert_eq!(backend.account.session_token, "tok");
+        assert!(!backend.signed_in(), "signed in only after the server confirms the token");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn accepted_session_signs_in_and_is_kept() {
+        let dir = scratch("ok");
+        let cfg = BackendConfig::loopback(18105);
+        let mut backend = signed(&dir, &cfg);
+        let mut events = Vec::new();
+        let reply = AccountReply { username: "KYTTU".into(), ..AccountReply::default() };
+        backend.on_account(Ok(reply), true, &mut events);
+        assert!(backend.signed_in());
+        assert!(matches!(events.as_slice(), [BackendEvent::SignedIn(_)]));
+        assert_eq!(AccountStore::new(&dir, &cfg).load(&cfg).session_token, "tok");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rejected_session_is_cleared_quietly() {
+        for status in config::SESSION_REJECTED_CODES {
+            let dir = scratch(&format!("rej{status}"));
+            let cfg = BackendConfig::loopback(18105);
+            let mut backend = signed(&dir, &cfg);
+            let mut events = Vec::new();
+            backend.on_account(Err(http(status)), true, &mut events);
+            assert_eq!(events, vec![BackendEvent::SignedOut], "no error text for a refused saved session");
+            assert!(!backend.signed_in());
+            assert_eq!(backend.account, StoredSession::default());
+            assert_eq!(AccountStore::new(&dir, &cfg).load(&cfg), StoredSession::default(), "cleared in the store");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn unreachable_server_keeps_the_saved_session() {
+        let dir = scratch("down");
+        let cfg = BackendConfig::loopback(18105);
+        let mut backend = signed(&dir, &cfg);
+        let mut events = Vec::new();
+        backend.on_account(Err(NetError::Timeout), true, &mut events);
+        backend.on_account(Err(http(500)), true, &mut events);
+        assert!(events.iter().all(|e| matches!(e, BackendEvent::AccountError(_))));
+        assert_eq!(AccountStore::new(&dir, &cfg).load(&cfg).session_token, "tok", "a down server is not a logout");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explicit_sign_out_clears_the_store() {
+        let dir = scratch("out");
+        let mut cfg = BackendConfig::loopback(18105);
+        cfg.offline = true; // the revoke call is skipped; the local clear is what is checked
+        let mut backend = signed(&dir, &cfg);
+        backend.sign_out();
+        assert_eq!(backend.account, StoredSession::default());
+        assert_eq!(AccountStore::new(&dir, &cfg).load(&cfg), StoredSession::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

@@ -42,7 +42,7 @@ cues::cache_key(cue, pan, intensity)    // the original's cache key
 cues::cue_names()                       // 164 names: 96 plain, 36 nw_*, 32 step:<gait>:<surface>
 cues::wav_bytes(&frames)                // for macroquad::audio::load_sound_from_bytes
 cues::rules::*                          // what each Sound.<method>() plays, the throttles, and main_3d's pan/volume rules
-cues::music_box::*                      // the tune / hum loops, the wind-down pitch and positional gains
+cues::music_box::*                      // the tune (Night Watch's), the percentage slowdown + run buffer, the hum loop and positional gains
 cues::ambience(region, seconds)         // silence: no bed plays on the finite route (see below)
 ```
 
@@ -116,19 +116,30 @@ the exit path), so the port's current `lift` sound has no source equivalent.
 
 ## The music box tune and its wind-down (`music_box.rs`)
 
-- `music_box_tune` (sound.gd 948-953): 16 triangle notes 0.27 s apart, then a breath. The whole buffer loops. In
-  MusicBoxTune it is positional: unit 5 m, max 12 m, +6 dB, 0.4 m above the box.
-- The pitch follows MusicBoxes' clock. The box plays for 45 / 35 / 25 s (standard / hard / nightmare), and the last 15 s
-  are the wind-down:
-  `pitch_scale = max(.55, .78 + .2 * left / 15 + .045 * sin(clock * 6.3))`, where `clock` is the node's own running
-  time. Then it stops. In Godot, `pitch_scale` is resampling, so the tune gets both slower and lower.
-  `music_box::winddown()` pre-renders that stretch, since macroquad cannot repitch a playing sound. The engine plays it as
-  a looped voice on Master that stops itself when the stretch ends (`Engine::play_frames`), so it follows Master live and
-  `stop_all` stops it.
-- **On the finite route the tune never plays.** MusicBoxTune is only attached when the interactable gets a `music_boxes`
+- `music_box_tune`: **no longer the original's cue** (the golden in `tests.rs` was updated on purpose). It is Night
+  Watch's Masked Hours tune (KyttusLab `games/night-watch/src/modes/mask/mask-data.js` `TUNE`, played by `mask.js`): 13
+  sine notes, 659 587 523 587 659 659 659 587 587 587 659 784 784 Hz (E D C D E E E D D D E G G), 380 ms apart at full
+  wind (16758 frames, so the spacing is exact), each ringing 0.5 s, the phrase restarting straight after the last note
+  (no breath). `music_box::tune()` cuts the render to exactly 13 x 16758 frames and adds the last note's ring onto the
+  start, so the loop has no click and no gap at the seam and every round is the same samples.
+- The speed follows MusicBoxes' clock, as a share of the wound time (45 / 35 / 25 s standard / hard / nightmare):
+  `music_box::slowdown_factor(left / wound, from, floor)` is 1 down to `from` (`slowdown_from_fraction`, 0.70), then a
+  smoothstep down to `floor` (`slowdown_floor`, 0.40), and 0 at an empty box. Full wind and 70 % are normal speed, 35 %
+  is about 0.7 (clearly slower and lower), 0 is stopped. The tune is read back at that rate (resampling, like Godot's
+  `pitch_scale`), so tempo and pitch sink together, like Night Watch's tune slowing as its box runs down. (The old
+  Godot formula, the last 15 s only, is gone; `winddown_seconds` stays for Glyra's mood and the HUD colour.)
+- macroquad cannot repitch a playing sound, so `music_box::run_frames(wound, elapsed)` renders the whole wound time as
+  ONE buffer, a pure function of the wound time and the data (the same on desktop and in the browser), and
+  `world::music_box(left, wound)` plays it once when the box is wound, through `Engine::play_frames` (a looped voice on
+  Master that stops itself when the stretch ends, so it follows Master live and `stop_all` stops it). There is no
+  hand-over between a steady loop and a slowing one, which on the browser (where loops decode asynchronously) would
+  have been a gap. It starts again when the box is wound again, or the game stood still for 0.4 s (paused).
+  In the browser the timed end is counted from the moment the decoded channels start playing.
+- In MusicBoxTune the sound is positional: unit 5 m, max 12 m, +6 dB, 0.4 m above the box; this port plays it
+  non-positionally from the pack.
+- **In the original, on the finite route the tune never plays** (this port plays it anyway, see above). MusicBoxTune is only attached when the interactable gets a `music_boxes`
   clock (ri 247), and only the streamed route view sets one (streamed_facility_view_3d.gd 4734). In main_3d the box
-  gives the one-shot `music_box` phrase, and the music you hear is Glyra's `glyra_hum` while her box PLAYS. Use the tune
-  only if the port wants the streamed behaviour.
+  gives the one-shot `music_box` phrase, and the music you hear is Glyra's `glyra_hum` while her box PLAYS.
 
 ## Ambience (`ambience.rs`)
 

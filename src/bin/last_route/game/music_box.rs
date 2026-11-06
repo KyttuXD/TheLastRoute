@@ -17,8 +17,14 @@ pub struct Rules {
     pub boxes_per_region: usize,
     /// Wound seconds by difficulty id. "standard" is the fallback for any other id.
     pub wound_seconds: HashMap<String, f32>,
-    /// The last stretch of a wound box, in seconds, where the tune slows and turns off key.
+    /// The last stretch of a wound box, in seconds: Glyra's winding-down mood and the HUD's warning colour. (The tune's
+    /// slowing is `slowdown_from_fraction`, not this.)
     pub winddown_seconds: f32,
+    /// The tune plays at normal speed while the wind left is at least this fraction of the wound time (0.70 = 70 %),
+    /// then slows and sinks as it drains to nothing (audio/cues/music_box.rs `slowdown_factor`).
+    pub slowdown_from_fraction: f32,
+    /// How fast the tune still plays just before the box empties (a factor of normal speed, tempo and pitch).
+    pub slowdown_floor: f32,
     /// The tune loop's gain against the master bus.
     pub tune_gain: f32,
 }
@@ -53,6 +59,8 @@ pub fn parse(text: &str) -> Rules {
             .unwrap_or_else(|| panic!("data/{FILE}: boxes_per_region is not a count")) as usize,
         wound_seconds,
         winddown_seconds: num("winddown_seconds"),
+        slowdown_from_fraction: num("slowdown_from_fraction"),
+        slowdown_floor: num("slowdown_floor"),
         tune_gain: num("tune_gain"),
     }
 }
@@ -76,6 +84,9 @@ mod tests {
         let r = rules();
         assert_eq!(r.boxes_per_region, 2);
         assert_eq!(r.winddown_seconds, 15.0);
+        assert_eq!(r.slowdown_from_fraction, 0.70, "the tune slows below 70 % of the wind");
+        assert!(r.slowdown_floor > 0.0 && r.slowdown_floor < 1.0);
+        assert!(r.tune_gain > 0.0 && r.tune_gain <= 0.3, "the tune stays quiet");
         assert_eq!(wound_seconds("standard"), 45.0);
         assert_eq!(wound_seconds("hard"), 35.0);
         assert_eq!(wound_seconds("nightmare"), 25.0);

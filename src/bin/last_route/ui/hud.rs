@@ -18,6 +18,8 @@ pub struct HudDrawn {
     pub relays: bool,
     pub stamina: bool,
     pub hotbar: bool,
+    /// The hunter specialty bar (slots 6 to 9) was laid out; individual slots show only while their hunter is out.
+    pub specialty: bool,
     pub minimap: bool,
 }
 
@@ -195,6 +197,84 @@ fn shadowed(a: &Assets, text: &str, x: f32, top: f32, size: f32, col: Color) {
         rgba(0.0, 0.0, 0.0, col.a),
     );
     label(a, F::Body, text, x, top, size, col);
+}
+
+/// Where the specialty bar's slots sit: `(left, top, slot width, slot height, gap)`. Beside the hotbar when the window
+/// has room to its right (the usual case), above the hotbar and the stamina bar otherwise (a narrow window).
+fn specialty_bar_layout(v: Vec2, c: Vec2, hb: Rect, slots: usize) -> (f32, f32, f32, f32, f32) {
+    let (w, h, gap) = (30.0, hb.h - 2.0, 2.0);
+    let total = w * slots as f32 + gap * (slots as f32 - 1.0);
+    let beside = hb.x + hb.w + 8.0;
+    if beside + total <= v.x - SAFE {
+        (beside, hb.y + 1.0, w, h, gap)
+    } else {
+        (c.x - total * 0.5, hb.y - 8.0 - h - 6.0, w, h, gap)
+    }
+}
+
+/// The hunter specialty bar (game/specialty.rs, data/ui/specialty_slots.json): four slots labelled 6 to 9, separate
+/// from the five-slot hotbar. A slot shows while its hunter is on the floor; 8 and 9 are reserved and always show empty.
+fn draw_specialty_bar(g: &Game, a: &Assets, v: Vec2, c: Vec2, hb: Rect) {
+    use crate::game::specialty::{rules, Kind, Mode, SpecItem};
+    let p = pal();
+    let defs = &rules().slots;
+    let (x0, y0, w, h, gap) = specialty_bar_layout(v, c, hb, defs.len());
+    for (i, def) in defs.iter().enumerate() {
+        if !g.specialty.visible[i] {
+            continue;
+        }
+        let r = Rect::new(x0 + i as f32 * (w + gap), y0, w, h);
+        let selected = g.specialty.selected == Some(i);
+        let item = g.specialty.items[i];
+        let tint = if item.is_some() { WHITE } else { rgba(0.48, 0.5, 0.51, 0.72) };
+        let mul = |col: Color| Color::new(col.r * tint.r, col.g * tint.g, col.b * tint.b, col.a * tint.a);
+        let edge = if selected {
+            p.amber
+        } else {
+            lr(hexa(0xffffff47), rgba(0.3, 0.14, 0.18, 0.92))
+        };
+        sbox(
+            r,
+            mul(lr(hexa(0x09060ab8), rgba(0.078, 0.043, 0.063, 0.94))),
+            mul(edge),
+            if selected { 2.0 } else { 1.0 },
+            1.0,
+        );
+        let mut number = format!("{}", def.number);
+        match item {
+            Some(SpecItem::MusicBox) => {
+                let icon = &a.icons[6];
+                let (iw, ih) = (icon.width().max(1.0), icon.height().max(1.0));
+                let k = (r.w / iw).min(22.0 / ih);
+                let s = unit();
+                draw_texture_ex(
+                    icon,
+                    (r.x + (r.w - iw * k) * 0.5) * s,
+                    r.y * s,
+                    WHITE,
+                    DrawTextureParams {
+                        dest_size: Some(vec2(iw * k * s, ih * k * s)),
+                        ..Default::default()
+                    },
+                );
+            }
+            Some(SpecItem::Temperature(mode)) => {
+                // no art for the shared item yet: a warm or cold disc, the colour that tells the type at a glance
+                let (core, rim) = match mode {
+                    Mode::Heat => (rgba(1.0, 0.52, 0.2, 1.0), rgba(1.0, 0.82, 0.5, 1.0)),
+                    Mode::Cold => (rgba(0.4, 0.72, 1.0, 1.0), rgba(0.78, 0.92, 1.0, 1.0)),
+                };
+                let mid = vec2(r.x + r.w * 0.5, r.y + 10.0);
+                circle(mid, 7.0, rim);
+                circle(mid, 5.5, core);
+                number = format!("{} {}", def.number, mode.label());
+            }
+            None => {}
+        }
+        // the slot's key number, as the hotbar prints it; the shared item adds its type
+        let tint_text = if matches!(def.kind, Kind::Empty) { mul(p.body) } else { p.body };
+        label_c(a, F::Body, &number, r.x + r.w * 0.5, r.y + 20.0, 6.0, tint_text);
+    }
 }
 
 pub fn draw_hud(g: &Game, a: &Assets, fps: i32, s: f32) -> HudDrawn {
@@ -508,6 +588,8 @@ pub fn draw_hud_with_runners(
         );
     }
     drawn.hotbar = true;
+    draw_specialty_bar(g, a, v, c, hb);
+    drawn.specialty = true;
 
     if let Some(e) = &g.escape {
         // above the stamina bar, not over the middle of the screen, so the grab animation stays visible

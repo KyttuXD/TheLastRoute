@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use super::cues::music_box::Mood;
+use super::cues::music_box::RunClock;
 use super::cues::positional::HUM;
 use super::cues::rules::{self, Bus, HunterStepClock};
 use super::cues::stride::{preferred_clip, HunterGait};
@@ -101,33 +101,43 @@ struct WorldState {
     was_active: HashMap<String, bool>,
     was_pursued: bool,
     clock: HunterStepClock,
-    /// The wound music box's mood last frame (None before the first frame of the floor).
-    box_mood: Option<Mood>,
+    /// The music box tune that is playing: what the run was started for, and the box clock at the last frame.
+    box_run: Option<RunClock>,
 }
 
-/// The wound music box's sound (music_box.rs): its tune loops while the box plays, and the wind-down is one pre-rendered
-/// buffer played when the box enters its last stretch (the loops cannot change pitch). Not positional: the box is in the
-/// pack, so there is no source to hear it from. Called every frame with the seconds left (game/mod.rs `run_music_box`).
-/// Both are on the Master bus (the tune is an AudioStreamPlayer3D in the original), so Master reaches them live.
-pub fn music_box(left: f32) {
+/// The voice of the wound music box's tune (one pre-rendered run, see `music_box`).
+const BOX_VOICE: &str = "music_box_run";
+
+/// The wound music box's sound (music_box.rs): its tune, steady at normal speed while the wind is above the slowdown line
+/// (70 % by default), then slower and lower as it drains, stopped when it is empty. The loops cannot change pitch while
+/// they play, so the whole wound time is ONE pre-rendered run (`run_frames`, a pure function of the wound time) started
+/// when the box is wound: the same samples, with no hand-over between a steady loop and a slowing one, on the browser
+/// build (where loops decode asynchronously) as on desktop. The run starts again if the box is wound again, or the game
+/// stood still while it played (paused). Not positional: the box is in the pack, so there is no source to hear it from.
+/// Called every frame with the seconds left and the wound time (game/mod.rs `run_music_box`). On the Master bus (the tune
+/// is an AudioStreamPlayer3D in the original), so Master reaches it live.
+pub fn music_box(left: f32, wound: f32) {
     use super::cues::music_box as mb;
     WORLD.with(|w| {
         let w = &mut *w.borrow_mut();
-        let mood = mb::mood_for(left);
-        let changed = w.box_mood != Some(mood);
-        w.box_mood = Some(mood);
         with(|e| {
             if !e.ready {
                 return;
             }
-            let tune = crate::game::music_box::rules().tune_gain;
-            match mood {
-                Mood::Playing => e.set_loop("music_box_tune", Bus::Master, Some((tune, tune)), mb::tune),
-                _ => e.set_loop("music_box_tune", Bus::Master, None, Vec::new),
+            if left <= 0.0 {
+                // empty: the tune stops (the run is silent from here anyway)
+                if w.box_run.take().is_some() {
+                    e.set_loop(BOX_VOICE, Bus::Master, None, Vec::new);
+                }
+                return;
             }
-            if changed && mood == Mood::WindingDown {
-                let frames = mb::winddown(0.0, 0.0, left);
-                e.play_frames("music_box_winddown", Bus::Master, frames, (tune, tune), left);
+            let now = e.now();
+            let restart = mb::run_needs_restart(w.box_run.as_ref(), left, wound, now);
+            w.box_run = Some(RunClock { wound, last_left: left, last_now: now });
+            if restart {
+                let tune = crate::game::music_box::rules().tune_gain;
+                let frames = mb::run_frames(wound, wound - left);
+                e.play_frames(BOX_VOICE, Bus::Master, frames, (tune, tune), left);
             }
         });
     });

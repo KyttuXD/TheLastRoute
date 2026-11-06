@@ -871,14 +871,16 @@ impl Game {
                     if let Gimmick::Solyth(s) = &mut brains[i].gimmick {
                         s.heat_locked = self.meters.heat_locked;
                     }
+                    self.specialty.deter(&mut brains[i]); // the cold source slows Solyth here too (specialty.rs)
+                    let heat_source = self.heat_source_for_hunters();
                     let ctx = Ctx {
                         fac,
                         relays_taken: &[],
                         batteries_taken: &[],
                         hiding_disabled: &[],
                         vents: &fix.vents,
-                        heater_on: self.heater_running(),
-                        heater_thawed: self.heater != Heater::Frozen,
+                        heater_on: self.heater_running() || heat_source,
+                        heater_thawed: self.heater != Heater::Frozen || heat_source,
                         diff: self.difficulty,
                         music_box_left: self.music_box_left,
                         music_boxes: &music_boxes,

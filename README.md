@@ -35,6 +35,7 @@ These are the default bindings. You can change them in the settings.
 | Interact (relays, pickups, lockers, lift, stairs, safe zone) | E or right click |
 | Flashlight / taser | F / G |
 | Hotbar | 1-5, mouse wheel |
+| Hunter specialty bar (shows only while the hunter is on the floor) | 6 music box (Glyra), 7 heat/cold item (Wynelle, Solyth; press 7 again or click to flip), 8 and 9 reserved |
 | Drop held item | Q |
 | Map | M |
 | Pause | Escape |

@@ -51,11 +51,18 @@ pub struct Slot {
 impl Game {
     /// True when `grant(item, _)` would find room: a stack with space, or an empty slot.
     pub(super) fn can_grant(&self, item: Item) -> bool {
+        // while Glyra is out a box belongs in slot 6, and only when that slot is empty (never two boxes)
+        if item == Item::MusicBox && self.specialty.box_slot_visible() {
+            return self.specialty.box_slot_free();
+        }
         (item.stack_max() > 1 && self.slots.iter().flatten().any(|s| s.item == item && s.n < item.stack_max()))
             || self.slots.iter().any(|s| s.is_none())
     }
 
     pub(super) fn grant(&mut self, item: Item, n: i32) -> bool {
+        if item == Item::MusicBox && self.specialty.box_slot_visible() {
+            return self.specialty.put_box();
+        }
         if item.stack_max() > 1 {
             for s in self.slots.iter_mut().flatten() {
                 if s.item == item && s.n < item.stack_max() {
@@ -78,6 +85,7 @@ impl Game {
 
     pub(super) fn select(&mut self, i: usize) {
         self.selected = i % HOTBAR_SIZE;
+        self.specialty.selected = None; // a hotbar slot in hand puts the specialty slot away
         if self.p.flashlight_on && self.selected_item() != Some(Item::Flashlight) {
             self.p.flashlight_on = false;
         }
@@ -259,16 +267,19 @@ impl Game {
                 self.consume_selected();
                 self.say("STIM PACK");
             }
-            Item::MusicBox => self.wind_music_box(),
+            Item::MusicBox => {
+                self.wind_music_box();
+                self.consume_selected(); // a pack box is spent by the wind (slot 6 spends its own, specialty.rs)
+            }
         }
     }
 
-    /// The box's use from the pack: it winds for its difficulty's time (game/music_box.rs), the winding phrase sounds
-    /// (route_interactable_3d.gd 818), and the box is spent. The room effect is the clock `run_music_box` reads.
-    fn wind_music_box(&mut self) {
+    /// The box's use: it winds for its difficulty's time (game/music_box.rs) and the winding phrase sounds
+    /// (route_interactable_3d.gd 818). The caller spends the box, from the pack or from specialty slot 6. The room
+    /// effect is the clock `run_music_box` reads.
+    pub(super) fn wind_music_box(&mut self) {
         self.music_box_left = super::music_box::wound_seconds(self.difficulty.id());
         crate::audio::sound::music_box();
-        self.consume_selected();
         self.say("Music box wound. The room settles.");
     }
 
@@ -315,10 +326,18 @@ impl Game {
         if c.taser {
             self.fire_taser(sounds);
         }
-        if c.use_item {
-            self.use_selected(sounds);
+        if let Some(i) = c.specialty {
+            self.press_specialty(i);
         }
-        if c.drop {
+        if c.use_item {
+            if self.specialty.selected.is_some() {
+                self.use_specialty();
+            } else {
+                self.use_selected(sounds);
+            }
+        }
+        // a specialty item cannot be dropped: it leaves with its hunter
+        if c.drop && self.specialty.selected.is_none() {
             self.drop_selected();
         }
     }

@@ -1,0 +1,66 @@
+{
+  "suite": "specialty",
+  "description": "The hunter specialty bar, slots 6 to 9 (game/specialty.rs, data/ui/specialty_slots.json): slot 6 holds the music box while Glyra is on the floor and winding it spends it, slot 7 is one heat/cold item for Wynelle and Solyth, slots 8 and 9 stay empty.",
+  "ported_from": "KT decision 2026-11-06 (no Godot source: the specialty bar is a Rust-port design)",
+  "defaults": { "seed": 12345, "difficulty": "standard", "mode": "finite", "no_target": true },
+  "tests": [
+    {
+      "name": "slots 8 and 9 always show and hold nothing",
+      "steps": [
+        { "cmd": "step", "frames": 2, "observe": false },
+        { "expect": [
+          { "path": "hotbar.specialty.slots.2.number", "value": 8 },
+          { "path": "hotbar.specialty.slots.2.visible", "value": true },
+          { "path": "hotbar.specialty.slots.2.item", "op": "missing" },
+          { "path": "hotbar.specialty.slots.3.number", "value": 9 },
+          { "path": "hotbar.specialty.slots.3.visible", "value": true },
+          { "path": "hotbar.specialty.slots.3.item", "op": "missing" }
+        ] },
+        { "cmd": "act", "act": { "pulse": ["slot_8"] } },
+        { "cmd": "step", "frames": 1, "observe": false },
+        { "cmd": "act", "act": { "pulse": ["tool_use"] } },
+        { "cmd": "step", "frames": 1, "observe": false },
+        { "expect": [ { "path": "hotbar.specialty.slots.2.item", "op": "missing" } ] }
+      ]
+    },
+    {
+      "name": "Glyra on the floor shows slot 6 with the music box, and winding it spends the box",
+      "steps": [
+        { "cmd": "admin", "name": "summon", "id": "glyra" },
+        { "cmd": "step", "frames": 2, "observe": false },
+        { "expect": [
+          { "path": "hotbar.specialty.slots.0.number", "value": 6 },
+          { "path": "hotbar.specialty.slots.0.visible", "value": true },
+          { "path": "hotbar.specialty.slots.0.item", "value": "music_box" }
+        ] },
+        { "cmd": "act", "act": { "pulse": ["slot_6"] } },
+        { "cmd": "step", "frames": 1, "observe": false },
+        { "expect": [ { "path": "hotbar.specialty.selected", "value": 6 } ] },
+        { "cmd": "act", "act": { "pulse": ["tool_use"] } },
+        { "cmd": "step", "frames": 1, "observe": false },
+        { "expect": [
+          { "path": "hotbar.specialty.slots.0.visible", "value": true },
+          { "path": "hotbar.specialty.slots.0.item", "op": "missing" },
+          { "path": "run.music_box_left", "op": ">", "value": 0 }
+        ] }
+      ]
+    },
+    {
+      "name": "Wynelle on the floor shows slot 7 with the temperature item, and slot 7 pressed twice flips it",
+      "steps": [
+        { "cmd": "admin", "name": "summon", "id": "wynelle" },
+        { "cmd": "step", "frames": 2, "observe": false },
+        { "expect": [
+          { "path": "hotbar.specialty.slots.1.number", "value": 7 },
+          { "path": "hotbar.specialty.slots.1.visible", "value": true },
+          { "path": "hotbar.specialty.slots.1.item", "op": "in", "value": ["heat", "cold"] }
+        ] },
+        { "cmd": "act", "act": { "pulse": ["slot_7"] } },
+        { "cmd": "step", "frames": 1, "observe": false },
+        { "cmd": "act", "act": { "pulse": ["slot_7"] } },
+        { "cmd": "step", "frames": 1, "observe": false },
+        { "expect": [ { "path": "hotbar.specialty.slots.1.item", "op": "in", "value": ["heat", "cold"] } ] }
+      ]
+    }
+  ]
+}

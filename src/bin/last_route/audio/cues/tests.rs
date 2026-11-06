@@ -127,7 +127,8 @@ fn cue_goldens_match_the_original() {
         ("step:walk:concrete:1", 0.05, 1.0, 3808229991),
         ("step:sprint:metal:2", -0.05, 1.0, 553711646),
         ("heartbeat", 0.0, 0.65, 456396346),
-        ("music_box_tune", 0.0, 1.0, 642208190),
+        // not the original's bytes any more: the music box tune is Night Watch's Masked Hours tune (music_box.rs), by request
+        ("music_box_tune", 0.0, 1.0, 1410652678),
         ("glyra_hum", 0.0, 1.0, 3426237372),
         ("carnival_carousel_tune", 0.0, 1.0, 2758972945),
         ("step:sprint:carpet:1", 0.05, 1.0, 3790847878),
@@ -219,12 +220,17 @@ fn front_end_throttles_like_the_original() {
 }
 
 #[test]
-fn music_box_winds_down() {
-    assert_eq!(music_box::pitch_scale(30.0, 0.0), Some(1.0));
-    assert_eq!(music_box::pitch_scale(0.0, 0.0), None);
-    let p = music_box::pitch_scale(7.5, 0.0).unwrap();
-    assert!((p - 0.88).abs() < 1e-6);
-    let buf = music_box::winddown(0.0, 0.0, 2.0);
+fn music_box_slows_by_the_share_of_wind_left() {
+    // full wind and 70 % play at normal speed; 35 % is clearly slower; empty is stopped (a 45 s standard box)
+    assert_eq!(music_box::playback_rate(45.0, 45.0), 1.0);
+    assert_eq!(music_box::playback_rate(31.5, 45.0), 1.0);
+    assert!(music_box::playback_rate(15.75, 45.0) < 0.8);
+    assert_eq!(music_box::playback_rate(0.0, 45.0), 0.0);
+    // Glyra's mood still turns at the last 15 s, whatever the tune does
+    assert_eq!(music_box::mood_for(30.0), music_box::Mood::Playing);
+    assert_eq!(music_box::mood_for(15.0), music_box::Mood::WindingDown);
+    assert_eq!(music_box::mood_for(0.0), music_box::Mood::Stopped);
+    let buf = music_box::run_frames(2.0, 0.0);
     assert_eq!(buf.len(), 88200);
     assert!(buf.iter().any(|f| f[0].abs() > 0.01));
 }

@@ -26,6 +26,7 @@ mod inferno_terrain_tests;
 mod items;
 pub mod meters;
 pub mod music_box;
+pub mod specialty;
 pub mod swim_effects;
 pub mod npc;
 pub mod player;
@@ -71,6 +72,8 @@ pub struct Controls {
     pub look: Vec2,
     /// Digit keys while Zellia's store is open.
     pub shop_choice: Option<usize>,
+    /// A specialty-bar key (0 to 3 for keys 6 to 9, data/ui/specialty_slots.json), pressed this frame.
+    pub specialty: Option<usize>,
 }
 
 /// The admin switches (admin_menu.gd; the playtest bridge's admin helpers): `god` and
@@ -167,6 +170,8 @@ pub struct Game {
     pub map_open: bool,
     /// Seconds left on the wound music box (Glyra's room effect; the box is an item, game/music_box.rs).
     pub music_box_left: f32,
+    /// The hunter specialty bar, slots 6 to 9 (game/specialty.rs): separate from `slots`.
+    pub specialty: specialty::Specialty,
     pub relays_collected: i32,
     /// Per-room climate offsets: hot and cold spots on the floor.
     pub climate: Vec<f32>,
@@ -300,6 +305,7 @@ impl Game {
             void_fx: Default::default(),
             map_open: false,
             music_box_left: music_box::wound_seconds(difficulty.id()),
+            specialty: specialty::Specialty::default(),
             relays_collected: 0,
             climate: vec![],
             discovered: vec![],
@@ -433,6 +439,7 @@ impl Game {
             void_fx: Default::default(),
             map_open: false,
             music_box_left: music_box::wound_seconds(difficulty.id()),
+            specialty: specialty::Specialty::default(),
             relays_collected: 0,
             climate: vec![],
             discovered: vec![],
@@ -639,11 +646,12 @@ impl Game {
         self.escape = None;
     }
 
-    /// The wound box's clock: it runs down every frame, and the audio follows it (the tune loop, then the wind-down).
+    /// The wound box's clock: it runs down every frame, and the audio follows it (the tune, steady until the wind is
+    /// below the slowdown line, then slower and lower until it stops).
     /// Glyra reads the clock through `Ctx` (hunting.rs), so this is the room effect's whole timer.
     pub(super) fn run_music_box(&mut self, dt: f32) {
         self.music_box_left = (self.music_box_left - dt).max(0.0);
-        crate::audio::world::music_box(self.music_box_left);
+        crate::audio::world::music_box(self.music_box_left, music_box::wound_seconds(self.difficulty.id()));
     }
 
     pub fn say(&mut self, text: &str) {
@@ -718,6 +726,13 @@ impl Game {
     }
 
     pub fn selected_item(&self) -> Option<Item> {
+        // a selected specialty slot is in hand instead of the hotbar's (only the music box is a held model)
+        if self.specialty.selected.is_some() {
+            return match self.specialty.held() {
+                Some(specialty::SpecItem::MusicBox) => Some(Item::MusicBox),
+                _ => None,
+            };
+        }
         self.slots[self.selected].map(|s| s.item)
     }
 
@@ -811,6 +826,8 @@ impl Game {
         }
         // Glyra's box winds down every frame (the original's finite floor forgot to tick it)
         self.run_music_box(dt);
+        // the specialty bar follows the hunters on the floor (slot 6 for Glyra, slot 7 for Wynelle and Solyth)
+        self.sync_specialty();
 
         // world sound every frame, hidden or struggling too (main_3d.gd _update_local_audio, Glyra's hum)
         {
@@ -891,7 +908,7 @@ impl Game {
             self.hide_check = None;
             let heater_on = self.heater_running();
             let in_safe = self.in_safe_zone();
-            let local = self.local_climate();
+            let local = self.felt_climate();
             let admin = self.admin_flags();
             self.p.noclip = admin.noclip;
             // wading: the water at the runner's feet slows the step (swim.json), then adds its noise, stamina cost and

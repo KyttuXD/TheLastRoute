@@ -89,7 +89,7 @@ A good loop for an LLM: `observe` (or `state`) -> decide -> `goto` / `act`+`step
 ```
 `move`/`look` are sticks in -1..1 (look turns at 2.8 rad/s at full stick). `pulse` presses for one
 frame: `interact`, `flashlight`, `taser`, `tool_use`, `drop_item`, `hotbar_previous`, `hotbar_next`,
-`jump`, `slot_1`..`slot_5`, `shop_1`..`shop_4` (Zellia's store); `inventory`, `toggle_map`,
+`jump`, `slot_1`..`slot_5`, `slot_6`..`slot_9` (the hunter specialty bar, game/specialty.rs), `shop_1`..`shop_4` (Zellia's store); `inventory`, `toggle_map`,
 `pause`, `ui_*` are accepted and ignored. `hold.interact` is "hold [E]" (winding the music box).
 
 **admin** (also `npc` {count, smart}: bots round the crosshair spot, and, in `--agent-window` only, `remote` {peer, x, z, yaw, h, clip: idle|walk|sprint|chase|crouch|jump|fall|climb|swim|stun|down, moving, sprinting, crouching, slim, vy, skin, hide: [cell x, cell y, facing x, facing y], hide_for} to draw a made-up other runner and check its pose, `clear: true` removes them): `god` {on}, `no_target` {on}, `noclip` {on}, `speed` {scale 0.25..3}, `teleport` {x, y, z}

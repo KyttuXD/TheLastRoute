@@ -156,7 +156,8 @@ impl Game {
             sprinting: self.p.sprinting && self.p.noise > 0.0,
             in_vent: self.p.in_vent,
             vent_time_in: self.p.vent_time,
-            temperature: self.meters.temperature,
+            // a cold source on the runner keeps the reading under Solyth's pounce gate (specialty.rs)
+            temperature: self.specialty.reading_for_hunters(self.meters.temperature),
             pesticide: self.p.pesticide > 0.0,
             map_open: self.map_open,
             level: self.runner_level(),
@@ -249,14 +250,18 @@ impl Game {
             if let Gimmick::Solyth(s) = &mut self.hunters[i].gimmick {
                 s.heat_locked = self.meters.heat_locked;
             }
+            // the temperature item's cold source slows Solyth while she is out (specialty.rs)
+            self.specialty.deter(&mut self.hunters[i]);
+            let heat_source = self.heat_source_for_hunters();
             let ctx = Ctx {
                 fac: &self.fac,
                 relays_taken: &self.relays_taken,
                 batteries_taken: &self.batteries_taken,
                 hiding_disabled: &self.hiding_disabled,
                 vents: &self.fix.vents,
-                heater_on: self.heater_running(),
-                heater_thawed: self.heater != Heater::Frozen,
+                // the temperature item's heat source is a heater to Wynelle (specialty.rs)
+                heater_on: self.heater_running() || heat_source,
+                heater_thawed: self.heater != Heater::Frozen || heat_source,
                 diff: self.difficulty,
                 music_box_left: self.music_box_left,
                 music_boxes: &music_boxes,
@@ -477,7 +482,7 @@ impl Game {
                 hidden: true,
                 in_safe_zone: in_safe,
                 heater_on: self.heater_running(),
-                local: self.local_climate(),
+                local: self.felt_climate(),
             },
         );
         if c.interact {

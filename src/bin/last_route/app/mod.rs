@@ -187,6 +187,15 @@ fn read_controls(
             }
         }
     }
+    // the hunter specialty bar, keys 6 to 9 (data/ui/specialty_slots.json); digits mean shop choices only while the shop
+    // is open, and the shop has no slot past 5, so the specialty keys do nothing then
+    if !shop {
+        for (i, def) in crate::game::specialty::rules().slots.iter().enumerate() {
+            if crate::game::specialty::key_code(&def.key).is_some_and(is_key_pressed) {
+                c.specialty = Some(i);
+            }
+        }
+    }
     let wheel = mouse_wheel().1;
     c.wheel = if wheel < 0.0 {
         1

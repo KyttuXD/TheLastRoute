@@ -90,7 +90,9 @@ struct PendingLoop {
     token: u64,
     bus: Bus,
     base: (f32, f32),
-    until: Option<f64>,
+    /// For a timed loop, how long it plays once it starts. The end is counted from the moment the channels are decoded and
+    /// the loop really starts, not from the request, so a slow decode does not cut the stretch short.
+    seconds: Option<f64>,
 }
 
 pub(crate) struct Engine {
@@ -380,8 +382,7 @@ impl Engine {
         self.stop_loop(name);
         let tail = (TIMED_LOOP_TAIL_SECONDS * cues::SAMPLE_RATE as f32) as usize;
         frames.extend(std::iter::repeat([0.0, 0.0]).take(tail));
-        let until = self.now() + f64::from(seconds.max(0.0));
-        self.start_loop(name, bus, base, frames, Some(until));
+        self.start_loop(name, bus, base, frames, Some(f64::from(seconds.max(0.0))));
     }
 
     /// Keeps the looping `name` playing at the stereo `base` gains (before the bus), on `bus`, or stops it (`None`).
@@ -438,15 +439,16 @@ impl Engine {
         bus: Bus,
         base: (f32, f32),
         frames: Vec<[f32; 2]>,
-        until: Option<f64>,
+        seconds: Option<f64>,
     ) {
         let left: Vec<[f32; 2]> = frames.iter().map(|x| [x[0], 0.0]).collect();
         let right: Vec<[f32; 2]> = frames.iter().map(|x| [0.0, x[1]]).collect();
+        drop(frames);
         if WEB {
             // the browser decodes both channels first: they start when they are ready, unless the loop is stopped meanwhile
             self.next_token += 1;
             let token = self.next_token;
-            self.loops_pending.insert(name, PendingLoop { token, bus, base, until });
+            self.loops_pending.insert(name, PendingLoop { token, bus, base, seconds });
             let _ = start_coroutine(async move {
                 let l = load_frames(&left).await;
                 let r = load_frames(&right).await;
@@ -456,10 +458,8 @@ impl Engine {
                     }
                     let Some(p) = e.loops_pending.remove(name) else { return };
                     let (Some(l), Some(r)) = (l, r) else { return };
-                    if p.until.is_some_and(|t| e.now() >= t) {
-                        return;
-                    }
-                    e.play_loop(name, p.bus, p.base, l, r, p.until);
+                    let until = p.seconds.map(|s| e.now() + s);
+                    e.play_loop(name, p.bus, p.base, l, r, until);
                 });
             });
             return;
@@ -467,6 +467,7 @@ impl Engine {
         let (Some(l), Some(r)) = (load_frames_now(&left), load_frames_now(&right)) else {
             return;
         };
+        let until = seconds.map(|s| self.now() + s);
         self.play_loop(name, bus, base, l, r, until);
     }
 

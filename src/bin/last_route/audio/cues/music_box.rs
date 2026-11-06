@@ -1,21 +1,41 @@
 //! The wound music box and Glyra's hum: looping, positional, pitch-ridden playback of two rendered cues.
 //!
-//! Sources: game/world/interactables/music_box_tune.gd (the tune), music_boxes.gd (the clock),
-//! game/hunters/view/hunter_view_3d.gd 1546-1570 (Glyra's hum), game/config/game_config.gd 543-544.
+//! The box's tune is Night Watch's Masked Hours tune (games/night-watch/src/modes/mask/mask-data.js `TUNE`, played by
+//! mask.js): thirteen sine notes, 380 ms apart at full wind, each ringing 0.5 s, the phrase starting again straight after
+//! the last note. The clock is `Game::music_box_left` (game/music_box.rs), as in game/world/interactables/music_boxes.gd.
 //!
 //! IMPORTANT for the finite route: MusicBoxTune is only attached when the interactable has a `music_boxes` clock, which
 //! only the streamed (infinite) route view sets (streamed_facility_view_3d.gd 4734). The finite floor's FacilityView3D
 //! never sets it, so in main_3d winding the box plays the one-shot "music_box" phrase (route_interactable_3d.gd 818)
-//! and the only continuous music is Glyra's own hum while her box PLAYS. The tune and wind-down are ported here
-//! anyway (requested, and the port may want them); NOTES.md says the same.
+//! and the only continuous music is Glyra's own hum while her box PLAYS. This port plays the tune on the finite route
+//! anyway (requested); NOTES.md says the same.
 //!
 //! Godot changes a looping stream's pitch with `pitch_scale` (resampling: slower AND lower). macroquad 0.4 cannot
-//! change the pitch of a playing sound, so `LoopPlayer` resamples in software and `winddown` pre-renders the whole
-//! off-key stretch as one buffer.
+//! change the pitch of a playing sound, so `run_frames` resamples in software: the whole wound time is rendered as one
+//! buffer (the loop read back at the slowing rate) and played once from the moment the box is wound.
 
 use super::render::SAMPLE_RATE;
 
-/// The last stretch of a wound box, in seconds, where the tune slows (data/music_box.json `winddown_seconds`).
+/// The tune, note by note, in Hz: Night Watch's Masked Hours phrase (`TUNE` in
+/// games/night-watch/src/modes/mask/mask-data.js), E5 D5 C5 D5 E5 E5 E5 D5 D5 D5 E5 G5 G5. The notes are in that
+/// game's rounded Hz; they play in order and the phrase starts again straight after the last note.
+pub const TUNE_NOTES: [f64; 13] = [
+    659.0, 587.0, 523.0, 587.0, 659.0, 659.0, 659.0, 587.0, 587.0, 587.0, 659.0, 784.0, 784.0,
+];
+
+/// The gap between two notes at full wind, in frames: 380 ms (mask.js `noteAt = 380 + ...` at 100 %). A whole number of
+/// frames, so every note of every round lands the same distance from the last (0.38 s x 44100 = 16758).
+pub const NOTE_STEP_FRAMES: usize = 16758;
+
+/// How long one note rings, in seconds (mask.js `blip(.., 0.5, "sine", 0.04, ..)`).
+pub const NOTE_RING_SECONDS: f64 = 0.5;
+
+/// The loop's length in frames: the notes at their spacing, no breath. The last note rings over the seam into the
+/// first slot (see `tune`).
+pub const LOOP_FRAMES: usize = TUNE_NOTES.len() * NOTE_STEP_FRAMES;
+
+/// The last stretch of a wound box, in seconds (data/music_box.json `winddown_seconds`). It no longer drives the
+/// tune's slowing (that starts at `slowdown_from_fraction`); it is the threshold of Glyra's `Mood` and the HUD colour.
 pub fn winddown_seconds() -> f32 {
     crate::game::music_box::rules().winddown_seconds
 }
@@ -38,23 +58,96 @@ pub fn mood_for(seconds_left: f32) -> Mood {
     }
 }
 
-/// The tune's `pitch_scale` (music_box_tune.gd 35-45): 1 while playing; in the wind-down
-/// `max(.55, .78 + .2 * left / 15 + .045 * sin(clock * 6.3))` (slower towards the end, with a wobble that pulls it off
-/// key); `None` = stopped. `clock` is the seconds the tune node has existed (its own `_clock += delta`).
-pub fn pitch_scale(seconds_left: f32, clock: f32) -> Option<f32> {
-    match mood_for(seconds_left) {
-        Mood::Playing => Some(1.0),
-        Mood::WindingDown => {
-            let left = seconds_left / winddown_seconds();
-            Some((0.78 + 0.2 * left + 0.045 * (clock * 6.3).sin()).max(0.55))
-        }
-        Mood::Stopped => None,
+/// How fast the tune plays for the wind left in the box, as a factor of its normal speed: 1 from a full wind down to
+/// `from` (a fraction of the wound time, 0.70 = 70 %), then it eases down to `floor` as the box drains (smoothstep, so
+/// there is no kink at `from`), and 0 (stopped) once the box is empty. Tempo and pitch both follow it, like a tape
+/// slowing, because the tune is read back at this rate. `fraction` is `music_box_left / wound_seconds`.
+pub fn slowdown_factor(fraction: f32, from: f32, floor: f32) -> f32 {
+    if fraction.is_nan() || fraction <= 0.0 {
+        return 0.0;
     }
+    if from <= 0.0 || fraction >= from {
+        return 1.0;
+    }
+    let x = (fraction / from).clamp(0.0, 1.0);
+    let ease = x * x * (3.0 - 2.0 * x);
+    let floor = floor.clamp(0.0, 1.0);
+    floor + (1.0 - floor) * ease
 }
 
-/// The tune loop (`render_cue("music_box_tune")`, looped over its whole length: 16 notes 0.27 s apart, then a breath).
+/// [`slowdown_factor`] with the shipped numbers (data/music_box.json): the tune's speed with `seconds_left` of a box
+/// wound for `wound_seconds`. The one formula the audio follows, driven by the box clock `Game::music_box_left`.
+pub fn playback_rate(seconds_left: f32, wound_seconds: f32) -> f32 {
+    if wound_seconds <= 0.0 {
+        return 0.0;
+    }
+    let r = crate::game::music_box::rules();
+    slowdown_factor(seconds_left / wound_seconds, r.slowdown_from_fraction, r.slowdown_floor)
+}
+
+/// The tune loop (`render_cue("music_box_tune")`) cut to exactly [`LOOP_FRAMES`] frames. The cue itself runs a little
+/// past that (the last note rings after its slot); the part past the end is added onto the start, so the last note
+/// keeps ringing into the first slot of the next round and the seam has neither a click nor a gap. Every round is the
+/// same samples.
 pub fn tune() -> Vec<[f32; 2]> {
-    super::render("music_box_tune", 0.0, 1.0).unwrap_or_default()
+    let mut frames = super::render("music_box_tune", 0.0, 1.0).unwrap_or_default();
+    if frames.len() > LOOP_FRAMES {
+        let over: Vec<[f32; 2]> = frames.split_off(LOOP_FRAMES);
+        for (k, f) in over.iter().enumerate() {
+            let at = k % LOOP_FRAMES;
+            frames[at][0] += f[0];
+            frames[at][1] += f[1];
+        }
+    }
+    frames.resize(LOOP_FRAMES, [0.0, 0.0]);
+    frames
+}
+
+/// The whole of one wound box's tune as one buffer: the loop read at [`playback_rate`] frame by frame, from
+/// `from_elapsed` seconds after winding (0 = a box just wound; more joins a box part-way through). A full wind plays the
+/// loop exactly (rate 1 reads whole frames), then the tune slows and sinks smoothly as the wind drains, and the buffer
+/// ends when the box is empty. It depends only on the wound time and the data, so it is the same on every platform, and
+/// a sound that cannot change pitch while it plays (macroquad 0.4) needs no more than this one pre-rendered stretch.
+pub fn run_frames(wound_seconds: f32, from_elapsed: f32) -> Vec<[f32; 2]> {
+    let sr = f64::from(SAMPLE_RATE);
+    let total = (f64::from(wound_seconds.max(0.0)) * sr) as usize;
+    let skip = ((f64::from(from_elapsed.max(0.0)) * sr) as usize).min(total);
+    let mut player = LoopPlayer::new(tune());
+    let mut out = Vec::with_capacity(total - skip);
+    for k in 0..total {
+        let left = ((total - k) as f64 / sr) as f32; // seconds left, always above 0 until the last frame is out
+        let rate = playback_rate(left, wound_seconds);
+        if rate <= 0.0 {
+            break;
+        }
+        let frame = player.next(rate);
+        if k >= skip {
+            out.push(frame);
+        }
+    }
+    out
+}
+
+/// What the world keeps about the tune it started, to know when the pre-rendered run no longer matches the box clock.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RunClock {
+    pub wound: f32,
+    pub last_left: f32,
+    /// The wall clock at the last frame the box clock was read.
+    pub last_now: f64,
+}
+
+/// A frame gap longer than this (seconds) means the game stood still (paused, loading, the tab hidden) while the
+/// run kept playing on the wall clock, so the run is started again from the box clock.
+pub const RESYNC_GAP_SECONDS: f64 = 0.4;
+
+/// True when the run must be (re)started for `left` now: none is playing, the box was wound again (the clock went up),
+/// the wound time changed, or the game stood still for longer than [`RESYNC_GAP_SECONDS`].
+pub fn run_needs_restart(prev: Option<&RunClock>, left: f32, wound: f32, now: f64) -> bool {
+    match prev {
+        None => true,
+        Some(p) => p.wound != wound || left > p.last_left + 1e-3 || now - p.last_now > RESYNC_GAP_SECONDS,
+    }
 }
 
 /// Glyra's hum loop (`render_cue("glyra_hum")`, looped), played while her box is PLAYING (GlyraGimmick.humming()).
@@ -114,40 +207,152 @@ impl LoopPlayer {
         LoopPlayer { frames, pos: 0.0 }
     }
 
-    /// Fills `out` (at SAMPLE_RATE) advancing `pitch` source frames per output frame.
-    pub fn fill(&mut self, out: &mut [[f32; 2]], pitch: f32) {
+    /// The next output frame, advancing `pitch` source frames. The position wraps by subtraction (no float modulo, which
+    /// is slow on the browser build); a whole-frame position reads the source frame exactly.
+    pub fn next(&mut self, pitch: f32) -> [f32; 2] {
         let n = self.frames.len();
         if n == 0 {
-            out.iter_mut().for_each(|f| *f = [0.0, 0.0]);
-            return;
+            return [0.0, 0.0];
         }
+        let i = (self.pos as usize).min(n - 1);
+        let j = if i + 1 == n { 0 } else { i + 1 };
+        let frac = (self.pos - i as f64) as f32;
+        let (a, b) = (self.frames[i], self.frames[j]);
+        let out = [a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac];
+        self.pos += f64::from(pitch);
+        let len = n as f64;
+        while self.pos >= len {
+            self.pos -= len;
+        }
+        out
+    }
+
+    /// Fills `out` (at SAMPLE_RATE) advancing `pitch` source frames per output frame.
+    pub fn fill(&mut self, out: &mut [[f32; 2]], pitch: f32) {
         for o in out.iter_mut() {
-            let i = self.pos.floor() as usize % n;
-            let j = (i + 1) % n;
-            let frac = (self.pos - self.pos.floor()) as f32;
-            let (a, b) = (self.frames[i], self.frames[j]);
-            *o = [a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac];
-            self.pos = (self.pos + pitch as f64) % n as f64;
+            *o = self.next(pitch);
         }
     }
 }
 
-/// The whole wind-down as one buffer: the tune from `start_pos` (source frames into the loop, e.g. where the steady
-/// loop was) with the pitch recomputed every output frame from `seconds_left` (counting down from the value given,
-/// normally `winddown_seconds()`) and the tune node's `clock`. Ends when the box stops. Per-frame pitch is a smooth
-/// stand-in for the original's per-frame (_process) update.
-pub fn winddown(start_pos: f64, clock: f32, seconds_left: f32) -> Vec<[f32; 2]> {
-    let mut player = LoopPlayer::new(tune());
-    player.pos = start_pos;
-    let total = (seconds_left.max(0.0) * SAMPLE_RATE as f32) as usize;
-    let mut out = vec![[0.0f32; 2]; total];
-    let dt = 1.0 / SAMPLE_RATE as f32;
-    for (k, frame) in out.iter_mut().enumerate() {
-        let t = k as f32 * dt;
-        let Some(pitch) = pitch_scale(seconds_left - t, clock + t) else {
-            break;
-        };
-        player.fill(std::slice::from_mut(frame), pitch);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::cues::{components, SAMPLE_RATE};
+
+    const FROM: f32 = 0.70;
+    const FLOOR: f32 = 0.40;
+
+    #[test]
+    fn full_wind_and_seventy_percent_play_at_normal_speed() {
+        assert_eq!(slowdown_factor(1.0, FROM, FLOOR), 1.0);
+        assert_eq!(slowdown_factor(0.85, FROM, FLOOR), 1.0);
+        assert_eq!(slowdown_factor(0.70, FROM, FLOOR), 1.0);
     }
-    out
+
+    #[test]
+    fn thirty_five_percent_is_clearly_slower_and_empty_is_stopped() {
+        let half = slowdown_factor(0.35, FROM, FLOOR);
+        assert!(half < 0.8 && half > FLOOR, "35 % should be clearly slower, not stopped: {half}");
+        assert_eq!(slowdown_factor(0.0, FROM, FLOOR), 0.0);
+        assert_eq!(slowdown_factor(-0.1, FROM, FLOOR), 0.0);
+        assert_eq!(slowdown_factor(f32::NAN, FROM, FLOOR), 0.0);
+    }
+
+    #[test]
+    fn the_slowdown_eases_in_smoothly_and_never_speeds_up() {
+        // no kink at 70 %: just under it the factor is still about 1
+        assert!(slowdown_factor(0.699, FROM, FLOOR) > 0.999);
+        let mut last = 1.0;
+        for step in (1..=1000).rev() {
+            let f = slowdown_factor(step as f32 / 1000.0, FROM, FLOOR);
+            assert!(f <= last + 1e-6, "the tune sped up at {step}/1000");
+            assert!(f >= FLOOR - 1e-6);
+            assert!(last - f < 0.01, "a jump of {} at {step}/1000", last - f);
+            last = f;
+        }
+        assert!((slowdown_factor(0.001, FROM, FLOOR) - FLOOR).abs() < 0.01, "it runs down towards the floor");
+    }
+
+    #[test]
+    fn the_shipped_numbers_drive_the_rate_by_the_box_clock() {
+        // 45 s standard box: full wind and 31.5 s left are normal; 15.75 s left (35 %) is slower; empty is stopped
+        assert_eq!(playback_rate(45.0, 45.0), 1.0);
+        assert_eq!(playback_rate(31.5, 45.0), 1.0);
+        assert!(playback_rate(15.75, 45.0) < 0.8);
+        assert_eq!(playback_rate(0.0, 45.0), 0.0);
+        // the same fractions on a nightmare box (25 s) give the same speeds
+        assert_eq!(playback_rate(17.5, 25.0), 1.0);
+        assert!((playback_rate(8.75, 25.0) - playback_rate(15.75, 45.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_tune_is_night_watchs_notes_at_a_constant_spacing() {
+        let parts = components("music_box_tune", 0.0, 1.0).expect("the cue exists");
+        let notes: Vec<_> = parts.iter().filter(|c| c.volume > 0.0).collect();
+        assert_eq!(notes.len(), TUNE_NOTES.len());
+        for (k, c) in notes.iter().enumerate() {
+            assert_eq!(c.frequency, TUNE_NOTES[k], "note {k}");
+            assert_eq!((c.delay * f64::from(SAMPLE_RATE)) as usize, k * NOTE_STEP_FRAMES, "note {k} is on the grid");
+            assert!((c.duration - NOTE_RING_SECONDS).abs() < 1e-9);
+        }
+        assert_eq!(NOTE_STEP_FRAMES as f64 / f64::from(SAMPLE_RATE), 0.38);
+    }
+
+    #[test]
+    fn the_loop_seam_has_no_click_and_no_gap() {
+        let t = tune();
+        assert_eq!(t.len(), LOOP_FRAMES);
+        let step = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs().max((a[1] - b[1]).abs());
+        let across = step(t[LOOP_FRAMES - 1], t[0]);
+        let inside = (1..LOOP_FRAMES).map(|i| step(t[i - 1], t[i])).fold(0.0f32, f32::max);
+        assert!(across <= inside * 1.01, "the seam jumps {across}, the loudest step inside is {inside}");
+        // the last note still rings at the seam, so the loop never goes quiet there
+        let tail: f32 = t[LOOP_FRAMES - 400..].iter().map(|f| f[0].abs()).fold(0.0, f32::max);
+        assert!(tail > 0.002, "the last note was cut short at the seam");
+        // and the first note starts from nothing (its attack), so what rings in is the last note's tail alone
+        assert!(t[0][0].abs() < 0.01);
+    }
+
+    #[test]
+    fn every_round_of_the_run_is_the_same_samples_until_the_slowdown() {
+        let wound = 45.0;
+        let run = run_frames(wound, 0.0);
+        assert_eq!(run.len(), (wound * SAMPLE_RATE as f32) as usize);
+        // a 45 s box is at normal speed for its first 13.5 s (down to 70 %), so the first two rounds (4.94 s each)
+        // are the loop, exactly, every time
+        assert!(run[..LOOP_FRAMES] == run[LOOP_FRAMES..2 * LOOP_FRAMES], "round two differs from round one");
+        assert!(run[..LOOP_FRAMES] == tune()[..], "the first round is not the loop");
+    }
+
+    #[test]
+    fn the_run_slows_and_sinks_as_the_box_drains_and_joins_part_way() {
+        let wound = 20.0;
+        let sr = SAMPLE_RATE as usize;
+        let run = run_frames(wound, 0.0);
+        let crossings = |from: usize, to: usize| -> usize {
+            run[from..to].windows(2).filter(|w| (w[0][0] < 0.0) != (w[1][0] < 0.0)).count()
+        };
+        let normal = crossings(sr, 2 * sr);
+        let late = crossings(19 * sr - sr / 2, 20 * sr - sr / 2 - 1000);
+        assert!(normal > 300, "the first second is the tune at its pitch: {normal}");
+        assert!((late as f32) < normal as f32 * 0.7, "pitch should have sunk: {late} against {normal}");
+        // part-way: the same samples as the tail of the full run
+        let joined = run_frames(wound, 6.0);
+        assert_eq!(joined.len(), run.len() - 6 * sr);
+        assert!(joined[..] == run[6 * sr..], "joining part-way gives different samples");
+        // an empty or spent box is no tune
+        assert!(run_frames(wound, wound).is_empty());
+        assert!(run_frames(0.0, 0.0).is_empty());
+    }
+
+    #[test]
+    fn the_run_restarts_only_when_it_stops_matching_the_clock() {
+        let clock = RunClock { wound: 45.0, last_left: 40.0, last_now: 10.0 };
+        assert!(run_needs_restart(None, 45.0, 45.0, 0.0));
+        assert!(!run_needs_restart(Some(&clock), 39.98, 45.0, 10.02), "an ordinary frame");
+        assert!(run_needs_restart(Some(&clock), 45.0, 45.0, 10.02), "wound again");
+        assert!(run_needs_restart(Some(&clock), 39.98, 35.0, 10.02), "another difficulty");
+        assert!(run_needs_restart(Some(&clock), 40.0, 45.0, 14.0), "the game stood still");
+    }
 }

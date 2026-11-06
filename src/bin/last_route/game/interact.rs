@@ -466,6 +466,13 @@ impl Game {
             crate::audio::sound::collect();
             self.notice_taken(actor, item.label());
             true
+        } else if item == Item::MusicBox && self.specialty.box_slot_visible() {
+            // slot 6 already holds the box: a second is refused, not put in the pack
+            if actor == Actor::Player {
+                crate::audio::sound::interaction_fail();
+                self.say("ALREADY CARRYING A MUSIC BOX");
+            }
+            false
         } else {
             self.notice_full(actor);
             false

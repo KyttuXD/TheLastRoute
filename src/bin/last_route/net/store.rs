@@ -166,6 +166,70 @@ pub struct StoredSession {
     pub session_token: String,
 }
 
+/// The browser build keeps the session in the page's localStorage (no files there: `paths::WRITES_TO_DISK`), one entry
+/// per server, under this key prefix + the server's origin (+ `#profile` for a named profile).
+pub const WEB_SESSION_KEY_PREFIX: &str = "last_route.account:";
+
+/// The localStorage key of one server's saved session, e.g. `last_route.account:http://host:8105`.
+pub fn web_session_key(config: &BackendConfig) -> String {
+    let origin = config.session_section(); // "account:<origin>"
+    let origin = origin.strip_prefix("account:").unwrap_or(&origin);
+    if config.profile.is_empty() {
+        format!("{WEB_SESSION_KEY_PREFIX}{origin}")
+    } else {
+        format!("{WEB_SESSION_KEY_PREFIX}{origin}#{}", config.profile)
+    }
+}
+
+/// The stored text of a session: `{"username":"NAME","session_token":"TOKEN"}`. Nothing else is kept (never the password).
+pub fn session_to_text(session: &StoredSession) -> String {
+    serde_json::json!({ "username": session.username, "session_token": session.session_token }).to_string()
+}
+
+/// The session in stored text; empty, damaged or half-filled text is the signed-out state.
+pub fn session_from_text(text: &str) -> StoredSession {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else { return StoredSession::default() };
+    let field = |k: &str| value.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let session = StoredSession { username: field("username").trim().to_uppercase(), session_token: field("session_token") };
+    if session.username.is_empty() || session.session_token.is_empty() {
+        return StoredSession::default();
+    }
+    session
+}
+
+/// The saved session for `config` from a key/value store (`get` = the store's read).
+pub fn load_session_kv(get: &dyn Fn(&str) -> Option<String>, config: &BackendConfig) -> StoredSession {
+    get(&web_session_key(config)).map(|t| session_from_text(&t)).unwrap_or_default()
+}
+
+/// Saves the session for `config`; a session with no token or name is a clear. False when the store refused it.
+pub fn save_session_kv(set: &mut dyn FnMut(&str, &str) -> bool, config: &BackendConfig, session: &StoredSession) -> bool {
+    let text = if session.username.is_empty() || session.session_token.is_empty() { String::new() } else { session_to_text(session) };
+    set(&web_session_key(config), &text)
+}
+
+/// Forgets the session for `config` (localStorage has no remove through the bridge: an empty text reads as signed out).
+pub fn clear_session_kv(set: &mut dyn FnMut(&str, &str) -> bool, config: &BackendConfig) -> bool {
+    set(&web_session_key(config), "")
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_get(key: &str) -> Option<String> {
+    crate::app::web_storage::get(key)
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn web_get(_key: &str) -> Option<String> {
+    None
+}
+#[cfg(target_arch = "wasm32")]
+fn web_set(key: &str, value: &str) -> bool {
+    crate::app::web_storage::set(key, value)
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn web_set(_key: &str, _value: &str) -> bool {
+    false
+}
+
 /// `last_route_account.cfg` in `dir`.
 #[derive(Clone, Debug)]
 pub struct AccountStore {
@@ -179,6 +243,9 @@ impl AccountStore {
 
     /// `_load_account_session`.
     pub fn load(&self, config: &BackendConfig) -> StoredSession {
+        if !crate::shared::paths::WRITES_TO_DISK {
+            return load_session_kv(&web_get, config);
+        }
         let Some(file) = ConfigFile::load(&self.path) else { return StoredSession::default() };
         let mut section = config.session_section();
         if !file.has_section(&section) && config.base_url.trim_end_matches('/').eq_ignore_ascii_case(PRIMARY_BASE_URL) {
@@ -192,6 +259,10 @@ impl AccountStore {
 
     /// `_save_account_session`: keeps the other servers' sessions.
     pub fn save(&self, config: &BackendConfig, session: &StoredSession) {
+        if !crate::shared::paths::WRITES_TO_DISK {
+            let _ = save_session_kv(&mut web_set, config, session);
+            return;
+        }
         let mut file = ConfigFile::load(&self.path).unwrap_or_default();
         let section = config.session_section();
         file.set_string(&section, "username", &session.username);
@@ -201,6 +272,10 @@ impl AccountStore {
 
     /// `_clear_account_session` (the file part).
     pub fn clear(&self, config: &BackendConfig) {
+        if !crate::shared::paths::WRITES_TO_DISK {
+            let _ = clear_session_kv(&mut web_set, config);
+            return;
+        }
         let mut file = ConfigFile::load(&self.path).unwrap_or_default();
         let section = config.session_section();
         file.set_string(&section, "username", "");
@@ -309,6 +384,66 @@ mod tests {
         let text = std::fs::read_to_string(dir.join(ACCOUNT_CONFIG_FILE)).unwrap();
         assert!(text.contains("[account:http://127.0.0.1:18105]"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn web_session_key_format_per_server() {
+        let primary = BackendConfig::primary();
+        let local = BackendConfig::loopback(18105);
+        assert_eq!(web_session_key(&primary), "last_route.account:http://lastroute.kyttuslab.org:8105");
+        assert_eq!(web_session_key(&local), "last_route.account:http://127.0.0.1:18105");
+        let mut named = BackendConfig::primary();
+        named.profile = "two".into();
+        assert_eq!(web_session_key(&named), "last_route.account:http://lastroute.kyttuslab.org:8105#two");
+        assert_ne!(web_session_key(&primary), web_session_key(&local));
+    }
+
+    #[test]
+    fn web_session_text_round_trip_and_damage() {
+        let s = StoredSession { username: "KYTTU".into(), session_token: "tok\"en".into() };
+        assert_eq!(session_from_text(&session_to_text(&s)), s);
+        // only the name and the token are kept
+        let text = session_to_text(&s);
+        assert!(!text.contains("password"));
+        // the name is canonical uppercase on the way in
+        assert_eq!(session_from_text(r#"{"username":" kyttu ","session_token":"t"}"#).username, "KYTTU");
+        // empty, damaged and half-filled text is signed out
+        for bad in ["", "not json", "[]", r#"{"username":"A"}"#, r#"{"session_token":"t"}"#, r#"{"username":"","session_token":"t"}"#] {
+            assert_eq!(session_from_text(bad), StoredSession::default(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn web_session_load_save_clear_through_a_key_value_store() {
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+        let map: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+        let get = |k: &str| map.borrow().get(k).cloned();
+        let mut set = |k: &str, v: &str| {
+            map.borrow_mut().insert(k.to_string(), v.to_string());
+            true
+        };
+        let primary = BackendConfig::primary();
+        let local = BackendConfig::loopback(18105);
+        assert_eq!(load_session_kv(&get, &primary), StoredSession::default(), "nothing stored: signed out");
+        let a = StoredSession { username: "KYTTU".into(), session_token: "a".into() };
+        let b = StoredSession { username: "LOCAL".into(), session_token: "b".into() };
+        assert!(save_session_kv(&mut set, &primary, &a));
+        assert!(save_session_kv(&mut set, &local, &b));
+        assert_eq!(load_session_kv(&get, &primary), a);
+        assert_eq!(load_session_kv(&get, &local), b);
+        // clearing one server leaves the other
+        assert!(clear_session_kv(&mut set, &primary));
+        assert_eq!(load_session_kv(&get, &primary), StoredSession::default());
+        assert_eq!(load_session_kv(&get, &local), b);
+        // a session with no token is a clear, not a half entry
+        assert!(save_session_kv(&mut set, &local, &StoredSession { username: "LOCAL".into(), session_token: String::new() }));
+        assert_eq!(load_session_kv(&get, &local), StoredSession::default());
+        // a refusing store (blocked storage) reports false and loads as signed out
+        let mut refuse = |_: &str, _: &str| false;
+        assert!(!save_session_kv(&mut refuse, &primary, &a));
+        let none = |_: &str| None;
+        assert_eq!(load_session_kv(&none, &primary), StoredSession::default());
     }
 
     #[test]
