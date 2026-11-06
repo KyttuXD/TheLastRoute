@@ -19,6 +19,8 @@ pub mod swim;
 #[cfg(test)]
 mod ladder_tests;
 #[cfg(test)]
+mod ladder_sweep_tests;
+#[cfg(test)]
 mod stack_walk_tests;
 #[cfg(test)]
 mod stack_entry_tests;
