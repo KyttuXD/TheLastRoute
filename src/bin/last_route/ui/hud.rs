@@ -461,7 +461,7 @@ pub fn draw_hud_with_runners(
         let stamina = (g.p.stamina / MAX_STAMINA * 100.0).round();
         let st_col = if g.p.exhausted || stamina < 20.0 {
             METER_LOW
-        } else if stamina < 45.0 {
+        } else if stamina < crate::game::stamina::rules().weak_below * 100.0 {
             METER_WARN
         } else {
             stamina_col()

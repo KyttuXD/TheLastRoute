@@ -467,6 +467,8 @@ impl Player {
                 } else {
                     1.0
                 }
+                // a tired runner slows (data/player/stamina.json: weaker under 45 percent of the bar)
+                * super::stamina::rules().speed_scale(self.stamina)
         } else {
             PLAYER_WALK_SPEED * prof.player_speed
         } * meters.movement_scale()
@@ -494,7 +496,7 @@ impl Player {
             };
             // Native 0x14008a600: frame delta is multiplied by the profile/stim
             // drain scale, then the meter is clamped at zero.
-            let native_sprint_drain = STAMINA_SPRINT_DRAIN * scale * meters.drain_scale();
+            let native_sprint_drain = super::stamina::rules().sprint_drain() * scale * meters.drain_scale();
             self.stamina = (self.stamina - native_sprint_drain * dt).max(0.0);
             if self.stamina <= 0.0 {
                 self.exhausted = true;
@@ -944,6 +946,177 @@ mod tests {
         let prof = g.prof();
         let full = PLAYER_SPRINT_SPEED * prof.sprint_speed * g.meters.movement_scale() * 16.0 * dt;
         assert!(moved > full * 0.85 && moved < full * 1.15, "moved {moved} m, a full sprint gives {full} m (air control would give {})", full * fall_rules().air_control);
+    }
+
+    /// One sprint frame from `at` at `stamina` points, best of four headings (a wall can block one); the other state set by `prep`.
+    fn tired_sprint_speed(g: &mut Game, at: (f32, f32), yaw: f32, stamina: f32, prep: impl Fn(&mut Game)) -> f32 {
+        let run = Controls { fwd: 1.0, sprint: true, ..Default::default() };
+        (0..4)
+            .map(|k| {
+                g.p.pos = at;
+                g.p.yaw = yaw + k as f32 * std::f32::consts::FRAC_PI_2;
+                run_body(g, 0.5, &Controls::default());
+                g.p.exhausted = false;
+                // every call starts from a plain body: no stim, no cold, no wade scale
+                g.p.stim_boost = 0.0;
+                g.p.speed_scale = 1.0;
+                g.meters.temperature = 50.0;
+                prep(g);
+                g.p.stamina = stamina;
+                step_body(g, &run);
+                g.p.move_vel.0.hypot(g.p.move_vel.1)
+            })
+            .fold(0.0_f32, f32::max)
+    }
+
+    #[test]
+    fn sprint_speed_weakens_under_forty_five_percent_on_the_flat_and_on_a_flight() {
+        let (mut g, s) = flight_game();
+        let prof = g.prof();
+        let full = PLAYER_SPRINT_SPEED * prof.sprint_speed;
+        let walk = PLAYER_WALK_SPEED * prof.player_speed;
+        let p = path(&g, s);
+        let (on, yaw_on) = (p[12], yaw_along((p[15].0 - p[12].0, p[15].1 - p[12].1)));
+        let (off, yaw_off) = (off_stair(s), yaw_along((-(s.run.0 as f32), -(s.run.1 as f32))));
+        let rules = crate::game::stamina::rules();
+        let mut last = f32::MAX;
+        for stamina in [100.0, 60.0, 45.0, 30.0, 10.0, 0.5] {
+            let flat = tired_sprint_speed(&mut g, off, yaw_off, stamina, |_| {});
+            let stairs = tired_sprint_speed(&mut g, on, yaw_on, stamina, |_| {});
+            let want = full * rules.speed_scale(stamina);
+            assert!((flat - want).abs() < 0.01, "{stamina}: flat {flat} vs {want}");
+            assert!((stairs - want).abs() < 0.01, "{stamina}: flight {stairs} vs {want}");
+            assert!(flat <= last + 1e-4, "{stamina}: never faster than at more stamina");
+            assert!(flat > walk, "{stamina}: still faster than a walk ({flat} vs {walk})");
+            last = flat;
+        }
+        // 45 percent and above is the full sprint, 0.5 percent is near the 70 percent floor
+        assert!((tired_sprint_speed(&mut g, off, yaw_off, 45.0, |_| {}) - full).abs() < 0.01);
+        assert!((tired_sprint_speed(&mut g, off, yaw_off, 0.5, |_| {}) / full - 0.70).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_stamina_scale_multiplies_once_with_the_stim_the_cold_and_the_difficulty() {
+        let (mut g, s) = flight_game();
+        let (off, yaw_off) = (off_stair(s), yaw_along((-(s.run.0 as f32), -(s.run.1 as f32))));
+        let k = crate::game::stamina::rules().speed_scale(20.0);
+        assert!(k < 0.9 && k > 0.7, "{k}");
+        let base = PLAYER_SPRINT_SPEED * g.prof().sprint_speed;
+        let plain = tired_sprint_speed(&mut g, off, yaw_off, 20.0, |_| {});
+        assert!((plain - base * k).abs() < 0.01, "{plain} vs {}", base * k);
+        let stim = tired_sprint_speed(&mut g, off, yaw_off, 20.0, |g| g.p.stim_boost = 5.0);
+        assert!((stim - base * k * STIM_SPEED_SCALE).abs() < 0.01, "stim {stim} vs {}", base * k * STIM_SPEED_SCALE);
+        let cold = tired_sprint_speed(&mut g, off, yaw_off, 20.0, |g| g.meters.temperature = 5.0);
+        assert!(g.meters.freezing());
+        assert!((cold - base * k * 0.72).abs() < 0.01, "cold {cold} vs {}", base * k * 0.72);
+        g.meters.temperature = 50.0;
+        let slow = tired_sprint_speed(&mut g, off, yaw_off, 20.0, |g| g.p.speed_scale = 0.5);
+        assert!((slow - base * k * 0.5).abs() < 0.01, "wade/admin scale {slow}");
+        // a full bar is untouched by the new factor under the stim too
+        let stim_full = tired_sprint_speed(&mut g, off, yaw_off, 100.0, |g| {
+            g.p.speed_scale = 1.0;
+            g.p.stim_boost = 5.0;
+        });
+        assert!((stim_full - base * STIM_SPEED_SCALE).abs() < 0.01, "{stim_full}");
+    }
+
+    /// Seconds a held sprint on open floor takes to empty a full bar (it ends in exhaustion).
+    fn seconds_to_empty(g: &mut Game, at: (f32, f32), yaw: f32) -> f32 {
+        g.p.pos = at;
+        g.p.yaw = yaw;
+        g.p.stamina = MAX_STAMINA;
+        g.p.exhausted = false;
+        let run = Controls { fwd: 1.0, sprint: true, ..Default::default() };
+        let prof = g.prof();
+        let sounds = Sounds::default();
+        let mut t = 0.0;
+        while !g.p.exhausted && t < 30.0 {
+            g.p.update_movement(FRAME, &run, &prof, &g.fac, &LevelStack::EMPTY, &mut g.meters, &sounds);
+            t += FRAME;
+        }
+        t
+    }
+
+    #[test]
+    fn a_full_bar_sprints_one_and_a_half_times_longer_than_before_on_every_difficulty() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        for d in crate::config::difficulty::ALL {
+            let mut g = Game::new_infinite_sim(d, 7, "ROOM-TEST-0", 0, &content, &catalog);
+            let at = g.p.pos;
+            let t = seconds_to_empty(&mut g, at, 0.0);
+            // 100 points at 100 / 4.6875 per second (the old 32 per second emptied it in 3.125 s)
+            assert!((t - 4.6875).abs() < 0.05, "{}: {t} s", d.name());
+            assert!(t / 3.125 > 1.45 && t / 3.125 < 1.55, "{}", d.name());
+        }
+    }
+
+    #[test]
+    fn one_held_sprint_never_speeds_up_and_never_drops_under_the_floor_before_exhaustion() {
+        let (mut g, s) = flight_game();
+        let (off, yaw_off) = (off_stair(s), yaw_along((-(s.run.0 as f32), -(s.run.1 as f32))));
+        let full = PLAYER_SPRINT_SPEED * g.prof().sprint_speed;
+        let rules = crate::game::stamina::rules();
+        g.p.pos = off;
+        g.p.yaw = yaw_off;
+        g.p.stamina = MAX_STAMINA;
+        g.p.exhausted = false;
+        g.p.stim_boost = 0.0;
+        g.p.speed_scale = 1.0;
+        g.meters.temperature = 50.0;
+        let run = Controls { fwd: 1.0, sprint: true, ..Default::default() };
+        let prof = g.prof();
+        let sounds = Sounds::default();
+        let (mut last, mut t, mut below) = (f32::MAX, 0.0_f32, 0.0_f32);
+        while !g.p.exhausted && t < 20.0 {
+            // back to the open spot each frame: a wall must not slow the measured speed
+            g.p.pos = off;
+            g.p.yaw = yaw_off;
+            g.p.update_movement(FRAME, &run, &prof, &g.fac, &LevelStack::EMPTY, &mut g.meters, &sounds);
+            let v = g.p.move_vel.0.hypot(g.p.move_vel.1);
+            if v > 0.1 {
+                assert!(v <= last + 0.05, "{t}: sped up from {last} to {v} at stamina {}", g.p.stamina);
+                assert!(v >= full * rules.min_speed_scale - 0.05, "{t}: {v} under the floor at stamina {}", g.p.stamina);
+                last = v;
+            }
+            if g.p.stamina < MAX_STAMINA * rules.weak_below {
+                below += FRAME;
+            }
+            t += FRAME;
+        }
+        assert!(g.p.exhausted, "a held sprint ends in exhaustion");
+        // the weak part is the last 45 percent of the bar: 0.45 * 4.6875 s
+        assert!((below - 0.45 * 4.6875).abs() < 0.1, "{below} s under 45 percent");
+        // resuming at the exhaustion exit (25 points) runs at the curve's value there, not at the floor
+        g.p.stamina = 25.0;
+        g.p.exhausted = false;
+        step_body(&mut g, &run);
+        let resumed = g.p.move_vel.0.hypot(g.p.move_vel.1);
+        assert!((resumed - full * rules.speed_scale(25.0)).abs() < 0.05, "{resumed}");
+    }
+
+    #[test]
+    fn the_stim_and_overheating_still_scale_the_longer_drain() {
+        let (mut g, s) = flight_game();
+        let (off, yaw_off) = (off_stair(s), yaw_along((-(s.run.0 as f32), -(s.run.1 as f32))));
+        g.meters.temperature = 95.0;
+        assert!(g.meters.overheating());
+        let hot = seconds_to_empty(&mut g, off, yaw_off);
+        assert!((hot - 4.6875 / 1.35).abs() < 0.06, "overheating: {hot}");
+        g.meters.temperature = 50.0;
+        // the stim halves the drain while its boost lasts
+        g.p.pos = off;
+        g.p.yaw = yaw_off;
+        g.p.stamina = MAX_STAMINA;
+        g.p.stim_boost = 6.0;
+        let run = Controls { fwd: 1.0, sprint: true, ..Default::default() };
+        let prof = g.prof();
+        let sounds = Sounds::default();
+        for _ in 0..60 {
+            g.p.update_movement(FRAME, &run, &prof, &g.fac, &LevelStack::EMPTY, &mut g.meters, &sounds);
+        }
+        let lost = MAX_STAMINA - g.p.stamina;
+        assert!((lost - 100.0 / 4.6875 * 0.5).abs() < 0.4, "one stim second cost {lost}");
     }
 
     #[test]

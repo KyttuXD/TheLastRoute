@@ -781,6 +781,17 @@ mod tests {
     }
 
     #[test]
+    fn the_stamina_bar_marks_the_speed_threshold_of_the_stamina_rules() {
+        // the FIT zone and the 45 tick sit exactly where the run speed starts to weaken (data/player/stamina.json)
+        let r = shipped();
+        let s = bar(&r, "stamina");
+        let weak = crate::game::stamina::rules().weak_below * 100.0;
+        assert!(s.ticks.iter().any(|t| (t.at - weak).abs() < 1e-4), "no tick at {weak}");
+        let fit = s.zones.iter().find(|z| z.name == "FIT").expect("a FIT zone");
+        assert!((fit.from - weak).abs() < 1e-4, "FIT starts at {} not {weak}", fit.from);
+    }
+
+    #[test]
     fn temperature_ticks_and_zones_are_the_real_thresholds() {
         let r = shipped();
         let t = bar(&r, "temperature");

@@ -31,6 +31,7 @@ mod items;
 pub mod meters;
 pub mod music_box;
 pub mod specialty;
+pub mod stamina;
 pub mod swim_effects;
 pub mod npc;
 pub mod player;
