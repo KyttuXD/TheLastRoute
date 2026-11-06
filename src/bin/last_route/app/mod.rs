@@ -583,6 +583,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
     // the look filter: a short settle after a re-lock while the cursor moves to the capture point, then spike rejection
     let mut look_filter = LookFilter::default();
     let mut grabbed = false;
+    // the pointer lock given up without a user gesture to take it back (a pause menu closed by a hunter's grab on the web)
+    let mut pointer_wait = run_gate::PointerWait::default();
     let mut save = checkpoint::load();
     if !stress_on {
         boot.step(crate::ui::boot::Step::Saves).await;
@@ -1202,6 +1204,14 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             let marks = crate::ui::markers::all_markers(g, &remotes);
             // the admin tools follow the server's admin flag for the signed-in account, never the local name
             admin.enabled = (backend.admin || (screenshot.is_some() && env("LR_SHOT_ADMIN").is_some())) && !stress_on;
+            // a hunter holding this runner in an open room: the struggle needs the keys, so the pause menu (the world keeps
+            // running under it online) closes by itself and stays shut until the runner is free
+            let online = net.is_some();
+            let held_by_hunter = g.escape.is_some() && !in_report;
+            let handed_back = run_gate::hand_back_on_grab(&mut pz, online, held_by_hunter, web_pointer::locked());
+            if handed_back.wait_for_click {
+                pointer_wait.start();
+            }
             let admin_esc = if in_report || pz.open {
                 false
             } else {
@@ -1218,7 +1228,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                             z.shop_open = false;
                         }
                     }
-                } else {
+                } else if run_gate::pause_allowed(online, held_by_hunter) {
                     pz.show();
                 }
             }
@@ -1238,6 +1248,9 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 map_open,
                 screenshot.is_none() && !stress_on && !update_screen.is_shown(),
             );
+            let click = is_mouse_button_pressed(MouseButton::Left) || is_mouse_button_pressed(MouseButton::Right);
+            // no lock request until a click when the last close had no gesture to take the lock with
+            want_grab = pointer_wait.allows_grab(want_grab, click, pz.open || in_report);
             // a long frame (a hitch, or the window was in the background) may have left the capture half-undone and
             // the cursor warp pending: settle again, re-issue the capture now and again on the next click
             if grabbed && want_grab && raw_dt > look::cfg().gap_relock_s {
@@ -1246,7 +1259,6 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 set_cursor_grab(true);
                 show_mouse(false);
             }
-            let click = is_mouse_button_pressed(MouseButton::Left) || is_mouse_button_pressed(MouseButton::Right);
             // the browser may have dropped the pointer lock (Escape, focus loss): then the game is not grabbed any more
             if web_pointer::lost_after_held(grabbed) {
                 grabbed = false;
@@ -1258,8 +1270,14 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 // the browser takes Escape to release the lock and never sends it to the game, so a lock lost during
                 // play opens the pause menu instead (the player is not left stuck in the game)
                 if !pz.open && !in_report && !update_screen.is_shown() {
-                    pz.show();
-                    // the pause menu is open now: this frame must not ask the browser for the lock again
+                    if run_gate::pause_allowed(online, held_by_hunter) {
+                        pz.show();
+                    } else {
+                        // held by a hunter in a room: no menu, the cursor stays free for the struggle and the next click
+                        // takes the lock back
+                        pointer_wait.start();
+                    }
+                    // the menu is open (or the lock waits for a click) now: this frame must not ask for the lock again
                     want_grab = false;
                 }
             } else if want_grab && grabbed && !web_pointer::locked() && web_pointer::may_request(false) {

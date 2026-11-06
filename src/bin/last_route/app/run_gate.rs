@@ -5,6 +5,12 @@
 //!   with `pauses_tree = not RoomState.online` (main_3d.gd 124), so the hunters, timers, meters and the net broadcast go
 //!   on, and the pausing runner is only uncontrolled: it stands in the world with blank controls and can be caught
 //!   (`_player_controls_blocked` freezes input, not the body). [`controls_for`] is the one test.
+//! * A grab in an open room. The pausing runner can be caught (above), and the struggle (mash [E] or the right button) is
+//!   input the paused menu blanks, so [`hand_back_on_grab`] closes the menu (every sub-screen, a pending quit question
+//!   included: the grab wins) the moment the local runner is held, and [`pause_allowed`] keeps Escape (and the web's
+//!   lost pointer lock) from opening it again until the struggle is over (Escape is ignored while held, online). A browser only grants the pointer lock on a user gesture, so the hand-back never asks for one:
+//!   [`PointerWait`] leaves the cursor free after a close that could not take the lock and waits for the next click, the
+//!   struggle works from the keyboard meanwhile, and nothing retries on a timer.
 //! * A long frame. The window loop caps one frame's step at [`MAX_FRAME_DT`], so a hitch is never one huge step that
 //!   tunnels a hunter through a wall. For a client that hosts a room the stall would otherwise be lost for every guest
 //!   (their hunters are the host's), so [`extra_steps`] asks for a few more capped steps, at most
@@ -13,6 +19,7 @@
 //!   catch-up, never skipping it, and the rest of the stall is dropped, like the dedicated room's loop does.
 
 use crate::game::Controls;
+use crate::ui::pause::Pause;
 
 /// The longest step one frame simulates (the window loop's `dt` cap).
 pub const MAX_FRAME_DT: f32 = 0.05;
@@ -24,6 +31,59 @@ pub fn controls_for(paused: bool, online: bool, c: &Controls) -> Option<Controls
         (false, _) => Some(c.clone()),
         (true, true) => Some(Controls::default()),
         (true, false) => None,
+    }
+}
+
+/// Whether Escape (or a browser-dropped pointer lock) may open the pause menu: not for a runner an online hunter is holding,
+/// whose struggle needs the keys. A single-player run cannot be grabbed while the menu is open, and its menu is always allowed.
+pub fn pause_allowed(online: bool, held_by_hunter: bool) -> bool {
+    !(online && held_by_hunter)
+}
+
+/// What closing the pause menu on a grab left for the pointer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HandBack {
+    /// The menu was open and has been closed.
+    pub closed: bool,
+    /// The pointer lock was not held at that moment: the caller must not ask the browser for it (no user gesture) and waits
+    /// for a click instead ([`PointerWait`]).
+    pub wait_for_click: bool,
+}
+
+/// An open room's hunter holds the local runner (`held_by_hunter`: the escape struggle is on) while the pause menu is open:
+/// close the menu, with its settings, players, dossier, skin or confirm screen, back to the plain game. `lock_held` is
+/// whether the pointer is really locked now (always true off the web).
+pub fn hand_back_on_grab(pz: &mut Pause, online: bool, held_by_hunter: bool, lock_held: bool) -> HandBack {
+    if !(online && held_by_hunter && pz.open) {
+        return HandBack { closed: false, wait_for_click: false };
+    }
+    *pz = Pause::default();
+    HandBack { closed: true, wait_for_click: !lock_held }
+}
+
+/// The pointer lock the game has given up without a user gesture to take it back with. While it is set the cursor stays
+/// free and the lock is not requested; the next click clears it and re-locks as it always did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PointerWait(bool);
+
+impl PointerWait {
+    #[cfg(test)]
+    pub fn waiting(self) -> bool {
+        self.0
+    }
+
+    pub fn start(&mut self) {
+        self.0 = true;
+    }
+
+    /// One frame: `want_grab` is what the screen would capture, `click` a mouse press, `menu_or_report` a pause menu or
+    /// the run report on screen (the menu's own clicks are gestures and the report frees the pointer anyway, so the wait
+    /// ends). Returns whether the pointer may be captured this frame.
+    pub fn allows_grab(&mut self, want_grab: bool, click: bool, menu_or_report: bool) -> bool {
+        if menu_or_report || click {
+            self.0 = false;
+        }
+        want_grab && !self.0
     }
 }
 
@@ -228,5 +288,188 @@ mod tests {
         assert_eq!(parse("1000000").unwrap().host_catch_up_steps, 20, "a huge value is clamped, never a stall of its own");
         assert_eq!(parse("2.9").unwrap().host_catch_up_steps, 2);
         assert!(parse("1e999").is_err() && parse("\"4\"").is_err() && parse("null").is_err());
+    }
+
+    // ---- a hunter's grab while the pause menu is open in a room ----
+
+    use crate::ui::pause::Sub;
+
+    /// What the window loop does each frame around the gate in an online room: hand back on a grab, then step the world with
+    /// the controls the (possibly just closed) menu leaves. `pressed` is the player's E press this frame.
+    fn room_frame(g: &mut Game, content: &Content, catalog: &Catalog, pz: &mut Pause, wait: &mut PointerWait, lock: bool, pressed: bool) -> HandBack {
+        let sounds = Sounds::default();
+        g.fac.safe_zone = None;
+        let hb = hand_back_on_grab(pz, true, g.escape.is_some(), lock);
+        if hb.wait_for_click {
+            wait.start();
+        }
+        // the loop blanks the controls under an open menu, then the gate decides
+        let c = if pz.open { Controls::default() } else { Controls { interact: pressed, ..Controls::default() } };
+        if let Some(step_c) = controls_for(pz.open, true, &c) {
+            g.step(DT, &step_c, content, catalog, &sounds);
+        }
+        hb
+    }
+
+    fn open_menu(sub: Sub, tab: usize) -> Pause {
+        let mut pz = Pause::default();
+        pz.show();
+        pz.sub = sub;
+        pz.tab = tab;
+        pz
+    }
+
+    #[test]
+    fn a_grab_closes_every_screen_of_the_online_pause_menu() {
+        for (sub, tab) in [(Sub::None, 0), (Sub::None, 1), (Sub::None, 2), (Sub::Settings, 0), (Sub::Skin, 0), (Sub::Dossier, 0), (Sub::Confirm, 0)] {
+            let mut pz = open_menu(sub, tab);
+            pz.copied = "ROOM".into();
+            let hb = hand_back_on_grab(&mut pz, true, true, true);
+            assert!(hb.closed && !hb.wait_for_click, "{sub:?}/{tab}: closed, and a held lock needs no click");
+            assert!(!pz.open && pz.sub == Sub::None && pz.tab == 0 && pz.copied.is_empty(), "{sub:?}/{tab}: a fresh menu state");
+        }
+        // the quit question is cancelled by the grab, not answered
+        let mut pz = open_menu(Sub::Confirm, 0);
+        assert!(hand_back_on_grab(&mut pz, true, true, true).closed);
+        assert_eq!(pz.sub, Sub::None, "the grab wins over a pending leave-the-route question");
+    }
+
+    #[test]
+    fn nothing_closes_without_a_room_a_grab_or_an_open_menu() {
+        for (online, held, open) in [(false, true, true), (true, false, true), (true, true, false), (false, false, false)] {
+            let mut pz = Pause::default();
+            if open {
+                pz = open_menu(Sub::Settings, 1);
+            }
+            let hb = hand_back_on_grab(&mut pz, online, held, false);
+            assert_eq!(hb, HandBack { closed: false, wait_for_click: false }, "online {online} held {held} open {open}");
+            assert_eq!(pz.open, open, "the menu is left as it was");
+            if open {
+                assert!(pz.sub == Sub::Settings && pz.tab == 1, "its screen too");
+            }
+        }
+    }
+
+    #[test]
+    fn a_close_without_the_pointer_lock_waits_for_a_click_and_never_asks_on_a_timer() {
+        let mut pz = open_menu(Sub::None, 0);
+        let hb = hand_back_on_grab(&mut pz, true, true, false);
+        assert!(hb.closed && hb.wait_for_click, "a browser without the lock gives none back without a gesture");
+        let mut wait = PointerWait::default();
+        assert!(!wait.waiting());
+        wait.start();
+        // thousands of frames of a free cursor: the pointer is never captured, so nothing is requested (no retry loop)
+        for _ in 0..5000 {
+            assert!(!wait.allows_grab(true, false, false), "no lock request without a click");
+            assert!(wait.waiting());
+        }
+        // a click is the gesture: the wait ends and that frame captures, then it stays captured
+        assert!(wait.allows_grab(true, true, false), "the click takes the lock");
+        assert!(!wait.waiting());
+        assert!(wait.allows_grab(true, false, false));
+        // a screen that does not capture stays uncaptured whatever the wait says
+        wait.start();
+        assert!(!wait.allows_grab(false, true, false));
+        // a pause menu or the report ends the wait too (their own clicks are gestures)
+        wait.start();
+        assert!(!wait.allows_grab(false, false, true) && !wait.waiting());
+    }
+
+    #[test]
+    fn escape_is_ignored_while_held_online_and_works_otherwise() {
+        assert!(!pause_allowed(true, true), "no pause menu over a struggle in a room");
+        assert!(pause_allowed(true, false), "an online runner who is free may pause");
+        assert!(pause_allowed(false, true), "a solo run is never held while the menu could open");
+        assert!(pause_allowed(false, false));
+    }
+
+    #[test]
+    fn a_grab_under_the_open_menu_closes_it_and_the_struggle_works_from_the_keyboard() {
+        let (mut g, content, catalog) = staged(1.5);
+        let mut pz = open_menu(Sub::Settings, 0);
+        let mut wait = PointerWait::default();
+        let mut frames = 0;
+        // the runner stands in the open menu until the hunter has her
+        while g.escape.is_none() && g.report.is_none() && frames < 600 {
+            let hb = room_frame(&mut g, &content, &catalog, &mut pz, &mut wait, false, false);
+            assert!(!hb.closed, "the menu stays up until there is a grab");
+            frames += 1;
+        }
+        assert!(g.escape.is_some(), "the hunter grabbed the standing runner");
+        assert!(pz.open, "the grab began inside the step: the menu is still up this frame");
+        // the very next frame hands control back
+        let hb = room_frame(&mut g, &content, &catalog, &mut pz, &mut wait, false, false);
+        assert!(hb.closed && hb.wait_for_click && !pz.open && wait.waiting());
+        assert!(!wait.allows_grab(true, false, false), "and the cursor stays free: no lock is requested without a click");
+        // mashing E (no pointer lock, no click needed) breaks the hold
+        let mut presses = 0;
+        while g.escape.is_some() && presses < 6 {
+            let before = g.escape.as_ref().unwrap().progress;
+            room_frame(&mut g, &content, &catalog, &mut pz, &mut wait, false, true);
+            presses += 1;
+            if let Some(e) = &g.escape {
+                assert_eq!(e.progress, before + 1, "every press counts");
+            }
+        }
+        assert!(g.escape.is_none() && g.report.is_none(), "six presses broke free");
+    }
+
+    #[test]
+    fn without_the_hand_back_a_menu_that_stays_open_loses_the_struggle() {
+        // the old behaviour, to prove the test above is not passing by accident: the menu blanks every press
+        let (mut g, content, catalog) = staged(1.5);
+        let sounds = Sounds::default();
+        let mut frames = 0;
+        while g.escape.is_none() && frames < 600 {
+            g.fac.safe_zone = None;
+            g.step(DT, &Controls::default(), &content, &catalog, &sounds);
+            frames += 1;
+        }
+        assert!(g.escape.is_some());
+        for _ in 0..400 {
+            g.fac.safe_zone = None;
+            let c = controls_for(true, true, &Controls { interact: true, ..Controls::default() }).unwrap();
+            g.step(DT, &c, &content, &catalog, &sounds);
+        }
+        assert!(g.report.is_some(), "the blanked presses never broke the hold: the run ended");
+    }
+
+    #[test]
+    fn a_runner_pulled_out_of_a_locker_under_the_menu_gets_the_menu_closed_too() {
+        let (mut g, content, catalog) = staged(1.5);
+        let li = 0usize;
+        let centre = g.fac.hiding[li].cell.center();
+        g.p.hidden = Some(li);
+        g.p.pos = centre;
+        g.hunters[0].pos = centre;
+        g.hunters[0].last_known = Some(centre);
+        let mut pz = open_menu(Sub::None, 2);
+        let mut wait = PointerWait::default();
+        let mut closed = false;
+        for _ in 0..600 {
+            let hb = room_frame(&mut g, &content, &catalog, &mut pz, &mut wait, true, false);
+            if hb.closed {
+                closed = true;
+                assert!(!hb.wait_for_click, "the lock is held: no click needed");
+                break;
+            }
+            if g.report.is_some() {
+                break;
+            }
+        }
+        assert!(closed, "the pulled-out runner's grab closed the menu");
+        assert!(g.p.hidden.is_none() && g.escape.is_some(), "she is out of the locker and struggling");
+    }
+
+    #[test]
+    fn a_menu_opened_by_a_free_online_runner_is_left_alone() {
+        let (mut g, content, catalog) = staged(30.0);
+        let mut pz = open_menu(Sub::None, 1);
+        let mut wait = PointerWait::default();
+        for _ in 0..120 {
+            let hb = room_frame(&mut g, &content, &catalog, &mut pz, &mut wait, false, false);
+            assert!(!hb.closed);
+        }
+        assert!(pz.open && pz.tab == 1 && !wait.waiting());
     }
 }

@@ -73,7 +73,7 @@ pub fn confirm_layout(body_lines: usize, button_h: f32) -> (f32, f32) {
     (buttons_top, buttons_top + button_h + CONFIRM_INSET)
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Sub {
     None,
     Settings,
