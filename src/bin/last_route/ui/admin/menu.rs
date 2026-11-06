@@ -85,7 +85,7 @@ fn fit(ui: &Ui, text: &str, size: f32, width: f32) -> String {
     format!("{s}...")
 }
 
-fn wrap(ui: &Ui, text: &str, size: f32, width: f32) -> Vec<String> {
+pub(super) fn wrap(ui: &Ui, text: &str, size: f32, width: f32) -> Vec<String> {
     let mut out = vec![];
     for para in text.split('\n') {
         let mut line = String::new();
@@ -126,7 +126,8 @@ impl Admin {
             size.y * u,
         );
 
-        let mut click = is_mouse_button_pressed(MouseButton::Left);
+        // (the password message box over the menu takes the click, see password.rs)
+        let mut click = is_mouse_button_pressed(MouseButton::Left) && self.reset.notice.is_none();
         let wheel = mouse_wheel().1;
         let hunters = hunter_list(content);
         let mut cmds: Vec<Cmd> = vec![];
@@ -799,6 +800,10 @@ impl Admin {
             }
         }
         for (i, (label, placeholder)) in menu().fields.iter().enumerate() {
+            // RESET PASSWORD is for the full admin owners only
+            if !self.field_visible(i) {
+                continue;
+            }
             let c = col.take(line_h(7.0), 4.0);
             if ui.visible(c) {
                 ui.text(label, c.x, c.y, 7.0, AMBER);
@@ -812,6 +817,19 @@ impl Admin {
                 self.clock,
             ) {
                 self.field_focus = Some(i);
+            }
+            if i == super::password::RESET_FIELD {
+                let r = col.take(17.0, 4.0);
+                let busy = self.reset_busy();
+                let text = if busy { "RESETTING..." } else { "RESET PASSWORD" };
+                let button = Rect::new(r.x, r.y, ui.tw("RESET PASSWORD", 7.0) + 20.0 * col.u, r.h);
+                if busy {
+                    if ui.visible(button) {
+                        ui.button_face(button, text, 7.0, false, false);
+                    }
+                } else if ui.button(button, text, 7.0, false, false) {
+                    cmds.push(Cmd::Field(i));
+                }
             }
         }
 

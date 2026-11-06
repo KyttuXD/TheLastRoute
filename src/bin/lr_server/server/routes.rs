@@ -69,7 +69,29 @@ fn or_default(text: String, fallback: &str) -> String {
 
 /// One line per account event: the time, the event, the account name, the outcome and the source address. The body and
 /// the tokens are never logged.
-fn log_account_event(now: i64, path: &str, body: &Value, result: &Reply, address: &str) {
+fn log_account_event(now: i64, path: &str, body: &Value, result: &Reply, address: &str, actor: &str) {
+    if let Some((ok, line)) = account_event_line(now, path, body, result, address, actor) {
+        if ok {
+            log_info(&line);
+        } else {
+            log_warn(&line);
+        }
+    }
+}
+
+/// A log-safe account name: trimmed, upper-cased, only `A-Z 0-9 _`, at most 24 characters, `-` when nothing is left.
+fn log_name(raw: &str) -> String {
+    let name: String = raw.trim().to_uppercase().chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(24).collect();
+    if name.is_empty() {
+        "-".to_string()
+    } else {
+        name
+    }
+}
+
+/// The audit line of an account event (and whether it succeeded), or None for a route that is not logged. The admin
+/// password reset also names the owner who asked (`actor=`); it never carries a password, a token or any of the body.
+pub(super) fn account_event_line(now: i64, path: &str, body: &Value, result: &Reply, address: &str, actor: &str) -> Option<(bool, String)> {
     let event = match path {
         "/api/account/register" => "register",
         "/api/account/login" => "login",
@@ -77,23 +99,18 @@ fn log_account_event(now: i64, path: &str, body: &Value, result: &Reply, address
         "/api/account/logout" => "logout",
         "/api/account/password" => "password",
         "/api/account/rename" => "rename",
-        _ => return,
+        "/api/admin/account/reset-password" => "admin-reset-password",
+        _ => return None,
     };
     let ok = result.1.get("ok") == Some(&json!(true));
-    let name = if ok { str_or_empty(result.1.get("username")) } else { str_or_empty(body.get("username")) };
-    let name: String = name.trim().to_uppercase().chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(24).collect();
-    let name = if name.is_empty() { "-".to_string() } else { name };
+    let name = log_name(&if ok { str_or_empty(result.1.get("username")) } else { str_or_empty(body.get("username")) });
     let outcome = match result.1.get("code").and_then(Value::as_str) {
         _ if ok => "ok".to_string(),
         Some(code) => code.to_string(),
         None => format!("HTTP {}", result.0),
     };
-    let line = format!("account {event} at {} user={name} outcome={outcome} from={address}", iso_time(now));
-    if ok {
-        log_info(&line);
-    } else {
-        log_warn(&line);
-    }
+    let by = if path == "/api/admin/account/reset-password" { format!(" actor={}", log_name(actor)) } else { String::new() };
+    Some((ok, format!("account {event} at {} user={name}{by} outcome={outcome} from={address}", iso_time(now))))
 }
 
 /// The caller's session for the admin and moderation routes, resolved before the state lock is taken (see
@@ -341,7 +358,7 @@ impl LastRouteServer {
             return response;
         }
         let result = self.route_accounts(guard, &body, path);
-        log_account_event(self.now(), path, &body, &result, &requester_address(request, self.config.trust_proxy));
+        log_account_event(self.now(), path, &body, &result, &requester_address(request, self.config.trust_proxy), &caller.username);
         reply(result)
     }
 
@@ -894,6 +911,16 @@ impl LastRouteServer {
                     let name = if set { r.1.get("entry").and_then(|e| e.get("username")) } else { r.1.get("username") };
                     let name = name.map(|n| str_nullish(Some(n)));
                     guard.dir.admin_tickets.retain(|_, proof| Some(&proof.username) != name.as_ref());
+                }
+                r
+            }
+            "/api/admin/account/reset-password" => {
+                let (r, g) = self.with_accounts(guard, |accounts| accounts.admin_reset_password(body));
+                guard = g;
+                if r.1.get("ok") == Some(&json!(true)) {
+                    // the account was reset: a room admin ticket it held no longer proves anything
+                    let name = str_nullish(r.1.get("username"));
+                    guard.dir.admin_tickets.retain(|_, proof| proof.username != name);
                 }
                 r
             }

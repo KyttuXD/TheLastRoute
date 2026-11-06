@@ -337,6 +337,47 @@ pub fn admin_roster_remove(cfg: &BackendConfig, token: &str, username: &str) -> 
     post(cfg, "/api/admin/roster/remove", &json!({"sessionToken": token, "username": username})).map(|p| s(&p, "username"))
 }
 
+/// What an admin password reset answered. `temporary_password` is the one-time password the server generated (None
+/// when the admin typed the password themselves). The password is never shown by `Debug`.
+#[derive(Clone, Default, PartialEq)]
+pub struct PasswordReset {
+    pub username: String,
+    pub temporary_password: Option<String>,
+    pub sessions_revoked: i64,
+}
+
+impl std::fmt::Debug for PasswordReset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PasswordReset")
+            .field("username", &self.username)
+            .field("temporary_password", &self.temporary_password.as_ref().map(|_| "[hidden]"))
+            .field("sessions_revoked", &self.sessions_revoked)
+            .finish()
+    }
+}
+
+/// The request body of `POST /api/admin/account/reset-password`: no `newPassword` key unless one was typed (the server
+/// then generates a temporary one).
+pub fn admin_reset_password_body(token: &str, username: &str, new_password: Option<&str>) -> Value {
+    let mut body = json!({"sessionToken": token, "username": username.trim().to_uppercase()});
+    if let Some(password) = new_password.filter(|p| !p.is_empty()) {
+        body["newPassword"] = Value::String(password.to_string());
+    }
+    body
+}
+
+/// `POST /api/admin/account/reset-password {sessionToken, username, newPassword?}`: a full admin owner sets another
+/// account's password; every session of that account ends. Without `newPassword` the answer carries the generated
+/// temporary password, once.
+pub fn admin_reset_password(cfg: &BackendConfig, token: &str, username: &str, new_password: Option<&str>) -> Result<PasswordReset, NetError> {
+    let p = post(cfg, "/api/admin/account/reset-password", &admin_reset_password_body(token, username, new_password))?;
+    Ok(PasswordReset {
+        username: s(&p, "username"),
+        temporary_password: Some(s(&p, "temporaryPassword")).filter(|t| !t.is_empty()),
+        sessions_revoked: i(&p, "sessionsRevoked"),
+    })
+}
+
 // ---- guest names ------------------------------------------------------------------------------------
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1067,5 +1108,88 @@ mod admin_join_tests {
     fn the_reserve_request_names_the_code_and_the_owner_session() {
         let body = admin_reserve_body("ADMN1", "tok");
         assert_eq!(body, json!({"action": "create", "code": "ADMN1", "sessionToken": "tok"}));
+    }
+
+    #[test]
+    fn the_password_reset_body_names_the_target_in_uppercase_and_sends_a_password_only_when_typed() {
+        assert_eq!(admin_reset_password_body("tok", " runner ", None), json!({"sessionToken": "tok", "username": "RUNNER"}));
+        assert_eq!(admin_reset_password_body("tok", "runner", Some("")), json!({"sessionToken": "tok", "username": "RUNNER"}));
+        let typed = admin_reset_password_body("tok", "runner", Some("fake-typed-password"));
+        assert_eq!(typed["newPassword"], "fake-typed-password");
+    }
+
+    #[test]
+    fn a_reset_answer_never_prints_its_password() {
+        let reset = PasswordReset { username: "RUNNER".into(), temporary_password: Some("K7QF-2MXD-H9TA-WP4C".into()), sessions_revoked: 2 };
+        let shown = format!("{reset:?}");
+        assert!(shown.contains("RUNNER") && !shown.contains("K7QF"), "{shown}");
+    }
+
+    /// One canned HTTP answer on loopback; returns the port and the request text the client sent.
+    fn serve_once(reply: String) -> (u16, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut got = Vec::new();
+            let mut chunk = [0u8; 2048];
+            loop {
+                let n = stream.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                got.extend_from_slice(&chunk[..n]);
+                let text = String::from_utf8_lossy(&got).to_string();
+                if let Some(at) = text.find("\r\n\r\n") {
+                    let length = text[..at]
+                        .to_ascii_lowercase()
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+                        .unwrap_or(0);
+                    if got.len() >= at + 4 + length {
+                        break;
+                    }
+                }
+            }
+            stream.write_all(reply.as_bytes()).unwrap();
+            String::from_utf8_lossy(&got).to_string()
+        });
+        (port, handle)
+    }
+
+    fn json_reply(status: &str, body: &str) -> String {
+        format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len())
+    }
+
+    #[test]
+    fn the_reset_call_posts_to_the_admin_route_and_returns_the_temporary_password_once() {
+        let (port, seen) = serve_once(json_reply(
+            "200 OK",
+            r#"{"ok":true,"username":"RUNNER","generated":true,"temporaryPassword":"K7QF-2MXD-H9TA-WP4C","sessionsRevoked":2}"#,
+        ));
+        let reset = admin_reset_password(&BackendConfig::loopback(port), "tok", "runner", None).unwrap();
+        assert_eq!(
+            reset,
+            PasswordReset { username: "RUNNER".into(), temporary_password: Some("K7QF-2MXD-H9TA-WP4C".into()), sessions_revoked: 2 }
+        );
+        let sent = seen.join().unwrap();
+        assert!(sent.starts_with("POST /api/admin/account/reset-password HTTP/1.1\r\n"), "{sent}");
+        assert!(sent.ends_with(r#"{"sessionToken":"tok","username":"RUNNER"}"#), "{sent}");
+
+        // a typed password is not echoed by the server, so none comes back
+        let (port, _) = serve_once(json_reply("200 OK", r#"{"ok":true,"username":"RUNNER","generated":false,"sessionsRevoked":0}"#));
+        let reset = admin_reset_password(&BackendConfig::loopback(port), "tok", "runner", Some("fake-typed-password")).unwrap();
+        assert_eq!(reset.temporary_password, None);
+    }
+
+    #[test]
+    fn the_reset_call_passes_the_servers_refusal_on() {
+        let (port, _) = serve_once(json_reply("403 Forbidden", r#"{"ok":false,"code":"ADMIN_OWNER_REQUIRED","error":"Full admin account required"}"#));
+        let err = admin_reset_password(&BackendConfig::loopback(port), "tok", "runner", None).unwrap_err();
+        assert!(matches!(&err, NetError::Http { status: 403, code, .. } if code == "ADMIN_OWNER_REQUIRED"), "{err:?}");
+        let offline = BackendConfig { offline: true, ..BackendConfig::loopback(1) };
+        assert!(matches!(admin_reset_password(&offline, "tok", "runner", None), Err(NetError::Offline)));
     }
 }

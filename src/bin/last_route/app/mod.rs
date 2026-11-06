@@ -1202,6 +1202,9 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             let marks = crate::ui::markers::all_markers(g, &remotes);
             // the admin tools follow the server's admin flag for the signed-in account, never the local name
             admin.enabled = (backend.admin || (screenshot.is_some() && env("LR_SHOT_ADMIN").is_some())) && !stress_on;
+            // RESET PASSWORD (FIELDS tab) is for the full admin owners, by the server's own flag; the field's request goes out here
+            admin.owner = backend.signed_in() && backend.account_info.as_ref().is_some_and(|a| a.admin_owner);
+            admin.run_password_reset(&backend.config, &backend.account.session_token);
             let admin_esc = if in_report || pz.open {
                 false
             } else {
