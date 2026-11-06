@@ -108,6 +108,29 @@ impl GlCache {
         self.bind_texture(slot_index, self.stored_target, self.stored_texture);
     }
 
+    /// Forgets the GL texture name `raw` in the binding cache, as it is about to be deleted (Last Route patch).
+    /// Upstream leaves the cache holding a deleted name; the next `store_texture_binding` / `restore_texture_binding`
+    /// pair then rebinds it, which WebGL reports as "glBindTexture called with an already deleted texture ID" and
+    /// which, on native GL (which reuses names), makes a new texture that got the same name skip its bind. Only the
+    /// deleted name is reset, so no GL call is made and live bindings keep their cache entries.
+    pub fn forget_texture(&mut self, raw: GLuint) {
+        if raw == 0 {
+            return;
+        }
+        for slot in self.textures.iter_mut() {
+            if slot.texture == raw {
+                *slot = CachedTexture {
+                    target: 0,
+                    texture: 0,
+                };
+            }
+        }
+        if self.stored_texture == raw {
+            self.stored_texture = 0;
+            self.stored_target = 0;
+        }
+    }
+
     pub fn clear_buffer_bindings(&mut self) {
         self.bind_buffer(GL_ARRAY_BUFFER, 0, None);
         self.vertex_buffer = 0;
@@ -137,5 +160,62 @@ impl GlCache {
             }
             *cached_attr = None;
         }
+    }
+}
+
+// Last Route patch: tests for `forget_texture`. They touch only the cache's fields, never a GL call.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cache() -> GlCache {
+        GlCache {
+            stored_index_buffer: 0,
+            stored_index_type: None,
+            stored_vertex_buffer: 0,
+            index_buffer: 0,
+            index_type: None,
+            vertex_buffer: 0,
+            cur_pipeline: None,
+            cur_pass: None,
+            color_blend: None,
+            alpha_blend: None,
+            stencil: None,
+            color_write: (true, true, true, true),
+            cull_face: CullFace::Nothing,
+            stored_texture: 0,
+            stored_target: 0,
+            textures: [CachedTexture { target: 0, texture: 0 }; MAX_SHADERSTAGE_IMAGES],
+            attributes: [None; MAX_VERTEX_ATTRIBUTES],
+        }
+    }
+
+    #[test]
+    fn a_deleted_texture_name_leaves_the_binding_cache() {
+        let mut c = cache();
+        c.textures[0] = CachedTexture { target: GL_TEXTURE_2D, texture: 17 };
+        c.textures[3] = CachedTexture { target: GL_TEXTURE_2D, texture: 17 };
+        c.textures[1] = CachedTexture { target: GL_TEXTURE_2D, texture: 9 };
+        c.stored_texture = 17;
+        c.stored_target = GL_TEXTURE_2D;
+        c.forget_texture(17);
+        assert_eq!((c.textures[0].texture, c.textures[0].target), (0, 0));
+        assert_eq!((c.textures[3].texture, c.textures[3].target), (0, 0));
+        assert_eq!(c.textures[1].texture, 9, "another texture's binding stays");
+        assert_eq!((c.stored_texture, c.stored_target), (0, 0), "a stored binding of the name is dropped too");
+    }
+
+    #[test]
+    fn forgetting_leaves_other_stored_bindings_and_name_zero_alone() {
+        let mut c = cache();
+        c.textures[2] = CachedTexture { target: GL_TEXTURE_2D, texture: 5 };
+        c.stored_texture = 5;
+        c.stored_target = GL_TEXTURE_2D;
+        c.forget_texture(6);
+        c.forget_texture(0);
+        assert_eq!(c.textures[2].texture, 5);
+        assert_eq!(c.stored_texture, 5);
+        assert_eq!(c.stored_target, GL_TEXTURE_2D);
+        assert_eq!(c.textures[0].texture, 0);
     }
 }

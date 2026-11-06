@@ -560,6 +560,49 @@ pub fn window(
     (f, fix)
 }
 
+/// The chunks the window will need that a runner at window-local `pos` (metres, the window's own frame) has not yet
+/// got, when it is within `margin` metres of the edge of the middle chunk: the 3x3 around each centre it can step to
+/// (one chunk along each edge it is near, and the diagonal when it is near a corner), in a fixed order. Empty away from
+/// the edges. `window` builds missing chunks synchronously, so generating these a few frames ahead (into the same
+/// cache) turns the crossing's one long frame into a cache hit.
+pub fn approach_chunks(center: (i32, i32), level: i32, pos: (f32, f32), margin: f32) -> Vec<ChunkKey> {
+    let (lo, hi) = (CHUNK as f32, (2 * CHUNK) as f32);
+    let step = |v: f32| {
+        if v < lo + margin {
+            -1
+        } else if v >= hi - margin {
+            1
+        } else {
+            0
+        }
+    };
+    let (sx, sy) = (step(pos.0), step(pos.1));
+    let mut steps = vec![];
+    if sx != 0 {
+        steps.push((sx, 0));
+    }
+    if sy != 0 {
+        steps.push((0, sy));
+    }
+    if sx != 0 && sy != 0 {
+        steps.push((sx, sy));
+    }
+    let mut out: Vec<ChunkKey> = vec![];
+    for (ax, ay) in steps {
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let k = ChunkKey { cx: center.0 + ax + dx, cy: center.1 + ay + dy, level };
+                // the window the runner is in already holds its own 3x3
+                let in_window = (k.cx - center.0).abs() <= 1 && (k.cy - center.1).abs() <= 1;
+                if !in_window && !out.contains(&k) {
+                    out.push(k);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// A throwaway floor a Game holds before its first window is built.
 pub fn placeholder(seed: &str, cat: &Catalog) -> Facility {
     Facility::generate(&format!("{seed}:SHELL"), &Options::default(), cat)
@@ -576,6 +619,42 @@ mod tests {
     }
 
     const WORLDS: [&str; 3] = ["1426541270", "4157433391", "2899547009"];
+
+    #[test]
+    fn nothing_is_approached_from_the_middle_of_the_chunk() {
+        let mid = (1.5 * CHUNK as f32, 1.5 * CHUNK as f32);
+        assert!(approach_chunks((4, -2), 0, mid, 8.0).is_empty());
+    }
+
+    #[test]
+    fn near_an_edge_the_next_three_chunks_are_wanted() {
+        // 3 m from the east edge of the middle chunk: the window to the east adds the column cx + 2
+        let pos = (2.0 * CHUNK as f32 - 3.0, 1.5 * CHUNK as f32);
+        let want = approach_chunks((4, -2), 7, pos, 8.0);
+        let mut got: Vec<(i32, i32)> = want.iter().map(|k| (k.cx, k.cy)).collect();
+        got.sort();
+        assert_eq!(got, vec![(6, -3), (6, -2), (6, -1)]);
+        assert!(want.iter().all(|k| k.level == 7));
+        // west edge: the column cx - 2
+        let pos = (CHUNK as f32 + 1.0, 1.5 * CHUNK as f32);
+        let mut got: Vec<(i32, i32)> = approach_chunks((4, -2), 0, pos, 8.0).iter().map(|k| (k.cx, k.cy)).collect();
+        got.sort();
+        assert_eq!(got, vec![(2, -3), (2, -2), (2, -1)]);
+    }
+
+    #[test]
+    fn near_a_corner_the_diagonal_window_is_wanted_without_repeats() {
+        let pos = (2.0 * CHUNK as f32 - 1.0, 2.0 * CHUNK as f32 - 1.0);
+        let want = approach_chunks((0, 0), 0, pos, 8.0);
+        // the east window's new column (3) and the south window's new row (3), and the corner (2, 2) the diagonal
+        // window adds, each once: 7 chunks
+        assert_eq!(want.len(), 7);
+        for k in &want {
+            assert!(k.cx == 2 || k.cy == 2, "outside the current window: {k:?}");
+            assert!(want.iter().filter(|o| *o == k).count() == 1);
+        }
+        assert!(want.contains(&ChunkKey { cx: 2, cy: 2, level: 0 }));
+    }
 
     #[test]
     fn the_level_stack_is_zero_down_to_the_inferno() {

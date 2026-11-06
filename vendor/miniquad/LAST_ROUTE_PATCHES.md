@@ -1,10 +1,10 @@
 # Last Route patches to miniquad 0.4.11
 
 This is the crates.io miniquad 0.4.11 source (crate checksum `dcbaea978d741f3b60ced666b06a2a1e4a2bc81cb8b9dd29f4a40965e1f59e65`)
-with six small changes, all marked "Last Route patch" in the code. They are three Metal fixes, two Metal speed
-changes, one Metal diagnostic and the pacer switch. Nothing outside macOS (and the Metal backend, which only macOS and
-iOS build) behaves differently. The tree also holds the Linux, Windows and wasm backends untouched; they are kept so the
-folder stays a faithful copy of the crate.
+with eight small changes, all marked "Last Route patch" in the code. They are four Metal fixes, two Metal speed
+changes, one Metal diagnostic, the pacer switch and one GL texture-cache fix (item 8, the only change that reaches the
+GL, Linux, Windows and wasm backends). Everything else outside macOS (and the Metal backend, which only macOS and iOS
+build) is the untouched crate source.
 
 `last_route.patch` in this folder is the exact `diff -ruN` of upstream `src/` against `vendor/miniquad/src/`. To check or
 upgrade: unpack the crate, apply `last_route.patch` (`patch -p1 -d <crate>/src < last_route.patch`) and compare with
@@ -46,6 +46,18 @@ Pacer switch:
 7. `src/native/macos.rs` and `src/lib.rs`: `window::set_frame_pacer(bool)`. The macOS run loop waits on a
    CVDisplayLink at the top of every iteration, which caps it at the display's refresh rate even with the swap
    interval at 0. The static `FRAME_PACER_ENABLED` (default true, the stock behaviour) is read every iteration.
+
+GL / WebGL fix (all GL targets, wasm included):
+
+8. `src/graphics/gl.rs` `delete_texture` and `src/graphics/gl/cache.rs` `GlCache::forget_texture`: upstream has the
+   `clear_texture_bindings()` call in `delete_texture` commented out, so the binding cache (`textures[slot]`,
+   `stored_texture`) keeps a deleted GL name. The next `new_texture`, `texture_set_filter`, `texture_set_wrap` or
+   `texture_update` stores that slot and rebinds it afterwards, which the web shim (`js/gl.js` `validateGLObjectID`)
+   reports as "glBindTexture called with an already deleted texture ID N" (harmless there: its IDs never repeat), and
+   which on native GL, where names are reused, makes a new texture that got the same name skip its bind so its upload
+   goes to the wrong texture. `delete_texture` now resets just the deleted name's cache entries (no GL call, other
+   bindings keep their entries) before `glDeleteTextures`. Two unit tests sit at the end of `cache.rs`
+   (`cargo test --lib` inside this folder).
 
 Not implemented in the Metal backend: `texture_read_pixels` (macroquad's `grab_screen` is OpenGL only too), so
 screenshots need OpenGL. A Metal window is also held to the refresh rate by the compositor (docs/GRAPHICS_API.md). When
