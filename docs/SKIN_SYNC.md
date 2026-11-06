@@ -12,14 +12,17 @@ A skin is a 64x64 PNG known on the wire by its id: the lowercase hex SHA-256 of 
    is the hash of those canonical bytes.
 2. **Upload by hash** (signed in, not offline): `skins::upload_in_background` sends `POST /api/v1/skins {sessionToken, png}`
    (`net::api::upload_skin`). One upload per skin runs at a time and a failed one waits 60 s (`retry_secs`) before the next try.
-   The server answers `{ok, id, hash}`; the client remembers that id, and only that one, in `skins-uploaded.json` (the website
-   keeps one skin per account, so choosing an earlier skin again uploads it again).
+   The server answers `{ok, id, hash}` (the Node backend's `POST /api/skins/upload`, the fallback when the v1 route is unknown,
+   answers only `{ok, hash}`; the client accepts either); the client remembers that id, and only that one, in
+   `skins-uploaded.json` (the website keeps one skin per account, so choosing an earlier skin again uploads it again). The browser
+   build has no user folder, so it keeps that list in memory for the session (`skins::uploaded_ids`) and uploads again on a reload.
 3. **Publish**: once the id is held by the server, the host publishes it in its profile; other clients see the id.
 4. **Download by hash**: `skins::fetch_skin_in_background(id)`, tried in this order, first fully verified copy wins:
    1. `GET <backend>/api/v1/skins/<id>` (lr_server's own route, the store the uploads go to),
    2. `GET https://skins.kyttuslab.org/<id>.png` (static immutable copies behind Caddy on VPS 2),
    3. `GET <backend>/api/skins/files/<id>.png` (the Godot backend's route; lr_server answers it as well).
-   At most 4 downloads and uploads run at once, a skin that failed is left alone for 60 s, the timeout is 8 s, the size limit
+   A recorded skin is checked against the server the same way (the v1 route, then the Godot route) before it is trusted again.
+   Nothing here needs a session: a guest fetches any skin it is told about. At most 4 downloads and uploads run at once, a skin that failed is left alone for 60 s, the timeout is 8 s, the size limit
    is the cap + 1 byte, the content type must be an image or a generic binary type.
 5. **Validate** (both ends, the same code): `last_route_core::shared::skin_validate`. Its structural check (`check_png`, shapes
    `Remote` and `Local`, chunk limit from `data/skins/config.json` `png.max_chunks`) and its full check (`check_skin_png_with`,
@@ -40,6 +43,8 @@ A skin is a 64x64 PNG known on the wire by its id: the lowercase hex SHA-256 of 
    (`skins::remember_own`), so a pruned or wiped cache folder never takes it away from the hand, the body or the upload.
    A cached file is read at most cap + 1 bytes and only if it is a regular file, and it counts as cached only when it passes the
    full check (`fetch_needed`, `read_skin`).
+   With no cache folder (the browser build, or a desktop without a user folder) a verified download is kept in memory instead
+   (`skins::remember_peer`, the same `cache_max` bound) and `skins::read_skin` finds it there.
 7. **Fallback**: no skin yet, a failed or refused download: the runner wears the default mannequin and the fetch is retried
    after the cool-down.
 

@@ -2771,6 +2771,52 @@ mod tests {
         guest.coop.close();
     }
 
+    /// KT: "runner (skinless guest) doesn't see my skin". A guest with no account (no session, no skin of its own) and no
+    /// cache folder (the browser) is in a room whose host wears a skin the website holds. The figure exists before the host's
+    /// profile arrives (DEFAULT meanwhile); when the id arrives the guest fetches it with no session and shows it.
+    #[test]
+    fn a_guest_with_no_session_and_no_cache_folder_shows_the_hosts_skin_once_it_arrives_and_is_fetched() {
+        use crate::net::runner_figure::{pick, Pick};
+        use crate::shared::skins;
+        let rgba: Vec<u8> = (0..64 * 64).flat_map(|i| [(i % 241) as u8, 33, 200, 255]).collect();
+        let png = skins::encode_png(&rgba, 64, 64);
+        let hash = skins::sha256_hex(&png);
+        let now = Instant::now();
+        let mut host = offline_session(true, "KYTTU");
+        let mut guest = offline_session(false, "RUNNER");
+        assert!(guest.token.is_empty(), "the guest is not signed in");
+        host.set_skin(&hash, &[hash.clone()]);
+        assert_eq!(host.published_skin(), hash, "the host announces the skin the website holds");
+
+        // the host's figure is on the guest's screen before its profile has arrived
+        assert!(guest.store_remote(HOST_PEER_ID, sample(1, 3.0, -2.0), now));
+        let view = guest.remotes_at(5.0, 1, (0, 0)).into_iter().find(|r| r.peer == HOST_PEER_ID).expect("the host is drawn");
+        assert_eq!(view.skin, SKIN_DEFAULT, "DEFAULT until the profile arrives");
+        let have = |id: &str| skins::read_skin_in(&[None, None], id).is_some();
+        assert_eq!(pick(&view.skin, &have), Pick::Atlas);
+
+        // the profile arrives late: the guest applies it to the figure that already exists
+        let mut out = Vec::new();
+        guest.on_message(HOST_PEER_ID, profile_message(HOST_PEER_ID, "KYTTU", host.published_skin(), SkinFlags { slim: false, copy: true }), now, &mut out);
+        let view = guest.remotes_at(5.0, 1, (0, 0)).into_iter().find(|r| r.peer == HOST_PEER_ID).unwrap();
+        assert_eq!(view.skin, hash, "the late hash is applied");
+        assert_eq!(pick(&view.skin, &have), Pick::Atlas, "the picture is not here yet: the default body shows meanwhile");
+
+        // the fetch: a server like the Node backend (the legacy file route only, public, no session asked for)
+        let cfg = skins::SkinConfig { host_base: "https://skins.invalid".to_string(), ..skins::config().unwrap() };
+        let (server_port, stop) = skin_server(png.clone(), 1);
+        assert!(skins::start_download(cfg, format!("http://127.0.0.1:{server_port}"), None, &hash), "the guest starts a download with no cache folder");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !have(&hash) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(have(&hash), "the guest ends up holding the host's skin");
+        assert_eq!(pick(&view.skin, &have), Pick::Skin(hash.clone()), "and the figure wears it");
+        let bytes = skins::read_skin_in(&[None, None], &hash).unwrap();
+        assert_eq!(skins::remote_skin_rgba(&bytes).unwrap().len(), 64 * 64 * 4);
+    }
+
     #[test]
     fn a_guest_takes_the_hosts_hunter_frames_and_world_events_and_never_sends_them() {
         let now = Instant::now();

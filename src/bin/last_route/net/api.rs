@@ -107,7 +107,14 @@ pub fn upload_skin(cfg: &BackendConfig, session_token: &str, png: &[u8]) -> Resu
         Err(e) if is_unknown_endpoint(&e) => upload_skin_legacy(cfg, session_token, png)?,
         Err(e) => return Err(e),
     };
-    Ok(s(&p, "id"))
+    Ok(uploaded_skin_id(&p))
+}
+
+/// The id a skin upload answers with: `id` (lr_server) or `hash` (the Node backend's `POST /api/skins/upload` answers only
+/// `{ok, hash}`; reading `id` alone made every upload there look like it stored another skin, so the skin was never published).
+fn uploaded_skin_id(answer: &Json) -> String {
+    let id = s(answer, "id");
+    if id.is_empty() { s(answer, "hash") } else { id }
 }
 
 /// True for a 404 that means the route does not exist (lr_server's `UNKNOWN_ENDPOINT`, or a bare 404 with no JSON body),
