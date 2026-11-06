@@ -14,6 +14,8 @@
 //!   LR_SHOT_LEVEL=n         with LR_SHOT_RUN=1 (Infinite route): start on level n (-3 has spirals in open bays)
 //!   LR_SHOT_STAIRS=shape    with a run: stand on the landing of the first flight down of a shape (spiral | switchback |
 //!                           straight) found in the window, 1 m back from it, looking down at the well
+//!   LR_SHOT_PROP=type       with a run: stand LR_SHOT_DIST metres (default 3) from the nearest prop of that type in the streamed window
+//!                           (e.g. sewerOutflowPipe on level -1), looking at it; LR_SHOT_PITCH tilts the view (radians, default 0.1)
 //!   LR_SHOT_PAUSE=...       with a run: pause | statistics | players | settings | dossier | confirm
 //!   LR_SHOT_ADMIN=n         with a run: the admin menu on tab n (0 STATUS .. 9 FIELDS)
 //!   LR_SHOT_MAP=1           with a run: the full map
@@ -1765,6 +1767,9 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 if let Some(shape) = env("LR_SHOT_STAIRS") {
                     shot_at_stairs(&mut g, &shape);
                 }
+                if let Some(ptype) = env("LR_SHOT_PROP") {
+                    shot_at_prop(&mut g, &ptype);
+                }
                 if let Ok(turn) = std::env::var("LR_SHOT_YAW") {
                     g.p.yaw = turn.parse().unwrap_or(0.0);
                 }
@@ -2046,6 +2051,45 @@ mod owner_command_tests {
         assert!(cmd.busy());
     }
 
+}
+
+/// `LR_SHOT_PROP=type`: stand `LR_SHOT_DIST` metres from the prop of that type nearest the player, on open floor, looking at it.
+fn shot_at_prop(g: &mut Game, ptype: &str) {
+    let from = g.p.pos;
+    let centre = |p: &crate::world::facility::Prop| {
+        let (cx, cz) = p.cell.center();
+        (cx + p.offset.0, cz + p.offset.1)
+    };
+    let nearest = g
+        .fac
+        .props
+        .iter()
+        .filter(|p| p.ptype == ptype)
+        .min_by(|a, b| {
+            let d = |p: &crate::world::facility::Prop| {
+                let c = centre(p);
+                (c.0 - from.0).powi(2) + (c.1 - from.1).powi(2)
+            };
+            d(a).total_cmp(&d(b))
+        });
+    let Some(p) = nearest else {
+        eprintln!("LR_SHOT_PROP: no {ptype} in the window ({} props)", g.fac.props.len());
+        return;
+    };
+    let c = centre(p);
+    let dist: f32 = env("LR_SHOT_DIST").and_then(|d| d.parse().ok()).unwrap_or(3.0);
+    for k in 0..16 {
+        let a = k as f32 * std::f32::consts::TAU / 16.0;
+        let at = (c.0 + a.sin() * dist, c.1 + a.cos() * dist);
+        if g.fac.can_occupy(at.0 as f64, at.1 as f64, 0.3) {
+            g.p.pos = at;
+            g.p.yaw = (-(c.0 - at.0)).atan2(-(c.1 - at.1));
+            g.p.pitch = env("LR_SHOT_PITCH").and_then(|d| d.parse().ok()).unwrap_or(0.1);
+            eprintln!("LR_SHOT_PROP: {ptype} at {c:?} (rotation {}), player at {at:?}", p.rotation);
+            return;
+        }
+    }
+    eprintln!("LR_SHOT_PROP: no open floor within {dist} m of the {ptype} at {c:?}");
 }
 
 /// `LR_SHOT_STAIRS=shape`: put the player on the landing row of the first flight down of that shape (spiral, switchback or

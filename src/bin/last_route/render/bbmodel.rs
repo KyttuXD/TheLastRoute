@@ -669,7 +669,9 @@ mod tests {
     /// One fold of the digests of every other embedded model that has a decodable texture (props, doors, the player
     /// mannequins, the A to Z hunters), recorded the same way, and how many went into it.
     /// (685 -> 684 on 2026-11-06: the retired heater station model left the embedded set, see archive/heater-stations.)
-    const GOLDEN_ALL: (usize, u64) = (684, 0xfbac92f6c2cbbbfc);
+    /// (digest moved on 2026-11-06: the sewer outflow pipe, its broken stub and the sewer bridge were re-converted from
+    /// the full Godot GLBs, their wall triangles restored; only those three models differ.)
+    const GOLDEN_ALL: (usize, u64) = (684, 0x2d860dac37d60e4d);
 
     /// The shape of a model read with the game's UV rule.
     fn shape_now(path: &str, j: &serde_json::Value) -> Option<Shape> {
@@ -872,4 +874,150 @@ mod tests {
             }
         }
     }
+    // ---- prop mesh integrity: the "big sewer pipe is see-through" bug (2026-11-06) ----
+    //
+    // The sewer outflow pipe shipped with every tube segment missing about two thirds of its wall (a 500-triangle cap
+    // had been cut into the source GLB, so a 20-sided barrel kept 23 of its 76 triangles): the pipe drew as stripes
+    // with the room showing through. Nothing in the loader or the renderer was at fault (the world material does not
+    // cull back faces, every prop vertex is the opaque textured mode, and a part stays far below the 16-bit index
+    // limit), so the checks below read the shipped models themselves.
+
+    /// One welded vertex: a model-space position rounded to 0.01 of a bbmodel unit (below the converter's 1e-4 m).
+    type Weld = (i32, i32, i32);
+
+    fn weld(p: Vec3) -> Weld {
+        ((p.x * 100.0).round() as i32, (p.y * 100.0).round() as i32, (p.z * 100.0).round() as i32)
+    }
+
+    /// How many edges of `faces` (welded by position, each face a corner loop) are not shared by exactly two faces
+    /// running in opposite directions: 0 means a closed surface with one consistent winding.
+    fn broken_edges(faces: &[&Face]) -> usize {
+        use std::collections::HashMap;
+        // undirected edge -> (low to high count, high to low count)
+        let mut edges: HashMap<(Weld, Weld), (u32, u32)> = HashMap::new();
+        for f in faces {
+            let w: Vec<Weld> = f.corners.iter().map(|c| weld(*c)).collect();
+            for i in 0..w.len() {
+                let (a, b) = (w[i], w[(i + 1) % w.len()]);
+                if a == b {
+                    continue;
+                }
+                let e = edges.entry(if a < b { (a, b) } else { (b, a) }).or_default();
+                if a < b {
+                    e.0 += 1;
+                } else {
+                    e.1 += 1;
+                }
+            }
+        }
+        edges.values().filter(|e| **e != (1, 1)).count()
+    }
+
+    /// The volume the face loops enclose with the origin, summed: positive when they wind counter-clockwise seen from
+    /// outside, which is the way the loader derives a face normal (`(c1 - c0) x (c2 - c0)`), so a positive total means
+    /// the lit normals of a closed part point outward.
+    fn signed_volume(faces: &[&Face]) -> f32 {
+        let mut v = 0.0;
+        for f in faces {
+            for k in 1..f.corners.len() - 1 {
+                v += f.corners[0].dot(f.corners[k].cross(f.corners[k + 1])) / 6.0;
+            }
+        }
+        v
+    }
+
+    /// The prop models of the sewer's big pipework: each drawable element (a tube segment, a flange ring, a strap, a bolt)
+    /// must be a closed solid, or the camera sees through it from some side.
+    const SEWER_PIPEWORK: [&str; 4] = [
+        "props/sewer/sewer_outflow_pipe.bbmodel",
+        "props/sewer/sewer_outflow_pipe_broken.bbmodel",
+        "props/sewer/sewer_pipe_run.bbmodel",
+        "props/sewer/sewer_bridge.bbmodel",
+    ];
+
+    #[test]
+    fn every_element_of_the_sewer_pipework_is_a_closed_outward_solid() {
+        let models = all_models();
+        for path in SEWER_PIPEWORK {
+            let (_, j) = models.iter().find(|(p, _)| *p == path).unwrap_or_else(|| panic!("{path} is not embedded"));
+            let shape = shape_now(path, j).unwrap_or_else(|| panic!("{path} does not load"));
+            assert!(shape.parts.len() >= 10, "{path}: {} elements", shape.parts.len());
+            assert_eq!(shape.parts.len(), j["elements"].as_array().map_or(0, Vec::len), "{path}: a part per element, so the names line up");
+            for (i, part) in shape.parts.iter().enumerate() {
+                let faces: Vec<&Face> = part.faces.iter().collect();
+                let name = j["elements"][i]["name"].as_str().unwrap_or("?");
+                assert!(faces.len() >= 4, "{path}: element {name} has {} faces, a solid needs 4", faces.len());
+                assert_eq!(broken_edges(&faces), 0, "{path}: element {name} is open or wound inconsistently (see-through)");
+                // a cube carries its own face normals (its corner loops wind the other way); a mesh derives them from its winding
+                if j["elements"][i]["type"].as_str() == Some("mesh") {
+                    assert!(signed_volume(&faces) > 0.0, "{path}: element {name} is wound inward (its lit normals face the wrong way)");
+                }
+            }
+        }
+    }
+
+    /// The old outflow pipe (a barrel that kept a third of its wall) must trip the check, so the check is known to bite.
+    #[test]
+    fn a_barrel_missing_most_of_its_wall_is_seen_as_open() {
+        let ring = |z: f32, k: usize| {
+            let a = k as f32 * std::f32::consts::TAU / 20.0;
+            vec3(a.sin(), a.cos(), z)
+        };
+        let side = |k: usize| Face {
+            corners: vec![ring(0.0, k), ring(0.0, k + 1), ring(1.0, k + 1), ring(1.0, k)],
+            uv: vec![Vec2::ZERO; 4],
+            normal: Vec3::Z,
+        };
+        // every third side of a 20-sided tube
+        let few: Vec<Face> = (0..20).step_by(3).map(side).collect();
+        assert!(broken_edges(&few.iter().collect::<Vec<_>>()) > 0);
+        // all twenty sides still leave both ends open (20 edges at each): only a capped tube is a solid
+        let all: Vec<Face> = (0..20).map(side).collect();
+        assert_eq!(broken_edges(&all.iter().collect::<Vec<_>>()), 40);
+    }
+
+    /// The prop models the game draws: `props/<set>/<name>` and the interactables (the loose `props/<name>` files are
+    /// older rebuilds nothing loads).
+    fn drawn_prop_models() -> Vec<(&'static str, serde_json::Value)> {
+        all_models()
+            .into_iter()
+            .filter(|(p, _)| p.starts_with("interactables/") || (p.starts_with("props/") && p.matches('/').count() >= 2))
+            .collect()
+    }
+
+    /// Every face of every drawn prop reads inside its atlas. The browser build draws on WebGL 1, where a texture whose
+    /// size is not a power of two keeps the clamp wrap (prop_model.rs `may_repeat`), so a UV outside 0..1 would smear the
+    /// border texel across the face.
+    #[test]
+    fn every_prop_face_uv_stays_inside_its_atlas() {
+        let models = drawn_prop_models();
+        assert!(models.len() > 600, "only {} prop models found", models.len());
+        for (path, j) in &models {
+            let Some(shape) = shape_now(path, j) else { continue };
+            for f in shape.parts.iter().flat_map(|p| &p.faces) {
+                for uv in &f.uv {
+                    let eps = 1e-3;
+                    assert!(
+                        uv.x.is_finite() && uv.y.is_finite() && uv.x >= -eps && uv.y >= -eps && uv.x <= 1.0 + eps && uv.y <= 1.0 + eps,
+                        "{path}: UV {uv} lies outside the atlas"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A prop is built into 16-bit-indexed meshes by `prop_model::add_verts`, which takes a part whole below 60,000
+    /// vertices and splits it above; no model comes near, and every face is a triangle or a quad (the loader fans a
+    /// longer loop, which slivers).
+    #[test]
+    fn no_prop_model_nears_the_16_bit_mesh_limit() {
+        for (path, j) in drawn_prop_models() {
+            let Some(shape) = shape_now(path, &j) else { continue };
+            let faces: Vec<&Face> = shape.parts.iter().flat_map(|p| &p.faces).collect();
+            let corners: usize = faces.iter().map(|f| f.corners.len()).sum();
+            assert!(corners < 20_000, "{path}: {corners} vertices");
+            assert!(faces.iter().all(|f| (3..=4).contains(&f.corners.len())), "{path}: a face is neither a triangle nor a quad");
+        }
+    }
+
 }
