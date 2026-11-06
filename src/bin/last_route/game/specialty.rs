@@ -98,6 +98,10 @@ pub struct ColdRules {
     pub solyth_slow_factor: f32,
     /// The temperature the hunters read on a runner carrying the cold source, at most (Solyth's pounce gate is 60).
     pub solyth_pounce_reading: f32,
+    /// Seconds Solyth keeps backing off after a frame with the cold source on (she is out of the chase, cannot grab).
+    pub solyth_deter_seconds: f32,
+    /// How far (cells) from the runner she retreats when the cold source drives her off.
+    pub solyth_retreat_cells: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -213,6 +217,8 @@ pub fn parse(text: &str) -> Result<Rules, String> {
         floor: num(&v, "temperature.cold.floor")?,
         solyth_slow_factor: num(&v, "temperature.cold.solyth_slow_factor")?,
         solyth_pounce_reading: num(&v, "temperature.cold.solyth_pounce_reading")?,
+        solyth_deter_seconds: num(&v, "temperature.cold.solyth_deter_seconds")?,
+        solyth_retreat_cells: num(&v, "temperature.cold.solyth_retreat_cells")?,
     };
     if !(0.0..=60.0).contains(&heat.target_offset) || heat.target_offset <= 0.0 {
         return Err("temperature.heat.target_offset must be in (0, 60]".into());
@@ -233,6 +239,12 @@ pub fn parse(text: &str) -> Result<Rules, String> {
     }
     if !(0.0..60.0).contains(&cold.solyth_pounce_reading) {
         return Err("temperature.cold.solyth_pounce_reading must be under 60 (her pounce gate)".into());
+    }
+    if !(0.1..=10.0).contains(&cold.solyth_deter_seconds) {
+        return Err("temperature.cold.solyth_deter_seconds must be in [0.1, 10]".into());
+    }
+    if !(4.0..=60.0).contains(&cold.solyth_retreat_cells) {
+        return Err("temperature.cold.solyth_retreat_cells must be in [4, 60]".into());
     }
     Ok(Rules { slots, default_mode, heat, cold })
 }
@@ -440,12 +452,18 @@ impl Specialty {
         target - ambient
     }
 
-    /// A cold source slows Solyth while she is out (an active brain with her gimmick). Called every hunter frame; the
-    /// slow is short, so it lapses a moment after the source is switched to heat or is gone.
+    /// A cold source deters Solyth while she is out (an active brain with her gimmick): she is slowed, drops the chase,
+    /// backs off to a point away from the runner and cannot grab until the source is off for `solyth_deter_seconds`.
+    /// Called every hunter frame; it lapses a moment after the source is switched to heat or is gone.
     pub fn deter(&self, b: &mut Brain) {
-        if self.cold_on() && b.active && matches!(b.gimmick, Gimmick::Solyth(_)) {
-            b.apply_slow(0.5, rules().cold.solyth_slow_factor);
+        if !(self.cold_on() && b.active) {
+            return;
         }
+        let Gimmick::Solyth(s) = &mut b.gimmick else {
+            return;
+        };
+        s.deter(rules().cold.solyth_deter_seconds, rules().cold.solyth_retreat_cells);
+        b.apply_slow(0.5, rules().cold.solyth_slow_factor);
     }
 
     /// The temperature the hunters read on the runner: a cold source holds it under Solyth's pounce gate.
@@ -779,6 +797,28 @@ mod tests {
     }
 
     #[test]
+    fn the_wheel_runs_through_the_hotbar_then_the_specialty_slots_whose_hunter_is_out() {
+        let (mut g, content) = sim();
+        g.sync_specialty();
+        // no hunter out: only the five hotbar slots, and 6 to 9 are empty
+        g.select(4);
+        g.scroll_hotbar(1);
+        assert_eq!((g.selected, g.specialty.selected), (0, None), "wraps from slot 5 to slot 1");
+        assert!(g.specialty.items.iter().all(|i| i.is_none()), "no hunters: slots 6 to 9 hold nothing");
+        add(&mut g, &content, "glyra");
+        g.sync_specialty();
+        g.select(4);
+        g.scroll_hotbar(1);
+        assert_eq!(g.specialty.selected, Some(0), "slot 5 then slot 6");
+        g.scroll_hotbar(1);
+        assert_eq!((g.selected, g.specialty.selected), (0, None), "slot 6 then back to slot 1");
+        g.scroll_hotbar(-1);
+        assert_eq!(g.specialty.selected, Some(0), "backwards from slot 1 reaches slot 6");
+        g.scroll_hotbar(-1);
+        assert_eq!((g.selected, g.specialty.selected), (4, None), "and then slot 5");
+    }
+
+    #[test]
     fn selecting_a_common_slot_puts_the_specialty_slot_away() {
         let (mut g, content) = sim();
         add(&mut g, &content, "glyra");
@@ -918,6 +958,7 @@ mod tests {
         sp.deter(&mut g.hunters[si]);
         assert!(g.hunters[si].slow_timer > 0.0);
         assert_eq!(g.hunters[si].slow_factor, rules().cold.solyth_slow_factor);
+        assert!(g.hunters[si].gimmick.immune_to_capture(&g.hunters[si]), "a deterred Solyth cannot grab the runner");
         let wi = g.hunters.iter().position(|h| h.def.id == "wynelle").unwrap();
         assert_eq!(g.hunters[wi].slow_timer, 0.0, "Wynelle is not slowed by cold");
         // heat does not slow Solyth

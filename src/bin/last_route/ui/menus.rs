@@ -204,6 +204,10 @@ impl Ui {
         // no quit dialog where quitting is not offered (QUIT_OFFERED): it lands on the title
         let s = if s == Screen::Quit && !QUIT_OFFERED { Screen::Title } else { s };
         self.screen = s;
+        // keys typed in the game or on another screen wait in the character queue; they must not land in the next text
+        // field (the JOIN ROOM code filled itself with the game's WASD presses)
+        #[cfg(not(test))]
+        while get_char_pressed().is_some() {}
         self.focus = 0;
         self.scroll = 0.0;
         self.drag = None;

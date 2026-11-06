@@ -133,20 +133,37 @@ pub fn run_frames(wound_seconds: f32, from_elapsed: f32) -> Vec<[f32; 2]> {
 pub struct RunClock {
     pub wound: f32,
     pub last_left: f32,
-    /// The wall clock at the last frame the box clock was read.
-    pub last_now: f64,
+    /// The wall clock when this run was started, and the seconds of the wind already used up then.
+    pub start_now: f64,
+    pub start_elapsed: f32,
 }
 
-/// A frame gap longer than this (seconds) means the game stood still (paused, loading, the tab hidden) while the
-/// run kept playing on the wall clock, so the run is started again from the box clock.
-pub const RESYNC_GAP_SECONDS: f64 = 0.4;
+/// How far (seconds) the wall clock the run plays on may drift from the box clock before the run is started again.
+/// Frame hitches and lag stay well under it, so they never restart the tune (a restart renders and decodes the whole
+/// run, which is what made the tune stutter); a pause or a loading stall longer than this does resync it once.
+pub const RESYNC_DRIFT_SECONDS: f64 = 1.5;
 
 /// True when the run must be (re)started for `left` now: none is playing, the box was wound again (the clock went up),
-/// the wound time changed, or the game stood still for longer than [`RESYNC_GAP_SECONDS`].
+/// the wound time changed, or the run has drifted from the box clock by more than [`RESYNC_DRIFT_SECONDS`].
 pub fn run_needs_restart(prev: Option<&RunClock>, left: f32, wound: f32, now: f64) -> bool {
     match prev {
         None => true,
-        Some(p) => p.wound != wound || left > p.last_left + 1e-3 || now - p.last_now > RESYNC_GAP_SECONDS,
+        Some(p) => {
+            if p.wound != wound || left > p.last_left + 1e-3 {
+                return true;
+            }
+            let played = now - p.start_now;
+            let used = ((wound - left) - p.start_elapsed) as f64;
+            (played - used).abs() > RESYNC_DRIFT_SECONDS
+        }
+    }
+}
+
+/// The clock to keep after a frame: a restarted run begins now, a running one only follows the box clock.
+pub fn next_clock(prev: Option<&RunClock>, restart: bool, left: f32, wound: f32, now: f64) -> RunClock {
+    match prev {
+        Some(p) if !restart => RunClock { last_left: left, ..*p },
+        _ => RunClock { wound, last_left: left, start_now: now, start_elapsed: wound - left },
     }
 }
 
@@ -348,11 +365,23 @@ mod tests {
 
     #[test]
     fn the_run_restarts_only_when_it_stops_matching_the_clock() {
-        let clock = RunClock { wound: 45.0, last_left: 40.0, last_now: 10.0 };
+        // started at wall time 5 with 0 s of the wind used; at wall time 10 the box has 40 s left (5 s used)
+        let clock = RunClock { wound: 45.0, last_left: 40.0, start_now: 5.0, start_elapsed: 0.0 };
         assert!(run_needs_restart(None, 45.0, 45.0, 0.0));
         assert!(!run_needs_restart(Some(&clock), 39.98, 45.0, 10.02), "an ordinary frame");
+        assert!(!run_needs_restart(Some(&clock), 39.98, 45.0, 10.8), "a lag spike must not restart the tune");
         assert!(run_needs_restart(Some(&clock), 45.0, 45.0, 10.02), "wound again");
         assert!(run_needs_restart(Some(&clock), 39.98, 35.0, 10.02), "another difficulty");
-        assert!(run_needs_restart(Some(&clock), 40.0, 45.0, 14.0), "the game stood still");
+        assert!(run_needs_restart(Some(&clock), 40.0, 45.0, 14.0), "the game stood still for seconds");
+    }
+
+    #[test]
+    fn a_restarted_run_keeps_its_own_start_and_a_running_one_only_follows_the_box() {
+        let first = next_clock(None, true, 45.0, 45.0, 3.0);
+        assert_eq!((first.start_now, first.start_elapsed), (3.0, 0.0));
+        let later = next_clock(Some(&first), false, 30.0, 45.0, 18.0);
+        assert_eq!((later.start_now, later.start_elapsed, later.last_left), (3.0, 0.0, 30.0));
+        let again = next_clock(Some(&later), true, 45.0, 45.0, 20.0);
+        assert_eq!((again.start_now, again.start_elapsed), (20.0, 0.0));
     }
 }

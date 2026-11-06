@@ -651,7 +651,9 @@ impl Game {
     /// Glyra reads the clock through `Ctx` (hunting.rs), so this is the room effect's whole timer.
     pub(super) fn run_music_box(&mut self, dt: f32) {
         self.music_box_left = (self.music_box_left - dt).max(0.0);
-        crate::audio::world::music_box(self.music_box_left, music_box::wound_seconds(self.difficulty.id()));
+        // the tune is Glyra's: it plays only while she is on the floor (nothing is heard when she is not out)
+        let heard = if self.specialty.box_slot_visible() { self.music_box_left } else { 0.0 };
+        crate::audio::world::music_box(heard, music_box::wound_seconds(self.difficulty.id()));
     }
 
     pub fn say(&mut self, text: &str) {

@@ -604,6 +604,11 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         let mut held_driven = false;
         for &(lvl, cslot, slot, h) in posed.iter() {
             let is_held = held_slot == Some(slot);
+            // a hunter that has not been activated (Solyth before the heat latches, the rest of the roster that is not
+            // out) is disabled and not drawn at all
+            if !h.active && !is_held {
+                continue;
+            }
             if !is_held && !cull.visible(g, lvl, h.y, h.pos, cull_eye) {
                 continue;
             }

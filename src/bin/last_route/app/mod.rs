@@ -1067,7 +1067,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             if is_key_pressed(KeyCode::F1) {
                 hud_hidden = !hud_hidden;
             }
-            let want_grab = cursor_grab_wanted(
+            let mut want_grab = cursor_grab_wanted(
                 pz.open,
                 in_report,
                 admin.is_open(),
@@ -1087,13 +1087,18 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             if web_pointer::lost_after_held(grabbed) {
                 grabbed = false;
                 mouse_last = None;
+                // the browser already let go: tell macroquad too, or it keeps its grabbed flag, ignores the real cursor
+                // position and the pause menu cannot be clicked
+                set_cursor_grab(false);
                 show_mouse(true);
                 // the browser takes Escape to release the lock and never sends it to the game, so a lock lost during
                 // play opens the pause menu instead (the player is not left stuck in the game)
                 if !pz.open && !in_report {
                     pz.show();
+                    // the pause menu is open now: this frame must not ask the browser for the lock again
+                    want_grab = false;
                 }
-            } else if grabbed && !web_pointer::locked() && web_pointer::may_request(false) {
+            } else if want_grab && grabbed && !web_pointer::locked() && web_pointer::may_request(false) {
                 // the browser has not granted the lock yet, or refused it: ask again until it does
                 set_cursor_grab(true);
             }
@@ -1111,6 +1116,12 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 // transition before the window is focused. A click never freezes the look (relock_action).
                 set_cursor_grab(true);
                 show_mouse(false);
+            }
+            if cfg!(target_arch = "wasm32") && !want_grab && web_pointer::locked() {
+                // a lock the browser granted after the game stopped wanting it (a request still in flight when a menu
+                // opened): release it, or the menu is stuck behind a locked, hidden cursor
+                set_cursor_grab(false);
+                show_mouse(true);
             }
             if action.clear_last {
                 mouse_last = None;

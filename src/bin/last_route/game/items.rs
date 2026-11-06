@@ -309,6 +309,26 @@ impl Game {
         self.say(&format!("DROPPED {}", slot.item.label()));
     }
 
+    /// The wheel moves through one ring: the five hotbar slots, then every specialty slot whose hunter is out (an empty
+    /// placeholder slot is skipped), so slots 6 and up swap into the hand like 1 to 5.
+    pub(super) fn scroll_hotbar(&mut self, wheel: i32) {
+        use super::specialty::{rules, Kind};
+        let spec: Vec<usize> = (0..self.specialty.visible.len())
+            .filter(|&i| self.specialty.visible[i] && !matches!(rules().slots[i].kind, Kind::Empty))
+            .collect();
+        let ring = HOTBAR_SIZE + spec.len();
+        let here = match self.specialty.selected {
+            Some(s) => spec.iter().position(|&x| x == s).map_or(0, |p| HOTBAR_SIZE + p),
+            None => self.selected,
+        };
+        let next = (here as i32 + wheel).rem_euclid(ring as i32) as usize;
+        if next < HOTBAR_SIZE {
+            self.select(next);
+        } else {
+            self.press_specialty(spec[next - HOTBAR_SIZE]);
+        }
+    }
+
     pub(super) fn update_tools(&mut self, c: &super::Controls, sounds: &Sounds) {
         if self.shop_open() {
             return;
@@ -317,8 +337,7 @@ impl Game {
             self.select(s);
         }
         if c.wheel != 0 {
-            let n = (self.selected as i32 + c.wheel).rem_euclid(HOTBAR_SIZE as i32) as usize;
-            self.select(n);
+            self.scroll_hotbar(c.wheel);
         }
         if c.flashlight {
             self.toggle_flashlight(sounds);

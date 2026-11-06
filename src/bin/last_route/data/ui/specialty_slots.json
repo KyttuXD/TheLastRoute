@@ -10,6 +10,6 @@
   "temperature": {
     "default_mode": "heat",
     "heat": { "target_offset": 28.0, "cap": 84.0 },
-    "cold": { "target_offset": 28.0, "floor": 32.0, "solyth_slow_factor": 0.6, "solyth_pounce_reading": 55.0 }
+    "cold": { "target_offset": 28.0, "floor": 32.0, "solyth_slow_factor": 0.6, "solyth_pounce_reading": 55.0, "solyth_deter_seconds": 1.5, "solyth_retreat_cells": 18.0 }
   }
 }
