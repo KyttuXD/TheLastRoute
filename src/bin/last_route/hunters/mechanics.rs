@@ -171,3 +171,25 @@ mod tests {
         assert_eq!(intern(""), None);
     }
 }
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+
+    /// The timing table is not a hunter: the roster loader must not try to read it as one (it would leave a warning).
+    #[test]
+    fn the_cue_table_is_not_read_as_a_hunter_definition() {
+        let c = crate::content::Content::load();
+        assert!(!c.warnings.iter().any(|w| w.contains("mechanic_cues")), "{:?}", c.warnings);
+        assert!(c.hunters.iter().all(|h| h.id != "mechanic_cues"));
+    }
+
+    /// A hostile `mech` off the wire (huge, wrong case, non-string) never becomes a name.
+    #[test]
+    fn hostile_wire_names_are_never_interned() {
+        let huge = "x".repeat(100_000);
+        for bad in [huge.as_str(), "STEAL_BATTERY", " steal_battery", "steal_battery\0", "climb ", "\u{0}"] {
+            assert_eq!(intern(bad), None, "{bad:?}");
+        }
+    }
+}

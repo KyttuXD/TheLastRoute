@@ -863,6 +863,8 @@ impl Brain {
                 self.cue = None;
             }
         }
+        // a brain that simulates (the host's, or a guest's that became one) never keeps a name a host once sent
+        self.tick_net_mechanic(dt);
     }
 
     /// Guest: the mechanic name the host's frame carried (None when it carried none), kept `net_ttl` seconds.
@@ -4436,5 +4438,24 @@ mod route_budget_tests {
         path_scheduler::reset_thread();
         assert!(deferred > 0, "the budget was tight: some searches waited for a frame");
         assert!(reached.iter().all(|r| *r), "every hunter reached the runner: {reached:?} of {} starts", starts.len());
+    }
+}
+
+#[cfg(test)]
+mod mechanic_review_tests {
+    use super::*;
+
+    /// A simulating brain (not a display copy) lets go of a name a host once sent, instead of holding the pose for good.
+    #[test]
+    fn a_simulating_brain_drains_a_stale_host_name() {
+        let content = crate::content::Content::load();
+        let def = content.hunter("aki").expect("aki").clone();
+        let mut b = Brain::new(def, (1.5, 1.5), "PIN", Difficulty::Standard);
+        b.set_net_mechanic(Some("steal_battery"));
+        assert_eq!(b.mechanic(), Some("steal_battery"));
+        b.tick_cue(0.3);
+        assert_eq!(b.mechanic(), Some("steal_battery"), "still inside net_ttl");
+        b.tick_cue(1.0);
+        assert_eq!(b.mechanic(), None, "a brain that ticks its own cue clock forgets the name");
     }
 }

@@ -82,6 +82,10 @@ impl Content {
             {
                 continue;
             }
+            // hunters/mechanic_cues.json is the hunter mechanic animation timing table (hunters/mechanics.rs)
+            if path == crate::hunters::mechanics::PATH {
+                continue;
+            }
             // hunters/charge.json is the per-hunter charge table (hunters/gimmicks/charge.rs), not a hunter definition
             if path == crate::hunters::gimmicks::charge::CHARGE_PATH {
                 continue;
