@@ -216,6 +216,7 @@ impl HunterGait {
 #[cfg(test)]
 mod chase_scale_tests {
     use super::*;
+    use crate::config::Difficulty;
     use crate::content::Content;
     use crate::game::progression::Progression;
 
@@ -241,7 +242,8 @@ mod chase_scale_tests {
         let mut checked = 0;
         for (id, ..) in STRIDE.iter() {
             let Some(def) = content.hunter(id) else { continue };
-            let (old, new) = (def.chase, def.chase * rules.chase_scale_for(&def.category));
+            let scale = rules.chase_scale_for(Difficulty::Standard, &def.category);
+            let (old, new) = (def.chase, def.chase * scale);
             let (clip_old, scale_old) = choose(id, Clip::Chase, old);
             let (clip_new, scale_new) = choose(id, Clip::Chase, new);
             for (s, c) in [(scale_old, clip_old), (scale_new, clip_new)] {
@@ -251,10 +253,10 @@ mod chase_scale_tests {
             let feet_new = scale_new * ref_speed(id, clip_new);
             assert!((feet_new - new).abs() < 1e-3, "{id}: feet {feet_new} vs ground {new}");
             if clip_old == clip_new {
-                assert!((scale_new / scale_old - rules.chase_speed_scale).abs() < 1e-3, "{id}");
+                assert!((scale_new / scale_old - scale).abs() < 1e-3, "{id}");
                 let (r_old, r_new) = (settled_rate(id, old), settled_rate(id, new));
                 assert!(
-                    r_new > r_old && (r_new / r_old - rules.chase_speed_scale).abs() < 0.02,
+                    r_new > r_old && (r_new / r_old - scale).abs() < 0.02,
                     "{id}: footfalls {r_old} -> {r_new}"
                 );
             }
@@ -267,7 +269,7 @@ mod chase_scale_tests {
     /// playback clamp or the feet slide at the speed that matters most.
     #[test]
     fn the_fastest_dash_never_hits_the_stride_playback_clamp() {
-        use crate::config::{Difficulty, HUNTER_DEPTH_SPEED_BONUS_MAX, HUNTER_VISIBLE_CHASE_SPEED_SCALE};
+        use crate::config::{HUNTER_DEPTH_SPEED_BONUS_MAX, HUNTER_VISIBLE_CHASE_SPEED_SCALE};
         let rules = Progression::load();
         let content = Content::base();
         let nm = Difficulty::Nightmare.profile();
@@ -275,7 +277,7 @@ mod chase_scale_tests {
             let Some(def) = content.hunter(id) else { continue };
             let prog = rules.chase_speed_bonus(12) + HUNTER_DEPTH_SPEED_BONUS_MAX;
             let worst = (def.chase + prog * def.prog)
-                * rules.chase_scale_for(&def.category)
+                * rules.chase_scale_for(Difficulty::Nightmare, &def.category)
                 * nm.hunter_speed
                 * HUNTER_VISIBLE_CHASE_SPEED_SCALE;
             let (clip, scale) = choose(id, Clip::Chase, worst);

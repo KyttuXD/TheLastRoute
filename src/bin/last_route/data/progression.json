@@ -13,7 +13,8 @@
     "nightmare": { "activation_relays": 0, "streamed_base": 2, "streamed_step": 1 }
   },
   "chase_speed_bonus_per_relay": 0.1,
-  "chase_speed_scale": 1.09,
+  "_chase_speed_scale": "Per difficulty (a single number applies to all four). Relaxed/Standard 1.06 keep every non-secret hunter's clear-line dash (chase x scale x the difficulty's hunter_speed x 1.2) at or under the runner's sprint; Hard 1.0 leaves the hunters that were already past the sprint exactly as fast as before (and those under it under it); only Nightmare, 1.09, lets a dash out-run the sprint.",
+  "chase_speed_scale": { "relaxed": 1.06, "standard": 1.06, "hard": 1.0, "nightmare": 1.09 },
   "chase_speed_scale_skip": ["secret"],
   "relay_rush": { "relays": 7, "delay_seconds": 45.0, "include_searching": true, "search_clear": 12.0 },
   "milestones": [

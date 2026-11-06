@@ -39,9 +39,10 @@ pub struct Progression {
     /// Chase-speed bonus per collected relay (HUNTER_RELAY_SPEED_BONUS).
     pub chase_speed_bonus_per_relay: f32,
     /// Every hunter's chase speed (the `chase` + relay/depth bonus, before the sight-line dash, winded, slow and
-    /// difficulty scales) is multiplied by this. 1.0 is the original roster; the per-hunter `chase` values stay intact.
-    /// Wander, investigate and search speeds are not touched.
-    pub chase_speed_scale: f32,
+    /// difficulty scales) is multiplied by this, one value per difficulty (Relaxed, Standard, Hard, Nightmare). 1.0 is
+    /// the original roster; the per-hunter `chase` values stay intact. Wander, investigate and search speeds are not
+    /// touched. Only Nightmare is tuned high enough to let a clear-line dash out-run the runner's sprint.
+    pub chase_speed_scale: [f32; 4],
     /// Hunter categories (`category` in data/hunters/*.json) that keep their authored chase speed, e.g. the secret
     /// wolf spiders.
     pub chase_speed_scale_skip: Vec<String>,
@@ -71,7 +72,8 @@ impl Default for Progression {
             // Relaxed, Standard, Hard, Nightmare
             gates: [gate(3, 1, 3), gate(1, 1, 2), gate(0, 1, 1), gate(0, 2, 1)],
             chase_speed_bonus_per_relay: 0.1,
-            chase_speed_scale: 1.09,
+            // Relaxed, Standard, Hard, Nightmare (see data/progression.json for why Hard is 1.0)
+            chase_speed_scale: [1.06, 1.06, 1.0, 1.09],
             chase_speed_scale_skip: vec!["secret".into()],
             rush_relays: 7,
             rush_delay: 45.0,
@@ -124,8 +126,15 @@ impl Progression {
         if let Some(x) = v["chase_speed_bonus_per_relay"].as_f64() {
             p.chase_speed_bonus_per_relay = (x as f32).clamp(0.0, 10.0);
         }
+        // a number is one scale for every difficulty; an object names them (a missing or junk one keeps its default)
         if let Some(x) = v["chase_speed_scale"].as_f64() {
-            p.chase_speed_scale = (x as f32).clamp(0.5, 2.0);
+            p.chase_speed_scale = [(x as f32).clamp(0.5, 2.0); 4];
+        } else if v["chase_speed_scale"].is_object() {
+            for (i, k) in DIFFICULTY_KEYS.iter().enumerate() {
+                if let Some(x) = v["chase_speed_scale"][k].as_f64() {
+                    p.chase_speed_scale[i] = (x as f32).clamp(0.5, 2.0);
+                }
+            }
         }
         if let Some(a) = v["chase_speed_scale_skip"].as_array() {
             p.chase_speed_scale_skip = a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect();
@@ -196,12 +205,13 @@ impl Progression {
         relays_collected.max(0) as f32 * self.chase_speed_bonus_per_relay
     }
 
-    /// The chase-speed multiplier for a hunter of this category: `chase_speed_scale`, or 1.0 for a skipped category.
-    pub fn chase_scale_for(&self, category: &str) -> f32 {
+    /// The chase-speed multiplier for a hunter of this category on `d`: `chase_speed_scale` for that difficulty, or
+    /// 1.0 for a skipped category.
+    pub fn chase_scale_for(&self, d: Difficulty, category: &str) -> f32 {
         if self.chase_speed_scale_skip.iter().any(|c| c == category) {
             1.0
         } else {
-            self.chase_speed_scale
+            self.chase_speed_scale[index(d)]
         }
     }
 

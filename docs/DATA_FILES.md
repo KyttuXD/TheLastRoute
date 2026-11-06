@@ -69,9 +69,14 @@ Audible volume only; the hunter-alert noise (`pool.noise`, `splash_noise`, `nois
 
 ## Hunter chase speed scale
 
-`data/progression.json` `chase_speed_scale` (`game/progression.rs`, read by `Brain::current_speed`): 1.0 -> 1.09. It multiplies
-every hunter's chase speed (`chase` + relay/depth bonus * `prog`) in the Chase state only; the per-hunter `chase` values in
-`data/hunters/*.json` are unchanged, and wander, investigate and search speeds are untouched. `chase_speed_scale_skip`
-(`["secret"]`) lists hunter `category` values that keep their authored chase speed (the secret wolf spiders). The stride
-animation (`render/anim/hunter.rs`) and the footstep cadence (`audio/cues/stride.rs`) are driven by the measured ground
-speed, so legs and footfalls follow the new pace without their own key.
+`data/progression.json` `chase_speed_scale` (`game/progression.rs`, read by `Brain::current_speed` with the brain's difficulty): a
+number (one scale for all four difficulties) or a table `{ "relaxed": 1.06, "standard": 1.06, "hard": 1.0, "nightmare": 1.09 }`
+(a difficulty left out keeps its shipped value; each entry is clamped to 0.5..2.0). It multiplies every hunter's chase speed
+(`chase` + relay/depth bonus * `prog`) in the Chase state only; the per-hunter `chase` values in `data/hunters/*.json` are
+unchanged, and wander, investigate and search speeds are untouched. The shipped table keeps every non-secret hunter's
+clear-line dash (chase x scale x the difficulty's `hunter_speed` x 1.2) at or under the runner's sprint on Relaxed and
+Standard, leaves Hard exactly as it was (hunters already past the sprint there get no faster), and only Nightmare lets a dash
+out-run the sprint (kathy 5.83 -> 6.35 against a 6.00 sprint). `chase_speed_scale_skip` (`["secret"]`) lists hunter
+`category` values that keep their authored chase speed (the secret wolf spiders). The stride animation
+(`render/anim/hunter.rs`) and the footstep cadence (`audio/cues/stride.rs`) are driven by the measured ground speed, so legs
+and footfalls follow the new pace without their own key.

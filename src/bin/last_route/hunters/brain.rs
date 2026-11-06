@@ -1189,9 +1189,9 @@ impl Brain {
         let rules = crate::game::progression::Progression::load();
         let prog = rules.chase_speed_bonus(relays) + depth_boost;
         let mut speed = if self.state == State::Chase {
-            // data/progression.json chase_speed_scale: one global knob over every hunter's own `chase` value. The stride
-            // animation and the footfalls follow the measured ground speed, so they speed up with it.
-            (self.def.chase + prog * self.def.prog) * rules.chase_scale_for(&self.def.category)
+            // data/progression.json chase_speed_scale: one knob per difficulty over every hunter's own `chase` value. The
+            // stride animation and the footfalls follow the measured ground speed, so they speed up with it.
+            (self.def.chase + prog * self.def.prog) * rules.chase_scale_for(self.diff, &self.def.category)
         } else {
             self.def.speed + prog
         };
@@ -2027,7 +2027,7 @@ mod tests {
         let prof = Difficulty::Standard.profile();
         let mut b = Brain::new(aki(), (0.0, 0.0), "PIN", Difficulty::Standard);
         b.state = State::Chase;
-        let scale = crate::game::progression::Progression::load().chase_speed_scale;
+        let scale = crate::game::progression::Progression::load().chase_scale_for(Difficulty::Standard, &b.def.category);
         assert!((b.current_speed(1, 0, &prof, 1.0) - 3.55 * scale).abs() < 1e-5);
         b.state = State::Wander;
         assert!((b.current_speed(1, 0, &prof, 1.0) - 0.82).abs() < 1e-5);
@@ -2084,7 +2084,7 @@ mod tests {
         }
         // never faster than her chase speed; the turns of the route cost a little (each waypoint stops the
         // frame's travel short, as hunter_brain.gd _pursue does)
-        let scale = crate::game::progression::Progression::load().chase_speed_scale;
+        let scale = crate::game::progression::Progression::load().chase_scale_for(Difficulty::Standard, "az");
         assert!(walked <= 3.56 * scale && walked >= 3.4 * scale, "walked {walked} cells in one second");
 
         // a straight run of clear floor with the runner 3.8 cells ahead, in plain sight
@@ -3596,16 +3596,14 @@ mod chase_speed_tests {
     #[test]
     fn every_hunter_chases_at_the_scaled_speed_and_walks_at_the_old_one() {
         let rules = Progression::load();
-        assert!(
-            rules.chase_speed_scale > 1.05 && rules.chase_speed_scale < 1.12,
-            "slightly faster: {}",
-            rules.chase_speed_scale
-        );
+        for (i, scale) in rules.chase_speed_scale.iter().enumerate() {
+            assert!((1.0..1.12).contains(scale), "slightly faster, never slower: {scale} on difficulty {i}");
+        }
         let content = Content::base();
         assert!(content.hunters.len() >= 38);
         let prof = Difficulty::Standard.profile();
         for def in &content.hunters {
-            let scale = if def.category == "secret" { 1.0 } else { rules.chase_speed_scale };
+            let scale = if def.category == "secret" { 1.0 } else { rules.chase_speed_scale[1] };
             let chase = brain_of(def, Difficulty::Standard, State::Chase).current_speed(1, 0, &prof, 1.0);
             assert!((chase - def.chase * scale).abs() < 1e-4, "{}: chase {chase} vs {} x {scale}", def.id, def.chase);
             for state in [State::Wander, State::Investigate, State::Search] {
@@ -3631,15 +3629,41 @@ mod chase_speed_tests {
     /// The scale is one data key: a changed value, a skipped category, and a missing key (the shipped default).
     #[test]
     fn the_scale_comes_from_the_data_file() {
+        let st = Difficulty::Standard;
         let p = Progression::parse(&serde_json::json!({ "chase_speed_scale": 1.5, "chase_speed_scale_skip": ["void"] }));
-        assert_eq!(p.chase_scale_for("az"), 1.5);
-        assert_eq!(p.chase_scale_for("void"), 1.0);
-        assert_eq!(p.chase_scale_for("secret"), 1.5, "the skip list is replaced, not merged");
+        for d in PROFILES {
+            assert_eq!(p.chase_scale_for(d, "az"), 1.5, "a single number applies to every difficulty ({d:?})");
+        }
+        assert_eq!(p.chase_scale_for(st, "void"), 1.0);
+        assert_eq!(p.chase_scale_for(st, "secret"), 1.5, "the skip list is replaced, not merged");
         let d = Progression::parse(&serde_json::json!({}));
         assert_eq!(d.chase_speed_scale, Progression::load().chase_speed_scale);
-        assert_eq!(d.chase_scale_for("secret"), 1.0);
+        assert_eq!(d.chase_scale_for(st, "secret"), 1.0);
         let off = Progression::parse(&serde_json::json!({ "chase_speed_scale": 1.0 }));
-        assert_eq!(off.chase_scale_for("az"), 1.0, "1.0 gives the original roster back");
+        assert_eq!(off.chase_scale_for(st, "az"), 1.0, "1.0 gives the original roster back");
+    }
+
+    /// The scale is a per-difficulty table: each named difficulty is read, an unnamed one keeps its shipped value.
+    #[test]
+    fn the_scale_is_a_per_difficulty_table() {
+        let p = Progression::parse(&serde_json::json!({
+            "chase_speed_scale": { "relaxed": 1.02, "nightmare": 1.3, "hard": "fast" }
+        }));
+        let shipped = Progression::default();
+        assert_eq!(p.chase_scale_for(Difficulty::Relaxed, "az"), 1.02);
+        assert_eq!(p.chase_scale_for(Difficulty::Nightmare, "az"), 1.3);
+        assert_eq!(p.chase_scale_for(Difficulty::Standard, "az"), shipped.chase_scale_for(Difficulty::Standard, "az"));
+        assert_eq!(p.chase_scale_for(Difficulty::Hard, "az"), shipped.chase_scale_for(Difficulty::Hard, "az"));
+        assert_eq!(p.chase_scale_for(Difficulty::Nightmare, "secret"), 1.0, "skipped categories ignore the table");
+        // out of range entries are clamped like the single number
+        let wild = Progression::parse(&serde_json::json!({ "chase_speed_scale": { "standard": 99.0, "hard": -1.0 } }));
+        assert_eq!(wild.chase_scale_for(Difficulty::Standard, "az"), 2.0);
+        assert_eq!(wild.chase_scale_for(Difficulty::Hard, "az"), 0.5);
+        // the shipped file is the table
+        let rules = Progression::load();
+        assert_eq!(rules.chase_speed_scale, shipped.chase_speed_scale, "data/progression.json matches the defaults");
+        let [relaxed, standard, hard, nightmare] = rules.chase_speed_scale;
+        assert!(nightmare > standard.max(relaxed).max(hard), "Nightmare is the fastest: {:?}", rules.chase_speed_scale);
     }
 
     /// The relay/depth bonus, winded, taser slow and the difficulty profile all stack on top of the scaled speed.
@@ -3651,11 +3675,12 @@ mod chase_speed_tests {
         for diff in PROFILES {
             let prof = diff.profile();
             let mut b = brain_of(aki, diff, State::Chase);
-            let base = aki.chase * rules.chase_speed_scale * prof.hunter_speed;
+            let scale = rules.chase_scale_for(diff, &aki.category);
+            let base = aki.chase * scale * prof.hunter_speed;
             assert!((b.current_speed(1, 0, &prof, 1.0) - base).abs() < 1e-4, "{diff:?}");
             // relays: the bonus times `prog`, then the scale
             let with_relays = (aki.chase + 3.0 * rules.chase_speed_bonus_per_relay * aki.prog)
-                * rules.chase_speed_scale
+                * scale
                 * prof.hunter_speed;
             assert!((b.current_speed(1, 3, &prof, 1.0) - with_relays).abs() < 1e-4, "{diff:?} relays");
             b.slow_timer = 3.0;
@@ -3685,34 +3710,69 @@ mod chase_speed_tests {
         assert!(chasing > retreating * 3.0);
     }
 
-    /// Before/after numbers for every hunter (run with --nocapture for the table in the commit message). Asserts that
-    /// the plain A-Z roster can still be out-run on a full-stamina sprint at Standard, even on a clear-line dash.
+    /// The runner's full-stamina sprint on `diff` and a hunter's clear-line dash (depth 1, no relays), both end to end.
+    fn sprint_and_dash(def: &HunterDef, diff: Difficulty, scale: Option<f32>) -> (f32, f32) {
+        let prof = diff.profile();
+        let sprint = PLAYER_SPRINT_SPEED * prof.sprint_speed;
+        let mut chase = brain_of(def, diff, State::Chase).current_speed(1, 0, &prof, 1.0);
+        if let Some(s) = scale {
+            // the same hunter with another scale (1.0 = before the knob existed)
+            chase = chase / Progression::load().chase_scale_for(diff, &def.category) * s;
+        }
+        (sprint, chase * HUNTER_VISIBLE_CHASE_SPEED_SCALE)
+    }
+
+    /// Before/after dash vs sprint for every hunter on every difficulty (run with --nocapture for the table in the
+    /// commit message). The knob never lets a dash out-run the sprint except on Nightmare:
+    /// - Relaxed and Standard: no non-secret hunter's dash passes the runner's sprint.
+    /// - Hard: a hunter that was under the sprint before the scale is still under it, and one that was already over it is
+    ///   no faster than before.
+    /// - Nightmare: the scale is what lifts some hunters (kathy) past the sprint.
     #[test]
-    fn a_full_stamina_runner_still_outruns_the_az_roster_at_standard() {
-        let rules = Progression::load();
+    fn only_nightmare_lets_a_scaled_dash_outrun_the_sprint() {
         let content = Content::base();
-        let sprint = PLAYER_SPRINT_SPEED * Difficulty::Standard.profile().sprint_speed;
-        println!("runner sprint: standard {sprint:.2}");
-        println!("hunter                  old    new | oldDsh newDsh | newNM newNMdsh");
-        let nm = Difficulty::Nightmare.profile();
-        for def in &content.hunters {
-            let scale = rules.chase_scale_for(&def.category);
-            let (old, new) = (def.chase, def.chase * scale);
-            let dash = HUNTER_VISIBLE_CHASE_SPEED_SCALE;
-            println!(
-                "{:<20} {:>6.2} {:>6.2} | {:>6.2} {:>6.2} | {:>6.2} {:>6.2}   [{}]",
-                def.id,
-                old,
-                new,
-                old * dash,
-                new * dash,
-                new * nm.hunter_speed,
-                new * nm.hunter_speed * dash,
-                def.category
-            );
-            if def.category == "az" {
-                assert!(new * dash < sprint, "{}: dash {} vs sprint {sprint}", def.id, new * dash);
+        let mut crossed_on_nightmare = Vec::new();
+        for diff in PROFILES {
+            let sprint = sprint_and_dash(&content.hunters[0], diff, None).0;
+            println!("{diff:?}: runner sprint {sprint:.3}");
+            for def in content.hunters.iter().filter(|d| d.category != "secret") {
+                let (_, old) = sprint_and_dash(def, diff, Some(1.0));
+                let (_, new) = sprint_and_dash(def, diff, None);
+                println!("  {:<14} old dash {old:.2}  new dash {new:.2}", def.id);
+                match diff {
+                    Difficulty::Relaxed | Difficulty::Standard => {
+                        assert!(new <= sprint, "{diff:?} {}: dash {new} vs sprint {sprint}", def.id);
+                    }
+                    Difficulty::Hard => {
+                        if old <= sprint {
+                            assert!(new <= sprint, "Hard {}: pushed over the sprint ({old} -> {new})", def.id);
+                        }
+                        assert!(new <= old + 1e-4, "Hard {}: faster than before ({old} -> {new})", def.id);
+                    }
+                    Difficulty::Nightmare => {
+                        assert!(new >= old, "{}", def.id);
+                        if old <= sprint && new > sprint {
+                            crossed_on_nightmare.push(def.id.clone());
+                        }
+                    }
+                }
             }
+        }
+        assert!(
+            crossed_on_nightmare.iter().any(|id| id == "kathy"),
+            "kathy's dash passes the Nightmare sprint only through the scale: {crossed_on_nightmare:?}"
+        );
+    }
+
+    /// The secret creatures keep their own authored speed on every difficulty (the table does not touch them).
+    #[test]
+    fn the_table_never_touches_the_secret_creatures() {
+        let content = Content::base();
+        for diff in PROFILES {
+            let prof = diff.profile();
+            let def = content.hunter("black_wolf_spider").unwrap();
+            let chase = brain_of(def, diff, State::Chase).current_speed(1, 0, &prof, 1.0);
+            assert!((chase - def.chase * prof.hunter_speed).abs() < 1e-4, "{diff:?}");
         }
     }
 
@@ -3735,14 +3795,14 @@ mod chase_speed_tests {
     #[test]
     fn a_hostile_scale_is_clamped_and_junk_skip_entries_are_ignored() {
         let hi = Progression::parse(&serde_json::json!({ "chase_speed_scale": 1.0e9 }));
-        assert!(hi.chase_speed_scale <= 2.0);
+        assert!(hi.chase_speed_scale.iter().all(|x| *x <= 2.0));
         let lo = Progression::parse(&serde_json::json!({ "chase_speed_scale": -5.0 }));
-        assert!(lo.chase_speed_scale >= 0.5);
+        assert!(lo.chase_speed_scale.iter().all(|x| *x >= 0.5));
         let junk = Progression::parse(
             &serde_json::json!({ "chase_speed_scale": "fast", "chase_speed_scale_skip": [1, null, "az"] }),
         );
         assert_eq!(junk.chase_speed_scale, Progression::default().chase_speed_scale, "a non-number keeps the default");
-        assert_eq!(junk.chase_scale_for("az"), 1.0);
-        assert_eq!(junk.chase_scale_for("void"), junk.chase_speed_scale);
+        assert_eq!(junk.chase_scale_for(Difficulty::Standard, "az"), 1.0);
+        assert_eq!(junk.chase_scale_for(Difficulty::Standard, "void"), junk.chase_speed_scale[1]);
     }
 }
