@@ -1179,8 +1179,10 @@ pub struct Guard {
 ///
 /// - A switchback: along the landing row's inner edge across the leaving flight and the divider (the arriving flight's
 ///   width is the gap), so the whole edge is guarded but the head of the stairs.
-/// - A spiral: along the landing row's end on the arc's end side (the open corner), where the drop is; the start side is
-///   floored by the corner slab. The slab's own rail is [`spiral_slab_rail`].
+/// - A spiral: every stretch of the well's rim the walker cannot step over (see [`spiral_rim_guards`]): the whole outer
+///   edge of the 5 x 5 well, which has no surface in its last 2 cm, and the open corner on the arc's end side; the
+///   doorway edge and the corner slab on the start side are floored, so they are the gap. The slab's own rail is
+///   [`spiral_slab_rail`].
 /// - A straight flight: every rim edge of the well that borders an open cell, except the one at the landing.
 pub fn landing_guards_with(rules: &FlightRules, f: &Flight) -> Vec<Guard> {
     if f.kind != FlightKind::Stairs {
@@ -1196,14 +1198,7 @@ pub fn landing_guards_with(rules: &FlightRules, f: &Flight) -> Vec<Guard> {
                 .map(|j| Guard { seg: seg((0.0, j as f32), (0.0, (j + 1) as f32)), outside: cell_at(f, 0, j) })
                 .collect()
         }
-        FlightShape::Spiral => {
-            let (_, vc) = spiral_centre(rules, f);
-            let dir = spiral_dir(rules, f);
-            // the bottom end's side: dv has the sign of +dir (see spiral_point); the landing row ends half its width out
-            let edge_v = vc + dir * rules.sp_landing_cells as f32 * 0.5;
-            let j = if dir > 0.0 { 2 } else { -2 };
-            vec![Guard { seg: seg((-1.0, edge_v), (0.0, edge_v)), outside: cell_at(f, 0, j) }]
-        }
+        FlightShape::Spiral => spiral_rim_guards(rules, f),
         FlightShape::Straight => {
             let hole = well_footprint_with(rules, f).upper_hole;
             let (landing, _) = ends(rules, f);
@@ -1228,6 +1223,86 @@ pub fn landing_guards_with(rules: &FlightRules, f: &Flight) -> Vec<Guard> {
             out
         }
     }
+}
+
+/// How finely a spiral's rim is read for the guards: samples per cell edge (a metre).
+const RIM_SAMPLES: usize = 20;
+/// How far inside the well cell a rim sample is taken (m): the first thing a body's corner meets when it crosses the edge.
+const RIM_INSET: f32 = 0.005;
+/// An opening in a spiral's guard narrower than this many samples (0.45 m, a body is 0.46 m across) cannot be walked
+/// through, so it is closed.
+const RIM_MIN_GAP: usize = 9;
+
+/// Whether a body standing on the upper floor can step over the rim at `(x, z)` (grid coordinates, just inside a well
+/// cell): the collision rule of `Facility::body_fits_at_y`, which lets a body over a stair well only where the flight's
+/// surface is within `FLIGHT_FIT_TOL` of its walking height (the upper floor).
+fn spiral_rim_open(rules: &FlightRules, f: &Flight, x: f32, z: f32) -> bool {
+    flight_walk_y_with(rules, f, x, z, false).is_some_and(|y| (y - f.upper_y()).abs() <= super::facility::FLIGHT_FIT_TOL)
+}
+
+/// The guards of a spiral's rim on the upper level: for every edge of the well that borders a cell outside it, the
+/// stretches where a body is stopped (read from the same surface the collision reads, so the rail and the collision
+/// agree). The well is a square whose outer 2 cm (`spiral.wall_clearance`) has no surface, so its whole outer edge is
+/// closed to a body; the doorway edge is floored by the slab and is the gap, as is the corner cell on the arc's start
+/// side; the corner on the arc's end side is a drop and is closed. Openings narrower than a body are closed.
+fn spiral_rim_guards(rules: &FlightRules, f: &Flight) -> Vec<Guard> {
+    let hole = well_footprint_with(rules, f).upper_hole;
+    let mut out = Vec::new();
+    for c in &hole {
+        for d in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let n = Cell::new(c.x + d.0, c.y + d.1);
+            if hole.contains(&n) {
+                continue;
+            }
+            let (x0, z0) = (c.x as f32, c.y as f32);
+            // the point `t` along the edge towards n
+            let at = |t: f32| match d {
+                (1, 0) => (x0 + 1.0, z0 + t),
+                (-1, 0) => (x0, z0 + t),
+                (0, 1) => (x0 + t, z0 + 1.0),
+                _ => (x0 + t, z0),
+            };
+            let mut closed: Vec<bool> = (0..RIM_SAMPLES)
+                .map(|i| {
+                    let (x, z) = at((i as f32 + 0.5) / RIM_SAMPLES as f32);
+                    !spiral_rim_open(rules, f, x - d.0 as f32 * RIM_INSET, z - d.1 as f32 * RIM_INSET)
+                })
+                .collect();
+            // close the openings between two closed stretches that a body cannot pass
+            let mut i = 0;
+            while i < RIM_SAMPLES {
+                if closed[i] {
+                    i += 1;
+                    continue;
+                }
+                let mut j = i;
+                while j < RIM_SAMPLES && !closed[j] {
+                    j += 1;
+                }
+                if i > 0 && j < RIM_SAMPLES && j - i < RIM_MIN_GAP {
+                    closed[i..j].iter_mut().for_each(|c| *c = true);
+                }
+                i = j;
+            }
+            let mut i = 0;
+            while i < RIM_SAMPLES {
+                if !closed[i] {
+                    i += 1;
+                    continue;
+                }
+                let mut j = i;
+                while j < RIM_SAMPLES && closed[j] {
+                    j += 1;
+                }
+                out.push(Guard {
+                    seg: Segment { a: at(i as f32 / RIM_SAMPLES as f32), b: at(j as f32 / RIM_SAMPLES as f32) },
+                    outside: n,
+                });
+                i = j;
+            }
+        }
+    }
+    out
 }
 
 pub fn landing_guards(f: &Flight) -> Vec<Guard> {
@@ -1349,9 +1424,10 @@ pub fn sign_text(level: i32) -> String {
     }
 }
 
-/// The two signs of a stairwell: the upper level's and the lower level's, on the wall beside the landing.
+/// The two signs of a stairwell: the upper level's and the lower level's, on the wall beside the landing. A spiral has
+/// none (KT: no "LEVEL n" lettering on the spiral staircases); the other flights keep theirs.
 pub fn signs_with(rules: &FlightRules, f: &Flight) -> Vec<Sign> {
-    if f.kind != FlightKind::Stairs {
+    if f.kind != FlightKind::Stairs || f.shape == FlightShape::Spiral {
         return vec![];
     }
     let d = &rules.dressing;

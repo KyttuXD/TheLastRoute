@@ -511,12 +511,14 @@ fn the_spiral_rail_and_guard_stand_where_godot_puts_them() {
             let (ub, vb) = to_local(&f, rail.b.0, rail.b.1);
             assert!(((ua - uc).hypot(va - vc) - rules.sp_post).abs() < 1e-3, "{run:?} cw {cw}: starts at the post");
             assert!(ub.abs() < 1e-3 && (vb - (vc + dir * 1.5)).abs() < 1e-3, "{run:?} cw {cw}: ends on the landing row's edge at {ub},{vb}");
-            // the guard is the landing row's end beside B, on the open side
+            // the guard includes the landing row's end beside B, on the open side (the whole edge, a metre)
             let g = landing_guards_with(rules, &f);
-            assert_eq!(g.len(), 1);
-            assert_eq!(g[0].outside, well_footprint_with(rules, &f).foot);
-            let (_, gv) = to_local(&f, g[0].seg.a.0, g[0].seg.a.1);
-            assert!((gv - (vc + dir * 1.5)).abs() < 1e-3);
+            let foot = well_footprint_with(rules, &f).foot;
+            let at_b: Vec<_> = g.iter().filter(|g| g.outside == foot).collect();
+            assert_eq!(at_b.len(), 1, "{run:?} cw {cw}: one guard beside B");
+            let ((ua, gv), (ub, gw)) = (to_local(&f, at_b[0].seg.a.0, at_b[0].seg.a.1), to_local(&f, at_b[0].seg.b.0, at_b[0].seg.b.1));
+            assert!((gv - (vc + dir * 1.5)).abs() < 1e-3 && (gw - gv).abs() < 1e-3, "{run:?} cw {cw}: along the landing row's end");
+            assert!((ua - ub).abs() > 0.99 && ua.min(ub) > -1.001 && ua.max(ub) < 0.001, "{run:?} cw {cw}: from u -1 to 0");
             // the helix rail winds round the post at inner_radius + 0.12, 0.95 over the tread
             let rails = handrails_with(rules, &f);
             assert_eq!(rails.len(), 1);
@@ -592,6 +594,102 @@ fn a_switchback_is_railed_on_both_edges_of_both_flights_and_guarded_but_for_the_
     }
 }
 
+/// Whether the grid point `p` lies on the guard's segment, its length widened by `slack` metres (negative: shrunk); guards
+/// run along cell edges, so they are axis-aligned.
+fn on_guard(g: &Guard, p: (f32, f32), slack: f32) -> bool {
+    let along_x = (g.seg.b.0 - g.seg.a.0).abs() > (g.seg.b.1 - g.seg.a.1).abs();
+    let ((lo_x, hi_x), (lo_z, hi_z)) = (
+        (g.seg.a.0.min(g.seg.b.0), g.seg.a.0.max(g.seg.b.0)),
+        (g.seg.a.1.min(g.seg.b.1), g.seg.a.1.max(g.seg.b.1)),
+    );
+    let (sx, sz) = if along_x { (slack, 1e-3) } else { (1e-3, slack) };
+    p.0 >= lo_x - sx && p.0 <= hi_x + sx && p.1 >= lo_z - sz && p.1 <= hi_z + sz
+}
+
+/// Every point of a spiral well's rim, as (the point on the cell edge, the point just inside the well, the outside cell).
+fn rim_points(rules: &FlightRules, f: &Flight) -> Vec<((f32, f32), (f32, f32), Cell)> {
+    let hole = well_footprint_with(rules, f).upper_hole;
+    let mut out = Vec::new();
+    for c in &hole {
+        for d in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let n = Cell::new(c.x + d.0, c.y + d.1);
+            if hole.contains(&n) {
+                continue;
+            }
+            for i in 0..40 {
+                let t = (i as f32 + 0.5) / 40.0;
+                let (x0, z0) = (c.x as f32, c.y as f32);
+                let p = match d {
+                    (1, 0) => (x0 + 1.0, z0 + t),
+                    (-1, 0) => (x0, z0 + t),
+                    (0, 1) => (x0 + t, z0 + 1.0),
+                    _ => (x0 + t, z0),
+                };
+                out.push((p, (p.0 - d.0 as f32 * 0.005, p.1 - d.1 as f32 * 0.005), n));
+            }
+        }
+    }
+    out
+}
+
+/// The spiral's rim is guarded wherever the collision stops a body and nowhere else: the whole outer edge of the 5 x 5
+/// well, the open corner on the arc's end side, and not the doorway edge or the corner floored by the slab. The rim is
+/// read through the very rule the hole rule of `Facility::body_fits_at_y` applies (the surface within the fit tolerance of
+/// the upper floor), so the guard and the invisible wall cannot drift apart.
+#[test]
+fn a_spiral_is_guarded_wherever_the_collision_closes_its_rim() {
+    let rules = flights();
+    let tol = crate::world::facility::FLIGHT_FIT_TOL;
+    for run in RUNS {
+        for cw in [false, true] {
+            let f = stairs(FlightShape::Spiral, run, cw);
+            let fp = well_footprint_with(rules, &f);
+            let guards = landing_guards_with(rules, &f);
+            let (uc, vc) = spiral_centre(rules, &f);
+            let (mut closed, mut open, mut open_guarded, mut outer) = (0, 0, 0, 0);
+            for (p, q, n) in rim_points(rules, &f) {
+                let walks = |x: f32, z: f32| flight_walk_y_with(rules, &f, x, z, false).is_some_and(|y| (y - f.upper_y()).abs() <= tol);
+                let walkable = walks(q.0, q.1);
+                // a closed sliver a few cm wide beside an open stretch (the well's 2 cm outer strip crossing a doorway edge) is no wall
+                let sliver = !walkable && [(0.03, 0.0), (-0.03, 0.0), (0.0, 0.03), (0.0, -0.03)].iter().any(|d| walks(q.0 + d.0, q.1 + d.1));
+                // the guards are read on a 5 cm grid: a point within that of a guard end counts as on it
+                let guarded = guards.iter().any(|g| g.outside == n && on_guard(g, p, 0.06));
+                let well_inside = guards.iter().any(|g| g.outside == n && on_guard(g, p, -0.06));
+                if sliver {
+                    continue;
+                } else if !walkable {
+                    closed += 1;
+                    assert!(guarded, "{run:?} cw {cw}: the collision closes the rim at {p:?} but no guard stands there");
+                } else {
+                    open += 1;
+                    open_guarded += usize::from(well_inside);
+                }
+                // the outer edge of the well is closed to a body everywhere: its last 2 cm has no surface
+                let (u, v) = to_local(&f, q.0, q.1);
+                if (u - uc).abs() > rules.sp_reach() || (v - vc).abs() > rules.sp_reach() {
+                    outer += 1;
+                    assert!(guarded, "{run:?} cw {cw}: the outer edge at {p:?} is unguarded");
+                }
+            }
+            assert_eq!(open_guarded, 0, "{run:?} cw {cw}: no rail where a body can walk over the rim");
+            assert!(closed > 300 && outer > 300, "{run:?} cw {cw}: the rim is guarded all round ({closed} closed, {outer} outer samples)");
+            // the arrival gap: the doorway edge is open, so the landing row's cells have no guard on their well side
+            assert!(open >= 40, "{run:?} cw {cw}: an arrival gap ({open} open samples)");
+            let doorway: Vec<Cell> = landing_row_with(rules, &f);
+            for g in &guards {
+                let (ua, _) = to_local(&f, g.seg.a.0, g.seg.a.1);
+                let (ub, vb) = to_local(&f, g.seg.b.0, g.seg.b.1);
+                assert!(!(ua.abs() < 1e-3 && ub.abs() < 1e-3 && (vb - vc).abs() < 1.5 - 1e-3), "{run:?} cw {cw}: a guard across the doorway");
+                assert!(!fp.upper_hole.contains(&g.outside), "{run:?} cw {cw}: a guard stands on floor");
+            }
+            assert!(guards.iter().all(|g| g.outside != fp.landing), "{run:?} cw {cw}: the landing A is the arrival");
+            assert!(doorway.contains(&fp.landing) && doorway.contains(&fp.foot));
+            // a guard beside B closes the open corner on the arc's end side
+            assert!(guards.iter().any(|g| g.outside == fp.foot), "{run:?} cw {cw}: the drop beside B is guarded");
+        }
+    }
+}
+
 #[test]
 fn a_straight_flight_is_railed_on_both_sides_and_guarded_but_at_the_landing() {
     let rules = flights();
@@ -612,7 +710,7 @@ fn ladders_and_drops_have_no_dressing() {
 }
 
 #[test]
-fn the_signs_name_both_levels_in_godots_gold_at_two_and_a_half_metres() {
+fn the_signs_name_both_levels_in_godots_gold_at_two_and_a_half_metres_but_a_spiral_has_none() {
     let rules = flights();
     assert_eq!(sign_text(1), "LEVEL +1");
     assert_eq!(sign_text(0), "LEVEL 0");
@@ -622,6 +720,12 @@ fn the_signs_name_both_levels_in_godots_gold_at_two_and_a_half_metres() {
     assert_eq!(gold.map(|c| (c * 255.0).round() as u8), [0xe8, 0xc2, 0x5a]);
     assert!((d.sign_y() - 2.1 * 1.25).abs() < 1e-5, "2.1 m in a 4 m storey is 2.625 m in a 5 m one");
     for shape in SHAPES {
+        if shape == FlightShape::Spiral {
+            for run in RUNS {
+                assert!(signs_with(rules, &stairs(shape, run, false)).is_empty(), "no LEVEL sign on a spiral staircase");
+            }
+            continue;
+        }
         for run in RUNS {
             for level in [1, 0, -2] {
                 let f = Flight { upper_level: level, ..stairs(shape, run, false) };
