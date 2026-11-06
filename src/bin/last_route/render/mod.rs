@@ -6,7 +6,6 @@ pub mod ambient;
 pub mod anim;
 pub mod bbmodel;
 pub mod builder;
-pub mod catwalk;
 pub mod door;
 pub mod draw_stats;
 pub mod fp_hands;

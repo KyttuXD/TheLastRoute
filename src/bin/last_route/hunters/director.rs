@@ -747,7 +747,7 @@ pub fn separate(dt: f32, hunters: &mut [Brain], fac: &Facility) -> i32 {
             if i == j || !hunters[j].active {
                 continue;
             }
-            // a hunter on a deck and one on the floor below it do not crowd each other
+            // hunters at different heights (one part-way up a flight, one below it) do not crowd each other
             if (hunters[i].y - hunters[j].y).abs() > super::flight_edges::rules().same_layer_eps {
                 continue;
             }
@@ -983,8 +983,8 @@ mod tests {
         };
         let mut level = pair(0.0);
         assert!(separate(1.0 / 60.0, &mut level, &fac) > 0, "two hunters on one floor push apart");
-        let mut stacked = pair(crate::world::route::catwalk::params().height);
-        assert_eq!(separate(1.0 / 60.0, &mut stacked, &fac), 0, "a hunter on a deck and one below it do not crowd each other");
+        let mut stacked = pair(2.5);
+        assert_eq!(separate(1.0 / 60.0, &mut stacked, &fac), 0, "a hunter up a flight and one below it do not crowd each other");
         assert_eq!(stacked[0].pos, at);
     }
 

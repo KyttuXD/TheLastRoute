@@ -95,7 +95,7 @@ pub fn pick_lair(
         let angle = rng.next_float() as f32 * TAU;
         let distance = rules.spawn_min_distance + (rules.spawn_max_distance - rules.spawn_min_distance) * rng.next_float() as f32;
         let cell = Cell::new(here.x + (angle.cos() * distance).round() as i32, here.y + (angle.sin() * distance).round() as i32);
-        if !fac.nav_open(cell) {
+        if !fac.hunter_open(cell) {
             continue;
         }
         let world = cell.center();

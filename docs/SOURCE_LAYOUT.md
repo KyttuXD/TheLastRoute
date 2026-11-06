@@ -22,6 +22,7 @@ One package, `last_route` ([Cargo.toml](../Cargo.toml)), builds a small shared l
 - `shared/`: the game-only shared items (`assets`, `checkpoint`, `admin_flags`, `safe_room`). It re-exports `paths` from the library, so `crate::shared::paths` keeps working.
 - `archive/` (outside `src`, so it is not embedded): retired features kept for history and restoring, each with its own README. [archive/heater-stations](../archive/heater-stations/README.md) holds the retired heater station model and notes.
 - `assets/` (pictures and Blockbench models; the Blender GLB sources they were converted from are in `tools/props/source_glb`, not embedded) and `data/` (JSON content): embedded into the executable by [build.rs](../build.rs), under the same keys as before (`hunters/aki.bbmodel`, `props/...`).
+- `archive/catwalks/` (repo root, outside `src/`, not embedded): the level-0 catwalk data, doc and a restore recipe. The catwalks were removed on 2026-11-06; there is no catwalk code left in the game.
 - `audio/quad-snd` is a vendored, patched crate (`[patch.crates-io]` in Cargo.toml).
 
 ## Inside `src/bin/lr_server`

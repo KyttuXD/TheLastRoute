@@ -1095,12 +1095,12 @@ mod tests {
         let sluice = g.fac.props.iter().position(|p| p.ptype == "sewerSluiceGate" && p.sewer.as_ref().is_some_and(|k| k.gate == gate)).expect("the gate's sluice");
         let at = (g.fac.props[sluice].cell.x as f64 + 0.5, g.fac.props[sluice].cell.y as f64 + 0.5);
         assert!(g.fac.props[sluice].solid && !g.fac.can_occupy(at.0, at.1, 0.23), "closed: a wall");
-        assert!(!g.fac.nav_open(g.fac.props[sluice].cell), "closed: no hunter route");
+        assert!(!g.fac.hunter_open(g.fac.props[sluice].cell), "closed: no hunter route");
         let hold = crate::game::pipes::rules().valve.hold_seconds;
         assert!(g.update_valve_hold(hold + 0.1, true));
         assert!(g.pipes.is_open(&id));
         assert!(!g.fac.props[sluice].solid && g.fac.can_occupy(at.0, at.1, 0.23), "open: a crossing");
-        assert!(g.fac.nav_open(g.fac.props[sluice].cell), "open: a hunter route");
+        assert!(g.fac.hunter_open(g.fac.props[sluice].cell), "open: a hunter route");
         g.focus = Some(Focus::Valve(i));
         assert!(g.update_valve_hold(hold + 0.1, true));
         assert!(g.fac.props[sluice].solid, "an even turn lowers it back");

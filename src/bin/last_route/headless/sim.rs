@@ -676,7 +676,6 @@ impl Sim {
             "coins": g.fix.coins.iter().enumerate().map(|(i, c)| json!({ "index": i, "cell": cell(*c), "taken": g.coins_taken[i], "distance": d(c.center()) })).collect::<Vec<_>>(),
             "lockers": g.fac.hiding.iter().enumerate().map(|(i, h)| json!({ "index": i, "cell": cell(h.cell), "facing": [h.facing.0, h.facing.1], "disabled": g.hiding_disabled[i], "distance": d(h.cell.center()) })).collect::<Vec<_>>(),
             "stairs": g.fac.stairs.iter().enumerate().map(|(i, s)| json!({ "index": i, "cell": cell(s.cell), "dir": s.dir, "run": [s.run.0, s.run.1], "shape": format!("{:?}", s.shape), "kind": format!("{:?}", s.kind), "clockwise": s.clockwise, "distance": d(s.cell.center()) })).collect::<Vec<_>>(),
-            "catwalk_links": g.fac.catwalk_links.iter().enumerate().map(|(i, l)| json!({ "index": i, "cell": cell(l.cell), "run": [l.run.0, l.run.1], "deck_height": l.deck_height, "distance": d(l.cell.center()) })).collect::<Vec<_>>(),
             "light_switches": g.fac.room_lights.iter().enumerate().map(|(i, l)| json!({ "index": i, "room": l.room, "cell": cell(l.switch_cell), "on": g.lights_on[i] })).collect::<Vec<_>>(),
             "music_box": g
                 .pickups

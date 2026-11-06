@@ -1,6 +1,6 @@
 {
   "schema": "lr.noise_events/1",
-  "_note": "Noise EVENTS a hunter or bot can hear (hunters/noise_events.rs). radius: cells at hearing scale 1, times the event's loudness; max_radius caps it (a sprint is 10.5, NOISE_SPRINT, so no event is louder than one). response: investigate walks to the point, search starts a search from it. Soaked footsteps are not an event: the runner's own noise already carries the soaked factor (game/hunting.rs). flooded_depth: metres of water at which a cell counts as flooded in the hunters' water field. water_rebuild_seconds: how often the field is rebuilt while a pipe flow runs. bot_hearing_scale and bot_look_seconds: a bot hears at that scale and turns toward the sound for that long. hunter_wade_min_depth and hunter_wade_splash_every: a moving hunter standing in at least that much water makes a wading splash that often (bots hear it). hunter_landing is the thud of a hunter landing from a catwalk jump: the bots and the runner hear it, other hunters do not. landing_thud_volume_scale multiplies the volume of a hunter step for the runner's thud.",
+  "_note": "Noise EVENTS a hunter or bot can hear (hunters/noise_events.rs). radius: cells at hearing scale 1, times the event's loudness; max_radius caps it (a sprint is 10.5, NOISE_SPRINT, so no event is louder than one). response: investigate walks to the point, search starts a search from it. Soaked footsteps are not an event: the runner's own noise already carries the soaked factor (game/hunting.rs). flooded_depth: metres of water at which a cell counts as flooded in the hunters' water field. water_rebuild_seconds: how often the field is rebuilt while a pipe flow runs. bot_hearing_scale and bot_look_seconds: a bot hears at that scale and turns toward the sound for that long. hunter_wade_min_depth and hunter_wade_splash_every: a moving hunter standing in at least that much water makes a wading splash that often (bots hear it).",
   "max_radius": 10.5,
   "flooded_depth": 0.25,
   "water_rebuild_seconds": 0.5,
@@ -8,7 +8,6 @@
   "bot_look_seconds": 2.5,
   "hunter_wade_min_depth": 0.2,
   "hunter_wade_splash_every": 0.6,
-  "landing_thud_volume_scale": 3.0,
   "kinds": {
     "plunge_splash": { "radius": 9.0, "loudness": 1.0, "response": "search", "search_seconds": 6.0 },
     "hard_landing": { "radius": 6.0, "loudness": 1.0, "response": "investigate", "search_seconds": 0.0 },
@@ -16,7 +15,6 @@
     "pipe_burst": { "radius": 10.0, "loudness": 1.0, "response": "search", "search_seconds": 5.0 },
     "valve_turn": { "radius": 7.0, "loudness": 1.0, "response": "investigate", "search_seconds": 0.0 },
     "sluice_open": { "radius": 10.0, "loudness": 1.0, "response": "investigate", "search_seconds": 0.0 },
-    "hunter_landing": { "radius": 6.0, "loudness": 1.0, "response": "investigate", "search_seconds": 0.0 },
     "relay_recover": { "radius": 8.0, "loudness": 1.0, "response": "investigate", "search_seconds": 0.0 }
   }
 }

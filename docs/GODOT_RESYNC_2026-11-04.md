@@ -35,7 +35,7 @@ Godot paths are under `KyttusLabApp/`. Rust paths are under `src/bin/last_route/
 
 | # | Size | Gap | Godot | Rust | Fix |
 |---|------|-----|-------|------|-----|
-| 16 | M | Level-0 catwalks not ported. | `night_watch/openair/openair_world.gd:145-151` (night watch geometry); facility rules `hunters/ai/streamed_hunter_navigation.gd:548-576` | `world/facility.rs:151-156` has `DeckKind::Catwalk` and `set_walk_surface`, no geometry. | Add catwalk cells to the level-0 generator. |
+| 16 | M | Level-0 catwalks not ported. | `night_watch/openair/openair_world.gd:145-151` (night watch geometry); facility rules `hunters/ai/streamed_hunter_navigation.gd:548-576` | Built and then removed on 2026-11-06 (KT: not how I wanted them); archive/catwalks/. | Wait for KT's description of the platforms. |
 | 17 | S-M | Hunter sight through breakables unchecked. | `streamed_hunter_navigation.gd:576` (`SEE_THROUGH_BREAKABLES`: `chainedGate`, `lockedCatwalkGate`, `sluiceGate`) | No matching list. | Add the same see-through list (as data) to hunter sight. |
 | 18 | S | Level-0 maze regions not compared. | `world/generation/streamed_route_generator.gd` (279 KB), `docs/REGION_RULES.md` | `world/route/layout.rs`, `furnished.rs` | Diff the region list against REGION_RULES.md. |
 

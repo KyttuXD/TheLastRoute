@@ -72,8 +72,8 @@ static GRID_ALLOCS: AtomicU64 = AtomicU64::new(0);
 static SAMPLE_MIN: AtomicUsize = AtomicUsize::new(256);
 static SAMPLE_EVERY: AtomicU64 = AtomicU64::new(16);
 static BIG: AtomicU64 = AtomicU64::new(0);
-const NS: usize = 9;
-const NC: usize = 10;
+const NS: usize = 8;
+const NC: usize = 9;
 const Z: AtomicU64 = AtomicU64::new(0);
 static TALLY_N: [AtomicU64; NS * NC] = [Z; NS * NC];
 static TALLY_B: [AtomicU64; NS * NC] = [Z; NS * NC];
@@ -87,20 +87,18 @@ thread_local! {
 /// Search functions, innermost first in a backtrace: (substring of the symbol, label).
 const SEARCHES: [(&str, &str); NS - 1] = [
     ("plan_route_wet", "hunter A* (brain::plan_route_wet, HashMap)"),
-    ("find_path_with", "StackNav A* (flight_edges::find_path_with, BTreeMap)"),
+    ("StackNav::find_path", "StackNav A* (flight_edges::StackNav::find_path, BTreeMap)"),
     ("Facility::find_path", "Facility::find_path (flat-array A*)"),
     ("dry_route", "bot dry_route (BFS, HashMap)"),
     ("flee_route", "bot flee_route (BFS, HashMap)"),
     ("distance_map", "Facility::distance_map (BFS)"),
-    ("nearest_on_layer", "hunter nearest_on_layer (deck BFS)"),
     ("separate", "director::separate (pairwise)"),
 ];
 /// Who asked, outermost-relevant: (substring, label).
 const CALLERS: [(&str, &str); NC - 1] = [
     ("perceive", "Brain::perceive (hearing check, every sense tick)"),
     ("pursue", "Brain::pursue (repath timer)"),
-    ("hop_to", "Brain::hop_to (cross-layer next_hop)"),
-    ("stalk_goal", "Brain::stalk_goal"),
+    ("hop_to", "Brain::hop_to (cross-level next_hop)"),
     ("pick_goal", "bot pick_goal (route_cost per candidate)"),
     ("route_cost", "bot route_cost"),
     ("walk_toward", "bot walk_toward -> plan (REPATH 0.5 s)"),

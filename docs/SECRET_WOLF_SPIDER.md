@@ -53,7 +53,7 @@ LURK -> BARK (stands still, bark clip + cue) -> HUNT -> RETREAT (home, 3.2x) -> 
 
 * A runner on another level is never marked and ends a hunt (`Target::cross`), and a hidden or sheltered runner is not marked.
 * It never leaves level -3 (`secret_creatures::stays_home`): `Brain::hop_to` plans no flight, ladder or drop for it,
-  `noise_events::react` skips an adjacent-floor sound for it, and `data/hunters/decks.json` keeps it off the catwalks.
+  `noise_events::react` skips an adjacent-floor sound for it.
   It is also in `data/peek.json` `never` (no corner peeks).
 * A pair shares one rest and a recall (`PackState`, `Arc<Mutex<..>>` so a brain stays `Send`): when one gives up both go home and
   neither starts another hunt until the shared cooldown ends.

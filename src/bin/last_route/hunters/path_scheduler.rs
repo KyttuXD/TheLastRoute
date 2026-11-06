@@ -128,12 +128,11 @@ struct PathKey {
     water: Option<WaterKey>,
 }
 
-/// Everything a goal field depends on: the goal, the walk height the field is for, the gates and the water.
+/// Everything a goal field depends on: the goal, the gates and the water.
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct FieldKey {
     fac: u64,
     to: Cell,
-    layer: u32,
     gates: Vec<Cell>,
     water: Option<WaterKey>,
 }
@@ -166,8 +165,8 @@ fn path_key(fac: u64, from: (f32, f32), to: Cell, avoid: &[(Cell, f32)], gates: 
     }
 }
 
-fn field_key(fac: u64, to: Cell, layer: f32, gates: &[Cell], water: Option<WaterKey>) -> FieldKey {
-    FieldKey { fac, to, layer: layer.to_bits(), gates: gates.to_vec(), water }
+fn field_key(fac: u64, to: Cell, gates: &[Cell], water: Option<WaterKey>) -> FieldKey {
+    FieldKey { fac, to, gates: gates.to_vec(), water }
 }
 
 /// What one search reads, borrowed (a queued request lends its own copies).
@@ -246,9 +245,9 @@ impl Ord for Front {
     }
 }
 
-/// The cost from every cell to `to` (infinite where no route reaches), over the cells `walk_open` allows at `layer`,
+/// The cost from every cell to `to` (infinite where no route reaches), over the cells `walk_open` allows,
 /// with the same corner rule and entry costs as the forward search. One reverse Dijkstra serves every start.
-fn build_field(fac: &Facility, to: Cell, layer: f32, gates: &[Cell], water: Option<&WaterPlan>) -> Vec<f32> {
+fn build_field(fac: &Facility, to: Cell, gates: &[Cell], water: Option<&WaterPlan>) -> Vec<f32> {
     let cells = (fac.cols.max(0) * fac.rows.max(0)) as usize;
     let stand = Standable::new(fac);
     let mut dist = vec![f32::INFINITY; cells];
@@ -265,13 +264,13 @@ fn build_field(fac: &Facility, to: Cell, layer: f32, gates: &[Cell], water: Opti
             // the forward step x -> u is (dx, dy)
             let x = Cell::new(u.x - dx, u.y - dy);
             let Some(ix) = index(fac, x) else { continue };
-            if !walk_open(&stand, x, layer, gates, water) {
+            if !walk_open(&stand, x, gates, water) {
                 continue;
             }
             if dx != 0
                 && dy != 0
-                && (!walk_open(&stand, Cell::new(x.x + dx, x.y), layer, gates, water)
-                    || !walk_open(&stand, Cell::new(x.x, x.y + dy), layer, gates, water))
+                && (!walk_open(&stand, Cell::new(x.x + dx, x.y), gates, water)
+                    || !walk_open(&stand, Cell::new(x.x, x.y + dy), gates, water))
             {
                 continue;
             }
@@ -287,7 +286,7 @@ fn build_field(fac: &Facility, to: Cell, layer: f32, gates: &[Cell], water: Opti
 
 /// The route from `start` down the field to `to`: each step takes the open neighbour that is strictly closer to the goal
 /// and costs least to reach it. None if the field does not lead there (the caller searches instead).
-fn descend(fac: &Facility, dist: &[f32], start: Cell, to: Cell, layer: f32, gates: &[Cell], water: Option<&WaterPlan>) -> Option<Vec<Cell>> {
+fn descend(fac: &Facility, dist: &[f32], start: Cell, to: Cell, gates: &[Cell], water: Option<&WaterPlan>) -> Option<Vec<Cell>> {
     let at = |c: Cell| index(fac, c).map_or(f32::INFINITY, |i| dist[i]);
     let stand = Standable::new(fac);
     let mut cur = start;
@@ -309,8 +308,8 @@ fn descend(fac: &Facility, dist: &[f32], start: Cell, to: Cell, layer: f32, gate
             }
             if dx != 0
                 && dy != 0
-                && (!walk_open(&stand, Cell::new(cur.x + dx, cur.y), layer, gates, water)
-                    || !walk_open(&stand, Cell::new(cur.x, cur.y + dy), layer, gates, water))
+                && (!walk_open(&stand, Cell::new(cur.x + dx, cur.y), gates, water)
+                    || !walk_open(&stand, Cell::new(cur.x, cur.y + dy), gates, water))
             {
                 continue;
             }
@@ -438,23 +437,22 @@ impl State {
     /// Plans one route. Returns it with the units it cost: a goal field build (only when `build`), then either the
     /// descent on the field (when one exists for this goal) or the A* search.
     fn plan_job(&mut self, fac: &Facility, job: &Job, fkey: &FieldKey, build: bool) -> (Vec<Cell>, usize) {
-        let layer = fac.height_at(cell_of(job.from));
         let stand = Standable::new(fac);
         let plan = job.water.map(|(field, rules, chasing)| WaterPlan { field, rules, chasing });
         let here = cell_of(job.from);
         let mut units = 0;
         if job.avoid.is_empty()
-            && walk_open(&stand, here, layer, job.gates, plan.as_ref())
-            && walk_open(&stand, job.to, layer, job.gates, plan.as_ref())
+            && walk_open(&stand, here, job.gates, plan.as_ref())
+            && walk_open(&stand, job.to, job.gates, plan.as_ref())
         {
             if build && !self.has_field(fkey) {
-                let dist = build_field(fac, job.to, layer, job.gates, plan.as_ref());
+                let dist = build_field(fac, job.to, job.gates, plan.as_ref());
                 self.insert_field(fkey.clone(), dist);
                 self.stats.field_builds += 1;
                 units += 1;
             }
             if let Some(field) = self.field(fkey) {
-                if let Some(path) = descend(fac, &field.dist, here, job.to, layer, job.gates, plan.as_ref()) {
+                if let Some(path) = descend(fac, &field.dist, here, job.to, job.gates, plan.as_ref()) {
                     self.stats.field_routes += 1;
                     return (path, units + 1);
                 }
@@ -544,7 +542,7 @@ pub fn plan(fac: &Facility, req: PlanRequest<'_>) -> Route {
             s.stats.cache_hits += 1;
             return Route::Ready(path);
         }
-        let fkey = field_key(fk, req.to, fac.height_at(cell_of(req.from)), req.gates, wk);
+        let fkey = field_key(fk, req.to, req.gates, wk);
         if s.used < s.budget() {
             let job = Job {
                 from: req.from,
@@ -792,10 +790,9 @@ mod tests {
         let wet = WaterPlan { field: &field, rules: &rules, chasing: true };
         for water in [None, Some(&wet)] {
             for (a, b) in &ps {
-                let layer = fac.height_at(*a);
-                let dist = build_field(&fac, *b, layer, &[], water);
+                let dist = build_field(&fac, *b, &[], water);
                 let searched = plan_route_wet(&fac, a.center(), *b, &[], &[], water);
-                let down = descend(&fac, &dist, *a, *b, layer, &[], water).expect("the field leads from the start to the goal");
+                let down = descend(&fac, &dist, *a, *b, &[], water).expect("the field leads from the start to the goal");
                 assert_eq!((down.first(), down.last()), (Some(a), Some(b)));
                 assert!(
                     (cost(&down, water) - cost(&searched, water)).abs() < 1e-3,

@@ -121,8 +121,7 @@ pub struct Climb {
     from_y: f32,
     to_y: f32,
     /// Where a dismount lands at the top and at the bottom of the shaft: a spot and the yaw to stand with. A sewer ladder
-    /// lands on its step cell at both ends; a catwalk ladder lands on the deck cell at the top and on its own ground cell
-    /// at the bottom.
+    /// lands on its step cell at both ends.
     exit_top: ((f32, f32), f32),
     exit_bottom: ((f32, f32), f32),
     /// The landing of the dismount that runs (set by `dismount`).
@@ -162,45 +161,6 @@ impl Climb {
             exit_top: (step_center(cell, run), facing(run)),
             exit_bottom: (step_center(cell, run), facing(run)),
             exit: (step_center(cell, run), facing(run)),
-        }
-    }
-
-    /// A mount onto a catwalk ladder: the shaft is the link's ground cell `foot`, its rails stand on the deck's front
-    /// face (the side `toward_deck`, one unit step to the deck cell), and it rises `rise` metres from `y_bottom` to the
-    /// deck. The top lands on the deck cell facing along the deck; the bottom lands back on the foot facing away.
-    fn catwalk(
-        foot: Cell,
-        toward_deck: (i32, i32),
-        rise: f32,
-        y_bottom: f32,
-        from_top: bool,
-        from: (f32, f32),
-        yaw: f32,
-    ) -> Climb {
-        let (cx, cy) = foot.center();
-        let (dx, dy) = (toward_deck.0 as f32, toward_deck.1 as f32);
-        let y_top = y_bottom + rise;
-        let top = ((cx + dx, cy + dy), facing(toward_deck));
-        let bottom = ((cx, cy), facing((-toward_deck.0, -toward_deck.1)));
-        Climb {
-            cell: foot,
-            run: toward_deck,
-            side: toward_deck,
-            dir: if from_top { -1 } else { 1 },
-            y_top,
-            y_bottom,
-            y: if from_top { y_top } else { y_bottom },
-            phase: Phase::Mount,
-            t: 0.0,
-            end: if from_top { End::Top } else { End::Bottom },
-            from,
-            from_yaw: yaw,
-            from_y: if from_top { y_top } else { y_bottom },
-            to_y: if from_top { y_top } else { y_bottom },
-            turn_done: 0.0,
-            exit_top: top,
-            exit_bottom: bottom,
-            exit: if from_top { top } else { bottom },
         }
     }
 
@@ -297,44 +257,6 @@ impl Game {
             self.start_ladder(i);
             return;
         }
-        self.catwalk_walk_in();
-    }
-
-    /// The runner walked into the foot of a catwalk ladder from its ground cell (a climb up), or into its top from the
-    /// deck cell (a climb down): the same walk-in rule as a sewer hatch, against the boundary between the two cells.
-    fn catwalk_walk_in(&mut self) {
-        let (fx, fy) = self.p.forward2();
-        let rules = rules();
-        let floor = floor_y_of(self.storey());
-        let y = self.p.y();
-        for i in 0..self.fac.catwalk_links.len() {
-            let l = self.fac.catwalk_links[i];
-            let run = if l.run == (0, 0) { (1, 0) } else { l.run };
-            let deck = Cell::new(l.cell.x + run.0, l.cell.y + run.1);
-            let on_ground = (y - floor).abs() < 0.3;
-            let on_deck = (y - (floor + l.deck_height)).abs() < 0.3;
-            let up = on_ground && rules.walks_in(deck, (-run.0, -run.1), self.p.pos, (fx, fy));
-            let down = on_deck && rules.walks_in(l.cell, run, self.p.pos, (fx, fy));
-            if up || down {
-                self.start_catwalk_ladder(i, down);
-                return;
-            }
-        }
-    }
-
-    /// Mounts the catwalk ladder `i` of `fac.catwalk_links`: from its ground cell going up, or (`from_top`) from the
-    /// deck going down. The climb spans the deck's height, not a storey. Refused while another climb or a fall runs.
-    pub(super) fn start_catwalk_ladder(&mut self, i: usize, from_top: bool) -> bool {
-        if self.ladder.is_some() || self.p.falling() {
-            return false;
-        }
-        let Some(l) = self.fac.catwalk_links.get(i).copied() else { return false };
-        let run = if l.run == (0, 0) { (1, 0) } else { l.run };
-        let floor = floor_y_of(self.storey());
-        self.focus = None;
-        self.p.moving = false;
-        self.ladder = Some(Climb::catwalk(l.cell, run, l.deck_height, floor, from_top, self.p.pos, self.p.yaw));
-        true
     }
 
     /// One frame of mouse look on the ladder (Godot never writes the yaw while climbing): free horizontal look within

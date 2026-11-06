@@ -152,7 +152,7 @@ pub fn remote_state(r: &RemoteView) -> RunnerState {
 }
 
 /// The state of this runner's own body, for the sample it sends (`Sample::with_body`) and for anything that draws it.
-/// Down once its route has ended, stunned while locked, on a ladder (a shaft or a catwalk ladder, `game/ladder.rs`),
+/// Down once its route has ended, stunned while locked, on a ladder (`game/ladder.rs`),
 /// airborne with the sign of its vertical speed, swimming in water as deep as the swim rules say, chased while a
 /// hunter is in the chase.
 pub fn local_state(g: &Game) -> RunnerState {

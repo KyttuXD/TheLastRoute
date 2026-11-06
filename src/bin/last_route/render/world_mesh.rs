@@ -17,7 +17,7 @@ use crate::config::WALL_HEIGHT;
 use crate::content::props::{stable_index, visual_y};
 use crate::content::regions::{RegionDef, RegionSafeLight};
 use crate::content::Content;
-use crate::world::facility::{Cell, DeckKind, DoorDraw, Prop, Stair};
+use crate::world::facility::{Cell, DoorDraw, Prop, Stair};
 use crate::world::inferno::InfernoChunk;
 use crate::world::inferno_terrain::Terrain;
 use crate::world::infinite::{ChunkKey, CHUNK, INFERNO_LEVEL, WINDOW};
@@ -1476,59 +1476,6 @@ impl SewerFloor {
     }
 }
 
-/// The rails and rungs of a catwalk ladder, in facility metres: two posts and a rung every 0.3 m on the deck's front face
-/// (the boundary between the ground cell `foot` and the deck cell one step `toward_deck`), rising from the floor to
-/// the deck and a grab-height past it.
-fn catwalk_ladder_boxes(foot: Cell, toward_deck: (i32, i32), deck_height: f32) -> Vec<(Vec3, Vec3, Color)> {
-    let iron = Color::from_rgba(112, 108, 100, 255);
-    let (sx, sz) = (toward_deck.0 as f32, toward_deck.1 as f32);
-    let (lx, lz) = (foot.x as f32 + 0.5, foot.y as f32 + 0.5);
-    // the plane of the rails, a hair inside the ground cell
-    let (bx, bz) = (lx + sx * 0.46, lz + sz * 0.46);
-    let (px, pz) = (-sz, sx);
-    let top = deck_height + 0.9;
-    let post = vec3(0.05, top, 0.05);
-    let mut out = Vec::new();
-    for k in [-1.0f32, 1.0] {
-        out.push((vec3(bx + px * 0.22 * k, top * 0.5, bz + pz * 0.22 * k), post, iron));
-    }
-    let rung = if sx != 0.0 { vec3(0.04, 0.04, 0.44) } else { vec3(0.44, 0.04, 0.04) };
-    let mut y = 0.3;
-    while y < deck_height + 0.8 {
-        out.push((vec3(bx, y, bz), rung, iron));
-        y += 0.3;
-    }
-    out
-}
-
-/// The boxes of one catwalk cell as (centre, size, colour) in facility metres: `deck_height` above the floor,
-/// `deck_at(x, y)` telling which neighbours are deck (a railing stands on each side that is not).
-fn catwalk_boxes(c: Cell, deck_height: f32, deck_at: &dyn Fn(i32, i32) -> bool) -> Vec<(Vec3, Vec3, Color)> {
-    catwalk_boxes_with_gap(c, deck_height, deck_at, None)
-}
-
-/// `catwalk_boxes` with the railing left off the side facing `gap` (a unit step to the neighbour): the deck cell a
-/// ladder lands on keeps no rail on the ladder's side, so the climber steps onto the deck.
-fn catwalk_boxes_with_gap(
-    c: Cell,
-    deck_height: f32,
-    deck_at: &dyn Fn(i32, i32) -> bool,
-    gap: Option<(i32, i32)>,
-) -> Vec<(Vec3, Vec3, Color)> {
-    use super::catwalk;
-    let open = catwalk::OpenSides {
-        north: !deck_at(c.x, c.y - 1) && gap != Some((0, -1)),
-        south: !deck_at(c.x, c.y + 1) && gap != Some((0, 1)),
-        west: !deck_at(c.x - 1, c.y) && gap != Some((-1, 0)),
-        east: !deck_at(c.x + 1, c.y) && gap != Some((1, 0)),
-    };
-    let mid = vec3(c.x as f32 + 0.5, deck_height, c.y as f32 + 0.5);
-    catwalk::build(catwalk::config(), 1.0, deck_height, open, (c.x, c.y))
-        .into_iter()
-        .map(|p| (mid + Vec3::from(p.center), Vec3::from(p.size), rgb(p.color)))
-        .collect()
-}
-
 /// Whether a cell draws its ceiling quad: not over the well of a flight up (the lower level's well is open to the level
 /// above, whose floor has the matching hole).
 fn draws_ceiling(step: Option<Stair>) -> bool {
@@ -1690,26 +1637,6 @@ fn build_meshes(
                     0.0,
                 ),
                 None => plain.quad(corners, UV1, -up, ceiling, 0.0),
-            }
-        }
-        // a catwalk deck: grating, railings on its open sides and supports (render/catwalk.rs, data/render/catwalk.json)
-        let surface = f.walk_surface_at(c);
-        if surface.kind == DeckKind::Catwalk && step.is_none() {
-            let deck_at = |x: i32, y: i32| f.walk_surface_at(Cell::new(x, y)).kind == DeckKind::Catwalk;
-            // a ladder lands here: no rail on the side facing its foot
-            let gap = f.catwalk_links.iter().find_map(|l| {
-                let run = if l.run == (0, 0) { (1, 0) } else { l.run };
-                (Cell::new(l.cell.x + run.0, l.cell.y + run.1) == c).then_some((-run.0, -run.1))
-            });
-            for (center, size, col) in catwalk_boxes_with_gap(c, surface.height, &deck_at, gap) {
-                plain.cube(center, size, 0.0, col, 0.0);
-            }
-        }
-        // the ladder up to a deck stands on its ground cell, on the deck's front face
-        if let Some(l) = f.catwalk_links.iter().find(|l| l.cell == c) {
-            let run = if l.run == (0, 0) { (1, 0) } else { l.run };
-            for (center, size, col) in catwalk_ladder_boxes(c, run, l.deck_height) {
-                plain.cube(center, size, 0.0, col, 0.0);
             }
         }
         let edges = [
@@ -2081,23 +2008,6 @@ mod tests {
         assert_eq!(chunk_cell(origin, 0, 0), ((-1, 2), (0, 0)));
         assert_eq!(chunk_cell(origin, CHUNK + 3, 5), ((0, 2), (3, 5)));
         assert_eq!(chunk_cell((-1, 0), 0, 0), ((-1, 0), ((CHUNK - 1) as usize, 0)));
-    }
-
-    #[test]
-    fn a_catwalk_cell_gets_rails_only_on_its_open_sides() {
-        let c = Cell::new(4, 4);
-        let all = catwalk_boxes(c, 4.0, &|_, _| true);
-        let alone = catwalk_boxes(c, 4.0, &|x, y| (x, y) == (4, 4));
-        assert!(!all.is_empty());
-        assert!(alone.len() > all.len(), "open sides add railing boxes");
-        let side = catwalk_boxes(c, 4.0, &|x, y| !(x == 5 && y == 4));
-        assert!(side.len() > all.len() && side.len() < alone.len(), "one open side adds fewer rails than four");
-        // every box is placed around the cell centre, the grating at the deck height
-        for (centre, _, _) in &alone {
-            assert!((centre.x - 4.5).abs() < 1.0 && (centre.z - 4.5).abs() < 1.0);
-        }
-        assert!(all.iter().any(|(centre, _, _)| (centre.y - 4.0).abs() < 0.1), "grating sits at the deck height");
-        assert!(all.iter().all(|(centre, _, _)| centre.y <= 4.0 + 1e-3), "all-deck cell has nothing above the deck");
     }
 
     #[test]

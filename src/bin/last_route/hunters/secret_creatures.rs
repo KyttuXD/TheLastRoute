@@ -410,10 +410,10 @@ mod secrecy_tests {
     use super::*;
     use crate::content::Content;
 
-    /// Files that may name the creatures: their own data, models, rigs and grab pools, the per-hunter rule tables (decks, peek) and the death
+    /// Files that may name the creatures: their own data, models, rigs and grab pools, the per-hunter rule tables (peek) and the death
     /// lines (which are keyed by id).
     fn may_name_them(path: &str) -> bool {
-        path.contains("wolf_spider") || path == SECRET_PATH || path == "hunters/decks.json" || path == "peek.json" || path == "ui/death_lines.json"
+        path.contains("wolf_spider") || path == SECRET_PATH || path == "peek.json" || path == "ui/death_lines.json"
     }
 
     fn names_them(text: &str) -> bool {
@@ -459,14 +459,5 @@ mod secrecy_tests {
         }
         // the shapeshifter never wears one (her pool is a fixed list)
         assert!(IDS.iter().all(|id| !crate::hunters::gimmicks::umbriel::pool().contains(id)));
-    }
-
-    #[test]
-    fn they_stay_off_the_catwalk_decks() {
-        let rules = crate::hunters::decks::DeckRules::get();
-        for id in IDS {
-            let d = rules.for_hunter(id);
-            assert!(!d.can_climb && !d.can_jump_down, "{id} is ground-only");
-        }
     }
 }

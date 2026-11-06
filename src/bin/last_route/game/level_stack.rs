@@ -110,7 +110,7 @@ fn has_surface(fac: &Facility, x: f32, z: f32) -> bool {
 }
 
 /// The absolute surface under (x, z) of `fac`'s own level only: a stair tread (`stair_height_at`), else the cell's walk
-/// surface (a catwalk deck, `Facility::walk_surface_at`), else the plain floor.
+/// surface (`Facility::ground_height`, the Inferno's noisy floor), else the plain floor.
 pub fn ground_y_single(fac: &Facility, x: f32, z: f32, _y_hint: f32) -> Ground {
     Ground { y: floor_y_of(fac.level) + local_ground(fac, x, z), level: fac.level }
 }
@@ -218,7 +218,7 @@ pub fn local_ground(fac: &Facility, x: f32, z: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::world::catalog::Catalog;
-    use crate::world::facility::{DeckKind, LinkKind, Options};
+    use crate::world::facility::{LinkKind, Options};
 
     #[test]
     fn floor_y_is_the_level_times_the_storey() {
@@ -274,16 +274,6 @@ mod tests {
             return;
         }
         panic!("no test window has a stair flight");
-    }
-
-    #[test]
-    fn ground_on_a_catwalk_deck_cell_is_the_deck_height() {
-        let cat = Catalog::load();
-        let mut f = Facility::generate("GROUND-DECK", &Options::default(), &cat);
-        let c = f.start;
-        f.set_walk_surface(c, DeckKind::Catwalk, 2.25);
-        let g = ground_y(&f, &LevelStack::EMPTY, c.x as f32 + 0.5, c.y as f32 + 0.5, 2.25);
-        assert_eq!(g, Ground { y: 2.25, level: 0 });
     }
 
     /// A flight window on level -1 (the lower level) and its level-0 neighbour at the same centre.

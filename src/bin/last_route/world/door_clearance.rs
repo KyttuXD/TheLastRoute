@@ -414,10 +414,10 @@ pub struct Dropped {
 }
 
 /// Whether a hunter's body (`HUNTER_RADIUS`, the body `hunters::brain::Standable` plans with) can stand at the centre of
-/// `c` at its walk height. The hunter grid is built for the thinner agent radius, so a cell it calls open can still be
+/// `c`. The hunter grid is built for the thinner agent radius, so a cell it calls open can still be
 /// too tight for the hunters: a doorway approach like that is closed to them, and the door rule judges it by this.
 fn hunter_stands(f: &Facility, c: Cell) -> bool {
-    f.body_fits_at(c.x as f32 + 0.5, c.y as f32 + 0.5, HUNTER_RADIUS, f.height_at(c))
+    f.body_fits(c.x as f32 + 0.5, c.y as f32 + 0.5, HUNTER_RADIUS)
 }
 
 /// The placement side of the rule, read by `Facility::populate_rooms` before it puts a room prop down. It is made from
