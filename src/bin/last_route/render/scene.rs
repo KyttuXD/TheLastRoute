@@ -1,6 +1,6 @@
 //! The per-frame 3D scene: the floor, its fixtures and pickups drawn with the original's
 //! authored Blender models (assets/interactables/*.bbmodel: relay, battery, coin, locker, lift,
-//! safe zone, vent, music box, heater station, light switch, and the tools), Ravelle's wires,
+//! safe zone, vent, music box, light switch, and the tools), Ravelle's wires,
 //! and the hunters in their Blockbench bodies. Simple shapes stand in if a model is missing.
 
 use super::anim::{
@@ -14,7 +14,7 @@ use super::shader::{self, Flicker, Lamp, Lighting};
 use super::{ambient, catwalk, inferno_deco, lamp_flicker, seams, waterfall, world_stack};
 use crate::shared::assets::Assets;
 use crate::config::*;
-use crate::game::{Game, Heater, Item};
+use crate::game::{Game, Item};
 use crate::hunters::brain::State;
 use crate::hunters::gimmicks::Gimmick;
 use crate::net::runner_figure;
@@ -466,33 +466,6 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
                 vec3(0.03, 0.03, 0.03),
                 0.0,
                 Color::new(0.95, 0.75, 0.3, 1.0),
-                2.0,
-            );
-        }
-    }
-    if let Some(c) = g.fix.heater {
-        let (x, y) = c.center();
-        let tint = match g.heater {
-            Heater::Frozen => Color::new(0.7, 0.85, 1.0, 1.0),
-            Heater::Thawed => WHITE,
-            Heater::Powered => Color::new(1.0, 0.85, 0.7, 1.0),
-        };
-        match item_model(a, "heater_station") {
-            Some(m) => draw_static(m, at(x, 0.0, y, 0.0), tint),
-            None => b.cube(
-                vec3(x, 0.55, y),
-                vec3(0.7, 1.1, 0.4),
-                0.0,
-                Color::new(0.3, 0.28, 0.27, 1.0),
-                0.0,
-            ),
-        }
-        if g.heater == Heater::Powered {
-            b.cube(
-                vec3(x, 0.06, y + 0.3),
-                vec3(0.4, 0.02, 0.08),
-                0.0,
-                Color::new(0.98, 0.55, 0.25, 1.0),
                 2.0,
             );
         }

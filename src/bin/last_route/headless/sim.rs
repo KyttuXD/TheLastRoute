@@ -5,7 +5,7 @@
 use crate::audio::Sounds;
 use crate::config::*;
 use crate::content::Content;
-use crate::game::{Controls, Focus, Game, Heater};
+use crate::game::{Controls, Focus, Game};
 use crate::hunters::brain::State;
 use crate::world::catalog::Catalog;
 use crate::world::Cell;
@@ -82,7 +82,6 @@ struct Watch {
     toast_t: f32,
     slots: Vec<Option<(&'static str, i32)>>,
     flashlight: bool,
-    heater: Option<Heater>,
     stairs_center: Option<(i32, i32)>,
 }
 
@@ -120,14 +119,6 @@ fn state_id(s: State) -> &'static str {
     }
 }
 
-fn heater_id(h: Heater) -> &'static str {
-    match h {
-        Heater::Frozen => "frozen",
-        Heater::Thawed => "thawed",
-        Heater::Powered => "powered",
-    }
-}
-
 pub fn r2(v: f32) -> f64 {
     ((v as f64) * 1000.0).round() / 1000.0
 }
@@ -158,11 +149,6 @@ pub fn focus_json(g: &Game, f: Focus) -> Value {
             "light_switch",
             Some(i),
             g.fac.room_lights[i].switch_cell.center(),
-        ),
-        Focus::Heater => (
-            "heater",
-            None,
-            g.fix.heater.map(|c| c.center()).unwrap_or(g.p.pos),
         ),
         Focus::Vent(i) => ("vent", Some(i), g.fix.vents[i].center()),
         Focus::Shop(i) => ("shop", Some(i), g.hunters[i].pos),
@@ -338,7 +324,6 @@ impl Sim {
                 .map(|s| s.map(|s| (s.item.label(), s.n)))
                 .collect(),
             flashlight: g.p.flashlight_on,
-            heater: Some(g.heater),
             stairs_center: g.inf.as_ref().map(|i| i.center),
         }
     }
@@ -368,9 +353,6 @@ impl Sim {
         }
         if now.flashlight != was.flashlight {
             out.push(("flashlight", json!({ "on": now.flashlight })));
-        }
-        if now.heater != was.heater && !floor_changed {
-            out.push(("heater", json!({ "state": now.heater.map(heater_id) })));
         }
         if now.hidden != was.hidden {
             match now.hidden {
@@ -493,7 +475,6 @@ impl Sim {
             "message": if g.message_t > 0.0 { Value::from(g.message.clone()) } else { Value::Null },
             "toast": if g.toast_t > 0.0 { Value::from(g.toast.clone()) } else { Value::Null },
             "danger": r2(g.danger()),
-            "heater": heater_id(g.heater),
             "music_box_left": r2(g.music_box_left),
             "chunks_visited": g.chunks_visited(),
             "window_center": g.inf.as_ref().map(|i| json!([i.center.0, i.center.1])),
@@ -675,7 +656,6 @@ impl Sim {
             "stairs": g.fac.stairs.iter().enumerate().map(|(i, s)| json!({ "index": i, "cell": cell(s.cell), "dir": s.dir, "run": [s.run.0, s.run.1], "shape": format!("{:?}", s.shape), "kind": format!("{:?}", s.kind), "clockwise": s.clockwise, "distance": d(s.cell.center()) })).collect::<Vec<_>>(),
             "catwalk_links": g.fac.catwalk_links.iter().enumerate().map(|(i, l)| json!({ "index": i, "cell": cell(l.cell), "run": [l.run.0, l.run.1], "deck_height": l.deck_height, "distance": d(l.cell.center()) })).collect::<Vec<_>>(),
             "light_switches": g.fac.room_lights.iter().enumerate().map(|(i, l)| json!({ "index": i, "room": l.room, "cell": cell(l.switch_cell), "on": g.lights_on[i] })).collect::<Vec<_>>(),
-            "heater": g.fix.heater.map(cell),
             "music_box": g
                 .pickups
                 .iter()

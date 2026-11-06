@@ -13,7 +13,7 @@
 use super::endless::shift_brain;
 use super::hunting::ability_held;
 use super::level_stack::floor_y_of;
-use super::{pdist, Game, Heater, Item};
+use super::{pdist, Game, Item};
 use crate::config::*;
 use crate::content::hunters::HunterDef;
 use crate::content::Content;
@@ -879,8 +879,8 @@ impl Game {
                         batteries_taken: &[],
                         hiding_disabled: &[],
                         vents: &fix.vents,
-                        heater_on: self.heater_running() || heat_source,
-                        heater_thawed: self.heater != Heater::Frozen || heat_source,
+                        heater_on: heat_source,
+                        heater_thawed: heat_source,
                         diff: self.difficulty,
                         music_box_left: self.music_box_left,
                         music_boxes: &music_boxes,

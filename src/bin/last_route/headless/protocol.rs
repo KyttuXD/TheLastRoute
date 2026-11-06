@@ -165,7 +165,6 @@ pub fn kind_name(f: Focus) -> &'static str {
         Focus::Lift => "LIFT",
         Focus::Ladder(_) => "LADDER",
         Focus::LightSwitch(_) => "LIGHT_SWITCH",
-        Focus::Heater => "HEATER_STATION",
         Focus::Vent(_) => "VENT",
         Focus::Shop(_) => "SHOP",
         Focus::Door(_) => "ROOM_DOOR",
@@ -1227,7 +1226,6 @@ impl Session {
                 "lift" | "exit" => Some(g.fac.exit),
                 "stairs" => g.fac.stairs.get(i).map(|s| s.cell),
                 "safe_zone" => g.fac.safe_zone,
-                "heater" => g.fix.heater,
                 "music_box" => g
                     .pickups
                     .iter()
@@ -1338,7 +1336,6 @@ impl Session {
                     "safe_zone" => g.fac.safe_zone.map(|c| (c.center(), 0.7)),
                     "locker" => g.fac.hiding.get(i).map(|h| (g.fac.locker_center(h), 1.0)),
                     "pickup" => g.pickups.get(i).map(|p| (p.pos, 0.15)),
-                    "heater" => g.fix.heater.map(|c| (c.center(), 0.6)),
                     "music_box" => g
                         .pickups
                         .iter()
@@ -1587,14 +1584,6 @@ impl Session {
         }
         for (i, l) in g.fac.room_lights.iter().enumerate() {
             add("LIGHT_SWITCH", l.switch_cell.center(), 1.2, !g.lights_on[i]);
-        }
-        if let Some(c) = g.fix.heater {
-            add(
-                "HEATER_STATION",
-                c.center(),
-                0.6,
-                g.heater == crate::game::Heater::Powered,
-            );
         }
         for p in g.pickups.iter().filter(|p| !p.taken && p.item == Item::MusicBox) {
             add("MUSIC_BOX_PICKUP", p.pos, 0.5, false);

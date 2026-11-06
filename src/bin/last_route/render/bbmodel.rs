@@ -668,7 +668,8 @@ mod tests {
 
     /// One fold of the digests of every other embedded model that has a decodable texture (props, doors, the player
     /// mannequins, the A to Z hunters), recorded the same way, and how many went into it.
-    const GOLDEN_ALL: (usize, u64) = (685, 0x110d2bc3d03dea9c);
+    /// (685 -> 684 on 2026-11-06: the retired heater station model left the embedded set, see archive/heater-stations.)
+    const GOLDEN_ALL: (usize, u64) = (684, 0xfbac92f6c2cbbbfc);
 
     /// The shape of a model read with the game's UV rule.
     fn shape_now(path: &str, j: &serde_json::Value) -> Option<Shape> {

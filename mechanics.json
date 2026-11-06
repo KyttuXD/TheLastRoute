@@ -47,7 +47,7 @@
     {"name": "safe zone radius", "group": "modes", "value": 2.5, "unit": "cells", "source": "game_config.gd SAFE_ZONE_RADIUS"},
     {"name": "switchable room lights per floor", "group": "modes", "value": 3, "source": "facility_view_3d.gd _spawn_room_lights"},
     {"name": "room climate offsets", "group": "modes", "value": "nether +28, maintenance -22, server -30", "estimated": true},
-    {"name": "fixture placement (heater, music box, vents, coins)", "group": "modes", "value": "near start / 4 grates / 5 coins", "estimated": true},
+    {"name": "fixture placement (music box, vents, coins)", "group": "modes", "value": "near start / 4 grates / 5 coins", "estimated": true},
     {"name": "Nyxie darkness wake", "group": "hunters", "value": 120, "unit": "s", "source": "game_config.gd NYXIE_TIMER_DELAY"},
     {"name": "Glyra music box", "group": "hunters", "value": 45, "unit": "s", "source": "game_config.gd MUSIC_BOX_WOUND_SECONDS standard"},
     {"name": "temperature start", "group": "modes", "value": 60, "source": "game_config.gd TEMPERATURE_START"},

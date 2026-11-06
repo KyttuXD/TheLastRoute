@@ -493,7 +493,7 @@ fn apply_sewer_floor(f: &mut Facility, sc: &super::route::sewer::SewerChunk, see
 }
 
 /// The live window: 3x3 chunks around `center` on `level`, merged into one floor, plus the
-/// fixtures of the window (heater and vent ring from the centre chunk, every
+/// fixtures of the window (the vent ring from the centre chunk, every
 /// chunk's coins).
 pub fn window(
     seed: &str,
@@ -505,7 +505,6 @@ pub fn window(
 ) -> (Facility, Fixtures) {
     let mut parts = vec![];
     let mut fix = Fixtures {
-        heater: None,
         vents: vec![],
         coins: vec![],
     };
@@ -520,7 +519,6 @@ pub fn window(
             let (ox, oy) = ((dx + 1) * CHUNK, (dy + 1) * CHUNK);
             let sh = |c: Cell| Cell::new(c.x + ox, c.y + oy);
             if dx == 0 && dy == 0 {
-                fix.heater = entry.1.heater.map(sh);
                 fix.vents = entry.1.vents.iter().map(|c| sh(*c)).collect();
             }
             fix.coins.extend(entry.1.coins.iter().map(|c| sh(*c)));

@@ -1,10 +1,10 @@
 //! What the crosshair is on and what [E] does to it (route_interactable_3d.gd): relays,
 //! batteries, equipment, coins, lockers, the safe zone, the service lift, room light switches,
-//! the heater station, vent grates and Zellia's store. The music box is a collectable (take it, then wind it from the
+//! vent grates and Zellia's store (the heater station is retired: archive/heater-stations/). The music box is a collectable (take it, then wind it from the
 //! pack: game/music_box.rs, game/items.rs). Opalie's
 //! guard vetoes anything near her post.
 
-use super::{pdist, Game, Heater, Item};
+use super::{pdist, Game, Item};
 use crate::audio::Sounds;
 use crate::config::*;
 use crate::content::Content;
@@ -24,7 +24,6 @@ pub enum Focus {
     /// A sewer ladder, by its index in `Facility::stairs` (a stair flight is walked and is never a focus).
     Ladder(usize),
     LightSwitch(usize),
-    Heater,
     Vent(usize),
     Shop(usize),
     /// A room door, by its index in `Facility::props`.
@@ -140,9 +139,6 @@ impl Game {
                 Focus::LightSwitch(i),
             );
         }
-        if let Some(c) = self.fix.heater {
-            consider(c.center(), 0.6, INTERACT_REACH, Focus::Heater);
-        }
         for (i, c) in self.fix.vents.iter().enumerate() {
             consider(c.center(), 0.4, INTERACT_REACH, Focus::Vent(i));
         }
@@ -212,11 +208,6 @@ impl Game {
                 }
             }
             Focus::LightSwitch(_) => "[E] TOGGLE ROOM LIGHT".into(),
-            Focus::Heater => match self.heater {
-                Heater::Frozen => "[E] THAW HEATER STATION".into(),
-                Heater::Thawed => "[E] POWER HEATER STATION".into(),
-                Heater::Powered => "[E] POWER DOWN HEATER".into(),
-            },
             Focus::Vent(_) => "[E] VENT".into(),
             Focus::Valve(i) => {
                 let p = &self.fac.props[i];
@@ -245,7 +236,6 @@ impl Game {
             Focus::Lift => self.fac.exit.center(),
             Focus::Ladder(i) => self.fac.stairs[i].cell.center(),
             Focus::LightSwitch(i) => self.fac.room_lights[i].switch_cell.center(),
-            Focus::Heater => self.fix.heater.map(|c| c.center()).unwrap_or(self.p.pos),
             Focus::Vent(i) => self.fix.vents[i].center(),
             Focus::Valve(i) => self.fac.props[i].cell.center(),
             Focus::Shop(i) => self.hunters[i].pos,
@@ -322,22 +312,6 @@ impl Game {
                 } else {
                     "ROOM LIGHT OFF"
                 });
-            }
-            Focus::Heater => {
-                self.heater = match self.heater {
-                    Heater::Frozen => {
-                        self.say("Heater station thawed.");
-                        Heater::Thawed
-                    }
-                    Heater::Thawed => {
-                        self.say("Heater station powered. The facility is warming.");
-                        Heater::Powered
-                    }
-                    Heater::Powered => {
-                        self.say("Heater station powered down.");
-                        Heater::Thawed
-                    }
-                };
             }
             Focus::Vent(i) => self.use_vent(i),
             Focus::Shop(i) => {

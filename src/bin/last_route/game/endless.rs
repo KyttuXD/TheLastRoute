@@ -3,7 +3,7 @@
 //! coins and pickups taken, cells discovered), and the hunter population that grows with
 //! recovered relays (GameConfig.streamed_hunter_population).
 
-use super::{pdist, FloorPickup, Game, Heater, Item};
+use super::{pdist, FloorPickup, Game, Item};
 use crate::config::*;
 use crate::content::Content;
 use crate::hunters::brain::{Brain, State};
@@ -197,11 +197,6 @@ pub struct InfState {
     /// Set by `relabel`: the keep set of the new level is topped up from the next frame, so the frame of the change loads
     /// nothing (`keep_stack` clears it).
     relabelled: bool,
-    /// The heater state of every station the runner has used, by (level, centre chunk x, y): a powered one stays powered
-    /// while the runner is far away and is found again on the way back (`stash_heater`, `restore_heater`).
-    heaters: HashMap<(i32, i32, i32), Heater>,
-    /// The key of the station whose state `Game::heater` holds.
-    heater_key: Option<(i32, i32, i32)>,
 }
 
 /// An estimate of the bytes a built window holds: the per-cell grids and the entries of its lists.
@@ -597,8 +592,6 @@ impl InfState {
             stack: LevelStack::default(),
             builds: 0,
             relabelled: false,
-            heaters: HashMap::new(),
-            heater_key: None,
         }
     }
 
@@ -710,41 +703,14 @@ impl Game {
         self.adopt_window(fac, fix, content);
     }
 
-    /// Keeps the live heater state under the station it belongs to, before the window or level changes. A window with no
-    /// station holds nothing to keep.
-    fn stash_heater(&mut self) {
-        let Some(inf) = self.inf.as_mut() else { return };
-        if let (Some(key), Some(_)) = (inf.heater_key, self.fix.heater) {
-            if self.heater == Heater::Frozen {
-                inf.heaters.remove(&key);
-            } else {
-                inf.heaters.insert(key, self.heater);
-            }
-        }
-    }
-
-    /// The live heater state of the window just adopted: the stored one of its centre chunk's station, frozen when it has
-    /// none stored or no station at all (so nothing runs that the runner cannot power down).
-    fn restore_heater(&mut self) {
-        let Some(inf) = self.inf.as_mut() else { return };
-        let key = (inf.level, inf.center.0, inf.center.1);
-        inf.heater_key = Some(key);
-        self.heater = match self.fix.heater {
-            Some(_) => inf.heaters.get(&key).copied().unwrap_or(Heater::Frozen),
-            None => Heater::Frozen,
-        };
-    }
-
     /// Everything after a window is obtained: the window becomes the live one (`self.fac`, `self.fix`) and the runner's
     /// claims, discovery, depth, focus, floor and safe zone follow it.
     fn adopt_window(&mut self, fac: Facility, fix: Fixtures, content: &Content) {
         if self.inf.is_none() {
             return;
         }
-        self.stash_heater();
         self.fac = fac;
         self.fix = fix;
-        self.restore_heater();
         let level = self.inf.as_ref().map_or(0, |i| i.level);
         self.fac.level = level;
         self.claim_window();
@@ -1307,7 +1273,6 @@ impl Game {
         // the level being left keeps its hunters at their absolute cells, to be found again on the way back
         let Some(inf) = self.inf.as_mut() else { return false };
         let Some(r) = inf.stack.take(to) else { return false };
-        self.stash_heater();
         let Some(inf) = self.inf.as_mut() else { return false };
         let old = Resident {
             level: inf.level,
@@ -1323,7 +1288,6 @@ impl Game {
         self.p.rebase_floor(floor_y_of(to));
         self.claim_window();
         self.focus = None;
-        self.restore_heater();
         self.adopt_floor(content);
         self.sync_in();
         self.sync_safe_zone();
@@ -3019,61 +2983,6 @@ mod walked_stair_tests {
         assert!(!inf.stack.residents.is_empty());
         assert!(inf.stack.residents.iter().all(|r| r.center == inf.center), "every resident is at the window's centre");
         assert!(!inf.stack.has(inf.level), "the active level is never also a resident");
-    }
-
-    fn heater_run() -> (Game, Content, Catalog) {
-        let content = Content::load();
-        let catalog = Catalog::load();
-        let g = Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, "ROOM-TEST-7", 0, &content, &catalog);
-        (g, content, catalog)
-    }
-
-    #[test]
-    fn level_zero_live_has_a_heater_to_reach() {
-        let (g, _, _) = heater_run();
-        let h = g.fix.heater.expect("the centre chunk has a heater station");
-        assert!(g.fac.can_occupy(h.x as f64 + 0.5, h.y as f64 + 0.5, 0.23));
-        let d = h.len_to(g.fac.start);
-        assert!((3.0..=7.0).contains(&d), "3-7 cells from the start, got {d}");
-    }
-
-    #[test]
-    fn a_powered_heater_keeps_its_state_per_station() {
-        let (content, catalog) = (Content::load(), Catalog::load());
-        let (mut g, _, _) = heater_run();
-        let home = g.inf.as_ref().unwrap().center;
-        g.heater = Heater::Powered;
-        assert!(g.heater_running());
-        g.p.pos.0 += CHUNK as f32;
-        g.recentre_window(&content, &catalog);
-        assert_ne!(g.inf.as_ref().unwrap().center, home);
-        assert!(g.fix.heater.is_some(), "the new centre chunk has a station to use");
-        assert!(g.heater == Heater::Frozen, "the new station is its own, still frozen");
-        assert!(!g.heater_running(), "only the active station decides");
-        g.heater = Heater::Thawed;
-        g.p.pos.0 -= CHUNK as f32;
-        g.recentre_window(&content, &catalog);
-        assert_eq!(g.inf.as_ref().unwrap().center, home);
-        assert!(g.heater == Heater::Powered, "the first station was kept powered while far away");
-        assert!(g.heater_running());
-        // the other one was kept too
-        g.p.pos.0 += CHUNK as f32;
-        g.recentre_window(&content, &catalog);
-        assert!(g.heater == Heater::Thawed);
-    }
-
-    #[test]
-    fn a_powered_heater_survives_a_level_change_and_powers_down_where_it_stands() {
-        let (content, catalog) = (Content::load(), Catalog::load());
-        let (mut g, _, _) = heater_run();
-        g.heater = Heater::Powered;
-        let at = g.p.pos;
-        g.go_to_level(-1, (at.0, at.1), 0.0, &content, &catalog);
-        assert!(!g.heater_running(), "the level below starts with its own, unpowered station");
-        g.go_to_level(0, (at.0, at.1), 0.0, &content, &catalog);
-        assert!(g.heater == Heater::Powered);
-        assert!(g.heater_running());
-        assert!(g.fix.heater.is_some(), "the active station is there to power down");
     }
 
     #[test]
