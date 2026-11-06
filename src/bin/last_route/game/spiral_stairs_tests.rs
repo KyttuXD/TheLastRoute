@@ -12,7 +12,7 @@
 //! * the generator-level validators (no prop or locker in a stair's zone or ring, a body can walk it, no lava or cave
 //!   decoration in the Inferno bay) are `world/spiral_stairs_tests.rs`.
 
-use super::level_stack::{body_fits_at_y, floor_y_of};
+use super::level_stack::body_fits_at_y;
 use super::{Controls, Game};
 use crate::audio::Sounds;
 use crate::config::{Difficulty, PLAYER_RADIUS};
