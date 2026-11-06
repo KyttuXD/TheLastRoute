@@ -1,0 +1,7 @@
+{
+  "schema": "lr.stamina/1",
+  "_note": "The runner's sprint stamina (game/stamina.rs). sprint_seconds: how long a full bar lasts while sprinting (the Godot original is 3.125 s, 32 per second of 100; the port runs 1.5x longer, 100 / 4.6875 = 21.33 per second). The stim pack (x0.5) and overheating (x1.35) still scale it, and every difficulty uses the same drain. Recovery is unchanged (config STAMINA_RECOVERY). weak_below: the fraction of the bar under which the run speed starts to weaken (0.45 = 45 percent, the HUD's FIT/TIRED line in data/ui/hud_bars.json). min_speed_scale: the share of the full sprint speed left at an empty bar, reached on a smoothstep curve (flat at weak_below, flat at 0); 0.70 keeps it above the walk, so the sprint never turns slower than a walk before exhaustion ends it.",
+  "sprint_seconds": 4.6875,
+  "weak_below": 0.45,
+  "min_speed_scale": 0.70
+}

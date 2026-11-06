@@ -43,7 +43,7 @@ pub const KEY_LOOK_RADIANS_PER_SECOND: f32 = 2.8;
 // -- stamina ----------------------------------------------------------------------------------
 // Native trace: 0x14008a600 (frame/state update).
 pub const MAX_STAMINA: f32 = 100.0;
-pub const STAMINA_SPRINT_DRAIN: f32 = 32.0;
+// The sprint drain is data now: data/player/stamina.json (game/stamina.rs). The Godot original was 32 per second.
 pub const STAMINA_RECOVERY: f32 = 21.0;
 pub const STAMINA_EXHAUSTED_RECOVERY: f32 = 25.0;
 pub const STIM_INJECT_SECONDS: f32 = 0.6;

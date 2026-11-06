@@ -888,7 +888,6 @@ fn tunable_rows(content: &Content, prefs: &super::prefs::Prefs) -> Vec<(String, 
         KEY_LOOK_RADIANS_PER_SECOND,
         // stamina
         MAX_STAMINA,
-        STAMINA_SPRINT_DRAIN,
         STAMINA_RECOVERY,
         STAMINA_EXHAUSTED_RECOVERY,
         STIM_INJECT_SECONDS,
@@ -1071,6 +1070,15 @@ fn tunable_rows(content: &Content, prefs: &super::prefs::Prefs) -> Vec<(String, 
         for (key, value) in values {
             rows.push((file.clone(), key, value));
         }
+    }
+
+    let st = crate::game::stamina::rules();
+    for (key, value) in [
+        ("sprint_seconds", st.sprint_seconds),
+        ("weak_below", st.weak_below),
+        ("min_speed_scale", st.min_speed_scale),
+    ] {
+        rows.push(("data/player/stamina.json".to_string(), key.to_string(), value.to_string()));
     }
 
     for (key, _) in super::prefs::KEYS {
