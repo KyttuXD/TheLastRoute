@@ -220,13 +220,18 @@ fn draw_specialty_bar(g: &Game, a: &Assets, v: Vec2, c: Vec2, hb: Rect) {
     let defs = &rules().slots;
     let (x0, y0, w, h, gap) = specialty_bar_layout(v, c, hb, defs.len());
     for (i, def) in defs.iter().enumerate() {
-        if !g.specialty.visible[i] {
-            continue;
-        }
+        // every slot is always drawn; one whose hunter is not on the floor is dimmer and empty (its key does nothing)
+        let active = g.specialty.visible[i];
         let r = Rect::new(x0 + i as f32 * (w + gap), y0, w, h);
-        let selected = g.specialty.selected == Some(i);
-        let item = g.specialty.items[i];
-        let tint = if item.is_some() { WHITE } else { rgba(0.48, 0.5, 0.51, 0.72) };
+        let selected = active && g.specialty.selected == Some(i);
+        let item = if active { g.specialty.items[i] } else { None };
+        let tint = if !active {
+            rgba(0.34, 0.36, 0.37, 0.5)
+        } else if item.is_some() {
+            WHITE
+        } else {
+            rgba(0.48, 0.5, 0.51, 0.72)
+        };
         let mul = |col: Color| Color::new(col.r * tint.r, col.g * tint.g, col.b * tint.b, col.a * tint.a);
         let edge = if selected {
             p.amber
