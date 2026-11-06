@@ -916,6 +916,8 @@ impl RenderingBackend for GlContext {
         let t = self.textures.get(texture);
         match &t.raw {
             TextureOrRenderbuffer::Texture(raw) => unsafe {
+                // Last Route patch: drop the deleted name from the binding cache first (see `forget_texture`).
+                self.cache.forget_texture(*raw);
                 glDeleteTextures(1, raw as *const _);
             },
             TextureOrRenderbuffer::Renderbuffer(raw) => unsafe {

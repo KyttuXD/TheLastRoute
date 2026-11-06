@@ -1,6 +1,112 @@
+diff -ruN a/graphics/gl/cache.rs b/graphics/gl/cache.rs
+--- a/graphics/gl/cache.rs	2026-11-06 11:50:29.336530400 -0500
++++ b/graphics/gl/cache.rs	2026-11-06 11:50:32.013303000 -0500
+@@ -108,6 +108,29 @@
+         self.bind_texture(slot_index, self.stored_target, self.stored_texture);
+     }
+ 
++    /// Forgets the GL texture name `raw` in the binding cache, as it is about to be deleted (Last Route patch).
++    /// Upstream leaves the cache holding a deleted name; the next `store_texture_binding` / `restore_texture_binding`
++    /// pair then rebinds it, which WebGL reports as "glBindTexture called with an already deleted texture ID" and
++    /// which, on native GL (which reuses names), makes a new texture that got the same name skip its bind. Only the
++    /// deleted name is reset, so no GL call is made and live bindings keep their cache entries.
++    pub fn forget_texture(&mut self, raw: GLuint) {
++        if raw == 0 {
++            return;
++        }
++        for slot in self.textures.iter_mut() {
++            if slot.texture == raw {
++                *slot = CachedTexture {
++                    target: 0,
++                    texture: 0,
++                };
++            }
++        }
++        if self.stored_texture == raw {
++            self.stored_texture = 0;
++            self.stored_target = 0;
++        }
++    }
++
+     pub fn clear_buffer_bindings(&mut self) {
+         self.bind_buffer(GL_ARRAY_BUFFER, 0, None);
+         self.vertex_buffer = 0;
+@@ -139,3 +162,60 @@
+         }
+     }
+ }
++
++// Last Route patch: tests for `forget_texture`. They touch only the cache's fields, never a GL call.
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn cache() -> GlCache {
++        GlCache {
++            stored_index_buffer: 0,
++            stored_index_type: None,
++            stored_vertex_buffer: 0,
++            index_buffer: 0,
++            index_type: None,
++            vertex_buffer: 0,
++            cur_pipeline: None,
++            cur_pass: None,
++            color_blend: None,
++            alpha_blend: None,
++            stencil: None,
++            color_write: (true, true, true, true),
++            cull_face: CullFace::Nothing,
++            stored_texture: 0,
++            stored_target: 0,
++            textures: [CachedTexture { target: 0, texture: 0 }; MAX_SHADERSTAGE_IMAGES],
++            attributes: [None; MAX_VERTEX_ATTRIBUTES],
++        }
++    }
++
++    #[test]
++    fn a_deleted_texture_name_leaves_the_binding_cache() {
++        let mut c = cache();
++        c.textures[0] = CachedTexture { target: GL_TEXTURE_2D, texture: 17 };
++        c.textures[3] = CachedTexture { target: GL_TEXTURE_2D, texture: 17 };
++        c.textures[1] = CachedTexture { target: GL_TEXTURE_2D, texture: 9 };
++        c.stored_texture = 17;
++        c.stored_target = GL_TEXTURE_2D;
++        c.forget_texture(17);
++        assert_eq!((c.textures[0].texture, c.textures[0].target), (0, 0));
++        assert_eq!((c.textures[3].texture, c.textures[3].target), (0, 0));
++        assert_eq!(c.textures[1].texture, 9, "another texture's binding stays");
++        assert_eq!((c.stored_texture, c.stored_target), (0, 0), "a stored binding of the name is dropped too");
++    }
++
++    #[test]
++    fn forgetting_leaves_other_stored_bindings_and_name_zero_alone() {
++        let mut c = cache();
++        c.textures[2] = CachedTexture { target: GL_TEXTURE_2D, texture: 5 };
++        c.stored_texture = 5;
++        c.stored_target = GL_TEXTURE_2D;
++        c.forget_texture(6);
++        c.forget_texture(0);
++        assert_eq!(c.textures[2].texture, 5);
++        assert_eq!(c.stored_texture, 5);
++        assert_eq!(c.stored_target, GL_TEXTURE_2D);
++        assert_eq!(c.textures[0].texture, 0);
++    }
++}
+diff -ruN a/graphics/gl.rs b/graphics/gl.rs
+--- a/graphics/gl.rs	2026-11-06 11:50:29.353460300 -0500
++++ b/graphics/gl.rs	2026-11-06 11:50:32.014304100 -0500
+@@ -916,6 +916,8 @@
+         let t = self.textures.get(texture);
+         match &t.raw {
+             TextureOrRenderbuffer::Texture(raw) => unsafe {
++                // Last Route patch: drop the deleted name from the binding cache first (see `forget_texture`).
++                self.cache.forget_texture(*raw);
+                 glDeleteTextures(1, raw as *const _);
+             },
+             TextureOrRenderbuffer::Renderbuffer(raw) => unsafe {
 diff -ruN a/graphics/metal.rs b/graphics/metal.rs
---- a/graphics/metal.rs	2006-07-23 21:21:28
-+++ b/graphics/metal.rs	2026-11-05 02:48:33
+--- a/graphics/metal.rs	2026-11-06 11:50:29.375333900 -0500
++++ b/graphics/metal.rs	2026-11-06 11:50:32.008509900 -0500
 @@ -160,7 +160,7 @@
          match format {
              TextureFormat::RGBA8 => MTLPixelFormat::RGBA8Unorm,
@@ -138,12 +244,12 @@ diff -ruN a/graphics/metal.rs b/graphics/metal.rs
              msg_send_![
                  descriptor,
 -                setDepthAttachmentPixelFormat: MTLPixelFormat::Depth32Float_Stencil8
-+                setDepthAttachmentPixelFormat: DEPTH_FORMAT
-             ];
+-            ];
 -            msg_send_![
 -                descriptor,
 -                setStencilAttachmentPixelFormat: MTLPixelFormat::Depth32Float_Stencil8
--            ];
++                setDepthAttachmentPixelFormat: DEPTH_FORMAT
+             ];
  
 +
              let mut error: ObjcId = nil;
@@ -189,12 +295,12 @@ diff -ruN a/graphics/metal.rs b/graphics/metal.rs
                          screen_width as f64,
                          screen_height as f64,
                      )
-@@ -1186,7 +1247,19 @@
+@@ -1186,6 +1247,18 @@
                  }
              };
              assert!(!descriptor.is_null());
 +            self.pass_height = pass_h;
- 
++
 +            // Last Route patch: a custom pass hard-sets its depth to Clear, which wiped depth between the
 +            // draws macroquad issues as one pass each. Clear only when the action asks for it.
 +            if pass.is_some() {
@@ -205,10 +311,9 @@ diff -ruN a/graphics/metal.rs b/graphics/metal.rs
 +                };
 +                msg_send_![depth_attachment, setLoadAction: load];
 +            }
-+
+ 
              let color_attachments = msg_send_![descriptor, colorAttachments];
              let color_attachment = msg_send_![color_attachments, objectAtIndexedSubscript: 0];
- 
 @@ -1226,6 +1299,7 @@
              // });
  
@@ -275,8 +380,8 @@ diff -ruN a/graphics/metal.rs b/graphics/metal.rs
          for buffer in &mut self.buffers {
              buffer.next_value = 0;
 diff -ruN a/lib.rs b/lib.rs
---- a/lib.rs	2006-07-23 21:21:28
-+++ b/lib.rs	2026-11-05 02:33:53
+--- a/lib.rs	2026-11-06 11:50:29.377472000 -0500
++++ b/lib.rs	2026-11-06 11:50:35.470625900 -0500
 @@ -424,6 +424,16 @@
          }
      }
@@ -295,8 +400,8 @@ diff -ruN a/lib.rs b/lib.rs
      pub fn apple_gfx_api() -> crate::conf::AppleGfxApi {
          let d = native_display().lock().unwrap();
 diff -ruN a/native/apple/frameworks.rs b/native/apple/frameworks.rs
---- a/native/apple/frameworks.rs	2006-07-23 21:21:28
-+++ b/native/apple/frameworks.rs	2026-11-05 02:45:39
+--- a/native/apple/frameworks.rs	2026-11-06 11:50:29.646238100 -0500
++++ b/native/apple/frameworks.rs	2026-11-06 11:50:32.069623200 -0500
 @@ -641,6 +641,10 @@
      RGBA16Float = 115,
  }
@@ -309,8 +414,8 @@ diff -ruN a/native/apple/frameworks.rs b/native/apple/frameworks.rs
  #[repr(u64)]
  #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 diff -ruN a/native/macos.rs b/native/macos.rs
---- a/native/macos.rs	2006-07-23 21:21:28
-+++ b/native/macos.rs	2026-11-05 02:45:39
+--- a/native/macos.rs	2026-11-06 11:50:31.259625800 -0500
++++ b/native/macos.rs	2026-11-06 11:50:34.351965500 -0500
 @@ -16,6 +16,7 @@
          collections::HashMap,
          os::raw::c_void,

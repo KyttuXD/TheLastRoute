@@ -121,6 +121,8 @@ pub struct InfState {
     /// Chunk at the middle of the window.
     pub center: (i32, i32),
     cache: HashMap<ChunkKey, (Facility, Fixtures)>,
+    /// Frames to wait before the next chunk is generated ahead of a window crossing (`prewarm_chunks`).
+    prewarm_wait: u32,
     /// Claimed pickups by entity id (Godot's claimed_pickups, streamed_world_state.gd:11): the Godot
     /// id on level 0, `L<level>:<KIND>:<x>:<y>` (absolute cell) on the other levels.
     claimed: HashSet<String>,
@@ -564,6 +566,7 @@ impl InfState {
             level,
             center: (0, 0),
             cache: HashMap::new(),
+            prewarm_wait: 0,
             claimed: HashSet::new(),
             ids: live::WindowIds::default(),
             layout_pickups: HashMap::new(),
@@ -894,6 +897,7 @@ impl Game {
         self.clear_reached_waypoint();
         self.refresh_waypoint();
         self.keep_stack(content, catalog);
+        self.prewarm_chunks(content, catalog);
         self.pipes_tick();
         let dt = self.safe_room_dt();
         let before = self.active_checkpoint().to_string();
@@ -902,6 +906,30 @@ impl Game {
         // the room does not save it again every frame (`_update_checkpoint` skips the `_last_checkpoint`)
         if !self.active_checkpoint().is_empty() && self.active_checkpoint() != before {
             self.autosave("checkpoint");
+        }
+    }
+
+    /// Generates, one chunk every `PREWARM_GAP` frames, the chunks the window will need when the runner crosses the edge
+    /// of the middle chunk it is within `PREWARM_MARGIN` metres of, into the window's chunk cache. `window` builds
+    /// missing chunks synchronously, so without this the crossing's frame generated three to seven chunks at once (a
+    /// 150 to 190 ms hitch measured on the web build, and the world popping in after it); with it the crossing is a
+    /// cache hit. A chunk is a pure function of the seed, so the world is the same either way.
+    fn prewarm_chunks(&mut self, content: &Content, catalog: &Catalog) {
+        const PREWARM_MARGIN: f32 = 8.0;
+        const PREWARM_GAP: u32 = 8;
+        let pos = self.p.pos;
+        let Some(inf) = self.inf.as_mut() else { return };
+        inf.prewarm_wait = inf.prewarm_wait.saturating_sub(1);
+        if inf.prewarm_wait > 0 {
+            return;
+        }
+        let next = infinite::approach_chunks(inf.center, inf.level, pos, PREWARM_MARGIN)
+            .into_iter()
+            .find(|k| !inf.cache.contains_key(k));
+        if let Some(k) = next {
+            let made = infinite::chunk(&inf.seed, k, catalog, &content.loot);
+            inf.cache.insert(k, made);
+            inf.prewarm_wait = PREWARM_GAP;
         }
     }
 

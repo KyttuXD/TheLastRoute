@@ -41,6 +41,9 @@ pub struct WorldMeshes {
     parts: HashMap<PartKey, Part>,
     /// The part each of `meshes` was taken from (None for the safe pad, built fresh each time).
     drawn: Vec<Option<PartKey>>,
+    /// The window origin the drawn vertices (`meshes`, `bounds`, `doors`) are placed for. A recentre moves the window
+    /// origin before the new parts are built; `follow_origin` keeps the stale drawn set registered to it meanwhile.
+    drawn_origin: (i32, i32),
     builds: u64,
     /// Window parts the last rebuild left for a later frame (the frame budget ran out); see `has_pending`. While any
     /// are pending and something is drawn, the drawn set stays as it was, so the floor shows no holes.
@@ -387,6 +390,7 @@ impl WorldMeshes {
             self.doors = doors;
             self.lift_doors();
             self.drawn = vec![None; self.meshes.len()];
+            self.drawn_origin = f.origin;
             self.bounds = mesh_bounds(&self.meshes);
             return;
         };
@@ -421,6 +425,8 @@ impl WorldMeshes {
         // with something drawn, the drawn set waits for the window to be whole; with nothing drawn yet (the first
         // load) the built parts show as they come
         if pending > 0 && !self.drawn.is_empty() {
+            // the window may have been recentred since the drawn set was placed: keep it where the camera now is
+            self.follow_origin(f.origin);
             return;
         }
         self.builds = build_no;
@@ -433,11 +439,7 @@ impl WorldMeshes {
         self.doors = doors_in_rects(doors, &built);
         self.lift_doors();
         // Phase 2: the drawn set goes back into the parts it came from, then every wanted part is drawn in order.
-        for (m, key) in std::mem::take(&mut self.meshes).into_iter().zip(std::mem::take(&mut self.drawn)) {
-            if let Some(p) = key.and_then(|k| self.parts.get_mut(&k)) {
-                p.meshes.push(m);
-            }
-        }
+        self.return_drawn_to_parts();
         let mut out: Vec<(Option<PartKey>, Mesh)> = vec![];
         for key in drawable_keys(&wanted, |k| self.parts.contains_key(k)) {
             let part = self.parts.get_mut(&key).expect("drawable_keys returns only built parts");
@@ -476,7 +478,50 @@ impl WorldMeshes {
         let (drawn, meshes) = sorted.into_iter().map(|(_, km)| km).unzip();
         self.drawn = drawn;
         self.meshes = meshes;
+        self.drawn_origin = f.origin;
         self.bounds = mesh_bounds(&self.meshes);
+    }
+
+    /// Puts the drawn meshes back into the parts they were taken from. A part whose meshes were drained into the drawn
+    /// set takes the drawn set's origin, which `follow_origin` may have moved since, so the later reframe of the part
+    /// starts from where its vertices really are.
+    fn return_drawn_to_parts(&mut self) {
+        for (m, key) in std::mem::take(&mut self.meshes).into_iter().zip(std::mem::take(&mut self.drawn)) {
+            if let Some(p) = key.and_then(|k| self.parts.get_mut(&k)) {
+                if p.meshes.is_empty() {
+                    p.origin = self.drawn_origin;
+                }
+                p.meshes.push(m);
+            }
+        }
+    }
+
+    /// Moves the drawn set (vertices, bounds, door leaves) from the window origin it was placed for to `to`, when a
+    /// recentre moved the window while new parts are still being built. Without it the stale set keeps the old
+    /// origin's coordinates while the camera, the runner and the hunters are already in the new ones, so the walls
+    /// stand a whole chunk off for the frames the build takes.
+    fn follow_origin(&mut self, to: (i32, i32)) {
+        let from = self.drawn_origin;
+        if from == to {
+            return;
+        }
+        reframe(&mut self.meshes, from, to);
+        let (dx, dz) = ((from.0 - to.0) as f32, (from.1 - to.1) as f32);
+        for (lo, hi) in &mut self.bounds {
+            // an empty mesh keeps its inverted box
+            if lo.x <= hi.x {
+                lo.x += dx;
+                hi.x += dx;
+                lo.z += dz;
+                hi.z += dz;
+            }
+        }
+        let by = Mat4::from_translation(vec3(dx, 0.0, dz));
+        for d in &mut self.doors {
+            d.xf = by * d.xf;
+            d.cell = Cell::new(d.cell.x + (from.0 - to.0), d.cell.y + (from.1 - to.1));
+        }
+        self.drawn_origin = to;
     }
 
     /// Whether the last rebuild left window parts unbuilt: the caller calls `rebuild` again (same floor) until
@@ -603,14 +648,11 @@ impl WorldMeshes {
         }
         self.pending = pending;
         if pending > 0 && !self.drawn.is_empty() {
+            self.follow_origin(f.origin);
             return;
         }
         self.builds = build_no;
-        for (m, key) in std::mem::take(&mut self.meshes).into_iter().zip(std::mem::take(&mut self.drawn)) {
-            if let Some(p) = key.and_then(|k| self.parts.get_mut(&k)) {
-                p.meshes.push(m);
-            }
-        }
+        self.return_drawn_to_parts();
         let mut out: Vec<(Option<PartKey>, Mesh)> = vec![];
         for key in drawable_keys(&wanted, |k| self.parts.contains_key(k)) {
             let part = self.parts.get_mut(&key).expect("drawable_keys returns only built parts");
@@ -627,6 +669,7 @@ impl WorldMeshes {
         let (drawn, meshes) = group_by_texture(out);
         self.drawn = drawn;
         self.meshes = meshes;
+        self.drawn_origin = f.origin;
         self.bounds = mesh_bounds(&self.meshes);
     }
 }
@@ -2462,6 +2505,79 @@ mod stack_mesh_tests {
         assert_eq!(p.dy, -5.0);
         assert_eq!(p.meshes[0].vertices[0].position.y, -5.0);
         assert_eq!(w.held_parts(), 1);
+    }
+
+    /// A drawn set at window origin `at`: one mesh with a vertex at (1, y, 2), its box, and one door leaf.
+    fn drawn_at(at: (i32, i32)) -> WorldMeshes {
+        let mut w = WorldMeshes::default();
+        w.meshes = vec![mesh(&[0.0, 3.0]), Mesh { vertices: vec![], indices: vec![], texture: None }];
+        w.drawn = vec![None, None];
+        w.drawn_origin = at;
+        w.bounds = mesh_bounds(&w.meshes);
+        w.doors = vec![DoorInstance {
+            cell: Cell::new(10, 20),
+            model: String::new(),
+            xf: Mat4::from_translation(vec3(10.5, 1.0, 20.5)),
+            fit: door::DoorFit { sx: 1.0, sy: 1.0, shift: 0.0, from: 0.0, jamb: 0.5 },
+        }];
+        w
+    }
+
+    #[test]
+    fn the_drawn_set_follows_a_recentre_while_parts_are_pending() {
+        // the runner crossed a chunk east: the window origin moved CHUNK cells, so old geometry sits CHUNK cells west
+        // of where it is now, in the new window's coordinates
+        let mut w = drawn_at((0, 0));
+        w.follow_origin((CHUNK, 0));
+        assert_eq!(w.drawn_origin, (CHUNK, 0));
+        let c = CHUNK as f32;
+        assert_eq!(w.meshes[0].vertices[0].position.x, 1.0 - c);
+        assert_eq!(w.meshes[0].vertices[0].position.z, 2.0);
+        assert_eq!((w.bounds[0].0.x, w.bounds[0].1.x), (1.0 - c, 1.0 - c));
+        assert_eq!((w.bounds[0].0.y, w.bounds[0].1.y), (0.0, 3.0), "height is untouched");
+        assert!(w.bounds[1].0.x > w.bounds[1].1.x, "an empty mesh keeps its inverted box");
+        assert_eq!(w.doors[0].xf.w_axis.x, 10.5 - c);
+        assert_eq!(w.doors[0].xf.w_axis.z, 20.5);
+        assert_eq!(w.doors[0].cell, Cell::new(10 - CHUNK, 20));
+        // the bounds still describe the vertices
+        assert_eq!(w.bounds[0], mesh_bounds(&w.meshes)[0]);
+    }
+
+    #[test]
+    fn following_the_same_origin_changes_nothing_and_a_return_trip_restores_it() {
+        let mut w = drawn_at((CHUNK, -CHUNK));
+        w.follow_origin((CHUNK, -CHUNK));
+        assert_eq!(w.meshes[0].vertices[0].position, vec3(1.0, 0.0, 2.0));
+        w.follow_origin((2 * CHUNK, CHUNK));
+        w.follow_origin((CHUNK, -CHUNK));
+        assert_eq!(w.meshes[0].vertices[0].position, vec3(1.0, 0.0, 2.0));
+        assert_eq!(w.doors[0].cell, Cell::new(10, 20));
+        assert_eq!(w.doors[0].xf.w_axis.x, 10.5);
+    }
+
+    #[test]
+    fn parts_returned_after_a_follow_are_reframed_from_where_their_vertices_are() {
+        let key = PartKey { level: 0, cx: 0, cy: 0, needs: 0, open: 0 };
+        let mut w = WorldMeshes::default();
+        // a part drained into the drawn set at origin (0, 0); its stale origin is that same (0, 0)
+        w.parts.insert(key, Part { meshes: vec![], origin: (0, 0), dy: 0.0, used: 1 });
+        w.meshes = vec![mesh(&[0.0])];
+        w.drawn = vec![Some(key)];
+        w.drawn_origin = (0, 0);
+        w.bounds = mesh_bounds(&w.meshes);
+        // two recentres while the build is pending
+        w.follow_origin((CHUNK, 0));
+        w.follow_origin((CHUNK, CHUNK));
+        w.return_drawn_to_parts();
+        let p = w.parts.get_mut(&key).unwrap();
+        assert_eq!(p.origin, (CHUNK, CHUNK), "the part's origin is the one its vertices were moved to");
+        // the finalize step reframes by (part.origin - target): the vertices are already at the target, so no move
+        let origin = p.origin;
+        reframe(&mut p.meshes, origin, (CHUNK, CHUNK));
+        assert_eq!(p.meshes[0].vertices[0].position, vec3(1.0 - CHUNK as f32, 0.0, 2.0 - CHUNK as f32));
+        // and a further recentre of the finished window moves them on by one chunk, once
+        reframe(&mut p.meshes, origin, (2 * CHUNK, CHUNK));
+        assert_eq!(p.meshes[0].vertices[0].position.x, 1.0 - 2.0 * CHUNK as f32);
     }
 
     #[test]

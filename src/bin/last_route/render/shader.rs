@@ -19,12 +19,15 @@ pub const LIT_MODE: f32 = 1.0;
 /// `LIT_MODE`, but the alpha it draws with is the texture times the vertex colour, not 1.
 pub const GHOST_MODE: f32 = 4.0;
 
+// The texture coordinate varying is `highp` in both stages: lowp is about -2..2 at 8 bits on mobile GPUs, and tiled
+// wall surfaces and door-header strips run well past that, so a lowp uv breaks the tiling on phones (the MSL twin
+// below already carries a full float2).
 const VERTEX: &str = r#"#version 100
 attribute vec3 position;
 attribute vec2 texcoord;
 attribute vec4 color0;
 attribute vec4 normal;
-varying lowp vec2 uv;
+varying highp vec2 uv;
 varying lowp vec4 color;
 varying highp vec3 wpos;
 varying mediump vec4 nrm;
@@ -41,7 +44,7 @@ void main() {
 
 const FRAGMENT: &str = r#"#version 100
 precision highp float;
-varying lowp vec2 uv;
+varying highp vec2 uv;
 varying lowp vec4 color;
 varying highp vec3 wpos;
 varying mediump vec4 nrm;
@@ -393,6 +396,14 @@ pub fn apply(mat: &Material, l: &Lighting, lamps: &[Lamp]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_uv_varying_is_high_precision_in_both_stages() {
+        for (stage, src) in [("vertex", VERTEX), ("fragment", FRAGMENT)] {
+            assert!(src.contains("varying highp vec2 uv;"), "{stage} stage declares uv highp");
+            assert!(!src.contains("lowp vec2 uv"), "{stage} stage has no lowp uv");
+        }
+    }
 
     fn lamp_at(x: f32, range: f32) -> Lamp {
         Lamp {
