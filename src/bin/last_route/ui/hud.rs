@@ -230,7 +230,7 @@ pub fn draw_hud_with_runners(
     let mm = Rect::new(right - 88.0, SAFE, 88.0, 72.0);
     hud_box(mm);
     clip_begin(Rect::new(mm.x + 1.0, mm.y + 1.0, mm.w - 2.0, mm.h - 2.0));
-    draw_map(g, mm, false, marks);
+    draw_map(g, a, mm, false, marks);
     clip_end();
     drawn.minimap = true;
 
@@ -352,11 +352,12 @@ pub fn draw_hud_with_runners(
             let dy = if matches!(g.focus, Some(Focus::Ladder(_))) { -v.y * 0.22 } else { 16.0 };
             shadowed(a, &pr, x, c.y + dy, size, p.ink);
         }
-        if g.focus == Some(Focus::MusicBox) {
-            let pct = (g.music_box_left / 45.0 * 100.0).clamp(0.0, 100.0);
-            let col = if pct <= 0.0 {
-                METER_LOW
-            } else if g.music_box_left <= 15.0 {
+        // the wound music box's readout, while it plays: its time left over the wound time of this difficulty
+        // (game/music_box.rs), amber through the wind-down
+        if g.music_box_left > 0.0 {
+            let full = crate::game::music_box::wound_seconds(g.difficulty.id());
+            let pct = (g.music_box_left / full * 100.0).clamp(0.0, 100.0);
+            let col = if g.music_box_left <= crate::game::music_box::rules().winddown_seconds {
                 METER_WARN
             } else {
                 meter_safe()
@@ -370,13 +371,6 @@ pub fn draw_hud_with_runners(
                 7.0,
                 col,
             );
-            if g.wind_hold > 0.0 {
-                meter(
-                    Rect::new(c.x - 40.0, c.y + 40.0, 80.0, 3.0),
-                    (g.wind_hold / 1.5).min(1.0),
-                    p.teal,
-                );
-            }
         }
     } else if g.p.hidden.is_some() {
         let t = if g.p.hide_lock > 0.0 {
@@ -461,6 +455,7 @@ pub fn draw_hud_with_runners(
                 Item::Axe => 3,
                 Item::Battery => 4,
                 Item::Stim => 5,
+                Item::MusicBox => 6,
             }];
             let (iw, ih) = (icon.width().max(1.0), icon.height().max(1.0));
             let k = (r.w / iw).min(22.0 / ih);

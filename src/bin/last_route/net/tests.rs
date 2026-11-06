@@ -9,7 +9,8 @@ use super::relay::RelayLink;
 use super::saves::{CloudOutcome, CloudSaves, Owed};
 use super::session::{CoopSession, SessionEvent, HOST_PEER_ID};
 use super::BackendConfig;
-use std::time::{Duration, Instant};
+use crate::shared::clock::Instant;
+use std::time::Duration;
 
 fn ports() -> Option<(u16, u16)> {
     let http = std::env::var("LR_NET_TEST_HTTP_PORT").ok()?.parse().ok()?;
@@ -18,7 +19,7 @@ fn ports() -> Option<(u16, u16)> {
 }
 
 fn scratch(name: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("lr_net_it_{name}_{}_{}", std::process::id(), super::unix_now()));
+    let d = std::env::temp_dir().join(format!("lr_net_it_{name}_{}_{}", crate::shared::task::process_id(), super::unix_now()));
     std::fs::create_dir_all(&d).unwrap();
     d
 }

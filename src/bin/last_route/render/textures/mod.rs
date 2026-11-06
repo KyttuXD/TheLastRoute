@@ -1,5 +1,5 @@
 //! Port of the original's procedural pixel-art surfaces (game/look/ref_textures.gd, `RefTextures`) and of the tables
-//! that pick them per district / room purpose (ref_look.gd, floor_sets.gd, data/themes/**, data/regions/*.json).
+//! that pick them per district / room purpose (ref_look.gd, floor_sets.gd, data/themes/**, src/bin/last_route/data/regions/*.json).
 //!
 //! Every texel is painted from a seeded Godot `RandomNumberGenerator` (PCG32, seeded with `String.hash()` of a key such
 //! as "metal0"), so the textures are byte-identical to the Godot game's (verified against Godot 4.7.2 dumps, NOTES.md).

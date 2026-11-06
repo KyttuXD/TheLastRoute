@@ -8,7 +8,10 @@
 //! Space, and places a waypoint with a double click, a right click or E (Godot FacilityMap).
 //!
 //! The hunters come from `Game::map_hunters`: Porcelle while awake, and every hunter on the floor
-//! while the admin HUNTER REVEAL is on (the asleep ones dimmed).
+//! while the admin HUNTER REVEAL is on (the asleep ones dimmed). Each is marked by who it is
+//! (`hunter_mark`): the capital letter of an A to Z hunter, the colour of a void hunter.
+
+mod hunter_mark;
 
 use super::style::*;
 use crate::app::assets::Assets;
@@ -105,7 +108,7 @@ fn fit_box(plan: Rect, w: i32, h: i32) -> Xf {
 }
 
 /// Draws the minimap or a floor map into `r` (units), with the players and bots in `marks` as pins.
-pub fn draw_map(g: &Game, r: Rect, full: bool, marks: &[Marker]) {
+pub fn draw_map(g: &Game, a: &Assets, r: Rect, full: bool, marks: &[Marker]) {
     let (vx, vy, vw, vh) = view_cells(g, full);
     let b = fit_box(r, vw, vh);
     let xf = Xf {
@@ -113,7 +116,7 @@ pub fn draw_map(g: &Game, r: Rect, full: bool, marks: &[Marker]) {
         ox: b.ox - vx as f32 * b.cell,
         oy: b.oy - vy as f32 * b.cell,
     };
-    draw_floor(g, xf, (vx, vy, vw, vh), full, marks);
+    draw_floor(g, a, xf, (vx, vy, vw, vh), full, marks);
     radar_state_overlay(g, r);
 }
 
@@ -133,7 +136,7 @@ fn radar_state_overlay(g: &Game, r: Rect) {
 
 /// Draws the floor cells `cells` (x, y, w, h) through `xf`: the floor, the safe zone, relays, batteries, the lift, the
 /// stairs, the waypoint, the hunters on the map, the teammates and the runner.
-fn draw_floor(g: &Game, xf: Xf, cells: (i32, i32, i32, i32), full: bool, marks: &[Marker]) {
+fn draw_floor(g: &Game, a: &Assets, xf: Xf, cells: (i32, i32, i32, i32), full: bool, marks: &[Marker]) {
     let p = pal();
     let (vx, vy, vw, vh) = cells;
     let cell = xf.cell;
@@ -209,35 +212,43 @@ fn draw_floor(g: &Game, xf: Xf, cells: (i32, i32, i32, i32), full: bool, marks: 
     if let Some(at) = g.waypoint_marker() {
         dot(at, waypoint_pin_colour(), (cell * 0.5).max(1.5));
     }
-    for h in g.map_hunters() {
-        dot(
-            h.pos,
-            hunter_colour(h),
-            (cell * 0.55).max(if full { 3.0 } else { 1.2 }),
-        );
-    }
+    let radius = (cell * 0.55).max(if full { 3.0 } else { 1.8 });
+    let placed = hunter_marks(g, |h| inside(h.pos).then(|| xf.at(h.pos)), radius);
+    hunter_mark::draw(a, &placed, full);
     draw_runner_pins(xf, cells, (0, 0), marks, g.fac.level, full);
     let q = xf.at(g.p.pos);
     runner_wedge(g, vec2(q.0, q.1), cell, full);
 }
 
-/// A hunter's mark on the maps: red while awake, dimmed while asleep (the admin reveal shows the sleeping ones too).
-fn hunter_colour(h: &Brain) -> Color {
-    let base = if h.active {
-        METER_LOW
-    } else {
-        alpha(METER_LOW, 0.4)
-    };
+/// How visible a hunter's mark is on the maps (0..1): full while awake, dimmed while asleep (the admin reveal shows the
+/// sleeping ones too). The dot, and the letter or colour that names it, share this one factor, so who a hunter is never shows
+/// where its position does not.
+fn hunter_alpha(h: &Brain) -> f32 {
+    let base = if h.active { 1.0 } else { 0.4 };
     // Porcelle's radar ping (Godot RadarPing): strength gates alpha; reduced motion
     // keeps a steady dim via style::reduced_motion().
     if h.def.id == "porcelle" {
         let s = super::radar_ping::sample(macroquad::time::get_time() as f32, super::style::reduced_motion());
         if s.strength <= 0.001 {
-            return alpha(base, 0.0);
+            return 0.0;
         }
-        return alpha(base, base.a * s.strength);
+        return base * s.strength;
     }
     base
+}
+
+/// The hunters the maps show (`Game::map_hunters`), each as a mark that names it, placed by `place` (the plan point of a hunter
+/// on this view, or `None` off it). `radius` is the dot's size.
+fn hunter_marks(g: &Game, place: impl Fn(&Brain) -> Option<(f32, f32)>, radius: f32) -> Vec<hunter_mark::Placed> {
+    g.map_hunters()
+        .filter_map(|h| {
+            let alpha = hunter_alpha(h);
+            if alpha <= 0.001 {
+                return None;
+            }
+            Some(hunter_mark::Placed { mark: hunter_mark::mark_of(&h.def), at: place(h)?, radius, alpha })
+        })
+        .collect()
 }
 
 /// Godot PlayerColors' palette (Okabe-Ito plus Tol extensions), the colour of a teammate's pin. Godot ranks the peers of the
@@ -676,7 +687,7 @@ pub fn full_map_input(g: &mut Game, map_view: &mut FullView) {
 /// The level-0 full map: every discovered chunk (`feed`), drawn through the frame `geo`. The floor is drawn per chunk in runs
 /// of cells, then the solid props, the relays and batteries, the stairs, the waypoint, the hunters on the map and the runner.
 /// Off the discovered area nothing is drawn.
-fn draw_level0(g: &Game, feed: &FullMapFeed, plan: Rect, geo: &FullPlan, marks: &[Marker]) {
+fn draw_level0(g: &Game, a: &Assets, feed: &FullMapFeed, plan: Rect, geo: &FullPlan, marks: &[Marker]) {
     let p = pal();
     let keys: Vec<(i32, i32)> = feed.chunks.iter().map(|(k, _)| (k.cx, k.cy)).collect();
     let Some(fit) = fit_discovered(plan, &keys) else { return };
@@ -776,9 +787,15 @@ fn draw_level0(g: &Game, feed: &FullMapFeed, plan: Rect, geo: &FullPlan, marks: 
         dot(at, waypoint_pin_colour(), (cell * 0.5).max(1.5));
     }
     let o = (feed.origin.0 as f32, feed.origin.1 as f32);
-    for h in g.map_hunters() {
-        dot((h.pos.0 + o.0, h.pos.1 + o.1), hunter_colour(h), (cell * 0.55).max(3.0));
-    }
+    let placed = hunter_marks(
+        g,
+        |h| {
+            let c = (h.pos.0 + o.0, h.pos.1 + o.1);
+            shown(c).then(|| xf.at(c))
+        },
+        (cell * 0.55).max(3.0),
+    );
+    hunter_mark::draw(a, &placed, true);
     draw_runner_pins(xf, (fit.x0, fit.y0, fit.w, fit.h), feed.origin, marks, g.fac.level, true);
     let q = xf.at(geo.runner);
     runner_wedge(g, vec2(q.0, q.1), cell, true);
@@ -813,14 +830,14 @@ pub fn draw_full_map_with_runners(g: &Game, a: &Assets, map_view: &FullView, mar
     let geo = full_plan(g, plan, map_view);
     clip_begin(plan);
     match g.full_map_feed() {
-        Some(feed) => draw_level0(g, &feed, plan, &geo, marks),
-        None => draw_floor(g, geo.xf, (0, 0, g.fac.cols, g.fac.rows), true, marks),
+        Some(feed) => draw_level0(g, a, &feed, plan, &geo, marks),
+        None => draw_floor(g, a, geo.xf, (0, 0, g.fac.cols, g.fac.rows), true, marks),
     }
     clip_end();
     let legend = if is_last_route() {
-        "ORANGE relay  •  YELLOW battery  •  GRAY prop  •  WHITE stairs  •  RED hunter"
+        "ORANGE relay  •  YELLOW battery  •  GRAY prop  •  WHITE stairs  •  LETTER or COLOUR hunter"
     } else {
-        "TEAL-BLUE relay  •  YELLOW battery  •  GRAY prop  •  WHITE stairs  •  RED hunter"
+        "TEAL-BLUE relay  •  YELLOW battery  •  GRAY prop  •  WHITE stairs  •  LETTER or COLOUR hunter"
     };
     label_c(
         a,
@@ -934,6 +951,29 @@ mod tests {
         assert!(!shown(&g), "a sleeping hunter is not on the maps without the reveal");
         g.admin.hunter_reveal = true;
         assert!(shown(&g), "the reveal puts the sleeping hunter on the maps");
+    }
+
+    #[test]
+    fn a_hunter_is_named_on_the_map_only_where_the_map_already_shows_it() {
+        let mut g = game();
+        let content = Content::load();
+        let def = content.hunters.iter().find(|h| h.id == "kathy").expect("kathy").clone();
+        let mut b = crate::hunters::brain::Brain::new(def, (5.0, 5.0), "label-test", Difficulty::Standard);
+        b.active = false;
+        g.hunters.clear();
+        g.hunters.push(b);
+        let all = |_: &Brain| Some((1.0, 2.0));
+        assert!(hunter_marks(&g, all, 2.0).is_empty(), "no reveal: no position, so no letter either");
+        g.admin.hunter_reveal = true;
+        let marks = hunter_marks(&g, all, 2.0);
+        assert_eq!(marks.len(), 1);
+        assert_eq!(marks[0].mark.label, Some('K'));
+        assert!((marks[0].alpha - 0.4).abs() < 1e-6, "a sleeping hunter's letter is dimmed like its dot");
+        // a hunter off this view is not placed, so its letter is not drawn
+        assert!(hunter_marks(&g, |_: &Brain| None, 2.0).is_empty());
+        // a blanked radar shows nobody, so names nobody
+        g.admin.hunter_reveal = false;
+        assert!(hunter_marks(&g, all, 2.0).is_empty());
     }
 
     #[test]

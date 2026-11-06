@@ -1,5 +1,5 @@
 //! Catwalks above level 0: a walkway grid over the maze with railings, gaps and landings.
-//! Layout rules live in `data/regions/catwalk.json`; this file holds behaviour only. Pure: seed text in, grid out.
+//! Layout rules live in `src/bin/last_route/data/regions/catwalk.json`; this file holds behaviour only. Pure: seed text in, grid out.
 //! Every walkable cell is reachable from a landing (cells cut off by gaps are pruned back to void).
 
 use std::collections::VecDeque;

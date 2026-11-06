@@ -161,7 +161,7 @@ pub fn spawn_region(world: &str) -> &'static str {
     region_for(world, 0, 0, 0)
 }
 
-/// The catalogue entry of a region (data/regions/<id>.json, `lr.region/1`, or a pack's override), when
+/// The catalogue entry of a region (src/bin/last_route/data/regions/<id>.json, `lr.region/1`, or a pack's override), when
 /// it has one. The placement rules above stay in code; the facts a region carries come from here.
 pub fn region_def(region: &str) -> Option<&'static crate::content::regions::RegionDef> {
     crate::content::regions::table().def(region)
@@ -295,7 +295,7 @@ mod tests {
     /// The rows the consumers read from the catalogue (layout.rs room_type_choices, props.rs prop_set) and the
     /// copies they still hold in code: furnished.rs HOSPITAL_ROOMS, LAB_ROOMS, GREENHOUSE_ROOMS and MALL_ROOMS,
     /// grid.rs ROOM_DOOR_TABLE (mall row) and render/textures/sets.rs District (hospital, mall).
-    /// A change to data/regions must change these copies as well, until the consumers read the catalogue.
+    /// A change to src/bin/last_route/data/regions must change these copies as well, until the consumers read the catalogue.
     #[test]
     fn catalogue_matches_the_hard_coded_copies() {
         let t = crate::content::regions::RegionTable::builtin(&mut Vec::new());
@@ -361,7 +361,7 @@ mod tests {
         assert!(region_def("office").is_none());
     }
 
-    /// The regions whose rows moved from code into data/regions (the ten `lr.region/1` files that are not
+    /// The regions whose rows moved from code into src/bin/last_route/data/regions (the ten `lr.region/1` files that are not
     /// hospital, mall or sewer).
     const MOVED_REGIONS: [&str; 10] =
         ["maze", "mansion", "hotel", "apartment", "beach", "gothic", "prison", "carnival", "lab", "greenhouse"];
@@ -414,14 +414,14 @@ mod tests {
         }
     }
 
-    /// data/regions/sewer.json against the constants the sewer port holds in world/route/sewer/core.rs
+    /// src/bin/last_route/data/regions/sewer.json against the constants the sewer port holds in world/route/sewer/core.rs
     /// (PUMP_COLLIDER, OUTFLOW_SIZE, ROOM_KINDS) and the district row of render/textures/sets.rs, which
     /// matches Godot's game/look/floor_sets.gd "sewer" row (stone walkways, concrete rooms, no runner).
     /// The Standard values must stay the game's current ones.
     #[test]
     fn sewer_catalogue_matches_the_sewer_constants() {
         use crate::world::route::sewer::core::{OUTFLOW_SIZE, PUMP_COLLIDER, ROOM_KINDS};
-        let d = region_def("sewer").expect("data/regions/sewer.json is built in");
+        let d = region_def("sewer").expect("src/bin/last_route/data/regions/sewer.json is built in");
         assert_eq!(d.hall_floor, ["stone0", "stone1"]);
         assert!(!d.hall_runner);
         assert_eq!(d.room_default_floor, ["concrete0", "concrete1"]);

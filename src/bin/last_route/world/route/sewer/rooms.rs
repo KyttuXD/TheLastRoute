@@ -1,5 +1,5 @@
 //! More sewer rooms: pump room, valve hall, junction chamber, overflow chamber and storage alcove.
-//! Everything tunable (layouts, props, loot, hunter rules, placement chance) is in `data/regions/sewer_rooms.json`
+//! Everything tunable (layouts, props, loot, hunter rules, placement chance) is in `src/bin/last_route/data/regions/sewer_rooms.json`
 //! (`lr.sewer_rooms/1`). This module holds behaviour only: parsing, picking a free spot, stamping the layout into a
 //! chunk grid, and rolling the room's loot and hunter spawns. It is not wired into the chunk generator yet (see hooks).
 //!
@@ -15,7 +15,7 @@ use crate::world::route::layout::V2;
 
 use super::core::{BRIDGE, CHUNK, DRY, SOLID, WATER};
 
-const DATA: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/data/regions/sewer_rooms.json"));
+const DATA: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/last_route/data/regions/sewer_rooms.json"));
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RoomProp {

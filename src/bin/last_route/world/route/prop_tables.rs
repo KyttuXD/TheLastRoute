@@ -11,7 +11,7 @@
 // Values are copied exactly. Godot's Vector2/Vector3/Vector4 and float literals are f32 in the game; the
 // Vector2i sizes are cells. Each table keeps the Godot name, with a prefix where two Godot classes share one
 // (PropColliderSizes.SIZES is PROP_COLLIDER_SIZES). Dictionaries keep their Godot source order.
-// The mall and hospital region prop sets are not inlined: they come from data/regions (see DATA_BACKED_REGION_PROP_SETS).
+// The mall and hospital region prop sets are not inlined: they come from src/bin/last_route/data/regions (see DATA_BACKED_REGION_PROP_SETS).
 
 /// One entry of a region's prop set (SRG `REGION_PROP_SETS`). `solid` is Godot's default true unless the entry says false.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -162,7 +162,7 @@ pub const REGION_PROP_SETS: &[(&str, &[PropSetEntry])] = &[
         PropSetEntry { prop_type: "overgrowthPatch", size: [1.6, 0.35, 1.3], solid: false },
     ]),
 ];
-/// Regions whose Godot `REGION_PROP_SETS` value comes from `data/regions/*.json` (`ContentRegistry.DATA`), not from code.
+/// Regions whose Godot `REGION_PROP_SETS` value comes from `src/bin/last_route/data/regions/*.json` (`ContentRegistry.DATA`), not from code.
 pub const DATA_BACKED_REGION_PROP_SETS: &[&str] = &["mall", "hospital"];
 /// Godot `TEMPLATE_PROP_SIZES`: `game/world/generation/streamed_route_generator.gd` line 299.
 /// Collider envelopes for furnished-room recipes (metres, x / height / z).

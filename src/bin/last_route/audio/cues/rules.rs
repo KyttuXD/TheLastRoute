@@ -8,25 +8,25 @@
 
 use super::render::{cache_key, snapped};
 
-/// The audio bus a cue plays on (default_bus_layout.tres). Everything is SFX except the menu blip.
+/// The audio bus a cue plays on (default_bus_layout.tres). Every `Sound.<method>()` cue is SFX except the menu blip, which
+/// is UI. `Master` is for the positional node players (the music box tune and its wind-down, Glyra's hum, the falls):
+/// Godot's AudioStreamPlayer3D defaults to the Master bus, so only the Master slider applies to them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Bus {
+    Master,
     Sfx,
     Ui,
 }
 
-/// Linear gain of a bus from the settings percentages (settings.gd 685-695: each bus is set to
-/// `linear_to_db(percent / 100)`, 0 % = -80 dB, which REPLACES the -10 dB / -12 dB of default_bus_layout.tres at boot,
-/// so at 100 % both buses are unity). Master multiplies both.
-pub fn bus_gain(master_percent: f32, bus_percent: f32) -> f32 {
-    let g = |p: f32| {
-        if p <= 0.0 {
-            0.0
-        } else {
-            (p / 100.0).clamp(0.0, 1.0)
+/// The settings' bus gains, as the engine applies them: `Master` x the bus slider (`Sfx` or `Ui`), each 0..1.
+/// `Engine::bus_gain` is the only place this is computed at run time.
+pub fn bus_gain(bus: Bus, master: f32, sfx: f32, ui: f32) -> f32 {
+    master
+        * match bus {
+            Bus::Master => 1.0,
+            Bus::Sfx => sfx,
+            Bus::Ui => ui,
         }
-    };
-    g(master_percent) * g(bus_percent)
 }
 
 pub fn db_to_linear(db: f32) -> f32 {

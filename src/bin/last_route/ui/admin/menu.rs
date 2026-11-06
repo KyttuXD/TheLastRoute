@@ -7,6 +7,7 @@
 //! FIELDS line edits. Clicks become `Cmd`s that `actions.rs` runs on the Game.
 
 use super::look::*;
+use super::actions::{npc_button, NpcButton};
 use super::menu_data::menu;
 use super::{Admin, Popup, TABS};
 use crate::app::assets::Assets;
@@ -70,6 +71,18 @@ pub(super) fn hunter_list(content: &Content) -> Vec<(String, String)> {
     // the secret wolf spiders are in the list above (category "secret"); this picker is their only listing, plus the pair entry
     az.push((crate::hunters::secret_creatures::PAIR_ID.to_string(), crate::hunters::secret_creatures::PAIR_LABEL.to_string()));
     az
+}
+
+/// `text` cut with "..." so that it is no wider than `width` (the one hint line has no room to wrap).
+fn fit(ui: &Ui, text: &str, size: f32, width: f32) -> String {
+    if ui.tw(text, size) <= width {
+        return text.to_string();
+    }
+    let mut s: String = text.to_string();
+    while !s.is_empty() && ui.tw(&format!("{s}..."), size) > width {
+        s.pop();
+    }
+    format!("{s}...")
 }
 
 fn wrap(ui: &Ui, text: &str, size: f32, width: f32) -> Vec<String> {
@@ -234,12 +247,18 @@ impl Admin {
         } else {
             "0 OR ESC CLOSES  //  TAB SWITCHES  //  UP/DOWN SCROLLS"
         };
+        // a gray NPC button under the mouse says why it is gray in place of the hint (set by the grid last frame)
+        let tip = self.npc_tip.take().filter(|_| self.tab == 4);
+        let (hint, hint_col) = match tip.as_deref() {
+            Some(t) => (fit(&ui, t, 6.0, cw), AMBER),
+            None => (hint.to_string(), MUTED),
+        };
         ui.text(
-            hint,
+            &hint,
             cx,
             panel.y + (size.y - 15.0) * u,
             6.0,
-            MUTED,
+            hint_col,
         );
 
         let page = Rect::new(
@@ -677,22 +696,12 @@ impl Admin {
         let row = col.take(17.0, 2.0);
         let w1 = ui.tw("REMOVE NEAREST", 7.0) + 20.0 * u;
         let w2 = ui.tw("REMOVE ALL", 7.0) + 20.0 * u;
-        if ui.button(
-            Rect::new(row.x, row.y, w1, row.h),
-            "REMOVE NEAREST",
-            7.0,
-            false,
-            false,
-        ) {
+        // the removes act on whatever NPCs exist, so they are gray (with the reason) only when there are none
+        let removes = if g.npcs.is_empty() { NpcButton::NoNpcs } else { NpcButton::Ready };
+        if self.npc_button_at(ui, Rect::new(row.x, row.y, w1, row.h), "REMOVE NEAREST", removes) {
             cmds.push(Cmd::Npc("remove_nearest"));
         }
-        if ui.button(
-            Rect::new(row.x + w1 + 4.0 * u, row.y, w2, row.h),
-            "REMOVE ALL",
-            7.0,
-            false,
-            false,
-        ) {
+        if self.npc_button_at(ui, Rect::new(row.x + w1 + 4.0 * u, row.y, w2, row.h), "REMOVE ALL", removes) {
             cmds.push(Cmd::Npc("remove_all"));
         }
         cap(ui, col, "NPC");
@@ -704,9 +713,21 @@ impl Admin {
             None => "NO NPCS".to_string(),
         };
         cap(ui, col, caption.as_str());
-        self.grid(ui, col, cmds, &menu().npc_ops);
+        self.grid(ui, col, cmds, &menu().npc_ops, g.npcs.len());
         cap(ui, col, "ALL NPCS");
-        self.grid(ui, col, cmds, &menu().npc_all);
+        self.grid(ui, col, cmds, &menu().npc_all, g.npcs.len());
+    }
+
+    /// One NPC button: a normal one when `state` is Ready, else drawn gray. A gray button still takes the click (the
+    /// run says why nothing happened) and, while the mouse is on it, puts its reason in the hint line.
+    fn npc_button_at(&mut self, ui: &mut Ui, rect: Rect, label: &str, state: NpcButton) -> bool {
+        if state == NpcButton::Ready {
+            return ui.button(rect, label, 7.0, false, false);
+        }
+        if ui.visible(rect) && ui.hover(rect) {
+            self.npc_tip = state.tip();
+        }
+        ui.button_muted(rect, label, 7.0)
     }
 
     /// GridContainer, 3 columns, 4-unit separations, columns as wide as their widest button.
@@ -716,6 +737,7 @@ impl Admin {
         col: &mut Col,
         cmds: &mut Vec<Cmd>,
         list: &[(&'static str, &'static str)],
+        npcs: usize,
     ) {
         let u = col.u;
         let mut widths = [0.0f32; 3];
@@ -729,12 +751,7 @@ impl Admin {
             for c in 0..3 {
                 if let Some((op, label)) = list.get(r * 3 + c) {
                     let rect = Rect::new(x, row.y, widths[c], row.h);
-                    let pressed = if super::actions::npc_op_live(op) {
-                        ui.button(rect, label, 7.0, false, false)
-                    } else {
-                        ui.button_muted(rect, label, 7.0)
-                    };
-                    if pressed {
+                    if self.npc_button_at(ui, rect, label, npc_button(op, npcs)) {
                         cmds.push(Cmd::Npc(op));
                     }
                 }
@@ -1023,7 +1040,7 @@ fn tunable_rows(content: &Content, prefs: &super::prefs::Prefs) -> Vec<(String, 
 
     for r in &content.regions.defs {
         let file = if r.source == crate::content::regions::BUILTIN {
-            format!("data/regions/{}.json", r.id)
+            format!("src/bin/last_route/data/regions/{}.json", r.id)
         } else {
             format!("pack {}", r.source)
         };

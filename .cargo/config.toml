@@ -3,3 +3,8 @@
 
 [target.'cfg(target_os = "macos")']
 rustflags = ["-C", "split-debuginfo=unpacked"]
+
+# Browser build (cargo build --target wasm32-unknown-unknown --bin last_route): quad-snd's web backend (audio.js in the
+# page) calls functions the wasm does not define itself, so the link leaves them to the page's JavaScript.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=--allow-undefined"]

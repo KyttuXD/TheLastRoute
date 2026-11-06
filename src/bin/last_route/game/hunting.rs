@@ -2,7 +2,7 @@
 //! events, captures and the escape struggle (mash [E] 6 times in 3.2 s), the hide check at a
 //! locker, and the run report.
 
-use super::{pdist, Admin, Escape, Game, Heater, Report};
+use super::{pdist, Admin, Escape, Game, Heater, Item, Report};
 use crate::audio::Sounds;
 use crate::config::*;
 use super::level_stack::floor_y_of;
@@ -182,6 +182,8 @@ impl Game {
         if self.remote_hunters {
             return;
         }
+        // this frame's route budget (hunters/path_scheduler.rs): last frame's queued searches are answered first
+        crate::hunters::path_scheduler::begin_frame(&self.fac);
         // one navigation graph over the active and resident levels, given to every brain of every list
         self.sync_stack_nav();
         // the Inferno's secret creatures: the dwell clock on level -3 and their spawn (game/inferno_secrets.rs)
@@ -231,11 +233,18 @@ impl Game {
         // another level than the hunter carries the hunter's 3D sight and the adjacent hearing (`target_for`).
         let list_level = self.runner_level();
         let bot_targets = self.bot_targets();
+        // the music box floor pickups still on the floor: Glyra guards the nearest (gimmicks/glyra.rs)
+        let music_boxes: Vec<(f32, f32)> =
+            self.pickups.iter().filter(|p| p.item == Item::MusicBox && !p.taken).map(|p| p.pos).collect();
         let mut all_events: Vec<(usize, Event)> = vec![];
         let mut caught: Option<usize> = None;
         for i in 0..self.hunters.len() {
             let (hunter_target, chose_bot) = self.target_for(&self.hunters[i], list_level, &target, &bot_targets);
             self.hunters[i].target_is_bot = chose_bot;
+            // Nyxie's wake and dispel read the runner even while she chases a bot (nyxie::Nyxie::runner)
+            if let Gimmick::Nyxie(n) = &mut self.hunters[i].gimmick {
+                n.runner = chose_bot.then(|| target.clone());
+            }
             let hunter_target = &hunter_target;
             if let Gimmick::Solyth(s) = &mut self.hunters[i].gimmick {
                 s.heat_locked = self.meters.heat_locked;
@@ -250,6 +259,7 @@ impl Game {
                 heater_thawed: self.heater != Heater::Frozen,
                 diff: self.difficulty,
                 music_box_left: self.music_box_left,
+                music_boxes: &music_boxes,
                 exposure: self.meters.exposure,
             };
             let held_before = ability_held(&self.hunters[i]);
@@ -263,7 +273,7 @@ impl Game {
                     self.difficulty,
                     kind,
                     vec![("index", json!(i)), ("hunter_id", json!(id)), ("ability", json!(ability))],
-                    std::time::Instant::now(),
+                    crate::shared::clock::Instant::now(),
                 );
             }
             // a capture ends the run only when the runner was the target: a bot caught is no run end
@@ -406,11 +416,13 @@ impl Game {
             } else {
                 (away.0 / l, away.1 / l)
             };
-            self.p.pos = self.fac.nearest_open_or(
-                self.p.pos.0 + away.0 * ESCAPE_KNOCKBACK,
-                self.p.pos.1 + away.1 * ESCAPE_KNOCKBACK,
+            // the shove stops at the first wall or railing on the way, never carries her through one
+            let shoved = self.fac.clear_toward(
+                self.p.pos,
+                (self.p.pos.0 + away.0 * ESCAPE_KNOCKBACK, self.p.pos.1 + away.1 * ESCAPE_KNOCKBACK),
                 PLAYER_RADIUS,
             );
+            self.p.pos = self.fac.nearest_open_or(shoved.0, shoved.1, PLAYER_RADIUS);
             let pos = self.p.pos;
             self.hunters[hi].enter_search_from(pos, 1.8, &self.fac);
             self.hunters[hi].apply_stun(prof.escape_stun, false);
@@ -419,6 +431,15 @@ impl Game {
         } else if esc.remaining <= 0.0 {
             self.escape = None;
             self.end_run(hi, "contact");
+        }
+    }
+
+    /// Seconds a hunter has spent checking hiding spot `spot`, while its check runs (the locker shakes for it,
+    /// `net/hide_sync.rs` `search_tell_shake`); None when no check is on that spot.
+    pub fn hide_check_elapsed(&self, spot: usize) -> Option<f32> {
+        match self.hide_check {
+            Some((s, _, left)) if s == spot => Some((self.prof().hide_tell - left).max(0.0)),
+            _ => None,
         }
     }
 
@@ -484,7 +505,7 @@ impl Game {
                         self.difficulty,
                         "hunter_door",
                         vec![("index", json!(h)), ("hunter_id", json!(id)), ("action", json!("open")), ("spot", json!(li))],
-                        std::time::Instant::now(),
+                        crate::shared::clock::Instant::now(),
                     );
                 } else {
                     self.hide_check = Some((spot, h, t));
@@ -513,7 +534,7 @@ impl Game {
                         self.difficulty,
                         "hunter_locker",
                         vec![("index", json!(h)), ("hunter_id", json!(id)), ("spot", json!(li))],
-                        std::time::Instant::now(),
+                        crate::shared::clock::Instant::now(),
                     );
                     // her breath at the slats (hunter_view_3d.gd 1537-1558): within 3.5 m of the camera
                     let (eye, (_, right, _)) = (self.eye(), self.camera_basis());
@@ -913,7 +934,8 @@ mod remote_hunter_tests {
     use super::*;
     use crate::content::Content;
     use crate::world::catalog::Catalog;
-    use std::time::{Duration, Instant};
+    use crate::shared::clock::Instant;
+use std::time::Duration;
 
     fn run() -> (Game, Content, Catalog) {
         let content = Content::load();
@@ -1150,6 +1172,19 @@ mod remote_hunter_tests {
             g.update_hidden(0.0, &Controls::default(), &prof, &sounds);
             assert_eq!((g.p.yaw, g.p.pitch), (base + 2.5, 1.4), "frozen, not clamped, while it shakes");
         }
+    }
+
+    #[test]
+    fn a_hunters_locker_check_is_the_elapsed_tell_on_that_locker_only() {
+        let (mut g, _, _) = run();
+        let li = 0usize;
+        let tell = g.prof().hide_tell;
+        assert_eq!(g.hide_check_elapsed(li), None, "no check: the locker is still");
+        g.hide_check = Some((li, 0, tell));
+        assert_eq!(g.hide_check_elapsed(li), Some(0.0), "the tell has just begun");
+        g.hide_check = Some((li, 0, tell * 0.5));
+        assert!((g.hide_check_elapsed(li).unwrap() - tell * 0.5).abs() < 1e-6);
+        assert_eq!(g.hide_check_elapsed(li + 1), None, "another locker is not checked");
     }
 
     #[test]
@@ -1560,7 +1595,27 @@ mod resident_floor_tests {
     fn resident_cap_limits_ticked_hunters() {
         let (mut g, content, _) = stacked();
         let cap = flight_edges::rules().resident_hunter_cap as usize;
-        let spots = open_spots(&g, -1, cap + 3, g.p.pos, 8.0);
+        // spots more than two separations apart: the level's separation moves every hunter it crowds, ticked or not, so
+        // a crowded set would move the un-ticked ones too (the railings close some cells that a plain pick would use)
+        let spots = {
+            let (fac, _) = g.level_parts(-1).expect("the level is held");
+            let mut picked: Vec<(f32, f32)> = vec![];
+            for c in fac.floor_cells() {
+                let p = c.center();
+                if fac.hunter_open(c)
+                    && fac.body_fits(p.0, p.1, HUNTER_RADIUS)
+                    && pdist(p, g.p.pos) >= 8.0
+                    && picked.iter().all(|q| pdist(*q, p) >= 2.0 * crate::hunters::director::SEPARATION)
+                {
+                    picked.push(p);
+                    if picked.len() == cap + 3 {
+                        break;
+                    }
+                }
+            }
+            assert_eq!(picked.len(), cap + 3, "the level has room for {} hunters apart", cap + 3);
+            picked
+        };
         for (i, s) in spots.iter().enumerate() {
             g.resident_hunters.list_mut(-1).push(slot(ready_to_wander(hunter(&content, 0, *s, -1, 1.0 - i as f32 * 0.01))));
         }

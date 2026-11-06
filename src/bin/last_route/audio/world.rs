@@ -6,8 +6,9 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use super::cues::music_box::Mood;
 use super::cues::positional::HUM;
-use super::cues::rules::{self, HunterStepClock};
+use super::cues::rules::{self, Bus, HunterStepClock};
 use super::cues::stride::{preferred_clip, HunterGait};
 use super::engine::with;
 
@@ -100,6 +101,36 @@ struct WorldState {
     was_active: HashMap<String, bool>,
     was_pursued: bool,
     clock: HunterStepClock,
+    /// The wound music box's mood last frame (None before the first frame of the floor).
+    box_mood: Option<Mood>,
+}
+
+/// The wound music box's sound (music_box.rs): its tune loops while the box plays, and the wind-down is one pre-rendered
+/// buffer played when the box enters its last stretch (the loops cannot change pitch). Not positional: the box is in the
+/// pack, so there is no source to hear it from. Called every frame with the seconds left (game/mod.rs `run_music_box`).
+/// Both are on the Master bus (the tune is an AudioStreamPlayer3D in the original), so Master reaches them live.
+pub fn music_box(left: f32) {
+    use super::cues::music_box as mb;
+    WORLD.with(|w| {
+        let w = &mut *w.borrow_mut();
+        let mood = mb::mood_for(left);
+        let changed = w.box_mood != Some(mood);
+        w.box_mood = Some(mood);
+        with(|e| {
+            if !e.ready {
+                return;
+            }
+            let tune = crate::game::music_box::rules().tune_gain;
+            match mood {
+                Mood::Playing => e.set_loop("music_box_tune", Bus::Master, Some((tune, tune)), mb::tune),
+                _ => e.set_loop("music_box_tune", Bus::Master, None, Vec::new),
+            }
+            if changed && mood == Mood::WindingDown {
+                let frames = mb::winddown(0.0, 0.0, left);
+                e.play_frames("music_box_winddown", Bus::Master, frames, (tune, tune), left);
+            }
+        });
+    });
 }
 
 thread_local! {
@@ -152,23 +183,17 @@ pub fn update(dt: f32, l: &Listener, hunters: &[HunterAudio]) {
                 let clip =
                     preferred_clip(h.chasing, !h.chasing && !h.idle, h.direct_visible, h.winded);
                 w.gaits[i].update(h.id, h.pos, dt, clip, h.active && !h.stunned && !h.in_vent);
-                // Glyra's hum: positional loop on Master while she is active and her box plays
+                // Glyra's hum: positional loop on Master while she is active and her box plays. The engine applies the
+                // Master gain (and re-applies it on every master change), so the base gains here are the positional ones.
                 if h.id == "glyra" {
                     let gains = (h.active && h.glyra_humming).then(|| {
-                        let (gl, gr) = HUM.gains_from(
-                            [h.pos.0, 0.0, h.pos.1],
-                            l.eye,
-                            l.right,
-                            l.up,
-                            l.forward,
-                        );
-                        (gl * e.master, gr * e.master)
+                        HUM.gains_from([h.pos.0, 0.0, h.pos.1], l.eye, l.right, l.up, l.forward)
                     });
-                    e.set_loop("glyra_hum", gains, super::cues::music_box::glyra_hum);
+                    e.set_loop("glyra_hum", Bus::Master, gains, super::cues::music_box::glyra_hum);
                 }
             }
             if !hunters.iter().any(|h| h.id == "glyra") {
-                e.set_loop("glyra_hum", None, Vec::new);
+                e.set_loop("glyra_hum", Bus::Master, None, Vec::new);
             }
             if pursued && !w.was_pursued {
                 e.play(&rules::chase_start());

@@ -50,7 +50,7 @@ Catwalk links use the Ladder `Flight` footprint for cells only: the step cell an
 
 ## Deck height in the Rust port
 
-The Rust decks stand 2.5 m over level 0 (`data/regions/catwalk.json` `height`), half our 5 m storey. A deck must stay on
+The Rust decks stand 2.5 m over level 0 (`src/bin/last_route/data/regions/catwalk.json` `height`), half our 5 m storey. A deck must stay on
 level 0: `level_from_height` flips at the storey midpoint (2.5 m) plus a margin, so a deck at 4 m would read as level 1 and
 swap a deck body into another hunter list. The test `deck_height_stays_level_zero` (`hunters/brain.rs`) holds
 `level_at(height + 0.1, 0) == 0`.

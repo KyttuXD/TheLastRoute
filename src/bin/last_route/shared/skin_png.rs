@@ -117,7 +117,7 @@ mod tests {
         // 64 MB of zeros compress to about 64 KB; the header promises 16 KB, so inflating stops right after it.
         let bomb = zlib_of(&vec![0u8; 64 * 1024 * 1024]);
         let png = build(&[(b"IHDR", ihdr(64, 64, 8, 6, 0)), (b"IDAT", bomb), (b"IEND", vec![])]);
-        let start = std::time::Instant::now();
+        let start = crate::shared::clock::Instant::now();
         if png.len() <= LIMITS.max_bytes {
             assert!(check_png(&png, LIMITS, Shape::Remote).is_err());
         }

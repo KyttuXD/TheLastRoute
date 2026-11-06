@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const JSON_DIRS = ['src/bin/last_route/data', 'src/bin/last_route/assets/hunters', 'data/regions'];
+const JSON_DIRS = ['src/bin/last_route/data', 'src/bin/last_route/assets/hunters', 'src/bin/last_route/data/regions'];
 const SKIP_DIRS = new Set(['target', 'node_modules', '.git', 'quad-snd']);
 const problems = [];
 const bad = (kind, file, msg) => problems.push(`${kind}: ${path.relative(root, file).replace(/\\/g, '/')}${msg ? ' - ' + msg : ''}`);

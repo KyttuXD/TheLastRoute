@@ -9,12 +9,16 @@ pub mod flight_edges;
 pub mod gimmicks;
 pub mod navigation;
 pub mod noise_events;
+pub mod path_scheduler;
 pub mod peek;
 pub mod residency;
 pub mod sabotage;
 pub mod secret_creatures;
 pub mod target_filter;
 pub mod water;
+
+#[cfg(test)]
+mod bulk_bench;
 
 use crate::config::{tier_weights_for, Difficulty};
 use crate::content::Content;

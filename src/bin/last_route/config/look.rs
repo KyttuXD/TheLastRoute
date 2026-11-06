@@ -29,6 +29,8 @@ pub struct Cfg {
     pub mouse_multiplier_macos: f32,
     pub mouse_multiplier_windows: f32,
     pub mouse_multiplier_other: f32,
+    /// The browser build (wasm32): its own feel, since the other platforms' values made the web look too slow.
+    pub mouse_multiplier_web: f32,
     /// Width of the eased zone at the edge of the locker window's look cone.
     pub hide_soft_zone_deg: f32,
     /// Free horizontal look around the rails' direction while climbing, and the eased zone at its edge.
@@ -83,6 +85,7 @@ impl Cfg {
             mouse_multiplier_macos: positive(&v, "mouse_multiplier_macos")?,
             mouse_multiplier_windows: positive(&v, "mouse_multiplier_windows")?,
             mouse_multiplier_other: positive(&v, "mouse_multiplier_other")?,
+            mouse_multiplier_web: positive(&v, "mouse_multiplier_web")?,
             hide_soft_zone_deg: positive(&v, "hide_soft_zone_deg")?,
             ladder_free_yaw_deg: positive(&v, "ladder_free_yaw_deg")?,
             ladder_soft_zone_deg: positive(&v, "ladder_soft_zone_deg")?,
@@ -101,7 +104,9 @@ impl Cfg {
 
     /// The multiplier for the platform this build runs on.
     pub fn multiplier(&self) -> f32 {
-        if cfg!(target_os = "macos") {
+        if cfg!(target_arch = "wasm32") {
+            self.mouse_multiplier_web
+        } else if cfg!(target_os = "macos") {
             self.mouse_multiplier_macos
         } else if cfg!(target_os = "windows") {
             self.mouse_multiplier_windows

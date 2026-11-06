@@ -53,8 +53,21 @@ pub struct BackendConfig {
 
 impl Default for BackendConfig {
     fn default() -> Self {
-        BackendConfig { base_url: PRIMARY_BASE_URL.into(), test_server_active: false, offline: false, profile: String::new() }
+        BackendConfig { base_url: default_base_url(), test_server_active: false, offline: false, profile: String::new() }
     }
+}
+
+/// The directory the build talks to. Native: the primary origin. The browser build has no fixed origin of its own: the
+/// page serves the directory from the same origin (or `window.LR_API_BASE` when the page names one), so `/api/...` and
+/// the relay at `/api/ws` are the page's own, as in the Godot web build.
+#[cfg(not(target_arch = "wasm32"))]
+fn default_base_url() -> String {
+    PRIMARY_BASE_URL.into()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn default_base_url() -> String {
+    super::web_bridge::api_base()
 }
 
 /// What `--backend=` (or a constructor) asked for and whether it was accepted.

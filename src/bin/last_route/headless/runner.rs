@@ -13,7 +13,7 @@ use super::sim::{parse_difficulty, parse_mode, r2, Mode, Sim};
 use super::Args;
 use serde_json::{json, Value};
 use std::io::Write;
-use std::time::Instant;
+use crate::shared::clock::Instant;
 
 pub const SCENARIOS: &[&str] = &[
     "survive",

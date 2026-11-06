@@ -448,7 +448,8 @@ fn start_fetch(s: &mut SkinUi, label: &str, job: impl FnOnce() -> Result<ValidSk
         return;
     }
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    crate::shared::task::detach(move || {
+
         let _ = tx.send(job());
     });
     s.fetch = Some(rx);
@@ -1246,7 +1247,7 @@ mod tests {
 
     #[test]
     fn picking_a_file_names_it_and_a_bad_file_gives_its_real_reason() {
-        let dir = std::env::temp_dir().join(format!("lr_skin_tab_pick_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lr_skin_tab_pick_{}", crate::shared::task::process_id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let good = crate::shared::skins::encode_png(&vec![200u8; 64 * 64 * 4], 64, 64);

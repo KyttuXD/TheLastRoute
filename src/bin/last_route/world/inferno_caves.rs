@@ -1,5 +1,5 @@
 //! Inferno cave layout rules: winding passages, chambers and lava channels, read from
-//! `data/regions/inferno_caves.json` (`layout`). Code holds only the behaviour; every count, size and
+//! `src/bin/last_route/data/regions/inferno_caves.json` (`layout`). Code holds only the behaviour; every count, size and
 //! chance is data. Pure and deterministic from the chunk's seed text. Lava cells are open but not
 //! walkable; bridges keep every chamber reachable. Spawn and loot cells come from the same file.
 //!
@@ -11,7 +11,7 @@ use super::Cell;
 use serde_json::Value;
 
 const N: usize = CHUNK as usize;
-const FILE: &str = include_str!("../../../../data/regions/inferno_caves.json");
+const FILE: &str = include_str!("../data/regions/inferno_caves.json");
 
 /// Inclusive integer range from a two-number JSON array.
 #[derive(Clone, Copy, Debug, PartialEq)]

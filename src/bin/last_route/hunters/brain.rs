@@ -6,11 +6,13 @@
 use super::decks::{DeckRules, HunterDeck};
 use super::flight_edges::{self, EdgePermit, EdgeWalk, Hop, Node, StackNav};
 use super::gimmicks::{Ctx, Event, Gimmick};
+use super::path_scheduler::{self, PlanRequest, Route};
 use super::peek::{self, Corner, Style};
 use crate::config::*;
 use crate::content::hunters::HunterDef;
 use crate::world::rng::Rng;
 use crate::world::{Cell, Facility};
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use super::water::{HunterWater, WaterField, WaterPlan, WaterRules};
@@ -237,6 +239,49 @@ impl Ord for OpenCell {
     }
 }
 
+/// Whether a hunter's body (`HUNTER_RADIUS`) can stand at the centre of each cell, at the cell's own walk height, for one
+/// planning call. The hunter grid is built for the agent radius (`DEFAULT_AGENT_RADIUS`, thinner than the hunter), so a
+/// cell it calls open can still be too tight for the body: a route through it strands the hunter at the wall.
+/// Memoised per call, since one search asks about the same cell from several neighbours.
+pub(super) struct Standable<'a> {
+    fac: &'a Facility,
+    /// 0 not asked yet, 1 the body fits, 2 it does not (one per grid cell).
+    known: RefCell<Vec<u8>>,
+}
+
+impl<'a> Standable<'a> {
+    pub(super) fn new(fac: &'a Facility) -> Self {
+        let cells = (fac.cols.max(0) * fac.rows.max(0)) as usize;
+        Standable { fac, known: RefCell::new(vec![0; cells]) }
+    }
+
+    pub(super) fn can_stand(&self, c: Cell) -> bool {
+        let fac = self.fac;
+        if c.x < 0 || c.y < 0 || c.x >= fac.cols || c.y >= fac.rows {
+            return false;
+        }
+        let i = (c.y * fac.cols + c.x) as usize;
+        match self.known.borrow()[i] {
+            1 => return true,
+            2 => return false,
+            _ => {}
+        }
+        let fits = fac.body_fits_at(c.x as f32 + 0.5, c.y as f32 + 0.5, HUNTER_RADIUS, fac.height_at(c));
+        self.known.borrow_mut()[i] = if fits { 1 } else { 2 };
+        fits
+    }
+}
+
+/// Whether the grid planner may stand a hunter on `c` for a walk at `layer`: a hunter cell (or a gate channel) at that
+/// height that the hunter's body fits, and not a cell the water rules close. Shared by the A* (`plan_route_wet`) and the
+/// goal fields of path_scheduler.rs, so both plan over the same cells.
+pub(super) fn walk_open(stand: &Standable, c: Cell, layer: f32, gates: &[Cell], water: Option<&WaterPlan>) -> bool {
+    let fac = stand.fac;
+    (gates.contains(&c) || (fac.nav_open(c) && stand.can_stand(c)))
+        && (fac.height_at(c) - layer).abs() <= DECK_EPS
+        && water.map_or(Some(1.0), |w| w.step_factor((c.x, c.y))).is_some()
+}
+
 /// A route over the hunter grid from the cell under `from` to `to`, as `Facility::find_path` plans it, except that the
 /// cells in `avoid` (ones a step has just been blocked by) are left out. A closed start cell (the body stands
 /// off-centre in it) starts from the nearest open cell beside it.
@@ -248,7 +293,7 @@ fn plan_route(fac: &Facility, from: (f32, f32), to: Cell, avoid: &[(Cell, f32)],
 /// not enter (deep water for a hunter that cannot or will not swim) is closed like a wall. The route stays on one
 /// walk surface, the one under `from` (a deck is walked on deck cells, the floor on floor cells): a rail is simply
 /// where the height changes, and the only ways across are the catwalk edges (`StackNav`, a hop).
-fn plan_route_wet(
+pub(super) fn plan_route_wet(
     fac: &Facility,
     from: (f32, f32),
     to: Cell,
@@ -259,12 +304,8 @@ fn plan_route_wet(
     let avoided = |c: Cell| avoid.iter().any(|(a, _)| *a == c);
     let wet = |c: Cell| water.map_or(Some(1.0), |w| w.step_factor((c.x, c.y)));
     let layer = fac.height_at(cell_of(from));
-    let open = |c: Cell| {
-        (fac.nav_open(c) || gates.contains(&c))
-            && (fac.height_at(c) - layer).abs() <= DECK_EPS
-            && !avoided(c)
-            && wet(c).is_some()
-    };
+    let stand = Standable::new(fac);
+    let open = |c: Cell| walk_open(&stand, c, layer, gates, water) && !avoided(c);
     let here = cell_of(from);
     let start = if open(here) {
         here
@@ -469,6 +510,8 @@ const DECK_EPS: f32 = 0.01;
 const WAYPOINT_DISTANCE: f32 = 0.18;
 /// How long a cell a step was blocked by stays out of a hunter's route.
 const BLOCKED_AVOID_SECONDS: f32 = 2.0;
+/// How far off the middle of its cell (m) a body may stand before it walks to the middle to get past a corner.
+const CENTRE_EPS: f32 = 0.05;
 const BEAM_ATTENTION_TIME: f32 = 0.35;
 const BEAM_ATTENTION_DECAY: f32 = 1.6;
 const BEAM_ATTENTION_RANGE: f32 = 12.0;
@@ -1123,7 +1166,12 @@ impl Brain {
                     // Another layer of this floor (a deck): heard when a catwalk edge this hunter may take leads there.
                     hears = self.hop_to(fac, target.pos, self.level).is_some();
                 } else {
-                    let p = plan_route(fac, self.pos, cell_of(target.pos), &self.avoid, &self.gate_floor);
+                    let priority = self.plan_priority(target.pos);
+                    let Some(p) = self.grid_route(fac, cell_of(target.pos), priority, false) else {
+                        // the route search is queued for the next frame: hear the runner then (the sense clock is due again)
+                        self.sense_timer = 0.0;
+                        return;
+                    };
                     hears = !p.is_empty() && p.len() <= hearing_limit.ceil() as usize;
                     if hears && self.state == State::Chase {
                         self.path = p;
@@ -1475,6 +1523,31 @@ impl Brain {
         self.path_goal = None;
     }
 
+    /// The grid route from the body to `to`, through the route scheduler (path_scheduler.rs). `water` plans it with this
+    /// hunter's water rules (the walk) or dry (the hearing and search checks). None: the frame's search budget is spent
+    /// and the answer is queued for the next frame.
+    fn grid_route(&self, fac: &Facility, to: Cell, priority: u64, water: bool) -> Option<Vec<Cell>> {
+        let water = water.then_some((&self.water, &self.water_rules, self.state == State::Chase));
+        let request = PlanRequest { from: self.pos, to, avoid: &self.avoid, gates: &self.gate_floor, water, priority };
+        match path_scheduler::plan(fac, request) {
+            Route::Ready(path) => Some(path),
+            Route::Deferred => None,
+        }
+    }
+
+    /// The order a queued route request is answered in when the budget is short: chasing hunters first, then by how far
+    /// the goal is (in centimetres), so the nearest work is done first.
+    fn plan_priority(&self, goal: (f32, f32)) -> u64 {
+        let class: u64 = match self.state {
+            State::Chase => 0,
+            State::Investigate => 1,
+            State::Search => 2,
+            State::Wander => 3,
+            _ => 4,
+        };
+        (class << 40) | ((dist(self.pos, goal) * 100.0).clamp(0.0, 1e12) as u64)
+    }
+
     fn pursue(&mut self, goal: (f32, f32), speed: f32, dt: f32, fac: &Facility, prof: &Profile) {
         let mut target_cell = cell_of(goal);
         let goal_level = self.goal_level();
@@ -1507,6 +1580,7 @@ impl Brain {
             self.path_timer = 0.0;
         }
         let mut no_hop = false;
+        let mut deferred = false;
         if self.path_timer <= 0.0 || self.path.is_empty() || self.path_goal.is_none() {
             if cross {
                 self.hop = self.hop_to(fac, goal, goal_level);
@@ -1515,14 +1589,19 @@ impl Brain {
             if let Some(h) = self.hop.as_ref().filter(|_| cross) {
                 target_cell = h.entrance;
             }
-            let plan = WaterPlan { field: &self.water, rules: &self.water_rules, chasing: self.state == State::Chase };
-            self.path = if no_hop {
-                vec![]
-            } else {
-                plan_route_wet(fac, self.pos, target_cell, &self.avoid, &self.gate_floor, Some(&plan))
-            };
-            self.path_timer = interval;
-            self.path_goal = Some(target_cell);
+            let planned = if no_hop { Some(vec![]) } else { self.grid_route(fac, target_cell, self.plan_priority(goal), true) };
+            match planned {
+                Some(path) => {
+                    self.path = path;
+                    self.path_timer = interval;
+                    self.path_goal = Some(target_cell);
+                }
+                None => {
+                    // the frame's search budget is spent: walk the route there is and ask again next frame
+                    deferred = true;
+                    self.path_timer = 0.0;
+                }
+            }
         } else if cross {
             match self.hop.as_ref() {
                 Some(h) => target_cell = h.entrance,
@@ -1548,6 +1627,10 @@ impl Brain {
             self.unreachable = 0.0;
             self.blocked_time = 0.0;
             self.clear_path();
+            return;
+        }
+        if deferred && self.path.is_empty() {
+            // nothing to walk yet and the route is only late, not missing: this is not unreachable
             return;
         }
         if self.path.is_empty() && (no_hop || cell_of(self.pos) != target_cell) {
@@ -1608,6 +1691,15 @@ impl Brain {
             // The step into the next cell is blocked: do not slide along the wall. Keep that cell out of the route for
             // a moment and plan again from where the body stands. (Off-centre in its own cell the body walks to the
             // centre, as before; the goal's own cell is never kept out, the body closes on it as far as it can.)
+            // A body that came round a corner can stand off-centre, its edge over the corner of the wall it has to turn
+            // past: then the step is blocked though the cell is open. It walks to the middle of its own cell first (the
+            // way a body turns a corner), and only a block it cannot get round by that keeps a cell out of the route.
+            let own = cell_of(self.pos).center();
+            if dist(self.pos, own) > CENTRE_EPS && sweep_clear(fac, &self.gate_floor, self.pos, own, self.layer()) {
+                self.blocked_time = 0.0;
+                self.step_toward(own, travel, fac, dt);
+                return;
+            }
             self.blocked_time += dt;
             if self.blocked_time >= self.give_up_after {
                 self.give_up_goal(fac, prof);
@@ -1855,7 +1947,9 @@ impl Brain {
         if self.goal_on_other_layer(fac, p) {
             self.hop_to(fac, p, self.level).is_some()
         } else {
-            !plan_route(fac, self.pos, cell_of(p), &self.avoid, &self.gate_floor).is_empty()
+            // a search the budget deferred counts as reachable until it is answered (a walk that cannot get there gives up)
+            let priority = self.plan_priority(p);
+            self.grid_route(fac, cell_of(p), priority, false).is_none_or(|route| !route.is_empty())
         }
     }
 
@@ -2049,6 +2143,7 @@ mod tests {
             heater_thawed: true,
             diff: Difficulty::Standard,
             music_box_left: 0.0,
+            music_boxes: &[],
             exposure: 0.0,
         };
         let dt = 1.0 / 60.0;
@@ -2170,6 +2265,7 @@ mod tests {
             heater_thawed: true,
             diff: Difficulty::Standard,
             music_box_left: 0.0,
+            music_boxes: &[],
             exposure: 0.0,
         }
     }
@@ -2532,6 +2628,30 @@ mod tests {
             }
         }
         (false, slide)
+    }
+
+    /// A planned route crosses only cells the hunter's body fits: the grid is built for the thinner agent radius, and a
+    /// route through a cell the body cannot stand in strands the hunter at the wall (the NAV-2 floor's doorway).
+    #[test]
+    fn a_planned_route_only_crosses_cells_the_hunter_body_fits() {
+        let cat = crate::world::catalog::Catalog::load();
+        let fac = Facility::generate("NAV-2", &Options::default(), &cat);
+        let stand = Standable::new(&fac);
+        let cells = fac.floor_cells();
+        let mut routes = 0;
+        for a in cells.iter().step_by(23) {
+            for b in cells.iter().step_by(31) {
+                let route = plan_route_wet(&fac, a.center(), *b, &[], &[], None);
+                if route.len() < 2 {
+                    continue;
+                }
+                routes += 1;
+                for c in &route {
+                    assert!(stand.can_stand(*c), "{a:?} -> {b:?}: the route enters {c:?}, which the hunter's body does not fit");
+                }
+            }
+        }
+        assert!(routes >= 20, "the test floor has routes to check: {routes}");
     }
 }
 
@@ -3042,6 +3162,7 @@ mod wiring_tests {
             heater_thawed: true,
             diff: Difficulty::Standard,
             music_box_left: 0.0,
+            music_boxes: &[],
             exposure: 0.0,
         }
     }
@@ -3788,6 +3909,7 @@ mod edge_tests {
             heater_thawed: true,
             diff: Difficulty::Standard,
             music_box_left: 0.0,
+            music_boxes: &[],
             exposure: 0.0,
         }
     }
@@ -4072,6 +4194,7 @@ mod inferno_floor_tests {
             heater_thawed: true,
             diff: Difficulty::Standard,
             music_box_left: 0.0,
+            music_boxes: &[],
             exposure: 0.0,
         };
         let prof = Difficulty::Standard.profile();
@@ -4102,5 +4225,109 @@ mod inferno_floor_tests {
         assert!(walked > 20.0, "the hunter walked {walked} cells");
         assert!(hi - lo > 0.05, "its route crossed no height ({lo}..{hi})");
         assert_eq!(b.level, INFERNO_LEVEL);
+    }
+}
+
+#[cfg(test)]
+mod route_budget_tests {
+    //! The route scheduler's budget seen from a brain: a deferred search keeps the route the hunter has, and a crowd
+    //! under a tight budget still reaches the runner.
+    use super::*;
+    use crate::config::Difficulty;
+    use crate::world::catalog::Catalog;
+    use crate::world::facility::Options;
+
+    fn aki() -> HunterDef {
+        let v: serde_json::Value = serde_json::from_str(include_str!("../data/hunters/aki.json")).unwrap();
+        crate::content::hunters::parse(&v, None, "").unwrap()
+    }
+
+    fn facility() -> Facility {
+        Facility::generate("BUDGET-1", &Options::default(), &Catalog::load())
+    }
+
+    #[test]
+    fn a_hunter_whose_search_is_deferred_keeps_walking_the_route_it_has() {
+        path_scheduler::reset_thread();
+        path_scheduler::set_searches_per_frame(Some(0));
+        let prof = Difficulty::Standard.profile();
+        let fac = facility();
+        let cells = fac.floor_cells();
+        let (a, b, route) = cells
+            .iter()
+            .step_by(13)
+            .flat_map(|a| cells.iter().rev().step_by(29).map(move |b| (*a, *b)))
+            .find_map(|(a, b)| {
+                let p = fac.find_path(a, b);
+                (p.len() >= 30).then_some((a, b, p))
+            })
+            .expect("the test floor has a long route");
+        let mut h = Brain::new(aki(), a.center(), "BUDGET-WALK", Difficulty::Standard);
+        h.active = true;
+        h.state = State::Chase;
+        h.last_known = Some(b.center());
+        h.path = route;
+        h.path_goal = Some(b);
+        h.path_timer = 0.0;
+        let speed = h.current_speed(1, 0, &prof, 1.0);
+        let start = h.pos;
+        for _ in 0..30 {
+            path_scheduler::begin_frame(&fac);
+            h.pursue(b.center(), speed, 1.0 / 60.0, &fac, &prof);
+        }
+        assert!(path_scheduler::stats().deferred >= 1, "the search was asked for and deferred");
+        assert!(!h.path.is_empty(), "the route it has is kept while the new one waits");
+        assert!(dist(start, h.pos) > 1.0, "and it walks it: moved {:.2} m", dist(start, h.pos));
+        assert_eq!(h.unreachable, 0.0, "a route that is late is not a route that is missing");
+        path_scheduler::reset_thread();
+    }
+
+    #[test]
+    fn hunters_still_reach_the_runner_under_a_tight_budget() {
+        path_scheduler::reset_thread();
+        path_scheduler::set_searches_per_frame(Some(2));
+        let prof = Difficulty::Standard.profile();
+        let fac = facility();
+        let goal = fac.floor_cells()[fac.floor_cells().len() / 2];
+        let starts: Vec<Cell> = fac
+            .floor_cells()
+            .into_iter()
+            .step_by(17)
+            .filter(|c| {
+                let d = dist(c.center(), goal.center());
+                (4.0..14.0).contains(&d) && fac.find_path(*c, goal).len() >= 6
+            })
+            .take(8)
+            .collect();
+        assert!(starts.len() >= 4, "the test floor has hunters' starts round the runner: {}", starts.len());
+        let mut hunters: Vec<Brain> = starts
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let mut h = Brain::new(aki(), s.center(), &format!("BUDGET-{i}"), Difficulty::Standard);
+                h.active = true;
+                h.state = State::Chase;
+                h.last_known = Some(goal.center());
+                h
+            })
+            .collect();
+        let speed = hunters[0].current_speed(1, 0, &prof, 1.0);
+        let mut reached = vec![false; hunters.len()];
+        for _ in 0..(60 * 40) {
+            path_scheduler::begin_frame(&fac);
+            for (i, h) in hunters.iter_mut().enumerate() {
+                if !reached[i] {
+                    h.pursue(goal.center(), speed, 1.0 / 60.0, &fac, &prof);
+                    reached[i] = dist(h.pos, goal.center()) <= 1.0;
+                }
+            }
+            if reached.iter().all(|r| *r) {
+                break;
+            }
+        }
+        let deferred = path_scheduler::stats().deferred;
+        path_scheduler::reset_thread();
+        assert!(deferred > 0, "the budget was tight: some searches waited for a frame");
+        assert!(reached.iter().all(|r| *r), "every hunter reached the runner: {reached:?} of {} starts", starts.len());
     }
 }

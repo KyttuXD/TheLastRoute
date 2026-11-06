@@ -29,8 +29,8 @@ pub const STAIRWELL_LAMP_RADIUS: f32 = 1.5;
 #[derive(Default)]
 pub struct NeighbourWorlds {
     pub items: Vec<WorldMeshes>,
-    /// The window centre each item was last built for, by level.
-    built: HashMap<i32, (i32, i32)>,
+    /// The window centre and the eye's nearest opening each item was last built for, by level.
+    built: HashMap<i32, ((i32, i32), Option<usize>)>,
 }
 
 /// Whether a neighbour is worth building now: the eye is within `reach` metres (in the floor plane) of an opening's
@@ -79,7 +79,22 @@ pub fn neighbour_scope(
         radius: table.neighbour_cull_radius,
         max_parts: table.neighbour_max_parts,
         chunks_per_frame: neighbour_parts_per_frame(eye, own_openings, reach, on_flight, table),
+        eye: (eye.0, eye.2),
     }
+}
+
+/// The index of the opening whose centre is nearest the eye (in the floor plane), the key a neighbour's kept parts are
+/// ranked by: the cap keeps the shafts round the eye, so the set is rebuilt when the eye comes to another opening.
+fn nearest_opening(eye: (f32, f32, f32), openings: &[Opening]) -> Option<usize> {
+    openings
+        .iter()
+        .enumerate()
+        .map(|(i, o)| {
+            let (dx, dz) = (o.centre.0 - eye.0, o.centre.1 - eye.2);
+            (i, dx * dx + dz * dz)
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(i, _)| i)
 }
 
 /// Whether the eye is between the floors (below the active floor, or above a standing eye on a way up).
@@ -169,18 +184,22 @@ impl NeighbourWorlds {
                     self.items.len() - 1
                 }
             };
+            let scope = neighbour_scope(dy, world_mesh::openings(&r.fac), &own_openings, eye, reach, on_flight, table);
+            // what the kept parts were ranked for: the window centre and the opening nearest the eye
+            let key = (r.center, nearest_opening(eye, &scope.openings));
             // an item that arrived by a relabel is a whole floor already built for the shared centre
             if !self.built.contains_key(&r.level) && !self.items[idx].meshes.is_empty() {
-                self.built.insert(r.level, r.center);
+                self.built.insert(r.level, key);
             }
             let m = &mut self.items[idx];
-            let stale = self.built.get(&r.level) != Some(&r.center) || m.has_pending();
-            let scope = neighbour_scope(dy, world_mesh::openings(&r.fac), &own_openings, eye, reach, on_flight, table);
-            if stale && wants_neighbour(eye, &scope.openings, reach, on_flight) {
+            let stale = self.built.get(&r.level) != Some(&key) || m.has_pending();
+            // built out to the cull radius (not the residency reach), so a hatch seen from across its floor is drawn
+            // with its shaft; the draw side uses the same radius (scene.rs)
+            if stale && wants_neighbour(eye, &scope.openings, table.neighbour_cull_radius, on_flight) {
                 m.level = r.level;
                 m.dy = dy;
                 m.rebuild_neighbour(&r.fac, ChunkFrame { level: r.level, center: r.center }, &scope, assets, content);
-                self.built.insert(r.level, r.center);
+                self.built.insert(r.level, key);
             }
         }
     }

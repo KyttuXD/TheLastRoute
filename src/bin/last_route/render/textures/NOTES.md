@@ -2,7 +2,7 @@
 
 Source (read-only original): `game/look/ref_textures.gd` (`RefTextures`), chosen by `game/look/ref_look.gd`,
 `game/look/floor_sets.gd`, `game/look/theme_data.gd`, `data/themes/regions/*.json`, `data/themes/rooms/*.json`,
-`data/regions/{hospital,mall}.json`, and drawn by `game/look/ref_surface_mesh.gd` +
+`src/bin/last_route/data/regions/{hospital,mall}.json`, and drawn by `game/look/ref_surface_mesh.gd` +
 `game/world/streaming/streamed_facility_view_3d.gd`.
 
 Not wired in yet: add `pub mod textures;` to `src/render/mod.rs` (this folder was written without touching other files).

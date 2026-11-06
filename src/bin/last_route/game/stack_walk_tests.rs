@@ -428,7 +428,7 @@ fn primed(seed: &str, level: i32, dir: i32, at: (i32, i32), content: &Content, c
 /// ends sit on the two floors, and the label flips exactly once per crossing.
 #[test]
 fn every_flight_in_the_golden_seeds_walks_up_and_down_with_y_continuity() {
-    let started = std::time::Instant::now();
+    let started = crate::shared::clock::Instant::now();
     let (content, catalog) = (Content::load(), Catalog::load());
     let max_h = crate::config::PLAYER_WALK_SPEED * FRAME * 1.5 + 1e-3;
     let max_dy = crate::config::PLAYER_WALK_SPEED * FRAME + SPEED_SLACK_Y;

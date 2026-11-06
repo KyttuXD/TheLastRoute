@@ -142,8 +142,8 @@ fn stamp_now() -> Stamp {
 /// The UTC time: the standard library has no time zone, and this build runs on Windows.
 #[cfg(not(windows))]
 fn stamp_now() -> Stamp {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let secs = crate::shared::clock::SystemTime::now()
+        .duration_since(crate::shared::clock::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     stamp_from_unix(secs)

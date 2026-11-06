@@ -17,6 +17,8 @@
 //! * [`relay`]    the LRR1 relay wrapper: host register / HOST_ALIVE keep-alive / guest join.
 //! * [`protocol`] typed versions of every message the Godot co-op code syncs, and their encoding.
 //! * [`session`]  a Rust-to-Rust co-op transport (reliable + unreliable channels) over the relay.
+//! * [`room_link`] the transport seam: [`relay`] (UDP, native) or [`ws_link`] (WebSocket `/api/ws`, browser build).
+//! * [`web_bridge`] the browser build's page bridge (WebSocket and synchronous HTTP, dist/web/index.html).
 //!
 //! INTEROP NOTE: Godot clients exchange ENet datagrams carrying Godot SceneMultiplayer RPC
 //! packets (Variant-encoded arguments, node-path caches, RPC ids by sorted method name). Talking
@@ -44,13 +46,16 @@ pub mod hunter_events;
 pub mod protocol;
 pub mod public_route;
 pub mod relay;
+pub mod room_link;
 pub mod runner_figure;
 pub mod saves;
 pub mod session;
 pub mod store;
 pub mod valve_events;
+pub mod web_bridge;
 pub mod wiring;
 pub mod world_sync;
+pub mod ws_link;
 
 #[cfg(test)]
 mod tests;
@@ -192,7 +197,7 @@ pub fn random_bytes(n: usize) -> Vec<u8> {
     while out.len() < n {
         let mut h = RandomState::new().build_hasher();
         h.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
-        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let t = crate::shared::clock::SystemTime::now().duration_since(crate::shared::clock::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         h.write_u128(t);
         out.extend_from_slice(&h.finish().to_le_bytes());
     }
@@ -250,7 +255,7 @@ pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
 
 /// Seconds since the Unix epoch (`Time.get_unix_time_from_system()`).
 pub fn unix_now() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    crate::shared::clock::SystemTime::now().duration_since(crate::shared::clock::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
 #[cfg(test)]

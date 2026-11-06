@@ -14,8 +14,10 @@
 //!   becomes `Fixtures.coins` (each claimed coin is worth `COIN_PICKUP_VALUE`, 2, Godot
 //!   `_sync_stream_progress` 5995-6006); tool, aid and backpack become `Facility.pickups` when the
 //!   `Pickup` enum can hold them, and `Game::floor_pickups` takes the ones the `Item` enum can hold.
+//!   Each music box is a pickup of its own (`ChunkLayout.music_pickups`, kind "music_box"), listed after the
+//!   layout's pickups: a collectable, not a fixture (game/music_box.rs).
 //! - `fixtures` of kind hiding_spot (without a prop) become `Facility.hiding`; vent fixtures become
-//!   `Fixtures.vents`; the first music box becomes `Fixtures.music_box`.
+//!   `Fixtures.vents`.
 //! - The spawn is the chunk centre cell (22,22), Godot's spawn cell (SRG:1432), which is open on
 //!   every layout (the centre cross is always carved).
 //!
@@ -45,6 +47,7 @@ use crate::hunters::navigation;
 use crate::render::door;
 use crate::shared::safe_room::SafeRoom;
 use crate::world::catalog::Catalog;
+use crate::world::door_clearance;
 use crate::world::facility::{Cell, Facility, Hiding, Options, Pickup, Prop, Room, Stair};
 use crate::world::flight::{well_footprint, Flight};
 use crate::world::flight_links;
@@ -125,7 +128,7 @@ pub fn from_layout(seed: &str, k: ChunkKey, lay: &ChunkLayout, cat: &Catalog) ->
     f.batteries.clear();
     f.pickups.clear();
     let mut coins = Vec::new();
-    for p in &lay.pickups {
+    for p in collectables(lay) {
         let cell = Cell::new(p.cell.x, p.cell.y);
         match slot_of(p.kind, p.item) {
             Slot::Relay => f.relays.push(cell),
@@ -136,8 +139,34 @@ pub fn from_layout(seed: &str, k: ChunkKey, lay: &ChunkLayout, cat: &Catalog) ->
         }
     }
 
-    f.hiding = lay
-        .fixtures
+    // Door clearance (world::door_clearance): no locker, vent or hide spot in a door's way. The layout's wall fixtures
+    // that stand in a doorway, in front of or behind a door, or between two doors move to the nearest legal cell (or are
+    // dropped), and the props of those kinds in a door's clearance go. The layout itself is the Godot port and stays.
+    let door_clear = door_clearance::Clearance::of(&f);
+    let wall_fixtures = {
+        let avoid: Vec<V2> = collectables(lay)
+            .map(|p| p.cell)
+            .chain(lay.hunter_spawns.iter().map(|h| h.cell))
+            .collect();
+        let blocked = |kind: &str, cell: V2| {
+            let kind = if kind == "vent" { door_clearance::Kind::Vent } else { door_clearance::Kind::Locker };
+            door_clear.blocks(kind, Cell::new(cell.x, cell.y))
+        };
+        super::fixtures::clear_of_doors(
+            &lay.fixtures,
+            &lay.grid,
+            &lay.rooms,
+            &[],
+            lay.region_props.as_deref().unwrap_or(&[]),
+            is_safe_chunk(seed, k.cx, k.cy),
+            &avoid,
+            door_clearance::rules().relocate_radius,
+            &blocked,
+        )
+    };
+    door_clearance::drop_blocked_by(&mut f, &door_clear);
+
+    f.hiding = wall_fixtures
         .iter()
         .filter(|x| x.kind == "hiding_spot" && x.hide.is_none())
         .map(|x| Hiding {
@@ -149,9 +178,7 @@ pub fn from_layout(seed: &str, k: ChunkKey, lay: &ChunkLayout, cat: &Catalog) ->
 
     let mut fixtures = Fixtures {
         heater: None,
-        music_box: lay.music_boxes.first().map(|m| Cell::new(m.cell.x, m.cell.y)),
-        vents: lay
-            .fixtures
+        vents: wall_fixtures
             .iter()
             .filter(|x| x.kind == "vent")
             .map(|x| Cell::new(x.cell.x, x.cell.y))
@@ -250,8 +277,16 @@ fn live_pickup(item: &str) -> Option<Pickup> {
         "backpack_small" => Pickup::BackpackSmall,
         "backpack_medium" => Pickup::BackpackMedium,
         "backpack_large" => Pickup::BackpackLarge,
+        "music_box" => Pickup::MusicBox,
         _ => return None,
     })
+}
+
+/// A level-0 chunk's pickups in the order the live window takes them: the layout's own pickups, then its music boxes
+/// (`ChunkLayout.music_pickups`). The live pickup lists, the claim ids (`layout_pickups`, `window_ids`) and the
+/// `from_layout` pass all walk this one order, so an id lines up with its entry.
+fn collectables(lay: &ChunkLayout) -> impl Iterator<Item = &crate::world::route::pickups::Pickup> {
+    lay.pickups.iter().chain(lay.music_pickups.iter())
 }
 
 /// Where a layout pickup lands in the live window. Shared by `from_layout` and `window_ids`, so the
@@ -291,8 +326,7 @@ pub fn layout_pickups(seed: &str, k: ChunkKey) -> Option<Vec<LayoutPickup>> {
     }
     let lay = layout::chunk_layout(seed, Coord::new(k.cx, 0, k.cy))?;
     Some(
-        lay.pickups
-            .iter()
+        collectables(&lay)
             .map(|p| LayoutPickup {
                 id: p.id.clone(),
                 kind: p.kind,
@@ -373,6 +407,8 @@ pub fn window_ids(
                     Slot::Relay => out.relays.push(p.id.clone()),
                     Slot::Battery => out.batteries.push(p.id.clone()),
                     Slot::Coin => out.coins.push(p.id.clone()),
+                    // a music box is kept by every region (Facility::apply_maze_variant), and not counted as loot
+                    Slot::Pickup(Pickup::MusicBox) => out.pickups.push(p.id.clone()),
                     Slot::Pickup(_) => {
                         n += 1;
                         if super::maze_regions::keeps(loot, seed, &format!("{tag}:loot"), n) {
@@ -628,11 +664,16 @@ mod tests {
                     continue;
                 };
                 let ids = layout_pickups(world, k).unwrap();
-                assert_eq!(ids.len(), lay.pickups.len());
-                for (got, want) in ids.iter().zip(&lay.pickups) {
+                // the layout's pickups, then the music boxes (collectables: their ids are the box ids)
+                assert_eq!(ids.len(), lay.pickups.len() + lay.music_pickups.len());
+                for (got, want) in ids.iter().zip(collectables(&lay)) {
                     assert_eq!(got.id, want.id);
                     assert_eq!(got.kind, want.kind);
-                    assert!(got.id.starts_with(&format!("{cx}:0:{cz}:PICKUP:{}:", want.kind.to_uppercase())));
+                    if want.kind == "music_box" {
+                        assert!(got.id.starts_with(&format!("{cx}:0:{cz}:")) && got.id.ends_with(":music_box"), "{got:?}");
+                    } else {
+                        assert!(got.id.starts_with(&format!("{cx}:0:{cz}:PICKUP:{}:", want.kind.to_uppercase())));
+                    }
                 }
                 // ids name their chunk and are unique within it
                 let mut seen: Vec<&String> = ids.iter().map(|p| &p.id).collect();
@@ -641,6 +682,47 @@ mod tests {
                 assert_eq!(seen.len(), ids.len(), "{world} {cx},{cz}: duplicate ids");
             }
         }
+    }
+
+    /// A music box is a collectable: one pickup per box of the layout, on an open cell no solid prop covers, and the live
+    /// chunk carries it on the floor as a `Pickup::MusicBox` (the fixture is gone).
+    #[test]
+    fn music_boxes_are_collectable_pickups_not_fixtures() {
+        let mut boxes = 0;
+        for world in WORLDS {
+            for cz in -3..=3 {
+                for cx in -3..=3 {
+                    let Some(lay) = layout::chunk_layout(world, Coord::new(cx, 0, cz)) else {
+                        continue;
+                    };
+                    let at = format!("{world} {cx},{cz}");
+                    assert_eq!(lay.music_pickups.len(), lay.music_boxes.len(), "{at}: one pickup per box");
+                    let mut blocked: std::collections::HashSet<V2> = std::collections::HashSet::new();
+                    for p in lay.region_props.as_deref().unwrap_or(&[]).iter().filter(|p| p.solid && !p.room_door) {
+                        if p.occupied_cells.is_empty() {
+                            blocked.insert(p.cell);
+                        } else {
+                            blocked.extend(p.occupied_cells.iter().copied());
+                        }
+                    }
+                    for p in &lay.music_pickups {
+                        boxes += 1;
+                        assert_eq!(lay.grid[p.cell.y as usize][p.cell.x as usize], 0, "{at}: a box in a wall");
+                        assert!(!blocked.contains(&p.cell), "{at}: a box under a solid prop");
+                    }
+                    let (f, _) = chunk(world, ChunkKey { cx, cy: cz, level: 0 }, cat()).expect("level 0 is adapted");
+                    let on_floor: Vec<V2> = f
+                        .pickups
+                        .iter()
+                        .filter(|(_, p)| *p == Pickup::MusicBox)
+                        .map(|(c, _)| V2::new(c.x, c.y))
+                        .collect();
+                    let want: Vec<V2> = lay.music_pickups.iter().map(|p| p.cell).collect();
+                    assert_eq!(on_floor, want, "{at}: the boxes on the floor are the layout's boxes");
+                }
+            }
+        }
+        assert!(boxes > 0, "the goldens have music boxes to collect");
     }
 
     #[test]

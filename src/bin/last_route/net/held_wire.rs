@@ -2,7 +2,7 @@
 //! puts the item's model on the mannequin's right hand.
 //!
 //! Wire: `"held": "<id>"` with the stable Godot ids (`flashlight`, `taser`, `crowbar`, `rescue_axe`, `battery`,
-//! `stim_pack`). The key is absent when nothing is held. An older peer never sends it and ignores it; an id this build
+//! `stim_pack`, `music_box`). The key is absent when nothing is held. An older peer never sends it and ignores it; an id this build
 //! does not know (a newer peer's, or Godot's lockpick and revive kit) reads as no item, never as a bad sample.
 //!
 //! Pose: `data/render/remote_held.json` (Godot `HeldItemPoses.THIRD_PERSON` and `REMOTE_HELD_SCALES`). The item hangs on
@@ -24,12 +24,15 @@ pub fn wire(item: Item) -> &'static str {
         Item::Axe => "rescue_axe",
         Item::Battery => "battery",
         Item::Stim => "stim_pack",
+        Item::MusicBox => "music_box",
     }
 }
 
 /// The item a wire id names; None for an id this build does not know.
 pub fn from_wire(id: &str) -> Option<Item> {
-    [Item::Flashlight, Item::Taser, Item::Crowbar, Item::Axe, Item::Battery, Item::Stim].into_iter().find(|i| wire(*i) == id)
+    [Item::Flashlight, Item::Taser, Item::Crowbar, Item::Axe, Item::Battery, Item::Stim, Item::MusicBox]
+        .into_iter()
+        .find(|i| wire(*i) == id)
 }
 
 /// How one item sits in the hand.
@@ -77,7 +80,7 @@ impl HeldData {
         };
         let bone = a["bone"].as_str().ok_or("anchor.bone is missing or not a string")?.to_string();
         let mut items = vec![];
-        for item in [Item::Flashlight, Item::Taser, Item::Crowbar, Item::Axe, Item::Battery, Item::Stim] {
+        for item in [Item::Flashlight, Item::Taser, Item::Crowbar, Item::Axe, Item::Battery, Item::Stim, Item::MusicBox] {
             let o = &v["items"][wire(item)];
             let e = |m: String| format!("items.{}: {m}", wire(item));
             items.push((
@@ -159,7 +162,7 @@ mod tests {
 
     #[test]
     fn every_item_has_a_wire_id_that_reads_back() {
-        for i in [Item::Flashlight, Item::Taser, Item::Crowbar, Item::Axe, Item::Battery, Item::Stim] {
+        for i in [Item::Flashlight, Item::Taser, Item::Crowbar, Item::Axe, Item::Battery, Item::Stim, Item::MusicBox] {
             assert_eq!(from_wire(wire(i)), Some(i));
         }
         assert_eq!(from_wire("lockpick"), None, "a Godot-only item is no item");

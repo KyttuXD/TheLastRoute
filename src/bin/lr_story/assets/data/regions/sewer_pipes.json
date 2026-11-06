@@ -1,0 +1,21 @@
+{
+	"schema": "lr.region/1",
+	"id": "sewer_pipes",
+	"hall_floor": ["stone0", "stone1"],
+	"hall_runner": false,
+	"room_default_floor": ["concrete0", "concrete1"],
+	"room_roles": ["pump_room", "valve_room"],
+	"prop_set": [
+		{ "type": "sewerValveWheel", "size": [0.5, 0.5, 0.2], "solid": false },
+		{ "type": "sewerPipeRun", "size": [2.0, 0.55, 0.5], "solid": false },
+		{ "type": "sewerOutflowPipe", "size": [1.64, 1.64, 3.2] }
+	],
+	"layout": {
+		"pipes": {
+			"_about": "Valve placement for the sewer pipes (game/pipes.rs): which effect a valve gets by where it stands. Read by game/pipes.rs, not by the level generator.",
+			"valve_effects": ["flood", "gate", "flow", "redirect"],
+			"room_valves": 2,
+			"tunnel_valve_offsets": [4, 40, 16, 28]
+		}
+	}
+}

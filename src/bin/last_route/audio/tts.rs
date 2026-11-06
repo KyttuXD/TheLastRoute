@@ -121,6 +121,13 @@ pub fn volume(distance: f64, radius: f64, floor: f64) -> f64 {
     (1.0 - distance.max(0.0) / radius).clamp(0.0, 1.0).max(floor).min(1.0)
 }
 
+/// The level a line is spoken at: the distance falloff times Master (0..1) times the SPOKEN CHAT slider (0..100). The
+/// speech is an OS process, so it takes this level when the line starts; a line already being spoken keeps it.
+pub fn speech_volume(distance: f64, radius: f64, floor: f64, master: f32, spoken_chat_pct: f32) -> f64 {
+    let chat = f64::from(spoken_chat_pct.clamp(0.0, 100.0)) / 100.0;
+    (volume(distance, radius, floor) * f64::from(master.clamp(0.0, 1.0)) * chat).clamp(0.0, 1.0)
+}
+
 /// One-at-a-time queue; the oldest lines are dropped beyond `max`.
 pub struct Queue {
     items: VecDeque<(String, f64)>,
@@ -193,6 +200,7 @@ pub fn build(os: Os, program: &str, text: &str, vol: f64, c: &Config) -> Invocat
             }
         }
         Os::Mac => {
+            // `say` has no volume option, so on macOS the speech is at the system level: Master and SPOKEN CHAT do not reach it.
             let mut args = vec!["-r".to_string(), c.rate[1].to_string()];
             if !c.voices[1].is_empty() {
                 args.extend(["-v".into(), c.voices[1].clone()]);
@@ -254,6 +262,10 @@ impl Speaker {
     pub fn new() -> Self {
         let os = current_os();
         let pending = Arc::new(AtomicUsize::new(0));
+        // the browser has no speech program to run and no thread to run the queue on (shared/task.rs)
+        if crate::shared::task::IN_BROWSER {
+            return Speaker { tx: None, pending, recent: Vec::new() };
+        }
         let Some(program) = find_program(os, config()) else {
             eprintln!("tts: no voice available, chat stays silent");
             return Speaker { tx: None, pending, recent: Vec::new() };
@@ -269,7 +281,8 @@ impl Speaker {
         Speaker { tx: Some(tx), pending, recent: Vec::new() }
     }
 
-    /// Feed one received line (called from net/chat.rs). A line arriving while the queue is full is dropped.
+    /// Feed one received line (called from net/chat.rs). A line arriving while the queue is full is dropped. `master` and
+    /// `spoken_chat_pct` are the Master volume (0..1) and the SPOKEN CHAT slider (0..100) from the settings.
     pub fn speak_line(
         &mut self,
         line: &ChatLine,
@@ -278,6 +291,8 @@ impl Speaker {
         settings: Settings,
         muted: &HashSet<i64>,
         now_ms: i64,
+        master: f32,
+        spoken_chat_pct: f32,
     ) {
         let c = config();
         let Some(t) = should_speak(line, listener_world, listener_depth, settings, muted, &self.recent, now_ms) else { return };
@@ -289,7 +304,7 @@ impl Speaker {
         self.recent.retain(|(_, at)| now_ms - *at < c.duplicate_window_ms);
         self.recent.push((t.clone(), now_ms));
         self.pending.fetch_add(1, Ordering::SeqCst);
-        let _ = tx.send((t, volume(d, c.radius, c.volume_floor)));
+        let _ = tx.send((t, speech_volume(d, c.radius, c.volume_floor, master, spoken_chat_pct)));
     }
 }
 
@@ -342,6 +357,17 @@ mod tests {
         let recent = vec![("hi".to_string(), 0)];
         assert!(should_speak(&l, [0.0; 3], 1, ON, &HashSet::new(), &recent, w / 2).is_none());
         assert!(should_speak(&l, [0.0; 3], 1, ON, &HashSet::new(), &recent, w + 1).is_some());
+    }
+
+    #[test]
+    fn spoken_level_follows_master_and_the_spoken_chat_slider() {
+        let (r, f) = (config().radius, config().volume_floor);
+        let full = speech_volume(0.0, r, f, 1.0, 100.0);
+        assert_eq!(full, 1.0);
+        assert!((speech_volume(0.0, r, f, 0.5, 100.0) - 0.5).abs() < 1e-9, "master halves the line");
+        assert!((speech_volume(0.0, r, f, 1.0, 45.0) - 0.45).abs() < 1e-9, "the SPOKEN CHAT slider scales it");
+        assert_eq!(speech_volume(0.0, r, f, 0.0, 100.0), 0.0, "master 0 silences speech");
+        assert_eq!(speech_volume(0.0, r, f, 1.0, 0.0), 0.0, "slider 0 silences speech");
     }
 
     #[test]

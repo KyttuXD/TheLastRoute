@@ -3,6 +3,7 @@
 #![allow(dead_code)] // ported API kept ahead of its callers (these items were the lib's pub API); prune as the port settles
 
 pub mod catalog;
+pub mod door_clearance;
 pub mod facility;
 pub mod fixtures;
 pub mod godot_sort;

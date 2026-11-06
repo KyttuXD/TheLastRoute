@@ -8,7 +8,7 @@
 //! Solyth uses the same leap (solyth.rs).
 
 use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
+use crate::shared::clock::Instant;
 
 use super::Ctx;
 use crate::config::{Difficulty, HUNTER_RADIUS};
@@ -31,6 +31,10 @@ pub struct Nyxie {
     /// Set the frame she wakes (for the sound cue).
     pub just_woke: bool,
     leap: Leap,
+    /// The runner, set by the host for the frame only when she chases a bot instead (hard and nightmare,
+    /// data/hunters/targets.json). Her wake, dispel, darkness clock and pounce gate read the runner's lamp and beam, as
+    /// Godot's target always is the runner; the chase itself still follows the bot she was given. `before` takes it.
+    pub runner: Option<Target>,
 }
 
 /// The floor cell whose centre distance to `p` is closest to `d` (first match).
@@ -392,13 +396,16 @@ impl Nyxie {
 
     pub fn before(&mut self, b: &mut Brain, dt: f32, c: &Ctx, t: &Target) {
         self.just_woke = false;
-        let lit = t.flashlight_on && t.lamp_charge > 0.0;
+        // the runner's lamp, beam and place; `t` is the chase target (a bot may stand in for the runner)
+        let runner = self.runner.take();
+        let r = runner.as_ref().unwrap_or(t);
+        let lit = r.flashlight_on && r.lamp_charge > 0.0;
         if lit {
             self.darkness = 0.0;
             self.empty = 0.0;
         } else {
             self.darkness += dt;
-            self.empty = if t.lamp_charge <= 0.0 {
+            self.empty = if r.lamp_charge <= 0.0 {
                 self.empty + dt
             } else {
                 0.0
@@ -421,13 +428,13 @@ impl Nyxie {
             }
             Wake::Empty => {
                 b.active = true;
-                b.pos = t.pos;
+                b.pos = r.pos;
             }
             Wake::Timer => {
                 if !b.active {
                     b.active = true;
-                    b.pos = spawn_near(c, t.pos, 10.0);
-                } else if lit && Brain::beam_reaches(c.fac, t.pos, t.facing, b.pos, 7.0, 0.33) {
+                    b.pos = spawn_near(c, r.pos, 10.0);
+                } else if lit && Brain::beam_reaches(c.fac, r.pos, r.facing, b.pos, 7.0, 0.33) {
                     self.wake = Wake::None;
                     b.active = false;
                     b.state = State::Idle;
@@ -436,7 +443,7 @@ impl Nyxie {
                 }
             }
         }
-        let gate = !pounce().nyxie_requires_dark || !t.flashlight_on;
+        let gate = !pounce().nyxie_requires_dark || !r.flashlight_on;
         if pounce_frame(&mut self.leap, b, dt, c, t, gate) {
             return;
         }
@@ -592,5 +599,178 @@ mod tests {
         assert_eq!(sweep_samples(1.0, n.sweep_step), 2);
         // a zero or negative step is clamped, so the sweep never divides by zero
         assert!(parse(r#"{"sweep": {"step": 0.0}}"#).sweep_step >= 0.01);
+    }
+}
+
+/// The beam dispel through the real frame (`Game::step`), not `before` alone.
+#[cfg(test)]
+mod beam_tests {
+    use super::*;
+    use crate::audio::Sounds;
+    use crate::config::Difficulty;
+    use crate::content::Content;
+    use crate::game::{Controls, Game};
+    use crate::world::catalog::Catalog;
+    use crate::world::Cell;
+
+    const FRAME: f32 = 1.0 / 60.0;
+
+    /// A level-0 window, the runner at `from` facing `dir` (a unit step), and Nyxie awake on a timer wake `gap` cells
+    /// ahead of her with open sight, hunting. The runner's lamp is lit and charged.
+    fn stalked(level: i32, dir: (i32, i32), gap: i32) -> (Game, Content, Catalog) {
+        stalked_on(Difficulty::Standard, level, dir, gap)
+    }
+
+    fn stalked_on(diff: Difficulty, level: i32, dir: (i32, i32), gap: i32) -> (Game, Content, Catalog) {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        for n in 0..80 {
+            let mut g = Game::new_infinite_sim(diff, 7, &format!("ROOM-NYXIE-BEAM-{n}"), level, &content, &catalog);
+            g.fade = 0.0;
+            let spot = g.fac.floor_cells().into_iter().find(|c| {
+                (0..=gap + 1).all(|k| {
+                    let (x, y) = Cell::new(c.x + dir.0 * k, c.y + dir.1 * k).center();
+                    g.fac.hunter_open(Cell::new(c.x + dir.0 * k, c.y + dir.1 * k)) && g.fac.body_fits(x, y, HUNTER_RADIUS.max(crate::config::PLAYER_RADIUS))
+                })
+            });
+            let Some(c) = spot else { continue };
+            let from = c.center();
+            let to = Cell::new(c.x + dir.0 * gap, c.y + dir.1 * gap).center();
+            if !g.fac.has_line_of_sight(from, to) {
+                continue;
+            }
+            g.hunters.clear();
+            g.p.pos = from;
+            // forward2() = (-sin yaw, -cos yaw)
+            g.p.yaw = (-(dir.0 as f32)).atan2(-(dir.1 as f32));
+            g.p.flashlight_on = true;
+            g.p.lamp = 80.0;
+            let mut b = Brain::new(content.hunter("nyxie").expect("nyxie").clone(), to, "NYXIE-BEAM", diff);
+            b.active = true;
+            b.state = State::Chase;
+            b.level = g.runner_level();
+            b.y = crate::game::level_stack::floor_y_of(b.level);
+            if let crate::hunters::gimmicks::Gimmick::Nyxie(ny) = &mut b.gimmick {
+                ny.wake = Wake::Timer;
+                ny.darkness = 130.0;
+            }
+            g.hunters.push(b);
+            return (g, content, catalog);
+        }
+        panic!("no window has a clear row of {gap} cells");
+    }
+
+    fn nyxie(g: &Game) -> &Brain {
+        g.hunters.iter().find(|h| h.def.id == "nyxie").expect("nyxie is in the list")
+    }
+
+    fn run(g: &mut Game, content: &Content, catalog: &Catalog, frames: usize) {
+        let sounds = Sounds::default();
+        for _ in 0..frames {
+            g.step(FRAME, &Controls::default(), content, catalog, &sounds);
+        }
+    }
+
+    #[test]
+    fn a_live_beam_sends_a_timer_wake_back_through_the_real_frame() {
+        for dir in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let (mut g, content, catalog) = stalked(0, dir, 5);
+            assert!(nyxie(&g).active);
+            run(&mut g, &content, &catalog, 60);
+            let b = nyxie(&g);
+            assert!(!b.active, "dir {dir:?}: the beam on her dispels a timer wake");
+            assert_eq!(b.state, State::Idle, "dir {dir:?}");
+            assert!(g.report.is_none() && g.escape.is_none(), "dir {dir:?}: she did not catch the runner first");
+        }
+    }
+
+    #[test]
+    fn the_beam_dispels_on_every_difficulty() {
+        for diff in [Difficulty::Relaxed, Difficulty::Standard, Difficulty::Hard, Difficulty::Nightmare] {
+            for gap in [3, 5, 6] {
+                let (mut g, content, catalog) = stalked_on(diff, 0, (1, 0), gap);
+                run(&mut g, &content, &catalog, 60);
+                assert!(!nyxie(&g).active, "{diff:?} gap {gap}: dispelled");
+            }
+        }
+    }
+
+    #[test]
+    fn the_same_beam_works_on_the_lower_levels_and_without_a_beam_nothing_happens() {
+        for level in [-1, -2] {
+            let (mut g, content, catalog) = stalked(level, (1, 0), 5);
+            run(&mut g, &content, &catalog, 60);
+            assert!(!nyxie(&g).active, "level {level}: dispelled");
+        }
+        // control: lamp off, the same wake stays
+        let (mut g, content, catalog) = stalked(0, (1, 0), 5);
+        g.p.flashlight_on = false;
+        run(&mut g, &content, &catalog, 20);
+        assert!(nyxie(&g).active || g.escape.is_some() || g.report.is_some(), "no beam, no dispel");
+    }
+
+    #[test]
+    fn a_bot_beside_her_does_not_stop_the_runners_beam() {
+        // Hard and Nightmare hunters chase a bot within reach (data/hunters/targets.json). Her target is then the bot,
+        // but the dispel is the runner's beam (Godot: the target is always the runner).
+        let (mut g, content, catalog) = stalked_on(Difficulty::Hard, 0, (1, 0), 5);
+        let her = nyxie(&g).pos;
+        let spot = (0..24)
+            .map(|k| {
+                let a = k as f32 * std::f32::consts::TAU / 24.0;
+                (her.0 + 1.5 * a.cos(), her.1 + 1.5 * a.sin())
+            })
+            .find(|s| g.fac.body_fits(s.0, s.1, HUNTER_RADIUS) && g.fac.has_line_of_sight(her, *s))
+            .expect("open floor beside her");
+        let p = g.p.pos;
+        g.npc_spawn(1, 0, (p.0, 1.5, p.1), (1.0, 0.0, 0.0));
+        let bot = g.npcs.last_mut().expect("a bot");
+        bot.at = spot;
+        bot.y = crate::game::level_stack::floor_y_of(bot.level);
+        run(&mut g, &content, &catalog, 60);
+        assert!(!nyxie(&g).active, "the runner's beam dispels her while a bot is beside her");
+    }
+
+    #[test]
+    fn a_full_dark_wake_then_the_flashlight_turned_on_and_aimed_sends_her_back() {
+        use crate::hunters::gimmicks::Gimmick;
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let sounds = Sounds::default();
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-NYXIE-FULL", 0, &content, &catalog);
+        g.fade = 0.0;
+        g.hunters.clear();
+        g.p.flashlight_on = false;
+        let far = g.fac.floor_cells().into_iter().find(|c| crate::hunters::brain::dist(c.center(), g.p.pos) > 20.0).unwrap().center();
+        let mut b = Brain::new(content.hunter("nyxie").unwrap().clone(), far, "NYXIE-FULL", Difficulty::Standard);
+        b.active = false;
+        g.hunters.push(b);
+        let mut woke = None;
+        for f in 0..7400 {
+            g.step(FRAME, &Controls::default(), &content, &catalog, &sounds);
+            if nyxie(&g).active {
+                woke = Some(f);
+                break;
+            }
+        }
+        let woke = woke.expect("120 s of dark wakes her");
+        assert!(woke >= 7190, "woke at frame {woke}");
+        let Gimmick::Nyxie(n) = &nyxie(&g).gimmick else { panic!() };
+        assert!(n.wake == Wake::Timer);
+        // the runner switches the flashlight on and turns toward her
+        let mut gone = None;
+        for f in 0..180 {
+            let hp = nyxie(&g).pos;
+            let (dx, dy) = (hp.0 - g.p.pos.0, hp.1 - g.p.pos.1);
+            g.p.yaw = (-dx).atan2(-dy);
+            let c = Controls { flashlight: f == 0, ..Controls::default() };
+            g.step(FRAME, &c, &content, &catalog, &sounds);
+            if g.escape.is_some() || g.report.is_some() {
+                break;
+            }
+            if !nyxie(&g).active {
+                gone = Some(f);
+                break;
+            }
+        }
+        assert!(gone.is_some(), "flashlight on: lit {} lamp {} escape {} pos {:?} / {:?}", g.p.flashlight_on, g.p.lamp, g.escape.is_some(), nyxie(&g).pos, g.p.pos);
     }
 }

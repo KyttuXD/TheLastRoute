@@ -1,0 +1,19 @@
+{
+	"schema": "lr.maze_region/1",
+	"id": "maze_library",
+	"label": "Library",
+	"weight": 2.0,
+	"plain_weight": 10.0,
+	"hall_floor": ["parquet0", "carpet_tile0"],
+	"hall_runner": true,
+	"room_default_floor": ["parquet0", "carpet_tile0"],
+	"room_roles": ["drawing_room", "waiting_room", "storage"],
+	"prop_set": [
+		{ "type": "normalBookcase", "size": [1.25, 1.9, 0.45] },
+		{ "type": "mansionBookshelf", "size": [1.6, 2.2, 0.5] },
+		{ "type": "woodenChairCushion", "size": [0.65, 1.0, 0.65] },
+		{ "type": "floorLamp", "size": [0.4, 1.7, 0.4] },
+		{ "type": "mansionAreaRug", "size": [2.4, 0.03, 1.6], "solid": false }
+	],
+	"spawn_rules": { "hunter_chance_scale": 0.8, "loot_scale": 1.0, "prop_density": 1.1 }
+}

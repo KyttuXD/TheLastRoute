@@ -170,6 +170,8 @@ pub struct Admin {
     summoned: Vec<String>,
     request: Option<Request>,
     npc_count: i32,
+    /// What the hovered gray NPC button says, shown in the hint line under the menu (one frame behind).
+    npc_tip: Option<String>,
 
     run_key: Option<u32>,
     last_time: f32,
@@ -221,6 +223,7 @@ impl Admin {
             summoned: vec![],
             request: None,
             npc_count: 1,
+            npc_tip: None,
             run_key: None,
             last_time: 0.0,
             pre: Pre::default(),

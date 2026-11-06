@@ -1,5 +1,5 @@
 //! The second sewer level, below the first: its own layout rules and water, joined to the first level by drops
-//! where the waterfalls of `falls_between` fall. Every number is in the `layout` block of data/regions/sewer2.json
+//! where the waterfalls of `falls_between` fall. Every number is in the `layout` block of src/bin/last_route/data/regions/sewer2.json
 //! (`Rules2`); the code holds only the behaviour. Drop cells are offsets from the falls centre and the landing
 //! pool is the falls void grown by `landing_grow`, so the two levels line up for any data that keeps the drops
 //! inside the void (`chunk` skips a drop whose cell is outside the void).
@@ -45,7 +45,7 @@ pub fn rules() -> &'static Rules2 {
             .iter()
             .find(|(file, _)| *file == "regions/sewer2.json")
             .map(|(_, text)| *text)
-            .unwrap_or(include_str!("../../../../../../data/regions/sewer2.json"));
+            .unwrap_or(include_str!("../../../data/regions/sewer2.json"));
         Rules2::from_region_text(text).unwrap_or_else(|e| panic!("sewer2 layout rules: {e}"))
     })
 }

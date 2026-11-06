@@ -20,9 +20,12 @@ mod ladder_tests;
 mod stack_walk_tests;
 #[cfg(test)]
 mod stack_entry_tests;
+#[cfg(test)]
+mod rail_tests;
 mod inferno_terrain_tests;
 mod items;
 pub mod meters;
+pub mod music_box;
 pub mod swim_effects;
 pub mod npc;
 pub mod player;
@@ -43,7 +46,7 @@ use crate::hunters::director::Director;
 use crate::hunters::gimmicks::Gimmick;
 use crate::render::world_mesh::{ChunkFrame, WorldMeshes};
 use crate::world::catalog::Catalog;
-use crate::world::facility::{Facility, Options};
+use crate::world::facility::{Facility, Options, Pickup};
 use crate::world::fixtures::{self, Fixtures};
 use macroquad::prelude::*;
 use meters::Meters;
@@ -162,8 +165,8 @@ pub struct Game {
     pub void_fx: void_player::VoidEffects,
     /// The full-screen map is open this frame (the app sets it before `update`; Void Yellow reads it).
     pub map_open: bool,
+    /// Seconds left on the wound music box (Glyra's room effect; the box is an item, game/music_box.rs).
     pub music_box_left: f32,
-    pub wind_hold: f32,
     pub relays_collected: i32,
     /// Per-room climate offsets: hot and cold spots on the floor.
     pub climate: Vec<f32>,
@@ -273,8 +276,10 @@ impl Game {
             safe_zone_count: difficulty.safe_zone_limit(),
             ..Default::default()
         };
-        let fac = Facility::generate(&format!("{run_seed}-D1"), &opt, catalog);
-        let fix = fixtures::place(&fac);
+        let mut fac = Facility::generate(&format!("{run_seed}-D1"), &opt, catalog);
+        let (fix, box_cell) = fixtures::place_with_box(&fac);
+        // the floor's music box is a collectable on the floor (game/music_box.rs), not a fixture
+        fac.pickups.extend(box_cell.map(|c| (c, Pickup::MusicBox)));
         let world = WorldMeshes::default();
         let mut g = Game {
             difficulty,
@@ -294,8 +299,7 @@ impl Game {
             heater: Heater::Frozen,
             void_fx: Default::default(),
             map_open: false,
-            music_box_left: 45.0,
-            wind_hold: 0.0,
+            music_box_left: music_box::wound_seconds(difficulty.id()),
             relays_collected: 0,
             climate: vec![],
             discovered: vec![],
@@ -428,8 +432,7 @@ impl Game {
             heater: Heater::Frozen,
             void_fx: Default::default(),
             map_open: false,
-            music_box_left: 45.0,
-            wind_hold: 0.0,
+            music_box_left: music_box::wound_seconds(difficulty.id()),
             relays_collected: 0,
             climate: vec![],
             discovered: vec![],
@@ -564,10 +567,12 @@ impl Game {
             ..Default::default()
         };
         self.fac = Facility::generate(&seed, &opt, catalog);
-        self.fix = fixtures::place(&self.fac);
+        let (fix, box_cell) = fixtures::place_with_box(&self.fac);
+        self.fix = fix;
+        self.fac.pickups.extend(box_cell.map(|c| (c, Pickup::MusicBox)));
         self.adopt_floor(content);
         self.heater = Heater::Frozen;
-        self.music_box_left = 45.0;
+        self.music_box_left = music_box::wound_seconds(self.difficulty.id());
         self.relays_collected = 0;
         self.p.place(self.fac.start.center());
         self.npc_place_beside_runner();
@@ -632,6 +637,13 @@ impl Game {
         self.discovered = vec![vec![false; self.fac.cols as usize]; self.fac.rows as usize];
         self.hide_check = None;
         self.escape = None;
+    }
+
+    /// The wound box's clock: it runs down every frame, and the audio follows it (the tune loop, then the wind-down).
+    /// Glyra reads the clock through `Ctx` (hunting.rs), so this is the room effect's whole timer.
+    pub(super) fn run_music_box(&mut self, dt: f32) {
+        self.music_box_left = (self.music_box_left - dt).max(0.0);
+        crate::audio::world::music_box(self.music_box_left);
     }
 
     pub fn say(&mut self, text: &str) {
@@ -798,7 +810,7 @@ impl Game {
             *t = (*t - dt).max(0.0);
         }
         // Glyra's box winds down every frame (the original's finite floor forgot to tick it)
-        self.music_box_left = (self.music_box_left - dt).max(0.0);
+        self.run_music_box(dt);
 
         // world sound every frame, hidden or struggling too (main_3d.gd _update_local_audio, Glyra's hum)
         {

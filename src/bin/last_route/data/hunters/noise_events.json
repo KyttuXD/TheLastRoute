@@ -16,6 +16,7 @@
     "pipe_burst": { "radius": 10.0, "loudness": 1.0, "response": "search", "search_seconds": 5.0 },
     "valve_turn": { "radius": 7.0, "loudness": 1.0, "response": "investigate", "search_seconds": 0.0 },
     "sluice_open": { "radius": 10.0, "loudness": 1.0, "response": "investigate", "search_seconds": 0.0 },
-    "hunter_landing": { "radius": 6.0, "loudness": 1.0, "response": "investigate", "search_seconds": 0.0 }
+    "hunter_landing": { "radius": 6.0, "loudness": 1.0, "response": "investigate", "search_seconds": 0.0 },
+    "relay_recover": { "radius": 8.0, "loudness": 1.0, "response": "investigate", "search_seconds": 0.0 }
   }
 }

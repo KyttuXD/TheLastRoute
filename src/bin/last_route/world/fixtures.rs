@@ -1,10 +1,11 @@
 //! The floor fixtures some hunters depend on, each on its own seeded stream like the
 //! original's on-demand placements: the heater station (Wynelle's counterplay, 3-7 cells from
-//! the start), the music box (Glyra's, 1-4 cells from the start), the ring of four vent grates
-//! (Verrine's, one per room, "<seed>:VENT-NETWORK") and five coins for Zellia's store
-//! ("<seed>:COINS", one per random room centre). Exact cells are estimated where the original
-//! places them in presentation code.
+//! the start), the ring of four vent grates (Verrine's, one per room, "<seed>:VENT-NETWORK") and five
+//! coins for Zellia's store ("<seed>:COINS", one per random room centre). The music box (Glyra's, 1-4 cells
+//! from the start) is a collectable pickup, not a fixture: `place_with_box` returns its cell for the caller to
+//! put on the floor. Exact cells are estimated where the original places them in presentation code.
 
+use super::door_clearance;
 use super::facility::{Cell, Facility};
 use super::rng::Rng;
 use std::collections::HashSet;
@@ -12,7 +13,6 @@ use std::collections::HashSet;
 #[derive(Clone, Default)]
 pub struct Fixtures {
     pub heater: Option<Cell>,
-    pub music_box: Option<Cell>,
     pub vents: Vec<Cell>,
     pub coins: Vec<Cell>,
 }
@@ -85,6 +85,13 @@ pub fn heater_for(f: &Facility, stream: &str, safe: bool) -> Option<Cell> {
 }
 
 pub fn place(f: &Facility) -> Fixtures {
+    place_with_box(f).0
+}
+
+/// The fixtures of a finite floor, and the cell of its music box (`<seed>:MUSIC-BOX`, 1.5-4 cells from the start).
+/// The box is a collectable: the caller adds it to the floor as a `Pickup::MusicBox` (game/mod.rs, infinite.rs). Its
+/// cell is still reserved here, so the vents and coins keep the cells they had as a fixture.
+pub fn place_with_box(f: &Facility) -> (Fixtures, Option<Cell>) {
     let mut t = taken(f);
     let heater = near_start(
         f,
@@ -103,6 +110,8 @@ pub fn place(f: &Facility) -> Fixtures {
     );
     t.extend(music_box);
 
+    // no vent grate in a door's way (world::door_clearance)
+    let door_clear = door_clearance::Clearance::of(f);
     let mut vents = vec![];
     let mut rng = Rng::new(&format!("{}:VENT-NETWORK", f.seed_text));
     let mut rooms: Vec<usize> = (0..f.rooms.len())
@@ -118,7 +127,7 @@ pub fn place(f: &Facility) -> Fixtures {
                 let backed = [(1, 0), (-1, 0), (0, 1), (0, -1)]
                     .iter()
                     .any(|(dx, dy)| f.is_wall_cell(x + dx, y + dy));
-                if backed && !t.contains(&c) && f.can_occupy(x as f64 + 0.5, y as f64 + 0.5, 0.23) {
+                if backed && !t.contains(&c) && !door_clear.blocks(door_clearance::Kind::Vent, c) && f.can_occupy(x as f64 + 0.5, y as f64 + 0.5, 0.23) {
                     cells.push(c);
                 }
             }
@@ -149,10 +158,12 @@ pub fn place(f: &Facility) -> Fixtures {
             }
         }
     }
-    Fixtures {
-        heater,
+    (
+        Fixtures {
+            heater,
+            vents,
+            coins,
+        },
         music_box,
-        vents,
-        coins,
-    }
+    )
 }

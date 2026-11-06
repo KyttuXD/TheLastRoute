@@ -541,7 +541,8 @@ impl Default for RegisterRoom {
             protocol: super::protocol::fingerprint(),
             spawn_ticket: String::new(),
             region: String::new(),
-            transport: "enet".into(),
+            // the browser build hosts over the WebSocket relay (Godot web: ws_room_peer.gd); native keeps the UDP relay
+            transport: if crate::shared::task::IN_BROWSER { "ws" } else { "enet" }.into(),
         }
     }
 }

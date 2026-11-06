@@ -164,11 +164,6 @@ pub fn focus_json(g: &Game, f: Focus) -> Value {
             None,
             g.fix.heater.map(|c| c.center()).unwrap_or(g.p.pos),
         ),
-        Focus::MusicBox => (
-            "music_box",
-            None,
-            g.fix.music_box.map(|c| c.center()).unwrap_or(g.p.pos),
-        ),
         Focus::Vent(i) => ("vent", Some(i), g.fix.vents[i].center()),
         Focus::Shop(i) => ("shop", Some(i), g.hunters[i].pos),
         Focus::Door(i) => (
@@ -667,7 +662,11 @@ impl Sim {
             "catwalk_links": g.fac.catwalk_links.iter().enumerate().map(|(i, l)| json!({ "index": i, "cell": cell(l.cell), "run": [l.run.0, l.run.1], "deck_height": l.deck_height, "distance": d(l.cell.center()) })).collect::<Vec<_>>(),
             "light_switches": g.fac.room_lights.iter().enumerate().map(|(i, l)| json!({ "index": i, "room": l.room, "cell": cell(l.switch_cell), "on": g.lights_on[i] })).collect::<Vec<_>>(),
             "heater": g.fix.heater.map(cell),
-            "music_box": g.fix.music_box.map(cell),
+            "music_box": g
+                .pickups
+                .iter()
+                .find(|p| !p.taken && p.item == crate::game::Item::MusicBox)
+                .map(|p| cell(Cell::new(p.pos.0.floor() as i32, p.pos.1.floor() as i32))),
             "vents": g.fix.vents.iter().map(|c| cell(*c)).collect::<Vec<_>>(),
             "doors": g.fac.doors().enumerate().map(|(i, (prop, at))| {
                 let c = g.fac.props[prop].cell;
@@ -887,5 +886,6 @@ pub fn item_id(i: crate::game::Item) -> &'static str {
         Axe => "axe",
         Battery => "battery",
         Stim => "stim",
+        MusicBox => "music_box",
     }
 }

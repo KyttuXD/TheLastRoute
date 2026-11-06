@@ -21,6 +21,7 @@ pub enum HeldId {
     RescueAxe,
     Battery,
     StimPack,
+    MusicBox,
 }
 
 pub struct Pose {
@@ -94,6 +95,16 @@ pub fn pose(id: HeldId) -> Pose {
             -64.0,
             0.18,
             0.80,
+            None,
+        ),
+        // the box is carried flat and turned to show its front (no swing, like the other carried items)
+        HeldId::MusicBox => p(
+            vec3(0.25, -0.26, -0.52),
+            0.46,
+            20.0,
+            -28.0,
+            0.22,
+            0.78,
             None,
         ),
     }

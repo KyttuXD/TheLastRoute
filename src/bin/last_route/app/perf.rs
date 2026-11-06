@@ -13,7 +13,8 @@ use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use crate::shared::clock::Instant;
+use std::time::Duration;
 
 /// The tunable numbers, from data/perf.json. The defaults are the Standard values.
 #[derive(Clone, Debug, PartialEq)]

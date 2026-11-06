@@ -10,9 +10,11 @@
 //! through the relay is that runner's ping. The host reports each guest's ping to the guests in a `KIND_PINGS` packet.
 
 use super::protocol::{self, Delivery, Message};
-use super::relay::{RelayEvent, RelayLink, Role, MAX_PAYLOAD_BYTES};
+use super::relay::{RelayEvent, Role, MAX_PAYLOAD_BYTES};
+use super::room_link::RoomLink;
 use std::collections::{BTreeMap, HashMap};
-use std::time::{Duration, Instant};
+use crate::shared::clock::Instant;
+use std::time::Duration;
 
 pub const HOST_PEER_ID: u32 = 1;
 pub const RESEND_INTERVAL: Duration = Duration::from_millis(200);
@@ -51,7 +53,8 @@ pub enum SessionEvent {
 }
 
 pub struct CoopSession {
-    pub link: RelayLink,
+    /// The relay connection: UDP ([`super::relay::RelayLink`]) natively, WebSocket ([`super::ws_link::WsLink`]) in the browser.
+    pub link: Box<dyn RoomLink>,
     peers: HashMap<u32, Peer>,
     /// The last measured round trip per runner, in ms. A guest holds its own to the host (HOST_PEER_ID) and the host's
     /// report of the other guests; the host holds its own to each guest.
@@ -71,9 +74,9 @@ fn packet(channel: u8, kind: u8, seq: u32, body: &[u8]) -> Vec<u8> {
 }
 
 impl CoopSession {
-    pub fn new(link: RelayLink) -> CoopSession {
+    pub fn new<L: RoomLink + 'static>(link: L) -> CoopSession {
         CoopSession {
-            link,
+            link: Box::new(link),
             peers: HashMap::new(),
             pings: HashMap::new(),
             pending_pings: HashMap::new(),
@@ -140,6 +143,13 @@ impl CoopSession {
             match event {
                 RelayEvent::Ready { .. } => out.push(SessionEvent::Ready),
                 RelayEvent::Data { session, payload } => self.receive(session, &payload, &mut out),
+                RelayEvent::PeerLeft(peer) => {
+                    // a WebSocket guest left: its unacknowledged reliable packets are dropped, not resent forever
+                    self.peers.remove(&peer);
+                    self.pings.remove(&peer);
+                    self.pending_pings.remove(&peer);
+                    out.push(SessionEvent::Relay(RelayEvent::PeerLeft(peer)));
+                }
                 other => out.push(SessionEvent::Relay(other)),
             }
         }
@@ -289,7 +299,7 @@ impl CoopSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::relay::{decode, encode, frame};
+    use crate::net::relay::{decode, encode, frame, RelayLink};
     use serde_json::json;
     use std::net::UdpSocket;
 

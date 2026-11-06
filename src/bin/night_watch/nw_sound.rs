@@ -5,6 +5,7 @@
 //! under `events`) and `room_tone(name, on)`. Unknown names and a missing audio context are silent with one log line.
 
 use crate::blip::wav_bytes;
+use last_route_core::shared::volumes::Volumes;
 use macroquad::audio::{load_sound_from_bytes, play_sound, stop_sound, PlaySoundParams, Sound};
 use serde_json::Value;
 use std::cell::RefCell;
@@ -138,8 +139,16 @@ thread_local! {
     static PLAYER: RefCell<Player> = RefCell::new(Player::default());
 }
 
+/// The player's sliders as the game saved them, read once at launch (shared/volumes.rs).
+fn volumes() -> Volumes {
+    static V: OnceLock<Volumes> = OnceLock::new();
+    *V.get_or_init(Volumes::load)
+}
+
+/// The cue level: the data's master (0.8) x the player's Master x GAMEPLAY sliders. Night Watch's cues are gameplay sounds.
 fn master() -> f32 {
-    num(data(), "master", 0.8) as f32
+    let v = volumes();
+    num(data(), "master", 0.8) as f32 * v.master * v.gameplay
 }
 
 fn snap(x: f32) -> f32 {

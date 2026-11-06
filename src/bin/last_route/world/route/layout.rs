@@ -138,7 +138,7 @@ fn bank_big_types(region: &str) -> &'static [&'static str] {
 }
 
 /// `_room_type_choices` (line 2215): the room-type names of a district, duplicates kept (they are weights). A region
-/// with a catalogue row (data/regions/<id>.json, `room_roles`) takes its list from the row; the inferno (no row yet)
+/// with a catalogue row (src/bin/last_route/data/regions/<id>.json, `room_roles`) takes its list from the row; the inferno (no row yet)
 /// and any region with no row keep the code lists below.
 pub fn room_type_choices(region: &str) -> Vec<&'static str> {
     if let Some(def) = regions::region_def(region) {
@@ -646,6 +646,9 @@ pub struct ChunkLayout {
     /// The music boxes of the chunk, `_music_boxes` (streamed_route_generator.gd:1039): `music_boxes::chunk_music_boxes`.
     /// Read the pickups before the ensure pass. Empty on a safe chunk.
     pub music_boxes: Vec<music_boxes::MusicBox>,
+    /// The music boxes as collectable pickups (kind "music_box"), one per entry of `music_boxes` and reachable the way
+    /// a pickup is. Not in the Godot pickup golden: Godot places the box as a fixture.
+    pub music_pickups: Vec<pickups::Pickup>,
     /// The hunter spawns of the chunk, `_hunter_spawns` (streamed_route_generator.gd:1040): `hunter_spawns::chunk_hunter_spawns`.
     /// Empty on a safe chunk.
     pub hunter_spawns: Vec<hunter_spawns::HunterSpawn>,
@@ -2253,6 +2256,19 @@ pub fn chunk_layout(world: &str, c: Coord) -> Option<ChunkLayout> {
     let hunters = hunter_spawns::chunk_hunter_spawns(world, c, &grid, &[], props_now, safe);
     // 809 (pickups.rs): _ensure_pickups_reachable runs last, after the music boxes and hunters in Godot.
     pickups::ensure_pickups_reachable(&grid, props_now, &mut pickups);
+    // The music boxes as collectables: each box's cell from `_music_boxes`, made reachable the way a pickup is
+    // (`ensure_pickups_reachable`, so a box on a table or against furniture moves to the nearest open floor). Godot keeps
+    // the box as a fixture, so these are kept apart from the golden-checked `pickups`.
+    let mut music_pickups: Vec<pickups::Pickup> = music
+        .iter()
+        .map(|m| pickups::Pickup {
+            id: m.id.clone(),
+            cell: m.cell,
+            kind: "music_box",
+            item: "music_box",
+        })
+        .collect();
+    pickups::ensure_pickups_reachable(&grid, props_now, &mut music_pickups);
     Some(ChunkLayout {
         coord: c,
         region,
@@ -2266,6 +2282,7 @@ pub fn chunk_layout(world: &str, c: Coord) -> Option<ChunkLayout> {
         region_props,
         fixtures,
         pickups,
+        music_pickups,
         music_boxes: music,
         hunter_spawns: hunters,
     })
@@ -2345,8 +2362,8 @@ mod tests {
 
     #[test]
     fn district_lists_match_the_data_files() {
-        let hospital: Value = serde_json::from_str(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/data/regions/hospital.json"))).unwrap();
-        let mall: Value = serde_json::from_str(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/data/regions/mall.json"))).unwrap();
+        let hospital: Value = serde_json::from_str(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/last_route/data/regions/hospital.json"))).unwrap();
+        let mall: Value = serde_json::from_str(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/last_route/data/regions/mall.json"))).unwrap();
         let names = |v: &Value| -> Vec<String> {
             v["room_roles"].as_array().unwrap().iter().map(|r| r.as_str().unwrap().to_string()).collect()
         };

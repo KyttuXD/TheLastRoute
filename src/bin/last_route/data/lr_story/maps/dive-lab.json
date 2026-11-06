@@ -1,0 +1,22 @@
+{
+  "schema": "lr.story.map/1",
+  "id": "dive-lab",
+  "name": "Voss' Robotic Labs - dive lab",
+  "art": "dive-lab.png",
+  "mask": "dive-lab-mask.png",
+  "legend": {
+    "000000": { "kind": "wall" },
+    "ffffff": { "kind": "floor" },
+    "ff00ff": { "kind": "spawn", "name": "start" },
+    "ff80ff": { "kind": "spawn", "name": "inside" },
+    "00ff00": { "kind": "npc", "name": "Felix", "scene": "felix-hello" },
+    "ffff00": { "kind": "item", "item": "keycard" },
+    "00ffff": { "kind": "trigger", "scene": "dive-brief", "once": true },
+    "ff8000": {
+      "kind": "door",
+      "if": { "has": "keycard" },
+      "locked": "The reader blinks red. It wants a keycard."
+    },
+    "8000ff": { "kind": "exit", "map": "corridor", "spawn": "from-lab" }
+  }
+}

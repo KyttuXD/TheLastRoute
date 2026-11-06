@@ -23,14 +23,24 @@ pub mod world;
 
 use macroquad::audio::{play_sound, PlaySoundParams, Sound};
 
+use cues::rules::Bus;
+
 /// The bus volumes as linear gains 0..1: Master (everything), SFX (every cue but the menu blip), UI (the menu blip).
-/// Glyra's hum plays on Master only, like the original's AudioStreamPlayer3D.
+/// The positional loops (the music box tune, Glyra's hum, the falls) play on Master only, like the original's
+/// AudioStreamPlayer3D. Loops that already play are re-gained here, so a slider moved in the pause menu applies at once.
 pub fn set_volumes(master: f32, sfx: f32, ui: f32) {
     engine::with(|e| {
         e.master = master.clamp(0.0, 1.0);
         e.sfx = sfx.clamp(0.0, 1.0);
         e.ui = ui.clamp(0.0, 1.0);
+        e.refresh_loops();
     });
+}
+
+/// Once per frame, from the app loop, whatever the game is doing (paused, on a report, loading): releases delayed cues
+/// that are due and ends timed loops (the music box wind-down). `world::update` also pumps, but it is skipped then.
+pub fn tick() {
+    engine::with(|e| e.tick());
 }
 
 /// Legacy: one volume for everything (treated as Master, SFX and UI at 100 %). Prefer `set_volumes`.
@@ -73,51 +83,58 @@ pub struct Sounds {
     pub menu: Option<Sound>,
 }
 
+/// One bank sound: the cue at `variant` (the synth form), loaded. Awaited, since the browser decodes it first.
+async fn bank(name: &str, variant: u32) -> Option<Sound> {
+    engine::load_frames(&cues::synth(name, variant)?).await
+}
+
+/// One bank sound: the cue rendered at pan 0 and intensity 1, loaded.
+async fn bank_render(name: &str) -> Option<Sound> {
+    engine::load_frames(&cues::render(name, 0.0, 1.0)?).await
+}
+
 impl Sounds {
     pub async fn new() -> Sounds {
-        engine::init();
-        let c = |name: &str, variant: u32| engine::load_frames(&cues::synth(name, variant)?);
+        engine::init().await;
         Sounds {
-            step: c("footstep_walk", 0),
-            step_alt: c("footstep_walk", 1),
-            step_sprint: c("footstep_sprint", 0),
-            step_crouch: c("footstep_crouch", 0),
-            step_vent: c("step:crouch:metal", 0),
-            hunter_step: c("hunter_footstep", 0),
-            collect: c("collect", 0),
-            battery: cues::render("recharge", 0.0, 1.0).and_then(|f| engine::load_frames(&f)),
-            click: c("light_switch", 0),
-            taser: c("taser", 0),
-            swing: c("axe_swing", 0),
-            chop: c("axe_chop", 0),
-            tool_break: c("tool_break", 0),
-            fail: c("interaction_fail", 0),
-            chase: c("chase_start", 0),
-            capture: c("capture", 0),
-            struggle: c("struggle", 0),
-            escape: c("escape", 0),
-            lift: c("ladder_rung", 0),
-            heartbeat: cues::render("heartbeat", 0.0, 1.0).and_then(|f| engine::load_frames(&f)),
-            music_box: c("music_box", 0),
-            menu: c("menu", 0),
+            step: bank("footstep_walk", 0).await,
+            step_alt: bank("footstep_walk", 1).await,
+            step_sprint: bank("footstep_sprint", 0).await,
+            step_crouch: bank("footstep_crouch", 0).await,
+            step_vent: bank("step:crouch:metal", 0).await,
+            hunter_step: bank("hunter_footstep", 0).await,
+            collect: bank("collect", 0).await,
+            battery: bank_render("recharge").await,
+            click: bank("light_switch", 0).await,
+            taser: bank("taser", 0).await,
+            swing: bank("axe_swing", 0).await,
+            chop: bank("axe_chop", 0).await,
+            tool_break: bank("tool_break", 0).await,
+            fail: bank("interaction_fail", 0).await,
+            chase: bank("chase_start", 0).await,
+            capture: bank("capture", 0).await,
+            struggle: bank("struggle", 0).await,
+            escape: bank("escape", 0).await,
+            lift: bank("ladder_rung", 0).await,
+            heartbeat: bank_render("heartbeat").await,
+            music_box: bank("music_box", 0).await,
+            menu: bank("menu", 0).await,
         }
     }
 }
 
 #[allow(dead_code)]
-/// Legacy: plays a bank sound at `volume` x Master x SFX. Migrated call sites use `sound::*` instead.
+/// Legacy: plays a bank sound at `volume` x Master x SFX (the engine's bus gain). Migrated call sites use `sound::*`.
 pub fn play(s: &Option<Sound>, volume: f32) {
-    let bus = engine::with(|e| e.master * e.sfx);
-    let volume = volume * bus;
-    if let Some(s) = s {
-        if volume > 0.0 {
-            play_sound(
-                s,
-                PlaySoundParams {
-                    looped: false,
-                    volume,
-                },
-            );
-        }
+    let Some(s) = s else { return };
+    let volume = engine::with(|e| if e.ready { volume * e.bus_gain(Bus::Sfx) } else { 0.0 });
+    if volume > 0.0 {
+        play_sound(
+            s,
+            PlaySoundParams {
+                looped: false,
+                volume,
+            },
+        );
     }
 }

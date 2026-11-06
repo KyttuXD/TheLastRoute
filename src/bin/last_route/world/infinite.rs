@@ -348,7 +348,9 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -
     }
     f.level = k.level;
     f.rebuild_grids();
-    let mut fix = fixtures::place(&f);
+    let (mut fix, box_cell) = fixtures::place_with_box(&f);
+    // the floor's music box is a collectable pickup (game/music_box.rs), not a fixture
+    f.pickups.extend(box_cell.map(|c| (c, Pickup::MusicBox)));
     fix.coins.extend(sewer_coins);
     (f, fix)
 }
@@ -446,6 +448,17 @@ fn apply_sewer_floor(f: &mut Facility, sc: &super::route::sewer::SewerChunk, see
     } else if k.level == LOWER_LEVEL {
         f.set_air_above_cells(&super::flight_links::fall_cells(seed, k.cx, k.cy));
     }
+    // the iron railings along the banks are walls (render/sewer_rails.rs draws the same segments): the runner, the bots
+    // and the hunters stay on the walkway, and the waterfall jump's gap stays the way in
+    let rails = crate::render::sewer_rails::config();
+    if rails.collision.solid {
+        let gap = sc.falls.as_ref().map(|fl| (fl.jump.cell.x, fl.jump.cell.y));
+        let edges: Vec<(Cell, u8)> = crate::render::sewer_rails::channel_rail_segments(&sc.sewer_grid, gap)
+            .into_iter()
+            .map(|s| (Cell::new(s.x, s.z), super::facility::rail_side_bit(s.step)))
+            .collect();
+        f.set_rails(&edges, rails.inset_m, rails.collision.thickness_m);
+    }
     f.rooms = sc
         .rooms
         .iter()
@@ -480,7 +493,7 @@ fn apply_sewer_floor(f: &mut Facility, sc: &super::route::sewer::SewerChunk, see
 }
 
 /// The live window: 3x3 chunks around `center` on `level`, merged into one floor, plus the
-/// fixtures of the window (heater and music box from the centre chunk, its vent ring, every
+/// fixtures of the window (heater and vent ring from the centre chunk, every
 /// chunk's coins).
 pub fn window(
     seed: &str,
@@ -493,7 +506,6 @@ pub fn window(
     let mut parts = vec![];
     let mut fix = Fixtures {
         heater: None,
-        music_box: None,
         vents: vec![],
         coins: vec![],
     };
@@ -509,7 +521,6 @@ pub fn window(
             let sh = |c: Cell| Cell::new(c.x + ox, c.y + oy);
             if dx == 0 && dy == 0 {
                 fix.heater = entry.1.heater.map(sh);
-                fix.music_box = entry.1.music_box.map(sh);
                 fix.vents = entry.1.vents.iter().map(|c| sh(*c)).collect();
             }
             fix.coins.extend(entry.1.coins.iter().map(|c| sh(*c)));

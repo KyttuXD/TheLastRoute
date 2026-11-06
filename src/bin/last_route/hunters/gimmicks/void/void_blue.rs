@@ -45,7 +45,13 @@ impl VoidBlue {
         if !beam_on(t, b.pos, BEAM_RANGE, BEAM_HALF_ANGLE, |a, p| c.fac.has_line_of_sight(a, p)) {
             return;
         }
-        b.pos = pushed_position(b.pos, t.pos, |x, y| c.fac.nearest_open(x, y, HUNTER_RADIUS));
+        // the shove stops at the first wall or railing on its line: the open spot is searched from there, so it never
+        // lands her on the far side of a railing
+        let from = b.pos;
+        b.pos = pushed_position(from, t.pos, |x, y| {
+            let (sx, sy) = c.fac.clear_toward(from, (x, y), HUNTER_RADIUS);
+            c.fac.nearest_open(sx, sy, HUNTER_RADIUS)
+        });
         if self.strike() {
             ev.push(Event::Message(REVEAL_MESSAGE.to_string()));
         }

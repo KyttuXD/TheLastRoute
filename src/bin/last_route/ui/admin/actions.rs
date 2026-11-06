@@ -61,13 +61,43 @@ fn npc_set_smart(g: &mut Game, i: usize, smart: i32) -> String {
     format!("ADMIN // {} SMART {}", n.name, n.smart)
 }
 
-/// The NPC commands this build runs, by id (`npc_ops` and `npc_all` in data/admin/menu.json). The rest of
-/// the grid is drawn muted and answers with a line that names the command.
+/// The NPC commands this build runs, by id (`npc_live` in data/admin/menu.json). The rest of the grid
+/// (`npc_pending`) is drawn gray and answers with a line that names the command.
 pub(super) fn npc_op_live(op: &str) -> bool {
-    matches!(
-        op,
-        "teleport" | "follow" | "unfollow" | "smart" | "remove" | "all_teleport" | "all_follow" | "all_unfollow" | "all_smart"
-    )
+    menu().npc_live.contains(&op)
+}
+
+/// How an NPC grid button is drawn and what its tooltip says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NpcButton {
+    /// A live command and there is an NPC to act on.
+    Ready,
+    /// A live command, but the run has no NPC: gray until one is spawned.
+    NoNpcs,
+    /// The build cannot do this yet; the text says what is missing (data/admin/menu.json `npc_pending`).
+    Pending(&'static str),
+}
+
+/// The state of the NPC grid button `op` in a run with `npcs` NPCs. Only a missing NPC or a missing feature grays one.
+pub(super) fn npc_button(op: &str, npcs: usize) -> NpcButton {
+    if let Some((_, reason)) = menu().npc_pending.iter().find(|(id, _)| *id == op) {
+        NpcButton::Pending(reason)
+    } else if npcs == 0 {
+        NpcButton::NoNpcs
+    } else {
+        NpcButton::Ready
+    }
+}
+
+impl NpcButton {
+    /// The tooltip of a gray button (the hint line under the menu); None for a ready one.
+    pub(super) fn tip(self) -> Option<String> {
+        match self {
+            NpcButton::Ready => None,
+            NpcButton::NoNpcs => Some(menu().npc_no_npcs.to_string()),
+            NpcButton::Pending(reason) => Some(format!("{}{}", menu().npc_pending_prefix, reason)),
+        }
+    }
 }
 
 /// The label of an NPC command id, for the "not in this build" line.

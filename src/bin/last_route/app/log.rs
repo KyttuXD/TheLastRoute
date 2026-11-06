@@ -9,7 +9,7 @@
 use std::io::Write;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
-use std::time::Instant;
+use crate::shared::clock::Instant;
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Debug)]
 #[repr(u8)]
@@ -66,7 +66,7 @@ pub fn init() {
             env!("CARGO_PKG_VERSION"),
             std::env::consts::OS,
             std::env::consts::ARCH,
-            &args[1..]
+            args.get(1..).unwrap_or_default()
         ),
     );
     if let Some(root) = super::paths::docs_dir() {

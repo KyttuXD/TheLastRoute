@@ -337,7 +337,7 @@ Night Watch is a separate executable (`src/bin/night_watch/main.rs`) that is onl
 | Apartment suites (suite clusters with shared entrances) | missing | important | `game/world/generation/streamed_route_generator.gd` |
 | Great halls (21x21 merged middle rooms) | missing | important | `game/world/generation/streamed_route_generator.gd` |
 | Room roles per district | partial | core | `game/world/generation/streamed_route_generator.gd` |
-| Data-driven region files (hospital and mall) | missing | important | `data/regions/mall.json` |
+| Data-driven region files (hospital and mall) | missing | important | `src/bin/last_route/data/regions/mall.json` |
 | Room furnishing (recipes, orientation, seating, ceiling fixtures) | partial | core | `game/world/generation/streamed_route_generator.gd` |
 | Room and prop catalogue (footprints, solid flags, surface parents) | ported | core | `game/config/room_catalog.gd` |
 | Room doors, canonical thresholds and wall humps | partial | important | `game/world/generation/streamed_route_generator.gd` |
@@ -703,7 +703,7 @@ Night Watch is a separate executable (`src/bin/night_watch/main.rs`) that is onl
 | Prop model catalogue and blocky rebuilds | ported | core | `game/config/prop_model_catalog.gd` |
 | Prop collision boxes | partial | core | `game/config/prop_collider_boxes.gd` |
 | Room catalogue, footprints and room sizes | partial | important | `game/config/room_catalog.gd` |
-| Region definitions (hospital and mall) | partial | important | `data/regions/hospital.json` |
+| Region definitions (hospital and mall) | partial | important | `src/bin/last_route/data/regions/hospital.json` |
 | Loot tables | partial | important | `data/loot/route.json` |
 | Surface themes (walls, floors, ceilings) | partial | important | `data/themes/` |
 | NPC teammate lines and upload budget | partial | important | `data/npc_lines/` |

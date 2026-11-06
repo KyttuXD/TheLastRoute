@@ -1,0 +1,12 @@
+{
+  "schema": "lr.music_box/1",
+  "_note": "The music box: a collectable that is wound from the pack (game/music_box.rs). boxes_per_region is the count of boxes per route region (GameConfig.MUSIC_BOXES_PER_REGION, game_config.gd:546). wound_seconds is the wound time by difficulty id (GameConfig.MUSIC_BOX_WOUND_SECONDS). winddown_seconds is the last stretch where the tune slows (MusicBoxes.mood_for). tune_gain scales the tune loop against the master bus.",
+  "boxes_per_region": 2,
+  "wound_seconds": {
+    "standard": 45.0,
+    "hard": 35.0,
+    "nightmare": 25.0
+  },
+  "winddown_seconds": 15.0,
+  "tune_gain": 0.25
+}

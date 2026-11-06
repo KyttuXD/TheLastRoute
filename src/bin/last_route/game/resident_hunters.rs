@@ -13,7 +13,7 @@
 use super::endless::shift_brain;
 use super::hunting::ability_held;
 use super::level_stack::floor_y_of;
-use super::{pdist, Game, Heater};
+use super::{pdist, Game, Heater, Item};
 use crate::config::*;
 use crate::content::hunters::HunterDef;
 use crate::content::Content;
@@ -850,9 +850,24 @@ impl Game {
             let (ids, mut brains) = split(slots);
             if let Some((fac, fix)) = self.level_parts(level) {
                 let dists: Vec<f32> = brains.iter().map(|b| pdist(b.pos, runner.pos)).collect();
+                // the music boxes still on this floor: the runner's floor reads Game.pickups (where collection is
+                // recorded); another resident floor reads its own facility's boxes (no collection is tracked there)
+                let music_boxes: Vec<(f32, f32)> = if level == self.runner_level() {
+                    self.pickups.iter().filter(|p| p.item == Item::MusicBox && !p.taken).map(|p| p.pos).collect()
+                } else {
+                    fac.pickups
+                        .iter()
+                        .filter(|(_, k)| *k == crate::world::facility::Pickup::MusicBox)
+                        .map(|(c, _)| c.center())
+                        .collect()
+                };
                 for i in nearest_within_cap(&dists, cap) {
                     let (t, is_bot) = self.target_for(&brains[i], level, &runner, &bots);
                     brains[i].target_is_bot = is_bot;
+                    // Nyxie's wake and dispel read the runner even while she chases a bot (nyxie::Nyxie::runner)
+                    if let Gimmick::Nyxie(n) = &mut brains[i].gimmick {
+                        n.runner = is_bot.then(|| runner.clone());
+                    }
                     if let Gimmick::Solyth(s) = &mut brains[i].gimmick {
                         s.heat_locked = self.meters.heat_locked;
                     }
@@ -866,6 +881,7 @@ impl Game {
                         heater_thawed: self.heater != Heater::Frozen,
                         diff: self.difficulty,
                         music_box_left: self.music_box_left,
+                        music_boxes: &music_boxes,
                         exposure: self.meters.exposure,
                     };
                     let held_before = ability_held(&brains[i]);
@@ -899,7 +915,7 @@ impl Game {
                 self.difficulty,
                 kind,
                 vec![("index", json!(index)), ("hunter_id", json!(id)), ("ability", json!(ability))],
-                std::time::Instant::now(),
+                crate::shared::clock::Instant::now(),
             );
         }
         for (level, from, e) in events {

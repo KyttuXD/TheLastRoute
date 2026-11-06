@@ -1,5 +1,5 @@
 //! Build steps:
-//! 1. Embeds the game's data (src/bin/last_route/data, data/regions) and assets (src/bin/last_route/assets) (pictures, Blockbench models)
+//! 1. Embeds the game's data (src/bin/last_route/data, including regions/) and assets (src/bin/last_route/assets) (pictures, Blockbench models)
 //!    into the executable, so the game runs from anywhere; mod packs still load from disk.
 //! 2. Gives the Windows executable the original app icon (src/bin/last_route/assets/branding/logo_*.png, the same
 //!    octagon the Godot export presets use), packed into an .ico at build time.
@@ -80,12 +80,11 @@ fn main() {
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rustc-env=LR_REVISION={}", revision());
     println!("cargo:rerun-if-changed=src/bin/last_route/data");
-    println!("cargo:rerun-if-changed=data/regions");
     let mut code = String::new();
-    // the game's data and pictures live in its bin folder; data/regions stays at the top (the lib's packs read it)
+    // the game's data, region files (regions/) and pictures all live in its bin folder
     embed(
         "DATA_FILES",
-        &[("src/bin/last_route/data", ""), ("data/regions", "regions/")],
+        &[("src/bin/last_route/data", "")],
         &["json"],
         &|_| false,
         true,
@@ -94,7 +93,8 @@ fn main() {
     embed(
         "ASSET_FILES",
         &[("src/bin/last_route/assets", "")],
-        &["png", "bbmodel", "json"],
+        // ttf: the open-licence stand-in fonts (assets/fonts/, OFL 1.1) the browser build falls back to
+        &["png", "bbmodel", "json", "ttf"],
         // The game reads every model through the prop data (props/<set>/<name>.bbmodel, props/blocky/...) and
         // interactables/; the one-per-prop props/<id>.bbmodel rebuilds from before the data named variants are not
         // loaded by anything, so they stay on disk and out of the executable. GLBs are not embedded either (the

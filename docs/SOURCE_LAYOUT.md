@@ -33,7 +33,7 @@ One package, `last_route` ([Cargo.toml](../Cargo.toml)), builds a small shared l
 ## Data and assets
 
 - The game's data and assets live in `src/bin/last_route/data` and `src/bin/last_route/assets`.
-- [data/regions](../data/regions) stays at the top level because the library's `packs` module reads it. `build.rs` embeds it under the `regions/` keys.
+- [src/bin/last_route/data/regions](../src/bin/last_route/data/regions) sits in the bin data folder; the library's `packs` module includes its files from there, and `build.rs` embeds them under the `regions/` keys.
 - Night Watch's reference copy of the Godot rules and cast is in `src/bin/night_watch/assets`. It is not embedded yet.
 - The build script runs once per package, so every executable still embeds the same files. Splitting the embed per executable needs a package per executable, which is not done.
 

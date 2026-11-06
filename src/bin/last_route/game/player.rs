@@ -1281,4 +1281,35 @@ mod tests {
         p.moving = false;
         assert_eq!((p.eye().x, p.eye().z), p.pos);
     }
+
+    #[test]
+    fn the_runner_walks_up_to_a_sewer_railing_and_no_further() {
+        use super::super::rail_tests::samples;
+        let mut checked = 0;
+        for s in samples().iter().take(8) {
+            for (c, bit) in s.fac.rail_edges().iter().step_by(5) {
+                let st = match *bit {
+                    crate::world::facility::RAIL_N => (0.0, -1.0),
+                    crate::world::facility::RAIL_E => (1.0, 0.0),
+                    crate::world::facility::RAIL_S => (0.0, 1.0),
+                    _ => (-1.0, 0.0),
+                };
+                let mut p = Player::new(c.center());
+                p.floor_y = floor_y_of(s.fac.level);
+                if !p.fits(&s.fac, &LevelStack::EMPTY, p.pos.0, p.pos.1) {
+                    continue;
+                }
+                // a hard run at the water: the walk and then a lunge, in the frame sizes the game steps in
+                for _ in 0..30 {
+                    p.move_body(&s.fac, &LevelStack::EMPTY, st.0 * 0.12, st.1 * 0.12);
+                }
+                p.move_body(&s.fac, &LevelStack::EMPTY, st.0 * 3.0, st.1 * 3.0);
+                let cell = crate::world::Cell::new(p.pos.0.floor() as i32, p.pos.1.floor() as i32);
+                assert_eq!(cell, *c, "{}: the runner went through the railing of {c:?} to {:?}", s.name, p.pos);
+                assert!(p.fits(&s.fac, &LevelStack::EMPTY, p.pos.0, p.pos.1));
+                checked += 1;
+            }
+        }
+        assert!(checked > 20, "{checked}");
+    }
 }

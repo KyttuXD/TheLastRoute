@@ -15,14 +15,9 @@
 
 use super::render::SAMPLE_RATE;
 
-pub const WINDDOWN_SECONDS: f32 = 15.0;
-/// GameConfig.MUSIC_BOX_WOUND_SECONDS by difficulty id ("standard" for anything else).
-pub fn wound_seconds(difficulty_id: &str) -> f32 {
-    match difficulty_id {
-        "hard" => 35.0,
-        "nightmare" => 25.0,
-        _ => 45.0,
-    }
+/// The last stretch of a wound box, in seconds, where the tune slows (data/music_box.json `winddown_seconds`).
+pub fn winddown_seconds() -> f32 {
+    crate::game::music_box::rules().winddown_seconds
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,7 +31,7 @@ pub enum Mood {
 pub fn mood_for(seconds_left: f32) -> Mood {
     if seconds_left <= 0.0 {
         Mood::Stopped
-    } else if seconds_left <= WINDDOWN_SECONDS {
+    } else if seconds_left <= winddown_seconds() {
         Mood::WindingDown
     } else {
         Mood::Playing
@@ -50,7 +45,7 @@ pub fn pitch_scale(seconds_left: f32, clock: f32) -> Option<f32> {
     match mood_for(seconds_left) {
         Mood::Playing => Some(1.0),
         Mood::WindingDown => {
-            let left = seconds_left / WINDDOWN_SECONDS;
+            let left = seconds_left / winddown_seconds();
             Some((0.78 + 0.2 * left + 0.045 * (clock * 6.3).sin()).max(0.55))
         }
         Mood::Stopped => None,
@@ -139,7 +134,7 @@ impl LoopPlayer {
 
 /// The whole wind-down as one buffer: the tune from `start_pos` (source frames into the loop, e.g. where the steady
 /// loop was) with the pitch recomputed every output frame from `seconds_left` (counting down from the value given,
-/// normally WINDDOWN_SECONDS) and the tune node's `clock`. Ends when the box stops. Per-frame pitch is a smooth
+/// normally `winddown_seconds()`) and the tune node's `clock`. Ends when the box stops. Per-frame pitch is a smooth
 /// stand-in for the original's per-frame (_process) update.
 pub fn winddown(start_pos: f64, clock: f32, seconds_left: f32) -> Vec<[f32; 2]> {
     let mut player = LoopPlayer::new(tune());

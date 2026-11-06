@@ -30,8 +30,10 @@ use crate::content::embedded;
 use crate::world::rng::Rng;
 use serde_json::Value;
 
-/// `GameConfig.MUSIC_BOXES_PER_REGION` (game_config.gd:546).
-pub const MUSIC_BOXES_PER_REGION: usize = 2;
+/// `GameConfig.MUSIC_BOXES_PER_REGION` (game_config.gd:546), read from data/music_box.json (`boxes_per_region`).
+pub fn boxes_per_region() -> usize {
+    crate::game::music_box::rules().boxes_per_region
+}
 /// `MUSIC_BOX_FLOOR_Y` (streamed_route_generator.gd:5491).
 const MUSIC_BOX_FLOOR_Y: f64 = 0.04;
 /// `MUSIC_BOX_TABLE_LIFT` (5492): added to the tabletop height.
@@ -60,7 +62,7 @@ pub fn music_box_chunk(world: &str, c: Coord) -> bool {
     let mut rng = Rng::new(&format!("{world}:MUSICBOX:{region_x}:{}:{region_z}", c.y));
     let mut slots: Vec<i32> = (0..REGION_SIZE_CHUNKS * REGION_SIZE_CHUNKS).collect();
     let local = (c.x - region_x * REGION_SIZE_CHUNKS) + (c.z - region_z * REGION_SIZE_CHUNKS) * REGION_SIZE_CHUNKS;
-    for _ in 0..MUSIC_BOXES_PER_REGION {
+    for _ in 0..boxes_per_region() {
         let pick = rng.next_index(slots.len());
         if slots[pick] == local {
             return true;
@@ -345,7 +347,7 @@ mod tests {
         };
         for (rx, rz) in [(0, 0), (-1, 2), (3, -2)] {
             let hits = region_chunks(rx, rz).iter().filter(|c| music_box_chunk(world, **c)).count();
-            assert_eq!(hits, MUSIC_BOXES_PER_REGION, "region ({rx}, {rz})");
+            assert_eq!(hits, boxes_per_region(), "region ({rx}, {rz})");
         }
     }
 

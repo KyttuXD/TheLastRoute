@@ -102,36 +102,8 @@ pub fn fixtures(
 ) -> Vec<Fixture> {
     // Exclude the complete flight (5343), then the prop neighbourhoods (5344-5345) and a 9x9 round the centre on
     // a safe chunk (5346-5347).
-    let mut excluded = stair_door_exclusion(stairs);
-    for prop in region_props {
-        exclude_neighbourhood(&mut excluded, prop.cell, 1);
-    }
-    if safe {
-        exclude_neighbourhood(&mut excluded, V2::new(CENTER, CENTER), 4);
-    }
-    // The pool: every room's rectangle in order, skipping suite parents, the excluded cells, the non-floor cells and
-    // the cells that do not have exactly one wall side (5349-5365). A cell is listed once.
-    let mut candidates: Vec<V2> = Vec::new();
-    let mut seen: HashSet<V2> = HashSet::new();
-    for room in rooms {
-        if room.suite_parent {
-            continue;
-        }
-        let rect = room.rect;
-        for z in rect.y..rect.y + rect.h {
-            for x in rect.x..rect.x + rect.w {
-                let cell = V2::new(x, z);
-                if seen.contains(&cell) || excluded.contains(&cell) || !in_chunk(cell) {
-                    continue;
-                }
-                if grid[z as usize][x as usize] != 0 || wall_count(grid, cell) != 1 {
-                    continue;
-                }
-                seen.insert(cell);
-                candidates.push(cell);
-            }
-        }
-    }
+    let excluded = excluded_cells(stairs, region_props, safe);
+    let mut candidates = pool(grid, rooms, &excluded);
     let tag = props::chunk_tag(c);
     let mut rng = Rng::new(&format!("{world}:FIXTURES:{tag}"));
     let target_count = if safe { 3 } else { 6 };
@@ -161,6 +133,108 @@ pub fn fixtures(
         });
     }
     result
+}
+
+/// The cells `_fixtures` keeps its wall fixtures off (5343-5347): the stair flights, the prop neighbourhoods, and a 9x9
+/// round the centre on a safe chunk.
+fn excluded_cells(stairs: &[V2], region_props: &[Prop], safe: bool) -> HashSet<V2> {
+    let mut excluded = stair_door_exclusion(stairs);
+    for prop in region_props {
+        exclude_neighbourhood(&mut excluded, prop.cell, 1);
+    }
+    if safe {
+        exclude_neighbourhood(&mut excluded, V2::new(CENTER, CENTER), 4);
+    }
+    excluded
+}
+
+/// The pool of `_fixtures` (5349-5365): every room's rectangle in order, skipping suite parents, the excluded cells,
+/// the non-floor cells and the cells that do not have exactly one wall side. A cell is listed once.
+fn pool(grid: &Grid, rooms: &[Room], excluded: &HashSet<V2>) -> Vec<V2> {
+    let mut candidates: Vec<V2> = Vec::new();
+    let mut seen: HashSet<V2> = HashSet::new();
+    for room in rooms {
+        if room.suite_parent {
+            continue;
+        }
+        let rect = room.rect;
+        for z in rect.y..rect.y + rect.h {
+            for x in rect.x..rect.x + rect.w {
+                let cell = V2::new(x, z);
+                if seen.contains(&cell) || excluded.contains(&cell) || !in_chunk(cell) {
+                    continue;
+                }
+                if grid[z as usize][x as usize] != 0 || wall_count(grid, cell) != 1 {
+                    continue;
+                }
+                seen.insert(cell);
+                candidates.push(cell);
+            }
+        }
+    }
+    candidates
+}
+
+/// Door clearance for the live floor (`world::door_clearance`). The Godot pool lists every wall-backed cell of a room's
+/// rectangle, which includes the outer cells of a wide doorway and the cells in front of a door; a locker or a vent on
+/// one is in the way of the door. A wall fixture whose cell `blocked(kind, cell)` refuses (kind "hiding_spot" or
+/// "vent") moves to the nearest pool cell within `radius` that `blocked` allows, that no prop neighbourhood, `avoid`
+/// cell or other fixture (less than 5 cells away) takes; with none it is dropped.
+/// Nothing is drawn from the RNG, so the same chunk always gives the same floor. Prop-based hiding spots (`hide`) stay.
+/// Fixtures that need no move keep their cell, order and ids.
+pub fn clear_of_doors(
+    fixtures: &[Fixture],
+    grid: &Grid,
+    rooms: &[Room],
+    stairs: &[V2],
+    region_props: &[Prop],
+    safe: bool,
+    avoid: &[V2],
+    radius: i32,
+    blocked: &dyn Fn(&str, V2) -> bool,
+) -> Vec<Fixture> {
+    let mut excluded = excluded_cells(stairs, region_props, safe);
+    excluded.extend(avoid.iter().copied());
+    let candidates = pool(grid, rooms, &excluded);
+    let mut out: Vec<Fixture> = fixtures.to_vec();
+    let mut dropped: Vec<usize> = Vec::new();
+    for i in 0..out.len() {
+        if out[i].hide.is_some() || !blocked(out[i].kind, out[i].cell) {
+            continue;
+        }
+        let from = out[i].cell;
+        let kind = out[i].kind;
+        let mut best: Option<(i32, V2)> = None;
+        for &cell in &candidates {
+            let (dx, dz) = (cell.x - from.x, cell.y - from.y);
+            if dx.abs() > radius || dz.abs() > radius || blocked(kind, cell) {
+                continue;
+            }
+            let apart = out
+                .iter()
+                .enumerate()
+                .all(|(j, other)| j == i || dropped.contains(&j) || distance(cell, other.cell) >= 5.0);
+            if !apart {
+                continue;
+            }
+            let d = dx * dx + dz * dz;
+            if best.map_or(true, |(bd, bc)| d < bd || (d == bd && (cell.y, cell.x) < (bc.y, bc.x))) {
+                best = Some((d, cell));
+            }
+        }
+        match best {
+            Some((_, cell)) => {
+                let backing_wall = backing_wall_direction(grid, cell);
+                let open_direction = backing_wall.neg();
+                out[i].cell = cell;
+                out[i].backing_wall = backing_wall;
+                out[i].open_direction = open_direction;
+                out[i].yaw = props::room_facing_yaw(cell, cell.add(open_direction));
+            }
+            None => dropped.push(i),
+        }
+    }
+    out.into_iter().enumerate().filter(|(i, _)| !dropped.contains(i)).map(|(_, f)| f).collect()
 }
 
 /// `_prop_hiding_fixtures` (streamed_route_generator.gd:5307-5335): every solid room-template bed and wardrobe becomes

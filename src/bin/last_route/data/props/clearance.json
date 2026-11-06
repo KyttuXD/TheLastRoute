@@ -1,0 +1,18 @@
+{
+  "schema": "lr.door_clearance/1",
+  "_about": "Where lockers, vents and hide spots may NOT stand round a room door, read by world/door_clearance.rs and applied by every placement pass (the live level-0 adapter, the finite and legacy floors, the vent ring). A door's doorway is its row of cells across the wall (door_span cells). For each kind: `along` is how many cells in front of and behind the doorway row stay clear (the door's swing), `across` is how many extra cells past each end of the doorway stay clear. A door of span N sweeps at least ceil(N * swing_per_span) cells each way, so a wide double door keeps more floor clear than a single one. `between_doors_gap` is the widest gap (in cells) between two doors on the same axis whose in-between cells are also clear (the cell wedged between a double-door pair). `approach_depth` is how many cells in front of and behind every doorway must stay free of lockers (the world validation checks it). `relocate_radius` is how far (in cells) a fixture that the rule pushes out of the clearance may be moved to the nearest legal cell before it is dropped. `prop_types` maps each kind to the prop type names that count as that kind when they are placed as props.",
+  "kinds": {
+    "locker": { "along": 1, "across": 0 },
+    "vent": { "along": 1, "across": 0 },
+    "hide": { "along": 1, "across": 0 }
+  },
+  "swing_per_span": 0.5,
+  "between_doors_gap": 2,
+  "approach_depth": 1,
+  "relocate_radius": 8,
+  "prop_types": {
+    "locker": ["locker"],
+    "vent": ["lavaVent"],
+    "hide": ["singleBed", "doubleBed", "gothicDoubleBed", "bedroomWardrobe", "bedroomWardrobeMansion", "gothicWardrobe"]
+  }
+}

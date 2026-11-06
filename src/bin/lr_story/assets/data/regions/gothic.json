@@ -1,0 +1,87 @@
+{
+	"schema": "lr.region/1",
+	"id": "gothic",
+	"hall_floor": [
+		"stone0",
+		"stone1"
+	],
+	"hall_runner": true,
+	"room_default_floor": [
+		"carpet_red"
+	],
+	"room_roles": [
+		"crypt",
+		"chapel",
+		"mourning_room",
+		"archive"
+	],
+	"prop_set": [
+		{
+			"type": "gothicBookcase",
+			"size": [
+				1.4,
+				2.1,
+				0.5
+			]
+		},
+		{
+			"type": "gothicHighbackChair",
+			"size": [
+				0.7,
+				1.35,
+				0.7
+			]
+		},
+		{
+			"type": "gothicCoffinChest",
+			"size": [
+				0.85,
+				0.65,
+				1.9
+			]
+		},
+		{
+			"type": "gothicDoubleBed",
+			"size": [
+				1.8,
+				0.9,
+				2.2
+			]
+		},
+		{
+			"type": "gothicBedroomBench",
+			"size": [
+				1.4,
+				0.7,
+				0.55
+			]
+		},
+		{
+			"type": "gothicBedroomRug",
+			"size": [
+				2.2,
+				0.03,
+				1.4
+			],
+			"solid": false
+		},
+		{
+			"type": "gothicPictureFrameEmpty",
+			"size": [
+				0.75,
+				1,
+				0.12
+			],
+			"solid": false
+		},
+		{
+			"type": "gothicPaintingFrameEmpty",
+			"size": [
+				1.2,
+				1.55,
+				0.12
+			],
+			"solid": false
+		}
+	]
+}

@@ -1,0 +1,105 @@
+{
+	"schema": "lr.region/1",
+	"id": "mansion",
+	"hall_floor": [
+		"parquet0",
+		"parquet1"
+	],
+	"hall_runner": true,
+	"room_default_floor": [
+		"parquet0",
+		"parquet1"
+	],
+	"room_roles": [
+		"drawing_room",
+		"bedroom",
+		"dining_room",
+		"luxury_bathroom"
+	],
+	"prop_set": [
+		{
+			"type": "mansionBookshelf",
+			"size": [
+				1.5,
+				2.1,
+				0.45
+			]
+		},
+		{
+			"type": "loungeCouchWide",
+			"size": [
+				2.6,
+				1,
+				0.95
+			]
+		},
+		{
+			"type": "diningSideboard",
+			"size": [
+				1.4,
+				1.1,
+				0.5
+			]
+		},
+		{
+			"type": "diningChair",
+			"size": [
+				0.65,
+				1,
+				0.65
+			]
+		},
+		{
+			"type": "singleBed",
+			"size": [
+				1,
+				0.75,
+				2
+			]
+		},
+		{
+			"type": "bunkBed",
+			"size": [
+				1.06,
+				1.88,
+				2.1
+			]
+		},
+		{
+			"type": "mansionAreaRug",
+			"size": [
+				2.6,
+				0.03,
+				1.6
+			],
+			"solid": false
+		},
+		{
+			"type": "bathroomMirror",
+			"size": [
+				0.85,
+				1.4,
+				0.14
+			],
+			"solid": false
+		},
+		{
+			"type": "luxuryPictureFrameEmpty",
+			"size": [
+				0.75,
+				1,
+				0.12
+			],
+			"solid": false
+		},
+		{
+			"type": "luxuryPaintingFrameEmpty",
+			"size": [
+				1.2,
+				1.55,
+				0.12
+			],
+			"solid": false
+		}
+	]
+}

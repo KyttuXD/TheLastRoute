@@ -1,0 +1,8 @@
+{
+  "schema": "lr.pack/1",
+  "id": "lr_story",
+  "name": "Dive Lab (sample pack)",
+  "version": "0.1.0",
+  "start": { "map": "dive-lab", "spawn": "start" },
+  "start_scene": null
+}

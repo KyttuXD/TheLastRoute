@@ -1,0 +1,40 @@
+{
+  "schema": "lr.story.scenes/1",
+  "scenes": {
+    "dive-brief": {
+      "once": true,
+      "lines": [
+        { "text": "The fluorescent lights in the dive lab hum the way they always do in the dark hours." },
+        { "speaker": "Felix", "text": "\"Night shift snacks. Don't tell Renata.\"" },
+        { "speaker": "Renata", "text": "\"I can hear you chewing, Felix.\"" }
+      ]
+    },
+    "felix-hello": {
+      "lines": [
+        { "speaker": "Felix", "text": "\"She's good. Headset's seated, board's warm.\"" }
+      ],
+      "choices": [
+        { "text": "Ask about the dive", "next": "felix-dive" },
+        {
+          "text": "Ask for a keycard",
+          "if": { "not": { "has": "keycard" } },
+          "do": [ { "op": "give", "item": "keycard" }, { "op": "toast", "text": "Felix hands you a keycard." } ],
+          "next": "felix-keycard"
+        },
+        { "text": "Leave him to it" }
+      ]
+    },
+    "felix-dive": {
+      "lines": [
+        { "speaker": "Felix", "text": "\"Look at that. A whole dive without counting down.\"" },
+        { "speaker": "Felix", "text": "\"Remember when we had to yank people at the twelve-minute mark?\"" }
+      ],
+      "do": [ { "op": "set_flag", "flag": "heard-about-the-dive" } ]
+    },
+    "felix-keycard": {
+      "lines": [
+        { "speaker": "Felix", "text": "\"Don't lose it. Owen counts them.\"" }
+      ]
+    }
+  }
+}

@@ -3,6 +3,7 @@
 //! with macroquad's audio. No sound file ships; with no audio context the player stays silent.
 
 use super::typewriter::{ui, BlipRules, CallsUi, Voice, Wave};
+use last_route_core::shared::volumes::Volumes;
 use macroquad::audio::{load_sound_from_bytes, play_sound, PlaySoundParams, Sound};
 use std::collections::HashMap;
 use std::f64::consts::PI;
@@ -90,12 +91,16 @@ pub struct BlipPlayer {
 }
 
 impl BlipPlayer {
+    /// The blip level is the data's blip volume x the player's Master x UI sliders (the game plays its caption typing on
+    /// the UI bus too). The sliders are read once, here (shared/volumes.rs).
     pub fn new() -> Self {
-        Self { banks: HashMap::new(), master: ui().blip.master as f32, enabled: true }
+        let mut p = Self { banks: HashMap::new(), master: 0.0, enabled: true };
+        let v = Volumes::load();
+        p.set_master(ui().blip.master as f32 * v.master * v.ui);
+        p
     }
 
-    /// Master volume 0..1; 0 plays nothing. (The settings screen will call this; nothing does yet.)
-    #[allow(dead_code)]
+    /// The blip volume 0..1; 0 plays nothing.
     pub fn set_master(&mut self, volume: f32) {
         self.master = volume.clamp(0.0, 1.0);
     }

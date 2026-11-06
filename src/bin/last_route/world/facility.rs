@@ -151,6 +151,8 @@ pub enum Pickup {
     BackpackSmall,
     BackpackMedium,
     BackpackLarge,
+    /// The music box (game/music_box.rs). Not in `PICKUP_ORDER`: the equipment draw of a finite floor does not place it.
+    MusicBox,
 }
 
 /// PlayerController3D.COLLECTIBLE_ITEMS minus the starting flashlight, in order.
@@ -180,6 +182,44 @@ pub enum DeckKind {
 pub struct WalkSurface {
     pub kind: DeckKind,
     pub height: f32,
+}
+
+/// The railing sides of a walkway cell (`Facility::set_rails`): north is -y, east +x, south +y, west -x.
+pub const RAIL_N: u8 = 1;
+pub const RAIL_E: u8 = 2;
+pub const RAIL_S: u8 = 4;
+pub const RAIL_W: u8 = 8;
+
+/// The side bit of a unit step to a neighbouring cell, 0 for anything that is not one of the four.
+pub fn rail_side_bit(step: (i32, i32)) -> u8 {
+    match step {
+        (0, -1) => RAIL_N,
+        (1, 0) => RAIL_E,
+        (0, 1) => RAIL_S,
+        (-1, 0) => RAIL_W,
+        _ => 0,
+    }
+}
+
+/// The unit step a side bit faces.
+fn rail_side_step(bit: u8) -> (i32, i32) {
+    match bit {
+        RAIL_N => (0, -1),
+        RAIL_E => (1, 0),
+        RAIL_S => (0, 1),
+        _ => (-1, 0),
+    }
+}
+
+/// The solid railings of a level: a thin wall along a cell edge, on the walkway side of it (the sewer's channel
+/// railings, `render::sewer_rails`). `edges` is each (cell, one side bit); `grid` the side bits per cell, indexed by
+/// `Facility::index_rails`. A railing runs the whole edge, `inset` in from it, and is `half` thick on either side of that line.
+#[derive(Clone, Debug, Default)]
+struct Rails {
+    edges: Vec<(Cell, u8)>,
+    grid: Vec<u8>,
+    inset: f32,
+    half: f32,
 }
 
 #[derive(Clone)]
@@ -238,6 +278,8 @@ pub struct Facility {
     air_list: Vec<Cell>,
     drop: Vec<bool>,
     air: Vec<bool>,
+    /// The solid railings along the water's edge (`set_rails`); empty on every level but the sewers.
+    rails: Rails,
     /// The noisy floor and ceiling of an Inferno window (`world/inferno_terrain.rs`); `None` on every other level. Set by
     /// `set_terrain`; the cell walk surfaces above stay for catwalk decks.
     terrain: Option<Terrain>,
@@ -540,6 +582,7 @@ impl Facility {
             air_list: vec![],
             drop: vec![],
             air: vec![],
+            rails: Rails::default(),
             terrain: None,
         };
         let room_count = opt.room_count.max(5);
@@ -547,6 +590,7 @@ impl Facility {
         f.start = f.rooms[0].center;
         f.connect_facility_rooms();
         f.populate_rooms(cat);
+        super::door_clearance::drop_blocked(&mut f);
         let from_start = f.distance_map(f.start);
         f.exit = f.pick_service_lift(&from_start, cat);
         if opt.safe_zone_count.clamp(0, 4) > 0 {
@@ -716,6 +760,7 @@ impl Facility {
         self.exit = self.start;
         self.rebuild_grids();
         self.populate_rooms(cat);
+        super::door_clearance::drop_blocked(self);
         let from_start = self.distance_map(self.start);
         self.place_relays(&from_start, 3, cat);
         self.place_batteries(&from_start, 4, cat);
@@ -780,6 +825,7 @@ impl Facility {
             }
         }
         self.index_drops();
+        self.index_rails();
         self.prop_grid = vec![vec![]; (self.cols * self.rows) as usize];
         for i in 0..self.props.len() {
             if self.props[i].solid {
@@ -852,6 +898,7 @@ impl Facility {
             air_list: vec![],
             drop: vec![],
             air: vec![],
+            rails: Rails::default(),
             terrain: None,
         };
         for (p, ox, oy, region) in parts {
@@ -902,6 +949,11 @@ impl Facility {
             f.stairs.extend(p.stairs.into_iter().map(|s| s.shifted(ox, oy)));
             f.drop_list.extend(p.drop_list.iter().map(|c| sh(*c)));
             f.air_list.extend(p.air_list.iter().map(|c| sh(*c)));
+            // the railings along the water ride along with their chunk (all chunks of a window share one shape)
+            if !p.rails.edges.is_empty() {
+                f.rails.edges.extend(p.rails.edges.iter().map(|(c, bit)| (sh(*c), *bit)));
+                (f.rails.inset, f.rails.half) = (p.rails.inset, p.rails.half);
+            }
             // catwalk decks and their links ride along with the chunk they belong to
             for (c, s) in p.walk_surface {
                 f.walk_surface.insert(sh(c), s);
@@ -1280,6 +1332,9 @@ impl Facility {
                 return false;
             }
         }
+        if self.rail_blocks(x, y, r) {
+            return false;
+        }
         if self.props.is_empty() {
             return true;
         }
@@ -1351,6 +1406,102 @@ impl Facility {
         self.air_list.sort();
         self.air_list.dedup();
         self.index_drops();
+    }
+
+    /// Stands a solid railing on the given sides of walkway cells: `edges` is (cell, side bit `RAIL_N`..`RAIL_W`), `inset`
+    /// how far in from the cell edge the rail line sits and `thickness` how thick the wall is (metres). The railing is a
+    /// wall for every body (`clear_of_solids`: the runner, the bots, the hunters, a knock-back) and the cell it faces is closed
+    /// to the hunters' grid (`build_hunter_grid`), so no route crosses it. Replaces any earlier railings; call
+    /// `rebuild_grids` afterwards.
+    pub fn set_rails(&mut self, edges: &[(Cell, u8)], inset: f32, thickness: f32) {
+        let mut list: Vec<(Cell, u8)> = edges.iter().copied().filter(|(_, bit)| matches!(*bit, RAIL_N | RAIL_E | RAIL_S | RAIL_W)).collect();
+        list.sort();
+        list.dedup();
+        self.rails = Rails { edges: list, grid: vec![], inset, half: thickness * 0.5 };
+    }
+
+    fn index_rails(&mut self) {
+        let (cols, rows) = (self.cols, self.rows);
+        let mut grid = vec![0u8; if self.rails.edges.is_empty() { 0 } else { (cols * rows) as usize }];
+        for (c, bit) in &self.rails.edges {
+            if c.x >= 0 && c.y >= 0 && c.x < cols && c.y < rows {
+                grid[(c.y * cols + c.x) as usize] |= *bit;
+            }
+        }
+        self.rails.grid = grid;
+    }
+
+    /// Every railing as (walkway cell, side bit), sorted.
+    pub fn rail_edges(&self) -> &[(Cell, u8)] {
+        &self.rails.edges
+    }
+
+    /// The side bits of the railings standing on walkway cell `c` (0 for none).
+    pub fn rail_sides(&self, c: Cell) -> u8 {
+        if c.x < 0 || c.y < 0 || c.x >= self.cols || c.y >= self.rows {
+            return 0;
+        }
+        self.rails.grid.get((c.y * self.cols + c.x) as usize).copied().unwrap_or(0)
+    }
+
+    /// Whether a railing stands on the edge between the orthogonal neighbours `a` and `b` (on either one's side of it).
+    pub fn rail_between(&self, a: Cell, b: Cell) -> bool {
+        let step = (b.x - a.x, b.y - a.y);
+        let (there, back) = (rail_side_bit(step), rail_side_bit((-step.0, -step.1)));
+        there != 0 && (self.rail_sides(a) & there != 0 || self.rail_sides(b) & back != 0)
+    }
+
+    /// Whether a body of radius `r` at `(x, y)` overlaps a railing. A railing is the whole edge long and `Rails::half`
+    /// thick either side of its line, `Rails::inset` in from the edge on the walkway cell's side; the height is no
+    /// factor, so a jump does not clear it (there is no vault).
+    fn rail_blocks(&self, x: f64, y: f64, r: f64) -> bool {
+        if self.rails.grid.is_empty() {
+            return false;
+        }
+        let (x0, x1) = ((x - r).floor() as i32, (x + r).floor() as i32);
+        let (y0, y1) = ((y - r).floor() as i32, (y + r).floor() as i32);
+        let off = 0.5 - self.rails.inset as f64;
+        let half = self.rails.half as f64;
+        for cy in y0..=y1 {
+            for cx in x0..=x1 {
+                let bits = self.rail_sides(Cell::new(cx, cy));
+                if bits == 0 {
+                    continue;
+                }
+                let (mx, my) = (cx as f64 + 0.5, cy as f64 + 0.5);
+                for bit in [RAIL_N, RAIL_E, RAIL_S, RAIL_W] {
+                    if bits & bit == 0 {
+                        continue;
+                    }
+                    let (sx, sy) = rail_side_step(bit);
+                    let (bx, by) = (mx + sx as f64 * off, my + sy as f64 * off);
+                    // long across the cell on the edge's own axis, thin on the other
+                    let (hx, hy) = if sx != 0 { (half, 0.5) } else { (0.5, half) };
+                    if (x - bx).abs() < hx + r && (y - by).abs() < hy + r {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// The farthest point of the straight line from `from` to `to` that a body of radius `r` reaches before something
+    /// solid stops it (`to` itself when the line is clear): a knock-back or a shove never carries a body through a wall
+    /// or a railing. A `from` the body does not fit at stays put.
+    pub fn clear_toward(&self, from: (f32, f32), to: (f32, f32), r: f32) -> (f32, f32) {
+        let d = ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt();
+        let steps = ((d / 0.05).ceil() as i32).max(1);
+        let mut last = from;
+        for i in 1..=steps {
+            let t = i as f32 / steps as f32;
+            let p = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+            if !self.body_fits(p.0, p.1, r) {
+                break;
+            }
+            last = p;
+        }
+        last
     }
 
     /// Whether `c` is a drop cell (open air, no floor).
@@ -1676,8 +1827,12 @@ impl Facility {
         self.maze_variant = Some(v.id.clone());
         let tag = format!("{},{}", key.cx, key.cy);
         let loot = v.spawn_rules.loot_scale;
+        // the music box is not loot a region thins: it is kept, and it does not count toward the loot index
         let mut n = 0usize;
-        self.pickups.retain(|_| {
+        self.pickups.retain(|(_, p)| {
+            if *p == Pickup::MusicBox {
+                return true;
+            }
             n += 1;
             maze_regions::keeps(loot, seed, &format!("{tag}:loot"), n)
         });
@@ -1956,6 +2111,7 @@ impl Facility {
             for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
                 let n = Cell::new(c.x + dx, c.y + dy);
                 if d.contains_key(&n)
+                    || self.rail_between(c, n)
                     || !self.can_occupy(n.x as f64 + 0.5, n.y as f64 + 0.5, DEFAULT_AGENT_RADIUS)
                 {
                     continue;
@@ -1980,7 +2136,7 @@ impl Facility {
             }
             for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
                 let n = Cell::new(c.x + dx, c.y + dy);
-                if seen.contains(&n) || !self.is_floor(n.x as f64 + 0.5, n.y as f64 + 0.5) {
+                if seen.contains(&n) || self.rail_between(c, n) || !self.is_floor(n.x as f64 + 0.5, n.y as f64 + 0.5) {
                     continue;
                 }
                 seen.insert(n);
@@ -2039,6 +2195,9 @@ impl Facility {
     }
 
     fn populate_rooms(&mut self, cat: &Catalog) {
+        // the door rule, read before any prop stands: a prop that would close a doorway's approach or stand in a door's
+        // clearance is skipped at that cell (world::door_clearance)
+        let placement = super::door_clearance::Placement::of(self);
         for ri in 0..self.rooms.len() {
             let room = self.rooms[ri].clone();
             if room.prop_types.is_empty() || room.w < 4 || room.h < 4 {
@@ -2098,7 +2257,7 @@ impl Facility {
                     }
                     for offset in 0..4 {
                         let rotation = (rotation_start + offset) % 4;
-                        if !self.room_prop_fits(&room, cell, t, rotation, cat) {
+                        if !self.room_prop_fits(&room, cell, t, rotation, cat, &placement) {
                             continue;
                         }
                         let score = Self::room_prop_preference(&room, cell, t, rotation, cat);
@@ -2136,11 +2295,15 @@ impl Facility {
         t: &str,
         rotation: i32,
         cat: &Catalog,
+        placement: &super::door_clearance::Placement,
     ) -> bool {
         if !self.valid_open_cell(cell) || cell == self.start || cell == self.exit {
             return false;
         }
         let fp = cat.footprint(t, rotation);
+        if !placement.allows(t, cell, fp, cat.is_solid(t)) {
+            return false;
+        }
         let (fx, fy) = (fp.0 as f64, fp.1 as f64);
         let (cx, cy) = (cell.x as f64 + 0.5, cell.y as f64 + 0.5);
         let clearance = 0.12;
@@ -2344,6 +2507,8 @@ impl Facility {
         taken.extend(self.relays.iter());
         taken.extend(self.batteries.iter());
         taken.extend(self.safe_zone.iter());
+        // no locker in a door's way (world::door_clearance)
+        let door_clear = super::door_clearance::Clearance::of(self);
         let mut in_room = vec![];
         let mut in_corridor = vec![];
         for y in 1..self.rows - 1 {
@@ -2351,6 +2516,7 @@ impl Facility {
                 let c = Cell::new(x, y);
                 if !self.can_occupy(x as f64 + 0.5, y as f64 + 0.5, DEFAULT_AGENT_RADIUS)
                     || taken.contains(&c)
+                    || door_clear.blocks(super::door_clearance::Kind::Locker, c)
                 {
                     continue;
                 }
@@ -2502,6 +2668,15 @@ impl Facility {
                     && self.body_fits(x as f32 + 0.5, y as f32 + 0.5, DEFAULT_AGENT_RADIUS as f32);
             }
         }
+        // a railing closes the cell it faces (the water beyond it): a route never steps across the fence. Only an
+        // unfenced shore (the deliberate gap, a chunk border) stays open to the hunters.
+        for (c, bit) in &self.rails.edges {
+            let (dx, dy) = rail_side_step(*bit);
+            let (nx, ny) = (c.x + dx, c.y + dy);
+            if nx >= 0 && ny >= 0 && nx < self.cols && ny < self.rows {
+                open[(ny * self.cols + nx) as usize] = false;
+            }
+        }
         self.hunter_open = open;
         // a deck cell is open to a body at the deck's own height (never to a ground hunter: `hunter_open` stays false)
         let mut deck = vec![false; (self.cols * self.rows) as usize];
@@ -2551,7 +2726,7 @@ impl Facility {
         while let Some(c) = q.pop_front() {
             for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
                 let n = Cell::new(c.x + dx, c.y + dy);
-                if !seen.contains(&n) && self.can_occupy(n.x as f64 + 0.5, n.y as f64 + 0.5, 0.25) {
+                if !seen.contains(&n) && !self.rail_between(c, n) && self.can_occupy(n.x as f64 + 0.5, n.y as f64 + 0.5, 0.25) {
                     seen.insert(n);
                     q.push_back(n);
                 }
@@ -3528,5 +3703,110 @@ mod tests {
         assert_eq!(Stair::ladder(hatch, -1, Cover::Manhole).run, (0, -1));
         let stairs = Stair::stairs(hatch, -1, (0, 1), FlightShape::Switchback, false);
         assert_eq!(stairs.rails_side(), (0, 0));
+    }
+
+    // -- railings along the water ----------------------------------------------------------------------------
+
+    const RAIL_INSET: f32 = 0.06;
+    const RAIL_THICKNESS: f32 = 0.07;
+
+    /// A walkway row y = 10 (x 8..=14) over a walled pocket of "water" y = 11, fenced on its south side except at the
+    /// gap x = 11.
+    fn fenced_pocket() -> Facility {
+        let mut f = Facility::open_test_level(0);
+        f.wall[11][7] = true;
+        f.wall[11][15] = true;
+        for x in 8..=14usize {
+            f.wall[12][x] = true;
+        }
+        let edges: Vec<(Cell, u8)> = (8..=14).filter(|x| *x != 11).map(|x| (Cell::new(x, 10), RAIL_S)).collect();
+        f.set_rails(&edges, RAIL_INSET, RAIL_THICKNESS);
+        f.rebuild_grids();
+        f
+    }
+
+    #[test]
+    fn a_body_walking_into_the_railing_from_the_walkway_stops_short_of_it() {
+        let f = fenced_pocket();
+        let line = 11.0 - RAIL_INSET;
+        for r in [0.24, 0.33] {
+            assert!(f.body_fits(9.5, 10.5, r), "r {r}: the walkway is open");
+            assert!(!f.body_fits(9.5, line, r), "r {r}: the rail line is a wall");
+            assert!(f.body_fits(9.5, 11.5, r), "r {r}: the pocket behind the rail is open floor");
+            let end = f.clear_toward((9.5, 10.5), (9.5, 11.5), r);
+            assert!(end.1 + r <= line - RAIL_THICKNESS * 0.5 + 1e-4, "r {r}: stopped at {end:?}");
+            assert!(f.body_fits(end.0, end.1, r));
+        }
+        // along the railing is free: the walkway is a corridor
+        assert_eq!(f.clear_toward((9.5, 10.5), (13.5, 10.5), 0.33), (13.5, 10.5));
+        // a hunter-sized body walks the row beside its rail
+        assert!(f.body_fits(9.5, 10.5, crate::config::HUNTER_RADIUS));
+    }
+
+    #[test]
+    fn the_gap_in_the_railing_lets_a_body_through() {
+        let f = fenced_pocket();
+        for r in [0.24, 0.33] {
+            assert_eq!(f.clear_toward((11.5, 10.5), (11.5, 11.5), r), (11.5, 11.5), "r {r}");
+        }
+        assert!(!f.rail_between(Cell::new(11, 10), Cell::new(11, 11)));
+        assert!(f.rail_between(Cell::new(10, 10), Cell::new(10, 11)));
+        assert!(f.rail_between(Cell::new(10, 11), Cell::new(10, 10)), "the edge is the same from the water side");
+        assert!(!f.rail_between(Cell::new(10, 10), Cell::new(11, 10)), "along the walkway there is no rail");
+        assert!(!f.rail_between(Cell::new(10, 10), Cell::new(11, 11)), "only orthogonal neighbours share an edge");
+    }
+
+    #[test]
+    fn the_hunters_grid_has_no_edge_across_the_railing() {
+        let f = fenced_pocket();
+        for x in 8..=14 {
+            assert!(f.hunter_open(Cell::new(x, 10)), "the walkway cell {x} stays open");
+        }
+        for x in [8, 9, 10, 12, 13, 14] {
+            assert!(!f.hunter_open(Cell::new(x, 11)), "the water behind the rail at {x} is closed");
+            assert!(f.find_path(Cell::new(x, 10), Cell::new(x, 11)).is_empty(), "no route across the rail at {x}");
+        }
+        assert!(f.hunter_open(Cell::new(11, 11)), "the gap is the way in");
+        let path = f.find_path(Cell::new(9, 10), Cell::new(11, 11));
+        assert!(!path.is_empty());
+        for w in path.windows(2) {
+            let across = w[0].y == 10 && w[1].y == 11 || w[0].y == 11 && w[1].y == 10;
+            assert!(!across || (w[0].x == 11 && w[1].x == 11), "a step across the rail line at {w:?}");
+        }
+        // the same cell without a railing is open to a route
+        let mut bare = fenced_pocket();
+        bare.set_rails(&[], RAIL_INSET, RAIL_THICKNESS);
+        bare.rebuild_grids();
+        assert!(bare.hunter_open(Cell::new(9, 11)));
+        assert_eq!(bare.find_path(Cell::new(9, 10), Cell::new(9, 11)).len(), 2);
+    }
+
+    #[test]
+    fn a_distance_walk_goes_round_through_the_gap() {
+        let f = fenced_pocket();
+        let d = f.distance_map(Cell::new(9, 10));
+        assert_eq!(d.get(&Cell::new(11, 11)), Some(&3), "two along the walkway, one through the gap");
+        assert_eq!(d.get(&Cell::new(9, 11)), Some(&5), "back along the pocket");
+        let n = f.nearest_open(9.5, 11.5, 0.24).expect("a spot");
+        assert_eq!(n, (9.5, 11.5));
+    }
+
+    #[test]
+    fn railings_are_kept_when_chunks_are_merged_and_shifted() {
+        let part = fenced_pocket();
+        let (cols, rows) = (part.cols, part.rows);
+        let merged = Facility::merge(vec![(part, 5, 7, 0)], cols + 5, rows + 7, vec!["maze".into()], "RAILS-MERGE");
+        assert_eq!(merged.rail_sides(Cell::new(19, 17)), RAIL_S);
+        assert_eq!(merged.rail_sides(Cell::new(16, 17)), 0, "the gap column shifted too");
+        assert!(!merged.body_fits(19.5, 17.95, 0.24), "the shifted rail is a wall");
+        assert_eq!(merged.rail_edges().len(), 6);
+    }
+
+    #[test]
+    fn a_railing_never_stops_a_level_without_one() {
+        let f = Facility::open_test_level(0);
+        assert!(f.rail_edges().is_empty());
+        assert_eq!(f.rail_sides(Cell::new(10, 10)), 0);
+        assert_eq!(f.clear_toward((9.5, 10.5), (9.5, 14.5), 0.33), (9.5, 14.5));
     }
 }

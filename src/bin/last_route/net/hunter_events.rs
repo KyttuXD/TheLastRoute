@@ -18,7 +18,8 @@ use crate::hunters::brain::State;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use crate::shared::clock::Instant;
+use std::time::Duration;
 
 pub const SCHEMA: &str = "lr.hunter_events/1";
 

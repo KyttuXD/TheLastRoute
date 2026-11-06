@@ -727,7 +727,7 @@ mod tests {
 
     #[test]
     fn the_sewer_pipes_region_file_is_a_region_with_pipe_rules() {
-        let text = include_str!("../../../../data/regions/sewer_pipes.json");
+        let text = include_str!("../data/regions/sewer_pipes.json");
         let region = crate::content::regions::parse_file("regions/sewer_pipes.json", text).expect("a valid region");
         assert_eq!(region.id, "sewer_pipes");
         let v: Value = serde_json::from_str(text).unwrap();

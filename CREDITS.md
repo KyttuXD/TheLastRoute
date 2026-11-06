@@ -19,7 +19,7 @@ port is also by Kyttu and uses the files of that Godot project, for private use 
 | `assets/branding/logo_{16,32,64,128,256}.png`, `logo.svg` | `src/bin/last_route/assets/branding/` | window and executable icon |
 | `docs/player_skin_steve_reference.png`, `docs/player_skin_alex_reference.png` (the Godot2 project's reference skins, 64x64) | `src/bin/last_route/assets/skins/ref_classic.png`, `ref_slim.png` | the skin catalogue (FROM CATALOG) |
 | `data/hunters/*.json` | `src/bin/last_route/data/hunters/` | hunter tuning (lr.hunter/1) |
-| `data/regions/*.json` | `data/regions/` | region data (lr.region/1) |
+| `src/bin/last_route/data/regions/*.json` | `src/bin/last_route/data/regions/` | region data (lr.region/1) |
 | `data/loot/*.json` | `src/bin/last_route/data/loot/` | loot tables (lr.loot/1) |
 | `game/config/room_catalog.gd` (extracted constants) | `src/bin/last_route/data/rooms/catalog.json` | room types, props and footprints |
 
@@ -32,7 +32,7 @@ Ported from the original's code (no files copied; the output is the same pixels 
 
 | Original | Here | Use |
 |---|---|---|
-| `game/look/ref_textures.gd` (RefTextures painters), `ref_look.gd`, `floor_sets.gd`, `data/themes/**`, `data/regions/*.json` | `src/bin/last_route/render/textures/` | the 99 painted wall, floor, ceiling and duct textures and the per-district / per-room picks, hall runners and safe-room pad; byte-identical to Godot's output (see its NOTES.md) |
+| `game/look/ref_textures.gd` (RefTextures painters), `ref_look.gd`, `floor_sets.gd`, `data/themes/**`, `src/bin/last_route/data/regions/*.json` | `src/bin/last_route/render/textures/` | the 99 painted wall, floor, ceiling and duct textures and the per-district / per-room picks, hall runners and safe-room pad; byte-identical to Godot's output (see its NOTES.md) |
 | `game/autoload/sound.gd` and its cue tables, `music_box_tune.gd` | `src/bin/last_route/audio/cues/` | every sound cue rendered to the original's samples (checked against `tests/validate_audio.gd` goldens) |
 | `game/world/generation/streamed_route_generator.gd` (constants and stair-bay rules) | `src/bin/last_route/world/infinite.rs`, `src/bin/last_route/game/endless.rs` | the Infinite route's chunks, districts, seams and stairwells |
 | `ui/route_loading.gd`, account panel, `GameState.route_checkpoint` | `src/bin/last_route/ui/menus.rs`, `src/bin/last_route/shared/checkpoint.rs` | BUILDING ROUTE screen, account menu, saved run |

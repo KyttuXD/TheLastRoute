@@ -1,0 +1,67 @@
+{
+  "schema": "lr.player_anim/1",
+  "_source": "Godot: player_controller_3d.gd 1923-1935 (clip choice), remote_players.gd 736-763 and 1194-1215 (remote clip + pace), model_slot.gd 444 (crouch fade), player_stride.gd + hunter_stride.gd (pace). Read by render/anim/runner.rs.",
+  "rig": "player/anim/player_mannequin.json",
+  "rig_slim": "player/anim/player_mannequin_slim.json",
+  "expected_clips": ["idle", "walk", "chase", "sprint", "crouch", "stun", "stun_recover", "tpose", "sit", "lay", "jump", "fall", "climb"],
+  "clips": {
+    "idle": "idle",
+    "walk": "walk",
+    "sprint": "sprint",
+    "chased": "chase",
+    "crouch": "idle",
+    "jump": "jump",
+    "fall": "fall",
+    "climb": "climb",
+    "swim": "walk",
+    "stun": "stun",
+    "down": "lay"
+  },
+  "_wire": "The pose name a runner's net sample carries (`clip`, Godot remote_players.gd `clip`): state key -> wire name. A sample with no name (an older client) is read from its moving, sprinting and crouching flags.",
+  "wire": {
+    "idle": "idle",
+    "walk": "walk",
+    "sprint": "sprint",
+    "chased": "chase",
+    "crouch": "crouch",
+    "jump": "jump",
+    "fall": "fall",
+    "climb": "climb",
+    "swim": "swim",
+    "stun": "stun",
+    "down": "down"
+  },
+  "_swim": "Rust-only (the Godot rig has no swim clip): deep water plays the walk clip at the real swim pace and leans the body forward by pitch_deg about the hips (pivot_m above the feet), easing at pitch_rate per second.",
+  "swim": {
+    "pitch_deg": 38.0,
+    "pitch_rate": 6.0,
+    "pivot_m": 0.9
+  },
+  "_crouch": "Crouching plays IDLE (the imported crouch pose folds knees and elbows backward) and fades the body to this alpha; fade_rate is move_toward units per second.",
+  "crouch_alpha": 0.55,
+  "fade_rate": 2.8,
+  "blend": {
+    "travel": 0.15,
+    "idle": 0.2,
+    "air": 0.1,
+    "climb": 0.1,
+    "default": 0.1
+  },
+  "speed": {
+    "still_mps": 0.05,
+    "smoothing": 12.0,
+    "scale_smoothing": 10.0
+  },
+  "stride": {
+    "_note": "References at authored size (assets/hunters_blocky/stride_table.json, player_mannequin); the rig's own stride table wins when it has the clip. Multiplied by model_scale (PlayerModels.SCALE).",
+    "table": { "walk": 1.567, "sprint": 3.152, "chase": 3.976 },
+    "fallback_ref": 1.5,
+    "model_scale": 1.067,
+    "min_ratio": 0.55,
+    "max_ratio": 1.9,
+    "hard_min": 0.2,
+    "hard_max": 2.6,
+    "paced_clips": ["walk", "sprint", "chase"],
+    "swap_clips": ["walk", "sprint"]
+  }
+}

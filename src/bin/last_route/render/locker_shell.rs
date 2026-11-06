@@ -124,6 +124,19 @@ pub fn shell_boxes(bounds: Bounds, inset: f32, vent_min: f32, vent_max: f32) -> 
     quads
 }
 
+/// The shell for a camera that looks out at heights `eye_lo`..`eye_hi` (metres above the locker's floor, the hiding
+/// camera's vent band): the same quads as [`shell_boxes`], with the vent slit cut at those heights instead of the
+/// data's fractions, so the slit sits where the camera looks whatever height the prop model has. A band the bounds do
+/// not reach is clamped to them.
+pub fn view_shell(bounds: Bounds, d: &ShellData, eye_lo: f32, eye_hi: f32) -> Vec<Quad> {
+    // `shell_boxes` reads the band as fractions of the inset shell's height, so measure against that span
+    let (y0, y1) = (bounds.min[1] + d.inset_m, bounds.max[1] - d.inset_m);
+    let h = (y1 - y0).max(1e-4);
+    let frac = |y: f32| ((y - y0) / h).clamp(0.0, 1.0);
+    let (lo, hi) = (frac(eye_lo.min(eye_hi)), frac(eye_lo.max(eye_hi)));
+    shell_boxes(bounds, d.inset_m, lo, hi)
+}
+
 /// Triangle list for the hidden locker's shell: vertices and indices (both windings when two-sided).
 pub fn shell_mesh(bounds: Bounds, d: &ShellData) -> (Vec<[f32; 3]>, Vec<u16>) {
     let quads = shell_boxes(bounds, d.inset_m, d.vent_band_min, d.vent_band_max);
@@ -169,6 +182,47 @@ mod tests {
             assert!(hi <= v0 + 1e-4 || lo >= v1 - 1e-4, "front quad covers the vent band");
         }
         assert_eq!(quads.len(), 7);
+    }
+
+    /// A prop shorter than the one the data fractions were written for (1.9 m, like the hiding_spot model).
+    const SHORT: Bounds = Bounds { min: [-0.33, 0.0, -0.4], max: [0.33, 1.9, 0.42] };
+
+    #[test]
+    fn the_view_shell_slit_covers_the_cameras_look_heights_on_any_prop_height() {
+        let d = ShellData::parse(include_str!("../data/render/locker_shell.json")).unwrap();
+        let (lo, hi) = (1.38, 1.72);
+        for b in [B, SHORT] {
+            let front_z = b.max[2] - d.inset_m;
+            let fronts: Vec<Quad> = view_shell(b, &d, lo, hi)
+                .into_iter()
+                .filter(|q| q.iter().all(|p| (p[2] - front_z).abs() < 1e-5))
+                .collect();
+            assert_eq!(fronts.len(), 2, "a plate below and one above the slit");
+            for y in [lo, (lo + hi) * 0.5, hi] {
+                for q in &fronts {
+                    let (qlo, qhi) = (q[0][1].min(q[2][1]), q[0][1].max(q[2][1]));
+                    assert!(!(qlo < y - 1e-3 && qhi > y + 1e-3), "a plate covers the look height {y}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_view_shell_slit_follows_the_look_heights_in_data() {
+        let d = ShellData::parse(include_str!("../data/render/locker_shell.json")).unwrap();
+        let top = |lo: f32, hi: f32| {
+            let front_z = SHORT.max[2] - d.inset_m;
+            view_shell(SHORT, &d, lo, hi)
+                .into_iter()
+                .filter(|q| q.iter().all(|p| (p[2] - front_z).abs() < 1e-5))
+                .map(|q| q[0][1].max(q[2][1]))
+                .fold(f32::MIN, f32::max)
+        };
+        assert!(top(1.38, 1.72) > 1.7, "the upper plate starts above the slit");
+        // a slit higher than the prop leaves only the lower plate, and a reversed pair is the same slit
+        assert_eq!(top(5.0, 6.0), top(6.0, 5.0));
+        assert_eq!(view_shell(SHORT, &d, 1.38, 1.72), view_shell(SHORT, &d, 1.72, 1.38));
+        assert_eq!(view_shell(SHORT, &d, 5.0, 6.0).len(), 6, "no plate above a slit that the prop does not reach");
     }
 
     #[test]

@@ -114,6 +114,10 @@ impl ConfigFile {
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        // the browser build writes no files (paths::WRITES_TO_DISK): the account and guest files are not kept there
+        if !crate::shared::paths::WRITES_TO_DISK {
+            return Ok(());
+        }
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -249,8 +253,10 @@ pub fn device_id(dir: &Path) -> String {
         }
     }
     let id: String = super::random_bytes(16).iter().map(|b| format!("{b:02x}")).collect();
-    let _ = std::fs::create_dir_all(dir);
-    let _ = std::fs::write(&path, &id);
+    if crate::shared::paths::WRITES_TO_DISK {
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::write(&path, &id);
+    }
     id
 }
 
@@ -268,7 +274,7 @@ mod tests {
     }
 
     fn scratch(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("lr_net_store_{name}_{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("lr_net_store_{name}_{}", crate::shared::task::process_id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d

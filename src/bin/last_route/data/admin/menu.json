@@ -137,6 +137,35 @@
     { "id": "all_chat_off", "label": "ALL CHAT OFF" },
     { "id": "all_smart", "label": "ALL SMART" }
   ],
+  "npc_live": [
+    "teleport", "follow", "unfollow", "smart", "remove",
+    "all_teleport", "all_follow", "all_unfollow", "all_smart"
+  ],
+  "npc_pending": [
+    { "id": "freeze", "reason": "NPCS HAVE NO FREEZE STATE YET // THEY WALK ON THEIR OWN" },
+    { "id": "resume", "reason": "NPCS HAVE NO FREEZE STATE YET // NOTHING TO RESUME" },
+    { "id": "all_freeze", "reason": "NPCS HAVE NO FREEZE STATE YET // THEY WALK ON THEIR OWN" },
+    { "id": "all_resume", "reason": "NPCS HAVE NO FREEZE STATE YET // NOTHING TO RESUME" },
+    { "id": "goto", "reason": "NPCS HAVE NO WALK-TO-A-POINT ORDER YET // USE FOLLOW ME OR TELEPORT TO ME" },
+    { "id": "ignore", "reason": "HUNTERS PICK BOT TARGETS BY THE DIFFICULTY RULES, NO PER-NPC IGNORE YET" },
+    { "id": "target", "reason": "HUNTERS PICK BOT TARGETS BY THE DIFFICULTY RULES, NO PER-NPC TARGET YET" },
+    { "id": "chat_on", "reason": "NPCS HAVE NO CHAT SYSTEM YET" },
+    { "id": "chat_off", "reason": "NPCS HAVE NO CHAT SYSTEM YET" },
+    { "id": "down", "reason": "NPCS HAVE NO HEALTH OR DOWNED STATE YET" },
+    { "id": "revive", "reason": "NPCS HAVE NO HEALTH OR DOWNED STATE YET" },
+    { "id": "kill", "reason": "NPCS HAVE NO HEALTH OR DEATH YET // REMOVE TAKES THEM OFF THE FLOOR" },
+    { "id": "clear", "reason": "NPCS HAVE NO HUNTER FLAGS TO CLEAR YET" },
+    { "id": "spectate", "reason": "THERE IS NO NPC SPECTATE CAMERA YET" },
+    { "id": "all_ignore", "reason": "HUNTERS PICK BOT TARGETS BY THE DIFFICULTY RULES, NO PER-NPC IGNORE YET" },
+    { "id": "all_target", "reason": "HUNTERS PICK BOT TARGETS BY THE DIFFICULTY RULES, NO PER-NPC TARGET YET" },
+    { "id": "all_clear", "reason": "NPCS HAVE NO HUNTER FLAGS TO CLEAR YET" },
+    { "id": "all_chat_on", "reason": "NPCS HAVE NO CHAT SYSTEM YET" },
+    { "id": "all_chat_off", "reason": "NPCS HAVE NO CHAT SYSTEM YET" }
+  ],
+  "npc_text": {
+    "no_npcs": "NO NPCS ON THIS RUN // PRESS SPAWN NPC FIRST",
+    "pending": "NOT IN THIS BUILD YET // "
+  },
   "npc_smarts": [30, 50, 70, 90],
   "npc_spawn_max": 32,
   "fields": [

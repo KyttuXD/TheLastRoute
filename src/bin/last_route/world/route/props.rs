@@ -18,7 +18,7 @@
 //! (streamed_route_generator.gd:1024-1028): `GeometryResolve.push_out`, `scale_surface_mounts` (furnished.rs), then
 //! `PlacementClearance.clear` (clearance.rs). `layout::chunk_layout` calls it on the grid after
 //! `grid::level0_after_props`.
-//! A region with a catalogue row (data/regions/<id>.json) takes its prop set from the row (`prop_set`); the code
+//! A region with a catalogue row (src/bin/last_route/data/regions/<id>.json) takes its prop set from the row (`prop_set`); the code
 //! table in prop_tables.rs is the fallback for a region with no row.
 //! Not ported yet: `_stair_door_exclusion` (5177, empty on level 0: stair_links returns []), the dual-level activity
 //! entries (2841, behind `_dual_level_pair_active`, false at streamed_route_generator.gd:821), and
@@ -94,7 +94,7 @@ pub struct Prop {
 /// door planner (`level0_before_props`, grid.rs), which the furniture reads; `doors` are its planned doors;
 /// `circulation` is the layout's circulation mask. `stairs` is always empty on level 0.
 ///
-/// The region's prop set comes from the code table, or from data/regions for the mall and hospital (`prop_set`).
+/// The region's prop set comes from the code table, or from src/bin/last_route/data/regions for the mall and hospital (`prop_set`).
 /// Returns `Some(vec![])` for a chunk with no rooms, as Godot does (2826-2827). These are the props before the
 /// post passes (`post_passes`).
 pub fn region_props(
@@ -268,7 +268,7 @@ pub fn region_props(
 }
 
 /// `REGION_PROP_SETS.get(region, REGION_PROP_SETS["maze"])` (streamed_route_generator.gd:2828). A region with a
-/// catalogue row (data/regions/<id>.json, read through ContentRegistry) takes its set from the row; a region with
+/// catalogue row (src/bin/last_route/data/regions/<id>.json, read through ContentRegistry) takes its set from the row; a region with
 /// no row keeps the code table.
 fn prop_set(region: &str) -> Vec<PropSetEntry> {
     if let Some(def) = region_def(region) {

@@ -1,0 +1,21 @@
+{
+  "format": "lr.hunter_marker_colors/1",
+  "note": "How a revealed hunter is told apart on the minimap and the full map. A to Z hunters keep the red danger dot and show their letter (text and outline below). Void hunters have no letter: the dot is filled with their colour, ringed by the outline so white, black and gray stay visible on the dark map. Hunters from mod packs (and any void hunter with no entry here) get the neutral dot and the first letter of their name. Colours are #rrggbb; each fill and its outline must differ in brightness by at least min_contrast.",
+  "min_contrast": 0.3,
+  "letter": { "text": "#ffffff", "outline": "#05080a" },
+  "neutral": { "fill": "#b9c0c4", "outline": "#05080a", "text": "#ffffff" },
+  "colors": {
+    "void_black":  { "fill": "#101010", "outline": "#f2f2f2" },
+    "void_blue":   { "fill": "#2f6bff", "outline": "#ffffff" },
+    "void_brown":  { "fill": "#8b5a2b", "outline": "#ffffff" },
+    "void_cyan":   { "fill": "#19d3e6", "outline": "#05080a" },
+    "void_gray":   { "fill": "#8c8c8c", "outline": "#ffffff" },
+    "void_green":  { "fill": "#2fbf4f", "outline": "#05080a" },
+    "void_orange": { "fill": "#ff8c1a", "outline": "#05080a" },
+    "void_pink":   { "fill": "#ff7ac8", "outline": "#05080a" },
+    "void_purple": { "fill": "#9b4dff", "outline": "#ffffff" },
+    "void_red":    { "fill": "#ff2a2a", "outline": "#ffffff" },
+    "void_white":  { "fill": "#ffffff", "outline": "#05080a" },
+    "void_yellow": { "fill": "#ffe600", "outline": "#05080a" }
+  }
+}

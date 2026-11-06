@@ -426,6 +426,7 @@ mod tests {
             heater_thawed: true,
             diff: Difficulty::Standard,
             music_box_left: 0.0,
+            music_boxes: &[],
             exposure: 0.0,
         };
         b.update(dt, &ctx, t, 1, 0, &Difficulty::Standard.profile());
@@ -531,6 +532,7 @@ mod tests {
                     heater_thawed: true,
                     diff: Difficulty::Standard,
                     music_box_left: 0.0,
+                    music_boxes: &[],
                     exposure: 0.0,
                 };
                 g.before_perception(&mut b, 0.1, &c, &runner(near), &mut vec![]);

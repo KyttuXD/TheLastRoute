@@ -1,6 +1,6 @@
 {
   "schema": "lr.sewer_rails/1",
-  "_about": "Iron railings along every walkable sewer cell edge next to channel water or the falls' drop (render/sewer_rails.rs; Godot _spawn_channel_railings, RAIL_INSET 0.06, RAIL_HEIGHT 1.0). inset_m: how far in from the cell edge the rail line sits. height_m: the post and top-rail height. top_rail_drop_m: the top rail's centre below height_m; mid_rail_fraction: the mid rail's centre as a fraction of height_m. rail_thickness_m: the square section of both rails. post_size_m and post_spacing_m: a post every spacing metres along the edge, starting at the segment's start corner. The cell facing the deliberate waterfall jump gets no rail.",
+  "_about": "Iron railings along every walkable sewer cell edge next to channel water or the falls' drop (render/sewer_rails.rs; Godot _spawn_channel_railings, RAIL_INSET 0.06, RAIL_HEIGHT 1.0). inset_m: how far in from the cell edge the rail line sits. height_m: the post and top-rail height. top_rail_drop_m: the top rail's centre below height_m; mid_rail_fraction: the mid rail's centre as a fraction of height_m. rail_thickness_m: the square section of both rails. post_size_m and post_spacing_m: a post every spacing metres along the edge, starting at the segment's start corner. The cell facing the deliberate waterfall jump gets no rail, and a walkable jump cell (the lower deck beside its pool) gets none on its own water edges, so the pool stays a way out. collision: the railing is also a wall (world/facility.rs set_rails) for the runner, the bots and the hunters, as tall as height_m (no vault: a jump does not clear it), and the water cell behind it is closed to the hunters' routes. solid false makes the rails scenery again; thickness_m is the wall's thickness along the rail line's normal (0.07 matches the posts) and must leave a hunter room to walk between the rails of a one-cell walkway.",
   "inset_m": 0.06,
   "height_m": 1.0,
   "top_rail_drop_m": 0.03,
@@ -8,5 +8,9 @@
   "rail_thickness_m": 0.055,
   "post_size_m": 0.07,
   "post_spacing_m": 1.0,
-  "color": [0.231, 0.247, 0.259]
+  "color": [0.231, 0.247, 0.259],
+  "collision": {
+    "solid": true,
+    "thickness_m": 0.07
+  }
 }

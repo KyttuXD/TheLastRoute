@@ -4,11 +4,13 @@
 //!
 //! MENU / UI volume scales the menu blip. Graphics quality drives the 3D render-target scale
 //! via `app::targets` (LOW/MEDIUM/HIGH/AUTO). Some rows are kept for the panel only (spoken-chat
-//! volume, voices, subtitles, ads, pause-on-focus-loss, teammate waypoints): this build has no
-//! voice chat, so they are stored but change nothing. VSYNC and the FPS LIMIT are live:
+//! volume, voices, speak nearby chat, subtitles, ads, pause-on-focus-loss, teammate waypoints): the chat speaker
+//! (audio/tts.rs) is not fed by chat yet, so the spoken-chat rows are stored but change nothing until it is. When it
+//! is, a line's level is Master x SPOKEN CHAT (`tts::speech_volume`). VSYNC and the FPS LIMIT are live:
 //! `app::pacing` applies them (see `swap_interval` and `frame_cap_fps` below).
 
 use crate::net::world_sync::{clean_skin, SKIN_DEFAULT};
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 
 #[derive(Clone)]
@@ -16,7 +18,7 @@ pub struct Settings {
     pub master_volume: f32,
     pub gameplay_volume: f32,
     pub ui_volume: f32,
-    /// 0..100, steps of 5 (SPOKEN CHAT).
+    /// 0..100, steps of 5 (SPOKEN CHAT). Scales spoken chat with Master once the speaker is connected (audio/tts.rs).
     pub voice_volume: f32,
     pub voices: bool,
     pub subtitles: bool,
@@ -102,14 +104,25 @@ impl ArmsSetting {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn path() -> Option<PathBuf> {
     super::paths::user_file("settings.json")
 }
 
+/// The saved settings text: the page's localStorage in the browser build, the settings file everywhere else.
+#[cfg(target_arch = "wasm32")]
+fn read_text() -> Option<String> {
+    super::web_storage::get(super::web_storage::SETTINGS_KEY)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_text() -> Option<String> {
+    path().and_then(|p| std::fs::read_to_string(p).ok())
+}
+
 impl Settings {
     pub fn load() -> Settings {
-        path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
+        read_text()
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
             .map(|v| Settings::from_json(&v))
             .unwrap_or_default()
@@ -190,6 +203,11 @@ impl Settings {
     }
 
     pub fn save(&self) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = super::web_storage::set(super::web_storage::SETTINGS_KEY, &self.to_json().to_string());
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(p) = path() {
             let _ = std::fs::create_dir_all(p.parent().unwrap());
             let _ = std::fs::write(p, self.to_json().to_string());

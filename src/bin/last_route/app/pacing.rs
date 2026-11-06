@@ -17,7 +17,8 @@
 //! FPS LIMIT: `Pacer::wait` sleeps the loop to a fixed frame grid before the next frame. With no
 //! cap it returns at once, so the loop runs as fast as vsync (if on) allows.
 
-use std::time::{Duration, Instant};
+use crate::shared::clock::Instant;
+use std::time::Duration;
 
 /// The GL swap interval for the VSYNC row: 1 waits for the display's refresh, 0 does not.
 pub fn swap_interval_for(on: bool) -> i32 {
@@ -267,7 +268,7 @@ fn nap(d: Duration) {
     if d.is_zero() {
         std::thread::yield_now();
     } else {
-        std::thread::sleep(d);
+        crate::shared::task::pause(d);
     }
 }
 

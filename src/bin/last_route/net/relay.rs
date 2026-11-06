@@ -10,7 +10,8 @@
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use crate::shared::clock::Instant;
+use std::time::Duration;
 
 pub const HEADER_BYTES: usize = 14;
 pub const MAX_DATAGRAM_BYTES: usize = 1472;
@@ -110,6 +111,10 @@ pub enum RelayEvent {
     Migrating { epoch: i64, ready: bool },
     /// HOST_JOIN_AS_GUEST: the public route already has a host; this host registration did not take.
     JoinAsGuest,
+    /// WebSocket relay only (`/api/ws`): a guest joined the room (host side). The UDP relay never sends it.
+    PeerJoined(u32),
+    /// WebSocket relay only: a guest left the room (host side).
+    PeerLeft(u32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

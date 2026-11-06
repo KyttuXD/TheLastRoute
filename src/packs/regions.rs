@@ -1,5 +1,5 @@
 //! The region catalogue (standalone: serde_json and std only, so `lr_server` builds without the game
-//! modules): `lr.region/1` files (data/regions/<id>.json). A port of the region contract
+//! modules): `lr.region/1` files (src/bin/last_route/data/regions/<id>.json). A port of the region contract
 //! in game/config/content_registry.gd (REGION_FIELDS, _parse_entry, resolve_with) and of
 //! REGION_RULES.md section 1, so both engines read the same files with the same rules.
 //!
@@ -24,25 +24,25 @@ pub const DEFAULT_ROOM_MIN: i32 = 10;
 /// The largest room side, in grid cells (the game's `world::facility::MAX_AUTHORED_ROOM_SIZE`).
 pub const MAX_ROOM_SIZE: i32 = 26;
 
-/// The built-in region files, `(file name, text)`. The game embeds the same files from data/regions/ at
+/// The built-in region files, `(file name, text)`. The game embeds the same files from src/bin/last_route/data/regions/ at
 /// build time; a test in `content::regions` keeps the two lists equal.
 pub const BUILTIN_FILES: [(&str, &str); 16] = [
-    ("regions/apartment.json", include_str!("../../data/regions/apartment.json")),
-    ("regions/beach.json", include_str!("../../data/regions/beach.json")),
-    ("regions/carnival.json", include_str!("../../data/regions/carnival.json")),
-    ("regions/gothic.json", include_str!("../../data/regions/gothic.json")),
-    ("regions/greenhouse.json", include_str!("../../data/regions/greenhouse.json")),
-    ("regions/hospital.json", include_str!("../../data/regions/hospital.json")),
-    ("regions/hotel.json", include_str!("../../data/regions/hotel.json")),
-    ("regions/inferno_caves.json", include_str!("../../data/regions/inferno_caves.json")),
-    ("regions/lab.json", include_str!("../../data/regions/lab.json")),
-    ("regions/mall.json", include_str!("../../data/regions/mall.json")),
-    ("regions/mansion.json", include_str!("../../data/regions/mansion.json")),
-    ("regions/maze.json", include_str!("../../data/regions/maze.json")),
-    ("regions/prison.json", include_str!("../../data/regions/prison.json")),
-    ("regions/sewer.json", include_str!("../../data/regions/sewer.json")),
-    ("regions/sewer2.json", include_str!("../../data/regions/sewer2.json")),
-    ("regions/sewer_pipes.json", include_str!("../../data/regions/sewer_pipes.json")),
+    ("regions/apartment.json", include_str!("../bin/last_route/data/regions/apartment.json")),
+    ("regions/beach.json", include_str!("../bin/last_route/data/regions/beach.json")),
+    ("regions/carnival.json", include_str!("../bin/last_route/data/regions/carnival.json")),
+    ("regions/gothic.json", include_str!("../bin/last_route/data/regions/gothic.json")),
+    ("regions/greenhouse.json", include_str!("../bin/last_route/data/regions/greenhouse.json")),
+    ("regions/hospital.json", include_str!("../bin/last_route/data/regions/hospital.json")),
+    ("regions/hotel.json", include_str!("../bin/last_route/data/regions/hotel.json")),
+    ("regions/inferno_caves.json", include_str!("../bin/last_route/data/regions/inferno_caves.json")),
+    ("regions/lab.json", include_str!("../bin/last_route/data/regions/lab.json")),
+    ("regions/mall.json", include_str!("../bin/last_route/data/regions/mall.json")),
+    ("regions/mansion.json", include_str!("../bin/last_route/data/regions/mansion.json")),
+    ("regions/maze.json", include_str!("../bin/last_route/data/regions/maze.json")),
+    ("regions/prison.json", include_str!("../bin/last_route/data/regions/prison.json")),
+    ("regions/sewer.json", include_str!("../bin/last_route/data/regions/sewer.json")),
+    ("regions/sewer2.json", include_str!("../bin/last_route/data/regions/sewer2.json")),
+    ("regions/sewer_pipes.json", include_str!("../bin/last_route/data/regions/sewer_pipes.json")),
 ];
 
 /// The only region schema this build reads. A new shape is `lr.region/2`, added in both engines.
@@ -414,7 +414,7 @@ impl RegionTable {
         table
     }
 
-    /// The built-in regions: every file under data/regions/ (`BUILTIN_FILES`).
+    /// The built-in regions: every file under src/bin/last_route/data/regions/ (`BUILTIN_FILES`).
     pub fn builtin(warnings: &mut Vec<String>) -> RegionTable {
         Self::from_builtin_files(BUILTIN_FILES, warnings)
     }
@@ -565,8 +565,8 @@ pub fn table() -> &'static RegionTable {
 mod tests {
     use super::*;
 
-    const HOSPITAL: &str = include_str!("../../data/regions/hospital.json");
-    const MALL: &str = include_str!("../../data/regions/mall.json");
+    const HOSPITAL: &str = include_str!("../bin/last_route/data/regions/hospital.json");
+    const MALL: &str = include_str!("../bin/last_route/data/regions/mall.json");
 
     /// The smallest valid file: one prop item, no optional keys.
     const MIN: &str = r#"{"schema":"lr.region/1","id":"t","hall_floor":["a"],"hall_runner":false,"room_default_floor":["a"],"room_roles":["r"],"prop_set":[{"type":"crate","size":[1,1,1]}]}"#;

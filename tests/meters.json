@@ -41,7 +41,7 @@
       "steps": [
         { "cmd": "step", "frames": 1500, "observe": false },
         { "expect": [ { "path": "meters.ambient", "op": ">", "value": 63 }, { "path": "meters.heat_locked", "value": false } ] },
-        { "cmd": "teleport", "to": "relay", "index": 0 },
+        { "cmd": "teleport", "x": 23.5, "z": 7.5 },
         { "cmd": "step", "frames": 300, "observe": false },
         { "expect": [ { "path": "player.local_climate", "op": "<", "value": -5 }, { "path": "meters.temperature", "op": "<", "value": 55 } ] }
       ]

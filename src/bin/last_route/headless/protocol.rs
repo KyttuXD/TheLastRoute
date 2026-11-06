@@ -162,7 +162,6 @@ pub fn kind_name(f: Focus) -> &'static str {
         Focus::Ladder(_) => "LADDER",
         Focus::LightSwitch(_) => "LIGHT_SWITCH",
         Focus::Heater => "HEATER_STATION",
-        Focus::MusicBox => "MUSIC_BOX",
         Focus::Vent(_) => "VENT",
         Focus::Shop(_) => "SHOP",
         Focus::Door(_) => "ROOM_DOOR",
@@ -178,6 +177,7 @@ fn parse_item(s: &str) -> Option<Item> {
         "axe" | "rescue_axe" => Item::Axe,
         "battery" => Item::Battery,
         "stim" | "stim_pack" => Item::Stim,
+        "music_box" => Item::MusicBox,
         _ => return None,
     })
 }
@@ -864,7 +864,7 @@ impl Session {
             }
             "give" => {
                 let Some(item) = c.get("item").and_then(|v| v.as_str()).and_then(parse_item) else {
-                    return err("give needs item: flashlight, taser, crowbar, axe, battery, stim");
+                    return err("give needs item: flashlight, taser, crowbar, axe, battery, stim, music_box");
                 };
                 let n = c.get("count").and_then(|v| v.as_i64()).unwrap_or(match item {
                     Item::Crowbar => CROWBAR_DURABILITY as i64,
@@ -1222,7 +1222,12 @@ impl Session {
                 "stairs" => g.fac.stairs.get(i).map(|s| s.cell),
                 "safe_zone" => g.fac.safe_zone,
                 "heater" => g.fix.heater,
-                "music_box" => g.fix.music_box,
+                "music_box" => g
+                    .pickups
+                    .iter()
+                    .filter(|p| !p.taken && p.item == Item::MusicBox)
+                    .nth(i)
+                    .map(|p| Cell::new(p.pos.0.floor() as i32, p.pos.1.floor() as i32)),
                 "vent" => g.fix.vents.get(i).copied(),
                 "light_switch" => g.fac.room_lights.get(i).map(|l| l.switch_cell),
                 "coin" => g.fix.coins.get(i).copied(),
@@ -1328,7 +1333,12 @@ impl Session {
                     "locker" => g.fac.hiding.get(i).map(|h| (g.fac.locker_center(h), 1.0)),
                     "pickup" => g.pickups.get(i).map(|p| (p.pos, 0.15)),
                     "heater" => g.fix.heater.map(|c| (c.center(), 0.6)),
-                    "music_box" => g.fix.music_box.map(|c| (c.center(), 0.5)),
+                    "music_box" => g
+                        .pickups
+                        .iter()
+                        .filter(|p| !p.taken && p.item == Item::MusicBox)
+                        .nth(i)
+                        .map(|p| (p.pos, 0.5)),
                     "light_switch" => g
                         .fac
                         .room_lights
@@ -1580,8 +1590,8 @@ impl Session {
                 g.heater == crate::game::Heater::Powered,
             );
         }
-        if let Some(c) = g.fix.music_box {
-            add("MUSIC_BOX", c.center(), 0.5, false);
+        for p in g.pickups.iter().filter(|p| !p.taken && p.item == Item::MusicBox) {
+            add("MUSIC_BOX_PICKUP", p.pos, 0.5, false);
         }
         for c in &g.fix.vents {
             add("VENT", c.center(), 0.4, false);

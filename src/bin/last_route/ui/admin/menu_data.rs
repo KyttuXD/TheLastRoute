@@ -27,6 +27,14 @@ pub(super) struct MenuData {
     pub act_visual: Vec<(&'static str, &'static str)>,
     pub npc_ops: Vec<(&'static str, &'static str)>,
     pub npc_all: Vec<(&'static str, &'static str)>,
+    /// The NPC command ids this build runs (the rest are `npc_pending`).
+    pub npc_live: Vec<&'static str>,
+    /// The NPC commands that cannot act yet, each with the reason its tooltip shows.
+    pub npc_pending: Vec<(&'static str, &'static str)>,
+    /// Shown when an NPC button is gray because there is no NPC to act on.
+    pub npc_no_npcs: &'static str,
+    /// Put before a pending command's reason.
+    pub npc_pending_prefix: &'static str,
     pub npc_smarts: Vec<i32>,
     /// The most NPCs one SPAWN NPC press makes (the count stepper stops here).
     pub npc_spawn_max: i32,
@@ -126,6 +134,37 @@ pub(super) fn parse(v: &Value) -> Result<MenuData, String> {
     if npc_smarts.len() != 4 {
         return Err("npc_smarts needs exactly 4 entries (the SMART dropdown)".to_string());
     }
+    let npc_ops = pairs(v, "npc_ops", "id", "label")?;
+    let npc_all = pairs(v, "npc_all", "id", "label")?;
+    let npc_live = strings(v, "npc_live")?;
+    let npc_pending = pairs(v, "npc_pending", "id", "reason")?;
+    for (id, reason) in &npc_pending {
+        if reason.trim().is_empty() {
+            return Err(format!("npc_pending: {id} has an empty reason"));
+        }
+    }
+    for (id, _) in npc_ops.iter().chain(npc_all.iter()) {
+        let live = npc_live.contains(id);
+        let pending = npc_pending.iter().any(|(p, _)| p == id);
+        if live == pending {
+            return Err(format!("npc command {id} must be in exactly one of npc_live and npc_pending"));
+        }
+    }
+    for id in npc_live.iter().copied().chain(npc_pending.iter().map(|(id, _)| *id)) {
+        if !npc_ops.iter().chain(npc_all.iter()).any(|(o, _)| *o == id) {
+            return Err(format!("npc_live / npc_pending names {id}, which is not a button"));
+        }
+    }
+    let text = |key: &str| {
+        v.get("npc_text")
+            .and_then(|t| t.get(key))
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(leak)
+            .ok_or_else(|| format!("npc_text.{key} is missing"))
+    };
+    let npc_no_npcs = text("no_npcs")?;
+    let npc_pending_prefix = text("pending")?;
     if v.get("run_speeds").and_then(Value::as_array).map_or(0, Vec::len) < 1
         || v.get("game_speeds").and_then(Value::as_array).map_or(0, Vec::len) < 1
     {
@@ -145,8 +184,12 @@ pub(super) fn parse(v: &Value) -> Result<MenuData, String> {
         act_world: pairs(v, "act_world", "id", "label")?,
         act_story: pairs(v, "act_story", "id", "label")?,
         act_visual: pairs(v, "act_visual", "id", "label")?,
-        npc_ops: pairs(v, "npc_ops", "id", "label")?,
-        npc_all: pairs(v, "npc_all", "id", "label")?,
+        npc_ops,
+        npc_all,
+        npc_live,
+        npc_pending,
+        npc_no_npcs,
+        npc_pending_prefix,
         npc_smarts,
         npc_spawn_max,
         fields: pairs(v, "fields", "label", "placeholder")?,
@@ -249,6 +292,39 @@ mod tests {
         let mut v = base;
         v["game_speeds"] = json!([]);
         assert!(parse(&v).is_err());
+    }
+
+    #[test]
+    fn every_npc_button_is_live_or_pending_with_a_reason() {
+        let m = menu();
+        let all: Vec<&str> = m.npc_ops.iter().chain(m.npc_all.iter()).map(|(id, _)| *id).collect();
+        assert_eq!(m.npc_live.len() + m.npc_pending.len(), all.len());
+        for id in &all {
+            let live = m.npc_live.contains(id);
+            let reason = m.npc_pending.iter().find(|(p, _)| p == id).map(|(_, r)| *r);
+            assert!(live != reason.is_some(), "{id}");
+            if let Some(r) = reason {
+                assert!(r.len() > 12, "{id}: {r:?}");
+            }
+        }
+        assert!(m.npc_no_npcs.contains("SPAWN NPC"));
+    }
+
+    #[test]
+    fn an_npc_command_in_both_lists_or_neither_is_an_error() {
+        let base: Value = serde_json::from_str(embedded::data_under("admin/menu.json").next().unwrap().1).unwrap();
+        let mut v = base.clone();
+        v["npc_live"].as_array_mut().unwrap().push(json!("goto"));
+        assert!(parse(&v).is_err(), "goto is pending");
+        let mut v = base.clone();
+        v["npc_live"].as_array_mut().unwrap().retain(|e| e != "smart");
+        assert!(parse(&v).is_err(), "smart is in neither list");
+        let mut v = base.clone();
+        v["npc_live"].as_array_mut().unwrap().push(json!("dance"));
+        assert!(parse(&v).is_err(), "dance is not a button");
+        let mut v = base;
+        v["npc_pending"][0]["reason"] = json!("  ");
+        assert!(parse(&v).is_err(), "a pending command needs its reason");
     }
 
     #[test]

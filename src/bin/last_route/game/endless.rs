@@ -517,6 +517,7 @@ fn floor_item(k: &Pickup) -> Option<(Item, i32)> {
         Pickup::Axe => (Item::Axe, AXE_DURABILITY),
         Pickup::Battery => (Item::Battery, 1),
         Pickup::Stim => (Item::Stim, 1),
+        Pickup::MusicBox => (Item::MusicBox, 1),
         _ => return None,
     })
 }
@@ -998,7 +999,7 @@ impl Game {
                 self.difficulty,
                 crate::net::valve_events::BURST,
                 crate::net::valve_events::burst_fields(id),
-                std::time::Instant::now(),
+                crate::shared::clock::Instant::now(),
             );
         }
     }
@@ -1410,11 +1411,17 @@ impl Game {
     /// Adds route hunters until the population matches the relays recovered so far. On level 0 this is the
     /// residency pass (admission, then loading and storing); the old builder's levels keep the spawn-spot lineup.
     pub(super) fn ensure_hunters(&mut self, content: &Content) {
+        self.ensure_hunters_at(content, None);
+    }
+
+    /// `ensure_hunters`, with the place a hunter this pass wakes investigating: `wake` (where a bot recovered a relay),
+    /// else where the runner stands.
+    pub(super) fn ensure_hunters_at(&mut self, content: &Content, wake: Option<(f32, f32)>) {
         if super::guest_gate::is_display_only(self) {
             return;
         }
         if self.inf.as_ref().is_some_and(|i| i.level == 0) {
-            self.residency(content);
+            self.residency_at(content, wake);
             return;
         }
         let want = population(self.difficulty, self.relays_collected);
@@ -1441,7 +1448,7 @@ impl Game {
                 &format!("{seed}:HUNTER:{n}"),
                 self.difficulty,
             );
-            let at = self.p.pos;
+            let at = wake.unwrap_or(self.p.pos);
             b.activate_at(at);
             self.settle_new_brain(&mut b);
             self.hunters.push(b);
@@ -1455,6 +1462,11 @@ impl Game {
     /// first load, where the relay activation used to wake a spawn. A change in who is loaded resets the director, whose
     /// ids are indices into `hunters`.
     pub(super) fn residency(&mut self, content: &Content) {
+        self.residency_at(content, None);
+    }
+
+    /// `residency`, with the place a hunter loaded for the first time wakes investigating: `wake`, else the runner.
+    pub(super) fn residency_at(&mut self, content: &Content, wake: Option<(f32, f32)>) {
         if super::guest_gate::is_display_only(self) {
             return;
         }
@@ -1468,7 +1480,7 @@ impl Game {
             _ => return,
         };
         let difficulty = self.difficulty;
-        let runner_pos = self.p.pos;
+        let runner_pos = wake.unwrap_or(self.p.pos);
         let o = (origin.0 as f32, origin.1 as f32);
         let Some(inf) = self.inf.as_mut() else { return };
         // the loaded list follows the hunter list (a caller outside this module may have pushed or removed one)

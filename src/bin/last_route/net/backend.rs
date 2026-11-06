@@ -7,7 +7,8 @@ use super::config::{self, BackendConfig};
 use super::store::{self, AccountStore, GuestStore, StoredSession};
 use super::{NetError, Pending};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use crate::shared::clock::Instant;
+use std::time::Duration;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum BackendEvent {
@@ -364,7 +365,7 @@ impl Backend {
             if self.ops.is_empty() {
                 break;
             }
-            std::thread::sleep(Duration::from_millis(10));
+            crate::shared::task::pause(Duration::from_millis(10));
         }
         all
     }

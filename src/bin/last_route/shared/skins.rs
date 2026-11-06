@@ -505,12 +505,12 @@ pub fn download_error_text(error: &NetError) -> String {
 #[derive(Default)]
 struct Book {
     running: std::collections::HashSet<String>,
-    retry_at: std::collections::HashMap<String, std::time::Instant>,
+    retry_at: std::collections::HashMap<String, crate::shared::clock::Instant>,
     /// Failures in a row per key, and the words of the last one (shown to the player, never an address).
     fails: std::collections::HashMap<String, u32>,
     why: std::collections::HashMap<String, String>,
     /// When the recent downloads were started, newest last (see [`Book::fetch_allowed`]).
-    fetches: std::collections::VecDeque<std::time::Instant>,
+    fetches: std::collections::VecDeque<crate::shared::clock::Instant>,
 }
 
 /// The wait after the `fails`-th failure in a row: 5 s, 10 s, 20 s, ... never more than `cap` (the config's `retry_secs`,
@@ -528,7 +528,7 @@ const FETCH_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl Book {
     /// True (and `key` is now running) when it is not running, not cooling down, and fewer than `max` jobs run.
-    fn begin(&mut self, key: &str, now: std::time::Instant, max: usize) -> bool {
+    fn begin(&mut self, key: &str, now: crate::shared::clock::Instant, max: usize) -> bool {
         if self.running.contains(key) || self.running.len() >= max || self.retry_at.get(key).is_some_and(|at| now < *at) {
             return false;
         }
@@ -538,7 +538,7 @@ impl Book {
 
     /// [`Book::begin`] for a download, also held back by the global start rate (a flood of announced ids cannot start a flood
     /// of requests, and a key that is only refused for the rate is not marked as failed).
-    fn begin_download(&mut self, key: &str, now: std::time::Instant, max: usize) -> bool {
+    fn begin_download(&mut self, key: &str, now: crate::shared::clock::Instant, max: usize) -> bool {
         while self.fetches.front().is_some_and(|t| now.duration_since(*t) >= FETCH_WINDOW) {
             self.fetches.pop_front();
         }
@@ -560,7 +560,7 @@ impl Book {
 
     /// Ends a job: a failure cools `key` down for `retry` (with `ramp`, a short wait that doubles per failure in a row up
     /// to `retry`), a success clears it. `why` is what a failure says.
-    fn finish_with(&mut self, key: &str, ok: bool, now: std::time::Instant, retry: std::time::Duration, ramp: bool, why: &str) {
+    fn finish_with(&mut self, key: &str, ok: bool, now: crate::shared::clock::Instant, retry: std::time::Duration, ramp: bool, why: &str) {
         self.running.remove(key);
         if ok {
             self.retry_at.remove(key);
@@ -580,12 +580,12 @@ impl Book {
     /// so they are not to be trusted to stay few): the oldest whose cool-down is over go first. A key still cooling down is
     /// never forgotten (that would let it be asked for again at once; the start rate bounds how fast new ones appear), and
     /// neither is a running job or the runner's own upload.
-    fn prune_downloads(&mut self, now: std::time::Instant) {
+    fn prune_downloads(&mut self, now: crate::shared::clock::Instant) {
         let tracked = self.retry_at.keys().filter(|k| k.starts_with("down:")).count();
         if tracked <= MAX_TRACKED_DOWNLOADS {
             return;
         }
-        let mut over: Vec<(std::time::Instant, String)> = self
+        let mut over: Vec<(crate::shared::clock::Instant, String)> = self
             .retry_at
             .iter()
             .filter(|(k, at)| k.starts_with("down:") && !self.running.contains(*k) && **at <= now)
@@ -598,7 +598,7 @@ impl Book {
     }
 
     #[cfg(test)]
-    fn finish(&mut self, key: &str, ok: bool, now: std::time::Instant, retry: std::time::Duration) {
+    fn finish(&mut self, key: &str, ok: bool, now: crate::shared::clock::Instant, retry: std::time::Duration) {
         self.finish_with(key, ok, now, retry, false, "");
     }
 }
@@ -711,14 +711,14 @@ pub fn prune_cache(dir: &Path, keep: usize) -> usize {
 /// in `protected` (drawn right now, or the runner's own skin) is never evicted by the age rule.
 pub fn prune_cache_with(dir: &Path, keep: usize, tmp_stale: std::time::Duration, protected: &std::collections::HashSet<String>) -> usize {
     let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
-    let now = std::time::SystemTime::now();
+    let now = crate::shared::clock::SystemTime::now();
     let mut removed = 0;
-    let mut kept: Vec<(std::time::SystemTime, PathBuf, bool)> = Vec::new();
+    let mut kept: Vec<(crate::shared::clock::SystemTime, PathBuf, bool)> = Vec::new();
     for path in entries.filter_map(Result::ok).map(|e| e.path()) {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
         let stem = name.strip_suffix(".png").or_else(|| name.strip_suffix(".tmp"));
         let Some(stem) = stem.filter(|s| is_skin_hash(s)) else { continue };
-        let modified = std::fs::metadata(&path).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+        let modified = std::fs::metadata(&path).and_then(|m| m.modified()).map(crate::shared::clock::from_std).unwrap_or(crate::shared::clock::UNIX_EPOCH);
         if name.ends_with(".tmp") {
             // A temp file is a download in flight until it is old enough to be a leftover.
             if now.duration_since(modified).is_ok_and(|age| age >= tmp_stale) && std::fs::remove_file(&path).is_ok() {
@@ -779,11 +779,11 @@ pub fn fetch_skin_in_background(id: &str) {
         return;
     }
     let key = format!("down:{id}");
-    if !book().begin_download(&key, std::time::Instant::now(), cfg.max_concurrent) {
+    if !book().begin_download(&key, crate::shared::clock::Instant::now(), cfg.max_concurrent) {
         return;
     }
     let id = id.to_string();
-    std::thread::spawn(move || {
+    crate::shared::task::detach(move || {
         // Once per run, before the first download: drop what an older build cached that fails the full check.
         static PURGED: std::sync::Once = std::sync::Once::new();
         PURGED.call_once(|| {
@@ -796,7 +796,7 @@ pub fn fetch_skin_in_background(id: &str) {
             eprintln!("skins: {id} could not be fetched ({why}); trying again shortly");
             note_download_failed(&id, &why);
         }
-        book().finish_with(&key, ok, std::time::Instant::now(), std::time::Duration::from_secs(cfg.retry_secs), true, &why);
+        book().finish_with(&key, ok, crate::shared::clock::Instant::now(), std::time::Duration::from_secs(cfg.retry_secs), true, &why);
     });
 }
 
@@ -935,17 +935,17 @@ fn verify_held_in(hash: &str, origin: String, path: PathBuf, settings: SkinConfi
         return true;
     }
     let key = format!("verify:{hash}");
-    if !book().begin(&key, std::time::Instant::now(), settings.max_concurrent) {
+    if !book().begin(&key, crate::shared::clock::Instant::now(), settings.max_concurrent) {
         return false;
     }
     let hash = hash.to_string();
-    std::thread::spawn(move || {
+    crate::shared::task::detach(move || {
         let answer = verify_held_at(&settings, &path, &origin, &hash);
         if let Some(held) = answer {
             lock_checked(known).insert(hash.clone(), held);
         }
         let retry = std::time::Duration::from_secs(settings.retry_secs);
-        book().finish_with(&key, answer.is_some(), std::time::Instant::now(), retry, true, "the server could not be asked");
+        book().finish_with(&key, answer.is_some(), crate::shared::clock::Instant::now(), retry, true, "the server could not be asked");
     });
     false
 }
@@ -1045,15 +1045,15 @@ pub fn upload_in_background(cfg: BackendConfig, session_token: String, hash: Str
     let Some(bytes) = read_skin(&hash) else {
         // The picture is gone from the skins folder and the cache: say so instead of looking like an upload on its way.
         let retry = std::time::Duration::from_secs(settings.retry_secs);
-        book().finish_with(&key, false, std::time::Instant::now(), retry, true, "the skin file could not be read");
+        book().finish_with(&key, false, crate::shared::clock::Instant::now(), retry, true, "the skin file could not be read");
         return false;
     };
     // One upload per skin at a time, and a failed one waits `retry_secs` before the next try (Godot `RETRY_SECONDS`), so a
     // caller may ask again every frame.
-    if !book().begin(&key, std::time::Instant::now(), settings.max_concurrent) {
+    if !book().begin(&key, crate::shared::clock::Instant::now(), settings.max_concurrent) {
         return false;
     }
-    std::thread::spawn(move || {
+    crate::shared::task::detach(move || {
         let result = api::upload_skin(&cfg, &session_token, &bytes);
         let ok = matches!(&result, Ok(server_id) if *server_id == hash);
         let why = match &result {
@@ -1069,7 +1069,7 @@ pub fn upload_in_background(cfg: BackendConfig, session_token: String, hash: Str
         }
         // A server without the skin routes will not grow them in seconds: wait the full delay instead of ramping up.
         let ramp = why != SERVER_NEEDS_UPDATE;
-        book().finish_with(&key, ok, std::time::Instant::now(), std::time::Duration::from_secs(settings.retry_secs), ramp, &why);
+        book().finish_with(&key, ok, crate::shared::clock::Instant::now(), std::time::Duration::from_secs(settings.retry_secs), ramp, &why);
     });
     true
 }
@@ -1082,17 +1082,17 @@ pub fn clear_in_background(cfg: BackendConfig, session_token: String) {
     }
     let Some(settings) = config() else { return };
     let key = "clear".to_string();
-    if !book().begin(&key, std::time::Instant::now(), settings.max_concurrent) {
+    if !book().begin(&key, crate::shared::clock::Instant::now(), settings.max_concurrent) {
         return;
     }
-    std::thread::spawn(move || {
+    crate::shared::task::detach(move || {
         let result = api::clear_skin(&cfg, &session_token);
         // A server with no skin store of its own (SKINS_UNAVAILABLE) holds nothing the game could clear either.
         let ok = clear_succeeded(&result);
         if ok {
             forget_uploaded();
         }
-        book().finish_with(&key, ok, std::time::Instant::now(), std::time::Duration::from_secs(settings.retry_secs), false, "the website could not clear the skin");
+        book().finish_with(&key, ok, crate::shared::clock::Instant::now(), std::time::Duration::from_secs(settings.retry_secs), false, "the website could not clear the skin");
     });
 }
 
@@ -1121,9 +1121,9 @@ pub fn skin_is_slim(id: &str) -> Option<bool> {
     }
     // A picture that is not here yet, or fails the check, is looked for again only every two seconds: this is asked
     // for every remote runner on every frame.
-    static MISSES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> = std::sync::OnceLock::new();
+    static MISSES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, crate::shared::clock::Instant>>> = std::sync::OnceLock::new();
     let misses = MISSES.get_or_init(Default::default);
-    let now = std::time::Instant::now();
+    let now = crate::shared::clock::Instant::now();
     {
         let mut m = misses.lock().unwrap_or_else(|p| p.into_inner());
         if m.get(id).is_some_and(|at| now.duration_since(*at) < std::time::Duration::from_secs(2)) {
@@ -1869,7 +1869,7 @@ mod tests {
 
     #[test]
     fn lists_valid_skins_and_rejects_wrong_size_or_non_png() {
-        let dir = std::env::temp_dir().join(format!("lr_skins_test_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lr_skins_test_{}", crate::shared::task::process_id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("night.png"), png_head(64, 64)).unwrap();
@@ -2062,7 +2062,7 @@ mod tests {
     }
 
     fn temp_cache(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("lr_skins_{name}_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lr_skins_{name}_{}", crate::shared::task::process_id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -2117,7 +2117,8 @@ mod tests {
 
     #[test]
     fn a_failed_download_is_not_retried_before_the_cool_down_and_the_number_of_jobs_is_capped() {
-        use std::time::{Duration, Instant};
+        use crate::shared::clock::Instant;
+use std::time::Duration;
         let (start, retry) = (Instant::now(), Duration::from_secs(60));
         let mut book = Book::default();
         assert!(book.begin("down:a", start, 2));
@@ -2133,7 +2134,8 @@ mod tests {
 
     #[test]
     fn failed_jobs_are_retried_after_a_short_wait_that_grows_to_the_cap() {
-        use std::time::{Duration, Instant};
+        use crate::shared::clock::Instant;
+use std::time::Duration;
         let (start, cap) = (Instant::now(), Duration::from_secs(60));
         let secs = |s| Duration::from_secs(s);
         assert_eq!([1, 2, 3, 4, 5, 6, 40].map(|n| backoff(n, cap)), [secs(5), secs(10), secs(20), secs(40), secs(60), secs(60), secs(60)]);
@@ -2163,7 +2165,7 @@ mod tests {
         book().running.insert(format!("up:{unique}"));
         assert_eq!(share_state(&unique, true, false, &[]), ShareState::Uploading, "only while the job runs");
         book().running.remove(&format!("up:{unique}"));
-        book().finish_with(&format!("up:{unique}"), false, std::time::Instant::now(), std::time::Duration::from_secs(60), true, "the server did not accept this sign-in");
+        book().finish_with(&format!("up:{unique}"), false, crate::shared::clock::Instant::now(), std::time::Duration::from_secs(60), true, "the server did not accept this sign-in");
         let state = share_state(&unique, true, false, &[]);
         assert_eq!(state, ShareState::Retrying("the server did not accept this sign-in".into()));
         assert!(state.text().starts_with("not shared yet: "));
@@ -2171,7 +2173,7 @@ mod tests {
 
     #[test]
     fn failed_download_keys_stay_bounded_once_cooled_and_keep_their_cooldown_before() {
-        let (start, cap) = (std::time::Instant::now(), std::time::Duration::from_secs(60));
+        let (start, cap) = (crate::shared::clock::Instant::now(), std::time::Duration::from_secs(60));
         let mut book = Book::default();
         book.finish_with("up:own", false, start, cap, true, "x");
         for n in 0..(MAX_TRACKED_DOWNLOADS * 3) {
@@ -2189,7 +2191,7 @@ mod tests {
 
     #[test]
     fn downloads_start_at_a_bounded_rate_whatever_ids_are_announced() {
-        let (start, cap) = (std::time::Instant::now(), std::time::Duration::from_secs(60));
+        let (start, cap) = (crate::shared::clock::Instant::now(), std::time::Duration::from_secs(60));
         let mut book = Book::default();
         let mut started = 0;
         for n in 0..100 {
@@ -2227,7 +2229,7 @@ mod tests {
         let (a, b) = ("d".repeat(64), "e".repeat(64));
         let mut plan = UploadPlan::default();
         assert!(plan.due(1.0, &a, true, Vec::new, 60.0));
-        book().finish_with(&format!("up:{a}"), false, std::time::Instant::now(), std::time::Duration::from_secs(60), true, "boom");
+        book().finish_with(&format!("up:{a}"), false, crate::shared::clock::Instant::now(), std::time::Duration::from_secs(60), true, "boom");
         assert!(matches!(share_state(&a, true, false, &[]), ShareState::Retrying(_)));
         assert!(plan.due(2.0, &b, true, Vec::new, 60.0));
         assert_eq!(share_state(&a, true, false, &[]), ShareState::Waiting, "the old skin's failure no longer lingers");
@@ -2270,7 +2272,7 @@ mod tests {
 
     #[test]
     fn a_cached_skin_is_not_fetched_again() {
-        let dir = std::env::temp_dir().join(format!("lr_skins_cache_test_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lr_skins_cache_test_{}", crate::shared::task::process_id()));
         let _ = std::fs::remove_dir_all(&dir);
         let (id, bytes) = good_skin();
         assert!(fetch_needed(&dir, &id), "nothing cached yet");
@@ -2611,7 +2613,7 @@ mod tests {
     // ---- hostile skins, bounded reads, collision-free ids, the worn skin, the catalogue ----
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("lr_skins_{tag}_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lr_skins_{tag}_{}", crate::shared::task::process_id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -2943,7 +2945,7 @@ mod tests {
         std::fs::write(dir.join(format!("{young}.tmp")), b"half").unwrap();
         let old_tmp = dir.join(format!("{old}.tmp"));
         std::fs::write(&old_tmp, b"half").unwrap();
-        let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        let long_ago = crate::shared::clock::SystemTime::now() - std::time::Duration::from_secs(3600);
         std::fs::File::options().write(true).open(&old_tmp).unwrap().set_modified(long_ago).unwrap();
         let none = std::collections::HashSet::new();
         let removed = prune_cache_with(&dir, 16, std::time::Duration::from_secs(60), &none);
@@ -2971,7 +2973,7 @@ mod tests {
             .collect();
         for (i, (id, png)) in skins.iter().enumerate() {
             write_skin_file(&dir, id, png).unwrap();
-            let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000 + i as u64);
+            let when = crate::shared::clock::UNIX_EPOCH + std::time::Duration::from_secs(1_000 + i as u64);
             std::fs::File::options().write(true).open(cached_path(&dir, id)).unwrap().set_modified(when).unwrap();
         }
         let protected: std::collections::HashSet<String> = [skins[0].0.clone()].into();
@@ -2993,7 +2995,7 @@ mod tests {
         assert!(is_skin_hash(&worn.hash));
         assert!(cached_path(&cache, &worn.hash).exists(), "the cache copy is written");
         // 20 peer skins arrive and the prune keeps 16: the cache copy of the own skin is the oldest
-        std::fs::File::options().write(true).open(cached_path(&cache, &worn.hash)).unwrap().set_modified(std::time::UNIX_EPOCH).unwrap();
+        std::fs::File::options().write(true).open(cached_path(&cache, &worn.hash)).unwrap().set_modified(crate::shared::clock::UNIX_EPOCH).unwrap();
         for i in 0..20u8 {
             let mut px = fixture_rgba(false);
             px[1] = i + 1;
@@ -3137,7 +3139,7 @@ mod tests {
         std::fs::write(cached_path(&dir, &bad_id), &bad).unwrap();
         let leftover = dir.join(format!("{}.tmp", "a".repeat(64)));
         std::fs::write(&leftover, b"half").unwrap();
-        std::fs::File::options().write(true).open(&leftover).unwrap().set_modified(std::time::UNIX_EPOCH).unwrap();
+        std::fs::File::options().write(true).open(&leftover).unwrap().set_modified(crate::shared::clock::UNIX_EPOCH).unwrap();
         std::fs::write(dir.join("notes.txt"), b"not ours").unwrap();
         assert!(!fetch_needed(&dir, &good_id));
         assert!(fetch_needed(&dir, &bad_id), "a header-only file with the right hash is not a cached skin");
@@ -3159,7 +3161,7 @@ mod tests {
             let (id, bytes) = skin_from_png(encode_png(&px, 64, 64)).unwrap();
             std::fs::write(cached_path(&dir, &id), bytes).unwrap();
             let file = std::fs::File::options().write(true).open(cached_path(&dir, &id)).unwrap();
-            file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1000 + n as u64)).unwrap();
+            file.set_modified(crate::shared::clock::UNIX_EPOCH + std::time::Duration::from_secs(1000 + n as u64)).unwrap();
             ids.push(id);
         }
         assert_eq!(prune_cache(&dir, 3), 2);

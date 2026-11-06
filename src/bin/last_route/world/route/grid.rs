@@ -44,7 +44,7 @@ const REF_GLASSHOUSE_ROOMS: [&str; 5] = ["glasshouse", "palm_house", "cactus_roo
 
 /// `_CODE_REGION_ROOM_DOORS` (streamed_route_generator.gd:251) and `_CODE_REGION_DOUBLE_ROOM_DOORS`
 /// (line 259) as (region, single door, double door). The mall's two names come from
-/// data/regions/mall.json (`room_door` and `double_room_door`, lines 44-45), which ContentRegistry
+/// src/bin/last_route/data/regions/mall.json (`room_door` and `double_room_door`, lines 44-45), which ContentRegistry
 /// resolves over the `@data` sentinel. A region not listed here has no room doors, so
 /// `room_door_props` makes no door and no grid write for it.
 pub const ROOM_DOOR_TABLE: [(&str, &str, &str); 6] = [
@@ -586,7 +586,7 @@ mod tests {
 
     #[test]
     fn region_door_table_matches_the_mall_data_file() {
-        let mall: Value = serde_json::from_str(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/data/regions/mall.json"))).unwrap();
+        let mall: Value = serde_json::from_str(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/last_route/data/regions/mall.json"))).unwrap();
         let mall_row = ROOM_DOOR_TABLE.iter().find(|(name, _, _)| *name == "mall").unwrap();
         assert_eq!(mall["room_door"].as_str(), Some(mall_row.1));
         assert_eq!(mall["double_room_door"].as_str(), Some(mall_row.2));

@@ -92,12 +92,36 @@ impl SoundState {
     }
 }
 
+/// The one-shot voice pool (cues/NOTES.md, "One-shots ... from a pool of 16 voices"). Non-looped plays are the pool; loops
+/// (the music box tune, Glyra's hum, the falls, the wind-down) are not in it.
+pub const ONE_SHOT_VOICES: usize = 16;
+
 pub struct Mixer {
     rx: mpsc::Receiver<AudioMessage>,
     sounds: HashMap<u32, Arc<[f32]>>,
     mixer_state: Vec<SoundState>,
     /// Godot's `mix_increment` for a 44.1 kHz stream at the output rate.
     increment: u64,
+}
+
+impl Mixer {
+    /// With the one-shot pool full, the oldest one-shot (lowest play id) is cut off so the new one can start.
+    fn cut_oldest_one_shot(&mut self) {
+        let busy = self.mixer_state.iter().filter(|s| !s.looped).count();
+        if busy < ONE_SHOT_VOICES {
+            return;
+        }
+        let oldest = self
+            .mixer_state
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| !s.looped)
+            .min_by_key(|(_, s)| s.play_id)
+            .map(|(i, _)| i);
+        if let Some(i) = oldest {
+            self.mixer_state.swap_remove(i);
+        }
+    }
 }
 
 pub struct MixerBuilder {
@@ -208,8 +232,11 @@ impl Mixer {
                     self.sounds.insert(id, data.into());
                 }
                 AudioMessage::Play(sound_id, play_id, looped, volume) => {
-                    if let Some(data) = self.sounds.get(&sound_id) {
-                        self.mixer_state.push(SoundState { sound_id, play_id, offset: 0, data: data.clone(), looped, volume });
+                    if let Some(data) = self.sounds.get(&sound_id).cloned() {
+                        if !looped {
+                            self.cut_oldest_one_shot();
+                        }
+                        self.mixer_state.push(SoundState { sound_id, play_id, offset: 0, data, looped, volume });
                     }
                 }
                 AudioMessage::Stop(play_id) => {
@@ -308,6 +335,23 @@ pub fn load_samples_from_file(bytes: &[u8]) -> Result<Vec<f32>, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_seventeenth_one_shot_cuts_the_oldest_and_loops_are_outside_the_pool() {
+        let (builder, control) = Mixer::new();
+        let mut mixer = builder.build();
+        control.tx.send(AudioMessage::AddSound(0, vec![0.1; 4000])).unwrap();
+        control.tx.send(AudioMessage::Play(0, 0, true, 1.0)).unwrap(); // a loop: not a pool voice
+        for play_id in 1..=17u32 {
+            control.tx.send(AudioMessage::Play(0, play_id, false, 1.0)).unwrap();
+        }
+        let mut buf = vec![0.0f32; 64];
+        mixer.fill_audio_buffer(&mut buf, 32);
+        let ids: Vec<u32> = mixer.mixer_state.iter().map(|s| s.play_id).collect();
+        assert_eq!(ids.len(), 17, "one loop and the 16 newest one-shots");
+        assert!(!ids.contains(&1), "the oldest one-shot is the one cut");
+        assert!(ids.contains(&0) && ids.contains(&17), "the loop and the newest one-shot both play");
+    }
 
     #[test]
     fn unity_rate_is_exact_two_frames_late() {

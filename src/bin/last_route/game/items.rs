@@ -15,6 +15,8 @@ pub enum Item {
     Axe,
     Battery,
     Stim,
+    /// The music box: wound from the pack, then spent (game/music_box.rs).
+    MusicBox,
 }
 
 impl Item {
@@ -26,6 +28,7 @@ impl Item {
             Item::Axe => "AXE",
             Item::Battery => "FLASHLIGHT BATTERY",
             Item::Stim => "STIM PACK",
+            Item::MusicBox => "MUSIC BOX",
         }
     }
 
@@ -256,7 +259,17 @@ impl Game {
                 self.consume_selected();
                 self.say("STIM PACK");
             }
+            Item::MusicBox => self.wind_music_box(),
         }
+    }
+
+    /// The box's use from the pack: it winds for its difficulty's time (game/music_box.rs), the winding phrase sounds
+    /// (route_interactable_3d.gd 818), and the box is spent. The room effect is the clock `run_music_box` reads.
+    fn wind_music_box(&mut self) {
+        self.music_box_left = super::music_box::wound_seconds(self.difficulty.id());
+        crate::audio::sound::music_box();
+        self.consume_selected();
+        self.say("Music box wound. The room settles.");
     }
 
     pub(super) fn drop_selected(&mut self) {
@@ -378,5 +391,75 @@ mod tests {
         g.swing(Item::Crowbar, &Sounds::default());
         assert!(g.hunters[t].stun > 0.0, "the hit lands");
         assert!(!g.toast.contains("STUNNED"), "toast was {:?}", g.toast);
+    }
+
+    /// The music box is collected into the pack, wound once from the hotbar, and spent: the wind lasts the difficulty's
+    /// wound time, the tune's last 15 s are the wind-down, and a second use finds nothing to wind.
+    #[test]
+    fn a_music_box_from_the_pack_winds_once_for_the_wind_duration_and_is_spent() {
+        use crate::audio::cues::music_box::{mood_for, Mood};
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let mut g = Game::new_infinite_sim(Difficulty::Hard, 7, "BOX-PACK-7", 0, &content, &catalog);
+        assert!(g.give(Item::MusicBox, 1), "the pack takes the box");
+        let i = g.slots.iter().position(|s| s.map(|s| s.item == Item::MusicBox).unwrap_or(false)).expect("a slot holds the box");
+        g.select(i);
+        g.music_box_left = 0.0;
+        g.use_selected(&Sounds::default());
+        assert_eq!(g.music_box_left, 35.0, "Hard winds to 35 s");
+        assert!(g.slots.iter().flatten().all(|s| s.item != Item::MusicBox), "the wind spends the box");
+        assert_eq!(mood_for(g.music_box_left), Mood::Playing);
+        // the clock runs for the wind duration: playing, then the last 15 s wind down, then it stops
+        g.run_music_box(19.5);
+        assert_eq!(mood_for(g.music_box_left), Mood::Playing);
+        g.run_music_box(0.5);
+        assert_eq!(mood_for(g.music_box_left), Mood::WindingDown, "the tune slows in the last 15 s");
+        g.run_music_box(15.0);
+        assert_eq!(g.music_box_left, 0.0);
+        assert_eq!(mood_for(g.music_box_left), Mood::Stopped);
+        // with no box in the pack, a use winds nothing
+        g.selected = 0;
+        g.use_selected(&Sounds::default());
+        assert_eq!(g.music_box_left, 0.0, "no box, no wind");
+    }
+
+    /// Every finite floor's box is a floor item the runner can walk to from the start: a bot or a player reaches it.
+    #[test]
+    fn every_finite_floor_box_is_reachable_from_the_start() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let mut boxes = 0;
+        for seed in 1..=8u32 {
+            let g = Game::new_sim(Difficulty::Standard, seed, &content, &catalog);
+            for p in g.pickups.iter().filter(|p| p.item == Item::MusicBox) {
+                boxes += 1;
+                let cell = crate::world::Cell::new(p.pos.0.floor() as i32, p.pos.1.floor() as i32);
+                assert!(!g.fac.find_path(g.fac.start, cell).is_empty(), "seed {seed}: the box at {cell:?} is unreachable");
+            }
+        }
+        assert!(boxes >= 4, "most floors carry a box: {boxes} of 8");
+    }
+
+    /// A finite floor carries its music box as a floor pickup (no fixture). Taking it puts the box in the pack, and the
+    /// pack's use winds it for the difficulty's time.
+    #[test]
+    fn a_floor_box_is_a_pickup_that_goes_into_the_pack_and_winds() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let mut g = Game::new_sim(Difficulty::Standard, 11, &content, &catalog);
+        let i = g
+            .pickups
+            .iter()
+            .position(|p| p.item == Item::MusicBox && !p.taken)
+            .expect("the floor has its music box on it as a pickup");
+        // the box is a floor item the runner can walk to from the start (the placement's `can_occupy` test)
+        let at = g.pickups[i].pos;
+        let cell = crate::world::Cell::new(at.0.floor() as i32, at.1.floor() as i32);
+        assert!(!g.fac.find_path(g.fac.start, cell).is_empty(), "the box at {cell:?} is not reachable from the start");
+        assert!(g.take_pickup(i, crate::game::interact::Actor::Player), "the pack takes the box");
+        assert!(g.pickups[i].taken, "the floor pickup is spent");
+        let slot = g.slots.iter().position(|s| s.map(|s| s.item == Item::MusicBox).unwrap_or(false)).expect("the box is in the pack");
+        g.select(slot);
+        g.music_box_left = 0.0;
+        g.use_selected(&Sounds::default());
+        assert_eq!(g.music_box_left, 45.0, "standard winds to 45 s");
+        assert!(g.slots.iter().flatten().all(|s| s.item != Item::MusicBox), "the wind spends the box");
     }
 }

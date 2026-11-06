@@ -322,7 +322,7 @@ pub fn boot_guard_start() {
         return;
     }
     if let Some(p) = marker_path() {
-        write_marker(&p, std::process::id());
+        write_marker(&p, crate::shared::task::process_id());
     }
     // a panic that unwinds still ends the process through exit(), so the exit hook must know one happened: the
     // hook below records it (chained onto the log's) and the exit hook then leaves the marker
@@ -357,7 +357,7 @@ fn exit_is_clean(panicked: bool) -> bool {
 /// Removes this process's marker: the Metal start worked, or the process is ending normally.
 pub fn boot_guard_clear() {
     if let Some(p) = marker_path() {
-        clear_marker(&p, std::process::id());
+        clear_marker(&p, crate::shared::task::process_id());
     }
 }
 
@@ -507,7 +507,7 @@ mod tests {
 
     /// A scratch folder for the marker tests, removed at the end of each.
     fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("lr_gfx_test_{name}_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lr_gfx_test_{name}_{}", crate::shared::task::process_id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -533,7 +533,7 @@ mod tests {
     fn marker_lifecycle_start_writes_clean_end_clears_and_a_second_instance_is_ignored() {
         let dir = scratch("lifecycle");
         let path = dir.join("gfx_boot.marker");
-        let me = std::process::id();
+        let me = crate::shared::task::process_id();
         let nobody = |_: u32| false;
         let only_me = move |p: u32| p == me;
         assert!(!crash_marker_at(&path, &nobody), "no file, no crash");
@@ -563,7 +563,7 @@ mod tests {
     fn this_process_is_alive_and_pid_zero_is_not() {
         #[cfg(unix)]
         {
-            assert!(process_alive(std::process::id()));
+            assert!(process_alive(crate::shared::task::process_id()));
             assert!(!process_alive(0));
         }
     }

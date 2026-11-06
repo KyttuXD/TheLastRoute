@@ -37,7 +37,7 @@ use crate::world::route;
 use macroquad::prelude::Vec2;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::time::Instant;
+use crate::shared::clock::Instant;
 
 /// The run's seed. The screenshot runs start on the same seed.
 const SEED: u32 = 20261101;

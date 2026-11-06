@@ -232,7 +232,7 @@ mod tests {
     /// read back through the same pack-file reader load_models uses (an embedded data URI, or a pack png the model names).
     #[test]
     fn a_pack_bbmodel_prop_reads_its_own_texture() {
-        let dir = std::env::temp_dir().join(format!("lr-pack-bbmodel-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lr-pack-bbmodel-{}", crate::shared::task::process_id()));
         let _ = std::fs::remove_dir_all(&dir);
         write(&dir, "pack.json", r#"{"schema":"lr.pack/1","id":"lamp_pack","name":"Lamps","version":"1.0.0","author":"t"}"#);
         write(

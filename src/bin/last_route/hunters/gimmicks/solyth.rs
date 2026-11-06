@@ -86,6 +86,7 @@ mod tests {
             heater_thawed: true,
             diff: Difficulty::Standard,
             music_box_left: 0.0,
+            music_boxes: &[],
             exposure: 0.0,
         };
         for _ in 0..60 {

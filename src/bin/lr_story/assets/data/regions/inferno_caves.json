@@ -1,0 +1,49 @@
+{
+	"schema": "lr.region/1",
+	"id": "inferno_caves",
+	"hall_floor": ["stone0", "stone1"],
+	"hall_runner": false,
+	"room_default_floor": ["stone0", "stone1"],
+	"room_roles": ["storage"],
+	"prop_set": [
+		{"type": "sewerOutflowPipe", "size": [1.64, 1.64, 3.2]}
+	],
+	"layout": {
+		"margin": 3,
+		"chambers": {
+			"count": [2, 4],
+			"width": [9, 15],
+			"height": [9, 15],
+			"gap": 3,
+			"clear_half": 2,
+			"attempts": 40
+		},
+		"passages": {
+			"half_width": 1,
+			"wander_chance": 0.35,
+			"max_steps": 400,
+			"exits": 1,
+			"exit_half_width": 2
+		},
+		"lava": {
+			"channels": [1, 3],
+			"half_width": 1,
+			"wander_chance": 0.3,
+			"bridge_every": 6,
+			"bridge_len": 3,
+			"keep_clear_of_chamber_core": 3
+		},
+		"spawn": {
+			"per_chamber": [1, 2],
+			"min_spacing": 6,
+			"hunter_chance": 0.5
+		},
+		"loot": {
+			"table": "route",
+			"per_chamber_chance": 0.7,
+			"per_passage_chance": 0.15,
+			"passage_spacing": 8,
+			"max_per_chunk": 8
+		}
+	}
+}

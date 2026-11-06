@@ -1,7 +1,7 @@
 //! Admin menu logic that needs no window: the label lists, the NPC commands, the speed rows, RESET ALL,
 //! the gate closing the menu, tab stepping and the spawn count limits.
 
-use super::actions::npc_op_live;
+use super::actions::{npc_button, npc_op_live, NpcButton};
 use super::menu::{hunter_list, labels, step_count, Cmd};
 use super::*;
 use crate::config::Difficulty;
@@ -51,6 +51,112 @@ fn the_live_npc_commands_are_real_ids_and_the_rest_are_listed() {
     assert!(!npc_op_live("spectate") && !npc_op_live("freeze") && !npc_op_live("Teleport To Me"));
 }
 
+/// Every id of the two NPC grids, with its label.
+fn npc_buttons() -> Vec<(&'static str, &'static str)> {
+    let m = menu();
+    m.npc_ops.iter().chain(m.npc_all.iter()).copied().collect()
+}
+
+#[test]
+fn every_working_npc_button_is_enabled_when_the_run_has_an_npc() {
+    for (op, label) in npc_buttons() {
+        let state = npc_button(op, 1);
+        if npc_op_live(op) {
+            assert_eq!(state, NpcButton::Ready, "{label} is gray with an NPC on the floor");
+            assert_eq!(state.tip(), None, "{label}: an enabled button has no gray-out reason");
+            assert_eq!(npc_button(op, 5), NpcButton::Ready, "{label}");
+        } else {
+            let tip = state.tip().unwrap_or_else(|| panic!("{label} is gray and says nothing"));
+            assert!(tip.starts_with(menu().npc_pending_prefix), "{label}: {tip}");
+            assert!(tip.len() > menu().npc_pending_prefix.len() + 10, "{label} needs a real reason: {tip}");
+        }
+    }
+}
+
+#[test]
+fn with_no_npc_a_working_button_is_gray_and_says_to_spawn_one() {
+    for (op, label) in npc_buttons().into_iter().filter(|(op, _)| npc_op_live(op)) {
+        let state = npc_button(op, 0);
+        assert_eq!(state, NpcButton::NoNpcs, "{label}");
+        assert!(state.tip().unwrap().contains("SPAWN NPC"), "{label}");
+    }
+}
+
+#[test]
+fn a_not_built_button_stays_gray_with_its_reason_even_with_npcs() {
+    let pending: Vec<&str> = npc_buttons().into_iter().map(|(op, _)| op).filter(|op| !npc_op_live(op)).collect();
+    assert!(pending.contains(&"spectate") && pending.contains(&"kill") && pending.contains(&"goto"));
+    assert!(pending.contains(&"freeze") && pending.contains(&"all_resume"));
+    for op in pending {
+        for n in [0, 3] {
+            assert!(matches!(npc_button(op, n), NpcButton::Pending(r) if !r.is_empty()), "{op} with {n} NPCs");
+        }
+    }
+}
+
+#[test]
+fn every_working_npc_button_changes_the_game_as_labelled() {
+    // (op, what it must change) on a game with three NPCs; the second one is the picked NPC
+    let setup = || {
+        let (mut g, content, mut a) = game_with_npcs(3);
+        a.sel.insert("npc_pick", 1);
+        a.sel.insert("npc_smart", 0); // SMART 30
+        for n in g.npcs.iter_mut() {
+            n.at = (n.at.0 + 4.0, n.at.1);
+        }
+        (g, content, a)
+    };
+    for (op, label) in npc_buttons().into_iter().filter(|(op, _)| npc_op_live(op)) {
+        let (mut g, content, mut a) = setup();
+        if op == "follow" || op == "all_follow" {
+            for n in g.npcs.iter_mut() {
+                n.joined = false;
+            }
+        }
+        let before: Vec<_> = g.npcs.iter().map(|n| (n.at, n.joined, n.smart)).collect();
+        let ids: Vec<u32> = g.npcs.iter().map(|n| n.id).collect();
+        npc(&mut a, &mut g, &content, op);
+        assert!(!g.message.contains("NOT IN THIS BUILD"), "{label}: {}", g.message);
+        assert!(!g.message.contains("NO NPCS"), "{label}: {}", g.message);
+        match op {
+            "teleport" => {
+                assert_ne!(g.npcs[1].at, before[1].0, "{label}: the picked NPC did not move");
+                assert_eq!((g.npcs[0].at, g.npcs[2].at), (before[0].0, before[2].0), "{label}: only the picked one");
+                assert!(pdist(g.npcs[1].at, g.p.pos) < 3.0, "{label}");
+            }
+            "all_teleport" => {
+                for (i, n) in g.npcs.iter().enumerate() {
+                    assert_ne!(n.at, before[i].0, "{label}: NPC {i} stayed");
+                    assert!(pdist(n.at, g.p.pos) < 3.0, "{label}");
+                }
+            }
+            "follow" => assert_eq!(g.npcs.iter().map(|n| n.joined).collect::<Vec<_>>(), [false, true, false], "{label}"),
+            "all_follow" => assert!(g.npcs.iter().all(|n| n.joined), "{label}"),
+            "unfollow" => assert_eq!(g.npcs.iter().map(|n| n.joined).collect::<Vec<_>>(), [true, false, true], "{label}"),
+            "all_unfollow" => assert!(g.npcs.iter().all(|n| !n.joined), "{label}"),
+            "smart" => assert_eq!(g.npcs.iter().map(|n| n.smart).collect::<Vec<_>>(), [50, 30, 50], "{label}"),
+            "all_smart" => assert!(g.npcs.iter().all(|n| n.smart == 30), "{label}"),
+            "remove" => {
+                assert_eq!(g.npcs.len(), 2, "{label}");
+                assert!(g.npcs.iter().all(|n| n.id != ids[1]), "{label}: the picked NPC is still there");
+            }
+            other => panic!("{other} is live but this test does not know what it changes"),
+        }
+    }
+}
+
+#[test]
+fn the_remove_buttons_take_npcs_off_the_floor() {
+    let (mut g, content, mut a) = game_with_npcs(2);
+    npc(&mut a, &mut g, &content, "remove_nearest");
+    assert_eq!(g.npcs.len(), 1, "REMOVE NEAREST takes one NPC");
+    assert!(g.message.starts_with("ADMIN // NPC REMOVED"), "{}", g.message);
+    npc(&mut a, &mut g, &content, "remove_all");
+    assert!(g.npcs.is_empty(), "REMOVE ALL takes the rest");
+    assert_eq!(g.message, "ADMIN // 1 NPCS REMOVED");
+}
+
+
 #[test]
 fn npc_follow_and_stop_following_move_the_follow_flag() {
     let (mut g, content, mut a) = game_with_npcs(2);
@@ -99,7 +205,9 @@ fn npc_teleport_and_remove_act_on_the_picked_npc() {
 fn npc_commands_with_no_npcs_say_so() {
     let (mut g, content) = game();
     let mut a = Admin::new();
-    for op in ["teleport", "follow", "unfollow", "smart", "remove", "all_follow", "all_teleport"] {
+    for op in [
+        "teleport", "follow", "unfollow", "smart", "remove", "all_follow", "all_teleport", "all_unfollow", "all_smart",
+    ] {
         npc(&mut a, &mut g, &content, op);
         assert_eq!(g.message, "ADMIN // NO NPCS", "{op}");
     }

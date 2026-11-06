@@ -53,7 +53,7 @@ pub const RAMP: u8 = 4;
 pub const FALL: u8 = 5;
 pub const SHAFT: u8 = 6;
 
-/// The layout rules of the sewer levels, read from the `layout` block of data/regions/sewer.json (see `rules`).
+/// The layout rules of the sewer levels, read from the `layout` block of src/bin/last_route/data/regions/sewer.json (see `rules`).
 /// Every number the generator uses is in that file. The Standard values are the Godot values, and each field's
 /// doc names its Godot line. Code holds only the behaviour.
 #[derive(Clone, Debug, PartialEq)]
@@ -2296,7 +2296,7 @@ mod tests {
             .expect("sewer.json is built in")
     }
 
-    /// The Standard layout values in data/regions/sewer.json are the values the generator had as constants.
+    /// The Standard layout values in src/bin/last_route/data/regions/sewer.json are the values the generator had as constants.
     #[test]
     fn standard_layout_rules_match_the_godot_values() {
         let r = rules();

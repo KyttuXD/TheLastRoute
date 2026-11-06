@@ -18,10 +18,32 @@ pub struct RailCfg {
     pub post_size_m: f32,
     pub post_spacing_m: f32,
     pub color: [f32; 3],
+    pub collision: RailCollision,
+}
+
+/// The railing as a wall (`collision` in the data file).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RailCollision {
+    /// Whether the rails block bodies and routes at all.
+    pub solid: bool,
+    /// The wall's thickness (m) across the rail line.
+    pub thickness_m: f32,
 }
 
 fn num(v: &serde_json::Value, key: &str) -> Result<f32, String> {
     v.get(key).and_then(|x| x.as_f64()).map(|x| x as f32).ok_or_else(|| format!("{key}: expected a number"))
+}
+
+impl RailCollision {
+    fn parse(v: Option<&serde_json::Value>) -> Result<RailCollision, String> {
+        let v = v.ok_or("collision: expected an object")?;
+        let solid = v.get("solid").and_then(|x| x.as_bool()).ok_or("collision.solid: expected true or false")?;
+        let thickness_m = num(v, "thickness_m").map_err(|e| format!("collision.{e}"))?;
+        if !(thickness_m > 0.0 && thickness_m < 0.5) {
+            return Err(format!("collision.thickness_m: {thickness_m} must be above 0 and under half a cell"));
+        }
+        Ok(RailCollision { solid, thickness_m })
+    }
 }
 
 impl RailCfg {
@@ -42,9 +64,19 @@ impl RailCfg {
             post_size_m: num(&v, "post_size_m")?,
             post_spacing_m: num(&v, "post_spacing_m")?,
             color,
+            collision: RailCollision::parse(v.get("collision"))?,
         };
         if cfg.height_m <= 0.0 || cfg.post_spacing_m <= 0.0 || !(0.0..0.5).contains(&cfg.inset_m) {
             return Err("height and post spacing must be positive and the inset under half a cell".into());
+        }
+        // a hunter must still walk a one-cell walkway with a railing on both sides
+        let room = 1.0 - 2.0 * cfg.inset_m - cfg.collision.thickness_m;
+        if cfg.collision.solid && room <= 2.0 * crate::config::HUNTER_RADIUS {
+            return Err(format!(
+                "collision.thickness_m: {} leaves {room:.2} m between the rails of a one-cell walkway, a hunter needs {:.2} m",
+                cfg.collision.thickness_m,
+                2.0 * crate::config::HUNTER_RADIUS
+            ));
         }
         Ok(cfg)
     }
@@ -73,13 +105,18 @@ pub struct RailSegment {
 const DIRS: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
 
 /// A segment for every edge of a walkable (dry or bridge) cell whose neighbour is water or the falls' drop, except
-/// the neighbour `gap` (the deliberate jump cell). Edges at the grid's border get none.
+/// the deliberate jump cell `gap`: no rail faces it, and when the jump cell is itself walkable (the lower storey's
+/// deck, beside the pool it drops into) none stands on its own water edges either, so a body that lands in the pool
+/// can climb out through it. Edges at the grid's border get none.
 pub fn channel_rail_segments(grid: &Grid, gap: Option<(i32, i32)>) -> Vec<RailSegment> {
     let mut out = Vec::new();
     for z in 0..N as i32 {
         for x in 0..N as i32 {
             let code = grid[z as usize][x as usize];
             if code != DRY && code != BRIDGE {
+                continue;
+            }
+            if gap == Some((x, z)) {
                 continue;
             }
             for step in DIRS {
@@ -157,6 +194,16 @@ mod tests {
     }
 
     #[test]
+    fn a_walkable_jump_cell_keeps_its_water_edges_open() {
+        // the lower storey's deck is the jump cell itself, beside the pool: the pool stays a way out
+        let g = channel();
+        let segs = channel_rail_segments(&g, Some((4, 4)));
+        assert_eq!(segs.len(), 5);
+        assert!(!segs.iter().any(|s| s.x == 4 && s.z == 4));
+        assert!(segs.iter().any(|s| s.x == 3 && s.z == 4), "the neighbours keep their rails");
+    }
+
+    #[test]
     fn a_grid_without_water_has_no_rails() {
         // level 0 grids carry no WATER or FALL codes
         let mut g = [[SOLID; N]; N];
@@ -224,8 +271,11 @@ mod tests {
                     let with_gap = channel_rail_segments(&c.sewer_grid, Some(jump));
                     let all = channel_rail_segments(&c.sewer_grid, None);
                     let faces = |s: &RailSegment| (s.x + s.step.0, s.z + s.step.1) == jump;
+                    // the jump cell's own edges go too when it is walkable (the lower deck beside its pool)
+                    let own = |s: &RailSegment| (s.x, s.z) == jump;
                     assert!(!with_gap.iter().any(faces), "{seed} {level} {cx},{cz}: a rail faces the jump cell");
-                    assert_eq!(all.len() - with_gap.len(), all.iter().filter(|s| faces(s)).count());
+                    assert!(!with_gap.iter().any(own), "{seed} {level} {cx},{cz}: a rail stands on the jump cell");
+                    assert_eq!(all.len() - with_gap.len(), all.iter().filter(|s| faces(s) || own(s)).count());
                     assert!(!all.is_empty(), "a falls chunk has water edges to rail");
                     checked += 1;
                 }
@@ -244,5 +294,35 @@ mod tests {
     #[test]
     fn the_shipped_file_parses() {
         assert!(RailCfg::parse(include_str!("../data/render/sewer_rails.json")).is_ok());
+    }
+
+    /// The shipped file with its `collision` block replaced by `collision` (a JSON fragment).
+    fn with_collision(collision: &str) -> String {
+        let text = include_str!("../data/render/sewer_rails.json");
+        let mut v: serde_json::Value = serde_json::from_str(text).unwrap();
+        v["collision"] = serde_json::from_str(collision).unwrap_or(serde_json::Value::Null);
+        v.to_string()
+    }
+
+    #[test]
+    fn a_bad_collision_block_is_refused_on_load() {
+        assert!(RailCfg::parse(&with_collision(r#"{"solid": true, "thickness_m": 0.07}"#)).is_ok());
+        assert!(RailCfg::parse(&with_collision(r#"{"solid": false, "thickness_m": 0.07}"#)).is_ok());
+        // no block, a non-boolean solid, a missing or non-positive thickness, a thickness of half a cell or more
+        assert!(RailCfg::parse(&with_collision("null")).is_err());
+        assert!(RailCfg::parse(&with_collision(r#"{"solid": "yes", "thickness_m": 0.07}"#)).is_err());
+        assert!(RailCfg::parse(&with_collision(r#"{"solid": true}"#)).is_err());
+        assert!(RailCfg::parse(&with_collision(r#"{"solid": true, "thickness_m": 0.0}"#)).is_err());
+        assert!(RailCfg::parse(&with_collision(r#"{"solid": true, "thickness_m": 0.5}"#)).is_err());
+    }
+
+    #[test]
+    fn a_railing_too_thick_for_a_hunter_to_pass_between_is_refused() {
+        // the room between the rails of a one-cell walkway must fit a hunter
+        let thick = with_collision(r#"{"solid": true, "thickness_m": 0.45}"#);
+        let err = RailCfg::parse(&thick).unwrap_err();
+        assert!(err.contains("collision.thickness_m"), "{err}");
+        // a solid-false railing has no room to check
+        assert!(RailCfg::parse(&with_collision(r#"{"solid": false, "thickness_m": 0.45}"#)).is_ok());
     }
 }

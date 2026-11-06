@@ -99,7 +99,7 @@ mod tests {
     use super::*;
 
     fn temp_file(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("lr_admin_prefs_{}_{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lr_admin_prefs_{}_{name}", crate::shared::task::process_id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir.join("admin.cfg")
     }

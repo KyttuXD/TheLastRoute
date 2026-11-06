@@ -5,7 +5,7 @@
 //! * district wall set + ceiling: data/themes/regions/<id>.json, merged by RefLook._build_region_style
 //! * room-purpose wall set: data/themes/rooms/<purpose>.json (RefLook._build_room_style)
 //! * hall floors, hall runner, district room default floor, room-purpose floors: game/look/floor_sets.gd
-//!   (+ data/regions/hospital.json and mall.json, which supply those two districts' entries)
+//!   (+ src/bin/last_route/data/regions/hospital.json and mall.json, which supply those two districts' entries)
 //! * pick rules: RefLook.wall_kind / RefLook.pick, FloorSets.room_kind, StreamedFacilityView3D.ref_floor_kind /
 //!   _runner_kind and its safe-room pad.
 //!
@@ -571,7 +571,7 @@ pub fn region_set(region: &str, room_type: &str, is_hall: bool) -> TextureChoice
         finite_purpose(room_type)
     };
     let d = district_or_maze(override_district.unwrap_or_else(|| finite_district(region)));
-    // a level 0 maze variant (data/regions/maze_*.json) brings its own floors; walls and ceiling stay the maze's
+    // a level 0 maze variant (src/bin/last_route/data/regions/maze_*.json) brings its own floors; walls and ceiling stay the maze's
     let variant = variant_district(region).filter(|_| override_district.is_none());
     let inferno = d.id == "inferno";
     let wall_kinds = if is_hall {

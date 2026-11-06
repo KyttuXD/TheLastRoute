@@ -58,6 +58,10 @@ pub enum RoomMode {
     Guest,
 }
 
+/// Whether the game offers QUIT (the title button, its QUIT TO DESKTOP? dialog and Escape on the title). The browser
+/// build has no desktop to quit to, so it offers none of them and the page stays open.
+pub const QUIT_OFFERED: bool = !cfg!(target_arch = "wasm32");
+
 /// The title's buttons. ADMIN shows for the admin's account only.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TitleEntry {
@@ -98,6 +102,9 @@ pub fn title_entries(username: &str) -> Vec<TitleEntry> {
     ];
     if !crate::ui::admin::is_admin_owner(username) {
         v.retain(|e| *e != TitleEntry::Admin);
+    }
+    if !QUIT_OFFERED {
+        v.retain(|e| *e != TitleEntry::Quit);
     }
     v
 }
@@ -194,6 +201,8 @@ impl Default for Ui {
 impl Ui {
     /// Moves to another screen with a fresh focus (a dialog's default button).
     pub fn go(&mut self, s: Screen) {
+        // no quit dialog where quitting is not offered (QUIT_OFFERED): it lands on the title
+        let s = if s == Screen::Quit && !QUIT_OFFERED { Screen::Title } else { s };
         self.screen = s;
         self.focus = 0;
         self.scroll = 0.0;
@@ -407,7 +416,7 @@ pub fn draw_title(a: &Assets, ui: &mut Ui, username: &str, active: bool) -> Acti
     if ui.notice_t > 0.0 {
         notice(a, &ui.notice);
     }
-    if active && is_key_pressed(KeyCode::Escape) {
+    if active && QUIT_OFFERED && is_key_pressed(KeyCode::Escape) {
         out = Action::Go(Screen::Quit);
     }
     out

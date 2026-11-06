@@ -56,11 +56,13 @@ To compile this module, `src/audio/mod.rs` needs a `pub mod cues;` line (not add
 
 - The buses (`default_bus_layout.tres`) are Master, SFX (-10 dB) and UI (-12 dB). At boot Settings **overwrites** the SFX
   and UI levels with `linear_to_db(percent / 100)` (settings.gd 685-695, called at the end of `_load` either way). So at
-  the default 100 % every bus is unity, and 0 % is -80 dB. `rules::bus_gain(master_pct, bus_pct)`.
+  the default 100 % every bus is unity, and 0 % is -80 dB. `rules::bus_gain(bus, master, sfx, ui)` takes 0..1 gains;
+  `Engine::bus_gain` is the only run-time call. `Bus::Master` (Master alone) is for the positional loops, see below.
 - Every cue plays on **SFX**, except `menu` (the menu blip), which plays on **UI**. Runner steps use `Sound.footstep_bus`,
   which is SFX on the finite route (only LevelAmbience, on the infinite route only, moves it to its "Level" reverb bus).
 - One-shots are non-positional `AudioStreamPlayer`s from a pool of 16 voices. When all 16 are busy, the oldest is cut
-  off. Positional feel comes only from the baked pan and the caller's volume.
+  off (quad-snd `mixer.rs`, `ONE_SHOT_VOICES`; loops are outside the pool). Positional feel comes only from the baked pan
+  and the caller's volume.
 - `_play_named` plays at 0 dB, with pan and intensity in the render. `_play_scaled` (hunter and teammate steps) renders
   once at intensity 1 with the pan snapped to 0.25, and puts the loudness on the player:
   `gain = clamp(intensity, .05, 4)`. Gains above 1 happen (hunter steps up to 1.8), so do not clip them to 1 in a mixer
@@ -120,7 +122,9 @@ the exit path), so the port's current `lift` sound has no source equivalent.
   are the wind-down:
   `pitch_scale = max(.55, .78 + .2 * left / 15 + .045 * sin(clock * 6.3))`, where `clock` is the node's own running
   time. Then it stops. In Godot, `pitch_scale` is resampling, so the tune gets both slower and lower.
-  `music_box::winddown()` pre-renders that stretch, since macroquad cannot repitch a playing sound.
+  `music_box::winddown()` pre-renders that stretch, since macroquad cannot repitch a playing sound. The engine plays it as
+  a looped voice on Master that stops itself when the stretch ends (`Engine::play_frames`), so it follows Master live and
+  `stop_all` stops it.
 - **On the finite route the tune never plays.** MusicBoxTune is only attached when the interactable gets a `music_boxes`
   clock (ri 247), and only the streamed route view sets one (streamed_facility_view_3d.gd 4734). In main_3d the box
   gives the one-shot `music_box` phrase, and the music you hear is Glyra's `glyra_hum` while her box PLAYS. Use the tune
@@ -181,8 +185,9 @@ this module's renders (`%TEMP%\lr_audio_analyze`):
 - Renders are made on first use and cached by `cache_key`. The common keys are prewarmed in `Sounds::new()` (20 heartbeats,
   the stepped feet, the 9 hunter-step pans...). Loading is synchronous: `load_sound_from_bytes` is ready on its first poll on native targets.
 - Positional loops are two sounds (left-only, right-only) started together, with per-channel volume, because
-  macroquad has no per-voice pan.
-- Not reproduced: the 16-voice pool's voice stealing (quad-snd has no voice limit), Godot's per-buffer volume ramps, and
+  macroquad has no per-voice pan. A loop keeps its base gains and the engine applies its bus gain (`LoopGains`), so a
+  Master change reaches a playing loop from `set_volumes`, not from the next game update.
+- Not reproduced: Godot's per-buffer volume ramps, and
   the 3D shelf filter (under 0.1 dB on the hum).
 ## What could not be exact
 

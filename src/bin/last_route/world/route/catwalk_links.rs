@@ -1,4 +1,4 @@
-//! Stairs and ladders from the level 0 floor up to the catwalk decks and back down (`data/regions/catwalk_links.json`,
+//! Stairs and ladders from the level 0 floor up to the catwalk decks and back down (`src/bin/last_route/data/regions/catwalk_links.json`,
 //! `lr.catwalk_links/1`, embedded by build.rs). They are direct connections like every other level link: no
 //! halt. The residency radius is not repeated here, it comes from `data/stairs_links.json`
 //! (`game::transition::links`); links are that radius plus one `Flight` each.
@@ -86,8 +86,8 @@ pub fn rules() -> CatwalkRules {
         let text = embedded::data_under("regions/")
             .find(|(p, _)| *p == PATH)
             .map(|(_, t)| t)
-            .expect("data/regions/catwalk_links.json is embedded by build.rs");
-        parse(text).expect("data/regions/catwalk_links.json is valid")
+            .expect("src/bin/last_route/data/regions/catwalk_links.json is embedded by build.rs");
+        parse(text).expect("src/bin/last_route/data/regions/catwalk_links.json is valid")
     })
 }
 
@@ -133,8 +133,8 @@ pub fn allowed_regions() -> &'static [String] {
         let text = embedded::data_under("regions/")
             .find(|(p, _)| *p == PATH)
             .map(|(_, t)| t)
-            .expect("data/regions/catwalk_links.json is embedded by build.rs");
-        parse_regions(text).expect("data/regions/catwalk_links.json has regions")
+            .expect("src/bin/last_route/data/regions/catwalk_links.json is embedded by build.rs");
+        parse_regions(text).expect("src/bin/last_route/data/regions/catwalk_links.json has regions")
     })
 }
 
@@ -164,7 +164,7 @@ pub fn prefetch_distance() -> f32 {
 mod tests {
     use super::*;
 
-    const FILE: &str = include_str!("../../../../../data/regions/catwalk_links.json");
+    const FILE: &str = include_str!("../../data/regions/catwalk_links.json");
 
     fn std_rules() -> CatwalkRules {
         parse(FILE).unwrap()

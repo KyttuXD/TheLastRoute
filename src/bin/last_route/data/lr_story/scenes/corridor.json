@@ -1,0 +1,11 @@
+{
+  "schema": "lr.story.scenes/1",
+  "scenes": {
+    "corridor-note": {
+      "once": true,
+      "lines": [
+        { "text": "Somewhere below the signal, a facility keeps its own hours." }
+      ]
+    }
+  }
+}

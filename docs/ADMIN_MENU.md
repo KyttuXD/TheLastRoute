@@ -26,10 +26,17 @@ STATUS, GENERAL, PLAYER, HUNTERS, NPCS, WORLD, STORY, VISUAL, DEBUG VIEW, FIELDS
 
 ## NPC commands
 
-Live: TELEPORT TO ME, FOLLOW ME, STOP FOLLOWING, SMART = SPAWN SMART, REMOVE, and ALL TO ME, ALL FOLLOW ME,
-ALL STOP FOLLOW, ALL SMART. FOLLOW and STOP FOLLOWING set the NPC's `joined` flag (an admin NPC has no join
-radius, so a parked one stays put). The other buttons are drawn muted and answer with
-`ADMIN // <LABEL> IS NOT IN THIS BUILD YET` (`npc_op_live` in `actions.rs` lists the live ones).
+Live (`npc_live` in `menu.json`): TELEPORT TO ME, FOLLOW ME, STOP FOLLOWING, SMART = SPAWN SMART, REMOVE, and
+ALL TO ME, ALL FOLLOW ME, ALL STOP FOLLOW, ALL SMART. FOLLOW and STOP FOLLOWING set the NPC's `joined` flag (an admin
+NPC has no join radius, so a parked one stays put). Plus SPAWN NPC, REMOVE NEAREST and REMOVE ALL (sidebar).
+
+A live button is drawn normally. It is gray only when the run has no NPC to act on (REMOVE NEAREST and REMOVE ALL too);
+its hint line then says `NO NPCS ON THIS RUN // PRESS SPAWN NPC FIRST`. The buttons the build cannot do yet
+(`npc_pending`, each with its reason) are always gray: GO TO ME, HUNTERS IGNORE / TARGET, CHAT ON / OFF, DOWN, REVIVE,
+KILL, CLEAR, SPECTATE, FREEZE, RESUME and their ALL versions. A gray button still takes the click; while the mouse is
+on one, the hint line under the menu says what is missing. Clicking it answers
+`ADMIN // <LABEL> IS NOT IN THIS BUILD YET`. Each id must be in exactly one of the two lists (a test checks it), so
+moving a command to `npc_live` is the whole change once the game can do it.
 
 ## Preferences
 

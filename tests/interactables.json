@@ -58,12 +58,13 @@
       ]
     },
     {
-      "name": "holding [E] winds the music box",
+      "name": "a music box from the pack winds once for the wind time and is spent",
       "steps": [
         { "cmd": "step", "frames": 600, "observe": false },
         { "expect": [ { "path": "run.music_box_left", "op": "<", "value": 36 } ] },
-        { "cmd": "teleport", "to": "music_box" },
-        { "cmd": "interact", "kind": "MUSIC_BOX", "hold_frames": 100 },
+        { "cmd": "admin", "name": "give", "item": "music_box" },
+        { "cmd": "act", "act": { "slot": 2, "pulse": ["use"] } },
+        { "cmd": "step", "frames": 2, "observe": false },
         { "expect": [ { "path": "run.music_box_left", "op": ">", "value": 44 }, { "any": "events", "where": { "path": "text", "value": "Music box wound. The room settles." } } ] }
       ]
     }

@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn saved_file_has_the_name_and_the_same_bytes() {
-        let dir = std::env::temp_dir().join(format!("lr_skin_template_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lr_skin_template_{}", crate::shared::task::process_id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = save_template(&dir).expect("saves");
         assert_eq!(path.file_name().unwrap().to_str().unwrap(), "lastroute_skin_template.png");
@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn a_template_never_overwrites_an_existing_file() {
-        let dir = std::env::temp_dir().join(format!("lr_skin_template_keep_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lr_skin_template_keep_{}", crate::shared::task::process_id()));
         let _ = std::fs::remove_dir_all(&dir);
         let first = save_template(&dir).unwrap();
         std::fs::write(&first, b"my painted skin").unwrap();

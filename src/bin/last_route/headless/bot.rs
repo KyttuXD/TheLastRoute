@@ -466,6 +466,7 @@ impl Bot {
                 let held = g.slots.iter().flatten().any(|s| s.item == p.item);
                 if !p.taken
                     && d < 25.0
+                    && p.item != crate::game::Item::MusicBox
                     && (!held || p.item.stack_max() > 1)
                     && !self.banned(Bot::abs_key(g, 5, cell_of(p.pos)))
                     && best.map(|b| d < b.0).unwrap_or(true)

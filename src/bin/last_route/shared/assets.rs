@@ -13,7 +13,8 @@ use crate::shared::skins;
 use macroquad::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use crate::shared::clock::Instant;
+use std::time::Duration;
 
 /// The runner body (remote runners and NPC teammates): the blocky mannequin from the Godot build, embedded under
 /// assets/player/. Its atlas is also embedded as a data URI, but the file name is what the model's `find` resolves first.
@@ -117,6 +118,20 @@ fn system_font(names: &[&str]) -> Option<Font> {
         }
     }
     None
+}
+
+/// An open-licence stand-in face compiled in from assets/fonts/ (SIL OFL 1.1, see the OFL files beside them). The original
+/// asks for Courier New and Impact, which only Windows and macOS have; a platform without them (the browser) draws with
+/// these instead. None when the embedded bytes do not parse.
+fn embedded_font(file: &str) -> Option<Font> {
+    let bytes = embedded::asset(&format!("fonts/{file}"))?;
+    match load_ttf_font_from_bytes(bytes) {
+        Ok(f) => Some(f),
+        Err(e) => {
+            eprintln!("assets: the embedded font {file} did not load ({e:?})");
+            None
+        }
+    }
 }
 
 /// Reads a text file out of a model's folder for a bbmodel that names its atlas by file: the folder itself, else the one
@@ -242,6 +257,7 @@ impl Assets {
             "rescue_axe",
             "battery",
             "stim_pack",
+            "music_box",
         ]
         .iter()
         .map(|n| asset_tex(&format!("inventory/{n}.png")).unwrap_or_else(white_texture))
@@ -256,26 +272,31 @@ impl Assets {
             models,
             icons,
             logo: asset_tex("branding/logo_128.png"),
-            // Courier New Bold / Impact as the original asks; metric-compatible stand-ins on Linux
+            // Courier New Bold / Impact as the original asks: the system face first, then the embedded open-licence
+            // stand-in (Liberation Mono for Courier, Anton for Impact) where the system has neither.
+            // metric-compatible stand-ins on Linux
             font: system_font(&[
                 "courbd.ttf",
                 "Courier New Bold.ttf",
                 "Courier_New_Bold.ttf",
                 "LiberationMono-Bold.ttf",
-            ]),
+            ])
+            .or_else(|| embedded_font("LiberationMono-Bold.ttf")),
             title_font: system_font(&[
                 "impact.ttf",
                 "Impact.ttf",
                 "ariblk.ttf",
                 "Arial Black.ttf",
                 "LiberationSans-Bold.ttf",
-            ]),
+            ])
+            .or_else(|| embedded_font("Anton-Regular.ttf")),
             caption_font: system_font(&[
                 "couri.ttf",
                 "Courier New Italic.ttf",
                 "Courier_New_Italic.ttf",
                 "LiberationMono-Italic.ttf",
-            ]),
+            ])
+            .or_else(|| embedded_font("LiberationMono-Italic.ttf")),
             skin_textures: RefCell::new(HashMap::new()),
             skin_tick: std::cell::Cell::new(0),
         }
@@ -429,5 +450,89 @@ mod tests {
             .fold(f32::MIN, f32::max);
         let scale = crate::config::PLAYER_HEIGHT / top.max(1.0);
         assert!((top * scale - crate::config::PLAYER_HEIGHT).abs() < 0.01, "top {} at {}", top * scale, crate::config::PLAYER_HEIGHT);
+    }
+}
+
+#[cfg(test)]
+mod font_tests {
+    use super::*;
+
+    fn be16(t: &[u8], at: usize) -> Option<u16> {
+        Some(u16::from_be_bytes(t.get(at..at + 2)?.try_into().ok()?))
+    }
+
+    fn be32(t: &[u8], at: usize) -> Option<u32> {
+        Some(u32::from_be_bytes(t.get(at..at + 4)?.try_into().ok()?))
+    }
+
+    /// The byte offset and length of a TrueType table by its tag (the sfnt table directory).
+    fn table(f: &[u8], tag: &[u8; 4]) -> Option<(usize, usize)> {
+        let n = be16(f, 4)? as usize;
+        (0..n).find_map(|i| {
+            let rec = 12 + 16 * i;
+            (f.get(rec..rec + 4)? == tag).then(|| (be32(f, rec + 8).unwrap_or(0) as usize, be32(f, rec + 12).unwrap_or(0) as usize))
+        })
+    }
+
+    /// The glyph a Unicode code point maps to in a format 4 cmap subtable (the Windows Unicode BMP map), 0 when none.
+    fn cmap4_glyph(t: &[u8], code: u16) -> Option<u16> {
+        if be16(t, 0)? != 4 {
+            return None;
+        }
+        // segCountX2 at 6; endCode at 14, startCode after the reserved pad, idDelta and idRangeOffset after that
+        let seg_x2 = be16(t, 6)? as usize;
+        let (ends, starts, deltas, ranges) = (14, 16 + seg_x2, 16 + 2 * seg_x2, 16 + 3 * seg_x2);
+        for i in 0..seg_x2 / 2 {
+            let end = be16(t, ends + 2 * i)?;
+            if end < code {
+                continue;
+            }
+            let start = be16(t, starts + 2 * i)?;
+            if start > code {
+                return None;
+            }
+            let delta = be16(t, deltas + 2 * i)?;
+            let range = be16(t, ranges + 2 * i)? as usize;
+            let glyph = if range == 0 {
+                code.wrapping_add(delta)
+            } else {
+                let at = ranges + 2 * i + range + 2 * (code - start) as usize;
+                let g = be16(t, at)?;
+                if g == 0 { 0 } else { g.wrapping_add(delta) }
+            };
+            return Some(glyph).filter(|g| *g != 0);
+        }
+        None
+    }
+
+    /// The embedded stand-in faces parse as TrueType: a sfnt header, a head table with the magic number, a maxp glyph
+    /// count, and a Unicode cmap that maps the letters and digits the game draws.
+    #[test]
+    fn the_embedded_stand_in_fonts_parse() {
+        for file in ["LiberationMono-Bold.ttf", "LiberationMono-Italic.ttf", "Anton-Regular.ttf"] {
+            let f = embedded::asset(&format!("fonts/{file}")).unwrap_or_else(|| panic!("{file} is embedded"));
+            assert_eq!(be32(f, 0), Some(0x0001_0000), "{file} is a TrueType (sfnt 1.0) font");
+            let (head, _) = table(f, b"head").unwrap_or_else(|| panic!("{file} has a head table"));
+            assert_eq!(be32(f, head + 12), Some(0x5F0F_3CF5), "{file} head magic");
+            let upem = be16(f, head + 18).unwrap_or(0);
+            assert!((16..=16384).contains(&upem), "{file} units per em {upem}");
+            let (maxp, _) = table(f, b"maxp").unwrap_or_else(|| panic!("{file} has a maxp table"));
+            let glyphs = be16(f, maxp + 4).unwrap_or(0);
+            assert!(glyphs > 100, "{file} has {glyphs} glyphs");
+            let (cmap, len) = table(f, b"cmap").unwrap_or_else(|| panic!("{file} has a cmap table"));
+            let cmap = &f[cmap..cmap + len];
+            let subs = be16(cmap, 2).unwrap_or(0) as usize;
+            let unicode = (0..subs)
+                .filter_map(|i| {
+                    let rec = 4 + 8 * i;
+                    let (pid, eid) = (be16(cmap, rec)?, be16(cmap, rec + 2)?);
+                    ((pid == 3 && eid == 1) || pid == 0).then(|| be32(cmap, rec + 4).map(|o| &cmap[o as usize..]))?
+                })
+                .next()
+                .unwrap_or_else(|| panic!("{file} has a Unicode cmap"));
+            for ch in "AZ09".chars() {
+                assert!(cmap4_glyph(unicode, ch as u16).is_some(), "{file} draws {ch}");
+            }
+        }
     }
 }

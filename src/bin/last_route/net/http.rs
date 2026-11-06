@@ -36,7 +36,8 @@ use super::NetError;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+use crate::shared::clock::Instant;
+use std::time::Duration;
 
 /// Godot's HTTPRequest has no timeout by default (`timeout = 0`), which is fine for a node that
 /// can be cancelled; a background thread cannot be, so every request here gets one. PORT
@@ -429,8 +430,16 @@ fn connect(url: &Url, deadline: Instant, public_only: bool) -> Result<TcpStream,
 
 // ---- TLS ----------------------------------------------------------------------------------------------------------
 
+/// The TLS settings a request carries: the rustls client config on native. The browser build (wasm32) has no TLS
+/// and no sockets; [`send`] refuses every request there before any of this runs.
+#[cfg(not(target_arch = "wasm32"))]
+type Tls = rustls::ClientConfig;
+#[cfg(target_arch = "wasm32")]
+type Tls = ();
+
 /// The rustls client settings every https request uses: the `ring` provider, TLS 1.2 and 1.3, the Mozilla roots.
-fn tls_config() -> Arc<rustls::ClientConfig> {
+#[cfg(not(target_arch = "wasm32"))]
+fn tls_config() -> Arc<Tls> {
     static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
     CONFIG
         .get_or_init(|| {
@@ -441,6 +450,12 @@ fn tls_config() -> Arc<rustls::ClientConfig> {
         .clone()
 }
 
+#[cfg(target_arch = "wasm32")]
+fn tls_config() -> Arc<Tls> {
+    Arc::new(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn client_config(roots: rustls::RootCertStore) -> rustls::ClientConfig {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     rustls::ClientConfig::builder_with_provider(provider)
@@ -453,22 +468,32 @@ fn client_config(roots: rustls::RootCertStore) -> rustls::ClientConfig {
 /// A connection, plain or inside TLS.
 enum Stream {
     Plain(TcpStream),
+    #[cfg(not(target_arch = "wasm32"))]
     Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
 }
 
 impl Stream {
-    fn open(tcp: TcpStream, url: &Url, tls: &Arc<rustls::ClientConfig>) -> Result<Stream, NetError> {
+    fn open(tcp: TcpStream, url: &Url, tls: &Arc<Tls>) -> Result<Stream, NetError> {
         if !url.https {
             return Ok(Stream::Plain(tcp));
         }
-        let name = rustls::pki_types::ServerName::try_from(url.host.clone()).map_err(|_| NetError::Unsupported("INVALID SERVER ADDRESS".into()))?;
-        let connection = rustls::ClientConnection::new(tls.clone(), name).map_err(|e| NetError::Transport(format!("TLS: {e}")))?;
-        Ok(Stream::Tls(Box::new(rustls::StreamOwned::new(connection, tcp))))
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (tcp, tls);
+            return Err(NetError::Unsupported("HTTPS IS NOT AVAILABLE IN THE BROWSER BUILD".into()));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let name = rustls::pki_types::ServerName::try_from(url.host.clone()).map_err(|_| NetError::Unsupported("INVALID SERVER ADDRESS".into()))?;
+            let connection = rustls::ClientConnection::new(tls.clone(), name).map_err(|e| NetError::Transport(format!("TLS: {e}")))?;
+            Ok(Stream::Tls(Box::new(rustls::StreamOwned::new(connection, tcp))))
+        }
     }
 
     fn tcp(&self) -> &TcpStream {
         match self {
             Stream::Plain(s) => s,
+            #[cfg(not(target_arch = "wasm32"))]
             Stream::Tls(s) => &s.sock,
         }
     }
@@ -480,6 +505,7 @@ impl Read for Stream {
             Stream::Plain(s) => s.read(buf),
             // A server that closes the socket without a TLS close_notify is common; the body framing (length or
             // chunks) is checked by the caller, so a cut-off body is still caught.
+            #[cfg(not(target_arch = "wasm32"))]
             Stream::Tls(s) => match s.read(buf) {
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(0),
                 other => other,
@@ -492,12 +518,14 @@ impl Write for Stream {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
             Stream::Plain(s) => s.write(buf),
+            #[cfg(not(target_arch = "wasm32"))]
             Stream::Tls(s) => s.write(buf),
         }
     }
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
             Stream::Plain(s) => s.flush(),
+            #[cfg(not(target_arch = "wasm32"))]
             Stream::Tls(s) => s.flush(),
         }
     }
@@ -505,8 +533,31 @@ impl Write for Stream {
 
 /// Sends one request and reads the whole response (blocking; run it on a worker thread from
 /// the frame loop, see [`super::Pending`]).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn send(req: &Request) -> Result<Response, NetError> {
     send_with(req, &tls_config())
+}
+
+/// The browser build has no sockets of its own: a request goes through the page (`XMLHttpRequest`, see
+/// [`super::web_bridge`] and dist/web/index.html), which applies the browser's TLS and CORS rules. The call blocks the
+/// page until the answer comes back (the browser build runs requests inline, see [`crate::shared::task::detach`]).
+/// Redirects are followed by the browser; the redirect guards and the 2xx content-type check are native-only.
+#[cfg(target_arch = "wasm32")]
+pub fn send(req: &Request) -> Result<Response, NetError> {
+    let reply = super::web_bridge::http_request(req.method.as_str(), &req.url, &req.headers, req.body.as_deref());
+    if reply.status == 0 {
+        return Err(NetError::Transport("THE REQUEST DID NOT REACH THE SERVER".into()));
+    }
+    if reply.body.len() > req.limit {
+        return Err(NetError::Protocol("THE SERVER SENT TOO MUCH DATA".into()));
+    }
+    let headers = reply
+        .headers
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
+        .collect();
+    Ok(Response { status: reply.status, headers, body: reply.body })
 }
 
 fn is_redirect(status: u16) -> bool {
@@ -514,7 +565,8 @@ fn is_redirect(status: u16) -> bool {
 }
 
 /// [`send`] with the TLS settings given (tests trust their own certificate this way).
-fn send_with(req: &Request, tls: &Arc<rustls::ClientConfig>) -> Result<Response, NetError> {
+#[cfg(not(target_arch = "wasm32"))]
+fn send_with(req: &Request, tls: &Arc<Tls>) -> Result<Response, NetError> {
     let deadline = Instant::now() + req.timeout;
     let mut url = parse_url(&req.url)?;
     let (mut method, mut body, mut headers) = (req.method, req.body.clone(), req.headers.clone());
@@ -566,7 +618,7 @@ fn exchange(
     request_body: Option<&[u8]>,
     deadline: Instant,
     stop_at_redirect: bool,
-    tls: &Arc<rustls::ClientConfig>,
+    tls: &Arc<Tls>,
 ) -> Result<Response, NetError> {
     let tcp = connect(url, deadline, req.public_only)?;
     let _ = tcp.set_nodelay(true);

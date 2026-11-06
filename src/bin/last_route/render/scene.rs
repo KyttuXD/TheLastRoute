@@ -172,6 +172,7 @@ pub fn item_file(item: Item) -> &'static str {
         Item::Axe => "rescue_axe",
         Item::Battery => "battery",
         Item::Stim => "stim_pack",
+        Item::MusicBox => "music_box",
     }
 }
 
@@ -265,10 +266,12 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     // the resident neighbour level, in the same frame (baked at its offset), with the same fog cull and a slab-plane test
     // that skips it unless the eye is near an opening (nothing of it is visible through the slab otherwise)
     if !g.world_nb.items.is_empty() {
-        let reach = crate::game::transition::links().prefetch_distance;
         for nb in &g.world_nb.items {
             let openings = super::world_mesh::openings(&g.fac);
-            let near_opening = world_stack::wants_neighbour((light.eye.x, light.eye.y, light.eye.z), &openings, reach, world_stack::eye_on_flight(light.eye.y));
+            // the same radius the neighbour's parts are built to (world_stack::NeighbourWorlds::sync): a shaft seen from
+            // across its floor is drawn, not skipped as behind the slab
+            let draw_reach = super::world_mesh::stream_table().neighbour_cull_radius;
+            let near_opening = world_stack::wants_neighbour((light.eye.x, light.eye.y, light.eye.z), &openings, draw_reach, world_stack::eye_on_flight(light.eye.y));
             if !near_opening && world_stack::behind_slab(light.eye.y, nb.dy, &nb.bounds) {
                 continue;
             }
@@ -403,30 +406,34 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
             }
         }
     }
-    for (i, l) in f.hiding.iter().enumerate() {
-        let swing = hide::door_for(i, t).max(hide::remote_door_for((l.cell.x, l.cell.y), t));
-        if g.p.hidden == Some(i) && swing == 0.0 {
-            continue;
-        }
-        let (cx, cy) = f.locker_center(l);
-        let yaw = (l.facing.0 as f32).atan2(l.facing.1 as f32);
-        let burnt = g.hiding_disabled[i];
+    // every hiding spot is drawn whoever is inside it (the runner, a bot, a remote runner): the locker is a real prop
+    // the hider stands in, so hiding never removes it (`locker_draw_list`)
+    for d in locker_draw_list(g, t) {
+        let LockerDraw { centre: (cx, cy), yaw, burnt, swing, shake, .. } = d;
         match item_model(a, "hiding_spot") {
             Some(m) => {
                 if locker_fully_fogged(light.eye, cx, cy, locker_reach(m), locker_cull().margin_m, light.fog_far) {
                     continue;
                 }
-                let xf = at(cx, 0.0, cy, yaw);
+                // a hunter's check rattles the whole locker, body and interior alike; the hidden camera does not move
+                let xf = at(cx, 0.0, cy, yaw) * Mat4::from_translation(vec3(shake, 0.0, 0.0));
                 let tint = if burnt {
                     Color::new(0.25, 0.2, 0.18, 1.0)
                 } else {
                     WHITE
                 };
-                // the body is fixed; only the door swings, so it is the one part built each frame
-                draw_static(m, xf, tint);
-                let mut parts = HashMap::new();
-                m.add_locker_door(&mut parts, xf, tint, swing);
-                draw_builders(parts);
+                if d.inner_shell {
+                    // the runner inside looks out through the vent of the dark interior (render/locker_shell.rs). The outer
+                    // body and door are not culled from inside, so they would cover that view: the interior stands in
+                    // for them while the camera is in the box. The spot stays in the list either way.
+                    draw_locker_shell(a, m, xf);
+                } else {
+                    // the body is fixed; only the door swings, so it is the one part built each frame
+                    draw_static(m, xf, tint);
+                    let mut parts = HashMap::new();
+                    m.add_locker_door(&mut parts, xf, tint, swing);
+                    draw_builders(parts);
+                }
             }
             None => locker_shape(&mut b, vec3(cx, 0.0, cy), yaw, burnt, swing),
         }
@@ -488,25 +495,6 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
                 Color::new(0.98, 0.55, 0.25, 1.0),
                 2.0,
             );
-        }
-    }
-    if let Some(c) = g.fix.music_box {
-        let (x, y) = c.center();
-        let pct = (g.music_box_left / 45.0).clamp(0.0, 1.0);
-        let spin = if pct > 0.0 {
-            t * (0.2 + pct * 0.6)
-        } else {
-            0.0
-        };
-        match item_model(a, "music_box") {
-            Some(m) => m.draw(at(x, 0.0, y, spin), WHITE),
-            None => b.cube(
-                vec3(x, 0.35, y),
-                vec3(0.3, 0.7, 0.3),
-                0.0,
-                Color::new(0.3, 0.18, 0.12, 1.0),
-                0.0,
-            ),
         }
     }
     for (i, c) in g.fix.vents.iter().enumerate() {
@@ -1165,6 +1153,71 @@ fn locker_fully_fogged(eye: Vec3, cx: f32, cy: f32, reach: f32, margin: f32, fog
     (dx * dx + dz * dz).sqrt() - reach >= (fog_far * UNLIT_FOG_SCALE).clamp(WORLD_CULL_FLOOR, WORLD_CULL_CEIL) + margin
 }
 
+/// One hiding spot as the scene draws it this frame. Every spot of the floor has an entry, empty or occupied: hiding
+/// in a locker (the runner, a bot, or a remote runner, `net/runner_figure.rs`) never takes the locker out of the list.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LockerDraw {
+    /// The spot's index in `fac.hiding`.
+    pub spot: usize,
+    /// The locker's centre (x, z) and the yaw its model is placed with.
+    pub centre: (f32, f32),
+    pub yaw: f32,
+    pub burnt: bool,
+    /// The door's opening angle this frame, from the runner's own hiding or a remote runner's going in or out.
+    pub swing: f32,
+    /// The sideways shake (metres) while a hunter checks this locker (`net/hide_sync.rs`), zero otherwise.
+    pub shake: f32,
+    /// Draw the dark inner shell (`render/locker_shell.rs`) in place of the outer body and door: only for the local
+    /// runner while the camera is in the closed box (the glide has arrived, or is still past half way on the way out).
+    /// The spot is listed either way.
+    pub inner_shell: bool,
+}
+
+/// The local runner's exit glide weight below which the camera has left the locker box (smoothstep of the glide).
+const SHELL_LEAVE_WEIGHT: f32 = 0.5;
+
+/// What to draw for the floor's hiding spots at game time `t` (the hide views ticked for this frame).
+pub fn locker_draw_list(g: &Game, t: f32) -> Vec<LockerDraw> {
+    let w = hide::player_now().weight;
+    // the spot whose box the camera is in: the hidden one once the glide arrives, the last one while leaving
+    let inside = match g.p.hidden {
+        Some(i) => (w >= 1.0).then_some(i),
+        None => LAST_SPOT.with(|s| s.get()).filter(|_| w > SHELL_LEAVE_WEIGHT),
+    };
+    g.fac
+        .hiding
+        .iter()
+        .enumerate()
+        .map(|(i, l)| LockerDraw {
+            spot: i,
+            centre: g.fac.locker_center(l),
+            yaw: (l.facing.0 as f32).atan2(l.facing.1 as f32),
+            burnt: g.hiding_disabled.get(i).copied().unwrap_or(false),
+            swing: hide::door_for(i, t).max(hide::remote_door_for((l.cell.x, l.cell.y), t)),
+            shake: g.hide_check_elapsed(i).map_or(0.0, crate::net::hide_sync::search_tell_shake),
+            inner_shell: inside == Some(i),
+        })
+        .collect()
+}
+
+/// Draws the locker's dark inner shell, placed by `xf` like the prop: the vent slit is cut at the heights the hidden
+/// camera looks through (`data/player/hiding_view.json`), so the view out is never walled off.
+fn draw_locker_shell(a: &Assets, m: &PropModel, xf: Mat4) {
+    use super::locker_shell::{self, Bounds};
+    let d = locker_shell::data();
+    let cam = super::hiding_cam::cfg();
+    let bounds = Bounds { min: m.min.to_array(), max: m.max.to_array() };
+    let col = Color::new(d.color[0], d.color[1], d.color[2], d.color[3]);
+    let mut b = Builder::new(Some(a.white.clone()));
+    for q in locker_shell::view_shell(bounds, d, cam.vent_lo, cam.vent_hi) {
+        let c = q.map(|p| xf.transform_point3(Vec3::from(p)));
+        let n = (c[1] - c[0]).cross(c[3] - c[0]).normalize_or_zero();
+        // unlit: the interior stays as dark as the data says whatever lamps stand outside
+        b.quad(c, [vec2(0., 0.), vec2(1., 0.), vec2(1., 1.), vec2(0., 1.)], n, col, 2.0);
+    }
+    b.draw_and_clear();
+}
+
 fn locker_shape(b: &mut Builder, p: Vec3, yaw: f32, burnt: bool, swing: f32) {
     let body = if burnt {
         Color::new(0.16, 0.13, 0.12, 1.0)
@@ -1383,5 +1436,156 @@ mod tests {
                 assert!((pivot + turn * p).length() <= reach + 1e-5, "a door point at {angle} rad leaves the reach");
             }
         }
+    }
+
+    fn locker_game() -> Game {
+        let content = crate::content::Content::load();
+        let catalog = crate::world::catalog::Catalog::load();
+        let g = Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, "ROOM-TEST-7", 0, &content, &catalog);
+        assert!(!g.fac.hiding.is_empty(), "the test floor has a locker");
+        g
+    }
+
+    /// The list for frame time `t` after ticking the hide views the way `draw_scene` does.
+    fn list_at(g: &Game, t: f32) -> Vec<LockerDraw> {
+        hide::tick(g.p.hidden, t);
+        locker_draw_list(g, t)
+    }
+
+    fn assert_prop_listed(list: &[LockerDraw], g: &Game, spot: usize, what: &str) {
+        assert_eq!(list.len(), g.fac.hiding.len(), "{what}: every hiding spot is in the draw list");
+        let d = list.iter().find(|d| d.spot == spot).unwrap_or_else(|| panic!("{what}: the locker is not drawn"));
+        let l = &g.fac.hiding[spot];
+        assert_eq!(d.centre, g.fac.locker_center(l), "{what}: the locker stays where it stood");
+        assert_eq!(d.yaw, (l.facing.0 as f32).atan2(l.facing.1 as f32), "{what}: and keeps its facing");
+    }
+
+    #[test]
+    fn the_locker_stays_in_the_draw_list_before_during_and_after_the_runner_hides() {
+        let mut g = locker_game();
+        let li = 0usize;
+        let before = list_at(&g, 0.0);
+        assert_prop_listed(&before, &g, li, "before");
+        assert!(before.iter().all(|d| !d.inner_shell && d.swing == 0.0 && d.shake == 0.0), "nobody in: a shut, still locker, no inner shell");
+        // the runner goes in: every frame of the door swing and the glide still lists the locker, and the spot's own
+        // entry (its place, its facing, its burn) is the one it had before
+        g.p.hidden = Some(li);
+        let mut t = 0.0;
+        let mut swung = false;
+        while t < 1.5 {
+            t += 1.0 / 60.0;
+            let during = list_at(&g, t);
+            assert_prop_listed(&during, &g, li, "during");
+            let mine = during[li];
+            swung |= mine.swing > 0.0;
+            assert_eq!((mine.burnt, mine.centre, mine.yaw), (before[li].burnt, before[li].centre, before[li].yaw));
+            assert!(during.iter().filter(|d| d.spot != li).all(|d| !d.inner_shell), "only the hider's locker gets a shell");
+        }
+        assert!(swung, "the door swung open on the way in");
+        let inside = list_at(&g, t);
+        assert_prop_listed(&inside, &g, li, "inside");
+        assert_eq!(inside[li].swing, 0.0, "shut with the runner inside");
+        assert!(inside[li].inner_shell, "the camera sits in the closed locker: the inner shell is drawn with the prop");
+        // the runner comes out: the locker is listed through the swing and unchanged after it
+        g.p.hidden = None;
+        let mut left = false;
+        for _ in 0..90 {
+            t += 1.0 / 60.0;
+            let leaving = list_at(&g, t);
+            assert_prop_listed(&leaving, &g, li, "leaving");
+            left |= leaving[li].swing > 0.0;
+        }
+        assert!(left, "the door swung open on the way out");
+        let after = list_at(&g, t);
+        assert_eq!(after, before, "after hiding the list is what it was before");
+    }
+
+    #[test]
+    fn the_inner_shell_waits_for_the_glide_to_arrive() {
+        let mut g = locker_game();
+        let _ = list_at(&g, 0.0);
+        g.p.hidden = Some(0);
+        let first = list_at(&g, 0.02);
+        assert!(!first[0].inner_shell, "the camera is still outside at the start of the glide");
+        let mut t = 0.02;
+        while hide::player_now().weight < 1.0 && t < 3.0 {
+            t += 0.02;
+            let _ = list_at(&g, t);
+        }
+        assert!(list_at(&g, t)[0].inner_shell);
+    }
+
+    #[test]
+    fn the_shell_stays_up_while_the_camera_is_still_in_the_box_on_the_way_out() {
+        let mut g = locker_game();
+        let li = 0usize;
+        g.p.hidden = Some(li);
+        let mut t = 0.0;
+        while hide::player_now().weight < 1.0 && t < 3.0 {
+            t += 1.0 / 60.0;
+            let _ = list_at(&g, t);
+        }
+        assert!(list_at(&g, t)[li].inner_shell, "inside: the shell is up");
+        // the runner steps out; `view` remembers the spot the camera glides out of
+        LAST_SPOT.with(|s| s.set(Some(li)));
+        g.p.hidden = None;
+        let mut shell_seen = false;
+        for _ in 0..120 {
+            t += 1.0 / 60.0;
+            let listed = list_at(&g, t);
+            let weight = hide::player_now().weight;
+            assert_prop_listed(&listed, &g, li, "leaving");
+            assert_eq!(listed[li].inner_shell, weight > SHELL_LEAVE_WEIGHT, "weight {weight}");
+            shell_seen |= listed[li].inner_shell;
+        }
+        assert!(shell_seen, "the shell is up at the start of the exit");
+        assert!(!list_at(&g, t)[li].inner_shell, "the camera has left: the outer prop is back");
+    }
+
+    #[test]
+    fn a_hidden_bot_leaves_its_locker_in_the_draw_list_unchanged() {
+        let mut g = locker_game();
+        assert!(!g.npcs.is_empty(), "the test run has a bot");
+        let before = list_at(&g, 0.0);
+        g.npcs[0].hidden = Some(0);
+        g.npcs[0].at = g.fac.locker_center(&g.fac.hiding[0]);
+        for t in [0.5, 1.0, 5.0] {
+            let during = list_at(&g, t);
+            assert_prop_listed(&during, &g, 0, "bot inside");
+            assert_eq!(during, before, "a bot hiding changes nothing about the locker's drawing");
+        }
+        g.npcs[0].hidden = None;
+        assert_eq!(list_at(&g, 6.0), before);
+    }
+
+    #[test]
+    fn a_remote_runners_locker_stays_in_the_draw_list_and_swings_its_door() {
+        let g = locker_game();
+        let l = &g.fac.hiding[0];
+        let cell = (l.cell.x, l.cell.y);
+        hide::tick_remote(&[], 0.0);
+        let before = list_at(&g, 0.0);
+        assert_prop_listed(&before, &g, 0, "before");
+        // the peer slides in: the door swings, then shuts on the occupied locker, which stays listed throughout
+        hide::tick_remote(&[cell], 1.0);
+        let mut swung = false;
+        for k in 0..60 {
+            let t = 1.0 + k as f32 / 60.0;
+            hide::tick_remote(&[cell], t);
+            let during = list_at(&g, t);
+            assert_prop_listed(&during, &g, 0, "peer going in");
+            swung |= during[0].swing > 0.0;
+            assert!(during.iter().all(|d| !d.inner_shell), "a peer's view never gets the local shell");
+        }
+        assert!(swung, "the peer's door swung");
+        hide::tick_remote(&[cell], 5.0);
+        let shut = list_at(&g, 5.0);
+        assert_prop_listed(&shut, &g, 0, "peer inside");
+        assert_eq!(shut, before, "an occupied locker with its door shut is drawn like an empty one");
+        // and out again
+        hide::tick_remote(&[], 6.0);
+        assert_prop_listed(&list_at(&g, 6.1), &g, 0, "peer leaving");
+        hide::tick_remote(&[], 8.0);
+        assert_eq!(list_at(&g, 8.0), before);
     }
 }

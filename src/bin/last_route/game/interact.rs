@@ -1,6 +1,7 @@
 //! What the crosshair is on and what [E] does to it (route_interactable_3d.gd): relays,
 //! batteries, equipment, coins, lockers, the safe zone, the service lift, room light switches,
-//! the heater station, the music box (hold to wind), vent grates and Zellia's store. Opalie's
+//! the heater station, vent grates and Zellia's store. The music box is a collectable (take it, then wind it from the
+//! pack: game/music_box.rs, game/items.rs). Opalie's
 //! guard vetoes anything near her post.
 
 use super::{pdist, Game, Heater, Item};
@@ -24,7 +25,6 @@ pub enum Focus {
     Ladder(usize),
     LightSwitch(usize),
     Heater,
-    MusicBox,
     Vent(usize),
     Shop(usize),
     /// A room door, by its index in `Facility::props`.
@@ -143,9 +143,6 @@ impl Game {
         if let Some(c) = self.fix.heater {
             consider(c.center(), 0.6, INTERACT_REACH, Focus::Heater);
         }
-        if let Some(c) = self.fix.music_box {
-            consider(c.center(), 0.5, INTERACT_REACH, Focus::MusicBox);
-        }
         for (i, c) in self.fix.vents.iter().enumerate() {
             consider(c.center(), 0.4, INTERACT_REACH, Focus::Vent(i));
         }
@@ -220,7 +217,6 @@ impl Game {
                 Heater::Thawed => "[E] POWER HEATER STATION".into(),
                 Heater::Powered => "[E] POWER DOWN HEATER".into(),
             },
-            Focus::MusicBox => "HOLD [E] // WIND MUSIC BOX".into(),
             Focus::Vent(_) => "[E] VENT".into(),
             Focus::Valve(i) => {
                 let p = &self.fac.props[i];
@@ -250,7 +246,6 @@ impl Game {
             Focus::Ladder(i) => self.fac.stairs[i].cell.center(),
             Focus::LightSwitch(i) => self.fac.room_lights[i].switch_cell.center(),
             Focus::Heater => self.fix.heater.map(|c| c.center()).unwrap_or(self.p.pos),
-            Focus::MusicBox => self.fix.music_box.map(|c| c.center()).unwrap_or(self.p.pos),
             Focus::Vent(i) => self.fix.vents[i].center(),
             Focus::Valve(i) => self.fac.props[i].cell.center(),
             Focus::Shop(i) => self.hunters[i].pos,
@@ -344,7 +339,6 @@ impl Game {
                     }
                 };
             }
-            Focus::MusicBox => crate::audio::sound::music_box(), // on the press (route_interactable_3d.gd 818)
             Focus::Vent(i) => self.use_vent(i),
             Focus::Shop(i) => {
                 if let Gimmick::Zellia(z) = &mut self.hunters[i].gimmick {
@@ -366,8 +360,10 @@ impl Game {
             .map(|h| h.def.name.to_uppercase())
     }
 
-    /// Recovers relay `i` for `actor`: the relay count and score, the saved run and the hunter activation are the same
-    /// whoever stands at it. A bot's loot and score go to the team (the runner's). True when the relay was claimed.
+    /// Recovers relay `i` for `actor`: the relay count and score, the saved run, the hunter release
+    /// (`release_hunters_for_relay`) and the noise (`relay_noise`) are the same whoever stands at it; the player's
+    /// interact and a bot's claim both end here, with the actor's own position as the source. A bot's loot and score go
+    /// to the team (the runner's). True when the relay was claimed.
     pub(super) fn claim_relay(&mut self, i: usize, actor: Actor, content: &Content) -> bool {
         if self.relays_taken.get(i).copied().unwrap_or(true) {
             return false;
@@ -386,29 +382,55 @@ impl Game {
             Some(name) => self.announce(&format!("{name} RECOVERED A RELAY")),
             None => self.announce("RELAY ONLINE"),
         }
-        // a bot far from the runner changes the team's count only: no save and no population pass (the next claim near
-        // the runner catches both up)
+        // a bot far from the runner skips the save only (the runner's own save is the next one near them); the hunter
+        // release below is never skipped, so a bot's relay raises the same hunters at the same moment as the runner's
         let far = actor != Actor::Player && pdist(at, self.p.pos) > crate::game::npc::Tuning::get().goals.leash_distance;
         if !far {
             // a recovered relay saves the run (Godot `_sync_stream_progress`: autosave("relay"))
             self.autosave("relay");
         }
+        self.release_hunters_for_relay(actor, content);
+        self.relay_noise(actor);
+        true
+    }
+
+    /// The sound of a recovered relay, the same whoever recovers it: a `RelayRecover` noise event where the one who
+    /// recovered it stands, on that one's storey (data `noise_events.json` `kinds.relay_recover`), so the hunters and the
+    /// bots that hear it investigate the spot. A guest records nothing (`push_noise_at`).
+    fn relay_noise(&mut self, actor: Actor) {
+        let level = match actor {
+            Actor::Player => self.runner_level(),
+            Actor::Npc(id) => self.npcs.iter().find(|n| n.id == id).map_or(self.runner_level(), |n| n.level),
+        };
+        let stood = self.actor_position(actor);
+        self.push_noise_at(crate::hunters::noise_events::NoiseKind::RelayRecover, stood, level);
+    }
+
+    /// The hunters a recovered relay releases, the same for the runner and for a bot: the first route hunter wakes once
+    /// the difficulty's activation count is reached, and the Infinite route's population grows with the relay count.
+    /// What wakes does so investigating where the one who recovered the relay stood (Godot `applyRelayActivation`
+    /// wakes at the runner, and a bot is a runner of the team), so a bot's relay draws the hunters to the bot.
+    fn release_hunters_for_relay(&mut self, actor: Actor, content: &Content) {
+        let stood = self.actor_position(actor);
         let need = crate::game::progression::Progression::load()
             .activation_relays(self.difficulty)
             .min(self.fac.relays.len() as i32);
         if self.is_infinite() {
             // the streamed population grows instead (ensure_hunters)
-            if !far {
-                self.ensure_hunters(content);
+            self.ensure_hunters_at(content, Some(stood));
+        } else if self.relays_collected >= need {
+            if let Some(h) = self.hunters.first_mut().filter(|h| !h.active && !h.gimmick.runs_while_inactive()) {
+                h.activate_at(stood);
             }
-        } else if !self.hunters[0].active
-            && self.relays_collected >= need
-            && !self.hunters[0].gimmick.runs_while_inactive()
-        {
-            let p = self.p.pos;
-            self.hunters[0].activate_at(p);
         }
-        true
+    }
+
+    /// Where `actor` stands on the active level: the runner's body, or a bot's (the runner's when the bot is gone).
+    fn actor_position(&self, actor: Actor) -> (f32, f32) {
+        match actor {
+            Actor::Player => self.p.pos,
+            Actor::Npc(id) => self.npcs.iter().find(|n| n.id == id).map_or(self.p.pos, |n| n.at),
+        }
     }
 
     /// Takes flashlight battery `i` for `actor` into the team's inventory. True when it was taken.
@@ -639,7 +661,7 @@ impl Game {
                         self.difficulty,
                         crate::net::valve_events::VALVE,
                         crate::net::valve_events::turn_fields(&ev),
-                        std::time::Instant::now(),
+                        crate::shared::clock::Instant::now(),
                     );
                 }
                 if let Some((radius, seconds)) = ev.noise {
@@ -699,23 +721,9 @@ impl Game {
         }
     }
 
-    /// Held interactions: winding the music box, and Zellia's store choices.
+    /// Held interactions: the valve wheels, and Zellia's store choices.
     pub(super) fn update_holds(&mut self, dt: f32, c: &super::Controls, _sounds: &Sounds) {
         self.update_valve_hold(dt, c.interact_held);
-        if c.interact_held && self.focus == Some(Focus::MusicBox) {
-            self.wind_hold += dt;
-            if self.wind_hold >= 1.5 {
-                self.wind_hold = 0.0;
-                self.music_box_left = match self.difficulty {
-                    Difficulty::Hard => 35.0,
-                    Difficulty::Nightmare => 25.0,
-                    _ => 45.0,
-                };
-                self.say("Music box wound. The room settles.");
-            }
-        } else {
-            self.wind_hold = 0.0;
-        }
         if let Some(choice) = c.shop_choice {
             self.shop_trade(choice);
         }
@@ -1177,5 +1185,150 @@ mod tests {
         let (g, _, id) = valve_game();
         assert_eq!(g.focus_prompt(), Some(g.pipes.prompt(&id, "")));
         assert!(g.focus_prompt().is_some_and(|p| !p.is_empty()));
+    }
+}
+
+/// A bot's relay and the runner's relay end in the same `claim_relay`: the same count, score, danger and hunters, the
+/// hunters waking where the one who recovered the relay stood.
+#[cfg(test)]
+mod relay_claim_tests {
+    use super::*;
+    use crate::config::Difficulty;
+
+    /// What a claim changed that the rest of the game reads: counts, flags, the hunters and the danger readout.
+    fn state(g: &Game) -> (i32, i32, Vec<bool>, Vec<(String, bool)>, f32) {
+        let mut hunters: Vec<(String, bool)> = g.hunters.iter().map(|h| (h.def.id.clone(), h.active)).collect();
+        hunters.sort();
+        (g.relays_collected, g.score, g.relays_taken.clone(), hunters, g.danger())
+    }
+
+    /// Hunters present now that `before` (their ids) did not hold.
+    fn newcomers<'a>(g: &'a Game, before: &[String]) -> Vec<&'a crate::hunters::brain::Brain> {
+        g.hunters.iter().filter(|h| !before.contains(&h.def.id)).collect()
+    }
+
+    fn sky(p: (f32, f32)) -> ((f32, f32, f32), (f32, f32, f32)) {
+        ((p.0, 1.6, p.1), (0.0, 1.0, 0.0))
+    }
+
+    #[test]
+    fn a_bot_s_relay_releases_the_hunters_the_runner_s_does_where_the_bot_stands() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        for diff in [Difficulty::Relaxed, Difficulty::Standard, Difficulty::Hard] {
+            let make = || Game::new_infinite_sim(diff, 7, "ROOM-TEST-7", 0, &content, &catalog);
+            let (mut runner, mut bot_game) = (make(), make());
+            let id = bot_game.npcs[0].id;
+            let mut woke = 0;
+            for k in 0..4 {
+                let at = bot_game.fac.relays[k].center();
+                assert_ne!(at, bot_game.p.pos, "the relay is not under the runner");
+                // the bot stands at the relay, far from the runner when the relay is
+                bot_game.npcs[0].at = at;
+                let (before_r, before_b): (Vec<String>, Vec<String>) = (
+                    runner.hunters.iter().map(|h| h.def.id.clone()).collect(),
+                    bot_game.hunters.iter().map(|h| h.def.id.clone()).collect(),
+                );
+                assert!(runner.claim_relay(k, Actor::Player, &content));
+                assert!(bot_game.claim_relay(k, Actor::Npc(id), &content));
+                assert_eq!(state(&runner), state(&bot_game), "{diff:?} relay {k}: the same count, score, hunters and danger");
+                let (new_r, new_b) = (newcomers(&runner, &before_r), newcomers(&bot_game, &before_b));
+                assert_eq!(new_r.len(), new_b.len());
+                woke += new_b.len();
+                for h in new_r {
+                    assert!(h.active, "{diff:?}: a released hunter is awake");
+                    assert_eq!(h.last_known, Some(runner.p.pos), "the runner's relay wakes a hunter investigating the runner");
+                }
+                for h in new_b {
+                    assert!(h.active, "{diff:?}: a released hunter is awake");
+                    assert_eq!(h.last_known, Some(at), "a bot's relay wakes a hunter investigating the bot");
+                }
+            }
+            assert!(woke > 0, "{diff:?}: four relays released hunters");
+            assert!(bot_game.danger() > 0.0, "{diff:?}: awake hunters after the runner raise the danger readout");
+        }
+    }
+
+    #[test]
+    fn a_bot_s_relay_on_the_finite_floor_wakes_the_route_hunter_at_the_bot() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let make = || Game::new_sim(Difficulty::Standard, 4242, &content, &catalog);
+        let (mut runner, mut bot_game) = (make(), make());
+        bot_game.npc_spawn(1, 50, sky(bot_game.p.pos).0, sky(bot_game.p.pos).1);
+        let id = bot_game.npcs[0].id;
+        let at = bot_game.fac.relays[0].center();
+        bot_game.npcs[0].at = at;
+        assert!(!runner.hunters[0].active && !bot_game.hunters[0].active, "nothing is awake before the first relay");
+        assert!(runner.claim_relay(0, Actor::Player, &content));
+        assert!(bot_game.claim_relay(0, Actor::Npc(id), &content));
+        assert_eq!(state(&runner), state(&bot_game));
+        assert!(runner.hunters[0].active && bot_game.hunters[0].active, "the activation count is reached by either");
+        assert_eq!(runner.hunters[0].last_known, Some(runner.p.pos));
+        assert_eq!(bot_game.hunters[0].last_known, Some(at));
+        assert_eq!(bot_game.danger(), runner.danger());
+    }
+
+    #[test]
+    fn a_bot_that_walks_to_a_relay_releases_the_hunters_on_the_spot() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let sounds = Sounds::default();
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-TEST-7", 0, &content, &catalog);
+        g.npcs[0].joined = true;
+        g.hunters.clear();
+        g.inf.as_mut().unwrap().stored_mut().clear();
+        let mut taken_at = None;
+        for frame in 0..(240 * 30) {
+            g.step(1.0 / 30.0, &crate::game::Controls::default(), &content, &catalog, &sounds);
+            if g.relays_collected > 0 {
+                taken_at = Some(frame);
+                break;
+            }
+        }
+        assert!(taken_at.is_some(), "the bot recovered a relay on its own within four minutes");
+        assert_eq!(g.relays_collected, 1);
+        assert!(g.hunters.iter().any(|h| h.active), "the relay released a hunter in the step that took it");
+    }
+
+    #[test]
+    fn a_bot_s_pickup_raises_the_danger_readout_exactly_as_the_runner_s_does() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let make = || Game::new_sim(Difficulty::Standard, 4242, &content, &catalog);
+        let (mut runner, mut bot_game) = (make(), make());
+        bot_game.npc_spawn(1, 50, sky(bot_game.p.pos).0, sky(bot_game.p.pos).1);
+        let id = bot_game.npcs[0].id;
+        bot_game.npcs[0].at = bot_game.fac.relays[0].center();
+        // the one hunter sits a metre from the runner and is asleep: its waking is the only change a pickup makes
+        for g in [&mut runner, &mut bot_game] {
+            g.hunters[0].pos = (g.p.pos.0 + 1.0, g.p.pos.1);
+        }
+        assert_eq!(runner.danger(), 0.0, "a sleeping hunter feeds no danger");
+        assert_eq!(bot_game.danger(), 0.0, "a sleeping hunter feeds no danger");
+        assert!(runner.claim_relay(0, Actor::Player, &content));
+        assert!(bot_game.claim_relay(0, Actor::Npc(id), &content));
+        assert!(runner.danger() > 0.0, "the runner's pickup raises the danger readout");
+        assert_eq!(bot_game.danger(), runner.danger(), "the bot's pickup raises it by the same amount");
+    }
+
+    #[test]
+    fn a_relay_is_heard_where_the_one_who_recovered_it_stands_and_a_guest_records_nothing() {
+        use crate::hunters::noise_events::NoiseKind;
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let make = || Game::new_sim(Difficulty::Standard, 4242, &content, &catalog);
+        let (mut runner, mut bot_game) = (make(), make());
+        bot_game.npc_spawn(1, 50, sky(bot_game.p.pos).0, sky(bot_game.p.pos).1);
+        let id = bot_game.npcs[0].id;
+        let at = bot_game.fac.relays[0].center();
+        bot_game.npcs[0].at = at;
+        let level = bot_game.npcs[0].level;
+        let heard = |g: &Game| -> Vec<((f32, f32), i32)> {
+            g.noise_events.iter().filter(|e| e.kind == NoiseKind::RelayRecover).map(|e| (e.pos, e.level)).collect()
+        };
+        assert!(runner.claim_relay(0, Actor::Player, &content));
+        assert_eq!(heard(&runner), vec![(runner.p.pos, runner.runner_level())], "the runner's relay is a noise where the runner stands");
+        assert!(bot_game.claim_relay(0, Actor::Npc(id), &content));
+        assert_eq!(heard(&bot_game), vec![(at, level)], "a bot's relay is a noise where the bot stands, on its storey");
+        let mut guest = make();
+        guest.remote_hunters = true;
+        assert!(guest.claim_relay(0, Actor::Player, &content));
+        assert!(heard(&guest).is_empty(), "a guest records no noise for the host's hunters");
     }
 }

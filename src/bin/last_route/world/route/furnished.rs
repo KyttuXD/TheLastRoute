@@ -527,7 +527,7 @@ fn room_template_basis(room: &Room) -> Option<Basis> {
 // the template choice (`_furnished_room_props`, 3058-3154)
 
 /// Whether `room_type` is a room role of one of the four data-backed districts (`HOSPITAL_ROOMS`, `LAB_ROOMS`,
-/// `GREENHOUSE_ROOMS` and `MALL_ROOMS` of streamed_route_generator.gd:91-99): their `room_roles` in data/regions.
+/// `GREENHOUSE_ROOMS` and `MALL_ROOMS` of streamed_route_generator.gd:91-99): their `room_roles` in src/bin/last_route/data/regions.
 fn is_district_room_role(room_type: &str) -> bool {
     ["hospital", "lab", "greenhouse", "mall"]
         .iter()

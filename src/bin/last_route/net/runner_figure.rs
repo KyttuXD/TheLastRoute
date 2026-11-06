@@ -901,7 +901,7 @@ mod tests {
             let grip_point = root.transform_point3(mats[b].transform_point3(d.anchor.offset_units));
             assert!(pivot.y > 0.6 && pivot.y < 1.3, "slim={slim}: the hand pivot is at wrist height, got {pivot:?}");
             assert!(pivot.x.abs() > 0.15, "slim={slim}: the right hand is out to the side, got {pivot:?}");
-            for item in [Item::Flashlight, Item::Taser, Item::Crowbar, Item::Axe, Item::Battery, Item::Stim] {
+            for item in [Item::Flashlight, Item::Taser, Item::Crowbar, Item::Axe, Item::Battery, Item::Stim, Item::MusicBox] {
                 let xf = held_wire::item_transform(d, item, root, mats[b], unit);
                 let origin = xf.transform_point3(Vec3::ZERO);
                 let reach = d.pose(item).grip * d.pose(item).scale * d.anchor.rig_scale + 0.15;

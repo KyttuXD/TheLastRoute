@@ -89,6 +89,10 @@ fn path() -> Option<PathBuf> {
 }
 
 pub fn load() -> Option<Checkpoint> {
+    // the browser build keeps no run: nothing is saved there, so nothing is ever continued (paths::WRITES_TO_DISK)
+    if !super::paths::WRITES_TO_DISK {
+        return None;
+    }
     let v: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(path()?).ok()?).ok()?;
     from_json(&v)
@@ -129,7 +133,7 @@ pub static ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 
 fn enabled() -> bool {
     // the lib's unit tests drive relays, checkpoints and stairs: they never touch the player's real save
-    !cfg!(test) && ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+    !cfg!(test) && super::paths::WRITES_TO_DISK && ENABLED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 pub fn save(c: &Checkpoint) {

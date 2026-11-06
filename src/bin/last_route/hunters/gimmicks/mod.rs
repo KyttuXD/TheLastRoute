@@ -53,6 +53,8 @@ pub struct Ctx<'a> {
     pub diff: Difficulty,
     /// Seconds left on the floor's music box (Glyra).
     pub music_box_left: f32,
+    /// Centres of the music box floor pickups still uncollected in this window (Glyra guards the nearest).
+    pub music_boxes: &'a [(f32, f32)],
     pub exposure: f32,
 }
 

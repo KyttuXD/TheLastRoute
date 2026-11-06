@@ -83,8 +83,18 @@ impl Geometry {
     }
 }
 
+/// Whether a prop texture of this size may take the REPEAT wrap. The browser build draws on WebGL 1, which samples a
+/// texture whose width or height is not a power of two as opaque black once it repeats, so there such a texture keeps
+/// the default clamp (its UVs stay in 0..1). Native GL repeats every size, so native keeps REPEAT for every texture.
+fn may_repeat(width: u32, height: u32, webgl1: bool) -> bool {
+    !webgl1 || (width.is_power_of_two() && height.is_power_of_two())
+}
+
 fn repeat(t: &Texture2D) {
     use macroquad::miniquad::TextureWrap;
+    if !may_repeat(t.width() as u32, t.height() as u32, cfg!(target_arch = "wasm32")) {
+        return;
+    }
     let id = t.raw_miniquad_id();
     unsafe {
         get_internal_gl().quad_context.texture_set_wrap(
@@ -550,6 +560,7 @@ pub fn draw_builders(builders: HashMap<usize, Builder>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content::embedded;
     use std::cell::Cell;
 
     /// A unit box standing on the floor, as bare vertices (a model's parts, without a texture).
@@ -630,6 +641,30 @@ mod tests {
         assert!(verts.iter().all(|v| v.normal.w == LIT_MODE && v.color[3] == 255));
         fade_verts(&mut verts, 0.5);
         assert!(verts.iter().all(|v| v.normal.w == GHOST_MODE && (126..=128).contains(&v.color[3])));
+    }
+
+    #[test]
+    fn only_a_power_of_two_prop_texture_repeats_on_webgl1() {
+        // WebGL 1 repeats a power-of-two atlas only; native GL repeats every size
+        assert!(may_repeat(128, 64, true));
+        assert!(may_repeat(32, 32, true));
+        assert!(!may_repeat(96, 16, true));
+        assert!(!may_repeat(112, 16, true));
+        assert!(may_repeat(96, 16, false));
+    }
+
+    #[test]
+    fn the_flashlight_atlas_decodes_lit_and_does_not_repeat_on_webgl1() {
+        // a 96x16 atlas (not a power of two) decodes to real colours, and on WebGL 1 it must not repeat (it draws black)
+        let j: serde_json::Value =
+            serde_json::from_slice(embedded::asset("interactables/flashlight_item.bbmodel").expect("embedded")).expect("json");
+        let (_, bytes) = bbmodel::texture_bytes(&j, &|_| None).expect("atlas bytes");
+        let img = Image::from_file_with_format(&bytes, None).expect("decodes");
+        assert_eq!((img.width, img.height), (96, 16));
+        let texels = img.get_image_data();
+        let lit = texels.iter().filter(|p| p[3] > 0 && (p[0] | p[1] | p[2]) > 0).count();
+        assert!(lit > texels.len() / 4, "{lit} of {} texels are lit", texels.len());
+        assert!(!may_repeat(img.width as u32, img.height as u32, true));
     }
 
     #[test]

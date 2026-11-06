@@ -69,6 +69,9 @@ impl CloudSaves {
 
     /// `_mark_unsynced(owed)`: call with `Push` after every local save and `Clear` when the run ended.
     pub fn mark(&self, owed: Owed) {
+        if !crate::shared::paths::WRITES_TO_DISK {
+            return;
+        }
         let marker = self.marker();
         match owed {
             Owed::None => {
@@ -154,7 +157,7 @@ mod tests {
 
     #[test]
     fn owed_marker_round_trip_and_adoption_rule() {
-        let dir = std::env::temp_dir().join(format!("lr_net_saves_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lr_net_saves_{}", crate::shared::task::process_id()));
         let _ = std::fs::create_dir_all(&dir);
         let saves = CloudSaves::new(&dir.join("run.json"), 1);
         assert_eq!(saves.cloud_path, "/api/v1/saves/last-route-rust/run-world-1");

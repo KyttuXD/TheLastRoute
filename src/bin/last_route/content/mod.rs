@@ -25,7 +25,7 @@ pub struct Content {
     pub loot: LootTables,
     /// How a normal run seeds NPC teammates (data/npcs.json).
     pub npcs: NpcRules,
-    /// The region catalogue (data/regions and packs' regions/), `lr.region/1`.
+    /// The region catalogue (src/bin/last_route/data/regions and packs' regions/), `lr.region/1`.
     pub regions: RegionTable,
     pub packs: Vec<Pack>,
     /// Problems found while loading (shown on the MODS settings tab).

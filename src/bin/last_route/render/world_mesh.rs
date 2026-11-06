@@ -26,7 +26,7 @@ use crate::world::{region_texture, Facility, TEXTURE_SETS};
 use macroquad::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
-use std::time::Instant;
+use crate::shared::clock::Instant;
 
 #[derive(Default)]
 pub struct WorldMeshes {
@@ -125,6 +125,8 @@ pub struct NeighbourScope {
     pub radius: f32,
     pub max_parts: usize,
     pub chunks_per_frame: usize,
+    /// The eye in the window's cell frame (x, z): the parts nearest it are kept first when `max_parts` cuts the set.
+    pub eye: (f32, f32),
 }
 
 /// A room door to draw each frame: its threshold cell (the key of `Facility::door_open_amount`), the model it uses and
@@ -576,7 +578,7 @@ impl WorldMeshes {
             return;
         }
         self.last_frame = Some(frame);
-        let wanted = neighbour_wanted(window_parts(f, frame), frame, &scope.openings, scope.radius, scope.max_parts);
+        let wanted = neighbour_wanted_from(window_parts(f, frame), frame, &scope.openings, scope.radius, scope.max_parts, Some(scope.eye));
         // the hard cap: nothing outside the wanted set is kept
         self.parts.retain(|k, _| wanted.iter().any(|(w, _)| w == k));
         let table = stream_table();
@@ -661,14 +663,29 @@ fn rect_distance(p: (f32, f32), r: (f32, f32, f32, f32)) -> f32 {
     (dx * dx + dz * dz).sqrt()
 }
 
-/// The window parts a neighbour draws: those holding cells or rooms whose chunk lies within `radius` metres of an
-/// opening centre, nearest first, at most `max_parts`.
+/// The window parts a neighbour draws with no eye to rank them by: those holding cells or rooms whose chunk lies within
+/// `radius` metres of an opening centre, nearest an opening first, at most `max_parts`.
+#[cfg(test)]
 fn neighbour_wanted(
     parts: Vec<(PartKey, Pick)>,
     frame: ChunkFrame,
     openings: &[Opening],
     radius: f32,
     max_parts: usize,
+) -> Vec<(PartKey, Pick)> {
+    neighbour_wanted_from(parts, frame, openings, radius, max_parts, None)
+}
+
+/// `neighbour_wanted`, with the eye given: the parts that hold a cell nearest the eye come first, so when `max_parts`
+/// cuts the set it is the far openings' parts that go and the shaft under the eye (its hatch's cells, the lower
+/// floor round it) always stays. Without an eye the parts are ranked by their distance to an opening.
+fn neighbour_wanted_from(
+    parts: Vec<(PartKey, Pick)>,
+    frame: ChunkFrame,
+    openings: &[Opening],
+    radius: f32,
+    max_parts: usize,
+    eye: Option<(f32, f32)>,
 ) -> Vec<(PartKey, Pick)> {
     let mut near: Vec<(f32, (PartKey, Pick))> = parts
         .into_iter()
@@ -678,12 +695,36 @@ fn neighbour_wanted(
             let z0 = ((k.cy - (frame.center.1 - 1)) * CHUNK) as f32;
             let rect = (x0, z0, x0 + CHUNK as f32, z0 + CHUNK as f32);
             let d = openings.iter().map(|o| rect_distance(o.centre, rect)).fold(f32::MAX, f32::min);
-            (d <= radius).then_some((d, (k, p)))
+            if d > radius {
+                return None;
+            }
+            let rank = match eye {
+                Some(e) => part_eye_distance(&p, rect, e),
+                None => d,
+            };
+            Some((rank, (k, p)))
         })
         .collect();
     near.sort_by(|a, b| a.0.total_cmp(&b.0));
     near.truncate(max_parts);
     near.into_iter().map(|(_, kp)| kp).collect()
+}
+
+/// The distance from the eye to the nearest cell a part draws (its chunk's rectangle when it draws no cell, rooms only).
+fn part_eye_distance(p: &Pick, rect: (f32, f32, f32, f32), eye: (f32, f32)) -> f32 {
+    let cell = p
+        .cells
+        .iter()
+        .map(|c| {
+            let (x, z) = c.center();
+            ((x - eye.0).powi(2) + (z - eye.1).powi(2)).sqrt()
+        })
+        .fold(f32::MAX, f32::min);
+    if p.cells.is_empty() {
+        rect_distance(eye, rect)
+    } else {
+        cell
+    }
 }
 
 /// Path of the streaming budget under data/ (the embedded file's name).
@@ -3093,5 +3134,78 @@ mod sewer_lamp_tests {
         let applied = lamp_flicker::applied(&a, 3.7, false);
         assert_eq!(applied.len(), a.len());
         assert!(shader::nearest_lamps(eye, &applied) == shader::nearest_lamps(eye, &applied));
+    }
+}
+
+/// A manhole (or floor grate) is a hole in the level-0 floor onto the streamed sewer below it: the neighbour build must
+/// hold the cells of every shaft in reach, or the hatch opens onto nothing (a black void).
+#[cfg(test)]
+mod manhole_tests {
+    use super::*;
+    use crate::content::loot::LootTables;
+    use crate::render::world_stack;
+    use crate::world::catalog::Catalog;
+    use crate::world::infinite::window;
+
+    const SEEDS: [&str; 4] = ["3976365387", "1426541270", "4157433391", "2899547009"];
+
+    /// Stood at each ladder hatch of the level-0 window of `seed` at `centre` (the eye on its step cell), every hatch in
+    /// reach of that eye must have its shaft drawn in the sewer below: the 3x3 of floor cells round its foot. Returns
+    /// the (eye hatch, hatch in reach, cell) triples whose cell the neighbour build leaves out, and how many were checked.
+    fn missing_cells(seed: &str, centre: (i32, i32)) -> (usize, Vec<(Cell, Cell, Cell)>) {
+        let (cat, loot) = (Catalog::load(), LootTables::default());
+        let mut cache = HashMap::new();
+        let (up, _) = window(seed, centre, 0, &cat, &loot, &mut cache);
+        let (low, _) = window(seed, centre, SEWER_LEVEL, &cat, &loot, &mut cache);
+        let frame = ChunkFrame { level: SEWER_LEVEL, center: centre };
+        let floor: HashSet<Cell> = low.floor_cells().into_iter().collect();
+        let hatches: Vec<Cell> = up.stairs.iter().filter(|s| s.dir < 0 && s.is_ladder()).map(|s| s.cell).collect();
+        let reach = crate::game::transition::links().prefetch_distance;
+        let mut missing = vec![];
+        let mut checked = 0;
+        for s in up.stairs.iter().filter(|s| s.dir < 0 && s.is_ladder()) {
+            // the eye on the step cell, as the game sees it standing at the hatch
+            let step = s.step_cell();
+            let eye = (step.x as f32 + 0.5, 1.6, step.y as f32 + 0.5);
+            let scope = world_stack::neighbour_scope(-crate::world::vertical::STOREY, openings(&low), &openings(&up), eye, reach, false, stream_table());
+            let wanted = neighbour_wanted_from(window_parts(&low, frame), frame, &scope.openings, scope.radius, scope.max_parts, Some(scope.eye));
+            let drawn: HashSet<(i32, i32)> = wanted.iter().flat_map(|(_, p)| p.cells.iter().map(|c| (c.x, c.y))).collect();
+            for &h in &hatches {
+                let (hx, hz) = h.center();
+                let d = ((hx - eye.0).powi(2) + (hz - eye.2).powi(2)).sqrt();
+                if d > reach {
+                    continue;
+                }
+                checked += 1;
+                for dx in -1..=1 {
+                    for dz in -1..=1 {
+                        let c = Cell::new(h.x + dx, h.y + dz);
+                        if floor.contains(&c) && !drawn.contains(&(c.x, c.y)) {
+                            missing.push((s.cell, h, c));
+                        }
+                    }
+                }
+            }
+        }
+        (checked, missing)
+    }
+
+    #[test]
+    fn every_hatch_in_reach_has_its_shaft_built_in_the_sewer_below() {
+        let mut checked = 0;
+        let mut failures = vec![];
+        for seed in SEEDS {
+            for cx in -1..=1 {
+                for cy in -1..=1 {
+                    let (n, missing) = missing_cells(seed, (cx, cy));
+                    checked += n;
+                    if let Some(first) = missing.first() {
+                        failures.push(format!("{seed} ({cx},{cy}): eye at {:?} leaves hatch {:?} cell {:?} unbuilt", first.0, first.1, first.2));
+                    }
+                }
+            }
+        }
+        assert!(checked > 40, "only {checked} hatch-in-reach checks in the sweep");
+        assert!(failures.is_empty(), "{} windows leave a shaft unbuilt: {:#?}", failures.len(), failures);
     }
 }

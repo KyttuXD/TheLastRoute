@@ -1,5 +1,5 @@
 //! Level 0 maze variants: a courtyard, a warehouse, a library and a boiler room, each a data file
-//! `data/regions/maze_<name>.json` (`lr.maze_region/1`, embedded by build.rs). A variant has floors, room
+//! `src/bin/last_route/data/regions/maze_<name>.json` (`lr.maze_region/1`, embedded by build.rs). A variant has floors, room
 //! roles, a prop set, spawn rules and a weight; the picker mixes them into the level 0 maze area.
 //!
 //! These files are not `lr.region/1` (that schema has no weight or spawn rules), so the region catalogue in

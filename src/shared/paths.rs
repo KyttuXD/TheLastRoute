@@ -4,7 +4,15 @@
 
 use std::path::PathBuf;
 
+/// False in the browser build (wasm32): it has no file system, so nothing is written to disk there. Settings are kept
+/// in the page's localStorage instead (the game's `app/web_storage.rs`); saves, the account and guest files and the
+/// device id are never written, and their reads find nothing.
+pub const WRITES_TO_DISK: bool = !cfg!(target_arch = "wasm32");
+
 pub fn user_dir() -> Option<PathBuf> {
+    if !WRITES_TO_DISK {
+        return None;
+    }
     let env = |k: &str| {
         std::env::var(k)
             .ok()

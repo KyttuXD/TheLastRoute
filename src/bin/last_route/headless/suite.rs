@@ -20,7 +20,7 @@ use super::Args;
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use crate::shared::clock::Instant;
 
 fn wildcard(pat: &str, name: &str) -> bool {
     let p: Vec<char> = pat.to_lowercase().chars().collect();

@@ -412,7 +412,7 @@ mod tests {
         let Ok(godot) = std::env::var("LR_GODOT_DIR") else { return };
         let script = concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/last_route/render/anim/extract.py");
         let run = |tag: &str| -> Vec<u8> {
-            let app = std::env::temp_dir().join(format!("lr_extract_{}_{tag}", std::process::id()));
+            let app = std::env::temp_dir().join(format!("lr_extract_{}_{tag}", crate::shared::task::process_id()));
             let hunters = app.join("assets").join("hunters");
             std::fs::create_dir_all(&hunters).unwrap();
             std::fs::copy(

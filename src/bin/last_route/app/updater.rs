@@ -98,7 +98,7 @@ fn download(offer: &Offer, key: &str) -> Result<Vec<u8>, String> {
 }
 
 fn scratch_dir() -> Result<PathBuf, String> {
-    let dir = std::env::temp_dir().join(format!("lr-update-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("lr-update-{}", crate::shared::task::process_id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
@@ -388,7 +388,7 @@ pub fn start_check() -> UpdateHandle {
         return handle;
     };
     let shared = handle.clone();
-    std::thread::spawn(move || check_thread(&shared, &key));
+    crate::shared::task::detach(move || check_thread(&shared, &key));
     handle
 }
 
@@ -495,7 +495,7 @@ mod tests {
     #[test]
     fn the_marker_is_written_then_read_once_and_cleared() {
         let text = UpdaterText::standard();
-        let path = std::env::temp_dir().join(format!("lr-marker-test-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("lr-marker-test-{}", crate::shared::task::process_id()));
         let _ = std::fs::remove_file(&path);
         assert_eq!(take_marker(&path, text), None);
         write_marker(&path, text, 42).unwrap();

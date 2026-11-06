@@ -12,8 +12,24 @@ pub struct Pending<T> {
 }
 
 impl<T: Send + 'static> Pending<T> {
-    /// Runs `work` on a new thread.
+    /// Runs `work` on a new thread. The browser build has one thread, so the work runs at once on the page's thread
+    /// (its requests go through the page's XMLHttpRequest, see [`super::http`]) and the result is delivered on the next poll.
     pub fn spawn<F>(work: F) -> Pending<T>
+    where
+        F: FnOnce() -> Result<T, NetError> + Send + 'static,
+    {
+        #[cfg(target_arch = "wasm32")]
+        {
+            return Pending::done(work());
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Pending::spawn_thread(work)
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn spawn_thread<F>(work: F) -> Pending<T>
     where
         F: FnOnce() -> Result<T, NetError> + Send + 'static,
     {

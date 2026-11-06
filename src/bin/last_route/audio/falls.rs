@@ -4,6 +4,7 @@
 //! a sewer window (with `None` when no fall is in range, which stops the loop).
 
 use super::cues::positional::Emitter3D;
+use super::cues::rules::Bus;
 use super::cues::SAMPLE_RATE;
 use super::engine::with;
 use crate::render::waterfall::{config, SoundCfg, WaterfallCfg};
@@ -60,15 +61,13 @@ pub fn gains(cfg: &WaterfallCfg, pos: [f32; 3], eye: [f32; 3], right: [f32; 3], 
     .gains_from(pos, eye, right, up, forward)
 }
 
-/// Keeps the falls loop playing from `pos` (the nearest fall in range), or stops it for `None`.
+/// Keeps the falls loop playing from `pos` (the nearest fall in range), or stops it for `None`. A positional loop on the
+/// Master bus: the engine applies Master (and re-applies it when it changes), so the gains here are the positional ones.
 pub fn update(pos: Option<[f32; 3]>, eye: [f32; 3], right: [f32; 3], up: [f32; 3], forward: [f32; 3]) {
     let cfg = config();
     with(|e| {
-        let gain = pos.map(|p| {
-            let (l, r) = gains(cfg, p, eye, right, up, forward);
-            (l * e.master, r * e.master)
-        });
-        e.set_loop(cfg.sound_key.as_str(), gain, || loop_frames(&cfg.sound));
+        let base = pos.map(|p| gains(cfg, p, eye, right, up, forward));
+        e.set_loop(cfg.sound_key.as_str(), Bus::Master, base, || loop_frames(&cfg.sound));
     });
 }
 

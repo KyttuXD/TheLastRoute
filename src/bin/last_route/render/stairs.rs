@@ -403,11 +403,50 @@ fn propped_cover(out: &mut Parts, c: (i32, i32), m: (i32, i32), grate: bool) {
     }
 }
 
+/// Thickness of a closed cover's plate.
+const LID_T: f32 = 0.04;
+
+/// A cover lying closed over the hole of cell `c`: a plate flat on the floor across the cell (a manhole's iron, one box),
+/// or a grate's frame of four rails with two bars across it. Flat, it covers the hole, so nothing shows through the
+/// hatch from above or below.
+fn closed_cover(out: &mut Parts, c: (i32, i32), grate: bool) {
+    let (cx, cz) = (c.0 as f32 + 0.5, c.1 as f32 + 0.5);
+    if !grate {
+        out.boxes.push((vec3(cx, LID_T * 0.5, cz), vec3(COVER_DIA + 0.1, LID_T, COVER_DIA + 0.1), COVER));
+        return;
+    }
+    let half = 0.42;
+    let rail = 0.06;
+    for s in [-1.0f32, 1.0] {
+        let edge = half - rail * 0.5;
+        out.boxes.push((vec3(cx, LID_T * 0.5, cz + s * edge), vec3(2.0 * half, LID_T, rail), GRATE));
+        out.boxes.push((vec3(cx + s * edge, LID_T * 0.5, cz), vec3(rail, LID_T, 2.0 * half), GRATE));
+    }
+    for k in [-0.2f32, 0.2] {
+        out.boxes.push((vec3(cx + k, LID_T * 0.5, cz), vec3(rail, LID_T, 2.0 * half - rail * 2.0), GRATE));
+    }
+}
+
 /// The hatch of a ladder, seen from the upper level (`Stair::is_ladder`, `dir < 0`): a hole in the floor. There is no
 /// pit, no shaft wall and no pit floor (the lower level is the floor you see through it). Round it: a low coaming
 /// on the three sides that are not the step cell's side, two rails and two rungs standing `RAIL_H` above the floor on
 /// the rails side, and the cover as a model propped open on that side's rim. A grate adds its lit rim strips.
 pub fn ladder_down(out: &mut Parts, c: (i32, i32), s: Stair, site: &Site) {
+    ladder_down_with_lid(out, c, s, site, Lid::Propped);
+}
+
+/// Where a hatch's cover stands: propped open on the rim (the hole is open and the lower floor shows through it), or
+/// lying closed over the hole (a plate flat on the floor, so the hatch reads as a cover from above and below).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lid {
+    Propped,
+    // no caller in the game yet: the game keeps no per-hatch lid state, so every hatch is drawn propped
+    #[cfg_attr(not(test), allow(dead_code))]
+    Closed,
+}
+
+/// `ladder_down` with the cover in `lid`'s pose. The coaming, rails and rungs are the same either way.
+pub fn ladder_down_with_lid(out: &mut Parts, c: (i32, i32), s: Stair, site: &Site, lid: Lid) {
     let _ = site;
     let (cx, cz) = (c.0 as f32, c.1 as f32);
     let step = s.step_cell();
@@ -424,7 +463,10 @@ pub fn ladder_down(out: &mut Parts, c: (i32, i32), s: Stair, site: &Site) {
     }
     ladder_with(out, c, m, 0.0, RAIL_H, &[RAIL_H * 0.5, RAIL_H * 0.9]);
     let grate = s.kind == LinkKind::Ladder(Cover::Grate);
-    propped_cover(out, c, m, grate);
+    match lid {
+        Lid::Propped => propped_cover(out, c, m, grate),
+        Lid::Closed => closed_cover(out, c, grate),
+    }
     if grate {
         // the grate's lit rim: four thin warm strips round the cell's edge, so the cover's outline reads from above
         for (centre, size) in [
@@ -982,6 +1024,51 @@ mod tests {
         }
         assert_eq!(ladder_parts(-1, Cover::Grate).glow.len(), 4, "the grate keeps its lit rim");
         assert!(ladder_parts(-1, Cover::Manhole).glow.is_empty());
+    }
+
+    /// The hatch drawn with its cover in `lid`'s pose.
+    fn hatch_parts(cover: Cover, lid: Lid) -> Parts {
+        let (well, solid) = (|_: i32, _: i32| false, |_: i32, _: i32| false);
+        let site = Site { h: H, wall_h: H, tiers: 1.0, well: &well, solid: &solid };
+        let mut p = Parts::default();
+        ladder_down_with_lid(&mut p, LADDER_CELL, ladder(-1, cover), &site, lid);
+        p
+    }
+
+    #[test]
+    fn a_closed_cover_lies_flat_over_the_hole() {
+        for cover in [Cover::Manhole, Cover::Grate] {
+            let p = hatch_parts(cover, Lid::Closed);
+            let iron = if cover == Cover::Grate { GRATE } else { COVER };
+            let lid: Vec<_> = p.boxes.iter().filter(|(_, _, col)| *col == iron).collect();
+            assert!(!lid.is_empty(), "{cover:?}: the closed cover is drawn");
+            let top = lid.iter().map(|(c, s, _)| c.y + s.y * 0.5).fold(0.0f32, f32::max);
+            assert!((top - LID_T).abs() < EPS, "{cover:?}: lies flat on the floor ({top})");
+            let lowest = lid.iter().map(|(c, s, _)| c.y - s.y * 0.5).fold(f32::MAX, f32::min);
+            assert!(lowest >= -EPS, "{cover:?}: nothing below the floor ({lowest})");
+        }
+        // the manhole's plate covers the cell, so the hole is closed from above and below
+        assert!(cover_share(&hatch_parts(Cover::Manhole, Lid::Closed), Cover::Manhole) > 0.6);
+        // and the grate is still a grate: bars, not a solid plate
+        assert!(cover_share(&hatch_parts(Cover::Grate, Lid::Closed), Cover::Grate) < 0.6);
+    }
+
+    #[test]
+    fn the_default_hatch_is_propped_open_and_the_closed_pose_is_another_pose() {
+        for cover in [Cover::Manhole, Cover::Grate] {
+            let default = ladder_parts(-1, cover);
+            let propped = hatch_parts(cover, Lid::Propped);
+            assert_eq!(default.boxes.len(), propped.boxes.len(), "{cover:?}: ladder_down draws the propped cover");
+            let closed = hatch_parts(cover, Lid::Closed);
+            let rim_top = |p: &Parts| {
+                let iron = if cover == Cover::Grate { GRATE } else { COVER };
+                p.boxes.iter().filter(|(_, _, col)| *col == iron).map(|(c, s, _)| c.y + s.y * 0.5).fold(0.0f32, f32::max)
+            };
+            assert!(rim_top(&propped) > rim_top(&closed) + 0.3, "{cover:?}: propped stands up, closed lies down");
+            // the shaft and rails stand the same either way
+            let iron_rails = |p: &Parts| p.boxes.iter().filter(|(_, s, col)| *col == IRON && s.y > 0.5).count();
+            assert_eq!(iron_rails(&propped), iron_rails(&closed), "{cover:?}: the rails do not change with the lid");
+        }
     }
 
     #[test]

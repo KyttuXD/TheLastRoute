@@ -11,7 +11,7 @@ use serde_json::Value;
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::sync::OnceLock;
-use std::time::Instant;
+use crate::shared::clock::Instant;
 
 pub const SCHEMA: &str = "lr.net_sync/1";
 const TEXT: &str = include_str!("../data/net/sync.json");

@@ -2,3 +2,4 @@
 
 pub mod paths;
 pub mod skin_validate;
+pub mod volumes;

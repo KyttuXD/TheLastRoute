@@ -10,7 +10,7 @@ use crate::world::catalog::Catalog;
 use crate::world::facility::Options;
 use crate::world::Facility;
 use std::hint::black_box;
-use std::time::Instant;
+use crate::shared::clock::Instant;
 
 const HUNTERS: usize = 38;
 const STEPS: usize = 600;
@@ -58,6 +58,7 @@ fn hunter_brain_step_cost() {
         heater_thawed: true,
         diff: Difficulty::Standard,
         music_box_left: 0.0,
+        music_boxes: &[],
         exposure: 0.0,
     };
     let target = Target {
@@ -120,6 +121,7 @@ fn resident_floor_step_cost() {
         heater_thawed: true,
         diff: Difficulty::Standard,
         music_box_left: 0.0,
+        music_boxes: &[],
         exposure: 0.0,
     };
     let target = Target { pos: runner, facing: (0.0, 1.0), ..Default::default() };

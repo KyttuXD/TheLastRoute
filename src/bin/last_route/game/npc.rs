@@ -2981,7 +2981,7 @@ mod tests {
     }
 
     #[test]
-    fn a_far_bot_claim_counts_but_neither_saves_nor_grows_the_population() {
+    fn a_far_bot_claim_counts_and_grows_the_population_but_does_not_save() {
         let (mut g, content) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
         g.hunters.clear();
         let far = g.fac.relays.iter().position(|c| pdist(c.center(), g.p.pos) > Tuning::get().goals.leash_distance);
@@ -2993,6 +2993,7 @@ mod tests {
         assert_eq!(g.relays_collected, 1, "the team's count and flags are the same as a player's claim");
         assert!(g.relays_taken[i]);
         assert_eq!(g.last_autosave, "", "a claim far from the runner does not save");
+        assert!(!g.hunters.is_empty(), "but it releases the hunters at once, as a runner's claim does");
         if let Some(j) = near {
             assert!(g.claim_relay(j, bot, &content));
             assert_eq!(g.last_autosave, "relay", "a claim near the runner saves as before");
@@ -4344,3 +4345,7 @@ mod level_tests {
         assert!(n.walk.is_none() && n.hop.is_none() && n.edge_clock == 0.0);
     }
 }
+
+#[cfg(test)]
+#[path = "rail_npc_tests.rs"]
+mod rail_npc_tests;

@@ -1,0 +1,14 @@
+{
+  "schema": "lr.story.map/1",
+  "id": "corridor",
+  "name": "Lab corridor",
+  "art": "corridor.png",
+  "mask": "corridor-mask.png",
+  "legend": {
+    "000000": { "kind": "wall" },
+    "ffffff": { "kind": "floor" },
+    "ff00ff": { "kind": "spawn", "name": "from-lab" },
+    "00ffff": { "kind": "trigger", "scene": "corridor-note", "once": true },
+    "8000ff": { "kind": "exit", "map": "dive-lab", "spawn": "inside" }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "schema": "lr.story.items/1",
+  "items": {
+    "keycard": {
+      "name": "Lab keycard",
+      "description": "A red-striped access card. The reader on the dive lab door wants one."
+    }
+  }
+}

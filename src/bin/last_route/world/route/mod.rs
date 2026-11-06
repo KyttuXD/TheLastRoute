@@ -9,7 +9,7 @@
 
 use crate::world::rng::Rng;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::shared::clock::{SystemTime, UNIX_EPOCH};
 
 pub mod clearance;
 pub mod catwalk;
@@ -80,7 +80,7 @@ pub fn new_room_text() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(7);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    room_text_from_stamp(&format!("{nanos}:{n}:{}", std::process::id()))
+    room_text_from_stamp(&format!("{nanos}:{n}:{}", crate::shared::task::process_id()))
 }
 
 /// The room seed text drawn from a stamp (a random stamp in Godot, md5 of it in RoomState).

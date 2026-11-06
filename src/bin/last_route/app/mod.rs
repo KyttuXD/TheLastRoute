@@ -27,6 +27,9 @@ pub mod selftest;
 pub mod settings;
 pub mod stress;
 pub mod updater;
+pub mod web_pointer;
+#[cfg(target_arch = "wasm32")]
+pub mod web_storage;
 
 use crate::audio::{self, Sounds};
 use crate::config::look::{self, LookFilter};
@@ -266,7 +269,7 @@ pub async fn load_world() -> World {
 /// the route data, the art, then the signal (sounds and the world material). A load with no hunters
 /// or no room types fails the card.
 pub async fn load_world_booted(boot: &mut crate::ui::boot::BootLoader) -> World {
-    let t = std::time::Instant::now();
+    let t = crate::shared::clock::Instant::now();
     let content = Content::load();
     crate::lr_info!("startup timing: content {} ms", t.elapsed().as_millis());
     let catalog = Catalog::load();
@@ -637,6 +640,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             );
             audio_volumes = next_audio_volumes;
         }
+        // delayed cues and timed loops run on every frame, paused or on the report screen too (game `update` is skipped then)
+        audio::tick();
         if is_key_pressed(KeyCode::F11) {
             settings.fullscreen = !settings.fullscreen;
             set_fullscreen(settings.fullscreen);
@@ -829,7 +834,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                         let at = crate::game::Game::abs_to_window(g.window_origin(), (x, y));
                         if let Some(fields) = g.host_turn_valve(&req, at, depth) {
                             let rules = crate::net::hunter_events::rules();
-                            g.hunter_out.emit(rules, g.difficulty, crate::net::valve_events::VALVE, fields, std::time::Instant::now());
+                            g.hunter_out.emit(rules, g.difficulty, crate::net::valve_events::VALVE, fields, crate::shared::clock::Instant::now());
                         }
                     }
                 }
@@ -845,7 +850,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
         if let (Some(n), Some(g)) = (net.as_mut().filter(|n| n.is_host()), playing.as_ref()) {
             if loading.is_none() {
                 let grab = g.escape.as_ref().map(|e| e.hunter);
-                n.send_hunter_frame(g.hunter_frame(), g.difficulty, grab, std::time::Instant::now());
+                n.send_hunter_frame(g.hunter_frame(), g.difficulty, grab, crate::shared::clock::Instant::now());
             }
         }
         // the world events the host's game raised this frame go to the guests; a solo run only drops them
@@ -934,6 +939,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                             n.end_run(reason);
                         }
                         playing = None;
+                        crate::audio::world::reset(); // the box and hunter loops end with the run
                         death = None;
                         pz = Pause::default();
                         map_open = false;
@@ -948,6 +954,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     // the host ended the route: this guest's run is over and it waits in the room's lobby
                     if playing.is_some() || loading.is_some() {
                         playing = None;
+                        crate::audio::world::reset(); // the box and hunter loops end with the run
                         loading = None;
                         death = None;
                         pz = Pause::default();
@@ -965,6 +972,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             // the host closed the room: this guest goes back to the title with the reason
             net = None;
             playing = None;
+            crate::audio::world::reset(); // the box and hunter loops end with the run
             loading = None;
             death = None;
             pz = Pause::default();
@@ -981,7 +989,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             // draw the screen first, build on the next frame, then let the bar reach 100%
             l.frames += 1;
             if l.frames == 3 && l.built.is_none() {
-                let t0 = std::time::Instant::now();
+                let t0 = crate::shared::clock::Instant::now();
                 let mut g = l.build(&w);
                 g.fov_deg = settings.fov;
                 crate::lr_info!(
@@ -1066,15 +1074,27 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 show_mouse(false);
             }
             let click = is_mouse_button_pressed(MouseButton::Left) || is_mouse_button_pressed(MouseButton::Right);
+            // the browser may have dropped the pointer lock (Escape, focus loss): then the game is not grabbed any more
+            if grabbed && !web_pointer::locked() {
+                grabbed = false;
+                mouse_last = None;
+                show_mouse(true);
+                // the browser takes Escape to release the lock and never sends it to the game, so a lock lost during
+                // play opens the pause menu instead (the player is not left stuck in the game)
+                if cfg!(target_arch = "wasm32") && !pz.open && !in_report {
+                    pz.show();
+                }
+            }
             let action = look::relock_action(want_grab != grabbed, want_grab && grabbed && click, cfg!(target_os = "macos"));
-            if want_grab != grabbed {
+            // a browser grants the lock only on a user gesture, so on the web a request waits for a click (or a retry)
+            if want_grab != grabbed && (!want_grab || web_pointer::may_request(click)) {
                 set_cursor_grab(want_grab);
                 show_mouse(!want_grab);
                 grabbed = want_grab;
                 if want_grab {
                     look_filter.relock(look::cfg());
                 }
-            } else if want_grab && click {
+            } else if want_grab && click && web_pointer::may_request(true) {
                 // Re-issue capture on a click. Native Windows backends can reject a grab requested during the scene
                 // transition before the window is focused. A click never freezes the look (relock_action).
                 set_cursor_grab(true);
@@ -1298,6 +1318,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             }
             if leave {
                 playing = None;
+                crate::audio::world::reset(); // the box and hunter loops end with the run
                 death = None;
                 save = checkpoint::load();
                 ui.go(Screen::Title);
@@ -1491,8 +1512,11 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     settings.save();
                 }
                 Action::Quit => {
-                    settings.save();
-                    break;
+                    // the browser build has no desktop to quit to: its title never offers QUIT (menus::QUIT_OFFERED)
+                    if menus::QUIT_OFFERED {
+                        settings.save();
+                        break;
+                    }
                 }
                 Action::None => {}
             }

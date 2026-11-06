@@ -19,7 +19,10 @@ use super::interp::{self, SendClock, Track};
 use super::config::BackendConfig;
 use super::protocol::{self, Message};
 use super::relay::{RelayEvent, RelayLink, Role};
+use super::room_link::RoomLink;
 use super::session::{CoopSession, SessionEvent, HOST_PEER_ID};
+use super::ws_link::WsLink;
+use crate::shared::task::IN_BROWSER;
 use super::valve_events::{self, BurstRequest, ValveRequest};
 use super::{store, NetError, Pending};
 use crate::config::difficulty::{ALL, LOBBY};
@@ -33,7 +36,8 @@ use crate::shared::assets::Assets;
 use macroquad::prelude::*;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use crate::shared::clock::Instant;
+use std::time::Duration;
 
 /// A remote runner with no sample for this long is not drawn (`data/net/sync.json` `remote_timeout_s`, 2 s). The send
 /// rate is `send_hz` there (30; the original sends 20 Hz `_place`).
@@ -695,13 +699,22 @@ fn open_host(
     skin: String,
     reg: Registered,
 ) -> Result<NetSession, NetError> {
-    if reg.room.transport != "relay" || reg.room.address.is_empty() {
+    // the browser build hosts over the WebSocket relay (a ws room); the native build over the UDP relay (a relay room)
+    let link: Box<dyn RoomLink> = if IN_BROWSER && reg.room.transport == "ws" {
+        match WsLink::host(&code, &reg.token, &cfg.base_url) {
+            Ok(link) => Box::new(link),
+            Err(e) => {
+                let _ = api::unregister_room(&cfg, &code, &reg.token);
+                return Err(NetError::Transport(e.to_string()));
+            }
+        }
+    } else if reg.room.transport != "relay" || reg.room.address.is_empty() {
         // this client has no direct path: give the code back rather than leave a room nobody can join
         let _ = api::unregister_room(&cfg, &code, &reg.token);
         return Err(NetError::Unsupported("THE SERVER DOES NOT RELAY ROOMS".into()));
-    }
-    let link = RelayLink::host(&code, &reg.token, &reg.room.address, reg.room.port)
-        .map_err(|e| NetError::Transport(e.to_string()))?;
+    } else {
+        Box::new(RelayLink::host(&code, &reg.token, &reg.room.address, reg.room.port).map_err(|e| NetError::Transport(e.to_string()))?)
+    };
     let skin = publishable_skin(&skin);
     // Godot `_take_reserved(payload.reserved, true)`: a fresh registration takes the commands it lists
     let mut owner = OwnerCursor::default();
@@ -721,8 +734,13 @@ pub fn join_room(cfg: BackendConfig, code: String, name: String, skin: String, s
         if cfg.offline {
             return Err(NetError::Offline);
         }
-        match lookup_outcome(api::lookup_room(&cfg, &code), is_admin, &session_token)? {
-            JoinStep::Found(room) => join_found(cfg, code, room, name, skin),
+        let lookup = api::lookup_room(&cfg, &code);
+        // the browser build joins a private room with its join ticket (the page has no password prompt yet)
+        if IN_BROWSER && matches!(&lookup, Err(NetError::Http { status: 403, code: c, .. }) if c == "ROOM_RESERVED") {
+            return join_reserved(cfg, code, name, skin, session_token);
+        }
+        match lookup_outcome(lookup, is_admin, &session_token)? {
+            JoinStep::Found(room) => join_found(cfg, code, room, name, skin, ""),
             JoinStep::Reserve => reserve_and_host(cfg, code, name, skin, session_token),
         }
     })
@@ -738,7 +756,7 @@ pub fn join_public_room(cfg: BackendConfig, name: String, skin: String) -> Pendi
         }
         let code = super::public_route::rules().code.clone();
         match super::public_route::step(api::lookup_room(&cfg, &code))? {
-            super::public_route::Step::Join(room) => join_found(cfg, code, room, name, skin),
+            super::public_route::Step::Join(room) => join_found(cfg, code, room, name, skin, ""),
             super::public_route::Step::Host => {
                 let request = RegisterRoom {
                     code: code.clone(),
@@ -749,16 +767,16 @@ pub fn join_public_room(cfg: BackendConfig, name: String, skin: String) -> Pendi
                     Ok(reg) => {
                         let mut session = open_host(cfg.clone(), code.clone(), crate::world::route::new_room_text(), name.clone(), skin.clone(), reg)?;
                         // somebody opened the public room in the same moment: the relay says so, and this runner joins
-                        match probe_public_host(&mut session.coop.link, PUBLIC_HOST_PROBE) {
+                        match probe_public_host(session.coop.link.as_mut(), PUBLIC_HOST_PROBE) {
                             HostProbe::Hosting => Ok(session),
                             HostProbe::HasHost => {
                                 session.coop.link.close();
-                                join_found(cfg.clone(), code.clone(), api::lookup_room(&cfg, &code)?, name, skin)
+                                join_found(cfg.clone(), code.clone(), api::lookup_room(&cfg, &code)?, name, skin, "")
                             }
                         }
                     }
                     Err(first) => match api::lookup_room(&cfg, &code) {
-                        Ok(room) => join_found(cfg, code, room, name, skin),
+                        Ok(room) => join_found(cfg, code, room, name, skin, ""),
                         Err(_) => Err(first),
                     },
                 }
@@ -780,7 +798,7 @@ enum HostProbe {
 }
 
 /// Polls a fresh host link until the relay acks or sends the host away, or `wait` passes.
-fn probe_public_host(link: &mut RelayLink, wait: Duration) -> HostProbe {
+fn probe_public_host(link: &mut dyn RoomLink, wait: Duration) -> HostProbe {
     let deadline = Instant::now() + wait;
     while Instant::now() < deadline {
         for event in link.poll() {
@@ -791,7 +809,7 @@ fn probe_public_host(link: &mut RelayLink, wait: Duration) -> HostProbe {
                 _ => {}
             }
         }
-        std::thread::sleep(Duration::from_millis(20));
+        crate::shared::task::pause(Duration::from_millis(20));
     }
     HostProbe::Hosting
 }
@@ -824,16 +842,34 @@ fn lookup_outcome(lookup: Result<api::RoomEndpoint, NetError>, is_admin: bool, s
 /// A guest publishes its chosen skin id in its profile, the same as a host (only once the website holds it, see
 /// [`publishable_skin`]); remote runners fetch the skin by id. The guest's own screen keeps its local skin (Godot
 /// "Local-only", `PLAYER_SKINS.md`).
-fn join_found(cfg: BackendConfig, code: String, room: api::RoomEndpoint, name: String, skin: String) -> Result<NetSession, NetError> {
-    if room.transport != "relay" || room.address.is_empty() {
+/// `ticket` is a reserved room's join ticket (base64url) from the reserved resolve; empty for an open room. The browser
+/// build joins a ws room over the WebSocket relay; the native build joins a relay room over UDP.
+fn join_found(cfg: BackendConfig, code: String, room: api::RoomEndpoint, name: String, skin: String, ticket: &str) -> Result<NetSession, NetError> {
+    let ws = IN_BROWSER && room.transport == "ws";
+    if !ws && (room.transport != "relay" || room.address.is_empty()) {
         return Err(NetError::Refused("THAT ROOM CANNOT BE JOINED FROM THIS BUILD".into()));
     }
     let refused = api::protocol_mismatch(&room.protocol, &protocol::fingerprint());
     if !refused.is_empty() {
         return Err(NetError::Refused(refused));
     }
-    let link = RelayLink::guest(&code, &room.address, room.port, "").map_err(|e| NetError::Transport(e.to_string()))?;
+    let link: Box<dyn RoomLink> = if ws {
+        Box::new(WsLink::guest(&code, ticket, &cfg.base_url).map_err(|e| NetError::Transport(e.to_string()))?)
+    } else {
+        Box::new(RelayLink::guest(&code, &room.address, room.port, ticket).map_err(|e| NetError::Transport(e.to_string()))?)
+    };
     Ok(NetSession::new(cfg, code, Role::Guest, CoopSession::new(link), String::new(), String::new(), name, publishable_skin(&skin)))
+}
+
+/// A JOIN to a private (reserved) room, browser build: the directory resolves the code for this player (her session's
+/// invite, or the room password, which the page does not ask for yet: empty), and a live room is joined with the ticket it
+/// hands back. A room that is not open yet refuses.
+fn join_reserved(cfg: BackendConfig, code: String, name: String, skin: String, session_token: String) -> Result<NetSession, NetError> {
+    let resolved = api::resolve_reserved(&cfg, &code, &session_token, "")?;
+    match resolved.room {
+        Some(room) if resolved.live => join_found(cfg, code, room, name, skin, &resolved.join_ticket),
+        _ => Err(NetError::Refused("THAT PRIVATE ROOM IS NOT OPEN".into())),
+    }
 }
 
 /// An owner's miss: reserve the typed code for her session, then register and open it as the host (the same open as
@@ -843,7 +879,7 @@ fn reserve_and_host(cfg: BackendConfig, code: String, name: String, skin: String
         Ok(()) => {}
         Err(NetError::Http { code: c, .. }) if c == "ROOM_ALREADY_HOSTED" => {
             let room = api::lookup_room(&cfg, &code)?;
-            return join_found(cfg, code, room, name, skin);
+            return join_found(cfg, code, room, name, skin, "");
         }
         Err(e) => return Err(e),
     }
@@ -2019,7 +2055,7 @@ mod tests {
 
     #[test]
     fn a_held_item_rides_the_sample_and_an_unknown_one_is_none() {
-        for item in [Item::Flashlight, Item::Taser, Item::Crowbar, Item::Axe, Item::Battery, Item::Stim] {
+        for item in [Item::Flashlight, Item::Taser, Item::Crowbar, Item::Axe, Item::Battery, Item::Stim, Item::MusicBox] {
             let s = sample(2, 1.0, 2.0).with_held(Some(item));
             assert_eq!(Sample::from_json(&s.to_json()), Some(s), "{item:?} round trips");
         }
@@ -2516,7 +2552,7 @@ mod tests {
         let cfg = skins::SkinConfig { host_base: "https://skins.invalid".to_string(), ..skins::config().unwrap() };
         let (server_port, stop) = skin_server(png.clone(), 2);
         let base = format!("http://127.0.0.1:{server_port}");
-        let dir = std::env::temp_dir().join(format!("lr_two_peer_skin_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lr_two_peer_skin_{}", crate::shared::task::process_id()));
         let _ = std::fs::remove_dir_all(&dir);
         assert!(!skins::fetch_skin_blocking(&cfg, &base, &dir, &hash), "not on the server yet: nothing cached");
         assert!(skins::read_skin_in(&[Some(dir.clone())], &hash).is_none());

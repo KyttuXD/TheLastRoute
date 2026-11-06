@@ -310,8 +310,8 @@ pub fn day_key(unix_seconds: i64) -> String {
 
 /// Today's UTC day key from the system clock.
 pub fn today() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let now = crate::shared::clock::SystemTime::now()
+        .duration_since(crate::shared::clock::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     day_key(now)

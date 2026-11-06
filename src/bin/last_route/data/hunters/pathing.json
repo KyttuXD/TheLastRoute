@@ -1,0 +1,8 @@
+{
+  "searches_per_frame": 8,
+  "cache_entries": 512,
+  "cache_ttl_frames": 120,
+  "field_min_sharers": 3,
+  "field_cache_entries": 4,
+  "queue_keep_frames": 2
+}
