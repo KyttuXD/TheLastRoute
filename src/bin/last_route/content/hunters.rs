@@ -243,16 +243,28 @@ mod tests {
         assert!(checked >= 36, "only {checked} built-in hunters checked");
     }
 
-    /// The A to Z hunters are shown by letter (KT, 2026-11-04: players refer to them by letter): the id keeps the
-    /// old name for saves, mods and the wire, the display name is just that letter.
+    /// The canonical display names of the 26 A to Z hunters (KT, 2026-11-06: the single-letter names were wrong; the
+    /// full names are the canonical ones, from the Godot hunter definitions). The id is the key and never changes.
+    const AZ_NAMES: [(&str, &str); 26] = [
+        ("aki", "Aki"), ("briselle", "Briselle"), ("ceryth", "Ceryth"), ("dovelle", "Dovelle"), ("elise", "Elise"),
+        ("ferryn", "Ferryn"), ("glyra", "Glyra"), ("haelith", "Haelith"), ("ilyra", "Ilyra"), ("javelle", "Javelle"),
+        ("kathy", "Kathy"), ("loxelle", "Loxelle"), ("mavrine", "Mavrine"), ("nyxie", "Nyxie"), ("opalie", "Opalie"),
+        ("porcelle", "Porcelle"), ("quenelle", "Quenelle"), ("ravelle", "Ravelle"), ("solyth", "Solyth"),
+        ("thessine", "Thessine"), ("umbriel", "Umbriel"), ("verrine", "Verrine"), ("wynelle", "Wynelle"),
+        ("xivvy", "Xivvy"), ("ysolde", "Ysolde"), ("zellia", "Zellia"),
+    ];
+
+    /// Every built-in A to Z hunter shows its full canonical name (at least 3 letters), one hunter per letter.
     #[test]
-    fn the_a_to_z_hunters_are_shown_by_letter() {
+    fn the_a_to_z_hunters_carry_their_full_canonical_names() {
         let content = crate::content::Content::load();
         let mut seen = std::collections::BTreeSet::new();
         for h in content.hunters.iter().filter(|h| !h.is_pack() && h.category == "az") {
-            let letter = h.id.chars().next().unwrap().to_ascii_uppercase();
-            assert_eq!(h.name, letter.to_string(), "{}", h.id);
-            seen.insert(letter);
+            assert!(h.name.chars().count() >= 3, "{}: name {:?} is shorter than 3 letters", h.id, h.name);
+            let want = AZ_NAMES.iter().find(|(id, _)| *id == h.id).unwrap_or_else(|| panic!("{}: not in the canonical list", h.id)).1;
+            assert_eq!(h.name, want, "{}", h.id);
+            assert!(h.name.to_ascii_lowercase().starts_with(&h.id[..1]), "{}: the name starts with the id's letter", h.id);
+            seen.insert(h.id.chars().next().unwrap());
         }
         assert_eq!(seen.len(), 26, "one hunter per letter: {seen:?}");
     }
