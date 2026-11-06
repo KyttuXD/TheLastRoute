@@ -17,9 +17,44 @@ pub struct Solyth {
     /// Latched by the game when the runner's temperature hits 100.
     pub heat_locked: bool,
     leap: Leap,
+    /// Seconds she keeps backing off after the runner's cold source was last on (the temperature item's cold mode).
+    deter_left: f32,
+    /// How far (cells) from the runner she retreats, and the point she retreats to (picked once per deterrence).
+    retreat_cells: f32,
+    retreat: Option<(f32, f32)>,
 }
 
 impl Solyth {
+    /// The runner's cold source is on: she backs off for `seconds` more, to a point `cells` from the runner.
+    pub fn deter(&mut self, seconds: f32, cells: f32) {
+        self.deter_left = self.deter_left.max(seconds);
+        self.retreat_cells = cells;
+    }
+
+    /// True while a cold source holds her off: she is out of the chase and cannot grab.
+    pub fn deterred(&self) -> bool {
+        self.deter_left > 0.0
+    }
+
+    /// After perception: a deterred Solyth drops the chase (perception may just have restarted it) and wanders to her
+    /// retreat point, so the cold source works DURING a chase, not only before one.
+    pub fn after(&mut self, b: &mut Brain, dt: f32, c: &Ctx, t: &Target) {
+        if self.deter_left <= 0.0 {
+            self.retreat = None;
+            return;
+        }
+        self.deter_left = (self.deter_left - dt).max(0.0);
+        if !b.active || self.leap.leaping {
+            return;
+        }
+        let cells = self.retreat_cells.max(4.0);
+        let to = *self.retreat.get_or_insert_with(|| spawn_near(c, t.pos, cells));
+        b.state = State::Wander;
+        b.direct_visible = false;
+        b.last_known = None;
+        b.wander_target = Some(to);
+    }
+
     /// The leap holds her position (the leap moves her itself).
     pub fn holds_position(&self) -> bool {
         self.leap.leaping
@@ -51,6 +86,10 @@ impl Solyth {
             if let Some(i) = (0..c.batteries_taken.len()).find(|i| !c.batteries_taken[*i]) {
                 ev.push(Event::TakeBattery(i));
             }
+        }
+        if self.deterred() && !self.leap.leaping {
+            // the cold source holds her off: no pounce, no chase (after() keeps her backing away)
+            return;
         }
         let gate = t.temperature >= pounce().solyth_min_temperature;
         if pounce_frame(&mut self.leap, b, dt, c, t, gate) {

@@ -263,6 +263,7 @@ impl Gimmick {
             Gimmick::Ceryth(g) => g.after(b, c),
             Gimmick::Ferryn(g) => g.after(b, c, t, ev),
             Gimmick::Glyra(g) => g.after(b, dt, c, t),
+            Gimmick::Solyth(g) => g.after(b, dt, c, t),
             Gimmick::Haelith => haelith::after(b, c),
             Gimmick::Ilyra(g) => g.after(b, dt, c, t, ev),
             Gimmick::Javelle(g) => g.after(b, dt, c, t, ev),
@@ -348,6 +349,8 @@ impl Gimmick {
         match self {
             Gimmick::Ceryth(_) | Gimmick::Ilyra(_) | Gimmick::Loxelle(_) => true,
             Gimmick::Glyra(g) => g.playing(),
+            // the temperature item's cold source holds Solyth off (specialty.rs)
+            Gimmick::Solyth(g) => g.deterred(),
             Gimmick::Opalie(g) => g.on_station,
             Gimmick::Verrine(g) => !g.active_in_vent,
             Gimmick::Zellia(g) => g.trading(),
