@@ -38,6 +38,13 @@ pub struct Progression {
     pub gates: [DifficultyGate; 4],
     /// Chase-speed bonus per collected relay (HUNTER_RELAY_SPEED_BONUS).
     pub chase_speed_bonus_per_relay: f32,
+    /// Every hunter's chase speed (the `chase` + relay/depth bonus, before the sight-line dash, winded, slow and
+    /// difficulty scales) is multiplied by this. 1.0 is the original roster; the per-hunter `chase` values stay intact.
+    /// Wander, investigate and search speeds are not touched.
+    pub chase_speed_scale: f32,
+    /// Hunter categories (`category` in data/hunters/*.json) that keep their authored chase speed, e.g. the secret
+    /// wolf spiders.
+    pub chase_speed_scale_skip: Vec<String>,
     /// Relay rush starts at this many relays (RELAY_RUSH_COUNT) ...
     pub rush_relays: i32,
     /// ... once that has held this long, in seconds (RELAY_RUSH_DELAY).
@@ -64,6 +71,8 @@ impl Default for Progression {
             // Relaxed, Standard, Hard, Nightmare
             gates: [gate(3, 1, 3), gate(1, 1, 2), gate(0, 1, 1), gate(0, 2, 1)],
             chase_speed_bonus_per_relay: 0.1,
+            chase_speed_scale: 1.09,
+            chase_speed_scale_skip: vec!["secret".into()],
             rush_relays: 7,
             rush_delay: 45.0,
             rush_search: true,
@@ -114,6 +123,12 @@ impl Progression {
         }
         if let Some(x) = v["chase_speed_bonus_per_relay"].as_f64() {
             p.chase_speed_bonus_per_relay = (x as f32).clamp(0.0, 10.0);
+        }
+        if let Some(x) = v["chase_speed_scale"].as_f64() {
+            p.chase_speed_scale = (x as f32).clamp(0.5, 2.0);
+        }
+        if let Some(a) = v["chase_speed_scale_skip"].as_array() {
+            p.chase_speed_scale_skip = a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect();
         }
         if let Some(n) = v["relay_rush"]["relays"].as_i64() {
             p.rush_relays = n.clamp(0, 64) as i32;
@@ -179,6 +194,15 @@ impl Progression {
     /// Chase-speed bonus from the relays collected so far.
     pub fn chase_speed_bonus(&self, relays_collected: i32) -> f32 {
         relays_collected.max(0) as f32 * self.chase_speed_bonus_per_relay
+    }
+
+    /// The chase-speed multiplier for a hunter of this category: `chase_speed_scale`, or 1.0 for a skipped category.
+    pub fn chase_scale_for(&self, category: &str) -> f32 {
+        if self.chase_speed_scale_skip.iter().any(|c| c == category) {
+            1.0
+        } else {
+            self.chase_speed_scale
+        }
     }
 
     /// Relay rush is on once `relays_collected` reaches the threshold and it has held `held_seconds`.
