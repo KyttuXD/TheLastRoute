@@ -671,11 +671,20 @@ impl Game {
         crate::audio::world::music_box(self.music_box_heard(), music_box::wound_seconds(self.difficulty.id()));
     }
 
-    /// The seconds of wound tune the audio plays now. The tune is Glyra's: it plays only while she is on the floor
-    /// (slot 6 shows), and nothing is heard when she is not out. The wind itself (`music_box_left`) is the runner's and
-    /// runs on either way, so it is picked up where it was when she is back.
-    pub(super) fn music_box_heard(&self) -> f32 {
-        if self.specialty.box_slot_visible() {
+    /// Whether Glyra is on the floor the runner stands on: in the drawn floor's list, or on level 0 held by residency in
+    /// the stores outside the window (still on the floor, only not simulated). The hunters of the resident floors beside
+    /// and on the shelves are on other floors and do not count.
+    pub(super) fn glyra_on_floor(&self) -> bool {
+        self.hunters.iter().any(|h| h.def.id == "glyra")
+            || self.inf.as_ref().is_some_and(|i| i.stored_hunter_ids().contains(&"glyra"))
+    }
+
+    /// The seconds of wound tune the audio plays now. Slot 6 and its box are the run's (they stay while Glyra exists on
+    /// any floor of the run, `sync_specialty`), but the tune is Glyra's room effect: it plays only while she is on THIS
+    /// floor, and nothing is heard on a floor she is not on. The wind itself (`music_box_left`) is the runner's and runs
+    /// on either way, so it is picked up where it was when she is on the floor again.
+    pub fn music_box_heard(&self) -> f32 {
+        if self.specialty.box_slot_visible() && self.glyra_on_floor() {
             self.music_box_left
         } else {
             0.0

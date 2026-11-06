@@ -407,7 +407,7 @@ pub fn draw_hud_with_runners(
         }
         // the wound music box's readout, while it plays: its time left over the wound time of this difficulty
         // (game/music_box.rs), amber through the wind-down
-        if g.music_box_left > 0.0 && g.specialty.box_slot_visible() {
+        if g.music_box_heard() > 0.0 {
             let full = crate::game::music_box::wound_seconds(g.difficulty.id());
             let pct = (g.music_box_left / full * 100.0).clamp(0.0, 100.0);
             let col = if g.music_box_left <= crate::game::music_box::rules().winddown_seconds {
