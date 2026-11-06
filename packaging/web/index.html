@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="KYTTU: The Last Route, browser build (single player).">
+<title>KYTTU: The Last Route</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas#glcanvas { display: block; width: 100vw; height: 100vh; outline: none; touch-action: none; }
+</style>
+</head>
+<body>
+<canvas id="glcanvas" tabindex="1"></canvas>
+<!-- macroquad/miniquad JavaScript runtime, then the quad-snd audio plugin, then the game -->
+<!-- the bundle's quad_net plugin assigns register_plugin without declaring it (a strict-mode error otherwise) -->
+<script>var register_plugin;</script>
+<script src="mq_js_bundle.js"></script>
+<script src="audio.js"></script>
+<script>
+// Pointer lock state for the game's mouse look (app/web_pointer.rs): true only when the canvas really holds the pointer.
+// Browser storage for the settings (app/web_storage.rs): localStorage by key, as text. The wasm passes its bytes by
+// pointer into its own memory; a blocked or missing storage answers "nothing stored" and never throws into the game.
+const lrDecoder = new TextDecoder();
+const lrEncoder = new TextEncoder();
+function lrText(ptr, len) {
+  return lrDecoder.decode(new Uint8Array(wasm_memory.buffer, ptr, len));
+}
+miniquad_add_plugin({
+  register_plugin: function (importObject) {
+    importObject.env.lr_pointer_locked = function () {
+      return document.pointerLockElement === document.getElementById("glcanvas") ? 1 : 0;
+    };
+    // -1 when nothing is stored; the byte length otherwise, copied only when it fits in cap (the game then reads it again)
+    importObject.env.lr_storage_get = function (keyPtr, keyLen, dstPtr, cap) {
+      try {
+        const value = window.localStorage.getItem(lrText(keyPtr, keyLen));
+        if (value === null) return -1;
+        const bytes = lrEncoder.encode(value);
+        if (bytes.length <= cap) new Uint8Array(wasm_memory.buffer, dstPtr, bytes.length).set(bytes);
+        return bytes.length;
+      } catch (e) {
+        return -1;
+      }
+    };
+    importObject.env.lr_storage_set = function (keyPtr, keyLen, valPtr, valLen) {
+      try {
+        window.localStorage.setItem(lrText(keyPtr, keyLen), lrText(valPtr, valLen));
+        return 1;
+      } catch (e) {
+        return 0;
+      }
+    };
+  },
+  version: 1,
+  name: "lr_pointer",
+});
+</script>
+<script>
+// The room relay and the directory (net/web_bridge.rs), registered as the lr_net plugin. The relay is the backend's
+// WebSocket at /api/ws (the Godot web build's relay: the same text control frames and binary frames). The directory calls
+// are synchronous XMLHttpRequests, so the wasm gets each answer in one call. Handles and result ids are small integers
+// owned by this page; the wasm releases them. The API origin is window.LR_API_BASE when the page sets it, else the page's
+// own origin (so a site that serves /api itself needs nothing more).
+(function () {
+  const sockets = new Map();
+  const results = new Map();
+  let nextSocket = 1;
+  let nextResult = 1;
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+
+  function view(ptr, len) {
+    return new Uint8Array(wasm_memory.buffer, ptr, len);
+  }
+  function text(ptr, len) {
+    return decoder.decode(view(ptr, len));
+  }
+  // copies the bytes when they fit; the length is returned either way (the wasm reads again with a bigger buffer)
+  function copyOut(bytes, dst, cap) {
+    if (bytes.length <= cap) view(dst, bytes.length).set(bytes);
+    return bytes.length;
+  }
+  function apiBase() {
+    try {
+      return String(window.LR_API_BASE || window.location.origin).replace(/\/+$/, "");
+    } catch (e) {
+      return "";
+    }
+  }
+
+  // ---- WebSocket: one socket per room connection ----
+  function wsOpen(url, hello) {
+    let ws;
+    try {
+      ws = new WebSocket(url);
+    } catch (e) {
+      return 0;
+    }
+    ws.binaryType = "arraybuffer";
+    const id = nextSocket++;
+    const entry = { ws: ws, queue: [] };
+    sockets.set(id, entry);
+    ws.onopen = function () {
+      try {
+        ws.send(hello);
+      } catch (e) {}
+    };
+    ws.onmessage = function (event) {
+      if (typeof event.data === "string") entry.queue.push({ kind: 1, bytes: encoder.encode(event.data) });
+      else entry.queue.push({ kind: 2, bytes: new Uint8Array(event.data) });
+    };
+    // a failed connection closes too (code 1006), so the close is always the last queued item
+    ws.onclose = function (event) {
+      entry.queue.push({ kind: 3, bytes: encoder.encode(event.code + "\n" + (event.reason || "")) });
+    };
+    return id;
+  }
+  function wsPeekKind(id) {
+    const e = sockets.get(id);
+    return e && e.queue.length ? e.queue[0].kind : 0;
+  }
+  function wsPeekLen(id) {
+    const e = sockets.get(id);
+    return e && e.queue.length ? e.queue[0].bytes.length : 0;
+  }
+  function wsPop(id, dst, cap) {
+    const e = sockets.get(id);
+    if (!e || !e.queue.length) return -1;
+    const item = e.queue[0];
+    if (item.bytes.length > cap) return -1;
+    e.queue.shift();
+    view(dst, item.bytes.length).set(item.bytes);
+    // a closed socket is forgotten once its close has been read
+    if (item.kind === 3) sockets.delete(id);
+    return item.bytes.length;
+  }
+  function wsSend(id, ptr, len, asText) {
+    const e = sockets.get(id);
+    if (!e || e.ws.readyState !== 1) return 0;
+    try {
+      e.ws.send(asText ? text(ptr, len) : view(ptr, len).slice());
+      return 1;
+    } catch (err) {
+      return 0;
+    }
+  }
+  function wsBuffered(id) {
+    const e = sockets.get(id);
+    return e ? Math.min(e.ws.bufferedAmount, 2147483647) : 0;
+  }
+  function wsClose(id, code, reason) {
+    const e = sockets.get(id);
+    if (!e) return;
+    try {
+      e.ws.close(code, reason);
+    } catch (err) {}
+  }
+
+  // ---- HTTP: a synchronous request; the answer is kept until the wasm frees it ----
+  function httpSend(methodPtr, methodLen, urlPtr, urlLen, headersPtr, headersLen, bodyPtr, bodyLen, hasBody) {
+    const id = nextResult++;
+    const result = { status: 0, headers: new Uint8Array(0), body: new Uint8Array(0) };
+    results.set(id, result);
+    try {
+      let url = text(urlPtr, urlLen);
+      // a path names the page's API origin
+      if (url.charAt(0) === "/") url = apiBase() + url;
+      const xhr = new XMLHttpRequest();
+      xhr.open(text(methodPtr, methodLen), url, false);
+      // raw bytes both ways: the answer is read one byte per character, so a binary body survives
+      xhr.overrideMimeType("text/plain; charset=x-user-defined");
+      for (const line of text(headersPtr, headersLen).split("\n")) {
+        const colon = line.indexOf(":");
+        if (colon <= 0) continue;
+        try {
+          xhr.setRequestHeader(line.slice(0, colon).trim(), line.slice(colon + 1).trim());
+        } catch (e) {}
+      }
+      xhr.send(hasBody ? view(bodyPtr, bodyLen).slice() : null);
+      result.status = xhr.status;
+      result.headers = encoder.encode(xhr.getAllResponseHeaders());
+      const raw = xhr.responseText;
+      const bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i) & 0xff;
+      result.body = bytes;
+    } catch (e) {
+      // no answer: the status stays 0, which the wasm reports as "the request did not reach the server"
+      result.status = 0;
+    }
+    return id;
+  }
+
+  miniquad_add_plugin({
+    register_plugin: function (importObject) {
+      const env = importObject.env;
+      env.lr_api_base = function (dst, cap) {
+        return copyOut(encoder.encode(apiBase()), dst, cap);
+      };
+      env.lr_ws_open = function (urlPtr, urlLen, helloPtr, helloLen) {
+        return wsOpen(text(urlPtr, urlLen), text(helloPtr, helloLen));
+      };
+      env.lr_ws_peek_kind = wsPeekKind;
+      env.lr_ws_peek_len = wsPeekLen;
+      env.lr_ws_pop = wsPop;
+      env.lr_ws_send = wsSend;
+      env.lr_ws_buffered = wsBuffered;
+      env.lr_ws_close = function (id, code, reasonPtr, reasonLen) {
+        wsClose(id, code, text(reasonPtr, reasonLen));
+      };
+      env.lr_http_send = httpSend;
+      env.lr_http_status = function (id) {
+        const r = results.get(id);
+        return r ? r.status : 0;
+      };
+      env.lr_http_headers = function (id, dst, cap) {
+        const r = results.get(id);
+        return r ? copyOut(r.headers, dst, cap) : -1;
+      };
+      env.lr_http_body = function (id, dst, cap) {
+        const r = results.get(id);
+        return r ? copyOut(r.body, dst, cap) : -1;
+      };
+      env.lr_http_free = function (id) {
+        results.delete(id);
+      };
+    },
+    version: 1,
+    name: "lr_net",
+  });
+})();
+</script>
+<script>load("last_route.wasm");</script>
+</body>
+</html>

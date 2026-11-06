@@ -1075,15 +1075,18 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             }
             let click = is_mouse_button_pressed(MouseButton::Left) || is_mouse_button_pressed(MouseButton::Right);
             // the browser may have dropped the pointer lock (Escape, focus loss): then the game is not grabbed any more
-            if grabbed && !web_pointer::locked() {
+            if web_pointer::lost_after_held(grabbed) {
                 grabbed = false;
                 mouse_last = None;
                 show_mouse(true);
                 // the browser takes Escape to release the lock and never sends it to the game, so a lock lost during
                 // play opens the pause menu instead (the player is not left stuck in the game)
-                if cfg!(target_arch = "wasm32") && !pz.open && !in_report {
+                if !pz.open && !in_report {
                     pz.show();
                 }
+            } else if grabbed && !web_pointer::locked() && web_pointer::may_request(false) {
+                // the browser has not granted the lock yet, or refused it: ask again until it does
+                set_cursor_grab(true);
             }
             let action = look::relock_action(want_grab != grabbed, want_grab && grabbed && click, cfg!(target_os = "macos"));
             // a browser grants the lock only on a user gesture, so on the web a request waits for a click (or a retry)

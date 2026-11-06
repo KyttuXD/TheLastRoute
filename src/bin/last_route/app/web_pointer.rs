@@ -11,6 +11,32 @@ pub const RETRY_SECONDS: f64 = 0.3;
 
 thread_local! {
     static LAST_REQUEST: Cell<f64> = const { Cell::new(f64::NEG_INFINITY) };
+    /// The browser has granted the lock since the game last asked for it.
+    static HELD: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Call every frame with whether the game believes the mouse is grabbed. True only on the frame a lock the browser had
+/// granted is lost (Escape, focus loss). A request the browser has not granted yet, or refused, is not a loss: the
+/// grant arrives a moment after the request, so treating "not locked yet" as lost would pause the game on entry.
+/// Always false off the web.
+pub fn lost_after_held(grabbed: bool) -> bool {
+    if !cfg!(target_arch = "wasm32") {
+        return false;
+    }
+    HELD.with(|held| {
+        if !grabbed {
+            held.set(false);
+            false
+        } else if locked() {
+            held.set(true);
+            false
+        } else if held.get() {
+            held.set(false);
+            true
+        } else {
+            false
+        }
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
