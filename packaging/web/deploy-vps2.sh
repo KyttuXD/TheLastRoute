@@ -2,11 +2,11 @@
 # Deploys the browser build to VPS 2 (static files over Caddy, /srv/lr-rust-web).
 # Usage: sh packaging/web/deploy-vps2.sh [FOLDER]        FOLDER defaults to dist/web
 #
-# FOLDER holds the built game: index.html, update.js, audio.js, mq_js_bundle.js and last_route.wasm.
+# FOLDER holds the built game: index.html, update.js, keys.js, audio.js, mq_js_bundle.js and last_route.wasm.
 #
 # What it does, in order:
 #   1. writes FOLDER/version.json from the sha256 of last_route.wasm: {"build":"<sha256>","built":"<iso time>"}
-#   2. uploads the five game files by tar over ssh (extracted with --no-same-owner), into a staging folder on the
+#   2. uploads the six game files by tar over ssh (extracted with --no-same-owner), into a staging folder on the
 #      server and then moved into place one by one, so a browser never reads a half-written file
 #   3. uploads version.json LAST: open game tabs poll it (update.js), so they only see a new version once every file
 #      they will reload is already in place
@@ -22,7 +22,7 @@ HOST="${HOST:-vps2}"
 REMOTE_DIR="${REMOTE_DIR:-/srv/lr-rust-web}"
 LIVE_URL="${LIVE_URL:-https://lastrouterust.games.kyttuslab.org}"
 LIVE_URL="${LIVE_URL%/}"
-FILES="index.html update.js audio.js mq_js_bundle.js last_route.wasm"
+FILES="index.html update.js keys.js audio.js mq_js_bundle.js last_route.wasm"
 
 fail() {
     echo "deploy-vps2: $*" >&2
