@@ -6,7 +6,7 @@
 <meta name="description" content="KYTTU: The Last Route, browser build (single player).">
 <title>KYTTU: The Last Route</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; user-select: none; -webkit-user-select: none; }
   canvas#glcanvas { display: block; width: 100vw; height: 100vh; outline: none; touch-action: none; }
 </style>
 </head>
@@ -573,6 +573,197 @@ miniquad_add_plugin({
     },
     version: 1,
     name: "lr_mods",
+  });
+})();
+</script>
+<script>
+// The clipboard for the game's text fields (ui/clipboard.rs), registered as the lr_clip plugin. miniquad's own clipboard
+// code cannot serve them (it keeps the last paste for ever, answers a copy event with text from a frame ago, and never
+// reaches the real clipboard from a button), so this page does the three jobs itself:
+//   lr_paste_take(dst, cap) -> -1 nothing pending; else the byte length of the text of the last paste (the browser's
+//     `paste` event, or navigator.clipboard.readText() when no event came after the paste key). The text is handed over
+//     once and only while fresh (3 seconds), so an old paste never lands in a field opened later. Copied only when it
+//     fits in cap (it then stays pending and the game reads again with a bigger buffer).
+//   lr_clip_offer(ptr, len) -> what Ctrl/Cmd+C or +X would copy right now. The game repeats it every frame while a text
+//     field is focused; an offer older than half a second is ignored. An empty offer means "copy nothing" (a password
+//     field). The browser's `copy` / `cut` event is answered from it inside the event, which works in every browser
+//     without a permission prompt.
+//   lr_clip_write(ptr, len) -> puts text on the clipboard (the COPY CODE button, a copy shortcut). navigator.clipboard
+//     where the browser allows it; if not, the text waits for the next key or pointer gesture and goes out then (Safari
+//     only allows a write inside one), by navigator.clipboard again or the hidden-textarea copy command.
+// Nothing here throws into the game.
+(function () {
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  const PASTE_FRESH_MS = 3000;
+  const OFFER_FRESH_MS = 500;
+  const MAX_PASTE = 4096; // characters kept of a paste; the fields are far shorter
+  let paste = null; // { text: Uint8Array, at: ms }
+  let pasteSeen = 0; // when a paste event last arrived
+  let offer = null; // { text: string, at: ms }
+  let waiting = null; // { text, at }: text the browser refused to write outside a gesture, kept for WAIT_MS
+  const WAIT_MS = 15000;
+
+  function now() {
+    return window.performance && performance.now ? performance.now() : Date.now();
+  }
+  function view(ptr, len) {
+    return new Uint8Array(wasm_memory.buffer, ptr, len);
+  }
+  function keepPaste(text) {
+    if (typeof text !== "string" || text.length === 0) return;
+    paste = { text: encoder.encode(text.slice(0, MAX_PASTE)), at: now() };
+  }
+
+  // ---- paste ----
+  // capture phase: runs before miniquad's own listener, which stops the event
+  window.addEventListener(
+    "paste",
+    function (e) {
+      pasteSeen = now();
+      try {
+        const data = e.clipboardData || window.clipboardData;
+        keepPaste(data ? data.getData("text/plain") || data.getData("Text") : "");
+      } catch (err) {}
+    },
+    true
+  );
+  // A paste key the browser never answered with a paste event (a page without an editable focus can make some browsers
+  // skip it): ask for the clipboard instead. Browsers show their own permission or "Paste" prompt for this.
+  window.addEventListener(
+    "keydown",
+    function (e) {
+      if (e.repeat) return;
+      const mod = e.ctrlKey || e.metaKey;
+      const wantsPaste = (mod && e.code === "KeyV") || (e.shiftKey && !mod && e.code === "Insert");
+      if (!wantsPaste) return;
+      const pressedAt = now();
+      setTimeout(function () {
+        if (pasteSeen >= pressedAt) return;
+        try {
+          if (navigator.clipboard && navigator.clipboard.readText) {
+            navigator.clipboard.readText().then(keepPaste, function () {});
+          }
+        } catch (err) {}
+      }, 120);
+    },
+    true
+  );
+
+  // ---- copy and cut ----
+  function answerCopy(e) {
+    if (!offer || now() - offer.at > OFFER_FRESH_MS) return; // no text field is focused: leave it to the page
+    try {
+      if (offer.text.length > 0) {
+        e.clipboardData.setData("text/plain", offer.text);
+      }
+      e.preventDefault();
+      // miniquad's own listeners would put a stored text from a frame ago on the clipboard
+      e.stopImmediatePropagation();
+    } catch (err) {}
+  }
+  window.addEventListener("copy", answerCopy, true);
+  window.addEventListener("cut", answerCopy, true);
+
+  // ---- writing from the game ----
+  function execCopy(text) {
+    const active = document.activeElement;
+    try {
+      const box = document.createElement("textarea");
+      box.value = text;
+      box.setAttribute("readonly", "");
+      box.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0";
+      document.body.appendChild(box);
+      box.select();
+      box.setSelectionRange(0, text.length);
+      const ok = document.execCommand("copy");
+      document.body.removeChild(box);
+      return ok;
+    } catch (err) {
+      return false;
+    } finally {
+      try {
+        (active && active.focus ? active : document.getElementById("glcanvas")).focus();
+      } catch (err) {}
+    }
+  }
+  function write(text, inGesture) {
+    let started = false;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        started = true;
+        navigator.clipboard.writeText(text).then(
+          function () {
+            if (waiting && waiting.text === text) waiting = null;
+          },
+          function () {
+            if (inGesture) execCopy(text);
+            else waiting = { text: text, at: now() };
+          }
+        );
+      }
+    } catch (err) {
+      started = false;
+    }
+    if (!started) {
+      if (inGesture && execCopy(text)) return;
+      waiting = { text: text, at: now() };
+    }
+  }
+  function flushWaiting() {
+    if (waiting === null) return;
+    const held = waiting;
+    waiting = null;
+    // a text kept for long is not what the player means to have on the clipboard any more
+    if (now() - held.at <= WAIT_MS) write(held.text, true);
+  }
+  for (const name of ["pointerup", "mouseup", "touchend", "keyup", "keydown"]) {
+    window.addEventListener(name, flushWaiting, true);
+  }
+  // Ctrl/Cmd+A on the canvas would select the page (a blue wash over the game in some browsers); the game still gets the key
+  window.addEventListener(
+    "keydown",
+    function (e) {
+      if ((e.ctrlKey || e.metaKey) && e.code === "KeyA" && e.target && e.target.id === "glcanvas") e.preventDefault();
+    },
+    true
+  );
+
+  function guard(fallback, fn) {
+    return function () {
+      try {
+        return fn.apply(null, arguments);
+      } catch (err) {
+        return fallback;
+      }
+    };
+  }
+  miniquad_add_plugin({
+    register_plugin: function (importObject) {
+      const env = importObject.env;
+      env.lr_paste_take = guard(-1, function (dst, cap) {
+        if (!paste) return -1;
+        if (now() - paste.at > PASTE_FRESH_MS) {
+          paste = null;
+          return -1;
+        }
+        const bytes = paste.text;
+        if (bytes.length > cap) return bytes.length;
+        view(dst, bytes.length).set(bytes);
+        paste = null;
+        return bytes.length;
+      });
+      env.lr_clip_offer = guard(0, function (ptr, len) {
+        offer = { text: decoder.decode(view(ptr, len)), at: now() };
+        return 0;
+      });
+      env.lr_clip_write = guard(0, function (ptr, len) {
+        write(decoder.decode(view(ptr, len)), false);
+        return 0;
+      });
+    },
+    version: 1,
+    name: "lr_clip",
   });
 })();
 </script>

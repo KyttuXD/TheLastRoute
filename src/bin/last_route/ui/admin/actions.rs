@@ -466,12 +466,12 @@ impl Admin {
                 }
                 4 => {
                     debug = false;
-                    macroquad::miniquad::window::clipboard_set(&g.run_seed.to_string());
+                    crate::ui::clipboard::copy(&g.run_seed.to_string());
                     g.say("SEED COPIED");
                 }
                 _ => {
                     debug = false;
-                    macroquad::miniquad::window::clipboard_set(
+                    crate::ui::clipboard::copy(
                         crate::world::route::room_text_code(&g.room_text),
                     );
                     g.say("ROOM CODE COPIED");

@@ -5,6 +5,7 @@
 
 use super::settings_panel::tab_bar;
 use super::style::*;
+use super::text_field;
 use crate::app::assets::Assets;
 use crate::app::checkpoint::Checkpoint;
 use crate::config::difficulty::LOBBY;
@@ -182,6 +183,8 @@ pub struct Ui {
     pub acct_user: String,
     pub acct_pass: String,
     pub acct_field: usize,
+    /// SELECT ALL (Ctrl/Cmd+A) was used in the focused text field: the next typed character or paste replaces its text.
+    pub field_sel: bool,
     pub acct_status: String,
     /// A sign in or account creation is waiting on the server (the form shows SIGNING IN).
     pub acct_busy: bool,
@@ -218,6 +221,7 @@ impl Default for Ui {
             acct_user: String::new(),
             acct_pass: String::new(),
             acct_field: 0,
+            field_sel: false,
             acct_status: String::new(),
             acct_busy: false,
             confirm_clear: false,
@@ -241,7 +245,12 @@ impl Ui {
         // keys typed in the game or on another screen wait in the character queue; they must not land in the next text
         // field (the JOIN ROOM code filled itself with the game's WASD presses)
         #[cfg(not(test))]
-        while get_char_pressed().is_some() {}
+        {
+            while get_char_pressed().is_some() {}
+            // and a paste still waiting from before (the web page keeps it for a moment) is not for the next field either
+            let _ = super::clipboard::poll_paste(false);
+        }
+        self.field_sel = false;
         self.focus = 0;
         self.scroll = 0.0;
         self.drag = None;
@@ -590,14 +599,8 @@ pub fn draw_join(a: &Assets, ui: &mut Ui, username: &str) -> Action {
     let _scope = MenuScope::enter();
     let p = pal();
     draw_title(a, ui, username, false);
-    while let Some(ch) = get_char_pressed() {
-        if ch.is_ascii_alphanumeric() && ui.join_code.len() < 5 {
-            ui.join_code.push(ch.to_ascii_uppercase());
-        }
-    }
-    if is_key_pressed(KeyCode::Backspace) {
-        ui.join_code.pop();
-    }
+    // typing, Backspace, and Ctrl/Cmd + V / C / X / A (a pasted code replaces what is there)
+    text_field::edit(text_field::Kind::Code, &mut ui.join_code, &mut ui.field_sel);
     let kick_w = tw(a, F::Body, &track("ROUTE SIGNAL // ROOM ACCESS"), 6.0) + esc_close_size(a).x;
     let inner_w = kick_w.max(196.0);
     let hint = wrap(
@@ -626,6 +629,9 @@ pub fn draw_join(a: &Assets, ui: &mut Ui, username: &str) -> Action {
     );
     let field = Rect::new(m.inner.x, m.y, m.inner.w, 27.0);
     line_edit(a, field, &ui.join_code, "ABC12", 12.0, true, false, ui.t);
+    if ui.field_sel {
+        line_edit_selection(a, field, &ui.join_code, false, 12.0);
+    }
     let mut y = field.y + field.h + 5.0;
     for l in &hint {
         label(a, F::Body, l, m.inner.x, y, 6.0, p.muted);
@@ -731,22 +737,6 @@ pub fn draw_quit(a: &Assets, ui: &mut Ui, username: &str) -> Action {
 
 // -- account (account_panel.gd) -------------------------------------------------------------
 
-fn take_text(field: &mut String, max: usize, upper: bool) {
-    while let Some(ch) = get_char_pressed() {
-        let c = if upper { ch.to_ascii_uppercase() } else { ch };
-        if c.is_control() || field.chars().count() >= max {
-            continue;
-        }
-        if upper && !(c.is_ascii_alphanumeric() || c == '_') {
-            continue;
-        }
-        field.push(c);
-    }
-    if is_key_pressed(KeyCode::Backspace) {
-        field.pop();
-    }
-}
-
 fn valid_name(n: &str) -> bool {
     (3..=24).contains(&n.len()) && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
@@ -782,11 +772,13 @@ pub fn draw_account(
         // the sign-in form (240x150)
         if is_key_pressed(KeyCode::Tab) {
             ui.acct_field = (ui.acct_field + 1) % 2;
+            ui.field_sel = false;
         }
+        // the focused field takes the typing and the clipboard keys; the password is never copied or cut
         if ui.acct_field == 0 {
-            take_text(&mut ui.acct_user, 24, true);
+            text_field::edit(text_field::Kind::Username, &mut ui.acct_user, &mut ui.field_sel);
         } else {
-            take_text(&mut ui.acct_pass, 200, false);
+            text_field::edit(text_field::Kind::Password, &mut ui.acct_pass, &mut ui.field_sel);
         }
         let status = if ui.acct_busy {
             "SIGNING IN".to_string()
@@ -836,10 +828,23 @@ pub fn draw_account(
             true,
             ui.t,
         );
+        if ui.field_sel {
+            if ui.acct_field == 0 {
+                line_edit_selection(a, f1, &ui.acct_user, false, 8.0);
+            } else {
+                line_edit_selection(a, f2, &ui.acct_pass, true, 8.0);
+            }
+        }
         if clicked(f1) {
+            if ui.acct_field != 0 {
+                ui.field_sel = false;
+            }
             ui.acct_field = 0;
         }
         if clicked(f2) {
+            if ui.acct_field != 1 {
+                ui.field_sel = false;
+            }
             ui.acct_field = 1;
         }
         y += 54.0;
@@ -883,7 +888,7 @@ pub fn draw_account(
     }
     if ui.acct_manage {
         // ACCOUNT SETTINGS (280x214): rename the local profile; passwords need the server
-        take_text(&mut ui.acct_user, 24, true);
+        text_field::edit(text_field::Kind::Username, &mut ui.acct_user, &mut ui.field_sel);
         let status = if ui.acct_status.is_empty() {
             format!("SIGNED IN AS {username}")
         } else {
@@ -906,16 +911,11 @@ pub fn draw_account(
         y += l6 + 5.0;
         label(a, F::Body, "USERNAME", m.inner.x, y, 6.0, p.amber);
         y += l6 + 5.0;
-        line_edit(
-            a,
-            Rect::new(m.inner.x, y, m.inner.w, 22.0),
-            &ui.acct_user,
-            "",
-            8.0,
-            true,
-            false,
-            ui.t,
-        );
+        let name_box = Rect::new(m.inner.x, y, m.inner.w, 22.0);
+        line_edit(a, name_box, &ui.acct_user, "", 8.0, true, false, ui.t);
+        if ui.field_sel {
+            line_edit_selection(a, name_box, &ui.acct_user, false, 8.0);
+        }
         y += 27.0;
         if button(
             a,
@@ -973,6 +973,7 @@ pub fn draw_account(
             plain(),
         ) {
             ui.acct_manage = false;
+            ui.field_sel = false;
             ui.acct_status.clear();
         }
         if m.close || is_key_pressed(KeyCode::Escape) {
@@ -1070,6 +1071,7 @@ pub fn draw_account(
         plain(),
     ) {
         ui.acct_manage = true;
+        ui.field_sel = false;
         ui.acct_user = username.clone();
         ui.acct_status.clear();
     }
@@ -1537,7 +1539,7 @@ pub fn draw_lobby(
         plain(),
     ) && interactive
     {
-        macroquad::miniquad::window::clipboard_set(code);
+        super::clipboard::copy(code);
         ui.code_copied = true;
     }
     if ui.code_copied {

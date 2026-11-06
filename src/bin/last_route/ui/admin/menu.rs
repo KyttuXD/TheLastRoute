@@ -786,14 +786,9 @@ impl Admin {
         content: &Content,
     ) {
         if let Some(i) = self.field_focus {
-            while let Some(ch) = get_char_pressed() {
-                if !ch.is_control() && self.fields[i].chars().count() < 120 {
-                    self.fields[i].push(ch);
-                }
-            }
-            if is_key_pressed(KeyCode::Backspace) {
-                self.fields[i].pop();
-            }
+            // typing, Backspace and Ctrl/Cmd + V / C / X on the focused box (a dev tool: no select all)
+            let mut no_selection = false;
+            crate::ui::text_field::edit(crate::ui::text_field::Kind::Free, &mut self.fields[i], &mut no_selection);
             if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter) {
                 cmds.push(Cmd::Field(i));
             }

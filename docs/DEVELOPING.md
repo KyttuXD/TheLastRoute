@@ -61,6 +61,11 @@ The page also registers the game's JavaScript bridges as miniquad plugins: point
 `app/web_storage.rs`), the room relay and directory (`net/web_bridge.rs`), and the file chooser (`shared/file_pick.rs`, the `lr_pick_*`
 functions; see `docs/SKIN_SYNC.md`). A new `extern "C"` import in the game needs its function in `index.html` in the same deploy.
 
+Text fields (the JOIN ROOM code, the ACCOUNT username and password, the admin FIELDS boxes, the SKIN link box) take Ctrl/Cmd+V paste,
++C copy, +X cut and +A select all (`ui/text_field.rs`; a password is never copied or cut). On the web the clipboard goes through the `lr_clip`
+plugin in `index.html` (`ui/clipboard.rs`) because miniquad's own page script keeps a stale paste and answers copy events a frame late.
+`keys.js` also forwards the Cmd key (`MetaLeft`/`MetaRight`, which the stock bundle does not know) so Cmd+V reaches the game on a Mac.
+
 ## Offline project docs
 
 The app recognizes the local reference library at `C:\Users\Kyttu\Documents\Projects\Docs` when
