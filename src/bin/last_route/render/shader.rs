@@ -3,8 +3,7 @@
 //! flashlight's cone, and distance fog. Vertex `normal.w` selects the mode:
 //! 0 tiled texture (fract UVs), 1 atlas texture, 2 unlit/emissive.
 
-use std::cell::RefCell;
-use std::sync::atomic::AtomicUsize;
+use std::cell::{Cell, OnceCell, RefCell};
 
 use macroquad::miniquad::{
     BlendFactor, BlendState, BlendValue, Comparison, Equation, PipelineParams, UniformType,
@@ -12,6 +11,15 @@ use macroquad::miniquad::{
 use macroquad::prelude::*;
 
 pub const MAX_LAMPS: usize = 16;
+
+/// The lamp counts the world material is compiled for. The fragment shader loops over its lamp array, so a frame lit with
+/// at most 8 (or 4) lamps runs a material whose loop is 8 (or 4) long instead of a fixed 16 of mostly empty slots.
+pub const LAMP_VARIANTS: [usize; 3] = [4, 8, MAX_LAMPS];
+
+/// The smallest compiled lamp count that holds `cap` lamps (a cap of 0 to 4 takes the 4-lamp material, 9 to 16 the full one).
+pub fn variant_for_cap(cap: usize) -> usize {
+    LAMP_VARIANTS.iter().copied().find(|n| *n >= cap).unwrap_or(MAX_LAMPS)
+}
 
 /// The vertex mode (normal.w) of an ordinary lit, opaque surface.
 pub const LIT_MODE: f32 = 1.0;
@@ -39,6 +47,7 @@ void main() {
     nrm = normal;
 }"#;
 
+/// The 16-lamp fragment shader, which `fragment_for` narrows to the other lamp counts.
 const FRAGMENT: &str = r#"#version 100
 precision highp float;
 varying lowp vec2 uv;
@@ -184,9 +193,30 @@ fragment float4 fragmentShader(VOut in [[stage_in]], constant Uniforms& u [[buff
 }
 "#;
 
+/// The GLSL fragment shader for a material lit with `lamps` lamps: the 16-lamp source with the two lamp arrays and the
+/// loop bound narrowed. Only those three places mention the count, so the variants cannot drift from the template.
+fn fragment_for(lamps: usize) -> String {
+    FRAGMENT
+        .replace("Lamps[16]", &format!("Lamps[{lamps}]"))
+        .replace("LampColors[16]", &format!("LampColors[{lamps}]"))
+        .replace("i < 16", &format!("i < {lamps}"))
+}
+
+/// The Metal twin for `lamps` lamps: the uniform struct's arrays and the loop bound narrowed, as `fragment_for` does.
+fn msl_for(lamps: usize) -> String {
+    MSL.replace("Lamps[16]", &format!("Lamps[{lamps}]"))
+        .replace("LampColors[16]", &format!("LampColors[{lamps}]"))
+        .replace("i < 16", &format!("i < {lamps}"))
+}
+
 /// The world material's own uniforms, in declaration order. macroquad packs them tightly after its built-in
 /// block (Projection, Model, _Time: `BUILTIN_UNIFORM_BYTES`), so this order is the byte order of the MSL struct.
 fn world_uniforms() -> Vec<UniformDesc> {
+    world_uniforms_for(MAX_LAMPS)
+}
+
+/// [`world_uniforms`] with lamp arrays `lamps` long.
+fn world_uniforms_for(lamps: usize) -> Vec<UniformDesc> {
     vec![
         UniformDesc::new("CamPos", UniformType::Float3),
         UniformDesc::new("LightPos", UniformType::Float3),
@@ -195,8 +225,8 @@ fn world_uniforms() -> Vec<UniformDesc> {
         UniformDesc::new("AmbientColor", UniformType::Float3),
         UniformDesc::new("FogColor", UniformType::Float3),
         UniformDesc::new("FogFar", UniformType::Float1),
-        UniformDesc::new("Lamps", UniformType::Float4).array(MAX_LAMPS),
-        UniformDesc::new("LampColors", UniformType::Float4).array(MAX_LAMPS),
+        UniformDesc::new("Lamps", UniformType::Float4).array(lamps),
+        UniformDesc::new("LampColors", UniformType::Float4).array(lamps),
     ]
 }
 
@@ -204,14 +234,23 @@ fn world_uniforms() -> Vec<UniformDesc> {
 #[cfg(test)]
 const BUILTIN_UNIFORM_BYTES: usize = 64 + 64 + 16;
 
+/// The full 16-lamp world material.
 pub fn load_world_material() -> Material {
+    load_world_material_for(MAX_LAMPS)
+}
+
+/// The world material for a frame lit with at most `lamps` lamps (one of `LAMP_VARIANTS`).
+pub fn load_world_material_for(lamps: usize) -> Material {
     // macroquad picks its own shaders by backend; ours needs the matching source
+    let (msl, fragment);
     let source = if crate::app::platform::is_metal() {
-        ShaderSource::Msl { program: MSL }
+        msl = msl_for(lamps);
+        ShaderSource::Msl { program: &msl }
     } else {
+        fragment = fragment_for(lamps);
         ShaderSource::Glsl {
             vertex: VERTEX,
-            fragment: FRAGMENT,
+            fragment: &fragment,
         }
     };
     load_material(
@@ -227,11 +266,52 @@ pub fn load_world_material() -> Material {
                 )),
                 ..Default::default()
             },
-            uniforms: world_uniforms(),
+            uniforms: world_uniforms_for(lamps),
             ..Default::default()
         },
     )
     .expect("world shader")
+}
+
+/// The world material in each lamp-count variant. The 16-lamp one is compiled at boot; a narrower one is compiled the
+/// first frame a quality tier or the governor asks for it (a one-off shader compile), so a run that never drops below
+/// 16 lamps pays for none. It derefs to the variant the current lamp cap needs, so it stands wherever a `&Material` does.
+pub struct WorldMats {
+    variants: [OnceCell<Material>; 3],
+}
+
+impl WorldMats {
+    pub fn new() -> WorldMats {
+        let m = WorldMats { variants: Default::default() };
+        let _ = m.variants[2].set(load_world_material());
+        m
+    }
+
+    /// The material compiled for `lamps` (one of `LAMP_VARIANTS`), compiling it on first use.
+    pub fn get(&self, lamps: usize) -> &Material {
+        let at = LAMP_VARIANTS.iter().position(|n| *n == variant_for_cap(lamps)).unwrap_or(2);
+        self.variants[at].get_or_init(|| load_world_material_for(LAMP_VARIANTS[at]))
+    }
+
+    /// Compiles the variant for `lamps` now, so the frame that switches to it does not stall on the compile.
+    pub fn prewarm(&self, lamps: usize) {
+        let _ = self.get(lamps);
+    }
+}
+
+impl Default for WorldMats {
+    fn default() -> Self {
+        WorldMats::new()
+    }
+}
+
+impl std::ops::Deref for WorldMats {
+    type Target = Material;
+
+    /// The material that matches `lamp_cap()` (see `lamp_variant`).
+    fn deref(&self) -> &Material {
+        self.get(lamp_variant())
+    }
 }
 
 /// A light in the world: position, reach, colour and energy.
@@ -285,16 +365,39 @@ pub struct NearLamps {
     col: [Vec4; MAX_LAMPS],
 }
 
-static LAMP_CAP: AtomicUsize = AtomicUsize::new(MAX_LAMPS);
-
-/// The most lamps a frame is lit with (`lamp_flicker` `lamp_cap`, by graphics quality): 8 on the slowest tier.
-pub fn lamp_cap() -> usize {
-    LAMP_CAP.load(std::sync::atomic::Ordering::Relaxed)
+thread_local! {
+    /// The most lamps the graphics quality tier allows (`lamp_flicker` `lamp_cap`).
+    static TIER_LAMP_CAP: Cell<usize> = const { Cell::new(MAX_LAMPS) };
+    /// The most lamps the quality governor allows right now (app/quality.rs); MAX_LAMPS while it is off or at notch 0.
+    static GOVERNOR_LAMP_CAP: Cell<usize> = const { Cell::new(MAX_LAMPS) };
 }
 
-/// Sets the lamp cap for the graphics quality tier; the shader's array stays MAX_LAMPS long and the rest read as no lamp.
+/// The most lamps a frame is lit with: the smaller of the graphics quality tier's cap (`lamp_flicker` `lamp_cap`, 8 on the
+/// slowest tier) and the governor's.
+pub fn lamp_cap() -> usize {
+    effective_cap(TIER_LAMP_CAP.with(Cell::get), GOVERNOR_LAMP_CAP.with(Cell::get))
+}
+
+/// The lamp cap from the tier's and the governor's: the smaller, at least 1 and at most MAX_LAMPS.
+pub fn effective_cap(tier: usize, governor: usize) -> usize {
+    tier.min(governor).clamp(1, MAX_LAMPS)
+}
+
+/// The compiled lamp count (one of `LAMP_VARIANTS`) the current `lamp_cap()` lights with: the material `WorldMats` hands
+/// out and the number of lamp slots `apply` uploads.
+pub fn lamp_variant() -> usize {
+    variant_for_cap(lamp_cap())
+}
+
+/// Sets the lamp cap for the graphics quality tier; the shader's array is the narrowest variant that holds it and the
+/// rest of the slots read as no lamp.
 pub fn set_lamp_cap_for(quality: &str) {
-    LAMP_CAP.store(super::lamp_flicker::table().lamp_cap(quality).min(MAX_LAMPS), std::sync::atomic::Ordering::Relaxed);
+    TIER_LAMP_CAP.with(|c| c.set(super::lamp_flicker::table().lamp_cap(quality).min(MAX_LAMPS)));
+}
+
+/// Sets the governor's lamp limit (16, 8 or 4 from the notch table); `lamp_cap` is the smaller of this and the tier's.
+pub fn set_governor_lamp_cap(limit: usize) {
+    GOVERNOR_LAMP_CAP.with(|c| c.set(limit.clamp(1, MAX_LAMPS)));
 }
 
 /// The up to `lamp_cap()` lamps nearest `eye`, nearest first. Equal distances keep their input order (stable sort).
@@ -386,8 +489,10 @@ pub fn apply(mat: &Material, l: &Lighting, lamps: &[Lamp]) {
     mat.set_uniform("FogColor", l.fog);
     mat.set_uniform("FogFar", l.fog_far);
     let near = cached_nearest_lamps(l.eye, lamps);
-    mat.set_uniform_array("Lamps", &near.pos[..]);
-    mat.set_uniform_array("LampColors", &near.col[..]);
+    // the material's arrays are as long as its variant (`WorldMats`): slots past the cap are empty anyway
+    let slots = lamp_variant();
+    mat.set_uniform_array("Lamps", &near.pos[..slots]);
+    mat.set_uniform_array("LampColors", &near.col[..slots]);
 }
 
 #[cfg(test)]
@@ -588,6 +693,84 @@ mod tests {
                 let ns = string_with(objc_getClass(b"NSString\0".as_ptr() as *const c_char), sel("stringWithUTF8String:"), c.as_ptr());
                 assert!(!named(lib, sel("newFunctionWithName:"), ns).is_null(), "entry point {entry} missing");
             }
+        }
+    }
+
+    #[test]
+    fn a_cap_takes_the_narrowest_variant_that_holds_it() {
+        let table: Vec<(usize, usize)> = [0usize, 1, 3, 4, 5, 8, 9, 12, 16, 17, 100].iter().map(|c| (*c, variant_for_cap(*c))).collect();
+        assert_eq!(table, vec![(0, 4), (1, 4), (3, 4), (4, 4), (5, 8), (8, 8), (9, 16), (12, 16), (16, 16), (17, 16), (100, 16)]);
+        assert_eq!(LAMP_VARIANTS, [4, 8, MAX_LAMPS]);
+        assert!(LAMP_VARIANTS.windows(2).all(|w| w[0] < w[1]), "ascending, so the narrowest fit is the first");
+    }
+
+    #[test]
+    fn the_lamp_cap_is_the_smaller_of_the_tier_and_the_governor() {
+        assert_eq!(effective_cap(16, 16), 16);
+        assert_eq!(effective_cap(8, 16), 8, "the slow tier's cap holds under an idle governor");
+        assert_eq!(effective_cap(16, 4), 4);
+        assert_eq!(effective_cap(8, 4), 4);
+        assert_eq!(effective_cap(0, 16), 1, "never none");
+        assert_eq!(effective_cap(99, 99), MAX_LAMPS);
+        // the live cap, which picks the material (these cells are per thread, so no other test sees them)
+        assert_eq!(lamp_cap(), MAX_LAMPS);
+        set_governor_lamp_cap(8);
+        assert_eq!((lamp_cap(), lamp_variant()), (8, 8));
+        set_governor_lamp_cap(4);
+        assert_eq!((lamp_cap(), lamp_variant()), (4, 4));
+        set_governor_lamp_cap(99);
+        assert_eq!((lamp_cap(), lamp_variant()), (MAX_LAMPS, MAX_LAMPS));
+        set_lamp_cap_for("LOW");
+        assert_eq!(lamp_cap(), 8, "the LOW tier's table cap");
+        set_governor_lamp_cap(4);
+        assert_eq!(lamp_variant(), 4, "the governor goes below the tier");
+        set_lamp_cap_for("HIGH");
+        set_governor_lamp_cap(MAX_LAMPS);
+    }
+
+    #[test]
+    fn every_variant_loops_over_exactly_its_own_lamps() {
+        for n in LAMP_VARIANTS {
+            let (glsl, msl) = (fragment_for(n), msl_for(n));
+            for (name, src) in [("GLSL", &glsl), ("MSL", &msl)] {
+                assert!(src.contains(&format!("i < {n}")), "{name} {n}: loop bound");
+                assert!(src.contains(&format!("Lamps[{n}]")) || name == "MSL", "{name} {n}: lamp array");
+                assert!(src.contains(&format!("LampColors[{n}]")) || name == "MSL", "{name} {n}: colour array");
+                if n != MAX_LAMPS {
+                    assert!(!src.contains("[16]") && !src.contains("i < 16"), "{name} {n} still names 16 lamps");
+                }
+            }
+            assert!(msl.contains(&format!("packed_float4 Lamps[{n}];")) && msl.contains(&format!("packed_float4 LampColors[{n}];")), "MSL {n}: struct arrays");
+        }
+        assert_eq!(fragment_for(MAX_LAMPS), FRAGMENT);
+        assert_eq!(msl_for(MAX_LAMPS), MSL);
+    }
+
+    #[test]
+    fn each_variants_metal_struct_matches_its_uniform_byte_layout() {
+        for n in LAMP_VARIANTS {
+            let msl = msl_for(n);
+            let mut want: Vec<(String, usize)> = vec![("Projection".into(), 0), ("Model".into(), 64), ("_Time".into(), 128)];
+            let mut at = BUILTIN_UNIFORM_BYTES;
+            for u in world_uniforms_for(n) {
+                want.push((u.name.clone(), at));
+                at += u.uniform_type.size() * u.array_count;
+            }
+            assert_eq!(at, 212 + 32 * n, "{n}: total uniform bytes");
+            let body = msl.split("struct Uniforms {").nth(1).and_then(|b| b.split("};").next()).expect("Uniforms struct");
+            let mut got: Vec<(String, usize)> = Vec::new();
+            let mut off = 0;
+            for line in body.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                let (ty, name) = line.trim_end_matches(';').split_once(' ').expect("type and name");
+                let (name, count) = match name.split_once('[') {
+                    Some((nm, c)) => (nm, c.trim_end_matches(']').parse::<usize>().expect("array length")),
+                    None => (name, 1),
+                };
+                got.push((name.to_string(), off));
+                off += msl_size(ty) * count;
+            }
+            assert_eq!(got, want, "{n}: field offsets");
+            assert_eq!(off, at, "{n}: struct size");
         }
     }
 

@@ -31,6 +31,10 @@ pub struct Settings {
     pub fps_limit: f32,
     /// AUTO / LOW / MEDIUM / HIGH.
     pub quality: String,
+    /// ADAPTIVE QUALITY: while QUALITY is AUTO, the frame-time governor (app/quality.rs) gives up lamps, view distance and
+    /// render scale when frames run slow and takes them back when they run clean. On by default in the browser build, off
+    /// on a native build (whose AUTO stays at the HIGH look).
+    pub adaptive_quality: bool,
     /// off / gentle / annoying.
     pub ads: String,
     /// AUTO / METAL / OPENGL (macOS only; read at launch, so a change needs a restart). See `app::gfx`.
@@ -74,6 +78,7 @@ impl Default for Settings {
             vsync: true,
             fps_limit: 0.0,
             quality: "AUTO".into(),
+            adaptive_quality: cfg!(target_arch = "wasm32"),
             ads: "off".into(),
             graphics_api: "AUTO".into(),
             pause_on_focus_loss: true,
@@ -150,6 +155,7 @@ impl Settings {
         s.pause_on_focus_loss = b("pause_on_focus_loss", true);
         s.teammate_waypoints = b("teammate_waypoints", true);
         s.reduced_motion = b("reduced_motion", false);
+        s.adaptive_quality = b("adaptive_quality", s.adaptive_quality);
         if let Some(q) = v["quality"]
             .as_str()
             .filter(|q| ["AUTO", "LOW", "MEDIUM", "HIGH"].contains(q))
@@ -195,7 +201,7 @@ impl Settings {
             "ui_volume": self.ui_volume, "voice_volume": self.voice_volume, "voices": self.voices,
             "subtitles": self.subtitles, "fov": self.fov, "sensitivity": self.sensitivity,
             "fullscreen": self.fullscreen, "vsync": self.vsync, "fps_limit": self.fps_limit,
-            "quality": self.quality, "ads": self.ads, "graphics_api": self.graphics_api, "pause_on_focus_loss": self.pause_on_focus_loss,
+            "quality": self.quality, "adaptive_quality": self.adaptive_quality, "ads": self.ads, "graphics_api": self.graphics_api, "pause_on_focus_loss": self.pause_on_focus_loss,
             "teammate_waypoints": self.teammate_waypoints, "reduced_motion": self.reduced_motion, "username": self.username, "scheme": self.scheme,
             "skin": self.skin, "skin_slim": self.skin_slim, "skin_copy": self.skin_copy,
             "arms": self.arms, "speech_enabled": self.speech_enabled,
@@ -306,6 +312,7 @@ mod tests {
             "vsync",
             "fps_limit",
             "quality",
+            "adaptive_quality",
             "ads",
             "graphics_api",
             "pause_on_focus_loss",
@@ -341,6 +348,7 @@ mod tests {
             vsync: false,
             fps_limit: 90.0,
             quality: "MEDIUM".into(),
+            adaptive_quality: !cfg!(target_arch = "wasm32"),
             ads: "gentle".into(),
             graphics_api: "METAL".into(),
             pause_on_focus_loss: false,
@@ -359,6 +367,7 @@ mod tests {
         let back = Settings::from_json(&json);
         assert_eq!(back.to_json(), json);
         assert_eq!(back.quality, "MEDIUM");
+        assert_eq!(back.adaptive_quality, !cfg!(target_arch = "wasm32"), "the saved choice, not the default, comes back");
         assert_eq!(back.ads, "gentle");
         assert_eq!(back.graphics_api, "METAL");
         assert_eq!(back.username, "ALICE");
@@ -368,6 +377,17 @@ mod tests {
         assert_eq!(Settings::from_json(&serde_json::json!({"skin": ""})).skin, "DEFAULT");
         assert!(!back.vsync && back.fullscreen);
         assert!(back.reduced_motion);
+    }
+
+    #[test]
+    fn adaptive_quality_defaults_on_for_the_browser_and_off_native_and_old_files_load() {
+        let default_on = cfg!(target_arch = "wasm32");
+        assert_eq!(Settings::default().adaptive_quality, default_on);
+        // a settings file from before the row existed takes the platform's default; a saved choice wins either way
+        assert_eq!(Settings::from_json(&serde_json::json!({ "quality": "AUTO" })).adaptive_quality, default_on);
+        assert!(Settings::from_json(&serde_json::json!({ "adaptive_quality": true })).adaptive_quality);
+        assert!(!Settings::from_json(&serde_json::json!({ "adaptive_quality": false })).adaptive_quality);
+        assert_eq!(Settings::from_json(&serde_json::json!({ "adaptive_quality": "yes" })).adaptive_quality, default_on);
     }
 
     #[test]

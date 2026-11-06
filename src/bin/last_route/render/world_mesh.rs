@@ -394,6 +394,8 @@ impl WorldMeshes {
             return;
         };
         let table = stream_table();
+        // the quality governor's share of the build budget (1 outside a notch)
+        let stream_scale = f64::from(crate::app::quality::scales().stream);
         let started = Instant::now();
         // a level change or a teleport builds its whole window in this one step; a step builds what the budget allows
         let one_step = builds_in_one_step(self.last_frame, frame, self.builds, table.jump_steps);
@@ -411,7 +413,7 @@ impl WorldMeshes {
                 p.used = build_no;
                 continue;
             }
-            if !one_step && !table.allows(built, started.elapsed().as_secs_f64() * 1000.0, queued) {
+            if !one_step && !table.allows_scaled(built, started.elapsed().as_secs_f64() * 1000.0, queued, stream_scale) {
                 pending += 1;
                 continue;
             }
@@ -779,7 +781,13 @@ impl StreamBudget {
     /// Whether one more part may be built after `built` this frame, `elapsed_ms` into the frame. The first part of
     /// a rebuild always builds, so the queue never stalls.
     pub fn allows(&self, built: usize, elapsed_ms: f64, queued: usize) -> bool {
-        built == 0 || (built < self.chunks_per_frame && elapsed_ms < self.budget_ms(queued))
+        self.allows_scaled(built, elapsed_ms, queued, 1.0)
+    }
+
+    /// [`Self::allows`] with the frame's time budget cut to `scale` of itself (the quality governor's stream factor, 0 to 1;
+    /// 1 is exactly `allows`). The first part of a rebuild still always builds, so a smaller budget only slows the fill.
+    pub fn allows_scaled(&self, built: usize, elapsed_ms: f64, queued: usize, scale: f64) -> bool {
+        built == 0 || (built < self.chunks_per_frame && elapsed_ms < self.budget_ms(queued) * scale.clamp(0.0, 1.0))
     }
 }
 
@@ -2297,6 +2305,25 @@ mod stream_budget_tests {
         assert!(standard.allows(3, 0.0, 9));
         assert!(!capped.allows(2, 0.0, 9));
         assert!(capped.allows(1, 0.0, 9));
+    }
+
+    #[test]
+    fn the_governors_stream_factor_shrinks_the_time_budget_but_not_the_first_part() {
+        let t = StreamBudget::parse(STANDARD).unwrap();
+        // 1 is exactly `allows`; the Standard budget with 3 queued is 7 ms
+        for (built, elapsed, queued) in [(0usize, 999.0f64, 9usize), (1, 5.0, 0), (1, 6.9, 3), (1, 7.1, 3), (3, 0.0, 9), (4, 0.0, 9)] {
+            assert_eq!(t.allows_scaled(built, elapsed, queued, 1.0), t.allows(built, elapsed, queued), "{built} {elapsed} {queued}");
+        }
+        assert!(t.allows_scaled(1, 6.0, 3, 1.0));
+        assert!(!t.allows_scaled(1, 6.0, 3, 0.75), "5.25 ms is spent at 6 ms");
+        assert!(t.allows_scaled(1, 5.0, 3, 0.75));
+        assert!(!t.allows_scaled(1, 3.6, 3, 0.5));
+        assert!(t.allows_scaled(0, 999.0, 9, 0.5), "the first part always builds, whatever the factor");
+        assert!(t.allows_scaled(0, 999.0, 9, 0.0));
+        assert!(!t.allows_scaled(1, 0.0, 9, 0.0), "a zero factor leaves only the first part");
+        // out-of-range factors are clamped, not trusted
+        assert_eq!(t.allows_scaled(1, 6.0, 3, 5.0), t.allows(1, 6.0, 3));
+        assert!(!t.allows_scaled(1, 0.1, 3, -1.0));
     }
 
     #[test]

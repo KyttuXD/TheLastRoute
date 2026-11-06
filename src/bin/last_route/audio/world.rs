@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use super::cues::music_box::RunClock;
+use super::cues::music_box::{RunClock, RunRender};
 use super::cues::positional::HUM;
 use super::cues::rules::{self, Bus, HunterStepClock};
 use super::cues::stride::{preferred_clip, HunterGait};
@@ -103,10 +103,18 @@ struct WorldState {
     clock: HunterStepClock,
     /// The music box tune that is playing: what the run was started for, and the box clock at the last frame.
     box_run: Option<RunClock>,
+    /// The music box run being rendered a slice a frame (`music_box`).
+    box_render: Option<RunRender>,
 }
 
 /// The voice of the wound music box's tune (one pre-rendered run, see `music_box`).
 const BOX_VOICE: &str = "music_box_run";
+
+/// The music box run is rendered in slices of this many frames, until this much time of a game frame is spent: the render
+/// is a few million frames, which on one wasm thread would stall a frame for tenths of a second if done at once. The
+/// finished run is the same samples either way (`RunRender`).
+const BOX_RENDER_SLICE: usize = 4096;
+const BOX_RENDER_BUDGET: std::time::Duration = std::time::Duration::from_millis(2);
 
 /// The wound music box's sound (music_box.rs): its tune, steady at normal speed while the wind is above the slowdown line
 /// (70 % by default), then slower and lower as it drains, stopped when it is empty. The loops cannot change pitch while
@@ -126,6 +134,7 @@ pub fn music_box(left: f32, wound: f32) {
             }
             if left <= 0.0 {
                 // empty: the tune stops (the run is silent from here anyway)
+                w.box_render = None;
                 if w.box_run.take().is_some() {
                     e.set_loop(BOX_VOICE, Bus::Master, None, Vec::new);
                 }
@@ -135,9 +144,25 @@ pub fn music_box(left: f32, wound: f32) {
             let restart = mb::run_needs_restart(w.box_run.as_ref(), left, wound, now);
             w.box_run = Some(RunClock { wound, last_left: left, last_now: now });
             if restart {
-                let tune = crate::game::music_box::rules().tune_gain;
-                let frames = mb::run_frames(wound, wound - left);
-                e.play_frames(BOX_VOICE, Bus::Master, frames, (tune, tune), left);
+                // the run is a few million frames: it is rendered a slice a frame (below), not in this one. What played
+                // before no longer matches the box clock, so it stops now and the new run starts when it is ready.
+                e.set_loop(BOX_VOICE, Bus::Master, None, Vec::new);
+                w.box_render = Some(RunRender::new(wound, wound - left));
+            }
+            if let Some(render) = w.box_render.as_mut() {
+                let t0 = crate::shared::clock::Instant::now();
+                let mut done = false;
+                while !done && t0.elapsed() < BOX_RENDER_BUDGET {
+                    done = render.step(BOX_RENDER_SLICE);
+                }
+                if done {
+                    if let Some(render) = w.box_render.take() {
+                        // the box clock ran on while the run rendered: join it where it is now, as a run started now would
+                        let tune = crate::game::music_box::rules().tune_gain;
+                        let frames = render.finish_at(wound - left);
+                        e.play_frames(BOX_VOICE, Bus::Master, frames, (tune, tune), left);
+                    }
+                }
             }
         });
     });

@@ -33,7 +33,7 @@ const TAB_KEYS: [&[&str]; 7] = [
         "subtitles",
         "speech_enabled",
     ],
-    &["fullscreen", "ads", "vsync", "quality", "fps_limit", "fov", "graphics_api"],
+    &["fullscreen", "ads", "vsync", "quality", "adaptive_quality", "fps_limit", "fov", "graphics_api"],
     &["sensitivity"],
     &["arms", "skin_copy"],
     &[],
@@ -610,17 +610,29 @@ pub fn draw_settings(
                 st.vsync = !st.vsync;
                 changed = true;
             }
+            // AUTO shows the tier it is using: the browser build picks it from the hardware and the first seconds of play
             let q = format!(
                 "QUALITY: {}",
                 if st.quality == "AUTO" {
-                    "AUTO (HIGH)".to_string()
+                    format!("AUTO ({})", crate::app::quality::auto_tier_name())
                 } else {
                     st.quality.clone()
                 }
             );
+            if state_toggle(
+                a,
+                Rect::new(x + 306.0, y, 94.0, 16.0),
+                "ADAPTIVE",
+                st.adaptive_quality && st.quality == "AUTO",
+                true,
+                if st.quality == "AUTO" { plain() } else { disabled() },
+            ) {
+                st.adaptive_quality = !st.adaptive_quality;
+                changed = true;
+            }
             if button(
                 a,
-                Rect::new(x + 118.0, y, 282.0, 16.0),
+                Rect::new(x + 118.0, y, 180.0, 16.0),
                 &q,
                 8.0,
                 Kind::Secondary,
@@ -674,7 +686,8 @@ pub fn draw_settings(
                 "LOW" => "LOW: short view, fewer props, no shadows",
                 "MEDIUM" => "MEDIUM: longer view, more props, no flashlight shadows",
                 "HIGH" => "HIGH: full view, props, flashlight shadows",
-                _ => "AUTO: picks for this device, eases off if frames drop",
+                _ if st.adaptive_quality => "AUTO: picks for this device, eases off if frames drop",
+                _ => "AUTO: picks for this device and stays there (ADAPTIVE is off)",
             };
             label_vc(a, F::Body, hint, x, oy + 144.0, 12.0, 7.0, p.muted);
             video_note(a, VSYNC_NOTES[0], x, oy + 156.0, p.muted);

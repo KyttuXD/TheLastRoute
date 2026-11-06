@@ -49,6 +49,9 @@ const RESIDENT_VIEW_BASE: usize = 1_000_000;
 thread_local! {
     /// The frustum of the camera `draw_scene` is drawing with, for the items it draws one by one (`draw_static`).
     static VIEW_FRUSTUM: std::cell::Cell<Option<Frustum>> = const { std::cell::Cell::new(None) };
+    /// The eye and the distance past which `draw_static` skips a prop, while the quality governor has shortened the prop
+    /// draw range (`quality::Scales::prop` below 1); `None` while the props draw at the full range.
+    static PROP_RANGE: std::cell::Cell<Option<(Vec3, f32)>> = const { std::cell::Cell::new(None) };
 }
 
 /// Whether the frustum cull is on. `LR_NO_FRUSTUM_CULL` (any value) turns it off on a native build, to compare counters
@@ -98,7 +101,8 @@ fn draw_culled(meshes: &[Mesh], bounds: &[(Vec3, Vec3)], eye: Vec3, reach: f32, 
 /// Draws a static prop with its placement: its meshes come from the cache, built on first use. A prop wholly outside the
 /// view is not submitted (its meshes are still asked of the cache, so they are kept for when it comes back into view).
 fn draw_static(m: &PropModel, xf: Mat4, tint: Color) {
-    let in_view = VIEW_FRUSTUM.with(|f| f.get()).map_or(true, |f| f.intersects_transformed_box(xf, m.min, m.max, FRUSTUM_MARGIN_M));
+    let in_view = VIEW_FRUSTUM.with(|f| f.get()).map_or(true, |f| f.intersects_transformed_box(xf, m.min, m.max, FRUSTUM_MARGIN_M))
+        && !PROP_RANGE.with(|r| r.get()).is_some_and(|(eye, reach)| prop_beyond(eye, xf, m.min, m.max, reach));
     STATIC_PROPS.with(|c| {
         let mut cache = c.borrow_mut();
         let meshes = m.static_meshes(&mut cache, xf, tint);
@@ -323,6 +327,9 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         crate::audio::falls::update(near, light.eye.to_array(), right.to_array(), up.to_array(), fwd.to_array());
     }
     let cull_range = world_cull_range(light.fog_far);
+    // with the governor's prop draw range shortened, a prop drawn one by one past that share of the cull range is skipped
+    let prop_scale = crate::app::quality::scales().prop;
+    PROP_RANGE.with(|r| r.set((prop_scale < 1.0).then(|| (light.eye, (cull_range * prop_scale).max(PROP_RANGE_FLOOR)))));
     // the floor's meshes wholly past the fog's full reach are skipped: they would paint the fog colour alone (see
     // `box_fully_fogged`), which the clear colour already is
     let t_world = crate::app::perf::section("world meshes");
@@ -1177,7 +1184,37 @@ const WORLD_CULL_CEIL: f32 = 80.0;
 /// Distance from the eye past which a world mesh is skipped: the unlit mode's full fog (1.6 x the current `fog_far`)
 /// plus the margin. Lit surfaces reach full fog sooner (`fog_far`), so every fragment this far is fog colour in both modes.
 fn world_cull_range(fog_far: f32) -> f32 {
-    (fog_far * UNLIT_FOG_SCALE).clamp(WORLD_CULL_FLOOR, WORLD_CULL_CEIL) + WORLD_CULL_MARGIN
+    fog_reach(fog_far) + WORLD_CULL_MARGIN
+}
+
+/// A shortened reach is never under this many metres, so even the lowest notch keeps the room the runner stands in.
+const SCALED_REACH_FLOOR: f32 = 12.0;
+/// The shortest distance the prop draw range is cut to, metres.
+const PROP_RANGE_FLOOR: f32 = 10.0;
+
+/// The distance at which the unlit mode reaches full fog, clamped, and cut by the governor's cull factor
+/// (`quality::Scales::cull`, 1 outside a notch so the reach is exactly the fog's).
+fn fog_reach(fog_far: f32) -> f32 {
+    fog_reach_scaled(fog_far, crate::app::quality::scales().cull)
+}
+
+/// [`fog_reach`] for an explicit cull factor.
+fn fog_reach_scaled(fog_far: f32, cull: f32) -> f32 {
+    let full = (fog_far * UNLIT_FOG_SCALE).clamp(WORLD_CULL_FLOOR, WORLD_CULL_CEIL);
+    if cull >= 1.0 {
+        full
+    } else {
+        (full * cull).max(SCALED_REACH_FLOOR.min(full))
+    }
+}
+
+/// True when a prop whose local box is `lo`..`hi`, placed with `xf`, lies wholly `reach` metres or more from `eye`: its
+/// bounding sphere (the box's half diagonal, scaled by the largest axis scale of `xf`) is past the reach.
+fn prop_beyond(eye: Vec3, xf: Mat4, lo: Vec3, hi: Vec3, reach: f32) -> bool {
+    let centre = xf.transform_point3((lo + hi) * 0.5);
+    let scale = xf.x_axis.truncate().length().max(xf.y_axis.truncate().length()).max(xf.z_axis.truncate().length());
+    let radius = (hi - lo).length() * 0.5 * scale;
+    (centre - eye).length() - radius >= reach
 }
 
 /// True when the box `lo`..`hi` lies wholly `reach` metres or more from `eye`: every point of it is then fully fogged,
@@ -1208,7 +1245,7 @@ fn locker_reach(m: &PropModel) -> f32 {
 /// colour, so the locker draws nothing new. The unlit path (mode > 1.5) reaches full fog at 1.6 x `fog_far` (shader.rs).
 fn locker_fully_fogged(eye: Vec3, cx: f32, cy: f32, reach: f32, margin: f32, fog_far: f32) -> bool {
     let (dx, dz) = (cx - eye.x, cy - eye.z);
-    (dx * dx + dz * dz).sqrt() - reach >= (fog_far * UNLIT_FOG_SCALE).clamp(WORLD_CULL_FLOOR, WORLD_CULL_CEIL) + margin
+    (dx * dx + dz * dz).sqrt() - reach >= fog_reach(fog_far) + margin
 }
 
 /// One hiding spot as the scene draws it this frame. Every spot of the floor has an entry, empty or occupied: hiding
@@ -1505,6 +1542,46 @@ mod tests {
         assert!(SceneLights::parse(&text.replacen("3.0", "1.0", 1)).is_err(), "a lit mode cannot be translucent");
         let wide = SceneLights::parse(&text.replacen("24.0", "48.0", 1)).unwrap();
         assert!(wide.catwalk_scan_radius_m > s.catwalk_scan_radius_m);
+    }
+
+    #[test]
+    fn the_governors_cull_factor_shortens_the_reach_but_never_below_the_floor() {
+        // factor 1 (every notch 0, and the default outside the governor) is exactly the fog's reach
+        for fog in [4.0f32, 10.0, 24.0, 60.0] {
+            assert_eq!(fog_reach_scaled(fog, 1.0), (fog * UNLIT_FOG_SCALE).clamp(WORLD_CULL_FLOOR, WORLD_CULL_CEIL));
+            assert_eq!(fog_reach(fog), fog_reach_scaled(fog, 1.0), "no governor, no change");
+        }
+        let full = fog_reach_scaled(24.0, 1.0);
+        assert!((fog_reach_scaled(24.0, 0.8) - full * 0.8).abs() < 1e-4);
+        assert!(fog_reach_scaled(24.0, 0.7) < fog_reach_scaled(24.0, 0.8), "a lower notch reaches less");
+        // a short fog is already near the floor: the factor cannot push the reach under it
+        assert_eq!(fog_reach_scaled(4.0, 0.1), SCALED_REACH_FLOOR.min(fog_reach_scaled(4.0, 1.0)));
+        assert!(fog_reach_scaled(60.0, 0.1) >= SCALED_REACH_FLOOR);
+        // a box that the full reach keeps can be dropped by the shorter one
+        let eye = vec3(0.0, 1.6, 0.0);
+        let (lo, hi) = (vec3(40.0, 0.0, 0.0), vec3(41.0, 3.0, 1.0));
+        assert!(!box_fully_fogged(eye, lo, hi, fog_reach_scaled(30.0, 1.0)));
+        assert!(box_fully_fogged(eye, lo, hi, fog_reach_scaled(30.0, 0.7)));
+    }
+
+    #[test]
+    fn a_prop_past_the_shortened_draw_range_is_skipped_by_its_whole_sphere() {
+        let eye = vec3(0.0, 1.6, 0.0);
+        let (lo, hi) = (vec3(-0.5, 0.0, -0.5), vec3(0.5, 2.0, 0.5));
+        let at = |x: f32| Mat4::from_translation(vec3(x, 0.0, 0.0));
+        // the radius is the box's half diagonal (about 1.2 m): a prop 20 m off with reach 18 is past it, one 10 m off is not
+        assert!(prop_beyond(eye, at(20.0), lo, hi, 18.0));
+        assert!(!prop_beyond(eye, at(10.0), lo, hi, 18.0));
+        // right at the edge: the nearest point of the sphere decides, not the centre
+        assert!(!prop_beyond(eye, at(18.5), lo, hi, 18.0));
+        // a scaled prop (the draw scale of a bed or a table) has a larger sphere
+        let big = Mat4::from_translation(vec3(19.5, 0.0, 0.0)) * Mat4::from_scale(Vec3::splat(3.0));
+        assert!(!prop_beyond(eye, big, lo, hi, 18.0));
+        assert!(prop_beyond(eye, at(19.5), lo, hi, 18.0));
+        // the eye inside the prop, or a zero reach, never drops it unless the reach is zero
+        assert!(!prop_beyond(eye, at(0.0), lo, hi, 5.0));
+        // outside a notch the thread-local range is off, so nothing is dropped
+        assert!(PROP_RANGE.with(|r| r.get()).is_none());
     }
 
     #[test]
