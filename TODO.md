@@ -490,7 +490,7 @@ Godot references are `game/...` under the KyttusLabApp folder.
 - [ ] Sleep and drowsiness, with hunters stirring and jolting the sleeper (`toggle_sleep`, `sleep_disturb`, `_update_sleep`, lines 606-670; `docs/REST_AND_SLEEP.md`) (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Gamepad: right-stick look, pad bindings and triggers (`docs/CONTROLS.md`). `src/bin/last_route/app/mod.rs` `read_controls` reads only keyboard and mouse
 - [ ] Flashlight flicker and seize after a plunge splash or a hunter event (`force_flashlight_flicker`, `flashlight_seized`, `player_controller_3d.gd` 873-890)
-- [ ] Mutual light sight: hunters see you when they stand in light (`docs/LIGHT_SIGHT.md`). Rust sight uses the flashlight only (`src/bin/last_route/hunters/brain.rs` 372-380)
+- [x] Mutual light sight: hunters see you when they stand in light (`docs/LIGHT_SIGHT.md`). Done: the host feeds `self_exposure` and `target_exposure` from `hunters/light_field.rs` (`game/light_sight.rs`)
 - [~] Quality governor: Godot steps quality down when frame time misses (`game/look/quality_governor.gd`). Rust uses a fixed render scale per setting (`src/bin/last_route/app/mod.rs` 45-52)
 - [~] Hiding props: beds, wardrobes and tables with capacity 1 to 2 (`docs/HIDING_PROPS.md`). Rust hides in generated lockers only (`src/bin/last_route/world/facility.rs` 1352). The `hide_capacity` values in `src/bin/last_route/data/props` are not read by any Rust source
 
@@ -668,7 +668,7 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [ ] Port Void incursions: void_*.json hunters are never drawn and no incursion chance exists (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Nightmare difficulty scaling: no profile for bigger director teams, peeks, inspections or pounce tables
 - [~] Port Wander, idle, investigate, chase and search state machine: PEEK and INSPECT states absent (status note: [~] in the parity-gaps audit; the less complete status is kept) (session 2026-11-03: hunter hallway peeking is done; INSPECT and a visual confirmation of the peek lean are still open)
-- [ ] Port Sight and hearing perception: daylight and LightField exposure missing from the sight limit (status note: [~] in the parity-gaps audit; the less complete status is kept)
+- [~] Port Sight and hearing perception: daylight and LightField exposure missing from the sight limit (status note: [~] in the parity-gaps audit; the less complete status is kept) (LightField exposure now wired, see docs/LIGHT_SIGHT.md; daylight still missing)
 - [ ] Port Light-field exposure sight: no lamp exposure input to hunter sight
 - [ ] Port Hunter speed model: hard-ability speed scale and troll scale missing (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Pursuit and route following: sweep and waypoint look-ahead parity not confirmed against Godot (status note: [~] in the parity-gaps audit; the less complete status is kept)
@@ -765,7 +765,7 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 
 ### Look and controls
 - [ ] Port Gamepad input: sticks, triggers and pad bindings (effort M)
-- [ ] Port Mutual light sight: hunters see runners by lamp exposure (effort S) (status note: [~] in the parity-gaps audit 2026-11-03, [x] in the full audit 2026-11-01; the less complete status is kept)
+- [x] Port Mutual light sight: hunters see runners by lamp exposure (effort S) (status note: [~] in the parity-gaps audit 2026-11-03, [x] in the full audit 2026-11-01; the less complete status is kept) (ported 2026-11-06, game/light_sight.rs)
 - [ ] Port Adaptive quality governor: frame-time governed steps (Rust uses a fixed scale per setting) (status note: [~] in the parity-gaps audit; the less complete status is kept)
 
 ### Meters

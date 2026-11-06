@@ -99,8 +99,7 @@ pub struct CrossSense {
 
 /// LightField.unlit_scale: a runner in pitch dark is seen close, one in a lamp pool far.
 fn light_unlit_scale(exposure: f32) -> f32 {
-    let t = exposure.clamp(0.0, 1.0);
-    LIGHT_DARK_SIGHT_SCALE + (LIGHT_LIT_SIGHT_SCALE - LIGHT_DARK_SIGHT_SCALE) * t
+    super::light_field::unlit_scale(exposure)
 }
 
 pub fn dist(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -425,6 +424,8 @@ pub struct Brain {
     pub self_exposure: Option<f32>,
     /// The runner's own lamp exposure for this target (None: the light rule is off).
     pub target_exposure: Option<f32>,
+    /// Seconds to the host's next refresh of the two exposures above.
+    pub light_timer: f32,
     /// The difficulty her peek odds and reaction times are read at.
     pub diff: Difficulty,
     // corner peek (hunter_brain.gd 170-182); the renderer reads the pose fields
@@ -518,9 +519,11 @@ const BEAM_ATTENTION_RANGE: f32 = 12.0;
 const BEAM_ATTENTION_HALF_ANGLE: f32 = 0.28;
 /// LightField (game/look/light_field.gd): the exposure a hunter needs to make out a lit runner, and the sight
 /// scale of a runner in pitch dark and in a lamp pool.
-const LIGHT_VISIBLE_EXPOSURE: f32 = 0.36;
-const LIGHT_DARK_SIGHT_SCALE: f32 = 0.25;
-const LIGHT_LIT_SIGHT_SCALE: f32 = 1.6;
+const LIGHT_VISIBLE_EXPOSURE: f32 = super::light_field::VISIBLE_EXPOSURE;
+const LIGHT_DARK_SIGHT_SCALE: f32 = super::light_field::DARK_SIGHT_SCALE;
+const LIGHT_LIT_SIGHT_SCALE: f32 = super::light_field::LIT_SIGHT_SCALE;
+/// Seconds between the host's refreshes of a hunter's light exposures (game/light_sight.rs; Godot: about 5 a second).
+pub const LIGHT_REFRESH: f32 = 0.2;
 
 impl Brain {
     pub fn new(def: HunterDef, spawn: (f32, f32), seed: &str, diff: Difficulty) -> Brain {
@@ -567,6 +570,7 @@ impl Brain {
             disguise: None,
             self_exposure: None,
             target_exposure: None,
+            light_timer: 0.0,
             diff,
             peek_phase: PeekPhase::Settle,
             peek_timer: 0.0,
@@ -1101,6 +1105,17 @@ impl Brain {
         if self.flash_triggered {
             self.flash_armed = false;
         }
+    }
+
+    /// True when the host should refresh `self_exposure` and `target_exposure` now (about 5 times a second); `stagger`
+    /// spreads the hunters of a crowd over the cadence.
+    pub fn light_due(&mut self, dt: f32, stagger: f32) -> bool {
+        self.light_timer -= dt;
+        if self.light_timer > 0.0 {
+            return false;
+        }
+        self.light_timer = LIGHT_REFRESH + stagger;
+        true
     }
 
     pub fn sight_limit(&self, flashlight_on: bool, prof: &Profile, g: &Gimmick) -> f32 {

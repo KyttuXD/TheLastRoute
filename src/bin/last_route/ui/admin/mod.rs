@@ -81,7 +81,7 @@ pub enum View {
     Wireframe,
 }
 
-pub use crate::shared::admin_flags::{FULLBRIGHT, GOD, NOCLIP, NO_TARGET, RUN_SPEED, WIREFRAME};
+pub use crate::shared::admin_flags::{FULLBRIGHT, GOD, LIGHT_SIGHT, NOCLIP, NO_TARGET, RUN_SPEED, WIREFRAME};
 
 /// Keyboard scrolling of a page, in canvas units: Up / Down, PgUp / PgDn, Home / End (to either end).
 const SCROLL_LINE: f32 = 20.0;
@@ -511,6 +511,7 @@ impl Admin {
         NOCLIP.store(on && self.noclip, Ordering::Relaxed);
         FULLBRIGHT.store(on && self.view == View::Fullbright, Ordering::Relaxed);
         WIREFRAME.store(on && self.view == View::Wireframe, Ordering::Relaxed);
+        LIGHT_SIGHT.store(!on || self.light_sight, Ordering::Relaxed);
         let speed = if on { self.run_speed } else { 1.0 };
         RUN_SPEED.store(speed.to_bits(), Ordering::Relaxed);
     }

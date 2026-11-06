@@ -5,6 +5,7 @@
 pub mod endless;
 pub mod inferno_secrets;
 mod hunting;
+mod light_sight;
 mod hunter_pipes;
 mod resident_hunters;
 mod guest_gate;
