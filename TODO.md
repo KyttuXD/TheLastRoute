@@ -661,7 +661,7 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [ ] Port Hub office with two doors and three vents (effort M)
 ### Hunters
 - [x] Nyxie and Solyth have their own models; hunter and anim rigs for Nyxie, Solyth and the 12 void hunters (done 2026-11-04)
-- [x] The 26 A-Z hunters display as letters A..Z (done 2026-11-04)
+- [x] The 26 A-Z hunters display by their full canonical names again (Aki..Zellia; the letters A..Z of 2026-11-04 were reverted 2026-11-06; map dots still show the first letter)
 - [x] Port Per-floor draw Nightmare weights: only Relaxed, Standard and Hard weights exist. Done 2026-11-03: see the hunter draw pool item above.
 - [ ] Port Per-hunter tuning: numeric values not compared with Godot's roster tuning (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Special hunters Nyxie and Solyth: Nightmare pounce branches absent (status note: [~] in the parity-gaps audit; the less complete status is kept)
