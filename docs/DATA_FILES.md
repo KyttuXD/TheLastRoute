@@ -64,3 +64,12 @@ Changing a value in a file changes behaviour after a rebuild. The task rule is o
 Audible volume only; the hunter-alert noise (`pool.noise`, `splash_noise`, `noise_events.json` radii) is unchanged.
 `data/swim/fall.json` `pool.splash_gain` (pool landing): 1.0 -> 0.5. `data/swim/effects.json` and `movement.json`
 `wade.splash_gain` (wading splash): 0.6 -> 0.3. Distance falloff is untouched. Test: `the_pool_splash_is_quieter_than_before_and_still_audible`.
+
+## Hunter chase speed scale
+
+`data/progression.json` `chase_speed_scale` (`game/progression.rs`, read by `Brain::current_speed`): 1.0 -> 1.09. It multiplies
+every hunter's chase speed (`chase` + relay/depth bonus * `prog`) in the Chase state only; the per-hunter `chase` values in
+`data/hunters/*.json` are unchanged, and wander, investigate and search speeds are untouched. `chase_speed_scale_skip`
+(`["secret"]`) lists hunter `category` values that keep their authored chase speed (the secret wolf spiders). The stride
+animation (`render/anim/hunter.rs`) and the footstep cadence (`audio/cues/stride.rs`) are driven by the measured ground
+speed, so legs and footfalls follow the new pace without their own key.

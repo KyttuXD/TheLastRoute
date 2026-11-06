@@ -212,3 +212,74 @@ impl HunterGait {
         self.footfall_rate
     }
 }
+
+#[cfg(test)]
+mod chase_scale_tests {
+    use super::*;
+    use crate::content::Content;
+    use crate::game::progression::Progression;
+
+    /// A hunter walking a straight line at `speed` in the chase clip: the settled footfall rate.
+    fn settled_rate(id: &str, speed: f32) -> f32 {
+        let mut gait = HunterGait::new();
+        let dt = 1.0 / 60.0;
+        let mut x = 0.0;
+        let mut rate = 0.0;
+        for _ in 0..240 {
+            x += speed * dt;
+            rate = gait.update(id, (x, 0.0), dt, Some(Clip::Chase), true);
+        }
+        rate
+    }
+
+    /// The legs and the footfalls follow the measured ground speed, so the faster chase gets a faster stride, by the same
+    /// factor, and never hits the playback clamp (which would make the feet slide).
+    #[test]
+    fn the_stride_and_footfalls_speed_up_with_the_chase_scale() {
+        let rules = Progression::load();
+        let content = Content::base();
+        let mut checked = 0;
+        for (id, ..) in STRIDE.iter() {
+            let Some(def) = content.hunter(id) else { continue };
+            let (old, new) = (def.chase, def.chase * rules.chase_scale_for(&def.category));
+            let (clip_old, scale_old) = choose(id, Clip::Chase, old);
+            let (clip_new, scale_new) = choose(id, Clip::Chase, new);
+            for (s, c) in [(scale_old, clip_old), (scale_new, clip_new)] {
+                assert!(s > HARD_MIN && s < HARD_MAX, "{id}: stride scale {s} on {c:?} is clamped");
+            }
+            // playback rate x clip stride speed is the ground speed the feet cover: no sliding
+            let feet_new = scale_new * ref_speed(id, clip_new);
+            assert!((feet_new - new).abs() < 1e-3, "{id}: feet {feet_new} vs ground {new}");
+            if clip_old == clip_new {
+                assert!((scale_new / scale_old - rules.chase_speed_scale).abs() < 1e-3, "{id}");
+                let (r_old, r_new) = (settled_rate(id, old), settled_rate(id, new));
+                assert!(
+                    r_new > r_old && (r_new / r_old - rules.chase_speed_scale).abs() < 0.02,
+                    "{id}: footfalls {r_old} -> {r_new}"
+                );
+            }
+            checked += 1;
+        }
+        assert!(checked >= 30, "checked {checked} hunters");
+    }
+
+    /// Worst case: Nightmare, deepest depth, many relays, on a clear-line dash. The stride scale must stay inside the
+    /// playback clamp or the feet slide at the speed that matters most.
+    #[test]
+    fn the_fastest_dash_never_hits_the_stride_playback_clamp() {
+        use crate::config::{Difficulty, HUNTER_DEPTH_SPEED_BONUS_MAX, HUNTER_VISIBLE_CHASE_SPEED_SCALE};
+        let rules = Progression::load();
+        let content = Content::base();
+        let nm = Difficulty::Nightmare.profile();
+        for (id, ..) in STRIDE.iter() {
+            let Some(def) = content.hunter(id) else { continue };
+            let prog = rules.chase_speed_bonus(12) + HUNTER_DEPTH_SPEED_BONUS_MAX;
+            let worst = (def.chase + prog * def.prog)
+                * rules.chase_scale_for(&def.category)
+                * nm.hunter_speed
+                * HUNTER_VISIBLE_CHASE_SPEED_SCALE;
+            let (clip, scale) = choose(id, Clip::Chase, worst);
+            assert!(scale < HARD_MAX, "{id}: worst-case dash {worst} clamps the stride ({scale} on {clip:?})");
+        }
+    }
+}

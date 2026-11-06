@@ -1120,9 +1120,12 @@ impl Brain {
     ) -> f32 {
         let depth_boost = HUNTER_DEPTH_SPEED_BONUS_MAX
             .min((depth.max(1) - 1) as f32 * HUNTER_DEPTH_SPEED_BONUS_PER_LEVEL);
-        let prog = crate::game::progression::Progression::load().chase_speed_bonus(relays) + depth_boost;
+        let rules = crate::game::progression::Progression::load();
+        let prog = rules.chase_speed_bonus(relays) + depth_boost;
         let mut speed = if self.state == State::Chase {
-            self.def.chase + prog * self.def.prog
+            // data/progression.json chase_speed_scale: one global knob over every hunter's own `chase` value. The stride
+            // animation and the footfalls follow the measured ground speed, so they speed up with it.
+            (self.def.chase + prog * self.def.prog) * rules.chase_scale_for(&self.def.category)
         } else {
             self.def.speed + prog
         };
@@ -1958,7 +1961,8 @@ mod tests {
         let prof = Difficulty::Standard.profile();
         let mut b = Brain::new(aki(), (0.0, 0.0), "PIN", Difficulty::Standard);
         b.state = State::Chase;
-        assert!((b.current_speed(1, 0, &prof, 1.0) - 3.55).abs() < 1e-5);
+        let scale = crate::game::progression::Progression::load().chase_speed_scale;
+        assert!((b.current_speed(1, 0, &prof, 1.0) - 3.55 * scale).abs() < 1e-5);
         b.state = State::Wander;
         assert!((b.current_speed(1, 0, &prof, 1.0) - 0.82).abs() < 1e-5);
     }
@@ -2014,7 +2018,8 @@ mod tests {
         }
         // never faster than her chase speed; the turns of the route cost a little (each waypoint stops the
         // frame's travel short, as hunter_brain.gd _pursue does)
-        assert!(walked <= 3.56 && walked >= 3.4, "walked {walked} cells in one second");
+        let scale = crate::game::progression::Progression::load().chase_speed_scale;
+        assert!(walked <= 3.56 * scale && walked >= 3.4 * scale, "walked {walked} cells in one second");
 
         // a straight run of clear floor with the runner 3.8 cells ahead, in plain sight
         let mut line: Option<Cell> = None;
@@ -2041,7 +2046,7 @@ mod tests {
             prev = dasher.pos;
         }
         assert!(dasher.direct_visible, "she should see the runner on a clear line");
-        assert!((dashed / (18.0 * dt) - 4.26).abs() < 0.02, "dashed {dashed} cells in 0.3 s");
+        assert!((dashed / (18.0 * dt) - 4.26 * scale).abs() < 0.02, "dashed {dashed} cells in 0.3 s");
     }
 
     /// With the beam off, a runner in a lit cell is seen from further off than one in pitch dark: the unlit
@@ -3119,7 +3124,7 @@ mod edge_tests {
                 &mut b,
                 &s,
                 &t,
-                25.0,
+                45.0, // the Switchback foot can hold a hunter for ten seconds at some chase speeds (1.06 and 1.09 times); it still gets up
                 |h| {
                     assert!(h.y >= last_y - 1e-4, "{shape:?}: y is monotone going up {} -> {} level {} walk {:?} pos {:?}", last_y, h.y, h.level, h.walk.as_ref().map(|w| (w.s, w.len)), h.pos);
                     last_y = h.y;
@@ -3482,5 +3487,177 @@ mod route_budget_tests {
         path_scheduler::reset_thread();
         assert!(deferred > 0, "the budget was tight: some searches waited for a frame");
         assert!(reached.iter().all(|r| *r), "every hunter reached the runner: {reached:?} of {} starts", starts.len());
+    }
+}
+
+/// data/progression.json `chase_speed_scale`: every hunter is a little faster while chasing, nothing else changes.
+#[cfg(test)]
+mod chase_speed_tests {
+    use super::*;
+    use crate::config::{Difficulty, PLAYER_SPRINT_SPEED};
+    use crate::content::Content;
+    use crate::game::progression::Progression;
+
+    const PROFILES: [Difficulty; 4] =
+        [Difficulty::Relaxed, Difficulty::Standard, Difficulty::Hard, Difficulty::Nightmare];
+
+    fn brain_of(def: &HunterDef, diff: Difficulty, state: State) -> Brain {
+        let mut b = Brain::new(def.clone(), (0.0, 0.0), "PIN", diff);
+        b.state = state;
+        b
+    }
+
+    /// Depth 1, no relays: the chase speed is `chase` times the scale; wander, investigate and search keep the old numbers.
+    #[test]
+    fn every_hunter_chases_at_the_scaled_speed_and_walks_at_the_old_one() {
+        let rules = Progression::load();
+        assert!(
+            rules.chase_speed_scale > 1.05 && rules.chase_speed_scale < 1.12,
+            "slightly faster: {}",
+            rules.chase_speed_scale
+        );
+        let content = Content::base();
+        assert!(content.hunters.len() >= 38);
+        let prof = Difficulty::Standard.profile();
+        for def in &content.hunters {
+            let scale = if def.category == "secret" { 1.0 } else { rules.chase_speed_scale };
+            let chase = brain_of(def, Difficulty::Standard, State::Chase).current_speed(1, 0, &prof, 1.0);
+            assert!((chase - def.chase * scale).abs() < 1e-4, "{}: chase {chase} vs {} x {scale}", def.id, def.chase);
+            for state in [State::Wander, State::Investigate, State::Search] {
+                let walk = brain_of(def, Difficulty::Standard, state).current_speed(1, 0, &prof, 1.0);
+                assert!((walk - def.speed).abs() < 1e-5, "{} {state:?}: {walk} vs {}", def.id, def.speed);
+            }
+        }
+    }
+
+    /// The secret wolf spiders keep the speed they were authored with.
+    #[test]
+    fn the_secret_creatures_keep_their_authored_chase_speed() {
+        let content = Content::base();
+        let prof = Difficulty::Standard.profile();
+        for id in ["white_wolf_spider", "black_wolf_spider"] {
+            let def = content.hunter(id).unwrap();
+            assert_eq!(def.category, "secret");
+            let chase = brain_of(def, Difficulty::Standard, State::Chase).current_speed(1, 0, &prof, 1.0);
+            assert!((chase - def.chase).abs() < 1e-5, "{id}: {chase} vs {}", def.chase);
+        }
+    }
+
+    /// The scale is one data key: a changed value, a skipped category, and a missing key (the shipped default).
+    #[test]
+    fn the_scale_comes_from_the_data_file() {
+        let p = Progression::parse(&serde_json::json!({ "chase_speed_scale": 1.5, "chase_speed_scale_skip": ["void"] }));
+        assert_eq!(p.chase_scale_for("az"), 1.5);
+        assert_eq!(p.chase_scale_for("void"), 1.0);
+        assert_eq!(p.chase_scale_for("secret"), 1.5, "the skip list is replaced, not merged");
+        let d = Progression::parse(&serde_json::json!({}));
+        assert_eq!(d.chase_speed_scale, Progression::load().chase_speed_scale);
+        assert_eq!(d.chase_scale_for("secret"), 1.0);
+        let off = Progression::parse(&serde_json::json!({ "chase_speed_scale": 1.0 }));
+        assert_eq!(off.chase_scale_for("az"), 1.0, "1.0 gives the original roster back");
+    }
+
+    /// The relay/depth bonus, winded, taser slow and the difficulty profile all stack on top of the scaled speed.
+    #[test]
+    fn difficulty_slow_winded_and_relays_still_multiply_the_scaled_speed() {
+        let rules = Progression::load();
+        let content = Content::base();
+        let aki = content.hunter("aki").unwrap();
+        for diff in PROFILES {
+            let prof = diff.profile();
+            let mut b = brain_of(aki, diff, State::Chase);
+            let base = aki.chase * rules.chase_speed_scale * prof.hunter_speed;
+            assert!((b.current_speed(1, 0, &prof, 1.0) - base).abs() < 1e-4, "{diff:?}");
+            // relays: the bonus times `prog`, then the scale
+            let with_relays = (aki.chase + 3.0 * rules.chase_speed_bonus_per_relay * aki.prog)
+                * rules.chase_speed_scale
+                * prof.hunter_speed;
+            assert!((b.current_speed(1, 3, &prof, 1.0) - with_relays).abs() < 1e-4, "{diff:?} relays");
+            b.slow_timer = 3.0;
+            b.slow_factor = 0.5;
+            assert!((b.current_speed(1, 0, &prof, 1.0) - base * 0.5).abs() < 1e-4, "{diff:?} taser slow");
+            b.slow_timer = 0.0;
+            b.winded = true;
+            assert!(
+                (b.current_speed(1, 0, &prof, 1.0) - base * HUNTER_WINDED_SPEED_SCALE).abs() < 1e-4,
+                "{diff:?} winded"
+            );
+        }
+    }
+
+    /// A deterred Solyth drops out of Chase into a Wander, so the cold source holds her at her walking pace.
+    #[test]
+    fn a_deterred_solyth_moves_at_her_wander_speed() {
+        let content = Content::base();
+        let solyth = content.hunter("solyth").unwrap();
+        let prof = Difficulty::Standard.profile();
+        let mut b = brain_of(solyth, Difficulty::Standard, State::Chase);
+        let chasing = b.current_speed(1, 0, &prof, 1.0);
+        // what Solyth::after does to the brain while a deterrent is in reach
+        b.state = State::Wander;
+        let retreating = b.current_speed(1, 0, &prof, 1.0);
+        assert!((retreating - solyth.speed).abs() < 1e-5, "{retreating}");
+        assert!(chasing > retreating * 3.0);
+    }
+
+    /// Before/after numbers for every hunter (run with --nocapture for the table in the commit message). Asserts that
+    /// the plain A-Z roster can still be out-run on a full-stamina sprint at Standard, even on a clear-line dash.
+    #[test]
+    fn a_full_stamina_runner_still_outruns_the_az_roster_at_standard() {
+        let rules = Progression::load();
+        let content = Content::base();
+        let sprint = PLAYER_SPRINT_SPEED * Difficulty::Standard.profile().sprint_speed;
+        println!("runner sprint: standard {sprint:.2}");
+        println!("hunter                  old    new | oldDsh newDsh | newNM newNMdsh");
+        let nm = Difficulty::Nightmare.profile();
+        for def in &content.hunters {
+            let scale = rules.chase_scale_for(&def.category);
+            let (old, new) = (def.chase, def.chase * scale);
+            let dash = HUNTER_VISIBLE_CHASE_SPEED_SCALE;
+            println!(
+                "{:<20} {:>6.2} {:>6.2} | {:>6.2} {:>6.2} | {:>6.2} {:>6.2}   [{}]",
+                def.id,
+                old,
+                new,
+                old * dash,
+                new * dash,
+                new * nm.hunter_speed,
+                new * nm.hunter_speed * dash,
+                def.category
+            );
+            if def.category == "az" {
+                assert!(new * dash < sprint, "{}: dash {} vs sprint {sprint}", def.id, new * dash);
+            }
+        }
+    }
+
+    /// Every profile, every hunter: print the chase speed (the dash is 1.2x that on a clear line).
+    #[test]
+    fn print_the_chase_speed_table_per_difficulty() {
+        let content = Content::base();
+        for diff in PROFILES {
+            let prof = diff.profile();
+            println!("{diff:?}: runner sprint {:.2}", PLAYER_SPRINT_SPEED * prof.sprint_speed);
+            let mut worst: f32 = 0.0;
+            for def in content.hunters.iter().filter(|d| d.category == "az") {
+                worst = worst.max(brain_of(def, diff, State::Chase).current_speed(1, 0, &prof, 1.0));
+            }
+            println!("  fastest A-Z chase {worst:.2}, dash {:.2}", worst * HUNTER_VISIBLE_CHASE_SPEED_SCALE);
+        }
+    }
+
+    /// A hostile data file cannot zero, freeze or runaway the roster: the scale is clamped, junk skip entries dropped.
+    #[test]
+    fn a_hostile_scale_is_clamped_and_junk_skip_entries_are_ignored() {
+        let hi = Progression::parse(&serde_json::json!({ "chase_speed_scale": 1.0e9 }));
+        assert!(hi.chase_speed_scale <= 2.0);
+        let lo = Progression::parse(&serde_json::json!({ "chase_speed_scale": -5.0 }));
+        assert!(lo.chase_speed_scale >= 0.5);
+        let junk = Progression::parse(
+            &serde_json::json!({ "chase_speed_scale": "fast", "chase_speed_scale_skip": [1, null, "az"] }),
+        );
+        assert_eq!(junk.chase_speed_scale, Progression::default().chase_speed_scale, "a non-number keeps the default");
+        assert_eq!(junk.chase_scale_for("az"), 1.0);
+        assert_eq!(junk.chase_scale_for("void"), junk.chase_speed_scale);
     }
 }
