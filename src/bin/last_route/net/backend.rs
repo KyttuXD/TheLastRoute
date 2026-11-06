@@ -18,7 +18,8 @@ pub enum BackendEvent {
     SignedOut,
     /// An account action failed: the text the ACCOUNT panel shows.
     AccountError(String),
-    /// The guest name lease was issued or renewed.
+    /// The server's guest name lease was issued or renewed; the payload is the name this runner plays under
+    /// (`GUEST_4829`), which the lease never changes.
     GuestName(String),
     /// CREATE ROOM finished: the room is listed and heartbeating; `token` authenticates the relay host.
     RoomCreated { code: String, token: String, room: RoomEndpoint },
@@ -60,7 +61,11 @@ pub struct Backend {
     pub account_info: Option<AccountReply>,
     /// The signed-in account's admin flag, from the server's reply (never from the local name).
     pub admin: bool,
+    /// The name this runner plays under while it is not signed in: `GUEST_` and four digits, chosen once and kept
+    /// ([`super::guest_name`]). Never empty.
     pub guest_name: String,
+    /// The server's optional guest name lease (an `R-4823` style name) and its token; never shown.
+    lease_name: String,
     guest_token: String,
     hosted: Option<HostedRoom>,
     ops: Vec<Op>,
@@ -72,7 +77,12 @@ impl Backend {
         let accounts = AccountStore::new(dir, &config);
         let guests = GuestStore::new(dir, &config);
         let account = accounts.load(&config);
-        let (guest_name, guest_token) = guests.load();
+        let mut saved = guests.load();
+        if saved.name.is_empty() {
+            // the first run (or cleared storage): draw the number once and keep it
+            saved.name = super::guest_name::random_guest_name();
+            guests.save(&saved);
+        }
         Backend {
             config,
             dir: dir.to_path_buf(),
@@ -81,8 +91,9 @@ impl Backend {
             account,
             account_info: None,
             admin: false,
-            guest_name,
-            guest_token,
+            guest_name: saved.name,
+            lease_name: saved.lease_name,
+            guest_token: saved.lease_token,
             hosted: None,
             ops: Vec::new(),
         }
@@ -104,6 +115,32 @@ impl Backend {
         } else {
             self.guest_name.clone()
         }
+    }
+
+    /// The name this runner takes into a room: `username` (the account name the app keeps, empty when signed out),
+    /// else the guest name. Never a guest name for a signed-in account.
+    pub fn room_name(&self, username: &str) -> String {
+        super::guest_name::local_name(username, &self.guest_name)
+    }
+
+    /// The room gave this guest another name (its own was taken by an earlier guest): play under it from now on, and
+    /// keep it for the next run. Only a drawn guest name is taken. Returns whether the name changed.
+    pub fn set_guest_name(&mut self, name: &str) -> bool {
+        let name = name.trim().to_ascii_uppercase();
+        if !super::guest_name::is_drawn_name(&name) || name == self.guest_name {
+            return false;
+        }
+        self.guest_name = name;
+        self.save_guest();
+        true
+    }
+
+    fn save_guest(&self) {
+        self.guests.save(&store::SavedGuest {
+            name: self.guest_name.clone(),
+            lease_name: self.lease_name.clone(),
+            lease_token: self.guest_token.clone(),
+        });
     }
 
     pub fn busy(&self) -> bool {
@@ -182,15 +219,14 @@ impl Backend {
         self.ops.push(Op::Message(Pending::spawn(move || api::change_password(&cfg, &token, &pw))));
     }
 
-    /// The guest name lease (`POST /api/guest/name {previous, token}`), kept in `last_route_guest.cfg`.
+    /// The server's guest name lease (`POST /api/guest/name {previous, token}`), kept beside the guest name. It is
+    /// optional: the name shown is the client's `GUEST_####`, which exists before and without the lease, and an
+    /// `R-4823` answer is only stored.
     pub fn ensure_guest_name(&mut self) {
         if self.config.offline {
-            if self.guest_name.is_empty() {
-                self.guest_name = api::random_guest_name();
-            }
             return;
         }
-        let (cfg, previous, token) = (self.config.clone(), self.guest_name.clone(), self.guest_token.clone());
+        let (cfg, previous, token) = (self.config.clone(), self.lease_name.clone(), self.guest_token.clone());
         self.ops.push(Op::Guest(Pending::spawn(move || api::guest_name(&cfg, &previous, &token))));
     }
 
@@ -266,13 +302,13 @@ impl Backend {
                 Op::Guest(p) => p
                     .poll()
                     .map(|r| {
+                        // a refused or failed lease changes nothing: the guest name does not depend on it
                         if let Ok(g) = r {
-                            self.guest_name = g.name.clone();
-                            self.guest_token = g.token.clone();
-                            self.guests.save(&g.name, &g.token);
-                            events.push(BackendEvent::GuestName(g.name));
-                        } else if self.guest_name.is_empty() {
-                            self.guest_name = api::random_guest_name();
+                            if api::valid_lease_name(&g.name.to_ascii_uppercase()) {
+                                self.lease_name = g.name.to_ascii_uppercase();
+                                self.guest_token = g.token.clone();
+                                self.save_guest();
+                            }
                             events.push(BackendEvent::GuestName(self.guest_name.clone()));
                         }
                     })
@@ -389,6 +425,67 @@ mod tests {
     fn signed(dir: &Path, cfg: &BackendConfig) -> Backend {
         AccountStore::new(dir, cfg).save(cfg, &StoredSession { username: "KYTTU".into(), session_token: "tok".into() });
         Backend::new(cfg.clone(), dir)
+    }
+
+    #[test]
+    fn a_new_install_draws_one_guest_name_and_keeps_it_for_the_next_run() {
+        let dir = scratch("guest_once");
+        let cfg = BackendConfig::loopback(18105);
+        let first = Backend::new(cfg.clone(), &dir);
+        assert!(super::super::guest_name::is_drawn_name(&first.guest_name), "{}", first.guest_name);
+        assert_eq!(first.room_name(""), first.guest_name, "a guest goes into a room under its guest name");
+        // a reload / a new start: the same number, whatever the server says
+        let again = Backend::new(cfg.clone(), &dir);
+        assert_eq!(again.guest_name, first.guest_name);
+        // cleared storage: a number is drawn again (and is a valid one)
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(super::super::guest_name::is_drawn_name(&Backend::new(cfg, &dir).guest_name));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_signed_in_account_never_goes_into_a_room_as_a_guest() {
+        let dir = scratch("guest_account");
+        let backend = Backend::new(BackendConfig::loopback(18105), &dir);
+        assert_eq!(backend.room_name("ana"), "ANA");
+        assert_eq!(backend.room_name(" Ana "), "ANA");
+        assert_eq!(backend.room_name(""), backend.guest_name);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_room_may_change_a_guest_name_only_to_another_drawn_guest_name() {
+        let dir = scratch("guest_rename");
+        let cfg = BackendConfig::loopback(18105);
+        let mut backend = Backend::new(cfg.clone(), &dir);
+        let before = backend.guest_name.clone();
+        for refused in ["R-4823", "ANA", "GUEST_0007", "", "GUEST_48290", before.as_str()] {
+            assert!(!backend.set_guest_name(refused), "{refused:?}");
+            assert_eq!(backend.guest_name, before);
+        }
+        let next = if before == "GUEST_4321" { "GUEST_1234" } else { "GUEST_4321" };
+        assert!(backend.set_guest_name(&next.to_lowercase()));
+        assert_eq!(backend.guest_name, next);
+        assert_eq!(Backend::new(cfg, &dir).guest_name, next, "the new number is the one kept");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_old_lease_file_keeps_the_lease_and_the_guest_gets_a_guest_name() {
+        let dir = scratch("guest_legacy");
+        let cfg = BackendConfig::loopback(18105);
+        std::fs::write(dir.join(store::GUEST_CONFIG_FILE), "[player]
+
+guest_name=\"R-4823\"
+guest_name_token=\"tok\"
+").unwrap();
+        let backend = Backend::new(cfg.clone(), &dir);
+        assert!(super::super::guest_name::is_drawn_name(&backend.guest_name), "the R-4823 lease is not the name shown");
+        let saved = GuestStore::new(&dir, &cfg).load();
+        assert_eq!((saved.lease_name.as_str(), saved.lease_token.as_str()), ("R-4823", "tok"), "the lease is kept apart");
+        assert_eq!(saved.name, backend.guest_name);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

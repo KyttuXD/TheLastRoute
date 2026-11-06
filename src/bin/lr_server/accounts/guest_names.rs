@@ -9,8 +9,12 @@
 //! `previous` is kept when it is a valid guest name that nobody holds, or when `token` proves this client holds it (a
 //! renewal); otherwise a fresh name is issued. The token is a random secret only the holder has.
 //!
+//! The Rust client plays under `GUEST_4829` (GUEST_ and four digits) instead; both shapes are accepted as `previous`
+//! and leased the same way, and the server still hands out the letter-dash style.
+//!
 //! Store-and-echo: <data>/guest_names.json (`{"leases":{name:{expiry,token}}}`), atomic writes. Registered accounts can
-//! never clash: their names have no dash (account_service USERNAME_PATTERN).
+//! never clash: their names have no dash (account_service USERNAME_PATTERN), and a name shaped GUEST_<hex digits> cannot
+//! be registered (`is_reserved_for_guests`).
 
 use crate::account_service::OrderedMap;
 use crate::util::{self, base64url, field, js_number, num, random_bytes, str_or_empty, stringify, Clock, Reply};
@@ -22,7 +26,7 @@ pub const GUEST_LETTERS: &str = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 pub const GUEST_DIGITS: &str = "23456789";
 /// The JavaScript `GUEST_NAME_PATTERN` source (use [`is_guest_name`] to test).
 #[cfg(test)]
-pub const GUEST_NAME_PATTERN: &str = r"^[A-HJ-NP-Z]-[2-9]{4}$";
+pub const GUEST_NAME_PATTERN: &str = r"^(?:[A-HJ-NP-Z]-[2-9]{4}|GUEST_[0-9]{4})$";
 pub const LEASE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 const MAX_TRIES: usize = 64;
 
@@ -40,15 +44,22 @@ pub fn default_random() -> RandomSource {
     Arc::new(math_random)
 }
 
-/// `GUEST_NAME_PATTERN.test(name)`.
+/// `GUEST_NAME_PATTERN.test(name)`: the letter-dash style (`R-4823`) or the client's `GUEST_4829`.
 pub fn is_guest_name(name: &str) -> bool {
     let b = name.as_bytes();
-    b.len() == 6
+    let letter_dash = b.len() == 6
         && b[0].is_ascii_uppercase()
         && b[0] != b'I'
         && b[0] != b'O'
         && b[1] == b'-'
-        && b[2..].iter().all(|d| (b'2'..=b'9').contains(d))
+        && b[2..].iter().all(|d| (b'2'..=b'9').contains(d));
+    letter_dash || (b.len() == 10 && name.starts_with("GUEST_") && b[6..].iter().all(u8::is_ascii_digit))
+}
+
+/// A username a registered account may not take, so it can never pose as a guest: `GUEST_` followed only by digits or
+/// the hex letters A-F (`GUEST_4829`, and the `GUEST_45858185` session names). `canonical` is the upper-cased username.
+pub fn is_reserved_for_guests(canonical: &str) -> bool {
+    canonical.strip_prefix("GUEST_").is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b)))
 }
 
 fn pick(alphabet: &str, random: &dyn Fn() -> f64) -> char {
@@ -200,8 +211,12 @@ mod tests {
             assert!(is_guest_name(&name), "{name}");
             assert!(!name.contains(['I', 'O', '0', '1']), "{name}");
         }
-        for bad in ["R-482", "I-2345", "O-2345", "R-1234", "R-0234", "r-2345", "RR-2345", "R_2345", "FAR-LIGHT-658"] {
+        for bad in ["R-482", "I-2345", "O-2345", "R-1234", "R-0234", "r-2345", "RR-2345", "R_2345", "FAR-LIGHT-658", "GUEST_482", "GUEST_48290", "guest_4829", "GUEST_48A9"] {
             assert!(!is_guest_name(bad), "{bad}");
+        }
+        // the client's own style is accepted as well as the letter-dash one
+        for good in ["GUEST_4829", "GUEST_1000", "GUEST_0000"] {
+            assert!(is_guest_name(good), "{good}");
         }
         // the hand-written matcher agrees with the original regex
         let re = regex::Regex::new(GUEST_NAME_PATTERN).unwrap();
@@ -210,6 +225,19 @@ mod tests {
                 let name = format!("{letter}-{digits}");
                 assert_eq!(is_guest_name(&name), re.is_match(&name), "{name}");
             }
+        }
+        for name in ["GUEST_4829", "GUEST_0000", "GUEST_482", "GUEST_48290", "GUEST_48a9", "GUEST-4829", "GUEST_4829 "] {
+            assert_eq!(is_guest_name(name), re.is_match(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_registered_name_may_not_look_like_a_guest() {
+        for name in ["GUEST_4829", "GUEST_0001", "GUEST_45858185", "GUEST_3FA9C1", "GUEST_1"] {
+            assert!(is_reserved_for_guests(name), "{name}");
+        }
+        for name in ["GUEST", "GUEST_", "GUEST_ALPHA", "GUESTS_1234", "MY_GUEST_1234", "R_4823", "KYTTU"] {
+            assert!(!is_reserved_for_guests(name), "{name}");
         }
     }
 
@@ -238,6 +266,11 @@ mod tests {
         assert_ne!(thief["name"], mine["name"], "another client took a held name");
         let (_, free) = names.issue(&json!({ "previous": "z-9876" }));
         assert_eq!(free["name"], "Z-9876", "a free previous name is kept, canonical uppercase");
+        // the client's own style is leased like the old one, and a held one is not handed to a second client
+        let (_, own) = names.issue(&json!({ "previous": "guest_4829" }));
+        assert_eq!(own["name"], "GUEST_4829");
+        let (_, second) = names.issue(&json!({ "previous": "GUEST_4829" }));
+        assert_ne!(second["name"], "GUEST_4829", "a held GUEST_ name went to someone else");
         let (_, legacy) = names.issue(&json!({ "previous": "FAR-LIGHT-658" }));
         assert!(is_guest_name(legacy["name"].as_str().unwrap()), "an old-style name gets a new-style one");
         assert_eq!(mine["token"].as_str().unwrap().len(), 24);

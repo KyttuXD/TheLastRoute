@@ -202,6 +202,8 @@ pub fn order(rows: &mut [PlayerRow]) {
 
 /// The PLAYERS rows: this runner and the others in the room (Godot `RoomPlayerList.build`), in [`order`]. The local row
 /// reads this runner's own run state; a remote one reads its last sample's state.
+/// `username` is this runner's name in the room (the app passes the account name, else the guest name); the roster's
+/// runners with no name yet read as the guest placeholder for their peer id. Nobody in the list is called RUNNER.
 pub fn player_rows(g: &Game, username: &str, local_host: bool, roster: &[RosterEntry], kickable: bool) -> Vec<PlayerRow> {
     let local = RunnerState {
         depth: g.depth,
@@ -211,8 +213,8 @@ pub fn player_rows(g: &Game, username: &str, local_host: bool, roster: &[RosterE
         quiet: Duration::ZERO,
     };
     let me = PlayerRow {
-        name: if username.is_empty() {
-            "RUNNER".into()
+        name: if username.trim().is_empty() {
+            crate::net::guest_name::placeholder(0)
         } else {
             username.to_uppercase()
         },
@@ -226,7 +228,7 @@ pub fn player_rows(g: &Game, username: &str, local_host: bool, roster: &[RosterE
     };
     let mut rows = vec![me];
     rows.extend(roster.iter().map(|e| PlayerRow {
-        name: if e.name.is_empty() { "RUNNER".into() } else { e.name.clone() },
+        name: if e.name.is_empty() { crate::net::guest_name::placeholder(e.peer) } else { e.name.clone() },
         host: e.host,
         you: false,
         ping: ping_text(e.ping),
@@ -639,6 +641,27 @@ mod tests {
         assert!((h - bottom - CONFIRM_INSET).abs() < EPS, "bottom inset is not 14");
         // the old fixed 88-unit panel was too short for the content
         assert!(h > 88.0 + 7.0, "panel is {h} tall, the old 88 hung the buttons out");
+    }
+
+    fn roster_entry(peer: u32, name: &str, host: bool) -> RosterEntry {
+        RosterEntry { peer, name: name.into(), skin: "DEFAULT".into(), host, depth: None, sending: false, ping: None, state: None }
+    }
+
+    #[test]
+    fn the_players_list_shows_guest_names_and_never_runner() {
+        let content = crate::content::Content::load();
+        let catalog = crate::world::catalog::Catalog::load();
+        let g = Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, "ROOM-TEST-7", 0, &content, &catalog);
+        let roster = [roster_entry(1, "SERVER", true), roster_entry(3, "GUEST_2468", false), roster_entry(7, "", false)];
+        let rows = player_rows(&g, "guest_4829", false, &roster, false);
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        // the host first, then by name; this runner is a guest like the others and reads the same everywhere
+        assert_eq!(names, ["SERVER", "GUEST_0007", "GUEST_2468", "GUEST_4829"]);
+        assert!(rows.iter().find(|r| r.you).is_some_and(|r| r.name == "GUEST_4829"));
+        assert!(rows.iter().all(|r| r.name != "RUNNER"));
+        // an account name is shown as it is, and a runner with no name at all reads as a guest
+        assert_eq!(player_rows(&g, "ana", false, &[], false)[0].name, "ANA");
+        assert_eq!(player_rows(&g, "", false, &[], false)[0].name, "GUEST_0000");
     }
 
     #[test]
