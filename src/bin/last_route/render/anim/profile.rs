@@ -21,7 +21,6 @@
 
 use super::clip::Rig;
 use super::hunter::Bones;
-use super::player::Local;
 use crate::content::embedded;
 use macroquad::prelude::*;
 use serde_json::Value;
@@ -371,6 +370,7 @@ pub fn missing_in_rig(def: &StateDef, rig: &Rig) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::player::Local;
     use super::*;
     use serde_json::json;
 
