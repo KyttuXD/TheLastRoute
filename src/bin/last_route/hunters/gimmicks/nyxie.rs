@@ -6,6 +6,12 @@
 //! catch unless you are hidden or safe (nyxie_gimmick.gd). The delays and distances are data in
 //! data/hunters/nyxie_wake.json.
 //!
+//! The hunter activation count (the relays a difficulty needs before any hunter is out, `endless::population`) gates the
+//! route's own hunters; it never gates a dead flashlight (`ignore_activation_gate` in the wake file). Level 0 of the
+//! Infinite route has no Nyxie in its lineup, so the game makes one the moment the flashlight is dead there
+//! (`Game::keep_level0_nyxie`, marked `dead_only`): the dead lamp (and the 10 s lamp kill it grows into) wakes her with no
+//! relay recovered on any difficulty. Level 0 never had her 120 s darkness rule, and she keeps none there.
+//!
 //! Nightmare only: while she hunts in the dark she pounces (hard_abilities.gd pounce, Nightmare
 //! row). The pounce numbers, the leap and the gates are data in data/hunters/nightmare_pounce.json.
 //! Solyth uses the same leap (solyth.rs).
@@ -44,6 +50,10 @@ pub struct Nyxie {
     /// data/hunters/targets.json). Her wake, dispel, darkness clock and pounce gate read the runner's lamp and beam, as
     /// Godot's target always is the runner; the chase itself still follows the bot she was given. `before` takes it.
     pub runner: Option<Target>,
+    /// This is the level-0 Nyxie of the Infinite route (`Game::keep_level0_nyxie`), made when the flashlight dies there:
+    /// only a dead flashlight (and the lamp kill it grows into) wakes her, not the 120 s darkness rule, which level 0's
+    /// lineup never had. False for every other Nyxie.
+    pub dead_only: bool,
 }
 
 /// The floor cell whose centre distance to `p` is closest to `d` (first match).
@@ -81,10 +91,23 @@ pub struct WakeRules {
     pub despawn_range: f32,
     /// Half angle of the beam that dispels her, radians (NYXIE_DISPEL_HALF_ANGLE).
     pub dispel_half_angle: f32,
+    /// A dead flashlight brings her even before the difficulty's hunter activation count (Relaxed: 3 relays; Standard: 1;
+    /// Hard and Nightmare: 0). On: the Infinite route's level 0, whose streamed lineup has no Nyxie (the count keeps its
+    /// hunters out), makes a dormant one the moment the flashlight is dead there, and she wakes after `dead_delay` (then
+    /// the `empty_delay` lamp kill) with no relay recovered. Off: level 0 has no Nyxie, as in Godot.
+    pub ignore_activation_gate: bool,
 }
 
-const WAKE_KEYS: [&str; 7] =
-    ["timer_delay", "empty_delay", "dead_delay", "spawn_distance", "dead_spawn_distance", "despawn_range", "dispel_half_angle"];
+const WAKE_KEYS: [&str; 8] = [
+    "timer_delay",
+    "empty_delay",
+    "dead_delay",
+    "spawn_distance",
+    "dead_spawn_distance",
+    "despawn_range",
+    "dispel_half_angle",
+    "ignore_activation_gate",
+];
 
 impl WakeRules {
     /// Reads the file. Every key is required; an unknown key (one not starting with `_`), a wrong schema or a value outside
@@ -114,6 +137,10 @@ impl WakeRules {
             dead_spawn_distance: get("dead_spawn_distance", 0.0, 100.0)?,
             despawn_range: get("despawn_range", 0.0, 100.0)?,
             dispel_half_angle: get("dispel_half_angle", 0.01, std::f64::consts::PI)?,
+            ignore_activation_gate: o
+                .get("ignore_activation_gate")
+                .and_then(|x| x.as_bool())
+                .ok_or("nyxie wake: ignore_activation_gate must be true or false")?,
         };
         if r.dead_delay > r.empty_delay {
             return Err("nyxie wake: dead_delay must not exceed empty_delay".to_string());
@@ -504,7 +531,7 @@ impl Nyxie {
                 } else if c.flashlight_dead && self.dead >= rules.dead_delay {
                     self.wake = Wake::Dead;
                     self.just_woke = true;
-                } else if self.darkness >= rules.timer_delay {
+                } else if !self.dead_only && self.darkness >= rules.timer_delay {
                     self.wake = Wake::Timer;
                     self.just_woke = true;
                 }
@@ -743,6 +770,18 @@ mod tests {
         assert_eq!(r.dead_delay, 1.5);
     }
 
+    #[test]
+    fn the_activation_gate_switch_is_a_required_bool_in_the_wake_file() {
+        assert!(wake_rules().ignore_activation_gate, "shipped on: a dead flashlight ignores the hunter activation count");
+        assert!(wake_with(|v| { v.as_object_mut().unwrap().remove("ignore_activation_gate"); })
+            .unwrap_err()
+            .contains("ignore_activation_gate"));
+        assert!(wake_with(|v| v["ignore_activation_gate"] = "yes".into()).unwrap_err().contains("ignore_activation_gate"));
+        assert!(wake_with(|v| v["ignore_activation_gate"] = 1.into()).unwrap_err().contains("ignore_activation_gate"));
+        assert!(!wake_with(|v| v["ignore_activation_gate"] = false.into()).unwrap().ignore_activation_gate);
+        assert!(wake_with(|v| v["ignore_activation_gate"] = true.into()).unwrap().ignore_activation_gate);
+    }
+
     // ------------------------------------------------------------------------------ dead flashlight (Brain::update)
 
     use crate::content::Content;
@@ -960,6 +999,48 @@ mod tests {
         assert!(!b.active, "the recharged beam dispels the dead-flashlight wake");
         assert!(state(&b).0.wake == Wake::None);
     }
+
+    // ------------------------------------------------------------------ the level-0 Nyxie (dead lamp only)
+
+    /// The level-0 Nyxie (`dead_only`).
+    fn dead_only() -> Brain {
+        let fac = facility();
+        let mut b = sleeper(&fac, Difficulty::Relaxed);
+        if let crate::hunters::gimmicks::Gimmick::Nyxie(n) = &mut b.gimmick {
+            n.dead_only = true;
+        }
+        b
+    }
+
+    #[test]
+    fn the_level_zero_nyxie_wakes_for_a_dead_flashlight_and_the_lamp_kill_it_grows_into() {
+        let fac = facility();
+        let at = fac.start.center();
+        let mut b = dead_only();
+        let dead = ctx(&fac, Difficulty::Relaxed, true);
+        let first = run(&mut b, &dead, &runner(at, false, 0.0), Difficulty::Relaxed, 4.0).expect("the dead lamp wakes her");
+        assert!((first - wake_rules().dead_delay).abs() < 0.2, "after the dead delay: {first}");
+        assert!(state(&b).0.wake == Wake::Dead);
+        run(&mut b, &dead, &runner(at, false, 0.0), Difficulty::Relaxed, 8.0);
+        assert!(state(&b).0.wake == Wake::Empty && state(&b).0.inescapable(), "the 10 s lamp kill follows");
+    }
+
+    #[test]
+    fn the_level_zero_nyxie_has_no_darkness_wake_and_every_other_nyxie_keeps_hers() {
+        let fac = facility();
+        let at = fac.start.center();
+        // a switched-off but charged lamp for 130 s: not a dead flashlight, only the dark
+        let ok = ctx(&fac, Difficulty::Relaxed, false);
+        let t = runner(at, false, 80.0);
+        let mut level0 = dead_only();
+        assert!(run(&mut level0, &ok, &t, Difficulty::Relaxed, 130.0).is_none(), "level 0 never had the 120 s rule");
+        assert!(state(&level0).0.wake == Wake::None);
+        // a floor's own Nyxie is unchanged: the 120 s rule wakes her
+        let mut floor = sleeper(&fac, Difficulty::Relaxed);
+        let first = run(&mut floor, &ok, &t, Difficulty::Relaxed, 125.0).expect("the 120 s rule");
+        assert!((first - wake_rules().timer_delay).abs() < 0.2, "{first}");
+        assert!(!state(&floor).0.dead_only);
+    }
 }
 
 /// The beam dispel through the real frame (`Game::step`), not `before` alone.
@@ -1135,8 +1216,8 @@ mod beam_tests {
     }
 
     /// A sleeping Nyxie far from the runner on a fresh floor (no other hunters), the runner's lamp `lamp` charged and off.
-    /// Level -1: that lineup keeps her on every difficulty, while level 0 admits hunters by residency and Relaxed has none
-    /// before its 3rd relay (activation_relays), Nyxie included.
+    /// Level -1: that lineup keeps her on every difficulty. Level 0 has its own dormant Nyxie, tested below
+    /// (`fresh_level0`).
     fn asleep_on(diff: Difficulty, lamp: f32) -> (Game, Content, Catalog) {
         let (content, catalog) = (Content::load(), Catalog::load());
         let mut g = Game::new_infinite_sim(diff, 7, "ROOM-NYXIE-DEAD", -1, &content, &catalog);
@@ -1184,6 +1265,145 @@ mod beam_tests {
         run(&mut g, &content, &catalog, 600);
         assert!(!nyxie(&g).active, "ten seconds of an off but charged lamp is not a dead flashlight");
         assert_eq!(wake_of(&g), Wake::None);
+    }
+
+    // ------------------------------------------------- level 0, before the hunter activation count (real frames)
+
+    const ALL: [Difficulty; 4] = [Difficulty::Relaxed, Difficulty::Standard, Difficulty::Hard, Difficulty::Nightmare];
+
+    /// A new run on level 0 with no relay recovered, the runner's lamp `lamp` charged and switched off, and nothing else
+    /// touched: the lineup is the one the run starts with.
+    fn fresh_level0(diff: Difficulty, lamp: f32) -> (Game, Content, Catalog) {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let mut g = Game::new_infinite_sim(diff, 7, "ROOM-NYXIE-L0", 0, &content, &catalog);
+        g.fade = 0.0;
+        // the run starts in a safe room whose checkpoint tops the lamp up on the first frames: let that happen, then set the lamp
+        run(&mut g, &content, &catalog, 20);
+        g.p.flashlight_on = false;
+        g.p.lamp = lamp;
+        assert_eq!(g.relays_collected, 0);
+        (g, content, catalog)
+    }
+
+    fn nyxies(g: &Game) -> Vec<&Brain> {
+        g.hunters.iter().filter(|h| h.def.id == "nyxie").collect()
+    }
+
+    /// The hunters of the list that are not Nyxie (the route's own hunters).
+    fn route_hunters(g: &Game) -> usize {
+        g.hunters.iter().filter(|h| h.def.id != "nyxie").count()
+    }
+
+    #[test]
+    fn level_zero_makes_no_nyxie_while_the_flashlight_works() {
+        // the lineup of a run whose lamp never dies is unchanged: only the route's population, no extra hunter
+        for diff in ALL {
+            let (mut g, content, catalog) = fresh_level0(diff, 80.0);
+            run(&mut g, &content, &catalog, 90);
+            assert!(nyxies(&g).is_empty(), "{diff:?}: no Nyxie on level 0 until the flashlight dies");
+            assert_eq!(route_hunters(&g), crate::game::endless::population(diff, 0) as usize, "{diff:?}");
+        }
+    }
+
+    #[test]
+    fn a_dead_flashlight_brings_her_in_on_level_zero_before_any_relay_on_every_difficulty() {
+        // Relaxed needs 3 relays, Standard 1, Hard and Nightmare 0 before any route hunter is out; the dead lamp needs none.
+        for diff in ALL {
+            let (mut g, content, catalog) = fresh_level0(diff, 0.0);
+            let sounds = Sounds::default();
+            let delay = wake_rules().dead_delay;
+            let mut woke = None;
+            for f in 0..((delay + 1.0) / FRAME) as usize {
+                g.step(FRAME, &Controls::default(), &content, &catalog, &sounds);
+                if g.report.is_some() {
+                    break;
+                }
+                if nyxies(&g).first().is_some_and(|b| b.active) {
+                    woke = Some((f + 1) as f32 * FRAME);
+                    break;
+                }
+            }
+            let woke = woke.unwrap_or_else(|| panic!("{diff:?}: a dead flashlight wakes her on level 0 with no relay"));
+            assert!(woke >= delay - 0.1 && woke <= delay + 0.2, "{diff:?}: woke at {woke} s, delay {delay}");
+            assert_eq!(nyxies(&g).len(), 1, "{diff:?}: one Nyxie");
+            assert_eq!(g.relays_collected, 0, "{diff:?}");
+            assert_eq!(wake_of(&g), Wake::Dead, "{diff:?}");
+            let d = crate::hunters::brain::dist(nyxie(&g).pos, g.p.pos);
+            assert!(d <= wake_rules().dead_spawn_distance + 2.0, "{diff:?}: she appears about {} cells away, {d}", wake_rules().dead_spawn_distance);
+            // the activation rule still holds every other hunter back
+            assert_eq!(route_hunters(&g), crate::game::endless::population(diff, 0) as usize, "{diff:?}: no route hunter beyond the population");
+        }
+    }
+
+    #[test]
+    fn a_charged_lamp_that_is_only_off_never_brings_the_level_zero_nyxie() {
+        // 40 s of an off but charged lamp: past the dead-lamp delay and the 10 s lamp kill, and no flashlight is dead
+        for diff in ALL {
+            let (mut g, content, catalog) = fresh_level0(diff, 80.0);
+            let sounds = Sounds::default();
+            for _ in 0..2400 {
+                g.step(FRAME, &Controls::default(), &content, &catalog, &sounds);
+                if g.report.is_some() {
+                    break;
+                }
+            }
+            assert!(nyxies(&g).is_empty(), "{diff:?}: a switched-off lamp is not a dead flashlight");
+        }
+    }
+
+    #[test]
+    fn the_route_hunters_stay_gated_while_a_dead_lamp_has_her_out() {
+        let (mut g, content, catalog) = fresh_level0(Difficulty::Relaxed, 0.0);
+        let sounds = Sounds::default();
+        for _ in 0..(5.0 / FRAME) as usize {
+            g.step(FRAME, &Controls::default(), &content, &catalog, &sounds);
+        }
+        assert!(nyxie(&g).active);
+        assert_eq!(route_hunters(&g), 0, "Relaxed has no route hunter before the third relay");
+        // the third relay brings the first one, and Nyxie is still the single special on the list
+        g.relays_collected = 3;
+        run(&mut g, &content, &catalog, 30);
+        assert_eq!(route_hunters(&g), 1, "the third relay admits the first route hunter");
+        assert_eq!(nyxies(&g).len(), 1);
+    }
+
+    #[test]
+    fn a_beam_sends_the_level_zero_dead_lamp_wake_back_before_any_relay() {
+        let (mut g, content, catalog) = fresh_level0(Difficulty::Relaxed, 0.0);
+        run(&mut g, &content, &catalog, 240);
+        assert!(nyxie(&g).active && wake_of(&g) == Wake::Dead, "out for the dead lamp");
+        // a battery goes in and the lamp is aimed at her: she stands four cells off along a clear line
+        let from = g.p.pos;
+        let spot = (0..16)
+            .map(|k| {
+                let a = k as f32 * std::f32::consts::TAU / 16.0;
+                (from.0 + 4.0 * a.cos(), from.1 + 4.0 * a.sin())
+            })
+            .find(|s| g.fac.body_fits(s.0, s.1, HUNTER_RADIUS) && g.fac.has_line_of_sight(from, *s))
+            .expect("a clear spot four cells from the runner");
+        let hi = g.hunters.iter().position(|h| h.def.id == "nyxie").unwrap();
+        g.hunters[hi].pos = spot;
+        g.p.lamp = 80.0;
+        g.p.flashlight_on = true;
+        g.p.yaw = (-(spot.0 - from.0)).atan2(-(spot.1 - from.1));
+        run(&mut g, &content, &catalog, 60);
+        assert!(g.report.is_none() && g.escape.is_none(), "she did not catch the runner first");
+        assert!(!nyxie(&g).active, "the recharged beam dispels her");
+        assert_eq!(wake_of(&g), Wake::None);
+        // she stays one Nyxie: the lamp dying again wakes the same one, not a second
+        g.p.lamp = 0.0;
+        g.p.flashlight_on = false;
+        run(&mut g, &content, &catalog, 240);
+        assert_eq!(nyxies(&g).len(), 1);
+        assert!(nyxie(&g).active, "the next dead lamp brings her again");
+    }
+
+    #[test]
+    fn levels_below_zero_keep_their_ungated_nyxie() {
+        // levels below 0 keep their always-present Nyxie, which was never held back by the activation count
+        let (g, _, _) = asleep_on(Difficulty::Relaxed, 80.0);
+        let crate::hunters::gimmicks::Gimmick::Nyxie(n) = &nyxie(&g).gimmick else { panic!() };
+        assert!(!n.dead_only, "only the level-0 Nyxie is made for the dead lamp alone");
     }
 
     #[test]

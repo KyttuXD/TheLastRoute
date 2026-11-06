@@ -3,6 +3,7 @@
 //! coins and pickups taken, cells discovered), and the hunter population that grows with
 //! recovered relays (GameConfig.streamed_hunter_population).
 
+use super::resident_hunters::Slot;
 use super::{pdist, FloorPickup, Game, Item};
 use crate::config::*;
 use crate::content::Content;
@@ -1568,6 +1569,79 @@ impl Game {
         inf.loaded = kept_ids;
         if changed {
             self.reset_director();
+        }
+        self.park_level0_nyxie();
+    }
+
+    /// Whether the level-0 Nyxie exists anywhere: the active list, the shelf of level 0 (the runner is on another level),
+    /// or the resident list of level 0 (the runner stands on a flight beside it).
+    fn level0_nyxie_exists(&self) -> bool {
+        let level0 = |b: &Brain| matches!(&b.gimmick, Gimmick::Nyxie(n) if n.dead_only);
+        self.hunters.iter().any(level0)
+            || self.resident_hunters.list(0).iter().any(|s| level0(&s.brain))
+            || self
+                .inf
+                .as_ref()
+                .is_some_and(|i| i.floor_hunters.get(&0).is_some_and(|v| v.iter().any(level0)))
+    }
+
+    /// Level 0 of the Infinite route has no Nyxie in its lineup (Godot's streamed lineup has neither special, the layout
+    /// never draws her, and the hunter activation count keeps even the route's own hunters out until the first relays), so
+    /// before this a dead flashlight had nobody to bring there. With `ignore_activation_gate` on
+    /// (data/hunters/nyxie_wake.json) the first frame the runner's flashlight is dead on level 0 makes one dormant Nyxie,
+    /// marked `dead_only`, whatever the difficulty and the relays recovered; it is kept for the run (the shelf and the
+    /// stairs carry her like any id-less hunter). Dormant she is unseen and uncatchable, as every sleeping hunter is. Her
+    /// dead-lamp wake (and the 10 s lamp kill it grows into) is the ordinary one; she has no 120 s darkness wake, which level
+    /// 0 never had. She is not a layout spawn and carries no residency id, so the hunter selection, the draw pool, the
+    /// residency admission and the layout are untouched, and she is pushed after the hunters already in the list. A room
+    /// with no local runner (a dedicated host) and a guest never make her: the lamp she reads is the runner's.
+    pub(super) fn keep_level0_nyxie(&mut self, content: &Content) {
+        self.keep_level0_nyxie_with(content, crate::hunters::gimmicks::nyxie::wake_rules());
+    }
+
+    /// `keep_level0_nyxie` with the wake rules given (the tests pass edited ones).
+    fn keep_level0_nyxie_with(&mut self, content: &Content, rules: &crate::hunters::gimmicks::nyxie::WakeRules) {
+        // the cheap tests first: this runs every frame
+        if self.p.lamp > 0.0 || !rules.ignore_activation_gate {
+            return;
+        }
+        if super::guest_gate::is_display_only(self) || self.no_local_runner {
+            return;
+        }
+        if !self.inf.as_ref().is_some_and(|i| i.level == 0) || self.level0_nyxie_exists() {
+            return;
+        }
+        let Some(def) = content.hunter("nyxie") else { return };
+        let seed = self.level_seed();
+        let mut rng = Rng::new(&format!("{seed}:SPECIALS"));
+        let p = self.spawn_spot(&mut rng).unwrap_or(self.fac.start.center());
+        let mut b = Brain::new(def.clone(), p, &format!("{seed}:NYXIE"), self.difficulty);
+        if let Gimmick::Nyxie(n) = &mut b.gimmick {
+            n.dead_only = true;
+        }
+        self.settle_new_brain(&mut b);
+        self.push_active(Slot { id: String::new(), brain: b });
+    }
+
+    /// A dormant level-0 Nyxie that the window moved away from, or that stands in a wall, comes back in out of sight (the
+    /// window moves under her; she is not stored by residency). One that is awake is left alone.
+    fn park_level0_nyxie(&mut self) {
+        let size = (CHUNK * 3) as f32;
+        let seed = self.level_seed();
+        let mut rng = Rng::new(&format!("{seed}:PARK:{}", self.time as i32));
+        for i in 0..self.hunters.len() {
+            let h = &self.hunters[i];
+            if h.active || !matches!(&h.gimmick, Gimmick::Nyxie(n) if n.dead_only) {
+                continue;
+            }
+            let p = h.pos;
+            let out = p.0 < 0.0 || p.1 < 0.0 || p.0 >= size || p.1 >= size || !self.fac.body_fits(p.0, p.1, HUNTER_RADIUS);
+            if out {
+                if let Some(spot) = self.spawn_spot(&mut rng) {
+                    self.hunters[i].pos = spot;
+                    self.hunters[i].clear_path();
+                }
+            }
         }
     }
 
@@ -3432,6 +3506,74 @@ mod walked_stair_tests {
         assert!(stair_height_at(&g.fac, g.p.pos).is_none(), "the start is off every flight");
         g.keep_stack(&content, &catalog);
         assert!(!g.inf.as_ref().unwrap().stack.has(40), "a level far away is evicted");
+    }
+
+    fn level0_nyxies(g: &Game) -> usize {
+        g.hunters.iter().filter(|h| matches!(&h.gimmick, Gimmick::Nyxie(n) if n.dead_only)).count()
+    }
+
+    #[test]
+    fn the_level_zero_nyxie_is_made_by_a_dead_flashlight_and_only_then() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        for diff in [Difficulty::Relaxed, Difficulty::Standard, Difficulty::Hard, Difficulty::Nightmare] {
+            let mut g = Game::new_infinite_sim(diff, 7, "ROOM-NYXIE-MAKE", 0, &content, &catalog);
+            let before = g.hunters.len();
+            assert_eq!(level0_nyxies(&g), 0, "{diff:?}: the lineup of a new run has no Nyxie");
+            g.keep_level0_nyxie(&content);
+            assert_eq!(level0_nyxies(&g), 0, "{diff:?}: a working flashlight makes none");
+            g.p.lamp = 0.0;
+            g.keep_level0_nyxie(&content);
+            assert_eq!(level0_nyxies(&g), 1, "{diff:?}: a dead flashlight makes one, whatever the relays");
+            assert_eq!(g.relays_collected, 0);
+            assert_eq!(g.hunters.len(), before + 1, "{diff:?}: the route's own hunters are untouched");
+            assert!(!g.hunters.last().unwrap().active, "{diff:?}: dormant until she wakes");
+            g.keep_level0_nyxie(&content);
+            assert_eq!(level0_nyxies(&g), 1, "{diff:?}: never two");
+        }
+    }
+
+    #[test]
+    fn the_level_zero_nyxie_follows_the_wake_file_switch_and_the_room_kind() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let rules = crate::hunters::gimmicks::nyxie::wake_rules();
+        let mut off = rules.clone();
+        off.ignore_activation_gate = false;
+        let mut g = Game::new_infinite_sim(Difficulty::Relaxed, 7, "ROOM-NYXIE-SWITCH", 0, &content, &catalog);
+        g.p.lamp = 0.0;
+        g.keep_level0_nyxie_with(&content, &off);
+        assert_eq!(level0_nyxies(&g), 0, "switch off: level 0 has no Nyxie, as in Godot");
+        g.no_local_runner = true;
+        g.keep_level0_nyxie_with(&content, rules);
+        assert_eq!(level0_nyxies(&g), 0, "a room with no local runner has nobody whose lamp could die");
+        g.no_local_runner = false;
+        g.remote_hunters = true;
+        g.keep_level0_nyxie_with(&content, rules);
+        assert_eq!(level0_nyxies(&g), 0, "a guest only shows the hunters the host sends");
+        g.remote_hunters = false;
+        g.keep_level0_nyxie_with(&content, rules);
+        assert_eq!(level0_nyxies(&g), 1, "switch on, a local runner: she is made");
+    }
+
+    #[test]
+    fn the_level_zero_nyxie_waits_on_the_shelf_and_comes_back_once() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let mut g = Game::new_infinite_sim(Difficulty::Relaxed, 7, "ROOM-NYXIE-TRAVEL", 0, &content, &catalog);
+        g.p.lamp = 0.0;
+        g.keep_level0_nyxie(&content);
+        assert_eq!(level0_nyxies(&g), 1, "made by the dead flashlight");
+        let at = g.p.pos;
+        g.go_to_level(-1, at, 0.0, &content, &catalog);
+        assert_eq!(level0_nyxies(&g), 0, "level -1 has its own Nyxie, not the level-0 one");
+        assert!(g.level0_nyxie_exists(), "she waits on the level-0 shelf");
+        g.keep_level0_nyxie(&content);
+        g.go_to_level(0, at, 0.0, &content, &catalog);
+        assert_eq!(level0_nyxies(&g), 1, "back on level 0 she is one again, not two");
+        g.keep_level0_nyxie(&content);
+        for _ in 0..30 {
+            g.step(FRAME, &Controls::default(), &content, &catalog, &Sounds::default());
+        }
+        assert_eq!(level0_nyxies(&g), 1, "and the frames and the residency pass do not make another");
+        assert_eq!(g.inf.as_ref().unwrap().loaded.len(), g.hunters.len(), "the residency ids stay aligned with the list");
     }
 
     #[test]

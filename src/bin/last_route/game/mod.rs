@@ -993,6 +993,8 @@ impl Game {
         if self.inf.is_some() && self.ladder.is_none() {
             self.stream_window(content, catalog);
         }
+        // level 0 has no Nyxie in its lineup: a dead flashlight there makes the one that comes for it (endless.rs)
+        self.keep_level0_nyxie(content);
         self.update_hunters(dt, &prof, sounds);
     }
 
