@@ -549,6 +549,16 @@ impl InfState {
     pub(super) fn floor_hunters_mut(&mut self) -> &mut HashMap<i32, Vec<Brain>> {
         &mut self.floor_hunters
     }
+    /// The identities of the level-0 hunters residency holds in the stores (outside the 3x3 window, not simulated). They
+    /// exist on level 0 all the same, which is what the specialty bar asks (game/specialty.rs `sync_specialty`). Empty
+    /// off level 0, where a hunter that is not in the active list is on another floor's list or shelf, and for a guest,
+    /// which stores nothing.
+    pub(super) fn stored_hunter_ids(&self) -> Vec<&str> {
+        if self.level != 0 {
+            return Vec::new();
+        }
+        self.stored.values().map(|b| b.def.id.as_str()).collect()
+    }
     pub(super) fn stored_mut(&mut self) -> &mut HashMap<String, Brain> {
         &mut self.stored
     }
@@ -807,6 +817,7 @@ impl Game {
         self.p.place(start);
         self.p.pos = start;
         self.reset_hunters(content);
+        self.sync_specialty();
         // No NPC is made here: a room holds only its real players. Bots come from the admin panel
         // (`npc_spawn`); `npc_ensure_run` stays for callers that ask for the data/npcs.json run NPCs.
         self.fade = 1.0;
@@ -1260,6 +1271,8 @@ impl Game {
         // the level's own hunters come back where they were; a level not visited before gets its lineup
         self.unshelve_active_hunters(content);
         self.announce(&format!("LEVEL {to}"));
+        // the bar is the new floor's on this frame, not on the next step (the floor the runner left must not be drawn)
+        self.sync_specialty();
     }
 
     /// Respawn semantics on level `to` (admin level jump): the floor is rebuilt, the body stands on the start cell of
@@ -1332,6 +1345,8 @@ impl Game {
         // cheap: the parts are cached, and a level change is not a jump for the render
         self.world_dirty = true;
         self.announce(&format!("LEVEL {to}"));
+        // the hunters of the label just taken are the active list now: the bar follows on this frame
+        self.sync_specialty();
         self.autosave("level");
         true
     }
@@ -2536,6 +2551,49 @@ mod tests {
         }
     }
 
+    /// The specialty bar follows the hunters that EXIST on level 0, loaded or stored: a region switch (the window moving
+    /// until residency stores a hunter, then back) must not take her slot, her box or the runner's hand away.
+    #[test]
+    fn a_stored_level_zero_hunter_keeps_her_slot_over_a_region_switch() {
+        use crate::game::specialty::SpecItem;
+        let (mut g, content, catalog) = populated();
+        assert!(!g.hunters.is_empty(), "a populated level 0 has a hunter in its window");
+        let id = g.inf.as_ref().unwrap().loaded[0].clone();
+        let at = g.hunters[0].pos;
+        let mut glyra = Brain::new(content.hunter("glyra").unwrap().clone(), at, "REGION:glyra", g.difficulty);
+        glyra.activate_at(g.p.pos);
+        g.hunters[0] = glyra;
+        g.sync_specialty();
+        assert_eq!(g.specialty.items[0], Some(SpecItem::MusicBox), "Glyra is loaded: slot 6 holds the box");
+        g.press_specialty(0);
+        g.music_box_left = 31.0;
+        // east until residency stores her (she stays where she stands)
+        let mut moved = 0;
+        while !g.inf.as_ref().unwrap().stored.contains_key(&id) && moved < 8 {
+            g.p.pos.0 += CHUNK as f32;
+            g.stream_window(&content, &catalog);
+            moved += 1;
+        }
+        assert!(g.inf.as_ref().unwrap().stored.contains_key(&id), "residency stored her after {moved} chunks");
+        assert!(!g.hunters.iter().any(|h| h.def.id == "glyra"), "she is not in the window any more");
+        g.sync_specialty();
+        assert!(g.specialty.visible[0], "she still exists on level 0: the slot stays");
+        assert_eq!(g.specialty.items[0], Some(SpecItem::MusicBox), "and so does the box");
+        assert_eq!(g.specialty.selected, Some(0), "and the hand");
+        assert_eq!(g.music_box_heard(), 31.0, "and the tune");
+        // and back: she is loaded again, still the one box, nothing granted twice
+        while g.inf.as_ref().unwrap().stored.contains_key(&id) && moved > 0 {
+            g.p.pos.0 -= CHUNK as f32;
+            g.stream_window(&content, &catalog);
+            moved -= 1;
+        }
+        g.sync_specialty();
+        assert!(g.hunters.iter().any(|h| h.def.id == "glyra"), "loaded again");
+        assert_eq!(g.specialty.items[0], Some(SpecItem::MusicBox));
+        assert_eq!(g.specialty.selected, Some(0));
+        assert_eq!(g.slots.iter().flatten().filter(|s| s.item == Item::MusicBox).count(), 0);
+    }
+
     /// Moves the run across stairwell `i` as the old swap did (to the far end of its flight, one level over), through
     /// `go_to_level`: for the tests that need the hunters of two levels stored and restored.
     fn take(g: &mut Game, i: usize, content: &Content, catalog: &Catalog) {
@@ -3484,6 +3542,174 @@ mod walked_stair_tests {
         g.time += super::super::pipes::rules().flow.shut_drain_seconds + 2.0;
         g.pipes_tick();
         assert!(g.pipes.run(&id).is_none(), "the drained flow is dropped");
+    }
+
+    /// The hunter specialty bar (game/specialty.rs) across a change of floor, through the real label change (`relabel`,
+    /// which a walked flight, a ladder and a fall all end in) and the admin jump (`change_storey`).
+    mod specialty_across_floors {
+        use super::*;
+        use crate::game::resident_hunters::Slot as ShelfSlot;
+        use crate::game::specialty::{Mode, SpecItem};
+
+        fn brain_on(g: &Game, content: &Content, id: &str, level: i32) -> Brain {
+            let def = content.hunter(id).unwrap_or_else(|| panic!("no hunter {id}")).clone();
+            // far from the runner and dormant: nothing in these tests is caught or woken
+            let far = g
+                .fac
+                .floor_cells()
+                .into_iter()
+                .map(|c| c.center())
+                .max_by(|a, b| pdist(*a, g.p.pos).partial_cmp(&pdist(*b, g.p.pos)).unwrap());
+            let mut b = Brain::new(def, far.unwrap_or(g.p.pos), &format!("FLOORS:{id}:{level}"), g.difficulty);
+            b.level = level;
+            b.y = floor_y_of(level);
+            b
+        }
+
+        /// A runner on a flight with the neighbour floor resident: the active floor holds `here`, the neighbour `there`
+        /// (a hunter on a floor that is not the runner's is on that floor's list). Returns the game and the neighbour.
+        fn two_floors(here: &[&str], there: &[&str]) -> (Game, i32, Content, Catalog) {
+            let (content, catalog) = (Content::load(), Catalog::load());
+            let (mut g, _, to) = with_neighbour(-1, &content, &catalog);
+            let from = g.inf.as_ref().unwrap().level;
+            g.relays_collected = 0;
+            g.hunters.clear();
+            g.inf.as_mut().unwrap().loaded_mut().clear();
+            for id in here {
+                let b = brain_on(&g, &content, id, from);
+                g.hunters.push(b);
+            }
+            let other: Vec<ShelfSlot> =
+                there.iter().map(|id| ShelfSlot { id: String::new(), brain: brain_on(&g, &content, id, to) }).collect();
+            g.resident_hunters.put(to, other);
+            g.reset_director();
+            g.sync_specialty();
+            (g, to, content, catalog)
+        }
+
+        fn ids(g: &Game) -> Vec<String> {
+            g.hunters.iter().map(|h| h.def.id.clone()).collect()
+        }
+
+        fn boxes_in_pack(g: &Game) -> usize {
+            g.slots.iter().flatten().filter(|s| s.item == Item::MusicBox).count()
+        }
+
+        #[test]
+        fn the_bar_is_right_on_the_frame_of_the_change_not_a_frame_later() {
+            // floor 0 has Glyra and Wynelle, the floor beyond only Wynelle; slot 6 is in hand
+            let (mut g, to, content, catalog) = two_floors(&["glyra", "wynelle"], &["wynelle"]);
+            assert_eq!(g.specialty.visible, [true, true, true, true]);
+            g.press_specialty(0);
+            assert_eq!(g.specialty.selected, Some(0));
+            assert!(g.relabel(to, &content, &catalog));
+            assert_eq!(ids(&g), vec!["wynelle"], "the floor beyond has the hunters it kept");
+            // no step in between: the bar a frame is drawn with is the new floor's
+            assert_eq!(g.specialty.visible, [false, true, true, true], "slot 6 goes with Glyra on the frame of the change");
+            assert_eq!(g.specialty.items[0], None);
+            assert_eq!(g.specialty.selected, None, "a slot that is gone is not left in hand");
+            assert_ne!(g.selected_item(), Some(Item::MusicBox));
+            assert!(g.specialty.items[1].is_some(), "slot 7 stays: Wynelle is on both floors");
+        }
+
+        #[test]
+        fn the_tune_is_gated_by_the_new_floor_on_its_first_frame() {
+            let (mut g, to, content, catalog) = two_floors(&["glyra"], &["wynelle"]);
+            g.music_box_left = 40.0;
+            assert_eq!(g.music_box_heard(), 40.0, "Glyra is out: the wound box is heard");
+            assert!(g.relabel(to, &content, &catalog));
+            assert_eq!(g.music_box_heard(), 0.0, "she is not on this floor: nothing is heard on the first frame");
+            assert_eq!(g.music_box_left, 40.0, "the wind itself is untouched");
+            // and back: heard again at the remaining time, with no restart of the clock
+            g.music_box_left = 25.0;
+            assert!(g.relabel(0, &content, &catalog));
+            assert_eq!(g.music_box_heard(), 25.0, "Glyra is out again and the box plays on from where it was");
+        }
+
+        #[test]
+        fn state_survives_a_change_when_the_hunter_is_on_both_floors() {
+            let (mut g, to, content, catalog) = two_floors(&["glyra", "wynelle", "solyth"], &["glyra", "wynelle", "solyth"]);
+            // wind the box (spent), set the temperature item to cold and hold slot 7
+            g.press_specialty(0);
+            g.use_specialty();
+            assert_eq!(g.specialty.items[0], None, "the wind spends the box");
+            g.specialty.items[1] = Some(SpecItem::Temperature(Mode::Cold));
+            g.press_specialty(1);
+            let left = g.music_box_left;
+            assert!(left > 0.0);
+            assert!(g.relabel(to, &content, &catalog));
+            assert_eq!(g.specialty.items[0], None, "a spent box is not handed out again by a change of floor");
+            assert_eq!(g.specialty.temp_mode(), Some(Mode::Cold), "the type the runner set is kept");
+            assert_eq!(g.specialty.selected, Some(1), "and so is the slot in hand");
+            assert_eq!(g.music_box_left, left, "the wound clock is the runner's, not the floor's");
+            assert_eq!(g.music_box_heard(), left);
+            // the same across the whole way back and forth, with frames between
+            for _ in 0..4 {
+                for lvl in [0, to] {
+                    g.step(1.0 / 60.0, &Controls::default(), &content, &catalog, &Sounds::default());
+                    if g.inf.as_ref().unwrap().level != lvl {
+                        assert!(g.relabel(lvl, &content, &catalog));
+                    }
+                    assert_eq!(g.specialty.temp_mode(), Some(Mode::Cold));
+                    assert_eq!(g.specialty.items[0], None);
+                    assert_eq!(g.specialty.selected, Some(1));
+                }
+            }
+        }
+
+        #[test]
+        fn a_slot_whose_hunter_is_not_on_the_new_floor_goes_deliberately_and_does_not_double() {
+            let (mut g, to, content, catalog) = two_floors(&["glyra", "wynelle"], &["solyth"]);
+            assert_eq!(g.specialty.items[0], Some(SpecItem::MusicBox));
+            assert_eq!(g.specialty.temp_mode(), Some(Mode::Heat), "Wynelle alone: heat");
+            g.press_specialty(1);
+            assert!(g.relabel(to, &content, &catalog));
+            // Glyra is not here: her slot and box are gone, and the box is NOT returned to the pack
+            assert!(!g.specialty.visible[0]);
+            assert_eq!(g.specialty.items[0], None);
+            assert_eq!(boxes_in_pack(&g), 0);
+            // Solyth is: slot 7 stays visible without a second grant, so the type and the hand are kept
+            assert!(g.specialty.visible[1]);
+            assert_eq!(g.specialty.temp_mode(), Some(Mode::Heat), "no second grant: the type is not re-picked for Solyth");
+            assert_eq!(g.specialty.selected, Some(1));
+            // a floor box taken here goes to the pack, since Glyra is not out
+            assert!(g.give(Item::MusicBox, 1));
+            assert_eq!(boxes_in_pack(&g), 1);
+            // back to the floor with Glyra: the pack box folds into slot 6, so the runner never holds two
+            assert!(g.relabel(0, &content, &catalog));
+            assert!(g.specialty.visible[0]);
+            assert_eq!(g.specialty.items[0], Some(SpecItem::MusicBox));
+            assert_eq!(boxes_in_pack(&g), 0);
+        }
+
+        #[test]
+        fn hunters_of_the_floor_beside_do_not_count_for_this_floor() {
+            // Glyra and Wynelle are on the neighbour's list only: the runner's floor has none of them
+            let (g, _, _, _) = two_floors(&[], &["glyra", "wynelle"]);
+            assert_eq!(g.specialty.visible, [false, false, true, true]);
+            assert_eq!(g.specialty.items, [None; 4]);
+        }
+
+        #[test]
+        fn the_admin_jump_also_leaves_the_bar_right_on_arrival() {
+            let (mut g, _to, content, catalog) = two_floors(&["glyra", "wynelle"], &[]);
+            g.press_specialty(0);
+            let at = g.p.pos;
+            // floor -1 builds its own lineup (Nyxie, Solyth); Glyra and Wynelle stay shelved on floor 0
+            g.go_to_level(-1, at, 0.0, &content, &catalog);
+            let here = ids(&g);
+            let want = |id: &str| here.iter().any(|h| h == id);
+            assert_eq!(g.specialty.visible[0], want("glyra"));
+            assert_eq!(g.specialty.visible[1], want("wynelle") || want("solyth"));
+            assert_eq!(g.specialty.items[0].is_some(), want("glyra"));
+            if !want("glyra") {
+                assert_eq!(g.specialty.selected, None);
+            }
+            // back up: the shelved Glyra and Wynelle are on floor 0 again
+            g.go_to_level(0, at, 0.0, &content, &catalog);
+            let here = ids(&g);
+            assert_eq!(g.specialty.visible[0], here.iter().any(|h| h == "glyra"));
+        }
     }
 
 }
