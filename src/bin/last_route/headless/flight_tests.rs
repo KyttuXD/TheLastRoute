@@ -13,10 +13,10 @@ use crate::world::flight::FlightShape;
 const FRAMES: usize = 1800;
 /// The most the feet may move vertically in one frame (m): a walked flight is smooth, the old swap popped 1.7 to 3 m.
 const MAX_STEP_DY: f32 = 0.25;
-/// The level whose downward flights include spirals. A maze (level 0) spiral well falls back to a switchback because its
-/// foot lies in sewer rock (world/flight_links.rs, docs/STAIRS_CONTINUOUS_DESIGN.md), and the sewer (-1) has no spirals by
-/// its region weights, so spirals are walked on the -2 -> -3 bay links, which use the default shape weights.
-const SPIRAL_LEVEL: i32 = -2;
+/// The levels whose downward flights include spirals: the maze (level 0) wells that the layout asks to be spirals, whose
+/// landing and foot are the two ends of the doorway (world/flight_links.rs), and the -2 -> -3 bay links, which use the
+/// default shape weights. The sewer (-1) has no spirals by its region weights.
+const SPIRAL_LEVELS: [i32; 2] = [0, -2];
 
 fn origin(g: &Game) -> (f32, f32) {
     let o = g.inf.as_ref().map_or((0, 0), |i| i.origin());
@@ -88,7 +88,9 @@ fn walks_a_switchback_down_and_up() {
 
 #[test]
 fn walks_a_spiral_down_and_up() {
-    down_and_up(FlightShape::Spiral, SPIRAL_LEVEL);
+    for level in SPIRAL_LEVELS {
+        down_and_up(FlightShape::Spiral, level);
+    }
 }
 
 #[test]
@@ -101,7 +103,7 @@ fn walks_a_straight_down_and_up() {
 #[test]
 fn the_swap_keeps_absolute_y_continuous() {
     let (content, catalog) = (Content::load(), Catalog::load());
-    for (shape, level) in [(FlightShape::Switchback, 0), (FlightShape::Spiral, SPIRAL_LEVEL)] {
+    for (shape, level) in [(FlightShape::Switchback, 0), (FlightShape::Spiral, 0), (FlightShape::Spiral, -2)] {
         let (mut g, s) = window_with(shape, level, &content, &catalog);
         let at_swap = walk_flight_until(&mut g, s, &content, &catalog, FRAMES, true);
         assert_eq!(at_swap.level_changes, 1, "{shape:?}: the walk changed the level");

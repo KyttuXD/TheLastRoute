@@ -250,3 +250,14 @@ These are places where the local loader and the server index do not agree. A pac
 1. Override form. The index requires `props/<id>` and `hunters/<id>`, and the test suite uses `"props/officePrinter"`. The local loader compares props and hunters by bare id (`officePrinter`). A pack that lists the `kind/id` form passes the index, but the local loader then reports the replacement as "already exists". Regions use `regions/<id>` in both places.
 2. Schema. The local loader accepts a `pack.json` with no `schema` key. The index refuses a manifest without `"lr.pack/1"`.
 3. Prop type names. The region parser checks that `prop_set[].type` is a non-empty string. It does not check the name against the prop catalogue, so a misspelt type loads without an error.
+
+## 7. Importing a pack in the browser
+
+The browser build has no mods folder. Its MODS tab has IMPORT FOLDER (choose the pack folder) and IMPORT .ZIP (choose one or more zip files). `content/pack_import.rs` checks each pack, keeps it in the page's IndexedDB (database `last_route_mods`) and loads it with the other packs when the page starts, so an import or a REMOVE shows up after a page reload.
+
+- Manifest: the rules in section 4.1 (`schema` must be `lr.pack/1`; unknown keys, including `scripts`, are refused). `overrides` may use the index form (`hunters/<id>`) or the bare id the local loader compares.
+- Limits: 512 files, 16 MiB a file, 128 MiB a pack (`MOD_LIMITS`), and 256 MiB of imported packs in all. A test in `pack_import.rs` compares these numbers and the pack kinds with `mod_packs.rs`.
+- Files: `pack.json`, `<kind>/<name>.json`, and `.bbmodel`, `.glb`, `.png`, `.ogg` files up to 8 folders deep. Unlike the index, models and pictures need not sit under `assets/` (the sample pack keeps `hunters/mimic.bbmodel` beside its JSON). Other files (README.md, tools/) are ignored and reported.
+- `regions/` is refused: the region loader reads folders only. Use the mods folder of the desktop game for region packs.
+- A pack is also loaded once against the base content and the packs already imported; a hunter that does not parse, an id that already exists without `overrides`, or a pack that adds nothing is refused with the loader's own words.
+- A zip may hold stored or deflate entries (no zip64, no password); sizes are checked before anything is unpacked.

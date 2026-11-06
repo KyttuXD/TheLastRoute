@@ -28,7 +28,6 @@ use crate::world::rng::Rng;
 use crate::world::route::layout::{self, chunk_layout, ChunkLayout, Coord, Stairwell, V2};
 use super::breach::BreachSpec;
 use super::seals;
-use crate::world::flight_links;
 
 /// Godot `CHUNK_SIZE` (streamed_route_generator.gd:19).
 pub const CHUNK: i32 = 45;
@@ -908,9 +907,13 @@ fn carve_falls(grid: &mut Grid, falls: &Falls, level: i32) {
     }
 }
 
-/// `_carve_ramp` (sewer:505).
-fn carve_ramp(grid: &mut Grid, ramp: &Ramp, level: i32) {
-    carve_rect(grid, ramp.ramp, RAMP);
+/// `_carve_ramp` (sewer:505). With `flat_strip` false the 12x3 ramp strip itself stays rock: the played game has no ramps
+/// (the way between the sewers is a walked flight), so the strip would be a flat dead-end tunnel; the top, bottom and
+/// connector rooms are carved either way.
+fn carve_ramp(grid: &mut Grid, ramp: &Ramp, level: i32, flat_strip: bool) {
+    if flat_strip {
+        carve_rect(grid, ramp.ramp, RAMP);
+    }
     if ramp.upper == level {
         carve_rect(grid, ramp.top, DRY);
     } else {
@@ -1599,35 +1602,12 @@ pub struct SewerChunk {
 /// The sewer chunk as it is played: the Godot layout (`chunk_base`) plus the extra sewer room (`rooms`) in a free
 /// spot and, on the lower storey, the second level's water tunnels and landing pools (`level2`).
 pub fn chunk(coord: Coord, inputs: &Inputs) -> Option<SewerChunk> {
-    let mut c = chunk_base(coord, inputs)?;
+    let mut c = build_base(coord, inputs, false)?;
     if coord.y == LOWER_LEVEL {
         overlay_level2(&mut c, inputs);
     }
-    if coord.y == LEVEL {
-        carve_spiral_feet(&mut c, inputs.world);
-    }
     place_room(&mut c, inputs.world);
     Some(c)
-}
-
-/// The cells the played sewer opens for the spiral wells of a chunk: a spiral well's foot, its clear margin and the cell past it lie outside the well's box, in rock the Godot layout
-/// (`chunk_base`, which the goldens read) leaves solid. The played sewer makes room: those cells become floor, so the
-/// well is a spiral on both levels. Only for wells `flight_links::spiral_carvable` accepts (the chunk edge excepted).
-fn spiral_feet(c: &SewerChunk, world: &str) -> Vec<V2> {
-    let mut out = Vec::new();
-    for well in c.wells.iter().filter(|w| w.kind == "spiral") {
-        let flight = flight_links::spiral_well_flight(world, (well.door.x, well.door.y, well.door.w), well.north);
-        if flight_links::spiral_carvable(&flight) {
-            out.extend(flight_links::spiral_open_cells(&flight).into_iter().map(|cell| V2::new(cell.x, cell.y)));
-        }
-    }
-    out
-}
-
-fn carve_spiral_feet(c: &mut SewerChunk, world: &str) {
-    for cell in spiral_feet(c, world) {
-        c.sewer_grid[cell.y as usize][cell.x as usize] = DRY;
-    }
 }
 
 /// Open the second level's tunnels and pools into the lower storey: its non-solid cells are copied over solid ones
@@ -1695,6 +1675,12 @@ fn place_room(c: &mut SewerChunk, world: &str) {
 
 /// `sewer().chunk(coord)` for the Godot layout only: the golden tests read this one.
 pub fn chunk_base(coord: Coord, inputs: &Inputs) -> Option<SewerChunk> {
+    build_base(coord, inputs, true)
+}
+
+/// `chunk_base` with the choice of the ramp strips: Godot cuts them as flat RAMP cells (`flat_ramps`), the played chunk
+/// leaves them rock (decision: no dead flat ramp stubs below the first sewer).
+fn build_base(coord: Coord, inputs: &Inputs, flat_ramps: bool) -> Option<SewerChunk> {
     if !is_chunk_allowed(coord) {
         return None;
     }
@@ -1721,7 +1707,7 @@ pub fn chunk_base(coord: Coord, inputs: &Inputs) -> Option<SewerChunk> {
     // ramp quadrants are taken: no room or shaft there
     for ramp in &ramps {
         erase(&mut order, ramp.quadrant);
-        carve_ramp(&mut grid, ramp, coord.y);
+        carve_ramp(&mut grid, ramp, coord.y, flat_ramps);
     }
     let falls = falls_between(inputs, coord.x, coord.z);
     if let Some(falls) = &falls {
@@ -2494,10 +2480,33 @@ mod tests {
         chunk(Coord::new(x, y, z), &Inputs { world: "wired-sewer" }).expect("sewer chunk")
     }
 
+    /// The played grid equals the Godot grid, except that the flat ramp strips (RAMP) stay rock.
+    fn same_cell(played: u8, godot: u8) -> bool {
+        played == godot || (godot == RAMP && played == SOLID)
+    }
+
     fn base(x: i32, y: i32, z: i32) -> SewerChunk {
         chunk_base(Coord::new(x, y, z), &Inputs { world: "wired-sewer" }).expect("sewer chunk")
     }
 
+
+    /// The played sewers leave no flat RAMP stub: the way between them is a walked flight, so a 12x3 strip of RAMP cells
+    /// would be a dead-end tunnel. The Godot layout (`chunk_base`, which the goldens read) still has the strips.
+    #[test]
+    fn the_played_sewers_carve_no_flat_ramp_stubs() {
+        let mut godot_strips = 0;
+        for level in [LEVEL, LOWER_LEVEL] {
+            for x in -6..6 {
+                for z in -6..6 {
+                    let (a, b) = (played(x, level, z), base(x, level, z));
+                    godot_strips += b.sewer_grid.iter().flatten().filter(|c| **c == RAMP).count();
+                    assert!(a.sewer_grid.iter().flatten().all(|c| *c != RAMP), "({x}, {z}) level {level}: a RAMP stub in the played sewer");
+                    assert_eq!(a.ramps, b.ramps, "the ramp records (and their rooms) are unchanged");
+                }
+            }
+        }
+        assert!(godot_strips > 0, "the sweep met no ramp, so it proves nothing");
+    }
     /// The played chunk is the Godot chunk plus an extra room: outside the room's rectangle the grid is the same
     /// (level -1), the room's layout is in it, and its props are appended with unique ids.
     #[test]
@@ -2510,14 +2519,10 @@ mod tests {
                 assert_eq!(a.links, b.links);
                 assert_eq!(a.ramps, b.ramps);
                 assert_eq!(a.region_props.len() >= b.region_props.len(), true);
-                let feet = spiral_feet(&a, "wired-sewer");
-                let carved = |xx: i32, zz: i32| feet.contains(&V2::new(xx, zz));
                 let Some(room) = &a.room else {
                     for zz in 0..N as i32 {
                         for xx in 0..N as i32 {
-                            if !carved(xx, zz) {
-                                assert_eq!(a.sewer_grid[zz as usize][xx as usize], b.sewer_grid[zz as usize][xx as usize], "({x}, {z}) no room, same grid outside the spiral feet");
-                            }
+                            assert!(same_cell(a.sewer_grid[zz as usize][xx as usize], b.sewer_grid[zz as usize][xx as usize]), "({x}, {z}) no room, same grid");
                         }
                     }
                     continue;
@@ -2528,8 +2533,7 @@ mod tests {
                         let (rx, rz) = (xx - room.origin.x, zz - room.origin.y);
                         match room.def.code_at(rx, rz) {
                             Some(code) => assert_eq!(a.sewer_grid[zz as usize][xx as usize], code),
-                            None if carved(xx, zz) => {}
-                            None => assert_eq!(a.sewer_grid[zz as usize][xx as usize], b.sewer_grid[zz as usize][xx as usize]),
+                            None => assert!(same_cell(a.sewer_grid[zz as usize][xx as usize], b.sewer_grid[zz as usize][xx as usize])),
                         }
                     }
                 }
@@ -2556,7 +2560,8 @@ mod tests {
                 let l2 = super::super::level2::chunk(&Inputs { world: "wired-sewer" }, x, z);
                 for zz in 0..N {
                     for xx in 0..N {
-                        if b.sewer_grid[zz][xx] != SOLID {
+                        // (a Godot ramp strip is rock in the played chunk, so the second level fills it like any rock)
+                        if b.sewer_grid[zz][xx] != SOLID && b.sewer_grid[zz][xx] != RAMP {
                             // collector floor stays unless the extra room covers it
                             if a.room.is_none() {
                                 assert_eq!(a.sewer_grid[zz][xx], b.sewer_grid[zz][xx]);

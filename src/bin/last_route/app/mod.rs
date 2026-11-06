@@ -13,6 +13,7 @@
 //!   LR_SHOT_ADMIN=n         with a run: the admin menu on tab n (0 STATUS .. 9 FIELDS)
 //!   LR_SHOT_MAP=1           with a run: the full map
 //!   LR_SHOT_DEATH=...       with a run: moment | card (a capture by the floor's hunter)
+//!   LR_SHOT_UPDATE=1        the web build's UPDATING screen over whatever else is shown (with LR_SHOT_RUN=1: over a run, with LATER)
 
 pub use crate::shared::{assets, checkpoint, paths, skins};
 pub mod gfx;
@@ -28,6 +29,7 @@ pub mod settings;
 pub mod stress;
 pub mod updater;
 pub mod web_pointer;
+pub mod web_update;
 #[cfg(target_arch = "wasm32")]
 pub mod web_storage;
 
@@ -40,6 +42,7 @@ use crate::render::{scene, shader, viewmodel};
 use crate::ui::menus::{self, Action, Screen, Ui};
 use crate::ui::pause::{self, Pause, Sub};
 use crate::ui::{hud, map, report, settings_panel, style};
+use crate::net::hosted::{self, JoinProgress, OwnerAction, OwnerStep};
 use crate::net::world_sync::{self, NetEvent, NetSession, RemoteView, RouteCommand};
 use crate::net::{Backend, BackendConfig, BackendEvent, Pending};
 use crate::world::catalog::Catalog;
@@ -419,13 +422,31 @@ fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
-/// A room request that is in flight: hosting a room, or joining one by its code.
+/// A room request that is in flight. No client hosts an online room (the server does, `net/hosted.rs`): a player's game
+/// joins a room by its code, or takes part in the public route.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum NetIntent {
-    Host,
     Join,
-    /// PUBLIC ROUTE: the session turns out hosted or joined once the directory has answered.
+    /// PUBLIC ROUTE: the session turns out hosted or joined once the directory has answered. It is the one room a client
+    /// still hosts, until the public route becomes an always-on server room.
     Public,
+}
+
+/// A line of the owner's feedback stays this long.
+const OWNER_STATUS_SECONDS: f64 = 6.0;
+
+/// The owner's command from the lobby or the pause menu: taken only when this player owns the open room, and one at a time.
+fn submit_owner(cmd: &mut hosted::OwnerCommander, ui: &mut Ui, in_room: bool, action: OwnerAction, until: &mut f64, now: f64) -> bool {
+    if !ui.owner.owner || !in_room {
+        return false;
+    }
+    let taken = cmd.submit(action);
+    let accepted = taken.is_ok();
+    ui.owner.status = match taken {
+        Ok(note) | Err(note) => note,
+    };
+    *until = now + OWNER_STATUS_SECONDS;
+    accepted
 }
 
 /// A line for the title or lobby (`ui.notice`, four seconds).
@@ -488,6 +509,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
     // the boot loader (ui/boot.rs) draws its card before the first load step and yields a frame after each
     // a stress run skips the boot card (ui/boot.rs) and loads with none
     let mut boot = crate::ui::boot::BootLoader::new();
+    // the web build's UPDATING screen (ui/update_screen.rs): drawn last, holds the input while it is up
+    let mut update_screen = crate::ui::update_screen::Overlay::new();
     if let Some(h) = update {
         boot.set_update(h);
     }
@@ -576,6 +599,12 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
     let mut share_text_at = 0.0f64;
     let mut net: Option<NetSession> = None;
     let mut net_pending: Option<(NetIntent, Pending<NetSession>)> = None;
+    // CREATE ROOM (online): the server's answer, then the wait for the room to be listed and the guest join
+    let mut hosted_create: Option<Pending<hosted::Created>> = None;
+    let mut hosted_join: Option<hosted::HostedJoin> = None;
+    // the room owner's commands: a ticket from the directory, then the command to the room
+    let mut owner_cmd = hosted::OwnerCommander::default();
+    let mut owner_status_until = 0.0f64;
     if screenshot.is_some() {
         if let Some(s) = env("LR_SHOT_SCREEN").as_deref().and_then(shot_screen) {
             ui.go(s);
@@ -611,6 +640,9 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
         }
         let raw_dt = get_frame_time();
         let dt = raw_dt.min(0.05);
+        if update_screen.is_shown() {
+            update_screen.swallow_input();
+        }
         let arms = skins::ArmsSetting::parse(&settings.arms).unwrap_or(skins::ArmsSetting::Auto);
         if worn.update(&settings.skin, settings.skin_slim, &settings.arms, skins::generation(), || {
             skins::worn_skin(&settings.skin, settings.skin_slim, arms)
@@ -705,15 +737,11 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             match result {
                 Ok(mut session) => {
                     let code = session.code.clone();
-                    // PUBLIC ROUTE is a host when nobody held the room, else a guest of the runner who does
+                    // PUBLIC ROUTE is a host when nobody held the room, else a guest of the runner who does; a JOIN is
+                    // always a guest (no client hosts an online room)
                     let public = intent == NetIntent::Public;
-                    let intent = match intent {
-                        NetIntent::Public if session.is_host() => NetIntent::Host,
-                        NetIntent::Public => NetIntent::Join,
-                        other => other,
-                    };
-                    match intent {
-                        NetIntent::Host => {
+                    match session.is_host() {
+                        true => {
                             room = world_sync::room_text_for_code(&code, &route::new_room_text());
                             // the guests are sent the text this host runs on, so both start the same route
                             session.set_room_seed(room.clone());
@@ -726,13 +754,12 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                                 session.start_run(&room, diff.name());
                             }
                         }
-                        NetIntent::Join => {
+                        false => {
                             room = format!("ROOM-{code}-");
                             ui.room_mode = menus::RoomMode::Guest;
                             ui.go(Screen::Lobby);
                             flash(&mut ui, &format!("JOINED ROOM {code} // WAITING FOR THE ROUTE"));
                         }
-                        NetIntent::Public => {}
                     }
                     // a new room is offered the chosen skin on the next frame
                     room_skin_seen.clear();
@@ -742,10 +769,102 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 Err(e) => {
                     let text = e.message_or("ROOM REQUEST FAILED");
                     match intent {
-                        NetIntent::Host | NetIntent::Public => flash(&mut ui, &text),
+                        NetIntent::Public => flash(&mut ui, &text),
                         NetIntent::Join if ui.screen == Screen::Join => ui.join_status = text,
                         NetIntent::Join => flash(&mut ui, &text),
                     }
+                }
+            }
+        }
+
+        // CREATE ROOM (online): the directory has opened a room (or refused), then the room is checked until it is listed
+        // and joined as a guest. Leaving for the title cancels the wait.
+        if ui.screen == Screen::Title {
+            hosted_create = None;
+            hosted_join = None;
+        }
+        if let Some(result) = hosted_create.as_mut().and_then(|p| p.poll()) {
+            hosted_create = None;
+            match result {
+                Ok(created) => {
+                    room = format!("ROOM-{}-", created.code);
+                    ui.room_mode = menus::RoomMode::Guest;
+                    ui.go(Screen::Lobby);
+                    hosted_join = Some(hosted::HostedJoin::new(&created.code, &created.owner, crate::shared::clock::Instant::now()));
+                }
+                Err(e) => {
+                    let text = hosted::create_error_text(&e);
+                    ui.create_note = text.clone();
+                    flash(&mut ui, &text);
+                }
+            }
+        }
+        let join_progress = hosted_join.as_mut().map(|join| {
+            let (cfg, code) = (net_cfg.clone(), join.code.clone());
+            let name = world_sync::clean_name(&settings.username);
+            let skin = worn.get().hash;
+            join.update(crate::shared::clock::Instant::now(), move || world_sync::join_room(cfg, code, name, skin, String::new(), false))
+        });
+        match join_progress {
+            Some(JoinProgress::Joined(session)) => {
+                let join = hosted_join.take();
+                let code = session.code.clone();
+                let owned = hosted::is_room_owner(
+                    if session.room_owner().is_empty() { join.as_ref().map_or("", |j| j.owner.as_str()) } else { session.room_owner() },
+                    backend.signed_in(),
+                    &backend.account.username,
+                );
+                room = format!("ROOM-{code}-");
+                ui.room_mode = menus::RoomMode::Guest;
+                let text = if owned { hosted::fill(&hosted::rules().strings.opened_owner, &code, 0, 0, "") } else { format!("JOINED ROOM {code} // WAITING FOR THE ROUTE") };
+                flash(&mut ui, &text);
+                room_skin_seen.clear();
+                room_uploaded_seen = usize::MAX;
+                net = Some(*session);
+            }
+            Some(JoinProgress::Failed(text)) => {
+                hosted_join = None;
+                ui.go(Screen::Title);
+                ui.room_mode = menus::RoomMode::Solo;
+                flash(&mut ui, &text);
+            }
+            _ => {}
+        }
+        // what the lobby and the pause menu show of the room's owner: the controls only to the account that created the
+        // room, joined as a guest of an online room (nobody else, not a signed-out player)
+        {
+            let room_owner = net
+                .as_ref()
+                .map(|n| n.room_owner().to_string())
+                .or_else(|| hosted_join.as_ref().map(|j| j.owner.clone()))
+                .unwrap_or_default();
+            let online_guest = net.as_ref().map_or(hosted_join.is_some(), |n| !n.is_host());
+            ui.signed_in = backend.signed_in();
+            ui.owner.owner = hosted::owner_controls_visible(online_guest, &room_owner, backend.signed_in(), &backend.account.username);
+            ui.owner.joined = net.as_ref().is_some_and(|n| !n.is_host() && n.linked());
+            ui.owner.peers = net.as_ref().filter(|_| ui.owner.owner).map(|n| n.roster_peers()).unwrap_or_default();
+            ui.owner.waiting = hosted_join.as_ref().map(|j| j.status_lines());
+            if net.is_none() {
+                owner_cmd.cancel();
+            }
+            if !owner_cmd.busy() && get_time() >= owner_status_until {
+                ui.owner.status.clear();
+            }
+        }
+        // an owner command waits for the directory's ticket, then goes to the room
+        if owner_cmd.busy() {
+            let (cfg, code, token) = (net_cfg.clone(), net.as_ref().map(|n| n.code.clone()).unwrap_or_default(), backend.account.session_token.clone());
+            match owner_cmd.update(move || Pending::spawn(move || hosted::issue_owner_ticket(&cfg, &code, &token))) {
+                OwnerStep::Idle => {}
+                OwnerStep::Say(text) => {
+                    ui.owner.status = text;
+                    owner_status_until = get_time() + OWNER_STATUS_SECONDS;
+                }
+                OwnerStep::Send { ticket, action } => {
+                    if let Some(n) = net.as_mut() {
+                        n.send_owner_command(ticket.reveal(), &action);
+                    }
+                    ui.owner.status.clear();
                 }
             }
         }
@@ -916,6 +1035,14 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 NetEvent::GuestLeft(name) => show_room_notice(playing.as_mut(), &mut ui, &format!("{name} LEFT THE ROOM")),
                 NetEvent::HostLeft(reason) => room_closed = Some(reason),
                 NetEvent::Problem(text) => show_room_notice(playing.as_mut(), &mut ui, &text),
+                NetEvent::OwnerRefused(reason) => {
+                    // the room refused this owner's command: the reason shows where the owner is looking
+                    ui.owner.status = reason.clone();
+                    owner_status_until = get_time() + OWNER_STATUS_SECONDS;
+                    show_room_notice(playing.as_mut(), &mut ui, &reason);
+                }
+                // a server-side room's business: a player's game is never asked to run an owner command
+                NetEvent::OwnerCommand { .. } => {}
                 NetEvent::RouteCommand(RouteCommand::Restart { same_seed, seed, difficulty }) => {
                     // the owner's RESTART ROUTE (Godot carry_out_route_command "restart"): a running route ends for
                     // everyone (ROUTE RESTARTING), then a new run starts on the new seed that the guests enter
@@ -1043,7 +1170,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             } else {
                 admin.input(g)
             };
-            if is_key_pressed(KeyCode::Escape) && !in_report && !admin_esc && !stress_on {
+            if is_key_pressed(KeyCode::Escape) && !in_report && !admin_esc && !stress_on && !update_screen.is_shown() {
                 if pz.open {
                     pause::escape(&mut pz);
                 } else if map_open {
@@ -1067,12 +1194,12 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             if is_key_pressed(KeyCode::F1) {
                 hud_hidden = !hud_hidden;
             }
-            let want_grab = cursor_grab_wanted(
+            let mut want_grab = cursor_grab_wanted(
                 pz.open,
                 in_report,
                 admin.is_open(),
                 map_open,
-                screenshot.is_none() && !stress_on,
+                screenshot.is_none() && !stress_on && !update_screen.is_shown(),
             );
             // a long frame (a hitch, or the window was in the background) may have left the capture half-undone and
             // the cursor warp pending: settle again, re-issue the capture now and again on the next click
@@ -1087,13 +1214,18 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             if web_pointer::lost_after_held(grabbed) {
                 grabbed = false;
                 mouse_last = None;
+                // the browser already let go: tell macroquad too, or it keeps its grabbed flag, ignores the real cursor
+                // position and the pause menu cannot be clicked
+                set_cursor_grab(false);
                 show_mouse(true);
                 // the browser takes Escape to release the lock and never sends it to the game, so a lock lost during
                 // play opens the pause menu instead (the player is not left stuck in the game)
-                if !pz.open && !in_report {
+                if !pz.open && !in_report && !update_screen.is_shown() {
                     pz.show();
+                    // the pause menu is open now: this frame must not ask the browser for the lock again
+                    want_grab = false;
                 }
-            } else if grabbed && !web_pointer::locked() && web_pointer::may_request(false) {
+            } else if want_grab && grabbed && !web_pointer::locked() && web_pointer::may_request(false) {
                 // the browser has not granted the lock yet, or refused it: ask again until it does
                 set_cursor_grab(true);
             }
@@ -1112,6 +1244,12 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 set_cursor_grab(true);
                 show_mouse(false);
             }
+            if cfg!(target_arch = "wasm32") && !want_grab && web_pointer::locked() {
+                // a lock the browser granted after the game stopped wanting it (a request still in flight when a menu
+                // opened): release it, or the menu is stuck behind a locked, hidden cursor
+                set_cursor_grab(false);
+                show_mouse(true);
+            }
             if action.clear_last {
                 mouse_last = None;
             }
@@ -1127,7 +1265,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     dt,
                 ),
             };
-            if pz.open || map_open || admin.is_open() {
+            if pz.open || map_open || admin.is_open() || update_screen.is_shown() {
                 c = Controls::default();
             }
             // the open map takes the mouse and the keys (pan, zoom, waypoints) while the run itself is still
@@ -1308,7 +1446,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                         let name = settings.username.clone();
                         let roster = net.as_ref().map(|n| n.roster()).unwrap_or_default();
                         let local_host = net.as_ref().map_or(true, |n| n.is_host());
-                        if let pause::Out::Abandon = pause::draw_pause(
+                        match pause::draw_pause(
                             &w.assets,
                             &mut pz,
                             &mut ui,
@@ -1319,11 +1457,17 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                             &roster,
                             local_host,
                         ) {
-                            // leaving the route saves it first (Godot `_leave_test`: autosave("quit")); a guest never saves
-                            if local_host {
-                                g.autosave("quit");
+                            pause::Out::Abandon => {
+                                // leaving the route saves it first (Godot `_leave_test`: autosave("quit")); a guest never saves
+                                if local_host {
+                                    g.autosave("quit");
+                                }
+                                leave = true;
                             }
-                            leave = true;
+                            pause::Out::Owner(action) => {
+                                submit_owner(&mut owner_cmd, &mut ui, net.is_some(), action, &mut owner_status_until, get_time());
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -1350,6 +1494,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 if let Some(n) = net.take() {
                     n.leave();
                 }
+                owner_cmd.cancel();
                 ui.room_mode = menus::RoomMode::Solo;
             }
             let action = match ui.screen {
@@ -1424,13 +1569,13 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     );
                     if menus::draw_dossier(&w.assets, &mut ui, &w.content, &username) {
                         ui.go(Screen::Lobby);
-                        ui.focus = menus::lobby_focus(ui.room_mode, menus::LobbyButton::CharacterFiles);
+                        ui.focus = menus::lobby_focus_for(ui.room_mode, ui.owner.owner, menus::LobbyButton::CharacterFiles);
                     }
                     Action::None
                 }
             };
             // the boot card covers the title until it has faded: its buttons take no clicks
-            let action = if boot.blocks_input() { Action::None } else { action };
+            let action = if boot.blocks_input() || update_screen.is_shown() { Action::None } else { action };
             match action {
                 Action::Go(next) => {
                     // cancelling the JOIN dialog drops its request
@@ -1475,13 +1620,24 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                         room = route::new_room_text();
                     }
                 }
-                Action::HostRoom => {
-                    if net.is_none() && net_pending.is_none() {
-                        flash(&mut ui, "OPENING A ROOM ON THE SERVER...");
-                        let name = world_sync::clean_name(&settings.username);
-                        let skin = worn.get().hash;
-                        net_pending = Some((NetIntent::Host, world_sync::host_room(net_cfg.clone(), route::new_room_text(), name, skin)));
+                Action::CreateOnline => {
+                    // a room belongs to an account: signed out is told to sign in, and nothing is asked of the server
+                    if net.is_none() && net_pending.is_none() && hosted_create.is_none() && hosted_join.is_none() {
+                        let s = &hosted::rules().strings;
+                        if net_cfg.offline {
+                            ui.create_note = s.offline.clone();
+                        } else if !backend.signed_in() {
+                            ui.create_note = s.sign_in_required.clone();
+                            flash(&mut ui, &s.sign_in_required);
+                        } else {
+                            ui.create_note = s.creating.clone();
+                            let (cfg, token, d) = (net_cfg.clone(), backend.account.session_token.clone(), diff);
+                            hosted_create = Some(Pending::spawn(move || hosted::create(&cfg, &token, d)));
+                        }
                     }
+                }
+                Action::Owner(action) => {
+                    submit_owner(&mut owner_cmd, &mut ui, net.is_some(), action, &mut owner_status_until, get_time());
                 }
                 Action::PublicRoute => {
                     if net.is_none() && net_pending.is_none() {
@@ -1534,6 +1690,9 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             }
         }
 
+        // the web build's UPDATING screen goes over everything drawn so far (the menus, the run, the pause menu); native builds never see an update
+        let update_ready = web_update::update_available() || (screenshot.is_some() && env("LR_SHOT_UPDATE").is_some());
+        update_screen.frame(&w.assets, raw_dt, update_ready, loading.is_none() && playing.as_ref().is_some_and(|g| g.report.is_none()));
         if let Some(path) = &screenshot {
             // LR_SHOT_RUN=1 starts a run (flashlight on) to look at a floor or the run's overlays
             if frame == 20 && playing.is_none() && env("LR_SHOT_RUN").is_some() {
@@ -1560,6 +1719,10 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                         "statistics" => pz.tab = 1,
                         "players" => pz.tab = 2,
                         "settings" => pz.sub = Sub::Settings,
+                        "skin" => {
+                            pz.sub = Sub::Skin;
+                            ui.settings_tab = 4;
+                        }
                         "dossier" => pz.sub = Sub::Dossier,
                         "confirm" => pz.sub = Sub::Confirm,
                         _ => {}
@@ -1781,4 +1944,49 @@ mod remote_level_tests {
         assert_eq!(map.iter().map(|r| r.peer).collect::<Vec<_>>(), vec![1], "the 3D list keeps both, the map list one");
         assert_eq!(near.len(), 2);
     }
+}
+
+#[cfg(test)]
+mod owner_command_tests {
+    use super::*;
+
+    fn owner_ui(owner: bool) -> Ui {
+        let mut ui = Ui::default();
+        ui.owner.owner = owner;
+        ui
+    }
+
+    #[test]
+    fn a_player_who_does_not_own_the_room_cannot_send_owner_commands() {
+        // nobody but the owner has the controls on screen, and the app refuses a command that arrives anyway
+        let mut cmd = hosted::OwnerCommander::default();
+        let mut ui = owner_ui(false);
+        let mut until = 0.0;
+        assert!(!submit_owner(&mut cmd, &mut ui, true, OwnerAction::End, &mut until, 10.0));
+        assert!(!cmd.busy() && ui.owner.status.is_empty() && until == 0.0);
+    }
+
+    #[test]
+    fn the_owner_needs_a_room_to_send_to() {
+        let mut cmd = hosted::OwnerCommander::default();
+        let mut ui = owner_ui(true);
+        let mut until = 0.0;
+        assert!(!submit_owner(&mut cmd, &mut ui, false, OwnerAction::Start, &mut until, 10.0), "still waiting for the room to open");
+        assert!(!cmd.busy());
+    }
+
+    #[test]
+    fn the_owner_takes_one_command_at_a_time_and_sees_the_confirming_line() {
+        let mut cmd = hosted::OwnerCommander::default();
+        let mut ui = owner_ui(true);
+        let mut until = 0.0;
+        assert!(submit_owner(&mut cmd, &mut ui, true, OwnerAction::Restart, &mut until, 10.0));
+        assert_eq!(ui.owner.status, hosted::rules().strings.owner_confirming);
+        assert_eq!(until, 10.0 + OWNER_STATUS_SECONDS);
+        // the second is refused with the busy line, and the first is still the one waiting
+        assert!(!submit_owner(&mut cmd, &mut ui, true, OwnerAction::End, &mut until, 11.0));
+        assert_eq!(ui.owner.status, hosted::rules().strings.owner_busy);
+        assert!(cmd.busy());
+    }
+
 }

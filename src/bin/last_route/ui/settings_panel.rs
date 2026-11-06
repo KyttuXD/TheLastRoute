@@ -3,8 +3,8 @@
 //! tabs after GAMEPLAY: GAMEPLAY, SKIN, VOICE, MODS, AUDIO, VIDEO and CONTROLS.
 //! A 440x254 panel centred on the canvas with SETTINGS, the rebind hint, the tab bar and ESC CLOSE.
 //! Rows sit at the scene file's offsets; the tab bar and sliders are the project theme's fixed purple.
-//! The web's click-to-move and touch rows have no desktop meaning and are left out. SKIN and MODS
-//! show a note instead of their lists during a run.
+//! The web's click-to-move and touch rows have no desktop meaning and are left out. MODS shows a note instead of
+//! its list during a run; SKIN works in a run too (the pause menu's SKIN entry opens it).
 
 use super::menus::{wheel_notch, Ui};
 use super::style::*;
@@ -119,6 +119,29 @@ const SECTIONS: [(&str, &[(&str, &str)]); 3] = [
 ];
 
 const VOICE_TEXT: &str = "VOICE CHAT RUNS IN ONLINE ROOMS. THIS OFFLINE BUILD HAS NO ROOM SERVER.";
+
+/// The browser build speaks nothing yet (audio/tts.rs has no caller there, and there is no voice chat), so its VOICE tab
+/// says so plainly, and the AUDIO tab's spoken-chat rows (which would only store a value nothing reads) are replaced by a
+/// note. The desktop game keeps both as they were.
+const VOICE_WEB_TEXT: [&str; 2] = [
+    "VOICE CHAT IS NOT AVAILABLE IN THE BROWSER BUILD YET.",
+    "SPOKEN CHAT, VOICES AND SUBTITLES DO NOTHING IN THE BROWSER, SO THEIR CONTROLS ARE HIDDEN. THEY RETURN WHEN THE BROWSER BUILD CAN SPEAK.",
+];
+const AUDIO_WEB_NOTE: &str = "SPOKEN CHAT AND VOICE CHAT: NOT AVAILABLE IN THE BROWSER BUILD YET (SEE THE VOICE TAB).";
+
+/// True in the browser build: the wasm32 target.
+fn is_web() -> bool {
+    cfg!(target_arch = "wasm32")
+}
+
+/// The VOICE tab's paragraphs for this build.
+fn voice_paragraphs(web: bool) -> Vec<&'static str> {
+    if web {
+        VOICE_WEB_TEXT.to_vec()
+    } else {
+        vec![VOICE_TEXT]
+    }
+}
 const MODS_FOOTNOTE: &str =
     "PUT PACK FOLDERS (pack.json + hunters/ ...) IN \"mods\" BESIDE THE GAME, THEN RESTART.";
 
@@ -277,17 +300,19 @@ fn gap(out: &mut Vec<TextLine>, px: f32) {
     });
 }
 
-/// The text of a section tab: SKIN (1), VOICE (2) or MODS (3). SKIN and MODS show a note during a run.
+/// The text of a section tab: VOICE (5) or MODS (6). MODS shows a note during a run.
 fn section_text(a: &Assets, content: &Content, in_run: bool, tab: usize) -> Vec<TextLine> {
     let p = pal();
     let mut out = Vec::new();
     match tab {
-        4 => {
-            out.push(text_line("SKINS CHANGE FROM THE TITLE SCREEN.".into(), 7.0, p.muted, 0.0));
-        }
         5 => {
-            for l in wrap(a, F::Body, VOICE_TEXT, 400.0, 7.0) {
-                out.push(text_line(l, 7.0, p.muted, 0.0));
+            for (i, para) in voice_paragraphs(is_web()).into_iter().enumerate() {
+                if i > 0 {
+                    gap(&mut out, 4.0);
+                }
+                for l in wrap(a, F::Body, para, 400.0, 7.0) {
+                    out.push(text_line(l, 7.0, if i == 0 && is_web() { p.ink } else { p.muted }, 0.0));
+                }
             }
         }
         _ => {
@@ -347,7 +372,7 @@ fn scroll_text(a: &Assets, ui: &mut Ui, x: f32, area: Rect, lines: &[TextLine]) 
 
 // The SKIN tab lives in ui/skin_tab.rs.
 
-/// Draws the overlay; returns true when it closes. `in_run` shows a note for SKIN and MODS.
+/// Draws the overlay; returns true when it closes. `in_run` shows a note for MODS.
 pub fn draw_settings(
     a: &Assets,
     ui: &mut Ui,
@@ -404,9 +429,13 @@ pub fn draw_settings(
         ui.scroll = 0.0;
     }
     ui.settings_tab = pos;
-    if ui.settings_tab != 4 || in_run {
-        // a hidden SKIN tab never keeps a text box focused or the picker open
+    if ui.settings_tab != 4 {
+        // a hidden SKIN tab never keeps a text box focused or a file chooser open
         super::skin_tab::blur();
+    }
+    if ui.settings_tab != 6 {
+        // nor does a hidden MODS tab keep an import chooser open
+        super::mods_tab::blur();
     }
     let x = ox + 20.0;
     let mut changed = false;
@@ -449,12 +478,18 @@ pub fn draw_settings(
                 changed = true;
             }
         }
-        4 if !in_run => {
-            // SKIN: the Godot skin panel (game/menus/skin_panel.gd), see skin_tab
+        4 => {
+            // SKIN: the Godot skin panel (game/menus/skin_panel.gd), see skin_tab. It works in a run too (the pause menu's
+            // SKIN entry opens this tab): an applied skin is worn by the running game and sent to the room.
             super::skin_tab::draw(a, st, ox, oy, &mut changed);
         }
-        4 | 5 | 6 => {
-            // SKIN (during a run), VOICE and MODS each scroll their text below the tab bar
+        6 if is_web() && !in_run => {
+            // MODS in the browser: IMPORT FOLDER / IMPORT .ZIP and the installed mods with REMOVE (ui/mods_tab.rs). The desktop
+            // build lists the packs of its mods folder as text below.
+            super::mods_tab::draw(a, ui, ox, oy, content);
+        }
+        5 | 6 => {
+            // VOICE and MODS each scroll their text below the tab bar
             let lines = section_text(a, content, in_run, ui.settings_tab);
             scroll_text(a, ui, x, Rect::new(x, oy + 66.0, 400.0, 160.0), &lines);
         }
@@ -505,6 +540,14 @@ pub fn draw_settings(
                 st.ui_volume = v.round() / 100.0;
                 changed = true;
             }
+            if is_web() {
+                // the browser build cannot speak chat yet: no dead SPOKEN CHAT / VOICES / SUBTITLES / SPEAK NEARBY CHAT rows
+                let mut ny = oy + 146.0;
+                for l in wrap(a, F::Body, AUDIO_WEB_NOTE, 400.0, 7.0) {
+                    label(a, F::Body, &l, x, ny, 7.0, p.muted);
+                    ny += lh(F::Body, 7.0);
+                }
+            } else {
             // SPOKEN CHAT: label 96, the slider fills, readout 34 (separation 4)
             let y = oy + 142.0;
             label_vc(a, F::Body, "SPOKEN CHAT", x, y, 16.0, setting_label_u(), p.body);
@@ -562,6 +605,7 @@ pub fn draw_settings(
             ) {
                 st.speech_enabled = !st.speech_enabled;
                 changed = true;
+            }
             }
         }
         2 => {
@@ -819,6 +863,18 @@ mod tests {
         for l in VSYNC_NOTES.iter().chain(METAL_NOTES.iter()) {
             assert_eq!(l.to_uppercase(), *l);
         }
+    }
+
+    #[test]
+    fn the_voice_tab_says_plainly_that_the_browser_build_has_no_voice_yet() {
+        let web = voice_paragraphs(true);
+        assert!(web[0].contains("NOT AVAILABLE IN THE BROWSER BUILD YET"), "{web:?}");
+        assert!(web.iter().all(|t| !t.contains("ONLINE ROOMS") && !t.contains("OFFLINE BUILD")), "no claim the browser can do it: {web:?}");
+        assert!(web[1].contains("CONTROLS ARE HIDDEN"), "the hidden controls are explained: {web:?}");
+        assert!(AUDIO_WEB_NOTE.contains("NOT AVAILABLE IN THE BROWSER BUILD YET") && AUDIO_WEB_NOTE.contains("VOICE TAB"));
+        // the desktop game keeps its text and its rows
+        assert_eq!(voice_paragraphs(false), [VOICE_TEXT]);
+        assert_eq!(TAB_KEYS[1].iter().filter(|k| ["voice_volume", "voices", "subtitles", "speech_enabled"].contains(k)).count(), 4);
     }
 
     #[test]

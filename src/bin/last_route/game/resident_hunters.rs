@@ -838,7 +838,12 @@ impl Game {
         }
         let runner = self.target();
         let bots = self.bot_targets();
+        let guests = self.guest_targets();
+        if self.no_local_runner && guests.is_empty() {
+            return None;
+        }
         let rules = flight_edges::rules();
+        let mut guest_catches: Vec<(u32, String, (f32, f32), usize, bool)> = Vec::new();
         let cap = rules.resident_hunter_cap as usize;
         let mut base = self.hunters.len();
         let mut events: Vec<(i32, usize, Event)> = Vec::new();
@@ -862,7 +867,15 @@ impl Game {
                         .collect()
                 };
                 for i in nearest_within_cap(&dists, cap) {
-                    let (t, is_bot) = self.target_for(&brains[i], level, &runner, &bots);
+                    let (t, is_bot, guest_peer) = if self.no_local_runner {
+                        match self.target_for_guests(&brains[i], level, &guests, &bots) {
+                            Some(picked) => picked,
+                            None => continue,
+                        }
+                    } else {
+                        let (t, bot) = self.target_for(&brains[i], level, &runner, &bots);
+                        (t, bot, None)
+                    };
                     brains[i].target_is_bot = is_bot;
                     // Nyxie's wake and dispel read the runner even while she chases a bot (nyxie::Nyxie::runner)
                     if let Gimmick::Nyxie(n) = &mut brains[i].gimmick {
@@ -891,8 +904,14 @@ impl Game {
                     if let (None, Some((kind, ability))) = (held_before, ability_held(&brains[i])) {
                         emits.push((kind, ability, brains[i].def.id.clone(), base + i));
                     }
-                    if c && !is_bot && caught.is_none() {
-                        caught = Some((level, i));
+                    if c && !is_bot {
+                        if let Some(peer) = guest_peer {
+                            // a dedicated room: the hunter took a guest; it calms and the room resolves the capture
+                            brains[i].apply_stun(prof.escape_stun, false);
+                            guest_catches.push((peer, brains[i].def.id.clone(), brains[i].pos, base + i, brains[i].gimmick.capture_inescapable()));
+                        } else if caught.is_none() {
+                            caught = Some((level, i));
+                        }
                     }
                     // the runner is reached only from the same height; a FacilityAlert stays on this list
                     let reach = (brains[i].y - runner.y).abs() <= rules.capture_height;
@@ -910,6 +929,9 @@ impl Game {
             }
             *self.resident_hunters.list_mut(level) = join(ids, brains);
             base += count;
+        }
+        for (peer, id, at, index, inescapable) in guest_catches {
+            self.note_guest_catch(peer, id, at, index, inescapable);
         }
         for (kind, ability, id, index) in emits {
             self.hunter_out.emit(

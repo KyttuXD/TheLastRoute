@@ -6,6 +6,8 @@
 //!   (and a TCP port on 127.0.0.1).
 //! - `--test-suite <files|dirs|globs...> [--out report.json]`: runs suite files, prints a JSON
 //!   report, exit 0 pass / 1 fail / 2 could not run.
+//! - `--dedicated-host CODE [...]`: a room hosted by this process with no local runner (dedicated.rs); the guests are
+//!   hunted, nobody is ever the host.
 //! - `--bot` / `--playtest-runner --scenario=survive ...`: the bot plays a run (playtest_runner.gd).
 //! - `--agent-window [--port N]`: the same protocol with the game window drawing the run
 //!   (screenshots work).
@@ -13,6 +15,8 @@
 //! See docs/AGENT_CLI.md.
 
 pub mod bot;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod dedicated;
 pub mod expect;
 pub mod protocol;
 pub mod runner;
@@ -110,18 +114,27 @@ pub fn wants_agent_window() -> bool {
 
 /// Runs a windowless mode if one was asked for and returns the process exit code.
 pub fn dispatch() -> Option<i32> {
-    let a = Args::get();
+    dispatch_with(&Args::get())
+}
+
+/// [`dispatch`] for an explicit command line (the tests give one).
+pub fn dispatch_with(a: &Args) -> Option<i32> {
     if a.flag("agent-window") {
         return None;
     }
+    // a server-hosted room: before --headless, because the region agent's command line carries both
+    #[cfg(not(target_arch = "wasm32"))]
+    if a.flag("dedicated-host") {
+        return Some(dedicated::main(a));
+    }
     if a.flag("test-suite") || a.flag("test_suite") {
-        return Some(suite::main(&a));
+        return Some(suite::main(a));
     }
     if a.flag("bot") || a.flag("playtest-runner") {
-        return Some(runner::main(&a));
+        return Some(runner::main(a));
     }
     if a.flag("headless") || a.flag("playtest") {
-        return Some(serve(&a));
+        return Some(serve(a));
     }
     None
 }

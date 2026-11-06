@@ -1,13 +1,24 @@
-//! Stair flights and ladder wells as geometry: a flight of square tiles quantised from the flight's surface going down
-//! into a lined pit (or up into a shaft through the ceiling), and a ladder in its shaft. The pieces come out as flat
-//! quads and boxes that `world_mesh` files under the level's floor and wall pictures, so the pit carries the wall's
-//! picture. The flight's footprint, surface and walk code live in `world::facility` / `world::flight`: this is only
-//! what is drawn.
+//! Stair flights and ladder wells as geometry: a flight is a smooth ramp (sloped tiles sampled from the flight's surface,
+//! no tread blocks) going down through an open well, with its fit-out (handrails, the landing guards, the centre post,
+//! the "LEVEL n" signs and the light), and a ladder in its shaft. The pieces come out as quads and boxes that
+//! `world_mesh` files under the level's floor and wall pictures, so the shaft carries the wall's picture. The flight's
+//! footprint, surface and walk code live in `world::facility` / `world::flight`: this is only what is drawn. The numbers
+//! of the fit-out are data (`dressing` in data/flights.json); the geometry of each piece is `world::flight`'s
+//! (`handrails_with`, `landing_guards_with`, `signs_with`, `lamp_place_with`, `spiral_post_with`).
+//!
+//! Which level draws what. The lower level (`dir > 0`) owns the ramp and everything standing on it: the tiles, the solid
+//! divider and wall faces of a switchback or straight flight, the floor under a spiral's helicoid, the post, the
+//! handrails (up to the upper floor), its "LEVEL n" sign and the well's light. The upper level (`dir < 0`) draws no floor
+//! over the well, only its guard rails round the rim, the spiral's slab rail, the part of the handrails that stands
+//! above the upper floor and its own sign.
 
 use super::shader::{Flicker, Lamp};
-use crate::world::facility::{Cover, LinkKind, Stair};
-use crate::world::flight::{flights, max_riser_of};
-use crate::world::vertical::{STEPS_PER_CELL, STOREY};
+use crate::world::facility::{Cell, Cover, LinkKind, Stair};
+use crate::world::flight::{
+    divider_width, flight_surface_y_with, flights, handrails_with, lamp_place_with, landing_guards_with, lane_dividers, signs_with,
+    spiral_post_with, spiral_slab_rail_with, Dressing, Flight, FlightShape, Sign,
+};
+use crate::world::vertical::STOREY;
 use macroquad::prelude::*;
 
 /// Which of the level's pictures a piece is painted with.
@@ -17,8 +28,10 @@ pub enum Face {
     Floor,
     /// The wall picture of the cell (pit and shaft walls).
     Wall,
-    /// Flat colour (treads, risers, the shaft cap).
+    /// Flat colour (the ramp's tiles, the shaft cap).
     Plain,
+    /// Flat colour of the iron fittings (rails, the post): the colour carries the iron, the pictures stay off it.
+    Iron,
 }
 
 pub struct Quad {
@@ -33,78 +46,49 @@ pub struct Quad {
 #[derive(Default)]
 pub struct Parts {
     pub quads: Vec<Quad>,
-    /// Boxes (centre, size, colour) for rails, rungs and grate bars, drawn in plain colour.
+    /// Boxes (centre, size, colour) for rails, rungs, guards and grate bars, drawn in plain colour.
     pub boxes: Vec<(Vec3, Vec3, Color)>,
-    /// Boxes drawn unlit (the nosing of each step), so every step's edge shows even where the light is thin.
+    /// Boxes drawn unlit (the sign lettering, a grate's rim), so they read where the light is thin.
     pub glow: Vec<(Vec3, Vec3, Color)>,
 }
 
-/// One square tile of a flight: its corner, its side (1/STEPS_PER_CELL m) and its quantised top, relative to the
-/// floor of the level that holds the flight.
+/// One square tile of a flight's smooth ramp: its corner, its side (`1 / tiles_per_cell` of a cell) and the heights of
+/// its four corners relative to the floor of the level that holds the flight, in the order (x0, z0), (x0, z1),
+/// (x1, z1), (x1, z0) (x1 = x0 + size, z1 = z0 + size).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tile {
     pub x0: f32,
     pub z0: f32,
     pub size: f32,
-    pub top: f32,
+    pub y: [f32; 4],
 }
 
-/// The tile side in metres.
-fn tile_size() -> f32 {
-    1.0 / STEPS_PER_CELL as f32
-}
-
-/// The riser grid: the shape's largest riser. A neighbouring tile's surface differs by at most that, so the rounded
-/// tops differ by 0 or one grid step and a riser never exceeds it (a finer grid would round to two steps at times).
-fn riser_grid(s: Stair) -> f32 {
-    max_riser_of(flights(), s.shape)
-}
-
-/// `h` rounded to a multiple of `q` measured from the flight's lower floor `lo`, kept within `[lo, hi]`: the foot
-/// tile sits exactly on the lower floor and no tread dips below it or rises past the upper floor.
-fn quantise(h: f32, q: f32, lo: f32, hi: f32) -> f32 {
-    // the nudge settles exact halves (a straight flight's tiles sit on them) the same way every time, so float noise never
-    // rounds one tile down and its neighbour up by two grid steps
-    (lo + (((h - lo) / q) + 1e-3).round() * q).clamp(lo, hi)
-}
-
-/// The flight's lower and upper floor relative to the level that holds it: a flight down (dir < 0) is held by its
-/// upper level and runs from -STOREY to 0; a flight up is held by its lower level and runs from 0 to STOREY.
-fn span_rel(s: Stair) -> (f32, f32) {
-    let lo = if s.dir < 0 { -STOREY } else { 0.0 };
-    (lo, lo + STOREY)
-}
-
-/// The raw surface height for the global tile (`ix`, `iz`): at its centre, or where the walkable band only clips the
-/// tile, at the first of its four quarter points that has a surface (so no walkable point is left without a tile).
-fn tile_surface(s: Stair, level: i32, ix: i32, iz: i32) -> Option<f32> {
-    let size = tile_size();
-    let (cx, cz) = ((ix as f32 + 0.5) * size, (iz as f32 + 0.5) * size);
-    let q = size * 0.25;
-    [(0.0, 0.0), (-q, -q), (q, -q), (-q, q), (q, q)].into_iter().find_map(|(dx, dz)| s.surface_rel(level, cx + dx, cz + dz))
-}
-
-/// The quantised top of the global tile (`ix`, `iz`) (tile coordinates, `STEPS_PER_CELL` a cell), or None where the
-/// flight has no surface (open hole, or outside the flight).
-fn tile_top(s: Stair, level: i32, ix: i32, iz: i32) -> Option<f32> {
-    let (lo, hi) = span_rel(s);
-    tile_surface(s, level, ix, iz).map(|h| quantise(h, riser_grid(s), lo, hi))
-}
-
-/// The tiles of well cell `c` of the flight `s` as held by `level`: one per 1/3 m square with a surface.
-pub fn tiles(s: Stair, level: i32, c: (i32, i32)) -> Vec<Tile> {
-    let per = STEPS_PER_CELL;
-    let size = tile_size();
-    let mut out = Vec::new();
-    for i in 0..per {
-        for j in 0..per {
-            let (ix, iz) = (c.0 * per + i, c.1 * per + j);
-            if let Some(top) = tile_top(s, level, ix, iz) {
-                out.push(Tile { x0: ix as f32 * size, z0: iz as f32 * size, size, top });
-            }
+impl Tile {
+    /// The height at the tile's middle (the mean of its corners).
+    pub fn mean(&self) -> f32 {
+        self.y.iter().sum::<f32>() * 0.25
+    }
+    /// The corners as points.
+    pub fn corners(&self) -> [Vec3; 4] {
+        let (x1, z1) = (self.x0 + self.size, self.z0 + self.size);
+        [
+            vec3(self.x0, self.y[0], self.z0),
+            vec3(self.x0, self.y[1], z1),
+            vec3(x1, self.y[2], z1),
+            vec3(x1, self.y[3], self.z0),
+        ]
+    }
+    /// The unit normal of the tile's top face (pointing up).
+    pub fn normal(&self) -> Vec3 {
+        let p = self.corners();
+        let n = (p[2] - p[0]).cross(p[3] - p[1]);
+        let n = if n.length() > 1e-9 { n.normalize() } else { vec3(0.0, 1.0, 0.0) };
+        if n.y < 0.0 {
+            -n
+        } else {
+            n
         }
     }
-    out
 }
 
 /// What a cell's flight needs to know about its surroundings and ceiling.
@@ -130,10 +114,12 @@ impl Site<'_> {
     }
 }
 
+/// Height of the rails a ladder hatch stands in (its two rails and rungs over the upper floor, `ladder_down`). A flight's
+/// handrails and guards are `dressing.handrail.height` / `dressing.guard.height` in data/flights.json.
+pub const RAIL_H: f32 = 1.05;
+
 /// The ladder's rails and rungs: a light iron, so they read against the dark shaft from standing height.
 const IRON: Color = Color::new(0.82, 0.78, 0.72, 1.0);
-/// The risers: warm concrete, a shade under the treads' stone, so each step's face reads apart from its tread.
-const RISER: Color = Color::new(0.56, 0.5, 0.45, 1.0);
 /// A grate's bars and a hatch's frame: a mid grey iron that catches the light (the old near-black barely showed).
 const GRATE: Color = Color::new(0.5, 0.49, 0.47, 1.0);
 /// The lit edge of a grate cover, a dim warm rim so the cover's outline reads down the shaft.
@@ -141,22 +127,18 @@ const RIM: Color = Color::new(0.95, 0.62, 0.3, 1.0);
 /// A hatch's cover: a lit plate of pale grey-cream, unlit, so the cover never reads as a black hole in the ceiling
 /// (the floor picture painted over the hatch came out black from below).
 pub const HATCH: Color = Color::new(0.62, 0.6, 0.56, 1.0);
-const DAYLIGHT: Color = Color::new(0.75, 0.9, 1.0, 1.0);
 
-/// The nosing at each step's lower edge: a pale cream strip, unlit, so the edge of every step shows.
-const NOSING: Color = Color::new(1.0, 0.93, 0.7, 1.0);
-
-/// The treads' stone: a flat pale grey-cream, drawn in plain colour rather than over the floor picture. The sewer's
-/// floor is orange-brown, and a picture-painted tread blended into it; a light flat stone reads apart from any floor.
+/// The ramp's stone: a flat pale grey-cream, drawn in plain colour rather than over the floor picture. The sewer's
+/// floor is orange-brown, and a picture-painted ramp blended into it; a light flat stone reads apart from any floor.
 pub const TREAD_STONE: Color = Color::new(0.74, 0.72, 0.68, 1.0);
 
-/// Steps and pit walls fade with depth, but never to black: the lowest tread is still 75 % of the picture.
+/// The ramp fades with depth, but never to black: the lowest tile is still 75 % of the picture.
 fn shade(y: f32, h: f32) -> Color {
     let f = if y < 0.0 { 1.0 - 0.25 * (-y / h).min(1.0) } else { 1.0 - 0.2 * (y / h).min(1.0) };
     Color::new(f, f, f, 1.0)
 }
 
-/// A tread's colour: its depth shade times the stone.
+/// A tile's colour: its depth shade times the stone.
 fn tread_tint(s: Color) -> Color {
     Color::new(s.r * TREAD_STONE.r, s.g * TREAD_STONE.g, s.b * TREAD_STONE.b, 1.0)
 }
@@ -170,134 +152,278 @@ fn push(out: &mut Parts, face: Face, c: [Vec3; 4], uv: [Vec2; 4], n: Vec3, col: 
     out.quads.push(Quad { face, c, uv, n, col });
 }
 
-/// A vertical face from height `lo` to `hi` over `a`..`b` across, painted with the wall picture.
-fn wall_face(out: &mut Parts, s: &Site, a: (Vec3, f32), b: (Vec3, f32), lo: f32, hi: f32, n: Vec3, col: Color) {
-    vface(out, Face::Wall, s, a, b, lo, hi, n, col);
+/// The iron of the fittings (rails, post, guards): Godot's colour, lifted to read in this renderer's dark.
+pub fn iron() -> Color {
+    let d = &flights().dressing;
+    let c = d.iron_colour;
+    Color::new((c[0] * d.iron_lift).min(1.0), (c[1] * d.iron_lift).min(1.0), (c[2] * d.iron_lift).min(1.0), 1.0)
 }
 
-/// A vertical face painted with `face`'s picture: the wall picture runs floor to ceiling, the floor picture is laid
-/// by height (a metre a tile), so a pit lined with it reads as stone and not as a panelled wall.
-fn vface(out: &mut Parts, face: Face, s: &Site, a: (Vec3, f32), b: (Vec3, f32), lo: f32, hi: f32, n: Vec3, col: Color) {
-    let (p, u0) = a;
-    let (q, u1) = b;
-    let up = |v: Vec3, y: f32| vec3(v.x, y, v.z);
-    let v = |y: f32| if face == Face::Wall { wall_v(y, s) } else { -y };
-    push(
-        out,
-        face,
-        [up(p, hi), up(q, hi), up(q, lo), up(p, lo)],
-        [vec2(u0, v(hi)), vec2(u1, v(hi)), vec2(u1, v(lo)), vec2(u0, v(lo))],
-        n,
-        col,
-    );
+fn colour3(c: [f32; 3]) -> Color {
+    Color::new(c[0], c[1], c[2], 1.0)
 }
 
-/// A face's colour dimmed to `f` of itself (risers and pit ends sit darker than the treads, so the two read apart).
+/// A face's colour dimmed to `f` of itself (the underside of a hollow ramp sits darker than its top).
 fn dim(c: Color, f: f32) -> Color {
     Color::new(c.r * f, c.g * f, c.b * f, 1.0)
 }
 
-/// The two ground points (and their wall-picture u) of a vertical edge of length `len` centred on `mid`, whose face
-/// looks along horizontal `n`. The order p -> q makes the quad's winding match `n` (see `vface`).
-fn edge_ends(mid: (f32, f32), len: f32, n: (i32, i32)) -> ((Vec3, f32), (Vec3, f32)) {
-    let e = (-(n.1 as f32) * len * 0.5, n.0 as f32 * len * 0.5);
-    let p = vec3(mid.0 - e.0, 0.0, mid.1 - e.1);
-    let q = vec3(mid.0 + e.0, 0.0, mid.1 + e.1);
-    ((p, p.x + p.z), (q, q.x + q.z))
-}
-
-/// A vertical face over one edge (see `edge_ends`) from `lo` to `hi`, looking along `n`.
-fn edge_face(out: &mut Parts, face: Face, site: &Site, mid: (f32, f32), len: f32, n: (i32, i32), lo: f32, hi: f32, col: Color) {
-    let (a, b) = edge_ends(mid, len, n);
-    vface(out, face, site, a, b, lo, hi, vec3(n.0 as f32, 0.0, n.1 as f32), col);
-}
-
 const DIRS: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 
-/// Adds cell `c` (one of `s.well_cells()`) of the flight `s` as held by `level`: its tiles (flat tops, risers where a
-/// neighbour tile is lower, a nosing on those edges) and the side walls at open block edges, for the flight's owner
-/// (the lower level, dir > 0), with no shaft cap or ceiling (the well is open above) and the divider wall once. The
-/// upper level (dir < 0) draws no tiles, lining or floor: only the rim railing.
-pub fn flight_cell(out: &mut Parts, c: (i32, i32), s: Stair, level: i32, site: &Site) {
-    if s.dir < 0 {
-        // the upper level: the well is open (no floor, no tiles, no lining); only a railing round its rim
-        rim_rails(out, c, s, site);
+// ---------------------------------------------------------------------------------------------------------------------
+// The smooth ramp
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// The tiles of well cell `c` of the flight `s` as held by `level`: `tiles_per_cell` squared of them, those with a
+/// surface. A tile is there when the flight's surface is at its middle or, where the surface only clips the tile, at one
+/// of its quarter points, so no walkable point is left bare. The four corners take the surface's own height (read a hair
+/// inside the tile, so a corner on the edge of the surface still reads it); a corner off the surface takes the tile's
+/// middle height. The whole drawn surface is used (`flight_surface_y_with`), so a spiral's slab is drawn too.
+pub fn tiles(s: Stair, level: i32, c: (i32, i32)) -> Vec<Tile> {
+    let Some(f) = s.flight(level) else { return vec![] };
+    let rules = flights();
+    let per = rules.tiles_for(f.shape).max(1);
+    let size = 1.0 / per as f32;
+    let base = level as f32 * STOREY;
+    let at = |x: f32, z: f32| flight_surface_y_with(rules, &f, x, z).map(|y| y - base);
+    let q = size * 0.25;
+    let mut out = Vec::new();
+    for i in 0..per {
+        for j in 0..per {
+            let (x0, z0) = (c.0 as f32 + i as f32 * size, c.1 as f32 + j as f32 * size);
+            let (cx, cz) = (x0 + size * 0.5, z0 + size * 0.5);
+            let Some(hc) = [(0.0, 0.0), (-q, -q), (q, -q), (-q, q), (q, q)].into_iter().find_map(|(dx, dz)| at(cx + dx, cz + dz)) else {
+                continue;
+            };
+            let inset = size * 0.02;
+            let corner = |px: f32, pz: f32| {
+                let (ix, iz) = ((cx - px).signum() * inset, (cz - pz).signum() * inset);
+                // a corner across a drop in the surface (the slab beside a spiral's lowest step) takes the tile's own height
+                at(px + ix, pz + iz).filter(|h| (h - hc).abs() <= TILE_JUMP).unwrap_or(hc)
+            };
+            out.push(Tile {
+                x0,
+                z0,
+                size,
+                y: [corner(x0, z0), corner(x0, z0 + size), corner(x0 + size, z0 + size), corner(x0 + size, z0)],
+            });
+        }
+    }
+    out
+}
+
+/// The most a tile's corner may differ from its middle (m): a tile spans a quarter of a metre at a slope under 2, so a bigger
+/// difference is a drop in the surface the tile straddles, and the corner is not read across it.
+const TILE_JUMP: f32 = 0.6;
+
+/// The tile's top face, and for a hollow ramp (a spiral's helicoid is a thin shell) its darker underside too.
+fn tile_quads(out: &mut Parts, t: &Tile, hollow: bool, site: &Site) {
+    let p = t.corners();
+    let col = tread_tint(shade(t.mean(), site.h));
+    let n = t.normal();
+    push(out, Face::Plain, p, [Vec2::ZERO; 4], n, col);
+    if hollow {
+        push(out, Face::Plain, [p[3], p[2], p[1], p[0]], [Vec2::ZERO; 4], -n, dim(col, 0.8));
+    }
+}
+
+/// The face of a vertical edge between `a` and `b` (ground points with the tile height at each), from the floor up to
+/// those heights, painted with the wall picture, facing `d`. Heights are kept under the floor above.
+fn edge_wall(out: &mut Parts, site: &Site, a: (f32, f32, f32), b: (f32, f32, f32), d: (i32, i32), col: Color) {
+    let top = site.shaft_top();
+    let (ha, hb) = (a.2.min(top), b.2.min(top));
+    if ha <= 1e-5 && hb <= 1e-5 {
         return;
     }
-    let per = STEPS_PER_CELL;
-    let size = tile_size();
-    let eps = 1e-5;
-    for t in tiles(s, level, c) {
-        let (ix, iz) = ((t.x0 / size).round() as i32, (t.z0 / size).round() as i32);
-        let col = shade(t.top, site.h);
-        let top = [vec3(t.x0, t.top, t.z0), vec3(t.x0, t.top, t.z0 + size), vec3(t.x0 + size, t.top, t.z0 + size), vec3(t.x0 + size, t.top, t.z0)];
-        push(out, Face::Plain, top, [Vec2::ZERO; 4], vec3(0., 1., 0.), tread_tint(col));
-        let centre = (t.x0 + size * 0.5, t.z0 + size * 0.5);
-        for d in DIRS {
-            let (nix, niz) = (ix + d.0, iz + d.1);
-            let nc = (nix.div_euclid(per), niz.div_euclid(per));
-            let mid = (centre.0 + d.0 as f32 * size * 0.5, centre.1 + d.1 as f32 * size * 0.5);
-            if nc != c && !(site.well)(nc.0, nc.1) {
-                // the edge of the whole block
-                if !(site.solid)(nc.0, nc.1) && t.top > eps {
-                    // the side of the stair block where nothing else closes it, facing out of the block (never above the floor over the shaft)
-                    edge_face(out, Face::Wall, site, mid, size, d, 0.0, t.top.min(site.shaft_top()), col);
-                }
-                continue;
-            }
-            // a lower tile of the same flight: a riser down to it and a nosing on this tile's edge
-            if let Some(nt) = tile_top(s, level, nix, niz) {
-                if nt < t.top - eps {
-                    edge_face(out, Face::Plain, site, mid, size, d, nt, t.top, dim(RISER, shade(nt, site.h).r));
-                    let size3 = vec3(if d.0 != 0 { 0.08 } else { size * 0.96 }, 0.05, if d.1 != 0 { 0.08 } else { size * 0.96 });
-                    let at = vec3(centre.0 + d.0 as f32 * (size * 0.5 - 0.05), t.top + 0.01, centre.1 + d.1 as f32 * (size * 0.5 - 0.05));
-                    out.glow.push((at, size3, NOSING));
-                }
-            }
-        }
-    }
-    // no shaft cap and no ceiling: the well is open to the level above. The divider wall goes in once per stair.
-    if s.well_cells().first().is_some_and(|f| (f.x, f.y) == c) {
-        divider_wall(out, s, level, site);
-    }
+    let (ua, ub) = (a.0 + a.1, b.0 + b.1);
+    let v = |y: f32| wall_v(y, site);
+    push(
+        out,
+        Face::Wall,
+        [vec3(a.0, ha, a.1), vec3(b.0, hb, b.1), vec3(b.0, 0.0, b.1), vec3(a.0, 0.0, a.1)],
+        [vec2(ua, v(ha)), vec2(ub, v(hb)), vec2(ub, v(0.0)), vec2(ua, v(0.0))],
+        vec3(d.0 as f32, 0.0, d.1 as f32),
+        col,
+    );
 }
 
-/// Height of the railing round an open well rim.
-pub const RAIL_H: f32 = 1.05;
-
-/// The railing of a well cell of a flight down (held by the upper level): posts, a top rail and a mid rail along every
-/// edge that borders a non-well, non-solid cell, except the edge facing the landing cell, which stays open. Built of
-/// boxes, so both sides of every piece show.
-fn rim_rails(out: &mut Parts, c: (i32, i32), s: Stair, site: &Site) {
-    let landing = s.landing();
-    let col = tread_tint(shade(0.0, site.h));
-    let mid_c = (c.0 as f32 + 0.5, c.1 as f32 + 0.5);
+/// The side faces of a solid ramp (a switchback or straight flight is a wedge down to the floor): where a tile's edge
+/// borders a cell that is neither part of the well nor a wall, the wedge's side shows, from the floor up to the tile.
+fn tile_walls(out: &mut Parts, t: &Tile, c: (i32, i32), site: &Site) {
+    let (x1, z1) = (t.x0 + t.size, t.z0 + t.size);
+    let col = shade(t.mean(), site.h);
     for d in DIRS {
-        let nc = (c.0 + d.0, c.1 + d.1);
-        if (site.well)(nc.0, nc.1) || (site.solid)(nc.0, nc.1) || (landing.x, landing.y) == nc {
+        let probe = (t.x0 + t.size * 0.5 + d.0 as f32 * t.size, t.z0 + t.size * 0.5 + d.1 as f32 * t.size);
+        let nc = (probe.0.floor() as i32, probe.1.floor() as i32);
+        if nc == c || (site.well)(nc.0, nc.1) || (site.solid)(nc.0, nc.1) {
             continue;
         }
-        let inset = 0.06;
-        let at = (mid_c.0 + d.0 as f32 * (0.5 - inset), mid_c.1 + d.1 as f32 * (0.5 - inset));
-        // along the edge: x for a north/south edge, z for an east/west one
-        let along = vec3(d.1.abs() as f32, 0.0, d.0.abs() as f32);
-        let thin = vec3(d.0.abs() as f32, 0.0, d.1.abs() as f32);
-        let bar = |len: f32, t: f32, h: f32| along * len + thin * t + vec3(0.0, h, 0.0);
-        out.boxes.push((vec3(at.0, RAIL_H, at.1), bar(1.0, 0.06, 0.05), col));
-        out.boxes.push((vec3(at.0, RAIL_H * 0.5, at.1), bar(1.0, 0.04, 0.04), col));
-        for k in [-0.47f32, 0.0, 0.47] {
-            let p = vec3(at.0 + along.x * k, RAIL_H * 0.5, at.1 + along.z * k);
-            out.boxes.push((p, bar(0.06, 0.06, RAIL_H), col));
-        }
+        let (a, b) = match d {
+            (1, 0) => ((x1, t.z0, t.y[3]), (x1, z1, t.y[2])),
+            (-1, 0) => ((t.x0, t.z0, t.y[0]), (t.x0, z1, t.y[1])),
+            (0, 1) => ((t.x0, z1, t.y[1]), (x1, z1, t.y[2])),
+            _ => ((t.x0, t.z0, t.y[0]), (x1, t.z0, t.y[3])),
+        };
+        edge_wall(out, site, a, b, d, col);
     }
 }
 
-/// The thin wall between a switchback's two lanes: along every `s.dividers(level)` segment from the floor to the
-/// higher of the two lane surfaces there plus the rail height, clipped to the floor above. Straight and spiral flights
-/// have no divider and add nothing. Drawn as boxes (so both faces show), a box per tile-length run.
-pub fn divider_wall(out: &mut Parts, s: Stair, level: i32, site: &Site) {
-    let t = flights().divider_thickness;
-    for seg in s.dividers(level) {
+/// The floor under a well cell, in the floor picture (a spiral's helicoid is a shell, the lower level's floor lies
+/// under it).
+fn floor_quad(out: &mut Parts, c: (i32, i32)) {
+    let (x, z) = (c.0 as f32, c.1 as f32);
+    push(
+        out,
+        Face::Floor,
+        [vec3(x, 0.0, z), vec3(x + 1.0, 0.0, z), vec3(x + 1.0, 0.0, z + 1.0), vec3(x, 0.0, z + 1.0)],
+        [vec2(0., 0.), vec2(1., 0.), vec2(1., 1.), vec2(0., 1.)],
+        vec3(0.0, 1.0, 0.0),
+        WHITE,
+    );
+}
+
+/// Adds cell `c` (one of `s.well_cells()`) of the flight `s` as held by `level`: for the flight's owner (the lower level,
+/// dir > 0) its smooth tiles, the side faces of a solid ramp, the floor under a spiral's shell, and once per stair the
+/// divider, post, handrails, sign and (nothing else: the light is `lamp`) fittings; for the upper level (dir < 0) no tiles,
+/// lining or floor, only once per stair the guards, the slab rail, the handrail tops and the upper sign.
+pub fn flight_cell(out: &mut Parts, c: (i32, i32), s: Stair, level: i32, site: &Site) {
+    let Some(f) = s.flight(level) else { return };
+    let first = s.well_cells().first().is_some_and(|w| (w.x, w.y) == c);
+    if s.dir < 0 {
+        if first {
+            upper_dressing(out, &f, site);
+        }
+        return;
+    }
+    let hollow = f.shape == FlightShape::Spiral;
+    for t in tiles(s, level, c) {
+        tile_quads(out, &t, hollow, site);
+        if !hollow {
+            tile_walls(out, &t, c, site);
+        }
+    }
+    if hollow {
+        floor_quad(out, c);
+    }
+    if first {
+        lower_dressing(out, &f, site);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The fit-out
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// The lower level's fittings of one stair, once: the divider, the post, the handrails up to the upper floor, the sign.
+fn lower_dressing(out: &mut Parts, f: &Flight, site: &Site) {
+    divider_wall(out, f, site);
+    post(out, f, site);
+    // a bar is cut half its thickness short of the upper floor, so none of it passes the floor above (the rest of the rail
+    // is the upper level's, re-based to its floor)
+    let m = flights().dressing.rail_thickness * 0.5;
+    for r in handrails_with(flights(), f) {
+        for (a, b) in clip_segments(&r.points, 0.0, site.shaft_top() - m) {
+            rail_bar(out, a, b);
+        }
+    }
+    for sign in signs_with(flights(), f).iter().filter(|s| !s.upper) {
+        sign_lettering(out, sign);
+    }
+}
+
+/// The upper level's fittings of one stair, once: the guards round the rim, the slab rail, the part of the handrails that
+/// stands over the upper floor (re-based to it) and its sign.
+fn upper_dressing(out: &mut Parts, f: &Flight, site: &Site) {
+    let rules = flights();
+    let d = &rules.dressing;
+    for g in landing_guards_with(rules, f) {
+        if (site.solid)(g.outside.x, g.outside.y) {
+            continue;
+        }
+        guard_bar(out, g.seg.a, g.seg.b, g.outside, d);
+    }
+    if let Some(seg) = spiral_slab_rail_with(rules, f) {
+        let y = d.rail_height;
+        rail_bar(out, [seg.a.0, y, seg.a.1], [seg.b.0, y, seg.b.1]);
+    }
+    let m = d.rail_thickness * 0.5;
+    for r in handrails_with(rules, f) {
+        for (a, b) in clip_segments(&r.points, site.shaft_top() + m, f32::MAX) {
+            rail_bar(out, [a[0], a[1] - site.shaft_top(), a[2]], [b[0], b[1] - site.shaft_top(), b[2]]);
+        }
+    }
+    for sign in signs_with(rules, f).iter().filter(|s| s.upper) {
+        sign_lettering(out, sign);
+    }
+}
+
+/// The parts of a polyline's segments that lie within `lo..=hi` in height: each segment cut to the band (a segment wholly
+/// outside gives none).
+pub fn clip_segments(points: &[[f32; 3]], lo: f32, hi: f32) -> Vec<([f32; 3], [f32; 3])> {
+    let mut out = Vec::new();
+    for w in points.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let dy = b[1] - a[1];
+        // the parameter range of the segment inside the band
+        let (mut t0, mut t1) = (0.0f32, 1.0f32);
+        if dy.abs() < 1e-9 {
+            if a[1] < lo || a[1] > hi {
+                continue;
+            }
+        } else {
+            let (ta, tb) = ((lo - a[1]) / dy, (hi.min(1e9) - a[1]) / dy);
+            let (enter, leave) = if ta < tb { (ta, tb) } else { (tb, ta) };
+            t0 = t0.max(enter);
+            t1 = t1.min(leave);
+        }
+        if t1 - t0 < 1e-6 {
+            continue;
+        }
+        let at = |t: f32| [a[0] + (b[0] - a[0]) * t, a[1] + dy * t, a[2] + (b[2] - a[2]) * t];
+        out.push((at(t0), at(t1)));
+    }
+    out
+}
+
+/// A square bar from `a` to `b` (grid x, height, grid z), `rail_thickness` across, built of four quads in the iron's
+/// colour so both sides of every piece show.
+fn rail_bar(out: &mut Parts, a: [f32; 3], b: [f32; 3]) {
+    let t = flights().dressing.rail_thickness * 0.5;
+    let (pa, pb) = (Vec3::from(a), Vec3::from(b));
+    let dir = pb - pa;
+    if dir.length() < 1e-6 {
+        return;
+    }
+    let up = if dir.normalize().y.abs() > 0.95 { vec3(1.0, 0.0, 0.0) } else { vec3(0.0, 1.0, 0.0) };
+    let s1 = dir.cross(up).normalize() * t;
+    let s2 = dir.cross(s1).normalize() * t;
+    let ring = [s1 + s2, -s1 + s2, -s1 - s2, s1 - s2];
+    let col = iron();
+    for i in 0..4 {
+        let (r0, r1) = (ring[i], ring[(i + 1) % 4]);
+        let n = (r0 + r1).normalize();
+        push(out, Face::Iron, [pa + r0, pb + r0, pb + r1, pa + r1], [Vec2::ZERO; 4], n, col);
+    }
+}
+
+/// A guard rail along `seg` (grid coordinates), the thin bar Godot draws at the handrail's height, standing a hair out
+/// on the floor cell `outside` side of the rim.
+fn guard_bar(out: &mut Parts, a: (f32, f32), b: (f32, f32), outside: Cell, d: &Dressing) {
+    let mid = ((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5);
+    let to_out = (outside.x as f32 + 0.5 - mid.0, outside.y as f32 + 0.5 - mid.1);
+    // the rim is axis-aligned: step out along the axis the rim is not along
+    let along_x = (b.0 - a.0).abs() > (b.1 - a.1).abs();
+    let step = if along_x { (0.0, to_out.1.signum() * 0.02) } else { (to_out.0.signum() * 0.02, 0.0) };
+    let len = (b.0 - a.0).abs().max((b.1 - a.1).abs());
+    let size = if along_x { vec3(len, d.rail_thickness, d.guard_thickness) } else { vec3(d.guard_thickness, d.rail_thickness, len) };
+    out.boxes.push((vec3(mid.0 + step.0, d.rail_height, mid.1 + step.1), size, iron()));
+}
+
+/// The solid wall between a switchback's flights, floor to the upper floor, `divider_width` metres thick with flat ends
+/// (Godot's divider box). Straight and spiral flights have none and add nothing. Drawn as one box, so both faces show.
+fn divider_wall(out: &mut Parts, f: &Flight, site: &Site) {
+    let w = divider_width();
+    for seg in lane_dividers(f) {
         let (dx, dz) = (seg.b.0 - seg.a.0, seg.b.1 - seg.a.1);
         let len = (dx * dx + dz * dz).sqrt();
         if len < 1e-4 {
@@ -305,22 +431,113 @@ pub fn divider_wall(out: &mut Parts, s: Stair, level: i32, site: &Site) {
         }
         let (ux, uz) = (dx / len, dz / len);
         let (nx, nz) = (-uz, ux);
-        let step = tile_size();
-        let n = (len / step).ceil().max(1.0) as i32;
-        let run = len / n as f32;
-        for i in 0..n {
-            let m = (i as f32 + 0.5) * run;
-            let (px, pz) = (seg.a.0 + ux * m, seg.a.1 + uz * m);
-            let side = |k: f32| s.surface_rel(level, px + nx * k, pz + nz * k);
-            let top = [side(0.0), side(0.2), side(-0.2)].into_iter().flatten().fold(0.0f32, f32::max);
-            let hi = (top + RAIL_H).min(site.shaft_top());
-            if hi <= 1e-4 {
-                continue;
+        let top = site.shaft_top();
+        let size = vec3(ux.abs() * len + nx.abs() * w, top, uz.abs() * len + nz.abs() * w);
+        let mid = ((seg.a.0 + seg.b.0) * 0.5, (seg.a.1 + seg.b.1) * 0.5);
+        out.boxes.push((vec3(mid.0, top * 0.5, mid.1), size, tread_tint(shade(top * 0.5, site.h))));
+    }
+}
+
+/// A spiral's centre post: an upright prism of `POST_SIDES` faces, its radius the data's, floor to the upper floor.
+fn post(out: &mut Parts, f: &Flight, site: &Site) {
+    let Some(((cx, cz), r)) = spiral_post_with(flights(), f) else { return };
+    let top = site.shaft_top();
+    let col = iron();
+    let at = |i: usize| {
+        let a = i as f32 / POST_SIDES as f32 * std::f32::consts::TAU;
+        (cx + r * a.cos(), cz + r * a.sin(), a)
+    };
+    for i in 0..POST_SIDES {
+        let (p, q) = (at(i), at((i + 1) % POST_SIDES));
+        let mid = (p.2 + q.2 + if i + 1 == POST_SIDES { std::f32::consts::TAU } else { 0.0 }) * 0.5;
+        push(
+            out,
+            Face::Iron,
+            [vec3(p.0, top, p.1), vec3(q.0, top, q.1), vec3(q.0, 0.0, q.1), vec3(p.0, 0.0, p.1)],
+            [Vec2::ZERO; 4],
+            vec3(mid.cos(), 0.0, mid.sin()),
+            col,
+        );
+    }
+}
+
+/// The post is drawn as a prism this many sided.
+const POST_SIDES: usize = 12;
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The "LEVEL n" sign
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// The rows of a glyph of the sign's 5 x 7 face, top to bottom, bit 4 the left column. Only the letters and signs the
+/// sign says ("LEVEL +n", "LEVEL 0", "LEVEL -n") and the digits.
+fn glyph(c: char) -> [u8; 7] {
+    match c {
+        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+        'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
+        'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
+        '+' => [0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000],
+        '-' => [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
+        '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+        '2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
+        '3' => [0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110],
+        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
+        '6' => [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
+        _ => [0; 7],
+    }
+}
+
+/// The lit runs of a sign's lettering as (offset along the reading direction from the sign's middle, run length, height
+/// over the sign's middle, in metres): each row of each glyph, runs of lit dots joined.
+pub fn sign_runs(text: &str, text_height: f32) -> Vec<(f32, f32, f32)> {
+    let dot = text_height / 7.0;
+    let n = text.chars().count() as f32;
+    let width = (n * 6.0 - 1.0) * dot;
+    let mut out = Vec::new();
+    for (i, ch) in text.chars().enumerate() {
+        let origin = -width * 0.5 + i as f32 * 6.0 * dot;
+        for (row, bits) in glyph(ch).into_iter().enumerate() {
+            let y = text_height * 0.5 - (row as f32 + 0.5) * dot;
+            let mut col = 0;
+            while col < 5 {
+                if bits >> (4 - col) & 1 == 0 {
+                    col += 1;
+                    continue;
+                }
+                let start = col;
+                while col < 5 && bits >> (4 - col) & 1 == 1 {
+                    col += 1;
+                }
+                let len = (col - start) as f32 * dot;
+                out.push((origin + start as f32 * dot + len * 0.5, len, y));
             }
-            // thickness across the segment, a hair of overlap along it so the runs join
-            let size = vec3((ux.abs() * (run + 0.002)).max(t * nx.abs()), hi, (uz.abs() * (run + 0.002)).max(t * nz.abs()));
-            out.boxes.push((vec3(px, hi * 0.5, pz), size, tread_tint(shade(top, site.h))));
         }
+    }
+    out
+}
+
+/// A sign's lettering as unlit boxes in the sign's colour, standing on the wall plane facing into the well.
+fn sign_lettering(out: &mut Parts, s: &Sign) {
+    let d = &flights().dressing;
+    let (th, depth) = (d.sign_text_height(), 0.02);
+    let dot = th / 7.0;
+    let col = colour3(d.sign_colour);
+    for (along, len, y) in sign_runs(&s.text, th) {
+        let c = vec3(
+            s.at.0 + s.right.0 * along + s.normal.0 * depth * 0.5,
+            s.y + y,
+            s.at.1 + s.right.1 * along + s.normal.1 * depth * 0.5,
+        );
+        let size = vec3(
+            s.right.0.abs() * len * 0.98 + s.normal.0.abs() * depth,
+            dot * 0.92,
+            s.right.1.abs() * len * 0.98 + s.normal.1.abs() * depth,
+        );
+        out.glow.push((c, size, col));
     }
 }
 
@@ -500,10 +717,13 @@ pub fn ladder_up(out: &mut Parts, c: (i32, i32), s: Stair, site: &Site) {
     // twice on one plane here
 }
 
-/// The warm light of a stairwell (a cool shaft of daylight at a ladder's sewer end), so its steps read in the dark.
-/// Only the dir > 0 stair (the owner of the flight or shaft) should have its lamp pushed; callers (world_mesh,
-/// world_stack) filter out dir < 0 stairs, whose lamp is not wanted: the upper level's hatch has no shaft to light, the
-/// lower level's lamp does that. A dir < 0 ladder still returns a harmless lamp at the hatch so the type stays Lamp.
+/// The light of a stairwell (a cool shaft of daylight at a ladder's sewer end), so its flight reads in the dark. A flight's
+/// light is Godot's (warm `ffd29a`, energy 0.7, range 7 m in its 4 m storey; here scaled to the storey and with the
+/// renderer's falloff factor, all data: `dressing.lamp`), hanging over the middle of the well. Only the dir > 0 stair (the
+/// owner of the flight or shaft) should have its lamp pushed; callers (world_mesh, world_stack) filter out dir < 0
+/// stairs, whose lamp is not wanted: the upper level's hatch has no shaft to light, the lower level's lamp does that.
+/// A dir < 0 ladder still returns a harmless lamp at the hatch so the type stays Lamp, and a dir < 0 stair the same
+/// lamp held a storey `h` lower.
 pub fn lamp(s: Stair, h: f32) -> Lamp {
     let (cx, cz) = s.cell.center();
     if s.is_ladder() {
@@ -514,30 +734,19 @@ pub fn lamp(s: Stair, h: f32) -> Lamp {
             Lamp { pos: vec3(cx, h * 0.45, cz), range: 7.0, color: Color::new(0.8, 0.88, 1.0, 1.0), energy: 1.7, flicker: Flicker::NONE }
         };
     }
-    // over the middle of the footprint: the middle of the well cell nearest the cells' centroid
-    let cells = s.well_cells();
-    let n = cells.len().max(1) as f32;
-    let mean = cells.iter().fold((0.0f32, 0.0f32), |a, c| (a.0 + c.x as f32 + 0.5, a.1 + c.y as f32 + 0.5));
-    let mean = (mean.0 / n, mean.1 / n);
-    let (x, z) = cells
-        .iter()
-        .map(|c| (c.x as f32 + 0.5, c.y as f32 + 0.5))
-        .min_by(|a, b| {
-            let d = |p: &(f32, f32)| (p.0 - mean.0).powi(2) + (p.1 - mean.1).powi(2);
-            d(a).partial_cmp(&d(b)).unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .unwrap_or((cx, cz));
-    let y = if s.dir < 0 { 0.3 } else { h * 0.5 };
-    Lamp { pos: vec3(x, y, z), range: 13.0, color: Color::new(1.0, 0.74, 0.45, 1.0), energy: 5.0, flicker: Flicker::NONE }
+    let rules = flights();
+    let d = &rules.dressing;
+    let (x, y, z) = s.flight(0).map_or((cx, d.lamp_y(), cz), |f| lamp_place_with(rules, &f));
+    let y = if s.dir < 0 { y - h } else { y };
+    Lamp { pos: vec3(x, y, z), range: d.lamp_range(), color: colour3(d.lamp_colour), energy: d.lamp_energy(), flicker: Flicker::NONE }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::world::facility::{Cell, LinkKind};
-    use crate::world::flight::FlightShape;
-    use crate::world::vertical::STOREY;
-    use std::collections::{HashMap, HashSet};
+    use crate::world::flight::{well_footprint, FlightShape};
+    use std::collections::HashSet;
 
     const H: f32 = 5.0;
     const RUNS: [(i32, i32); 4] = [(0, -1), (0, 1), (1, 0), (-1, 0)];
@@ -578,81 +787,87 @@ mod tests {
         out
     }
 
-    /// Every tile of the flight keyed by its global tile coordinates.
-    fn tile_map(s: Stair) -> HashMap<(i32, i32), Tile> {
-        let mut m = HashMap::new();
-        for c in s.well_cells() {
-            for t in tiles(s, level_of(s), (c.x, c.y)) {
-                m.insert(((t.x0 / t.size).round() as i32, (t.z0 / t.size).round() as i32), t);
-            }
-        }
-        m
+    /// Every tile of the flight.
+    fn all_tiles(s: Stair) -> Vec<Tile> {
+        s.well_cells().iter().flat_map(|c| tiles(s, level_of(s), (c.x, c.y))).collect()
     }
 
-    fn tread_quads(p: &Parts) -> Vec<&Quad> {
-        p.quads.iter().filter(|q| q.face == Face::Plain && q.n == vec3(0., 1., 0.)).collect()
+    fn ramp_quads(p: &Parts) -> Vec<&Quad> {
+        p.quads.iter().filter(|q| q.face == Face::Plain).collect()
     }
 
-    fn risers(p: &Parts) -> Vec<&Quad> {
-        p.quads.iter().filter(|q| q.face == Face::Plain && q.n.y == 0.0).collect()
+    fn iron_quads(p: &Parts) -> Vec<&Quad> {
+        p.quads.iter().filter(|q| q.face == Face::Iron).collect()
+    }
+
+    fn top_faces(p: &Parts) -> Vec<&Quad> {
+        p.quads.iter().filter(|q| q.face == Face::Plain && q.n.y > 0.0).collect()
+    }
+
+    fn base_of(s: Stair) -> f32 {
+        level_of(s) as f32 * H
     }
 
     #[test]
     fn flight_tiles_follow_the_surface() {
         for shape in SHAPES {
-            let q = riser_grid(stair(-1, (0, -1), shape));
             for run in RUNS {
-                for dir in [-1, 1] {
-                    for level in [0, -1] {
-                        let s = stair(dir, run, shape);
-                        let mut count = 0;
-                        for c in s.well_cells() {
-                            for t in tiles(s, level, (c.x, c.y)) {
-                                // a tile exists where the surface does: at its centre, or (where the band only clips it) a quarter point
-                                let (cx, cz) = (t.x0 + t.size * 0.5, t.z0 + t.size * 0.5);
-                                let surface = s.surface_rel(level, cx, cz).or_else(|| s.surface_rel(level, cx - t.size * 0.25, cz - t.size * 0.25)).or_else(|| s.surface_rel(level, cx + t.size * 0.25, cz - t.size * 0.25)).or_else(|| s.surface_rel(level, cx - t.size * 0.25, cz + t.size * 0.25)).or_else(|| s.surface_rel(level, cx + t.size * 0.25, cz + t.size * 0.25)).expect("a tile only exists where the surface does");
-                                assert!((t.top - surface).abs() <= q / 2.0 + EPS, "{shape:?} {run:?} {dir} {level}: top {} surface {surface}", t.top);
-                                assert!((t.size - 1.0 / STEPS_PER_CELL as f32).abs() < 1e-6);
-                                count += 1;
-                            }
-                        }
-                        // a level that does not hold this flight has no surface and draws nothing; the holding level has tiles
-                        if level == level_of(s) {
-                            assert!(count > 0, "{shape:?} {run:?} {dir}: the holding level has tiles");
-                        }
-                    }
+                let s = stair(1, run, shape);
+                let f = s.flight(level_of(s)).unwrap();
+                let ts = all_tiles(s);
+                assert!(!ts.is_empty(), "{shape:?} {run:?}: the holding level has tiles");
+                for t in &ts {
+                    // a tile exists where the surface does: at its middle, or (where the band only clips it) a quarter point
+                    let (cx, cz) = (t.x0 + t.size * 0.5, t.z0 + t.size * 0.5);
+                    let q = t.size * 0.25;
+                    let surface = [(0.0, 0.0), (-q, -q), (q, -q), (-q, q), (q, q)]
+                        .into_iter()
+                        .find_map(|(dx, dz)| flight_surface_y_with(flights(), &f, cx + dx, cz + dz))
+                        .expect("a tile only exists where the surface does")
+                        - base_of(s);
+                    // the tile is planar-ish: its mean is the surface within the surface's own slope across the tile
+                    assert!((t.mean() - surface).abs() <= 0.35, "{shape:?} {run:?}: tile mean {} surface {surface}", t.mean());
+                    assert!(t.y.iter().all(|y| *y >= -EPS && *y <= H + EPS), "{shape:?} {run:?}: a corner at {:?}", t.y);
+                    assert!((t.size - 1.0 / flights().tiles_for(shape) as f32).abs() < 1e-6);
                 }
+                // the other level holds nothing of this flight
+                assert!(tiles(stair(-1, run, shape), 0, (20, 21)).iter().all(|t| t.y.iter().all(|y| *y <= EPS)), "an upper cell's tiles are below its floor");
             }
         }
     }
 
+    /// The ramp has no step treads: neighbouring tiles of a solid flight differ by no more than the slope across a tile,
+    /// and nothing draws a riser.
     #[test]
-    fn no_riser_exceeds_the_max_riser() {
-        for shape in SHAPES {
-            let max = max_riser_of(flights(), shape);
+    fn the_ramp_is_smooth_with_no_treads_or_risers() {
+        for shape in [FlightShape::Switchback, FlightShape::Straight] {
+            let slope = crate::world::flight::max_riser_of(flights(), shape) * flights().steps_per_cell;
             for run in RUNS {
-                for dir in [-1, 1] {
-                    let s = stair(dir, run, shape);
-                    let m = tile_map(s);
-                    for (&(ix, iz), t) in &m {
-                        for d in DIRS {
-                            if let Some(n) = m.get(&(ix + d.0, iz + d.1)) {
-                                // A switchback's two lanes lie side by side and climb opposite ways, so across the lane
-                                // border the surface differs by up to a whole storey: that border is the divider wall
-                                // (drawn as a riser face), not a step. A pair whose true surfaces already differ by more
-                                // than a riser is such a divider; every other pair, on every shape, must keep the limit.
-                                let raw = |a: i32, b: i32| tile_surface(s, level_of(s), a, b).unwrap();
-                                if shape == FlightShape::Switchback && (raw(ix, iz) - raw(ix + d.0, iz + d.1)).abs() > max {
-                                    continue;
-                                }
-                                assert!((t.top - n.top).abs() <= max + EPS, "{shape:?} {run:?} {dir}: step {} -> {} at tile ({ix}, {iz}) towards {d:?}, raw {:?} -> {:?}", t.top, n.top, tile_surface(s, level_of(s), ix, iz), tile_surface(s, level_of(s), ix + d.0, iz + d.1));
-                            }
+                let s = stair(1, run, shape);
+                let per = flights().tiles_for(shape);
+                let map: std::collections::HashMap<(i32, i32), Tile> = all_tiles(s)
+                    .into_iter()
+                    .map(|t| (((t.x0 * per as f32).round() as i32, (t.z0 * per as f32).round() as i32), t))
+                    .collect();
+                for (&(ix, iz), t) in &map {
+                    for d in [(1, 0), (0, 1)] {
+                        if let Some(n) = map.get(&(ix + d.0, iz + d.1)) {
+                            assert!(
+                                (t.mean() - n.mean()).abs() <= slope * t.size + 1e-3,
+                                "{shape:?} {run:?}: a step of {} between tiles ({ix}, {iz}) and ({}, {})",
+                                (t.mean() - n.mean()).abs(),
+                                ix + d.0,
+                                iz + d.1
+                            );
                         }
                     }
-                    let hi = m.values().map(|t| t.top).fold(f32::MIN, f32::max);
-                    let lo = m.values().map(|t| t.top).fold(f32::MAX, f32::min);
-                    assert!(((hi - lo) - STOREY).abs() <= 0.5, "{shape:?} {run:?} {dir}: the flight spans {} of {STOREY}", hi - lo);
                 }
+                // sloped, never flat treads and vertical risers: every ramp quad is a top face
+                let p = build(s);
+                assert!(ramp_quads(&p).iter().all(|q| q.n.y > 0.5), "{shape:?} {run:?}: a riser or an underside");
+                assert!(p.glow.iter().all(|(_, s, _)| s.y < 0.2), "{shape:?} {run:?}: no nosing strips, only the sign's dots");
+                // a sloped tile is not flat: some tile of each flight slopes
+                assert!(map.values().any(|t| (t.y[0] - t.y[2]).abs() > 0.05), "{shape:?} {run:?}: the ramp slopes");
             }
         }
     }
@@ -661,20 +876,18 @@ mod tests {
     fn every_surface_point_falls_on_a_tile() {
         for shape in SHAPES {
             for run in RUNS {
-                for dir in [-1, 1] {
-                    let s = stair(dir, run, shape);
-                    let level = level_of(s);
-                    for c in s.well_cells() {
-                        let ts = tiles(s, level, (c.x, c.y));
-                        for i in 0..6 {
-                            for j in 0..6 {
-                                let (x, z) = (c.x as f32 + (i as f32 + 0.5) / 6.0, c.y as f32 + (j as f32 + 0.5) / 6.0);
-                                if s.surface_rel(level, x, z).is_some() {
-                                    assert!(
-                                        ts.iter().any(|t| x >= t.x0 && x < t.x0 + t.size && z >= t.z0 && z < t.z0 + t.size),
-                                        "{shape:?} {run:?} {dir}: ({x}, {z}) has a surface but no tile"
-                                    );
-                                }
+                let s = stair(1, run, shape);
+                let f = s.flight(level_of(s)).unwrap();
+                for c in s.well_cells() {
+                    let ts = tiles(s, level_of(s), (c.x, c.y));
+                    for i in 0..6 {
+                        for j in 0..6 {
+                            let (x, z) = (c.x as f32 + (i as f32 + 0.5) / 6.0, c.y as f32 + (j as f32 + 0.5) / 6.0);
+                            if flight_surface_y_with(flights(), &f, x, z).is_some() {
+                                assert!(
+                                    ts.iter().any(|t| x >= t.x0 && x < t.x0 + t.size && z >= t.z0 && z < t.z0 + t.size),
+                                    "{shape:?} {run:?}: ({x}, {z}) has a surface but no tile"
+                                );
                             }
                         }
                     }
@@ -684,9 +897,7 @@ mod tests {
     }
 
     #[test]
-    fn the_mesh_has_a_tread_per_tile_and_stays_inside_the_storey() {
-        // (heights come from the flight surface, checked by flight_tiles_follow_the_surface and
-        // no_riser_exceeds_the_max_riser)
+    fn the_mesh_has_a_top_face_per_tile_and_stays_inside_the_storey() {
         for shape in SHAPES {
             for dir in [-1, 1] {
                 for run in RUNS {
@@ -694,14 +905,17 @@ mod tests {
                     let p = build(s);
                     if dir < 0 {
                         // the upper level owns no tiles: the well is open
-                        assert!(tread_quads(&p).is_empty() && p.quads.is_empty(), "{shape:?} {dir} {run:?}");
-                        continue;
+                        assert!(ramp_quads(&p).is_empty(), "{shape:?} {dir} {run:?}");
+                    } else {
+                        assert_eq!(top_faces(&p).len(), all_tiles(s).len(), "{shape:?} {dir} {run:?}");
                     }
-                    assert_eq!(tread_quads(&p).len(), tile_map(s).len(), "{shape:?} {dir} {run:?}");
                     for q in &p.quads {
                         for v in q.c {
-                            assert!(v.y >= -EPS && v.y <= H + EPS, "{shape:?} {dir} {run:?}: vertex at {}", v.y);
+                            assert!(v.y >= -EPS && v.y <= H + EPS, "{shape:?} {dir} {run:?}: {:?} vertex at {}", q.face, v.y);
                         }
+                    }
+                    for (c, sz, _) in p.boxes.iter().chain(&p.glow) {
+                        assert!(c.y - sz.y * 0.5 >= -EPS && c.y + sz.y * 0.5 <= H + EPS, "{shape:?} {dir} {run:?}: a box {c:?} {sz:?}");
                     }
                 }
             }
@@ -713,67 +927,28 @@ mod tests {
         for shape in SHAPES {
             for dir in [-1, 1] {
                 let p = build(stair(dir, (0, -1), shape));
-                // the steps (their stone tops) and the wall pictures (the shaft's cap is a ceiling, and may be dark)
                 for q in p.quads.iter().filter(|q| q.face != Face::Plain || q.n.y > 0.5) {
-                    assert!(q.col.r >= 0.5 && q.col.g >= 0.5 && q.col.b >= 0.5, "{dir}: {:?}", q.col);
+                    assert!(q.col.r >= 0.28 && q.col.g >= 0.28 && q.col.b >= 0.28, "{dir}: {:?} {:?}", q.face, q.col);
                 }
-                // the plain risers are concrete, lit to a third of white at the worst
-                for q in risers(&p) {
-                    assert!(q.col.r >= 0.28 && q.col.g >= 0.25 && q.col.b >= 0.22, "{dir}: {:?}", q.col);
+                for q in ramp_quads(&p) {
+                    // the underside of a hollow ramp sits at 80 % of its top
+                    assert!(q.col.r >= 0.4 && q.col.g >= 0.4 && q.col.b >= 0.36, "{shape:?} {dir}: {:?}", q.col);
                 }
             }
         }
-    }
-
-    #[test]
-    fn treads_are_light_stone_and_their_nosings_are_cream() {
-        // the stone is a light flat grey-cream, lit to at least two thirds of itself at the lowest tread
         assert!(TREAD_STONE.r >= 0.7 && TREAD_STONE.g >= 0.7 && TREAD_STONE.b >= 0.65, "{TREAD_STONE:?}");
-        assert!(NOSING.r >= 0.95 && NOSING.g >= 0.85 && NOSING.b >= 0.6, "the nosing is cream: {NOSING:?}");
-        for shape in SHAPES {
-            for dir in [1] {
-                let p = build(stair(dir, (0, -1), shape));
-                for q in tread_quads(&p) {
-                    assert!(q.col.r >= 0.45 && q.col.g >= 0.45 && q.col.b >= 0.4 && q.col.r <= 1.0, "{shape:?} {dir}: tread {:?}", q.col);
-                }
-                // one nosing per riser: every step edge is marked, and only those
-                assert_eq!(p.glow.len(), risers(&p).len(), "{shape:?} {dir}");
-                assert!(!p.glow.is_empty());
-                assert!(p.glow.iter().all(|(_, s, col)| s.y >= 0.04 && *col == NOSING));
-            }
-        }
     }
 
     #[test]
-    fn risers_face_the_lower_tile_and_join_two_heights() {
-        for shape in SHAPES {
-            for dir in [-1, 1] {
-                for run in RUNS {
-                    let p = build(stair(dir, run, shape));
-                    let tiles = tile_map(stair(dir, run, shape));
-                    for q in risers(&p) {
-                        let (hi, lo) = (q.c[0].y, q.c[3].y);
-                        assert!(hi > lo + EPS, "{shape:?} {dir} {run:?}: a riser has height");
-                        // a point a hair in front of the riser sits on a tile no higher than the riser's foot
-                        let m = (q.c[0] + q.c[1]) * 0.5;
-                        let (fx, fz) = (m.x + q.n.x * 0.01, m.z + q.n.z * 0.01);
-                        let (ix, iz) = ((fx * STEPS_PER_CELL as f32).floor() as i32, (fz * STEPS_PER_CELL as f32).floor() as i32);
-                        let front = tiles.get(&(ix, iz)).unwrap_or_else(|| panic!("{shape:?} {dir} {run:?}: nothing in front of a riser"));
-                        assert!((front.top - lo).abs() < EPS, "{shape:?} {dir} {run:?}: front tile {} vs riser foot {lo}", front.top);
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn a_flight_down_has_no_pit_lining_or_floor() {
+    fn a_flight_down_draws_no_floor_lining_or_tiles_over_its_well() {
         for shape in SHAPES {
             for run in RUNS {
                 let p = build(stair(-1, run, shape));
-                assert!(p.quads.is_empty(), "{shape:?} {run:?}: the upper cell emits no quad (no floor, lining or tiles)");
-                assert!(p.glow.is_empty(), "{shape:?} {run:?}: no nosings");
-                assert!(!p.boxes.is_empty(), "{shape:?} {run:?}: only rails");
+                assert!(
+                    p.quads.iter().all(|q| q.face == Face::Iron),
+                    "{shape:?} {run:?}: the upper cell emits no floor, lining or tile quad, only rails"
+                );
+                assert!(!p.boxes.is_empty(), "{shape:?} {run:?}: guards");
             }
         }
     }
@@ -783,132 +958,238 @@ mod tests {
         for shape in SHAPES {
             for run in RUNS {
                 let p = build(stair(1, run, shape));
-                // no quad faces down (a ceiling or cap), and nothing reaches past the ceiling height
-                assert!(p.quads.iter().all(|q| q.n.y >= 0.0), "{shape:?} {run:?}: a quad faces -Y");
+                // no wall or floor quad faces -Y (a ceiling or cap); only a hollow ramp's underside does
+                assert!(p.quads.iter().filter(|q| q.n.y < -0.01).all(|q| matches!(q.face, Face::Plain | Face::Iron)), "{shape:?} {run:?}: a cap");
                 assert!(p.quads.iter().all(|q| q.c.iter().all(|v| v.y <= H + EPS)), "{shape:?} {run:?}: wall above the ceiling");
                 assert!(p.boxes.iter().all(|(c, s, _)| c.y + s.y * 0.5 <= H + EPS));
             }
         }
     }
 
-    fn rail_boxes(p: &Parts) -> &[(Vec3, Vec3, Color)] {
-        &p.boxes
+    /// A spiral's shell has a floor under it; a solid ramp does not need one, the wedge stands on the floor.
+    #[test]
+    fn a_spiral_has_a_floor_under_its_shell_and_a_hollow_underside() {
+        for run in RUNS {
+            let s = stair(1, run, FlightShape::Spiral);
+            let p = build(s);
+            let floors = p.quads.iter().filter(|q| q.face == Face::Floor).count();
+            assert_eq!(floors, s.well_cells().len(), "{run:?}: a floor quad per well cell, no bottomless void");
+            assert!(p.quads.iter().filter(|q| q.face == Face::Floor).all(|q| q.c.iter().all(|v| v.y.abs() < EPS) && q.n.y > 0.5));
+            let tops = top_faces(&p).len();
+            let unders = ramp_quads(&p).iter().filter(|q| q.n.y < 0.0).count();
+            assert_eq!(tops, unders, "{run:?}: every tile has its underside");
+            let w = build(stair(1, run, FlightShape::Switchback));
+            assert!(w.quads.iter().all(|q| q.face != Face::Floor), "{run:?}: a solid wedge needs no floor quad");
+        }
     }
 
     #[test]
-    fn rails_stand_on_the_upper_floor_at_rail_height() {
+    fn a_switchback_has_a_one_metre_solid_divider_floor_to_the_upper_floor() {
         for shape in SHAPES {
             for run in RUNS {
-                let p = build(stair(-1, run, shape));
-                let top = rail_boxes(&p).iter().map(|(c, s, _)| c.y + s.y * 0.5).fold(0.0f32, f32::max);
-                assert!((top - (RAIL_H + 0.025)).abs() < 0.05, "{shape:?} {run:?}: top rail at {top}");
-                assert!(rail_boxes(&p).iter().all(|(c, s, _)| c.y - s.y * 0.5 >= -EPS), "{shape:?} {run:?}: nothing below the floor");
+                let s = stair(1, run, shape);
+                let p = build(s);
+                let dividers: Vec<_> = p.boxes.iter().filter(|(_, sz, _)| (sz.y - H).abs() < EPS).collect();
+                if shape == FlightShape::Switchback {
+                    assert_eq!(dividers.len(), 1, "{run:?}");
+                    let (c, sz, _) = dividers[0];
+                    assert!((c.y - H * 0.5).abs() < EPS, "{run:?}: stands on the floor");
+                    let (long, thick) = (sz.x.max(sz.z), sz.x.min(sz.z));
+                    assert!((thick - 1.0).abs() < EPS && (long - 3.0).abs() < EPS, "{run:?}: {sz:?} is 3 m of one metre wall");
+                } else {
+                    assert!(dividers.is_empty(), "{shape:?} {run:?}: only a switchback has a divider");
+                }
             }
         }
     }
 
     #[test]
-    fn upper_rails_leave_the_landing_open() {
+    fn a_spiral_has_its_post_floor_to_the_upper_floor() {
+        for run in RUNS {
+            let s = stair(1, run, FlightShape::Spiral);
+            let p = build(s);
+            let post: Vec<&Quad> = iron_quads(&p).into_iter().filter(|q| (q.c[0].y - H).abs() < EPS && q.c[2].y.abs() < EPS).collect();
+            assert_eq!(post.len(), POST_SIDES, "{run:?}");
+            let f = s.flight(-1).unwrap();
+            let ((cx, cz), r) = spiral_post_with(flights(), &f).unwrap();
+            for q in &post {
+                for v in [q.c[0], q.c[1]] {
+                    assert!(((v.x - cx).hypot(v.z - cz) - r).abs() < 1e-3, "{run:?}: a post corner off the circle");
+                }
+            }
+            for shape in [FlightShape::Switchback, FlightShape::Straight] {
+                let p = build(stair(1, run, shape));
+                assert!(iron_quads(&p).iter().all(|q| !((q.c[0].y - H).abs() < EPS && q.c[2].y.abs() < EPS)), "{shape:?}: no post");
+            }
+        }
+    }
+
+    /// The handrails: a bar along every rail the flight's data gives, 0.95 over the tread, the lower level's up to the
+    /// upper floor and the rest standing on the upper floor.
+    #[test]
+    fn the_handrails_run_the_flight_and_pass_through_the_upper_floor() {
+        let rules = flights();
+        let t = rules.dressing.rail_thickness;
+        for shape in SHAPES {
+            for run in RUNS {
+                let lower = stair(1, run, shape);
+                let upper = stair(-1, run, shape);
+                let f = lower.flight(-1).unwrap();
+                let rails = handrails_with(rules, &f);
+                assert_eq!(rails.len(), match shape { FlightShape::Switchback => 4, FlightShape::Straight => 2, FlightShape::Spiral => 1 }, "{shape:?}");
+                let (mut low_bars, mut high_bars) = (0, 0);
+                for r in &rails {
+                    low_bars += clip_segments(&r.points, 0.0, H - t * 0.5).len();
+                    high_bars += clip_segments(&r.points, H + t * 0.5, f32::MAX).len();
+                }
+                let post = if shape == FlightShape::Spiral { POST_SIDES } else { 0 };
+                let (lp, up) = (build(lower), build(upper));
+                assert_eq!(iron_quads(&lp).len(), low_bars * 4 + post, "{shape:?} {run:?}: four faces to every bar below the floor above");
+                let slab_rail = usize::from(shape == FlightShape::Spiral) * 4;
+                assert_eq!(iron_quads(&up).len(), high_bars * 4 + slab_rail, "{shape:?} {run:?}: and to every bar over the upper floor");
+                assert!(low_bars > 0 && high_bars > 0, "{shape:?}: rails climb past the floor");
+                // 0.95 over the tread at the top of the flight: the highest rail point stands 0.95 over the upper floor
+                let top = iron_quads(&up).iter().flat_map(|q| q.c.iter().map(|v| v.y)).fold(0.0f32, f32::max);
+                assert!((top - (rules.dressing.rail_height + t * 0.5)).abs() < 2.0 * t, "{shape:?} {run:?}: the rails top out at {top}");
+                let low_top = iron_quads(&lp).iter().flat_map(|q| q.c.iter().map(|v| v.y)).fold(0.0f32, f32::max);
+                assert!(low_top <= H + EPS && low_top > H - 0.1, "{shape:?} {run:?}: the lower level's rails are cut at the upper floor ({low_top})");
+            }
+        }
+    }
+
+    #[test]
+    fn clip_segments_cuts_a_polyline_to_a_band() {
+        let line = [[0.0, 1.0, 0.0], [10.0, 6.0, 0.0], [20.0, 6.0, 0.0]];
+        let below = clip_segments(&line, 0.0, 5.0);
+        assert_eq!(below.len(), 1);
+        assert!((below[0].1[1] - 5.0).abs() < 1e-5 && (below[0].1[0] - 8.0).abs() < 1e-5);
+        let above = clip_segments(&line, 5.0, f32::MAX);
+        assert_eq!(above.len(), 2);
+        assert!((above[0].0[1] - 5.0).abs() < 1e-5 && (above[0].0[0] - 8.0).abs() < 1e-5);
+        assert_eq!(above[1], ([10.0, 6.0, 0.0], [20.0, 6.0, 0.0]));
+        assert!(clip_segments(&line, 7.0, 9.0).is_empty());
+    }
+
+    /// The guards: Godot's thin bar at 0.95 m along the rim, a gap where the stairs arrive.
+    #[test]
+    fn the_landing_is_guarded_at_the_rim_but_for_the_head_of_the_stairs() {
+        let rules = flights();
         for shape in SHAPES {
             for run in RUNS {
                 let s = stair(-1, run, shape);
-                let l = s.landing();
+                let f = s.flight(0).unwrap();
+                let guards = landing_guards_with(rules, &f);
+                assert!(!guards.is_empty(), "{shape:?} {run:?}");
                 let p = build(s);
-                // no rail piece sits on the shared edge between a well cell and the landing cell
-                for c in s.well_cells() {
-                    let d = (l.x - c.x, l.y - c.y);
-                    if d.0.abs() + d.1.abs() != 1 {
-                        continue;
+                let bars: Vec<_> = p.boxes.iter().filter(|(c, sz, _)| (c.y - rules.dressing.rail_height).abs() < EPS && (sz.y - rules.dressing.rail_thickness).abs() < EPS).collect();
+                assert_eq!(bars.len(), guards.len(), "{shape:?} {run:?}: a bar per guard edge");
+                // no guard over the landing cell A, nor the arriving flight's first cells
+                let fp = well_footprint(&f);
+                assert!(guards.iter().all(|g| g.outside != fp.landing), "{shape:?} {run:?}: the landing edge is the gap");
+                for g in &guards {
+                    assert!(!fp.upper_hole.contains(&g.outside), "{shape:?} {run:?}: a guard stands on floor");
+                }
+                if shape == FlightShape::Switchback {
+                    assert_eq!(bars.len(), 3);
+                    for (_, sz, _) in bars {
+                        assert!((sz.x.max(sz.z) - 1.0).abs() < EPS, "a metre of rail per cell edge");
                     }
-                    let edge = (c.x as f32 + 0.5 + d.0 as f32 * 0.44, c.y as f32 + 0.5 + d.1 as f32 * 0.44);
-                    assert!(
-                        !p.boxes.iter().any(|(b, sz, _)| (b.x - edge.0).abs() <= sz.x * 0.5 + 0.02 && (b.z - edge.1).abs() <= sz.z * 0.5 + 0.02),
-                        "{shape:?} {run:?}: the landing edge of {c:?} is railed"
-                    );
                 }
             }
         }
     }
 
     #[test]
-    fn divider_wall_runs_the_lane_divider_and_only_for_switchback() {
+    fn a_guard_beside_a_wall_is_left_out() {
+        let s = stair(-1, (0, 1), FlightShape::Straight);
+        let well = well_set(s);
+        let landing = s.landing();
+        let wall = |x: i32, z: i32| (x, z) != (landing.x, landing.y) && !well.contains(&(x, z));
+        let well_fn = |x: i32, z: i32| well.contains(&(x, z));
+        let site = Site { h: H, wall_h: H, tiers: 1.0, well: &well_fn, solid: &wall };
+        let mut p = Parts::default();
+        for c in s.well_cells() {
+            flight_cell(&mut p, (c.x, c.y), s, 0, &site);
+        }
+        assert!(p.boxes.is_empty(), "every neighbour is a wall, so there is no floor edge to guard");
+    }
+
+    #[test]
+    fn each_level_has_its_sign_in_godots_gold_over_its_own_floor() {
+        let rules = flights();
+        let gold = colour3(rules.dressing.sign_colour);
         for shape in SHAPES {
             for run in RUNS {
-                let s = stair(1, run, shape);
-                let p = build(s);
-                let has_wall = !p.boxes.is_empty();
-                let has_dividers = !s.dividers(level_of(s)).is_empty();
-                assert_eq!(has_wall, has_dividers, "{shape:?} {run:?}");
-                assert_eq!(has_dividers, shape == FlightShape::Switchback, "{shape:?} {run:?}: only a switchback has a divider");
-                // every divider box stays within the ceiling and starts at the floor
-                for (c, sz, _) in &p.boxes {
-                    assert!(c.y - sz.y * 0.5 >= -EPS && c.y + sz.y * 0.5 <= H + EPS);
+                for dir in [-1, 1] {
+                    let s = stair(dir, run, shape);
+                    let f = s.flight(level_of(s)).unwrap();
+                    let p = build(s);
+                    let sign = signs_with(rules, &f).into_iter().find(|g| g.upper == (dir < 0)).unwrap();
+                    let lit: Vec<_> = p.glow.iter().filter(|(_, _, c)| *c == gold).collect();
+                    let runs = sign_runs(&sign.text, rules.dressing.sign_text_height());
+                    assert_eq!(lit.len(), runs.len(), "{shape:?} {run:?} dir {dir}: a box per lit run of {}", sign.text);
+                    assert!(lit.len() > 20);
+                    // the lettering is centred 2.625 m over the floor, on the wall plane, 2 cm deep
+                    let ys: Vec<f32> = lit.iter().map(|(c, _, _)| c.y).collect();
+                    let mid = (ys.iter().cloned().fold(f32::MAX, f32::min) + ys.iter().cloned().fold(f32::MIN, f32::max)) * 0.5;
+                    assert!((mid - rules.dressing.sign_y()).abs() < 0.1, "{shape:?} {run:?} dir {dir}: lettering at {mid}");
+                    for (c, sz, _) in &lit {
+                        let off = (c.x - sign.at.0) * sign.normal.0 + (c.z - sign.at.1) * sign.normal.1;
+                        assert!(off > 0.0 && off < 0.03, "stands off the wall by {off}");
+                        assert!((sz.x * sign.normal.0.abs() + sz.z * sign.normal.1.abs() - 0.02).abs() < EPS);
+                    }
+                    // and reads along `right`: the extent along it is the text's width, wider than tall
+                    let along: Vec<f32> = lit.iter().map(|(c, _, _)| (c.x - sign.at.0) * sign.right.0 + (c.z - sign.at.1) * sign.right.1).collect();
+                    let span = along.iter().cloned().fold(f32::MIN, f32::max) - along.iter().cloned().fold(f32::MAX, f32::min);
+                    assert!(span > 4.0 * rules.dressing.sign_text_height(), "{shape:?} {run:?}: {} is {span} m wide", sign.text);
                 }
             }
         }
     }
 
-    /// The y of the top of a quad.
-    fn top_of(q: &Quad) -> f32 {
-        q.c.iter().map(|v| v.y).fold(f32::MIN, f32::max)
-    }
-
-    /// A flight's side walls line the stair block up to the tread they flank, not to the cell's ceiling: under a 4 m
-    /// ceiling on a 5 m storey they still reach the top treads (the well is open above), exactly as under a 5 m one.
     #[test]
-    fn a_low_ceiling_still_lines_the_flight_side_walls_to_the_tread() {
-        let mut checked = 0;
-        for shape in SHAPES {
-            for run in RUNS {
-                let s = stair(1, run, shape);
-                let (low, full) = (build_at(s, 4.0), build_at(s, H));
-                let wall_tops = |p: &Parts| {
-                    let mut v: Vec<f32> = p.quads.iter().filter(|q| q.face == Face::Wall).map(top_of).collect();
-                    v.sort_by(f32::total_cmp);
-                    v
-                };
-                assert_eq!(wall_tops(&low), wall_tops(&full), "{shape:?} {run:?}: the lining does not depend on the cell's ceiling");
-                let highest = wall_tops(&low).last().copied().unwrap_or(0.0);
-                assert!(highest > 4.0 + EPS, "{shape:?} {run:?}: a side wall reaches the treads above the 4 m ceiling ({highest})");
-                assert!(highest <= H + EPS, "{shape:?} {run:?}: never past the floor above ({highest})");
-                checked += 1;
+    fn the_sign_font_has_the_letters_and_digits_of_a_level_sign() {
+        for text in ["LEVEL +1", "LEVEL 0", "LEVEL -1", "LEVEL -3", "LEVEL +2"] {
+            for ch in text.chars().filter(|c| *c != ' ') {
+                assert!(glyph(ch).iter().any(|r| *r != 0), "{ch:?} has a face");
             }
         }
-        assert_eq!(checked, SHAPES.len() * RUNS.len());
-    }
-
-    /// The divider between a switchback's lanes rises with the treads to its rail height, clipped to the floor above
-    /// (the storey), not to a lower ceiling.
-    #[test]
-    fn a_low_ceiling_still_runs_the_divider_wall_to_the_floor_above() {
-        for run in RUNS {
-            let s = stair(1, run, FlightShape::Switchback);
-            let (low, full) = (build_at(s, 4.0), build_at(s, H));
-            let tops = |p: &Parts| {
-                let mut v: Vec<f32> = p.boxes.iter().map(|(c, sz, _)| c.y + sz.y * 0.5).collect();
-                v.sort_by(f32::total_cmp);
-                v
-            };
-            assert!(!low.boxes.is_empty(), "{run:?}: a switchback has a divider");
-            assert_eq!(tops(&low), tops(&full), "{run:?}: the divider does not depend on the cell's ceiling");
-            let highest = tops(&low).last().copied().unwrap();
-            assert!(highest > 4.0 + EPS && highest <= H + EPS, "{run:?}: divider top {highest} passes the 4 m ceiling, not the storey");
-        }
+        assert!(glyph(' ').iter().all(|r| *r == 0), "a space is blank");
+        // an L is six dots down the left edge and a run of five at the bottom
+        let runs = sign_runs("L", 0.7);
+        assert_eq!(runs.len(), 7);
+        assert!(runs.iter().filter(|(_, len, _)| (*len - 0.5).abs() < 1e-4).count() == 1, "one full-width run");
+        // text is centred
+        let (lo, hi) = sign_runs("LEVEL 0", 0.7)
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(lo, hi), (c, len, _)| (lo.min(c - len * 0.5), hi.max(c + len * 0.5)));
+        assert!((lo + hi).abs() < 1e-3, "centred on the sign: {lo} {hi}");
     }
 
     #[test]
     fn the_stairwell_lamp_hangs_over_its_flight_and_the_ladder_lamp_is_the_lower_levels() {
+        let d = &flights().dressing;
         for shape in SHAPES {
             for dir in [-1, 1] {
                 for run in RUNS {
                     let s = stair(dir, run, shape);
                     let l = lamp(s, H);
+                    let fp = well_footprint(&s.flight(level_of(s)).unwrap());
                     assert!(
-                        s.well_cells().iter().any(|c| (c.x as f32..c.x as f32 + 1.0).contains(&l.pos.x) && (c.y as f32..c.y as f32 + 1.0).contains(&l.pos.z)),
+                        fp.upper_hole.iter().chain(&fp.upper_clear).any(|c| (c.x as f32..c.x as f32 + 1.0).contains(&l.pos.x) && (c.y as f32..c.y as f32 + 1.0).contains(&l.pos.z)),
                         "{shape:?} {dir} {run:?}: {:?}",
                         l.pos
                     );
-                    assert!(l.range > 0.0 && l.energy > 0.0);
+                    // Godot's warm light: ffd29a, energy 0.7 (doubled for this renderer), 7 m in a 4 m storey is 8.75 m in 5
+                    assert_eq!(l.color, colour3(d.lamp_colour));
+                    assert!((l.color.r - 1.0).abs() < 1e-3 && (l.color.g - 0xd2 as f32 / 255.0).abs() < 1e-3 && (l.color.b - 0x9a as f32 / 255.0).abs() < 1e-3);
+                    assert!((l.energy - 0.7 * 2.0).abs() < 1e-5 && (l.range - 8.75).abs() < 1e-4, "{shape:?}: energy {} range {}", l.energy, l.range);
+                    if dir > 0 {
+                        assert!((l.pos.y - (H * 0.5 + 1.4 * 1.25)).abs() < 1e-4, "{shape:?}: over mid storey: {}", l.pos.y);
+                        assert!(l.pos.y < H);
+                    } else {
+                        assert!(l.pos.y < 0.0, "the upper record's copy is held a storey lower");
+                    }
                 }
             }
         }
@@ -916,6 +1197,64 @@ mod tests {
         let l = lamp(ladder(1, Cover::Manhole), H);
         assert!(l.pos.y > 0.0 && l.pos.y < H && l.energy > 0.0);
         assert!(lamp(ladder(-1, Cover::Manhole), H).pos.y >= 0.0, "nothing is lit below the upper floor any more");
+    }
+
+    #[test]
+    fn the_iron_is_godots_colour_lifted() {
+        let c = iron();
+        let d = &flights().dressing;
+        assert!((c.r - 0x3b as f32 / 255.0 * d.iron_lift).abs() < 1e-3);
+        assert!(c.r > 0.3 && c.g > 0.3 && c.b > 0.3, "reads in the dark: {c:?}");
+    }
+
+    #[test]
+    fn a_low_ceiling_still_lines_the_flight_side_walls_to_the_tread() {
+        let mut checked = 0;
+        for shape in [FlightShape::Switchback, FlightShape::Straight] {
+            for run in RUNS {
+                let s = stair(1, run, shape);
+                let (low, full) = (build_at(s, 4.0), build_at(s, H));
+                let wall_tops = |p: &Parts| {
+                    let mut v: Vec<f32> = p.quads.iter().filter(|q| q.face == Face::Wall).map(|q| q.c.iter().map(|v| v.y).fold(f32::MIN, f32::max)).collect();
+                    v.sort_by(f32::total_cmp);
+                    v
+                };
+                assert_eq!(wall_tops(&low), wall_tops(&full), "{shape:?} {run:?}: the lining does not depend on the cell's ceiling");
+                let highest = wall_tops(&low).last().copied().unwrap_or(0.0);
+                assert!(highest > 4.0 + EPS, "{shape:?} {run:?}: a side wall reaches the ramp above the 4 m ceiling ({highest})");
+                assert!(highest <= H + EPS, "{shape:?} {run:?}: never past the floor above ({highest})");
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 2 * RUNS.len());
+    }
+
+    /// The divider rises to the floor above, not to a lower ceiling.
+    #[test]
+    fn a_low_ceiling_still_runs_the_divider_wall_to_the_floor_above() {
+        for run in RUNS {
+            let s = stair(1, run, FlightShape::Switchback);
+            let tops = |p: &Parts| {
+                let mut v: Vec<f32> = p.boxes.iter().map(|(c, sz, _)| c.y + sz.y * 0.5).collect();
+                v.sort_by(f32::total_cmp);
+                v
+            };
+            let (low, full) = (build_at(s, 4.0), build_at(s, H));
+            assert_eq!(tops(&low), tops(&full), "{run:?}: the divider does not depend on the cell's ceiling");
+            assert!((tops(&low).last().copied().unwrap() - H).abs() < EPS, "{run:?}: divider top");
+        }
+    }
+
+    /// The well's holes are lit and lined: a smooth ramp is sunk into walls that run to the upper floor.
+    #[test]
+    fn a_switchback_wedge_shows_its_side_below_the_arriving_flight() {
+        for run in RUNS {
+            let s = stair(1, run, FlightShape::Switchback);
+            let p = build(s);
+            // the wall under the arriving flight's top end rises to the upper floor at the landing row's edge
+            let tall = p.quads.iter().filter(|q| q.face == Face::Wall && q.c.iter().any(|v| v.y > H - 0.3)).count();
+            assert!(tall >= 2 * flights().tiles_for(FlightShape::Switchback) as usize, "{run:?}: {tall} tall wall faces");
+        }
     }
 
     const LADDER_CELL: (i32, i32) = (10, 10);

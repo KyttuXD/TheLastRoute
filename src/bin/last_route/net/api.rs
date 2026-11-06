@@ -443,6 +443,8 @@ pub struct RoomEndpoint {
     pub address: String,
     pub port: u16,
     pub ws_path: String,
+    /// The account that created a hosted room (upper case); empty for a room with no owner of record.
+    pub owner: String,
 }
 
 impl RoomEndpoint {
@@ -461,6 +463,7 @@ impl RoomEndpoint {
             address: s(o, "address"),
             port: i(o, "port").clamp(0, 65535) as u16,
             ws_path: s(o, "wsPath"),
+            owner: s(o, "owner").to_uppercase(),
         }
     }
 }

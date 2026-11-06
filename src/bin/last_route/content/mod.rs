@@ -6,6 +6,7 @@ pub mod embedded;
 pub mod hunters;
 pub mod loot;
 pub mod npcs;
+pub mod pack_import;
 pub mod packs;
 pub mod props;
 pub mod public_roster;
@@ -33,7 +34,18 @@ pub struct Content {
 }
 
 impl Content {
+    /// The game's content with every mod pack layered on (the normal start-up load).
     pub fn load() -> Content {
+        let mut c = Content::base();
+        packs::load_all(&mut c);
+        c.regions = regions::load(&c.packs, &mut c.warnings);
+        regions::install(c.regions.clone());
+        c
+    }
+
+    /// The base game's own data only (data/, compiled in): no mod pack, no region table installed. A mod pack is checked
+    /// against this (plus the packs already imported) before the browser build keeps it (`pack_import`).
+    pub fn base() -> Content {
         let mut c = Content {
             hunters: vec![],
             props: HashMap::new(),
@@ -107,9 +119,6 @@ impl Content {
                 Err(e) => c.warnings.push(format!("{path}: {e}")),
             }
         }
-        packs::load_all(&mut c);
-        c.regions = regions::load(&c.packs, &mut c.warnings);
-        regions::install(c.regions.clone());
         c
     }
 

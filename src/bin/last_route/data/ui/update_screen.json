@@ -1,0 +1,16 @@
+{
+  "schema": "lr.update_screen/1",
+  "_note": "The web build's UPDATING screen (app/web_update.rs state, ui/update_screen.rs drawing). When the deployed version.json differs from the one the page loaded with (dist/web/update.js), a full-screen overlay counts `countdown_seconds` down and reloads the page; UPDATE NOW reloads at once; LATER (offered only during a run) hides the screen for `postpone_seconds`, then it comes back. `max_step_seconds` caps one frame's time so a tab coming back from the background does not skip the countdown. Strings are shown as written; `countdown_line` must contain {n}, the whole seconds left. Poll timing (30 s plus up to 10 s of jitter) is in packaging/web/update.js.",
+  "countdown_seconds": 10.0,
+  "postpone_seconds": 120.0,
+  "max_step_seconds": 0.5,
+  "scrim_alpha": 0.82,
+  "kicker": "ROUTE SIGNAL // UPDATE",
+  "title": "UPDATING // NEW VERSION READY",
+  "countdown_line": "THE GAME RELOADS IN {n}",
+  "reloading_line": "RELOADING...",
+  "run_warning": "RELOADING ENDS YOUR CURRENT ROUTE // CHOOSE LATER TO FINISH IT FIRST",
+  "idle_note": "THE NEW VERSION LOADS WHEN THE PAGE RELOADS",
+  "update_now_label": "UPDATE NOW",
+  "later_label": "LATER"
+}

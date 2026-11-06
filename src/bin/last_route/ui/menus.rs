@@ -11,6 +11,7 @@ use crate::config::difficulty::LOBBY;
 use crate::config::Difficulty;
 use crate::content::hunters::HunterDef;
 use crate::content::Content;
+use crate::net::hosted::{self, OwnerAction};
 use macroquad::prelude::*;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -35,8 +36,10 @@ pub enum Action {
     ClearSave,
     Reroll,
     Quit,
-    /// CREATE ROOM, online by default: open a room on the server and show its lobby.
-    HostRoom,
+    /// CREATE ROOM, online by default: ask the server to open a room, wait for it, and join it as its owner (a guest).
+    CreateOnline,
+    /// A room-owner command (START, END, RESTART, KICK, difficulty) for the room the owner is in.
+    Owner(OwnerAction),
     /// The code the JOIN ROOM dialog submitted (already checked by `world_sync::parse_join_code`).
     JoinCode(String),
     /// PUBLIC ROUTE: join the always-open public room, or open it when nobody holds it (`world_sync::join_public_room`).
@@ -127,6 +130,31 @@ pub fn wheel_notch(wheel: f32, px: f32) -> f32 {
 
 pub const VERSION: &str = "VERSION 0.0.1.0";
 
+/// What the lobby and the pause menu show of an online room the server hosts: the owner controls and the wait for the room
+/// to open. The app sets it every frame from the open session (`net/hosted.rs`); nothing here is trusted by the server.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OwnerView {
+    /// This runner owns the open online room (the signed-in account that created it): the controls show. Anybody else
+    /// never sees them.
+    pub owner: bool,
+    /// This runner has joined the room (the controls need the room to send to). False while the room is still opening.
+    pub joined: bool,
+    /// The other runners of the room with their session ids (KICK names a guest by id).
+    pub peers: Vec<(u32, String)>,
+    /// The room is being opened by the server: the two lines the lobby shows while it waits.
+    pub waiting: Option<(String, String)>,
+    /// The owner's feedback line (confirming, refused).
+    pub status: String,
+}
+
+impl OwnerView {
+    /// The session id of the room's runner called `name`, for KICK. None for this runner, the host and any name that is
+    /// not in the room.
+    pub fn peer_of(&self, name: &str) -> Option<u32> {
+        self.peers.iter().find(|(_, n)| n.eq_ignore_ascii_case(name)).map(|(p, _)| *p)
+    }
+}
+
 /// Menu state that lives across frames (focus, fields, scroll, dialogs).
 pub struct Ui {
     pub screen: Screen,
@@ -146,6 +174,10 @@ pub struct Ui {
     pub account_back: Screen,
     pub create_offline: bool,
     pub create_note: String,
+    /// The player is signed in to an account (CREATE ROOM online needs one). Set by the app each frame.
+    pub signed_in: bool,
+    /// The owner controls of the open online room (see [`OwnerView`]). Set by the app each frame.
+    pub owner: OwnerView,
     pub acct_manage: bool,
     pub acct_user: String,
     pub acct_pass: String,
@@ -180,6 +212,8 @@ impl Default for Ui {
             account_back: Screen::Title,
             create_offline: false,
             create_note: String::new(),
+            signed_in: false,
+            owner: OwnerView::default(),
             acct_manage: false,
             acct_user: String::new(),
             acct_pass: String::new(),
@@ -204,6 +238,10 @@ impl Ui {
         // no quit dialog where quitting is not offered (QUIT_OFFERED): it lands on the title
         let s = if s == Screen::Quit && !QUIT_OFFERED { Screen::Title } else { s };
         self.screen = s;
+        // keys typed in the game or on another screen wait in the character queue; they must not land in the next text
+        // field (the JOIN ROOM code filled itself with the game's WASD presses)
+        #[cfg(not(test))]
+        while get_char_pressed().is_some() {}
         self.focus = 0;
         self.scroll = 0.0;
         self.drag = None;
@@ -481,8 +519,11 @@ pub fn draw_create(a: &Assets, ui: &mut Ui, username: &str) -> Action {
     } else if ui.create_offline {
         "SOLO ROOM ON THIS DEVICE. NO SERVER, NO CO-OP. THIS ONLY LASTS UNTIL YOU LEAVE THE ROOM."
             .to_string()
+    } else if !ui.signed_in {
+        // an online room belongs to an account: say so before the player presses CREATE ROOM
+        hosted::rules().strings.sign_in_required.clone()
     } else {
-        "ONLINE ROOM: HOSTED THROUGH THE PRIMARY SERVER SO FRIENDS CAN JOIN.".to_string()
+        "ONLINE ROOM: THE SERVER RUNS IT, YOU OWN IT, FRIENDS JOIN WITH ITS CODE.".to_string()
     };
     // the panel's width comes from the kicker row; the note wraps inside it
     let kick_w = tw(a, F::Body, &track("ROUTE SIGNAL // NEW ROOM"), 6.0) + esc_close_size(a).x;
@@ -538,8 +579,8 @@ pub fn draw_create(a: &Assets, ui: &mut Ui, username: &str) -> Action {
         if ui.create_offline {
             return Action::Go(Screen::Lobby);
         }
-        // online by default: open the room on the server (a failure is flashed by the app)
-        return Action::HostRoom;
+        // online by default: the server opens the room (a failure, or no account, is shown by the app)
+        return Action::CreateOnline;
     }
     Action::None
 }
@@ -1235,6 +1276,12 @@ pub enum LobbyButton {
     Enter,
     /// Solo only: resume the one saved run.
     ContinueRun,
+    /// The room owner's START ROUTE (replaces ENTER ROUTE, which a guest does not have).
+    StartRoute,
+    /// The room owner's RESTART ROUTE.
+    RestartRoute,
+    /// The room owner's END ROUTE.
+    EndRoute,
     /// The hunter dossier.
     CharacterFiles,
     /// Solo: BACK TO LAST ROUTE. A host or guest: LEAVE ROOM.
@@ -1242,7 +1289,23 @@ pub enum LobbyButton {
 }
 
 /// The actions row for this room, left to right.
+#[cfg(test)]
 pub fn lobby_buttons(mode: RoomMode) -> Vec<LobbyButton> {
+    lobby_buttons_for(mode, false)
+}
+
+/// The actions row for this room. The owner of an online room (a guest who created it) has START, RESTART and END ROUTE in
+/// place of the guest's locked WAITING FOR HOST.
+pub fn lobby_buttons_for(mode: RoomMode, owner: bool) -> Vec<LobbyButton> {
+    if owner && mode == RoomMode::Guest {
+        return vec![
+            LobbyButton::StartRoute,
+            LobbyButton::RestartRoute,
+            LobbyButton::EndRoute,
+            LobbyButton::CharacterFiles,
+            LobbyButton::Leave,
+        ];
+    }
     let mut v = vec![LobbyButton::Enter];
     if mode == RoomMode::Solo {
         v.push(LobbyButton::ContinueRun);
@@ -1253,8 +1316,14 @@ pub fn lobby_buttons(mode: RoomMode) -> Vec<LobbyButton> {
 }
 
 /// The keyboard focus index of `button` in this room's actions row.
+#[cfg(test)]
 pub fn lobby_focus(mode: RoomMode, button: LobbyButton) -> usize {
-    lobby_buttons(mode).iter().position(|b| *b == button).unwrap_or(0)
+    lobby_focus_for(mode, false, button)
+}
+
+/// [`lobby_focus`] for a room whose owner may be this runner.
+pub fn lobby_focus_for(mode: RoomMode, owner: bool, button: LobbyButton) -> usize {
+    lobby_buttons_for(mode, owner).iter().position(|b| *b == button).unwrap_or(0)
 }
 
 /// The label of an actions-row button in this room.
@@ -1266,6 +1335,38 @@ pub fn lobby_label(button: LobbyButton, mode: RoomMode) -> &'static str {
         LobbyButton::CharacterFiles => "CHARACTER FILES",
         LobbyButton::Leave if mode == RoomMode::Solo => "BACK TO LAST ROUTE",
         LobbyButton::Leave => "LEAVE ROOM",
+        // the owner's labels are data (data/net/hosted_room.json); lobby_text gives them
+        LobbyButton::StartRoute | LobbyButton::RestartRoute | LobbyButton::EndRoute => "",
+    }
+}
+
+/// The text on an actions-row button: [`lobby_label`], or the owner buttons' data labels.
+pub fn lobby_text(button: LobbyButton, mode: RoomMode) -> String {
+    let s = &hosted::rules().strings;
+    match button {
+        LobbyButton::StartRoute => s.label_start.clone(),
+        LobbyButton::RestartRoute => s.label_restart.clone(),
+        LobbyButton::EndRoute => s.label_end.clone(),
+        other => lobby_label(other, mode).to_string(),
+    }
+}
+
+/// The command an owner button sends.
+pub fn lobby_owner_action(button: LobbyButton) -> Option<OwnerAction> {
+    match button {
+        LobbyButton::StartRoute => Some(OwnerAction::Start),
+        LobbyButton::RestartRoute => Some(OwnerAction::Restart),
+        LobbyButton::EndRoute => Some(OwnerAction::End),
+        _ => None,
+    }
+}
+
+/// Whether an actions-row button is locked in a room whose owner controls may be showing. The owner's buttons need the
+/// room to be joined (while the server opens it there is nobody to send to); the others follow [`lobby_locked`].
+pub fn lobby_locked_for(button: LobbyButton, mode: RoomMode, has_save: bool, joined: bool) -> bool {
+    match button {
+        LobbyButton::StartRoute | LobbyButton::RestartRoute | LobbyButton::EndRoute => !joined,
+        other => lobby_locked(other, mode, has_save),
     }
 }
 
@@ -1301,6 +1402,20 @@ pub struct LobbyPlayer {
     /// The local runner's row (NAME // YOU).
     pub you: bool,
     pub status: String,
+    /// The owner's KICK target: set by [`with_kick_targets`] for a runner the owner may remove.
+    pub kick: Option<u32>,
+}
+
+/// Marks the rows the room's owner can KICK: every runner but this one and the host, matched by name to the room's
+/// session ids. Nobody else gets a target.
+pub fn with_kick_targets(mut rows: Vec<LobbyPlayer>, view: &OwnerView) -> Vec<LobbyPlayer> {
+    if !view.owner {
+        return rows;
+    }
+    for row in rows.iter_mut().filter(|r| !r.you && !r.host) {
+        row.kick = view.peer_of(&row.name);
+    }
+    rows
 }
 
 /// The roster the lobby shows, each runner once: this runner first, marked YOU. A host adds its guests. A guest adds
@@ -1312,6 +1427,7 @@ pub fn lobby_players(mode: RoomMode, username: &str, guests: &[String]) -> Vec<L
         host,
         you: true,
         status: if host { "HOST // STAGING" } else { "STAGING" }.into(),
+        kick: None,
     }];
     match mode {
         RoomMode::Solo => {}
@@ -1320,6 +1436,7 @@ pub fn lobby_players(mode: RoomMode, username: &str, guests: &[String]) -> Vec<L
             host: false,
             you: false,
             status: "STAGING".into(),
+            kick: None,
         })),
         RoomMode::Guest => {
             for (i, g) in guests.iter().enumerate().filter(|(_, g)| !g.is_empty() && !g.eq_ignore_ascii_case(username)) {
@@ -1329,6 +1446,7 @@ pub fn lobby_players(mode: RoomMode, username: &str, guests: &[String]) -> Vec<L
                     host: is_host,
                     you: false,
                     status: if is_host { "HOST // STAGING" } else { "STAGING" }.into(),
+                    kick: None,
                 });
             }
         }
@@ -1361,6 +1479,11 @@ pub fn draw_lobby(
     let mode = ui.room_mode;
     let solo = mode == RoomMode::Solo;
     let guest = mode == RoomMode::Guest;
+    // the owner of an online room sees the owner controls; nobody else does
+    let owner = guest && ui.owner.owner;
+    let owner_joined = ui.owner.joined;
+    let waiting = ui.owner.waiting.clone();
+    let strings = &hosted::rules().strings;
     let btn_h = button_min(a, "X", 7.0, false).y.max(row);
     let panel = Rect::new(v.x * 0.5 - 190.0, 10.0, 380.0, v.y - 20.0);
     panel_box(panel, p.panel, p.panel_edge);
@@ -1461,7 +1584,7 @@ pub fn draw_lobby(
     y += sh + 5.0;
     // ROUTE CONFIGURATION: the shared route's difficulty, and the save slot (a placeholder until a slot store exists)
     const NOTE: &str = "The host configures the shared route. Difficulty affects both runners and hunters.";
-    let note = wrap(a, F::Body, NOTE, w - 12.0, 6.0);
+    let note = wrap(a, F::Body, if ui.owner.owner && guest { &strings.owner_lobby_note } else { NOTE }, w - 12.0, 6.0);
     let cfg_h = 6.0
         + l7
         + 3.0
@@ -1486,7 +1609,9 @@ pub fn draw_lobby(
     let cw = w - 12.0;
     let mut cy = y + 6.0;
     label(a, F::Body, &track("ROUTE CONFIGURATION"), cx, cy, 7.0, p.amber);
-    if guest {
+    if owner {
+        label_r(a, F::Body, &strings.owner_heading, cx + cw, cy + (l7 - l6) * 0.5, 6.0, p.amber);
+    } else if guest {
         label_r(
             a,
             F::Body,
@@ -1509,7 +1634,8 @@ pub fn draw_lobby(
     }
     cy += l7 + 3.0;
     // a guest sees the host's difficulty as a locked row; only the host (or a solo runner) can pick another
-    label(a, F::Body, &difficulty_row_title(mode, *diff), cx, cy, 6.0, p.muted);
+    let title = if owner { lobby_difficulty().title.clone() } else { difficulty_row_title(mode, *diff) };
+    label(a, F::Body, &title, cx, cy, 6.0, p.muted);
     let by = cy + l6 + 2.0;
     let mut bx = cx;
     let row = lobby_row();
@@ -1520,11 +1646,19 @@ pub fn draw_lobby(
         } else {
             Kind::Secondary
         };
-        let st = BtnState { disabled: !difficulty_editable(mode), ..plain() };
+        // the owner picks the room's difficulty through the server (it applies from the next route); a host or a solo
+        // runner picks it here; any other guest only reads the host's
+        let st = BtnState { disabled: if owner { !owner_joined } else { !difficulty_editable(mode) }, ..plain() };
         if button(a, Rect::new(bx, by, bw, btn_h), difficulty_label(d), 7.0, kind, st)
             && interactive
         {
-            *diff = pick_difficulty(mode, *diff, d);
+            if owner {
+                if d != *diff {
+                    out = Action::Owner(OwnerAction::Difficulty(d));
+                }
+            } else {
+                *diff = pick_difficulty(mode, *diff, d);
+            }
         }
         bx += bw + 4.0;
     }
@@ -1572,7 +1706,7 @@ pub fn draw_lobby(
     label(a, F::Body, &track("CONNECTED PLAYERS"), x, y, 7.0, p.amber);
     y += l7 + 5.0;
     let rh = btn_h + 4.0;
-    for pl in lobby_players(mode, username, guests) {
+    for pl in with_kick_targets(lobby_players(mode, username, guests), &ui.owner) {
         let r = Rect::new(x, y, w, rh);
         let edge = if pl.you {
             lr(hex(0x73596d), p.panel_edge)
@@ -1588,7 +1722,15 @@ pub fn draw_lobby(
         } else {
             pl.name.clone()
         };
-        let name_w = (w - 14.0 - status_w - 14.0).max(20.0);
+        // the owner's KICK sits left of the status
+        let kick_w = if pl.kick.is_some() { button_min(a, &strings.label_kick, 6.0, false).x + 4.0 } else { 0.0 };
+        if let Some(peer) = pl.kick {
+            let kr = Rect::new(x + w - 6.0 - status_w - 6.0 - kick_w, y + 1.0, kick_w, rh - 2.0);
+            if button(a, kr, &strings.label_kick, 6.0, Kind::Secondary, plain()) && interactive {
+                out = Action::Owner(OwnerAction::Kick(peer));
+            }
+        }
+        let name_w = (w - 14.0 - status_w - 14.0 - if kick_w > 0.0 { kick_w + 6.0 } else { 0.0 }).max(20.0);
         label_vc(
             a,
             F::Body,
@@ -1607,39 +1749,58 @@ pub fn draw_lobby(
     // the feedback line: the room's status
     let (mode_line, mode_colour, mode_detail) = match mode {
         RoomMode::Solo => (
-            "OFFLINE SOLO ROOM",
+            "OFFLINE SOLO ROOM".to_string(),
             p.alert,
             format!("SOLO ROOM {code} // PRIMARY SERVER UNAVAILABLE"),
         ),
         RoomMode::Host => (
-            "ONLINE ROOM // YOU ARE HOSTING",
+            "ONLINE ROOM // YOU ARE HOSTING".to_string(),
             coop_blue(),
             format!("ROOM {code} // FRIENDS JOIN WITH THIS CODE"),
         ),
+        RoomMode::Guest if waiting.is_some() => (
+            strings.lobby_waiting_line.clone(),
+            coop_blue(),
+            waiting.as_ref().map(|w| w.0.clone()).unwrap_or_default(),
+        ),
+        RoomMode::Guest if owner => (
+            strings.lobby_owner_line.clone(),
+            coop_blue(),
+            hosted::fill(&strings.lobby_owner_detail, code, 0, 0, ""),
+        ),
         RoomMode::Guest => (
-            "ONLINE ROOM // JOINED",
+            "ONLINE ROOM // JOINED".to_string(),
             coop_blue(),
             format!("ROOM {code} // THE HOST STARTS THE ROUTE"),
         ),
     };
-    label(a, F::Body, mode_line, x, y, 7.0, mode_colour);
+    label(a, F::Body, &mode_line, x, y, 7.0, mode_colour);
     y += l7 + 5.0;
     label(a, F::Body, &mode_detail, x, y, 7.0, p.muted);
     y += l7 + 8.0;
+    if let Some((_, checks)) = waiting.as_ref() {
+        label(a, F::Body, checks, x, y - 3.0, 7.0, p.muted);
+        y += l7 + 5.0;
+    }
+    if !ui.owner.status.is_empty() {
+        label(a, F::Body, &ui.owner.status, x, y - 3.0, 7.0, p.amber);
+        y += l7 + 5.0;
+    }
     // the actions row: wraps onto a second line when the window is narrow
-    let items = lobby_buttons(mode);
+    let items = lobby_buttons_for(mode, owner);
     let enter = interactive && nav(&mut ui.focus, items.len(), false);
     let ah = button_min(a, "X", menu_size(10.0, 1.0), false).y.max(18.0);
     let mut ax = x;
     let mut ay = y;
     for (i, b) in items.iter().enumerate() {
-        let (fs, kind) = if *b == LobbyButton::Enter {
+        let (fs, kind) = if matches!(*b, LobbyButton::Enter | LobbyButton::StartRoute) {
             (menu_size(10.0, 1.0), Kind::Primary)
         } else {
             (7.0, Kind::Secondary)
         };
-        let text = lobby_label(*b, mode);
-        let locked = lobby_locked(*b, mode, save.is_some());
+        let text = lobby_text(*b, mode);
+        let text = text.as_str();
+        let locked = lobby_locked_for(*b, mode, save.is_some(), owner_joined);
         let bw = button_min(a, text, fs, false).x;
         if ax + bw > x + w && ax > x {
             ax = x;
@@ -1657,6 +1818,7 @@ pub fn draw_lobby(
                 LobbyButton::ContinueRun => Action::ContinueRun,
                 LobbyButton::CharacterFiles => Action::Go(Screen::Dossier),
                 LobbyButton::Leave => Action::Go(Screen::Title),
+                owner_button => lobby_owner_action(*owner_button).map_or(Action::None, Action::Owner),
             };
         }
         ax += bw + 5.0;
@@ -1687,10 +1849,12 @@ pub struct PlayerRow {
     pub status: String,
     pub floor: String,
     pub colour: Color,
+    /// The session id the room owner's KICK button removes; None for a row nobody may kick.
+    pub kick: Option<u32>,
 }
 
 /// PlayerListPanel: title, the column header and one row per player.
-pub fn player_list(a: &Assets, r: Rect, rows: &[PlayerRow]) {
+pub fn player_list(a: &Assets, r: Rect, rows: &[PlayerRow], interactive: bool) -> Option<u32> {
     let p = pal();
     panel_box(r, p.panel, p.panel_edge);
     let x = r.x + 6.0;
@@ -1705,14 +1869,15 @@ pub fn player_list(a: &Assets, r: Rect, rows: &[PlayerRow]) {
         xs[i] = cxp;
         cxp += w + 4.0;
     }
-    for (i, h) in ["", "", "NAME", "PING", "STATUS", "FLOOR", "VOICE"]
-        .iter()
-        .enumerate()
-    {
+    // the last column is the owner's KICK where a row has one (the voice column has nothing in it yet)
+    let any_kick = interactive && rows.iter().any(|r| r.kick.is_some());
+    let last = if any_kick { hosted::rules().strings.label_kick.as_str() } else { "VOICE" };
+    for (i, h) in ["", "", "NAME", "PING", "STATUS", "FLOOR", last].iter().enumerate() {
         label(a, F::Body, h, xs[i], y, 6.0, p.muted);
     }
     y += lh(F::Body, 6.0) + 3.0;
-    let rh = lh(F::Body, 7.0);
+    let rh = if any_kick { lh(F::Body, 7.0).max(13.0) } else { lh(F::Body, 7.0) };
+    let mut kicked = None;
     for row in rows {
         fill(Rect::new(xs[0], y + (rh - 9.0) * 0.5, 4.0, 9.0), row.colour);
         if row.host {
@@ -1739,8 +1904,15 @@ pub fn player_list(a: &Assets, r: Rect, rows: &[PlayerRow]) {
         };
         label_vc(a, F::Body, &row.status, xs[4], y, rh, 7.0, st);
         label_vc(a, F::Body, &row.floor, xs[5], y, rh, 7.0, p.body);
+        if let (Some(peer), true) = (row.kick, interactive) {
+            let kr = Rect::new(xs[6], y, cols[6] + 8.0, rh);
+            if button(a, kr, &hosted::rules().strings.label_kick, 6.0, Kind::Secondary, plain()) {
+                kicked = Some(peer);
+            }
+        }
         y += rh + 2.0;
     }
+    kicked
 }
 
 // -- the hunter dossier (room_lobby.gd / pause_menu.gd _open_dossier) -----------------------
@@ -2923,6 +3095,67 @@ mod lobby_tests {
         assert!(guest[0].you && !guest[0].host);
         assert!(guest[1].host && !guest[1].you);
         assert_eq!(guest[1].status, "HOST // STAGING");
+    }
+
+
+    fn owner_view(owner: bool, peers: &[(u32, &str)]) -> OwnerView {
+        OwnerView { owner, joined: true, peers: peers.iter().map(|(p, n)| (*p, n.to_string())).collect(), waiting: None, status: String::new() }
+    }
+
+    #[test]
+    fn the_owner_has_start_restart_and_end_where_other_guests_wait_for_the_host() {
+        let labels: Vec<String> = lobby_buttons_for(RoomMode::Guest, true).into_iter().map(|b| lobby_text(b, RoomMode::Guest)).collect();
+        assert_eq!(labels, ["START ROUTE", "RESTART ROUTE", "END ROUTE", "CHARACTER FILES", "LEAVE ROOM"]);
+        // any other guest keeps the locked WAITING FOR HOST row, and the owner flag means nothing outside a guest's room
+        assert_eq!(lobby_buttons_for(RoomMode::Guest, false), lobby_buttons(RoomMode::Guest));
+        for mode in [RoomMode::Solo, RoomMode::Host] {
+            assert_eq!(lobby_buttons_for(mode, true), lobby_buttons(mode), "{mode:?}");
+        }
+        assert_eq!(lobby_focus_for(RoomMode::Guest, true, LobbyButton::Leave), 4);
+        assert_eq!(lobby_focus_for(RoomMode::Guest, true, LobbyButton::CharacterFiles), 3);
+    }
+
+    #[test]
+    fn each_owner_button_sends_its_command() {
+        assert_eq!(lobby_owner_action(LobbyButton::StartRoute), Some(OwnerAction::Start));
+        assert_eq!(lobby_owner_action(LobbyButton::RestartRoute), Some(OwnerAction::Restart));
+        assert_eq!(lobby_owner_action(LobbyButton::EndRoute), Some(OwnerAction::End));
+        for b in [LobbyButton::Enter, LobbyButton::ContinueRun, LobbyButton::CharacterFiles, LobbyButton::Leave] {
+            assert_eq!(lobby_owner_action(b), None, "{b:?}");
+        }
+    }
+
+    #[test]
+    fn the_owner_buttons_wait_for_the_room_to_open() {
+        for b in [LobbyButton::StartRoute, LobbyButton::RestartRoute, LobbyButton::EndRoute] {
+            assert!(lobby_locked_for(b, RoomMode::Guest, false, false), "{b:?} while the server opens the room");
+            assert!(!lobby_locked_for(b, RoomMode::Guest, false, true), "{b:?} once joined");
+        }
+        // the rest follow the ordinary rule
+        assert!(!lobby_locked_for(LobbyButton::Leave, RoomMode::Guest, false, false), "a player can always leave");
+        assert!(lobby_locked_for(LobbyButton::Enter, RoomMode::Guest, false, true));
+    }
+
+    #[test]
+    fn only_the_owner_gets_kick_targets_and_never_for_itself_or_the_host() {
+        let roster = vec!["KYTTU".to_string(), "BO".to_string(), "MAX".to_string()];
+        let rows = |view: &OwnerView| with_kick_targets(lobby_players(RoomMode::Guest, "ana", &roster), view);
+        // the owner ANA, in a room hosted by the server process KYTTU(host row), with BO and MAX
+        let view = owner_view(true, &[(2, "ANA"), (3, "BO"), (4, "MAX"), (1, "KYTTU")]);
+        let r = rows(&view);
+        assert_eq!(r.iter().map(|p| (p.name.as_str(), p.kick)).collect::<Vec<_>>(), [("ANA", None), ("KYTTU", None), ("BO", Some(3)), ("MAX", Some(4))]);
+        // a guest who does not own the room has no target at all, even with the same roster
+        assert!(rows(&owner_view(false, &[(3, "BO"), (4, "MAX")])).iter().all(|p| p.kick.is_none()));
+        // a name the room has no id for gets none
+        assert!(rows(&owner_view(true, &[])).iter().all(|p| p.kick.is_none()));
+        assert_eq!(view.peer_of("bo"), Some(3), "names match without regard to case");
+    }
+
+    #[test]
+    fn the_create_dialog_asks_a_signed_out_player_to_sign_in() {
+        // the same line the app flashes and the dialog shows (data/net/hosted_room.json)
+        assert_eq!(hosted::rules().strings.sign_in_required, "SIGN IN TO CREATE AN ONLINE ROOM");
+        assert!(!Ui::default().signed_in, "a fresh menu is signed out until the app says otherwise");
     }
 
     #[test]

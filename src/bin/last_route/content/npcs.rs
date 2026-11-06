@@ -1,6 +1,8 @@
 //! `lr.npcs/1` (data/npcs.json): how many NPC teammates a normal Infinite run starts with, where they stand
 //! and how smart they are. Godot has no automatic spawn (only the lobby's NPC TEAMMATES count and the admin
 //! page), so this is the Rust port's rule; it is data so a pack or KT can change it without code.
+//! Note: a room start or join no longer applies it (`Game::enter_infinite` makes no NPC); the rule is read only by
+//! `Game::npc_ensure_run`, which no room path calls.
 
 use serde_json::Value;
 

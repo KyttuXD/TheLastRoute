@@ -926,8 +926,9 @@ fn lamps_with(f: &Facility, lights_on: &[bool], content: &Content, dark: &[bool]
             flicker: Flicker::NONE,
         });
     }
-    // each stairwell and ladder well carries a light, so its steps and rungs read in the dark
-    out.extend(f.stairs.iter().map(|s| stairs::lamp(*s, WALL_HEIGHT)));
+    // each stairwell and ladder well carries a light, so its steps and rungs read in the dark. A flight has one light (Godot's
+    // stairwell light): the lower level, which owns the flight, lights it; the upper level's record adds none
+    out.extend(f.stairs.iter().filter(|s| s.is_ladder() || s.dir > 0).map(|s| stairs::lamp(*s, WALL_HEIGHT)));
     let mut budget = lamp_flicker::table().prop_budget(f.level);
     for p in &f.props {
         if budget == 0 {
@@ -1139,7 +1140,7 @@ fn add_stairs(
         let b = match q.face {
             stairs::Face::Floor => painted(surf, floor, assets.floor(set)),
             stairs::Face::Wall => painted(surf, wall, assets.wall(set)),
-            stairs::Face::Plain => &mut *plain,
+            stairs::Face::Plain | stairs::Face::Iron => &mut *plain,
         };
         b.quad(q.c, q.uv, q.n, q.col, 0.0);
     }
@@ -2512,7 +2513,7 @@ mod stack_mesh_tests {
         assert!(draws_ceiling(None));
         assert!(draws_ceiling(Some(flight(-1))), "the upper level keeps its own ceiling");
         let p = parts_of(s, -1);
-        assert!(!p.quads.iter().any(|q| q.n.y < -0.5), "the flight adds no cap under the level above");
+        assert!(!p.quads.iter().any(|q| q.n.y < -0.5 && q.face != Face::Iron), "the flight adds no cap under the level above (a rail's underside is iron)");
         assert!(!p.quads.is_empty(), "the lower level draws its treads");
     }
 

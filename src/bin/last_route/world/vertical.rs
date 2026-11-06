@@ -54,9 +54,14 @@ pub const LADDER_MOUNT_SECONDS: f32 = 0.3;
 /// The smooth dismount off a ladder, in seconds (`player_controller_3d.gd:380`).
 pub const LADDER_DISMOUNT_SECONDS: f32 = 0.45;
 
-/// Under this height on the ladder, jump lets go (`player_controller_3d.gd:378`: 1.3 times the player scale), scaled to
-/// our storey.
-pub const LADDER_LET_GO_HEIGHT: f32 = 1.3 * 1.067 * GODOT_TO_OURS;
+/// Under this height on the ladder, jump lets go (`player_controller_3d.gd:378`: 1.3 times the player scale, 1.387 m). It
+/// is a reach of the body, not a share of the storey, so it is not scaled: the same 1.387 m as Godot.
+pub const LADDER_LET_GO_HEIGHT: f32 = 1.3 * 1.067;
+
+/// The small lift over the hatch lip on the way off a ladder at the top, in metres (`player_controller_3d.gd:1348`, a
+/// `sin(k * PI)` hop of .25 m during the dismount). It is a body motion over a lip, not a storey distance, so it is
+/// not scaled.
+pub const LADDER_TOP_HOP: f32 = 0.25;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Functions
@@ -107,6 +112,15 @@ mod tests {
     }
 
     #[test]
+    fn the_ladder_body_numbers_are_godots_unscaled() {
+        // the let-go reach and the hop over the hatch lip are body motions, not storey distances
+        assert!((LADDER_LET_GO_HEIGHT - 1.3871).abs() < 1e-4, "{LADDER_LET_GO_HEIGHT}");
+        assert_eq!(LADDER_TOP_HOP, 0.25);
+        // the climb speed does scale: the same 2.35 s over the whole shaft as Godot's 1.7 m/s over 4 m
+        assert!((STOREY / LADDER_CLIMB_SPEED - GODOT_STOREY / 1.7).abs() < 1e-4);
+    }
+
+    #[test]
     fn a_flight_reaches_the_storey() {
         for shape in SHAPES {
             for run in RUNS {
@@ -132,6 +146,9 @@ mod tests {
                 assert_eq!(cell_of(path[0]), fp.landing);
                 assert_eq!(cell_of(*path.last().unwrap()), fp.foot);
 
+                // A spiral's lead-out to the foot crosses the slab of upper floor beside the helicoid's end: the walker is on
+                // the lower floor under it, so those samples are not on the way down
+                let path: Vec<(f32, f32)> = path.into_iter().filter(|p| !crate::world::flight::on_slab(&flight, p.0, p.1)).collect();
                 // absolute height along the walk: 0 at A down to -STOREY at B, never rising, small steps, one level flip
                 let abs: Vec<f32> = path.iter().map(|p| flight_surface_y(&flight, p.0, p.1).unwrap()).collect();
                 assert!((abs[0] - 0.0).abs() < 1e-4 && (abs[abs.len() - 1] + STOREY).abs() < 1e-4);
@@ -159,7 +176,9 @@ mod tests {
                 }
                 // the lower stair walked from B to A: relative height 0 up, never falling, the same surface + STOREY
                 let mut prev = 0.0f32;
-                for p in path.iter().rev().filter(|p| cell_of(**p) != fp.landing) {
+                let landing_row = crate::world::flight::landing_row_with(flights(), &flight);
+                // (the rest of the landing row is the level's flat floor in each record, not the flight)
+                for p in path.iter().rev().filter(|p| cell_of(**p) != fp.landing && (cell_of(**p) == fp.foot || !landing_row.contains(&cell_of(**p)))) {
                     let y = stair_surface_y(lower, -1, *p).expect("surface on the well and at B");
                     let want = flight_surface_y(&flight, p.0, p.1).unwrap() + STOREY;
                     assert!((y - want).abs() < 1e-4, "{shape:?} {run:?}: lower is the same surface");

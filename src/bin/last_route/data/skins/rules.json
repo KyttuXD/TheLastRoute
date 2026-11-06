@@ -12,15 +12,6 @@
 		"repeat_delay_secs": 0.4,
 		"repeat_per_sec": 30
 	},
-	"minecraft": {
-		"name_max": 16,
-		"name_chars": "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
-		"lookup_url": "https://api.mojang.com/users/profiles/minecraft/{name}",
-		"lookup_host": "api.mojang.com",
-		"profile_url": "https://sessionserver.mojang.com/session/minecraft/profile/{uuid}",
-		"profile_host": "sessionserver.mojang.com",
-		"textures_host": "textures.minecraft.net"
-	},
 	"layout": {
 		"overlay_rects": [[32, 0, 32, 16], [16, 32, 24, 16], [40, 32, 16, 16], [0, 32, 16, 16], [48, 48, 16, 16], [0, 48, 16, 16]],
 		"slim_probe_rects": [[50, 16, 2, 4], [54, 20, 2, 12], [42, 48, 2, 4], [46, 52, 2, 12]],

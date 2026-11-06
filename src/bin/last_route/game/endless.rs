@@ -838,7 +838,8 @@ impl Game {
         self.p.place(start);
         self.p.pos = start;
         self.reset_hunters(content);
-        self.npc_ensure_run(content);
+        // No NPC is made here: a room holds only its real players. Bots come from the admin panel
+        // (`npc_spawn`); `npc_ensure_run` stays for callers that ask for the data/npcs.json run NPCs.
         self.fade = 1.0;
         self.reveal();
         self.discover_map();

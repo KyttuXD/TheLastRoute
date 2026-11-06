@@ -6,7 +6,7 @@ A skin is a 64x64 PNG known on the wire by its id: the lowercase hex SHA-256 of 
 
 ## The pipeline
 
-1. **Pick** (SKIN tab): the file, URL, Minecraft name or catalogue picture is validated and re-encoded canonically
+1. **Pick** (SKIN tab): the chosen file, URL, copied runner skin or catalogue picture is validated and re-encoded canonically
    (`skins::validate_skin`: the picked file goes through the one shared structural check in the shape `Local` (64x64 or the old
    64x32, interlaced allowed), then the fallible decoder, the old format upgraded to 64x64, the base layer made opaque). The id
    is the hash of those canonical bytes.
@@ -83,13 +83,37 @@ base, so the layout read when it was picked is kept in the settings).
 forget the uploaded id. `app/mod.rs` calls it when the worn skin goes from a real one to DEFAULT and the account is signed in
 (retried on later frames until accepted).
 
-## FROM URL, FROM MC NAME and the skins host
+## PICK A PNG, in a run and on the web
+
+**PICK A PNG** opens the system's own file chooser (`shared/file_pick.rs`), never a list drawn in the game:
+
+- **Web**: the page's script (`packaging/web/index.html`, copied to `dist/web/index.html`) makes a hidden `<input type=file accept="image/png,.png">`
+  and clicks it, so the browser shows its own file window. The chosen file is read into the page and the game polls for the answer
+  (`lr_pick_state`: pending, done or cancelled); the bytes stay in the page until `lr_pick_read` copies one file into the game. The bridge is
+  generic, so a mod can reuse it: `lr_pick_open(kind, multiple, directory)` returns a request id (`kind` is an HTML `accept` string, `directory`
+  picks a folder and gives its files by relative path), `lr_pick_state(id)`, `lr_pick_count(id)`, `lr_pick_name(id, i, dst, cap)`,
+  `lr_pick_size(id, i)`, `lr_pick_read(id, i, dst, cap)` and `lr_pick_release(id)`. It never throws into the game. A page without these
+  functions cannot start the wasm (the imports are missing), so `index.html` and `last_route.wasm` are deployed together.
+- **Windows and Linux**: the `rfd` crate (native targets only) shows the system open dialog on a thread of its own, starting in the Pictures
+  folder, else Desktop, else the home folder. **macOS**: the open panel must run on the main thread, which is the macroquad loop's thread, so
+  the synchronous dialog is called there on the frame after the press (the window waits while the panel is open). Linux without a desktop
+  portal or zenity has no dialog: the status line says to drop a PNG on the window.
+- The chosen file goes through the same checks as a dropped one (`.png` name, `skins::validate_skin`, the size cap). A closed chooser changes
+  nothing. Tests use a fake dialog (`file_pick` tests) and hand outcomes to `skin_tab::take_picked`.
+
+The browser has no skins folder (`paths::user_dir()` is `None` there), so APPLY keeps the skin in memory and in the page's localStorage
+(`last_route.custom_skin`) and the game wears it from there (`skins::keep_custom_in_memory`, `worn_skin_in`).
+
+**In a run**: the pause menu has a SKIN entry (between HUNTER DOSSIER and SETTINGS) that opens the settings overlay on its SKIN tab (the same
+`ui/skin_tab.rs`). APPLY and DEFAULT change `Settings::skin`; the game loop resolves it again the same frame (`WornTracker`), so the first-person
+hands change, the upload starts, and the open room gets the new id and arm style (`set_skin`, `set_skin_flags`).
+
+## FROM URL and the skins host
 
 They go through `net/http.rs` over https (`docs/NET_HTTPS.md`): `skins::fetch_https` with the rules' url checks, at most 3
 redirects each re-checked, loopback, private and other non-public addresses refused after the name is resolved (IPv6 forms that
 carry an IPv4 address, such as NAT64, 6to4, v4-compatible and Teredo, are judged by it), and DNS inside the request deadline. Tests:
-the whole Mojang chain and FROM URL with a fake getter (`fetch_minecraft_skin_via`, `fetch_url_skin_via`: hosts, content types,
-the profile's slim model, a profile that names another host), a skin PNG over real TLS on loopback through the client's own limit
+FROM URL with a fake getter (`fetch_url_skin_via`: hosts and content types), a skin PNG over real TLS on loopback through the client's own limit
 and content types (`net::http` tests), and an ignored live test (`cargo test --bin last_route live_ -- --ignored`).
 
 ## Room announce, retries and visible state

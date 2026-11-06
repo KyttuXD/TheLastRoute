@@ -3,8 +3,9 @@
 //! Both levels of a stairwell call the same pure function here, so the two footprints cannot disagree:
 //!
 //! - [`level0_well_flight`]: a maze (level 0) stairwell. Godot's layout box is kept as it is (the golden parity run
-//!   compares only the stairwell boxes), so a `stairs` well is a switchback and a `spiral` well is a spiral, except
-//!   that a spiral whose foot would land in rock or water on the sewer side falls back to a switchback.
+//!   compares only the stairwell boxes), so a `stairs` well is Godot's switchback (the 5 x 7 interior: two landing rows,
+//!   a 5 x 5 well) and a `spiral` well is Godot's spiral (landing and foot are the two end cells of the landing row just
+//!   inside the doorway, the 5 x 5 interior round the post), with no fallback and no rock carved.
 //! - [`sewer_well_flights`]: the same flights seen from level -1, computed through [`level0_well_flight`].
 //! - [`bay_flight`]: the stair bays of levels -1 -> -2 and -2 -> -3 (`infinite::stair_link`). The first candidate that
 //!   fits wins, in a seeded fixed order, so the upper and the lower chunk always pick the same one.
@@ -130,49 +131,35 @@ pub fn carve_cells(f: &Flight) -> Vec<Cell> {
 
 /// The flight of a maze stairwell. `door` is the layout door rectangle's (x, y, w) in chunk cells and `north` its side.
 ///
-/// `stairs` wells are a switchback anchored on the landing cell just inside the doorway, running into the box (the old
-/// layout's landing and run). `spiral` wells are a spiral anchored on the doorway cell, so its 5x5 hole fills the box
-/// interior. The spiral's foot lies in the box wall column, so it is kept only when the sewer below is open there; else
-/// the well is a switchback. Both levels call this with the same arguments, so they agree.
+/// `stairs` wells are Godot's switchback (stairwells.gd:66-80, the 7 x 9 box): the landing is the two rows at the doorway
+/// end, the arriving flight is the two columns on the +x side (columns 3 and 4 of the 5-wide interior), the divider the
+/// column beside them and the leaving flight the two beyond, so the landing A is the first cell of the arriving flight,
+/// in the row just inside the landing's door row (the row behind it, at the door, is its margin). `spiral` wells are a
+/// spiral (stairwells.gd:116-134) whose landing A and foot B are the two end cells of the three-cell landing row (the
+/// row just inside the doorway), its 5x5 well filling the box interior round the post, both ends open onto the landing
+/// row and the corridor that already leaves the doorway on both levels. Every layout spiral therefore builds as a spiral;
+/// no rock is carved for it and nothing falls back. Both levels call this with the same arguments, so they agree.
 pub fn level0_well_flight(seed: &str, _cx: i32, _cy: i32, kind: &str, door: (i32, i32, i32), north: bool) -> Flight {
     if kind == "spiral" {
-        let spiral = spiral_well_flight(seed, door, north);
-        if spiral_carvable(&spiral) {
-            return spiral;
-        }
+        return spiral_well_flight(seed, door, north);
     }
     let outward = if north { 1 } else { -1 };
     let mid = door.0 + door.2 / 2;
-    Flight::new(FlightKind::Stairs, FlightShape::Switchback, 0, Cell::new(mid, door.1 - outward), (0, -outward))
+    Flight::new(FlightKind::Stairs, FlightShape::Switchback, 0, Cell::new(mid + 1, door.1 - 2 * outward), (0, -outward))
 }
 
-/// The spiral a `spiral` layout well asks for: anchored on the doorway cell, running into the box.
-pub fn spiral_well_flight(seed: &str, door: (i32, i32, i32), north: bool) -> Flight {
+/// The spiral a `spiral` layout well asks for: the landing A is the landing-row cell the arc starts at, the foot B the cell
+/// it ends at (`B = A + side * 2 * dir`), running into the box. The turn is Godot's: its helicoid is cut the same way round
+/// in both box orientations (a rotation of the north layout is the south one), which in the one local frame the flight
+/// uses, whose across axis is +x for both, is a mirror image: counter-clockwise (`clockwise` false) for a north well,
+/// clockwise for a south one. The seed does not choose it.
+pub fn spiral_well_flight(_seed: &str, door: (i32, i32, i32), north: bool) -> Flight {
     let outward = if north { 1 } else { -1 };
-    let a = Cell::new(door.0 + door.2 / 2, door.1);
-    Flight::new(FlightKind::Stairs, FlightShape::Spiral, 0, a, (0, -outward))
-        .with_clockwise(spiral_clockwise_for(seed_key(seed), 0, a))
-}
-
-/// The cells the sewer below must hold open for a spiral well beyond its box: the foot B, its clear margin and the
-/// cell past the margin (the foot has somewhere to go). The sewer chunk carves exactly these.
-pub fn spiral_open_cells(f: &Flight) -> Vec<Cell> {
-    let fp = well_footprint(f);
-    let mut out: Vec<Cell> = fp.lower_clear.clone();
-    out.push(fp.foot);
-    let far = fp.lower_clear.iter().copied().max_by_key(|c| (c.x - fp.foot.x).abs() + (c.y - fp.foot.y).abs());
-    if let Some(c) = far.filter(|c| *c != fp.foot) {
-        out.push(Cell::new(c.x + (c.x - fp.foot.x).signum(), c.y + (c.y - fp.foot.y).signum()));
-    }
-    out.sort();
-    out.dedup();
-    out
-}
-
-/// A spiral well is possible unless its cells would leave the chunk interior (the only genuine impossibility: the
-/// sewer makes room for everything else). Pure geometry, so both levels decide alike.
-pub fn spiral_carvable(f: &Flight) -> bool {
-    well_footprint(f).upper_hole.iter().chain(spiral_open_cells(f).iter()).all(|c| in_bounds(*c))
+    let middle = Cell::new(door.0 + door.2 / 2, door.1 - outward);
+    let clockwise = !north;
+    let dir = if clockwise { -1 } else { 1 };
+    Flight::new(FlightKind::Stairs, FlightShape::Spiral, 0, Cell::new(middle.x - dir, middle.y), (0, -outward))
+        .with_clockwise(clockwise)
 }
 
 /// The flights of the level-0 wells of column (cx, cy), seen from the sewer (`k.level == -1`; empty otherwise). Each is
@@ -503,8 +490,8 @@ mod tests {
 
 
     #[test]
-    fn every_layout_spiral_well_is_a_spiral_and_the_sewer_makes_room_for_it() {
-        let (mut spirals, mut fallbacks) = (0, 0);
+    fn every_layout_spiral_well_is_a_spiral_anchored_on_the_doorway() {
+        let mut spirals = 0;
         for n in 0..60u32 {
             let seed = format!("{}", 1000 + n * 7919);
             for cx in -1..=1 {
@@ -519,43 +506,56 @@ mod tests {
                         spirals += 1;
                         let door = (w.door.x, w.door.y, w.door.w);
                         let f = level0_well_flight(&seed, cx, cy, "spiral", door, w.north);
-                        if f.shape != FlightShape::Spiral {
-                            fallbacks += 1;
-                            let s = spiral_well_flight(&seed, door, w.north);
-                            assert!(spiral_open_cells(&s).iter().any(|c| !in_bounds(*c)), "{seed} {cx},{cy}: a spiral that fits the chunk fell back");
-                            continue;
-                        }
+                        assert_eq!(f.shape, FlightShape::Spiral, "{seed} {cx},{cy}: a layout spiral never falls back");
                         assert!(flights.contains(&f), "{seed} {cx},{cy}: the sewer lacks the spiral");
                         assert_eq!(upper_stair(&f).flight(0), lower_stair(&f).flight(-1));
                         let fp = well_footprint(&f);
+                        // the landing and the foot are the two end cells of the landing row (the row just inside the doorway),
+                        // two cells apart
+                        let outward = if w.north { 1 } else { -1 };
+                        let landing_row: Vec<Cell> = (door.0..door.0 + door.2).map(|x| Cell::new(x, door.1 - outward)).collect();
+                        assert!(landing_row.contains(&fp.landing) && landing_row.contains(&fp.foot), "{seed} {cx},{cy}: A and B are landing row cells");
+                        assert_eq!((fp.foot.x - fp.landing.x).abs(), 2);
+                        assert_eq!(fp.foot.y, fp.landing.y);
+                        // Godot's turn: counter-clockwise for a north well, clockwise for a south one, whatever the seed
+                        assert_eq!(f.clockwise, !w.north, "{seed} {cx},{cy}");
+                        // the doorway row stays open
+                        let doorway: Vec<Cell> = (door.0..door.0 + door.2).map(|x| Cell::new(x, door.1)).collect();
+                        // the well is the box interior less the landing row (floor on both levels), and the sewer already
+                        // holds the doorway row open
+                        let interior: BTreeSet<Cell> = (w.bbox.x + 1..w.bbox.x + w.bbox.w - 1)
+                            .flat_map(|x| (w.bbox.y + 1..w.bbox.y + w.bbox.h - 1).map(move |y| Cell::new(x, y)))
+                            .filter(|c| !landing_row.contains(c))
+                            .collect();
+                        assert_eq!(fp.upper_hole.iter().copied().collect::<BTreeSet<_>>(), interior, "{seed} {cx},{cy}: the hole is the 5x5 interior less the landing row");
                         let g = |c: Cell| info.grid[c.y as usize][c.x as usize];
                         let open = |c: Cell| !matches!(g(c), score::SOLID | score::WATER | score::FALL);
-                        for c in fp.upper_hole.iter().chain(spiral_open_cells(&f).iter()) {
+                        for c in doorway.iter().chain(landing_row.iter()).chain(fp.lower_clear.iter()) {
                             assert!(open(*c), "{seed} {cx},{cy}: {c:?} is not open in the sewer");
                         }
-                        // reachability from the foot over open cells to a cell outside the footprint
-                        let own: BTreeSet<Cell> = fp.upper_hole.iter().chain(spiral_open_cells(&f).iter()).copied().collect();
+                        for c in fp.upper_hole.iter() {
+                            assert!(!matches!(g(*c), score::SOLID | score::WATER), "{seed} {cx},{cy}: well cell {c:?} is rock or water");
+                        }
+                        // reachability from the foot over open cells, never through the well, to a cell far from the box
                         let mut seen: BTreeSet<Cell> = BTreeSet::new();
                         let mut q = vec![fp.foot];
                         seen.insert(fp.foot);
                         while let Some(c) = q.pop() {
                             for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
                                 let n = Cell::new(c.x + dx, c.y + dy);
-                                if in_bounds(n) && open(n) && seen.insert(n) {
+                                if in_bounds(n) && open(n) && !fp.upper_hole.contains(&n) && seen.insert(n) {
                                     q.push(n);
                                 }
                             }
                         }
-                        assert!(seen.iter().any(|c| !own.contains(c)), "{seed} {cx},{cy}: the foot {:?} is sealed in", fp.foot);
-                        assert!(seen.len() > 60, "{seed} {cx},{cy}: the foot reaches only {} cells", seen.len());
+                        assert!(seen.len() > 60, "{seed} {cx},{cy}: the foot {:?} reaches only {} cells", fp.foot, seen.len());
                     }
                 }
             }
         }
         assert!(spirals > 20, "only {spirals} spiral wells in the sweep");
-        // the only fallback is the chunk edge: a corner box whose foot margin would leave the interior (asserted per well above)
-        assert!(spirals - fallbacks > 10, "{fallbacks} of {spirals} spiral wells fell back");
     }
+
     #[test]
     fn all_three_shapes_occur_among_the_bay_flights() {
         let shapes: BTreeSet<String> = bay_sweep().iter().map(|(_, _, _, _, f)| format!("{:?}", f.shape)).collect();
@@ -566,15 +566,16 @@ mod tests {
 
     #[test]
     fn a_well_flight_keeps_the_layout_landing_and_run() {
-        // a stairs well: landing just inside the doorway, running into the box, the old layout's cells
+        // a stairs well: landing in the second row inside the doorway, on the first column of the arriving flight (one right
+        // of the doorway's middle), running into the box, Godot's 5 x 7 interior
         for north in [true, false] {
             let outward = if north { 1 } else { -1 };
             let f = level0_well_flight("1426541270", 0, 0, "stairs", (20, 30, 3), north);
             assert_eq!(f.shape, FlightShape::Switchback);
-            assert_eq!(f.anchor_cell, Cell::new(21, 30 - outward));
+            assert_eq!(f.anchor_cell, Cell::new(22, 30 - 2 * outward));
             assert_eq!(f.run, (0, -outward));
             assert_eq!(f.upper_level, 0);
-            assert_eq!(well_footprint(&f).upper_hole.len(), 8, "the 2x4 hole");
+            assert_eq!(well_footprint(&f).upper_hole.len(), 25, "the 5 x 5 well beyond the two landing rows");
         }
     }
 

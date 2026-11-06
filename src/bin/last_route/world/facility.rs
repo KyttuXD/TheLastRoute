@@ -6,7 +6,7 @@
 //! unstable sort are reproduced where they decide placement).
 
 use super::catalog::Catalog;
-use super::flight::{flight_surface_y, flights, lane_dividers, walk_path as flight_walk_path, well_footprint, Flight, FlightKind, FlightShape, Footprint, Segment};
+use super::flight::{divider_width, flight_walk_y_with, flights, landing_row_with, lane_dividers, spiral_post, walk_path as flight_walk_path, well_footprint, Flight, FlightKind, FlightShape, Footprint, Segment};
 use super::godot_sort::sort_custom;
 use super::vertical::STOREY;
 use super::infinite::ChunkKey;
@@ -486,10 +486,34 @@ impl Stair {
                 here = north;
             }
         }
-        if here == other || !(here == own || fp.upper_hole.contains(&here)) {
+        // the well, this stair's own end and the rest of the landing row (a body sinking onto the ramp has its back
+        // corners over it, so it carries the level's flat floor)
+        if here == other || !(here == own || fp.upper_hole.contains(&here) || landing_row_with(flights(), &flight).contains(&here)) {
             return None;
         }
-        flight_surface_y(&flight, x, z).map(|y| y - level as f32 * STOREY)
+        // what a body of this record's level walks on: the lower level sees a spiral's slab as overhead and the wedge
+        // under it as plain floor (the walker arriving at the helicoid's foot steps off onto it)
+        flight_walk_y_with(flights(), &flight, x, z, self.dir > 0).map(|y| y - level as f32 * STOREY)
+    }
+
+    /// Whether the point lies within `r` of a drop in the flight's walking surface: a spiral's end radial, across which the
+    /// slab of upper floor stands a storey over the lowest step. The route crosses it where the walker changes level, and a
+    /// body is kept off it (it is the rail): a test that fits a body along the route skips those samples.
+    #[cfg(test)]
+    pub(crate) fn near_cliff(&self, level: i32, x: f32, z: f32, r: f32) -> bool {
+        let Some(here) = self.surface_rel(level, x, z) else { return false };
+        (0..8).any(|i| {
+            let a = i as f32 * std::f32::consts::FRAC_PI_4;
+            self.surface_rel(level, x + r * a.cos(), z + r * a.sin()).is_some_and(|h| (h - here).abs() > FLIGHT_FIT_TOL)
+        })
+    }
+
+    /// The post a spiral stands round (centre, radius; grid coordinates) as held by `level`. `None` for any other flight.
+    pub fn post(&self, level: i32) -> Option<((f32, f32), f32)> {
+        if self.is_ladder() || self.shape != FlightShape::Spiral {
+            return None;
+        }
+        self.flight(level).and_then(|f| spiral_post(&f))
     }
 
     /// The walked route from the centre of A to the centre of B, always in that order.
@@ -1589,20 +1613,39 @@ impl Facility {
         self.is_drop(c) || self.stairs.iter().any(|s| s.dir < 0 && s.well_cells().contains(&c))
     }
 
-    /// Whether a body of radius `r` at `(x, z)` overlaps the wall between the lanes of any switchback.
+    /// Whether a body of radius `r` at `(x, z)` overlaps the solid wall between the flights of any switchback (a wall
+    /// `divider_width` metres thick with flat ends, so the body is kept `r` off its rectangle) or a spiral's post (a
+    /// cylinder, so `r` off its circle).
     pub fn divider_blocks(&self, x: f32, z: f32, r: f32) -> bool {
         if self.stairs.is_empty() {
             return false;
         }
-        let reach = r + flights().divider_thickness * 0.5;
+        let half = divider_width() * 0.5;
+        // a flight's solids lie within 8 cells of its anchor: the cheap cull before building the flight
+        const NEAR: f32 = 9.0;
         self.stairs.iter().any(|s| {
-            s.dividers(self.level).iter().any(|seg| {
+            let (cx, cz) = s.cell.center();
+            if (x - cx).abs() > NEAR || (z - cz).abs() > NEAR {
+                return false;
+            }
+            let wall = s.dividers(self.level).iter().any(|seg| {
                 let (dx, dz) = (seg.b.0 - seg.a.0, seg.b.1 - seg.a.1);
-                let len2 = dx * dx + dz * dz;
-                let t = if len2 > 0.0 { (((x - seg.a.0) * dx + (z - seg.a.1) * dz) / len2).clamp(0.0, 1.0) } else { 0.0 };
-                let (px, pz) = (seg.a.0 + dx * t, seg.a.1 + dz * t);
+                let len = (dx * dx + dz * dz).sqrt();
+                if len < 1e-6 {
+                    return false;
+                }
+                // the body's offset from the wall's start along it and across it
+                let (ux, uz) = (dx / len, dz / len);
+                let (px, pz) = (x - seg.a.0, z - seg.a.1);
+                let (along, across) = (px * ux + pz * uz, -px * uz + pz * ux);
+                // the rectangle [0, len] x [-half, half], grown by r with rounded corners
+                let out_along = (-along).max(along - len).max(0.0);
+                let out_across = (across.abs() - half).max(0.0);
+                out_along * out_along + out_across * out_across < r * r
+            });
+            wall || s.post(self.level).is_some_and(|((px, pz), pr)| {
                 let (ex, ez) = (x - px, z - pz);
-                ex * ex + ez * ez < reach * reach
+                ex * ex + ez * ez < (pr + r) * (pr + r)
             })
         })
     }
@@ -2131,7 +2174,11 @@ impl Facility {
         let mut q = VecDeque::from([s]);
         while let Some(c) = q.pop_front() {
             let (wx, wy) = c.center();
-            if self.body_fits(wx, wy, r) {
+            // a well cell the hunters' grid closes (under the ramp, over the drop) is no place to stand and walk from
+            let closed_well = self.hunter_open.len() == (self.cols * self.rows) as usize
+                && self.is_stair_hole(c.x, c.y)
+                && !self.hunter_open[(c.y * self.cols + c.x) as usize];
+            if !closed_well && self.body_fits(wx, wy, r) {
                 return Some((wx, wy));
             }
             for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
@@ -2675,6 +2722,20 @@ impl Facility {
             let (nx, ny) = (c.x + dx, c.y + dy);
             if nx >= 0 && ny >= 0 && nx < self.cols && ny < self.rows {
                 open[(ny * self.cols + nx) as usize] = false;
+            }
+        }
+        // A well cell is ground for a hunter only where the flight's surface is at the floor (the first step of the ramp, a
+        // spiral's floor wedge): the rest is under the ramp or over the drop, and a hunter crosses by the flight's edge.
+        // (The plain footprint test above exempts every tread, so a hunter would otherwise path across the wide wells.)
+        for s in self.stairs.iter().filter(|s| !s.is_ladder()) {
+            for c in s.well_cells() {
+                if c.x < 0 || c.y < 0 || c.x >= self.cols || c.y >= self.rows {
+                    continue;
+                }
+                let (x, y) = c.center();
+                if !s.surface_rel(self.level, x, y).is_some_and(|rel| rel.abs() <= FLIGHT_FIT_TOL) {
+                    open[(c.y * self.cols + c.x) as usize] = false;
+                }
             }
         }
         self.hunter_open = open;
@@ -3353,12 +3414,12 @@ mod tests {
         // A generated maze has no wall-free block of a flight's size, so carve one: the flight's block becomes open
         // floor with no props, and the rest of the facility stays as generated.
         let (ax, az) = (8, 8);
-        for z in az - 2..az + 12 {
-            for x in ax - 2..ax + 8 {
+        for z in az - 3..az + 14 {
+            for x in ax - 6..ax + 10 {
                 f.wall[z as usize][x as usize] = false;
             }
         }
-        f.props.retain(|p| !((ax - 3..ax + 9).contains(&p.cell.x) && (az - 3..az + 13).contains(&p.cell.y)));
+        f.props.retain(|p| !((ax - 7..ax + 11).contains(&p.cell.x) && (az - 4..az + 15).contains(&p.cell.y)));
         let upper = Stair::stairs(Cell::new(ax, az), -1, (0, 1), shape, false);
         let s = if dir < 0 {
             upper
@@ -3377,9 +3438,9 @@ mod tests {
         let seg = s.dividers(0)[0];
         let mid = ((seg.a.0 + seg.b.0) * 0.5, (seg.a.1 + seg.b.1) * 0.5);
         assert!(f.divider_blocks(mid.0, mid.1, 0.2));
-        // half a metre to either side is a lane, not the divider (the divider runs along z for run (0, 1))
-        assert!(!f.divider_blocks(mid.0 - 0.5, mid.1, 0.2));
-        assert!(!f.divider_blocks(mid.0 + 0.5, mid.1, 0.2));
+        // a body's radius and the wall's half width to either side is a lane, not the divider (it runs along z for run (0, 1))
+        assert!(!f.divider_blocks(mid.0 - 0.75, mid.1, 0.2));
+        assert!(!f.divider_blocks(mid.0 + 0.75, mid.1, 0.2));
         assert!(!f.body_fits(mid.0, mid.1, 0.2) && !f.body_fits_at_y(mid.0, mid.1, 0.0, 0.2));
         // a facility without stairs, and the other shapes, have no divider
         let cat = Catalog::load();
@@ -3390,8 +3451,33 @@ mod tests {
             assert!(t.dividers(0).is_empty());
             let c = t.cell.center();
             for (dx, dz) in [(0.0, 0.0), (0.5, 1.0), (1.0, 2.0), (1.0, 3.0)] {
-                assert!(!g.divider_blocks(c.0 + dx, c.1 + dz, 0.2), "{shape:?} {dx} {dz}");
+                // only a spiral's post is solid: the point that is its centre (1.0 across, 2.0 along from A's centre)
+                let post = shape == Spiral && (dx, dz) == (1.0, 2.0);
+                assert_eq!(g.divider_blocks(c.0 + dx, c.1 + dz, 0.2), post, "{shape:?} {dx} {dz}");
             }
+        }
+    }
+
+    #[test]
+    fn a_spiral_post_blocks_a_body_by_its_radius_and_only_a_spiral_has_one() {
+        use crate::world::flight::FlightShape::*;
+        for (level, dir) in [(0, -1), (-1, 1)] {
+            let (f, s) = with_stair(level, dir, Spiral);
+            let ((px, pz), pr) = s.post(level).expect("a spiral has a post");
+            assert!((pr - 0.4).abs() < 1e-6);
+            let r = 0.25;
+            assert!(f.divider_blocks(px, pz, r));
+            assert!(f.divider_blocks(px + pr + r - 0.02, pz, r), "inside the post's radius plus the body's");
+            assert!(!f.divider_blocks(px + pr + r + 0.02, pz, r), "just outside it");
+            // blocked on both levels, from every side
+            for (dx, dz) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+                assert!(f.divider_blocks(px + dx * (pr + r - 0.02), pz + dz * (pr + r - 0.02), r));
+                assert!(!f.body_fits_at_y(px + dx * (pr + r - 0.02), pz + dz * (pr + r - 0.02), level as f32 * 5.0, r));
+            }
+        }
+        for shape in [Switchback, Straight] {
+            let (_, s) = with_stair(0, -1, shape);
+            assert!(s.post(0).is_none(), "{shape:?}");
         }
     }
 
@@ -3462,6 +3548,10 @@ mod tests {
                     // The far end of the walk is the other storey's floor: that body stands in the neighbour's foot cell
                     // (the label flips there), which this facility does not own, so it is not this level's fit to check.
                     if rel.abs() > crate::world::vertical::STOREY - FLIGHT_FIT_TOL {
+                        continue;
+                    }
+                    // and a body is kept off a spiral's end radial, where the walker changes owner
+                    if s.near_cliff(level, x, z, 0.3) {
                         continue;
                     }
                     let y_abs = level as f32 * crate::world::vertical::STOREY + rel;

@@ -165,7 +165,17 @@ pub fn worn_skin(saved: &str, detected_slim: bool, arms: ArmsSetting) -> Worn {
 /// [`worn_skin`] with the skins folder and the cache folder given.
 pub fn worn_skin_in(skins: Option<&Path>, cache: Option<&Path>, saved: &str, detected_slim: bool, arms: ArmsSetting) -> Worn {
     let id = resolve_skin(saved, &list_skins(skins));
-    match skins.and_then(|dir| load_skin_in(dir, &id)) {
+    let mut loaded = skins.and_then(|dir| load_skin_in(dir, &id));
+    let mut id = id;
+    if loaded.is_none() && skins.is_none() {
+        // no skins folder (the browser): the applied custom skin lives in memory
+        let wanted = clean_skin(saved);
+        if let Some(valid) = load_memory_custom(&wanted) {
+            loaded = Some(valid);
+            id = wanted;
+        }
+    }
+    match loaded {
         Some(valid) => {
             if let Some(dir) = cache {
                 if fetch_needed(dir, &valid.hash) {
@@ -194,7 +204,44 @@ fn skin_file_in(dir: &Path, id: &str) -> Option<PathBuf> {
 /// The validated skin a list id names in the skins folder: read with the size cap, checked and canonicalised. DEFAULT,
 /// unknown ids and files that fail the check give None.
 pub fn load_skin(id: &str) -> Option<ValidSkin> {
-    load_skin_in(&skin_dir()?, id)
+    skin_dir().and_then(|dir| load_skin_in(&dir, id)).or_else(|| load_memory_custom(id))
+}
+
+/// The key of the browser's localStorage entry that keeps the applied custom skin between page loads (base64 of the PNG).
+#[cfg(target_arch = "wasm32")]
+const CUSTOM_STORAGE_KEY: &str = "last_route.custom_skin";
+
+fn memory_custom() -> std::sync::MutexGuard<'static, Option<Vec<u8>>> {
+    static CUSTOM: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mutex::new(None);
+    CUSTOM.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The applied custom skin kept in memory (no skins folder: the browser has no files, a desktop without a user folder
+/// has none either). The browser also keeps it in localStorage and reads it back on the first use after a page load.
+fn stored_custom() -> Option<Vec<u8>> {
+    let mut held = memory_custom();
+    #[cfg(target_arch = "wasm32")]
+    if held.is_none() {
+        *held = crate::app::web_storage::get(CUSTOM_STORAGE_KEY).and_then(|text| crate::net::base64_decode(&text));
+    }
+    held.clone()
+}
+
+/// The validated custom skin held in memory, when `id` is the custom skin's list id.
+fn load_memory_custom(id: &str) -> Option<ValidSkin> {
+    if id != clean_skin(CUSTOM_STEM) {
+        return None;
+    }
+    validate_skin(&stored_custom()?, max_bytes()).ok()
+}
+
+/// Keeps the custom skin in memory (and in the browser's localStorage) when there is no skins folder to write to.
+fn keep_custom_in_memory(bytes: &[u8]) -> String {
+    *memory_custom() = Some(bytes.to_vec());
+    #[cfg(target_arch = "wasm32")]
+    let _ = crate::app::web_storage::set(CUSTOM_STORAGE_KEY, &crate::net::base64_encode(bytes));
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    clean_skin(CUSTOM_STEM)
 }
 
 /// [`load_skin`] for a given skins folder.
@@ -452,11 +499,9 @@ fn first_verified_skin(urls: &[String], id: &str, mut get: impl FnMut(&str) -> O
 
 /// The content types a skin picture may be served as. Plain servers and CDNs often send the generic ones.
 const PNG_TYPES: [&str; 4] = ["image/png", "image/x-png", "application/octet-stream", "binary/octet-stream"];
-/// The content type of Mojang's lookup answers.
-const JSON_TYPES: [&str; 1] = ["application/json"];
 
 /// Downloads one address. The backend (plain http, possibly on a LAN) is asked once. An https address (the skins host,
-/// a player's link, Mojang) may redirect up to the client's cap, each hop re-checked by the skin URL rules, and never
+/// a player's link) may redirect up to the client's cap, each hop re-checked by the skin URL rules, and never
 /// connects to a non-public address. Only a 200 answer's body comes back.
 fn download(url: &str, timeout_secs: u64, limit: usize, accept: &[&str]) -> Result<Vec<u8>, NetError> {
     let mut request = Request::new(Method::Get, url.trim().to_string())
@@ -1142,7 +1187,7 @@ pub fn skin_is_slim(id: &str) -> Option<bool> {
 
 /// The schema of a catalogue entry (data/skins/*.json), the Godot `lr.skin/1` format.
 pub const CATALOG_SCHEMA: &str = "lr.skin/1";
-/// The schema of the rules file (data/skins/rules.json): the URL and Minecraft-name checks for the SKIN tab.
+/// The schema of the rules file (data/skins/rules.json): the URL checks, key repeat and layout for the SKIN tab.
 pub const RULES_SCHEMA: &str = "lr.skin_rules/1";
 
 /// One ready-made skin from the catalogue. `image` is a path under the embedded assets (e.g. `skins/ref_classic.png`).
@@ -1193,7 +1238,7 @@ pub fn catalog_png(skin: &CatalogSkin) -> Option<Vec<u8>> {
     crate::content::embedded::asset(&skin.image).map(<[u8]>::to_vec)
 }
 
-/// The URL and Minecraft-name rules, read from data/skins/rules.json.
+/// The URL rules, key repeat and layout, read from data/skins/rules.json.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SkinRules {
     pub scheme: String,
@@ -1206,13 +1251,6 @@ pub struct SkinRules {
     pub repeat_delay_secs: f64,
     /// How many times a second a held key repeats once it has started.
     pub repeat_per_sec: f64,
-    pub name_max: usize,
-    pub name_chars: String,
-    pub lookup_url: String,
-    pub lookup_host: String,
-    pub profile_url: String,
-    pub profile_host: String,
-    pub textures_host: String,
 }
 
 /// The rules from their JSON text. None when the schema or any value is missing.
@@ -1222,7 +1260,6 @@ pub fn parse_rules(text: &str) -> Option<SkinRules> {
         return None;
     }
     let url = &v["url"];
-    let mc = &v["minecraft"];
     let strings = |val: &serde_json::Value| -> Vec<String> {
         val.as_array()
             .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
@@ -1237,13 +1274,6 @@ pub fn parse_rules(text: &str) -> Option<SkinRules> {
         blocked_suffixes: strings(&url["blocked_suffixes"]),
         repeat_delay_secs: v["input"]["repeat_delay_secs"].as_f64()?,
         repeat_per_sec: v["input"]["repeat_per_sec"].as_f64()?,
-        name_max: mc["name_max"].as_u64()? as usize,
-        name_chars: mc["name_chars"].as_str()?.to_string(),
-        lookup_url: mc["lookup_url"].as_str()?.to_string(),
-        lookup_host: mc["lookup_host"].as_str()?.to_string(),
-        profile_url: mc["profile_url"].as_str()?.to_string(),
-        profile_host: mc["profile_host"].as_str()?.to_string(),
-        textures_host: mc["textures_host"].as_str()?.to_string(),
     })
 }
 
@@ -1256,7 +1286,7 @@ pub fn rules() -> Option<SkinRules> {
 
 /// Why a URL may not be fetched, or None when it may. Mirrors PlayerSkin.check_url in the Godot game: the scheme from
 /// the rules, a real public host, no login, no loopback, LAN or IP literal, the standard port only. `allowed_hosts`
-/// (when not empty) narrows the host further, as the Minecraft lookups do.
+/// (when not empty) narrows the host further.
 pub fn url_refusal(url: &str, rules: &SkinRules, allowed_hosts: &[&str]) -> Option<&'static str> {
     let text = url.trim();
     if text.is_empty() || text.len() > rules.max_url_length {
@@ -1725,7 +1755,7 @@ pub fn fetch_url_skin(url: &str, rules: &SkinRules) -> Result<ValidSkin, String>
     fetch_url_skin_via(url, &mut |url, hosts, types| fetch_https(url, rules, hosts, read_limit(), types))
 }
 
-/// What fetches one address for the FROM URL and FROM MC NAME chains: `(url, allowed hosts, accepted content types)` to the
+/// What fetches one address for the FROM URL download: `(url, allowed hosts, accepted content types)` to the
 /// body. The real one is [`fetch_https`]; a test supplies its own.
 pub type Getter<'a> = &'a mut dyn FnMut(&str, &[&str], &[&str]) -> Result<Vec<u8>, String>;
 
@@ -1733,61 +1763,6 @@ pub type Getter<'a> = &'a mut dyn FnMut(&str, &[&str], &[&str]) -> Result<Vec<u8
 pub fn fetch_url_skin_via(url: &str, get: Getter) -> Result<ValidSkin, String> {
     let bytes = get(url, &[], &PNG_TYPES)?;
     validate_skin(&bytes, max_bytes())
-}
-
-/// True when `name` is a Minecraft username by the rules: 1 to `name_max` characters, all from `name_chars`.
-pub fn valid_minecraft_name(name: &str, rules: &SkinRules) -> bool {
-    !name.is_empty() && name.len() <= rules.name_max && name.chars().all(|c| rules.name_chars.contains(c))
-}
-
-/// The skin URL in a Mojang profile: the `textures` property (base64 JSON) with a SKIN url on the textures host.
-pub fn profile_skin_url(profile: &serde_json::Value, rules: &SkinRules) -> Option<String> {
-    profile_skin(profile, rules).map(|(url, _)| url)
-}
-
-/// The skin URL in a Mojang profile and whether the profile says the model is slim (Alex): the SKIN texture's
-/// `metadata.model` (Godot `PlayerSkin` reads the same field and lets it win over the pixel detection).
-pub fn profile_skin(profile: &serde_json::Value, rules: &SkinRules) -> Option<(String, bool)> {
-    let props = profile["properties"].as_array()?;
-    let prop = props.iter().find(|p| p["name"].as_str() == Some("textures"))?;
-    let raw = crate::content::embedded::base64_decode(prop["value"].as_str()?);
-    let decoded: serde_json::Value = serde_json::from_slice(&raw).ok()?;
-    let skin = &decoded["textures"]["SKIN"];
-    let url = skin["url"].as_str()?;
-    let slim = skin["metadata"]["model"].as_str() == Some("slim");
-    url_refusal(url, rules, &[rules.textures_host.as_str()]).is_none().then(|| (url.to_string(), slim))
-}
-
-/// FROM MC NAME: the name's skin through Mojang's APIs (name to uuid, uuid to profile, then the textures host). Returns
-/// the validated skin; the profile's slim model wins over the pixel detection, except for an old 64x32 skin, which has
-/// only classic arms.
-pub fn fetch_minecraft_skin(name: &str, rules: &SkinRules) -> Result<ValidSkin, String> {
-    fetch_minecraft_skin_via(name, rules, &mut |url, hosts, types| fetch_https(url, rules, hosts, read_limit(), types))
-}
-
-/// [`fetch_minecraft_skin`] over a given getter.
-pub fn fetch_minecraft_skin_via(name: &str, rules: &SkinRules, get: Getter) -> Result<ValidSkin, String> {
-    let name = name.trim();
-    if !valid_minecraft_name(name, rules) {
-        return Err("a Minecraft name is 1-16 letters, numbers or underscores".to_string());
-    }
-    let lookup_url = rules.lookup_url.replace("{name}", name);
-    let lookup = get(&lookup_url, &[rules.lookup_host.as_str()], &JSON_TYPES)?;
-    let found: serde_json::Value =
-        serde_json::from_slice(&lookup).map_err(|_| "no Minecraft player was found".to_string())?;
-    let uuid = found["id"].as_str().unwrap_or("");
-    if uuid.len() != 32 || !uuid.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err("no Minecraft player was found".to_string());
-    }
-    let profile_url = rules.profile_url.replace("{uuid}", uuid);
-    let body = get(&profile_url, &[rules.profile_host.as_str()], &JSON_TYPES)?;
-    let profile: serde_json::Value =
-        serde_json::from_slice(&body).map_err(|_| "the profile could not be read".to_string())?;
-    let (url, slim_model) = profile_skin(&profile, rules).ok_or_else(|| "that player has no skin".to_string())?;
-    let file = get(&url, &[rules.textures_host.as_str()], &PNG_TYPES)?;
-    let mut valid = validate_skin(&file, max_bytes())?;
-    valid.slim = (valid.slim || slim_model) && !valid.legacy;
-    Ok(valid)
 }
 
 /// The list id a picked skin is saved under: `custom.png` in the skins folder.
@@ -1803,9 +1778,10 @@ pub fn generation() -> u64 {
 }
 
 /// Saves validated skin bytes as the user's own skin (`<skins folder>/custom.png`), replacing it in one step. Returns
-/// the list id ([`clean_skin`] of the stem).
+/// the list id ([`clean_skin`] of the stem). Without a skins folder (the browser) the skin is kept in memory instead.
 pub fn save_custom_skin(bytes: &[u8]) -> std::io::Result<String> {
-    let dir = skin_dir().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no user folder"))?;
+    // the browser has no files: the skin is kept in memory (and localStorage) and worn from there
+    let Some(dir) = skin_dir() else { return Ok(keep_custom_in_memory(bytes)) };
     std::fs::create_dir_all(&dir)?;
     let tmp = dir.join(format!("{CUSTOM_STEM}.tmp"));
     std::fs::write(&tmp, bytes)?;
@@ -2261,13 +2237,11 @@ use std::time::Duration;
     }
 
     #[test]
-    fn from_url_and_from_mc_name_refuse_what_the_rules_refuse_before_any_connection() {
+    fn from_url_refuses_what_the_rules_refuse_before_any_connection() {
         let rules = rules().expect("rules load");
         for url in ["http://example.org/a.png", "https://localhost/a.png", "https://127.0.0.1/a.png", "https://user@example.org/a.png", "https://example.org:8443/a.png"] {
             assert!(fetch_url_skin(url, &rules).is_err(), "{url}");
         }
-        assert!(fetch_minecraft_skin("not a name!", &rules).is_err());
-        assert!(fetch_minecraft_skin("", &rules).is_err());
     }
 
     #[test]
@@ -2316,10 +2290,6 @@ use std::time::Duration;
         assert_eq!(r.max_url_length, 512, "PlayerSkin.MAX_URL_LENGTH (game/player/player_skin.gd:108)");
         assert_eq!(r.url_timeout_secs, 5, "URL_TIMEOUT_SECONDS (game/autoload/skin_sync.gd:302)");
         assert_eq!(r.url_port, 443);
-        assert_eq!(r.name_max, 16, "valid_minecraft_name (game/player/player_skin.gd:173)");
-        assert_eq!(r.lookup_host, "api.mojang.com");
-        assert_eq!(r.profile_host, "sessionserver.mojang.com");
-        assert_eq!(r.textures_host, "textures.minecraft.net", "MC_HOSTS (game/player/player_skin.gd:107)");
         assert!(r.blocked_suffixes.iter().any(|s| s == ".local"));
     }
 
@@ -2334,7 +2304,7 @@ use std::time::Duration;
         assert!(url_refusal("https://192.168.1.5/skin.png", &r, &[]).is_some(), "no IP literals");
         assert!(url_refusal("https://example.com:8443/skin.png", &r, &[]).is_some(), "standard port only");
         assert!(url_refusal("https://example.com:443/skin.png", &r, &[]).is_none(), "the standard port is fine");
-        assert!(url_refusal("https://example.com/skin.png", &r, &["textures.minecraft.net"]).is_some(), "a host list narrows it");
+        assert!(url_refusal("https://example.com/skin.png", &r, &["skins.example.net"]).is_some(), "a host list narrows it");
     }
 
     #[test]
@@ -2411,28 +2381,6 @@ use std::time::Duration;
         assert!(parse_config(&text.replace("lr.skin_config/1", "lr.skin_config/2")).is_none());
         assert!(parse_config(&text.replace("\"timeout_secs\": 8", "\"timeout_secs\": \"8\"")).is_none());
     }
-    #[test]
-    fn minecraft_names_and_profiles_follow_the_rules() {
-        let r = shipped_rules();
-        assert!(valid_minecraft_name("Notch_1", &r));
-        assert!(!valid_minecraft_name("", &r));
-        assert!(!valid_minecraft_name("seventeen_chars_x", &r), "16 characters at most");
-        assert!(!valid_minecraft_name("bad-name", &r), "letters, numbers and underscores only");
-        let good: serde_json::Value = serde_json::from_str(
-            r#"{"properties":[{"name":"textures","value":"eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHBzOi8vdGV4dHVyZXMubWluZWNyYWZ0Lm5ldC90ZXh0dXJlL2FiYzEyMyJ9fX0="}]}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            profile_skin_url(&good, &r).as_deref(),
-            Some("https://textures.minecraft.net/texture/abc123")
-        );
-        let other: serde_json::Value = serde_json::from_str(
-            r#"{"properties":[{"name":"textures","value":"eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHBzOi8vZXZpbC5leGFtcGxlLmNvbS94LnBuZyJ9fX0="}]}"#,
-        )
-        .unwrap();
-        assert_eq!(profile_skin_url(&other, &r), None, "a skin URL off the textures host is ignored");
-    }
-
     // ---- full validation (Godot player_skin.gd validate / upgrade_legacy / is_slim_layout) ----
 
     fn shipped_layout() -> SkinLayout {
@@ -2852,72 +2800,6 @@ use std::time::Duration;
         assert_eq!(ArmsSetting::Slim.label(), "SLIM");
     }
 
-    /// Standard base64 with padding (tests only).
-    fn test_base64(bytes: &[u8]) -> String {
-        const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut out = String::new();
-        for chunk in bytes.chunks(3) {
-            let n = (chunk[0] as u32) << 16 | (*chunk.get(1).unwrap_or(&0) as u32) << 8 | *chunk.get(2).unwrap_or(&0) as u32;
-            for i in 0..4 {
-                if i <= chunk.len() {
-                    out.push(T[(n >> (18 - 6 * i) & 63) as usize] as char);
-                } else {
-                    out.push('=');
-                }
-            }
-        }
-        out
-    }
-
-    /// A Mojang profile whose `textures` property names `url` (base64 JSON, as the session server sends it).
-    fn profile_json(url: &str, slim: bool) -> Vec<u8> {
-        let model = if slim { r#","metadata":{"model":"slim"}"# } else { "" };
-        let textures = format!(r#"{{"textures":{{"SKIN":{{"url":"{url}"{model}}}}}}}"#);
-        let value = test_base64(textures.as_bytes());
-        format!(r#"{{"id":"{}","name":"Notch","properties":[{{"name":"textures","value":"{value}"}}]}}"#, "a".repeat(32)).into_bytes()
-    }
-
-    #[test]
-    fn from_mc_name_walks_the_three_hosts_and_the_profile_model_wins() {
-        let rules = shipped_rules();
-        let png = fixture_png(false);
-        let textures_url = "https://textures.minecraft.net/texture/abc";
-        let mut asked: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
-        let mut get = |url: &str, hosts: &[&str], types: &[&str]| -> Result<Vec<u8>, String> {
-            asked.push((url.to_string(), hosts.iter().map(|h| h.to_string()).collect(), types.iter().map(|t| t.to_string()).collect()));
-            if url.contains("api.mojang.com") {
-                Ok(format!(r#"{{"id":"{}","name":"Notch"}}"#, "a".repeat(32)).into_bytes())
-            } else if url.contains("sessionserver.mojang.com") {
-                Ok(profile_json(textures_url, true))
-            } else {
-                Ok(png.clone())
-            }
-        };
-        let valid = fetch_minecraft_skin_via("Notch", &rules, &mut get).expect("the chain works");
-        assert!(valid.slim, "the profile's slim model wins over the pixels (a classic picture)");
-        assert_eq!(skin_validate::check_skin_png(&valid.png, max_bytes()), Ok(()));
-        assert!(verify_skin(&valid.hash, &valid.png));
-        assert_eq!(asked.len(), 3);
-        assert!(asked[0].0.contains("api.mojang.com/users/profiles/minecraft/Notch") && asked[0].1 == ["api.mojang.com"]);
-        assert!(asked[1].0.contains(&"a".repeat(32)) && asked[1].1 == ["sessionserver.mojang.com"]);
-        assert_eq!((asked[2].0.as_str(), asked[2].1.as_slice()), (textures_url, ["textures.minecraft.net".to_string()].as_slice()));
-        assert!(asked[2].2.iter().any(|t| t == "image/png") && asked[0].2 == ["application/json"]);
-        // a name that is not a Minecraft name never reaches a host
-        let mut never = |_: &str, _: &[&str], _: &[&str]| -> Result<Vec<u8>, String> { panic!("no request for a bad name") };
-        assert!(fetch_minecraft_skin_via("not a name!", &rules, &mut never).is_err());
-        // a profile that names a skin on another host is refused by the rules, so the third request is never made
-        let mut elsewhere = |url: &str, _: &[&str], _: &[&str]| -> Result<Vec<u8>, String> {
-            if url.contains("api.mojang.com") {
-                Ok(format!(r#"{{"id":"{}"}}"#, "b".repeat(32)).into_bytes())
-            } else if url.contains("sessionserver") {
-                Ok(profile_json("https://evil.example/skin.png", false))
-            } else {
-                panic!("the skin of another host was fetched: {url}")
-            }
-        };
-        assert_eq!(fetch_minecraft_skin_via("Notch", &rules, &mut elsewhere).unwrap_err(), "that player has no skin");
-    }
-
     #[test]
     fn from_url_validates_what_the_getter_returns_and_asks_for_a_picture() {
         let png = fixture_png(true);
@@ -3118,17 +3000,6 @@ use std::time::Duration;
         assert!(!clear_succeeded::<()>(&Err(NetError::Timeout)));
     }
 
-    /// Needs the internet: `cargo test --bin last_route live_ -- --ignored`. The whole FROM MC NAME chain (name to id,
-    /// id to profile, textures host) over real https, then the validation: proves the download, the roots and the checks agree.
-    #[test]
-    #[ignore]
-    fn live_from_mc_name_fetches_and_validates_a_real_skin() {
-        let rules = rules().expect("rules load");
-        let valid = fetch_minecraft_skin("Notch", &rules).expect("Mojang's chain works over https");
-        assert_eq!(skin_validate::check_skin_png(&valid.png, max_bytes()), Ok(()), "the canonical result passes the shared check");
-        assert!(verify_skin(&valid.hash, &valid.png));
-    }
-
     #[test]
     fn a_cached_hostile_file_counts_as_not_cached_and_is_purged() {
         let (good_id, good) = good_skin();
@@ -3168,6 +3039,22 @@ use std::time::Duration;
         assert!(!cached_path(&dir, &ids[0]).exists() && !cached_path(&dir, &ids[1]).exists(), "the oldest two are evicted");
         assert!(ids[2..].iter().all(|id| cached_path(&dir, id).exists()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn without_a_skins_folder_the_applied_skin_is_worn_from_memory() {
+        let valid = validate_skin(&fixture_png(true), max_bytes()).expect("the fixture is a valid skin");
+        let before = generation();
+        assert_eq!(keep_custom_in_memory(&valid.png), "CUSTOM");
+        assert!(generation() > before, "the worn skin is resolved again after an APPLY");
+        let worn = worn_skin_in(None, None, "CUSTOM", true, ArmsSetting::Auto);
+        assert_eq!(worn.hash, valid.hash, "the browser build has no folder: the memory copy is worn");
+        assert!(worn.slim, "the arm layout read at APPLY is kept");
+        assert_eq!(load_memory_custom("CUSTOM").map(|v| v.hash), Some(valid.hash.clone()));
+        assert!(load_memory_custom("DEFAULT").is_none() && load_memory_custom("OTHER").is_none());
+        assert_eq!(worn_skin_in(None, None, "DEFAULT", false, ArmsSetting::Auto).hash, SKIN_DEFAULT);
+        *memory_custom() = None;
+        assert_eq!(worn_skin_in(None, None, "CUSTOM", false, ArmsSetting::Auto).hash, SKIN_DEFAULT, "nothing kept: DEFAULT");
     }
 
     #[test]

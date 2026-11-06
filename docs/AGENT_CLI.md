@@ -15,12 +15,56 @@ last_route --headless --seed ALPHA --difficulty hard --mode infinite   # start a
 last_route --agent-window [--port N] [--realtime]   # same protocol, the game window draws the run; screenshot works
 last_route --test-suite tests/*.json [--out report.json] [--only NAME]  # run suite files, JSON report
 last_route --bot --scenario=collect_relays --seed=ALPHA --minutes=3 --target=5 --out=.playtest/alpha
+last_route --dedicated-host ABCDE --host-token T --relay ws://127.0.0.1:8205 [--seed S] [--difficulty hard]   # a server-hosted room, see below
 last_route --self-test out.json             # unchanged (windowed self-test)
 last_route --screenshot out.png             # unchanged (windowed screenshot)
 ```
 
 Build with `cargo build` in `app/`; the binary is `target/debug/last_route.exe` (Windows).
 Logs and banners go to **stderr**; stdout carries only replies (and, for `--test-suite`, the report).
+
+## A dedicated room (`--dedicated-host`)
+
+`--dedicated-host CODE` is not the agent protocol: it hosts one online room as a server process, with **no local runner**.
+Every player, the owner included, joins it as a guest over the WebSocket relay (`/api/ws`); the hunters hunt the guests
+(`game/remote_targets.rs`) and the room idles while it is empty. It is dispatched before `--headless`, so the Godot region
+agent's command line (`--headless -- --dedicated-host CODE --port P --idle-minutes M [--seed S] [--difficulty D] --ws-rooms
+[--backend=URL]`, with `LASTROUTE_SPAWN_TICKET` and `LASTROUTE_REGION` in the environment) starts it unchanged.
+
+| flag | environment | meaning |
+|---|---|---|
+| `--dedicated-host CODE` | | the room code (5 characters A-Z / 0-9) |
+| `--host-token T` | `LASTROUTE_HOST_TOKEN` | the host token the directory issued; the process registers nothing |
+| | `LASTROUTE_SPAWN_TICKET` | a spawn ticket instead: one `register` call (transport ws) that exchanges it for the token |
+| `--region R` | `LASTROUTE_REGION` | region name sent with that registration |
+| `--backend=URL` | | the directory (loopback or primary origin, `net/config.rs`) |
+| `--relay URL` | `LASTROUTE_RELAY_URL` | the relay if not the backend: an origin or `ws://host:port[/api/ws]` (`wss://` is not supported yet) |
+| `--seed TEXT`, `--difficulty D` | | room seed text; relaxed / standard / hard / nightmare or Godot's 0 to 3 |
+| `--idle-minutes M` | | exit after this long with nobody in (default 10, floor 0.5) |
+| `--start-relays N` | | relays the room counts as recovered, i.e. the hunter population (default: the difficulty's activation count) |
+| `--reconnect-seconds S` | | retry a lost relay link this long (default 30; 0 gives up at once, exit 4) |
+| `--name TEXT`, `--no-heartbeat` | | what guests see as the host (SERVER); do not talk to the directory after the start |
+
+Exit codes: 0 idle shutdown, 2 bad command line, 3 token or relay refused or unreachable, 4 relay link lost. The code is
+`headless/dedicated.rs`; its header lists the limits (no signal handling, relays and pickups still local to each guest, one
+window that follows the party anchor).
+
+### The owner of a dedicated room, and the client that creates one
+
+No client hosts an online room. CREATE ROOM (online, signed in) calls `POST /api/rooms/hosted/create {sessionToken, difficulty}`
+(`202 {ok, code, region, relay, owner}`), checks `GET /api/enet/rooms/CODE` every 2 s up to 60 times until the process has
+listed the room (`data/net/hosted_room.json`), and joins it as a guest over the WebSocket relay (browser: the page's
+WebSocket; native: `net/ws_native.rs`). A signed-out player is told to sign in and nothing is sent. The account that
+created the room is its owner (`room.owner` in the directory entry) and sees START ROUTE, RESTART ROUTE, END ROUTE, the
+difficulty row and a KICK button per guest in the lobby, and an OWNER tab and KICK in the PLAYERS tab of the pause menu.
+Nobody else sees them (`net/hosted.rs`, `owner_controls_visible`).
+
+An owner command is two steps, the Godot flow: `POST /api/enet/owner-tickets/issue {code, sessionToken}` (`201 {ticket,
+expiresIn}`, only the owner's account) and then a `_owner_command {ticket, action, args}` message to the room over the
+relay. The room process sends `POST /api/enet/owner-tickets/verify {code, ticket, hostToken, action}` and acts only on a yes
+(once per ticket and action); a refusal comes back as `_owner_refused {reason}`. Actions: `start`, `end`, `restart`,
+`kick {peer}` (the relay closes the guest with 4005), `difficulty {value}` (applies from the next route). While the route
+is ended the room steps nothing and sends no guest to the route. Tickets and tokens are never logged.
 
 ## Conventions
 

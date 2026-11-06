@@ -1,7 +1,9 @@
 //! The pause overlay (pause_menu.gd): the scrim, a 380x236 panel with SIGNAL SUSPENDED, PAUSED
-//! and the PAUSE / STATISTICS / PLAYERS tabs; RETURN, HUNTER DOSSIER, SETTINGS and ABANDON
+//! and the PAUSE / STATISTICS / PLAYERS tabs; RETURN, HUNTER DOSSIER, SKIN, SETTINGS and ABANDON
 //! ROUTE (a two-step question), the run statistics with the route-signal block, and the player
-//! list. SETTINGS opens the shared settings overlay without SKIN and MODS.
+//! list. SETTINGS opens the shared settings overlay; SKIN opens the same overlay on its SKIN tab
+//! (ui/skin_tab.rs), so a skin can be changed in a run: the game loop wears the applied skin and
+//! sends it to the room.
 
 use super::menus::{self, PlayerRow, Ui};
 use super::settings_panel;
@@ -10,6 +12,7 @@ use crate::app::assets::Assets;
 use crate::app::settings::Settings;
 use crate::content::Content;
 use crate::game::Game;
+use crate::net::hosted::{self, OwnerAction};
 use crate::net::world_sync::{skin_colour, RosterEntry, RunnerState, QUIET_DISCONNECT};
 use macroquad::prelude::*;
 use std::time::Duration;
@@ -74,9 +77,28 @@ pub fn confirm_layout(body_lines: usize, button_h: f32) -> (f32, f32) {
 pub enum Sub {
     None,
     Settings,
+    /// The settings overlay opened on its SKIN tab (the pause menu's SKIN entry).
+    Skin,
     Dossier,
     Confirm,
 }
+
+/// The settings overlay's SKIN tab (settings_panel TABS).
+const SKIN_TAB: usize = 4;
+
+/// The PAUSE page's buttons, top to bottom: the label, the least width and height, and the kind.
+pub const MAIN_ITEMS: [(&str, f32, f32, Kind); 5] = [
+    ("RETURN", 74.0, 18.0, Kind::Primary),
+    ("HUNTER DOSSIER", 112.0, 18.0, Kind::Secondary),
+    ("SKIN", 112.0, 18.0, Kind::Secondary),
+    ("SETTINGS", 112.0, 18.0, Kind::Secondary),
+    ("ABANDON ROUTE", 88.0, 14.0, Kind::Secondary),
+];
+/// The index of each button in [`MAIN_ITEMS`].
+const ITEM_DOSSIER: usize = 1;
+const ITEM_SKIN: usize = 2;
+const ITEM_SETTINGS: usize = 3;
+const ITEM_ABANDON: usize = 4;
 
 pub struct Pause {
     pub open: bool,
@@ -102,6 +124,8 @@ pub enum Out {
     None,
     Resume,
     Abandon,
+    /// The room owner's command from the OWNER tab or a KICK in the PLAYERS tab.
+    Owner(OwnerAction),
 }
 
 impl Pause {
@@ -112,6 +136,18 @@ impl Pause {
         };
     }
 }
+
+/// The pause menu's tabs: the three everybody has, and the room owner's OWNER tab after them.
+pub fn tab_names(owner: bool) -> Vec<String> {
+    let mut v: Vec<String> = ["PAUSE", "STATISTICS", "PLAYERS"].iter().map(|s| s.to_string()).collect();
+    if owner {
+        v.push(hosted::rules().strings.tab_owner.clone());
+    }
+    v
+}
+
+/// The OWNER tab's index, when there is one.
+pub const OWNER_TAB: usize = 3;
 
 /// ESC handling: backs out of the settings, dossier or question first, then closes the menu.
 pub fn escape(pz: &mut Pause) -> Out {
@@ -166,7 +202,7 @@ pub fn order(rows: &mut [PlayerRow]) {
 
 /// The PLAYERS rows: this runner and the others in the room (Godot `RoomPlayerList.build`), in [`order`]. The local row
 /// reads this runner's own run state; a remote one reads its last sample's state.
-pub fn player_rows(g: &Game, username: &str, local_host: bool, roster: &[RosterEntry]) -> Vec<PlayerRow> {
+pub fn player_rows(g: &Game, username: &str, local_host: bool, roster: &[RosterEntry], kickable: bool) -> Vec<PlayerRow> {
     let local = RunnerState {
         depth: g.depth,
         spectating: false,
@@ -186,6 +222,7 @@ pub fn player_rows(g: &Game, username: &str, local_host: bool, roster: &[RosterE
         status: status_of(Some(&local), true, true).into(),
         floor: floor_text(Some(-local.depth)),
         colour: menus::coop_blue(),
+        kick: None,
     };
     let mut rows = vec![me];
     rows.extend(roster.iter().map(|e| PlayerRow {
@@ -196,14 +233,21 @@ pub fn player_rows(g: &Game, username: &str, local_host: bool, roster: &[RosterE
         status: status_of(e.state.as_ref(), false, true).into(),
         floor: floor_text(e.state.map(|s| -s.depth)),
         colour: skin_colour(&e.skin, e.peer),
+        // the owner can remove any guest, never the host
+        kick: kick_target(kickable, e.host, e.peer),
     }));
     order(&mut rows);
     rows
 }
 
+/// The session id KICK names for a row: only the room's owner has one, and only for a guest (never the host, peer 1).
+pub fn kick_target(owner: bool, host: bool, peer: u32) -> Option<u32> {
+    (owner && !host && peer > 1).then_some(peer)
+}
+
 /// Hold-O overlay (Godot `player_list`): the PLAYERS panel without pause chrome.
 pub fn draw_hold_player_list(a: &Assets, g: &Game, username: &str, roster: &[RosterEntry], local_host: bool) {
-    let rows = player_rows(g, username, local_host, roster);
+    let rows = player_rows(g, username, local_host, roster, false);
     let sw = screen_width();
     let sh = screen_height();
     let r = Rect::new(
@@ -212,7 +256,7 @@ pub fn draw_hold_player_list(a: &Assets, g: &Game, username: &str, roster: &[Ros
         PANEL_W,
         PANEL_H,
     );
-    menus::player_list(a, r, &rows);
+    menus::player_list(a, r, &rows, false);
 }
 #[allow(clippy::too_many_arguments)]
 pub fn draw_pause(
@@ -230,10 +274,10 @@ pub fn draw_pause(
     let v = view();
     fill(Rect::new(0.0, 0.0, v.x, v.y), p.scrim);
     match pz.sub {
-        Sub::Settings => {
+        Sub::Settings | Sub::Skin => {
             if settings_panel::draw_settings(a, ui, st, content, true) {
+                pz.focus = if pz.sub == Sub::Skin { ITEM_SKIN } else { ITEM_SETTINGS };
                 pz.sub = Sub::None;
-                pz.focus = 2;
             }
             return Out::None;
         }
@@ -262,8 +306,15 @@ pub fn draw_pause(
     y += lh(F::Title, 22.0) + 8.0;
     // tabs: 80x18 each, separation 4, the open page's tab is the primary slab
     let tab_h = TAB_H;
-    let tx = cx - (80.0 * 3.0 + 8.0) * 0.5;
-    for (i, t) in ["PAUSE", "STATISTICS", "PLAYERS"].iter().enumerate() {
+    // the room owner has a fourth tab
+    let owner = ui.owner.owner;
+    let names = tab_names(owner);
+    let tabs = names.len();
+    let tx = cx - (80.0 * tabs as f32 + 4.0 * (tabs as f32 - 1.0)) * 0.5;
+    if pz.tab >= tabs {
+        pz.tab = 0;
+    }
+    for (i, t) in names.iter().enumerate() {
         let kind = if i == pz.tab {
             Kind::Primary
         } else {
@@ -282,21 +333,16 @@ pub fn draw_pause(
         }
     }
     if is_key_pressed(KeyCode::Tab) {
-        pz.tab = (pz.tab + 1) % 3;
+        pz.tab = (pz.tab + 1) % tabs;
         pz.focus = 0;
     }
     let view_r = page_area(inner);
     let mut out = Out::None;
     match pz.tab {
         0 => {
-            // RETURN (74x18 primary), HUNTER DOSSIER and SETTINGS (112x18), ABANDON ROUTE (88x14)
+            // RETURN (74x18 primary), HUNTER DOSSIER, SKIN and SETTINGS (112x18), ABANDON ROUTE (88x14)
             let bh8 = button_min(a, "X", 8.0, false).y.max(18.0);
-            let items: [(&str, f32, f32, Kind); 4] = [
-                ("RETURN", 74.0, 18.0, Kind::Primary),
-                ("HUNTER DOSSIER", 112.0, 18.0, Kind::Secondary),
-                ("SETTINGS", 112.0, 18.0, Kind::Secondary),
-                ("ABANDON ROUTE", 88.0, 14.0, Kind::Secondary),
-            ];
+            let items = MAIN_ITEMS;
             let sizes: Vec<Vec2> = items
                 .iter()
                 .map(|(t, w, h, _)| {
@@ -306,7 +352,7 @@ pub fn draw_pause(
                 .collect();
             let heights: Vec<f32> = sizes.iter().map(|s| s.y).collect();
             let tops = centred_column(view_r.y, view_r.h, &heights, 8.0);
-            let enter = nav(&mut pz.focus, 4, true);
+            let enter = nav(&mut pz.focus, MAIN_ITEMS.len(), true);
             for (i, (t, _, _, k)) in items.iter().enumerate() {
                 let r = Rect::new(cx - sizes[i].x * 0.5, tops[i], sizes[i].x, sizes[i].y);
                 let hit = button(a, r, t, 8.0, *k, state(pz.focus == i));
@@ -319,14 +365,21 @@ pub fn draw_pause(
                             pz.open = false;
                             out = Out::Resume;
                         }
-                        1 => {
+                        ITEM_DOSSIER => {
                             pz.sub = Sub::Dossier;
                             // every opening starts on the Route Dossier tab, at its first hunter
                             ui.dossier_tab = 0;
                             ui.dossier_sel = 0;
                             ui.dossier_scroll = 0.0;
                         }
-                        2 => {
+                        ITEM_SKIN => {
+                            pz.sub = Sub::Skin;
+                            ui.settings_tab = SKIN_TAB;
+                            ui.scroll = 0.0;
+                            // a text box or file chooser left from an earlier visit is dropped
+                            super::skin_tab::blur();
+                        }
+                        ITEM_SETTINGS => {
                             pz.sub = Sub::Settings;
                             ui.settings_tab = 0;
                             ui.scroll = 0.0;
@@ -340,10 +393,64 @@ pub fn draw_pause(
             }
         }
         1 => draw_statistics(a, pz, view_r, g),
-        _ => {
-            let rows = player_rows(g, username, local_host, roster);
-            menus::player_list(a, view_r, &rows);
+        OWNER_TAB if owner => {
+            if let Some(action) = draw_owner_tab(a, ui, view_r, g) {
+                out = Out::Owner(action);
+            }
         }
+        _ => {
+            let rows = player_rows(g, username, local_host, roster, owner);
+            if let Some(peer) = menus::player_list(a, view_r, &rows, true) {
+                out = Out::Owner(OwnerAction::Kick(peer));
+            }
+        }
+    }
+    out
+}
+
+/// The OWNER tab: END ROUTE, RESTART ROUTE and the room's difficulty. The server carries them out; the choice shown is the
+/// room's own difficulty, which changes when the server says so.
+fn draw_owner_tab(a: &Assets, ui: &mut Ui, r: Rect, g: &Game) -> Option<OwnerAction> {
+    let p = pal();
+    let s = &hosted::rules().strings;
+    let mut out = None;
+    let x = r.x;
+    let mut y = r.y;
+    label_c(a, F::Body, &track(&s.owner_heading), x + r.w * 0.5, y, 8.0, p.amber);
+    y += lh(F::Body, 8.0) + 8.0;
+    let bh = button_min(a, "X", 8.0, false).y.max(18.0);
+    let joined = ui.owner.joined;
+    let st = if joined { plain() } else { disabled() };
+    let end_w = button_min(a, &s.label_end, 8.0, false).x.max(88.0);
+    let restart_w = button_min(a, &s.label_restart, 8.0, false).x.max(88.0);
+    let row_w = end_w + 6.0 + restart_w;
+    let bx = x + (r.w - row_w) * 0.5;
+    if button(a, Rect::new(bx, y, restart_w, bh), &s.label_restart, 8.0, Kind::Primary, st) && joined {
+        out = Some(OwnerAction::Restart);
+    }
+    if button(a, Rect::new(bx + restart_w + 6.0, y, end_w, bh), &s.label_end, 8.0, Kind::Secondary, st) && joined {
+        out = Some(OwnerAction::End);
+    }
+    y += bh + 10.0;
+    label(a, F::Body, &menus::lobby_difficulty().title, x, y, 7.0, p.muted);
+    y += lh(F::Body, 7.0) + 3.0;
+    let mut dx = x;
+    for d in menus::lobby_row() {
+        let w = button_min(a, menus::difficulty_label(d), 7.0, false).x;
+        let kind = if d == g.difficulty { Kind::Selected } else { Kind::Secondary };
+        if button(a, Rect::new(dx, y, w, bh), menus::difficulty_label(d), 7.0, kind, st) && joined && d != g.difficulty {
+            out = Some(OwnerAction::Difficulty(d));
+        }
+        dx += w + 4.0;
+    }
+    y += bh + 6.0;
+    for line in wrap(a, F::Body, &s.owner_pause_note, r.w, 6.0) {
+        label(a, F::Body, &line, x, y, 6.0, p.muted);
+        y += lh(F::Body, 6.0);
+    }
+    if !ui.owner.status.is_empty() {
+        y += 4.0;
+        label(a, F::Body, &ui.owner.status, x, y, 7.0, p.amber);
     }
     out
 }
@@ -505,7 +612,7 @@ fn draw_confirm(a: &Assets, pz: &mut Pause) -> Out {
     }
     if no || (enter && pz.focus == 1) {
         pz.sub = Sub::None;
-        pz.focus = 3;
+        pz.focus = ITEM_ABANDON;
     }
     Out::None
 }
@@ -552,9 +659,10 @@ mod tests {
             PANEL_W - PANEL_INSET * 2.0,
             PANEL_H - PANEL_INSET * 2.0,
         ));
-        // RETURN, HUNTER DOSSIER and SETTINGS are 18 tall, ABANDON ROUTE is 17.06 (the 14 minimum
+        // RETURN, HUNTER DOSSIER, SKIN and SETTINGS are 18 tall, ABANDON ROUTE is 17.06 (the 14 minimum
         // grows to the measured label height, capped at 18)
-        let heights = [18.0, 18.0, 18.0, BUTTON_8];
+        let heights = [18.0, 18.0, 18.0, 18.0, BUTTON_8];
+        assert_eq!(heights.len(), MAIN_ITEMS.len());
         let tops = centred_column(area.y, area.h, &heights, 8.0);
         assert_eq!(tops.len(), heights.len());
         for (t, h) in tops.iter().zip(heights.iter()) {
@@ -566,6 +674,30 @@ mod tests {
             );
             assert!(t + h <= panel.y + PANEL_H - PANEL_INSET + EPS);
         }
+    }
+
+    #[test]
+    fn the_pause_page_has_a_skin_entry_between_the_dossier_and_settings() {
+        let labels: Vec<&str> = MAIN_ITEMS.iter().map(|i| i.0).collect();
+        assert_eq!(labels, ["RETURN", "HUNTER DOSSIER", "SKIN", "SETTINGS", "ABANDON ROUTE"]);
+        assert_eq!(MAIN_ITEMS[ITEM_DOSSIER].0, "HUNTER DOSSIER");
+        assert_eq!(MAIN_ITEMS[ITEM_SKIN].0, "SKIN");
+        assert_eq!(MAIN_ITEMS[ITEM_SETTINGS].0, "SETTINGS");
+        assert_eq!(MAIN_ITEMS[ITEM_ABANDON].0, "ABANDON ROUTE");
+        assert_eq!(MAIN_ITEMS[0].3 as u8, Kind::Primary as u8, "RETURN stays the primary button");
+        assert!(MAIN_ITEMS.iter().skip(1).all(|i| i.3 as u8 == Kind::Secondary as u8));
+        assert_eq!(SKIN_TAB, 4, "the settings overlay's SKIN tab");
+    }
+
+    #[test]
+    fn escape_leaves_the_skin_tab_before_it_closes_the_pause_menu() {
+        let mut pz = Pause::default();
+        pz.show();
+        pz.sub = Sub::Skin;
+        assert!(matches!(escape(&mut pz), Out::None), "the first Escape goes back to the pause page");
+        assert!(pz.open && pz.sub == Sub::None);
+        assert!(matches!(escape(&mut pz), Out::Resume), "the second one resumes the run");
+        assert!(!pz.open);
     }
 
     fn runner(depth: i32, quiet_s: u64, spectating: bool, game_over: bool, escape_active: bool) -> RunnerState {
@@ -587,6 +719,7 @@ mod tests {
             status: String::new(),
             floor: String::new(),
             colour: WHITE,
+            kick: None,
         }
     }
 
@@ -630,6 +763,26 @@ mod tests {
         assert_eq!(ping_text(None), "-");
         assert_eq!(ping_text(Some(0)), "0 MS");
         assert_eq!(ping_text(Some(42)), "42 MS");
+    }
+
+    #[test]
+    fn only_the_owner_has_the_owner_tab() {
+        assert_eq!(tab_names(false), ["PAUSE", "STATISTICS", "PLAYERS"]);
+        let owner = tab_names(true);
+        assert_eq!(owner.len(), 4);
+        assert_eq!(owner[OWNER_TAB], hosted::rules().strings.tab_owner);
+        assert_eq!(&owner[..3], &tab_names(false)[..]);
+        // four tabs of 80 and three gaps of 4 fit the panel's inner width
+        assert!(80.0 * 4.0 + 4.0 * 3.0 <= PANEL_W - PANEL_INSET * 2.0);
+    }
+
+    #[test]
+    fn kick_is_for_the_owner_and_for_guests_only() {
+        assert_eq!(kick_target(true, false, 7), Some(7));
+        assert_eq!(kick_target(false, false, 7), None, "a guest who does not own the room cannot kick");
+        assert_eq!(kick_target(true, true, 1), None, "the host is never kicked");
+        assert_eq!(kick_target(true, false, 1), None, "peer 1 is the host whatever the row says");
+        assert_eq!(kick_target(true, false, 0), None);
     }
 
     #[test]

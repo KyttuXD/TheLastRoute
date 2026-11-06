@@ -110,6 +110,10 @@ The stairs questions D1 to D8 in the old list are answered in the Decisions tabl
     stairs on level 0, or (c) that you expect Godot's ramps below the first sewer? Keep the flights, or port the ramps?
     **Default:** keep the flights (decision D1 chose the three shapes); no ramps.
 
+    **Decided (KT, stairs pass):** keep the walked flights below the first sewer. The played sewers no longer carve the 12x3 flat RAMP strips
+    (`sewer::core::chunk` leaves them rock; the Godot layout `chunk_base`, which the goldens read, still has them), so there is no dead flat
+    tunnel stub. The ramp records and their top, bottom and connector rooms stay.
+
 ## Inferno terrain (owner override of Godot parity)
 
 28. **Decided by the owner (2026-11-04): "add noisy floor height and ceiling height in the Inferno caverns".** Godot's Inferno floor is flat, and the heights track made it flat here too; this overrides that parity. Level -3 now has a smooth noisy floor (up to 0.5 m up or down) and ceiling (sagging up to 1.2 m under the slab line, never closer than 2.6 m to the floor, never above `STOREY - slab`). The player, hunters, bots, props, doors, pickups and decorations stand on it; the flat-floor contract is replaced by `world/inferno_terrain.rs` and its tests. The numbers are the `terrain` block of `data/inferno.json`. Stairwells keep a flat floor and a full-height ceiling (a pad that eases out over 8 cells). Open question: the noise covers the whole of level -3 (the maze rooms and halls too), not only the carved caves, because the terrain is a function of the world cell alone. **Default:** keep it everywhere; say if halls and rooms should stay flat.

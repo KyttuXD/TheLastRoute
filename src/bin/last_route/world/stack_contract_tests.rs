@@ -605,7 +605,10 @@ fn the_todo_stairwell_at_seed_40490470_chunk_3_2_is_walkable_end_to_end() {
             // sample on the foot's edge that already stands on the lower floor is the lower level's too (the label has
             // flipped there), so it is checked against the lower level's facility, not the upper one.
             let on_foot = Cell::new(x.floor() as i32, z.floor() as i32) == fp.foot
-                || s.surface_rel(0, *x, *z).is_some_and(|rel| rel <= -STOREY + 1e-3);
+                || s.surface_rel(0, *x, *z).is_some_and(|rel| rel <= -STOREY + 1e-3)
+                // a spiral's lead-out to the foot runs under the upper floor's slab: the walker is on the lower floor there,
+                // which only the lower level's record knows (the upper one reports the slab overhead)
+                || (last < -STOREY * 0.5 && s.surface_rel(0, *x, *z).is_some_and(|rel| lvl_abs(0, rel) > last + 1e-3));
             let (lvl, fac, stair) = if on_foot { (-1, &lower, t) } else { (0, &b, Some(s)) };
             let Some(rel) = stair.and_then(|st| st.surface_rel(lvl, *x, *z)) else {
                 fails.push(format!("no surface at ({x:.2}, {z:.2}) on the flight from {:?}", s.cell));
@@ -619,7 +622,7 @@ fn the_todo_stairwell_at_seed_40490470_chunk_3_2_is_walkable_end_to_end() {
                 fails.push(format!("height turns back at ({x:.2}, {z:.2}): {abs} after {last}"));
             }
             last = last.min(abs);
-            if !crate::game::player::body_fits(&fac.f, *x, *z, rel) {
+            if !stair.is_some_and(|st| st.near_cliff(lvl, *x, *z, 0.3)) && !crate::game::player::body_fits(&fac.f, *x, *z, rel) {
                 fails.push(format!("the player's body does not fit at ({x:.2}, {z:.2}) height {rel}"));
             }
         }
@@ -631,6 +634,11 @@ fn the_todo_stairwell_at_seed_40490470_chunk_3_2_is_walkable_end_to_end() {
         }
     }
     report("seed 40490470 chunk (3,2)", &fails);
+}
+
+/// The absolute height of relative height `rel` on `level`.
+fn lvl_abs(level: i32, rel: f32) -> f32 {
+    level as f32 * STOREY + rel
 }
 
 /// Every stairwell of the sweep (all seeds, all three upper levels): the walked route from the landing to the foot has
@@ -647,7 +655,11 @@ fn every_flight_walk_path_has_a_surface_at_every_sample() {
         let fp = well_footprint(&fl);
         let mut last = f32::INFINITY;
         for (x, z) in p.s.walk_path(u, 0.25) {
-            let on_foot = Cell::new(x.floor() as i32, z.floor() as i32) == fp.foot;
+            // the foot cell is the lower level's; so is any sample after the walker has reached the bottom of a spiral (its
+            // lead-out runs under the upper floor's slab, which the upper record reports as overhead)
+            let upper_abs = p.s.surface_rel(u, x, z).map(|r| lvl_abs(u, r));
+            let under_slab = last < (u - 1) as f32 * STOREY + 0.5 && upper_abs.is_some_and(|a| a > last + 1e-3);
+            let on_foot = Cell::new(x.floor() as i32, z.floor() as i32) == fp.foot || under_slab;
             let abs = if on_foot {
                 t.surface_rel(u - 1, x, z).map(|r| (u - 1) as f32 * STOREY + r)
             } else {
@@ -717,4 +729,397 @@ fn level0_maze_wells_are_sparse_like_godot() {
         let share = wells as f32 / chunks as f32;
         assert!((MIN_SHARE..=MAX_SHARE).contains(&share), "seed {seed}: {wells} wells in {chunks} chunks ({share:.3})");
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The way out of a flight (stairs fix, phase 0): a foot that leads nowhere strands the runner
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// The cells of `b` a walker reaches from `from` by 4-way steps over cells a body can stand on (`hunter_open`), never
+/// stepping on `forbidden`. The flight's own well is forbidden: a walker who has just left the flight must get out
+/// without going back across its treads (the treads count as open ground on both levels, so a path through the well
+/// would hide a foot that is walled in).
+fn reach_without(b: &Built, from: Cell, forbidden: &BTreeSet<Cell>) -> HashSet<Cell> {
+    let mut seen = HashSet::new();
+    if !b.f.hunter_open(from) || forbidden.contains(&from) {
+        return seen;
+    }
+    let mut stack = vec![from];
+    seen.insert(from);
+    while let Some(c) = stack.pop() {
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let n = Cell::new(c.x + dx, c.y + dy);
+            if b.f.hunter_open(n) && !forbidden.contains(&n) && seen.insert(n) {
+                stack.push(n);
+            }
+        }
+    }
+    seen
+}
+/// The size of the biggest group of open cells of `b` (the level's main walkable area), the well counted as open.
+fn largest_area(b: &Built) -> usize {
+    let none = BTreeSet::new();
+    let mut done: HashSet<Cell> = HashSet::new();
+    let mut best = 0;
+    for y in 0..b.f.rows {
+        for x in 0..b.f.cols {
+            let c = Cell::new(x, y);
+            if b.f.hunter_open(c) && !done.contains(&c) {
+                let area = reach_without(b, c, &none);
+                best = best.max(area.len());
+                done.extend(area);
+            }
+        }
+    }
+    best
+}
+
+/// Why the foot or the landing of the flight leads nowhere, or `None` when both reach their level's main walkable area
+/// (the level's biggest group of open cells) without crossing the well. The chunk's own start cell is no test: it can
+/// sit across a water channel in a perfectly good level. A stranded foot reaches a pocket of a few cells.
+fn way_out_problem(p_up: &Built, p_lo: &Built, fp: &super::flight::Footprint) -> Option<String> {
+    let hole: BTreeSet<Cell> = fp.upper_hole.iter().copied().collect();
+    let mut why = vec![];
+    for (name, b, from) in [("lower foot", p_lo, fp.foot), ("upper landing", p_up, fp.landing)] {
+        let seen = reach_without(b, from, &hole);
+        let main = largest_area(b);
+        if seen.is_empty() {
+            why.push(format!("{name} {from:?} is not open ground"));
+        } else if seen.len() * 2 < main.saturating_sub(hole.len()) {
+            why.push(format!("{name} {from:?} is walled in: it reaches {} cells, the level's main area has {main}", seen.len()));
+        }
+    }
+    (!why.is_empty()).then(|| why.join("; "))
+}
+
+
+/// The foot of every stair flight of the golden and sweep seeds leads to the level's start without crossing the flight's
+/// own well, and so does the landing on the level above. A flight whose foot sits in a sealed pocket (the old level-0
+/// spiral, whose foot was carved into rock beside the box) fails here.
+#[test]
+fn every_stair_foot_and_landing_leads_out_of_the_well() {
+    let mut fails = vec![];
+    let mut checked = 0;
+    for p in stair_pairs() {
+        let Some(fl) = p.s.flight(p.up.f.level) else { continue };
+        let fp = well_footprint(&fl);
+        checked += 1;
+        if let Some(why) = way_out_problem(&p.up, &p.lo, &fp) {
+            fails.push(format!("{} {:?} {:?}: {why}", p.tag, fl.shape, fl.anchor_cell));
+        }
+    }
+    assert!(checked >= 20, "only {checked} flights checked");
+    report("stairwell way out", &fails);
+}
+
+/// Level-0 wells of the numeric seeds 100..160 around the origin: (seed, cx, cy, the layout's kind, the realised flight
+/// shape on level 0). The layout kind is Godot's (`stairs` / `spiral`); the realised shape is what the player gets.
+fn level0_range_wells() -> Vec<(String, i32, i32, &'static str, Stair)> {
+    use super::route::live::layout_stairwells;
+    let mut out = vec![];
+    for n in 100..160 {
+        let seed = n.to_string();
+        for cy in -2..=2 {
+            for cx in -2..=2 {
+                let wells = layout_stairwells(&seed, ChunkKey { cx, cy, level: 0 });
+                if wells.is_empty() {
+                    continue;
+                }
+                let up = built(&seed, cx, cy, 0);
+                for w in wells {
+                    // the stair of this well: the one whose landing is on the well's walk cells
+                    let landing_cells: Vec<Cell> = w.walk.iter().map(|v| Cell::new(v.x, v.y)).collect();
+                    for s in up.f.stairs.iter().filter(|s| s.dir < 0 && !s.is_ladder()) {
+                        if landing_cells.contains(&s.landing()) {
+                            out.push((seed.clone(), cx, cy, w.kind, *s));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Every level-0 well of seeds 100..160 near the origin, whatever its shape, leads out of the flight on both levels. This
+/// is the sweep that named the stranded spiral wells (seeds 104, 129 and 130), with the realised shape per layout kind
+/// printed (run with `-- --nocapture`).
+#[test]
+fn every_level0_well_of_the_seed_range_leads_out_of_the_flight() {
+    let wells = level0_range_wells();
+    let mut fails = vec![];
+    let mut tally: std::collections::BTreeMap<(&str, String), usize> = Default::default();
+    for (seed, cx, cy, kind, s) in &wells {
+        *tally.entry((*kind, format!("{:?}", s.shape))).or_default() += 1;
+        let (up, lo) = (built(seed, *cx, *cy, 0), built(seed, *cx, *cy, -1));
+        let fl = s.flight(0).expect("a stair has a flight");
+        if let Some(why) = way_out_problem(&up, &lo, &well_footprint(&fl)) {
+            fails.push(format!("{seed} {cx},{cy} L0 layout {kind} -> {:?}: {why}", s.shape));
+        }
+    }
+    eprintln!("level-0 wells of seeds 100..160 (layout kind, realised shape): {tally:?}");
+    assert!(wells.len() >= 20, "only {} level-0 wells in the range", wells.len());
+    let spirals = wells.iter().filter(|w| w.4.shape == FlightShape::Spiral).count();
+    assert!(spirals >= 3, "only {spirals} realised spirals in {} wells: {tally:?}", wells.len());
+    report("level-0 well way out", &fails);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Godot's geometry (stairs phases 4 and 5): the box filled exactly, a solid lower floor, a smooth way down, the guards
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// The cells strictly inside a layout well's box (Godot's interior: 5 x 7 for a switchback, 5 x 5 for a spiral).
+fn box_interior(w: &super::route::layout::Stairwell) -> BTreeSet<Cell> {
+    (w.bbox.x + 1..w.bbox.x + w.bbox.w - 1)
+        .flat_map(|x| (w.bbox.y + 1..w.bbox.y + w.bbox.h - 1).map(move |y| Cell::new(x, y)))
+        .collect()
+}
+
+/// Every level-0 well of the seeds 100..160 around the origin, with its flight, is Godot's box with no cell left over: the
+/// hole and the landing floor (the cells both levels keep open inside the box) are exactly the box's interior. A cell of the
+/// interior outside both would be a leftover shaft cell, walkable on one level and a void on the other.
+#[test]
+fn a_level0_well_fills_godots_box_with_no_leftover_shaft_cell() {
+    use super::flight::FlightKind;
+    use super::flight_links::level0_well_flight;
+    use super::route::live::layout_stairwells;
+    let (mut switchbacks, mut spirals) = (0, 0);
+    for n in 100..160 {
+        let seed = n.to_string();
+        for cy in -2..=2 {
+            for cx in -2..=2 {
+                for w in layout_stairwells(&seed, ChunkKey { cx, cy, level: 0 }) {
+                    let f = level0_well_flight(&seed, cx, cy, w.kind, (w.door.x, w.door.y, w.door.w), w.north);
+                    assert_eq!(f.kind, FlightKind::Stairs);
+                    let fp = well_footprint(&f);
+                    let interior = box_interior(&w);
+                    let hole: BTreeSet<Cell> = fp.upper_hole.iter().copied().collect();
+                    // the landing floor: the clear cells of both levels that lie inside the box
+                    let landing: BTreeSet<Cell> = fp
+                        .upper_clear
+                        .iter()
+                        .filter(|c| fp.lower_clear.contains(c) && interior.contains(c))
+                        .copied()
+                        .collect();
+                    let union: BTreeSet<Cell> = hole.union(&landing).copied().collect();
+                    assert_eq!(union, interior, "{seed} {cx},{cy} {}: the flight does not fill the box", w.kind);
+                    assert!(hole.is_disjoint(&landing), "{seed} {cx},{cy}: floor cells in the hole");
+                    match w.kind {
+                        "stairs" => {
+                            assert_eq!((hole.len(), landing.len(), interior.len()), (25, 10, 35), "{seed} {cx},{cy}: the 5 x 7 interior");
+                            assert_eq!(f.shape, FlightShape::Switchback);
+                            switchbacks += 1;
+                        }
+                        _ => {
+                            assert_eq!((hole.len(), landing.len(), interior.len()), (22, 3, 25), "{seed} {cx},{cy}: the 5 x 5 interior");
+                            assert_eq!(f.shape, FlightShape::Spiral);
+                            spirals += 1;
+                        }
+                    }
+                    // A and B stand on the landing floor, inside the box
+                    assert!(landing.contains(&fp.landing) && landing.contains(&fp.foot), "{seed} {cx},{cy}");
+                }
+            }
+        }
+    }
+    assert!(switchbacks >= 8 && spirals >= 8, "only {switchbacks} switchbacks and {spirals} spirals in the range");
+}
+
+/// The lower level of a well is a solid floor with no bottomless void: every point of every well cell is under a tile of
+/// the ramp, on a floor quad, or inside the solid divider. A spiral's shell has its floor quad; a solid wedge its tiles and
+/// divider box.
+#[test]
+fn no_well_cell_of_the_lower_level_is_a_bottomless_void() {
+    use crate::render::stairs::{flight_cell, tiles, Face, Parts, Site};
+    let mut checked = 0;
+    for p in stair_pairs() {
+        let Some(t) = p.t else { continue };
+        let lvl = p.lo.f.level;
+        let well = footprint(t);
+        let well_fn = |x: i32, z: i32| well.contains(&Cell::new(x, z));
+        let solid_fn = |x: i32, z: i32| p.lo.f.is_wall_cell(x, z);
+        let site = Site { h: STOREY, wall_h: STOREY, tiers: 1.0, well: &well_fn, solid: &solid_fn };
+        for c in &well {
+            let mut parts = Parts::default();
+            flight_cell(&mut parts, (c.x, c.y), t, lvl, &site);
+            let ts = tiles(t, lvl, (c.x, c.y));
+            let floor = parts.quads.iter().any(|q| q.face == Face::Floor && q.c.iter().all(|v| v.y.abs() < 1e-4));
+            // the divider box belongs to the stair, drawn once with its first cell
+            let mut all = Parts::default();
+            for w in &well {
+                flight_cell(&mut all, (w.x, w.y), t, lvl, &site);
+            }
+            for i in 0..5 {
+                for j in 0..5 {
+                    let (x, z) = (c.x as f32 + (i as f32 + 0.5) / 5.0, c.y as f32 + (j as f32 + 0.5) / 5.0);
+                    let under_tile = ts.iter().any(|q| x >= q.x0 && x < q.x0 + q.size && z >= q.z0 && z < q.z0 + q.size);
+                    let in_box = all.boxes.iter().any(|(bc, bs, _)| {
+                        bs.y > STOREY - 1e-3 && (x - bc.x).abs() <= bs.x * 0.5 && (z - bc.z).abs() <= bs.z * 0.5
+                    });
+                    assert!(
+                        under_tile || floor || in_box,
+                        "{} {:?}: ({x:.2}, {z:.2}) of well cell {c:?} is a bottomless void on level {lvl}",
+                        p.tag,
+                        t.shape
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(checked > 2000, "only {checked} well samples checked");
+}
+
+/// A body on the lower level's floor stands in a well only where the flight's surface is: on the foot lane's first metres,
+/// on a spiral's floor wedge. No other well cell is walkable ground (no leftover shaft cell): the rest is under the ramp,
+/// the divider or the shell.
+#[test]
+fn the_lower_levels_well_is_walkable_only_where_the_flight_is() {
+    let r = 0.2;
+    let mut ground_cells = 0;
+    for p in stair_pairs() {
+        let Some(t) = p.t else { continue };
+        let lvl = p.lo.f.level;
+        let floor_y = lvl as f32 * STOREY;
+        for c in footprint(t) {
+            for i in 0..4 {
+                for j in 0..4 {
+                    let (x, z) = (c.x as f32 + (i as f32 + 0.5) / 4.0, c.y as f32 + (j as f32 + 0.5) / 4.0);
+                    if !p.lo.f.body_fits_at_y(x, z, floor_y, r) {
+                        continue;
+                    }
+                    // a body at the lower floor fits here: the flight's surface is within a step of the floor, nowhere else
+                    let rel = t.surface_rel(lvl, x, z);
+                    assert!(
+                        rel.is_some_and(|h| h.abs() <= 0.6),
+                        "{} {:?}: a body stands on the lower floor at ({x:.2}, {z:.2}) in well cell {c:?}, surface {rel:?}",
+                        p.tag,
+                        t.shape
+                    );
+                    ground_cells += 1;
+                }
+            }
+        }
+    }
+    assert!(ground_cells > 50, "only {ground_cells} ground samples: the foot lane and the wedge are walkable");
+}
+
+/// A body on the upper floor cannot walk off a guarded landing edge: only at the gap where the stairs arrive does the way
+/// into the well open. The runner walks from the middle of each landing-row cell towards the well in 1 cm steps.
+#[test]
+fn a_body_cannot_walk_off_a_guarded_landing_edge_except_at_the_arrival_gap() {
+    use super::flight::landing_guards_with;
+    let r = 0.23;
+    let (mut guarded, mut gaps) = (0, 0);
+    for p in stair_pairs().into_iter().filter(|p| p.up.f.level == 0 && p.s.shape == FlightShape::Switchback) {
+        let f = p.s.flight(0).unwrap();
+        let fp = well_footprint(&f);
+        let guards = landing_guards_with(super::flight::flights(), &f);
+        assert_eq!(guards.len(), 3, "{}: three guarded cell edges", p.tag);
+        let hole: BTreeSet<Cell> = fp.upper_hole.iter().copied().collect();
+        // the landing row's cells whose run-ward neighbour is the first row of the well
+        let run = f.run;
+        let row: Vec<Cell> = fp.upper_clear.iter().copied().filter(|c| hole.contains(&Cell::new(c.x + run.0, c.y + run.1))).collect();
+        assert_eq!(row.len(), 5, "{}: five landing cells face the well", p.tag);
+        for c in row {
+            let guarded_here = guards.iter().any(|g| g.outside == c);
+            // walk from the middle of the cell towards the well, 1 cm at a time, at the upper floor
+            let (cx, cz) = c.center();
+            let mut crossed = false;
+            let mut blocked_at = None;
+            for k in 0..70 {
+                let d = k as f32 * 0.01;
+                let (x, z) = (cx + run.0 as f32 * d, cz + run.1 as f32 * d);
+                if !p.up.f.body_fits_at_y(x, z, 0.0, r) {
+                    blocked_at = Some(d);
+                    break;
+                }
+                // the cell edge is 0.5 away: past it the body's centre is over the well (the body keeps the floor's height:
+                // a flight that has fallen 0.6 m below it takes the body no further, so the walk stops at 0.7)
+                crossed |= d > 0.55;
+            }
+            if guarded_here {
+                guarded += 1;
+                assert!(!crossed, "{} {:?}: a body walked over the well past the guard at {c:?}", p.tag, p.s.cell);
+                assert!(blocked_at.is_some_and(|d| d <= 0.5 - r + 0.03), "{}: the guard at {c:?} stops the body at the rim: {blocked_at:?}", p.tag);
+            } else {
+                gaps += 1;
+                assert!(blocked_at.is_none(), "{} {:?}: the arrival gap at {c:?} is blocked at {blocked_at:?}", p.tag, p.s.cell);
+                assert!(crossed, "{}: the gap lets the body onto the flight", p.tag);
+            }
+        }
+    }
+    assert!(guarded >= 9 && gaps >= 6, "{guarded} guarded and {gaps} open edges walked: the sweep needs switchbacks on level 0");
+}
+
+/// The spiral's guard is the landing row's end on the arc's end side; its start side is floored by the corner slab, so a
+/// body walks out onto it. The same walk, outwards from A's and B's cells.
+#[test]
+fn a_spiral_is_guarded_on_the_arc_end_side_and_floored_on_the_start_side() {
+    let r = 0.23;
+    let mut seen = 0;
+    for (seed, cx, cy, kind, s) in level0_range_wells() {
+        if kind != "spiral" {
+            continue;
+        }
+        let up = built(&seed, cx, cy, 0);
+        let f = s.flight(0).unwrap();
+        let fp = well_footprint(&f);
+        // across the landing row (side), from A outwards and from B outwards
+        let side = (f.run.1.abs(), f.run.0.abs());
+        let dir = if f.clockwise { -1 } else { 1 };
+        for (cell, out, name, should_open) in [(fp.landing, -dir, "A (start side)", true), (fp.foot, dir, "B (end side)", false)] {
+            let (x0, z0) = cell.center();
+            let mut blocked = None;
+            let mut over_well = false;
+            for k in 0..100 {
+                let d = k as f32 * 0.01;
+                let (x, z) = (x0 + (side.0 * out) as f32 * d, z0 + (side.1 * out) as f32 * d);
+                if !up.f.body_fits_at_y(x, z, 0.0, r) {
+                    blocked = Some(d);
+                    break;
+                }
+                over_well |= d > 0.55;
+            }
+            if should_open {
+                assert!(blocked.is_none() && over_well, "{seed} {cx},{cy}: the start-side corner of {name} is floored: {blocked:?}");
+            } else {
+                assert!(!over_well && blocked.is_some_and(|d| d <= 0.5 - r + 0.03), "{seed} {cx},{cy}: {name} is guarded: {blocked:?} {over_well}");
+            }
+        }
+        seen += 1;
+    }
+    assert!(seen >= 8, "only {seen} spirals in the range");
+}
+
+/// The way down is smooth: along the walked route sampled every 5 cm the height never steps by more than the steepest
+/// slope of the walking line allows (a ramp, not treads), for every flight of the sweep and for the whole way from the
+/// landing to the foot.
+#[test]
+fn the_way_down_has_no_step_over_a_quarter_metre() {
+    let mut worst = 0.0f32;
+    let mut samples = 0;
+    for p in stair_pairs() {
+        let u = p.up.f.level;
+        let Some(fl) = p.s.flight(u) else { continue };
+        let Some(t) = p.t else { continue };
+        let fp = well_footprint(&fl);
+        let mut last: Option<f32> = None;
+        for (x, z) in p.s.walk_path(u, 0.05) {
+            let upper_abs = p.s.surface_rel(u, x, z).map(|r| lvl_abs(u, r));
+            let under_slab = last.is_some_and(|l| l < (u - 1) as f32 * STOREY + 0.5 && upper_abs.is_some_and(|a| a > l + 1e-3));
+            let on_foot = Cell::new(x.floor() as i32, z.floor() as i32) == fp.foot || under_slab;
+            let abs = if on_foot { t.surface_rel(u - 1, x, z).map(|r| lvl_abs(u - 1, r)) } else { upper_abs };
+            let Some(abs) = abs else { continue };
+            if let Some(l) = last {
+                worst = worst.max((abs - l).abs());
+            }
+            last = Some(abs);
+            samples += 1;
+        }
+    }
+    assert!(samples > 3000, "only {samples} samples");
+    // 5 cm of run at the steepest walking slope (0.84) is 4.2 cm; a tread block would be 28 cm
+    assert!(worst <= 0.25, "the height steps by {worst} m between 5 cm samples");
+    assert!(worst <= 0.1, "a smooth ramp steps by under 10 cm in 5 cm of run, got {worst}");
 }

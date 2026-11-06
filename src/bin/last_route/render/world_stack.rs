@@ -3,6 +3,7 @@
 //! and the pure predicates that decide when a neighbour is built or drawn.
 
 use super::shader::{Flicker, Lamp, MAX_LAMPS};
+use super::stairs;
 use super::world_mesh::{self, ChunkFrame, NeighbourScope, Opening, WorldMeshes};
 use crate::game::level_stack::LevelStack;
 use crate::shared::assets::Assets;
@@ -223,9 +224,17 @@ impl NeighbourWorlds {
         true
     }
 
-    /// Every neighbour lamp, flagged when within STAIRWELL_LAMP_RADIUS of a stair centre of `active`.
+    /// Every neighbour lamp, flagged when within STAIRWELL_LAMP_RADIUS of where a stair of `active` hangs its light (over
+    /// the middle of its well, which for a wide switchback or a spiral is cells from the landing the stair record names).
     pub fn lamps(&self, active: &Facility) -> Vec<(Lamp, bool)> {
-        let centres: Vec<(f32, f32)> = active.stairs.iter().map(|s| s.cell.center()).collect();
+        let centres: Vec<(f32, f32)> = active
+            .stairs
+            .iter()
+            .map(|s| {
+                let l = stairs::lamp(*s, STOREY);
+                (l.pos.x, l.pos.z)
+            })
+            .collect();
         self.items
             .iter()
             .flat_map(|m| m.lamps.iter())

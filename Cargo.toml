@@ -33,6 +33,10 @@ tiny_http = { version = "0.12", optional = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1"
+# The system file dialog behind the SKIN tab's PICK A PNG (shared/file_pick.rs): the Windows and macOS open panels. The browser
+# build has its own chooser in the page (packaging/web/index.html), so rfd is not compiled for wasm32. xdg-portal is
+# the Linux backend (portal or zenity, found at run time); the wayland window-handle feature is not needed.
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 
 [features]
 default = []

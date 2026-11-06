@@ -1224,6 +1224,7 @@ mod relay_claim_tests {
         for diff in [Difficulty::Relaxed, Difficulty::Standard, Difficulty::Hard] {
             let make = || Game::new_infinite_sim(diff, 7, "ROOM-TEST-7", 0, &content, &catalog);
             let (mut runner, mut bot_game) = (make(), make());
+            bot_game.npc_ensure_run(&content);
             let id = bot_game.npcs[0].id;
             let mut woke = 0;
             for k in 0..4 {
@@ -1279,6 +1280,7 @@ mod relay_claim_tests {
         let (content, catalog) = (Content::load(), Catalog::load());
         let sounds = Sounds::default();
         let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-TEST-7", 0, &content, &catalog);
+        g.npc_ensure_run(&content);
         g.npcs[0].joined = true;
         g.hunters.clear();
         g.inf.as_mut().unwrap().stored_mut().clear();

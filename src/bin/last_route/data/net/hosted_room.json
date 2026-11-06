@@ -1,0 +1,39 @@
+{
+  "schema": "lr.hosted_room/1",
+  "_about": "Online rooms hosted by the server. CREATE ROOM asks the directory for a room (POST /api/rooms/hosted/create), then checks the room's listing (GET /api/enet/rooms/CODE) every poll.interval_seconds, at most poll.attempts times (Godot room_state.gd HOSTED_JOIN_ATTEMPTS and HOSTED_JOIN_INTERVAL), and joins it as a guest. The account that created the room is its owner and sees the owner controls. Every player-facing line of that flow is here; {code}, {n} and {max} are filled in by the game.",
+  "poll": {
+    "attempts": 60,
+    "interval_seconds": 2
+  },
+  "strings": {
+    "sign_in_required": "SIGN IN TO CREATE AN ONLINE ROOM",
+    "offline": "ONLINE ROOMS NEED THE SERVER // YOU ARE OFFLINE",
+    "creating": "ASKING THE SERVER FOR A ROOM...",
+    "unreachable": "COULD NOT REACH THE ROOM SERVER",
+    "create_failed": "THE ROOM SERVER DID NOT OPEN A ROOM",
+    "waiting": "WAITING FOR ROOM {code} TO START",
+    "waiting_check": "SERVER CHECK {n} OF {max}",
+    "not_started": "ROOM {code} DID NOT START // TRY CREATE ROOM AGAIN",
+    "opened_owner": "ROOM {code} IS OPEN // YOU OWN THIS ROOM",
+    "lobby_owner_line": "ONLINE ROOM // YOU OWN THIS ROOM",
+    "lobby_owner_detail": "ROOM {code} // THE SERVER RUNS THE ROUTE, YOU CONTROL IT",
+    "lobby_waiting_line": "ONLINE ROOM // OPENING",
+    "owner_confirming": "CONFIRMING ROOM OWNER...",
+    "owner_busy": "ANOTHER OWNER COMMAND IS STILL CONFIRMING // TRY AGAIN",
+    "owner_sign_in": "SIGN IN AS THE ROOM OWNER TO CONTROL THIS ROOM",
+    "owner_check_failed": "ROOM OWNER CHECK FAILED",
+    "owner_refused": "ROOM OWNER REFUSED: {reason}",
+    "owner_refused_default": "THE ROOM OWNER COMMAND WAS REFUSED",
+    "owner_not_in_room": "JOIN THE ROOM FIRST",
+    "label_start": "START ROUTE",
+    "label_end": "END ROUTE",
+    "label_restart": "RESTART ROUTE",
+    "label_kick": "KICK",
+    "tab_owner": "OWNER",
+    "owner_heading": "ROOM OWNER CONTROLS",
+    "owner_lobby_note": "You own this room. The server runs the route; START, RESTART, END and KICK are sent to it.",
+    "owner_pause_note": "A new difficulty applies from the next RESTART ROUTE.",
+    "owner_end_reason": "THE OWNER ENDED THE ROUTE",
+    "owner_restart_reason": "THE OWNER RESTARTED THE ROUTE"
+  }
+}

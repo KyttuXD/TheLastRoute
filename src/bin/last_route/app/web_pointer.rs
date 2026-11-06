@@ -13,6 +13,8 @@ thread_local! {
     static LAST_REQUEST: Cell<f64> = const { Cell::new(f64::NEG_INFINITY) };
     /// The browser has granted the lock since the game last asked for it.
     static HELD: Cell<bool> = const { Cell::new(false) };
+    /// When the lock was first seen held.
+    static HELD_AT: Cell<f64> = const { Cell::new(0.0) };
 }
 
 /// Call every frame with whether the game believes the mouse is grabbed. True only on the frame a lock the browser had
@@ -23,21 +25,30 @@ pub fn lost_after_held(grabbed: bool) -> bool {
     if !cfg!(target_arch = "wasm32") {
         return false;
     }
+    let now = get_time();
     HELD.with(|held| {
         if !grabbed {
             held.set(false);
             false
         } else if locked() {
-            held.set(true);
+            if !held.get() {
+                held.set(true);
+                HELD_AT.with(|at| at.set(now));
+            }
             false
         } else if held.get() {
             held.set(false);
-            true
+            // a lock that was dropped almost at once (Escape was still down from closing the pause menu, or the page
+            // lost focus in the same moment) is not the player pausing: it must not open the pause menu again
+            now - HELD_AT.with(|at| at.get()) >= MIN_HELD_SECONDS
         } else {
             false
         }
     })
 }
+
+/// A lock must have been held this long (seconds) before losing it counts as the player pressing Escape.
+pub const MIN_HELD_SECONDS: f64 = 0.35;
 
 #[cfg(target_arch = "wasm32")]
 mod imp {
@@ -67,6 +78,11 @@ pub fn locked() -> bool {
 pub fn may_request(click: bool) -> bool {
     if !cfg!(target_arch = "wasm32") {
         return true;
+    }
+    // Escape both closes the pause menu and makes the browser release the lock: a lock requested while it is still down
+    // is dropped by the browser at once, which used to pause the game again
+    if macroquad::input::is_key_down(macroquad::input::KeyCode::Escape) {
+        return false;
     }
     let now = get_time();
     LAST_REQUEST.with(|last| {

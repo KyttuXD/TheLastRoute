@@ -20,6 +20,7 @@ pub const HOST_PEER_ID: u32 = 1;
 pub const RESEND_INTERVAL: Duration = Duration::from_millis(200);
 const PING_INTERVAL: Duration = Duration::from_secs(1);
 const PACKET_HEADER: usize = 6;
+/// The largest message over the UDP relay; a link may carry more ([`RoomLink::max_payload`]).
 pub const MAX_MESSAGE_BYTES: usize = MAX_PAYLOAD_BYTES - PACKET_HEADER;
 const KIND_DATA: u8 = 0;
 const KIND_ACK: u8 = 1;
@@ -109,7 +110,7 @@ impl CoopSession {
             return false;
         }
         let body = message.encode();
-        if body.len() > MAX_MESSAGE_BYTES {
+        if body.len() > self.link.max_payload().saturating_sub(PACKET_HEADER) {
             return false;
         }
         let channel = message.channel();
@@ -131,6 +132,19 @@ impl CoopSession {
         for peer in peers {
             self.send(peer, message);
         }
+    }
+
+    /// Host: removes guest `peer` from the room: the relay closes its socket, and nothing more is sent or resent to it.
+    /// False when the link cannot remove a guest (the UDP relay) or it was not sent.
+    pub fn kick(&mut self, peer: u32) -> bool {
+        if !self.is_host() || peer == HOST_PEER_ID {
+            return false;
+        }
+        let sent = self.link.kick(peer);
+        self.peers.remove(&peer);
+        self.pings.remove(&peer);
+        self.pending_pings.remove(&peer);
+        sent
     }
 
     pub fn peers(&self) -> Vec<u32> {

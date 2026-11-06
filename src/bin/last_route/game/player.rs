@@ -451,13 +451,12 @@ impl Player {
         self.crouching = c.crouch;
         let target = if self.crouching { 1.0 } else { 0.0 };
         self.crouch_t += (target - self.crouch_t) * (1.0 - (-14.0 * dt).exp());
-        let on_stair = stair_height_at(fac, self.pos).is_some();
+        // A flight is no special ground for the speed (Godot has no stair code): walk, sprint and crouch follow the flat
+        // rules on it, and a sprint held through a fall keeps its full speed (the air control scale is for walking).
         let airborne = self.falling();
-        let wants_sprint = c.sprint && moving && !self.exhausted && !on_stair && !airborne;
+        let wants_sprint = c.sprint && moving && !self.exhausted;
         let mut sprinting = false;
-        let speed = if on_stair {
-            PLAYER_WALK_SPEED * prof.player_speed
-        } else if self.crouching {
+        let speed = if self.crouching {
             PLAYER_CROUCH_SPEED * prof.crouch_speed
         } else if wants_sprint && self.stamina > 0.0 {
             sprinting = true;
@@ -472,7 +471,7 @@ impl Player {
             PLAYER_WALK_SPEED * prof.player_speed
         } * meters.movement_scale()
             * self.speed_scale
-            * fall_rules().air_scale(airborne);
+            * fall_rules().air_scale(airborne && !sprinting);
         self.sprinting = sprinting;
         self.moving = moving;
         self.noise = if !moving {
@@ -562,7 +561,7 @@ impl Player {
         if self.feet_y <= min_feet {
             self.feet_y = min_feet;
             self.vy = 0.0;
-            if jump_edge && !self.crouching && self.stun <= 0.0 && !on_stair {
+            if jump_edge && !self.crouching && self.stun <= 0.0 {
                 self.vy = PLAYER_JUMP_VELOCITY;
             }
         }
@@ -816,17 +815,135 @@ mod tests {
         assert_eq!(g.p.pitch, 0.3);
     }
 
+    /// One frame of the body on the flight window.
+    fn step_body(g: &mut Game, c: &Controls) {
+        let prof = g.prof();
+        let sounds = Sounds::default();
+        g.p.update_movement(FRAME, c, &prof, &g.fac, &LevelStack::EMPTY, &mut g.meters, &sounds);
+    }
+
     #[test]
-    fn jump_is_refused_on_a_stair_and_still_works_on_the_floor() {
+    fn a_jump_on_a_flight_lands_back_on_it_with_y_continuous() {
+        let (mut g, s) = flight_game();
+        g.p.pos = on_flight(&g, s, 12);
+        run_body(&mut g, 0.5, &Controls::default());
+        assert!(g.p.grounded && stair_height_at(&g.fac, g.p.pos).is_some());
+        let hop = Controls { jump: true, ..Default::default() };
+        let (mut last, mut max_step, mut peak) = (g.p.y() + g.p.feet_y, 0.0_f32, 0.0_f32);
+        let mut left_ground = false;
+        for i in 0..150 {
+            let c = if i == 0 { hop.clone() } else { Controls::default() };
+            step_body(&mut g, &c);
+            let y = g.p.y() + g.p.feet_y;
+            max_step = max_step.max((y - last).abs());
+            last = y;
+            peak = peak.max(g.p.feet_y);
+            left_ground |= !g.p.grounded;
+            assert!(!g.p.falling(), "a hop on a flight is not a fall (frame {i})");
+        }
+        assert!(left_ground && peak > 0.3, "the press hops on a stair: peak {peak} m");
+        assert!(max_step <= 0.25, "y stays continuous through the hop: worst frame step {max_step}");
+        assert!(g.p.grounded && g.p.feet_y == 0.0 && g.p.take_landing().is_none(), "landed on the flight, no fall landing");
+        let tread = stair_height_at(&g.fac, g.p.pos).expect("still on the flight");
+        assert!((g.p.height - tread).abs() < 0.05, "standing on the tread again: {} vs {tread}", g.p.height);
+    }
+
+    #[test]
+    fn a_jump_still_works_on_the_floor() {
         let (mut g, s) = flight_game();
         let hop = Controls { jump: true, ..Default::default() };
-        g.p.pos = on_flight(&g, s, 12);
-        run_body(&mut g, 0.1, &hop);
-        assert_eq!(g.p.feet_y, 0.0, "no hop on a stair");
         g.p.pos = off_stair(s);
         run_body(&mut g, FRAME, &Controls::default());
         run_body(&mut g, FRAME, &hop);
         assert!(g.p.feet_y > 0.0, "a fresh press hops on the floor");
+    }
+
+    /// The horizontal speed (m/s) of one frame of `c` from `at` facing `yaw`.
+    fn frame_speed(g: &mut Game, at: (f32, f32), yaw: f32, c: &Controls) -> f32 {
+        g.p.pos = at;
+        g.p.yaw = yaw;
+        // settle onto the surface under the spot first (the height eases to a tread), with no key held
+        run_body(g, 0.5, &Controls::default());
+        g.p.stamina = MAX_STAMINA;
+        g.p.exhausted = false;
+        step_body(g, c);
+        g.p.move_vel.0.hypot(g.p.move_vel.1)
+    }
+
+    #[test]
+    fn sprint_crouch_and_walk_on_a_flight_run_at_the_flat_speeds() {
+        let (mut g, s) = flight_game();
+        let prof = g.prof();
+        let ms = g.meters.movement_scale();
+        let (walk, sprint, crouch) = (
+            PLAYER_WALK_SPEED * prof.player_speed * ms,
+            PLAYER_SPRINT_SPEED * prof.sprint_speed * ms,
+            PLAYER_CROUCH_SPEED * prof.crouch_speed * ms,
+        );
+        assert!(crouch < walk && walk < sprint, "{crouch} {walk} {sprint}");
+        let p = path(&g, s);
+        let (on, yaw_on) = (p[12], yaw_along((p[15].0 - p[12].0, p[15].1 - p[12].1)));
+        // a flat spot: just behind the landing, walking away from the flight
+        let (off, yaw_off) = (off_stair(s), yaw_along((-(s.run.0 as f32), -(s.run.1 as f32))));
+        let fwd = Controls { fwd: 1.0, ..Default::default() };
+        let run = Controls { fwd: 1.0, sprint: true, ..Default::default() };
+        let duck = Controls { fwd: 1.0, crouch: true, ..Default::default() };
+        for (name, c, want) in [("walk", &fwd, walk), ("sprint", &run, sprint), ("crouch", &duck, crouch)] {
+            // the crouch settles over a few frames; the speed does not wait for it
+            let flat = (0..4).map(|k| frame_speed(&mut g, off, yaw_off + k as f32 * std::f32::consts::FRAC_PI_2, c)).fold(0.0_f32, f32::max);
+            let stairs = frame_speed(&mut g, on, yaw_on, c);
+            assert!((flat - want).abs() < 0.01, "{name} on the flat: {flat} vs {want}");
+            assert!((stairs - want).abs() < 0.01, "{name} on a flight: {stairs} vs the flat {want}");
+        }
+        frame_speed(&mut g, on, yaw_on, &run);
+        assert!(g.p.sprinting, "the sprint flag is set on a flight");
+    }
+
+    #[test]
+    fn a_sprinting_climb_and_a_hopping_climb_keep_y_continuous_and_never_fall() {
+        use crate::world::flight::FlightShape::*;
+        let mut checked = 0;
+        for (shape, level) in [(Switchback, 0), (Straight, -1), (Spiral, 0)] {
+            let Some((mut g, s)) = shape_game(shape, level) else { continue };
+            // sprint all the way, then hop every 20 frames
+            for hop in [false, true] {
+                g.p.set_abs_y(g.p.floor_y);
+                g.p.stamina = MAX_STAMINA;
+                g.p.exhausted = false;
+                let (steps, grounded_always, lag, fell) = climb_steps_with(&mut g, s, |i| Controls {
+                    fwd: 1.0,
+                    sprint: true,
+                    jump: hop && (i / 10) % 2 == 0,
+                    ..Default::default()
+                });
+                assert!(steps.len() > 20, "{shape:?}: the body walked the flight");
+                let worst = steps.iter().cloned().fold(0.0, f32::max);
+                assert!(worst < 0.25, "{shape:?} hop {hop}: a frame step of {worst} m");
+                assert!(lag < 0.3, "{shape:?} hop {hop}: the height lags the tread by {lag} m");
+                assert!(!fell, "{shape:?} hop {hop}: no fall started on the flight");
+                assert!(grounded_always || hop, "{shape:?}: a sprint alone stays on the treads");
+            }
+            checked += 1;
+        }
+        assert!(checked >= 1, "at least one shape was found");
+    }
+
+    #[test]
+    fn a_sprint_held_through_a_fall_keeps_its_full_speed() {
+        let (mut g, _, run) = drop_game();
+        g.p.yaw = yaw_along((run.0 as f32, run.1 as f32));
+        let start = g.p.pos;
+        let c = Controls { fwd: 1.0, sprint: true, ..Default::default() };
+        let dt = 1.0 / 120.0;
+        for _ in 0..16 {
+            step_in_stack(&mut g, &c, dt);
+        }
+        assert!(g.p.falling(), "still in the air");
+        assert!(g.p.sprinting, "the sprint carries into the fall");
+        let moved = (g.p.pos.0 - start.0).hypot(g.p.pos.1 - start.1);
+        let prof = g.prof();
+        let full = PLAYER_SPRINT_SPEED * prof.sprint_speed * g.meters.movement_scale() * 16.0 * dt;
+        assert!(moved > full * 0.85 && moved < full * 1.15, "moved {moved} m, a full sprint gives {full} m (air control would give {})", full * fall_rules().air_control);
     }
 
     #[test]
@@ -941,6 +1058,11 @@ mod tests {
                 let h = s
                     .surface_rel(g.fac.level, pt.0, pt.1)
                     .unwrap_or_else(|| panic!("{shape:?}: path sample {i} {pt:?} is on the flight"));
+                // a spiral's end radial is a rail (the slab of upper floor stands a storey over the lowest step): the
+                // route crosses it where the walker changes owner, and a body is kept off it
+                if s.near_cliff(g.fac.level, pt.0, pt.1, 0.3) {
+                    continue;
+                }
                 assert!(body_fits(&g.fac, pt.0, pt.1, h), "{shape:?}: the body fits at path sample {i} {pt:?}");
             }
             checked += 1;
@@ -966,6 +1088,9 @@ mod tests {
                     let (ox, oy) = (other.x as f32, other.y as f32);
                     for (i, pt) in s.walk_path(g.fac.level, 0.25).into_iter().enumerate() {
                         if pt.0 > ox - 0.25 && pt.0 < ox + 1.25 && pt.1 > oy - 0.25 && pt.1 < oy + 1.25 {
+                            continue;
+                        }
+                        if s.near_cliff(g.fac.level, pt.0, pt.1, 0.3) {
                             continue;
                         }
                         let fits = s.surface_rel(g.fac.level, pt.0, pt.1).is_some_and(|h| body_fits(&g.fac, pt.0, pt.1, h));
@@ -1017,14 +1142,19 @@ mod tests {
     /// Walks the flight of `s` along its path: every frame's change of y(), whether the body stayed grounded, and the
     /// worst lag of the height behind the tread under it.
     fn climb_steps(g: &mut Game, s: Stair) -> (Vec<f32>, bool, f32) {
+        let (steps, grounded, lag, _) = climb_steps_with(g, s, |_| Controls { fwd: 1.0, ..Default::default() });
+        (steps, grounded, lag)
+    }
+
+    /// `climb_steps` with the controls of frame `i` chosen by `controls`; the fourth value is whether a fall started.
+    fn climb_steps_with(g: &mut Game, s: Stair, controls: impl Fn(usize) -> Controls) -> (Vec<f32>, bool, f32, bool) {
         start_on_flight(g, s);
         let prof = g.prof();
         let sounds = Sounds::default();
-        let c = Controls { fwd: 1.0, ..Default::default() };
         let p = path(g, s);
-        let (mut steps, mut grounded, mut worst_lag) = (Vec::new(), true, 0.0_f32);
-        let mut last = g.p.y();
-        for _ in 0..(p.len() * 40) {
+        let (mut steps, mut grounded, mut worst_lag, mut fell) = (Vec::new(), true, 0.0_f32, false);
+        let mut last = g.p.y() + g.p.feet_y;
+        for frame in 0..(p.len() * 40) {
             let here = g.p.pos;
             let k = p
                 .iter()
@@ -1040,15 +1170,16 @@ mod tests {
             }
             let t = p[k + 3];
             g.p.yaw = yaw_along((t.0 - here.0, t.1 - here.1));
-            g.p.update_movement(FRAME, &c, &prof, &g.fac, &LevelStack::EMPTY, &mut g.meters, &sounds);
-            steps.push((g.p.y() - last).abs());
-            last = g.p.y();
+            g.p.update_movement(FRAME, &controls(frame), &prof, &g.fac, &LevelStack::EMPTY, &mut g.meters, &sounds);
+            steps.push((g.p.y() + g.p.feet_y - last).abs());
+            last = g.p.y() + g.p.feet_y;
+            fell |= g.p.falling();
             grounded &= g.p.grounded;
             if let Some(h) = stair_height_at(&g.fac, g.p.pos) {
                 worst_lag = worst_lag.max((h - g.p.height).abs());
             }
         }
-        (steps, grounded, worst_lag)
+        (steps, grounded, worst_lag, fell)
     }
 
     #[test]

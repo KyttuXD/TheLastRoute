@@ -5,7 +5,11 @@
 //! name order from `mods/` beside the executable, `mods/` in the working folder, and the
 //! per-user folder (%APPDATA%/KYTTU/TheLastRoute/mods). Pack hunters may bring a `.bbmodel` model with
 //! its atlas and a portrait PNG; a model in another format falls back to the base body.
+//!
+//! The browser build has no folders: its packs are imported through the MODS tab and kept in the page's storage
+//! (`pack_import`). They load through the same code below, from memory instead of from a folder (`Source::Memory`).
 
+use super::pack_import::{self, ImportedPack};
 use super::{hunters, Content};
 use std::path::{Path, PathBuf};
 
@@ -49,8 +53,58 @@ fn json_files(dir: &Path) -> Vec<PathBuf> {
     v
 }
 
+/// Where a pack's files are read from: a folder on disk, or the memory of an imported pack (browser build).
+pub enum Source<'a> {
+    Disk(&'a Path),
+    Memory(&'a ImportedPack),
+}
+
+impl Source<'_> {
+    /// The `Pack.dir` the pack is known by: its folder, or the virtual folder `read_pack_file` serves from memory.
+    fn dir(&self) -> PathBuf {
+        match self {
+            Source::Disk(dir) => dir.to_path_buf(),
+            Source::Memory(pack) => pack_import::virtual_dir(&pack.id),
+        }
+    }
+
+    /// The name used in messages: the folder name, or the pack's id.
+    fn label(&self) -> String {
+        match self {
+            Source::Disk(dir) => dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+            Source::Memory(pack) => pack.id.clone(),
+        }
+    }
+
+    fn read_text(&self, rel: &str) -> Option<String> {
+        match self {
+            Source::Disk(dir) => std::fs::read_to_string(dir.join(rel)).ok(),
+            Source::Memory(pack) => pack.text(rel),
+        }
+    }
+
+    /// The `*.json` files directly inside the pack folder `sub`, in name order: the name to show in a message and the
+    /// text (or why it could not be read).
+    fn json_texts(&self, sub: &str) -> Vec<(String, Result<String, String>)> {
+        match self {
+            Source::Disk(dir) => json_files(&dir.join(sub))
+                .into_iter()
+                .map(|f| {
+                    let text = std::fs::read_to_string(&f).map_err(|e| e.to_string());
+                    (f.display().to_string(), text)
+                })
+                .collect(),
+            Source::Memory(pack) => pack.json_in(sub),
+        }
+    }
+}
+
 /// Reads one file of a pack by its pack-relative path.
 pub fn read_pack_file(pack_dir: &Path, rel: &str) -> Option<Vec<u8>> {
+    // an imported pack (browser build) is served from memory
+    if let Some(answer) = pack_import::read_virtual(pack_dir, rel) {
+        return answer;
+    }
     let p = pack_dir.join(rel);
     let canon = p.canonicalize().ok()?;
     // stay inside the pack folder
@@ -75,15 +129,23 @@ pub fn load_all(c: &mut Content) {
             load_pack(c, &dir);
         }
     }
+    // the browser build: the packs the player imported (kept in the page's storage), after any others
+    if cfg!(target_arch = "wasm32") {
+        pack_import::load_stored_into(c);
+    }
 }
 
 fn load_pack(c: &mut Content, dir: &Path) {
-    let label = dir
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let manifest: serde_json::Value = match std::fs::read_to_string(dir.join("pack.json"))
-        .ok()
+    load_source(c, &Source::Disk(dir));
+}
+
+/// Loads one pack from its source into the content registry. Problems go to `c.warnings`; the pack is skipped when its
+/// `pack.json` is unusable.
+pub fn load_source(c: &mut Content, src: &Source) {
+    let label = src.label();
+    let dir = src.dir();
+    let manifest: serde_json::Value = match src
+        .read_text("pack.json")
         .and_then(|t| serde_json::from_str(&t).ok())
     {
         Some(v) => v,
@@ -121,17 +183,16 @@ fn load_pack(c: &mut Content, dir: &Path) {
         version: manifest["version"].as_str().unwrap_or("").to_string(),
         author: manifest["author"].as_str().unwrap_or("").to_string(),
         description: manifest["description"].as_str().unwrap_or("").to_string(),
-        dir: dir.to_path_buf(),
+        dir,
         provides: vec![],
     };
-    for file in json_files(&dir.join("hunters")) {
-        let parsed = std::fs::read_to_string(&file)
-            .map_err(|e| e.to_string())
+    for (shown, text) in src.json_texts("hunters") {
+        let parsed = text
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).map_err(|e| e.to_string()));
         let v = match parsed {
             Ok(v) => v,
             Err(e) => {
-                c.warnings.push(format!("{id}/{}: {e}", file.display()));
+                c.warnings.push(format!("{id}/{shown}: {e}"));
                 continue;
             }
         };
@@ -155,11 +216,8 @@ fn load_pack(c: &mut Content, dir: &Path) {
         }
     }
     // props: a pack may restyle a catalogue type it lists in "overrides" (models are pack-relative paths)
-    for file in json_files(&dir.join("props")) {
-        if let Some(v) = std::fs::read_to_string(&file)
-            .ok()
-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-        {
+    for (_, text) in src.json_texts("props") {
+        if let Some(v) = text.ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
             for mut p in super::props::parse_file(&v) {
                 if c.props.contains_key(&p.id) && !overrides.contains(&p.id) {
                     c.warnings.push(format!(
@@ -174,11 +232,8 @@ fn load_pack(c: &mut Content, dir: &Path) {
             }
         }
     }
-    for file in json_files(&dir.join("loot")) {
-        if let Some(v) = std::fs::read_to_string(&file)
-            .ok()
-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-        {
+    for (_, text) in src.json_texts("loot") {
+        if let Some(v) = text.ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
             let lid = v["id"].as_str().unwrap_or("");
             if overrides.iter().any(|o| o == lid) {
                 if let Some(table) = c.loot.by_id_mut(lid) {

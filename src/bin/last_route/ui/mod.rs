@@ -11,6 +11,8 @@ pub mod menus;
 pub mod pause;
 pub mod report;
 pub mod skin_preview;
+pub mod mods_tab;
 pub mod skin_tab;
 pub mod settings_panel;
 pub mod style;
+pub mod update_screen;

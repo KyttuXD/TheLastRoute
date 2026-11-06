@@ -122,6 +122,11 @@ pub fn parse_control(text: &str) -> Option<Control> {
     })
 }
 
+/// The host's control frame that removes a guest.
+pub fn kick_text(id: u32) -> String {
+    json!({"t": "kick", "id": id}).to_string()
+}
+
 /// The first message a client sends. A guest omits `ticket` when it has none (ws_room_peer.gd does the same).
 pub fn hello_text(code: &str, role: Role, credential: &str) -> String {
     match role {
@@ -171,6 +176,10 @@ impl WsCore {
     }
     pub fn code(&self) -> &str {
         &self.code
+    }
+    /// The room is gone or the connection failed: nothing more is reported.
+    pub fn terminal(&self) -> bool {
+        self.terminal
     }
 
     /// A text control frame.
@@ -318,6 +327,10 @@ impl RoomLink for WsLink {
         self.core.role()
     }
 
+    fn max_payload(&self) -> usize {
+        MAX_FRAME_PAYLOAD
+    }
+
     fn ready(&self) -> bool {
         self.core.ready()
     }
@@ -350,6 +363,11 @@ impl RoomLink for WsLink {
         };
         self.last_out.set(Instant::now());
         super::web_bridge::ws_send(self.handle, &frame)
+    }
+
+    /// Host: the relay closes guest `session` with 4005 (`{"t":"kick","id":N}`, ws_room_peer.gd `_disconnect_peer`).
+    fn kick(&self, session: u32) -> bool {
+        self.core.role() == Role::Host && self.core.ready() && self.handle != 0 && self.send_text(&kick_text(session))
     }
 
     fn poll(&mut self) -> Vec<RelayEvent> {

@@ -779,6 +779,28 @@ mod tests {
     }
 
     #[test]
+    fn the_wheel_runs_through_the_hotbar_then_the_specialty_slots_whose_hunter_is_out() {
+        let (mut g, content) = sim();
+        g.sync_specialty();
+        // no hunter out: only the five hotbar slots, and 6 to 9 are empty
+        g.select(4);
+        g.scroll_hotbar(1);
+        assert_eq!((g.selected, g.specialty.selected), (0, None), "wraps from slot 5 to slot 1");
+        assert!(g.specialty.items.iter().all(|i| i.is_none()), "no hunters: slots 6 to 9 hold nothing");
+        add(&mut g, &content, "glyra");
+        g.sync_specialty();
+        g.select(4);
+        g.scroll_hotbar(1);
+        assert_eq!(g.specialty.selected, Some(0), "slot 5 then slot 6");
+        g.scroll_hotbar(1);
+        assert_eq!((g.selected, g.specialty.selected), (0, None), "slot 6 then back to slot 1");
+        g.scroll_hotbar(-1);
+        assert_eq!(g.specialty.selected, Some(0), "backwards from slot 1 reaches slot 6");
+        g.scroll_hotbar(-1);
+        assert_eq!((g.selected, g.specialty.selected), (4, None), "and then slot 5");
+    }
+
+    #[test]
     fn selecting_a_common_slot_puts_the_specialty_slot_away() {
         let (mut g, content) = sim();
         add(&mut g, &content, "glyra");

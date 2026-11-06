@@ -1919,6 +1919,8 @@ impl Game {
     /// (`{seed}:NPC:{n}`), each on an open cell `min_distance`..`max_distance` from the runner and out of its sight. They
     /// wait there until the runner comes close, then follow. An NPC whose key already exists is not made again, so the
     /// same seed always gives the same NPCs and a call after a rebuild adds nothing. Returns how many were made.
+    /// Nothing calls it on a room start or join any more (a room holds only real players); it is kept for tests and
+    /// for any caller that wants the data/npcs.json run NPCs.
     pub(super) fn npc_ensure_run(&mut self, content: &crate::content::Content) -> usize {
         if self.runner_level() != 0 || self.inf.is_none() {
             return 0;
@@ -2524,12 +2526,32 @@ mod tests {
         assert_eq!(g.npc_remove_all(), 4);
     }
 
-    /// A normal Infinite run (the pattern of the endless tests): level 0, seed text fixed.
+    /// A normal Infinite run (the pattern of the endless tests): level 0, seed text fixed. A run no longer makes NPCs
+    /// by itself, so the data/npcs.json run NPCs are asked for here, for the tests of that system.
     pub(super) fn run_game(diff: Difficulty, run_seed: u32, text: &str) -> (Game, Content) {
         let content = Content::load();
         let catalog = Catalog::load();
-        let g = Game::new_infinite_sim(diff, run_seed, text, 0, &content, &catalog);
+        let mut g = Game::new_infinite_sim(diff, run_seed, text, 0, &content, &catalog);
+        g.npc_ensure_run(&content);
         (g, content)
+    }
+
+    #[test]
+    fn starting_or_joining_a_room_spawns_no_npc() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        for diff in [Difficulty::Relaxed, Difficulty::Standard, Difficulty::Hard, Difficulty::Nightmare] {
+            let g = Game::new_infinite_sim(diff, 7, "ROOM-TEST-7", 0, &content, &catalog);
+            assert!(g.npcs.is_empty(), "{diff:?}: a new room started with {} NPC(s)", g.npcs.len());
+        }
+        // entering the window again (a continued checkpoint, a rejoin) adds none either
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-TEST-7", 0, &content, &catalog);
+        g.enter_infinite(&content, &catalog);
+        assert!(g.npcs.is_empty(), "re-entering the room made an NPC");
+        // the NPC system itself still works when asked for: the admin spawn and the run rule
+        let (e, d) = sky(g.p.pos);
+        assert_eq!(g.npc_spawn(1, 50, e, d), 1);
+        assert_eq!(g.npcs.len(), 1);
     }
 
     #[test]
@@ -4053,8 +4075,8 @@ mod level_tests {
     /// No bot may take longer than this to reach a runner one storey away.
     const CAP_SECONDS: f32 = 40.0;
     /// Levels whose downward flights include each shape (as game/stack_walk_tests.rs).
-    const CASES: [(FlightShape, i32); 4] =
-        [(FlightShape::Switchback, 0), (FlightShape::Switchback, -1), (FlightShape::Straight, -1), (FlightShape::Spiral, -2)];
+    const CASES: [(FlightShape, i32); 5] =
+        [(FlightShape::Switchback, 0), (FlightShape::Switchback, -1), (FlightShape::Straight, -1), (FlightShape::Spiral, 0), (FlightShape::Spiral, -2)];
 
     /// A window with the runner standing at one end of a link and one bot at the other, on the neighbour level.
     struct Case {

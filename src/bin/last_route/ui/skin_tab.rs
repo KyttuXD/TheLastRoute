@@ -1,25 +1,45 @@
 //! The SKIN tab of the settings overlay, laid out as the Godot skin panel (game/menus/skin_panel.gd): the rotating
-//! preview on the left; on the right PICK A PNG and APPLY, DEFAULT with the two TEMPLATE buttons, the FROM URL and
-//! FROM MC NAME boxes, the co-op COPY SKIN row, the catalogue row, OTHERS MAY COPY and ARMS, then the status and
-//! "Your skin". Every rectangle is in menu design units (the preview box included: see `skin_preview::screen_rect`).
+//! preview on the left; on the right PICK A PNG and APPLY, DEFAULT, the FROM URL box, the co-op COPY SKIN row, the
+//! catalogue row, OTHERS MAY COPY and ARMS, then the status and "Your skin". Every rectangle is in menu design units
+//! (the preview box included: see `skin_preview::screen_rect`).
+//!
+//! PICK A PNG opens the system's own file chooser (shared/file_pick.rs): the browser's file window on the web, the
+//! system open dialog on Windows and macOS. The tab is reached from the title screen's settings and, in a run, from the
+//! pause menu's SKIN entry; an applied skin changes `Settings`, and the game loop wears it from there (the hands, the
+//! upload and the room).
 
 use super::style::*;
 use crate::app::assets::Assets;
 use crate::app::settings::Settings;
 use crate::net::world_sync::SKIN_DEFAULT;
-use crate::shared::skins::{self, SkinFile, ValidSkin};
+use crate::shared::file_pick::{self, Outcome};
+use crate::shared::skins::{self, ValidSkin};
 use macroquad::prelude::*;
 use std::cell::RefCell;
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-/// Which SKIN text box has the keyboard.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Field {
-    Url,
-    Minecraft,
-}
+/// The accept string PICK A PNG gives the file chooser (an HTML `accept` value: the page uses it as it is, the native
+/// dialog filters by the extension).
+const PNG_KIND: &str = "image/png,.png";
+
+/// The captions of the tab's buttons, row by row (the boxes and the pair-buttons beside them are described in `draw`).
+const PICK_LABEL: &str = "PICK A PNG";
+const APPLY_LABEL: &str = "APPLY";
+const DEFAULT_LABEL: &str = "DEFAULT";
+const URL_LABEL: &str = "FROM URL";
+const COPY_LABEL: &str = "COPY SKIN";
+const CATALOG_LABEL: &str = "FROM CATALOG";
+const SHARE_LABEL: &str = "OTHERS MAY COPY";
+#[cfg_attr(not(test), allow(dead_code))]
+const ROW_LABELS: [&[&str]; ROWS] = [
+    &[PICK_LABEL, APPLY_LABEL],
+    &[DEFAULT_LABEL],
+    &[URL_LABEL],
+    &[COPY_LABEL],
+    &[CATALOG_LABEL],
+    &[SHARE_LABEL],
+];
 
 /// The arm styles ARMS cycles through (skin_panel.gd `_cycle_arms`).
 const ARMS: [&str; 3] = ["auto", "classic", "slim"];
@@ -191,7 +211,7 @@ fn fit_tail(text: &str, width: f32, measure: &dyn Fn(&str) -> f32) -> String {
 // ------------------------------------------------------------------------------------------- layout
 
 /// The SKIN tab's grid, from the panel's top-left corner. The right column is 240 units wide: a 158 box and an 80 button
-/// with a 2 unit gap (the Godot panel's HBoxes).
+/// with a 2 unit gap (the Godot panel's HBoxes). Row `n` (0 = PICK A PNG | APPLY) is 16 units tall every 18 units.
 #[derive(Clone, Copy, Debug)]
 struct Grid {
     top: f32,
@@ -216,30 +236,28 @@ impl Grid {
     fn row(&self, n: usize) -> f32 {
         self.top + 18.0 * n as f32
     }
-    /// The three buttons of the second row: DEFAULT, TEMPLATE and SLIM TEMPLATE.
-    fn row2(&self) -> [Rect; 3] {
-        let w = (self.full - 4.0) / 3.0;
-        let at = |i: f32| Rect::new(self.cx + i * (w + 2.0), self.row(1), w, 16.0);
-        [at(0.0), at(1.0), at(2.0)]
+    /// DEFAULT, alone on the second row and as wide as the column.
+    fn default_button(&self) -> Rect {
+        Rect::new(self.cx, self.row(1), self.full, 16.0)
     }
     /// OTHERS MAY COPY (a short toggle) and ARMS (the rest of the row, wide enough for "ARMS: AUTO (CLASSIC)").
     fn options(&self) -> (Rect, Rect) {
         let toggle_w = 112.0;
-        let y = self.row(6);
+        let y = self.row(ROWS - 1);
         (Rect::new(self.cx, y, toggle_w, 16.0), Rect::new(self.cx + toggle_w + 2.0, y, self.full - toggle_w - 2.0, 16.0))
     }
-    /// Where the status text starts, and the line of "Your skin" under it (three status lines fit between them).
+    /// Where the status text starts: just under the last row (three status lines fit before "Your skin").
     fn status_top(&self) -> f32 {
-        self.top + 126.0
+        self.row(ROWS - 1) + 16.0 + 4.0
     }
+    /// The line of "Your skin", under the status.
     fn mine_top(&self) -> f32 {
-        self.top + 154.0
-    }
-    /// The picker popup, drawn over rows 2 to 7.
-    fn picker(&self) -> Rect {
-        Rect::new(self.cx, self.row(1), self.full, 106.0)
+        self.status_top() + 28.0
     }
 }
+
+/// How many rows of controls the right column has (see `ROW_LABELS`).
+const ROWS: usize = 6;
 
 /// The status text's size in units and the line step.
 const STATUS_SIZE: f32 = 6.0;
@@ -255,11 +273,11 @@ struct Picked {
     name: String,
 }
 
-/// The PICK A PNG popup: the skin files of the skins folder, one is the cursor.
-struct Picker {
-    files: Vec<SkinFile>,
-    cursor: usize,
-    folder: String,
+/// PICK A PNG waiting on the file chooser, with the status line it replaced (a chooser that is closed puts it back).
+struct Picking {
+    req: file_pick::Request,
+    status: String,
+    detail: String,
 }
 
 /// A co-op runner whose skin can be copied (filled by the app from the room: `set_copy_peers`).
@@ -284,8 +302,8 @@ struct SkinUi {
     /// A muted second line under the status (a folder path).
     detail: String,
     url: TextBox,
-    minecraft: TextBox,
-    field: Option<Field>,
+    /// The link box has the keyboard.
+    url_focused: bool,
     repeats: [Repeat; 4],
     /// A download in progress; its result arrives here.
     fetch: Option<Receiver<Result<ValidSkin, String>>>,
@@ -293,7 +311,8 @@ struct SkinUi {
     rules: Option<skins::SkinRules>,
     catalog: Option<Vec<skins::CatalogSkin>>,
     catalog_index: usize,
-    picker: Option<Picker>,
+    /// The file chooser PICK A PNG opened, until it answers.
+    picking: Option<Picking>,
     copy_index: usize,
     /// The file name of the skin applied this session (for "Your skin").
     applied_name: String,
@@ -309,15 +328,14 @@ impl Default for SkinUi {
             status: String::new(),
             detail: String::new(),
             url: TextBox::default(),
-            minecraft: TextBox::default(),
-            field: None,
+            url_focused: false,
             repeats: [Repeat::default(); 4],
             fetch: None,
             fetch_label: String::new(),
             rules: None,
             catalog: None,
             catalog_index: 0,
-            picker: None,
+            picking: None,
             copy_index: 0,
             applied_name: String::new(),
         }
@@ -333,7 +351,7 @@ thread_local! {
     static SKIN_PREVIEW: RefCell<crate::ui::skin_preview::SkinPreview> = RefCell::new(crate::ui::skin_preview::SkinPreview::new());
 }
 
-/// Set when Escape was used inside the tab (closing the picker or leaving a text box): the panel then stays open.
+/// Set when Escape was used inside the tab (leaving a text box): the panel then stays open.
 static ESCAPE_TAKEN: AtomicBool = AtomicBool::new(false);
 
 /// True when the SKIN tab used this frame's Escape press, so the settings panel must not close on it. Reading resets it.
@@ -351,12 +369,15 @@ pub fn set_share_text(text: String) {
     SHARE_TEXT.with(|t| *t.borrow_mut() = text);
 }
 
-/// The tab is not showing: a focused text box or an open picker is dropped, so a hidden tab never holds the keyboard.
+/// The tab is not showing: a focused text box is dropped and a file chooser still open is let go of, so a hidden tab never
+/// holds the keyboard or takes a file later.
 pub fn blur() {
     SKIN.with(|c| {
         if let Ok(mut s) = c.try_borrow_mut() {
-            s.field = None;
-            s.picker = None;
+            s.url_focused = false;
+            if let Some(p) = s.picking.take() {
+                file_pick::release(p.req);
+            }
         }
     });
 }
@@ -474,53 +495,6 @@ fn poll_fetch(s: &mut SkinUi) {
     }
 }
 
-/// Opens PICK A PNG: the list of the skin files in the skins folder, with OPEN FOLDER.
-fn open_picker(s: &mut SkinUi) {
-    let dir = skins::skin_dir();
-    let files = dir.as_deref().map(skins::list_skin_files).unwrap_or_default();
-    let folder = dir.map(|d| d.display().to_string()).unwrap_or_else(|| "(no user folder)".to_string());
-    s.field = None;
-    s.picker = Some(Picker { files, cursor: 0, folder });
-}
-
-/// Moves the picker cursor by `delta`, staying inside the list.
-fn step_cursor(cursor: usize, len: usize, delta: i32) -> usize {
-    if len == 0 {
-        return 0;
-    }
-    (cursor as i32 + delta).clamp(0, len as i32 - 1) as usize
-}
-
-/// The first row shown when `rows` fit and the cursor must be visible.
-fn first_row(cursor: usize, len: usize, rows: usize) -> usize {
-    if len <= rows {
-        return 0;
-    }
-    cursor.saturating_sub(rows - 1).min(len - rows)
-}
-
-/// A file chosen in the picker goes to the preview, or the real reason it cannot is shown.
-fn pick_file(s: &mut SkinUi, file: &SkinFile) {
-    s.picker = None;
-    match skins::read_capped(&file.path, skins::max_bytes()).map_err(|e| e.to_string()).and_then(|b| skins::validate_skin(&b, skins::max_bytes())) {
-        Ok(valid) => set_pick(s, valid, &format!("{}.png", file.name)),
-        Err(why) => refuse_file(s, &format!("{}.png", file.name), &why),
-    }
-}
-
-/// Opens a folder in the system's file browser (creating it first).
-fn open_folder(dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let opener = if cfg!(target_os = "macos") {
-        "open"
-    } else if cfg!(target_os = "windows") {
-        "explorer"
-    } else {
-        "xdg-open"
-    };
-    std::process::Command::new(opener).arg(dir).spawn().map(|_| ()).map_err(|e| format!("{opener}: {e}"))
-}
-
 /// Takes the PNG files dropped on the window into the preview. A file over the size cap is refused by its size on disk
 /// before it is read, so a huge file is never loaded.
 fn take_dropped(s: &mut SkinUi) {
@@ -541,25 +515,73 @@ fn take_dropped(s: &mut SkinUi) {
             (None, Some(b)) if b.len() <= cap => Ok(b),
             (None, _) => Err("the file is too big".to_string()),
         };
-        match bytes.and_then(|b| skins::validate_skin(&b, cap)) {
-            Ok(valid) => set_pick(s, valid, &name),
-            Err(why) => refuse_file(s, &name, &why),
+        take_file(s, &name, bytes);
+    }
+}
+
+/// A file from the chooser or from a drop: it must be a PNG by its name, and its bytes go through the same check as
+/// ever (`skins::validate_skin`: size cap, signature, chunks, 64x64, opaque base layer). The preview waits for APPLY.
+fn take_file(s: &mut SkinUi, name: &str, bytes: Result<Vec<u8>, String>) {
+    if !name.to_ascii_lowercase().ends_with(".png") {
+        refuse_file(s, name, "it is not a PNG file");
+        return;
+    }
+    match bytes.and_then(|b| skins::validate_skin(&b, skins::max_bytes())) {
+        Ok(valid) => set_pick(s, valid, name),
+        Err(why) => refuse_file(s, name, &why),
+    }
+}
+
+/// PICK A PNG: opens the file chooser (the browser's file window, the system open dialog) and waits for its answer. A
+/// chooser still open from an earlier press is let go of first, so a second press asks the browser again.
+fn start_pick(s: &mut SkinUi) {
+    if let Some(old) = s.picking.take() {
+        file_pick::release(old.req);
+    }
+    s.url_focused = false;
+    match file_pick::open(PNG_KIND, false, false) {
+        Ok(req) => {
+            s.picking = Some(Picking { req, status: std::mem::take(&mut s.status), detail: std::mem::take(&mut s.detail) });
+            s.status = "Choose a PNG in the file window.".to_string();
+        }
+        Err(why) => {
+            s.detail.clear();
+            s.status = why;
         }
     }
 }
 
-/// TEMPLATE: saves the classic or slim skin template to Downloads and reports the file and the folder, or why not.
-fn save_template_status(s: &mut SkinUi, slim: bool) {
-    match crate::shared::skin_template::save_template_to_downloads(slim) {
-        Ok(path) => {
-            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            s.status = format!("Saved the {} template as {name}.", arms_word(slim));
-            s.detail = path.parent().map(|d| d.display().to_string()).unwrap_or_default();
+/// Takes the chooser's answer, when there is one, each frame.
+fn poll_pick(s: &mut SkinUi) {
+    let Some(req) = s.picking.as_ref().map(|p| p.req) else { return };
+    let outcome = file_pick::poll(req, skins::max_bytes());
+    take_picked(s, outcome);
+}
+
+/// What the chooser's answer does. Pending waits. A closed chooser changes nothing: the status line it replaced comes
+/// back. A chosen file is checked like a dropped one.
+fn take_picked(s: &mut SkinUi, outcome: Outcome) {
+    if outcome == Outcome::Pending {
+        return;
+    }
+    let before = s.picking.take();
+    match outcome {
+        Outcome::Pending => {}
+        Outcome::Cancelled => {
+            if let Some(p) = before {
+                s.status = p.status;
+                s.detail = p.detail;
+            }
         }
-        Err(e) => {
-            s.detail.clear();
-            s.status = format!("Could not save the template: {e}");
-        }
+        Outcome::Picked(files) => match files.into_iter().next() {
+            Some(file) => take_file(s, &file.name, file.bytes),
+            None => {
+                if let Some(p) = before {
+                    s.status = p.status;
+                    s.detail = p.detail;
+                }
+            }
+        },
     }
 }
 
@@ -571,17 +593,6 @@ fn from_url(s: &mut SkinUi) {
     };
     let url = s.url.text.trim().to_string();
     start_fetch(s, "link", move || skins::fetch_url_skin(&url, &rules));
-}
-
-/// FROM MC NAME: the name's skin through Mojang's APIs, on a thread (see `skins::fetch_minecraft_skin`).
-fn from_minecraft(s: &mut SkinUi) {
-    let Some(rules) = s.rules.clone() else {
-        refuse(s, "the skin rules are missing from this build");
-        return;
-    };
-    let name = s.minecraft.text.trim().to_string();
-    let label = name.clone();
-    start_fetch(s, &label, move || skins::fetch_minecraft_skin(&name, &rules));
 }
 
 /// FROM CATALOG: the chosen catalogue skin goes to the preview, then APPLY like any other source.
@@ -642,35 +653,22 @@ fn mine_text(st: &Settings, s: &SkinUi) -> String {
     }
 }
 
-/// The characters a box takes: any printable ASCII for the link, the rules' name characters for the Minecraft name.
-fn allowed_in(field: Field, rules: &skins::SkinRules) -> Box<dyn Fn(char) -> bool + '_> {
-    match field {
-        Field::Url => Box::new(|c: char| c.is_ascii_graphic()),
-        Field::Minecraft => Box::new(|c: char| rules.name_chars.contains(c)),
-    }
-}
-
-/// Keys for the focused SKIN text box: printable characters (the name box takes only the rules' name characters), paste
-/// (Ctrl or Cmd + V), Backspace and Delete with key repeat, Left, Right, Home and End. Returns true when Enter was pressed.
+/// Keys for the focused link box: printable ASCII characters, paste (Ctrl or Cmd + V), Backspace and Delete with key
+/// repeat, Left, Right, Home and End. Returns true when Enter was pressed.
 fn edit_keys(s: &mut SkinUi, now: f64) -> bool {
     let command = is_key_down(KeyCode::LeftControl)
         || is_key_down(KeyCode::RightControl)
         || is_key_down(KeyCode::LeftSuper)
         || is_key_down(KeyCode::RightSuper);
     let paste = command && is_key_pressed(KeyCode::V);
-    let (Some(field), Some(rules)) = (s.field, s.rules.as_ref()) else {
+    let (true, Some(rules)) = (s.url_focused, s.rules.as_ref()) else {
         while get_char_pressed().is_some() {}
         return false;
     };
-    let (cap, allowed) = match field {
-        Field::Url => (rules.max_url_length, allowed_in(field, rules)),
-        Field::Minecraft => (rules.name_max, allowed_in(field, rules)),
-    };
+    let cap = rules.max_url_length;
+    let allowed = |c: char| c.is_ascii_graphic();
     let (delay, per_sec) = (rules.repeat_delay_secs, rules.repeat_per_sec);
-    let tb = match field {
-        Field::Url => &mut s.url,
-        Field::Minecraft => &mut s.minecraft,
-    };
+    let tb = &mut s.url;
     while let Some(ch) = get_char_pressed() {
         if !command && allowed(ch) {
             tb.insert(ch, cap);
@@ -678,7 +676,7 @@ fn edit_keys(s: &mut SkinUi, now: f64) -> bool {
     }
     if paste {
         if let Some(clip) = macroquad::miniquad::window::clipboard_get() {
-            for ch in pasted(&clip, &*allowed, cap.saturating_sub(tb.len())).chars() {
+            for ch in pasted(&clip, &allowed, cap.saturating_sub(tb.len())).chars() {
                 tb.insert(ch, cap);
             }
         }
@@ -775,85 +773,6 @@ fn fit_button(a: &Assets, r: Rect, text: &str, kind: Kind, st: BtnState) -> bool
     button(a, r, &shown, 7.0, kind, st)
 }
 
-/// The PICK A PNG popup over rows 2 to 7. Returns nothing; it changes `s` itself.
-fn draw_picker(a: &Assets, s: &mut SkinUi, g: &Grid) {
-    let p = pal();
-    let area = g.picker();
-    sbox(area, p.inset, p.field_edge, 1.0, p.corner);
-    let measure = |t: &str| tw(a, F::Body, t, STATUS_SIZE);
-    let Some(picker) = s.picker.as_mut() else { return };
-    label(a, F::Body, &fit_tail(&picker.folder, area.w - 8.0, &measure), area.x + 4.0, area.y + 3.0, STATUS_SIZE, p.muted);
-    let (rows, row_h) = (6usize, 10.0f32);
-    let list_top = area.y + 13.0;
-    let len = picker.files.len();
-    if len == 0 {
-        let note = "No 64x64 PNG is in the skins folder yet. Put one there, drop a PNG on this window, or press OPEN FOLDER.";
-        for (i, line) in wrap_to(note, area.w - 8.0, 5, &measure).iter().enumerate() {
-            label(a, F::Body, line, area.x + 4.0, list_top + 2.0 + i as f32 * STATUS_STEP, STATUS_SIZE, p.body);
-        }
-    }
-    // keys and wheel
-    let (_, wheel) = mouse_wheel();
-    let mut delta = 0;
-    if is_key_pressed(KeyCode::Down) {
-        delta += 1;
-    }
-    if is_key_pressed(KeyCode::Up) {
-        delta -= 1;
-    }
-    if wheel > 0.0 {
-        delta -= 1;
-    } else if wheel < 0.0 {
-        delta += 1;
-    }
-    picker.cursor = step_cursor(picker.cursor, len, delta);
-    let start = first_row(picker.cursor, len, rows);
-    let mut chosen: Option<usize> = None;
-    for i in 0..rows.min(len.saturating_sub(start)) {
-        let idx = start + i;
-        let r = Rect::new(area.x + 2.0, list_top + i as f32 * row_h, area.w - 4.0, row_h);
-        if hovered(r) && (is_mouse_button_pressed(MouseButton::Left) || mouse_delta_position() != Vec2::ZERO) {
-            picker.cursor = idx;
-        }
-        if idx == picker.cursor {
-            fill(r, lightened(p.panel, 0.12));
-        }
-        let name = ellipsize(a, F::Body, &picker.files[idx].name, r.w - 8.0, 7.0);
-        label_vc(a, F::Body, &name, r.x + 4.0, r.y, r.h, 7.0, if idx == picker.cursor { p.ink } else { p.body });
-        if hovered(r) && is_mouse_button_pressed(MouseButton::Left) {
-            chosen = Some(idx);
-        }
-    }
-    if len > rows {
-        label_r(a, F::Body, &format!("{}/{}", picker.cursor + 1, len), area.x + area.w - 4.0, area.y + 3.0, STATUS_SIZE, p.muted);
-    }
-    if is_key_pressed(KeyCode::Enter) && len > 0 {
-        chosen = Some(picker.cursor);
-    }
-    let half = (area.w - 6.0) * 0.5;
-    let by = area.y + area.h - 18.0;
-    let open = button(a, Rect::new(area.x + 2.0, by, half, 16.0), "OPEN FOLDER", 7.0, Kind::Secondary, plain());
-    let close = button(a, Rect::new(area.x + 4.0 + half, by, half, 16.0), "CLOSE", 7.0, Kind::Secondary, plain());
-    let folder = picker.folder.clone();
-    let file = chosen.and_then(|i| picker.files.get(i).cloned());
-    if is_key_pressed(KeyCode::Escape) {
-        ESCAPE_TAKEN.store(true, Ordering::SeqCst);
-        s.picker = None;
-        return;
-    }
-    if close {
-        s.picker = None;
-    } else if open {
-        let result = skins::skin_dir().ok_or_else(|| "no user folder".to_string()).and_then(|d| open_folder(&d));
-        if let Err(e) = result {
-            s.detail = folder;
-            s.status = format!("Could not open the folder: {e}");
-        }
-    } else if let Some(file) = file {
-        pick_file(s, &file);
-    }
-}
-
 /// Draws the SKIN tab at the panel corner (`ox`, `oy`) and handles its input.
 pub fn draw(a: &Assets, st: &mut Settings, ox: f32, oy: f32, changed: &mut bool) {
     let p = pal();
@@ -866,130 +785,104 @@ pub fn draw(a: &Assets, st: &mut Settings, ox: f32, oy: f32, changed: &mut bool)
             s.catalog = Some(skins::catalog());
         }
         poll_fetch(&mut s);
+        poll_pick(&mut s);
         take_dropped(&mut s);
 
         let g = grid(ox, oy);
         let url_box = Rect::new(g.cx, g.row(2), g.bw, 16.0);
-        let mc_box = Rect::new(g.cx, g.row(3), g.bw, 16.0);
 
-        if is_mouse_button_pressed(MouseButton::Left) && s.picker.is_none() {
+        if is_mouse_button_pressed(MouseButton::Left) {
             if hovered(url_box) {
-                s.field = Some(Field::Url);
+                s.url_focused = true;
                 s.url.set_end();
-            } else if hovered(mc_box) {
-                s.field = Some(Field::Minecraft);
-                s.minecraft.set_end();
             } else {
-                s.field = None;
+                s.url_focused = false;
             }
         }
-        if s.picker.is_some() {
-            while get_char_pressed().is_some() {}
-        } else if edit_keys(&mut s, get_time()) {
-            match s.field {
-                Some(Field::Url) => from_url(&mut s),
-                Some(Field::Minecraft) => from_minecraft(&mut s),
-                None => {}
-            }
+        if edit_keys(&mut s, get_time()) && s.url_focused {
+            from_url(&mut s);
         }
-        if is_key_pressed(KeyCode::Escape) && s.picker.is_none() && s.field.is_some() {
-            s.field = None;
+        if is_key_pressed(KeyCode::Escape) && s.url_focused {
+            s.url_focused = false;
             ESCAPE_TAKEN.store(true, Ordering::SeqCst);
         }
         let busy = s.fetch.is_some();
 
         draw_preview(a, &mut s, st, g.preview(ox));
 
-        // Row 1: PICK A PNG | APPLY
+        // Row 0: PICK A PNG | APPLY. PICK A PNG stays live while a chooser is open: pressing it again asks again.
         let half = (g.full - 2.0) * 0.5;
-        if fit_button(a, Rect::new(g.cx, g.row(0), half, 16.0), "PICK A PNG", Kind::Secondary, gate(!busy)) {
-            open_picker(&mut s);
+        if fit_button(a, Rect::new(g.cx, g.row(0), half, 16.0), PICK_LABEL, Kind::Secondary, gate(!busy)) {
+            start_pick(&mut s);
         }
         if fit_button(
             a,
             Rect::new(g.cx + half + 2.0, g.row(0), half, 16.0),
-            "APPLY",
+            APPLY_LABEL,
             Kind::Secondary,
             gate(!busy && apply_enabled(&s)),
         ) {
             apply_pick(&mut s, st, changed);
         }
 
-        if s.picker.is_some() {
-            draw_picker(a, &mut s, &g);
+        // Row 1: DEFAULT
+        let default_on = !busy && (st.skin != SKIN_DEFAULT || s.pick.is_some());
+        if fit_button(a, g.default_button(), DEFAULT_LABEL, Kind::Secondary, gate(default_on)) {
+            reset_to_default(st, &mut s);
+            *changed = true;
+        }
+
+        // Row 2: the https link box and FROM URL
+        let t = get_time() as f32;
+        let url_caret = s.url.caret;
+        line_edit_caret(a, url_box, &s.url.text, Some(url_caret), "https:// link to a 64x64 PNG skin", 7.0, s.url_focused, false, t);
+        if fit_button(a, Rect::new(g.bx, g.row(2), g.gw, 16.0), URL_LABEL, Kind::Secondary, gate(!busy)) {
+            from_url(&mut s);
+        }
+
+        // Row 3: the co-op players whose skin can be copied (click to choose the next) and COPY SKIN
+        let peers = COPY_PEERS.with(|c| c.borrow().clone());
+        let copy_box = Rect::new(g.cx, g.row(3), g.bw, 16.0);
+        if peers.is_empty() {
+            sbox(copy_box, p.inset, p.field_edge, 1.0, p.corner);
+            label_vc(a, F::Body, "(no one to copy)", g.cx + 6.0, copy_box.y, 16.0, 7.0, p.muted);
+            button(a, Rect::new(g.bx, g.row(3), g.gw, 16.0), COPY_LABEL, 7.0, Kind::Secondary, disabled());
         } else {
-            // Row 2: DEFAULT | TEMPLATE | SLIM TEMPLATE
-            let [default_r, template_r, slim_r] = g.row2();
-            let default_on = !busy && (st.skin != SKIN_DEFAULT || s.pick.is_some());
-            if fit_button(a, default_r, "DEFAULT", Kind::Secondary, gate(default_on)) {
-                reset_to_default(st, &mut s);
-                *changed = true;
+            let i = s.copy_index % peers.len();
+            let text = format!("{}/{} {}", i + 1, peers.len(), peers[i].name);
+            if fit_button(a, copy_box, &text, Kind::Secondary, gate(peers.len() > 1)) {
+                s.copy_index = (i + 1) % peers.len();
             }
-            if fit_button(a, template_r, "TEMPLATE", Kind::Secondary, gate(!busy)) {
-                save_template_status(&mut s, false);
+            if fit_button(a, Rect::new(g.bx, g.row(3), g.gw, 16.0), COPY_LABEL, Kind::Secondary, gate(!busy)) {
+                copy_peer(&mut s, &peers[i]);
             }
-            if fit_button(a, slim_r, "SLIM TEMPLATE", Kind::Secondary, gate(!busy)) {
-                save_template_status(&mut s, true);
-            }
+        }
 
-            // Row 3: the https link box and FROM URL
-            let t = get_time() as f32;
-            let (url_caret, mc_caret) = (s.url.caret, s.minecraft.caret);
-            line_edit_caret(a, url_box, &s.url.text, Some(url_caret), "https:// link to a 64x64 PNG skin", 7.0, s.field == Some(Field::Url), false, t);
-            if fit_button(a, Rect::new(g.bx, g.row(2), g.gw, 16.0), "FROM URL", Kind::Secondary, gate(!busy)) {
-                from_url(&mut s);
+        // Row 4: the catalogue (click to choose the next) and FROM CATALOG
+        let (list_len, catalog_label) = match s.catalog.as_ref() {
+            Some(list) if !list.is_empty() => {
+                let i = s.catalog_index % list.len();
+                (list.len(), format!("{}/{} {}", i + 1, list.len(), list[i].name.to_uppercase()))
             }
+            _ => (0, "(NO CATALOG SKINS)".to_string()),
+        };
+        if fit_button(a, Rect::new(g.cx, g.row(4), g.bw, 16.0), &catalog_label, Kind::Secondary, gate(list_len > 1)) {
+            s.catalog_index = (s.catalog_index + 1) % list_len.max(1);
+        }
+        if fit_button(a, Rect::new(g.bx, g.row(4), g.gw, 16.0), CATALOG_LABEL, Kind::Secondary, gate(!busy && list_len > 0)) {
+            from_catalog(&mut s);
+        }
 
-            // Row 4: the Minecraft name box and FROM MC NAME
-            line_edit_caret(a, mc_box, &s.minecraft.text, Some(mc_caret), "Minecraft username", 7.0, s.field == Some(Field::Minecraft), false, t);
-            if fit_button(a, Rect::new(g.bx, g.row(3), g.gw, 16.0), "FROM MC NAME", Kind::Secondary, gate(!busy)) {
-                from_minecraft(&mut s);
-            }
-
-            // Row 5: the co-op players whose skin can be copied (click to choose the next) and COPY SKIN
-            let peers = COPY_PEERS.with(|c| c.borrow().clone());
-            let copy_box = Rect::new(g.cx, g.row(4), g.bw, 16.0);
-            if peers.is_empty() {
-                sbox(copy_box, p.inset, p.field_edge, 1.0, p.corner);
-                label_vc(a, F::Body, "(no one to copy)", g.cx + 6.0, copy_box.y, 16.0, 7.0, p.muted);
-                button(a, Rect::new(g.bx, g.row(4), g.gw, 16.0), "COPY SKIN", 7.0, Kind::Secondary, disabled());
-            } else {
-                let i = s.copy_index % peers.len();
-                let text = format!("{}/{} {}", i + 1, peers.len(), peers[i].name);
-                if fit_button(a, copy_box, &text, Kind::Secondary, gate(peers.len() > 1)) {
-                    s.copy_index = (i + 1) % peers.len();
-                }
-                if fit_button(a, Rect::new(g.bx, g.row(4), g.gw, 16.0), "COPY SKIN", Kind::Secondary, gate(!busy)) {
-                    copy_peer(&mut s, &peers[i]);
-                }
-            }
-
-            // Row 6: the catalogue (click to choose the next) and FROM CATALOG
-            let (list_len, catalog_label) = match s.catalog.as_ref() {
-                Some(list) if !list.is_empty() => {
-                    let i = s.catalog_index % list.len();
-                    (list.len(), format!("{}/{} {}", i + 1, list.len(), list[i].name.to_uppercase()))
-                }
-                _ => (0, "(NO CATALOG SKINS)".to_string()),
-            };
-            if fit_button(a, Rect::new(g.cx, g.row(5), g.bw, 16.0), &catalog_label, Kind::Secondary, gate(list_len > 1)) {
-                s.catalog_index = (s.catalog_index + 1) % list_len.max(1);
-            }
-            if fit_button(a, Rect::new(g.bx, g.row(5), g.gw, 16.0), "FROM CATALOG", Kind::Secondary, gate(!busy && list_len > 0)) {
-                from_catalog(&mut s);
-            }
-
-            // Row 7: OTHERS MAY COPY and ARMS
-            let (toggle_r, arms_r) = g.options();
-            if state_toggle(a, toggle_r, "OTHERS MAY COPY", st.skin_copy, false, plain()) {
-                st.skin_copy = !st.skin_copy;
-                *changed = true;
-            }
-            let label_text = arms_label(&st.arms, preview_slim(&st.arms, s.shown_slim));
-            if fit_button(a, arms_r, &label_text, Kind::Secondary, plain()) {
-                st.arms = next_arms(&st.arms).to_string();
-                *changed = true;
-            }
+        // Row 5: OTHERS MAY COPY and ARMS
+        let (toggle_r, arms_r) = g.options();
+        if state_toggle(a, toggle_r, SHARE_LABEL, st.skin_copy, false, plain()) {
+            st.skin_copy = !st.skin_copy;
+            *changed = true;
+        }
+        let label_text = arms_label(&st.arms, preview_slim(&st.arms, s.shown_slim));
+        if fit_button(a, arms_r, &label_text, Kind::Secondary, plain()) {
+            st.arms = next_arms(&st.arms).to_string();
+            *changed = true;
         }
 
         // Status (up to three lines, a muted detail line takes the third), then the skin in use
@@ -1125,14 +1018,15 @@ mod tests {
                     assert!(mono(7.0)(&label) + 8.0 <= arms.w, "{w}x{h}: {label} fits {} units", arms.w);
                 }
             }
-            let toggle_text = mono(7.0)("OTHERS MAY COPY") + 10.0 + 20.0;
+            let toggle_text = mono(7.0)(SHARE_LABEL) + 10.0 + 20.0;
             assert!(toggle_text <= toggle.w, "{w}x{h}: the toggle's caption and chip fit");
-            for r in g.row2() {
-                assert!(mono(7.0)("SLIM TEMPLATE") + 8.0 <= r.w, "{w}x{h}: SLIM TEMPLATE fits {} units", r.w);
-            }
+            let default = g.default_button();
+            assert!(mono(7.0)(DEFAULT_LABEL) + 8.0 <= default.w, "{w}x{h}: DEFAULT fits {} units", default.w);
+            assert!((default.right() - (g.bx + g.gw)).abs() < 1e-3, "{w}x{h}: DEFAULT is as wide as the column");
             // the status block ends above ESC CLOSE (oy + 234): three lines, then "Your skin"
             assert!(g.status_top() + 3.0 * STATUS_STEP <= g.mine_top(), "three status lines stay clear of \"Your skin\"");
             assert!(g.mine_top() + 8.0 <= oy + 234.0, "{w}x{h}: \"Your skin\" sits above the close button");
+            assert!(g.status_top() > arms.bottom(), "{w}x{h}: the status starts under the last row");
             let pv = g.preview(ox);
             assert!(pv.right() < g.cx, "{w}x{h}: the preview ends before the buttons start");
         }
@@ -1140,7 +1034,7 @@ mod tests {
 
     #[test]
     fn a_long_unbroken_path_wraps_inside_the_status_box() {
-        let path = "Saved the classic template as lastroute_skin_template.png in /Users/someone/Library/Application Support/KYTTU/TheLastRoute/skins/a/very/long/folder/name";
+        let path = "Not applied: a-very-long-skin-name.png in /Users/someone/Library/Application Support/KYTTU/TheLastRoute/skins/a/very/long/folder/name";
         let m = mono(6.0);
         let lines = wrap_to(path, 240.0, 3, &m);
         assert!(lines.len() <= 3);
@@ -1233,38 +1127,132 @@ mod tests {
         assert_eq!((rules.repeat_delay_secs, rules.repeat_per_sec), (0.4, 30.0), "the numbers come from data/skins/rules.json");
     }
 
-    #[test]
-    fn the_picker_cursor_stays_in_the_list_and_in_view() {
-        assert_eq!(step_cursor(0, 3, -1), 0);
-        assert_eq!(step_cursor(2, 3, 1), 2);
-        assert_eq!(step_cursor(1, 3, 1), 2);
-        assert_eq!(step_cursor(5, 0, 1), 0, "an empty list");
-        assert_eq!(first_row(0, 3, 6), 0, "a short list shows from the top");
-        assert_eq!(first_row(2, 20, 6), 0);
-        assert_eq!(first_row(9, 20, 6), 4, "the cursor is the last visible row");
-        assert_eq!(first_row(19, 20, 6), 14);
+    /// A skin file as the chooser hands it over.
+    fn png_bytes(slim: bool) -> Vec<u8> {
+        let mut px = vec![0u8; 64 * 64 * 4];
+        for p in px.chunks_exact_mut(4) {
+            p.copy_from_slice(&[40, 90, 160, 255]);
+        }
+        if slim {
+            // a slim (Alex) skin has the arms' fourth texture column clear
+            let layout = skins::layout().expect("the layout loads");
+            for r in &layout.slim_probe_rects {
+                for y in r[1]..r[1] + r[3] {
+                    for x in r[0]..r[0] + r[2] {
+                        px[((y * 64 + x) * 4 + 3) as usize] = 0;
+                    }
+                }
+            }
+        }
+        skins::encode_png(&px, 64, 64)
+    }
+
+    fn picked(name: &str, bytes: Result<Vec<u8>, String>) -> Outcome {
+        Outcome::Picked(vec![file_pick::PickedFile { name: name.to_string(), bytes }])
+    }
+
+    /// A tab that is waiting on a chooser that replaced the status line given (and a detail line).
+    fn waiting(status: &str) -> SkinUi {
+        let mut s = SkinUi::default();
+        s.picking = Some(Picking { req: file_pick::test_request(1), status: status.to_string(), detail: "some folder".to_string() });
+        s.status = "Choose a PNG in the file window.".to_string();
+        s
     }
 
     #[test]
-    fn picking_a_file_names_it_and_a_bad_file_gives_its_real_reason() {
-        let dir = std::env::temp_dir().join(format!("lr_skin_tab_pick_{}", crate::shared::task::process_id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let good = crate::shared::skins::encode_png(&vec![200u8; 64 * 64 * 4], 64, 64);
-        std::fs::write(dir.join("night owl.png"), &good).unwrap();
-        // a valid header, a corrupt body
-        let mut bad = good.clone();
-        bad[40] ^= 1;
-        std::fs::write(dir.join("broken.png"), &bad).unwrap();
-        let files = skins::list_skin_files(&dir);
-        assert_eq!(files.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["broken", "night owl"], "listed by the name as typed");
+    fn a_chosen_png_goes_to_the_preview_and_waits_for_apply() {
+        let mut s = waiting("Skin applied.");
+        take_picked(&mut s, picked("night.png", Ok(png_bytes(false))));
+        assert!(s.picking.is_none(), "the chooser has answered");
+        assert!(apply_enabled(&s), "a valid skin turns APPLY on");
+        assert!(s.status.contains("night.png") && s.status.contains("classic arms"), "{}", s.status);
+        let mut s = waiting("");
+        take_picked(&mut s, picked("alex.PNG", Ok(png_bytes(true))));
+        assert!(s.status.contains("slim arms"), "the arm layout is read from the pixels: {}", s.status);
+    }
+
+    #[test]
+    fn a_closed_chooser_changes_nothing() {
+        let mut s = waiting("Skin applied.");
+        s.pick = None;
+        take_picked(&mut s, Outcome::Cancelled);
+        assert!(s.picking.is_none());
+        assert_eq!(s.status, "Skin applied.", "the status line the chooser replaced comes back");
+        assert_eq!(s.detail, "some folder");
+        assert!(!apply_enabled(&s), "no skin was picked");
+        // a pick made earlier stays when a later chooser is closed
         let mut s = SkinUi::default();
-        pick_file(&mut s, &files[1]);
-        assert!(apply_enabled(&s) && s.status.contains("night owl.png"), "{}", s.status);
-        pick_file(&mut s, &files[0]);
+        set_pick(&mut s, valid(false), "first.png");
+        s.picking = Some(Picking { req: file_pick::test_request(2), status: s.status.clone(), detail: String::new() });
+        take_picked(&mut s, Outcome::Cancelled);
+        assert!(apply_enabled(&s) && s.pick.as_ref().unwrap().name == "first.png");
+    }
+
+    #[test]
+    fn a_waiting_chooser_is_left_alone() {
+        let mut s = waiting("x");
+        take_picked(&mut s, Outcome::Pending);
+        assert!(s.picking.is_some(), "still waiting");
+        assert_eq!(s.status, "Choose a PNG in the file window.");
+    }
+
+    #[test]
+    fn a_bad_pick_gives_its_real_reason_and_names_the_file() {
+        let mut s = waiting("");
+        take_picked(&mut s, picked("notes.txt", Ok(b"hello".to_vec())));
+        assert_eq!(s.status, "Not applied: notes.txt: it is not a PNG file.");
+        let mut s = waiting("");
+        take_picked(&mut s, picked("big.png", Err("the file is too big".to_string())));
+        assert_eq!(s.status, "Not applied: big.png: the file is too big.");
         assert!(!apply_enabled(&s));
-        assert!(s.status.starts_with("Not applied: broken.png: the PNG could not be read"), "the real reason, not \"can no longer be read\": {}", s.status);
-        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = waiting("");
+        let mut broken = png_bytes(false);
+        broken[40] ^= 1;
+        take_picked(&mut s, picked("broken.png", Ok(broken)));
+        assert!(s.status.starts_with("Not applied: broken.png: the PNG could not be read"), "{}", s.status);
+        let mut s = waiting("");
+        take_picked(&mut s, picked("small.png", Ok(skins::encode_png(&vec![255u8; 32 * 32 * 4], 32, 32))));
+        assert!(s.status.starts_with("Not applied: small.png:"), "a picture that is not 64x64 is refused: {}", s.status);
+        // a chooser that answered with no file at all changes nothing
+        let mut s = waiting("kept");
+        take_picked(&mut s, Outcome::Picked(Vec::new()));
+        assert_eq!(s.status, "kept");
+    }
+
+    #[test]
+    fn the_rows_have_no_gap_after_the_removals() {
+        let flat: Vec<&str> = ROW_LABELS.iter().flat_map(|r| r.iter().copied()).collect();
+        assert!(flat.iter().all(|l| !l.contains("TEMPLATE") && !l.contains("MC NAME")), "the removed buttons are gone: {flat:?}");
+        assert_eq!(flat, ["PICK A PNG", "APPLY", "DEFAULT", "FROM URL", "COPY SKIN", "FROM CATALOG", "OTHERS MAY COPY"]);
+        assert!(ROW_LABELS.iter().all(|r| !r.is_empty()), "every row has a control");
+        let g = grid(0.0, 0.0);
+        for n in 1..ROWS {
+            assert!((g.row(n) - g.row(n - 1) - 18.0).abs() < 1e-3, "row {n} follows row {} with the same step", n - 1);
+        }
+        let (toggle, arms) = g.options();
+        assert_eq!((toggle.y, arms.y), (g.row(ROWS - 1), g.row(ROWS - 1)), "the options are the last row");
+        assert!(g.status_top() - (g.row(ROWS - 1) + 16.0) <= 4.0, "the status follows the last row without a blank gap");
+        assert_eq!(g.default_button().y, g.row(1), "DEFAULT sits right under PICK A PNG");
+        // every caption fits its button
+        let m = mono(7.0);
+        let half = (g.full - 2.0) * 0.5;
+        assert!(m(PICK_LABEL) + 8.0 <= half && m(APPLY_LABEL) + 8.0 <= half);
+        assert!(m(URL_LABEL) + 8.0 <= g.gw && m(COPY_LABEL) + 8.0 <= g.gw && m(CATALOG_LABEL) + 8.0 <= g.gw);
+    }
+
+    #[test]
+    fn the_chooser_is_asked_for_a_png() {
+        assert_eq!(file_pick::extensions_of(PNG_KIND), ["png"]);
+    }
+
+    #[test]
+    fn a_dropped_or_chosen_file_needs_a_png_name() {
+        let mut s = SkinUi::default();
+        take_file(&mut s, "skin.png", Ok(png_bytes(false)));
+        assert!(apply_enabled(&s));
+        take_file(&mut s, "skin.jpg", Ok(png_bytes(false)));
+        assert!(!apply_enabled(&s), "a refused file clears the pick");
+        assert_eq!(s.status, "Not applied: skin.jpg: it is not a PNG file.");
     }
 
     #[test]

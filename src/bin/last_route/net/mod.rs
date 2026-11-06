@@ -18,6 +18,7 @@
 //! * [`protocol`] typed versions of every message the Godot co-op code syncs, and their encoding.
 //! * [`session`]  a Rust-to-Rust co-op transport (reliable + unreliable channels) over the relay.
 //! * [`room_link`] the transport seam: [`relay`] (UDP, native) or [`ws_link`] (WebSocket `/api/ws`, browser build).
+//! * [`ws_native`] the native build's WebSocket link (`ws://`, host and guest): the dedicated room process and native guests.
 //! * [`web_bridge`] the browser build's page bridge (WebSocket and synchronous HTTP, dist/web/index.html).
 //!
 //! INTEROP NOTE: Godot clients exchange ENet datagrams carrying Godot SceneMultiplayer RPC
@@ -38,6 +39,8 @@ pub mod backend;
 pub mod chat;
 pub mod held_wire;
 pub mod hide_sync;
+/// Online rooms hosted by the server: create, wait for the listing, join as a guest, and the owner's commands.
+pub mod hosted;
 pub mod interp;
 pub mod config;
 pub mod http;
@@ -56,6 +59,12 @@ pub mod web_bridge;
 pub mod wiring;
 pub mod world_sync;
 pub mod ws_link;
+/// The native WebSocket room link (std TcpStream, RFC 6455 client): host and guest over `ws://`.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ws_native;
+/// A tiny in-process WebSocket relay for tests (loopback TCP).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) mod ws_test_hub;
 
 #[cfg(test)]
 mod tests;

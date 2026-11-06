@@ -1,11 +1,12 @@
 //! The transport seam under [`super::session::CoopSession`]: one relay connection, host or guest, whatever carries it.
 //!
-//! Two implementations exist:
+//! Three implementations exist:
 //! * [`super::relay::RelayLink`]: the native UDP LRR1 relay (unchanged).
 //! * [`super::ws_link::WsLink`]: the browser build's WebSocket relay (`/api/ws`, the same hub the Godot web build
 //!   joins), reached through the page's WebSocket API in dist/web/index.html.
+//! * [`super::ws_native::NativeWsLink`]: the same WebSocket relay from a native process (the dedicated room host, native guests).
 //!
-//! Both report through [`RelayEvent`] and carry opaque session datagrams, so the co-op layer above does not care
+//! All report through [`RelayEvent`] and carry opaque session datagrams, so the co-op layer above does not care
 //! which one it has.
 
 use super::relay::{RelayEvent, Role};
@@ -16,12 +17,27 @@ pub trait RoomLink: Send {
     fn role(&self) -> Role;
     /// True once the relay accepted this connection (HOST_ACK / welcome).
     fn ready(&self) -> bool;
+    /// The largest payload one [`RoomLink::send`] carries: a UDP relay datagram holds [`super::relay::MAX_PAYLOAD_BYTES`], a
+    /// WebSocket frame up to 65535 bytes. The co-op layer sizes its messages by it (a big hunter frame is not split).
+    fn max_payload(&self) -> usize {
+        super::relay::MAX_PAYLOAD_BYTES
+    }
+    /// False once the connection is over for good (the socket closed, the room ended or the relay refused us). A link
+    /// that cannot tell says true. A host process uses it to decide to reconnect.
+    fn alive(&self) -> bool {
+        true
+    }
     /// A guest's relay session (or welcome id); 0 for a host.
     fn session(&self) -> u32;
     /// The room code.
     fn code(&self) -> &str;
     /// Host: to guest `session`. Guest: to the host (`session` is ignored). False when it was not sent.
     fn send(&self, session: u32, payload: &[u8]) -> bool;
+    /// Host: removes guest `session` from the room (the WebSocket relay closes its socket with 4005; the guest hears
+    /// YOU WERE REMOVED FROM THE ROOM). False when this link cannot, or the request was not sent.
+    fn kick(&self, _session: u32) -> bool {
+        false
+    }
     /// Drains what arrived since the last call and keeps the connection alive.
     fn poll(&mut self) -> Vec<RelayEvent>;
     /// The host token changed (a heartbeat rotated it).
@@ -38,6 +54,12 @@ impl<T: RoomLink + ?Sized> RoomLink for Box<T> {
     fn ready(&self) -> bool {
         (**self).ready()
     }
+    fn alive(&self) -> bool {
+        (**self).alive()
+    }
+    fn max_payload(&self) -> usize {
+        (**self).max_payload()
+    }
     fn session(&self) -> u32 {
         (**self).session()
     }
@@ -46,6 +68,9 @@ impl<T: RoomLink + ?Sized> RoomLink for Box<T> {
     }
     fn send(&self, session: u32, payload: &[u8]) -> bool {
         (**self).send(session, payload)
+    }
+    fn kick(&self, session: u32) -> bool {
+        (**self).kick(session)
     }
     fn poll(&mut self) -> Vec<RelayEvent> {
         (**self).poll()

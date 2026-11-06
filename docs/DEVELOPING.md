@@ -46,6 +46,21 @@ default.
 - The same code also checks with `cargo check --target x86_64-unknown-linux-gnu` and
   `--target aarch64-apple-darwin`.
 
+## Web build and deploy
+
+The browser build is `wasm32-unknown-unknown`; the page and its scripts are `packaging/web/` (`index.html`, `update.js`, plus `audio.js` and
+`mq_js_bundle.js` from the macroquad/quad-snd bundles), copied next to `last_route.wasm` in `dist/web`. `sh packaging/web/deploy-vps2.sh [FOLDER]`
+(default `dist/web`) deploys that folder to `vps2:/srv/lr-rust-web`: it writes `version.json` from the sha256 of `last_route.wasm`, uploads the five
+game files by tar over ssh (`--no-same-owner`, moved into place from a staging folder), uploads `version.json` last so open tabs only see a new
+version once every file is in place, then checks the wasm sha256 on the server and through the live URL. It never touches the Caddyfile.
+`DRY_RUN=1` prints the plan without uploading. Open tabs poll `version.json` (`update.js`) and show the UPDATING screen
+(`ui/update_screen.rs`, numbers in `data/ui/update_screen.json`) when its build changes: a 10 second countdown, UPDATE NOW, and LATER during a run.
+`LR_SHOT_UPDATE=1` with `--screenshot` draws that screen on a native build.
+
+The page also registers the game's JavaScript bridges as miniquad plugins: pointer lock and localStorage (`app/web_pointer.rs`,
+`app/web_storage.rs`), the room relay and directory (`net/web_bridge.rs`), and the file chooser (`shared/file_pick.rs`, the `lr_pick_*`
+functions; see `docs/SKIN_SYNC.md`). A new `extern "C"` import in the game needs its function in `index.html` in the same deploy.
+
 ## Offline project docs
 
 The app recognizes the local reference library at `C:\Users\Kyttu\Documents\Projects\Docs` when

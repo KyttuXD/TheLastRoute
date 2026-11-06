@@ -9,6 +9,7 @@ mod hunter_pipes;
 mod resident_hunters;
 mod guest_gate;
 mod guest_apply;
+pub mod remote_targets;
 mod interact;
 pub mod ladder;
 pub mod level_stack;
@@ -158,6 +159,18 @@ pub struct Game {
     /// Guest: the host simulates the hunters and its frames set them (hunting.rs `apply_hunter_frame`), so this game
     /// runs no hunter simulation. The app sets it each frame from the room's role.
     pub remote_hunters: bool,
+    /// A room hosted by a server process (headless/dedicated.rs): no runner plays here. The body `p` is parked on the party
+    /// anchor, the hunters hunt the guests in `remote_targets` and the frame is `step_dedicated` (game/remote_targets.rs).
+    pub no_local_runner: bool,
+    /// Dedicated room: the guests with a fresh sample (absolute cells) and the one the world window follows.
+    pub remote_targets: Vec<remote_targets::RemoteTarget>,
+    pub party_anchor: Option<u32>,
+    /// Dedicated room: the hunters' catches of guests since the dedicated loop last took them, and the guests a hunter
+    /// holds (or released a moment ago), by peer id.
+    pub guest_catches: Vec<remote_targets::GuestCatch>,
+    pub guest_holds: std::collections::HashMap<u32, remote_targets::GuestHold>,
+    /// Dedicated room: the guest each hunter of the active list took as its target last frame (None: a bot or none).
+    pub hunter_aim: Vec<Option<u32>>,
     pub batteries_taken: Vec<bool>,
     pub coins_taken: Vec<bool>,
     pub pickups: Vec<FloorPickup>,
@@ -296,6 +309,12 @@ impl Game {
             relays_taken: vec![],
             sabotage: None,
             remote_hunters: false,
+            no_local_runner: false,
+            remote_targets: Vec::new(),
+            party_anchor: None,
+            guest_catches: Vec::new(),
+            guest_holds: Default::default(),
+            hunter_aim: Vec::new(),
             batteries_taken: vec![],
             coins_taken: vec![],
             pickups: vec![],
@@ -430,6 +449,12 @@ impl Game {
             relays_taken: vec![],
             sabotage: None,
             remote_hunters: false,
+            no_local_runner: false,
+            remote_targets: Vec::new(),
+            party_anchor: None,
+            guest_catches: Vec::new(),
+            guest_holds: Default::default(),
+            hunter_aim: Vec::new(),
             batteries_taken: vec![],
             coins_taken: vec![],
             pickups: vec![],
@@ -651,7 +676,9 @@ impl Game {
     /// Glyra reads the clock through `Ctx` (hunting.rs), so this is the room effect's whole timer.
     pub(super) fn run_music_box(&mut self, dt: f32) {
         self.music_box_left = (self.music_box_left - dt).max(0.0);
-        crate::audio::world::music_box(self.music_box_left, music_box::wound_seconds(self.difficulty.id()));
+        // the tune is Glyra's: it plays only while she is on the floor (nothing is heard when she is not out)
+        let heard = if self.specialty.box_slot_visible() { self.music_box_left } else { 0.0 };
+        crate::audio::world::music_box(heard, music_box::wound_seconds(self.difficulty.id()));
     }
 
     pub fn say(&mut self, text: &str) {
@@ -804,6 +831,11 @@ impl Game {
         catalog: &Catalog,
         sounds: &Sounds,
     ) {
+        // a room hosted by a server process has no runner to move: its own frame (game/remote_targets.rs)
+        if self.no_local_runner {
+            self.step_dedicated(dt, content, catalog, sounds);
+            return;
+        }
         // Void effect timers (outage, radar, fake steps) run here so the agent path (headless/sim.rs calls `step`
         // directly) ticks them too, not only the window's `update`.
         self.tick_void_effects(dt);

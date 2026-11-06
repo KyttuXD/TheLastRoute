@@ -23,8 +23,8 @@ const MAX_STEP_DY: f32 = 0.25;
 /// The body lands on the floor it walks to within this (m).
 const FLOOR_TOL: f32 = 0.05;
 /// Levels whose downward flights include each shape (see headless/flight_tests.rs for why).
-const CASES: [(FlightShape, i32); 4] =
-    [(FlightShape::Switchback, 0), (FlightShape::Switchback, -1), (FlightShape::Straight, -1), (FlightShape::Spiral, -2)];
+const CASES: [(FlightShape, i32); 5] =
+    [(FlightShape::Switchback, 0), (FlightShape::Switchback, -1), (FlightShape::Straight, -1), (FlightShape::Spiral, 0), (FlightShape::Spiral, -2)];
 
 /// One frame of a recorded walk.
 #[derive(Clone, Copy, Debug)]
@@ -82,7 +82,7 @@ fn nearest(g: &Game, dir: i32, shape: FlightShape) -> Option<Stair> {
 }
 
 /// A window on `level` with a flight going down of `shape`, the body on its landing and the level beyond resident in
-/// `inf.stack`. `None` (with a printed skip message) when 200 seeds have no such flight.
+/// `inf.stack`. Fails the test when 200 seeds have no such flight: a missing shape must not pass by looking at nothing.
 fn window_with(shape: FlightShape, level: i32, content: &Content, catalog: &Catalog) -> Option<(Game, Stair)> {
     for n in 0..200 {
         let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, &format!("ROOM-STACK-{n}"), level, content, catalog);
@@ -97,8 +97,7 @@ fn window_with(shape: FlightShape, level: i32, content: &Content, catalog: &Cata
         }
         return Some((g, s));
     }
-    eprintln!("SKIPPED: no window on level {level} has a {shape:?} flight going down in 200 seeds");
-    None
+    panic!("no window on level {level} has a {shape:?} flight going down in 200 seeds");
 }
 
 /// Places the body on the first waypoint of `s` exactly as headless/steer.rs does.

@@ -5,11 +5,22 @@
 //! so the top and the bottom cannot disagree. All three shapes (switchback, straight, spiral) and the ladder and the
 //! drop are defined here. Every number is in `data/flights.json` ([`flights`]); this file holds behaviour only.
 //!
-//! Nothing in the running game calls this yet (phase 0): only the tests do.
+//! The switchback and the spiral are Godot's (stairwells.gd, streamed_facility_view_3d.gd:2486-2823) scaled to the 5 m
+//! storey: a switchback is two flights `lane_width` cells wide side by side, a solid divider between them and a mid
+//! landing across the whole width (the 5 x 7 interior of the 7 x 9 box); a spiral is a smooth helicoid from a centre
+//! post out to the wall of a 5 x 5 well, 270 degrees from one doorway-side corner to the other. Both surfaces are smooth
+//! ramps (no tread blocks). The doorway landing is floor on both levels; the rest of the interior is the well.
 //!
 //! Frame. The flight's local frame has `u` metres along `run` from the far edge of the landing cell (`u = 0` there;
-//! cell `k` of the run covers `u` in `k-1..k`) and `v` metres across, towards the +x / +y side (the second lane is
-//! always on that side, as in `facility::stair_well_cells`). The anchor cell is the landing A at `u` in `-1..0`.
+//! cell `k` of the run covers `u` in `k-1..k`) and `v` metres across, towards the +x / +y side. The anchor cell is the
+//! landing A at `u` in `-1..0`, `v` in `0..1`. A switchback's arriving (top) flight is on the +v side of the anchor
+//! (Godot's flight B, columns 3-4), the divider is just on the -v side and the leaving (foot) flight beyond it
+//! (columns 0-1), so the anchor is the first cell of the top flight. A spiral's anchor is the doorway-side landing cell
+//! the arc starts at, its foot the landing row's other end cell (`B = A + side * 2 * dir`).
+//!
+//! Two layers. [`flight_surface_y`] is the whole drawn surface, including the floor slab that fills the wedge of the
+//! upper floor between a spiral's two end radials. [`flight_walk_y_with`] is what a body walks on, held by one level:
+//! the lower level sees the same wedge as plain floor (the slab is overhead), the upper level sees the slab.
 
 use super::facility::Cell;
 use super::vertical::{STEPS_PER_CELL, STOREY};
@@ -32,11 +43,11 @@ pub enum FlightKind {
 /// How a stair is laid out (KT decision D1: all three).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FlightShape {
-    /// Down one lane to a mid landing, back up the other lane (the 2x4 well).
+    /// Down one wide flight to a mid landing, back up the other (Godot's 5 x 7 well).
     Switchback,
     /// One longer flight.
     Straight,
-    /// Around a centre column.
+    /// Around a centre post.
     Spiral,
 }
 
@@ -101,9 +112,9 @@ pub struct Footprint {
     pub landing: Cell,
     /// B: the open floor cell on the lower level where the walker steps off (a ladder's and a drop's hole cell).
     pub foot: Cell,
-    /// A and `margin_cells` cells behind it, which must stay open floor on the upper level.
+    /// A and `margin_cells` cells behind it, and the landing floor of the well, which must stay open floor on the upper level.
     pub upper_clear: Vec<Cell>,
-    /// B and `margin_cells` cells beyond it, which must stay open floor on the lower level.
+    /// B and `margin_cells` cells beyond it, and the landing floor of the well, which must stay open floor on the lower level.
     pub lower_clear: Vec<Cell>,
     /// A ladder's one clear cell beside the hatch (D4); `None` for stairs and drops.
     pub step_cell: Option<Cell>,
@@ -149,13 +160,82 @@ pub struct FlightLimits {
     pub slab: Limit,
     pub max_riser: Limit,
     pub margin_cells: Limit,
-    pub divider_thickness: Limit,
     pub sb_length: Limit,
     pub sb_lane_width: Limit,
+    pub sb_divider_width: Limit,
+    pub sb_landing_depth: Limit,
     pub st_length: Limit,
     pub st_width: Limit,
-    pub sp_lane_width: Limit,
-    pub sp_radius: Limit,
+    pub sp_half: Limit,
+    pub sp_landing_cells: Limit,
+    pub sp_inner: Limit,
+    pub sp_post: Limit,
+    pub sp_walk: Limit,
+    pub sp_steps: Limit,
+    /// Degrees the spiral's arc starts away from the doorway axis.
+    pub sp_start_offset: Limit,
+    pub tiles_per_cell: Limit,
+}
+
+/// The stairwell fit-out (Godot `_add_stairwell_signs_and_light`, `_add_handrails_switchback`, `_add_landing_guards`).
+/// Distances Godot gives in its 4 m storey are stored raw (`godot_*`) and scaled by [`Dressing::scale`]; heights a
+/// person's size (rails, guards) are not scaled.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Dressing {
+    /// Godot's storey height (4.0): the scale of a `godot_*` distance is `storey / godot_storey`.
+    pub godot_storey: f32,
+    /// The "LEVEL n" sign: colour, height over the floor (Godot units), height of the lettering (Godot units) and how
+    /// far it stands off the wall (metres).
+    pub sign_colour: [f32; 3],
+    pub sign_godot_height: f32,
+    pub sign_godot_text_height: f32,
+    pub sign_inset: f32,
+    /// The stairwell light: colour, Godot's energy and the factor that makes it read the same under this renderer's
+    /// linear falloff (the prop lights double it), range and height over mid storey (Godot units).
+    pub lamp_colour: [f32; 3],
+    pub lamp_energy: f32,
+    pub lamp_energy_scale: f32,
+    pub lamp_godot_range: f32,
+    pub lamp_godot_height: f32,
+    /// Handrail: height over the tread, bar thickness, distance in from the flight's edge, and the offset of the spiral's
+    /// rail out from the inner radius (metres).
+    pub rail_height: f32,
+    pub rail_thickness: f32,
+    pub rail_inset: f32,
+    pub rail_inner_offset: f32,
+    /// Landing guard: height and thickness of the solid rail.
+    pub guard_height: f32,
+    pub guard_thickness: f32,
+    /// The iron of the rails, the post and the guards: Godot's colour and the brightening that lets it read here.
+    pub iron_colour: [f32; 3],
+    pub iron_lift: f32,
+}
+
+impl Dressing {
+    /// `storey / godot_storey`: what a Godot distance is worth here.
+    pub fn scale(&self) -> f32 {
+        STOREY / self.godot_storey
+    }
+    /// The sign's height over its floor.
+    pub fn sign_y(&self) -> f32 {
+        self.sign_godot_height * self.scale()
+    }
+    /// The height of the sign's letters.
+    pub fn sign_text_height(&self) -> f32 {
+        self.sign_godot_text_height * self.scale()
+    }
+    /// The lamp's reach.
+    pub fn lamp_range(&self) -> f32 {
+        self.lamp_godot_range * self.scale()
+    }
+    /// The lamp's energy in this renderer's units.
+    pub fn lamp_energy(&self) -> f32 {
+        self.lamp_energy * self.lamp_energy_scale
+    }
+    /// The lamp's height over the lower floor: mid storey plus Godot's height over it, scaled.
+    pub fn lamp_y(&self) -> f32 {
+        STOREY * 0.5 + self.lamp_godot_height * self.scale()
+    }
 }
 
 /// Every flight tunable (data/flights.json).
@@ -168,17 +248,38 @@ pub struct FlightRules {
     pub max_riser: f32,
     pub steps_per_cell: f32,
     pub margin_cells: i32,
-    /// Width of the wall between the two switchback lanes (metres).
-    pub divider_thickness: f32,
+    /// Rows of the switchback well beyond the landing row: the ramp and the mid landing.
     pub sb_length: i32,
+    /// Cells across each switchback flight.
     pub sb_lane_width: i32,
+    /// Cells (metres) of solid wall between the two flights.
+    pub sb_divider_width: i32,
+    /// Rows of floor at the doorway end on both levels (the landing A row and the margin row behind it).
+    pub sb_landing_depth: i32,
     pub sb_mid_rise: f32,
-    pub sb_mid_len: f32,
+    /// Rows deep of the mid landing.
+    pub sb_mid_len: i32,
     pub st_length: i32,
     pub st_width: i32,
-    pub sp_radius: f32,
-    pub sp_lane_width: i32,
+    /// Half the side of the spiral's square well, in cells (the square is `2 * half + 1` across, the post in its middle).
+    pub sp_half_cells: i32,
+    /// Cells across the doorway-wide landing row of a spiral (odd).
+    pub sp_landing_cells: i32,
+    pub sp_inner: f32,
+    pub sp_post: f32,
+    pub sp_walk: f32,
+    /// How far the helicoid stops short of the well's wall (metres).
+    pub sp_clear: f32,
     pub sp_turns: f32,
+    /// Degrees from the doorway axis (the direction back to the landing) to where the arc starts; the arc ends at the
+    /// same angle on the other side when `start_offset_deg * 2 + turns * 360 = 360` (Godot: 45 + 270 + 45).
+    pub sp_start_offset_deg: f32,
+    pub sp_steps: i32,
+    /// Tessellation of the smooth ramp: tiles along a well cell's side, per shape.
+    pub tiles_switchback: i32,
+    pub tiles_straight: i32,
+    pub tiles_spiral: i32,
+    pub dressing: Dressing,
     pub weights: ShapeWeights,
     /// (level, weights) that replace `weights` on that level.
     pub region_weights: Vec<(i32, ShapeWeights)>,
@@ -207,6 +308,24 @@ fn jint(v: &Json, path: &[&str]) -> Result<i32, String> {
         return Err(format!("flights.json: \"{}\" must be a whole number, got {n}", path.join(".")));
     }
     Ok(n as i32)
+}
+
+/// A colour written as six hex digits (`"e8c25a"`), as 0..1 channels.
+fn jcolour(v: &Json, path: &[&str]) -> Result<[f32; 3], String> {
+    let text = jget(v, path)?
+        .as_str()
+        .ok_or_else(|| format!("flights.json: \"{}\" must be a colour string", path.join(".")))?;
+    let text = text.trim_start_matches('#');
+    if text.len() != 6 || !text.is_ascii() {
+        return Err(format!("flights.json: \"{}\" must be six hex digits, got \"{text}\"", path.join(".")));
+    }
+    let mut out = [0.0f32; 3];
+    for (i, c) in out.iter_mut().enumerate() {
+        let byte = u8::from_str_radix(&text[i * 2..i * 2 + 2], 16)
+            .map_err(|_| format!("flights.json: \"{}\" must be six hex digits, got \"{text}\"", path.join(".")))?;
+        *c = byte as f32 / 255.0;
+    }
+    Ok(out)
 }
 
 /// A `{ "min": a, "max": b }` limit; a missing or inverted one is refused.
@@ -258,13 +377,40 @@ impl FlightRules {
             slab: jlimit(&v, "slab")?,
             max_riser: jlimit(&v, "max_riser")?,
             margin_cells: jlimit(&v, "margin_cells")?,
-            divider_thickness: jlimit(&v, "divider_thickness")?,
             sb_length: jlimit(&v, "switchback_length")?,
             sb_lane_width: jlimit(&v, "switchback_lane_width")?,
+            sb_divider_width: jlimit(&v, "switchback_divider_width")?,
+            sb_landing_depth: jlimit(&v, "switchback_landing_depth")?,
             st_length: jlimit(&v, "straight_length")?,
             st_width: jlimit(&v, "straight_width")?,
-            sp_lane_width: jlimit(&v, "spiral_lane_width")?,
-            sp_radius: jlimit(&v, "spiral_radius")?,
+            sp_half: jlimit(&v, "spiral_half")?,
+            sp_landing_cells: jlimit(&v, "spiral_landing_cells")?,
+            sp_inner: jlimit(&v, "spiral_inner_radius")?,
+            sp_post: jlimit(&v, "spiral_post_radius")?,
+            sp_walk: jlimit(&v, "spiral_walk_radius")?,
+            sp_steps: jlimit(&v, "spiral_steps")?,
+            sp_start_offset: jlimit(&v, "spiral_start_offset_deg")?,
+            tiles_per_cell: jlimit(&v, "tiles_per_cell")?,
+        };
+        let dressing = Dressing {
+            godot_storey: jnum(&v, &["dressing", "godot_storey"])?,
+            sign_colour: jcolour(&v, &["dressing", "sign", "colour"])?,
+            sign_godot_height: jnum(&v, &["dressing", "sign", "godot_height"])?,
+            sign_godot_text_height: jnum(&v, &["dressing", "sign", "godot_text_height"])?,
+            sign_inset: jnum(&v, &["dressing", "sign", "inset"])?,
+            lamp_colour: jcolour(&v, &["dressing", "lamp", "colour"])?,
+            lamp_energy: jnum(&v, &["dressing", "lamp", "energy"])?,
+            lamp_energy_scale: jnum(&v, &["dressing", "lamp", "energy_scale"])?,
+            lamp_godot_range: jnum(&v, &["dressing", "lamp", "godot_range"])?,
+            lamp_godot_height: jnum(&v, &["dressing", "lamp", "godot_height_over_mid"])?,
+            rail_height: jnum(&v, &["dressing", "handrail", "height"])?,
+            rail_thickness: jnum(&v, &["dressing", "handrail", "thickness"])?,
+            rail_inset: jnum(&v, &["dressing", "handrail", "inset"])?,
+            rail_inner_offset: jnum(&v, &["dressing", "handrail", "inner_offset"])?,
+            guard_height: jnum(&v, &["dressing", "guard", "height"])?,
+            guard_thickness: jnum(&v, &["dressing", "guard", "thickness"])?,
+            iron_colour: jcolour(&v, &["dressing", "iron", "colour"])?,
+            iron_lift: jnum(&v, &["dressing", "iron", "lift"])?,
         };
         let rules = FlightRules {
             limits,
@@ -274,16 +420,27 @@ impl FlightRules {
             max_riser: jnum(&v, &["max_riser"])?,
             steps_per_cell: jnum(&v, &["steps_per_cell"])?,
             margin_cells: jint(&v, &["margin_cells"])?,
-            divider_thickness: jnum(&v, &["divider_thickness"])?,
             sb_length: jint(&v, &["switchback", "length"])?,
             sb_lane_width: jint(&v, &["switchback", "lane_width"])?,
+            sb_divider_width: jint(&v, &["switchback", "divider_width"])?,
+            sb_landing_depth: jint(&v, &["switchback", "landing_depth"])?,
             sb_mid_rise: jnum(&v, &["switchback", "mid_landing_rise"])?,
-            sb_mid_len: jnum(&v, &["switchback", "mid_landing_len"])?,
+            sb_mid_len: jint(&v, &["switchback", "mid_landing_len"])?,
             st_length: jint(&v, &["straight", "length"])?,
             st_width: jint(&v, &["straight", "width"])?,
-            sp_radius: jnum(&v, &["spiral", "radius"])?,
-            sp_lane_width: jint(&v, &["spiral", "lane_width"])?,
+            sp_half_cells: jint(&v, &["spiral", "half"])?,
+            sp_landing_cells: jint(&v, &["spiral", "landing_cells"])?,
+            sp_inner: jnum(&v, &["spiral", "inner_radius"])?,
+            sp_post: jnum(&v, &["spiral", "post_radius"])?,
+            sp_walk: jnum(&v, &["spiral", "walk_radius"])?,
+            sp_clear: jnum(&v, &["spiral", "wall_clearance"])?,
             sp_turns: jnum(&v, &["spiral", "turns"])?,
+            sp_start_offset_deg: jnum(&v, &["spiral", "start_offset_deg"])?,
+            sp_steps: jint(&v, &["spiral", "steps"])?,
+            tiles_switchback: jint(&v, &["render", "tiles_per_cell", "switchback"])?,
+            tiles_straight: jint(&v, &["render", "tiles_per_cell", "straight"])?,
+            tiles_spiral: jint(&v, &["render", "tiles_per_cell", "spiral"])?,
+            dressing,
             weights: jweights(jget(&v, &["shape_weights"])?, "shape_weights")?,
             region_weights,
         };
@@ -323,36 +480,103 @@ impl FlightRules {
             ));
         }
         ranged("margin_cells", self.margin_cells as f32, &l.margin_cells)?;
-        ranged("divider_thickness", self.divider_thickness, &l.divider_thickness)?;
         ranged("switchback.length", self.sb_length as f32, &l.sb_length)?;
         ranged("switchback.lane_width", self.sb_lane_width as f32, &l.sb_lane_width)?;
+        ranged("switchback.divider_width", self.sb_divider_width as f32, &l.sb_divider_width)?;
+        ranged("switchback.landing_depth", self.sb_landing_depth as f32, &l.sb_landing_depth)?;
         if self.sb_mid_rise <= 0.0 || self.sb_mid_rise >= self.rise_total {
             return Err(format!(
                 "flights.json: switchback.mid_landing_rise {} must be above 0 and below rise_total {}",
                 self.sb_mid_rise, self.rise_total
             ));
         }
-        if self.sb_mid_len <= 0.0 || self.sb_length as f32 - self.sb_mid_len < 1.0 {
+        if self.sb_mid_len < 1 || self.sb_length - self.sb_mid_len < 1 {
             return Err(format!(
-                "flights.json: switchback.mid_landing_len {} must be above 0 and leave 1 cell of ramp in length {}",
+                "flights.json: switchback.mid_landing_len {} must be at least 1 and leave 1 row of ramp in length {}",
                 self.sb_mid_len, self.sb_length
             ));
         }
         ranged("straight.length", self.st_length as f32, &l.st_length)?;
         ranged("straight.width", self.st_width as f32, &l.st_width)?;
-        ranged("spiral.lane_width", self.sp_lane_width as f32, &l.sp_lane_width)?;
-        if self.sp_lane_width % 2 == 0 {
-            return Err(format!("flights.json: spiral.lane_width {} must be odd", self.sp_lane_width));
+        ranged("spiral.half", self.sp_half_cells as f32, &l.sp_half)?;
+        ranged("spiral.landing_cells", self.sp_landing_cells as f32, &l.sp_landing_cells)?;
+        if self.sp_landing_cells % 2 == 0 || self.sp_landing_cells > 2 * self.sp_half_cells + 1 {
+            return Err(format!(
+                "flights.json: spiral.landing_cells {} must be odd and fit the well's {} cells",
+                self.sp_landing_cells,
+                2 * self.sp_half_cells + 1
+            ));
         }
-        if self.sp_radius.fract() != 0.0 {
-            return Err(format!("flights.json: spiral.radius {} must be a whole number of cells", self.sp_radius));
+        ranged("spiral.inner_radius", self.sp_inner, &l.sp_inner)?;
+        ranged("spiral.post_radius", self.sp_post, &l.sp_post)?;
+        ranged("spiral.walk_radius", self.sp_walk, &l.sp_walk)?;
+        ranged("spiral.steps", self.sp_steps as f32, &l.sp_steps)?;
+        if self.sp_clear < 0.0 || self.sp_clear >= 0.5 {
+            return Err(format!("flights.json: spiral.wall_clearance {} must be from 0 to under half a cell", self.sp_clear));
         }
-        ranged("spiral.radius", self.sp_radius, &l.sp_radius)?;
-        if self.sp_radius - self.sp_lane_width as f32 * 0.5 < 0.5 {
-            return Err("flights.json: spiral.radius leaves no centre column inside the lane".to_string());
+        if !(self.sp_post < self.sp_inner && self.sp_inner < self.sp_walk && self.sp_walk < self.sp_reach()) {
+            return Err(format!(
+                "flights.json: the spiral radii must grow: post_radius {} < inner_radius {} < walk_radius {} < the wall at {}",
+                self.sp_post,
+                self.sp_inner,
+                self.sp_walk,
+                self.sp_reach()
+            ));
         }
         if ![0.25, 0.5, 0.75].iter().any(|t| near(self.sp_turns, *t)) {
             return Err(format!("flights.json: spiral.turns {} must be 0.25, 0.5 or 0.75", self.sp_turns));
+        }
+        ranged("spiral.start_offset_deg", self.sp_start_offset_deg, &l.sp_start_offset)?;
+        // the arc must end before it meets its own start again on the far side of the doorway axis
+        if self.sp_start_offset_deg * 2.0 + self.sp_turns * 360.0 > 360.0 + 1e-3 {
+            return Err(format!(
+                "flights.json: spiral.start_offset_deg {} twice plus {} turns overruns the circle: the arc would cross its own start",
+                self.sp_start_offset_deg, self.sp_turns
+            ));
+        }
+        for (label, n) in [
+            ("switchback", self.tiles_switchback),
+            ("straight", self.tiles_straight),
+            ("spiral", self.tiles_spiral),
+        ] {
+            ranged(&format!("render.tiles_per_cell.{label}"), n as f32, &l.tiles_per_cell)?;
+        }
+        let d = &self.dressing;
+        if d.godot_storey <= 0.0 {
+            return Err(format!("flights.json: dressing.godot_storey {} must be above 0", d.godot_storey));
+        }
+        for (label, n) in [
+            ("sign.godot_height", d.sign_godot_height),
+            ("sign.godot_text_height", d.sign_godot_text_height),
+            ("lamp.energy", d.lamp_energy),
+            ("lamp.energy_scale", d.lamp_energy_scale),
+            ("lamp.godot_range", d.lamp_godot_range),
+            ("handrail.height", d.rail_height),
+            ("handrail.thickness", d.rail_thickness),
+            ("guard.height", d.guard_height),
+            ("guard.thickness", d.guard_thickness),
+            ("iron.lift", d.iron_lift),
+        ] {
+            if !(n > 0.0 && n.is_finite()) {
+                return Err(format!("flights.json: dressing.{label} {n} must be above 0"));
+            }
+        }
+        for (label, n) in [("sign.inset", d.sign_inset), ("handrail.inset", d.rail_inset), ("handrail.inner_offset", d.rail_inner_offset)] {
+            if !(n >= 0.0 && n.is_finite()) {
+                return Err(format!("flights.json: dressing.{label} {n} must not be negative"));
+            }
+        }
+        if d.sign_y() + d.sign_text_height() * 0.5 >= self.storey {
+            return Err(format!("flights.json: dressing.sign stands at {} m, past the storey {}", d.sign_y(), self.storey));
+        }
+        if d.lamp_y() >= self.storey {
+            return Err(format!("flights.json: dressing.lamp hangs at {} m, past the storey {}", d.lamp_y(), self.storey));
+        }
+        if d.rail_height >= d.guard_height || d.guard_height >= self.storey {
+            return Err(format!(
+                "flights.json: dressing heights must grow: handrail {} < guard {} < storey {}",
+                d.rail_height, d.guard_height, self.storey
+            ));
         }
         for shape in [FlightShape::Switchback, FlightShape::Straight, FlightShape::Spiral] {
             let riser = max_riser_of(self, shape);
@@ -366,12 +590,36 @@ impl FlightRules {
         Ok(())
     }
 
-    /// Half the side of the spiral's square, in cells (the square is `2 * half + 1` across, the centre column in its middle).
+    /// Half the side of the spiral's square, in cells (the square is `2 * half + 1` across, the post in its middle).
     pub fn sp_half(&self) -> i32 {
-        (self.sp_radius + self.sp_lane_width as f32 * 0.5 - 0.5 - 1e-3).ceil() as i32
+        self.sp_half_cells
+    }
+    /// How far from the post centre the helicoid reaches along an axis (the wall, less the clearance).
+    pub fn sp_reach(&self) -> f32 {
+        self.sp_half_cells as f32 + 0.5 - self.sp_clear
     }
     fn sp_span(&self) -> f32 {
         TAU * self.sp_turns
+    }
+    /// The start offset in radians.
+    fn sp_offset(&self) -> f32 {
+        self.sp_start_offset_deg.to_radians()
+    }
+    /// The rows of a switchback's ramp.
+    pub fn sb_ramp(&self) -> f32 {
+        (self.sb_length - self.sb_mid_len) as f32
+    }
+    /// The first and last `v` of a switchback's well, across (the foot flight's far edge, the top flight's far edge).
+    pub fn sb_v_range(&self) -> (f32, f32) {
+        (-((self.sb_divider_width + self.sb_lane_width) as f32), self.sb_lane_width as f32)
+    }
+    /// How finely each well cell of `shape` is tessellated for the smooth ramp.
+    pub fn tiles_for(&self, shape: FlightShape) -> i32 {
+        match shape {
+            FlightShape::Switchback => self.tiles_switchback,
+            FlightShape::Straight => self.tiles_straight,
+            FlightShape::Spiral => self.tiles_spiral,
+        }
     }
     /// The weights in force on `level`.
     pub fn weights_for(&self, level: i32) -> ShapeWeights {
@@ -386,18 +634,17 @@ pub fn flights() -> &'static FlightRules {
     RULES.get_or_init(|| FlightRules::parse(FILE).unwrap_or_else(|e| panic!("{e}")))
 }
 
-/// The tallest riser (metres per tread) a walker meets on a shape: the steepest slope, taken at the spiral's inner edge.
+/// The tallest riser (metres per tread) a walker meets on a shape: the slope on the walking line, per 1/steps_per_cell
+/// metre of run. The surfaces are smooth ramps, so this bounds the slope, not a block; the spiral's walking line is the
+/// radius the walk path runs on (its inner edge is steeper still, but a body is kept off it by the post).
 pub fn max_riser_of(rules: &FlightRules, shape: FlightShape) -> f32 {
     let slope = match shape {
         FlightShape::Straight => rules.rise_total / rules.st_length as f32,
         FlightShape::Switchback => {
-            let ramp = rules.sb_length as f32 - rules.sb_mid_len;
+            let ramp = rules.sb_ramp();
             (rules.sb_mid_rise / ramp).max((rules.rise_total - rules.sb_mid_rise) / ramp)
         }
-        FlightShape::Spiral => {
-            let inner = rules.sp_radius - rules.sp_lane_width as f32 * 0.5;
-            rules.rise_total / (rules.sp_span() * inner)
-        }
+        FlightShape::Spiral => rules.rise_total / (rules.sp_span() * rules.sp_walk),
     };
     slope / rules.steps_per_cell
 }
@@ -513,22 +760,39 @@ fn spiral_dir(rules: &FlightRules, f: &Flight) -> f32 {
     }
 }
 
-/// The spiral's exit direction in the local frame (an axis, as turns are quarters): outwards from the centre at the arc's end.
-fn spiral_exit(rules: &FlightRules, f: &Flight) -> (i32, i32) {
-    let psi = PI + spiral_dir(rules, f) * rules.sp_span();
-    (psi.cos().round() as i32, psi.sin().round() as i32)
+/// The spiral's centre in the local frame. The landing row is the anchor's row and the well is the `2 * half + 1` square
+/// whose near side is that row, so the centre is `half - 0.5` along the run (the anchor row occupies `u` in `-1..0`);
+/// across, the doorway's middle cell is `dir` cells across from the landing A, so the centre is over its middle.
+fn spiral_centre(rules: &FlightRules, f: &Flight) -> (f32, f32) {
+    (rules.sp_half() as f32 - 0.5, 0.5 + spiral_dir(rules, f))
 }
 
-/// The foot cell B as (cells along the run, cells across) from the anchor A.
+/// The angle (in the local frame) of the point at `swept` radians along the spiral, counted from the doorway axis: the
+/// doorway axis points back from the centre to the landing row (angle `PI`), and the spiral turns away from it `dir` way.
+fn spiral_angle(rules: &FlightRules, f: &Flight, swept: f32) -> f32 {
+    PI + spiral_dir(rules, f) * swept
+}
+
+/// The point of the spiral's walking line at `swept` radians from the doorway axis (local frame).
+fn spiral_point(rules: &FlightRules, f: &Flight, swept: f32) -> (f32, f32) {
+    spiral_point_at(rules, f, swept, rules.sp_walk)
+}
+
+/// The point at `swept` radians from the doorway axis and radius `r` from the post (local frame).
+fn spiral_point_at(rules: &FlightRules, f: &Flight, swept: f32, r: f32) -> (f32, f32) {
+    let (uc, vc) = spiral_centre(rules, f);
+    let phi = spiral_angle(rules, f, swept);
+    (uc + r * phi.cos(), vc + r * phi.sin())
+}
+
+/// The foot cell B as (cells along the run, cells across) from the anchor A. A switchback's foot is the cell beside the
+/// divider on the leaving flight, level with A; a spiral's is the landing row's other end cell, `B = A + side * 2 * dir`
+/// (Godot's top and bottom landings are the one landing row, stairwells.gd:116-134).
 fn foot_offset(rules: &FlightRules, f: &Flight) -> (i32, i32) {
     match f.shape {
-        FlightShape::Switchback => (0, rules.sb_lane_width),
+        FlightShape::Switchback => (0, -(rules.sb_divider_width + 1)),
         FlightShape::Straight => (rules.st_length + 1, 0),
-        FlightShape::Spiral => {
-            let half = rules.sp_half();
-            let (du, dv) = spiral_exit(rules, f);
-            (half + 1 + (half + 1) * du, (half + 1) * dv)
-        }
+        FlightShape::Spiral => (0, 2 * spiral_dir(rules, f) as i32),
     }
 }
 
@@ -544,6 +808,54 @@ fn ends(rules: &FlightRules, f: &Flight) -> (Cell, Cell) {
     }
 }
 
+/// The floor of the well's landing on both levels: a switchback's `landing_depth` rows across its whole width (rows `k`
+/// = 0, -1, ...), a spiral's doorway-wide landing row (A, the cell between and B). Empty for the other flights.
+fn landing_zone(rules: &FlightRules, f: &Flight) -> Vec<Cell> {
+    let mut out = Vec::new();
+    if f.kind != FlightKind::Stairs {
+        return out;
+    }
+    match f.shape {
+        FlightShape::Switchback => {
+            let (v0, v1) = rules.sb_v_range();
+            for r in 0..rules.sb_landing_depth {
+                for j in v0 as i32..v1 as i32 {
+                    out.push(cell_at(f, -r, j));
+                }
+            }
+        }
+        FlightShape::Straight => {}
+        FlightShape::Spiral => {
+            let mid = spiral_dir(rules, f) as i32;
+            let door = rules.sp_landing_cells / 2;
+            for j in mid - door..=mid + door {
+                out.push(cell_at(f, 0, j));
+            }
+        }
+    }
+    out
+}
+
+/// The landing row: the cells of the well's landing at the anchor's own row (`k` = 0), A and B among them. A body stepping
+/// onto the flight has its back corners over these, so they carry the flat floor of the level (see [`flight_walk_y_with`]).
+pub fn landing_row_with(rules: &FlightRules, f: &Flight) -> Vec<Cell> {
+    if f.kind != FlightKind::Stairs {
+        return vec![];
+    }
+    match f.shape {
+        FlightShape::Switchback => {
+            let (v0, v1) = rules.sb_v_range();
+            (v0 as i32..v1 as i32).map(|j| cell_at(f, 0, j)).collect()
+        }
+        FlightShape::Straight => vec![],
+        FlightShape::Spiral => {
+            let mid = spiral_dir(rules, f) as i32;
+            let door = rules.sp_landing_cells / 2;
+            (mid - door..=mid + door).map(|j| cell_at(f, 0, j)).collect()
+        }
+    }
+}
+
 /// The cells of the opening, in the flight's own frame.
 pub fn well_footprint_with(rules: &FlightRules, f: &Flight) -> Footprint {
     let (landing, foot) = ends(rules, f);
@@ -552,8 +864,9 @@ pub fn well_footprint_with(rules: &FlightRules, f: &Flight) -> Footprint {
         FlightKind::Ladder | FlightKind::Drop => hole.push(f.anchor_cell),
         FlightKind::Stairs => match f.shape {
             FlightShape::Switchback => {
+                let (v0, v1) = rules.sb_v_range();
                 for k in 1..=rules.sb_length {
-                    for j in 0..2 * rules.sb_lane_width {
+                    for j in v0 as i32..v1 as i32 {
                         hole.push(cell_at(f, k, j));
                     }
                 }
@@ -566,9 +879,16 @@ pub fn well_footprint_with(rules: &FlightRules, f: &Flight) -> Footprint {
                 }
             }
             FlightShape::Spiral => {
+                // the square around the post, whose near row is the landing row: its doorway-wide middle is floor, the
+                // rest (the two corner cells of that row and every row beyond) is the well
                 let half = rules.sp_half();
-                for k in 1..=2 * half + 1 {
-                    for j in -half..=half {
+                let mid = spiral_dir(rules, f) as i32;
+                let door = rules.sp_landing_cells / 2;
+                for k in 0..=2 * half {
+                    for j in mid - half..=mid + half {
+                        if k == 0 && (j - mid).abs() <= door {
+                            continue;
+                        }
                         hole.push(cell_at(f, k, j));
                     }
                 }
@@ -583,16 +903,18 @@ pub fn well_footprint_with(rules: &FlightRules, f: &Flight) -> Footprint {
         (FlightKind::Drop, _) => ((-f.run.0, -f.run.1), f.run),
         (FlightKind::Stairs, FlightShape::Switchback) => ((-f.run.0, -f.run.1), (-f.run.0, -f.run.1)),
         (FlightKind::Stairs, FlightShape::Straight) => ((-f.run.0, -f.run.1), f.run),
-        (FlightKind::Stairs, FlightShape::Spiral) => {
-            let (du, dv) = spiral_exit(rules, f);
-            let s = side(f.run);
-            ((-f.run.0, -f.run.1), (f.run.0 * du + s.0 * dv, f.run.1 * du + s.1 * dv))
-        }
+        // both ends are landing-row cells: the clear cells lie behind the row, away from the well
+        (FlightKind::Stairs, FlightShape::Spiral) => ((-f.run.0, -f.run.1), (-f.run.0, -f.run.1)),
     };
+    let zone = landing_zone(rules, f);
     let mut upper_clear: Vec<Cell> = (0..=rules.margin_cells).map(|m| step(landing, up_dir, m)).collect();
     let mut lower_clear: Vec<Cell> = (0..=rules.margin_cells).map(|m| step(foot, low_dir, m)).collect();
+    upper_clear.extend(zone.iter().copied());
+    lower_clear.extend(zone.iter().copied());
     upper_clear.sort();
+    upper_clear.dedup();
     lower_clear.sort();
+    lower_clear.dedup();
     Footprint {
         lower_open: hole.clone(),
         upper_hole: hole,
@@ -609,81 +931,65 @@ pub fn well_footprint(f: &Flight) -> Footprint {
     well_footprint_with(flights(), f)
 }
 
-/// The progress along the spiral (0 at the top, 1 at the foot) of a point, or `None` off the walkway. The walkway is the
-/// arc (an annulus `lane_width` wide, `turns` of a circle) plus a straight stub at each end, as wide as the lane and
-/// running from where the arc starts (ends) out to the edge of the well square, so the walkway is never narrower than the
-/// lane where the walker steps on at the landing A and off at the foot B.
-fn spiral_progress(rules: &FlightRules, f: &Flight, u: f32, v: f32) -> Option<f32> {
-    let uc = rules.sp_half() as f32 + 0.5;
-    let (du, dv) = (u - uc, v - 0.5);
-    let d = (du * du + dv * dv).sqrt();
-    let (span, half_lane) = (rules.sp_span(), rules.sp_lane_width as f32 * 0.5 + 1e-4);
-    if (d - rules.sp_radius).abs() <= half_lane {
-        let a = spiral_dir(rules, f) * (dv.atan2(du) - PI);
-        let w = (a - span * 0.5).rem_euclid(TAU);
-        let a = span * 0.5 + if w > PI { w - TAU } else { w };
-        if (0.0..=span).contains(&a) {
-            return Some(a / span);
-        }
-        // A short lead-in past each end of the arc, held flat at that end's floor: the arc itself ends in a radial cut,
-        // so without it the walkway is only half a lane wide where the straight stub meets it and a body is blocked.
-        let lead = (rules.sp_lane_width as f32 / rules.sp_radius).min(0.6);
-        if a < 0.0 && a >= -lead {
-            return Some(0.0);
-        }
-        if a > span && a <= span + lead {
-            return Some(1.0);
-        }
+/// Which surface of the spiral a point is on: the helicoid itself, or the slab of upper floor in the wedge between the
+/// two end radials (Godot's top slab and corner slab).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpiralLayer {
+    Helix,
+    Slab,
+}
+
+/// The spiral's surface at the local point `(u, v)`: its absolute height and layer, or `None` off it (outside the
+/// well, in the post, or in the open corner on the bottom end's side, which is a drop to the lower floor).
+///
+/// - The helicoid: the arc `start_offset .. start_offset + turns` swept from the doorway axis, from the inner radius out
+///   to the well's wall, `y` falling from the upper floor at the start radial to the lower floor at the end radial, a
+///   function of the angle only (so it is a true helicoid, steepest at the post).
+/// - The slab: the wedge between the two radials that faces the doorway is upper floor. The triangle from the post to
+///   the landing row's inner edge, and on the arc's start side the corner cell of the landing row beyond it. The bottom
+///   end's side corner stays open.
+fn spiral_surface(rules: &FlightRules, f: &Flight, u: f32, v: f32) -> Option<(f32, SpiralLayer)> {
+    let (uc, vc) = spiral_centre(rules, f);
+    let (du, dv) = (u - uc, v - vc);
+    let reach = rules.sp_reach();
+    if du.abs() > reach || dv.abs() > reach {
+        return None;
     }
-    // the well edge, with a hair of tolerance: a walk sample exactly on the cell edge belongs to the flight
-    let edge = rules.sp_half() as f32 + 0.5 + 1e-3;
-    // the stub at the top: from the arc start (angle PI, outwards along -u) to the well edge
-    let (along, across) = (-du, dv);
-    if (rules.sp_radius..=edge).contains(&along) && across.abs() <= half_lane {
-        return Some(0.0);
+    if du.hypot(dv) < rules.sp_inner {
+        return None;
     }
-    // the stub at the foot: outwards along the exit axis
-    let (eu, ev) = spiral_exit(rules, f);
-    let (along, across) = (du * eu as f32 + dv * ev as f32, du * ev as f32 - dv * eu as f32);
-    if (rules.sp_radius..=edge).contains(&along) && across.abs() <= half_lane {
-        return Some(1.0);
+    let (span, off) = (rules.sp_span(), rules.sp_offset());
+    let a = (spiral_dir(rules, f) * (dv.atan2(du) - PI)).rem_euclid(TAU);
+    let hi = f.lower_y() + rules.rise_total;
+    if a >= off && a <= off + span {
+        return Some((hi - rules.rise_total * (a - off) / span, SpiralLayer::Helix));
+    }
+    // the wedge facing the doorway: upper floor beyond the landing row's inner edge (u >= 0), and on the start side the
+    // landing row's corner cell, past the landing row's end (half the doorway out from the post)
+    if u >= 0.0 || (a < off && dv.abs() >= rules.sp_landing_cells as f32 * 0.5) {
+        return Some((hi, SpiralLayer::Slab));
     }
     None
-}
-
-/// A line segment in grid coordinates.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Segment {
-    pub a: (f32, f32),
-    pub b: (f32, f32),
-}
-
-/// The wall between the two lanes of a switchback: the line on `v = lane_width` from the landing end of the run to where
-/// the two lanes are no more than `max_riser` apart (just before they join on the mid landing). Empty for the other
-/// shapes, ladders and drops. Grid coordinates, the same list whichever level's record asks.
-pub fn lane_dividers_with(rules: &FlightRules, f: &Flight) -> Vec<Segment> {
-    if f.kind != FlightKind::Stairs || f.shape != FlightShape::Switchback {
-        return vec![];
-    }
-    let lw = rules.sb_lane_width as f32;
-    let ramp = rules.sb_length as f32 - rules.sb_mid_len;
-    // the lanes differ by rise_total * (1 - u / ramp)
-    let end = (ramp * (1.0 - rules.max_riser / rules.rise_total)).max(0.0);
-    if end <= 0.0 {
-        return vec![];
-    }
-    vec![Segment { a: to_world(f, 0.0, lw), b: to_world(f, end, lw) }]
-}
-
-pub fn lane_dividers(f: &Flight) -> Vec<Segment> {
-    lane_dividers_with(flights(), f)
 }
 
 /// The absolute y of the walking surface at `(x, z)` (grid cells), or `None` off the flight. Exactly the upper floor at
 /// the landing cell A and exactly the lower floor at the foot cell B; between them a smooth monotone rise (flat on a
 /// mid landing). A ladder or drop has only its two ends: the step cell / bank at the upper floor, the shaft or hole
-/// cell at the lower floor (the ground under a climber or a falling body).
+/// cell at the lower floor (the ground under a climber or a falling body). This is the whole drawn surface; see
+/// [`flight_walk_y_with`] for what a body of one level walks on.
 pub fn flight_surface_y_with(rules: &FlightRules, f: &Flight, x: f32, z: f32) -> Option<f32> {
+    surface_with(rules, f, x, z, false)
+}
+
+/// The walking surface as the level that holds the record sees it: `lower` is the lower level's record (dir > 0). Equal
+/// to [`flight_surface_y_with`] except in a spiral's wedge between the end radials, where the slab is overhead for the
+/// lower level (its floor is the plain floor, held flat at the lower floor, so the walker arriving at the foot of the
+/// helicoid steps off onto it) and the open corner on the arc's end side is floor, not a drop.
+pub fn flight_walk_y_with(rules: &FlightRules, f: &Flight, x: f32, z: f32, lower: bool) -> Option<f32> {
+    surface_with(rules, f, x, z, lower)
+}
+
+fn surface_with(rules: &FlightRules, f: &Flight, x: f32, z: f32, lower_view: bool) -> Option<f32> {
     let (lo, hi) = (f.lower_y(), f.lower_y() + rules.rise_total);
     let here = Cell::new(x.floor() as i32, z.floor() as i32);
     let (landing, foot) = ends(rules, f);
@@ -696,6 +1002,11 @@ pub fn flight_surface_y_with(rules: &FlightRules, f: &Flight, x: f32, z: f32) ->
     if f.kind != FlightKind::Stairs {
         return None;
     }
+    // the rest of the landing row is the floor of the level the walker is on (a body sinking onto the ramp still has its
+    // back corners over it): the upper floor for the upper level's record, the lower floor for the lower level's
+    if landing_row_with(rules, f).contains(&here) {
+        return Some(if lower_view { lo } else { hi });
+    }
     let (u, v) = to_local(f, x, z);
     let rise = rules.rise_total;
     match f.shape {
@@ -707,30 +1018,104 @@ pub fn flight_surface_y_with(rules: &FlightRules, f: &Flight, x: f32, z: f32) ->
             None
         }
         FlightShape::Switchback => {
-            let (len, lw) = (rules.sb_length as f32, rules.sb_lane_width as f32);
-            if !(0.0..=len).contains(&u) || !(0.0..2.0 * lw).contains(&v) {
+            let len = rules.sb_length as f32;
+            let (v0, v1) = rules.sb_v_range();
+            if !(0.0..=len).contains(&u) || !(v0..=v1).contains(&v) {
                 return None;
             }
-            let ramp = len - rules.sb_mid_len;
+            let ramp = rules.sb_ramp();
             let mid = rules.sb_mid_rise;
+            let dw = rules.sb_divider_width as f32;
             Some(if u >= ramp {
                 lo + mid
-            } else if v < lw {
+            } else if v >= 0.0 {
+                // the arriving flight, on the +v side: the upper floor at the landing row down to the mid landing
                 lo + mid + (rise - mid) * (1.0 - u / ramp)
+            } else if v > -dw {
+                // the solid divider
+                return None;
             } else {
+                // the leaving flight: the lower floor at the landing row up to the mid landing
                 lo + mid * u / ramp
             })
         }
-        FlightShape::Spiral => spiral_progress(rules, f, u, v).map(|t| lo + rise * (1.0 - t)),
+        FlightShape::Spiral => match spiral_surface(rules, f, u, v) {
+            // the slab is overhead for the lower level: its floor there is the plain floor
+            Some((_, SpiralLayer::Slab)) if lower_view => Some(lo),
+            Some((y, _)) => Some(y),
+            // the open corner on the arc's end side: a drop above, floor below
+            None => (lower_view && spiral_floor(rules, f, u, v)).then_some(lo),
+        },
     }
+}
+
+/// Whether the local point is on the spiral's well floor outside the arc: inside the square, past the post, not on the
+/// helicoid. The lower level's floor (the plain floor under the slab and in the open corner).
+fn spiral_floor(rules: &FlightRules, f: &Flight, u: f32, v: f32) -> bool {
+    let (uc, vc) = spiral_centre(rules, f);
+    let (du, dv) = (u - uc, v - vc);
+    let reach = rules.sp_reach();
+    du.abs() <= reach && dv.abs() <= reach && du.hypot(dv) >= rules.sp_inner
 }
 
 pub fn flight_surface_y(f: &Flight, x: f32, z: f32) -> Option<f32> {
     flight_surface_y_with(flights(), f, x, z)
 }
 
+/// Whether `(x, z)` is on the slab of upper floor that fills a spiral's wedge between its end radials (the drawn surface
+/// there is the upper floor; the lower level walks on the plain floor under it). False for every other flight.
+pub fn on_slab(f: &Flight, x: f32, z: f32) -> bool {
+    if f.kind != FlightKind::Stairs || f.shape != FlightShape::Spiral {
+        return false;
+    }
+    let (u, v) = to_local(f, x, z);
+    matches!(spiral_surface(flights(), f, u, v), Some((_, SpiralLayer::Slab)))
+}
+
+/// A line segment in grid coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Segment {
+    pub a: (f32, f32),
+    pub b: (f32, f32),
+}
+
+/// The solid divider between the two flights of a switchback, as the centre line of a wall `divider_width` metres thick
+/// whose two ends are flat: it runs the length of the ramp (from the landing row to the mid landing), from the floor to
+/// the upper floor. Empty for the other shapes, ladders and drops. Grid coordinates, the same list whichever level's
+/// record asks.
+pub fn lane_dividers_with(rules: &FlightRules, f: &Flight) -> Vec<Segment> {
+    if f.kind != FlightKind::Stairs || f.shape != FlightShape::Switchback || rules.sb_divider_width == 0 {
+        return vec![];
+    }
+    let mid_v = -(rules.sb_divider_width as f32) * 0.5;
+    vec![Segment { a: to_world(f, 0.0, mid_v), b: to_world(f, rules.sb_ramp(), mid_v) }]
+}
+
+pub fn lane_dividers(f: &Flight) -> Vec<Segment> {
+    lane_dividers_with(flights(), f)
+}
+
+/// The width in metres of the wall a [`lane_dividers`] segment is the centre line of.
+pub fn divider_width() -> f32 {
+    flights().sb_divider_width as f32
+}
+
+/// The spiral's centre post: its centre in grid coordinates and its radius. `None` for the other flights.
+pub fn spiral_post_with(rules: &FlightRules, f: &Flight) -> Option<((f32, f32), f32)> {
+    if f.kind != FlightKind::Stairs || f.shape != FlightShape::Spiral {
+        return None;
+    }
+    let (uc, vc) = spiral_centre(rules, f);
+    Some((to_world(f, uc, vc), rules.sp_post))
+}
+
+pub fn spiral_post(f: &Flight) -> Option<((f32, f32), f32)> {
+    spiral_post_with(flights(), f)
+}
+
 /// Points (x, z) along the walked route of a stair from the centre of A to the centre of B, about `step` metres apart.
-/// A ladder or drop gives just the two cell centres.
+/// A ladder or drop gives just the two cell centres. A switchback goes down the arriving flight's centre line, across the
+/// mid landing and back up the leaving flight's; a spiral round the helicoid's walking line.
 pub fn walk_path_with(rules: &FlightRules, f: &Flight, step: f32) -> Vec<(f32, f32)> {
     let (landing, foot) = ends(rules, f);
     if f.kind != FlightKind::Stairs {
@@ -744,28 +1129,30 @@ pub fn walk_path_with(rules: &FlightRules, f: &Flight, step: f32) -> Vec<(f32, f
             out.push((a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t));
         }
     };
-    let lw = rules.sb_lane_width as f32;
     match f.shape {
         FlightShape::Straight => line(&mut local, (-0.5, 0.5), (rules.st_length as f32 + 0.5, 0.5)),
         FlightShape::Switchback => {
-            let land = rules.sb_length as f32 - rules.sb_mid_len * 0.5;
-            line(&mut local, (-0.5, 0.5), (land, 0.5));
-            line(&mut local, (land, 0.5), (land, lw + 0.5));
-            line(&mut local, (land, lw + 0.5), (-0.5, lw + 0.5));
+            let (lw, dw) = (rules.sb_lane_width as f32, rules.sb_divider_width as f32);
+            let (top_c, foot_c) = (lw * 0.5, -dw - lw * 0.5);
+            let land = rules.sb_length as f32 - rules.sb_mid_len as f32 * 0.5;
+            // A's centre to the arriving flight's centre line (still inside A's cell), down it to the mid landing, across
+            // the mid landing, up the leaving flight's centre line, and into B's cell
+            line(&mut local, (-0.5, 0.5), (0.0, top_c));
+            line(&mut local, (0.0, top_c), (land, top_c));
+            line(&mut local, (land, top_c), (land, foot_c));
+            line(&mut local, (land, foot_c), (0.0, foot_c));
+            line(&mut local, (0.0, foot_c), (-0.5, -dw - 0.5));
         }
         FlightShape::Spiral => {
-            let (half, r) = (rules.sp_half() as f32, rules.sp_radius);
-            let (uc, vc) = (half + 0.5, 0.5);
-            line(&mut local, (-0.5, 0.5), (uc - r, vc));
-            let (s, span) = (spiral_dir(rules, f), rules.sp_span());
+            // landing A, in to where the arc starts, round the arc, out to foot B
+            let (span, off, r) = (rules.sp_span(), rules.sp_offset(), rules.sp_walk);
+            let dir = spiral_dir(rules, f);
+            line(&mut local, (-0.5, 0.5), spiral_point(rules, f, off));
             let n = (span * r / step).ceil().max(1.0) as i32;
             for i in 1..=n {
-                let phi = PI + s * span * i as f32 / n as f32;
-                local.push((uc + r * phi.cos(), vc + r * phi.sin()));
+                local.push(spiral_point(rules, f, off + span * i as f32 / n as f32));
             }
-            let (du, dv) = spiral_exit(rules, f);
-            let end = *local.last().expect("arc has points");
-            line(&mut local, end, (uc + (half + 1.0) * du as f32, vc + (half + 1.0) * dv as f32));
+            line(&mut local, spiral_point(rules, f, off + span), (-0.5, 0.5 + 2.0 * dir));
         }
     }
     local.into_iter().map(|(u, v)| to_world(f, u, v)).collect()
@@ -775,190 +1162,243 @@ pub fn walk_path(f: &Flight, step: f32) -> Vec<(f32, f32)> {
     walk_path_with(flights(), f, step)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// ---------------------------------------------------------------------------------------------------------------------
+// Dressing: guards, handrails, signs, lamp (all pure geometry in grid coordinates; render/stairs.rs draws them)
+// ---------------------------------------------------------------------------------------------------------------------
 
-    const RUNS: [(i32, i32); 4] = [(0, -1), (0, 1), (1, 0), (-1, 0)];
-    const SHAPES: [FlightShape; 3] = [FlightShape::Switchback, FlightShape::Straight, FlightShape::Spiral];
+/// A guard rail along the rim of the well on the UPPER level: a solid rail `guard_height` high (the hole rule keeps a
+/// walker out of the well already; this is what shows it) between the well and `outside`, the floor cell beside it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Guard {
+    pub seg: Segment,
+    /// The floor cell on the walker's side of the rail.
+    pub outside: Cell,
+}
 
-    fn stairs(shape: FlightShape, run: (i32, i32), cw: bool) -> Flight {
-        Flight::new(FlightKind::Stairs, shape, 1, Cell::new(20, 20), run).with_clockwise(cw)
+/// The rim guards of the upper level, with a gap where the stairs arrive (Godot `_add_landing_guards`).
+///
+/// - A switchback: along the landing row's inner edge across the leaving flight and the divider (the arriving flight's
+///   width is the gap), so the whole edge is guarded but the head of the stairs.
+/// - A spiral: along the landing row's end on the arc's end side (the open corner), where the drop is; the start side is
+///   floored by the corner slab. The slab's own rail is [`spiral_slab_rail`].
+/// - A straight flight: every rim edge of the well that borders an open cell, except the one at the landing.
+pub fn landing_guards_with(rules: &FlightRules, f: &Flight) -> Vec<Guard> {
+    if f.kind != FlightKind::Stairs {
+        return vec![];
     }
-
-    #[test]
-    fn the_shipped_table_is_valid_and_matches_the_game() {
-        let r = FlightRules::parse(FILE).expect("data/flights.json is valid");
-        assert!((r.storey - STOREY).abs() < 1e-6);
-        assert_eq!(&r, flights());
-    }
-
-    #[test]
-    fn the_surface_is_the_lower_floor_at_b_and_the_upper_floor_at_a() {
-        let rules = flights();
-        for level in [1, 0, -2, 3] {
-            for shape in SHAPES {
-                for run in RUNS {
-                    for cw in [false, true] {
-                        let f = Flight { upper_level: level, ..stairs(shape, run, cw) };
-                        let fp = well_footprint_with(rules, &f);
-                        let (a, b) = (fp.landing.center(), fp.foot.center());
-                        let top = flight_surface_y(&f, a.0, a.1).expect("A has a surface");
-                        let bottom = flight_surface_y(&f, b.0, b.1).expect("B has a surface");
-                        assert!((top - level as f32 * STOREY).abs() < 1e-4, "{shape:?} {run:?}: A {top}");
-                        assert!((bottom - (level - 1) as f32 * STOREY).abs() < 1e-4, "{shape:?} {run:?}: B {bottom}");
+    let seg = |a: (f32, f32), b: (f32, f32)| Segment { a: to_world(f, a.0, a.1), b: to_world(f, b.0, b.1) };
+    match f.shape {
+        FlightShape::Switchback => {
+            // one guard per cell edge of the landing row's inner edge, from the leaving flight's far side to the divider's
+            // near edge: each stands beside the one floor cell of the row it guards
+            let (v0, _) = rules.sb_v_range();
+            (v0 as i32..0)
+                .map(|j| Guard { seg: seg((0.0, j as f32), (0.0, (j + 1) as f32)), outside: cell_at(f, 0, j) })
+                .collect()
+        }
+        FlightShape::Spiral => {
+            let (_, vc) = spiral_centre(rules, f);
+            let dir = spiral_dir(rules, f);
+            // the bottom end's side: dv has the sign of +dir (see spiral_point); the landing row ends half its width out
+            let edge_v = vc + dir * rules.sp_landing_cells as f32 * 0.5;
+            let j = if dir > 0.0 { 2 } else { -2 };
+            vec![Guard { seg: seg((-1.0, edge_v), (0.0, edge_v)), outside: cell_at(f, 0, j) }]
+        }
+        FlightShape::Straight => {
+            let hole = well_footprint_with(rules, f).upper_hole;
+            let (landing, _) = ends(rules, f);
+            let mut out = Vec::new();
+            for c in &hole {
+                for d in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let n = Cell::new(c.x + d.0, c.y + d.1);
+                    if hole.contains(&n) || n == landing {
+                        continue;
                     }
+                    // the edge of cell c towards n
+                    let (x0, z0) = (c.x as f32, c.y as f32);
+                    let (a, b) = match d {
+                        (1, 0) => ((x0 + 1.0, z0), (x0 + 1.0, z0 + 1.0)),
+                        (-1, 0) => ((x0, z0), (x0, z0 + 1.0)),
+                        (0, 1) => ((x0, z0 + 1.0), (x0 + 1.0, z0 + 1.0)),
+                        _ => ((x0, z0), (x0 + 1.0, z0)),
+                    };
+                    out.push(Guard { seg: Segment { a, b }, outside: n });
                 }
             }
+            out
         }
-        for kind in [FlightKind::Ladder, FlightKind::Drop] {
-            for run in RUNS {
-                let f = Flight::new(kind, FlightShape::Switchback, 0, Cell::new(5, 5), run);
-                let fp = well_footprint(&f);
-                let (a, b) = (fp.landing.center(), fp.foot.center());
-                assert_eq!(flight_surface_y(&f, a.0, a.1), Some(0.0), "{kind:?} A");
-                assert_eq!(flight_surface_y(&f, b.0, b.1), Some(-STOREY), "{kind:?} B");
+    }
+}
+
+pub fn landing_guards(f: &Flight) -> Vec<Guard> {
+    landing_guards_with(flights(), f)
+}
+
+/// The rail along the spiral's end radial on the upper level (Godot: a 1.1 m collider and a 0.95 m rail from the post
+/// to the landing row's inner edge, where the slab beside the helicoid's lowest step drops a storey): grid coordinates,
+/// from `post_radius` out from the post to the landing row's edge. `None` for the other flights.
+pub fn spiral_slab_rail_with(rules: &FlightRules, f: &Flight) -> Option<Segment> {
+    if f.kind != FlightKind::Stairs || f.shape != FlightShape::Spiral {
+        return None;
+    }
+    let (uc, vc) = spiral_centre(rules, f);
+    let end = rules.sp_offset() + rules.sp_span();
+    let phi = spiral_angle(rules, f, end);
+    let (cu, sv) = (phi.cos(), phi.sin());
+    // along the radial from the post to the line u = 0
+    let t = uc / -cu;
+    let from = (uc + cu * (rules.sp_post), vc + sv * rules.sp_post);
+    let to = (0.0, vc + sv * t);
+    Some(Segment { a: to_world(f, from.0, from.1), b: to_world(f, to.0, to.1) })
+}
+
+pub fn spiral_slab_rail(f: &Flight) -> Option<Segment> {
+    spiral_slab_rail_with(flights(), f)
+}
+
+/// A handrail: a polyline of points `(x, y, z)` with `y` measured from the LOWER floor to the rail (so the polyline is
+/// already `rail_height` over the tread).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Handrail {
+    pub points: Vec<[f32; 3]>,
+}
+
+/// The handrails of the lower level's fit-out (Godot `_add_handrails_switchback` and the spiral's helix rail): a
+/// switchback has one on each edge of each flight (four), a straight flight one on each side, a spiral one winding
+/// round the post at `inner_radius + inner_offset`.
+pub fn handrails_with(rules: &FlightRules, f: &Flight) -> Vec<Handrail> {
+    if f.kind != FlightKind::Stairs {
+        return vec![];
+    }
+    let d = &rules.dressing;
+    let lo = f.lower_y();
+    let at = |u: f32, v: f32, y: f32| {
+        let (x, z) = to_world(f, u, v);
+        [x, y - lo + d.rail_height, z]
+    };
+    let rise = rules.rise_total;
+    match f.shape {
+        FlightShape::Switchback => {
+            let (lw, dw) = (rules.sb_lane_width as f32, rules.sb_divider_width as f32);
+            let (mid, ramp) = (rules.sb_mid_rise, rules.sb_ramp());
+            let top = |u: f32| lo + mid + (rise - mid) * (1.0 - u / ramp);
+            let foot = |u: f32| lo + mid * u / ramp;
+            let ins = d.rail_inset;
+            let mut out = Vec::new();
+            for v in [ins, lw - ins] {
+                out.push(Handrail { points: vec![at(0.0, v, top(0.0)), at(ramp, v, top(ramp))] });
             }
-        }
-    }
-
-    #[test]
-    fn the_walked_route_is_all_surface_and_only_goes_down() {
-        let rules = flights();
-        for shape in SHAPES {
-            for run in RUNS {
-                for cw in [false, true] {
-                    let f = stairs(shape, run, cw);
-                    let path = walk_path_with(rules, &f, 0.05);
-                    let mut prev = f32::MAX;
-                    for (x, z) in &path {
-                        let y = flight_surface_y(&f, *x, *z).unwrap_or_else(|| panic!("{shape:?} {run:?}: no surface at {x},{z}"));
-                        assert!(y <= prev + 1e-4, "{shape:?} {run:?} cw {cw}: rises from {prev} to {y} at {x},{z}");
-                        prev = y;
-                    }
-                    assert!((flight_surface_y(&f, path[0].0, path[0].1).unwrap() - STOREY).abs() < 1e-4);
-                    assert!(prev.abs() < 1e-4, "{shape:?}: ends at {prev}");
-                }
+            for v in [-dw - lw + ins, -dw - ins] {
+                out.push(Handrail { points: vec![at(0.0, v, foot(0.0)), at(ramp, v, foot(ramp))] });
             }
+            out
+        }
+        FlightShape::Straight => {
+            let len = rules.st_length as f32;
+            let w = rules.st_width as f32;
+            let y = |u: f32| lo + rise * (1.0 - u / len);
+            [d.rail_inset, w - d.rail_inset]
+                .into_iter()
+                .map(|v| Handrail { points: vec![at(0.0, v, y(0.0)), at(len, v, y(len))] })
+                .collect()
+        }
+        FlightShape::Spiral => {
+            let (span, off) = (rules.sp_span(), rules.sp_offset());
+            let r = rules.sp_inner + d.rail_inner_offset;
+            let n = rules.sp_steps;
+            let points = (0..=n)
+                .map(|i| {
+                    let t = i as f32 / n as f32;
+                    let (u, v) = spiral_point_at(rules, f, off + span * t, r);
+                    at(u, v, lo + rise * (1.0 - t))
+                })
+                .collect();
+            vec![Handrail { points }]
         }
     }
+}
 
-    #[test]
-    fn no_riser_is_above_the_data_max() {
-        let rules = flights();
-        let tread = 1.0 / rules.steps_per_cell;
-        for shape in SHAPES {
-            assert!(max_riser_of(rules, shape) <= rules.max_riser + 1e-4, "{shape:?}");
-            let f = stairs(shape, (0, 1), false);
-            let path = walk_path_with(rules, &f, tread * 0.25);
-            // heights one tread apart along the route
-            let ys: Vec<f32> = path.iter().map(|(x, z)| flight_surface_y(&f, *x, *z).unwrap()).collect();
-            for i in 0..ys.len().saturating_sub(4) {
-                assert!((ys[i] - ys[i + 4]).abs() <= rules.max_riser + 1e-3, "{shape:?} at {i}: {} -> {}", ys[i], ys[i + 4]);
-            }
+pub fn handrails(f: &Flight) -> Vec<Handrail> {
+    handrails_with(flights(), f)
+}
+
+/// A "LEVEL n" sign on the well's low-`v` wall at the landing, facing into the well.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sign {
+    /// "LEVEL +1", "LEVEL 0", "LEVEL -1".
+    pub text: String,
+    /// The point on the wall plane (grid coordinates, already `inset` out from the wall) at the landing row's middle.
+    pub at: (f32, f32),
+    /// The unit horizontal direction the sign faces (into the well).
+    pub normal: (f32, f32),
+    /// The unit horizontal direction the text runs, left to right for a reader facing the sign.
+    pub right: (f32, f32),
+    /// The centre of the sign over the floor of its level (metres).
+    pub y: f32,
+    /// The level the sign names, and whether it stands on the upper level (else the lower).
+    pub level: i32,
+    pub upper: bool,
+}
+
+/// "LEVEL +1" / "LEVEL 0" / "LEVEL -1": the sign's words for `level` (Godot's `"LEVEL %+d"`, zero unsigned).
+pub fn sign_text(level: i32) -> String {
+    if level == 0 {
+        "LEVEL 0".to_string()
+    } else {
+        format!("LEVEL {level:+}")
+    }
+}
+
+/// The two signs of a stairwell: the upper level's and the lower level's, on the wall beside the landing.
+pub fn signs_with(rules: &FlightRules, f: &Flight) -> Vec<Sign> {
+    if f.kind != FlightKind::Stairs {
+        return vec![];
+    }
+    let d = &rules.dressing;
+    let (u, v_wall) = match f.shape {
+        // the door-adjacent row of the landing, and the interior's low-v wall
+        FlightShape::Switchback => (-(rules.sb_landing_depth as f32) + 0.5, rules.sb_v_range().0),
+        FlightShape::Straight => (-0.5, 0.0),
+        FlightShape::Spiral => {
+            let (_, vc) = spiral_centre(rules, f);
+            (-0.5, vc - (rules.sp_half() as f32 + 0.5))
         }
-    }
+    };
+    let at = to_world(f, u, v_wall + d.sign_inset);
+    let s = side(f.run);
+    let normal = (s.0 as f32, s.1 as f32);
+    // a reader faces the wall: forward is -normal, right = forward x up = (n.z, -n.x)
+    let right = (normal.1, -normal.0);
+    [(f.upper_level, true), (f.upper_level - 1, false)]
+        .into_iter()
+        .map(|(level, upper)| Sign { text: sign_text(level), at, normal, right, y: d.sign_y(), level, upper })
+        .collect()
+}
 
-    #[test]
-    fn the_switchback_has_its_mid_landing_at_the_data_rise() {
-        let rules = flights();
-        let f = stairs(FlightShape::Switchback, (0, 1), false);
-        let (u, v) = (rules.sb_length as f32 - rules.sb_mid_len * 0.5, 0.5);
-        let (x, z) = to_world(&f, u, v);
-        assert!((flight_surface_y(&f, x, z).unwrap() - 2.5).abs() < 1e-4);
-        assert_eq!(well_footprint(&f).upper_hole.len(), 8, "the 2x4 well");
-    }
+pub fn signs(f: &Flight) -> Vec<Sign> {
+    signs_with(flights(), f)
+}
 
-    #[test]
-    fn lane_dividers_are_empty_for_straight_and_spiral() {
-        for run in RUNS {
-            for cw in [false, true] {
-                assert!(lane_dividers(&stairs(FlightShape::Straight, run, cw)).is_empty());
-                assert!(lane_dividers(&stairs(FlightShape::Spiral, run, cw)).is_empty());
-            }
+/// The stairwell light: (x, y over the LOWER floor, z), over the middle of the well (Godot: the interior's centre, 1.4
+/// Godot metres over mid storey).
+pub fn lamp_place_with(rules: &FlightRules, f: &Flight) -> (f32, f32, f32) {
+    let d = &rules.dressing;
+    let (u, v) = match f.shape {
+        FlightShape::Switchback => {
+            // the interior: landing_depth rows behind the hole's first row, then the hole
+            let depth = rules.sb_landing_depth as f32 + rules.sb_length as f32;
+            let (v0, v1) = rules.sb_v_range();
+            (-(rules.sb_landing_depth as f32) + depth * 0.5, (v0 + v1) * 0.5)
         }
-        let ladder = Flight::new(FlightKind::Ladder, FlightShape::Switchback, 1, Cell::new(20, 20), (0, 1));
-        assert!(lane_dividers(&ladder).is_empty());
-    }
+        FlightShape::Straight => (rules.st_length as f32 * 0.5, rules.st_width as f32 * 0.5),
+        FlightShape::Spiral => spiral_centre(rules, f),
+    };
+    let (x, z) = to_world(f, u, v);
+    (x, d.lamp_y(), z)
+}
 
-    #[test]
-    fn the_switchback_divider_runs_between_the_lanes_where_they_differ() {
-        let rules = flights();
-        for run in RUNS {
-            let f = stairs(FlightShape::Switchback, run, false);
-            let d = lane_dividers(&f);
-            assert_eq!(d.len(), 1);
-            let (a, b) = (d[0].a, d[0].b);
-            let (ua, va) = to_local(&f, a.0, a.1);
-            let (ub, vb) = to_local(&f, b.0, b.1);
-            assert!(ua.abs() < 1e-4 && (va - rules.sb_lane_width as f32).abs() < 1e-4);
-            assert!((vb - va).abs() < 1e-4 && ub > 0.5 && ub < rules.sb_length as f32 - rules.sb_mid_len);
-            // across the divider the two lanes differ by more than a riser at its start and by about a riser at its end
-            let lane_gap = |u: f32| {
-                let lw = rules.sb_lane_width as f32;
-                let (x1, z1) = to_world(&f, u, lw - 0.5);
-                let (x2, z2) = to_world(&f, u, lw + 0.5);
-                (flight_surface_y(&f, x1, z1).unwrap() - flight_surface_y(&f, x2, z2).unwrap()).abs()
-            };
-            assert!(lane_gap(0.05) > rules.max_riser);
-            assert!((lane_gap(ub) - rules.max_riser).abs() < 1e-3);
-        }
-    }
-
-    #[test]
-    fn the_ladder_dir_order_is_a_seeded_rotation_of_the_four_steps() {
-        let mut firsts = std::collections::BTreeSet::new();
-        for seed in [1u64, 99, 123_456_789] {
-            for cx in -2..=2 {
-                for cell in [Cell::new(10, 12), Cell::new(30, 7), Cell::new(22, 22)] {
-                    let order = ladder_dir_order(seed, (cx, 1), cell);
-                    assert_eq!(order, ladder_dir_order(seed, (cx, 1), cell), "deterministic");
-                    let mut sorted = order.to_vec();
-                    sorted.sort();
-                    sorted.dedup();
-                    assert_eq!(sorted.len(), 4, "all four directions, once each");
-                    for d in order {
-                        assert_eq!(d.0.abs() + d.1.abs(), 1, "a unit step");
-                    }
-                    // a rotation: consecutive entries are quarter turns of one another, all the same way
-                    let turn = |a: (i32, i32), b: (i32, i32)| a.0 * b.1 - a.1 * b.0;
-                    let t0 = turn(order[0], order[1]);
-                    assert!(t0 != 0 && (1..3).all(|i| turn(order[i], order[i + 1]) == t0), "{order:?} is not a rotation");
-                    firsts.insert(order[0]);
-                }
-            }
-        }
-        assert!(firsts.len() >= 3, "the rotation should start at different steps, got {firsts:?}");
-    }
-
-    #[test]
-    fn a_ladder_steps_off_beside_its_hatch_in_its_run_direction() {
-        let rules = flights();
-        for run in RUNS {
-            let f = Flight::new(FlightKind::Ladder, FlightShape::Switchback, 0, Cell::new(20, 20), run);
-            let fp = well_footprint_with(rules, &f);
-            assert_eq!(fp.upper_hole, vec![Cell::new(20, 20)], "the hatch alone is the hole");
-            assert_eq!(fp.landing, Cell::new(20 + run.0, 20 + run.1), "the step cell is one step along the run");
-            assert_eq!(fp.step_cell, Some(fp.landing));
-            assert_eq!(fp.foot, Cell::new(20, 20), "the foot is the hatch's own cell below");
-            assert!(fp.upper_clear.contains(&fp.landing) && fp.lower_clear.contains(&fp.foot));
-            // the same flight seen from its foot is the same record
-            let low = Flight::from_foot_with(rules, FlightKind::Ladder, FlightShape::Switchback, -1, fp.foot, run, false);
-            assert_eq!(low, f, "{run:?}: both levels build one flight");
-        }
-    }
-
-    #[test]
-    fn divider_thickness_is_data_and_validated() {
-        let rules = flights();
-        assert!(rules.divider_thickness >= rules.limits.divider_thickness.min);
-        assert!(rules.divider_thickness <= rules.limits.divider_thickness.max);
-        let mut bad = rules.clone();
-        bad.divider_thickness = 0.01;
-        assert!(bad.validate().unwrap_err().contains("divider_thickness"));
-        bad.divider_thickness = 0.9;
-        assert!(bad.validate().is_err());
-    }
+pub fn lamp_place(f: &Flight) -> (f32, f32, f32) {
+    lamp_place_with(flights(), f)
 }
 
 #[cfg(test)]

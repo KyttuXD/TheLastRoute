@@ -2,8 +2,9 @@
 //! handed to the guests, and the position exchange that puts each runner into the others' world.
 //!
 //! Flow (the Godot room flow, `room_state.gd` / `backend_client.gd`, with the Rust transport of `net::session`):
-//! * Host: [`host_room`] registers a code (`api::register_room`, retrying a reserved one), opens the relay
-//!   (`RelayLink::host`) and heartbeats the directory every 20 s. The route seed is the room text
+//! * Host: only the public route is hosted by a client now (`join_public_room`: `api::register_room`, the relay host
+//!   link, a directory heartbeat every 5 s). Every other online room is hosted by a server process
+//!   (`headless/dedicated.rs`, `net/hosted.rs`) and joined as a guest. The route seed is the room text
 //!   (`ROOM-<code>-<hex>`), so the lobby shows the code the guests type.
 //! * Guest: [`join_room`] looks the code up (`api::lookup_room`), refuses a room that is not on the relay or that runs
 //!   another build's protocol, then joins the relay (`RelayLink::guest`).
@@ -70,6 +71,7 @@ const GUEST_IDLE: Duration = Duration::from_secs(45);
 /// A guest whose relay join is not answered in this long is told so.
 pub const JOIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// Registrations tried while the drawn code is a reserved one (ROOM_RESERVED).
+#[cfg(test)]
 const REGISTER_TRIES: u32 = 6;
 /// Longest name a runner shows in a room.
 const MAX_NAME: usize = 24;
@@ -378,6 +380,24 @@ fn remote_view(peer: u32, name: String, r: &Remote, skin: String, origin: (i32, 
     }
 }
 
+/// A guest as a dedicated room's hunters see it ([`NetSession::guest_poses`]): the last sample, in absolute cells.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GuestPose {
+    pub peer: u32,
+    pub name: String,
+    pub x: f32,
+    pub y: f32,
+    /// Absolute feet height, and the level that owns it.
+    pub h: f32,
+    pub level: i32,
+    pub yaw: f32,
+    pub moving: bool,
+    pub sprinting: bool,
+    pub crouching: bool,
+    pub hidden: bool,
+    pub huntable: bool,
+}
+
 /// What the room tells the game. The app acts on these between frames.
 #[derive(Clone, Debug, PartialEq)]
 pub enum NetEvent {
@@ -405,6 +425,11 @@ pub enum NetEvent {
     Hunters(Vec<Value>),
     /// A world event the host relayed (guest side): an object with `what` (see `net::hunter_events`).
     WorldEvent(Map<String, Value>),
+    /// A guest asked the room for an owner command (host side, a server-side room): `peer` is the guest's session, `ticket`
+    /// the directory's owner ticket. The room runs the command only after the directory has confirmed the ticket.
+    OwnerCommand { peer: u32, ticket: String, action: String, args: Map<String, Value> },
+    /// The room refused this runner's owner command (guest side); the text is the reason to show the owner.
+    OwnerRefused(String),
 }
 
 /// An owner route command for a reserved room, as Godot `RoomState.carry_out_route_command` carries it out.
@@ -645,6 +670,11 @@ pub struct NetSession {
     heartbeat: Option<Pending<api::HeartbeatReply>>,
     relist: Option<Pending<Registered>>,
     opened: Instant,
+    /// Host: whether this room talks to the directory (heartbeat, relist). A dedicated room started with a host token has
+    /// one (it is the room's owner of record); a test room over an in-process hub does not.
+    directory: bool,
+    /// Host: a server-side room, whose host is no runner: the room's player count is its guests.
+    dedicated: bool,
     timed_out: bool,
     /// Host: the owner-command cursors of a reserved room (see [`OwnerCursor`]).
     owner: OwnerCursor,
@@ -669,9 +699,16 @@ pub struct NetSession {
     relays_sabotaged: u32,
     /// Guest: the snapshot the host sent on join, until the app takes it ([`NetSession::take_snapshot`]).
     snapshot: Option<hunter_events::Snapshot>,
+    /// The account that owns the room (upper case; empty for a room with no owner of record), from the directory entry.
+    room_owner: String,
+    /// Guest: the session id of each name in `players`, from the host's last room message (0 when the host sent none).
+    player_peers: Vec<u32>,
 }
 
-/// CREATE a room on the directory and open its relay. The request blocks, so the frame loop polls the result.
+/// CREATE a room on the directory and open its relay as the host. The request blocks, so the frame loop polls the result.
+/// The game no longer hosts online rooms from a client (a server process does, `net/hosted.rs`); this is the test
+/// harness' way to stand up a host on a test directory.
+#[cfg(test)]
 pub fn host_room(cfg: BackendConfig, route_seed: String, name: String, skin: String) -> Pending<NetSession> {
     Pending::spawn(move || {
         if cfg.offline {
@@ -842,10 +879,10 @@ fn lookup_outcome(lookup: Result<api::RoomEndpoint, NetError>, is_admin: bool, s
 /// A guest publishes its chosen skin id in its profile, the same as a host (only once the website holds it, see
 /// [`publishable_skin`]); remote runners fetch the skin by id. The guest's own screen keeps its local skin (Godot
 /// "Local-only", `PLAYER_SKINS.md`).
-/// `ticket` is a reserved room's join ticket (base64url) from the reserved resolve; empty for an open room. The browser
-/// build joins a ws room over the WebSocket relay; the native build joins a relay room over UDP.
+/// `ticket` is a reserved room's join ticket (base64url) from the reserved resolve; empty for an open room. A ws room (a
+/// hosted room, or a browser host's) is joined over the WebSocket relay by both builds; a relay room over UDP by the native build.
 fn join_found(cfg: BackendConfig, code: String, room: api::RoomEndpoint, name: String, skin: String, ticket: &str) -> Result<NetSession, NetError> {
-    let ws = IN_BROWSER && room.transport == "ws";
+    let ws = room.transport == "ws";
     if !ws && (room.transport != "relay" || room.address.is_empty()) {
         return Err(NetError::Refused("THAT ROOM CANNOT BE JOINED FROM THIS BUILD".into()));
     }
@@ -854,11 +891,18 @@ fn join_found(cfg: BackendConfig, code: String, room: api::RoomEndpoint, name: S
         return Err(NetError::Refused(refused));
     }
     let link: Box<dyn RoomLink> = if ws {
-        Box::new(WsLink::guest(&code, ticket, &cfg.base_url).map_err(|e| NetError::Transport(e.to_string()))?)
+        // the browser build joins through the page's WebSocket; the native build opens its own (net/ws_native.rs)
+        #[cfg(target_arch = "wasm32")]
+        let link = WsLink::guest(&code, ticket, &cfg.base_url);
+        #[cfg(not(target_arch = "wasm32"))]
+        let link = super::ws_native::NativeWsLink::guest(&code, ticket, &cfg.base_url);
+        Box::new(link.map_err(|e| NetError::Transport(e.to_string()))?)
     } else {
         Box::new(RelayLink::guest(&code, &room.address, room.port, ticket).map_err(|e| NetError::Transport(e.to_string()))?)
     };
-    Ok(NetSession::new(cfg, code, Role::Guest, CoopSession::new(link), String::new(), String::new(), name, publishable_skin(&skin)))
+    let mut session = NetSession::new(cfg, code, Role::Guest, CoopSession::new(link), String::new(), String::new(), name, publishable_skin(&skin));
+    session.room_owner = room.owner.to_uppercase();
+    Ok(session)
 }
 
 /// A JOIN to a private (reserved) room, browser build: the directory resolves the code for this player (her session's
@@ -934,6 +978,8 @@ impl NetSession {
             heartbeat: None,
             relist: None,
             opened: now,
+            directory: true,
+            dedicated: false,
             timed_out: false,
             owner: OwnerCursor::default(),
             backlog: Vec::new(),
@@ -946,17 +992,89 @@ impl NetSession {
             hunters_now: Vec::new(),
             relays_sabotaged: 0,
             snapshot: None,
+            room_owner: String::new(),
+            player_peers: Vec::new(),
         }
+    }
+
+    /// A room hosted by a server-side process (`headless/dedicated.rs`): the link is already open as the room's host with
+    /// the token the directory issued, and no client plays here. `name` is what the guests see as the host (the Godot
+    /// dedicated host is called SERVER). `directory` keeps the heartbeat on (player count and route flag for the room
+    /// list); the host sends only keep-alives as its own sample, never a position.
+    pub fn dedicated_host(cfg: BackendConfig, code: String, link: Box<dyn RoomLink>, token: String, route_seed: String, name: String, directory: bool) -> NetSession {
+        let mut session = NetSession::new(cfg, code, Role::Host, CoopSession::new(link), token, route_seed, name, SKIN_DEFAULT.to_string());
+        session.directory = directory;
+        session.dedicated = true;
+        session
+    }
+
+    /// A guest over a link the caller opened (a native client on [`super::ws_native::NativeWsLink`], or a test).
+    pub fn guest_over(cfg: BackendConfig, code: String, link: Box<dyn RoomLink>, name: String, skin: String) -> NetSession {
+        NetSession::new(cfg, code, Role::Guest, CoopSession::new(link), String::new(), String::new(), name, publishable_skin(&skin))
     }
 
     pub fn is_host(&self) -> bool {
         self.role == Role::Host
     }
 
+    /// Host: how many runners the host itself counts for in the room: one, or none in a dedicated room.
+    fn runners(&self) -> u32 {
+        u32::from(!self.dedicated)
+    }
+
+    /// The account that owns this room, from the directory entry (upper case); empty when the room has no owner of record.
+    pub fn room_owner(&self) -> &str {
+        &self.room_owner
+    }
+
+    /// Guest: sends the room an owner command with the directory's owner ticket (Godot `_owner_command.rpc_id(1, ...)`).
+    /// False on the host, or when the message could not be sent. The room checks the ticket with the directory.
+    pub fn send_owner_command(&mut self, ticket: &str, action: &super::hosted::OwnerAction) -> bool {
+        if self.is_host() {
+            return false;
+        }
+        let message = Message::OwnerCommand { ticket: ticket.to_string(), action: action.wire_name().to_string(), args: action.args() };
+        self.coop.send(HOST_PEER_ID, &message)
+    }
+
+    /// Host: tells guest `peer` the room refused its owner command.
+    pub fn send_owner_refused(&mut self, peer: u32, reason: &str) -> bool {
+        self.is_host() && self.coop.send(peer, &Message::OwnerRefused { reason: reason.to_string() })
+    }
+
+    /// Host: removes guest `peer` from the room. The relay closes its socket (the guest hears YOU WERE REMOVED FROM THE
+    /// ROOM), the guest is dropped from the roster at once, and the others get the new roster. False when no such guest is
+    /// in the room.
+    pub fn kick_guest(&mut self, peer: u32) -> bool {
+        if !self.is_host() || !self.guests.contains_key(&peer) {
+            return false;
+        }
+        self.coop.kick(peer);
+        self.forget_guest(peer);
+        self.send_room_and_roster();
+        true
+    }
+
+    /// Host: drops everything kept for guest `peer`; the guest's name when it was in the room.
+    fn forget_guest(&mut self, peer: u32) -> Option<String> {
+        self.remotes.remove(&peer);
+        self.skins.remove(&peer);
+        self.peer_flags.remove(&peer);
+        self.skin_slims.remove(&peer);
+        self.pending_captures.remove(&peer);
+        self.last_taser.remove(&peer);
+        self.guests.remove(&peer).map(|g| g.name)
+    }
+
+    /// Host: how many guests the room holds now (the host itself is no runner in a dedicated room).
+    pub fn guest_count(&self) -> usize {
+        self.guests.len()
+    }
+
     /// Host only: how many runners the room holds now, the host included (the same count the heartbeat
     /// sends). None on a guest, which does not see the other runners.
     pub fn player_count(&self) -> Option<u32> {
-        self.is_host().then(|| 1 + self.guests.len() as u32)
+        self.is_host().then(|| self.runners() + self.guests.len() as u32)
     }
 
     /// Host: the room's mod pack ids (the reserved room's `mods`), sent to every runner with the room. Ids that are not
@@ -1081,6 +1199,24 @@ impl NetSession {
             .collect()
     }
 
+    /// The other runners of the room with their session ids, for the owner's lobby (KICK needs the id). Host: the guests.
+    /// Guest: the others in the host's last room message, this runner and the host left out. A name with no id from the host
+    /// is left out too.
+    pub fn roster_peers(&self) -> Vec<(u32, String)> {
+        if self.is_host() {
+            let mut v: Vec<(u32, String)> = self.guests.iter().filter(|(_, g)| !g.name.is_empty()).map(|(p, g)| (*p, g.name.clone())).collect();
+            v.sort_by_key(|(p, _)| *p);
+            return v;
+        }
+        let me = self.coop.link.session();
+        self.players
+            .iter()
+            .zip(self.player_peers.iter())
+            .filter(|(name, peer)| **peer > HOST_PEER_ID && **peer != me && !name.is_empty() && !name.eq_ignore_ascii_case(&self.host_name))
+            .map(|(name, peer)| (*peer, name.clone()))
+            .collect()
+    }
+
     /// The other runners for the PLAYERS list, the host first. A guest lists the host and each other runner it has a
     /// state for; the host lists each guest that registered. `sending` is whether a sample came lately; `state` is the
     /// last sample's state (None until one arrives), and it is kept until the runner drops, so a silent one reads
@@ -1139,6 +1275,11 @@ impl NetSession {
         self.coop.link.ready()
     }
 
+    /// False once the relay connection is over for good (see [`RoomLink::alive`]).
+    pub fn link_alive(&self) -> bool {
+        self.coop.link.alive()
+    }
+
     /// The route seed the room runs on (host: its own; guest: the last one received).
     pub fn room_seed(&self) -> &str {
         &self.room_seed
@@ -1156,6 +1297,10 @@ impl NetSession {
         rest.insert("host".into(), Value::String(self.name.clone()));
         let players: Vec<Value> = self.guest_names().into_iter().map(Value::String).collect();
         rest.insert("players".into(), Value::Array(players));
+        // the session id of each name above, in the same order (the owner's KICK names a guest by it)
+        let mut named: Vec<(&u32, &Guest)> = self.guests.iter().filter(|(_, g)| !g.name.is_empty()).collect();
+        named.sort_by_key(|(peer, _)| **peer);
+        rest.insert("peers".into(), Value::Array(named.into_iter().map(|(peer, _)| json!(peer)).collect()));
         rest.insert("difficulty".into(), Value::String(self.difficulty.clone()));
         let room = Message::Room { code: self.code.clone(), seed: self.room_seed.clone(), mode: 0, scale: 0, rest };
         let packs = packs_message(&self.mods);
@@ -1241,6 +1386,46 @@ impl NetSession {
             self.guest_events.push(ev);
         }
         expired.len()
+    }
+
+    /// Host: tells one guest something about itself (Godot `_player_event`: a `capture` when a hunter takes it).
+    pub fn send_player_event(&mut self, peer: u32, event: Map<String, Value>) -> bool {
+        self.is_host() && self.guests.contains_key(&peer) && self.coop.send(peer, &Message::PlayerEvent { event })
+    }
+
+    /// Host: the guests with a fresh sample as the hunters of a dedicated room need them: absolute cell and height, the
+    /// level that owns it, the flags that make noise, and whether a hunter may take it. In peer order.
+    pub fn guest_poses(&self) -> Vec<GuestPose> {
+        if !self.is_host() {
+            return Vec::new();
+        }
+        let now = Instant::now();
+        let mut out: Vec<GuestPose> = self
+            .remotes
+            .iter()
+            .filter(|(peer, r)| self.guests.contains_key(peer) && now.duration_since(r.last_seen) < remote_timeout())
+            .map(|(peer, r)| {
+                let s = &r.sample;
+                let h = s.h.unwrap_or(s.depth as f32 * STOREY);
+                GuestPose {
+                    peer: *peer,
+                    name: self.peer_name(*peer),
+                    x: s.x,
+                    y: s.y,
+                    h,
+                    level: crate::game::level_stack::owning_level(h),
+                    yaw: s.yaw,
+                    moving: s.moving,
+                    sprinting: s.sprinting,
+                    crouching: s.crouching,
+                    hidden: s.hide.is_some(),
+                    // spectating, over, or already in a hunter's grip: not a target
+                    huntable: !(s.spectating || s.game_over || s.escape_active),
+                }
+            })
+            .collect();
+        out.sort_by_key(|g| g.peer);
+        out
     }
 
     /// Host: the guests' valve turn requests since the last call, oldest first. A guest always gets nothing.
@@ -1455,17 +1640,24 @@ impl NetSession {
     /// one storey of `viewer_h`; from an old client (no height), those on `depth`. `origin` is this runner's window
     /// origin: the samples are absolute cells, so they are moved into this window before they are returned.
     pub fn remotes_at(&self, viewer_h: f32, depth: i32, origin: (i32, i32)) -> Vec<RemoteView> {
+        self.remotes_where(origin, |r| match r.sample.h {
+            Some(h) => (h - viewer_h).abs() <= STOREY + 0.05,
+            None => r.sample.depth == depth,
+        })
+    }
+
+    /// Every other runner with a fresh sample, on any floor, in peer order and moved into the window whose origin is
+    /// `origin`. The dedicated room's hunters choose their target among these (there is no viewer to be near).
+    pub fn remotes_all(&self, origin: (i32, i32)) -> Vec<RemoteView> {
+        self.remotes_where(origin, |_| true)
+    }
+
+    fn remotes_where(&self, origin: (i32, i32), keep: impl Fn(&Remote) -> bool) -> Vec<RemoteView> {
         let now = Instant::now();
         let mut out: Vec<RemoteView> = self
             .remotes
             .iter()
-            .filter(|(_, r)| {
-                let near = match r.sample.h {
-                    Some(h) => (h - viewer_h).abs() <= STOREY + 0.05,
-                    None => r.sample.depth == depth,
-                };
-                near && now.duration_since(r.last_seen) < remote_timeout()
-            })
+            .filter(|(_, r)| keep(r) && now.duration_since(r.last_seen) < remote_timeout())
             .map(|(peer, r)| {
                 let mut v = remote_view(*peer, self.peer_name(*peer), r, self.skins.get(peer).cloned().unwrap_or_else(|| SKIN_DEFAULT.into()), origin, now);
                 // arm style: the sample's own flag, else the profile's word, else read from the picture once it is here
@@ -1481,7 +1673,9 @@ impl NetSession {
     /// link (the host also drops it after the sample timeout).
     pub fn leave(mut self) {
         if self.is_host() {
-            let _ = api::unregister_room(&self.cfg, &self.code, &self.token);
+            if self.directory {
+                let _ = api::unregister_room(&self.cfg, &self.code, &self.token);
+            }
         } else {
             self.coop.send(HOST_PEER_ID, &Message::PeerLeave);
         }
@@ -1489,7 +1683,7 @@ impl NetSession {
     }
 
     fn service_directory(&mut self, now: Instant, out: &mut Vec<NetEvent>) {
-        if !self.is_host() {
+        if !self.is_host() || !self.directory {
             return;
         }
         if let Some(p) = self.heartbeat.as_mut() {
@@ -1541,7 +1735,7 @@ impl NetSession {
         Heartbeat {
             code: self.code.clone(),
             token: self.token.clone(),
-            players: 1 + self.guests.len() as u32,
+            players: self.runners() + self.guests.len() as u32,
             session_active: self.run.is_some(),
             daytime: false,
             command_since: self.owner.seen,
@@ -1628,17 +1822,23 @@ impl NetSession {
                 self.names.insert(peer, name);
             }
             Message::PeerLeave if self.is_host() => {
-                self.remotes.remove(&from);
-                self.skins.remove(&from);
-                self.peer_flags.remove(&from);
-                self.skin_slims.remove(&from);
-                self.pending_captures.remove(&from);
-                self.last_taser.remove(&from);
-                if let Some(guest) = self.guests.remove(&from) {
-                    out.push(NetEvent::GuestLeft(guest.name));
+                if let Some(name) = self.forget_guest(from) {
+                    out.push(NetEvent::GuestLeft(name));
                     self.send_room_and_roster();
                 }
             }
+            // an owner command from a registered guest: the app (the room process) checks the ticket and acts
+            Message::OwnerCommand { ticket, action, args } if self.is_host() => {
+                let registered = self.guests.get(&from).is_some_and(|g| !g.name.is_empty());
+                if registered && ticket.len() <= super::hosted::TICKET_LEN && action.len() <= super::hosted::MAX_ACTION_LEN {
+                    if let Some(guest) = self.guests.get_mut(&from) {
+                        guest.last_seen = now;
+                    }
+                    out.push(NetEvent::OwnerCommand { peer: from, ticket, action, args });
+                }
+            }
+            // the room refused this runner's owner command
+            Message::OwnerRefused { reason } if !self.is_host() => out.push(NetEvent::OwnerRefused(reason)),
             Message::Place { packet } if self.is_host() => {
                 if let Some(guest) = self.guests.get_mut(&from) {
                     guest.last_seen = now;
@@ -1674,6 +1874,11 @@ impl NetSession {
                     .get("players")
                     .and_then(Value::as_array)
                     .map(|names| names.iter().filter_map(|n| n.as_str().map(str::to_string)).collect())
+                    .unwrap_or_default();
+                self.player_peers = rest
+                    .get("peers")
+                    .and_then(Value::as_array)
+                    .map(|ids| ids.iter().map(|i| i.as_u64().and_then(|n| u32::try_from(n).ok()).unwrap_or(0)).collect())
                     .unwrap_or_default();
                 if let Some(d) = rest.get("difficulty").and_then(Value::as_str) {
                     self.difficulty = difficulty_from_name(d).name().to_string();

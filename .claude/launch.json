@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["packaging/web/serve.mjs", "dist/web", "8760"],
+      "port": 8760
+    },
+    {
+      "name": "lr_server",
+      "runtimeExecutable": "cargo",
+      "runtimeArgs": ["run", "--features", "server", "--bin", "lr_server"],
+      "port": 8105
+    }
+  ]
+}

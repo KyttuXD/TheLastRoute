@@ -119,8 +119,8 @@ mod tests {
     fn bad_files_are_refused() {
         let good = include_str!("../data/render/seams.json");
         for (from, to) in [
-            ("\"ceiling_inset\": 0.02", "\"ceiling_inset\": 0.0"),
-            ("\"ceiling_inset\": 0.02", "\"ceiling_inset\": 0.5"),
+            ("\"ceiling_inset\": 0.05", "\"ceiling_inset\": 0.0"),
+            ("\"ceiling_inset\": 0.05", "\"ceiling_inset\": 0.5"),
             ("\"camera_near\": 0.06", "\"camera_near\": 2.0"),
             ("\"camera_far\": 80.0", "\"camera_far\": 5.0"),
             ("\"depth_bits\": 16", "\"depth_bits\": 20"),

@@ -6,8 +6,11 @@
 //! `LADDER_CLIMB_SPEED`, and no key hangs the body still. The body's absolute y moves smoothly the whole way
 //! (`Player::set_abs_y`); the level label flips mid-shaft by the same height rule as a walked flight
 //! (`Game::walk_relabel`), with no fade, no hold and no move of the body. A dismount lerps to the centre of the step
-//! cell at that end. Letting go (jump at or below `LADDER_LET_GO_HEIGHT` above the bottom) hands the body back to the
-//! normal movement, which falls to the floor below (game/player.rs).
+//! cell at that end, and at the top it lifts the body 0.25 m over the hatch lip on a `sin` hop (`LADDER_TOP_HOP`,
+//! player_controller_3d.gd:1343-1349). Letting go (jump at or below `LADDER_LET_GO_HEIGHT`, 1.387 m, above the bottom) is
+//! a smooth 0.45 s dismount to the bottom exit, the body easing down the last of the shaft (player_controller_3d.gd:1323,
+//! `_ladder_dismount("bottom")`), not a free fall. After any dismount the body faces away from the hatch; turning back
+//! and walking into it (or interact) mounts again.
 //!
 //! One climber at a time: `Game::ladder` holds the one climb, and a second mount is refused while it runs.
 
@@ -20,6 +23,7 @@ use crate::world::facility::Cell;
 use crate::world::infinite;
 use crate::world::vertical::{
     LADDER_CLIMB_SPEED, LADDER_DISMOUNT_SECONDS, LADDER_LET_GO_HEIGHT, LADDER_MOUNT_SECONDS, LADDER_RAIL_REACH,
+    LADDER_TOP_HOP,
 };
 use std::f32::consts::{PI, TAU};
 
@@ -112,6 +116,10 @@ pub struct Climb {
     pub end: End,
     from: (f32, f32),
     from_yaw: f32,
+    /// The height the dismount began at and the floor height it ends on (`y` runs between them). They differ only for a
+    /// let-go partway up the shaft; a dismount at an end starts on its floor height.
+    from_y: f32,
+    to_y: f32,
     /// Where a dismount lands at the top and at the bottom of the shaft: a spot and the yaw to stand with. A sewer ladder
     /// lands on its step cell at both ends; a catwalk ladder lands on the deck cell at the top and on its own ground cell
     /// at the bottom.
@@ -148,6 +156,8 @@ impl Climb {
             end: if dir < 0 { End::Top } else { End::Bottom },
             from,
             from_yaw: yaw,
+            from_y: if dir < 0 { y_top } else { y_bottom },
+            to_y: if dir < 0 { y_top } else { y_bottom },
             turn_done: 0.0,
             exit_top: (step_center(cell, run), facing(run)),
             exit_bottom: (step_center(cell, run), facing(run)),
@@ -185,6 +195,8 @@ impl Climb {
             end: if from_top { End::Top } else { End::Bottom },
             from,
             from_yaw: yaw,
+            from_y: if from_top { y_top } else { y_bottom },
+            to_y: if from_top { y_top } else { y_bottom },
             turn_done: 0.0,
             exit_top: top,
             exit_bottom: bottom,
@@ -348,12 +360,14 @@ impl Game {
         true
     }
 
-    /// Begins a dismount at the end the body is at: it lerps to the centre of the step cell, its y fixed.
+    /// Begins a dismount off `end`: the body lerps to the centre of the step cell there and its y eases from where it
+    /// hangs now to that floor (the same y at an end, the rest of the shaft for a let-go), 0.45 s in all.
     fn dismount(&self, k: &mut Climb, end: End) {
         k.phase = Phase::Dismount;
         k.t = 0.0;
         k.end = end;
-        k.y = match end {
+        k.from_y = k.y;
+        k.to_y = match end {
             End::Top => k.y_top,
             End::Bottom => k.y_bottom,
         };
@@ -371,18 +385,7 @@ impl Game {
         self.ladder = None;
         // the yaw is not written: the dismount's eased turn has finished and the mouse's own turn stays
         self.p.pos = k.exit.0;
-        self.p.set_abs_y(k.y);
-    }
-
-    /// Lets go of the rungs where the body is: the climb ends, and the normal movement takes the body, which falls to the
-    /// floor below if there is more than a step of air under it.
-    pub(super) fn let_go_ladder(&mut self) {
-        let Some(k) = self.ladder.take() else {
-            return;
-        };
-        self.p.set_abs_y(k.y);
-        self.p.moving = false;
-        self.p.noise = 0.0;
+        self.p.set_abs_y(k.to_y);
     }
 
     /// One frame of the climb (mount, climb or dismount). Replaces the movement while mounted. The level label follows
@@ -405,12 +408,12 @@ impl Game {
                 }
             }
             Phase::Climb => {
-                // forward climbs up, back climbs down; jump at or below the let-go height drops off the bottom
+                // forward climbs up, back climbs down; jump at or below the let-go height is a smooth dismount to the
+                // bottom exit (Godot: `_ladder_dismount("bottom")`), never a free fall
                 let stopped = self.p.stun > 0.0;
                 let axis = if stopped { 0.0 } else { c.fwd };
                 if c.jump && k.height() <= LADDER_LET_GO_HEIGHT {
-                    self.let_go_ladder();
-                    return;
+                    self.dismount(&mut k, End::Bottom);
                 } else if axis > 0.2 && k.y >= k.y_top {
                     self.dismount(&mut k, End::Top);
                 } else if axis < -0.2 && k.y <= k.y_bottom {
@@ -431,7 +434,10 @@ impl Game {
                 // turn to the landing's yaw (away from a hatch), so holding forward does not climb straight back on
                 self.p.yaw += turn(k.from_yaw, k.exit.1) * (e - k.turn_done);
                 k.turn_done = e;
-                self.p.set_abs_y(k.y);
+                k.y = k.from_y + (k.to_y - k.from_y) * e;
+                // a small lift over the lip of the hatch on the way off at the top (not at the bottom)
+                let lift = if k.end == End::Top { (e * PI).sin() * LADDER_TOP_HOP } else { 0.0 };
+                self.p.set_abs_y(k.y + lift);
                 moving = true;
                 if k.t >= 1.0 {
                     self.finish_ladder(k);
@@ -709,41 +715,137 @@ mod tests {
         let bottom = g.ladder.unwrap().y_bottom;
         g.ladder.as_mut().unwrap().y = bottom + LET_GO * 0.5;
         run(&mut g, &jump(), DT, &content, &catalog);
-        assert!(g.ladder.is_none(), "a low jump lets go of the rungs");
+        let k = g.ladder.expect("a low jump is a dismount, not the end of the climb");
+        assert_eq!((k.phase, k.end), (Phase::Dismount, End::Bottom), "a low jump lets go: a dismount to the bottom exit");
+        assert!((LET_GO - 1.3871).abs() < 1e-3, "Godot's let-go height, unscaled: {LET_GO}");
+        // just over the let-go height does not let go
+        let (mut g, i) = ladder_game(&content, &catalog);
+        g.start_ladder(i);
+        run(&mut g, &quiet(), MOUNT + DT, &content, &catalog);
+        g.ladder.as_mut().unwrap().y = g.ladder.unwrap().y_bottom + LET_GO + 0.05;
+        run(&mut g, &jump(), DT, &content, &catalog);
+        assert_eq!(g.ladder.unwrap().phase, Phase::Climb, "a jump above the let-go height holds on");
+    }
+
+    /// One frame of play at `dt`.
+    fn tick(g: &mut Game, c: &Controls, dt: f32, content: &Content, catalog: &Catalog) {
+        g.step(dt, c, content, catalog, &Sounds::default());
     }
 
     #[test]
-    fn falling_off_a_ladder_lands_on_ground_y_below() {
+    fn a_jump_near_the_bottom_is_a_smooth_dismount_to_the_bottom_exit_with_no_fall() {
         let content = Content::load();
         let catalog = Catalog::load();
         let (mut g, i) = ladder_game(&content, &catalog);
         g.start_ladder(i);
         run(&mut g, &quiet(), MOUNT + DT, &content, &catalog);
-        // part way down, let go of the rungs
+        // hang 1.3 m above the foot (under the 1.387 m let-go height), with the body on the rungs
         let bottom = g.ladder.unwrap().y_bottom;
-        g.ladder.as_mut().unwrap().y = bottom + LET_GO * 0.9;
+        g.ladder.as_mut().unwrap().y = bottom + 1.3;
+        run(&mut g, &quiet(), DT, &content, &catalog);
+        let start_y = g.p.y();
+        assert!((start_y - (bottom + 1.3)).abs() < 1e-3);
+        let dt = 0.01;
+        tick(&mut g, &jump(), dt, &content, &catalog);
+        assert_eq!(g.ladder.unwrap().phase, Phase::Dismount);
+        let (mut t, mut last, mut worst_step) = (dt, start_y, 0.0_f32);
+        while g.ladder.is_some() {
+            tick(&mut g, &quiet(), dt, &content, &catalog);
+            t += dt;
+            assert!(t < 1.0, "the dismount never ended");
+            assert!(!g.p.falling(), "no free fall on a let-go dismount (t {t})");
+            assert!(g.p.grounded && g.p.vy() == 0.0, "held, not in the air (t {t})");
+            assert!(g.p.y() <= last + 1e-4, "eases down, never up: {last} -> {}", g.p.y());
+            worst_step = worst_step.max(last - g.p.y());
+            last = g.p.y();
+        }
+        assert!((t - LADDER_DISMOUNT_SECONDS).abs() < 3.0 * dt, "a 0.45 s dismount, took {t}");
+        assert!(worst_step < 1.3 * 1.5 * dt / LADDER_DISMOUNT_SECONDS + 1e-3, "smooth, no snap: {worst_step}");
+        // it ends standing at the bottom exit (the sewer step cell beside the foot), on the lower floor
+        let low = nearest_ladder(&g);
+        assert!(pdist(g.p.pos, step_center_of(low)) < 0.05, "at the bottom exit: {:?}", g.p.pos);
+        assert!((g.p.y() - bottom).abs() < 1e-3, "on the lower floor: {} vs {bottom}", g.p.y());
+        assert!(g.p.grounded && !g.p.falling() && g.p.take_landing().is_none(), "standing, no landing to report");
+        assert_eq!(g.inf.as_ref().unwrap().level, -1, "the label is the sewer's");
+    }
+
+    #[test]
+    fn the_top_dismount_hops_a_quarter_metre_over_the_lip_and_the_bottom_does_not() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        // the top: mounted at the top of a ladder down, forward dismounts onto the maze floor
+        let (mut g, i) = ladder_game(&content, &catalog);
+        g.start_ladder(i);
+        run(&mut g, &quiet(), MOUNT + DT, &content, &catalog);
+        let top = g.ladder.unwrap().y_top;
+        let dt = 0.005;
+        tick(&mut g, &forward(), dt, &content, &catalog);
+        assert_eq!((g.ladder.unwrap().phase, g.ladder.unwrap().end), (Phase::Dismount, End::Top));
+        let (mut peak, mut at_half) = (0.0_f32, 0.0_f32);
+        let mut t = 0.0;
+        while g.ladder.is_some() {
+            tick(&mut g, &quiet(), dt, &content, &catalog);
+            t += dt;
+            let lift = g.p.y() - top;
+            assert!(lift > -1e-4, "never below the floor: {lift}");
+            peak = peak.max(lift);
+            if (t - LADDER_DISMOUNT_SECONDS * 0.5).abs() < dt {
+                at_half = lift;
+            }
+        }
+        assert!((peak - LADDER_TOP_HOP).abs() < 0.005, "the hop peaks at {peak} m, wanted {LADDER_TOP_HOP}");
+        assert!(at_half > 0.24, "the peak is mid-dismount: {at_half}");
+        assert!((g.p.y() - top).abs() < 1e-4 && g.p.grounded, "the hop lands on the floor again: {}", g.p.y());
+
+        // the bottom: mounted at the foot of a ladder up, back dismounts onto the sewer floor with no lift
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-TEST-7", -1, &content, &catalog);
+        let i = g.fac.stairs.iter().position(|s| s.is_ladder() && s.dir > 0).expect("the sewer window has a ladder foot");
+        g.p.pos = step_center_of(g.fac.stairs[i]);
+        g.p.set_abs_y(g.p.floor_y);
+        g.keep_stack(&content, &catalog);
+        assert!(g.start_ladder(i));
+        run(&mut g, &quiet(), MOUNT + DT, &content, &catalog);
+        let bottom = g.ladder.unwrap().y_bottom;
+        tick(&mut g, &back(), dt, &content, &catalog);
+        assert_eq!((g.ladder.unwrap().phase, g.ladder.unwrap().end), (Phase::Dismount, End::Bottom));
+        let mut highest = f32::MIN;
+        while g.ladder.is_some() {
+            tick(&mut g, &quiet(), dt, &content, &catalog);
+            highest = highest.max(g.p.y() - bottom);
+        }
+        assert!(highest < 1e-4, "no hop at the bottom: {highest}");
+    }
+
+    #[test]
+    fn after_a_let_go_dismount_the_ladder_mounts_again() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let (mut g, i) = ladder_game(&content, &catalog);
+        g.start_ladder(i);
+        run(&mut g, &quiet(), MOUNT + DT, &content, &catalog);
+        let bottom = g.ladder.unwrap().y_bottom;
+        g.ladder.as_mut().unwrap().y = bottom + 1.3;
+        run(&mut g, &quiet(), DT, &content, &catalog);
         run(&mut g, &jump(), DT, &content, &catalog);
-        assert!(g.ladder.is_none());
-        // `Game::step` takes the landing itself and applies the landing rule (`apply_landing`), so the test watches the
-        // fall end (falling, then not) and reads the rule's effect rather than `Player::take_landing`
-        let from_y = g.p.y();
+        run(&mut g, &quiet(), LADDER_DISMOUNT_SECONDS + 2.0 * DT, &content, &catalog);
+        assert!(g.ladder.is_none(), "the dismount is over");
+        // standing off the foot facing away: holding forward does not climb straight back on
+        run(&mut g, &forward(), 0.3, &content, &catalog);
+        assert!(g.ladder.is_none(), "walking away mounts nothing");
+        // turn round and walk into the foot: the ladder mounts again, going up
+        let low = nearest_ladder(&g);
+        assert!(low.dir > 0, "the sewer end of the shaft");
+        g.p.pos = step_center_of(low);
+        g.p.yaw = facing((-run_of(&low).0, -run_of(&low).1));
         let mut frames = 0;
-        while frames == 0 || g.p.falling() {
-            frame(&mut g, &quiet(), &content, &catalog);
+        while g.ladder.is_none() {
+            frame(&mut g, &forward(), &content, &catalog);
             frames += 1;
-            assert!(frames < 200, "the body never landed: y {}", g.p.y());
+            assert!(frames < 60, "walking into the foot never mounted; at {:?}", g.p.pos);
         }
-        let drop = from_y - g.p.y();
-        let stack = &g.inf.as_ref().unwrap().stack;
-        let ground = ground_y(&g.fac, stack, g.p.pos.0, g.p.pos.1, g.p.y());
-        assert!((g.p.y() - ground.y).abs() < 1e-3, "standing on the ground below: {} vs {}", g.p.y(), ground.y);
-        assert!((g.p.y() - bottom).abs() < 1e-3, "on the lower floor");
-        assert!(drop > 0.0 && drop < LET_GO, "dropped {drop} from the let-go height");
-        assert!(g.p.take_landing().is_none(), "the step already took the landing");
-        if drop >= crate::game::swim::fall_rules().min_height {
-            assert!(g.p.noise_burst_timer > 0.0, "the landing rule ran on the touchdown frame (stun, noise or splash)");
-        }
-        assert!(!g.p.falling() && g.ladder.is_none());
+        let k = g.ladder.unwrap();
+        assert_eq!((k.phase, k.end), (Phase::Mount, End::Bottom), "mounted at the foot");
+        assert!((k.y - bottom).abs() < 1e-3);
     }
 
     #[test]

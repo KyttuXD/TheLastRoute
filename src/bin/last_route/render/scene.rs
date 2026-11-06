@@ -604,6 +604,11 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         let mut held_driven = false;
         for &(lvl, cslot, slot, h) in posed.iter() {
             let is_held = held_slot == Some(slot);
+            // a hunter that has not been activated (Solyth before the heat latches, the rest of the roster that is not
+            // out) is disabled and not drawn at all
+            if !h.active && !is_held {
+                continue;
+            }
             if !is_held && !cull.visible(g, lvl, h.y, h.pos, cull_eye) {
                 continue;
             }
@@ -1545,6 +1550,9 @@ mod tests {
     #[test]
     fn a_hidden_bot_leaves_its_locker_in_the_draw_list_unchanged() {
         let mut g = locker_game();
+        // a room makes no bot by itself, so this test spawns the one it needs
+        let p = g.p.pos;
+        g.npc_spawn(1, 50, (p.0, 1.6, p.1), (0.0, 1.0, 0.0));
         assert!(!g.npcs.is_empty(), "the test run has a bot");
         let before = list_at(&g, 0.0);
         g.npcs[0].hidden = Some(0);

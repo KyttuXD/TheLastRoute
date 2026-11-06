@@ -101,6 +101,10 @@ pub const RPC_TABLE: &[(&str, Sender, u8)] = &[
     ("_voice_up", Sender::AnyPeer, channel::VOICE),
     ("_voice_down", Sender::Host, channel::VOICE),
     ("_set_force_muted", Sender::Host, channel::EVENTS),
+    // Godot `_owner_command(ticket, action, args)` and `_owner_refused(reason)` (room_state.gd): the room owner, a guest, asks the
+    // server-side room to start, end, restart, kick or change the difficulty; the room checks the ticket with the directory.
+    ("_owner_command", Sender::AnyPeer, channel::EVENTS),
+    ("_owner_refused", Sender::Host, channel::EVENTS),
 ];
 // Channel 99 above = the original's plain "unreliable" on the default channel 0; sent here on VOICE-like
 // unreliable delivery (see `Message::channel`).
@@ -151,6 +155,10 @@ pub enum Message {
     VoiceUp { packet: Vec<u8> },
     VoiceDown { sender: i64, packet: Vec<u8> },
     SetForceMuted { muted: bool },
+    /// Guest -> host: an owner command with the directory's owner ticket (the host verifies it before it acts).
+    OwnerCommand { ticket: String, action: String, args: Map<String, Value> },
+    /// Host -> guest: the host refused the guest's owner command; `reason` is what the owner sees.
+    OwnerRefused { reason: String },
 }
 
 fn s(o: &Map<String, Value>, k: &str) -> String {
@@ -214,6 +222,8 @@ impl Message {
             VoiceUp { .. } => "_voice_up",
             VoiceDown { .. } => "_voice_down",
             SetForceMuted { .. } => "_set_force_muted",
+            OwnerCommand { .. } => "_owner_command",
+            OwnerRefused { .. } => "_owner_refused",
         }
     }
 
@@ -274,6 +284,8 @@ impl Message {
             VoiceUp { packet } => json!({ "packet": super::base64_encode(packet) }),
             VoiceDown { sender, packet } => json!({ "sender": sender, "packet": super::base64_encode(packet) }),
             SetForceMuted { muted } => json!({ "muted": muted }),
+            OwnerCommand { ticket, action, args } => json!({ "ticket": ticket, "action": action, "args": args }),
+            OwnerRefused { reason } => json!({ "reason": reason }),
         };
         o["t"] = json!(self.name());
         o
@@ -337,6 +349,8 @@ impl Message {
             "_voice_up" => VoiceUp { packet: bytes("packet") },
             "_voice_down" => VoiceDown { sender: i(o, "sender"), packet: bytes("packet") },
             "_set_force_muted" => SetForceMuted { muted: b(o, "muted") },
+            "_owner_command" => OwnerCommand { ticket: s(o, "ticket"), action: s(o, "action"), args: m(o, "args") },
+            "_owner_refused" => OwnerRefused { reason: s(o, "reason") },
             _ => return None,
         })
     }
@@ -386,6 +400,8 @@ mod tests {
             Message::Hunters { data: vec![json!({"id": 3})] },
             Message::Event { event: ev },
             Message::VoiceDown { sender: 2, packet: vec![0, 1, 255] },
+            Message::OwnerCommand { ticket: "T".into(), action: "kick".into(), args: [("peer".to_string(), json!(7))].into_iter().collect() },
+            Message::OwnerRefused { reason: "NO".into() },
         ];
         for message in samples {
             assert_eq!(Message::decode(&message.encode()), Some(message.clone()), "{}", message.name());
@@ -399,7 +415,12 @@ mod tests {
         assert!(relayed.host_only());
         assert_eq!(relayed.channel(), channel::STATE);
         assert_eq!(relayed.to_json()["t"], json!("_peer_place"));
-        assert_eq!(RPC_TABLE.len(), 40);
+        // the owner commands: a guest sends the command, only the host answers with a refusal
+        let command = Message::OwnerCommand { ticket: "T".into(), action: "end".into(), args: Map::new() };
+        assert!(!command.host_only() && command.channel() == channel::EVENTS);
+        assert!(Message::OwnerRefused { reason: String::new() }.host_only());
+        assert_eq!(command.to_json()["t"], json!("_owner_command"));
+        assert_eq!(RPC_TABLE.len(), 42);
     }
 
     #[test]

@@ -209,7 +209,7 @@ impl Sim {
 
     /// Starts a run. `depth` (finite) or `level` (infinite, 0 = top) picks where.
     pub fn new_run(&mut self, diff: Difficulty, seed: u32, mode: Mode, depth: i32, level: i32) {
-        let mut g = match mode {
+        let g = match mode {
             Mode::Infinite => {
                 // a numeric seed is the room text it has always stood for (route::room_text)
                 let text = crate::world::route::room_text(seed);
@@ -224,6 +224,20 @@ impl Sim {
                 g
             }
         };
+        self.install(g, diff, seed, mode);
+    }
+
+    /// A run on the Infinite route for a room seed text (the text a host's `Start` message carries), the way a client
+    /// enters it: `route::run_seed_of_text` is the run seed and the text the world seed. `no_local_runner` makes it a
+    /// dedicated room's game (game/remote_targets.rs): no runner plays, the guests are the targets.
+    pub fn new_room_run(&mut self, diff: Difficulty, room_text: &str, no_local_runner: bool) {
+        let seed = crate::world::route::run_seed_of_text(room_text);
+        let mut g = Game::new_infinite_sim(diff, seed, room_text, 0, &self.content, &self.catalog);
+        g.no_local_runner = no_local_runner;
+        self.install(g, diff, seed, Mode::Infinite);
+    }
+
+    fn install(&mut self, mut g: Game, diff: Difficulty, seed: u32, mode: Mode) {
         g.fade = 0.0;
         self.game = Some(g);
         self.mode = mode;
@@ -288,6 +302,14 @@ impl Sim {
         g.step(dt, &c, &self.content, &self.catalog, &self.sounds);
         self.frame += 1;
         self.diff_events();
+    }
+
+    /// One frame of a dedicated room (`Game::no_local_runner`): no controls, and none of the per-frame event log, which
+    /// watches the local runner. The room's own outputs are read from the game (catches, the hunter frame).
+    pub fn step_room(&mut self) {
+        let Some(g) = self.game.as_mut() else { return };
+        g.step(self.dt, &Controls::default(), &self.content, &self.catalog, &self.sounds);
+        self.frame += 1;
     }
 
     /// Steps `n` frames with the held inputs; stops early when the run ends (if asked).

@@ -133,7 +133,7 @@ pub fn music_box(left: f32, wound: f32) {
             }
             let now = e.now();
             let restart = mb::run_needs_restart(w.box_run.as_ref(), left, wound, now);
-            w.box_run = Some(RunClock { wound, last_left: left, last_now: now });
+            w.box_run = Some(mb::next_clock(w.box_run.as_ref(), restart, left, wound, now));
             if restart {
                 let tune = crate::game::music_box::rules().tune_gain;
                 let frames = mb::run_frames(wound, wound - left);

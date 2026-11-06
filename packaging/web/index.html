@@ -17,6 +17,8 @@
 <script>var register_plugin;</script>
 <script src="mq_js_bundle.js"></script>
 <script src="audio.js"></script>
+<script src="update.js"></script>
+<script src="keys.js"></script>
 <script>
 // Pointer lock state for the game's mouse look (app/web_pointer.rs): true only when the canvas really holds the pointer.
 // Browser storage for the settings (app/web_storage.rs): localStorage by key, as text. The wasm passes its bytes by
@@ -230,6 +232,348 @@ miniquad_add_plugin({
   });
 })();
 </script>
-<script>load("last_route.wasm");</script>
+<script>
+// The file chooser (shared/file_pick.rs), registered as the lr_pick plugin. It is generic, so anything in the game (the
+// SKIN tab's PICK A PNG, a mod's import) can use it:
+//   lr_pick_open(kind, multiple, directory) -> request id (0 when the page could not make one). `kind` is an HTML accept
+//     string ("image/png,.png"); `directory` chooses a folder (its files, named by their path inside it).
+//   lr_pick_state(id) -> 0 pending, 1 done, 2 cancelled (also an unknown id)
+//   lr_pick_count(id), lr_pick_name(id, i, dst, cap), lr_pick_size(id, i)
+//   lr_pick_read(id, i, dst, cap) -> byte length, -1 when the bytes are not there; copied only when they fit in cap
+//   lr_pick_release(id) forgets the request and its bytes
+// The chosen files are read into the page when the player confirms; their bytes stay here until lr_pick_read copies one
+// into the wasm, so the game never holds a file it did not ask for. Nothing here throws into the game.
+(function () {
+  const requests = new Map();
+  let nextRequest = 1;
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  // a file bigger than this is not loaded into the page at all (the game refuses such sizes from lr_pick_size)
+  const MAX_LOAD = 64 * 1024 * 1024;
+
+  function view(ptr, len) {
+    return new Uint8Array(wasm_memory.buffer, ptr, len);
+  }
+  function copyOut(bytes, dst, cap) {
+    if (bytes.length <= cap) view(dst, bytes.length).set(bytes);
+    return bytes.length;
+  }
+  function loadFile(file) {
+    const entry = { name: file.webkitRelativePath || file.name, size: file.size, bytes: null };
+    if (file.size > MAX_LOAD) return Promise.resolve(entry);
+    return file.arrayBuffer().then(
+      function (buffer) {
+        entry.bytes = new Uint8Array(buffer);
+        return entry;
+      },
+      function () {
+        return entry;
+      }
+    );
+  }
+  function forget(req) {
+    try {
+      if (req.input && req.input.parentNode) req.input.parentNode.removeChild(req.input);
+    } catch (e) {}
+    for (const off of req.undo) {
+      try {
+        off();
+      } catch (e) {}
+    }
+    req.undo = [];
+  }
+
+  function open(kind, multiple, directory) {
+    try {
+      const input = document.createElement("input");
+      input.type = "file";
+      if (kind) input.accept = kind;
+      input.multiple = !!multiple;
+      if (directory) input.webkitdirectory = true;
+      input.style.cssText = "position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none";
+      const id = nextRequest++;
+      const req = { state: 0, input: input, files: [], undo: [] };
+      requests.set(id, req);
+      const cancel = function () {
+        if (req.state === 0) req.state = 2;
+        forget(req);
+      };
+      input.addEventListener("change", function () {
+        if (req.state !== 0 || requests.get(id) !== req) return forget(req);
+        const list = Array.prototype.slice.call(input.files || []);
+        if (list.length === 0) return cancel();
+        Promise.all(list.map(loadFile)).then(
+          function (files) {
+            if (req.state !== 0 || requests.get(id) !== req) return;
+            req.files = files;
+            req.state = 1;
+            forget(req);
+          },
+          cancel
+        );
+      });
+      if ("oncancel" in input) {
+        input.addEventListener("cancel", cancel);
+      } else {
+        // older browsers say nothing when the window is closed: the page getting focus back with no file after a moment is a cancel
+        const onFocus = function () {
+          setTimeout(function () {
+            if (req.state === 0 && !(input.files && input.files.length)) cancel();
+          }, 1000);
+        };
+        window.addEventListener("focus", onFocus, { once: true });
+        req.undo.push(function () {
+          window.removeEventListener("focus", onFocus);
+        });
+      }
+      document.body.appendChild(input);
+      // a chooser may only open on a user gesture; when the browser says the click that asked is no longer one, the next
+      // click or key press opens it instead
+      const active = !(window.navigator.userActivation && window.navigator.userActivation.isActive === false);
+      if (active) {
+        input.click();
+      } else {
+        const later = function () {
+          try {
+            if (req.state === 0 && requests.get(id) === req) input.click();
+          } catch (e) {}
+          for (const name of ["pointerdown", "keydown"]) window.removeEventListener(name, later, true);
+        };
+        for (const name of ["pointerdown", "keydown"]) window.addEventListener(name, later, true);
+        req.undo.push(function () {
+          for (const name of ["pointerdown", "keydown"]) window.removeEventListener(name, later, true);
+        });
+      }
+      return id;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  function guard(fallback, fn) {
+    return function () {
+      try {
+        return fn.apply(null, arguments);
+      } catch (e) {
+        return fallback;
+      }
+    };
+  }
+
+  miniquad_add_plugin({
+    register_plugin: function (importObject) {
+      const env = importObject.env;
+      env.lr_pick_open = guard(0, function (kindPtr, kindLen, multiple, directory) {
+        return open(decoder.decode(view(kindPtr, kindLen)), multiple !== 0, directory !== 0);
+      });
+      env.lr_pick_state = guard(2, function (id) {
+        const r = requests.get(id);
+        return r ? r.state : 2;
+      });
+      env.lr_pick_count = guard(0, function (id) {
+        const r = requests.get(id);
+        return r && r.state === 1 ? r.files.length : 0;
+      });
+      env.lr_pick_name = guard(-1, function (id, i, dst, cap) {
+        const r = requests.get(id);
+        const f = r && r.state === 1 ? r.files[i] : null;
+        return f ? copyOut(encoder.encode(f.name), dst, cap) : -1;
+      });
+      env.lr_pick_size = guard(-1, function (id, i) {
+        const r = requests.get(id);
+        const f = r && r.state === 1 ? r.files[i] : null;
+        return f ? Math.min(f.size, 2147483647) : -1;
+      });
+      env.lr_pick_read = guard(-1, function (id, i, dst, cap) {
+        const r = requests.get(id);
+        const f = r && r.state === 1 ? r.files[i] : null;
+        return f && f.bytes ? copyOut(f.bytes, dst, cap) : -1;
+      });
+      env.lr_pick_release = guard(0, function (id) {
+        const r = requests.get(id);
+        if (r) {
+          r.state = r.state === 0 ? 2 : r.state;
+          forget(r);
+          requests.delete(id);
+        }
+        return 0;
+      });
+    },
+    version: 1,
+    name: "lr_pick",
+  });
+})();
+</script>
+<script>
+// Imported mod packs (content/pack_import.rs), registered as the lr_mods plugin. The MODS tab's IMPORT FOLDER / IMPORT .ZIP
+// hand the game's checked packs here as one byte string each (the game's own encoding; this page never looks inside), and
+// they are kept in IndexedDB (database "last_route_mods", store "packs", key = the pack id, value = the bytes). IndexedDB is
+// asynchronous and the game reads synchronously, so every stored pack is read into memory BEFORE the wasm starts
+// (window.lrModsReady, awaited by the load line below, with a 4 second limit so a stuck database never blocks the game). From
+// then on the game reads from that memory and writes through to IndexedDB in the background.
+//   lr_mods_count() -> packs read at page start
+//   lr_mods_id(i, dst, cap) -> id length (copied only when it fits) ; lr_mods_size(i) -> bytes, -1 if absent
+//   lr_mods_read(i, dst, cap) -> bytes length, -1 if absent (copied only when it fits)
+//   lr_mods_put(idPtr, idLen, dataPtr, dataLen) -> 1 queued, 0 refused (no storage) ; lr_mods_remove(idPtr, idLen) -> 1 / 0
+//   lr_mods_state() -> 0 no storage (nothing survives a reload), 1 works, 2 the last save failed (quota, usually)
+// The size limit is the game's (256 MB of imported mods in all, 16 MB a file, 128 MB a pack); the browser's own IndexedDB
+// quota can be smaller, and then state turns 2 and the tab says the save failed. localStorage is not used: it holds about
+// 5 MB of text, far less than a model pack.
+(function () {
+  const DB_NAME = "last_route_mods";
+  const STORE = "packs";
+  const memory = new Map(); // pack id -> Uint8Array (what the game saw at start, then what it saved or removed)
+  let order = []; // the ids in the order the game indexes them at start
+  let db = null;
+  let state = 0;
+  let started = false; // the game has begun reading: late results from IndexedDB are ignored
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+
+  function view(ptr, len) {
+    return new Uint8Array(wasm_memory.buffer, ptr, len);
+  }
+  function copyOut(bytes, dst, cap) {
+    if (bytes.length <= cap) view(dst, bytes.length).set(bytes);
+    return bytes.length;
+  }
+  function openDb() {
+    return new Promise(function (resolve, reject) {
+      const req = window.indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = function () {
+        req.result.createObjectStore(STORE);
+      };
+      req.onsuccess = function () {
+        resolve(req.result);
+      };
+      req.onerror = function () {
+        reject(req.error);
+      };
+      req.onblocked = function () {
+        reject(new Error("blocked"));
+      };
+    });
+  }
+  function readAll(database) {
+    return new Promise(function (resolve, reject) {
+      const store = database.transaction(STORE, "readonly").objectStore(STORE);
+      const keys = store.getAllKeys();
+      const values = store.getAll();
+      store.transaction.oncomplete = function () {
+        resolve({ keys: keys.result, values: values.result });
+      };
+      store.transaction.onerror = function () {
+        reject(store.transaction.error);
+      };
+      store.transaction.onabort = function () {
+        reject(store.transaction.error);
+      };
+    });
+  }
+  function write(change) {
+    if (!db) return false;
+    try {
+      const tx = db.transaction(STORE, "readwrite");
+      change(tx.objectStore(STORE));
+      tx.oncomplete = function () {
+        if (state === 2) state = 1;
+      };
+      tx.onerror = tx.onabort = function () {
+        state = 2;
+      };
+      return true;
+    } catch (e) {
+      state = 2;
+      return false;
+    }
+  }
+
+  const loading = (async function () {
+    if (!window.indexedDB) return;
+    const database = await openDb();
+    const found = await readAll(database);
+    if (started) return;
+    db = database;
+    state = 1;
+    for (let i = 0; i < found.keys.length; i++) {
+      const value = found.values[i];
+      const bytes = value instanceof Uint8Array ? value : value ? new Uint8Array(value) : null;
+      if (typeof found.keys[i] === "string" && bytes) memory.set(found.keys[i], bytes);
+    }
+  })().catch(function () {
+    // no usable IndexedDB (a private window, storage blocked): the game runs without kept mods
+    db = null;
+    state = 0;
+  });
+  window.lrModsReady = Promise.race([
+    loading,
+    new Promise(function (resolve) {
+      setTimeout(resolve, 4000);
+    }),
+  ]).then(function () {
+    started = true;
+    order = Array.from(memory.keys());
+    if (!db) state = 0;
+  });
+
+  function guard(fallback, fn) {
+    return function () {
+      try {
+        return fn.apply(null, arguments);
+      } catch (e) {
+        return fallback;
+      }
+    };
+  }
+
+  miniquad_add_plugin({
+    register_plugin: function (importObject) {
+      const env = importObject.env;
+      env.lr_mods_count = guard(0, function () {
+        return order.length;
+      });
+      env.lr_mods_id = guard(-1, function (i, dst, cap) {
+        return i < order.length ? copyOut(encoder.encode(order[i]), dst, cap) : -1;
+      });
+      env.lr_mods_size = guard(-1, function (i) {
+        const bytes = i < order.length ? memory.get(order[i]) : null;
+        return bytes ? bytes.length : -1;
+      });
+      env.lr_mods_read = guard(-1, function (i, dst, cap) {
+        const bytes = i < order.length ? memory.get(order[i]) : null;
+        return bytes ? copyOut(bytes, dst, cap) : -1;
+      });
+      env.lr_mods_put = guard(0, function (idPtr, idLen, dataPtr, dataLen) {
+        if (state === 0 || !db) return 0;
+        const id = decoder.decode(view(idPtr, idLen));
+        // a copy: the wasm memory can grow (and move) after this call returns
+        const bytes = new Uint8Array(view(dataPtr, dataLen));
+        memory.set(id, bytes);
+        return write(function (store) {
+          store.put(bytes, id);
+        })
+          ? 1
+          : 0;
+      });
+      env.lr_mods_remove = guard(0, function (idPtr, idLen) {
+        const id = decoder.decode(view(idPtr, idLen));
+        memory.delete(id);
+        if (state === 0 || !db) return 0;
+        return write(function (store) {
+          store.delete(id);
+        })
+          ? 1
+          : 0;
+      });
+      env.lr_mods_state = guard(0, function () {
+        return state;
+      });
+    },
+    version: 1,
+    name: "lr_mods",
+  });
+})();
+</script>
+<script>(window.lrModsReady || Promise.resolve()).then(function () { load("last_route.wasm"); });</script>
 </body>
 </html>

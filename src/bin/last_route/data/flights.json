@@ -1,39 +1,64 @@
 {
   "schema": "lr.flights/1",
-  "_about": "The flight definition (world/flight.rs): one stair, ladder or drop between two floors, in one vertical frame (floor y = level * storey). Lengths are cells (1 cell = 1 m of run), heights are metres. storey and rise_total must equal the game's STOREY (world/vertical.rs, 5.0) or the file is refused; slab is the floor/ceiling slab thickness between two storeys, the ONE slab number: the renderer caps every ceiling at storey - slab (render/seams.rs) and lines the shafts through it; 0.15 keeps the gap wider than one 16-bit depth step out to the fog range. max_riser is the tallest step the walked surface may have: the rise per tread, with steps_per_cell treads per metre of run; a shape that would exceed it is refused. divider_thickness is the width in metres of the wall between the two switchback lanes (bodies cannot cross it). margin_cells is the clear cells kept beyond the landing (upper level) and the foot (lower level). switchback: a well length x (2 * lane_width) cells with a mid landing mid_landing_rise above the lower floor, mid_landing_len cells deep at the far end of the well. straight: a longer flight, length cells long and width cells wide. spiral: a flight around a centre column, radius (cells, a whole number) to the middle of the walkway, lane_width (odd) cells wide, turns of a full circle (0.25, 0.5 or 0.75). limits are the inclusive bounds the checks hold each tunable to (a missing or inverted limit refuses the file; slab max is half a storey). steps_per_cell must equal STEPS_PER_CELL in world/vertical.rs, the one source for treads per cell (checked on load and by a test); slab and margin_cells live only here. shape_weights pick the shape of a stairwell (shape_for, keyed on the UPPER level of the connection); region_weights replace them for the listed upper levels (key = level number).",
+  "_about": "The flight definition (world/flight.rs): one stair, ladder or drop between two floors, in one vertical frame (floor y = level * storey). Lengths are cells (1 cell = 1 m of run), heights are metres. storey and rise_total must equal the game's STOREY (world/vertical.rs, 5.0) or the file is refused; slab is the floor/ceiling slab thickness between two storeys, the ONE slab number (Godot SLAB 0.1): the renderer caps every ceiling at storey - slab (render/seams.rs) and lines the shafts through it. max_riser is the tallest step the walked surface may have per 1/steps_per_cell metre of run on the walking line (the surface is a smooth ramp, there are no tread blocks; the number bounds the slope). margin_cells is the clear cells kept beyond the landing (upper level) and the foot (lower level). switchback (Godot stairwells.gd:66-80, the 7 x 9 box): two flights lane_width cells wide side by side, a divider_width cell solid divider between them, and a mid landing mid_landing_len cells deep across the whole width at mid_landing_rise above the lower floor. length is the rows of the well beyond the landing row (ramp rows plus mid landing rows); landing_depth is the rows of floor at the doorway end on both levels (the landing A row and the margin row behind it). The landing A is the first cell of the arriving (top) flight, the foot B the cell beside the divider on the leaving flight, both on the landing row. straight: a longer flight, length cells long and width cells wide (Rust only). spiral (Godot stairwells.gd:116-134, streamed_facility_view_3d.gd:2577-2696): a square well of 2 * half + 1 cells around a centre post (post_radius), a smooth helicoid from inner_radius out to the wall (wall_clearance short of it), turns of a full circle (0.25, 0.5 or 0.75), start_offset_deg degrees from the doorway axis to where the arc starts (45 for 270 degrees: the arc starts and ends on the two doorway-side corners, 2 * start_offset_deg + turns * 360 must not pass 360), steps segments to the arc, walk_radius the radius of the walking line (the walk path and the slope check). landing_cells is the doorway-wide row of floor on both levels (3); the landing A and the foot B are its two end cells. render.tiles_per_cell is how finely each well cell is tessellated for the smooth ramp. dressing is the Godot stairwell fit-out (streamed_facility_view_3d.gd:2728-2823): distances marked godot_* are in Godot's 4 m storey and scale by storey / godot_storey; handrail and guard heights are human sized and do not scale; lamp.energy_scale is the factor the prop lights also use (Godot's omni energy reads brighter than this shader's linear falloff); iron is the rails', post's and guards' colour (Godot 3b3f42) with lift the brightening that lets it read in this renderer's dark. limits are the inclusive bounds the checks hold each tunable to (a missing or inverted limit refuses the file; slab max is half a storey). steps_per_cell must equal STEPS_PER_CELL in world/vertical.rs, the one source for treads per cell (checked on load and by a test); slab and margin_cells live only here. shape_weights pick the shape of a stairwell (shape_for, keyed on the UPPER level of the connection); region_weights replace them for the listed upper levels (key = level number).",
   "limits": {
     "slab": { "min": 0.0, "max": 2.5 },
     "max_riser": { "min": 0.05, "max": 0.5 },
     "margin_cells": { "min": 0, "max": 4 },
-    "divider_thickness": { "min": 0.05, "max": 0.5 },
-    "switchback_length": { "min": 3, "max": 8 },
+    "switchback_length": { "min": 3, "max": 12 },
     "switchback_lane_width": { "min": 1, "max": 3 },
+    "switchback_divider_width": { "min": 0, "max": 2 },
+    "switchback_landing_depth": { "min": 1, "max": 3 },
     "straight_length": { "min": 4, "max": 16 },
     "straight_width": { "min": 1, "max": 4 },
-    "spiral_lane_width": { "min": 1, "max": 3 },
-    "spiral_radius": { "min": 1, "max": 6 }
+    "spiral_half": { "min": 1, "max": 4 },
+    "spiral_landing_cells": { "min": 1, "max": 5 },
+    "spiral_inner_radius": { "min": 0.2, "max": 1.5 },
+    "spiral_post_radius": { "min": 0.1, "max": 1.0 },
+    "spiral_walk_radius": { "min": 0.5, "max": 6.0 },
+    "spiral_steps": { "min": 8, "max": 72 },
+    "spiral_start_offset_deg": { "min": 0, "max": 90 },
+    "tiles_per_cell": { "min": 1, "max": 8 }
   },
   "storey": 5.0,
-  "slab": 0.15,
+  "slab": 0.1,
   "rise_total": 5.0,
   "max_riser": 0.3,
   "steps_per_cell": 3,
   "margin_cells": 1,
-  "divider_thickness": 0.12,
   "switchback": {
-    "length": 4,
-    "lane_width": 1,
+    "length": 5,
+    "lane_width": 2,
+    "divider_width": 1,
+    "landing_depth": 2,
     "mid_landing_rise": 2.5,
-    "mid_landing_len": 0.5
+    "mid_landing_len": 2
   },
   "straight": {
     "length": 8,
     "width": 2
   },
   "spiral": {
-    "radius": 2,
-    "lane_width": 1,
-    "turns": 0.75
+    "half": 2,
+    "landing_cells": 3,
+    "inner_radius": 0.55,
+    "post_radius": 0.4,
+    "walk_radius": 1.6,
+    "wall_clearance": 0.02,
+    "turns": 0.75,
+    "start_offset_deg": 45,
+    "steps": 27
+  },
+  "render": {
+    "tiles_per_cell": { "switchback": 3, "straight": 3, "spiral": 4 }
+  },
+  "dressing": {
+    "godot_storey": 4.0,
+    "sign": { "colour": "e8c25a", "godot_height": 2.1, "godot_text_height": 0.29, "inset": 0.04 },
+    "lamp": { "colour": "ffd29a", "energy": 0.7, "energy_scale": 2.0, "godot_range": 7.0, "godot_height_over_mid": 1.4 },
+    "handrail": { "height": 0.95, "thickness": 0.05, "inset": 0.06, "inner_offset": 0.12 },
+    "guard": { "height": 1.1, "thickness": 0.06 },
+    "iron": { "colour": "3b3f42", "lift": 2.0 }
   },
   "shape_weights": {
     "switchback": 0.5,

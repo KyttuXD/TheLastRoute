@@ -1,7 +1,7 @@
 # HTTPS in the game's HTTP client
 
 `src/bin/last_route/net/http.rs` is the one HTTP client of the game. Until 2026-11-04 it refused `https://`, so
-FROM URL, FROM MC NAME and the skins host (`https://skins.kyttuslab.org`) could never work. It now speaks TLS.
+FROM URL and the skins host (`https://skins.kyttuslab.org`) could never work. It now speaks TLS.
 
 ## What was chosen, and why
 
@@ -57,8 +57,7 @@ Measured on macOS arm64 (aarch64-apple-darwin), `cargo build --release --bin las
 
 ## Where it is used
 
-- `shared/skins.rs` `fetch_https` (FROM URL, the three Mojang calls of FROM MC NAME) and `download` (the skins host).
+- `shared/skins.rs` `fetch_https` (FROM URL) and `download` (the skins host).
 - Everything else still uses plain `Request::send()`.
 
-An internet check (`cargo test --bin last_route live_ -- --ignored`) fetches from `api.mojang.com`, `sessionserver.mojang.com`
-and `skins.kyttuslab.org` to prove the built-in roots reach the real hosts.
+An internet check (`cargo test --bin last_route live_ -- --ignored`) fetches from `skins.kyttuslab.org` and other hosts to prove the built-in roots reach the real hosts.

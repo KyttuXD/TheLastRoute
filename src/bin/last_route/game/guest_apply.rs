@@ -48,6 +48,12 @@ impl Game {
             return;
         }
         let at = num(&ev, "x").zip(num(&ev, "y"));
+        // a dedicated room: a report that closes a capture frees the guest for the hunters again (after the grace)
+        if matches!(ev.get("what").and_then(Value::as_str), Some("escaped" | "caught" | "capture_blocked" | "capture_timeout")) {
+            if let Some(peer) = ev.get("peer_id").and_then(Value::as_u64).and_then(|p| u32::try_from(p).ok()) {
+                self.guest_released(peer);
+            }
+        }
         match ev.get("what").and_then(Value::as_str).unwrap_or_default() {
             "taser" => {
                 if let (Some(from), Some(yaw)) = (at, num(&ev, "yaw")) {

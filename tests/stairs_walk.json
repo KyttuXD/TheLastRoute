@@ -53,6 +53,54 @@
         { "cmd": "walk_flight", "dir": "up", "frames": 900 },
         { "expect": [ { "path": "run.level", "value": 0 }, { "path": "player.y", "op": "approx", "value": 0, "tol": 0.1 } ] }
       ]
+    },
+    {
+      "name": "a level-0 spiral (seed 129, doorway on the south wall) walks down and its foot leads out to the sewer tunnel",
+      "start_run": { "seed": 129, "no_target": true },
+      "steps": [
+        { "cmd": "teleport", "to": "stairs_down" },
+        { "cmd": "stairs_report", "expect": [ { "path": "last.stairs_report.flights.0.shape", "value": "spiral" } ] },
+        { "cmd": "walk_flight", "dir": "down", "frames": 900 },
+        { "expect": [ { "path": "run.level", "value": -1 }, { "path": "player.y", "op": "approx", "value": -5, "tol": 0.1 } ] },
+        { "cmd": "goto", "x": 83.5, "z": 76.5, "max_frames": 900, "expect": [ { "path": "last.arrived", "value": true } ] },
+        { "cmd": "goto", "x": 83.5, "z": 70.5, "max_frames": 900, "expect": [ { "path": "last.arrived", "value": true } ] }
+      ]
+    },
+    {
+      "name": "a level-0 spiral (seed 130, doorway on the south wall) leads out of its foot",
+      "start_run": { "seed": 130, "no_target": true },
+      "steps": [
+        { "cmd": "teleport", "to": "stairs_down" },
+        { "cmd": "stairs_report", "expect": [ { "path": "last.stairs_report.flights.0.shape", "value": "spiral" } ] },
+        { "cmd": "walk_flight", "dir": "down", "frames": 900 },
+        { "expect": [ { "path": "run.level", "value": -1 } ] },
+        { "cmd": "goto", "x": 51.5, "z": 76.5, "max_frames": 900, "expect": [ { "path": "last.arrived", "value": true } ] },
+        { "cmd": "goto", "x": 51.5, "z": 70.5, "max_frames": 900, "expect": [ { "path": "last.arrived", "value": true } ] }
+      ]
+    },
+    {
+      "name": "a level-0 spiral (seed 128, doorway on the north wall) leads out of its foot",
+      "start_run": { "seed": 128, "no_target": true },
+      "steps": [
+        { "cmd": "teleport", "to": "stairs_down" },
+        { "cmd": "stairs_report", "expect": [ { "path": "last.stairs_report.flights.0.shape", "value": "spiral" } ] },
+        { "cmd": "walk_flight", "dir": "down", "frames": 900 },
+        { "expect": [ { "path": "run.level", "value": -1 } ] },
+        { "cmd": "goto", "x": 85.5, "z": 58.5, "max_frames": 900, "expect": [ { "path": "last.arrived", "value": true } ] },
+        { "cmd": "goto", "x": 85.5, "z": 64.5, "max_frames": 900, "expect": [ { "path": "last.arrived", "value": true } ] }
+      ]
+    },
+    {
+      "name": "a level-0 switchback (seed 102) leads out of its foot",
+      "start_run": { "seed": 102, "no_target": true },
+      "steps": [
+        { "cmd": "teleport", "to": "stairs_down" },
+        { "cmd": "stairs_report", "expect": [ { "path": "last.stairs_report.flights.0.shape", "value": "switchback" } ] },
+        { "cmd": "walk_flight", "dir": "down", "frames": 900 },
+        { "expect": [ { "path": "run.level", "value": -1 } ] },
+        { "cmd": "goto", "x": 51.5, "z": 76.5, "max_frames": 900, "expect": [ { "path": "last.arrived", "value": true } ] },
+        { "cmd": "goto", "x": 51.5, "z": 70.5, "max_frames": 900, "expect": [ { "path": "last.arrived", "value": true } ] }
+      ]
     }
   ]
 }

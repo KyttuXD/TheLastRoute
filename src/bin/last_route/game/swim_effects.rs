@@ -320,7 +320,13 @@ impl Game {
     /// active label, which may lag a frame. A fall below `min_height` does nothing; water deep enough takes the body
     /// (splash, flicker, noise, soak, no stun); anything else is the ground rule: stun, stamina, exposure, noise.
     /// Never changes the storey or moves the runner. In the pool the runner then swims by the normal wade rules.
-    pub(super) fn apply_landing(&mut self, l: super::player::Landing, _content: &Content, _catalog: &Catalog) {
+    pub(super) fn apply_landing(&mut self, l: super::player::Landing, content: &Content, catalog: &Catalog) {
+        let roll = macroquad::rand::gen_range(0.0f32, 1.0);
+        self.apply_landing_rolled(l, roll, content, catalog);
+    }
+
+    /// `apply_landing` with the 0..1 roll that decides the pool's item slip supplied (a test picks it).
+    pub(super) fn apply_landing_rolled(&mut self, l: super::player::Landing, roll: f32, _content: &Content, _catalog: &Catalog) {
         let rules = swim::fall_rules();
         if !(l.drop_height >= rules.min_height) {
             return;
@@ -337,11 +343,17 @@ impl Game {
             if p.soak {
                 self.swim.soak(&self.swim_cfg);
             }
+            // Godot: coming out of the pool, a small chance the item in hand slipped away and floated to the edge
+            if rules.item_slips(roll) {
+                self.slip_held_item();
+            }
             return;
         }
         let g = &rules.ground;
         let k = rules.ground_scale(l.drop_height);
-        self.p.stun = self.p.stun.max(g.stun_seconds * k);
+        // the stun is Godot's curve of the touchdown speed (none under 8.25 m/s, 0.4 s up to 1.4 s at 14 m/s)
+        let stun = rules.stun_seconds(l.speed);
+        self.p.stun = self.p.stun.max(stun);
         self.p.stamina = (self.p.stamina - g.stamina_loss * k).max(0.0);
         if self.p.stamina <= 0.0 {
             self.p.exhausted = true;
@@ -351,7 +363,24 @@ impl Game {
         self.p.noise_burst_timer = g.noise_seconds;
         self.p.force_flashlight_flicker(g.flicker_seconds);
         self.push_noise_scaled(crate::hunters::noise_events::NoiseKind::HardLanding, l.pos, level, (l.drop_height / rules.min_height).clamp(1.0, 2.0));
-        self.say("You hit the floor hard.");
+        if stun > 0.0 {
+            self.say(&format!("{} {:.1}s", swim::HARD_LANDING_MESSAGE, stun));
+        } else {
+            self.say("You hit the floor hard.");
+        }
+    }
+
+    /// The item in hand slips out of the runner's grip in the pool and floats to the edge (Godot
+    /// `_on_player_plunge_finished`: "YOUR X SLIPPED AWAY // IT FLOATED TO THE EDGE"). Nothing happens with an empty hand;
+    /// the flashlight is never dropped (`drop_selected`). Returns whether an item went.
+    pub(super) fn slip_held_item(&mut self) -> bool {
+        let Some(slot) = self.slots[self.selected] else { return false };
+        if slot.item == super::items::Item::Flashlight {
+            return false;
+        }
+        self.drop_selected();
+        self.say(&format!("YOUR {} SLIPPED AWAY // IT FLOATED TO THE EDGE", slot.item.label().to_uppercase()));
+        true
     }
 
     /// The wading speed multiplier for `depth` (1 when dry).
@@ -756,16 +785,93 @@ mod tests {
     fn ground_effects_scale_with_drop_height_between_the_clamps() {
         let (mut g, content, catalog) = sewer_game(0);
         let rules = swim::fall_rules();
-        let mut stun_for = |drop: f32| {
-            g.p.stun = 0.0;
+        // the noise burst is a part that scales with the drop (the stun follows the touchdown speed, below)
+        let mut burst_for = |drop: f32| {
+            g.p.noise_burst = 0.0;
             g.apply_landing(landing(0, (3.5, 3.5), drop), &content, &catalog);
-            g.p.stun
+            g.p.noise_burst
         };
-        let (short, one, tall, taller) = (stun_for(rules.min_height), stun_for(STOREY), stun_for(10.0 * STOREY), stun_for(20.0 * STOREY));
-        assert!(short >= rules.ground.stun_seconds * rules.ground.scale_min - 1e-4, "never below the lower clamp");
-        assert!(short <= one && one < tall, "a longer fall stuns longer: {short} {one} {tall}");
-        assert!((tall - rules.ground.stun_seconds * rules.ground.scale_max).abs() < 1e-4, "capped by scale_max");
-        assert_eq!(tall, taller, "past the cap the stun stops growing");
+        let (short, one, tall, taller) = (burst_for(rules.min_height), burst_for(STOREY), burst_for(10.0 * STOREY), burst_for(20.0 * STOREY));
+        assert!(short >= rules.ground.noise * rules.ground.scale_min - 1e-4, "never below the lower clamp");
+        assert!(short <= one && one < tall, "a longer fall is louder: {short} {one} {tall}");
+        assert!((tall - rules.ground.noise * rules.ground.scale_max).abs() < 1e-3, "capped by scale_max");
+        assert_eq!(tall, taller, "past the cap the burst stops growing");
+    }
+
+    #[test]
+    fn the_hard_landing_stun_is_godots_speed_curve_and_says_so() {
+        let (mut g, content, catalog) = sewer_game(0);
+        let rules = swim::fall_rules();
+        let mut hit = |speed: f32| {
+            g.p.stun = 0.0;
+            g.message.clear();
+            let l = Landing { y: floor_y_of(0) + 0.01, drop_height: speed * speed / (2.0 * crate::config::PLAYER_GRAVITY), speed, pos: (3.5, 3.5) };
+            g.apply_landing(l, &content, &catalog);
+            (g.p.stun, g.message.clone())
+        };
+        // under 8.25 m/s: hurt (stamina, noise) but not stunned, and no stun message
+        let (s, m) = hit(8.0);
+        assert_eq!(s, 0.0);
+        assert_eq!(m, "You hit the floor hard.");
+        // at the threshold: 0.4 s; at 14 m/s: 1.4 s; past it the stun stops growing
+        let (s, m) = hit(8.25);
+        assert!((s - 0.4).abs() < 1e-4, "{s}");
+        assert_eq!(m, "HARD LANDING // STUNNED 0.4s");
+        let (s, m) = hit(14.0);
+        assert!((s - 1.4).abs() < 1e-4, "{s}");
+        assert_eq!(m, "HARD LANDING // STUNNED 1.4s");
+        assert_eq!(hit(30.0).0, s);
+        // the middle of the curve
+        assert!((hit(11.125).0 - 0.9).abs() < 1e-3);
+        // a landing never shortens a longer stun already running
+        g.p.stun = 5.0;
+        g.apply_landing(Landing { y: floor_y_of(0) + 0.01, drop_height: 5.0, speed: 10.95, pos: (3.5, 3.5) }, &content, &catalog);
+        assert_eq!(g.p.stun, 5.0);
+        let _ = rules;
+    }
+
+    #[test]
+    fn a_pool_landing_may_make_the_held_item_slip_away() {
+        use crate::game::items::{Item, Slot};
+        let (mut g, content, catalog) = sewer_game(sewer_core::LEVEL);
+        let pos = sewer_cell(&g, sewer_core::WATER);
+        g.p.pos = pos;
+        let chance = swim::fall_rules().pool.item_slip_chance;
+        assert!((chance - 0.08).abs() < 1e-6);
+        let hold = |g: &mut Game| {
+            g.pickups.clear();
+            g.slots[g.selected] = Some(Slot { item: Item::Crowbar, n: 1 });
+        };
+        // a roll above the chance keeps the item
+        hold(&mut g);
+        g.apply_landing_rolled(landing(sewer_core::LEVEL, pos, STOREY), chance + 0.01, &content, &catalog);
+        assert!(g.slots[g.selected].is_some() && g.pickups.is_empty(), "the item stays in hand");
+        // a roll under it lets it go: out of the hand, on the floor, and the runner is told
+        hold(&mut g);
+        g.apply_landing_rolled(landing(sewer_core::LEVEL, pos, STOREY), chance - 0.01, &content, &catalog);
+        assert!(g.slots[g.selected].is_none(), "the item left the hand");
+        assert_eq!(g.pickups.len(), 1);
+        assert_eq!(g.pickups[0].item, Item::Crowbar);
+        assert_eq!(g.message, "YOUR CROWBAR SLIPPED AWAY // IT FLOATED TO THE EDGE");
+        // an empty hand loses nothing, and the flashlight never slips
+        g.slots[g.selected] = None;
+        g.pickups.clear();
+        g.apply_landing_rolled(landing(sewer_core::LEVEL, pos, STOREY), 0.0, &content, &catalog);
+        assert!(g.pickups.is_empty());
+        g.slots[g.selected] = Some(Slot { item: Item::Flashlight, n: 1 });
+        g.apply_landing_rolled(landing(sewer_core::LEVEL, pos, STOREY), 0.0, &content, &catalog);
+        assert!(g.slots[g.selected].is_some() && g.pickups.is_empty(), "the flashlight stays");
+    }
+
+    #[test]
+    fn dry_floor_never_makes_the_item_slip() {
+        use crate::game::items::{Item, Slot};
+        let (mut g, content, catalog) = sewer_game(sewer_core::LEVEL);
+        let pos = sewer_cell(&g, sewer_core::DRY);
+        g.pickups.clear();
+        g.slots[g.selected] = Some(Slot { item: Item::Crowbar, n: 1 });
+        g.apply_landing_rolled(landing(sewer_core::LEVEL, pos, STOREY), 0.0, &content, &catalog);
+        assert!(g.slots[g.selected].is_some() && g.pickups.is_empty());
     }
 
     #[test]

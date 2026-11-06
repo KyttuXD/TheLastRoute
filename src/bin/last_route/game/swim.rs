@@ -153,13 +153,23 @@ pub struct PoolLanding {
     pub noise_seconds: f32,
     pub flicker_seconds: f32,
     pub soak: bool,
+    /// The chance (0 to 1) that the item in hand slips away into the pool on the landing (Godot `FALLS_ITEM_DROP_CHANCE`
+    /// .08, infinite_route_test.gd:58).
+    pub item_slip_chance: f32,
 }
 
-/// What a landing on dry floor does. There are no hit points: a stun, a stamina loss, exposure and a noise burst,
-/// all scaled by `(drop_height / STOREY).clamp(scale_min, scale_max)`.
+/// What a landing on dry floor does. There are no hit points: a stun, a stamina loss, exposure and a noise burst. The
+/// stun is Godot's hard-landing curve of the touchdown speed (`PLAYER_FALL_STUN_SPEED` 8.25 m/s up to
+/// `PLAYER_FALL_STUN_FULL_SPEED` 14 m/s mapped to 0.4 to 1.4 s, game_config.gd:107-110) and is none under the first speed;
+/// the stamina loss, exposure and noise are scaled by `(drop_height / STOREY).clamp(scale_min, scale_max)`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GroundLanding {
-    pub stun_seconds: f32,
+    /// The touchdown speed (m/s) from which a landing stuns (for `stun_min_seconds`); slower is no stun.
+    pub stun_from_speed: f32,
+    /// The touchdown speed (m/s) at and above which the stun is `stun_max_seconds`.
+    pub stun_full_speed: f32,
+    pub stun_min_seconds: f32,
+    pub stun_max_seconds: f32,
     pub stamina_loss: f32,
     pub exposure_add: f32,
     pub noise: f32,
@@ -182,6 +192,10 @@ pub struct FallRules {
     pub pool: PoolLanding,
     pub ground: GroundLanding,
 }
+
+/// The text on a stunning hard landing (Godot `HARD LANDING // STUNNED %.1fs`, player_controller_3d.gd:2126); the stun
+/// seconds follow it.
+pub const HARD_LANDING_MESSAGE: &str = "HARD LANDING // STUNNED";
 
 /// The shipped file, the single source of the standard values.
 const FALL_JSON: &str = include_str!("../data/swim/fall.json");
@@ -241,9 +255,13 @@ impl FallRules {
                 noise_seconds: limited(v, "pool", "noise_seconds", 0.0, 30.0)?,
                 flicker_seconds: limited(v, "pool", "flicker_seconds", 0.0, 30.0)?,
                 soak,
+                item_slip_chance: limited(v, "pool", "item_slip_chance", 0.0, 1.0)?,
             },
             ground: GroundLanding {
-                stun_seconds: limited(v, "ground", "stun_seconds", 0.0, 30.0)?,
+                stun_from_speed: limited(v, "ground", "stun_from_speed", 0.0, 100.0)?,
+                stun_full_speed: limited(v, "ground", "stun_full_speed", 0.01, 100.0)?,
+                stun_min_seconds: limited(v, "ground", "stun_min_seconds", 0.0, 30.0)?,
+                stun_max_seconds: limited(v, "ground", "stun_max_seconds", 0.0, 30.0)?,
                 stamina_loss: limited(v, "ground", "stamina_loss", 0.0, 1000.0)?,
                 exposure_add: limited(v, "ground", "exposure_add", 0.0, 100.0)?,
                 noise: limited(v, "ground", "noise", 0.0, 100.0)?,
@@ -255,6 +273,12 @@ impl FallRules {
         };
         if rules.ground.scale_max < rules.ground.scale_min {
             return Err("fall.json: ground.scale_max is below scale_min".into());
+        }
+        if rules.ground.stun_full_speed <= rules.ground.stun_from_speed {
+            return Err("fall.json: ground.stun_full_speed must be above stun_from_speed".into());
+        }
+        if rules.ground.stun_max_seconds < rules.ground.stun_min_seconds {
+            return Err("fall.json: ground.stun_max_seconds is below stun_min_seconds".into());
         }
         if rules.landing_report_gap < rules.min_gap {
             return Err("fall.json: landing_report_gap is below min_gap".into());
@@ -279,6 +303,23 @@ impl FallRules {
     /// Whether a fall of `drop_height` metres reports a landing.
     pub fn reports_landing(&self, drop_height: f32) -> bool {
         drop_height >= self.landing_report_gap
+    }
+
+    /// The stun (seconds) of touching dry floor at `speed` m/s (the downward speed): none under `stun_from_speed`, then
+    /// Godot's lerp from `stun_min_seconds` at that speed to `stun_max_seconds` at `stun_full_speed` and above
+    /// (player_controller_3d.gd:2117-2124).
+    pub fn stun_seconds(&self, speed: f32) -> f32 {
+        let g = &self.ground;
+        if !(speed >= g.stun_from_speed) {
+            return 0.0;
+        }
+        let severity = ((speed - g.stun_from_speed) / (g.stun_full_speed - g.stun_from_speed)).clamp(0.0, 1.0);
+        g.stun_min_seconds + (g.stun_max_seconds - g.stun_min_seconds) * severity
+    }
+
+    /// Whether the item in hand slips away into the pool, for a roll in 0..1 (chance `pool.item_slip_chance`).
+    pub fn item_slips(&self, roll: f32) -> bool {
+        roll < self.pool.item_slip_chance
     }
 
     /// How hard a landing from `drop_height` metres hits on dry floor: the drop in storeys, between the clamps.
@@ -583,7 +624,11 @@ mod tests {
         assert_eq!(*fall_rules(), r, "the embedded file is the one in the tree");
         assert_eq!(r.min_height, 1.5);
         assert_eq!((r.air_control, r.min_gap, r.landing_report_gap), (0.6, 0.6, 1.2));
-        assert_eq!((r.ground.stun_seconds, r.ground.stamina_loss, r.ground.exposure_add), (2.5, 60.0, 12.0));
+        // Godot's hard-landing curve (game_config.gd:107-110) and the pool's item slip (infinite_route_test.gd:58)
+        assert_eq!((r.ground.stun_from_speed, r.ground.stun_full_speed), (8.25, 14.0));
+        assert_eq!((r.ground.stun_min_seconds, r.ground.stun_max_seconds), (0.4, 1.4));
+        assert_eq!(r.pool.item_slip_chance, 0.08);
+        assert_eq!((r.ground.stamina_loss, r.ground.exposure_add), (60.0, 12.0));
         assert_eq!((r.ground.noise, r.ground.noise_seconds, r.ground.flicker_seconds), (18.0, 1.5, 0.8));
         assert_eq!((r.ground.scale_min, r.ground.scale_max), (0.4, 2.0));
         assert!(r.pool.soak);
@@ -635,7 +680,14 @@ mod tests {
             ("pool", "noise_seconds", neg.clone()),
             ("pool", "flicker_seconds", huge.clone()),
             ("pool", "soak", serde_json::json!(1)),
-            ("ground", "stun_seconds", neg.clone()),
+            ("pool", "item_slip_chance", neg.clone()),
+            ("pool", "item_slip_chance", serde_json::json!(1.5)),
+            ("ground", "stun_from_speed", neg.clone()),
+            ("ground", "stun_full_speed", huge.clone()),
+            ("ground", "stun_full_speed", serde_json::json!(8.0)),
+            ("ground", "stun_min_seconds", neg.clone()),
+            ("ground", "stun_max_seconds", huge.clone()),
+            ("ground", "stun_max_seconds", serde_json::json!(0.1)),
             ("ground", "stamina_loss", huge.clone()),
             ("ground", "exposure_add", serde_json::json!(101.0)),
             ("ground", "noise", neg.clone()),
@@ -649,12 +701,49 @@ mod tests {
         }
         // a missing field, a wrong schema and an inverted clamp
         let mut missing = ok.clone();
-        missing["ground"].as_object_mut().unwrap().remove("stun_seconds");
+        missing["ground"].as_object_mut().unwrap().remove("stun_from_speed");
         assert!(FallRules::parse(&missing).is_err());
+        let mut no_slip = ok.clone();
+        no_slip["pool"].as_object_mut().unwrap().remove("item_slip_chance");
+        assert!(FallRules::parse(&no_slip).is_err());
         assert!(FallRules::parse(&with("", "schema", serde_json::json!("lr.swim.fall/2"))).is_err());
         let mut inverted = ok.clone();
         inverted["ground"]["scale_min"] = serde_json::json!(3.0);
         assert!(FallRules::parse(&inverted).is_err(), "scale_max below scale_min");
+    }
+
+    #[test]
+    fn the_hard_landing_stun_follows_godots_speed_curve() {
+        let r = FallRules::default();
+        // none under 8.25 m/s, 0.4 s at it, 1.4 s from 14 m/s up
+        assert_eq!(r.stun_seconds(0.0), 0.0);
+        assert_eq!(r.stun_seconds(8.24), 0.0, "just under the threshold");
+        assert!((r.stun_seconds(8.25) - 0.4).abs() < 1e-5);
+        assert!((r.stun_seconds(14.0) - 1.4).abs() < 1e-5);
+        assert_eq!(r.stun_seconds(40.0), r.stun_seconds(14.0), "capped past the full speed");
+        // the middle of the curve: (11.125 - 8.25) / 5.75 = 0.5 gives 0.9 s
+        assert!((r.stun_seconds(11.125) - 0.9).abs() < 1e-4, "{}", r.stun_seconds(11.125));
+        // monotone between the ends
+        let mut last = 0.0;
+        for i in 0..=100 {
+            let s = r.stun_seconds(8.25 + 5.75 * i as f32 / 100.0);
+            assert!(s >= last - 1e-6, "stun never shortens as the landing gets harder");
+            last = s;
+        }
+        // a storey of free fall (v = sqrt(2 g 5) = 10.95 m/s) is a stun of about 0.87 s: inside the curve, not at an end
+        let storey = (2.0 * crate::config::PLAYER_GRAVITY * crate::world::vertical::STOREY).sqrt();
+        assert!(r.stun_seconds(storey) > 0.4 && r.stun_seconds(storey) < 1.4, "{}", r.stun_seconds(storey));
+        // the message is Godot's
+        assert_eq!(HARD_LANDING_MESSAGE, "HARD LANDING // STUNNED");
+    }
+
+    #[test]
+    fn the_pool_item_slip_is_eight_percent() {
+        let r = FallRules::default();
+        assert!(r.item_slips(0.0) && r.item_slips(0.079) && !r.item_slips(0.08) && !r.item_slips(0.99));
+        let mut v = fall_json();
+        v["pool"]["item_slip_chance"] = serde_json::json!(0.0);
+        assert!(!FallRules::parse(&v).unwrap().item_slips(0.0), "a zero chance never slips");
     }
 
     #[test]

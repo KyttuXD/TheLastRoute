@@ -10,10 +10,14 @@
     "noise": 3.0,
     "noise_seconds": 1.2,
     "flicker_seconds": 1.4,
-    "soak": true
+    "soak": true,
+    "item_slip_chance": 0.08
   },
   "ground": {
-    "stun_seconds": 2.5,
+    "stun_from_speed": 8.25,
+    "stun_full_speed": 14.0,
+    "stun_min_seconds": 0.4,
+    "stun_max_seconds": 1.4,
     "stamina_loss": 60.0,
     "exposure_add": 12.0,
     "noise": 18.0,

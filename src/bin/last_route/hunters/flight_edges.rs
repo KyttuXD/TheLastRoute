@@ -319,10 +319,6 @@ fn path_len_3d(p: &[[f32; 3]]) -> f32 {
     p.windows(2).map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2) + (w[1][2] - w[0][2]).powi(2)).sqrt()).sum()
 }
 
-fn path_len_flat(p: &[[f32; 3]]) -> f32 {
-    p.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum()
-}
-
 struct Fnv(u64);
 
 impl Fnv {
@@ -759,7 +755,8 @@ fn stair_edge(fac: &Facility, s: &Stair, rules: &FlightEdgeRules) -> Option<Edge
                 [*x, *z, y]
             })
             .collect();
-        let cost = path_len_flat(&path) * rules.edge_cost_scale;
+        // the walk is along the slope: the cost is the 3D length (what `EdgeWalk::advance` walks), not its ground shadow
+        let cost = path_len_3d(&path) * rules.edge_cost_scale;
         (EdgeKind::Flight, path, cost)
     };
     let from = Node { level: fac.level, cell: fp.landing };
@@ -1050,7 +1047,13 @@ pub(crate) fn test_stage(shape: TestShape, rules: &FlightEdgeRules) -> TestStage
 pub(crate) fn surface_error(stage: &TestStage, pos: (f32, f32), y: f32) -> f32 {
     let Some(stair) = stage.upper.stairs.first() else { return 0.0 };
     let Some(flight) = stair.flight(stage.upper.level) else { return 0.0 };
-    flight_surface_y(&flight, pos.0, pos.1).map_or(0.0, |sy| (sy - y).abs())
+    // the surface a body walks on: the upper level's view or the lower level's (a spiral's lead-out runs under the slab)
+    let rules = crate::world::flight::flights();
+    [false, true]
+        .into_iter()
+        .filter_map(|lower| crate::world::flight::flight_walk_y_with(rules, &flight, pos.0, pos.1, lower).map(|sy| (sy - y).abs()))
+        .fold(None, |best: Option<f32>, e| Some(best.map_or(e, |b| b.min(e))))
+        .unwrap_or(0.0)
 }
 
 #[cfg(test)]
@@ -1089,8 +1092,12 @@ mod tests {
             assert!(!e.one_way);
             let flight = s.flight(0).unwrap();
             let pts = walk_path(&flight, WALK_STEP);
-            let expect: f32 = pts.windows(2).map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1)).sum();
-            assert!(approx(e.cost, expect * rules().edge_cost_scale), "{shape:?}: cost {} vs walk path {expect}", e.cost);
+            let flat: f32 = pts.windows(2).map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1)).sum();
+            // the cost is the length of the walk along the slope (what `EdgeWalk` walks), not its ground shadow
+            let expect: f32 = e.path.windows(2).map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2) + (w[1][2] - w[0][2]).powi(2)).sqrt()).sum();
+            assert!(expect > flat + 1.0, "{shape:?}: the slope adds length: {expect} vs {flat}");
+            assert!(approx(e.cost, expect * rules().edge_cost_scale), "{shape:?}: cost {} vs 3D walk path {expect}", e.cost);
+            assert!(approx(e.len, expect), "{shape:?}: the walked length is the same 3D length");
             assert!(approx(e.path[0][2], flight.upper_y()) && approx(e.path.last().unwrap()[2], flight.lower_y()), "{shape:?}");
             // the same edge walked backwards starts at the foot and ends at the landing
             let back = nav.edges_from(to).find(|e| e.key.kind == EdgeKind::Flight).expect("two-way");

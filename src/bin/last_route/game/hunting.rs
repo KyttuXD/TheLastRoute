@@ -77,6 +77,14 @@ impl Game {
     pub fn hunter_frame(&self) -> Vec<Value> {
         let mut out: Vec<Value> = self.hunters.iter().enumerate().map(|(index, h)| frame_entry(index, h)).collect();
         out.extend(self.resident_frame_entries());
+        // a dedicated room's window follows its own anchor, not each guest's: the entries say which window their cells
+        // are in (the absolute cell of its (0, 0)), and a guest moves them into its own (apply_hunter_frame)
+        if self.no_local_runner {
+            let origin = self.window_origin();
+            for entry in out.iter_mut() {
+                entry["origin"] = json!([origin.0, origin.1]);
+            }
+        }
         out
     }
 
@@ -86,6 +94,7 @@ impl Game {
     /// as it was. Only the display state is set here.
     pub fn apply_hunter_frame(&mut self, data: &[Value]) {
         let viewer = self.runner_level();
+        let window = self.window_origin();
         let finite = |v: &Value| v.as_f64().map(|f| f as f32).filter(|f| f.is_finite());
         for entry in data {
             let Some(id) = entry["id"].as_str() else { continue };
@@ -100,7 +109,12 @@ impl Game {
             };
             let Some(h) = self.hunter_at_mut(spot) else { continue };
             if let (Some(x), Some(y)) = (finite(&entry["position"][0]), finite(&entry["position"][1])) {
-                h.pos = (x, y);
+                // a frame from a room with its own window: the cells are that window's, moved into this one
+                let shift = match (entry["origin"][0].as_i64(), entry["origin"][1].as_i64()) {
+                    (Some(ox), Some(oy)) => ((ox - window.0 as i64) as f32, (oy - window.1 as i64) as f32),
+                    _ => (0.0, 0.0),
+                };
+                h.pos = (x + shift.0, y + shift.1);
             }
             if let (Some(x), Some(y)) = (finite(&entry["facing"][0]), finite(&entry["facing"][1])) {
                 h.facing = (x, y);
@@ -144,6 +158,14 @@ impl Game {
     }
 
     fn runner_target(&self) -> Target {
+        // a room with no local runner: the party anchor stands where the parked body is
+        if self.no_local_runner {
+            if let Some(a) = self.party_anchor.and_then(|a| self.remote_targets.iter().find(|t| t.peer == a)).or_else(|| self.remote_targets.first()) {
+                let mut t = a.target.clone();
+                t.pos = Self::abs_to_window(self.window_origin(), a.abs);
+                return t;
+            }
+        }
         Target {
             pos: self.p.pos,
             facing: self.forward2(),
@@ -183,6 +205,13 @@ impl Game {
         if self.remote_hunters {
             return;
         }
+        // a room with no local runner hunts its guests (game/remote_targets.rs); with none in play it runs nothing at all
+        let guests = self.guest_targets();
+        self.hunter_aim.clear();
+        self.hunter_aim.resize(self.hunters.len(), None);
+        if self.no_local_runner && guests.is_empty() {
+            return;
+        }
         // this frame's route budget (hunters/path_scheduler.rs): last frame's queued searches are answered first
         crate::hunters::path_scheduler::begin_frame(&self.fac);
         // one navigation graph over the active and resident levels, given to every brain of every list
@@ -193,12 +222,20 @@ impl Game {
         // (relay rush on); the Infinite route then pushes crowded hunters apart
         let target = self.target();
         let admin = self.admin_flags();
-        let runner = if self.report.is_none() && !admin.no_target {
+        let runner = if self.report.is_none() && !admin.no_target && !self.no_local_runner {
             Some(self.p.pos)
         } else {
             None
         };
-        let targets = vec![runner; self.hunters.len()];
+        // the director reads each hunter's runner: the local one, or in a dedicated room the nearest guest in play
+        let targets: Vec<Option<(f32, f32)>> = if self.no_local_runner {
+            self.hunters
+                .iter()
+                .map(|h| super::remote_targets::nearest_guest(h.pos, &guests).map(|k| guests[k].target.pos))
+                .collect()
+        } else {
+            vec![runner; self.hunters.len()]
+        };
         let remaining: Vec<crate::world::Cell> = self
             .fac
             .relays
@@ -240,8 +277,17 @@ impl Game {
         let mut all_events: Vec<(usize, Event)> = vec![];
         let mut caught: Option<usize> = None;
         for i in 0..self.hunters.len() {
-            let (hunter_target, chose_bot) = self.target_for(&self.hunters[i], list_level, &target, &bot_targets);
+            let (hunter_target, chose_bot, guest_peer) = if self.no_local_runner {
+                match self.target_for_guests(&self.hunters[i], list_level, &guests, &bot_targets) {
+                    Some(picked) => picked,
+                    None => continue,
+                }
+            } else {
+                let (t, bot) = self.target_for(&self.hunters[i], list_level, &target, &bot_targets);
+                (t, bot, None)
+            };
             self.hunters[i].target_is_bot = chose_bot;
+            self.hunter_aim[i] = guest_peer;
             // Nyxie's wake and dispel read the runner even while she chases a bot (nyxie::Nyxie::runner)
             if let Gimmick::Nyxie(n) = &mut self.hunters[i].gimmick {
                 n.runner = chose_bot.then(|| target.clone());
@@ -282,8 +328,15 @@ impl Game {
                 );
             }
             // a capture ends the run only when the runner was the target: a bot caught is no run end
-            if c && !chose_bot && caught.is_none() {
-                caught = Some(i);
+            if c && !chose_bot {
+                if let Some(peer) = guest_peer {
+                    // a dedicated room: the hunter took a guest. The hunter calms; the room resolves the capture with the guest
+                    let (id, at, inescapable) = (self.hunters[i].def.id.clone(), self.hunters[i].pos, self.hunters[i].gimmick.capture_inescapable());
+                    self.hunters[i].apply_stun(prof.escape_stun, false);
+                    self.note_guest_catch(peer, id, at, i, inescapable);
+                } else if caught.is_none() {
+                    caught = Some(i);
+                }
             }
             all_events.extend(ev.into_iter().map(|e| (i, e)));
         }
@@ -561,6 +614,10 @@ impl Game {
     }
 
     pub(super) fn end_run(&mut self, hunter: usize, cause: &'static str) {
+        // a room with no local runner has no run to end: a guest's capture is the room's to resolve (note_guest_catch)
+        if self.no_local_runner {
+            return;
+        }
         let a = self.admin_flags();
         if a.god || a.no_target {
             // admin god mode / no target: nothing ends the run
