@@ -14,7 +14,7 @@
 use super::catalog::Catalog;
 use super::facility::{Cell, Facility, Options, Pickup};
 use super::flight::Flight;
-use super::flight_links::{bay_flight, carve_cells, lower_stair, sewer_well_flights, upper_stair};
+use super::flight_links::{bay_flight, bay_rect, carve_cells, lower_stair, sewer_well_flights, upper_stair};
 use super::fixtures::{self, Fixtures};
 use super::rng::Rng;
 use super::route::regions;
@@ -361,13 +361,11 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -
 /// (the sewer's wells are already joined to their own tunnels).
 fn carve_bay(f: &mut Facility, flight: &Flight, hall: bool) {
     let cells = carve_cells(flight);
-    let x0 = (cells.iter().map(|c| c.x).min().unwrap_or(1) - 1).max(1);
-    let x1 = (cells.iter().map(|c| c.x).max().unwrap_or(1) + 1).min(CHUNK - 2);
-    let y0 = (cells.iter().map(|c| c.y).min().unwrap_or(1) - 1).max(1);
-    let y1 = (cells.iter().map(|c| c.y).max().unwrap_or(1) + 1).min(CHUNK - 2);
-    f.clear_props_in(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+    let (x0, y0, w, h) = bay_rect(flight);
+    let x1 = x0 + w - 1;
+    f.clear_props_reaching(x0, y0, w, h);
     if hall {
-        f.open_cells(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+        f.open_cells(x0, y0, w, h);
         let (cx, cy) = (f.start.x, f.start.y);
         let mx = (x0 + x1) / 2;
         f.open_cells(mx.min(cx) - 1, y0, (mx - cx).abs() + 3, 3);

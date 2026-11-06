@@ -818,6 +818,25 @@ impl Facility {
         self.room_lights.retain(|l| !inside(l.switch_cell));
     }
 
+    /// `clear_props_in`, and also every solid prop whose FOOTPRINT (its centre cell plus offset, grown by its half extents)
+    /// overlaps the rectangle, not only those whose centre cell is inside it. A wide prop (a sewer outflow pipe is 3.2 m)
+    /// centred one or two cells outside a stair's bay otherwise reaches into the ring round the well or the landing and
+    /// pins the runner against the drop. Room doors stay (they are the doorways). Call `rebuild_grids` afterwards.
+    pub fn clear_props_reaching(&mut self, x: i32, y: i32, w: i32, h: i32) {
+        self.clear_props_in(x, y, w, h);
+        let (x0, y0, x1, y1) = (x as f32, y as f32, (x + w) as f32, (y + h) as f32);
+        self.props.retain(|p| {
+            // a sewer valve or sluice gate belongs to a channel puzzle (game/pipes.rs): never swept away by reach
+            if p.door.is_some() || !p.solid || p.sewer.is_some() {
+                return true;
+            }
+            let (px, py) = (p.cell.x as f32 + 0.5 + p.offset.0, p.cell.y as f32 + 0.5 + p.offset.1);
+            // strictly overlapping: a prop that only touches the rectangle's edge (a shelf flush against its wall) stays
+            let overlaps = px + p.half.0 > x0 + 1e-3 && px - p.half.0 < x1 - 1e-3 && py + p.half.1 > y0 + 1e-3 && py - p.half.1 < y1 - 1e-3;
+            !overlaps
+        });
+    }
+
     /// Removes the props of cell `c` and every solid prop whose footprint reaches into it, so a body fills the cell
     /// (a ladder's hatch and step cell, a catwalk link). Room doors are never removed, and relays, batteries, pickups
     /// and lockers stay: they are objectives, not furniture. Call `rebuild_grids` afterwards.

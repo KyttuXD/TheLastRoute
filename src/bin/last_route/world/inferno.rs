@@ -515,6 +515,10 @@ mod tests {
 pub struct InfernoChunk {
     pub inferno: Inferno,
     pub caves: Option<super::inferno_caves::Caves>,
+    /// The stair bay of the flight that comes up from this chunk (`flight_links::bay_rect`, chunk cells): the build opens
+    /// it for the runner (`infinite::carve_bay`), so no lava pit and no cave decoration may stand in it. `None` when the
+    /// chunk has no flight up.
+    pub bay: Option<Rect>,
 }
 
 impl InfernoChunk {
@@ -523,10 +527,28 @@ impl InfernoChunk {
     }
 
     pub fn carve_with(seed: &str, k: ChunkKey, rules: &InfernoRules) -> InfernoChunk {
-        InfernoChunk {
+        let mut chunk = InfernoChunk {
             inferno: Inferno::carve_with(seed, k, rules),
             caves: rules.caves_enabled.then(|| super::inferno_caves::Caves::carve(seed, k)),
+            bay: None,
+        };
+        // The caves know nothing of the flight that lands here. Its bay (the carve cells grown by one) is opened by the
+        // build whatever the caves made of it, so it is made walkable here too: lava in it would sit under the foot of the
+        // stairs, and the renderer draws the lava glow and the embers of a lava cell. A pure function of the world text and
+        // the chunk, so the build and the renderer (which carve separately) agree.
+        if let Some(flight) = super::flight_links::bay_flight(seed, k.cx, k.cy, super::infinite::INFERNO_LEVEL + 1) {
+            let (x, y, w, h) = super::flight_links::bay_rect(&flight);
+            chunk.bay = Some(Rect { x, y, w, h });
+            if let Some(caves) = chunk.caves.as_mut() {
+                caves.make_walkable(x, y, w, h);
+            }
         }
+        chunk
+    }
+
+    /// Whether the chunk-local cell is in the stair bay (see `bay`).
+    pub fn in_bay(&self, c: Cell) -> bool {
+        self.bay.is_some_and(|r| c.x >= r.x && c.y >= r.y && c.x < r.x + r.w && c.y < r.y + r.h)
     }
 
     /// Cells the build opens (walkable only: lava stays closed).

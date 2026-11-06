@@ -218,6 +218,9 @@ impl Game {
         self.sync_stack_nav();
         // the Inferno's secret creatures: the dwell clock on level -3 and their spawn (game/inferno_secrets.rs)
         self.update_inferno_secrets(dt);
+        // the creature is pushed onto the hunter list from inside that call (the frame its dwell clock runs out): the aim
+        // list sized above follows the list, or the per-hunter loop below indexes past its end (a panic 30 s into the Inferno)
+        self.hunter_aim.resize(self.hunters.len(), None);
         // _direct_hunters: the director runs every frame before the brains, in every mode
         // (relay rush on); the Infinite route then pushes crowded hunters apart
         let target = self.target();
