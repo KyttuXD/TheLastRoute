@@ -1,6 +1,8 @@
 //! The hunter specialty bar: four slots numbered 6 to 9, SEPARATE from the five common hotbar slots (`HOTBAR_SIZE`).
 //! Each slot belongs to hunters (data/ui/specialty_slots.json, `lr.specialty_slots/1`). A slot is visible while one of
-//! its hunters exists on the current floor, whatever that hunter's state. The slot's item is granted the moment the slot
+//! its hunters exists IN THE RUN (the drawn floor's list, every resident floor's list and the shelves, `run_hunter_ids`),
+//! whatever that hunter's state or floor: Solyth is built into the lineup of the floors below and above level 0, so the
+//! item must already be in hand on level 0, where she arrives by the stairs. The slot's item is granted the moment the slot
 //! becomes visible and REMOVED (not returned to the pack) the moment it stops being visible.
 //!
 //! - Slot 6, the music box (Glyra). Using it winds the box (game/music_box.rs) and spends it. A box picked up off the
@@ -477,10 +479,27 @@ impl Specialty {
 }
 
 impl Game {
-    /// Keeps the specialty bar in step with the hunters on the floor: shows or hides slots, grants an item the moment a
+    /// The identity of every hunter that exists in the run, wherever it stands: the drawn floor's list, the lists of the
+    /// other resident floors, and the shelves (level-0 hunters outside the window, the floors the runner left). The
+    /// specialty slots follow this, not the drawn floor alone: Solyth lives in the lineup of a floor below or above and
+    /// reaches level 0 by the stairs, so level 0 needs the temperature item though its own list holds neither of the pair.
+    fn run_hunter_ids<'a>(
+        hunters: &'a [Brain],
+        resident: &'a super::resident_hunters::ResidentHunters,
+        inf: Option<&'a super::endless::InfState>,
+    ) -> Vec<&'a str> {
+        hunters
+            .iter()
+            .chain(resident.iter_all())
+            .chain(inf.into_iter().flat_map(|i| i.shelved_hunters()))
+            .map(|h| h.def.id.as_str())
+            .collect()
+    }
+
+    /// Keeps the specialty bar in step with the hunters of the run: shows or hides slots, grants an item the moment a
     /// slot appears and removes it the moment the slot goes. A music box already in the pack folds into the new slot 6.
     pub(super) fn sync_specialty(&mut self) {
-        let ids: Vec<&str> = self.hunters.iter().map(|h| h.def.id.as_str()).collect();
+        let ids = Self::run_hunter_ids(&self.hunters, &self.resident_hunters, self.inf.as_ref());
         let changes = self.specialty.sync(&ids);
         for c in changes {
             match c {
@@ -561,8 +580,53 @@ mod tests {
     fn sim() -> (Game, Content) {
         let (content, catalog) = (Content::load(), Catalog::load());
         let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "SPEC-7", 0, &content, &catalog);
-        g.hunters.clear();
+        empty_run(&mut g);
         (g, content)
+    }
+
+    /// No hunter anywhere in the run: the drawn list, every resident list and both shelves.
+    fn empty_run(g: &mut Game) {
+        g.hunters.clear();
+        for l in g.resident_hunters.levels() {
+            g.resident_hunters.list_mut(l).clear();
+        }
+        if let Some(inf) = g.inf.as_mut() {
+            inf.loaded_mut().clear();
+            inf.stored_mut().clear();
+            inf.floor_hunters_mut().clear();
+        }
+    }
+
+    /// A level-0 window with level -1 resident beside it (its lineup as built: Nyxie, Solyth and the route hunters).
+    fn stacked_sim() -> (Game, Content) {
+        use crate::game::player::stair_height_at;
+        use crate::world::facility::LinkKind;
+        let (content, catalog) = (Content::load(), Catalog::load());
+        for n in 0..60 {
+            let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, &format!("ROOM-WALK-{n}"), 0, &content, &catalog);
+            let Some(s) = g.fac.stairs.iter().copied().find(|s| s.dir < 0 && matches!(s.kind, LinkKind::Stairs)) else {
+                continue;
+            };
+            let path = s.walk_path(g.fac.level, 0.25);
+            let p = path[path.len() / 4];
+            g.p.pos = p;
+            let Some(h) = stair_height_at(&g.fac, p) else { continue };
+            g.p.height = h;
+            g.keep_stack(&content, &catalog);
+            g.keep_stack(&content, &catalog);
+            if g.inf.as_ref().unwrap().stack.has(-1) {
+                return (g, content);
+            }
+        }
+        panic!("no test window has a flight going down with its neighbour resident");
+    }
+
+    /// A brain of `id` for a resident list of `level`, at the runner's x and z.
+    fn slot_of(g: &Game, content: &Content, id: &str, level: i32) -> crate::game::resident_hunters::Slot {
+        let def = content.hunter(id).unwrap_or_else(|| panic!("no hunter {id}")).clone();
+        let mut brain = Brain::new(def, g.p.pos, &format!("SPEC:{id}:L{level}"), g.difficulty);
+        brain.level = level;
+        crate::game::resident_hunters::Slot { id: String::new(), brain }
     }
 
     fn add(g: &mut Game, content: &Content, id: &str) {
@@ -988,5 +1052,132 @@ mod tests {
         assert!(!g.heat_source_for_hunters(), "Void Orange's climate outage takes the heat source offline");
         g.void_fx.outage = Some((System::Radar, 1.0));
         assert!(g.heat_source_for_hunters(), "another system's outage leaves it running");
+    }
+
+    // -- the slots follow the run, not the drawn floor (KT 2026-11-06: the item only showed in the sewers and the Inferno,
+    //    where the floor's own lineup holds Solyth; on level 0 she arrives from a resident list or the shelves) --
+
+    #[test]
+    fn level_zero_shows_slot_seven_while_either_of_the_pair_lives_in_another_resident_list() {
+        let (mut g, content) = sim();
+        assert_eq!(g.inf.as_ref().unwrap().level, 0, "the drawn floor is level 0");
+        g.sync_specialty();
+        assert!(!g.specialty.visible[1] && g.specialty.items[1].is_none(), "nobody in the run: no item");
+        // Solyth lives in the lineup of the floor below; level 0's own list holds neither of the pair
+        let s = slot_of(&g, &content, "solyth", -1);
+        g.resident_hunters.put(-1, vec![s]);
+        assert!(g.hunters.is_empty());
+        g.sync_specialty();
+        assert!(g.specialty.visible[1], "slot 7 shows on level 0");
+        assert_eq!(g.specialty.items[1], Some(SpecItem::Temperature(Mode::Cold)), "granted, the counter for Solyth alone");
+        // and Wynelle in a list of the floor above
+        g.resident_hunters.take(-1);
+        g.sync_specialty();
+        assert!(!g.specialty.visible[1] && g.specialty.items[1].is_none(), "removed when no hunter of the slot is left");
+        let w = slot_of(&g, &content, "wynelle", 1);
+        g.resident_hunters.put(1, vec![w]);
+        g.sync_specialty();
+        assert_eq!(g.specialty.items[1], Some(SpecItem::Temperature(Mode::Heat)), "the counter for Wynelle alone");
+        // Glyra in a resident list gives slot 6 its box the same way
+        let gl = slot_of(&g, &content, "glyra", 1);
+        g.resident_hunters.list_mut(1).push(gl);
+        g.sync_specialty();
+        assert_eq!(g.specialty.items[0], Some(SpecItem::MusicBox));
+    }
+
+    #[test]
+    fn the_shelves_count_as_the_run_and_the_slot_stays_while_the_hunter_exists() {
+        let (mut g, content) = sim();
+        // Wynelle stored on level 0 outside the window
+        let w = slot_of(&g, &content, "wynelle", 0).brain;
+        g.inf.as_mut().unwrap().stored_mut().insert("FAR-WYNELLE".into(), w);
+        g.sync_specialty();
+        assert_eq!(g.specialty.items[1], Some(SpecItem::Temperature(Mode::Heat)));
+        g.inf.as_mut().unwrap().stored_mut().clear();
+        g.sync_specialty();
+        assert!(g.specialty.items[1].is_none());
+        // Solyth lives on level -1; the runner presses 7 to hold cold, then leaves by the stairs so the level's list goes
+        // to the shelf: the slot, the item and the mode stay
+        let s = slot_of(&g, &content, "solyth", -1);
+        g.resident_hunters.put(-1, vec![s]);
+        g.sync_specialty();
+        g.press_specialty(1);
+        g.press_specialty(1);
+        let held = g.specialty.temp_mode().expect("carried");
+        let slots = g.resident_hunters.take(-1);
+        g.store_slots(-1, slots);
+        assert!(g.resident_hunters.list(-1).is_empty());
+        g.sync_specialty();
+        assert!(g.specialty.visible[1], "she still exists in the run");
+        assert_eq!(g.specialty.temp_mode(), Some(held), "nothing was re-granted");
+        assert_eq!(g.specialty.selected, Some(1), "and the selection is kept");
+        // she is gone from the run: the item goes
+        g.inf.as_mut().unwrap().floor_hunters_mut().clear();
+        g.sync_specialty();
+        assert!(!g.specialty.visible[1] && g.specialty.items[1].is_none());
+        assert_eq!(g.specialty.selected, None);
+    }
+
+    fn solyth_state(g: &Game, level: Option<i32>) -> (bool, bool, bool) {
+        let b = match level {
+            Some(l) => g.resident_hunters.list(l).iter().map(|s| &s.brain).find(|b| b.def.id == "solyth"),
+            None => g.hunters.iter().find(|b| b.def.id == "solyth"),
+        }
+        .expect("Solyth is in the list");
+        (b.active, matches!(b.state, crate::hunters::brain::State::Chase), b.gimmick.immune_to_capture(b))
+    }
+
+    fn run_frames(g: &mut Game, n: usize) {
+        let (prof, sounds) = (g.prof(), Sounds::default());
+        for _ in 0..n {
+            g.update_hunters(1.0 / 60.0, &prof, &sounds);
+        }
+    }
+
+    #[test]
+    fn a_summoned_solyth_on_level_zero_is_deterred_by_cold_and_still_chases_in_heat() {
+        for cold in [true, false] {
+            let (mut g, content) = sim();
+            add(&mut g, &content, "solyth");
+            g.sync_specialty();
+            g.specialty.items[1] = Some(SpecItem::Temperature(if cold { Mode::Cold } else { Mode::Heat }));
+            g.meters.heat_locked = true;
+            run_frames(&mut g, 120);
+            let (active, chasing, immune) = solyth_state(&g, None);
+            assert!(active, "the latched heat summoned her");
+            if cold {
+                assert!(!chasing && immune, "cold: she is out of the chase and cannot grab");
+            } else {
+                assert!(chasing && !immune, "heat: she still chases and can grab");
+            }
+        }
+    }
+
+    #[test]
+    fn solyth_summoned_in_a_resident_list_is_deterred_through_the_item_level_zero_now_carries() {
+        for cold in [true, false] {
+            let (mut g, _content) = stacked_sim();
+            g.hunters.clear();
+            if let Some(inf) = g.inf.as_mut() {
+                inf.loaded_mut().clear();
+            }
+            // only Solyth lives below, as in the sewer lineup
+            g.resident_hunters.list_mut(-1).retain(|s| s.brain.def.id == "solyth");
+            assert_eq!(g.resident_hunters.list(-1).len(), 1, "the lineup of level -1 holds Solyth");
+            g.sync_specialty();
+            assert!(g.specialty.visible[1], "level 0 carries the item although its own list is empty");
+            g.specialty.items[1] = Some(SpecItem::Temperature(if cold { Mode::Cold } else { Mode::Heat }));
+            g.meters.heat_locked = true;
+            run_frames(&mut g, 150);
+            let (active, _, immune) = solyth_state(&g, Some(-1));
+            assert!(active, "the latched heat summoned her on her own floor");
+            if cold {
+                assert!(immune, "cold reaches her through the resident update: she cannot grab");
+                let b = g.resident_hunters.list(-1).iter().map(|s| &s.brain).find(|b| b.def.id == "solyth").unwrap();
+                assert!(!matches!(b.state, crate::hunters::brain::State::Chase), "and she is out of the chase");
+            } else {
+                assert!(!immune, "heat leaves her able to grab");
+            }
+        }
     }
 }

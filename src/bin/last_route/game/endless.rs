@@ -546,6 +546,11 @@ pub fn population(diff: Difficulty, relays: i32) -> i32 {
 }
 
 impl InfState {
+    /// Every hunter the shelves hold: the level-0 ones the window does not load (`stored`) and those of the levels the
+    /// runner left (`floor_hunters`). They exist in the run though no list shows them (the specialty bar counts them).
+    pub(super) fn shelved_hunters(&self) -> impl Iterator<Item = &Brain> {
+        self.stored.values().chain(self.floor_hunters.values().flatten())
+    }
     pub(super) fn floor_hunters_mut(&mut self) -> &mut HashMap<i32, Vec<Brain>> {
         &mut self.floor_hunters
     }
