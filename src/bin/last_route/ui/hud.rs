@@ -17,6 +17,8 @@ pub struct HudDrawn {
     pub depth: bool,
     pub relays: bool,
     pub stamina: bool,
+    /// How many system bars (TEMP, EXPOSE, NOISE, LAMP, STAMINA) the cluster left of the hotbar drew; 0 when it is off.
+    pub bars: usize,
     pub hotbar: bool,
     /// The hunter specialty bar (slots 6 to 9) was laid out; individual slots show only while their hunter is out.
     pub specialty: bool,
@@ -164,7 +166,7 @@ pub fn fill_label(template: &str, args: &[String]) -> String {
 }
 
 /// hud.tscn's StyleBoxFlat_hud (Last Route) or the scheme's frame (other schemes).
-fn hud_box(r: Rect) {
+pub(super) fn hud_box(r: Rect) {
     if is_last_route() {
         let p = pal();
         sbox(r, p.panel, p.panel_edge, 1.0, 2.0);
@@ -201,7 +203,7 @@ fn shadowed(a: &Assets, text: &str, x: f32, top: f32, size: f32, col: Color) {
 
 /// Where the specialty bar's slots sit: `(left, top, slot width, slot height, gap)`. Beside the hotbar when the window
 /// has room to its right (the usual case), above the hotbar and the stamina bar otherwise (a narrow window).
-fn specialty_bar_layout(v: Vec2, c: Vec2, hb: Rect, slots: usize) -> (f32, f32, f32, f32, f32) {
+pub(super) fn specialty_bar_layout(v: Vec2, c: Vec2, hb: Rect, slots: usize) -> (f32, f32, f32, f32, f32) {
     let (w, h, gap) = (30.0, hb.h - 2.0, 2.0);
     let total = w * slots as f32 + gap * (slots as f32 - 1.0);
     let beside = hb.x + hb.w + 8.0;
@@ -484,23 +486,28 @@ pub fn draw_hud_with_runners(
     }
     // no on-screen STUNNED notice: the stun mechanic stays, only the message is gone
 
-    // the compact stamina bar (164x5) over the hotbar panel (188x34)
-    let stamina = (g.p.stamina / MAX_STAMINA * 100.0).round();
-    let st_col = if g.p.exhausted || stamina < 20.0 {
-        METER_LOW
-    } else if stamina < 45.0 {
-        METER_WARN
-    } else {
-        stamina_col()
-    };
-    meter(
-        Rect::new(c.x - 82.0, v.y - 50.0, 164.0, 5.0),
-        stamina / 100.0,
-        st_col,
-    );
+    let hb = Rect::new(c.x - 94.0, v.y - 42.0, 188.0, 34.0);
+    // the system bars left of the hotbar (data/ui/hud_bars.json): TEMP, EXPOSE, NOISE, LAMP and STAMINA, each labelled
+    drawn.bars = super::hud_bars::draw(g, a, v, hb);
+    if drawn.bars == 0 {
+        // the compact stamina bar (164x5) over the hotbar panel (188x34), kept for when the cluster is not drawn
+        let stamina = (g.p.stamina / MAX_STAMINA * 100.0).round();
+        let st_col = if g.p.exhausted || stamina < 20.0 {
+            METER_LOW
+        } else if stamina < 45.0 {
+            METER_WARN
+        } else {
+            stamina_col()
+        };
+        meter(
+            Rect::new(c.x - 82.0, v.y - 50.0, 164.0, 5.0),
+            stamina / 100.0,
+            st_col,
+        );
+    }
+    // the cluster carries the stamina bar too, so the selftest's stamina mark holds either way
     drawn.stamina = true;
 
-    let hb = Rect::new(c.x - 94.0, v.y - 42.0, 188.0, 34.0);
     hud_box(hb);
     let slot_w = 34.0;
     let sx0 = hb.x + (hb.w - (slot_w * 5.0 + 2.0 * 4.0)) * 0.5;

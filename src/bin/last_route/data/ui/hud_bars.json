@@ -1,0 +1,127 @@
+{
+  "schema": "lr.hud_bars/1",
+  "_note": "The system-bar cluster left of the hotbar (ui/hud_bars.rs). One row per bar, top to bottom in list order: TEMP, EXPOSURE, NOISE, LAMP, STAMINA. Each row is a small icon (`glyph`), a short LABEL, the bar and an optional value. `source` is the meter the bar reads (temperature = body temperature 0..100; exposure = how visible the runner is to hunters; noise = the noise meter; lamp = flashlight charge in percent; stamina = sprint stamina in percent). `zones` split the bar by value: a zone starts at `from` and runs to the next zone's `from`; the fill takes the colour of the zone the value is in and the zone strips behind it show where the thresholds are. `alert` zones also colour the row label. `ticks` are thin lines (with their numbers under the bar at the widest layout when `tick_numbers` is true and the numbers fit). `overrides` are checked first, in order, and replace the zone's name and colour while their `when` holds (exhausted, stim, safe_zone, heat_locked). The fallback tiers for narrow windows run in this fixed order: full (icon, label, bar, value with zone name, tick numbers and the temperature item's source line), compact (icon, label, bar, number only), short (icon, short label, bar) and icon (icon and bar only); the cluster drops to the first tier that leaves each bar at least `bar_min` units. The TEMP thresholds are the real game thresholds: 10 freezing (slows the runner; the COLD zone starts at 10.01 so a reading of exactly 10 is still FROZEN), 60 (Wynelle's cold: she gathers below it), 76 (heat haze starts), 90 overheating (drains faster), 100 the heat latch that summons Solyth. Design: KT 2026-11-06.",
+  "layout": {
+    "max_width": 138.0,
+    "gap": 2.0,
+    "icon": 6.0,
+    "bar_height": 4.0,
+    "bar_min": 24.0,
+    "text_size": 5.5,
+    "sub_size": 5.0,
+    "pad": 2.0
+  },
+  "bars": [
+    {
+      "id": "temperature",
+      "source": "temperature",
+      "label": "TEMP",
+      "short": "TMP",
+      "glyph": "thermometer",
+      "min": 0.0,
+      "max": 100.0,
+      "unit": "",
+      "tick_numbers": true,
+      "zones": [
+        { "from": 0.0, "name": "FROZEN", "colour": "#3d7ee0", "alert": true },
+        { "from": 10.01, "name": "COLD", "colour": "#5aa9e0", "alert": false },
+        { "from": 60.0, "name": "STABLE", "colour": "#75c492", "alert": false },
+        { "from": 76.0, "name": "WARM", "colour": "#f2bb62", "alert": false },
+        { "from": 90.0, "name": "HOT", "colour": "#e0512f", "alert": true },
+        { "from": 100.0, "name": "LATCH", "colour": "#ff2a44", "alert": true }
+      ],
+      "ticks": [
+        { "at": 10.0, "label": "10" },
+        { "at": 60.0, "label": "60" },
+        { "at": 90.0, "label": "90" }
+      ],
+      "overrides": [
+        { "when": "heat_locked", "name": "LATCHED", "colour": "#ff2a44", "alert": true }
+      ]
+    },
+    {
+      "id": "exposure",
+      "source": "exposure",
+      "label": "EXPOSE",
+      "short": "EXP",
+      "glyph": "eye",
+      "min": 0.0,
+      "max": 100.0,
+      "unit": "%",
+      "zones": [
+        { "from": 0.0, "name": "LOW", "colour": "#75c492", "alert": false },
+        { "from": 20.0, "name": "SEEN", "colour": "#e07a4f", "alert": false },
+        { "from": 75.0, "name": "EXPOSED", "colour": "#ff5a45", "alert": true }
+      ],
+      "ticks": [
+        { "at": 20.0, "label": "20" },
+        { "at": 75.0, "label": "75" }
+      ],
+      "overrides": []
+    },
+    {
+      "id": "noise",
+      "source": "noise",
+      "label": "NOISE",
+      "short": "NSE",
+      "glyph": "sound",
+      "min": 0.0,
+      "max": 100.0,
+      "unit": "%",
+      "zones": [
+        { "from": 0.0, "name": "QUIET", "colour": "#4fb6c7", "alert": false },
+        { "from": 40.0, "name": "LOUD", "colour": "#f2bb62", "alert": false },
+        { "from": 75.0, "name": "ALARM", "colour": "#ff5a45", "alert": true }
+      ],
+      "ticks": [
+        { "at": 40.0, "label": "40" },
+        { "at": 75.0, "label": "75" }
+      ],
+      "overrides": []
+    },
+    {
+      "id": "lamp",
+      "source": "lamp",
+      "label": "LAMP",
+      "short": "LMP",
+      "glyph": "bulb",
+      "min": 0.0,
+      "max": 100.0,
+      "unit": "%",
+      "zones": [
+        { "from": 0.0, "name": "DEAD", "colour": "#e64451", "alert": true },
+        { "from": 1.0, "name": "LOW", "colour": "#e64451", "alert": true },
+        { "from": 22.0, "name": "OK", "colour": "#f2bb62", "alert": false }
+      ],
+      "ticks": [
+        { "at": 22.0, "label": "22" }
+      ],
+      "overrides": [
+        { "when": "safe_zone", "name": "CHARGE", "colour": "#75c492", "alert": false }
+      ]
+    },
+    {
+      "id": "stamina",
+      "source": "stamina",
+      "label": "STAMINA",
+      "short": "STA",
+      "glyph": "runner",
+      "min": 0.0,
+      "max": 100.0,
+      "unit": "%",
+      "zones": [
+        { "from": 0.0, "name": "LOW", "colour": "#e64451", "alert": true },
+        { "from": 20.0, "name": "TIRED", "colour": "#f2bb62", "alert": false },
+        { "from": 45.0, "name": "FIT", "colour": "#8fd0e0", "alert": false }
+      ],
+      "ticks": [
+        { "at": 20.0, "label": "20" },
+        { "at": 45.0, "label": "45" }
+      ],
+      "overrides": [
+        { "when": "exhausted", "name": "SPENT", "colour": "#e64451", "alert": true },
+        { "when": "stim", "name": "STIM", "colour": "#75c492", "alert": false }
+      ]
+    }
+  ]
+}
