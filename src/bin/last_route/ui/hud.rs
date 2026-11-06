@@ -44,17 +44,6 @@ pub struct HudRules {
     pub safe_below: i32,
     /// Danger (percent) at or above this is the low (red) band; between the two is the warn band.
     pub low_from: i32,
-    /// Danger (0..1) above which the crimson edge pulse starts.
-    pub pulse_from: f32,
-    /// Pulse frequency: base plus `pulse_speed_per_danger` times the danger.
-    pub pulse_speed: f32,
-    pub pulse_speed_per_danger: f32,
-    /// Width in design units of the crimson edge pulse.
-    pub pulse_width: f32,
-    /// Peak alpha scale of the crimson edge pulse.
-    pub pulse_alpha: f32,
-    /// Lowest factor the pulse dips to (1.0 means no dip).
-    pub pulse_floor: f32,
     /// Width reserved for the danger meter beside its label.
     pub meter_min_width: f32,
     pub label_danger: String,
@@ -67,12 +56,6 @@ impl Default for HudRules {
         Self {
             safe_below: 40,
             low_from: 75,
-            pulse_from: 0.35,
-            pulse_speed: 3.0,
-            pulse_speed_per_danger: 6.0,
-            pulse_width: 10.0,
-            pulse_alpha: 0.55,
-            pulse_floor: 0.55,
             meter_min_width: 72.0,
             label_danger: "DANGER {}%".to_string(),
             label_relays_run: "RELAYS {} // CHUNKS {}".to_string(),
@@ -93,12 +76,6 @@ impl HudRules {
             r.low_from = x.clamp(0, 100) as i32;
         }
         let f = |key: &str, cur: f32| d[key].as_f64().map(|x| x as f32).unwrap_or(cur);
-        r.pulse_from = f("pulse_from", r.pulse_from);
-        r.pulse_speed = f("pulse_speed", r.pulse_speed);
-        r.pulse_speed_per_danger = f("pulse_speed_per_danger", r.pulse_speed_per_danger);
-        r.pulse_width = f("pulse_width", r.pulse_width);
-        r.pulse_alpha = f("pulse_alpha", r.pulse_alpha);
-        r.pulse_floor = f("pulse_floor", r.pulse_floor).clamp(0.0, 1.0);
         r.meter_min_width = f("meter_min_width", r.meter_min_width);
         let l = &v["labels"];
         if let Some(s) = l["danger"].as_str() {
@@ -134,16 +111,6 @@ impl HudRules {
         } else {
             DangerBand::Low
         }
-    }
-
-    /// The pulse's flicker speed for a danger level (0..1).
-    pub fn pulse_speed_for(&self, danger: f32) -> f32 {
-        self.pulse_speed + danger * self.pulse_speed_per_danger
-    }
-
-    /// The edge pulse's alpha for a danger level (0..1) and a flicker `pulse` (0..1).
-    pub fn pulse_alpha_for(&self, danger: f32, pulse: f32) -> f32 {
-        (danger - self.pulse_from) * self.pulse_alpha * (self.pulse_floor + (1.0 - self.pulse_floor) * pulse)
     }
 }
 
@@ -631,16 +598,7 @@ pub fn draw_hud_with_runners(
         );
     }
 
-    // the crimson edge pulse while a hunter hunts close by; frost or heat haze at the extremes
-    let danger = g.danger();
-    if danger > rules.pulse_from && g.report.is_none() {
-        let pulse = 0.5 + 0.5 * (g.time * rules.pulse_speed_for(danger)).sin();
-        edge(
-            v,
-            rules.pulse_width,
-            rgba(0.6, 0.05, 0.1, rules.pulse_alpha_for(danger, pulse)),
-        );
-    }
+    // frost or heat haze at the temperature extremes (the crimson danger edge pulse was removed: KT 2026-11-06)
     let heat = ((g.meters.temperature - 76.0) / 24.0).clamp(0.0, 1.0);
     let cold = ((34.0 - g.meters.temperature) / 34.0).clamp(0.0, 1.0);
     if cold > 0.0 {
@@ -707,8 +665,6 @@ mod tests {
         assert_eq!(r, HudRules::default());
         assert_eq!(r.safe_below, 40);
         assert_eq!(r.low_from, 75);
-        assert!((r.pulse_from - 0.35).abs() < 1e-6);
-        assert!((r.pulse_width - 10.0).abs() < 1e-6);
         assert!((r.meter_min_width - 72.0).abs() < 1e-6);
         assert_eq!(r.label_danger, "DANGER {}%");
         assert_eq!(r.label_relays_run, "RELAYS {} // CHUNKS {}");
@@ -733,22 +689,6 @@ mod tests {
         assert_eq!(r.band(49), DangerBand::Safe);
         assert_eq!(r.band(50), DangerBand::Warn);
         assert_eq!(r.band(60), DangerBand::Low);
-    }
-
-    #[test]
-    fn standard_pulse_matches_the_old_constants() {
-        let r = HudRules::default();
-        // old code: speed 3 + 6 * danger; alpha (danger - 0.35) * 0.55 * (0.55 + 0.45 * pulse)
-        assert!((r.pulse_speed_for(0.5) - 6.0).abs() < 1e-6);
-        assert!((r.pulse_alpha_for(0.85, 1.0) - 0.5 * 0.55).abs() < 1e-6);
-        assert!((r.pulse_alpha_for(0.85, 0.0) - 0.5 * 0.55 * 0.55).abs() < 1e-6);
-    }
-
-    #[test]
-    fn changing_the_pulse_data_changes_the_pulse() {
-        let r = HudRules::parse(&json!({ "danger": { "pulse_speed": 1.0, "pulse_alpha": 1.0, "pulse_floor": 1.0 } }));
-        assert!((r.pulse_speed_for(0.0) - 1.0).abs() < 1e-6);
-        assert!((r.pulse_alpha_for(0.85, 0.0) - 0.5).abs() < 1e-6);
     }
 
     #[test]
