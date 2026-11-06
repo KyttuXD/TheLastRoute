@@ -41,6 +41,10 @@ pub struct Rules {
     /// A sample arriving less than this many send intervals after the one before it came in a burst (a frame hitch
     /// handed several packets over at once): it is placed one send interval after the previous one instead.
     pub burst_gap_factor: f32,
+    /// A client that hosts a room (the public route) runs up to this many extra fixed steps after a long frame (a hitch,
+    /// or a background tab that was just brought back), so the hunters it simulates for the guests catch up instead of
+    /// losing the stall. 0 keeps one capped step per frame.
+    pub host_catch_up_steps: u32,
 }
 
 impl Default for Rules {
@@ -61,6 +65,7 @@ impl Default for Rules {
             remote_timeout_s: 2.0,
             max_speed_mps: 12.5,
             burst_gap_factor: 0.25,
+            host_catch_up_steps: 4,
         }
     }
 }
@@ -98,6 +103,7 @@ impl Rules {
             remote_timeout_s: num("remote_timeout_s", d.remote_timeout_s, 0.1)?,
             max_speed_mps: num("max_speed_mps", d.max_speed_mps, 0.1)?,
             burst_gap_factor: num("burst_gap_factor", d.burst_gap_factor, 0.0)?,
+            host_catch_up_steps: num("host_catch_up_steps", d.host_catch_up_steps as f32, 0.0)?.min(20.0) as u32,
         };
         if r.interp_delay_min_s > r.interp_delay_max_s {
             return Err("sync.json: key 'interp_delay_min_s' must not exceed 'interp_delay_max_s'".into());

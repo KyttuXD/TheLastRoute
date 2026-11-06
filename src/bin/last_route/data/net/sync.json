@@ -15,5 +15,6 @@
   "buffer_len": 8,
   "remote_timeout_s": 2.0,
   "max_speed_mps": 12.5,
-  "burst_gap_factor": 0.25
+  "burst_gap_factor": 0.25,
+  "host_catch_up_steps": 4
 }

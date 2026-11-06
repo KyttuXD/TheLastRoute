@@ -27,6 +27,7 @@ pub mod pacing;
 pub mod perf;
 pub mod platform;
 pub mod profile;
+pub mod run_gate;
 pub mod public_route;
 pub mod quality;
 pub mod screenshot;
@@ -670,7 +671,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             }
         }
         let raw_dt = get_frame_time();
-        let dt = raw_dt.min(0.05);
+        let dt = raw_dt.min(run_gate::MAX_FRAME_DT);
         if update_screen.is_shown() {
             update_screen.swallow_input();
         }
@@ -1314,10 +1315,23 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 st.prepare(g, &w.content);
             }
             admin.before_update(g);
-            if !pz.open {
+            // the pause menu stops a single-player run only: in an open room the world (every hunter, the clocks, the net
+            // broadcast) goes on and the pausing runner just stands there uncontrolled (app/run_gate.rs; Godot
+            // `pauses_tree = not RoomState.online`)
+            if let Some(step_c) = run_gate::controls_for(pz.open, net.is_some(), &c) {
                 let _t = perf::section("update");
                 g.map_open = map_open; // Void Yellow reads the full-screen map (main_3d.gd:444)
-                g.update(gdt, &c, &w.content, &w.catalog, &w.assets, &w.sounds);
+                // a client that hosts the room catches a long frame up in a few more capped steps, so the guests' hunters
+                // do not lose the stall (a background tab brought back); a guest and a solo run keep one capped step
+                let hosting = net.as_ref().is_some_and(|n| n.is_host());
+                let extra = run_gate::extra_steps(raw_dt, hosting, crate::net::interp::rules().host_catch_up_steps);
+                if extra > 0 && dt > 0.0 && gdt > 0.0 {
+                    let held = run_gate::held_only(&step_c);
+                    for _ in 0..extra {
+                        g.step(run_gate::MAX_FRAME_DT * (gdt / dt), &held, &w.content, &w.catalog, &w.sounds);
+                    }
+                }
+                g.update(gdt, &step_c, &w.content, &w.catalog, &w.assets, &w.sounds);
             }
             admin.after_update(g, &c, &w.content, gdt);
             // hunter dossier: entries unlock from real encounters, kept on the local account
