@@ -22,7 +22,7 @@ HOST="${HOST:-vps2}"
 REMOTE_DIR="${REMOTE_DIR:-/srv/lr-rust-web}"
 LIVE_URL="${LIVE_URL:-https://lastrouterust.games.kyttuslab.org}"
 LIVE_URL="${LIVE_URL%/}"
-FILES="index.html update.js keys.js audio.js mq_js_bundle.js last_route.wasm"
+FILES="index.html update.js keys.js hw.js audio.js mq_js_bundle.js last_route.wasm"
 
 fail() {
     echo "deploy-vps2: $*" >&2
