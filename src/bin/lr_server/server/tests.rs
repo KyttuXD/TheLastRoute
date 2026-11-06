@@ -1097,6 +1097,9 @@ fn the_password_reset_is_for_owners_only_and_checks_its_input() {
     assert_eq!((status, reply["code"].clone()), (404, json!("ACCOUNT_NOT_FOUND")));
     let (status, reply) = post(&server, RESET_PATH, json!({ "sessionToken": owner, "username": "no" }));
     assert_eq!((status, reply["code"].clone()), (400, json!("INVALID_USERNAME")));
+    // a name over 24 characters is refused, not cut down to an existing account
+    let long = json!({ "sessionToken": owner, "username": "TARGETxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" });
+    assert_eq!(post(&server, RESET_PATH, long).0, 400);
     for weak in [json!("short"), json!("x".repeat(201)), json!(123456), json!(""), json!(["a", "b"])] {
         let body = json!({ "sessionToken": owner, "username": "TARGET", "newPassword": weak });
         let (status, reply) = post(&server, RESET_PATH, body);

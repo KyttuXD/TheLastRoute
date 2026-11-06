@@ -30,7 +30,7 @@ That decides how a reset has to work: a hand-edit of the file while the service 
 the old password keeps working until then. There are three ways to reset a password, simplest first. No password is ever
 logged, and none comes back in an API answer except the one temporary password a reset generated for you, once.
 
-**1. Nobody can sign in as an admin: the offline command (shell access only).** Stop the service, run the command as the
+**1. Nobody can sign in as an admin: the offline command (shell access only).** (The subcommand and the lock exist only in an `lr_server` built from this change: until that binary is deployed, stopping the service first is what makes the file safe to edit, and the old binary has no `reset-password`; edit with the old node script instead.) Stop the service, run the command as the
 service user, start the service:
 
 ```sh
@@ -49,7 +49,7 @@ systemctl start lastroute-rust
   the shell history, so only for a throwaway). Neither is echoed back.
 - `USERNAME` is any case and is stored in UPPERCASE. The account must exist: this command never creates accounts. Use
   `--list` (names only, no hashes) to find the exact name.
-- It writes `accounts.json.<UTC time>.bak` (a copy of the old file, same mode) next to the file, then replaces the file
+- It writes `accounts.json.<UTC time>.bak` (a copy of the old file, owner-only mode `0600`) next to the file, then replaces the file
   atomically (temp file, then rename, same mode and owner), with the new salt and hash and **all of that account's
   sessions removed**. Every other account, session and field is left exactly as it was. Delete old `.bak` files when you
   are done: they hold the old hashes.

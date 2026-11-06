@@ -137,6 +137,14 @@ pub(crate) fn username_of_str(text: &str) -> String {
     js_slice(&js_trim(text).to_uppercase(), 24)
 }
 
+/// The canonical form of a name used as typed: trimmed and upper-cased, NOT cut to 24 characters. `None` when it is not
+/// a valid name. The password resets use this instead of `username_of_str`, which cuts a long name to 24 characters and
+/// so could reset a different account than the one that was typed.
+pub(crate) fn exact_username(text: &str) -> Option<String> {
+    let name = js_trim(text).to_uppercase();
+    valid_username(&name).then_some(name)
+}
+
 /// `/^[A-Z0-9_]{3,24}$/`.
 pub(crate) fn valid_username(name: &str) -> bool {
     (3..=24).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
@@ -766,10 +774,9 @@ impl AccountService {
         if !is_admin_owner_username(&requester) {
             return owner_required();
         }
-        let username = username_of(field(body, "username"));
-        if !valid_username(&username) {
+        let Some(username) = exact_username(&str_or_empty(field(body, "username"))) else {
             return invalid_username();
-        }
+        };
         if username == requester {
             return fail(400, "USE_PASSWORD_CHANGE", "Change your own password from the account panel");
         }

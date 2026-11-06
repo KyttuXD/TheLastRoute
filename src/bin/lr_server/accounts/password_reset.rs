@@ -16,7 +16,7 @@
 //! No password is ever written to a log: this file prints a generated password to stdout once and nothing else about it.
 
 use crate::account_service::{
-    password_is_valid, password_record, username_of_str, valid_username, WEAK_PASSWORD_MESSAGE,
+    exact_username, password_is_valid, password_record, username_of_str, valid_username, WEAK_PASSWORD_MESSAGE,
 };
 use crate::util::{field, iso_time, random_bytes, str_or_empty, stringify, truthy};
 use serde_json::Value;
@@ -112,10 +112,7 @@ pub fn list_account_names(store: &Value) -> Vec<String> {
 /// every other field and every other session as they were. Pure: it takes the finished record, so it can be tested
 /// without the slow key derivation.
 pub fn reset_password_in_store(store: &mut Value, username: &str, salt: &str, hash: &str) -> Result<StoreReset, ResetError> {
-    let target = username_of_str(username);
-    if !valid_username(&target) {
-        return Err(ResetError::BadUsername);
-    }
+    let target = exact_username(username).ok_or(ResetError::BadUsername)?;
     let Value::Object(root) = store else {
         return Err(ResetError::BadStore("the top level is not an object".into()));
     };
@@ -160,10 +157,11 @@ pub fn backup_path(store: &Path, now_ms: i64, attempt: u32) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Writes `bytes` to a NEW file (fails when it exists) that never has looser permissions than `like`: it is created
+/// Writes `bytes` to a NEW file (fails when it exists) that never has looser permissions than `like` (and with
+/// `owner_only`, which the backup uses, never any group or other access, whatever `like` allows): it is created
 /// owner-only, then given `like`'s mode, and (on Unix) its owner and group when they differ and we may. Returns a
 /// warning when the ownership could not be copied.
-fn write_new_file(path: &Path, bytes: &[u8], like: &std::fs::Metadata) -> std::io::Result<Option<String>> {
+fn write_new_file(path: &Path, bytes: &[u8], like: &std::fs::Metadata, owner_only: bool) -> std::io::Result<Option<String>> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -177,7 +175,16 @@ fn write_new_file(path: &Path, bytes: &[u8], like: &std::fs::Metadata) -> std::i
     let result = (|| -> std::io::Result<()> {
         file.write_all(bytes)?;
         file.sync_all()?;
-        std::fs::set_permissions(path, like.permissions())?;
+        #[allow(unused_mut)]
+        let mut permissions = like.permissions();
+        #[cfg(unix)]
+        if owner_only {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(permissions.mode() & 0o600);
+        }
+        #[cfg(not(unix))]
+        let _ = owner_only;
+        std::fs::set_permissions(path, permissions)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
@@ -215,10 +222,7 @@ pub struct FileReset {
 /// in the same folder, renamed over it) with the new salt and hash and that account's sessions gone. Nothing is
 /// written when the account does not exist. The caller prints the result; this never logs a password.
 pub fn reset_password_file(path: &Path, username: &str, password: &str, now_ms: i64) -> Result<FileReset, ResetError> {
-    let target = username_of_str(username);
-    if !valid_username(&target) {
-        return Err(ResetError::BadUsername);
-    }
+    let target = exact_username(username).ok_or(ResetError::BadUsername)?;
     if !password_is_valid(password) {
         return Err(ResetError::WeakPassword);
     }
@@ -237,7 +241,7 @@ pub fn reset_password_file(path: &Path, username: &str, password: &str, now_ms: 
     let mut backup = None;
     for attempt in 0..100 {
         let candidate = backup_path(path, now_ms, attempt);
-        match write_new_file(&candidate, &original, &like) {
+        match write_new_file(&candidate, &original, &like, true) {
             Ok(warning) => {
                 warnings.extend(warning);
                 backup = Some(candidate);
@@ -253,7 +257,7 @@ pub fn reset_password_file(path: &Path, username: &str, password: &str, now_ms: 
     temp.push(".reset-tmp");
     let temp = PathBuf::from(temp);
     let _ = std::fs::remove_file(&temp);
-    match write_new_file(&temp, stringify(&store).as_bytes(), &like) {
+    match write_new_file(&temp, stringify(&store).as_bytes(), &like, false) {
         Ok(warning) => warnings.extend(warning),
         Err(error) => return Err(ResetError::Io(format!("Could not write {}: {error}", temp.display()))),
     }
@@ -466,7 +470,7 @@ pub fn run_cli(
         let _ = writeln!(err, "reset-password: give the username to reset (or --list)\n\n{USAGE}");
         return 1;
     };
-    if !valid_username(&username_of_str(username)) {
+    if exact_username(username).is_none() {
         let _ = writeln!(err, "reset-password: {}", ResetError::BadUsername);
         return 1;
     }
@@ -689,6 +693,8 @@ mod tests {
         assert_eq!(reset_password_in_store(&mut store, "ghost", "s", "h"), Err(ResetError::NoSuchAccount("GHOST".into())));
         assert_eq!(reset_password_in_store(&mut store, "no", "s", "h"), Err(ResetError::BadUsername));
         assert_eq!(reset_password_in_store(&mut store, "has space", "s", "h"), Err(ResetError::BadUsername));
+        // a name longer than 24 characters is refused, not cut down to a shorter account name
+        assert_eq!(reset_password_in_store(&mut store, "ADAxxxxxxxxxxxxxxxxxxxxxxxxxxx", "s", "h"), Err(ResetError::BadUsername));
         assert_eq!(store, before);
         assert!(matches!(reset_password_in_store(&mut json!([]), "ada", "s", "h"), Err(ResetError::BadStore(_))));
         assert!(matches!(reset_password_in_store(&mut json!({ "version": 2 }), "ada", "s", "h"), Err(ResetError::BadStore(_))));
@@ -765,14 +771,17 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn the_new_file_and_the_backup_keep_the_old_files_mode() {
+    fn the_new_file_keeps_the_old_mode_and_the_backup_is_owner_only() {
         use std::os::unix::fs::PermissionsExt;
         let (dir, ..) = seeded();
         std::fs::set_permissions(dir.store(), std::fs::Permissions::from_mode(0o640)).unwrap();
         let done = reset_password_file(&dir.store(), "ada", NEW, 1).unwrap();
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&dir.store()), 0o640);
-        assert_eq!(mode(&done.backup), 0o640);
+        assert_eq!(mode(&done.backup), 0o600, "the backup holds the old hashes: never group or world readable");
+        std::fs::set_permissions(dir.store(), std::fs::Permissions::from_mode(0o644)).unwrap();
+        let again = reset_password_file(&dir.store(), "ada", NEW, 2).unwrap();
+        assert_eq!((mode(&dir.store()), mode(&again.backup)), (0o644, 0o600));
     }
 
     #[test]
