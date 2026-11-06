@@ -125,6 +125,18 @@ pub fn carve_cells(f: &Flight) -> Vec<Cell> {
     out
 }
 
+/// The bay of a flight as a rectangle `(x, y, w, h)` of chunk cells: the bounding box of its carve cells grown by one cell
+/// (the ring round the well and the landing) and kept inside the chunk border. The one box every level of the flight clears
+/// of props (`infinite::carve_bay`) and the Inferno keeps free of lava and cave decoration (`inferno::InfernoChunk`).
+pub fn bay_rect(f: &Flight) -> (i32, i32, i32, i32) {
+    let cells = carve_cells(f);
+    let x0 = (cells.iter().map(|c| c.x).min().unwrap_or(1) - 1).max(1);
+    let x1 = (cells.iter().map(|c| c.x).max().unwrap_or(1) + 1).min(CHUNK - 2);
+    let y0 = (cells.iter().map(|c| c.y).min().unwrap_or(1) - 1).max(1);
+    let y1 = (cells.iter().map(|c| c.y).max().unwrap_or(1) + 1).min(CHUNK - 2);
+    (x0, y0, x1 - x0 + 1, y1 - y0 + 1)
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Level 0 wells
 // ---------------------------------------------------------------------------------------------------------------------

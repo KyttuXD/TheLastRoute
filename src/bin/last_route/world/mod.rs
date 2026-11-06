@@ -21,6 +21,8 @@ pub mod flight;
 pub mod flight_links;
 #[cfg(test)]
 mod stack_contract_tests;
+#[cfg(test)]
+mod spiral_stairs_tests;
 
 pub use facility::{Cell, Facility};
 

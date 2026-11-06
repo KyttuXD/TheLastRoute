@@ -171,6 +171,19 @@ impl Caves {
             .map(|i| Cell::new((i % N) as i32, (i / N) as i32))
             .collect()
     }
+    /// Makes every cell of the rectangle (chunk cells, clipped to the chunk) open floor with no lava: the bay a stair
+    /// flight needs, which the caves were carved without knowing about.
+    pub fn make_walkable(&mut self, x: i32, y: i32, w: i32, h: i32) {
+        for cy in y..y + h {
+            for cx in x..x + w {
+                let c = Cell::new(cx, cy);
+                if inside(c) {
+                    self.open[idx(c)] = true;
+                    self.lava[idx(c)] = false;
+                }
+            }
+        }
+    }
     pub fn lava_cells(&self) -> Vec<Cell> {
         (0..N * N).filter(|i| self.lava[*i]).map(|i| Cell::new((i % N) as i32, (i / N) as i32)).collect()
     }

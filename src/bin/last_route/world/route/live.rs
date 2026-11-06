@@ -488,7 +488,7 @@ pub(crate) fn carve_stair_well(f: &mut Facility, well: &Stairwell, flight: &Flig
         row += outward;
     }
     f.clear_props_in(bx.x, bx.y, bx.w, bx.h);
-    f.clear_props_in(lane_x, door.y.min(last), 3, (door.y - last).abs() + 1);
+    f.clear_props_reaching(lane_x, door.y.min(last), 3, (door.y - last).abs() + 1);
     // the flight's own cells are walkable (the walking body stands on them): its hole, its landing and the margin behind
     // the landing. Its foot and the margin beyond it belong to the level below, so they stay as the box leaves them.
     let fp = well_footprint(flight);

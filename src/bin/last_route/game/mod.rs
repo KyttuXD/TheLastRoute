@@ -25,6 +25,8 @@ mod stack_walk_tests;
 #[cfg(test)]
 mod stack_entry_tests;
 #[cfg(test)]
+mod spiral_stairs_tests;
+#[cfg(test)]
 mod rail_tests;
 mod inferno_terrain_tests;
 mod items;

@@ -99,6 +99,10 @@ impl InfernoDeco {
                 if kept.len() >= rule.max_per_chunk {
                     break;
                 }
+                // the stair bay is the runner's way down: no stalagmite, lava glow or crack stands on the flight's foot
+                if inf.in_bay(c) {
+                    continue;
+                }
                 if !rule.tiers.contains(&inf.tier_at(c)) {
                     continue;
                 }
