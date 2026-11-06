@@ -428,6 +428,7 @@ mod tests {
             music_box_left: 0.0,
             music_boxes: &[],
             exposure: 0.0,
+            flashlight_dead: false,
         };
         b.update(dt, &ctx, t, 1, 0, &Difficulty::Standard.profile());
     }
@@ -534,6 +535,7 @@ mod tests {
                     music_box_left: 0.0,
                     music_boxes: &[],
                     exposure: 0.0,
+                    flashlight_dead: false,
                 };
                 g.before_perception(&mut b, 0.1, &c, &runner(near), &mut vec![]);
                 b.gimmick = g;

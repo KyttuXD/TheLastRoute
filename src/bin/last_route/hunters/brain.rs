@@ -2145,6 +2145,7 @@ mod tests {
             music_box_left: 0.0,
             music_boxes: &[],
             exposure: 0.0,
+            flashlight_dead: false,
         };
         let dt = 1.0 / 60.0;
 
@@ -2267,6 +2268,7 @@ mod tests {
             music_box_left: 0.0,
             music_boxes: &[],
             exposure: 0.0,
+            flashlight_dead: false,
         }
     }
 
@@ -3164,6 +3166,7 @@ mod wiring_tests {
             music_box_left: 0.0,
             music_boxes: &[],
             exposure: 0.0,
+            flashlight_dead: false,
         }
     }
 
@@ -3911,6 +3914,7 @@ mod edge_tests {
             music_box_left: 0.0,
             music_boxes: &[],
             exposure: 0.0,
+            flashlight_dead: false,
         }
     }
 
@@ -4196,6 +4200,7 @@ mod inferno_floor_tests {
             music_box_left: 0.0,
             music_boxes: &[],
             exposure: 0.0,
+            flashlight_dead: false,
         };
         let prof = Difficulty::Standard.profile();
         let mut b = Brain::new(def, from.center(), "PIN", Difficulty::Standard);

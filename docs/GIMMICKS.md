@@ -921,6 +921,8 @@ She is always spawned, inert: `_extra_hunter_spawn` index 0, `angle = 0.8`, dist
 
 A TIMER capture is a normal escapable grab (death cause "darkness").
 
+**Port addition (owner request, 2026-11): dead flashlight.** The game feeds `Ctx::flashlight_dead` (the runner's lamp charge is empty, so it cannot light; a lamp merely switched off is not dead). A third wake, DEAD, fires after `dead_delay` (3 s, data/hunters/nyxie_wake.json) of that: she spawns `dead_spawn_distance` (10) cells away like TIMER and a live beam dispels her the same way (a battery, then the flashlight on, aimed). The 120 s darkness rule still covers the lamp-off case. A lamp that stays dead until `empty_delay` (10 s) still ends in EMPTY (she moves onto the runner, inescapable), so DEAD can escalate to EMPTY. The wake is the same on every difficulty.
+
 **Same on relaxed, standard and hard.** Pounce on nightmare only.
 **World needs:** lamp charge, flashlight toggle and facing (all present). Fully portable.
 **Tells:** `Sound.nyxie_timer_wake()` or `Sound.nyxie_empty_wake()` when she becomes active (main_3d `_update_local_audio`). A jumpscare on an EMPTY catch.

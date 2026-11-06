@@ -1,7 +1,10 @@
 //! Nyxie (special): darkness stalker. 120 s without light wakes her 10 cells away and she hunts
-//! you until the beam catches her (instantly dispelled within 7 cells). A dead lamp for 10 s
-//! wakes her on top of you: an inescapable catch unless you are hidden or safe
-//! (nyxie_gimmick.gd).
+//! you until the beam catches her (instantly dispelled within 7 cells). A DEAD flashlight (charge
+//! empty, the lamp cannot light; `Ctx::flashlight_dead`) brings her in after only a few seconds
+//! (data/hunters/nyxie_wake.json `dead_delay`, 3 s) instead of the 120 s, and a recharged beam
+//! sends her back the same way. A lamp left dead for 10 s wakes her on top of you: an inescapable
+//! catch unless you are hidden or safe (nyxie_gimmick.gd). The delays and distances are data in
+//! data/hunters/nyxie_wake.json.
 //!
 //! Nightmare only: while she hunts in the dark she pounces (hard_abilities.gd pounce, Nightmare
 //! row). The pounce numbers, the leap and the gates are data in data/hunters/nightmare_pounce.json.
@@ -15,11 +18,15 @@ use crate::config::{Difficulty, HUNTER_RADIUS};
 use crate::hunters::brain::{dist, Brain, State, Target};
 use crate::world::Facility;
 
-#[derive(Clone, Copy, PartialEq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum Wake {
     #[default]
     None,
+    /// The lamp stayed unlit `timer_delay` seconds.
     Timer,
+    /// The flashlight is dead (charge empty): she appears `dead_delay` seconds in. Dispelled by a live beam like Timer.
+    Dead,
+    /// The lamp stayed dead `empty_delay` seconds: on top of the runner, an inescapable catch.
     Empty,
 }
 
@@ -28,6 +35,8 @@ pub struct Nyxie {
     pub wake: Wake,
     darkness: f32,
     empty: f32,
+    /// Seconds the flashlight has been dead (`Ctx::flashlight_dead`).
+    dead: f32,
     /// Set the frame she wakes (for the sound cue).
     pub just_woke: bool,
     leap: Leap,
@@ -48,6 +57,78 @@ pub fn spawn_near(c: &Ctx, p: (f32, f32), d: f32) -> (f32, f32) {
         }
     }
     best.1
+}
+
+// ---------------------------------------------------------------------------------------- wake rules
+
+pub const WAKE_SCHEMA: &str = "lr.nyxie_wake/1";
+
+/// When and where Nyxie wakes (data/hunters/nyxie_wake.json). The Godot numbers are GameConfig.NYXIE_*; the dead-lamp
+/// appearance (`dead_delay`, `dead_spawn_distance`) is the owner's.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WakeRules {
+    /// Seconds the lamp stays unlit before she wakes (NYXIE_TIMER_DELAY).
+    pub timer_delay: f32,
+    /// Seconds the lamp stays dead before she is on top of the runner (NYXIE_EMPTY_DELAY).
+    pub empty_delay: f32,
+    /// Seconds a dead flashlight takes to bring her in.
+    pub dead_delay: f32,
+    /// Cells from the runner where the timer wake puts her (NYXIE_SPAWN_DISTANCE).
+    pub spawn_distance: f32,
+    /// Cells from the runner where the dead-flashlight wake puts her.
+    pub dead_spawn_distance: f32,
+    /// A live beam reaches her this far (NYXIE_DESPAWN_RANGE).
+    pub despawn_range: f32,
+    /// Half angle of the beam that dispels her, radians (NYXIE_DISPEL_HALF_ANGLE).
+    pub dispel_half_angle: f32,
+}
+
+const WAKE_KEYS: [&str; 7] =
+    ["timer_delay", "empty_delay", "dead_delay", "spawn_distance", "dead_spawn_distance", "despawn_range", "dispel_half_angle"];
+
+impl WakeRules {
+    /// Reads the file. Every key is required; an unknown key (one not starting with `_`), a wrong schema or a value outside
+    /// its range refuses the file with the reason.
+    pub fn parse(text: &str) -> Result<WakeRules, String> {
+        let v: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("nyxie wake: {e}"))?;
+        let o = v.as_object().ok_or("nyxie wake: the file must be an object")?;
+        if o.get("schema").and_then(|s| s.as_str()) != Some(WAKE_SCHEMA) {
+            return Err(format!("nyxie wake: schema must be \"{WAKE_SCHEMA}\""));
+        }
+        for k in o.keys() {
+            if k != "schema" && !k.starts_with('_') && !WAKE_KEYS.contains(&k.as_str()) {
+                return Err(format!("nyxie wake: unknown key \"{k}\""));
+            }
+        }
+        let get = |k: &str, lo: f64, hi: f64| -> Result<f32, String> {
+            match o.get(k).and_then(|x| x.as_f64()) {
+                Some(x) if x.is_finite() && (lo..=hi).contains(&x) => Ok(x as f32),
+                _ => Err(format!("nyxie wake: {k} must be a number from {lo} to {hi}")),
+            }
+        };
+        let r = WakeRules {
+            timer_delay: get("timer_delay", 1.0, 3600.0)?,
+            empty_delay: get("empty_delay", 0.0, 600.0)?,
+            dead_delay: get("dead_delay", 0.0, 600.0)?,
+            spawn_distance: get("spawn_distance", 0.0, 100.0)?,
+            dead_spawn_distance: get("dead_spawn_distance", 0.0, 100.0)?,
+            despawn_range: get("despawn_range", 0.0, 100.0)?,
+            dispel_half_angle: get("dispel_half_angle", 0.01, std::f64::consts::PI)?,
+        };
+        if r.dead_delay > r.empty_delay {
+            return Err("nyxie wake: dead_delay must not exceed empty_delay".to_string());
+        }
+        Ok(r)
+    }
+}
+
+/// The embedded wake rules (data/hunters/nyxie_wake.json). A broken shipped file is caught by the tests.
+pub fn wake_rules() -> &'static WakeRules {
+    static R: OnceLock<WakeRules> = OnceLock::new();
+    R.get_or_init(|| {
+        WakeRules::parse(include_str!("../../data/hunters/nyxie_wake.json"))
+            .unwrap_or_else(|e| panic!("data/hunters/nyxie_wake.json: {e}"))
+    })
 }
 
 // ---------------------------------------------------------------------------------- Nightmare pounce data
@@ -396,6 +477,7 @@ impl Nyxie {
 
     pub fn before(&mut self, b: &mut Brain, dt: f32, c: &Ctx, t: &Target) {
         self.just_woke = false;
+        let rules = wake_rules();
         // the runner's lamp, beam and place; `t` is the chase target (a bot may stand in for the runner)
         let runner = self.runner.take();
         let r = runner.as_ref().unwrap_or(t);
@@ -403,6 +485,7 @@ impl Nyxie {
         if lit {
             self.darkness = 0.0;
             self.empty = 0.0;
+            self.dead = 0.0;
         } else {
             self.darkness += dt;
             self.empty = if r.lamp_charge <= 0.0 {
@@ -410,15 +493,28 @@ impl Nyxie {
             } else {
                 0.0
             };
+            // a dead flashlight (not merely a lamp switched off) runs its own, much shorter clock
+            self.dead = if c.flashlight_dead { self.dead + dt } else { 0.0 };
         }
-        if self.wake == Wake::None {
-            if self.empty >= 10.0 {
+        match self.wake {
+            Wake::None => {
+                if self.empty >= rules.empty_delay {
+                    self.wake = Wake::Empty;
+                    self.just_woke = true;
+                } else if c.flashlight_dead && self.dead >= rules.dead_delay {
+                    self.wake = Wake::Dead;
+                    self.just_woke = true;
+                } else if self.darkness >= rules.timer_delay {
+                    self.wake = Wake::Timer;
+                    self.just_woke = true;
+                }
+            }
+            // she is already out for the dead lamp; a lamp that stays dead ends in the inescapable catch (Godot's EMPTY)
+            Wake::Dead if self.empty >= rules.empty_delay => {
                 self.wake = Wake::Empty;
                 self.just_woke = true;
-            } else if self.darkness >= 120.0 {
-                self.wake = Wake::Timer;
-                self.just_woke = true;
             }
+            _ => {}
         }
         match self.wake {
             Wake::None => {
@@ -430,15 +526,17 @@ impl Nyxie {
                 b.active = true;
                 b.pos = r.pos;
             }
-            Wake::Timer => {
+            Wake::Timer | Wake::Dead => {
                 if !b.active {
                     b.active = true;
-                    b.pos = spawn_near(c, r.pos, 10.0);
-                } else if lit && Brain::beam_reaches(c.fac, r.pos, r.facing, b.pos, 7.0, 0.33) {
+                    let d = if self.wake == Wake::Dead { rules.dead_spawn_distance } else { rules.spawn_distance };
+                    b.pos = spawn_near(c, r.pos, d);
+                } else if lit && Brain::beam_reaches(c.fac, r.pos, r.facing, b.pos, rules.despawn_range, rules.dispel_half_angle) {
                     self.wake = Wake::None;
                     b.active = false;
                     b.state = State::Idle;
                     self.darkness = 0.0;
+                    self.dead = 0.0;
                     return;
                 }
             }
@@ -599,6 +697,268 @@ mod tests {
         assert_eq!(sweep_samples(1.0, n.sweep_step), 2);
         // a zero or negative step is clamped, so the sweep never divides by zero
         assert!(parse(r#"{"sweep": {"step": 0.0}}"#).sweep_step >= 0.01);
+    }
+
+    // ------------------------------------------------------------------------------------------ wake rules
+
+    fn wake_file() -> String {
+        include_str!("../../data/hunters/nyxie_wake.json").to_string()
+    }
+
+    fn wake_with(edit: impl FnOnce(&mut serde_json::Value)) -> Result<WakeRules, String> {
+        let mut v: serde_json::Value = serde_json::from_str(&wake_file()).unwrap();
+        edit(&mut v);
+        WakeRules::parse(&v.to_string())
+    }
+
+    #[test]
+    fn the_wake_file_keeps_the_godot_numbers_and_adds_the_dead_flashlight_delay() {
+        // Godot game/config/game_config.gd NYXIE_TIMER_DELAY 120, NYXIE_EMPTY_DELAY 10, NYXIE_DESPAWN_RANGE 7,
+        // NYXIE_DISPEL_HALF_ANGLE .33, NYXIE_SPAWN_DISTANCE 10 (lines 356-360); the dead flashlight delay is the owner's 3 s.
+        let r = wake_rules();
+        assert_eq!(r.timer_delay, 120.0);
+        assert_eq!(r.empty_delay, 10.0);
+        assert_eq!(r.spawn_distance, 10.0);
+        assert_eq!(r.despawn_range, 7.0);
+        assert_eq!(r.dispel_half_angle, 0.33);
+        assert_eq!(r.dead_delay, 3.0);
+        assert_eq!(r.dead_spawn_distance, 10.0);
+        assert_eq!(WakeRules::parse(&wake_file()).unwrap(), *r);
+    }
+
+    #[test]
+    fn the_wake_loader_refuses_bad_files_with_a_reason() {
+        assert!(wake_with(|v| v["schema"] = "lr.other/1".into()).unwrap_err().contains("schema"));
+        assert!(wake_with(|v| v["bogus"] = 1.into()).unwrap_err().contains("unknown key"));
+        assert!(wake_with(|v| { v.as_object_mut().unwrap().remove("dead_delay"); }).unwrap_err().contains("dead_delay"));
+        assert!(wake_with(|v| v["dead_delay"] = "soon".into()).unwrap_err().contains("dead_delay"));
+        assert!(wake_with(|v| v["dead_delay"] = (-1.0).into()).unwrap_err().contains("dead_delay"));
+        assert!(wake_with(|v| v["timer_delay"] = 0.0.into()).unwrap_err().contains("timer_delay"));
+        assert!(wake_with(|v| v["dispel_half_angle"] = 9.0.into()).unwrap_err().contains("dispel_half_angle"));
+        assert!(wake_with(|v| v["dead_delay"] = 11.0.into()).unwrap_err().contains("must not exceed"), "dead_delay above empty_delay");
+        assert!(WakeRules::parse("not json").is_err());
+        assert!(WakeRules::parse("[]").is_err());
+        // notes (keys starting with an underscore) and a changed value are fine
+        let r = wake_with(|v| { v["_extra"] = "x".into(); v["dead_delay"] = 1.5.into(); }).unwrap();
+        assert_eq!(r.dead_delay, 1.5);
+    }
+
+    // ------------------------------------------------------------------------------ dead flashlight (Brain::update)
+
+    use crate::content::Content;
+    use crate::world::catalog::Catalog;
+    use crate::world::Cell;
+
+    const DT: f32 = 1.0 / 30.0;
+
+    fn ctx<'a>(fac: &'a Facility, diff: Difficulty, dead: bool) -> Ctx<'a> {
+        Ctx {
+            fac,
+            relays_taken: &[],
+            batteries_taken: &[],
+            hiding_disabled: &[],
+            vents: &[],
+            heater_on: false,
+            heater_thawed: true,
+            diff,
+            music_box_left: 0.0,
+            music_boxes: &[],
+            exposure: 0.0,
+            flashlight_dead: dead,
+        }
+    }
+
+    /// The runner at `at`: the lamp switched `on` with `charge` left.
+    fn runner(at: (f32, f32), on: bool, charge: f32) -> Target {
+        Target { pos: at, facing: (1.0, 0.0), flashlight_on: on, lamp_charge: charge, ..Default::default() }
+    }
+
+    fn sleeper(fac: &Facility, diff: Difficulty) -> Brain {
+        let content = Content::load();
+        Brain::new(content.hunter("nyxie").expect("nyxie").clone(), fac.start.center(), "NYXIE-DEAD", diff)
+    }
+
+    fn facility() -> Facility {
+        Facility::generate("NYXIE-DEAD-WAKE", &Default::default(), &Catalog::load())
+    }
+
+    fn state(b: &Brain) -> (&Nyxie, bool) {
+        let crate::hunters::gimmicks::Gimmick::Nyxie(n) = &b.gimmick else { panic!("not Nyxie") };
+        (n, b.active)
+    }
+
+    /// Steps `seconds` of frames; returns the first elapsed time at which she was active.
+    fn run(b: &mut Brain, c: &Ctx, t: &Target, diff: Difficulty, seconds: f32) -> Option<f32> {
+        let prof = diff.profile();
+        let mut first = None;
+        let frames = (seconds / DT).round() as usize;
+        for f in 0..frames {
+            b.update(DT, c, t, 1, 0, &prof);
+            if first.is_none() && b.active {
+                first = Some((f + 1) as f32 * DT);
+            }
+        }
+        first
+    }
+
+    #[test]
+    fn a_dead_flashlight_wakes_her_within_the_delay_on_every_difficulty() {
+        let fac = facility();
+        let at = fac.start.center();
+        let delay = wake_rules().dead_delay;
+        for diff in [Difficulty::Relaxed, Difficulty::Standard, Difficulty::Hard, Difficulty::Nightmare] {
+            let mut b = sleeper(&fac, diff);
+            let c = ctx(&fac, diff, true);
+            let t = runner(at, false, 0.0);
+            let woke = run(&mut b, &c, &t, diff, delay + 0.5).unwrap_or_else(|| panic!("{diff:?}: a dead flashlight wakes her"));
+            assert!(woke >= delay - 0.1, "{diff:?}: not before the delay ({woke} s)");
+            assert!(woke <= delay + 0.2, "{diff:?}: within the delay ({woke} s)");
+            let (n, active) = state(&b);
+            assert!(active && n.wake == Wake::Dead, "{diff:?}: the dead-flashlight wake");
+            assert!(!n.inescapable(), "{diff:?}: the first catch is a normal grab, not the 10 s lamp kill");
+        }
+    }
+
+    #[test]
+    fn she_appears_near_the_runner_not_two_minutes_later() {
+        let fac = facility();
+        let at = fac.start.center();
+        let mut b = sleeper(&fac, Difficulty::Standard);
+        let c = ctx(&fac, Difficulty::Standard, true);
+        let t = runner(at, false, 0.0);
+        // just before the delay she is still asleep
+        run(&mut b, &c, &t, Difficulty::Standard, wake_rules().dead_delay - 0.3);
+        assert!(!b.active && state(&b).0.wake == Wake::None);
+        // the frame she wakes she stands where the wake puts her (a floor cell about dead_spawn_distance away)
+        let prof = Difficulty::Standard.profile();
+        let mut woke_at = None;
+        for _ in 0..30 {
+            b.update(DT, &c, &t, 1, 0, &prof);
+            if state(&b).0.just_woke {
+                woke_at = Some(b.pos);
+                break;
+            }
+        }
+        let p = woke_at.expect("woke");
+        let d = crate::hunters::brain::dist(p, at);
+        assert!((d - wake_rules().dead_spawn_distance).abs() < 2.0, "she appears about {} cells away, was {d}", wake_rules().dead_spawn_distance);
+    }
+
+    #[test]
+    fn a_lamp_merely_switched_off_does_not_wake_her_early() {
+        let fac = facility();
+        let at = fac.start.center();
+        let mut b = sleeper(&fac, Difficulty::Standard);
+        // charged and off: not dead
+        let c = ctx(&fac, Difficulty::Standard, false);
+        let t = runner(at, false, 80.0);
+        let woke = run(&mut b, &c, &t, Difficulty::Standard, 60.0);
+        assert!(woke.is_none(), "a lamp that is off but charged leaves her asleep for the 120 s rule");
+        let (n, active) = state(&b);
+        assert!(!active && n.wake == Wake::None);
+        assert_eq!(n.dead, 0.0, "the dead clock never ran");
+        assert!(n.darkness > 59.0, "the 120 s darkness clock still runs");
+    }
+
+    #[test]
+    fn the_two_minute_darkness_rule_still_wakes_her_when_the_lamp_is_off_but_charged() {
+        let fac = facility();
+        let at = fac.start.center();
+        let mut b = sleeper(&fac, Difficulty::Standard);
+        let c = ctx(&fac, Difficulty::Standard, false);
+        let t = runner(at, false, 80.0);
+        let woke = run(&mut b, &c, &t, Difficulty::Standard, 125.0).expect("120 s of darkness wakes her");
+        assert!(woke >= 119.9 && woke <= 120.5, "woke at {woke}");
+        assert!(state(&b).0.wake == Wake::Timer);
+    }
+
+    #[test]
+    fn a_lit_lamp_keeps_her_away_and_a_short_dead_spell_resets() {
+        let fac = facility();
+        let at = fac.start.center();
+        let mut b = sleeper(&fac, Difficulty::Standard);
+        let dead = ctx(&fac, Difficulty::Standard, true);
+        let ok = ctx(&fac, Difficulty::Standard, false);
+        // dead for 2 s, then recharged and lit: the clock restarts, she never appears
+        assert!(run(&mut b, &dead, &runner(at, false, 0.0), Difficulty::Standard, 2.0).is_none());
+        assert!(run(&mut b, &ok, &runner(at, true, 80.0), Difficulty::Standard, 1.0).is_none());
+        assert_eq!(state(&b).0.dead, 0.0);
+        assert!(run(&mut b, &dead, &runner(at, false, 0.0), Difficulty::Standard, 2.0).is_none(), "the 2 s do not add up to the earlier 2 s");
+        // an off-but-charged spell in between also resets the dead clock
+        assert!(run(&mut b, &ok, &runner(at, false, 80.0), Difficulty::Standard, 1.0).is_none());
+        assert_eq!(state(&b).0.dead, 0.0);
+    }
+
+    #[test]
+    fn the_dead_flashlight_wake_does_not_trigger_twice() {
+        let fac = facility();
+        let at = fac.start.center();
+        let mut b = sleeper(&fac, Difficulty::Standard);
+        let c = ctx(&fac, Difficulty::Standard, true);
+        let t = runner(at, false, 0.0);
+        let prof = Difficulty::Standard.profile();
+        let mut wakes = 0;
+        let mut respawn_jumps = 0;
+        let mut last = b.pos;
+        // 7 s: past the 3 s delay, short of the 10 s lamp kill
+        for _ in 0..(7.0 / DT) as usize {
+            b.update(DT, &c, &t, 1, 0, &prof);
+            if state(&b).0.just_woke {
+                wakes += 1;
+            }
+            if b.active && crate::hunters::brain::dist(b.pos, last) > 2.0 && wakes > 0 && !state(&b).0.just_woke {
+                respawn_jumps += 1;
+            }
+            last = b.pos;
+        }
+        assert_eq!(wakes, 1, "one wake for one dead spell");
+        assert_eq!(respawn_jumps, 0, "she is not placed again while the flashlight stays dead");
+        assert!(state(&b).0.wake == Wake::Dead);
+    }
+
+    #[test]
+    fn a_flashlight_dead_for_ten_seconds_still_ends_in_the_lamp_kill() {
+        let fac = facility();
+        let at = fac.start.center();
+        let mut b = sleeper(&fac, Difficulty::Standard);
+        let c = ctx(&fac, Difficulty::Standard, true);
+        let t = runner(at, false, 0.0);
+        run(&mut b, &c, &t, Difficulty::Standard, 5.0);
+        assert!(state(&b).0.wake == Wake::Dead && !state(&b).0.inescapable());
+        run(&mut b, &c, &t, Difficulty::Standard, 6.0);
+        let (n, active) = state(&b);
+        assert!(active && n.wake == Wake::Empty && n.inescapable(), "the Godot EMPTY wake is the end of a long dead spell");
+        assert_eq!(b.pos, at, "she is on top of the runner");
+    }
+
+    #[test]
+    fn a_dead_flashlight_that_is_recharged_and_aimed_sends_her_back_in_place() {
+        // the unit view of the beam rule: lit and facing her, a Dead wake is dispelled exactly like a Timer wake
+        let fac = facility();
+        // a runner with four open cells and a clear line east
+        let from = fac
+            .floor_cells()
+            .into_iter()
+            .find(|c| {
+                (0..=4).all(|k| fac.hunter_open(Cell::new(c.x + k, c.y)))
+                    && fac.has_line_of_sight(c.center(), Cell::new(c.x + 4, c.y).center())
+            })
+            .expect("a clear row of four cells");
+        let at = from.center();
+        let mut b = sleeper(&fac, Difficulty::Standard);
+        let dead = ctx(&fac, Difficulty::Standard, true);
+        run(&mut b, &dead, &runner(at, false, 0.0), Difficulty::Standard, 3.5);
+        assert!(b.active && state(&b).0.wake == Wake::Dead);
+        // she stands 4 cells ahead of the runner; the lamp is recharged and switched on, facing her
+        b.pos = Cell::new(from.x + 4, from.y).center();
+        let ok = ctx(&fac, Difficulty::Standard, false);
+        let prof = Difficulty::Standard.profile();
+        // a beam that is off or empty does nothing to her
+        b.update(DT, &dead, &runner(at, false, 0.0), 1, 0, &prof);
+        assert!(b.active, "no beam, no dispel");
+        b.update(DT, &ok, &runner(at, true, 80.0), 1, 0, &prof);
+        assert!(!b.active, "the recharged beam dispels the dead-flashlight wake");
+        assert!(state(&b).0.wake == Wake::None);
     }
 }
 
@@ -772,5 +1132,81 @@ mod beam_tests {
             }
         }
         assert!(gone.is_some(), "flashlight on: lit {} lamp {} escape {} pos {:?} / {:?}", g.p.flashlight_on, g.p.lamp, g.escape.is_some(), nyxie(&g).pos, g.p.pos);
+    }
+
+    /// A sleeping Nyxie far from the runner on a fresh floor (no other hunters), the runner's lamp `lamp` charged and off.
+    /// Level -1: that lineup keeps her on every difficulty, while level 0 admits hunters by residency and Relaxed has none
+    /// before its 3rd relay (activation_relays), Nyxie included.
+    fn asleep_on(diff: Difficulty, lamp: f32) -> (Game, Content, Catalog) {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let mut g = Game::new_infinite_sim(diff, 7, "ROOM-NYXIE-DEAD", -1, &content, &catalog);
+        g.fade = 0.0;
+        g.hunters.clear();
+        g.p.flashlight_on = false;
+        g.p.lamp = lamp;
+        let far = g.fac.floor_cells().into_iter().find(|c| crate::hunters::brain::dist(c.center(), g.p.pos) > 20.0).unwrap().center();
+        let mut b = Brain::new(content.hunter("nyxie").unwrap().clone(), far, "NYXIE-DEAD", diff);
+        b.active = false;
+        b.level = g.runner_level();
+        b.y = crate::game::level_stack::floor_y_of(b.level);
+        g.hunters.push(b);
+        (g, content, catalog)
+    }
+
+    fn wake_of(g: &Game) -> Wake {
+        let crate::hunters::gimmicks::Gimmick::Nyxie(n) = &nyxie(g).gimmick else { panic!("not Nyxie") };
+        n.wake
+    }
+
+    #[test]
+    fn a_dead_flashlight_brings_her_in_through_the_real_frame_on_every_difficulty() {
+        for diff in [Difficulty::Relaxed, Difficulty::Standard, Difficulty::Hard, Difficulty::Nightmare] {
+            let (mut g, content, catalog) = asleep_on(diff, 0.0);
+            let sounds = Sounds::default();
+            let delay = wake_rules().dead_delay;
+            let mut woke = None;
+            for f in 0..((delay + 1.0) / FRAME) as usize {
+                g.step(FRAME, &Controls::default(), &content, &catalog, &sounds);
+                if nyxie(&g).active {
+                    woke = Some((f + 1) as f32 * FRAME);
+                    break;
+                }
+            }
+            let woke = woke.unwrap_or_else(|| panic!("{diff:?}: a dead flashlight wakes her"));
+            assert!(woke >= delay - 0.1 && woke <= delay + 0.2, "{diff:?}: woke at {woke} s, delay {delay}");
+            assert_eq!(wake_of(&g), Wake::Dead, "{diff:?}");
+        }
+    }
+
+    #[test]
+    fn a_charged_lamp_that_is_only_off_leaves_her_asleep_through_the_real_frame() {
+        let (mut g, content, catalog) = asleep_on(Difficulty::Standard, 80.0);
+        run(&mut g, &content, &catalog, 600);
+        assert!(!nyxie(&g).active, "ten seconds of an off but charged lamp is not a dead flashlight");
+        assert_eq!(wake_of(&g), Wake::None);
+    }
+
+    #[test]
+    fn a_battery_then_the_beam_sends_the_dead_flashlight_wake_back_through_the_real_frame() {
+        let (mut g, content, catalog) = stalked(0, (1, 0), 5);
+        // the lamp dies (the game switches it off) and she is out for it
+        g.p.lamp = 0.0;
+        g.p.flashlight_on = false;
+        if let crate::hunters::gimmicks::Gimmick::Nyxie(ny) = &mut g.hunters[0].gimmick {
+            ny.wake = Wake::Dead;
+            ny.darkness = 0.0;
+        }
+        run(&mut g, &content, &catalog, 6);
+        assert!(nyxie(&g).active, "a dead lamp casts no beam");
+        assert_eq!(wake_of(&g), Wake::Dead);
+        // the runner puts a battery in and turns the lamp on, still facing her
+        g.p.lamp = 80.0;
+        g.p.flashlight_on = true;
+        run(&mut g, &content, &catalog, 60);
+        let b = nyxie(&g);
+        assert!(!b.active, "the recharged beam dispels the dead-flashlight wake");
+        assert_eq!(b.state, State::Idle);
+        assert_eq!(wake_of(&g), Wake::None);
+        assert!(g.report.is_none() && g.escape.is_none(), "she did not catch the runner first");
     }
 }
