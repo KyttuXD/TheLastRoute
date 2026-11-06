@@ -25,7 +25,8 @@ impl Ysolde {
             return;
         }
         let nearest = (0..c.fac.batteries.len())
-            .filter(|i| !c.batteries_taken[*i])
+            // resident hunters (other floors) are stepped with an empty taken list: a battery with no entry is not taken
+            .filter(|i| !c.batteries_taken.get(*i).copied().unwrap_or(false))
             .min_by(|p, q| {
                 dist(c.fac.batteries[*p].center(), b.pos)
                     .partial_cmp(&dist(c.fac.batteries[*q].center(), b.pos))
