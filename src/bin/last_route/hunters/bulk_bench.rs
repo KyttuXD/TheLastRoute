@@ -553,6 +553,7 @@ fn brain_run(g: &Game, content: &Content, hunters: &mut [Brain], route: &[(f32, 
         music_box_left: 0.0,
         music_boxes: &[],
         exposure: 0.0,
+        flashlight_dead: false,
     };
     let _ = content;
     let o = g.window_origin();
@@ -702,6 +703,7 @@ fn bulk_brain_search_bursts() {
             music_box_left: 0.0,
             music_boxes: &[],
             exposure: 0.0,
+            flashlight_dead: false,
         };
         let o = base.g.window_origin();
         let abs = along(&base.route, &base.cum, 0.0);

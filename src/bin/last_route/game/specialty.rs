@@ -930,6 +930,7 @@ mod tests {
                 music_box_left: 0.0,
                 music_boxes: &[],
                 exposure: 0.0,
+                flashlight_dead: false,
             };
             let mut came = false;
             for _ in 0..30 * 30 {

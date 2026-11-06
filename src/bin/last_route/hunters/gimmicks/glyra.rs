@@ -147,6 +147,7 @@ mod tests {
             diff: Difficulty::Standard,
             music_box_left: 45.0,
             exposure: 0.0,
+            flashlight_dead: false,
             music_boxes,
         }
     }

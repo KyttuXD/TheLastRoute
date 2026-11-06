@@ -267,6 +267,7 @@ impl Game {
                 music_box_left: self.music_box_left,
                 music_boxes: &music_boxes,
                 exposure: self.meters.exposure,
+                flashlight_dead: self.p.lamp <= 0.0,
             };
             let held_before = ability_held(&self.hunters[i]);
             let (c, ev) =

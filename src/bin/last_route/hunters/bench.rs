@@ -60,6 +60,7 @@ fn hunter_brain_step_cost() {
         music_box_left: 0.0,
         music_boxes: &[],
         exposure: 0.0,
+        flashlight_dead: false,
     };
     let target = Target {
         pos: runner,
@@ -123,6 +124,7 @@ fn resident_floor_step_cost() {
         music_box_left: 0.0,
         music_boxes: &[],
         exposure: 0.0,
+        flashlight_dead: false,
     };
     let target = Target { pos: runner, facing: (0.0, 1.0), ..Default::default() };
 

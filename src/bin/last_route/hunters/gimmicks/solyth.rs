@@ -127,6 +127,7 @@ mod tests {
             music_box_left: 0.0,
             music_boxes: &[],
             exposure: 0.0,
+            flashlight_dead: false,
         };
         for _ in 0..60 {
             b.update(1.0 / 30.0, &ctx, &t, 1, 0, &Difficulty::Standard.profile());
