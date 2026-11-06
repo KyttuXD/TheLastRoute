@@ -134,6 +134,7 @@ impl Game {
             if entry.get("disguise").is_some() {
                 h.disguise = entry["disguise"].as_str().map(str::to_string);
             }
+            h.set_net_mechanic(entry["mech"].as_str());
             if let crate::hunters::gimmicks::Gimmick::WolfSpider(s) = &mut h.gimmick {
                 if let (Some(phase), Some(bark)) = (entry["phase"].as_i64(), entry["bark_seq"].as_u64()) {
                     s.apply_network_state(phase, bark.min(u32::MAX as u64) as u32);
@@ -203,6 +204,13 @@ impl Game {
         }
         // a guest runs no hunter simulation: the host's frames set every hunter (apply_hunter_frame)
         if self.remote_hunters {
+            // the host's mechanic name is kept a moment past its last frame, then it lets go of the pose
+            for h in &mut self.hunters {
+                h.tick_net_mechanic(dt);
+            }
+            for h in self.resident_hunters.iter_all_mut() {
+                h.tick_net_mechanic(dt);
+            }
             return;
         }
         // a room with no local runner hunts its guests (game/remote_targets.rs); with none in play it runs nothing at all
@@ -1759,6 +1767,53 @@ mod resident_floor_tests {
         assert_eq!(guest.hunters.len(), 2, "it joined the active list");
         assert!(guest.resident_hunters.list(-1).is_empty());
         assert_eq!(guest.hunters[1].level, 0);
+    }
+
+    #[test]
+    fn the_hunter_frame_carries_the_mechanic_animation_and_a_guest_plays_it_then_lets_go() {
+        let (mut host, content, _) = stacked();
+        let up = open_spots(&host, 0, 1, host.p.pos, 8.0)[0];
+        let down = open_spots(&host, -1, 1, host.p.pos, 8.0)[0];
+        let mut a = hunter(&content, 0, up, 0, 1.0);
+        a.raise_cue("pocket_battery");
+        host.hunters.push(a);
+        host.hunters.push(hunter(&content, 1, up, 0, 1.0));
+        let mut r = hunter(&content, 2, down, -1, 1.0);
+        r.raise_cue("lock_on");
+        host.resident_hunters.list_mut(-1).push(slot(r));
+        let frame = host.hunter_frame();
+        assert_eq!(frame[0]["mech"], json!("pocket_battery"), "the active hunter's cue is in her entry");
+        assert!(frame[1].get("mech").is_none(), "a hunter with no mechanic carries no key (an older guest sees the frame it always did)");
+        assert_eq!(frame[2]["mech"], json!("lock_on"), "and so is a resident hunter's");
+
+        let (mut guest, _, _) = stacked();
+        guest.remote_hunters = true;
+        let (up_g, down_g) = (open_spots(&guest, 0, 1, guest.p.pos, 8.0)[0], open_spots(&guest, -1, 1, guest.p.pos, 8.0)[0]);
+        guest.hunters.push(hunter(&content, 0, up_g, 0, 1.0));
+        guest.hunters.push(hunter(&content, 1, up_g, 0, 1.0));
+        guest.resident_hunters.list_mut(-1).push(slot(hunter(&content, 2, down_g, -1, 1.0)));
+        guest.apply_hunter_frame(&frame);
+        assert_eq!(guest.hunters[0].mechanic(), Some("pocket_battery"), "the guest plays the host's animation");
+        assert_eq!(guest.hunters[1].mechanic(), None);
+        assert_eq!(guest.resident_hunters.list(-1)[0].brain.mechanic(), Some("lock_on"));
+
+        // the host's frames stop (it paused, the link dropped): the guest does not hold the pose for ever
+        frames(&mut guest, 60);
+        assert_eq!(guest.hunters[0].mechanic(), None, "released a moment after the last frame that carried it");
+        assert_eq!(guest.resident_hunters.list(-1)[0].brain.mechanic(), None);
+
+        // a frame that no longer carries the name clears it at once
+        guest.apply_hunter_frame(&frame);
+        assert_eq!(guest.hunters[0].mechanic(), Some("pocket_battery"));
+        let mut over = frame.clone();
+        over[0].as_object_mut().unwrap().remove("mech");
+        guest.apply_hunter_frame(&over);
+        assert_eq!(guest.hunters[0].mechanic(), None, "the host's cue ended");
+        // a name from a newer host is ignored, not stored
+        let mut newer = frame.clone();
+        newer[0]["mech"] = json!("an_animation_from_the_future");
+        guest.apply_hunter_frame(&newer);
+        assert_eq!(guest.hunters[0].mechanic(), None);
     }
 
     #[test]

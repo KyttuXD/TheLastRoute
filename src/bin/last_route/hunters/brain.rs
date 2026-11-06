@@ -469,6 +469,10 @@ pub struct Brain {
     water_rules: HunterWater,
     /// The field version the current route was planned against.
     water_seen: u64,
+    /// The one-shot mechanic animation raised at a gameplay event and its seconds left (hunters/mechanics.rs).
+    cue: Option<(&'static str, f32)>,
+    /// A guest's copy of the mechanic name the host sent, and the seconds it is kept without a newer frame.
+    net_mech: Option<(&'static str, f32)>,
     /// A guest shows the host's emote index and never starts one.
     pub display_only: bool,
     /// A guest's copy of a host hunter that the guest's own lineup does not have (made by `create_guest_hunter` from a
@@ -598,6 +602,8 @@ impl Brain {
             water: Arc::new(WaterField::default()),
             water_rules: WaterRules::get().for_hunter(&def_id),
             water_seen: 0,
+            cue: None,
+            net_mech: None,
             display_only: false,
             shadow: false,
             level: 0,
@@ -800,6 +806,10 @@ impl Brain {
     }
 
     pub fn apply_stun(&mut self, s: f32, heavy: bool) {
+        // a stun cuts the mechanic animation short: it does not come back when she gets up
+        if s > 0.0 {
+            self.cue = None;
+        }
         if s > self.stun {
             self.stun_heavy = heavy;
         }
@@ -829,6 +839,59 @@ impl Brain {
                 self.slow_factor = 1.0;
             }
         }
+    }
+
+    /// Raises the one-shot mechanic animation `name` (one of `mechanics::CUES`) for its `seconds` in
+    /// data/hunters/mechanic_cues.json. A cue already running is replaced (the newest event wins); a name that is not a
+    /// cue is ignored. It never moves or freezes the hunter.
+    pub fn raise_cue(&mut self, name: &'static str) {
+        if super::mechanics::CUES.contains(&name) {
+            self.cue = Some((name, super::mechanics::cues().seconds(name)));
+        }
+    }
+
+    /// The cue running now.
+    pub fn cue(&self) -> Option<&'static str> {
+        self.cue.map(|c| c.0)
+    }
+
+    /// Runs the cue clock down. Called at the top of every `update`, so a stunned or dormant hunter's cue still runs out.
+    pub fn tick_cue(&mut self, dt: f32) {
+        if let Some((_, left)) = self.cue.as_mut() {
+            *left -= dt;
+            if *left <= 0.0 {
+                self.cue = None;
+            }
+        }
+    }
+
+    /// Guest: the mechanic name the host's frame carried (None when it carried none), kept `net_ttl` seconds.
+    pub fn set_net_mechanic(&mut self, name: Option<&str>) {
+        self.net_mech = name.and_then(super::mechanics::intern).map(|n| (n, super::mechanics::cues().net_ttl));
+    }
+
+    /// Guest: runs the kept name down (a guest runs no `update`), so a frame that never comes cannot freeze a pose.
+    pub fn tick_net_mechanic(&mut self, dt: f32) {
+        if let Some((_, left)) = self.net_mech.as_mut() {
+            *left -= dt;
+            if *left <= 0.0 {
+                self.net_mech = None;
+            }
+        }
+    }
+
+    /// The mechanic animation she is in right now, for the view and the host's hunter frame: the ladder climb, else the
+    /// one-shot cue, else what her gimmick is doing. A guest's copy (`display_only`, or a `shadow`) runs no gimmick, so
+    /// its idle gimmick must not speak (Glyra's sits at "box playing"): only the name the host last sent counts there.
+    pub fn mechanic(&self) -> Option<&'static str> {
+        use super::flight_edges::EdgeKind;
+        if self.display_only || self.shadow {
+            return self.net_mech.map(|m| m.0);
+        }
+        if matches!(self.walk.as_ref().map(|w| w.kind), Some(EdgeKind::Ladder | EdgeKind::CatwalkLadder)) {
+            return Some("climb");
+        }
+        self.cue().or_else(|| self.gimmick.mechanic(self)).or_else(|| self.net_mech.map(|m| m.0))
     }
 
     pub fn investigate(&mut self, p: (f32, f32)) {
@@ -904,6 +967,7 @@ impl Brain {
         let mut events = vec![];
         self.landed = None;
         self.tick_slow(dt);
+        self.tick_cue(dt);
         let state_before = self.state;
         self.moving_speed = 0.0;
         let mut g = std::mem::take(&mut self.gimmick);
@@ -3331,6 +3395,29 @@ mod wiring_tests {
         b.update(1.0 / 60.0, &c, &far, 1, 0, &prof);
         assert!(b.landed.is_none(), "the host reads it once: the next frame clears it");
         assert!(b.stun <= 0.0, "landing_stun_seconds is 0 in the data");
+    }
+
+    #[test]
+    fn a_ladder_walk_is_the_climb_mechanic_and_outranks_a_cue_or_the_hosts_name() {
+        let (mut fac, [ground, _, _]) = deck_row();
+        fac.catwalk_links.push(crate::world::route::catwalk_links::CatwalkLink {
+            cell: ground,
+            kind: crate::world::route::catwalk_links::CatwalkKind::Ladder,
+            deck_height: deck_h(),
+            run: (1, 0),
+        });
+        let nav = deck_nav(&fac);
+        let up = nav.edges_from(at(ground)).find(|e| e.key.kind == flight_edges::EdgeKind::CatwalkLadder).expect("a ladder").clone();
+        let mut b = watcher(ground.center(), 0.0);
+        b.set_nav(nav);
+        assert_eq!(b.mechanic(), None);
+        b.raise_cue("mimic_cue");
+        b.set_net_mechanic(Some("shapeshift"));
+        assert_eq!(b.mechanic(), Some("mimic_cue"), "a local cue outranks the name a host sent");
+        b.walk = Some(EdgeWalk::start(&up));
+        assert_eq!(b.mechanic(), Some("climb"), "on the ladder she climbs, whatever else is on");
+        b.walk = None;
+        assert_eq!(b.mechanic(), Some("mimic_cue"));
     }
 
     #[test]

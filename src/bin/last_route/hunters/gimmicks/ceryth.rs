@@ -86,8 +86,19 @@ impl Ceryth {
         self.trap_spot = None;
     }
 
+    /// The locker she waits beside (tests enter it).
+    #[cfg(test)]
+    pub fn trap_spot(&self) -> Option<usize> {
+        self.trap_spot
+    }
+
     pub fn holds_position(&self) -> bool {
         !self.dispersed && !self.retreating && self.trap_spot.is_some()
+    }
+
+    /// The mechanic pose she is in: standing watch beside her locker, eyes on the door.
+    pub fn mechanic(&self) -> Option<&'static str> {
+        self.holds_position().then_some("locker_vigil")
     }
 
     pub fn speed_scale(&self, b: &Brain) -> f32 {

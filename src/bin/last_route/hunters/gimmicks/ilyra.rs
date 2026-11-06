@@ -19,6 +19,11 @@ impl Ilyra {
         self.hidden_remaining > 0.0
     }
 
+    /// The mechanic pose she is in: standing in her corner, watching (not while a beam has banished her).
+    pub fn mechanic(&self) -> Option<&'static str> {
+        (self.has_corner && !self.banished()).then_some("corner_watch")
+    }
+
     fn respawn_corner(&mut self, b: &mut Brain, c: &Ctx) {
         let rooms = &c.fac.rooms;
         let r = &rooms[b.next_index(rooms.len())];
@@ -66,6 +71,8 @@ impl Ilyra {
             self.pounce_remaining -= dt;
             if self.pounce_remaining <= 0.0 {
                 ev.push(Event::Stun(5.0));
+                // the curse lands: one arm thrown out at the runner wherever they are
+                b.raise_cue("pounce_curse");
                 self.tagged = false;
                 self.respawn_corner(b, c);
             }

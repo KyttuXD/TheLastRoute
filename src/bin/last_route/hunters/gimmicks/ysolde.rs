@@ -7,6 +7,8 @@ use crate::hunters::brain::{cell_of, dist, Brain, State, Target};
 use crate::world::Cell;
 
 const KEEP: f32 = 9.0;
+/// How close (cells) to a battery she starts to reach for it: the `steal_battery` pose runs from here to the grab at 0.8.
+const REACH: f32 = 1.9;
 
 #[derive(Default)]
 pub struct Ysolde {
@@ -14,10 +16,13 @@ pub struct Ysolde {
     flee_timer: f32,
     replan: f32,
     flee_point: Option<(f32, f32)>,
+    /// She is within reach of the battery she is heading for (the `steal_battery` pose).
+    reaching: bool,
 }
 
 impl Ysolde {
     pub fn after(&mut self, b: &mut Brain, dt: f32, c: &Ctx, t: &Target, ev: &mut Vec<Event>) {
+        self.reaching = false;
         if self.update_flee(b, dt, c, t) {
             return;
         }
@@ -37,6 +42,10 @@ impl Ysolde {
         b.last_known = Some(bat);
         if dist(b.pos, bat) <= 0.8 {
             ev.push(Event::TakeBattery(i));
+            // the pull and pocket: the battery is in her hand for a moment as she walks on
+            b.raise_cue("pocket_battery");
+        } else {
+            self.reaching = dist(b.pos, bat) <= REACH;
         }
     }
 
@@ -116,5 +125,12 @@ impl Ysolde {
             }
         }
         None
+    }
+}
+
+impl Ysolde {
+    /// The mechanic pose she is in: reaching down for a battery close ahead (the pocket pose after it is a cue).
+    pub fn mechanic(&self) -> Option<&'static str> {
+        self.reaching.then_some("steal_battery")
     }
 }

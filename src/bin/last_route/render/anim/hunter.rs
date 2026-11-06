@@ -581,6 +581,9 @@ pub struct HunterView {
     /// The mechanic state last on (kept while its pose eases out) and how far it is in, 0..1.
     mech: Option<&'static StateDef>,
     mech_w: f32,
+    /// Seconds since the mechanic state last came on (a state's `then` phase and `prop_until` read it), and whether it is on.
+    mech_t: f32,
+    mech_on: bool,
 }
 
 impl HunterView {
@@ -627,6 +630,8 @@ impl HunterView {
             layers: Weights::default(),
             mech: None,
             mech_w: 0.0,
+            mech_t: 0.0,
+            mech_on: false,
         }
     }
 
@@ -1111,8 +1116,14 @@ impl HunterView {
         // a mechanic state's bone pose over everything the clips and the chase layer did, eased in and out
         let want = self.mechanic_def(i);
         if let Some(m) = want {
+            // a state that comes on (or one that replaces another) starts its timeline again
+            if !self.mech_on || self.mech.map_or(true, |p| !std::ptr::eq(p, m)) {
+                self.mech_t = 0.0;
+            }
             self.mech = Some(m);
+            self.mech_t += delta;
         }
+        self.mech_on = want.is_some();
         let goal = if want.is_some() { 1.0 } else { 0.0 };
         let secs = self.mech.map(|m| if goal > 0.0 { m.blend_in } else { m.blend_out }).unwrap_or(0.0);
         self.mech_w = if secs <= 0.0 { goal } else { move_toward(self.mech_w, goal, delta / secs) };
@@ -1120,7 +1131,7 @@ impl HunterView {
             if self.mech_w <= 0.0 && want.is_none() {
                 self.mech = None;
             } else {
-                profile::apply_state(m, &mut Bones::new(&rig, &mut pose), smoothstep01(self.mech_w));
+                profile::apply_state(m, &mut Bones::new(&rig, &mut pose), smoothstep01(self.mech_w), self.mech_t);
             }
         }
         self.update_expression(i, delta, clock);
@@ -1237,6 +1248,15 @@ impl HunterView {
                 (vec3(i.pos.0, top, i.pos.1) + yaw * local, rot)
             })
             .collect()
+    }
+
+    /// The item a mechanic state puts in her right hand (`StateDef::prop`) and the matrix of the hand bone it rides, while
+    /// the state is mostly in. The caller draws the item model with `net/held_wire.rs item_transform`.
+    pub fn held_prop(&self, out: &Output) -> Option<(crate::game::Item, Mat4)> {
+        let m = self.mech.filter(|m| self.mech_w > 0.35 && m.prop_until.map_or(true, |t| self.mech_t < t))?;
+        let item = crate::net::held_wire::from_wire(m.prop.as_deref()?)?;
+        let hand = self.rig.bone("R-Hand")?;
+        Some((item, *out.bones.get(hand)?))
     }
 
     pub fn heavy(&self, i: &Input) -> bool {

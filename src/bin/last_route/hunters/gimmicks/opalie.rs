@@ -35,6 +35,11 @@ impl Opalie {
         self.station = relay;
     }
 
+    /// The mechanic pose she is in: standing guard on her relay.
+    pub fn mechanic(&self) -> Option<&'static str> {
+        self.on_station.then_some("guard_post")
+    }
+
     /// The interaction veto: anything within 1.5 cells of her post.
     pub fn blocks(&self, p: (f32, f32)) -> bool {
         self.on_station && dist(self.station, p) <= 1.5

@@ -70,5 +70,7 @@ impl Umbriel {
             .collect();
         let pick = pool[b.next_index(pool.len())];
         b.disguise = Some(pick.to_string());
+        // the change: she goes rigid for a moment as the new body settles on her
+        b.raise_cue("shapeshift");
     }
 }

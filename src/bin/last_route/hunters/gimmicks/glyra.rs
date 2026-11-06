@@ -62,6 +62,12 @@ impl Glyra {
         if self.mood == Mood::Playing && self.was_mood != Mood::Playing {
             self.settle_left = 3.0;
             self.was_hunting = true;
+            // the box was wound: she takes it up again and her shoulders drop
+            b.raise_cue("music_box_settle");
+        }
+        if self.mood == Mood::Stopped && self.was_mood == Mood::WindingDown {
+            // the tune ran out: she starts, head up, the box held out
+            b.raise_cue("music_box_startle");
         }
         if self.mood == Mood::Stopped
             && self.was_mood != Mood::Stopped
@@ -105,6 +111,11 @@ impl Glyra {
                 }
             }
         }
+    }
+
+    /// The mechanic pose she is in: cradling the playing box while she is calm (a chase puts it away).
+    pub fn mechanic(&self, b: &Brain) -> Option<&'static str> {
+        (self.mood == Mood::Playing && b.state != State::Chase).then_some("music_box_hold")
     }
 
     pub fn speed_scale(&self) -> f32 {

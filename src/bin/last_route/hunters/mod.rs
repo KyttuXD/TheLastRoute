@@ -8,6 +8,7 @@ pub mod emotes;
 pub mod flight_edges;
 pub mod gimmicks;
 pub mod light_field;
+pub mod mechanics;
 pub mod navigation;
 pub mod noise_events;
 pub mod path_scheduler;

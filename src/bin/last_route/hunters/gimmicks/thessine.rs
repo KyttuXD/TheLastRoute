@@ -25,5 +25,7 @@ impl Thessine {
         let rare = b.next_float() < 0.08;
         let _choice = b.next_float();
         ev.push(Event::Mimic { rare });
+        // the throw: a hand cupped to her mouth, head back, as the fake sound plays elsewhere
+        b.raise_cue("mimic_cue");
     }
 }
