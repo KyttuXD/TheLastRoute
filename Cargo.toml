@@ -72,6 +72,13 @@ opt-level = 3
 debug = 0
 strip = "symbols"
 panic = "abort"
+# One codegen unit and fat LTO let the optimiser see the whole program: smaller and faster code, which matters most in the
+# browser build (single-threaded wasm, bound by CPU rather than the GPU). The cost is a slower release link: a native release
+# build and the wasm build each take longer than with the default 16 units, so day-to-day work uses the dev, fast and ci profiles.
+# opt-level stays at the default 3: -Os and -Oz would shrink only the code section (a fifth of the wasm, the rest is embedded
+# assets) and cost speed. Cargo has no per-target profile, so these settings apply to every release target, native included.
+lto = "fat"
+codegen-units = 1
 
 # CI builds (cargo build --profile ci) keep the dev settings and line tables for backtraces, without full debug info.
 [profile.ci]

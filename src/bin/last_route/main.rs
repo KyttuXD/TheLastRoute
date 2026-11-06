@@ -59,8 +59,8 @@ fn window_conf(stress_vsync: Option<bool>) -> macroquad::conf::Conf {
         update_on: None,
         default_filter_mode: FilterMode::Linear,
         // the floor meshes are split under the 16-bit index limit; each must fit one draw call
-        draw_call_vertex_capacity: 65536,
-        draw_call_index_capacity: 65536 * 3 / 2,
+        draw_call_vertex_capacity: render::draw_stats::DRAW_CALL_VERTEX_CAPACITY,
+        draw_call_index_capacity: render::draw_stats::DRAW_CALL_INDEX_CAPACITY,
     }
 }
 

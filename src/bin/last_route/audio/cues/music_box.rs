@@ -109,23 +109,93 @@ pub fn tune() -> Vec<[f32; 2]> {
 /// ends when the box is empty. It depends only on the wound time and the data, so it is the same on every platform, and
 /// a sound that cannot change pitch while it plays (macroquad 0.4) needs no more than this one pre-rendered stretch.
 pub fn run_frames(wound_seconds: f32, from_elapsed: f32) -> Vec<[f32; 2]> {
+    let mut run = RunRender::new(wound_seconds, from_elapsed);
+    while !run.step(usize::MAX) {}
+    run.finish()
+}
+
+/// [`run_frames`] rendered a slice at a time, so the game can spread the (long: a 45 s box is two million frames) render
+/// over several game frames instead of stalling one. The output is exactly `run_frames`, whatever the slice sizes: the same
+/// loop, paused between iterations. Build it with [`RunRender::new`], call [`RunRender::step`] until it says it is done, then
+/// take the frames with [`RunRender::finish`] (or [`RunRender::finish_at`] when the box clock has moved on meanwhile).
+pub struct RunRender {
+    wound_seconds: f32,
+    total: usize,
+    skip: usize,
+    /// The next frame index to render.
+    k: usize,
+    /// The tune loop, rendered by the first `step` (it is itself a few thousand sine notes, worth a game frame of its own).
+    player: Option<LoopPlayer>,
+    out: Vec<[f32; 2]>,
+    done: bool,
+}
+
+impl RunRender {
+    pub fn new(wound_seconds: f32, from_elapsed: f32) -> RunRender {
+        let (total, skip) = run_extent(wound_seconds, from_elapsed);
+        RunRender { wound_seconds, total, skip, k: 0, player: None, out: Vec::with_capacity(total - skip), done: total == 0 }
+    }
+
+    /// Renders up to `max_frames` more frames (the first call renders only the tune loop and no frames). True once the
+    /// whole run is rendered.
+    pub fn step(&mut self, max_frames: usize) -> bool {
+        if self.done {
+            return true;
+        }
+        let Some(player) = self.player.as_mut() else {
+            self.player = Some(LoopPlayer::new(tune()));
+            return false;
+        };
+        let sr = f64::from(SAMPLE_RATE);
+        let end = self.k.saturating_add(max_frames).min(self.total);
+        while self.k < end {
+            let left = ((self.total - self.k) as f64 / sr) as f32; // seconds left, always above 0 until the last frame is out
+            let rate = playback_rate(left, self.wound_seconds);
+            if rate <= 0.0 {
+                self.done = true;
+                return true;
+            }
+            let frame = player.next(rate);
+            if self.k >= self.skip {
+                self.out.push(frame);
+            }
+            self.k += 1;
+        }
+        self.done = self.k >= self.total;
+        self.done
+    }
+
+    /// The frames rendered so far; the whole run once `step` has said it is done.
+    pub fn finish(self) -> Vec<[f32; 2]> {
+        self.out
+    }
+
+    /// The finished run as it would have been rendered to start `from_elapsed` seconds after winding: the frames that have
+    /// already been played by then are dropped. Exactly `run_frames(wound, from_elapsed)` when `from_elapsed` is no earlier
+    /// than the one the render began with (an earlier one cannot bring frames back, and leaves the run as rendered).
+    pub fn finish_at(mut self, from_elapsed: f32) -> Vec<[f32; 2]> {
+        let (_, skip) = run_extent(self.wound_seconds, from_elapsed);
+        let drop = skip.saturating_sub(self.skip).min(self.out.len());
+        self.out.drain(..drop);
+        self.out
+    }
+
+    /// Frames of the whole run still to render (for tests).
+    pub fn remaining(&self) -> usize {
+        if self.done {
+            0
+        } else {
+            self.total - self.k
+        }
+    }
+}
+
+/// (total frames of a run, frames to skip) for a wound time and a start `from_elapsed` seconds in.
+fn run_extent(wound_seconds: f32, from_elapsed: f32) -> (usize, usize) {
     let sr = f64::from(SAMPLE_RATE);
     let total = (f64::from(wound_seconds.max(0.0)) * sr) as usize;
     let skip = ((f64::from(from_elapsed.max(0.0)) * sr) as usize).min(total);
-    let mut player = LoopPlayer::new(tune());
-    let mut out = Vec::with_capacity(total - skip);
-    for k in 0..total {
-        let left = ((total - k) as f64 / sr) as f32; // seconds left, always above 0 until the last frame is out
-        let rate = playback_rate(left, wound_seconds);
-        if rate <= 0.0 {
-            break;
-        }
-        let frame = player.next(rate);
-        if k >= skip {
-            out.push(frame);
-        }
-    }
-    out
+    (total, skip)
 }
 
 /// What the world keeps about the tune it started, to know when the pre-rendered run no longer matches the box clock.
@@ -361,6 +431,66 @@ mod tests {
         // an empty or spent box is no tune
         assert!(run_frames(wound, wound).is_empty());
         assert!(run_frames(0.0, 0.0).is_empty());
+    }
+
+    #[test]
+    fn a_run_rendered_in_slices_is_the_run_rendered_whole() {
+        let (wound, from) = (6.0f32, 1.25f32);
+        let whole = run_frames(wound, from);
+        assert!(!whole.is_empty());
+        for slice in [1usize, 777, 4096, 100_000, usize::MAX] {
+            if slice == 1 {
+                continue; // one call per frame is too slow for a debug run; 777 covers the odd-size case
+            }
+            let mut run = RunRender::new(wound, from);
+            let mut calls = 0usize;
+            while !run.step(slice) {
+                calls += 1;
+                assert!(calls < 2_000_000, "never finishes at slice {slice}");
+            }
+            // the first call renders the tune loop only
+            if slice == 777 {
+                assert!(calls > whole.len() / 777, "{calls} calls for {} frames", whole.len());
+            }
+            assert!(run.remaining() == 0 && run.step(10), "done stays done");
+            let frames = run.finish();
+            assert!(frames == whole, "slice {slice}: {} frames against {}", frames.len(), whole.len());
+        }
+    }
+
+    #[test]
+    fn a_slice_never_renders_more_than_it_was_given() {
+        let mut run = RunRender::new(2.0, 0.0);
+        assert!(!run.step(100_000), "the first call is the tune loop");
+        let start = run.remaining();
+        assert_eq!(start, 2 * SAMPLE_RATE as usize);
+        assert!(!run.step(10_000));
+        assert_eq!(start - run.remaining(), 10_000);
+        assert!(!run.step(0), "a slice of nothing moves nothing");
+        assert_eq!(start - run.remaining(), 10_000);
+    }
+
+    #[test]
+    fn a_run_finished_late_drops_the_frames_the_box_clock_has_passed() {
+        let wound = 8.0f32;
+        let started_at = 0.5f32;
+        let mut run = RunRender::new(wound, started_at);
+        while !run.step(50_000) {}
+        // the render took 0.75 s of box time: it joins as if it had been started then, sample for sample
+        let late = run.finish_at(1.25);
+        assert!(late == run_frames(wound, 1.25), "a late finish differs from a late start");
+        // an earlier time than the start cannot bring frames back
+        let mut run = RunRender::new(wound, 1.0);
+        while !run.step(50_000) {}
+        let n = run.out.len();
+        assert_eq!(run.finish_at(0.2).len(), n);
+        // past the end it is empty, not a panic
+        let mut run = RunRender::new(1.0, 0.0);
+        while !run.step(50_000) {}
+        assert!(run.finish_at(99.0).is_empty());
+        // an empty run is done at once and renders nothing
+        let mut none = RunRender::new(0.0, 0.0);
+        assert!(none.step(10) && none.finish().is_empty());
     }
 
     #[test]

@@ -24,6 +24,7 @@ pub mod perf;
 pub mod platform;
 pub mod profile;
 pub mod public_route;
+pub mod quality;
 pub mod screenshot;
 pub mod selftest;
 pub mod settings;
@@ -63,11 +64,14 @@ pub struct Targets {
 /// original's restrained pixel filter (DEFAULT_PIXEL_EFFECT_PERCENT 42). Lower quality
 /// settings deliberately reduce the internal render target so the GPU has less fragment work.
 pub fn targets(old: Option<Targets>, quality: &str) -> Targets {
-    let scale = match quality {
-        "LOW" => 0.32,
-        "MEDIUM" => 0.40,
-        _ => 0.50, // AUTO and HIGH preserve the reference presentation
-    };
+    // AUTO and HIGH preserve the reference presentation (the browser build picks AUTO's tier in app/quality.rs)
+    let tier = quality::Tier::parse(quality).unwrap_or(quality::Tier::High);
+    targets_scaled(old, quality::config().render_scale(tier, 0))
+}
+
+/// [`targets`] at an explicit render scale: the quality manager's (`quality::Live::render_scale`), which follows the AUTO
+/// pick and the governor's notch. A new scale makes new render targets; the same size keeps the old ones.
+pub fn targets_scaled(old: Option<Targets>, scale: f32) -> Targets {
     let w = (screen_width() * scale).max(64.0) as u32;
     let h = (screen_height() * scale).max(36.0) as u32;
     if let Some(t) = old {
@@ -75,6 +79,8 @@ pub fn targets(old: Option<Targets>, quality: &str) -> Targets {
             return t;
         }
     }
+    // new render targets hold nothing known: the held-item layer clears its target once before it skips an empty frame
+    crate::render::viewmodel::forget_layer();
     let make = || {
         let rt = render_target_ex(
             w,
@@ -111,11 +117,15 @@ pub fn render_play_with(g: &Game, a: &Assets, mat: &Material, t: &Targets, remot
         let _t = perf::section("remote players");
         world_sync::draw_remotes(g, a, mat, &t.scene, remotes);
     }
-    {
+    // The scene's draw calls are queued by macroquad until the next camera change, which the viewmodel's camera makes. While
+    // the full panel shows, they are sent here instead, so the panel can time the GL submit ("gl flush") apart from the
+    // viewmodel; the same work in the same order (the camera is unchanged), only started a few lines early.
+    perf::flush_timed("gl flush");
+    let view_layer = {
         let _t = perf::section("viewmodel");
-        viewmodel::draw_viewmodel(g, a, mat, &t.view);
-        crate::render::fp_hands::draw_ladder_hands(g, a, mat, &t.view);
-    }
+        viewmodel::draw_view_layer(g, a, mat, &t.view)
+    };
+    perf::flush_timed("gl flush view");
     set_default_camera();
     clear_background(BLACK);
     let p = DrawTextureParams {
@@ -125,8 +135,18 @@ pub fn render_play_with(g: &Game, a: &Assets, mat: &Material, t: &Targets, remot
         ..Default::default()
     };
     draw_texture_ex(&t.scene.texture, 0.0, 0.0, WHITE, p.clone());
-    draw_texture_ex(&t.view.texture, 0.0, 0.0, WHITE, p);
+    // the held-item layer is blitted only when something was drawn into it (an empty layer is fully transparent)
+    if view_layer {
+        draw_texture_ex(&t.view.texture, 0.0, 0.0, WHITE, p);
+    }
     crate::ui::markers::draw_nametags(g, a, &t.scene, &crate::ui::markers::all_markers(g, remotes));
+}
+
+/// The extra rows of the F7 panel: the render counters, then the quality manager's.
+fn overlay_rows() -> Vec<(String, String)> {
+    let mut rows = crate::render::draw_stats::rows();
+    rows.extend(quality::rows());
+    rows
 }
 
 pub struct World {
@@ -134,7 +154,9 @@ pub struct World {
     pub catalog: Catalog,
     pub assets: Assets,
     pub sounds: Sounds,
-    pub mat: Material,
+    /// The world material, in the lamp-count variants the quality governor switches between; it derefs to the one the
+    /// current lamp cap needs, so `&w.mat` stands wherever a `&Material` is taken.
+    pub mat: shader::WorldMats,
 }
 
 /// Keyboard look for one frame: Godot's `Input.get_vector` caps the combined stick at length 1,
@@ -268,7 +290,7 @@ pub async fn load_world() -> World {
     let catalog = Catalog::load();
     let assets = Assets::load(&content);
     let sounds = Sounds::new().await;
-    let mat = shader::load_world_material();
+    let mat = shader::WorldMats::new();
     World {
         content,
         catalog,
@@ -298,7 +320,7 @@ pub async fn load_world_booted(boot: &mut crate::ui::boot::BootLoader) -> World 
     crate::lr_info!("startup timing: art step {} ms", t.elapsed().as_millis());
     let sounds = Sounds::new().await;
     crate::lr_info!("startup timing: sounds {} ms", t.elapsed().as_millis());
-    let mat = shader::load_world_material();
+    let mat = shader::WorldMats::new();
     crate::lr_info!("startup timing: world material {} ms", t.elapsed().as_millis());
     boot.step(crate::ui::boot::Step::Signal).await;
     crate::lr_info!("startup timing: signal step {} ms", t.elapsed().as_millis());
@@ -527,8 +549,12 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
     if settings.fullscreen && screenshot.is_none() {
         set_fullscreen(true);
     }
-    let mut tg = targets(None, &settings.quality);
-    shader::set_lamp_cap_for(&settings.quality);
+    // the quality manager: the AUTO tier (the browser's hardware report, then the first seconds of play), the governor, the
+    // lamp cap and the render scale (app/quality.rs). A native build has no report and keeps AUTO = HIGH.
+    let mut qm = quality::Manager::new(quality::config(), quality::Hardware::from_page());
+    let live = qm.update(&settings.quality, settings.adaptive_quality, settings.fps_limit, 0.0, false);
+    qm.publish(&live, &settings.quality);
+    let mut tg = targets_scaled(None, live.render_scale);
     let mut ui = Ui::default();
     // a stress run starts its route at once, with no title
     let mut playing: Option<Game> = if stress_on {
@@ -667,8 +693,13 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             fps_t = 0.0;
             fps_n = 0;
         }
-        tg = targets(Some(tg), &settings.quality);
-        shader::set_lamp_cap_for(&settings.quality);
+        // only a frame that drew the 3D world counts towards the AUTO pick and the governor (not menus, loading or the pause screen)
+        let in_play = playing.is_some() && loading.is_none() && !pz.open && !stress_on;
+        let live = qm.update(&settings.quality, settings.adaptive_quality, settings.fps_limit, raw_dt * 1000.0, in_play);
+        qm.publish(&live, &settings.quality);
+        tg = targets_scaled(Some(tg), live.render_scale);
+        // a narrower lamp variant is compiled the first frame it is needed; do it here, not mid-draw
+        w.mat.prewarm(crate::render::shader::lamp_cap());
         let next_audio_volumes = (
             settings.master_volume,
             settings.gameplay_volume,
@@ -1760,6 +1791,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 }
             }
             if frame >= 120 {
+                // LR_PERF_MODE=2 puts the performance panel (and its render counters) in the capture
+                perf::draw_overlay(w.assets.font.as_ref(), &overlay_rows());
                 save_screen(path);
                 return;
             }
@@ -1771,7 +1804,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
         if !stress_on {
             boot.draw_frame();
         }
-        perf::draw_overlay(w.assets.font.as_ref(), &[]);
+        perf::draw_overlay(w.assets.font.as_ref(), &overlay_rows());
         if shot_key {
             shots.capture();
         }

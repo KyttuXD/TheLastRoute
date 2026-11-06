@@ -336,7 +336,7 @@ fn draw_body(a: &Assets, look: Look, pick: &Pick, slim: bool, pose: Option<(&Rig
     let tint = Color::new(1.0, 1.0, 1.0, look.alpha);
     body.build_posed_mode(&mut verts, &mut idx, root, &bone_of, Vec2::ZERO, tint, body_mode(look.alpha));
     let mesh = Mesh { vertices: verts, indices: idx, texture: Some(texture) };
-    draw_mesh(&mesh);
+    crate::render::draw_stats::draw_counted(&mesh);
     SCRATCH.with(|s| *s.borrow_mut() = (mesh.vertices, mesh.indices));
     // the held item rides the hand bone (no rig, no hand, no item)
     if let (Some(item), Some((rig, m)), Some(d)) = (held, mats.as_ref(), held_wire::data()) {
