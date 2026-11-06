@@ -9,6 +9,10 @@
 //!   LR_SHOT_DOSSIER_TAB=n   the dossier tab (0 ROUTE DOSSIER, 1 CUSTOM HUNTERS)
 //!   LR_SHOT_ACCOUNT=1       the account panel (same as LR_SHOT_SCREEN=account)
 //!   LR_SHOT_RUN=1           start a run (LR_SHOT_INF=1: the Infinite route)
+//!   LR_SHOT_SEED=n          with LR_SHOT_RUN=1: the run seed (default 20261101)
+//!   LR_SHOT_LEVEL=n         with LR_SHOT_RUN=1 (Infinite route): start on level n (-3 has spirals in open bays)
+//!   LR_SHOT_STAIRS=shape    with a run: stand on the landing of the first flight down of a shape (spiral | switchback |
+//!                           straight) found in the window, 1 m back from it, looking down at the well
 //!   LR_SHOT_PAUSE=...       with a run: pause | statistics | players | settings | dossier | confirm
 //!   LR_SHOT_ADMIN=n         with a run: the admin menu on tab n (0 STATUS .. 9 FIELDS)
 //!   LR_SHOT_MAP=1           with a run: the full map
@@ -1696,20 +1700,24 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
         if let Some(path) = &screenshot {
             // LR_SHOT_RUN=1 starts a run (flashlight on) to look at a floor or the run's overlays
             if frame == 20 && playing.is_none() && env("LR_SHOT_RUN").is_some() {
+                let shot_seed: u32 = env("LR_SHOT_SEED").and_then(|s| s.parse().ok()).unwrap_or(20261101);
                 let mut g = if env("LR_SHOT_FINITE").is_some() {
                     Game::new(diff, 20261101, &w.content, &w.catalog, &w.assets)
                 } else {
                     Game::new_infinite(
                         diff,
-                        20261101,
-                        &route::room_text(20261101),
-                        0,
+                        shot_seed,
+                        &route::room_text(shot_seed),
+                        env("LR_SHOT_LEVEL").and_then(|l| l.parse().ok()).unwrap_or(0),
                         &w.content,
                         &w.catalog,
                         &w.assets,
                     )
                 };
                 g.p.flashlight_on = true;
+                if let Some(shape) = env("LR_SHOT_STAIRS") {
+                    shot_at_stairs(&mut g, &shape);
+                }
                 if let Ok(turn) = std::env::var("LR_SHOT_YAW") {
                     g.p.yaw = turn.parse().unwrap_or(0.0);
                 }
@@ -1989,4 +1997,30 @@ mod owner_command_tests {
         assert!(cmd.busy());
     }
 
+}
+
+/// `LR_SHOT_STAIRS=shape`: put the player on the landing row of the first flight down of that shape (spiral, switchback or
+/// straight) in the streamed window, a metre back from the landing, looking down at the well's middle.
+fn shot_at_stairs(g: &mut Game, shape: &str) {
+    use crate::world::flight::FlightShape;
+    let want = match shape {
+        "spiral" => FlightShape::Spiral,
+        "straight" => FlightShape::Straight,
+        _ => FlightShape::Switchback,
+    };
+    let Some(s) = g.fac.stairs.iter().copied().find(|s| s.dir < 0 && !s.is_ladder() && s.shape == want) else {
+        eprintln!("LR_SHOT_STAIRS: no {shape} flight down in the window ({} stairs)", g.fac.stairs.len());
+        return;
+    };
+    let cells = s.well_cells();
+    let n = cells.len().max(1) as f32;
+    let mid = (
+        cells.iter().map(|c| c.x as f32 + 0.5).sum::<f32>() / n,
+        cells.iter().map(|c| c.y as f32 + 0.5).sum::<f32>() / n,
+    );
+    let (lx, lz) = s.landing().center();
+    g.p.pos = (lx - s.run.0 as f32, lz - s.run.1 as f32);
+    g.p.yaw = (-(mid.0 - g.p.pos.0)).atan2(-(mid.1 - g.p.pos.1));
+    g.p.pitch = -0.5;
+    eprintln!("LR_SHOT_STAIRS: {shape} flight at {:?}, player at {:?}", s.cell, g.p.pos);
 }

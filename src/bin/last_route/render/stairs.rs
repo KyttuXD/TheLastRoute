@@ -9,8 +9,9 @@
 //! Which level draws what. The lower level (`dir > 0`) owns the ramp and everything standing on it: the tiles, the solid
 //! divider and wall faces of a switchback or straight flight, the floor under a spiral's helicoid, the post, the
 //! handrails (up to the upper floor), its "LEVEL n" sign and the well's light. The upper level (`dir < 0`) draws no floor
-//! over the well, only its guard rails round the rim, the spiral's slab rail, the part of the handrails that stands
-//! above the upper floor and its own sign.
+//! over the well, only its guard rails round the rim (posts, a top and a knee rail; a spiral's run the whole rim the
+//! collision closes, `spiral_rim_guards`), the spiral's slab rail, the part of the handrails that stands above the upper
+//! floor and its own sign. A spiral has no "LEVEL n" sign (`signs_with` gives it none).
 
 use super::shader::{Flicker, Lamp};
 use crate::world::facility::{Cell, Cover, LinkKind, Stair};
@@ -343,8 +344,10 @@ fn upper_dressing(out: &mut Parts, f: &Flight, site: &Site) {
         guard_bar(out, g.seg.a, g.seg.b, g.outside, d);
     }
     if let Some(seg) = spiral_slab_rail_with(rules, f) {
-        let y = d.rail_height;
-        rail_bar(out, [seg.a.0, y, seg.a.1], [seg.b.0, y, seg.b.1]);
+        for y in [d.rail_height, d.rail_height * 0.5] {
+            rail_bar(out, [seg.a.0, y, seg.a.1], [seg.b.0, y, seg.b.1]);
+        }
+        guard_posts(out, seg.a, seg.b, d);
     }
     let m = d.rail_thickness * 0.5;
     for r in handrails_with(rules, f) {
@@ -406,8 +409,12 @@ fn rail_bar(out: &mut Parts, a: [f32; 3], b: [f32; 3]) {
     }
 }
 
-/// A guard rail along `seg` (grid coordinates), the thin bar Godot draws at the handrail's height, standing a hair out
-/// on the floor cell `outside` side of the rim.
+/// The most metres between two posts of a guard.
+pub const POST_SPACING: f32 = 1.0;
+
+/// A guard along `seg` (grid coordinates) standing a hair out on the floor cell `outside` side of the rim: the top rail at
+/// the handrail's height (Godot's thin bar), a knee rail at half that, and a post (`guard.height` tall) at each end and at
+/// most `POST_SPACING` apart, all in the iron.
 fn guard_bar(out: &mut Parts, a: (f32, f32), b: (f32, f32), outside: Cell, d: &Dressing) {
     let mid = ((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5);
     let to_out = (outside.x as f32 + 0.5 - mid.0, outside.y as f32 + 0.5 - mid.1);
@@ -416,7 +423,21 @@ fn guard_bar(out: &mut Parts, a: (f32, f32), b: (f32, f32), outside: Cell, d: &D
     let step = if along_x { (0.0, to_out.1.signum() * 0.02) } else { (to_out.0.signum() * 0.02, 0.0) };
     let len = (b.0 - a.0).abs().max((b.1 - a.1).abs());
     let size = if along_x { vec3(len, d.rail_thickness, d.guard_thickness) } else { vec3(d.guard_thickness, d.rail_thickness, len) };
-    out.boxes.push((vec3(mid.0 + step.0, d.rail_height, mid.1 + step.1), size, iron()));
+    for y in [d.rail_height, d.rail_height * 0.5] {
+        out.boxes.push((vec3(mid.0 + step.0, y, mid.1 + step.1), size, iron()));
+    }
+    guard_posts(out, (a.0 + step.0, a.1 + step.1), (b.0 + step.0, b.1 + step.1), d);
+}
+
+/// Posts along the line `a`..`b` (grid coordinates): one at each end and enough between to keep them `POST_SPACING` apart.
+fn guard_posts(out: &mut Parts, a: (f32, f32), b: (f32, f32), d: &Dressing) {
+    let len = (b.0 - a.0).hypot(b.1 - a.1);
+    let n = (len / POST_SPACING).ceil().max(1.0) as usize;
+    for i in 0..=n {
+        let t = i as f32 / n as f32;
+        let (x, z) = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+        out.boxes.push((vec3(x, d.guard_height * 0.5, z), vec3(d.guard_thickness, d.guard_height, d.guard_thickness), iron()));
+    }
 }
 
 /// The solid wall between a switchback's flights, floor to the upper floor, `divider_width` metres thick with flat ends
@@ -1045,7 +1066,7 @@ mod tests {
                 let post = if shape == FlightShape::Spiral { POST_SIDES } else { 0 };
                 let (lp, up) = (build(lower), build(upper));
                 assert_eq!(iron_quads(&lp).len(), low_bars * 4 + post, "{shape:?} {run:?}: four faces to every bar below the floor above");
-                let slab_rail = usize::from(shape == FlightShape::Spiral) * 4;
+                let slab_rail = usize::from(shape == FlightShape::Spiral) * 8;
                 assert_eq!(iron_quads(&up).len(), high_bars * 4 + slab_rail, "{shape:?} {run:?}: and to every bar over the upper floor");
                 assert!(low_bars > 0 && high_bars > 0, "{shape:?}: rails climb past the floor");
                 // 0.95 over the tread at the top of the flight: the highest rail point stands 0.95 over the upper floor
@@ -1099,6 +1120,74 @@ mod tests {
         }
     }
 
+    /// A spiral's rim is railed along the whole guard path the collision closes (posts, a top rail at 0.95 and a knee
+    /// rail, in the iron of the other rails) and open at the arrival.
+    #[test]
+    fn a_spiral_rim_has_posts_and_rails_along_its_guard_path_and_a_gap_at_the_arrival() {
+        let rules = flights();
+        let d = &rules.dressing;
+        for run in RUNS {
+            for cw in [false, true] {
+                let s = Stair { clockwise: cw, ..stair(-1, run, FlightShape::Spiral) };
+                let f = s.flight(0).unwrap();
+                let guards = landing_guards_with(rules, &f);
+                assert!(guards.len() >= 15, "{run:?} cw {cw}: a guard on every closed edge of the rim ({})", guards.len());
+                let p = build(s);
+                let is = |c: &Vec3, sz: &Vec3, y: f32, h: f32| (c.y - y).abs() < EPS && (sz.y - h).abs() < EPS;
+                let tops: Vec<_> = p.boxes.iter().filter(|(c, sz, _)| is(c, sz, d.rail_height, d.rail_thickness)).collect();
+                let knees: Vec<_> = p.boxes.iter().filter(|(c, sz, _)| is(c, sz, d.rail_height * 0.5, d.rail_thickness)).collect();
+                let posts: Vec<_> = p.boxes.iter().filter(|(c, sz, _)| is(c, sz, d.guard_height * 0.5, d.guard_height)).collect();
+                assert_eq!(tops.len(), guards.len(), "{run:?} cw {cw}: a top rail per guard");
+                assert_eq!(knees.len(), guards.len(), "{run:?} cw {cw}: a knee rail per guard");
+                assert!(posts.len() > guards.len(), "{run:?} cw {cw}: posts along the rail");
+                assert!(tops.iter().chain(&knees).chain(&posts).all(|(_, _, col)| *col == iron()), "{run:?} cw {cw}: the iron of the other rails");
+                // the top rail covers every guard's segment end to end, and a post stands at each end of it
+                for g in &guards {
+                    for i in 0..=10 {
+                        let t = i as f32 / 10.0;
+                        let (x, z) = (g.seg.a.0 + (g.seg.b.0 - g.seg.a.0) * t, g.seg.a.1 + (g.seg.b.1 - g.seg.a.1) * t);
+                        assert!(
+                            tops.iter().any(|(c, sz, _)| (x - c.x).abs() <= sz.x * 0.5 + 0.03 && (z - c.z).abs() <= sz.z * 0.5 + 0.03),
+                            "{run:?} cw {cw}: no rail at ({x}, {z}) of the guard {g:?}"
+                        );
+                    }
+                    for e in [g.seg.a, g.seg.b] {
+                        assert!(posts.iter().any(|(c, _, _)| (c.x - e.0).hypot(c.z - e.1) < 0.05), "{run:?} cw {cw}: no post at the end {e:?} of {g:?}");
+                    }
+                }
+                // the gap: nothing stands across the doorway edge, where the stairs arrive
+                for c in crate::world::flight::landing_row_with(rules, &f) {
+                    let (x, z) = (c.x as f32 + 0.5 + f.run.0 as f32 * 0.5, c.y as f32 + 0.5 + f.run.1 as f32 * 0.5);
+                    for (c, sz, _) in tops.iter().chain(&knees).chain(&posts) {
+                        assert!(
+                            (x - c.x).abs() > sz.x * 0.5 + 0.3 || (z - c.z).abs() > sz.z * 0.5 + 0.3,
+                            "{run:?} cw {cw}: a rail piece at {c:?} in the arrival gap ({x}, {z})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A spiral guard standing beside a wall is left out like any other.
+    #[test]
+    fn a_spiral_guard_beside_a_wall_is_left_out() {
+        let s = stair(-1, (0, 1), FlightShape::Spiral);
+        let well = well_set(s);
+        let well_fn = |x: i32, z: i32| well.contains(&(x, z));
+        let all_open = |_: i32, _: i32| false;
+        let all_walls = |x: i32, z: i32| !well.contains(&(x, z));
+        let count = |solid: &dyn Fn(i32, i32) -> bool| {
+            let site = Site { h: H, wall_h: H, tiers: 1.0, well: &well_fn, solid };
+            let mut p = Parts::default();
+            for c in s.well_cells() {
+                flight_cell(&mut p, (c.x, c.y), s, 0, &site);
+            }
+            p.boxes.len()
+        };
+        assert!(count(&all_open) > count(&all_walls) + 30, "the walled rim has no guards; only the slab rail's posts stand");
+    }
+
     #[test]
     fn a_guard_beside_a_wall_is_left_out() {
         let s = stair(-1, (0, 1), FlightShape::Straight);
@@ -1119,6 +1208,14 @@ mod tests {
         let rules = flights();
         let gold = colour3(rules.dressing.sign_colour);
         for shape in SHAPES {
+            if shape == FlightShape::Spiral {
+                for run in RUNS {
+                    for dir in [-1, 1] {
+                        assert!(build(stair(dir, run, shape)).glow.is_empty(), "no LEVEL lettering on a spiral staircase ({run:?} {dir})");
+                    }
+                }
+                continue;
+            }
             for run in RUNS {
                 for dir in [-1, 1] {
                     let s = stair(dir, run, shape);
