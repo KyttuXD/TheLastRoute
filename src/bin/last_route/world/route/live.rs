@@ -197,10 +197,8 @@ pub fn from_layout(seed: &str, k: ChunkKey, lay: &ChunkLayout, cat: &Catalog) ->
 
     f.hunter_spawn = f.start;
     let _ = f.apply_maze_variant(seed, k);
-    // apply_catwalks reads the hole and prop grids (can_occupy, is_hole), which only exist once they are built
+    // the hole, prop and hunter grids the heater pick below reads
     f.level = k.level;
-    f.rebuild_grids();
-    f.apply_catwalks(seed, k, crate::world::route::regions::region_for(seed, k.cx, k.cy, k.level));
     f.rebuild_grids();
     fixtures.heater = crate::world::fixtures::heater_for(&f, &format!("{seed}:{}:{}", k.cx, k.cy), is_safe_chunk(seed, k.cx, k.cy));
     (f, fixtures)

@@ -2,7 +2,6 @@
 #![allow(dead_code)] // ported API kept ahead of its callers (these items were the lib's pub API); prune as the port settles
 
 pub mod brain;
-pub mod decks;
 pub mod director;
 pub mod emotes;
 pub mod flight_edges;

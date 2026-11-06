@@ -183,7 +183,7 @@ impl Game {
             pesticide: self.p.pesticide > 0.0,
             map_open: self.map_open,
             level: self.runner_level(),
-            // `y()` is floor + height and height already carries the surface under the feet (decks and the Inferno's
+            // `y()` is floor + height and height already carries the surface under the feet (the Inferno's
             // noisy floor), the same absolute y a hunter keeps through `Brain::follow_terrain`
             y: self.p.y(),
             cross: None,
@@ -356,10 +356,6 @@ impl Game {
                 caught = Some(self.adopt_resident(level, i));
             }
         }
-        // a hunter that landed from a catwalk jump: the bots and the runner hear the thud, the other hunters do not
-        let landings = self.hunter_landing_events();
-        self.npc_hear(&landings);
-        self.play_landing_thuds(&landings);
         // hunter footsteps, heartbeat, chase_start and Nyxie's wake cue: crate::audio::world::update (Game::update)
         if let Some(i) = caught {
             self.resolve_capture(i, &admin);
@@ -773,44 +769,6 @@ impl Game {
         out
     }
 
-    /// One `HunterLanding` event for every hunter, active or resident, that landed from a catwalk jump this frame
-    /// (`Brain::landed`, set once when the jump ends).
-    ///
-    /// The host takes the landing (`Option::take`): a resident that landed and then fell out of the nearest-within-cap
-    /// set is not updated again, and its `landed` would otherwise raise the event every frame.
-    pub(super) fn hunter_landing_events(&mut self) -> Vec<NoiseEvent> {
-        let active = self.hunters.iter_mut().filter_map(|h| h.landed.take().map(|p| NoiseEvent::new(NoiseKind::HunterLanding, p, h.level)));
-        let resident = self
-            .resident_hunters
-            .iter_all_mut()
-            .filter_map(|h| h.landed.take().map(|p| NoiseEvent::new(NoiseKind::HunterLanding, p, h.level)));
-        active.chain(resident).collect()
-    }
-
-    /// The runner hears a landing on her own level within the kind's radius, as a heavy step (the nearest hunter step's
-    /// pan and falloff, scaled by `noise_events.json landing_thud_volume_scale`).
-    pub(super) fn play_landing_thuds(&self, events: &[NoiseEvent]) {
-        let level = self.runner_level();
-        for e in events.iter().filter(|e| e.kind == NoiseKind::HunterLanding && e.level == level) {
-            if let Some((pan, volume)) = self.landing_thud(e) {
-                crate::audio::sound::hunter_footstep(pan, volume);
-            }
-        }
-    }
-
-    /// The pan and volume of the runner's thud for one landing: the footstep falloff of the hunter step cue at that
-    /// offset, scaled by `landing_thud_volume_scale`; None beyond the kind's radius or past the footstep's range.
-    pub(super) fn landing_thud(&self, e: &NoiseEvent) -> Option<(f32, f32)> {
-        let rules = noise_events::rules();
-        if pdist(e.pos, self.p.pos) > rules.radius_of(e, 1.0) {
-            return None;
-        }
-        let offset = ((e.pos.0 - self.p.pos.0) as f64, (e.pos.1 - self.p.pos.1) as f64);
-        let facing = self.forward2();
-        let (pan, volume) = crate::audio::cues::rules::hunter_step_pan_volume(offset, (facing.0 as f64, facing.1 as f64))?;
-        Some((pan as f32, volume as f32 * rules.landing_thud_volume_scale))
-    }
-
     /// The host's hunters and the bots hear this frame's noise events (`hearing` is the difficulty's `hunter_hearing`):
     /// a hunter in range investigates or searches from the sound (`noise_events::react`), a bot turns toward it. Returns
     /// how many hunters reacted. A guest changes nothing: its hunters only display the host's frames. No event ever
@@ -910,41 +868,6 @@ mod noise_react_tests {
         let events = std::mem::take(&mut g.noise_events);
         assert_eq!(g.hunters_hear_noise(&events, 1.0), 0);
         assert_eq!(g.hunters[0].state, State::Wander);
-    }
-
-    #[test]
-    fn a_catwalk_landing_is_an_event_for_the_bots_and_the_runner_and_never_queued_for_hunters() {
-        let (mut g, content) = game();
-        let mut other = Brain::new(content.hunters[1].clone(), (6.5, 5.5), "L", Difficulty::Standard);
-        other.active = true;
-        other.state = State::Wander;
-        g.hunters.push(other);
-        assert!(g.hunter_landing_events().is_empty(), "nothing landed");
-        g.hunters[0].landed = Some((7.5, 5.5));
-        let ev = g.hunter_landing_events();
-        assert!(g.hunters[0].landed.is_none(), "the host took the landing");
-        assert!(g.hunter_landing_events().is_empty(), "a landing is read once");
-        assert_eq!(ev.len(), 1);
-        assert_eq!((ev[0].kind, ev[0].pos, ev[0].level), (NoiseKind::HunterLanding, (7.5, 5.5), g.hunters[0].level));
-        // the hunters' own queue (what hunters_hear_noise reads) is untouched: only bots and the runner get the event
-        assert!(g.noise_events.is_empty());
-        g.play_landing_thuds(&ev); // the runner's thud: no panic with no audio engine
-        // the computed level: the footstep falloff at that offset times the data scale, nothing past the radius
-        let scale = noise_events::rules().landing_thud_volume_scale;
-        let (here, near) = (g.p.pos, ev[0].clone());
-        let at = |d: f32| NoiseEvent::new(NoiseKind::HunterLanding, (here.0 + d, here.1), near.level);
-        let (_, v0) = g.landing_thud(&at(0.0)).expect("a landing on top of the runner is heard");
-        let (_, v4) = g.landing_thud(&at(4.0)).expect("a landing 4 m away is heard");
-        let step = |d: f64| crate::audio::cues::rules::hunter_step_pan_volume((d, 0.0), (0.0, 1.0)).unwrap().1 as f32;
-        assert!((v0 - step(0.0) * scale).abs() < 1e-6 && (v4 - step(4.0) * scale).abs() < 1e-6);
-        assert!(v4 < v0, "the thud falls off with distance");
-        assert!(g.landing_thud(&at(1000.0)).is_none(), "beyond the radius nothing is heard");
-        let rule = noise_events::rules().kind(NoiseKind::HunterLanding);
-        assert_eq!(rule.response, noise_events::Response::Investigate);
-        assert!(rule.radius > 0.0 && noise_events::rules().landing_thud_volume_scale > 0.0);
-        assert_eq!(g.hunters[1].state, State::Wander, "the other hunter does not react");
-        frames_one(&mut g);
-        assert!(g.hunters[0].landed.is_none(), "the next frame clears it");
     }
 
     fn frames_one(g: &mut Game) {
@@ -1855,77 +1778,5 @@ mod resident_floor_tests {
         assert!(!guest.resident_hunters.has(-1), "the guest drops the list instead of storing it");
         assert!(guest.inf.as_mut().unwrap().floor_hunters_mut().is_empty(), "a guest stores nothing");
         assert!(guest.inf.as_mut().unwrap().stored_mut().is_empty());
-    }
-
-    /// A level-0 window with a three-cell deck made on its floor (the deck cells at 2.5 m, no ladder), the runner on the
-    /// floor beside the deck, and one hunter standing on the deck's far cell, chasing her.
-    fn deck_chase() -> (Game, crate::world::Cell) {
-        let content = Content::load();
-        let catalog = Catalog::load();
-        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-DECK-CHASE", 0, &content, &catalog);
-        let h = crate::world::route::catwalk::params().height;
-        let start = g.fac.start.center();
-        let row = g
-            .fac
-            .floor_cells()
-            .into_iter()
-            .find(|c| {
-                pdist(c.center(), start) > 25.0
-                    && (-1..=5).all(|k| g.fac.hunter_open(Cell::new(c.x + k, c.y)) && g.fac.hunter_open(Cell::new(c.x + k, c.y + 1)))
-            })
-            .expect("a roomy stretch of floor away from the start");
-        let deck = [Cell::new(row.x + 1, row.y), Cell::new(row.x + 2, row.y), Cell::new(row.x + 3, row.y)];
-        for c in deck {
-            g.fac.set_walk_surface(c, crate::world::facility::DeckKind::Catwalk, h);
-        }
-        g.fac.rebuild_grids();
-        g.resident_hunters.nav_key = None; // the graph was built before the deck: build it again
-        g.hunters.clear();
-        if let Some(inf) = g.inf.as_mut() {
-            inf.loaded_mut().clear();
-        }
-        for level in g.resident_hunters.levels() {
-            g.resident_hunters.list_mut(level).clear();
-        }
-        let mut hunter = Brain::new(content.hunters[0].clone(), deck[2].center(), "DECK-CHASE", Difficulty::Standard);
-        hunter.active = true;
-        hunter.y = h;
-        hunter.state = State::Chase;
-        g.hunters.push(hunter);
-        // the runner two cells below the deck's middle cell, in the row of floor beside it
-        let runner = Cell::new(row.x + 2, row.y + 1);
-        g.p.pos = runner.center();
-        (g, row)
-    }
-
-    #[test]
-    fn a_deck_hunter_chases_through_update_hunters_and_stays_in_the_level_zero_list() {
-        let (mut g, _) = deck_chase();
-        let h = crate::world::route::catwalk::params().height;
-        let (mut on_deck_dy, mut jumped, mut landings, mut was_jumping) = (None, false, 0, false);
-        let prof = g.prof();
-        let sounds = Sounds::default();
-        for _ in 0..900 {
-            g.update_hunters(FRAME, &prof, &sounds);
-            assert!(g.resident_hunters.levels().iter().all(|l| g.resident_hunters.list(*l).is_empty()), "never moved to another list");
-            assert_eq!(g.hunters.len(), 1, "it stays in the active list");
-            let b = &g.hunters[0];
-            assert_eq!(b.level, 0, "a deck is on level 0, so no crosser list swap");
-            if b.on_deck() && on_deck_dy.is_none() {
-                on_deck_dy = Some(crate::render::stack_actors::actor_dy(b.y, g.runner_level()));
-            }
-            let jumping = b.walk.as_ref().is_some_and(|w| w.kind == flight_edges::EdgeKind::CatwalkJump);
-            jumped |= jumping;
-            // the host takes `landed` inside the frame (one noise event), so a landing is the jump ending
-            landings += (was_jumping && !jumping) as i32;
-            was_jumping = jumping;
-            if jumped && !b.on_deck() && b.walk.is_none() {
-                break;
-            }
-        }
-        assert_eq!(on_deck_dy, Some(h), "drawn at the deck height while on it");
-        assert!(jumped, "it jumped down after the runner (no ladder in this window)");
-        assert_eq!(landings, 1);
-        assert_eq!(g.hunters[0].y, 0.0);
     }
 }

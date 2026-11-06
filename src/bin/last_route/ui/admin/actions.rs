@@ -757,7 +757,7 @@ impl Admin {
                 g.difficulty,
             );
             // stand on the runner's level: a Brain starts on level 0 at y 0. On the ground (the Inferno's floor follows the
-            // terrain on its first step), never on a deck: a runner on a catwalk deck gets a hunter on the floor below it
+            // terrain on its first step)
             let level = g.runner_level();
             b.set_level(level);
             if let Some(t) = g.fac.terrain().filter(|_| g.fac.level == level) {

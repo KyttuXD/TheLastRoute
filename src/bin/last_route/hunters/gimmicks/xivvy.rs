@@ -216,10 +216,10 @@ impl Xivvy {
     }
 }
 
-/// Free height above the floor at one point: the ceiling over its cell less the walk surface under it.
+/// Free height above the floor at one point: the ceiling over its cell.
 pub fn headroom_at(fac: &Facility, p: (f32, f32)) -> f32 {
     let cell = cell_of(p);
-    ceiling_of(fac, (cell.x, cell.y)) - fac.height_at(cell)
+    ceiling_of(fac, (cell.x, cell.y))
 }
 
 /// The ceiling over one cell in metres: its region's wall height, read the way world_mesh.rs draws it (the
@@ -477,7 +477,7 @@ mod tests {
         let cell = f.floor_cells()[0];
         let c = (cell.x, cell.y);
         let h = headroom_at(&f, cell.center());
-        assert!((h - (ceiling_of(&f, c) - f.height_at(cell))).abs() < 1e-6);
+        assert!((h - ceiling_of(&f, c)).abs() < 1e-6);
         assert!(h > 0.0, "a floor cell has headroom: {h}");
     }
 }

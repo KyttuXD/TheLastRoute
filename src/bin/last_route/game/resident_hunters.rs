@@ -403,21 +403,15 @@ impl Game {
 
     /// A hunter that stands outside the window of `level`, or in a wall of it, comes back in out of sight (as on a window
     /// move). One that is walking an edge is left alone.
-    /// The footprint is tested at the hunter's own height when it stands on a catwalk deck, so it is not taken for one
-    /// inside a deck cell and put on the floor; a hunter on the floor keeps the plain test, which exempts the treads
-    /// of a stair well beside it.
+    /// The plain footprint test exempts the treads of a stair well beside the hunter.
     fn fit_into_window(&self, level: i32, slots: &mut [Slot]) {
         let (Some(inf), Some((fac, _))) = (self.inf.as_ref(), self.level_parts(level)) else { return };
         let size = (CHUNK * 3) as f32;
         let mut rng = Rng::new(&format!("{}:L{}:RESIDENT:{}", inf.seed, level, self.time as i32));
         for s in slots.iter_mut() {
             let p = s.brain.pos;
-            let fits = if s.brain.on_deck() {
-                fac.body_fits_at_y(p.0, p.1, s.brain.y, HUNTER_RADIUS)
-            } else {
-                // on the floor the plain footprint test: a hunter beside a stair well is not over its hole
-                fac.body_fits(p.0, p.1, HUNTER_RADIUS)
-            };
+            // the plain footprint test: a hunter beside a stair well is not over its hole
+            let fits = fac.body_fits(p.0, p.1, HUNTER_RADIUS);
             let out = p.0 < 0.0 || p.1 < 0.0 || p.0 >= size || p.1 >= size || !fits;
             if out && !s.brain.on_edge() {
                 if let Some(spot) = spawn_spot_in(fac, self.p.pos, &mut rng) {
@@ -1044,44 +1038,6 @@ mod shelf_tests {
         }
     }
 
-    /// The first open cell of `fac` with a free row of three cells east of it, made a deck (2.5 m): its centre.
-    fn deck_spot(fac: &mut Facility) -> ((f32, f32), crate::world::Cell) {
-        let h = crate::world::route::catwalk::params().height;
-        let cell = fac
-            .floor_cells()
-            .into_iter()
-            .find(|c| (0..3).all(|k| fac.hunter_open(crate::world::Cell::new(c.x + k, c.y))))
-            .expect("three open cells in a row");
-        for k in 0..3 {
-            fac.set_walk_surface(crate::world::Cell::new(cell.x + k, cell.y), crate::world::facility::DeckKind::Catwalk, h);
-        }
-        fac.rebuild_grids();
-        let mid = crate::world::Cell::new(cell.x + 1, cell.y);
-        (mid.center(), mid)
-    }
-
-    #[test]
-    fn a_deck_hunter_is_not_teleported_by_fit_into_window() {
-        let (mut g, content, catalog) = run("ROOM-DECK-FIT");
-        let at = g.p.pos;
-        g.go_to_level(-1, at, 0.0, &content, &catalog);
-        let (spot, cell) = deck_spot(&mut g.fac);
-        let level = g.runner_level();
-        let h = crate::world::route::catwalk::params().height;
-        let mut on_deck = brain(&content, spot, "DECK-FIT");
-        on_deck.level = level;
-        on_deck.y = floor_y_of(level) + h;
-        let mut mistaken = brain(&content, spot, "DECK-FIT-2");
-        mistaken.level = level;
-        mistaken.y = floor_y_of(level); // floor height inside a deck cell: this one really is inside a solid
-        let mut slots = vec![Slot { id: String::new(), brain: on_deck }, Slot { id: String::new(), brain: mistaken }];
-        g.fit_into_window(level, &mut slots);
-        assert_eq!(slots[0].brain.pos, spot, "a hunter standing on a deck stays on it ({cell:?})");
-        assert!((slots[0].brain.y - (floor_y_of(level) + h)).abs() < 1e-4);
-        assert_ne!(slots[1].brain.pos, spot, "a floor-height body inside a deck cell is still put back on the floor");
-        assert_eq!(slots[1].brain.y, floor_y_of(level));
-    }
-
     /// A floor hunter whose footprint touches a stair well keeps the plain test (the old `body_fits`, which exempts the
     /// treads): it is not taken for one inside the well and teleported to a spawn spot.
     #[test]
@@ -1114,38 +1070,23 @@ mod shelf_tests {
         assert_eq!(slots[0].brain.pos, spot, "a floor hunter beside a well stays put");
     }
 
-    /// A resident that landed and then dropped out of the nearest-within-cap set is not updated again: its `landed`
-    /// must still raise the event only once.
     #[test]
-    fn a_resident_landing_is_one_event_even_when_the_hunter_is_not_updated_again() {
-        let (mut g, content, _) = run("ROOM-RESIDENT-LAND");
-        let mut b = brain(&content, (6.5, 6.5), "RES-LAND");
-        b.landed = Some((6.5, 6.5));
-        g.resident_hunters.list_mut(-1).push(Slot { id: "RES-LAND".into(), brain: b });
-        let first = g.hunter_landing_events();
-        assert_eq!(first.len(), 1, "the landing is heard");
-        for _ in 0..5 {
-            assert!(g.hunter_landing_events().is_empty(), "never again without a new landing");
-        }
-    }
-
-    #[test]
-    fn a_deck_hunter_keeps_its_height_across_the_shelf() {
-        let (mut g, content, _) = run("ROOM-DECK-SHELF");
+    fn a_hunter_keeps_its_height_across_the_shelf() {
+        let (mut g, content, _) = run("ROOM-HEIGHT-SHELF");
         let at = g.p.pos;
-        let h = crate::world::route::catwalk::params().height;
+        let h = 2.0; // part-way up a flight
         g.hunters.clear();
-        let mut b = brain(&content, at, "DECK-SHELF");
+        let mut b = brain(&content, at, "HEIGHT-SHELF");
         b.y = h;
         g.hunters.push(b);
-        *g.inf.as_mut().unwrap().loaded_mut() = vec!["DECK-SHELF-ID".to_string()];
+        *g.inf.as_mut().unwrap().loaded_mut() = vec!["HEIGHT-SHELF-ID".to_string()];
         g.shelve_active_hunters();
-        let kept_y = g.inf.as_mut().unwrap().stored_mut().get("DECK-SHELF-ID").map(|b| b.y).expect("on the shelf by id");
+        let kept_y = g.inf.as_mut().unwrap().stored_mut().get("HEIGHT-SHELF-ID").map(|b| b.y).expect("on the shelf by id");
         assert_eq!(kept_y, h, "the stored brain keeps its absolute height");
         g.unshelve_active_hunters(&content);
         let ids = g.inf.as_mut().unwrap().loaded_mut().clone();
-        let i = ids.iter().position(|id| id == "DECK-SHELF-ID").expect("it came back");
-        assert_eq!(g.hunters[i].y, h, "and it is on its deck again");
+        let i = ids.iter().position(|id| id == "HEIGHT-SHELF-ID").expect("it came back");
+        assert_eq!(g.hunters[i].y, h, "and it is at that height again");
         assert_eq!(g.hunters[i].level, 0);
     }
 

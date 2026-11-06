@@ -11,10 +11,8 @@ mod tests {
     #[test]
     fn the_standalone_builtin_files_match_the_embedded_data() {
         // Files beside the region catalogue that are not `lr.region/1` (maze variants, sewer room
-        // tables, catwalk tables) are read by their own modules, not through BUILTIN_FILES.
-        const OTHER: [&str; 4] = [
-            "regions/catwalk.json",
-            "regions/catwalk_links.json",
+        // tables) are read by their own modules, not through BUILTIN_FILES.
+        const OTHER: [&str; 2] = [
             "regions/maze_",
             "regions/sewer_rooms.json",
         ];

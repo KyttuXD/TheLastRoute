@@ -1042,12 +1042,6 @@ fn follow(n: &mut Npc, fac: &Facility, leader: (f32, f32), t: &Tuning, dt: f32, 
     }
 }
 
-/// True when the bot stands on a catwalk deck. Hunters of the floor cannot reach it, so a deck bot neither hides nor
-/// runs: it stays where it is.
-fn on_deck(fac: &Facility, p: (f32, f32)) -> bool {
-    fac.height_at(cell_at(p)) > 0.1
-}
-
 /// True when a hunter of any state is in the bot's view: inside `sight_range` with a clear line and either inside the
 /// view cone about the bot's heading (2D) or inside `sense_range`. A bot that has not moved yet sees all round.
 fn sees(n: &Npc, fac: &Facility, seen: &[Seen], f: &FleeTuning) -> bool {
@@ -1124,16 +1118,15 @@ fn flee_route(n: &Npc, fac: &Facility, threats: &[(f32, f32)], f: &FleeTuning) -
 /// Godot `_think`'s flee (npc_teammates.gd 305-315), widened: a bot runs from a chasing hunter inside the smart-scaled
 /// threat range, from a hunter it sees (`sees`) and from a hunter near a noise it heard (`hears_hunter`). It runs the
 /// route `flee_route` picks, and keeps it until the goal is reached, the route is blocked, or a hunter comes within
-/// `clearance` of what is left of it (then it re-plans, at most every `flee.replan` seconds). A bot on a deck stays. A
-/// bot with nowhere farther to go stands. True when the bot acted.
+/// `clearance` of what is left of it (then it re-plans, at most every `flee.replan` seconds). A bot with nowhere
+/// farther to go stands. True when the bot acted.
 fn flee(n: &mut Npc, fac: &Facility, seen: &[Seen], t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -> bool {
     let f = &t.flee;
     let range = t.threat_range * (t.smart_base + n.smart as f32 / 100.0);
-    let alarmed = !on_deck(fac, n.at)
-        && (seen.iter().any(|&(c, chasing)| chasing && pdist(n.at, c) < range)
-            || sees(n, fac, seen, f)
-            || hears_hunter(n, seen, f)
-            || (n.flee.alert > 0.0 && !seen.is_empty()));
+    let alarmed = seen.iter().any(|&(c, chasing)| chasing && pdist(n.at, c) < range)
+        || sees(n, fac, seen, f)
+        || hears_hunter(n, seen, f)
+        || (n.flee.alert > 0.0 && !seen.is_empty());
     if !alarmed {
         if n.flee.goal.is_some() {
             n.path.clear();
@@ -1364,11 +1357,10 @@ fn go_to_locker(n: &mut Npc, sc: &Scene, i: usize, running: bool, t: &Tuning, dt
 
 /// Hide (data `hide`): a chasing hunter within `chase_range`, a hunter in view, or a hunter near a noise the bot heard,
 /// and a locker within `reach` that the bot gets to before any hunter and that is clear of them, send the bot running to
-/// the nearest such locker, not burnt out. A deck bot stays. True when the bot acted.
+/// the nearest such locker, not burnt out. True when the bot acted.
 fn hide(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -> bool {
     let f = &t.flee;
-    if on_deck(sc.fac, n.at)
-        || !(chaser_within(sc.seen, n.at, t.hide_chase_range)
+    if !(chaser_within(sc.seen, n.at, t.hide_chase_range)
             || sees(n, sc.fac, sc.seen, f)
             || hears_hunter(n, sc.seen, f)
             || (n.flee.alert > 0.0 && !sc.seen.is_empty()))
@@ -3255,19 +3247,6 @@ mod tests {
             }
         }
         assert!(flips <= seconds, "{flips} reversals in {seconds} s: at most one a second");
-    }
-
-    #[test]
-    fn a_bot_on_a_deck_stays_when_a_hunter_comes() {
-        let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
-        let t = Tuning::get();
-        let at = g.npcs[0].at;
-        let h = sight_cell(&g.fac, at);
-        g.fac.set_walk_surface(cell_at(at), crate::world::facility::DeckKind::Catwalk, 3.0);
-        let chasing = vec![(h, true)];
-        let mut presses = vec![];
-        assert!(!flee(&mut g.npcs[0], &g.fac, &chasing, t, 1.0 / 60.0, &mut presses), "a floor hunter cannot reach a deck bot");
-        assert_eq!(g.npcs[0].at, at, "the bot did not move");
     }
 
     #[test]

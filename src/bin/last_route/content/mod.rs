@@ -78,7 +78,6 @@ impl Content {
             if path == crate::hunters::water::WATER_PATH
                 || path == "hunters/noise_events.json"
                 || path == crate::hunters::flight_edges::FLIGHTS_PATH
-                || path == crate::hunters::decks::DECKS_PATH
             {
                 continue;
             }

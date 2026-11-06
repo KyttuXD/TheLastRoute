@@ -4,7 +4,7 @@ Status: implemented (phases 0-9). Owner request (KT, repeated): levels must conn
 
 All line numbers come from five read-only investigator reports on a working tree that other agents were editing. Re-check each one with `git show HEAD:path` before editing. Paths are under `src/bin/last_route/` unless noted.
 
-Related docs: [CATWALKS.md](CATWALKS.md) (the existing same-world deck model), [PERF_TRIANGLES.md](PERF_TRIANGLES.md), [SOURCE_LAYOUT.md](SOURCE_LAYOUT.md), [DATA_FILES.md](DATA_FILES.md), [GODOT_RUST_PARITY.md](GODOT_RUST_PARITY.md), [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md).
+Related docs: [CATWALKS.md](../archive/catwalks/docs/CATWALKS.md) (the archived same-world deck model; the catwalks were removed on 2026-11-06, so the catwalk and deck mentions below are history), [PERF_TRIANGLES.md](PERF_TRIANGLES.md), [SOURCE_LAYOUT.md](SOURCE_LAYOUT.md), [DATA_FILES.md](DATA_FILES.md), [GODOT_RUST_PARITY.md](GODOT_RUST_PARITY.md), [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md).
 
 Source files referred to: [vertical.rs](../src/bin/last_route/world/vertical.rs), [endless.rs](../src/bin/last_route/game/endless.rs), [ladder.rs](../src/bin/last_route/game/ladder.rs), [transition.rs](../src/bin/last_route/game/transition.rs), [stairs.rs](../src/bin/last_route/render/stairs.rs), [world_mesh.rs](../src/bin/last_route/render/world_mesh.rs), [level_links.rs](../src/bin/last_route/world/level_links.rs), [swim_effects.rs](../src/bin/last_route/game/swim_effects.rs), [world_sync.rs](../src/bin/last_route/net/world_sync.rs), [stairs_links.json](../src/bin/last_route/data/stairs_links.json).
 

@@ -271,7 +271,7 @@ impl Player {
         CAMERA_HEIGHT + (crouched - CAMERA_HEIGHT) * self.crouch_t
     }
 
-    /// Absolute y of the feet' walking surface: the level's floor plus the stair or deck lift (`height`).
+    /// Absolute y of the feet' walking surface: the level's floor plus the stair lift (`height`).
     pub fn y(&self) -> f32 {
         self.floor_y + self.height
     }
@@ -282,7 +282,7 @@ impl Player {
         self.y() + self.feet_y + self.eye_height() - self.water_sink
     }
 
-    /// Puts the feet on the walking surface under the body (the floor, a deck, a flight tread, the Inferno's noisy floor):
+    /// Puts the feet on the walking surface under the body (the floor, a flight tread, the Inferno's noisy floor):
     /// `height` is the surface relative to the level floor and `feet_y` stays 0. A spawn, a resume and a level change use it.
     pub fn stand_on_ground(&mut self, fac: &Facility) {
         self.set_abs_y(self.floor_y + super::level_stack::local_ground(fac, self.pos.0, self.pos.1));
@@ -528,19 +528,19 @@ impl Player {
         self.move_vel = ((self.pos.0 - before.0) / dt.max(1e-4), (self.pos.1 - before.1) / dt.max(1e-4));
 
         // The ground under the body in the absolute frame (the active level, else a resident neighbour). On a flight, or
-        // past its end on the neighbour's floor, the body's height follows it; on the level's own deck the deck is the
-        // lowest the jump offset can go (`min_feet`) and the height stays 0.
+        // past its end on the neighbour's floor, the body's height follows it; on the level's own surface that surface is
+        // the lowest the jump offset can go (`min_feet`).
         let under = ground_y(fac, stack, self.pos.0, self.pos.1, self.y() + self.feet_y);
         let rel = under.y - self.floor_y;
         // a neighbour's surface is followed only when it is within a step of the feet (the flight's own continuation);
         // a floor far below the feet is a hole or a shaft (a ladder's), which the body does not drop into by easing
         let neighbour = under.level != fac.level && (under.y - self.y()).abs() <= STEP_UP;
         let on_flight = stair_height_at(fac, self.pos).is_some();
-        // any surface of the level's own window (the floor, a catwalk deck, the Inferno's noisy floor, above or below the
+        // any surface of the level's own window (the floor, the Inferno's noisy floor, above or below the
         // level floor) is carried in `height` (relative to the level floor); `feet_y` is only the jump offset, so `y()` is
         // the true absolute y and the collision and the ladder read the same number
-        let on_deck = under.level == fac.level;
-        let lifted = neighbour || on_flight || on_deck;
+        let on_own = under.level == fac.level;
+        let lifted = neighbour || on_flight || on_own;
         // No ground within a step under a standing body (a drop cell, a ladder shaft, a hole): the body falls. A jump in
         // the air over such a place falls too, from the height of its walking surface.
         if !self.falling() && !self.noclip && !on_flight {
@@ -579,9 +579,9 @@ impl Player {
         // The body rises and sinks with the flight under it: the height eases toward the surface it now stands on, and
         // back to the floor off the stairs, so it never snaps through a tread.
         self.height += (surface - self.height) * (1.0 - (-STAIR_FOLLOW_RATE * dt).exp());
-        // a deck or a noisy cave floor is continuous by construction (the slope per cell is capped), so the body stands
+        // a noisy cave floor is continuous by construction (the slope per cell is capped), so the body stands
         // on it exactly: only a flight's treads are eased
-        if on_deck && !neighbour && !on_flight {
+        if on_own && !neighbour && !on_flight {
             self.height = surface;
         }
 

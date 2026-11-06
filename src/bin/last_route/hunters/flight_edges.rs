@@ -24,15 +24,12 @@ use crate::game::ladder;
 use crate::game::level_stack::{owning_level, LevelStack};
 use crate::world::facility::{Cell, Stair};
 use crate::world::flight::{flight_surface_y, walk_path, well_footprint};
-use crate::world::vertical::{LADDER_CLIMB_SPEED, LADDER_RAIL_REACH, STOREY};
+use crate::world::vertical::{LADDER_CLIMB_SPEED, STOREY};
 use crate::world::Facility;
 
 pub const SCHEMA: &str = "lr.hunter_flights/1";
 /// The embedded path; content/mod.rs skips it when it reads hunter definitions.
 pub const FLIGHTS_PATH: &str = "hunters/flights.json";
-
-/// Walk heights closer than this (m) are one surface (`Facility::fits` uses the same 0.01).
-const SURFACE_EPS: f32 = 0.01;
 
 /// Metres between the points of a walked flight route (`walk_path`).
 const WALK_STEP: f32 = 0.25;
@@ -59,23 +56,8 @@ pub struct FlightEdgeRules {
     pub see_adjacent: bool,
     /// Largest height difference (m) at which a hunter captures.
     pub capture_height: f32,
-    /// Largest height difference (m) at which a hunter and a target count as standing on the same layer (floor or deck),
-    /// so a straight dash at the target is allowed. A deck runner is on another layer and is reached by a ladder or a jump.
+    /// Largest height difference (m) at which two hunters count as standing at the same height (the director's pairing).
     pub same_layer_eps: f32,
-    /// Whether the catwalk ladder (floor to deck at a catwalk link) is an edge of the graph.
-    pub catwalk_ladder_enabled: bool,
-    /// Whether the jump down from a deck edge to the floor beside it is an edge of the graph.
-    pub catwalk_jump_enabled: bool,
-    /// Cells added to a jump's cost, so a jump beats the ladder only when the ladder is that much further.
-    pub jump_extra_cost: f32,
-    /// The highest deck (m) a hunter jumps from; a taller deck gets no jump edge.
-    pub jump_max_drop_m: f32,
-    /// Gravity (m/s squared) of the jump's fall.
-    pub jump_gravity: f32,
-    /// How far (m) past the deck edge the arc carries before it lands.
-    pub jump_arc_reach_m: f32,
-    /// Points on the arc of a jump (the polyline an edge walk follows).
-    pub jump_arc_samples: u32,
     /// How close (m) to the entrance of an edge a walker must be to start it.
     pub edge_enter_radius: f32,
     /// Body radius (m) of the footprint test while a walker follows an edge. The routes of the flights are validated for
@@ -115,10 +97,6 @@ impl FlightEdgeRules {
         if cap.fract() != 0.0 {
             return Err(format!("flights.json: `resident_hunter_cap` = {cap} must be a whole number"));
         }
-        let samples = num(&v, "jump_arc_samples", 3.0, 16.0)?;
-        if samples.fract() != 0.0 {
-            return Err(format!("flights.json: `jump_arc_samples` = {samples} must be a whole number"));
-        }
         Ok(FlightEdgeRules {
             ladder_speed_scale: num(&v, "ladder_speed_scale", 0.1, 5.0)?,
             drop_allowed: flag(&v, "drop_allowed")?,
@@ -129,13 +107,6 @@ impl FlightEdgeRules {
             see_adjacent: flag(&v, "see_adjacent")?,
             capture_height: num(&v, "capture_height", 0.1, 3.0)?,
             same_layer_eps: num(&v, "same_layer_eps", 0.1, 2.0)?,
-            catwalk_ladder_enabled: flag(&v, "catwalk_ladder_enabled")?,
-            catwalk_jump_enabled: flag(&v, "catwalk_jump_enabled")?,
-            jump_extra_cost: num(&v, "jump_extra_cost", 0.0, 50.0)?,
-            jump_max_drop_m: num(&v, "jump_max_drop_m", 0.5, 10.0)?,
-            jump_gravity: num(&v, "jump_gravity", 1.0, 30.0)?,
-            jump_arc_reach_m: num(&v, "jump_arc_reach_m", 0.0, 3.0)?,
-            jump_arc_samples: samples as u32,
             edge_enter_radius: num(&v, "edge_enter_radius", 0.05, 2.0)?,
             edge_fit_radius: num(&v, "edge_fit_radius", 0.05, 0.6)?,
             edge_stuck_seconds: num(&v, "edge_stuck_seconds", 0.5, 60.0)?,
@@ -173,30 +144,6 @@ pub enum EdgeKind {
     Flight,
     Ladder,
     Drop,
-    /// The ladder from the floor up to a catwalk deck (two-way, same level).
-    CatwalkLadder,
-    /// The jump from a deck edge down to the floor beside it (one-way, same level).
-    CatwalkJump,
-}
-
-/// Which catwalk edges a walker may use. A bot and the sewer code walk none of them (`StackNav::find_path`); a hunter's
-/// permit comes from its `decks.json` row and its state (`Brain`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct EdgePermit {
-    pub catwalk_ladder: bool,
-    pub catwalk_jump: bool,
-}
-
-impl EdgePermit {
-    pub const NONE: EdgePermit = EdgePermit { catwalk_ladder: false, catwalk_jump: false };
-
-    fn allows(self, kind: EdgeKind) -> bool {
-        match kind {
-            EdgeKind::CatwalkLadder => self.catwalk_ladder,
-            EdgeKind::CatwalkJump => self.catwalk_jump,
-            _ => true,
-        }
-    }
 }
 
 /// Names an edge across nav rebuilds: the upper level, the cell on it (a stair's landing A, a ladder's step cell, a drop's
@@ -230,55 +177,28 @@ pub struct LevelGrid {
     pub rows: i32,
     /// Open ground (`Facility::hunter_open`).
     pub open: Vec<bool>,
-    /// Open deck cells (`Facility::deck_open`): raised walk surface a body stands on at its own height.
-    pub deck: Vec<bool>,
-    /// Each cell's walk height above the level's floor (`Facility::height_at`, m).
-    pub height: Vec<f32>,
 }
 
 impl LevelGrid {
     pub fn from_facility(fac: &Facility) -> LevelGrid {
         let cap = (fac.cols * fac.rows).max(0) as usize;
-        let (mut open, mut deck, mut height) = (Vec::with_capacity(cap), Vec::with_capacity(cap), Vec::with_capacity(cap));
+        let mut open = Vec::with_capacity(cap);
         for y in 0..fac.rows {
             for x in 0..fac.cols {
                 let c = Cell::new(x, y);
                 open.push(fac.hunter_open(c));
-                deck.push(fac.deck_open(c));
-                height.push(fac.height_at(c));
             }
         }
-        LevelGrid { level: fac.level, cols: fac.cols, rows: fac.rows, open, deck, height }
+        LevelGrid { level: fac.level, cols: fac.cols, rows: fac.rows, open }
     }
 
     fn index(&self, c: Cell) -> Option<usize> {
         (c.x >= 0 && c.y >= 0 && c.x < self.cols && c.y < self.rows).then(|| (c.y * self.cols + c.x) as usize)
     }
 
-    /// Open ground. A deck cell is not open here (see `is_nav_open`).
+    /// Open ground (`Facility::hunter_open`).
     pub fn is_open(&self, c: Cell) -> bool {
         self.index(c).is_some_and(|i| self.open[i])
-    }
-
-    /// An open deck cell.
-    pub fn is_deck(&self, c: Cell) -> bool {
-        self.index(c).is_some_and(|i| self.deck[i])
-    }
-
-    /// Open ground or an open deck cell: what the planner walks on.
-    pub fn is_nav_open(&self, c: Cell) -> bool {
-        self.is_open(c) || self.is_deck(c)
-    }
-
-    /// The walk height of `c` above its level's floor (0 off the grid).
-    pub fn height_of(&self, c: Cell) -> f32 {
-        self.index(c).map_or(0.0, |i| self.height[i])
-    }
-
-    /// Whether a grid step between two adjacent cells stays on one walk surface (same height); a different height is
-    /// crossed only by a catwalk edge.
-    pub fn same_surface(&self, a: Cell, b: Cell) -> bool {
-        (self.height_of(a) - self.height_of(b)).abs() <= SURFACE_EPS
     }
 }
 
@@ -353,9 +273,6 @@ impl StackNav {
         for (level, fac) in &facs {
             nav.grids.insert(*level, LevelGrid::from_facility(fac));
         }
-        for fac in facs.values() {
-            nav.add_catwalk_edges(fac, rules);
-        }
         for (level, fac) in &facs {
             if !nav.grids.contains_key(&(level - 1)) {
                 continue;
@@ -394,80 +311,6 @@ impl StackNav {
         self.by_key.insert(e.key, e);
     }
 
-    /// The edges between a level's floor and its catwalk decks: a two-way ladder at each catwalk link, and a one-way jump
-    /// from each deck cell beside open ground down to that ground cell. Same level on both ends; only a walker whose
-    /// [`EdgePermit`] allows the kind takes them.
-    fn add_catwalk_edges(&mut self, fac: &Facility, rules: &FlightEdgeRules) {
-        let level = fac.level;
-        let y0 = level as f32 * STOREY;
-        if rules.catwalk_ladder_enabled {
-            for l in &fac.catwalk_links {
-                let run = if l.run == (0, 0) { (1, 0) } else { l.run };
-                let deck_cell = Cell::new(l.cell.x + run.0, l.cell.y + run.1);
-                if !fac.hunter_open(l.cell) || !fac.deck_open(deck_cell) {
-                    continue;
-                }
-                let (foot, top) = (l.cell.center(), deck_cell.center());
-                let reach = (foot.0 + run.0 as f32 * LADDER_RAIL_REACH, foot.1 + run.1 as f32 * LADDER_RAIL_REACH);
-                let up = y0 + l.deck_height;
-                let path = vec![[foot.0, foot.1, y0], [reach.0, reach.1, y0], [reach.0, reach.1, up], [top.0, top.1, up]];
-                let len = path_len_3d(&path);
-                let (from, to) = (Node { level, cell: l.cell }, Node { level, cell: deck_cell });
-                let cost = len * rules.reference_speed / rules.ladder_speed() * rules.edge_cost_scale;
-                self.add(Edge {
-                    key: EdgeKey { upper_level: level, cell: l.cell, kind: EdgeKind::CatwalkLadder },
-                    from,
-                    to,
-                    cost: cost.max(octile(from.cell, to.cell)),
-                    path: path.into(),
-                    len,
-                    one_way: false,
-                });
-            }
-        }
-        if rules.catwalk_jump_enabled {
-            for d in fac.deck_cells() {
-                let rise = fac.height_at(d);
-                if rise > rules.jump_max_drop_m {
-                    continue;
-                }
-                let ground = [(0, -1), (1, 0), (0, 1), (-1, 0)]
-                    .iter()
-                    .map(|n| (*n, Cell::new(d.x + n.0, d.y + n.1)))
-                    .find(|(_, g)| {
-                        fac.hunter_open(*g)
-                            && !fac.catwalk_links.iter().any(|l| l.cell == *g)
-                            && fac.body_fits(g.center().0, g.center().1, crate::config::HUNTER_RADIUS)
-                    });
-                let Some((n, g)) = ground else { continue };
-                let (dc, gc) = (d.center(), g.center());
-                let top = y0 + rise;
-                let lip = ((dc.0 + gc.0) * 0.5, (dc.1 + gc.1) * 0.5);
-                let fall = (2.0 * rise / rules.jump_gravity).sqrt();
-                let mut path = vec![[dc.0, dc.1, top], [lip.0, lip.1, top]];
-                let samples = rules.jump_arc_samples.max(1);
-                for i in 1..=samples {
-                    let t = fall * i as f32 / samples as f32;
-                    let reach = rules.jump_arc_reach_m * t / fall;
-                    let y = if i == samples { y0 } else { top - 0.5 * rules.jump_gravity * t * t };
-                    path.push([lip.0 + n.0 as f32 * reach, lip.1 + n.1 as f32 * reach, y]);
-                }
-                path.push([gc.0, gc.1, y0]);
-                let len = path_len_3d(&path);
-                let (from, to) = (Node { level, cell: d }, Node { level, cell: g });
-                self.add(Edge {
-                    key: EdgeKey { upper_level: level, cell: d, kind: EdgeKind::CatwalkJump },
-                    from,
-                    to,
-                    cost: (len * rules.edge_cost_scale + rules.jump_extra_cost).max(octile(from.cell, to.cell)),
-                    path: path.into(),
-                    len,
-                    one_way: true,
-                });
-            }
-        }
-    }
-
     fn drop_edge(&self, fac: &Facility, c: Cell, rules: &FlightEdgeRules) -> Option<Edge> {
         let lower = self.grids.get(&(fac.level - 1))?;
         let bank = [(0, -1), (1, 0), (0, 1), (-1, 0)]
@@ -500,13 +343,6 @@ impl StackNav {
             h.put(g.rows as u64);
             for chunk in g.open.chunks(64) {
                 h.put(chunk.iter().enumerate().fold(0u64, |a, (i, b)| a | ((*b as u64) << i)));
-            }
-            for chunk in g.deck.chunks(64) {
-                h.put(chunk.iter().enumerate().fold(0u64, |a, (i, b)| a | ((*b as u64) << i)));
-            }
-            for (i, z) in g.height.iter().enumerate().filter(|(_, z)| z.abs() > SURFACE_EPS) {
-                h.put(i as u64);
-                h.put(z.to_bits() as u64);
             }
         }
         for (k, e) in &self.by_key {
@@ -546,14 +382,9 @@ impl StackNav {
         self.version
     }
 
-    /// Open ground (not a deck cell).
+    /// Open ground.
     pub fn is_open(&self, n: Node) -> bool {
         self.grids.get(&n.level).is_some_and(|g| g.is_open(n.cell))
-    }
-
-    /// Open ground or an open deck cell.
-    pub fn is_nav_open(&self, n: Node) -> bool {
-        self.grids.get(&n.level).is_some_and(|g| g.is_nav_open(n.cell))
     }
 
     /// The edges that start at `n` (a two-way edge appears at both ends, each with its own direction).
@@ -582,19 +413,7 @@ impl StackNav {
     /// step's length (water; values under 1 are taken as 1) or `None` when that step is not allowed. The route includes
     /// `from` (via `None`); empty when `from` or `to` is not open or no route exists. A one-way edge is never walked backwards.
     pub fn find_path(&self, from: Node, to: Node, step_cost: &dyn Fn(i32, Cell, Cell) -> Option<f32>) -> Vec<RouteStep> {
-        self.find_path_with(from, to, step_cost, EdgePermit::NONE)
-    }
-
-    /// `find_path` for a walker whose [`EdgePermit`] allows some catwalk edges. A grid step never changes walk height (a
-    /// deck is entered by an edge only), and a deck cell is a node like any other.
-    pub fn find_path_with(
-        &self,
-        from: Node,
-        to: Node,
-        step_cost: &dyn Fn(i32, Cell, Cell) -> Option<f32>,
-        permit: EdgePermit,
-    ) -> Vec<RouteStep> {
-        if !self.is_nav_open(from) || !self.is_nav_open(to) {
+        if !self.is_open(from) || !self.is_open(to) {
             return vec![];
         }
         if from == to {
@@ -643,13 +462,13 @@ impl StackNav {
             };
             for (dx, dy) in NEIGHBOURS {
                 let nb = Cell::new(cur.cell.x + dx, cur.cell.y + dy);
-                if !grid.is_nav_open(nb) || !grid.same_surface(cur.cell, nb) {
+                if !grid.is_open(nb) {
                     continue;
                 }
                 let diag = dx != 0 && dy != 0;
                 if diag {
                     let (a, b) = (Cell::new(cur.cell.x + dx, cur.cell.y), Cell::new(cur.cell.x, cur.cell.y + dy));
-                    if !grid.is_nav_open(a) || !grid.is_nav_open(b) || !grid.same_surface(cur.cell, a) || !grid.same_surface(cur.cell, b) {
+                    if !grid.is_open(a) || !grid.is_open(b) {
                         continue;
                     }
                 }
@@ -658,7 +477,7 @@ impl StackNav {
                 relax(Node { level: cur.level, cell: nb }, gc + step, None, &mut heap);
             }
             for e in self.edges_from(cur) {
-                if permit.allows(e.key.kind) && self.is_nav_open(e.to) {
+                if self.is_open(e.to) {
                     relax(e.to, gc + e.cost, Some(e.key), &mut heap);
                 }
             }
@@ -689,18 +508,7 @@ impl StackNav {
     /// The first edge on the cheapest route from `from` to `to`, or `None` when the route needs no edge (same grid) or
     /// there is no route (the goal's level is not reachable).
     pub fn next_hop(&self, from: Node, to: Node, step_cost: &dyn Fn(i32, Cell, Cell) -> Option<f32>) -> Option<Hop> {
-        self.next_hop_with(from, to, step_cost, EdgePermit::NONE)
-    }
-
-    /// `next_hop` for a walker with an [`EdgePermit`].
-    pub fn next_hop_with(
-        &self,
-        from: Node,
-        to: Node,
-        step_cost: &dyn Fn(i32, Cell, Cell) -> Option<f32>,
-        permit: EdgePermit,
-    ) -> Option<Hop> {
-        let route = self.find_path_with(from, to, step_cost, permit);
+        let route = self.find_path(from, to, step_cost);
         let i = route.iter().position(|s| s.via.is_some())?;
         Some(Hop { edge: route[i].via?, entrance: route[i - 1].node.cell, steps: i - 1 })
     }
@@ -805,7 +613,7 @@ impl EdgeWalk {
     }
 
     pub fn is_ladder(&self) -> bool {
-        matches!(self.kind, EdgeKind::Ladder | EdgeKind::CatwalkLadder)
+        self.kind == EdgeKind::Ladder
     }
 
     /// The share of the edge walked so far, 0 to 1.
@@ -817,7 +625,7 @@ impl EdgeWalk {
     /// flight, the data ladder speed on a ladder. Used for the "held on the edge too long" limit.
     pub fn speed(&self, hunter_speed: f32, rules: &FlightEdgeRules) -> f32 {
         match self.kind {
-            EdgeKind::Ladder | EdgeKind::CatwalkLadder => rules.ladder_speed(),
+            EdgeKind::Ladder => rules.ladder_speed(),
             _ => hunter_speed,
         }
     }
@@ -837,19 +645,7 @@ impl EdgeWalk {
     fn segment_speed(&self, a: &[f32; 3], b: &[f32; 3], hunter_speed: f32, rules: &FlightEdgeRules) -> f32 {
         match self.kind {
             EdgeKind::Flight => hunter_speed,
-            EdgeKind::Ladder | EdgeKind::CatwalkLadder => rules.ladder_speed(),
-            EdgeKind::CatwalkJump => {
-                // flat parts at the hunter's speed; the arc is a free fall, so each point is reached when gravity says
-                // (the arc's points are evenly spaced in time)
-                let top = self.path.first().map_or(a[2], |p| p[2]);
-                let at = |y: f32| (2.0 * (top - y).max(0.0) / rules.jump_gravity).sqrt();
-                if (b[2] - a[2]).abs() < 1e-4 {
-                    hunter_speed
-                } else {
-                    let dt = (at(b[2]) - at(a[2])).max(1e-3);
-                    ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt() / dt
-                }
-            }
+            EdgeKind::Ladder => rules.ladder_speed(),
             EdgeKind::Drop => {
                 if (b[0] - a[0]).hypot(b[1] - a[1]) < 1e-4 {
                     rules.drop_fall_speed
@@ -1279,13 +1075,6 @@ mod tests {
         let bad = [
             ("\"capture_height\": 1.2", "\"capture_height\": 99.0"),
             ("\"same_layer_eps\": 0.5", "\"same_layer_eps\": 5.0"),
-            ("\"catwalk_ladder_enabled\": true", "\"catwalk_ladder_enabled\": 1"),
-            ("\"jump_extra_cost\": 4.0", "\"jump_extra_cost\": -1.0"),
-            ("\"jump_max_drop_m\": 3.0", "\"jump_max_drop_m\": 0.0"),
-            ("\"jump_gravity\": 9.81", "\"jump_gravity\": 0.0"),
-            ("\"jump_arc_samples\": 5", "\"jump_arc_samples\": 5.5"),
-            ("\"jump_arc_samples\": 5", "\"jump_arc_samples\": 1"),
-            ("\"jump_arc_reach_m\": 0.4,", ""),
             ("\"edge_cost_scale\": 1.0", "\"edge_cost_scale\": 0.5"),
             ("\"hear_adjacent_scale\": 0.5", "\"hear_adjacent_scale\": -0.1"),
             ("\"resident_hunter_cap\": 8", "\"resident_hunter_cap\": 2.5"),
@@ -1315,248 +1104,5 @@ mod tests {
         let heavy = FlightEdgeRules { edge_cost_scale: 3.0, ..rules().clone() };
         assert_ne!(test_nav_of(&upper, &lower, &heavy).version(), test_nav_of(&upper, &lower, rules()).version());
         assert_eq!(StackNav::empty().levels(), Vec::<i32>::new());
-    }
-}
-
-
-/// The catwalk edges: the ladder at a link and the jump off a deck (docs/CATWALKS.md, "Hunters and bots on decks").
-#[cfg(test)]
-mod catwalk_tests {
-    use super::*;
-    use crate::world::facility::DeckKind;
-    use crate::world::flight::FlightShape;
-    use crate::world::route::catwalk_links::{CatwalkKind, CatwalkLink};
-
-    const DECK_Y: f32 = 2.5;
-    const FOOT: Cell = Cell { x: 19, y: 20 };
-
-    /// An open level 0 with a deck of cells (20..=23, 20) at 2.5 m and a ladder link at (19, 20) running east, if asked.
-    fn deck_level(link: bool) -> Facility {
-        let (mut f, _) = Facility::test_levels(FlightShape::Switchback, false);
-        for x in 20..=23 {
-            f.set_walk_surface(Cell::new(x, 20), DeckKind::Catwalk, DECK_Y);
-        }
-        if link {
-            f.catwalk_links.push(CatwalkLink { cell: FOOT, kind: CatwalkKind::Ladder, deck_height: DECK_Y, run: (1, 0) });
-        }
-        f.rebuild_grids();
-        f
-    }
-
-    fn nav_of(f: &Facility, rules: &FlightEdgeRules) -> StackNav {
-        StackNav::build(f, &LevelStack::default(), rules)
-    }
-
-    fn free(_: i32, _: Cell, _: Cell) -> Option<f32> {
-        Some(1.0)
-    }
-
-    fn node(c: Cell) -> Node {
-        Node { level: 0, cell: c }
-    }
-
-    fn kinds_from(nav: &StackNav, c: Cell) -> Vec<EdgeKind> {
-        nav.edges_from(node(c)).map(|e| e.key.kind).collect()
-    }
-
-    #[test]
-    fn the_deck_cells_are_open_to_a_body_at_the_deck_height_and_closed_to_the_ground() {
-        let f = deck_level(true);
-        for x in 20..=23 {
-            let c = Cell::new(x, 20);
-            assert!(f.deck_open(c) && !f.hunter_open(c) && f.nav_open(c), "{c:?}");
-        }
-        assert!(f.hunter_open(FOOT) && !f.deck_open(FOOT));
-        assert_eq!(f.deck_cells().len(), 4);
-    }
-
-    #[test]
-    fn the_catwalk_ladder_edge_appears_for_a_link_and_not_without_one() {
-        let nav = nav_of(&deck_level(true), rules());
-        let up: Vec<&Edge> = nav.edges_from(node(FOOT)).filter(|e| e.key.kind == EdgeKind::CatwalkLadder).collect();
-        assert_eq!(up.len(), 1);
-        let e = up[0];
-        assert_eq!((e.from, e.to), (node(FOOT), node(Cell::new(20, 20))));
-        assert!(!e.one_way);
-        assert!((e.path[0][2]).abs() < 1e-4 && (e.path.last().unwrap()[2] - DECK_Y).abs() < 1e-4, "foot at the floor, top on the deck");
-        let ladder_t = e.len * rules().reference_speed / rules().ladder_speed() * rules().edge_cost_scale;
-        assert!((e.cost - ladder_t.max(octile(e.from.cell, e.to.cell))).abs() < 1e-3, "costed by climb time");
-        let down = nav.edges_from(node(Cell::new(20, 20))).find(|e| e.key.kind == EdgeKind::CatwalkLadder).expect("two-way");
-        assert_eq!(down.to, node(FOOT));
-        assert!((down.path[0][2] - DECK_Y).abs() < 1e-4);
-        let bare = nav_of(&deck_level(false), rules());
-        assert!(!bare.edges_from(node(FOOT)).any(|e| e.key.kind == EdgeKind::CatwalkLadder), "no link, no ladder");
-        let off = FlightEdgeRules { catwalk_ladder_enabled: false, ..rules().clone() };
-        assert!(!kinds_from(&nav_of(&deck_level(true), &off), FOOT).contains(&EdgeKind::CatwalkLadder), "the data switches it off");
-    }
-
-    #[test]
-    fn a_jump_edge_leaves_each_deck_cell_beside_open_ground_one_way() {
-        let f = deck_level(true);
-        let nav = nav_of(&f, rules());
-        let mut jumps = 0;
-        for d in f.deck_cells() {
-            let from: Vec<&Edge> = nav.edges_from(node(d)).filter(|e| e.key.kind == EdgeKind::CatwalkJump).collect();
-            assert_eq!(from.len(), 1, "one landing per deck cell: {d:?}");
-            let e = from[0];
-            assert!(e.one_way);
-            let g = e.to.cell;
-            assert!(f.hunter_open(g) && !f.deck_open(g) && (g.x - d.x).abs() + (g.y - d.y).abs() == 1, "lands on open ground beside {d:?}");
-            assert_ne!(g, FOOT, "never on the ladder's foot cell");
-            assert!((e.path[0][2] - DECK_Y).abs() < 1e-4 && e.path.last().unwrap()[2].abs() < 1e-4);
-            assert!(e.cost >= octile(e.from.cell, e.to.cell) + rules().jump_extra_cost - 1e-3);
-            jumps += 1;
-        }
-        assert_eq!(jumps, 4);
-        // nothing goes up by a jump: from the ground the only way onto the deck is the ladder
-        for y in 18..=22 {
-            for x in 18..=24 {
-                let c = Cell::new(x, y);
-                if f.hunter_open(c) {
-                    assert!(!kinds_from(&nav, c).contains(&EdgeKind::CatwalkJump), "{c:?}");
-                }
-            }
-        }
-        assert_eq!(kinds_from(&nav, FOOT), vec![EdgeKind::CatwalkLadder]);
-    }
-
-    #[test]
-    fn a_deck_too_tall_for_the_data_gets_no_jump() {
-        let short = FlightEdgeRules { jump_max_drop_m: 0.5, ..rules().clone() };
-        let nav = nav_of(&deck_level(true), &short);
-        assert!((0..40).all(|y| (0..40).all(|x| !kinds_from(&nav, Cell::new(x, y)).contains(&EdgeKind::CatwalkJump))));
-        let off = FlightEdgeRules { catwalk_jump_enabled: false, ..rules().clone() };
-        assert!(!kinds_from(&nav_of(&deck_level(true), &off), Cell::new(20, 20)).contains(&EdgeKind::CatwalkJump));
-    }
-
-    #[test]
-    fn a_grid_step_never_changes_the_walk_height_and_the_default_permit_has_no_catwalk_edge() {
-        let f = deck_level(true);
-        let nav = nav_of(&f, rules());
-        let (ground, deck) = (node(Cell::new(21, 22)), node(Cell::new(22, 20)));
-        assert!(nav.find_path(ground, deck, &free).is_empty(), "a bot or a sewer walker has no way up");
-        assert!(nav.next_hop(ground, deck, &free).is_none());
-        let climb = EdgePermit { catwalk_ladder: true, catwalk_jump: false };
-        let route = nav.find_path_with(ground, deck, &free, climb);
-        assert_eq!(route.first().map(|s| s.node), Some(ground));
-        assert_eq!(route.last().map(|s| s.node), Some(deck));
-        assert_eq!(route.iter().filter(|s| s.via == Some(EdgeKey { upper_level: 0, cell: FOOT, kind: EdgeKind::CatwalkLadder })).count(), 1);
-        let grid = nav.grid(0).unwrap();
-        for w in route.windows(2) {
-            if w[1].via.is_none() {
-                assert!(grid.same_surface(w[0].node.cell, w[1].node.cell), "{:?} to {:?}", w[0].node, w[1].node);
-            }
-        }
-        let hop = nav.next_hop_with(ground, deck, &free, climb).expect("the ladder is the first edge");
-        assert_eq!((hop.edge.kind, hop.entrance), (EdgeKind::CatwalkLadder, FOOT));
-    }
-
-    #[test]
-    fn down_from_a_deck_the_jump_wins_when_the_ladder_is_far_and_the_ladder_when_it_is_near() {
-        let f = deck_level(true);
-        let nav = nav_of(&f, rules());
-        let both = EdgePermit { catwalk_ladder: true, catwalk_jump: true };
-        let climb = EdgePermit { catwalk_ladder: true, catwalk_jump: false };
-        // a deck cell far from the foot, a ground goal right beside it
-        let (from, goal) = (node(Cell::new(23, 20)), node(Cell::new(23, 22)));
-        let hop = nav.next_hop_with(from, goal, &free, both).expect("an edge");
-        assert_eq!(hop.edge.kind, EdgeKind::CatwalkJump);
-        let hop = nav.next_hop_with(from, goal, &free, climb).expect("an edge");
-        assert_eq!(hop.edge.kind, EdgeKind::CatwalkLadder, "without the permit the way down is the ladder");
-        assert!(nav.next_hop_with(from, goal, &free, EdgePermit::NONE).is_none(), "and a bot has no way down at all");
-        // beside the ladder, the ladder is cheaper than a jump costs
-        let near = node(Cell::new(20, 20));
-        let goal = node(Cell::new(18, 20));
-        assert_eq!(nav.next_hop_with(near, goal, &free, both).map(|h| h.edge.kind), Some(EdgeKind::CatwalkLadder));
-    }
-
-    /// The live level 0 maze chunks around the origin of the golden world, with their decks and links as the route builds them.
-    #[test]
-    fn every_generated_catwalk_link_has_a_ladder_edge_and_decks_have_jumps() {
-        const WORLD: &str = "1426541270";
-        let cat = crate::world::catalog::Catalog::load();
-        let (mut with_links, mut ladders, mut jumps) = (0, 0, 0);
-        for cx in -8..8 {
-            for cy in -8..8 {
-                if crate::world::route::regions::region_for(WORLD, cx, cy, 0) != "maze" {
-                    continue;
-                }
-                let key = crate::world::infinite::ChunkKey { cx, cy, level: 0 };
-                let Some((f, _)) = crate::world::route::live::chunk(WORLD, key, &cat) else { continue };
-                if f.catwalk_links.is_empty() {
-                    continue;
-                }
-                with_links += 1;
-                let nav = nav_of(&f, rules());
-                for l in &f.catwalk_links {
-                    let ladder = nav.edge(EdgeKey { upper_level: 0, cell: l.cell, kind: EdgeKind::CatwalkLadder });
-                    let e = ladder.unwrap_or_else(|| panic!("chunk {cx},{cy}: link at {:?} has no ladder edge", l.cell));
-                    assert!(f.hunter_open(e.from.cell) && f.deck_open(e.to.cell), "foot on the floor, landing on the deck");
-                    assert!((e.path.last().unwrap()[2] - l.deck_height).abs() < 1e-4);
-                    ladders += 1;
-                }
-                for d in f.deck_cells() {
-                    for e in nav.edges_from(node(d)).filter(|e| e.key.kind == EdgeKind::CatwalkJump) {
-                        assert!(f.hunter_open(e.to.cell) && e.one_way);
-                        jumps += 1;
-                    }
-                }
-                if with_links >= 3 {
-                    break;
-                }
-            }
-            if with_links >= 3 {
-                break;
-            }
-        }
-        assert!(with_links >= 1 && ladders >= 1 && jumps >= 1, "links {with_links}, ladders {ladders}, jumps {jumps}");
-    }
-
-    #[test]
-    fn the_graph_hashes_deck_heights_and_builds_the_same_twice() {
-        let a = nav_of(&deck_level(true), rules());
-        assert_eq!(a, nav_of(&deck_level(true), rules()));
-        assert_eq!(a.version(), nav_of(&deck_level(true), rules()).version());
-        let mut lower = deck_level(true);
-        for x in 20..=23 {
-            lower.set_walk_surface(Cell::new(x, 20), DeckKind::Catwalk, 2.0);
-        }
-        lower.catwalk_links[0].deck_height = 2.0;
-        lower.rebuild_grids();
-        assert_ne!(a.version(), nav_of(&lower, rules()).version(), "a deck at another height is another graph");
-        assert_ne!(a.version(), nav_of(&deck_level(false), rules()).version());
-    }
-
-    /// Walks `walk` in 1/60 s steps and returns the absolute heights, one per frame.
-    fn heights(mut walk: EdgeWalk) -> Vec<f32> {
-        let mut out = vec![walk.start_point()[2]];
-        for _ in 0..2000 {
-            let pose = walk.advance(2.4, 1.0 / 60.0, rules());
-            out.push(pose.y);
-            if pose.done {
-                break;
-            }
-        }
-        out
-    }
-
-    #[test]
-    fn a_ladder_walk_ends_on_the_deck_and_a_jump_walk_on_the_floor_both_on_level_zero() {
-        let f = deck_level(true);
-        let nav = nav_of(&f, rules());
-        let up = nav.edges_from(node(FOOT)).find(|e| e.key.kind == EdgeKind::CatwalkLadder).unwrap();
-        let ys = heights(EdgeWalk::start(up));
-        assert!((ys.last().unwrap() - DECK_Y).abs() < 1e-4);
-        assert!(ys.windows(2).all(|w| w[1] >= w[0] - 1e-5), "a climb never drops");
-        let secs = (ys.len() - 1) as f32 / 60.0;
-        assert!((secs - up.len / rules().ladder_speed()).abs() < 0.05, "climbed at the ladder speed: {secs} s");
-        assert_eq!(crate::game::level_stack::level_at(*ys.last().unwrap(), 0), 0);
-        let jump = nav.edges_from(node(Cell::new(21, 20))).find(|e| e.key.kind == EdgeKind::CatwalkJump).unwrap();
-        let ys = heights(EdgeWalk::start(jump));
-        assert!(ys.last().unwrap().abs() < 1e-4);
-        assert!(ys.windows(2).all(|w| w[1] <= w[0] + 1e-5), "a fall never rises");
-        let cap = rules().drop_fall_speed / 60.0 + 1e-3;
-        assert!(ys.windows(2).all(|w| w[0] - w[1] <= cap), "no frame falls faster than the data fall speed");
-        assert!(ys.iter().all(|y| crate::game::level_stack::level_at(*y, 0) == 0));
     }
 }

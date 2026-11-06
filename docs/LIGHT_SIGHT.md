@@ -42,6 +42,6 @@ Aki), however well the building lit her, while the player saw a lamp-lit hunter 
 
 ## Not done
 
-* Lamps of neighbouring levels (through stairwells) and the catwalk and splash lamps are not read; only the floor's own lamps.
+* Lamps of neighbouring levels (through stairwells) and the splash lamps are not read; only the floor's own lamps.
 * Resident hunters on other levels get no exposures (their target is always across levels).
 * Bots as targets get their own exposure from the same lamps; the shared per-frame cache is keyed by the point asked for.

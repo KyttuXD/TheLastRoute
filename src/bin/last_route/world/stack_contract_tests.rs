@@ -9,16 +9,16 @@
 //! chunk. Nothing here is called by the running game.
 //!
 //! Each connection kind is its own test. A kind that fails is reported with the failing seeds and chunks (a kind that
-//! cannot pass yet is `#[ignore]`d with the reason). Stairwells (phase 1), ladders and catwalk links (phase 6) and
-//! drops (phase 7) all hold: a ladder is a hatch plus one step cell, a catwalk link a ground cell plus the deck cell
-//! it steps onto, a drop a hole in the upper floor over air above the pool.
+//! cannot pass yet is `#[ignore]`d with the reason). Stairwells (phase 1), ladders (phase 6) and
+//! drops (phase 7) all hold: a ladder is a hatch plus one step cell, a drop a hole in the upper floor over air above
+//! the pool.
 #![cfg(test)]
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use super::catalog::Catalog;
-use super::facility::{Cell, DeckKind, Facility, Stair};
+use super::facility::{Cell, Facility, Stair};
 use super::flight::{well_footprint, FlightShape};
 use super::infinite::{chunk, ChunkKey, CHUNK};
 use super::route::layout::Coord;
@@ -387,73 +387,6 @@ fn ladder_step_cell_is_the_same_on_both_levels() {
         }
     }
     report("ladder step cell", &fails);
-}
-
-// ---------------------------------------------------------------------------------------------------------------------
-// Catwalk links (same world: the "upper level" is the deck)
-// ---------------------------------------------------------------------------------------------------------------------
-
-/// The ground end is open at height 0 and the deck cell the link steps onto (`run`) is a kept deck cell at exactly the
-/// link's height, with no hole or prop on it.
-#[test]
-fn catwalk_links_have_an_open_foot_and_a_deck_landing() {
-    let mut fails = vec![];
-    let mut links = 0;
-    for (seed, cx, cy) in columns() {
-        let b = built(&seed, cx, cy, 0);
-        for l in &b.f.catwalk_links {
-            links += 1;
-            let tag = format!("{seed} {cx},{cy} L0 link {:?}", l.cell);
-            if !stand_ok(&b, l.cell) || b.f.height_at(l.cell) != 0.0 {
-                fails.push(format!("{tag}: ground foot not open at height 0"));
-            }
-            if l.run.0.abs() + l.run.1.abs() != 1 {
-                fails.push(format!("{tag}: run {:?} is not a unit step", l.run));
-                continue;
-            }
-            let deck = Cell::new(l.cell.x + l.run.0, l.cell.y + l.run.1);
-            let s = b.f.walk_surface_at(deck);
-            if !(s.kind == DeckKind::Catwalk && (s.height - l.deck_height).abs() < 0.01 && !b.f.is_hole(deck.x, deck.y)) {
-                fails.push(format!("{tag}: run {:?} leads to {deck:?}, which is not a deck cell at {} m", l.run, l.deck_height));
-            }
-            if !stand_ok(&b, deck) {
-                fails.push(format!("{tag}: the deck landing {deck:?} is not clear ({:?})", blocked(&b, deck)));
-            }
-            // the link as a flight: foot on the ground cell, landing on the deck cell
-            let fp = well_footprint(&Facility::catwalk_flight(l));
-            if (fp.foot, fp.landing) != (l.cell, deck) {
-                fails.push(format!("{tag}: catwalk_flight foot/landing {:?}/{:?}, wanted {:?}/{deck:?}", fp.foot, fp.landing, l.cell));
-            }
-        }
-    }
-    assert!(links > 0, "no catwalk link in the sweep");
-    report("catwalk foot and landing", &fails);
-}
-
-#[test]
-fn catwalk_link_footprints_hold_no_wall_prop_or_water() {
-    let mut fails = vec![];
-    for (seed, cx, cy) in columns() {
-        let b = built(&seed, cx, cy, 0);
-        for l in &b.f.catwalk_links {
-            if let Some(why) = blocked(&b, l.cell) {
-                fails.push(format!("{seed} {cx},{cy} L0 link {:?}: ground cell {why}", l.cell));
-            }
-            let deck = Cell::new(l.cell.x + l.run.0, l.cell.y + l.run.1);
-            if let Some(why) = blocked(&b, deck) {
-                fails.push(format!("{seed} {cx},{cy} L0 link {:?}: deck landing {deck:?} {why}", l.cell));
-            }
-            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                let c = Cell::new(l.cell.x + dx, l.cell.y + dy);
-                if b.f.walk_surface_at(c).kind == DeckKind::Catwalk {
-                    if let Some(why) = blocked(&b, c) {
-                        fails.push(format!("{seed} {cx},{cy} L0 link {:?}: deck cell {:?} {why}", l.cell, c));
-                    }
-                }
-            }
-        }
-    }
-    report("catwalk footprint clearance", &fails);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

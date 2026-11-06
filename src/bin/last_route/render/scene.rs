@@ -11,14 +11,13 @@ use super::builder::{submit_all, Builder};
 use super::hunter_cache::{self, HunterMeshCache};
 use super::prop_model::{draw_builders, Placement, PropModel, StaticCache};
 use super::shader::{self, Flicker, Lamp, Lighting};
-use super::{ambient, catwalk, inferno_deco, lamp_flicker, seams, waterfall, world_stack};
+use super::{ambient, inferno_deco, lamp_flicker, seams, waterfall, world_stack};
 use crate::shared::assets::Assets;
 use crate::config::*;
 use crate::game::{Game, Heater, Item};
 use crate::hunters::brain::State;
 use crate::hunters::gimmicks::Gimmick;
 use crate::net::runner_figure;
-use crate::world::facility::{Cell, DeckKind, Facility};
 use crate::world::infinite::INFERNO_LEVEL;
 use crate::world::route::sewer::core as sewer_core;
 use macroquad::prelude::*;
@@ -229,7 +228,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     clear_background(Color::new(light.fog.x, light.fog.y, light.fog.z, 1.0));
     gl_use_material(mat);
     // the grab's fill joins the room's lamps while the struggle holds the runner (grab_fill); the flashlight is unchanged
-    // this storey's own lights join the room's lamps: the falls' pool lights, the inferno's lava and cracks, the catwalks' lamps
+    // this storey's own lights join the room's lamps: the falls' pool lights, the inferno's lava and cracks
     let fx = level_fx(g, light.eye);
     let mut extra = fx.lamps.clone();
     extra.extend(grab_fill(g.escape.is_some(), grab::camera()));
@@ -828,7 +827,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     gl_use_default_material();
 }
 
-/// Whether a storey's catwalk lamps, falls and inferno glow are in this frame, found once per frame.
+/// Whether a storey's falls and inferno glow are in this frame, found once per frame.
 struct LevelFx {
     /// The point lights this storey adds to the room's lamps.
     lamps: Vec<Lamp>,
@@ -836,32 +835,6 @@ struct LevelFx {
     falls: Vec<(waterfall::Site, waterfall::Waterfall)>,
     /// All of the window's falls (the loop picks the nearest in range, seen or not).
     sites: Vec<waterfall::Site>,
-}
-
-/// The lamps of the catwalk cells within `radius` metres of `eye` (x, z): every cell of a deck that carries one
-/// (`catwalk::lamp`, by absolute cell), placed above the deck at the cell's middle.
-pub fn catwalk_lamps(fac: &Facility, eye: (f32, f32), radius: f32, cfg: &catwalk::CatwalkCfg) -> Vec<Lamp> {
-    let r = radius.ceil() as i32;
-    let (cx, cy) = (eye.0.floor() as i32, eye.1.floor() as i32);
-    let mut out = Vec::new();
-    for y in cy - r..=cy + r {
-        for x in cx - r..=cx + r {
-            let surface = fac.walk_surface_at(Cell::new(x, y));
-            if surface.kind != DeckKind::Catwalk {
-                continue;
-            }
-            if let Some(l) = catwalk::lamp(cfg, (x + fac.origin.0, y + fac.origin.1)) {
-                out.push(Lamp {
-                    pos: vec3(x as f32 + 0.5 + l.pos[0], surface.height + l.pos[1], y as f32 + 0.5 + l.pos[2]),
-                    range: l.range_m,
-                    color: Color::new(l.color[0], l.color[1], l.color[2], 1.0),
-                    energy: l.energy,
-                    flicker: Flicker::NONE,
-                });
-            }
-        }
-    }
-    out
 }
 
 /// The point light of a fall's splash pool (waterfall.rs `Waterfall::light_pos`, placed at the fall's lip).
@@ -876,11 +849,10 @@ pub fn splash_lamp(cfg: &waterfall::WaterfallCfg, site: &waterfall::Site, w: &wa
     }
 }
 
-/// The lights and falls of the runner's storey this frame: catwalk lamps on any storey, the falls and their pool lights
+/// The lights and falls of the runner's storey this frame: the falls and their pool lights
 /// on the two sewer storeys, the lava and cracks of the inferno (level -3) with their flicker.
 fn level_fx(g: &Game, eye: Vec3) -> LevelFx {
     let mut fx = LevelFx { lamps: Vec::new(), falls: Vec::new(), sites: Vec::new() };
-    fx.lamps.extend(catwalk_lamps(&g.fac, (eye.x, eye.z), scene_lights().catwalk_scan_radius_m, catwalk::config()));
     let Some(inf) = g.inf.as_ref() else { return fx };
     let cfg = waterfall::config();
     fx.sites = waterfall::sites_cached(&inf.seed, inf.level, inf.center);
@@ -975,15 +947,12 @@ const SCENE_LIGHTS_PATH: &str = "render/scene_lights.json";
 /// The scene light tunables from data/render/scene_lights.json.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SceneLights {
-    /// How far from the eye (metres, along the floor) the catwalk cells are searched for lamps.
-    pub catwalk_scan_radius_m: f32,
     /// The shader mode of an unlit, alpha-blended surface (falls, mist, foam).
     pub translucent_mode: f32,
 }
 
 impl SceneLights {
-    /// Parses `{ "catwalk_scan_radius_m": <metres>, "translucent_mode": <shader mode> }`; the radius is zero or more
-    /// and the mode is above 1.5 (the unlit modes).
+    /// Parses `{ "translucent_mode": <shader mode> }`; the mode is above 1.5 (the unlit modes).
     pub fn parse(text: &str) -> Result<SceneLights, String> {
         let value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let num = |key: &str| {
@@ -994,7 +963,7 @@ impl SceneLights {
                 .map(|v| v as f32)
                 .ok_or_else(|| format!("{key}: expected a number, zero or more"))
         };
-        let out = SceneLights { catwalk_scan_radius_m: num("catwalk_scan_radius_m")?, translucent_mode: num("translucent_mode")? };
+        let out = SceneLights { translucent_mode: num("translucent_mode")? };
         if out.translucent_mode <= 1.5 {
             return Err("translucent_mode: expected an unlit mode above 1.5".into());
         }
@@ -1003,14 +972,14 @@ impl SceneLights {
 }
 
 /// The scene light tunables compiled into the executable. A table that fails to parse is reported on stderr and the
-/// catwalks are searched out to the fog's reach.
+/// built-in unlit mode is used.
 pub fn scene_lights() -> &'static SceneLights {
     static LIGHTS: OnceLock<SceneLights> = OnceLock::new();
     LIGHTS.get_or_init(|| {
         let text = crate::content::embedded::data_under(SCENE_LIGHTS_PATH).next().map(|(_, text)| text).unwrap_or("{}");
         SceneLights::parse(text).unwrap_or_else(|e| {
             eprintln!("{SCENE_LIGHTS_PATH}: {e}");
-            SceneLights { catwalk_scan_radius_m: FOG_RANGE, translucent_mode: 2.0 }
+            SceneLights { translucent_mode: 2.0 }
         })
     })
 }
@@ -1278,53 +1247,6 @@ mod tests {
         assert!(!held_hunter_drawn(false, true, true), "no model, no draw");
     }
 
-    fn deck_floor() -> Facility {
-        use crate::world::catalog::Catalog;
-        use crate::world::facility::Options;
-        Facility::generate("SCENE-DECK", &Options::default(), &Catalog::load())
-    }
-
-    /// A cell whose absolute coordinates both divide by `every`, so a lamp of that spacing stands on it.
-    fn lamp_cell(f: &Facility, every: i32) -> Cell {
-        let pick = |origin: i32| (0..every).find(|v| (v + origin).rem_euclid(every) == 0).unwrap() + every * 3;
-        Cell::new(pick(f.origin.0), pick(f.origin.1))
-    }
-
-    #[test]
-    fn a_catwalk_lamp_hangs_over_its_deck_and_a_floor_cell_has_none() {
-        let cfg = catwalk::config();
-        let mut f = deck_floor();
-        let c = lamp_cell(&f, cfg.light_every_cells);
-        let eye = (c.x as f32 + 0.5, c.y as f32 + 0.5);
-        assert!(catwalk_lamps(&f, eye, 6.0, cfg).is_empty(), "no deck, no lamp");
-        f.set_walk_surface(c, DeckKind::Catwalk, 4.0);
-        let lamps = catwalk_lamps(&f, eye, 6.0, cfg);
-        assert_eq!(lamps.len(), 1);
-        let l = lamps[0];
-        assert_eq!((l.pos.x, l.pos.z), (eye.0, eye.1), "over the middle of the cell");
-        assert!((l.pos.y - (4.0 + cfg.light_height_m)).abs() < 1e-5, "above the deck, not the floor");
-        assert_eq!((l.range, l.energy), (cfg.light_range_m, cfg.light_energy));
-        // a deck cell the lamp spacing skips carries none, and a deck out of the search reach is not looked at
-        let skipped = Cell::new(c.x + 1, c.y);
-        f.set_walk_surface(skipped, DeckKind::Catwalk, 4.0);
-        assert_eq!(catwalk_lamps(&f, eye, 6.0, cfg).len(), 1);
-        assert!(catwalk_lamps(&f, (eye.0 + 100.0, eye.1), 6.0, cfg).is_empty());
-    }
-
-    #[test]
-    fn the_catwalk_lamp_spacing_is_data() {
-        let text = include_str!("../data/render/catwalk.json");
-        let dense = catwalk::CatwalkCfg::parse(&text.replacen("\"every_cells\": 3", "\"every_cells\": 1", 1)).unwrap();
-        let mut f = deck_floor();
-        let c = Cell::new(10, 10);
-        for dx in 0..3 {
-            f.set_walk_surface(Cell::new(c.x + dx, c.y), DeckKind::Catwalk, 4.0);
-        }
-        let eye = (11.5, 10.5);
-        assert!(catwalk_lamps(&f, eye, 6.0, &dense).len() == 3, "a lamp on every deck cell");
-        assert!(catwalk_lamps(&f, eye, 6.0, catwalk::config()).len() < 3);
-    }
-
     #[test]
     fn the_splash_lamp_sits_at_the_lip_with_the_data_colour() {
         let cfg = waterfall::config();
@@ -1368,11 +1290,9 @@ mod tests {
         let text = include_str!("../data/render/scene_lights.json");
         let s = SceneLights::parse(text).unwrap();
         assert_eq!(&s, scene_lights());
-        assert!(s.translucent_mode > 1.5 && s.catwalk_scan_radius_m > 0.0);
+        assert!(s.translucent_mode > 1.5);
         assert!(SceneLights::parse("{}").is_err());
         assert!(SceneLights::parse(&text.replacen("3.0", "1.0", 1)).is_err(), "a lit mode cannot be translucent");
-        let wide = SceneLights::parse(&text.replacen("24.0", "48.0", 1)).unwrap();
-        assert!(wide.catwalk_scan_radius_m > s.catwalk_scan_radius_m);
     }
 
     #[test]

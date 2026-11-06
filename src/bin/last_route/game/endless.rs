@@ -940,7 +940,7 @@ impl Game {
     /// `builds_per_frame` a frame. Every resident shares the window's centre, so a walked change of storey is a relabel
     /// (`relabel`), not a load. The connections in reach are built this frame. Residents of another centre, or no longer
     /// kept, are dropped, and the farthest go while the held bytes pass the memory cap; none is dropped while the runner
-    /// is on a flight. Catwalk links join the same level-0 window, so they need no resident.
+    /// is on a flight.
     pub(super) fn keep_stack(&mut self, content: &Content, catalog: &Catalog) {
         if let Some(inf) = self.inf.as_mut() {
             if std::mem::take(&mut inf.relabelled) {

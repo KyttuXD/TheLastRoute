@@ -353,13 +353,12 @@ fn using_a_tool_marks_the_run_as_a_debug_run() {
     assert!(a.debug_run());
 }
 
-/// A level-0 window with a three-cell deck (2.5 m) made on its floor; returns the game and the deck's middle cell.
-fn deck_game() -> (Game, Content, crate::world::Cell) {
+/// A level-0 window with a stretch of open floor away from the start; returns the game and the stretch's middle cell.
+fn open_game() -> (Game, Content, crate::world::Cell) {
     use crate::world::Cell;
     let content = Content::load();
     let catalog = Catalog::load();
-    let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-DECK-SUMMON", 0, &content, &catalog);
-    let h = crate::world::route::catwalk::params().height;
+    let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-OPEN-SUMMON", 0, &content, &catalog);
     let start = g.fac.start.center();
     let row = g
         .fac
@@ -370,10 +369,6 @@ fn deck_game() -> (Game, Content, crate::world::Cell) {
                 && (-1..=5).all(|k| g.fac.hunter_open(Cell::new(c.x + k, c.y)) && g.fac.hunter_open(Cell::new(c.x + k, c.y + 1)))
         })
         .expect("a roomy stretch of floor away from the start");
-    for k in 1..=3 {
-        g.fac.set_walk_surface(Cell::new(row.x + k, row.y), crate::world::facility::DeckKind::Catwalk, h);
-    }
-    g.fac.rebuild_grids();
     g.hunters.clear();
     for level in g.resident_hunters.levels() {
         g.resident_hunters.list_mut(level).clear();
@@ -386,39 +381,25 @@ fn summon_first(g: &mut Game, content: &Content) {
     Admin::new().run_cmd(Cmd::Hunter(0, 0, 0), g, content, &list);
 }
 
-/// Summons one hunter, then stands it on the runner's cell (under the deck when she is on it) and steps the hunters.
-fn grab_attempt(deck: bool) -> Game {
-    let (mut g, content, mid) = deck_game();
-    let h = crate::world::route::catwalk::params().height;
+/// Summons one hunter, then stands it on the runner's cell and steps the hunters.
+fn grab_attempt() -> Game {
+    let (mut g, content, mid) = open_game();
     g.p.pos = mid.center();
-    if deck {
-        g.p.set_abs_y(h);
-    }
     summon_first(&mut g, &content);
     assert_eq!(g.hunters.len(), 1);
-    assert_eq!(g.hunters[0].y, 0.0, "a summon stands on the floor, never on a deck");
+    assert_eq!(g.hunters[0].y, 0.0, "a summon stands on the floor");
     g.hunters[0].pos = (g.p.pos.0 + 0.2, g.p.pos.1);
     let sounds = crate::audio::Sounds::default();
     let catalog = Catalog::load();
     for _ in 0..30 {
-        if deck {
-            g.p.set_abs_y(h); // the test deck has no support of its own: hold her on it
-            g.p.pos = mid.center();
-        }
         g.step(1.0 / 60.0, &crate::game::Controls::default(), &content, &catalog, &sounds);
     }
     g
 }
 
 #[test]
-fn a_summoned_hunter_below_a_deck_cannot_grab_the_runner_on_it() {
-    let g = grab_attempt(true);
-    assert!(g.escape.is_none() && g.report.is_none(), "no grab through the deck");
-}
-
-#[test]
 fn a_summoned_hunter_at_the_runners_height_grabs() {
-    let g = grab_attempt(false);
+    let g = grab_attempt();
     assert!(g.escape.is_some() || g.report.is_some(), "the same height grabs");
 }
 

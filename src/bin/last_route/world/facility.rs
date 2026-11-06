@@ -10,8 +10,7 @@ use super::flight::{divider_width, flight_walk_y_with, flights, landing_row_with
 use super::godot_sort::sort_custom;
 use super::vertical::STOREY;
 use super::infinite::ChunkKey;
-use super::route::catwalk_links::{self, CatwalkLink};
-use super::route::{catwalk, maze_regions};
+use super::route::maze_regions;
 use crate::content::regions::RegionDef;
 use super::inferno_terrain::Terrain;
 use super::rng::Rng;
@@ -169,21 +168,6 @@ pub const PICKUP_ORDER: [Pickup; 10] = [
     Pickup::BackpackLarge,
 ];
 
-/// What a cell's walk surface is: the ground floor, or a catwalk deck raised over it (Godot's Mezzanine decks).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum DeckKind {
-    #[default]
-    Floor,
-    Catwalk,
-}
-
-/// The walk surface of one cell: its kind and its height above the level's floor, in metres.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct WalkSurface {
-    pub kind: DeckKind,
-    pub height: f32,
-}
-
 /// The railing sides of a walkway cell (`Facility::set_rails`): north is -y, east +x, south +y, west -x.
 pub const RAIL_N: u8 = 1;
 pub const RAIL_E: u8 = 2;
@@ -253,8 +237,6 @@ pub struct Facility {
     /// Stairwell cells: open to the level below (or above), not walkable.
     hole: Vec<bool>,
     hunter_open: Vec<bool>,
-    /// Deck cells a body stands on (their own walk height): `deck_open`. Kept apart from `hunter_open`, which is ground only.
-    deck_open: Vec<bool>,
     random: Rng,
     /// Solid props by cell, for fast footprint tests.
     prop_grid: Vec<Vec<usize>>,
@@ -262,10 +244,6 @@ pub struct Facility {
     /// and counts as open, so a floor nobody calls `update_doors` on stays walkable. Nothing here opens a door
     /// for the runner or a player bot (NPC teammate): only `toggle_door` (the interact press) does; hunters pull the doors they reach.
     door_state: HashMap<Cell, DoorState>,
-    /// The walk surface of each cell that is not plain ground floor; a cell with no entry is `Floor` at 0.0 m.
-    walk_surface: HashMap<Cell, WalkSurface>,
-    /// The stairs and ladders up to this chunk's catwalk decks (`apply_catwalks`); empty on a chunk with none.
-    pub catwalk_links: Vec<CatwalkLink>,
     /// The id of the level 0 maze variant that dresses this chunk (`apply_maze_variant`); `None` is the plain maze.
     pub maze_variant: Option<String>,
     /// The level this facility is (0 ground, -1 sewer); its floor sits at `level * STOREY` in absolute y
@@ -281,7 +259,7 @@ pub struct Facility {
     /// The solid railings along the water's edge (`set_rails`); empty on every level but the sewers.
     rails: Rails,
     /// The noisy floor and ceiling of an Inferno window (`world/inferno_terrain.rs`); `None` on every other level. Set by
-    /// `set_terrain`; the cell walk surfaces above stay for catwalk decks.
+    /// `set_terrain`.
     terrain: Option<Terrain>,
 }
 
@@ -594,12 +572,9 @@ impl Facility {
             origin: (0, 0),
             hole: vec![false; (cols * rows) as usize],
             hunter_open: vec![],
-            deck_open: vec![],
             random: Rng::new(seed_text),
             prop_grid: vec![vec![]; (cols * rows) as usize],
             door_state: HashMap::new(),
-            walk_surface: HashMap::new(),
-            catwalk_links: vec![],
             maze_variant: None,
             level: 0,
             drop_list: vec![],
@@ -819,7 +794,7 @@ impl Facility {
     }
 
     /// Removes the props of cell `c` and every solid prop whose footprint reaches into it, so a body fills the cell
-    /// (a ladder's hatch and step cell, a catwalk link). Room doors are never removed, and relays, batteries, pickups
+    /// (a ladder's hatch and step cell). Room doors are never removed, and relays, batteries, pickups
     /// and lockers stay: they are objectives, not furniture. Call `rebuild_grids` afterwards.
     pub fn clear_props_at(&mut self, c: Cell) {
         self.props.retain(|p| {
@@ -910,12 +885,9 @@ impl Facility {
             origin: (0, 0),
             hole: vec![false; (cols * rows) as usize],
             hunter_open: vec![],
-            deck_open: vec![],
             random: Rng::new(seed_text),
             prop_grid: vec![],
             door_state: HashMap::new(),
-            walk_surface: HashMap::new(),
-            catwalk_links: vec![],
             maze_variant: None,
             level: parts.first().map_or(0, |p| p.0.level),
             drop_list: vec![],
@@ -978,11 +950,6 @@ impl Facility {
                 f.rails.edges.extend(p.rails.edges.iter().map(|(c, bit)| (sh(*c), *bit)));
                 (f.rails.inset, f.rails.half) = (p.rails.inset, p.rails.half);
             }
-            // catwalk decks and their links ride along with the chunk they belong to
-            for (c, s) in p.walk_surface {
-                f.walk_surface.insert(sh(c), s);
-            }
-            f.catwalk_links.extend(p.catwalk_links.into_iter().map(|l| CatwalkLink { cell: sh(l.cell), ..l }));
             if let Some(s) = p.safe_zone {
                 f.safe_zone = Some(sh(s));
             }
@@ -1667,15 +1634,14 @@ impl Facility {
         self.fits(x, z, r, y_abs - floor_y, true)
     }
 
-    /// `body_fits` for a body standing at walk height `height`: every cell the body touches must have a
-    /// walk surface at that same height, so a body on the floor cannot enter a deck and a body on a deck
-    /// cannot step onto the floor.
+    /// `body_fits` for a body standing at walk height `height` (metres over the level's floor): off the floor it
+    /// fits only on a flight at that height (see `fits`).
     pub fn body_fits_at(&self, x: f32, y: f32, r: f32, height: f32) -> bool {
         self.fits(x, y, r, height, false)
     }
 
     /// The shared body of `body_fits_at` and `body_fits_at_y`. `by_height`: a corner on a flight at the body's height is
-    /// exempt from the deck-height and hole rules; otherwise any tread of a flight is exempt from the hole rule.
+    /// exempt from the floor-height and hole rules; otherwise any tread of a flight is exempt from the hole rule.
     fn fits(&self, x: f32, y: f32, r: f32, height: f32, by_height: bool) -> bool {
         // a drop has no wall, so a body may enter it (the hole rule below does not apply to a drop either)
         if !self.clear_of_solids(x as f64, y as f64, r as f64) {
@@ -1684,16 +1650,16 @@ impl Facility {
         if self.divider_blocks(x, y, r) {
             return false;
         }
-        // an Inferno window has no decks: its floor is one continuous noisy surface with the slope limited by
-        // construction (`TerrainRules`), so no cell edge is a step and the per-cell height rule does not apply
-        if self.terrain.is_none() && (!self.walk_surface.is_empty() || height != 0.0) {
+        // a body off the floor line fits only on a flight at its height. An Inferno window's floor is one continuous
+        // noisy surface with the slope limited by construction (`TerrainRules`), so the height rule does not apply
+        if self.terrain.is_none() && height != 0.0 {
             for (sx, sy) in [(x - r, y - r), (x + r, y - r), (x - r, y + r), (x + r, y + r)] {
                 let cell = Cell::new(sx.floor() as i32, sy.floor() as i32);
                 // open air holds a body at any height: only the cells around it say whether it is below the floor
                 if self.is_drop(cell) {
                     continue;
                 }
-                if (self.height_at(cell) - height).abs() > 0.01 && !(by_height && self.on_flight_at(sx, sy, height)) {
+                if height.abs() > 0.01 && !(by_height && self.on_flight_at(sx, sy, height)) {
                     return false;
                 }
             }
@@ -1814,23 +1780,13 @@ impl Facility {
         Some(DoorToggle::Closed)
     }
 
-    /// The walk surface of `cell`: plain `Floor` at 0.0 m unless it was set with `set_walk_surface`.
-    pub fn walk_surface_at(&self, cell: Cell) -> WalkSurface {
-        self.walk_surface.get(&cell).copied().unwrap_or_default()
-    }
-
-    /// The height of `cell`'s walk surface in metres above the level's floor.
-    pub fn height_at(&self, cell: Cell) -> f32 {
-        self.walk_surface_at(cell).height
-    }
-
     /// The height of the ground under the point (x, z), metres above the level's floor line: the noisy cavern floor of
-    /// an Inferno window (`set_terrain`), else the walk surface of the cell (0 or a deck). A flight tread is not
-    /// included (`level_stack::local_ground` asks the flights first).
+    /// an Inferno window (`set_terrain`), else 0 (the flat floor). A flight tread is not included
+    /// (`level_stack::local_ground` asks the flights first).
     pub fn ground_height(&self, x: f32, z: f32) -> f32 {
         match &self.terrain {
             Some(t) => t.floor_at(x, z),
-            None => self.height_at(Cell::new(x.floor() as i32, z.floor() as i32)),
+            None => 0.0,
         }
     }
 
@@ -1848,16 +1804,6 @@ impl Facility {
     /// `self.origin`, so set `origin` first). `chunks` is how many chunks the grid spans each way.
     pub fn set_terrain(&mut self, world: &str, chunks: i32) {
         self.terrain = Some(Terrain::new(world, self.origin, chunks));
-    }
-
-    /// Sets the walk surface of `cell` alone; every other cell keeps its surface.
-    pub fn set_walk_surface(&mut self, cell: Cell, kind: DeckKind, height: f32) {
-        let surface = WalkSurface { kind, height };
-        if surface == WalkSurface::default() {
-            self.walk_surface.remove(&cell);
-        } else {
-            self.walk_surface.insert(cell, surface);
-        }
     }
 
     /// Dresses a level 0 maze chunk with its region variant (`route::maze_regions`): records the variant id and thins
@@ -1889,218 +1835,6 @@ impl Facility {
             self.rebuild_grids();
         }
         Some(v)
-    }
-
-    /// Raises catwalk decks over the level 0 floor of a chunk whose region the data allows (`catwalk_links.json`
-    /// `regions`) and links them to the ground by stairs and ladders. The deck grid is `route::catwalk`'s; a deck cell
-    /// stands only on an open, clear ground cell, and only where lifting it leaves the cells around it still
-    /// connected, so the ground floor stays walkable. Only the decks a link reaches are kept. Returns the number of
-    /// deck cells set (0 when the chunk has no catwalk).
-    pub fn apply_catwalks(&mut self, seed: &str, key: ChunkKey, region: &str) -> usize {
-        self.apply_catwalks_with(seed, key, region, &catwalk_links::rules())
-    }
-
-    /// `apply_catwalks` with explicit rules. The link clearance (`rules.link_clearance`, the half side of the footprint
-    /// that must be free of solid props on a link's ground cell and its deck landing) decides which catwalks survive.
-    pub(crate) fn apply_catwalks_with(
-        &mut self,
-        seed: &str,
-        key: ChunkKey,
-        region: &str,
-        rules: &catwalk_links::CatwalkRules,
-    ) -> usize {
-        self.catwalk_links.clear();
-        if key.level != 0 || !catwalk_links::allowed_in(region) {
-            return 0;
-        }
-        let params = catwalk::params();
-        let grid = catwalk::generate(&format!("{seed}:L0:C{},{}", key.cx, key.cy));
-        let n = self.cols;
-        if self.rows != n || grid.size as i32 != n {
-            return 0;
-        }
-        let idx = |c: Cell| (c.y * n + c.x) as usize;
-        let mut ground = vec![false; (n * n) as usize];
-        for y in 0..n {
-            for x in 0..n {
-                ground[idx(Cell::new(x, y))] =
-                    !self.is_hole(x, y) && self.can_occupy(x as f64 + 0.5, y as f64 + 0.5, 0.25);
-            }
-        }
-        let open = ground.clone();
-        let mut keep_clear = self.taken_cells();
-        for s in &self.stairs {
-            for dy in -3..=3 {
-                for dx in -3..=3 {
-                    keep_clear.insert(Cell::new(s.cell.x + dx, s.cell.y + dy));
-                }
-            }
-            for c in s.carve_cells() {
-                for dy in -1..=1 {
-                    for dx in -1..=1 {
-                        keep_clear.insert(Cell::new(c.x + dx, c.y + dy));
-                    }
-                }
-            }
-        }
-        for p in self.props.iter().filter(|p| p.door.is_some()) {
-            for dy in -1..=1 {
-                for dx in -1..=1 {
-                    keep_clear.insert(Cell::new(p.cell.x + dx, p.cell.y + dy));
-                }
-            }
-        }
-        let mut deck: HashSet<Cell> = HashSet::new();
-        for y in 0..n {
-            for x in 0..n {
-                let c = Cell::new(x, y);
-                if grid.walkable(x, y) && ground[idx(c)] && !keep_clear.contains(&c) && Self::lifts_cleanly(&ground, n, c) {
-                    ground[idx(c)] = false;
-                    deck.insert(c);
-                }
-            }
-        }
-        // A link needs its own ground cell and the deck cell it steps onto clear of solid props (the deck grid ignores
-        // props): a cell whose body-sized footprint touches a solid prop is refused.
-        let clear = |c: Cell| self.clear_of_solids(c.x as f64 + 0.5, c.y as f64 + 0.5, rules.link_clearance);
-        let mut candidates: Vec<Cell> = Vec::new();
-        for c in &deck {
-            if !clear(*c) {
-                continue;
-            }
-            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                let g = Cell::new(c.x + dx, c.y + dy);
-                if g.x >= 0 && g.y >= 0 && g.x < n && g.y < n && ground[idx(g)] && !keep_clear.contains(&g) && clear(g) {
-                    candidates.push(g);
-                }
-            }
-        }
-        let mut links = catwalk_links::links_for(seed, key, &candidates, Some(params.height), rules);
-        if links.is_empty() {
-            return 0;
-        }
-        // keep the deck cells joined to a link
-        let mut kept: HashSet<Cell> = HashSet::new();
-        let mut queue: VecDeque<Cell> = VecDeque::new();
-        for l in &links {
-            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                let c = Cell::new(l.cell.x + dx, l.cell.y + dy);
-                if deck.contains(&c) && kept.insert(c) {
-                    queue.push_back(c);
-                }
-            }
-        }
-        while let Some(c) = queue.pop_front() {
-            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                let m = Cell::new(c.x + dx, c.y + dy);
-                if deck.contains(&m) && kept.insert(m) {
-                    queue.push_back(m);
-                }
-            }
-        }
-        // the ground must not be cut in two by what is kept
-        let mut after = open.clone();
-        for c in &kept {
-            after[idx(*c)] = false;
-        }
-        if Self::ground_pieces(&after, n) > Self::ground_pieces(&open, n) {
-            return 0;
-        }
-        // each link steps from its ground cell onto an adjacent kept deck cell with no solid prop on it (the deck landing)
-        for l in &mut links {
-            let landing = [(1, 0), (-1, 0), (0, 1), (0, -1)]
-                .into_iter()
-                .find(|(dx, dy)| {
-                    let d = Cell::new(l.cell.x + dx, l.cell.y + dy);
-                    kept.contains(&d) && clear(d)
-                })
-                .unwrap_or((1, 0));
-            l.run = landing;
-        }
-        for c in &kept {
-            self.set_walk_surface(*c, DeckKind::Catwalk, params.height);
-        }
-        // the two cells of a link hold no prop at all (a rug or lamp the clearance test let through)
-        for l in &links {
-            self.clear_props_in(l.cell.x, l.cell.y, 1, 1);
-            self.clear_props_in(l.cell.x + l.run.0, l.cell.y + l.run.1, 1, 1);
-        }
-        self.catwalk_links = links;
-        self.rebuild_grids();
-        kept.len()
-    }
-
-    /// The flight of a catwalk link, for its cells only: a ladder whose foot is the link's ground cell and whose landing
-    /// is the deck cell it steps onto (`CatwalkLink::run`), with the footprint's clear margins. Its heights are not
-    /// the flight's: a deck is `link.deck_height` above the same floor, never a storey.
-    pub fn catwalk_flight(link: &CatwalkLink) -> Flight {
-        let run = if link.run == (0, 0) { (1, 0) } else { link.run };
-        Flight::new(FlightKind::Ladder, FlightShape::Switchback, 1, link.cell, run)
-    }
-
-    /// Whether closing `c` leaves its open 4-neighbours joined through the ring of cells around it.
-    fn lifts_cleanly(ground: &[bool], n: i32, c: Cell) -> bool {
-        const RING: [(i32, i32); 8] = [(-1, -1), (0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0)];
-        let at = |(dx, dy): (i32, i32)| {
-            let (x, y) = (c.x + dx, c.y + dy);
-            x >= 0 && y >= 0 && x < n && y < n && ground[(y * n + x) as usize]
-        };
-        let o: Vec<bool> = RING.iter().map(|d| at(*d)).collect();
-        let edges_open = (1..8).step_by(2).filter(|i| o[*i]).count();
-        if edges_open <= 1 {
-            return true;
-        }
-        let Some(start) = o.iter().position(|x| !*x) else {
-            return true;
-        };
-        let (mut run, mut prev_open) = (0usize, false);
-        let mut edge_run: Option<usize> = None;
-        for step in 1..=8 {
-            let i = (start + step) % 8;
-            if o[i] {
-                if !prev_open {
-                    run += 1;
-                }
-                if i % 2 == 1 {
-                    match edge_run {
-                        None => edge_run = Some(run),
-                        Some(r) if r != run => return false,
-                        _ => {}
-                    }
-                }
-            }
-            prev_open = o[i];
-        }
-        true
-    }
-
-    /// The number of 4-connected pieces of open ground in `ground` (an n x n grid).
-    fn ground_pieces(ground: &[bool], n: i32) -> usize {
-        let mut seen = vec![false; ground.len()];
-        let mut pieces = 0;
-        for s in 0..ground.len() {
-            if !ground[s] || seen[s] {
-                continue;
-            }
-            pieces += 1;
-            seen[s] = true;
-            let mut q = VecDeque::from([s as i32]);
-            while let Some(i) = q.pop_front() {
-                let (x, y) = (i % n, i / n);
-                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                    let (nx, ny) = (x + dx, y + dy);
-                    if nx < 0 || ny < 0 || nx >= n || ny >= n {
-                        continue;
-                    }
-                    let j = (ny * n + nx) as usize;
-                    if ground[j] && !seen[j] {
-                        seen[j] = true;
-                        q.push_back(j as i32);
-                    }
-                }
-            }
-        }
-        pieces
     }
 
     /// Swings every room door toward its wanted state. `openers` (the hunters, never the runner or a player bot) open a
@@ -2739,18 +2473,6 @@ impl Facility {
             }
         }
         self.hunter_open = open;
-        // a deck cell is open to a body at the deck's own height (never to a ground hunter: `hunter_open` stays false)
-        let mut deck = vec![false; (self.cols * self.rows) as usize];
-        let mut cells: Vec<Cell> = self.walk_surface.iter().filter(|(_, s)| s.height > 0.0).map(|(c, _)| *c).collect();
-        cells.sort();
-        for c in cells {
-            if c.x < 0 || c.y < 0 || c.x >= self.cols || c.y >= self.rows {
-                continue;
-            }
-            deck[(c.y * self.cols + c.x) as usize] =
-                !self.is_drop(c) && self.body_fits_at(c.x as f32 + 0.5, c.y as f32 + 0.5, DEFAULT_AGENT_RADIUS as f32, self.height_at(c));
-        }
-        self.deck_open = deck;
     }
 
     /// place_hunter_spawn: >20 steps from the start, in the start's open component, 7 cells
@@ -2804,35 +2526,6 @@ impl Facility {
             && c.x < self.cols
             && c.y < self.rows
             && self.hunter_open[(c.y * self.cols + c.x) as usize]
-    }
-
-    /// Whether a body of the hunters' nav radius stands on the deck cell `c` at the deck's own walk height. False for a
-    /// ground cell: `hunter_open` is the ground, this is the decks, and `nav_open` is either.
-    pub fn deck_open(&self, c: Cell) -> bool {
-        c.x >= 0
-            && c.y >= 0
-            && c.x < self.cols
-            && c.y < self.rows
-            && self.deck_open.get((c.y * self.cols + c.x) as usize).copied().unwrap_or(false)
-    }
-
-    /// A cell a hunter can stand in: open ground or an open deck cell.
-    pub fn nav_open(&self, c: Cell) -> bool {
-        self.hunter_open(c) || self.deck_open(c)
-    }
-
-    /// Every open deck cell, in scan order (row by row).
-    pub fn deck_cells(&self) -> Vec<Cell> {
-        let mut v = Vec::new();
-        for y in 0..self.rows {
-            for x in 0..self.cols {
-                let c = Cell::new(x, y);
-                if self.deck_open(c) {
-                    v.push(c);
-                }
-            }
-        }
-        v
     }
 
     /// Whether a sight line may pass `(x, z)` on this level: open floor, or a well / hatch / drop / air cell (an opening
@@ -2990,10 +2683,7 @@ impl Facility {
 
     /// has_line_of_sight: samples the segment at ceil(distance*6) points; walls only.
     ///
-    /// Deliberately 2D (Godot parity): it has no height term. A catwalk deck is a see-through grating with 1.1 m rails
-    /// and the walls are a full storey (5 m), well above any eye, so a wall test alone is exact between a deck and the
-    /// floor below it. A ground hunter therefore sees a deck runner and a deck hunter sees the floor; what a deck changes
-    /// is whether the hunter can reach her (the deck is another layer, see `hunters::brain` and `hunters::flight_edges`).
+    /// Deliberately 2D (Godot parity): it has no height term.
     pub fn has_line_of_sight(&self, a: (f32, f32), b: (f32, f32)) -> bool {
         let d = ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt();
         let steps = ((d * 6.0).ceil() as i32).max(1);
@@ -3159,69 +2849,6 @@ mod tests {
         assert_eq!(Facility::size_range(40, (0.5, 0.64), room_sizes_for(None)), (20, 25));
     }
 
-    /// A new floor is all ground floor at 0.0 m; a catwalk set on one cell changes that cell only.
-    #[test]
-    fn a_new_facility_is_all_floor_and_a_catwalk_moves_only_its_own_cell() {
-        let cat = Catalog::load();
-        let mut f = Facility::generate("DECK-1", &Options::default(), &cat);
-        let cells: Vec<Cell> = (0..f.rows)
-            .flat_map(|y| (0..f.cols).map(move |x| Cell::new(x, y)))
-            .collect();
-        for &c in &cells {
-            assert_eq!(f.walk_surface_at(c), WalkSurface { kind: DeckKind::Floor, height: 0.0 });
-            assert_eq!(f.height_at(c), 0.0);
-        }
-        let deck = f.floor_cells()[0];
-        f.set_walk_surface(deck, DeckKind::Catwalk, 4.0);
-        assert_eq!(f.walk_surface_at(deck), WalkSurface { kind: DeckKind::Catwalk, height: 4.0 });
-        assert_eq!(f.height_at(deck), 4.0);
-        for &c in cells.iter().filter(|&&c| c != deck) {
-            assert_eq!(f.walk_surface_at(c), WalkSurface { kind: DeckKind::Floor, height: 0.0 }, "{c:?} moved");
-        }
-        f.set_walk_surface(deck, DeckKind::Floor, 0.0);
-        assert_eq!(f.walk_surface_at(deck), WalkSurface::default());
-    }
-
-    fn deck_fixture() -> (Facility, Cell, Cell) {
-        let cat = Catalog::load();
-        let mut f = Facility::generate("DECK-2", &Options::default(), &cat);
-        let cells = f.floor_cells();
-        let deck = cells
-            .iter()
-            .copied()
-            .find(|&c| {
-                let (x, y) = c.center();
-                f.body_fits(x, y, 0.2)
-            })
-            .expect("a free floor cell");
-        let floor = cells
-            .iter()
-            .copied()
-            .find(|&c| c != deck && f.body_fits(c.center().0, c.center().1, 0.2))
-            .expect("a second free floor cell");
-        f.set_walk_surface(deck, DeckKind::Catwalk, 4.0);
-        (f, deck, floor)
-    }
-
-    #[test]
-    fn a_body_on_the_floor_is_blocked_by_a_deck_cell() {
-        let (f, deck, floor) = deck_fixture();
-        assert!(!f.body_fits_at(deck.center().0, deck.center().1, 0.2, 0.0));
-        assert!(f.body_fits_at(floor.center().0, floor.center().1, 0.2, 0.0));
-    }
-
-    #[test]
-    fn a_body_on_the_deck_is_not_blocked_by_deck_cells() {
-        let (f, deck, _) = deck_fixture();
-        assert!(f.body_fits_at(deck.center().0, deck.center().1, 0.2, 4.0));
-    }
-
-    #[test]
-    fn a_body_on_the_deck_is_blocked_by_a_floor_cell_at_zero() {
-        let (f, _, floor) = deck_fixture();
-        assert!(!f.body_fits_at(floor.center().0, floor.center().1, 0.2, 4.0));
-    }
-
     const WORLD: &str = "1426541270";
 
     /// The level 0 maze chunks around the origin, each built the way the live route builds it.
@@ -3250,104 +2877,6 @@ mod tests {
             }
         }
         g
-    }
-
-    #[test]
-    fn catwalk_decks_stand_on_clear_ground_and_every_link_touches_a_deck() {
-        let height = catwalk::params().height;
-        let mut with_decks = 0;
-        for (key, mut f) in maze_chunks() {
-            let before = open_ground(&f);
-            let set = f.apply_catwalks(WORLD, key, "maze");
-            if set == 0 {
-                assert!(f.catwalk_links.is_empty());
-                continue;
-            }
-            with_decks += 1;
-            assert!(!f.catwalk_links.is_empty() && f.catwalk_links.len() <= catwalk_links::rules().per_chunk);
-            let decks: Vec<Cell> = (0..f.rows)
-                .flat_map(|y| (0..f.cols).map(move |x| Cell::new(x, y)))
-                .filter(|c| f.walk_surface_at(*c).kind == DeckKind::Catwalk)
-                .collect();
-            assert_eq!(decks.len(), set);
-            for c in &decks {
-                assert!(before[(c.y * f.cols + c.x) as usize], "a deck over a wall or prop at {c:?}");
-                assert_eq!(f.height_at(*c), height);
-                // a runner up on the deck fits there; one on the floor does not
-                assert!(f.body_fits_at(c.center().0, c.center().1, 0.2, height));
-                assert!(!f.body_fits_at(c.center().0, c.center().1, 0.2, 0.0));
-            }
-            for l in &f.catwalk_links {
-                assert_eq!(f.walk_surface_at(l.cell).kind, DeckKind::Floor, "a link starts on the ground");
-                assert!(decks.iter().any(|d| (d.x - l.cell.x).abs() + (d.y - l.cell.y).abs() == 1));
-                assert_eq!(l.deck_height, height);
-            }
-            // lifting the decks cut no ground floor in two
-            let mut after = before.clone();
-            for c in &decks {
-                after[(c.y * f.cols + c.x) as usize] = false;
-            }
-            assert!(Facility::ground_pieces(&after, f.cols) <= Facility::ground_pieces(&before, f.cols));
-        }
-        assert!(with_decks > 0, "no maze chunk got a catwalk");
-    }
-
-    #[test]
-    fn catwalks_are_deterministic_and_follow_the_data_regions() {
-        let (key, f) = maze_chunks().into_iter().find(|(k, f)| {
-            let mut g = f.clone();
-            g.apply_catwalks(WORLD, *k, "maze") > 0
-        }).expect("a chunk with a catwalk");
-        let (mut a, mut b) = (f.clone(), f.clone());
-        assert_eq!(a.apply_catwalks(WORLD, key, "maze"), b.apply_catwalks(WORLD, key, "maze"));
-        assert_eq!(a.catwalk_links, b.catwalk_links);
-        // a region the data does not list, and any level but 0, get none
-        // (live::chunk already decked this chunk as a maze one, so start from the bare chunk)
-        let mut c = f.clone();
-        c.walk_surface.clear();
-        assert_eq!(c.apply_catwalks(WORLD, key, "mansion"), 0);
-        assert!(c.walk_surface.is_empty());
-        assert_eq!(c.apply_catwalks(WORLD, ChunkKey { level: -1, ..key }, "maze"), 0);
-    }
-
-    #[test]
-    fn the_link_clearance_is_data_and_changing_it_changes_which_catwalks_survive() {
-        let std = catwalk_links::rules();
-        assert_eq!(std.link_clearance, 0.45, "the shipped value");
-        let run = |clearance: f64| -> Vec<(ChunkKey, usize, Vec<Cell>)> {
-            let rules = catwalk_links::CatwalkRules { link_clearance: clearance, ..std };
-            maze_chunks()
-                .into_iter()
-                .map(|(k, mut f)| {
-                    f.walk_surface.clear();
-                    let decks = f.apply_catwalks_with(WORLD, k, "maze", &rules);
-                    (k, decks, f.catwalk_links.iter().map(|l| l.cell).collect())
-                })
-                .collect()
-        };
-        let shipped = run(std.link_clearance);
-        assert_eq!(shipped, run(std.link_clearance), "deterministic for one value");
-        assert!(shipped.iter().any(|(_, d, _)| *d > 0), "no maze chunk got a catwalk");
-        assert_ne!(shipped, run(0.0), "no clearance admits cells the shipped value refuses");
-        assert_ne!(shipped, run(0.5), "a whole-cell clearance refuses cells the shipped value admits");
-    }
-
-    #[test]
-    fn merging_chunks_keeps_their_decks_and_links_shifted() {
-        let (key, mut f) = maze_chunks().into_iter().find(|(k, f)| {
-            let mut g = f.clone();
-            g.apply_catwalks(WORLD, *k, "maze") > 0
-        }).expect("a chunk with a catwalk");
-        f.apply_catwalks(WORLD, key, "maze");
-        let deck = (0..f.rows)
-            .flat_map(|y| (0..f.cols).map(move |x| Cell::new(x, y)))
-            .find(|c| f.walk_surface_at(*c).kind == DeckKind::Catwalk)
-            .unwrap();
-        let link = f.catwalk_links[0];
-        let m = Facility::merge(vec![(f.clone(), 45, 45, 0)], 135, 135, vec!["maze".into()], WORLD);
-        assert_eq!(m.walk_surface_at(Cell::new(deck.x + 45, deck.y + 45)), f.walk_surface_at(deck));
-        assert_eq!(m.walk_surface_at(deck).kind, DeckKind::Floor);
-        assert!(m.catwalk_links.iter().any(|l| l.cell == Cell::new(link.cell.x + 45, link.cell.y + 45)));
     }
 
     #[test]
@@ -3749,32 +3278,6 @@ mod tests {
             assert!(!lo.open_above(step));
             assert_eq!(top.well_cells(), foot.well_cells());
         }
-    }
-
-    #[test]
-    fn every_catwalk_link_steps_onto_a_kept_deck_cell_with_no_prop_on_it() {
-        let mut seen = 0;
-        for (key, mut f) in maze_chunks() {
-            if f.apply_catwalks(WORLD, key, "maze") == 0 {
-                continue;
-            }
-            for l in f.catwalk_links.clone() {
-                seen += 1;
-                assert_eq!(l.run.0.abs() + l.run.1.abs(), 1, "{:?}: run {:?} is a unit step", l.cell, l.run);
-                let deck = Cell::new(l.cell.x + l.run.0, l.cell.y + l.run.1);
-                assert_eq!(f.walk_surface_at(deck).kind, DeckKind::Catwalk, "{:?} leads to a deck cell", l.cell);
-                assert_eq!(f.walk_surface_at(l.cell).kind, DeckKind::Floor);
-                for c in [l.cell, deck] {
-                    let (x, z) = c.center();
-                    assert!(f.can_occupy(x as f64, z as f64, 0.3), "{c:?}: a solid prop on the link");
-                }
-                // the link as a flight, for its cells: foot on the ground cell, landing on the deck cell
-                let fp = well_footprint(&Facility::catwalk_flight(&l));
-                assert_eq!((fp.foot, fp.landing), (l.cell, deck));
-                assert_eq!(fp.upper_hole, vec![l.cell]);
-            }
-        }
-        assert!(seen > 0, "no catwalk link in the sweep");
     }
 
     #[test]
