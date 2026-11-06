@@ -1,6 +1,11 @@
 //! Frame timing and the F7 performance overlay. F7 cycles: off → small FPS readout → full panel
 //! (frame-time graph, average / 1% low / worst, per-section CPU times, spike count, scene
 //! counts). Sections are timed with `let _t = perf::section("hud");` (ends when dropped).
+//! The full panel also shows the render counters of render/draw_stats.rs (3D draw calls, meshes, triangles, vertex
+//! megabytes sent to the GPU, an estimate of WebGL calls, what the fog and frustum culls dropped) and times the GPU submit
+//! as "gl flush" (the scene's queued draw calls) and "gl flush view" (the held-item layer's), measured only while the panel
+//! shows. On a native build `LR_PERF_MODE=2` opens the panel from the first frame (it is in a `--screenshot` capture), and
+//! `LR_NO_FRUSTUM_CULL` / `LR_NO_MESH_TILES` switch the view cull and the mesh tiling off to compare the counters.
 //! Spikes (frames over `spike_ms` and over 2x the average and `debug_min_ms`) are written to the debug log. Every frame
 //! over `spike_ms` also goes into a rolling log of the last few (frame time and slowest section), and into the game log
 //! with the sections over `spike_section_ms`, at most `spike_lines_per_sec` lines a second.
@@ -372,7 +377,9 @@ impl State {
             frame_secs: Vec::new(),
             open: BTreeMap::new(),
             spikes: SpikeLog::new(rules().spike_log_len),
-            mode: 0,
+            // LR_PERF_MODE=2 opens the full panel from the first frame (a screenshot or a stress run reads it); the
+            // browser build has no environment and starts with the panel off
+            mode: std::env::var("LR_PERF_MODE").ok().and_then(|m| m.parse::<u8>().ok()).filter(|m| *m < 3).unwrap_or(0),
             counters: BTreeMap::new(),
         }
     }
@@ -439,6 +446,9 @@ pub fn frame(dt: f32) {
         s.head = (s.head + 1) % r.history;
     });
     counter("draws", f64::from(draws));
+    // the render counters of the full panel run only while it shows (render/draw_stats.rs); a new frame starts them again
+    crate::render::draw_stats::set_active(mode() == 2);
+    crate::render::draw_stats::begin_frame();
 }
 
 pub struct Section(&'static str);
@@ -470,6 +480,20 @@ impl Drop for Section {
 /// A named value shown on the full panel (e.g. hunters, props, meshes).
 pub fn counter(name: &'static str, v: f64) {
     S.with(|s| s.borrow_mut().counters.insert(name, v));
+}
+
+/// Sends the draw calls macroquad has queued to the GPU now, timing it as section `name`; only while the full panel
+/// shows (otherwise a no-op, and the queue goes out at the next camera change as before). Call it where the next macroquad
+/// call would flush anyway (a camera change), so the work is the same, only counted apart. The time is the CPU cost of the
+/// submit (batch copies, buffer uploads and the GL calls); the GPU runs on after it.
+pub fn flush_timed(name: &'static str) {
+    if mode() != 2 {
+        return;
+    }
+    let _t = section(name);
+    crate::render::draw_stats::note_flush();
+    // SAFETY: `get_internal_gl` hands out macroquad's own context on its (only) thread, as every macroquad call does
+    unsafe { macroquad::window::get_internal_gl() }.flush();
 }
 
 /// A section's smoothed time in ms, read by the stress run (app/stress.rs); 0 until it has run.

@@ -8,6 +8,7 @@ use super::anim::{
     hunter::{CreatureInput, HunterView, Input},
 };
 use super::builder::{submit_all, Builder};
+use super::frustum::{Frustum, FRUSTUM_MARGIN_M};
 use super::hunter_cache::{self, HunterMeshCache};
 use super::prop_model::{draw_builders, Placement, PropModel, StaticCache};
 use super::shader::{self, Flicker, Lamp, Lighting};
@@ -45,9 +46,68 @@ const UNRIGGED_SLOT_BASE: usize = 1000;
 /// First view slot of the resident floors' hunters (the drawn list's slots are its indexes).
 const RESIDENT_VIEW_BASE: usize = 1_000_000;
 
-/// Draws a static prop with its placement: its meshes come from the cache, built on first use.
+thread_local! {
+    /// The frustum of the camera `draw_scene` is drawing with, for the items it draws one by one (`draw_static`).
+    static VIEW_FRUSTUM: std::cell::Cell<Option<Frustum>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether the frustum cull is on. `LR_NO_FRUSTUM_CULL` (any value) turns it off on a native build, to compare counters
+/// with and without it; the browser build has no environment and always culls.
+fn frustum_cull_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("LR_NO_FRUSTUM_CULL").is_none())
+}
+
+/// What the scene does with one world mesh this frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MeshCull {
+    Draw,
+    /// Wholly past the fog's full reach (`box_fully_fogged`).
+    Fogged,
+    /// Wholly outside the camera's view frustum.
+    OffView,
+}
+
+/// Decides whether a mesh with box `bounds` is drawn. A mesh without a box (never the case once `bounds` is kept in step
+/// with the meshes) is drawn, so nothing vanishes. The fog test goes first: it is the cheaper of the two. `frustum` is
+/// `None` when the view cull is off.
+fn mesh_cull(bounds: Option<&(Vec3, Vec3)>, eye: Vec3, reach: f32, frustum: Option<&Frustum>) -> MeshCull {
+    let Some((lo, hi)) = bounds else { return MeshCull::Draw };
+    if box_fully_fogged(eye, *lo, *hi, reach) {
+        return MeshCull::Fogged;
+    }
+    if frustum.is_some_and(|f| !f.intersects_box(*lo, *hi, FRUSTUM_MARGIN_M)) {
+        return MeshCull::OffView;
+    }
+    MeshCull::Draw
+}
+
+/// Draws the meshes the fog and the frustum leave; returns (meshes seen, dropped by the fog, dropped by the frustum).
+fn draw_culled(meshes: &[Mesh], bounds: &[(Vec3, Vec3)], eye: Vec3, reach: f32, frustum: Option<&Frustum>) -> (usize, usize, usize) {
+    let (mut fogged, mut off_view) = (0, 0);
+    for (i, m) in meshes.iter().enumerate() {
+        match mesh_cull(bounds.get(i), eye, reach, frustum) {
+            MeshCull::Draw => super::draw_stats::draw_counted(m),
+            MeshCull::Fogged => fogged += 1,
+            MeshCull::OffView => off_view += 1,
+        }
+    }
+    (meshes.len(), fogged, off_view)
+}
+
+/// Draws a static prop with its placement: its meshes come from the cache, built on first use. A prop wholly outside the
+/// view is not submitted (its meshes are still asked of the cache, so they are kept for when it comes back into view).
 fn draw_static(m: &PropModel, xf: Mat4, tint: Color) {
-    STATIC_PROPS.with(|c| submit_all(m.static_meshes(&mut c.borrow_mut(), xf, tint)));
+    let in_view = VIEW_FRUSTUM.with(|f| f.get()).map_or(true, |f| f.intersects_transformed_box(xf, m.min, m.max, FRUSTUM_MARGIN_M));
+    STATIC_PROPS.with(|c| {
+        let mut cache = c.borrow_mut();
+        let meshes = m.static_meshes(&mut cache, xf, tint);
+        if in_view {
+            submit_all(meshes);
+        } else {
+            super::draw_stats::note_item_off_view();
+        }
+    });
 }
 
 /// How far the fog reaches, metres.
@@ -87,7 +147,11 @@ pub fn view(g: &Game) -> (Vec3, Vec3, Vec3, Vec3) {
 }
 
 pub fn camera(g: &Game, rt: &RenderTarget) -> Camera3D {
-    let (eye, fwd, _, _) = view(g);
+    camera_from_view(g, rt, view(g))
+}
+
+/// [`camera`] for a `view(g)` the caller already has (one frame reads it once and shares it).
+pub fn camera_from_view(g: &Game, rt: &RenderTarget, (eye, fwd, _, _): (Vec3, Vec3, Vec3, Vec3)) -> Camera3D {
     // held by a hunter: the view rides the grabbed body's eyes and looks at her face (HunterGrab._solve_camera)
     let (position, target, up) = match (g.escape.as_ref(), grab::camera()) {
         (Some(_), Some(c)) => c,
@@ -112,7 +176,11 @@ pub fn flickered(g: &Game, lamps: &[Lamp]) -> Vec<Lamp> {
 }
 
 pub fn lighting(g: &Game) -> Lighting {
-    let (eye, fwd, right, up) = view(g);
+    lighting_from_view(g, view(g))
+}
+
+/// [`lighting`] for a `view(g)` the caller already has.
+pub fn lighting_from_view(g: &Game, (eye, fwd, right, up): (Vec3, Vec3, Vec3, Vec3)) -> Lighting {
     let (x, y) = g.p.pos;
     let level = g.runner_level();
     // a region's look is a level 0 thing: the sewers and the Inferno keep their level rows under any district
@@ -224,7 +292,13 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         grab::abandon();
     }
     STATIC_PROPS.with(|c| c.borrow_mut().begin_frame());
-    set_camera(&camera(g, rt));
+    // the camera the scene draws with: the frustum below is read off its own matrix, so it holds for the hiding and the
+    // grab cameras too
+    let cam = camera(g, rt);
+    set_camera(&cam);
+    super::draw_stats::note_flush();
+    let frustum = frustum_cull_enabled().then(|| Frustum::from_view_proj(cam.matrix()));
+    VIEW_FRUSTUM.with(|f| f.set(frustum));
     let light = lighting(g);
     clear_background(Color::new(light.fog.x, light.fog.y, light.fog.z, 1.0));
     gl_use_material(mat);
@@ -252,17 +326,8 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     // the floor's meshes wholly past the fog's full reach are skipped: they would paint the fog colour alone (see
     // `box_fully_fogged`), which the clear colour already is
     let t_world = crate::app::perf::section("world meshes");
-    for (i, m) in g.world.meshes.iter().enumerate() {
-        // a mesh without a box (never the case once `bounds` is kept in step) is drawn, so nothing vanishes
-        let fogged = g
-            .world
-            .bounds
-            .get(i)
-            .is_some_and(|(lo, hi)| box_fully_fogged(light.eye, *lo, *hi, cull_range));
-        if !fogged {
-            draw_mesh(m);
-        }
-    }
+    let (seen, fogged, off_view) = draw_culled(&g.world.meshes, &g.world.bounds, light.eye, cull_range, frustum.as_ref());
+    super::draw_stats::note_world_cull(seen, fogged, off_view);
     // the resident neighbour level, in the same frame (baked at its offset), with the same fog cull and a slab-plane test
     // that skips it unless the eye is near an opening (nothing of it is visible through the slab otherwise)
     if !g.world_nb.items.is_empty() {
@@ -275,15 +340,8 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
             if !near_opening && world_stack::behind_slab(light.eye.y, nb.dy, &nb.bounds) {
                 continue;
             }
-            for (i, m) in nb.meshes.iter().enumerate() {
-                let fogged = nb
-                    .bounds
-                    .get(i)
-                    .is_some_and(|(lo, hi)| box_fully_fogged(light.eye, *lo, *hi, cull_range));
-                if !fogged {
-                    draw_mesh(m);
-                }
-            }
+            let (seen, fogged, off_view) = draw_culled(&nb.meshes, &nb.bounds, light.eye, cull_range, frustum.as_ref());
+            super::draw_stats::note_world_cull(seen, fogged, off_view);
         }
     }
     drop(t_world);
@@ -665,7 +723,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
                         Some(model.texture.clone()),
                         |v, i| model.build(v, i, at, yaw, swing, amp_scale, tint),
                     );
-                    draw_mesh(mesh);
+                    crate::render::draw_stats::draw_counted(mesh);
                 });
                 continue;
             };
@@ -755,7 +813,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
                     Some(model.texture.clone()),
                     |v, i| model.build_posed(v, i, root, &bone_of, model.face_cell_uv(out.face_cell), tint),
                 );
-                draw_mesh(mesh);
+                crate::render::draw_stats::draw_counted(mesh);
             });
             let star = if view.heavy(&input) {
                 Color::new(1.0, 0.42, 0.18, 1.0)
@@ -1246,6 +1304,85 @@ fn locker_shape(b: &mut Builder, p: Vec3, yaw: f32, burnt: bool, swing: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tiles of a floor 120 m square cut into 15 m boxes, as `mesh_batch::split_into_tiles` leaves a window.
+    fn tile_boxes() -> Vec<(Vec3, Vec3)> {
+        let mut out = vec![];
+        for ix in -4..4 {
+            for iz in -4..4 {
+                let lo = vec3(ix as f32 * 15.0, 0.0, iz as f32 * 15.0);
+                out.push((lo, lo + vec3(15.0, 3.0, 15.0)));
+            }
+        }
+        out
+    }
+
+    fn visible_point_in_reach(m: Mat4, eye: Vec3, reach: f32, (lo, hi): (Vec3, Vec3)) -> bool {
+        for ix in 0..=8 {
+            for iy in 0..=2 {
+                for iz in 0..=8 {
+                    let p = lo + (hi - lo) * vec3(ix as f32 / 8.0, iy as f32 / 2.0, iz as f32 / 8.0);
+                    let c = m * p.extend(1.0);
+                    if c.w > 0.0 && c.x.abs() <= c.w && c.y.abs() <= c.w && c.z.abs() <= c.w && (p - eye).length() < reach - 1.0 {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn the_view_cull_never_drops_a_mesh_whose_box_is_in_view_and_in_the_fog() {
+        let reach = world_cull_range(FOG_RANGE);
+        let boxes = tile_boxes();
+        let (mut drawn_n, mut off_view_n) = (0, 0);
+        // the player's camera and a grab-style camera looking back at a hunter, from several spots and headings
+        for (i, (eye, yaw, pitch)) in [
+            (vec3(7.0, 1.6, 7.0), 0.3, 0.0),
+            (vec3(-22.0, 1.6, 31.0), 2.4, -0.2),
+            (vec3(40.0, 1.6, -35.0), 5.0, 0.3),
+            (vec3(0.5, 1.2, 0.5), 3.14, 0.1),
+            (vec3(14.9, 1.6, 15.1), 0.8, -0.4),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for fovy in [60f32, 75.0, 100.0] {
+                let dir = vec3(f32::cos(yaw) * f32::cos(pitch), f32::sin(pitch), f32::sin(yaw) * f32::cos(pitch));
+                let (fovy, aspect, near, far) = (fovy.to_radians(), 16.0 / 9.0, 0.05, 80.0);
+                let m = Mat4::perspective_rh_gl(fovy, aspect, near, far) * Mat4::look_at_rh(eye, eye + dir, Vec3::Y);
+                let frustum = Frustum::from_perspective(eye, eye + dir, Vec3::Y, fovy, aspect, near, far);
+                for b in &boxes {
+                    let verdict = mesh_cull(Some(b), eye, reach, Some(&frustum));
+                    if visible_point_in_reach(m, eye, reach, *b) {
+                        assert_eq!(verdict, MeshCull::Draw, "camera {i}: a box with a visible point was dropped: {b:?}");
+                    }
+                    match verdict {
+                        MeshCull::Draw => drawn_n += 1,
+                        MeshCull::OffView => off_view_n += 1,
+                        MeshCull::Fogged => {}
+                    }
+                }
+            }
+        }
+        assert!(drawn_n > 20 && off_view_n > 50, "the cases must hold both outcomes ({drawn_n} drawn, {off_view_n} off view)");
+    }
+
+    #[test]
+    fn a_mesh_without_a_box_is_drawn_and_the_cull_off_leaves_the_fog_cull() {
+        let eye = Vec3::ZERO;
+        let reach = world_cull_range(FOG_RANGE);
+        assert_eq!(mesh_cull(None, eye, reach, None), MeshCull::Draw);
+        // behind the camera but near: only the frustum drops it, and with the frustum off it is drawn
+        let f = Frustum::from_perspective(eye, vec3(0.0, 0.0, -1.0), Vec3::Y, 1.2, 1.5, 0.05, 80.0);
+        let behind = (vec3(-1.0, 0.0, 5.0), vec3(1.0, 3.0, 8.0));
+        assert_eq!(mesh_cull(Some(&behind), eye, reach, Some(&f)), MeshCull::OffView);
+        assert_eq!(mesh_cull(Some(&behind), eye, reach, None), MeshCull::Draw);
+        // far behind and past the fog: the fog cull still drops it
+        let far = (vec3(-1.0, 0.0, 90.0), vec3(1.0, 3.0, 93.0));
+        assert_eq!(mesh_cull(Some(&far), eye, reach, None), MeshCull::Fogged);
+    }
 
     #[test]
     fn grab_light_on_during_grab_off_after() {

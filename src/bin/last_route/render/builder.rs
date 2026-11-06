@@ -23,7 +23,7 @@ pub fn take_draw_count() -> u32 {
 
 fn submit(m: &Mesh) {
     DRAWS.fetch_add(1, Ordering::Relaxed);
-    draw_mesh(m);
+    super::draw_stats::draw_counted(m);
 }
 
 /// Draws meshes built earlier (a static prop's cached geometry), counted as `draw_and_clear` counts its own.

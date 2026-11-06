@@ -5,9 +5,7 @@
 //! Every offset, scale and tilt is data (data/render/fp_hands.json). The pose rows of the lockpick and the revive kit
 //! (held_item_poses.gd FIRST_PERSON / GRIP / REACH) live there too.
 
-use super::bbmodel::{Group, Model};
-use super::scene::{camera, lighting, view};
-use super::shader;
+use super::bbmodel::{Face, Group, Model};
 use crate::game::Game;
 use crate::shared::assets::Assets;
 use macroquad::prelude::*;
@@ -193,78 +191,148 @@ pub fn climb_hand_pose(d: &HandData, height: f32, side: f32) -> (f32, f32, bool)
 /// The forearm-and-hand triangles of `model`, with the prop point at the origin of `xf`'s space. `xf` maps metres (the
 /// mannequin's scale is applied here) to the layer. A mirrored hand reverses its winding so it is not culled.
 pub fn hand_mesh(model: &Model, d: &HandData, slim: bool, xf: Mat4, mirror: bool) -> (Vec<Vertex>, Vec<u16>) {
+    let local = LocalHand::build(model.faces(), &model.groups, model.scale, d, slim, mirror);
     let mut out = vec![];
-    let mut idx = vec![];
-    let Some(root) = hand_group(&model.groups, slim, d) else {
-        return (out, idx);
-    };
-    let narrow = slim && !has_slim_group(&model.groups, d);
-    let m = xf
-        * Mat4::from_scale(vec3(if narrow { d.slim_width } else { 1.0 }, 1.0, 1.0))
-        * Mat4::from_scale(Vec3::splat(model.scale))
-        * Mat4::from_translation(-d.prop_point);
-    let nm = Mat3::from_mat4(m);
-    let col: [u8; 4] = WHITE.into();
-    for (g, f) in model.faces() {
-        let Some(g) = g else { continue };
-        if !under(&model.groups, g, root) {
-            continue;
-        }
-        let n = (nm * f.normal).normalize_or_zero();
-        let base = out.len() as u16;
-        for (c, uv) in f.corners.iter().zip(&f.uv) {
-            out.push(Vertex { position: m.transform_point3(*c), uv: *uv, color: col, normal: vec4(n.x, n.y, n.z, 1.0) });
-        }
-        let last = f.corners.len() as u16;
-        for k in 1..last.saturating_sub(1) {
-            if mirror {
-                idx.extend_from_slice(&[base, base + k + 1, base + k]);
-            } else {
-                idx.extend_from_slice(&[base, base + k, base + k + 1]);
+    local.place(xf, &mut out);
+    (out, local.idx)
+}
+
+/// The hand's triangles in the hand's own space (the prop point at the origin, the mannequin's scale and a slim hand's
+/// narrowing already applied), built once from the mannequin's faces. Only `place`, a transform of each vertex by the
+/// frame's matrix, runs per frame: the mannequin's whole face list is walked again only when the model, the arm style or
+/// the hand's side changes (`draw_hand`'s cache).
+pub struct LocalHand {
+    pos: Vec<Vec3>,
+    uv: Vec<Vec2>,
+    /// Face normals through the local transform, not yet normalised (the frame's matrix is applied before that).
+    normal: Vec<Vec3>,
+    /// Triangle indices; a mirrored hand has its winding reversed so it is not culled.
+    pub idx: Vec<u16>,
+}
+
+impl LocalHand {
+    /// The forearm group's faces of `faces` (with their outliner groups `groups`), as `hand_mesh` has always built them.
+    pub fn build<'a>(
+        faces: impl Iterator<Item = (Option<usize>, &'a Face)>,
+        groups: &[Group],
+        model_scale: f32,
+        d: &HandData,
+        slim: bool,
+        mirror: bool,
+    ) -> LocalHand {
+        let mut out = LocalHand { pos: vec![], uv: vec![], normal: vec![], idx: vec![] };
+        let Some(root) = hand_group(groups, slim, d) else {
+            return out;
+        };
+        let narrow = slim && !has_slim_group(groups, d);
+        let m = Mat4::from_scale(vec3(if narrow { d.slim_width } else { 1.0 }, 1.0, 1.0))
+            * Mat4::from_scale(Vec3::splat(model_scale))
+            * Mat4::from_translation(-d.prop_point);
+        let nm = Mat3::from_mat4(m);
+        for (g, f) in faces {
+            let Some(g) = g else { continue };
+            if !under(groups, g, root) {
+                continue;
+            }
+            let n = nm * f.normal;
+            let base = out.pos.len() as u16;
+            for (c, uv) in f.corners.iter().zip(&f.uv) {
+                out.pos.push(m.transform_point3(*c));
+                out.uv.push(*uv);
+                out.normal.push(n);
+            }
+            let last = f.corners.len() as u16;
+            for k in 1..last.saturating_sub(1) {
+                if mirror {
+                    out.idx.extend_from_slice(&[base, base + k + 1, base + k]);
+                } else {
+                    out.idx.extend_from_slice(&[base, base + k, base + k + 1]);
+                }
             }
         }
+        out
     }
-    (out, idx)
+
+    /// The vertices placed by `xf` (hand space to the layer), written over `out`.
+    pub fn place(&self, xf: Mat4, out: &mut Vec<Vertex>) {
+        let nm = Mat3::from_mat4(xf);
+        let col: [u8; 4] = WHITE.into();
+        out.clear();
+        out.extend((0..self.pos.len()).map(|i| {
+            let n = (nm * self.normal[i]).normalize_or_zero();
+            Vertex { position: xf.transform_point3(self.pos[i]), uv: self.uv[i], color: col, normal: vec4(n.x, n.y, n.z, 1.0) }
+        }));
+    }
+}
+
+/// One cached hand: its local geometry and the mesh it is drawn from (indices fixed, vertices replaced each frame).
+struct HandEntry {
+    /// The mannequin (by address and size, which the asset map keeps fixed), the arm style and the side.
+    key: (usize, usize, bool, bool),
+    local: LocalHand,
+    mesh: Mesh,
+}
+
+/// The most hands kept: the item hand and the two ladder hands, each in the classic and the slim style, are four at a time.
+const HAND_CACHE_SLOTS: usize = 4;
+
+thread_local! {
+    static HANDS: RefCell<Vec<HandEntry>> = const { RefCell::new(Vec::new()) };
 }
 
 fn draw_hand(a: &Assets, d: &HandData, look: &Look, xf: Mat4, mirror: bool) {
     let Some(body) = a.npc_body.as_ref() else { return };
-    let (vertices, indices) = hand_mesh(body, d, look.slim, xf, mirror);
-    if indices.is_empty() {
-        return;
-    }
+    // the skin's texture may arrive after the hand is first drawn, so it is looked up each frame; the geometry is cached
     let texture = a.skin_texture(&look.skin).unwrap_or_else(|| body.texture.clone());
-    draw_mesh(&Mesh { vertices, indices, texture: Some(texture) });
+    let key = (body as *const Model as usize, body.groups.len(), look.slim, mirror);
+    HANDS.with(|h| {
+        let mut h = h.borrow_mut();
+        let at = match h.iter().position(|e| e.key == key) {
+            Some(i) => i,
+            None => {
+                let local = LocalHand::build(body.faces(), &body.groups, body.scale, d, look.slim, mirror);
+                let mesh = Mesh { vertices: Vec::new(), indices: local.idx.clone(), texture: None };
+                if h.len() >= HAND_CACHE_SLOTS {
+                    h.remove(0);
+                }
+                h.push(HandEntry { key, local, mesh });
+                h.len() - 1
+            }
+        };
+        let e = &mut h[at];
+        if e.mesh.indices.is_empty() {
+            return;
+        }
+        e.local.place(xf, &mut e.mesh.vertices);
+        e.mesh.texture = Some(texture);
+        super::draw_stats::draw_counted(&e.mesh);
+    });
 }
 
 /// The hand under a held item: `base` is camera * items * the item's view node (the grip is its origin), so the hand rides
-/// the item's tween and the wall push. Called by draw_viewmodel with the shader already set.
+/// the item's tween and the wall push. Called by the held-item layer with the shader already set.
 pub fn draw_item_hand(a: &Assets, base: Mat4) {
     let Some(d) = data() else { return };
     let look = LOOK.with(|l| l.borrow().clone());
     draw_hand(a, d, &look, base * hand_matrix(Vec3::ZERO, d.tilt_deg, d.scale, false), false);
 }
 
-/// The two hands on a ladder, driven by the height climbed. `mat` is the viewmodel material; draws into the layer
-/// draw_viewmodel just cleared (it leaves it empty while a climb runs), so call it right after draw_viewmodel.
-pub fn draw_ladder_hands(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
-    let Some(c) = g.ladder.as_ref() else { return };
-    if g.p.hidden.is_some() || g.report.is_some() || g.escape.is_some() {
-        return;
-    }
-    let Some(d) = data() else { return };
+/// Whether the ladder hands are drawn: while a climb runs, unless the runner is hiding, caught or dead.
+pub fn ladder_hands_wanted(g: &Game) -> bool {
+    g.ladder.is_some() && g.p.hidden.is_none() && g.report.is_none() && g.escape.is_none() && data().is_some()
+}
+
+/// The two hands on a ladder, driven by the height climbed. The held-item layer has set the camera and the viewmodel
+/// material and cleared the layer; `view` is the runner's `(eye, forward, right, up)`.
+pub fn draw_ladder_hands(g: &Game, a: &Assets, (eye, fwd, right, up): (Vec3, Vec3, Vec3, Vec3)) {
+    let (Some(c), Some(d)) = (g.ladder.as_ref(), data()) else { return };
     let look = LOOK.with(|l| l.borrow().clone());
-    set_camera(&camera(g, rt));
-    gl_use_material(mat);
-    shader::apply(mat, &lighting(g), &super::scene::flickered(g, &g.world.lamps));
-    let (eye, fwd, right, up) = view(g);
     let cam = Mat4::from_cols(right.extend(0.0), up.extend(0.0), (-fwd).extend(0.0), eye.extend(1.0));
     for side in [-1.0f32, 1.0] {
         let (y, pull, _grip) = climb_hand_pose(d, c.y, side);
         let pos = vec3(d.climb_offset.x * side, d.climb_offset.y + y, d.climb_offset.z + pull);
         draw_hand(a, d, &look, cam * hand_matrix(pos, d.climb_tilt_deg, d.climb_scale, side < 0.0), side < 0.0);
     }
-    gl_use_default_material();
 }
 
 #[cfg(test)]
@@ -365,6 +433,108 @@ mod tests {
         let slim_auto = crate::shared::skins::ArmsSetting::Auto.resolve(true);
         let slim_forced_off = crate::shared::skins::ArmsSetting::Classic.resolve(true);
         assert!(slim_auto && !slim_forced_off);
+    }
+
+    fn face(corners: &[Vec3], normal: Vec3) -> Face {
+        Face {
+            corners: corners.to_vec(),
+            uv: corners.iter().map(|c| vec2(c.x * 0.1, c.y * 0.1)).collect(),
+            normal,
+        }
+    }
+
+    /// The hand exactly as `hand_mesh` built it before the local geometry was cached: every face through one matrix.
+    fn reference_hand(
+        faces: &[(Option<usize>, Face)],
+        groups: &[Group],
+        scale: f32,
+        d: &HandData,
+        slim: bool,
+        xf: Mat4,
+        mirror: bool,
+    ) -> (Vec<Vertex>, Vec<u16>) {
+        let mut out = vec![];
+        let mut idx = vec![];
+        let Some(root) = hand_group(groups, slim, d) else { return (out, idx) };
+        let narrow = slim && !has_slim_group(groups, d);
+        let m = xf
+            * Mat4::from_scale(vec3(if narrow { d.slim_width } else { 1.0 }, 1.0, 1.0))
+            * Mat4::from_scale(Vec3::splat(scale))
+            * Mat4::from_translation(-d.prop_point);
+        let nm = Mat3::from_mat4(m);
+        let col: [u8; 4] = WHITE.into();
+        for (g, f) in faces {
+            let Some(g) = *g else { continue };
+            if !under(groups, g, root) {
+                continue;
+            }
+            let n = (nm * f.normal).normalize_or_zero();
+            let base = out.len() as u16;
+            for (c, uv) in f.corners.iter().zip(&f.uv) {
+                out.push(Vertex { position: m.transform_point3(*c), uv: *uv, color: col, normal: vec4(n.x, n.y, n.z, 1.0) });
+            }
+            let last = f.corners.len() as u16;
+            for k in 1..last.saturating_sub(1) {
+                if mirror {
+                    idx.extend_from_slice(&[base, base + k + 1, base + k]);
+                } else {
+                    idx.extend_from_slice(&[base, base + k, base + k + 1]);
+                }
+            }
+        }
+        (out, idx)
+    }
+
+    #[test]
+    fn the_cached_hand_places_to_the_same_vertices_as_a_direct_build() {
+        let d = d();
+        let groups = vec![group("R-Arm", None), group(&d.classic_group, Some(0)), group(&d.slim_group, Some(0)), group("Body", None)];
+        let quad = [vec3(0.0, 0.0, 0.0), vec3(4.0, 0.0, 0.0), vec3(4.0, 8.0, 0.0), vec3(0.0, 8.0, 0.0)];
+        let tri = [vec3(1.0, 1.0, 2.0), vec3(3.0, 1.0, 2.0), vec3(2.0, 5.0, 2.0)];
+        let faces = vec![
+            (Some(1), face(&quad, vec3(0.0, 0.0, 1.0))),
+            (Some(2), face(&quad, vec3(0.0, 1.0, 0.0))),
+            (Some(3), face(&tri, vec3(1.0, 0.0, 0.0))),
+            (None, face(&quad, vec3(0.0, 0.0, -1.0))),
+            (Some(1), face(&tri, vec3(0.6, 0.0, 0.8))),
+        ];
+        let xfs = [
+            Mat4::IDENTITY,
+            Mat4::from_translation(vec3(3.0, 1.5, -2.0)) * Mat4::from_rotation_y(0.9) * Mat4::from_scale(Vec3::splat(0.4)),
+            hand_matrix(vec3(0.2, -0.3, -0.5), 118.0, 0.52, true),
+        ];
+        for slim in [false, true] {
+            for mirror in [false, true] {
+                let local = LocalHand::build(faces.iter().map(|(g, f)| (*g, f)), &groups, 1.0 / 16.0, &d, slim, mirror);
+                for xf in xfs {
+                    let (want_v, want_i) = reference_hand(&faces, &groups, 1.0 / 16.0, &d, slim, xf, mirror);
+                    let mut got_v = vec![];
+                    local.place(xf, &mut got_v);
+                    assert_eq!(local.idx, want_i, "slim {slim} mirror {mirror}: the same triangles");
+                    assert_eq!(got_v.len(), want_v.len());
+                    for (a, b) in got_v.iter().zip(&want_v) {
+                        assert!((a.position - b.position).length() < 1e-4, "position {:?} vs {:?}", a.position, b.position);
+                        assert!((a.normal - b.normal).length() < 1e-4, "normal {:?} vs {:?}", a.normal, b.normal);
+                        assert_eq!((a.uv, a.color), (b.uv, b.color));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_mirrored_hand_reverses_its_winding_and_the_other_group_is_left_out() {
+        let d = d();
+        let groups = vec![group("R-Arm", None), group(&d.classic_group, Some(0)), group("Body", None)];
+        let quad = [vec3(0.0, 0.0, 0.0), vec3(4.0, 0.0, 0.0), vec3(4.0, 8.0, 0.0), vec3(0.0, 8.0, 0.0)];
+        let faces = vec![(Some(1), face(&quad, Vec3::Z)), (Some(2), face(&quad, Vec3::Z))];
+        let plain = LocalHand::build(faces.iter().map(|(g, f)| (*g, f)), &groups, 1.0, &d, false, false);
+        let mirrored = LocalHand::build(faces.iter().map(|(g, f)| (*g, f)), &groups, 1.0, &d, false, true);
+        assert_eq!(plain.idx, vec![0, 1, 2, 0, 2, 3], "the body face is not part of the hand");
+        assert_eq!(mirrored.idx, vec![0, 2, 1, 0, 3, 2]);
+        // no forearm group in the model: no hand
+        let none = LocalHand::build(faces.iter().map(|(g, f)| (*g, f)), &[group("Body", None)], 1.0, &d, false, false);
+        assert!(none.idx.is_empty());
     }
 
     #[test]

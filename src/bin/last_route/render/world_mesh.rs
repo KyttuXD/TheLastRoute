@@ -382,11 +382,14 @@ impl WorldMeshes {
                 fixtures: Some((0, 0, f.cols, f.rows)),
                 pad: true,
             };
-            self.meshes = build_meshes(f, &pick, &mut choices, assets, content);
+            // one texture's meshes side by side, so the batcher joins them into one draw call
+            let built = build_meshes(f, &pick, &mut choices, assets, content).into_iter().map(|m| (None, m)).collect();
+            let (drawn, meshes) = group_by_texture(built);
+            self.meshes = meshes;
+            self.drawn = drawn;
             lift(&mut self.meshes, self.dy);
             self.doors = doors;
             self.lift_doors();
-            self.drawn = vec![None; self.meshes.len()];
             self.bounds = mesh_bounds(&self.meshes);
             return;
         };
@@ -460,20 +463,7 @@ impl WorldMeshes {
         let builds = self.builds;
         self.parts.retain(|_, p| p.used + 1 >= builds);
         // one texture's meshes side by side, so the batcher joins them into one draw call
-        let mut textures: Vec<Option<Texture2D>> = vec![];
-        let mut order: Vec<usize> = out
-            .iter()
-            .map(|(_, m)| match textures.iter().position(|t| *t == m.texture) {
-                Some(i) => i,
-                None => {
-                    textures.push(m.texture.clone());
-                    textures.len() - 1
-                }
-            })
-            .collect();
-        let mut sorted: Vec<(usize, (Option<PartKey>, Mesh))> = order.drain(..).zip(out).collect();
-        sorted.sort_by_key(|(t, _)| *t);
-        let (drawn, meshes) = sorted.into_iter().map(|(_, km)| km).unzip();
+        let (drawn, meshes) = group_by_texture(out);
         self.drawn = drawn;
         self.meshes = meshes;
         self.bounds = mesh_bounds(&self.meshes);
@@ -636,24 +626,10 @@ fn neighbour_allows(table: &StreamBudget, per_frame: usize, built: usize, elapse
     built == 0 || (built < per_frame && elapsed_ms < table.budget_ms(queued))
 }
 
-/// The meshes with one texture's side by side (so the batcher joins them), and the part each came from.
+/// The meshes with one texture's side by side (so the batcher joins them), and the part each came from. Blended meshes
+/// follow the opaque ones in the order they were built (render/mesh_batch.rs `draw_order`).
 fn group_by_texture(out: Vec<(Option<PartKey>, Mesh)>) -> (Vec<Option<PartKey>>, Vec<Mesh>) {
-    let mut textures: Vec<Option<Texture2D>> = vec![];
-    let mut sorted: Vec<(usize, (Option<PartKey>, Mesh))> = out
-        .into_iter()
-        .map(|km| {
-            let i = match textures.iter().position(|t| *t == km.1.texture) {
-                Some(i) => i,
-                None => {
-                    textures.push(km.1.texture.clone());
-                    textures.len() - 1
-                }
-            };
-            (i, km)
-        })
-        .collect();
-    sorted.sort_by_key(|(t, _)| *t);
-    sorted.into_iter().map(|(_, km)| km).unzip()
+    super::mesh_batch::group_for_batching(out).into_iter().unzip()
 }
 
 /// The distance from point `p` to the box (x0, z0, x1, z1); 0 inside it.
@@ -1872,7 +1848,8 @@ fn build_meshes(
     meshes.extend(plain.finish());
     meshes.extend(glow.finish());
     meshes.extend(water.finish());
-    meshes
+    // cut into tiles, so each mesh's box is tight enough for the scene's fog and frustum culls to drop what is out of view
+    meshes.into_iter().flat_map(|m| super::mesh_batch::split_into_tiles(m, super::mesh_batch::tile_size())).collect()
 }
 
 /// The radians a room prop's model is turned by when it is drawn, from its gameplay yaw. Godot turns every

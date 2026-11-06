@@ -5,7 +5,7 @@
 use super::anim::held::{self, HeldId, HeldState, Motion};
 use super::anim::hide;
 use super::builder::Builder;
-use super::scene::{camera, item_file, item_model, lighting, view, BATTERY};
+use super::scene::{camera_from_view, flickered, item_file, item_model, lighting_from_view, view, BATTERY};
 use super::shader;
 use crate::shared::assets::Assets;
 use crate::config::WALL_HEIGHT;
@@ -97,18 +97,120 @@ fn motion_now(g: &Game, item: Item, eye: Vec3, fwd: Vec3) -> (Option<(HeldId, Mo
     })
 }
 
-pub fn draw_viewmodel(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
-    set_camera(&camera(g, rt));
-    clear_background(Color::new(0.0, 0.0, 0.0, 0.0));
-    if hide::player_now().weight >= 1.0 || g.report.is_some() || g.escape.is_some() || g.ladder.is_some() {
-        return;
+/// What the first-person layer (the held item and the hands, drawn into their own target so walls never cut through them)
+/// shows this frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayerContent {
+    /// Nothing: no item in hand, or the runner is hidden away, caught or dead.
+    Empty,
+    /// The held item, with the runner's hand under it.
+    HeldItem,
+    /// The two hands of a ladder climb.
+    LadderHands,
+}
+
+/// What the layer shows. The held item is drawn unless the runner is fully hidden (`hidden_away`), the run has ended or a
+/// hunter holds her, or she is on a ladder (which draws its own hands, `ladder_hands`).
+pub fn layer_content(hidden_away: bool, report: bool, held: bool, on_ladder: bool, has_item: bool, ladder_hands: bool) -> LayerContent {
+    if !(hidden_away || report || held || on_ladder) && has_item {
+        LayerContent::HeldItem
+    } else if ladder_hands {
+        LayerContent::LadderHands
+    } else {
+        LayerContent::Empty
     }
-    let Some(item) = g.selected_item() else {
-        return;
-    };
+}
+
+/// What to do with the layer's target this frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayerAction {
+    /// Nothing: the target is already clear and stays so, so no pass is run and the layer is not blitted.
+    Skip,
+    /// Clear the target once (it held last frame's item, or is new), and do not blit it.
+    ClearOnly,
+    /// Draw the layer and blit it.
+    Draw,
+}
+
+/// Which target the layer is known to be clear for, so an empty layer costs a pass once and not every frame.
+pub struct LayerState<K> {
+    clean_for: Option<K>,
+}
+
+impl<K: PartialEq + Copy> LayerState<K> {
+    pub const fn new() -> Self {
+        LayerState { clean_for: None }
+    }
+
+    /// The action for a frame with `content` going to `target`.
+    pub fn next(&mut self, content: LayerContent, target: K) -> LayerAction {
+        if content != LayerContent::Empty {
+            self.clean_for = None;
+            return LayerAction::Draw;
+        }
+        if self.clean_for == Some(target) {
+            LayerAction::Skip
+        } else {
+            self.clean_for = Some(target);
+            LayerAction::ClearOnly
+        }
+    }
+
+    /// The target's contents are unknown again (it was made anew).
+    pub fn forget(&mut self) {
+        self.clean_for = None;
+    }
+}
+
+type LayerTarget = (macroquad::miniquad::TextureId, u32, u32);
+
+thread_local! {
+    static LAYER: RefCell<LayerState<LayerTarget>> = const { RefCell::new(LayerState::new()) };
+}
+
+/// The render targets were made anew: the layer's contents are unknown until it is cleared once.
+pub fn forget_layer() {
+    LAYER.with(|l| l.borrow_mut().forget());
+}
+
+/// Draws the first-person layer into `rt`: the held item and the hand under it, or the ladder hands, lit once with the
+/// room's lamps from one reading of the runner's view. An empty layer is cleared once and then left alone. Returns whether
+/// the layer holds anything to blit over the scene.
+pub fn draw_view_layer(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) -> bool {
+    let item = g.selected_item();
+    let content = layer_content(
+        hide::player_now().weight >= 1.0,
+        g.report.is_some(),
+        g.escape.is_some(),
+        g.ladder.is_some(),
+        item.is_some(),
+        super::fp_hands::ladder_hands_wanted(g),
+    );
+    let target = (rt.texture.raw_miniquad_id(), rt.texture.width() as u32, rt.texture.height() as u32);
+    let action = LAYER.with(|l| l.borrow_mut().next(content, target));
+    if action == LayerAction::Skip {
+        return false;
+    }
+    let v = view(g);
+    set_camera(&camera_from_view(g, rt, v));
+    super::draw_stats::note_flush();
+    clear_background(Color::new(0.0, 0.0, 0.0, 0.0));
+    if action == LayerAction::ClearOnly {
+        return false;
+    }
     gl_use_material(mat);
-    shader::apply(mat, &lighting(g), &super::scene::flickered(g, &g.world.lamps));
-    let (eye, fwd, right, up) = view(g);
+    shader::apply(mat, &lighting_from_view(g, v), &flickered(g, &g.world.lamps));
+    match (content, item) {
+        (LayerContent::HeldItem, Some(item)) => draw_held_item(g, a, item, v),
+        (LayerContent::LadderHands, _) => super::fp_hands::draw_ladder_hands(g, a, v),
+        _ => {}
+    }
+    gl_use_default_material();
+    true
+}
+
+/// The held `item` in the layer, the camera and the material already set.
+fn draw_held_item(g: &Game, a: &Assets, item: Item, (eye, fwd, right, up): (Vec3, Vec3, Vec3, Vec3)) {
     let (motion, push) = motion_now(g, item, eye, fwd);
     // the taser kick shows the taser whatever was held (_animate_taser_fire makes its view visible)
     let shown = match motion {
@@ -169,5 +271,52 @@ pub fn draw_viewmodel(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
             b.draw_and_clear();
         }
     }
-    gl_use_default_material();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_layer_holds_the_item_unless_hidden_caught_or_climbing() {
+        // (hidden away, report, held by a hunter, on a ladder, has an item, ladder hands wanted)
+        let c = layer_content;
+        assert_eq!(c(false, false, false, false, true, false), LayerContent::HeldItem);
+        assert_eq!(c(true, false, false, false, true, false), LayerContent::Empty, "hidden away");
+        assert_eq!(c(false, true, false, false, true, false), LayerContent::Empty, "the run has ended");
+        assert_eq!(c(false, false, true, false, true, false), LayerContent::Empty, "held by a hunter");
+        assert_eq!(c(false, false, false, false, false, false), LayerContent::Empty, "nothing in hand");
+        // on a ladder the item is not drawn, the hands are
+        assert_eq!(c(false, false, false, true, true, true), LayerContent::LadderHands);
+        assert_eq!(c(false, false, false, true, false, true), LayerContent::LadderHands);
+        assert_eq!(c(false, false, false, true, true, false), LayerContent::Empty);
+    }
+
+    #[test]
+    fn an_empty_layer_costs_one_clear_and_then_nothing() {
+        let mut s: LayerState<u32> = LayerState::new();
+        // the first empty frame clears whatever the target held (it may be new)
+        assert_eq!(s.next(LayerContent::Empty, 1), LayerAction::ClearOnly);
+        for _ in 0..5 {
+            assert_eq!(s.next(LayerContent::Empty, 1), LayerAction::Skip, "no pass and no blit while nothing is held");
+        }
+        // drawing dirties it; the first empty frame after clears it again
+        assert_eq!(s.next(LayerContent::HeldItem, 1), LayerAction::Draw);
+        assert_eq!(s.next(LayerContent::LadderHands, 1), LayerAction::Draw);
+        assert_eq!(s.next(LayerContent::Empty, 1), LayerAction::ClearOnly);
+        assert_eq!(s.next(LayerContent::Empty, 1), LayerAction::Skip);
+    }
+
+    #[test]
+    fn a_new_target_or_a_forgotten_one_is_cleared_before_it_is_skipped() {
+        let mut s: LayerState<u32> = LayerState::new();
+        assert_eq!(s.next(LayerContent::Empty, 1), LayerAction::ClearOnly);
+        assert_eq!(s.next(LayerContent::Empty, 1), LayerAction::Skip);
+        // the targets were resized: a different target is not known clear
+        assert_eq!(s.next(LayerContent::Empty, 2), LayerAction::ClearOnly);
+        assert_eq!(s.next(LayerContent::Empty, 2), LayerAction::Skip);
+        // made anew under the same id: forgotten
+        s.forget();
+        assert_eq!(s.next(LayerContent::Empty, 2), LayerAction::ClearOnly);
+    }
 }

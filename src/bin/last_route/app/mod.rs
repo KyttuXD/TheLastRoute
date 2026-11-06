@@ -71,6 +71,8 @@ pub fn targets(old: Option<Targets>, quality: &str) -> Targets {
             return t;
         }
     }
+    // new render targets hold nothing known: the held-item layer clears its target once before it skips an empty frame
+    crate::render::viewmodel::forget_layer();
     let make = || {
         let rt = render_target_ex(
             w,
@@ -107,11 +109,15 @@ pub fn render_play_with(g: &Game, a: &Assets, mat: &Material, t: &Targets, remot
         let _t = perf::section("remote players");
         world_sync::draw_remotes(g, a, mat, &t.scene, remotes);
     }
-    {
+    // The scene's draw calls are queued by macroquad until the next camera change, which the viewmodel's camera makes. While
+    // the full panel shows, they are sent here instead, so the panel can time the GL submit ("gl flush") apart from the
+    // viewmodel; the same work in the same order (the camera is unchanged), only started a few lines early.
+    perf::flush_timed("gl flush");
+    let view_layer = {
         let _t = perf::section("viewmodel");
-        viewmodel::draw_viewmodel(g, a, mat, &t.view);
-        crate::render::fp_hands::draw_ladder_hands(g, a, mat, &t.view);
-    }
+        viewmodel::draw_view_layer(g, a, mat, &t.view)
+    };
+    perf::flush_timed("gl flush view");
     set_default_camera();
     clear_background(BLACK);
     let p = DrawTextureParams {
@@ -121,7 +127,10 @@ pub fn render_play_with(g: &Game, a: &Assets, mat: &Material, t: &Targets, remot
         ..Default::default()
     };
     draw_texture_ex(&t.scene.texture, 0.0, 0.0, WHITE, p.clone());
-    draw_texture_ex(&t.view.texture, 0.0, 0.0, WHITE, p);
+    // the held-item layer is blitted only when something was drawn into it (an empty layer is fully transparent)
+    if view_layer {
+        draw_texture_ex(&t.view.texture, 0.0, 0.0, WHITE, p);
+    }
     crate::ui::markers::draw_nametags(g, a, &t.scene, &crate::ui::markers::all_markers(g, remotes));
 }
 
@@ -1595,6 +1604,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 }
             }
             if frame >= 120 {
+                // LR_PERF_MODE=2 puts the performance panel (and its render counters) in the capture
+                perf::draw_overlay(w.assets.font.as_ref(), &crate::render::draw_stats::rows());
                 save_screen(path);
                 return;
             }
@@ -1606,7 +1617,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
         if !stress_on {
             boot.draw_frame();
         }
-        perf::draw_overlay(w.assets.font.as_ref(), &[]);
+        perf::draw_overlay(w.assets.font.as_ref(), &crate::render::draw_stats::rows());
         if shot_key {
             shots.capture();
         }

@@ -519,28 +519,42 @@ fn add_verts(
     tint: Color,
     pre: &impl Fn(Vec3) -> Vec3,
 ) {
+    let place = |v: &Vertex| {
+        let n = (nm * v.normal.truncate()).normalize_or_zero();
+        let c = [
+            (v.color[0] as f32 * tint.r) as u8,
+            (v.color[1] as f32 * tint.g) as u8,
+            (v.color[2] as f32 * tint.b) as u8,
+            v.color[3],
+        ];
+        Vertex {
+            position: xf.transform_point3(pre(v.position)),
+            uv: v.uv,
+            color: c,
+            normal: vec4(n.x, n.y, n.z, v.normal.w),
+        }
+    };
+    // The usual part: its vertices go in once and its triangles index them, so a quad costs 4 vertices and not 6. (A part
+    // too big for the 16-bit index falls through to the per-triangle path below.)
+    if verts.len() <= SHARED_PART_MAX_VERTS {
+        b.reserve(verts.len());
+        let base = b.verts.len();
+        b.verts.extend(verts.iter().map(place));
+        b.idx.extend(idx.iter().map(|&i| (base + i as usize) as u16));
+        return;
+    }
     for chunk in idx.chunks(3 * 6000) {
         b.reserve(chunk.len());
         let base = b.verts.len() as u16;
         for (k, &i) in chunk.iter().enumerate() {
-            let v = verts[i as usize];
-            let n = (nm * v.normal.truncate()).normalize_or_zero();
-            let c = [
-                (v.color[0] as f32 * tint.r) as u8,
-                (v.color[1] as f32 * tint.g) as u8,
-                (v.color[2] as f32 * tint.b) as u8,
-                v.color[3],
-            ];
-            b.verts.push(Vertex {
-                position: xf.transform_point3(pre(v.position)),
-                uv: v.uv,
-                color: c,
-                normal: vec4(n.x, n.y, n.z, v.normal.w),
-            });
+            b.verts.push(place(&verts[i as usize]));
             b.idx.push(base + k as u16);
         }
     }
 }
+
+/// The most vertices a part may have to be added whole (see `add_verts`): well under the builder's 16-bit index limit.
+const SHARED_PART_MAX_VERTS: usize = 60_000;
 
 /// Scales the vertices' alpha by `alpha` and switches them to the blended lit mode.
 fn fade_verts(verts: &mut [Vertex], alpha: f32) {
@@ -685,5 +699,63 @@ mod tests {
         cache.begin_frame();
         ask(&mut cache);
         assert_eq!(built.get(), 2);
+    }
+
+    /// A triangle list as corner positions (millimetres), sorted, whatever the vertex order.
+    fn triangle_set(ms: &[Mesh]) -> Vec<Vec<[i32; 3]>> {
+        let mut out: Vec<Vec<[i32; 3]>> = ms
+            .iter()
+            .flat_map(|m| {
+                m.indices.chunks_exact(3).map(|t| {
+                    t.iter()
+                        .map(|&i| {
+                            let p = m.vertices[i as usize].position;
+                            [(p.x * 1000.0).round() as i32, (p.y * 1000.0).round() as i32, (p.z * 1000.0).round() as i32]
+                        })
+                        .collect()
+                })
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn a_part_is_added_with_shared_vertices_and_the_same_triangles() {
+        // two quads (4 vertices, 6 indices each) in a part: 8 vertices, not the 12 a per-triangle copy takes
+        let quad = |x: f32| -> Vec<Vertex> {
+            [vec3(x, 0.0, 0.0), vec3(x + 1.0, 0.0, 0.0), vec3(x + 1.0, 1.0, 0.0), vec3(x, 1.0, 0.0)]
+                .iter()
+                .map(|&p| white_vertex(p, vec2(p.x, p.y), vec3(0.0, 0.0, 1.0)))
+                .collect()
+        };
+        let mut verts = quad(0.0);
+        verts.extend(quad(3.0));
+        let idx: Vec<u32> = vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
+        let xf = Mat4::from_translation(vec3(2.0, 0.0, 5.0)) * Mat4::from_rotation_y(0.7);
+        let nm = Mat3::from_mat4(xf).inverse().transpose();
+        let mut shared = Builder::new(None);
+        add_verts(&mut shared, &verts, &idx, xf, nm, WHITE, &|p| p);
+        let shared = shared.finish();
+        assert_eq!(shared.iter().map(|m| m.vertices.len()).sum::<usize>(), 8);
+        assert_eq!(shared.iter().map(|m| m.indices.len()).sum::<usize>(), 12);
+        // the expected triangles, placed one by one
+        let mut want: Vec<Vec<[i32; 3]>> = idx
+            .chunks_exact(3)
+            .map(|t| {
+                t.iter()
+                    .map(|&i| {
+                        let p = xf.transform_point3(verts[i as usize].position);
+                        [(p.x * 1000.0).round() as i32, (p.y * 1000.0).round() as i32, (p.z * 1000.0).round() as i32]
+                    })
+                    .collect()
+            })
+            .collect();
+        want.sort();
+        assert_eq!(triangle_set(&shared), want);
+        // the box test geometry keeps its triangle count and every index in range
+        let boxed = build(Mat4::IDENTITY, WHITE);
+        assert_eq!(boxed.iter().map(|m| m.indices.len()).sum::<usize>(), 36);
+        assert!(boxed.iter().all(|m| m.indices.iter().all(|&i| (i as usize) < m.vertices.len())));
     }
 }
