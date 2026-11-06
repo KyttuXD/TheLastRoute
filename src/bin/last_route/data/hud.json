@@ -3,12 +3,6 @@
   "danger": {
     "safe_below": 40,
     "low_from": 75,
-    "pulse_from": 0.35,
-    "pulse_speed": 3.0,
-    "pulse_speed_per_danger": 6.0,
-    "pulse_width": 10.0,
-    "pulse_alpha": 0.55,
-    "pulse_floor": 0.55,
     "meter_min_width": 72.0
   },
   "labels": {
