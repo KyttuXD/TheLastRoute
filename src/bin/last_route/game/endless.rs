@@ -3710,6 +3710,121 @@ mod walked_stair_tests {
             let here = ids(&g);
             assert_eq!(g.specialty.visible[0], here.iter().any(|h| h == "glyra"));
         }
+
+        /// The bar's invariants on any floor: a slot shows exactly when one of its hunters exists here (active or stored
+        /// on level 0), a hidden item slot holds nothing and is not in hand, the runner never holds a second music box
+        /// (slot plus pack), and nothing is heard without Glyra.
+        fn bar_is_consistent(g: &Game) {
+            let mut here = ids(g);
+            here.extend(g.inf.as_ref().unwrap().stored_hunter_ids().iter().map(|s| s.to_string()));
+            let has = |id: &str| here.iter().any(|h| h == id);
+            assert_eq!(g.specialty.visible[0], has("glyra"), "slot 6 follows Glyra on {:?}", here);
+            assert_eq!(g.specialty.visible[1], has("wynelle") || has("solyth"), "slot 7 follows Wynelle and Solyth on {:?}", here);
+            for i in 0..2 {
+                if !g.specialty.visible[i] {
+                    assert_eq!(g.specialty.items[i], None, "a hidden slot {i} holds nothing");
+                }
+            }
+            if let Some(s) = g.specialty.selected {
+                assert!(g.specialty.visible[s], "the hand is never on a hidden slot");
+            }
+            let boxes = boxes_in_pack(g) + usize::from(g.specialty.items[0] == Some(SpecItem::MusicBox));
+            assert!(boxes <= 1, "never two boxes");
+            if !g.specialty.visible[0] {
+                assert_eq!(g.music_box_heard(), 0.0, "nothing is heard without Glyra");
+            }
+        }
+
+        #[test]
+        fn rapid_back_and_forth_never_doubles_or_loses_what_stays() {
+            // both floors have the whole set: nothing may ever change hands
+            let (mut g, to, content, catalog) = two_floors(&["glyra", "wynelle", "solyth"], &["glyra", "wynelle", "solyth"]);
+            g.press_specialty(1);
+            g.specialty.items[1] = Some(SpecItem::Temperature(Mode::Cold));
+            g.music_box_left = 90.0;
+            for n in 0..40 {
+                let want = if n % 2 == 0 { to } else { 0 };
+                assert!(g.relabel(want, &content, &catalog), "hop {n}");
+                bar_is_consistent(&g);
+                assert_eq!(g.specialty.items[0], Some(SpecItem::MusicBox), "the unspent box stays, hop {n}");
+                assert_eq!(g.specialty.temp_mode(), Some(Mode::Cold), "hop {n}");
+                assert_eq!(g.specialty.selected, Some(1), "hop {n}");
+                assert_eq!(g.music_box_left, 90.0, "hop {n}");
+                assert_eq!(boxes_in_pack(&g), 0);
+            }
+        }
+
+        #[test]
+        fn rapid_back_and_forth_with_glyra_on_one_floor_never_mints_a_second_box() {
+            let (mut g, to, content, catalog) = two_floors(&["glyra", "wynelle"], &["wynelle"]);
+            for n in 0..40 {
+                // the step may itself relabel the body back (it stands on the flight of the floor it came from), so hop from
+                // wherever the label is: the labels flip every frame, the way a runner dithering on a flight does
+                let want = if g.inf.as_ref().unwrap().level == 0 { to } else { 0 };
+                assert!(g.relabel(want, &content, &catalog), "hop {n}");
+                bar_is_consistent(&g);
+                assert_eq!(g.specialty.visible[0], want == 0, "hop {n}");
+                g.step(1.0 / 60.0, &Controls::default(), &content, &catalog, &Sounds::default());
+                bar_is_consistent(&g);
+                let now = g.inf.as_ref().unwrap().level;
+                assert_eq!(g.specialty.visible[0], now == 0, "hop {n}");
+                assert_eq!(g.specialty.items[0].is_some(), now == 0, "one box on Glyra's floor, none off it, hop {n}");
+                assert_eq!(boxes_in_pack(&g), 0, "hop {n}");
+            }
+        }
+
+        #[test]
+        fn a_floor_with_neither_pair_hunter_shows_only_the_reserved_slots() {
+            let (mut g, to, content, catalog) = two_floors(&["glyra", "wynelle"], &["nyxie"]);
+            g.press_specialty(0);
+            g.music_box_left = 12.0;
+            assert!(g.relabel(to, &content, &catalog));
+            bar_is_consistent(&g);
+            assert_eq!(g.specialty.visible, [false, false, true, true]);
+            assert_eq!(g.specialty.items, [None; 4]);
+            assert_eq!(g.specialty.selected, None);
+            assert_eq!(g.music_box_heard(), 0.0);
+            assert_eq!(g.music_box_left, 12.0, "the wind is the runner's and keeps");
+            // a key on a hidden or reserved slot does nothing
+            for i in 0..2 {
+                g.press_specialty(i);
+                assert_eq!(g.specialty.selected, None, "slot {i}");
+            }
+            // frames on the floor change nothing either (a step may label the body back to the floor it stands on the
+            // flight of; the bar then is that floor's, and the invariants hold either way)
+            for _ in 0..5 {
+                g.step(1.0 / 60.0, &Controls::default(), &content, &catalog, &Sounds::default());
+                bar_is_consistent(&g);
+                if g.inf.as_ref().unwrap().level == to {
+                    assert_eq!(g.specialty.items, [None; 4]);
+                }
+            }
+            // and the floor with the pair is granted again, once
+            if g.inf.as_ref().unwrap().level != 0 {
+                assert!(g.relabel(0, &content, &catalog));
+            }
+            bar_is_consistent(&g);
+            assert_eq!(g.specialty.items[0], Some(SpecItem::MusicBox));
+        }
+
+        #[test]
+        fn a_ladder_down_then_a_manhole_chain_keeps_the_bar_consistent_each_hop() {
+            use crate::world::route::sewer::core::{LEVEL, LOWER_LEVEL};
+            let (mut g, _to, content, catalog) = two_floors(&["glyra", "wynelle"], &[]);
+            g.press_specialty(0);
+            let at = g.p.pos;
+            for lvl in [LEVEL, LOWER_LEVEL, LEVEL, 0, LOWER_LEVEL, 0] {
+                g.go_to_level(lvl, at, 0.0, &content, &catalog);
+                bar_is_consistent(&g);
+                // a frame on the new floor must not move anything the arrival frame decided
+                let (vis, items, sel) = (g.specialty.visible, g.specialty.items, g.specialty.selected);
+                g.step(1.0 / 60.0, &Controls::default(), &content, &catalog, &Sounds::default());
+                bar_is_consistent(&g);
+                assert_eq!(g.specialty.visible, vis, "floor {lvl}: the first step keeps the arrival bar");
+                assert_eq!(g.specialty.items, items, "floor {lvl}");
+                assert_eq!(g.specialty.selected, sel, "floor {lvl}");
+            }
+        }
     }
 
 }
