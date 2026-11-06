@@ -4512,4 +4512,19 @@ mod chase_speed_tests {
             println!("  fastest A-Z chase {worst:.2}, dash {:.2}", worst * HUNTER_VISIBLE_CHASE_SPEED_SCALE);
         }
     }
+
+    /// A hostile data file cannot zero, freeze or runaway the roster: the scale is clamped, junk skip entries dropped.
+    #[test]
+    fn a_hostile_scale_is_clamped_and_junk_skip_entries_are_ignored() {
+        let hi = Progression::parse(&serde_json::json!({ "chase_speed_scale": 1.0e9 }));
+        assert!(hi.chase_speed_scale <= 2.0);
+        let lo = Progression::parse(&serde_json::json!({ "chase_speed_scale": -5.0 }));
+        assert!(lo.chase_speed_scale >= 0.5);
+        let junk = Progression::parse(
+            &serde_json::json!({ "chase_speed_scale": "fast", "chase_speed_scale_skip": [1, null, "az"] }),
+        );
+        assert_eq!(junk.chase_speed_scale, Progression::default().chase_speed_scale, "a non-number keeps the default");
+        assert_eq!(junk.chase_scale_for("az"), 1.0);
+        assert_eq!(junk.chase_scale_for("void"), junk.chase_speed_scale);
+    }
 }

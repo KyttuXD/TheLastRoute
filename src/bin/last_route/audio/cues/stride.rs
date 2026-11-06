@@ -262,4 +262,24 @@ mod chase_scale_tests {
         }
         assert!(checked >= 30, "checked {checked} hunters");
     }
+
+    /// Worst case: Nightmare, deepest depth, many relays, on a clear-line dash. The stride scale must stay inside the
+    /// playback clamp or the feet slide at the speed that matters most.
+    #[test]
+    fn the_fastest_dash_never_hits_the_stride_playback_clamp() {
+        use crate::config::{Difficulty, HUNTER_DEPTH_SPEED_BONUS_MAX, HUNTER_VISIBLE_CHASE_SPEED_SCALE};
+        let rules = Progression::load();
+        let content = Content::base();
+        let nm = Difficulty::Nightmare.profile();
+        for (id, ..) in STRIDE.iter() {
+            let Some(def) = content.hunter(id) else { continue };
+            let prog = rules.chase_speed_bonus(12) + HUNTER_DEPTH_SPEED_BONUS_MAX;
+            let worst = (def.chase + prog * def.prog)
+                * rules.chase_scale_for(&def.category)
+                * nm.hunter_speed
+                * HUNTER_VISIBLE_CHASE_SPEED_SCALE;
+            let (clip, scale) = choose(id, Clip::Chase, worst);
+            assert!(scale < HARD_MAX, "{id}: worst-case dash {worst} clamps the stride ({scale} on {clip:?})");
+        }
+    }
 }
