@@ -493,6 +493,12 @@ impl Nyxie {
         self.wake == Wake::Empty
     }
 
+    /// Starts or ends the leap without the chase around it (tests).
+    #[cfg(test)]
+    pub fn set_leaping(&mut self, on: bool) {
+        self.leap.leaping = on;
+    }
+
     pub fn speed_scale(&self) -> f32 {
         self.leap.speed_scale(pounce())
     }
@@ -500,6 +506,11 @@ impl Nyxie {
     /// The leap holds her position (the leap moves her itself).
     pub fn holds_position(&self) -> bool {
         self.leap.leaping
+    }
+
+    /// The mechanic pose she is in: the pounce in the air (the wake is a cue).
+    pub fn mechanic(&self) -> Option<&'static str> {
+        self.leap.leaping.then_some("pounce")
     }
 
     pub fn before(&mut self, b: &mut Brain, dt: f32, c: &Ctx, t: &Target) {
@@ -542,6 +553,10 @@ impl Nyxie {
                 self.just_woke = true;
             }
             _ => {}
+        }
+        if self.just_woke {
+            // she unfolds out of the dark
+            b.raise_cue("darkness_wake");
         }
         match self.wake {
             Wake::None => {

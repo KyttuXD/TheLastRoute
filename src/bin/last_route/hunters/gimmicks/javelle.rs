@@ -10,6 +10,11 @@ pub struct Javelle {
 }
 
 impl Javelle {
+    /// The mechanic pose she is in: leaning over the locker with the runner inside, hands out to pull the door.
+    pub fn mechanic(&self) -> Option<&'static str> {
+        (self.held > 0.0).then_some("locker_loom")
+    }
+
     pub fn after(&mut self, b: &mut Brain, dt: f32, c: &Ctx, t: &Target, ev: &mut Vec<Event>) {
         let Some(spot) = t.hiding_spot.filter(|_| t.hidden) else {
             self.held = 0.0;

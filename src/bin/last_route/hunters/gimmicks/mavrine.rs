@@ -35,6 +35,21 @@ impl Mavrine {
         self.phase == Phase::Survey
     }
 
+    /// The invisible mark she projected (tests stand the runner on it).
+    #[cfg(test)]
+    pub fn mark(&self) -> Option<(f32, f32)> {
+        self.mark
+    }
+
+    /// The mechanic pose she is in: standing still taking her bearings (the survey), then the ping when a mark is crossed.
+    pub fn mechanic(&self) -> Option<&'static str> {
+        match self.phase {
+            Phase::Survey => Some("survey"),
+            Phase::Ping => Some("ping_mark"),
+            _ => None,
+        }
+    }
+
     pub fn before(&mut self, b: &mut Brain, dt: f32, c: &Ctx, t: &Target) {
         if b.state == State::Chase && matches!(self.phase, Phase::Cooldown | Phase::Survey) {
             self.timer = self.timer.max(6.2 * 0.35);

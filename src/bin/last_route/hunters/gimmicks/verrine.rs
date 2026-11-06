@@ -19,6 +19,11 @@ impl Default for Verrine {
 }
 
 impl Verrine {
+    /// The mechanic pose she is in: crawling low through the vents after the runner.
+    pub fn mechanic(&self) -> Option<&'static str> {
+        self.active_in_vent.then_some("vent_stalk")
+    }
+
     pub fn after(&mut self, b: &mut Brain, t: &Target) {
         self.active_in_vent = t.in_vent;
         if !t.in_vent {

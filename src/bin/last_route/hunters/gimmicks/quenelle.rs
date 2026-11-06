@@ -55,6 +55,11 @@ impl Quenelle {
         self.lock_seconds
     }
 
+    /// The mechanic pose she is in: locked on and the torch is lit, so she is straining toward it (every flick makes her faster).
+    pub fn mechanic(&self) -> Option<&'static str> {
+        (self.tracking && self.was_on).then_some("torch_frenzy")
+    }
+
     pub fn before(&mut self, b: &mut Brain, dt: f32, t: &Target) {
         let lit = t.flashlight_on && t.lamp_charge > 0.0 && !t.hidden;
         if lit && !self.was_on {
@@ -65,6 +70,8 @@ impl Quenelle {
             self.elapsed = if lit { self.elapsed + dt } else { 0.0 };
             if self.elapsed >= self.lock_seconds {
                 self.tracking = true;
+                // the lock: she turns on the light and stays on it
+                b.raise_cue("lock_on");
             }
         }
         let progress = (self.activations as f32 / 10.0).min(1.0);

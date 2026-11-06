@@ -809,6 +809,11 @@ pub(super) fn frame_entry(index: usize, h: &Brain) -> Value {
         entry["phase"] = json!(phase);
         entry["bark_seq"] = json!(bark_seq);
     }
+    // the mechanic animation she is in (hunters/mechanics.rs): a guest plays the same one. Absent when none, so an older
+    // guest sees the frame it always did and a newer guest clears the pose.
+    if let Some(m) = h.mechanic() {
+        entry["mech"] = json!(m);
+    }
     entry
 }
 

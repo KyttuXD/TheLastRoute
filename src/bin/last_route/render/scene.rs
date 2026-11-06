@@ -767,6 +767,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
                     }),
                     _ => None,
                 },
+                mechanic: anim::profile::mechanic_of(h),
             };
             let (pose, normal) = view.update(&input, dt, g.time);
             let out = grab::drive(
@@ -801,6 +802,12 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
                 );
                 crate::render::draw_stats::draw_counted(mesh);
             });
+            // the item a mechanic animation puts in her hand (Ysolde's stolen battery, Glyra's music box), on the hand bone
+            if let (Some((item, hand)), Some(d)) = (view.held_prop(&out), crate::net::held_wire::data()) {
+                if let Some(m) = item_model(a, item_file(item)) {
+                    m.draw_faded(crate::net::held_wire::item_transform(d, item, out.root, hand, rig.draw_scale()), WHITE);
+                }
+            }
             let star = if view.heavy(&input) {
                 Color::new(1.0, 0.42, 0.18, 1.0)
             } else {

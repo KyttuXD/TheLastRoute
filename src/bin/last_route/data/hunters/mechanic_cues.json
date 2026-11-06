@@ -1,0 +1,28 @@
+{
+  "schema": "lr.mechanic_cues/1",
+  "_about": "How long each one-shot hunter mechanic animation is raised for (hunters/mechanics.rs). A gimmick raises the cue in its own hook at the real gameplay event (a battery taken, a tripwire hit, a fake cue sent...) and the host keeps the name on the hunter for `seconds`; the pose it plays is in data/render/hunter_anims.json `states`. Continuous mechanics (reaching for a battery, the music box hold...) have no entry here: they last as long as the gimmick's own state. `net_ttl` is how long a guest keeps the name the host last sent when no newer frame arrives. A cue never moves or freezes the hunter: the pose is laid over the walk.",
+  "net_ttl": 0.6,
+  "seconds": {
+    "pocket_battery": 0.9,
+    "burn_battery": 1.1,
+    "fuse_burst": 0.8,
+    "lock_on": 1.5,
+    "flash_recoil": 1.0,
+    "pounce_curse": 1.4,
+    "lay_wire": 1.4,
+    "tripwire_snap": 1.0,
+    "mimic_cue": 1.4,
+    "shapeshift": 1.2,
+    "materialize": 1.2,
+    "music_box_startle": 1.2,
+    "music_box_settle": 2.0,
+    "darkness_wake": 1.2,
+    "reveal_flinch": 1.0,
+    "jam_cast": 1.2,
+    "signal_ping": 1.4,
+    "vent_surface": 1.2,
+    "sabotage_cast": 1.5,
+    "footstep_trick": 1.2,
+    "static_cast": 1.5
+  }
+}

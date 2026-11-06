@@ -60,6 +60,23 @@ impl Solyth {
         self.leap.leaping
     }
 
+    /// The mechanic pose she is in: the pounce in the air, else shrinking from the runner's cold source.
+    pub fn mechanic(&self) -> Option<&'static str> {
+        if self.leap.leaping {
+            Some("pounce")
+        } else if self.deterred() {
+            Some("cold_recoil")
+        } else {
+            None
+        }
+    }
+
+    /// Starts or ends the leap without the chase around it (tests).
+    #[cfg(test)]
+    pub fn set_leaping(&mut self, on: bool) {
+        self.leap.leaping = on;
+    }
+
     pub fn speed_scale(&self) -> f32 {
         self.leap.speed_scale(pounce())
     }
@@ -85,6 +102,8 @@ impl Solyth {
             self.burn -= 30.0;
             if let Some(i) = (0..c.batteries_taken.len()).find(|i| !c.batteries_taken[*i]) {
                 ev.push(Event::TakeBattery(i));
+                // the burn: the battery in her fist, crushed to ash
+                b.raise_cue("burn_battery");
             }
         }
         if self.deterred() && !self.leap.leaping {

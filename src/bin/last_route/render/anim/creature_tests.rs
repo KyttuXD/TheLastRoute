@@ -136,6 +136,7 @@ fn input(pos: (f32, f32), creature: Option<CreatureInput>, state: State) -> Inpu
         grabbing: false,
         peek_lean: None,
         creature,
+        mechanic: None,
     }
 }
 

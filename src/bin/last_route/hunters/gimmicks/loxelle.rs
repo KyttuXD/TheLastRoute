@@ -56,6 +56,15 @@ impl Loxelle {
         matches!(self.phase, Phase::Windup | Phase::Charge)
     }
 
+    /// The mechanic pose she is in: coiled back for the windup, then driving forward for the charge.
+    pub fn mechanic(&self) -> Option<&'static str> {
+        match self.phase {
+            Phase::Windup => Some("charge_windup"),
+            Phase::Charge => Some("charge_lunge"),
+            _ => None,
+        }
+    }
+
     pub fn after(&mut self, b: &mut Brain, dt: f32, c: &Ctx, t: &Target, ev: &mut Vec<Event>) {
         if t.pesticide {
             return;

@@ -17,6 +17,8 @@ impl Elise {
             }
             if self.progress >= 1.0 {
                 self.locked = true;
+                // the fifty seconds are up: she snaps round to the runner for good
+                b.raise_cue("lock_on");
             }
         }
         if self.locked {

@@ -14,6 +14,11 @@ pub struct Wynelle {
 }
 
 impl Wynelle {
+    /// The mechanic pose she is in: arms out over the runner while the cold closes in (the ten-second clock).
+    pub fn mechanic(&self) -> Option<&'static str> {
+        self.materialized.then_some("freeze_cast")
+    }
+
     pub fn before(&mut self, b: &mut Brain, dt: f32, c: &Ctx, t: &Target, ev: &mut Vec<Event>) {
         if c.diff == crate::config::Difficulty::Relaxed {
             b.active = false;
@@ -59,6 +64,8 @@ impl Wynelle {
             return;
         }
         self.materialized = true;
+        // she rises out of the cold beside the runner
+        b.raise_cue("materialize");
         b.active = true;
         b.pos = t.pos;
         b.chase(t.pos);

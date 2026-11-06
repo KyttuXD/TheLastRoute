@@ -66,6 +66,8 @@ impl Ravelle {
         if !self.has_wires || self.refresh <= 0.0 {
             if !self.has_wires || !self.window_triggered {
                 self.place(b, c);
+                // she crouches and works a wire across the doorway (the wires appear wherever the doorways are)
+                b.raise_cue("lay_wire");
             }
             self.refresh = 30.0;
             self.window_triggered = false;
@@ -81,6 +83,8 @@ impl Ravelle {
             self.window_triggered = true;
             self.triggered += 1;
             ev.push(Event::Stun(1.6));
+            // the wire snaps taut: she punches the air
+            b.raise_cue("tripwire_snap");
             ev.push(Event::FacilityAlert {
                 at: t.pos,
                 except_self: false,

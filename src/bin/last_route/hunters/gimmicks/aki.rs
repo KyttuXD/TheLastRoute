@@ -12,6 +12,11 @@ pub struct Aki {
 }
 
 impl Aki {
+    /// The mechanic pose she is in: the fuse is burning (the burst itself is a cue).
+    pub fn mechanic(&self) -> Option<&'static str> {
+        self.armed.then_some("fuse_lit")
+    }
+
     pub fn before(&mut self, b: &mut Brain, dt: f32, _c: &Ctx, ev: &mut Vec<Event>) {
         if !self.armed {
             // reads last frame's flash, as the original's hook order does
@@ -31,6 +36,8 @@ impl Aki {
             noise_add: 0.0,
             temperature_add: 0.0,
         });
+        // the burst: she flings her arms wide and throws her head back as the exposure spikes
+        b.raise_cue("fuse_burst");
         self.bursts_remaining = (self.bursts_remaining - 1).max(0);
         if self.bursts_remaining <= 0 {
             self.armed = false;

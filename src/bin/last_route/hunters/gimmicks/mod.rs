@@ -30,6 +30,11 @@ pub mod xivvy;
 pub mod ysolde;
 pub mod zellia;
 
+#[cfg(test)]
+pub mod bench;
+#[cfg(test)]
+mod mechanic_tests;
+
 pub use ceryth::Ceryth;
 pub use glyra::Glyra;
 pub use nyxie::Nyxie;
@@ -37,7 +42,7 @@ pub use opalie::Opalie;
 pub use verrine::Verrine;
 pub use zellia::Zellia;
 
-use super::brain::{Brain, Target};
+use super::brain::{dist, Brain, State, Target};
 use crate::config::Difficulty;
 use crate::world::{Cell, Facility};
 
@@ -214,6 +219,7 @@ impl Gimmick {
         t: &Target,
         ev: &mut Vec<Event>,
     ) {
+        let first = ev.len();
         match self {
             Gimmick::Aki(g) => g.before(b, dt, c, ev),
             Gimmick::Elise(g) => g.before(b, dt, t),
@@ -252,6 +258,7 @@ impl Gimmick {
             Gimmick::VoidYellow(g) => g.before(dt, t.map_open),
             _ => {}
         }
+        self.raise_event_cues(b, &ev[first..]);
         silence_callouts(ev);
     }
 
@@ -263,6 +270,7 @@ impl Gimmick {
         t: &Target,
         ev: &mut Vec<Event>,
     ) {
+        let first = ev.len();
         match self {
             Gimmick::Briselle(g) => g.after(b, dt, c),
             Gimmick::Ceryth(g) => g.after(b, c),
@@ -289,7 +297,58 @@ impl Gimmick {
             }
             _ => {}
         }
+        self.raise_event_cues(b, &ev[first..]);
         silence_callouts(ev);
+    }
+
+    /// The mechanic animation her gimmick has her in right now (hunters/mechanics.rs `HELD`), or None. It lasts as long
+    /// as the state does; the one-shot ones are raised as cues at their event (`Brain::raise_cue`) and win over this.
+    pub fn mechanic(&self, b: &Brain) -> Option<&'static str> {
+        match self {
+            Gimmick::Aki(g) => g.mechanic(),
+            Gimmick::Briselle(g) => g.mechanic(),
+            Gimmick::Ceryth(g) => g.mechanic(),
+            Gimmick::Glyra(g) => g.mechanic(b),
+            Gimmick::Haelith => (b.active && b.state == State::Investigate && b.last_known.is_some_and(|k| dist(k, b.pos) < 1.4))
+                .then_some("relay_camp"),
+            Gimmick::Ilyra(g) => g.mechanic(),
+            Gimmick::Javelle(g) => g.mechanic(),
+            // the search beam found the runner this frame (kathy.rs)
+            Gimmick::Kathy => (b.ability_direct_sight && b.state == State::Chase).then_some("beam_spot"),
+            Gimmick::Loxelle(g) => g.mechanic(),
+            Gimmick::Mavrine(g) => g.mechanic(),
+            Gimmick::Nyxie(g) => g.mechanic(),
+            Gimmick::Opalie(g) => g.mechanic(),
+            Gimmick::Quenelle(g) => g.mechanic(),
+            Gimmick::Solyth(g) => g.mechanic(),
+            Gimmick::Verrine(g) => g.mechanic(),
+            Gimmick::Wynelle(g) => g.mechanic(),
+            Gimmick::Ysolde(g) => g.mechanic(),
+            Gimmick::Zellia(g) => g.mechanic(),
+            Gimmick::VoidBlack(g) => g.watched.then_some("watched_freeze"),
+            // her sight has been building toward the ping (void_cyan.rs): arms to her head
+            Gimmick::VoidCyan(g) => (g.cooldown_left() <= 0.0 && g.sight_built() > 0.4).then_some("signal_lock"),
+            Gimmick::VoidWhite(g) => g.lit.then_some("beam_flinch"),
+            _ => None,
+        }
+    }
+
+    /// The one-shot mechanic animations the void hunters raise at the event their hook just pushed (the other gimmicks raise
+    /// theirs where they push the event). Read before `silence_callouts`, which drops the announcements these ride on.
+    fn raise_event_cues(&self, b: &mut Brain, events: &[Event]) {
+        for e in events {
+            let cue = match (self, e) {
+                (Gimmick::VoidBrown(_), Event::SpotDisabled(_, true)) => "jam_cast",
+                (Gimmick::VoidBlue(_), Event::Message(m)) if m == void::void_blue::REVEAL_MESSAGE => "reveal_flinch",
+                (Gimmick::VoidCyan(_), Event::FacilityAlert { .. }) => "signal_ping",
+                (Gimmick::VoidGreen(_), Event::Message(m)) if m == void::void_green::VENT_CLATTER => "vent_surface",
+                (Gimmick::VoidOrange(_), Event::SystemOutage(_)) => "sabotage_cast",
+                (Gimmick::VoidPink(_), Event::FakeFootsteps(_)) => "footstep_trick",
+                (Gimmick::VoidPurple(_), Event::RadarCorrupt(_)) => "static_cast",
+                _ => continue,
+            };
+            b.raise_cue(cue);
+        }
     }
 
     pub fn speed_scale(&self, b: &Brain) -> f32 {

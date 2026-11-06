@@ -35,6 +35,8 @@ impl Ferryn {
             b.state = State::Wander;
             b.last_known = None;
             if flashed {
+                // the flash drives her back to her room: she is back there, arms over her face
+                b.raise_cue("flash_recoil");
                 ev.push(Event::Meter {
                     exposure_add: 0.0,
                     noise_add: 100.0,

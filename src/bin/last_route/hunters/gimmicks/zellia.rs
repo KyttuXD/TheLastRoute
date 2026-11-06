@@ -49,6 +49,11 @@ impl Zellia {
         true
     }
 
+    /// The mechanic pose she is in: both hands out over the counter while the runner has her shop open.
+    pub fn mechanic(&self) -> Option<&'static str> {
+        self.shop_open.then_some("trade_offer")
+    }
+
     pub fn after(&mut self, b: &mut Brain, _dt: f32, c: &Ctx, t: &Target) {
         if !self.settled {
             self.settled = true;

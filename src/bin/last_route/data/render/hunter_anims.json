@@ -1,0 +1,390 @@
+{
+  "schema": "lr.hunter_anims/1",
+  "_about": "Per-hunter animation tuning laid over each hunter's own baked clips (assets/hunters/anim/<id>.json, shaped by the original's motion.py personality profiles). Read by render/anim/profile.rs. `default` is the identity (today's look); a row under `hunters` changes only the keys it names. Keys: walk_speed / chase_speed (playback speed of the walk / chase+sprint clips on top of the stride match, 1 = legs match the ground), stride / arm_swing (how far legs / arms swing from rest while a gait clip plays), lean_deg / chase_lean_deg (extra forward torso lean walking / chasing), crouch / chase_crouch (0..1 knee bend with the hips lowered so the feet stay down; the chase one is extra while chasing), idle_sway (how much the idle clip moves), head_roll_deg (head tilt). `states` are mechanic animations switched on by name (hunters/mechanics.rs: the gimmick code raises the name at the real gameplay event, the host sends it to guests): a `clip` of the hunter's rig (skipped when the rig lacks it), `speed`, `blend`, and/or a `pose` of bone -> [x, y, z] degrees eased by `blend_in` / `blend_out`; `mode` \"set\" makes the pose relative to REST and replaces what the clips did to those bones (the same silhouette whatever the walk is doing), \"add\" (default) multiplies it onto the animated pose; `crouch` bends the knees (0..1); `then` is a second beat {after, over, pose, crouch}; `prop` puts an item model (net/held_wire.rs wire id: battery, music_box) in the right hand until `prop_until` seconds in. Rotation conventions in this rig (it faces -Z, right is +X): arm X positive raises the arm forward, arm Z positive swings the RIGHT arm out (negative for the left), forearm X positive bends the elbow, chest/belly X negative bows forward, head X negative looks down, head Y positive turns to her left. A state in a hunter's row replaces the global one of its name, null removes it. How long each one-shot lasts is data/hunters/mechanic_cues.json. The rows below are a first pass to tune by eye (docs/HUNTER_ANIMATIONS.md).",
+  "default": {},
+  "states": {
+    "climb": { "clip": "climb", "speed": 1.0, "blend": 0.15 },
+    "shapeshift": {
+      "_about": "Umbriel changes bodies (every 30 s): whatever body she wears, she locks rigid, arms stiff out from her sides, head back, then lets go.",
+      "mode": "set", "blend_in": 0.12, "blend_out": 0.3,
+      "pose": { "R-Arm": [8, 0, 30], "L-Arm": [8, 0, -30], "R-Forearm": [0, 0, 0], "L-Forearm": [0, 0, 0], "Chest": [8, 0, 0], "Head": [14, 0, 0] },
+      "then": { "after": 0.7, "over": 0.3, "pose": { "R-Arm": [8, 0, 6], "L-Arm": [8, 0, -6], "Chest": [0, 0, 0], "Head": [-6, 0, 0] } }
+    }
+  },
+  "hunters": {
+    "aki": {
+      "states": {
+        "fuse_lit": {
+          "_about": "The 10 s fuse after a flash: both hands pressed to the sides of her head.",
+          "mode": "set", "blend_in": 0.25,
+          "pose": { "R-Arm": [100, 0, 32], "R-Forearm": [120, 0, 0], "L-Arm": [100, 0, -32], "L-Forearm": [120, 0, 0], "Chest": [-6, 0, 0], "Head": [-8, 0, 0] }
+        },
+        "fuse_burst": {
+          "_about": "Each of the three exposure bursts: arms flung wide, head thrown back.",
+          "mode": "set", "blend_in": 0.06, "blend_out": 0.3,
+          "pose": { "R-Arm": [20, 0, 80], "L-Arm": [20, 0, -80], "R-Forearm": [10, 0, 0], "L-Forearm": [10, 0, 0], "Chest": [14, 0, 0], "Head": [28, 0, 0] }
+        }
+      }
+    },
+    "briselle": {
+      "states": {
+        "relay_lock": {
+          "_about": "Locked onto a recovered relay for 12 s: one arm out in front, pointing the way.",
+          "mode": "set", "blend_in": 0.2,
+          "pose": { "R-Arm": [88, 0, -4], "R-Forearm": [4, 0, 0], "Chest": [-6, 0, 0], "Head": [-4, 0, 0] }
+        }
+      }
+    },
+    "ceryth": {
+      "states": {
+        "locker_vigil": {
+          "_about": "Waiting beside her locker: arms folded, head turned to the door.",
+          "mode": "set", "blend_in": 0.4,
+          "pose": { "R-Arm": [30, 0, -14], "R-Forearm": [115, 0, 0], "L-Arm": [30, 0, 14], "L-Forearm": [115, 0, 0], "Head": [0, 22, 0] }
+        }
+      }
+    },
+    "elise": {
+      "chase_speed": 1.06,
+      "states": {
+        "lock_on": {
+          "_about": "Fifty seconds of sprinting counted: fists clenched, head snapped round, shoulders forward.",
+          "mode": "set", "blend_in": 0.08, "blend_out": 0.3,
+          "pose": { "R-Arm": [10, 0, 24], "L-Arm": [10, 0, -24], "R-Forearm": [60, 0, 0], "L-Forearm": [60, 0, 0], "Chest": [-18, 0, 0], "Head": [8, 0, 0] }
+        }
+      }
+    },
+    "ferryn": {
+      "states": {
+        "flash_recoil": {
+          "_about": "Flashed and sent back to her room: an arm over her face.",
+          "mode": "set", "blend_in": 0.06, "blend_out": 0.35,
+          "pose": { "R-Arm": [100, 0, -26], "R-Forearm": [125, 0, 0], "L-Arm": [14, 0, -10], "Chest": [10, 0, 0], "Head": [10, 0, 0] }
+        }
+      }
+    },
+    "glyra": {
+      "states": {
+        "music_box_hold": {
+          "_about": "Calm while the box plays: it is cradled in both hands at her chest, head bowed over it.",
+          "mode": "set", "blend_in": 0.5, "blend_out": 0.4, "prop": "music_box",
+          "pose": { "R-Arm": [48, 0, -12], "R-Forearm": [88, 0, 0], "L-Arm": [48, 0, 12], "L-Forearm": [88, 0, 0], "Chest": [-4, 0, 0], "Head": [-14, 0, 5] }
+        },
+        "music_box_startle": {
+          "_about": "The tune ran out: she jerks upright, the box held out, head up.",
+          "mode": "set", "blend_in": 0.07, "blend_out": 0.4, "prop": "music_box",
+          "pose": { "R-Arm": [30, 0, 30], "R-Forearm": [45, 0, 0], "L-Arm": [30, 0, -30], "L-Forearm": [45, 0, 0], "Chest": [10, 0, 0], "Head": [20, 0, 0] }
+        },
+        "music_box_settle": {
+          "_about": "The box was wound: she takes it up again, shoulders drop, head bows.",
+          "mode": "set", "blend_in": 0.2, "blend_out": 0.5, "prop": "music_box",
+          "pose": { "R-Arm": [45, 0, -10], "R-Forearm": [85, 0, 0], "L-Arm": [45, 0, 10], "L-Forearm": [85, 0, 0], "Chest": [4, 0, 0], "Head": [10, 0, 0] },
+          "then": { "after": 0.7, "over": 0.6, "pose": { "Chest": [-6, 0, 0], "Head": [-20, 0, 6] } }
+        }
+      }
+    },
+    "haelith": {
+      "chase_speed": 1.04,
+      "chase_lean_deg": 5,
+      "states": {
+        "relay_camp": {
+          "_about": "Camping a relay she wants: low, forward, hands out ready.",
+          "mode": "set", "blend_in": 0.3, "crouch": 0.8,
+          "pose": { "R-Arm": [38, 0, 8], "L-Arm": [38, 0, -8], "R-Forearm": [25, 0, 0], "L-Forearm": [25, 0, 0], "Chest": [-18, 0, 0], "Head": [10, 0, 0] }
+        }
+      }
+    },
+    "ilyra": {
+      "chase_crouch": 0.12,
+      "chase_lean_deg": 5,
+      "states": {
+        "corner_watch": {
+          "_about": "Never walks: she stands in her corner with her hands behind her, peering.",
+          "mode": "set", "blend_in": 0.4,
+          "pose": { "R-Arm": [-24, 0, 8], "L-Arm": [-24, 0, -8], "R-Forearm": [10, 0, 0], "L-Forearm": [10, 0, 0], "Chest": [-4, 0, 0], "Head": [-4, 20, 0] }
+        },
+        "pounce_curse": {
+          "_about": "Fifteen seconds after losing sight of the runner: one arm thrust out at them wherever they are.",
+          "mode": "set", "blend_in": 0.08, "blend_out": 0.4,
+          "pose": { "R-Arm": [100, 0, 0], "R-Forearm": [8, 0, 0], "L-Arm": [30, 0, -16], "Chest": [-10, 0, 0], "Head": [-8, 0, 0] }
+        }
+      }
+    },
+    "javelle": {
+      "states": {
+        "locker_loom": {
+          "_about": "Standing over the locker the runner is in: leaning in, both hands out for the door.",
+          "mode": "set", "blend_in": 0.3, "crouch": 0.4,
+          "pose": { "R-Arm": [52, 0, 8], "L-Arm": [52, 0, -8], "R-Forearm": [20, 0, 0], "L-Forearm": [20, 0, 0], "Chest": [-20, 0, 0], "Head": [-6, 0, 0] }
+        }
+      }
+    },
+    "kathy": {
+      "states": {
+        "beam_spot": {
+          "_about": "Her search beam is on the runner: an arm along the beam.",
+          "mode": "set", "blend_in": 0.15,
+          "pose": { "R-Arm": [96, 0, 8], "R-Forearm": [4, 0, 0], "Chest": [-4, 0, 0], "Head": [-4, 0, 0] }
+        }
+      }
+    },
+    "loxelle": {
+      "chase_lean_deg": 3,
+      "states": {
+        "charge_windup": {
+          "_about": "The windup before she charges a locker: coiled low, arms drawn back.",
+          "mode": "set", "blend_in": 0.15, "crouch": 0.9,
+          "pose": { "R-Arm": [-40, 0, 10], "L-Arm": [-40, 0, -10], "R-Forearm": [20, 0, 0], "L-Forearm": [20, 0, 0], "Chest": [-28, 0, 0], "Belly": [-10, 0, 0], "Head": [12, 0, 0] }
+        },
+        "charge_lunge": {
+          "_about": "The charge itself: driving forward, arms swept back.",
+          "mode": "set", "blend_in": 0.08, "crouch": 0.5,
+          "pose": { "R-Arm": [-72, 0, 12], "L-Arm": [-72, 0, -12], "R-Forearm": [18, 0, 0], "L-Forearm": [18, 0, 0], "Chest": [-35, 0, 0], "Belly": [-12, 0, 0], "Head": [20, 0, 0] }
+        }
+      }
+    },
+    "mavrine": {
+      "states": {
+        "survey": {
+          "_about": "The 0.9 s survey: standing still, arms out low, head turned, taking her bearings.",
+          "mode": "set", "blend_in": 0.12,
+          "pose": { "R-Arm": [20, 0, 36], "L-Arm": [20, 0, -36], "R-Forearm": [22, 0, 0], "L-Forearm": [22, 0, 0], "Chest": [0, -10, 0], "Head": [-5, 25, 0] }
+        },
+        "ping_mark": {
+          "_about": "A runner crossed her mark: one arm pointing straight at the spot.",
+          "mode": "set", "blend_in": 0.06,
+          "pose": { "R-Arm": [95, 0, 4], "R-Forearm": [5, 0, 0], "Chest": [-10, 0, 0], "Head": [-8, 0, 0] }
+        }
+      }
+    },
+    "nyxie": {
+      "chase_crouch": 0.1,
+      "chase_lean_deg": 4,
+      "states": {
+        "darkness_wake": {
+          "_about": "Woken by the dark: she unfolds from a crouch, arms out.",
+          "mode": "set", "blend_in": 0.1, "blend_out": 0.35, "crouch": 0.9,
+          "pose": { "R-Arm": [20, 0, 30], "L-Arm": [20, 0, -30], "Chest": [-35, 0, 0], "Head": [20, 0, 0] },
+          "then": { "after": 0.6, "over": 0.5, "crouch": 0, "pose": { "Chest": [0, 0, 0], "Head": [0, 0, 0], "R-Arm": [10, 0, 14], "L-Arm": [10, 0, -14] } }
+        },
+        "pounce": {
+          "_about": "Nightmare pounce in the air: both arms reaching, body stretched.",
+          "mode": "set", "blend_in": 0.06, "blend_out": 0.2,
+          "pose": { "R-Arm": [140, 0, 18], "L-Arm": [140, 0, -18], "R-Forearm": [8, 0, 0], "L-Forearm": [8, 0, 0], "Chest": [-30, 0, 0], "Belly": [-12, 0, 0], "Head": [12, 0, 0] }
+        }
+      }
+    },
+    "opalie": {
+      "states": {
+        "guard_post": {
+          "_about": "On station at her relay: arms crossed, chin up.",
+          "mode": "set", "blend_in": 0.4,
+          "pose": { "R-Arm": [40, 0, -20], "R-Forearm": [100, 0, 0], "L-Arm": [40, 0, 20], "L-Forearm": [100, 0, 0], "Chest": [3, 0, 0], "Head": [4, 0, 0] }
+        }
+      }
+    },
+    "quenelle": {
+      "chase_lean_deg": 4,
+      "states": {
+        "lock_on": {
+          "_about": "Eight seconds of light and she is locked on: head snaps to the torch, fists clench.",
+          "mode": "set", "blend_in": 0.08, "blend_out": 0.3,
+          "pose": { "R-Arm": [14, 0, 20], "L-Arm": [14, 0, -20], "R-Forearm": [70, 0, 0], "L-Forearm": [70, 0, 0], "Chest": [-14, 0, 0], "Head": [6, 0, 0] }
+        },
+        "torch_frenzy": {
+          "_about": "Locked on and the torch is lit: reaching for the light.",
+          "mode": "set", "blend_in": 0.2,
+          "pose": { "R-Arm": [78, 0, 8], "L-Arm": [78, 0, -8], "R-Forearm": [10, 0, 0], "L-Forearm": [10, 0, 0], "Chest": [-14, 0, 0], "Head": [8, 0, 0] }
+        }
+      }
+    },
+    "ravelle": {
+      "states": {
+        "lay_wire": {
+          "_about": "Every 30 s she strings fresh wires: crouched, both hands working low, then pulling it tight.",
+          "mode": "set", "blend_in": 0.2, "blend_out": 0.3, "crouch": 1.0,
+          "pose": { "R-Arm": [45, 0, 6], "L-Arm": [45, 0, -6], "R-Forearm": [30, 0, 0], "L-Forearm": [30, 0, 0], "Chest": [-30, 0, 0], "Head": [10, 0, 0] },
+          "then": { "after": 0.75, "over": 0.3, "pose": { "R-Arm": [80, 0, 25], "L-Arm": [20, 0, -6] } }
+        },
+        "tripwire_snap": {
+          "_about": "A wire caught the runner: a fist pumped in the air.",
+          "mode": "set", "blend_in": 0.06, "blend_out": 0.3,
+          "pose": { "R-Arm": [145, 0, 10], "R-Forearm": [100, 0, 0], "L-Arm": [10, 0, -14], "Chest": [6, 0, 0], "Head": [10, 0, 0] }
+        }
+      }
+    },
+    "solyth": {
+      "chase_speed": 1.04,
+      "chase_lean_deg": 4,
+      "states": {
+        "burn_battery": {
+          "_about": "Burning a battery every 30 s: it is crushed between her hands, then she flares her arms and the ash is gone.",
+          "mode": "set", "blend_in": 0.1, "blend_out": 0.3, "prop": "battery", "prop_until": 0.55,
+          "pose": { "R-Arm": [52, 0, -6], "R-Forearm": [95, 0, 0], "L-Arm": [52, 0, 6], "L-Forearm": [95, 0, 0], "Chest": [-12, 0, 0], "Head": [-18, 0, 0] },
+          "then": { "after": 0.55, "over": 0.2, "pose": { "R-Arm": [36, 0, 42], "L-Arm": [36, 0, -42], "R-Forearm": [30, 0, 0], "L-Forearm": [30, 0, 0], "Chest": [8, 0, 0], "Head": [18, 0, 0] } }
+        },
+        "pounce": {
+          "_about": "Nightmare pounce in the air: both arms reaching, body stretched.",
+          "mode": "set", "blend_in": 0.06, "blend_out": 0.2,
+          "pose": { "R-Arm": [140, 0, 18], "L-Arm": [140, 0, -18], "R-Forearm": [8, 0, 0], "L-Forearm": [8, 0, 0], "Chest": [-30, 0, 0], "Belly": [-12, 0, 0], "Head": [12, 0, 0] }
+        },
+        "cold_recoil": {
+          "_about": "Held off by the runner's cold source: arms crossed up in front of her face.",
+          "mode": "set", "blend_in": 0.15, "blend_out": 0.3,
+          "pose": { "R-Arm": [95, 0, -20], "R-Forearm": [110, 0, 0], "L-Arm": [95, 0, 20], "L-Forearm": [110, 0, 0], "Chest": [-8, 0, 0], "Head": [-10, 0, 0] }
+        }
+      }
+    },
+    "thessine": {
+      "chase_crouch": 0.05,
+      "chase_lean_deg": 4,
+      "states": {
+        "mimic_cue": {
+          "_about": "Throwing a fake sound: a hand cupped at her mouth, head back and turned, as if calling from elsewhere.",
+          "mode": "set", "blend_in": 0.12, "blend_out": 0.35,
+          "pose": { "R-Arm": [105, 0, 20], "R-Forearm": [125, 0, 0], "L-Arm": [10, 0, -10], "Chest": [4, 0, 0], "Head": [8, -12, 6] }
+        }
+      }
+    },
+    "verrine": {
+      "chase_speed": 1.05,
+      "chase_crouch": 0.16,
+      "states": {
+        "vent_stalk": {
+          "_about": "Hunting in the vents: crawling low, hands forward.",
+          "mode": "set", "blend_in": 0.25, "crouch": 1.0,
+          "pose": { "R-Arm": [32, 0, 6], "L-Arm": [32, 0, -6], "R-Forearm": [30, 0, 0], "L-Forearm": [30, 0, 0], "Chest": [-24, 0, 0], "Head": [12, 0, 0] }
+        }
+      }
+    },
+    "wynelle": {
+      "states": {
+        "materialize": {
+          "_about": "Appearing beside the runner: arms drawn up out of the cold, head back, then the arms open forward.",
+          "mode": "set", "blend_in": 0.1, "blend_out": 0.3,
+          "pose": { "R-Arm": [30, 0, 52], "L-Arm": [30, 0, -52], "Chest": [14, 0, 0], "Head": [22, 0, 0] },
+          "then": { "after": 0.55, "over": 0.4, "pose": { "R-Arm": [80, 0, 25], "L-Arm": [80, 0, -25], "Chest": [4, 0, 0], "Head": [4, 0, 0] } }
+        },
+        "freeze_cast": {
+          "_about": "The ten-second freeze: arms forward and spread over the runner, the cold flowing out.",
+          "mode": "set", "blend_in": 0.3,
+          "pose": { "R-Arm": [80, 0, 25], "L-Arm": [80, 0, -25], "R-Forearm": [15, 0, 0], "L-Forearm": [15, 0, 0], "Chest": [4, 0, 0], "Head": [4, 0, 0] }
+        }
+      }
+    },
+    "ysolde": {
+      "states": {
+        "steal_battery": {
+          "_about": "Closing on a battery: bent over, knees soft, one arm reaching down and out for it.",
+          "mode": "set", "blend_in": 0.15, "blend_out": 0.2, "crouch": 0.7,
+          "pose": { "R-Arm": [42, 0, 6], "R-Forearm": [18, 0, 0], "L-Arm": [-8, 0, -14], "Belly": [-14, 0, 0], "Chest": [-16, 0, 0], "Head": [12, 0, 0] }
+        },
+        "pocket_battery": {
+          "_about": "The battery is in her hand: she lifts it to look at it, then slides it into her pocket and glances round.",
+          "mode": "set", "blend_in": 0.12, "blend_out": 0.3, "prop": "battery", "prop_until": 0.5,
+          "pose": { "R-Arm": [58, 0, 10], "R-Forearm": [82, 0, 0], "L-Arm": [10, 0, -6], "Chest": [-6, 0, 0], "Head": [-16, 0, 0] },
+          "then": { "after": 0.45, "over": 0.2, "pose": { "R-Arm": [14, 0, 20], "R-Forearm": [24, 0, 0], "Head": [0, 20, 0] } }
+        }
+      }
+    },
+    "zellia": {
+      "states": {
+        "trade_offer": {
+          "_about": "The shop is open: both hands out over the counter, palms up.",
+          "mode": "set", "blend_in": 0.3, "blend_out": 0.3,
+          "pose": { "R-Arm": [36, 0, 12], "R-Forearm": [70, 0, 0], "L-Arm": [36, 0, -12], "L-Forearm": [70, 0, 0], "Head": [-6, 0, 0] }
+        }
+      }
+    },
+    "void_black": {
+      "states": {
+        "watched_freeze": {
+          "_about": "Watched, she is stopped dead: rigid, arms hanging, head tilted too far.",
+          "mode": "set", "blend_in": 0.1,
+          "pose": { "R-Arm": [0, 0, 6], "L-Arm": [0, 0, -6], "Chest": [3, 0, 0], "Head": [0, 0, 14] }
+        }
+      }
+    },
+    "void_blue": {
+      "states": {
+        "reveal_flinch": {
+          "_about": "The beam hit her and showed her: an arm up against the light, shoved back.",
+          "mode": "set", "blend_in": 0.05, "blend_out": 0.3,
+          "pose": { "R-Arm": [100, 0, -22], "R-Forearm": [120, 0, 0], "Chest": [10, 0, 0], "Head": [14, 0, 0] }
+        }
+      }
+    },
+    "void_brown": {
+      "states": {
+        "jam_cast": {
+          "_about": "Jamming two hiding spots: both palms thrust toward them.",
+          "mode": "set", "blend_in": 0.1, "blend_out": 0.3,
+          "pose": { "R-Arm": [95, 0, 14], "L-Arm": [95, 0, -14], "R-Forearm": [8, 0, 0], "L-Forearm": [8, 0, 0], "Chest": [-8, 0, 0] }
+        }
+      }
+    },
+    "void_cyan": {
+      "states": {
+        "signal_lock": {
+          "_about": "Holding sight of the runner for the ping: a hand pressed to her ear.",
+          "mode": "set", "blend_in": 0.2,
+          "pose": { "R-Arm": [105, 0, 20], "R-Forearm": [125, 0, 0], "Head": [0, 0, -8] }
+        },
+        "signal_ping": {
+          "_about": "The ping goes out to every hunter: both arms thrown up, head back.",
+          "mode": "set", "blend_in": 0.08, "blend_out": 0.35,
+          "pose": { "R-Arm": [150, 0, 20], "L-Arm": [150, 0, -20], "R-Forearm": [10, 0, 0], "L-Forearm": [10, 0, 0], "Chest": [8, 0, 0], "Head": [16, 0, 0] }
+        }
+      }
+    },
+    "void_green": {
+      "states": {
+        "vent_surface": {
+          "_about": "Back out of the vents beside the runner: rising from a crouch, arms sweeping up.",
+          "mode": "set", "blend_in": 0.1, "blend_out": 0.3, "crouch": 1.0,
+          "pose": { "R-Arm": [40, 0, 16], "L-Arm": [40, 0, -16], "Chest": [-30, 0, 0], "Head": [14, 0, 0] },
+          "then": { "after": 0.5, "over": 0.5, "crouch": 0, "pose": { "Chest": [0, 0, 0], "Head": [0, 0, 0], "R-Arm": [10, 0, 20], "L-Arm": [10, 0, -20] } }
+        }
+      }
+    },
+    "void_orange": {
+      "chase_speed": 1.05,
+      "states": {
+        "sabotage_cast": {
+          "_about": "Knocking a system offline for nine seconds: both hands clawed and thrust out, then dropped.",
+          "mode": "set", "blend_in": 0.1, "blend_out": 0.3,
+          "pose": { "R-Arm": [100, 0, 6], "L-Arm": [100, 0, -6], "R-Forearm": [30, 0, 0], "L-Forearm": [30, 0, 0], "Chest": [-8, 0, 0] },
+          "then": { "after": 0.9, "over": 0.3, "pose": { "R-Arm": [20, 0, 8], "L-Arm": [20, 0, -8], "R-Forearm": [10, 0, 0], "L-Forearm": [10, 0, 0], "Chest": [0, 0, 0] } }
+        }
+      }
+    },
+    "void_pink": {
+      "states": {
+        "footstep_trick": {
+          "_about": "Sending fake footsteps: a hand cupped to her ear, listening to her own trick.",
+          "mode": "set", "blend_in": 0.15, "blend_out": 0.3,
+          "pose": { "L-Arm": [102, 0, -20], "L-Forearm": [125, 0, 0], "Chest": [-8, 0, 0], "Head": [-12, -10, -6] }
+        }
+      }
+    },
+    "void_purple": {
+      "states": {
+        "static_cast": {
+          "_about": "Corrupting the radar: both hands up with the fingers spread.",
+          "mode": "set", "blend_in": 0.1, "blend_out": 0.35,
+          "pose": { "R-Arm": [120, 0, 40], "L-Arm": [120, 0, -40], "R-Forearm": [20, 0, 0], "L-Forearm": [20, 0, 0], "Head": [10, 0, 0] }
+        }
+      }
+    },
+    "void_red": { "chase_speed": 1.05 },
+    "void_white": {
+      "states": {
+        "beam_flinch": {
+          "_about": "The beam is on her and she is stopped: both arms crossed over her face.",
+          "mode": "set", "blend_in": 0.08,
+          "pose": { "R-Arm": [100, 0, -30], "R-Forearm": [125, 0, 0], "L-Arm": [100, 0, 30], "L-Forearm": [125, 0, 0], "Chest": [6, 0, 0] }
+        }
+      }
+    }
+  }
+}

@@ -29,7 +29,7 @@ const BEAM_RANGE: f32 = 12.0;
 /// void_blue_gimmick.gd:10 `BEAM_HALF_ANGLE := 0.48`, radians.
 const BEAM_HALF_ANGLE: f32 = 0.48;
 /// void_blue_gimmick.gd:26: the callout on a fresh reveal (dropped by the shared silencer, see the header).
-const REVEAL_MESSAGE: &str = "SOMETHING WAS STANDING THERE";
+pub const REVEAL_MESSAGE: &str = "SOMETHING WAS STANDING THERE";
 
 /// Blue Void's state. `reveal_remaining` is Godot's `reveal_remaining` (void_blue_gimmick.gd:12): above zero she is drawn.
 #[derive(Default)]

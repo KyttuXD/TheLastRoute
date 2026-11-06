@@ -67,6 +67,11 @@ impl Briselle {
         }
     }
 
+    /// The mechanic pose she is in: locked onto a relay (an arm out toward it) until the lock runs out or a beam breaks it.
+    pub fn mechanic(&self) -> Option<&'static str> {
+        self.locked.then_some("relay_lock")
+    }
+
     pub fn speed_scale(&self) -> f32 {
         if self.locked {
             1.25
