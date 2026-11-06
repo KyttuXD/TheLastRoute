@@ -1052,6 +1052,50 @@ mod tests {
     }
 
     #[test]
+    fn one_held_sprint_never_speeds_up_and_never_drops_under_the_floor_before_exhaustion() {
+        let (mut g, s) = flight_game();
+        let (off, yaw_off) = (off_stair(s), yaw_along((-(s.run.0 as f32), -(s.run.1 as f32))));
+        let full = PLAYER_SPRINT_SPEED * g.prof().sprint_speed;
+        let rules = crate::game::stamina::rules();
+        g.p.pos = off;
+        g.p.yaw = yaw_off;
+        g.p.stamina = MAX_STAMINA;
+        g.p.exhausted = false;
+        g.p.stim_boost = 0.0;
+        g.p.speed_scale = 1.0;
+        g.meters.temperature = 50.0;
+        let run = Controls { fwd: 1.0, sprint: true, ..Default::default() };
+        let prof = g.prof();
+        let sounds = Sounds::default();
+        let (mut last, mut t, mut below) = (f32::MAX, 0.0_f32, 0.0_f32);
+        while !g.p.exhausted && t < 20.0 {
+            // back to the open spot each frame: a wall must not slow the measured speed
+            g.p.pos = off;
+            g.p.yaw = yaw_off;
+            g.p.update_movement(FRAME, &run, &prof, &g.fac, &LevelStack::EMPTY, &mut g.meters, &sounds);
+            let v = g.p.move_vel.0.hypot(g.p.move_vel.1);
+            if v > 0.1 {
+                assert!(v <= last + 0.05, "{t}: sped up from {last} to {v} at stamina {}", g.p.stamina);
+                assert!(v >= full * rules.min_speed_scale - 0.05, "{t}: {v} under the floor at stamina {}", g.p.stamina);
+                last = v;
+            }
+            if g.p.stamina < MAX_STAMINA * rules.weak_below {
+                below += FRAME;
+            }
+            t += FRAME;
+        }
+        assert!(g.p.exhausted, "a held sprint ends in exhaustion");
+        // the weak part is the last 45 percent of the bar: 0.45 * 4.6875 s
+        assert!((below - 0.45 * 4.6875).abs() < 0.1, "{below} s under 45 percent");
+        // resuming at the exhaustion exit (25 points) runs at the curve's value there, not at the floor
+        g.p.stamina = 25.0;
+        g.p.exhausted = false;
+        step_body(&mut g, &run);
+        let resumed = g.p.move_vel.0.hypot(g.p.move_vel.1);
+        assert!((resumed - full * rules.speed_scale(25.0)).abs() < 0.05, "{resumed}");
+    }
+
+    #[test]
     fn the_stim_and_overheating_still_scale_the_longer_drain() {
         let (mut g, s) = flight_game();
         let (off, yaw_off) = (off_stair(s), yaw_along((-(s.run.0 as f32), -(s.run.1 as f32))));
