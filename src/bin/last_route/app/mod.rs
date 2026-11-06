@@ -1748,7 +1748,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 };
                 // LR_SHOT_FLASH=0 leaves the flashlight off (the dark view), for a before/after pair at the same spot
                 g.p.flashlight_on = env("LR_SHOT_FLASH").as_deref() != Some("0");
-                g.p.flashlight_on = true;
+                if let Some(shape) = env("LR_SHOT_STAIRS") {
                     shot_at_stairs(&mut g, &shape);
                 }
                 if let Ok(turn) = std::env::var("LR_SHOT_YAW") {
