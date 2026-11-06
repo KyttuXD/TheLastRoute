@@ -637,6 +637,8 @@ impl Game {
             self.hunters[0].activate_at(p);
         }
         self.fade = 1.0;
+        // a new floor has new hunters: the bar is theirs from its first frame (the runner keeps what stays on the bar)
+        self.sync_specialty();
         self.reveal();
     }
 
@@ -666,9 +668,18 @@ impl Game {
     /// Glyra reads the clock through `Ctx` (hunting.rs), so this is the room effect's whole timer.
     pub(super) fn run_music_box(&mut self, dt: f32) {
         self.music_box_left = (self.music_box_left - dt).max(0.0);
-        // the tune is Glyra's: it plays only while she is on the floor (nothing is heard when she is not out)
-        let heard = if self.specialty.box_slot_visible() { self.music_box_left } else { 0.0 };
-        crate::audio::world::music_box(heard, music_box::wound_seconds(self.difficulty.id()));
+        crate::audio::world::music_box(self.music_box_heard(), music_box::wound_seconds(self.difficulty.id()));
+    }
+
+    /// The seconds of wound tune the audio plays now. The tune is Glyra's: it plays only while she is on the floor
+    /// (slot 6 shows), and nothing is heard when she is not out. The wind itself (`music_box_left`) is the runner's and
+    /// runs on either way, so it is picked up where it was when she is back.
+    pub(super) fn music_box_heard(&self) -> f32 {
+        if self.specialty.box_slot_visible() {
+            self.music_box_left
+        } else {
+            0.0
+        }
     }
 
     pub fn say(&mut self, text: &str) {
@@ -846,10 +857,11 @@ impl Game {
         for t in self.locker_cooldown.iter_mut() {
             *t = (*t - dt).max(0.0);
         }
+        // the specialty bar follows the hunters on the floor (slot 6 for Glyra, slot 7 for Wynelle and Solyth); first, so the
+        // tune below is gated by the floor the runner is on now
+        self.sync_specialty();
         // Glyra's box winds down every frame (the original's finite floor forgot to tick it)
         self.run_music_box(dt);
-        // the specialty bar follows the hunters on the floor (slot 6 for Glyra, slot 7 for Wynelle and Solyth)
-        self.sync_specialty();
 
         // world sound every frame, hidden or struggling too (main_3d.gd _update_local_audio, Glyra's hum)
         {
@@ -996,6 +1008,9 @@ impl Game {
         // level 0 has no Nyxie in its lineup: a dead flashlight there makes the one that comes for it (endless.rs)
         self.keep_level0_nyxie(content);
         self.update_hunters(dt, &prof, sounds);
+        // the window may have stored or loaded a hunter and a hunter may have crossed to the floor beside: the bar the frame is
+        // drawn with is the one for the hunters as they stand now
+        self.sync_specialty();
     }
 
     /// _discover_visible_hunters (main_3d.gd 260): an active hunter within

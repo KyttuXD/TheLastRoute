@@ -498,6 +498,12 @@ impl Game {
 
     /// Keeps the specialty bar in step with the hunters of the run: shows or hides slots, grants an item the moment a
     /// slot appears and removes it the moment the slot goes. A music box already in the pack folds into the new slot 6.
+    ///
+    /// "On the floor" is every hunter that exists there: the active list, and on level 0 the ones residency holds in the
+    /// stores outside the window (a region switch only moves a hunter between loaded and stored; she is still on the
+    /// floor, so her slot, her box and the runner's chosen type stay). The hunters of the resident floors beside this
+    /// one are on those floors and do not count. It runs every frame and again wherever a floor changes (`relabel`,
+    /// `change_storey`, a floor start), so the bar a frame is drawn with is never the floor that was left.
     pub(super) fn sync_specialty(&mut self) {
         let ids = Self::run_hunter_ids(&self.hunters, &self.resident_hunters, self.inf.as_ref());
         let changes = self.specialty.sync(&ids);
