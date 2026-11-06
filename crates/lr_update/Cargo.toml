@@ -1,0 +1,19 @@
+[package]
+name = "lr_update"
+version = "0.1.0"
+edition = "2021"
+description = "Native build delivery for The Last Route: manifest, ed25519 + sha256 checks, zlib install, state. Shared by the launcher and the in-game updater."
+
+# Everything here is already in Cargo.lock through the game (sha2, miniz_oxide, serde_json, rustls with ring, webpki-roots),
+# so the launcher adds no new crate to the tree. No macroquad: building the launcher never compiles the game.
+[dependencies]
+sha2 = "0.10"
+miniz_oxide = "0.8"
+serde_json = "1"
+ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
+
+[features]
+# The fake website and test keys (src/testsite.rs); the launcher tests turn it on.
+testsite = []

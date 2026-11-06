@@ -1,0 +1,9 @@
+# Public keys (ed25519, 32 bytes as 64 hex digits, one per line) that may sign native builds. The launcher and the
+# in-game updater refuse every build whose manifest.json.sig does not verify against one of these.
+#
+# This file is compiled into both programs (crates/lr_update/src/verify.rs). It has NO KEY YET on purpose: the private key
+# is KT's decision and never lives in the repo. To set up signing:
+#   node packaging/native/manifest.mjs keygen "C:/Users/Kyttu/lr-native-signing.pem"     (private key stays outside the repo)
+# then paste the printed public key on a line below, rebuild the launcher and the game, and keep a second line free for
+# rotation (add the new key, ship, then publish with the new private key, later remove the old line).
+# With no key here, native updates fail closed: the launcher falls back to the web version and the game keeps its old updater.
