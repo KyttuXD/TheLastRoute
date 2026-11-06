@@ -653,14 +653,14 @@ fn mine_text(st: &Settings, s: &SkinUi) -> String {
     }
 }
 
-/// Keys for the focused link box: printable ASCII characters, paste (Ctrl or Cmd + V), Backspace and Delete with key
-/// repeat, Left, Right, Home and End. Returns true when Enter was pressed.
+/// Keys for the focused link box: printable ASCII characters, paste (Ctrl or Cmd + V, Shift+Insert), copy and cut (Ctrl or
+/// Cmd + C / X: the whole link), Backspace and Delete with key repeat, Left, Right, Home and End. Returns true when Enter
+/// was pressed.
 fn edit_keys(s: &mut SkinUi, now: f64) -> bool {
-    let command = is_key_down(KeyCode::LeftControl)
-        || is_key_down(KeyCode::RightControl)
-        || is_key_down(KeyCode::LeftSuper)
-        || is_key_down(KeyCode::RightSuper);
-    let paste = command && is_key_pressed(KeyCode::V);
+    use super::text_field::{shortcut_pressed, Shortcut};
+    let command = super::text_field::command_down();
+    let shortcut = shortcut_pressed();
+    let paste = shortcut == Some(Shortcut::Paste);
     let (true, Some(rules)) = (s.url_focused, s.rules.as_ref()) else {
         while get_char_pressed().is_some() {}
         return false;
@@ -674,13 +674,22 @@ fn edit_keys(s: &mut SkinUi, now: f64) -> bool {
             tb.insert(ch, cap);
         }
     }
-    if paste {
-        if let Some(clip) = macroquad::miniquad::window::clipboard_get() {
-            for ch in pasted(&clip, &allowed, cap.saturating_sub(tb.len())).chars() {
-                tb.insert(ch, cap);
-            }
+    // the web page delivers a paste when the browser fires its paste event, which can be a frame after the key
+    if let Some(clip) = super::clipboard::poll_paste(paste) {
+        for ch in pasted(&clip, &allowed, cap.saturating_sub(tb.len())).chars() {
+            tb.insert(ch, cap);
         }
     }
+    match shortcut {
+        Some(Shortcut::Copy) if !tb.text.is_empty() => super::clipboard::copy(&tb.text),
+        Some(Shortcut::Cut) if !tb.text.is_empty() => {
+            super::clipboard::copy(&tb.text);
+            *tb = TextBox::default();
+        }
+        _ => {}
+    }
+    // the page answers the browser's own copy and cut events from this
+    super::clipboard::offer(&tb.text);
     let keys = [KeyCode::Backspace, KeyCode::Delete, KeyCode::Left, KeyCode::Right];
     for (i, key) in keys.iter().enumerate() {
         if s.repeats[i].fire(is_key_down(*key), now, delay, per_sec) {

@@ -981,6 +981,23 @@ pub fn line_edit_caret(
     }
 }
 
+/// The select-all mark over a [`line_edit`]'s text (draw it right after the field): a translucent band the width of the
+/// visible text, as wide as the text itself when it fits. `secret` fields measure their asterisks.
+pub fn line_edit_selection(a: &Assets, r: Rect, text: &str, secret: bool, size: f32) {
+    let count = text.chars().count();
+    if count == 0 {
+        return;
+    }
+    let shown = if secret { "*".repeat(count) } else { text.to_string() };
+    let pad = 6.0;
+    let (start, end) = visible_window(&shown, count, r.w - 2.0 * pad, &|s| tw(a, F::Body, s, size));
+    let part: String = shown.chars().skip(start).take(end - start).collect();
+    let h = F::Body.height() * size;
+    let mut col = focus_edge_colour();
+    col.a = 0.35;
+    fill(Rect::new(r.x + pad, r.y + (r.h - h) * 0.5, tw(a, F::Body, &part, size), h), col);
+}
+
 // -- backdrop (signal_backdrop.gd) ----------------------------------------------------------
 
 /// The archive backdrop: warm field, checker diamonds, scanlines, grid and the dual frame.

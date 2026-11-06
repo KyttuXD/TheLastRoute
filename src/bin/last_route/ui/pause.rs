@@ -518,7 +518,7 @@ fn draw_statistics(a: &Assets, pz: &mut Pause, r: Rect, g: &Game) {
         let text = format!("ROOM {route_code} // SEED {seed_text}");
         let _ = &text;
         pz.copied = "COPIED TO CLIPBOARD".into();
-        macroquad::miniquad::window::clipboard_set(&text);
+        super::clipboard::copy(&text);
     }
     label_vc(
         a,

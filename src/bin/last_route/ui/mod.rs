@@ -3,6 +3,7 @@
 
 pub mod admin;
 pub mod boot;
+pub mod clipboard;
 pub mod hud;
 pub mod hud_bars;
 pub mod map;
@@ -16,4 +17,5 @@ pub mod mods_tab;
 pub mod skin_tab;
 pub mod settings_panel;
 pub mod style;
+pub mod text_field;
 pub mod update_screen;
