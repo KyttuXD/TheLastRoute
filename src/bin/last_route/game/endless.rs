@@ -103,10 +103,13 @@ impl MapChunk {
     }
 }
 
-/// The level-0 full map's feed (ui/map.rs): every discovered chunk's record in key order, and the frame they are drawn in.
+/// The level-0 full map's feed (ui/map.rs): the record of every chunk the runner has seen a cell of, in key order, the cells it
+/// has seen, and the frame they are drawn in.
 pub struct FullMapFeed<'a> {
-    /// Every discovered level-0 chunk, by key, in (cx, cy) order.
+    /// Every level-0 chunk with a seen cell, by key, in (cx, cy) order.
     pub chunks: Vec<(ChunkKey, &'a MapChunk)>,
+    /// The seen cells (a cell outside them is not drawn, nor are the marks on it).
+    pub seen: &'a super::discovery::SeenCells,
     /// The window's origin: the absolute cell of its (0, 0). Window-local positions (the runner, the hunters) add it.
     pub origin: (i32, i32),
     /// The waypoint route (`WaypointRoutes::full`) in absolute cell centres.
@@ -143,6 +146,9 @@ pub struct InfState {
     /// Level-0 map records of the discovered chunks (see `MapChunk`), taken when each chunk is discovered and never dropped,
     /// so the full map draws every discovered chunk after it has left the window.
     map_chunks: HashMap<ChunkKey, MapChunk>,
+    /// Level-0 cells the runner has seen (mod.rs `reveal`; the full map and the minimap draw only these): a bitmap per chunk
+    /// keyed by absolute cell (`discovery::SeenCells`), so it outlives the window and a chunk unloading.
+    pub(super) level0_seen: super::discovery::SeenCells,
     /// Off level 0, the cells the line-of-sight reveal (mod.rs `reveal`) has found, by (level, x, y).
     seen: HashSet<(i32, i32, i32)>,
     pub chunks_visited: HashSet<ChunkKey>,
@@ -585,6 +591,7 @@ impl InfState {
             discovered_rooms: HashSet::new(),
             markers: HashSet::new(),
             map_chunks: HashMap::new(),
+            level0_seen: super::discovery::SeenCells::default(),
             seen: HashSet::new(),
             chunks_visited: HashSet::new(),
             safe: SafeRooms::default(),
@@ -649,7 +656,7 @@ impl Game {
                 inf.claimed.insert(inf.ids.pickups[fi].clone());
             }
         }
-        // level 0 keeps its discovery as chunks (discovered_chunks); the cell list is for the other levels
+        // level 0 keeps its discovery as per-chunk bitmaps (level0_seen), written as the runner sees; the cell set is for the other levels
         if inf.level != 0 {
             let (ox, oy) = inf.origin();
             let l = inf.level;
@@ -688,20 +695,14 @@ impl Game {
         }
         let (ox, oy) = inf.origin();
         let l = inf.level;
+        if l == 0 {
+            // level 0: the bitmaps of the chunks the window covers, by absolute cell (`discovery::SeenCells`)
+            inf.level0_seen.fill_window((ox, oy), &mut self.discovered);
+            return;
+        }
         for (y, row) in self.discovered.iter_mut().enumerate() {
             for (x, d) in row.iter_mut().enumerate() {
-                let (ax, ay) = (x as i32 + ox, y as i32 + oy);
-                *d = if l == 0 {
-                    // a level-0 cell is discovered when its chunk is (Godot `_remember_discovered_chunk`)
-                    let key = ChunkKey {
-                        cx: ax.div_euclid(CHUNK),
-                        cy: ay.div_euclid(CHUNK),
-                        level: 0,
-                    };
-                    inf.discovered_chunks.contains(&key)
-                } else {
-                    inf.seen.contains(&(l, ax, ay))
-                };
+                *d = inf.seen.contains(&(l, x as i32 + ox, y as i32 + oy));
             }
         }
     }
@@ -828,6 +829,7 @@ impl Game {
         // (`npc_spawn`); `npc_ensure_run` stays for callers that ask for the data/npcs.json run NPCs.
         self.fade = 1.0;
         self.reveal();
+        self.reveal_start_room();
         self.discover_map();
         self.refresh_waypoint();
     }
@@ -1696,6 +1698,55 @@ impl Game {
             .collect()
     }
 
+    /// Whether the runner has seen level-0 absolute cell (`ax`, `ay`). False off level 0.
+    pub fn level0_cell_seen(&self, ax: i32, ay: i32) -> bool {
+        self.inf.as_ref().is_some_and(|i| i.level == 0 && i.level0_seen.is_seen(ax, ay))
+    }
+
+    /// Marks a level-0 window cell seen in the persistent bitmaps (the grid `discovered` is the window's view of them). A cell
+    /// off the window, or any cell off level 0, does nothing. True when the cell was new.
+    pub(super) fn mark_level0_seen(&mut self, x: i32, y: i32) -> bool {
+        let Some(inf) = self.inf.as_mut() else { return false };
+        if inf.level != 0 {
+            return false;
+        }
+        let (ox, oy) = inf.origin();
+        inf.level0_seen.mark(x + ox, y + oy)
+    }
+
+    /// The start lobby is on the map from the first frame (the safe room, with a cell of wall around it), whatever the line of
+    /// sight finds: the runner begins in it, and the map should not open on a blank.
+    fn reveal_start_room(&mut self) {
+        let Some(sz) = self.fac.safe_zone else { return };
+        let r = (SAFE_ZONE_RADIUS + 1.0).ceil() as i32;
+        let c = sz.center();
+        for y in (sz.y - r).max(0)..=(sz.y + r).min(self.fac.rows - 1) {
+            for x in (sz.x - r).max(0)..=(sz.x + r).min(self.fac.cols - 1) {
+                if pdist((x as f32 + 0.5, y as f32 + 0.5), c) <= SAFE_ZONE_RADIUS + 1.0 {
+                    self.discovered[y as usize][x as usize] = true;
+                    self.mark_level0_seen(x, y);
+                }
+            }
+        }
+    }
+
+    /// The admin MAP REVEAL: every cell of the window is seen, on level 0 too (all nine chunks' bitmaps are filled, so the full map
+    /// and the windows after this one keep it).
+    pub fn reveal_whole_window(&mut self) {
+        for row in self.discovered.iter_mut() {
+            row.iter_mut().for_each(|d| *d = true);
+        }
+        if let Some(inf) = self.inf.as_mut() {
+            if inf.level == 0 {
+                for dy in 0..infinite::WINDOW {
+                    for dx in 0..infinite::WINDOW {
+                        inf.level0_seen.mark_chunk((inf.center.0 - 1 + dx, inf.center.1 - 1 + dy));
+                    }
+                }
+            }
+        }
+    }
+
     /// Godot `_update_map_discovery` (infinite_route_test.gd:1676), run every frame on level 0. The
     /// runner's room is discovered with every marker inside it, and each marker within
     /// `MAP_DISCOVERY_NEARBY_RADIUS` of the runner is discovered too. The markers are the window's
@@ -1782,17 +1833,23 @@ impl Game {
         }
     }
 
-    /// The level-0 full map's feed: every discovered chunk, in key order. `None` off level 0.
+    /// The level-0 full map's feed: every chunk the runner has seen a cell of, in key order. `None` off level 0, and before the
+    /// runner has seen any cell (the map then falls back to the window, which draws nothing undiscovered either).
     pub fn full_map_feed(&self) -> Option<FullMapFeed<'_>> {
         let inf = self.inf.as_ref()?;
-        if inf.level != 0 || inf.map_chunks.is_empty() {
+        if inf.level != 0 || inf.map_chunks.is_empty() || inf.level0_seen.total() == 0 {
             return None;
         }
-        let mut chunks: Vec<(ChunkKey, &MapChunk)> =
-            inf.map_chunks.iter().map(|(k, c)| (*k, c)).collect();
+        let mut chunks: Vec<(ChunkKey, &MapChunk)> = inf
+            .map_chunks
+            .iter()
+            .filter(|(k, _)| inf.level0_seen.chunk_has_any((k.cx, k.cy)))
+            .map(|(k, c)| (*k, c))
+            .collect();
         chunks.sort_by_key(|(k, _)| (k.cx, k.cy));
         Some(FullMapFeed {
             chunks,
+            seen: &inf.level0_seen,
             origin: inf.origin(),
             route: &inf.routes.full,
             waypoint: inf.waypoint.filter(|w| w.level == 0).map(|w| w.at),
@@ -2165,17 +2222,214 @@ mod tests {
         }
     }
 
+    /// The window cells the grid marks discovered.
+    fn seen_count(g: &Game) -> usize {
+        g.discovered.iter().map(|r| r.iter().filter(|d| **d).count()).sum()
+    }
+
+    /// The absolute cells the window grid marks discovered.
+    fn seen_cells(g: &Game) -> Vec<(i32, i32)> {
+        let (ox, oy) = g.inf.as_ref().unwrap().origin();
+        let mut v = vec![];
+        for (y, row) in g.discovered.iter().enumerate() {
+            for (x, d) in row.iter().enumerate() {
+                if *d {
+                    v.push((x as i32 + ox, y as i32 + oy));
+                }
+            }
+        }
+        v
+    }
+
+    /// The first open window cell centre at least `min` cells from `from` that the runner may stand on.
+    fn open_spot(g: &Game, from: (f32, f32), min: f32) -> (f32, f32) {
+        for y in 0..g.fac.rows {
+            for x in 0..g.fac.cols {
+                let c = Cell::new(x, y);
+                if g.fac.can_occupy(c.center().0 as f64, c.center().1 as f64, 0.3) && pdist(c.center(), from) >= min {
+                    return c.center();
+                }
+            }
+        }
+        panic!("no open cell {min} cells from {from:?}");
+    }
+
     #[test]
-    fn level_zero_chunks_are_on_the_map_as_they_load() {
-        let (mut g, content, catalog) = run();
-        // Godot _discover_loaded_chunks: the nine loaded chunks are discovered at once
+    fn level_zero_starts_with_the_lobby_and_what_the_runner_sees_not_the_whole_window() {
+        let (g, _, _) = run();
+        // the nine chunks are loaded (the map records and the router read them) but not discovered
         assert_eq!(g.inf.as_ref().unwrap().discovered_chunks.len(), 9);
+        let n = seen_count(&g);
+        let all = g.discovered.len() * g.discovered[0].len();
+        assert!(n > 0, "the start is on the map");
+        assert!(n < all / 20, "{n} of {all} cells: a lobby's worth, not the window");
+        let (sx, sy) = (g.p.pos.0.floor() as usize, g.p.pos.1.floor() as usize);
+        assert!(g.discovered[sy][sx], "the runner's own cell");
+        let sz = g.fac.safe_zone.expect("the start chunk is a safe room");
+        for dy in -2..=2 {
+            for dx in -2..=2 {
+                assert!(
+                    g.discovered[(sz.y + dy) as usize][(sz.x + dx) as usize],
+                    "the safe room cell {dx},{dy} is discovered at the start"
+                );
+            }
+        }
+        // the corners of the window are far outside the view
+        assert!(!g.discovered[0][0] && !g.discovered[g.fac.rows as usize - 1][g.fac.cols as usize - 1]);
+        // the persistent bitmaps hold exactly the window grid
+        assert_eq!(g.inf.as_ref().unwrap().level0_seen.total(), n);
+    }
+
+    #[test]
+    fn level_zero_cells_outside_the_view_are_hidden() {
+        let (mut g, _, _) = run();
+        g.reveal();
+        let reach = crate::ui::map::look::MapLook::load().reveal_radius as f32 + 0.5;
+        let lobby = SAFE_ZONE_RADIUS + 2.0;
+        let (ox, oy) = g.inf.as_ref().unwrap().origin();
+        for (ax, ay) in seen_cells(&g) {
+            let d = pdist((ax as f32 + 0.5 - ox as f32, ay as f32 + 0.5 - oy as f32), g.p.pos);
+            assert!(d <= reach.max(lobby), "cell {ax},{ay} is {d} from the runner");
+        }
+        // a cell in a far corner of the window is not seen, by absolute coordinate either
+        assert!(!g.level0_cell_seen(ox + 2 * CHUNK + 10, oy + 2 * CHUNK + 10));
+        assert!(!g.level0_cell_seen(ox + 1, oy + 1));
+    }
+
+    #[test]
+    fn level_zero_discovery_grows_with_exploration() {
+        let (mut g, _, _) = run();
+        let before = seen_count(&g);
+        let first = g.inf.as_ref().unwrap().level0_seen.total();
+        // stand at an open spot a dozen cells away: the frame's reveal finds the floor around it
+        let to = open_spot(&g, g.p.pos, 12.0);
+        g.p.pos = to;
+        g.reveal();
+        let after = seen_count(&g);
+        assert!(after > before, "{before} -> {after}");
+        assert!(g.inf.as_ref().unwrap().level0_seen.total() > first);
+        // seen stays seen: walking back does not take cells off the map
+        let start = g.fac.start.center();
+        g.p.pos = start;
+        g.reveal();
+        assert!(seen_count(&g) >= after);
+        // and revealing the same view again adds nothing
+        let again = seen_count(&g);
+        g.reveal();
+        assert_eq!(seen_count(&g), again);
+    }
+
+    #[test]
+    fn level_zero_discovery_persists_across_chunk_reload_and_is_keyed_by_absolute_cell() {
+        let (mut g, content, catalog) = run();
+        let to = open_spot(&g, g.p.pos, 12.0);
+        g.p.pos = to;
+        g.reveal();
+        let seen = seen_cells(&g);
+        assert!(seen.len() > 50);
+        // three chunks east: the window has left every chunk it started with, and the new view shows none of the old cells
+        for _ in 0..3 {
+            g.p.pos.0 += CHUNK as f32;
+            g.stream_window(&content, &catalog);
+        }
+        let (ox, _) = g.inf.as_ref().unwrap().origin();
+        assert!(seen.iter().all(|(ax, _)| *ax < ox), "the first cells are west of the new window");
+        assert!(seen.iter().all(|(ax, ay)| g.level0_cell_seen(*ax, *ay)), "they stay seen off the window");
+        assert!(seen_count(&g) < seen.len(), "the new window shows none of the old cells");
+        // the chunks are rebuilt from the seed (the cache and layout read are dropped): the cells are the same absolute cells
+        g.regen_window(&content, &catalog);
+        assert!(seen.iter().all(|(ax, ay)| g.level0_cell_seen(*ax, *ay)));
+        // back west: the window grid shows the cells that were seen, at the same absolute cells
+        for _ in 0..3 {
+            g.p.pos.0 -= CHUNK as f32;
+            g.stream_window(&content, &catalog);
+        }
+        let again = seen_cells(&g);
+        for c in &seen {
+            assert!(again.contains(c), "cell {c:?} is back on the map after returning");
+        }
+    }
+
+    #[test]
+    fn level_zero_discovery_is_per_cell_in_negative_chunks_too() {
+        let (mut g, content, catalog) = run();
+        g.p.pos.0 -= 2.0 * CHUNK as f32;
+        g.stream_window(&content, &catalog);
+        g.p.pos = g.fac.start.center();
+        g.reveal();
+        let c = g.p.pos;
+        let (ox, oy) = g.inf.as_ref().unwrap().origin();
+        let abs = ((c.0.floor() as i32) + ox, (c.1.floor() as i32) + oy);
+        assert!(abs.0 < 0, "the runner is west of the origin chunk: {abs:?}");
+        assert!(g.level0_cell_seen(abs.0, abs.1));
+        assert!(!g.level0_cell_seen(abs.0 + 20, abs.1), "a cell twenty east is not");
+    }
+
+    #[test]
+    fn the_admin_map_reveal_fills_the_window_and_keeps_it() {
+        let (mut g, content, catalog) = run();
+        g.reveal_whole_window();
         assert!(g.discovered.iter().all(|r| r.iter().all(|d| *d)));
-        // a window move loads a column of new chunks; the chunks it leaves stay discovered
+        let n = (9 * CHUNK * CHUNK) as usize;
+        assert_eq!(g.inf.as_ref().unwrap().level0_seen.total(), n);
+        assert_eq!(g.full_map_feed().expect("feed").chunks.len(), 9);
+        // one chunk east: the new column is not revealed, the old chunks still are
         g.p.pos.0 += CHUNK as f32;
         g.stream_window(&content, &catalog);
-        assert_eq!(g.inf.as_ref().unwrap().discovered_chunks.len(), 12);
-        assert!(g.discovered.iter().all(|r| r.iter().all(|d| *d)));
+        assert!(!g.discovered.iter().all(|r| r.iter().all(|d| *d)));
+        assert_eq!(g.inf.as_ref().unwrap().level0_seen.total(), n);
+        assert!(g.discovered[40][10], "an old cell is still on the map");
+    }
+
+    #[test]
+    fn the_sewer_and_the_inferno_keep_their_cell_set_and_level_zero_marks_stay_empty() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        for level in [crate::world::route::sewer::core::LEVEL, crate::world::infinite::INFERNO_LEVEL] {
+            let mut g = Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, "ROOM-TEST-7", level, &content, &catalog);
+            g.reveal();
+            let n = seen_count(&g);
+            let all = g.discovered.len() * g.discovered[0].len();
+            assert!(n > 0 && n < all / 10, "level {level}: {n} cells seen is a view, not the window");
+            assert_eq!(g.inf.as_ref().unwrap().level0_seen.total(), 0, "level {level} never writes level 0's bitmaps");
+            assert!(g.full_map_feed().is_none(), "the full map feed is level 0's");
+            // the cell set carries over a window move, by absolute cell, as before
+            let before = seen_cells(&g);
+            g.p.pos.0 += CHUNK as f32;
+            g.stream_window(&content, &catalog);
+            let inf = g.inf.as_ref().unwrap();
+            for (ax, ay) in &before {
+                assert!(inf.seen.contains(&(level, *ax, *ay)), "level {level}: {ax},{ay} kept");
+            }
+        }
+    }
+
+    #[test]
+    fn the_sewer_window_marks_the_water_the_swim_code_reads() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        for level in [crate::world::route::sewer::core::LEVEL, crate::world::route::sewer::core::LOWER_LEVEL] {
+            let mut g = Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, "ROOM-TEST-7", level, &content, &catalog);
+            let wet: Vec<Cell> = g.fac.water_cells().to_vec();
+            assert!(!wet.is_empty(), "level {level} has water in its window");
+            let (mut with, mut without) = (0, 0);
+            for y in 0..g.fac.rows {
+                for x in 0..g.fac.cols {
+                    let c = Cell::new(x, y);
+                    let depth = g.water_depth_on(level, c.center());
+                    assert_eq!(g.fac.is_water(c), depth > 0.0, "level {level}: cell {x},{y}: map water and swim water agree");
+                    if depth > 0.0 {
+                        with += 1;
+                    } else {
+                        without += 1;
+                    }
+                }
+            }
+            assert_eq!(with, wet.len());
+            assert!(without > with, "most of the window is dry");
+        }
+        let (g, _, _) = run();
+        assert!(g.fac.water_cells().is_empty(), "level 0 has no channel water");
     }
 
     #[test]
@@ -2227,14 +2481,17 @@ mod tests {
     #[test]
     fn the_full_map_feed_follows_the_discovery_into_negative_chunks() {
         let (mut g, content, catalog) = run();
-        assert_eq!(g.full_map_feed().expect("level 0 has a feed").chunks.len(), 9);
-        // one chunk west: the window recentres on (-1, 0) and the chunks at cx -2 come in
+        // only the start chunk has a seen cell at the start, though nine are loaded
+        assert_eq!(g.full_map_feed().expect("level 0 has a feed").chunks.len(), 1);
+        // one chunk west: the window recentres on (-1, 0) and the runner stands at its lobby, which it sees
         g.p.pos.0 -= CHUNK as f32;
         g.stream_window(&content, &catalog);
+        g.p.pos = g.fac.start.center();
+        g.reveal();
         let origin = g.inf.as_ref().unwrap().origin();
         let feed = g.full_map_feed().expect("level 0 has a feed");
-        assert_eq!(feed.chunks.len(), 12);
-        assert!(feed.chunks.iter().any(|(k, _)| k.cx == -2), "the chunk west of the old window is discovered");
+        assert_eq!(feed.chunks.len(), 2);
+        assert!(feed.chunks.iter().any(|(k, _)| k.cx == -1), "the chunk the runner walked into is discovered");
         assert_eq!(feed.origin, origin);
         // the feed is in key order
         let keys: Vec<(i32, i32)> = feed.chunks.iter().map(|(k, _)| (k.cx, k.cy)).collect();

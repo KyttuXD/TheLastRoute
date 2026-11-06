@@ -2,6 +2,7 @@
 //! together (relays -> service lift, captures -> escape struggle -> run report).
 #![allow(dead_code)] // ported API kept ahead of its callers (these items were the lib's pub API); prune as the port settles
 
+pub mod discovery;
 pub mod endless;
 pub mod inferno_secrets;
 mod hunting;
@@ -780,8 +781,10 @@ impl Game {
 
     fn reveal(&mut self) {
         let (px, py) = self.p.pos;
-        let r = 7;
+        let r = crate::ui::map::look::MapLook::load().reveal_radius;
         let (cx, cy) = (px.floor() as i32, py.floor() as i32);
+        // level 0 keeps what is seen by absolute cell, so it outlives the window (`discovery::SeenCells`)
+        let level0 = self.inf.as_ref().is_some_and(|i| i.level == 0);
         for y in (cy - r).max(0)..=(cy + r).min(self.fac.rows - 1) {
             for x in (cx - r).max(0)..=(cx + r).min(self.fac.cols - 1) {
                 if self.discovered[y as usize][x as usize] {
@@ -802,6 +805,9 @@ impl Game {
                     && self.fac.has_line_of_sight(self.p.pos, probe)
                 {
                     self.discovered[y as usize][x as usize] = true;
+                    if level0 {
+                        self.mark_level0_seen(x, y);
+                    }
                 }
             }
         }

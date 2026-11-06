@@ -1,0 +1,13 @@
+{
+  "format": "lr.map_look/1",
+  "note": "How the minimap and the full map tint the sewer's water. The water cells are the ones the swim, slip and landing code read (the sewer chunk grid's WATER code); a discovered water cell is drawn as the floor colour with this tint laid over it. fill is #rrggbb and strength is 0..1 (how far the floor colour moves toward fill: 0 shows no water, 1 a flat blue). legend is the word the full map's legend shows for it, in capitals; the colour name in it should match fill.",
+  "water": {
+    "fill": "#2f78c8",
+    "strength": 0.72,
+    "legend": "BLUE water"
+  },
+  "reveal": {
+    "radius_cells": 7,
+    "_note": "How far the runner sees the floor for the map (Godot FacilityMap reveal), in cells; the cells must also be in line of sight. Level 0 uses it like the sewer and the Inferno."
+  }
+}

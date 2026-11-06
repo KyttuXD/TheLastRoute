@@ -17,6 +17,7 @@
 //!   LR_SHOT_PAUSE=...       with a run: pause | statistics | players | settings | dossier | confirm
 //!   LR_SHOT_ADMIN=n         with a run: the admin menu on tab n (0 STATUS .. 9 FIELDS)
 //!   LR_SHOT_MAP=1           with a run: the full map
+//!   LR_SHOT_REVEAL=1        with a run: the admin MAP REVEAL (the whole window counts as seen), for a map with something to draw
 //!   LR_SHOT_DEATH=...       with a run: moment | card (a capture by the floor's hunter)
 //!   LR_SHOT_UPDATE=1        the web build's UPDATING screen over whatever else is shown (with LR_SHOT_RUN=1: over a run, with LATER)
 
@@ -1767,6 +1768,9 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 }
                 if let Ok(turn) = std::env::var("LR_SHOT_YAW") {
                     g.p.yaw = turn.parse().unwrap_or(0.0);
+                }
+                if env("LR_SHOT_REVEAL").is_some() {
+                    g.reveal_whole_window();
                 }
                 if let Some(pg) = env("LR_SHOT_PAUSE") {
                     pz.show();

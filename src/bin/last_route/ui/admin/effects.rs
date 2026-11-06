@@ -179,9 +179,7 @@ impl Admin {
         }
 
         if self.map_reveal {
-            for row in g.discovered.iter_mut() {
-                row.iter_mut().for_each(|d| *d = true);
-            }
+            g.reveal_whole_window();
         }
     }
 
