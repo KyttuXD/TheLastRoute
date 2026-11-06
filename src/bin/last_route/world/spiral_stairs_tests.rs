@@ -203,3 +203,22 @@ fn the_inferno_stair_bay_has_no_lava_and_no_cave_decoration() {
     }
     assert!(bays > 100 && spirals > 10, "{bays} bays, {spirals} spirals");
 }
+
+/// Sweeping a table by its footprint takes what stands on it too: a mounted prop whose centre is over a swept prop's
+/// footprint must not hang in the air, while one on a prop that stays is kept.
+#[test]
+fn sweeping_a_wide_prop_by_reach_takes_its_tabletop_items_with_it() {
+    let (c, cat) = (Content::load(), Catalog::load());
+    let g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-SPIRAL-0", 0, &c, &cat);
+    let mut f = g.fac.clone();
+    let template = f.props.iter().find(|p| p.door.is_none() && p.sewer.is_none()).expect("a prop").clone();
+    f.props.clear();
+    let table = Prop { id: "t".into(), cell: Cell::new(10, 10), ptype: "table".into(), solid: true, half: (2.0, 0.5), offset: (0.0, 0.0), mount_y: None, ..template.clone() };
+    // on the table's far end, outside the swept rectangle (x 8..10): centre cell 12, over the table's footprint
+    let item = Prop { id: "i".into(), cell: Cell::new(12, 10), ptype: "lamp".into(), solid: false, half: (0.1, 0.1), offset: (0.0, 0.0), mount_y: Some(0.8), ..template.clone() };
+    let stay = Prop { id: "s".into(), cell: Cell::new(20, 20), ptype: "lamp".into(), solid: false, half: (0.1, 0.1), offset: (0.0, 0.0), mount_y: Some(0.8), ..template };
+    f.props.extend([table, item, stay]);
+    f.clear_props_reaching(8, 9, 2, 3);
+    let ids: Vec<&str> = f.props.iter().map(|p| p.id.as_str()).collect();
+    assert_eq!(ids, vec!["s"], "the table reaches the rectangle and goes, its lamp with it; the far lamp stays");
+}

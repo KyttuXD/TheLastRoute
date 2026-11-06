@@ -825,6 +825,7 @@ impl Facility {
     pub fn clear_props_reaching(&mut self, x: i32, y: i32, w: i32, h: i32) {
         self.clear_props_in(x, y, w, h);
         let (x0, y0, x1, y1) = (x as f32, y as f32, (x + w) as f32, (y + h) as f32);
+        let mut swept: Vec<(f32, f32, f32, f32)> = vec![];
         self.props.retain(|p| {
             // a sewer valve or sluice gate belongs to a channel puzzle (game/pipes.rs): never swept away by reach
             if p.door.is_some() || !p.solid || p.sewer.is_some() {
@@ -833,8 +834,22 @@ impl Facility {
             let (px, py) = (p.cell.x as f32 + 0.5 + p.offset.0, p.cell.y as f32 + 0.5 + p.offset.1);
             // strictly overlapping: a prop that only touches the rectangle's edge (a shelf flush against its wall) stays
             let overlaps = px + p.half.0 > x0 + 1e-3 && px - p.half.0 < x1 - 1e-3 && py + p.half.1 > y0 + 1e-3 && py - p.half.1 < y1 - 1e-3;
+            if overlaps {
+                swept.push((px, py, p.half.0, p.half.1));
+            }
             !overlaps
         });
+        // what stood on a swept table or desk (a `mount_y` prop whose centre is over its footprint) goes with it, or it would
+        // hang in the air above the cleared floor
+        if !swept.is_empty() {
+            self.props.retain(|p| {
+                if p.mount_y.is_none() || p.door.is_some() {
+                    return true;
+                }
+                let (px, py) = (p.cell.x as f32 + 0.5 + p.offset.0, p.cell.y as f32 + 0.5 + p.offset.1);
+                !swept.iter().any(|(sx, sy, hx, hy)| (px - sx).abs() <= *hx && (py - sy).abs() <= *hy)
+            });
+        }
     }
 
     /// Removes the props of cell `c` and every solid prop whose footprint reaches into it, so a body fills the cell
