@@ -131,6 +131,8 @@ pub fn lighting(g: &Game) -> Lighting {
         ambient: Vec3::from(look.ambient_color) * look.ambient_energy,
         fog: Vec3::from(look.fog_color),
         fog_far: look.fog_far,
+        dark_far: look.dark_far,
+        flash: ambient::table().flashlight(),
     }
 }
 
@@ -248,7 +250,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         let near = waterfall::nearest_sound(waterfall::config(), &fx.sites, (light.eye.x, light.eye.z), g.time);
         crate::audio::falls::update(near, light.eye.to_array(), right.to_array(), up.to_array(), fwd.to_array());
     }
-    let cull_range = world_cull_range(light.fog_far);
+    let cull_range = world_cull_range(light.cull_fog_far());
     // the floor's meshes wholly past the fog's full reach are skipped: they would paint the fog colour alone (see
     // `box_fully_fogged`), which the clear colour already is
     let t_world = crate::app::perf::section("world meshes");
@@ -412,7 +414,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         let LockerDraw { centre: (cx, cy), yaw, burnt, swing, shake, .. } = d;
         match item_model(a, "hiding_spot") {
             Some(m) => {
-                if locker_fully_fogged(light.eye, cx, cy, locker_reach(m), locker_cull().margin_m, light.fog_far) {
+                if locker_fully_fogged(light.eye, cx, cy, locker_reach(m), locker_cull().margin_m, light.cull_fog_far()) {
                     continue;
                 }
                 // a hunter's check rattles the whole locker, body and interior alike; the hidden camera does not move

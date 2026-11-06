@@ -55,6 +55,7 @@ uniform vec3 FogColor;
 uniform float FogFar;
 uniform vec4 Lamps[16];
 uniform vec4 LampColors[16];
+uniform vec4 Reach;
 void main() {
     float mode = nrm.w;
     float ghost = mode > 3.5 ? 1.0 : 0.0;
@@ -69,7 +70,7 @@ void main() {
         return;
     }
     vec3 n = normalize(nrm.xyz);
-    vec3 light = AmbientColor;
+    vec3 lamp = vec3(0.0);
     for (int i = 0; i < 16; i++) {
         float range = Lamps[i].w;
         if (range > 0.0) {
@@ -77,22 +78,26 @@ void main() {
             float dist = length(d) + 0.001;
             float att = clamp(1.0 - dist / range, 0.0, 1.0);
             float ndl = max(dot(n, d / dist), 0.0) * 0.7 + 0.3;
-            light += LampColors[i].rgb * LampColors[i].a * att * att * ndl;
+            lamp += LampColors[i].rgb * LampColors[i].a * att * att * ndl;
         }
     }
+    vec3 beam = vec3(0.0);
     if (LightOn > 0.5) {
         vec3 d = wpos - LightPos;
         float dist = length(d) + 0.001;
         vec3 dir = d / dist;
         float c = dot(dir, LightDir);
         float cone = smoothstep(0.80, 0.93, c) + 0.6 * smoothstep(0.955, 0.985, c);
-        float att = clamp(1.0 - dist / 16.0, 0.0, 1.0);
+        float att = clamp(1.0 - dist / Reach.y, 0.0, 1.0);
         float ndl = max(dot(n, -dir), 0.0);
-        light += vec3(1.0, 0.95, 0.86) * cone * att * att * (0.25 + 0.75 * ndl) * 1.9;
+        beam = vec3(1.0, 0.95, 0.86) * cone * att * att * (0.25 + 0.75 * ndl) * Reach.z;
     }
-    vec3 col = tex.rgb * light;
-    float f = clamp(fd / FogFar, 0.0, 1.0);
-    gl_FragColor = vec4(mix(col, FogColor, f * f), ghost > 0.5 ? tex.a : 1.0);
+    float fa = clamp(fd / Reach.x, 0.0, 1.0);
+    float fl = clamp(fd / FogFar, 0.0, 1.0);
+    float fb = clamp(fd / Reach.w, 0.0, 1.0);
+    float va = 1.0 - fa * fa;
+    vec3 col = tex.rgb * (AmbientColor * va + lamp * (1.0 - fl * fl) + beam * (1.0 - fb * fb));
+    gl_FragColor = vec4(col + FogColor * (1.0 - va), ghost > 0.5 ? tex.a : 1.0);
 }"#;
 
 /// The Metal twin of VERTEX and FRAGMENT. It must stay line for line with them (the test below checks the
@@ -115,6 +120,7 @@ struct Uniforms {
     float FogFar;
     packed_float4 Lamps[16];
     packed_float4 LampColors[16];
+    packed_float4 Reach;
 };
 struct Vertex {
     float3 position [[attribute(0)]];
@@ -155,32 +161,37 @@ fragment float4 fragmentShader(VOut in [[stage_in]], constant Uniforms& u [[buff
         return float4(mix(tex.rgb, float3(u.FogColor), f * f), mode > 2.5 ? tex.a : 1.0);
     }
     float3 n = normalize(in.nrm.xyz);
-    float3 light = float3(u.AmbientColor);
+    float4 reach = float4(u.Reach);
+    float3 lamp = float3(0.0);
     for (int i = 0; i < 16; i++) {
-        float4 lamp = float4(u.Lamps[i]);
-        float range = lamp.w;
+        float4 lp = float4(u.Lamps[i]);
+        float range = lp.w;
         if (range > 0.0) {
-            float3 d = lamp.xyz - in.wpos;
+            float3 d = lp.xyz - in.wpos;
             float dist = length(d) + 0.001;
             float att = clamp(1.0 - dist / range, 0.0, 1.0);
             float ndl = max(dot(n, d / dist), 0.0) * 0.7 + 0.3;
             float4 lc = float4(u.LampColors[i]);
-            light += lc.rgb * lc.a * att * att * ndl;
+            lamp += lc.rgb * lc.a * att * att * ndl;
         }
     }
+    float3 beam = float3(0.0);
     if (u.LightOn > 0.5) {
         float3 d = in.wpos - float3(u.LightPos);
         float dist = length(d) + 0.001;
         float3 dir = d / dist;
         float c = dot(dir, float3(u.LightDir));
         float cone = smoothstep(0.80, 0.93, c) + 0.6 * smoothstep(0.955, 0.985, c);
-        float att = clamp(1.0 - dist / 16.0, 0.0, 1.0);
+        float att = clamp(1.0 - dist / reach.y, 0.0, 1.0);
         float ndl = max(dot(n, -dir), 0.0);
-        light += float3(1.0, 0.95, 0.86) * cone * att * att * (0.25 + 0.75 * ndl) * 1.9;
+        beam = float3(1.0, 0.95, 0.86) * cone * att * att * (0.25 + 0.75 * ndl) * reach.z;
     }
-    float3 col = tex.rgb * light;
-    float f = clamp(fd / u.FogFar, 0.0, 1.0);
-    return float4(mix(col, float3(u.FogColor), f * f), ghost > 0.5 ? tex.a : 1.0);
+    float fa = clamp(fd / reach.x, 0.0, 1.0);
+    float fl = clamp(fd / u.FogFar, 0.0, 1.0);
+    float fb = clamp(fd / reach.w, 0.0, 1.0);
+    float va = 1.0 - fa * fa;
+    float3 col = tex.rgb * (float3(u.AmbientColor) * va + lamp * (1.0 - fl * fl) + beam * (1.0 - fb * fb));
+    return float4(col + float3(u.FogColor) * (1.0 - va), ghost > 0.5 ? tex.a : 1.0);
 }
 "#;
 
@@ -197,6 +208,8 @@ fn world_uniforms() -> Vec<UniformDesc> {
         UniformDesc::new("FogFar", UniformType::Float1),
         UniformDesc::new("Lamps", UniformType::Float4).array(MAX_LAMPS),
         UniformDesc::new("LampColors", UniformType::Float4).array(MAX_LAMPS),
+        // (dark_far, flashlight range, flashlight intensity, flashlight fog reach): data/render/ambient.json
+        UniformDesc::new("Reach", UniformType::Float4),
     ]
 }
 
@@ -274,7 +287,24 @@ pub struct Lighting {
     /// The ambient light's colour already multiplied by its energy (AMBIENT_COLOR * AMBIENT_ENERGY).
     pub ambient: Vec3,
     pub fog: Vec3,
+    /// Metres to full fog on lamp-lit light (the lamps' reach).
     pub fog_far: f32,
+    /// Metres to full fog on the ambient light alone: the dark view of the place.
+    pub dark_far: f32,
+    /// The held beam's throw, strength and fog reach (data/render/ambient.json `flashlight`).
+    pub flash: super::ambient::Flashlight,
+}
+
+impl Lighting {
+    /// The `fog_far` the world cull follows: the lamps' reach, widened to the beam's fog reach while the beam is lit
+    /// (the cull multiplies by the unlit scale, so the beam's reach is divided by it here).
+    pub fn cull_fog_far(&self) -> f32 {
+        if self.flashlight_on {
+            self.fog_far.max(self.flash.fog_reach / 1.6)
+        } else {
+            self.fog_far
+        }
+    }
 }
 
 /// The lamps nearest the eye, packed for the shader: `pos` holds (x, y, z, range) and `col` holds (r, g, b, energy),
@@ -385,6 +415,7 @@ pub fn apply(mat: &Material, l: &Lighting, lamps: &[Lamp]) {
     mat.set_uniform("AmbientColor", l.ambient);
     mat.set_uniform("FogColor", l.fog);
     mat.set_uniform("FogFar", l.fog_far);
+    mat.set_uniform("Reach", vec4(l.dark_far, l.flash.range, l.flash.intensity, l.flash.fog_reach));
     let near = cached_nearest_lamps(l.eye, lamps);
     mat.set_uniform_array("Lamps", &near.pos[..]);
     mat.set_uniform_array("LampColors", &near.col[..]);
@@ -510,11 +541,11 @@ mod tests {
             want.push((u.name.clone(), at));
             at += u.uniform_type.size() * u.array_count;
         }
-        assert_eq!(at, 724, "total uniform bytes");
+        assert_eq!(at, 740, "total uniform bytes");
         let off = |n: &str| want.iter().find(|(k, _)| k == n).map(|(_, o)| *o);
         assert_eq!(
-            [off("CamPos"), off("LightPos"), off("LightDir"), off("LightOn"), off("AmbientColor"), off("FogColor"), off("FogFar"), off("Lamps"), off("LampColors")],
-            [144, 156, 168, 180, 184, 196, 208, 212, 468].map(Some)
+            [off("CamPos"), off("LightPos"), off("LightDir"), off("LightOn"), off("AmbientColor"), off("FogColor"), off("FogFar"), off("Lamps"), off("LampColors"), off("Reach")],
+            [144, 156, 168, 180, 184, 196, 208, 212, 468, 724].map(Some)
         );
         // the MSL struct, walked field by field, must land every field on the same offset with no padding
         let body = MSL.split("struct Uniforms {").nth(1).and_then(|b| b.split("};").next()).expect("Uniforms struct");
@@ -532,7 +563,7 @@ mod tests {
             at += msl_size(ty) * count;
         }
         assert_eq!(got, want);
-        assert_eq!(at, 724);
+        assert_eq!(at, 740);
         // the arrays of 16 in the MSL are MAX_LAMPS
         assert_eq!(MAX_LAMPS, 16);
     }
@@ -592,8 +623,19 @@ mod tests {
     }
 
     #[test]
+    fn both_shaders_read_the_beam_and_dark_reach_from_the_one_uniform() {
+        // the flashlight's range and strength and the fog reaches come from Reach (data), not from literals in the shader
+        for (glsl, msl) in [("Reach.x", "reach.x"), ("Reach.y", "reach.y"), ("Reach.z", "reach.z"), ("Reach.w", "reach.w")] {
+            assert!(FRAGMENT.contains(glsl), "GLSL lost {glsl}");
+            assert!(MSL.contains(msl), "MSL lost {msl}");
+        }
+        assert!(!FRAGMENT.contains("/ 16.0") && !MSL.contains("/ 16.0"), "the beam range is data, not 16 m");
+        assert!(!FRAGMENT.contains("* 1.9;") && !MSL.contains("* 1.9;"), "the beam strength is data, not 1.9");
+    }
+
+    #[test]
     fn msl_and_glsl_share_the_same_lighting_constants() {
-        for k in ["0.80", "0.93", "0.955", "0.985", "16.0", "1.9", "0.001", "0.7 + 0.3", "0.25 + 0.75", "(FogFar * 1.6)", "1.0, 0.95, 0.86", "0.6 *"] {
+        for k in ["0.80", "0.93", "0.955", "0.985", "0.001", "0.7 + 0.3", "0.25 + 0.75", "(FogFar * 1.6)", "1.0, 0.95, 0.86", "0.6 *", "1.0 - fa * fa", "(1.0 - fl * fl)", "(1.0 - fb * fb)", "(1.0 - va)"] {
             let msl_k = k.replace("FogFar", "u.FogFar");
             assert!(FRAGMENT.contains(k), "GLSL lost {k}");
             assert!(MSL.contains(&msl_k), "MSL lost {k}");

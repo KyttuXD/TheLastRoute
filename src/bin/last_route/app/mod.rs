@@ -9,6 +9,7 @@
 //!   LR_SHOT_DOSSIER_TAB=n   the dossier tab (0 ROUTE DOSSIER, 1 CUSTOM HUNTERS)
 //!   LR_SHOT_ACCOUNT=1       the account panel (same as LR_SHOT_SCREEN=account)
 //!   LR_SHOT_RUN=1           start a run (LR_SHOT_INF=1: the Infinite route)
+//!   LR_SHOT_FLASH=0         with a run: start with the flashlight off (default on)
 //!   LR_SHOT_PAUSE=...       with a run: pause | statistics | players | settings | dossier | confirm
 //!   LR_SHOT_ADMIN=n         with a run: the admin menu on tab n (0 STATUS .. 9 FIELDS)
 //!   LR_SHOT_MAP=1           with a run: the full map
@@ -1561,7 +1562,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                         &w.assets,
                     )
                 };
-                g.p.flashlight_on = true;
+                // LR_SHOT_FLASH=0 leaves the flashlight off (the dark view), for a before/after pair at the same spot
+                g.p.flashlight_on = env("LR_SHOT_FLASH").as_deref() != Some("0");
                 if let Ok(turn) = std::env::var("LR_SHOT_YAW") {
                     g.p.yaw = turn.parse().unwrap_or(0.0);
                 }
