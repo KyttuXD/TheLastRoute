@@ -78,6 +78,13 @@ fn hold(found: &mut Found, label: &str, fac: &Facility, prev: (f32, f32), b: &Br
             fac.hunter_open(cell_of(b.pos)),
         ));
     }
+    // the hunter's own rule (the runner's body rule plus the crawl-under pipes) holds at every step it takes on its own
+    if fac.hunter_fits(prev.0, prev.1) && !fac.hunter_fits(b.pos.0, b.pos.1) && found.inside.len() < 30 {
+        found.inside.push(format!(
+            "{label} {who} {:.2},{:.2} -> {:.2},{:.2} state {:?}: left the hunter rule (a crawl-under pipe or a body fit)",
+            prev.0, prev.1, b.pos.0, b.pos.1, b.state
+        ));
+    }
     // The hunter moves a short step in x and then in y, so a straight line is not its path: a graze of an obstacle's
     // corner by the line is no crossing. A crossing is a blocked run of the line as long as the thinnest thing that
     // stops the runner (a door slab, 0.1 m) plus his two radii would make it, taken as 0.2 m.
@@ -449,4 +456,76 @@ fn collision_cost() {
         time("body_fits", &|x, y| g.fac.body_fits(x, y, HUNTER_RADIUS));
         time("hunter_fits", &|x, y| g.fac.hunter_fits(x, y));
     }
+}
+
+/// The crowd push and the placement searches (`nearest_open`, `clear_toward`: the Void teleports, the spawn spots) keep a
+/// hunter out of a crawl-under pipe too, from every side.
+#[test]
+fn the_push_and_the_placement_searches_keep_a_hunter_out_of_a_crawl_pipe() {
+    use crate::content::loot::LootTables;
+    use crate::world::infinite::{chunk, ChunkKey};
+    let (cat, loot) = (Catalog::load(), LootTables::default());
+    let def = Content::load().hunters[0].clone();
+    let (mut pushes, mut placed) = (0, 0);
+    for level in [-1, -2] {
+        for seed in ["ROOM-CRAWL-1", "ROOM-CRAWL-2", "ROOM-CRAWL-3", "ROOM-CRAWL-4"] {
+            for (cx, cy) in [(0, 0), (1, 0), (0, 1), (-1, 0), (0, -1), (1, 1), (2, 0), (0, 2), (-1, -1), (2, 1), (1, 2)] {
+                let (fac, _) = chunk(seed, ChunkKey { cx, cy, level }, &cat, &loot);
+                for p in fac.props.iter().filter(|p| p.crawl_under) {
+                    let c = (p.cell.x as f32 + 0.5 + p.offset.0, p.cell.y as f32 + 0.5 + p.offset.1);
+                    // the placement searches asked from the pipe's centre
+                    if let Some(q) = fac.nearest_open(c.0, c.1, HUNTER_RADIUS) {
+                        assert!(fac.hunter_fits(q.0, q.1), "{}: nearest_open set a hunter down at {q:?}", p.id);
+                        placed += 1;
+                    }
+                    for k in 0..8 {
+                        let a = k as f32 * std::f32::consts::FRAC_PI_4;
+                        let out = (a.cos(), a.sin());
+                        // the first spot of the line in from outside where a hunter no longer fits
+                        let reach = p.half.0.max(p.half.1) + 1.5;
+                        let (mut edge, mut hit) = (None, false);
+                        for i in 0..=((reach / 0.02) as i32) {
+                            let d = reach - i as f32 * 0.02;
+                            let q = (c.0 + out.0 * d, c.1 + out.1 * d);
+                            if fac.hunter_fits(q.0, q.1) {
+                                edge = Some(q);
+                            } else if edge.is_some() && fac.crawl_blocks(q.0, q.1, HUNTER_RADIUS) {
+                                hit = true;
+                                break;
+                            } else if edge.is_some() {
+                                break;
+                            }
+                        }
+                        let (Some(edge), true) = (edge, hit) else { continue };
+                        // the clear-toward shove stops at the pipe
+                        let end = fac.clear_toward(edge, c, HUNTER_RADIUS);
+                        assert!(fac.hunter_fits(end.0, end.1), "{}: clear_toward carried a hunter to {end:?}", p.id);
+                        // a second hunter just outside pushes this one in toward the pipe, however long it runs
+                        let behind = (edge.0 + out.0 * 0.4, edge.1 + out.1 * 0.4);
+                        if !fac.hunter_fits(behind.0, behind.1) {
+                            continue;
+                        }
+                        let mut hs: Vec<Brain> = [edge, behind]
+                            .iter()
+                            .enumerate()
+                            .map(|(i, q)| {
+                                let mut b = Brain::new(def.clone(), *q, &format!("CRAWL-PUSH:{i}"), Difficulty::Standard);
+                                b.set_level(level);
+                                b.active = true;
+                                b
+                            })
+                            .collect();
+                        for _ in 0..400 {
+                            pushes += super::director::separate(1.0 / 20.0, &mut hs, &fac);
+                            for b in &hs {
+                                assert!(fac.hunter_fits(b.pos.0, b.pos.1), "{}: the push put a hunter at {:?}, inside the crawl pipe", p.id, b.pos);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!("{pushes} pushes, {placed} placements");
+    assert!(placed > 3, "crawl pipes were sampled ({placed})");
 }

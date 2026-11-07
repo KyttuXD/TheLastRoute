@@ -782,8 +782,9 @@ pub fn separate(dt: f32, hunters: &mut [Brain], fac: &Facility) -> i32 {
             hunters[i].pos.1 + lim.1 * SEPARATION_SPEED * dt,
         );
         // the hunter's own body against the runner's rule (walls, props, railings, doors, lockers, flight dividers and
-        // stair wells), and the push is a short step: it never carries a body through anything
-        if !fac.body_fits(to.0, to.1, crate::config::HUNTER_RADIUS) {
+        // stair wells) and the crawl-under pipes (`hunter_fits`), and the push is a short step: it never carries a body
+        // through anything
+        if !fac.hunter_fits(to.0, to.1) {
             continue;
         }
         hunters[i].pos = to;

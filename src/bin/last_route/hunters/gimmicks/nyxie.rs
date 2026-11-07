@@ -20,7 +20,7 @@ use std::sync::{Mutex, OnceLock};
 use crate::shared::clock::Instant;
 
 use super::Ctx;
-use crate::config::{Difficulty, HUNTER_RADIUS};
+use crate::config::Difficulty;
 use crate::hunters::brain::{dist, Brain, State, Target};
 use crate::world::Facility;
 
@@ -1059,7 +1059,7 @@ mod tests {
 mod beam_tests {
     use super::*;
     use crate::audio::Sounds;
-    use crate::config::Difficulty;
+    use crate::config::{Difficulty, HUNTER_RADIUS};
     use crate::content::Content;
     use crate::game::{Controls, Game};
     use crate::world::catalog::Catalog;

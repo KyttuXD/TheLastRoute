@@ -1539,7 +1539,7 @@ impl Facility {
         for i in 1..=steps {
             let t = i as f32 / steps as f32;
             let p = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
-            if !self.body_fits(p.0, p.1, r) {
+            if !self.body_fits_tall(p.0, p.1, r) {
                 break;
             }
             last = p;
@@ -1644,6 +1644,15 @@ impl Facility {
     /// crawl-under pipe in the way. The one footprint rule of a hunter's step, route cell and spawn.
     pub fn hunter_fits(&self, x: f32, y: f32) -> bool {
         self.body_fits(x, y, crate::config::HUNTER_RADIUS) && !self.crawl_blocks(x, y, crate::config::HUNTER_RADIUS)
+    }
+
+    /// `body_fits` for a body of radius `r` that is as tall as it is wide to the crawl-under pipes: a body of a hunter's
+    /// radius or more is a hunter (the runner and the bots are thinner), so it is kept out of them too. The placement
+    /// searches (`nearest_open`, `clear_toward`) take their radius from the caller, which is `HUNTER_RADIUS` for every
+    /// teleport and shove of a hunter (the Void hunters, the spawn spots, the admin tools); without this they could set a
+    /// hunter down inside a crawl pipe.
+    fn body_fits_tall(&self, x: f32, y: f32, r: f32) -> bool {
+        self.body_fits(x, y, r) && (r < crate::config::HUNTER_RADIUS || !self.crawl_blocks(x, y, r))
     }
 
     /// Every cell of every stair's well (sorted, no repeats).
@@ -2001,7 +2010,7 @@ impl Facility {
             let closed_well = self.hunter_open.len() == (self.cols * self.rows) as usize
                 && self.is_stair_hole(c.x, c.y)
                 && !self.hunter_open[(c.y * self.cols + c.x) as usize];
-            if !closed_well && self.body_fits(wx, wy, r) {
+            if !closed_well && self.body_fits_tall(wx, wy, r) {
                 return Some((wx, wy));
             }
             for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
