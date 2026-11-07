@@ -57,3 +57,7 @@ __pycache__/
 .TemporaryItems
 .VolumeIcon.icns
 Icon?
+
+# Local-only folders (not in git history: they are large reference material and golden test data)
+reference/
+tests/parity/
