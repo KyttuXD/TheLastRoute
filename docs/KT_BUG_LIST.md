@@ -1,10 +1,10 @@
 # KT's bug and feature list (2026-11-07)
 
-Everything KT reported or asked for, in KT's words where possible. The open list started from main `5bfc405` (web build `e7442c5e` live on https://lastrouterust.games.kyttuslab.org). Items 1, 3, 4, 5 and 14 are fixed on `cursor/audit-open-bugs-d6c4` and are not deployed. Hand this to another agent as the starting brief. Platform priority: the WEB build (wasm32, WebGL1), then desktop. Reference browser: Firefox on a 2015 dual-core Intel MacBook Air.
+Everything KT reported or asked for, in KT's words where possible. The open list started from main `5bfc405` (web build `e7442c5e` live on https://lastrouterust.games.kyttuslab.org). Items 1, 3, 4, 5 and 14 are in main and are not deployed to the live web build yet. Hand this to another agent as the starting brief. Platform priority: the WEB build (wasm32, WebGL1), then desktop. Reference browser: Firefox on a 2015 dual-core Intel MacBook Air.
 
 Legend: DONE = merged and deployed; MERGED = in main, not all of it live; BRANCH = finished on a branch, not merged; OPEN = not fixed yet; NEEDS KT = waiting on a decision or a server change.
 
-## Fixed on branch `cursor/audit-open-bugs-d6c4` (not merged, not deployed)
+## Fixed in main (not deployed)
 
 1. **Small gray pipes have no collision for the player.** A standing runner and a standing bot stop at a crawl-under pipe; a crouched runner passes, and releasing crouch under the pipe does not stand them back up. Hunters stay fully closed (`Facility::crawl_stops`, `Player::fits`). The floor footprint stays open.
 3. **Hunters must not spawn in sewer water.** Runtime spots (`Game::spawn_spot`, resident hunters) require `hunter_may_spawn` (open and dry). The chunk generator already required a dry neighbourhood.
