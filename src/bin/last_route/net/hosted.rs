@@ -203,9 +203,9 @@ pub fn is_room_owner(room_owner: &str, signed_in: bool, account: &str) -> bool {
 
 /// The owner-controls rule: the controls are shown only to the room's owner, in an online room they joined as a guest.
 /// Nobody else sees them: not another guest, not a signed-out player, not a solo room, and not the runner who hosts the
-/// public route.
-pub fn owner_controls_visible(online_guest: bool, room_owner: &str, signed_in: bool, account: &str) -> bool {
-    online_guest && is_room_owner(room_owner, signed_in, account)
+/// public route. The public route has no owner at all: not even an account the directory names as its owner gets them.
+pub fn owner_controls_visible(code: &str, online_guest: bool, room_owner: &str, signed_in: bool, account: &str) -> bool {
+    online_guest && !super::public_route::is_public(code) && is_room_owner(room_owner, signed_in, account)
 }
 
 // ---- create ------------------------------------------------------------------------------------------------------
@@ -751,19 +751,29 @@ mod tests {
     #[test]
     fn only_the_rooms_owner_sees_the_controls() {
         // the owner, signed in, a guest of an online room
-        assert!(owner_controls_visible(true, "KYTTU", true, "KYTTU"));
-        assert!(owner_controls_visible(true, "KYTTU", true, "kyttu"), "case is ignored");
+        assert!(owner_controls_visible("ABCDE", true, "KYTTU", true, "KYTTU"));
+        assert!(owner_controls_visible("ABCDE", true, "KYTTU", true, "kyttu"), "case is ignored");
         // another guest
-        assert!(!owner_controls_visible(true, "KYTTU", true, "AYTTU"));
+        assert!(!owner_controls_visible("ABCDE", true, "KYTTU", true, "AYTTU"));
         // signed out, even with the owner's name left in the settings
-        assert!(!owner_controls_visible(true, "KYTTU", false, "KYTTU"));
+        assert!(!owner_controls_visible("ABCDE", true, "KYTTU", false, "KYTTU"));
         // a room with no owner of record (a browser host's room, the public route)
-        assert!(!owner_controls_visible(true, "", true, ""));
-        assert!(!owner_controls_visible(true, "", true, "KYTTU"));
-        assert!(!owner_controls_visible(true, "KYTTU", true, ""));
+        assert!(!owner_controls_visible("ABCDE", true, "", true, ""));
+        assert!(!owner_controls_visible("ABCDE", true, "", true, "KYTTU"));
+        assert!(!owner_controls_visible("ABCDE", true, "KYTTU", true, ""));
         // a solo room or a hosting client is not an online guest
-        assert!(!owner_controls_visible(false, "KYTTU", true, "KYTTU"));
+        assert!(!owner_controls_visible("ABCDE", false, "KYTTU", true, "KYTTU"));
         assert!(!is_room_owner("  ", true, "  "));
+    }
+
+    #[test]
+    fn nobody_sees_the_owner_controls_on_the_public_route_not_even_a_named_owner() {
+        let code = crate::net::public_route::rules().code.clone();
+        // the same signed-in account that owns a private room (an admin the directory names as the entry's owner)
+        assert!(owner_controls_visible("ABCDE", true, "KYTTU", true, "KYTTU"));
+        assert!(!owner_controls_visible(&code, true, "KYTTU", true, "KYTTU"), "the public route has no owner");
+        assert!(!owner_controls_visible(&code, false, "KYTTU", true, "KYTTU"));
+        assert!(!owner_controls_visible(&code, true, "", true, "KYTTU"));
     }
 
     fn miss() -> NetError {

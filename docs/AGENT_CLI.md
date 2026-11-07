@@ -49,6 +49,15 @@ Exit codes: 0 idle shutdown, 2 bad command line, 3 token or relay refused or unr
 `headless/dedicated.rs`; its header lists the limits (no signal handling, relays and pickups still local to each guest, one
 window that follows the party anchor).
 
+### The public route's room (`--dedicated-host PUBLC`)
+
+When the code is the public code (`data/net/public_route.json`) the process is the public route's room: no token or ticket is
+needed (it registers the code itself, transport ws, `register_public`, and waits while a runner holds the code), there is no owner
+(every owner command is refused with `THE PUBLIC ROUTE HAS NO OWNER` and the directory is never asked), the difficulty is the
+route's own, `--idle-minutes` is ignored (an empty public room is its normal state) and a lost link is retried for ever with a
+fresh registration. The room carries `dedicated: true`, so runners never open the room in a hurry when it restarts. The unit
+that runs it and the switch that turns the client's stand-in off are in docs/SERVERS.md ("Public route: no player host").
+
 ### The owner of a dedicated room, and the client that creates one
 
 No client hosts an online room. CREATE ROOM (online, signed in) calls `POST /api/rooms/hosted/create {sessionToken, difficulty}`

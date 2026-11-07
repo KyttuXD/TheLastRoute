@@ -169,6 +169,9 @@ pub struct Ui {
     pub join_net: bool,
     /// The room the lobby shows (see [`RoomMode`]).
     pub room_mode: RoomMode,
+    /// The open room is the public route: nobody in it chooses the difficulty, so the lobby shows it locked (as a guest
+    /// reads the host's) whoever holds the room.
+    pub public_route: bool,
     /// The lobby's COPY CODE was just used (shows COPIED TO CLIPBOARD until the screen changes).
     pub code_copied: bool,
     /// Where the account screen's back button goes: the screen it was opened from (the lobby keeps its room).
@@ -211,6 +214,7 @@ impl Default for Ui {
             join_status: String::new(),
             join_net: true,
             room_mode: RoomMode::Solo,
+            public_route: false,
             code_copied: false,
             account_back: Screen::Title,
             create_offline: false,
@@ -1641,7 +1645,9 @@ pub fn draw_lobby(
     }
     cy += l7 + 3.0;
     // a guest sees the host's difficulty as a locked row; only the host (or a solo runner) can pick another
-    let title = if owner { lobby_difficulty().title.clone() } else { difficulty_row_title(mode, *diff) };
+    // (the public route has one difficulty: its lobby row is locked for whoever holds the room)
+    let diff_mode = if ui.public_route { RoomMode::Guest } else { mode };
+    let title = if owner { lobby_difficulty().title.clone() } else { difficulty_row_title(diff_mode, *diff) };
     label(a, F::Body, &title, cx, cy, 6.0, p.muted);
     let by = cy + l6 + 2.0;
     let mut bx = cx;
@@ -1655,7 +1661,7 @@ pub fn draw_lobby(
         };
         // the owner picks the room's difficulty through the server (it applies from the next route); a host or a solo
         // runner picks it here; any other guest only reads the host's
-        let st = BtnState { disabled: if owner { !owner_joined } else { !difficulty_editable(mode) }, ..plain() };
+        let st = BtnState { disabled: if owner { !owner_joined } else { !difficulty_editable(diff_mode) }, ..plain() };
         if button(a, Rect::new(bx, by, bw, btn_h), difficulty_label(d), 7.0, kind, st)
             && interactive
         {
@@ -1670,7 +1676,7 @@ pub fn draw_lobby(
         bx += bw + 4.0;
     }
     if interactive
-        && difficulty_editable(mode)
+        && difficulty_editable(diff_mode)
         && !row.is_empty()
         && (is_key_pressed(KeyCode::Left) || is_key_pressed(KeyCode::Right))
         && (is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift))

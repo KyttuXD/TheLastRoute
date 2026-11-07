@@ -49,6 +49,7 @@ pub mod http;
 pub mod pending;
 pub mod hunter_events;
 pub mod protocol;
+pub mod public_reform;
 pub mod public_route;
 pub mod relay;
 pub mod room_link;

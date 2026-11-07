@@ -1090,6 +1090,84 @@ use std::time::Duration;
         assert!(!b.frame_due(&slow, t1), "10 Hz: no frame before 100 ms");
     }
 
+
+    /// The public route's handover (net/public_reform.rs): a guest that becomes the room's host keeps the hunters the old
+    /// host last showed it, and runs them from there.
+    #[test]
+    fn a_guest_that_becomes_the_host_keeps_the_hunters_of_the_old_hosts_last_frame_and_simulates_them() {
+        let sounds = crate::audio::Sounds::default();
+        let (mut host, content, catalog) = run();
+        for _ in 0..240 {
+            host.step(1.0 / 60.0, &Controls::default(), &content, &catalog, &sounds);
+        }
+        let last_frame = host.hunter_frame();
+        assert!(!last_frame.is_empty(), "the old host had hunters to show");
+
+        // a guest of the same route: it built no hunter of its own, the host's frames made them
+        let mut guest = Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, "ROOM-TEST-7", 0, &content, &catalog);
+        guest.remote_hunters = true;
+        assert!(guest.hunters.is_empty());
+        guest.apply_hunter_frame(&last_frame);
+        let ids = |g: &Game| g.hunters.iter().map(|h| h.def.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&guest), ids(&host), "the guest shows the same hunters");
+
+        // the old host leaves; this guest is promoted. Its hunters stand where the last frame put them, in the same state
+        guest.relays_collected = 1;
+        guest.become_host(&content);
+        assert!(!guest.remote_hunters && guest.hunters.iter().all(|h| !h.shadow && !h.display_only), "no hunter is a shadow any more");
+        for (g, h) in guest.hunters.iter().zip(host.hunters.iter()) {
+            assert_eq!(g.pos, h.pos, "{} stands where the old host last showed it", h.def.id);
+            assert_eq!(hunter_events::state_name(g.state), hunter_events::state_name(h.state));
+            assert_eq!((g.active, g.level), (h.active, h.level));
+        }
+        let before: Vec<(f32, f32)> = guest.hunters.iter().map(|h| h.pos).collect();
+        for _ in 0..600 {
+            guest.step(1.0 / 60.0, &Controls::default(), &content, &catalog, &sounds);
+        }
+        assert_eq!(ids(&guest), ids(&host), "the promotion neither drops nor doubles a hunter");
+        let moved = guest.hunters.iter().zip(before.iter()).any(|(h, p)| h.pos != *p);
+        assert!(moved, "the new host runs the hunters: they move on their own now");
+        // and its frames are what the next guests are sent
+        assert_eq!(guest.hunter_frame().len(), host.hunter_frame().len());
+    }
+
+    /// The other guest of the handover: it keeps showing the old host's hunters until the new host's frames arrive, and
+    /// those frames must reuse the hunters it has (matched by id), never add a second set.
+    #[test]
+    fn a_guest_that_stays_a_guest_follows_the_new_hosts_frames_without_doubling_the_hunters() {
+        let sounds = crate::audio::Sounds::default();
+        let (mut old_host, content, catalog) = run();
+        for _ in 0..240 {
+            old_host.step(1.0 / 60.0, &Controls::default(), &content, &catalog, &sounds);
+        }
+        let last_frame = old_host.hunter_frame();
+        let make = || {
+            let mut g = Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, "ROOM-TEST-7", 0, &content, &catalog);
+            g.remote_hunters = true;
+            g.apply_hunter_frame(&last_frame);
+            g
+        };
+        let (mut new_host, mut stays) = (make(), make());
+        let ids = |g: &Game| {
+            let mut v = g.hunters.iter().map(|h| h.def.id.clone()).collect::<Vec<_>>();
+            v.sort();
+            v
+        };
+        assert_eq!(ids(&stays), ids(&old_host));
+        new_host.become_host(&content);
+        for _ in 0..180 {
+            new_host.step(1.0 / 60.0, &Controls::default(), &content, &catalog, &sounds);
+        }
+        let frame = new_host.hunter_frame();
+        stays.apply_hunter_frame(&frame);
+        assert_eq!(ids(&stays), ids(&new_host), "the guest neither keeps a stale hunter nor adds a second set");
+        for _ in 0..3 {
+            stays.apply_hunter_frame(&new_host.hunter_frame());
+        }
+        assert_eq!(stays.hunters.len(), new_host.hunters.len());
+        assert!(stays.hunters.iter().all(|h| h.shadow), "the guest still only shows them");
+    }
+
     #[test]
     fn a_guest_queues_no_host_world_events() {
         let (mut guest, content, catalog) = run();

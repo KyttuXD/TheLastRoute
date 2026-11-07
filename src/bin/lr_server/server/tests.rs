@@ -1149,3 +1149,46 @@ fn the_reset_audit_line_names_the_owner_and_the_account_but_never_a_password_or_
     let old = routes::account_event_line(0, "/api/account/login", &json!({}), &login, "a", "ignored").unwrap().1;
     assert!(old.starts_with("account login at ") && !old.contains("actor="), "{old}");
 }
+
+#[test]
+fn when_the_public_routes_relay_host_goes_its_guests_are_told_and_the_code_is_free_for_a_successor() {
+    // The client's handover (net/public_reform.rs) relies on exactly this: the relay ends the room on the guests
+    // (HOST_LEFT, they cannot be promoted), the directory forgets the code, and the next registration of it succeeds.
+    let (server, time, relay_port) = hostless_app();
+    assert_eq!(post(&server, "/api/enet/rooms/register", json!({ "code": PUBLIC_HOSTLESS, "port": 7000 })).0, 201);
+    let (host, guest) = (udp_host(), udp_host());
+    assert_eq!(public_hello(&host, relay_port, RelayFrame::HOST_REGISTER), RelayFrame::HOST_ACK);
+    host.send_to(&encode_relay_frame(RelayFrame::HOST_ALIVE, 0, PUBLIC_HOSTLESS, b"").unwrap(), ("127.0.0.1", relay_port)).unwrap();
+    guest.send_to(&encode_relay_frame(RelayFrame::GUEST_JOIN, 0, PUBLIC_HOSTLESS, b"a-guest-nonce").unwrap(), ("127.0.0.1", relay_port)).unwrap();
+    let mut buf = [0u8; 1500];
+    let n = guest.recv(&mut buf).unwrap();
+    assert_eq!(decode_relay_frame(&buf[..n]).unwrap().kind, RelayFrame::GUEST_ACK);
+    assert_eq!(get(&server, "/api/enet/rooms/PUBLC").0, 200);
+    // the host's keep-alive stops
+    std::thread::sleep(Duration::from_millis(100));
+    time.advance(1_500);
+    let mut kinds = Vec::new();
+    for _ in 0..4 {
+        match guest.recv(&mut buf) {
+            Ok(n) => kinds.push(decode_relay_frame(&buf[..n]).unwrap().kind),
+            Err(_) => break,
+        }
+        if kinds.contains(&RelayFrame::HOST_LEFT) {
+            break;
+        }
+    }
+    assert!(kinds.contains(&RelayFrame::HOST_LEFT), "the guest is told the room is gone: {kinds:?}");
+    let mut gone = false;
+    for _ in 0..40 {
+        if get(&server, "/api/enet/rooms/PUBLC").0 == 404 {
+            gone = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(gone, "the directory forgot the code");
+    // a guest of the old room registers as the new host, from its own address, with no host token
+    assert_eq!(post(&server, "/api/enet/rooms/register", json!({ "code": PUBLIC_HOSTLESS, "port": 7000 })).0, 201);
+    assert_eq!(get(&server, "/api/enet/rooms/PUBLC").0, 200);
+    server.close();
+}

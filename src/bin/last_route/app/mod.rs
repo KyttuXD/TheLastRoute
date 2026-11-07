@@ -52,6 +52,8 @@ use crate::ui::menus::{self, Action, Screen, Ui};
 use crate::ui::pause::{self, Pause, Sub};
 use crate::ui::{hud, map, report, settings_panel, style};
 use crate::net::hosted::{self, JoinProgress, OwnerAction, OwnerStep};
+use crate::net::public_reform::{PublicReform, ReformStep, Settled};
+use crate::net::public_route as net_public;
 use crate::net::world_sync::{self, NetEvent, NetSession, RemoteView, RouteCommand};
 use crate::net::{Backend, BackendConfig, BackendEvent, Pending};
 use crate::world::catalog::Catalog;
@@ -457,9 +459,12 @@ fn env(name: &str) -> Option<String> {
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum NetIntent {
     Join,
-    /// PUBLIC ROUTE: the session turns out hosted or joined once the directory has answered. It is the one room a client
-    /// still hosts, until the public route becomes an always-on server room.
+    /// PUBLIC ROUTE: the session turns out hosted or joined once the directory has answered. A runner holds the room
+    /// only as a stand-in for the server process that is meant to hold it (net/public_route.rs).
     Public,
+    /// PUBLIC ROUTE after its host left: the runner is already playing and keeps its game; the session is the room it
+    /// is back in (net/public_reform.rs).
+    Reform,
 }
 
 /// A line of the owner's feedback stays this long.
@@ -641,6 +646,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
     let mut share_text_at = 0.0f64;
     let mut net: Option<NetSession> = None;
     let mut net_pending: Option<(NetIntent, Pending<NetSession>)> = None;
+    // PUBLIC ROUTE: the way back into the room after its host left (net/public_reform.rs). The runner keeps playing meanwhile.
+    let mut reform: Option<PublicReform> = None;
     // CREATE ROOM (online): the server's answer, then the wait for the room to be listed and the guest join
     let mut hosted_create: Option<Pending<hosted::Created>> = None;
     let mut hosted_join: Option<hosted::HostedJoin> = None;
@@ -777,17 +784,46 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
         }
         ui.acct_busy = backend.account_pending();
 
-        // a host or join request that has answered: adopt the session and show its lobby
+        // a host or join request that has answered: adopt the session and show its lobby. The handover of the public route
+        // (net/public_reform.rs) answers the same way, for a runner that is playing already.
         let answered = net_pending.as_mut().and_then(|(intent, p)| p.poll().map(|r| (*intent, r)));
+        let mut reform_gave_up: Option<String> = None;
+        let answered = answered.or_else(|| {
+            let step = reform.as_mut().filter(|_| net.is_none()).map(|r| r.update(crate::shared::clock::Instant::now()));
+            match step {
+                Some(ReformStep::Entered(session)) => Some((NetIntent::Reform, Ok(*session))),
+                Some(ReformStep::GaveUp) => {
+                    reform_gave_up = Some(crate::content::public_roster::PublicRoster::load().messages.unavailable);
+                    None
+                }
+                _ => None,
+            }
+        });
         if let Some((intent, result)) = answered {
             net_pending = None;
             match result {
                 Ok(mut session) => {
                     let code = session.code.clone();
-                    // PUBLIC ROUTE is a host when nobody held the room, else a guest of the runner who does; a JOIN is
-                    // always a guest (no client hosts an online room)
-                    let public = intent == NetIntent::Public;
+                    // PUBLIC ROUTE is a stand-in host when nobody held the room (no server process was up), else a guest
+                    // of whoever holds it; a JOIN is always a guest (no client hosts an online room)
+                    let public = intent != NetIntent::Join;
+                    // a runner that is playing when the handover finishes keeps its game and its world
+                    let resumed = intent == NetIntent::Reform && (playing.is_some() || loading.is_some());
+                    if public {
+                        // nobody on the public route chooses its difficulty
+                        diff = net_public::rules().difficulty;
+                    }
                     match session.is_host() {
+                        true if resumed => {
+                            // the new host runs the world it is in: its seed, the hunters it last saw (the old host's
+                            // frames set them in this game), its own timers. The runners that rejoin are sent this route.
+                            room = playing.as_ref().map(|g| g.room_text.clone()).filter(|t| !t.is_empty()).unwrap_or_else(|| room.clone());
+                            session.set_room_seed(room.clone());
+                            session.start_run(&room, diff.name());
+                            ui.room_mode = menus::RoomMode::Host;
+                            flash(&mut ui, "THE ROUTE CONTINUES // THE PUBLIC ROOM IS OPEN AGAIN");
+                        }
+                        false if resumed => flash(&mut ui, "THE ROUTE CONTINUES // BACK IN THE PUBLIC ROOM"),
                         true => {
                             room = world_sync::room_text_for_code(&code, &route::new_room_text());
                             // the guests are sent the text this host runs on, so both start the same route
@@ -816,7 +852,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 Err(e) => {
                     let text = e.message_or("ROOM REQUEST FAILED");
                     match intent {
-                        NetIntent::Public => flash(&mut ui, &text),
+                        NetIntent::Public | NetIntent::Reform => flash(&mut ui, &text),
                         NetIntent::Join if ui.screen == Screen::Join => ui.join_status = text,
                         NetIntent::Join => flash(&mut ui, &text),
                     }
@@ -887,7 +923,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 .unwrap_or_default();
             let online_guest = net.as_ref().map_or(hosted_join.is_some(), |n| !n.is_host());
             ui.signed_in = backend.signed_in();
-            ui.owner.owner = hosted::owner_controls_visible(online_guest, &room_owner, backend.signed_in(), &backend.account.username);
+            ui.public_route = net.as_ref().map_or(reform.is_some(), |n| n.is_public_route());
+            ui.owner.owner = hosted::owner_controls_visible(net.as_ref().map_or("", |n| n.code.as_str()), online_guest, &room_owner, backend.signed_in(), &backend.account.username);
             ui.owner.joined = net.as_ref().is_some_and(|n| !n.is_host() && n.linked());
             ui.owner.peers = net.as_ref().filter(|_| ui.owner.owner).map(|n| n.roster_peers()).unwrap_or_default();
             ui.owner.waiting = hosted_join.as_ref().map(|j| j.status_lines());
@@ -938,6 +975,10 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
         // the room's difficulty: the host sets it and sends it; a guest takes the host's and never sends its own
         if let Some(n) = net.as_mut() {
             if n.is_host() {
+                // the public route has one difficulty; nobody holding the room chooses it
+                if n.is_public_route() {
+                    diff = net_public::rules().difficulty;
+                }
                 n.set_room_difficulty(diff);
             } else {
                 diff = world_sync::difficulty_from_name(n.room_difficulty());
@@ -977,7 +1018,14 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
         );
         // a guest's game runs no hunter simulation: the host's frames drive the hunters (game/hunting.rs)
         if let Some(g) = playing.as_mut() {
-            g.remote_hunters = net.as_ref().is_some_and(|n| !n.is_host());
+            // while the public room is being opened again, the hunters stand where the old host last showed them
+            let remote = net.as_ref().map_or(reform.is_some(), |n| !n.is_host());
+            if g.remote_hunters && !remote {
+                // this runner now holds the room: the hunters it was shown become the ones it simulates
+                g.become_host(&w.content);
+            } else {
+                g.remote_hunters = remote;
+            }
         }
         // a guest that joined a running route is told how many relays the host has sabotaged (the late joiner's snapshot)
         if loading.is_none() {
@@ -1157,9 +1205,64 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 }
             }
         }
+        // the handover could not bring the runner back in time: the room is gone for it
+        if room_closed.is_none() {
+            room_closed = reform_gave_up.take();
+        }
+        // a stand-in host of the public route whose own relay link ended for good is no host any more: the relay closed the
+        // room on its guests, who open it among themselves. It lets go of the dead room and comes back through the handover
+        // (behind the guests it had); left alone it would carry on in a room nobody is in, and its heartbeat would keep
+        // listing a room no one can join.
+        let lost_link = net.as_ref().is_some_and(|n| n.lost_public_link());
+        if room_closed.is_none() && lost_link {
+            room_closed = Some("LOST THE CONNECTION TO THE ROOM".to_string());
+        }
+        // the public route has no player host to keep alive: when the one holding the room goes, the runner keeps playing
+        // and the room is opened again (net/public_reform.rs), not closed on it. A removal from the room still ends it.
+        if let Some(reason) = room_closed.take() {
+            let public = net.as_ref().is_some_and(|n| n.is_public_route());
+            if public && !net_public::is_removal(&reason) && !net_cfg.offline {
+                let now = crate::shared::clock::Instant::now();
+                if let Some(r) = reform.as_mut() {
+                    // a room entered by the handover ended before it linked (the directory still listed a dead host)
+                    let _ = r.settle(now, false, true);
+                    // (a room this runner opened and could not reach is given back, so the next try does not find its own dead listing)
+                    if let Some(n) = net.take() {
+                        n.leave();
+                    }
+                } else {
+                    let plan = net.as_ref().map_or(net_public::Plan::join_only(), |n| n.reform_plan());
+                    let (name, skin) = (world_sync::clean_name(&backend.room_name(&settings.username)), worn.get().hash);
+                    reform = Some(PublicReform::begin(net_cfg.clone(), name, skin, plan, now));
+                    match net.take() {
+                        // the dead room's directory entry goes now (its token is the old one: a successor's entry is untouched)
+                        Some(n) if lost_link => n.leave(),
+                        _ => {}
+                    }
+                    show_room_notice(playing.as_mut(), &mut ui, "THE HOST LEFT // THE ROUTE CONTINUES");
+                }
+            } else {
+                room_closed = Some(reason);
+            }
+        } else if let (Some(r), Some(n)) = (reform.as_mut(), net.as_ref()) {
+            // a room entered by the handover: watched until the relay accepts it, dropped if it never does
+            match r.settle(crate::shared::clock::Instant::now(), n.linked(), false) {
+                Settled::Linked => reform = None,
+                Settled::Retry => {
+                    if let Some(n) = net.take() {
+                        n.leave();
+                    }
+                }
+                Settled::Waiting => {}
+            }
+        }
+        if ui.screen == Screen::Title {
+            reform = None;
+        }
         if let Some(reason) = room_closed {
-            // the host closed the room: this guest goes back to the title with the reason
+            // the host closed the room (or the handover ran out of time): this guest goes back to the title with the reason
             net = None;
+            reform = None;
             playing = None;
             crate::audio::world::reset(); // the box and hunter loops end with the run
             loading = None;
@@ -1222,7 +1325,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             admin.enabled = (backend.admin || (screenshot.is_some() && env("LR_SHOT_ADMIN").is_some())) && !stress_on;
             // a hunter holding this runner in an open room: the struggle needs the keys, so the pause menu (the world keeps
             // running under it online) closes by itself and stays shut until the runner is free
-            let online = net.is_some();
+            let online = net.is_some() || reform.is_some();
             let held_by_hunter = g.escape.is_some() && !in_report;
             let handed_back = run_gate::hand_back_on_grab(&mut pz, online, held_by_hunter, web_pointer::locked());
             if handed_back.wait_for_click {
@@ -1360,7 +1463,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             // the pause menu stops a single-player run only: in an open room the world (every hunter, the clocks, the net
             // broadcast) goes on and the pausing runner just stands there uncontrolled (app/run_gate.rs; Godot
             // `pauses_tree = not RoomState.online`)
-            if let Some(step_c) = run_gate::controls_for(pz.open, net.is_some(), &c) {
+            if let Some(step_c) = run_gate::controls_for(pz.open, net.is_some() || reform.is_some(), &c) {
                 let _t = perf::section("update");
                 g.map_open = map_open; // Void Yellow reads the full-screen map (main_3d.gd:444)
                 // a client that hosts the room catches a long frame up in a few more capped steps, so the guests' hunters
@@ -1501,8 +1604,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     // Hold O: player list overlay (Godot player_list; Tab/T are labels until inventory/chat UI land).
                     if !stress_on && !pz.open && !in_report && is_key_down(KeyCode::O) {
                         let roster = net.as_ref().map(|n| n.roster()).unwrap_or_default();
-                        let local_host = net.as_ref().map_or(true, |n| n.is_host());
                         let listed = list_name(net.is_some(), &settings.username, &backend);
+                        let local_host = net.as_ref().map_or(reform.is_none(), |n| n.host_controls());
                         pause::draw_hold_player_list(
                             &w.assets,
                             g,
@@ -1538,7 +1641,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     if pz.open {
                         let name = list_name(net.is_some(), &settings.username, &backend);
                         let roster = net.as_ref().map(|n| n.roster()).unwrap_or_default();
-                        let local_host = net.as_ref().map_or(true, |n| n.is_host());
+                        let local_host = net.as_ref().map_or(reform.is_none(), |n| n.host_controls());
                         match pause::draw_pause(
                             &w.assets,
                             &mut pz,

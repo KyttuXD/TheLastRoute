@@ -140,6 +140,7 @@ Reserved codes (even a reserved public code) keep the full token check. What rep
 Tradeoff: the vouch is by address, so a flagged account behind a shared address that someone else vouched can still host;
 anyone who can send from the holder's address can replace it. The route is a public room, so nothing private is exposed.
 
+
 ## Guest names
 
 A runner who is not signed in plays under `GUEST_` and four digits (`GUEST_4829`). The client draws the number once (1000 to
@@ -157,6 +158,87 @@ and the join message all show the same name. Solo play still shows RUNNER, since
   digits or the hex letters A-F (`RESERVED_USERNAME`), and the client's CREATE ACCOUNT refuses it first. The Node backend
   has no such rule yet.
 - **Older clients** send `RUNNER` (or `R-4823`); the host accepts both and leaves them alone.
+
+## Public route: no player host (2026-11-06)
+
+The public route (`PUBLC`) is meant to have no player host. The world (hunters, timers, meters) is simulated by a server
+process and runners come and go freely: no owner, no kick, no route command, and a runner leaving never ends the room.
+What the report "the first joining member kicks everyone out of a public room when they leave" was, and what is built:
+
+**The cause.** Before this change the first runner to find no room (`GET /api/enet/rooms/PUBLC` answering 404) registered
+it and was the host (`world_sync::join_public_room`): it simulated the hunters, held the route seed and carried the relay
+link. Both relays close a room the moment its host goes: the UDP relay (`HOST_LEFT` to every guest, from `close_room`, and
+`on_room_closed` makes `lr_server` forget the directory entry), and the WebSocket hub, Node `ws_relay.mjs` `detach`
+(`{"t":"host","on":false}`, then close 4001 on every guest). The game then took `HostLeft` as "the room is closed" and sent
+every guest to the title. The relay cannot be told to promote a guest: the UDP relay's `HOST_PROMOTE` is only started by the
+host's own `release-host` HTTP call, and the Node WebSocket hub has no promotion at all. The public route never calls the
+Node `/api/public/*` routes; its hostless state lives in the directory entry and the relay (the section above).
+Reproduced by `net/world_sync/public_tests.rs` `reproduction_the_first_joiner_leaves_and_the_relay_closes_the_room_on_everyone`
+(A first, B and C join, A leaves: B and C both get `HostLeft`; this stays true after the fix, because it is the relay).
+
+**The design: a server process holds the room (preferred).** `last_route --dedicated-host PUBLC` (headless/dedicated.rs) is
+now a public room when the code is the public code: it registers the code itself over the WebSocket relay (no spawn ticket,
+no owner; `register_public`), refuses every owner command (the session answers `THE PUBLIC ROUTE HAS NO OWNER`; the
+directory is never asked), never closes for being empty, takes the room again with a fresh token whenever its link is lost, and
+waits (retrying every 2 s) while a runner holds the code. Its guests never become hosts: `Room` carries `dedicated: true`, and
+`data/net/public_route.json` `client_host_fallback: false` turns the stand-in off for good.
+
+**What the deployment needs (not done; nothing on any server was changed).**
+1. A Linux build of `last_route` on vps2 beside the Node directory (the process talks to the hub with `ws://` on loopback).
+   `/opt/lastroute-rust` does not exist on vps2 today; vps2 only has the Godot export for the private always-on room
+   (`lastroute-room@AKIRI.service`).
+2. A systemd unit on vps2, patterned on `lastroute-room@.service`, `Restart=always`, `RestartSec=5`, its own `StateDirectory`
+   and `HOME` (the device id for the directory's moderation check is stored there):
+   `ExecStart=/opt/lastroute-rust/current/last_route --headless -- --dedicated-host PUBLC --backend=http://127.0.0.1:8205 --ws-rooms`
+   (`--backend` names the loopback directory, which is also the relay; `--seed TEXT` keeps one world across restarts;
+   `--idle-minutes` is ignored for the public room). No host token and no region-agent change: the region agent only spawns hosts
+   for hosted codes that hold a spawn ticket, and the public code never has one.
+3. After the unit has been seen holding `PUBLC` (`GET /api/enet/rooms/PUBLC` lists it), set `client_host_fallback` to `false`
+   and ship a client build. Until then the stand-in below keeps the route working.
+4. `lr_server` on vps3 has no WebSocket hub, so a server process can only be reached through the Node hub on vps2; the UDP
+   relay path keeps the stand-in only.
+
+**The stand-in (until it is deployed, and whenever no server process is up).** A runner that finds no room opens it, as before,
+but holds it only as a stand-in: it has no host controls (`NetSession::host_controls`: KICK, END ROUTE, RESTART, the owner tab
+and the lobby's difficulty row are gone; the PLAYERS list shows no HOST tag; the difficulty is the route's own, `STANDARD`).
+When it leaves, the others hand the room over (`net/public_reform.rs`), with no change to either relay:
+- every guest keeps playing; the hunters stand where the old host's last frame left them;
+- from the host's last room message each guest knows its place in line (lowest session id first: the oldest joiner on the
+  WebSocket relay, whose ids count up; on the UDP relay ids are random, which is as deterministic);
+- the first in line looks the code up, finds none and registers it (after about 0.3 s, so the relay and directory have let go
+  of the old host); the others look it up every second and join whoever holds it; a runner whose place in line has come
+  (1.5 s per place) opens the room if it is still free, so a first in line that never came costs one step;
+- two that open at the same moment cannot both win: only one registration of a code succeeds (HTTP 409 for the other,
+  which then joins) and the UDP relay answers a second public host `HOST_JOIN_AS_GUEST`;
+- a room the directory still lists after its host died (the 15 s entry TTL) never links; it is dropped after 6 s and the
+  next try is made; a runner gives up after 30 s past its turn and goes to the title;
+- when the host that left was a server process, the stand-in waits 45 s before it may open the room (a restart takes seconds);
+- if nobody remains the room is gone and the next runner to arrive opens a fresh one;
+- a runner that joined as the host left, before the host's room message told it who is in the room, goes second in line
+  (it never saw the world, so it must not win the room from the runners playing in it);
+- a stand-in host whose own relay link ends for good (a dropped connection, a second host replacing it) lets go of the dead
+  room (unregistering it, so its heartbeat cannot keep a listing no one can join alive) and comes back through the same
+  handover behind the guests it had. The browser build's `WsLink` and the native WebSocket link report this; the UDP
+  `RelayLink` cannot tell yet, so a native stand-in on the UDP relay (`lr_server`) is not covered by this.
+
+What the new host knows: its own game (the world is the route's seed, which every runner builds itself) and the hunters it last
+saw (position, facing, state, level, stun, slow, disguise). What the old host's brains knew beyond that (paths, search memory,
+timers) is not on the wire, so a hunter restarts from that place with a clean brain. The relays and pickups each runner took
+are that runner's own, as they always were (see headless/dedicated.rs, Limits). The gap (about a second) shows as hunters
+standing still and a notice; nobody is sent to the title.
+
+**Verified by tests** (`cargo test --lib --bin last_route`): the first joiner holds the room only as a stand-in with no host
+controls; a server-held room is never opened by a joiner; the relay closes the room on B and C when A leaves (reproduction);
+the lowest id opens it again and the others rejoin it, once, with the seed and the Start the old host sent, nobody kicked; a
+single remaining runner keeps the room and later runners join it; an empty room closes and the next arrival opens a fresh
+one; two simultaneous openers produce one host; a dead listing is dropped and retried; a server process leaving does not
+make a runner open the room in a hurry; owner commands are refused; the dedicated public room never idles out, refuses owner
+commands, and survives runners coming and going; a guest promoted to host keeps and simulates the last frame's hunters.
+
+**Needs a live deployment:** the real Node directory and WebSocket hub (409 on the second registration, 4001 on host leave, the
+15 s entry TTL), the real UDP relay under `lr_server`, a browser (the web build opens its handover host over `WsLink`; the
+native tests do not run that path, and `cargo check --target wasm32-unknown-unknown` only proves it builds), more than
+three runners, and the systemd unit itself.
 
 ## Open
 
