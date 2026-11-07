@@ -1,13 +1,13 @@
 {
   "schema": "lr.hunter_targets/1",
-  "note": "Which target a hunter chases. The runner is always a candidate. NPC bots are candidates only on the difficulties whose bot_targets flag is true, and only when within bot_range (and, with bot_line_of_sight, in line of sight). The hunter picks the candidate with the smallest distance divided by its weight. Standard keeps bots off, so the route plays as before. Read by hunters/brain.rs (TargetRules).",
+  "note": "Which target a hunter chases. The runner is always a candidate. NPC bots are candidates on every difficulty when within bot_range (and, with bot_line_of_sight, in line of sight). The hunter picks the candidate with the smallest distance divided by its weight. Read by hunters/brain.rs (TargetRules).",
   "runner_weight": 1.0,
-  "bot_weight": 0.9,
-  "bot_range": 7.0,
+  "bot_weight": 1.0,
+  "bot_range": 12.0,
   "bot_line_of_sight": true,
   "bot_targets": {
-    "relaxed": false,
-    "standard": false,
+    "relaxed": true,
+    "standard": true,
     "hard": true,
     "nightmare": true
   }

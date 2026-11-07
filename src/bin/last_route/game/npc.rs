@@ -48,8 +48,23 @@ pub const SLOT_RADIUS: f32 = 2.4;
 pub const SLOT_RING_SLOTS: f32 = 8.0;
 /// Godot `npc_teammates.gd` 23: each slot's first repath phase.
 pub const PATH_STAGGER: f32 = 0.137;
-/// Godot `npc_teammates.gd` 27: seconds between path plans.
-pub const REPATH: f32 = 0.5;
+/// Godot `npc_teammates.gd` 27: seconds between path plans (scaled shorter by smartness).
+pub const REPATH: f32 = 0.4;
+
+/// How much smarter `n` acts: 0.55 at smart 0, 1.55 at smart 100. Used to shorten goal cool-downs and path replans.
+fn smart_rate(n: &Npc) -> f32 {
+    (0.55 + n.smart as f32 / 100.0).clamp(0.55, 1.55)
+}
+
+/// Seconds before a bot may pick another goal: base `replan` divided by its smart rate.
+fn goal_cool_for(n: &Npc, t: &Tuning) -> f32 {
+    (t.goals.replan / smart_rate(n)).max(0.35)
+}
+
+/// Seconds between path plans for this bot: base `REPATH` divided by its smart rate.
+fn repath_for(n: &Npc) -> f32 {
+    (REPATH / smart_rate(n)).max(0.18)
+}
 /// Godot `npc_teammates.gd` 39: time constant of the heading ease.
 pub const HEADING_SMOOTH: f32 = 0.3;
 /// Godot `npc_teammates.gd` 40: the body-turn spring.
@@ -752,7 +767,9 @@ fn wait_at_door(n: &mut Npc, fac: &Facility, door: Cell, t: &Tuning, dt: f32, pr
         Some((c, t)) if c == door => t - dt,
         _ => {
             let mut rng = Rng::new(&format!("{}:door:{}:{}", n.name, door.x, door.y));
-            t.door_think + t.door_think_jitter * rng.next_f32() - dt
+            // smarter bots wait less at shut doors
+            let think = (t.door_think + t.door_think_jitter * rng.next_f32()) / smart_rate(n);
+            think - dt
         }
     };
     if left <= 0.0 {
@@ -935,7 +952,8 @@ fn walk_toward(n: &mut Npc, fac: &Facility, goal: (f32, f32), running: bool, t: 
     let here = n.at;
     n.path_age += dt;
     // a flight keeps the route `flee_route` chose: a replan here would run the shortest way, past the hunter
-    if n.path_age >= REPATH && !(n.flee.goal.is_some() && !n.path.is_empty()) {
+    let repath = repath_for(n);
+    if n.path_age >= repath && !(n.flee.goal.is_some() && !n.path.is_empty()) {
         plan(n, fac, goal);
     }
     if n.path.is_empty() {
@@ -1220,13 +1238,14 @@ fn cross_to(n: &mut Npc, sc: &Scene, target: Node, avoid_search: bool, t: &Tunin
         n.walking = false;
         return;
     };
-    if n.hop.is_none() || n.path_age >= REPATH {
+    let repath = repath_for(n);
+    if n.hop.is_none() || n.path_age >= repath {
         let hop = {
             let cost = step_cost(n, sc, t, avoid_search);
             next_hop(nav, Node { level: n.level, cell: cell_at(n.at) }, target, &cost)
         };
         // a fresh hop is planned to on this frame; with no route the next ask waits a full repath
-        n.path_age = if hop.is_some() { REPATH } else { 0.0 };
+        n.path_age = if hop.is_some() { repath } else { 0.0 };
         n.hop = hop;
     }
     let Some(hop) = n.hop.clone() else {
@@ -1605,7 +1624,7 @@ fn run_goal(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec<Cell
     n.goal.away = if pdist(n.at, sc.leader) > t.goals.leash_distance { n.goal.away + dt } else { 0.0 };
     if n.goal.away > t.goals.leash_away {
         if n.goal.spot.take().is_some() {
-            n.goal.cool = t.goals.replan;
+            n.goal.cool = goal_cool_for(n, t);
             n.goal.stuck = StuckState::default();
             n.path.clear();
             n.hop = None;
@@ -1617,11 +1636,11 @@ fn run_goal(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec<Cell
         cur = sc.spots.iter().find(|x| x.same(&s)).copied().filter(|x| x.level != n.level || spot_safe(n, sc, x.pos, t));
         if cur.is_none() {
             n.goal.spot = None;
-            n.goal.cool = t.goals.replan;
+            n.goal.cool = goal_cool_for(n, t);
         } else if n.goal.age > t.goals.give_up {
             n.goal.done.push(s.key());
             n.goal.spot = None;
-            n.goal.cool = t.goals.replan;
+            n.goal.cool = goal_cool_for(n, t);
             cur = None;
         }
     }
@@ -1632,7 +1651,7 @@ fn run_goal(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec<Cell
                 return false;
             }
             let Some(s) = pick_goal(n, sc, t) else {
-                n.goal.cool = t.goals.replan;
+                n.goal.cool = goal_cool_for(n, t);
                 return false;
             };
             n.goal = GoalState {
@@ -1757,7 +1776,7 @@ fn stuck_watch(n: &mut Npc, sc: &Scene, spot: Spot, t: &Tuning, dt: f32, presses
         _ => {
             n.goal.banned.push((spot.key(), s.ban_seconds));
             n.goal.spot = None;
-            n.goal.cool = t.goals.replan;
+            n.goal.cool = goal_cool_for(n, t);
             n.goal.stuck = StuckState { anchor: n.at, count: n.goal.stuck.count, ..StuckState::default() };
             n.path.clear();
             n.hop = None;
@@ -3018,14 +3037,14 @@ mod tests {
     #[test]
     fn standard_tuning_matches_the_game() {
         let t = Tuning::get();
-        assert_eq!(t.threat_range, 14.0, "Godot npc_teammates.gd 25 THREAT_RANGE");
-        assert_eq!(t.smart_base, 0.5, "npc_teammates.gd 307 (.5 + smart / 100)");
+        assert_eq!(t.threat_range, 16.0, "raised so every smartness notices hunters sooner");
+        assert_eq!(t.smart_base, 0.6, "raised base of the smart scale (.6 + smart / 100)");
         assert_eq!(t.flee_step, 12.0, "npc_teammates.gd 312 flee distance");
         assert!(t.flee_running, "npc_teammates.gd 324-326 runs");
         assert_eq!(t.min_away, 0.1, "npc_teammates.gd 311 away length");
         assert_eq!(t.follow_radius, 5.0, "npc_teammates.gd 24 FOLLOW_RADIUS");
-        assert_eq!(t.door_think, 0.25, "DOOR_THINK, the first port's figure");
-        assert_eq!(t.door_think_jitter, 0.1, "DOOR_THINK_JITTER, the first port's figure");
+        assert_eq!(t.door_think, 0.12, "shorter door think so bots clear doors faster");
+        assert_eq!(t.door_think_jitter, 0.08, "door think jitter");
         assert_eq!(t.tasks, vec!["door".to_string()]);
         let intents: Vec<String> = ["hide", "flee", "goal", "locker", "follow"].iter().map(|s| s.to_string()).collect();
         assert_eq!(t.intents, intents, "the order the bots try their intents in");

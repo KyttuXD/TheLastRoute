@@ -1231,6 +1231,7 @@ impl Brain {
             State::Idle => {
                 self.idle_timer -= dt;
                 if self.idle_timer <= 0.0 {
+                    // nothing to chase: walk the floor instead of standing still
                     self.state = State::Wander;
                     self.wander_target = Some(self.pick_wander_target(fac));
                 }
@@ -1239,9 +1240,10 @@ impl Brain {
             State::Search => {
                 self.search_timer -= dt;
                 if self.search_timer <= 0.0 {
-                    self.state = State::Idle;
+                    // search ran out with no target: keep moving (Wander), do not park in Idle
+                    self.state = State::Wander;
                     self.last_known = None;
-                    self.idle_timer = 0.6 + self.next_float() * 1.4;
+                    self.wander_target = Some(self.pick_wander_target(fac));
                     self.clear_path();
                     return;
                 }
@@ -1366,9 +1368,9 @@ impl Brain {
     fn handle_arrival(&mut self, fac: &Facility, prof: &Profile) {
         match self.state {
             State::Wander => {
-                self.state = State::Idle;
-                self.idle_timer = 0.7 + self.next_float() * 1.6;
-                self.wander_target = None;
+                // chain another wander immediately so hunters patrol instead of pausing between legs
+                self.wander_target = Some(self.pick_wander_target(fac));
+                self.clear_path();
             }
             State::Chase | State::Investigate => {
                 self.state = State::Search;
@@ -1441,9 +1443,7 @@ impl Brain {
             }
             State::Search => self.search_target = Some(self.pick_search_target(fac)),
             State::Wander => {
-                self.state = State::Idle;
-                self.wander_target = None;
-                self.idle_timer = 0.25 + self.next_float() * 0.5;
+                self.wander_target = Some(self.pick_wander_target(fac));
             }
             _ => {}
         }
@@ -1568,9 +1568,9 @@ impl Brain {
                 return;
             }
             if self.state == State::Wander {
-                self.state = State::Idle;
-                self.wander_target = None;
-                self.idle_timer = 0.25 + self.next_float() * 0.5;
+                // unreachable wander point: pick another instead of standing Idle
+                self.wander_target = Some(self.pick_wander_target(fac));
+                self.clear_path();
                 self.path_goal = None;
             }
             return;
@@ -2672,21 +2672,21 @@ mod target_choice_tests {
     }
 
     #[test]
-    fn embedded_standard_keeps_bots_off() {
+    fn embedded_every_difficulty_chases_bots() {
         let r = TargetRules::get();
-        assert!(!r.bots_allowed(Difficulty::Standard), "Standard chases the runner only, as before");
-        assert!(!r.bots_allowed(Difficulty::Relaxed));
+        assert!(r.bots_allowed(Difficulty::Standard), "bots are chased like runners on every difficulty");
+        assert!(r.bots_allowed(Difficulty::Relaxed));
         assert!(r.bots_allowed(Difficulty::Hard));
         assert!(r.bots_allowed(Difficulty::Nightmare));
-        assert_eq!(r.bot_range, 7.0);
+        assert_eq!(r.bot_range, 12.0);
         assert!(r.bot_line_of_sight);
     }
 
     #[test]
-    fn standard_ignores_a_bot_right_beside_the_hunter() {
+    fn standard_chases_a_bot_right_beside_the_hunter() {
         let r = TargetRules::get();
         let got = choose_target(r, Difficulty::Standard, (0.0, 0.0), (9.0, 0.0), &[(0.5, 0.0)], clear);
-        assert_eq!(got, None, "Standard: the runner stays the only target");
+        assert_eq!(got, Some(0), "Standard: a near bot beats a far runner");
     }
 
     #[test]

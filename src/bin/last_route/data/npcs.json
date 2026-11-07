@@ -7,7 +7,7 @@
     "max_distance": 20,
     "join_radius": 6
   },
-  "smart": [30, 50, 70, 90],
+  "smart": [50, 70, 85, 100],
   "intents": ["hide", "flee", "goal", "locker", "follow"],
   "_intents_note": "relay and pickup are still valid intent names, but the goal intent already takes every relay and useful item, so the standard list leaves them out",
   "follow": {
@@ -15,12 +15,12 @@
     "_source": "Godot game/player/npc_teammates.gd 24 FOLLOW_RADIUS"
   },
   "threat": {
-    "range": 14.0,
-    "smart_base": 0.5,
+    "range": 16.0,
+    "smart_base": 0.6,
     "flee_step": 12.0,
     "flee_running": true,
     "min_away": 0.1,
-    "_source": "Godot npc_teammates.gd 25 THREAT_RANGE, 307 smart scale (.5 + smart/100), 311 away > .1, 312 flee 12 m, 324-326 running"
+    "_source": "Godot npc_teammates.gd 25 THREAT_RANGE, 307 smart scale (.5 + smart/100), 311 away > .1, 312 flee 12 m, 324-326 running; Rust raises the base so every smartness notices and flees sooner"
   },
   "hide": {
     "chase_range": 14.0,
@@ -65,9 +65,9 @@
     "_source": "Rust-only figures: a bot is at a door within 1.5 m, and shuts it once 2.5 m clear of the threshold"
   },
   "door": {
-    "think": 0.25,
-    "think_jitter": 0.1,
-    "_source": "Rust-only figures from the first port (npc.rs DOOR_THINK); no Godot line"
+    "think": 0.12,
+    "think_jitter": 0.08,
+    "_source": "Rust-only figures from the first port (npc.rs DOOR_THINK); no Godot line; shortened so bots clear doors faster at every smartness"
   },
   "water": {
     "avoid_depth": 0.5,
@@ -79,16 +79,16 @@
     "distance_cap": 25,
     "search_cost": 12,
     "edge_cost": 6,
-    "replan": 4,
-    "give_up": 120,
-    "leash": { "max_distance": 30.0, "max_away": 40.0 },
-    "candidates": 8,
+    "replan": 2.0,
+    "give_up": 90,
+    "leash": { "max_distance": 36.0, "max_away": 50.0 },
+    "candidates": 12,
     "level_metres": 40,
     "low_lamp": 0.3,
     "low_stamina": 0.35,
     "heal_item": "stim_pack",
-    "stuck": { "seconds": 3.0, "progress": 0.3, "aside_seconds": 0.8, "door_reach": 2.5, "ban_seconds": 30.0 },
-    "_source": "Rust-only figures: a bot scores relays 100, a battery or heal item 70 while the lamp is under 30 percent or stamina under 35 percent, a useful pickup 40 and the exit 20 (once the level's relays are done), less 0.1 per path step up to 25, so a kind never loses to a lower one; a hunter-searched cell costs 12 steps; it picks again at most every 4 s and gives a goal up after 120 s; leash: a bot more than 30 m from the runner for 40 s drops its goal and takes none until it is back within 30 m. The follow intent stays last as the fallback. stuck (headless/bot.rs recovery ladder): after 3 s without moving 0.3 m a bot repaths, then presses a shut door within 2.5 m, then steps aside 0.8 s in a seeded direction, then gives the goal up for 30 s"
+    "stuck": { "seconds": 2.0, "progress": 0.25, "aside_seconds": 0.6, "door_reach": 2.5, "ban_seconds": 20.0 },
+    "_source": "Rust-only figures: a bot scores relays 100, a battery or heal item 70 while the lamp is under 30 percent or stamina under 35 percent, a useful pickup 40 and the exit 20 (once the level's relays are done), less 0.1 per path step up to 25, so a kind never loses to a lower one; a hunter-searched cell costs 12 steps; it picks again at most every 2 s (scaled faster by smart) and gives a goal up after 90 s; leash: a bot more than 36 m from the runner for 50 s drops its goal and takes none until it is back within 36 m. The follow intent stays last as the fallback. stuck (headless/bot.rs recovery ladder): after 2 s without moving 0.25 m a bot repaths, then presses a shut door within 2.5 m, then steps aside 0.6 s in a seeded direction, then gives the goal up for 20 s"
   },
   "tasks": ["door"]
 }
