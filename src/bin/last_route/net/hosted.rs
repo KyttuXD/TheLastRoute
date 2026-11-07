@@ -239,9 +239,15 @@ pub fn difficulty_from_wire(v: &Value) -> Option<Difficulty> {
     }
 }
 
-/// The body of `POST /api/rooms/hosted/create`.
+/// What this build asks the directory to start the room with (`build` in the create body).
+pub const HOST_BUILD: &str = "rust";
+
+/// The body of `POST /api/rooms/hosted/create`. `build` names the game build that must host the room: the room is joined
+/// over this build's wire protocol (`net/protocol.rs`), which a Godot dedicated host does not speak, so a directory that
+/// runs more than one kind of room host (docs/SERVERS.md, "CREATE ROOM says BUILD MISMATCH") starts the Rust one. A
+/// directory that does not know the field ignores it, and then starts whatever its region agent is set to start.
 pub fn create_request(session_token: &str, difficulty: Difficulty) -> Value {
-    json!({"sessionToken": session_token, "difficulty": difficulty_index(difficulty)})
+    json!({"sessionToken": session_token, "difficulty": difficulty_index(difficulty), "build": HOST_BUILD})
 }
 
 fn text(o: &Json, key: &str) -> String {
@@ -647,7 +653,7 @@ mod tests {
 
     #[test]
     fn the_create_request_has_the_godot_shape() {
-        assert_eq!(create_request("tok", Difficulty::Standard), json!({"sessionToken": "tok", "difficulty": 1}));
+        assert_eq!(create_request("tok", Difficulty::Standard), json!({"sessionToken": "tok", "difficulty": 1, "build": "rust"}));
         assert_eq!(create_request("tok", Difficulty::Relaxed)["difficulty"], json!(0));
         assert_eq!(create_request("tok", Difficulty::Nightmare)["difficulty"], json!(3));
     }
@@ -1031,5 +1037,78 @@ mod wire_tests {
         let (_, g) = pump(&mut host, &mut guest, |_, g| g.iter().any(|e| matches!(e, NetEvent::HostLeft(_))));
         assert!(g.contains(&NetEvent::HostLeft("YOU WERE REMOVED FROM THE ROOM".into())), "{g:?}");
         assert!(!guest.kick_guest(peer), "only the room removes a guest");
+    }
+}
+
+/// CREATE ROOM end to end against an in-process directory: the create request, the host the directory started, and the
+/// creator's own join of it (the reported "BUILD MISMATCH when creating a room").
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod create_round_trip_tests {
+    use super::*;
+    use crate::net::api::RegisterRoom;
+    use crate::net::test_directory::{TestDirectory, TICKET};
+    use crate::net::world_sync;
+
+    /// Runs the wait the way the frame loop does until it ends; returns the failure text and how many checks it made.
+    fn wait_for_the_room(dir: &TestDirectory, created: &Created) -> (Option<String>, u32) {
+        let mut join = HostedJoin::with(&created.code, &created.owner, Instant::now(), 5, Duration::from_millis(5));
+        let end = std::time::Instant::now() + Duration::from_secs(20);
+        while std::time::Instant::now() < end {
+            let (cfg, code) = (dir.config(), created.code.clone());
+            match join.update(Instant::now(), move || world_sync::join_room(cfg, code, "RUNNER".into(), "DEFAULT".into(), String::new(), false)) {
+                JoinProgress::Failed(text) => return (Some(text), join.checks()),
+                JoinProgress::Joined(_) => return (None, join.checks()),
+                JoinProgress::Waiting => std::thread::sleep(Duration::from_millis(2)),
+            }
+        }
+        panic!("the wait never ended");
+    }
+
+    #[test]
+    fn the_create_request_names_the_rust_build_and_a_signed_out_player_sends_nothing() {
+        let dir = TestDirectory::start();
+        dir.hosted_code("K7M2Q");
+        assert!(matches!(create(&dir.config(), "", Difficulty::Standard), Err(NetError::Refused(_))));
+        assert!(dir.requests().is_empty(), "signed out: nothing is asked of the server");
+        let created = create(&dir.config(), "session-token", Difficulty::Hard).unwrap();
+        assert_eq!((created.code.as_str(), created.owner.as_str()), ("K7M2Q", "KYTTU"));
+        let sent = dir.posted("/api/rooms/hosted/create");
+        assert_eq!(sent, vec![json!({"sessionToken": "session-token", "difficulty": 2, "build": "rust"})]);
+    }
+
+    #[test]
+    fn a_room_host_of_another_build_ends_the_creators_wait_at_once_with_a_line_that_names_it() {
+        let dir = TestDirectory::start();
+        dir.hosted_code("K7M2Q");
+        let created = create(&dir.config(), "session-token", Difficulty::Standard).unwrap();
+        // what the directory's region agent started was a Godot dedicated host: it lists its own fingerprint
+        let godot = RegisterRoom { code: created.code.clone(), spawn_ticket: TICKET.into(), transport: "ws".into(), protocol: "8645f524".into(), ..RegisterRoom::default() };
+        api::register_room(&dir.config(), &godot).unwrap();
+        let (failed, checks) = wait_for_the_room(&dir, &created);
+        let mine = crate::net::protocol::fingerprint().to_uppercase();
+        assert_eq!(
+            failed.as_deref(),
+            Some(format!("BUILD MISMATCH // SERVER ROOM HOST 8645F524 YOU {mine} // UPDATE THE GAME OR TELL THE SERVER OWNER").as_str())
+        );
+        assert_eq!(checks, 1, "a build mismatch is not waited out 60 times");
+    }
+
+    #[test]
+    fn a_room_not_listed_yet_is_waited_for_and_not_called_a_mismatch() {
+        let dir = TestDirectory::start();
+        dir.hosted_code("K7M2Q");
+        let created = create(&dir.config(), "session-token", Difficulty::Standard).unwrap();
+        let mut join = HostedJoin::with(&created.code, &created.owner, Instant::now(), 3, Duration::from_millis(1));
+        let end = std::time::Instant::now() + Duration::from_secs(20);
+        let mut text = None;
+        while text.is_none() && std::time::Instant::now() < end {
+            let (cfg, code) = (dir.config(), created.code.clone());
+            if let JoinProgress::Failed(t) = join.update(Instant::now(), move || world_sync::join_room(cfg, code, "RUNNER".into(), "DEFAULT".into(), String::new(), false)) {
+                text = Some(t);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(text.as_deref(), Some("ROOM K7M2Q DID NOT START // TRY CREATE ROOM AGAIN"));
+        assert_eq!(join.checks(), 3);
     }
 }

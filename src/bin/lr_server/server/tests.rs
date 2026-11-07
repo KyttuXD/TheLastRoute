@@ -133,6 +133,44 @@ fn rooms_carry_the_game_they_belong_to_missing_or_invalid_means_last_route() {
 }
 
 #[test]
+fn a_rooms_protocol_is_listed_as_the_host_sent_it_and_the_creator_reads_back_its_own() {
+    // The client refuses a room whose listed `protocol` is not its own fingerprint (BUILD MISMATCH), so the directory must
+    // hand back exactly what the host registered, in the shape the client sends: 8 lower-case hex digits
+    // (`net/protocol.rs fingerprint()`), through register, the lookup and the heartbeat reply.
+    let server = app(|_| {});
+    let (status, registered) = post(&server, "/api/enet/rooms/register", json!({ "code": "RUSTA", "transport": "ws", "protocol": "0a1b2c3d", "players": 1 }));
+    assert_eq!(status, 201, "{registered}");
+    assert_eq!(registered["room"]["protocol"], json!("0a1b2c3d"));
+    assert_eq!(get(&server, "/api/enet/rooms/RUSTA").1["room"]["protocol"], json!("0a1b2c3d"));
+    let (_, beat) = post(&server, "/api/enet/rooms/heartbeat", json!({ "code": "RUSTA", "token": registered["token"], "players": 2 }));
+    assert_eq!(beat["room"]["protocol"], json!("0a1b2c3d"), "a heartbeat does not change the protocol");
+    // a host that sent none, or something that is not 8 lower-case hex digits, is listed unversioned ("")
+    for (code, sent) in [("RUSTB", json!(null)), ("RUSTC", json!("0A1B2C3D")), ("RUSTD", json!("0a1b2c")), ("RUSTE", json!("0a1b2c3d4")), ("RUSTF", json!("zzzzzzzz"))] {
+        let (status, listed) = post(&server, "/api/enet/rooms/register", json!({ "code": code, "transport": "ws", "protocol": sent }));
+        assert_eq!(status, 201, "{listed}");
+        assert_eq!(get(&server, &format!("/api/enet/rooms/{code}")).1["room"]["protocol"], json!(""), "{code}: {sent}");
+    }
+}
+
+#[test]
+fn a_spawned_dedicated_host_is_listed_dedicated_with_its_own_protocol() {
+    // the owner's `POST /api/admin/regions spawn` hands a code a spawn ticket; the host that registers with it is the
+    // server's own room host: listed `dedicated`, and its protocol is what that host build sent
+    let server = app(|_| {});
+    {
+        let mut state = server.state.lock().unwrap();
+        state.spawn_tickets.insert("HSTED".into(), ("ticket-1".into(), i64::MAX));
+    }
+    let (status, host) = post(&server, "/api/enet/rooms/register", json!({ "code": "HSTED", "transport": "ws", "protocol": "8645f524", "spawnTicket": "ticket-1" }));
+    assert_eq!(status, 201, "{host}");
+    let room = &get(&server, "/api/enet/rooms/HSTED").1["room"];
+    assert_eq!((room["dedicated"].clone(), room["protocol"].clone(), room["transport"].clone()), (json!(true), json!("8645f524"), json!("ws")));
+    // a register with no spawn ticket is a player's room, not a dedicated host
+    let (_, plain) = post(&server, "/api/enet/rooms/register", json!({ "code": "PLMNB", "transport": "ws", "protocol": "0a1b2c3d" }));
+    assert_eq!((plain["ok"].clone(), plain["room"]["dedicated"].clone()), (json!(true), json!(false)), "{plain}");
+}
+
+#[test]
 fn rate_limits_sensitive_account_endpoints_per_requester_and_honours_trusted_proxies_only_when_enabled() {
     let server = app(|o| o.account_rate_limit_max = 2);
     let attempt = |remote: &str, forwarded: Option<&str>| {

@@ -68,6 +68,9 @@ pub mod ws_native;
 /// A tiny in-process WebSocket relay for tests (loopback TCP).
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) mod ws_test_hub;
+/// A tiny in-process directory (register, lookup, hosted create) for the BUILD MISMATCH round trips.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) mod test_directory;
 
 #[cfg(test)]
 mod tests;

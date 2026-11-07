@@ -914,7 +914,10 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             }
             Some(JoinProgress::Failed(text)) => {
                 hosted_join = None;
-                ui.go(Screen::Title);
+                // back to the CREATE ROOM dialog with the reason written in it (a 4 s flash on the title was gone before a
+                // BUILD MISMATCH could be read), so the player can read it and try again or go back
+                ui.go(Screen::Create);
+                ui.create_note = text.clone();
                 ui.room_mode = menus::RoomMode::Solo;
                 flash(&mut ui, &text);
             }

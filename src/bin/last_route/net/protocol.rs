@@ -369,9 +369,19 @@ pub const RUST_WIRE_VERSION: u32 = 1;
 
 /// `NetProtocol.fingerprint()` for this port: FNV-1a (32-bit) over the wire version and the RPC table, as 8 hex
 /// digits. Prefixed with "rust" before hashing so it never collides with a Godot build's String.hash() value by design.
+///
+/// It is a pure function of the wire version and [`RPC_TABLE`]: no build id, no environment variable, no target
+/// (native, wasm), no clock. Every build of the same source speaks the same fingerprint, so the browser build and the
+/// desktop build (and a server process, `headless/dedicated.rs`) of one commit always agree, and it changes only when the
+/// RPC table or the wire version does. A cached older web page therefore mismatches a newer host only after a wire change.
 pub fn fingerprint() -> String {
-    let mut text = format!("rust;wire{RUST_WIRE_VERSION}");
-    for (name, sender, ch) in RPC_TABLE {
+    fingerprint_of(RUST_WIRE_VERSION, RPC_TABLE)
+}
+
+/// [`fingerprint`] for any version and table (the function is pinned by a test on a fixed table).
+pub fn fingerprint_of(version: u32, table: &[(&str, Sender, u8)]) -> String {
+    let mut text = format!("rust;wire{version}");
+    for (name, sender, ch) in table {
         text.push_str(&format!(";{name}={:?}/{ch}", sender));
     }
     let mut hash: u32 = 0x811c_9dc5;
@@ -429,5 +439,26 @@ mod tests {
         assert_eq!(f.len(), 8);
         assert!(f.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
         assert_eq!(f, fingerprint());
+    }
+
+    /// The derivation is pinned on a fixed table, so a change to the algorithm (which would split every deployed build from
+    /// every other one) fails here, while adding an RPC to the real table changes only the real fingerprint. The same
+    /// code runs on native and wasm32 (FNV-1a over a string: no pointer-width, endianness or float dependence).
+    #[test]
+    fn fingerprint_derivation_is_pinned_and_depends_on_nothing_else() {
+        let table = [("_a", Sender::Host, 0u8), ("_b", Sender::AnyPeer, 1u8)];
+        assert_eq!(fingerprint_of(1, &table), "08098d7c", "FNV-1a 32 over \"rust;wire1;_a=Host/0;_b=AnyPeer/1\"");
+        assert_eq!(fingerprint(), fingerprint_of(RUST_WIRE_VERSION, RPC_TABLE));
+        // a different wire version, sender or channel is a different protocol
+        assert_ne!(fingerprint_of(2, &table), fingerprint_of(1, &table));
+        assert_ne!(fingerprint_of(1, &[("_a", Sender::AnyPeer, 0u8), ("_b", Sender::AnyPeer, 1u8)]), fingerprint_of(1, &table));
+        assert_ne!(fingerprint_of(1, &[("_a", Sender::Host, 1u8), ("_b", Sender::AnyPeer, 1u8)]), fingerprint_of(1, &table));
+    }
+
+    /// Why a CREATE ROOM can mismatch: a Godot dedicated host lists a Godot `NetProtocol` fingerprint (the live
+    /// directory showed "8645f524" for rooms started by the Godot headless export), which is never this port's.
+    #[test]
+    fn a_godot_hosts_fingerprint_is_never_this_ports() {
+        assert_ne!(fingerprint(), "8645f524");
     }
 }

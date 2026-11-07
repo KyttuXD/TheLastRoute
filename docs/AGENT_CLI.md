@@ -60,7 +60,7 @@ that runs it and the switch that turns the client's stand-in off are in docs/SER
 
 ### The owner of a dedicated room, and the client that creates one
 
-No client hosts an online room. CREATE ROOM (online, signed in) calls `POST /api/rooms/hosted/create {sessionToken, difficulty}`
+No client hosts an online room. CREATE ROOM (online, signed in) calls `POST /api/rooms/hosted/create {sessionToken, difficulty, build: "rust"}`
 (`202 {ok, code, region, relay, owner}`), checks `GET /api/enet/rooms/CODE` every 2 s up to 60 times until the process has
 listed the room (`data/net/hosted_room.json`), and joins it as a guest over the WebSocket relay (browser: the page's
 WebSocket; native: `net/ws_native.rs`). A signed-out player is told to sign in and nothing is sent. The account that
