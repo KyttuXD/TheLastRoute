@@ -159,10 +159,15 @@ fn rebuild(dir: &Path) -> State {
 /// Writes the state atomically.
 pub fn save(dir: &Path, state: &State) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    let tmp = dir.join("state.json.tmp");
+    // The temporary name carries the process id: two launchers saving at the same moment never write the same file.
+    let tmp = dir.join(format!("state.json.{}.tmp", std::process::id()));
     let text = serde_json::to_string_pretty(&state.to_json()).unwrap_or_default();
     std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, dir.join("state.json"))
+    let renamed = std::fs::rename(&tmp, dir.join("state.json"));
+    if renamed.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    renamed
 }
 
 /// Removes everything except the builds named in `keep`, and the leftovers of interrupted downloads in `tmp/`.
@@ -178,7 +183,11 @@ pub fn collect_garbage(dir: &Path, keep: &[u64]) {
             }
         }
     }
-    remove_tmp(dir);
+    // tmp/ holds another launcher's download while it installs: it is cleared only when nobody holds the install lock
+    // (the installer itself calls this with its own lock held, and has already removed its own leftovers).
+    if let Some(_lock) = InstallLock::acquire(dir, 1800) {
+        remove_tmp(dir);
+    }
 }
 
 pub fn remove_tmp(dir: &Path) {
@@ -278,7 +287,8 @@ mod tests {
         save(&dir, &s).unwrap();
         s.adopt(6);
         save(&dir, &s).unwrap();
-        assert!(!dir.join("state.json.tmp").exists());
+        let leftovers = std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).count();
+        assert_eq!(leftovers, 0, "no temporary file is left behind");
         assert_eq!(load(&dir), (s, false));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -311,6 +321,19 @@ mod tests {
         std::fs::create_dir_all(tmp_dir(&dir).join("4.partial")).unwrap();
         collect_garbage(&dir, &[2, 3]);
         assert!(!build_dir(&dir, 1).exists() && build_dir(&dir, 2).exists() && build_dir(&dir, 3).exists());
+        assert!(!tmp_dir(&dir).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn garbage_collection_leaves_tmp_alone_while_another_launcher_installs() {
+        let dir = temp("gc-locked");
+        std::fs::create_dir_all(tmp_dir(&dir).join("4.partial")).unwrap();
+        let lock = InstallLock::acquire(&dir, 600).expect("lock");
+        collect_garbage(&dir, &[]);
+        assert!(tmp_dir(&dir).join("4.partial").exists(), "another launcher's download is not deleted");
+        drop(lock);
+        collect_garbage(&dir, &[]);
         assert!(!tmp_dir(&dir).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
