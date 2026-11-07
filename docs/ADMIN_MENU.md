@@ -77,3 +77,28 @@ a run (it forces the admin gate on for the screenshot only); add `LR_SHOT_SIZE=W
 
 - **BUILD and SERVER lines:** the STATUS tab shows the running build (CI number and commit, or LOCAL) and the server the game talks to. The old "SERVER OFFLINE (SOLO, NO SERVER)" line is gone.
 - **UPDATES:** the MACOS, WINDOWS and LINUX lines come from the public nightly release on GitHub (`last_route-macos-x86_64.zip`, `last_route-macos-arm64.zip`, `last_route-windows-x86_64.exe`, `last-route-linux-x86_64.tar.gz`), with the time CI last published each file. They no longer ask the old update server, which was stuck on old builds. PHONE and QUEST show NONE PUBLISHED, since there is no nightly file for them.
+
+## Audit of ADMIN // STATUS (2026-11-07)
+
+Checked line by line against `ui/admin/hub.rs` and the data each line reads. Status: OK, STALE (hard-coded or old text), WRONG (shows false information), GAP (not wired).
+
+| Section | Line | Status | Finding | Fix |
+|---|---|---|---|---|
+| THIS BUILD | version | STALE | `VERSION 0.0.1.0` (menus.rs:132) does not match the shipped apps (Mac app 0.1.0) and does not show the CI build | show `updater::build_label()` (CI build and commit) |
+| THIS BUILD | `BUILD RUST PORT (#0)` | STALE | `#0` is a literal, not a number | drop it |
+| THIS BUILD | `CHANNEL LOCAL` | STALE | always LOCAL, even on CI builds | show nightly (CI) or LOCAL from the build number |
+| THIS BUILD | `HALF-RES PIXEL VIEW` | STALE | the description is true only with the quality setting that uses half resolution | show the real render scale or drop it |
+| ACCOUNT | `SCOPES NONE` | WRONG | always NONE, so owners (KYTTU, AYTTU) see no scopes; the real list is `adminPermissions` in the signed-in account (api.rs:213-236) | show the account's `admin_permissions` |
+| ACCOUNT | `ADMIN` | WRONG | shown for everyone signed in, not only owners | show ADMIN OWNER / ADMIN / NOT ADMIN from the server's `adminOwner` flag |
+| SERVER | `CHANNEL DEBUG` | STALE | `CHANNEL` is the old `debug` constant (hub.rs:42); updates now come from nightly | show the real update channel (nightly) |
+| SERVER | `INSTANCE`, `SERVICE` | WRONG | these come from the vps2 backend (`vps2-godot-test`, `last-route-backend`), which is the Godot test instance the Rust web site shares; the line implies the Rust server | label it as the shared backend, or hide the instance name |
+| SERVER | `ROOMS`, `WEBROOMS`, `RELAY` | OK | live from `/api/health` on the backend | none |
+| UPDATES | MACOS / WINDOWS / LINUX | OK (fixed in e889006) | now from the nightly release on GitHub | none |
+| UPDATES | PHONE / QUEST | OK | no nightly file, so NONE PUBLISHED | none |
+| PUBLIC ROUTE | the whole line | OK | live from `/api/public/status` on the backend | none |
+| SERVER NOTICES | `NONE THIS SESSION` | GAP | literal text; no notices are read from anywhere | read the server's notices, or hide the section |
+| DEBUG TOGGLES | text | OK | static explanation | none |
+| SKINS / MODERATION | `OWNERS ONLY` | GAP | shows the same line for everyone, not the real rights | show the real rights from the account |
+| ROUTE TOOLS | text | OK | static explanation | none |
+
+Summary: 4 WRONG or STALE items show false information (VERSION, CHANNEL, SCOPES, ADMIN), 2 items are GAPS (SERVER NOTICES, SKINS/MODERATION rights), and the rest are correct. The UPDATES and PUBLIC ROUTE data is fine; the build and account lines are the ones to fix first.
