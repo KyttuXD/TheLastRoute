@@ -10,7 +10,7 @@ Legend: DONE = merged and deployed; MERGED = in main, not all of it live; BRANCH
 3. **Hunters must not spawn in sewer water.** Runtime spots (`Game::spawn_spot`, resident hunters) require `hunter_may_spawn` (open and dry). The chunk generator already required a dry neighbourhood.
 4. **Collectables and props must not spawn on sewer water.** Pickups, relays, batteries, coins, vents and hiding spots skip water. Pipes, bridges, grate decks, floor grates, overflow grates, sluice gates and the outflow pipe may stand in it (`may_stand_in_water` in `data/sewer_water.json`). Lamps, pumps and barrels may not.
 5. **Sewer water glows.** The surface is lit (`shader::LIT_MODE`) and the shipped `glow_mix` is 0, so the dark sewer is not washed with the water tint.
-14. **Status bars.** One row of thin outlined bars above the hotbar, no icons and no panel: BATTERY (amber, `BATTERY 97% // F`), STAMINA (light blue), FADE (crouch amount), EXPOSURE (orange-red, middle zone `LIT`), NOISE, and TEMP as the sixth. The break-free box sits above that row.
+14. **Status bars.** A compact 3×2 grid of thin outlined bars above the hotbar, no icons and no panel: BATTERY / STAMINA / FADE, then EXPOSURE / NOISE / TEMP. Captions use the short labels (`BAT 97% // F`). The break-free box sits above that grid.
 17. **Standing-runner blocking of crawl pipes** is item 1. The hard-difficulty chase speed is still open (KT may want a small buff; Hard currently gets none).
 
 ## Open bugs (not fixed yet)
