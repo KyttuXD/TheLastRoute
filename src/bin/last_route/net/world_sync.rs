@@ -1811,8 +1811,9 @@ impl NetSession {
                 self.note_peer_slim(from, profile_slim(&profile));
                 // a guest still sending the name it asked for, after the host gave it another: the given name stands
                 let given = self.guests.get(&from).map(|g| g.name.clone()).unwrap_or_default();
-                if guest_name::is_guest_name(&name) && guest_name::is_guest_name(&given) && name != given {
-                    name = given;
+                let (settled, tell) = self.settle_profile_name(name, &given, from);
+                name = settled;
+                if tell {
                     self.send_rename(from, &name);
                 }
                 let forward = profile_message(from, &name, &skin, flags);
@@ -1962,6 +1963,23 @@ impl NetSession {
     fn settle_guest_name(&self, name: String, from: u32) -> (String, bool) {
         if guest_name::is_guest_name(&name) && (!guest_name::is_drawn_name(&name) || self.name_in_use(&name, from)) {
             (guest_name::unique_guest_name(&|n| self.name_in_use(n, from)), true)
+        } else {
+            (name, false)
+        }
+    }
+
+    /// Host: the name a guest's profile may show, given the name `given` it registered under. A guest-shaped name that
+    /// is not the given one is replaced by it when the given one is guest-shaped too (a stale name after a re-roll: the
+    /// flag says to tell the guest), and also when another runner of the room already holds it (a guest cannot pose as
+    /// another guest by sending a profile). Any other name stays as it is.
+    fn settle_profile_name(&self, name: String, given: &str, from: u32) -> (String, bool) {
+        if !guest_name::is_guest_name(&name) || given.is_empty() || name == given {
+            return (name, false);
+        }
+        if guest_name::is_guest_name(given) {
+            (given.to_string(), true)
+        } else if self.name_in_use(&name, from) {
+            (given.to_string(), false)
         } else {
             (name, false)
         }
@@ -3655,6 +3673,25 @@ mod guest_name_tests {
         let kept = registered_name(&host, 2);
         host.on_message(2, guest_message(&kept), now, &mut out);
         assert_eq!(registered_name(&host, 2), kept);
+        host.coop.close();
+    }
+
+    #[test]
+    fn a_profile_cannot_make_a_guest_pose_as_another_guest() {
+        let mut host = offline_session(true, "SERVER");
+        let mut out = Vec::new();
+        let now = Instant::now();
+        host.on_message(2, guest_message("GUEST_4829"), now, &mut out);
+        host.on_message(3, guest_message("ANA"), now, &mut out);
+        // a signed-in guest sending another guest's name in its profile keeps its own name
+        assert_eq!(host.settle_profile_name("GUEST_4829".into(), "ANA", 3), ("ANA".to_string(), false));
+        // a free guest-shaped name is left alone, and so is the guest's own name
+        assert_eq!(host.settle_profile_name("GUEST_2468".into(), "ANA", 3), ("GUEST_2468".to_string(), false));
+        assert_eq!(host.settle_profile_name("GUEST_4829".into(), "GUEST_4829", 2), ("GUEST_4829".to_string(), false));
+        // a stale name after a re-roll is replaced by the given one and the guest is told
+        assert_eq!(host.settle_profile_name("GUEST_4829".into(), "GUEST_2468", 4), ("GUEST_2468".to_string(), true));
+        // no registered name yet: nothing to settle against
+        assert_eq!(host.settle_profile_name("GUEST_4829".into(), "", 9), ("GUEST_4829".to_string(), false));
         host.coop.close();
     }
 
