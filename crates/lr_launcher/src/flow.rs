@@ -241,7 +241,7 @@ pub fn check_and_install(cfg: &Config, store: &Store, log: &Log, show: bool, can
             std::fs::remove_dir_all(&dest).map_err(|e| format!("could not replace build {}: {e}", m.build))?;
         }
         std::fs::create_dir_all(state::builds_dir(&cfg.dir)).map_err(|e| e.to_string())?;
-        std::fs::rename(&stage, &dest).map_err(|e| e.to_string())
+        rename_folder(&stage, &dest)
     })();
     if let Err(e) = finish {
         let _ = std::fs::remove_dir_all(&stage);
@@ -262,6 +262,20 @@ pub fn check_and_install(cfg: &Config, store: &Store, log: &Log, show: bool, can
 }
 
 // ---- the installed build -----------------------------------------------------------------------------------------
+
+/// Renames the finished folder into place. Windows refuses to rename a folder while a virus scanner still has one of the
+/// freshly written files open, so a few tries are made before giving up.
+fn rename_folder(from: &std::path::Path, to: &std::path::Path) -> Result<(), String> {
+    let mut last = String::new();
+    for attempt in 0..8 {
+        match std::fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(e) => last = e.to_string(),
+        }
+        std::thread::sleep(Duration::from_millis(150 * (attempt + 1)));
+    }
+    Err(format!("could not move the finished build into place: {last}"))
+}
 
 /// The manifest of an installed build when the build is whole: its saved manifest still verifies against a trusted key,
 /// every file is there with the right size (and hash, with `--verify`).

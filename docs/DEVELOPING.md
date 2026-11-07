@@ -46,6 +46,12 @@ default.
 - The same code also checks with `cargo check --target x86_64-unknown-linux-gnu` and
   `--target aarch64-apple-darwin`.
 
+## Native builds from the website (the launcher)
+
+A small launcher installs and starts the newest signed native build from the website, so a deploy to vps2 reaches every desktop
+install on its next start (see [LAUNCHER.md](LAUNCHER.md)). `cargo test -p lr_update -p lr_launcher --offline` runs its tests; they
+need no network (a fake site on 127.0.0.1) and no display.
+
 ## Web build and deploy
 
 The browser build is `wasm32-unknown-unknown`; the page and its scripts are `packaging/web/` (`index.html`, `update.js`, plus `audio.js` and

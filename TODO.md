@@ -13,6 +13,14 @@ items rather than left in an ambiguous in-progress state.
 - Next: wire the locker body and nearby-player TTS into the game, cleanup Tier B (needs KT), mod packs with mechanics, the Godot parity batches.
 - Waiting on KT: hallucinations design for Dead Air, Descent sounds, Standard-visible hunter changes, the Mac Mini GitHub login.
 
+## Launcher: native builds from the website (2026-11-06, docs/LAUNCHER.md)
+
+- [x] Launcher, signed manifests (`lr.native/1`), publish script, in-game updater asks the website first (vps3 stays as the fallback), tests on Windows
+- [ ] KT: make the signing key (`node packaging/native/manifest.mjs keygen KEYFILE`), put the public key in `crates/lr_update/keys/trusted.txt`, rebuild the launcher and the game, answer the questions at the end of docs/LAUNCHER.md
+- [ ] First real publish to vps2 (`DRY_RUN=1` first), then `curl -I` the `native/` files; install the launcher on the PC, KT-MBP, the Airs and KT-NEO
+- [ ] Needs a Mac: Dock icon and focus when the downloaded `.app` is started by exec (else `open -n -a` plus a ready file), `build-launcher.sh`, ad-hoc signing, Gatekeeper, Metal on the 2015 Airs
+- [ ] Deferred: the game reads the launcher's state and a ready file, then `updater.rs`, the download key and the vps3 update route are retired; a launcher window instead of a console; launcher self-update; resumable downloads; Linux check (`x86_64-unknown-linux-gnu` is not installed on the PC)
+
 ## Floors and ceilings merging (2026-11-04)
 
 - [x] Level floors and ceilings z-fought where two storeys are drawn together: slab + ceiling inset, capped region wall heights, lined shafts and rims, near plane 0.06 (`render/seams.rs`, `data/render/seams.json`, `docs/STAIRS_CONTINUOUS_DESIGN.md` item 6)

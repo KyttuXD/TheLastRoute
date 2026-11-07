@@ -46,6 +46,10 @@ webpki-roots = "1"
 # the Linux backend (portal or zenity, found at run time); the wayland window-handle feature is not needed.
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 
+# The fake website the in-game updater's tests talk to (loopback only; never in a normal build).
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+lr_update = { path = "crates/lr_update", features = ["testsite"] }
+
 [features]
 default = []
 server = [

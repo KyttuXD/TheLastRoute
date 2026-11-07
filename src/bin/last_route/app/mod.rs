@@ -35,6 +35,8 @@ pub mod selftest;
 pub mod settings;
 pub mod stress;
 pub mod updater;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod updater_site;
 pub mod web_pointer;
 pub mod web_update;
 #[cfg(target_arch = "wasm32")]
