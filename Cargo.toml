@@ -21,7 +21,7 @@ macroquad = { version = "0.4", features = ["audio"] }
 gltf = { version = "1", default-features = false, features = ["utils", "names"] }
 # preserve_order keeps object keys in insertion order, like JSON.stringify in Node (lr_server needs it).
 serde_json = { version = "1", features = ["preserve_order"] }
-# lr_server's dependencies. They build only with the `server` feature, so the game and night_watch
+# lr_server's dependencies. They build only with the `server` feature, so the game
 # do not compile them (cargo build --features server --bin lr_server).
 serde = { version = "1", optional = true }
 indexmap = { version = "2", optional = true }

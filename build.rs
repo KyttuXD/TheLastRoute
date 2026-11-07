@@ -107,7 +107,7 @@ fn main() {
     std::fs::write(out_dir.join("embedded.rs"), code).unwrap();
 
     // Windows executables each carry their own icon. `compile_for` links a resource into that one
-    // binary only (cargo:rustc-link-arg-bin), so the server and Night Watch do not share the game's.
+    // binary only (cargo:rustc-link-arg-bin), so the server does not share the game's.
     #[cfg(windows)]
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         for (bin, ico) in [
