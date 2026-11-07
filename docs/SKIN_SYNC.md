@@ -142,7 +142,7 @@ the default mannequin atlas on the viewer's screen, never in a lost frame:
 **Browser build.** It has no user folder, so a web client keeps its own skin in memory, does not fetch other runners' skins (it draws
 them in the default atlas, with their arm style) and, before the fix, never recorded that the website holds its own skin: the skin was
 uploaded again on every 60 s retry (a blocking request on the page's only thread) and never announced to the room. The session now remembers
-what the website took (`skins::uploaded_ids_at`), so a web skin is uploaded once and announced.
+what the website took (`skins::uploaded_ids_for`), so a web skin is uploaded once and announced.
 
 ## Room announce, retries and visible state
 
