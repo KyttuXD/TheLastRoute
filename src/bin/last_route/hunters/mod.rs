@@ -20,6 +20,8 @@ pub mod water;
 
 #[cfg(test)]
 mod bulk_bench;
+#[cfg(test)]
+mod collision_tests;
 
 use crate::config::{tier_weights_for, Difficulty};
 use crate::content::Content;

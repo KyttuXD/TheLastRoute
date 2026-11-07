@@ -1249,7 +1249,7 @@ impl Game {
                 || p.1 < 0.0
                 || p.0 >= size
                 || p.1 >= size
-                || !self.fac.body_fits(p.0, p.1, HUNTER_RADIUS)
+                || !self.fac.hunter_fits(p.0, p.1)
             {
                 if let Some(spot) = self.spawn_spot(&mut rng) {
                     self.hunters[i].pos = spot;
@@ -1650,7 +1650,7 @@ impl Game {
                 continue;
             }
             let p = h.pos;
-            let out = p.0 < 0.0 || p.1 < 0.0 || p.0 >= size || p.1 >= size || !self.fac.body_fits(p.0, p.1, HUNTER_RADIUS);
+            let out = p.0 < 0.0 || p.1 < 0.0 || p.0 >= size || p.1 >= size || !self.fac.hunter_fits(p.0, p.1);
             if out {
                 if let Some(spot) = self.spawn_spot(&mut rng) {
                     self.hunters[i].pos = spot;

@@ -411,7 +411,7 @@ impl Game {
         for s in slots.iter_mut() {
             let p = s.brain.pos;
             // the plain footprint test: a hunter beside a stair well is not over its hole
-            let fits = fac.body_fits(p.0, p.1, HUNTER_RADIUS);
+            let fits = fac.hunter_fits(p.0, p.1);
             let out = p.0 < 0.0 || p.1 < 0.0 || p.0 >= size || p.1 >= size || !fits;
             if out && !s.brain.on_edge() {
                 if let Some(spot) = spawn_spot_in(fac, self.p.pos, &mut rng) {

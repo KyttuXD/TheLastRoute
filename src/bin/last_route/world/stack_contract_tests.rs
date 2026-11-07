@@ -668,7 +668,8 @@ fn level0_maze_wells_are_sparse_like_godot() {
 // The way out of a flight (stairs fix, phase 0): a foot that leads nowhere strands the runner
 // ---------------------------------------------------------------------------------------------------------------------
 
-/// The cells of `b` a walker reaches from `from` by 4-way steps over cells a body can stand on (`hunter_open`), never
+/// The cells of `b` a walker reaches from `from` by 4-way steps over cells a body can stand on (`hunter_open`, or a cell
+/// only a crawl-under pipe closes: the runner walks under it, `Facility::crawl_closed`), never
 /// stepping on `forbidden`. The flight's own well is forbidden: a walker who has just left the flight must get out
 /// without going back across its treads (the treads count as open ground on both levels, so a path through the well
 /// would hide a foot that is walled in).
@@ -682,7 +683,7 @@ fn reach_without(b: &Built, from: Cell, forbidden: &BTreeSet<Cell>) -> HashSet<C
     while let Some(c) = stack.pop() {
         for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
             let n = Cell::new(c.x + dx, c.y + dy);
-            if b.f.hunter_open(n) && !forbidden.contains(&n) && seen.insert(n) {
+            if (b.f.hunter_open(n) || b.f.crawl_closed(n)) && !forbidden.contains(&n) && seen.insert(n) {
                 stack.push(n);
             }
         }
@@ -697,7 +698,7 @@ fn largest_area(b: &Built) -> usize {
     for y in 0..b.f.rows {
         for x in 0..b.f.cols {
             let c = Cell::new(x, y);
-            if b.f.hunter_open(c) && !done.contains(&c) {
+            if (b.f.hunter_open(c) || b.f.crawl_closed(c)) && !done.contains(&c) {
                 let area = reach_without(b, c, &none);
                 best = best.max(area.len());
                 done.extend(area);

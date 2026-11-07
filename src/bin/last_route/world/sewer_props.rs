@@ -3,9 +3,10 @@
 //! mesh builder all see them. The ids stay the sewer's own (`SEWER:x:y:z:PROP:n`), which is what a valve turn names.
 //!
 //! Collision: only the pump, the outflow main, the extra rooms' own solid props (barrel, crate, locker) and a closed
-//! sluice gate are solid. A crawl pipe hangs at crawl height and is never solid here (nothing in the port crawls), and
-//! a valve, lamp or bridge deck is never in the way. A sluice gate is solid while closed (a wall across its channel
-//! cells) and `Facility::set_gate_open` makes it floor.
+//! sluice gate are solid. A crawl pipe hangs at crawl height and is not solid to the runner here (nothing in the port
+//! crawls), but it is to a hunter (`Prop::crawl_under`, `Facility::hunter_fits`): Godot keeps the tall hunters out of the
+//! cells of a raised collider. A valve, lamp or bridge deck is never in the way. A sluice gate is solid while closed (a wall
+//! across its channel cells) and `Facility::set_gate_open` makes it floor.
 
 use super::catalog::Catalog;
 use super::facility::{Cell, Prop, SewerKeys, SLUICE_GATE};
@@ -69,6 +70,7 @@ fn prop(p: &SewerProp, rooms: &[super::facility::Room], cat: &Catalog) -> Prop {
         offset,
         door: None,
         sewer: keys,
+        crawl_under: p.crawl_under,
     }
 }
 

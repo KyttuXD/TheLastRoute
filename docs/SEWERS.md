@@ -23,6 +23,12 @@ How the sewer levels connect, as built for the continuous levels project (see [S
 
 - The sewer water field and valve floods reach hunters: `game/hunter_pipes.rs` and `hunter_pipe_cells` mark flooded cells, so hunters path around deep water, wade when chasing, and replan when a valve floods their route. Rules per hunter: `data/hunters/water.json`.
 
+## Hunters and what blocks them
+
+- A hunter is held to the runner's rule. The runner's collision is `Facility::body_fits_at_y`; a hunter's step, route cell, spawn and window fit use `Facility::hunter_fits`, which is `body_fits` for `HUNTER_RADIUS` (walls, solid props, railings, doors, lockers, flight dividers) plus the runner's own stair-well and ladder-hatch rule at floor height (`stair_holes_fit`, `PLAYER_RADIUS`). Before this a hunter's plain test exempted every tread of a well, so a straight chase line, a crowd push or a lunge could carry it across a flight's well (over the drop, under the ramp) that the runner cannot cross.
+- The one deliberate difference is the crawl-under pipe (`Prop::crawl_under`, `Facility::crawl_blocks`): not solid to the runner (nothing in the port crawls), closed to a hunter in the grid and in every step, as Godot's `StreamedHunterNavigation` closes the cells of a raised collider (`collider_y0 > 0`) and its capsule cannot pass under it. The pipe's footprint is its collider (`crawl_pipe_size` at its placement offset).
+- Pinned by `hunters/collision_tests.rs`: real windows on levels 0, -1 and -3 at 60 fps and at the window loop's longest step, the census of every solid prop footprint, hunters driven at every sewer pipe and pump with steps up to 1 m, the stair-well drives and the crowd push.
+
 ## Heights and the water camera
 
 - The sewer ceiling is 4.0 m (`geometry.wall_height` in `src/bin/last_route/data/regions/sewer.json` and `sewer2.json`): Godot's `CEILING_HEIGHT` 3.2 times our 1.25. The storey stays 5.0 m, so a 1.0 m slab lies between the sewer ceiling and the floor above. Ladder shafts and stair flights are lined up through that slab to the floor above (`Site::shaft_top` in `render/stairs.rs`), so no void shows.
