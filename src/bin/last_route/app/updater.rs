@@ -466,6 +466,16 @@ fn finish_install(build: u64) -> ! {
     start_installed()
 }
 
+/// The build as the admin STATUS tab shows it: the CI build number and commit, or LOCAL for a development build.
+pub fn build_label() -> String {
+    let rev: String = REVISION.chars().take(7).collect();
+    if BUILD == 0 {
+        format!("LOCAL ({rev})")
+    } else {
+        format!("{BUILD} ({rev})")
+    }
+}
+
 /// macOS: the nightly release on GitHub, which CI replaces on every push to main. The installed app is up to date when
 /// its executable's SHA-256 equals the release file's digest. Returns Ok(true) after a new bundle is installed,
 /// Ok(false) when nothing needs doing.

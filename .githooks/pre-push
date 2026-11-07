@@ -9,7 +9,7 @@ while read local_ref local_sha remote_ref remote_sha; do
   if git log "$range" --format='%an <%ae>%n%cn <%ce>' | grep -i -E 'claude|anthropic|cursoragent|cursor@|copilot|openai|chatgpt|gemini' >/dev/null; then
     echo "push rejected: AI author or committer in $range (AGENTS.md)." >&2; bad=1
   fi
-  if git log "$range" --format='%B' | grep -i -E '^(co-authored-by|generated with|signed-off-by).*(claude|anthropic|cursor|copilot|openai|gpt|gemini)|generated with .*claude|🤖' >/dev/null; then
+  if git log "$range" --format='%B' | grep -i -E '^(co-authored-by|generated with|signed-off-by)|generated with .*claude|🤖' >/dev/null; then
     echo "push rejected: AI attribution line in $range (AGENTS.md)." >&2; bad=1
   fi
 done

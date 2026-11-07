@@ -984,8 +984,11 @@ impl Admin {
 
     /// _admin_status: the STATUS page readout.
     pub(super) fn status(&self, g: &Game) -> String {
-        let mut out =
-            String::from("SERVER OFFLINE (SOLO, NO SERVER) // CHANNEL LOCAL\n");
+        let server = crate::net::config::PRIMARY_BASE_URL.trim_start_matches("https://").trim_start_matches("http://");
+        let mut out = format!(
+            "BUILD {}\nSERVER {server}\n",
+            crate::app::updater::build_label()
+        );
         let region = g
             .fac
             .region_at(g.p.pos.0.floor() as i32, g.p.pos.1.floor() as i32)
