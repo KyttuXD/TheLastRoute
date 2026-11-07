@@ -622,6 +622,22 @@ mod tests {
             .collect()
     }
 
+    /// An opaque prop never takes the blended pass (which draws after the opaque meshes, in build order, and would show
+    /// through its own far side), and the world material draws both sides of a triangle: a one-sided piece of a model
+    /// is seen from behind instead of vanishing.
+    #[test]
+    fn a_prop_draws_opaque_and_two_sided() {
+        let meshes = build(Mat4::from_translation(vec3(1.0, 0.0, 2.0)), WHITE);
+        assert!(!meshes.is_empty());
+        assert!(meshes.iter().all(|m| !crate::render::mesh_batch::is_blended(m)), "a prop mesh must not be blended");
+        assert!(meshes.iter().flat_map(|m| &m.vertices).all(|v| v.normal.w == 1.0), "a prop vertex is the opaque textured mode");
+        assert_eq!(
+            macroquad::miniquad::PipelineParams::default().cull_face,
+            macroquad::miniquad::CullFace::Nothing,
+            "the world material takes the default pipeline: no back-face culling"
+        );
+    }
+
     #[test]
     fn cached_static_meshes_equal_a_fresh_build() {
         let placements = [
