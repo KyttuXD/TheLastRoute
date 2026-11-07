@@ -17,8 +17,8 @@
 //! Constructor args ([`BackendConfig::loopback`], [`BackendConfig::from_args`]) replace Godot's
 //! `use_test_base_url()`; they obey the same policy, so tests point at 127.0.0.1.
 
-/// Default online directory endpoint; the VPS can reverse-proxy this port or expose it directly.
-pub const PRIMARY_BASE_URL: &str = "http://lastroute.kyttuslab.org:8105";
+/// Default online directory: the same server as the web build (vps2, behind Caddy at /api).
+pub const PRIMARY_BASE_URL: &str = "https://lastrouterust.games.kyttuslab.org";
 /// Dev/test only: the separate TEST instance on the same VPS. Debug builds only, exact match.
 pub const TEST_BASE_URLS: [&str; 1] = ["http://lastroute.kyttuslab.org:8205"];
 /// Directory heartbeat for a hosted room (`HEARTBEAT_SECONDS`).
@@ -226,7 +226,7 @@ mod tests {
     fn accounts_gate() {
         let p = BackendConfig::primary();
         assert!(p.accounts_available(false));
-        assert_eq!(p.session_section(), "account:http://lastroute.kyttuslab.org:8105");
+        assert_eq!(p.session_section(), "account:https://lastrouterust.games.kyttuslab.org");
         let l = BackendConfig::loopback(18105);
         assert!(l.accounts_available(false));
         let mut odd = BackendConfig::primary();

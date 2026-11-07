@@ -464,11 +464,11 @@ mod tests {
     fn web_session_key_format_per_server() {
         let primary = BackendConfig::primary();
         let local = BackendConfig::loopback(18105);
-        assert_eq!(web_session_key(&primary), "last_route.account:http://lastroute.kyttuslab.org:8105");
+        assert_eq!(web_session_key(&primary), "last_route.account:https://lastrouterust.games.kyttuslab.org");
         assert_eq!(web_session_key(&local), "last_route.account:http://127.0.0.1:18105");
         let mut named = BackendConfig::primary();
         named.profile = "two".into();
-        assert_eq!(web_session_key(&named), "last_route.account:http://lastroute.kyttuslab.org:8105#two");
+        assert_eq!(web_session_key(&named), "last_route.account:https://lastrouterust.games.kyttuslab.org#two");
         assert_ne!(web_session_key(&primary), web_session_key(&local));
     }
 
