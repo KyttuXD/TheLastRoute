@@ -1717,6 +1717,10 @@ impl Game {
     /// The start lobby is on the map from the first frame (the safe room, with a cell of wall around it), whatever the line of
     /// sight finds: the runner begins in it, and the map should not open on a blank.
     fn reveal_start_room(&mut self) {
+        // level 0 only: the sewer and the Inferno start with what the line of sight finds, as before
+        if self.inf.as_ref().is_none_or(|i| i.level != 0) {
+            return;
+        }
         let Some(sz) = self.fac.safe_zone else { return };
         let r = (SAFE_ZONE_RADIUS + 1.0).ceil() as i32;
         let c = sz.center();
@@ -2379,6 +2383,25 @@ mod tests {
         assert!(!g.discovered.iter().all(|r| r.iter().all(|d| *d)));
         assert_eq!(g.inf.as_ref().unwrap().level0_seen.total(), n);
         assert!(g.discovered[40][10], "an old cell is still on the map");
+    }
+
+    #[test]
+    fn the_start_room_is_pre_discovered_on_level_zero_only() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        for level in [crate::world::route::sewer::core::LEVEL, crate::world::infinite::INFERNO_LEVEL] {
+            let mut g = Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, "ROOM-TEST-7", level, &content, &catalog);
+            // even a safe room on the storey adds nothing beyond the line of sight
+            g.fac.safe_zone = Some(g.fac.start);
+            let before = seen_cells(&g);
+            g.reveal_start_room();
+            assert_eq!(seen_cells(&g), before, "level {level}: the start room is not pre-discovered");
+            assert_eq!(g.inf.as_ref().unwrap().level0_seen.total(), 0);
+        }
+        let (mut g, _, _) = run();
+        g.discovered.iter_mut().for_each(|r| r.iter_mut().for_each(|d| *d = false));
+        g.reveal_start_room();
+        assert!(seen_count(&g) > 0, "level 0 pre-discovers the lobby");
     }
 
     #[test]

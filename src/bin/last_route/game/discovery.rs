@@ -190,6 +190,34 @@ mod tests {
         assert_eq!(s.total(), (CHUNK * CHUNK) as usize, "filling a full chunk again changes nothing");
     }
 
+    /// `cargo test --release bench_ -- --ignored --nocapture`: what the per-frame and per-recentre reads cost.
+    #[test]
+    #[ignore]
+    fn bench_window_refill_and_cell_reads() {
+        let mut s = SeenCells::default();
+        // a long walk: 400 chunks, a third of their cells seen
+        for cy in -10..10 {
+            for cx in -10..10 {
+                for i in 0..CHUNK * CHUNK / 3 {
+                    s.mark(cx * CHUNK + (i * 7) % CHUNK, cy * CHUNK + (i * 7) / CHUNK);
+                }
+            }
+        }
+        let mut grid = vec![vec![false; (3 * CHUNK) as usize]; (3 * CHUNK) as usize];
+        let t = std::time::Instant::now();
+        for i in 0..1000 {
+            s.fill_window((i % 50 - 25, i % 30 - 15), &mut grid);
+        }
+        let refill = t.elapsed() / 1000;
+        let t = std::time::Instant::now();
+        let mut n = 0;
+        for i in 0..1_000_000 {
+            n += s.is_seen(i % 900 - 450, i % 700 - 350) as u32;
+        }
+        let read = t.elapsed() / 1_000_000;
+        println!("fill_window of 135 x 135: {refill:?}; is_seen: {read:?} ({n})");
+    }
+
     #[test]
     fn a_chunk_costs_a_few_hundred_bytes() {
         assert!(std::mem::size_of::<Bits>() <= 288, "{}", std::mem::size_of::<Bits>());

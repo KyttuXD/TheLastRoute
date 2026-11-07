@@ -836,17 +836,20 @@ fn legend_size(width_at_9: f32, screen_w: f32) -> f32 {
     }
 }
 
-/// The full map's legend line: the marks it can show, and the water on a floor that has any (the sewers).
-fn legend_text(g: &Game) -> String {
-    let marks = if is_last_route() {
-        "ORANGE relay  •  YELLOW battery  •  GRAY prop  •  WHITE stairs  •  LETTER or COLOUR hunter"
-    } else {
-        "TEAL-BLUE relay  •  YELLOW battery  •  GRAY prop  •  WHITE stairs  •  LETTER or COLOUR hunter"
-    };
+/// The full map's legend line: the marks it can show, and the water on a floor that has any (the sewers). Built once per colour
+/// scheme and floor kind, so the full map's frame does not format a string.
+fn legend_text(g: &Game) -> &'static str {
+    const MARKS: [&str; 2] = [
+        "ORANGE relay  •  YELLOW battery  •  GRAY prop  •  WHITE stairs  •  LETTER or COLOUR hunter",
+        "TEAL-BLUE relay  •  YELLOW battery  •  GRAY prop  •  WHITE stairs  •  LETTER or COLOUR hunter",
+    ];
+    static WET: std::sync::OnceLock<[String; 2]> = std::sync::OnceLock::new();
+    let scheme = if is_last_route() { 0 } else { 1 };
     if g.fac.water_cells().is_empty() {
-        marks.to_string()
+        MARKS[scheme]
     } else {
-        format!("{marks}  •  {}", look::MapLook::load().water.legend)
+        let wet = WET.get_or_init(|| MARKS.map(|m| format!("{m}  •  {}", look::MapLook::load().water.legend)));
+        &wet[scheme]
     }
 }
 
@@ -884,11 +887,11 @@ pub fn draw_full_map_with_runners(g: &Game, a: &Assets, map_view: &FullView, mar
     clip_end();
     let legend = legend_text(g);
     // a longer legend (the sewer's water entry) shrinks to the screen's width rather than running off both edges
-    let size = legend_size(tw(a, F::Body, &legend, 9.0), v.x);
+    let size = legend_size(tw(a, F::Body, legend, 9.0), v.x);
     label_c(
         a,
         F::Body,
-        &legend,
+        legend,
         v.x * 0.5,
         v.y - 20.0 + (20.0 - lh(F::Body, size)) * 0.5,
         size,
