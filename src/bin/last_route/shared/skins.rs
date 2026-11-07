@@ -325,6 +325,33 @@ pub fn read_skin_in(dirs: &[Option<PathBuf>], id: &str) -> Option<Vec<u8>> {
         .filter_map(|path| read_capped(&path, max_bytes()).ok())
         .find(|bytes| verify_skin(id, bytes))
         .or_else(|| own_skin(id))
+        .or_else(|| peer_skin(id))
+}
+
+/// The skins of other runners kept in memory when there is no cache folder to keep them in (the browser has no files).
+/// Bounded like the GPU cache ([`peer_cache_max`]); the oldest goes first.
+fn peer_skins() -> std::sync::MutexGuard<'static, Vec<(String, Vec<u8>)>> {
+    static PEERS: std::sync::OnceLock<std::sync::Mutex<Vec<(String, Vec<u8>)>>> = std::sync::OnceLock::new();
+    PEERS.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Keeps a downloaded, already verified skin of another runner in memory under its hash.
+fn remember_peer(id: &str, png: &[u8]) {
+    keep_newest(&mut peer_skins(), peer_cache_max(), id, png);
+}
+
+/// Puts skin `id` last in `list` and drops the oldest ones beyond `max`.
+fn keep_newest(list: &mut Vec<(String, Vec<u8>)>, max: usize, id: &str, png: &[u8]) {
+    list.retain(|(h, _)| h != id);
+    list.push((id.to_string(), png.to_vec()));
+    let extra = list.len().saturating_sub(max);
+    list.drain(..extra);
+}
+
+/// The remembered skin `id` of another runner, re-verified (hash and the full check) before it is handed out.
+fn peer_skin(id: &str) -> Option<Vec<u8>> {
+    let bytes = peer_skins().iter().find(|(h, _)| h == id).map(|(_, b)| b.clone())?;
+    verify_skin(id, &bytes).then_some(bytes)
 }
 
 /// How many worn skins are kept in memory (one per run is normal; a few more cover a picker that is changed often).
@@ -720,6 +747,17 @@ pub fn fetch_skin_blocking(cfg: &SkinConfig, backend_base: &str, dir: &Path, id:
 /// [`fetch_skin_blocking`] with the words of the failure (never an address): the first reason that is more than a plain
 /// 404, since a 404 from one of the addresses is the ordinary "not there yet".
 pub fn fetch_skin_why(cfg: &SkinConfig, backend_base: &str, dir: &Path, id: &str) -> Result<(), String> {
+    let bytes = fetch_skin_bytes(cfg, backend_base, id)?;
+    if write_skin_file(dir, id, &bytes).is_err() {
+        return Err("the skin could not be saved".to_string());
+    }
+    prune_cache(dir, cfg.cache_max);
+    Ok(())
+}
+
+/// The verified bytes of skin `id` from the first address that serves them, with the words of the failure as in
+/// [`fetch_skin_why`]. Nothing is written: the caller keeps the skin in a folder or in memory ([`remember_peer`]).
+pub fn fetch_skin_bytes(cfg: &SkinConfig, backend_base: &str, id: &str) -> Result<Vec<u8>, String> {
     let limit = read_limit();
     let mut why: Option<String> = None;
     let mut note = |text: String| {
@@ -729,13 +767,7 @@ pub fn fetch_skin_why(cfg: &SkinConfig, backend_base: &str, dir: &Path, id: &str
     };
     for url in fetch_urls(cfg, backend_base, id) {
         match download(&url, cfg.timeout_secs, limit, &PNG_TYPES) {
-            Ok(bytes) if verify_skin(id, &bytes) => {
-                if write_skin_file(dir, id, &bytes).is_err() {
-                    return Err("the skin could not be saved".to_string());
-                }
-                prune_cache(dir, cfg.cache_max);
-                return Ok(());
-            }
+            Ok(bytes) if verify_skin(id, &bytes) => return Ok(bytes),
             Ok(_) => note("the server sent a file that is not this skin".to_string()),
             Err(e) => note(download_error_text(&e)),
         }
@@ -813,28 +845,48 @@ pub fn set_backend_base(base: &str) {
     let _ = BACKEND_BASE.set(base.trim_end_matches('/').to_string());
 }
 
-/// Starts a background fetch of skin `id` into the cache folder. It never blocks the frame; the file shows up on a later
-/// check once it has been downloaded and verified. The skins host is tried first, then the backend route. Does nothing
-/// when no backend is set (fetching is off), the id is not a skin hash, or the skin is already cached.
+/// Starts a background fetch of skin `id` into the cache folder, or into memory when there is no cache folder (the
+/// browser has no files). It never blocks the frame; the skin shows up on a later check once it has been downloaded and
+/// verified. The backend route is tried first, then the skins host and the legacy route. Does nothing when no backend is
+/// set (fetching is off), the id is not a skin hash, or the skin is already held.
 pub fn fetch_skin_in_background(id: &str) {
     let Some(base) = BACKEND_BASE.get().filter(|b| !b.is_empty()).cloned() else { return };
     let Some(cfg) = config() else { return };
-    let Some(dir) = cache_dir() else { return };
-    if !is_skin_hash(id) || !fetch_needed(&dir, id) {
-        return;
+    start_download(cfg, base, cache_dir(), id);
+}
+
+/// [`fetch_skin_in_background`] for a given config, backend and cache folder (None: keep the skin in memory). True when a
+/// download was started; false when the skin is held already, a download of it runs or cools down after a failure, or
+/// the start rate is used up.
+pub(crate) fn start_download(cfg: SkinConfig, base: String, dir: Option<PathBuf>, id: &str) -> bool {
+    // The id comes from another runner's profile: only 64 lowercase hex characters may reach a file path or the network.
+    if !is_skin_hash(id) {
+        return false;
+    }
+    let held = match &dir {
+        Some(dir) => !fetch_needed(dir, id),
+        None => peer_skin(id).is_some(),
+    };
+    if held {
+        return false;
     }
     let key = format!("down:{id}");
     if !book().begin_download(&key, crate::shared::clock::Instant::now(), cfg.max_concurrent) {
-        return;
+        return false;
     }
     let id = id.to_string();
     crate::shared::task::detach(move || {
         // Once per run, before the first download: drop what an older build cached that fails the full check.
         static PURGED: std::sync::Once = std::sync::Once::new();
-        PURGED.call_once(|| {
-            prune_cache(&dir, cfg.cache_max);
-        });
-        let result = fetch_skin_why(&cfg, &base, &dir, &id);
+        if let Some(dir) = &dir {
+            PURGED.call_once(|| {
+                prune_cache(dir, cfg.cache_max);
+            });
+        }
+        let result = match &dir {
+            Some(dir) => fetch_skin_why(&cfg, &base, dir, &id),
+            None => fetch_skin_bytes(&cfg, &base, &id).map(|bytes| remember_peer(&id, &bytes)),
+        };
         let ok = result.is_ok();
         let why = result.err().unwrap_or_default();
         if !ok {
@@ -843,6 +895,7 @@ pub fn fetch_skin_in_background(id: &str) {
         }
         book().finish_with(&key, ok, crate::shared::clock::Instant::now(), std::time::Duration::from_secs(cfg.retry_secs), true, &why);
     });
+    true
 }
 
 /// The server origin the uploaded record is for: the backend skins are fetched from (empty when fetching is off).
@@ -904,8 +957,22 @@ fn write_record_at(path: &Path, origin: &str, ids: &[String]) {
 /// The recorded ids that were checked against the server this session (or uploaded this session): the ids the website
 /// holds for this account. The record alone is not trusted, since the server may have dropped the file since.
 pub fn uploaded_ids() -> Vec<String> {
-    let Some(path) = uploaded_path() else { return Vec::new() };
-    uploaded_ids_in(&path, &server_origin(), checked_map())
+    uploaded_ids_for(uploaded_path().as_deref(), &server_origin(), checked_map())
+}
+
+/// [`uploaded_ids`] for the record file, if there is one. With no user folder (the browser) there is no record file, so
+/// the skins the server was seen holding this session are all there is. Without this a runner in the browser never
+/// published its skin, whatever the website held.
+fn uploaded_ids_for(path: Option<&Path>, origin: &str, known: &Checked) -> Vec<String> {
+    match path {
+        Some(path) => uploaded_ids_in(path, origin, known),
+        None => held_this_session(known),
+    }
+}
+
+/// The ids this session uploaded or saw the server holding, for a runner with no record file.
+fn held_this_session(known: &Checked) -> Vec<String> {
+    lock_checked(known).iter().filter(|(id, held)| **held && is_skin_hash(id)).map(|(id, _)| id.clone()).collect()
 }
 
 /// [`uploaded_ids`] for a record file, server origin and checked map. With no origin there is no server to ask (see
@@ -933,10 +1000,20 @@ fn uploaded_path() -> Option<PathBuf> {
 /// account, so an earlier id is no longer something to rely on (it is only kept for a grace period): picking it again
 /// uploads it again, and the room's published skin never names a file the website has dropped.
 fn remember_uploaded(id: &str) {
-    if let Some(path) = uploaded_path() {
-        write_record_at(&path, &server_origin(), &[id.to_string()]);
+    remember_uploaded_in(uploaded_path().as_deref(), &server_origin(), checked_map(), id);
+}
+
+/// [`remember_uploaded`] for a record file (None: the browser, which keeps the list in memory only), origin and checked map.
+fn remember_uploaded_in(path: Option<&Path>, origin: &str, known: &Checked, id: &str) {
+    if let Some(path) = path {
+        write_record_at(path, origin, &[id.to_string()]);
     }
-    checked().insert(id.to_string(), true);
+    let mut known = lock_checked(known);
+    if path.is_none() {
+        // the session list is all there is without a record file: one skin per account here too
+        known.retain(|_, held| !*held);
+    }
+    known.insert(id.to_string(), true);
 }
 
 /// Looks up whether the server holds the recorded skin `hash` (`GET <base>/api/v1/skins/<hash>`, which the server
@@ -948,13 +1025,14 @@ fn verify_held_at(cfg: &SkinConfig, path: &Path, origin: &str, hash: &str) -> Op
     if !recorded.iter().any(|id| id == hash) {
         return Some(false);
     }
-    let missing = match download(&format!("{origin}/api/v1/skins/{hash}"), cfg.timeout_secs, read_limit(), &PNG_TYPES) {
-        Ok(bytes) => !verify_skin(hash, &bytes),
-        Err(NetError::Http { status: 404, .. }) => true,
-        Err(_) => return None,
-    };
-    if !missing {
-        return Some(true);
+    // The backend's own route first, then the Godot route (a server of the Node backend has only that one: asking one
+    // route alone made it look like the server never held the skin, so every start uploaded it again).
+    for url in [format!("{origin}/api/v1/skins/{hash}"), skin_backend_url(cfg, origin, hash)] {
+        match download(&url, cfg.timeout_secs, read_limit(), &PNG_TYPES) {
+            Ok(bytes) if verify_skin(hash, &bytes) => return Some(true),
+            Ok(_) | Err(NetError::Http { status: 404, .. }) => {}
+            Err(_) => return None,
+        }
     }
     // The GET was slow: another skin may have been recorded meanwhile, so drop only this hash from a fresh read.
     let fresh = read_record_at(path, origin);
@@ -2019,6 +2097,15 @@ mod tests {
                         Ok(n) => got.extend_from_slice(&b[..n]),
                     }
                 }
+                // read the body of a POST too: closing with unread data can reset the connection before the client reads the answer
+                let head_end = got.windows(4).position(|w| w == b"\r\n\r\n").map_or(got.len(), |i| i + 4);
+                let want = String::from_utf8_lossy(&got[..head_end]).lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").and_then(|v| v.trim().parse::<usize>().ok())).unwrap_or(0);
+                while got.len() < head_end + want {
+                    match conn.read(&mut b) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => got.extend_from_slice(&b[..n]),
+                    }
+                }
                 let line = String::from_utf8_lossy(&got).lines().next().unwrap_or("").to_string();
                 seen2.lock().unwrap().push(line.clone());
                 let path = line.split(' ').nth(1).unwrap_or("").to_string();
@@ -2946,7 +3033,11 @@ use std::time::Duration;
         assert!(!verify_held_in(&id, origin.clone(), path.clone(), cfg.clone(), known), "unsettled while the check runs");
         let settled = |known: &Checked| { for _ in 0..200 { if lock_checked(known).contains_key(&id) { return true; } std::thread::sleep(std::time::Duration::from_millis(25)); } false };
         assert!(settled(known));
-        assert_eq!(seen.lock().unwrap().clone(), vec![format!("GET /api/v1/skins/{id} HTTP/1.1")]);
+        assert_eq!(
+            seen.lock().unwrap().clone(),
+            vec![format!("GET /api/v1/skins/{id} HTTP/1.1"), format!("GET /api/skins/files/{id}.png HTTP/1.1")],
+            "both routes are asked before the skin counts as missing"
+        );
         assert!(read_record_at(&path, &origin).is_empty(), "the stale record is dropped");
         assert!(verify_held_in(&id, origin.clone(), path.clone(), cfg.clone(), known), "settled, so the skin is offered");
         let mut plan = UploadPlan::default();
@@ -3064,5 +3155,164 @@ use std::time::Duration;
         note_slim(&id, true);
         assert_eq!(skin_is_slim(&id), Some(true));
         assert_eq!(skin_is_slim(&"e".repeat(64)), None, "an unknown picture has no style");
+    }
+
+    /// A valid skin that differs per `tag`: the download book and the memory store are process-wide, so tests that run side
+    /// by side must not share an id.
+    fn tagged_skin(tag: u8) -> (String, Vec<u8>) {
+        let mut px = fixture_rgba(false);
+        px[px_at(1, 1, 64)] = tag;
+        skin_from_png(encode_png(&px, 64, 64)).expect("the fixture is a valid skin")
+    }
+
+    fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        for _ in 0..400 {
+            if done() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        panic!("timed out waiting for: {what}");
+    }
+
+    #[test]
+    fn a_runner_with_no_cache_folder_fetches_another_runners_skin_into_memory() {
+        use std::sync::atomic::Ordering;
+        // The browser build has no folders: before this, nothing was ever fetched there and every remote skin stayed DEFAULT.
+        let (id, bytes) = tagged_skin(11);
+        let (port, seen, stop) = serve_routes(vec![(format!("/api/skins/files/{id}.png"), bytes.clone(), "image/png")]);
+        let base = format!("http://127.0.0.1:{port}");
+        assert!(read_skin_in(&[None, None], &id).is_none(), "not here yet");
+        assert!(start_download(offline_host_config(), base.clone(), None, &id), "a download starts with no cache folder");
+        wait_until("the skin is held in memory", || read_skin_in(&[None, None], &id).is_some());
+        stop.store(true, Ordering::SeqCst);
+        assert_eq!(read_skin_in(&[None, None], &id), Some(bytes.clone()));
+        assert!(!start_download(offline_host_config(), base, None, &id), "a skin that is held is not fetched again");
+        assert_eq!(skin_is_slim(&id), Some(false), "the arm style is read from the kept picture too");
+        let asked = seen.lock().unwrap().clone();
+        assert!(asked.iter().all(|line| line.starts_with("GET ")), "a read-only fetch: {asked:?}");
+        assert!(remote_skin_rgba(&bytes).is_ok());
+    }
+
+    #[test]
+    fn a_hostile_id_from_a_profile_never_reaches_a_file_path_or_the_network() {
+        use std::sync::atomic::Ordering;
+        let (port, seen, stop) = serve_routes(Vec::new());
+        let base = format!("http://127.0.0.1:{port}");
+        let dir = temp_dir("hostile_id");
+        let upper = tagged_skin(51).0.to_ascii_uppercase();
+        let hostile = [
+            "../../etc/passwd".to_string(),
+            "..\\..\\secret".to_string(),
+            format!("{}/../x", "a".repeat(60)),
+            "a".repeat(5000),
+            "a".repeat(63),
+            upper,
+            String::new(),
+        ];
+        for id in &hostile {
+            assert!(!start_download(offline_host_config(), base.clone(), Some(dir.clone()), id), "refused: {:.30}", id);
+            assert!(!start_download(offline_host_config(), base.clone(), None, id), "refused in memory: {:.30}", id);
+            assert!(!book().running.contains(&format!("down:{id}")) && !book().retry_at.contains_key(&format!("down:{id}")), "not even booked");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        stop.store(true, Ordering::SeqCst);
+        assert!(seen.lock().unwrap().is_empty(), "nothing was asked of the server: {:?}", seen.lock().unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_fetch_cools_down_then_retries_and_never_leaves_the_skin_stuck() {
+        use std::sync::atomic::Ordering;
+        let (id, bytes) = tagged_skin(12);
+        let cfg = offline_host_config();
+        let key = format!("down:{id}");
+        // the server does not hold the skin yet
+        let (empty_port, _seen, stop_empty) = serve_routes(Vec::new());
+        let empty = format!("http://127.0.0.1:{empty_port}");
+        assert!(start_download(cfg.clone(), empty.clone(), None, &id));
+        wait_until("the failure is booked", || {
+            let b = book();
+            b.fails.get(&key) == Some(&1) && !b.running.contains(&key)
+        });
+        stop_empty.store(true, Ordering::SeqCst);
+        assert!(read_skin_in(&[None], &id).is_none(), "nothing to draw: the default skin shows meanwhile");
+        assert!(!start_download(cfg.clone(), empty, None, &id), "cooling down: not asked again at once");
+        let wait = book().retry_at[&key].saturating_duration_since(crate::shared::clock::Instant::now());
+        assert!(wait > std::time::Duration::from_secs(2) && wait <= std::time::Duration::from_secs(5), "the first wait is short: {wait:?}");
+        assert!(book().why.get(&key).is_some_and(|why| !why.is_empty()), "the player can be told why");
+        // the cool-down ends, and the server holds the skin by now
+        book().retry_at.insert(key.clone(), crate::shared::clock::Instant::now());
+        let (port, _seen, stop) = serve_routes(vec![(format!("/api/skins/files/{id}.png"), bytes.clone(), "image/png")]);
+        assert!(start_download(cfg, format!("http://127.0.0.1:{port}"), None, &id), "the retry starts");
+        wait_until("the retry brings the skin", || read_skin_in(&[None], &id).is_some());
+        stop.store(true, Ordering::SeqCst);
+        wait_until("the book forgets the failure", || {
+            let b = book();
+            !b.fails.contains_key(&key) && !b.running.contains(&key)
+        });
+        assert_eq!(read_skin_in(&[None], &id), Some(bytes));
+    }
+
+    #[test]
+    fn the_skins_kept_in_memory_for_other_runners_are_bounded_and_the_newest_stay() {
+        let mut list = Vec::new();
+        for tag in 0..5u8 {
+            keep_newest(&mut list, 3, &format!("id{tag}"), &[tag]);
+        }
+        assert_eq!(list.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), vec!["id2", "id3", "id4"]);
+        keep_newest(&mut list, 3, "id2", &[9]);
+        assert_eq!(list.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), vec!["id3", "id4", "id2"], "a skin seen again is the newest");
+        assert_eq!(list[2].1, vec![9]);
+    }
+
+    #[test]
+    fn without_a_record_file_the_skin_the_server_holds_this_session_is_published() {
+        use crate::net::world_sync::published_skin;
+        // The browser keeps no skins-uploaded.json: before this its uploaded list was always empty, so a signed-in runner in the
+        // browser announced DEFAULT to the room whatever the website held.
+        let (a, _) = tagged_skin(21);
+        let (b, _) = tagged_skin(22);
+        let known: Checked = Default::default();
+        assert!(uploaded_ids_for(None, "http://s", &known).is_empty());
+        assert_eq!(published_skin(&a, &uploaded_ids_for(None, "http://s", &known)), SKIN_DEFAULT, "DEFAULT until the upload is accepted");
+        remember_uploaded_in(None, "http://s", &known, &a);
+        assert_eq!(published_skin(&a, &uploaded_ids_for(None, "http://s", &known)), a, "announced once the website holds it");
+        remember_uploaded_in(None, "http://s", &known, &b);
+        let held = uploaded_ids_for(None, "http://s", &known);
+        assert!(holds(&held, &b) && !holds(&held, &a), "one skin per account, as in the record file");
+        let mut plan = UploadPlan::default();
+        assert!(!plan.due(1.0, &b, true, || held.clone(), 60.0), "a skin the website holds is not uploaded again");
+        lock_checked(&known).insert(b.clone(), false);
+        assert!(uploaded_ids_for(None, "http://s", &known).is_empty(), "a skin found missing is not announced");
+    }
+
+    #[test]
+    fn a_server_that_has_only_the_legacy_route_still_counts_as_holding_a_recorded_skin() {
+        use std::sync::atomic::Ordering;
+        let (id, bytes) = tagged_skin(31);
+        let dir = temp_dir("verify_legacy");
+        let path = dir.join("skins-uploaded.json");
+        let (port, _seen, stop) = serve_routes(vec![(format!("/api/skins/files/{id}.png"), bytes, "image/png")]);
+        let origin = format!("http://127.0.0.1:{port}");
+        write_record_at(&path, &origin, &[id.clone()]);
+        assert_eq!(verify_held_at(&shipped_config(), &path, &origin, &id), Some(true));
+        assert_eq!(read_record_at(&path, &origin), vec![id], "the record stays: no upload on every start");
+        stop.store(true, Ordering::SeqCst);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_upload_to_the_node_backend_is_recognised_by_its_hash_answer() {
+        use std::sync::atomic::Ordering;
+        // The Node backend's POST /api/skins/upload answers {ok, hash} with no id (lr_server sends both). The client read only
+        // "id", so every upload there looked like it stored another skin: it was never recorded and never announced.
+        let (id, bytes) = tagged_skin(41);
+        let answer = format!(r#"{{"ok":true,"hash":"{id}"}}"#).into_bytes();
+        let (port, seen, stop) = serve_routes(vec![("/api/skins/upload".to_string(), answer, "application/json")]);
+        let cfg = BackendConfig::loopback(port);
+        assert_eq!(api::upload_skin(&cfg, "token", &bytes).as_deref(), Ok(id.as_str()));
+        stop.store(true, Ordering::SeqCst);
+        assert_eq!(seen.lock().unwrap().clone(), vec!["POST /api/v1/skins HTTP/1.1".to_string(), "POST /api/skins/upload HTTP/1.1".to_string()]);
     }
 }
