@@ -7,11 +7,17 @@
 //! until the mouse drags it, zooms with the wheel (about the pointer) or F / G, recentres on
 //! Space, and places a waypoint with a double click, a right click or E (Godot FacilityMap).
 //!
+//! Both maps draw only what the runner has seen. The sewer, the Inferno and level 0 all reveal the floor around the runner in line of
+//! sight (`Game::reveal`, radius `reveal.radius_cells` in data/ui/map.json) and keep it by absolute cell; level 0's full map draws a
+//! chunk's cells only where its seen bitmap (`game::discovery`) has them. On the sewer storeys the water cells the swim code reads
+//! (`Facility::is_water`) are tinted blue once discovered, with a legend entry (data/ui/map.json).
+//!
 //! The hunters come from `Game::map_hunters`: Porcelle while awake, and every hunter on the floor
 //! while the admin HUNTER REVEAL is on (the asleep ones dimmed). Each is marked by who it is
 //! (`hunter_mark`): the capital letter of an A to Z hunter, the colour of a void hunter.
 
 mod hunter_mark;
+pub mod look;
 
 use super::style::*;
 use crate::app::assets::Assets;
@@ -142,6 +148,8 @@ fn draw_floor(g: &Game, a: &Assets, xf: Xf, cells: (i32, i32, i32, i32), full: b
     let cell = xf.cell;
     let (bx, by) = xf.at((vx as f32, vy as f32));
     fill(Rect::new(bx, by, vw as f32 * cell, vh as f32 * cell), p.backdrop);
+    // the sewer's water: a discovered water cell is the floor colour moved toward the blue (data/ui/map.json)
+    let water_col = look::MapLook::load().water.over(p.panel);
     for y in vy..vy + vh {
         for x in vx..vx + vw {
             if !g.discovered[y as usize][x as usize] || g.fac.is_wall_cell(x, y) {
@@ -149,6 +157,8 @@ fn draw_floor(g: &Game, a: &Assets, xf: Xf, cells: (i32, i32, i32, i32), full: b
             }
             let col = if g.fac.is_hole(x, y) {
                 HOLE
+            } else if g.fac.is_water(crate::world::Cell::new(x, y)) {
+                water_col
             } else {
                 p.panel
             };
@@ -403,6 +413,16 @@ fn floor_tint(mc: &MapChunk, z: i32, x: i32, panel: Color) -> Option<Color> {
         Some(HOLE)
     } else {
         Some(panel)
+    }
+}
+
+/// The floor colour of chunk-local cell (`x`, `z`) on the level-0 full map, or `None` for a wall and for a cell the runner has not
+/// seen (`bits` is the chunk's seen bitmap): an unexplored cell stays the backdrop.
+fn seen_floor_tint(mc: &MapChunk, bits: &crate::game::discovery::Bits, z: i32, x: i32, panel: Color) -> Option<Color> {
+    if bits.get(x, z) {
+        floor_tint(mc, z, x, panel)
+    } else {
+        None
     }
 }
 
@@ -700,17 +720,20 @@ fn draw_level0(g: &Game, a: &Assets, feed: &FullMapFeed, plan: Rect, geo: &FullP
         p.backdrop,
     );
     // each chunk's open floor, as runs of cells along each row (one fill per run, not per cell)
+    // only the cells the runner has seen (the chunk's bitmap), so an unexplored cell stays the backdrop
     for (k, mc) in &feed.chunks {
         let (bx, by) = (k.cx * CHUNK, k.cy * CHUNK);
+        let Some(bits) = feed.seen.chunk((k.cx, k.cy)) else { continue };
+        let tint = |z: i32, x: i32| seen_floor_tint(mc, bits, z, x, p.panel);
         for z in 0..CHUNK {
             let mut x = 0;
             while x < CHUNK {
-                let Some(col) = floor_tint(mc, z, x, p.panel) else {
+                let Some(col) = tint(z, x) else {
                     x += 1;
                     continue;
                 };
                 let start = x;
-                while x < CHUNK && floor_tint(mc, z, x, p.panel) == Some(col) {
+                while x < CHUNK && tint(z, x) == Some(col) {
                     x += 1;
                 }
                 let (qx, qy) = xf.at(((bx + start) as f32, (by + z) as f32));
@@ -730,18 +753,19 @@ fn draw_level0(g: &Game, a: &Assets, feed: &FullMapFeed, plan: Rect, geo: &FullP
             circle(vec2(q.0, q.1), rad, col);
         }
     };
+    // a mark on the map is drawn only where the runner has seen the cell under it
+    let seen = |c: crate::world::Cell| feed.seen.is_seen(c.x, c.y);
     // the window's safe zone (the middle chunk's safe room while intact), in absolute cells
     if let Some(sz) = g.fac.safe_zone {
         let o = feed.origin;
-        dot(
-            crate::world::Cell::new(sz.x + o.0, sz.y + o.1).center(),
-            meter_safe(),
-            cell * 0.9,
-        );
+        let at = crate::world::Cell::new(sz.x + o.0, sz.y + o.1);
+        if seen(at) {
+            dot(at.center(), meter_safe(), cell * 0.9);
+        }
     }
     for (_, mc) in &feed.chunks {
         for pr in &mc.props {
-            if !g.full_map_prop_shown(&pr.id) {
+            if !seen(pr.cell) || !g.full_map_prop_shown(&pr.id) {
                 continue;
             }
             let c = pr.cell.center();
@@ -752,12 +776,12 @@ fn draw_level0(g: &Game, a: &Assets, feed: &FullMapFeed, plan: Rect, geo: &FullP
     }
     for (_, mc) in &feed.chunks {
         for (id, c) in &mc.relays {
-            if g.full_map_pickup_shown(id) {
+            if seen(*c) && g.full_map_pickup_shown(id) {
                 dot(c.center(), relay_colour(), (cell * 0.34).max(0.5));
             }
         }
         for (id, c) in &mc.batteries {
-            if g.full_map_pickup_shown(id) {
+            if seen(*c) && g.full_map_pickup_shown(id) {
                 dot(c.center(), battery_colour(), (cell * 0.26).max(0.4));
             }
         }
@@ -765,7 +789,7 @@ fn draw_level0(g: &Game, a: &Assets, feed: &FullMapFeed, plan: Rect, geo: &FullP
     for (_, mc) in &feed.chunks {
         for s in &mc.stairs {
             let c = s.cell.center();
-            if shown(c) {
+            if shown(c) && seen(s.cell) {
                 let q = xf.at(c);
                 stair_icon(vec2(q.0, q.1), cell, true);
             }
@@ -802,6 +826,33 @@ fn draw_level0(g: &Game, a: &Assets, feed: &FullMapFeed, plan: Rect, geo: &FullP
     radar_state_overlay(g, plan);
 }
 
+/// The legend's font size: 9, or smaller so a line that is `width_at_9` wide at size 9 fits `screen_w` with a margin each side.
+fn legend_size(width_at_9: f32, screen_w: f32) -> f32 {
+    let room = (screen_w - 16.0).max(1.0);
+    if width_at_9 <= room {
+        9.0
+    } else {
+        9.0 * room / width_at_9
+    }
+}
+
+/// The full map's legend line: the marks it can show, and the water on a floor that has any (the sewers). Built once per colour
+/// scheme and floor kind, so the full map's frame does not format a string.
+fn legend_text(g: &Game) -> &'static str {
+    const MARKS: [&str; 2] = [
+        "ORANGE relay  •  YELLOW battery  •  GRAY prop  •  WHITE stairs  •  LETTER or COLOUR hunter",
+        "TEAL-BLUE relay  •  YELLOW battery  •  GRAY prop  •  WHITE stairs  •  LETTER or COLOUR hunter",
+    ];
+    static WET: std::sync::OnceLock<[String; 2]> = std::sync::OnceLock::new();
+    let scheme = if is_last_route() { 0 } else { 1 };
+    if g.fac.water_cells().is_empty() {
+        MARKS[scheme]
+    } else {
+        let wet = WET.get_or_init(|| MARKS.map(|m| format!("{m}  •  {}", look::MapLook::load().water.legend)));
+        &wet[scheme]
+    }
+}
+
 /// The fullscreen map overlay (hud.tscn MapOverlay): title, plan and legend, with the players and bots in `marks` drawn as
 /// pins. `map_view` is the view the input steps.
 pub fn draw_full_map_with_runners(g: &Game, a: &Assets, map_view: &FullView, marks: &[Marker]) {
@@ -834,18 +885,16 @@ pub fn draw_full_map_with_runners(g: &Game, a: &Assets, map_view: &FullView, mar
         None => draw_floor(g, a, geo.xf, (0, 0, g.fac.cols, g.fac.rows), true, marks),
     }
     clip_end();
-    let legend = if is_last_route() {
-        "ORANGE relay  •  YELLOW battery  •  GRAY prop  •  WHITE stairs  •  LETTER or COLOUR hunter"
-    } else {
-        "TEAL-BLUE relay  •  YELLOW battery  •  GRAY prop  •  WHITE stairs  •  LETTER or COLOUR hunter"
-    };
+    let legend = legend_text(g);
+    // a longer legend (the sewer's water entry) shrinks to the screen's width rather than running off both edges
+    let size = legend_size(tw(a, F::Body, legend, 9.0), v.x);
     label_c(
         a,
         F::Body,
         legend,
         v.x * 0.5,
-        v.y - 20.0 + (20.0 - lh(F::Body, 9.0)) * 0.5,
-        9.0,
+        v.y - 20.0 + (20.0 - lh(F::Body, size)) * 0.5,
+        size,
         lr(hex(0x8b7f85), rgba(0.49, 0.455, 0.431, 1.0)),
     );
 }
@@ -1084,5 +1133,55 @@ mod tests {
             step(&mut map_view, &geo, plan, &MapPointer { at: vec2(100.0, 100.0), wheel: -1.0, now: 0.0, ..Default::default() });
         }
         assert!(close(map_view.zoom, MIN_FULL_ZOOM), "{}", map_view.zoom);
+    }
+
+    #[test]
+    fn the_level_zero_full_map_tints_only_the_floor_the_runner_has_seen() {
+        let g = game();
+        let feed = g.full_map_feed().expect("level 0 has a feed");
+        let panel = hex(0x123456);
+        let (k, mc) = feed.chunks[0];
+        let bits = feed.seen.chunk((k.cx, k.cy)).expect("the chunk has seen cells");
+        let (mut drawn, mut open_unseen) = (0, 0);
+        for z in 0..CHUNK {
+            for x in 0..CHUNK {
+                let t = seen_floor_tint(mc, bits, z, x, panel);
+                if bits.get(x, z) {
+                    assert_eq!(t, floor_tint(mc, z, x, panel));
+                    drawn += t.is_some() as i32;
+                } else {
+                    assert_eq!(t, None, "unseen cell {x},{z} stays the backdrop");
+                    open_unseen += floor_tint(mc, z, x, panel).is_some() as i32;
+                }
+            }
+        }
+        assert!(drawn > 0, "the lobby is drawn");
+        assert!(open_unseen > drawn, "most of the chunk's open floor is still hidden ({open_unseen} vs {drawn})");
+    }
+
+    #[test]
+    fn the_legend_names_the_water_only_on_a_floor_that_has_it() {
+        let content = Content::load();
+        let catalog = crate::world::catalog::Catalog::load();
+        let sewer = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-TEST-7", -1, &content, &catalog);
+        let word = &look::MapLook::load().water.legend;
+        assert!(legend_text(&sewer).ends_with(word.as_str()), "{}", legend_text(&sewer));
+        assert!(!legend_text(&game()).contains(word.as_str()));
+    }
+
+    #[test]
+    fn a_long_legend_shrinks_to_fit_the_screen_and_a_short_one_stays_at_nine() {
+        assert_eq!(legend_size(300.0, 480.0), 9.0);
+        let s = legend_size(560.0, 480.0);
+        assert!(s < 9.0 && (560.0 * s / 9.0 - 464.0).abs() < 1e-3, "{s}");
+    }
+
+    #[test]
+    fn a_water_cell_is_tinted_blue_over_the_floor_colour() {
+        let panel = hex(0x2a2530);
+        let water = look::MapLook::load().water.over(panel);
+        assert_ne!(water, panel);
+        assert!(water.b > water.r && water.b > panel.b, "bluer than the floor: {water:?}");
+        assert_eq!(water.a, panel.a);
     }
 }

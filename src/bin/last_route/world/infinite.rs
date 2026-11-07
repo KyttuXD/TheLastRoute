@@ -480,6 +480,13 @@ fn apply_sewer_floor(f: &mut Facility, sc: &super::route::sewer::SewerChunk, see
     f.props = super::sewer_props::props(sc, &f.rooms, cat);
     // the pulsing emergency lights are their own layer over the generator's props (they are not in the golden layout)
     f.props.extend(super::sewer_emergency::props(sc, seed, k.cx, k.cy, k.level, &f.rooms));
+    // the channel water for the maps: the cells the swim, slip and landing code read as water (`water_depth_at_level`)
+    let wet: Vec<Cell> = (0..CHUNK)
+        .flat_map(|z| (0..CHUNK).map(move |x| (x, z)))
+        .filter(|&(x, z)| super::route::sewer::water::water_depth_at_level(&sc.sewer_grid, x, z, k.level) > 0.0)
+        .map(|(x, z)| Cell::new(x, z))
+        .collect();
+    f.set_water_cells(&wet);
     f.rebuild_grids();
     f.hiding.clear();
     f.room_lights.clear();

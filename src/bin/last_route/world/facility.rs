@@ -263,6 +263,10 @@ pub struct Facility {
     air_list: Vec<Cell>,
     drop: Vec<bool>,
     air: Vec<bool>,
+    /// The channel water cells of a sewer window (`set_water_cells`): sorted, and indexed into `water` by `rebuild_grids`.
+    /// The maps tint these; nothing in the walk, the swim or the hunters' grid reads them (those read the sewer chunk grid).
+    water_list: Vec<Cell>,
+    water: Vec<bool>,
     /// The solid railings along the water's edge (`set_rails`); empty on every level but the sewers.
     rails: Rails,
     /// The noisy floor and ceiling of an Inferno window (`world/inferno_terrain.rs`); `None` on every other level. Set by
@@ -589,6 +593,8 @@ impl Facility {
             air_list: vec![],
             drop: vec![],
             air: vec![],
+            water_list: vec![],
+            water: vec![],
             rails: Rails::default(),
             terrain: None,
         };
@@ -938,6 +944,8 @@ impl Facility {
             air_list: vec![],
             drop: vec![],
             air: vec![],
+            water_list: vec![],
+            water: vec![],
             rails: Rails::default(),
             terrain: None,
         };
@@ -989,6 +997,7 @@ impl Facility {
             f.stairs.extend(p.stairs.into_iter().map(|s| s.shifted(ox, oy)));
             f.drop_list.extend(p.drop_list.iter().map(|c| sh(*c)));
             f.air_list.extend(p.air_list.iter().map(|c| sh(*c)));
+            f.water_list.extend(p.water_list.iter().map(|c| sh(*c)));
             // the railings along the water ride along with their chunk (all chunks of a window share one shape)
             if !p.rails.edges.is_empty() {
                 f.rails.edges.extend(p.rails.edges.iter().map(|(c, bit)| (sh(*c), *bit)));
@@ -1431,6 +1440,7 @@ impl Facility {
         };
         self.drop = index(&self.drop_list);
         self.air = index(&self.air_list);
+        self.water = index(&self.water_list);
     }
 
     /// Makes `cells` this level's drops (a waterfall void): no floor and no wall, open air down to the level below.
@@ -1441,6 +1451,29 @@ impl Facility {
         self.drop_list.sort();
         self.drop_list.dedup();
         self.index_drops();
+    }
+
+    /// Marks `cells` as this level's channel water (a sewer chunk's WATER cells), for the maps. Replaces any earlier water;
+    /// call `rebuild_grids` afterwards. It changes nothing about walking, swimming or the hunters' grid.
+    pub fn set_water_cells(&mut self, cells: &[Cell]) {
+        self.water_list = cells.to_vec();
+        self.water_list.sort();
+        self.water_list.dedup();
+        self.index_drops();
+    }
+
+    /// Whether `c` is a channel water cell (the sewer's pools and channels).
+    pub fn is_water(&self, c: Cell) -> bool {
+        c.x >= 0
+            && c.y >= 0
+            && c.x < self.cols
+            && c.y < self.rows
+            && self.water.get((c.y * self.cols + c.x) as usize).copied().unwrap_or(false)
+    }
+
+    /// Every channel water cell (sorted); empty off the sewers.
+    pub fn water_cells(&self) -> &[Cell] {
+        &self.water_list
     }
 
     /// Makes `cells` this level's air-above cells: no ceiling, because a drop on the level above falls through them.
