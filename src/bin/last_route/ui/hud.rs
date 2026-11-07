@@ -17,7 +17,7 @@ pub struct HudDrawn {
     pub depth: bool,
     pub relays: bool,
     pub stamina: bool,
-    /// How many system bars (TEMP, EXPOSE, NOISE, LAMP, STAMINA) the cluster left of the hotbar drew; 0 when it is off.
+    /// How many status bars the row above the hotbar drew; 0 when it is off.
     pub bars: usize,
     pub hotbar: bool,
     /// The hunter specialty bar (slots 6 to 9) was laid out; individual slots show only while their hunter is out.
@@ -454,10 +454,10 @@ pub fn draw_hud_with_runners(
     // no on-screen STUNNED notice: the stun mechanic stays, only the message is gone
 
     let hb = Rect::new(c.x - 94.0, v.y - 42.0, 188.0, 34.0);
-    // the system bars left of the hotbar (data/ui/hud_bars.json): TEMP, EXPOSE, NOISE, LAMP and STAMINA, each labelled
+    // the status row above the hotbar (data/ui/hud_bars.json): BATTERY, STAMINA, FADE, EXPOSURE, NOISE, TEMP
     drawn.bars = super::hud_bars::draw(g, a, v, hb);
     if drawn.bars == 0 {
-        // the compact stamina bar (164x5) over the hotbar panel (188x34), kept for when the cluster is not drawn
+        // the compact stamina bar (164x5) over the hotbar panel (188x34), kept for when the status row is not drawn
         let stamina = (g.p.stamina / MAX_STAMINA * 100.0).round();
         let st_col = if g.p.exhausted || stamina < 20.0 {
             METER_LOW
@@ -472,7 +472,7 @@ pub fn draw_hud_with_runners(
             st_col,
         );
     }
-    // the cluster carries the stamina bar too, so the selftest's stamina mark holds either way
+    // the status row carries the stamina bar too, so the selftest's stamina mark holds either way
     drawn.stamina = true;
 
     hud_box(hb);
@@ -570,8 +570,11 @@ pub fn draw_hud_with_runners(
     drawn.specialty = true;
 
     if let Some(e) = &g.escape {
-        // above the stamina bar, not over the middle of the screen, so the grab animation stays visible
-        let r = Rect::new(c.x - 90.0, v.y - 118.0, 180.0, 60.0);
+        // above the status row, not over the middle of the screen, so the grab animation stays visible
+        let row_top = super::hud_bars::rules().map(|rules| {
+            super::hud_bars::row_bounds(v, c, hb, rules.bars.len(), rules.layout.bar_height, lh(F::Body, rules.layout.text_size)).y
+        });
+        let r = Rect::new(c.x - 90.0, row_top.unwrap_or(hb.y) - 64.0, 180.0, 60.0);
         hud_box(r);
         let content = lh(F::Body, 11.0) + 5.0 + 8.0 + 5.0 + 4.0;
         let mut y = r.y + (r.h - content) * 0.5;

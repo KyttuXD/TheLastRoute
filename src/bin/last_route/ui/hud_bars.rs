@@ -1,13 +1,8 @@
-//! The system-bar cluster: TEMP, EXPOSE, NOISE, LAMP and STAMINA as labelled bars with a small icon each, in a plate left
-//! of the hotbar (the specialty bar sits to its right, so the two never meet). The rows, labels, colour zones, ticks and
-//! overrides are data (data/ui/hud_bars.json, `lr.hud_bars/1`), read by a validated loader; the value to fill and zone
-//! rules are pure functions, unit-tested below. The reference is the web build's HUD (games/last-route index.html and
-//! styles.css: BATTERY amber, STAMINA cyan, EXPOSURE ember, NOISE teal, and the vertical body-temperature gauge).
-//!
-//! Narrow windows: the text never drops under 12 window pixels, so as the window shrinks the cluster steps down through
-//! fixed tiers until every bar keeps `bar_min` units: full (icon, label, bar, value with the zone name, tick numbers and
-//! the temperature item's source line), compact (the number only), short (3-letter label, no value) and icon (icon and
-//! bar). The old stamina bar over the hotbar is drawn only when this cluster is not (a broken data file).
+//! The status bars: thin outlined meters in one row above the hotbar, label and value under each, no icons and no panel.
+//! Order and colours are data (data/ui/hud_bars.json, `lr.hud_bars/1`): BATTERY amber, STAMINA light blue, FADE, EXPOSURE
+//! orange-red, NOISE, and TEMP as the sixth. A readout is `BATTERY 97% // F`. The value to fill and the zone rules are
+//! pure functions, unit-tested below. The old stamina bar over the hotbar is drawn only when this row is not (a broken
+//! data file).
 
 use super::style::*;
 use crate::app::assets::Assets;
@@ -19,8 +14,6 @@ use serde_json::Value;
 
 const FILE: &str = "ui/hud_bars.json";
 const SCHEMA: &str = "lr.hud_bars/1";
-/// The gap between the cluster plate and the hotbar (the specialty bar uses the same on the other side).
-const HOTBAR_GAP: f32 = 8.0;
 /// The screen margin the HUD keeps (hud.rs SAFE).
 const SAFE: f32 = 8.0;
 
@@ -37,6 +30,8 @@ pub enum Source {
     Lamp,
     /// Sprint stamina, percent.
     Stamina,
+    /// How far the body has ducked and faded, 0 standing to 100 fully crouched.
+    Fade,
 }
 
 impl Source {
@@ -47,6 +42,7 @@ impl Source {
             "noise" => Some(Source::Noise),
             "lamp" => Some(Source::Lamp),
             "stamina" => Some(Source::Stamina),
+            "fade" => Some(Source::Fade),
             _ => None,
         }
     }
@@ -60,6 +56,8 @@ pub enum Glyph {
     Sound,
     Bulb,
     Runner,
+    /// Kept in the data for the loader; the row draws no icons.
+    Veil,
 }
 
 impl Glyph {
@@ -70,6 +68,7 @@ impl Glyph {
             "sound" => Some(Glyph::Sound),
             "bulb" => Some(Glyph::Bulb),
             "runner" => Some(Glyph::Runner),
+            "veil" => Some(Glyph::Veil),
             _ => None,
         }
     }
@@ -136,6 +135,8 @@ pub struct BarDef {
     pub label: String,
     pub short: String,
     pub glyph: Glyph,
+    /// The fill of the outlined bar (the zone colour still names the readout).
+    pub fill_colour: Rgb,
     pub min: f32,
     pub max: f32,
     pub unit: String,
@@ -247,14 +248,15 @@ pub fn parse(src: &str) -> Result<BarRules, String> {
         let source = b["source"]
             .as_str()
             .and_then(Source::named)
-            .ok_or_else(|| format!("{} is not temperature, exposure, noise, lamp or stamina", at("source")))?;
+            .ok_or_else(|| format!("{} is not temperature, exposure, noise, lamp, stamina or fade", at("source")))?;
         if bars.iter().any(|o| o.source == source) {
             return Err(format!("{} reads a meter another bar already shows", at("source")));
         }
         let glyph = b["glyph"]
             .as_str()
             .and_then(Glyph::named)
-            .ok_or_else(|| format!("{} is not thermometer, eye, sound, bulb or runner", at("glyph")))?;
+            .ok_or_else(|| format!("{} is not thermometer, eye, sound, bulb, runner or veil", at("glyph")))?;
+        let fill_colour = colour(&b["colour"], &at("colour"))?;
         let min = num(b, "min").map_err(|e| format!("bars[{i}].{e}"))?;
         let max = num(b, "max").map_err(|e| format!("bars[{i}].{e}"))?;
         if min >= max {
@@ -318,6 +320,7 @@ pub fn parse(src: &str) -> Result<BarRules, String> {
             label: text(&b["label"], &at("label"), 8)?,
             short: text(&b["short"], &at("short"), 4)?,
             glyph,
+            fill_colour,
             min,
             max,
             unit: b["unit"].as_str().filter(|u| u.chars().count() <= 2).ok_or_else(|| format!("{} must be text of up to 2 characters", at("unit")))?.to_string(),
@@ -410,6 +413,11 @@ pub fn resolve<'a>(bar: &'a BarDef, value: f32, flags: &Flags) -> Resolved<'a> {
     Resolved { value, fill: fill_fraction(value, bar.min, bar.max), zone, name, colour, alert }
 }
 
+/// The line under a bar: `BATTERY 97% // F`.
+pub fn readout(label: &str, value: f32, unit: &str, zone: &str) -> String {
+    format!("{label} {:.0}{unit} // {zone}", value)
+}
+
 /// The value text for a tier: the rounded number and unit, with the zone name at the full tier; nothing below compact.
 pub fn value_text(bar: &BarDef, r: &Resolved, tier: Tier) -> String {
     let n = format!("{}{}", r.value.round() as i32, bar.unit);
@@ -490,15 +498,20 @@ pub fn fit_tick_labels(bar_w: f32, ticks: &[(f32, f32)], min_gap: f32) -> Vec<bo
         .collect()
 }
 
-/// The cluster plate's width, left of the hotbar at `hotbar_x` (0 when there is no room).
-pub fn plate_width(hotbar_x: f32, l: &Layout) -> f32 {
-    (hotbar_x - HOTBAR_GAP - SAFE).min(l.max_width).max(0.0)
-}
-
-/// The plate's rectangle: its right edge `HOTBAR_GAP` left of the hotbar, its bottom on the hotbar's bottom.
-pub fn plate_rect(hb: Rect, height: f32, l: &Layout) -> Rect {
-    let w = plate_width(hb.x, l);
-    Rect::new(hb.x - HOTBAR_GAP - w, hb.y + hb.h - height, w, height)
+/// The status row above the hotbar: one column per bar, centred on the hotbar, and above the specialty bar when that
+/// bar has moved up over a narrow window. `line_h` is one caption line.
+pub fn row_bounds(v: Vec2, c: Vec2, hb: Rect, n: usize, bar_h: f32, line_h: f32) -> Rect {
+    let n = n.max(1);
+    let nf = n as f32;
+    let col_gap = 4.0;
+    let avail = (v.x - 2.0 * SAFE - col_gap * (nf - 1.0)).max(nf * 16.0);
+    let col_w = (avail / nf).min(78.0);
+    let total = col_w * nf + col_gap * (nf - 1.0);
+    let x = (hb.x + hb.w * 0.5 - total * 0.5).clamp(SAFE, (v.x - SAFE - total).max(SAFE));
+    let (_, sy, _, _, _) = super::hud::specialty_bar_layout(v, c, hb, crate::game::specialty::SLOT_COUNT);
+    let limit = if sy + 0.5 < hb.y { sy } else { hb.y };
+    let h = bar_h + line_h + 3.0;
+    Rect::new(x, (limit - 4.0 - h).max(0.0), total, h)
 }
 
 // -- what the game says ----------------------------------------------------------------------------------------
@@ -515,6 +528,7 @@ pub struct Snapshot {
     pub noise: f32,
     pub lamp: f32,
     pub stamina: f32,
+    pub fade: f32,
     pub flags: Flags,
 }
 
@@ -529,6 +543,7 @@ impl Snapshot {
             noise: g.meters.noise_meter,
             lamp: g.p.lamp / MAX_LAMP_CHARGE * 100.0,
             stamina: g.p.stamina / MAX_STAMINA * 100.0,
+            fade: g.p.crouch_t.clamp(0.0, 1.0) * 100.0,
             flags: Flags {
                 exhausted: g.p.exhausted,
                 stim: g.p.stim_boost > 0.0,
@@ -545,6 +560,7 @@ impl Snapshot {
             Source::Noise => self.noise,
             Source::Lamp => self.lamp,
             Source::Stamina => self.stamina,
+            Source::Fade => self.fade,
         }
     }
 }
@@ -560,6 +576,7 @@ fn col(c: Rgb) -> Color {
     Color::new(c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0)
 }
 
+#[allow(dead_code)] // the row draws no icons; the glyph shapes stay for the data
 fn mode_colour(m: Mode) -> Color {
     match m {
         Mode::Heat => rgba(1.0, 0.52, 0.2, 1.0),
@@ -567,6 +584,7 @@ fn mode_colour(m: Mode) -> Color {
     }
 }
 
+#[allow(dead_code)] // the row draws no icons; the glyph shapes stay for the data
 fn draw_glyph(g: Glyph, r: Rect, c: Color, fill_frac: f32, badge: Option<Color>) {
     let dim = alpha(c, 0.45);
     let mid = vec2(r.x + r.w * 0.5, r.y + r.h * 0.5);
@@ -605,6 +623,10 @@ fn draw_glyph(g: Glyph, r: Rect, c: Color, fill_frac: f32, badge: Option<Color>)
                 line(b, d, 1.0, c);
             }
         }
+        Glyph::Veil => {
+            fill(Rect::new(r.x + r.w * 0.12, r.y + r.h * 0.2, r.w * 0.76, r.h * 0.6), alpha(c, 0.35));
+            line(vec2(r.x + r.w * 0.2, mid.y), vec2(r.x + r.w * 0.8, mid.y), 1.0, c);
+        }
     }
     if let Some(b) = badge {
         circle(vec2(r.x + r.w - 0.6, r.y + 0.9), r.w * 0.2, rgba(0.0, 0.0, 0.0, 0.8));
@@ -613,148 +635,43 @@ fn draw_glyph(g: Glyph, r: Rect, c: Color, fill_frac: f32, badge: Option<Color>)
 }
 
 fn draw_bar(r: Rect, bar: &BarDef, res: &Resolved) {
-    let c = col(res.colour);
-    fill(r, hex(0x09060a));
-    // the zone strips: where each threshold sits, dim behind the fill
-    for (i, z) in bar.zones.iter().enumerate() {
-        let x0 = fill_fraction(z.from, bar.min, bar.max);
-        let x1 = bar.zones.get(i + 1).map_or(1.0, |n| fill_fraction(n.from, bar.min, bar.max));
-        if x1 > x0 {
-            fill(Rect::new(r.x + r.w * x0, r.y, r.w * (x1 - x0), r.h), alpha(col(z.colour), 0.26));
-        }
-    }
-    // a zone that starts at the very top of the bar (the temperature latch) is a lit cap on the right edge
-    if let Some(z) = bar.zones.last().filter(|z| z.from >= bar.max) {
-        fill(Rect::new(r.x + r.w - 1.5, r.y, 1.5, r.h), col(z.colour));
-    }
+    fill(r, rgba(0.04, 0.03, 0.05, 0.55));
     if res.fill > 0.0 {
-        fill(Rect::new(r.x, r.y, r.w * res.fill, r.h), c);
+        fill(Rect::new(r.x, r.y, r.w * res.fill, r.h), col(bar.fill_colour));
     }
-    for t in &bar.ticks {
-        let x = r.x + r.w * fill_fraction(t.at, bar.min, bar.max);
-        line(vec2(x, r.y - 1.0), vec2(x, r.y + r.h + 1.0), 1.0, rgba(1.0, 1.0, 1.0, 0.7));
-    }
-    border(r, 1.0, hexa(0xffffff57));
+    border(r, 1.0, rgba(0.78, 0.78, 0.74, 0.85));
 }
 
-/// Draws the cluster; returns how many bars it drew (0 when the data is broken or there is no room).
+/// Draws the row above the hotbar; returns how many bars it drew (0 when the data is broken).
 pub fn draw(g: &Game, a: &Assets, v: Vec2, hb: Rect) -> usize {
-    let _ = v;
     let Some(rules) = rules() else { return 0 };
-    let l = &rules.layout;
-    let width = plate_width(hb.x, l);
-    if width < 40.0 {
+    if rules.bars.is_empty() {
         return 0;
     }
-    let p = pal();
     let snap = Snapshot::of(g);
-    // text keeps at least 12 window pixels (the HUD rule), so a small window enlarges the text, not just the bars
-    let floor_units = (12.0 / unit()).ceil().min(9.0);
-    let size = l.text_size.max(floor_units);
-    let sub = l.sub_size.max(floor_units);
-    let icon = l.icon.max(size);
-    let inner = width - 2.0 * l.pad;
-
-    let wid = |t: &str| tw(a, F::Body, t, size);
-    let widest = |f: &dyn Fn(&BarDef) -> String| rules.bars.iter().map(|b| wid(&f(b))).fold(0.0_f32, f32::max);
-    let widths = Widths {
-        label: widest(&|b| b.label.clone()),
-        short: widest(&|b| b.short.clone()),
-        value_full: widest(&|b| widest_value_text(b, Tier::Full)),
-        value_compact: widest(&|b| widest_value_text(b, Tier::Compact)),
-    };
-    let tier = choose_tier(inner, l, icon, &widths);
-    let (label_w, value_w) = match tier {
-        Tier::Full => (widths.label, widths.value_full),
-        Tier::Compact => (widths.label, widths.value_compact),
-        Tier::Short => (widths.short, 0.0),
-        Tier::Icon => (0.0, 0.0),
-    };
-
-    // rows: the resolved bar, its height, and (full tier) the tick numbers and the temperature item's source line
-    struct Row<'b> {
-        bar: &'b BarDef,
-        res: Resolved<'b>,
-        h: f32,
-        numbers: bool,
-        source: Option<String>,
-    }
-    let line_h = lh(F::Body, size).max(icon);
-    let sub_h = lh(F::Body, sub);
-    let bar_x = |x0: f32| x0 + icon + l.gap + if label_w > 0.0 { label_w + l.gap } else { 0.0 };
-    let x0 = hb.x - HOTBAR_GAP - width + l.pad;
-    let bw = (x0 + inner - if value_w > 0.0 { value_w + l.gap } else { 0.0 }) - bar_x(x0);
-    let mut rows: Vec<Row> = Vec::new();
-    for bar in &rules.bars {
+    let c = (v * 0.5).round();
+    let size = rules.layout.text_size;
+    let line_h = lh(F::Body, size);
+    let band = row_bounds(v, c, hb, rules.bars.len(), rules.layout.bar_height, line_h);
+    let n = rules.bars.len() as f32;
+    let col_gap = 4.0;
+    let col_w = (band.w - col_gap * (n - 1.0)) / n;
+    let ink = rgba(0.78, 0.78, 0.74, 1.0);
+    for (i, bar) in rules.bars.iter().enumerate() {
         let res = resolve(bar, snap.value(bar.source), &snap.flags);
-        let mut h = line_h.max(l.bar_height + 6.0);
-        let mut numbers = false;
-        if tier == Tier::Full && bar.tick_numbers && !bar.ticks.is_empty() {
-            numbers = true;
-            h += sub_h;
+        let x = band.x + i as f32 * (col_w + col_gap);
+        let br = Rect::new(x, band.y, col_w, rules.layout.bar_height);
+        draw_bar(br, bar, &res);
+        let text = readout(&bar.label, res.value, &bar.unit, res.name);
+        let mut size = size;
+        let mut twid = tw(a, F::Body, &text, size);
+        while twid > col_w - 1.0 && size > 3.0 {
+            size -= 1.0;
+            twid = tw(a, F::Body, &text, size);
         }
-        let source = (tier == Tier::Full && bar.source == Source::Temperature)
-            .then(|| snap.item.map(|m| source_line(m, snap.target)))
-            .flatten();
-        if source.is_some() {
-            h += sub_h;
-        }
-        rows.push(Row { bar, res, h, numbers, source });
+        label(a, F::Body, &text, x + (col_w - twid).max(0.0) * 0.5, br.y + br.h + 1.0, size, ink);
     }
-    let total: f32 = rows.iter().map(|r| r.h).sum::<f32>() + 2.0 * l.pad;
-    let plate = plate_rect(hb, total, l);
-    super::hud::hud_box(plate);
-    let mut y = plate.y + l.pad;
-    for r in &rows {
-        let c = col(r.res.colour);
-        let main_h = line_h.max(l.bar_height + 6.0);
-        let badge = (r.bar.source == Source::Temperature).then(|| snap.item.map(mode_colour)).flatten();
-        draw_glyph(r.bar.glyph, Rect::new(x0, y + (main_h - icon) * 0.5, icon, icon), c, r.res.fill, badge);
-        let name = match tier {
-            Tier::Full | Tier::Compact => r.bar.label.as_str(),
-            Tier::Short => r.bar.short.as_str(),
-            Tier::Icon => "",
-        };
-        if !name.is_empty() {
-            let lc = if r.res.alert { c } else { p.body };
-            label_vc(a, F::Body, name, x0 + icon + l.gap, y, main_h, size, lc);
-        }
-        let br = Rect::new(bar_x(x0), y + (main_h - l.bar_height) * 0.5, bw, l.bar_height);
-        draw_bar(br, r.bar, &r.res);
-        // the temperature item's pull: a marker on the bar at the temperature the body is heading for
-        if r.bar.source == Source::Temperature {
-            if let Some(m) = snap.item {
-                let tx = br.x + br.w * fill_fraction(snap.target, r.bar.min, r.bar.max);
-                tri(vec2(tx, br.y - 0.5), vec2(tx - 2.0, br.y - 3.5), vec2(tx + 2.0, br.y - 3.5), mode_colour(m));
-            }
-        }
-        if value_w > 0.0 {
-            label_vc(a, F::Body, &value_text(r.bar, &r.res, tier), br.x + br.w + l.gap, y, main_h, size, c);
-        }
-        let mut sy = y + main_h;
-        if r.numbers {
-            let labels: Vec<(f32, f32)> = r
-                .bar
-                .ticks
-                .iter()
-                .map(|t| (fill_fraction(t.at, r.bar.min, r.bar.max), tw(a, F::Body, &t.label, sub)))
-                .collect();
-            let keep = fit_tick_labels(br.w, &labels, 1.0);
-            for ((t, (frac, w)), k) in r.bar.ticks.iter().zip(labels).zip(keep) {
-                if k {
-                    let lx = (br.x + frac * br.w - w * 0.5).clamp(br.x, br.x + (br.w - w).max(0.0));
-                    label(a, F::Body, &t.label, lx, sy - 1.0, sub, alpha(p.body, 0.85));
-                }
-            }
-            sy += sub_h;
-        }
-        if let Some(s) = &r.source {
-            let mc = snap.item.map_or(c, mode_colour);
-            label(a, F::Body, s, br.x, sy - 1.0, sub, mc);
-        }
-        y += r.h;
-    }
-    rows.len()
+    rules.bars.len()
 }
 
 #[cfg(test)]
@@ -774,10 +691,14 @@ mod tests {
     fn the_shipped_file_loads_with_the_five_bars_in_order() {
         let r = shipped();
         let ids: Vec<&str> = r.bars.iter().map(|b| b.id.as_str()).collect();
-        assert_eq!(ids, ["temperature", "exposure", "noise", "lamp", "stamina"]);
+        assert_eq!(ids, ["lamp", "stamina", "fade", "exposure", "noise", "temperature"]);
         let src: Vec<Source> = r.bars.iter().map(|b| b.source).collect();
-        assert_eq!(src, [Source::Temperature, Source::Exposure, Source::Noise, Source::Lamp, Source::Stamina]);
+        assert_eq!(src, [Source::Lamp, Source::Stamina, Source::Fade, Source::Exposure, Source::Noise, Source::Temperature]);
+        assert_eq!(bar(&r, "lamp").fill_colour, [0xf2, 0xbb, 0x62]);
+        assert_eq!(readout("BATTERY", 97.0, "%", "F"), "BATTERY 97% // F");
+        assert_eq!(readout("EXPOSURE", 56.4, "%", "LIT"), "EXPOSURE 56% // LIT");
         assert!(rules().is_some(), "the embedded loader accepts the shipped file");
+        assert_eq!((r.layout.max_width, r.layout.icon, r.layout.sub_size, r.layout.pad, r.layout.bar_height), (138.0, 6.0, 5.0, 2.0, 3.0));
     }
 
     #[test]
@@ -859,7 +780,7 @@ mod tests {
         let lamp = bar(&r, "lamp");
         assert_eq!(resolve(lamp, 0.0, &Flags::default()).name, "DEAD");
         assert_eq!(resolve(lamp, 10.0, &Flags::default()).name, "LOW");
-        assert_eq!(resolve(lamp, 60.0, &Flags::default()).name, "OK");
+        assert_eq!(resolve(lamp, 60.0, &Flags::default()).name, "F");
         assert_eq!(resolve(lamp, 60.0, &Flags { safe_zone: true, ..Flags::default() }).name, "CHARGE");
     }
 
@@ -868,7 +789,7 @@ mod tests {
         let r = shipped();
         let e = bar(&r, "exposure");
         assert_eq!(resolve(e, 5.0, &Flags::default()).name, "LOW");
-        assert_eq!(resolve(e, 40.0, &Flags::default()).name, "SEEN");
+        assert_eq!(resolve(e, 40.0, &Flags::default()).name, "LIT");
         let hi = resolve(e, 75.0, &Flags::default());
         assert_eq!((hi.name, hi.alert), ("EXPOSED", true));
         let n = bar(&r, "noise");
@@ -928,21 +849,23 @@ mod tests {
     #[test]
     fn the_cluster_never_meets_the_hotbar_or_the_specialty_bar() {
         let l = shipped().layout;
-        // a 5-row stack with both temperature sub-lines at a generous height
-        let height = 5.0 * 16.0 + 2.0 * 8.0 + 2.0 * l.pad;
-        for (vx, vy) in [(480.0, 270.0), (480.0, 360.0), (640.0, 270.0), (570.0, 270.0), (1000.0, 270.0), (480.0, 700.0)] {
+        let n = shipped().bars.len();
+        for (vx, vy) in [(390.0, 270.0), (480.0, 270.0), (480.0, 360.0), (640.0, 270.0), (844.0, 390.0), (1000.0, 270.0)] {
             let v = vec2(vx, vy);
             let c = (v * 0.5).round();
             let hb = Rect::new(c.x - 94.0, v.y - 42.0, 188.0, 34.0);
-            let plate = plate_rect(hb, height, &l);
-            assert!(plate.w > 0.0 && plate.w <= l.max_width, "{vx}x{vy}: width {}", plate.w);
-            assert!(plate.x >= SAFE - 1e-3, "{vx}x{vy}: keeps the screen margin");
-            assert!(plate.x + plate.w <= hb.x - HOTBAR_GAP + 1e-3, "{vx}x{vy}: clear of the hotbar");
-            assert!(plate.y >= 0.0, "{vx}x{vy}: on screen");
+            let row = row_bounds(v, c, hb, n, l.bar_height, 8.0);
+            assert!(row.x >= SAFE - 1e-3, "{vx}x{vy}: keeps the screen margin");
+            assert!(row.x + row.w <= v.x - SAFE + 1e-3, "{vx}x{vy}: stays on screen");
+            assert!(row.y >= 0.0, "{vx}x{vy}: on screen");
+            assert!(row.y + row.h <= hb.y + 1e-3, "{vx}x{vy}: sits above the hotbar");
             let (sx, sy, sw, sh, sg) = super::super::hud::specialty_bar_layout(v, c, hb, crate::game::specialty::SLOT_COUNT);
             let spec = Rect::new(sx, sy, sw * 4.0 + sg * 3.0, sh);
-            assert!(!plate.overlaps(&spec), "{vx}x{vy}: clear of the specialty bar");
-            assert!(!plate.overlaps(&hb), "{vx}x{vy}: clear of the hotbar");
+            if sy + 0.5 < hb.y {
+                assert!(row.y + row.h <= sy + 1e-3, "{vx}x{vy}: sits above the specialty bar");
+            }
+            assert!(!row.overlaps(&spec), "{vx}x{vy}: clear of the specialty bar");
+            assert!(!row.overlaps(&hb), "{vx}x{vy}: clear of the hotbar");
         }
     }
 
@@ -964,10 +887,30 @@ mod tests {
         assert!(with(|v| v["bars"][0]["glyph"] = "skull".into()).unwrap_err().contains("glyph"));
         assert!(with(|v| v["bars"][0]["zones"][0]["colour"] = "red".into()).unwrap_err().contains("#rrggbb"));
         assert!(with(|v| v["bars"][0]["zones"][0]["from"] = 3.0.into()).unwrap_err().contains("min"));
-        assert!(with(|v| v["bars"][0]["zones"][2]["from"] = 5.0.into()).unwrap_err().contains("above the zone before"));
-        assert!(with(|v| v["bars"][0]["zones"][5]["from"] = 150.0.into()).unwrap_err().contains("past"));
-        assert!(with(|v| v["bars"][0]["ticks"][0]["at"] = 0.0.into()).unwrap_err().contains("inside the bar"));
-        assert!(with(|v| v["bars"][0]["ticks"][1]["at"] = 5.0.into()).unwrap_err().contains("above the tick before"));
+        assert!(with(|v| {
+            let i = v["bars"].as_array().unwrap().iter().position(|b| b["id"] == "temperature").unwrap();
+            v["bars"][i]["zones"][2]["from"] = 5.0.into();
+        })
+        .unwrap_err()
+        .contains("above the zone before"));
+        assert!(with(|v| {
+            let i = v["bars"].as_array().unwrap().iter().position(|b| b["id"] == "temperature").unwrap();
+            v["bars"][i]["zones"][5]["from"] = 150.0.into();
+        })
+        .unwrap_err()
+        .contains("past"));
+        assert!(with(|v| {
+            let i = v["bars"].as_array().unwrap().iter().position(|b| b["id"] == "temperature").unwrap();
+            v["bars"][i]["ticks"][0]["at"] = 0.0.into();
+        })
+        .unwrap_err()
+        .contains("inside the bar"));
+        assert!(with(|v| {
+            let i = v["bars"].as_array().unwrap().iter().position(|b| b["id"] == "temperature").unwrap();
+            v["bars"][i]["ticks"][1]["at"] = 5.0.into();
+        })
+        .unwrap_err()
+        .contains("above the tick before"));
         assert!(with(|v| v["bars"][0]["overrides"][0]["when"] = "sometimes".into()).unwrap_err().contains("when"));
         assert!(with(|v| v["bars"][0]["label"] = "WAY TOO LONG".into()).unwrap_err().contains("label"));
         assert!(with(|v| v["bars"][0]["short"] = "".into()).unwrap_err().contains("short"));
