@@ -1,0 +1,6 @@
+# fetched from the website at build time, never committed
+web-bundle/
+# build output
+dist/
+# the logo PNGs copied here by remote-build.sh for the icon
+icon/

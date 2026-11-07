@@ -72,6 +72,10 @@ Text fields (the JOIN ROOM code, the ACCOUNT username and password, the admin FI
 plugin in `index.html` (`ui/clipboard.rs`) because miniquad's own page script keeps a stale paste and answers copy events a frame late.
 `keys.js` also forwards the Cmd key (`MetaLeft`/`MetaRight`, which the stock bundle does not know) so Cmd+V reaches the game on a Mac.
 
+`packaging/macos/webapp/` is a native macOS app that runs this web build in a `WKWebView` and keeps its files current from the site by itself
+(update, offline copy, rollback); a deploy needs nothing extra for it. It reads `version.json` and the seven files named in `deploy-vps2.sh`, and the page's
+`window.LR_API_BASE` hook. See [MACOS_WEB_APP.md](MACOS_WEB_APP.md).
+
 ## Offline project docs
 
 The app recognizes the local reference library at `C:\Users\Kyttu\Documents\Projects\Docs` when
