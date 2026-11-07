@@ -72,3 +72,8 @@ a run (it forces the admin gate on for the screenshot only); add `LR_SHOT_SIZE=W
 - **ADMIN ACTIVE badge removed.** The top-centre "ADMIN ACTIVE // SOLO // DEBUG RUN" banner is no longer drawn, in or out of the menu. The STATUS tab no longer shows "ROUTE DEBUG" or "DEBUG RUN // NOT RECORDED"; it still shows the offline line and the MAP REVEAL state.
 - **MAP REVEAL undo.** Switching MAP REVEAL off now restores the map as it was before it was switched on: the discovered cells and level 0's seen bitmaps (`Game::map_reveal_snapshot` / `map_reveal_restore`). Before, the reveal's cells stayed discovered after the toggle was turned off. Discoveries made while the reveal was on are discarded on switch-off. RESET ALL and a new run also drop the saved snapshot.
 - **Debug marking is unchanged.** A run is still marked as a debug run internally (roster and read-only rows opt out), so the report and records still show it; it is just no longer displayed.
+
+## STATUS and UPDATES (2026-11-07)
+
+- **BUILD and SERVER lines:** the STATUS tab shows the running build (CI number and commit, or LOCAL) and the server the game talks to. The old "SERVER OFFLINE (SOLO, NO SERVER)" line is gone.
+- **UPDATES:** the MACOS, WINDOWS and LINUX lines come from the public nightly release on GitHub (`last_route-macos-x86_64.zip`, `last_route-macos-arm64.zip`, `last_route-windows-x86_64.exe`, `last-route-linux-x86_64.tar.gz`), with the time CI last published each file. They no longer ask the old update server, which was stuck on old builds. PHONE and QUEST show NONE PUBLISHED, since there is no nightly file for them.

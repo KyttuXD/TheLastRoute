@@ -102,7 +102,10 @@ impl HubPanel {
         }
         self.requests.clear();
         let mut targets = vec![(Target::Health, "/api/health".to_string())];
-        targets.extend(PLATFORMS.iter().enumerate().map(|(i, p)| (Target::Update(i), format!("/api/updates/{CHANNEL}/{p}"))));
+        for (i, p) in PLATFORMS.iter().enumerate() {
+            let files = nightly_files(p);
+            self.requests.push((Target::Update(i), Pending::spawn(move || Ok(fetch_nightly(files)))));
+        }
         targets.push((Target::Public, "/api/public/status".to_string()));
         for (target, path) in targets {
             let config = self.config.clone();
@@ -182,6 +185,48 @@ fn fetch(config: &BackendConfig, path: &str) -> Probe {
     Probe::from_result(sent.and_then(api::check))
 }
 
+/// The files of the public nightly release (GitHub, replaced by CI on every push to main) that each UPDATES line shows.
+fn nightly_files(platform: &str) -> Vec<(&'static str, &'static str)> {
+    match platform {
+        "macos" => vec![("INTEL", "last_route-macos-x86_64.zip"), ("ARM", "last_route-macos-arm64.zip")],
+        "windows" => vec![("EXE", "last_route-windows-x86_64.exe")],
+        "linux" => vec![("TAR", "last-route-linux-x86_64.tar.gz")],
+        _ => Vec::new(),
+    }
+}
+
+/// One platform's UPDATES state from the nightly release on GitHub: each file with the time CI last published it.
+/// A platform with no file in the release answers an empty body, which the line shows as NONE PUBLISHED.
+fn fetch_nightly(files: Vec<(&'static str, &'static str)>) -> Probe {
+    if files.is_empty() {
+        return Probe::Answered { status: 200, body: Json::new() };
+    }
+    let sent = Request::new(Method::Get, "https://api.github.com/repos/KyttuXD/TheLastRoute/releases/tags/nightly")
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "last-route-admin")
+        .timeout(FETCH_TIMEOUT)
+        .send();
+    let body = match sent.and_then(api::check) {
+        Ok(body) => body,
+        Err(e) => return Probe::from_result(Err(e)),
+    };
+    let assets = body.get("assets").and_then(|a| a.as_array()).cloned().unwrap_or_default();
+    let parts: Vec<String> = files
+        .iter()
+        .filter_map(|(label, name)| {
+            let asset = assets.iter().find(|a| a.get("name").and_then(|n| n.as_str()) == Some(*name))?;
+            let when = asset.get("updated_at").and_then(|t| t.as_str()).unwrap_or("").replace('T', " ");
+            let when: String = when.chars().take(16).collect();
+            Some(format!("{label} {when} UTC"))
+        })
+        .collect();
+    let mut out = Json::new();
+    if !parts.is_empty() {
+        out.insert("nightly".into(), Value::String(parts.join(" / ")));
+    }
+    Probe::Answered { status: 200, body: out }
+}
+
 /// The update channel line; the server address is never shown.
 fn debug_line() -> String {
     format!("CHANNEL {}", CHANNEL.to_uppercase())
@@ -223,6 +268,7 @@ fn update_line(platform: &str, probe: &Probe) -> String {
         Probe::Checking => "CHECKING...".to_string(),
         Probe::Unreachable => "NO ANSWER".to_string(),
         Probe::Answered { status, .. } if *status >= 500 => http_trouble(*status),
+        Probe::Answered { body, .. } if body.contains_key("nightly") => body["nightly"].as_str().unwrap_or("").to_string(),
         Probe::Answered { body, .. } => match body.get("update") {
             Some(Value::Object(update)) if !update.is_empty() => {
                 let build = update.get("build").and_then(|b| b.as_f64()).unwrap_or(0.0) as i64;
