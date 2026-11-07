@@ -1,7 +1,14 @@
 {
   "schema": "lr.public_route/1",
-  "_about": "The PUBLIC ROUTE title button joins the always-open room under this code, or opens it when no runner holds it yet (Godot room_state.gd PUBLIC_CODE, public_route.gd). The code is five letters like any room code. heartbeat_seconds is the directory heartbeat of the public room: the directory forgets a public entry 15 s after its last beat, so it is capped at 10 s (a heartbeat request times out after 4 s; private rooms keep 20 s). The code is matched exactly, like the server does.",
+  "_about": "The PUBLIC ROUTE title button joins the always-open room under this code (Godot room_state.gd PUBLIC_CODE, public_route.gd). The public route has no player host: a server process (last_route --dedicated-host PUBLC) holds it and every runner joins as a guest. Until that process is up, client_host_fallback lets the first runner open the room as a stand-in, and when that runner leaves the others hand the room over (the lowest session id opens it, handover_step_seconds apart per place in line; a runner tries for handover_grace_seconds, and waits handover_dedicated_seconds for a server process that left before a stand-in may open). Set client_host_fallback to false once the server process holds the route: no client then ever opens the room. difficulty is the one difficulty of the public route; nobody chooses it. The code is five letters like any room code. heartbeat_seconds is the directory heartbeat of the public room: the directory forgets a public entry 15 s after its last beat, so it is capped at 10 s (a heartbeat request times out after 4 s; private rooms keep 20 s). The code is matched exactly, like the server does.",
   "code": "PUBLC",
   "start_when_hosting": true,
-  "heartbeat_seconds": 5
+  "heartbeat_seconds": 5,
+  "difficulty": "STANDARD",
+  "client_host_fallback": true,
+  "handover_step_seconds": 1.5,
+  "handover_grace_seconds": 30,
+  "handover_dedicated_seconds": 45,
+  "handover_retry_seconds": 1,
+  "handover_settle_seconds": 6
 }

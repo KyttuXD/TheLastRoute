@@ -703,6 +703,9 @@ pub struct NetSession {
     room_owner: String,
     /// Guest: the session id of each name in `players`, from the host's last room message (0 when the host sent none).
     player_peers: Vec<u32>,
+    /// Guest: whether the host is a server process (its last room message said so), not a runner. A room whose host
+    /// was a server process is not handed to a runner the moment it goes (net/public_route.rs `Reform`).
+    host_dedicated: bool,
 }
 
 /// CREATE a room on the directory and open its relay as the host. The request blocks, so the frame loop polls the result.
@@ -784,42 +787,112 @@ pub fn join_room(cfg: BackendConfig, code: String, name: String, skin: String, s
 }
 
 /// PUBLIC ROUTE: looks up the public code (`data/net/public_route.json`). A runner holding it is joined as a guest; a
-/// miss opens the room and holds the route as its host. A code someone registered between the lookup and the open joins
-/// that room instead. Blocking, so polled like [`host_room`].
+/// miss opens the room and holds the route as its stand-in host (the route has no player host once a server process
+/// holds it: `client_host_fallback` in the data turns the stand-in off). A code someone registered between the lookup and
+/// the open joins that room instead. Blocking, so polled like [`host_room`].
 pub fn join_public_room(cfg: BackendConfig, name: String, skin: String) -> Pending<NetSession> {
     Pending::spawn(move || {
         if cfg.offline {
             return Err(NetError::Offline);
         }
-        let code = super::public_route::rules().code.clone();
-        match super::public_route::step(api::lookup_room(&cfg, &code))? {
-            super::public_route::Step::Join(room) => join_found(cfg, code, room, name, skin, ""),
-            super::public_route::Step::Host => {
-                let request = RegisterRoom {
-                    code: code.clone(),
-                    device_id: store::device_id(&store::default_dir()),
-                    ..RegisterRoom::default()
-                };
-                match api::register_room(&cfg, &request) {
-                    Ok(reg) => {
-                        let mut session = open_host(cfg.clone(), code.clone(), crate::world::route::new_room_text(), name.clone(), skin.clone(), reg)?;
-                        // somebody opened the public room in the same moment: the relay says so, and this runner joins
-                        match probe_public_host(session.coop.link.as_mut(), PUBLIC_HOST_PROBE) {
-                            HostProbe::Hosting => Ok(session),
-                            HostProbe::HasHost => {
-                                session.coop.link.close();
-                                join_found(cfg.clone(), code.clone(), api::lookup_room(&cfg, &code)?, name, skin, "")
-                            }
-                        }
-                    }
-                    Err(first) => match api::lookup_room(&cfg, &code) {
-                        Ok(room) => join_found(cfg, code, room, name, skin, ""),
-                        Err(_) => Err(first),
-                    },
-                }
-            }
+        let ops = DirectoryOps { cfg, name, skin };
+        match enter_public(&ops, super::public_route::rules().client_host_fallback)? {
+            Entry::Hosting(session) | Entry::Joined(session) => Ok(session),
+            // the stand-in is off and no server process holds the route
+            Entry::NoRoom => Err(NetError::Refused(crate::content::public_roster::PublicRoster::load().messages.unavailable)),
         }
     })
+}
+
+/// What the public join does to the directory and the relay, so the join and the handover share one path and a test can
+/// stand a hub behind it.
+pub(crate) trait PublicOps: Send + Sync {
+    /// The directory entry of the public code (404: nobody holds the route).
+    fn lookup(&self) -> Result<api::RoomEndpoint, NetError>;
+    /// Registers the code and opens it as the host. [`HostOutcome::HasHost`] when somebody opened it in the same moment.
+    fn open(&self) -> Result<HostOutcome, NetError>;
+    /// Joins the room the directory returned as a guest.
+    fn join(&self, room: api::RoomEndpoint) -> Result<NetSession, NetError>;
+}
+
+pub(crate) enum HostOutcome {
+    Hosting(NetSession),
+    HasHost,
+    /// The code was registered but the relay link could not be opened: the error is the answer (nothing to join).
+    Failed(NetError),
+}
+
+/// How a try to enter the public route ended.
+pub(crate) enum Entry {
+    /// Nobody held the route: this runner opened it.
+    Hosting(NetSession),
+    /// Somebody holds the route (a server process or a runner): this runner is its guest.
+    Joined(NetSession),
+    /// Nobody holds the route and this try may not open it.
+    NoRoom,
+}
+
+/// One try to enter the public route: join the room that is there; when there is none, open it if `may_host`. Two runners
+/// that try at the same moment cannot both host: only one registration of the code succeeds, and the other joins it.
+pub(crate) fn enter_public(ops: &dyn PublicOps, may_host: bool) -> Result<Entry, NetError> {
+    match super::public_route::step(ops.lookup())? {
+        super::public_route::Step::Join(room) => Ok(Entry::Joined(ops.join(room)?)),
+        super::public_route::Step::Host if !may_host => Ok(Entry::NoRoom),
+        super::public_route::Step::Host => match ops.open() {
+            Ok(HostOutcome::Hosting(session)) => Ok(Entry::Hosting(session)),
+            Ok(HostOutcome::HasHost) => Ok(Entry::Joined(ops.join(ops.lookup()?)?)),
+            Ok(HostOutcome::Failed(e)) => Err(e),
+            Err(first) => match ops.lookup() {
+                Ok(room) => Ok(Entry::Joined(ops.join(room)?)),
+                Err(_) => Err(first),
+            },
+        },
+    }
+}
+
+/// The public join over the real directory and relay.
+pub(crate) struct DirectoryOps {
+    cfg: BackendConfig,
+    name: String,
+    skin: String,
+}
+
+impl DirectoryOps {
+    pub(crate) fn new(cfg: BackendConfig, name: String, skin: String) -> DirectoryOps {
+        DirectoryOps { cfg, name, skin }
+    }
+}
+
+impl PublicOps for DirectoryOps {
+    fn lookup(&self) -> Result<api::RoomEndpoint, NetError> {
+        api::lookup_room(&self.cfg, &super::public_route::rules().code)
+    }
+
+    fn open(&self) -> Result<HostOutcome, NetError> {
+        let code = super::public_route::rules().code.clone();
+        let request = RegisterRoom {
+            code: code.clone(),
+            device_id: store::device_id(&store::default_dir()),
+            ..RegisterRoom::default()
+        };
+        let reg = api::register_room(&self.cfg, &request)?;
+        let mut session = match open_host(self.cfg.clone(), code, crate::world::route::new_room_text(), self.name.clone(), self.skin.clone(), reg) {
+            Ok(session) => session,
+            Err(e) => return Ok(HostOutcome::Failed(e)),
+        };
+        // somebody opened the public room in the same moment: the relay says so, and this runner joins
+        match probe_public_host(session.coop.link.as_mut(), PUBLIC_HOST_PROBE) {
+            HostProbe::Hosting => Ok(HostOutcome::Hosting(session)),
+            HostProbe::HasHost => {
+                session.coop.link.close();
+                Ok(HostOutcome::HasHost)
+            }
+        }
+    }
+
+    fn join(&self, room: api::RoomEndpoint) -> Result<NetSession, NetError> {
+        join_found(self.cfg.clone(), super::public_route::rules().code.clone(), room, self.name.clone(), self.skin.clone(), "")
+    }
 }
 
 /// How long a runner that just opened the public room waits for the relay to say it already has a host.
@@ -994,6 +1067,7 @@ impl NetSession {
             snapshot: None,
             room_owner: String::new(),
             player_peers: Vec::new(),
+            host_dedicated: false,
         }
     }
 
@@ -1015,6 +1089,27 @@ impl NetSession {
 
     pub fn is_host(&self) -> bool {
         self.role == Role::Host
+    }
+
+    /// Whether this is the public route's room. It has no owner and no host-only controls whoever holds it: a runner
+    /// that holds the room as a stand-in for the server process (net/public_route.rs) runs it like any runner.
+    pub fn is_public_route(&self) -> bool {
+        super::public_route::is_public(&self.code)
+    }
+
+    /// Whether the controls of a room's host or owner (KICK, END ROUTE, RESTART, a difficulty choice, the HOST tag in the
+    /// PLAYERS list) exist for this runner: never on the public route, and for the host of any other room only.
+    pub fn host_controls(&self) -> bool {
+        self.is_host() && !self.is_public_route()
+    }
+
+    /// Guest: where this runner stands in the line to open the public room again when its host is gone, from the host's
+    /// last room message (net/public_route.rs `plan`). A host session lost a race for the room, so it only joins.
+    pub fn reform_plan(&self) -> super::public_route::Plan {
+        if self.is_host() {
+            return super::public_route::Plan::join_only();
+        }
+        super::public_route::plan(self.coop.link.session(), &self.player_peers, self.host_dedicated)
     }
 
     /// Host: how many runners the host itself counts for in the room: one, or none in a dedicated room.
@@ -1046,7 +1141,8 @@ impl NetSession {
     /// ROOM), the guest is dropped from the roster at once, and the others get the new roster. False when no such guest is
     /// in the room.
     pub fn kick_guest(&mut self, peer: u32) -> bool {
-        if !self.is_host() || !self.guests.contains_key(&peer) {
+        // nobody removes a runner from the public route: it has no owner
+        if !self.host_controls() || !self.guests.contains_key(&peer) {
             return false;
         }
         self.coop.kick(peer);
@@ -1242,7 +1338,8 @@ impl NetSession {
                 peer,
                 name,
                 skin: self.skins.get(&peer).cloned().unwrap_or_else(|| SKIN_DEFAULT.into()),
-                host: peer == HOST_PEER_ID,
+                // no HOST tag on the public route: whoever runs the room, it has no player host
+                host: peer == HOST_PEER_ID && !self.is_public_route(),
                 depth,
                 sending: depth.is_some(),
                 ping: self.coop.ping_ms(peer),
@@ -1255,7 +1352,9 @@ impl NetSession {
             return peers.into_iter().map(|(peer, guest)| entry(*peer, guest.name.clone())).collect();
         }
         let mut out = Vec::new();
-        if !self.host_name.is_empty() || fresh(HOST_PEER_ID).is_some() {
+        // a server process that holds a room is not a runner: it has no row on the public route
+        let hosted_by_server = self.host_dedicated && self.is_public_route();
+        if !hosted_by_server && (!self.host_name.is_empty() || fresh(HOST_PEER_ID).is_some()) {
             out.push(entry(HOST_PEER_ID, self.host_name.clone()));
         }
         let mut others: Vec<(&u32, &String)> = self
@@ -1302,6 +1401,10 @@ impl NetSession {
         named.sort_by_key(|(peer, _)| **peer);
         rest.insert("peers".into(), Value::Array(named.into_iter().map(|(peer, _)| json!(peer)).collect()));
         rest.insert("difficulty".into(), Value::String(self.difficulty.clone()));
+        // a server process holds this room: its guests do not hand it to a runner the moment it goes (public_route::Reform)
+        if self.dedicated {
+            rest.insert("dedicated".into(), Value::Bool(true));
+        }
         let room = Message::Room { code: self.code.clone(), seed: self.room_seed.clone(), mode: 0, scale: 0, rest };
         let packs = packs_message(&self.mods);
         for peer in self.coop.peers() {
@@ -1745,11 +1848,15 @@ impl NetSession {
 
     fn start_relist(&mut self) {
         let cfg = self.cfg.clone();
-        let request = RegisterRoom {
+        let mut request = RegisterRoom {
             code: self.code.clone(),
             device_id: store::device_id(&store::default_dir()),
             ..RegisterRoom::default()
         };
+        // a server-side room is always a WebSocket room (headless/dedicated.rs)
+        if self.dedicated {
+            request.transport = "ws".into();
+        }
         self.relist = Some(Pending::spawn(move || api::register_room(&cfg, &request)));
     }
 
@@ -1828,6 +1935,10 @@ impl NetSession {
                 }
             }
             // an owner command from a registered guest: the app (the room process) checks the ticket and acts
+            // the public route has no owner: whoever asks is told so, and nothing reaches the app or the directory
+            Message::OwnerCommand { .. } if self.is_host() && self.is_public_route() => {
+                self.coop.send(from, &Message::OwnerRefused { reason: super::public_route::NO_OWNER_TEXT.to_string() });
+            }
             Message::OwnerCommand { ticket, action, args } if self.is_host() => {
                 let registered = self.guests.get(&from).is_some_and(|g| !g.name.is_empty());
                 if registered && ticket.len() <= super::hosted::TICKET_LEN && action.len() <= super::hosted::MAX_ACTION_LEN {
@@ -1883,6 +1994,7 @@ impl NetSession {
                 if let Some(d) = rest.get("difficulty").and_then(Value::as_str) {
                     self.difficulty = difficulty_from_name(d).name().to_string();
                 }
+                self.host_dedicated = rest.get("dedicated").and_then(Value::as_bool).unwrap_or(false);
                 out.push(NetEvent::Seed(seed));
             }
             Message::Packs { packs } if !self.is_host() => {
@@ -3527,3 +3639,8 @@ mod height_tests {
         s.coop.close();
     }
 }
+
+/// The public route over an in-process WebSocket hub: who holds the room, what a guest may do, and the handover when the
+/// holder leaves (net/public_reform.rs).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod public_tests;

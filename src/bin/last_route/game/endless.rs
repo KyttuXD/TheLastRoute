@@ -1469,6 +1469,78 @@ impl Game {
         }
     }
 
+    /// The public route's handover (net/public_reform.rs): this game stops showing the old host's hunters and runs them.
+    /// The hunters the old host's frames made here (`shadow`, display only) are taken out of the list, the host's own
+    /// lineup is topped up (`ensure_hunters`: on level 0 the residency pass admits the layout's spawns, and a shadow has no
+    /// identity in it, so leaving the shadows in would double each one), and every shadow's state is put on the lineup hunter
+    /// of its kind that the top-up made: place, facing, state, awake or not, stun, slow, disguise, level and height. A hunter
+    /// of a kind the top-up did not make (the lineup already had it, or this runner's relay count admits fewer than the old
+    /// host's did) stays as it was shown, as an ordinary hunter. What the old host's brain knew beyond what a frame carries
+    /// (its path, its search memory, its timers) is not known here: a hunter starts from a clean brain at the place it was
+    /// last seen.
+    pub fn become_host(&mut self, content: &Content) {
+        if !self.remote_hunters {
+            return;
+        }
+        // the residency ids run parallel to the hunter list: they leave with the shadows
+        let old = std::mem::take(&mut self.hunters);
+        let mut ids = self.inf.as_mut().map(|i| std::mem::take(&mut i.loaded)).unwrap_or_default();
+        ids.resize(old.len(), String::new());
+        let (mut shadows, mut kept, mut kept_ids) = (Vec::new(), Vec::new(), Vec::new());
+        for (h, id) in old.into_iter().zip(ids) {
+            if h.shadow {
+                shadows.push(h);
+            } else {
+                kept.push(h);
+                kept_ids.push(id);
+            }
+        }
+        self.hunters = kept;
+        if let Some(inf) = self.inf.as_mut() {
+            inf.loaded = kept_ids;
+        }
+        // the other levels' hunters become ordinary residents: they are simulated beside the active level's
+        for l in self.resident_hunters.levels() {
+            for slot in self.resident_hunters.list_mut(l).iter_mut() {
+                slot.brain.shadow = false;
+                slot.brain.display_only = false;
+            }
+        }
+        self.remote_hunters = false;
+        // the top-up appends what it makes after the hunters already in the list
+        let first_new = self.hunters.len();
+        self.ensure_hunters(content);
+        let mut taken: Vec<usize> = Vec::new();
+        let mut extras: Vec<Brain> = Vec::new();
+        for mut shown in shadows {
+            shown.shadow = false;
+            shown.display_only = false;
+            let slot = (first_new..self.hunters.len()).find(|i| !taken.contains(i) && self.hunters[*i].def.id == shown.def.id);
+            match slot {
+                Some(i) => {
+                    taken.push(i);
+                    let h = &mut self.hunters[i];
+                    h.pos = shown.pos;
+                    h.facing = shown.facing;
+                    h.state = shown.state;
+                    h.active = shown.active;
+                    h.stun = shown.stun;
+                    h.slow_factor = shown.slow_factor;
+                    h.disguise = shown.disguise.clone();
+                    h.level = shown.level;
+                    h.y = shown.y;
+                    h.clear_path();
+                }
+                None => extras.push(shown),
+            }
+        }
+        self.hunters.extend(extras);
+        if let Some(inf) = self.inf.as_mut() {
+            inf.loaded.resize(self.hunters.len(), String::new());
+        }
+        self.reset_director();
+    }
+
     /// Level 0: the window's hunter residency (Godot `_refresh_hunter_stream_work`, see residency.rs). The hunters that exist
     /// are the stored ones, and the loaded ones at their absolute cells. Admission takes the layout spawns of the active
     /// chunks up to the population. A wanted hunter that stands in the runner's 3x3 window is loaded and the rest stay

@@ -71,7 +71,7 @@ use crate::game::Game;
 use crate::net::api::{self, RegisterRoom};
 use crate::net::config::BackendConfig;
 use crate::net::hosted::{self, OwnerAction};
-use crate::net::Pending;
+use crate::net::{NetError, Pending};
 use crate::net::room_link::RoomLink;
 use crate::net::world_sync::{GuestPose, NetEvent, NetSession};
 use crate::net::ws_native::NativeWsLink;
@@ -116,6 +116,9 @@ pub struct Options {
     pub name: String,
     /// Whether the directory is told how the room is (heartbeat).
     pub heartbeat: bool,
+    /// The room is the public route (the code is `net::public_route::rules().code`): no owner, no kick, no route command,
+    /// never closed for being empty, and the process registers the room itself and takes it again whenever it is lost.
+    pub public: bool,
 }
 
 fn difficulty_arg(text: &str) -> Option<Difficulty> {
@@ -135,7 +138,9 @@ pub fn parse_options(a: &Args, env: &dyn Fn(&str) -> Option<String>, cfg: &Backe
             Some(v) => v.trim().parse::<f64>().ok().filter(|n| n.is_finite() && *n >= 0.0).map(|n| n.max(min)).ok_or_else(|| format!("--{name} needs a number, not \"{v}\"")),
         }
     };
+    let public = code == crate::net::public_route::rules().code;
     let difficulty = match a.value("difficulty") {
+        None if public => crate::net::public_route::rules().difficulty,
         None => Difficulty::Standard,
         Some(v) => difficulty_arg(&v).ok_or_else(|| format!("--difficulty needs relaxed, standard, hard, nightmare or 0 to 3, not \"{v}\""))?,
     };
@@ -158,6 +163,7 @@ pub fn parse_options(a: &Args, env: &dyn Fn(&str) -> Option<String>, cfg: &Backe
         reconnect_seconds: number("reconnect-seconds", DEFAULT_RECONNECT_SECONDS, 0.0)?,
         name: if name.is_empty() { DEFAULT_NAME.into() } else { name },
         heartbeat: !a.flag("no-heartbeat"),
+        public,
     })
 }
 
@@ -192,6 +198,8 @@ pub struct Room {
     cfg: BackendConfig,
     token: String,
     idle_limit: Duration,
+    /// The public route: no owner commands, never idle-closed (see [`Options::public`]).
+    public: bool,
     anchor: Option<u32>,
     /// Seconds of real time with no guest in the room.
     empty_for: Duration,
@@ -229,6 +237,7 @@ impl Room {
             cfg,
             token,
             idle_limit: Duration::from_secs_f64(opts.idle_minutes * 60.0),
+            public: opts.public,
             anchor: None,
             empty_for: Duration::ZERO,
             captures: Vec::new(),
@@ -295,7 +304,8 @@ impl Room {
         let poses = self.net.guest_poses();
         if poses.is_empty() && !self.busy() {
             self.empty_for += dt;
-            if self.empty_for >= self.idle_limit {
+            // the public route is always on: an empty room is the normal state of it
+            if self.empty_for >= self.idle_limit && !self.public {
                 return Status::IdleTimeout;
             }
         } else {
@@ -319,6 +329,12 @@ impl Room {
 
     /// A guest's owner command: parsed here, then its ticket is sent to the directory to check. Nothing is acted on yet.
     fn check_owner(&mut self, peer: u32, ticket: String, action: String, args: Map<String, Value>) {
+        // the public route has no owner: nothing is asked of the directory and nothing is acted on (the session refuses
+        // these before they get here; this keeps the room safe if a path ever lets one through)
+        if self.public {
+            self.net.send_owner_refused(peer, crate::net::public_route::NO_OWNER_TEXT);
+            return;
+        }
         let Some(parsed) = OwnerAction::parse(&action, &args) else {
             self.notes.push(format!("owner command {action} from {peer} is not one of ours"));
             self.net.send_owner_refused(peer, &hosted::refusal_text(""));
@@ -359,6 +375,9 @@ impl Room {
 
     /// Carries out a command the directory has confirmed for guest `from`.
     fn apply_owner(&mut self, from: u32, action: OwnerAction) {
+        if self.public {
+            return;
+        }
         self.notes.push(format!("owner command {} from {from}", action.wire_name()));
         match action {
             OwnerAction::Start => {
@@ -496,6 +515,29 @@ fn target_of(p: &GuestPose) -> RemoteTarget {
     RemoteTarget::new(p.peer, (p.x, p.y), p.h, p.level, p.yaw, p.moving, p.sprinting, p.crouching, p.hidden, p.huntable)
 }
 
+/// How long the public room waits between two tries to take the room (a runner holds it, or the directory is down).
+pub const PUBLIC_REGISTER_EVERY: Duration = Duration::from_secs(2);
+
+/// The public room's one registration call: the process registers the code itself, as a runner would, over the WebSocket
+/// relay. There is no spawn ticket for the public code and no owner; the directory takes the registration unless a live
+/// host (a runner standing in for this process) holds the code, which it answers with 409. Blocking.
+pub fn register_public(cfg: &BackendConfig, opts: &Options) -> Result<String, NetError> {
+    let request = RegisterRoom {
+        code: opts.code.clone(),
+        region: opts.region.clone(),
+        transport: "ws".into(),
+        device_id: crate::net::store::device_id(&crate::net::store::default_dir()),
+        // empty until the first guest: the heartbeat reports the real count
+        players: 1,
+        ..RegisterRoom::default()
+    };
+    let token = api::register_room(cfg, &request)?.token;
+    if token.is_empty() {
+        return Err(NetError::Protocol("THE DIRECTORY ISSUED NO TOKEN".into()));
+    }
+    Ok(token)
+}
+
 /// Exchanges a spawn ticket for the host token: the one registration call (transport ws, hosted codes accept only the
 /// ticket's holder). Blocking.
 pub fn token_from_ticket(cfg: &BackendConfig, opts: &Options) -> Result<String, String> {
@@ -528,19 +570,36 @@ pub fn run(mut room: Room, opts: &Options) -> i32 {
             eprintln!("[dedicated] {code} {note}");
         }
         if let Some(since) = down_since {
-            // the link is down: try to reopen it, give up after the grace
+            // the link is down: try to reopen it, give up after the grace. The public room never gives up: its entry lapsed
+            // with the old link, so each try registers it again for a fresh token, and a runner holding it (409) is waited out.
             if now >= next_try {
                 next_try = now + RECONNECT_EVERY;
-                match NativeWsLink::host(&opts.code, &room.token, &opts.relay) {
-                    Ok(link) => {
-                        room.reopen(Box::new(link), opts);
-                        down_since = None;
-                        continue;
+                let token_ready = if opts.public {
+                    match register_public(&room.cfg, opts) {
+                        Ok(token) => {
+                            room.token = token;
+                            true
+                        }
+                        Err(e) => {
+                            eprintln!("[dedicated] {} public room not taken yet: {}", room.code(), e.message_or("REGISTER FAILED"));
+                            false
+                        }
                     }
-                    Err(e) => eprintln!("[dedicated] {} relay link still down: {e}", room.code()),
+                } else {
+                    true
+                };
+                if token_ready {
+                    match NativeWsLink::host(&opts.code, &room.token, &opts.relay) {
+                        Ok(link) => {
+                            room.reopen(Box::new(link), opts);
+                            down_since = None;
+                            continue;
+                        }
+                        Err(e) => eprintln!("[dedicated] {} relay link still down: {e}", room.code()),
+                    }
                 }
             }
-            if now.duration_since(since).as_secs_f64() >= opts.reconnect_seconds {
+            if !opts.public && now.duration_since(since).as_secs_f64() >= opts.reconnect_seconds {
                 eprintln!("[dedicated] room {} lost its relay link for good", room.code());
                 return 4;
             }
@@ -571,7 +630,7 @@ pub fn run(mut room: Room, opts: &Options) -> i32 {
                 return 0;
             }
             Status::LinkLost => {
-                if opts.reconnect_seconds <= 0.0 {
+                if opts.reconnect_seconds <= 0.0 && !opts.public {
                     eprintln!("[dedicated] room {} lost its relay link", room.code());
                     return 4;
                 }
@@ -601,25 +660,46 @@ pub fn main(a: &Args) -> i32 {
     };
     // a dedicated room never writes the player's checkpoint or settings
     crate::app::checkpoint::ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
-    let token = if !opts.token.is_empty() {
-        opts.token.clone()
-    } else if !opts.spawn_ticket.is_empty() {
-        match token_from_ticket(&cfg, &opts) {
-            Ok(t) => t,
+    // the public room is registered by this process itself and taken again whenever it is free (a runner standing in for
+    // this process holds it until they leave): the opening waits for it instead of giving up, so a restart never races
+    let mut tries = 0u32;
+    let (token, link) = loop {
+        let token = if !opts.token.is_empty() {
+            opts.token.clone()
+        } else if !opts.spawn_ticket.is_empty() {
+            match token_from_ticket(&cfg, &opts) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("[dedicated] the directory refused the spawn ticket: {e}");
+                    return 3;
+                }
+            }
+        } else if opts.public {
+            match register_public(&cfg, &opts) {
+                Ok(t) => t,
+                Err(e) => {
+                    if tries % 5 == 0 {
+                        eprintln!("[dedicated] the public room is not free yet: {}", e.message_or("REGISTER FAILED"));
+                    }
+                    tries += 1;
+                    crate::shared::task::pause(PUBLIC_REGISTER_EVERY);
+                    continue;
+                }
+            }
+        } else {
+            eprintln!("[dedicated] needs a host token (--host-token or LASTROUTE_HOST_TOKEN) or a spawn ticket (LASTROUTE_SPAWN_TICKET)");
+            return 2;
+        };
+        match NativeWsLink::host(&opts.code, &token, &opts.relay) {
+            Ok(l) => break (token, l),
+            Err(e) if opts.public => {
+                eprintln!("[dedicated] could not open the relay link yet: {e}");
+                crate::shared::task::pause(PUBLIC_REGISTER_EVERY);
+            }
             Err(e) => {
-                eprintln!("[dedicated] the directory refused the spawn ticket: {e}");
+                eprintln!("[dedicated] could not open the relay link: {e}");
                 return 3;
             }
-        }
-    } else {
-        eprintln!("[dedicated] needs a host token (--host-token or LASTROUTE_HOST_TOKEN) or a spawn ticket (LASTROUTE_SPAWN_TICKET)");
-        return 2;
-    };
-    let link = match NativeWsLink::host(&opts.code, &token, &opts.relay) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("[dedicated] could not open the relay link: {e}");
-            return 3;
         }
     };
     let room = Room::new(&opts, cfg, Box::new(link), token);
@@ -717,6 +797,7 @@ mod tests {
             reconnect_seconds: 0.0,
             name: DEFAULT_NAME.into(),
             heartbeat: false,
+            public: false,
         }
     }
 
@@ -744,8 +825,12 @@ mod tests {
 
     impl Bot {
         fn join(hub: &TestHub, name: &str, at: (f32, f32)) -> Bot {
-            let link = NativeWsLink::guest("ABCDE", "", &hub.url()).unwrap();
-            let net = NetSession::guest_over(BackendConfig::default(), "ABCDE".into(), Box::new(link), name.into(), "DEFAULT".into());
+            Bot::join_code(hub, "ABCDE", name, at)
+        }
+
+        fn join_code(hub: &TestHub, code: &str, name: &str, at: (f32, f32)) -> Bot {
+            let link = NativeWsLink::guest(code, "", &hub.url()).unwrap();
+            let net = NetSession::guest_over(BackendConfig::default(), code.into(), Box::new(link), name.into(), "DEFAULT".into());
             Bot { net, at, h: 0.0, started: false, hunters: Vec::new(), problems: Vec::new(), frames: 0, starts: 0, ended: Vec::new(), refused: Vec::new() }
         }
 
@@ -858,6 +943,82 @@ mod tests {
         assert!(!room.game().hunters.is_empty());
     }
 
+
+    // ---- the public route's room -------------------------------------------------------------------------------------
+
+    fn public_options(hub: &TestHub) -> Options {
+        Options { code: "PUBLC".into(), room_text: "ROOM-PUBLC-DEDICATED".into(), public: true, ..options(hub) }
+    }
+
+    fn open_public(hub: &TestHub, opts: &Options) -> Room {
+        hub.add_room("PUBLC", "tok");
+        let link = NativeWsLink::host("PUBLC", "tok", &hub.url()).unwrap();
+        Room::new(opts, BackendConfig::default(), Box::new(link), "tok".into())
+    }
+
+    #[test]
+    fn the_public_code_makes_a_public_room_with_the_routes_one_difficulty() {
+        let cfg = BackendConfig::default();
+        let public = parse_options(&args(&["--dedicated-host", "PUBLC", "--ws-rooms"]), &no_env, &cfg).unwrap();
+        assert!(public.public);
+        assert_eq!(public.difficulty, crate::net::public_route::rules().difficulty, "the route's difficulty, not the process's default");
+        let private = parse_options(&args(&["--dedicated-host", "ABCDE"]), &no_env, &cfg).unwrap();
+        assert!(!private.public);
+        // the process registers the public room itself: no token or ticket is needed on its command line
+        assert!(public.token.is_empty() && public.spawn_ticket.is_empty());
+    }
+
+    #[test]
+    fn the_public_room_is_never_closed_for_being_empty_and_a_private_one_still_is() {
+        let hub = TestHub::start();
+        let mut opts = public_options(&hub);
+        opts.idle_minutes = 1.0;
+        let mut room = open_public(&hub, &opts);
+        drive(&mut room, &mut [], |room, _| room.net.link_alive() && room.net.linked());
+        for _ in 0..4 {
+            assert_eq!(room.frame(Duration::from_secs(60)), Status::Running, "an empty public room is its normal state");
+        }
+        let mut private = options(&hub);
+        private.idle_minutes = 1.0;
+        let mut other = open_room(&hub, &private);
+        drive(&mut other, &mut [], |room, _| room.net.link_alive() && room.net.linked());
+        assert_eq!(other.frame(Duration::from_secs(61)), Status::IdleTimeout);
+    }
+
+    #[test]
+    fn nothing_a_guest_sends_ends_or_changes_the_public_room_and_runners_come_and_go_freely() {
+        let hub = TestHub::start();
+        let opts = public_options(&hub);
+        let mut room = open_public(&hub, &opts);
+        let start = room.game().fac.start.center();
+        let origin = room.game().window_origin();
+        let at = (start.0 + origin.0 as f32, start.1 + origin.1 as f32);
+        let mut a = Bot::join_code(&hub, "PUBLC", "BOT-A", at);
+        let mut b = Bot::join_code(&hub, "PUBLC", "BOT-B", (at.0 + 12.0, at.1));
+        drive(&mut room, &mut [&mut a, &mut b], |room, bots| room.net.guest_count() == 2 && bots.iter().all(|b| b.started));
+        assert!(room.route_on, "the route is on from the first moment");
+        // the guests know a server process holds the room, so they do not open it themselves when it restarts quickly
+        assert!(a.net.reform_plan().was_dedicated && b.net.reform_plan().was_dedicated);
+        assert!(a.net.roster().iter().all(|r| !r.host));
+        // an owner command (even with a ticket that would be valid) is refused by the room itself: no END, no RESTART, no KICK
+        let peer = a.net.roster_peers().first().map_or(2, |p| p.0);
+        for action in [OwnerAction::End, OwnerAction::Restart, OwnerAction::Start, OwnerAction::Kick(peer), OwnerAction::Difficulty(Difficulty::Nightmare)] {
+            assert!(a.net.send_owner_command("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ", &action));
+        }
+        drive(&mut room, &mut [&mut a, &mut b], |_, bots| bots[0].refused.len() >= 5);
+        assert!(a.refused.iter().all(|r| r == crate::net::public_route::NO_OWNER_TEXT), "{:?}", a.refused);
+        assert!(room.route_on && room.net.guest_count() == 2, "the route runs on and nobody was removed");
+        assert!(a.ended.is_empty() && b.ended.is_empty(), "the route was not ended for anyone");
+        assert!(room.notes.iter().all(|n| !n.contains("checking the ticket")), "the directory is never asked: {:?}", room.notes);
+        // runners leave and come back: the room never closes
+        a.net.leave();
+        drive(&mut room, &mut [&mut b], |room, _| room.net.guest_count() == 1);
+        b.net.leave();
+        drive(&mut room, &mut [], |room, _| room.net.guest_count() == 0);
+        assert!(hub.has_host("PUBLC"), "the room is still open with nobody in it");
+        let mut late = Bot::join_code(&hub, "PUBLC", "BOT-LATE", at);
+        drive(&mut room, &mut [&mut late], |room, bots| room.net.guest_count() == 1 && bots[0].started && !bots[0].hunters.is_empty());
+    }
     #[test]
     fn an_empty_room_shuts_down_after_its_idle_time_and_a_busy_one_does_not() {
         let hub = TestHub::start();
