@@ -10,6 +10,8 @@
 //!   LR_SHOT_ACCOUNT=1       the account panel (same as LR_SHOT_SCREEN=account)
 //!   LR_SHOT_RUN=1           start a run (LR_SHOT_INF=1: the Infinite route)
 //!   LR_SHOT_FLASH=0         with a run: start with the flashlight off (default on)
+//!   LR_SHOT_EMPTY=1         with a run: select the first empty hotbar slot (nothing in hand)
+//!   LR_SHOT_REMOTE=1        with a run: a second runner stands three metres ahead, as in an open room
 //!   LR_SHOT_SEED=n          with LR_SHOT_RUN=1: the run seed (default 20261101)
 //!   LR_SHOT_LEVEL=n         with LR_SHOT_RUN=1 (Infinite route): start on level n (-3 has spirals in open bays)
 //!   LR_SHOT_STAIRS=shape    with a run: stand on the landing of the first flight down of a shape (spiral | switchback |
@@ -138,6 +140,8 @@ pub fn render_play_with(g: &Game, a: &Assets, mat: &Material, t: &Targets, remot
         viewmodel::draw_view_layer(g, a, mat, &t.view)
     };
     perf::flush_timed("gl flush view");
+    // whatever the passes above bound, the window and the HUD are drawn with the default material
+    crate::render::pipeline::reset();
     set_default_camera();
     clear_background(BLACK);
     let p = DrawTextureParams {
@@ -1322,7 +1326,11 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             }
         } else if let Some(g) = playing.as_mut() {
             let in_report = g.report.is_some();
-            let remotes = net.as_ref().map(|n| n.remotes_at(g.p.y(), g.depth, g.window_origin())).unwrap_or_default();
+            let mut remotes = net.as_ref().map(|n| n.remotes_at(g.p.y(), g.depth, g.window_origin())).unwrap_or_default();
+            // LR_SHOT_REMOTE=1 stands a second runner three metres ahead, as an open room would show one
+            if screenshot.is_some() && env("LR_SHOT_REMOTE").is_some() {
+                remotes.push(shot_remote(g));
+            }
             let marks = crate::ui::markers::all_markers(g, &remotes);
             // the admin tools follow the server's admin flag for the signed-in account, never the local name
             admin.enabled = (backend.admin || (screenshot.is_some() && env("LR_SHOT_ADMIN").is_some())) && !stress_on;
@@ -1913,6 +1921,12 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 };
                 // LR_SHOT_FLASH=0 leaves the flashlight off (the dark view), for a before/after pair at the same spot
                 g.p.flashlight_on = env("LR_SHOT_FLASH").as_deref() != Some("0");
+                // LR_SHOT_EMPTY=1 selects the first empty hotbar slot: nothing in hand
+                if env("LR_SHOT_EMPTY").is_some() {
+                    if let Some(i) = g.slots.iter().position(|s| s.is_none()) {
+                        g.selected = i;
+                    }
+                }
                 if let Some(shape) = env("LR_SHOT_STAIRS") {
                     shot_at_stairs(&mut g, &shape);
                 }
@@ -2203,6 +2217,31 @@ mod owner_command_tests {
         assert!(cmd.busy());
     }
 
+}
+
+/// `LR_SHOT_REMOTE=1`: a second runner standing three metres in front of the viewer, on the viewer's floor.
+fn shot_remote(g: &Game) -> RemoteView {
+    let (_, fwd, _, _) = scene::view(g);
+    RemoteView {
+        peer: 7,
+        name: "SHOT".to_string(),
+        x: g.p.pos.0 + fwd.x * 3.0,
+        y: g.p.pos.1 + fwd.z * 3.0,
+        yaw: g.p.yaw + std::f32::consts::PI,
+        h: g.p.y(),
+        level: g.depth,
+        skin: world_sync::SKIN_DEFAULT.to_string(),
+        moving: false,
+        sprinting: false,
+        crouching: false,
+        slim: false,
+        speed: 0.0,
+        vy: 0.0,
+        clip: None,
+        hide: None,
+        held: None,
+        hide_since: None,
+    }
 }
 
 /// `LR_SHOT_PROP=type`: stand `LR_SHOT_DIST` metres from the prop of that type nearest the player, on open floor, looking at it.

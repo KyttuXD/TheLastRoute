@@ -306,7 +306,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     VIEW_FRUSTUM.with(|f| f.set(frustum));
     let light = lighting(g);
     clear_background(Color::new(light.fog.x, light.fog.y, light.fog.z, 1.0));
-    gl_use_material(mat);
+    let world = super::pipeline::world_material(mat);
     // the grab's fill joins the room's lamps while the struggle holds the runner (grab_fill); the flashlight is unchanged
     // this storey's own lights join the room's lamps: the falls' pool lights, the inferno's lava and cracks
     let fx = level_fx(g, light.eye);
@@ -871,7 +871,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     }
     drop(t_hunters);
     draw_level_fx(g, a, &fx, light.eye);
-    gl_use_default_material();
+    drop(world);
 }
 
 /// Whether a storey's falls and inferno glow are in this frame, found once per frame.

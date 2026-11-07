@@ -464,7 +464,8 @@ pub fn draw_runners(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, rem
     }
     set_camera(&scene::camera(g, rt));
     let active_y = crate::game::level_stack::floor_y_of(g.fac.level);
-    gl_use_material(mat);
+    // released on every way out, the early return below included: a leaked world material blacks out the rest of the frame
+    let _world = crate::render::pipeline::world_material(mat);
     shader::apply(mat, &scene::lighting(g), &scene::flickered(g, &g.world.lamps));
     if a.npc_body.is_none() {
         // The mannequin failed to load: a plain grey post keeps the runner visible in the 3D view.
