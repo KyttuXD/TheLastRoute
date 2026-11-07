@@ -249,9 +249,14 @@ installs it with the launcher, so the two languages cannot drift apart.
 ## What is verified and what is not
 
 **Verified by tests on Windows:** everything in the list above, the publisher script's `DRY_RUN` for the exe, tar.gz and folder
-layouts, the Node and Rust sides agreeing on manifest, zlib and ed25519, and that the game and the wasm build still compile.
+layouts, the Node and Rust sides agreeing on manifest, zlib and ed25519, a release build of the launcher (`build-launcher.sh`, 1.7 MB,
+`--version` and `--check` run), the game's own suite (2586 lib and bin tests pass, including the in-game updater's 8 new tests against the fake
+site), and `cargo check --target wasm32-unknown-unknown --bin last_route`.
 
 **Needs a Mac:**
+* The macOS-only code was not compiled on the PC: `cargo check --target aarch64-apple-darwin` stops in `ring`'s C build script (no Apple C
+  compiler on Windows; the game's own rustls dependency hits the same wall). The bundle-swap functions in `updater.rs` were type-checked
+  alone with `rustc`; everything around them was not.
 * The game started by `exec` from inside the downloaded `.app` folder: does it get the right Dock icon and focus? If not, switch to
   `open -n -a` plus the ready-file signal (deferred).
 * `build-launcher.sh` on macOS (lipo, `codesign --sign -`, the `.app` layout) and ad-hoc signing on Apple Silicon.
