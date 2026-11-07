@@ -65,6 +65,24 @@
     var text = await response.text();
     return { status: response.status, type: response.headers.get("content-type"), body: text.slice(0, 160) };
   });
+  // the scheme handler may only serve plain files of the build folder: every one of these must be refused (400/404), never 200
+  await step("traversal", async function () {
+    var paths = ["../../state.json", "..%2f..%2fstate.json", "%2e%2e/state.json", "..%5cstate.json", "web/../state.json", ".stage-x", "./index.html/..", "index.html?x=/../a", "state.json", "meta%00.json", "a/b.js", "//etc/passwd", "%2fetc%2fpasswd"];
+    var out = {};
+    var leaked = [];
+    for (var i = 0; i < paths.length; i++) {
+      var status;
+      try {
+        status = (await fetch("lrapp://game/" + paths[i], { cache: "no-store" })).status;
+      } catch (e) {
+        status = "err";
+      }
+      out[paths[i]] = status;
+      if (status === 200 && paths[i] !== "index.html?x=/../a" && paths[i] !== "./index.html/..") leaked.push(paths[i]);
+    }
+    out.leaked = leaked.length;
+    return out;
+  });
   await step("wasmFetch", async function () {
     var response = await fetch("last_route.wasm", { method: "HEAD" });
     return { status: response.status, type: response.headers.get("content-type"), length: response.headers.get("content-length") };

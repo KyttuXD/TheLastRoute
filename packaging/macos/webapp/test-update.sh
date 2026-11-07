@@ -8,6 +8,7 @@
 #   update     the site has a newer build: it is downloaded, verified, switched to, and the running page reloads itself into it
 #   pages      same wasm, one page file changed: a new folder with that file, build unchanged
 #   mismatch   version.json names a build the wasm does not match: nothing is installed
+#   older      the site serves a different build with an older "built" time: it is not installed (no downgrade)
 #   rollback   the new build's wasm is garbage: two failed starts, then the previous build runs, and the bad build is not fetched again
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -31,7 +32,7 @@ stop_server() {
 }
 trap stop_server EXIT
 
-# make_site NAME MODE: a site folder from the bundled files. MODE: same | pages | newwasm | mismatch | garbage
+# make_site NAME MODE: a site folder from the bundled files. MODE: same | pages | newwasm | mismatch | garbage | older
 make_site() {
     dir="$WORK/site-$1"
     mkdir -p "$dir"
@@ -39,7 +40,7 @@ make_site() {
     case "$2" in
         same) ;;
         pages) printf '\n// changed by test-update.sh\n' >> "$dir/update.js" ;;
-        newwasm | mismatch | garbage)
+        newwasm | mismatch | garbage | older)
             python3 -I - "$SRC/last_route.wasm" "$dir/last_route.wasm" "$2" > "$dir/.sha" <<'PY'
 import hashlib, sys
 src, dst, mode = sys.argv[1:4]
@@ -55,7 +56,9 @@ print(hashlib.sha256(out).hexdigest())
 PY
             sha="$(cat "$dir/.sha")"
             [ "$2" = mismatch ] && sha="$(echo "$sha" | tr '0-9a-f' 'a-f0-9')"
-            printf '{"build":"%s","built":"2026-11-07T09:00:00Z"}' "$sha" > "$dir/version.json"
+            built="2026-11-07T09:00:00Z"
+            [ "$2" = older ] && built="2020-01-01T00:00:00Z"
+            printf '{"build":"%s","built":"%s"}' "$sha" "$built" > "$dir/version.json"
             printf '\n// new build\n' >> "$dir/update.js"
             ;;
     esac
@@ -142,6 +145,14 @@ run_case mismatch "http://127.0.0.1:$PORT" 0
 show mismatch
 expect mismatch 'does not match version.json' "the download is refused"
 forbid mismatch 'update: installed' "nothing is installed"
+
+echo "== older: a different build deployed before the installed one"
+SITE="$(make_site older older)"
+serve "$SITE"
+run_case older "http://127.0.0.1:$PORT" 0
+show older
+expect older 'is not newer than the installed' "the older build is skipped"
+forbid older 'update: installed' "nothing is installed"
 
 echo "== rollback: the new build's wasm is garbage"
 SITE="$(make_site rollback garbage)"

@@ -48,7 +48,7 @@ over ssh with no GUI interaction. [What was verified and what was not](#what-is-
   because WKWebView has no element fullscreen on older macOS), Cmd+Q / Cmd+R / Cmd+H / Cmd+M work even when the game takes the key,
   Edit menu (Cut/Copy/Paste/Select All), View > Reload Game, Open Game Website in Browser, Show Log in Finder, About with the web build id, Check for Updates,
   Reset to Bundled Build. Audio autoplay is allowed. The file chooser (`<input type=file>`, the SKIN tab) is a native open panel (files or a folder).
-  `http(s)` links and `window.open` go to the default browser. Downloads (`<a download>`, macOS 11.3+) save to Downloads and reveal the file. JS
+  `https` links and `window.open` go to the default browser (http, mailto, file and app-scheme links are dropped). Downloads (`<a download>`, macOS 11.3+) save to Downloads and reveal the file. JS
   alert/confirm are native. The right-click menu of the web view is removed.
 * **Clipboard.** `lr_clip` in `index.html` works unchanged (the custom origin counts as a secure context, so `navigator.clipboard` exists), and the Edit menu
   gives WKWebView its paste/copy commands. If WKWebView ever reports paste as unavailable, Cmd+V reads the clipboard in the shell and hands the text to the page as a
@@ -88,6 +88,18 @@ ad-hoc signature is not a notarized one. Updating the *app* (new code) means bui
 Measured: the build takes about 8 s on KT-MBP (universal, web files already fetched about 2 s more); the app is 31 MB (30.5 MB of it the web files); each
 installed copy in Application Support is 31 MB (two are kept at most: current and previous).
 
+## Trust and limits
+
+* The scheme handler serves only single plain files of the current build folder: the name must be letters, digits, `.`, `-`, `_` (no `/`, no leading dot, no escapes), so
+  `../`, `%2f`, `%5c`, `%00` and subfolders get 400/404 (the self-test probes this). `/api/*` is forwarded only to the configured site host, never to a host the page names.
+* A new build is taken only when its wasm sha256 equals `version.json`'s `build`. The page files (`index.html`, the `.js` files) are not hashed by `version.json`, so
+  they are trusted as far as the site's HTTPS is. A compromised site could ship a malicious page; there is no signature (that is what the launcher's signed manifests are for).
+* No downgrade: a build different from the installed one is only taken when the site's `built` time is later than the installed build's (`deploy-vps2.sh` writes the deploy time,
+  so deploying an older commit still counts as newer). The log says `skipped`. If the deploy machine's clock runs behind, updates are skipped until it catches up; View >
+  Reset to Bundled Build does not help with that, rebuilding the app does. A hostile site could still replay a *newer-looking* version.json: out of scope.
+* Page console lines in the log are cut to 400 characters and anything that looks like a credential (`token=...`, `password: ...`, long random strings) is replaced by `[redacted]`.
+* A cancelled load (Reload pressed while loading) is not counted as a failed start.
+
 ## Flags and files
 
 `LastRoute --help` lists them. `--site-url URL` (or `LASTROUTE_SITE_URL`) the website; `--data-dir DIR`; `--log FILE`; `--no-update`;
@@ -104,6 +116,7 @@ Tests that need no GUI, run on a Mac: `sh packaging/macos/webapp/test-update.sh 
 | update | newer build: downloaded, verified, pointer moved, the running page's update.js notices, the page reloads itself into it |
 | pages | same wasm, changed `update.js`: a new folder with the new file |
 | mismatch | version.json names a hash the wasm does not have: refused, nothing installed |
+| older | a different build with an older `built` time than the installed one: skipped, nothing installed (no downgrade) |
 | rollback | garbage wasm with a correct hash: installed, two failed starts, rolled back to the previous build, the next launch does not fetch it again |
 
 ## What is verified and what is not

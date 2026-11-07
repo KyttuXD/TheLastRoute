@@ -147,6 +147,31 @@ static BOOL LRSafeName(NSString *name) {
     return YES;
 }
 
+// A file name of the site's page: letters, digits, dot, dash, underscore only (no query, fragment, escape or separator), no leading dot.
+// Used for every name that comes from the URL a page asks for or from a `files` list in version.json.
+static BOOL LRSafeSiteFile(NSString *name) {
+    if (!LRSafeName(name)) return NO;
+    static NSCharacterSet *bad;
+    if (!bad) bad = [[NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"] invertedSet];
+    return [name rangeOfCharacterFromSet:bad].location == NSNotFound;
+}
+
+// Page text that goes to the log: anything that looks like a credential is cut out first.
+static NSString *LRRedact(NSString *text) {
+    if (![text isKindOfClass:[NSString class]]) return @"";
+    static NSRegularExpression *keyed, *longTokens;
+    if (!keyed) {
+        keyed = [NSRegularExpression regularExpressionWithPattern:@"(token|password|passwd|pass|secret|auth|authorization|bearer|cookie|session|apikey|api_key|key)([\"']?\\s*[:=]\\s*[\"']?)[^\\s\"',;&}]+"
+                                                          options:NSRegularExpressionCaseInsensitive
+                                                            error:nil];
+        longTokens = [NSRegularExpression regularExpressionWithPattern:@"[A-Za-z0-9_\\-+/=.]{32,}" options:0 error:nil];
+    }
+    NSRange all = NSMakeRange(0, text.length);
+    text = [keyed stringByReplacingMatchesInString:text options:0 range:all withTemplate:@"$1$2[redacted]"];
+    all = NSMakeRange(0, text.length);
+    return [longTokens stringByReplacingMatchesInString:text options:0 range:all withTemplate:@"[redacted]"];
+}
+
 static BOOL LRIsHex64(NSString *s) {
     if (![s isKindOfClass:[NSString class]] || s.length != 64) return NO;
     NSCharacterSet *bad = [[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"] invertedSet];
@@ -461,6 +486,11 @@ static NSString *LRComputeId(NSString *dir) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *target = [self dirForId:ident];
     if (!LRFolderComplete(stage)) return NO;
+    // the id names the content: a folder that is already there is the same files, and it may be the one a page is reading right now
+    if (LRFolderComplete(target)) {
+        [fm removeItemAtPath:stage error:nil];
+        return YES;
+    }
     [fm removeItemAtPath:target error:nil];
     return [fm moveItemAtPath:stage toPath:target error:nil];
 }
@@ -565,7 +595,7 @@ static LRStore *gStore;
     NSString *name = path;
     while ([name hasPrefix:@"/"]) name = [name substringFromIndex:1];
     if (name.length == 0) name = @"index.html";
-    if (!LRSafeName(name)) {
+    if (!LRSafeSiteFile(name)) {
         [self replyText:task status:400 text:@"bad path"];
         return;
     }
@@ -837,7 +867,7 @@ typedef void (^LRUpdateDone)(NSString *outcome, NSString *detail);
     id listed = parsed[@"files"];  // optional: a deploy may name its files; the default list is used otherwise
     if ([listed isKindOfClass:[NSArray class]] && [listed count] > 0) {
         for (id n in listed) {
-            if (LRSafeName(n) && ![n isEqualToString:@"version.json"] && ![n isEqualToString:@"meta.json"]) [files addObject:n];
+            if (LRSafeSiteFile(n) && ![n isEqualToString:@"version.json"] && ![n isEqualToString:@"meta.json"]) [files addObject:n];
         }
     }
     if (![files containsObject:@"index.html"] || ![files containsObject:@"last_route.wasm"]) files = [LRDefaultFiles() mutableCopy];
@@ -845,8 +875,18 @@ typedef void (^LRUpdateDone)(NSString *outcome, NSString *detail);
     NSString *latest = [gStore latestId];
     NSString *latestDir = [gStore dirForId:latest];
     if (!LRFolderComplete(latestDir)) latestDir = [gStore currentDir];
-    NSString *haveBuild = LRVersionOf(latestDir)[@"build"];
+    NSDictionary *haveVersion = LRVersionOf(latestDir);
+    NSString *haveBuild = haveVersion[@"build"];
     if ([haveBuild isEqualToString:build]) return [self refreshPages:latestDir files:files raw:raw detail:detail];
+    // no downgrade: a different build is only taken when the site says it was deployed after the one installed (deploy-vps2.sh writes
+    // "built" as the UTC time of the deploy, ISO 8601, so the strings compare in time order). A deploy of an older commit gets a new time.
+    // A site that serves an old version.json again (a stale cache, or a hostile site) is ignored. Without a usable "built" the build is taken.
+    NSString *siteBuilt = [parsed[@"built"] isKindOfClass:[NSString class]] ? parsed[@"built"] : nil;
+    NSString *haveBuilt = [haveVersion[@"built"] isKindOfClass:[NSString class]] ? haveVersion[@"built"] : nil;
+    if (siteBuilt.length >= 10 && haveBuilt.length >= 10 && [siteBuilt compare:haveBuilt] != NSOrderedDescending) {
+        *detail = [NSString stringWithFormat:@"site build %@ (built %@) is not newer than the installed %@ (built %@); skipped", [build substringToIndex:12], siteBuilt, [haveBuild description] ? [[haveBuild description] substringToIndex:MIN((NSUInteger)12, [haveBuild description].length)] : @"?", haveBuilt];
+        return @"skipped";
+    }
     return [self installBuild:build files:files raw:raw detail:detail];
 }
 
@@ -1143,7 +1183,8 @@ API_AVAILABLE(macos(11.3))
     WKUserContentController *content = [WKUserContentController new];
     NSString *shell = [self resource:@"shell.js"];
     if (shell) {
-        shell = [shell stringByReplacingOccurrencesOfString:@"@SITE@" withString:gSite];
+        NSString *siteJS = [[gSite stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"] stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""];
+        shell = [shell stringByReplacingOccurrencesOfString:@"@SITE@" withString:siteJS];
         shell = [shell stringByReplacingOccurrencesOfString:@"@VERSION@" withString:APP_VERSION];
         [content addUserScript:[[WKUserScript alloc] initWithSource:shell injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES]];
     } else {
@@ -1558,18 +1599,18 @@ API_AVAILABLE(macos(11.3))
     if ([type isEqualToString:@"ready"]) {
         [self pageBecameReady:m[@"info"]];
     } else if ([type isEqualToString:@"error"]) {
-        LRLog(@"page error: %@", m[@"text"]);
-        if ([m[@"fatal"] boolValue]) [self bootFailed:[NSString stringWithFormat:@"page error: %@", m[@"text"]]];
+        LRLog(@"page error: %@", LRRedact(m[@"text"]));
+        if ([m[@"fatal"] boolValue]) [self bootFailed:[NSString stringWithFormat:@"page error: %@", LRRedact(m[@"text"])]];
     } else if ([type isEqualToString:@"console"]) {
-        LRLog(@"page %@: %@", m[@"level"], m[@"text"]);
+        LRLog(@"page %@: %@", [m[@"level"] isKindOfClass:[NSString class]] ? m[@"level"] : @"?", LRRedact(m[@"text"]));
     } else if ([type isEqualToString:@"fullscreen"]) {
         BOOL want = [m[@"on"] boolValue];
         if (want != _fullscreen && !gSelfTest) [_window toggleFullScreen:nil];
-    } else if ([type isEqualToString:@"selftest-click"]) {
+    } else if (gSelfTest && [type isEqualToString:@"selftest-click"]) {
         [self selfTestClick];
-    } else if ([type isEqualToString:@"selftest-move"]) {
+    } else if (gSelfTest && [type isEqualToString:@"selftest-move"]) {
         [self selfTestMove];
-    } else if ([type isEqualToString:@"selftest"]) {
+    } else if (gSelfTest && [type isEqualToString:@"selftest"]) {
         [self selfTestResult:m[@"result"]];
     }
 }
@@ -1589,9 +1630,12 @@ API_AVAILABLE(macos(11.3))
         decisionHandler(WKNavigationActionPolicyAllow);
         return;
     }
-    if ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"] || [scheme isEqualToString:@"mailto"]) {
-        LRLog(@"navigation: opening %@ in the default browser", url.absoluteString);
+    // only https goes out to the browser; http, mailto, file, ftp, custom app schemes are dropped
+    if ([scheme isEqualToString:@"https"] && url.host.length > 0) {
+        LRLog(@"navigation: opening %@://%@ in the default browser", scheme, url.host);
         [[NSWorkspace sharedWorkspace] openURL:url];
+    } else {
+        LRLog(@"navigation: blocked a %@ link", scheme ?: @"(none)");
     }
     decisionHandler(WKNavigationActionPolicyCancel);
 }
@@ -1623,12 +1667,24 @@ API_AVAILABLE(macos(11.3))
     }
 }
 
+// A load that was replaced by a newer one (Reload pressed while loading) or cancelled by a navigation policy is not a failed start.
+static BOOL LRIsCancel(NSError *error) {
+    if ([error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled) return YES;
+    if ([error.domain isEqualToString:@"WebKitErrorDomain"] && error.code == 102) return YES;  // frame load interrupted by a policy change
+    return NO;
+}
+
 - (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+    if (LRIsCancel(error)) {
+        LRLog(@"navigation: a load was cancelled (%@ %ld)", error.domain, (long)error.code);
+        return;
+    }
     LRLog(@"navigation: failed to load: %@", error.localizedDescription);
     [self bootFailed:[NSString stringWithFormat:@"the page could not be loaded: %@", error.localizedDescription]];
 }
 
 - (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+    if (LRIsCancel(error)) return;
     LRLog(@"navigation: failed: %@", error.localizedDescription);
     [self bootFailed:[NSString stringWithFormat:@"the page failed: %@", error.localizedDescription]];
 }
@@ -1647,7 +1703,7 @@ API_AVAILABLE(macos(11.3))
 
 - (WKWebView *)webView:(WKWebView *)webView createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration forNavigationAction:(WKNavigationAction *)action windowFeatures:(WKWindowFeatures *)features {
     NSURL *url = action.request.URL;
-    if ([url.scheme isEqualToString:@"http"] || [url.scheme isEqualToString:@"https"]) [[NSWorkspace sharedWorkspace] openURL:url];
+    if ([url.scheme.lowercaseString isEqualToString:@"https"] && url.host.length > 0) [[NSWorkspace sharedWorkspace] openURL:url];
     return nil;
 }
 
@@ -1739,6 +1795,8 @@ API_AVAILABLE(macos(11.3))
     if (![wasm isKindOfClass:[NSDictionary class]] || [wasm[@"exports"] intValue] == 0) { pass = NO; [notes addObject:@"wasm not instantiated"]; }
     if (![gl isKindOfClass:[NSDictionary class]] || ![gl[@"gameContext"] boolValue]) { pass = NO; [notes addObject:@"no WebGL context"]; }
     if (![vj isKindOfClass:[NSDictionary class]] || [vj[@"status"] intValue] != 200) { pass = NO; [notes addObject:@"version.json not served"]; }
+    NSDictionary *trav = result[@"traversal"];
+    if (![trav isKindOfClass:[NSDictionary class]] || [trav[@"leaked"] intValue] != 0) { pass = NO; [notes addObject:@"path traversal probe was served"]; }
     _probeDone = YES;
     if (pass && gSelfTestHold > 0) {
         LRLog(@"selftest: probes passed; holding up to %.0f s to watch for an update reload", gSelfTestHold);
