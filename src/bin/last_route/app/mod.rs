@@ -483,6 +483,12 @@ fn flash(ui: &mut Ui, text: &str) {
     ui.notice_t = 4.0;
 }
 
+/// The name the lobby and the players list show for this runner: in a room the name the others see (the account name,
+/// else the guest name); alone, what solo has always shown.
+fn list_name(online: bool, username: &str, backend: &Backend) -> String {
+    crate::net::guest_name::shown_name(online, username, &backend.guest_name)
+}
+
 /// A room event during a run is announced on the HUD; outside one it is a title notice.
 fn show_room_notice(playing: Option<&mut Game>, ui: &mut Ui, text: &str) {
     match playing {
@@ -840,7 +846,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
         }
         let join_progress = hosted_join.as_mut().map(|join| {
             let (cfg, code) = (net_cfg.clone(), join.code.clone());
-            let name = world_sync::clean_name(&settings.username);
+            let name = world_sync::clean_name(&backend.room_name(&settings.username));
             let skin = worn.get().hash;
             join.update(crate::shared::clock::Instant::now(), move || world_sync::join_room(cfg, code, name, skin, String::new(), false))
         });
@@ -1072,6 +1078,12 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 }
                 NetEvent::GuestJoined(name) => show_room_notice(playing.as_mut(), &mut ui, &format!("{name} JOINED THE ROOM")),
                 NetEvent::GuestLeft(name) => show_room_notice(playing.as_mut(), &mut ui, &format!("{name} LEFT THE ROOM")),
+                // the room gave this guest another number (its own was taken): it keeps the new one from now on
+                NetEvent::Renamed(name) => {
+                    if settings.username.trim().is_empty() && backend.set_guest_name(&name) {
+                        show_room_notice(playing.as_mut(), &mut ui, &format!("YOU ARE {name}"));
+                    }
+                }
                 NetEvent::HostLeft(reason) => room_closed = Some(reason),
                 NetEvent::Problem(text) => show_room_notice(playing.as_mut(), &mut ui, &text),
                 NetEvent::OwnerRefused(reason) => {
@@ -1488,10 +1500,11 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     if !stress_on && !pz.open && !in_report && is_key_down(KeyCode::O) {
                         let roster = net.as_ref().map(|n| n.roster()).unwrap_or_default();
                         let local_host = net.as_ref().map_or(true, |n| n.is_host());
+                        let listed = list_name(net.is_some(), &settings.username, &backend);
                         pause::draw_hold_player_list(
                             &w.assets,
                             g,
-                            &settings.username,
+                            &listed,
                             &roster,
                             local_host,
                         );
@@ -1521,7 +1534,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                         None => {}
                     }
                     if pz.open {
-                        let name = settings.username.clone();
+                        let name = list_name(net.is_some(), &settings.username, &backend);
                         let roster = net.as_ref().map(|n| n.roster()).unwrap_or_default();
                         let local_host = net.as_ref().map_or(true, |n| n.is_host());
                         match pause::draw_pause(
@@ -1564,6 +1577,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             }
         } else {
             let username = settings.username.clone();
+            // the name the lobby lists this runner under: in a room the account name, else the guest name (alone: as signed in)
+            let lobby_name = list_name(ui.room_mode != menus::RoomMode::Solo, &username, &backend);
             // the lobby's live capacity and guest names (a guest's session has neither)
             let live = net.as_ref().and_then(|n| n.player_count());
             let guests = net.as_ref().map(|n| n.guest_names()).unwrap_or_default();
@@ -1626,7 +1641,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     &mut diff,
                     route::room_text_code(&room),
                     &room,
-                    &username,
+                    &lobby_name,
                     save.as_ref(),
                     live,
                     &guests,
@@ -1724,7 +1739,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                             flash(&mut ui, &messages.unavailable);
                         } else {
                             flash(&mut ui, &messages.joining);
-                            let name = world_sync::clean_name(&settings.username);
+                            let name = world_sync::clean_name(&backend.room_name(&settings.username));
                             let skin = worn.get().hash;
                             net_pending = Some((NetIntent::Public, world_sync::join_public_room(net_cfg.clone(), name, skin)));
                         }
@@ -1733,7 +1748,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 Action::JoinCode(code) => {
                     if net.is_none() && net_pending.is_none() {
                         ui.join_status = format!("JOINING ROOM {code}...");
-                        let name = world_sync::clean_name(&settings.username);
+                        let name = world_sync::clean_name(&backend.room_name(&settings.username));
                         let skin = worn.get().hash;
                         // an owner's miss reserves the typed code and hosts it (world_sync::join_room); everyone else joins as a guest
                         let owner = backend.signed_in() && crate::ui::admin::is_admin_owner(&backend.account.username);

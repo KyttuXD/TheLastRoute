@@ -35,9 +35,14 @@ fn accounts_guest_names_rooms_and_cloud_saves_against_a_live_server() {
     let cfg = BackendConfig::loopback(http);
     let dir = scratch("backend");
     let mut backend = Backend::new(cfg.clone(), &dir);
+    // the name shown is the client's GUEST_####, chosen before any answer and kept; the server's lease is stored apart
+    let shown = backend.guest_name.clone();
+    assert!(crate::net::guest_name::is_drawn_name(&shown), "{shown}");
     backend.ensure_guest_name();
     let events = backend.settle(Duration::from_secs(10));
-    assert!(events.iter().any(|e| matches!(e, BackendEvent::GuestName(n) if api::valid_guest_name(n))), "{events:?}");
+    assert!(events.iter().any(|e| matches!(e, BackendEvent::GuestName(n) if *n == shown && api::valid_guest_name(n))), "{events:?}");
+    assert_eq!(backend.guest_name, shown, "a lease never changes the name");
+    assert_eq!(Backend::new(cfg.clone(), &dir).guest_name, shown, "the next run keeps the number");
 
     let name = unique_name("RUST");
     backend.create_account(&name, "correct horse battery", "");

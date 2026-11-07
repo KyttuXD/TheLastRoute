@@ -192,6 +192,11 @@ fn fail(status: u16, code: &str, error: &str) -> Reply {
     (status, json!({ "ok": false, "code": code, "error": error }))
 }
 
+/// GUEST_4829 is what the game calls a runner who is not signed in: no account may take such a name.
+fn guest_username() -> Reply {
+    fail(403, "RESERVED_USERNAME", "That username is reserved for guests")
+}
+
 fn invalid_username() -> Reply {
     fail(400, "INVALID_USERNAME", "Username must be 3-24 characters: letters, numbers, underscore")
 }
@@ -456,6 +461,9 @@ impl AccountService {
         if is_admin_owner_username(&username) && !allow_developer_names {
             return fail(403, "RESERVED_USERNAME", "That username is reserved");
         }
+        if crate::guest_names::is_reserved_for_guests(&username) {
+            return guest_username();
+        }
         let password = field(body, "password");
         if !Self::valid_password(password) {
             return weak_password();
@@ -636,6 +644,9 @@ impl AccountService {
         }
         if is_admin_owner_username(&username) && username != current_username && !allow_developer_names {
             return fail(403, "RESERVED_USERNAME", "That username is reserved");
+        }
+        if username != current_username && crate::guest_names::is_reserved_for_guests(&username) {
+            return guest_username();
         }
         if username != current_username && state.accounts.contains_key(&username) {
             return fail(409, "USERNAME_TAKEN", "That username is already taken");
@@ -972,6 +983,21 @@ mod tests {
     }
 
     #[test]
+    fn a_registered_account_cannot_take_a_guest_name() {
+        let app = open_accounts();
+        for name in ["GUEST_4829", "guest_0001", "Guest_45858185", "GUEST_3FA9C1"] {
+            let (status, body) = app.accounts.register(&json!({ "username": name, "password": PASSWORD }), false);
+            assert_eq!((status, body["code"].as_str()), (403, Some("RESERVED_USERNAME")), "{name}");
+            // not even a developer request gets one
+            assert_eq!(app.accounts.register(&json!({ "username": name, "password": PASSWORD }), true).0, 403, "{name}");
+        }
+        // names that merely start like one are fine
+        for name in ["GUEST_ALPHA", "GUESTS_1234", "THE_GUEST_1234"] {
+            assert_eq!(app.accounts.register(&json!({ "username": name, "password": PASSWORD }), false).0, 200, "{name}");
+        }
+    }
+
+    #[test]
     fn long_usernames_are_clipped_to_24_so_a_different_25th_character_still_collides() {
         let app = open_accounts();
         let base = "A".repeat(24);
@@ -998,6 +1024,8 @@ mod tests {
 
         assert_eq!(a.rename(&json!({ "sessionToken": player, "username": "kyttu" }), false).1["code"], "RESERVED_USERNAME");
         assert_eq!(a.rename(&json!({ "sessionToken": player, "username": "no" }), false).0, 400);
+        // nobody may rename into a guest's name either
+        assert_eq!(a.rename(&json!({ "sessionToken": player, "username": "guest_4829" }), false).1["code"], "RESERVED_USERNAME");
         let second = token(&a.register(&json!({ "username": "OTHER", "password": PASSWORD }), false).1);
         assert_eq!(a.rename(&json!({ "sessionToken": player, "username": "other" }), false).0, 409);
 

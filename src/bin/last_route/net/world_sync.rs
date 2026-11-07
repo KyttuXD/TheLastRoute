@@ -15,6 +15,7 @@
 //!   A sample is `null` while nothing is playing: that keeps the relay session alive, nothing else.
 
 use super::api::{self, Heartbeat, RegisterRoom, Registered, ReservedHostView};
+use super::guest_name;
 use super::hunter_events::{self, Tracker};
 use super::interp::{self, SendClock, Track};
 use super::config::BackendConfig;
@@ -416,6 +417,9 @@ pub enum NetEvent {
     HostLeft(String),
     /// Something to show the player.
     Problem(String),
+    /// The host gave this guest another name because the one it asked for was taken by an earlier guest (guest side).
+    /// The app keeps the new name for the next run.
+    Renamed(String),
     /// The room's owner sent a route command (host side, reserved rooms only). The app carries it out, as Godot's
     /// `RoomState._on_reserved_commands` does, and the command is acked when it is handed over.
     RouteCommand(RouteCommand),
@@ -1780,11 +1784,15 @@ impl NetSession {
     fn on_message(&mut self, from: u32, message: Message, now: Instant, out: &mut Vec<NetEvent>) {
         match message {
             Message::RegisterPeer { requested_name } if self.is_host() => {
-                let name = clean_name(&requested_name);
+                // two guests of one room never share a guest name: the later one is given a free number
+                let (name, renamed) = self.settle_guest_name(clean_name(&requested_name), from);
                 let guest = self.guests.entry(from).or_insert_with(|| Guest { name: String::new(), last_seen: now });
                 guest.name = name.clone();
                 guest.last_seen = now;
-                out.push(NetEvent::GuestJoined(name));
+                out.push(NetEvent::GuestJoined(name.clone()));
+                if renamed {
+                    self.send_rename(from, &name);
+                }
                 self.send_room_and_roster();
                 if let Some((seed, difficulty)) = self.run.clone() {
                     self.coop.send(from, &start_message(&self.code, &seed, &difficulty));
@@ -1796,11 +1804,18 @@ impl NetSession {
             }
             Message::WireProfile { profile } if self.is_host() => {
                 let skin = profile_skin(&profile);
-                let name = clean_name(profile.get("name").and_then(Value::as_str).unwrap_or_default());
+                let mut name = clean_name(profile.get("name").and_then(Value::as_str).unwrap_or_default());
                 let flags = profile_flags(&profile);
                 self.skins.insert(from, skin.clone());
                 self.peer_flags.insert(from, flags);
                 self.note_peer_slim(from, profile_slim(&profile));
+                // a guest still sending the name it asked for, after the host gave it another: the given name stands
+                let given = self.guests.get(&from).map(|g| g.name.clone()).unwrap_or_default();
+                let (settled, tell) = self.settle_profile_name(name, &given, from);
+                name = settled;
+                if tell {
+                    self.send_rename(from, &name);
+                }
                 let forward = profile_message(from, &name, &skin, flags);
                 let others: Vec<u32> = self.coop.peers().into_iter().filter(|p| *p != from).collect();
                 for peer in others {
@@ -1813,6 +1828,12 @@ impl NetSession {
                     return;
                 };
                 if peer == self.coop.link.session() {
+                    // the host's profile for this very guest: a new name when the one it asked for was taken
+                    let name = clean_name(profile.get("name").and_then(Value::as_str).unwrap_or_default());
+                    if guest_name::is_guest_name(&self.name) && guest_name::is_guest_name(&name) && name != self.name {
+                        self.name = name.clone();
+                        out.push(NetEvent::Renamed(name));
+                    }
                     return;
                 }
                 self.skins.insert(peer, profile_skin(&profile));
@@ -1929,6 +1950,47 @@ impl NetSession {
             }
             _ => {}
         }
+    }
+
+    /// Host: whether `name` is the host's or belongs to a guest other than `except` (compared without regard to case).
+    fn name_in_use(&self, name: &str, except: u32) -> bool {
+        name.eq_ignore_ascii_case(&self.name) || self.guests.iter().any(|(peer, g)| *peer != except && !g.name.is_empty() && g.name.eq_ignore_ascii_case(name))
+    }
+
+    /// Host: the name guest `from` goes by. A guest-shaped name that is taken, or that is only a placeholder (a runner
+    /// that sent no name), is replaced by a free `GUEST_####` (the flag says so); every other name stays as it is, since
+    /// two runners of one account are not for the host to tell apart.
+    fn settle_guest_name(&self, name: String, from: u32) -> (String, bool) {
+        if guest_name::is_guest_name(&name) && (!guest_name::is_drawn_name(&name) || self.name_in_use(&name, from)) {
+            (guest_name::unique_guest_name(&|n| self.name_in_use(n, from)), true)
+        } else {
+            (name, false)
+        }
+    }
+
+    /// Host: the name a guest's profile may show, given the name `given` it registered under. A guest-shaped name that
+    /// is not the given one is replaced by it when the given one is guest-shaped too (a stale name after a re-roll: the
+    /// flag says to tell the guest), and also when another runner of the room already holds it (a guest cannot pose as
+    /// another guest by sending a profile). Any other name stays as it is.
+    fn settle_profile_name(&self, name: String, given: &str, from: u32) -> (String, bool) {
+        if !guest_name::is_guest_name(&name) || given.is_empty() || name == given {
+            return (name, false);
+        }
+        if guest_name::is_guest_name(given) {
+            (given.to_string(), true)
+        } else if self.name_in_use(&name, from) {
+            (given.to_string(), false)
+        } else {
+            (name, false)
+        }
+    }
+
+    /// Host: tells guest `to` the name it goes by in this room, as a profile for its own session (an older guest ignores it).
+    fn send_rename(&mut self, to: u32, name: &str) {
+        let skin = self.skins.get(&to).cloned().unwrap_or_else(|| SKIN_DEFAULT.to_string());
+        let flags = self.peer_flags.get(&to).copied().unwrap_or_default();
+        let profile = profile_message(to, name, &skin, flags);
+        self.coop.send(to, &profile);
     }
 
     /// Host: sends a guest that just registered every runner's profile in the room, the host's first, then each
@@ -2100,7 +2162,8 @@ pub fn clean_skin(text: &str) -> String {
 }
 
 /// A runner's name in a room: letters, digits, space, dash and underscore, upper-cased, at most 24 characters.
-/// Empty becomes RUNNER.
+/// Empty becomes `GUEST_0000`: a guest-shaped name nobody draws ([`guest_name::placeholder`]), so a name that cleans to
+/// nothing still reads as a guest (and the host gives it a real number if it registers).
 pub fn clean_name(text: &str) -> String {
     let kept: String = text
         .chars()
@@ -2109,7 +2172,7 @@ pub fn clean_name(text: &str) -> String {
         .collect();
     let name = kept.trim().to_ascii_uppercase();
     if name.is_empty() {
-        "RUNNER".into()
+        guest_name::placeholder(0)
     } else {
         name
     }
@@ -2543,7 +2606,7 @@ mod tests {
     fn names_are_cleaned_for_the_room() {
         assert_eq!(clean_name("  kyttu<script>!  "), "KYTTUSCRIPT");
         assert_eq!(clean_name("abcdefghijklmnopqrstuvwxyz0123"), "ABCDEFGHIJKLMNOPQRSTUVWX");
-        assert_eq!(clean_name("!!!"), "RUNNER");
+        assert_eq!(clean_name("!!!"), "GUEST_0000");
     }
 
     /// Host and guest on one fake relay: each sees the other's sample, and the start is delivered.
@@ -3571,5 +3634,203 @@ mod height_tests {
         assert_eq!(views[2].h, -STOREY, "an old sample's height is depth * STOREY");
         assert_eq!(views[0].level, -1);
         s.coop.close();
+    }
+}
+
+/// Guest names in a room: the host keeps them apart, and everyone sees the same name for the same guest.
+#[cfg(test)]
+mod guest_name_tests {
+    use super::tests::offline_session;
+    use super::*;
+
+    fn guest_message(name: &str) -> Message {
+        Message::RegisterPeer { requested_name: name.to_string() }
+    }
+
+    fn registered_name(host: &NetSession, peer: u32) -> String {
+        host.guests.get(&peer).map(|g| g.name.clone()).unwrap_or_default()
+    }
+
+    #[test]
+    fn clean_name_keeps_a_guest_name_and_an_empty_one_is_a_guest_not_runner() {
+        assert_eq!(clean_name("GUEST_4829"), "GUEST_4829");
+        assert_eq!(clean_name(" guest_4829 "), "GUEST_4829");
+        assert_eq!(clean_name(""), "GUEST_0000");
+        assert_eq!(clean_name("!!!"), "GUEST_0000");
+        assert!(guest_name::is_guest_name(&clean_name("")));
+        // the old style still passes through, and so does a name from an older client
+        assert_eq!(clean_name("R-4823"), "R-4823");
+        assert_eq!(clean_name("RUNNER"), "RUNNER");
+    }
+
+    #[test]
+    fn the_wire_profile_carries_the_guest_name_unchanged() {
+        let message = profile_message(3, &clean_name("guest_4829"), "DEFAULT", SkinFlags::default());
+        match message {
+            Message::WireProfile { profile } => assert_eq!(profile["name"], "GUEST_4829"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_free_guest_name_is_kept_and_announced_as_it_is() {
+        let mut host = offline_session(true, "SERVER");
+        let mut out = Vec::new();
+        host.on_message(2, guest_message("GUEST_4829"), Instant::now(), &mut out);
+        assert_eq!(registered_name(&host, 2), "GUEST_4829");
+        assert_eq!(out, vec![NetEvent::GuestJoined("GUEST_4829".into())]);
+        host.coop.close();
+    }
+
+    #[test]
+    fn the_later_guest_with_a_taken_name_is_given_a_free_one() {
+        let mut host = offline_session(true, "SERVER");
+        let mut out = Vec::new();
+        let now = Instant::now();
+        host.on_message(2, guest_message("GUEST_4829"), now, &mut out);
+        host.on_message(3, guest_message("GUEST_4829"), now, &mut out);
+        let (first, second) = (registered_name(&host, 2), registered_name(&host, 3));
+        assert_eq!(first, "GUEST_4829", "the earlier guest keeps its name");
+        assert_ne!(second, first, "the later one is re-rolled");
+        assert!(guest_name::is_drawn_name(&second), "{second}");
+        // the join message names the guest as the room knows it
+        assert_eq!(out, vec![NetEvent::GuestJoined(first.clone()), NetEvent::GuestJoined(second.clone())]);
+        // the lobby roster lists two different guests
+        assert_eq!(host.guest_names(), vec![first.clone(), second.clone()]);
+        // a third with a placeholder (an older client's empty name) is a new name too
+        host.on_message(4, guest_message(""), now, &mut out);
+        let third = registered_name(&host, 4);
+        assert!(guest_name::is_drawn_name(&third) && third != first && third != second, "{third}");
+        host.coop.close();
+    }
+
+    #[test]
+    fn a_guest_never_takes_the_hosts_name_and_a_signed_in_name_is_left_alone() {
+        let mut host = offline_session(true, "GUEST_5555");
+        let mut out = Vec::new();
+        let now = Instant::now();
+        host.on_message(2, guest_message("GUEST_5555"), now, &mut out);
+        assert_ne!(registered_name(&host, 2), "GUEST_5555");
+        // two sessions of one account are not for the host to rename
+        host.on_message(3, guest_message("ANA"), now, &mut out);
+        host.on_message(4, guest_message("ANA"), now, &mut out);
+        assert_eq!((registered_name(&host, 3), registered_name(&host, 4)), ("ANA".to_string(), "ANA".to_string()));
+        // registering again under the same session keeps the name (it does not collide with itself)
+        let kept = registered_name(&host, 2);
+        host.on_message(2, guest_message(&kept), now, &mut out);
+        assert_eq!(registered_name(&host, 2), kept);
+        host.coop.close();
+    }
+
+    #[test]
+    fn a_profile_cannot_make_a_guest_pose_as_another_guest() {
+        let mut host = offline_session(true, "SERVER");
+        let mut out = Vec::new();
+        let now = Instant::now();
+        host.on_message(2, guest_message("GUEST_4829"), now, &mut out);
+        host.on_message(3, guest_message("ANA"), now, &mut out);
+        // a signed-in guest sending another guest's name in its profile keeps its own name
+        assert_eq!(host.settle_profile_name("GUEST_4829".into(), "ANA", 3), ("ANA".to_string(), false));
+        // a free guest-shaped name is left alone, and so is the guest's own name
+        assert_eq!(host.settle_profile_name("GUEST_2468".into(), "ANA", 3), ("GUEST_2468".to_string(), false));
+        assert_eq!(host.settle_profile_name("GUEST_4829".into(), "GUEST_4829", 2), ("GUEST_4829".to_string(), false));
+        // a stale name after a re-roll is replaced by the given one and the guest is told
+        assert_eq!(host.settle_profile_name("GUEST_4829".into(), "GUEST_2468", 4), ("GUEST_2468".to_string(), true));
+        // no registered name yet: nothing to settle against
+        assert_eq!(host.settle_profile_name("GUEST_4829".into(), "", 9), ("GUEST_4829".to_string(), false));
+        host.coop.close();
+    }
+
+    #[test]
+    fn the_host_tells_a_renamed_guest_and_the_guest_takes_the_name_once() {
+        let mut guest = offline_session(false, "GUEST_4829");
+        let me = guest.coop.link.session();
+        let mut out = Vec::new();
+        let profile = |name: &str| profile_message(me, name, "DEFAULT", SkinFlags::default());
+        guest.on_message(HOST_PEER_ID, profile("GUEST_2468"), Instant::now(), &mut out);
+        assert_eq!(out, vec![NetEvent::Renamed("GUEST_2468".into())]);
+        assert_eq!(guest.name, "GUEST_2468");
+        // the same profile again is not a second rename
+        out.clear();
+        guest.on_message(HOST_PEER_ID, profile("GUEST_2468"), Instant::now(), &mut out);
+        assert!(out.is_empty());
+        guest.coop.close();
+    }
+
+    #[test]
+    fn a_signed_in_runner_is_never_renamed_by_a_profile() {
+        let mut guest = offline_session(false, "ANA");
+        let me = guest.coop.link.session();
+        let mut out = Vec::new();
+        let profile = profile_message(me, "GUEST_2468", "DEFAULT", SkinFlags::default());
+        guest.on_message(HOST_PEER_ID, profile, Instant::now(), &mut out);
+        assert!(out.is_empty());
+        assert_eq!(guest.name, "ANA");
+        guest.coop.close();
+    }
+
+    /// Two guests ask for the same number over a real relay: both end up with different names, and each sees the
+    /// same names for itself and the other in the lobby roster and in the wire profiles.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn two_guests_asking_for_one_number_see_the_same_two_names_over_the_relay() {
+        use crate::net::ws_native::NativeWsLink;
+        use crate::net::ws_test_hub::TestHub;
+        let hub = TestHub::start();
+        hub.add_room("ABCDE", "tok");
+        let mut host = NetSession::dedicated_host(
+            BackendConfig::default(),
+            "ABCDE".into(),
+            Box::new(NativeWsLink::host("ABCDE", "tok", &hub.url()).unwrap()),
+            "tok".into(),
+            "ROOM-ABCDE-X".into(),
+            "SERVER".into(),
+            false,
+        );
+        let join = |name: &str| {
+            NetSession::guest_over(BackendConfig::default(), "ABCDE".into(), Box::new(NativeWsLink::guest("ABCDE", "", &hub.url()).unwrap()), name.into(), "DEFAULT".into())
+        };
+        let mut a = join("GUEST_4829");
+        let mut events_a = Vec::new();
+        let end = std::time::Instant::now() + Duration::from_secs(20);
+        while host.guest_names().is_empty() && std::time::Instant::now() < end {
+            host.tick(None);
+            events_a.extend(a.tick(None));
+            std::thread::sleep(Duration::from_millis(3));
+        }
+        let mut b = join("GUEST_4829");
+        let mut events_b = Vec::new();
+        let mut both = false;
+        while !both && std::time::Instant::now() < end {
+            host.tick(None);
+            events_a.extend(a.tick(None));
+            events_b.extend(b.tick(None));
+            both = events_b.iter().any(|e| matches!(e, NetEvent::Renamed(_))) && a.guest_names().len() == 2 && b.guest_names().len() == 2;
+            std::thread::sleep(Duration::from_millis(3));
+        }
+        assert!(both, "no rename: a {events_a:?} b {events_b:?}");
+        let renamed = events_b.iter().find_map(|e| if let NetEvent::Renamed(n) = e { Some(n.clone()) } else { None }).unwrap();
+        assert!(guest_name::is_drawn_name(&renamed) && renamed != "GUEST_4829", "{renamed}");
+        assert_eq!(b.name, renamed, "the guest plays under the name the room gave it");
+        assert!(events_a.iter().all(|e| !matches!(e, NetEvent::Renamed(_))), "the earlier guest is not renamed");
+        // the lobby: the host lists both, each guest lists the host first and the other guest
+        assert_eq!(host.guest_names(), vec!["GUEST_4829".to_string(), renamed.clone()]);
+        assert_eq!(a.guest_names(), vec!["SERVER".to_string(), renamed.clone()]);
+        assert_eq!(b.guest_names(), vec!["SERVER".to_string(), "GUEST_4829".to_string()]);
+        // the wire: the earlier guest hears the later one's profile under its new name
+        let peer_b = host.roster_peers().into_iter().find(|(_, n)| *n == renamed).map(|(p, _)| p).unwrap();
+        for _ in 0..400 {
+            host.tick(None);
+            a.tick(None);
+            b.tick(None);
+            if a.peer_name(peer_b) == renamed {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(3));
+        }
+        assert_eq!(a.peer_name(peer_b), renamed);
+        for s in [&mut host, &mut a, &mut b] {
+            s.coop.close();
+        }
     }
 }

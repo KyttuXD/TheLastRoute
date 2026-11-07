@@ -130,6 +130,24 @@ Reserved codes (even a reserved public code) keep the full token check. What rep
 Tradeoff: the vouch is by address, so a flagged account behind a shared address that someone else vouched can still host;
 anyone who can send from the holder's address can replace it. The route is a public room, so nothing private is exposed.
 
+## Guest names
+
+A runner who is not signed in plays under `GUEST_` and four digits (`GUEST_4829`). The client draws the number once (1000 to
+9999), keeps it (`last_route_guest.cfg` on a desktop, the page's localStorage key `last_route.guest` on the web) and sends
+it as its name in the room (`RegisterPeer` and the wire profile), so the lobby, the players list, the nametag, the map pin
+and the join message all show the same name. Solo play still shows RUNNER, since nobody else sees it.
+
+- **Same number twice in a room.** The room's host keeps the earlier guest's name and gives the later guest a free
+  `GUEST_####`, sent back as a profile for that guest's own session; the guest keeps the new number for its next run.
+  Signed-in names are never changed.
+- **The server's lease is optional.** `POST /api/guest/name` still hands out `R-4823` style names (and `lr_server` also
+  accepts `GUEST_4829` as `previous`), but the client stores that lease apart and never shows it. The Node backend on vps2
+  keeps issuing `R-4823`, which therefore never reaches a screen.
+- **No account may look like a guest.** `lr_server` refuses to register or rename an account to `GUEST_` followed only by
+  digits or the hex letters A-F (`RESERVED_USERNAME`), and the client's CREATE ACCOUNT refuses it first. The Node backend
+  has no such rule yet.
+- **Older clients** send `RUNNER` (or `R-4823`); the host accepts both and leaves them alone.
+
 ## Open
 
 - What `vps1` is for.

@@ -867,7 +867,10 @@ pub fn draw_account(
             plain(),
         );
         if (sign || make || is_key_pressed(KeyCode::Enter)) && !ui.acct_busy {
-            if valid_name(&ui.acct_user) {
+            if make && crate::net::guest_name::reserved_for_guests(&ui.acct_user) {
+                // GUEST_1234 is what a runner who is not signed in is called: an account may not pose as one
+                ui.acct_status = "THAT NAME IS RESERVED FOR GUESTS".into();
+            } else if valid_name(&ui.acct_user) {
                 // the password leaves the form here and is not kept; the app sets the name once the server confirms
                 let name = ui.acct_user.clone();
                 let password = std::mem::take(&mut ui.acct_pass);
@@ -1422,10 +1425,12 @@ pub fn with_kick_targets(mut rows: Vec<LobbyPlayer>, view: &OwnerView) -> Vec<Lo
 
 /// The roster the lobby shows, each runner once: this runner first, marked YOU. A host adds its guests. A guest adds
 /// the host, which is the first of `guests` (as `NetSession::guest_names` orders them), then the other guests.
+/// `username` is the name this runner goes by in the room (the app passes the account name, else the guest name);
+/// alone (solo) an empty one reads RUNNER, in a room it reads as a guest (GUEST_0000).
 pub fn lobby_players(mode: RoomMode, username: &str, guests: &[String]) -> Vec<LobbyPlayer> {
     let host = mode == RoomMode::Host;
     let mut v = vec![LobbyPlayer {
-        name: username_or(username),
+        name: if mode == RoomMode::Solo { username_or(username) } else { room_name_or(username) },
         host,
         you: true,
         status: if host { "HOST // STAGING" } else { "STAGING" }.into(),
@@ -1833,6 +1838,15 @@ pub fn draw_lobby(
         out = Action::Go(Screen::Title);
     }
     out
+}
+
+/// This runner's name in a room: an empty one is a guest-shaped name, never RUNNER.
+fn room_name_or(n: &str) -> String {
+    if n.trim().is_empty() {
+        crate::net::guest_name::placeholder(0)
+    } else {
+        n.to_uppercase()
+    }
 }
 
 fn username_or(n: &str) -> String {
@@ -3163,5 +3177,20 @@ mod lobby_tests {
     #[test]
     fn an_unnamed_runner_reads_runner() {
         assert_eq!(lobby_players(RoomMode::Solo, "", &[])[0].name, "RUNNER");
+    }
+
+    #[test]
+    fn a_guest_in_a_room_is_listed_by_its_guest_name_never_runner() {
+        for mode in [RoomMode::Guest, RoomMode::Host] {
+            let rows = lobby_players(mode, "guest_4829", &["GUEST_2468".to_string()]);
+            assert_eq!(rows[0].name, "GUEST_4829");
+            assert!(rows[0].you);
+            assert_eq!(rows[1].name, "GUEST_2468");
+            assert!(rows.iter().all(|r| r.name != "RUNNER"));
+            // a missing name still reads as a guest in a room
+            assert_eq!(lobby_players(mode, "", &[])[0].name, "GUEST_0000");
+        }
+        // an account keeps its own name
+        assert_eq!(lobby_players(RoomMode::Guest, "ana", &[])[0].name, "ANA");
     }
 }

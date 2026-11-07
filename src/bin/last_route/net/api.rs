@@ -410,25 +410,24 @@ pub fn guest_name(cfg: &BackendConfig, previous: &str, token: &str) -> Result<Gu
     Ok(GuestName { name: s(&p, "name"), token: s(&p, "token"), renewed: b(&p, "renewed") })
 }
 
-/// `GuestNames.valid`: one letter (no I/O), a dash, four digits 2-9.
-pub fn valid_guest_name(name: &str) -> bool {
+/// `GuestNames.valid`: the server's lease name, one letter (no I/O), a dash, four digits 2-9 (`R-4823`).
+pub fn valid_lease_name(name: &str) -> bool {
     const LETTERS: &str = "ABCDEFGHJKLMNPQRSTUVWXYZ";
     const DIGITS: &str = "23456789";
     let c: Vec<char> = name.chars().collect();
     c.len() == 6 && LETTERS.contains(c[0]) && c[1] == '-' && c[2..].iter().all(|d| DIGITS.contains(*d))
 }
 
-/// `GuestNames.random_name`: the local name used until the server answers (and offline).
+/// A guest name either side accepts: the client's `GUEST_4829` ([`super::guest_name`]) or the server's older lease
+/// style `R-4823` ([`valid_lease_name`]).
+pub fn valid_guest_name(name: &str) -> bool {
+    valid_lease_name(name) || super::guest_name::is_guest_name(name)
+}
+
+/// The local name a guest plays under (and the one used offline): `GUEST_` and a four digit number. The server's
+/// lease (`R-4823`) is never shown; see [`super::guest_name`].
 pub fn random_guest_name() -> String {
-    const LETTERS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ";
-    const DIGITS: &[u8] = b"23456789";
-    let mut name = String::new();
-    name.push(LETTERS[super::random_below(LETTERS.len())] as char);
-    name.push('-');
-    for _ in 0..4 {
-        name.push(DIGITS[super::random_below(DIGITS.len())] as char);
-    }
-    name
+    super::guest_name::random_guest_name()
 }
 
 // ---- room directory ------------------------------------------------------------------------------------
@@ -988,8 +987,16 @@ mod tests {
         assert!(!valid_guest_name("R-4821"));
         assert!(!valid_guest_name("I-4821"));
         assert!(!valid_guest_name("R-4101"));
+        // both styles are valid guest names; only the old one is a lease name
+        assert!(valid_guest_name("GUEST_4829"));
+        assert!(valid_guest_name("GUEST_1000"));
+        assert!(!valid_guest_name("GUEST_482"));
+        assert!(!valid_guest_name("GUEST_48290"));
+        assert!(!valid_guest_name("guest_4829"));
+        assert!(valid_lease_name("R-4823") && !valid_lease_name("GUEST_4829"));
         for _ in 0..20 {
-            assert!(valid_guest_name(&random_guest_name()));
+            let name = random_guest_name();
+            assert!(valid_guest_name(&name) && name.starts_with("GUEST_"), "{name}");
         }
     }
 

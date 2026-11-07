@@ -37,6 +37,8 @@ pub mod api;
 pub mod backend;
 /// Co-op chat lines (team / nearby, spoken aloud in the original) and their host-side moderation.
 pub mod chat;
+/// The name a runner who is not signed in plays under: `GUEST_` and a four digit number.
+pub mod guest_name;
 pub mod held_wire;
 pub mod hide_sync;
 /// Online rooms hosted by the server: create, wait for the listing, join as a guest, and the owner's commands.

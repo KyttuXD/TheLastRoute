@@ -288,31 +288,105 @@ impl AccountStore {
     }
 }
 
-/// The guest name lease (`Settings.guest_name` / `guest_name_token`).
+/// What a runner who is not signed in keeps between runs: the name it plays under (`GUEST_` and four digits, chosen
+/// once by the client, see [`super::guest_name`]) and, apart from it, the server's optional guest name lease
+/// (`POST /api/guest/name`: an `R-4823` style name and its token).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SavedGuest {
+    /// The name shown to the other runners; empty until the first one is chosen.
+    pub name: String,
+    /// The server's lease on a name, with the token that renews it; empty until the server answered once.
+    pub lease_name: String,
+    pub lease_token: String,
+}
+
+impl SavedGuest {
+    /// Normalises what a file or the page's storage held: the name is kept only when it is a drawn guest name, and a
+    /// pre-GUEST file's `guest_name` (an `R-4823` lease) becomes the lease.
+    pub fn from_parts(name: &str, lease_name: &str, lease_token: &str) -> SavedGuest {
+        let name = name.trim().to_ascii_uppercase();
+        let mut lease = lease_name.trim().to_ascii_uppercase();
+        if lease.is_empty() && super::api::valid_lease_name(&name) {
+            lease = name.clone();
+        }
+        SavedGuest {
+            name: if super::guest_name::is_drawn_name(&name) { name } else { String::new() },
+            lease_name: if super::api::valid_lease_name(&lease) { lease } else { String::new() },
+            lease_token: lease_token.trim().to_string(),
+        }
+    }
+}
+
+/// The browser build keeps the guest in the page's localStorage under this key (+ `#profile` for a named profile).
+pub const WEB_GUEST_KEY_PREFIX: &str = "last_route.guest";
+
+/// The localStorage key of the saved guest.
+pub fn web_guest_key(config: &BackendConfig) -> String {
+    if config.profile.is_empty() {
+        WEB_GUEST_KEY_PREFIX.to_string()
+    } else {
+        format!("{WEB_GUEST_KEY_PREFIX}#{}", config.profile)
+    }
+}
+
+/// The stored text of a guest: `{"name":"GUEST_4829","lease_name":"","lease_token":""}`.
+pub fn guest_to_text(guest: &SavedGuest) -> String {
+    serde_json::json!({ "name": guest.name, "lease_name": guest.lease_name, "lease_token": guest.lease_token }).to_string()
+}
+
+/// The guest in stored text; empty or damaged text is no guest yet.
+pub fn guest_from_text(text: &str) -> SavedGuest {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else { return SavedGuest::default() };
+    let field = |k: &str| value.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    SavedGuest::from_parts(&field("name"), &field("lease_name"), &field("lease_token"))
+}
+
+/// The saved guest from a key/value store (`get` = the store's read).
+pub fn load_guest_kv(get: &dyn Fn(&str) -> Option<String>, config: &BackendConfig) -> SavedGuest {
+    get(&web_guest_key(config)).map(|t| guest_from_text(&t)).unwrap_or_default()
+}
+
+/// Saves the guest; false when the store refused it.
+pub fn save_guest_kv(set: &mut dyn FnMut(&str, &str) -> bool, config: &BackendConfig, guest: &SavedGuest) -> bool {
+    set(&web_guest_key(config), &guest_to_text(guest))
+}
+
+/// The saved guest: `last_route_guest.cfg` on a desktop (`[player]` `guest_name`, `guest_lease_name`,
+/// `guest_name_token`), the page's localStorage on the web.
 #[derive(Clone, Debug)]
 pub struct GuestStore {
     pub path: PathBuf,
+    config: BackendConfig,
 }
 
 impl GuestStore {
     pub fn new(dir: &Path, config: &BackendConfig) -> GuestStore {
-        GuestStore { path: dir.join(config.profile_file(GUEST_CONFIG_FILE)) }
+        GuestStore { path: dir.join(config.profile_file(GUEST_CONFIG_FILE)), config: config.clone() }
     }
 
-    /// (name, token); empty strings until the first answer.
-    pub fn load(&self) -> (String, String) {
-        let Some(file) = ConfigFile::load(&self.path) else { return (String::new(), String::new()) };
-        (
-            file.get_string("player", "guest_name").unwrap_or_default(),
-            file.get_string("player", "guest_name_token").unwrap_or_default(),
+    /// Empty fields until the first name is chosen.
+    pub fn load(&self) -> SavedGuest {
+        if !crate::shared::paths::WRITES_TO_DISK {
+            return load_guest_kv(&web_get, &self.config);
+        }
+        let Some(file) = ConfigFile::load(&self.path) else { return SavedGuest::default() };
+        SavedGuest::from_parts(
+            &file.get_string("player", "guest_name").unwrap_or_default(),
+            &file.get_string("player", "guest_lease_name").unwrap_or_default(),
+            &file.get_string("player", "guest_name_token").unwrap_or_default(),
         )
     }
 
     /// `Settings.set_guest_name`.
-    pub fn save(&self, name: &str, token: &str) {
+    pub fn save(&self, guest: &SavedGuest) {
+        if !crate::shared::paths::WRITES_TO_DISK {
+            let _ = save_guest_kv(&mut web_set, &self.config, guest);
+            return;
+        }
         let mut file = ConfigFile::load(&self.path).unwrap_or_default();
-        file.set_string("player", "guest_name", &name.to_uppercase());
-        file.set_string("player", "guest_name_token", token);
+        file.set_string("player", "guest_name", &guest.name.to_uppercase());
+        file.set_string("player", "guest_lease_name", &guest.lease_name.to_uppercase());
+        file.set_string("player", "guest_name_token", &guest.lease_token);
         let _ = file.save(&self.path);
     }
 }
@@ -453,9 +527,64 @@ mod tests {
         c.profile = "two".into();
         let g = GuestStore::new(&dir, &c);
         assert!(g.path.ends_with("last_route_guest_two.cfg"));
-        assert_eq!(g.load(), (String::new(), String::new()));
-        g.save("r-4821", "tok");
-        assert_eq!(g.load(), ("R-4821".into(), "tok".into()));
+        assert_eq!(g.load(), SavedGuest::default());
+        g.save(&SavedGuest { name: "guest_4821".into(), lease_name: "r-4823".into(), lease_token: "tok".into() });
+        assert_eq!(g.load(), SavedGuest { name: "GUEST_4821".into(), lease_name: "R-4823".into(), lease_token: "tok".into() });
+        // the same name comes back for the next run, on a new store over the same folder
+        assert_eq!(GuestStore::new(&dir, &c).load().name, "GUEST_4821");
+        // another profile has its own
+        assert_eq!(GuestStore::new(&dir, &BackendConfig::primary()).load(), SavedGuest::default());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_old_lease_file_keeps_its_lease_and_gets_no_guest_name() {
+        let dir = scratch("guest_old");
+        let c = BackendConfig::primary();
+        std::fs::write(dir.join(GUEST_CONFIG_FILE), "[player]\n\nguest_name=\"R-4823\"\nguest_name_token=\"tok\"\n").unwrap();
+        let g = GuestStore::new(&dir, &c).load();
+        assert_eq!(g, SavedGuest { name: String::new(), lease_name: "R-4823".into(), lease_token: "tok".into() });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn web_guest_text_round_trip_and_damage() {
+        let g = SavedGuest { name: "GUEST_4829".into(), lease_name: "R-4823".into(), lease_token: "t".into() };
+        assert_eq!(guest_from_text(&guest_to_text(&g)), g);
+        assert_eq!(guest_from_text(r#"{"name":" guest_4829 "}"#).name, "GUEST_4829");
+        // a name that is not a drawn guest name (a placeholder, a registered name, junk) is no guest name
+        for bad in ["", "not json", "[]", r#"{"name":"GUEST_0007"}"#, r#"{"name":"KYTTU"}"#, r#"{"name":"RUNNER"}"#, r#"{"name":5}"#] {
+            assert_eq!(guest_from_text(bad).name, "", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn web_guest_survives_a_reload_through_a_key_value_store() {
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+        let map: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+        let get = |k: &str| map.borrow().get(k).cloned();
+        let mut set = |k: &str, v: &str| {
+            map.borrow_mut().insert(k.to_string(), v.to_string());
+            true
+        };
+        let primary = BackendConfig::primary();
+        let mut named = BackendConfig::primary();
+        named.profile = "two".into();
+        assert_eq!(web_guest_key(&primary), "last_route.guest");
+        assert_eq!(web_guest_key(&named), "last_route.guest#two");
+        assert_eq!(load_guest_kv(&get, &primary), SavedGuest::default(), "nothing stored yet");
+        let g = SavedGuest { name: "GUEST_2468".into(), ..SavedGuest::default() };
+        assert!(save_guest_kv(&mut set, &primary, &g));
+        // "a reload": a fresh read of the same store gives the same name
+        assert_eq!(load_guest_kv(&get, &primary).name, "GUEST_2468");
+        assert_eq!(load_guest_kv(&get, &named), SavedGuest::default());
+        // cleared site data: a new number is drawn by the caller
+        map.borrow_mut().clear();
+        assert_eq!(load_guest_kv(&get, &primary).name, "");
+        // blocked storage refuses and loads as no guest
+        let mut refuse = |_: &str, _: &str| false;
+        assert!(!save_guest_kv(&mut refuse, &primary, &g));
+        assert_eq!(load_guest_kv(&|_| None, &primary), SavedGuest::default());
     }
 }
