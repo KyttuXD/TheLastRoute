@@ -432,7 +432,23 @@ fn check_thread(handle: &Mutex<UpdateStatus>, key: Option<&str>) {
             set(handle, UpdateStatus::Failed(e));
             return;
         }
-        SiteOutcome::Unavailable(why) => crate::lr_info!("update: the website has nothing usable ({why}); trying the old update server"),
+        SiteOutcome::Unavailable(why) => {
+            #[cfg(target_os = "macos")]
+            {
+                crate::lr_info!("update: the website has nothing usable ({why}); checking the nightly release on GitHub");
+                match github_update(handle) {
+                    Ok(true) => start_installed(),
+                    Ok(false) => return,
+                    Err(e) => {
+                        crate::lr_error!("update: {e}");
+                        set(handle, UpdateStatus::Failed(e));
+                        return;
+                    }
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            crate::lr_info!("update: the website has nothing usable ({why}); trying the old update server");
+        }
     }
     let Some(key) = key else {
         crate::lr_info!("update: no download key in the game folder, so the old update server is not asked");
@@ -448,6 +464,81 @@ fn finish_install(build: u64) -> ! {
         let _ = write_marker(&path, UpdaterText::standard(), build);
     }
     start_installed()
+}
+
+/// macOS: the nightly release on GitHub, which CI replaces on every push to main. The installed app is up to date when
+/// its executable's SHA-256 equals the release file's digest. Returns Ok(true) after a new bundle is installed,
+/// Ok(false) when nothing needs doing.
+#[cfg(target_os = "macos")]
+fn github_update(handle: &Mutex<UpdateStatus>) -> Result<bool, String> {
+    let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x86_64" };
+    let file = format!("last_route-macos-{arch}.zip");
+    let url = "https://api.github.com/repos/KyttuXD/TheLastRoute/releases/tags/nightly";
+    let reply = Request::new(Method::Get, url)
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "last-route-updater")
+        .timeout(Duration::from_secs(10))
+        .send()
+        .map_err(|e| format!("GitHub did not answer ({e:?})"))?;
+    if !reply.ok() {
+        return Err(format!("GitHub refused the release check ({})", reply.status));
+    }
+    let body = http::parse_body(&reply.body);
+    let asset = body
+        .get("assets")
+        .and_then(|a| a.as_array())
+        .and_then(|list| list.iter().find(|a| a.get("name").and_then(|n| n.as_str()) == Some(file.as_str())))
+        .ok_or("the nightly release has no build for this Mac")?;
+    let want = asset
+        .get("digest")
+        .and_then(|d| d.as_str())
+        .and_then(|d| d.strip_prefix("sha256:"))
+        .ok_or("the release file has no checksum")?
+        .to_string();
+    let link = asset.get("browser_download_url").and_then(|u| u.as_str()).ok_or("the release file has no download link")?.to_string();
+
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mine: String = Sha256::digest(std::fs::read(&exe).map_err(|e| e.to_string())?).iter().map(|b| format!("{b:02x}")).collect();
+    if mine == want {
+        crate::lr_info!("update: the nightly release is the build this app already is");
+        if let Ok(mut s) = handle.lock() {
+            if !matches!(*s, UpdateStatus::Updated(_)) {
+                *s = UpdateStatus::UpToDate(BUILD);
+            }
+        }
+        return Ok(false);
+    }
+
+    crate::lr_info!("update: the nightly release differs from this app; downloading {file}");
+    set(handle, UpdateStatus::Downloading { build: 0, got: 0, total: 0 });
+    let reply = Request::new(Method::Get, link)
+        .timeout(Duration::from_secs(900))
+        .limit(256 * 1024 * 1024)
+        .send()
+        .map_err(|e| format!("download failed: {e:?}"))?;
+    if !reply.ok() {
+        return Err(format!("the download was refused ({})", reply.status));
+    }
+    let got: String = Sha256::digest(&reply.body).iter().map(|b| format!("{b:02x}")).collect();
+    if got != want {
+        return Err("checksum mismatch: the update was not installed".into());
+    }
+
+    let stage = site_stage_root(true)?;
+    let _ = std::fs::remove_dir_all(&stage);
+    std::fs::create_dir_all(&stage).map_err(|e| e.to_string())?;
+    let zip = stage.join(&file);
+    std::fs::write(&zip, &reply.body).map_err(|e| e.to_string())?;
+    set(handle, UpdateStatus::Installing);
+    run("ditto", &["-x", "-k", zip.to_str().unwrap_or(""), stage.to_str().unwrap_or("")])?;
+    let bundle = stage.join("KYTTU The Last Route.app");
+    if !bundle.is_dir() {
+        let _ = std::fs::remove_dir_all(&stage);
+        return Err("the release file does not hold the app".into());
+    }
+    let result = install_staged_bundle(&bundle);
+    let _ = std::fs::remove_dir_all(&stage);
+    result.map(|()| true)
 }
 
 /// The old vps3 update API: the offer, a keyed download, the SHA-256, the replacement.
