@@ -4,7 +4,7 @@
 //! body took, MAP REVEAL uncovers the loaded floor, and a teleport outside the loaded window
 //! lands once the window has streamed there. Then the overlays: HUNTER REVEAL markers, SHOW
 //! TRAPS (Ravelle's wires), SHOW COLLISION (wall cells round the runner), the REGION MAP chip,
-//! the FPS / SPIKE overlay, and the ADMIN ACTIVE status badge.
+//! the FPS / SPIKE overlay. (The ADMIN ACTIVE badge was removed on 2026-11-07.)
 
 use super::actions::safe_landing;
 use super::look::*;
@@ -179,7 +179,12 @@ impl Admin {
         }
 
         if self.map_reveal {
+            if self.map_reveal_undo.is_none() {
+                self.map_reveal_undo = Some(g.map_reveal_snapshot());
+            }
             g.reveal_whole_window();
+        } else if let Some(u) = self.map_reveal_undo.take() {
+            g.map_reveal_restore(u);
         }
     }
 
@@ -330,32 +335,6 @@ impl Admin {
         }
     }
 
-    /// "ADMIN ACTIVE // SOLO" (+ DEBUG RUN, + the debug view): the admin segment of the HUD
-    /// status bar, top centre, also while the menu is closed.
-    pub(super) fn draw_badge(&self, a: &Assets) {
-        let u = px_per_unit();
-        let ui = Ui::new(a, u, false);
-        let mut line = String::from("ADMIN ACTIVE // SOLO");
-        if self.debug_run {
-            line += " // DEBUG RUN (NOT RECORDED)";
-        }
-        line += match self.view {
-            View::Off => "",
-            View::Fullbright => " // FULLBRIGHT",
-            View::Wireframe => " // WIREFRAME",
-        };
-        let w = ui.tw(&line, 7.0) + 8.0 * u;
-        let seg = Rect::new((screen_width() - w) / 2.0, 9.0 * u, w, 11.0 * u);
-        let frame = Rect::new(
-            seg.x - 1.0 * u,
-            seg.y - 1.0 * u,
-            seg.w + 2.0 * u,
-            seg.h + 2.0 * u,
-        );
-        ui.boxed(frame, PANEL, PANEL_EDGE);
-        draw_rectangle(seg.x, seg.y, seg.w, seg.h, TEAL);
-        ui.text_center(&line, seg, 7.0, ON_AMBER);
-    }
 }
 
 const STAMINA_WARN: Color = Color::new(0.949, 0.733, 0.384, 1.0);

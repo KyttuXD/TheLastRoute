@@ -985,7 +985,7 @@ impl Admin {
     /// _admin_status: the STATUS page readout.
     pub(super) fn status(&self, g: &Game) -> String {
         let mut out =
-            String::from("SERVER OFFLINE (SOLO, NO SERVER) // CHANNEL LOCAL\nROUTE DEBUG\n");
+            String::from("SERVER OFFLINE (SOLO, NO SERVER) // CHANNEL LOCAL\n");
         let region = g
             .fac
             .region_at(g.p.pos.0.floor() as i32, g.p.pos.1.floor() as i32)
@@ -1062,9 +1062,6 @@ impl Admin {
                     format!("{}X", self.game_speed)
                 }
             );
-        }
-        if self.debug_run {
-            out += "\nDEBUG RUN // NOT RECORDED";
         }
         out
     }

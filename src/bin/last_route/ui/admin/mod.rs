@@ -1,6 +1,6 @@
 //! The admin tools (game/admin/): the in-run developer overlay on the 0 key (admin_menu.gd with
 //! the route's rows from infinite_route_test.gd `_infinite_admin_rows`, DebugView's entries and
-//! the AdminNpcPanel page), its "ADMIN ACTIVE" status badge, the effects its toggles have on
+//! the AdminNpcPanel page), (no status badge: removed 2026-11-07), the effects its toggles have on
 //! the run, and the hub/title ADMIN panel (hub_admin_panel.gd).
 //!
 //! Layout follows the original's canvas units: the 480x270 design canvas expands with the
@@ -164,6 +164,8 @@ pub struct Admin {
     show_traps: bool,
     light_sight: bool,
     map_reveal: bool,
+    /// The map as it was before MAP REVEAL was switched on (restored when it is switched off).
+    map_reveal_undo: Option<crate::game::endless::MapRevealUndo>,
     region_map: bool,
     show_collision: bool,
     hunter_reveal: bool,
@@ -222,6 +224,7 @@ impl Admin {
             show_traps: false,
             light_sight: true,
             map_reveal: false,
+            map_reveal_undo: None,
             region_map: false,
             show_collision: false,
             hunter_reveal: false,
@@ -261,6 +264,7 @@ impl Admin {
         self.god_mode = false;
         self.noclip = false;
         self.map_reveal = false;
+        self.map_reveal_undo = None;
         self.hunter_reveal = false;
         self.region_map = false;
         self.show_collision = false;
@@ -562,7 +566,7 @@ impl Admin {
         self.apply_after(g, c, content, dt);
     }
 
-    /// Everything the admin draws over the run: the debug overlays, the ADMIN ACTIVE badge and,
+    /// Everything the admin draws over the run: the debug overlays and,
     /// when open, the menu (which also runs the clicked actions on the run).
     pub fn draw(&mut self, g: &mut Game, a: &Assets, content: &Content) {
         if !self.enabled {
@@ -577,7 +581,6 @@ impl Admin {
         self.lights_all_on = g.lights_on.iter().all(|l| *l);
         self.poll_password_reset();
         self.draw_overlays(g, a);
-        self.draw_badge(a);
         if self.open {
             self.draw_menu(g, a, content);
         }

@@ -118,6 +118,12 @@ pub struct FullMapFeed<'a> {
     pub waypoint: Option<(f32, f32)>,
 }
 
+/// The map state the admin MAP REVEAL overwrites, kept so switching it off can undo it.
+pub struct MapRevealUndo {
+    discovered: Vec<Vec<bool>>,
+    level0_seen: Option<super::discovery::SeenCells>,
+}
+
 pub struct InfState {
     /// The world seed of the route: str(run_seed) of the room seed text (route::world_seed).
     pub seed: String,
@@ -1820,6 +1826,22 @@ impl Game {
                     }
                 }
             }
+        }
+    }
+
+    /// What the admin MAP REVEAL changes: the discovered cells and level 0's seen bitmaps, as they were before it.
+    pub fn map_reveal_snapshot(&self) -> MapRevealUndo {
+        MapRevealUndo {
+            discovered: self.discovered.clone(),
+            level0_seen: self.inf.as_ref().map(|i| i.level0_seen.clone()),
+        }
+    }
+
+    /// Undo the MAP REVEAL: put back the snapshot taken before it was switched on.
+    pub fn map_reveal_restore(&mut self, u: MapRevealUndo) {
+        self.discovered = u.discovered;
+        if let (Some(inf), Some(seen)) = (self.inf.as_mut(), u.level0_seen) {
+            inf.level0_seen = seen;
         }
     }
 
