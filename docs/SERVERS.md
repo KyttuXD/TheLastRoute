@@ -240,6 +240,70 @@ commands, and survives runners coming and going; a guest promoted to host keeps 
 native tests do not run that path, and `cargo check --target wasm32-unknown-unknown` only proves it builds), more than
 three runners, and the systemd unit itself.
 
+## CREATE ROOM says BUILD MISMATCH on the web build (found 2026-11-07)
+
+**Report:** pressing CREATE ROOM (online) on https://lastrouterust.games.kyttuslab.org shows `BUILD MISMATCH // HOST ... YOU ...`
+(or `HOST UNVERSIONED`) and the room is not entered.
+
+**Cause (evidence, read-only on vps2):** the room is not hosted by the client. `POST /api/rooms/hosted/create` makes the Node
+directory (`/opt/lastroute-godot/current/backend/server.mjs`, port 8205, the `lastroute-godot-test` unit) queue a spawn; the region
+agent (`lastroute-region-agent`, `region_agent.mjs`) starts `LASTROUTE_GODOT_BIN` from `/etc/lastroute-agent/agent.env`, which is
+`/opt/lastroute-room/current/LastRoute-Dedicated.x86_64`: the **Godot** dedicated host. That host registers the room with the Godot
+build's own `NetProtocol` fingerprint. The directory stores whatever 8-hex `protocol` the registrant sends (server.mjs, `register`),
+and the Rust client compares it with its own `net::protocol::fingerprint()` before joining (`net/world_sync.rs` `join_found`), so it
+refuses a room that was made for it. Live on 2026-11-07: the four rooms KYTTU created at 02:21 to 02:25 (`X6XX4`, `P4XZQ`, `M7AEZ`,
+`P9ZJW`) are listed `{"dedicated":true,"region":"vps2","owner":"KYTTU","transport":"ws","protocol":"8645f524"}`, the directory log
+shows `hosted/create 202`, two `GET /api/enet/rooms/CODE 404`, the host's `register 201`, then `GET ... 200` and **no** WebSocket guest
+join (the client stopped there), and the agent log shows each spawn of the Godot export. The Rust fingerprint is a different value
+(`09923496` at the time of writing; derived from the RPC table, see below), by design: the Godot host speaks Godot's SceneMultiplayer
+RPCs and the Rust client could not talk to it even if the check passed.
+
+It is not (checked and ruled out): the directory rewriting the field (it stores the registrant's value); an empty or wrong value from
+the web build (`RegisterRoom::default()` sends `fingerprint()` on every target, and the fingerprint is a pure function of the RPC table
+and `RUST_WIRE_VERSION`: no build id, no environment, no target, so a cached older web page differs from a newer host only after a wire
+change, and the creator is a *guest* of the server's room, never its host); a case or format difference (lower-case hex both sides; the
+client now also ignores case).
+
+The always-on private room AKIRI (`lastroute-room@AKIRI`, the same Godot binary) is Godot's too, so a Rust client joining it gets the
+same refusal. The Rust host cannot take a reserved code yet (`headless/dedicated.rs` registers only a spawn-ticket code or `PUBLC`).
+
+**What the client does now** (`net/api.rs` `room_mismatch`, `app/mod.rs`, `net/hosted.rs`): for a room a server process hosts the
+refusal reads `BUILD MISMATCH // SERVER ROOM HOST 8645F524 YOU 09923496 // UPDATE THE GAME OR TELL THE SERVER OWNER` (a player's own
+room keeps the plain `HOST x YOU y // UPDATE`); the wait stops at the first check (it was never retried); CREATE ROOM goes back to the
+CREATE ROOM dialog with the line written in it instead of a 4 second flash on the title; and the create request now says
+`"build": "rust"` so a directory that can run both kinds of host can pick the right one. A directory that ignores the field behaves as before.
+
+**What the server needs (not done; nothing on any server was changed).** The one directory on vps2 also serves the Godot web build
+(`lastroutegodot.games.kyttuslab.org`, same port 8205, same agent), so pointing `LASTROUTE_GODOT_BIN` at the Rust binary would fix this
+site and break that one. The patch [patches/node-hosted-build.patch](patches/node-hosted-build.patch) (against
+`/opt/lastroute-godot/current/backend`, with tests; it applies cleanly to the copy read on 2026-11-07) lets one agent run both:
+
+1. `server.mjs` passes `build: "rust"` from the create body on to `regions.requestSpawn`; `regions.mjs` keeps it (only the exact value
+   `rust`) in the queued spawn options; `region_agent.mjs` runs `LASTROUTE_RUST_BIN` for such a room (no `--path`, and `--difficulty 0`
+   is passed, which the Godot branch drops, so a RELAXED room is RELAXED) and the Godot host for every other room. With
+   `LASTROUTE_RUST_BIN` unset nothing changes.
+2. Put a Linux x86_64 build of the Rust game on vps2, e.g. `/opt/lastroute-rust/current/last_route` (`packaging/linux/build.sh`; mode 755,
+   readable by `lastroute-godot`). The agent's command line (`--headless -- --dedicated-host CODE --port P --idle-minutes M --ws-rooms
+   [--seed S] [--difficulty D] [--backend=http://127.0.0.1:8205]`, ticket and region in the environment) is exactly what
+   `headless/dedicated.rs` reads (test `the_godot_agents_command_line_is_understood`).
+3. Apply and test: `cd /opt/lastroute-godot/current && patch -p1 < node-hosted-build.patch && (cd backend && node --test region_agent.test.mjs regions.test.mjs)`,
+   add `LASTROUTE_RUST_BIN=/opt/lastroute-rust/current/last_route` to `/etc/lastroute-agent/agent.env`, restart `lastroute-godot-test` and
+   `lastroute-region-agent` (a directory restart drops every room and bumps `reloadId`: pick a quiet moment).
+4. Check: sign in, CREATE ROOM, then `curl -H 'Accept: application/json' https://lastrouterust.games.kyttuslab.org/api/enet/rooms/CODE`
+   must show `"dedicated":true` and the Rust client's `protocol` (the 8 digits in `YOU ...` of any mismatch line).
+
+Also seen: each refused create leaves a Godot host holding one of the region's 9 slots until it idles out (10 minutes; `free` was 5 of 9
+with four of them), so repeated tries hit `NO_FREE_REGION` for a while. `lr_server` (vps3) has no `/api/rooms/hosted/create` at all
+(TODO.md), so CREATE ROOM against it answers 404; the register/lookup logic it shares with Node is now pinned by tests
+(`a_rooms_protocol_is_listed_as_the_host_sent_it...`, `a_spawned_dedicated_host_is_listed_dedicated...`).
+
+**Tests:** `net::api::build_mismatch_round_trips` (register then resolve against an in-process directory, `net/test_directory.rs`: a
+client's own room, a spawned Rust host, a Godot-fingerprint host, no/malformed protocol), `net::hosted::create_round_trip_tests` (create
+request body, the creator's wait ends at the first check with the new line, a not-yet-listed room is waited for),
+`headless::dedicated` `the_spawned_host_lists_its_room_with_this_builds_fingerprint_and_the_creator_can_join_it`,
+`net::protocol` (`fingerprint_derivation_is_pinned_and_depends_on_nothing_else`: FNV-1a over `rust;wire<N>;<rpc>=<sender>/<channel>...`
+pinned on a fixed table), and the Node tests inside the patch.
+
 ## Open
 
 - What `vps1` is for.

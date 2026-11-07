@@ -1,0 +1,146 @@
+--- a/backend/region_agent.mjs
++++ b/backend/region_agent.mjs
+@@ -11,6 +11,8 @@
+ //   LASTROUTE_DIRECTORY_URL     http://lastroute.kyttuslab.org:8105
+ //   LASTROUTE_GODOT_BIN         the headless game binary (a Linux export of the game)
+ //   LASTROUTE_GAME_PATH         optional --path for a project checkout instead of an exported binary
++//   LASTROUTE_RUST_BIN          the Rust port's last_route binary; a room created with {build: "rust"} runs it
++//                               (`last_route --headless -- --dedicated-host CODE ...`), every other room the Godot host
+ //   LASTROUTE_RELAY_ADDRESS / LASTROUTE_RELAY_PORT   this region's relay, advertised to clients (stage c)
+ //   LASTROUTE_ROOM_MB           RAM budget per dedicated host (default 700)
+ //   LASTROUTE_MAX_ROOMS         hard cap (default: from cores and RAM)
+@@ -84,19 +86,23 @@
+     }
+     const port = freePort();
+     if (!port) return "no free local port";
++    // a room that asks for the Rust build runs the Rust port's headless host when this machine has one
++    // (LASTROUTE_RUST_BIN); otherwise, and for every other room, the Godot host
++    const rust = options.build === "rust" && Boolean(env.LASTROUTE_RUST_BIN);
+     const args = ["--headless"];
+-    if (env.LASTROUTE_GAME_PATH) args.push("--path", env.LASTROUTE_GAME_PATH);
++    if (env.LASTROUTE_GAME_PATH && !rust) args.push("--path", env.LASTROUTE_GAME_PATH);
+     args.push("--", "--dedicated-host", code, "--port", String(port),
+       "--idle-minutes", String(Number(options.idleMinutes) || 10));
+     if (options.seed) args.push("--seed", String(options.seed));
+     // every hosted room is a WebSocket room, so browsers can join it as well as desktop builds
+     args.push("--ws-rooms");
+-    if (options.difficulty) args.push("--difficulty", String(options.difficulty));
++    // the Rust host takes 0 (RELAXED) too: leaving it out would start the room on its default, STANDARD
++    if (options.difficulty || (rust && Number.isInteger(options.difficulty))) args.push("--difficulty", String(options.difficulty));
+     if (directory.startsWith("http://127.0.0.1:") || directory.startsWith("http://localhost:")) {
+       args.push(`--backend=${directory}`);   // a local directory (tests); the game's built-in one otherwise
+     }
+     // the ticket and region go through the environment, never the command line (ps shows arguments)
+-    const child = spawnProcess(env.LASTROUTE_GODOT_BIN || "godot", args, {
++    const child = spawnProcess(rust ? env.LASTROUTE_RUST_BIN : env.LASTROUTE_GODOT_BIN || "godot", args, {
+       env: { ...process.env, LASTROUTE_SPAWN_TICKET: String(options.spawnTicket || ""), LASTROUTE_REGION: region,
+         LASTROUTE_AGENT_TOKEN: "" },
+       stdio: ["ignore", "inherit", "inherit"],
+--- a/backend/regions.mjs
++++ b/backend/regions.mjs
+@@ -96,7 +96,9 @@
+     if (!ROOM_CODE.test(code)) return [400, { ok: false, code: "INVALID_ROOM_CODE", error: "Room codes are 5 letters/digits" }];
+     const action = { id: randomBytes(6).toString("hex"), action: "spawn", code,
+       options: { seed: String(options.seed || "").slice(0, 40), difficulty: Number(options.difficulty) || 0,
+-        idleMinutes: Math.min(240, Math.max(1, Number(options.idleMinutes) || 10)), spawnTicket: options.spawnTicket || "" } };
++        idleMinutes: Math.min(240, Math.max(1, Number(options.idleMinutes) || 10)), spawnTicket: options.spawnTicket || "",
++        // which game build must host the room: "rust" (the Rust port's headless host) or "" (the agent's default host)
++        build: options.build === "rust" ? "rust" : "" } };
+     pending.set(region, [...(pending.get(region) || []), action]);
+     return [202, { ok: true, queued: { ...action, options: { ...action.options, spawnTicket: undefined } } }];
+   }
+--- a/backend/server.mjs
++++ b/backend/server.mjs
+@@ -863,7 +863,9 @@
+       // the spawned host registers the code with this ticket; nothing else may take the code
+       const ticket = randomBytes(18).toString("base64url");
+       spawnTickets.set(code, { ticket, expiresAt: now() + 5 * 60_000 });
+-      const [status, payload] = regions.requestSpawn(picked.region, code, { difficulty: body.difficulty, spawnTicket: ticket });
++      // the Rust client asks for its own build ({build: "rust"}): a Godot host speaks another protocol, so its players are refused
++      const build = body.build === "rust" ? "rust" : "";
++      const [status, payload] = regions.requestSpawn(picked.region, code, { difficulty: body.difficulty, spawnTicket: ticket, build });
+       if (status >= 300) {
+         spawnTickets.delete(code);
+         return json(response, status, payload);
+--- a/backend/region_agent.test.mjs
++++ b/backend/region_agent.test.mjs
+@@ -247,3 +247,32 @@
+   assert.equal(result.status, 2);
+   assert.match(result.stderr, /LASTROUTE_REGION, LASTROUTE_AGENT_TOKEN and LASTROUTE_DIRECTORY_URL/);
+ });
++
++test("a room that asks for the Rust build runs the Rust binary when there is one, else the Godot host", () => {
++  const { spawned, spawnProcess } = fakeSpawn();
++  const make = (extra) => createAgent(agentEnv({ LASTROUTE_DIRECTORY_URL: "http://127.0.0.1:8205", ...extra }), {
++    spawnProcess, log() {}, resources: resources(), now: () => 1_000,
++  });
++  // LASTROUTE_RUST_BIN set: build "rust" runs it, with the same command line the Rust headless host reads, and no --path
++  const both = make({ LASTROUTE_RUST_BIN: "/opt/lastroute-rust/current/last_route" });
++  assert.equal(both.spawnHost("RUST1", { build: "rust", difficulty: 0, idleMinutes: 10, spawnTicket: "ticket-r" }), "");
++  assert.equal(spawned[0].bin, "/opt/lastroute-rust/current/last_route");
++  const rustArgs = spawned[0].args;
++  assert.deepEqual(rustArgs.slice(0, 3), ["--headless", "--", "--dedicated-host"]);
++  assert.equal(rustArgs.includes("--path"), false, "the Rust binary has no project path");
++  assert.equal(rustArgs[rustArgs.indexOf("--difficulty") + 1], "0", "RELAXED reaches the Rust host");
++  assert.ok(rustArgs.includes("--ws-rooms") && rustArgs.includes("--backend=http://127.0.0.1:8205"));
++  assert.equal(rustArgs.join(" ").includes("ticket-r"), false);
++  assert.equal(spawned[0].options.env.LASTROUTE_SPAWN_TICKET, "ticket-r");
++  // the same agent still starts the Godot host for a room that did not ask for the Rust build
++  assert.equal(both.spawnHost("GODOT1", { difficulty: 2, spawnTicket: "ticket-g" }), "");
++  assert.equal(spawned[1].bin, "/opt/lastroute/game.x86_64");
++  assert.deepEqual(spawned[1].args.slice(0, 3), ["--headless", "--path", "/opt/lastroute/project"]);
++  // no LASTROUTE_RUST_BIN: build "rust" falls back to the Godot host (today's behavior), it does not fail
++  const godotOnly = make({});
++  assert.equal(godotOnly.spawnHost("RUST2", { build: "rust", difficulty: 0 }), "");
++  assert.equal(spawned[2].bin, "/opt/lastroute/game.x86_64");
++  assert.equal(spawned[2].args.includes("--difficulty"), false);
++  both.stopAll();
++  godotOnly.stopAll();
++});
+--- a/backend/regions.test.mjs
++++ b/backend/regions.test.mjs
+@@ -110,3 +110,12 @@
+     await rm(root, { recursive: true });
+   }
+ });
++
++test("a spawn request carries the asked-for build, rust or nothing", () => {
++  const regions = createRegions({ tokens: new Map([["virginia", "t"]]) });
++  regions.report("virginia", { label: "US East", capacity: 4, relay: null, rooms: [], version: "test" });
++  const queued = (build) => regions.requestSpawn("virginia", "ABCDE", { spawnTicket: "x", build });
++  assert.equal(queued("rust")[1].queued.options.build, "rust");
++  assert.equal(queued("godot")[1].queued.options.build, "");
++  assert.equal(queued(undefined)[1].queued.options.build, "");
++});
+--- a/backend/server.test.mjs
++++ b/backend/server.test.mjs
+@@ -922,6 +922,29 @@
+   }
+ });
+ 
++test("hosted create passes the asked-for build on to the region agent, and only the value rust", async () => {
++  const clock = { now: 60_000 };
++  const { app, report, directory } = await hostedFixture(clock);
++  try {
++    const result = await post(app.url, "/api/account/register", { username: "HOSTER", password: "hoster password" });
++    const hoster = result.body.sessionToken;
++    clock.now += 1_000;
++    await report(clock.now);
++    const builds = [];
++    for (const asked of ["rust", "RUST", "godot", undefined, { x: 1 }]) {
++      const created = await post(app.url, "/api/rooms/hosted/create", { sessionToken: hoster, difficulty: 0, build: asked });
++      assert.equal(created.response.status, 202);
++      clock.now += 1_000;
++      const spawn = (await report(clock.now)).body.actions.find((action) => action.action === "spawn" && action.code === created.body.code);
++      builds.push(spawn.options.build);
++    }
++    assert.deepEqual(builds, ["rust", "", "", "", ""], "anything but the exact value rust keeps the agent's default host");
++  } finally {
++    await app.close();
++    await rm(directory, { recursive: true, force: true });
++  }
++});
++
+ test("a refused hosted register keeps the spawn ticket, and an expired spawn ticket cannot register", async () => {
+   const clock = { now: 60_000 };
+   const { app, report, directory } = await hostedFixture(clock);

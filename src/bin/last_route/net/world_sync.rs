@@ -966,7 +966,7 @@ fn join_found(cfg: BackendConfig, code: String, room: api::RoomEndpoint, name: S
     if !ws && (room.transport != "relay" || room.address.is_empty()) {
         return Err(NetError::Refused("THAT ROOM CANNOT BE JOINED FROM THIS BUILD".into()));
     }
-    let refused = api::protocol_mismatch(&room.protocol, &protocol::fingerprint());
+    let refused = api::room_mismatch(&room, &protocol::fingerprint());
     if !refused.is_empty() {
         return Err(NetError::Refused(refused));
     }

@@ -741,14 +741,36 @@ pub fn resolve_reserved(cfg: &BackendConfig, code: &str, session_token: &str, pa
     })
 }
 
-/// `NetProtocol.mismatch`: "" when the host speaks this build's protocol.
+/// `NetProtocol.mismatch`: "" when the host speaks this build's protocol. The fingerprints are compared as the 8 hex
+/// digits they are (case and surrounding spaces do not matter): the directory only ever stores lower case, but a
+/// differently cased copy of the same fingerprint is still the same build.
 pub fn protocol_mismatch(host_protocol: &str, mine: &str) -> String {
-    if host_protocol == mine {
+    let (host, mine) = (host_protocol.trim(), mine.trim());
+    if host.eq_ignore_ascii_case(mine) {
         String::new()
-    } else if host_protocol.is_empty() {
+    } else if host.is_empty() {
         "BUILD MISMATCH // HOST UNVERSIONED // UPDATE".into()
     } else {
-        format!("BUILD MISMATCH // HOST {} YOU {} // UPDATE", host_protocol.to_uppercase(), mine.to_uppercase())
+        format!("BUILD MISMATCH // HOST {} YOU {} // UPDATE", host.to_uppercase(), mine.to_uppercase())
+    }
+}
+
+/// [`protocol_mismatch`] for a listed room. A room that a server process hosts (`dedicated`: the CREATE ROOM rooms and the
+/// always-on private rooms) is not a player's build, so a bare "UPDATE" would send the player after a fix that is not
+/// theirs: its line names the server's room host and says the server owner may have to act.
+pub fn room_mismatch(room: &RoomEndpoint, mine: &str) -> String {
+    let line = protocol_mismatch(&room.protocol, mine);
+    if line.is_empty() || !room.dedicated {
+        return line;
+    }
+    if room.protocol.trim().is_empty() {
+        "BUILD MISMATCH // SERVER ROOM HOST UNVERSIONED // TELL THE SERVER OWNER".into()
+    } else {
+        format!(
+            "BUILD MISMATCH // SERVER ROOM HOST {} YOU {} // UPDATE THE GAME OR TELL THE SERVER OWNER",
+            room.protocol.trim().to_uppercase(),
+            mine.trim().to_uppercase()
+        )
     }
 }
 
@@ -779,7 +801,7 @@ pub fn resolve_room(cfg: &BackendConfig, code: &str, session_token: &str, room_p
             if room.address.is_empty() && room.transport != "ws" {
                 return Resolution::Failed { message: "DIRECTORY RETURNED AN INVALID ENDPOINT".into() };
             }
-            let refused = protocol_mismatch(&room.protocol, mine);
+            let refused = room_mismatch(&room, mine);
             if !refused.is_empty() {
                 return Resolution::Failed { message: refused };
             }
@@ -805,7 +827,7 @@ pub fn resolve_room(cfg: &BackendConfig, code: &str, session_token: &str, room_p
                 Ok(r) => match r.room {
                     None => Resolution::Failed { message: "PRIVATE ROOM RETURNED NO ENDPOINT".into() },
                     Some(room) => {
-                        let refused = protocol_mismatch(&room.protocol, mine);
+                        let refused = room_mismatch(&room, mine);
                         if !refused.is_empty() {
                             Resolution::Failed { message: refused }
                         } else {
@@ -1027,6 +1049,29 @@ mod tests {
         assert_eq!(protocol_mismatch("abc", "abc"), "");
         assert_eq!(protocol_mismatch("", "abc"), "BUILD MISMATCH // HOST UNVERSIONED // UPDATE");
         assert_eq!(protocol_mismatch("0a0b0c0d", "11223344"), "BUILD MISMATCH // HOST 0A0B0C0D YOU 11223344 // UPDATE");
+        // the same fingerprint in another case, or with stray spaces, is the same build
+        assert_eq!(protocol_mismatch("0A0B0C0D", "0a0b0c0d"), "");
+        assert_eq!(protocol_mismatch(" 0a0b0c0d ", "0a0b0c0d"), "");
+        assert_eq!(protocol_mismatch("   ", "abc"), "BUILD MISMATCH // HOST UNVERSIONED // UPDATE");
+    }
+
+    fn listed(protocol: &str, dedicated: bool) -> RoomEndpoint {
+        RoomEndpoint { code: "ABCDE".into(), protocol: protocol.into(), dedicated, transport: "ws".into(), ..RoomEndpoint::default() }
+    }
+
+    #[test]
+    fn a_players_room_keeps_the_update_line_and_a_server_room_names_the_server() {
+        let mine = "11223344";
+        assert_eq!(room_mismatch(&listed("11223344", false), mine), "");
+        assert_eq!(room_mismatch(&listed("11223344", true), mine), "");
+        assert_eq!(room_mismatch(&listed("0a0b0c0d", false), mine), protocol_mismatch("0a0b0c0d", mine));
+        assert_eq!(room_mismatch(&listed("", false), mine), "BUILD MISMATCH // HOST UNVERSIONED // UPDATE");
+        // a room a server process hosts: not the player's update alone, the server's room host is what differs
+        assert_eq!(
+            room_mismatch(&listed("8645f524", true), mine),
+            "BUILD MISMATCH // SERVER ROOM HOST 8645F524 YOU 11223344 // UPDATE THE GAME OR TELL THE SERVER OWNER"
+        );
+        assert_eq!(room_mismatch(&listed("", true), mine), "BUILD MISMATCH // SERVER ROOM HOST UNVERSIONED // TELL THE SERVER OWNER");
     }
 
     #[test]
@@ -1205,5 +1250,81 @@ mod admin_join_tests {
         assert!(matches!(&err, NetError::Http { status: 403, code, .. } if code == "ADMIN_OWNER_REQUIRED"), "{err:?}");
         let offline = BackendConfig { offline: true, ..BackendConfig::loopback(1) };
         assert!(matches!(admin_reset_password(&offline, "tok", "runner", None), Err(NetError::Offline)));
+    }
+}
+
+/// The CREATE ROOM / JOIN ROOM round trip against an in-process directory: what a host registers is what a player
+/// resolves, and a room started by another build is refused with a line that says who differs.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod build_mismatch_round_trips {
+    use super::*;
+    use crate::net::protocol;
+    use crate::net::test_directory::{TestDirectory, OWNER, TICKET};
+
+    const GODOT_HOST: &str = "8645f524";
+
+    fn resolve(dir: &TestDirectory, code: &str) -> Resolution {
+        resolve_room(&dir.config(), code, "", "", &protocol::fingerprint(), false)
+    }
+
+    #[test]
+    fn a_room_registered_by_this_build_resolves_for_its_own_creator_on_both_transports() {
+        let dir = TestDirectory::start();
+        for (code, transport) in [("WEBRM", "ws"), ("NATRM", "enet")] {
+            let request = RegisterRoom { code: code.into(), transport: transport.into(), ..RegisterRoom::default() };
+            // the wire carries exactly this build's fingerprint, lower case
+            assert_eq!(request.to_json()["protocol"], json!(protocol::fingerprint()));
+            register_room(&dir.config(), &request).unwrap();
+            match resolve(&dir, &code.to_lowercase()) {
+                Resolution::Found { room, .. } => assert_eq!((room.code.as_str(), room.protocol.as_str(), room.dedicated), (code, protocol::fingerprint().as_str(), false)),
+                other => panic!("{code}: the creator is refused its own room: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_spawned_host_of_this_build_lists_dedicated_and_is_joinable() {
+        let dir = TestDirectory::start();
+        dir.hosted_code("HOSTD");
+        // the owner is not a host: the code takes only the spawn ticket's holder
+        let owner_try = RegisterRoom { code: "HOSTD".into(), transport: "ws".into(), ..RegisterRoom::default() };
+        assert!(matches!(register_room(&dir.config(), &owner_try), Err(NetError::Http { status: 403, .. })));
+        let host = RegisterRoom { code: "HOSTD".into(), spawn_ticket: TICKET.into(), transport: "ws".into(), ..RegisterRoom::default() };
+        register_room(&dir.config(), &host).unwrap();
+        match resolve(&dir, "HOSTD") {
+            Resolution::Found { room, .. } => assert_eq!((room.dedicated, room.owner.as_str()), (true, OWNER)),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_room_started_by_another_build_is_refused_and_the_line_says_who_differs() {
+        let dir = TestDirectory::start();
+        dir.hosted_code("GODOT");
+        // the Godot dedicated host registers its own NetProtocol fingerprint (seen live: 8645f524)
+        let godot = RegisterRoom { code: "GODOT".into(), spawn_ticket: TICKET.into(), transport: "ws".into(), protocol: GODOT_HOST.into(), ..RegisterRoom::default() };
+        register_room(&dir.config(), &godot).unwrap();
+        let mine = protocol::fingerprint();
+        assert_eq!(
+            resolve(&dir, "GODOT"),
+            Resolution::Failed { message: format!("BUILD MISMATCH // SERVER ROOM HOST 8645F524 YOU {} // UPDATE THE GAME OR TELL THE SERVER OWNER", mine.to_uppercase()) }
+        );
+        // a player's own room of another build keeps the plain update line
+        let other = RegisterRoom { code: "OTHER".into(), transport: "ws".into(), protocol: GODOT_HOST.into(), ..RegisterRoom::default() };
+        register_room(&dir.config(), &other).unwrap();
+        assert_eq!(
+            resolve(&dir, "OTHER"),
+            Resolution::Failed { message: format!("BUILD MISMATCH // HOST 8645F524 YOU {} // UPDATE", mine.to_uppercase()) }
+        );
+    }
+
+    #[test]
+    fn a_host_that_sends_no_usable_protocol_is_listed_unversioned() {
+        let dir = TestDirectory::start();
+        for (code, sent) in [("NOPRO", ""), ("UPPER", "ABCDEF01"), ("SHORT", "abc")] {
+            let request = RegisterRoom { code: code.into(), transport: "ws".into(), protocol: sent.into(), ..RegisterRoom::default() };
+            register_room(&dir.config(), &request).unwrap();
+            assert_eq!(resolve(&dir, code), Resolution::Failed { message: "BUILD MISMATCH // HOST UNVERSIONED // UPDATE".into() }, "{code}");
+        }
     }
 }

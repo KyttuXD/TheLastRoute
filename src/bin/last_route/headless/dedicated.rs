@@ -760,6 +760,29 @@ mod tests {
         assert_eq!((o.heartbeat, o.start_relays, o.name.as_str(), o.reconnect_seconds), (false, Some(4), "ROOMBOT", 0.0));
     }
 
+    /// The reported "BUILD MISMATCH when creating a room", from the host's side: the server process of this build lists
+    /// its room with this build's fingerprint, so the player who created it (same build) is let in.
+    #[test]
+    fn the_spawned_host_lists_its_room_with_this_builds_fingerprint_and_the_creator_can_join_it() {
+        use crate::net::test_directory::{TestDirectory, TICKET};
+        let dir = TestDirectory::start();
+        dir.hosted_code("K7M2Q");
+        let cfg = dir.config();
+        let env = |k: &str| (k == "LASTROUTE_SPAWN_TICKET").then(|| TICKET.to_string());
+        let opts = parse_options(&args(&["--headless", "--", "--dedicated-host", "k7m2q", "--ws-rooms"]), &env, &cfg).unwrap();
+        assert_eq!(opts.spawn_ticket, TICKET);
+        assert_eq!(token_from_ticket(&cfg, &opts).unwrap(), "host-token");
+        let sent = dir.posted("/api/enet/rooms/register");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["protocol"], json!(crate::net::protocol::fingerprint()), "the room host registers this build's protocol");
+        assert_eq!((sent[0]["transport"].as_str(), sent[0]["spawnTicket"].as_str()), (Some("ws"), Some(TICKET)));
+        // the creator, a guest of this build, resolves it: listed dedicated, owned by the creator, not refused
+        match api::resolve_room(&cfg, "K7M2Q", "", "", &crate::net::protocol::fingerprint(), false) {
+            api::Resolution::Found { room, .. } => assert!(room.dedicated && room.protocol == crate::net::protocol::fingerprint() && room.owner == "KYTTU", "{room:?}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
     #[test]
     fn bad_command_lines_are_refused_with_a_reason() {
         let cfg = BackendConfig::default();
