@@ -2,7 +2,7 @@
 # Exercises the app's update, offline and rollback logic on a Mac with no GUI interaction. It serves fake "websites" from
 # 127.0.0.1 with python3's http.server (made from the web files bundled in the app, so nothing needs the internet) and runs the
 # app hidden (--self-test) against each, with a throw-away data folder and log. The real data folder and log are not touched.
-#   sh test-update.sh [APP]        APP defaults to ./Last Route Web.app next to this script's parent (~/LastRouteApp)
+#   sh test-update.sh [APP]        APP defaults to ./KYTTU The Last Route.app next to this script's parent (~/LastRouteApp)
 # Scenarios (each prints the log lines that decide it, then PASS or FAIL):
 #   offline    the site is unreachable: the bundled build runs, the update check says offline
 #   update     the site has a newer build: it is downloaded, verified, switched to, and the running page reloads itself into it
@@ -12,8 +12,8 @@
 #   rollback   the new build's wasm is garbage: two failed starts, then the previous build runs, and the bad build is not fetched again
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
-APP="${1:-$HERE/../Last Route Web.app}"
-[ -d "$APP" ] || APP="$HOME/LastRouteApp/Last Route Web.app"
+APP="${1:-$HERE/../KYTTU The Last Route.app}"
+[ -d "$APP" ] || APP="$HOME/LastRouteApp/KYTTU The Last Route.app"
 BIN="$APP/Contents/MacOS/LastRoute"
 WORK="${WORK:-$HOME/LastRouteApp/test-work}"
 PORT="${PORT:-8765}"

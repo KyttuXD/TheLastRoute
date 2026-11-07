@@ -10,7 +10,7 @@ over ssh with no GUI interaction. [What was verified and what was not](#what-is-
 ## What it does
 
 ```
-  Last Route Web.app                         ~/Library/Application Support/LastRoute/
+  KYTTU The Last Route.app                         ~/Library/Application Support/LastRoute/
   ├─ Contents/MacOS/LastRoute  (Objective-C)   ├─ state.json           the pointer: current, previous, bad builds, failures
   └─ Contents/Resources/                       └─ web/<id>/            index.html update.js keys.js hw.js audio.js
        ├─ web/   the bundled build (fallback)                          mq_js_bundle.js last_route.wasm version.json meta.json
@@ -69,7 +69,7 @@ a refusal (the game keeps asking every 0.3 s and the player can use the website 
 From this repo, in any shell that has the ssh alias (Windows Git Bash too):
 
 ```sh
-sh packaging/macos/webapp/remote-build.sh KT-MBP        # copies the sources, builds on the Mac, leaves ~/LastRouteApp/"Last Route Web.app"
+sh packaging/macos/webapp/remote-build.sh KT-MBP        # copies the sources, builds on the Mac, leaves ~/LastRouteApp/"KYTTU The Last Route.app"
 ```
 
 Or on the Mac itself, from a checkout: `sh packaging/macos/webapp/build-app.sh [OUT_DIR]` (default `packaging/macos/webapp/dist`).
@@ -78,11 +78,11 @@ Needs the Command Line Tools only (clang, lipo, iconutil, sips, codesign, curl);
 1. fetches the web files from the website (`SITE_URL`, default the live site) into `web-bundle/` (gitignored) and checks the wasm sha256 against `version.json`
    (`BUNDLE_SRC=dist/web` uses a local web build instead; the wasm is never committed),
 2. compiles `LastRoute.m` for `x86_64` (macOS 10.13+) and `arm64` (11.0+) and joins them with `lipo` (`ARCHS=x86_64` for Intel only),
-3. assembles `Last Route Web.app` (Info.plist from `Info.plist.in`, icon from the game logo PNGs, `shell.js`, `selftest.js`, the web files),
+3. assembles `KYTTU The Last Route.app` (Info.plist from `Info.plist.in`, icon from the game logo PNGs, `shell.js`, `selftest.js`, the web files),
 4. signs it ad hoc (`codesign -s -`, no developer account).
 
-To install: `cp -R ~/LastRouteApp/"Last Route Web.app" /Applications/` (or `~/Applications`), then `open -a "Last Route Web"`. An app copied by
-scp or tar has no quarantine flag and just opens; one downloaded in a browser needs `xattr -dr com.apple.quarantine "Last Route Web.app"` once, because an
+To install: `cp -R ~/LastRouteApp/"KYTTU The Last Route.app" /Applications/` (or `~/Applications`), then `open -a "KYTTU The Last Route"`. An app copied by
+scp or tar has no quarantine flag and just opens; one downloaded in a browser needs `xattr -dr com.apple.quarantine "KYTTU The Last Route.app"` once, because an
 ad-hoc signature is not a notarized one. Updating the *app* (new code) means building and copying it again; updating the *game* never needs that.
 
 Measured: the build takes about 8 s on KT-MBP (universal, web files already fetched about 2 s more); the app is 31 MB (30.5 MB of it the web files); each

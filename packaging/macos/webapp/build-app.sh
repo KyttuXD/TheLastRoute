@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds "Last Route Web.app" on a Mac with the Command Line Tools (clang, lipo, iconutil, sips, codesign, curl): no Xcode project.
+# Builds "KYTTU The Last Route.app" on a Mac with the Command Line Tools (clang, lipo, iconutil, sips, codesign, curl): no Xcode project.
 #   sh build-app.sh [OUT_DIR]          OUT_DIR defaults to ./dist next to this script
 # The web files bundled into the app are fetched from the website at build time (never committed):
 #   SITE_URL=https://...    the site to fetch from (default the live game site)
@@ -15,7 +15,7 @@ SITE_URL="${SITE_URL%/}"
 BUNDLE_SRC="${BUNDLE_SRC:-}"
 ARCHS="${ARCHS:-x86_64 arm64}"
 VERSION="${VERSION:-$(sed -n 's/^#define APP_VERSION @"\(.*\)"$/\1/p' "$HERE/LastRoute.m")}"
-APP="$OUT/Last Route Web.app"
+APP="$OUT/KYTTU The Last Route.app"
 WEB="$HERE/web-bundle"
 FILES="index.html update.js keys.js hw.js audio.js mq_js_bundle.js last_route.wasm"
 

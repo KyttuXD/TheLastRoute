@@ -2,7 +2,7 @@
 # Builds the app on a Mac over ssh, from any shell that has the ssh alias (Windows Git Bash included).
 #   sh packaging/macos/webapp/remote-build.sh [HOST]          HOST defaults to KT-MBP
 # Copies this folder (and the logo PNGs for the icon) to ~/LastRouteApp/src on the Mac, runs build-app.sh there and leaves
-# ~/LastRouteApp/Last Route Web.app. Nothing else on the Mac is touched. FETCH=1 also copies the app back to ./dist.
+# ~/LastRouteApp/KYTTU The Last Route.app. Nothing else on the Mac is touched. FETCH=1 also copies the app back to ./dist.
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 HOST="${1:-KT-MBP}"
@@ -15,6 +15,6 @@ tar -C "$BRANDING" -cf - logo_16.png logo_32.png logo_64.png logo_128.png logo_2
 ssh "$HOST" "cd \"\$HOME/$REMOTE/src\" && sh build-app.sh \"\$HOME/$REMOTE\""
 if [ "${FETCH:-0}" = 1 ]; then
     mkdir -p "$HERE/dist"
-    ssh "$HOST" "cd \"\$HOME/$REMOTE\" && tar -cf - \"Last Route Web.app\"" | tar -C "$HERE/dist" -xf -
-    echo "copied to $HERE/dist/Last Route Web.app"
+    ssh "$HOST" "cd \"\$HOME/$REMOTE\" && tar -cf - \"KYTTU The Last Route.app\"" | tar -C "$HERE/dist" -xf -
+    echo "copied to $HERE/dist/KYTTU The Last Route.app"
 fi
