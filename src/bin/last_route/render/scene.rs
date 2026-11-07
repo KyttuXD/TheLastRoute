@@ -435,14 +435,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
             continue;
         }
         let base = vec3(p.pos.0, ground(p.pos.0, p.pos.1), p.pos.1);
-        // lit like the floor (mode 0): unlit, the pad read as a flat blue hole in the floor
-        b.cube(
-            base + vec3(0.0, 0.006, 0.0),
-            vec3(0.56, 0.01, 0.56),
-            0.4,
-            Color::new(TOOL.r * 0.35, TOOL.g * 0.35, TOOL.b * 0.4, 1.0),
-            0.0,
-        );
+        // no pad under the pickup: the item model sits on the floor by itself
         match item_model(a, item_file(p.item)) {
             // configure_tool_pickup: scale .72 (stim x1.3), lifted .10, tipped -18 deg and turned 25 deg
             Some(m) => {
