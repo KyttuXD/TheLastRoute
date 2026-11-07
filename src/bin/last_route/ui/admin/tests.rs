@@ -496,3 +496,210 @@ fn summon_all_leaves_the_wolf_spiders_to_their_own_level() {
     assert!(g.hunters.len() > before);
     assert!(g.hunters.iter().all(|h| !h.def.id.ends_with("wolf_spider")), "summon all never brings them to level 0");
 }
+
+// ---- RESET PASSWORD (password.rs): the FIELDS action for full admin owners ----------------------------------------
+
+use super::password::{canonical_username, failure_text, Notice, RESET_FIELD};
+use crate::net::api::PasswordReset;
+use crate::net::{BackendConfig, NetError, Pending};
+
+fn http_error(status: u16, code: &str, error: &str) -> NetError {
+    NetError::Http { status, code: code.into(), error: error.into(), body: serde_json::Value::Null }
+}
+
+fn temporary(name: &str) -> PasswordReset {
+    PasswordReset { username: name.into(), temporary_password: Some("K7QF-2MXD-H9TA-WP4C".into()), sessions_revoked: 2 }
+}
+
+/// An admin that is a full owner, as the app sets it from the server's flag.
+fn owner_admin() -> Admin {
+    let mut a = Admin::new();
+    a.enabled = true;
+    a.owner = true;
+    a
+}
+
+#[test]
+fn the_reset_password_field_is_the_last_one_in_the_data() {
+    assert_eq!(menu().fields[RESET_FIELD].0, "RESET PASSWORD");
+    assert_eq!(RESET_FIELD, menu().fields.len() - 1, "hiding it must not move the other fields");
+    assert_eq!(Admin::new().fields.len(), menu().fields.len());
+}
+
+#[test]
+fn only_a_full_admin_owner_sees_the_reset_password_field() {
+    let mut a = Admin::new();
+    assert!(!a.owner, "nobody is an owner until the server says so");
+    a.enabled = true;
+    assert!(!a.field_visible(RESET_FIELD) && a.field_count() == menu().fields.len() - 1);
+    assert!((0..RESET_FIELD).all(|i| a.field_visible(i)), "the other fields are for every admin");
+    a.owner = true;
+    assert!(a.field_visible(RESET_FIELD) && a.field_count() == menu().fields.len());
+    // an owner flag without the admin gate gives nothing (signed out, or not the admin any more)
+    a.enabled = false;
+    assert!(!a.field_visible(RESET_FIELD));
+}
+
+#[test]
+fn a_limited_admin_cannot_ask_for_a_reset() {
+    let (mut g, content) = game();
+    let mut a = Admin::new();
+    a.enabled = true;
+    a.fields[RESET_FIELD] = "runner".into();
+    a.run_cmd(Cmd::Field(RESET_FIELD), &mut g, &content, &hunter_list(&content));
+    assert!(g.message.contains("FULL ADMIN"), "{}", g.message);
+    assert!(a.reset.request.is_none() && !a.reset_busy(), "nothing is queued for the app to send");
+    assert_eq!(a.fields[RESET_FIELD], "runner", "the field is left alone");
+}
+
+#[test]
+fn the_owner_queues_one_reset_for_a_valid_name_and_the_field_clears() {
+    let (mut g, content) = game();
+    let mut a = owner_admin();
+    for bad in ["", "  ", "no", "has space", "semi;colon", &"A".repeat(25)] {
+        a.fields[RESET_FIELD] = bad.to_string();
+        a.run_cmd(Cmd::Field(RESET_FIELD), &mut g, &content, &hunter_list(&content));
+        assert!(g.message.contains("TYPE THE ACCOUNT NAME"), "{bad:?}: {}", g.message);
+        assert!(!a.reset_busy(), "{bad:?}");
+    }
+    a.fields[RESET_FIELD] = " runner_1 ".into();
+    a.run_cmd(Cmd::Field(RESET_FIELD), &mut g, &content, &hunter_list(&content));
+    assert!(g.message.contains("RESETTING THE PASSWORD OF RUNNER_1"), "{}", g.message);
+    assert_eq!(a.reset.request.as_deref(), Some("RUNNER_1"));
+    assert!(a.fields[RESET_FIELD].is_empty());
+    // a second ask while the first is outstanding does nothing
+    a.fields[RESET_FIELD] = "other".into();
+    a.run_cmd(Cmd::Field(RESET_FIELD), &mut g, &content, &hunter_list(&content));
+    assert!(g.message.contains("ALREADY RUNNING"), "{}", g.message);
+    assert_eq!(a.reset.request.as_deref(), Some("RUNNER_1"));
+    assert!(!g.message.contains("NEEDS THE PRIMARY SERVER"));
+}
+
+#[test]
+fn the_other_fields_still_run_as_before() {
+    let (mut g, content) = game();
+    let mut a = owner_admin();
+    a.fields[2] = "someone".into();
+    a.run_cmd(Cmd::Field(2), &mut g, &content, &hunter_list(&content));
+    assert!(g.message.contains("NEEDS THE PRIMARY SERVER"), "{}", g.message);
+    assert!(!a.reset_busy());
+}
+
+#[test]
+fn canonical_names_follow_the_server_rule() {
+    assert_eq!(canonical_username(" ada_1 ").as_deref(), Some("ADA_1"));
+    assert_eq!(canonical_username(&"a".repeat(24)).as_deref(), Some("A".repeat(24).as_str()));
+    for bad in ["", "ab", "a b", "a-b", "über", &"a".repeat(25)] {
+        assert_eq!(canonical_username(bad), None, "{bad:?}");
+    }
+}
+
+#[test]
+fn a_generated_password_opens_a_message_box_on_the_fields_tab() {
+    let mut a = owner_admin();
+    a.reset.pending = Some(("RUNNER".into(), Pending::done(Ok(temporary("RUNNER")))));
+    assert!(!a.is_open());
+    a.poll_password_reset();
+    assert!(a.reset.pending.is_none());
+    let notice = a.reset.notice.as_ref().expect("the answer opens the message box");
+    assert_eq!(notice.password.as_deref(), Some("K7QF-2MXD-H9TA-WP4C"), "the COPY button copies exactly this");
+    assert_eq!(notice.heading, "PASSWORD RESET");
+    let text = notice.lines.join(" ");
+    assert!(text.contains("RUNNER") && text.contains("SHOWN ONCE") && text.contains("2 OPEN SESSIONS"), "{text}");
+    assert!(!text.contains("K7QF"), "the password is drawn in its own row, not in a line of text");
+    assert!(a.is_open(), "the menu opens so the box can be clicked");
+    assert_eq!(a.tab, 9);
+    // CLOSE drops the box and the password with it
+    a.close_notice();
+    assert!(a.reset.notice.is_none());
+}
+
+#[test]
+fn a_typed_password_is_not_shown_back_and_a_failure_says_why() {
+    let typed = PasswordReset { username: "RUNNER".into(), temporary_password: None, sessions_revoked: 1 };
+    let notice = Notice::success(&typed, "RUNNER");
+    assert_eq!(notice.password, None);
+    assert!(notice.lines.join(" ").contains("NEW PASSWORD"));
+    let mut a = owner_admin();
+    a.reset.pending = Some(("GHOST".into(), Pending::done(Err(http_error(404, "ACCOUNT_NOT_FOUND", "Account was not found")))));
+    a.poll_password_reset();
+    let notice = a.reset.notice.as_ref().unwrap();
+    assert_eq!((notice.heading.as_str(), notice.password.as_ref()), ("RESET FAILED", None));
+    assert_eq!(notice.lines, ["NO ACCOUNT NAMED GHOST"]);
+}
+
+#[test]
+fn every_refusal_has_a_player_facing_line() {
+    let line = |e: NetError| failure_text(&e, "RUNNER");
+    assert!(line(NetError::Offline).starts_with("OFFLINE"));
+    assert!(line(http_error(401, "NO_SESSION", "x")).contains("SIGN IN AGAIN"));
+    assert!(line(http_error(403, "ADMIN_OWNER_REQUIRED", "x")).contains("FULL ADMIN"));
+    assert_eq!(line(http_error(404, "ACCOUNT_NOT_FOUND", "x")), "NO ACCOUNT NAMED RUNNER");
+    assert!(line(http_error(404, "UNKNOWN_ENDPOINT", "x")).contains("CANNOT RESET"));
+    assert!(line(http_error(400, "USE_PASSWORD_CHANGE", "x")).contains("OWN ACCOUNT"));
+    assert!(line(http_error(400, "INVALID_USERNAME", "x")).contains("NOT A VALID"));
+    assert!(line(http_error(429, "RATE_LIMITED", "x")).contains("TOO MANY"));
+    assert_eq!(line(http_error(500, "", "")), "THE SERVER ANSWERED 500");
+    assert_eq!(line(http_error(502, "", "bad gateway")), "BAD GATEWAY");
+    assert!(line(NetError::Timeout).contains("DID NOT ANSWER"));
+    assert!(line(NetError::Transport("refused".into())).contains("COULD NOT REACH"));
+    assert_eq!(line(NetError::Refused("Sign in first".into())), "SIGN IN FIRST");
+}
+
+/// Waits for a started request to land (the request runs on a worker thread).
+fn settle(a: &mut Admin) {
+    for _ in 0..400 {
+        a.poll_password_reset();
+        if a.reset.pending.is_none() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the reset never finished");
+}
+
+#[test]
+fn the_app_sends_a_queued_reset_once_and_only_with_a_session() {
+    // offline: the client refuses before sending anything
+    let offline = BackendConfig { offline: true, ..BackendConfig::loopback(1) };
+    let mut a = owner_admin();
+    a.reset.request = Some("RUNNER".into());
+    a.run_password_reset(&offline, "session-token");
+    assert!(a.reset.request.is_none() && a.reset.pending.is_some(), "the request is on its way");
+    a.run_password_reset(&offline, "session-token"); // nothing queued: no second request
+    settle(&mut a);
+    assert!(a.reset.notice.as_ref().unwrap().lines[0].starts_with("OFFLINE"));
+
+    // no session token: refused locally, the server is never asked
+    let mut b = owner_admin();
+    b.reset.request = Some("RUNNER".into());
+    b.run_password_reset(&BackendConfig::loopback(1), "");
+    settle(&mut b);
+    assert!(b.reset.notice.as_ref().unwrap().lines[0].contains("SIGN IN"));
+
+    // with nothing queued the call does nothing at all
+    let mut c = owner_admin();
+    c.run_password_reset(&BackendConfig::loopback(1), "session-token");
+    assert!(!c.reset_busy());
+}
+
+#[test]
+fn signing_out_drops_a_password_waiting_in_the_message_box() {
+    let (mut g, _) = game();
+    let mut a = owner_admin();
+    a.reset.notice = Some(Notice::success(&temporary("RUNNER"), "RUNNER"));
+    a.reset.request = Some("OTHER".into());
+    a.enabled = false;
+    assert!(!a.input(&mut g));
+    assert!(a.reset.notice.is_none() && !a.reset_busy(), "nothing of a reset outlives the admin's sign-in");
+}
+
+#[test]
+fn reset_all_does_not_touch_a_reset_in_flight_and_clears_the_typed_name() {
+    let mut a = owner_admin();
+    a.fields[RESET_FIELD] = "runner".into();
+    a.reset.request = Some("RUNNER".into());
+    a.reset_all();
+    assert!(a.fields.iter().all(|f| f.is_empty()));
+    assert!(a.reset.request.is_some(), "RESET ALL SETTINGS is about switches, not a request already made");
+}

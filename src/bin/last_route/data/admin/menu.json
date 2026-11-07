@@ -171,6 +171,7 @@
   "fields": [
     { "label": "SAFE TELEPORT", "placeholder": "X,Z or X,Z,LEVEL" },
     { "label": "ADD / UPDATE LIMITED ADMIN", "placeholder": "USERNAME:player,world,hunters,visual,inventory" },
-    { "label": "REMOVE LIMITED ADMIN", "placeholder": "USERNAME" }
+    { "label": "REMOVE LIMITED ADMIN", "placeholder": "USERNAME" },
+    { "label": "RESET PASSWORD", "placeholder": "USERNAME" }
   ]
 }

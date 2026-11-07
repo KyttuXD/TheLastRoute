@@ -233,9 +233,10 @@ mod tests {
         assert_eq!(m.npc_all[10], ("all_smart", "ALL SMART"));
         assert_eq!(m.npc_smarts, vec![30, 50, 70, 90]);
         assert_eq!(m.npc_spawn_max, 32);
-        assert_eq!(m.fields.len(), 3);
+        assert_eq!(m.fields.len(), 4);
         assert_eq!(m.fields[0], ("SAFE TELEPORT", "X,Z or X,Z,LEVEL"));
         assert_eq!(m.fields[2], ("REMOVE LIMITED ADMIN", "USERNAME"));
+        assert_eq!(m.fields[3], ("RESET PASSWORD", "USERNAME"));
     }
 
     /// Changing a value in the data changes what the menu holds (the labels, ids and numbers).

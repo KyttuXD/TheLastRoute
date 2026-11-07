@@ -186,7 +186,7 @@ Sources: the website game at KyttusLab/games/night-watch (src/modes, docs/ROADMA
 - [ ] Sessions expire on the server, and a session token from one PC is refused on another after sign-out
 - [ ] Saved sessions are per server: the primary server and any local test server keep separate sessions (the account config sections)
 - [ ] Password change and account deletion from ACCOUNT SETTINGS, with a confirmation step
-- [ ] Password reset path for players who lose their password (contact flow or recovery code), decided first in OPEN_QUESTIONS
+- [ ] Password reset path for players who lose their password (contact flow or recovery code), decided first in OPEN_QUESTIONS. Done for admins (2026-11-06): `lr_server reset-password`, `POST /api/admin/account/reset-password` and the admin menu's RESET PASSWORD field, see docs/SERVERS.md; a player-facing self-service path is still open
 - [ ] Account saves: each account's run saves go through /api/v1/saves/:gameId/:slot, with the same slot rules as the website
 - [ ] Website and desktop accounts share one account store, so a name signed up on one works on the other
 - [ ] Migration: existing accounts in data/accounts.json load without loss, and the old session format still signs in once

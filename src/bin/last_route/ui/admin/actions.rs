@@ -382,6 +382,11 @@ impl Admin {
                 let text = self.fields[i].trim().to_string();
                 match i {
                     0 => self.teleport_coordinates(g, content, &text),
+                    // an owner's RESET PASSWORD: the app sends it (Admin::run_password_reset) and the answer opens a message box
+                    super::password::RESET_FIELD => {
+                        let line = self.ask_password_reset(&text);
+                        g.say(&line);
+                    }
                     _ => g.say(&format!(
                         "ADMIN ROSTER FAILED // {} NEEDS THE PRIMARY SERVER",
                         menu().fields[i].0

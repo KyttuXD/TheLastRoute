@@ -116,13 +116,13 @@ fn derive(password: &str, salt: &str) -> Vec<u8> {
 }
 
 /// `{ salt, hash }` for a new password.
-fn password_record(password: &str) -> (String, String) {
+pub(crate) fn password_record(password: &str) -> (String, String) {
     let salt = hex(&random_bytes(16));
     let hash = hex(&derive(password, &salt));
     (salt, hash)
 }
 
-fn password_matches(password: &str, salt: Option<&Value>, hash: Option<&Value>) -> bool {
+pub(crate) fn password_matches(password: &str, salt: Option<&Value>, hash: Option<&Value>) -> bool {
     let expected = from_hex(&str_or_empty(hash));
     let actual = derive(password, &str_or_empty(salt));
     expected.len() == actual.len() && timing_safe_equal(&expected, &actual)
@@ -133,12 +133,20 @@ fn username_of(value: Option<&Value>) -> String {
     username_of_str(&str_or_empty(value))
 }
 
-fn username_of_str(text: &str) -> String {
+pub(crate) fn username_of_str(text: &str) -> String {
     js_slice(&js_trim(text).to_uppercase(), 24)
 }
 
+/// The canonical form of a name used as typed: trimmed and upper-cased, NOT cut to 24 characters. `None` when it is not
+/// a valid name. The password resets use this instead of `username_of_str`, which cuts a long name to 24 characters and
+/// so could reset a different account than the one that was typed.
+pub(crate) fn exact_username(text: &str) -> Option<String> {
+    let name = js_trim(text).to_uppercase();
+    valid_username(&name).then_some(name)
+}
+
 /// `/^[A-Z0-9_]{3,24}$/`.
-fn valid_username(name: &str) -> bool {
+pub(crate) fn valid_username(name: &str) -> bool {
     (3..=24).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
 }
 
@@ -188,8 +196,16 @@ fn invalid_username() -> Reply {
     fail(400, "INVALID_USERNAME", "Username must be 3-24 characters: letters, numbers, underscore")
 }
 
+/// What a refused password says (register, password change, the admin reset and the offline reset all share it).
+pub const WEAK_PASSWORD_MESSAGE: &str = "Password must be 6-200 characters";
+
+/// The register rule for a new password: 6 to 200 characters (UTF-16 code units, like `string.length`).
+pub fn password_is_valid(password: &str) -> bool {
+    (MIN_PASSWORD_LENGTH..=MAX_PASSWORD_LENGTH).contains(&js_len(password))
+}
+
 fn weak_password() -> Reply {
-    fail(400, "WEAK_PASSWORD", "Password must be 6-200 characters")
+    fail(400, "WEAK_PASSWORD", WEAK_PASSWORD_MESSAGE)
 }
 
 fn owner_required() -> Reply {
@@ -363,7 +379,7 @@ impl AccountService {
     }
 
     fn valid_password(password: Option<&Value>) -> bool {
-        matches!(password, Some(Value::String(p)) if (MIN_PASSWORD_LENGTH..=MAX_PASSWORD_LENGTH).contains(&js_len(p)))
+        matches!(password, Some(Value::String(p)) if password_is_valid(p))
     }
 
     /// `{ admin, adminOwner, adminPermissions }` for a username.
@@ -737,6 +753,63 @@ impl AccountService {
         account.insert("adminPermissions".into(), json!([]));
         self.persist(&state);
         (200, json!({ "ok": true, "username": username, "removed": true }))
+    }
+
+    /// POST /api/admin/account/reset-password `{sessionToken, username, newPassword?}`: a full admin owner sets another
+    /// account's password and every session of that account ends. Without `newPassword` a one-time temporary password is
+    /// generated and returned once as `temporaryPassword`; a password the owner typed is never echoed back. Neither is
+    /// logged. The owner's own account is refused (a reset signs the account out; use the password change instead).
+    pub fn admin_reset_password(&self, body: &Value) -> Reply {
+        if let Some(reply) = self.forward("/api/admin/account/reset-password", body) {
+            return reply;
+        }
+        let token = str_or_empty(field(body, "sessionToken"));
+        let requester = {
+            let mut state = self.lock();
+            self.session_user(&mut state, &token)
+        };
+        let Some(requester) = requester else {
+            return fail(401, "NO_SESSION", "Sign in with a full admin account");
+        };
+        if !is_admin_owner_username(&requester) {
+            return owner_required();
+        }
+        let Some(username) = exact_username(&str_or_empty(field(body, "username"))) else {
+            return invalid_username();
+        };
+        if username == requester {
+            return fail(400, "USE_PASSWORD_CHANGE", "Change your own password from the account panel");
+        }
+        let (password, generated) = match field(body, "newPassword") {
+            None | Some(Value::Null) => (super::password_reset::generate_temporary_password(), true),
+            Some(Value::String(typed)) if password_is_valid(typed) => (typed.clone(), false),
+            Some(_) => return weak_password(),
+        };
+        let not_found = || fail(404, "ACCOUNT_NOT_FOUND", "Account was not found");
+        if !self.lock().accounts.contains_key(&username) {
+            return not_found();
+        }
+        // The slow scrypt runs outside the lock, like register and the password change.
+        let (salt, hash) = password_record(&password);
+        let mut state = self.lock();
+        let Some(account) = state.accounts.get_mut(&username) else {
+            return not_found();
+        };
+        account.insert("salt".into(), json!(salt));
+        account.insert("hash".into(), json!(hash));
+        let before = state.sessions.len();
+        state.sessions.retain(|_, session| session.username != username);
+        let revoked = before - state.sessions.len();
+        self.persist(&state);
+        let mut out = Map::new();
+        out.insert("ok".into(), Value::Bool(true));
+        out.insert("username".into(), json!(username));
+        out.insert("generated".into(), Value::Bool(generated));
+        out.insert("sessionsRevoked".into(), json!(revoked));
+        if generated {
+            out.insert("temporaryPassword".into(), json!(password));
+        }
+        (200, Value::Object(out))
     }
 
     /// `isAdminOwner(name)`: one of the built-in full-admin usernames (whether or not the account exists).

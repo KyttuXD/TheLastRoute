@@ -62,7 +62,7 @@ pub const RESERVED_TAKEOVER_MS: i64 = 30_000;
 pub const WS_PATH: &str = "/api/ws";
 /// The biggest skin PNG: 64 KB, the one number of `skins/skins.rs` (and of the game's validator).
 pub const SKIN_MAX_BYTES: usize = crate::skins::skins::SKIN_MAX_BYTES;
-pub const ACCOUNT_RATE_LIMIT_PATHS: [&str; 17] = [
+pub const ACCOUNT_RATE_LIMIT_PATHS: [&str; 18] = [
     "/api/guest/name",
     "/api/account/register",
     "/api/account/login",
@@ -72,6 +72,7 @@ pub const ACCOUNT_RATE_LIMIT_PATHS: [&str; 17] = [
     "/api/admin/roster",
     "/api/admin/roster/set",
     "/api/admin/roster/remove",
+    "/api/admin/account/reset-password",
     "/api/dev/login",
     "/api/dev/reload",
     "/api/enet/admin-tickets/issue",
@@ -888,6 +889,21 @@ pub fn service_token_from(env: &HashMap<String, String>) -> Option<String> {
     env.get("LASTROUTE_SERVICE_TOKEN").map(|value| value.trim()).filter(|value| value.chars().count() >= 32).map(str::to_string)
 }
 
+/// The data directory the server uses: `LASTROUTE_DATA_DIR`, else `KYTTU_DATA_DIR` (both relative to `cwd`), else `.data`.
+pub fn data_dir_from(env: &HashMap<String, String>, cwd: &Path) -> PathBuf {
+    let path_of = |name: &str| env.get(name).map(|v| v.trim()).filter(|v| !v.is_empty()).map(|v| cwd.join(v));
+    path_of("LASTROUTE_DATA_DIR").or_else(|| path_of("KYTTU_DATA_DIR")).unwrap_or_else(|| cwd.join(".data"))
+}
+
+/// Where the server keeps `accounts.json`: `LASTROUTE_ACCOUNT_STORE`, else `KYTTU_ACCOUNT_STORE_PATH`, else
+/// `accounts.json` in the data directory. The offline password reset resolves the file the same way.
+pub fn account_store_path_from(env: &HashMap<String, String>, cwd: &Path) -> PathBuf {
+    let path_of = |name: &str| env.get(name).map(|v| v.trim()).filter(|v| !v.is_empty()).map(|v| cwd.join(v));
+    path_of("LASTROUTE_ACCOUNT_STORE")
+        .or_else(|| path_of("KYTTU_ACCOUNT_STORE_PATH"))
+        .unwrap_or_else(|| data_dir_from(env, cwd).join("accounts.json"))
+}
+
 pub fn options_from_environment(env: &HashMap<String, String>, cwd: &Path) -> Result<EnvironmentConfig, String> {
     let get = |name: &str| env.get(name).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
     let account_upstream = get("LASTROUTE_ACCOUNT_UPSTREAM")
@@ -905,10 +921,8 @@ pub fn options_from_environment(env: &HashMap<String, String>, cwd: &Path) -> Re
         .unwrap()
         .is_match(env.get("LASTROUTE_RELAY_ENABLED").filter(|v| !v.is_empty()).map(String::as_str).unwrap_or("true"));
     let relay_address = get("LASTROUTE_RELAY_HOST").unwrap_or_else(|| "lastroute.kyttuslab.org".into());
-    let data = path_of("LASTROUTE_DATA_DIR").or_else(|| path_of("KYTTU_DATA_DIR")).unwrap_or_else(|| cwd.join(".data"));
-    let accounts = path_of("LASTROUTE_ACCOUNT_STORE")
-        .or_else(|| path_of("KYTTU_ACCOUNT_STORE_PATH"))
-        .unwrap_or_else(|| data.join("accounts.json"));
+    let data = data_dir_from(env, cwd);
+    let accounts = account_store_path_from(env, cwd);
     let custom = path_of("LASTROUTE_CUSTOM_MAP_DIR").or_else(|| Some(cwd.join("assets/custom_maps")).filter(|p| p.exists()));
     let manifest = path_of("LASTROUTE_UPDATE_MANIFEST");
     let mut updates = json!({});

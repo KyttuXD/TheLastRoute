@@ -38,6 +38,18 @@ on one, the hint line under the menu says what is missing. Clicking it answers
 `ADMIN // <LABEL> IS NOT IN THIS BUILD YET`. Each id must be in exactly one of the two lists (a test checks it), so
 moving a command to `npc_live` is the whole change once the game can do it.
 
+## RESET PASSWORD (FIELDS tab, full admin owners)
+
+The fourth FIELDS line edit sets another account's password through `POST /api/admin/account/reset-password`
+(`net::api::admin_reset_password`, `ui/admin/password.rs`). It exists only while the signed-in account is a full admin
+owner (KYTTU or AYTTU: `Admin::owner`, which the app sets from the server's `adminOwner` flag each frame); nobody else sees
+the field or the button, and the server refuses a non-owner anyway. Type the account name (3 to 24 letters, numbers or `_`)
+and press Enter or RESET PASSWORD. The server generates a temporary password, signs that account out everywhere and answers
+with the password once; a message box shows it with COPY (clipboard) and CLOSE (Esc closes it too). Nothing stores or
+logs the password: it is gone when the box closes. Your own account is refused (use the account panel). The field is the
+last entry of `fields` in `data/admin/menu.json` (a test pins that, so hiding it moves nothing). Lost-password steps for
+the live server, including the offline command, are in docs/SERVERS.md.
+
 ## Preferences
 
 `admin.cfg` in the user folder (`prefs.rs`): no_target, god_mode, noclip, map_reveal, region_map,

@@ -16,6 +16,9 @@
 //! `lr_server --check` builds the server from the environment, prints the resolved configuration and exits.
 //! `lr_server --check-pack <folder>` checks a mod pack folder (see `pack_check`) without starting the server; it
 //! exits 0 when the folder is clean and 1 when it has errors.
+//! `lr_server reset-password USERNAME [--password P | --password-stdin] [--data-dir DIR] [--force]` sets an account's
+//! password in `accounts.json` while the server is stopped (`lr_server reset-password --list` shows the names); see
+//! `accounts/password_reset.rs` and docs/SERVERS.md ("Lost password / admin reset").
 
 
 mod accounts;
@@ -28,7 +31,7 @@ mod saves;
 mod skins;
 
 // Re-exports keep the flat `crate::module` paths short.
-use accounts::{account_service, guest_names};
+use accounts::{account_service, guest_names, password_reset};
 use common::{upstream, util};
 use ops::{crash_reports, env_file, moderation};
 use packs::{mod_packs, pack_check, pack_kinds, regions};
@@ -72,17 +75,43 @@ fn run_pack_check(folder: Option<&str>) -> i32 {
     }
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(at) = args.iter().position(|a| a == "--check-pack") {
-        std::process::exit(run_pack_check(args.get(at + 1).map(String::as_str)));
-    }
-    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+/// Loads `backend/.env` and then `.env` from `cwd` into the environment (real environment variables win).
+fn load_environment_files(cwd: &Path) {
     for file in [cwd.join("backend").join(".env"), cwd.join(".env")] {
         if let Err(error) = crate::env_file::load_environment_file(&file) {
             util::log_error(&format!("Could not read {}: {error}", file.display()));
         }
     }
+}
+
+/// `reset-password`: the offline lost-password command. Returns the exit status.
+fn run_reset_password(args: &[String]) -> i32 {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    load_environment_files(&cwd);
+    let env: HashMap<String, String> = std::env::vars().collect();
+    let now_ms = (util::system_clock())();
+    let stdin = std::io::stdin();
+    password_reset::run_cli(
+        args,
+        &env,
+        &cwd,
+        now_ms,
+        &mut stdin.lock(),
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    )
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(at) = args.iter().position(|a| a == "--check-pack") {
+        std::process::exit(run_pack_check(args.get(at + 1).map(String::as_str)));
+    }
+    if args.get(1).map(String::as_str) == Some("reset-password") {
+        std::process::exit(run_reset_password(&args[2..]));
+    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    load_environment_files(&cwd);
     let env: HashMap<String, String> = std::env::vars().collect();
     let config = match options_from_environment(&env, &cwd) {
         Ok(config) => config,
@@ -95,6 +124,28 @@ fn main() {
     let updates = config.options.updates.clone();
     let relay_enabled = config.relay_enabled;
     let upstream = config.options.account_upstream.as_ref().map(|upstream| upstream.authority().to_string());
+    // The server keeps the accounts in memory and rewrites accounts.json on every change, so it holds an exclusive
+    // lock on the file's `.lock` neighbour for as long as it runs. `reset-password` refuses to edit the file while the
+    // lock is held. A second server on the same data folder would clobber the first one's accounts: it does not start.
+    // (A restart waits a few seconds for the old process or a finishing reset to let go.)
+    let _store_lock = if check_only || upstream.is_some() {
+        None
+    } else {
+        match password_reset::lock_store_waiting(&config.account_store_path, std::time::Duration::from_secs(5)) {
+            password_reset::StoreLock::Held(lock) => Some(lock),
+            password_reset::StoreLock::InUse => {
+                util::log_error(&format!(
+                    "Another lr_server (or a password reset) is using {}: not starting",
+                    config.account_store_path.display()
+                ));
+                std::process::exit(1);
+            }
+            password_reset::StoreLock::Unavailable(why) => {
+                util::log_warn(&format!("Account store lock unavailable ({why}); running without it"));
+                None
+            }
+        }
+    };
     let server = Arc::new(LastRouteServer::new(config.options));
     let address = format!("{}:{}", config.host, config.http_port);
     util::log_info(&format!("Last Route backend (rust) listening on http://{address}"));

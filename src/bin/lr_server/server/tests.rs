@@ -976,3 +976,176 @@ fn a_keep_alive_from_the_relay_host_keeps_its_relay_made_entry_past_the_ttl_and_
     assert_eq!(alive(true), 200, "the live relay host's entry lapsed");
     assert_eq!(alive(false), 404, "a keep-alive from another endpoint refreshed the entry");
 }
+
+// --- POST /api/admin/account/reset-password: an owner sets another account's password
+const RESET_PATH: &str = "/api/admin/account/reset-password";
+// obviously fake test passwords
+const TYPED_PASSWORD: &str = "fake-typed-password-9";
+const OWNER_PROOF: &str = "fake setup proof";
+
+fn reset_app(store: Option<PathBuf>) -> LastRouteServer {
+    app(move |o| {
+        o.account_store_path = store;
+        o.admin_password = OWNER_PROOF.into();
+        o.account_rate_limit_max = 10_000;
+    })
+}
+
+fn login_status(server: &LastRouteServer, name: &str, password: &str) -> u16 {
+    post(server, "/api/account/login", json!({ "username": name, "password": password })).0
+}
+
+#[test]
+fn an_owner_resets_a_password_with_a_generated_one_shown_once_and_the_accounts_sessions_end() {
+    let root = temp_root("pwreset");
+    let store = root.join("accounts.json");
+    let server = reset_app(Some(store.clone()));
+    let owner = sign_up(&server, "KYTTU", json!({ "adminProof": OWNER_PROOF }));
+    let first = sign_up(&server, "Runner", json!({}));
+    let (_, second_login) = post(&server, "/api/account/login", json!({ "username": "RUNNER", "password": PASSWORD }));
+    let second = second_login["sessionToken"].as_str().unwrap().to_string();
+    let bystander = sign_up(&server, "BYSTANDER", json!({}));
+    assert_eq!(post(&server, "/api/account/save", json!({ "sessionToken": first, "progress": { "depth": 6 } })).0, 200);
+
+    let (status, reply) = post(&server, RESET_PATH, json!({ "sessionToken": owner, "username": " runner " }));
+    assert_eq!(status, 200, "{reply}");
+    assert_eq!(
+        (reply["username"].clone(), reply["generated"].clone(), reply["sessionsRevoked"].clone()),
+        (json!("RUNNER"), json!(true), json!(2))
+    );
+    let temporary = reply["temporaryPassword"].as_str().expect("a generated password is returned once").to_string();
+    assert!(temporary.len() >= 12 && temporary != PASSWORD);
+    assert!(reply.get("hash").is_none() && reply.get("salt").is_none());
+
+    // every session of the account ended; others did not
+    for token in [&first, &second] {
+        let (status, body) = post(&server, "/api/account/session", json!({ "sessionToken": token }));
+        assert_eq!((status, body["code"].clone()), (401, json!("NO_SESSION")));
+    }
+    assert_eq!(post(&server, "/api/account/session", json!({ "sessionToken": bystander })).0, 200);
+    assert_eq!(post(&server, "/api/account/session", json!({ "sessionToken": owner })).0, 200);
+    // the old password fails, the new one signs in, and the account's data is untouched
+    assert_eq!(login_status(&server, "runner", PASSWORD), 401);
+    let (status, login) = post(&server, "/api/account/login", json!({ "username": "runner", "password": temporary }));
+    assert_eq!(status, 200);
+    assert_eq!(login["progress"]["depth"], json!(6));
+
+    // it survives a restart, and no password is written to the file
+    drop(server);
+    let again = reset_app(Some(store.clone()));
+    assert_eq!(login_status(&again, "RUNNER", &temporary), 200);
+    assert_eq!(login_status(&again, "RUNNER", PASSWORD), 401);
+    let text = std::fs::read_to_string(&store).unwrap();
+    assert!(!text.contains(&temporary) && !text.contains(PASSWORD));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_owner_can_choose_the_password_and_it_is_never_echoed_back() {
+    let server = reset_app(None);
+    let owner = sign_up(&server, "KYTTU", json!({ "adminProof": OWNER_PROOF }));
+    sign_up(&server, "RUNNER", json!({}));
+    let (status, reply) =
+        post(&server, RESET_PATH, json!({ "sessionToken": owner, "username": "RUNNER", "newPassword": TYPED_PASSWORD }));
+    assert_eq!(status, 200, "{reply}");
+    assert_eq!(reply["generated"], json!(false));
+    assert!(reply.get("temporaryPassword").is_none());
+    assert!(!reply.to_string().contains(TYPED_PASSWORD));
+    assert_eq!(login_status(&server, "RUNNER", TYPED_PASSWORD), 200);
+    assert_eq!(login_status(&server, "RUNNER", PASSWORD), 401);
+    // another owner can be reset by an owner too (the lost-password worst case), but never your own account
+    let other = sign_up(&server, "AYTTU", json!({ "adminProof": OWNER_PROOF }));
+    let (status, _) = post(&server, RESET_PATH, json!({ "sessionToken": owner, "username": "AYTTU" }));
+    assert_eq!(status, 200);
+    assert_eq!(post(&server, "/api/account/session", json!({ "sessionToken": other })).0, 401);
+    let (status, own) = post(&server, RESET_PATH, json!({ "sessionToken": owner, "username": "kyttu" }));
+    assert_eq!((status, own["code"].clone()), (400, json!("USE_PASSWORD_CHANGE")));
+    assert_eq!(post(&server, "/api/account/session", json!({ "sessionToken": owner })).0, 200, "a refused reset signs nobody out");
+}
+
+#[test]
+fn the_password_reset_is_for_owners_only_and_checks_its_input() {
+    let server = reset_app(None);
+    let owner = sign_up(&server, "KYTTU", json!({ "adminProof": OWNER_PROOF }));
+    let player = sign_up(&server, "PLAYER", json!({}));
+    let limited = sign_up(&server, "MODERATOR", json!({}));
+    let granted = json!({ "sessionToken": owner, "username": "MODERATOR", "permissions": ["world"] });
+    assert_eq!(post(&server, "/api/admin/roster/set", granted).0, 200);
+    sign_up(&server, "TARGET", json!({}));
+
+    // no token or a dead one: 401. A live session that is not an owner (even a limited admin): 403.
+    let dead = [
+        json!({ "username": "TARGET" }),
+        json!({ "sessionToken": "", "username": "TARGET" }),
+        json!({ "sessionToken": "nope", "username": "TARGET" }),
+    ];
+    for body in dead {
+        let (status, reply) = post(&server, RESET_PATH, body);
+        assert_eq!((status, reply["code"].clone()), (401, json!("NO_SESSION")));
+    }
+    for token in [&player, &limited] {
+        let body = json!({ "sessionToken": token, "username": "TARGET", "newPassword": TYPED_PASSWORD });
+        let (status, reply) = post(&server, RESET_PATH, body);
+        assert_eq!((status, reply["code"].clone()), (403, json!("ADMIN_OWNER_REQUIRED")));
+    }
+    // the setup password alone is not an owner session
+    let (status, _) = post(&server, RESET_PATH, json!({ "adminProof": OWNER_PROOF, "username": "TARGET" }));
+    assert_eq!(status, 401);
+    assert_eq!(login_status(&server, "TARGET", PASSWORD), 200, "nothing was changed");
+
+    let (status, reply) = post(&server, RESET_PATH, json!({ "sessionToken": owner, "username": "NOBODY" }));
+    assert_eq!((status, reply["code"].clone()), (404, json!("ACCOUNT_NOT_FOUND")));
+    let (status, reply) = post(&server, RESET_PATH, json!({ "sessionToken": owner, "username": "no" }));
+    assert_eq!((status, reply["code"].clone()), (400, json!("INVALID_USERNAME")));
+    // a name over 24 characters is refused, not cut down to an existing account
+    let long = json!({ "sessionToken": owner, "username": "TARGETxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" });
+    assert_eq!(post(&server, RESET_PATH, long).0, 400);
+    for weak in [json!("short"), json!("x".repeat(201)), json!(123456), json!(""), json!(["a", "b"])] {
+        let body = json!({ "sessionToken": owner, "username": "TARGET", "newPassword": weak });
+        let (status, reply) = post(&server, RESET_PATH, body);
+        assert_eq!((status, reply["code"].clone()), (400, json!("WEAK_PASSWORD")), "{weak}");
+    }
+    assert_eq!(login_status(&server, "TARGET", PASSWORD), 200, "refused requests changed nothing");
+    let null_password = json!({ "sessionToken": owner, "username": "TARGET", "newPassword": null });
+    assert_eq!(post(&server, RESET_PATH, null_password).0, 200, "null means generate one");
+}
+
+#[test]
+fn the_password_reset_shares_the_login_rate_limit() {
+    let server = app(|o| {
+        o.admin_password = OWNER_PROOF.into();
+        o.account_rate_limit_max = 3;
+    });
+    let owner = sign_up(&server, "KYTTU", json!({ "adminProof": OWNER_PROOF }));
+    let attempt = || post(&server, RESET_PATH, json!({ "sessionToken": owner, "username": "NOBODY" })).0;
+    assert_eq!(attempt(), 404); // the sign-up above was the first hit of the shared bucket
+    assert_eq!(attempt(), 404);
+    assert_eq!(attempt(), 429);
+}
+
+#[test]
+fn the_reset_audit_line_names_the_owner_and_the_account_but_never_a_password_or_token() {
+    let generated = "K7QF-2MXD-H9TA-WP4C";
+    let body = json!({ "sessionToken": "tok-secret-token", "username": " runner ", "newPassword": TYPED_PASSWORD });
+    let ok = (
+        200,
+        json!({ "ok": true, "username": "RUNNER", "generated": true, "temporaryPassword": generated, "sessionsRevoked": 2 }),
+    );
+    let (is_ok, line) = routes::account_event_line(1_700_000_000_000, RESET_PATH, &body, &ok, "203.0.113.5", "kyttu").unwrap();
+    assert!(is_ok);
+    assert_eq!(line, "account admin-reset-password at 2023-11-14T22:13:20.000Z user=RUNNER actor=KYTTU outcome=ok from=203.0.113.5");
+    let refused = (403, json!({ "ok": false, "code": "ADMIN_OWNER_REQUIRED", "error": "Full admin account required" }));
+    let (is_ok, refused_line) = routes::account_event_line(0, RESET_PATH, &body, &refused, "203.0.113.5", "PLAYER").unwrap();
+    assert!(!is_ok && refused_line.contains("user=RUNNER actor=PLAYER outcome=ADMIN_OWNER_REQUIRED"), "{refused_line}");
+    let anonymous = routes::account_event_line(0, RESET_PATH, &body, &refused, "203.0.113.5", "").unwrap().1;
+    assert!(anonymous.contains("actor=-"), "{anonymous}");
+    for text in [&line, &refused_line, &anonymous] {
+        for secret in [generated, TYPED_PASSWORD, "tok-secret-token"] {
+            assert!(!text.contains(secret), "{text}");
+        }
+    }
+    // the other account events keep their old shape
+    let login = (200, json!({ "ok": true, "username": "RUNNER" }));
+    let old = routes::account_event_line(0, "/api/account/login", &json!({}), &login, "a", "ignored").unwrap().1;
+    assert!(old.starts_with("account login at ") && !old.contains("actor="), "{old}");
+}

@@ -21,6 +21,7 @@ mod hub;
 mod look;
 mod menu;
 mod menu_data;
+mod password;
 mod prefs;
 
 pub use hub::{draw_hub, HubPanel};
@@ -128,6 +129,11 @@ struct Pre {
 pub struct Admin {
     /// Build.tools_enabled(): the badge and the 0 key exist only while this is on.
     pub enabled: bool,
+    /// The signed-in account is a full admin owner (the server's `adminOwner`, set by the app each frame). Only then the
+    /// FIELDS tab shows RESET PASSWORD; the server refuses anyone else anyway.
+    pub owner: bool,
+    /// The RESET PASSWORD request, its answer and the message box (password.rs).
+    reset: password::ResetState,
     open: bool,
     tab: usize,
     tab_offset: usize,
@@ -139,7 +145,7 @@ pub struct Admin {
     pending_popup: Option<&'static str>,
     /// Keyboard focus (a widget key); the first action control gets it when the menu opens.
     focus: Option<String>,
-    fields: [String; 3],
+    fields: [String; 4],
     /// Keyboard scrolling asked for this frame, in canvas units (the menu applies it when it draws).
     scroll_keys: f32,
     field_focus: Option<usize>,
@@ -192,6 +198,8 @@ impl Admin {
         let prefs = prefs::Prefs::load();
         let mut admin = Admin {
             enabled: true,
+            owner: false,
+            reset: password::ResetState::default(),
             open: false,
             tab: 0,
             tab_offset: 0,
@@ -374,6 +382,16 @@ impl Admin {
             if self.open {
                 self.set_open(false);
             }
+            // and nothing of a password reset outlives the admin's sign-in
+            self.reset = password::ResetState::default();
+            return false;
+        }
+        if self.reset.notice.is_some() {
+            // the message box takes the keyboard: Esc closes it, every other admin key waits
+            if is_key_pressed(KeyCode::Escape) {
+                self.close_notice();
+                return true;
+            }
             return false;
         }
         if is_key_pressed(KeyCode::F6) {
@@ -454,7 +472,7 @@ impl Admin {
                 if is_key_pressed(KeyCode::Up) {
                     self.field_focus = Some(i.saturating_sub(1));
                 } else if is_key_pressed(KeyCode::Down) {
-                    self.field_focus = Some((i + 1).min(self.fields.len() - 1));
+                    self.field_focus = Some((i + 1).min(self.field_count() - 1));
                 }
             }
         }
@@ -557,11 +575,13 @@ impl Admin {
             self.frame_ms.pop_front();
         }
         self.lights_all_on = g.lights_on.iter().all(|l| *l);
+        self.poll_password_reset();
         self.draw_overlays(g, a);
         self.draw_badge(a);
         if self.open {
             self.draw_menu(g, a, content);
         }
+        self.draw_notice(a);
         self.publish();
     }
 
