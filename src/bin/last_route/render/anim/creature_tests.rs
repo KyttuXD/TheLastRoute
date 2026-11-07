@@ -1,5 +1,5 @@
-//! The wolf spiders' rig and presentation (assets/hunters/anim/{white,black}_wolf_spider.json from extract_creature.py, the
-//! creature clips of `HunterView`, and the pounce-and-pin grab on a creature rig). The models are the original's two bbmodels.
+//! The wolf spider's rig and presentation (assets/hunters/anim/white_wolf_spider.json from extract_creature.py, the
+//! creature clips of `HunterView`, and the pounce-and-pin grab on a creature rig). The model is the original bbmodel.
 
 use super::clip::{rig, Rig};
 use super::grab;
@@ -7,7 +7,7 @@ use super::hunter::{CreatureInput, HunterView, Input};
 use crate::content::embedded;
 use crate::hunters::brain::State;
 use crate::hunters::gimmicks::wolf_spider::Phase;
-use crate::hunters::secret_creatures::{BLACK, IDS, WHITE};
+use crate::hunters::secret_creatures::{IDS, WHITE};
 use macroquad::prelude::*;
 use serde_json::Value;
 
@@ -32,8 +32,8 @@ fn group_names(model: &Value) -> Vec<String> {
 }
 
 #[test]
-fn both_models_are_embedded_with_their_palette_and_a_hidden_hitbox() {
-    for (id, cubes) in [(WHITE, 90), (BLACK, 97)] {
+fn the_model_is_embedded_with_its_palette_and_a_hidden_hitbox() {
+    for (id, cubes) in [(WHITE, 90)] {
         let model = json(&format!("hunters/{id}.bbmodel"));
         assert!(crate::render::bbmodel::texture_bytes(&model, &|_: &str| None).is_some(), "{id}: no embedded palette");
         let visible = model["elements"].as_array().unwrap().iter().filter(|e| e["visibility"].as_bool() != Some(false)).count();
@@ -54,7 +54,8 @@ fn the_rigs_drive_the_models_own_groups_and_carry_the_six_clips() {
         for n in names.iter().filter(|n| *n != "hitbox") {
             assert!(bones.contains(&n.as_str()), "{id}: model group {n} has no bone");
         }
-        assert!((rig_json["metres"].as_f64().unwrap() - 0.035).abs() < 1e-9, "{id}: 0.035 m per unit like the original");
+        // 0.0525 m per unit: the original 0.035 scaled 1.5x (the spider is drawn 1.5x its original size)
+        assert!((rig_json["metres"].as_f64().unwrap() - 0.0525).abs() < 1e-9, "{id}: 0.0525 m per unit (1.5x the original 0.035)");
         for clip in CLIPS {
             let c = &rig_json["clips"][clip];
             assert!(c.is_object(), "{id}: no {clip} clip");
@@ -84,7 +85,8 @@ fn a_creature_rig_is_drawn_at_its_own_scale_and_loops_close() {
     for id in IDS {
         let r: std::rc::Rc<Rig> = rig(id).expect("the rig loads");
         assert!(r.is_creature());
-        assert!((r.draw_scale() - 0.035).abs() < 1e-6, "{id}: {}", r.draw_scale());
+        // 0.0525 = the original 0.035 x 1.5, so the spider is drawn 1.5x bigger
+        assert!((r.draw_scale() - 0.0525).abs() < 1e-6, "{id}: {}", r.draw_scale());
         for clip in ["idle", "walk", "sprint"] {
             let c = &r.clips[clip];
             assert!(c.looping && (c.length - c.times[c.times.len() - 1]).abs() < 1e-4);
@@ -181,7 +183,7 @@ fn the_clip_follows_the_gimmick_phase() {
 
 #[test]
 fn the_first_sight_of_a_spider_already_barking_plays_the_bark() {
-    let mut view = HunterView::new(BLACK, rig(BLACK).unwrap());
+    let mut view = HunterView::new(WHITE, rig(WHITE).unwrap());
     let mut clock = 0.0;
     let (clip, _) = run(&mut view, 0.0, 0.0, 2, creature(Phase::Bark, 1, false), State::Idle, &mut clock);
     assert_eq!(clip, "bark");

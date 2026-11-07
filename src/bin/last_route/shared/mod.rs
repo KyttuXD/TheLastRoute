@@ -15,3 +15,6 @@ pub mod skin_cache;
 pub mod skin_png;
 pub mod skins;
 pub mod task;
+
+#[cfg(test)]
+pub mod test_support;

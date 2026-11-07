@@ -213,6 +213,9 @@ mod tests {
 
     #[test]
     fn region_matches_godot_goldens() {
+        if crate::shared::test_support::skip_without_parity() {
+            return;
+        }
         let mut failures: Vec<String> = vec![];
         for tag in ["parity", "k7qxm", "demo"] {
             let g = load(tag);

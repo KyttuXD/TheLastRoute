@@ -390,8 +390,8 @@ mod tests {
         let m = c.mark("void_red", "Crimson", "void", true);
         assert_eq!(m.label, Some('C'));
         assert_eq!(m.fill, Some(c.neutral.fill));
-        // the secret creatures are no A to Z hunter either
-        let m = c.mark("black_wolf_spider", "Black Wolf Spider", "secret", false);
+        // the secret creature is no A to Z hunter either
+        let m = c.mark("white_wolf_spider", "White Wolf Spider", "secret", false);
         assert_eq!(m.fill, Some(c.neutral.fill));
     }
 

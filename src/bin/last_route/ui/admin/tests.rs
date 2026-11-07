@@ -441,14 +441,11 @@ fn inferno_game(content: &Content) -> Game {
 }
 
 #[test]
-fn the_picker_lists_both_wolf_spiders_and_the_pair() {
+fn the_picker_lists_the_wolf_spider() {
     use crate::hunters::secret_creatures as secret;
     let content = Content::load();
     let list = hunter_list(&content);
-    for id in [secret::WHITE, secret::BLACK, secret::PAIR_ID] {
-        assert!(list.iter().any(|(i, _)| i == id), "{id}");
-    }
-    assert_eq!(list.last().map(|(i, _)| i.as_str()), Some(secret::PAIR_ID));
+    assert!(list.iter().any(|(i, _)| i == secret::WHITE), "{}", secret::WHITE);
     assert_eq!(list.iter().filter(|(i, _)| i == secret::WHITE).count(), 1);
 }
 
@@ -457,34 +454,24 @@ fn a_wolf_spider_is_refused_off_its_home_level() {
     let (mut g, content) = game();
     let mut a = Admin::new();
     let list = hunter_list(&content);
-    for id in ["white_wolf_spider", "black_wolf_spider", "wolf_spider_pair"] {
-        a.run_cmd(Cmd::Hunter(picker_index(&content, id), 0, 0), &mut g, &content, &list);
-        assert!(g.hunters.iter().all(|h| !h.def.id.ends_with("wolf_spider")), "{id} was summoned on level 0");
-        assert!(g.message.contains("LIVES ON LEVEL -3"), "{id}: {}", g.message);
-    }
+    let id = "white_wolf_spider";
+    a.run_cmd(Cmd::Hunter(picker_index(&content, id), 0, 0), &mut g, &content, &list);
+    assert!(g.hunters.iter().all(|h| !h.def.id.ends_with("wolf_spider")), "{id} was summoned on level 0");
+    assert!(g.message.contains("LIVES ON LEVEL -3"), "{id}: {}", g.message);
 }
 
 #[test]
-fn the_summon_works_on_the_inferno_and_the_pair_is_linked_with_the_difficulty_knobs() {
-    use crate::hunters::gimmicks::Gimmick;
+fn the_summon_works_on_the_inferno_and_remove_takes_it_out_again() {
     let content = Content::load();
     let list = hunter_list(&content);
     let mut g = inferno_game(&content);
     let mut a = Admin::new();
-    a.run_cmd(Cmd::Hunter(picker_index(&content, "black_wolf_spider"), 0, 0), &mut g, &content, &list);
-    let black = g.hunters.iter().filter(|h| h.def.id == "black_wolf_spider").count();
-    assert_eq!(black, 1, "{}", g.message);
-    assert_eq!(g.hunters.iter().find(|h| h.def.id == "black_wolf_spider").unwrap().level, crate::world::infinite::INFERNO_LEVEL);
-    // the pair entry brings both, linked
-    let mut g = inferno_game(&content);
-    let chase_before = content.hunter("white_wolf_spider").unwrap().chase;
-    a.run_cmd(Cmd::Hunter(picker_index(&content, "wolf_spider_pair"), 0, 0), &mut g, &content, &list);
-    let both: Vec<_> = g.hunters.iter().filter(|h| h.def.id.ends_with("wolf_spider")).collect();
-    assert_eq!(both.len(), 2, "{}", g.message);
-    assert!(both.iter().all(|h| matches!(&h.gimmick, Gimmick::WolfSpider(s) if s.in_pack())), "linked");
-    let _ = chase_before;
-    // and REMOVE takes both out again
-    a.run_cmd(Cmd::Hunter(picker_index(&content, "wolf_spider_pair"), 1, 0), &mut g, &content, &list);
+    a.run_cmd(Cmd::Hunter(picker_index(&content, "white_wolf_spider"), 0, 0), &mut g, &content, &list);
+    let spiders = g.hunters.iter().filter(|h| h.def.id == "white_wolf_spider").count();
+    assert_eq!(spiders, 1, "{}", g.message);
+    assert_eq!(g.hunters.iter().find(|h| h.def.id == "white_wolf_spider").unwrap().level, crate::world::infinite::INFERNO_LEVEL);
+    // REMOVE takes it out again
+    a.run_cmd(Cmd::Hunter(picker_index(&content, "white_wolf_spider"), 1, 0), &mut g, &content, &list);
     assert!(g.hunters.iter().all(|h| !h.def.id.ends_with("wolf_spider")));
 }
 

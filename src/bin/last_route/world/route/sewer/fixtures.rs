@@ -258,6 +258,9 @@ mod tests {
     /// The compact extracts: every sewer chunk of levels -1 and -2 on the three seeds, field `fixtures`.
     #[test]
     fn fixtures_match_godot_goldens() {
+        if crate::shared::test_support::skip_without_parity() {
+            return;
+        }
         let seeds: Vec<Seed> = TAGS.iter().map(|tag| load_compact(tag)).collect();
         check_all(&seeds);
     }

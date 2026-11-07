@@ -507,6 +507,9 @@ mod tests {
     /// `behind` cells, with the golden pickup cells as the exclusion input.
     #[test]
     fn hunter_spawns_match_godot_goldens() {
+        if crate::shared::test_support::skip_without_parity() {
+            return;
+        }
         let seeds: Vec<Seed> = TAGS.iter().map(|tag| load_compact(tag)).collect();
         check_all(&seeds);
     }

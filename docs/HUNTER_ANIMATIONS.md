@@ -72,7 +72,7 @@ the most alike of all: their clips differ in tempo, swing and lean but have one 
 | void_white | 40 | 11 | 1.05 / 0.53 | 74 / 25 / 7.3 | -6.8 | glide | cover | wrist_yank/upside_down | `_VOID` base + nudge (see below) |
 | void_yellow | 40 | 11 | 0.83 / 0.42 | 77 / 35 / 8.0 | -6.8 | reach2 | shake | shoulder_grab/shoulder_carry | `_VOID` base + nudge (see below) |
 
-Wolf spiders (`white_wolf_spider`, `black_wolf_spider`): creature rig, 37 to 38 bones, clips walk / idle / bark / sprint / attack / death, `pounce_pin` grab. Complete and unique per creature.
+Wolf spider (`white_wolf_spider`): creature rig, 37 to 38 bones, clips walk / idle / bark / sprint / attack / death, `pounce_pin` grab. Complete and unique per creature.
 
 ## Findings
 

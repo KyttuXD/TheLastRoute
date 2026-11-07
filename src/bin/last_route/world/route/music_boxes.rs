@@ -527,6 +527,9 @@ mod parity_tests {
 
     #[test]
     fn music_boxes_match_godot_compact_extracts() {
+        if crate::shared::test_support::skip_without_parity() {
+            return;
+        }
         check(&TAGS, load_compact);
     }
 

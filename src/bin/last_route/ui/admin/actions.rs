@@ -719,13 +719,6 @@ impl Admin {
     /// heading for the runner.
     fn summon(&mut self, g: &mut Game, content: &Content, ids: &[String]) {
         use crate::hunters::secret_creatures as secret;
-        // the picker's pair entry is both wolf spiders, linked afterwards (SecretCreatures.link_admin_pair)
-        let pair = ids.iter().any(|id| id == secret::PAIR_ID);
-        let expanded: Vec<String> = ids
-            .iter()
-            .flat_map(|id| if id == secret::PAIR_ID { secret::IDS.iter().map(|s| s.to_string()).collect() } else { vec![id.clone()] })
-            .collect();
-        let ids: &[String] = &expanded;
         let (fx, fy) = g.forward2();
         let base = (fx).atan2(-fy);
         let mut placed = 0;
@@ -777,9 +770,6 @@ impl Admin {
             self.summoned.push(id.clone());
             placed += 1;
             last = def.name.to_uppercase();
-        }
-        if pair && placed == 2 {
-            g.link_admin_wolf_spiders();
         }
         if let Some(home) = refused.filter(|_| placed == 0) {
             g.say(&format!("ADMIN SUMMON FAILED // THIS ONE LIVES ON LEVEL {home}"));
@@ -836,13 +826,6 @@ impl Admin {
         if !self.can_remove(g) {
             return;
         }
-        // the picker's wolf spider pair entry takes both out
-        if id == crate::hunters::secret_creatures::PAIR_ID {
-            for member in crate::hunters::secret_creatures::IDS {
-                self.remove_hunter(g, member, name);
-            }
-            return;
-        }
         let mut removed = 0;
         let mut i = g.hunters.len();
         while i > 0 {
@@ -889,10 +872,10 @@ impl Admin {
                     .into_iter()
                     .map(|(id, _)| id)
                     .filter(|id| !self.summoned.contains(id))
-                    // the wolf spiders come with the list only on their home level; the pair entry is both of them again
+                    // the wolf spider comes with the list only on its home level
                     .filter(|id| {
                         use crate::hunters::secret_creatures as secret;
-                        id != secret::PAIR_ID && (!secret::stays_home(id) || g.runner_level() == secret::Rules::get().home_level)
+                        !secret::stays_home(id) || g.runner_level() == secret::Rules::get().home_level
                     })
                     .collect();
                 if ids.is_empty() {

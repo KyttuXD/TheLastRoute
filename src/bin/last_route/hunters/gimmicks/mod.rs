@@ -182,7 +182,7 @@ impl Gimmick {
             "thessine" => Gimmick::Thessine(thessine::Thessine::new()),
             "umbriel" => Gimmick::Umbriel(umbriel::Umbriel::new()),
             "verrine" => Gimmick::Verrine(Default::default()),
-            "white_wolf_spider" | "black_wolf_spider" => Gimmick::WolfSpider(wolf_spider::WolfSpider::new(id)),
+            "white_wolf_spider" => Gimmick::WolfSpider(wolf_spider::WolfSpider::new()),
             "wynelle" => Gimmick::Wynelle(Default::default()),
             "xivvy" => Gimmick::Xivvy(Default::default()),
             "ysolde" => Gimmick::Ysolde(Default::default()),

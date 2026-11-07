@@ -749,6 +749,9 @@ mod tests {
     /// `breakable_id`.
     #[test]
     fn breakables_match_godot_goldens() {
+        if crate::shared::test_support::skip_without_parity() {
+            return;
+        }
         let goldens = compact_goldens();
         assert_field(&goldens, "breakables");
         assert_field(&goldens, "pipe_props");
@@ -757,6 +760,9 @@ mod tests {
     /// `sealed_cells` of levels -1 and -2 for the three goldens, in z-major order.
     #[test]
     fn sealed_cells_match_godot_goldens() {
+        if crate::shared::test_support::skip_without_parity() {
+            return;
+        }
         assert_field(&compact_goldens(), "sealed_cells");
     }
 

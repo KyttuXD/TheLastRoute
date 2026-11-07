@@ -2404,51 +2404,81 @@ mod tests {
 
     #[test]
     fn sewer_grid_match_godot_goldens() {
+        if crate::shared::test_support::skip_without_parity() {
+            return;
+        }
         check_field("sewer_grid");
     }
 
     #[test]
     fn rooms_match_godot_goldens() {
+        if crate::shared::test_support::skip_without_parity() {
+            return;
+        }
         check_field("rooms");
     }
 
     #[test]
     fn links_match_godot_goldens() {
+        if crate::shared::test_support::skip_without_parity() {
+            return;
+        }
         check_field("links");
     }
 
     #[test]
     fn falls_match_godot_goldens() {
+        if crate::shared::test_support::skip_without_parity() {
+            return;
+        }
         check_field("falls");
     }
 
     #[test]
     fn ramp_cells_match_godot_goldens() {
+        if crate::shared::test_support::skip_without_parity() {
+            return;
+        }
         check_field("ramp_cells");
     }
 
     #[test]
     fn crawl_cells_match_godot_goldens() {
+        if crate::shared::test_support::skip_without_parity() {
+            return;
+        }
         check_field("crawl_cells");
     }
 
     #[test]
     fn gates_match_godot_goldens() {
+        if crate::shared::test_support::skip_without_parity() {
+            return;
+        }
         check_field("gates");
     }
 
     #[test]
     fn shaft_cells_match_godot_goldens() {
+        if crate::shared::test_support::skip_without_parity() {
+            return;
+        }
         check_field("shaft_cells");
     }
 
     #[test]
     fn ramps_match_godot_goldens() {
+        if crate::shared::test_support::skip_without_parity() {
+            return;
+        }
         check_field("ramps");
     }
 
     #[test]
     fn region_props_match_godot_goldens() {
+        if crate::shared::test_support::skip_without_parity() {
+            return;
+        }
         check_field("region_props");
     }
 

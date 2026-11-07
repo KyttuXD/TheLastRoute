@@ -650,6 +650,9 @@ mod tests {
     /// PARITY_DIR points at compact goldens elsewhere than tests/parity.
     #[test]
     fn region_props_match_godot_goldens() {
+        if crate::shared::test_support::skip_without_parity() {
+            return;
+        }
         const ALL_TAGS: [&str; 7] = ["parity", "k7qxm", "demo", "mansion1", "apt1", "beach1", "gothic1"];
         // PARITY_TAGS=apt1,demo narrows the run to some seeds (the goldens of the other seeds may be missing)
         let only: Vec<String> = std::env::var("PARITY_TAGS").map(|v| v.split(',').map(str::to_string).collect()).unwrap_or_default();

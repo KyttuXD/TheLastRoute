@@ -3630,7 +3630,7 @@ mod chase_speed_tests {
     fn the_secret_creatures_keep_their_authored_chase_speed() {
         let content = Content::base();
         let prof = Difficulty::Standard.profile();
-        for id in ["white_wolf_spider", "black_wolf_spider"] {
+        for id in ["white_wolf_spider"] {
             let def = content.hunter(id).unwrap();
             assert_eq!(def.category, "secret");
             let chase = brain_of(def, Difficulty::Standard, State::Chase).current_speed(1, 0, &prof, 1.0);
@@ -3782,7 +3782,7 @@ mod chase_speed_tests {
         let content = Content::base();
         for diff in PROFILES {
             let prof = diff.profile();
-            let def = content.hunter("black_wolf_spider").unwrap();
+            let def = content.hunter("white_wolf_spider").unwrap();
             let chase = brain_of(def, diff, State::Chase).current_speed(1, 0, &prof, 1.0);
             assert!((chase - def.chase * prof.hunter_speed).abs() < 1e-4, "{diff:?}");
         }

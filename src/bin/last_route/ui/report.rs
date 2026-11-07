@@ -347,7 +347,7 @@ mod secret_line_tests {
 
     #[test]
     fn the_wolf_spiders_have_caption_placeholder_lines_that_only_a_debug_build_shows() {
-        for id in ["white_wolf_spider", "black_wolf_spider"] {
+        for id in ["white_wolf_spider"] {
             assert_eq!(pick_line_with(id, "", "ROOM-X", 3, "secret", false), None, "{id}: a release build shows the generic line");
             let (text, caption) = pick_line_with(id, "", "ROOM-X", 3, "secret", true).unwrap_or_else(|| panic!("{id}: no placeholder line"));
             assert!(text.starts_with("[PLACEHOLDER]") && caption, "{id}: {text}");

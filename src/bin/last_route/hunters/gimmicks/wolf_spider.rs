@@ -1,17 +1,16 @@
-//! The white and black wolf spider (white_wolf_spider_gimmick.gd, black_wolf_spider_gimmick.gd, spider_pack.gd): a fast ambusher.
+//! The white wolf spider (white_wolf_spider_gimmick.gd): a fast ambusher.
 //! It lurks motionless at its lair, barks ONCE to mark a runner it has seen or heard (the telegraph), bursts after them for a
 //! limited time, then gives up and goes home. Survivable on purpose: the bark gives a head start, the burst is limited by its own
-//! stamina, a shelter ends the chase, and a flashlight beam held on it for a moment drives it off (the black one ignores the light).
+//! stamina, a shelter ends the chase, and a flashlight beam held on it for a moment drives it off.
 //!
 //!   LURK -> BARK (holds, bark clip + cue) -> HUNT (<= hunt seconds) -> RETREAT (to the lair) -> LURK (cooldown)
 //!
-//! Host-simulated like every hunter; a guest only needs `phase` and `bark_seq` (the hunter frame) to play the bark. The black
-//! variant is the same machine with harsher numbers (data/hunters/secret_creatures.json). Specs: docs/SECRET_WOLF_SPIDER.md.
+//! Host-simulated like every hunter; a guest only needs `phase` and `bark_seq` (the hunter frame) to play the bark. The numbers are
+//! in data/hunters/secret_creatures.json. Specs: docs/SECRET_WOLF_SPIDER.md.
 
 use crate::hunters::brain::{Brain, State, Target};
-use crate::hunters::secret_creatures::{self, Knobs, Rules};
+use crate::hunters::secret_creatures::{Knobs, Rules};
 use crate::world::Facility;
-use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -37,35 +36,7 @@ impl Phase {
     }
 }
 
-/// The shared state of a pair (host only, nothing here is replicated): one rest timer so the two never chain-hunt a runner one
-/// after the other, and a recall so when one gives up the other goes home with it. Member 0 is the clock: only it advances
-/// `elapsed`, so a pair does not tick twice per frame.
-#[derive(Default, Debug)]
-pub struct PackState {
-    members: usize,
-    elapsed: f32,
-    rest_until: f32,
-    pub recall_seq: u32,
-}
-
-impl PackState {
-    pub fn resting(&self) -> bool {
-        self.elapsed < self.rest_until
-    }
-
-    pub fn start_rest(&mut self, seconds: f32) {
-        self.rest_until = self.rest_until.max(self.elapsed + seconds);
-    }
-
-    pub fn recall(&mut self) {
-        self.recall_seq += 1;
-    }
-}
-
-pub type Pack = Arc<Mutex<PackState>>;
-
 pub struct WolfSpider {
-    black: bool,
     alert_radius: f32,
     bark_seconds: f32,
     hunt_seconds: f32,
@@ -82,20 +53,13 @@ pub struct WolfSpider {
     cooldown: f32,
     sense_left: f32,
     spawn_barks: bool,
-    spawn_bark_delay: f32,
-    delay_left: f32,
-    delay_target: (f32, f32),
     rest_scale: f32,
-    pack: Option<(Pack, usize)>,
-    seen_recall: u32,
 }
 
 impl WolfSpider {
-    pub fn new(id: &str) -> WolfSpider {
-        let r = Rules::get();
-        let v = r.variant_of(id);
+    pub fn new() -> WolfSpider {
+        let v = &Rules::get().white;
         WolfSpider {
-            black: id == secret_creatures::BLACK,
             alert_radius: v.alert_radius,
             bark_seconds: v.bark_seconds,
             hunt_seconds: v.hunt_seconds,
@@ -111,17 +75,8 @@ impl WolfSpider {
             cooldown: 0.0,
             sense_left: 0.0,
             spawn_barks: false,
-            spawn_bark_delay: 0.0,
-            delay_left: 0.0,
-            delay_target: (0.0, 0.0),
             rest_scale: 1.0,
-            pack: None,
-            seen_recall: 0,
         }
-    }
-
-    pub fn is_black(&self) -> bool {
-        self.black
     }
 
     pub fn lair(&self) -> Option<(f32, f32)> {
@@ -133,11 +88,9 @@ impl WolfSpider {
         self.cooldown
     }
 
-    /// A spawner may start it already marking its runner (set right after creating the brain). `delay` staggers the tell of the
-    /// second creature of a pair (the first barks at once, the other follows `delay` seconds later).
-    pub fn start_with_bark(&mut self, delay: f32) {
+    /// A spawner may start it already marking its runner (set right after creating the brain).
+    pub fn start_with_bark(&mut self) {
         self.spawn_barks = true;
-        self.spawn_bark_delay = delay;
     }
 
     /// The per-difficulty multipliers: notice = sight range, chase = chase speed, rest = rest time, alert = alert radius.
@@ -160,40 +113,6 @@ impl WolfSpider {
         }
     }
 
-    /// Two creatures of one pair: one shared rest timer and recall. Joins into either's pack when it already has one.
-    pub fn link(a: &mut WolfSpider, b: &mut WolfSpider) {
-        if a.pack.is_some() && b.pack.is_some() {
-            return;
-        }
-        let pack: Pack = match (&a.pack, &b.pack) {
-            (Some((p, _)), _) | (_, Some((p, _))) => p.clone(),
-            _ => Arc::new(Mutex::new(PackState::default())),
-        };
-        for s in [a, b] {
-            if s.pack.is_none() {
-                let mut p = pack.lock().unwrap();
-                s.pack = Some((pack.clone(), p.members));
-                p.members += 1;
-            }
-        }
-    }
-
-    pub fn in_pack(&self) -> bool {
-        self.pack.is_some()
-    }
-
-    fn tick_pack(&self, dt: f32) {
-        if let Some((p, member)) = &self.pack {
-            if *member == 0 {
-                p.lock().unwrap().elapsed += dt;
-            }
-        }
-    }
-
-    fn pack_resting(&self) -> bool {
-        self.pack.as_ref().is_some_and(|(p, _)| p.lock().unwrap().resting())
-    }
-
     pub fn before(&mut self, b: &mut Brain, dt: f32, c: &super::Ctx, t: &Target) {
         let lair = match self.lair {
             Some(l) => l,
@@ -201,24 +120,11 @@ impl WolfSpider {
                 self.lair = Some(b.pos);
                 if self.spawn_barks {
                     self.spawn_barks = false;
-                    if self.spawn_bark_delay > 0.0 {
-                        self.delay_left = self.spawn_bark_delay;
-                        self.delay_target = t.pos;
-                    } else {
-                        self.begin_bark(b, t.pos);
-                    }
+                    self.begin_bark(b, t.pos);
                 }
                 b.pos
             }
         };
-        self.tick_pack(dt);
-        if self.delay_left > 0.0 && self.phase == Phase::Lurk {
-            self.delay_left -= dt;
-            if self.delay_left <= 0.0 {
-                let at = self.delay_target;
-                self.begin_bark(b, at);
-            }
-        }
         self.cooldown = (self.cooldown - dt).max(0.0);
         let tp = t.pos;
         // a runner on another level is out of reach: the spider never leaves its own
@@ -226,7 +132,7 @@ impl WolfSpider {
         match self.phase {
             Phase::Lurk => {
                 self.sense_left -= dt;
-                if self.cooldown <= 0.0 && !self.pack_resting() && self.delay_left <= 0.0 && exposed && self.sense_left <= 0.0 {
+                if self.cooldown <= 0.0 && exposed && self.sense_left <= 0.0 {
                     self.sense_left = Rules::get().sense_every;
                     if self.notices(b, c.fac, t) {
                         self.begin_bark(b, tp);
@@ -245,14 +151,9 @@ impl WolfSpider {
             Phase::Hunt => {
                 self.timer -= dt;
                 self.beam_time = if b.beam_alerted { self.beam_time + dt } else { 0.0 };
-                let recalled = self.pack.as_ref().is_some_and(|(p, _)| p.lock().unwrap().recall_seq != self.seen_recall);
                 let driven_off = b.beam_alerted && self.flash_hold.is_some_and(|hold| self.beam_time > hold);
-                if recalled {
-                    // the other one gave up: both go home together
-                    self.seen_recall = self.pack.as_ref().map_or(0, |(p, _)| p.lock().unwrap().recall_seq);
-                    self.begin_retreat(b, lair, false);
-                } else if !exposed || b.winded || self.timer <= 0.0 || driven_off {
-                    self.begin_retreat(b, lair, true);
+                if !exposed || b.winded || self.timer <= 0.0 || driven_off {
+                    self.begin_retreat(b, lair);
                 } else {
                     // it does not lose a runner it has marked: it follows sound and light
                     b.chase(tp);
@@ -309,25 +210,16 @@ impl WolfSpider {
         face(b, at);
     }
 
-    fn begin_retreat(&mut self, b: &mut Brain, lair: (f32, f32), call_pack: bool) {
-        if call_pack {
-            if let Some((p, _)) = &self.pack {
-                let mut p = p.lock().unwrap();
-                p.start_rest(self.cooldown_seconds * self.rest_scale);
-                p.recall();
-                self.seen_recall = p.recall_seq;
-            }
-        }
+    fn begin_retreat(&mut self, b: &mut Brain, lair: (f32, f32)) {
         self.phase = Phase::Retreat;
         b.state = State::Wander;
         b.wander_target = Some(lair);
         b.direct_visible = false;
     }
 
-    /// The window moved under it: its lair and a pending tell's aim move with the cells.
+    /// The window moved under it: its lair moves with the cells.
     pub fn shift(&mut self, d: (f32, f32)) {
         self.lair = self.lair.map(|l| (l.0 + d.0, l.1 + d.1));
-        self.delay_target = (self.delay_target.0 + d.0, self.delay_target.1 + d.1);
     }
 
     /// The numbers a guest needs: phase and bark counter.
@@ -361,6 +253,7 @@ mod tests {
     use crate::content::Content;
     use crate::hunters::brain::CrossSense;
     use crate::hunters::gimmicks::{Ctx, Gimmick};
+    use crate::hunters::secret_creatures;
     use crate::world::catalog::Catalog;
     use crate::world::facility::Options;
 
@@ -444,14 +337,11 @@ mod tests {
     }
 
     #[test]
-    fn both_ids_get_the_gimmick_and_the_black_one_is_harsher() {
-        let w = spider(secret_creatures::WHITE, (5.5, 5.5));
-        let k = spider(secret_creatures::BLACK, (5.5, 5.5));
-        let (w, k) = (gim(&w), gim(&k));
-        assert!(!w.is_black() && k.is_black());
-        assert!(k.alert_radius > w.alert_radius && k.hunt_seconds > w.hunt_seconds && k.cooldown_seconds > w.cooldown_seconds);
-        assert!(w.flash_hold.is_some() && k.flash_hold.is_none());
-        assert!(!w.hiss && k.hiss);
+    fn it_is_the_gimmick_with_the_authored_numbers() {
+        let b = spider(secret_creatures::WHITE, (5.5, 5.5));
+        let w = gim(&b);
+        assert_eq!(w.alert_radius, 15.0);
+        assert!(w.flash_hold.is_some() && !w.hiss, "the white one is driven off by the light and barks");
     }
 
     #[test]
@@ -503,7 +393,7 @@ mod tests {
             }
         }
         assert_eq!(gim(&b).phase, Phase::Lurk, "it hurries back to its lair");
-        assert!(gim(&b).cooldown_left() > 25.0, "and rests (30 s for the white one)");
+        assert!(gim(&b).cooldown_left() > 25.0, "and rests (30 s)");
         // a runner in plain sight does not start another hunt while it rests
         for _ in 0..30 {
             step(&mut b, &fac, &runner(near), 0.2);
@@ -512,84 +402,46 @@ mod tests {
     }
 
     #[test]
-    fn the_flashlight_drives_the_white_one_off_but_not_the_black_one() {
+    fn the_flashlight_drives_it_off() {
         let fac = facility();
         let (lair, near) = sight_pair(&fac);
-        for (id, driven_off) in [(secret_creatures::WHITE, true), (secret_creatures::BLACK, false)] {
-            let mut b = spider(id, lair);
-            until_hunt(&mut b, &fac, &runner(near), 300);
-            assert_eq!(gim(&b).phase, Phase::Hunt, "{id}");
-            let mut left = false;
-            for _ in 0..6 {
-                b.beam_alerted = true;
-                let mut g = std::mem::take(&mut b.gimmick);
-                let c = Ctx {
-                    fac: &fac,
-                    relays_taken: &[],
-                    batteries_taken: &[],
-                    hiding_disabled: &[],
-                    vents: &[],
-                    heater_on: false,
-                    heater_thawed: true,
-                    diff: Difficulty::Standard,
-                    music_box_left: 0.0,
-                    music_boxes: &[],
-                    exposure: 0.0,
-                    flashlight_dead: false,
-                };
-                g.before_perception(&mut b, 0.1, &c, &runner(near), &mut vec![]);
-                b.gimmick = g;
-                left |= gim(&b).phase == Phase::Retreat;
-            }
-            assert_eq!(left, driven_off, "{id}");
+        let mut b = spider(secret_creatures::WHITE, lair);
+        until_hunt(&mut b, &fac, &runner(near), 300);
+        assert_eq!(gim(&b).phase, Phase::Hunt);
+        let mut left = false;
+        for _ in 0..6 {
+            b.beam_alerted = true;
+            let mut g = std::mem::take(&mut b.gimmick);
+            let c = Ctx {
+                fac: &fac,
+                relays_taken: &[],
+                batteries_taken: &[],
+                hiding_disabled: &[],
+                vents: &[],
+                heater_on: false,
+                heater_thawed: true,
+                diff: Difficulty::Standard,
+                music_box_left: 0.0,
+                music_boxes: &[],
+                exposure: 0.0,
+                flashlight_dead: false,
+            };
+            g.before_perception(&mut b, 0.1, &c, &runner(near), &mut vec![]);
+            b.gimmick = g;
+            left |= gim(&b).phase == Phase::Retreat;
         }
+        assert!(left, "a beam held on it drives it off");
     }
 
     #[test]
-    fn the_pair_shares_one_rest_and_a_recall() {
-        let fac = facility();
-        let (lair, near) = sight_pair(&fac);
-        let mut a = spider(secret_creatures::WHITE, lair);
-        let mut k = spider(secret_creatures::BLACK, lair);
-        {
-            let (Gimmick::WolfSpider(x), Gimmick::WolfSpider(y)) = (&mut a.gimmick, &mut k.gimmick) else { unreachable!() };
-            WolfSpider::link(x, y);
-            assert!(x.in_pack() && y.in_pack());
-        }
-        for _ in 0..300 {
-            step(&mut a, &fac, &runner(near), DT);
-            step(&mut k, &fac, &runner(near), DT);
-            if gim(&a).phase == Phase::Hunt && gim(&k).phase == Phase::Hunt {
-                break;
-            }
-        }
-        assert_eq!((gim(&a).phase, gim(&k).phase), (Phase::Hunt, Phase::Hunt));
-        let sheltered = Target { in_safe_zone: true, ..runner(near) };
-        step(&mut a, &fac, &sheltered, DT);
-        assert_eq!(gim(&a).phase, Phase::Retreat);
-        // the other one is recalled with it, though its own runner is still in the open
-        step(&mut k, &fac, &runner(near), DT);
-        assert_eq!(gim(&k).phase, Phase::Retreat, "when one gives up both go home");
-    }
-
-    #[test]
-    fn a_spawner_can_start_it_barking_and_stagger_the_second_tell() {
+    fn a_spawner_can_start_it_already_barking() {
         let fac = facility();
         let (lair, _) = sight_pair(&fac);
-        let mut first = spider(secret_creatures::WHITE, lair);
-        let mut second = spider(secret_creatures::BLACK, lair);
-        gim_mut(&mut first).start_with_bark(0.0);
-        gim_mut(&mut second).start_with_bark(1.8);
-        let far = nobody(lair);
-        step(&mut first, &fac, &far, DT);
-        step(&mut second, &fac, &far, DT);
-        assert_eq!(gim(&first).phase, Phase::Bark, "the first tells at once");
-        assert_eq!(gim(&second).phase, Phase::Lurk, "the second waits");
-        for _ in 0..70 {
-            step(&mut second, &fac, &far, DT);
-        }
-        assert_ne!(gim(&second).phase, Phase::Lurk, "and tells 1.8 s later");
-        assert_eq!(gim(&second).bark_seq, 1);
+        let mut b = spider(secret_creatures::WHITE, lair);
+        gim_mut(&mut b).start_with_bark();
+        step(&mut b, &fac, &nobody(lair), DT);
+        assert_eq!(gim(&b).phase, Phase::Bark, "it tells at once");
+        assert_eq!(gim(&b).bark_seq, 1);
     }
 
     #[test]

@@ -343,13 +343,6 @@
         "[PLACEHOLDER] (a dry clicking of legs, very close, then nothing)",
         "[PLACEHOLDER] (a single low bark echoes down the dark)"
       ]
-    },
-    "blackwolfspider": {
-      "style": "caption",
-      "lines": [
-        "[PLACEHOLDER] (a long dry hiss, very close, then the light goes out)",
-        "[PLACEHOLDER] (legs on stone, quick and many, and then none)"
-      ]
     }
   },
   "causes": {

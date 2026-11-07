@@ -598,6 +598,9 @@ mod tests {
     /// compared cell by cell with the golden grid. A mismatch is reported with its first cell.
     #[test]
     fn level0_grids_match_godot_goldens() {
+        if crate::shared::test_support::skip_without_parity() {
+            return;
+        }
         let mut failures: Vec<String> = Vec::new();
         let mut report = String::new();
         for tag in ["parity", "k7qxm", "demo"] {

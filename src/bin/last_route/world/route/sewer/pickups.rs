@@ -419,6 +419,9 @@ mod tests {
     /// item). The chunk's own inputs come from `chunk()`, so the seal frame, the breakables and the gates are the port's.
     #[test]
     fn pickups_match_godot_goldens() {
+        if crate::shared::test_support::skip_without_parity() {
+            return;
+        }
         let seeds: Vec<Seed> = TAGS.iter().map(|tag| load_compact(tag)).collect();
         for seed in &seeds {
             assert_eq!(seed.goldens.len(), 98, "{}: 98 sewer chunks", seed.tag);

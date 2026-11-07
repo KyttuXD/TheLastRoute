@@ -295,7 +295,7 @@ Night Watch is a separate executable (`src/bin/night_watch/main.rs`) that is onl
 | Void White: light-frozen (gimmick) | missing | important | `game/hunters/gimmicks/void_white_gimmick.gd` |
 | Void Yellow: map pressure (gimmick) | missing | important | `game/hunters/gimmicks/void_yellow_gimmick.gd` |
 | White wolf spider: lurk, bark, hunt, retreat (secret creature) | missing | important | `game/hunters/gimmicks/white_wolf_spider_gimmick.gd` |
-| Black wolf spider: harsher hunter (secret creature) | missing | important | `game/hunters/gimmicks/black_wolf_spider_gimmick.gd` |
+| Black wolf spider: harsher hunter (secret creature) | removed | n/a | removed from the game on 2026-11-07 (KT); was `game/hunters/gimmicks/black_wolf_spider_gimmick.gd` |
 | Wolf spider pair: shared rest and recall | missing | important | `game/hunters/gimmicks/spider_pack.gd` |
 | Creature rig presentation (spider clips, bark cue, collider) | missing | polish | `game/hunters/view/creature_view.gd` |
 | Secret creature spawn trigger on Inferno level -3 | missing | important | `game/config/secret_creatures.gd` |

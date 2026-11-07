@@ -1267,12 +1267,11 @@ mod tests {
         }
     }
 
-    /// The 16 grab pools ported from Godot's data/grabs/<id>.json (the ids without a Rust copy before) hold the Standard
+    /// The 15 grab pools ported from Godot's data/grabs/<id>.json (the ids without a Rust copy before) hold the Standard
     /// weights of the originals: each row is the Godot file's "pool", read as (style, weight).
     #[test]
     fn ported_grab_pools_match_godot_standard() {
-        let expected: [(&str, &[(&str, f32)]); 16] = [
-            ("black_wolf_spider", &[("pounce_pin", 6.0)]),
+        let expected: [(&str, &[(&str, f32)]); 15] = [
             ("nyxie", &[("wrap", 6.0), ("leg_grab", 2.0), ("upside_down", 2.0)]),
             ("solyth", &[("wrist_yank", 6.0), ("shoulder_grab", 2.0), ("collar_drag", 2.0)]),
             ("white_wolf_spider", &[("pounce_pin", 6.0)]),

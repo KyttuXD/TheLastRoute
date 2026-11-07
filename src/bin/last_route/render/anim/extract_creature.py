@@ -16,9 +16,6 @@ here in the same `lr.rig` json that render/anim/clip.rs reads:
   stride  clip -> {"ref": ground speed in metres per second at the drawn size, "reverse": false}, measured from the
           planted feet of the clip (the feet's backward travel while they are on the ground)
 
-The black wolf spider's model has no animations: its clips are the white spider's, retargeted bone by bone by the original's
-tools/city/spider_clip_map.py into black_wolf_spider.clips.json (`--clips`).
-
 Usage: python3 -I extract_creature.py <model.bbmodel> <out.json> [--clips <clips.json>] [--metres 0.035]
 """
 import json

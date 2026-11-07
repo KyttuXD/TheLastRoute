@@ -635,9 +635,8 @@ mod tests {
     }
 
     /// Recorded before the loader change, with the legacy rule, from the shipped files: every non-void hunter model.
-    const GOLDEN: [(&str, u64); 28] = [
+    const GOLDEN: [(&str, u64); 27] = [
         ("hunters/aki.bbmodel", 0x3a02eff66b76ac46),
-        ("hunters/black_wolf_spider.bbmodel", 0x0febcbc00e318892),
         ("hunters/briselle.bbmodel", 0xb9f9ddf0cef5025e),
         ("hunters/ceryth.bbmodel", 0x3a02eff66b76ac46),
         ("hunters/dovelle.bbmodel", 0xdc6dbdd8697eb03a),
@@ -673,7 +672,8 @@ mod tests {
     /// the full Godot GLBs, their wall triangles restored; only those three models differ.)
     /// (digest moved on 2026-11-07: the six room door models' back faces are UV-mapped across the wood region, not one
     /// flat strip of the atlas, so the back of a door reads as wood. Doors only; no other model changed.)
-    const GOLDEN_ALL: (usize, u64) = (684, 0x5cfe2fe6e7358c4e);
+    /// (684 -> 683 on 2026-11-07: the black wolf spider was removed from the game, so its model left the set; digest recomputed.)
+    const GOLDEN_ALL: (usize, u64) = (683, 0xfb4e4da38ad385cc);
 
     /// The shape of a model read with the game's UV rule.
     fn shape_now(path: &str, j: &serde_json::Value) -> Option<Shape> {
