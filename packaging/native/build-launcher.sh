@@ -6,12 +6,13 @@
 # macOS: dist/launcher/KYTTU The Last Route.app (Intel + Apple Silicon in one binary, ad-hoc signed, no Dock icon of its own).
 #        NOT TESTED ON A MAC YET (written from the design; see docs/LAUNCHER.md, "Needs a Mac").
 #
-# The launcher is a few hundred KB of code that almost never changes: the game itself is installed and updated from the
+# The launcher is a small program (1.7 MB on Windows) that almost never changes: the game itself is installed and updated from the
 # website. A launcher built before a signing key was added to crates/lr_update/keys/trusted.txt cannot install anything:
 # add the key first, then build.
 set -eu
 cd "$(dirname "$0")/../.."
 OUT=dist/launcher
+TARGET="${CARGO_TARGET_DIR:-target}"
 rm -rf "$OUT"
 mkdir -p "$OUT"
 
@@ -22,7 +23,7 @@ case "$(uname -s)" in
         cargo build --release -p lr_launcher --bin lr_launcher --target aarch64-apple-darwin
         APP="$OUT/KYTTU The Last Route.app"
         mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-        lipo -create target/x86_64-apple-darwin/release/lr_launcher target/aarch64-apple-darwin/release/lr_launcher \
+        lipo -create "$TARGET/x86_64-apple-darwin/release/lr_launcher" "$TARGET/aarch64-apple-darwin/release/lr_launcher" \
             -output "$APP/Contents/MacOS/lr_launcher"
         cp packaging/native/macos-launcher/Info.plist "$APP/Contents/Info.plist"
         # the game's icon, if the game app was built before (packaging/macos/build_app.sh puts it in dist/)
@@ -36,8 +37,8 @@ case "$(uname -s)" in
     *)
         cargo build --release -p lr_launcher --bin lr_launcher
         EXE=lr_launcher
-        [ -f "target/release/lr_launcher.exe" ] && EXE=lr_launcher.exe
-        cp "target/release/$EXE" "$OUT/$EXE"
+        [ -f "$TARGET/release/lr_launcher.exe" ] && EXE=lr_launcher.exe
+        cp "$TARGET/release/$EXE" "$OUT/$EXE"
         echo "built $OUT/$EXE"
         ;;
 esac

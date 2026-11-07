@@ -184,7 +184,7 @@ Build it (the signing key must already be in `trusted.txt`, see above):
 sh packaging/native/build-launcher.sh        # -> dist/launcher/
 ```
 
-* **Windows** (KT's PC): copy `dist/launcher/lr_launcher.exe` anywhere, e.g. `%LOCALAPPDATA%\KYTTU\lr_launcher.exe`, and make a
+* **Windows** (KT's PC): copy `dist/launcher/lr_launcher.exe` (1.7 MB) anywhere, e.g. `%LOCALAPPDATA%\KYTTU\lr_launcher.exe`, and make a
   shortcut to it. The first start downloads about 7 MB (a console shows progress). Files the launcher writes carry no
   Mark-of-the-Web, so SmartScreen does not apply to the downloaded game; the launcher exe itself only gets the warning if it
   comes through a browser download. Defender sometimes distrusts unsigned downloaders: test on the PC first.
