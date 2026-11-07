@@ -369,7 +369,8 @@ mod tests {
                     assert_eq!(inf.open_cells(), again.open_cells(), "{world} {cx},{cy}: not deterministic");
                     assert!(!inf.caverns.is_empty() && inf.caverns.len() <= 2);
                     let big = &inf.caverns[0];
-                    assert!((16..=22).contains(&big.rect.w) && (16..=22).contains(&big.rect.h));
+                    // the caverns' size range is data (inferno.json "cavern": 22 to 30 cells, enlarged for the 1.5x spider)
+                    assert!((22..=30).contains(&big.rect.w) && (22..=30).contains(&big.rect.h));
                     for cv in &inf.caverns {
                         for dy in -3..=3 {
                             for dx in -3..=3 {

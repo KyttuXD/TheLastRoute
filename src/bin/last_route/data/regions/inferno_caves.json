@@ -12,8 +12,8 @@
 		"margin": 3,
 		"chambers": {
 			"count": [2, 4],
-			"width": [9, 15],
-			"height": [9, 15],
+			"width": [13, 21],
+			"height": [13, 21],
 			"gap": 3,
 			"clear_half": 2,
 			"attempts": 40
