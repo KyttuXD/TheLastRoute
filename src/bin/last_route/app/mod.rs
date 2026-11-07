@@ -396,6 +396,15 @@ impl Loading {
         Loading::for_room(diff, route::new_room_text(), level)
     }
 
+    /// Death-card / admin restart loading: online keeps the shared seed and stays connected; solo mints a new room.
+    fn death_restart(online: bool, diff: Difficulty, room_text: &str, level: Option<i32>) -> (Loading, bool) {
+        if online {
+            (Loading::for_room(diff, room_text.to_string(), level), true)
+        } else {
+            (Loading::new_room(diff, level), false)
+        }
+    }
+
     fn from_checkpoint(c: &checkpoint::Checkpoint) -> Loading {
         let mut l = Loading::new(
             c.difficulty,
@@ -824,7 +833,13 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                         true if resumed => {
                             // the new host runs the world it is in: its seed, the hunters it last saw (the old host's
                             // frames set them in this game), its own timers. The runners that rejoin are sent this route.
-                            room = playing.as_ref().map(|g| g.room_text.clone()).filter(|t| !t.is_empty()).unwrap_or_else(|| room.clone());
+                            // Prefer the live game, then an in-flight loading seed — never mint a new room during reform.
+                            room = playing
+                                .as_ref()
+                                .map(|g| g.room_text.clone())
+                                .or_else(|| loading.as_ref().map(|l| l.room.clone()))
+                                .filter(|t| !t.is_empty())
+                                .unwrap_or_else(|| room.clone());
                             session.set_room_seed(room.clone());
                             session.start_run(&room, diff.name());
                             ui.room_mode = menus::RoomMode::Host;
@@ -832,7 +847,13 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                         }
                         false if resumed => flash(&mut ui, "THE ROUTE CONTINUES // BACK IN THE PUBLIC ROOM"),
                         true => {
-                            room = world_sync::room_text_for_code(&code, &route::new_room_text());
+                            // Reform without a local world still must not invent a seed if the session already has one
+                            // (DirectoryOps::open mints a placeholder); only a fresh public open rolls a new room.
+                            room = if intent == NetIntent::Reform && !session.room_seed().is_empty() {
+                                session.room_seed().to_string()
+                            } else {
+                                world_sync::room_text_for_code(&code, &route::new_room_text())
+                            };
                             // the guests are sent the text this host runs on, so both start the same route
                             session.set_room_seed(room.clone());
                             ui.room_mode = menus::RoomMode::Host;
@@ -1524,6 +1545,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             }
             let seed_text = g.room_text.clone();
             let mut leave = false;
+            // online same-seed reload: clear the run after this borrow of `playing` ends, without Title/net.leave
+            let mut reload_keep_net = false;
             // a caught stress run ends here: the summary covers the run up to the catch
             if stress_on && g.report.is_some() {
                 if let Some(st) = stress_run.as_mut() {
@@ -1587,16 +1610,39 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                         }
                         match choice {
                             Some(0) => {
-                                loading = Some(match &last_save {
+                                let online = net.is_some() || reform.is_some();
+                                match &last_save {
                                     Some(cp) => {
                                         checkpoint::save(cp);
-                                        Loading::from_checkpoint(cp)
+                                        loading = Some(Loading::from_checkpoint(cp));
+                                        if online {
+                                            // stay in the room on the same route; Title leave would drop the session
+                                            reload_keep_net = true;
+                                        } else {
+                                            leave = true;
+                                        }
                                     }
                                     None => {
-                                        Loading::new_room(g.difficulty, g.inf.as_ref().map(|_| 0))
+                                        let room_text = g.room_text.clone();
+                                        let (load, stay) = Loading::death_restart(
+                                            online,
+                                            g.difficulty,
+                                            &room_text,
+                                            g.inf.as_ref().map(|_| 0),
+                                        );
+                                        loading = Some(load);
+                                        if stay {
+                                            // same seed reload while still hosting/joining: never mint a new public map
+                                            room = room_text.clone();
+                                            if let Some(n) = net.as_mut().filter(|n| n.is_host()) {
+                                                n.start_run(&room_text, g.difficulty.name());
+                                            }
+                                            reload_keep_net = true;
+                                        } else {
+                                            leave = true;
+                                        }
                                     }
-                                });
-                                leave = true;
+                                }
                             }
                             Some(_) => leave = true,
                             None => {}
@@ -1634,20 +1680,43 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     admin.draw(g, &w.assets, &w.content);
                     match admin.take_request() {
                         Some(crate::ui::admin::Request::RestartNewSeed) => {
-                            loading = Some(Loading::new_room(
+                            let online = net.is_some() || reform.is_some();
+                            let room_text = g.room_text.clone();
+                            let (load, stay) = Loading::death_restart(
+                                online,
                                 g.difficulty,
+                                &room_text,
                                 g.inf.as_ref().map(|_| 0),
-                            ));
-                            leave = true;
+                            );
+                            loading = Some(load);
+                            if stay {
+                                room = room_text.clone();
+                                if let Some(n) = net.as_mut().filter(|n| n.is_host()) {
+                                    n.start_run(&room_text, g.difficulty.name());
+                                }
+                                reload_keep_net = true;
+                            } else {
+                                leave = true;
+                            }
                         }
                         Some(crate::ui::admin::Request::RestartSameSeed) => {
+                            let online = net.is_some() || reform.is_some();
+                            let room_text = g.room_text.clone();
                             loading = Some(Loading::new(
                                 g.difficulty,
                                 g.run_seed,
-                                g.room_text.clone(),
+                                room_text.clone(),
                                 g.inf.as_ref().map(|_| 0),
                             ));
-                            leave = true;
+                            if online {
+                                room = room_text.clone();
+                                if let Some(n) = net.as_mut().filter(|n| n.is_host()) {
+                                    n.start_run(&room_text, g.difficulty.name());
+                                }
+                                reload_keep_net = true;
+                            } else {
+                                leave = true;
+                            }
                         }
                         Some(crate::ui::admin::Request::EndRoute) => leave = true,
                         None => {}
@@ -1688,6 +1757,24 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 death = None;
                 save = checkpoint::load();
                 ui.go(Screen::Title);
+                pz = Pause::default();
+                map_open = false;
+                set_cursor_grab(false);
+                show_mouse(true);
+                grabbed = false;
+                // Title's net.leave() only runs on the menus branch; a loading restart would otherwise keep the
+                // session while minting a solo seed and desync the room. Drop the room now when leaving with a load.
+                if loading.is_some() {
+                    if let Some(n) = net.take() {
+                        n.leave();
+                    }
+                    reform = None;
+                    ui.room_mode = menus::RoomMode::Solo;
+                }
+            } else if reload_keep_net {
+                playing = None;
+                crate::audio::world::reset();
+                death = None;
                 pz = Pause::default();
                 map_open = false;
                 set_cursor_grab(false);
@@ -2034,6 +2121,28 @@ fn title_return_focus(from: Screen, who: &str) -> usize {
         Screen::Account => menus::title_focus(menus::TitleEntry::Account, who),
         Screen::Quit => menus::title_focus(menus::TitleEntry::Quit, who),
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod death_restart_tests {
+    use super::*;
+
+    #[test]
+    fn online_death_restart_keeps_the_shared_seed() {
+        let shared = "ROOM-PUBLC-ABCDEF0123456789ab";
+        let (load, stay) = Loading::death_restart(true, Difficulty::Standard, shared, Some(0));
+        assert!(stay, "online restart stays connected");
+        assert_eq!(load.room, shared, "must not mint a fresh solo seed");
+    }
+
+    #[test]
+    fn solo_death_restart_mints_a_new_room() {
+        let shared = "ROOM-PUBLC-ABCDEF0123456789ab";
+        let (load, stay) = Loading::death_restart(false, Difficulty::Standard, shared, Some(0));
+        assert!(!stay, "solo restart leaves the title path");
+        assert!(load.room.starts_with("ROOM-"), "{}", load.room);
+        assert_ne!(load.room, shared);
     }
 }
 
