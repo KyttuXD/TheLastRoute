@@ -706,6 +706,9 @@ pub struct NetSession {
     /// Guest: whether the host is a server process (its last room message said so), not a runner. A room whose host
     /// was a server process is not handed to a runner the moment it goes (net/public_route.rs `Reform`).
     host_dedicated: bool,
+    /// Guest: whether the host's room message (the roster with session ids) has arrived. A runner that joined as the host
+    /// left has not been told who is in the room, so it does not know its place in line (`reform_plan`).
+    room_seen: bool,
 }
 
 /// CREATE a room on the directory and open its relay as the host. The request blocks, so the frame loop polls the result.
@@ -1068,6 +1071,7 @@ impl NetSession {
             room_owner: String::new(),
             player_peers: Vec::new(),
             host_dedicated: false,
+            room_seen: false,
         }
     }
 
@@ -1103,13 +1107,31 @@ impl NetSession {
         self.is_host() && !self.is_public_route()
     }
 
-    /// Guest: where this runner stands in the line to open the public room again when its host is gone, from the host's
-    /// last room message (net/public_route.rs `plan`). A host session lost a race for the room, so it only joins.
+    /// Where this runner stands in the line to open the public room again when its host is gone (or, for a stand-in host,
+    /// when its own relay link is gone), from the host's last room message (net/public_route.rs `plan`).
+    /// - A guest that has not yet had the host's room message (it joined as the host left) knows nobody in the room: it
+    ///   goes behind the first in line, so a runner who never saw the world does not win the room from those playing in it.
+    /// - A stand-in host whose link ended for good ([`NetSession::lost_public_link`]) goes behind the guests it had.
+    /// - A host that lost the race for the room (the relay says another host holds it) only joins.
     pub fn reform_plan(&self) -> super::public_route::Plan {
         if self.is_host() {
+            if self.lost_public_link() {
+                return super::public_route::Plan { rank: Some(self.guests.len()), was_dedicated: false };
+            }
             return super::public_route::Plan::join_only();
         }
+        if !self.room_seen {
+            return super::public_route::Plan { rank: Some(1), was_dedicated: false };
+        }
         super::public_route::plan(self.coop.link.session(), &self.player_peers, self.host_dedicated)
+    }
+
+    /// Whether this is the public route's stand-in host and its relay link is over for good (a dropped connection, a
+    /// second host replacing it). The relay has then closed the room on its guests, who open it again among themselves;
+    /// this runner is no longer the host of anything and must not keep its directory entry alive (the heartbeat would
+    /// list a room nobody can join), so the app lets it go and brings it back through the handover.
+    pub fn lost_public_link(&self) -> bool {
+        self.is_host() && self.is_public_route() && !self.dedicated && !self.coop.link.alive()
     }
 
     /// Host: how many runners the host itself counts for in the room: one, or none in a dedicated room.
@@ -1874,6 +1896,15 @@ impl NetSession {
                 self.guests.entry(peer).or_insert_with(|| Guest { name: String::new(), last_seen: now });
             }
             SessionEvent::Message { from, message } => self.on_message(from, message, now, out),
+            // the WebSocket relay says a guest's socket closed: a closed tab or a dropped connection sends no PeerLeave, and a
+            // PeerLeave sent as the guest closes can be lost. The guest goes now, not after the 45 s idle limit (a ghost would
+            // count in the room, hold its place in the public route's line to open the room again, and keep the room "busy").
+            SessionEvent::Relay(RelayEvent::PeerLeft(peer)) if self.is_host() => {
+                if let Some(name) = self.forget_guest(peer).filter(|n| !n.is_empty()) {
+                    out.push(NetEvent::GuestLeft(name));
+                    self.send_room_and_roster();
+                }
+            }
             SessionEvent::Relay(RelayEvent::HostLeft(reason)) => out.push(NetEvent::HostLeft(reason)),
             SessionEvent::Relay(RelayEvent::JoinAsGuest) => out.push(NetEvent::HostLeft("THE PUBLIC ROUTE HAS A HOST // JOIN IT".into())),
             SessionEvent::Relay(RelayEvent::Error(text)) if self.is_host() && super::public_route::is_public(&self.code) && is_host_refusal(&text) => {
@@ -1995,6 +2026,7 @@ impl NetSession {
                     self.difficulty = difficulty_from_name(d).name().to_string();
                 }
                 self.host_dedicated = rest.get("dedicated").and_then(Value::as_bool).unwrap_or(false);
+                self.room_seen = true;
                 out.push(NetEvent::Seed(seed));
             }
             Message::Packs { packs } if !self.is_host() => {

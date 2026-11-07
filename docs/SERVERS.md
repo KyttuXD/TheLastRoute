@@ -118,7 +118,13 @@ When it leaves, the others hand the room over (`net/public_reform.rs`), with no 
 - a room the directory still lists after its host died (the 15 s entry TTL) never links; it is dropped after 6 s and the
   next try is made; a runner gives up after 30 s past its turn and goes to the title;
 - when the host that left was a server process, the stand-in waits 45 s before it may open the room (a restart takes seconds);
-- if nobody remains the room is gone and the next runner to arrive opens a fresh one.
+- if nobody remains the room is gone and the next runner to arrive opens a fresh one;
+- a runner that joined as the host left, before the host's room message told it who is in the room, goes second in line
+  (it never saw the world, so it must not win the room from the runners playing in it);
+- a stand-in host whose own relay link ends for good (a dropped connection, a second host replacing it) lets go of the dead
+  room (unregistering it, so its heartbeat cannot keep a listing no one can join alive) and comes back through the same
+  handover behind the guests it had. The browser build's `WsLink` and the native WebSocket link report this; the UDP
+  `RelayLink` cannot tell yet, so a native stand-in on the UDP relay (`lr_server`) is not covered by this.
 
 What the new host knows: its own game (the world is the route's seed, which every runner builds itself) and the hunters it last
 saw (position, facing, state, level, stun, slow, disguise). What the old host's brains knew beyond that (paths, search memory,

@@ -1195,6 +1195,14 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
         if room_closed.is_none() {
             room_closed = reform_gave_up.take();
         }
+        // a stand-in host of the public route whose own relay link ended for good is no host any more: the relay closed the
+        // room on its guests, who open it among themselves. It lets go of the dead room and comes back through the handover
+        // (behind the guests it had); left alone it would carry on in a room nobody is in, and its heartbeat would keep
+        // listing a room no one can join.
+        let lost_link = net.as_ref().is_some_and(|n| n.lost_public_link());
+        if room_closed.is_none() && lost_link {
+            room_closed = Some("LOST THE CONNECTION TO THE ROOM".to_string());
+        }
         // the public route has no player host to keep alive: when the one holding the room goes, the runner keeps playing
         // and the room is opened again (net/public_reform.rs), not closed on it. A removal from the room still ends it.
         if let Some(reason) = room_closed.take() {
@@ -1212,7 +1220,11 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     let plan = net.as_ref().map_or(net_public::Plan::join_only(), |n| n.reform_plan());
                     let (name, skin) = (world_sync::clean_name(&settings.username), worn.get().hash);
                     reform = Some(PublicReform::begin(net_cfg.clone(), name, skin, plan, now));
-                    net = None;
+                    match net.take() {
+                        // the dead room's directory entry goes now (its token is the old one: a successor's entry is untouched)
+                        Some(n) if lost_link => n.leave(),
+                        _ => {}
+                    }
                     show_room_notice(playing.as_mut(), &mut ui, "THE HOST LEFT // THE ROUTE CONTINUES");
                 }
             } else {
@@ -1575,7 +1587,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     // Hold O: player list overlay (Godot player_list; Tab/T are labels until inventory/chat UI land).
                     if !stress_on && !pz.open && !in_report && is_key_down(KeyCode::O) {
                         let roster = net.as_ref().map(|n| n.roster()).unwrap_or_default();
-                        let local_host = net.as_ref().map_or(true, |n| n.host_controls());
+                        let local_host = net.as_ref().map_or(reform.is_none(), |n| n.host_controls());
                         pause::draw_hold_player_list(
                             &w.assets,
                             g,
@@ -1611,7 +1623,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     if pz.open {
                         let name = settings.username.clone();
                         let roster = net.as_ref().map(|n| n.roster()).unwrap_or_default();
-                        let local_host = net.as_ref().map_or(true, |n| n.host_controls());
+                        let local_host = net.as_ref().map_or(reform.is_none(), |n| n.host_controls());
                         match pause::draw_pause(
                             &w.assets,
                             &mut pz,

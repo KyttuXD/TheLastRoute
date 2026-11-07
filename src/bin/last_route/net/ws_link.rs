@@ -335,6 +335,12 @@ impl RoomLink for WsLink {
         self.core.ready()
     }
 
+    /// False once the socket closed or the room ended: the browser host of the public route lets go of a room whose link
+    /// is gone (app: `NetSession::lost_public_link`).
+    fn alive(&self) -> bool {
+        self.handle != 0 && !self.core.terminal()
+    }
+
     fn session(&self) -> u32 {
         self.core.session()
     }

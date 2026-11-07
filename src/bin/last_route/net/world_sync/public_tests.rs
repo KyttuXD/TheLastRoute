@@ -463,3 +463,52 @@ fn when_the_server_process_leaves_the_runners_wait_for_it_and_none_opens_the_roo
     assert!(!a2.is_host());
     assert_eq!(dir.opened.load(Ordering::SeqCst), 0, "no runner opened the room");
 }
+
+// ---- review additions: link loss and a join in flight ------------------------------------------------------------------
+
+#[test]
+fn a_stand_in_host_whose_relay_link_is_gone_lets_go_of_the_room_and_goes_behind_its_guests() {
+    let dir = Dir::new();
+    let mut a = hosting(enter(&dir, "A", true));
+    let mut b = joined(enter(&dir, "B", true));
+    registered(&mut a, &mut [&mut b]);
+    assert!(!a.lost_public_link(), "the link is up");
+    assert_eq!(a.reform_plan(), Plan::join_only(), "a stand-in whose link is up only joins (it lost a race, if it ends)");
+    // the relay drops the room (a dropped connection, a second host replacing it): the host's own link ends for good
+    dir.hub.close_room(CODE);
+    pump(&mut [&mut a, &mut b], |s, seen| !s[0].link_alive() && host_left(&seen[1]));
+    assert!(a.lost_public_link(), "the app lets this runner go and brings it back through the handover");
+    // it comes back behind the guest it had, so the guest (who is also reforming) opens the room first
+    assert_eq!(a.reform_plan(), Plan { rank: Some(1), was_dedicated: false });
+    // a server process never counts as a stand-in that lost its link
+    let srv = server(&dir);
+    assert!(!srv.lost_public_link());
+}
+
+#[test]
+fn a_runner_that_joined_as_the_host_left_and_never_saw_the_room_goes_behind_those_who_were_playing_in_it() {
+    let dir = Dir::new();
+    let mut a = hosting(enter(&dir, "A", true));
+    let mut b = joined(enter(&dir, "B", true));
+    registered(&mut a, &mut [&mut b]);
+    // D joins and the host leaves before D has been told who is in the room
+    let d = joined(enter(&dir, "D", true));
+    assert_eq!(d.reform_plan().rank, Some(1), "no room message yet: not first in line");
+    assert!(b.reform_plan().rank == Some(0), "B, who was listed, is first");
+    a.leave();
+}
+
+#[test]
+fn a_runner_whose_connection_just_closes_is_forgotten_at_once_and_does_not_hold_a_place_in_line() {
+    // a closed tab or a dropped connection sends no PeerLeave: the relay's peer-left notice is what the host has
+    let dir = Dir::new();
+    let mut a = hosting(enter(&dir, "A", true));
+    let mut b = joined(enter(&dir, "B", true));
+    let mut c = joined(enter(&dir, "C", true));
+    registered(&mut a, &mut [&mut b, &mut c]);
+    drop(b);
+    let seen = pump(&mut [&mut a, &mut c], |s, _| s[0].guest_count() == 1 && s[1].player_peers.len() == 1);
+    assert!(seen[0].contains(&NetEvent::GuestLeft("B".into())), "{:?}", seen[0]);
+    // C, who is now the only runner besides the host, is first in line to open the room if the host goes
+    assert_eq!(c.reform_plan().rank, Some(0), "the gone runner's id no longer stands ahead of C");
+}
