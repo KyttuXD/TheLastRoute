@@ -5,6 +5,16 @@ Updated as work lands. The port's current implementation is now treated as the
 completed scope for this checklist; future expansions should be tracked as new
 items rather than left in an ambiguous in-progress state.
 
+## GitHub CI and deploy (2026-11-07, repo is public)
+
+- [x] CI restored (.github/workflows/build.yml, test.yml): Windows, Linux, macOS Intel and macOS Apple Silicon are separate builds; nightly builds go to the "nightly" and "nightly-server" releases, not Actions artifacts.
+- [x] Web deploy from GitHub (.github/workflows/deploy-web.yml): push to main builds the wasm and runs packaging/web/deploy-vps2.sh as the restricted lr-deploy user. Secrets DEPLOY_SSH_KEY and DEPLOY_KNOWN_HOSTS are set; environment "production" exists.
+- [ ] Dry-run check on the first real deploy: watch the deploy-web run, then curl https://lastrouterust.games.kyttuslab.org/version.json.
+- [ ] Remove the stale NIGHTLY_SSH_KEY and NIGHTLY_KNOWN_HOSTS secrets (old vps3 publish, no longer used).
+- [ ] Decide whether the in-game macOS updater should pick the Intel or Apple Silicon zip (nightly now has separate files, no universal zip).
+- [ ] Tests that read tests/parity/ or reference/ need those folders, which are now local-only (git history was rewritten to remove them). They skip or fail on a fresh clone; add a note or skip guard.
+- [ ] Ask KT before any server change beyond the lr-deploy user (vps2 deploy user created 2026-11-07).
+
 ## Status 2026-11-04
 
 - Stairs linking audit (2026-11-04): real-entry walk tests, residency, twin-record and resume tests, the `stairs_report` protocol command and a faster neighbour build near a well are in; a resume from a mid-flight save no longer drops the body. Open: the stairs-vs-ramps question and the "stairs do not link" repro data (docs/OPEN_QUESTIONS.md 27), and the partial floor right after a relabel (below).
