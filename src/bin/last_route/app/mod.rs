@@ -1833,7 +1833,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     if crate::ui::admin::draw_hub(
                         &w.assets,
                         hub.get_or_insert_with(|| crate::ui::admin::HubPanel::new(net_cfg.clone())),
-                        &settings.username,
+                        backend.account_info.as_ref(),
                     ) {
                         hub = None;
                         Action::Go(Screen::Title)

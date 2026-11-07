@@ -132,14 +132,10 @@ impl HubPanel {
         }
     }
 
-    fn section(&self, title: &str, username: &str) -> String {
+    fn section(&self, title: &str, account: Option<&api::AccountReply>) -> String {
         match title {
-            "THIS BUILD" => format!(
-                "{} // BUILD RUST PORT (#0) // CHANNEL LOCAL\n{} DESKTOP // MACROQUAD // HALF-RES PIXEL VIEW",
-                crate::ui::menus::VERSION,
-                std::env::consts::OS.to_uppercase()
-            ),
-            "ACCOUNT" => format!("{} // ADMIN // SCOPES NONE", if username.is_empty() { "NOT SIGNED IN".to_string() } else { username.to_uppercase() }),
+            "THIS BUILD" => this_build_text(),
+            "ACCOUNT" => account_text(account),
             "SERVER" => server_text(&self.health),
             "UPDATES" => updates_text(&self.updates),
             "PUBLIC ROUTE" => public_text(&self.public),
@@ -149,6 +145,34 @@ impl HubPanel {
             _ => "In a run: press 0 (or the right stick click) for the admin menu: items, hunters, map reveal, god mode,\nroom chat mute / kick, FULLBRIGHT (F6).".into(),
         }
     }
+}
+
+/// THIS BUILD: the CI build number and commit (or LOCAL for a development build), and the platform.
+fn this_build_text() -> String {
+    format!("BUILD {}\n{} DESKTOP // MACROQUAD", crate::app::updater::build_label(), std::env::consts::OS.to_uppercase())
+}
+
+/// ACCOUNT: the signed-in name, the role the server reports, and the admin scopes it grants.
+/// `None` means not signed in (the backend keeps the account answer only while signed in).
+fn account_text(account: Option<&api::AccountReply>) -> String {
+    let Some(a) = account else {
+        return "NOT SIGNED IN // NO ADMIN SCOPES".into();
+    };
+    let role = if a.admin_owner {
+        "OWNER"
+    } else if a.admin {
+        "ADMIN"
+    } else {
+        "PLAYER"
+    };
+    let scopes = if !a.has_admin_permissions {
+        "NOT REPORTED BY SERVER".to_string()
+    } else if a.admin_permissions.is_empty() {
+        "NONE".to_string()
+    } else {
+        a.admin_permissions.join(" ").to_uppercase()
+    };
+    format!("{} // {role} // SCOPES {scopes}", a.username)
 }
 
 /// One status request's outcome: still running, no answer (could not connect / timed out), or an
@@ -351,7 +375,7 @@ fn wrap(ui: &Ui, text: &str, size: f32, width: f32) -> Vec<String> {
 
 /// Draws the panel over whatever is behind it (the title screen). Returns true when it closed
 /// (CLOSE, or Esc / ui_cancel).
-pub fn draw_hub(a: &Assets, hub: &mut HubPanel, username: &str) -> bool {
+pub fn draw_hub(a: &Assets, hub: &mut HubPanel, account: Option<&api::AccountReply>) -> bool {
     let (sw, sh) = (screen_width(), screen_height());
     let u = px_per_unit();
     hub.checking = (hub.checking - get_frame_time()).max(0.0);
@@ -411,7 +435,7 @@ pub fn draw_hub(a: &Assets, hub: &mut HubPanel, username: &str) -> bool {
             ui.tracked(title, body.x + (body.w - w) / 2.0, y, 7.0, AMBER);
         }
         y += row;
-        for line in wrap(&ui, &hub.section(title, username), 7.0, body.w) {
+        for line in wrap(&ui, &hub.section(title, account), 7.0, body.w) {
             let lw = ui.tw(&line, 7.0);
             if ui.visible(Rect::new(body.x, y, body.w, row)) {
                 ui.text(&line, body.x + (body.w - lw) / 2.0, y, 7.0, BODY);
@@ -460,6 +484,32 @@ mod tests {
 
     fn answered(status: u16, body: Value) -> Probe {
         Probe::Answered { status, body: body.as_object().cloned().unwrap_or_default() }
+    }
+
+    #[test]
+    fn account_line_shows_the_servers_role_and_scopes() {
+        assert_eq!(account_text(None), "NOT SIGNED IN // NO ADMIN SCOPES");
+        let owner = api::AccountReply {
+            username: "KYTTU".into(),
+            admin: true,
+            has_admin_owner: true,
+            admin_owner: true,
+            has_admin_permissions: true,
+            admin_permissions: vec!["hunters".into(), "world".into()],
+            ..Default::default()
+        };
+        assert_eq!(account_text(Some(&owner)), "KYTTU // OWNER // SCOPES HUNTERS WORLD");
+        let player = api::AccountReply { username: "BOB".into(), has_admin_permissions: true, ..Default::default() };
+        assert_eq!(account_text(Some(&player)), "BOB // PLAYER // SCOPES NONE");
+        let unknown = api::AccountReply { username: "BOB".into(), ..Default::default() };
+        assert_eq!(account_text(Some(&unknown)), "BOB // PLAYER // SCOPES NOT REPORTED BY SERVER");
+    }
+
+    #[test]
+    fn this_build_line_names_the_build_not_a_fixed_label() {
+        let text = this_build_text();
+        assert!(text.starts_with("BUILD "), "{text}");
+        assert!(!text.contains("RUST PORT") && !text.contains("CHANNEL LOCAL") && !text.contains("HALF-RES"), "{text}");
     }
 
     #[test]

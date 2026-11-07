@@ -102,3 +102,9 @@ Checked line by line against `ui/admin/hub.rs` and the data each line reads. Sta
 | ROUTE TOOLS | text | OK | static explanation | none |
 
 Summary: 4 WRONG or STALE items show false information (VERSION, CHANNEL, SCOPES, ADMIN), 2 items are GAPS (SERVER NOTICES, SKINS/MODERATION rights), and the rest are correct. The UPDATES and PUBLIC ROUTE data is fine; the build and account lines are the ones to fix first.
+
+### Fixed (2026-11-07)
+
+- THIS BUILD: shows `BUILD <CI number> (<commit>)` or `BUILD LOCAL (<commit>)` from the real build, plus the platform. The fixed "RUST PORT (#0)", "CHANNEL LOCAL", "HALF-RES" and "VERSION 0.0.1.0" text is gone.
+- ACCOUNT: `NAME // OWNER|ADMIN|PLAYER // SCOPES ...` from the server's `adminOwner` and `adminPermissions`. Signed out reads `NOT SIGNED IN // NO ADMIN SCOPES`. Scopes the server did not report read `NOT REPORTED BY SERVER`.
+- Still open from the audit: SERVER's `CHANNEL DEBUG` line, SERVER NOTICES, and SKINS / MODERATION rights.
