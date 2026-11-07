@@ -859,11 +859,15 @@ pub fn fetch_skin_in_background(id: &str) {
 /// download was started; false when the skin is held already, a download of it runs or cools down after a failure, or
 /// the start rate is used up.
 pub(crate) fn start_download(cfg: SkinConfig, base: String, dir: Option<PathBuf>, id: &str) -> bool {
+    // The id comes from another runner's profile: only 64 lowercase hex characters may reach a file path or the network.
+    if !is_skin_hash(id) {
+        return false;
+    }
     let held = match &dir {
         Some(dir) => !fetch_needed(dir, id),
         None => peer_skin(id).is_some(),
     };
-    if !is_skin_hash(id) || held {
+    if held {
         return false;
     }
     let key = format!("down:{id}");
@@ -2094,9 +2098,7 @@ mod tests {
                     }
                 }
                 // read the body of a POST too: closing with unread data can reset the connection before the client reads the answer
-                let head_end = got.windows(4).position(|w| w == b"
-
-").map_or(got.len(), |i| i + 4);
+                let head_end = got.windows(4).position(|w| w == b"\r\n\r\n").map_or(got.len(), |i| i + 4);
                 let want = String::from_utf8_lossy(&got[..head_end]).lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").and_then(|v| v.trim().parse::<usize>().ok())).unwrap_or(0);
                 while got.len() < head_end + want {
                     match conn.read(&mut b) {
@@ -3190,6 +3192,33 @@ use std::time::Duration;
         let asked = seen.lock().unwrap().clone();
         assert!(asked.iter().all(|line| line.starts_with("GET ")), "a read-only fetch: {asked:?}");
         assert!(remote_skin_rgba(&bytes).is_ok());
+    }
+
+    #[test]
+    fn a_hostile_id_from_a_profile_never_reaches_a_file_path_or_the_network() {
+        use std::sync::atomic::Ordering;
+        let (port, seen, stop) = serve_routes(Vec::new());
+        let base = format!("http://127.0.0.1:{port}");
+        let dir = temp_dir("hostile_id");
+        let upper = tagged_skin(51).0.to_ascii_uppercase();
+        let hostile = [
+            "../../etc/passwd".to_string(),
+            "..\\..\\secret".to_string(),
+            format!("{}/../x", "a".repeat(60)),
+            "a".repeat(5000),
+            "a".repeat(63),
+            upper,
+            String::new(),
+        ];
+        for id in &hostile {
+            assert!(!start_download(offline_host_config(), base.clone(), Some(dir.clone()), id), "refused: {:.30}", id);
+            assert!(!start_download(offline_host_config(), base.clone(), None, id), "refused in memory: {:.30}", id);
+            assert!(!book().running.contains(&format!("down:{id}")) && !book().retry_at.contains_key(&format!("down:{id}")), "not even booked");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        stop.store(true, Ordering::SeqCst);
+        assert!(seen.lock().unwrap().is_empty(), "nothing was asked of the server: {:?}", seen.lock().unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
