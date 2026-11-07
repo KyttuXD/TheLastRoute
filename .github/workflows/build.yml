@@ -1,0 +1,122 @@
+# Builds the port for Windows, Linux, macOS Intel and macOS Apple Silicon. Each build is published to a
+# rolling pre-release in Releases (not Actions artifacts): "nightly" for the game, "nightly-server" for the
+# Linux server. The release is replaced in place on every push to main (packaging/nightly.sh).
+# Intel and Apple Silicon macOS are separate builds and separate files: last_route-macos-x86_64.zip and
+# last_route-macos-arm64.zip. The repository is public, so GitHub-hosted runners (including macOS) are free.
+name: build
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".claude/**"
+      - "tools/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  RUST_TOOLCHAIN: "1.99.1"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows
+      - run: cargo build --release --bins --features server
+      - name: Collect the Windows builds
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/last_route.exe dist/last_route-windows-x86_64.exe
+          cp target/release/night_watch.exe dist/night_watch-windows-x86_64.exe
+      - name: Publish to nightly
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh packaging/nightly.sh dist/last_route-windows-x86_64.exe dist/night_watch-windows-x86_64.exe
+
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev
+      - run: sh packaging/linux/build.sh
+      - name: Publish to nightly
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh packaging/nightly.sh dist/last-route-linux-x86_64.tar.gz
+      - name: Collect the server build
+        run: |
+          mkdir -p dist
+          cp target/release/lr_server dist/lr_server-linux-x86_64
+          sha256sum dist/lr_server-linux-x86_64 > dist/lr_server-linux-x86_64.sha256
+      - name: Publish the server to nightly-server
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NIGHTLY_TAG: nightly-server
+          NIGHTLY_TITLE: Nightly server (Linux x86_64)
+        run: sh packaging/nightly.sh dist/lr_server-linux-x86_64 dist/lr_server-linux-x86_64.sha256
+
+  # Intel Mac: its own build, its own zip. Runs on the Intel runner image.
+  macos-intel:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-intel
+      - name: Build the Intel app
+        env:
+          ARCHS: x86_64-apple-darwin
+        run: sh packaging/macos/build_app.sh
+      - name: Zip the Intel app
+        run: (cd dist/intel && zip -qry ../last_route-macos-x86_64.zip "KYTTU The Last Route.app")
+      - name: Publish to nightly
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh packaging/nightly.sh dist/last_route-macos-x86_64.zip dist/night_watch-macos-x86_64.zip
+
+  # Apple Silicon Mac: its own build, its own zip. Runs on the Apple Silicon runner image.
+  macos-arm64:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-arm64
+      - name: Build the Apple Silicon app
+        env:
+          ARCHS: aarch64-apple-darwin
+        run: sh packaging/macos/build_app.sh
+      - name: Zip the Apple Silicon app
+        run: (cd dist/arm64 && zip -qry ../last_route-macos-arm64.zip "KYTTU The Last Route.app")
+      - name: Publish to nightly
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh packaging/nightly.sh dist/last_route-macos-arm64.zip dist/night_watch-macos-arm64.zip
