@@ -1,7 +1,6 @@
 #!/bin/sh
 # Makes the universal (Apple Silicon + Intel) zips that the in-game updater and the nightly release use, from the
 # per-architecture apps build_app.sh writes (dist/intel/ and dist/arm64/). Run from the repo root after build_app.sh:
-#   dist/last_route-macos-universal.zip and dist/night_watch-macos-universal.zip
 # Needs lipo, zip.
 set -e
 cd "$(dirname "$0")/../../dist"
@@ -19,4 +18,3 @@ universal_zip() {
 }
 
 universal_zip "KYTTU The Last Route.app" last_route last_route-macos-universal.zip
-universal_zip "KYTTU Night Watch.app" night_watch night_watch-macos-universal.zip

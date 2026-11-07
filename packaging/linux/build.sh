@@ -6,19 +6,13 @@
 # otherwise Liberation Mono/Sans Bold are used.
 set -e
 cd "$(dirname "$0")/../.."
-cargo build --release --bin last_route --bin night_watch
 cargo build --release --bin lr_server --features server
 
 OUT=dist/last-route-linux
 rm -rf "$OUT"
 mkdir -p "$OUT/share/applications" "$OUT/share/icons/hicolor/256x256/apps" "$OUT/bin"
 cp target/release/last_route "$OUT/bin/last_route"
-cp target/release/night_watch "$OUT/bin/night_watch"
 cp packaging/linux/last-route.desktop "$OUT/share/applications/"
-cp packaging/linux/night-watch.desktop "$OUT/share/applications/"
 cp src/bin/last_route/assets/branding/logo_256.png "$OUT/share/icons/hicolor/256x256/apps/last-route.png"
-# Night Watch has no PNG logo of its own yet, so it uses the Last Route logo as its icon.
-cp src/bin/last_route/assets/branding/logo_256.png "$OUT/share/icons/hicolor/256x256/apps/night-watch.png"
 tar -C dist -czf dist/last-route-linux-x86_64.tar.gz last-route-linux
 echo "built $OUT and dist/last-route-linux-x86_64.tar.gz"
-echo "install for this user: cp -r $OUT/* ~/.local/ (puts last_route and night_watch on ~/.local/bin)"

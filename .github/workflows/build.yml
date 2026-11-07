@@ -37,13 +37,13 @@ jobs:
         run: |
           mkdir -p dist
           cp target/release/last_route.exe dist/last_route-windows-x86_64.exe
-          cp target/release/night_watch.exe dist/night_watch-windows-x86_64.exe
+
       - name: Publish to nightly
         if: github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: sh packaging/nightly.sh dist/last_route-windows-x86_64.exe dist/night_watch-windows-x86_64.exe
+        run: sh packaging/nightly.sh dist/last_route-windows-x86_64.exe
 
   linux:
     runs-on: ubuntu-22.04
@@ -96,7 +96,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: sh packaging/nightly.sh dist/last_route-macos-x86_64.zip dist/night_watch-macos-x86_64.zip
+        run: sh packaging/nightly.sh dist/last_route-macos-x86_64.zip
 
   # Apple Silicon Mac: its own build, its own zip. Runs on the Apple Silicon runner image.
   macos-arm64:
@@ -119,4 +119,4 @@ jobs:
         if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: sh packaging/nightly.sh dist/last_route-macos-arm64.zip dist/night_watch-macos-arm64.zip
+        run: sh packaging/nightly.sh dist/last_route-macos-arm64.zip

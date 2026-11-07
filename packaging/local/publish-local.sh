@@ -144,7 +144,6 @@ build_windows() {
         return 1
     fi
     cp "$TARGET_U/release/last_route.exe" "$OUT/last_route-windows-x86_64.exe"
-    cp "$TARGET_U/release/night_watch.exe" "$OUT/night_watch-windows-x86_64.exe"
     echo "$N" > "$src/.lr-local-n"
     say "windows: built $(file_of windows) ($(size_of "$OUT/$(file_of windows)") bytes)"
 }

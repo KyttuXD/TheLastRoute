@@ -112,7 +112,6 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         for (bin, ico) in [
             ("lr_server", "packaging/windows/lr_server.ico"),
-            ("night_watch", "packaging/windows/night_watch.ico"),
         ] {
             println!("cargo:rerun-if-changed={ico}");
             let mut res = winresource::WindowsResource::new();

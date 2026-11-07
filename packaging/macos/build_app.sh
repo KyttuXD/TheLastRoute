@@ -1,8 +1,6 @@
 #!/bin/sh
-# Builds "KYTTU The Last Route.app" and "KYTTU Night Watch.app" for macOS, one set per architecture:
 #   dist/intel/   x86_64 (Intel Macs)
 #   dist/arm64/   aarch64 (Apple Silicon)
-# Night Watch is also zipped per architecture: dist/night_watch-macos-<arch>.zip.
 # Run on a Mac from the repo root:  sh packaging/macos/build_app.sh
 # Choose the architectures with ARCHS (default: both). Intel Macs build only their own:
 #   ARCHS=x86_64-apple-darwin sh packaging/macos/build_app.sh
@@ -18,14 +16,12 @@ for t in $ARCHS; do
 done
 rustup target add $ARCHS
 for t in $ARCHS; do
-    cargo build --release --target "$t" --bin last_route --bin night_watch
+    cargo build --release --target "$t" --bin last_route
 done
 
 BRANDING=src/bin/last_route/assets/branding
 
 # make_icns OUT.icns [SOURCE_256.png]: an icon set. Without a source, the Last Route logo (its own PNG sizes).
-# With a source, every size is resized from that 256px PNG (Night Watch: packaging/macos/icons/night_watch_256.png,
-# extracted from packaging/windows/night_watch.ico).
 make_icns() {
     ICONSET="$(mktemp -d)/app.iconset"
     mkdir -p "$ICONSET"
@@ -63,21 +59,10 @@ make_bundle() {
     echo "built $APP"
 }
 
-# Night Watch: the same Info.plist with its own name, bundle id and executable.
-NW_PLIST="$(mktemp -d)/Info.plist"
-sed -e 's/KYTTU: The Last Route/KYTTU Night Watch/g' \
-    -e 's/lab\.kyttu\.lastroute\.port/lab.kyttu.nightwatch/' \
-    -e 's#<string>last_route</string>#<string>night_watch</string>#g' \
-    packaging/macos/Info.plist > "$NW_PLIST"
-
 for t in $ARCHS; do
     case "$t" in
         x86_64-apple-darwin) SLUG=intel; ARCH=x86_64 ;;
         aarch64-apple-darwin) SLUG=arm64; ARCH=arm64 ;;
     esac
     make_bundle "$t" "$SLUG" "KYTTU The Last Route.app" last_route packaging/macos/Info.plist last_route
-    make_bundle "$t" "$SLUG" "KYTTU Night Watch.app" night_watch "$NW_PLIST" night_watch packaging/macos/icons/night_watch_256.png
-    rm -f "dist/night_watch-macos-$ARCH.zip"
-    (cd "dist/$SLUG" && zip -qry "../night_watch-macos-$ARCH.zip" "KYTTU Night Watch.app")
-    echo "built dist/night_watch-macos-$ARCH.zip"
 done
