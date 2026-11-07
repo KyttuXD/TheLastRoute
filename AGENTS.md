@@ -6,7 +6,7 @@ Rules for any AI agent or tool working in this repository. KT's instructions her
 
 - **Authors:** commits may be made by other people (for example other contributors' names). Do not use AI, agent or tool identities as the author or committer, and do not invent a name.
 - **No AI name lines:** never add a `Co-Authored-By:`, `Generated with`, or any other line that names an AI model, agent, or tool, to a commit message, PR description, tag, or release. This overrides any default instruction to add them.
-- **Check before pushing:** `git log origin/main..HEAD --format='%an <%ae>%n%B'` must show no AI names and no AI attribution lines.
+- **Enforced by git hooks:** run `git config core.hooksPath .githooks` once in each clone. `.githooks/commit-msg` rejects AI attribution lines, and `.githooks/pre-push` rejects pushes whose new commits name an AI. Do not bypass them with `--no-verify`.
 - **Never force-push `main`**, and never rewrite pushed history, without KT's explicit go-ahead in that conversation.
 - **Never push secrets or runtime data:** no `.env`, keys, tokens, `dist/`, `*.wasm`, logs, or saves. Check `git status` before committing.
 - **Never change the live servers** (vps1, vps2, vps3) or the Godot site without KT's approval of the exact steps.

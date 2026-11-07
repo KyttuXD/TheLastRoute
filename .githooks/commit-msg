@@ -1,0 +1,6 @@
+#!/bin/sh
+# Rejects AI attribution lines in commit messages (see AGENTS.md).
+if grep -i -E '^(co-authored-by|generated with|signed-off-by).*(claude|anthropic|cursor|copilot|openai|gpt|chatgpt|gemini|llm)|generated with \[claude|🤖' "$1" >/dev/null; then
+  echo "commit rejected: AI attribution line found (AGENTS.md forbids these)." >&2
+  exit 1
+fi
