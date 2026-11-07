@@ -28,6 +28,10 @@ Open an issue with:
 3. Your operating system and how you started the game.
 4. The log file, if the game wrote one (see the wiki's troubleshooting page).
 
+## Licence
+
+The code is MIT-licensed ([LICENSE](LICENSE)). The art and assets are CC BY-NC 4.0: free to play, share and mod for non-commercial use, with credit ([docs/LICENSE_ASSETS.md](docs/LICENSE_ASSETS.md)).
+
 ## Credits
 
 KYTTU: The Last Route was made by Kyttu (KyttuXD, Kyttu's Lab). The full list of files and sources is in [CREDITS.md](CREDITS.md).
