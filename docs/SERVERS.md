@@ -87,6 +87,7 @@ systemctl start lastroute-rust
 go to **FIELDS**, type the account name in **RESET PASSWORD** and press Enter or the RESET PASSWORD button. A message box
 shows the temporary password once with a **COPY** button (the clipboard) and CLOSE. The field and the button are not shown
 to anyone else. It calls the endpoint above. See docs/ADMIN_MENU.md.
+
 ## VPS 2: the game's website, mods and skins (static files)
 
 `lastrouterust.games.kyttuslab.org` serves `/srv/lr-rust-web` (checked read-only on 2026-11-06: `/api/*` goes to a Node backend, everything
