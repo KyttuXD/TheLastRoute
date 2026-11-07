@@ -20,7 +20,7 @@ use std::sync::{Mutex, OnceLock};
 use crate::shared::clock::Instant;
 
 use super::Ctx;
-use crate::config::{Difficulty, HUNTER_RADIUS};
+use crate::config::Difficulty;
 use crate::hunters::brain::{dist, Brain, State, Target};
 use crate::world::Facility;
 
@@ -480,11 +480,7 @@ pub fn sweep_clear(fac: &Facility, from: (f32, f32), to: (f32, f32), step: f32) 
     let steps = sweep_samples(dist(from, to), step);
     (1..=steps).all(|i| {
         let t = i as f32 / steps as f32;
-        fac.body_fits(
-            from.0 + (to.0 - from.0) * t,
-            from.1 + (to.1 - from.1) * t,
-            HUNTER_RADIUS,
-        )
+        fac.hunter_fits(from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
     })
 }
 
@@ -1063,7 +1059,7 @@ mod tests {
 mod beam_tests {
     use super::*;
     use crate::audio::Sounds;
-    use crate::config::Difficulty;
+    use crate::config::{Difficulty, HUNTER_RADIUS};
     use crate::content::Content;
     use crate::game::{Controls, Game};
     use crate::world::catalog::Catalog;
@@ -1175,7 +1171,7 @@ mod beam_tests {
                 let a = k as f32 * std::f32::consts::TAU / 24.0;
                 (her.0 + 1.5 * a.cos(), her.1 + 1.5 * a.sin())
             })
-            .find(|s| g.fac.body_fits(s.0, s.1, HUNTER_RADIUS) && g.fac.has_line_of_sight(her, *s))
+            .find(|s| g.fac.hunter_fits(s.0, s.1) && g.fac.has_line_of_sight(her, *s))
             .expect("open floor beside her");
         let p = g.p.pos;
         g.npc_spawn(1, 0, (p.0, 1.5, p.1), (1.0, 0.0, 0.0));
@@ -1394,7 +1390,7 @@ mod beam_tests {
                 let a = k as f32 * std::f32::consts::TAU / 16.0;
                 (from.0 + 4.0 * a.cos(), from.1 + 4.0 * a.sin())
             })
-            .find(|s| g.fac.body_fits(s.0, s.1, HUNTER_RADIUS) && g.fac.has_line_of_sight(from, *s))
+            .find(|s| g.fac.hunter_fits(s.0, s.1) && g.fac.has_line_of_sight(from, *s))
             .expect("a clear spot four cells from the runner");
         let hi = g.hunters.iter().position(|h| h.def.id == "nyxie").unwrap();
         g.hunters[hi].pos = spot;

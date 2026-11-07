@@ -257,6 +257,7 @@ fn prop_of_layout(p: &crate::world::route::props::Prop, rooms: &[layout::Room]) 
             door::draw_for((p.cell.x, p.cell.y), &cells)
         }),
         sewer: None,
+        crawl_under: false,
     }
 }
 

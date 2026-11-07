@@ -99,6 +99,11 @@ pub struct Prop {
     pub door: Option<DoorDraw>,
     /// A sewer valve wheel's or sluice gate's keys; `None` for every other prop.
     pub sewer: Option<SewerKeys>,
+    /// A pipe hung at crawl height (the sewer's crawl-under pipe, underside `collider_y0` above the floor). The runner is not
+    /// stopped by it here (nothing in the port crawls, so `solid` is false), but a hunter is tall: Godot's navigation and
+    /// physics keep it out (`StreamedHunterNavigation` closes the cells of a raised collider, the collider blocks the
+    /// capsule). `Facility::hunter_fits` and the hunters' grid read it; the runner's rule does not.
+    pub crawl_under: bool,
 }
 
 /// The prop type of a sewer sluice gate (`world::route::sewer`).
@@ -237,6 +242,8 @@ pub struct Facility {
     /// Stairwell cells: open to the level below (or above), not walkable.
     hole: Vec<bool>,
     hunter_open: Vec<bool>,
+    /// Indices into `props` of the crawl-under pipes (`Prop::crawl_under`): the few props only a hunter is stopped by.
+    crawl_props: Vec<usize>,
     random: Rng,
     /// Solid props by cell, for fast footprint tests.
     prop_grid: Vec<Vec<usize>>,
@@ -572,6 +579,7 @@ impl Facility {
             origin: (0, 0),
             hole: vec![false; (cols * rows) as usize],
             hunter_open: vec![],
+            crawl_props: vec![],
             random: Rng::new(seed_text),
             prop_grid: vec![vec![]; (cols * rows) as usize],
             door_state: HashMap::new(),
@@ -867,6 +875,7 @@ impl Facility {
                 }
             }
         }
+        self.crawl_props = (0..self.props.len()).filter(|i| self.props[*i].crawl_under).collect();
         self.build_hunter_grid();
     }
 
@@ -919,6 +928,7 @@ impl Facility {
             origin: (0, 0),
             hole: vec![false; (cols * rows) as usize],
             hunter_open: vec![],
+            crawl_props: vec![],
             random: Rng::new(seed_text),
             prop_grid: vec![],
             door_state: HashMap::new(),
@@ -1529,7 +1539,7 @@ impl Facility {
         for i in 1..=steps {
             let t = i as f32 / steps as f32;
             let p = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
-            if !self.body_fits(p.0, p.1, r) {
+            if !self.body_fits_tall(p.0, p.1, r) {
                 break;
             }
             last = p;
@@ -1598,8 +1608,51 @@ impl Facility {
         })
     }
 
+    /// Whether a body of radius `r` standing on this level's floor fits at `(x, y)`. Walls, solid props, doors, lockers and
+    /// flight dividers are tested for the body's own radius. The stair wells and ladder hatches are tested by the runner's
+    /// own rule at floor height (`stair_holes_fit`, `PLAYER_RADIUS`): a cell of a well holds a floor-walking body only where
+    /// the flight's surface is at the floor. A hunter or a bot is never carried across a well (over the drop, under the
+    /// ramp) that the runner could not cross; the landing where a flight starts still holds the wider hunter, as it holds
+    /// the runner.
     pub fn body_fits(&self, x: f32, y: f32, r: f32) -> bool {
-        self.body_fits_at(x, y, r, 0.0)
+        self.fits(x, y, r, 0.0, false)
+            && (self.stairs.is_empty() || self.stair_holes_fit(x, y, r.min(crate::config::PLAYER_RADIUS), 0.0, true))
+    }
+
+    /// Whether a crawl-under pipe (`Prop::crawl_under`) stops a body of radius `r` at `(x, y)`: its collider box grown by
+    /// the radius. Only tall bodies are asked (a hunter); the runner passes under it.
+    pub fn crawl_blocks(&self, x: f32, y: f32, r: f32) -> bool {
+        self.crawl_props.iter().any(|&i| {
+            let p = &self.props[i];
+            let (px, py) = (p.cell.x as f32 + 0.5 + p.offset.0, p.cell.y as f32 + 0.5 + p.offset.1);
+            (x - px).abs() < p.half.0 + r && (y - py).abs() < p.half.1 + r
+        })
+    }
+
+    /// Whether the hunters' grid is closed at `c` only by a crawl-under pipe: the cell is floor for the runner (who walks under
+    /// the pipe) and shut to a hunter.
+    pub fn crawl_closed(&self, c: Cell) -> bool {
+        let (x, y) = c.center();
+        !self.crawl_props.is_empty()
+            && !self.hunter_open(c)
+            && self.crawl_blocks(x, y, DEFAULT_AGENT_RADIUS as f32)
+            && !self.is_drop(c)
+            && self.body_fits(x, y, DEFAULT_AGENT_RADIUS as f32)
+    }
+
+    /// Whether a hunter (`HUNTER_RADIUS`, tall) standing on the floor fits at `(x, y)`: `body_fits` for its radius, and no
+    /// crawl-under pipe in the way. The one footprint rule of a hunter's step, route cell and spawn.
+    pub fn hunter_fits(&self, x: f32, y: f32) -> bool {
+        self.body_fits(x, y, crate::config::HUNTER_RADIUS) && !self.crawl_blocks(x, y, crate::config::HUNTER_RADIUS)
+    }
+
+    /// `body_fits` for a body of radius `r` that is as tall as it is wide to the crawl-under pipes: a body of a hunter's
+    /// radius or more is a hunter (the runner and the bots are thinner), so it is kept out of them too. The placement
+    /// searches (`nearest_open`, `clear_toward`) take their radius from the caller, which is `HUNTER_RADIUS` for every
+    /// teleport and shove of a hunter (the Void hunters, the spawn spots, the admin tools); without this they could set a
+    /// hunter down inside a crawl pipe.
+    fn body_fits_tall(&self, x: f32, y: f32, r: f32) -> bool {
+        self.body_fits(x, y, r) && (r < crate::config::HUNTER_RADIUS || !self.crawl_blocks(x, y, r))
     }
 
     /// Every cell of every stair's well (sorted, no repeats).
@@ -1682,18 +1735,11 @@ impl Facility {
         self.fits(x, y, r, height, false)
     }
 
-    /// The shared body of `body_fits_at` and `body_fits_at_y`. `by_height`: a corner on a flight at the body's height is
-    /// exempt from the floor-height and hole rules; otherwise any tread of a flight is exempt from the hole rule.
-    fn fits(&self, x: f32, y: f32, r: f32, height: f32, by_height: bool) -> bool {
-        // a drop has no wall, so a body may enter it (the hole rule below does not apply to a drop either)
-        if !self.clear_of_solids(x as f64, y as f64, r as f64) {
-            return false;
-        }
-        if self.divider_blocks(x, y, r) {
-            return false;
-        }
-        // a body off the floor line fits only on a flight at its height. An Inferno window's floor is one continuous
-        // noisy surface with the slope limited by construction (`TerrainRules`), so the height rule does not apply
+    /// The floor-height and hole rules of `fits`, for a body of radius `r` at walk height `height`: off the floor line a
+    /// body fits only on a flight at its height (an Inferno window's floor is one continuous noisy surface with the slope
+    /// limited by construction (`TerrainRules`), so the height rule does not apply there), and no corner or the centre
+    /// may be in a stair well or ladder hatch unless on a flight (`by_height`: at the body's height; otherwise any tread).
+    fn stair_holes_fit(&self, x: f32, y: f32, r: f32, height: f32, by_height: bool) -> bool {
         if self.terrain.is_none() && height != 0.0 {
             for (sx, sy) in [(x - r, y - r), (x + r, y - r), (x - r, y + r), (x + r, y + r)] {
                 let cell = Cell::new(sx.floor() as i32, sy.floor() as i32);
@@ -1706,19 +1752,29 @@ impl Facility {
                 }
             }
         }
-        for (sx, sy) in [
-            (x - r, y - r),
-            (x + r, y - r),
-            (x - r, y + r),
-            (x + r, y + r),
-            (x, y),
-        ] {
+        for (sx, sy) in [(x - r, y - r), (x + r, y - r), (x - r, y + r), (x + r, y + r), (x, y)] {
             if self.is_stair_hole(sx.floor() as i32, sy.floor() as i32) {
                 let on = if by_height { self.on_flight_at(sx, sy, height) } else { self.on_stair_flight(sx, sy) };
                 if !on {
                     return false;
                 }
             }
+        }
+        true
+    }
+
+    /// The shared body of `body_fits_at` and `body_fits_at_y`. `by_height`: a corner on a flight at the body's height is
+    /// exempt from the floor-height and hole rules; otherwise any tread of a flight is exempt from the hole rule.
+    fn fits(&self, x: f32, y: f32, r: f32, height: f32, by_height: bool) -> bool {
+        // a drop has no wall, so a body may enter it (the hole rule below does not apply to a drop either)
+        if !self.clear_of_solids(x as f64, y as f64, r as f64) {
+            return false;
+        }
+        if self.divider_blocks(x, y, r) {
+            return false;
+        }
+        if !self.stair_holes_fit(x, y, r, height, by_height) {
+            return false;
         }
         if self.door_blocks(x, y, r) {
             return false;
@@ -1954,7 +2010,7 @@ impl Facility {
             let closed_well = self.hunter_open.len() == (self.cols * self.rows) as usize
                 && self.is_stair_hole(c.x, c.y)
                 && !self.hunter_open[(c.y * self.cols + c.x) as usize];
-            if !closed_well && self.body_fits(wx, wy, r) {
+            if !closed_well && self.body_fits_tall(wx, wy, r) {
                 return Some((wx, wy));
             }
             for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
@@ -2067,6 +2123,7 @@ impl Facility {
                             offset: (0.0, 0.0),
                             door: None,
                             sewer: None,
+                            crawl_under: false,
                         });
                     }
                     continue;
@@ -2106,6 +2163,7 @@ impl Facility {
                     offset: (0.0, 0.0),
                     door: None,
                     sewer: None,
+                    crawl_under: false,
                 });
             }
         }
@@ -2488,7 +2546,8 @@ impl Facility {
             for x in 0..self.cols {
                 // a hunter never walks into a drop: it has no floor
                 open[(y * self.cols + x) as usize] = !self.is_drop(Cell::new(x, y))
-                    && self.body_fits(x as f32 + 0.5, y as f32 + 0.5, DEFAULT_AGENT_RADIUS as f32);
+                    && self.body_fits(x as f32 + 0.5, y as f32 + 0.5, DEFAULT_AGENT_RADIUS as f32)
+                    && !self.crawl_blocks(x as f32 + 0.5, y as f32 + 0.5, DEFAULT_AGENT_RADIUS as f32);
             }
         }
         // a railing closes the cell it faces (the water beyond it): a route never steps across the fence. Only an
@@ -2760,6 +2819,7 @@ mod tests {
             offset: (0.0, 0.0),
             door: Some(DoorDraw { span: 1, offset: [0.0, 0.0] }),
             sewer: None,
+            crawl_under: false,
         });
         f
     }

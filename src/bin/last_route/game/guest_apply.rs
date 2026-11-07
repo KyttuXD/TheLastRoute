@@ -355,6 +355,7 @@ mod tests {
             offset: (0.0, 0.0),
             door: None,
             sewer: None,
+            crawl_under: false,
         });
     }
 

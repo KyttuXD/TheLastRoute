@@ -1463,7 +1463,7 @@ mod resident_floor_tests {
             .into_iter()
             .filter(|c| {
                 let (x, z) = c.center();
-                fac.hunter_open(*c) && fac.body_fits(x, z, HUNTER_RADIUS) && pdist((x, z), from) >= from_min
+                fac.hunter_open(*c) && fac.hunter_fits(x, z) && pdist((x, z), from) >= from_min
             })
             .map(|c| c.center())
             .step_by(7)
@@ -1681,7 +1681,7 @@ mod resident_floor_tests {
             for c in fac.floor_cells() {
                 let p = c.center();
                 if fac.hunter_open(c)
-                    && fac.body_fits(p.0, p.1, HUNTER_RADIUS)
+                    && fac.hunter_fits(p.0, p.1)
                     && pdist(p, g.p.pos) >= 8.0
                     && picked.iter().all(|q| pdist(*q, p) >= 2.0 * crate::hunters::director::SEPARATION)
                 {

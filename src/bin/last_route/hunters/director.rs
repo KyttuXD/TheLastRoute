@@ -739,7 +739,7 @@ fn exit_point(relays: &[Cell], seen_at: (f32, f32), toward: (f32, f32)) -> (f32,
 pub fn separate(dt: f32, hunters: &mut [Brain], fac: &Facility) -> i32 {
     let mut pushed = 0;
     for i in 0..hunters.len() {
-        if !hunters[i].active {
+        if !hunters[i].active || hunters[i].walk.is_some() {
             continue;
         }
         let mut push = (0.0f32, 0.0f32);
@@ -781,8 +781,10 @@ pub fn separate(dt: f32, hunters: &mut [Brain], fac: &Facility) -> i32 {
             hunters[i].pos.0 + lim.0 * SEPARATION_SPEED * dt,
             hunters[i].pos.1 + lim.1 * SEPARATION_SPEED * dt,
         );
-        // can_occupy at its default radius (DEFAULT_AGENT_RADIUS 0.23)
-        if !fac.can_occupy(to.0 as f64, to.1 as f64, 0.23) {
+        // the hunter's own body against the runner's rule (walls, props, railings, doors, lockers, flight dividers and
+        // stair wells) and the crawl-under pipes (`hunter_fits`), and the push is a short step: it never carries a body
+        // through anything
+        if !fac.hunter_fits(to.0, to.1) {
             continue;
         }
         hunters[i].pos = to;

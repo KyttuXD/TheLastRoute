@@ -194,7 +194,7 @@ fn body_fits_gated(fac: &Facility, gates: &[Cell], x: f32, y: f32) -> bool {
 fn body_fits_gated_at(fac: &Facility, gates: &[Cell], x: f32, z: f32, h: Option<f32>) -> bool {
     let fits = match h {
         Some(h) => super::navigation::on_flight(fac, x, z, h),
-        None => fac.body_fits(x, z, HUNTER_RADIUS),
+        None => fac.hunter_fits(x, z),
     };
     fits || (!gates.is_empty() && gates.contains(&cell_of((x, z))))
 }
@@ -253,7 +253,7 @@ impl<'a> Standable<'a> {
             2 => return false,
             _ => {}
         }
-        let fits = fac.body_fits(c.x as f32 + 0.5, c.y as f32 + 0.5, HUNTER_RADIUS);
+        let fits = fac.hunter_fits(c.x as f32 + 0.5, c.y as f32 + 0.5);
         self.known.borrow_mut()[i] = if fits { 1 } else { 2 };
         fits
     }
@@ -1284,8 +1284,20 @@ impl Brain {
             }
             plan.step_factor((c.x, c.y))
         };
+        // a body standing off-centre in a closed cell (the corner of a well beside a flight's landing, a cell the grid
+        // closes but the body fits) plans from the open cell beside it, as `plan_route_wet` does
+        let here = cell_of(self.pos);
+        let start = if fac.hunter_open(here) || gates.contains(&here) {
+            here
+        } else {
+            (-1..=1)
+                .flat_map(|dy| (-1..=1).map(move |dx| Cell::new(here.x + dx, here.y + dy)))
+                .filter(|c| fac.hunter_open(*c))
+                .min_by(|a, b| dist(a.center(), self.pos).total_cmp(&dist(b.center(), self.pos)))
+                .unwrap_or(here)
+        };
         self.nav.next_hop(
-            Node { level: self.level, cell: cell_of(self.pos) },
+            Node { level: self.level, cell: start },
             Node { level: goal_level, cell: cell_of(goal) },
             &step_cost,
         )
@@ -1679,7 +1691,7 @@ impl Brain {
             return;
         }
         let spot = corner.body();
-        if dist(self.pos, spot) > 1.0 || !fac.body_fits(spot.0, spot.1, HUNTER_RADIUS) {
+        if dist(self.pos, spot) > 1.0 || !fac.hunter_fits(spot.0, spot.1) {
             return; // not at the corner yet, or no room to stand behind it
         }
         self.peek_corner_cell = Some(corner.c);

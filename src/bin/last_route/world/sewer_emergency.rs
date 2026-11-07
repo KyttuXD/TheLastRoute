@@ -125,6 +125,7 @@ pub fn props(sc: &SewerChunk, seed: &str, cx: i32, cy: i32, level: i32, rooms: &
                 offset: (wall.0 as f32 * 0.5, wall.1 as f32 * 0.5),
                 door: None,
                 sewer: None,
+                crawl_under: false,
             }
         })
         .collect()

@@ -136,10 +136,9 @@ impl Loxelle {
                     let travel = (lunge.speed * dt).min(d);
                     let dir = ((impact.0 - b.pos.0) / d, (impact.1 - b.pos.1) / d);
                     b.facing = dir;
-                    let next = (b.pos.0 + dir.0 * travel, b.pos.1 + dir.1 * travel);
-                    if c.fac.can_occupy(next.0 as f64, next.1 as f64, 0.33) {
-                        b.pos = next;
-                    }
+                    // the brain's own collided step: swept in short sub-steps against the runner's rule, so a long frame
+                    // never carries the charge through a prop, a door, a locker or a well
+                    b.move_with_collision(dir.0 * travel, dir.1 * travel, c.fac);
                 }
                 if dist(b.pos, impact) <= lunge.impact_distance || self.timer <= 0.0 {
                     if t.hidden && t.hiding_spot == Some(self.spot) {
