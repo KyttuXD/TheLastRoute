@@ -2,7 +2,16 @@
   "schema": "lr.sewer_water/1",
   "channel_depth": 1.0,
   "water_surface": -0.3,
-  "glow_mix": 0.3,
+  "glow_mix": 0.0,
+  "may_stand_in_water": [
+    "sewerPipeRun",
+    "sewerOutflowPipe",
+    "sewerBridge",
+    "sewerGrateDeck",
+    "sewerFloorGrate",
+    "sewerOverflowGrate",
+    "sewerSluiceGate"
+  ],
   "shore_depth_fraction": 0.35,
   "tint": {
     "shallow": [74, 112, 96, 150],

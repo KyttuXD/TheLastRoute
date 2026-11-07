@@ -397,9 +397,23 @@ impl Player {
         self.walked += ((self.pos.0 - start.0).powi(2) + (self.pos.1 - start.1).powi(2)).sqrt();
     }
 
+    /// The capsule height: the standing body (`PLAYER_HEIGHT`) eased to the crouch capsule as `crouch_t` rises.
+    pub fn collision_height(&self) -> f32 {
+        let stand = PLAYER_HEIGHT;
+        let crouch = crate::world::route::sewer::core::CROUCH_COLLISION_HEIGHT as f32;
+        stand + (crouch - stand) * self.crouch_t.clamp(0.0, 1.0)
+    }
+
+    /// The top of the capsule, in metres above `fac`'s floor, at the current pose.
+    fn capsule_top(&self, fac: &Facility) -> f32 {
+        self.floor_y + self.height + self.feet_y + self.collision_height() - floor_y_of(fac.level)
+    }
+
     /// Whether the body fits at (x, z) standing on its current surface (feet y = floor + height, not the jump offset).
+    /// A crawl pipe stops the body when the capsule top reaches the pipe's underside.
     fn fits(&self, fac: &Facility, stack: &LevelStack, x: f32, z: f32) -> bool {
         body_fits_at_y(fac, stack, x, z, self.floor_y + self.height, PLAYER_RADIUS)
+            && !fac.crawl_stops(x, z, PLAYER_RADIUS, self.capsule_top(fac))
     }
 
     pub fn update_movement(
@@ -448,7 +462,9 @@ impl Player {
             input = input.normalize();
         }
         let moving = input.length_squared() > 0.0;
-        self.crouching = c.crouch;
+        // releasing crouch under a crawl pipe keeps the capsule down: a standing body does not fit there
+        let stand_top = self.floor_y + self.height + self.feet_y + PLAYER_HEIGHT - floor_y_of(fac.level);
+        self.crouching = c.crouch || fac.crawl_stops(self.pos.0, self.pos.1, PLAYER_RADIUS, stand_top);
         let target = if self.crouching { 1.0 } else { 0.0 };
         self.crouch_t += (target - self.crouch_t) * (1.0 - (-14.0 * dt).exp());
         // A flight is no special ground for the speed (Godot has no stair code): walk, sprint and crouch follow the flat

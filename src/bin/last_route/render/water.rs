@@ -1,7 +1,8 @@
 //! The sewer's water surface as a mesh: one flat quad per water cell at the water height, tinted by depth.
 //! The tint runs from `shallow` at the shore to `deep` over the bed (`world::route::sewer::water` holds the
 //! numbers, read from `sewer_water.json`). Vertex colour carries the tint, so the water deepens toward the
-//! channel's middle without a texture. Drawn unlit (builder mode 2).
+//! channel's middle without a texture. Drawn lit (`shader::LIT_MODE`), so it goes dark with the sewer
+//! instead of sitting at full brightness like an emissive surface.
 
 use super::builder::Builder;
 use crate::world::route::sewer::core::{Grid, N, WATER};
@@ -54,7 +55,7 @@ pub fn add_water_cells(b: &mut Builder, grid: &Grid, origin: Vec2, cell: f32, fl
                 [vec2(0., 0.), vec2(1., 0.), vec2(1., 1.), vec2(0., 1.)],
                 vec3(0., 1., 0.),
                 WHITE,
-                2.0,
+                super::shader::LIT_MODE,
             );
             // quad() may have flushed a full mesh first, so the four new vertices are the last four
             let n = b.verts.len();
@@ -109,6 +110,7 @@ mod tests {
         let mut all = Builder::new(None);
         assert_eq!(add_water(&mut all, &g, vec2(10.0, 20.0), 1.0, 0.0), 25);
         assert!(all.verts.iter().all(|v| (v.position.y - p.water_surface).abs() < 1e-5), "surface = floor + water_surface");
+        assert!(all.verts.iter().all(|v| (v.normal.w - crate::render::shader::LIT_MODE).abs() < 1e-5), "the surface is lit, not emissive");
         assert!(all.verts.iter().all(|v| v.position.x >= 14.0 && v.position.x <= 19.0 && v.position.z >= 24.0));
         let mut part = Builder::new(None);
         let kept = add_water_cells(&mut part, &g, vec2(0.0, 0.0), 1.0, 2.0, &|x, _| x < 6);

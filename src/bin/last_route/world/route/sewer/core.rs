@@ -2606,8 +2606,8 @@ mod tests {
                         let wet = |cell: V2| c.sewer_grid[cell.y as usize][cell.x as usize] == WATER;
                         for p in &c.region_props {
                             props += 1;
-                            if p.gate.is_some() || p.prop_type == "sewerSluiceGate" {
-                                continue; // the gates close the channel on purpose
+                            if super::super::water::may_stand_in_water(p.prop_type) {
+                                continue; // pipes, bridges, grates and gates may stand in the channel
                             }
                             let footprint = p.occupied_cells.iter().flatten().copied().chain([p.cell]);
                             if footprint.into_iter().any(wet) {

@@ -1571,7 +1571,7 @@ fn build_meshes(
     let up = vec3(0., 1., 0.);
     let steps = stair_steps(f);
     let mut inferno = InfernoFloor::of(f);
-    // the sewer window's channel water: the bed lies below the floor, the surface (unlit, tinted by depth) above it
+    // the sewer window's channel water: the bed lies below the floor, the surface (lit, tinted by depth) above it
     let mut sewer = SewerFloor::of(f);
     let water_params = crate::world::route::sewer::water::params();
     let bed = water_params.bed_offset();

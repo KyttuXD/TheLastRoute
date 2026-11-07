@@ -3,10 +3,10 @@
 //! mesh builder all see them. The ids stay the sewer's own (`SEWER:x:y:z:PROP:n`), which is what a valve turn names.
 //!
 //! Collision: only the pump, the outflow main, the extra rooms' own solid props (barrel, crate, locker) and a closed
-//! sluice gate are solid. A crawl pipe hangs at crawl height and is not solid to the runner here (nothing in the port
-//! crawls), but it is to a hunter (`Prop::crawl_under`, `Facility::hunter_fits`): Godot keeps the tall hunters out of the
-//! cells of a raised collider. A valve, lamp or bridge deck is never in the way. A sluice gate is solid while closed (a wall
-//! across its channel cells) and `Facility::set_gate_open` makes it floor.
+//! sluice gate are solid. A crawl pipe hangs at crawl height (`Prop::crawl_under`). Its floor footprint stays open, and
+//! `Facility::crawl_stops` blocks a standing runner or bot while a crouched runner passes under; a hunter is stopped
+//! outright (`Facility::hunter_fits`). A valve, lamp or bridge deck is never in the way. A sluice gate is solid while
+//! closed (a wall across its channel cells) and `Facility::set_gate_open` makes it floor.
 
 use super::catalog::Catalog;
 use super::facility::{Cell, Prop, SewerKeys, SLUICE_GATE};
@@ -275,5 +275,58 @@ mod tests {
             }
         }
         assert!(tested > 0, "no sample chunk has a sluice gate");
+    }
+
+    /// Collectables, vents and hunter placements stay off channel water. Pipes, bridges and grates may stand in it.
+    #[test]
+    fn collectables_and_hunter_spawns_stay_off_sewer_water() {
+        use crate::world::route::sewer::hunters::chunk_hunter_spawns;
+        use crate::world::route::sewer::water::may_stand_in_water;
+        let mut wet = 0;
+        let mut placed = 0;
+        let mut spawns = 0;
+        for world in WORLDS {
+            for level in [LEVEL, LOWER_LEVEL] {
+                for cx in -2..2 {
+                    for cy in -2..2 {
+                        let (fac, fix) = infinite::chunk(world, ChunkKey { cx, cy, level }, cat(), &LootTables::default());
+                        wet += fac.water_cells().len();
+                        let cells = fac
+                            .pickups
+                            .iter()
+                            .map(|p| p.0)
+                            .chain(fac.relays.iter().copied())
+                            .chain(fac.batteries.iter().copied())
+                            .chain(fac.hiding.iter().map(|h| h.cell))
+                            .chain(fix.coins.iter().copied())
+                            .chain(fix.vents.iter().copied());
+                        for c in cells {
+                            placed += 1;
+                            assert!(!fac.is_water(c), "{world} {cx},{level},{cy}: a collectable on water at {c:?}");
+                        }
+                        for c in fac.water_cells() {
+                            assert!(!fac.hunter_may_spawn(*c), "{world}: hunter spawn on water {c:?}");
+                        }
+                        for p in &fac.props {
+                            if may_stand_in_water(&p.ptype) {
+                                continue;
+                            }
+                            let (px, py) = (p.cell.x as f32 + 0.5 + p.offset.0, p.cell.y as f32 + 0.5 + p.offset.1);
+                            assert!(!fac.is_water(p.cell) && !fac.is_water(Cell::new(px.floor() as i32, py.floor() as i32)), "{world}: {} stands in water", p.ptype);
+                        }
+                        if let Some(sc) = sewer::chunk(Coord::new(cx, level, cy), &Inputs { world }) {
+                            for s in chunk_hunter_spawns(world, &sc, &[], &[]) {
+                                spawns += 1;
+                                let code = sc.sewer_grid[s.cell.y as usize][s.cell.x as usize];
+                                assert_ne!(code, WATER, "{world}: hunter {} spawned in water", s.id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(wet > 20, "the sample has channel water ({wet})");
+        assert!(placed > 10, "collectables were placed ({placed})");
+        assert!(spawns > 0, "hunter spawns were placed");
     }
 }

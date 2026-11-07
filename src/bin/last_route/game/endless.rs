@@ -1381,7 +1381,7 @@ impl Game {
                 let d = super::pdist(p, self.p.pos);
                 d >= 12.0
                     && d <= 34.0
-                    && self.fac.hunter_open(*c)
+                    && self.fac.hunter_may_spawn(*c)
                     && !self.fac.has_line_of_sight(p, self.p.pos)
             })
             .collect();

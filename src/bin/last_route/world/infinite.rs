@@ -215,6 +215,7 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -
             c.len_to(f.start) >= 3.0
                 && !f.relays.contains(c)
                 && !f.batteries.contains(c)
+                && !f.is_water(*c)
                 && f.can_occupy(c.x as f64 + 0.5, c.y as f64 + 0.5, 0.23)
         })
         .collect();
@@ -387,6 +388,9 @@ fn apply_sewer_dressing(f: &mut Facility, seed: &str, sc: &super::route::sewer::
     let mut coins = vec![];
     for p in super::route::sewer::pickups::chunk_pickups(seed, sc, false) {
         let cell = Cell::new(p.cell.x, p.cell.y);
+        if f.is_water(cell) {
+            continue;
+        }
         match p.kind {
             "relay" => f.relays.push(cell),
             "battery" => f.batteries.push(cell),
@@ -411,7 +415,7 @@ fn apply_sewer_dressing(f: &mut Facility, seed: &str, sc: &super::route::sewer::
     let rooms = f.rooms.clone();
     f.hiding = super::route::sewer::fixtures::fixtures(seed, sc)
         .iter()
-        .filter(|x| x.kind == "hiding_spot" && x.hide.is_none())
+        .filter(|x| x.kind == "hiding_spot" && x.hide.is_none() && !f.is_water(Cell::new(x.cell.x, x.cell.y)))
         .map(|x| super::facility::Hiding {
             cell: Cell::new(x.cell.x, x.cell.y),
             facing: (x.open_direction.x, x.open_direction.y),

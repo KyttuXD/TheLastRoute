@@ -99,10 +99,9 @@ pub struct Prop {
     pub door: Option<DoorDraw>,
     /// A sewer valve wheel's or sluice gate's keys; `None` for every other prop.
     pub sewer: Option<SewerKeys>,
-    /// A pipe hung at crawl height (the sewer's crawl-under pipe, underside `collider_y0` above the floor). The runner is not
-    /// stopped by it here (nothing in the port crawls, so `solid` is false), but a hunter is tall: Godot's navigation and
-    /// physics keep it out (`StreamedHunterNavigation` closes the cells of a raised collider, the collider blocks the
-    /// capsule). `Facility::hunter_fits` and the hunters' grid read it; the runner's rule does not.
+    /// A pipe hung at crawl height (the sewer's crawl-under pipe, underside `collider_y0` above the floor). `solid` stays
+    /// false so the floor footprint is open, and `crawl_stops` blocks a body whose top reaches that underside: a standing
+    /// runner or a bot is stopped, a crouched runner passes under, and a hunter is always stopped (`hunter_fits`).
     pub crawl_under: bool,
 }
 
@@ -1652,8 +1651,7 @@ impl Facility {
             && (self.stairs.is_empty() || self.stair_holes_fit(x, y, r.min(crate::config::PLAYER_RADIUS), 0.0, true))
     }
 
-    /// Whether a crawl-under pipe (`Prop::crawl_under`) stops a body of radius `r` at `(x, y)`: its collider box grown by
-    /// the radius. Only tall bodies are asked (a hunter); the runner passes under it.
+    /// Whether a crawl-under pipe's footprint covers a body of radius `r` at `(x, y)`. Height is `crawl_stops`.
     pub fn crawl_blocks(&self, x: f32, y: f32, r: f32) -> bool {
         self.crawl_props.iter().any(|&i| {
             let p = &self.props[i];
@@ -1662,8 +1660,22 @@ impl Facility {
         })
     }
 
-    /// Whether the hunters' grid is closed at `c` only by a crawl-under pipe: the cell is floor for the runner (who walks under
-    /// the pipe) and shut to a hunter.
+    /// Whether a crawl pipe stops a body of radius `r` whose top is `top` metres above this facility's floor. The pipe's
+    /// underside is the crouch clearance (`crawl_clearance`, the crouch capsule plus a margin): a crouched runner's top
+    /// is under it and passes, a standing runner or a standing bot is over it and is stopped. Hunters use `hunter_fits`,
+    /// which closes the footprint at every height.
+    pub fn crawl_stops(&self, x: f32, y: f32, r: f32, top: f32) -> bool {
+        top > crate::world::route::sewer::core::crawl_clearance() as f32
+            && self.crawl_blocks(x, y, r)
+    }
+
+    /// Whether a hunter may be placed on `c`: the hunters' grid is open there, and the cell is not channel water.
+    pub fn hunter_may_spawn(&self, c: Cell) -> bool {
+        self.hunter_open(c) && !self.is_water(c)
+    }
+
+    /// Whether the hunters' grid is closed at `c` only by a crawl-under pipe: the cell is floor for a crouched runner
+    /// and shut to a hunter.
     pub fn crawl_closed(&self, c: Cell) -> bool {
         let (x, y) = c.center();
         !self.crawl_props.is_empty()
@@ -2560,6 +2572,7 @@ impl Facility {
             .filter(|c| {
                 !taken.contains(c)
                     && c.len_to(self.start) >= 3.0
+                    && !self.is_water(*c)
                     && self.can_occupy(c.x as f64 + 0.5, c.y as f64 + 0.5, DEFAULT_AGENT_RADIUS)
             })
             .collect();
@@ -2621,6 +2634,7 @@ impl Facility {
                 *c != self.start
                     && from.get(c).copied().unwrap_or(0) > 20
                     && comp.contains(c)
+                    && !self.is_water(*c)
                     && self.can_occupy(c.x as f64 + 0.5, c.y as f64 + 0.5, 0.25)
                     && Self::far_from_all(*c, &safe, 7.0)
                     && c.len_to(self.exit) > 4.0

@@ -27,7 +27,11 @@ pub struct WaterParams {
     /// Shape of the shallow-to-deep blend (1 = linear, above 1 = stays pale longer).
     pub deepen_power: f32,
     /// How far the sewers' ambient light leans toward the water's shallow tint (0..=1; the optional `glow_mix`, 0 if absent).
+    /// Shipped at 0: a positive mix washes the sewer walls with the water colour and reads as a glow in the dark.
     pub glow_mix: f32,
+    /// Prop types that may occupy a water cell (pipes, bridges, grates, sluice gates). Anything else, and every
+    /// collectable, must be placed on dry floor.
+    pub may_stand_in_water: Vec<String>,
 }
 
 fn num(v: &Value, key: &str) -> Result<f32, String> {
@@ -56,6 +60,19 @@ impl WaterParams {
             deep: rgba(tint, "deep")?,
             deepen_power: num(tint, "deepen_power")?,
             glow_mix: if root.get("glow_mix").is_some() { num(&root, "glow_mix")? } else { 0.0 },
+            may_stand_in_water: match root.get("may_stand_in_water") {
+                None => Vec::new(),
+                Some(v) => {
+                    let list = v.as_array().ok_or("sewer_water.json: may_stand_in_water must be a list of prop types")?;
+                    let mut names = Vec::with_capacity(list.len());
+                    for (i, item) in list.iter().enumerate() {
+                        let name = item.as_str().filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric()))
+                            .ok_or_else(|| format!("sewer_water.json: may_stand_in_water[{i}] must be a prop type name"))?;
+                        names.push(name.to_string());
+                    }
+                    names
+                }
+            },
         };
         if !(0.0..=1.0).contains(&p.glow_mix) {
             return Err("sewer_water.json: glow_mix is 0..=1".into());
@@ -88,6 +105,11 @@ impl WaterParams {
     pub fn bed_offset(&self) -> f32 {
         -self.channel_depth
     }
+}
+
+/// Whether a prop of type `kind` is allowed to occupy a channel-water cell. Collectables are never on this list.
+pub fn may_stand_in_water(kind: &str) -> bool {
+    params().may_stand_in_water.iter().any(|s| s == kind)
 }
 
 /// The built-in water rules, read once.
@@ -196,15 +218,18 @@ mod tests {
     }
 
     #[test]
-    fn the_glow_leans_the_ambient_toward_the_shallow_tint() {
+    fn the_shipped_water_does_not_glow_and_names_what_may_stand_in_it() {
         let p = params();
-        assert!(p.glow_mix > 0.0 && p.glow_mix <= 1.0);
-        let out = p.glow_ambient([0.0, 0.0, 0.0]);
+        assert_eq!(p.glow_mix, 0.0, "a glow mix washes the dark sewer with the water tint");
+        assert_eq!(p.glow_ambient([0.12, 0.1, 0.14]), [0.12, 0.1, 0.14]);
+        let glowing = WaterParams { glow_mix: 0.5, ..p.clone() };
+        let out = glowing.glow_ambient([0.0, 0.0, 0.0]);
         for (o, s) in out.iter().zip(p.shallow) {
-            assert!((o - s as f32 / 255.0 * p.glow_mix).abs() < 1e-6);
+            assert!((o - s as f32 / 255.0 * 0.5).abs() < 1e-6);
         }
-        let bare = WaterParams { glow_mix: 0.0, ..p.clone() };
-        assert_eq!(bare.glow_ambient([0.2, 0.3, 0.4]), [0.2, 0.3, 0.4]);
+        assert!(may_stand_in_water("sewerPipeRun") && may_stand_in_water("sewerBridge") && may_stand_in_water("sewerGrateDeck"));
+        assert!(may_stand_in_water("sewerSluiceGate") && may_stand_in_water("sewerOutflowPipe"));
+        assert!(!may_stand_in_water("sewerLamp") && !may_stand_in_water("sewerPump") && !may_stand_in_water("barrel"));
     }
 
     #[test]

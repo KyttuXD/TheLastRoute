@@ -186,7 +186,7 @@ fn spawn_spot_in(fac: &Facility, runner: (f32, f32), rng: &mut Rng) -> Option<(f
         .filter(|c| {
             let p = c.center();
             let d = pdist(p, runner);
-            d >= 12.0 && d <= 34.0 && fac.hunter_open(*c) && !fac.has_line_of_sight(p, runner)
+            d >= 12.0 && d <= 34.0 && fac.hunter_may_spawn(*c) && !fac.has_line_of_sight(p, runner)
         })
         .collect();
     if cands.is_empty() {

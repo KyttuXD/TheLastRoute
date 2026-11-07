@@ -784,7 +784,8 @@ fn sweep(fac: &Facility, a: (f32, f32), b: (f32, f32)) -> Sweep {
         if let Some(door) = fac.door_in_way(x, y, NAV_RADIUS) {
             return Sweep::Door(door);
         }
-        if !fac.body_fits(x, y, NAV_RADIUS) {
+        // a standing bot is as tall as a standing runner, so a crawl pipe stops it the same way
+        if !fac.body_fits(x, y, NAV_RADIUS) || fac.crawl_stops(x, y, NAV_RADIUS, crate::config::PLAYER_HEIGHT) {
             return Sweep::Blocked;
         }
     }

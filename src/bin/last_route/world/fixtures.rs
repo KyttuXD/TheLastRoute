@@ -40,6 +40,7 @@ fn near_start(
             d >= min
                 && d <= max
                 && !taken.contains(c)
+                && !f.is_water(*c)
                 && f.can_occupy(c.x as f64 + 0.5, c.y as f64 + 0.5, 0.23)
         })
         .collect();
@@ -95,7 +96,7 @@ pub fn place_with_box(f: &Facility) -> (Fixtures, Option<Cell>) {
                 let backed = [(1, 0), (-1, 0), (0, 1), (0, -1)]
                     .iter()
                     .any(|(dx, dy)| f.is_wall_cell(x + dx, y + dy));
-                if backed && !t.contains(&c) && !door_clear.blocks(door_clearance::Kind::Vent, c) && f.can_occupy(x as f64 + 0.5, y as f64 + 0.5, 0.23) {
+                if backed && !t.contains(&c) && !f.is_water(c) && !door_clear.blocks(door_clearance::Kind::Vent, c) && f.can_occupy(x as f64 + 0.5, y as f64 + 0.5, 0.23) {
                     cells.push(c);
                 }
             }
@@ -120,7 +121,7 @@ pub fn place_with_box(f: &Facility) -> (Fixtures, Option<Cell>) {
         let oy = rng.next_f32() * 2.0 - 1.0;
         if let Some(p) = f.nearest_open(cx + ox * 1.5, cy + oy * 1.5, 0.23) {
             let c = Cell::new(p.0 as i32, p.1 as i32);
-            if !t.contains(&c) {
+            if !t.contains(&c) && !f.is_water(c) {
                 t.insert(c);
                 coins.push(c);
             }

@@ -395,11 +395,10 @@ fn the_crowd_push_keeps_hunters_out_of_a_stair_well() {
     assert!(moved_any, "the push moved somebody");
 }
 
-/// The crawl-under pipes of the sewers are the one deliberate difference between the runner and a hunter: the runner
-/// walks under them in this port (`solid` is false), a tall hunter does not (Godot's raised collider closes its cells).
-/// Every one in the sample chunks is open to the runner's body and closed to a hunter's, in the centre and at each end.
+/// The crawl-under pipes stop a standing runner and a hunter, and let a crouched runner through. The floor footprint
+/// stays open (`solid` is false); the height rule is `Facility::crawl_stops`.
 #[test]
-fn a_crawl_under_pipe_stops_a_hunter_and_not_the_runner() {
+fn a_crawl_under_pipe_stops_a_standing_runner_and_a_hunter_and_lets_a_crouch_through() {
     use crate::content::loot::LootTables;
     use crate::world::infinite::{chunk, ChunkKey};
     let (cat, loot) = (Catalog::load(), LootTables::default());
@@ -410,12 +409,16 @@ fn a_crawl_under_pipe_stops_a_hunter_and_not_the_runner() {
                 let (fac, _) = chunk(seed, ChunkKey { cx, cy, level }, &cat, &loot);
                 for p in fac.props.iter().filter(|p| p.crawl_under) {
                     pipes += 1;
-                    assert!(!p.solid, "the runner is not stopped by a crawl pipe: {}", p.id);
+                    assert!(!p.solid, "the floor footprint stays open: {}", p.id);
                     let c = (p.cell.x as f32 + 0.5 + p.offset.0, p.cell.y as f32 + 0.5 + p.offset.1);
                     assert!(!fac.hunter_fits(c.0, c.1), "{}: a hunter fits at the pipe's centre {c:?}", p.id);
                     assert!(!fac.hunter_open(Cell::new(c.0.floor() as i32, c.1.floor() as i32)), "{}: the hunters' grid is open under the pipe", p.id);
+                    let crouch = crate::world::route::sewer::core::CROUCH_COLLISION_HEIGHT as f32;
+                    let stand = crate::config::PLAYER_HEIGHT;
                     if fac.body_fits(c.0, c.1, PLAYER_RADIUS) {
                         runner_passes += 1;
+                        assert!(fac.crawl_stops(c.0, c.1, PLAYER_RADIUS, stand), "{}: a standing runner walks through", p.id);
+                        assert!(!fac.crawl_stops(c.0, c.1, PLAYER_RADIUS, crouch), "{}: a crouched runner is blocked", p.id);
                     }
                 }
             }
@@ -423,6 +426,82 @@ fn a_crawl_under_pipe_stops_a_hunter_and_not_the_runner() {
     }
     println!("{pipes} crawl pipes; the runner's body fits under {runner_passes}");
     assert!(pipes >= 3, "the sample chunks have crawl pipes ({pipes})");
+    assert!(runner_passes >= 1, "a pipe the runner can reach");
+}
+
+/// A standing runner walks into a crawl pipe and stops; crouched, the same approach goes under it, and releasing
+/// crouch there does not stand the body back up.
+#[test]
+fn a_standing_runner_is_stopped_by_a_crawl_pipe_and_a_crouched_one_passes() {
+    use crate::content::loot::LootTables;
+    use crate::game::level_stack::LevelStack;
+    use crate::game::meters::Meters;
+    use crate::game::player::Player;
+    use crate::world::infinite::{chunk, ChunkKey};
+    let (cat, loot) = (Catalog::load(), LootTables::default());
+    let (fac, _) = chunk("ROOM-CRAWL-1", ChunkKey { cx: 0, cy: 0, level: -1 }, &cat, &loot);
+    let pipe = fac.props.iter().find(|p| p.crawl_under && {
+        let c = (p.cell.x as f32 + 0.5 + p.offset.0, p.cell.y as f32 + 0.5 + p.offset.1);
+        fac.body_fits(c.0, c.1, PLAYER_RADIUS)
+    }).expect("a reachable crawl pipe");
+    let centre = (pipe.cell.x as f32 + 0.5 + pipe.offset.0, pipe.cell.y as f32 + 0.5 + pipe.offset.1);
+    let approaches = [
+        ((0.0_f32, 1.0_f32), 0.0_f32, pipe.half.1),
+        ((0.0, -1.0), std::f32::consts::PI, pipe.half.1),
+        ((1.0, 0.0), std::f32::consts::FRAC_PI_2, pipe.half.0),
+        ((-1.0, 0.0), -std::f32::consts::FRAC_PI_2, pipe.half.0),
+    ];
+    let (dir, yaw, half) = approaches
+        .into_iter()
+        .find(|(dir, _, half)| {
+            let start = (centre.0 + dir.0 * (half + PLAYER_RADIUS + 0.4), centre.1 + dir.1 * (half + PLAYER_RADIUS + 0.4));
+            fac.body_fits(start.0, start.1, PLAYER_RADIUS) && !fac.crawl_blocks(start.0, start.1, PLAYER_RADIUS)
+        })
+        .expect("an open approach to the pipe");
+    let start = (centre.0 + dir.0 * (half + PLAYER_RADIUS + 0.4), centre.1 + dir.1 * (half + PLAYER_RADIUS + 0.4));
+    let prof = Difficulty::Standard.profile();
+    let stack = LevelStack::EMPTY;
+    let mut meters = Meters::default();
+    let sounds = Sounds::default();
+    let under = |body: &Player| fac.crawl_blocks(body.pos.0, body.pos.1, PLAYER_RADIUS);
+    let mut walk = |crouch: bool, frames: i32| {
+        let mut body = Player::new(start);
+        body.floor_y = floor_y_of(fac.level);
+        body.yaw = yaw;
+        body.crouch_t = if crouch { 1.0 } else { 0.0 };
+        let keys = Controls { fwd: 1.0, crouch, ..Controls::default() };
+        let mut entered = false;
+        for _ in 0..frames {
+            body.update_movement(1.0 / 60.0, &keys, &prof, &fac, &stack, &mut meters, &sounds);
+            entered |= under(&body);
+        }
+        (body, entered)
+    };
+    let (stood, stood_in) = walk(false, 180);
+    assert!(!stood_in, "a standing runner went under the pipe at {:?} (centre {centre:?})", stood.pos);
+    assert!(dist(stood.pos, start) > 0.05, "the standing runner did move");
+    assert!(dist(stood.pos, centre) + 0.05 < dist(start, centre), "the standing runner never closed on the pipe");
+    let (ducked, ducked_in) = walk(true, 180);
+    assert!(ducked_in, "crouched runner never went under the pipe: {:?} centre {centre:?}", ducked.pos);
+    assert!(ducked.crouch_t > 0.9, "still crouched under the pipe");
+    // letting the key go must not stand the body up inside the pipe: walk back in and hold there
+    let mut held = Player::new(start);
+    held.floor_y = floor_y_of(fac.level);
+    held.yaw = yaw;
+    held.crouch_t = 1.0;
+    let down = Controls { fwd: 1.0, crouch: true, ..Controls::default() };
+    for _ in 0..180 {
+        held.update_movement(1.0 / 60.0, &down, &prof, &fac, &stack, &mut meters, &sounds);
+        if under(&held) {
+            break;
+        }
+    }
+    assert!(under(&held), "could not stop under the pipe to test the uncrouch lock");
+    let up = Controls { fwd: 0.0, crouch: false, ..Controls::default() };
+    for _ in 0..90 {
+        held.update_movement(1.0 / 60.0, &up, &prof, &fac, &stack, &mut meters, &sounds);
+    }
+    assert!(held.crouching && held.crouch_t > 0.85, "released crouch stood up inside the pipe ({})", held.crouch_t);
 }
 
 /// Cost of the hunter footprint test on real windows (`cargo test collision_cost -- --ignored --nocapture`): the plain
