@@ -6,6 +6,7 @@
 # otherwise Liberation Mono/Sans Bold are used.
 set -e
 cd "$(dirname "$0")/../.."
+cargo build --release --bin last_route
 cargo build --release --bin lr_server --features server
 
 OUT=dist/last-route-linux
