@@ -1,7 +1,14 @@
-//! Update on start. Before the game opens, it asks the server for the newest build of this platform. A newer
-//! build is downloaded with the download key (the file `download-key` in the game's user folder), checked
-//! against its SHA-256, put in place, and started; the old program is kept beside it. A build made without CI
-//! (LR_BUILD_NUMBER 0) never checks, so a development build is not replaced.
+//! Update on start. Before the game opens, it looks for the newest build of this platform in two places:
+//!
+//! 1. The website's signed native builds (`updater_site.rs`, the same files the launcher installs, docs/LAUNCHER.md).
+//!    No key is needed: the ed25519 signature and the file hashes are the trust.
+//! 2. The old update server (vps3, `/api/updates/debug/<platform>`), used when the site has no build for this platform,
+//!    cannot be reached, or fails a check. It downloads with the download key (the file `download-key` in the game's
+//!    user folder) and checks the SHA-256.
+//!
+//! A newer build is put in place and started; the old program is kept beside it until the next start. A build made
+//! without CI (LR_BUILD_NUMBER 0) never checks, so a development build is not replaced. A game started by the
+//! launcher (`LR_LAUNCHER=1`) never checks either: the launcher keeps builds up to date, so the two cannot disagree.
 
 use crate::net::config::PRIMARY_BASE_URL;
 use crate::net::http::{self, Method, Request};
@@ -138,10 +145,16 @@ fn install_in(exe: &Path, bytes: &[u8], file: &str, work: &Path) -> Result<(), S
     if !new_bundle.join("Contents/MacOS/last_route").is_file() {
         return Err("the update has no game program".into());
     }
+    swap_bundle(bundle, &new_bundle)
+}
+
+/// Replaces the app bundle `bundle` with the finished one at `new_bundle` (renames, so both must be on one volume).
+#[cfg(target_os = "macos")]
+fn swap_bundle(bundle: &Path, new_bundle: &Path) -> Result<(), String> {
     let previous = bundle.with_extension("previous.app");
     let _ = std::fs::remove_dir_all(&previous);
     std::fs::rename(bundle, &previous).map_err(|e| e.to_string())?;
-    if let Err(e) = std::fs::rename(&new_bundle, bundle) {
+    if let Err(e) = std::fs::rename(new_bundle, bundle) {
         let _ = std::fs::rename(&previous, bundle);
         return Err(e.to_string());
     }
@@ -149,6 +162,14 @@ fn install_in(exe: &Path, bytes: &[u8], file: &str, work: &Path) -> Result<(), S
     let _ = std::fs::remove_dir_all(&previous);
     let _ = run("xattr", &["-cr", &bundle.to_string_lossy()]);
     Ok(())
+}
+
+/// The website build is unpacked beside the running bundle: put it in place of the running one.
+#[cfg(target_os = "macos")]
+fn install_staged_bundle(new_bundle: &Path) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let bundle = exe.parent().and_then(Path::parent).and_then(Path::parent).ok_or("the game is not in an app bundle")?;
+    swap_bundle(bundle, new_bundle)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -223,7 +244,7 @@ fn remove_leftover() {
 
 /// Whether an offered build replaces this one. The build number must go up, so an older published build never
 /// replaces a newer one, and the commit must differ, so a rebuild of the same commit does not replace itself.
-fn should_update(current_build: u64, current_rev: &str, offer_build: u64, offer_rev: &str) -> bool {
+pub(super) fn should_update(current_build: u64, current_rev: &str, offer_build: u64, offer_rev: &str) -> bool {
     offer_build > current_build && !same_commit(current_rev, offer_rev)
 }
 
@@ -237,8 +258,9 @@ fn same_commit(a: &str, b: &str) -> bool {
 pub enum UpdateStatus {
     /// A development build (BUILD == 0): nothing is checked and nothing is shown.
     LocalBuild,
-    /// There is no download key, so no check is made.
-    NoKey,
+    /// Nothing is checked and nothing is shown: the launcher keeps this build up to date, or the site could not be asked
+    /// and there is no download key for the old server.
+    Idle,
     Checking,
     UpToDate(u64),
     /// Downloading build `build`. A total of 0 means the size is not known yet.
@@ -294,7 +316,7 @@ impl UpdaterText {
                 .replace("{reason}", reason)
         };
         let text = match status {
-            UpdateStatus::LocalBuild | UpdateStatus::NoKey => return None,
+            UpdateStatus::LocalBuild | UpdateStatus::Idle => return None,
             UpdateStatus::Checking => fill("checking", 0, 0, ""),
             UpdateStatus::UpToDate(b) => fill("up_to_date", *b, 0, ""),
             UpdateStatus::Downloading { build, got, total } => fill("downloading", *build, percent(*got, *total), ""),
@@ -336,15 +358,21 @@ fn take_marker(path: &Path, text: &UpdaterText) -> Option<u64> {
     content.trim().strip_prefix(head)?.strip_suffix(tail)?.trim().parse().ok()
 }
 
-/// The status a check starts in, before any thread runs.
-fn initial_status(build: u64, has_key: bool) -> UpdateStatus {
-    if build == 0 {
+/// The status a check starts in, before any thread runs. The browser build never updates itself this way (its page
+/// does, see web_update.rs).
+fn initial_status(build: u64, launcher: bool) -> UpdateStatus {
+    if build == 0 || cfg!(target_arch = "wasm32") {
         UpdateStatus::LocalBuild
-    } else if !has_key {
-        UpdateStatus::NoKey
+    } else if launcher {
+        UpdateStatus::Idle
     } else {
         UpdateStatus::Checking
     }
+}
+
+/// True when the launcher started this game (it sets `LR_LAUNCHER=1`).
+fn started_by_launcher() -> bool {
+    std::env::var("LR_LAUNCHER").is_ok_and(|v| v == "1")
 }
 
 fn set(handle: &Mutex<UpdateStatus>, status: UpdateStatus) {
@@ -373,26 +401,57 @@ fn apply_offer(handle: &Mutex<UpdateStatus>, build: u64, revision: &str, offer: 
 /// is logged, shown, and never stops the game from opening.
 pub fn start_check() -> UpdateHandle {
     remove_leftover();
-    let key = download_key();
-    let handle: UpdateHandle = Arc::new(Mutex::new(initial_status(BUILD, key.is_some())));
+    let launcher = started_by_launcher();
+    let handle: UpdateHandle = Arc::new(Mutex::new(initial_status(BUILD, launcher)));
     let marker = marker_path().and_then(|p| take_marker(&p, UpdaterText::standard()));
-    if BUILD == 0 {
-        crate::lr_info!("update: this is a local build (no CI build number), so no update check");
+    if BUILD == 0 || cfg!(target_arch = "wasm32") {
+        crate::lr_info!("update: this is a local or browser build (no CI build number), so no update check");
         return handle;
     }
     if let Some(built) = marker {
         set(&handle, UpdateStatus::Updated(built));
     }
-    let Some(key) = key else {
-        crate::lr_info!("update: no download key in the game folder, so no update check");
+    if launcher {
+        crate::lr_info!("update: the launcher started this game and keeps builds up to date, so no update check here");
         return handle;
-    };
+    }
+    let key = download_key();
     let shared = handle.clone();
-    crate::shared::task::detach(move || check_thread(&shared, &key));
+    crate::shared::task::detach(move || check_thread(&shared, key.as_deref()));
     handle
 }
 
-fn check_thread(handle: &Mutex<UpdateStatus>, key: &str) {
+/// The website's signed builds first, then the old server (only with a download key) when the site cannot be used.
+fn check_thread(handle: &Mutex<UpdateStatus>, key: Option<&str>) {
+    #[cfg(not(target_arch = "wasm32"))]
+    match site_update(handle) {
+        SiteOutcome::Installed(build) => finish_install(build),
+        SiteOutcome::UpToDate => return,
+        SiteOutcome::Failed(e) => {
+            crate::lr_error!("update: {e}");
+            set(handle, UpdateStatus::Failed(e));
+            return;
+        }
+        SiteOutcome::Unavailable(why) => crate::lr_info!("update: the website has nothing usable ({why}); trying the old update server"),
+    }
+    let Some(key) = key else {
+        crate::lr_info!("update: no download key in the game folder, so the old update server is not asked");
+        set(handle, UpdateStatus::Idle);
+        return;
+    };
+    legacy_check(handle, key);
+}
+
+fn finish_install(build: u64) -> ! {
+    crate::lr_info!("update: installed build {build}; starting it");
+    if let Some(path) = marker_path() {
+        let _ = write_marker(&path, UpdaterText::standard(), build);
+    }
+    start_installed()
+}
+
+/// The old vps3 update API: the offer, a keyed download, the SHA-256, the replacement.
+fn legacy_check(handle: &Mutex<UpdateStatus>, key: &str) {
     let offer = match offer() {
         Ok(offer) => offer,
         Err(why) => {
@@ -411,17 +470,93 @@ fn check_thread(handle: &Mutex<UpdateStatus>, key: &str) {
         install(&bytes, &offer.file)
     });
     match result {
-        Ok(()) => {
-            crate::lr_info!("update: installed build {}; starting it", offer.build);
-            if let Some(path) = marker_path() {
-                let _ = write_marker(&path, UpdaterText::standard(), offer.build);
-            }
-            start_installed();
-        }
+        Ok(()) => finish_install(offer.build),
         Err(e) => {
             crate::lr_error!("update: {e}");
             set(handle, UpdateStatus::Failed(e));
         }
+    }
+}
+
+/// What the website source did.
+#[cfg(not(target_arch = "wasm32"))]
+enum SiteOutcome {
+    UpToDate,
+    Installed(u64),
+    /// No usable offer (no native build here, offline, a failed signature): the old server is next.
+    Unavailable(String),
+    /// A verified offer was found but could not be installed: shown to the player, no fallback.
+    Failed(String),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn site_update(handle: &Mutex<UpdateStatus>) -> SiteOutcome {
+    use super::updater_site as source;
+    let base = source::site_url(std::env::var("LR_UPDATE_SITE_URL").ok().as_deref());
+    let keys = source::trusted_keys(&base, std::env::var("LR_NATIVE_PUBKEY").ok().as_deref());
+    let site = match lr_update::fetch::Site::new(&base, "", lr_update::manifest::this_platform(), keys) {
+        Ok(site) => site,
+        Err(e) => return SiteOutcome::Unavailable(e),
+    };
+    let found = source::check(&site, |build, revision| should_update(BUILD, REVISION, build, revision), lr_update::osver::detect().as_deref());
+    let m = match found {
+        Err(source::Unavailable(why)) => return SiteOutcome::Unavailable(why),
+        Ok(source::SiteCheck::UpToDate) => {
+            crate::lr_info!("update: the website offers nothing newer than build {BUILD}");
+            if let Ok(mut s) = handle.lock() {
+                if !matches!(*s, UpdateStatus::Updated(_)) {
+                    *s = UpdateStatus::UpToDate(BUILD);
+                }
+            }
+            return SiteOutcome::UpToDate;
+        }
+        Ok(source::SiteCheck::Newer(m)) => m,
+    };
+    crate::lr_info!("update: the website offers build {} (this is {}); downloading {} files", m.build, BUILD, m.files.len());
+    set(handle, UpdateStatus::Downloading { build: m.build, got: 0, total: 0 });
+    let mac = cfg!(target_os = "macos");
+    let stage_root = match site_stage_root(mac) {
+        Ok(p) => p,
+        Err(e) => return SiteOutcome::Failed(e),
+    };
+    let build = m.build;
+    let staged = source::stage(&site, &m, &stage_root, mac, &mut |p| {
+        set(handle, UpdateStatus::Downloading { build, got: p.got, total: p.total });
+    });
+    let staged = match staged {
+        Ok(s) => s,
+        Err(e) => return SiteOutcome::Failed(format!("download failed: {e}")),
+    };
+    set(handle, UpdateStatus::Installing);
+    let installed = match staged {
+        source::Staged::Program(bytes) => install(&bytes, &m.run),
+        source::Staged::Bundle { bundle, stage_root } => {
+            #[cfg(target_os = "macos")]
+            let result = install_staged_bundle(&bundle);
+            #[cfg(not(target_os = "macos"))]
+            let result: Result<(), String> = Err(format!("{} is an app bundle, which only macOS installs", bundle.display()));
+            let _ = std::fs::remove_dir_all(&stage_root);
+            result
+        }
+    };
+    match installed {
+        Ok(()) => SiteOutcome::Installed(build),
+        Err(e) => SiteOutcome::Failed(e),
+    }
+}
+
+/// Where the website build is unpacked first. On macOS it sits beside the running bundle (so the final rename stays on one
+/// volume); elsewhere in the temporary folder.
+#[cfg(not(target_arch = "wasm32"))]
+fn site_stage_root(mac: bool) -> Result<PathBuf, String> {
+    if mac {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let bundle = exe.parent().and_then(Path::parent).and_then(Path::parent).ok_or("the game is not in an app bundle")?;
+        let root = bundle.with_file_name(".lr-update-stage");
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(root)
+    } else {
+        Ok(scratch_dir()?.join("site-stage"))
     }
 }
 
@@ -457,11 +592,12 @@ mod tests {
 
     #[test]
     fn a_local_build_reports_local_build_and_shows_nothing() {
+        assert_eq!(initial_status(0, false), UpdateStatus::LocalBuild);
         assert_eq!(initial_status(0, true), UpdateStatus::LocalBuild);
-        assert_eq!(initial_status(5, false), UpdateStatus::NoKey);
-        assert_eq!(initial_status(5, true), UpdateStatus::Checking);
+        assert_eq!(initial_status(5, false), UpdateStatus::Checking);
+        assert_eq!(initial_status(5, true), UpdateStatus::Idle, "a game started by the launcher does not check");
         let text = UpdaterText::standard();
-        assert!(text.line(&UpdateStatus::LocalBuild).is_none() && text.line(&UpdateStatus::NoKey).is_none());
+        assert!(text.line(&UpdateStatus::LocalBuild).is_none() && text.line(&UpdateStatus::Idle).is_none());
     }
 
     #[test]

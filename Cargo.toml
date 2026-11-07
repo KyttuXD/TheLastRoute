@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2021"
 build = "build.rs"
 
+# The launcher crates (crates/): a tiny native launcher that installs the game from the website (docs/LAUNCHER.md).
+# They do not depend on macroquad, so building them never compiles the game. The game itself depends on lr_update
+# (native only) for the same manifest and signature checks. `cargo test` at the root still runs only the game package.
+[workspace]
+members = [".", "crates/*"]
+resolver = "2"
+
 # The shared core (src/lib.rs). The game and the other executables live in src/bin/<name>/.
 [lib]
 name = "last_route_core"
@@ -31,12 +38,17 @@ tiny_http = { version = "0.12", optional = true }
 # HTTPS for the native game (net/http.rs). The browser (wasm32) build has no TLS: rustls and ring need a C
 # compiler and do not target wasm, so they are only pulled in for native targets.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+lr_update = { path = "crates/lr_update" }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1"
 # The system file dialog behind the SKIN tab's PICK A PNG (shared/file_pick.rs): the Windows and macOS open panels. The browser
 # build has its own chooser in the page (packaging/web/index.html), so rfd is not compiled for wasm32. xdg-portal is
 # the Linux backend (portal or zenity, found at run time); the wayland window-handle feature is not needed.
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+
+# The fake website the in-game updater's tests talk to (loopback only; never in a normal build).
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+lr_update = { path = "crates/lr_update", features = ["testsite"] }
 
 [features]
 default = []

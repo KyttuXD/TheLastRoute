@@ -6,7 +6,7 @@ Checked on the machines themselves on 2026-11-04 (read-only: service lists, Cadd
 | Alias | Address | Role |
 |---|---|---|
 | `vps1` | 147.189.174.63 | Not recorded anywhere in the repo. Fill in. |
-| `vps2` | 195.62.47.178 | Static files over Caddy: mods and skins. |
+| `vps2` | 195.62.47.178 | Static files over Caddy: the web build and the signed native builds (`lastrouterust.games.kyttuslab.org`), mods and skins. |
 | `vps3` | 194.156.90.219 | Game servers (Rust `lr_server` and the Godot live server) and the update downloads. |
 
 ## VPS 3: game servers and updates
@@ -17,8 +17,9 @@ Checked on the machines themselves on 2026-11-04 (read-only: service lists, Cadd
   `reserved_rooms.json`, `guest_names.json`; the running server also holds `accounts.json.lock`, which stops a second
   `lr_server` on the same data and the offline password reset, see "Lost password / admin reset"). Secrets: `/etc/lastroute-rust/lastroute-rust.env` (root only, never printed or committed).
 - `last-route.service`: "LastRoute Live Server", the Godot version's server, still running beside it.
-- Updates: the game's updater downloads builds from `/var/lib/lastroute-rust/updates`, described by `update-manifest.json`.
-  CI publishes with `packaging/publish-vps.sh` (upload user `nightly-upload`), and local builds publish with
+- Updates (the old route): the game's updater downloads builds from `/var/lib/lastroute-rust/updates`, described by `update-manifest.json`.
+  Since the launcher ([LAUNCHER.md](LAUNCHER.md)) the in-game updater asks the website on vps2 first and uses this route only as the
+  fallback. CI publishes with `packaging/publish-vps.sh` (upload user `nightly-upload`), and local builds publish with
   `packaging/local/publish-local.sh publish` (host `vps3` by default).
 - Deploying `lr_server`: stop the service, replace `/opt/lastroute-rust/current/lr_server`, check the SHA-256, start it. See TODO.md.
 
@@ -86,10 +87,18 @@ systemctl start lastroute-rust
 go to **FIELDS**, type the account name in **RESET PASSWORD** and press Enter or the RESET PASSWORD button. A message box
 shows the temporary password once with a **COPY** button (the clipboard) and CLOSE. The field and the button are not shown
 to anyone else. It calls the endpoint above. See docs/ADMIN_MENU.md.
+## VPS 2: the game's website, mods and skins (static files)
 
-## VPS 2: mods and skins (static files)
+`lastrouterust.games.kyttuslab.org` serves `/srv/lr-rust-web` (checked read-only on 2026-11-06: `/api/*` goes to a Node backend, everything
+else is static with `Cache-Control: no-cache`, ETags and byte ranges work):
 
-Caddy (`caddy.service`) serves two sites from `/etc/caddy/Caddyfile`:
+- the web build (`index.html`, `last_route.wasm`, ..., `version.json` written last), deployed by `packaging/web/deploy-vps2.sh`;
+- the signed native builds under `native/<platform>/` (`latest.json`, `builds/<N>/manifest.json`, `manifest.json.sig` and the
+  compressed files), published by `packaging/publish-native-vps2.sh` and installed by the launcher. The web deploy never deletes
+  them. Nothing was published there as of this writing. Layout, signing and publishing: [LAUNCHER.md](LAUNCHER.md). No Caddy change is needed
+  for them (there is no `precompressed` option and the launcher sends `Accept-Encoding: identity`).
+
+Caddy (`caddy.service`) also serves two more sites from `/etc/caddy/Caddyfile`:
 
 - `mods.kyttuslab.org` serves `/srv/lr3d/mods` (cache one hour). Layout `<pack_id>/<version>/pack.json` plus files, and an
   `index.json` at the root written by `tools/mods/publish-index.mjs` (copy it over by hand after review).

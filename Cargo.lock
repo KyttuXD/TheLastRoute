@@ -456,6 +456,7 @@ dependencies = [
  "gltf",
  "hmac",
  "indexmap",
+ "lr_update",
  "macroquad",
  "miniz_oxide 0.8.9",
  "regex",
@@ -505,6 +506,27 @@ name = "log"
 version = "0.4.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
+
+[[package]]
+name = "lr_launcher"
+version = "0.1.0"
+dependencies = [
+ "lr_update",
+ "ring",
+ "serde_json",
+]
+
+[[package]]
+name = "lr_update"
+version = "0.1.0"
+dependencies = [
+ "miniz_oxide 0.8.9",
+ "ring",
+ "rustls",
+ "serde_json",
+ "sha2",
+ "webpki-roots",
+]
 
 [[package]]
 name = "macroquad"
