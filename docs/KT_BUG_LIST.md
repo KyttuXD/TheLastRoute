@@ -59,3 +59,26 @@ These claims match the tree. They were not re-deployed.
 - KT's PC runs out of memory with many builds: at most two agents and one cargo build at a time (`CARGO_BUILD_JOBS=4`).
 - Never change the live servers (vps1, vps2, vps3) without KT's explicit approval of the exact steps. The Godot site `lastroutegodot.games.kyttuslab.org` and its backend must stay untouched.
 - Never commit credentials. Deploy the web build with `sh packaging/web/deploy-vps2.sh dist/web` after building the wasm.
+
+## More bugs and open items from TODO.md (found 2026-11-07, not yet in the list above)
+
+Real bugs and gameplay problems, taken from TODO.md. The rest of TODO.md is ports and wish-list items.
+
+- **Crowbar and axe "STUNNED" callout** is still printed (TODO, partly done).
+- **Dossier shows a black square** instead of the name for undiscovered hunters.
+- **Hold the drop key to drop a whole stack** is missing: Rust drops one item per press (`game/items.rs` around 231-255).
+- **Locker hide check still prints callouts**, and the hide glide animates into the locker.
+- **Footsteps on floor surfaces:** the surface kind is passed, but the footstep sound does not follow it.
+- **Player list shows the room's runners**, not every connected player, and the SPECTATE admin button has no handler.
+- **Quality governor steps quality down on slow frames** (may lower quality on a single hitch; see also the Air performance pass).
+- **Scene depth target is 16-bit** (macroquad `render_target_ex`). This can cause z-fighting; a 32-bit target needs a macroquad or miniquad change.
+- **Coplanar surfaces:** the Godot coplanar scan over props, decals, rugs and door frames is not ported, so z-fighting can still appear on those.
+- **Inferno lava pits are not drawn:** lava cells are closed, so a lava region renders as a solid wall.
+- **Hunter navigation stall at a wall corner** (found by the live-chunk tests in the golden world's first maze).
+- **Sewer 4.0 m ceiling readers:** xivvy's headroom, prop mount heights, ceiling fixtures and the admin menu still read the old ceiling height.
+- **Level -2 water depth changed to 0.7 m** (was a deliberate 1.4 m). This matches Godot but changes wading, swimming and landing. Decide if KT wants 1.4 m back.
+- **Relay rush timings and targets** still need verifying.
+- **Sweep and waypoint look-ahead parity** is unconfirmed.
+- **Title menu:** the PUBLIC ROUTE button and admin visibility for non-KYTTU admins.
+- **Night Watch:** eight modes have data but are unplayable (Masked Hours, Dead Air, Bedtime, The Facility, The Descent, Salvage Run, Open Air, Mixed Shift). Hub events do not reach every mode, and the Salvage Run Custom Night is not reachable from the hub.
+- **Hunter stats:** should stay hidden from other players in a room (open question Q24).
