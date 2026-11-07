@@ -969,6 +969,82 @@ mod tests {
         assert!(is_overlay_pixel(40, 0) && !is_overlay_pixel(8, 8));
     }
 
+    /// The chunks of a PNG as (kind, body).
+    fn chunks_of(bytes: &[u8]) -> Vec<([u8; 4], Vec<u8>)> {
+        let mut at = 8;
+        let mut out = vec![];
+        while at + 8 <= bytes.len() {
+            let len = u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+            let kind: [u8; 4] = bytes[at + 4..at + 8].try_into().unwrap();
+            out.push((kind, bytes[at + 8..at + 8 + len].to_vec()));
+            at += 12 + len;
+        }
+        out
+    }
+
+    /// A hostile peer can announce any file, as long as it hashes to its own id, so every byte of the stream may be chosen by
+    /// the attacker with every chunk checksum correct. This feeds the strict check and the decoder thousands of such files
+    /// (a stored stream and a real dynamic Huffman stream, damaged in the header and in the compressed data, with stray
+    /// palette and transparency chunks) and asserts they never panic and that "accepted" always means a full 64x64 RGBA image.
+    #[test]
+    fn files_with_good_checksums_and_a_damaged_stream_are_refused_or_decoded_whole_and_never_panic() {
+        let seeds = [good_png(), from_hex(DYNAMIC_RGB_PNG_HEX)];
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let (mut accepted, mut refused) = (0u32, 0u32);
+        for seed in &seeds {
+            let original = chunks_of(seed);
+            for _ in 0..4000 {
+                let mut chunks = original.clone();
+                for _ in 0..1 + next() % 4 {
+                    let pick = (next() % chunks.len() as u64) as usize;
+                    // the header and the compressed data are the two chunks with something to damage
+                    let body = &mut chunks[pick].1;
+                    match next() % 6 {
+                        0 | 1 if !body.is_empty() => {
+                            let i = (next() % body.len() as u64) as usize;
+                            body[i] = next() as u8;
+                        }
+                        2 if !body.is_empty() => {
+                            let i = (next() % body.len() as u64) as usize;
+                            body[i] ^= 1 << (next() % 8);
+                        }
+                        3 if !body.is_empty() => body.truncate((next() % body.len() as u64) as usize),
+                        4 => {
+                            let at = (next() % (body.len() as u64 + 1)) as usize;
+                            body.insert(at, next() as u8);
+                        }
+                        _ => {
+                            let stray: [&[u8; 4]; 3] = [b"PLTE", b"tRNS", b"gAMA"];
+                            let kind = *stray[(next() % 3) as usize];
+                            let junk: Vec<u8> = (0..next() % 40).map(|_| next() as u8).collect();
+                            chunks.insert(1, (kind, junk));
+                        }
+                    }
+                }
+                let mut bytes = PNG_SIGNATURE.to_vec();
+                for (kind, body) in &chunks {
+                    push_chunk(&mut bytes, kind, body);
+                }
+                let checked = check_skin_png(&bytes, SKIN_MAX_BYTES);
+                let decoded = decode_skin_png(&bytes, SKIN_MAX_BYTES);
+                match checked {
+                    Ok(()) => {
+                        accepted += 1;
+                        assert_eq!(decoded.expect("an accepted file decodes").len(), SKIN_RGBA_BYTES);
+                    }
+                    Err(_) => refused += 1,
+                }
+            }
+        }
+        assert!(refused > 1000, "the damage is mostly caught ({refused} refused, {accepted} accepted)");
+    }
+
     #[test]
     fn crc32_and_adler32_match_their_known_values() {
         assert_eq!(crc32(b"IEND"), 0xAE42_6082);

@@ -972,7 +972,9 @@ fn uploaded_ids_for(path: Option<&Path>, origin: &str, known: &Checked) -> Vec<S
 
 /// The ids this session uploaded or saw the server holding, for a runner with no record file.
 fn held_this_session(known: &Checked) -> Vec<String> {
-    lock_checked(known).iter().filter(|(id, held)| **held && is_skin_hash(id)).map(|(id, _)| id.clone()).collect()
+    let mut held: Vec<String> = lock_checked(known).iter().filter(|(id, held)| **held && is_skin_hash(id)).map(|(id, _)| id.clone()).collect();
+    held.sort();
+    held
 }
 
 /// [`uploaded_ids`] for a record file, server origin and checked map. With no origin there is no server to ask (see
@@ -3000,6 +3002,27 @@ use std::time::Duration;
         std::fs::write(skins_dir.join("steve.png"), fixture_png(false)).unwrap();
         assert!(!worn_skin_in(Some(&skins_dir), None, "STEVE", true, ArmsSetting::Auto).slim);
         let _ = std::fs::remove_dir_all(&skins_dir);
+    }
+
+    #[test]
+    fn with_no_record_file_the_session_knows_what_the_website_took_so_a_web_skin_is_announced_and_uploaded_once() {
+        // the browser build: no user folder, so no skins-uploaded.json
+        let known: &'static Checked = Box::leak(Box::default());
+        let (a, b) = (sha256_hex(b"web a"), sha256_hex(b"web b"));
+        assert!(uploaded_ids_for(None, "https://site", known).is_empty(), "nothing taken yet: DEFAULT is announced");
+        let mut plan = UploadPlan::default();
+        let ids = || uploaded_ids_for(None, "https://site", known);
+        assert!(plan.due(1.0, &a, true, ids, 60.0), "the first offer");
+        remember_uploaded_in(None, "https://site", known, &a);
+        assert_eq!(uploaded_ids_for(None, "https://site", known), vec![a.clone()], "taken: announced to the room");
+        for minute in 2..30 {
+            assert!(!plan.due(60.0 * minute as f64, &a, true, ids, 60.0), "never offered again after the website took it (minute {minute})");
+        }
+        assert_eq!(crate::net::world_sync::published_skin(&a, &ids()), a);
+        // a second skin replaces the first, as on the website
+        remember_uploaded_in(None, "https://site", known, &b);
+        assert_eq!(uploaded_ids_for(None, "https://site", known), vec![b.clone()]);
+        assert_eq!(crate::net::world_sync::published_skin(&a, &ids()), SKIN_DEFAULT, "the first is not relied on any more");
     }
 
     #[test]

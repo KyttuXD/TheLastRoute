@@ -14,7 +14,7 @@ use macroquad::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use crate::shared::clock::Instant;
-use std::time::Duration;
+use crate::shared::skin_cache::{SkinBackend, SkinCache};
 
 /// The runner body (remote runners and NPC teammates): the blocky mannequin from the Godot build, embedded under
 /// assets/player/. Its atlas is also embedded as a data URI, but the file name is what the model's `find` resolves first.
@@ -39,25 +39,10 @@ pub struct Assets {
     pub title_font: Option<Font>,
     /// Courier New italic: the death moment's caption lines.
     pub caption_font: Option<Font>,
-    /// Runner skin textures by skin id, read from the skin folders when first needed (see [`Assets::skin_texture`]).
-    skin_textures: RefCell<HashMap<String, SkinSlot>>,
-    /// Counts skin texture requests (the clock of the least-recently-used drop).
-    skin_tick: std::cell::Cell<u64>,
+    /// Runner skin textures by skin id, read from the skin folders when first needed (see [`Assets::skin_texture`] and
+    /// `shared/skin_cache.rs`, which holds every decision about them).
+    skin_textures: RefCell<SkinCache<Texture2D>>,
 }
-
-/// One skin id's texture: loaded, or still waiting for a file (checked again later, and fetched from the website once in a while).
-enum SkinSlot {
-    /// The texture and the tick of its last use (the oldest is dropped when more than `skins::peer_cache_max` are held).
-    Ready(Texture2D, u64),
-    /// A file that passed the hash and structure check but would not decode: never read again, the default skin is drawn.
-    Bad,
-    Waiting { check_at: Instant, fetch_at: Instant },
-}
-
-/// How often a missing skin file is looked for again on disk.
-const SKIN_RECHECK: Duration = Duration::from_secs(2);
-/// How often a missing skin is asked for again from the website.
-const SKIN_REFETCH: Duration = Duration::from_secs(30);
 
 /// A PNG as a nearest-filtered texture, or None when it does not decode. This is the one place a picture is decoded:
 /// the decoder is the fallible one, so a bad file (a damaged pack picture, a hostile skin) is an `Err` here and never the
@@ -297,8 +282,7 @@ impl Assets {
                 "LiberationMono-Italic.ttf",
             ])
             .or_else(|| embedded_font("LiberationMono-Italic.ttf")),
-            skin_textures: RefCell::new(HashMap::new()),
-            skin_tick: std::cell::Cell::new(0),
+            skin_textures: RefCell::new(SkinCache::default()),
         }
     }
 
@@ -328,8 +312,7 @@ impl Assets {
             font: None,
             title_font: None,
             caption_font: None,
-            skin_textures: RefCell::new(HashMap::new()),
-            skin_tick: std::cell::Cell::new(0),
+            skin_textures: RefCell::new(SkinCache::default()),
         }
     }
 
@@ -358,72 +341,41 @@ impl Assets {
         if id == SKIN_DEFAULT {
             return None;
         }
-        let now = Instant::now();
-        let mut slots = self.skin_textures.borrow_mut();
-        let tick = self.skin_tick.get() + 1;
-        self.skin_tick.set(tick);
-        match slots.get_mut(id) {
-            Some(SkinSlot::Ready(t, used)) => {
-                *used = tick;
-                return Some(t.clone());
-            }
-            Some(SkinSlot::Bad) => return None,
-            _ => {}
-        }
-        let (check_at, fetch_at) = match slots.get(id) {
-            Some(SkinSlot::Waiting { check_at, fetch_at }) => (*check_at, *fetch_at),
-            _ => (now, now),
-        };
-        if now < check_at {
-            return None;
-        }
-        if let Some(bytes) = skins::read_skin(id) {
-            // verified (hash, every chunk checksum, 64x64), then decoded through the fallible path with the base layer opaque
-            return match skins::remote_skin_rgba(&bytes) {
-                Ok(px) => {
-                    let t = Texture2D::from_rgba8(skins::SKIN_SIZE as u16, skins::SKIN_SIZE as u16, &px);
-                    t.set_filter(FilterMode::Nearest);
-                    slots.insert(id.to_string(), SkinSlot::Ready(t.clone(), tick));
-                    // a skin that is on the GPU is in use: its cache file is not pruned from under it
-                    skins::mark_in_use(id);
-                    evict_skin_textures(&mut slots, id);
-                    Some(t)
-                }
-                Err(why) => {
-                    eprintln!("skins: {id} was refused ({why}); the default skin is drawn");
-                    slots.insert(id.to_string(), SkinSlot::Bad);
-                    None
-                }
-            };
-        }
-        let fetch_at = if now >= fetch_at {
-            skins::fetch_skin_in_background(id);
-            now + SKIN_REFETCH
-        } else {
-            fetch_at
-        };
-        slots.insert(id.to_string(), SkinSlot::Waiting { check_at: now + SKIN_RECHECK, fetch_at });
-        None
+        // The cache is borrowed for the whole lookup and nothing inside it draws or asks for another skin; a second borrow
+        // (a nested draw) would otherwise be a panic in the frame, so one that finds it taken draws the default instead.
+        let mut cache = self.skin_textures.try_borrow_mut().ok()?;
+        cache.get(id, Instant::now(), &mut GlSkins)
     }
 }
 
-/// Keeps at most `skins::peer_cache_max()` skin textures on the GPU (Godot PEER_CACHE_MAX): the least recently used one
-/// is freed and asked for again from the disk cache if it is needed later. `keep` is the one just loaded.
-fn evict_skin_textures(slots: &mut HashMap<String, SkinSlot>, keep: &str) {
-    let max = skins::peer_cache_max();
-    while slots.values().filter(|s| matches!(s, SkinSlot::Ready(..))).count() > max {
-        let oldest = slots
-            .iter()
-            .filter_map(|(k, s)| match s {
-                SkinSlot::Ready(_, used) if k != keep => Some((*used, k.clone())),
-                _ => None,
-            })
-            .min()
-            .map(|(_, k)| k);
-        let Some(key) = oldest else { return };
-        // dropping the last handle frees the GPU texture (macroquad textures are reference counted)
-        slots.remove(&key);
-        skins::unmark_in_use(&key);
+/// The skin cache's window on the real world: the skin folders and the fetch cache, the website, and the GPU.
+struct GlSkins;
+
+impl SkinBackend<Texture2D> for GlSkins {
+    fn read(&mut self, id: &str) -> Option<Vec<u8>> {
+        skins::read_skin(id)
+    }
+
+    fn upload(&mut self, rgba: &[u8]) -> Texture2D {
+        let t = Texture2D::from_rgba8(skins::SKIN_SIZE as u16, skins::SKIN_SIZE as u16, rgba);
+        t.set_filter(FilterMode::Nearest);
+        t
+    }
+
+    fn fetch(&mut self, id: &str) {
+        skins::fetch_skin_in_background(id);
+    }
+
+    fn in_use(&mut self, id: &str, on: bool) {
+        if on {
+            skins::mark_in_use(id);
+        } else {
+            skins::unmark_in_use(id);
+        }
+    }
+
+    fn cap(&self) -> usize {
+        skins::peer_cache_max()
     }
 }
 
