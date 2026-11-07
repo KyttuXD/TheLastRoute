@@ -198,14 +198,14 @@ pub fn draw_view_layer(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) 
     if action == LayerAction::ClearOnly {
         return false;
     }
-    gl_use_material(mat);
+    let world = super::pipeline::world_material(mat);
     shader::apply(mat, &lighting_from_view(g, v), &flickered(g, &g.world.lamps));
     match (content, item) {
         (LayerContent::HeldItem, Some(item)) => draw_held_item(g, a, item, v),
         (LayerContent::LadderHands, _) => super::fp_hands::draw_ladder_hands(g, a, v),
         _ => {}
     }
-    gl_use_default_material();
+    drop(world);
     true
 }
 

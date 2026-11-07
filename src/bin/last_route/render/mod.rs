@@ -17,6 +17,7 @@ pub mod lamp_flicker;
 pub mod locker_occupant;
 pub mod locker_shell;
 pub mod mesh_batch;
+pub mod pipeline;
 pub mod prop_model;
 pub mod prop_scale;
 pub mod scene;
