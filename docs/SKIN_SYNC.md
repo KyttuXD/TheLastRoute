@@ -116,6 +116,29 @@ carry an IPv4 address, such as NAT64, 6to4, v4-compatible and Teredo, are judged
 FROM URL with a fake getter (`fetch_url_skin_via`: hosts and content types), a skin PNG over real TLS on loopback through the client's own limit
 and content types (`net::http` tests), and an ignored live test (`cargo test --bin last_route live_ -- --ignored`).
 
+## What another player's skin can and cannot do to your frame
+
+Only a skin id (a 64 hex hash), the arm style and a copy flag cross the room's wire; the PNG itself never does (the server's skin
+store holds it, 64 KB at most, and each client fetches, verifies and decodes it). Everything that can go wrong with a peer's skin ends in
+the default mannequin atlas on the viewer's screen, never in a lost frame:
+
+- `shared/skin_cache.rs` holds every decision about the skin textures (generic over the texture type, tested with no GPU): a pending skin, a
+  failed download, a refused file (not a PNG, wrong size, 64x32, 128x128, 16-bit, palette, interlaced, trailing bytes, a hash that matches
+  a hostile file) all answer `None` and the caller draws the atlas. A refused skin is noted once and never read again; only exactly
+  64x64 RGBA reaches the GPU upload; at most `cache_max` skin textures are held (least recently used freed); at most 64 pending or refused ids
+  are remembered (ids are announced by other players).
+- Profiles are cleaned on receipt (`clean_skin`, `clean_name`, a boolean-only `skin_slim`), tested against hostile profiles in
+  `net::world_sync::skin_wire_tests`.
+- A skin that arrives late (or after the runner was first drawn) is picked up within 2 s; the slim body is drawn from the profile's
+  `skin_slim` while the picture is still on its way.
+- The release profile aborts on a panic (and a wasm panic stops the frame loop), so there is no `catch_unwind` net: the defence is that
+  none of these paths can panic.
+
+**Browser build.** It has no user folder, so a web client keeps its own skin in memory, does not fetch other runners' skins (it draws
+them in the default atlas, with their arm style) and, before the fix, never recorded that the website holds its own skin: the skin was
+uploaded again on every 60 s retry (a blocking request on the page's only thread) and never announced to the room. The session now remembers
+what the website took (`skins::uploaded_ids_at`), so a web skin is uploaded once and announced.
+
 ## Room announce, retries and visible state
 
 - A runner (host or guest, direct or relay) announces its skin in its wire profile only once the server holds it

@@ -11,6 +11,7 @@ pub mod checkpoint;
 pub mod clock;
 pub mod file_pick;
 pub mod safe_room;
+pub mod skin_cache;
 pub mod skin_png;
 pub mod skins;
 pub mod task;

@@ -3527,3 +3527,87 @@ mod height_tests {
         s.coop.close();
     }
 }
+
+/// What the other client sends about a skin is the only thing a custom skin puts on this client's wire, so a player with a
+/// skin must never be able to blank another player's frame through it: whatever a profile holds, the figure list the frame
+/// draws stays sane (a bounded skin id and name, a boolean arm style, no panic).
+#[cfg(test)]
+mod skin_wire_tests {
+    use super::tests::{offline_session, sample};
+    use super::*;
+
+    fn profile(v: Value) -> Map<String, Value> {
+        v.as_object().cloned().expect("an object")
+    }
+
+    fn hostile_profiles() -> Vec<(&'static str, Map<String, Value>)> {
+        let hash = "a".repeat(64);
+        vec![
+            ("a valid skin", profile(json!({"peer_id": 7, "name": "ALEX", "skin": hash, "skin_slim": true, "skin_copy": true}))),
+            ("an upper-case hash", profile(json!({"peer_id": 7, "name": "ALEX", "skin": "A".repeat(64)}))),
+            ("a 100 KB skin id", profile(json!({"peer_id": 7, "name": "ALEX", "skin": "x".repeat(100_000)}))),
+            ("a 100 KB name", profile(json!({"peer_id": 7, "name": "N".repeat(100_000), "skin": "DEFAULT"}))),
+            ("a number for the skin", profile(json!({"peer_id": 7, "name": "ALEX", "skin": 12345}))),
+            ("null everywhere", profile(json!({"peer_id": 7, "name": null, "skin": null, "skin_slim": null, "skin_copy": null}))),
+            ("text for the flags", profile(json!({"peer_id": 7, "skin": "DEFAULT", "skin_slim": "yes", "skin_copy": "true"}))),
+            ("emoji and controls", profile(json!({"peer_id": 7, "name": "\u{202e}\u{1F600}\n\0", "skin": "\u{1F600}\n\0\u{202e}"}))),
+            ("a path as the skin", profile(json!({"peer_id": 7, "skin": "../../etc/passwd"}))),
+            ("a 63 and a 65 character hash", profile(json!({"peer_id": 7, "skin": "b".repeat(63), "name": "c".repeat(65)}))),
+            ("nothing at all", Map::new()),
+            ("nested objects", profile(json!({"peer_id": 7, "skin": {"a": [1, 2]}, "name": ["x"], "skin_slim": {}}))),
+        ]
+    }
+
+    fn assert_sane(what: &str, views: &[RemoteView]) {
+        for v in views {
+            assert!(v.skin == SKIN_DEFAULT || is_skin_hash(&v.skin) || (v.skin.len() <= MAX_SKIN && v.skin.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')), "{what}: skin {:?}", v.skin);
+            assert!(v.name.chars().count() <= 24, "{what}: a {} character name", v.name.chars().count());
+            assert!(v.x.is_finite() && v.y.is_finite() && v.h.is_finite() && v.yaw.is_finite(), "{what}: a figure at a non-finite place");
+        }
+    }
+
+    #[test]
+    fn a_host_takes_any_profile_and_hands_the_frame_a_sane_figure() {
+        let mut host = offline_session(true, "HOST");
+        host.guests.insert(7, Guest { name: "ALEX".into(), last_seen: Instant::now() });
+        host.remotes.insert(7, Remote::new(sample(1, 3.0, 4.0), Instant::now(), None));
+        for (what, p) in hostile_profiles() {
+            let mut out = vec![];
+            host.on_message(7, Message::WireProfile { profile: p }, Instant::now(), &mut out);
+            let views = host.remotes_at(5.0, 1, (0, 0));
+            assert_eq!(views.len(), 1, "{what}: the runner stays in the room");
+            assert_sane(what, &views);
+        }
+    }
+
+    #[test]
+    fn a_guest_takes_any_relayed_profile_and_hands_the_frame_a_sane_figure() {
+        let mut guest = offline_session(false, "GUEST");
+        guest.remotes.insert(7, Remote::new(sample(1, 3.0, 4.0), Instant::now(), None));
+        for (what, p) in hostile_profiles() {
+            let mut out = vec![];
+            guest.on_message(HOST_PEER_ID, Message::WireProfile { profile: p }, Instant::now(), &mut out);
+            assert_sane(what, &guest.remotes_at(5.0, 1, (0, 0)));
+        }
+        // a profile that names no runner, a negative one, one far out of range, or this runner's own, is dropped
+        for peer in [json!(-1), json!(1e30), json!("7"), json!(null), json!(guest.coop.link.session())] {
+            let mut out = vec![];
+            let before = guest.skins.clone();
+            guest.on_message(HOST_PEER_ID, Message::WireProfile { profile: profile(json!({"peer_id": peer, "skin": "b".repeat(64)})) }, Instant::now(), &mut out);
+            assert_eq!(guest.skins, before, "a profile for peer {peer} changes nothing");
+        }
+    }
+
+    #[test]
+    fn a_runner_with_a_skin_the_viewer_does_not_have_is_drawn_with_its_hash_and_slim_arms_and_no_file_is_needed() {
+        // B has no skin and no file of A's: the figure list says what A wears, and what B draws is decided by the texture cache
+        // (shared/skin_cache.rs: a pending skin draws the default atlas)
+        let hash = "c".repeat(64);
+        let mut guest = offline_session(false, "B");
+        guest.remotes.insert(7, Remote::new(sample(1, 3.0, 4.0), Instant::now(), None));
+        let mut out = vec![];
+        guest.on_message(HOST_PEER_ID, Message::WireProfile { profile: profile(json!({"peer_id": 7, "name": "A", "skin": hash, "skin_slim": true})) }, Instant::now(), &mut out);
+        let views = guest.remotes_at(5.0, 1, (0, 0));
+        assert_eq!((views[0].skin.as_str(), views[0].slim), (hash.as_str(), true));
+    }
+}

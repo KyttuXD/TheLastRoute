@@ -904,8 +904,22 @@ fn write_record_at(path: &Path, origin: &str, ids: &[String]) {
 /// The recorded ids that were checked against the server this session (or uploaded this session): the ids the website
 /// holds for this account. The record alone is not trusted, since the server may have dropped the file since.
 pub fn uploaded_ids() -> Vec<String> {
-    let Some(path) = uploaded_path() else { return Vec::new() };
-    uploaded_ids_in(&path, &server_origin(), checked_map())
+    uploaded_ids_at(uploaded_path().as_deref(), &server_origin(), checked_map())
+}
+
+/// [`uploaded_ids`] for an optional record file. With no file (the browser build has no user folder, and so no record)
+/// the session's own knowledge is all there is: the ids it saw the website take. Without that, a web player's skin was
+/// never known to be held, so it was never announced to the room and was offered for upload again on every retry, each
+/// one a blocking request on the page's only thread (see `shared/task.rs`).
+fn uploaded_ids_at(path: Option<&Path>, origin: &str, known: &Checked) -> Vec<String> {
+    match path {
+        Some(path) => uploaded_ids_in(path, origin, known),
+        None => {
+            let mut held: Vec<String> = lock_checked(known).iter().filter(|(_, held)| **held).map(|(id, _)| id.clone()).collect();
+            held.sort();
+            held
+        }
+    }
 }
 
 /// [`uploaded_ids`] for a record file, server origin and checked map. With no origin there is no server to ask (see
@@ -933,10 +947,22 @@ fn uploaded_path() -> Option<PathBuf> {
 /// account, so an earlier id is no longer something to rely on (it is only kept for a grace period): picking it again
 /// uploads it again, and the room's published skin never names a file the website has dropped.
 fn remember_uploaded(id: &str) {
-    if let Some(path) = uploaded_path() {
-        write_record_at(&path, &server_origin(), &[id.to_string()]);
+    remember_uploaded_at(uploaded_path().as_deref(), &server_origin(), checked_map(), id);
+}
+
+/// [`remember_uploaded`] for an optional record file and a checked map.
+fn remember_uploaded_at(path: Option<&Path>, origin: &str, known: &Checked, id: &str) {
+    if let Some(path) = path {
+        write_record_at(path, origin, &[id.to_string()]);
     }
-    checked().insert(id.to_string(), true);
+    let mut known = lock_checked(known);
+    if path.is_none() {
+        // no record file to hold just the latest: the map is the record, and the website holds one skin per account
+        for held in known.values_mut() {
+            *held = false;
+        }
+    }
+    known.insert(id.to_string(), true);
 }
 
 /// Looks up whether the server holds the recorded skin `hash` (`GET <base>/api/v1/skins/<hash>`, which the server
@@ -2913,6 +2939,27 @@ use std::time::Duration;
         std::fs::write(skins_dir.join("steve.png"), fixture_png(false)).unwrap();
         assert!(!worn_skin_in(Some(&skins_dir), None, "STEVE", true, ArmsSetting::Auto).slim);
         let _ = std::fs::remove_dir_all(&skins_dir);
+    }
+
+    #[test]
+    fn with_no_record_file_the_session_knows_what_the_website_took_so_a_web_skin_is_announced_and_uploaded_once() {
+        // the browser build: no user folder, so no skins-uploaded.json
+        let known: &'static Checked = Box::leak(Box::default());
+        let (a, b) = (sha256_hex(b"web a"), sha256_hex(b"web b"));
+        assert!(uploaded_ids_at(None, "https://site", known).is_empty(), "nothing taken yet: DEFAULT is announced");
+        let mut plan = UploadPlan::default();
+        let ids = || uploaded_ids_at(None, "https://site", known);
+        assert!(plan.due(1.0, &a, true, ids, 60.0), "the first offer");
+        remember_uploaded_at(None, "https://site", known, &a);
+        assert_eq!(uploaded_ids_at(None, "https://site", known), vec![a.clone()], "taken: announced to the room");
+        for minute in 2..30 {
+            assert!(!plan.due(60.0 * minute as f64, &a, true, ids, 60.0), "never offered again after the website took it (minute {minute})");
+        }
+        assert_eq!(crate::net::world_sync::published_skin(&a, &ids()), a);
+        // a second skin replaces the first, as on the website
+        remember_uploaded_at(None, "https://site", known, &b);
+        assert_eq!(uploaded_ids_at(None, "https://site", known), vec![b.clone()]);
+        assert_eq!(crate::net::world_sync::published_skin(&a, &ids()), SKIN_DEFAULT, "the first is not relied on any more");
     }
 
     #[test]
