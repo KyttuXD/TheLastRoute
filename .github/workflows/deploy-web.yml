@@ -1,0 +1,64 @@
+# Builds the web game and deploys it to vps2 (https://lastrouterust.games.kyttuslab.org) on every push to main
+# that touches the game or the page files. The deploy is the same script as the manual one (packaging/web/deploy-vps2.sh):
+# it uploads the files, then version.json last, and checks the live URL before it reports success.
+# Secrets (repository settings, never in the repo): DEPLOY_SSH_KEY (private key of the restricted lr-deploy user on vps2)
+# and DEPLOY_KNOWN_HOSTS (vps2's host key line). The deploy user may only write /srv/lr-rust-web.
+name: deploy-web
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packaging/web/**"
+      - "src/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/deploy-web.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-web
+  cancel-in-progress: false
+
+env:
+  RUST_TOOLCHAIN: "1.99.1"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-22.04
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: web
+      - name: Build the wasm
+        run: cargo build --release --target wasm32-unknown-unknown --bin last_route --target-dir target/web
+      - name: Assemble the web folder
+        run: |
+          mkdir -p dist/web
+          cp target/web/wasm32-unknown-unknown/release/last_route.wasm dist/web/
+          for f in index.html update.js keys.js hw.js audio.js mq_js_bundle.js; do cp packaging/web/$f dist/web/; done
+      - name: SSH setup
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          test -n "$DEPLOY_SSH_KEY" || { echo "DEPLOY_SSH_KEY secret is not set" >&2; exit 1; }
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/lr_deploy && chmod 600 ~/.ssh/lr_deploy
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf 'Host vps2\n  HostName 195.62.47.178\n  User lr-deploy\n  IdentityFile ~/.ssh/lr_deploy\n  IdentitiesOnly yes\n' > ~/.ssh/config
+      - name: Deploy to vps2
+        run: sh packaging/web/deploy-vps2.sh dist/web
+      - name: Summary
+        if: always()
+        run: echo "- web deploy: ${{ job.status }} (commit $GITHUB_SHA)" >> "$GITHUB_STEP_SUMMARY"
