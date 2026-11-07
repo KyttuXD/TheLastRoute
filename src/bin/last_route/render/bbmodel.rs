@@ -707,10 +707,10 @@ mod tests {
         assert_eq!((n, fold), GOLDEN_ALL, "a non-void model draws differently now");
     }
 
-    /// The fix may only move models whose texture carries its own UV size that differs from the project resolution;
-    /// today those are exactly the 12 void hunters.
+    /// The void models now use the A to Z rig and its 64x64 skins, so no model reads a UV space other than its own
+    /// picture's and the project's (the old void 64x96 exception is gone).
     #[test]
-    fn only_the_void_models_read_a_different_uv_space_than_before() {
+    fn no_hunter_reads_a_uv_space_other_than_its_picture_and_the_project_resolution() {
         let mut moved: Vec<&str> = vec![];
         for (path, j) in all_models() {
             let Some(img) = texture_image(path, &j) else { continue };
@@ -719,12 +719,7 @@ mod tests {
                 moved.push(path);
             }
         }
-        moved.sort();
-        let want: Vec<String> = ["black", "blue", "brown", "cyan", "gray", "green", "orange", "pink", "purple", "red", "white", "yellow"]
-            .iter()
-            .map(|c| format!("hunters/void_{c}.bbmodel"))
-            .collect();
-        assert_eq!(moved, want.iter().map(String::as_str).collect::<Vec<_>>());
+        assert!(moved.is_empty(), "{moved:?} read a different UV space");
     }
 
     #[test]
@@ -753,6 +748,16 @@ mod tests {
         v
     }
 
+    /// The A to Z rig every void model is built on: its shape is the reference for the bones and the faces.
+    fn a_to_z_shape() -> Shape {
+        let (path, j) = all_models().into_iter().find(|(p, _)| *p == "hunters/dovelle.bbmodel").expect("the A to Z rig");
+        shape_now(path, &j).expect("dovelle loads")
+    }
+
+    fn face_count(shape: &Shape) -> usize {
+        shape.parts.iter().map(|p| p.faces.len()).sum()
+    }
+
     #[test]
     fn every_void_model_loads_with_a_texture_that_matches_its_uv_space() {
         for (path, j) in void_models() {
@@ -766,7 +771,7 @@ mod tests {
                 img.height()
             );
             let shape = shape_with(&j, (w, h)).unwrap_or_else(|| panic!("{path}: does not load"));
-            assert_eq!(shape.groups.len(), 40, "{path}: the rig drives 40 bones");
+            assert_eq!(shape.groups.len(), a_to_z_shape().groups.len(), "{path}: the bones are the A to Z rig's");
             assert!(shape.parts.iter().map(|p| p.faces.len()).sum::<usize>() >= 100, "{path}: too few faces");
         }
     }
@@ -790,7 +795,7 @@ mod tests {
                     }
                 }
             }
-            assert_eq!(faces, 109, "{path}: textured faces");
+            assert_eq!(faces, face_count(&a_to_z_shape()), "{path}: textured faces");
         }
     }
 
@@ -822,43 +827,44 @@ mod tests {
         solid as f32 / n.max(1) as f32
     }
 
-    /// The bug (2026-11-05): read against 64x64, 61 of 109 faces sampled only transparent texels (arms, legs, belly
-    /// and neck vanished). Every body face has to land on paint; the four hair cards (Fringe, two Locks, Top) are
-    /// cut-outs that the atlas gives only a few texels, and may be sparse, but never wholly empty.
+    /// The overlay layers of a Minecraft skin (hat, jacket, sleeves, pants), in skin pixels: x0, y0, x1, y1. A skin may
+    /// leave them transparent, so their faces are not held to paint; every other face (the base body) must be painted.
+    const SKIN_OVERLAYS: [(f32, f32, f32, f32); 6] = [
+        (32.0, 0.0, 64.0, 16.0),  // hat
+        (16.0, 32.0, 40.0, 48.0), // jacket
+        (40.0, 32.0, 56.0, 48.0), // right sleeve
+        (48.0, 48.0, 64.0, 64.0), // left sleeve
+        (0.0, 32.0, 16.0, 48.0),  // right pants
+        (0.0, 48.0, 16.0, 64.0),  // left pants
+    ];
+
+    /// Whether a face's UV centre lies in a skin overlay layer.
+    fn in_skin_overlay(f: &Face) -> bool {
+        let (sum_u, sum_v) = f.uv.iter().fold((0.0, 0.0), |(u, v), uv| (u + uv.x, v + uv.y));
+        let n = f.uv.len().max(1) as f32;
+        let (x, y) = (sum_u / n * 64.0, sum_v / n * 64.0);
+        SKIN_OVERLAYS.iter().any(|&(x0, y0, x1, y1)| x > x0 && x < x1 && y > y0 && y < y1)
+    }
+
+    /// Every base-layer face has to land on paint.
     #[test]
-    fn void_body_faces_land_on_painted_texels() {
+    fn void_base_faces_land_on_painted_texels() {
         for (path, j) in void_models() {
             let img = texture_image(path, &j).unwrap();
             let shape = shape_now(path, &j).unwrap();
             let name_of = |g: Option<usize>| g.map(|g| shape.groups[g].name.as_str()).unwrap_or("");
-            let (mut faces, mut sparse, mut empty_hair) = (0, 0, 0);
+            let mut faces = 0;
             for p in &shape.parts {
-                let hair = name_of(p.group).starts_with("Hair");
                 for f in &p.faces {
                     faces += 1;
-                    let frac = opaque_fraction(&img, f);
-                    if hair {
-                        sparse += (frac < 0.9) as i32;
-                        empty_hair += (frac == 0.0) as i32;
-                    } else {
-                        assert!(frac >= 0.9, "{path}: a face of {:?} samples only {:.0}% painted texels", name_of(p.group), frac * 100.0);
+                    if !in_skin_overlay(f) {
+                        let frac = opaque_fraction(&img, f);
+                        assert!(frac >= 0.9, "{path}: a base face of {:?} samples only {:.0}% painted texels", name_of(p.group), frac * 100.0);
                     }
                 }
             }
-            assert_eq!(faces, 109);
-            assert!(sparse <= 4, "{path}: {sparse} sparse hair faces");
-            assert_eq!(empty_hair, 0, "{path}: a hair card on fully transparent texels");
+            assert_eq!(faces, face_count(&a_to_z_shape()));
         }
-    }
-
-    /// The same sampler on the legacy rule must see the bug, so the check above is known to bite.
-    #[test]
-    fn the_sampler_sees_the_old_misread() {
-        let (path, j) = void_models().into_iter().next().unwrap();
-        let img = texture_image(path, &j).unwrap();
-        let old = shape_with(&j, legacy_res(&j, img.width() as f32, img.height() as f32)).unwrap();
-        let blank = old.parts.iter().flat_map(|p| &p.faces).filter(|f| opaque_fraction(&img, f) == 0.0).count();
-        assert!(blank >= 50, "the old 64x64 reading should leave most faces on empty texels, found {blank}");
     }
 
     /// A texture that declares its own UV size declares its picture's size (a face past the bottom edge clamps to

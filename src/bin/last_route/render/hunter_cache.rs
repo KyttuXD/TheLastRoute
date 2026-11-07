@@ -398,7 +398,7 @@ mod tests {
             let unit = rig_json(id)["unit"].as_f64().unwrap() as f32;
             assert!((unit - 65.0).abs() < 0.01, "{id}: unit {unit}");
             let metres = model_top(id) / unit * crate::render::anim::hunter::MODEL_SCALE;
-            let want = if id.starts_with("void_") { 121.75 / 65.0 * 1.5 } else { metres };
+            let want = if id.starts_with("void_") { model_top("dovelle") / 65.0 * 1.5 } else { metres };
             assert!((metres - want).abs() < 0.02, "{id}: {metres} m");
         }
         // Nyxie and Solyth reach the audit's heights
