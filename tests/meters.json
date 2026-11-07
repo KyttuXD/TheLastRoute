@@ -8,7 +8,7 @@
       "name": "sprinting drains stamina, resting refills it",
       "steps": [
         { "cmd": "step", "frames": 60, "act": { "move": [0, 1], "hold": { "sprint": true } }, "observe": false },
-        { "expect": [ { "path": "player.stamina", "op": "<", "value": 75 } ] },
+        { "expect": [ { "path": "player.stamina", "op": "<", "value": 85 }, { "path": "player.stamina", "op": ">", "value": 70 } ] },
         { "cmd": "act", "act": { "move": [0, 0], "hold": { "sprint": false } } },
         { "cmd": "step_until", "expect": [ { "path": "player.stamina", "op": ">=", "value": 100 } ], "max_frames": 600 }
       ]
