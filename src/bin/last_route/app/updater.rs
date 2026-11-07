@@ -341,6 +341,18 @@ pub fn percent(got: u64, total: u64) -> u32 {
     ((got.min(total) as u128 * 100) / total as u128) as u32
 }
 
+/// The macOS install-attempt record (`<digest> <count>`), in the user data folder so an install that replaces the bundle keeps it.
+#[cfg(target_os = "macos")]
+fn attempts_path() -> Option<PathBuf> {
+    super::paths::user_dir().map(|d| d.join("update-attempts.txt"))
+}
+
+/// The digest of the nightly zip last installed (the release file's SHA-256), in the user data folder.
+#[cfg(target_os = "macos")]
+fn installed_record_path() -> Option<PathBuf> {
+    super::paths::user_dir().map(|d| d.join("installed-release.txt"))
+}
+
 fn marker_path() -> Option<PathBuf> {
     Some(std::env::current_exe().ok()?.parent()?.join(&UpdaterText::standard().marker_file))
 }
@@ -507,10 +519,14 @@ fn github_update(handle: &Mutex<UpdateStatus>) -> Result<bool, String> {
         .to_string();
     let link = asset.get("browser_download_url").and_then(|u| u.as_str()).ok_or("the release file has no download link")?.to_string();
 
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let mine: String = Sha256::digest(std::fs::read(&exe).map_err(|e| e.to_string())?).iter().map(|b| format!("{b:02x}")).collect();
-    if mine == want {
+    // The release digest is the checksum of the zip, not of the program inside it, so it cannot be compared with the
+    // running executable. The installed release's digest is recorded (outside the bundle) when an install succeeds.
+    let recorded = installed_record_path().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+    if recorded.trim() == want {
         crate::lr_info!("update: the nightly release is the build this app already is");
+        if let Some(p) = attempts_path() {
+            let _ = std::fs::remove_file(p);
+        }
         if let Ok(mut s) = handle.lock() {
             if !matches!(*s, UpdateStatus::Updated(_)) {
                 *s = UpdateStatus::UpToDate(BUILD);
@@ -519,6 +535,21 @@ fn github_update(handle: &Mutex<UpdateStatus>) -> Result<bool, String> {
         return Ok(false);
     }
 
+    // Loop guard: the attempt record lives in the user data folder, not in the bundle (installing replaces the bundle).
+    // If this exact release was installed twice and the app still is not it, stop instead of installing it again.
+    let attempts = attempts_path();
+    let tried = attempts.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+    let (tried_digest, tried_n) = match tried.split_once(' ') {
+        Some((d, n)) => (d.to_string(), n.trim().parse::<u32>().unwrap_or(0)),
+        None => (String::new(), 0),
+    };
+    if tried_digest == want && tried_n >= 2 {
+        return Err("this build did not start after two installs; not installing it again".into());
+    }
+    if let Some(p) = &attempts {
+        let n = if tried_digest == want { tried_n + 1 } else { 1 };
+        let _ = std::fs::write(p, format!("{want} {n}"));
+    }
     crate::lr_info!("update: the nightly release differs from this app; downloading {file}");
     set(handle, UpdateStatus::Downloading { build: 0, got: 0, total: 0 });
     // GitHub answers a release file with a redirect to its file host, so the download follows up to 3 hops, each one
@@ -552,6 +583,11 @@ fn github_update(handle: &Mutex<UpdateStatus>) -> Result<bool, String> {
     }
     let result = install_staged_bundle(&bundle);
     let _ = std::fs::remove_dir_all(&stage);
+    if result.is_ok() {
+        if let Some(p) = installed_record_path() {
+            let _ = std::fs::write(p, &want);
+        }
+    }
     result.map(|()| true)
 }
 
