@@ -1,8 +1,8 @@
-//! The status bars: thin outlined meters in one row above the hotbar, label and value under each, no icons and no panel.
-//! Order and colours are data (data/ui/hud_bars.json, `lr.hud_bars/1`): BATTERY amber, STAMINA light blue, FADE, EXPOSURE
-//! orange-red, NOISE, and TEMP as the sixth. A readout is `BATTERY 97% // F`. The value to fill and the zone rules are
-//! pure functions, unit-tested below. The old stamina bar over the hotbar is drawn only when this row is not (a broken
-//! data file).
+//! The status bars: a compact grid of thin outlined meters above the hotbar (default 3×2), short label and value under
+//! each, no icons and no panel. Order and colours are data (data/ui/hud_bars.json, `lr.hud_bars/1`): BATTERY amber,
+//! STAMINA light blue, FADE, EXPOSURE orange-red, NOISE, and TEMP. A readout is `BAT 97% // F`. The value to fill and
+//! the zone rules are pure functions, unit-tested below. The old stamina bar over the hotbar is drawn only when this
+//! grid is not (a broken data file).
 
 use super::style::*;
 use crate::app::assets::Assets;
@@ -160,6 +160,8 @@ pub struct Layout {
     pub sub_size: f32,
     /// Padding inside the plate.
     pub pad: f32,
+    /// How many columns the status grid uses (3 → two rows of three for the six shipped bars).
+    pub columns: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -224,15 +226,26 @@ pub fn parse(src: &str) -> Result<BarRules, String> {
         return Err(format!("schema must be {SCHEMA}"));
     }
     let l = &v["layout"];
+    let columns = match l.get("columns") {
+        None => 3,
+        Some(v) => {
+            let n = v.as_u64().ok_or("layout.columns is not a whole number")?;
+            if !(1..=4).contains(&n) {
+                return Err("layout.columns must be 1 to 4".into());
+            }
+            n as usize
+        }
+    };
     let layout = Layout {
         max_width: ranged(l, "max_width", 60.0, 400.0)?,
         gap: ranged(l, "gap", 0.0, 8.0)?,
         icon: ranged(l, "icon", 3.0, 12.0)?,
         bar_height: ranged(l, "bar_height", 2.0, 8.0)?,
         bar_min: ranged(l, "bar_min", 8.0, 100.0)?,
-        text_size: ranged(l, "text_size", 4.0, 12.0)?,
+        text_size: ranged(l, "text_size", 3.0, 12.0)?,
         sub_size: ranged(l, "sub_size", 3.0, 10.0)?,
         pad: ranged(l, "pad", 0.0, 8.0)?,
+        columns,
     };
     let list = v["bars"].as_array().ok_or("bars is not a list")?;
     if list.is_empty() || list.len() > 8 {
@@ -498,20 +511,25 @@ pub fn fit_tick_labels(bar_w: f32, ticks: &[(f32, f32)], min_gap: f32) -> Vec<bo
         .collect()
 }
 
-/// The status row above the hotbar: one column per bar, centred on the hotbar, and above the specialty bar when that
-/// bar has moved up over a narrow window. `line_h` is one caption line.
-pub fn row_bounds(v: Vec2, c: Vec2, hb: Rect, n: usize, bar_h: f32, line_h: f32) -> Rect {
+/// The status grid above the hotbar: `layout.columns` across, as many rows as the bar count needs, centred on the
+/// hotbar and above the specialty bar when that bar has moved up over a narrow window. `line_h` is one caption line.
+pub fn row_bounds(v: Vec2, c: Vec2, hb: Rect, n: usize, l: &Layout, line_h: f32) -> Rect {
     let n = n.max(1);
-    let nf = n as f32;
-    let col_gap = 4.0;
-    let avail = (v.x - 2.0 * SAFE - col_gap * (nf - 1.0)).max(nf * 16.0);
-    let col_w = (avail / nf).min(78.0);
-    let total = col_w * nf + col_gap * (nf - 1.0);
+    let cols = l.columns.clamp(1, n);
+    let rows = (n + cols - 1) / cols;
+    let col_gap = l.gap.max(2.0);
+    let row_gap = 2.0;
+    let avail = (v.x - 2.0 * SAFE - col_gap * (cols as f32 - 1.0)).max(cols as f32 * 14.0);
+    // stay near the hotbar width so six bars do not stretch across a wide desktop
+    let target = hb.w.min(l.max_width.max(120.0));
+    let col_w = ((avail / cols as f32).min(target / cols as f32)).clamp(28.0, 64.0);
+    let total = col_w * cols as f32 + col_gap * (cols as f32 - 1.0);
     let x = (hb.x + hb.w * 0.5 - total * 0.5).clamp(SAFE, (v.x - SAFE - total).max(SAFE));
     let (_, sy, _, _, _) = super::hud::specialty_bar_layout(v, c, hb, crate::game::specialty::SLOT_COUNT);
     let limit = if sy + 0.5 < hb.y { sy } else { hb.y };
-    let h = bar_h + line_h + 3.0;
-    Rect::new(x, (limit - 4.0 - h).max(0.0), total, h)
+    let cell_h = l.bar_height + line_h + 2.0;
+    let h = cell_h * rows as f32 + row_gap * (rows as f32 - 1.0);
+    Rect::new(x, (limit - 3.0 - h).max(0.0), total, h)
 }
 
 // -- what the game says ----------------------------------------------------------------------------------------
@@ -642,7 +660,7 @@ fn draw_bar(r: Rect, bar: &BarDef, res: &Resolved) {
     border(r, 1.0, rgba(0.78, 0.78, 0.74, 0.85));
 }
 
-/// Draws the row above the hotbar; returns how many bars it drew (0 when the data is broken).
+/// Draws the grid above the hotbar; returns how many bars it drew (0 when the data is broken).
 pub fn draw(g: &Game, a: &Assets, v: Vec2, hb: Rect) -> usize {
     let Some(rules) = rules() else { return 0 };
     if rules.bars.is_empty() {
@@ -650,26 +668,34 @@ pub fn draw(g: &Game, a: &Assets, v: Vec2, hb: Rect) -> usize {
     }
     let snap = Snapshot::of(g);
     let c = (v * 0.5).round();
-    let size = rules.layout.text_size;
-    let line_h = lh(F::Body, size);
-    let band = row_bounds(v, c, hb, rules.bars.len(), rules.layout.bar_height, line_h);
-    let n = rules.bars.len() as f32;
-    let col_gap = 4.0;
-    let col_w = (band.w - col_gap * (n - 1.0)) / n;
+    let l = &rules.layout;
+    let size0 = l.text_size;
+    let line_h = lh(F::Body, size0);
+    let band = row_bounds(v, c, hb, rules.bars.len(), l, line_h);
+    let cols = l.columns.clamp(1, rules.bars.len());
+    let rows = (rules.bars.len() + cols - 1) / cols;
+    let col_gap = l.gap.max(2.0);
+    let row_gap = 2.0;
+    let col_w = (band.w - col_gap * (cols as f32 - 1.0)) / cols as f32;
+    let cell_h = (band.h - row_gap * (rows as f32 - 1.0)) / rows as f32;
     let ink = rgba(0.78, 0.78, 0.74, 1.0);
     for (i, bar) in rules.bars.iter().enumerate() {
         let res = resolve(bar, snap.value(bar.source), &snap.flags);
-        let x = band.x + i as f32 * (col_w + col_gap);
-        let br = Rect::new(x, band.y, col_w, rules.layout.bar_height);
+        let col = i % cols;
+        let row = i / cols;
+        let x = band.x + col as f32 * (col_w + col_gap);
+        let y = band.y + row as f32 * (cell_h + row_gap);
+        let br = Rect::new(x, y, col_w, l.bar_height);
         draw_bar(br, bar, &res);
-        let text = readout(&bar.label, res.value, &bar.unit, res.name);
-        let mut size = size;
+        // short labels keep the 3×2 cells readable; the long form stays in the data for the loader tests
+        let text = readout(&bar.short, res.value, &bar.unit, res.name);
+        let mut size = size0;
         let mut twid = tw(a, F::Body, &text, size);
-        while twid > col_w - 1.0 && size > 3.0 {
-            size -= 1.0;
+        while twid > col_w - 1.0 && size > 2.5 {
+            size -= 0.5;
             twid = tw(a, F::Body, &text, size);
         }
-        label(a, F::Body, &text, x + (col_w - twid).max(0.0) * 0.5, br.y + br.h + 1.0, size, ink);
+        label(a, F::Body, &text, x + (col_w - twid).max(0.0) * 0.5, br.y + br.h + 0.5, size, ink);
     }
     rules.bars.len()
 }
@@ -695,10 +721,11 @@ mod tests {
         let src: Vec<Source> = r.bars.iter().map(|b| b.source).collect();
         assert_eq!(src, [Source::Lamp, Source::Stamina, Source::Fade, Source::Exposure, Source::Noise, Source::Temperature]);
         assert_eq!(bar(&r, "lamp").fill_colour, [0xf2, 0xbb, 0x62]);
-        assert_eq!(readout("BATTERY", 97.0, "%", "F"), "BATTERY 97% // F");
-        assert_eq!(readout("EXPOSURE", 56.4, "%", "LIT"), "EXPOSURE 56% // LIT");
+        assert_eq!(readout("BAT", 97.0, "%", "F"), "BAT 97% // F");
+        assert_eq!(readout("EXP", 56.4, "%", "LIT"), "EXP 56% // LIT");
         assert!(rules().is_some(), "the embedded loader accepts the shipped file");
-        assert_eq!((r.layout.max_width, r.layout.icon, r.layout.sub_size, r.layout.pad, r.layout.bar_height), (138.0, 6.0, 5.0, 2.0, 3.0));
+        assert_eq!(r.layout.columns, 3);
+        assert_eq!((r.layout.max_width, r.layout.icon, r.layout.sub_size, r.layout.pad, r.layout.bar_height, r.layout.text_size), (168.0, 6.0, 4.0, 1.0, 2.0, 4.0));
     }
 
     #[test]
@@ -824,15 +851,20 @@ mod tests {
     fn narrow_layouts_step_down_through_the_tiers() {
         let l = shipped().layout;
         let w = Widths { label: 24.0, short: 10.0, value_full: 40.0, value_compact: 16.0 };
-        // icon 6 + gap 2 + bar 24 = 32 base; each part adds its width and a gap
-        assert_eq!(choose_tier(138.0, &l, 6.0, &w), Tier::Full);
-        assert_eq!(choose_tier(32.0 + 26.0 + 42.0, &l, 6.0, &w), Tier::Full);
-        assert_eq!(choose_tier(32.0 + 26.0 + 42.0 - 0.5, &l, 6.0, &w), Tier::Compact);
-        assert_eq!(choose_tier(32.0 + 26.0 + 18.0, &l, 6.0, &w), Tier::Compact);
-        assert_eq!(choose_tier(32.0 + 26.0 + 18.0 - 0.5, &l, 6.0, &w), Tier::Short);
-        assert_eq!(choose_tier(32.0 + 12.0, &l, 6.0, &w), Tier::Short);
-        assert_eq!(choose_tier(32.0 + 12.0 - 0.5, &l, 6.0, &w), Tier::Icon);
-        assert_eq!(choose_tier(0.0, &l, 6.0, &w), Tier::Icon);
+        let icon = 6.0;
+        // base = icon + gap + bar_min; each label/value part adds its width and another gap
+        let base = icon + l.gap + l.bar_min;
+        let full = base + (w.label + l.gap) + (w.value_full + l.gap);
+        let compact = base + (w.label + l.gap) + (w.value_compact + l.gap);
+        let short = base + (w.short + l.gap);
+        assert_eq!(choose_tier(full + 10.0, &l, icon, &w), Tier::Full);
+        assert_eq!(choose_tier(full, &l, icon, &w), Tier::Full);
+        assert_eq!(choose_tier(full - 0.5, &l, icon, &w), Tier::Compact);
+        assert_eq!(choose_tier(compact, &l, icon, &w), Tier::Compact);
+        assert_eq!(choose_tier(compact - 0.5, &l, icon, &w), Tier::Short);
+        assert_eq!(choose_tier(short, &l, icon, &w), Tier::Short);
+        assert_eq!(choose_tier(short - 0.5, &l, icon, &w), Tier::Icon);
+        assert_eq!(choose_tier(0.0, &l, icon, &w), Tier::Icon);
     }
 
     #[test]
@@ -850,15 +882,17 @@ mod tests {
     fn the_cluster_never_meets_the_hotbar_or_the_specialty_bar() {
         let l = shipped().layout;
         let n = shipped().bars.len();
+        assert_eq!((n + l.columns - 1) / l.columns, 2, "six bars in three columns are two rows");
         for (vx, vy) in [(390.0, 270.0), (480.0, 270.0), (480.0, 360.0), (640.0, 270.0), (844.0, 390.0), (1000.0, 270.0)] {
             let v = vec2(vx, vy);
             let c = (v * 0.5).round();
             let hb = Rect::new(c.x - 94.0, v.y - 42.0, 188.0, 34.0);
-            let row = row_bounds(v, c, hb, n, l.bar_height, 8.0);
+            let row = row_bounds(v, c, hb, n, &l, 6.0);
             assert!(row.x >= SAFE - 1e-3, "{vx}x{vy}: keeps the screen margin");
             assert!(row.x + row.w <= v.x - SAFE + 1e-3, "{vx}x{vy}: stays on screen");
             assert!(row.y >= 0.0, "{vx}x{vy}: on screen");
             assert!(row.y + row.h <= hb.y + 1e-3, "{vx}x{vy}: sits above the hotbar");
+            assert!(row.w < hb.w + 8.0, "{vx}x{vy}: stays near the hotbar width ({})", row.w);
             let (sx, sy, sw, sh, sg) = super::super::hud::specialty_bar_layout(v, c, hb, crate::game::specialty::SLOT_COUNT);
             let spec = Rect::new(sx, sy, sw * 4.0 + sg * 3.0, sh);
             if sy + 0.5 < hb.y {
@@ -867,6 +901,12 @@ mod tests {
             assert!(!row.overlaps(&spec), "{vx}x{vy}: clear of the specialty bar");
             assert!(!row.overlaps(&hb), "{vx}x{vy}: clear of the hotbar");
         }
+    }
+
+    #[test]
+    fn the_loader_rejects_a_broken_column_count() {
+        assert!(with(|v| v["layout"]["columns"] = 0.into()).unwrap_err().contains("columns"));
+        assert!(with(|v| v["layout"]["columns"] = 5.into()).unwrap_err().contains("columns"));
     }
 
     fn with(edit: impl Fn(&mut Value)) -> Result<BarRules, String> {

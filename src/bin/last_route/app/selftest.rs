@@ -178,8 +178,8 @@ pub async fn run(path: &str) {
 
     steps.push(serde_json::json!({
         "step": "hud",
-        "passed": drawn.depth && drawn.relays && drawn.stamina && drawn.hotbar && drawn.minimap,
-        "detail": format!("depth {:02}, {}/{} signal relays, temperature, stamina bar, five-slot hotbar and minimap drawn", g.depth, g.relays_collected, g.fac.relays.len())
+        "passed": drawn.depth && drawn.relays && drawn.stamina && drawn.bars >= 6 && drawn.hotbar && drawn.minimap,
+        "detail": format!("depth {:02}, {}/{} signal relays, {} status bars, five-slot hotbar and minimap drawn", g.depth, g.relays_collected, g.fac.relays.len(), drawn.bars)
     }));
     let authored = g
         .fac

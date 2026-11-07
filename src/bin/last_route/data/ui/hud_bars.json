@@ -1,15 +1,16 @@
 {
   "schema": "lr.hud_bars/1",
-  "_note": "The status row above the hotbar (ui/hud_bars.rs). One thin outlined bar per entry, left to right: BATTERY, STAMINA, FADE, EXPOSURE, NOISE, TEMP. No icons and no panel. `colour` is the bar's fill; the zone still names the readout (`BATTERY 97% // F`). `source` is the meter: lamp = flashlight charge in percent, stamina = sprint stamina in percent, fade = how far the body has crouched (0 standing, 100 fully ducked), exposure = how visible the runner is, noise = the noise meter, temperature = body temperature 0..100. `zones` name the readout by value. `overrides` are checked first, in order, and replace the zone's name and colour while their `when` holds. The TEMP thresholds are the real game thresholds: 10 freezing, 60 (Wynelle's cold), 76 (heat haze), 90 overheating, 100 the heat latch. Design: KT 2026-11-06.",
+  "_note": "The status grid above the hotbar (ui/hud_bars.rs). `columns` 3 lays the six bars as two rows of three: BATTERY, STAMINA, FADE / EXPOSURE, NOISE, TEMP. No icons and no panel. Captions use the short label (`BAT 97% // F`). `colour` is the bar's fill. `source` is the meter: lamp, stamina, fade (crouch amount), exposure, noise, temperature. `zones` name the readout. `overrides` replace the zone while their `when` holds. TEMP thresholds: 10 freezing, 60 Wynelle cold, 76 heat haze, 90 overheating, 100 heat latch. Design: KT 2026-11-06.",
   "layout": {
-    "max_width": 138.0,
-    "gap": 2.0,
+    "max_width": 168.0,
+    "gap": 3.0,
     "icon": 6.0,
-    "bar_height": 3.0,
+    "bar_height": 2.0,
     "bar_min": 24.0,
-    "text_size": 5.5,
-    "sub_size": 5.0,
-    "pad": 2.0
+    "text_size": 4.0,
+    "sub_size": 4.0,
+    "pad": 1.0,
+    "columns": 3
   },
   "bars": [
     {
