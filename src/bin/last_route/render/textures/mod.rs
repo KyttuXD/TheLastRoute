@@ -214,6 +214,11 @@ pub fn paint(group: &str, kind: &str, variant: i32) -> Option<(u16, u16, Vec<u8>
     Some((img.w as u16, img.h as u16, img.px))
 }
 
+/// `paint` in the flat style (2-3 tone shapes), for this call only; the style is restored afterwards.
+pub fn paint_flat(group: &str, kind: &str, variant: i32) -> Option<(u16, u16, Vec<u8>)> {
+    canvas::with_style(true, || paint(group, kind, variant))
+}
+
 /// `RefTextures.texture()` semantics: an unknown kind paints the group's first kind (metal0 / panel0 / ceil0 / sheet).
 pub fn paint_or_first(group: &str, kind: &str) -> Option<(u16, u16, Vec<u8>)> {
     paint(group, kind, 0).or_else(|| {
@@ -296,9 +301,38 @@ pub fn surface_params(group: &str, kind: &str) -> (f32, f32, f32) {
 /// metal floors 1.2,1.2,1.25, ceilings .8,.78,.85.)
 pub const ARRAY_TINT: [f32; 3] = [1.25, 1.22, 1.3];
 
+/// Test helper: true when the painted and the flat output of one surface differ.
+#[cfg(test)]
+pub fn painted_vs_flat_differ(group: &str, kind: &str, variant: i32) -> bool {
+    paint(group, kind, variant) != paint_flat(group, kind, variant)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paint_flat_restores_the_style() {
+        canvas::set_flat(false);
+        let before = paint("wall", "panel", 0);
+        let flat = paint_flat("wall", "panel", 0);
+        assert!(!canvas::flat(), "paint_flat must restore the default style");
+        assert_eq!(paint("wall", "panel", 0), before, "default output unchanged");
+        assert!(flat.is_some());
+    }
+
+    #[test]
+    fn flat_style_changes_a_grained_wall() {
+        assert!(painted_vs_flat_differ("wall", "panel", 0));
+    }
+
+    #[test]
+    fn paint_flat_is_deterministic() {
+        assert_eq!(
+            paint_flat("wall", "panel", 0),
+            paint_flat("wall", "panel", 0)
+        );
+    }
 
     #[test]
     fn sizes() {

@@ -2,7 +2,46 @@
 //! brushes (_dot, _noise, _rivet, _crack, _flower, _star, _mosaic, the wall bands).
 
 use super::rng::GodotRng;
+use std::cell::Cell;
 use std::f64::consts::{PI, TAU};
+
+thread_local! {
+    /// The flat style switch. Per thread, so parallel tests cannot see each other's setting.
+    static FLAT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Sets the style for this thread: `true` = flat (2-3 tone shapes), `false` = the painted look (the default).
+pub fn set_flat(on: bool) {
+    FLAT.with(|f| f.set(on));
+}
+
+/// Whether the flat style is on for this thread.
+pub fn flat() -> bool {
+    FLAT.with(|f| f.get())
+}
+
+/// Runs `f` with the style set to `on`, then restores the previous style (also when `f` panics).
+pub fn with_style<T>(on: bool, f: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            set_flat(self.0);
+        }
+    }
+    let _restore = Restore(flat());
+    set_flat(on);
+    f()
+}
+
+/// The painted shade, or `flat_tone` in the flat style. Painters pass the painted expression first, so the default
+/// output is unchanged.
+pub fn flat_or(painted: Col, flat_tone: Col) -> Col {
+    if flat() {
+        flat_tone
+    } else {
+        painted
+    }
+}
 
 pub const PX: i32 = 32;
 pub const WALL_H: i32 = 128;
@@ -159,7 +198,8 @@ pub fn range(from: i32, to: i32, step: i32) -> impl Iterator<Item = i32> {
 
 // -- brushes ---------------------------------------------------------------------------------------------------------
 
-/// `_noise`: three-step brightness grain, one draw per `cell` block, rows then columns.
+/// `_noise`: three-step brightness grain, one draw per `cell` block, rows then columns. Flat style: every block is
+/// the base colour (the draws are still taken, so the RNG stream does not change).
 pub fn noise(
     img: &mut Img,
     x0: i32,
@@ -174,18 +214,21 @@ pub fn noise(
     for y in range(0, h, cell) {
         for x in range(0, w, cell) {
             let step = rng.randi_range(-1, 1);
-            img.dot(
-                x0 + x,
-                y0 + y,
-                mul(base, 1.0 + step as f64 * amp),
-                cell,
-                cell,
-            );
+            let c = if flat() {
+                base
+            } else {
+                mul(base, 1.0 + step as f64 * amp)
+            };
+            img.dot(x0 + x, y0 + y, c, cell, cell);
         }
     }
 }
 
+/// Flat style: no rivet shading at all.
 pub fn rivet(img: &mut Img, x: i32, y: i32, base: Col) {
+    if flat() {
+        return;
+    }
     img.dot(x, y, mul(base, 0.35), 2, 2);
     img.dot1(x, y, mul(base, 1.7));
 }
@@ -259,7 +302,7 @@ pub fn leaf_cluster(img: &mut Img, rng: &mut GodotRng, cx: i32, cy: i32, r: i32,
 
 // -- wall bands -------------------------------------------------------------------------------------------------------
 
-/// Upper paint above the rail, lower paint below, each with grain.
+/// Upper paint above the rail, lower paint below, each with grain. Flat style: one tone per band (via `noise`).
 pub fn wall_base(img: &mut Img, rng: &mut GodotRng, lower: Col, upper: Col) {
     noise(img, 0, 0, PX, RAIL_Y, upper, 0.1, rng, 1);
     noise(img, 0, RAIL_Y, PX, WALL_H - RAIL_Y, lower, 0.1, rng, 1);
@@ -285,7 +328,7 @@ pub fn rail(img: &mut Img) {
     img.dot(0, RAIL_Y + 1, hex(0x070405), PX, 1);
 }
 
-/// Vertical grime streaks between the cornice and the skirting.
+/// Vertical grime streaks between the cornice and the skirting. Flat style: draws are taken, nothing is painted.
 pub fn grime(img: &mut Img, rng: &mut GodotRng, count: i32) {
     for _ in 0..count {
         let x = rng.randi_range(0, PX - 1);
@@ -296,7 +339,85 @@ pub fn grime(img: &mut Img, rng: &mut GodotRng, count: i32) {
         } else {
             hex(0x2a1810)
         };
-        img.dot(x, y, c, 1, len);
+        if !flat() {
+            img.dot(x, y, c, 1, len);
+        }
+    }
+}
+
+/// Number of distinct opaque colours (alpha 255) in an image.
+#[cfg(test)]
+pub fn colour_count(img: &Img) -> usize {
+    let mut seen = std::collections::BTreeSet::new();
+    for p in img.px.chunks_exact(4) {
+        if p[3] == 255 {
+            seen.insert([p[0], p[1], p[2]]);
+        }
+    }
+    seen.len()
+}
+
+/// Test helper for a painter's flat style: 3-6 opaque colours, differs from the painted output, same bytes on a re-run.
+#[cfg(test)]
+pub fn check_flat_painter(name: &str, painter: fn(i32) -> Img, variant: i32) {
+    let painted = with_style(false, || painter(variant));
+    let flat = with_style(true, || painter(variant));
+    let colours = colour_count(&flat);
+    assert!((3..=6).contains(&colours), "{name}: {colours} colours");
+    assert_ne!(flat.px, painted.px, "{name}: flat output equals the painted one");
+    let again = with_style(true, || painter(variant));
+    assert_eq!(flat.px, again.px, "{name}: flat output is not deterministic");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rng() -> GodotRng {
+        GodotRng::new(7)
+    }
+
+    #[test]
+    fn flat_noise_is_one_tone_and_keeps_the_draws() {
+        let base = hex(0x406080);
+        let (mut painted, mut flat_img) = (Img::new(PX, PX), Img::new(PX, PX));
+        let (mut r1, mut r2) = (rng(), rng());
+        set_flat(false);
+        noise(&mut painted, 0, 0, PX, PX, base, 0.1, &mut r1, 1);
+        set_flat(true);
+        noise(&mut flat_img, 0, 0, PX, PX, base, 0.1, &mut r2, 1);
+        set_flat(false);
+        assert_eq!(colour_count(&flat_img), 1);
+        assert_eq!(flat_img.get(3, 9), base);
+        assert!(colour_count(&painted) > 1);
+        assert_eq!(r1.next_u32(), r2.next_u32(), "same RNG draws in both styles");
+    }
+
+    #[test]
+    fn flat_grime_paints_nothing_and_keeps_the_draws() {
+        let (mut painted, mut flat_img) = (Img::new(PX, WALL_H), Img::new(PX, WALL_H));
+        let (mut r1, mut r2) = (rng(), rng());
+        grime(&mut painted, &mut r1, 6);
+        with_style(true, || grime(&mut flat_img, &mut r2, 6));
+        assert_eq!(colour_count(&flat_img), 1);
+        assert_eq!(r1.next_u32(), r2.next_u32());
+    }
+
+    #[test]
+    fn flat_rivet_paints_nothing() {
+        let mut img = Img::new(PX, PX);
+        let before = img.px.clone();
+        with_style(true, || rivet(&mut img, 4, 4, hex(0x808080)));
+        assert_eq!(img.px, before);
+        rivet(&mut img, 4, 4, hex(0x808080));
+        assert_ne!(img.px, before);
+    }
+
+    #[test]
+    fn with_style_restores_on_panic() {
+        set_flat(false);
+        let _ = std::panic::catch_unwind(|| with_style(true, || panic!("boom")));
+        assert!(!flat());
     }
 }
 

@@ -33,12 +33,13 @@ pub fn paint_sand(variant: i32) -> Img {
     noise(&mut img, 0, 0, PX, PX, base, 0.06, &mut rng, 2);
     for _ in 0..90 {
         let speck = mul(base, if rng.randf() < 0.5 { 0.86 } else { 1.12 });
-        img.dot1(
-            rng.randi_range(0, PX - 1),
-            rng.randi_range(0, PX - 1),
-            speck,
-        );
+        let (x, y) = (rng.randi_range(0, PX - 1), rng.randi_range(0, PX - 1));
+        if !flat() {
+            img.dot1(x, y, speck); // flat: no grit, the draws stay
+        }
     }
+    // flat: the dune shadow is one dark tone (0.7), the crest the light one (1.12)
+    let shadow = mul(base, 0.7);
     let ripples = [2, 1, 3][variant as usize];
     for _ in 0..ripples {
         let y0 = rng.randi_range(5, PX - 6);
@@ -46,7 +47,11 @@ pub fn paint_sand(variant: i32) -> Img {
         let phase = rng.randf() * TAU;
         for x in 0..PX {
             let y = y0 + roundi((x as f64 / PX as f64 * TAU + phase).sin() * amp);
-            img.dot1(x, y, mul(base, if wet { 0.8 } else { 0.84 }));
+            img.dot1(
+                x,
+                y,
+                flat_or(mul(base, if wet { 0.8 } else { 0.84 }), shadow),
+            );
             img.dot1(x, y - 1, mul(base, 1.12));
         }
     }
@@ -82,8 +87,8 @@ pub fn paint_sand(variant: i32) -> Img {
         for _ in 0..4 {
             let px = rng.randi_range(0, PX - 3);
             let py = rng.randi_range(0, PX - 4);
-            img.dot(px, py + 1, hex(0x4a4238), 2, 2);
-            img.dot(px, py, hex(0x6e6658), 2, 2);
+            img.dot(px, py + 1, flat_or(hex(0x4a4238), mul(base, 0.7)), 2, 2);
+            img.dot(px, py, flat_or(hex(0x6e6658), mul(base, 1.12)), 2, 2);
         }
     } else {
         for _ in 0..2 {
@@ -107,6 +112,16 @@ pub fn paint_driftwood(variant: i32) -> Img {
     let nail = hex(0x3e362c);
     for band in 0..4 {
         let shade = rng.randf_range(0.86, 1.14);
+        // flat: two board tones, light and dark
+        let shade = if flat() {
+            if shade < 1.0 {
+                0.9
+            } else {
+                1.1
+            }
+        } else {
+            shade
+        };
         let board = mul(driftwood(), shade);
         let joint = (rng.randi() % 20) as i32 + 4 + (band % 2) * 6;
         if variant == 0 {
@@ -118,7 +133,7 @@ pub fn paint_driftwood(variant: i32) -> Img {
                 img.dot(
                     rng.randi_range(0, 30),
                     y0 + rng.randi_range(1, 6),
-                    mul(board, 0.78),
+                    flat_or(mul(board, 0.78), seam),
                     rng.randi_range(3, 8),
                     1,
                 );
@@ -141,7 +156,7 @@ pub fn paint_driftwood(variant: i32) -> Img {
                 img.dot(
                     x0 + rng.randi_range(1, 6),
                     rng.randi_range(0, 24),
-                    mul(board, 0.78),
+                    flat_or(mul(board, 0.78), seam),
                     1,
                     rng.randi_range(3, 8),
                 );
