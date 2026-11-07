@@ -653,11 +653,14 @@ fn draw_glyph(g: Glyph, r: Rect, c: Color, fill_frac: f32, badge: Option<Color>)
 }
 
 fn draw_bar(r: Rect, bar: &BarDef, res: &Resolved) {
-    fill(r, rgba(0.04, 0.03, 0.05, 0.55));
+    // a darker track and a bright fill keep the thin meters readable on the game view
+    fill(r, rgba(0.02, 0.02, 0.03, 0.82));
     if res.fill > 0.0 {
-        fill(Rect::new(r.x, r.y, r.w * res.fill, r.h), col(bar.fill_colour));
+        let mut fill_c = col(bar.fill_colour);
+        fill_c.a = 1.0;
+        fill(Rect::new(r.x, r.y, r.w * res.fill, r.h), fill_c);
     }
-    border(r, 1.0, rgba(0.78, 0.78, 0.74, 0.85));
+    border(r, 1.0, hexa(0xf0ebe2ff));
 }
 
 /// Draws the grid above the hotbar; returns how many bars it drew (0 when the data is broken).
@@ -678,7 +681,7 @@ pub fn draw(g: &Game, a: &Assets, v: Vec2, hb: Rect) -> usize {
     let row_gap = 2.0;
     let col_w = (band.w - col_gap * (cols as f32 - 1.0)) / cols as f32;
     let cell_h = (band.h - row_gap * (rows as f32 - 1.0)) / rows as f32;
-    let ink = rgba(0.78, 0.78, 0.74, 1.0);
+    let ink = rgba(0.96, 0.94, 0.88, 1.0);
     for (i, bar) in rules.bars.iter().enumerate() {
         let res = resolve(bar, snap.value(bar.source), &snap.flags);
         let col = i % cols;
@@ -720,12 +723,12 @@ mod tests {
         assert_eq!(ids, ["lamp", "stamina", "fade", "exposure", "noise", "temperature"]);
         let src: Vec<Source> = r.bars.iter().map(|b| b.source).collect();
         assert_eq!(src, [Source::Lamp, Source::Stamina, Source::Fade, Source::Exposure, Source::Noise, Source::Temperature]);
-        assert_eq!(bar(&r, "lamp").fill_colour, [0xf2, 0xbb, 0x62]);
+        assert_eq!(bar(&r, "lamp").fill_colour, [0xff, 0xc8, 0x57]);
         assert_eq!(readout("BAT", 97.0, "%", "F"), "BAT 97% // F");
         assert_eq!(readout("EXP", 56.4, "%", "LIT"), "EXP 56% // LIT");
         assert!(rules().is_some(), "the embedded loader accepts the shipped file");
         assert_eq!(r.layout.columns, 3);
-        assert_eq!((r.layout.max_width, r.layout.icon, r.layout.sub_size, r.layout.pad, r.layout.bar_height, r.layout.text_size), (168.0, 6.0, 4.0, 1.0, 2.0, 4.0));
+        assert_eq!((r.layout.max_width, r.layout.icon, r.layout.sub_size, r.layout.pad, r.layout.bar_height, r.layout.text_size), (168.0, 6.0, 4.0, 1.0, 3.0, 4.5));
     }
 
     #[test]
@@ -796,7 +799,7 @@ mod tests {
         let r = shipped();
         let s = bar(&r, "stamina");
         let plain = resolve(s, 80.0, &Flags::default());
-        assert_eq!((plain.name, plain.colour, plain.alert), ("FIT", [0x8f, 0xd0, 0xe0], false));
+        assert_eq!((plain.name, plain.colour, plain.alert), ("FIT", [0x6f, 0xe8, 0xff], false));
         let spent = resolve(s, 80.0, &Flags { exhausted: true, ..Flags::default() });
         assert_eq!((spent.name, spent.alert), ("SPENT", true));
         // exhausted is listed before stim, so it wins when both hold

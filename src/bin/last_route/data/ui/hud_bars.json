@@ -5,9 +5,9 @@
     "max_width": 168.0,
     "gap": 3.0,
     "icon": 6.0,
-    "bar_height": 2.0,
+    "bar_height": 3.0,
     "bar_min": 24.0,
-    "text_size": 4.0,
+    "text_size": 4.5,
     "sub_size": 4.0,
     "pad": 1.0,
     "columns": 3
@@ -19,14 +19,14 @@
       "label": "BATTERY",
       "short": "BAT",
       "glyph": "bulb",
-      "colour": "#f2bb62",
+      "colour": "#ffc857",
       "min": 0.0,
       "max": 100.0,
       "unit": "%",
       "zones": [
         { "from": 0.0, "name": "DEAD", "colour": "#e64451", "alert": true },
         { "from": 1.0, "name": "LOW", "colour": "#e64451", "alert": true },
-        { "from": 22.0, "name": "F", "colour": "#f2bb62", "alert": false }
+        { "from": 22.0, "name": "F", "colour": "#ffc857", "alert": false }
       ],
       "ticks": [
         { "at": 22.0, "label": "22" }
@@ -41,14 +41,14 @@
       "label": "STAMINA",
       "short": "STA",
       "glyph": "runner",
-      "colour": "#8fd0e0",
+      "colour": "#6fe8ff",
       "min": 0.0,
       "max": 100.0,
       "unit": "%",
       "zones": [
-        { "from": 0.0, "name": "LOW", "colour": "#e64451", "alert": true },
-        { "from": 20.0, "name": "TIRED", "colour": "#f2bb62", "alert": false },
-        { "from": 45.0, "name": "FIT", "colour": "#8fd0e0", "alert": false }
+        { "from": 0.0, "name": "LOW", "colour": "#ff4d5e", "alert": true },
+        { "from": 20.0, "name": "TIRED", "colour": "#ffc857", "alert": false },
+        { "from": 45.0, "name": "FIT", "colour": "#6fe8ff", "alert": false }
       ],
       "ticks": [
         { "at": 20.0, "label": "20" },
@@ -65,13 +65,13 @@
       "label": "FADE",
       "short": "FAD",
       "glyph": "veil",
-      "colour": "#9aa0a8",
+      "colour": "#d7dde8",
       "min": 0.0,
       "max": 100.0,
       "unit": "%",
       "zones": [
-        { "from": 0.0, "name": "SOLID", "colour": "#9aa0a8", "alert": false },
-        { "from": 50.0, "name": "FADED", "colour": "#c8ccd0", "alert": false }
+        { "from": 0.0, "name": "SOLID", "colour": "#d7dde8", "alert": false },
+        { "from": 50.0, "name": "FADED", "colour": "#f2f5fa", "alert": false }
       ],
       "ticks": [],
       "overrides": []
@@ -82,14 +82,14 @@
       "label": "EXPOSURE",
       "short": "EXP",
       "glyph": "eye",
-      "colour": "#e07a4f",
+      "colour": "#ff6a3d",
       "min": 0.0,
       "max": 100.0,
       "unit": "%",
       "zones": [
         { "from": 0.0, "name": "LOW", "colour": "#75c492", "alert": false },
-        { "from": 20.0, "name": "LIT", "colour": "#e07a4f", "alert": false },
-        { "from": 75.0, "name": "EXPOSED", "colour": "#ff5a45", "alert": true }
+        { "from": 20.0, "name": "LIT", "colour": "#ff6a3d", "alert": false },
+        { "from": 75.0, "name": "EXPOSED", "colour": "#ff3b2f", "alert": true }
       ],
       "ticks": [
         { "at": 20.0, "label": "20" },
@@ -103,14 +103,14 @@
       "label": "NOISE",
       "short": "NSE",
       "glyph": "sound",
-      "colour": "#4fb6c7",
+      "colour": "#3de0e8",
       "min": 0.0,
       "max": 100.0,
       "unit": "%",
       "zones": [
-        { "from": 0.0, "name": "QUIET", "colour": "#4fb6c7", "alert": false },
-        { "from": 40.0, "name": "LOUD", "colour": "#f2bb62", "alert": false },
-        { "from": 75.0, "name": "ALARM", "colour": "#ff5a45", "alert": true }
+        { "from": 0.0, "name": "QUIET", "colour": "#3de0e8", "alert": false },
+        { "from": 40.0, "name": "LOUD", "colour": "#ffc857", "alert": false },
+        { "from": 75.0, "name": "ALARM", "colour": "#ff3b2f", "alert": true }
       ],
       "ticks": [
         { "at": 40.0, "label": "40" },
@@ -124,17 +124,17 @@
       "label": "TEMP",
       "short": "TMP",
       "glyph": "thermometer",
-      "colour": "#e0512f",
+      "colour": "#ff5a2f",
       "min": 0.0,
       "max": 100.0,
       "unit": "",
       "tick_numbers": true,
       "zones": [
-        { "from": 0.0, "name": "FROZEN", "colour": "#3d7ee0", "alert": true },
-        { "from": 10.01, "name": "COLD", "colour": "#5aa9e0", "alert": false },
+        { "from": 0.0, "name": "FROZEN", "colour": "#4d9cff", "alert": true },
+        { "from": 10.01, "name": "COLD", "colour": "#6ec8ff", "alert": false },
         { "from": 60.0, "name": "STABLE", "colour": "#75c492", "alert": false },
-        { "from": 76.0, "name": "WARM", "colour": "#f2bb62", "alert": false },
-        { "from": 90.0, "name": "HOT", "colour": "#e0512f", "alert": true },
+        { "from": 76.0, "name": "WARM", "colour": "#ffc857", "alert": false },
+        { "from": 90.0, "name": "HOT", "colour": "#ff5a2f", "alert": true },
         { "from": 100.0, "name": "LATCH", "colour": "#ff2a44", "alert": true }
       ],
       "ticks": [
