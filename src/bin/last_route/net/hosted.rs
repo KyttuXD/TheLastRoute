@@ -623,8 +623,8 @@ mod tests {
     #[test]
     fn the_embedded_file_parses_and_names_godots_poll() {
         let r = rules();
-        assert_eq!(r.poll_attempts, 60);
-        assert_eq!(r.poll_interval, Duration::from_secs(2));
+        assert_eq!(r.poll_attempts, 240);
+        assert_eq!(r.poll_interval, Duration::from_millis(500));
         assert!(r.strings.sign_in_required.contains("SIGN IN"));
         // every string key of the file is read (STRING_KEYS is the contract)
         let v: Value = serde_json::from_str(include_str!("../data/net/hosted_room.json")).unwrap();
@@ -636,7 +636,7 @@ mod tests {
         let ok = include_str!("../data/net/hosted_room.json");
         assert!(parse(ok).is_ok());
         assert!(parse(&ok.replace("lr.hosted_room/1", "lr.hosted_room/2")).unwrap_err().contains("schema"));
-        assert!(parse(&ok.replace("\"attempts\": 60", "\"attempts\": 0")).unwrap_err().contains("attempts"));
+        assert!(parse(&ok.replace("\"attempts\": 240", "\"attempts\": 0")).unwrap_err().contains("attempts"));
         assert!(parse(&ok.replace("\"label_kick\"", "\"label_boot\"")).unwrap_err().contains("label_boot"));
         assert!(parse(&ok.replace("\"waiting\": \"WAITING FOR ROOM {code} TO START\"", "\"waiting\": \"\"")).unwrap_err().contains("waiting"));
         assert!(parse("[]").is_err());

@@ -2,8 +2,8 @@
   "schema": "lr.hosted_room/1",
   "_about": "Online rooms hosted by the server. CREATE ROOM asks the directory for a room (POST /api/rooms/hosted/create), then checks the room's listing (GET /api/enet/rooms/CODE) every poll.interval_seconds, at most poll.attempts times (Godot room_state.gd HOSTED_JOIN_ATTEMPTS and HOSTED_JOIN_INTERVAL), and joins it as a guest. The account that created the room is its owner and sees the owner controls. Every player-facing line of that flow is here; {code}, {n} and {max} are filled in by the game.",
   "poll": {
-    "attempts": 60,
-    "interval_seconds": 2
+    "attempts": 240,
+    "interval_seconds": 0.5
   },
   "strings": {
     "sign_in_required": "SIGN IN TO CREATE AN ONLINE ROOM",
