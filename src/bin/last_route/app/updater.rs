@@ -521,7 +521,11 @@ fn github_update(handle: &Mutex<UpdateStatus>) -> Result<bool, String> {
 
     crate::lr_info!("update: the nightly release differs from this app; downloading {file}");
     set(handle, UpdateStatus::Downloading { build: 0, got: 0, total: 0 });
+    // GitHub answers a release file with a redirect to its file host, so the download follows up to 3 hops, each one
+    // limited to GitHub's own hosts. The SHA-256 check below still decides whether the bytes are installed.
     let reply = Request::new(Method::Get, link)
+        .redirects(3)
+        .hop_guard(|next| if release_host_allowed(next) { None } else { Some(format!("the download moved to {next}")) })
         .timeout(Duration::from_secs(900))
         .limit(256 * 1024 * 1024)
         .send()
@@ -661,9 +665,31 @@ fn site_stage_root(mac: bool) -> Result<PathBuf, String> {
     }
 }
 
+/// The hosts a GitHub release download may move through: github.com, then its file hosts. Anything else refuses the hop.
+#[cfg(target_os = "macos")]
+fn release_host_allowed(url: &str) -> bool {
+    const HOSTS: [&str; 4] = [
+        "https://github.com/",
+        "https://objects.githubusercontent.com/",
+        "https://release-assets.githubusercontent.com/",
+        "https://github-releases.githubusercontent.com/",
+    ];
+    HOSTS.iter().any(|h| url.starts_with(h))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_release_download_may_only_move_through_github_hosts() {
+        assert!(release_host_allowed("https://github.com/KyttuXD/TheLastRoute/releases/download/nightly/x.zip"));
+        assert!(release_host_allowed("https://release-assets.githubusercontent.com/github-production-release-asset/1/x?sig=a"));
+        assert!(!release_host_allowed("http://github.com/x.zip"));
+        assert!(!release_host_allowed("https://evil.example.com/x.zip"));
+        assert!(!release_host_allowed("https://github.com.evil.example/x.zip"));
+    }
 
     #[test]
     fn build_number_parses_from_the_build_environment() {
