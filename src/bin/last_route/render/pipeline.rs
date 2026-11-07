@@ -176,4 +176,20 @@ mod tests {
         walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/last_route"), &mut hits);
         assert!(hits.is_empty(), "use render::pipeline::world_material instead: {hits:?}");
     }
+
+    /// The frame's last line of defence: the window blit and the HUD come after `pipeline::reset()`, so a pass that leaks the
+    /// world material (a future one the guard scan cannot see) still cannot black out the UI.
+    #[test]
+    fn the_frame_resets_the_pipeline_before_it_draws_to_the_window() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/last_route/app/mod.rs");
+        let text = std::fs::read_to_string(path).unwrap();
+        let body = text.split("pub fn render_play_with(").nth(1).expect("render_play_with exists");
+        let body = body.split("\n}\n").next().unwrap();
+        let reset = body.find("pipeline::reset()").expect("render_play_with resets the pipeline");
+        let camera = body.find("set_default_camera()").expect("render_play_with draws to the window");
+        let blit = body.find("draw_texture_ex(").expect("render_play_with blits the scene");
+        assert!(reset < camera && camera < blit, "reset {reset}, camera {camera}, blit {blit}");
+        let passes = ["draw_scene(", "draw_remotes(", "draw_view_layer("];
+        assert!(passes.iter().all(|p| body.find(p).is_some_and(|i| i < reset)), "every 3D pass runs before the reset");
+    }
 }
