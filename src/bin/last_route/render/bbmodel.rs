@@ -671,7 +671,9 @@ mod tests {
     /// (685 -> 684 on 2026-11-06: the retired heater station model left the embedded set, see archive/heater-stations.)
     /// (digest moved on 2026-11-06: the sewer outflow pipe, its broken stub and the sewer bridge were re-converted from
     /// the full Godot GLBs, their wall triangles restored; only those three models differ.)
-    const GOLDEN_ALL: (usize, u64) = (684, 0x2d860dac37d60e4d);
+    /// (digest moved on 2026-11-07: the six room door models' back faces are UV-mapped across the wood region, not one
+    /// flat strip of the atlas, so the back of a door reads as wood. Doors only; no other model changed.)
+    const GOLDEN_ALL: (usize, u64) = (684, 0x5cfe2fe6e7358c4e);
 
     /// The shape of a model read with the game's UV rule.
     fn shape_now(path: &str, j: &serde_json::Value) -> Option<Shape> {
