@@ -76,6 +76,23 @@ jobs:
         run: sh packaging/nightly.sh dist/lr_server-linux-x86_64 dist/lr_server-linux-x86_64.sha256
 
   # Intel Mac: its own build, its own zip. Runs on the Intel runner image.
+  # Records the native side of production: one deployment per push, linked to the nightly release and
+  # paired with the web deployment (deploy-web.yml) through the same commit. Runs only after all native builds.
+  production:
+    needs: [windows, linux, macos-intel, macos-arm64]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    environment:
+      name: production
+      url: https://github.com/KyttuXD/TheLastRoute/releases/tag/nightly
+    steps:
+      - name: Note the pairing in the run summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "- native release: https://github.com/KyttuXD/TheLastRoute/releases/tag/nightly (commit ${GITHUB_SHA})" >> "$GITHUB_STEP_SUMMARY"
+          echo "- web: https://lastrouterust.games.kyttuslab.org (the web deploy for this commit is in deploy-web)" >> "$GITHUB_STEP_SUMMARY"
+
   macos-intel:
     runs-on: macos-15-intel
     steps:

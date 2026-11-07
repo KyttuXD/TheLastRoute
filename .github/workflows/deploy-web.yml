@@ -30,7 +30,9 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-22.04
-    environment: production
+    environment:
+      name: production
+      url: https://lastrouterust.games.kyttuslab.org
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
