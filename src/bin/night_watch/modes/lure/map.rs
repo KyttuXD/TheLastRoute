@@ -101,6 +101,9 @@ pub struct LureMap {
     pub cam_target: Vec3,
     /// Per-room aim overrides (sim id -> target in the same terms as `cam_target`), for rooms whose tasks sit under the mount.
     pub cam_aim: Vec<(String, Vec3)>,
+    /// Per-room mount corner (sim id -> (sx, sz), each -1 or 1; the default is the north-west corner (-1, -1)): a room whose task
+    /// spots lie near the default corner hangs its camera in another one, so the hunters stay 2.5 m or more from the lens.
+    pub cam_corner: Vec<(String, (f32, f32))>,
     pub slot0: (f32, f32),
     pub slot1: (f32, f32),
     pub vent0: (f32, f32),
@@ -146,6 +149,11 @@ impl LureMap {
             cam_inset: jf64(&cam, "inset", 0.5) as f32,
             cam_target: vec_of(&cam, "target"),
             cam_aim: aim.as_object().map(|o| o.keys().map(|k| (k.clone(), vec_of(&aim, k))).collect()).unwrap_or_default(),
+            cam_corner: cam
+                .get("corner")
+                .and_then(|c| c.as_object())
+                .map(|o| o.keys().map(|k| (k.clone(), pair(&cam["corner"], k))).collect())
+                .unwrap_or_default(),
             slot0: pair(&stand, "slot0"),
             slot1: pair(&stand, "slot1"),
             vent0: pair(&stand, "vent0"),
@@ -329,7 +337,8 @@ impl LureMap {
         let Some(r) = self.by_sim(sim) else { return (Vec3::ZERO, vec3(0.0, 0.0, -1.0)) };
         let c = self.centre(&r.id);
         let h = if self.is_vent(sim) { self.cam_vent_height } else { self.cam_height };
-        let from = c + vec3(-r.w() * 0.5 + self.cam_inset, h, -r.d() * 0.5 + self.cam_inset);
+        let (sx, sz) = self.cam_corner.iter().find(|(s, _)| s == sim).map(|(_, c)| *c).unwrap_or((-1.0, -1.0));
+        let from = c + vec3(sx * (r.w() * 0.5 - self.cam_inset), h, sz * (r.d() * 0.5 - self.cam_inset));
         let aim = self.cam_aim.iter().find(|(s, _)| s == sim).map(|(_, a)| *a).unwrap_or(self.cam_target);
         let to = c + vec3(r.w() * aim.x, aim.y, r.d() * aim.z);
         (from, to)
@@ -406,6 +415,7 @@ pub fn map() -> &'static LureMap {
             cam_inset: 0.5,
             cam_target: Vec3::ZERO,
             cam_aim: Vec::new(),
+            cam_corner: Vec::new(),
             slot0: (0.8, 0.6),
             slot1: (-1.0, -0.6),
             vent0: (0.0, 0.9),

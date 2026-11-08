@@ -649,14 +649,15 @@ fn transmitter(out: &mut Vec<Group>, sim: &str, c: Vec3, hw: f32, hd: f32) {
         put(&mut coil, "InsulatorPost", [0.14, 0.4, 0.14], [-0.4 + i as f32 * 0.27, 1.6, 0.0], O::new().k("glass"));
     }
     out.push(coil);
-    let mut mast = part(sim, "AntennaMast", c, [hw - 0.7, 0.0, -hd + 0.7]);
+    let mut mast = part(sim, "AntennaMast", c, [hw - 0.7, 0.0, hd - 0.7]);
     put(&mut mast, "MastPipe", [0.12, map().height, 0.12], [0.0, map().height * 0.5, 0.0], O::new().k("metal"));
     put(&mut mast, "MastBase", [0.5, 0.2, 0.5], [0.0, 0.1, 0.0], O::new().k("metal"));
     out.push(mast);
 }
 
 fn crawl(out: &mut Vec<Group>, sim: &str, c: Vec3, hw: f32, hd: f32) {
-    let mut duct = part(sim, "Duct", c, [0.0, 0.0, 0.0]);
+    // the tube lies along the north wall (the camera hangs above it), so it does not hide the hunters crawling on the floor south of it
+    let mut duct = part(sim, "Duct", c, [0.0, 0.0, -0.75]);
     put(&mut duct, "DuctTube", [hw * 2.0 - 0.8, 1.1, 1.4], [0.0, 0.55, 0.0], O::new().k("metal").t([0.9, 0.95, 1.05]));
     for x in [-1.2f32, 0.0, 1.2] {
         put(&mut duct, "DuctBand", [0.14, 1.2, 1.5], [if hw > 1.5 { x } else { 0.0 }, 0.55, 0.0], O::new().k("metal").t([0.7, 0.7, 0.75]));

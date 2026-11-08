@@ -500,50 +500,50 @@ fn wing(out: &mut Vec<Group>) {
         let mut d = group(&format!("WDuct{tag}"), 0.0, 0.0, 0.0);
         bx(&mut d, "DuctFloor", "metal", floor_t, [len, 0.1, 1.6], [mid, 0.05, 0.6]);
         bx(&mut d, "DuctFloor", "metal", floor_t, [1.6, 0.1, 2.0], [side * 8.0, 0.05, 2.2]);
-        bx(&mut d, "DuctEnd", "metal", tint(1.1, 1.1, 1.25), [0.1, 1.8, 1.7], [side * 8.9, 0.9, 0.6]);
+        bx(&mut d, "DuctEnd", "metal", tint(1.1, 1.1, 1.25), [0.1, 2.4, 1.7], [side * 8.9, 1.2, 0.6]);
         if left {
             // straight walls; the roof steps down in the middle (a bend in the vertical plane): high, low, lower, high
             for z in [-0.2f32, 1.4] {
-                bx(&mut d, "DuctSide", "metal", side_t, [len, 1.8, 0.1], [mid, 0.9, z]);
+                bx(&mut d, "DuctSide", "metal", side_t, [len, 2.4, 0.1], [mid, 1.2, z]);
             }
-            for (a, b, h) in [(3.5f32, 5.8f32, 1.85f32), (5.8, 7.0, 1.6), (7.0, 8.8, 1.85)] {
+            for (a, b, h) in [(3.5f32, 5.8f32, 2.45f32), (5.8, 7.0, 2.25), (7.0, 8.8, 2.45)] {
                 bx(&mut d, "DuctTop", "metal", top_t, [b - a, 0.1, 1.8], [side * (a + b) * 0.5, h, 0.6]);
             }
             for x in [5.8f32, 7.0] {
-                bx(&mut d, "DuctStep", "metal", tint(1.0, 1.05, 1.25), [0.08, 0.35, 1.7], [side * x, 1.75, 0.6]);
+                bx(&mut d, "DuctStep", "metal", tint(1.0, 1.05, 1.25), [0.08, 0.35, 1.7], [side * x, 2.35, 0.6]);
             }
             // rings: a frame every 0.8 m round the tube, a pipe along the left wall and a hanging cable
             for i in 0..6 {
                 let x = side * (3.9 + i as f32 * 0.8);
-                bx(&mut d, "DuctRib", "metal", rib_t, [0.08, 0.12, 1.7], [x, 1.7, 0.6]);
+                bx(&mut d, "DuctRib", "metal", rib_t, [0.08, 0.12, 1.7], [x, 2.3, 0.6]);
                 for z in [-0.16f32, 1.36] {
-                    bx(&mut d, "DuctRib", "metal", rib_t, [0.08, 1.7, 0.1], [x, 0.9, z]);
+                    bx(&mut d, "DuctRib", "metal", rib_t, [0.08, 2.3, 0.1], [x, 1.15, z]);
                 }
             }
             bx(&mut d, "DuctPipe", "metal", tint(1.0, 1.1, 1.4), [len - 0.4, 0.12, 0.12], [mid, 1.1, 1.25]);
-            bx(&mut d, "DuctCable", "fabric", tint(0.5, 0.5, 0.55), [0.05, 0.5, 0.05], [side * 6.0, 1.4, 0.6]);
+            bx(&mut d, "DuctCable", "fabric", tint(0.5, 0.5, 0.55), [0.05, 0.5, 0.05], [side * 6.0, 2.0, 0.6]);
         } else {
             // a flat roof, but the walls kink: panels turned a few degrees one way and the other (a bend in the plan)
-            bx(&mut d, "DuctTop", "metal", top_t, [len, 0.1, 1.8], [mid, 1.85, 0.6]);
+            bx(&mut d, "DuctTop", "metal", top_t, [len, 0.1, 1.8], [mid, 2.45, 0.6]);
             for (i, a) in [3.5f32, 4.65, 5.8, 6.95].iter().enumerate() {
                 let turn = if i % 2 == 0 { 0.2f32 } else { -0.2 };
                 let c = side * (a + 0.6);
                 for (z, t) in [(-0.2f32, turn), (1.4, -turn)] {
-                    let mut p = Cube::new("DuctSide", vec3(1.25, 1.8, 0.1), vec3(c, 0.9, z)).tint(side_t).kind("metal").rot_y(t);
+                    let mut p = Cube::new("DuctSide", vec3(1.25, 2.4, 0.1), vec3(c, 1.2, z)).tint(side_t).kind("metal").rot_y(t);
                     p.solid = false;
                     d.add(p);
                 }
             }
-            bx(&mut d, "DuctSide", "metal", side_t, [0.9, 1.8, 0.1], [side * 8.35, 0.9, -0.2]);
-            bx(&mut d, "DuctSide", "metal", side_t, [0.9, 1.8, 0.1], [side * 8.35, 0.9, 1.4]);
+            bx(&mut d, "DuctSide", "metal", side_t, [0.9, 2.4, 0.1], [side * 8.35, 1.2, -0.2]);
+            bx(&mut d, "DuctSide", "metal", side_t, [0.9, 2.4, 0.1], [side * 8.35, 1.2, 1.4]);
             // collars: a thick band every 1.3 m with a thin ring between
             for i in 0..4 {
                 let x = side * (4.1 + i as f32 * 1.3);
-                bx(&mut d, "DuctRib", "metal", rib_t, [0.22, 0.14, 1.7], [x, 1.8, 0.6]);
-                bx(&mut d, "DuctRib", "metal", rib_t, [0.06, 0.14, 1.7], [x + side * 0.65, 1.8, 0.6]);
+                bx(&mut d, "DuctRib", "metal", rib_t, [0.22, 0.14, 1.7], [x, 2.4, 0.6]);
+                bx(&mut d, "DuctRib", "metal", rib_t, [0.06, 0.14, 1.7], [x + side * 0.65, 2.4, 0.6]);
             }
-            bx(&mut d, "DuctDrip", "metal", tint(1.5, 1.2, 0.9), [0.1, 1.2, 0.1], [side * 7.0, 1.2, 1.25]);
-            bx(&mut d, "DuctCable", "fabric", tint(0.5, 0.45, 0.4), [len - 0.6, 0.05, 0.05], [mid, 1.65, -0.1]);
+            bx(&mut d, "DuctDrip", "metal", tint(1.5, 1.2, 0.9), [0.1, 1.2, 0.1], [side * 7.0, 1.8, 1.25]);
+            bx(&mut d, "DuctCable", "fabric", tint(0.5, 0.45, 0.4), [len - 0.6, 0.05, 0.05], [mid, 2.25, -0.1]);
         }
         // the grate at the office end: a frame, and bars (slats for the left one, upright bars for the right one)
         let gx = side * 3.62;

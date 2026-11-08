@@ -35,7 +35,7 @@
 		{"id": "CAM:music", "kind": "camera", "room": "music", "p": [-11.6,2.8,-20.2], "cam": 1},
 		{"id": "CAM:costume", "kind": "camera", "room": "costume", "p": [11.6,2.8,-20.2], "cam": 2},
 		{"id": "CAM:gallery", "kind": "camera", "room": "gallery", "p": [7.5,2.9,-28.5], "cam": 3},
-		{"id": "CAM:ballroom", "kind": "camera", "room": "ballroom", "p": [10,3.1,-31], "cam": 4},
+		{"id": "CAM:ballroom", "kind": "camera", "room": "ballroom", "p": [10,3.1,-33.2], "cam": 4},
 		{"id": "CAM:crawl", "kind": "camera", "room": "crawl", "p": [13.3,1.95,3.5], "cam": 5},
 		{"id": "CAM:ductL", "kind": "camera", "room": "ductL", "p": [-8.75,1.4,0.6], "cam": 6},
 		{"id": "CAM:ductR", "kind": "camera", "room": "ductR", "p": [8.75,1.4,0.6], "cam": 7},

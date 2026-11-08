@@ -23,8 +23,8 @@ const NEAR: f32 = 0.05;
 const FAR: f32 = 80.0;
 /// A hunter stands at least this far from a room camera (metres), or she fills the picture and her head is cropped.
 const MIN_DIST_ROOM: f32 = 2.5;
-/// A hunter's head height for the framing check (the shortest of the cast stands about 1.6 m).
-const HEAD_Y: f32 = 1.6;
+/// A hunter's head height for the framing check: the humanoid hunters are drawn 2.1 m tall (`data/hunter_scale.json`), the crown of the head (ears and hair above it) is near 2.0 m.
+const HEAD_Y: f32 = 2.0;
 
 /// One camera as the feed renders it.
 struct View {
@@ -101,6 +101,15 @@ impl View {
                 }
             }
         }
+    }
+}
+
+/// Ducts and crawlspaces are tighter than rooms: a hunter may stand this near (metres), rooms use `MIN_DIST_ROOM`.
+fn duct_min(room: &str) -> f32 {
+    if room.starts_with("vent") || room.contains("crawl") || room.contains("duct") {
+        1.75
+    } else {
+        MIN_DIST_ROOM
     }
 }
 
@@ -219,7 +228,7 @@ fn classic_cameras_show_their_rooms() {
         .iter()
         .map(|r| {
             let (pos, target) = Building::camera_transform(r);
-            (View::new(&format!("classic {r}"), pos, target, FEED_FOV_DEG, &[r.as_str()]), slots(|s| Building::stand_position(r, s)))
+            (View::new(&format!("classic {r}"), pos, target, FEED_FOV_DEG, &[r.as_str()]).framed(MIN_DIST_ROOM), slots(|s| Building::stand_position(r, s)))
         })
         .collect();
     assert_covered("classic", &views, &nav);
@@ -271,7 +280,7 @@ fn lure_cameras_show_their_rooms() {
         .iter()
         .map(|&sim| {
             let (pos, target) = m.camera_transform(sim);
-            (View::new(&format!("lure {sim}"), pos, target, FEED_FOV_DEG, &[sim]), slots(|s| m.stand_position(sim, s)))
+            (View::new(&format!("lure {sim}"), pos, target, FEED_FOV_DEG, &[sim]).framed(duct_min(sim)), slots(|s| m.stand_position(sim, s)))
         })
         .collect();
     assert_covered("lure", &views, &nav);
@@ -283,7 +292,7 @@ fn dayshift_cameras_show_their_rooms() {
     use super::dayshift::world::map;
     let nav = load_nav();
     let views: Vec<(View, Extra)> =
-        map().cameras.iter().map(|c| (View::new(&format!("dayshift {}", c.room), c.pos, c.target, c.fov, &[c.room.as_str()]), Vec::new())).collect();
+        map().cameras.iter().map(|c| (View::new(&format!("dayshift {}", c.room), c.pos, c.target, c.fov, &[c.room.as_str()]).framed(MIN_DIST_ROOM), Vec::new())).collect();
     assert_eq!(views.len(), 8);
     assert_covered("dayshift", &views, &nav);
 }
@@ -310,7 +319,7 @@ fn openair_cameras_show_their_rooms() {
             .iter()
             .map(|c| {
                 let rooms: Vec<&str> = c.rooms.iter().map(|r| r.as_str()).collect();
-                (View::new(&format!("openair {} {}", w.id, c.id), feed_position(c), c.target, c.fov, &rooms), Vec::new())
+                (View::new(&format!("openair {} {}", w.id, c.id), feed_position(c), c.target, c.fov, &rooms).framed(MIN_DIST_ROOM), Vec::new())
             })
             .collect();
         assert_covered(&format!("openair {}", w.id), &views, &nav);
@@ -331,10 +340,10 @@ fn mixed_cameras_show_their_rooms() {
         .iter()
         .map(|a| {
             let (pos, target) = camera_transform(&a.id);
-            (View::new(&format!("mixed {}", a.id), pos, target, FEED_FOV_DEG, &[a.id.as_str()]), slots(|s| stand_position(&a.id, s)))
+            (View::new(&format!("mixed {}", a.id), pos, target, FEED_FOV_DEG, &[a.id.as_str()]).framed(MIN_DIST_ROOM), slots(|s| stand_position(&a.id, s)))
         })
         .collect();
     let (pos, target) = camera_transform("vent");
-    views.push((View::new("mixed vent", pos, target, FEED_FOV_DEG, &["vent"]), (0..5).map(|i| (format!("vent spot {i}"), vent_spot_pos(i))).collect()));
+    views.push((View::new("mixed vent", pos, target, FEED_FOV_DEG, &["vent"]).framed(1.75), (0..5).map(|i| (format!("vent spot {i}"), vent_spot_pos(i))).collect()));
     assert_covered("mixed", &views, &nav);
 }

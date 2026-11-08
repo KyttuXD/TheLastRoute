@@ -12,8 +12,11 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const SIZE: Vec2 = Vec2::new(120.0, 92.0);
 pub const BTN: Vec2 = Vec2::new(30.0, 13.0);
 pub const PAD: Vec2 = Vec2::new(3.0, 3.0);
-/// Top left of the map on the 480x270 canvas (bottom right, 146 from the right edge, 128 from the bottom).
-pub const MAP_POS: Vec2 = Vec2::new(334.0, 142.0);
+/// How big the panel is drawn (the geometry below stays in 120x92 map pixels): it covers less of the picture.
+pub const SCALE: f32 = 0.82;
+/// Top left of the map on the 480x270 canvas: its bottom right corner sits at (460, 239), just above the strip under the picture
+/// and partly beside the picture, so it hides only the picture's lower right corner.
+pub const MAP_POS: Vec2 = Vec2::new(362.0, 164.0);
 
 /// Clear space kept between two buttons, and between the lowest button and the YOU slot.
 pub const GAP: f32 = 3.0;
@@ -665,7 +668,7 @@ pub fn title_for(layout: &CamLayout, room: &str) -> String {
 /// The camera button under the pointer (virtual canvas coordinates), if any.
 pub fn hit(layout: &CamLayout, mouse: Vec2) -> Option<String> {
     let geo = compute(layout);
-    let p = mouse - MAP_POS;
+    let p = (mouse - MAP_POS) / SCALE;
     geo.buttons.iter().find(|(_, c)| button_rect(*c).contains(p)).map(|(r, _)| r.clone())
 }
 
@@ -673,8 +676,8 @@ pub fn hit(layout: &CamLayout, mouse: Vec2) -> Option<String> {
 pub fn draw(st: &HudState, mouse: Vec2, time: f64) {
     let Some(layout) = &st.cam_map else { return };
     let geo = compute(layout);
-    let at = |p: Vec2| MAP_POS + p;
-    let area = Rect::new(MAP_POS.x, MAP_POS.y, SIZE.x, SIZE.y);
+    let at = |p: Vec2| MAP_POS + p * SCALE;
+    let area = Rect::new(MAP_POS.x, MAP_POS.y, SIZE.x * SCALE, SIZE.y * SCALE);
     fill(area, Color::new(0.04, 0.08, 0.06, 0.8));
     stroke(area, Color::new(0.25, 0.3, 0.27, 1.0), 1.0);
     let is_vent = |id: &str| layout.vents.iter().any(|v| v == id);
@@ -699,7 +702,7 @@ pub fn draw(st: &HudState, mouse: Vec2, time: f64) {
         }
     }
     // camera buttons
-    let local_mouse = mouse - MAP_POS;
+    let local_mouse = (mouse - MAP_POS) / SCALE;
     for (i, (room, c)) in geo.buttons.iter().enumerate() {
         let r = button_rect(*c);
         let on = *room == st.monitor_room;
@@ -711,11 +714,11 @@ pub fn draw(st: &HudState, mouse: Vec2, time: f64) {
         } else {
             Color::new(0.05, 0.08, 0.07, 0.95)
         };
-        let vr = Rect::new(MAP_POS.x + r.x, MAP_POS.y + r.y, r.w, r.h);
+        let vr = Rect::new(MAP_POS.x + r.x * SCALE, MAP_POS.y + r.y * SCALE, r.w * SCALE, r.h * SCALE);
         fill(vr, bg);
         stroke(vr, if on { AMBER } else { Color::new(0.3, 0.38, 0.33, 1.0) }, 1.0);
         let n = layout.cams.iter().position(|x| x == room).map(|p| p + 1).unwrap_or(i + 1);
-        vtext_center(&format!("CAM {}", n), vr.x + vr.w * 0.5, vr.y + (vr.h - 6.0) * 0.5 - 0.5, 6.0, if on { AMBER } else { MAP_INK });
+        vtext_center(&format!("CAM {}", n), vr.x + vr.w * 0.5, vr.y + (vr.h - 6.0 * SCALE) * 0.5 - 0.5, 6.0 * SCALE, if on { AMBER } else { MAP_INK });
     }
     // pulse rings (a sound or a movement the player should look at)
     if !st.cam_pulse.is_empty() {
@@ -723,7 +726,7 @@ pub fn draw(st: &HudState, mouse: Vec2, time: f64) {
         for room in &st.cam_pulse {
             if let Some(c) = geo.button(room) {
                 let r = button_rect(c);
-                let vr = Rect::new(MAP_POS.x + r.x - 1.0, MAP_POS.y + r.y - 1.0, r.w + 2.0, r.h + 2.0);
+                let vr = Rect::new(MAP_POS.x + r.x * SCALE - 1.0, MAP_POS.y + r.y * SCALE - 1.0, r.w * SCALE + 2.0, r.h * SCALE + 2.0);
                 stroke(vr, Color::new(0.96, 0.72, 0.28, a), 1.0);
             } else if let Some(p) = geo.point(room) {
                 dot(at(p), 3.2, Color::new(0.96, 0.72, 0.28, a));
@@ -738,10 +741,10 @@ pub fn draw(st: &HudState, mouse: Vec2, time: f64) {
         }
     }
     let yr = you_rect();
-    let vy = Rect::new(MAP_POS.x + yr.x, MAP_POS.y + yr.y, yr.w, yr.h);
+    let vy = Rect::new(MAP_POS.x + yr.x * SCALE, MAP_POS.y + yr.y * SCALE, yr.w * SCALE, yr.h * SCALE);
     fill(vy, Color::new(0.04, 0.08, 0.06, 0.95));
     stroke(vy, Color::new(0.5, 0.38, 0.14, 1.0), 1.0);
-    vtext_center("YOU", MAP_POS.x + geo.office.x, MAP_POS.y + geo.office.y - 3.0, 6.0, AMBER);
+    vtext_center("YOU", MAP_POS.x + geo.office.x * SCALE, MAP_POS.y + (geo.office.y - 3.0) * SCALE, 6.0 * SCALE, AMBER);
 }
 
 #[cfg(test)]
@@ -828,7 +831,7 @@ mod tests {
         let l = layout(&[("a", 0.0, 0.0), ("b", 16.0, 16.0)], &["a", "b"]);
         let g = compute(&l);
         let b = g.button("b").unwrap();
-        assert_eq!(hit(&l, MAP_POS + b), Some("b".to_string()));
+        assert_eq!(hit(&l, MAP_POS + b * SCALE), Some("b".to_string()));
         assert_eq!(hit(&l, vec2(0.0, 0.0)), None);
     }
 

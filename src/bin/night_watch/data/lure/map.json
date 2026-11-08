@@ -7,7 +7,8 @@
 	"door_gap": 1.6,
 	"door_top": 3.2,
 	"camera": {"height": 2.8, "vent_height": 2.2, "inset": 0.5, "target": [0.12, 0.7, 0.12],
-		"aim": {"lobby": [-0.14, 0.4, 0.12], "arcade": [0.1, -2.0, 0.0], "party": [0.12, -2.0, -0.04], "prize": [0.1, -2.0, 0.12], "storage": [-0.16, -1.0, 0.14]}},
+		"corner": {"arcade": [-1,1], "party": [1,1], "prize": [1,1], "storage": [1,-1]},
+		"aim": {"lobby": [-0.14, 0.4, 0.12], "arcade": [0.25, -0.75, -0.286], "party": [-0.258, 0.5, 0.009], "prize": [-0.2, -0.75, -0.4], "storage": [-0.469, -0.5, 0.75], "ventr": [-0.05, 0.6, 0.367]}},
 	"stand": {"slot0": [0.8, 0.6], "slot1": [-1.0, -0.6], "vent0": [0.0, 0.9], "vent1": [-1.2, 0.9]},
 	"rooms": [
 		{"id": "reception", "sim": "lobby", "rect": [-4, 0, 4, 5], "theme": "reception"},
@@ -88,7 +89,7 @@
 		{"model": "floorLamp", "room": "storage", "x": -3.5, "z": -0.4, "face": "S"},
 		{"model": "supplyCrates", "room": "ventl", "x": -2.0, "z": 1.0, "face": "S"},
 		{"model": "cableCoil", "room": "ventl", "x": 1.8, "z": -1.0, "face": "S"},
-		{"model": "supplyCrates", "room": "ventr", "x": 1.4, "z": 1.0, "face": "S"},
+		{"model": "supplyCrates", "room": "ventr", "x": 1.4, "z": -1.0, "face": "S"},
 		{"model": "cableCoil", "room": "ventr", "x": -1.4, "z": -1.0, "face": "S"},
 		{"model": "deskMic", "room": "booth", "x": -0.2, "z": -1.9, "y": 0.8, "face": "S"},
 		{"model": "paSpeakerPole", "room": "booth", "x": 2.6, "z": 1.9, "face": "N"},

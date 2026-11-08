@@ -287,7 +287,13 @@ pub fn draw_all(st: &HudState, bindings: &Bindings, subtitles: bool) {
     // toast
     if let Some((text, left)) = &st.note {
         if *left > 0.0 && !text.is_empty() {
-            vtext_center(&ut::glyph(text), W * 0.5, H * 0.5 + 30.0, 8.0, Color::new(0.85, 0.82, 0.75, 1.0));
+            let col = Color::new(0.85, 0.82, 0.75, 1.0);
+            if st.monitor_up {
+                // with the monitor up the middle of the screen is the picture: the toast goes in the strip under it
+                vtext_center(&ut::glyph(text), W * 0.5, H - 9.0, 6.0, col);
+            } else {
+                vtext_center(&ut::glyph(text), W * 0.5, H * 0.5 + 30.0, 8.0, col);
+            }
         }
     }
     draw_call(st, bindings, subtitles);
