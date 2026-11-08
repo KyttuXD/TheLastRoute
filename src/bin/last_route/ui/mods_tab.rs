@@ -34,6 +34,8 @@ struct ModsUi {
     picking: Option<file_pick::Request>,
     /// What the last action said: whether it went well, and the words.
     lines: Vec<(bool, String)>,
+    /// The built list and its total height, with the key it was built for (see `list_key`).
+    cache: Option<(u64, Vec<Item>, f32)>,
 }
 
 thread_local! {
@@ -291,6 +293,30 @@ fn items(a: &Assets, s: &ModsUi, rows: Vec<ModRow>, store: &dyn Persist) -> Vec<
     out
 }
 
+/// A key that changes whenever anything the list shows changes: the status lines, the storage flags, the loaded packs and
+/// what the registry holds. The list and its wrapped text are rebuilt only when it changes.
+fn list_key<'a>(s: &ModsUi, available: bool, save_failed: bool, loaded: impl Iterator<Item = &'a str>, held_sig: u64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.lines.hash(&mut h);
+    (available, save_failed, held_sig).hash(&mut h);
+    for id in loaded {
+        id.hash(&mut h);
+    }
+    h.finish()
+}
+
+fn registry_sig(r: &Registry) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for p in r.all() {
+        (&p.id, &p.provides).hash(&mut h);
+        let m = p.meta();
+        (&m.name, &m.version, &m.author).hash(&mut h);
+    }
+    h.finish()
+}
+
 /// What this browser holds, for the list.
 fn held() -> Vec<(String, Meta, Vec<String>)> {
     pack_import::with_registry(|r| r.all().iter().map(|p| (p.id.clone(), p.meta(), p.provides.clone())).collect())
@@ -314,10 +340,16 @@ pub fn draw(a: &Assets, ui: &mut Ui, ox: f32, oy: f32, content: &Content) {
         }
 
         let store = Browser;
-        let rows = mod_rows(content, &held());
-        let list = items(a, &s, rows, &store);
+        let sig = pack_import::with_registry(|r| registry_sig(r));
+        let key = list_key(&s, store.available(), store.save_failed(), content.packs.iter().map(|p| p.id.as_str()), sig);
+        if s.cache.as_ref().map(|c| c.0) != Some(key) {
+            let rows = mod_rows(content, &held());
+            let built = items(a, &s, rows, &store);
+            let total: f32 = built.iter().map(item_height).sum();
+            s.cache = Some((key, built, total));
+        }
+        let Some((_, list, total)) = s.cache.take() else { return };
         let area = Rect::new(x, oy + 88.0, 400.0, 138.0);
-        let total: f32 = list.iter().map(item_height).sum();
         if s.lines != before {
             ui.scroll = 0.0;
         }
@@ -362,6 +394,7 @@ pub fn draw(a: &Assets, ui: &mut Ui, ox: f32, oy: f32, content: &Content) {
             }
         }
         clip_end();
+        s.cache = Some((key, list, total));
 
         if let Some((id, loaded)) = remove_id {
             pack_import::with_registry(|reg| remove(&mut s, reg, &mut Browser, &id, loaded));
@@ -391,6 +424,24 @@ mod tests {
             PickedFile { name: format!("{id}/pack.json"), bytes: Ok(pack_json(id, name)) },
             PickedFile { name: format!("{id}/hunters/h.json"), bytes: Ok(hunter_json(hunter)) },
         ]
+    }
+
+    #[test]
+    fn the_list_key_changes_only_when_what_is_shown_changes() {
+        let mut s = ModsUi::default();
+        let ids = ["a", "b"];
+        let k = list_key(&s, true, false, ids.iter().copied(), 1);
+        assert_eq!(k, list_key(&s, true, false, ids.iter().copied(), 1), "a quiet frame keeps the key");
+        assert_ne!(k, list_key(&s, false, false, ids.iter().copied(), 1));
+        assert_ne!(k, list_key(&s, true, true, ids.iter().copied(), 1));
+        assert_ne!(k, list_key(&s, true, false, ids.iter().copied(), 2));
+        assert_ne!(k, list_key(&s, true, false, ["a"].into_iter(), 1));
+        s.lines.push((true, "x".into()));
+        assert_ne!(k, list_key(&s, true, false, ids.iter().copied(), 1));
+        let (mut reg, mut store, mut t) = (Registry::default(), Memory::default(), ModsUi::default());
+        let before = registry_sig(&reg);
+        finish(&mut t, Ok(folder("tab_pack", "Tab Pack", "tabling")), &mut reg, &mut store);
+        assert_ne!(before, registry_sig(&reg), "an import changes the registry signature");
     }
 
     #[test]

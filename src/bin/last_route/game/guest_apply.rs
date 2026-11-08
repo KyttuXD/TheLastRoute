@@ -157,6 +157,7 @@ impl Game {
         }
         // the valve is the host's own prop: its place and keys are never the request's claim (`valve_at`, `effect`
         // and `gate` of the request are ignored), so a guest cannot turn a valve it is not standing at
+        let storey_here = depth.checked_neg()?;
         let rules = super::pipes::rules();
         let storey = super::pipes::parse_valve_id(&req.valve_id, rules.valve.max_id_length)?.1;
         let prop = self.fac.props.iter().find(|p| p.id == req.valve_id && p.ptype == rules.valve.prop_type)?;
@@ -169,7 +170,7 @@ impl Game {
             valve_at,
             valve_storey: storey,
             at,
-            storey: -depth,
+            storey: storey_here,
             by_player: false,
         };
         let ev = self.pipes.turn(q).ok()?;
@@ -363,6 +364,8 @@ mod tests {
     fn a_guest_cannot_turn_a_valve_it_names_at_a_place_it_picks_or_one_the_host_does_not_have() {
         let mut g = run();
         add_valve(&mut g, "SEWER:0:-1:0:PROP:3", (10, 10));
+        let min = ValveRequest { peer: 2, valve_id: "SEWER:0:-1:0:PROP:3".into(), effect: String::new(), gate: String::new(), valve_at: (0.0, 0.0) };
+        assert!(g.host_turn_valve(&min, (10.5, 10.5), i32::MIN).is_none(), "i32::MIN depth is refused, not a panic");
         // the guest stands far from the real valve and claims the valve is at its own feet
         let lie = ValveRequest {
             peer: 2,

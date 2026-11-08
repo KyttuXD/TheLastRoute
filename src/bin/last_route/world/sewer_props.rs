@@ -29,8 +29,15 @@ pub fn props(sc: &SewerChunk, rooms: &[super::facility::Room], cat: &Catalog) ->
         .collect()
 }
 
+/// A yaw in radians as the nearest quarter turn, 0..4. A facility prop carries only quarter turns (its footprint, grid
+/// and hunter navigation are axis-aligned), so a data yaw such as 15 degrees snaps to 0 on purpose; room and prop data
+/// should use multiples of 90 degrees.
+fn quarter_turns(yaw: f64) -> i32 {
+    ((yaw / std::f64::consts::FRAC_PI_2).round() as i32).rem_euclid(4)
+}
+
 fn prop(p: &SewerProp, rooms: &[super::facility::Room], cat: &Catalog) -> Prop {
-    let rotation = ((p.yaw / std::f64::consts::FRAC_PI_2).round() as i32).rem_euclid(4);
+    let rotation = quarter_turns(p.yaw);
     let gate = p.prop_type == SLUICE_GATE;
     let wanted_solid = (p.solid && !p.crawl_under) || gate;
     let (half, offset) = if gate {
@@ -123,6 +130,14 @@ mod tests {
         }
         for kind in ["sewerValveWheel", "sewerPipeRun", "sewerPump"] {
             assert!(seen.iter().any(|t| t == kind), "no {kind} at chunk (0,0) level -1 of any sample world: {seen:?}");
+        }
+    }
+
+    #[test]
+    fn a_prop_yaw_snaps_to_the_nearest_quarter_turn() {
+        let deg = f64::to_radians;
+        for (yaw, want) in [(0.0, 0), (15.0, 0), (44.0, 0), (46.0, 1), (90.0, 1), (180.0, 2), (270.0, 3), (-90.0, 3), (360.0, 0)] {
+            assert_eq!(quarter_turns(deg(yaw)), want, "{yaw} degrees");
         }
     }
 

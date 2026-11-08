@@ -22,6 +22,10 @@ const PING_INTERVAL: Duration = Duration::from_secs(1);
 const PACKET_HEADER: usize = 6;
 /// The largest message over the UDP relay; a link may carry more ([`RoomLink::max_payload`]).
 pub const MAX_MESSAGE_BYTES: usize = MAX_PAYLOAD_BYTES - PACKET_HEADER;
+/// Most out-of-order reliable packets held per channel, and how far ahead of the next expected seq one may be: a peer that
+/// skips a seq and keeps sending cannot grow host memory.
+const MAX_HELD: usize = 256;
+const MAX_HELD_AHEAD: u32 = 1024;
 const KIND_DATA: u8 = 0;
 const KIND_ACK: u8 = 1;
 const KIND_PING: u8 = 2;
@@ -35,6 +39,22 @@ struct Channel {
     next_receive: u32,
     held: BTreeMap<u32, Vec<u8>>,
     newest_seen: Option<u32>,
+}
+
+impl Channel {
+    /// Stores a reliable packet for in-order delivery. False when it is too far ahead or the buffer is full (it is then not
+    /// ACKed, so an honest sender resends it later). A duplicate of something already delivered is true (ACK it again).
+    fn hold(&mut self, seq: u32, body: &[u8]) -> bool {
+        let ahead = seq.wrapping_sub(self.next_receive);
+        if ahead >= u32::MAX / 2 {
+            return true;
+        }
+        if ahead >= MAX_HELD_AHEAD || (self.held.len() >= MAX_HELD && !self.held.contains_key(&seq)) {
+            return false;
+        }
+        self.held.insert(seq, body.to_vec());
+        true
+    }
 }
 
 #[derive(Default)]
@@ -147,6 +167,17 @@ impl CoopSession {
         sent
     }
 
+    /// Host: drops a guest that went silent without leaving (the UDP relay never says so): it leaves `peers`, so nothing
+    /// more is sent and its unacknowledged reliable packets are not resent forever. No link call.
+    pub fn forget_peer(&mut self, peer: u32) {
+        if peer == HOST_PEER_ID {
+            return;
+        }
+        self.peers.remove(&peer);
+        self.pings.remove(&peer);
+        self.pending_pings.remove(&peer);
+    }
+
     pub fn peers(&self) -> Vec<u32> {
         self.peers.keys().copied().filter(|p| *p != HOST_PEER_ID).collect()
     }
@@ -234,13 +265,13 @@ impl CoopSession {
         let mut deliver: Vec<Vec<u8>> = Vec::new();
         match protocol::delivery(channel) {
             Delivery::Reliable => {
-                let ack = packet(channel, KIND_ACK, seq, &[]);
-                let route = if self.is_host() { session } else { 0 };
-                self.link.send(route, &ack);
                 let state = &mut self.peers.get_mut(&from).unwrap().channels[channel as usize];
-                if seq.wrapping_sub(state.next_receive) < u32::MAX / 2 {
-                    state.held.insert(seq, body.to_vec());
+                if state.hold(seq, body) {
+                    let ack = packet(channel, KIND_ACK, seq, &[]);
+                    let route = if self.is_host() { session } else { 0 };
+                    self.link.send(route, &ack);
                 }
+                let state = &mut self.peers.get_mut(&from).unwrap().channels[channel as usize];
                 while let Some(next) = state.held.remove(&state.next_receive) {
                     deliver.push(next);
                     state.next_receive = state.next_receive.wrapping_add(1);
@@ -313,6 +344,32 @@ impl CoopSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_reorder_buffer_is_capped_and_refused_packets_are_not_acked() {
+        let mut ch = Channel::default();
+        assert!(!ch.hold(MAX_HELD_AHEAD, b"x"), "too far ahead");
+        for seq in 1..=MAX_HELD as u32 {
+            assert!(ch.hold(seq, b"x"));
+        }
+        assert!(!ch.hold(MAX_HELD as u32 + 1, b"x"), "buffer full");
+        assert_eq!(ch.held.len(), MAX_HELD);
+        assert!(ch.hold(1, b"x"), "a packet already held is ACKed again");
+    }
+
+    #[test]
+    fn forgetting_a_silent_guest_drops_its_resend_queue() {
+        let relay = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = relay.local_addr().unwrap().port();
+        let mut host = CoopSession::new(RelayLink::host("ABCDE", "tok", "127.0.0.1", port).unwrap());
+        host.send(42, &Message::PeerLeave);
+        host.send(42, &Message::Start { code: "ABCDE".into(), seed: "s".into(), mode: 0, scale: 0, rest: Default::default() });
+        assert_eq!(host.peers(), vec![42]);
+        host.forget_peer(42);
+        assert!(host.peers().is_empty(), "no later broadcast reaches it");
+        host.forget_peer(HOST_PEER_ID);
+        host.close();
+    }
     use crate::net::relay::{decode, encode, frame, RelayLink};
     use serde_json::json;
     use std::net::UdpSocket;

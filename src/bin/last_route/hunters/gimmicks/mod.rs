@@ -159,6 +159,29 @@ pub enum Gimmick {
 }
 
 impl Gimmick {
+    /// The window moved under the hunter by `d`: every world position the gimmick holds moves with the cells.
+    /// (A gimmick that keeps no position needs nothing; add its arm here when it starts to.)
+    pub fn shift(&mut self, d: (f32, f32)) {
+        match self {
+            Gimmick::WolfSpider(s) => s.shift(d),
+            Gimmick::Ferryn(f) => f.shift(d),
+            Gimmick::Briselle(g) => g.shift(d),
+            Gimmick::Mavrine(g) => g.shift(d),
+            Gimmick::Opalie(g) => g.shift(d),
+            Gimmick::Solyth(g) => g.shift(d),
+            Gimmick::Ysolde(g) => g.shift(d),
+            Gimmick::VoidGray(g) => g.shift(d),
+            Gimmick::Nyxie(g) => g.shift(d),
+            Gimmick::Ravelle(r) => {
+                for w in &mut r.wires {
+                    w.a = (w.a.0 + d.0, w.a.1 + d.1);
+                    w.b = (w.b.0 + d.0, w.b.1 + d.1);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn for_id(id: &str, diff: Difficulty) -> Gimmick {
         match id {
             "aki" => Gimmick::Aki(Default::default()),

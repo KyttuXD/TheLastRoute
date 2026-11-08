@@ -269,8 +269,6 @@ pub struct Facility {
     /// and counts as open, so a floor nobody calls `update_doors` on stays walkable. Nothing here opens a door
     /// for the runner or a player bot (NPC teammate): only `toggle_door` (the interact press) does; hunters pull the doors they reach.
     door_state: HashMap<Cell, DoorState>,
-    /// The id of the level 0 maze variant that dresses this chunk (`apply_maze_variant`); `None` is the plain maze.
-    pub maze_variant: Option<String>,
     /// The level this facility is (0 ground, -1 sewer); its floor sits at `level * STOREY` in absolute y
     /// (`body_fits_at_y`). Set by the game when it loads a window; 0 until then.
     pub level: i32,
@@ -303,6 +301,9 @@ pub struct DoorState {
     centre: (f32, f32),
     half: (f32, f32),
 }
+
+/// A snapshot of door swing: threshold cell, open amount, wanted-open.
+pub type DoorSwing = Vec<(Cell, f32, bool)>;
 
 /// A hunter this close to a door's edge pulls it open and leaves it open (the Godot hunter's
 /// `_operate_hunter_room_door` reaches 1.15 m from the door's centre; a wider doorway adds half its span).
@@ -605,7 +606,6 @@ impl Facility {
             random: Rng::new(seed_text),
             prop_grid: vec![vec![]; (cols * rows) as usize],
             door_state: HashMap::new(),
-            maze_variant: None,
             level: 0,
             drop_list: vec![],
             air_list: vec![],
@@ -956,7 +956,6 @@ impl Facility {
             random: Rng::new(seed_text),
             prop_grid: vec![],
             door_state: HashMap::new(),
-            maze_variant: None,
             level: parts.first().map_or(0, |p| p.0.level),
             drop_list: vec![],
             air_list: vec![],
@@ -1968,14 +1967,12 @@ impl Facility {
         self.terrain = Some(Terrain::new(world, self.origin, chunks));
     }
 
-    /// Dresses a level 0 maze chunk with its region variant (`route::maze_regions`): records the variant id and thins
+    /// Dresses a level 0 maze chunk with its region variant (`route::maze_regions`): thins
     /// the chunk's loose pickups by the variant's `loot_scale` and its props by `prop_density` (a scale of 1 or more
     /// changes nothing; relays, batteries and doors are never thinned). The floors, room roles and prop set of the
-    /// variant are read by the renderer through `maze_variant`. Returns the variant, `None` for the plain maze.
+    /// variant are looked up from the data by the chunk key, not stored here. Returns the variant, `None` for the plain maze.
     pub fn apply_maze_variant(&mut self, seed: &str, key: ChunkKey) -> Option<&'static maze_regions::MazeVariant> {
-        self.maze_variant = None;
         let v = maze_regions::variant_at(seed, key.cx, key.cy, key.level)?;
-        self.maze_variant = Some(v.id.clone());
         let tag = format!("{},{}", key.cx, key.cy);
         let loot = v.spawn_rules.loot_scale;
         // the music box is not loot a region thins: it is kept, and it does not count toward the loot index
@@ -1997,6 +1994,23 @@ impl Facility {
             self.rebuild_grids();
         }
         Some(v)
+    }
+
+    /// The swing of every registered door, keyed by its threshold cell, to carry across a window rebuild.
+    pub fn door_swing(&self) -> DoorSwing {
+        self.door_state.iter().map(|(c, s)| (*c, s.open, s.want_open)).collect()
+    }
+
+    /// Re-registers the doors of a rebuilt window with the swing they had in the old one. `shift` is how far the
+    /// cells moved (new cell = old cell + shift); a door the new window does not have is dropped.
+    pub fn restore_door_swing(&mut self, swing: &DoorSwing, shift: (i32, i32)) {
+        for p in &self.props {
+            let Some(d) = p.door else { continue };
+            let old = Cell { x: p.cell.x - shift.0, y: p.cell.y - shift.1 };
+            let Some(&(_, open, want_open)) = swing.iter().find(|(c, _, _)| *c == old) else { continue };
+            let (centre, half) = Self::door_slab(p, d);
+            self.door_state.insert(p.cell, DoorState { open, want_open, span: d.span as f32, centre, half });
+        }
     }
 
     /// Swings every room door toward its wanted state. `openers` (the hunters, never the runner or a player bot) open a
@@ -2902,6 +2916,32 @@ mod tests {
         f
     }
 
+    /// A rebuilt window keeps the swing of its doors, with the cells shifted by the window's move.
+    #[test]
+    fn door_swing_survives_a_rebuild_shifted_by_the_origin_change() {
+        let mut old = door_floor();
+        let cell = old.props.last().unwrap().cell;
+        old.update_doors(&[], &[], 0.0);
+        let runner = cell.center();
+        assert_eq!(old.toggle_door(cell, &[runner]), Some(DoorToggle::Opened));
+        old.update_doors(&[], &[], 1.0);
+        assert!(old.door_is_open(cell));
+        let swing = old.door_swing();
+        // the rebuilt window has the same door 40 cells over; without the carry it would be unregistered
+        let mut fresh = door_floor();
+        fresh.props.last_mut().unwrap().cell = Cell { x: cell.x - 40, y: cell.y - 40 };
+        let moved = fresh.props.last().unwrap().cell;
+        fresh.restore_door_swing(&swing, (-40, -40));
+        fresh.update_doors(&[], &[], 0.0);
+        assert!(fresh.door_is_open(moved), "the opened door stays open");
+        assert_eq!(fresh.door_open_amount(moved), 1.0);
+        // a shift that matches no door restores nothing
+        let mut other = door_floor();
+        other.restore_door_swing(&swing, (7, 7));
+        other.update_doors(&[], &[(1e6, 1e6)], 0.0);
+        assert_eq!(other.door_open_amount(other.props.last().unwrap().cell), 0.0);
+    }
+
     /// A door nobody ticked is open floor; once ticked it is closed and blocks. A body beside it (the runner) does
     /// not open it; only `toggle_door` does, and it closes again the same way.
     #[test]
@@ -3060,14 +3100,13 @@ mod tests {
     }
 
     #[test]
-    fn a_maze_variant_is_recorded_and_thins_only_what_the_data_says() {
+    fn a_maze_variant_thins_only_what_the_data_says() {
         let mut seen_variant = false;
         for (key, mut f) in maze_chunks() {
             let doors = f.props.iter().filter(|p| p.door.is_some()).count();
             let (pickups, relays, batteries) = (f.pickups.len(), f.relays.len(), f.batteries.len());
             let v = f.apply_maze_variant(WORLD, key);
-            assert_eq!(f.maze_variant.as_deref(), v.map(|v| v.id.as_str()));
-            assert_eq!(f.maze_variant.as_deref(), maze_regions::variant_at(WORLD, key.cx, key.cy, 0).map(|v| v.id.as_str()));
+            assert_eq!(v.map(|v| v.id.as_str()), maze_regions::variant_at(WORLD, key.cx, key.cy, 0).map(|v| v.id.as_str()));
             assert_eq!(f.props.iter().filter(|p| p.door.is_some()).count(), doors);
             assert_eq!((f.relays.len(), f.batteries.len()), (relays, batteries));
             match v {
@@ -3086,7 +3125,6 @@ mod tests {
         let cat = Catalog::load();
         let mut f = Facility::generate("V", &Options::default(), &cat);
         assert!(f.apply_maze_variant(WORLD, ChunkKey { cx: 0, cy: 0, level: -1 }).is_none());
-        assert!(f.maze_variant.is_none());
     }
 
     #[test]

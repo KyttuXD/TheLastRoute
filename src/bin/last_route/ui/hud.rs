@@ -624,6 +624,29 @@ pub fn draw_hud_with_runners(
 /// The centre reticle (crosshair.gd), drawn only while the view is aimed: `aimed` is whether the cursor
 /// is captured, so the pause menu, the map and the other free-cursor screens show none. A hidden player
 /// or a struggle to break free keeps the screen's own marks instead.
+/// Text of one co-op chat line on the HUD: "NAME: text" (a system line has no name).
+pub fn chat_line_text(line: &crate::net::chat::ChatLine) -> String {
+    if line.system || line.display_name.is_empty() {
+        line.text.clone()
+    } else {
+        format!("{}: {}", line.display_name, line.text)
+    }
+}
+
+/// The co-op chat feed, bottom-left above the hotbar rows, oldest line on top (`app` calls this once per frame, after
+/// the HUD, with the feed it keeps).
+pub fn draw_chat_feed(a: &Assets, feed: &crate::net::chat::ChatFeed) {
+    let v = view();
+    let size = (7.0f32).max((12.0 / unit()).ceil().min(9.0));
+    let lines: Vec<String> = feed.visible().map(chat_line_text).collect();
+    let step = size + 3.0;
+    let mut top = v.y - SAFE - 40.0 - step * lines.len() as f32;
+    for text in lines {
+        shadowed(a, &text, SAFE, top, size, rgba(0.95, 0.95, 0.9, 0.95));
+        top += step;
+    }
+}
+
 pub fn draw_crosshair(g: &Game, aimed: bool) {
     if !aimed || g.p.hidden.is_some() || g.escape.is_some() {
         return;
@@ -718,4 +741,15 @@ mod tests {
         let r = HudRules::parse(&json!({ "danger": { "safe_below": "soon" }, "labels": { "danger": 5 } }));
         assert_eq!(r, HudRules::default());
     }
+    #[test]
+    fn a_chat_line_shows_its_sender_unless_it_is_a_system_line() {
+        use crate::net::chat::ChatLine;
+        let mut p = serde_json::Map::new();
+        p.insert("text".into(), json!("run"));
+        let line = ChatLine::sanitize(2, "R-1", &p, false);
+        assert_eq!(chat_line_text(&line), "R-1: run");
+        p.insert("system".into(), json!(true));
+        assert_eq!(chat_line_text(&ChatLine::sanitize(2, "R-1", &p, true)), "run");
+    }
+
 }

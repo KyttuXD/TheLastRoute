@@ -17,7 +17,6 @@
 //! Solyth uses the same leap (solyth.rs).
 
 use std::sync::{Mutex, OnceLock};
-use crate::shared::clock::Instant;
 
 use super::Ctx;
 use crate::config::Difficulty;
@@ -313,6 +312,11 @@ pub struct Leap {
 }
 
 impl Leap {
+    /// The window moved by `d`: the tracked runner moves with it, so the next step is not a huge velocity.
+    pub fn shift(&mut self, d: (f32, f32)) {
+        self.last_target = self.last_target.map(|p| (p.0 + d.0, p.1 + d.1));
+    }
+
     /// Slowed while stumbling after a clean leap.
     pub fn speed_scale(&self, n: &NightmarePounce) -> f32 {
         if self.stumble > 0.0 {
@@ -436,14 +440,34 @@ pub fn pounce_frame(leap: &mut Leap, b: &mut Brain, dt: f32, c: &Ctx, t: &Target
     leap.step(n, b, dt, c)
 }
 
-/// Seconds on the party clock (real time, like Godot's Time.get_ticks_msec in hard_abilities.gd).
-static PARTY_START: OnceLock<Instant> = OnceLock::new();
-/// The party's last pounce on the clock (hard_abilities.gd `_last_fire["pounce"]`, shared by every
-/// hunter in the party). Not reset between matches yet (Godot's reset_director has no call here).
-static PARTY_LAST_POUNCE: Mutex<Option<f32>> = Mutex::new(None);
+/// The party's pounce state: the game clock (seconds of play, advanced once a frame by `party_advance`) and the
+/// last pounce on it (hard_abilities.gd `_last_fire["pounce"]`, shared by every hunter in the party).
+struct Party {
+    clock: f32,
+    last: Option<f32>,
+}
+static PARTY: Mutex<Party> = Mutex::new(Party { clock: 0.0, last: None });
+
+fn party() -> std::sync::MutexGuard<'static, Party> {
+    PARTY.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Starts a match: clears the party budget and the clock (called when a run starts, with the director reset).
+pub fn party_reset() {
+    let mut p = party();
+    p.clock = 0.0;
+    p.last = None;
+}
+
+/// Advances the party clock by one frame of game time (call once a frame while the game runs; pauses do not count).
+pub fn party_advance(dt: f32) {
+    if dt.is_finite() && dt > 0.0 {
+        party().clock += dt;
+    }
+}
 
 fn party_now() -> f32 {
-    PARTY_START.get_or_init(Instant::now).elapsed().as_secs_f32()
+    party().clock
 }
 
 /// True when `budget` seconds have passed since the last party pounce (hard_abilities.gd `_budget_ok`).
@@ -456,15 +480,12 @@ pub fn budget_open(last: Option<f32>, now: f32, budget: f32) -> bool {
 
 /// The party budget check. With `commit`, a pass records this pounce for the whole party.
 fn party_budget_ok(now: f32, budget: f32, commit: bool) -> bool {
-    let mut last = match PARTY_LAST_POUNCE.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if !budget_open(*last, now, budget) {
+    let mut p = party();
+    if !budget_open(p.last, now, budget) {
         return false;
     }
     if commit {
-        *last = Some(now);
+        p.last = Some(now);
     }
     true
 }
@@ -485,6 +506,11 @@ pub fn sweep_clear(fac: &Facility, from: (f32, f32), to: (f32, f32), step: f32) 
 }
 
 impl Nyxie {
+    /// The window moved by `d`.
+    pub fn shift(&mut self, d: (f32, f32)) {
+        self.leap.shift(d);
+    }
+
     pub fn inescapable(&self) -> bool {
         self.wake == Wake::Empty
     }
@@ -712,6 +738,20 @@ mod tests {
         assert!(budget_open(None, 0.0, 25.0));
         assert!(!budget_open(Some(0.0), 24.9, 25.0));
         assert!(budget_open(Some(0.0), 25.0, 25.0));
+    }
+
+    #[test]
+    fn party_budget_is_per_match_and_on_the_game_clock() {
+        party_reset();
+        party_advance(f32::NAN);
+        party_advance(-1.0);
+        assert_eq!(party_now(), 0.0, "bad frames do not move the clock");
+        assert!(party_budget_ok(party_now(), 25.0, true));
+        party_advance(10.0);
+        assert!(!party_budget_ok(party_now(), 25.0, true), "inside the window");
+        party_reset();
+        assert!(party_budget_ok(party_now(), 25.0, true), "a new match starts with a clean budget");
+        party_reset();
     }
 
     #[test]

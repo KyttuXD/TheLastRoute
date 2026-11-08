@@ -629,6 +629,7 @@ impl WorldMeshes {
         let started = Instant::now();
         let build_no = self.builds + 1;
         let queued = wanted.iter().filter(|(k, _)| !self.parts.contains_key(k)).count();
+        let stream_scale = f64::from(crate::app::quality::scales().stream);
         let mut choices = HashMap::new();
         let (mut built, mut pending) = (0, 0);
         for (key, pick) in &wanted {
@@ -636,7 +637,7 @@ impl WorldMeshes {
                 p.used = build_no;
                 continue;
             }
-            if !neighbour_allows(table, scope.chunks_per_frame, built, started.elapsed().as_secs_f64() * 1000.0, queued) {
+            if !neighbour_allows(table, scope.chunks_per_frame, built, started.elapsed().as_secs_f64() * 1000.0, queued, stream_scale) {
                 pending += 1;
                 continue;
             }
@@ -673,13 +674,14 @@ impl WorldMeshes {
     }
 }
 
-/// Whether one more neighbour part may be built after `built` this frame (the first always may).
-fn neighbour_allows(table: &StreamBudget, per_frame: usize, built: usize, elapsed_ms: f64, queued: usize) -> bool {
+/// Whether one more neighbour part may be built after `built` this frame (the first always may). `scale` is the quality
+/// governor's stream factor, cutting the time budget as it does for the streamed window.
+fn neighbour_allows(table: &StreamBudget, per_frame: usize, built: usize, elapsed_ms: f64, queued: usize, scale: f64) -> bool {
     #[cfg(test)]
     if SLOW_FRAMES.with(|s| s.get()) {
         return built == 0;
     }
-    built == 0 || (built < per_frame && elapsed_ms < table.budget_ms(queued))
+    built == 0 || (built < per_frame && elapsed_ms < table.budget_ms(queued) * scale.clamp(0.0, 1.0))
 }
 
 /// The meshes with one texture's side by side (so the batcher joins them), and the part each came from. Blended meshes
@@ -924,6 +926,12 @@ fn safe_pad(f: &Facility, assets: &Assets) -> Vec<Mesh> {
 
 const UV1: [Vec2; 4] = [vec2(0., 0.), vec2(1., 0.), vec2(1., 1.), vec2(0., 1.)];
 
+/// Whether a stair record pushes a lamp: only the lower level's (dir > 0) record owns the flight or shaft; the upper level's
+/// (dir < 0) hatch adds none, matching `stairs::lamp`.
+fn owns_lamp(s: &Stair) -> bool {
+    s.dir > 0
+}
+
 /// The room lights plus each lamp prop's `light` from data/props (the original's fixture lights,
 /// budget 10 per floor, offset turning with the prop).
 ///
@@ -970,7 +978,7 @@ fn lamps_with(f: &Facility, lights_on: &[bool], content: &Content, dark: &[bool]
     }
     // each stairwell and ladder well carries a light, so its steps and rungs read in the dark. A flight has one light (Godot's
     // stairwell light): the lower level, which owns the flight, lights it; the upper level's record adds none
-    out.extend(f.stairs.iter().filter(|s| s.is_ladder() || s.dir > 0).map(|s| stairs::lamp(*s, WALL_HEIGHT)));
+    out.extend(f.stairs.iter().filter(|s| owns_lamp(s)).map(|s| stairs::lamp(*s, WALL_HEIGHT)));
     let mut budget = lamp_flicker::table().prop_budget(f.level);
     for p in &f.props {
         if budget == 0 {
@@ -2752,15 +2760,28 @@ mod stack_mesh_tests {
     }
 
     #[test]
+    fn an_upper_floor_hatch_pushes_no_lamp() {
+        use crate::world::facility::LinkKind;
+        use crate::world::flight::FlightShape;
+        let s = |dir, kind| Stair { cell: Cell::new(3, 3), dir, run: (0, 1), kind, shape: FlightShape::Straight, clockwise: false };
+        assert!(!owns_lamp(&s(-1, LinkKind::Ladder(crate::world::facility::Cover::Manhole))), "the hatch lights nothing");
+        assert!(owns_lamp(&s(1, LinkKind::Ladder(crate::world::facility::Cover::Manhole))), "a ladder foot does");
+        assert!(owns_lamp(&s(1, LinkKind::Stairs)));
+        assert!(!owns_lamp(&s(-1, LinkKind::Stairs)));
+    }
+
+    #[test]
     fn the_neighbour_budget_follows_the_data() {
         let t = StreamBudget::parse(
             r#"{"frame_budget_ms":4.0,"per_queued_ms":1.0,"max_budget_ms":9.0,"chunks_per_frame":4,"jump_steps":1,
             "neighbour_chunks_per_frame":2,"neighbour_near_chunks_per_frame":4,"neighbour_max_parts":12,"neighbour_cull_radius":14.0}"#,
         )
         .unwrap();
-        assert!(neighbour_allows(&t, 2, 0, 999.0, 5), "the first always builds");
-        assert!(neighbour_allows(&t, 2, 1, 0.0, 5));
-        assert!(!neighbour_allows(&t, 2, 2, 0.0, 5), "the per-frame cap");
+        assert!(neighbour_allows(&t, 2, 0, 999.0, 5, 0.0), "the first always builds");
+        assert!(neighbour_allows(&t, 2, 1, 0.0, 5, 1.0));
+        assert!(!neighbour_allows(&t, 2, 1, 5.0, 5, 0.5), "a governor scale below 1 cuts the neighbour budget");
+        assert!(neighbour_allows(&t, 2, 1, 5.0, 5, 1.0));
+        assert!(!neighbour_allows(&t, 2, 2, 0.0, 5, 1.0), "the per-frame cap");
         let old = r#"{"frame_budget_ms":4.0,"per_queued_ms":1.0,"max_budget_ms":9.0,"chunks_per_frame":4,"jump_steps":1}"#;
         assert!(StreamBudget::parse(old).is_err(), "the neighbour keys are required");
     }

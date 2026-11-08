@@ -17,7 +17,6 @@ const DATA: &str = include_str!("../data/render/skin_preview.json");
 /// The preview's settings, from skin_preview.json.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
-    pub model: String,
     pub slim_model: String,
     pub rig: String,
     pub idle_clip: String,
@@ -51,7 +50,6 @@ impl Config {
         }
         let ch = |i: usize| bg[i].as_f64().map(|n| n as f32).ok_or("background holds a non-number");
         let c = Config {
-            model: text(&v, "model")?,
             slim_model: text(&v, "slim_model")?,
             rig: text(&v, "rig")?,
             idle_clip: text(&v, "idle_clip")?,
@@ -312,6 +310,14 @@ mod tests {
         assert_eq!(c.background[3], 0.0, "a transparent background, like the Godot preview");
         assert!(Config::parse("{}").is_err());
         assert!(Config::parse(&DATA.replace("\"height_m\": 1.60", "\"height_m\": 0")).is_err());
+    }
+
+    #[test]
+    fn the_file_holds_no_unread_model_key() {
+        // the base body comes from Assets::npc_body; only the slim model path is read from this file
+        assert!(!DATA.contains("\"model\""), "a key nothing reads must not be in the file");
+        let c = Config::parse(DATA).unwrap();
+        assert!(c.slim_model.ends_with(".bbmodel"));
     }
 
     #[test]

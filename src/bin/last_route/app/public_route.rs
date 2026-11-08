@@ -5,11 +5,18 @@
 //! Radius, fallback scale, dwell and speed come from data/public_roster.json "patrol" (content::public_roster::
 //! PublicPatrol). This module holds only the decisions; the caller owns the hunters, the clock and the runners.
 //! Idle hunters patrol around one runner for `dwell_msec`, then re-roll to the runner with the fewest hunters on it.
-//! Not called from the game yet (the hunter brain hook is a later task), so the pub items are unused for now.
-#![allow(dead_code)]
+//! Callers (hooks): `JoinThrottle::try_join` before the client joins the public route (app/mod.rs), and
+//! `PatrolBook::anchor` + `filter_candidates` + `patrol_speed` where the public room's host picks an idle hunter's
+//! wander goal (hunters/brain.rs `pick_wander_target`, fed from game/hunting.rs).
 
 use crate::content::public_roster::{PublicLimits, PublicPatrol};
 use std::collections::HashMap;
+
+/// The patrol rules from data/public_roster.json, read once.
+pub fn patrol() -> &'static PublicPatrol {
+    static PATROL: std::sync::OnceLock<PublicPatrol> = std::sync::OnceLock::new();
+    PATROL.get_or_init(|| crate::content::public_roster::PublicRoster::load().patrol)
+}
 
 /// A position on the route grid, in cells.
 pub type Pos = (f32, f32);
@@ -99,6 +106,24 @@ pub fn patrol_speed(base: f32, patrol: &PublicPatrol, anchored: bool) -> f32 {
 /// `limits.join_per_minute` from data/public_roster.json "limits" (server JOIN_LIMIT_PER_MINUTE, 20 in Standard).
 pub fn join_allowed(limits: &PublicLimits, joins_last_minute: u32) -> bool {
     joins_last_minute < limits.join_per_minute
+}
+
+/// Client-side sliding one-minute window of PUBLIC route joins; refuses once `join_per_minute` were sent.
+#[derive(Default, Debug)]
+pub struct JoinThrottle {
+    sent: Vec<u64>,
+}
+
+impl JoinThrottle {
+    /// Records a join at `now_msec` and returns true when allowed; a refused join is not recorded.
+    pub fn try_join(&mut self, limits: &PublicLimits, now_msec: u64) -> bool {
+        self.sent.retain(|t| now_msec.saturating_sub(*t) < 60_000);
+        if !join_allowed(limits, self.sent.len().min(u32::MAX as usize) as u32) {
+            return false;
+        }
+        self.sent.push(now_msec);
+        true
+    }
 }
 
 fn within(candidates: &[Pos], anchor: Pos, radius: f32) -> Vec<Pos> {
@@ -241,5 +266,16 @@ mod tests {
         let slow = patrol_from(r#"{"patrol":{"speed_scale":0.5}}"#);
         assert!((patrol_speed(0.82, &slow, true) - 0.41).abs() < 1e-6);
         assert_eq!(patrol_speed(0.82, &slow, false), 0.82);
+    }
+
+    #[test]
+    fn the_join_throttle_refuses_past_the_limit_and_recovers_after_a_minute() {
+        let limits = PublicLimits { join_per_minute: 3, ..PublicLimits::default() };
+        let mut t = JoinThrottle::default();
+        assert!(t.try_join(&limits, 0) && t.try_join(&limits, 10) && t.try_join(&limits, 20));
+        assert!(!t.try_join(&limits, 30_000));
+        assert!(t.try_join(&limits, 60_001));
+        let none = PublicLimits { join_per_minute: 0, ..PublicLimits::default() };
+        assert!(!JoinThrottle::default().try_join(&none, 0));
     }
 }

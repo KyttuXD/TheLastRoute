@@ -1,23 +1,8 @@
 {
   "schema": "lr.swim.movement/1",
+  "_note": "Wading speed only. Wade and swim noise, stamina drain and the soak timer live in data/swim/effects.json; the fall and landing rules in data/swim/fall.json.",
   "wade": {
     "deep_depth": 0.9,
-    "max_flood_depth": 0.35,
-    "speed_scale": 0.45,
-    "tiring_depth": 0.6,
-    "stamina_drain": 6.0,
-    "noise": 12.0,
-    "deep_noise": 17.0,
-    "splash_every": 0.42,
-    "splash_gain": 0.3,
-    "soaked_floor_fraction": 0.5
-  },
-  "plunge": {
-    "splash_noise": 3.0,
-    "splash_noise_seconds": 1.2,
-    "soaked_seconds": 30.0,
-    "soaked_noise_scale": 1.45,
-    "channel_depth": 0.0,
-    "water_surface": 0.0
+    "speed_scale": 0.45
   }
 }

@@ -161,6 +161,9 @@ pub struct Game {
     /// Guest: the host simulates the hunters and its frames set them (hunting.rs `apply_hunter_frame`), so this game
     /// runs no hunter simulation. The app sets it each frame from the room's role.
     pub remote_hunters: bool,
+    /// The room is the PUBLIC route and this game simulates its hunters: idle hunters patrol near a runner (app/public_route.rs).
+    pub public_route: bool,
+    pub(crate) patrol_book: crate::app::public_route::PatrolBook,
     /// A room hosted by a server process (headless/dedicated.rs): no runner plays here. The body `p` is parked on the party
     /// anchor, the hunters hunt the guests in `remote_targets` and the frame is `step_dedicated` (game/remote_targets.rs).
     pub no_local_runner: bool,
@@ -210,6 +213,8 @@ pub struct Game {
     pub escape: Option<Escape>,
     /// The runner's downed state (game/revive.rs): Some while it lies down, not yet revived and not dead.
     pub downed: Option<revive::Downed>,
+    /// The id and name of the hunter that downed the runner, kept by identity (the active list re-indexes) for the run card.
+    pub downed_hunter: Option<(String, String)>,
     /// The bots that are down, by `Npc::id` (game/revive.rs).
     pub downed_npcs: std::collections::BTreeMap<u32, revive::Downed>,
     /// The spectator state of a downed or dead runner (game/spectate.rs): Some while it watches another runner.
@@ -316,6 +321,8 @@ impl Game {
             relays_taken: vec![],
             sabotage: None,
             remote_hunters: false,
+            public_route: false,
+            patrol_book: Default::default(),
             no_local_runner: false,
             remote_targets: Vec::new(),
             party_anchor: None,
@@ -356,6 +363,7 @@ impl Game {
             director: Director::new(difficulty, &format!("{run_seed}-director")),
             escape: None,
             downed: None,
+            downed_hunter: None,
             downed_npcs: std::collections::BTreeMap::new(),
             spectate: None,
             escape_cooldown: 0.0,
@@ -458,6 +466,8 @@ impl Game {
             relays_taken: vec![],
             sabotage: None,
             remote_hunters: false,
+            public_route: false,
+            patrol_book: Default::default(),
             no_local_runner: false,
             remote_targets: Vec::new(),
             party_anchor: None,
@@ -498,6 +508,7 @@ impl Game {
             director: Director::new(difficulty, &format!("{run_seed}-director")),
             escape: None,
             downed: None,
+            downed_hunter: None,
             downed_npcs: std::collections::BTreeMap::new(),
             spectate: None,
             escape_cooldown: 0.0,
@@ -547,6 +558,7 @@ impl Game {
     /// A fresh director for a rebuilt hunter list (main_3d.gd makes one per level).
     pub(crate) fn reset_director(&mut self) {
         self.director = Director::new(self.difficulty, &format!("{}-director", self.run_seed));
+        crate::hunters::gimmicks::nyxie::party_reset();
     }
 
     /// The hunters the minimap and the full map draw (Godot `_streamed_map_marks`): Porcelle while she is awake, and every
@@ -672,7 +684,8 @@ impl Game {
         self.world.lamps = crate::render::world_mesh::lamps(&self.fac, &self.lights_on, content);
         self.world_dirty = true;
         self.relays_taken = vec![false; self.fac.relays.len()];
-        self.sabotage = Some(crate::hunters::sabotage::Tracker::for_floor(self.depth, self.difficulty.id()));
+        let world_seed = self.inf.as_ref().map_or_else(|| self.room_text.clone(), |i| i.seed.clone());
+        self.sabotage = Some(crate::hunters::sabotage::Tracker::for_floor_seeded(&world_seed, self.depth, self.difficulty.id()));
         self.batteries_taken = vec![false; self.fac.batteries.len()];
         self.coins_taken = vec![false; self.fix.coins.len()];
         self.hiding_disabled = vec![false; self.fac.hiding.len()];
@@ -953,7 +966,13 @@ impl Game {
         // NPC teammates follow the runner through the escape struggle too (game/npc.rs)
         self.update_npcs(dt);
         // a downed runner or bot is revived by a teammate's hold, or dies at the timeout (game/revive.rs)
+        let ended_before = self.report.is_some();
         self.tick_revives(dt, c);
+        // a revive timeout that ended the run in THIS frame stops the frame: no capture may take the finished run down again.
+        // A run that ended earlier keeps stepping as before (the report screen and the hunters still update).
+        if !ended_before && self.report.is_some() && !self.spectating() {
+            return;
+        }
         let level = self.runner_level();
         // hunters pull the doors they reach open; the runner and the player bots (NPC teammates) never do, they press
         // interact on the door (Focus::Door, npc.rs), but every body keeps a leaf from swinging shut through it
@@ -1023,8 +1042,11 @@ impl Game {
             }
             self.focus = self.find_focus();
             if c.interact && self.p.stun <= 0.0 {
-                if let Some(f) = self.focus {
-                    self.interact(f, content, catalog, sounds);
+                // an open Void Gray signal route takes the E press first (void_gray.rs press_route)
+                if !self.press_signal_route() {
+                    if let Some(f) = self.focus {
+                        self.interact(f, content, catalog, sounds);
+                    }
                 }
             }
             self.update_holds(dt, c, sounds);

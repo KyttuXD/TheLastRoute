@@ -183,12 +183,27 @@ impl Tracker {
         Tracker::with_rules(rules(), depth, difficulty_id)
     }
 
+    /// The tracker for one floor of one world: the roll stream is seeded from the world seed and the depth, so two
+    /// worlds at the same depth do not share rolls.
+    pub fn for_floor_seeded(world_seed: &str, depth: i32, difficulty_id: &str) -> Tracker {
+        Tracker::with_rules_seeded(rules(), world_seed, depth, difficulty_id)
+    }
+
     pub fn with_rules(rules: &Rules, depth: i32, difficulty_id: &str) -> Tracker {
+        Tracker::with_rules_seeded(rules, "", depth, difficulty_id)
+    }
+
+    pub fn with_rules_seeded(rules: &Rules, world_seed: &str, depth: i32, difficulty_id: &str) -> Tracker {
         let rule = rules.for_difficulty(difficulty_id).filter(|r| r.enabled).cloned();
+        let seed = if world_seed.is_empty() {
+            format!("{depth}:HUNTER-SABOTAGE")
+        } else {
+            format!("{world_seed}:{depth}:HUNTER-SABOTAGE")
+        };
         Tracker {
             depth,
             rule,
-            rng: Rng::new(&format!("{depth}:HUNTER-SABOTAGE")),
+            rng: Rng::new(&seed),
             dwell: 0.0,
             last: None,
             blocked: Vec::new(),
@@ -203,6 +218,12 @@ impl Tracker {
     /// The relays offline now, each with the seconds left before it is resecured.
     pub fn blocked(&self) -> &[(Cell, f32)] {
         &self.blocked
+    }
+
+    /// The relays still in play: `relays` without the ones a sabotage has taken offline. The director's relay rush
+    /// and cover points take this list, so nobody is sent to an offline relay.
+    pub fn online(&self, relays: &[Cell]) -> Vec<Cell> {
+        relays.iter().copied().filter(|r| !self.is_blocked(*r)).collect()
     }
 
     pub fn depth(&self) -> i32 {
@@ -318,6 +339,21 @@ mod tests {
         v["difficulties"]["standard"]["chance"] = Value::from(1.0);
         v["relay"]["resecure_s"] = Value::from(resecure);
         v.to_string()
+    }
+
+    #[test]
+    fn online_drops_sabotaged_relays_and_the_seed_includes_the_world() {
+        let r = Rules::parse(&tweaked("standard", true, 1.0)).unwrap();
+        let mut t = Tracker::with_rules(&r, 3, "standard");
+        let relays = [Cell { x: 10, y: 10 }, Cell { x: 30, y: 30 }];
+        assert_eq!(t.online(&relays).len(), 2);
+        first_outcome(&mut t, &relays, 200, 0.5).expect("sabotage fires");
+        assert_eq!(t.online(&relays), vec![Cell { x: 30, y: 30 }]);
+        // different world seeds at one depth draw different roll streams
+        let a = Tracker::with_rules_seeded(&r, "alpha", 3, "standard");
+        let b = Tracker::with_rules_seeded(&r, "beta", 3, "standard");
+        let (mut ra, mut rb) = (a.rng.clone(), b.rng.clone());
+        assert!((0..8).any(|_| ra.next_float() != rb.next_float()));
     }
 
     /// Far from every relay, so nothing rolls and no dwell builds.

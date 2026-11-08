@@ -396,6 +396,19 @@ fn centre(c: (i32, i32)) -> (f32, f32) {
     (c.0 as f32 + 0.5, c.1 as f32 + 0.5)
 }
 
+/// Drops the route's points before the cell `from` when the route runs through it; false (route untouched) when it
+/// does not, so the caller plans again.
+fn trim_route(route: &mut Vec<(f32, f32)>, from: (i32, i32)) -> bool {
+    let c = centre(from);
+    match route.iter().position(|p| *p == c) {
+        Some(i) => {
+            route.drain(..i);
+            true
+        }
+        None => false,
+    }
+}
+
 /// Godot `WaypointLine.choose_route` (waypoint_line.gd:21): the floor line's points, as cell centres. `discovered` is the
 /// discovered cell path, possibly empty. A discovered route that stops short of `to` runs straight on to it; without one, a
 /// straight segment runs from `from`.
@@ -1246,11 +1259,7 @@ impl Game {
         // a guest's hunters stay where the host's frames put them: the host shifts its own and sends the result
         if !self.remote_hunters {
             for h in self.hunters.iter_mut() {
-                h.pos = (h.pos.0 - sx, h.pos.1 - sy);
-                h.last_known = h.last_known.map(|k| (k.0 - sx, k.1 - sy));
-                h.wander_target = h.wander_target.map(|k| (k.0 - sx, k.1 - sy));
-                h.search_target = h.search_target.map(|k| (k.0 - sx, k.1 - sy));
-                h.clear_path();
+                shift_brain(h, (-sx, -sy));
             }
             self.shift_resident_hunters((-sx, -sy));
             self.fit_resident_lists_into_window();
@@ -1263,7 +1272,10 @@ impl Game {
             // a resident built for the old centre is stale: dropped, and rebuilt below on a flight
             inf.stack.retain_center(inf.center);
         }
+        // door swing is kept across the rebuild: the same doors, their cells moved by the window
+        let swing = self.fac.door_swing();
         self.load_window(content, catalog);
+        self.fac.restore_door_swing(&swing, (-rx * CHUNK, -ry * CHUNK));
         if stair_height_at(&self.fac, self.p.pos).is_some() {
             // on a flight the neighbour is built at the new centre this frame (one hitch; the chunk cache makes it cheap)
             self.keep_stack(content, catalog);
@@ -2029,9 +2041,7 @@ pub(super) fn shift_brain(b: &mut Brain, d: (f32, f32)) {
     b.last_known = b.last_known.map(s);
     b.wander_target = b.wander_target.map(s);
     b.search_target = b.search_target.map(s);
-    if let crate::hunters::gimmicks::Gimmick::WolfSpider(spider) = &mut b.gimmick {
-        spider.shift(d);
-    }
+    b.gimmick.shift(d);
     b.clear_path();
 }
 
@@ -2125,6 +2135,20 @@ impl Game {
         };
         if inf.route_key == Some(key) {
             return;
+        }
+        // the runner only stepped along the route it already has: drop the cells behind it instead of searching again
+        // (a search over the whole discovered floor per cell step hitches a long run)
+        if let (Some(prev), Some(_)) = (inf.route_key, to) {
+            if prev.level == key.level && prev.center == key.center && prev.to == key.to && prev.discovered == key.discovered {
+                if let Some(inf) = self.inf.as_mut() {
+                    let mut routes = inf.routes.clone();
+                    if trim_route(&mut routes.full, from) && trim_route(&mut routes.line, from) {
+                        inf.routes = routes;
+                        inf.route_key = Some(key);
+                        return;
+                    }
+                }
+            }
         }
         let routes = match to {
             Some(to) => self.plan_routes(from, to),
@@ -2228,6 +2252,29 @@ mod tests {
     use super::*;
     use crate::content::Content;
     use crate::world::catalog::Catalog;
+
+    #[test]
+    fn stepping_along_a_route_trims_it_and_leaving_it_asks_for_a_new_plan() {
+        let mut route: Vec<(f32, f32)> = (0..5).map(|x| centre((x, 3))).collect();
+        assert!(trim_route(&mut route, (2, 3)));
+        assert_eq!(route, vec![centre((2, 3)), centre((3, 3)), centre((4, 3))]);
+        let before = route.clone();
+        assert!(!trim_route(&mut route, (9, 9)), "off the route: plan again");
+        assert_eq!(route, before);
+        assert!(!trim_route(&mut Vec::new(), (0, 0)), "no route: plan again");
+    }
+
+    #[test]
+    fn a_gimmick_shift_moves_the_wire_ends_with_the_window() {
+        use crate::hunters::gimmicks::{ravelle, Gimmick};
+        let mut g = Gimmick::Ravelle(Default::default());
+        if let Gimmick::Ravelle(r) = &mut g {
+            r.wires.push(ravelle::Wire { a: (40.0, 8.0), b: (41.0, 8.0), triggered: false });
+        }
+        g.shift((-32.0, 0.0));
+        let Gimmick::Ravelle(r) = &g else { unreachable!() };
+        assert_eq!((r.wires[0].a, r.wires[0].b), ((8.0, 8.0), (9.0, 8.0)));
+    }
 
     fn run() -> (Game, Content, Catalog) {
         let content = Content::load();

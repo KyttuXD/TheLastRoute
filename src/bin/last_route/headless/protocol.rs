@@ -875,12 +875,15 @@ impl Session {
                     Item::Crowbar => CROWBAR_DURABILITY as i64,
                     Item::Axe => AXE_DURABILITY as i64,
                     _ => 1,
-                }) as i32;
+                });
                 let stack = item.stack_max() > 1;
+                let n = clamp_give_count(n, stack);
                 let mut given = 0;
-                for _ in 0..(if stack { n.max(1) } else { 1 }) {
+                for _ in 0..(if stack { n } else { 1 }) {
                     if g.give(item, if stack { 1 } else { n }) {
                         given += 1;
+                    } else if stack {
+                        break; // inventory full
                     }
                 }
                 if given == 0 {
@@ -917,8 +920,8 @@ impl Session {
             }
             "npc" => {
                 // the admin's NPC spawn (ui/admin/actions.rs): `count` bots round the crosshair spot
-                let count = c.get("count").and_then(|v| v.as_i64()).unwrap_or(1) as i32;
-                let smart = c.get("smart").and_then(|v| v.as_i64()).unwrap_or(70) as i32;
+                let count = i32::try_from(c.get("count").and_then(|v| v.as_i64()).unwrap_or(1)).unwrap_or(0);
+                let smart = c.get("smart").and_then(|v| v.as_i64()).unwrap_or(70).clamp(0, 100) as i32;
                 let eye = g.eye();
                 let (fwd, _, _) = g.camera_basis();
                 let made = g.npc_spawn(count, smart, (eye.x, eye.y, eye.z), (fwd.x, fwd.y, fwd.z));
@@ -961,7 +964,7 @@ impl Session {
                     flash_pitch: None,
                     look_pitch: c.get("look").and_then(|v| v.as_f64()).map(|x| (x as f32).clamp(-crate::net::world_sync::LOOK_PITCH_LIMIT, crate::net::world_sync::LOOK_PITCH_LIMIT)).unwrap_or(0.0),
                     hide,
-                    hide_since: hide.map(|_| std::time::Duration::from_secs_f32(f(c, "hide_for").unwrap_or(10.0))),
+                    hide_since: hide.map(|_| std::time::Duration::from_secs_f32(clamp_hide_for(f(c, "hide_for")))),
                 };
                 self.remotes.retain(|r| r.peer != peer);
                 self.remotes.push(view);
@@ -1885,5 +1888,40 @@ mod stairs_report_tests {
     #[test]
     fn the_stairs_report_is_a_listed_command() {
         assert!(COMMANDS.contains(&"stairs_report"));
+    }
+}
+
+/// Most stack items one admin give may hand out (the loop also stops at a full inventory).
+const GIVE_COUNT_CAP: i64 = 1000;
+
+fn clamp_give_count(n: i64, stack: bool) -> i32 {
+    if stack { n.clamp(1, GIVE_COUNT_CAP) as i32 } else { n.clamp(-GIVE_COUNT_CAP * 100, GIVE_COUNT_CAP * 100) as i32 }
+}
+
+/// Seconds a remote stays hidden: finite and within 0..=1e6, default 10.
+fn clamp_hide_for(v: Option<f32>) -> f32 {
+    match v {
+        Some(s) if s.is_finite() => s.clamp(0.0, 1.0e6),
+        _ => 10.0,
+    }
+}
+
+#[cfg(test)]
+mod admin_clamp_tests {
+    use super::*;
+
+    #[test]
+    fn hide_for_never_reaches_duration_unsafe() {
+        for v in [-3.0f32, f32::NAN, f32::INFINITY, f32::MAX, 0.0, 5.0] {
+            let _ = std::time::Duration::from_secs_f32(clamp_hide_for(Some(v)));
+        }
+        assert_eq!(clamp_hide_for(None), 10.0);
+        assert_eq!(clamp_hide_for(Some(-3.0)), 0.0);
+    }
+
+    #[test]
+    fn give_count_is_capped() {
+        assert_eq!(clamp_give_count(2_000_000_000, true), GIVE_COUNT_CAP as i32);
+        assert_eq!(clamp_give_count(-5, true), 1);
     }
 }

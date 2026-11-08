@@ -116,6 +116,11 @@ impl BootState {
         self.done
     }
 
+    /// Title clicks are held back until the title has drawn; a failed load never reaches Ready, so it keeps blocking.
+    pub fn blocks_input(&self) -> bool {
+        !self.is_ready()
+    }
+
     /// The title has drawn and the card is fading (or gone). Input is free from this point.
     pub fn is_ready(&self) -> bool {
         self.step == Step::Ready
@@ -750,7 +755,7 @@ impl BootLoader {
     /// Whether the card is still loading. Clicks on the title are ignored only until the title has
     /// drawn; the fade-out does not hold input back. A failed load keeps blocking.
     pub fn blocks_input(&self) -> bool {
-        self.state.failed().is_none() && !self.state.is_ready()
+        self.state.blocks_input()
     }
 
     /// A startup step has completed: reach it, then draw a frame and yield to the window.
@@ -1120,6 +1125,17 @@ mod tests {
             last = s.shown();
         }
         assert!(close(last, 0.35, 1e-3), "the bar settles on 35% (got {last})");
+    }
+
+    #[test]
+    fn a_failed_load_keeps_blocking_input() {
+        let mut s = BootState::new();
+        assert!(s.blocks_input());
+        s.fail(FAIL_LOAD);
+        assert!(s.blocks_input(), "a failed load must not let title clicks through");
+        let mut done = BootState::new();
+        done.reach(Step::Ready);
+        assert!(!done.blocks_input());
     }
 
     #[test]

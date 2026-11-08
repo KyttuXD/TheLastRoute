@@ -507,6 +507,12 @@ pub struct WsConn {
     close_sent: bool,
 }
 
+/// The share of the remaining connect time one address may use, so a blackholed first address cannot starve the rest.
+fn address_slice(left: Duration, addresses_left: usize) -> Duration {
+    let share = left / addresses_left.max(1) as u32;
+    share.max(Duration::from_millis(250).min(left))
+}
+
 impl WsConn {
     /// Opens `url`: `ws://` as plain TCP, `wss://` over TLS (the TCP connect, the TLS handshake and the HTTP upgrade, all
     /// within `timeout`). Blocking.
@@ -521,12 +527,13 @@ impl WsConn {
         let addrs: Vec<_> = (url.host.as_str(), url.port).to_socket_addrs().map_err(|_| "COULD NOT FIND THE SERVER".to_string())?.collect();
         let mut tcp = None;
         let mut last = "COULD NOT REACH THE SERVER".to_string();
-        for addr in addrs {
+        let total = addrs.len();
+        for (tried, addr) in addrs.into_iter().enumerate() {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return Err("TIMED OUT".into());
             }
-            match TcpStream::connect_timeout(&addr, left) {
+            match TcpStream::connect_timeout(&addr, address_slice(left, total - tried)) {
                 Ok(s) => {
                     tcp = Some(s);
                     break;
@@ -892,6 +899,15 @@ impl Drop for NativeWsLink {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn address_slice_leaves_time_for_the_next_address() {
+        use std::time::Duration;
+        let left = Duration::from_secs(8);
+        assert!(super::address_slice(left, 2) <= Duration::from_secs(4));
+        assert_eq!(super::address_slice(left, 1), left);
+        assert!(super::address_slice(Duration::from_millis(100), 3) <= Duration::from_millis(100));
+    }
+
     use super::super::protocol;
     use super::*;
 

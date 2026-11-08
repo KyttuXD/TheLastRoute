@@ -1033,7 +1033,12 @@ impl Admin {
             None => "NONE".to_string(),
         };
         let checkpoint = match g.active_checkpoint() {
-            "" if crate::app::checkpoint::load().is_some() => "SAVED".to_string(),
+            "" if cached_flag(&self.checkpoint_cache, self.clock, CHECKPOINT_RECHECK, || {
+                crate::app::checkpoint::load().is_some()
+            }) =>
+            {
+                "SAVED".to_string()
+            }
             "" => "NONE".to_string(),
             id => id.to_string(),
         };
@@ -1084,5 +1089,40 @@ impl Admin {
             );
         }
         out
+    }
+}
+
+/// Seconds between reads of the saved-checkpoint file while the STATUS tab is open.
+const CHECKPOINT_RECHECK: f32 = 0.5;
+
+/// A cached bool: `load` runs only when the cache is older than `ttl` (or the clock went back).
+fn cached_flag(cache: &std::cell::Cell<(f32, bool)>, now: f32, ttl: f32, load: impl FnOnce() -> bool) -> bool {
+    let (at, value) = cache.get();
+    if now >= at && now - at < ttl {
+        return value;
+    }
+    let value = load();
+    cache.set((now, value));
+    value
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::cached_flag;
+    use std::cell::Cell;
+
+    #[test]
+    fn the_checkpoint_file_is_read_on_a_timer_not_every_frame() {
+        let cache = Cell::new((f32::NEG_INFINITY, false));
+        let mut reads = 0;
+        for frame in 0..60 {
+            cached_flag(&cache, frame as f32 / 60.0 * 0.4, 0.5, || {
+                reads += 1;
+                true
+            });
+        }
+        assert_eq!(reads, 1);
+        assert!(cached_flag(&cache, 0.4, 0.5, || false));
+        assert!(!cached_flag(&cache, 1.0, 0.5, || false));
     }
 }

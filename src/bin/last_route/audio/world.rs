@@ -213,7 +213,13 @@ pub fn update(dt: f32, l: &Listener, hunters: &[HunterAudio]) {
                         });
                     }
                 }
-                w.was_active.insert(h.id.to_string(), h.active);
+                // no String per hunter per frame: allocate the key only the first time a hunter is seen
+                match w.was_active.get_mut(h.id) {
+                    Some(v) => *v = h.active,
+                    None => {
+                        w.was_active.insert(h.id.to_string(), h.active);
+                    }
+                }
                 // every view runs its gait (so the eased speed is right when she becomes the stepping one)
                 let clip =
                     preferred_clip(h.chasing, !h.chasing && !h.idle, h.direct_visible, h.winded);

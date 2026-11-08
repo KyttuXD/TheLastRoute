@@ -142,7 +142,23 @@ pub fn save(c: &Checkpoint) {
     }
     let Some(p) = path() else { return };
     let _ = std::fs::create_dir_all(p.parent().unwrap());
-    let _ = std::fs::write(p, to_json(c).to_string());
+    let _ = write_atomic(&p, &to_json(c).to_string());
+}
+
+/// Writes `text` to a sibling temp file, then renames it over `p`, so an interrupted write never leaves a truncated checkpoint.
+fn write_atomic(p: &std::path::Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut tmp = p.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = std::path::PathBuf::from(tmp);
+    let mut f = std::fs::File::create(&tmp)?;
+    f.write_all(text.as_bytes())?;
+    let _ = f.sync_all();
+    drop(f);
+    std::fs::rename(&tmp, p).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e
+    })
 }
 
 /// The JSON a save writes. `y_abs` only for an infinite route with a finite y.
@@ -305,5 +321,17 @@ mod tests {
         let v = to_json(&cp(3, false, Some(4.0)));
         assert!(v.get("y_abs").is_none());
         assert_eq!(v["depth"], 3);
+    }
+
+    #[test]
+    fn the_atomic_write_replaces_the_file_and_leaves_no_temp() {
+        let dir = std::env::temp_dir().join(format!("lr_cp_atomic_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("checkpoint.json");
+        std::fs::write(&p, "old").unwrap();
+        write_atomic(&p, "{\"a\":1}").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "{\"a\":1}");
+        assert!(!dir.join("checkpoint.json.tmp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

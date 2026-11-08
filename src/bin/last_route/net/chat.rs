@@ -200,6 +200,78 @@ impl ChatModeration {
     }
 }
 
+/// Chat display tuning, from data/chat.json (the Standard defaults if it is missing or broken).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChatRules {
+    pub max_lines: usize,
+    pub line_seconds: f32,
+    pub nearby_radius: f64,
+    pub inbox_max: usize,
+}
+
+impl Default for ChatRules {
+    fn default() -> Self {
+        ChatRules { max_lines: 6, line_seconds: 12.0, nearby_radius: 30.0, inbox_max: 64 }
+    }
+}
+
+impl ChatRules {
+    pub fn parse(v: &Value) -> ChatRules {
+        let d = ChatRules::default();
+        ChatRules {
+            max_lines: v.get("max_lines").and_then(Value::as_u64).map(|n| (n as usize).clamp(1, 20)).unwrap_or(d.max_lines),
+            line_seconds: v.get("line_seconds").and_then(Value::as_f64).filter(|s| *s > 0.0).map(|s| s as f32).unwrap_or(d.line_seconds),
+            nearby_radius: v.get("nearby_radius").and_then(Value::as_f64).filter(|r| *r > 0.0).unwrap_or(d.nearby_radius),
+            inbox_max: v.get("inbox_max").and_then(Value::as_u64).map(|n| (n as usize).clamp(1, 1000)).unwrap_or(d.inbox_max),
+        }
+    }
+
+    pub fn load() -> &'static ChatRules {
+        static RULES: std::sync::OnceLock<ChatRules> = std::sync::OnceLock::new();
+        RULES.get_or_init(|| {
+            crate::content::embedded::data_under("chat.json")
+                .next()
+                .and_then(|(_, text)| serde_json::from_str::<Value>(text).ok())
+                .map(|v| ChatRules::parse(&v))
+                .unwrap_or_default()
+        })
+    }
+}
+
+/// The lines on screen: the app pushes what [`super::world_sync::NetSession::take_chat_lines`] returns, ticks it each
+/// frame and the HUD draws [`ChatFeed::visible`].
+#[derive(Default)]
+pub struct ChatFeed {
+    lines: Vec<(ChatLine, f32)>,
+}
+
+impl ChatFeed {
+    /// Adds lines that this listener hears (nearby lines only within the data's radius on the same floor).
+    pub fn push(&mut self, new: Vec<ChatLine>, listener_world: [f64; 3], listener_depth: i64) {
+        let rules = ChatRules::load();
+        for line in new {
+            if line.audible_from(listener_world, listener_depth, rules.nearby_radius) {
+                self.lines.push((line, 0.0));
+            }
+        }
+        let extra = self.lines.len().saturating_sub(rules.max_lines);
+        self.lines.drain(..extra);
+    }
+
+    pub fn tick(&mut self, dt: f32) {
+        let life = ChatRules::load().line_seconds;
+        for (_, age) in &mut self.lines {
+            *age += dt.max(0.0);
+        }
+        self.lines.retain(|(_, age)| *age < life);
+    }
+
+    /// Oldest first.
+    pub fn visible(&self) -> impl Iterator<Item = &ChatLine> {
+        self.lines.iter().map(|(l, _)| l)
+    }
+}
+
 /// Guest side: the message to send for a typed line (`send_chat(text, channel)` + position context).
 pub fn submit(text: &str, channel: &str, at: [f64; 2], world: [f64; 3], depth: i64) -> Option<Message> {
     let mut payload = Map::new();
@@ -254,4 +326,31 @@ mod tests {
         moderation.room_muted.insert(9);
         assert!(relay_submission(&mut moderation, 9, "M", payload, 0).is_none());
     }
+    #[test]
+    fn chat_rules_read_data_and_fall_back() {
+        let embedded: Value = serde_json::from_str(include_str!("../data/chat.json")).unwrap();
+        assert_eq!(ChatRules::parse(&embedded), ChatRules::default());
+        let r = ChatRules::parse(&json!({ "max_lines": 2, "line_seconds": 1.5, "nearby_radius": 4.0 }));
+        assert_eq!((r.max_lines, r.line_seconds, r.nearby_radius), (2, 1.5, 4.0));
+        assert_eq!(ChatRules::parse(&json!({ "max_lines": "x", "line_seconds": -1 })), ChatRules::default());
+    }
+
+    #[test]
+    fn the_feed_keeps_the_newest_lines_hears_only_near_ones_and_expires() {
+        let rules = ChatRules::load();
+        let mut feed = ChatFeed::default();
+        let mk = |text: &str, channel: &str, z: f64| {
+            let Some(Message::SubmitChatPayload { payload }) = submit(text, channel, [0.0; 2], [0.0, 0.0, z], 0) else { panic!() };
+            ChatLine::sanitize(2, "A", &payload, false)
+        };
+        let many: Vec<ChatLine> = (0..rules.max_lines + 3).map(|n| mk(&format!("line {n}"), "team", 0.0)).collect();
+        feed.push(many, [0.0; 3], 0);
+        assert_eq!(feed.visible().count(), rules.max_lines);
+        assert_eq!(feed.visible().last().unwrap().text, format!("line {}", rules.max_lines + 2));
+        feed.push(vec![mk("far away", "nearby", rules.nearby_radius * 3.0)], [0.0; 3], 0);
+        assert!(feed.visible().all(|l| l.text != "far away"), "a distant nearby line is not heard");
+        feed.tick(rules.line_seconds + 1.0);
+        assert_eq!(feed.visible().count(), 0, "lines expire");
+    }
+
 }

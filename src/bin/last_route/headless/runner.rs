@@ -23,6 +23,14 @@ pub const SCENARIOS: &[&str] = &[
     "goto_check",
 ];
 
+const MAX_MINUTES: f64 = 1440.0;
+const MAX_DEADLINE_S: f64 = 1.0e7;
+
+/// A playtest length that can run: finite, above zero, and a day at most.
+fn minutes_ok(m: f64) -> bool {
+    m.is_finite() && m > 0.0 && m <= MAX_MINUTES
+}
+
 fn num(a: &Args, k: &str, d: f64) -> f64 {
     a.value(k).and_then(|v| v.parse().ok()).unwrap_or(d)
 }
@@ -47,6 +55,10 @@ pub fn main(a: &Args) -> i32 {
         return 2;
     };
     let minutes = num(a, "minutes", 2.0);
+    if !minutes_ok(minutes) {
+        eprintln!("PLAYTEST SKIP: --minutes must be a finite number above 0 (and at most {MAX_MINUTES})");
+        return 2;
+    }
     let bot_seed = num(a, "bot_seed", 1.0) as u32;
     let target = num(a, "target", 0.0) as i64;
     let hz = num(a, "fixed_fps", 60.0).clamp(10.0, 240.0);
@@ -57,6 +69,7 @@ pub fn main(a: &Args) -> i32 {
         .value("out")
         .unwrap_or_else(|| format!(".playtest/{name}"));
     let deadline = num(a, "deadline", minutes * 60.0 * 3.0 + 120.0);
+    let deadline = if deadline.is_finite() { deadline.clamp(1.0, MAX_DEADLINE_S) } else { MAX_DEADLINE_S };
     let limits = json!({
         "max_stuck": num(a, "max_stuck", 3.0), "max_soft_locks": num(a, "max_soft_locks", 0.0),
         "max_errors": num(a, "max_errors", 0.0), "max_unreachable": num(a, "max_unreachable", 6.0),
@@ -322,4 +335,17 @@ fn progress(scenario: &str, bot: &Bot) -> i64 {
 #[allow(dead_code)]
 fn _mode(m: Mode) -> &'static str {
     m.id()
+}
+
+#[cfg(test)]
+mod minutes_tests {
+    use super::*;
+
+    #[test]
+    fn bad_minutes_are_refused() {
+        for m in [f64::NAN, f64::INFINITY, -2.0, 0.0, 1e300] {
+            assert!(!minutes_ok(m), "{m}");
+        }
+        assert!(minutes_ok(2.0));
+    }
 }

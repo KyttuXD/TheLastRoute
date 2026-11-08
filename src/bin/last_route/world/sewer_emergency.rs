@@ -79,7 +79,12 @@ pub fn props(sc: &SewerChunk, seed: &str, cx: i32, cy: i32, level: i32, rooms: &
     if want == 0 {
         return vec![];
     }
-    let taken: Vec<(i32, i32)> = sc.region_props.iter().map(|p| (p.cell.x, p.cell.y)).collect();
+    // every cell a region prop holds: its own cell and its footprint (an outflow main, a crawl pipe)
+    let taken: Vec<(i32, i32)> = sc
+        .region_props
+        .iter()
+        .flat_map(|p| std::iter::once((p.cell.x, p.cell.y)).chain(p.occupied_cells.iter().flatten().map(|c| (c.x, c.y))))
+        .collect();
     let lamps: Vec<(i32, i32)> = sc.region_props.iter().filter(|p| p.prop_type == "sewerLamp").map(|p| (p.cell.x, p.cell.y)).collect();
     // every dry cell with brick behind it, in grid order
     let mut spots: Vec<(i32, i32, (i32, i32))> = Vec::new();
@@ -182,6 +187,11 @@ mod tests {
                         let toward_wall = (yaw.sin().round() as i32, yaw.cos().round() as i32);
                         assert_eq!(toward_wall, (back.0 - p.cell.x, back.1 - p.cell.y), "{} faces the wrong way", p.id);
                         assert!(sc.region_props.iter().all(|o| (o.cell.x, o.cell.y) != (p.cell.x, p.cell.y)));
+                        assert!(
+                            sc.region_props.iter().all(|o| o.occupied_cells.iter().flatten().all(|c| (c.x, c.y) != (p.cell.x, p.cell.y))),
+                            "{} stands on a prop footprint",
+                            p.id
+                        );
                         for o in &out[..i] {
                             let d = (o.cell.x - p.cell.x).abs().max((o.cell.y - p.cell.y).abs());
                             assert!(d >= r.min_gap_cells);

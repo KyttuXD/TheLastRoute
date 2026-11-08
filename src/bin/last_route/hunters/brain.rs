@@ -380,6 +380,9 @@ pub struct Brain {
     pub lost_sight: f32,
     sense_timer: f32,
     pub wander_target: Option<(f32, f32)>,
+    /// PUBLIC route patrol (app/public_route.rs): the runner this hunter guards while it wanders, and the rules. None elsewhere.
+    pub patrol_anchor: Option<(f32, f32)>,
+    pub patrol: Option<&'static crate::content::public_roster::PublicPatrol>,
     pub search_target: Option<(f32, f32)>,
     pub last_known: Option<(f32, f32)>,
     pub direct_visible: bool,
@@ -476,6 +479,9 @@ pub struct Brain {
     nav: Arc<StackNav>,
     /// The hop (edge and entrance cell) the current route heads for, when the goal is on another level.
     hop: Option<Hop>,
+    /// A cross-floor goal that had no hop: (nav version, goal cell, goal level, own level, seconds left). While it holds the
+    /// hop search is skipped, so a goal with no flight is not searched again every frame.
+    no_hop_memo: Option<(u64, Cell, i32, i32, f32)>,
     /// Seconds spent on the current edge.
     edge_clock: f32,
 }
@@ -521,6 +527,8 @@ impl Brain {
             lost_sight: 0.0,
             sense_timer: 0.0,
             wander_target: None,
+            patrol_anchor: None,
+            patrol: None,
             search_target: None,
             last_known: None,
             direct_visible: false,
@@ -582,6 +590,7 @@ impl Brain {
             last_known_stamp: None,
             nav: Arc::new(StackNav::empty()),
             hop: None,
+            no_hop_memo: None,
             edge_clock: 0.0,
         }
     }
@@ -1193,7 +1202,11 @@ impl Brain {
             // stride animation and the footfalls follow the measured ground speed, so they speed up with it.
             (self.def.chase + prog * self.def.prog) * rules.chase_scale_for(self.diff, &self.def.category)
         } else {
-            self.def.speed + prog
+            let base = self.def.speed + prog;
+            match self.patrol {
+                Some(p) if self.state == State::Wander => crate::app::public_route::patrol_speed(base, p, self.patrol_anchor.is_some()),
+                _ => base,
+            }
         };
         if self.winded {
             speed *= HUNTER_WINDED_SPEED_SCALE;
@@ -1433,6 +1446,7 @@ impl Brain {
         self.unreachable = 0.0;
         self.blocked_time = 0.0;
         self.avoid.clear();
+        self.no_hop_memo = None;
         match self.state {
             State::Chase | State::Investigate => {
                 self.last_known = None;
@@ -1484,6 +1498,9 @@ impl Brain {
             self.hop = None;
         }
         self.path_timer -= dt;
+        if let Some(m) = self.no_hop_memo.as_mut() {
+            m.4 -= dt;
+        }
         for a in self.avoid.iter_mut() {
             a.1 -= dt;
         }
@@ -1511,8 +1528,16 @@ impl Brain {
         let mut deferred = false;
         if self.path_timer <= 0.0 || self.path.is_empty() || self.path_goal.is_none() {
             if cross {
-                self.hop = self.hop_to(fac, goal, goal_level);
+                let memo_key = (self.nav.version(), target_cell, goal_level, self.level);
+                let remembered =
+                    self.no_hop_memo.is_some_and(|m| (m.0, m.1, m.2, m.3) == memo_key && m.4 > 0.0);
+                self.hop = if remembered { None } else { self.hop_to(fac, goal, goal_level) };
                 no_hop = self.hop.is_none();
+                if self.hop.is_some() {
+                    self.no_hop_memo = None;
+                } else if !remembered {
+                    self.no_hop_memo = Some((memo_key.0, memo_key.1, memo_key.2, memo_key.3, self.give_up_after));
+                }
             }
             if let Some(h) = self.hop.as_ref().filter(|_| cross) {
                 target_cell = h.entrance;
@@ -1815,6 +1840,9 @@ impl Brain {
                     cands.push(p);
                 }
             }
+        }
+        if let Some(p) = self.patrol {
+            cands = crate::app::public_route::filter_candidates(p, self.patrol_anchor, &cands);
         }
         if cands.is_empty() {
             return fac.exit.center();
@@ -3480,6 +3508,29 @@ mod route_budget_tests {
 
     fn facility() -> Facility {
         Facility::generate("BUDGET-1", &Options::default(), &Catalog::load())
+    }
+
+    #[test]
+    fn a_cross_floor_goal_with_no_flight_is_remembered_not_searched_every_frame() {
+        path_scheduler::reset_thread();
+        let prof = Difficulty::Standard.profile();
+        let fac = facility();
+        let cells = fac.floor_cells();
+        let mut h = Brain::new(aki(), cells[0].center(), "NOHOP-1", Difficulty::Standard);
+        h.active = true;
+        h.state = State::Chase;
+        let goal = cells[cells.len() / 2].center();
+        h.last_known = Some(goal);
+        h.last_known_stamp = Some(goal);
+        h.last_known_level = h.level - 2; // no flight links the (empty) nav graph
+        h.pursue(goal, 1.0, 1.0 / 60.0, &fac, &prof);
+        let first = h.no_hop_memo.expect("the failed hop search is remembered");
+        h.pursue(goal, 1.0, 1.0 / 60.0, &fac, &prof);
+        let second = h.no_hop_memo.expect("and kept");
+        assert_eq!((first.0, first.1, first.2, first.3), (second.0, second.1, second.2, second.3));
+        assert!(second.4 < first.4, "the memo ran down instead of being searched afresh");
+        h.give_up_goal(&fac, &prof);
+        assert!(h.no_hop_memo.is_none(), "giving up forgets it");
     }
 
     #[test]

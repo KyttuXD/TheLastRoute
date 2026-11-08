@@ -101,7 +101,11 @@ impl CloudSaves {
                     self.mark(Owed::None);
                     return CloudOutcome::Cleared;
                 }
-                Ok(CloudPut::Stale { .. }) => return CloudOutcome::Deferred("STALE".into()),
+                Ok(CloudPut::Stale { .. }) => {
+                    // the account holds a newer run: drop the owed clear and let the pull decide
+                    self.mark(Owed::None);
+                    pull = true;
+                }
                 Err(e) => return CloudOutcome::Deferred(e.to_string()),
             },
             Owed::Push => match local {

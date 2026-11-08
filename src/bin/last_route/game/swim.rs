@@ -14,61 +14,22 @@
 use serde_json::Value;
 use std::sync::OnceLock;
 
+/// Wading speed rules. The wade and swim noise, stamina and soak numbers live in data/swim/effects.json
+/// (`SwimConfig`), the one source for them; this file holds only what the speed curve reads.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WadeRules {
     pub deep_depth: f32,
-    pub max_flood_depth: f32,
     pub speed_scale: f32,
-    pub tiring_depth: f32,
-    pub stamina_drain: f32,
-    pub noise: f32,
-    pub deep_noise: f32,
-    pub splash_every: f32,
-    pub splash_gain: f32,
-    pub soaked_floor_fraction: f32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PlungeRules {
-    pub splash_noise: f32,
-    pub splash_noise_seconds: f32,
-    pub soaked_seconds: f32,
-    pub soaked_noise_scale: f32,
-    /// Metres from the water surface down to the bed (Godot CHANNEL_DEPTH + WATER_SURFACE); the swim runs on the bed.
-    pub channel_depth: f32,
-    pub water_surface: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SwimRules {
     pub wade: WadeRules,
-    pub plunge: PlungeRules,
 }
 
 impl Default for SwimRules {
     fn default() -> Self {
-        SwimRules {
-            wade: WadeRules {
-                deep_depth: 0.9,
-                max_flood_depth: 0.35,
-                speed_scale: 0.45,
-                tiring_depth: 0.6,
-                stamina_drain: 6.0,
-                noise: 12.0,
-                deep_noise: 17.0,
-                splash_every: 0.42,
-                splash_gain: 0.3,
-                soaked_floor_fraction: 0.5,
-            },
-            plunge: PlungeRules {
-                splash_noise: 3.0,
-                splash_noise_seconds: 1.2,
-                soaked_seconds: 30.0,
-                soaked_noise_scale: 1.45,
-                channel_depth: 0.0,
-                water_surface: 0.0,
-            },
-        }
+        SwimRules { wade: WadeRules { deep_depth: 0.9, speed_scale: 0.45 } }
     }
 }
 
@@ -101,28 +62,11 @@ impl SwimRules {
     /// (non-negative; durations above zero) so a bad edit cannot divide by zero.
     pub fn parse(v: &Value) -> SwimRules {
         let w = &v["wade"];
-        let p = &v["plunge"];
         let d = SwimRules::default();
         SwimRules {
             wade: WadeRules {
                 deep_depth: pos(w, "deep_depth", d.wade.deep_depth),
-                max_flood_depth: pos(w, "max_flood_depth", d.wade.max_flood_depth),
                 speed_scale: nn(w, "speed_scale", d.wade.speed_scale).min(1.0),
-                tiring_depth: nn(w, "tiring_depth", d.wade.tiring_depth),
-                stamina_drain: nn(w, "stamina_drain", d.wade.stamina_drain),
-                noise: nn(w, "noise", d.wade.noise),
-                deep_noise: nn(w, "deep_noise", d.wade.deep_noise),
-                splash_every: pos(w, "splash_every", d.wade.splash_every),
-                splash_gain: nn(w, "splash_gain", d.wade.splash_gain),
-                soaked_floor_fraction: nn(w, "soaked_floor_fraction", d.wade.soaked_floor_fraction).min(1.0),
-            },
-            plunge: PlungeRules {
-                splash_noise: nn(p, "splash_noise", d.plunge.splash_noise),
-                splash_noise_seconds: nn(p, "splash_noise_seconds", d.plunge.splash_noise_seconds),
-                soaked_seconds: nn(p, "soaked_seconds", d.plunge.soaked_seconds),
-                soaked_noise_scale: nn(p, "soaked_noise_scale", d.plunge.soaked_noise_scale),
-                channel_depth: nn(p, "channel_depth", d.plunge.channel_depth),
-                water_surface: nn(p, "water_surface", d.plunge.water_surface),
             },
         }
     }
@@ -447,44 +391,6 @@ pub fn wade_speed_scale(rules: &WadeRules, depth: f32) -> f32 {
     lerp(1.0, rules.speed_scale, (depth / rules.deep_depth).clamp(0.0, 1.0))
 }
 
-/// The noise figure of a wading step at `depth` (Godot `_update_wading`): `noise` scaled by how deep the flood is up
-/// to its normal maximum, blending to `deep_noise` between `max_flood_depth` and `deep_depth`. 0 when dry.
-pub fn wade_noise(rules: &WadeRules, depth: f32) -> f32 {
-    if !(depth > 0.0) {
-        return 0.0;
-    }
-    let span = (rules.deep_depth - rules.max_flood_depth).max(1e-4);
-    let deep = ((depth - rules.max_flood_depth) / span).clamp(0.0, 1.0);
-    lerp(rules.noise * (depth / rules.max_flood_depth).clamp(0.5, 1.0), rules.deep_noise, deep)
-}
-
-/// Stamina lost over `dt` seconds of moving in `depth` of water (0 under `tiring_depth` or when dry).
-pub fn wade_stamina_cost(rules: &WadeRules, depth: f32, dt: f32) -> f32 {
-    if depth > 0.0 && depth >= rules.tiring_depth {
-        rules.stamina_drain * dt.max(0.0)
-    } else {
-        0.0
-    }
-}
-
-/// The soaked seconds a wader is held at least at while in water (any wet foot).
-pub fn wade_soaked_floor(wade: &WadeRules, plunge: &PlungeRules, depth: f32) -> f32 {
-    if depth > 0.0 {
-        plunge.soaked_seconds * wade.soaked_floor_fraction
-    } else {
-        0.0
-    }
-}
-
-/// Footstep noise while soaked (hunters hear a wet runner from further away).
-pub fn soaked_noise(rules: &PlungeRules, base_noise: f32, soaked_left: f32) -> f32 {
-    if soaked_left > 0.0 {
-        base_noise * rules.soaked_noise_scale
-    } else {
-        base_noise
-    }
-}
-
 /// An absolute cell split into its chunk (x, z) and the cell inside that chunk (floor division, so negative cells work).
 pub fn split_cell(abs: (i32, i32), chunk: i32) -> ((i32, i32), (i32, i32)) {
     (
@@ -590,20 +496,18 @@ mod tests {
     fn embedded_data_matches_godot_standard() {
         assert_eq!(*rules(), standard());
         assert_eq!(rules().wade.speed_scale, 0.45);
-        assert_eq!(rules().plunge.soaked_seconds, 30.0);
     }
 
     #[test]
     fn changed_data_changes_behaviour() {
-        let v = serde_json::json!({ "wade": { "speed_scale": 0.2 }, "plunge": { "soaked_noise_scale": 3.0 } });
+        let v = serde_json::json!({ "wade": { "speed_scale": 0.2 } });
         let r = SwimRules::parse(&v);
         assert!(wade_speed_scale(&r.wade, 0.9) < wade_speed_scale(&standard().wade, 0.9));
-        assert!(soaked_noise(&r.plunge, 10.0, 5.0) > soaked_noise(&standard().plunge, 10.0, 5.0));
     }
 
     #[test]
     fn bad_data_falls_back() {
-        let v = serde_json::json!({ "plunge": { "soaked_seconds": -1 }, "wade": { "deep_depth": "x" } });
+        let v = serde_json::json!({ "wade": { "speed_scale": -1, "deep_depth": "x" } });
         assert_eq!(SwimRules::parse(&v), standard());
     }
 
@@ -632,9 +536,8 @@ mod tests {
         assert_eq!((r.ground.noise, r.ground.noise_seconds, r.ground.flicker_seconds), (18.0, 1.5, 0.8));
         assert_eq!((r.ground.scale_min, r.ground.scale_max), (0.4, 2.0));
         assert!(r.pool.soak);
-        // the pool splash is the old plunge splash
-        assert_eq!(r.pool.noise, rules().plunge.splash_noise);
-        assert_eq!(r.pool.noise_seconds, rules().plunge.splash_noise_seconds);
+        // the pool splash noise is the fall data's own
+        assert!(r.pool.noise > 0.0 && r.pool.noise_seconds > 0.0);
     }
 
     #[test]
@@ -643,7 +546,6 @@ mod tests {
         const OLD_WADE_GAIN: f32 = 0.6;
         let r = FallRules::parse(&fall_json()).unwrap();
         assert!(r.pool.splash_gain < OLD_POOL_GAIN && r.pool.splash_gain >= 0.2);
-        assert!(rules().wade.splash_gain < OLD_WADE_GAIN && rules().wade.splash_gain >= 0.1);
         // the gameplay noise is untouched
         assert_eq!(r.pool.noise, 3.0);
     }
@@ -786,24 +688,18 @@ mod tests {
         assert!((knee - w.speed_scale).abs() < 1e-5);
         assert_eq!(wade_speed_scale(&w, 5.0), knee);
     }
-
     #[test]
-    fn wading_noise_and_tiring() {
-        let w = standard().wade;
-        assert_eq!(wade_noise(&w, 0.0), 0.0);
-        assert!(wade_noise(&w, 0.35) >= wade_noise(&w, 0.1));
-        assert!(wade_noise(&w, 0.9) > wade_noise(&w, 0.35));
-        assert_eq!(wade_stamina_cost(&w, 0.3, 1.0), 0.0);
-        assert!(wade_stamina_cost(&w, 0.7, 1.0) > 0.0);
-        let p = standard().plunge;
-        assert_eq!(wade_soaked_floor(&w, &p, 0.0), 0.0);
-        assert!(wade_soaked_floor(&w, &p, 0.1) > 0.0);
+    fn movement_json_holds_only_keys_the_code_reads() {
+        let (_, text) = crate::content::embedded::data_under("swim/movement.json").next().unwrap();
+        let v: Value = serde_json::from_str(text).unwrap();
+        let keys = |o: &Value| -> Vec<String> { o.as_object().unwrap().keys().cloned().collect() };
+        assert!(keys(&v["wade"]).iter().all(|k| k == "deep_depth" || k == "speed_scale"));
+        assert!(v.get("plunge").is_none(), "plunge numbers live in fall.json and effects.json");
     }
 
     #[test]
-    fn soaked_makes_steps_louder() {
-        let r = standard().plunge;
-        assert!(soaked_noise(&r, 10.0, 5.0) > 10.0);
-        assert_eq!(soaked_noise(&r, 10.0, 0.0), 10.0);
+    fn wade_stamina_noise_and_soak_come_from_effects_json() {
+        let c = crate::game::swim_effects::SwimConfig::default();
+        assert!(c.wade_stamina_drain > 0.0 && c.wade_noise > 0.0 && c.soaked_seconds > 0.0);
     }
 }

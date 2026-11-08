@@ -157,6 +157,8 @@ pub struct Admin {
     /// Keyboard scrolling asked for this frame, in canvas units (the menu applies it when it draws).
     scroll_keys: f32,
     field_focus: Option<usize>,
+    /// STATUS tab: when (admin clock) the saved-checkpoint file was last read, and what it held.
+    checkpoint_cache: std::cell::Cell<(f32, bool)>,
     prefs: prefs::Prefs,
 
     // PLAYER
@@ -224,6 +226,7 @@ impl Admin {
             fields: Default::default(),
             scroll_keys: 0.0,
             field_focus: None,
+            checkpoint_cache: std::cell::Cell::new((f32::NEG_INFINITY, false)),
             no_target: false,
             god_mode: false,
             noclip: false,
@@ -455,7 +458,7 @@ impl Admin {
         } else {
             0
         };
-        if step != 0 {
+        if step != 0 && tab_step_allowed(self.tab, self.field_focus) {
             let next = step_tab(self.tab, step);
             if next != self.tab {
                 self.tab = next;
@@ -611,6 +614,24 @@ impl Admin {
 
 #[cfg(test)]
 mod tests;
+
+/// Left, Right and Tab leave a FIELDS text box alone while it has focus (they edit the text).
+fn tab_step_allowed(tab: usize, field_focus: Option<usize>) -> bool {
+    !(tab == 9 && field_focus.is_some())
+}
+
+#[cfg(test)]
+mod nav_tests {
+    use super::tab_step_allowed;
+
+    #[test]
+    fn a_focused_fields_box_keeps_left_right_and_tab() {
+        assert!(!tab_step_allowed(9, Some(0)));
+        assert!(tab_step_allowed(9, None));
+        assert!(tab_step_allowed(8, Some(0)));
+        assert!(tab_step_allowed(0, None));
+    }
+}
 
 #[cfg(test)]
 mod publish_tests {

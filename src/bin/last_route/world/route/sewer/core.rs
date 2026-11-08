@@ -1600,7 +1600,9 @@ pub struct SewerChunk {
 /// `sewer().chunk(coord)` for the sewer levels (`_build_chunk`, sewer:275-376) up to the seams. `None` for a
 /// coordinate that is not a sewer chunk.
 /// The sewer chunk as it is played: the Godot layout (`chunk_base`) plus the extra sewer room (`rooms`) in a free
-/// spot and, on the lower storey, the second level's water tunnels and landing pools (`level2`).
+/// spot and, on the lower storey, the second level's tunnels and landing pools (`level2`) opened into solid rock.
+/// The lower storey's own main cross keeps its dry and water cells: level 2's data (a wider channel, a narrower
+/// tunnel) only fills rock the cross left, it does not re-cut the cross.
 pub fn chunk(coord: Coord, inputs: &Inputs) -> Option<SewerChunk> {
     let mut c = build_base(coord, inputs, false)?;
     if coord.y == LOWER_LEVEL {
@@ -1625,6 +1627,32 @@ fn overlay_level2(c: &mut SewerChunk, inputs: &Inputs) {
     }
 }
 
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+
+    /// The level -2 overlay only fills rock: the lower storey's main cross keeps its own dry cells where level 2's data
+    /// has water (level 2's channel is wider than the lower one).
+    #[test]
+    fn the_level_two_overlay_does_not_recut_the_lower_main_cross() {
+        let mut compared = 0;
+        for x in -3..3 {
+            for z in -3..3 {
+                let inputs = Inputs { world: "overlay-w" };
+                let Some(c) = chunk(Coord::new(x, LOWER_LEVEL, z), &inputs) else { continue };
+                let l2 = super::super::level2::chunk(&inputs, x, z);
+                let col = 2;
+                let row = CENTER as usize - 2;
+                if l2.grid[row][col] == WATER && c.sewer_grid[row][col] == DRY {
+                    compared += 1;
+                }
+                assert_ne!(c.sewer_grid[row][col], SOLID, "the cross is open");
+            }
+        }
+        assert!(compared > 0, "the lower cross keeps dry cells where level 2 has water");
+    }
+}
+
 /// Put one extra room (pump room, valve hall...) into a free spot of the chunk, after the maze, the region props and
 /// the seal frame, and before the pickups, hunters and fixtures read the chunk. Its props join `region_props`.
 fn place_room(c: &mut SewerChunk, world: &str) {
@@ -1633,9 +1661,9 @@ fn place_room(c: &mut SewerChunk, world: &str) {
     keep_clear.extend(c.sealed_cells.iter().copied());
     keep_clear.extend(c.behind.iter().copied());
     let grid = c.sewer_grid;
-    let free = |x: i32, z: i32, w: i32, h: i32| super::rooms::spot_is_free(table, &grid, &keep_clear, x, z, w, h);
+    let free = |def: &super::rooms::RoomDef, x: i32, z: i32| super::rooms::spot_is_free(def, &grid, &keep_clear, x, z);
     let Some(placed) = super::rooms::pick(table, world, &chunk_id(c.coord), &free) else { return };
-    // `free` only knows the size: the picked room must be one that opens onto floor at that spot
+    // `free` already tested this room's own doorway; kept as a guard
     if !super::rooms::connects(placed.def, &grid, placed.origin.x, placed.origin.y) {
         return;
     }

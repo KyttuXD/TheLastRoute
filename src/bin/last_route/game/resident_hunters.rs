@@ -210,11 +210,14 @@ impl Game {
 
     /// Every bot as a target, with the level it stands on (a hunter picks among those on its own level).
     pub(super) fn bot_targets(&self) -> Vec<BotTarget> {
+        // a bot carries the runner's temperature reading: a default 0 would read as freezing to Wynelle, whose meter
+        // would fill on a bot target and end the runner's run in the cold
+        let temperature = self.specialty.reading_for_hunters(self.meters.temperature);
         self.npcs
             .iter()
             .map(|n| BotTarget {
                 level: n.level,
-                target: Target { pos: n.at, facing: n.heading, y: n.y, level: n.level, ..Default::default() },
+                target: Target { pos: n.at, facing: n.heading, y: n.y, level: n.level, temperature, ..Default::default() },
             })
             .collect()
     }
@@ -970,6 +973,20 @@ mod tests {
         assert_eq!(nearest_within_cap(&[5.0, 1.0], 8), vec![0, 1], "a cap above the count keeps everyone");
         assert!(nearest_within_cap(&[5.0, 1.0], 0).is_empty(), "a zero cap simulates nobody");
         assert_eq!(nearest_within_cap(&[2.0, 2.0, 2.0], 2), vec![0, 1], "ties go to the lower index");
+    }
+
+    #[test]
+    fn a_bot_target_carries_the_runners_temperature_reading() {
+        use crate::config::Difficulty;
+        use crate::content::Content;
+        use crate::world::catalog::Catalog;
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-BOT-TEMP", 0, &content, &catalog);
+        g.npc_ensure_run(&content);
+        let want = g.specialty.reading_for_hunters(g.meters.temperature);
+        for b in g.bot_targets() {
+            assert_eq!(b.target.temperature, want, "a bot is not freezing to a hunter's gimmick");
+        }
     }
 
     #[test]

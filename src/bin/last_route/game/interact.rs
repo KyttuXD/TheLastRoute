@@ -167,12 +167,39 @@ impl Game {
         best.map(|b| b.1)
     }
 
+    /// The open Void Gray signal route, as the prompt shows it: (presses done, presses needed, seconds left for the next).
+    pub fn signal_route(&self) -> Option<(u32, u32, f32)> {
+        self.hunters.iter().find_map(|h| match &h.gimmick {
+            crate::hunters::gimmicks::Gimmick::VoidGray(g) => g.route_prompt(),
+            _ => None,
+        })
+    }
+
+    /// E on an open signal route: one press for the first hunter with a route open. True when a route took the press.
+    pub(crate) fn press_signal_route(&mut self) -> bool {
+        use crate::hunters::gimmicks::Gimmick;
+        let Some(i) = self.hunters.iter().position(|h| matches!(&h.gimmick, Gimmick::VoidGray(g) if g.route_prompt().is_some())) else {
+            return false;
+        };
+        let b = &mut self.hunters[i];
+        let mut g = std::mem::take(&mut b.gimmick);
+        if let Gimmick::VoidGray(v) = &mut g {
+            v.press_route(b);
+        }
+        b.gimmick = g;
+        true
+    }
+
     pub fn focus_prompt(&self) -> Option<String> {
         if self.shop_open() {
             return Some(
                 "ZELLIA'S STORE // [1] COOL -2 // [2] WARM -2 // [3] REPAIR -3 // [4] PESTICIDE -4"
                     .into(),
             );
+        }
+        // an open Void Gray signal route: E presses it, each press within its seconds
+        if let Some((done, need, left)) = self.signal_route() {
+            return Some(format!("SIGNAL ROUTE // [E] {done}/{need} // {left:.0} S"));
         }
         let f = self.focus?;
         Some(match f {

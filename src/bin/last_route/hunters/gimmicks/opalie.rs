@@ -12,6 +12,11 @@ pub struct Opalie {
 }
 
 impl Opalie {
+    /// The window moved by `d`.
+    pub fn shift(&mut self, d: (f32, f32)) {
+        self.station = (self.station.0 + d.0, self.station.1 + d.1);
+    }
+
     pub fn after(&mut self, b: &mut Brain, c: &Ctx, t: &Target) {
         if c.fac.relays.is_empty() {
             return;

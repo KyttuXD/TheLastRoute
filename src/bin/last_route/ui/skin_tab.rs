@@ -507,10 +507,18 @@ fn take_dropped(s: &mut SkinUi) {
         let cap = skins::max_bytes();
         let bytes = match (&file.path, file.bytes) {
             (Some(path), _) => skins::read_capped(path, cap).map_err(|e| e.to_string()),
-            (None, Some(b)) if b.len() <= cap => Ok(b),
-            (None, _) => Err("the file is too big".to_string()),
+                        (None, b) => bytes_without_path(b, cap),
         };
         take_file(s, &name, bytes);
+    }
+}
+
+/// The bytes of a dropped file that came without a path: over the cap is too big, and no bytes at all is unreadable.
+fn bytes_without_path(bytes: Option<Vec<u8>>, cap: usize) -> Result<Vec<u8>, String> {
+    match bytes {
+        Some(b) if b.len() <= cap => Ok(b),
+        Some(_) => Err("the file is too big".to_string()),
+        None => Err("the file could not be read".to_string()),
     }
 }
 
@@ -925,6 +933,13 @@ pub fn draw(a: &Assets, st: &mut Settings, ox: f32, oy: f32, changed: &mut bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_drop_with_no_path_and_no_bytes_is_unreadable_not_too_big() {
+        assert_eq!(bytes_without_path(None, 100), Err("the file could not be read".to_string()));
+        assert_eq!(bytes_without_path(Some(vec![0; 101]), 100), Err("the file is too big".to_string()));
+        assert_eq!(bytes_without_path(Some(vec![0; 100]), 100), Ok(vec![0; 100]));
+    }
 
     /// Courier: every glyph is 0.6 em wide (style::tw for the system font).
     fn mono(size: f32) -> impl Fn(&str) -> f32 {

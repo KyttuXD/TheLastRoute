@@ -22,6 +22,12 @@ pub struct Mavrine {
 }
 
 impl Mavrine {
+    /// The window moved by `d`.
+    pub fn shift(&mut self, d: (f32, f32)) {
+        self.mark = self.mark.map(|m| (m.0 + d.0, m.1 + d.1));
+        self.last_mark = None;
+    }
+
     pub fn new() -> Mavrine {
         Mavrine {
             phase: Phase::Cooldown,

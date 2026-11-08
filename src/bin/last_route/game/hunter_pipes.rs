@@ -216,6 +216,13 @@ impl Game {
             self.burst_pipe(chunk, n);
             true
         } else {
+            // a guest asks the host once per swing, so the host's own strike count can reach the pipe's durability;
+            // the breaking swing's request is queued by `burst_pipe`
+            if self.remote_hunters {
+                if let Some(inf) = self.inf.as_mut() {
+                    inf.burst_requests.push(id);
+                }
+            }
             false
         }
     }
@@ -229,22 +236,36 @@ impl Game {
             return false;
         }
         let Some((chunk, n)) = pipes::parse_burst_id(&req.flow_id) else { return false };
-        if chunk.1 != -depth || self.pipes.run(&req.flow_id).is_some() {
+        if Some(chunk.1) != depth.checked_neg() || self.pipes.run(&req.flow_id).is_some() {
             return false;
         }
-        let Some(cells) = self.pipe_cells_abs(chunk, n) else { return false };
+        let Some((kind, cells)) = self.pipe_cells_abs(chunk, n) else { return false };
         if !pipe_in_reach(&cells, at, MELEE_STRIKE_RANGE + GUEST_REACH_SLACK) {
             return false;
         }
-        let at = Self::abs_to_window(self.window_origin(), at);
-        self.open_burst(&req.flow_id, at, chunk.1);
+        // the host's own swing rules: a clear line to a pipe cell in reach, and the strikes the pipe takes
+        let o = self.window_origin();
+        let from = Self::abs_to_window(o, at);
+        let range = MELEE_STRIKE_RANGE + GUEST_REACH_SLACK;
+        let seen = cells.iter().filter(|c| super::pdist(**c, at) <= range).any(|c| {
+            let w = Self::abs_to_window(o, *c);
+            sight_to_cell(|x, z| self.fac.is_floor(x, z), from, (w.0.floor() as i32, w.1.floor() as i32))
+        });
+        if !seen {
+            return false;
+        }
+        let need = pipes::rules().strikes_to_burst(kind);
+        if !self.pipes.strike(&req.flow_id, need) {
+            return false;
+        }
+        self.open_burst(&req.flow_id, from, chunk.1);
         true
     }
 
     /// The absolute cell centres of pipe `n` of sewer chunk `chunk`: from the runner's water chunk when it is that
     /// one, else the chunk built from the run's seed.
-    fn pipe_cells_abs(&self, chunk: pipes::Chunk, n: usize) -> Option<Vec<(f32, f32)>> {
-        let cells = match &self.water_cache {
+    fn pipe_cells_abs(&self, chunk: pipes::Chunk, n: usize) -> Option<(&'static str, Vec<(f32, f32)>)> {
+        let (kind, cells) = match &self.water_cache {
             Some((key, Some(ch))) if *key == chunk => pipe_cells(&ch.breakables, n)?,
             _ => {
                 let seed = &self.inf.as_ref()?.seed;
@@ -252,8 +273,11 @@ impl Game {
                 pipe_cells(&ch.breakables, n)?
             }
         };
-        let base = (chunk.0 * sewer_core::CHUNK, chunk.2 * sewer_core::CHUNK);
-        Some(cells.iter().map(|c| ((base.0 + c.x) as f32 + 0.5, (base.1 + c.y) as f32 + 0.5)).collect())
+        // a guest names the chunk: checked math, so a far coordinate is refused instead of wrapping
+        let base = (chunk.0.checked_mul(sewer_core::CHUNK)?, chunk.2.checked_mul(sewer_core::CHUNK)?);
+        let abs: Option<Vec<(f32, f32)>> =
+            cells.iter().map(|c| Some((base.0.checked_add(c.x)? as f32 + 0.5, base.1.checked_add(c.y)? as f32 + 0.5))).collect();
+        Some((kind, abs?))
     }
 }
 
@@ -267,9 +291,9 @@ fn same_height(feet_y: f32, floor_y: f32) -> bool {
 }
 
 /// The cells of breakable `n` when it is a pipe.
-fn pipe_cells(breakables: &[BreachSpec], n: usize) -> Option<Vec<V2>> {
+fn pipe_cells(breakables: &[BreachSpec], n: usize) -> Option<(&'static str, Vec<V2>)> {
     match &breakables.get(n)?.extras {
-        Extras::Pipe(p) => Some(p.cells.clone()),
+        Extras::Pipe(p) => Some((p.pipe, p.cells.clone())),
         _ => None,
     }
 }
@@ -612,12 +636,29 @@ mod tests {
         assert!(!g.host_burst_pipe(&not_a_pipe, near, 1), "no such breakable");
         assert!(g.pipes.run(&id).is_none());
         g.noise_events.clear();
+        // the host counts the strikes: a request is one swing, the pipe bursts on the one that breaks it
+        let need = pipes::rules().strikes_to_burst("outflow").max(1);
+        for _ in 1..need {
+            assert!(!g.host_burst_pipe(&req, near, 1), "a dent is not a burst");
+            assert!(g.pipes.run(&id).is_none());
+        }
         assert!(g.host_burst_pipe(&req, near, 1), "at the pipe on its storey");
         assert!(g.pipes.run(&id).is_some());
         assert!(g.noise_events.iter().any(|e| e.kind == NoiseKind::PipeBurst && e.level == key.1));
         assert!(!g.host_burst_pipe(&req, near, 1), "a flow already running is not burst again");
         g.remote_hunters = true;
         assert!(!g.host_burst_pipe(&BurstRequest { peer: 2, flow_id: id }, near, 1), "a guest never decides");
+    }
+
+    #[test]
+    fn a_guest_depth_or_chunk_that_would_overflow_is_refused() {
+        let (mut g, id) = game_with_pipe(&[(3, 3)]);
+        let near = Game::window_to_abs(g.window_origin(), pipe_cell_at(&g, (3, 3)));
+        let req = BurstRequest { peer: 2, flow_id: id };
+        assert!(!g.host_burst_pipe(&req, near, i32::MIN), "i32::MIN depth cannot be negated");
+        let far = BurstRequest { peer: 2, flow_id: "BRK:2000000000:-1:0:0".into() };
+        assert!(!g.host_burst_pipe(&far, near, 1), "a far chunk is refused, not wrapped");
+        assert!(g.pipe_cells_abs((2_000_000_000, -1, 0), 0).is_none());
     }
 
     #[test]

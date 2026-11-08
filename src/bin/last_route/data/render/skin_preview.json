@@ -1,7 +1,6 @@
 {
   "schema": "lr.skin_preview/1",
   "_source": "Godot: game/ui/skin_panel.gd (the mannequin scaled to the 1.60 m runner, turning at 28 deg/s, camera at (0, 1, 2.9) x 0.9 with a 38 degree field of view, transparent background). The 180 degree start shows the front first.",
-  "model": "player/player_mannequin.bbmodel",
   "slim_model": "player/player_mannequin_slim.bbmodel",
   "rig": "player_mannequin",
   "idle_clip": "idle",

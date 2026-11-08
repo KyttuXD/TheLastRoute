@@ -25,6 +25,11 @@ pub struct Solyth {
 }
 
 impl Solyth {
+    /// The window moved by `d`.
+    pub fn shift(&mut self, d: (f32, f32)) {
+        self.retreat = self.retreat.map(|p| (p.0 + d.0, p.1 + d.1));
+    }
+
     /// The runner's cold source is on: she backs off for `seconds` more, to a point `cells` from the runner.
     pub fn deter(&mut self, seconds: f32, cells: f32) {
         self.deter_left = self.deter_left.max(seconds);

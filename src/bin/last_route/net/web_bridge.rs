@@ -63,6 +63,34 @@ mod ffi {
     }
 }
 
+/// The most a page blob may be before the build refuses to copy it into memory.
+const MAX_BLOB: usize = 32 * 1024 * 1024;
+
+/// What to do with a blob the page reports at `n` bytes after a read into `cap`: `Some(None)` it fit, `Some(Some(m))`
+/// read again at `m`, `None` refuse (too large).
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn blob_regrow(n: usize, cap: usize) -> Option<Option<usize>> {
+    if n <= cap {
+        Some(None)
+    } else if n > MAX_BLOB {
+        None
+    } else {
+        Some(Some(n))
+    }
+}
+
+#[cfg(test)]
+mod blob_tests {
+    use super::*;
+
+    #[test]
+    fn a_page_reported_length_is_capped_before_allocating() {
+        assert_eq!(blob_regrow(10, 64), Some(None));
+        assert_eq!(blob_regrow(100, 64), Some(Some(100)));
+        assert_eq!(blob_regrow(MAX_BLOB + 1, 64), None);
+    }
+}
+
 /// Reads a page blob: the first try uses a 64 KB buffer, a longer blob is read again at its own length.
 #[cfg(target_arch = "wasm32")]
 fn read_blob(get: impl Fn(*mut u8, u32) -> i32) -> Vec<u8> {
@@ -74,11 +102,14 @@ fn read_blob(get: impl Fn(*mut u8, u32) -> i32) -> Vec<u8> {
             return Vec::new();
         }
         let n = n as usize;
-        if n <= cap {
-            buf.truncate(n);
-            return buf;
+        match blob_regrow(n, cap) {
+            Some(None) => {
+                buf.truncate(n);
+                return buf;
+            }
+            Some(Some(bigger)) => cap = bigger,
+            None => return Vec::new(),
         }
-        cap = n;
     }
     Vec::new()
 }

@@ -61,14 +61,21 @@ fn short(v: &Option<Value>) -> String {
     match v {
         None => "<missing>".into(),
         Some(v) => {
-            let s = v.to_string();
-            if s.len() > 160 {
-                format!("{}...", &s[..160])
-            } else {
-                s
-            }
+            cut_160(v.to_string())
         }
     }
+}
+
+/// Cut to 160 bytes at most, on a char boundary, so a multi-byte character never panics the slice.
+fn cut_160(s: String) -> String {
+    if s.len() <= 160 {
+        return s;
+    }
+    let mut cut = 160;
+    while !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}...", &s[..cut])
 }
 
 fn compare(actual: &Option<Value>, op: &str, want: &Value, tol: f64) -> Result<bool, String> {
@@ -233,5 +240,26 @@ pub fn sections(list: &Value, out: &mut std::collections::HashSet<String>) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod short_tests {
+    use super::*;
+
+    #[test]
+    fn a_long_multibyte_value_is_cut_without_panicking() {
+        // 'e' with accent is 2 bytes; every offset up to 160 is exercised
+        for pad in 0..4 {
+            let s = format!("{}{}", "a".repeat(pad), "é".repeat(200));
+            let out = short(&Some(Value::String(s)));
+            assert!(out.ends_with("..."));
+            assert!(out.len() <= 160 + 3 + 2);
+        }
+    }
+
+    #[test]
+    fn a_short_value_is_left_alone() {
+        assert_eq!(cut_160("abc".into()), "abc");
     }
 }

@@ -77,11 +77,13 @@ impl Game {
     /// The runner would die: it goes down instead. Returns true when the runner is down after the call (it went down
     /// now, or it was down already and a further catch does not kill it; only the timeout does).
     pub(super) fn go_down(&mut self, hunter: usize) -> bool {
-        if self.downed.is_some() {
+        // a run that already has its report is finished: it is never taken down (and never ended twice)
+        if self.downed.is_some() || self.report.is_some() {
             return true;
         }
         let r = rules();
         self.downed = Some(Downed { remaining: r.timeout_seconds, held: 0.0, hunter });
+        self.downed_hunter = self.hunters.get(hunter).map(|h| (h.def.id.clone(), h.def.name.clone()));
         self.escape = None;
         self.hide_check = None;
         if self.p.hidden.is_some() {
@@ -131,6 +133,11 @@ impl Game {
                 let a = self.admin_flags();
                 if !(a.god || a.no_target) {
                     self.finish_run(d.hunter, "contact");
+                    // the downed hunter by identity: the active list may have shifted since the catch
+                    if let (Some((id, name)), Some(rep)) = (self.downed_hunter.take(), self.report.as_mut()) {
+                        rep.hunter = id;
+                        rep.hunter_name = name;
+                    }
                 }
             } else {
                 self.downed = Some(d);
@@ -254,6 +261,32 @@ mod tests {
         g.tick_revives(1.0, &idle());
         assert!(!g.runner_downed());
         assert!(g.report.is_some(), "the timeout ends the run");
+    }
+
+    #[test]
+    fn the_run_card_names_the_hunter_that_downed_the_runner_after_the_list_shifts() {
+        let (mut g, _) = game();
+        let want = g.hunters.get(0).map(|h| h.def.id.clone());
+        g.end_run(0, "caught");
+        assert!(g.downed_hunter.is_some() == want.is_some());
+        // the active list changes while the runner lies down
+        if g.hunters.len() > 1 {
+            g.hunters.remove(0);
+        }
+        g.tick_revives(rules().timeout_seconds + 1.0, &idle());
+        let rep = g.report.as_ref().expect("the timeout ends the run");
+        // the report names the hunter that downed the runner (empty when the fixture has no hunter)
+        assert_eq!(rep.hunter, want.unwrap_or_default());
+    }
+
+    #[test]
+    fn a_finished_run_is_never_taken_down_again() {
+        let (mut g, _) = game();
+        g.end_run(0, "caught");
+        g.tick_revives(rules().timeout_seconds + 1.0, &idle());
+        assert!(g.report.is_some());
+        g.end_run(0, "caught");
+        assert!(!g.runner_downed(), "a capture after the timeout does not down a finished run");
     }
 
     #[test]

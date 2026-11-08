@@ -535,6 +535,37 @@ struct Body<'a> {
     stretch: Vec<f32>,
 }
 
+/// The shoulder-to-goal distance kept inside what two arm segments can reach, or `None` for non-finite input or
+/// segments too short to give an ordered range (so `clamp` can never see min > max).
+fn arm_reach(len: f32, upper: f32, lower: f32) -> Option<f32> {
+    let lo = (upper - lower).abs() + 0.002;
+    let hi = upper + lower - 0.002;
+    if !(len.is_finite() && lo.is_finite() && hi.is_finite() && lo <= hi) {
+        return None;
+    }
+    Some(len.clamp(lo, hi))
+}
+
+#[cfg(test)]
+mod arm_reach_tests {
+    use super::arm_reach;
+
+    #[test]
+    fn crossed_or_non_finite_bounds_are_refused() {
+        assert!(arm_reach(0.5, 0.001, 0.3).is_none());
+        assert!(arm_reach(0.5, 0.3, 0.001).is_none());
+        assert!(arm_reach(f32::NAN, 0.3, 0.3).is_none());
+        assert!(arm_reach(0.5, f32::NAN, 0.3).is_none());
+    }
+
+    #[test]
+    fn normal_arms_clamp_into_reach() {
+        let d = arm_reach(5.0, 0.3, 0.3).unwrap();
+        assert!(d <= 0.6 && d > 0.5);
+        assert!(arm_reach(0.0, 0.3, 0.3).unwrap() > 0.0);
+    }
+}
+
 impl<'a> Body<'a> {
     fn new(rig: &'a Rig, pose: Vec<Local>, root: Mat4, arm_stretch: f32) -> Body<'a> {
         let (s, r, _) = root.to_scale_rotation_translation();
@@ -630,14 +661,14 @@ impl<'a> Body<'a> {
         let elbow = self.pos(fore);
         let upper = shoulder.distance(elbow);
         let lower = elbow.distance(grip);
-        if upper < 1e-4 || lower < 1e-4 {
+        if !(upper >= 1e-4 && lower >= 1e-4) {
             return;
         }
         let goal = grip.lerp(target, amount.clamp(0.0, 1.0));
         let span = goal - shoulder;
-        let distance = span
-            .length()
-            .clamp((upper - lower).abs() + 0.002, upper + lower - 0.002);
+        let Some(distance) = arm_reach(span.length(), upper, lower) else {
+            return;
+        };
         let dir = span.normalize_or_zero();
         let mut bend = pole - dir * pole.dot(dir);
         if bend.length_squared() < 1e-6 {

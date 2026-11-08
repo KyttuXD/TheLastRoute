@@ -92,7 +92,7 @@ pub fn chunk_hunter_spawns(world: &str, chunk: &SewerChunk, fixtures: &[Fixture]
         let coord = chunk.coord;
         // the same exits as the base pass: the arrival column and a safe surface room hold no hunters
         if (coord.x.abs() > 1 || coord.z.abs() > 1) && !is_safe_room(world, Coord::new(coord.x, SURFACE_LEVEL, coord.z)) {
-            add_room_spawns(world, chunk, room, &mut result);
+            add_room_spawns(world, chunk, room, fixtures, pickup_cells, &mut result);
         }
     }
     result
@@ -106,8 +106,24 @@ fn roster_id(name: &str) -> Option<&'static str> {
 /// The room's hunter cells (`Placed::hunter_spawns`, chance lerped by the level's danger) as spawns. The identity is
 /// drawn from the room's prefer list minus its avoid list, and by `sewer_affinity` never from the hunters who avoid
 /// the sewer; with no usable preference it falls back to the roster the base pass uses.
-fn add_room_spawns(world: &str, chunk: &SewerChunk, room: &super::rooms::Placed<'_>, out: &mut Vec<HunterSpawn>) {
+///
+/// A room hunter never stands on a pickup, a fixture (hiding spot, coin, vent) or a prop cell: those cells are held
+/// exactly (not a neighbourhood, which would empty a small room). Rooms are not in Godot, so this is the port's rule.
+fn add_room_spawns(
+    world: &str,
+    chunk: &SewerChunk,
+    room: &super::rooms::Placed<'_>,
+    fixtures: &[Fixture],
+    pickup_cells: &[V2],
+    out: &mut Vec<HunterSpawn>,
+) {
     let coord = chunk.coord;
+    let mut held: HashSet<V2> = pickup_cells.iter().copied().collect();
+    held.extend(fixtures.iter().map(|f| f.cell));
+    for p in &chunk.region_props {
+        held.insert(p.cell);
+        held.extend(p.occupied_cells.iter().flatten().copied());
+    }
     let sewer_id = chunk_id(coord);
     let danger = danger_for_level(coord.y);
     for (n, (cell, prefer, avoid)) in room.hunter_spawns(world, &sewer_id, danger).into_iter().enumerate() {
@@ -124,7 +140,7 @@ fn add_room_spawns(world: &str, chunk: &SewerChunk, room: &super::rooms::Placed<
                 .filter(|id| sewer_affinity(id) != "avoid" && !avoid.iter().any(|a| a == id))
                 .collect();
         }
-        if pool.is_empty() || out.iter().any(|s| s.cell == cell) {
+        if pool.is_empty() || held.contains(&cell) || out.iter().any(|s| s.cell == cell) {
             continue;
         }
         let mut rng = Rng::new(&format!("{world}:SEWER-ROOMS:{sewer_id}:IDENTITY:{n}"));
@@ -307,6 +323,32 @@ mod tests {
         }
         assert!(added > 0, "no room hunters in the scanned area");
     }
+    /// A room hunter is not put on a pickup cell: with every room hunter cell of the first pass held as a pickup, none
+    /// of them comes back.
+    #[test]
+    fn room_hunters_keep_off_pickup_cells() {
+        use crate::world::route::sewer::core::{chunk as played, Inputs};
+        let mut checked = 0;
+        for x in -12..12 {
+            for z in -12..12 {
+                let Some(c) = played(Coord::new(x, -2, z), &Inputs { world: "rooms-hunt" }) else { continue };
+                if c.room.is_none() {
+                    continue;
+                }
+                let base = base_hunter_spawns("rooms-hunt", &c, &[], &[]).len();
+                let first: Vec<V2> = chunk_hunter_spawns("rooms-hunt", &c, &[], &[])[base..].iter().map(|s| s.cell).collect();
+                if first.is_empty() {
+                    continue;
+                }
+                let held = chunk_hunter_spawns("rooms-hunt", &c, &[], &first);
+                let base_held = base_hunter_spawns("rooms-hunt", &c, &[], &first).len();
+                checked += first.len();
+                assert!(held[base_held..].iter().all(|s| !first.contains(&s.cell)), "a room hunter on a pickup cell");
+            }
+        }
+        assert!(checked > 0, "no room hunters in the scanned area");
+    }
+
     use crate::world::route::sewer::core::{chunk_base as chunk, Inputs};
     use serde_json::Value;
 

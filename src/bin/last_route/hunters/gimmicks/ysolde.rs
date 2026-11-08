@@ -21,6 +21,11 @@ pub struct Ysolde {
 }
 
 impl Ysolde {
+    /// The window moved by `d`.
+    pub fn shift(&mut self, d: (f32, f32)) {
+        self.flee_point = self.flee_point.map(|p| (p.0 + d.0, p.1 + d.1));
+    }
+
     pub fn after(&mut self, b: &mut Brain, dt: f32, c: &Ctx, t: &Target, ev: &mut Vec<Event>) {
         self.reaching = false;
         if self.update_flee(b, dt, c, t) {

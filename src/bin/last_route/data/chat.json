@@ -1,0 +1,7 @@
+{
+  "_note": "Co-op chat on screen. max_lines = lines shown at once; line_seconds = how long a line stays; nearby_radius = world units a 'nearby' line carries; inbox_max = lines the net layer keeps until the app takes them.",
+  "max_lines": 6,
+  "line_seconds": 12.0,
+  "nearby_radius": 30.0,
+  "inbox_max": 64
+}

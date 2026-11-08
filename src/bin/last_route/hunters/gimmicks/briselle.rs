@@ -25,6 +25,11 @@ impl Default for Briselle {
 }
 
 impl Briselle {
+    /// The window moved by `d`.
+    pub fn shift(&mut self, d: (f32, f32)) {
+        self.relay = (self.relay.0 + d.0, self.relay.1 + d.1);
+    }
+
     pub fn after(&mut self, b: &mut Brain, dt: f32, c: &Ctx) {
         let collected: Vec<usize> = (0..c.relays_taken.len())
             .filter(|i| c.relays_taken[*i])

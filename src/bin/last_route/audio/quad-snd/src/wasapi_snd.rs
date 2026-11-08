@@ -68,12 +68,23 @@ mod consts {
     pub const BUFFER_MS: f64 = 10.0;
 }
 
-unsafe fn audio_thread(mixer_builder: crate::mixer::MixerBuilder) {
-    CoInitializeEx(std::ptr::null_mut(), COINIT_MULTITHREADED);
+/// Wait before the next device (re)open attempt: 250 ms doubling to a 5 s cap.
+fn retry_delay_ms(attempt: u32) -> u64 {
+    (250u64 << attempt.min(5)).min(5000)
+}
 
-    let buffer_end_event = CreateEventA(std::ptr::null_mut(), FALSE, FALSE, std::ptr::null());
-    assert!(buffer_end_event.is_null() == false);
+/// How long one wait for the buffer event may take before the device is probed anyway (an invalidated endpoint stops
+/// signalling, so an infinite wait would hang forever).
+const WAIT_MS: u32 = 200;
 
+/// One device session: opens the default endpoint and mixes until the device is lost. Returns why it ended; the caller
+/// reopens it. The mixer outlives sessions, so sounds keep their state across a device change.
+unsafe fn run_session(
+    buffer_end_event: winapi::shared::ntdef::HANDLE,
+    builder: &mut Option<crate::mixer::MixerBuilder>,
+    mixer: &mut Option<crate::mixer::Mixer>,
+    rate: &mut u32,
+) -> String {
     let mut device_enumerator: *mut IMMDeviceEnumerator = std::ptr::null_mut();
     let hr = CoCreateInstance(
         &CLSID_IMMDeviceEnumerator,
@@ -82,11 +93,23 @@ unsafe fn audio_thread(mixer_builder: crate::mixer::MixerBuilder) {
         &IID_IMMDeviceEnumerator,
         &mut device_enumerator as *mut _ as _,
     );
-    assert!(hr >= 0, "CoCreatInstance failed");
+    if hr < 0 || device_enumerator.is_null() {
+        return format!("CoCreateInstance failed 0x{:x}", hr as u32);
+    }
 
     let mut device: *mut IMMDevice = std::ptr::null_mut();
     let hr = (*device_enumerator).GetDefaultAudioEndpoint(eRender, eConsole, &mut device);
-    assert!(hr >= 0, "GetDefaultAudioEndPoint failed");
+    (*device_enumerator).Release();
+    if hr < 0 || device.is_null() {
+        return format!("GetDefaultAudioEndpoint failed 0x{:x}", hr as u32);
+    }
+
+    let mut state = 0;
+    (*device).GetState(&mut state);
+    if state & DEVICE_STATE_ACTIVE == 0 {
+        (*device).Release();
+        return "default device not active".into();
+    }
 
     let mut audio_client: *mut IAudioClient = std::ptr::null_mut();
     let hr = (*device).Activate(
@@ -95,26 +118,31 @@ unsafe fn audio_thread(mixer_builder: crate::mixer::MixerBuilder) {
         std::ptr::null_mut(),
         &mut audio_client as *mut _ as _,
     );
-    assert!(hr >= 0, "Device Activate failed");
-
-    let mut state = 0;
-    (*device).GetState(&mut state);
-    assert!(
-        state & DEVICE_STATE_ACTIVE != 0,
-        "Default device not active"
-    );
-
-    // the shared-mode engine's own rate (Godot's driver mixes at it too: 48 kHz on most PCs)
-    let mut rate = consts::SAMPLE_RATE;
-    let mut mix_format: *mut WAVEFORMATEX = std::ptr::null_mut();
-    if (*audio_client).GetMixFormat(&mut mix_format) >= 0 && !mix_format.is_null() {
-        let r = (*mix_format).nSamplesPerSec;
-        if (8000..=384000).contains(&r) {
-            rate = r;
-        }
-        CoTaskMemFree(mix_format as _);
+    (*device).Release();
+    if hr < 0 || audio_client.is_null() {
+        return format!("Device Activate failed 0x{:x}", hr as u32);
     }
-    let mut mixer = mixer_builder.build_at(rate);
+
+    // the shared-mode engine's own rate (Godot's driver mixes at it too: 48 kHz on most PCs). The mixer is built once,
+    // so a later device with another rate is converted by WASAPI (AUTOCONVERTPCM) to the rate the mixer runs at.
+    if let Some(b) = builder.take() {
+        let mut r = consts::SAMPLE_RATE;
+        let mut mix_format: *mut WAVEFORMATEX = std::ptr::null_mut();
+        if (*audio_client).GetMixFormat(&mut mix_format) >= 0 && !mix_format.is_null() {
+            let m = (*mix_format).nSamplesPerSec;
+            if (8000..=384000).contains(&m) {
+                r = m;
+            }
+            CoTaskMemFree(mix_format as _);
+        }
+        *rate = r;
+        *mixer = Some(b.build_at(r));
+    }
+    let rate = *rate;
+    let Some(mixer) = mixer.as_mut() else {
+        (*audio_client).Release();
+        return "mixer missing".into();
+    };
 
     let format = WAVEFORMATEX {
         nChannels: consts::CHANNELS as _,
@@ -153,43 +181,51 @@ unsafe fn audio_thread(mixer_builder: crate::mixer::MixerBuilder) {
         std::ptr::null(),
     );
     if hr < 0 {
-        println!("Error code: 0x{:x}", hr as u32);
+        (*audio_client).Release();
+        return format!("audio_client.Initialize failed 0x{:x}", hr as u32);
     }
-    assert!(hr >= 0, "audio_client.Initialize failed");
 
     let mut dst_buffer_frames = 0;
     let hr = (*audio_client).GetBufferSize(&mut dst_buffer_frames);
-    assert!(hr >= 0, "GetBufferSize failed");
+    if hr < 0 {
+        (*audio_client).Release();
+        return format!("GetBufferSize failed 0x{:x}", hr as u32);
+    }
 
     let mut render_client: *mut IAudioRenderClient = std::ptr::null_mut();
     let hr = (*audio_client).GetService(&IID_IAudioRenderClient, &mut render_client as *mut _ as _);
-    assert!(
-        hr >= 0,
-        "sokol_audio wasapi: audio client GetService failed"
-    );
+    if hr < 0 || render_client.is_null() {
+        (*audio_client).Release();
+        return format!("GetService failed 0x{:x}", hr as u32);
+    }
 
     let hr = (*audio_client).SetEventHandle(buffer_end_event);
-    assert!(hr >= 0, "SetEventHandle failed");
+    if hr < 0 {
+        (*render_client).Release();
+        (*audio_client).Release();
+        return format!("SetEventHandle failed 0x{:x}", hr as u32);
+    }
 
     (*audio_client).Start();
-    loop {
-        WaitForSingleObject(buffer_end_event, INFINITE);
+    let why = loop {
+        WaitForSingleObject(buffer_end_event, WAIT_MS);
 
         let mut padding = 0;
-        if (*audio_client).GetCurrentPadding(&mut padding) < 0 {
-            continue;
+        let hr = (*audio_client).GetCurrentPadding(&mut padding);
+        if hr < 0 {
+            break format!("GetCurrentPadding failed 0x{:x}", hr as u32);
         }
-        let num_frames = dst_buffer_frames - padding;
+        let num_frames = dst_buffer_frames.saturating_sub(padding);
 
         if num_frames == 0 {
             continue;
         }
 
         let mut wasapi_buffer: *mut u8 = std::ptr::null_mut();
-        if (*render_client).GetBuffer(num_frames, &mut wasapi_buffer) < 0 {
-            continue;
+        let hr = (*render_client).GetBuffer(num_frames, &mut wasapi_buffer);
+        if hr < 0 || wasapi_buffer.is_null() {
+            break format!("GetBuffer failed 0x{:x}", hr as u32);
         }
-        assert!(wasapi_buffer.is_null() == false);
 
         let buffer = std::slice::from_raw_parts_mut(
             wasapi_buffer as *mut f32,
@@ -199,6 +235,48 @@ unsafe fn audio_thread(mixer_builder: crate::mixer::MixerBuilder) {
         mixer.fill_audio_buffer(buffer, num_frames as _);
 
         (*render_client).ReleaseBuffer(num_frames, 0);
+    };
+    (*audio_client).Stop();
+    (*render_client).Release();
+    (*audio_client).Release();
+    why
+}
+
+unsafe fn audio_thread(mixer_builder: crate::mixer::MixerBuilder) {
+    CoInitializeEx(std::ptr::null_mut(), COINIT_MULTITHREADED);
+
+    let buffer_end_event = CreateEventA(std::ptr::null_mut(), FALSE, FALSE, std::ptr::null());
+    if buffer_end_event.is_null() {
+        eprintln!("audio: CreateEvent failed, sound disabled");
+        return;
+    }
+
+    let mut builder = Some(mixer_builder);
+    let mut mixer = None;
+    let mut rate = consts::SAMPLE_RATE;
+    let mut attempt: u32 = 0;
+    loop {
+        let started = std::time::Instant::now();
+        let why = run_session(buffer_end_event, &mut builder, &mut mixer, &mut rate);
+        // a session that ran a while was healthy: restart the backoff
+        if started.elapsed() > std::time::Duration::from_secs(10) {
+            attempt = 0;
+        }
+        eprintln!("audio: device session ended ({why}), retrying");
+        std::thread::sleep(std::time::Duration::from_millis(retry_delay_ms(attempt)));
+        attempt = attempt.saturating_add(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::retry_delay_ms;
+
+    #[test]
+    fn retry_backs_off_and_caps() {
+        assert!(retry_delay_ms(1) > retry_delay_ms(0));
+        assert!(retry_delay_ms(100) <= 5000);
+        assert_eq!(retry_delay_ms(100), retry_delay_ms(50));
     }
 }
 

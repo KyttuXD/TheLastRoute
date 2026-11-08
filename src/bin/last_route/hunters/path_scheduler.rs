@@ -46,6 +46,8 @@ pub struct PathingRules {
     pub field_cache_entries: usize,
     /// Frames a queued request is kept after it was last asked for (a brain that no longer needs it stops asking).
     pub queue_keep_frames: u64,
+    /// Units a frame keeps for requests from resident (not active) floors, spent even when the active floor used the whole budget.
+    pub resident_searches_per_frame: usize,
 }
 
 impl PathingRules {
@@ -61,6 +63,7 @@ impl PathingRules {
             field_min_sharers: whole("field_min_sharers")? as usize,
             field_cache_entries: whole("field_cache_entries")? as usize,
             queue_keep_frames: whole("queue_keep_frames")?,
+            resident_searches_per_frame: whole("resident_searches_per_frame")? as usize,
         };
         if rules.searches_per_frame == 0 || rules.cache_entries == 0 || rules.field_cache_entries == 0 {
             return Err("searches_per_frame, cache_entries and field_cache_entries must be at least 1".into());
@@ -126,6 +129,8 @@ struct PathKey {
     avoid: Vec<Cell>,
     gates: Vec<Cell>,
     water: Option<WaterKey>,
+    /// The door state of the facility (`door_signature`): a door that opens or shuts makes a new key.
+    doors: u64,
 }
 
 /// Everything a goal field depends on: the goal, the gates and the water.
@@ -135,6 +140,7 @@ struct FieldKey {
     to: Cell,
     gates: Vec<Cell>,
     water: Option<WaterKey>,
+    doors: u64,
 }
 
 /// The facility a route was planned on: its address, seed, size and window origin.
@@ -146,6 +152,19 @@ fn fac_key(fac: &Facility) -> u64 {
     h.finish()
 }
 
+/// A hash of every room door's state (wanted open or shut, and whether its swing has settled fully open or fully shut),
+/// so a route or goal field planned with a door in one state is never reused once the door changes. It changes when a
+/// door is toggled and when its swing ends, not on every frame of the swing: a per-frame key would drop every queued
+/// request and goal field while any door in the window animates.
+fn door_signature(fac: &Facility) -> u64 {
+    let mut h = DefaultHasher::new();
+    for p in fac.props.iter().filter(|p| p.door.is_some()) {
+        let open = fac.door_open_amount(p.cell);
+        (p.cell, fac.door_is_open(p.cell), open >= 0.999, open <= 0.001).hash(&mut h);
+    }
+    h.finish()
+}
+
 fn water_key(water: Option<(&Arc<WaterField>, &HunterWater, bool)>) -> Option<WaterKey> {
     water.map(|(field, rules, chasing)| {
         let mut h = DefaultHasher::new();
@@ -154,7 +173,15 @@ fn water_key(water: Option<(&Arc<WaterField>, &HunterWater, bool)>) -> Option<Wa
     })
 }
 
-fn path_key(fac: u64, from: (f32, f32), to: Cell, avoid: &[(Cell, f32)], gates: &[Cell], water: Option<WaterKey>) -> PathKey {
+fn path_key(
+    fac: u64,
+    doors: u64,
+    from: (f32, f32),
+    to: Cell,
+    avoid: &[(Cell, f32)],
+    gates: &[Cell],
+    water: Option<WaterKey>,
+) -> PathKey {
     PathKey {
         fac,
         from: cell_of(from),
@@ -162,11 +189,12 @@ fn path_key(fac: u64, from: (f32, f32), to: Cell, avoid: &[(Cell, f32)], gates: 
         avoid: avoid.iter().map(|(c, _)| *c).collect(),
         gates: gates.to_vec(),
         water,
+        doors,
     }
 }
 
-fn field_key(fac: u64, to: Cell, gates: &[Cell], water: Option<WaterKey>) -> FieldKey {
-    FieldKey { fac, to, gates: gates.to_vec(), water }
+fn field_key(fac: u64, doors: u64, to: Cell, gates: &[Cell], water: Option<WaterKey>) -> FieldKey {
+    FieldKey { fac, to, gates: gates.to_vec(), water, doors }
 }
 
 /// What one search reads, borrowed (a queued request lends its own copies).
@@ -394,6 +422,10 @@ struct Field {
 
 #[derive(Default)]
 struct State {
+    /// Units spent this frame on resident floors' requests out of their own reserve.
+    resident_used: usize,
+    /// facility -> (frame, signature): the door signature, worked out once per frame and facility.
+    door_sigs: HashMap<u64, (u64, u64)>,
     /// A frame is open: `begin_frame` has run on this thread. Only an open frame budgets and caches.
     open: bool,
     /// The facility the open frame belongs to (`fac_key`).
@@ -415,15 +447,32 @@ impl State {
         self.budget_override.unwrap_or(PathingRules::get().searches_per_frame)
     }
 
+    /// A goal field older than the cache TTL is stale (the floor may have changed under it): it counts as absent.
+    fn fresh(&self, f: &Field) -> bool {
+        self.frame.saturating_sub(f.frame) <= PathingRules::get().cache_ttl_frames
+    }
+
+    fn doors_of(&mut self, fac: &Facility, fk: u64) -> u64 {
+        match self.door_sigs.get(&fk) {
+            Some((frame, sig)) if *frame == self.frame => *sig,
+            _ => {
+                let sig = door_signature(fac);
+                self.door_sigs.insert(fk, (self.frame, sig));
+                sig
+            }
+        }
+    }
+
     fn has_field(&self, key: &FieldKey) -> bool {
-        self.fields.iter().any(|(k, _)| k == key)
+        self.fields.iter().any(|(k, f)| k == key && self.fresh(f))
     }
 
     fn field(&self, key: &FieldKey) -> Option<&Field> {
-        self.fields.iter().find(|(k, _)| k == key).map(|(_, f)| f)
+        self.fields.iter().find(|(k, f)| k == key && self.fresh(f)).map(|(_, f)| f)
     }
 
     fn insert_field(&mut self, key: FieldKey, dist: Vec<f32>) {
+        self.fields.retain(|(k, _)| *k != key);
         if self.fields.len() >= self.field_cap.max(1) {
             let oldest = (0..self.fields.len()).min_by_key(|i| self.fields[*i].1.frame);
             if let Some(i) = oldest {
@@ -485,10 +534,14 @@ pub fn begin_frame(fac: &Facility) {
         s.open = true;
         s.frame += 1;
         s.used = 0;
+        s.resident_used = 0;
         s.field_cap = rules.field_cache_entries;
         s.cache.configure(rules.cache_entries, rules.cache_ttl_frames);
         let frame = s.frame;
-        s.queue.retain(|_, q| frame.saturating_sub(q.asked) <= rules.queue_keep_frames);
+        s.fields.retain(|(_, f)| frame.saturating_sub(f.frame) <= rules.cache_ttl_frames);
+        let doors = s.doors_of(fac, fk);
+        // a request planned against other door states is stale: its asker will ask again with the current ones
+        s.queue.retain(|k, q| (k.fac != fk || k.doors == doors) && frame.saturating_sub(q.asked) <= rules.queue_keep_frames);
         // this facility's requests only: a resident floor's requests wait for their own facility
         let mut order: Vec<(u64, u64, PathKey)> = s
             .queue
@@ -536,14 +589,19 @@ pub fn plan(fac: &Facility, req: PlanRequest<'_>) -> Route {
         }
         let fk = fac_key(fac);
         let wk = water_key(req.water);
-        let key = path_key(fk, req.from, req.to, req.avoid, req.gates, wk);
+        let doors = s.doors_of(fac, fk);
+        let key = path_key(fk, doors, req.from, req.to, req.avoid, req.gates, wk);
         let frame = s.frame;
         if let Some(path) = s.cache.get(&key, frame) {
             s.stats.cache_hits += 1;
             return Route::Ready(path);
         }
-        let fkey = field_key(fk, req.to, req.gates, wk);
-        if s.used < s.budget() {
+        let fkey = field_key(fk, doors, req.to, req.gates, wk);
+        // a resident floor keeps a small reserve, so a busy active floor cannot starve its hunters
+        let resident = s.fac.is_some_and(|a| a != fk);
+        let in_budget = s.used < s.budget();
+        let from_reserve = !in_budget && resident && s.resident_used < PathingRules::get().resident_searches_per_frame;
+        if in_budget || from_reserve {
             let job = Job {
                 from: req.from,
                 to: req.to,
@@ -552,7 +610,11 @@ pub fn plan(fac: &Facility, req: PlanRequest<'_>) -> Route {
                 water: req.water.map(|(field, rules, chasing)| (&**field, rules, chasing)),
             };
             let (path, units) = s.plan_job(fac, &job, &fkey, false);
-            s.used += units;
+            if from_reserve {
+                s.resident_used += units;
+            } else {
+                s.used += units;
+            }
             s.cache.put(key, path.clone(), frame);
             return Route::Ready(path);
         }
@@ -802,5 +864,67 @@ mod tests {
                 );
             }
         }
+    }
+    #[test]
+    fn a_door_changing_state_makes_the_cached_route_stale() {
+        reset_thread();
+        set_searches_per_frame(Some(8));
+        let mut fac = facility();
+        let (a, b) = pairs(&fac, 6, 1)[0];
+        let door = fac.floor_cells()[0];
+        fac.props.push(crate::world::facility::Prop {
+            id: "door".into(),
+            cell: door,
+            ptype: "normalRoomDoor".into(),
+            room: 0,
+            rotation: 0,
+            mount_y: None,
+            solid: false,
+            half: (0.5, 0.1),
+            offset: (0.0, 0.0),
+            door: Some(crate::world::facility::DoorDraw { span: 1, offset: [0.0, 0.0] }),
+            sewer: None,
+            crawl_under: false,
+        });
+        fac.update_doors(&[], &[(1e6, 1e6)], 0.0);
+        begin_frame(&fac);
+        assert!(route_of(ask(&fac, a, b, 0)).is_some());
+        begin_frame(&fac);
+        assert!(route_of(ask(&fac, a, b, 0)).is_some());
+        assert_eq!(stats().searches, 1, "the same door state reuses the cached route");
+        assert!(fac.toggle_door(door, &[]).is_some());
+        begin_frame(&fac);
+        assert!(route_of(ask(&fac, a, b, 0)).is_some());
+        assert_eq!(stats().searches, 2, "a door that opened plans the route again");
+    }
+
+    #[test]
+    fn a_goal_field_older_than_the_ttl_counts_as_absent() {
+        let ttl = PathingRules::get().cache_ttl_frames;
+        let key = field_key(1, 0, Cell::new(3, 3), &[], None);
+        let mut s = State { frame: 5, ..State::default() };
+        s.insert_field(key.clone(), vec![0.0]);
+        assert!(s.has_field(&key) && s.field(&key).is_some());
+        s.frame = 5 + ttl;
+        assert!(s.has_field(&key), "still fresh at the TTL");
+        s.frame = 5 + ttl + 1;
+        assert!(!s.has_field(&key) && s.field(&key).is_none(), "expired");
+    }
+
+    #[test]
+    fn a_resident_floor_is_answered_when_the_active_floor_spent_the_budget() {
+        reset_thread();
+        set_searches_per_frame(Some(1));
+        let active = facility();
+        let resident = Facility::generate("SCHED-RES", &crate::world::facility::Options::default(), &Catalog::load());
+        let reserve = PathingRules::get().resident_searches_per_frame;
+        assert!(reserve >= 1, "the data keeps a reserve for resident floors");
+        let ps = pairs(&resident, 6, reserve + 1);
+        assert_eq!(ps.len(), reserve + 1);
+        let (a, b) = pairs(&active, 6, 1)[0];
+        begin_frame(&active);
+        assert!(route_of(ask(&active, a, b, 0)).is_some(), "the active floor takes the whole budget");
+        let answered = ps.iter().filter(|(x, y)| route_of(ask(&resident, *x, *y, 0)).is_some()).count();
+        assert_eq!(answered, reserve, "the resident floor gets exactly its reserve");
     }
 }

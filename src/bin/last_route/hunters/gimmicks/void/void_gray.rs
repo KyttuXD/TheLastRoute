@@ -82,6 +82,10 @@ pub struct VoidGray {
     idle: f32,
     /// void_gray_gimmick.gd `_route_left`: the watchdog clock of the open route.
     route_left: f32,
+    /// E presses landed on the open route.
+    route_done: u32,
+    /// Seconds left for the next E press.
+    node_left: f32,
     /// void_gray_gimmick.gd `_relays`: the relay count last seen. None before the first tick (the Godot -1).
     relays: Option<usize>,
     /// void_gray_gimmick.gd `_last_position`: None is Vector2.INF.
@@ -139,6 +143,14 @@ fn continue_chase_from(b: &mut Brain, at: (f32, f32)) {
 }
 
 impl VoidGray {
+    /// The window moved by `d`.
+    pub fn shift(&mut self, d: (f32, f32)) {
+        let s = |p: (f32, f32)| (p.0 + d.0, p.1 + d.1);
+        self.last_position = self.last_position.map(s);
+        self.last_target_position = s(self.last_target_position);
+        self.lock_origin = s(self.lock_origin);
+    }
+
     pub fn new(nightmare: bool) -> VoidGray {
         VoidGray {
             nightmare,
@@ -152,6 +164,8 @@ impl VoidGray {
             grace: 0.0,
             idle: 0.0,
             route_left: 0.0,
+            route_done: 0,
+            node_left: 0.0,
             relays: None,
             last_position: None,
             last_target_position: (0.0, 0.0),
@@ -212,7 +226,8 @@ impl VoidGray {
         self.grace = (self.grace + dt).min(grace_limit(nightmare));
         if self.route_active {
             self.route_left -= dt;
-            if self.route_left <= 0.0 {
+            self.node_left -= dt;
+            if self.route_left <= 0.0 || self.node_left <= 0.0 {
                 self.fail(b);
             }
             return;
@@ -242,6 +257,8 @@ impl VoidGray {
         self.route_nodes = NODES;
         self.route_seconds = node_seconds(nightmare);
         self.route_left = self.route_nodes as f32 * self.route_seconds + REPORT_SLACK;
+        self.route_done = 0;
+        self.node_left = self.route_seconds;
         self.events.push(VoidGrayEvent::SignalRoute {
             nodes: self.route_nodes,
             seconds: self.route_seconds,
@@ -255,6 +272,24 @@ impl VoidGray {
         if self.dormant && !self.hunting {
             b.state = State::Idle;
             b.last_known = None;
+        }
+    }
+
+    /// The open route as the prompt shows it: (presses done, presses needed, seconds left for the next press).
+    pub fn route_prompt(&self) -> Option<(u32, u32, f32)> {
+        self.route_active.then_some((self.route_done, self.route_nodes, self.node_left.max(0.0)))
+    }
+
+    /// The runner pressed E on the open route. Each press must land within `route_seconds` of the last (the timer
+    /// runs in tick); the last press clears the route.
+    pub fn press_route(&mut self, b: &mut Brain) {
+        if !self.route_active {
+            return;
+        }
+        self.route_done += 1;
+        self.node_left = self.route_seconds;
+        if self.route_done >= self.route_nodes {
+            self.route_result(b, true);
         }
     }
 
@@ -364,6 +399,32 @@ mod tests {
         );
         assert!((g.route_left - 15.5).abs() < 1e-4, "5 x 2.5 + 3 s slack: {}", g.route_left);
         assert!(g.dormant && !g.hunting, "the route opens while she stays dormant");
+    }
+
+    #[test]
+    fn pressing_e_in_time_clears_the_route_and_a_slow_press_wakes_her() {
+        let t = still_in_the_open(5.5);
+        let mut g = VoidGray::new(false);
+        let mut b = brain();
+        g.tick(&mut b, 1.0, 0, &t, 1);
+        ticks_until_route(&mut g, &mut b, 0, 400, &t).expect("route opens");
+        assert_eq!(g.route_prompt().map(|p| (p.0, p.1)), Some((0, 5)));
+        for _ in 0..5 {
+            g.tick(&mut b, 1.0, 0, &t, 1);
+            g.press_route(&mut b);
+        }
+        assert!(!g.route_active && !g.hunting, "five timely presses clear it");
+        assert_eq!(g.route_prompt(), None);
+
+        let mut g = VoidGray::new(false);
+        let mut b = brain();
+        g.tick(&mut b, 1.0, 0, &t, 1);
+        ticks_until_route(&mut g, &mut b, 0, 400, &t).expect("route opens");
+        g.press_route(&mut b);
+        for _ in 0..3 {
+            g.tick(&mut b, 1.0, 0, &t, 1);
+        }
+        assert!(g.hunting, "a press later than the per-node seconds fails the route");
     }
 
     #[test]
@@ -477,18 +538,20 @@ mod tests {
     }
 
     #[test]
-    fn the_watchdog_fails_a_route_whose_report_never_arrives() {
-        // the route opens on tick 224 with route_left 15.5; sixteen 1 s ticks after that take it to -0.5
+    fn a_route_with_no_press_fails_when_the_first_node_runs_out() {
+        // the route opens on tick 224; with no E press the first node's seconds run out long before the 15.5 s watchdog
         let mut g = VoidGray::new(false);
         let mut b = brain();
         let t = still_in_the_open(5.5);
         assert_eq!(ticks_until_route(&mut g, &mut b, 0, 400, &t), Some(224));
-        for _ in 0..15 {
+        let per_node = g.route_prompt().expect("open").2;
+        let mut ticks = 0;
+        while g.route_active && ticks < 20 {
             g.tick(&mut b, 1.0, 0, &t, 1);
+            ticks += 1;
         }
-        assert!(g.route_active && !g.hunting, "15 s in, the report can still come");
-        g.tick(&mut b, 1.0, 0, &t, 1);
-        assert!(g.hunting && !g.route_active, "the watchdog ends the route after 15.5 s");
+        assert!(g.hunting && !g.route_active, "a missed node fails the route");
+        assert!(ticks as f32 <= per_node.ceil() + 1.0, "it fails at the node timer ({per_node} s), not the watchdog: {ticks} ticks");
     }
 
     #[test]

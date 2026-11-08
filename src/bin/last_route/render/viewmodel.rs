@@ -45,6 +45,16 @@ fn wall_ahead(g: &Game, eye: Vec3, fwd: Vec3) -> Option<f32> {
     None
 }
 
+/// Brings the trackers up to the game's current signals without starting a tween, for a frame where the held item is not
+/// drawn (hidden, caught, on a ladder), so a swing or torch change made meanwhile does not fire when the item returns.
+fn sync_trackers(s: &mut HeldState, swing_t: f32, taser_fx: f32, torch_on: bool) {
+    s.last_swing_t = swing_t;
+    s.last_taser_fx = taser_fx;
+    s.last_torch = Some(torch_on);
+    s.motion = None;
+    s.last_time = f32::NAN;
+}
+
 /// The tween running on the held item this frame, started by the game's own signals (a new swing, a taser shot, the torch
 /// switched), and the eased wall push.
 fn motion_now(g: &Game, item: Item, eye: Vec3, fwd: Vec3) -> (Option<(HeldId, Motion, f32)>, f32) {
@@ -186,6 +196,9 @@ pub fn draw_view_layer(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) 
         item.is_some(),
         super::fp_hands::ladder_hands_wanted(g),
     );
+    if content != LayerContent::HeldItem {
+        HELD.with(|s| sync_trackers(&mut s.borrow_mut(), g.swing_t, g.taser_fx, g.p.flashlight_on));
+    }
     let target = (rt.texture.raw_miniquad_id(), rt.texture.width() as u32, rt.texture.height() as u32);
     let action = LAYER.with(|l| l.borrow_mut().next(content, target));
     if action == LayerAction::Skip {
@@ -290,6 +303,16 @@ mod tests {
         assert_eq!(c(false, false, false, true, true, true), LayerContent::LadderHands);
         assert_eq!(c(false, false, false, true, false, true), LayerContent::LadderHands);
         assert_eq!(c(false, false, false, true, true, false), LayerContent::Empty);
+    }
+
+    #[test]
+    fn changes_made_while_the_item_is_not_drawn_start_no_tween_on_return() {
+        let mut s = HeldState { last_time: 3.0, last_swing_t: 1.0, last_taser_fx: 0.5, last_torch: Some(true), ..Default::default() };
+        s.motion = Some((HeldId::Crowbar, Motion::Swing, 2.9));
+        sync_trackers(&mut s, 4.0, 0.9, false);
+        assert_eq!((s.last_swing_t, s.last_taser_fx, s.last_torch), (4.0, 0.9, Some(false)));
+        assert!(s.motion.is_none(), "a tween from before does not resume");
+        assert!(s.last_time.is_nan(), "the first frame back takes no step");
     }
 
     #[test]

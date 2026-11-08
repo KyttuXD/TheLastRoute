@@ -233,7 +233,7 @@ pub fn player_rows(g: &Game, username: &str, local_host: bool, roster: &[RosterE
         you: false,
         ping: ping_text(e.ping),
         status: status_of(e.state.as_ref(), false, true).into(),
-        floor: floor_text(e.state.map(|s| -s.depth)),
+        floor: floor_text(e.state.map(|s| s.depth.saturating_neg())),
         colour: skin_colour(&e.skin, e.peer),
         // the owner can remove any guest, never the host
         kick: kick_target(kickable, e.host, e.peer),
@@ -626,6 +626,12 @@ mod tests {
     const EPS: f32 = 0.01;
     // Rust's measured button heights at size 8: the label line times 8 plus the 4 + 4 margins
     const BUTTON_8: f32 = 17.06;
+
+    #[test]
+    fn a_hostile_peer_depth_cannot_overflow_the_floor_negation() {
+        assert_eq!(floor_text(Some(i32::MIN.saturating_neg())), format!("{:+}", i32::MAX));
+        assert_eq!(floor_text(Some(5i32.saturating_neg())), "-5");
+    }
 
     #[test]
     fn confirm_buttons_sit_inside_the_panel_with_the_same_inset_as_the_sides() {

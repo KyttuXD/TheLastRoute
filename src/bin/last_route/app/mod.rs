@@ -671,6 +671,10 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
     let mut share_text_at = 0.0f64;
     let mut net: Option<NetSession> = None;
     let mut net_pending: Option<(NetIntent, Pending<NetSession>)> = None;
+    // co-op chat: the lines on screen, the line being typed (T opens it) and the client-side PUBLIC join throttle
+    let mut chat_feed = crate::net::chat::ChatFeed::default();
+    let mut chat_input: Option<String> = None;
+    let mut public_joins = crate::app::public_route::JoinThrottle::default();
     // PUBLIC ROUTE: the way back into the room after its host left (net/public_reform.rs). The runner keeps playing meanwhile.
     let mut reform: Option<PublicReform> = None;
     // CREATE ROOM (online): the server's answer, then the wait for the room to be listed and the guest join
@@ -1013,6 +1017,17 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             }
         }
 
+        // chat: what the room said since the last frame joins the feed (nearby lines only near this runner)
+        if let Some(n) = net.as_mut() {
+            let lines = n.take_chat_lines();
+            let (lw, ld) = playing.as_ref().map_or(([0.0; 3], 0i64), |g| {
+                let (ox, oy) = g.window_origin();
+                ([g.p.pos.0 as f64 + ox as f64, g.p.y() as f64, g.p.pos.1 as f64 + oy as f64], g.depth as i64)
+            });
+            chat_feed.push(lines, lw, ld);
+        }
+        chat_feed.tick(get_frame_time());
+
         // a player who hosts the room sends the NPCs this game runs (their admin summons too) to the guests
         if let (Some(n), Some(g)) = (net.as_mut(), playing.as_ref()) {
             n.publish_npcs(&g.npcs, g.window_origin());
@@ -1091,6 +1106,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             } else {
                 g.remote_hunters = remote;
             }
+            g.public_route = !remote && net.as_ref().is_some_and(|n| n.is_public_route());
         }
         // a guest that joined a running route is told how many relays the host has sabotaged (the late joiner's snapshot)
         if loading.is_none() {
@@ -1414,7 +1430,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             } else {
                 admin.input(g)
             };
-            if is_key_pressed(KeyCode::Escape) && !in_report && !admin_esc && !stress_on && !update_screen.is_shown() {
+            if is_key_pressed(KeyCode::Escape) && !in_report && !admin_esc && !stress_on && !update_screen.is_shown() && chat_input.is_none() {
                 if pz.open {
                     pause::escape(&mut pz);
                 } else if map_open {
@@ -1518,7 +1534,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     dt,
                 ),
             };
-            if pz.open || map_open || admin.is_open() || update_screen.is_shown() {
+            if pz.open || map_open || admin.is_open() || update_screen.is_shown() || chat_input.is_some() {
                 c = Controls::default();
             }
             // the click that took the pointer lock back after a hand-back is a gesture, not a use of the held item
@@ -1708,6 +1724,40 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     if !hud_hidden || g.escape.is_some() {
                         let _t = perf::section("hud");
                         hud::draw_hud_with_runners(g, &w.assets, fps, s, &marks);
+                    }
+                    // co-op chat: T opens the line, Enter sends it to the room, Escape drops it
+                    if net.is_some() && !pz.open && !stress_on && !in_report && !admin.is_open() && !map_open {
+                        hud::draw_chat_feed(&w.assets, &chat_feed);
+                        if chat_input.is_none() && is_key_pressed(KeyCode::T) {
+                            while get_char_pressed().is_some() {}
+                            chat_input = Some(String::new());
+                        } else if let Some(text) = chat_input.as_mut() {
+                            while let Some(ch) = get_char_pressed() {
+                                if !ch.is_control() && text.chars().count() < 200 {
+                                    text.push(ch);
+                                }
+                            }
+                            if is_key_pressed(KeyCode::Backspace) {
+                                text.pop();
+                            }
+                            if is_key_pressed(KeyCode::Escape) {
+                                chat_input = None;
+                            } else if is_key_pressed(KeyCode::Enter) {
+                                let sent = text.trim().to_string();
+                                chat_input = None;
+                                if !sent.is_empty() {
+                                    let (ox, oy) = g.window_origin();
+                                    let (ax, az) = (g.p.pos.0 as f64 + ox as f64, g.p.pos.1 as f64 + oy as f64);
+                                    if let Some(n) = net.as_mut() {
+                                        n.send_chat(&sent, "team", [ax, az], [ax, g.p.y() as f64, az], g.depth as i64);
+                                    }
+                                }
+                            } else {
+                                draw_text(&format!("> {text}_"), 16.0, screen_height() - 56.0, 26.0, WHITE);
+                            }
+                        }
+                    } else {
+                        chat_input = None;
                     }
                     // a spectator: LEFT and RIGHT cycle the runners it watches, Escape after the run's end goes back to the card
                     if g.spectating() {
@@ -2025,10 +2075,15 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                         if net_cfg.offline {
                             flash(&mut ui, &messages.unavailable);
                         } else {
-                            flash(&mut ui, &messages.joining);
-                            let name = world_sync::clean_name(&backend.room_name(&settings.username));
-                            let skin = worn.get().hash;
-                            net_pending = Some((NetIntent::Public, world_sync::join_public_room(net_cfg.clone(), name, skin)));
+                            let roster = crate::content::public_roster::PublicRoster::load();
+                            if !public_joins.try_join(&roster.limits, (get_time() * 1000.0) as u64) {
+                                flash(&mut ui, &roster.messages.unavailable);
+                            } else {
+                                flash(&mut ui, &messages.joining);
+                                let name = world_sync::clean_name(&backend.room_name(&settings.username));
+                                let skin = worn.get().hash;
+                                net_pending = Some((NetIntent::Public, world_sync::join_public_room(net_cfg.clone(), name, skin)));
+                            }
                         }
                     }
                 }

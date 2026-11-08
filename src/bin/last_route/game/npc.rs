@@ -96,12 +96,8 @@ pub struct Tuning {
     pub threat_range: f32,
     /// Godot `.5` in `threat_range * (.5 + smart / 100)` (npc_teammates.gd 307).
     pub smart_base: f32,
-    /// Godot 312: how far ahead of itself a fleeing NPC aims, in metres.
-    pub flee_step: f32,
     /// Godot 324-326: a fleeing NPC runs at the sprint speed (true) rather than walking.
     pub flee_running: bool,
-    /// Godot 311: an away vector this short points the bot right (Godot `Vector2.RIGHT`).
-    pub min_away: f32,
     /// Godot `FOLLOW_RADIUS` (npc_teammates.gd 24): metres from the runner before the NPC walks to its slot again.
     pub follow_radius: f32,
     /// Seconds a bot waits at a shut door before it presses interact: this base plus up to `door_think_jitter`, seeded.
@@ -401,9 +397,7 @@ impl Tuning {
         Some(Tuning {
             threat_range: num(threat, "range")?,
             smart_base: num(threat, "smart_base")?,
-            flee_step: num(threat, "flee_step")?,
             flee_running: threat["flee_running"].as_bool()?,
-            min_away: num(threat, "min_away")?,
             follow_radius: num(&v["follow"], "radius")?,
             door_think: num(door, "think")?,
             door_think_jitter: num(door, "think_jitter")?,
@@ -1356,13 +1350,23 @@ fn cross_to(n: &mut Npc, sc: &Scene, target: Node, avoid_search: bool, t: &Tunin
     walk_toward(n, sc.fac, entrance, false, t, dt, presses);
 }
 
+/// Moves the bot to `level`. Errand indices and visits belong to one storey, so a change of storey drops them.
+fn set_level(n: &mut Npc, level: i32) {
+    if n.level != level {
+        n.level = level;
+        n.visited.clear();
+        n.errand = None;
+        n.dwell = 0.0;
+    }
+}
+
 /// Puts the bot on the nearer end of the edge it was walking, with its route and hop cleared so it plans again.
 fn settle_on_nearer_end(n: &mut Npc, w: &EdgeWalk) {
     let p = if w.fraction() < 0.5 { w.start_point() } else { w.end_point() };
     let (at, y) = ((p[0], p[1]), p[2]);
     n.at = at;
     n.y = y;
-    n.level = level_at(y, n.level);
+    set_level(n, level_at(y, n.level));
     n.walk = None;
     n.edge_clock = 0.0;
     n.hop = None;
@@ -1393,7 +1397,7 @@ fn advance_edge(n: &mut Npc, dt: f32) {
     n.stride += moved + (y - n.y).abs();
     n.at = at;
     n.y = y;
-    n.level = level_at(y, n.level);
+    set_level(n, level_at(y, n.level));
     n.walking = true;
     n.door = None;
     n.path.clear();
@@ -1970,6 +1974,8 @@ impl Game {
         if count <= 0 {
             return 0;
         }
+        // hostile or broken input (the agent protocol) cannot ask for more than a summon may
+        let count = count.min(crate::net::hosted::MAX_SUMMON_NPCS as i32);
         let mut made = 0;
         for _ in 0..count {
             let slot = self.npc_next + 1;
@@ -2134,7 +2140,7 @@ impl Game {
 
     /// The per-frame tick: an NPC on a resident level tries its intents in order (data `intents`): it hides or runs
     /// from a chasing hunter, goes on a relay or locker errand, or follows the runner. A run NPC not yet joined waits
-    /// until the runner is close and in sight. A bot on another resident level follows over the flights and ladders; a bot on a non-resident level stands still.
+    /// until the runner is close and in sight. A bot on another resident level follows over the flights and ladders; a bot on a non-resident level is set down on the runner's level.
     /// Bots are re-placed beside the runner only by a floor rebuild (`start_floor_sim`), never by a level change.
     /// `t` is the tuning, so the tests can vary one value of the data.
     pub(super) fn update_npcs_with(&mut self, dt: f32, t: &Tuning) {
@@ -2176,8 +2182,21 @@ impl Game {
         let search_all: Vec<(i32, (f32, f32))> = by_level.iter().flat_map(|e| e.2.iter().map(move |p| (e.0, *p))).collect();
         for n in self.npcs.iter_mut() {
             let Some(&(_, fac)) = facs.iter().find(|(l, _)| *l == n.level) else {
-                // a level that is not resident: the bot stands (it follows the runner, so this is a rebuild's leftover)
+                // a level that is not resident (a summon with a stale level, or a landing on an evicted one): the bot
+                // drops its edge and route and is set down on the runner's level beside where it was
+                n.walk = None;
+                n.edge_clock = 0.0;
+                n.hop = None;
+                n.path.clear();
+                n.path_age = REPATH;
                 n.walking = false;
+                if let Some(&(_, home)) = facs.iter().find(|(l, _)| *l == level) {
+                    if let Some(at) = home.nearest_dry_open(n.at.0, n.at.1, NAV_RADIUS) {
+                        n.at = at;
+                    }
+                    set_level(n, level);
+                    n.y = floor_y_of(level) + local_ground(home, n.at.0, n.at.1);
+                }
                 continue;
             };
             let (seen, searching) = by_level
@@ -2621,19 +2640,19 @@ mod tests {
     }
 
     #[test]
-    fn an_npc_on_another_level_stands_still() {
+    fn an_npc_on_a_level_that_is_not_held_is_set_down_on_the_runners_level() {
         let (mut g, _, _) = offline_game();
         let runner = g.p.pos;
         let (e, d) = sky(runner);
         g.npc_spawn(1, 70, e, d);
         g.npcs[0].level = 1; // the runner is on level 0
         g.npcs[0].at = (runner.0 + 9.0, runner.1);
-        let before = g.npcs[0].at;
         for _ in 0..120 {
             g.update_npcs(1.0 / 60.0);
         }
-        assert_eq!(g.npcs[0].at, before, "an NPC on another level does not move");
-        assert!(!g.npcs[0].walking);
+        // an offline floor holds no level 1: the bot is not left waiting there, it rejoins the runner's level
+        assert_eq!(g.npcs[0].level, 0, "the bot is set down on the runner's level");
+        assert!(g.npcs[0].walk.is_none());
     }
 
     /// A spawn never lands on channel water: with every floor cell near the runner made water, every bot is put on a dry,
@@ -3176,9 +3195,7 @@ mod tests {
         let t = Tuning::get();
         assert_eq!(t.threat_range, 16.0, "raised so every smartness notices hunters sooner");
         assert_eq!(t.smart_base, 0.6, "raised base of the smart scale (.6 + smart / 100)");
-        assert_eq!(t.flee_step, 12.0, "npc_teammates.gd 312 flee distance");
         assert!(t.flee_running, "npc_teammates.gd 324-326 runs");
-        assert_eq!(t.min_away, 0.1, "npc_teammates.gd 311 away length");
         assert_eq!(t.follow_radius, 5.0, "npc_teammates.gd 24 FOLLOW_RADIUS");
         assert_eq!(t.door_think, 0.12, "shorter door think so bots clear doors faster");
         assert_eq!(t.door_think_jitter, 0.08, "door think jitter");
@@ -4444,16 +4461,16 @@ mod level_tests {
     }
 
     #[test]
-    fn a_bot_on_a_non_resident_floor_stands() {
+    fn a_bot_on_a_non_resident_floor_is_set_down_on_the_runners_floor() {
         let Some(mut c) = any_switchback() else { return };
         let far = c.g.runner_level() + 9;
         assert!(!c.g.inf.as_ref().unwrap().stack.has(far));
         c.g.npcs[0].level = far;
-        let (at, y) = (c.g.npcs[0].at, c.g.npcs[0].y);
+        let here = c.g.runner_level();
         run(&mut c, 3.0, |_| false);
         let n = &c.g.npcs[0];
-        assert_eq!((n.at, n.y, n.level), (at, y, far), "a bot on a level that is not resident does not move");
-        assert!(!n.walking && n.walk.is_none());
+        assert_eq!(n.level, here, "a bot on a level that is not resident is set down on the runner's floor");
+        assert!(n.y.is_finite());
     }
 
     #[test]
@@ -4532,6 +4549,46 @@ mod level_tests {
         let n = &g.npcs[0];
         assert_eq!(n.y, floor_y_of(n.level));
         assert!(n.walk.is_none() && n.hop.is_none() && n.edge_clock == 0.0);
+    }
+
+    #[test]
+    fn a_summon_count_is_capped() {
+        let (content, catalog) = (crate::content::Content::load(), crate::world::catalog::Catalog::load());
+        let mut g = Game::new_sim(Difficulty::Standard, 4242, &content, &catalog);
+        let spot = g.p.pos;
+        let made = g.npc_spawn_at(2_000_000_000, 70, spot, g.runner_level());
+        assert!(made <= crate::net::hosted::MAX_SUMMON_NPCS as usize, "a huge count makes at most one summon's worth");
+        assert_eq!(g.npcs.len(), made);
+    }
+
+    #[test]
+    fn a_bot_on_a_non_resident_level_is_set_down_on_the_runners_level() {
+        let (content, catalog) = (crate::content::Content::load(), crate::world::catalog::Catalog::load());
+        let mut g = Game::new_sim(Difficulty::Standard, 4242, &content, &catalog);
+        g.hunters.clear();
+        let spot = g.p.pos;
+        let here = g.runner_level();
+        g.npc_spawn_at(1, 70, spot, here + 40);
+        assert_eq!(g.npcs[0].level, here + 40);
+        g.update_npcs_with(1.0 / 60.0, Tuning::get());
+        assert_eq!(g.npcs[0].level, here, "the bot no longer waits on a level that is gone");
+        assert!(g.npcs[0].walk.is_none());
+    }
+
+    #[test]
+    fn a_change_of_storey_drops_the_visited_errands() {
+        let (content, catalog) = (crate::content::Content::load(), crate::world::catalog::Catalog::load());
+        let mut g = Game::new_sim(Difficulty::Standard, 4242, &content, &catalog);
+        let spot = g.p.pos;
+        g.npc_spawn_at(1, 70, spot, g.runner_level());
+        let n = &mut g.npcs[0];
+        n.visited = vec![Errand::Locker(2)];
+        n.errand = Some(Errand::Locker(2));
+        let same = n.level;
+        set_level(n, same);
+        assert_eq!(n.visited.len(), 1, "the same storey keeps its visits");
+        set_level(n, same - 1);
+        assert!(n.visited.is_empty() && n.errand.is_none(), "another storey starts with none");
     }
 }
 

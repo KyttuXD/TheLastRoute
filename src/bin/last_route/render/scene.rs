@@ -349,8 +349,9 @@ pub fn draw_scene(
     // the resident neighbour level, in the same frame (baked at its offset), with the same fog cull and a slab-plane test
     // that skips it unless the eye is near an opening (nothing of it is visible through the slab otherwise)
     if !g.world_nb.items.is_empty() {
+        // the floor's openings do not change between neighbours: listed once for the loop
+        let openings = super::world_mesh::openings(&g.fac);
         for nb in &g.world_nb.items {
-            let openings = super::world_mesh::openings(&g.fac);
             // the same radius the neighbour's parts are built to (world_stack::NeighbourWorlds::sync): a shaft seen from
             // across its floor is drawn, not skipped as behind the slab
             let draw_reach = super::world_mesh::stream_table().neighbour_cull_radius;
@@ -481,7 +482,7 @@ pub fn draw_scene(
         let LockerDraw { centre: (cx, cy), yaw, burnt, swing, shake, .. } = d;
         match item_model(a, "hiding_spot") {
             Some(m) => {
-                if locker_fully_fogged(light.eye, cx, cy, locker_reach(m), locker_cull().margin_m, light.cull_fog_far()) {
+                if locker_fully_fogged(light.eye, cx, cy, locker_reach_cached(m), locker_cull().margin_m, light.cull_fog_far()) {
                     continue;
                 }
                 // a hunter's check rattles the whole locker, body and interior alike; the hidden camera does not move
@@ -1222,6 +1223,25 @@ fn locker_reach(m: &PropModel) -> f32 {
     body.max(door)
 }
 
+thread_local! {
+    /// The last locker model's reach, keyed by the model's address (assets are loaded once and never move).
+    static LOCKER_REACH: std::cell::Cell<(usize, f32)> = const { std::cell::Cell::new((0, 0.0)) };
+}
+
+/// `locker_reach` computed once per model rather than per locker per frame.
+fn locker_reach_cached(m: &PropModel) -> f32 {
+    let key = m as *const PropModel as usize;
+    LOCKER_REACH.with(|c| {
+        let (k, r) = c.get();
+        if k == key {
+            return r;
+        }
+        let r = locker_reach(m);
+        c.set((key, r));
+        r
+    })
+}
+
 /// True when every point of a locker, a sphere of `reach` metres about its origin at (`cx`, `cy`), is past the fog's
 /// full reach from the eye by `margin` metres: the shader then writes the fog colour alone, the same as the clear
 /// colour, so the locker draws nothing new. The unlit path (mode > 1.5) reaches full fog at 1.6 x `fog_far` (shader.rs).
@@ -1583,6 +1603,20 @@ mod tests {
                 assert!((pivot + turn * p).length() <= reach + 1e-5, "a door point at {angle} rad leaves the reach");
             }
         }
+    }
+
+    #[test]
+    fn the_cached_locker_reach_equals_the_computed_one() {
+        let m = PropModel {
+            parts: Vec::new(),
+            min: Vec3::ZERO,
+            max: Vec3::ZERO,
+            door: None,
+            hinges: Vec::new(),
+            locker_door: None,
+        };
+        assert_eq!(locker_reach_cached(&m), locker_reach(&m));
+        assert_eq!(locker_reach_cached(&m), locker_reach(&m), "the second read hits the cache");
     }
 
     fn locker_game() -> Game {

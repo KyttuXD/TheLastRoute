@@ -100,9 +100,7 @@ mod tests {
         let t = Tuning::parse(&embedded_json()).expect("embedded npcs.json has the tuning keys");
         assert!((t.threat_range - 14.0_f32).abs() < 1e-4);
         assert!((t.smart_base - 0.5_f32).abs() < 1e-4);
-        assert!((t.flee_step - 12.0_f32).abs() < 1e-4);
         assert!(t.flee_running);
-        assert!((t.min_away - 0.1_f32).abs() < 1e-4);
         assert!((t.follow_radius - 5.0_f32).abs() < 1e-4);
         assert!((t.door_think - 0.25_f32).abs() < 1e-4);
         assert!((t.door_think_jitter - 0.1_f32).abs() < 1e-4);

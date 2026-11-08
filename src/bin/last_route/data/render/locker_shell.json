@@ -1,10 +1,7 @@
 {
   "shell": {
     "inset_m": 0.02,
-    "vent_band_min": 0.62,
-    "vent_band_max": 0.78,
     "color": [0.06, 0.06, 0.07, 1.0],
-    "roughness": 1.0,
     "two_sided": true
   },
   "occupant": {

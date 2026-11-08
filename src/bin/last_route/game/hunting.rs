@@ -68,6 +68,11 @@ pub fn water_layers(
     (depth.into_iter().collect(), flooded)
 }
 
+/// The widest window-origin difference (cells) a frame from another room may carry.
+const MAX_ORIGIN_SHIFT: i64 = 1_000_000;
+/// The most storeys a host frame's hunter level may lie from the viewer's (the stack spans a few storeys each way).
+const MAX_LEVEL_GAP: i64 = 64;
+
 impl Game {
     /// The host's hunter frame (Godot `_collect_hunter_report`): one object per hunter of every list, with its id,
     /// position, facing, state name, active flag, stun, slow factor and disguise, and the `level` it stands on and its
@@ -100,6 +105,11 @@ impl Game {
             let Some(id) = entry["id"].as_str() else { continue };
             let index = entry["index"].as_u64().map_or(usize::MAX, |i| i as usize);
             let level = entry["level"].as_i64().and_then(|l| i32::try_from(l).ok());
+            // a level far beyond any storey of the stack is a broken or hostile frame: it is not applied. A neighbouring
+            // floor this guest does not hold yet is still kept, on that floor's list, for when the guest goes there.
+            if level.is_some_and(|l| (i64::from(l) - i64::from(viewer)).abs() > MAX_LEVEL_GAP) {
+                continue;
+            }
             let spot = match self.locate_hunter(id, index, level) {
                 Some(s) => s,
                 None => match self.create_guest_hunter(id, level) {
@@ -111,10 +121,18 @@ impl Game {
             if let (Some(x), Some(y)) = (finite(&entry["position"][0]), finite(&entry["position"][1])) {
                 // a frame from a room with its own window: the cells are that window's, moved into this one
                 let shift = match (entry["origin"][0].as_i64(), entry["origin"][1].as_i64()) {
-                    (Some(ox), Some(oy)) => ((ox - window.0 as i64) as f32, (oy - window.1 as i64) as f32),
-                    _ => (0.0, 0.0),
+                    (Some(ox), Some(oy)) => {
+                        let d = |o: i64, w: i32| o.checked_sub(w as i64).filter(|d| d.abs() <= MAX_ORIGIN_SHIFT);
+                        match (d(ox, window.0), d(oy, window.1)) {
+                            (Some(dx), Some(dy)) => Some((dx as f32, dy as f32)),
+                            _ => None, // a shift beyond any real window: the position is not applied
+                        }
+                    }
+                    _ => Some((0.0, 0.0)),
                 };
-                h.pos = (x + shift.0, y + shift.1);
+                if let Some(shift) = shift {
+                    h.pos = (x + shift.0, y + shift.1);
+                }
             }
             if let (Some(x), Some(y)) = (finite(&entry["facing"][0]), finite(&entry["facing"][1])) {
                 h.facing = (x, y);
@@ -220,6 +238,7 @@ impl Game {
         if self.no_local_runner && guests.is_empty() {
             return;
         }
+        crate::hunters::gimmicks::nyxie::party_advance(dt);
         // this frame's route budget (hunters/path_scheduler.rs): last frame's queued searches are answered first
         crate::hunters::path_scheduler::begin_frame(&self.fac);
         // one navigation graph over the active and resident levels, given to every brain of every list
@@ -231,6 +250,22 @@ impl Game {
         self.hunter_aim.resize(self.hunters.len(), None);
         // _direct_hunters: the director runs every frame before the brains, in every mode
         // (relay rush on); the Infinite route then pushes crowded hunters apart
+        // PUBLIC route: each idle hunter patrols near one runner for a dwell, then re-rolls (app/public_route.rs)
+        if self.public_route {
+            let mut runners: std::collections::HashMap<u64, (f32, f32)> = std::collections::HashMap::new();
+            if !self.no_local_runner && self.report.is_none() {
+                runners.insert(0, self.p.pos);
+            }
+            for g in &guests {
+                runners.insert(u64::from(g.peer), g.target.pos);
+            }
+            let patrol = crate::app::public_route::patrol();
+            let now = (self.time * 1000.0) as u64;
+            for h in &mut self.hunters {
+                h.patrol_anchor = self.patrol_book.anchor(patrol, &h.def.id, now, &runners);
+                h.patrol = Some(patrol);
+            }
+        }
         let target = self.target();
         let admin = self.admin_flags();
         let runner = if self.report.is_none() && !admin.no_target && !self.no_local_runner {
@@ -257,14 +292,15 @@ impl Game {
             .filter(|(_, t)| !**t)
             .map(|(c, _)| *c)
             .collect();
+        let online = self.sabotage.as_ref().map_or_else(|| remaining.clone(), |s| s.online(&remaining));
         self.director.relays_collected = self.relays_collected;
         self.director.relay_rush_enabled = true;
         self.director
-            .tick(dt, &mut self.hunters, &targets, &self.fac, &remaining);
+            .tick(dt, &mut self.hunters, &targets, &self.fac, &online);
         // hunter sabotage (hunters/sabotage.rs): a dwell near an online relay may roll, and a hit blocks that relay
         // until its resecure time; off on every difficulty today
         let sabotaged = match self.sabotage.as_mut() {
-            Some(tr) => tr.tick(dt, self.hunters.iter().map(|h| h.pos), &remaining).is_some(),
+            Some(tr) => tr.tick(dt, self.hunters.iter().filter(|h| h.active).map(|h| h.pos), &remaining).is_some(),
             None => false,
         };
         if sabotaged {
@@ -1026,6 +1062,17 @@ use std::time::Duration;
         assert_eq!(h.stun, 0.25);
         assert_eq!(h.slow_factor, 0.5);
         assert_eq!(h.disguise, None);
+    }
+
+    #[test]
+    fn a_frame_with_an_unheld_level_or_a_huge_origin_shift_moves_nothing() {
+        let (mut g, _, _) = run();
+        let id = g.hunters[0].def.id.clone();
+        let (pos, level) = (g.hunters[0].pos, g.hunters[0].level);
+        g.apply_hunter_frame(&[json!({"index": 0, "id": id, "level": 999_999, "position": [1.0, 1.0]})]);
+        assert_eq!((g.hunters[0].pos, g.hunters[0].level), (pos, level), "a level nobody holds is skipped");
+        g.apply_hunter_frame(&[json!({"index": 0, "id": id, "position": [1.0, 1.0], "origin": [1_000_000_000_000_000_000i64, 0]})]);
+        assert_eq!(g.hunters[0].pos, pos, "a shift beyond any window is not applied");
     }
 
     #[test]

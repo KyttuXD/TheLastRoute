@@ -69,7 +69,8 @@ impl Default for HubPanel {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Target {
     Health,
-    Update(usize),
+    /// The one GitHub nightly-release call, shared by every platform's UPDATES line.
+    Release,
     Public,
 }
 
@@ -102,10 +103,7 @@ impl HubPanel {
         }
         self.requests.clear();
         let mut targets = vec![(Target::Health, "/api/health".to_string())];
-        for (i, p) in PLATFORMS.iter().enumerate() {
-            let files = nightly_files(p);
-            self.requests.push((Target::Update(i), Pending::spawn(move || Ok(fetch_nightly(files)))));
-        }
+        self.requests.push((Target::Release, Pending::spawn(|| Ok(fetch_release()))));
         targets.push((Target::Public, "/api/public/status".to_string()));
         for (target, path) in targets {
             let config = self.config.clone();
@@ -123,7 +121,11 @@ impl HubPanel {
                     let probe = answer.unwrap_or(Probe::Unreachable);
                     match target {
                         Target::Health => self.health = probe,
-                        Target::Update(n) => self.updates[n].1 = probe,
+                        Target::Release => {
+                            for (platform, slot) in &mut self.updates {
+                                *slot = nightly_probe(&probe, nightly_files(platform));
+                            }
+                        }
                         Target::Public => self.public = probe,
                     }
                 }
@@ -219,20 +221,25 @@ fn nightly_files(platform: &str) -> Vec<(&'static str, &'static str)> {
     }
 }
 
-/// One platform's UPDATES state from the nightly release on GitHub: each file with the time CI last published it.
-/// A platform with no file in the release answers an empty body, which the line shows as NONE PUBLISHED.
-fn fetch_nightly(files: Vec<(&'static str, &'static str)>) -> Probe {
-    if files.is_empty() {
-        return Probe::Answered { status: 200, body: Json::new() };
-    }
+/// The nightly release on GitHub, fetched once per refresh (the body is the raw release JSON).
+fn fetch_release() -> Probe {
     let sent = Request::new(Method::Get, "https://api.github.com/repos/KyttuXD/TheLastRoute/releases/tags/nightly")
         .header("Accept", "application/vnd.github+json")
         .header("User-Agent", "last-route-admin")
         .timeout(FETCH_TIMEOUT)
         .send();
-    let body = match sent.and_then(api::check) {
-        Ok(body) => body,
-        Err(e) => return Probe::from_result(Err(e)),
+    Probe::from_result(sent.and_then(api::check))
+}
+
+/// One platform's UPDATES state from the release answer: each file with the time CI last published it.
+/// A platform with no file in the release answers an empty body, which the line shows as NONE PUBLISHED.
+fn nightly_probe(release: &Probe, files: Vec<(&'static str, &'static str)>) -> Probe {
+    if files.is_empty() {
+        return Probe::Answered { status: 200, body: Json::new() };
+    }
+    let body = match release {
+        Probe::Answered { status, body } if (200..300).contains(status) => body,
+        other => return other.clone(),
     };
     let assets = body.get("assets").and_then(|a| a.as_array()).cloned().unwrap_or_default();
     let parts: Vec<String> = files
@@ -291,8 +298,10 @@ fn update_line(platform: &str, probe: &Probe) -> String {
     let state = match probe {
         Probe::Checking => "CHECKING...".to_string(),
         Probe::Unreachable => "NO ANSWER".to_string(),
+        Probe::Answered { status, .. } if *status == 403 || *status == 429 => format!("RATE LIMITED (HTTP {status})"),
         Probe::Answered { status, .. } if *status >= 500 => http_trouble(*status),
         Probe::Answered { body, .. } if body.contains_key("nightly") => body["nightly"].as_str().unwrap_or("").to_string(),
+        Probe::Answered { status, body } if *status >= 300 && *status != 404 && !body.contains_key("update") => http_trouble(*status),
         Probe::Answered { body, .. } => match body.get("update") {
             Some(Value::Object(update)) if !update.is_empty() => {
                 let build = update.get("build").and_then(|b| b.as_f64()).unwrap_or(0.0) as i64;
@@ -573,5 +582,18 @@ mod tests {
         assert_eq!(public_text(&Probe::Unreachable), "NO ANSWER");
         assert_eq!(public_text(&answered(500, json!({}))), "NO ANSWER // SERVER ERROR (HTTP 500)");
         assert_eq!(public_text(&answered(200, json!({}))), "NO ANSWER");
+    }
+
+    #[test]
+    fn a_rate_limit_is_not_none_published_and_the_release_is_shared() {
+        assert_eq!(update_line("macos", &answered(403, json!({"message": "rate limit"}))), "MACOS: RATE LIMITED (HTTP 403)");
+        assert_eq!(update_line("linux", &answered(429, json!({}))), "LINUX: RATE LIMITED (HTTP 429)");
+        assert_eq!(update_line("linux", &answered(401, json!({}))), "LINUX: HTTP 401");
+        let limited = answered(403, json!({}));
+        assert_eq!(nightly_probe(&limited, nightly_files("windows")), limited);
+        let release = answered(200, json!({"assets": [{"name": "last_route-windows-x86_64.exe", "updated_at": "2026-01-02T03:04:05Z"}]}));
+        assert_eq!(update_line("windows", &nightly_probe(&release, nightly_files("windows"))), "WINDOWS: EXE 2026-01-02 03:04 UTC");
+        assert_eq!(update_line("linux", &nightly_probe(&release, nightly_files("linux"))), "LINUX: NONE PUBLISHED");
+        assert_eq!(update_line("phone", &nightly_probe(&limited, nightly_files("phone"))), "PHONE: NONE PUBLISHED");
     }
 }

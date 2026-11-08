@@ -920,10 +920,17 @@ pub fn visible_window(text: &str, caret: usize, avail: f32, width_of: &dyn Fn(&s
     let chars: Vec<char> = text.chars().collect();
     let caret = caret.min(chars.len());
     let slice = |a: usize, b: usize| chars[a..b].iter().collect::<String>();
-    let mut start = 0;
-    while start < caret && width_of(&slice(start, caret)) > avail {
-        start += 1;
+    // the smallest start whose tail up to the caret fits (widths only shrink as start grows): a binary search
+    let (mut lo, mut hi) = (0, caret);
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if width_of(&slice(mid, caret)) > avail {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
     }
+    let start = lo;
     let mut end = caret;
     while end < chars.len() && width_of(&slice(start, end + 1)) <= avail {
         end += 1;
@@ -1217,6 +1224,20 @@ pub fn modal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visible_window_keeps_the_caret_in_view_with_few_measurements() {
+        let text: String = "a".repeat(500);
+        let calls = std::cell::Cell::new(0usize);
+        let w = |s: &str| {
+            calls.set(calls.get() + 1);
+            s.chars().count() as f32
+        };
+        let (start, end) = visible_window(&text, 500, 40.0, &w);
+        assert_eq!((start, end), (460, 500));
+        assert!(calls.get() < 100, "measured {} times", calls.get());
+        assert_eq!(visible_window("abc", 1, 100.0, &|s| s.len() as f32), (0, 3));
+    }
 
     /// A colour's 8-bit channels, rounded the way the web renders them.
     fn rgba8(c: Color) -> (u8, u8, u8, u8) {

@@ -235,6 +235,25 @@ fn find_program(os: Os, c: &Config) -> Option<String> {
     }
 }
 
+/// The longest one spoken line may take before its process is killed, so one hung program cannot block the queue.
+const SPEECH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// Wait for `child` up to `timeout`; kill and reap it when the time runs out. True when it was killed.
+fn wait_or_kill(child: &mut std::process::Child, timeout: std::time::Duration) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return false,
+            Ok(None) if start.elapsed() < timeout => std::thread::sleep(std::time::Duration::from_millis(25)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return true;
+            }
+        }
+    }
+}
+
 fn run(inv: &Invocation) {
     let Ok(mut child) = Command::new(&inv.program)
         .args(&inv.args)
@@ -248,7 +267,7 @@ fn run(inv: &Invocation) {
     if let (Some(text), Some(mut si)) = (&inv.stdin, child.stdin.take()) {
         let _ = si.write_all(text.as_bytes());
     }
-    let _ = child.wait();
+    wait_or_kill(&mut child, SPEECH_TIMEOUT);
 }
 
 /// The speaker: a worker thread speaks one line at a time; `speak_line` never blocks the frame.
@@ -422,5 +441,22 @@ mod tests {
         let bad = TEXT.replace("\"queue_max\"", "\"queue_maxx\"");
         assert!(parse(&bad).unwrap_err().contains("queue_max"));
         assert!(parse(TEXT).is_ok());
+    }
+
+    #[test]
+    fn a_hung_speech_process_is_killed_at_the_deadline() {
+        let mut cmd = if cfg!(windows) {
+            let mut c = Command::new("ping");
+            c.args(["-n", "30", "127.0.0.1"]);
+            c
+        } else {
+            let mut c = Command::new("sleep");
+            c.arg("30");
+            c
+        };
+        let Ok(mut child) = cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn() else { return };
+        let t = std::time::Instant::now();
+        assert!(wait_or_kill(&mut child, std::time::Duration::from_millis(100)), "timed out and killed");
+        assert!(t.elapsed() < std::time::Duration::from_secs(5));
     }
 }

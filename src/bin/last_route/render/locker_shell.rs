@@ -1,5 +1,6 @@
 //! The dark two-sided shell the local hider sees from inside a locker (Godot route_interactable_3d.gd
-//! _build_hide_seal: albedo (.06,.06,.07), roughness 1, cull disabled). The normal model's faces point
+//! _build_hide_seal: albedo (.06,.06,.07), cull disabled; drawn unlit, so no roughness is kept). The vent slit heights
+//! come from the hiding camera (data/player/hiding_view.json), not from this file. The normal model's faces point
 //! outward, so from inside they vanish; this shell sits just inside the prop bounds so nothing shows through.
 //! Pure geometry: the scene draws the quads for the hidden locker only. Tunables: data/render/locker_shell.json.
 
@@ -23,11 +24,7 @@ pub struct Bounds {
 pub struct ShellData {
     /// Metres the shell sits inside the prop bounds.
     pub inset_m: f32,
-    /// The vent slit on the front, as fractions of the bounds' height.
-    pub vent_band_min: f32,
-    pub vent_band_max: f32,
     pub color: [f32; 4],
-    pub roughness: f32,
     pub two_sided: bool,
 }
 
@@ -44,8 +41,6 @@ impl ShellData {
         };
         // read in the file's order so the first missing key is the one reported
         let inset_m = num("inset_m")?;
-        let vent_band_min = num("vent_band_min")?;
-        let vent_band_max = num("vent_band_max")?;
         let color = s
             .get("color")
             .and_then(|v| v.as_array())
@@ -60,10 +55,7 @@ impl ShellData {
             .ok_or_else(|| "shell.color: expected four numbers".to_string())?;
         let data = ShellData {
             inset_m,
-            vent_band_min,
-            vent_band_max,
             color,
-            roughness: num("roughness")?,
             two_sided: s
                 .get("two_sided")
                 .and_then(|v| v.as_bool())
@@ -71,12 +63,6 @@ impl ShellData {
         };
         if data.inset_m < 0.0 {
             return Err("shell.inset_m: expected zero or more".into());
-        }
-        if !(0.0..=1.0).contains(&data.vent_band_min)
-            || !(0.0..=1.0).contains(&data.vent_band_max)
-            || data.vent_band_min > data.vent_band_max
-        {
-            return Err("shell.vent_band_min/max: expected 0..1 with min <= max".into());
         }
         Ok(data)
     }
@@ -92,10 +78,7 @@ pub fn data() -> &'static ShellData {
             eprintln!("{PATH}: {e}; using the Standard shell");
             ShellData {
                 inset_m: 0.02,
-                vent_band_min: 0.62,
-                vent_band_max: 0.78,
                 color: [0.06, 0.06, 0.07, 1.0],
-                roughness: 1.0,
                 two_sided: true,
             }
         })
@@ -137,9 +120,10 @@ pub fn view_shell(bounds: Bounds, d: &ShellData, eye_lo: f32, eye_hi: f32) -> Ve
     shell_boxes(bounds, d.inset_m, lo, hi)
 }
 
-/// Triangle list for the hidden locker's shell: vertices and indices (both windings when two-sided).
-pub fn shell_mesh(bounds: Bounds, d: &ShellData) -> (Vec<[f32; 3]>, Vec<u16>) {
-    let quads = shell_boxes(bounds, d.inset_m, d.vent_band_min, d.vent_band_max);
+/// Triangle list for the hidden locker's shell with the slit at `eye_lo`..`eye_hi`: vertices and indices (both windings
+/// when two-sided).
+pub fn shell_mesh(bounds: Bounds, d: &ShellData, eye_lo: f32, eye_hi: f32) -> (Vec<[f32; 3]>, Vec<u16>) {
+    let quads = view_shell(bounds, d, eye_lo, eye_hi);
     let mut verts = Vec::with_capacity(quads.len() * 4);
     let mut idx = Vec::with_capacity(quads.len() * 12);
     for q in &quads {
@@ -229,22 +213,37 @@ mod tests {
     fn standard_file_parses_and_matches_godot() {
         let d = ShellData::parse(include_str!("../data/render/locker_shell.json")).unwrap();
         assert_eq!(d.color, [0.06, 0.06, 0.07, 1.0]);
-        assert_eq!(d.roughness, 1.0);
         assert!(d.two_sided);
     }
 
     #[test]
     fn missing_key_reports_its_name() {
         let e = ShellData::parse(r#"{"shell":{"inset_m":0.02}}"#).unwrap_err();
-        assert!(e.contains("vent_band_min"), "{e}");
+        assert!(e.contains("color"), "{e}");
+    }
+
+    #[test]
+    fn the_file_has_no_dead_keys() {
+        let text = include_str!("../data/render/locker_shell.json");
+        for dead in ["roughness", "vent_band_min", "vent_band_max"] {
+            assert!(!text.contains(dead), "{dead} is not read by the game");
+        }
+    }
+
+    #[test]
+    fn the_mesh_slit_follows_the_camera_heights() {
+        let d = ShellData::parse(include_str!("../data/render/locker_shell.json")).unwrap();
+        let (_, low) = shell_mesh(B, &d, 0.5, 0.8);
+        let (_, none_above) = shell_mesh(B, &d, 5.0, 6.0);
+        assert!(low.len() > none_above.len(), "a slit the prop does not reach drops the upper plate");
     }
 
     #[test]
     fn data_change_changes_the_mesh() {
         let mut d = ShellData::parse(include_str!("../data/render/locker_shell.json")).unwrap();
-        let (_, a) = shell_mesh(B, &d);
+        let (_, a) = shell_mesh(B, &d, 1.38, 1.72);
         d.two_sided = false;
-        let (_, b) = shell_mesh(B, &d);
+        let (_, b) = shell_mesh(B, &d, 1.38, 1.72);
         assert!(a.len() > b.len());
     }
 }

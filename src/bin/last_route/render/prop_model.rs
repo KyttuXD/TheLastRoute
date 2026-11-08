@@ -145,6 +145,39 @@ fn white_vertex(position: Vec3, uv: Vec2, normal: Vec3) -> Vertex {
     }
 }
 
+/// A byte range of buffer `idx`, or `None` when the buffer or the range does not exist (malformed GLB view).
+fn checked_view(buffers: &[Vec<u8>], idx: usize, offset: usize, length: usize) -> Option<&[u8]> {
+    let end = offset.checked_add(length)?;
+    buffers.get(idx)?.get(offset..end)
+}
+
+/// True when the optional vertex attributes all have one entry per position.
+fn attr_counts_match(pos: usize, normals: usize, uvs: usize, cols: usize) -> bool {
+    normals == pos && uvs == pos && cols == pos
+}
+
+#[cfg(test)]
+mod glb_guard_tests {
+    use super::*;
+
+    #[test]
+    fn a_view_past_the_buffer_is_refused() {
+        let bufs = vec![vec![1u8, 2, 3, 4]];
+        assert_eq!(checked_view(&bufs, 0, 1, 2), Some(&[2u8, 3][..]));
+        assert!(checked_view(&bufs, 0, 3, 5).is_none());
+        assert!(checked_view(&bufs, 0, usize::MAX, 2).is_none());
+        assert!(checked_view(&bufs, 1, 0, 1).is_none());
+    }
+
+    #[test]
+    fn short_attribute_accessors_are_refused() {
+        assert!(attr_counts_match(3, 3, 3, 3));
+        assert!(!attr_counts_match(3, 2, 3, 3));
+        assert!(!attr_counts_match(3, 3, 1, 3));
+        assert!(!attr_counts_match(3, 3, 3, 0));
+    }
+}
+
 impl PropModel {
     /// A model from its bbmodel text. `find` reads a file the model names next to itself (a shared atlas), `scope` is the
     /// folder the model sits in (the key `cache` shares a found atlas under), and `soft` rounds the normals the way the
@@ -283,8 +316,8 @@ impl PropModel {
         for img in g.images() {
             let data = match img.source() {
                 gltf::image::Source::View { view, .. } => {
-                    let b = &buffers[view.buffer().index()];
-                    Some(b[view.offset()..view.offset() + view.length()].to_vec())
+                    // A view that runs past its buffer leaves the picture out (white fallback), never panics.
+                    checked_view(&buffers, view.buffer().index(), view.offset(), view.length()).map(|s| s.to_vec())
                 }
                 gltf::image::Source::Uri { uri, .. } => sibling(uri),
             };
@@ -323,6 +356,9 @@ impl PropModel {
                     .read_colors(0)
                     .map(|c| c.into_rgba_f32().collect())
                     .unwrap_or_else(|| vec![[1.0; 4]; pos.len()]);
+                if !attr_counts_match(pos.len(), normals.len(), uvs.len(), cols.len()) {
+                    continue;
+                }
                 let factor = prim.material().pbr_metallic_roughness().base_color_factor();
                 let tex_index = prim
                     .material()

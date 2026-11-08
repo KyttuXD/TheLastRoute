@@ -253,7 +253,7 @@ impl Sample {
         let (vx, vz) = interp::clamp_velocity(num("vx").unwrap_or(0.0), num("vz").unwrap_or(0.0), interp::rules().max_speed_mps);
         Some(Sample {
             seq: o.get("seq")?.as_u64()? as u32,
-            depth: o.get("depth")?.as_i64()? as i32,
+            depth: i32::try_from(o.get("depth")?.as_i64()?).ok()?,
             h: num("h"),
             x: num("x")?,
             y: num("y")?,
@@ -396,7 +396,7 @@ fn remote_view(peer: u32, name: String, r: &Remote, skin: String, origin: (i32, 
         held: shown.held,
         flash_pitch: shown.flash_pitch,
         look_pitch: shown.look_pitch,
-        hide: shown.hide.map(|h| HideSpot { cell: (h.cell.0 - origin.0, h.cell.1 - origin.1), facing: h.facing }),
+        hide: shown.hide.and_then(|h| Some(HideSpot { cell: (h.cell.0.checked_sub(origin.0)?, h.cell.1.checked_sub(origin.1)?), facing: h.facing })),
         hide_since: r.hide_since.map(|t| now.duration_since(t)),
         speed: if !shown.moving {
             0.0
@@ -729,6 +729,10 @@ pub struct NetSession {
     pending_captures: HashMap<u32, PendingCapture>,
     /// Host: the last taser intent accepted from each guest, for the data's least gap (`guest.taser_min_gap_s`).
     last_taser: HashMap<u32, Instant>,
+    /// Host: per-guest chat moderation (rates, duplicates, mutes).
+    chat_moderation: super::chat::ChatModeration,
+    /// Chat lines received (guest) or accepted (host) and not yet taken by the app ([`NetSession::take_chat_lines`]).
+    chat_inbox: Vec<super::chat::ChatLine>,
     /// Host: guests' sewer valve turn requests waiting for the game ([`NetSession::take_valve_requests`]).
     valve_requests: Vec<ValveRequest>,
     /// Host: guests' Axe pipe breach requests waiting for the game ([`NetSession::take_burst_requests`]).
@@ -1105,6 +1109,8 @@ impl NetSession {
             hunter_tracker: Tracker::default(),
             pending_captures: HashMap::new(),
             last_taser: HashMap::new(),
+            chat_moderation: super::chat::ChatModeration::default(),
+            chat_inbox: Vec::new(),
             valve_requests: Vec::new(),
             burst_requests: Vec::new(),
             guest_events: Vec::new(),
@@ -1619,6 +1625,41 @@ impl NetSession {
             .collect();
         out.sort_by_key(|g| g.peer);
         out
+    }
+
+    /// Sends a typed chat line to the room. A guest submits it to the host (which moderates and rebroadcasts it, so the
+    /// guest sees its own line when it comes back); the host sends it to everyone and keeps it itself. False when the
+    /// line is empty or could not be sent.
+    pub fn send_chat(&mut self, text: &str, channel: &str, at: [f64; 2], world: [f64; 3], depth: i64) -> bool {
+        let Some(message) = super::chat::submit(text, channel, at, world, depth) else { return false };
+        if !self.is_host() {
+            return self.coop.send(HOST_PEER_ID, &message);
+        }
+        let Message::SubmitChatPayload { payload } = message else { return false };
+        let line = super::chat::ChatLine::sanitize(HOST_PEER_ID as i64, &self.name, &payload, false);
+        self.deliver_chat(Message::ChatPayload { peer_id: line.peer_id, display_name: line.display_name.clone(), payload: line.payload() });
+        true
+    }
+
+    /// The chat lines that arrived since the last call, oldest first (feed them to a [`super::chat::ChatFeed`] and the TTS).
+    pub fn take_chat_lines(&mut self) -> Vec<super::chat::ChatLine> {
+        std::mem::take(&mut self.chat_inbox)
+    }
+
+    /// Host: sends an accepted chat message to every guest and keeps its line for the host's own screen.
+    fn deliver_chat(&mut self, message: Message) {
+        for peer in self.coop.peers() {
+            self.coop.send(peer, &message);
+        }
+        self.keep_chat(&message);
+    }
+
+    fn keep_chat(&mut self, message: &Message) {
+        if let Some(line) = super::chat::ChatLine::from_message(message) {
+            self.chat_inbox.push(line);
+            let extra = self.chat_inbox.len().saturating_sub(super::chat::ChatRules::load().inbox_max);
+            self.chat_inbox.drain(..extra);
+        }
     }
 
     /// Host: the guests' valve turn requests since the last call, oldest first. A guest always gets nothing.
@@ -2143,6 +2184,17 @@ impl NetSession {
                     self.snapshot = Some(snapshot);
                 }
             }
+            // a guest's chat line: the host moderates it and rebroadcasts it (Godot `_submit_chat_payload`)
+            Message::SubmitChatPayload { payload } if self.is_host() => {
+                let Some(guest) = self.guests.get_mut(&from) else { return };
+                guest.last_seen = now;
+                let name = guest.name.clone();
+                let ms = i64::try_from(now.duration_since(self.opened).as_millis()).unwrap_or(i64::MAX);
+                if let Some(chat) = super::chat::relay_submission(&mut self.chat_moderation, from as i64, &name, &payload, ms) {
+                    self.deliver_chat(chat);
+                }
+            }
+            Message::ChatPayload { .. } if !self.is_host() => self.keep_chat(&message),
             Message::Event { event } if !self.is_host() => out.push(NetEvent::WorldEvent(event)),
             Message::Start { seed, rest, .. } if !self.is_host() => {
                 let difficulty = rest.get("difficulty").and_then(Value::as_str).unwrap_or("STANDARD").to_string();
@@ -2263,6 +2315,8 @@ impl NetSession {
                 self.skin_slims.remove(&peer);
                 self.pending_captures.remove(&peer);
                 self.last_taser.remove(&peer);
+                // the UDP relay never says a guest left: stop sending and resending to the dead session
+                self.coop.forget_peer(peer);
                 if let Some(guest) = self.guests.remove(&peer) {
                     out.push(NetEvent::GuestLeft(guest.name));
                 }
@@ -3784,6 +3838,57 @@ mod owner_route_tests {
         let mut guest = offline_session(false, "GUEST");
         guest.on_message(2, Message::RequestInteraction { event: request }, now, &mut out);
         assert!(guest.take_valve_requests().is_empty(), "a guest never queues requests");
+    }
+
+    #[test]
+    fn a_guests_chat_is_moderated_rebroadcast_and_a_guest_hears_the_host() {
+        let now = Instant::now();
+        let mut host = offline_session(true, "HOST");
+        let mut out = Vec::new();
+        let line = |text: &str| match crate::net::chat::submit(text, "team", [0.0; 2], [0.0; 3], 0) {
+            Some(Message::SubmitChatPayload { payload }) => Message::SubmitChatPayload { payload },
+            _ => panic!(),
+        };
+        host.on_message(2, line("hello"), now, &mut out);
+        assert!(host.take_chat_lines().is_empty(), "a peer that never registered is ignored");
+        registered(&mut host, 2, now);
+        host.on_message(2, line("hello"), now, &mut out);
+        let got = host.take_chat_lines();
+        assert_eq!((got.len(), got[0].text.as_str(), got[0].peer_id), (1, "hello", 2));
+        host.on_message(2, line("hello"), now, &mut out);
+        assert!(host.take_chat_lines().is_empty(), "moderation drops a duplicate");
+        assert!(host.send_chat("host line", "team", [0.0; 2], [0.0; 3], 0));
+        assert_eq!(host.take_chat_lines()[0].peer_id, HOST_PEER_ID as i64);
+        assert!(!host.send_chat("   ", "team", [0.0; 2], [0.0; 3], 0), "an empty line is not sent");
+        let mut guest = offline_session(false, "GUEST");
+        let heard = Message::ChatPayload { peer_id: 1, display_name: "HOST".into(), payload: crate::net::chat::ChatLine::sanitize(1, "HOST", &Map::new(), false).payload() };
+        guest.on_message(HOST_PEER_ID, heard, now, &mut out);
+        assert!(guest.take_chat_lines().is_empty(), "an empty line is not shown");
+        let mut p = Map::new();
+        p.insert("text".into(), json!("run"));
+        guest.on_message(HOST_PEER_ID, Message::ChatPayload { peer_id: 1, display_name: "HOST".into(), payload: p }, now, &mut out);
+        assert_eq!(guest.take_chat_lines()[0].text, "run");
+    }
+
+    #[test]
+    fn a_timed_out_guest_leaves_the_session_peers() {
+        let now = Instant::now();
+        let mut host = offline_session(true, "HOST");
+        let mut out = Vec::new();
+        registered(&mut host, 2, now);
+        host.coop.send(2, &Message::PeerLeave);
+        assert!(host.coop.peers().contains(&2));
+        host.prune(now + GUEST_IDLE + ROSTER_KEEP + Duration::from_secs(1), &mut out);
+        assert!(!host.coop.peers().contains(&2), "no later broadcast or resend reaches it");
+    }
+
+    #[test]
+    fn a_hostile_hide_cell_does_not_overflow_the_remote_view() {
+        let now = Instant::now();
+        let smp = sample(1, 13.0, 14.0).with_body(Pose::Climb, 1.5, true, Some(HideSpot { cell: (i32::MIN, i32::MAX), facing: (1, 0) }));
+        let r = Remote::new(smp, now, Some(now));
+        let v = remote_view(5, "Ann".into(), &r, "DEFAULT".into(), (10, -10), now);
+        assert_eq!(v.hide, None, "an out-of-range cell is dropped, not wrapped");
     }
 
     #[test]

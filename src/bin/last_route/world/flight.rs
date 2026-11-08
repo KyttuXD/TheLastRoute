@@ -534,6 +534,13 @@ impl FlightRules {
                 self.sp_start_offset_deg, self.sp_turns
             ));
         }
+        // the slab rail runs along the end radial to the landing row, so that radial must not run parallel to it
+        if (self.sp_start_offset_deg + self.sp_turns * 360.0).to_radians().cos().abs() < MIN_END_RADIAL_COS {
+            return Err(format!(
+                "flights.json: spiral.start_offset_deg {} with {} turns ends the arc along the landing row, so the slab rail would never reach it",
+                self.sp_start_offset_deg, self.sp_turns
+            ));
+        }
         for (label, n) in [
             ("switchback", self.tiles_switchback),
             ("straight", self.tiles_straight),
@@ -1309,6 +1316,9 @@ pub fn landing_guards(f: &Flight) -> Vec<Guard> {
     landing_guards_with(flights(), f)
 }
 
+/// Smallest |cos| of the spiral's end radial the slab rail accepts (about 0.06 degrees off horizontal).
+const MIN_END_RADIAL_COS: f32 = 1e-3;
+
 /// The rail along the spiral's end radial on the upper level (Godot: a 1.1 m collider and a 0.95 m rail from the post
 /// to the landing row's inner edge, where the slab beside the helicoid's lowest step drops a storey): grid coordinates,
 /// from `post_radius` out from the post to the landing row's edge. `None` for the other flights.
@@ -1321,6 +1331,10 @@ pub fn spiral_slab_rail_with(rules: &FlightRules, f: &Flight) -> Option<Segment>
     let phi = spiral_angle(rules, f, end);
     let (cu, sv) = (phi.cos(), phi.sin());
     // along the radial from the post to the line u = 0
+    // a (near) horizontal end radial never reaches the line u = 0: no rail rather than one thousands of cells long
+    if cu.abs() < MIN_END_RADIAL_COS {
+        return None;
+    }
     let t = uc / -cu;
     let from = (uc + cu * (rules.sp_post), vc + sv * rules.sp_post);
     let to = (0.0, vc + sv * t);
@@ -1475,6 +1489,29 @@ pub fn lamp_place_with(rules: &FlightRules, f: &Flight) -> (f32, f32, f32) {
 
 pub fn lamp_place(f: &Flight) -> (f32, f32, f32) {
     lamp_place_with(flights(), f)
+}
+
+#[cfg(test)]
+mod end_radial_tests {
+    use super::*;
+
+    #[test]
+    fn a_horizontal_end_radial_is_rejected_and_gives_no_runaway_rail() {
+        let mut bad = flights().clone();
+        bad.sp_start_offset_deg = 0.0;
+        bad.sp_turns = 0.75;
+        assert!(bad.validate().unwrap_err().contains("slab rail"));
+        bad.sp_turns = 0.25;
+        assert!(bad.validate().unwrap_err().contains("slab rail"));
+        for cw in [false, true] {
+            let f = Flight::new(FlightKind::Stairs, FlightShape::Spiral, 1, Cell::new(20, 20), (0, 1)).with_clockwise(cw);
+            assert!(spiral_slab_rail_with(&bad, &f).is_none(), "cw {cw}: no rail along a horizontal end radial");
+            let ok = spiral_slab_rail_with(flights(), &f).expect("the shipped spiral keeps its rail");
+            for p in [ok.a, ok.b] {
+                assert!(p.0.abs() < 1000.0 && p.1.abs() < 1000.0, "cw {cw}: bounded rail");
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -287,12 +287,14 @@ pub fn build(cfg: &WaterfallCfg, top_y: f32, bottom_y: f32, out: f32, t: f32) ->
         foam_center: [0.0, bottom_y + 0.03, foam_z],
         light_pos: [0.0, bottom_y + cfg.splash.light_height_m, foam_z],
         sound_key: cfg.sound_key.clone(),
-        sound_pos: [
-            0.0,
-            bottom_y + cfg.mist.above_surface_m,
-            out * (cfg.throw_m + cfg.mist.offset_out_m),
-        ],
+        sound_pos: sound_pos(cfg, bottom_y, out),
     }
+}
+
+/// Where a fall's loop plays from, relative to its lip: it depends on the cistern surface and the throw side only, not
+/// on the clock, so the sound pass reads it without building the sheet and mist.
+pub fn sound_pos(cfg: &WaterfallCfg, bottom_y: f32, out: f32) -> [f32; 3] {
+    [0.0, bottom_y + cfg.mist.above_surface_m, out * (cfg.throw_m + cfg.mist.offset_out_m)]
 }
 
 /// One fall in the streamed window: where its lip is (window metres, the middle of the lip), which way it throws
@@ -372,13 +374,13 @@ pub fn streak(cfg: &WaterfallCfg, v: f32, t: f32) -> f32 {
 }
 
 /// The fall nearest to `eye` (x, z) within `sound_range_m`, as the position its loop plays from.
-pub fn nearest_sound(cfg: &WaterfallCfg, sites: &[Site], eye: (f32, f32), t: f32) -> Option<[f32; 3]> {
+pub fn nearest_sound(cfg: &WaterfallCfg, sites: &[Site], eye: (f32, f32), _t: f32) -> Option<[f32; 3]> {
     let d2 = |p: &[f32; 3]| (p[0] - eye.0).powi(2) + (p[2] - eye.1).powi(2);
     sites
         .iter()
         .map(|s| {
-            let w = build(cfg, s.top_y, s.bottom_y, s.out, t);
-            [s.lip[0] + w.sound_pos[0], w.sound_pos[1], s.lip[1] + w.sound_pos[2]]
+            let sp = sound_pos(cfg, s.bottom_y, s.out);
+            [s.lip[0] + sp[0], sp[1], s.lip[1] + sp[2]]
         })
         .filter(|p| d2(p).sqrt() <= cfg.sound_range_m)
         .min_by(|a, b| d2(a).partial_cmp(&d2(b)).unwrap_or(std::cmp::Ordering::Equal))
@@ -528,6 +530,16 @@ mod tests {
         assert!((p[0] - 40.0).abs() < 1.0, "the nearer fall plays");
         assert!(nearest_sound(&c, &sites, (10.0 + c.sound_range_m + 5.0, 90.0), 0.0).is_none(), "out of range is silent");
         assert!(nearest_sound(&c, &[], (0.0, 0.0), 0.0).is_none());
+    }
+
+    #[test]
+    fn the_sound_position_matches_the_built_fall_without_building_it() {
+        let c = cfg();
+        for out in [-1.0, 1.0] {
+            for t in [0.0, 1.7] {
+                assert_eq!(sound_pos(&c, -5.0, out), build(&c, 0.0, -5.0, out, t).sound_pos);
+            }
+        }
     }
 
     #[test]

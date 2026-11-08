@@ -198,17 +198,16 @@ pub fn connects(def: &RoomDef, grid: &[[u8; CHUNK as usize]; CHUNK as usize], x:
     false
 }
 
-/// Whether a room rectangle may go into a chunk grid: every cell under it is solid, no `keep_clear` cell lies in it
-/// or the ring round it, and some room of this size opens onto existing floor (a doorway that leads somewhere).
+/// Whether this room may go into a chunk grid at (x, z): every cell under it is solid, no `keep_clear` cell lies in it
+/// or the ring round it, and this room opens onto existing floor (a doorway that leads somewhere).
 pub fn spot_is_free(
-    rooms: &Rooms,
+    def: &RoomDef,
     grid: &[[u8; CHUNK as usize]; CHUNK as usize],
     keep_clear: &[V2],
     x: i32,
     z: i32,
-    w: i32,
-    h: i32,
 ) -> bool {
+    let (w, h) = (def.w, def.h);
     for cz in z..z + h {
         for cx in x..x + w {
             if grid[cz as usize][cx as usize] != SOLID {
@@ -219,7 +218,7 @@ pub fn spot_is_free(
     if keep_clear.iter().any(|c| c.x >= x - 1 && c.x <= x + w && c.y >= z - 1 && c.y <= z + h) {
         return false;
     }
-    rooms.rooms.iter().any(|d| d.w == w && d.h == h && connects(d, grid, x, z))
+    connects(def, grid, x, z)
 }
 
 impl RoomDef {
@@ -231,13 +230,14 @@ impl RoomDef {
     }
 }
 
-/// Pick a room and a spot for one sewer chunk. `free(x, y, w, h)` says whether the rectangle may be used.
+/// Pick a room and a spot for one sewer chunk. `free(def, x, y)` says whether that room may go at that spot (the doorway
+/// test is per room, so a room that cannot connect there fails the try and the next try runs).
 /// Draws: chance, weighted room, then two draws (x, z) per try.
 pub fn pick<'a>(
     rooms: &'a Rooms,
     world: &str,
     chunk_id: &str,
-    free: &dyn Fn(i32, i32, i32, i32) -> bool,
+    free: &dyn Fn(&RoomDef, i32, i32) -> bool,
 ) -> Option<Placed<'a>> {
     if rooms.rooms.is_empty() {
         return None;
@@ -267,7 +267,7 @@ pub fn pick<'a>(
     for _ in 0..rooms.max_tries {
         let x = lo + rng.next_index(xs as usize) as i32;
         let z = lo + rng.next_index(zs as usize) as i32;
-        if free(x, z, def.w, def.h) {
+        if free(def, x, z) {
             return Some(Placed { def, origin: V2::new(x, z) });
         }
     }
@@ -345,7 +345,7 @@ impl Placed<'_> {
 mod tests {
     use super::*;
 
-    fn all_free(_: i32, _: i32, _: i32, _: i32) -> bool {
+    fn all_free(_: &RoomDef, _: i32, _: i32) -> bool {
         true
     }
 
@@ -415,7 +415,24 @@ mod tests {
     fn picking_is_deterministic_and_respects_free() {
         let rs = rooms();
         assert_eq!(picks(rs), picks(rs));
-        assert!((0..50).all(|n| pick(rs, "W", &format!("c{n}"), &|_, _, _, _| false).is_none()));
+        assert!((0..50).all(|n| pick(rs, "W", &format!("c{n}"), &|_, _, _| false).is_none()));
+    }
+
+    /// A spot that only the junction chamber connects to (an opening above it) is refused for the overflow chamber,
+    /// which has the same size but side doorways, so a pick that drew the overflow chamber tries again.
+    #[test]
+    fn a_spot_is_free_only_for_a_room_that_connects_there() {
+        let rs = rooms();
+        let by = |id: &str| rs.rooms.iter().find(|r| r.id == id).expect("room");
+        let (junction, overflow) = (by("junction_chamber"), by("overflow_chamber"));
+        assert_eq!((junction.w, junction.h), (overflow.w, overflow.h));
+        let mut grid = [[SOLID; CHUNK as usize]; CHUNK as usize];
+        // floor directly above the junction's top doorway (room at 10, 10: doorway column x = 10 + 4)
+        grid[9][14] = DRY;
+        assert!(connects(junction, &grid, 10, 10));
+        assert!(spot_is_free(junction, &grid, &[], 10, 10));
+        assert!(!connects(overflow, &grid, 10, 10));
+        assert!(!spot_is_free(overflow, &grid, &[], 10, 10));
     }
 
     #[test]

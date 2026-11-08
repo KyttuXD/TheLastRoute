@@ -425,7 +425,7 @@ pub struct PublicSettings {
 impl PublicSettings {
     /// The settings out of a `{settings: {...}}` answer; None when a value is missing or the wrong type.
     pub fn from_answer(p: &Json) -> Option<PublicSettings> {
-        let v = &p["settings"];
+        let v = p.get("settings")?;
         Some(PublicSettings {
             join_per_minute: v["join_per_minute"].as_u64()?.min(u32::MAX as u64) as u32,
             player_ttl_seconds: v["player_ttl_seconds"].as_f64()?,
@@ -1042,6 +1042,14 @@ pub fn cloud_put(cfg: &BackendConfig, path: &str, token: &str, data: Option<&Jso
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_settings_answer_without_settings_is_none_not_a_panic() {
+        assert!(PublicSettings::from_answer(&Json::new()).is_none());
+        let mut odd = Json::new();
+        odd.insert("settings".into(), json!("nope"));
+        assert!(PublicSettings::from_answer(&odd).is_none());
+    }
 
     #[test]
     fn only_an_unknown_route_404_falls_back_to_the_legacy_upload() {

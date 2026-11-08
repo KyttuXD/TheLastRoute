@@ -770,6 +770,11 @@ pub fn loaded_ids(content: &Content) -> Vec<String> {
     content.packs.iter().filter_map(|p| virtual_id(&p.dir).map(str::to_string)).collect()
 }
 
+/// The page-reported byte length of a stored record as an allocation size; None when missing or above `MAX_PACK_BYTES`.
+fn checked_stored_size(size: i32) -> Option<usize> {
+    usize::try_from(size).ok().filter(|&n| n <= MAX_PACK_BYTES)
+}
+
 /// Start-up: reads the stored packs back from the page, remembers them, and loads them into `c` like folder packs.
 pub fn load_stored_into(c: &mut Content) {
     load_stored_from(c, browser::stored());
@@ -781,7 +786,17 @@ pub fn load_stored_from(c: &mut Content, stored: Vec<(String, Vec<u8>)>) {
     let mut reg = lock();
     for (key, bytes) in stored {
         match decode(&bytes) {
-            Ok(pack) if pack.id == key => reg.insert(pack),
+            Ok(mut pack) if pack.id == key => {
+                // the same trial load an import gets: a pack the loader now warns about is skipped, not half-loaded
+                let others: Vec<Arc<ImportedPack>> = reg.all().into_iter().filter(|p| p.id != pack.id).collect();
+                match dry_run(&pack, &others) {
+                    Ok(provides) => {
+                        pack.provides = provides;
+                        reg.insert(pack);
+                    }
+                    Err(why) => c.warnings.push(format!("imported mod {key}: {why}; skipped")),
+                }
+            }
             Ok(pack) => c.warnings.push(format!("imported mod {key}: stored under the wrong name ({}); skipped", pack.id)),
             Err(why) => c.warnings.push(format!("imported mod {key}: {why}; skipped")),
         }
@@ -849,10 +864,8 @@ pub mod browser {
             }
             id.truncate(n as usize);
             let size = unsafe { lr_mods_size(i) };
-            if size < 0 {
-                continue;
-            }
-            let mut data = vec![0u8; size as usize];
+            let Some(size) = super::checked_stored_size(size) else { continue };
+            let mut data = vec![0u8; size];
             let got = unsafe { lr_mods_read(i, data.as_mut_ptr(), data.len() as u32) };
             if got < 0 || got as usize != data.len() {
                 continue;
@@ -1279,6 +1292,26 @@ mod tests {
         assert!(c.warnings.iter().any(|w| w.contains("evil_pack") && w.contains("skipped")), "{:?}", c.warnings);
         assert!(c.warnings.iter().any(|w| w.contains("wrong_key") && w.contains("wrong name")), "{:?}", c.warnings);
         assert!(!loaded_ids(&c).contains(&"evil_pack".to_string()));
+    }
+
+    #[test]
+    fn a_stored_size_above_the_pack_cap_is_refused_before_allocating() {
+        assert_eq!(checked_stored_size(-1), None);
+        assert_eq!(checked_stored_size(i32::MAX), None);
+        assert_eq!(checked_stored_size(1024), Some(1024));
+        assert_eq!(checked_stored_size(MAX_PACK_BYTES as i32), Some(MAX_PACK_BYTES));
+    }
+
+    #[test]
+    fn a_stored_pack_the_loader_now_warns_about_is_skipped() {
+        let (mut reg, mut store) = (Registry::default(), Memory::default());
+        import(good_folder("p", "stale_pack", "staleling"), &mut reg, &mut store);
+        let mut pack = decode(&store.kept["stale_pack"]).unwrap();
+        pack.files.insert("hunters/broken.json".to_string(), b"{ not json".to_vec());
+        let mut c = Content::base();
+        load_stored_from(&mut c, vec![("stale_pack".into(), encode(&pack))]);
+        assert!(c.warnings.iter().any(|w| w.contains("stale_pack") && w.contains("skipped")), "{:?}", c.warnings);
+        assert!(!loaded_ids(&c).contains(&"stale_pack".to_string()));
     }
 
     // ---- zip files
