@@ -694,11 +694,13 @@ pub struct Crowd {
     seed: u32,
     agents: Vec<Agent>,
     first_stare_done: bool,
+    /// Hunters re-placed by `add_at` while already standing somewhere (a direct write, not a walk). Tests watch this.
+    pub replaced: u32,
 }
 
 impl Crowd {
     pub fn new(nav: Rc<NavMap>, data: Rc<BehaviourData>, seed: u32) -> Crowd {
-        Crowd { nav, data, seed, agents: Vec::new(), first_stare_done: false }
+        Crowd { nav, data, seed, agents: Vec::new(), first_stare_done: false, replaced: 0 }
     }
 
     pub fn nav(&self) -> &NavMap {
@@ -730,6 +732,7 @@ impl Crowd {
     /// Adds (or re-places) a hunter at an explicit spot.
     pub fn add_at(&mut self, id: &str, room: &str, pos: Vec3, look: Option<Vec3>) {
         if let Some(a) = self.agents.iter_mut().find(|a| a.id == id) {
+            self.replaced += 1;
             a.walker.place(pos, room, look);
             a.brain.moved();
             return;

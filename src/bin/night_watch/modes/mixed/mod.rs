@@ -49,9 +49,8 @@ pub fn check_data() -> Vec<String> {
         }
         Err(e) => out.push(e),
     }
-    match crate::hunters::nav::NavMap::from_json(world::NAV_JSON) {
-        Ok(n) => out.extend(n.validate().into_iter().map(|s| format!("mixed nav: {s}"))),
-        Err(e) => out.push(e),
+    if let Err(e) = world::try_nav() {
+        out.push(e);
     }
     for s in skin::SKINS.iter() {
         if s.labels.iter().any(|l| l.is_empty()) {

@@ -7,6 +7,8 @@
 //!
 //! The hunters physically walk (contract 9.1): the sim decides WHEN and WHERE (`Presence::sync` turns every threat's state into a
 //! target), and the `Crowd` carries her there along the nav graph (`data/nav/mixed.json`), so she is visible crossing a feed.
+//! Nobody is ever put somewhere new once she exists: the office has a node on each side linked to its door, and the vent run is
+//! joined to the three office vents by long duct shafts (rooms `airduct_*`, out of every camera) that she crawls over time.
 //! Between moves a hunter stares into the camera, does a task or waits (`data/behaviour.json`); the attack timers never wait for it.
 #![allow(dead_code)]
 
@@ -19,7 +21,7 @@ use crate::core::{fnv1a, AdminEntry, CallScript, EndCard, Fnv, Headless, Mode, O
 use crate::gfx::office::{SEAT, SPAWN};
 use crate::gfx::{Office, OfficeConfig, OfficeVariant};
 use crate::hud::admin::{AdminAction, ModeAdmin};
-use crate::hunters::{Actor, ActorDriver, BehaviourData, BehaviourEvent, Crowd, HunterLib, Pace, PoseState};
+use crate::hunters::{Actor, ActorDriver, BehaviourData, BehaviourEvent, Crowd, HunterLib, NavKind, NavMap, Pace, PoseState};
 use macroquad::prelude::{clear_background, vec3, Color, Vec3};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -140,20 +142,42 @@ struct Placed {
 }
 
 /// The crowd and the bookkeeping that turns sim states into walks. Pure (no GL): the mode, the headless run and the tests
-/// share it.
+/// share it. Nobody is ever put somewhere new once she exists: she walks (contract 9.1). Only the first appearance of a
+/// hunter (and the manual clock, which has no time to walk) places her.
 pub struct Presence {
     pub crowd: Crowd,
+    nav: Rc<NavMap>,
     placed: HashMap<String, Placed>,
+    /// Where a hunter who is hidden for now (a sealed vent, no monitor) was last seen: she comes back from there, walking.
+    mem: HashMap<String, (String, Vec3)>,
     /// Manual clock: hunters are put on their spots at once.
     pub snap: bool,
-    /// How many times a hunter was put somewhere at once (not walked).
+    /// How many times a hunter was put somewhere at once (a first appearance, or the manual clock), not walked.
     pub teleports: u32,
 }
 
+/// Seconds a trip through the long duct shafts is budgeted (the walker clamps the pace to 6 m/s).
+pub const VENT_BUDGET_S: f32 = 10.0;
+
 impl Presence {
+    /// The crowd on the mode's nav graph; an error (shown to the player, reported by `--check`) when the graph is broken.
+    pub fn try_new(seed: u32, snap: bool) -> Result<Presence, String> {
+        let nav = Rc::new(world::try_nav()?);
+        Ok(Presence::with_nav(nav, seed, snap))
+    }
+
     pub fn new(seed: u32, snap: bool) -> Presence {
-        let crowd = Crowd::new(Rc::new(world::nav()), BehaviourData::embedded(), seed ^ 0x4d49_5844);
-        Presence { crowd, placed: HashMap::new(), snap, teleports: 0 }
+        Presence::try_new(seed, snap).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// An empty crowd for a mode that refused to start (its nav graph is broken): nothing walks and nothing is drawn.
+    fn inert(seed: u32) -> Presence {
+        Presence::with_nav(Rc::new(NavMap::new("mixed")), seed, false)
+    }
+
+    fn with_nav(nav: Rc<NavMap>, seed: u32, snap: bool) -> Presence {
+        let crowd = Crowd::new(nav.clone(), BehaviourData::embedded(), seed ^ 0x4d49_5844);
+        Presence { crowd, nav, placed: HashMap::new(), mem: HashMap::new(), snap, teleports: 0 }
     }
 
     /// Advance the walkers and their idle behaviour by `dt` seconds.
@@ -175,11 +199,77 @@ impl Presence {
             self.crowd.remove(&id);
         }
         self.placed.clear();
+        self.mem.clear();
     }
 
+    /// Is she crawling a duct shaft above the building? Nobody sees her there (no camera room, nothing drawn).
+    pub fn in_duct(&self, id: &str) -> bool {
+        self.crowd.agent(id).map_or(false, |a| a.walker.room().starts_with("airduct"))
+    }
+
+    /// First appearance (or the manual clock): placed at once.
     fn put(&mut self, id: &str, room: &str, pos: Vec3, look: Vec3) {
         self.teleports += 1;
         self.crowd.add_at(id, room, pos, Some(look));
+    }
+
+    /// She is hidden for now: keep where she was so she comes back from there.
+    fn forget(&mut self, id: &str) {
+        if let Some(a) = self.crowd.agent(id) {
+            self.mem.insert(id.to_string(), (a.walker.room().to_string(), a.walker.pos));
+        }
+        self.crowd.remove(id);
+        self.placed.remove(id);
+    }
+
+    /// The node a walk from `pos` starts at: the nearest one of the world she is in (the building, or the duct).
+    fn nearest_key(&self, pos: Vec3, duct: bool, only_room: Option<&str>) -> Option<String> {
+        let mut best: Option<(f32, &str)> = None;
+        for n in self.nav.nodes() {
+            let ok = if duct {
+                n.kind == NavKind::Vent && only_room.map_or(true, |r| n.room == r)
+            } else {
+                matches!(n.kind, NavKind::Waypoint | NavKind::Stand | NavKind::Doorway | NavKind::Door | NavKind::Task)
+            };
+            if !ok {
+                continue;
+            }
+            let d = n.p.distance_squared(pos);
+            if best.map_or(true, |(bd, _)| d < bd) {
+                best = Some((d, n.key.as_str()));
+            }
+        }
+        best.map(|(_, k)| k.to_string())
+    }
+
+    /// Is she in the duct world (the vent run, a shaft, an office vent)?
+    fn agent_in_ducts(&self, id: &str) -> bool {
+        self.crowd.agent(id).map_or(false, |a| {
+            let r = a.walker.room();
+            r.starts_with("airduct") || matches!(r, "vent" | "ventL" | "ventR" | "ventT")
+        })
+    }
+
+    /// Walk her from where she stands (from the office nodes when she is in the office, which is off the hall graph) to a
+    /// node of the graph, ending on `final_pos`. An unroutable trip would put her there at once: that is counted.
+    fn walk(&mut self, id: &str, to_key: &str, room: &str, final_pos: Vec3, look: Option<Vec3>, pace: Pace) {
+        let Some((pos, in_office)) = self.crowd.agent(id).map(|a| (a.walker.pos, a.walker.room() == "office")) else { return };
+        let duct = self.agent_in_ducts(id);
+        let from = if in_office {
+            Some(String::from(if pos.x < 0.0 { "O:officeL" } else { "O:officeR" }))
+        } else {
+            self.nearest_key(pos, duct, None)
+        };
+        let nav = self.nav.clone();
+        let legs = from.map(|f| nav.route(&f, to_key)).unwrap_or_default();
+        let unroutable = legs.is_empty();
+        if let Some(a) = self.crowd.agent_mut(id) {
+            a.brain.moved();
+            a.walker.go(&nav, &legs, room, final_pos, look, pace);
+        }
+        if unroutable {
+            self.teleports += 1;
+        }
     }
 
     /// Bring the crowd in line with the rules: new targets walk, unchanged ones are left to their idle behaviour.
@@ -194,16 +284,14 @@ impl Presence {
             *n += 1;
             let tgt = target_of(sim, th, slot, env);
             if !tgt.visible {
-                self.crowd.remove(&th.id);
-                self.placed.remove(&th.id);
+                self.forget(&th.id);
                 continue;
             }
             self.place(th, &tgt, slot);
         }
         let gone: Vec<String> = self.placed.keys().filter(|k| !present.contains(k)).cloned().collect();
         for id in gone {
-            self.crowd.remove(&id);
-            self.placed.remove(&id);
+            self.forget(&id);
         }
     }
 
@@ -211,44 +299,83 @@ impl Presence {
         let id = th.id.as_str();
         let slot_use = slot.min(1);
         let prev = self.placed.get(id).cloned();
-        let first = prev.is_none();
+        // a hunter who was hidden comes back where she vanished (not at the new spot)
+        if prev.is_none() {
+            if let Some((room, pos)) = self.mem.remove(id) {
+                self.crowd.add_at(id, &room, pos, None);
+            }
+        }
+        let first = self.crowd.agent(id).is_none();
+        let at_once = first || self.snap;
         let key_changed = prev.as_ref().map_or(true, |p| p.key != t.key);
+        let moved = prev.as_ref().map_or(true, |p| p.pos.distance(t.pos) > 0.01);
         match t.at {
             Where::Hub => {
                 let slot_changed = prev.as_ref().map_or(true, |p| p.slot != slot_use);
-                if first || key_changed || slot_changed {
-                    if first || self.snap {
-                        if self.crowd.add(id, &t.key, slot_use) {
-                            self.teleports += 1;
-                        }
-                    } else {
-                        self.crowd.send(id, &t.key, slot_use, Pace::Budget(WALK_BUDGET_S));
+                if at_once {
+                    if self.crowd.add(id, &t.key, slot_use) {
+                        self.teleports += 1;
+                    }
+                } else if key_changed || slot_changed {
+                    let stand = self.nav.stand_node(&t.key, slot_use).map(|n| (n.key.clone(), n.p, n.look));
+                    if let Some((key, p, look)) = stand {
+                        self.walk(id, &key, &t.key, p, look, Pace::Budget(WALK_BUDGET_S));
                     }
                 }
             }
             Where::Run => {
-                let moved = prev.as_ref().map_or(true, |p| p.pos.distance(t.pos) > 0.01);
-                if first || key_changed || self.snap {
+                if at_once {
                     self.put(id, "vent", t.pos, t.look);
-                } else if moved {
-                    self.crowd.send_to(id, "vent", t.pos, Some(t.look), Pace::Walk);
+                } else if key_changed || moved {
+                    // inside the run she crawls; coming back from an office vent she takes the shaft (hidden) at a hurry
+                    let in_run = self.crowd.agent(id).map_or(false, |a| a.walker.room() == "vent");
+                    if let Some(to) = self.nearest_key(t.pos, true, Some("vent")) {
+                        let pace = if in_run { Pace::Walk } else { Pace::Budget(VENT_BUDGET_S) };
+                        self.walk(id, &to, "vent", t.pos, Some(t.look), pace);
+                    }
                 }
             }
             Where::Door => {
-                // from the office floor (off the nav graph) she is put at the door; elsewhere she walks there
-                let from_office = prev.as_ref().map_or(false, |p| p.key == "office");
-                if first || self.snap || from_office {
+                if at_once {
                     self.put(id, &t.key, t.pos, t.look);
                 } else if key_changed {
-                    self.crowd.send_to(id, &t.key, t.pos, Some(t.look), Pace::Budget(WALK_BUDGET_S));
+                    self.walk(id, &format!("D:{}", t.key), &t.key, t.pos, Some(t.look), Pace::Budget(WALK_BUDGET_S));
                 } else {
                     self.crowd.set_final(id, t.pos, Some(t.look));
                 }
             }
-            Where::VentStand | Where::Lens | Where::Office => {
-                let moved = prev.as_ref().map_or(true, |p| p.pos.distance(t.pos) > 0.01);
-                if first || key_changed || moved {
+            Where::VentStand => {
+                if at_once {
                     self.put(id, &t.key, t.pos, t.look);
+                } else if key_changed {
+                    // from the run through the shaft to the office vent
+                    let to = format!("VS:{}", t.key.trim_start_matches("vent"));
+                    self.walk(id, &to, &t.key, t.pos, Some(t.look), Pace::Budget(VENT_BUDGET_S));
+                } else {
+                    self.crowd.set_final(id, t.pos, Some(t.look));
+                }
+            }
+            Where::Lens => {
+                if at_once {
+                    self.put(id, &t.key, t.pos, t.look);
+                } else if key_changed || moved {
+                    // the lens is her second stand slot of the monitor's room: she walks there
+                    let room = self.nav.room_at(t.pos).unwrap_or(&t.key).to_string();
+                    let stand = self.nav.stand_node(&room, 1).map(|n| n.key.clone());
+                    if let Some(key) = stand {
+                        self.walk(id, &key, &room, t.pos, Some(t.look), Pace::Budget(WALK_BUDGET_S));
+                    }
+                }
+            }
+            Where::Office => {
+                if at_once {
+                    self.put(id, &t.key, t.pos, t.look);
+                } else if key_changed {
+                    // in through her door: the office has its own node on each side, linked to that door
+                    let to = if t.pos.x < 0.0 { "O:officeL" } else { "O:officeR" };
+                    self.walk(id, to, "office", t.pos, Some(t.look), Pace::Budget(WALK_BUDGET_S));
+                } else if moved {
+                    self.crowd.set_final(id, t.pos, Some(t.look));
                 }
             }
         }
@@ -260,7 +387,7 @@ impl Presence {
 
     /// Hunters in a camera room's view, by position.
     pub fn visible_in(&self, sim_room: &str) -> Vec<String> {
-        self.crowd.visible_in(sim_room).iter().map(|a| a.id.clone()).collect()
+        self.crowd.visible_in(sim_room).iter().filter(|a| !a.walker.room().starts_with("airduct")).map(|a| a.id.clone()).collect()
     }
 
     /// A hash of where everybody stands (for the headless digest).
@@ -354,6 +481,8 @@ pub struct MixedGame {
     skin: usize,
     bag: SkinBag,
     pres: Presence,
+    /// Set when the mode cannot run (its nav graph is broken): shown on screen, nothing advances.
+    fatal: Option<String>,
     gx: Option<Gx>,
     monitor_up: bool,
     seal_held: [bool; 3],
@@ -411,13 +540,18 @@ impl MixedGame {
         let mut bag = SkinBag::new();
         let skin = bag.pick(seed);
         let name = sim.c.diff.name.clone();
+        let (pres, fatal) = match Presence::try_new(seed, false) {
+            Ok(p) => (p, None),
+            Err(e) => (Presence::inert(seed), Some(e)),
+        };
         MixedGame {
             seed,
             level,
             sim,
             skin,
             bag,
-            pres: Presence::new(seed, false),
+            pres,
+            fatal,
             gx: None,
             monitor_up: false,
             seal_held: [false; 3],
@@ -951,7 +1085,7 @@ impl MixedGame {
             }
             let th = sim.threat(&a.id);
             let Some(slot) = g.slots.get_mut(&a.id) else { continue };
-            slot.actor.visible = true;
+            slot.actor.visible = !pres.in_duct(&a.id);
             slot.actor.pos = a.walker.pos;
             slot.actor.yaw = a.walker.yaw;
             let kind = th.map(|t| t.kind);
@@ -1088,7 +1222,7 @@ impl Mode for MixedGame {
     }
 
     fn advance_ms(&mut self, ctx: &mut ShiftCtx, dt_ms: f64) {
-        if !self.playing() || self.admin_frozen {
+        if !self.playing() || self.admin_frozen || self.fatal.is_some() {
             return;
         }
         let mut left = dt_ms;
@@ -1178,6 +1312,16 @@ impl Mode for MixedGame {
             if s.actor.visible {
                 s.actor.draw(&ctx.gfx, &lights, cam.pos);
             }
+        }
+    }
+
+    fn draw_overlay(&mut self, _ctx: &mut ShiftCtx) {
+        if let Some(msg) = &self.fatal {
+            let (w, h) = (macroquad::prelude::screen_width(), macroquad::prelude::screen_height());
+            macroquad::prelude::draw_rectangle(0.0, 0.0, w, h, Color::new(0.0, 0.0, 0.0, 0.92));
+            macroquad::prelude::draw_text("MIXED SHIFT CANNOT START", 40.0, h * 0.35, 40.0, Color::new(1.0, 0.3, 0.3, 1.0));
+            macroquad::prelude::draw_text(msg, 40.0, h * 0.35 + 40.0, 22.0, Color::new(1.0, 1.0, 1.0, 1.0));
+            macroquad::prelude::draw_text("The embedded nav graph (data/nav/mixed.json) is broken. Run --check for details.", 40.0, h * 0.35 + 76.0, 22.0, Color::new(0.8, 0.8, 0.8, 1.0));
         }
     }
 
@@ -1569,34 +1713,113 @@ mod tests {
         }
     }
 
+    /// The walker top speed: no hunter may cover more than this (plus a hair) in one tick, ever.
+    const TICK_MAX: f32 = 6.0 * 0.1 + 0.05;
+
     #[test]
     fn hunters_walk_between_camera_rooms_during_a_seeded_night() {
-        let mut h = WalkingHeadless::new(4242, 4);
-        let mut last: HashMap<String, Vec3> = HashMap::new();
-        let mut walked = 0.0f32;
-        let mut jumps = 0;
-        let mut t = 0.0;
-        while t < 200_000.0 && h.outcome() == Outcome::Running {
-            let before = h.pres.teleports;
-            h.step_ms(100.0);
-            let placed_now = h.pres.teleports != before;
-            for a in h.pres.crowd.agents() {
-                let p = a.walker.pos;
-                assert!(p.x.is_finite() && p.z.is_finite());
-                if let Some(q) = last.get(&a.id) {
-                    let d = p.distance(*q);
-                    if d > 6.0 * 0.1 + 0.05 {
-                        assert!(placed_now, "{} jumped {d} m without being placed", a.id);
-                        jumps += 1;
-                    } else {
+        for (seed, level) in [(4242, 4), (777, 3), (31337, 5)] {
+            let mut h = WalkingHeadless::new(seed, level);
+            let mut last: HashMap<String, Vec3> = HashMap::new();
+            let mut walked = 0.0f32;
+            let mut t = 0.0;
+            while t < 200_000.0 && h.outcome() == Outcome::Running {
+                h.step_ms(100.0);
+                for a in h.pres.crowd.agents() {
+                    let p = a.walker.pos;
+                    assert!(p.x.is_finite() && p.z.is_finite());
+                    // only a hunter first appearance has no earlier position: from then on every move is a walk
+                    if let Some(q) = last.get(&a.id) {
+                        let d = p.distance(*q);
+                        assert!(d <= TICK_MAX, "seed {seed}: {} jumped {d} m in one tick at {t} ms", a.id);
                         walked += d;
                     }
+                    last.insert(a.id.clone(), p);
                 }
-                last.insert(a.id.clone(), p);
+                t += 100.0;
+            }
+            if seed == 4242 {
+                assert!(walked > 30.0, "the hunters walked {walked} m");
+            }
+        }
+    }
+
+    #[test]
+    fn nothing_is_placed_but_first_appearances() {
+        let mut h = WalkingHeadless::new(4242, 4);
+        let mut appearances = 0u32;
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut t = 0.0;
+        while t < 200_000.0 && h.outcome() == Outcome::Running {
+            h.step_ms(100.0);
+            for a in h.pres.crowd.agents() {
+                if seen.insert(a.id.clone()) {
+                    appearances += 1;
+                }
             }
             t += 100.0;
         }
-        assert!(walked > 30.0, "the hunters walked {walked} m ({jumps} placements)");
+        assert!(h.pres.teleports <= appearances, "{} placements for {appearances} first appearances", h.pres.teleports);
+    }
+
+    fn step_all(pres: &mut Presence, id: &str, ticks: usize, from: Vec3) -> (Vec3, bool) {
+        let mut last = from;
+        let mut hidden = false;
+        for _ in 0..ticks {
+            pres.tick(0.1);
+            let p = pres.crowd.agent(id).unwrap().walker.pos;
+            assert!(p.distance(last) <= TICK_MAX, "{id} jumped {} m", p.distance(last));
+            last = p;
+            if pres.in_duct(id) {
+                hidden = true;
+                for room in ["stage", "backstage", "dining", "westhall", "easthall", "kitchen", "closet", "corner", "vent"] {
+                    assert!(!pres.visible_in(room).contains(&id.to_string()), "{id} is seen in {room} while in the duct");
+                }
+            }
+        }
+        (last, hidden)
+    }
+
+    #[test]
+    fn the_monitor_gated_one_walks_out_of_the_office_to_her_door() {
+        let mut sim = solo(5, "opalie");
+        let mut pres = Presence::new(5, false);
+        assert!(sim.admin_place("opalie", "office"));
+        sim.threats[0].steps = 1;
+        pres.sync(&sim, &env());
+        let spawned = pres.teleports;
+        let start = pres.crowd.agent("opalie").unwrap().walker.pos;
+        sim.threats[0].armed = true;
+        sim.threats[0].side = Some(Side::L);
+        pres.sync(&sim, &env());
+        assert_eq!(pres.teleports, spawned, "she walks out of the office, she is not put at the door");
+        assert!(pres.crowd.agent("opalie").unwrap().walker.is_walking());
+        let (end, _) = step_all(&mut pres, "opalie", 300, start);
+        assert_eq!(pres.crowd.nav().room_at(end), Some("doorL"), "{end:?}");
+        assert!(end.x < -4.0);
+    }
+
+    #[test]
+    fn the_vent_crawler_crawls_a_hidden_shaft_to_her_vent_and_back() {
+        let mut sim = solo(5, "verrine");
+        let mut pres = Presence::new(5, false);
+        assert!(sim.admin_place("verrine", "vent"));
+        pres.sync(&sim, &env());
+        let spawned = pres.teleports;
+        let start = pres.crowd.agent("verrine").unwrap().walker.pos;
+        assert!(sim.admin_place("verrine", "ventR"));
+        pres.sync(&sim, &env());
+        assert_eq!(pres.teleports, spawned, "she crawls to the vent, she is not put there");
+        let (end, hidden) = step_all(&mut pres, "verrine", 700, start);
+        assert!(hidden, "the shaft crawl is out of every camera sight");
+        assert!(end.distance(vec3(2.3, 0.0, -1.7)) < 0.1, "{end:?}");
+        // sent away: back along the shaft to the run
+        assert!(sim.admin_place("verrine", "vent"));
+        pres.sync(&sim, &env());
+        assert_eq!(pres.teleports, spawned);
+        let (back, hidden) = step_all(&mut pres, "verrine", 700, end);
+        assert!(hidden);
+        assert!(back.distance(world::vent_spot_pos(spot_of(&sim.threats[0]))) < 0.1, "{back:?}");
     }
 
     #[test]

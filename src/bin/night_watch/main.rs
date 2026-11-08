@@ -139,6 +139,10 @@ macro_rules! ctx {
 
 /// Build the mode of `env.session` and start it. None when the mode is not built.
 fn begin_shift(env: &mut Env) -> Option<ShiftRun> {
+    if let Some(e) = crate::registry::load_error(&env.session.mode_id) {
+        env.notice = Some((format!("CANNOT START: {e}"), 8.0));
+        return None;
+    }
     let mode = crate::registry::make_mode(&env.session)?;
     let mut run = ShiftRun { mode, hud_state: HudState::default(), player: Player::new(SPAWN), paused: false, resolved: false, card: None };
     let input = InputFrame::idle(0.0);
@@ -385,7 +389,11 @@ async fn amain(args: cli::Args) {
         env.session.start_mode(&mode, args.level, BTreeMap::new(), seed);
         match begin_shift(&mut env) {
             Some(run) => scene = Scene::Shift(run),
-            None => env.notice = Some((format!("{} IS NOT BUILT YET", mode.to_uppercase()), 3.0)),
+            None => {
+                if env.notice.is_none() {
+                    env.notice = Some((format!("{} IS NOT BUILT YET", mode.to_uppercase()), 3.0));
+                }
+            }
         }
     }
 
@@ -421,7 +429,11 @@ async fn amain(args: cli::Args) {
                         env.session.start_mode(&mode, level, custom, None);
                         match begin_shift(&mut env) {
                             Some(run) => next = Some(Scene::Shift(run)),
-                            None => env.notice = Some((format!("{} IS NOT BUILT YET", mode.to_uppercase()), 3.0)),
+                            None => {
+                                if env.notice.is_none() {
+                                    env.notice = Some((format!("{} IS NOT BUILT YET", mode.to_uppercase()), 3.0));
+                                }
+                            }
                         }
                     }
                 }

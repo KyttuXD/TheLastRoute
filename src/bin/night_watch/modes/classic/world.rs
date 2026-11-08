@@ -141,10 +141,21 @@ impl Props {
     }
 }
 
+/// Why this mode cannot start, if so: the Classic props file does not parse. The mode refuses to start on it and `--check` reports it.
+pub fn load_error() -> Option<String> {
+    parse_props(PROPS_JSON).err()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::cam_rooms;
+
+    #[test]
+    fn a_broken_file_is_an_error_and_the_embedded_ones_load() {
+        assert!(parse_props("{ not json").is_err());
+        assert_eq!(load_error(), None);
+    }
 
     #[test]
     fn the_props_file_parses_and_every_model_is_embedded() {

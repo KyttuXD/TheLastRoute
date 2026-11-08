@@ -370,9 +370,20 @@ pub fn distances_to(target: &str) -> HashMap<String, i32> {
     dist
 }
 
+/// Why this mode cannot start, if so: Lure cannot start: the tuning, the map or the nav file does not parse. The mode refuses to start on it and `--check` reports it.
+pub fn load_error() -> Option<String> {
+    Tuning::parse(TUNING_JSON).err().or_else(super::map::load_error).or_else(super::presence::load_error)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_broken_file_is_an_error_and_the_embedded_ones_load() {
+        assert!(Tuning::parse("{ not json").is_err());
+        assert_eq!(load_error(), None);
+    }
 
     #[test]
     fn the_embedded_tuning_parses_and_validates() {

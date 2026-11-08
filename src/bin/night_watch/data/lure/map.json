@@ -6,7 +6,8 @@
 	"crawl_height": 2.6,
 	"door_gap": 1.6,
 	"door_top": 3.2,
-	"camera": {"height": 2.8, "vent_height": 2.2, "inset": 0.5, "target": [0.12, 0.7, 0.12]},
+	"camera": {"height": 2.8, "vent_height": 2.2, "inset": 0.5, "target": [0.12, 0.7, 0.12],
+		"aim": {"lobby": [-0.14, 0.4, 0.12], "arcade": [0.1, -2.0, 0.0], "party": [0.12, -2.0, -0.04], "prize": [0.1, -2.0, 0.12], "storage": [-0.16, -1.0, 0.14]}},
 	"stand": {"slot0": [0.8, 0.6], "slot1": [-1.0, -0.6], "vent0": [0.0, 0.9], "vent1": [-1.2, 0.9]},
 	"rooms": [
 		{"id": "reception", "sim": "lobby", "rect": [-4, 0, 4, 5], "theme": "reception"},

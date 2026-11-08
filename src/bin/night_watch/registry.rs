@@ -16,6 +16,24 @@ pub fn playable(mode_id: &str) -> bool {
     BUILT.contains(&mode_id)
 }
 
+/// The first embedded-data load error of the mode, so a broken data file refuses the start instead of playing on a patch.
+pub fn load_error(mode_id: &str) -> Option<String> {
+    use crate::modes as m;
+    let e = match mode_id {
+        "classic" => m::classic::view::load_error().or_else(m::classic::world::load_error),
+        "mask" => m::mask::data::load_error(),
+        "lure" => m::lure::data::load_error().or_else(m::lure::map::load_error).or_else(m::lure::presence::load_error),
+        "bedroom" => m::bedroom::map::load_error().or_else(m::bedroom::sim::load_error),
+        "story" => m::story::sim::load_error().or_else(m::story::world::load_error),
+        "dayshift" => m::dayshift::sim::load_error().or_else(m::dayshift::stage::load_error).or_else(m::dayshift::world::load_error),
+        "extra" => m::openair::data::load_error(),
+        "descent" => m::descent::map::load_error(),
+        "mixed" => m::mixed::world::try_nav().err(),
+        _ => None,
+    };
+    e.map(|e| format!("{}: {e}", mode_id.to_uppercase()))
+}
+
 /// The render-facing mode of the session, or None for a mode that is not built.
 pub fn make_mode(session: &Session) -> Option<Box<dyn Mode>> {
     match session.mode_id.as_str() {

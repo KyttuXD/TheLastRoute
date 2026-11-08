@@ -1342,9 +1342,20 @@ impl Headless for StoryHeadless {
 
 // ------------------------------------------------------------------------------------------------ tests
 
+/// Why this mode cannot start, if so: Story cannot start: the rules, the map, the nav file or the behaviour file does not parse. The mode refuses to start on it and `--check` reports it.
+pub fn load_error() -> Option<String> {
+    Rules::parse(RULES_JSON).err().or_else(super::world::load_error)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_broken_file_is_an_error_and_the_embedded_ones_load() {
+        assert!(Rules::parse("{ not json").is_err());
+        assert_eq!(load_error(), None);
+    }
 
     fn sim(night: i32, seed: u32) -> StoryLogic {
         StoryLogic::new(Options::night(night, seed))

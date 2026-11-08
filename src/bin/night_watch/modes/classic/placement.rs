@@ -18,11 +18,13 @@ pub struct Placement {
     pub crowd: Crowd,
     /// The sim room each hunter was last handed to the crowd in.
     last_room: BTreeMap<String, String>,
+    /// Where a hunter who dropped off the floor last stood (room, spot, look): she walks on from there when she returns.
+    gone: BTreeMap<String, (String, Vec3, Option<Vec3>)>,
 }
 
 impl Placement {
     pub fn new(seed: u32) -> Placement {
-        Placement { crowd: Crowd::new(Rc::new(NavMap::classic()), BehaviourData::embedded(), seed), last_room: BTreeMap::new() }
+        Placement { crowd: Crowd::new(Rc::new(NavMap::classic()), BehaviourData::embedded(), seed), last_room: BTreeMap::new(), gone: BTreeMap::new() }
     }
 
     /// Forget everyone (a restart) and let the first-stare cue fire again.
@@ -46,9 +48,22 @@ impl Placement {
         for h in &sim.hunters {
             if h.base <= 0 {
                 // not on tonight's floor
+                if let Some(a) = self.crowd.agent(&h.id) {
+                    self.gone.insert(h.id.clone(), (a.walker.room().to_string(), a.walker.pos, a.walker.look));
+                }
                 self.crowd.remove(&h.id);
                 self.last_room.remove(&h.id);
                 continue;
+            }
+            if !snap {
+                if let Some((room, pos, look)) = self.gone.remove(&h.id) {
+                    // back on the floor: she reappears where she last stood and walks to her slot
+                    self.crowd.add_at(&h.id, &room, pos, look);
+                    let _ = room;
+                    self.last_room.insert(h.id.clone(), String::new()); // not her sim room: the move below sends her
+                }
+            } else {
+                self.gone.remove(&h.id);
             }
             let slot_idx = *slots.entry(h.room.clone()).and_modify(|n| *n += 1).or_insert(0);
             let slot = slot_idx.min(1);
@@ -153,6 +168,28 @@ mod tests {
             assert!(cam[0].p.distance(mount) < 0.01, "{}: {:?} vs {:?}", r.id, cam[0].p, mount);
             assert_eq!(cam[0].cam, r.cam);
         }
+    }
+
+    #[test]
+    fn a_hunter_who_returns_to_the_floor_walks_on_from_where_she_stood() {
+        let mut s = sim(3);
+        let mut p = Placement::new(5);
+        let player = vec3(0.0, 0.0, 0.9);
+        p.sync(&s, player, false, &free);
+        s.admin_send("dovelle", "dining");
+        p.sync(&s, player, false, &free);
+        for _ in 0..20 {
+            p.tick(0.05);
+        }
+        let left_at = p.crowd.agent("dovelle").map(|a| a.walker.pos).expect("agent");
+        let base = s.hunters.iter().find(|h| h.id == "dovelle").map(|h| h.base).unwrap_or(1);
+        s.hunters.iter_mut().find(|h| h.id == "dovelle").unwrap().base = 0;
+        p.sync(&s, player, false, &free);
+        assert!(p.crowd.agent("dovelle").is_none(), "off the floor");
+        s.hunters.iter_mut().find(|h| h.id == "dovelle").unwrap().base = base.max(1);
+        p.sync(&s, player, false, &free);
+        let a = p.crowd.agent("dovelle").expect("back");
+        assert!(a.walker.pos.distance(left_at) < 0.01, "she returns where she was, not at a stand slot");
     }
 
     #[test]

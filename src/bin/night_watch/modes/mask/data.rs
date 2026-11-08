@@ -323,7 +323,16 @@ fn load_rules() -> &'static (Rules, Option<String>) {
     })
 }
 
-/// The embedded rules (an empty table when the file is broken; `check()` says why).
+/// The embedded rules, or the parse error.
+pub fn try_rules() -> Result<&'static Rules, String> {
+    match load_rules() {
+        (r, None) => Ok(r),
+        (_, Some(e)) => Err(e.clone()),
+    }
+}
+
+/// The embedded rules. After a failed load this is an empty table; the mode checks `load_error()` first and refuses to
+/// start, and `check()` says why.
 pub fn rules() -> &'static Rules {
     &load_rules().0
 }
@@ -595,8 +604,12 @@ impl MapData {
     }
 
     pub fn validate(&self) -> Vec<String> {
+        self.validate_against(rules())
+    }
+
+    pub fn validate_against(&self, rules: &Rules) -> Vec<String> {
         let mut out = Vec::new();
-        for room in rules().cam_rooms() {
+        for room in rules.cam_rooms() {
             if !self.cameras.contains_key(&room) {
                 out.push(format!("mask map: camera room {room} has no camera"));
             }
@@ -610,70 +623,98 @@ impl MapData {
     }
 }
 
-static MAP: OnceLock<(MapData, Option<String>)> = OnceLock::new();
+static MAP: OnceLock<Result<MapData, String>> = OnceLock::new();
+static INERT: OnceLock<MapData> = OnceLock::new();
 
-fn fallback_map() -> MapData {
+/// An all-zero placeholder so `map()` can hand out a reference after a failed load. It carries no gameplay numbers of its own
+/// (no camera, no centre): the mode refuses to start while `load_error()` is set, so nothing plays on it.
+fn inert_map() -> MapData {
     MapData {
-        half_w: 3.4,
-        front_z: -1.8,
-        back_z: 3.6,
-        height: 3.7,
-        opening: 2.5,
-        spawn: vec3(0.0, 0.0, 1.35),
-        hall_near: 3.3,
-        hall_far: 15.0,
-        rush_door: 2.6,
-        office_walker: vec3(0.0, 0.0, -1.25),
-        vent_stand: [vec3(-1.75, 0.0, 0.55), vec3(1.75, 0.0, 0.55)],
+        half_w: 0.0,
+        front_z: 0.0,
+        back_z: 0.0,
+        height: 0.0,
+        opening: 0.0,
+        spawn: Vec3::ZERO,
+        hall_near: 0.0,
+        hall_far: 0.0,
+        rush_door: 0.0,
+        office_walker: Vec3::ZERO,
+        vent_stand: [Vec3::ZERO, Vec3::ZERO],
         centres: BTreeMap::new(),
-        stand_offsets: vec![vec3(0.9, 0.0, 0.6), vec3(-0.9, 0.0, -0.6), vec3(0.0, 0.0, -1.6)],
+        stand_offsets: vec![Vec3::ZERO; 3],
         stand_lift: BTreeMap::new(),
         duct_x: BTreeMap::new(),
         glyra_offset: Vec3::ZERO,
-        glyra_advance: 3.0,
-        nyxie_from_z: -3.3,
-        nyxie_to: vec3(0.5, 0.0, -1.0),
+        glyra_advance: 0.0,
+        nyxie_from_z: 0.0,
+        nyxie_to: Vec3::ZERO,
         cameras: BTreeMap::new(),
         cam_map: CamLayout::default(),
     }
 }
 
-/// The embedded map numbers (an empty map when the file is broken; `check()` says why).
+fn load_map() -> &'static Result<MapData, String> {
+    MAP.get_or_init(|| MapData::parse(MAP_JSON, rules()))
+}
+
+/// The embedded map numbers, or the parse error.
+pub fn try_map() -> Result<&'static MapData, String> {
+    load_map().as_ref().map_err(|e| e.clone())
+}
+
+/// The embedded map numbers. After a failed load this is an inert placeholder; the mode checks `load_error()` first and
+/// refuses to start, and `check()` reports the error.
 pub fn map() -> &'static MapData {
-    &MAP.get_or_init(|| match MapData::parse(MAP_JSON, rules()) {
-        Ok(m) => (m, None),
-        Err(e) => (fallback_map(), Some(e)),
-    })
-    .0
+    match load_map() {
+        Ok(m) => m,
+        Err(_) => INERT.get_or_init(inert_map),
+    }
+}
+
+/// Why Masked Hours cannot start (a rules, map or nav file that does not parse), if so. The mode shows this on the shift
+/// screen instead of playing.
+pub fn load_error() -> Option<String> {
+    if let Some(e) = &load_rules().1 {
+        return Some(e.clone());
+    }
+    if let Err(e) = load_map() {
+        return Some(e.clone());
+    }
+    crate::hunters::NavMap::from_json(NAV_JSON).err().map(|e| format!("mask nav: {e}"))
 }
 
 /// Every problem in Masked Hours' data files: parse errors, missing keys, a nav graph with a hole in it, a task spot
 /// without a pose. Used by `--check` and the tests.
 pub fn check() -> Vec<String> {
+    check_sources(RULES_JSON, MAP_JSON, NAV_JSON)
+}
+
+/// `check()` on the given file texts (so a test can feed a broken one).
+pub fn check_sources(rules_src: &str, map_src: &str, nav_src: &str) -> Vec<String> {
     let mut out = Vec::new();
-    if let Some(e) = &load_rules().1 {
-        out.push(e.clone());
+    let rules = match Rules::parse(rules_src) {
+        Ok(r) => r,
+        Err(e) => {
+            out.push(e);
+            return out;
+        }
+    };
+    out.extend(rules.validate());
+    match MapData::parse(map_src, &rules) {
+        Ok(m) => out.extend(m.validate_against(&rules)),
+        Err(e) => out.push(e),
     }
-    out.extend(rules().validate());
-    if let Some(e) = &MAP.get_or_init(|| match MapData::parse(MAP_JSON, rules()) {
-        Ok(m) => (m, None),
-        Err(e) => (fallback_map(), Some(e)),
-    })
-    .1
-    {
-        out.push(e.clone());
-    }
-    out.extend(map().validate());
-    match crate::hunters::NavMap::from_json(NAV_JSON) {
+    match crate::hunters::NavMap::from_json(nav_src) {
         Ok(n) => {
             out.extend(n.validate().into_iter().map(|p| format!("mask nav: {p}")));
-            for room in rules().cam_rooms() {
+            for room in rules.cam_rooms() {
                 if n.hub_key(&room).is_none() {
                     out.push(format!("mask nav: camera room {room} has no hub node"));
                 }
             }
         }
-        Err(e) => out.push(e),
+        Err(e) => out.push(format!("mask nav: {e}")),
     }
     out
 }
@@ -681,6 +722,34 @@ pub fn check() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_broken_file_is_an_error_not_a_fallback() {
+        assert!(Rules::parse("{ not json").is_err());
+        let rules = Rules::parse(RULES_JSON).expect("rules");
+        assert!(MapData::parse("{ not json", &rules).is_err());
+        assert!(MapData::parse("{}", &rules).is_err(), "a map without stand_offsets is refused, not patched");
+        let p = check_sources("{ not json", MAP_JSON, NAV_JSON);
+        assert!(!p.is_empty() && p[0].contains("mask rules"), "{p:?}");
+        let p = check_sources(RULES_JSON, "{ not json", NAV_JSON);
+        assert!(p.iter().any(|m| m.contains("mask map")), "{p:?}");
+        let p = check_sources(RULES_JSON, MAP_JSON, "{ not json");
+        assert!(p.iter().any(|m| m.contains("mask nav")), "{p:?}");
+    }
+
+    #[test]
+    fn the_embedded_files_load_without_an_error() {
+        assert_eq!(load_error(), None);
+        assert!(try_rules().is_ok() && try_map().is_ok());
+        assert!(!map().cameras.is_empty(), "the real map, not the inert one");
+    }
+
+    #[test]
+    fn the_inert_map_has_no_gameplay_numbers() {
+        let m = inert_map();
+        assert!(m.cameras.is_empty() && m.centres.is_empty());
+        assert_eq!(m.half_w, 0.0);
+    }
 
     #[test]
     fn the_embedded_files_are_clean() {

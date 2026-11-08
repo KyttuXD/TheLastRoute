@@ -918,10 +918,22 @@ pub fn project(cam: &crate::gfx::FpCamera, aspect: f32, p: Vec3) -> Option<Vec2>
 
 // ------------------------------------------------------------------------------------------------ tests
 
+/// Why this mode cannot start, if so: the Story map, nav file or behaviour file does not parse. The mode refuses to start on it and `--check` reports it.
+pub fn load_error() -> Option<String> {
+    Layout::parse(MAP_JSON).err().or_else(|| crate::hunters::NavMap::from_json(NAV_JSON).err().map(|e| format!("story nav: {e}"))).or_else(|| crate::hunters::BehaviourData::parse(BEHAVIOUR_JSON).err().map(|e| format!("story behaviour: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::hunters::NavMap;
+
+    #[test]
+    fn a_broken_file_is_an_error_and_the_embedded_ones_load() {
+        assert!(Layout::parse("{ not json").is_err());
+        assert!(crate::hunters::BehaviourData::parse("{ not json").is_err());
+        assert_eq!(load_error(), None);
+    }
 
     fn approx(a: Vec3, b: Vec3) -> bool {
         (a - b).length() < 1e-4

@@ -957,9 +957,20 @@ impl Autoplay {
     }
 }
 
+/// Why this mode cannot start, if so: Day Shift cannot start: the tunables, the nav file or the map does not parse. The mode refuses to start on it and `--check` reports it.
+pub fn load_error() -> Option<String> {
+    Tunables::parse(TUNABLES_JSON).err().or_else(super::stage::load_error).or_else(super::world::load_error)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_broken_file_is_an_error_and_the_embedded_ones_load() {
+        assert!(Tunables::parse("{ not json").is_err());
+        assert_eq!(load_error(), None);
+    }
 
     fn sim(week: i32, seed: u32) -> DayshiftSim {
         DayshiftSim::new(week, Mulberry32::new(seed), DayOpts::default())

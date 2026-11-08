@@ -62,16 +62,25 @@ impl Shell {
         }
         if let Some(ev) = self.acct.poll() {
             match &ev {
-                AccountEvent::SignedIn { account, .. } => {
+                AccountEvent::SignedIn { account, op } => {
                     save.account_name = account.username.clone();
                     save.session_token = account.session_token.clone();
                     save.store();
                     self.acct_pass.clear();
+                    if *op == crate::net::account::Op::Guest {
+                        self.go(Screen::Title);
+                    }
                 }
                 AccountEvent::Rejected => {
                     save.account_name.clear();
                     save.session_token.clear();
                     save.store();
+                }
+                AccountEvent::GuestLocal { .. } => {
+                    save.account_name.clear();
+                    save.session_token.clear();
+                    save.store();
+                    self.go(Screen::Title);
                 }
                 AccountEvent::Failed { .. } => {}
             }
@@ -154,7 +163,7 @@ impl Shell {
             let mut submit: Option<bool> = None; // Some(create)
             let sign_in = c.ui.button(Rect::new(13.0, y, 60.0, 14.0), "SIGN IN", 6.0, ButtonStyle::Primary, can);
             let create = c.ui.button(Rect::new(81.0, y, 90.0, 14.0), "CREATE ACCOUNT", 6.0, ButtonStyle::Normal, can);
-            let guest = c.ui.button(Rect::new(179.0, y, 100.0, 14.0), "PLAY AS GUEST", 6.0, ButtonStyle::Normal, true);
+            let guest = c.ui.button(Rect::new(179.0, y, 100.0, 14.0), "PLAY AS GUEST", 6.0, ButtonStyle::Normal, !busy);
             if sign_in.denied || create.denied {
                 c.cue("deny");
             }
@@ -164,11 +173,12 @@ impl Shell {
                 submit = Some(true);
             }
             if guest.clicked {
-                self.toast = "Playing as a guest.".to_string();
+                // Asks the server for a guest session; the status line reports the result or the local fallback.
                 self.acct_pass.clear();
                 c.cue("pick");
-                self.go(Screen::Title);
-                self.toast = "Playing as a guest.".to_string();
+                self.acct_status = TEXT_WORKING.to_string();
+                let local = c.save.guest.clone();
+                self.acct.guest(&local);
                 return act;
             }
             if let Some(create) = submit {

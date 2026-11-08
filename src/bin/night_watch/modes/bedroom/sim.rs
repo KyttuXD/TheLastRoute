@@ -1110,10 +1110,22 @@ impl CueClock {
 
 // ------------------------------------------------------------------------------------------------ tests
 
+/// Why this mode cannot start, if so: Bedroom rules or nav file does not parse. The mode refuses to start on it and `--check` reports it.
+pub fn load_error() -> Option<String> {
+    Rules::parse(RULES_JSON).err().or_else(|| crate::hunters::NavMap::from_json(NAV_JSON).err().map(|e| format!("bedroom nav: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::hunters::NavMap;
+
+    #[test]
+    fn a_broken_file_is_an_error_and_the_embedded_ones_load() {
+        assert!(Rules::parse("{ not json").is_err());
+        assert!(crate::hunters::NavMap::from_json("{ not json").is_err());
+        assert_eq!(load_error(), None);
+    }
 
     const DARK: SimInput = SimInput::NONE;
     const HOLD: SimInput = SimInput { hold: true, light: Light::Dark };

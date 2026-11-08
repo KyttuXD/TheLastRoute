@@ -131,20 +131,38 @@ impl Tunables {
     }
 }
 
-/// The embedded tunables, parsed once. A broken file gives zeros (the tests and `--check` report it).
-pub fn tun() -> &'static Tunables {
-    static T: OnceLock<Tunables> = OnceLock::new();
+fn load_tun() -> &'static Result<Tunables, String> {
+    static T: OnceLock<Result<Tunables, String>> = OnceLock::new();
     T.get_or_init(|| {
-        Tunables::parse(TUNABLES_JSON).unwrap_or_else(|_| Tunables {
+        let t = Tunables::parse(TUNABLES_JSON)?;
+        if !t.missing.is_empty() {
+            return Err(format!("openair tunables: missing {}", t.missing.join(", ")));
+        }
+        Ok(t)
+    })
+}
+
+/// The embedded tunables, or why they are unusable (a parse error or missing keys).
+pub fn try_tun() -> Result<&'static Tunables, String> {
+    load_tun().as_ref().map_err(|e| e.clone())
+}
+
+/// The embedded tunables. After a failed load this is an empty table (all zero); the mode checks `load_error()` first and
+/// refuses to start, and `--check` reports the error.
+pub fn tun() -> &'static Tunables {
+    static EMPTY: OnceLock<Tunables> = OnceLock::new();
+    match load_tun() {
+        Ok(t) => t,
+        Err(_) => EMPTY.get_or_init(|| Tunables {
             n: Nums::default(),
             levels: BTreeMap::new(),
             pan: BTreeMap::new(),
             names: BTreeMap::new(),
             watches: Vec::new(),
             weather: [None, None, None],
-            missing: vec!["(file does not parse)".to_string()],
-        })
-    })
+            missing: Vec::new(),
+        }),
+    }
 }
 
 /// The listed AI level of a hunter (a Custom Night sets its own).
@@ -426,24 +444,65 @@ fn parse_watch(w: &Value) -> WatchMap {
     }
 }
 
-/// The three maps, parsed once (rooftop, bus stop, campfire).
+/// Parse the map file: exactly three watches (rooftop, bus stop, campfire), or why not.
+pub fn parse_maps(src: &str) -> Result<Vec<WatchMap>, String> {
+    let v: Value = serde_json::from_str(src).map_err(|e| format!("openair map: {e}"))?;
+    let list = v.get("watches").and_then(|w| w.as_array()).ok_or_else(|| "openair map: no \"watches\" list".to_string())?;
+    if list.len() != 3 {
+        return Err(format!("openair map: {} watches, not 3", list.len()));
+    }
+    Ok(list.iter().map(parse_watch).collect())
+}
+
+fn load_maps() -> &'static Result<Vec<WatchMap>, String> {
+    static M: OnceLock<Result<Vec<WatchMap>, String>> = OnceLock::new();
+    M.get_or_init(|| parse_maps(MAP_JSON))
+}
+
+/// The three maps (rooftop, bus stop, campfire), parsed once; empty when the file is broken (`load_error()` says why and the
+/// mode refuses to start).
 pub fn maps() -> &'static Vec<WatchMap> {
-    static M: OnceLock<Vec<WatchMap>> = OnceLock::new();
-    M.get_or_init(|| {
-        let v: Value = serde_json::from_str(MAP_JSON).unwrap_or(Value::Null);
-        v.get("watches").and_then(|w| w.as_array()).map(|a| a.iter().map(parse_watch).collect()).unwrap_or_default()
+    static NONE: OnceLock<Vec<WatchMap>> = OnceLock::new();
+    match load_maps() {
+        Ok(m) => m,
+        Err(_) => NONE.get_or_init(Vec::new),
+    }
+}
+
+/// A map with nothing in it, handed out by `map_of` after a failed load so no caller indexes an empty list.
+fn empty_map() -> &'static WatchMap {
+    static E: OnceLock<WatchMap> = OnceLock::new();
+    E.get_or_init(|| WatchMap {
+        id: String::new(),
+        nav_json: "",
+        spawn: Vec3::ZERO,
+        spawn_yaw: 0.0,
+        spawn_pitch: 0.0,
+        footprint: (0.0, 0.0, 0.0, 0.0),
+        ambient: [0.0; 3],
+        lights: Vec::new(),
+        stations: Vec::new(),
+        cameras: Vec::new(),
+        layout: CamLayout::default(),
+        props: Vec::new(),
+        tent: None,
+        cans: Vec::new(),
+        road: None,
+        bus: None,
     })
 }
 
 pub fn map_of(watch: usize) -> &'static WatchMap {
     let all = maps();
-    &all[watch.min(all.len().saturating_sub(1))]
+    if all.is_empty() {
+        return empty_map();
+    }
+    &all[watch.min(all.len() - 1)]
 }
 
-/// The nav graph of a watch: the file's nodes plus a camera node for every room a camera watches (the stare targets).
-pub fn build_nav(watch: usize) -> NavMap {
-    let map = map_of(watch);
-    let mut nav = NavMap::from_json(map.nav_json).unwrap_or_else(|_| NavMap::new("extra"));
+/// The nav graph of a map: the file's nodes plus a camera node for every room a camera watches (the stare targets).
+pub fn nav_for(map: &WatchMap) -> Result<NavMap, String> {
+    let mut nav = NavMap::from_json(map.nav_json).map_err(|e| format!("openair nav {}: {e}", map.id))?;
     for c in &map.cameras {
         for room in &c.rooms {
             let key = format!("CAM:{room}");
@@ -452,12 +511,47 @@ pub fn build_nav(watch: usize) -> NavMap {
             nav.add_node(node);
         }
     }
-    nav
+    Ok(nav)
 }
 
-/// The behaviour data of this mode (the shared defaults with the four hunters of Open Air).
+/// The nav graph of a watch, or the parse error of its file.
+pub fn try_build_nav(watch: usize) -> Result<NavMap, String> {
+    nav_for(map_of(watch))
+}
+
+/// The nav graph of a watch. A nav file that does not parse gives an empty graph here only because the mode has already
+/// refused to start (`load_error()`); `--check` reports the error.
+pub fn build_nav(watch: usize) -> NavMap {
+    try_build_nav(watch).unwrap_or_else(|_| NavMap::new("extra"))
+}
+
+/// The behaviour data of this mode, or the parse error.
+pub fn try_behaviour() -> Result<Rc<BehaviourData>, String> {
+    BehaviourData::parse(BEHAVIOUR_JSON).map(Rc::new).map_err(|e| format!("openair behaviour: {e}"))
+}
+
+/// The behaviour data of this mode (the shared defaults with the four hunters of Open Air). A broken file gives the shared
+/// defaults here only because the mode has already refused to start (`load_error()`).
 pub fn behaviour() -> Rc<BehaviourData> {
-    Rc::new(BehaviourData::parse(BEHAVIOUR_JSON).unwrap_or_else(|_| (*BehaviourData::embedded()).clone()))
+    try_behaviour().unwrap_or_else(|_| BehaviourData::embedded())
+}
+
+/// Why Open Air cannot start, if so: the tunables, the map file, a nav file or the behaviour file that does not parse. The
+/// mode shows this on the shift screen instead of playing.
+pub fn load_error() -> Option<String> {
+    load_error_of(load_tun().as_ref().err().cloned(), load_maps().as_ref().err().cloned())
+}
+
+fn load_error_of(tun: Option<String>, maps: Option<String>) -> Option<String> {
+    if let Some(e) = tun.or(maps) {
+        return Some(e);
+    }
+    for w in 0..3usize {
+        if let Err(e) = try_build_nav(w) {
+            return Some(e);
+        }
+    }
+    try_behaviour().err()
 }
 
 /// A prompt with its `{action}` tokens replaced by the bound key (upper case): `key` maps an action name to its text.
@@ -526,6 +620,41 @@ mod tests {
         ai.insert("wynelle".to_string(), 1);
         assert_eq!(custom_watches(&ai), vec![0, 1, 2]);
         assert!(custom_watches(&BTreeMap::new()).is_empty());
+    }
+
+    #[test]
+    fn broken_files_are_errors_not_empty_data() {
+        assert!(Tunables::parse("{ not json").is_err());
+        assert!(parse_maps("{ not json").is_err());
+        assert!(parse_maps("{}").is_err(), "no watches list");
+        assert!(parse_maps("{\"watches\": []}").is_err(), "three watches are required");
+        let mut broken = map_of(0).clone();
+        broken.nav_json = "{ not json";
+        let e = nav_for(&broken).expect_err("a nav file that does not parse");
+        assert!(e.contains("openair nav"), "{e}");
+        assert!(BehaviourData::parse("{ not json").is_err());
+    }
+
+    #[test]
+    fn the_embedded_files_load_without_an_error() {
+        assert_eq!(load_error(), None);
+        assert!(try_tun().is_ok());
+        assert!(try_build_nav(1).is_ok() && try_behaviour().is_ok());
+        assert_eq!(maps().len(), 3);
+    }
+
+    #[test]
+    fn a_load_error_is_reported_before_anything_else() {
+        let e = load_error_of(Some("openair tunables: x".to_string()), Some("openair map: y".to_string()));
+        assert_eq!(e.as_deref(), Some("openair tunables: x"));
+        let e = load_error_of(None, Some("openair map: y".to_string()));
+        assert_eq!(e.as_deref(), Some("openair map: y"));
+    }
+
+    #[test]
+    fn the_empty_map_is_safe_to_index() {
+        let m = empty_map();
+        assert!(m.cameras.is_empty() && m.nav_json.is_empty());
     }
 
     #[test]

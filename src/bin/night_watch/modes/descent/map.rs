@@ -140,6 +140,17 @@ pub fn nav() -> NavMap {
     NavMap::from_json(NAV_JSON).unwrap_or_else(|_| NavMap::new("descent"))
 }
 
+/// The nav graph as an error when it does not parse or validate (start refusal and `--check`).
+pub fn load_error() -> Option<String> {
+    match NavMap::from_json(NAV_JSON) {
+        Err(e) => Some(format!("descent nav graph: {e}")),
+        Ok(n) => {
+            let p = n.validate();
+            if p.is_empty() { None } else { Some(format!("descent nav graph: {}", p.join("; "))) }
+        }
+    }
+}
+
 // ------------------------------------------------------------------------------------------------ the map file
 
 #[derive(Clone, Debug)]
@@ -168,6 +179,17 @@ pub struct PropDef {
     pub size: f32,
 }
 
+/// A bbmodel prop of `last_route/assets/props` standing in a room: `at` is (x, z) from the room centre, `yaw_deg` turns it
+/// about the vertical axis (front toward +z at 0), `y` lifts it (on a table), `scale` multiplies the model's own scale.
+#[derive(Clone, Debug)]
+pub struct ModelDef {
+    pub model: String,
+    pub at: (f32, f32),
+    pub y: f32,
+    pub yaw_deg: f32,
+    pub scale: f32,
+}
+
 #[derive(Clone, Debug)]
 pub struct RoomDef {
     pub id: String,
@@ -179,6 +201,8 @@ pub struct RoomDef {
     pub walls: String,
     pub lamp: bool,
     pub props: Vec<PropDef>,
+    /// The bbmodel dressing of the room (data-driven, `models` in the map file).
+    pub models: Vec<ModelDef>,
 }
 
 #[derive(Clone, Debug)]
@@ -196,6 +220,24 @@ pub struct MapData {
     pub rooms: Vec<RoomDef>,
     pub flights: Vec<FlightDef>,
     pub sill_props: Vec<PropDef>,
+}
+
+fn models_of(v: &Value) -> Vec<ModelDef> {
+    let mut out = Vec::new();
+    for p in v.as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+        let (x, z) = match p.get("at").and_then(|a| a.as_array()) {
+            Some(a) if a.len() >= 2 => (a[0].as_f64().unwrap_or(0.0) as f32, a[1].as_f64().unwrap_or(0.0) as f32),
+            _ => (0.0, 0.0),
+        };
+        out.push(ModelDef {
+            model: p.get("model").and_then(|k| k.as_str()).unwrap_or("").to_string(),
+            at: (x, z),
+            y: num(p, "y", 0.0),
+            yaw_deg: num(p, "yaw", 0.0),
+            scale: num(p, "scale", 1.0),
+        });
+    }
+    out
 }
 
 fn props_of(v: &Value) -> Vec<PropDef> {
@@ -246,6 +288,7 @@ impl MapData {
                 walls: r.get("walls").and_then(|s| s.as_str()).unwrap_or("").to_string(),
                 lamp: r.get("lamp").and_then(|b| b.as_bool()).unwrap_or(false),
                 props: props_of(r.get("props").unwrap_or(&Value::Null)),
+                models: models_of(r.get("models").unwrap_or(&Value::Null)),
             });
         }
         let mut flights = Vec::new();
@@ -378,6 +421,26 @@ mod tests {
             assert!(d.is_some(), "{a} to {b} is walkable");
         }
         assert!(n.distance("C:stair_1", "C:sill_l").unwrap_or(99.0) < 6.0);
+    }
+
+    #[test]
+    fn room_task_spots_stand_beside_a_model_and_are_reachable() {
+        let n = nav();
+        let m = MapData::get();
+        for room in ["stair_3", "fuse_closet", "signal_hall"] {
+            let spots = n.task_spots(room, None);
+            assert!(!spots.is_empty(), "{room} has a task spot");
+            let r = m.rooms.iter().find(|r| r.id == room).expect("room");
+            for t in spots {
+                let look = t.look.expect("look");
+                let near = r.models.iter().any(|md| {
+                    let (x, z) = (r.centre.x + md.at.0, r.centre.z + md.at.1);
+                    ((look.x - x).powi(2) + (look.z - z).powi(2)).sqrt() < 0.8
+                });
+                assert!(near, "{} looks at a model", t.key);
+                assert!(n.distance(&format!("C:{room}"), "C:sill_l").is_some(), "{room} is walkable from the sill");
+            }
+        }
     }
 
     #[test]

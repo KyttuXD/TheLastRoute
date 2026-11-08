@@ -10,3 +10,6 @@ pub mod mask;
 pub mod mixed;
 pub mod openair;
 pub mod story;
+
+#[cfg(test)]
+mod camera_coverage_tests;

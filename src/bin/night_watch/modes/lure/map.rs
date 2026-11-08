@@ -99,6 +99,8 @@ pub struct LureMap {
     pub cam_vent_height: f32,
     pub cam_inset: f32,
     pub cam_target: Vec3,
+    /// Per-room aim overrides (sim id -> target in the same terms as `cam_target`), for rooms whose tasks sit under the mount.
+    pub cam_aim: Vec<(String, Vec3)>,
     pub slot0: (f32, f32),
     pub slot1: (f32, f32),
     pub vent0: (f32, f32),
@@ -131,6 +133,7 @@ impl LureMap {
     pub fn parse(text: &str) -> Result<LureMap, String> {
         let v: Value = serde_json::from_str(text).map_err(|e| format!("lure map: {e}"))?;
         let cam = v.get("camera").cloned().unwrap_or(Value::Null);
+        let aim = cam.get("aim").cloned().unwrap_or(Value::Null);
         let stand = v.get("stand").cloned().unwrap_or(Value::Null);
         let mut m = LureMap {
             origin: vec_of(&v, "origin"),
@@ -142,6 +145,7 @@ impl LureMap {
             cam_vent_height: jf64(&cam, "vent_height", 2.2) as f32,
             cam_inset: jf64(&cam, "inset", 0.5) as f32,
             cam_target: vec_of(&cam, "target"),
+            cam_aim: aim.as_object().map(|o| o.keys().map(|k| (k.clone(), vec_of(&aim, k))).collect()).unwrap_or_default(),
             slot0: pair(&stand, "slot0"),
             slot1: pair(&stand, "slot1"),
             vent0: pair(&stand, "vent0"),
@@ -319,13 +323,15 @@ impl LureMap {
         c + vec3(o.0, 0.0, o.1)
     }
 
-    /// The feed camera's mount: high in the room's north-west corner, looking at the middle of the floor.
+    /// The feed camera's mount: high in the room's north-west corner, looking at the middle of the floor (a few rooms aim lower,
+    /// see `cam_aim`, so the task spots under the mount stay in the picture).
     pub fn camera_transform(&self, sim: &str) -> (Vec3, Vec3) {
         let Some(r) = self.by_sim(sim) else { return (Vec3::ZERO, vec3(0.0, 0.0, -1.0)) };
         let c = self.centre(&r.id);
         let h = if self.is_vent(sim) { self.cam_vent_height } else { self.cam_height };
         let from = c + vec3(-r.w() * 0.5 + self.cam_inset, h, -r.d() * 0.5 + self.cam_inset);
-        let to = c + vec3(r.w() * self.cam_target.x, self.cam_target.y, r.d() * self.cam_target.z);
+        let aim = self.cam_aim.iter().find(|(s, _)| s == sim).map(|(_, a)| *a).unwrap_or(self.cam_target);
+        let to = c + vec3(r.w() * aim.x, aim.y, r.d() * aim.z);
         (from, to)
     }
 
@@ -398,6 +404,7 @@ pub fn map() -> &'static LureMap {
             cam_vent_height: 2.2,
             cam_inset: 0.5,
             cam_target: Vec3::ZERO,
+            cam_aim: Vec::new(),
             slot0: (0.8, 0.6),
             slot1: (-1.0, -0.6),
             vent0: (0.0, 0.9),
@@ -410,9 +417,20 @@ pub fn map() -> &'static LureMap {
     })
 }
 
+/// Why this mode cannot start, if so: the Lure map does not parse. The mode refuses to start on it and `--check` reports it.
+pub fn load_error() -> Option<String> {
+    LureMap::parse(MAP_JSON).err()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_broken_file_is_an_error_and_the_embedded_ones_load() {
+        assert!(LureMap::parse("{ not json").is_err());
+        assert_eq!(load_error(), None);
+    }
 
     fn close(a: Vec3, b: Vec3) -> bool {
         (a - b).length() < 1e-4
@@ -468,7 +486,10 @@ mod tests {
         assert!(close(m.stand_position("ventr", 1), m.centre_of_sim("ventr") + vec3(-1.2, 0.0, 0.9)));
         let (from, to) = m.camera_transform("lobby");
         assert!(close(from, vec3(-11.5, 2.8, -39.5)));
-        assert!(close(to, vec3(-8.0 + 8.0 * 0.12, 0.7, -37.5 + 5.0 * 0.12)));
+        assert!(close(to, vec3(-8.0 + 8.0 * -0.14, 0.4, -37.5 + 5.0 * 0.12)), "the lobby aims by its override");
+        let (bf, bt) = m.camera_transform("ballpit");
+        assert!(close(bf, vec3(-11.5, 2.8, -34.5)));
+        assert!(close(bt, vec3(-8.0 + 8.0 * 0.12, 0.7, -32.0 + 6.0 * 0.12)), "rooms without an override use the default aim");
         let (vf, _) = m.camera_transform("ventr");
         assert!((vf.y - 2.2).abs() < 1e-5, "the crawlspace cameras hang lower");
     }

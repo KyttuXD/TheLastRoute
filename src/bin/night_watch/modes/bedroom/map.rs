@@ -395,9 +395,20 @@ pub fn map() -> &'static BedroomMap {
     })
 }
 
+/// Why this mode cannot start, if so: Bedroom cannot start: the map, the rules or the nav file does not parse. The mode refuses to start on it and `--check` reports it.
+pub fn load_error() -> Option<String> {
+    BedroomMap::parse(MAP_JSON).err().or_else(super::sim::load_error)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_broken_file_is_an_error_and_the_embedded_ones_load() {
+        assert!(BedroomMap::parse("{ not json").is_err());
+        assert_eq!(load_error(), None);
+    }
 
     #[test]
     fn the_embedded_map_parses_with_nine_rooms_and_eight_doorways() {

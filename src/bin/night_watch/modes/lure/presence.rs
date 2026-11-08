@@ -179,11 +179,22 @@ pub fn progress_of(sim: &Sim) -> f32 {
     (sim.killer.at_ms / super::data::tuning().t.office_wait_ms.max(1.0)) as f32
 }
 
+/// Why this mode cannot start, if so: the Lure nav file does not parse. The mode refuses to start on it and `--check` reports it.
+pub fn load_error() -> Option<String> {
+    crate::hunters::NavMap::from_json(LURE_NAV_JSON).err().map(|e| format!("lure nav: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::hunters::nav::NavKind;
     use super::super::sim::SimOpts;
+
+    #[test]
+    fn a_broken_file_is_an_error_and_the_embedded_ones_load() {
+        assert!(crate::hunters::NavMap::from_json("{ not json").is_err());
+        assert_eq!(load_error(), None);
+    }
 
     fn quiet() -> Sim {
         let mut o = SimOpts::night(6, 1);
@@ -227,13 +238,14 @@ mod tests {
     }
 
     #[test]
-    fn the_vent_openings_hang_off_the_crawlspaces_by_a_jump() {
+    fn the_vent_openings_hang_off_the_crawlspaces_by_a_duct() {
         let nav = nav_map();
         let legs = nav.route("C:storage", "D:officeL");
         assert!(legs.len() >= 4);
-        assert!(legs.iter().any(|l| l.jump && l.key == "DO:officeL"), "the crawlspace to the duct is a jump");
+        assert!(legs.iter().all(|l| !l.jump), "no jump edges: the duct is walked");
+        assert!(legs.iter().any(|l| l.key == "V:officeL:4"), "the duct nodes are on the route");
         let r = nav.route("C:storage", "D:officeR");
-        assert!(r.iter().any(|l| l.jump && l.key == "DO:officeR"));
+        assert!(r.iter().all(|l| !l.jump) && r.iter().any(|l| l.key == "V:officeR:4"));
         // both openings are standing spots in their own rooms
         assert_eq!(nav.node("D:officeL").map(|n| n.kind), Some(NavKind::Door));
         assert_eq!(nav.hub_key("officeR").as_deref(), Some("D:officeR"));

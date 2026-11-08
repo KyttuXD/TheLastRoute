@@ -124,6 +124,9 @@ fn mode_data_problems() -> Vec<String> {
     p.extend(crate::hunters::nav::NavMap::classic().validate().into_iter().map(|e| format!("nav classic: {e}")));
     let poses = crate::hunters::poses::pose_ids(crate::assets::POSES_JSON);
     p.extend(crate::hunters::behaviour::BehaviourData::embedded().validate(&poses).into_iter().map(|e| format!("behaviour: {e}")));
+    for id in crate::registry::MODE_IDS {
+        p.extend(crate::registry::load_error(id));
+    }
     p.extend(modes::classic::check_data());
     p.extend(modes::mask::check_data());
     p.extend(modes::lure::check_data());

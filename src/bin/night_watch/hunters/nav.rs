@@ -696,6 +696,10 @@ struct Step {
     p: Vec3,
     jump: bool,
     room: String,
+    /// A run-in approach (outside the building): walked at run speed at least.
+    run: bool,
+    /// A duct leg: crawled, and she is hidden inside it.
+    vent: bool,
 }
 
 /// One hunter's visible movement along a path. Advances the sim position at walk or run speed; faces her direction of
@@ -707,6 +711,8 @@ pub struct NavWalker {
     pub yaw: f32,
     pub moving: bool,
     pub running: bool,
+    /// True while she crawls inside a vent duct: renderers skip drawing her.
+    pub hidden: bool,
     pub final_pos: Vec3,
     pub look: Option<Vec3>,
     room: String,
@@ -717,6 +723,8 @@ pub struct NavWalker {
     seg_len: f32,
     seg_started: bool,
     arrived: bool,
+    /// Trips that had no route and were walked as one straight line (never snapped). Tests watch this.
+    pub unrouted: u32,
 }
 
 impl Default for NavWalker {
@@ -747,6 +755,8 @@ impl NavWalker {
     /// How fast she turns to face something once she has stopped (radians per second).
     pub const TURN_RATE: f32 = 7.0;
     const ARRIVE_EPS: f32 = 0.02;
+    /// Crawl pace inside a vent duct.
+    pub const VENT_SPEED: f32 = 1.6;
 
     pub fn new() -> NavWalker {
         NavWalker {
@@ -754,6 +764,7 @@ impl NavWalker {
             yaw: 0.0,
             moving: false,
             running: false,
+            hidden: false,
             final_pos: Vec3::ZERO,
             look: None,
             room: String::new(),
@@ -764,6 +775,7 @@ impl NavWalker {
             seg_len: 0.0,
             seg_started: false,
             arrived: true,
+            unrouted: 0,
         }
     }
 
@@ -778,6 +790,7 @@ impl NavWalker {
         self.seg_started = false;
         self.moving = false;
         self.running = false;
+        self.hidden = false;
         self.arrived = true;
         if let Some(l) = look {
             self.yaw = yaw_of(l - pos, self.yaw);
@@ -825,10 +838,19 @@ impl NavWalker {
         self.seg_started = false;
         self.arrived = false;
         if legs.is_empty() {
-            self.pos = final_pos;
-            self.room = to_room.to_string();
-            self.moving = false;
-            self.arrived = true;
+            let d = vec3(final_pos.x - self.pos.x, 0.0, final_pos.z - self.pos.z).length();
+            if d <= 0.05 {
+                // already there: nothing to walk
+                self.room = to_room.to_string();
+                self.moving = false;
+                self.arrived = true;
+                return;
+            }
+            // no route: one straight walk to the spot, never a snap
+            self.unrouted += 1;
+            let length = self.pos.distance(final_pos);
+            let step = Step { p: final_pos, jump: false, room: to_room.to_string(), run: false, vent: false };
+            self.begin(vec![step], length, pace);
             return;
         }
         let mut rooms: Vec<String> = legs.iter().map(|l| nav.node(&l.key).map(|n| n.room.clone()).unwrap_or_default()).collect();
@@ -841,7 +863,11 @@ impl NavWalker {
                 next = r.clone();
             }
         }
-        let steps: Vec<Step> = legs.iter().zip(rooms).map(|(l, r)| Step { p: l.p, jump: l.jump, room: r }).collect();
+        let steps: Vec<Step> = legs.iter().zip(rooms).map(|(l, r)| {
+            let vent = nav.node(&l.key).map(|n| n.kind == NavKind::Vent).unwrap_or(false);
+            let run = l.key.starts_with("AP:");
+            Step { p: l.p, jump: l.jump, room: r, run, vent }
+        }).collect();
         let first = if legs[0].jump { self.pos } else { legs[0].p };
         let length = walked_length(legs) + self.pos.distance(first);
         self.begin(steps, length, pace);
@@ -861,7 +887,7 @@ impl NavWalker {
         for p in points {
             length += at.distance(*p);
             at = *p;
-            steps.push(Step { p: *p, jump: false, room: self.room.clone() });
+            steps.push(Step { p: *p, jump: false, room: self.room.clone(), run: false, vent: false });
         }
         self.begin(steps, length, pace);
     }
@@ -900,8 +926,8 @@ impl NavWalker {
         let mut budget = dt;
         self.moving = false;
         while budget > 0.0 {
-            let (target, jump, room) = match self.queue.front() {
-                Some(s) => (s.p, s.jump, s.room.clone()),
+            let (target, jump, room, run, vent) = match self.queue.front() {
+                Some(s) => (s.p, s.jump, s.room.clone(), s.run, s.vent),
                 None => break,
             };
             if jump {
@@ -919,12 +945,20 @@ impl NavWalker {
             let mut d = target - self.pos;
             d.y = 0.0;
             let dist = d.length();
-            let mv = self.speed * budget;
+            let speed = if vent {
+                NavWalker::VENT_SPEED
+            } else if run {
+                self.speed.max(NavWalker::RUN_SPEED).min(NavWalker::MAX_SPEED)
+            } else {
+                self.speed
+            };
+            let mv = speed * budget;
             self.moving = true;
+            self.hidden = vent;
             self.yaw = yaw_of(d, self.yaw);
             if mv >= dist {
                 self.pos = target;
-                budget -= dist / self.speed;
+                budget -= dist / speed;
                 self.enter(&room, &mut info);
                 self.queue.pop_front();
                 self.seg_started = false;
@@ -938,6 +972,7 @@ impl NavWalker {
             }
         }
         if self.queue.is_empty() {
+            self.hidden = false;
             let mut to_final = self.final_pos - self.pos;
             to_final.y = 0.0;
             let len = to_final.length();
@@ -1142,9 +1177,10 @@ mod tests {
         // stage down to dining through dining's north doorway
         let d = keys(&m.route_rooms("stage", "dining"));
         assert!(d.contains(&"DW:N:dining".to_string()), "{d:?}");
-        // the hall to the office door has exactly one jump
+        // the hall to the office door is a real walk with no jump edge
         let door = m.route_rooms("stage", "doorL");
-        assert_eq!(door.iter().filter(|l| l.jump).count(), 1);
+        assert_eq!(door.iter().filter(|l| l.jump).count(), 0);
+        assert!(door.iter().any(|l| l.key == "AP:doorL:2"));
         assert_eq!(door.last().map(|l| l.key.as_str()), Some("D:doorL"));
     }
 
@@ -1252,7 +1288,32 @@ mod tests {
         }
         assert!(w.pos.distance(door) < 1e-3);
         assert_eq!(w.room(), "doorL");
-        assert!(longest > 20.0, "the hall to the office is one jump: {longest}");
+        let max_step = NavWalker::MAX_SPEED * 0.05 + 1e-3;
+        assert!(longest <= max_step, "no snap across the hall to the office: {longest} > {max_step}");
+    }
+
+    #[test]
+    fn lure_duct_is_crawled_hidden_and_never_snaps() {
+        let m = NavMap::from_json(include_str!("../data/nav/lure.json")).expect("lure nav");
+        let mut w = NavWalker::new();
+        let from = m.pos("C:storage").unwrap_or_default();
+        w.place(from, "storage", None);
+        let door = m.pos("D:officeL").unwrap_or_default();
+        let legs = m.route_from(w.pos, "D:officeL");
+        assert!(legs.iter().all(|l| !l.jump));
+        w.go(&m, &legs, "officeL", door, None, Pace::Run);
+        let (mut last, mut hid, mut guard) = (w.pos, false, 0);
+        let max_step = NavWalker::MAX_SPEED * 0.05 + 1e-3;
+        while !(w.arrived() && !w.is_walking()) && guard < 4000 {
+            w.step(0.05);
+            assert!(w.pos.distance(last) <= max_step, "snap: {}", w.pos.distance(last));
+            hid |= w.hidden;
+            last = w.pos;
+            guard += 1;
+        }
+        assert!(hid, "hidden while in the duct");
+        assert!(!w.hidden);
+        assert!(w.pos.distance(door) < 1e-3);
     }
 
     #[test]
@@ -1307,7 +1368,7 @@ mod tests {
     }
 
     #[test]
-    fn walker_takes_the_stage_lift_and_an_empty_route_teleports() {
+    fn walker_takes_the_stage_lift_and_an_empty_route_walks_straight() {
         let m = NavMap::classic();
         let mut w = NavWalker::new();
         let from = m.pos("C:stage").unwrap_or_default();
@@ -1325,8 +1386,16 @@ mod tests {
         }
         assert!(seen_mid_lift, "the platform is climbed, not popped onto");
         assert!((w.pos.y - 0.45).abs() < 1e-3);
+        // no route: she walks one straight line, she is not snapped
+        let before = w.pos;
         w.go(&m, &[], "dining", vec3(1.0, 0.0, 2.0), None, Pace::Walk);
-        assert_eq!(w.pos, vec3(1.0, 0.0, 2.0));
+        assert_eq!(w.pos, before, "an unroutable trip does not move her at once");
+        assert_eq!(w.unrouted, 1);
+        assert!(!w.arrived());
+        for _ in 0..2000 {
+            w.step(0.05);
+        }
+        assert!((w.pos - vec3(1.0, 0.0, 2.0)).length() < 0.1);
         assert!(w.arrived() && w.room() == "dining");
     }
 

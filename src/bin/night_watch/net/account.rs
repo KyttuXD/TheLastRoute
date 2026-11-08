@@ -8,8 +8,10 @@
 //!   [`set_force_admin`].
 //! * Requests run on a worker thread ([`AccountClient`] polls once per frame, never blocks). The worker fills the
 //!   slot itself, so [`current`] is right even when no screen is polling.
-//! * There is no `/api/account/guest` route on `lr_server`: GUEST is local (the save's `GUEST_%08X` name), so
-//!   "continue as guest" signs out and makes no request of its own.
+//! * `lr_server` implements `POST /api/account/guest` (it answers through the website upstream when one is set and
+//!   with 404 `unknown endpoint` when accounts are local). PLAY AS GUEST asks it for a guest session, stored like a
+//!   login (name and token in the save). When the server cannot be reached, refuses, or answers without a name, play
+//!   falls back to the local guest (the save's `GUEST_%08X` name) and the status line says so.
 //! * The browser build has no HTTP bridge for this executable: every request answers "ACCOUNTS NEED THE DESKTOP
 //!   BUILD" there and play stays guest only.
 #![allow(dead_code)]
@@ -33,6 +35,7 @@ pub const TEXT_SIGNED_OUT: &str = "Signed out.";
 pub const TEXT_NOTE: &str = "Usernames are CAPS only and shared with Last Route and KT: Systems.";
 pub const TEXT_PLACEHOLDER_USER: &str = "3-24 CHARS: A-Z 0-9 _";
 pub const TEXT_PLACEHOLDER_PASSWORD: &str = "6+ characters";
+pub const TEXT_GUEST_OFFLINE: &str = "Server not reachable. Playing as a local guest";
 pub const TEXT_BROWSER: &str = "Accounts need the desktop build. You can play as a guest here.";
 
 /// The signed-in account, as the admin gate and the save need it.
@@ -152,6 +155,11 @@ pub fn credentials_body(username: &str, password: &str, admin_proof: &str) -> Va
     body
 }
 
+/// `{previous}` for `/api/account/guest`: the guest name this device already plays under, so the server can keep it.
+pub fn guest_body(local_name: &str) -> Value {
+    json!({"previous": local_name})
+}
+
 /// `{sessionToken}` for `/api/account/session` and `/api/account/logout`.
 pub fn token_body(token: &str) -> Value {
     json!({"sessionToken": token})
@@ -205,6 +213,15 @@ pub fn login(cfg: &BackendConfig, username: &str, password: &str) -> Result<Acco
     post(cfg, "/api/account/login", &credentials_body(username, password, "")).map(|p| AccountReply::from_json(&p))
 }
 
+/// `POST /api/account/guest {previous}`: a guest session. A reply without a name counts as a failure.
+pub fn guest(cfg: &BackendConfig, local_name: &str) -> Result<AccountReply, NetError> {
+    let reply = post(cfg, "/api/account/guest", &guest_body(local_name)).map(|p| AccountReply::from_json(&p))?;
+    if reply.username.is_empty() {
+        return Err(NetError::Protocol("guest reply without a name".into()));
+    }
+    Ok(reply)
+}
+
 /// `POST /api/account/session {sessionToken}`: restores a stored login.
 pub fn session(cfg: &BackendConfig, token: &str) -> Result<AccountReply, NetError> {
     post(cfg, "/api/account/session", &token_body(token)).map(|p| AccountReply::from_json(&p))
@@ -221,6 +238,7 @@ pub enum Op {
     SignIn,
     Register,
     Restore,
+    Guest,
 }
 
 /// What a screen learns from [`AccountClient::poll`].
@@ -230,6 +248,8 @@ pub enum AccountEvent {
     SignedIn { op: Op, account: Account },
     /// The server rejected the stored session: forget it.
     Rejected,
+    /// The server could not give a guest session: play under the local guest name (`name`), signed out.
+    GuestLocal { name: String },
     /// The request failed; the text is player facing. A failed restore keeps the stored token.
     Failed { op: Op, message: String },
 }
@@ -240,6 +260,7 @@ impl AccountEvent {
         match self {
             AccountEvent::SignedIn { account, .. } => format!("Signed in as {}.", account.username),
             AccountEvent::Rejected => "Your saved sign-in ended. Playing as a guest.".to_string(),
+            AccountEvent::GuestLocal { name } => format!("{TEXT_GUEST_OFFLINE} ({name})."),
             AccountEvent::Failed { message, .. } => message.clone(),
         }
     }
@@ -261,6 +282,8 @@ pub struct AccountClient {
     cfg: BackendConfig,
     op: Option<(Op, Pending<Account>)>,
     logout: Option<Pending<()>>,
+    /// The local guest name PLAY AS GUEST falls back to if the server fails.
+    guest_local: String,
 }
 
 impl AccountClient {
@@ -272,7 +295,7 @@ impl AccountClient {
     }
 
     pub fn with_config(cfg: BackendConfig) -> AccountClient {
-        AccountClient { cfg, op: None, logout: None }
+        AccountClient { cfg, op: None, logout: None, guest_local: String::new() }
     }
 
     /// A request is in flight.
@@ -315,6 +338,16 @@ impl AccountClient {
         self.start(Op::Register, move |cfg| register(&cfg, &u, &p).map(|r| r.into_account("")));
     }
 
+    /// PLAY AS GUEST: asks the server for a guest session; any failure becomes [`AccountEvent::GuestLocal`].
+    pub fn guest(&mut self, local_name: &str) {
+        if self.op.is_some() {
+            return;
+        }
+        self.guest_local = local_name.to_string();
+        let name = local_name.to_string();
+        self.start(Op::Guest, move |cfg| guest(&cfg, &name).map(|r| r.into_account("")));
+    }
+
     /// Start of the program: check the token stored with the save.
     pub fn restore(&mut self, token: &str) {
         if token.is_empty() {
@@ -353,6 +386,10 @@ impl AccountClient {
                 set_current(None);
                 AccountEvent::Rejected
             }
+            Err(_) if op == Op::Guest => {
+                set_current(None);
+                AccountEvent::GuestLocal { name: std::mem::take(&mut self.guest_local) }
+            }
             Err(_) if op == Op::Restore => AccountEvent::Failed { op, message: "Could not check your saved sign-in. Playing as a guest for now.".to_string() },
             Err(e) => AccountEvent::Failed { op, message: failure_text(&e) },
         })
@@ -373,6 +410,46 @@ mod tests {
         assert_eq!(credentials_body("a", "b", "key")["adminProof"], "key");
         assert_eq!(token_body("tok"), json!({"sessionToken": "tok"}));
         assert_eq!(normalize_username(" Kyttu "), "KYTTU");
+    }
+
+    #[test]
+    fn guest_request_body_and_reply() {
+        assert_eq!(guest_body("GUEST_0000ABCD"), json!({"previous": "GUEST_0000ABCD"}));
+        let p: Json = serde_json::from_str("{\"ok\":true,\"username\":\"guest_4829\",\"sessionToken\":\"g-1\"}").unwrap();
+        let a = AccountReply::from_json(&p).into_account("");
+        assert_eq!((a.username.as_str(), a.session_token.as_str(), a.admin), ("GUEST_4829", "g-1", false));
+    }
+
+    #[test]
+    fn guest_falls_back_to_local_play_when_the_server_is_out() {
+        let mut cfg = BackendConfig::loopback(9);
+        cfg.offline = true;
+        assert_eq!(guest(&cfg, "GUEST_1"), Err(NetError::Offline));
+        let mut client = AccountClient::with_config(cfg);
+        client.guest("GUEST_0000ABCD");
+        let ev = client.poll().expect("finished at once");
+        assert_eq!(ev, AccountEvent::GuestLocal { name: "GUEST_0000ABCD".into() });
+        assert_eq!(ev.status_text(), "Server not reachable. Playing as a local guest (GUEST_0000ABCD).");
+        assert!(!client.busy());
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn guest_round_trip_and_a_404_falls_back() {
+        let body = "{\"ok\":true,\"username\":\"guest_4829\",\"sessionToken\":\"g-1\"}";
+        let reply: &'static str = Box::leak(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).into_boxed_str());
+        let (port, server) = serve_once(reply);
+        let r = guest(&BackendConfig::loopback(port), "GUEST_0000ABCD").unwrap();
+        assert_eq!((r.username.as_str(), r.session_token.as_str()), ("GUEST_4829", "g-1"));
+        let seen = server.join().unwrap();
+        assert!(seen.starts_with("POST /api/account/guest HTTP/1.1"));
+        assert!(seen.ends_with("{\"previous\":\"GUEST_0000ABCD\"}"));
+
+        let nf = "{\"ok\":false,\"error\":\"unknown endpoint\"}";
+        let reply: &'static str = Box::leak(format!("HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", nf.len(), nf).into_boxed_str());
+        let (port, server) = serve_once(reply);
+        assert_eq!(guest(&BackendConfig::loopback(port), "G").unwrap_err().status(), Some(404));
+        let _ = server.join();
     }
 
     #[test]

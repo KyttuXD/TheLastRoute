@@ -208,7 +208,24 @@ pub fn sim_for(map_room: &str) -> String {
 
 /// The navigation graph the hunters walk (data/nav/mixed.json).
 pub fn nav() -> NavMap {
-    NavMap::from_json(NAV_JSON).unwrap_or_else(|_| NavMap::new("mixed"))
+    try_nav().unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// The same, as an error when the graph does not parse or does not validate. Never an empty map: a broken graph refuses the
+/// mode with a message (`MixedGame` shows it, `--check` reports it) instead of letting nobody walk.
+pub fn try_nav() -> Result<NavMap, String> {
+    parse_nav(NAV_JSON)
+}
+
+/// Parse and validate a nav graph source (the embedded one, or a broken one in a test).
+pub fn parse_nav(src: &str) -> Result<NavMap, String> {
+    let n = NavMap::from_json(src).map_err(|e| format!("mixed nav graph: {e}"))?;
+    let problems = n.validate();
+    if problems.is_empty() {
+        Ok(n)
+    } else {
+        Err(format!("mixed nav graph: {}", problems.join("; ")))
+    }
 }
 
 pub fn centre_of(sim_room: &str) -> Vec3 {
@@ -899,6 +916,54 @@ mod tests {
         assert!(l.labels.iter().any(|(r, t)| r == "platform" && t == "SHOW STAGE"));
         assert_eq!(l.vents, vec!["duct".to_string()]);
         assert!(l.office.is_some());
+    }
+
+    #[test]
+    fn a_broken_nav_graph_is_an_error_never_an_empty_map() {
+        assert!(try_nav().is_ok());
+        assert!(parse_nav("{ not json").is_err());
+        // a link to a node that does not exist
+        let bad = r#"{"id":"x","rooms":{"a":{"min":[0,0],"max":[1,1]}},"nodes":[{"id":"A","kind":"waypoint","room":"a","p":[0,0,0]}],"edges":[["A","GHOST"]]}"#;
+        let e = parse_nav(bad).unwrap_err();
+        assert!(e.contains("GHOST"), "{e}");
+        // the real graph has the rooms the mode needs
+        let real = nav();
+        for r in ["office", "doorL", "doorR", "vent", "ventL", "ventR", "ventT"] {
+            assert!(real.rooms().iter().any(|x| x.id == r), "{r}");
+        }
+    }
+
+    #[test]
+    fn the_vent_run_reaches_the_office_vents_by_a_hidden_walked_shaft_not_a_jump() {
+        let v: Value = serde_json::from_str(NAV_JSON).unwrap();
+        for e in v["edges"].as_array().unwrap() {
+            assert_eq!(e.as_array().unwrap().len(), 2, "no jump edges remain: {e}");
+        }
+        let nav = nav();
+        for (from, to, at_least) in [("V:3", "VS:L", 55.0), ("V:4", "VS:R", 55.0), ("C:vent", "VS:T", 50.0)] {
+            let legs = nav.route(from, to);
+            assert!(!legs.is_empty(), "{from} to {to}");
+            assert!(legs.iter().all(|l| !l.jump), "{from} to {to} has a jump leg");
+            let len = nav.distance(from, to).unwrap();
+            assert!(len > at_least, "{from} to {to} is {len} m");
+            // the shaft is a duct room: no camera room holds a crawler there
+            assert!(legs.iter().any(|l| nav.node(&l.key).map_or(false, |n| n.room.starts_with("airduct"))));
+        }
+        // the island leaves the building alone: no walkway joins the vent nodes to the hall nodes
+        assert!(nav.route("V:0", "C:dining").is_empty());
+    }
+
+    #[test]
+    fn the_office_has_a_node_on_each_side_linked_to_that_door_only() {
+        let nav = nav();
+        for (o, d) in [("O:officeL", "D:doorL"), ("O:officeR", "D:doorR")] {
+            assert_eq!(nav.room_at(nav.pos(o).unwrap()), Some("office"));
+            let r = nav.route(o, d);
+            assert_eq!(r.len(), 2, "{o} to {d}");
+            assert!(r.iter().all(|l| !l.jump));
+        }
+        let via = nav.route("O:officeL", "O:officeR");
+        assert!(via.len() > 8, "the office is not a shortcut between the doors: {:?}", via.iter().map(|l| l.key.as_str()).collect::<Vec<_>>());
     }
 
     #[test]

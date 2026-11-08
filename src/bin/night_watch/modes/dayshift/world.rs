@@ -739,10 +739,21 @@ pub fn begin_feed(gfx: &Gfx, cam: &CamDef) {
     clear_background(SKY);
 }
 
+/// Why this mode cannot start, if so: the Day Shift map does not parse. The mode refuses to start on it and `--check` reports it.
+pub fn load_error() -> Option<String> {
+    MapData::parse(MAP_JSON).err()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::hunters::nav::NavMap;
+
+    #[test]
+    fn a_broken_file_is_an_error_and_the_embedded_ones_load() {
+        assert!(MapData::parse("{ not json").is_err());
+        assert_eq!(load_error(), None);
+    }
 
     fn nav() -> NavMap {
         super::super::stage::load_nav()

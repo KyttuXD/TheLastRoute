@@ -187,7 +187,7 @@ impl Stage {
                 None => (true, true, true),
             };
             let look = Some(t.face);
-            if first || t.driven || (snap && (moved_room || moved_pos)) {
+            if first || (snap && (moved_room || moved_pos)) {
                 self.crowd.add_at(id, &t.room, t.pos, look);
             } else if moved_room {
                 self.crowd.send_to(id, &t.room, t.pos, look, Pace::Budget(2.0));
@@ -195,7 +195,7 @@ impl Stage {
                 let room = t.room.clone();
                 if let Some(a) = self.crowd.agent_mut(id) {
                     a.brain.moved();
-                    a.walker.go_points(&[t.pos], &room, t.pos, look, Pace::Walk);
+                    a.walker.go_points(&[t.pos], &room, t.pos, look, if t.driven { Pace::Run } else { Pace::Walk });
                 }
             }
             self.crowd.set_enabled(id, t.enabled && !t.driven);
@@ -373,10 +373,12 @@ mod tests {
         s.rush.t = s.rush.need * 0.5;
         st.sync(&s, player(), false);
         let z = st.pos("umbriel").expect("pos").z;
-        assert!((z - map().rush_pos(0.5).z).abs() < 1e-3);
+        assert!((z + 15.0).abs() < 1.0, "she runs there, she is not put there: z {z}");
+        let goal = map().rush_pos(0.5).z;
+        until(&mut st, 20.0, |st| (st.pos("umbriel").map_or(99.0, |p| p.z) - goal).abs() < 0.05).expect("she runs to the half-way mark");
         s.rush.state = RushState::Door;
         st.sync(&s, player(), false);
-        assert!((st.pos("umbriel").expect("pos").z + 2.6).abs() < 1e-3);
+        until(&mut st, 20.0, |st| (st.pos("umbriel").map_or(99.0, |p| p.z) + 2.6).abs() < 0.05).expect("she runs to the door");
         let t = st.target("umbriel").expect("target");
         assert!(t.driven && t.run && !t.enabled);
     }

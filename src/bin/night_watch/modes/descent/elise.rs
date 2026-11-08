@@ -100,7 +100,7 @@ impl EliseCtl {
         self.placed = true;
         let target = map::sill_pos(side, threat);
         let look = map::look_target(side);
-        if !self.crowd.add(ELISE, map::start_room(side), 0) {
+        if self.crowd.agent(ELISE).is_none() && !self.crowd.add(ELISE, map::start_room(side), 0) {
             self.crowd.add_at(ELISE, map::sill_room(side), target, Some(look));
         }
         self.crowd.set_enabled(ELISE, false);
@@ -231,10 +231,16 @@ mod tests {
         let mut c = EliseCtl::new(11);
         run(&mut c, Side::L, 10.0, true, 2.5);
         run(&mut c, Side::L, 10.0, false, 1.0);
+        let before = c.agent().expect("elise").walker.pos;
+        let replaced = c.crowd.replaced;
         c.update(0.05, Side::R, 0.0, true, true);
         let a = c.agent().expect("elise");
-        assert_eq!(a.walker.room(), "pipe_gallery", "a new ride starts the new side from its own room");
+        assert!(dist_xz(a.walker.pos, before) < 1.0, "a new ride walks her on from where she stands, it does not put her at the start room");
+        assert_eq!(c.crowd.replaced, replaced, "nothing re-places her");
         assert_eq!(c.side(), Side::R);
+        run(&mut c, Side::R, 0.0, true, 40.0);
+        let a = c.agent().expect("elise");
+        assert!(dist_xz(a.walker.pos, map::sill_pos(Side::R, 0.0)) < 1.5, "she walks to the new sill");
     }
 
     #[test]

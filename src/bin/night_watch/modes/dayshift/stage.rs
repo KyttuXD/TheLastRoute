@@ -313,11 +313,22 @@ impl Headless for DayshiftHeadless {
     }
 }
 
+/// Why this mode cannot start, if so: the Day Shift nav file does not parse. The mode refuses to start on it and `--check` reports it.
+pub fn load_error() -> Option<String> {
+    crate::hunters::NavMap::from_json(NAV_JSON).err().map(|e| format!("dayshift nav: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use super::super::sim::{DayInput, Over};
     use crate::hunters::nav::NavKind;
+
+    #[test]
+    fn a_broken_file_is_an_error_and_the_embedded_ones_load() {
+        assert!(crate::hunters::NavMap::from_json("{ not json").is_err());
+        assert_eq!(load_error(), None);
+    }
 
     fn session(week: i32, seed: u32) -> Session {
         let mut s = Session::new();

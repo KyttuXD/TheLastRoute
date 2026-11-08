@@ -103,6 +103,10 @@ pub fn defers_record(session: &Session) -> bool {
 /// Problems in Open Air's data (empty = fine): the tunables, the three maps, their nav graphs, the behaviour file. For `--check`.
 pub fn check() -> Vec<String> {
     let mut out = Vec::new();
+    if let Some(e) = data::load_error() {
+        out.push(e);
+        return out;
+    }
     for k in &data::tun().missing {
         out.push(format!("openair tunables: missing {k}"));
     }

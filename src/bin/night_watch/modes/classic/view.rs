@@ -281,10 +281,21 @@ pub fn nyxie_at(view: &View, door_stand: Vec3, t: f32) -> Vec3 {
     door_stand.lerp(view.nyxie_to, t.clamp(0.0, 1.0))
 }
 
+/// Why this mode cannot start, if so: Classic cannot start: the view or the props file does not parse. The mode refuses to start on it and `--check` reports it.
+pub fn load_error() -> Option<String> {
+    View::parse(VIEW_JSON).err().or_else(super::world::load_error)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::{cast, CastDef};
+
+    #[test]
+    fn a_broken_file_is_an_error_and_the_embedded_ones_load() {
+        assert!(View::parse("{ not json").is_err());
+        assert_eq!(load_error(), None);
+    }
 
     fn def(id: &str) -> &'static CastDef {
         cast().iter().find(|c| c.id == id).expect("cast")

@@ -5,7 +5,8 @@
 //! The cube lists (`build_groups`) are pure; `DescentWorld` bakes them (needs GL).
 #![allow(dead_code)]
 
-use super::map::{Car, FlightDef, MapData, PropDef, RoomDef, View};
+use super::map::{Car, FlightDef, MapData, ModelDef, PropDef, RoomDef, View};
+use crate::hunters::bbmodel::Model;
 use super::sim::Side;
 use crate::gfx::{blocky_prop, Cube, Gfx, Group, LightSet, Omni, Textures, World, WorldBuilder};
 use macroquad::prelude::*;
@@ -273,9 +274,48 @@ pub fn lights(view: &View, closeness: f32) -> LightSet {
     LightSet { ambient: view.ambient, omni, spot: Vec::new(), fog: None }
 }
 
+/// The bbmodel text of a prop from `last_route/assets/props`, by file stem (the models the Descent rooms use).
+pub fn prop_text(model: &str) -> Option<&'static str> {
+    macro_rules! props {
+        ($($name:literal),* $(,)?) => {
+            match model {
+                $($name => Some(include_str!(concat!("../../../last_route/assets/props/", $name, ".bbmodel"))),)*
+                _ => None,
+            }
+        };
+    }
+    props!(
+        "supplyCrates",
+        "gasCylinderRack",
+        "filingCabinet",
+        "trashBin",
+        "cableCoil",
+        "maintenanceToolCabinet",
+        "storageBarrel",
+        "serverRack",
+        "storageShelving",
+        "irrigationManifold",
+        "breakerCabinet",
+        "rackGear",
+    )
+}
+
+/// Where a room's model stands (world space).
+pub fn model_origin(r: &RoomDef, m: &ModelDef) -> Vec3 {
+    vec3(r.centre.x + m.at.0, r.centre.y + m.y, r.centre.z + m.at.1)
+}
+
+/// One room model as a mesh (the model stands on its placement point, turned about the vertical axis).
+fn model_mesh(model: &Model, pos: Vec3, m: &ModelDef) -> Mesh {
+    let (mut verts, mut idx) = (Vec::new(), Vec::new());
+    model.build_scaled(&mut verts, &mut idx, pos, m.yaw_deg.to_radians(), Vec3::splat(model.scale * m.scale), 0.0, 0.0, WHITE);
+    Mesh { vertices: verts, indices: idx, texture: Some(model.texture.clone()) }
+}
+
 /// The baked set.
 pub struct DescentWorld {
     pub world: World,
+    props: Vec<Mesh>,
     pub view: View,
     pub map: MapData,
     ride: f32,
@@ -291,7 +331,26 @@ impl DescentWorld {
         }
         let mut world = wb.bake(tex);
         world.set_offset("dress", Vec3::ZERO);
-        DescentWorld { world, view, map, ride: 0.0 }
+        let mut cache: Vec<(String, Option<Model>)> = Vec::new();
+        let mut props = Vec::new();
+        for r in &map.rooms {
+            for m in &r.models {
+                if !cache.iter().any(|(k, _)| *k == m.model) {
+                    let parsed = prop_text(&m.model).and_then(|t| Model::parse(t, None, &|_| None, None));
+                    if let Some(p) = &parsed {
+                        p.texture.set_filter(FilterMode::Nearest);
+                    }
+                    cache.push((m.model.clone(), parsed));
+                }
+                if let Some((_, Some(model))) = cache.iter().find(|(k, _)| *k == m.model) {
+                    let mesh = model_mesh(model, model_origin(r, m), m);
+                    if !mesh.vertices.is_empty() {
+                        props.push(mesh);
+                    }
+                }
+            }
+        }
+        DescentWorld { world, props, view, map, ride: 0.0 }
     }
 
     /// 0..1 through a ride: the shaft slides up past the windows by one beam gap (it looks the same at both ends).
@@ -312,6 +371,15 @@ impl DescentWorld {
 
     pub fn draw(&self, gfx: &Gfx, lights: &LightSet, cam_pos: Vec3) {
         self.world.draw(&gfx.shader, lights, cam_pos);
+        gfx.shader.begin(lights, cam_pos);
+        for m in &self.props {
+            draw_mesh(m);
+        }
+        gfx.shader.end();
+    }
+
+    pub fn prop_count(&self) -> usize {
+        self.props.len()
     }
 }
 
@@ -334,6 +402,47 @@ mod tests {
 
     fn count(g: &Group, name: &str) -> usize {
         g.cubes.iter().filter(|c| c.name == name).count()
+    }
+
+    #[test]
+    fn every_descent_room_is_dressed_with_bbmodel_props() {
+        for r in &MapData::get().rooms {
+            assert!(r.models.len() >= 2, "{} has bbmodel props", r.id);
+            for m in &r.models {
+                let t = prop_text(&m.model).unwrap_or_else(|| panic!("{}: {} has no model text", r.id, m.model));
+                assert!(t.contains("\"elements\""), "{}", m.model);
+            }
+        }
+        assert!(prop_text("noSuchProp").is_none());
+    }
+
+    #[test]
+    fn room_models_stay_on_the_floor_and_off_the_flight_ports() {
+        let map = MapData::get();
+        for r in &map.rooms {
+            for m in &r.models {
+                let o = model_origin(r, m);
+                assert!(m.at.0.abs() <= r.size.0 * 0.5 && m.at.1.abs() <= r.size.1 * 0.5, "{} {} on the floor", r.id, m.model);
+                for f in &map.flights {
+                    for end in [f.a, f.b] {
+                        if (end.y - r.centre.y).abs() < 0.1 {
+                            let d = ((o.x - end.x).powi(2) + (o.z - end.z).powi(2)).sqrt();
+                            assert!(d > 0.6, "{} {} blocks flight {} ({d:.2} m)", r.id, m.model, f.id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn room_models_leave_the_hunter_stand_free() {
+        for r in &MapData::get().rooms {
+            for m in &r.models {
+                let d = (m.at.0 * m.at.0 + (m.at.1 + 0.3).powi(2)).sqrt();
+                assert!(d > 0.5, "{} {} sits on the hunter stand", r.id, m.model);
+            }
+        }
     }
 
     #[test]
