@@ -91,6 +91,21 @@ pub fn kathy_beam_shown(gimmick: &Gimmick, active: bool, held: bool, faded: bool
     matches!(gimmick, Gimmick::Kathy) && active && !held && !faded && stun <= 0.0
 }
 
+/// The world light a lit remote flashlight adds: a warm point at the lamp that lights the walls and floor it reaches
+/// (the beam mesh shows the throw itself). Reach and energy are the glow the other runners' lamps give.
+pub const REMOTE_LAMP_RANGE: f32 = 5.0;
+pub const REMOTE_LAMP_ENERGY: f32 = 1.2;
+
+pub fn remote_lamp(apex: Vec3) -> super::shader::Lamp {
+    super::shader::Lamp {
+        pos: apex,
+        range: REMOTE_LAMP_RANGE,
+        color: Color::new(FLASHLIGHT_RGB.0, FLASHLIGHT_RGB.1, FLASHLIGHT_RGB.2, 1.0),
+        energy: REMOTE_LAMP_ENERGY,
+        flicker: super::shader::Flicker::NONE,
+    }
+}
+
 /// Where a runner's lamp is when no held flashlight model gives its tip (no item in the hand, or the body hidden): from
 /// its feet at `feet`, forward along its yaw, at the height it holds the lamp (standing or crouched).
 pub fn flashlight_apex(feet: Vec3, yaw: f32, crouching: bool) -> Vec3 {

@@ -15,6 +15,7 @@
   "bars": [
     {
       "id": "lamp",
+      "shown": false,
       "source": "lamp",
       "label": "BATTERY",
       "short": "BAT",
@@ -78,6 +79,7 @@
     },
     {
       "id": "exposure",
+      "shown": false,
       "source": "exposure",
       "label": "EXPOSURE",
       "short": "EXP",
@@ -99,6 +101,7 @@
     },
     {
       "id": "noise",
+      "shown": false,
       "source": "noise",
       "label": "NOISE",
       "short": "NSE",

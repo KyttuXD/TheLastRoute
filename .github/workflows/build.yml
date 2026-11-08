@@ -31,7 +31,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: windows
-      - run: cargo build --release --bins --features server
+      - run: cargo build --release --bin last_route
       - name: Collect the Windows builds
         shell: bash
         run: |

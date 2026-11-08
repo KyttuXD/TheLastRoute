@@ -131,6 +131,9 @@ pub struct Override {
 #[derive(Clone, Debug, PartialEq)]
 pub struct BarDef {
     pub id: String,
+    /// Whether the grid draws this bar. A bar the data sets `"shown": false` stays loaded (its zones and tests still
+    /// read) but is not drawn.
+    pub shown: bool,
     pub source: Source,
     pub label: String,
     pub short: String,
@@ -328,6 +331,7 @@ pub fn parse(src: &str) -> Result<BarRules, String> {
             });
         }
         bars.push(BarDef {
+            shown: b["shown"].as_bool().unwrap_or(true),
             id,
             source,
             label: text(&b["label"], &at("label"), 8)?,
@@ -666,7 +670,8 @@ fn draw_bar(r: Rect, bar: &BarDef, res: &Resolved) {
 /// Draws the grid above the hotbar; returns how many bars it drew (0 when the data is broken).
 pub fn draw(g: &Game, a: &Assets, v: Vec2, hb: Rect) -> usize {
     let Some(rules) = rules() else { return 0 };
-    if rules.bars.is_empty() {
+    let shown: Vec<&BarDef> = rules.bars.iter().filter(|b| b.shown).collect();
+    if shown.is_empty() {
         return 0;
     }
     let snap = Snapshot::of(g);
@@ -674,15 +679,15 @@ pub fn draw(g: &Game, a: &Assets, v: Vec2, hb: Rect) -> usize {
     let l = &rules.layout;
     let size0 = l.text_size;
     let line_h = lh(F::Body, size0);
-    let band = row_bounds(v, c, hb, rules.bars.len(), l, line_h);
-    let cols = l.columns.clamp(1, rules.bars.len());
-    let rows = (rules.bars.len() + cols - 1) / cols;
+    let band = row_bounds(v, c, hb, shown.len(), l, line_h);
+    let cols = l.columns.clamp(1, shown.len());
+    let rows = (shown.len() + cols - 1) / cols;
     let col_gap = l.gap.max(2.0);
     let row_gap = 2.0;
     let col_w = (band.w - col_gap * (cols as f32 - 1.0)) / cols as f32;
     let cell_h = (band.h - row_gap * (rows as f32 - 1.0)) / rows as f32;
     let ink = rgba(0.96, 0.94, 0.88, 1.0);
-    for (i, bar) in rules.bars.iter().enumerate() {
+    for (i, bar) in shown.iter().copied().enumerate() {
         let res = resolve(bar, snap.value(bar.source), &snap.flags);
         let col = i % cols;
         let row = i / cols;
@@ -700,7 +705,7 @@ pub fn draw(g: &Game, a: &Assets, v: Vec2, hb: Rect) -> usize {
         }
         label(a, F::Body, &text, x + (col_w - twid).max(0.0) * 0.5, br.y + br.h + 0.5, size, ink);
     }
-    rules.bars.len()
+    shown.len()
 }
 
 #[cfg(test)]
@@ -729,6 +734,15 @@ mod tests {
         assert!(rules().is_some(), "the embedded loader accepts the shipped file");
         assert_eq!(r.layout.columns, 3);
         assert_eq!((r.layout.max_width, r.layout.icon, r.layout.sub_size, r.layout.pad, r.layout.bar_height, r.layout.text_size), (168.0, 6.0, 4.0, 1.0, 3.0, 4.5));
+    }
+
+    #[test]
+    fn only_stamina_fade_and_temperature_are_shown_in_the_grid() {
+        let r = shipped();
+        let shown: Vec<&str> = r.bars.iter().filter(|b| b.shown).map(|b| b.id.as_str()).collect();
+        assert_eq!(shown, ["stamina", "fade", "temperature"]);
+        // three bars fill one row of the three columns
+        assert_eq!(r.layout.columns, 3);
     }
 
     #[test]

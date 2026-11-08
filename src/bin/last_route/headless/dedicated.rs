@@ -228,7 +228,10 @@ impl Room {
         if let Some(g) = sim.game.as_mut() {
             g.relays_collected = relays;
         }
-        let net = Room::session(opts, &cfg, link, &token, &opts.room_text, opts.difficulty, true);
+        // a public room runs its route from the first moment; a hosted room waits in its lobby until its owner starts it,
+        // so the owner can set the difficulty and the other settings first
+        let route_on = opts.public;
+        let net = Room::session(opts, &cfg, link, &token, &opts.room_text, opts.difficulty, route_on);
         let ticket_check = directory_check(cfg.clone(), token.clone());
         Room {
             sim,
@@ -245,7 +248,7 @@ impl Room {
             room_text: opts.room_text.clone(),
             difficulty: opts.difficulty,
             start_relays: opts.start_relays,
-            route_on: true,
+            route_on,
             ticket_check,
             checks: Vec::new(),
         }
@@ -826,10 +829,29 @@ mod tests {
         }
     }
 
+    /// A hosted room whose owner has started its route (what the owner's START does; a new room waits for it).
     fn open_room(hub: &TestHub, opts: &Options) -> Room {
+        let mut room = open_lobby_room(hub, opts);
+        room.begin_route(false);
+        room
+    }
+
+    /// A hosted room as it opens: in its lobby, the route not yet started.
+    fn open_lobby_room(hub: &TestHub, opts: &Options) -> Room {
         hub.add_room("ABCDE", "tok");
         let link = NativeWsLink::host("ABCDE", "tok", &hub.url()).unwrap();
         Room::new(opts, BackendConfig::default(), Box::new(link), "tok".into())
+    }
+
+    #[test]
+    fn a_hosted_room_waits_in_its_lobby_until_its_owner_starts_the_route() {
+        let hub = TestHub::start();
+        let opts = options(&hub);
+        let room = open_lobby_room(&hub, &opts);
+        assert!(!room.route_on, "a new hosted room does not run its route yet");
+        let public_opts = public_options(&hub);
+        let public = open_public(&hub, &public_opts);
+        assert!(public.route_on, "a public room runs its route from the first moment");
     }
 
     /// A scripted guest: a real guest session over a native link that stands where it is told.
@@ -1104,14 +1126,14 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(hub.has_host("ABCDE"), "the process connected as the host with its token");
-        // a guest joining it is sent the route
+        // a guest joining a hosted room waits in its lobby: the route starts only when the owner starts it
         let mut bot = Bot::join(&hub, "BOT", (10.0, 10.0));
-        let until = std::time::Instant::now() + Duration::from_secs(30);
-        while !bot.started && std::time::Instant::now() < until {
+        let until = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < until {
             bot.tick();
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(bot.started, "the guest got the route start from the process: {:?}", bot.problems);
+        assert!(!bot.started, "a hosted room does not start its route for a guest: {:?}", bot.problems);
         hub.close_room("ABCDE");
         assert_eq!(runner.join().unwrap(), 4, "the link was lost and --reconnect-seconds 0 gives up");
     }

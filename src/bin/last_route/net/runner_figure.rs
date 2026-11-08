@@ -506,6 +506,22 @@ fn draw_occupants(g: &Game, a: &Assets, remotes: &[RemoteView], active_y: f32) {
 /// Draws the remote runners in the 3D view, lit like the scene. Each one is the mannequin at its position and yaw,
 /// wearing its skin's texture, posed by its state. A runner that has slid into a locker is gone from the open (its body
 /// shows only while the locker door swings). Draws nothing for an empty list, so a single-player frame is unchanged.
+/// The world lights of the other runners' lit flashlights on this floor, for the world pass to add to the room's lamps.
+/// A hidden runner has no beam, so it has no light either. The lamp sits at the usual lamp height (the held lamp's tip
+/// is only known once the body is drawn, a few centimetres away).
+pub fn flashlight_lamps(g: &Game, remotes: &[RemoteView]) -> Vec<crate::render::shader::Lamp> {
+    let active_y = crate::game::level_stack::floor_y_of(g.fac.level);
+    remotes
+        .iter()
+        .filter(|r| !hidden_for_good(r) && r.hide.is_none())
+        .filter(|r| r.flash_pitch.is_some())
+        .map(|r| {
+            let pos = vec3(r.x, runner_draw_y(r.h, active_y), r.y);
+            crate::render::beam::remote_lamp(crate::render::beam::flashlight_apex(pos, r.yaw, r.crouching))
+        })
+        .collect()
+}
+
 pub fn draw_runners(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, remotes: &[RemoteView]) {
     let epoch = next_epoch();
     if remotes.is_empty() {

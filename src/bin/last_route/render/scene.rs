@@ -291,7 +291,9 @@ fn held_slot_drawn(g: &Game, a: &Assets, slot: usize) -> bool {
     })
 }
 
-pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
+/// Draws the 3D view's world. `remote_lamps` are the lit flashlights of the other runners on this floor: their lamps
+/// join the room's, so the walls and floor they reach are lit by them (net/runner_figure.rs `flashlight_lamps`).
+pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, remote_lamps: &[super::shader::Lamp]) {
     hide::tick(g.p.hidden, g.time);
     if g.escape.as_ref().is_some_and(|e| !held_slot_drawn(g, a, e.hunter)) {
         grab::abandon();
@@ -320,6 +322,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
         world_stack::merge_lamps(&g.world.lamps, &nb, light.eye, shader::lamp_cap())
     };
     lamps.extend(extra);
+    lamps.extend_from_slice(remote_lamps);
     shader::apply(mat, &light, &flickered(g, &lamps));
     // the falls' loop plays from the nearest fall in range, and stops on a storey without one
     {

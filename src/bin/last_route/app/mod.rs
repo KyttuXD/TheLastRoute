@@ -126,7 +126,7 @@ pub fn same_level_remotes(remotes: &[RemoteView], depth: i32) -> Vec<RemoteView>
 
 /// [`render_play`] with the other runners of an open room, drawn into the 3D view on this floor.
 pub fn render_play_with(g: &Game, a: &Assets, mat: &Material, t: &Targets, remotes: &[RemoteView]) {
-    scene::draw_scene(g, a, mat, &t.scene);
+    scene::draw_scene(g, a, mat, &t.scene, &crate::net::runner_figure::flashlight_lamps(g, remotes));
     {
         let _t = perf::section("remote players");
         world_sync::draw_remotes(g, a, mat, &t.scene, remotes);
