@@ -118,6 +118,17 @@ impl Actor {
         self.scale = super::place::world_scale(&self.rig, &self.id, mode);
     }
 
+    /// The metres per bbmodel unit this actor is drawn at (`place::world_scale` for its mode).
+    pub fn scale(&self) -> f32 {
+        self.scale
+    }
+
+    /// The height in metres this actor stands, measured against the Godot reference humanoid (its model is
+    /// `HUNTER_HEIGHT_M` tall at the Godot draw scale). Creature rigs report their reference height unscaled.
+    pub fn world_height_m(&self) -> f32 {
+        self.scale * super::place::HUNTER_HEIGHT_M / self.rig.draw_scale()
+    }
+
     /// An actor from loaded parts (no GL needed when `model` is None: it then draws the box figure).
     pub fn from_parts(id: &str, rig: Rc<Rig>, model: Option<Rc<Model>>, blends: Rc<HashMap<String, f32>>) -> Actor {
         let scale = super::place::world_scale(&rig, id, "");
@@ -423,6 +434,14 @@ impl HunterLib {
         self.models.get(id).cloned().flatten()
     }
 
+    /// A new actor for the hunter in a mode: `actor` plus the mode's scale (data/hunter_scale.json per_mode). Every mode
+    /// builds its actors with this, so every actor is drawn at the one `place::world_scale`.
+    pub fn actor_in(&mut self, id: &str, mode: &str) -> Option<Actor> {
+        let mut a = self.actor(id)?;
+        a.set_scale_mode(mode);
+        Some(a)
+    }
+
     /// A new actor for the hunter. None only if the id has no embedded rig. A model that does not parse gives the
     /// box figure instead.
     pub fn actor(&mut self, id: &str) -> Option<Actor> {
@@ -485,6 +504,52 @@ pub fn roster_entry(id: &str) -> Option<&'static RosterEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_modes_humanoid_actors_stand_the_height_of_hunter_scale_json() {
+        let cfg = super::super::place::HunterScale::get();
+        let mut lib = HunterLib::new();
+        let mut checked = 0;
+        for mode in cfg.modes().into_iter().chain([String::new()]) {
+            for e in ROSTER.iter().filter(|e| e.has_body) {
+                let Some(rig) = lib.rig(e.id) else { continue };
+                if rig.is_creature() {
+                    continue;
+                }
+                let blends = Rc::new(pose_blends(crate::assets::POSES_JSON));
+                let mut a = Actor::from_parts(e.id, rig, None, blends);
+                a.set_scale_mode(&mode);
+                let want = cfg.height_m(e.id, &mode);
+                let got = a.world_height_m();
+                assert!((got - want).abs() <= want * 0.05, "{} in '{mode}' stands {got} m, hunter_scale.json says {want} m", e.id);
+                checked += 1;
+            }
+        }
+        assert!(checked >= 9 * 20, "only {checked} actors checked");
+    }
+
+    #[test]
+    fn a_creature_keeps_its_own_scale_in_every_mode() {
+        let mut j: serde_json::Value = serde_json::from_str(DOVELLE).unwrap();
+        j["metres"] = serde_json::json!(0.0525);
+        let rig = Rig::parse("spider", &j.to_string()).expect("rig");
+        assert!(rig.is_creature());
+        for mode in ["", "classic", "dayshift", "story"] {
+            assert_eq!(super::super::place::world_scale(&rig, "spider", mode), 0.0525);
+        }
+    }
+
+    #[test]
+    fn the_classic_dayshift_and_story_modes_build_their_actors_with_their_mode_scale() {
+        for (src, mode) in [
+            (include_str!("../modes/classic/game.rs"), "classic"),
+            (include_str!("../modes/dayshift/game.rs"), "dayshift"),
+            (include_str!("../modes/story/game.rs"), "story"),
+        ] {
+            assert!(src.contains("actor_in(") && src.contains(&format!("\"{mode}\"")), "{mode} builds actors without actor_in");
+            assert!(!src.contains("hunters.actor("), "{mode} still calls HunterLib::actor directly");
+        }
+    }
 
     #[test]
     fn roster_has_26_and_matches_the_embedded_rigs() {

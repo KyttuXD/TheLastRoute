@@ -658,7 +658,7 @@ impl Mode for ClassicMode {
         let props = Props::build();
         let mut slots = Vec::new();
         for def in cast().iter() {
-            if let Some(mut actor) = ctx.hunters.actor(&def.id) {
+            if let Some(mut actor) = ctx.hunters.actor_in(&def.id, "classic") {
                 actor.visible = false;
                 slots.push(Slot { id: def.id.clone(), actor, driver: ActorDriver::new(), owner: Owner::Fresh });
             }
@@ -889,6 +889,18 @@ impl Mode for ClassicMode {
             .cloned()
             .collect();
         Some((inside, drawn))
+    }
+
+    fn tour_protect(&mut self) {
+        self.sim.god = true;
+        self.sim.infinite_power = true;
+        self.admin_no_scare = true;
+        let e = crate::core::tour_clock_wrap(self.sim.elapsed);
+        if e != self.sim.elapsed {
+            self.sim.elapsed = e;
+            self.hour_seen = self.sim.hour();
+            self.elapsed_ms = e;
+        }
     }
 
     fn outcome(&self) -> Outcome {

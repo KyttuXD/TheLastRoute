@@ -1,21 +1,21 @@
 {
 	"schema": "nw.classic.props/1",
-	"note": "bbmodel props placed in the classic building rooms. pos is local to the room centre (x, y base, z); yaw in degrees, a model's front is -Z so yaw 180 faces the room from the north wall; scale multiplies the native 1/16 size.",
+	"note": "bbmodel props placed in the classic building rooms. pos is local to the room centre (x, y base, z); yaw in degrees, a model front is +Z (yaw 0 faces south, 90 faces east, -90 faces west, 180 faces north), so a prop against the north wall uses yaw 0 and shows its front to the room; scale multiplies the native 1/16 size.",
 	"props": [
-		{"room": "stage", "model": "ampStack", "pos": [-1.95, 0.46, -2.3], "yaw": 180},
-		{"room": "stage", "model": "comboAmp", "pos": [1.95, 0.46, -2.3], "yaw": 180},
+		{"room": "stage", "model": "ampStack", "pos": [-1.95, 0.46, -2.3], "yaw": 0},
+		{"room": "stage", "model": "comboAmp", "pos": [1.95, 0.46, -2.3], "yaw": 0},
 		{"room": "dining", "model": "floorLamp", "pos": [-2.7, 0.0, -2.6], "yaw": 0},
-		{"room": "dining", "model": "coffeeStation", "pos": [2.2, 0.0, -2.6], "yaw": 180},
+		{"room": "dining", "model": "coffeeStation", "pos": [2.2, 0.0, -2.6], "yaw": 0},
 		{"room": "backstage", "model": "controlConsole", "pos": [1.4, 0.0, 2.1], "yaw": 0},
 		{"room": "backstage", "model": "cableCoil", "pos": [-2.3, 0.0, 1.9], "yaw": 20},
-		{"room": "westhall", "model": "breakerCabinet", "pos": [2.55, 0.0, -2.2], "yaw": 90},
+		{"room": "westhall", "model": "breakerCabinet", "pos": [2.55, 0.0, -2.2], "yaw": -90},
 		{"room": "westhall", "model": "cableCoil", "pos": [1.9, 0.0, 1.5], "yaw": 0},
-		{"room": "easthall", "model": "breakerCabinet", "pos": [-2.55, 0.0, -2.2], "yaw": -90},
-		{"room": "closet", "model": "clothesRack", "pos": [2.1, 0.0, 0.8], "yaw": 90},
+		{"room": "easthall", "model": "breakerCabinet", "pos": [-2.55, 0.0, -2.2], "yaw": 90},
+		{"room": "closet", "model": "clothesRack", "pos": [2.1, 0.0, 0.8], "yaw": -90},
 		{"room": "closet", "model": "cableCoil", "pos": [0.8, 0.0, 1.4], "yaw": 45},
-		{"room": "kitchen", "model": "coffeeStation", "pos": [-2.55, 0.0, -0.4], "yaw": -90},
-		{"room": "kitchen", "model": "bakeryRack", "pos": [2.6, 0.0, -1.1], "yaw": 90},
-		{"room": "corner", "model": "arcadeCabinet", "pos": [2.6, 0.0, 0.8], "yaw": 90},
+		{"room": "kitchen", "model": "coffeeStation", "pos": [-2.55, 0.0, -0.4], "yaw": 90},
+		{"room": "kitchen", "model": "bakeryRack", "pos": [2.6, 0.0, -1.1], "yaw": -90},
+		{"room": "corner", "model": "arcadeCabinet", "pos": [2.6, 0.0, 0.8], "yaw": -90},
 		{"room": "corner", "model": "magazineRack", "pos": [0.9, 0.0, 2.2], "yaw": 0}
 	]
 }

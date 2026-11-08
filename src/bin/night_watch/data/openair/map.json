@@ -9,7 +9,7 @@
       "spawn_yaw": 0.0,
       "spawn_pitch": -0.1,
       "footprint": [-6.0, -4.5, 6.0, 4.5],
-      "ambient": [0.3, 0.34, 0.5],
+      "ambient": [0.33, 0.37, 0.53],
       "lights": [
         {"id": "lantern", "pos": [0.0, 2.1, -2.7], "color": [1.0, 0.8, 0.5], "energy": 2.2, "range": 11.0}
       ],
@@ -22,8 +22,8 @@
       ],
       "cameras": [
         {"id": "roof", "label": "ROOF", "rooms": [], "pos": [0.0, 3.1, 4.9], "target": [0.0, 0.9, -3.0], "fov": 72, "base_y": 1.2},
-        {"id": "catwalk_w", "label": "WEST GANTRY", "rooms": ["catwalk_w", "door_w"], "pos": [-6.4, 3.0, 4.4], "target": [-8.7, 0.6, -7.0], "fov": 62, "base_y": 1.2},
-        {"id": "catwalk_e", "label": "EAST GANTRY", "rooms": ["catwalk_e", "door_e"], "pos": [6.4, 3.0, 4.4], "target": [8.7, 0.6, -7.0], "fov": 62, "base_y": 1.2},
+        {"id": "catwalk_w", "label": "WEST GANTRY", "rooms": ["catwalk_w", "door_w"], "pos": [1.2, 3.0, 3.8], "target": [-8.7, 0.3, -6.0], "fov": 62, "base_y": 0.0},
+        {"id": "catwalk_e", "label": "EAST GANTRY", "rooms": ["catwalk_e", "door_e"], "pos": [-3.6, 3.0, -4.4], "target": [8.7, 0.3, -9.0], "fov": 62, "pole": false},
         {"id": "back_catwalk", "label": "BACK WALK", "rooms": ["back_catwalk"], "pos": [0.0, 3.2, -4.9], "target": [0.0, 0.4, -10.0], "fov": 80, "base_y": 1.2}
       ],
       "layout": {
@@ -55,7 +55,7 @@
       "spawn_yaw": 0.0,
       "spawn_pitch": -0.1,
       "footprint": [-13.0, 0.4, 13.0, 6.6],
-      "ambient": [0.3, 0.34, 0.5],
+      "ambient": [0.33, 0.37, 0.53],
       "lights": [
         {"id": "lamp", "pos": [-1.5, 1.5, 3.0], "color": [1.0, 0.6, 0.3], "energy": 2.2, "range": 8.0},
         {"id": "street", "pos": [-6.0, 3.4, -0.6], "color": [0.7, 0.8, 1.0], "energy": 1.2, "range": 12.0}
@@ -96,7 +96,7 @@
       "spawn_yaw": 0.0,
       "spawn_pitch": -0.1,
       "footprint": [-9.5, -9.0, 9.5, 8.0],
-      "ambient": [0.3, 0.34, 0.5],
+      "ambient": [0.33, 0.37, 0.53],
       "lights": [
         {"id": "fire", "pos": [0.0, 1.0, 0.0], "color": [1.0, 0.62, 0.3], "energy": 2.6, "range": 12.0}
       ],

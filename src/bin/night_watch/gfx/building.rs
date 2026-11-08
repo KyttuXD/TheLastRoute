@@ -334,7 +334,11 @@ fn connectors(id: &str, centre: Vec3, tint: [f32; 3], groups: &mut Vec<Group>) {
         put(&mut g, "Floor", dim(gap, DOOR_GAP + 0.4, 0.2), off(0.0, -0.1), O::new().t(mul3(tint, [0.95, 0.95, 0.95])));
         put(&mut g, "Ceiling", dim(gap, DOOR_GAP + 0.4, 0.2), off(0.0, ROOM_H + 0.1), O::new().t(mul3(tint, [0.6, 0.6, 0.6])));
         for sgn in [-1.0f32, 1.0] {
-            put(&mut g, "WallLink", dim(gap, 0.2, ROOM_H), off(sgn * (DOOR_GAP * 0.5 + 0.1), ROOM_H * 0.5), O::new().t(wall_tint));
+            if along_x {
+                put(&mut g, "WallLink", dim(gap, 0.2, ROOM_H), off(sgn * (DOOR_GAP * 0.5 + 0.1), ROOM_H * 0.5), O::new().t(wall_tint));
+            }
+            // The feed camera of the room to the north hangs inside a north passage (see `camera_transform`): side walls there
+            // would be a flat slab filling half of that feed, so only east passages get them.
             // the frame posts at the room end of the passage and a lamp above the door
             let post = dim(0.12, 0.14, DOOR_TOP);
             let mut p = off(sgn * (DOOR_GAP * 0.5 - 0.05), DOOR_TOP * 0.5);
@@ -600,6 +604,29 @@ mod tests {
 
     fn near(a: Vec3, b: Vec3) -> bool {
         (a - b).length() < 1e-4
+    }
+
+    #[test]
+    fn no_passage_wall_stands_in_front_of_a_feed_camera() {
+        // A passage wall (the lit links between rooms) whose centre lies within 3.5 m ahead of a feed camera fills a large part
+        // of the feed (the full-length north passage walls once did, half of every room with a north doorway south of it).
+        for id in cam_room_ids() {
+            let (pos, target) = Building::camera_transform(&id);
+            let fwd = vec2(target.x - pos.x, target.z - pos.z).normalize();
+            let mut groups = Vec::new();
+            let mut walls = Vec::new();
+            for other in cam_room_ids() {
+                room_groups(&other, Building::room_centre(&other), &mut groups, &mut walls);
+            }
+            for g in groups.iter().filter(|g| g.name.contains("/Link")) {
+                for c in g.cubes.iter().filter(|c| c.name == "WallLink") {
+                    let mid = g.origin + c.pos;
+                    let v = vec2(mid.x - pos.x, mid.z - pos.z);
+                    let ahead = v.dot(fwd) > 0.0;
+                    assert!(!(ahead && v.length() < 3.5), "{} / {} stands {:.2} m in front of the {id} camera", g.name, c.name, v.length());
+                }
+            }
+        }
     }
 
     #[test]

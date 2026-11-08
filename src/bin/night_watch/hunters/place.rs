@@ -57,6 +57,13 @@ impl HunterScale {
         self.reference_height_m * self.factor(id, mode)
     }
 
+    /// The mode ids the file scales.
+    pub fn modes(&self) -> Vec<String> {
+        let mut m: Vec<String> = self.per_mode.keys().cloned().collect();
+        m.sort();
+        m
+    }
+
     /// The tallest humanoid in any mode (for clearance checks).
     pub fn max_height_m(&self) -> f32 {
         let h = self.per_hunter.values().copied().fold(1.0_f32, f32::max);
@@ -75,6 +82,10 @@ impl HunterScale {
 /// THE instantiate-path scale: metres per bbmodel unit a hunter rig is drawn at in `mode` (Godot draw scale times
 /// the data-driven factor).
 pub fn world_scale(rig: &Rig, id: &str, mode: &str) -> f32 {
+    // A creature rig (the wolf spiders) carries its own metres per unit; the humanoid height target does not apply to it.
+    if rig.is_creature() {
+        return rig.draw_scale();
+    }
     rig.draw_scale() * HunterScale::get().factor(id, mode)
 }
 

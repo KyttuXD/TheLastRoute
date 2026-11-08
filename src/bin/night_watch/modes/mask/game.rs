@@ -536,7 +536,7 @@ impl Mode for MaskMode {
         ctx.player.look_frozen = false;
         ctx.player.flashlight = false;
         for id in rules().cast.iter() {
-            if let Some(mut a) = ctx.hunters.actor(id) {
+            if let Some(mut a) = ctx.hunters.actor_in(id, "mask") {
                 a.visible = false;
                 self.actors.insert(id.clone(), a);
                 self.drivers.insert(id.clone(), ActorDriver::new());
@@ -736,8 +736,29 @@ impl Mode for MaskMode {
         clear_background(Color::new(0.02, 0.03, 0.03, 1.0));
         let lights = feed_lights(room, self.sim.lit);
         w.draw(&*ctx.gfx, &lights, cam.mount);
-        self.draw_actors(&*ctx.gfx, &lights, cam.mount);
+        // a duct camera sees a crawling hunter; every other camera skips one inside a duct
+        let duct = Actor::is_duct_room(room);
+        for a in self.actors.values() {
+            a.draw_in(&*ctx.gfx, &lights, cam.mount, duct);
+        }
         ctx.gfx.feed.end();
+    }
+
+    fn feed_report(&self, room: &str) -> Option<(Vec<String>, Vec<String>)> {
+        let inside: Vec<String> = self.stage.crowd.visible_in(room).iter().map(|a| a.id.clone()).collect();
+        let drawn = inside.iter().filter(|id| self.actors.get(*id).map_or(false, |a| a.drawn_in_room(room))).cloned().collect();
+        Some((inside, drawn))
+    }
+
+    fn tour_protect(&mut self) {
+        self.admin_god = true;
+        self.admin_no_scare = true;
+        self.sim.infinite_battery = true;
+        let e = crate::core::tour_clock_wrap(self.sim.elapsed);
+        if e != self.sim.elapsed {
+            self.sim.elapsed = e;
+            self.hour_seen = hour_index(e);
+        }
     }
 
     fn draw_overlay(&mut self, _ctx: &mut ShiftCtx) {

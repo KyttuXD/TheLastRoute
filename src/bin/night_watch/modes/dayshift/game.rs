@@ -569,7 +569,7 @@ impl Mode for DayshiftMode {
     fn start(&mut self, ctx: &mut ShiftCtx) {
         self.scene = Some(Scene::build(&ctx.gfx.tex));
         for id in CAST_IDS {
-            if let Some(mut actor) = ctx.hunters.actor(id) {
+            if let Some(mut actor) = ctx.hunters.actor_in(id, "dayshift") {
                 actor.visible = false;
                 self.hunters.push(Hunter { id, actor, driver: ActorDriver::new() });
             }
@@ -780,6 +780,15 @@ impl Mode for DayshiftMode {
         let inside = self.stage.visible_in(room);
         let drawn = inside.iter().filter(|id| self.hunters.iter().any(|h| h.id == id.as_str() && h.actor.drawn_in_room(room))).cloned().collect();
         Some((inside, drawn))
+    }
+
+    fn tour_protect(&mut self) {
+        self.god = true;
+        self.no_scare = true;
+        self.sim.infinite_power = true;
+        if self.phase != Phase::Shop {
+            self.sim.elapsed = crate::core::tour_clock_wrap(self.sim.elapsed);
+        }
     }
 
     fn draw_overlay(&mut self, ctx: &mut ShiftCtx) {

@@ -1074,7 +1074,7 @@ impl MixedGame {
         if g.slots.contains_key(id) {
             return true;
         }
-        match hunters.actor(id) {
+        match hunters.actor_in(id, "mixed") {
             Some(actor) => {
                 g.slots.insert(id.to_string(), Slot { actor, driver: ActorDriver::new() });
                 true
@@ -1136,7 +1136,7 @@ impl Mode for MixedGame {
         let hub = HubWorld::build(&ctx.gfx.tex, self.skin);
         let mut gx = Gx { office, hub, slots: HashMap::new() };
         for id in self.sim.roster() {
-            if let Some(mut actor) = ctx.hunters.actor(&id) {
+            if let Some(mut actor) = ctx.hunters.actor_in(&id, "mixed") {
                 actor.visible = false;
                 gx.slots.insert(id, Slot { actor, driver: ActorDriver::new() });
             }
@@ -1355,6 +1355,27 @@ impl Mode for MixedGame {
             }
         }
         ctx.gfx.feed.end();
+    }
+
+    fn feed_report(&self, room: &str) -> Option<(Vec<String>, Vec<String>)> {
+        let g = self.gx.as_ref()?;
+        let sim_room = world::sim_for(room);
+        let inside = self.pres.visible_in(&sim_room);
+        let drawn = inside.iter().filter(|id| g.slots.get(*id).map_or(false, |s| s.actor.visible && s.actor.drawn_in_room(room))).cloned().collect();
+        Some((inside, drawn))
+    }
+
+    fn tour_protect(&mut self) {
+        self.admin_god = true;
+        self.admin_no_scare = true;
+        self.admin_infinite = true;
+        if !self.sim.c.endless {
+            let e = crate::core::tour_clock_wrap(self.sim.c.elapsed);
+            if e != self.sim.c.elapsed {
+                self.sim.c.elapsed = e;
+                self.hour_seen = crate::core::hour_index(e);
+            }
+        }
     }
 
     fn outcome(&self) -> Outcome {

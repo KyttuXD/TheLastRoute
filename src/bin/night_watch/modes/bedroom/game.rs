@@ -338,7 +338,7 @@ impl Mode for BedroomMode {
         let m: &BedroomMap = map();
         self.world = Some(BedroomWorld::new(ctx.gfx, m));
         for h in Hunter::ALL {
-            self.actors[h.idx()] = ctx.hunters.actor(h.id());
+            self.actors[h.idx()] = ctx.hunters.actor_in(h.id(), "bedroom");
         }
         self.sim.set_snap(ctx.manual_clock);
         ctx.hud.call = if self.custom { CallScript::empty() } else { CallScript::for_level("bedroom", ctx.session.level()) };
@@ -515,6 +515,17 @@ impl Mode for BedroomMode {
                     }
                 }
             }
+        }
+    }
+
+    fn tour_protect(&mut self) {
+        self.sim.logic.god = true;
+        self.sim.logic.infinite_battery = true;
+        self.no_scare = true;
+        let e = crate::core::tour_clock_wrap(self.sim.logic.elapsed);
+        if e != self.sim.logic.elapsed {
+            self.sim.logic.elapsed = e;
+            self.hour_seen = hour_index(e);
         }
     }
 

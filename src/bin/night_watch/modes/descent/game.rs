@@ -162,7 +162,7 @@ impl Mode for DescentMode {
 
     fn start(&mut self, ctx: &mut ShiftCtx) {
         self.world = Some(DescentWorld::new(&ctx.gfx.tex));
-        self.actor = ctx.hunters.actor(ELISE);
+        self.actor = ctx.hunters.actor_in(ELISE, "descent");
         if let Some(a) = self.actor.as_mut() {
             a.visible = false;
         }
@@ -347,6 +347,11 @@ impl Mode for DescentMode {
 
     fn admin_do(&mut self, id: &str) {
         admin::run(self, id);
+    }
+
+    fn tour_protect(&mut self) {
+        self.sim.god = true;
+        self.no_scare = true;
     }
 
     fn debug_win(&mut self) {

@@ -1064,6 +1064,26 @@ mod tests {
     }
 
     #[test]
+    fn no_prop_fills_a_camera_near_field() {
+        // A prop closer than 1.9 m inside the camera's forward cone (50 degrees off the axis) fills a third of the feed.
+        let l = layout();
+        for cam in &l.cameras {
+            let fwd = vec2(cam.target.x - cam.pos.x, cam.target.z - cam.pos.z).normalize();
+            for p in &l.props {
+                let c = l.centre(&p.room);
+                let b = p.aabb(c);
+                let mid = vec2((b.min.x + b.max.x) * 0.5 - cam.pos.x, (b.min.z + b.max.z) * 0.5 - cam.pos.z);
+                let dist = mid.length();
+                if dist < 1e-4 {
+                    continue;
+                }
+                let ang = (mid.dot(fwd) / dist).clamp(-1.0, 1.0).acos().to_degrees();
+                assert!(dist >= 1.9 || ang >= 50.0, "{} in {} sits {dist:.2} m in front of the {} camera ({ang:.0} deg off axis)", p.model, p.room, cam.room);
+            }
+        }
+    }
+
+    #[test]
     fn a_prop_box_turns_with_its_facing() {
         let p = PropDef { model: "x".into(), room: "control".into(), pos: vec3(1.0, 0.0, 1.0), face: 'e', solid: true, min: vec3(-0.5, 0.0, -0.2), max: vec3(0.5, 1.0, 0.3) };
         let b = p.aabb(Vec3::ZERO);

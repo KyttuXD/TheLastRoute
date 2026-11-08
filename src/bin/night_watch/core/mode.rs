@@ -150,6 +150,10 @@ pub trait Mode {
     fn feed_report(&self, _room: &str) -> Option<(Vec<String>, Vec<String>)> {
         None
     }
+    /// The `--shots` tour calls this before every sim step: put the shift in a protected state with the mode's own admin hooks
+    /// (god mode, no jumpscare, systems never broken, power / battery / air topped up, the clock wound back before the shift can
+    /// end). The AI still moves the hunters normally. Default: nothing to protect.
+    fn tour_protect(&mut self) {}
     /// Screen-space extras beyond the shared Hud (keypad, shop, descent panel, mask overlay).
     fn draw_overlay(&mut self, _ctx: &mut ShiftCtx) {}
     fn outcome(&self) -> Outcome;
@@ -170,6 +174,15 @@ pub trait Mode {
     fn admin_do(&mut self, _id: &str) {}
     fn debug_win(&mut self);
     fn debug_lose(&mut self);
+}
+
+/// The `--shots` tour keeps a shift from ending by time: from hour 4 on, the clock is wound back two hours.
+pub fn tour_clock_wrap(elapsed_ms: f64) -> f64 {
+    if elapsed_ms >= 4.0 * super::data::HOUR_MS {
+        elapsed_ms - 2.0 * super::data::HOUR_MS
+    } else {
+        elapsed_ms
+    }
 }
 
 /// Pure, window-less half. Used by --check, tests and the Mode wrapper.
@@ -270,6 +283,14 @@ mod tests {
         assert!(h.heading && h.id.is_empty());
         let b = AdminEntry::button("Win", "win");
         assert!(!b.heading && b.id == "win");
+    }
+
+    #[test]
+    fn the_tour_clock_winds_back_from_hour_four() {
+        let h = crate::core::HOUR_MS;
+        assert_eq!(tour_clock_wrap(3.9 * h), 3.9 * h);
+        assert_eq!(tour_clock_wrap(4.0 * h), 2.0 * h);
+        assert!(tour_clock_wrap(5.99 * h) < 4.0 * h);
     }
 
     #[test]

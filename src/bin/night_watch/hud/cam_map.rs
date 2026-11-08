@@ -6,6 +6,7 @@
 use super::status::*;
 use crate::core::{CamLayout, HudState};
 use macroquad::prelude::*;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const SIZE: Vec2 = Vec2::new(120.0, 92.0);
@@ -13,6 +14,25 @@ pub const BTN: Vec2 = Vec2::new(30.0, 13.0);
 pub const PAD: Vec2 = Vec2::new(3.0, 3.0);
 /// Top left of the map on the 480x270 canvas (bottom right, 146 from the right edge, 128 from the bottom).
 pub const MAP_POS: Vec2 = Vec2::new(334.0, 142.0);
+
+/// Clear space kept between two buttons, and between the lowest button and the YOU slot.
+pub const GAP: f32 = 3.0;
+/// The YOU slot: bottom centre of the panel, below every button.
+pub const YOU_POS: Vec2 = Vec2::new(60.0, 86.0);
+pub const YOU_HALF: Vec2 = Vec2::new(8.0, 3.5);
+
+/// Where button centres may sit: inside the panel and above the YOU slot (with clearance).
+fn btn_lo() -> Vec2 {
+    BTN * 0.5 + Vec2::ONE
+}
+fn btn_hi() -> Vec2 {
+    vec2(SIZE.x - BTN.x * 0.5 - 1.0, YOU_POS.y - YOU_HALF.y - GAP - BTN.y * 0.5)
+}
+
+/// The YOU slot rectangle in map pixels.
+pub fn you_rect() -> Rect {
+    Rect::new(YOU_POS.x - YOU_HALF.x, YOU_POS.y - YOU_HALF.y, YOU_HALF.x * 2.0, YOU_HALF.y * 2.0)
+}
 
 const MAP_INK: Color = Color::new(0.8, 1.0, 0.85, 1.0);
 const BLIP: Color = Color::new(1.0, 0.25, 0.2, 1.0);
@@ -39,8 +59,29 @@ fn find(v: &[(String, Vec2)], id: &str) -> Option<Vec2> {
     v.iter().find(|(r, _)| r == id).map(|(_, p)| *p)
 }
 
-/// CamMap.setup: scale the rooms into the box, place the office, then push the buttons apart (relax) or grid-pack them.
+thread_local! {
+    static CACHE: RefCell<Option<(String, MapGeometry)>> = const { RefCell::new(None) };
+}
+
+/// The geometry of a layout. Placing the buttons can search a little, so the last result is kept (draw and hit ask every frame).
 pub fn compute(layout: &CamLayout) -> MapGeometry {
+    let key = format!("{:?}", layout);
+    CACHE.with(|c| {
+        if let Some((k, g)) = &*c.borrow() {
+            if *k == key {
+                return g.clone();
+            }
+        }
+        let g = compute_fresh(layout);
+        *c.borrow_mut() = Some((key, g.clone()));
+        g
+    })
+}
+
+/// CamMap.setup: scale the rooms into the area above the YOU slot, push the buttons apart (relax) or grid-pack them, then
+/// nudge them off every line that would run through a button it does not end at. The office is always the YOU slot at the
+/// bottom centre.
+fn compute_fresh(layout: &CamLayout) -> MapGeometry {
     if layout.rooms.is_empty() {
         return MapGeometry::default();
     }
@@ -51,29 +92,9 @@ pub fn compute(layout: &CamLayout) -> MapGeometry {
         max_p = max_p.max(*p);
     }
     let span = (max_p - min_p).max(Vec2::ONE);
-    let office = match layout.office {
-        Some(o) => o,
-        None => {
-            let mut sx = 0.0;
-            let mut n = 0;
-            for e in &layout.entrances {
-                if let Some(p) = find(&layout.rooms, e) {
-                    sx += p.x;
-                    n += 1;
-                }
-            }
-            let x = if n > 0 { sx / (n as f32).max(1.0) } else { (min_p.x + max_p.x) * 0.5 };
-            vec2(x, max_p.y + span.y * 0.3)
-        }
-    };
-    min_p = min_p.min(office);
-    max_p = max_p.max(office);
-    let span = (max_p - min_p).max(Vec2::ONE);
-    let inner = SIZE - BTN - PAD * 2.0 - vec2(0.0, 6.0);
-    let origin = PAD + BTN * 0.5;
-    let to_map = |p: Vec2| origin + (p - min_p) / span * inner;
+    let (lo, hi) = (btn_lo(), btn_hi());
+    let to_map = |p: Vec2| lo + (p - min_p) / span * (hi - lo);
     let mut points: Vec<(String, Vec2)> = layout.rooms.iter().map(|(id, p)| (id.clone(), to_map(*p))).collect();
-    let office_point = to_map(office);
     let mut centres: Vec<(String, Vec2)> = Vec::new();
     for room in &layout.cams {
         if let Some(p) = find(&points, room) {
@@ -82,7 +103,36 @@ pub fn compute(layout: &CamLayout) -> MapGeometry {
             }
         }
     }
+    let orig: Vec<Vec2> = centres.iter().map(|c| c.1).collect();
     relax(&mut centres);
+    // the lines the map will draw: room links and the office links from the doorway rooms
+    let mut segs: Vec<Seg> = Vec::new();
+    {
+        let button_index = |room: &str| centres.iter().position(|(r, _)| r == room);
+        let end_of = |room: &str| -> Option<End> {
+            match button_index(room) {
+                Some(i) => Some(End::Btn(i)),
+                None => find(&points, room).map(End::Pt),
+            }
+        };
+        for (a, b) in &layout.edges {
+            if let (Some(ea), Some(eb)) = (end_of(a), end_of(b)) {
+                if matches!(ea, End::Btn(_)) || matches!(eb, End::Btn(_)) {
+                    segs.push((ea, eb));
+                }
+            }
+        }
+        for e in &layout.entrances {
+            if let Some(i) = button_index(e) {
+                segs.push((End::Btn(i), End::Pt(YOU_POS)));
+            }
+        }
+    }
+    let mut pos: Vec<Vec2> = centres.iter().map(|c| c.1).collect();
+    clear_lines(&mut pos, &orig, &segs);
+    for (c, p) in centres.iter_mut().zip(&pos) {
+        c.1 = *p;
+    }
     for (room, c) in &centres {
         if let Some(e) = points.iter_mut().find(|(r, _)| r == room) {
             e.1 = *c;
@@ -94,7 +144,249 @@ pub fn compute(layout: &CamLayout) -> MapGeometry {
         .iter()
         .filter_map(|room| find(&centres, room).map(|c| (room.clone(), c)))
         .collect();
-    MapGeometry { points, buttons, office: office_point }
+    MapGeometry { points, buttons, office: YOU_POS }
+}
+
+// ---- keeping lines clear of buttons ----------------------------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+enum End {
+    /// A camera button (index into the button list; it can move).
+    Btn(usize),
+    /// A fixed point (a room without a button, or the YOU slot).
+    Pt(Vec2),
+}
+type Seg = (End, End);
+
+fn end_at(e: End, pos: &[Vec2]) -> Vec2 {
+    match e {
+        End::Btn(i) => pos[i],
+        End::Pt(p) => p,
+    }
+}
+
+fn is_end(e: End, k: usize) -> bool {
+    matches!(e, End::Btn(i) if i == k)
+}
+
+/// Does the segment a-b cross the button centred at c (the button rectangle plus one pixel)?
+fn seg_hits_rect(a: Vec2, b: Vec2, c: Vec2) -> bool {
+    let (x0, x1) = (c.x - BTN.x * 0.5 - 1.0, c.x + BTN.x * 0.5 + 1.0);
+    let (y0, y1) = (c.y - BTN.y * 0.5 - 1.0, c.y + BTN.y * 0.5 + 1.0);
+    let d = b - a;
+    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+    for (p, q) in [(-d.x, a.x - x0), (d.x, x1 - a.x), (-d.y, a.y - y0), (d.y, y1 - a.y)] {
+        if p.abs() < 1e-9 {
+            if q < 0.0 {
+                return false;
+            }
+        } else {
+            let r = q / p;
+            if p < 0.0 {
+                if r > t1 {
+                    return false;
+                }
+                if r > t0 {
+                    t0 = r;
+                }
+            } else {
+                if r < t0 {
+                    return false;
+                }
+                if r < t1 {
+                    t1 = r;
+                }
+            }
+        }
+    }
+    t0 <= t1
+}
+
+/// How many (line, button) pairs have a line running through a button it does not end at.
+fn through(pos: &[Vec2], segs: &[Seg]) -> usize {
+    let mut v = 0;
+    for (ea, eb) in segs {
+        let (a, b) = (end_at(*ea, pos), end_at(*eb, pos));
+        for (k, c) in pos.iter().enumerate() {
+            if is_end(*ea, k) || is_end(*eb, k) {
+                continue;
+            }
+            if seg_hits_rect(a, b, *c) {
+                v += 1;
+            }
+        }
+    }
+    v
+}
+
+fn too_close(a: Vec2, b: Vec2) -> bool {
+    (a.x - b.x).abs() < BTN.x + GAP - 0.01 && (a.y - b.y).abs() < BTN.y + GAP - 0.01
+}
+
+fn overlap_count(pos: &[Vec2]) -> usize {
+    let mut n = 0;
+    for i in 0..pos.len() {
+        for j in (i + 1)..pos.len() {
+            if too_close(pos[i], pos[j]) {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// Pairs that are clearly east/west or north/south of each other in `orig` but not in `p`.
+fn order_viol(orig: &[Vec2], p: &[Vec2]) -> usize {
+    let n = p.len().min(orig.len());
+    let mut v = 0;
+    for i in 0..n {
+        for j in 0..n {
+            if orig[j].x - orig[i].x > BTN.x * 0.6 && p[i].x > p[j].x {
+                v += 1;
+            }
+            if orig[j].y - orig[i].y > BTN.y * 0.6 && p[i].y > p[j].y {
+                v += 1;
+            }
+        }
+    }
+    v
+}
+
+/// Move buttons off any line that runs through a button it does not end at. First a local pass (move one button to the
+/// nearest free spot that removes a crossing), then, when that is not enough, a small deterministic search. Moves never
+/// overlap buttons, never leave the allowed area and never worsen the west/east and north/south order.
+fn clear_lines(pos: &mut Vec<Vec2>, orig: &[Vec2], segs: &[Seg]) {
+    let n = pos.len();
+    if n == 0 || through(pos, segs) == 0 {
+        return;
+    }
+    let (lo, hi) = (btn_lo(), btn_hi());
+    for _ in 0..8 {
+        if through(pos, segs) == 0 {
+            break;
+        }
+        let mut bad: BTreeSet<usize> = BTreeSet::new();
+        for (ea, eb) in segs {
+            let (a, b) = (end_at(*ea, pos), end_at(*eb, pos));
+            for k in 0..n {
+                if is_end(*ea, k) || is_end(*eb, k) {
+                    continue;
+                }
+                if seg_hits_rect(a, b, pos[k]) {
+                    bad.insert(k);
+                    for e in [ea, eb] {
+                        if let End::Btn(i) = e {
+                            bad.insert(*i);
+                        }
+                    }
+                }
+            }
+        }
+        let mut improved = false;
+        for k in bad {
+            let cur = through(pos, segs);
+            if cur == 0 {
+                break;
+            }
+            let base_ov = order_viol(orig, pos);
+            let keep = pos[k];
+            let mut best: Option<Vec2> = None;
+            let mut best_v = cur;
+            let mut best_d = f32::MAX;
+            let mut x = lo.x;
+            while x <= hi.x + 0.01 {
+                let mut y = lo.y;
+                while y <= hi.y + 0.01 {
+                    let p = vec2(x, y);
+                    y += 2.0;
+                    if (0..n).any(|m| m != k && too_close(p, pos[m])) {
+                        continue;
+                    }
+                    pos[k] = p;
+                    let v = through(pos, segs);
+                    let d = (p - keep).length_squared();
+                    if (v < best_v || (v == best_v && best.is_some() && d < best_d)) && order_viol(orig, pos) <= base_ov {
+                        best = Some(p);
+                        best_v = v;
+                        best_d = d;
+                    }
+                }
+                x += 2.0;
+            }
+            match best {
+                Some(p) if best_v < cur => {
+                    pos[k] = p;
+                    improved = true;
+                }
+                _ => pos[k] = keep,
+            }
+        }
+        if !improved {
+            break;
+        }
+    }
+    if through(pos, segs) == 0 {
+        return;
+    }
+    // simulated annealing from the current spots, fixed seeds so the map is the same every time
+    let start = pos.clone();
+    let ov0 = order_viol(orig, &start);
+    let cost = |p: &[Vec2]| -> f32 {
+        let d: f32 = p.iter().zip(&start).map(|(a, b)| (*a - *b).length()).sum();
+        1000.0 * through(p, segs) as f32
+            + 1000.0 * overlap_count(p) as f32
+            + 1000.0 * order_viol(orig, p).saturating_sub(ov0) as f32
+            + d * 0.5
+    };
+    let rnd = |seed: &mut u32| -> f32 {
+        *seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        *seed as f32 / 4294967296.0
+    };
+    const STEPS: usize = 20000;
+    for attempt in 0..6u32 {
+        let mut seed = 12345u32.wrapping_add(attempt * 7919);
+        let mut cur = start.clone();
+        let mut cc = cost(&cur);
+        let mut best = cur.clone();
+        let mut bc = cc;
+        let mut found: Option<usize> = None;
+        for it in 0..STEPS {
+            let t = 200.0 * (1.0 - it as f32 / STEPS as f32) + 0.5;
+            let k = ((rnd(&mut seed) * n as f32) as usize).min(n - 1);
+            let old = cur[k];
+            let p = if rnd(&mut seed) < 0.3 {
+                vec2(lo.x + rnd(&mut seed) * (hi.x - lo.x), lo.y + rnd(&mut seed) * (hi.y - lo.y))
+            } else {
+                vec2(
+                    (old.x + (rnd(&mut seed) - 0.5) * 30.0).clamp(lo.x, hi.x),
+                    (old.y + (rnd(&mut seed) - 0.5) * 24.0).clamp(lo.y, hi.y),
+                )
+            };
+            cur[k] = p;
+            let c = cost(&cur);
+            if c <= cc || rnd(&mut seed) < ((cc - c) / t).exp() {
+                cc = c;
+                if c < bc {
+                    bc = c;
+                    best = cur.clone();
+                    if bc < 1000.0 && found.is_none() {
+                        found = Some(it);
+                    }
+                }
+            } else {
+                cur[k] = old;
+            }
+            if let Some(f) = found {
+                if it > f + 1500 {
+                    break;
+                }
+            }
+        }
+        if bc < 1000.0 {
+            *pos = best;
+            return;
+        }
+    }
 }
 
 // ---- the layout from the nav graph ---------------------------------------------------------------------------------------------
@@ -219,12 +511,13 @@ pub fn from_nav(base: &CamLayout, nav_json: &str, alias: &[(String, String)]) ->
     }
     let edges: Vec<(String, String)> = edge_set.iter().map(|(i, j)| (base.cams[*i].clone(), base.cams[*j].clone())).collect();
 
-    let mut entrances: Vec<String> = base.entrances.iter().filter(|e| rooms.iter().any(|(r, _)| r == *e)).cloned().collect();
-    for e in derived_entrances {
-        if !entrances.contains(&e) {
-            entrances.push(e);
-        }
-    }
+    // the real doorway rooms (those that reach the office side through the nav graph) win; the mode's own list is only
+    // the fallback for a nav graph without office links
+    let entrances: Vec<String> = if derived_entrances.is_empty() {
+        base.entrances.iter().filter(|e| rooms.iter().any(|(r, _)| r == *e)).cloned().collect()
+    } else {
+        derived_entrances
+    };
 
     let ventish = |s: &str| {
         let l = s.to_lowercase();
@@ -252,8 +545,8 @@ pub fn from_nav(base: &CamLayout, nav_json: &str, alias: &[(String, String)]) ->
 }
 
 fn relax(c: &mut Vec<(String, Vec2)>) {
-    let lo = BTN * 0.5 + Vec2::ONE;
-    let hi = SIZE - BTN * 0.5 - Vec2::ONE;
+    let lo = btn_lo();
+    let hi = btn_hi();
     let n = c.len();
     for _ in 0..200 {
         let mut moved = false;
@@ -262,8 +555,8 @@ fn relax(c: &mut Vec<(String, Vec2)>) {
                 let a = c[i].1;
                 let b = c[j].1;
                 let d = b - a;
-                let over_x = BTN.x + 1.0 - d.x.abs();
-                let over_y = BTN.y + 1.0 - d.y.abs();
+                let over_x = BTN.x + GAP - d.x.abs();
+                let over_y = BTN.y + GAP - d.y.abs();
                 if over_x > 0.0 && over_y > 0.0 {
                     moved = true;
                     if over_y < over_x {
@@ -294,7 +587,7 @@ fn overlaps(c: &[(String, Vec2)]) -> bool {
     for i in 0..c.len() {
         for j in (i + 1)..c.len() {
             let d = c[i].1 - c[j].1;
-            if d.x.abs() < BTN.x && d.y.abs() < BTN.y {
+            if too_close(c[i].1, c[j].1) {
                 return true;
             }
         }
@@ -318,15 +611,12 @@ fn pack(c: &mut Vec<(String, Vec2)>) {
             j -= 1;
         }
     }
-    let cols = (((SIZE.x - 2.0) / (BTN.x + 1.0)).floor() as usize).max(1);
+    let cols = (((SIZE.x - 2.0) / (BTN.x + GAP)).floor() as usize).max(1);
     let rows = (n + cols - 1) / cols;
     let step_x = if cols > 1 { (SIZE.x - BTN.x - 2.0) / ((cols - 1) as f32).max(1.0) } else { 0.0 };
-    let step_y = if rows > 1 {
-        (BTN.y + 2.0).min((SIZE.y - BTN.y - 2.0) / ((rows - 1) as f32).max(1.0))
-    } else {
-        0.0
-    };
-    let cell = |col: usize, row: usize| vec2(1.0 + BTN.x * 0.5 + col as f32 * step_x, 1.0 + BTN.y * 0.5 + row as f32 * step_y);
+    let (lo, hi) = (btn_lo(), btn_hi());
+    let step_y = if rows > 1 { (BTN.y + GAP).min((hi.y - lo.y) / ((rows - 1) as f32).max(1.0)) } else { 0.0 };
+    let cell = |col: usize, row: usize| vec2(lo.x + col as f32 * step_x, lo.y + row as f32 * step_y);
     let mut reading = vec![Vec2::ZERO; n];
     for (i, idx) in order.iter().enumerate() {
         reading[*idx] = cell(i % cols, i / cols);
@@ -342,21 +632,7 @@ fn pack(c: &mut Vec<(String, Vec2)>) {
             column[*idx] = cell(ci.min(cols - 1), ri);
         }
     }
-    let violations = |p: &[Vec2]| -> usize {
-        let mut v = 0;
-        for i in 0..n {
-            for j in 0..n {
-                if orig[j].x - orig[i].x > BTN.x * 0.6 && p[i].x > p[j].x {
-                    v += 1;
-                }
-                if orig[j].y - orig[i].y > BTN.y * 0.6 && p[i].y > p[j].y {
-                    v += 1;
-                }
-            }
-        }
-        v
-    };
-    let pick = if violations(&column) < violations(&reading) { column } else { reading };
+    let pick = if order_viol(&orig, &column) < order_viol(&orig, &reading) { column } else { reading };
     for (i, e) in c.iter_mut().enumerate() {
         e.1 = pick[i];
     }
@@ -461,6 +737,10 @@ pub fn draw(st: &HudState, mouse: Vec2, time: f64) {
             dot(at(pos), 2.2, BLIP);
         }
     }
+    let yr = you_rect();
+    let vy = Rect::new(MAP_POS.x + yr.x, MAP_POS.y + yr.y, yr.w, yr.h);
+    fill(vy, Color::new(0.04, 0.08, 0.06, 0.95));
+    stroke(vy, Color::new(0.5, 0.38, 0.14, 1.0), 1.0);
     vtext_center("YOU", MAP_POS.x + geo.office.x, MAP_POS.y + geo.office.y - 3.0, 6.0, AMBER);
 }
 
@@ -686,6 +966,108 @@ mod tests {
         let mut base = base_for(src);
         base.cams.push("nowhere".to_string());
         assert!(from_nav(&base, src, &[]).rooms.is_empty());
+    }
+
+    /// The layout a mode hands over, with the entrances a mode lists itself when its nav graph has no office links (Day
+    /// Shift: the two gantries and the yard).
+    fn layout_for(name: &str, src: &str) -> CamLayout {
+        let mut base = base_for(src);
+        if name == "dayshift" {
+            base.entrances = vec!["gantryL".into(), "gantryR".into(), "yard".into()];
+        }
+        from_nav(&base, src, &[])
+    }
+
+    fn apart(a: Vec2, b: Vec2) -> bool {
+        (a.x - b.x).abs() >= BTN.x + GAP - 0.01 || (a.y - b.y).abs() >= BTN.y + GAP - 0.01
+    }
+
+    #[test]
+    fn the_you_slot_is_the_bottom_centre_and_never_touches_a_button() {
+        let you = you_rect();
+        assert!((you.x + you.w * 0.5 - SIZE.x * 0.5).abs() < 0.01 && you.y + you.h <= SIZE.y);
+        for (name, src) in NAVS {
+            let l = layout_for(name, src);
+            if l.cams.is_empty() {
+                continue;
+            }
+            let g = compute(&l);
+            assert_eq!(g.office, YOU_POS, "{name}: the office is not the YOU slot");
+            for (room, c) in &g.buttons {
+                let r = button_rect(*c);
+                assert!(r.y + r.h + GAP <= you.y + 0.01, "{name}: {room} is too close to YOU");
+                assert!(r.x >= 0.0 && r.x + r.w <= SIZE.x && r.y >= 0.0, "{name}: {room} leaves the panel");
+            }
+        }
+    }
+
+    #[test]
+    fn buttons_keep_a_gap_in_every_mode() {
+        for (name, src) in NAVS {
+            let l = layout_for(name, src);
+            let g = compute(&l);
+            for i in 0..g.buttons.len() {
+                for j in (i + 1)..g.buttons.len() {
+                    assert!(apart(g.buttons[i].1, g.buttons[j].1), "{name}: {} and {} are too close", g.buttons[i].0, g.buttons[j].0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_line_runs_through_a_button_it_does_not_end_at() {
+        for (name, src) in NAVS {
+            let l = layout_for(name, src);
+            let g = compute(&l);
+            let mut lines: Vec<(String, Vec2, Vec2)> = Vec::new();
+            for (a, b) in &l.edges {
+                if let (Some(pa), Some(pb)) = (g.point(a), g.point(b)) {
+                    lines.push((format!("{a}-{b}"), pa, pb));
+                }
+            }
+            for e in &l.entrances {
+                if let Some(p) = g.point(e) {
+                    lines.push((format!("{e}-YOU"), p, g.office));
+                }
+            }
+            for (label, pa, pb) in &lines {
+                for (room, c) in &g.buttons {
+                    if *c == *pa || *c == *pb {
+                        continue;
+                    }
+                    assert!(!seg_hits_rect(*pa, *pb, *c), "{name}: line {label} runs through {room}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_doorway_rooms_link_to_you() {
+        let src = NAVS[0].1; // classic: the two doors open on closet and corner
+        let l = from_nav(&base_for(src), src, &[]);
+        assert_eq!(l.entrances, vec!["closet".to_string(), "corner".to_string()]);
+        let src = NAVS[2].1; // lure: the two vent mouths
+        let l = from_nav(&base_for(src), src, &[]);
+        assert!(l.entrances.contains(&"ventl".to_string()) && l.entrances.contains(&"ventr".to_string()));
+    }
+
+    #[test]
+    fn a_line_through_a_button_is_seen_and_a_line_beside_it_is_not() {
+        let c = vec2(60.0, 40.0);
+        assert!(seg_hits_rect(vec2(60.0, 10.0), vec2(60.0, 80.0), c));
+        assert!(!seg_hits_rect(vec2(10.0, 10.0), vec2(10.0, 80.0), c));
+        assert!(!seg_hits_rect(vec2(60.0, 10.0), vec2(60.0, 20.0), c));
+    }
+
+    #[test]
+    fn a_line_in_the_way_is_cleared() {
+        // three rooms in a column: a-c would run through b
+        let mut l = layout(&[("a", 0.0, 0.0), ("b", 0.0, 10.0), ("c", 0.0, 20.0)], &["a", "b", "c"]);
+        l.edges = vec![("a".into(), "c".into())];
+        let g = compute(&l);
+        let (a, b, c) = (g.button("a").unwrap(), g.button("b").unwrap(), g.button("c").unwrap());
+        assert!(!seg_hits_rect(a, c, b), "the a-c line still runs through b");
+        assert!(apart(a, b) && apart(b, c) && apart(a, c));
     }
 
     #[test]

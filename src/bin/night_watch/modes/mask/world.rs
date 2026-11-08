@@ -10,7 +10,7 @@
 //!
 //! Differences from the Godot scene, all to stop hunters and ducts clipping through things: the two show-floor pillars sit
 //! 3 m nearer the south wall (off the prize corner's lane), the ducts start outside the office's side wall, the vent hub
-//! is 3.0 m high (a 2.58 m hunter fits under its pipes) and the Show Stage has a step up at its front.
+//! is a 2.3 m crawl space (a 2.1 m hunter fits under its pipes) and the Show Stage has a step up at its front.
 
 use super::data::{map, rules, side_of_room};
 use super::props;
@@ -463,7 +463,7 @@ fn wing(out: &mut Vec<Group>) {
     }
 
     // the vent hub (the hunters' nest): pipes, a sign, crates (props)
-    let hub_h = 3.0;
+    let hub_h = 2.3;
     let hw = [0.9f32, 0.9, 1.1];
     let mut hub = group("WVentHub", 0.0, 0.0, 0.0);
     floor(&mut hub, -14.0, 14.0, 3.0, 10.0, tint(0.8, 0.8, 1.0), "FloorHub", 0.0);
@@ -472,28 +472,96 @@ fn wing(out: &mut Vec<Group>) {
     wall(&mut hub, true, 3.0, -14.0, 14.0, &[(-13.7, -11.3), (-8.9, -7.1), (7.1, 8.9), (11.3, 13.7)], hw, "WallHub", hub_h);
     wall(&mut hub, false, -14.0, 3.0, 10.0, &[], hw, "WallHub", hub_h);
     wall(&mut hub, false, 14.0, 3.0, 10.0, &[], hw, "WallHub", hub_h);
+    // the crawl space is lower than the halls that open into it: a lintel closes the gap above each doorway
+    for (g0, g1) in [(-13.7f32, -11.3f32), (-8.9, -7.1), (7.1, 8.9), (11.3, 13.7)] {
+        bx(&mut hub, "WallHub", "concrete", hw, [g1 - g0, H - hub_h, 0.2], [(g0 + g1) * 0.5, (H + hub_h) * 0.5, 3.0]);
+    }
     for i in 0..3 {
-        bx(&mut hub, "PipeHub", "metal", [1.0, 1.0, 1.0], [26.0, 0.15, 0.15], [0.0, 2.75, 4.5 + i as f32 * 2.0]);
+        bx(&mut hub, "PipeHub", "metal", [1.0, 1.0, 1.0], [26.0, 0.15, 0.15], [0.0, hub_h - 0.1, 4.5 + i as f32 * 2.0]);
     }
     bx(&mut hub, "SignHub", "label", tint(1.4, 1.0, 0.5), [3.0, 0.4, 0.1], [0.0, 2.0, 9.85]);
     wing_groups.push(hub);
 
-    // the two air vent ducts: from the hub north, then east / west to the office's side vents (low, dark, a ribbed tube)
+    // the two air vent ducts: from the hub north, then east / west to the office's side vents. Each is its own ribbed tube
+    // (never mirror images): the left one is cold steel with a roof that dips in the middle and a slatted grate, the right one is rust
+    // with a kinked wall run and a barred grate. The axis (z 0.6, where the hunters walk) is the same for both.
     for side in [-1.0f32, 1.0] {
-        let tag = if side < 0.0 { "L" } else { "R" };
+        let left = side < 0.0;
+        let tag = if left { "L" } else { "R" };
         let (x0, x1) = (side * 3.5, side * 8.8);
         let (xa, xb) = (x0.min(x1), x0.max(x1));
         let mid = (xa + xb) * 0.5;
         let len = xb - xa;
+        let (floor_t, side_t, top_t, rib_t) = if left {
+            (tint(1.5, 1.6, 1.8), tint(1.3, 1.4, 1.65), tint(1.1, 1.2, 1.45), tint(1.8, 1.85, 2.0))
+        } else {
+            (tint(1.8, 1.45, 1.15), tint(1.6, 1.25, 1.0), tint(1.3, 1.0, 0.8), tint(1.9, 1.5, 1.1))
+        };
         let mut d = group(&format!("WDuct{tag}"), 0.0, 0.0, 0.0);
-        bx(&mut d, "DuctFloor", "metal", tint(1.7, 1.7, 1.85), [len, 0.1, 1.6], [mid, 0.05, 0.6]);
-        bx(&mut d, "DuctSide", "metal", tint(1.5, 1.5, 1.65), [len, 1.8, 0.1], [mid, 0.9, -0.2]);
-        bx(&mut d, "DuctSide", "metal", tint(1.5, 1.5, 1.65), [len, 1.8, 0.1], [mid, 0.9, 1.4]);
-        bx(&mut d, "DuctTop", "metal", tint(1.3, 1.3, 1.45), [len, 0.1, 1.8], [mid, 1.85, 0.6]);
-        bx(&mut d, "DuctFloor", "metal", tint(1.7, 1.7, 1.85), [1.6, 0.1, 2.0], [side * 8.0, 0.05, 2.2]);
+        bx(&mut d, "DuctFloor", "metal", floor_t, [len, 0.1, 1.6], [mid, 0.05, 0.6]);
+        bx(&mut d, "DuctFloor", "metal", floor_t, [1.6, 0.1, 2.0], [side * 8.0, 0.05, 2.2]);
         bx(&mut d, "DuctEnd", "metal", tint(1.1, 1.1, 1.25), [0.1, 1.8, 1.7], [side * 8.9, 0.9, 0.6]);
-        for i in 0..5 {
-            bx(&mut d, "DuctRib", "metal", tint(1.7, 1.7, 1.85), [0.08, 0.12, 1.7], [side * (3.9 + i as f32 * 1.0), 1.75, 0.6]);
+        if left {
+            // straight walls; the roof steps down in the middle (a bend in the vertical plane): high, low, lower, high
+            for z in [-0.2f32, 1.4] {
+                bx(&mut d, "DuctSide", "metal", side_t, [len, 1.8, 0.1], [mid, 0.9, z]);
+            }
+            for (a, b, h) in [(3.5f32, 5.8f32, 1.85f32), (5.8, 7.0, 1.6), (7.0, 8.8, 1.85)] {
+                bx(&mut d, "DuctTop", "metal", top_t, [b - a, 0.1, 1.8], [side * (a + b) * 0.5, h, 0.6]);
+            }
+            for x in [5.8f32, 7.0] {
+                bx(&mut d, "DuctStep", "metal", tint(1.0, 1.05, 1.25), [0.08, 0.35, 1.7], [side * x, 1.75, 0.6]);
+            }
+            // rings: a frame every 0.8 m round the tube, a pipe along the left wall and a hanging cable
+            for i in 0..6 {
+                let x = side * (3.9 + i as f32 * 0.8);
+                bx(&mut d, "DuctRib", "metal", rib_t, [0.08, 0.12, 1.7], [x, 1.7, 0.6]);
+                for z in [-0.16f32, 1.36] {
+                    bx(&mut d, "DuctRib", "metal", rib_t, [0.08, 1.7, 0.1], [x, 0.9, z]);
+                }
+            }
+            bx(&mut d, "DuctPipe", "metal", tint(1.0, 1.1, 1.4), [len - 0.4, 0.12, 0.12], [mid, 1.1, 1.25]);
+            bx(&mut d, "DuctCable", "fabric", tint(0.5, 0.5, 0.55), [0.05, 0.5, 0.05], [side * 6.0, 1.4, 0.6]);
+        } else {
+            // a flat roof, but the walls kink: panels turned a few degrees one way and the other (a bend in the plan)
+            bx(&mut d, "DuctTop", "metal", top_t, [len, 0.1, 1.8], [mid, 1.85, 0.6]);
+            for (i, a) in [3.5f32, 4.65, 5.8, 6.95].iter().enumerate() {
+                let turn = if i % 2 == 0 { 0.2f32 } else { -0.2 };
+                let c = side * (a + 0.6);
+                for (z, t) in [(-0.2f32, turn), (1.4, -turn)] {
+                    let mut p = Cube::new("DuctSide", vec3(1.25, 1.8, 0.1), vec3(c, 0.9, z)).tint(side_t).kind("metal").rot_y(t);
+                    p.solid = false;
+                    d.add(p);
+                }
+            }
+            bx(&mut d, "DuctSide", "metal", side_t, [0.9, 1.8, 0.1], [side * 8.35, 0.9, -0.2]);
+            bx(&mut d, "DuctSide", "metal", side_t, [0.9, 1.8, 0.1], [side * 8.35, 0.9, 1.4]);
+            // collars: a thick band every 1.3 m with a thin ring between
+            for i in 0..4 {
+                let x = side * (4.1 + i as f32 * 1.3);
+                bx(&mut d, "DuctRib", "metal", rib_t, [0.22, 0.14, 1.7], [x, 1.8, 0.6]);
+                bx(&mut d, "DuctRib", "metal", rib_t, [0.06, 0.14, 1.7], [x + side * 0.65, 1.8, 0.6]);
+            }
+            bx(&mut d, "DuctDrip", "metal", tint(1.5, 1.2, 0.9), [0.1, 1.2, 0.1], [side * 7.0, 1.2, 1.25]);
+            bx(&mut d, "DuctCable", "fabric", tint(0.5, 0.45, 0.4), [len - 0.6, 0.05, 0.05], [mid, 1.65, -0.1]);
+        }
+        // the grate at the office end: a frame, and bars (slats for the left one, upright bars for the right one)
+        let gx = side * 3.62;
+        let grate_t = tint(1.9, 1.9, 2.0);
+        bx(&mut d, "GrateFrame", "metal", grate_t, [0.1, 0.1, 1.5], [gx, 1.65, 0.6]);
+        bx(&mut d, "GrateFrame", "metal", grate_t, [0.1, 0.1, 1.5], [gx, 0.15, 0.6]);
+        for z in [-0.1f32, 1.3] {
+            bx(&mut d, "GrateFrame", "metal", grate_t, [0.1, 1.6, 0.1], [gx, 0.9, z]);
+        }
+        if left {
+            for i in 0..8 {
+                bx(&mut d, "GrateBar", "metal", grate_t, [0.06, 0.07, 1.3], [gx, 0.3 + i as f32 * 0.19, 0.6]);
+            }
+        } else {
+            for i in 0..7 {
+                bx(&mut d, "GrateBar", "metal", grate_t, [0.06, 1.5, 0.07], [gx, 0.9, 0.0 + i as f32 * 0.2]);
+            }
+            bx(&mut d, "GrateBar", "metal", grate_t, [0.06, 0.07, 1.3], [gx, 0.9, 0.6]);
         }
         wing_groups.push(d);
         let mut gl = group(&format!("GlintDuct{tag}"), side * 5.4, 0.9, 0.6);
@@ -842,6 +910,49 @@ mod tests {
         // ordinary cameras are always bright
         assert!((feed_lights("ballroom", Lit::default()).ambient[0] - normal.ambient[0]).abs() < 1e-6);
         assert!(feed_lights("hall", Lit { l: true, r: true, h: true }).omni.is_empty());
+    }
+
+    #[test]
+    fn the_two_ducts_are_different_ribbed_tubes_with_a_grate_at_the_office_end() {
+        let p = parts();
+        let l = find(&p, "WDuctL").expect("left duct");
+        let r = find(&p, "WDuctR").expect("right duct");
+        let sig = |g: &Group| {
+            let mut v: Vec<String> = g.cubes.iter().map(|c| format!("{}{:?}{:?}{:.2}", c.name, c.size, c.tint, c.rot_y)).collect();
+            v.sort();
+            v
+        };
+        assert_ne!(sig(l), sig(r), "the ducts are not mirror images");
+        for (g, side) in [(l, -1.0f32), (r, 1.0)] {
+            assert!(g.cubes.iter().filter(|c| c.name == "DuctRib").count() >= 8, "ribbed");
+            assert!(g.cubes.iter().filter(|c| c.name == "GrateBar").count() >= 5, "a grate");
+            for c in g.cubes.iter().filter(|c| c.name.starts_with("Grate")) {
+                assert!((c.pos.x - side * 3.62).abs() < 1e-4 && c.pos.x.abs() > 3.5, "the grate stands at the office end");
+            }
+        }
+        // the right duct's walls kink; the left duct's roof dips
+        assert!(r.cubes.iter().any(|c| c.name == "DuctSide" && c.rot_y.abs() > 0.05));
+        assert!(l.cubes.iter().any(|c| c.name == "DuctStep"));
+        // the hunters walk the axis z 0.6: no wall of either duct crosses it
+        for g in [l, r] {
+            for c in g.cubes.iter().filter(|c| c.name == "DuctSide") {
+                assert!((c.pos.z - 0.6).abs() > 0.6, "a wall stands in the hunters' lane at z {}", c.pos.z);
+            }
+        }
+    }
+
+    #[test]
+    fn the_vent_hub_is_a_low_crawl_space_with_its_camera_under_the_ceiling() {
+        let p = parts();
+        let hub = find(&p, "WVentHub").expect("hub");
+        let ceil = hub.cubes.iter().find(|c| c.name == "CeilingShow").expect("hub ceiling");
+        let under = ceil.pos.y - ceil.size.y * 0.5;
+        assert!(under < 2.5 && under > 2.1, "a crawl space a hunter (2.1 m) just fits under: {under}");
+        let cam = map().camera("crawl").expect("crawl camera");
+        assert!(cam.mount.y + 0.3 <= under, "the mount and its body stay under the ceiling");
+        assert!(cam.mount.z > 3.0 && cam.mount.z < 10.0 && cam.mount.x.abs() < 14.0, "inside the hub");
+        // the halls that open into the hub are closed above the doorway
+        assert!(hub.cubes.iter().filter(|c| c.name == "WallHub" && (c.pos.z - 3.0).abs() < 1e-4 && c.pos.y > under).count() >= 4);
     }
 
     #[test]

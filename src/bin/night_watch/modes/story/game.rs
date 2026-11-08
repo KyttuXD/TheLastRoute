@@ -198,7 +198,7 @@ impl StoryGame {
                 Who::Quenelle => ("lift".to_string(), l.in_car),
             };
             crowd.add_at(who.id(), &room, pos, Some(look));
-            let mut actor = ctx.hunters.actor(who.id());
+            let mut actor = ctx.hunters.actor_in(who.id(), "story");
             if let Some(a) = actor.as_mut() {
                 a.visible = false;
                 a.pos = pos;
@@ -930,6 +930,27 @@ impl Mode for StoryGame {
         }
         self.draw_hunters(&*ctx.gfx, &lights, cam.pos, false);
         set_default_camera();
+    }
+
+    fn feed_report(&self, room: &str) -> Option<(Vec<String>, Vec<String>)> {
+        let crowd = self.crowd.as_ref()?;
+        let inside: Vec<String> = crowd.visible_in(room).iter().map(|a| a.id.clone()).collect();
+        // the feed pass shows a hunter whose base level is above 0 and who is not hidden in a duct
+        let drawn = inside
+            .iter()
+            .filter(|id| {
+                self.slots.iter().any(|s| s.who.id() == id.as_str() && self.sim.base_level(s.who) > 0 && s.actor.as_ref().map_or(false, |a| !a.hidden || Actor::is_duct_room(room)))
+            })
+            .cloned()
+            .collect();
+        Some((inside, drawn))
+    }
+
+    fn tour_protect(&mut self) {
+        self.sim.god = true;
+        self.sim.infinite_beacon = true;
+        self.admin_no_scare = true;
+        self.sim.elapsed = crate::core::tour_clock_wrap(self.sim.elapsed);
     }
 
     fn draw_overlay(&mut self, ctx: &mut ShiftCtx) {

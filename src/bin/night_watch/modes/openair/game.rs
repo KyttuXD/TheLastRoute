@@ -468,7 +468,7 @@ impl Mode for OpenAirMode {
         // the hunters
         self.actors.clear();
         for id in self.cast.ids().to_vec() {
-            if let Some(mut actor) = ctx.hunters.actor(id) {
+            if let Some(mut actor) = ctx.hunters.actor_in(id, "openair") {
                 actor.visible = false;
                 self.actors.push(Slot { id, actor, driver: ActorDriver::new() });
             }
@@ -647,6 +647,36 @@ impl Mode for OpenAirMode {
         clear_background(SKY);
         self.render_set(ctx, pos, true);
         set_default_camera();
+    }
+
+    fn feed_report(&self, room: &str) -> Option<(Vec<String>, Vec<String>)> {
+        let cam = self.map.camera(room)?;
+        let mut inside: Vec<String> = Vec::new();
+        for r in &cam.rooms {
+            for a in self.cast.crowd.visible_in(r) {
+                if !inside.contains(&a.id) {
+                    inside.push(a.id.clone());
+                }
+            }
+        }
+        // the set draws every actor that is on duty (or revealed) and not hidden
+        let drawn = inside
+            .iter()
+            .filter(|id| self.actors.iter().any(|s| s.id == id.as_str() && (self.sim.hunter_on(s.id) || self.admin_reveal) && !s.actor.hidden))
+            .cloned()
+            .collect();
+        Some((inside, drawn))
+    }
+
+    fn tour_protect(&mut self) {
+        self.sim.god = true;
+        self.sim.infinite_light = true;
+        self.admin_no_scare = true;
+        let e = crate::core::tour_clock_wrap(self.sim.elapsed);
+        if e != self.sim.elapsed {
+            self.sim.elapsed = e;
+            self.hour_seen = hour_index(e);
+        }
     }
 
     fn outcome(&self) -> Outcome {

@@ -548,7 +548,7 @@ pub fn hub_parts(skin_idx: usize) -> HubParts {
                 dress_transit(&mut dress, &mut props, a, sp, k, c);
             } else {
                 // the room's number turns the kit, so no two rooms carry the same three things
-                dress_spot(&mut dress, &mut props, sk, sp, k + a.cam, c);
+                dress_spot(&mut dress, &mut props, sk, sp, k + ai, ai, c);
             }
         }
     }
@@ -612,8 +612,16 @@ fn accent(g: &mut Group, a: &Area, ai: usize) {
     let (w, l) = a.size();
     let col = room_colour(&a.map);
     // the runner follows the long side of the room
-    let size = if l > w { [1.0, 0.02, (l * 0.6).min(14.0)] } else { [(w * 0.6).min(14.0), 0.02, 1.0] };
-    put(g, &format!("RunnerRoom{ai}"), "fabric", col, size, [c.x, 0.012, c.z]);
+    // its width, length and side shift follow the room's index, so no two rooms lay the same rug
+    let rw = 0.8 + 0.15 * (ai % 4) as f32;
+    let rl = 0.45 + 0.05 * (ai % 3) as f32;
+    let shift = ((ai % 3) as f32 - 1.0) * 0.4;
+    let (size, pos) = if l > w {
+        ([rw, 0.02, (l * rl).min(14.0)], [c.x + shift, 0.012, c.z])
+    } else {
+        ([(w * rl).min(14.0), 0.02, rw], [c.x, 0.012, c.z + shift])
+    };
+    put(g, &format!("RunnerRoom{ai}"), "fabric", col, size, pos);
     if let Some((sx, sz)) = a.spots.first() {
         // hung on the nearer long wall of the room, never in mid air over the lane
         let wz = banner_wall_z(a, *sz);
@@ -654,9 +662,14 @@ fn dress_transit(g: &mut Group, props: &mut Vec<PropPlace>, a: &Area, sp: Vec3, 
 }
 
 /// One dressing spot of a room (the same three corner spots as Godot's `_dress`; the lanes along the middle stay clear).
-fn dress_spot(g: &mut Group, props: &mut Vec<PropPlace>, sk: &Skin, sp: Vec3, k: usize, centre: Vec3) {
-    let p = |x: f32, y: f32, z: f32| [sp.x + x, y, sp.z + z];
-    let b = |i: usize| BALLOON[i % 5];
+fn dress_spot(g: &mut Group, props: &mut Vec<PropPlace>, sk: &Skin, sp: Vec3, k: usize, v: usize, centre: Vec3) {
+    // v is the room's index: it mirrors the pieces across x and z (so rooms that share a kit pick still read differently),
+    // shifts the colours and changes how many pieces a cluster has
+    let mx = if v % 2 == 0 { 1.0f32 } else { -1.0 };
+    let mz = if (v / 2) % 2 == 0 { 1.0f32 } else { -1.0 };
+    let n3 = 2 + v % 3;
+    let p = |x: f32, y: f32, z: f32| [sp.x + x * mx, y, sp.z + z * mz];
+    let b = |i: usize| BALLOON[(i + v) % 5];
     match sk.kit {
         "bench" => {
             match k % 3 {
@@ -792,12 +805,13 @@ fn dress_spot(g: &mut Group, props: &mut Vec<PropPlace>, sk: &Skin, sp: Vec3, k:
             0 => {
                 put(g, "GroundCamp", "fabric", [0.7, 0.9, 0.6], [2.6, 0.05, 2.0], p(0.0, 0.025, 0.0));
                 for sx in [-0.75f32, 0.75] {
-                    put(g, "TentCamp", "fabric", [1.5 * (1.0 - 0.15 * (sx > 0.0) as i32 as f32), 0.9, 0.4], [0.9, 1.0, 1.4], p(sx, 0.55, 0.0));
+                    let t = b(k + (sx > 0.0) as usize);
+                    put(g, "TentCamp", "fabric", [t[0] * 0.8, t[1] * 0.7 + 0.3, t[2] * 0.5], [0.9, 0.8 + 0.1 * n3 as f32, 1.4], p(sx, 0.4 + 0.05 * n3 as f32, 0.0));
                 }
             }
             1 => {
-                for i in 0..3 {
-                    put(g, "LogCamp", "wood", [1.2, 0.8, 0.5], [1.2, 0.3, 0.3], p(0.0, 0.15, (i as f32 - 1.0) * 0.5));
+                for i in 0..n3 + 1 {
+                    put(g, "LogCamp", "wood", [1.2, 0.8, 0.5], [1.2, 0.3, 0.3], p(0.0, 0.15 + 0.3 * (i / 3) as f32, (i % 3) as f32 * 0.5 - 0.5 + 0.12 * (v % 3) as f32));
                 }
             }
             _ => {
@@ -1031,6 +1045,47 @@ mod tests {
                     assert_ne!(sigs[x].1, sigs[y].1, "skin {i}: {} and {} look the same", sigs[x].0, sigs[y].0);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn the_two_halls_and_the_two_end_rooms_are_filmed_from_different_headings() {
+        // the east cameras sit one hall-width from the west ones; the same aim would be the same picture
+        let heading = |id: &str| {
+            let (p, t) = camera_transform(id);
+            (t.x - p.x).atan2(t.z - p.z).to_degrees()
+        };
+        for (a, b) in [("westhall", "easthall"), ("closet", "corner")] {
+            let d = (heading(a) - heading(b)).abs();
+            let d = d.min(360.0 - d);
+            assert!(d > 15.0, "{a} and {b} look the same way ({d} degrees apart)");
+        }
+        for (i, a) in map().areas.iter().enumerate() {
+            for b in &map().areas[i + 1..] {
+                let same_aim = a.cam_look - a.cam_pos == b.cam_look - b.cam_pos;
+                assert!(!same_aim, "{} and {} share an aim", a.id, b.id);
+            }
+        }
+    }
+
+    #[test]
+    fn rooms_that_share_a_camp_pick_still_hold_different_pieces() {
+        let camp = skin::index_of("camp");
+        let parts = hub_parts(camp);
+        let dress = parts.groups.iter().find(|g| g.name == "HubDress").unwrap();
+        let sig = |id: &str| {
+            let a = map().areas.iter().find(|a| a.id == id).unwrap();
+            let mut v: Vec<String> = dress
+                .cubes
+                .iter()
+                .filter(|c| a.contains(c.pos.x, c.pos.z) && !c.name.starts_with("Runner") && !c.name.starts_with("Banner"))
+                .map(|c| format!("{}{:?}{:?}", c.name.trim_end_matches(char::is_numeric), c.size, c.tint))
+                .collect();
+            v.sort();
+            v
+        };
+        for (a, b) in [("westhall", "easthall"), ("closet", "corner")] {
+            assert_ne!(sig(a), sig(b), "{a} and {b} carry the same camp pieces");
         }
     }
 

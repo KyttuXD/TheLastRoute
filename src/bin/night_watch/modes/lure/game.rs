@@ -633,7 +633,7 @@ impl Mode for LureMode {
         self.booth = Some(Booth::new(&gfx.tex, &kit));
         self.hall = Some(Hall::new(&gfx.tex, &kit));
         for id in &tuning().cast {
-            if let Some(a) = ctx.hunters.actor(id) {
+            if let Some(a) = ctx.hunters.actor_in(id, "lure") {
                 self.actors.insert(id.clone(), a);
             }
         }
@@ -840,12 +840,36 @@ impl Mode for LureMode {
     fn feed_report(&self, room: &str) -> Option<(Vec<String>, Vec<String>)> {
         let sim_room = map().map_to_sim(room).unwrap_or(&self.monitor_room).to_string();
         let inside: Vec<String> = self.presence.crowd.visible_in(&sim_room).iter().map(|a| a.id.clone()).collect();
+        // the feed draws nobody while the cameras are down (the SYSTEM ERROR picture)
+        let cams = self.sim.online("cams");
         let drawn = inside
             .iter()
-            .filter(|id| self.actors.get(*id).map_or(false, |a| a.visible && a.drawn_in_room(&sim_room)))
+            .filter(|id| cams && self.actors.get(*id).map_or(false, |a| a.visible && a.drawn_in_room(&sim_room)))
             .cloned()
             .collect();
         Some((inside, drawn))
+    }
+
+    fn tour_protect(&mut self) {
+        self.sim.god = true;
+        self.sim.infinite_stress = true;
+        self.admin.no_scare = true;
+        // night 1 starts Xivvy at AI 0 (she never leaves reception and is not drawn): give the tour a walker
+        if self.sim.lvl == 0 {
+            self.sim.lvl = 3;
+        }
+        // no system stays broken: the cameras always show the feed
+        let ids: Vec<String> = tuning().systems.iter().map(|s| s.id.clone()).collect();
+        for id in ids {
+            if !self.sim.online(&id) {
+                self.sim.set_system(&id, false);
+            }
+        }
+        let e = crate::core::tour_clock_wrap(self.sim.elapsed);
+        if e != self.sim.elapsed {
+            self.sim.elapsed = e;
+            self.hour_seen = hour_index(e);
+        }
     }
 
     fn draw_overlay(&mut self, ctx: &mut ShiftCtx) {

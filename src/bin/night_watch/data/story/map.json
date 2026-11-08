@@ -304,7 +304,7 @@
    "pos": [
     -2.4,
     0,
-    0.6
+    2
    ],
    "face": "e",
    "solid": true,
@@ -470,7 +470,7 @@
    "model": "storageShelving",
    "room": "workshop",
    "pos": [
-    -0.6,
+    1.9,
     0,
     2.15
    ],
@@ -596,9 +596,9 @@
    "model": "supplyCrates",
    "room": "breaker",
    "pos": [
-    -0.8,
+    1.9,
     0,
-    1.8
+    1.9
    ],
    "face": "s",
    "solid": false,
@@ -640,7 +640,7 @@
    "pos": [
     -2.4,
     0,
-    2
+    0.6
    ],
    "face": "e",
    "solid": false,
