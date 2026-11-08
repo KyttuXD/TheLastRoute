@@ -578,12 +578,12 @@ impl Mode for DayshiftMode {
         ctx.player.footprint = Some((-2.5, -2.0, 2.5, 2.0));
         ctx.player.frozen = true;
         ctx.player.look_frozen = true;
-        ctx.hud.mode_text = format!("7. Salvage Run \u{b7} {}", if self.custom { "Custom Night".to_string() } else { format!("Week {}", self.week) });
+        ctx.hud.mode_text = if self.custom { "Custom".to_string() } else { format!("Week {}", self.week) };
         ctx.hud.hint = HINT.to_string();
         ctx.hud.night_label = format!("Week {}", self.week);
         ctx.hud.power = 100.0;
         ctx.hud.monitor_available = false;
-        ctx.hud.cam_map = Some(cam_layout());
+        ctx.hud.cam_map = Some(crate::hud::cam_map::from_nav(&cam_layout(), super::stage::NAV_JSON, &[]));
         ctx.hud.show_crosshair = false;
         ctx.hud.call = CallScript::empty();
         if let Some(first) = map().cameras.first() {
@@ -774,6 +774,12 @@ impl Mode for DayshiftMode {
             h.actor.draw_in(gfx, &lights, cam.pos, Actor::is_duct_room(room));
         }
         gfx.feed.end();
+    }
+
+    fn feed_report(&self, room: &str) -> Option<(Vec<String>, Vec<String>)> {
+        let inside = self.stage.visible_in(room);
+        let drawn = inside.iter().filter(|id| self.hunters.iter().any(|h| h.id == id.as_str() && h.actor.drawn_in_room(room))).cloned().collect();
+        Some((inside, drawn))
     }
 
     fn draw_overlay(&mut self, ctx: &mut ShiftCtx) {

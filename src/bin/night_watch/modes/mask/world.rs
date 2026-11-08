@@ -561,10 +561,11 @@ pub fn feed_lights(room: &str, lit: Lit) -> LightSet {
         if room.starts_with("duct") {
             if lit.side(side) {
                 let sx = if side == 'L' { -1.0 } else { 1.0 };
-                l.omni.push(Omni { pos: vec3(sx * 7.5, 1.5, 0.6), color: [1.0, 0.95, 0.8], energy: 2.2, range: 7.0 });
+                l.omni.push(Omni { pos: vec3(sx * 7.5, 1.5, 0.6), color: [1.0, 0.95, 0.8], energy: 3.0, range: 8.0 });
             } else {
+                // dark, but the ribbed tube still reads (it was a near black 0.19)
                 for a in l.ambient.iter_mut() {
-                    *a *= 0.19 / 1.15;
+                    *a *= 0.5 / 1.15;
                 }
             }
         }
@@ -831,7 +832,8 @@ mod tests {
         let dark = feed_lights("ductL", Lit::default());
         assert!(dark.omni.is_empty());
         let normal = LightSet::feed();
-        assert!(dark.ambient[0] < normal.ambient[0] * 0.2);
+        assert!(dark.ambient[0] < normal.ambient[0] * 0.5, "dark ducts are darker than a normal feed");
+        assert!(dark.ambient[0] > normal.ambient[0] * 0.2, "but the ribbed tube still reads");
         let lit = feed_lights("ductL", Lit { l: true, r: false, h: false });
         assert_eq!(lit.omni.len(), 1);
         assert!(lit.omni[0].pos.x < 0.0);

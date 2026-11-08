@@ -945,7 +945,7 @@ mod tests {
         assert_eq!(l.order, vec!["breaker", "gallery", "control", "workshop", "auditorium"]);
         assert_eq!((l.room_w, l.room_d, l.height), (5.6, 5.0, 3.6));
         assert_eq!(l.cameras.len(), 6);
-        assert_eq!(l.props.len(), 15);
+        assert_eq!(l.props.len(), 21);
         assert!(l.cameras.iter().all(|c| c.fov > 30.0 && c.fov < 100.0));
     }
 

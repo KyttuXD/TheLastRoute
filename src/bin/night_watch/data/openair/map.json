@@ -32,7 +32,7 @@
         "entrances": ["roof"]
       },
       "props": [
-        {"model": "paSpeakerPole", "pos": [-5.7, 0, -4.3], "yaw": 20},
+        {"model": "paSpeakerPole", "pos": [-2, 0, 4.2], "yaw": 20},
         {"model": "locker", "pos": [4.6, 0, -4.4], "yaw": 0},
         {"model": "hazardSign", "pos": [-5.5, 0, 2.6], "yaw": 90},
         {"model": "hazardSign", "pos": [5.5, 0, 2.6], "yaw": -90},

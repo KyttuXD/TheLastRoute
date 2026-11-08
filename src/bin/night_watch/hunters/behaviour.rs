@@ -891,6 +891,8 @@ impl ActorDriver {
     pub fn drive(&mut self, agent: &Agent, actor: &mut super::rig::Actor) {
         actor.pos = agent.walker.pos;
         actor.yaw = agent.walker.yaw;
+        // the in-duct flag follows the walker every frame, so a hunter that left a duct is never left hidden in a room
+        actor.hidden = agent.walker.hidden;
         let cmd = agent.drive_command();
         if self.last.as_ref() == Some(&cmd) {
             return;

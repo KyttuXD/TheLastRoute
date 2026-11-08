@@ -35,6 +35,8 @@ pub struct Area {
     /// x0, x1, z0, z1 in building space (the office is at the origin).
     pub rect: [f32; 4],
     pub tint: [f32; 3],
+    /// The tint of the walls this room owns (its own, so no two rooms share a wall colour).
+    pub wall: [f32; 3],
     pub map: String,
     pub cam: usize,
     pub spots: Vec<(f32, f32)>,
@@ -118,10 +120,12 @@ impl MapData {
                 return Err(format!("mixed map: area {id} needs four numbers"));
             }
             let t = v3(&a["tint"]);
+            let wt = if a["wall"].is_array() { v3(&a["wall"]) } else { t };
             areas.push(Area {
                 id: id.clone(),
                 rect: [f(&r[0]), f(&r[1]), f(&r[2]), f(&r[3])],
                 tint: [t.x, t.y, t.z],
+                wall: [wt.x, wt.y, wt.z],
                 map: a["map"].as_str().unwrap_or("").to_string(),
                 cam: a["cam"].as_u64().unwrap_or(0) as usize,
                 spots: pairs(&a["spots"]),
@@ -174,6 +178,15 @@ impl MapData {
             vent_spot_x: f(&run["spot_x"]),
             vent_stand: [v3(&stand["L"]), v3(&stand["R"]), v3(&stand["T"])],
         })
+    }
+
+    /// The room that owns a wall (its colour): the one with the lowest camera number whose edge the wall lies on.
+    pub fn wall_owner(&self, w: &WallDef) -> Option<&Area> {
+        let on = |a: &&Area| {
+            let (edge_lo, edge_hi, span_lo, span_hi) = if w.along_x { (a.rect[2], a.rect[3], a.rect[0], a.rect[1]) } else { (a.rect[0], a.rect[1], a.rect[2], a.rect[3]) };
+            ((w.fixed - edge_lo).abs() < 0.01 || (w.fixed - edge_hi).abs() < 0.01) && w.a < span_hi - 0.01 && w.b > span_lo + 0.01
+        };
+        self.areas.iter().filter(on).min_by_key(|a| a.cam)
     }
 
     pub fn area(&self, sim_room: &str) -> Option<&Area> {
@@ -264,7 +277,7 @@ pub fn vent_stand(side: Side) -> Vec3 {
 pub fn layout_for(skin_idx: usize) -> CamLayout {
     let m = map();
     let s = skin::skin(skin_idx);
-    CamLayout {
+    let base = CamLayout {
         rooms: m.layout_rooms.clone(),
         edges: m.layout_edges.clone(),
         entrances: m.layout_entrances.clone(),
@@ -272,7 +285,9 @@ pub fn layout_for(skin_idx: usize) -> CamLayout {
         labels: CAMS.iter().map(|c| (c.to_string(), s.label(c).to_string())).collect(),
         vents: m.layout_vents.clone(),
         office: Some(m.layout_office),
-    }
+    };
+    let alias: Vec<(String, String)> = m.sim_to_map.iter().map(|(sim, map_id)| (map_id.clone(), sim.clone())).collect();
+    crate::hud::cam_map::from_nav(&base, NAV_JSON, &alias)
 }
 
 // ------------------------------------------------------------------------------------------------ lights
@@ -442,7 +457,11 @@ pub fn hub_parts(skin_idx: usize) -> HubParts {
         put(&mut shell, "CeilingHub", "concrete", [0.8, 0.8, 0.9], [w, 0.2, l], [c.x, H + 0.1, c.z]);
     }
     for w in &m.walls {
-        wall_with_gaps(&mut shell, w.along_x, w.fixed, w.a, w.b, &w.gaps, H, m.thick, fix(wall_tint), &w.name);
+        let tint = match m.wall_owner(w) {
+            Some(a) => fix(mul(a.wall, sk.tint)),
+            None => fix(wall_tint),
+        };
+        wall_with_gaps(&mut shell, w.along_x, w.fixed, w.a, w.b, &w.gaps, H, m.thick, tint, &w.name);
         // a frame round every doorway
         for (s, e) in &w.gaps {
             for edge in [*s, *e] {
@@ -524,16 +543,40 @@ pub fn hub_parts(skin_idx: usize) -> HubParts {
         let c = a.centre();
         accent(&mut dress, a, ai);
         for (k, (sx, sz)) in a.spots.iter().enumerate() {
-            let sp = vec3(*sx, 0.0, *sz);
+            let sp = far_spot(a, *sx, *sz);
             if sk.kit == "bench" {
                 dress_transit(&mut dress, &mut props, a, sp, k, c);
             } else {
                 // the room's number turns the kit, so no two rooms carry the same three things
-                dress_spot(&mut dress, &mut props, sk, sp, k + ai, c);
+                dress_spot(&mut dress, &mut props, sk, sp, k + a.cam, c);
             }
         }
     }
     HubParts { groups: vec![shell, fit, dress, run, mb], props }
+}
+
+/// How far from the feed camera a prop may stand: nearer than this it fills the picture (or pokes behind the HUD).
+pub const NEAR_FIELD: f32 = 5.5;
+
+/// A dressing spot kept out of its camera's near field: pushed straight away from the camera until it is `NEAR_FIELD` off,
+/// and kept inside the room's walls.
+pub fn far_spot(a: &Area, sx: f32, sz: f32) -> Vec3 {
+    let (cx, cz) = (a.cam_pos.x, a.cam_pos.z);
+    let (dx, dz) = (sx - cx, sz - cz);
+    let d = (dx * dx + dz * dz).sqrt();
+    if d >= NEAR_FIELD {
+        return vec3(sx, 0.0, sz);
+    }
+    let (ux, uz) = if d < 0.01 {
+        let (lx, lz) = (a.cam_look.x - cx, a.cam_look.z - cz);
+        let l = (lx * lx + lz * lz).sqrt().max(0.01);
+        (lx / l, lz / l)
+    } else {
+        (dx / d, dz / d)
+    };
+    let x = (cx + ux * NEAR_FIELD).clamp(a.rect[0] + 1.0, a.rect[1] - 1.0);
+    let z = (cz + uz * NEAR_FIELD).clamp(a.rect[2] + 1.0, a.rect[3] - 1.0);
+    vec3(x, 0.0, z)
 }
 
 fn prop(props: &mut Vec<PropPlace>, key: &str, pos: Vec3, centre: Vec3) {
@@ -747,9 +790,9 @@ fn dress_spot(g: &mut Group, props: &mut Vec<PropPlace>, sk: &Skin, sp: Vec3, k:
         },
         _ => match k % 3 {
             0 => {
-                put(g, "GroundCamp", "fabric", [0.7, 0.9, 0.6], [2.0, 0.1, 2.0], p(0.0, 0.05, 0.0));
-                for sx in [-0.5f32, 0.5] {
-                    put(g, "TentCamp", "fabric", [1.5 * (1.0 - 0.15 * (sx > 0.0) as i32 as f32), 0.9, 0.4], [1.0, 1.4, 1.8], p(sx, 0.75, 0.0));
+                put(g, "GroundCamp", "fabric", [0.7, 0.9, 0.6], [2.6, 0.05, 2.0], p(0.0, 0.025, 0.0));
+                for sx in [-0.75f32, 0.75] {
+                    put(g, "TentCamp", "fabric", [1.5 * (1.0 - 0.15 * (sx > 0.0) as i32 as f32), 0.9, 0.4], [0.9, 1.0, 1.4], p(sx, 0.55, 0.0));
                 }
             }
             1 => {
@@ -758,8 +801,11 @@ fn dress_spot(g: &mut Group, props: &mut Vec<PropPlace>, sk: &Skin, sp: Vec3, k:
                 }
             }
             _ => {
-                put(g, "PostCamp", "wood", [1.1, 0.8, 0.6], [0.1, 2.2, 0.1], p(0.0, 1.1, 0.0));
-                put(g, "SignLanternCamp", "label", [1.9, 1.5, 0.6], [0.3, 0.4, 0.3], p(0.0, 2.3, 0.0));
+                // a lantern post with a log to sit on and a supply box beside it, so it never stands alone
+                put(g, "PostCamp", "wood", [1.1, 0.8, 0.6], [0.08, 1.5, 0.08], p(0.0, 0.75, 0.0));
+                put(g, "SignLanternCamp", "label", [1.9, 1.5, 0.6], [0.18, 0.24, 0.18], p(0.0, 1.62, 0.0));
+                put(g, "LogSeatCamp", "wood", [1.2, 0.8, 0.5], [1.0, 0.3, 0.3], p(0.9, 0.15, 0.4));
+                put(g, "BoxCamp", "wood", [1.0, 0.75, 0.5], [0.6, 0.45, 0.5], p(-0.8, 0.225, 0.2));
             }
         },
     }
@@ -1068,6 +1114,31 @@ mod tests {
         assert!(flash.cubes.iter().all(|c| c.emissive), "the glow is emissive by its name");
         assert_eq!(vent_station(Side::T).id, "ventT");
         assert!(vent_station(Side::L).prompt.contains("HOLD TO SEAL"));
+    }
+
+    #[test]
+    fn dressing_spots_stay_out_of_the_camera_near_field_and_inside_the_room() {
+        for a in &map().areas {
+            for (x, z) in &a.spots {
+                let p = far_spot(a, *x, *z);
+                let d = ((p.x - a.cam_pos.x).powi(2) + (p.z - a.cam_pos.z).powi(2)).sqrt();
+                assert!(a.contains(p.x, p.z), "{} spot left the room", a.id);
+                // a spot squeezed against a wall may stay nearer, but never within the picture's foreground
+                assert!(d >= 3.5, "{} spot at {x},{z} is {d} from its camera", a.id);
+            }
+        }
+    }
+
+    #[test]
+    fn every_room_has_its_own_floor_and_wall_tint() {
+        let m = map();
+        for (i, a) in m.areas.iter().enumerate() {
+            for b in &m.areas[i + 1..] {
+                assert_ne!(a.tint, b.tint, "{} and {} share a floor tint", a.id, b.id);
+                assert_ne!(a.wall, b.wall, "{} and {} share a wall tint", a.id, b.id);
+            }
+        }
+        assert!(m.walls.iter().all(|w| m.wall_owner(w).is_some()));
     }
 
     #[test]

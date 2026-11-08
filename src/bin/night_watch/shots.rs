@@ -22,11 +22,26 @@ const WARMUP_STEP_MS: f64 = 100.0;
 /// Seed of every shot shift, so the pictures are repeatable.
 const SEED: u32 = 12345;
 
-/// Warm-up sim seconds of a mode. Every mode uses the default; a mode that needs longer adds an arm here.
+/// Warm-up sim seconds of a mode: the mode's own first-move time from its data, plus a margin so the hunters are walking in
+/// front of the cameras when the feeds are shot.
+/// - mixed: the slowest pace (QUIET) starts its first threat at `start_ms` 50 000 (data/mixed/tuning.json), plus walking time.
+/// - lure: Xivvy's wake step is 8 s (`wakeStep`) and the others leave their rooms after a few of them.
+/// - dayshift: `firstSpawnMs` 2 000 with 50 % spread, then the hunters walk in from the airlock.
+/// - mask: `stepMs` 2 300 over `hallSteps` 4; classic / story / open air: first behaviour delay of 2 to 6 s, then walking.
 pub fn warmup_s(mode_id: &str) -> f64 {
     match mode_id {
+        "mixed" => 50.0 + 60.0,
+        "lure" => 8.0 * 6.0 + 60.0,
+        "dayshift" => 2.0 * 1.5 + 57.0,
+        "mask" => 2.3 * 4.0 * 4.0 + 50.0,
+        "classic" | "story" | "openair" => 90.0,
         _ => DEFAULT_WARMUP_S,
     }
+}
+
+/// The per-shot line: `<mode> cam <room>: hunters in room: [ids], drawn: [ids]`.
+pub fn report_line(mode_id: &str, room: &str, inside: &[String], drawn: &[String]) -> String {
+    format!("{mode_id} cam {room}: hunters in room: [{}], drawn: [{}]", inside.join(", "), drawn.join(", "))
 }
 
 /// Frames per camera: the `--frames` value when it was given, else the default.
@@ -196,11 +211,19 @@ pub(crate) async fn run(env: &mut crate::Env, dir: &str, frames: u32) -> i32 {
         }
         run.hud_state.monitor_up = true;
         for room in cams {
+            // raise the monitor the way the player's request reaches every mode: the HUD flag and room, which the mode adopts
+            // in its next handle_input (lure keeps its own monitor state and now honours this too)
+            run.hud_state.monitor_up = true;
             run.hud_state.monitor_room = room.clone();
             for _ in 0..frames {
                 sim_frame(env, &mut run);
             }
             files_wanted += 1;
+            // the sim's answer to "who is in this camera's view, and who does the feed draw"
+            match run.mode.feed_report(&room) {
+                Some((inside, drawn)) => println!("{}", report_line(id, &room, &inside, &drawn)),
+                None => println!("{id} cam {room}: hunters in room: [?], drawn: [?] (this mode reports none)"),
+            }
             let path = dir_path.join(file_name(id, Some(&room)));
             if capture(env, &mut run, &path).await {
                 println!("{}", path.display());
@@ -240,6 +263,19 @@ mod tests {
     fn sanitize_keeps_ids_readable() {
         assert_eq!(sanitize("west_hall"), "west-hall");
         assert_eq!(sanitize("Vent2"), "vent2");
+    }
+
+    #[test]
+    fn warmup_covers_each_modes_first_move() {
+        assert!(warmup_s("mixed") >= 50.0 + 30.0, "QUIET starts its first threat at 50 s");
+        assert!(warmup_s("lure") >= 8.0 * 4.0);
+    }
+
+    #[test]
+    fn report_line_format() {
+        let l = report_line("classic", "hall", &["aki".to_string(), "dovelle".to_string()], &["aki".to_string()]);
+        assert_eq!(l, "classic cam hall: hunters in room: [aki, dovelle], drawn: [aki]");
+        assert_eq!(report_line("lure", "x", &[], &[]), "lure cam x: hunters in room: [], drawn: []");
     }
 
     #[test]

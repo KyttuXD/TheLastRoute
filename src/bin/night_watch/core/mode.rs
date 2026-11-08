@@ -145,6 +145,11 @@ pub trait Mode {
     fn draw_world(&mut self, ctx: &mut ShiftCtx);
     /// Draw the selected camera feed into ctx.gfx.feed. Only called while hud.monitor_up.
     fn draw_feed(&mut self, _ctx: &mut ShiftCtx, _room: &str) {}
+    /// Feed diagnostics for the `--shots` tour: the hunter ids the sim puts in view of camera `room` (a HUD map room id), and
+    /// the ids the feed would really draw. `None` for a mode without a crowd.
+    fn feed_report(&self, _room: &str) -> Option<(Vec<String>, Vec<String>)> {
+        None
+    }
     /// Screen-space extras beyond the shared Hud (keypad, shop, descent panel, mask overlay).
     fn draw_overlay(&mut self, _ctx: &mut ShiftCtx) {}
     fn outcome(&self) -> Outcome;

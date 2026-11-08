@@ -150,7 +150,10 @@ impl LureMode {
     /// state and rewrites the HUD from it every frame, so the request was lost. On the first frame, take it over: open the
     /// monitor and point it at that camera.
     fn adopt_requested_monitor(&mut self, ctx: &mut ShiftCtx) {
-        if self.frame != 0 || self.monitor_up || !ctx.hud.monitor_up {
+        // Any frame, not only the first: `sync_hud` rewrites the HUD flag and room from this mode's own state every frame, so a
+        // HUD flag that is up while the mode's is down (or a room that differs) was set from outside (`--monitor`, the shots
+        // tour) and is a request.
+        if !ctx.hud.monitor_up {
             return;
         }
         if let Some(room) = Self::requested_sim_room(&ctx.hud.monitor_room) {
@@ -832,6 +835,17 @@ impl Mode for LureMode {
             }
         }
         ctx.gfx.feed.end();
+    }
+
+    fn feed_report(&self, room: &str) -> Option<(Vec<String>, Vec<String>)> {
+        let sim_room = map().map_to_sim(room).unwrap_or(&self.monitor_room).to_string();
+        let inside: Vec<String> = self.presence.crowd.visible_in(&sim_room).iter().map(|a| a.id.clone()).collect();
+        let drawn = inside
+            .iter()
+            .filter(|id| self.actors.get(*id).map_or(false, |a| a.visible && a.drawn_in_room(&sim_room)))
+            .cloned()
+            .collect();
+        Some((inside, drawn))
     }
 
     fn draw_overlay(&mut self, ctx: &mut ShiftCtx) {

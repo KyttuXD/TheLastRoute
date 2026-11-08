@@ -542,7 +542,7 @@ impl Mode for MaskMode {
                 self.drivers.insert(id.clone(), ActorDriver::new());
             }
         }
-        ctx.hud.cam_map = Some(m.cam_map.clone());
+        ctx.hud.cam_map = Some(crate::hud::cam_map::from_nav(&m.cam_map, super::data::NAV_JSON, &[]));
         ctx.hud.monitor_available = true;
         ctx.hud.monitor_up = false;
         ctx.hud.monitor_room = "music".to_string();

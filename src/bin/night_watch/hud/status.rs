@@ -75,6 +75,17 @@ pub fn vtext_right(s: &str, rx: f32, y: f32, size: f32, c: Color) {
 
 /// Text width in virtual px.
 pub fn tw(s: &str, size: f32) -> f32 {
+    // Unit tests have no window, so macroquad cannot measure: use a fixed advance.
+    #[cfg(test)]
+    {
+        return s.chars().count() as f32 * size * 0.6;
+    }
+    #[cfg(not(test))]
+    tw_measured(s, size)
+}
+
+#[cfg(not(test))]
+fn tw_measured(s: &str, size: f32) -> f32 {
     let kk = k().max(0.01);
     measure_text(s, None, (size * kk).round().max(1.0) as u16, 1.0).width / kk
 }
@@ -148,19 +159,23 @@ pub fn call_layout(st: &HudState, bindings: &Bindings, subtitles: bool) -> Optio
     let x0 = W * 0.2;
     let x1 = W * if st.monitor_up { 0.68 } else { 0.8 };
     let w = x1 - x0;
-    let name_w = tw("Z E L L I A", 5.0);
     let mute_label = format!("Mute  {}", bindings.key_text("office_radio"));
     let mute_w = tw(&mute_label, 5.0) + 8.0;
-    let text_w = (w - 12.0 - name_w - mute_w - 12.0).max(40.0);
+    // the name and Mute share a header row; the text wraps across the full box width under them
+    let text_w = (w - 12.0).max(40.0);
     let lines = ut::wrap(&text, text_w, 5.0);
     let step = 7.0;
-    let h = 6.0 + (lines.len().max(1) as f32 * step).max(11.0);
+    // while a call is typing, words arrive one by one: keep room for 3 rows so the box never jumps or clips
+    let reserve = if st.call.open { 3 } else { 1 };
+    let rows = lines.len().max(reserve);
+    let head = 14.0;
+    let h = head + rows as f32 * step + 3.0;
     let y = H * 0.9 - h;
     Some(CallLayout {
         rect: Rect::new(x0, y, w, h),
-        name_pos: vec2(x0 + 6.0, y + 3.0),
-        text_x: x0 + 6.0 + name_w + 6.0,
-        text_y: y + 3.0,
+        name_pos: vec2(x0 + 6.0, y + 4.0),
+        text_x: x0 + 6.0,
+        text_y: y + head,
         lines,
         mute: Rect::new(x1 - 6.0 - mute_w, y + 3.0, mute_w, 11.0),
         mute_label,
@@ -219,7 +234,7 @@ pub fn draw_all(st: &HudState, bindings: &Bindings, subtitles: bool) {
     // status block, top left
     vtext(&ut::glyph(&power_line(st)), 8.0, 6.0, 9.0, INK);
     vtext(&ut::glyph(&usage_line(st)), 8.0, 18.0, 9.0, INK);
-    vtext(&ut::glyph(&night_line(st)), 8.0, 30.0, 7.0, DIM);
+    vtext(&ut::glyph(&night_line(st)), 8.0, 30.0, 8.0, Color::new(0.80, 0.77, 0.68, 1.0));
     // small bars under it
     let mut y = 42.0;
     for (label, v, col) in &st.bars {
@@ -328,6 +343,17 @@ mod tests {
         assert_eq!(call_text_of(&st), "");
         st.call_text = "hello".into();
         assert_eq!(call_text_of(&st), "hello");
+    }
+
+    #[test]
+    fn a_long_call_line_wraps_and_every_word_shows() {
+        let mut st = HudState::default();
+        st.call_text = "The cameras are on Space or W, and the music box is breathing on the left, so keep winding it before it sleeps".into();
+        let l = call_layout(&st, &Bindings::from_save(&crate::core::save::Save::default()), true).unwrap();
+        assert!(l.lines.len() > 1);
+        assert_eq!(l.lines.join(" "), st.call_text);
+        assert!(l.rect.h >= 14.0 + l.lines.len() as f32 * l.step);
+        assert!(l.rect.y + l.rect.h <= H);
     }
 
     #[test]

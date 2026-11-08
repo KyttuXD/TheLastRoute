@@ -691,6 +691,13 @@ impl OpenAirWorld {
         l
     }
 
+    /// The lights of a camera feed: the same night, but the ambient lifted so the set reads on the monitor.
+    pub fn feed_lights(&self, st: &SceneState) -> LightSet {
+        let mut l = self.lights(st);
+        l.ambient = feed_ambient(l.ambient);
+        l
+    }
+
     /// The whole set: cubes, props and the falling weather, from `cam_pos`.
     pub fn draw(&self, gfx: &Gfx, lights: &LightSet, cam_pos: Vec3, weather_time: Option<f32>) {
         self.world.draw(&gfx.shader, lights, cam_pos);
@@ -733,6 +740,11 @@ pub fn move_toward(a: f32, b: f32, step: f32) -> f32 {
     }
 }
 
+/// The night ambient as a camera feed shows it: lifted (the monitors are not dark-adapted), blue kept, never above 1.
+pub fn feed_ambient(a: [f32; 3]) -> [f32; 3] {
+    [(a[0] * 1.9 + 0.04).min(1.0), (a[1] * 1.9 + 0.04).min(1.0), (a[2] * 1.9 + 0.04).min(1.0)]
+}
+
 /// The camera position the feed is rendered from: just in front of the housing, so the housing is not in the picture.
 pub fn feed_position(c: &CamDef) -> Vec3 {
     c.pos + (c.target - c.pos).normalize_or_zero() * 0.3
@@ -745,6 +757,19 @@ mod tests {
 
     fn cubes_of(wb: &WorldBuilder) -> Vec<(&str, &Cube)> {
         wb.groups.iter().flat_map(|g| g.cubes.iter().map(move |c| (g.name.as_str(), c))).collect()
+    }
+
+    #[test]
+    fn feed_ambient_is_lifted_but_stays_a_night_blue() {
+        for watch in 0..3usize {
+            let a = map_of(watch).ambient;
+            let f = feed_ambient(a);
+            for i in 0..3 {
+                assert!(f[i] > a[i] && f[i] <= 1.0);
+            }
+            assert!(f[2] > f[0], "still a blue night");
+            assert!(f[0] + f[1] + f[2] >= 1.3, "readable on the monitor");
+        }
     }
 
     #[test]

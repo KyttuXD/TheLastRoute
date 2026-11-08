@@ -71,6 +71,8 @@ pub struct PropDef {
     pub model: String,
     pub pos: Vec3,
     pub yaw_deg: f32,
+    /// Multiplies the model's native size (1 when the file gives none).
+    pub scale: f32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -128,7 +130,7 @@ impl MapData {
         }
         if let Some(a) = v.get("props").and_then(|s| s.as_array()) {
             for p in a {
-                m.props.push(PropDef { model: crate::core::jstr(p, "model"), pos: vec3_of(&p["pos"]), yaw_deg: crate::core::jf64(p, "yaw", 0.0) as f32 });
+                m.props.push(PropDef { model: crate::core::jstr(p, "model"), pos: vec3_of(&p["pos"]), yaw_deg: crate::core::jf64(p, "yaw", 0.0) as f32, scale: (crate::core::jf64(p, "scale", 1.0) as f32).max(0.05) });
             }
         }
         if m.cameras.len() != 8 {
@@ -241,7 +243,7 @@ impl PropSet {
             let entry = models.entry(d.model.clone()).or_insert_with(|| prop_text(&d.model).and_then(|t| Model::parse(t, None, &|_| None, None)));
             let Some(model) = entry.as_ref() else { continue };
             let (mut verts, mut idx) = (Vec::new(), Vec::new());
-            model.build(&mut verts, &mut idx, d.pos, d.yaw_deg.to_radians(), 0.0, 0.0, WHITE);
+            model.build_scaled(&mut verts, &mut idx, d.pos, d.yaw_deg.to_radians(), Vec3::splat(model.scale * d.scale), 0.0, 0.0, WHITE);
             if verts.is_empty() {
                 continue;
             }

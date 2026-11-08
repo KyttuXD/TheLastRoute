@@ -127,7 +127,7 @@ fn title_case(s: &str) -> String {
 
 fn cam_layout() -> CamLayout {
     let l = layout();
-    CamLayout {
+    let base = CamLayout {
         rooms: l.map_pos.iter().map(|(r, p)| (r.clone(), *p)).collect(),
         edges: l.map_edges.clone(),
         entrances: l.entrances.clone(),
@@ -135,7 +135,8 @@ fn cam_layout() -> CamLayout {
         labels: l.cameras.iter().map(|c| (c.room.clone(), c.label.clone())).collect(),
         vents: Vec::new(),
         office: None,
-    }
+    };
+    crate::hud::cam_map::from_nav(&base, super::world::NAV_JSON, &[])
 }
 
 fn play(ctx: &mut ShiftCtx, list: Vec<Cue>) {

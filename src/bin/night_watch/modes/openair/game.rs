@@ -415,10 +415,10 @@ impl OpenAirMode {
         self.sync_actors();
     }
 
-    fn render_set(&self, ctx: &ShiftCtx, cam_pos: Vec3) {
+    fn render_set(&self, ctx: &ShiftCtx, cam_pos: Vec3, feed: bool) {
         let Some(world) = self.world.as_ref() else { return };
         let st = self.scene_state(ctx.player.feet);
-        let lights = world.lights(&st);
+        let lights = if feed { world.feed_lights(&st) } else { world.lights(&st) };
         let weather = if self.sim.weather.on { Some(self.clock_s) } else { None };
         world.draw(&ctx.gfx, &lights, cam_pos, weather);
         for slot in &self.actors {
@@ -623,7 +623,7 @@ impl Mode for OpenAirMode {
         let cam = ctx.player.cam;
         set_camera(&cam.camera3d());
         clear_background(SKY);
-        self.render_set(ctx, cam.pos);
+        self.render_set(ctx, cam.pos, false);
     }
 
     fn draw_feed(&mut self, ctx: &mut ShiftCtx, room: &str) {
@@ -645,7 +645,7 @@ impl Mode for OpenAirMode {
             ..Default::default()
         });
         clear_background(SKY);
-        self.render_set(ctx, pos);
+        self.render_set(ctx, pos, true);
         set_default_camera();
     }
 

@@ -6,6 +6,7 @@
 use super::status::*;
 use crate::core::{CamLayout, HudState};
 use macroquad::prelude::*;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const SIZE: Vec2 = Vec2::new(120.0, 92.0);
 pub const BTN: Vec2 = Vec2::new(30.0, 13.0);
@@ -96,6 +97,160 @@ pub fn compute(layout: &CamLayout) -> MapGeometry {
     MapGeometry { points, buttons, office: office_point }
 }
 
+// ---- the layout from the nav graph ---------------------------------------------------------------------------------------------
+
+/// Rooms that belong to the office side of a nav graph (doors, booth openings, vent mouths): never map points, only the
+/// office link.
+const OFFICE_SIDE: [&str; 8] = ["office", "officeL", "officeR", "doorL", "doorR", "ventL", "ventR", "ventT"];
+const OFFICE_DOORS: [&str; 4] = ["doorL", "doorR", "officeL", "officeR"];
+
+#[derive(Default)]
+struct NavInfo {
+    /// (id, centre on the x/z plane, size)
+    rooms: Vec<(String, Vec2, Vec2)>,
+    /// Room to room connections (symmetric): graph edges between nodes of different rooms and doorway `between` pairs.
+    adj: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl NavInfo {
+    fn centre(&self, id: &str) -> Option<Vec2> {
+        self.rooms.iter().find(|(r, _, _)| r == id).map(|(_, c, _)| *c)
+    }
+}
+
+fn pair(v: &serde_json::Value) -> Option<Vec2> {
+    let a = v.as_array()?;
+    Some(vec2(a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32))
+}
+
+fn link_rooms(adj: &mut BTreeMap<String, BTreeSet<String>>, a: &str, b: &str) {
+    if a.is_empty() || b.is_empty() || a == b {
+        return;
+    }
+    adj.entry(a.to_string()).or_default().insert(b.to_string());
+    adj.entry(b.to_string()).or_default().insert(a.to_string());
+}
+
+fn parse_nav(src: &str) -> Option<NavInfo> {
+    let root: serde_json::Value = serde_json::from_str(src).ok()?;
+    let mut nav = NavInfo::default();
+    for (id, r) in root.get("rooms")?.as_object()? {
+        let lo = pair(r.get("min")?)?;
+        let hi = pair(r.get("max")?)?;
+        nav.rooms.push((id.clone(), (lo + hi) * 0.5, (hi - lo).abs()));
+    }
+    let mut node_room: BTreeMap<String, String> = BTreeMap::new();
+    for n in root.get("nodes")?.as_array()? {
+        let Some(id) = n.get("id").and_then(|x| x.as_str()) else { continue };
+        node_room.insert(id.to_string(), n.get("room").and_then(|x| x.as_str()).unwrap_or("").to_string());
+        if let Some(b) = n.get("between").and_then(|x| x.as_array()) {
+            if let (Some(a), Some(c)) = (b.first().and_then(|x| x.as_str()), b.get(1).and_then(|x| x.as_str())) {
+                link_rooms(&mut nav.adj, a, c);
+            }
+        }
+    }
+    if let Some(edges) = root.get("edges").and_then(|x| x.as_array()) {
+        for e in edges {
+            let (Some(a), Some(b)) = (e.get(0).and_then(|x| x.as_str()), e.get(1).and_then(|x| x.as_str())) else { continue };
+            if let (Some(ra), Some(rb)) = (node_room.get(a), node_room.get(b)) {
+                link_rooms(&mut nav.adj, ra, rb);
+            }
+        }
+    }
+    Some(nav)
+}
+
+/// The camera numbers of a nav graph: its camera nodes' rooms in camera order.
+pub fn nav_cams(nav_json: &str) -> Vec<String> {
+    let Ok(root) = serde_json::from_str::<serde_json::Value>(nav_json) else { return Vec::new() };
+    let mut v: Vec<(i64, String)> = Vec::new();
+    if let Some(nodes) = root.get("nodes").and_then(|x| x.as_array()) {
+        for n in nodes {
+            if n.get("kind").and_then(|x| x.as_str()) == Some("camera") {
+                let cam = n.get("cam").and_then(|x| x.as_i64()).unwrap_or(0);
+                if let Some(room) = n.get("room").and_then(|x| x.as_str()) {
+                    v.push((cam, room.to_string()));
+                }
+            }
+        }
+    }
+    v.sort();
+    v.into_iter().map(|(_, r)| r).collect()
+}
+
+/// The one layout builder every mode uses: take the mode's cameras, labels, vents and entrances (`base`) and place every CAM
+/// room at its real spot (room centre on the x/z plane, from the mode's nav graph, `alias` = (camera room id, nav room id)
+/// where the two differ), link rooms by the nav graph's real connections (through rooms without a camera when need be), put
+/// the office where its rooms are, and mark vent and duct rooms. When the nav graph does not know every camera room, the
+/// base layout is returned unchanged.
+pub fn from_nav(base: &CamLayout, nav_json: &str, alias: &[(String, String)]) -> CamLayout {
+    let Some(nav) = parse_nav(nav_json) else { return base.clone() };
+    let nav_id = |c: &str| -> String { alias.iter().find(|(a, _)| a == c).map(|(_, n)| n.clone()).unwrap_or_else(|| c.to_string()) };
+    if base.cams.is_empty() || base.cams.iter().any(|c| nav.centre(&nav_id(c)).is_none()) {
+        return base.clone();
+    }
+    let cams_nav: Vec<(String, String)> = base.cams.iter().map(|c| (c.clone(), nav_id(c))).collect();
+    let cam_of = |n: &str| -> Option<String> { cams_nav.iter().find(|(_, nn)| nn == n).map(|(c, _)| c.clone()) };
+    let order = |c: &str| base.cams.iter().position(|x| x == c).unwrap_or(usize::MAX);
+
+    let rooms: Vec<(String, Vec2)> = cams_nav.iter().filter_map(|(c, n)| nav.centre(n).map(|p| (c.clone(), p))).collect();
+
+    let mut edge_set: BTreeSet<(usize, usize)> = BTreeSet::new();
+    let mut derived_entrances: Vec<String> = Vec::new();
+    for (c, n) in &cams_nav {
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        seen.insert(n.clone());
+        let mut stack: Vec<String> = nav.adj.get(n).map(|s| s.iter().cloned().collect()).unwrap_or_default();
+        while let Some(m) = stack.pop() {
+            if !seen.insert(m.clone()) {
+                continue;
+            }
+            if OFFICE_SIDE.contains(&m.as_str()) {
+                if !derived_entrances.contains(c) {
+                    derived_entrances.push(c.clone());
+                }
+            } else if let Some(c2) = cam_of(&m) {
+                let (i, j) = (order(c), order(&c2));
+                edge_set.insert((i.min(j), i.max(j)));
+            } else if let Some(next) = nav.adj.get(&m) {
+                stack.extend(next.iter().cloned());
+            }
+        }
+    }
+    let edges: Vec<(String, String)> = edge_set.iter().map(|(i, j)| (base.cams[*i].clone(), base.cams[*j].clone())).collect();
+
+    let mut entrances: Vec<String> = base.entrances.iter().filter(|e| rooms.iter().any(|(r, _)| r == *e)).cloned().collect();
+    for e in derived_entrances {
+        if !entrances.contains(&e) {
+            entrances.push(e);
+        }
+    }
+
+    let ventish = |s: &str| {
+        let l = s.to_lowercase();
+        l.contains("vent") || l.contains("duct") || l.contains("crawl")
+    };
+    let mut vents: Vec<String> = base.vents.iter().filter(|e| rooms.iter().any(|(r, _)| r == *e)).cloned().collect();
+    for (c, n) in &cams_nav {
+        if (ventish(c) || ventish(n)) && !vents.contains(c) {
+            vents.push(c.clone());
+        }
+    }
+
+    let office = if let Some(p) = nav.centre("office") {
+        Some(p)
+    } else {
+        let doors: Vec<Vec2> = OFFICE_DOORS.iter().filter_map(|d| nav.centre(d)).collect();
+        if doors.is_empty() {
+            base.office
+        } else {
+            Some(doors.iter().fold(Vec2::ZERO, |a, b| a + *b) / doors.len() as f32)
+        }
+    };
+
+    CamLayout { rooms, edges, entrances, cams: base.cams.clone(), labels: base.labels.clone(), vents, office }
+}
+
 fn relax(c: &mut Vec<(String, Vec2)>) {
     let lo = BTN * 0.5 + Vec2::ONE;
     let hi = SIZE - BTN * 0.5 - Vec2::ONE;
@@ -147,15 +302,18 @@ fn overlaps(c: &[(String, Vec2)]) -> bool {
     false
 }
 
-/// Too crowded: lay the buttons on a grid in reading order (top to bottom, left to right).
+/// Too crowded: lay the buttons on a grid. Reading order (top to bottom, left to right) is the Godot layout; when it would
+/// put a button on the wrong side of one that is clearly east/west or north/south of it, a column-major grid (columns by
+/// x, rows by y inside a column) is used if it keeps the world's order better.
 fn pack(c: &mut Vec<(String, Vec2)>) {
     let n = c.len();
+    let orig: Vec<Vec2> = c.iter().map(|e| e.1).collect();
     // stable insertion sort with the Godot comparator (rows 6 px tall, then by x)
     let less = |pa: Vec2, pb: Vec2| pa.y < pb.y - 6.0 || ((pa.y - pb.y).abs() <= 6.0 && pa.x < pb.x);
     let mut order: Vec<usize> = (0..n).collect();
     for i in 1..n {
         let mut j = i;
-        while j > 0 && less(c[order[j]].1, c[order[j - 1]].1) {
+        while j > 0 && less(orig[order[j]], orig[order[j - 1]]) {
             order.swap(j, j - 1);
             j -= 1;
         }
@@ -168,11 +326,39 @@ fn pack(c: &mut Vec<(String, Vec2)>) {
     } else {
         0.0
     };
+    let cell = |col: usize, row: usize| vec2(1.0 + BTN.x * 0.5 + col as f32 * step_x, 1.0 + BTN.y * 0.5 + row as f32 * step_y);
+    let mut reading = vec![Vec2::ZERO; n];
     for (i, idx) in order.iter().enumerate() {
-        c[*idx].1 = vec2(
-            1.0 + BTN.x * 0.5 + (i % cols) as f32 * step_x,
-            1.0 + BTN.y * 0.5 + (i / cols) as f32 * step_y,
-        );
+        reading[*idx] = cell(i % cols, i / cols);
+    }
+    // column-major: sort by x, cut into columns of `rows`, sort each column by y
+    let mut by_x: Vec<usize> = (0..n).collect();
+    by_x.sort_by(|a, b| orig[*a].x.partial_cmp(&orig[*b].x).unwrap_or(std::cmp::Ordering::Equal));
+    let mut column = vec![Vec2::ZERO; n];
+    for (ci, chunk) in by_x.chunks(rows.max(1)).enumerate() {
+        let mut col: Vec<usize> = chunk.to_vec();
+        col.sort_by(|a, b| orig[*a].y.partial_cmp(&orig[*b].y).unwrap_or(std::cmp::Ordering::Equal));
+        for (ri, idx) in col.iter().enumerate() {
+            column[*idx] = cell(ci.min(cols - 1), ri);
+        }
+    }
+    let violations = |p: &[Vec2]| -> usize {
+        let mut v = 0;
+        for i in 0..n {
+            for j in 0..n {
+                if orig[j].x - orig[i].x > BTN.x * 0.6 && p[i].x > p[j].x {
+                    v += 1;
+                }
+                if orig[j].y - orig[i].y > BTN.y * 0.6 && p[i].y > p[j].y {
+                    v += 1;
+                }
+            }
+        }
+        v
+    };
+    let pick = if violations(&column) < violations(&reading) { column } else { reading };
+    for (i, e) in c.iter_mut().enumerate() {
+        e.1 = pick[i];
     }
 }
 
@@ -364,6 +550,142 @@ mod tests {
         let b = g.button("b").unwrap();
         assert_eq!(hit(&l, MAP_POS + b), Some("b".to_string()));
         assert_eq!(hit(&l, vec2(0.0, 0.0)), None);
+    }
+
+    const NAVS: [(&str, &str); 9] = [
+        ("classic", include_str!("../data/nav/classic.json")),
+        ("dayshift", include_str!("../data/nav/dayshift.json")),
+        ("lure", include_str!("../data/nav/lure.json")),
+        ("mask", include_str!("../data/nav/mask.json")),
+        ("mixed", include_str!("../data/nav/mixed.json")),
+        ("story", include_str!("../data/nav/story.json")),
+        ("rooftop", include_str!("../data/nav/extra_rooftop.json")),
+        ("campfire", include_str!("../data/nav/extra_campfire.json")),
+        ("busstop", include_str!("../data/nav/extra_busstop.json")),
+    ];
+
+    /// The layout a mode would hand over: its cameras only (ids as in the nav graph).
+    fn base_for(nav: &str) -> CamLayout {
+        CamLayout { cams: nav_cams(nav), ..CamLayout::default() }
+    }
+
+    /// Node graph search that never passes through another camera room or the office side: is there a real way from room a
+    /// to room b?
+    fn connected_in_nav(src: &str, a: &str, b: &str, cams: &[String]) -> bool {
+        let root: serde_json::Value = serde_json::from_str(src).unwrap();
+        let mut room: BTreeMap<String, String> = BTreeMap::new();
+        for n in root["nodes"].as_array().unwrap() {
+            room.insert(n["id"].as_str().unwrap().to_string(), n["room"].as_str().unwrap_or("").to_string());
+        }
+        let mut adj: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for e in root["edges"].as_array().unwrap() {
+            let (x, y) = (e[0].as_str().unwrap().to_string(), e[1].as_str().unwrap().to_string());
+            adj.entry(x.clone()).or_default().push(y.clone());
+            adj.entry(y).or_default().push(x);
+        }
+        let allowed = |r: &str| r == a || r == b || (!cams.iter().any(|c| c == r) && !OFFICE_SIDE.contains(&r));
+        let mut stack: Vec<String> = room.iter().filter(|(_, r)| r.as_str() == a).map(|(k, _)| k.clone()).collect();
+        let mut seen: BTreeSet<String> = stack.iter().cloned().collect();
+        while let Some(n) = stack.pop() {
+            if room[&n] == b {
+                return true;
+            }
+            for m in adj.get(&n).into_iter().flatten() {
+                if room.get(m).map(|r| allowed(r)).unwrap_or(false) && seen.insert(m.clone()) {
+                    stack.push(m.clone());
+                }
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn every_mode_places_every_camera_room_without_overlap() {
+        for (name, src) in NAVS {
+            let base = base_for(src);
+            if base.cams.is_empty() {
+                continue;
+            }
+            let l = from_nav(&base, src, &[]);
+            let g = compute(&l);
+            assert_eq!(g.buttons.len(), base.cams.len(), "{name}: a camera room has no button");
+            for c in &base.cams {
+                assert!(g.button(c).is_some(), "{name}: no button for {c}");
+            }
+            assert!(no_overlap(&g), "{name}: buttons overlap");
+        }
+    }
+
+    #[test]
+    fn buttons_keep_the_worlds_west_east_and_north_south() {
+        for (name, src) in NAVS {
+            let base = base_for(src);
+            if base.cams.is_empty() {
+                continue;
+            }
+            let nav = parse_nav(src).unwrap();
+            let g = compute(&from_nav(&base, src, &[]));
+            for a in &base.cams {
+                for b in &base.cams {
+                    let (_, ca, sa) = nav.rooms.iter().find(|(r, _, _)| r == a).unwrap().clone();
+                    let (_, cb, sb) = nav.rooms.iter().find(|(r, _, _)| r == b).unwrap().clone();
+                    let (pa, pb) = (g.button(a).unwrap(), g.button(b).unwrap());
+                    if cb.x - ca.x > sa.x.max(sb.x) {
+                        assert!(pa.x <= pb.x, "{name}: {a} is west of {b} but its button is not left");
+                    }
+                    if cb.y - ca.y > sa.y.max(sb.y) {
+                        assert!(pa.y <= pb.y, "{name}: {a} is north of {b} but its button is not above");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_drawn_line_is_a_nav_connection() {
+        for (name, src) in NAVS {
+            let base = base_for(src);
+            if base.cams.is_empty() {
+                continue;
+            }
+            let l = from_nav(&base, src, &[]);
+            for (a, b) in &l.edges {
+                assert!(connected_in_nav(src, a, b, &base.cams), "{name}: line {a} - {b} is not in the nav graph");
+            }
+        }
+    }
+
+    #[test]
+    fn the_main_modes_are_linked_and_have_an_office_link() {
+        for (name, src) in NAVS.iter().take(6) {
+            let l = from_nav(&base_for(src), src, &[]);
+            assert!(!l.edges.is_empty(), "{name}: no lines");
+            let linked = |r: &String| l.edges.iter().any(|(a, b)| a == r || b == r) || l.entrances.contains(r);
+            for c in &l.cams {
+                assert!(linked(c), "{name}: {c} has no line");
+            }
+        }
+    }
+
+    #[test]
+    fn vents_are_marked_and_the_office_sits_between_the_ducts() {
+        let src = NAVS[3].1; // mask
+        let l = from_nav(&base_for(src), src, &[]);
+        assert!(l.vents.iter().any(|v| v == "ductL") && l.vents.iter().any(|v| v == "crawl"));
+        assert!(l.entrances.iter().any(|v| v == "ductL"));
+        let office = l.office.expect("mask office");
+        // the real map: the office sits between the two ducts, north of the crawl and south of the hall and ballroom
+        let at = |id: &str| l.rooms.iter().find(|(r, _)| r == id).map(|(_, p)| *p).expect(id);
+        assert!(at("ductL").x < office.x && office.x < at("ductR").x);
+        assert!(at("hall").y < office.y && office.y < at("crawl").y);
+    }
+
+    #[test]
+    fn an_unknown_camera_room_returns_the_base_layout() {
+        let src = NAVS[0].1;
+        let mut base = base_for(src);
+        base.cams.push("nowhere".to_string());
+        assert!(from_nav(&base, src, &[]).rooms.is_empty());
     }
 
     #[test]

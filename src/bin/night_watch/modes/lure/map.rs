@@ -352,7 +352,8 @@ impl LureMap {
                 l.labels.push((id.to_string(), t.label(sim)));
             }
         }
-        l
+        let alias: Vec<(String, String)> = self.rooms.iter().map(|r| (r.id.clone(), r.sim.clone())).collect();
+        crate::hud::cam_map::from_nav(&l, super::presence::LURE_NAV_JSON, &alias)
     }
 
     pub fn tasks_in(&self, sim: &str) -> Vec<&TaskSpot> {

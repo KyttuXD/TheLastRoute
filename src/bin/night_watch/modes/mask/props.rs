@@ -47,6 +47,11 @@ pub fn text(file: &str) -> Option<&'static str> {
         "officeChair" => include_str!("../../../last_route/assets/props/officeChair.bbmodel"),
         "bedroomWallClock" => include_str!("../../../last_route/assets/props/bedroomWallClock.bbmodel"),
         "ceilingLight" => include_str!("../../../last_route/assets/props/ceilingLight.bbmodel"),
+        "vendingMachine" => include_str!("../../../last_route/assets/props/vendingMachine.bbmodel"),
+        "popcornCart" => include_str!("../../../last_route/assets/props/popcornCart.bbmodel"),
+        "prizeClawMachine" => include_str!("../../../last_route/assets/props/prizeClawMachine.bbmodel"),
+        "storageBarrel" => include_str!("../../../last_route/assets/props/storageBarrel.bbmodel"),
+        "maintenanceCleaningCart" => include_str!("../../../last_route/assets/props/maintenanceCleaningCart.bbmodel"),
         _ => return None,
     })
 }
@@ -82,6 +87,20 @@ pub fn specs() -> Vec<PropSpec> {
     // the office: the chair behind the desk and the clock on the back wall
     v.push(stand("officeChair", 0.0, 0.0, 0.7, 0.0, 1.2));
     v.push(stand("bedroomWallClock", 2.5, 2.1, 3.5, 0.0, 0.8));
+    // the ballroom and the show gallery: party tables, a popcorn cart, a vending machine, a claw machine, a
+    // toy chest (party props only, never statues). Off the hunters' centre lane (|x| >= 6) and outside the camera mounts.
+    for (x, z) in [(-6.0f32, -23.8f32), (6.0, -23.2), (-6.0, -28.6)] {
+        v.push(stand("restaurantPartyTable", x, 0.0, z, 0.0, 0.7));
+    }
+    v.push(stand("popcornCart", -9.5, 0.0, -26.5, -FRAC_PI_2, 1.0));
+    v.push(stand("vendingMachine", 9.6, 0.0, -25.5, FRAC_PI_2, 1.0));
+    v.push(stand("prizeClawMachine", 9.6, 0.0, -22.2, FRAC_PI_2, 1.0));
+    v.push(stand("toyChest", -9.5, 0.0, -21.8, 0.0, 1.1));
+    // the vent hub: barrels and a cart along the south wall, off the crawl lane
+    for x in [-6.0f32, 1.0, 7.0] {
+        v.push(stand("storageBarrel", x, 0.0, 9.4, 0.0, 1.0));
+    }
+    v.push(stand("maintenanceCleaningCart", -12.0, 0.0, 9.0, 0.0, 1.0));
     // ceiling lights: down the main hall and over the show floor
     for i in 0..5 {
         v.push(hang("ceilingLight", 0.0, 3.6, -3.0 - i as f32 * 2.9, 1.2));

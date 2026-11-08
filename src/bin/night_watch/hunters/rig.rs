@@ -337,6 +337,11 @@ impl Actor {
         self.visible && (!self.hidden || cam_in_duct)
     }
 
+    /// Whether this actor is drawn in the feed of camera room `room` (the one rule every feed path and the shots tour use).
+    pub fn drawn_in_room(&self, room: &str) -> bool {
+        self.drawn_for(Self::is_duct_room(room))
+    }
+
     /// Draw for a camera feed; `cam_in_duct` lets a vent cam show a crawling hunter.
     pub fn draw_in(&self, gfx: &Gfx, lights: &LightSet, cam_pos: Vec3, cam_in_duct: bool) {
         if !self.drawn_for(cam_in_duct) {

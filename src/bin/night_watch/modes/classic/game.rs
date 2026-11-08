@@ -676,7 +676,7 @@ impl Mode for ClassicMode {
         self.mode_text = view::mode_text(num, &title, &level_name, self.night);
 
         let h = &mut *ctx.hud;
-        h.cam_map = Some(classic_layout());
+        h.cam_map = Some(crate::hud::cam_map::from_nav(&classic_layout(), crate::hunters::nav::CLASSIC_NAV_JSON, &[]));
         h.monitor_available = true;
         h.monitor_up = false;
         h.show_crosshair = true;
@@ -878,6 +878,17 @@ impl Mode for ClassicMode {
             }
         }
         ctx.gfx.feed.end();
+    }
+
+    fn feed_report(&self, room: &str) -> Option<(Vec<String>, Vec<String>)> {
+        let g = self.gx.as_ref()?;
+        let inside: Vec<String> = self.placement.crowd.visible_in(room).iter().map(|a| a.id.clone()).collect();
+        let drawn = inside
+            .iter()
+            .filter(|id| g.slots.iter().any(|s| &s.id == *id && s.actor.drawn_in_room(room)))
+            .cloned()
+            .collect();
+        Some((inside, drawn))
     }
 
     fn outcome(&self) -> Outcome {

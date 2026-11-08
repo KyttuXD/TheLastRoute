@@ -54,6 +54,17 @@ fn font_px(size: f32, k: f32) -> u16 {
 
 /// Width in virtual px of `s` at `size`.
 pub fn measure(s: &str, size: f32) -> f32 {
+    // Unit tests have no window: fixed advance instead of macroquad.
+    #[cfg(test)]
+    {
+        return glyph(s).chars().count() as f32 * size * 0.6;
+    }
+    #[cfg(not(test))]
+    measure_real(s, size)
+}
+
+#[cfg(not(test))]
+fn measure_real(s: &str, size: f32) -> f32 {
     let (k, _, _) = frame();
     let g = glyph(s);
     measure_text(&g, None, font_px(size, k), 1.0).width / k

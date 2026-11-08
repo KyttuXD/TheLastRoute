@@ -292,11 +292,12 @@ fn room_groups(id: &str, centre: Vec3, groups: &mut Vec<Group>, walls: &mut Vec<
         put(&mut detail, "WallBolt", [0.06, 0.06, 0.04], [x, 0.4, -half + 0.12], O::new().k("metal").g(1.2));
     }
     put(&mut detail, "FloorDrain", [0.3, 0.02, 0.3], [2.0, 0.01, 1.6], O::new().k("metal").t([0.6, 0.6, 0.65]));
-    put(&mut detail, "ClutterBox", [0.2, 0.2, 0.2], [-2.4, 0.1, 2.0], O::new().k("wood").t([0.9, 0.85, 0.8]));
-    put(&mut detail, "ClutterCan", [0.16, 0.16, 0.16], [-2.15, 0.08, 2.1], O::new().k("metal").t([0.8, 1.1, 0.8]));
-    put(&mut detail, "ClutterPaper", [0.3, 0.02, 0.22], [-2.3, 0.02, 1.7], O::new().k("paper").t([1.2, 1.2, 1.1]).ao(1.0));
+    put(&mut detail, "ClutterBox", [0.2, 0.2, 0.2], [-0.9, 0.1, -2.55], O::new().k("wood").t([0.9, 0.85, 0.8]));
+    put(&mut detail, "ClutterCan", [0.16, 0.16, 0.16], [-0.65, 0.08, -2.5], O::new().k("metal").t([0.8, 1.1, 0.8]));
+    put(&mut detail, "ClutterPaper", [0.3, 0.02, 0.22], [-0.8, 0.02, -2.2], O::new().k("paper").t([1.2, 1.2, 1.1]).ao(1.0));
     groups.push(detail);
 
+    connectors(id, centre, tint, groups);
     match id {
         "stage" => stage(&mk, groups),
         "dining" => dining(&mk, groups),
@@ -306,6 +307,46 @@ fn room_groups(id: &str, centre: Vec3, groups: &mut Vec<Group>, walls: &mut Vec<
         "kitchen" => kitchen(&mk, groups),
         "corner" => corner(&mk, groups),
         _ => {}
+    }
+}
+
+/// The gap between two rooms is 2 m of nothing, so a doorway looked onto a black void. Where a doorway leads to the next room (east
+/// to a west doorway, north to the room above) a short lit passage spans the gap: floor, ceiling, two side walls and a door frame.
+fn connectors(id: &str, centre: Vec3, tint: [f32; 3], groups: &mut Vec<Group>) {
+    let Some((_, (gx, gy))) = room_info(id) else { return };
+    let half = ROOM_W * 0.5;
+    let gap = CELL - ROOM_W;
+    let neighbour = |dx: i32, dy: i32| cam_room_ids().into_iter().find(|r| room_info(r).map(|(_, g)| g) == Some((gx + dx, gy + dy)));
+    let wall_tint = mul3(tint, [1.0, 1.0, 1.0]);
+    for side in ['E', 'N'] {
+        let linked = match side {
+            'E' => has_doorway('E', id) && neighbour(1, 0).map(|r| has_doorway('W', &r)).unwrap_or(false),
+            _ => has_doorway('N', id) && neighbour(0, -1).is_some(),
+        };
+        if !linked {
+            continue;
+        }
+        // local axes: `a` runs along the passage, `s` across it
+        let (mid, along_x) = if side == 'E' { (vec3(half + gap * 0.5, 0.0, 0.0), true) } else { (vec3(0.0, 0.0, -half - gap * 0.5), false) };
+        let dim = |a: f32, s: f32, h: f32| if along_x { [a, h, s] } else { [s, h, a] };
+        let off = |s: f32, y: f32| if along_x { [0.0, y, s] } else { [s, y, 0.0] };
+        let mut g = Group::new(&format!("bld/{id}/Link{side}"), centre + mid);
+        put(&mut g, "Floor", dim(gap, DOOR_GAP + 0.4, 0.2), off(0.0, -0.1), O::new().t(mul3(tint, [0.95, 0.95, 0.95])));
+        put(&mut g, "Ceiling", dim(gap, DOOR_GAP + 0.4, 0.2), off(0.0, ROOM_H + 0.1), O::new().t(mul3(tint, [0.6, 0.6, 0.6])));
+        for sgn in [-1.0f32, 1.0] {
+            put(&mut g, "WallLink", dim(gap, 0.2, ROOM_H), off(sgn * (DOOR_GAP * 0.5 + 0.1), ROOM_H * 0.5), O::new().t(wall_tint));
+            // the frame posts at the room end of the passage and a lamp above the door
+            let post = dim(0.12, 0.14, DOOR_TOP);
+            let mut p = off(sgn * (DOOR_GAP * 0.5 - 0.05), DOOR_TOP * 0.5);
+            if along_x {
+                p[0] = -gap * 0.5 + 0.06;
+            } else {
+                p[2] = gap * 0.5 - 0.06;
+            }
+            put(&mut g, "DoorFrame", post, p, O::new().k("wood").t([0.9, 0.8, 0.7]));
+        }
+        put(&mut g, "CeilingPanelLink", [0.8, 0.05, 0.8], off(0.0, ROOM_H - 0.12), O::new());
+        groups.push(g);
     }
 }
 
@@ -501,10 +542,10 @@ fn kitchen(mk: Mk, groups: &mut Vec<Group>) {
         put(&mut h, "HangingPan", [0.08, 0.5, 0.06], [-0.5 + i as f32 * 0.5, -0.45, 0.2], O::new().k("metal").t([0.6, 0.6, 0.65]));
     }
     groups.push(h);
-    let mut f = mk("Fridge", vec3(2.1, 0.0, 1.5));
-    put(&mut f, "FridgeBody", [1.0, 2.0, 1.0], [0.0, 1.0, 0.0], O::new().t([1.2, 1.25, 1.3]));
-    put(&mut f, "FridgeHandle", [0.05, 0.6, 0.06], [-0.52, 1.3, 0.3], O::new().k("metal"));
-    put(&mut f, "FridgeSeam", [0.9, 0.04, 0.04], [0.0, 1.4, -0.52], O::new().k("plastic"));
+    let mut f = mk("Fridge", vec3(2.3, 0.0, 0.5));
+    put(&mut f, "FridgeBody", [0.9, 1.8, 0.9], [0.0, 0.9, 0.0], O::new().t([1.2, 1.25, 1.3]));
+    put(&mut f, "FridgeHandle", [0.05, 0.6, 0.06], [-0.47, 1.2, 0.3], O::new().k("metal"));
+    put(&mut f, "FridgeSeam", [0.8, 0.04, 0.04], [0.0, 1.3, -0.47], O::new().k("plastic"));
     groups.push(f);
     let mut s = mk("Stove", vec3(-1.5, 0.0, -2.3));
     for x in [-0.3f32, 0.3] {
@@ -650,6 +691,29 @@ mod tests {
         for g in &p.groups {
             for c in &g.cubes {
                 assert!(!c.kind.is_empty() && c.size.is_finite() && c.pos.is_finite());
+            }
+        }
+    }
+
+    #[test]
+    fn doorways_that_lead_to_a_room_get_a_passage_and_blind_ones_do_not() {
+        let p = Building::parts();
+        let has = |n: &str| p.groups.iter().any(|g| g.name == n);
+        assert!(has("bld/westhall/LinkE") && has("bld/backstage/LinkE") && has("bld/dining/LinkE"));
+        assert!(has("bld/dining/LinkN") && has("bld/corner/LinkN") && has("bld/closet/LinkN") && has("bld/westhall/LinkN"));
+        assert!(!has("bld/stage/LinkN") && !has("bld/kitchen/LinkE") && !has("bld/easthall/LinkE"));
+        // the passage sits in the 2 m gap between the rooms, centred on the doorway
+        let g = p.groups.iter().find(|g| g.name == "bld/westhall/LinkE").map(|g| g.origin).unwrap_or(Vec3::ZERO);
+        assert!(near(g, Building::room_centre("westhall") + vec3(ROOM_W * 0.5 + (CELL - ROOM_W) * 0.5, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn the_kitchen_props_stay_clear_of_the_camera_corner() {
+        let defs = include_str!("../data/classic/props.json");
+        let v: serde_json::Value = serde_json::from_str(defs).unwrap_or_default();
+        for d in v["props"].as_array().cloned().unwrap_or_default() {
+            if d["room"] == "kitchen" {
+                assert!(d["pos"][2].as_f64().unwrap_or(9.0) < 0.5, "a kitchen prop near the camera fills the feed");
             }
         }
     }
