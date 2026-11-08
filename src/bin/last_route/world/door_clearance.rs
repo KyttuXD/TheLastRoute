@@ -864,7 +864,9 @@ mod tests {
             }
         }
         assert!(chunks > 300, "the sweep built {chunks} chunks");
-        assert!(regions_seen.len() >= 9, "facility types in the sweep: {regions_seen:?}");
+        // level 0 is the concept map: the 5 x 5 chunks round the spawn show the apartment, greenhouse, hospital, mall,
+        // maze and prison areas (Godot's draw used to give nine or more types there)
+        assert!(regions_seen.len() >= 6, "facility types in the sweep: {regions_seen:?}");
         assert!(doors > 500 && wide > 20, "doors {doors}, wide doors {wide}");
         assert!(lockers > 300 && vents > 100, "lockers {lockers}, vents {vents}: the sweep must still place fixtures");
     }
@@ -975,7 +977,7 @@ mod tests {
         let (mut f, site) = a_wide_door();
         let outer = site.cells[2];
         assert!(f.hunter_open(outer), "the doorway is open to the hunters to begin with");
-        f.hiding.push(Hiding { cell: outer, facing: (0, 1), room: None });
+        f.hiding.push(Hiding { cell: outer, facing: (0, 1), room: None, kind: String::new() });
         f.rebuild_grids();
         assert!(!f.hunter_open(outer), "a locker closes the cell to the hunters");
         let bad = validate(&f, &Fixtures::default());

@@ -67,6 +67,7 @@ const LEVELS: [i32; 4] = [0, -1, -2, -3];
 /// No solid prop reaches a zone or ring cell and no locker stands in one, for every flight of every shape on every level.
 #[test]
 fn no_prop_or_locker_reaches_the_zone_or_ring_of_any_stair() {
+        crate::world::route::layout::with_godot_regions(|| {
     let mut checked = 0;
     let mut bad: Vec<String> = vec![];
     for level in LEVELS {
@@ -94,7 +95,8 @@ fn no_prop_or_locker_reaches_the_zone_or_ring_of_any_stair() {
     }
     assert!(checked > 100, "only {checked} flights were checked");
     assert!(bad.is_empty(), "{} blocked cells, first ones:\n{}", bad.len(), bad.iter().take(12).cloned().collect::<Vec<_>>().join("\n"));
-}
+        });
+    }
 
 /// A body of the player's radius can walk the lattice (0.25 m, eight directions) from the far end of the clear margin
 /// to the landing on the upper level, and from the foot to the far end of the margin on the lower level, staying on

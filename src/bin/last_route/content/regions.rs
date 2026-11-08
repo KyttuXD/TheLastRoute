@@ -16,10 +16,14 @@ mod tests {
             "regions/maze_",
             "regions/sewer_rooms.json",
         ];
-        let embedded: Vec<(&str, &str)> = embedded::data_under("regions/")
+        let mut embedded: Vec<(&str, &str)> = embedded::data_under("regions/")
             .filter(|(p, _)| !OTHER.iter().any(|o| p.starts_with(o)))
             .collect();
-        assert_eq!(embedded, BUILTIN_FILES.to_vec());
+        // the built-in list is in draw order, the embedded listing is by name: the same files either way
+        let mut builtin = BUILTIN_FILES.to_vec();
+        embedded.sort();
+        builtin.sort();
+        assert_eq!(embedded, builtin);
     }
 
     /// The sewer ceiling is Godot's 3.2 m x 1.25 = 4.0 m on both sewer storeys, 1 m under the next floor (a 1 m slab

@@ -88,6 +88,8 @@ pub struct BotStats {
     pub hides: i32,
     pub relays_camped: i32,
     pub jumps: i32,
+    /// Times the runner went down (game/revive.rs).
+    pub downs: i32,
 }
 
 pub struct Bot {
@@ -130,6 +132,12 @@ pub struct Bot {
     safe_wait: f32,
     dead: bool,
     hidden_for: f32,
+    /// Bot time the runner went down (game/revive.rs), while it lies down.
+    downed_since: Option<f32>,
+    /// The current down already counted as a soft lock (it outlasted the revive timeout).
+    down_locked: bool,
+    /// Times the bot broke off for a threat on its way to each relay (by goal key); two leave the relay a while.
+    relay_flees: HashMap<(u8, i32, i32), i32>,
 }
 
 fn wrap(a: f32) -> f32 {
@@ -233,6 +241,9 @@ impl Bot {
             safe_wait: 0.0,
             dead: false,
             hidden_for: 0.0,
+            downed_since: None,
+            down_locked: false,
+            relay_flees: HashMap::new(),
         }
     }
 
@@ -308,6 +319,7 @@ impl Bot {
             "idle_max_s": r2(s.idle_max_s),
             "idle_recoveries": s.idle_recoveries,
             "escapes": s.escapes,
+            "downs": s.downs,
             "hides": s.hides,
             "relays_camped": s.relays_camped,
             "jumps": s.jumps,
@@ -325,7 +337,11 @@ impl Bot {
             // a chaser out of sight counts only up close (the port's hunters keep "chase"
             // a while after losing the runner)
             let seen = g.fac.has_line_of_sight(h.pos, g.p.pos);
+            // a chaser slower than the runner walks (Ferryn's slow stalk, gimmicks/ferryn.rs) is outwalked: only up close
+            // is it worth breaking off a goal, or the bot runs from it all floor long and never reaches a relay
+            let slow = h.moving_speed < PLAYER_WALK_SPEED * 0.8;
             let hot = match h.state {
+                State::Chase if slow => d < 4.5,
                 State::Chase => d < 20.0 && (seen || d < 9.0),
                 State::Investigate | State::Search => d < 7.0,
                 _ => false,
@@ -355,7 +371,9 @@ impl Bot {
         if let Some(hi) = threat {
             let hp = g.hunters[hi].pos;
             if let Some(s) = g.fac.safe_zone {
-                if pdist(s.center(), me) < 70.0 && !self.banned(Bot::abs_key(g, 0, s)) {
+                // like a locker, a safe zone past the hunter is no refuge: the run there goes through its arms
+                let d = pdist(s.center(), me);
+                if d < 70.0 && pdist(s.center(), hp) > d * 0.8 && !self.banned(Bot::abs_key(g, 0, s)) {
                     return Some(Goal {
                         kind: Kind::Safe,
                         at: s.center(),
@@ -701,6 +719,37 @@ impl Bot {
             *self.visits.entry(k).or_insert(0) += 1;
         }
 
+        // 0. downed (game/revive.rs): the runner lies still and cannot walk or press, so the walking clocks (stuck, idle)
+        // do not apply. The game itself must end a down within the revive timeout (a revive or the run's end): a down
+        // that lasts longer is a soft lock, counted once.
+        if g.downed.is_some() {
+            let since = match self.downed_since {
+                Some(t) => t,
+                None => {
+                    self.downed_since = Some(self.time);
+                    self.stats.downs += 1;
+                    self.event(frame, "downed", json!({ "at": [r2(g.p.pos.0), r2(g.p.pos.1)] }));
+                    self.time
+                }
+            };
+            let limit = crate::game::revive::rules().timeout_seconds + 5.0;
+            if self.time - since > limit && !self.down_locked {
+                self.down_locked = true;
+                self.stats.soft_locks += 1;
+                self.event(frame, "soft_lock", json!({ "at": [r2(g.p.pos.0), r2(g.p.pos.1)], "seconds": r2(self.time - since), "downed": true }));
+            }
+            self.goal = None;
+            self.path.clear();
+            return c;
+        }
+        if self.downed_since.take().is_some() {
+            // back up: the walking clocks start again from here, not from before the down
+            self.stuck_ref = (g.p.pos, self.time);
+            self.stuck_since = None;
+            self.stuck_level = 0;
+            self.idle_t = 0.0;
+            self.down_locked = false;
+        }
         // 1. captured: mash [E]
         if let Some(e) = &g.escape {
             if frame % 2 == 0 {
@@ -775,6 +824,20 @@ impl Bot {
         // 3. goals
         let threat_changed =
             threat.is_some() != self.goal.map(|g| g.kind.threat_goal()).unwrap_or(false);
+        // a relay the bot keeps running from (a hunter that guards its way without catching) is left a while, so the
+        // bot tries the floor's other relays first instead of going back and forth on the same corridor
+        if threat_changed && threat.is_some() {
+            if let Some(goal) = self.goal.filter(|g| matches!(g.kind, Kind::Relay(_))) {
+                let key = Bot::goal_key(g, &goal);
+                let n = self.relay_flees.entry(key).or_insert(0);
+                *n += 1;
+                if *n >= 2 {
+                    self.relay_flees.remove(&key);
+                    self.ban(key, 45.0);
+                    self.event(frame, "relay_left", json!({ "at": [r2(goal.at.0), r2(goal.at.1)] }));
+                }
+            }
+        }
         if self.goal.is_none() || (self.walk_since.is_none() && self.pick_t <= 0.0) || threat_changed {
             self.pick_t = 0.25;
             let keep_safe = self.goal.map(|g| g.kind == Kind::Safe).unwrap_or(false)
@@ -786,7 +849,15 @@ impl Bot {
                 self.set_goal(next);
             }
         }
-        let Some(goal) = self.goal else { return c };
+        let Some(goal) = self.goal else {
+            // no goal at all is standing still too: the idle watchdog below never runs, so count it here, or a bot with
+            // nothing left to pick would stand for ever without a soft lock showing
+            if moved < 0.002 {
+                self.idle_t += dt;
+                self.stats.idle_max_s = self.stats.idle_max_s.max(self.idle_t);
+            }
+            return c;
+        };
 
         // a flight is walked, not used: stand on the landing, then follow its walk path until the level flips
         if let Kind::Stairs(i) = goal.kind {

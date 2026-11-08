@@ -13,5 +13,15 @@
   "slowdown_floor": 0.40,
   "tune_gain": 0.25,
   "placed_tune_rates": [1.0, 1.122, 0.891, 1.26],
-  "placed_min_gain": 0.002
+  "placed_min_gain": 0.002,
+  "_wind_note": "wind_seconds is the hold time from empty to 100%; overwind_seconds is how long past 100% before the box jams; jam_cooldown_seconds is the lock-out after a jam; jam_noise and jam_noise_seconds are the noise burst hunters hear; prompt_ and message_ are the upper-case texts.",
+  "wind_seconds": 4.0,
+  "overwind_seconds": 1.5,
+  "jam_cooldown_seconds": 20.0,
+  "jam_noise": 1.0,
+  "jam_noise_seconds": 2.5,
+  "prompt_wind": "[E] WIND (HOLD)",
+  "prompt_jammed": "JAMMED",
+  "message_jammed": "THE MUSIC BOX JAMMED",
+  "message_left_click": "HOLD [E] TO WIND THE MUSIC BOX"
 }

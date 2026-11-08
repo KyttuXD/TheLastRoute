@@ -1135,6 +1135,9 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 g.remote_hunters = remote;
             }
             g.public_route = !remote && net.as_ref().is_some_and(|n| n.is_public_route());
+            // the other runners of the room, who could revive this runner if it goes down (game/revive.rs); a guest's
+            // roster leaves its host out, so the host counts too
+            g.room_teammates = net.as_ref().map_or(0, |n| n.roster_peers().len() + usize::from(!n.is_host()));
         }
         // a guest that joined a running route is told how many relays the host has sabotaged (the late joiner's snapshot)
         if loading.is_none() {

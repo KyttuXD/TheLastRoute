@@ -261,6 +261,11 @@ impl Game {
         if let Some((done, need, left)) = self.signal_route() {
             return Some(format!("SIGNAL ROUTE // [E] {done}/{need} // {left:.0} S"));
         }
+        // a music box in hand and nothing else to use: hold to wind it, or JAMMED while it refuses
+        if self.focus.is_none() && self.box_in_hand() {
+            let r = super::music_box::rules();
+            return Some(if self.box_wind.jammed() { r.prompt_jammed.clone() } else { r.prompt_wind.clone() });
+        }
         let f = self.focus?;
         Some(match f {
             Focus::Relay(_) => "[E] RECOVER RELAY".into(),
@@ -273,7 +278,10 @@ impl Game {
                 } else if self.hiding_full(i) {
                     hiding_slots().full_text.clone()
                 } else {
-                    "[E] HIDE".into()
+                    match crate::world::fixtures::hide_rules().label_of(&self.fac.hiding[i].kind) {
+                        Some(l) if !self.fac.hiding[i].kind.is_empty() => format!("[E] HIDE // {l}"),
+                        _ => "[E] HIDE".into(),
+                    }
                 }
             }
             Focus::Safe => "[E] REST AT SAFE ZONE".into(),
@@ -440,7 +448,7 @@ impl Game {
         self.relays_taken[i] = true;
         self.relays_collected += 1;
         self.score += crate::game::progression::Progression::load().relay_score;
-        crate::audio::sound::collect();
+        crate::audio::sound::event("relay_pickup", 0.0, 0.0);
         match self.actor_name(actor) {
             Some(name) => self.announce(&format!("{name} RECOVERED A RELAY")),
             None => self.announce("RELAY ONLINE"),
@@ -506,7 +514,7 @@ impl Game {
         }
         if self.grant(Item::Battery, 1) {
             self.batteries_taken[i] = true;
-            crate::audio::sound::collect();
+            crate::audio::sound::event("battery_pickup", 0.0, 0.0);
             self.notice_taken(actor, "FLASHLIGHT BATTERY");
             true
         } else {
@@ -526,7 +534,7 @@ impl Game {
         }
         if self.grant(item, n) {
             self.pickups[i].taken = true;
-            crate::audio::sound::collect();
+            crate::audio::sound::event("item_pickup", 0.0, 0.0);
             self.notice_taken(actor, item.label());
             true
         } else if item == Item::MusicBox && self.specialty.box_slot_visible() {
@@ -617,6 +625,7 @@ impl Game {
         }
         self.p.hidden = Some(i);
         self.p.flashlight_on = false;
+        crate::audio::sound::event("locker_open", 0.0, 0.0);
         let l = &self.fac.hiding[i];
         self.p.pos = hiding_slot_pos(self.fac.locker_center(l), l.facing, slot);
         // the view turns out of the spot over the entry glide (game/mod.rs `apply_look`), not in one frame
@@ -650,8 +659,11 @@ impl Game {
     }
 
     /// Capacity of spot `i` (data per hiding kind; every spot is a locker for now).
-    pub(crate) fn hiding_capacity(&self, _i: usize) -> usize {
-        hiding_slots().capacity_of("locker")
+    pub(crate) fn hiding_capacity(&self, i: usize) -> usize {
+        let kind = self.fac.hiding.get(i).map(|h| h.kind.as_str()).unwrap_or("");
+        crate::world::fixtures::hide_rules()
+            .capacity_of(kind)
+            .unwrap_or_else(|| hiding_slots().capacity_of("locker"))
     }
 
     pub(crate) fn hiding_full(&self, i: usize) -> bool {
@@ -672,6 +684,7 @@ impl Game {
     pub(super) fn leave_locker(&mut self, forced_to: Option<(f32, f32)>) {
         if let Some(i) = self.p.hidden.take() {
             self.hide_ease = None;
+            crate::audio::sound::event("locker_close", 0.0, 0.0);
             self.p.hide_lock = 0.0;
             self.p.pos =
                 forced_to.unwrap_or_else(|| crate::hunters::gimmicks::hiding_exit(&self.fac, i));
@@ -689,7 +702,7 @@ impl Game {
             self.p.in_vent = true;
             self.p.vent_entry = i;
             self.p.vent_time = 0.0;
-            crate::audio::sound::door(true); // the hatch (player_controller_3d.gd 3823)
+            crate::audio::sound::event("vent_open", 0.0, 0.0); // the hatch (player_controller_3d.gd 3823)
             let far = self.fix.vents[(i + 2) % n].center();
             for h in self.hunters.iter_mut() {
                 if matches!(&h.gimmick, Gimmick::Verrine(v) if !v.physical()) && h.active {
@@ -703,7 +716,7 @@ impl Game {
             let (cx, cy) = self.fix.vents[self.p.vent_entry].center();
             self.p.pos = self.fac.nearest_open_or(cx, cy, 0.27);
             self.p.in_vent = false;
-            crate::audio::sound::door(false); // the hatch (player_controller_3d.gd 3811)
+            crate::audio::sound::event("vent_close", 0.0, 0.0); // the hatch (player_controller_3d.gd 3811)
             self.say("VENT NETWORK EXITED");
             return;
         }
@@ -845,9 +858,46 @@ impl Game {
     /// Held interactions: the valve wheels, and Zellia's store choices.
     pub(super) fn update_holds(&mut self, dt: f32, c: &super::Controls, _sounds: &Sounds) {
         self.update_valve_hold(dt, c.interact_held);
+        self.update_box_wind(dt, c.interact_held);
         if let Some(choice) = c.shop_choice {
             self.shop_trade(choice);
         }
+    }
+
+    /// True while a music box is in the runner's hand: a hotbar box selected, or the selected specialty slot holding one.
+    pub(crate) fn box_in_hand(&self) -> bool {
+        match self.specialty.selected {
+            Some(i) => self.specialty.items.get(i).copied().flatten() == Some(super::specialty::SpecItem::MusicBox),
+            None => self.selected_item() == Some(super::items::Item::MusicBox),
+        }
+    }
+
+    /// Left click with a box in hand: the box stays (it is never spent by a click); the click only hints at the hold.
+    pub(super) fn left_click_music_box(&mut self) {
+        let text = super::music_box::rules().message_left_click.clone();
+        self.say(&text);
+    }
+
+    /// Hold interact with a music box in hand and nothing else in focus: it winds back up to 100 %; held on past that it
+    /// jams (stops, refuses winding for a cooldown, loud noise). The jam cooldown runs every frame. Returns the event.
+    pub(super) fn update_box_wind(&mut self, dt: f32, held: bool) -> super::music_box::WindEvent {
+        use super::music_box::{rules, wound_seconds, WindEvent};
+        let winding = held && self.box_in_hand() && self.focus.is_none() && self.p.stun <= 0.0;
+        let full = wound_seconds(self.difficulty.id());
+        let before = self.music_box_left;
+        let ev = self.box_wind.step(dt, winding, &mut self.music_box_left, full);
+        if ev == WindEvent::Winding && before <= 0.0 && self.music_box_left > 0.0 {
+            crate::audio::sound::event("music_box_wind", 0.0, 0.0);
+        }
+        if ev == WindEvent::Jammed {
+            let r = rules();
+            self.p.noise_burst = r.jam_noise;
+            self.p.noise_burst_timer = r.jam_noise_seconds;
+            crate::audio::sound::event("music_box_jam", 0.0, 0.0);
+            let text = r.message_jammed.clone();
+            self.say(&text);
+        }
+        ev
     }
 
     fn shop_trade(&mut self, choice: usize) {
@@ -914,6 +964,56 @@ pub(super) fn valve_keys(prop: &crate::world::facility::Prop) -> (String, String
 mod tests {
     use super::*;
     use crate::config::Difficulty;
+
+    fn box_game() -> Game {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "BOX-7", 0, &content, &catalog);
+        g.specialty.selected = None;
+        g.slots[2] = Some(crate::game::items::Slot { item: crate::game::items::Item::MusicBox, n: 1 });
+        g.select(2);
+        g.focus = None;
+        g.p.stun = 0.0;
+        g.music_box_left = 0.0;
+        g
+    }
+
+    #[test]
+    fn a_left_click_leaves_the_music_box_in_the_pack() {
+        let mut g = box_game();
+        let c = crate::game::Controls { use_item: true, ..Default::default() };
+        g.update_tools(&c, &Sounds::default());
+        assert!(g.slots[2].is_some_and(|s| s.item == crate::game::items::Item::MusicBox), "the click does not spend it");
+    }
+
+    #[test]
+    fn holding_interact_winds_the_box_in_hand_to_full_and_prompts_the_hold() {
+        use crate::game::music_box::{rules, wound_seconds};
+        let mut g = box_game();
+        assert_eq!(g.focus_prompt().as_deref(), Some("[E] WIND (HOLD)"));
+        g.update_box_wind(rules().wind_seconds * 0.5, true);
+        assert!(g.music_box_left > 0.0 && g.music_box_left < wound_seconds("standard"));
+        g.update_box_wind(rules().wind_seconds, true);
+        assert_eq!(g.music_box_left, wound_seconds("standard"), "wound to 100 %");
+        g.update_box_wind(0.5, false);
+        assert!(!g.box_wind.jammed(), "releasing at 100 % does not jam");
+    }
+
+    #[test]
+    fn overwinding_jams_the_box_and_it_refuses_until_the_cooldown_ends() {
+        use crate::game::music_box::{rules, WindEvent};
+        let mut g = box_game();
+        g.music_box_left = crate::game::music_box::wound_seconds("standard");
+        assert_eq!(g.update_box_wind(rules().overwind_seconds + 0.1, true), WindEvent::Jammed);
+        assert_eq!(g.music_box_left, 0.0, "it stops playing");
+        assert_eq!(g.p.noise_burst, rules().jam_noise, "hunters hear the jam");
+        assert_eq!(g.focus_prompt().as_deref(), Some("JAMMED"));
+        assert_eq!(g.update_box_wind(0.5, true), WindEvent::Refused);
+        assert_eq!(g.music_box_left, 0.0);
+        g.update_box_wind(rules().jam_cooldown_seconds + 1.0, false);
+        assert_eq!(g.focus_prompt().as_deref(), Some("[E] WIND (HOLD)"));
+        g.update_box_wind(0.5, true);
+        assert!(g.music_box_left > 0.0, "winding works again");
+    }
 
     #[test]
     fn hiding_capacity_is_enforced_and_leaving_frees_the_slot() {

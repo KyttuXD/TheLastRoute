@@ -1,0 +1,167 @@
+{
+	"schema": "lr.ambience/2",
+	"note": "Per-region ambience beds. Layer kinds are the Godot AmbienceSynth kinds (noise, hum, pulse, chirp, wind, thump, creak, groan, water, crackle). The beds for the map-concept regions plus sewer and inferno are ports of the Godot district and level beds. Volumes are linear multipliers on the bed; loop and fade times are in seconds.",
+	"loop_seconds": 10.0,
+	"crossfade_seconds": 1.0,
+	"target_rms_db": -54.0,
+	"region_fade_seconds": 1.6,
+	"gain": 0.5,
+	"duck_db_per_unit": -14.0,
+	"fallback": "maze",
+	"spaces": {
+		"small": { "wet": 0.10, "feedback": 0.55 },
+		"medium": { "wet": 0.18, "feedback": 0.68 },
+		"large": { "wet": 0.30, "feedback": 0.80 },
+		"huge": { "wet": 0.40, "feedback": 0.86 }
+	},
+	"aliases": {
+		"apartment": "apartments",
+		"hotel": "apartments",
+		"mansion": "apartments",
+		"laboratory": "lab",
+		"hospital": "lab",
+		"office": "offices",
+		"mall": "offices",
+		"cold": "ice",
+		"wynelle": "ice",
+		"stall": "stalls",
+		"restrooms": "stalls",
+		"tunnel": "tunnels",
+		"mineshaft": "tunnels",
+		"mixed": "utility",
+		"gothic": "utility",
+		"carnival": "utility",
+		"beach": "greenhouse",
+		"nature": "greenhouse",
+		"maze_boiler": "maze",
+		"maze_courtyard": "maze",
+		"maze_library": "maze",
+		"maze_warehouse": "maze",
+		"spawn": "maze",
+		"sewer2": "sewer",
+		"sewer_pipes": "sewer",
+		"sewer_rooms": "sewer",
+		"inferno_caves": "inferno",
+		"inferno0": "inferno_zero",
+		"inferno_level_0": "inferno_zero"
+	},
+	"regions": ["apartments", "prison", "maze", "ice", "stalls", "inferno_zero", "tunnels", "lab", "offices", "utility", "greenhouse", "sewer", "inferno"],
+	"beds": {
+		"apartments": {
+			"space": "small", "volume": 1.0,
+			"layers": [
+				{ "kind": "hum", "hz": 100.0, "vol": 0.006 },
+				{ "kind": "noise", "hz": 240.0, "vol": 0.003 },
+				{ "kind": "pulse", "hz": 1800.0, "vol": 0.003, "every": 1.5, "len": 0.02 }
+			]
+		},
+		"prison": {
+			"space": "medium", "volume": 1.0,
+			"layers": [
+				{ "kind": "hum", "hz": 50.0, "vol": 0.008 },
+				{ "kind": "noise", "hz": 180.0, "vol": 0.003 },
+				{ "kind": "pulse", "hz": 140.0, "vol": 0.014, "every": 3.0, "len": 0.12 },
+				{ "kind": "pulse", "hz": 900.0, "vol": 0.003, "every": 4.0, "len": 0.03 }
+			]
+		},
+		"maze": {
+			"space": "medium", "volume": 1.0,
+			"layers": [
+				{ "kind": "hum", "hz": 120.0, "vol": 0.01 },
+				{ "kind": "noise", "hz": 260.0, "vol": 0.006 },
+				{ "kind": "thump", "hz": 48.0, "vol": 0.03, "every": 4.2 }
+			]
+		},
+		"ice": {
+			"space": "large", "volume": 1.0,
+			"layers": [
+				{ "kind": "wind", "hz": 700.0, "vol": 0.01, "q": 2.5, "gust": 6.0 },
+				{ "kind": "hum", "hz": 60.0, "vol": 0.003 },
+				{ "kind": "creak", "hz": 600.0, "vol": 0.004, "every": 5.5 },
+				{ "kind": "pulse", "hz": 2600.0, "vol": 0.002, "every": 3.5, "len": 0.04 }
+			]
+		},
+		"stalls": {
+			"space": "small", "volume": 1.0,
+			"layers": [
+				{ "kind": "noise", "hz": 500.0, "vol": 0.005 },
+				{ "kind": "hum", "hz": 120.0, "vol": 0.004 },
+				{ "kind": "water", "hz": 1100.0, "vol": 0.006, "density": 25.0, "swell": 7.0 },
+				{ "kind": "pulse", "hz": 1250.0, "vol": 0.006, "every": 0.9, "len": 0.05 },
+				{ "kind": "pulse", "hz": 2200.0, "vol": 0.003, "every": 2.4, "len": 0.03 }
+			]
+		},
+		"inferno_zero": {
+			"space": "large", "volume": 0.8,
+			"layers": [
+				{ "kind": "noise", "hz": 140.0, "vol": 0.012, "swell": 2.0 },
+				{ "kind": "hum", "hz": 41.0, "vol": 0.01 },
+				{ "kind": "crackle", "hz": 2100.0, "vol": 0.004, "rate": 1.5 }
+			]
+		},
+		"tunnels": {
+			"space": "large", "volume": 1.0,
+			"layers": [
+				{ "kind": "wind", "hz": 150.0, "vol": 0.008, "q": 3.0, "gust": 8.0 },
+				{ "kind": "hum", "hz": 38.0, "vol": 0.004 },
+				{ "kind": "thump", "hz": 40.0, "vol": 0.02, "every": 5.0 },
+				{ "kind": "creak", "hz": 380.0, "vol": 0.005, "every": 4.5 },
+				{ "kind": "pulse", "hz": 1300.0, "vol": 0.005, "every": 2.2, "len": 0.05 }
+			]
+		},
+		"lab": {
+			"space": "small", "volume": 1.0,
+			"layers": [
+				{ "kind": "noise", "hz": 650.0, "vol": 0.009 },
+				{ "kind": "hum", "hz": 120.0, "vol": 0.003 },
+				{ "kind": "pulse", "hz": 3000.0, "vol": 0.004, "every": 6.0, "len": 0.7 }
+			]
+		},
+		"offices": {
+			"space": "small", "volume": 1.0,
+			"layers": [
+				{ "kind": "hum", "hz": 120.0, "vol": 0.011 },
+				{ "kind": "noise", "hz": 500.0, "vol": 0.005 },
+				{ "kind": "pulse", "hz": 2200.0, "vol": 0.002, "every": 3.0, "len": 0.03 }
+			]
+		},
+		"utility": {
+			"space": "medium", "volume": 1.0,
+			"layers": [
+				{ "kind": "hum", "hz": 60.0, "vol": 0.008 },
+				{ "kind": "noise", "hz": 260.0, "vol": 0.005 },
+				{ "kind": "groan", "hz": 85.0, "vol": 0.006, "every": 7.0 },
+				{ "kind": "pulse", "hz": 1500.0, "vol": 0.004, "every": 2.0, "len": 0.04 }
+			]
+		},
+		"greenhouse": {
+			"space": "medium", "volume": 1.0,
+			"layers": [
+				{ "kind": "noise", "hz": 2200.0, "vol": 0.004, "swell": 3.0 },
+				{ "kind": "water", "hz": 1100.0, "vol": 0.004, "density": 12.0, "swell": 6.0 },
+				{ "kind": "pulse", "hz": 1400.0, "vol": 0.004, "every": 1.2, "len": 0.04 },
+				{ "kind": "chirp", "hz": 3200.0, "vol": 0.005, "count": 4 }
+			]
+		},
+		"sewer": {
+			"space": "large", "volume": 1.0,
+			"layers": [
+				{ "kind": "water", "hz": 1300.0, "vol": 0.009, "density": 55.0, "swell": 5.0 },
+				{ "kind": "pulse", "hz": 1250.0, "vol": 0.006, "every": 1.0, "len": 0.05 },
+				{ "kind": "groan", "hz": 85.0, "vol": 0.01, "every": 5.5 },
+				{ "kind": "thump", "hz": 60.0, "vol": 0.012, "every": 6.5 },
+				{ "kind": "chirp", "hz": 4200.0, "vol": 0.003, "count": 2 }
+			]
+		},
+		"inferno": {
+			"space": "large", "volume": 1.0,
+			"layers": [
+				{ "kind": "noise", "hz": 140.0, "vol": 0.016, "swell": 2.0 },
+				{ "kind": "hum", "hz": 41.0, "vol": 0.012 },
+				{ "kind": "crackle", "hz": 2100.0, "vol": 0.006, "rate": 3.5 },
+				{ "kind": "noise", "hz": 55.0, "vol": 0.016, "swell": 9.0 },
+				{ "kind": "thump", "hz": 32.0, "vol": 0.02, "every": 6.0 }
+			]
+		}
+	}
+}

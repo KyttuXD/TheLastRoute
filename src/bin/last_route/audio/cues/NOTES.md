@@ -43,7 +43,7 @@ cues::cue_names()                       // 164 names: 96 plain, 36 nw_*, 32 step
 cues::wav_bytes(&frames)                // for macroquad::audio::load_sound_from_bytes
 cues::rules::*                          // what each Sound.<method>() plays, the throttles, and main_3d's pan/volume rules
 cues::music_box::*                      // the tune (Night Watch's), the percentage slowdown + run buffer, the hum loop and positional gains
-cues::ambience(region, seconds)         // silence: no bed plays on the finite route (see below)
+cues::ambience(region, seconds)         // a seamless bed for a region (data/audio/ambience.json); cues::extra: data cues + events
 ```
 
 `rules::Play { cue, pan, intensity, gain, bus }`: render `cue` at `pan` and `intensity` (`Play::frames()`, cache by
@@ -148,7 +148,9 @@ tone, resonant hums, ticks, chirps, wind, thuds, creaks, groans, water, crackle,
 by Godot's PCG32). There is also a level layer (`level_ambience.gd`, `emitter_loops.gd`, `falls_loop.gd`). **Neither runs
 on the finite route.** `Sound.set_ambience` is only called by `infinite_route_test.gd` (1754, 7937), and LevelAmbience is
 only created there (193). `PlatformProfile` only pre-renders beds and never plays one. So the README is right: there is no
-continuous drone in main_3d. `ambience()` returns silence of the requested length. The only continuous sounds on the
+continuous drone in main_3d. The port goes further (KT, map concept): `ambience()` now renders a seamless bed per region from
+data/audio/ambience.json (same layer kinds and reverb; own RNG, so same character, not the same samples) and
+`world::ambience` crossfades them when the runner changes region. Before that, the only continuous sounds on the
 route are `glyra_hum` (and `heartbeat`, which repeats).
 
 ## Not on the finite route (ported for completeness)

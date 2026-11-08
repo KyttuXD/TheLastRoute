@@ -81,6 +81,11 @@ fn scaled(cue: &str, pan: f64, intensity: f64) -> Play {
 
 pub const SCALED_PAN_STEP: f64 = 0.25;
 
+/// A pan the way `scaled` snaps it (data events that play scaled).
+pub fn snap_scaled_pan(pan: f64) -> f64 {
+    snapped(pan.clamp(-1.0, 1.0), SCALED_PAN_STEP)
+}
+
 // ---- stateless cues (one per Sound method) ----
 
 /// Relay, battery, coin, tool pickup and locked-cache open (route_interactable_3d.gd 747-766, 1048; main_3d.gd 1567).

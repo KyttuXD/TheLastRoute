@@ -9,7 +9,7 @@
   },
   "smart": [50, 70, 85, 100],
   "coarse": { "speed": 4.0, "_source": "Rust-only figure: a bot outside the loaded window walks chunk to chunk toward the runner at the walking speed (4 m/s) and is placed on a dry open cell once its position is on the window floor" },
-  "intents": ["hide", "flee", "revive", "goal", "locker", "follow"],
+  "intents": ["hide", "flee", "revive", "goal", "locker", "life", "follow"],
   "_intents_note": "relay and pickup are still valid intent names, but the goal intent already takes every relay and useful item, so the standard list leaves them out",
   "revive": {
     "range_factor": 2.0,
@@ -97,6 +97,36 @@
     "heal_item": "stim_pack",
     "stuck": { "seconds": 2.0, "progress": 0.25, "aside_seconds": 0.6, "door_reach": 2.5, "ban_seconds": 20.0 },
     "_source": "Rust-only figures: a bot scores relays 100, a battery or heal item 70 while the lamp is under 30 percent or stamina under 35 percent, a useful pickup 40 and the exit 20 (once the level's relays are done), less 0.1 per path step up to 25, so a kind never loses to a lower one; a hunter-searched cell costs 12 steps; it picks again at most every 2 s (scaled faster by smart) and gives a goal up after 90 s; leash: a bot more than 36 m from the runner for 50 s drops its goal and takes none until it is back within 36 m. The follow intent stays last as the fallback. stuck (headless/bot.rs recovery ladder): after 2 s without moving 0.25 m a bot repaths, then presses a shut door within 2.5 m, then steps aside 0.6 s in a seeded direction, then gives the goal up for 20 s"
+  },
+  "life": {
+    "range": 9.0,
+    "min_distance": 2.0,
+    "arrive": 0.7,
+    "walk_timeout": 14.0,
+    "recent": 4,
+    "pause": [1.5, 5.0],
+    "spawn_pause": [0.5, 2.0],
+    "look": { "degrees": 140.0, "sweeps": 1.5 },
+    "emote_gap": 20.0,
+    "emotes": { "wave": 3, "point": 1, "cheer": 1, "shrug": 1, "bow": 1, "yes": 1, "no": 1, "dance": 1 },
+    "poi": {
+      "here": { "weight": 3.0, "acts": { "look_around": 4, "idle": 4, "crouch": 1, "emote": 2 } },
+      "room_centre": { "weight": 2.0, "acts": { "look_around": 3, "idle": 2, "crouch": 1, "sprint_burst": 1, "emote": 1 } },
+      "locker": { "weight": 2.0, "acts": { "check_locker": 1 } },
+      "door": { "weight": 2.0, "acts": { "check_door": 1 } },
+      "relay": { "weight": 1.5, "acts": { "inspect_relay": 1 } }
+    },
+    "durations": {
+      "look_around": [2.0, 4.0],
+      "check_locker": [1.5, 3.0],
+      "check_door": [1.5, 3.0],
+      "inspect_relay": [2.5, 4.5],
+      "idle": [2.0, 5.0],
+      "crouch": [2.0, 4.0],
+      "sprint_burst": [0.8, 1.6],
+      "emote": [2.0, 3.0]
+    },
+    "_source": "Rust-only figures: when no hunter is near and no errand or goal applies, a bot acts like a player who has stopped to look about. It picks a point from the hunter points of interest (hunters/activities.rs: room centres, lockers, relays, doors) or stays where it is, walks there (sprint_burst runs), does an activity for a few seconds (look around, check a locker or a door, inspect a relay, idle, crouch, play an emote from data/player/emotes.json), then pauses. range is the farthest it goes from the runner; past it the follow intent walks it back and it resumes once it is back in follow range. Weights are relative; durations and pauses are [min, max] seconds."
   },
   "tasks": ["door"]
 }

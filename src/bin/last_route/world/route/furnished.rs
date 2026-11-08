@@ -11,8 +11,9 @@
 //!
 //! Float arithmetic follows GDScript: a `Vector2`/`Vector3` is `f32`, a plain float expression is `f64`.
 //!
-//! Not ported here: `RoomRecipes` beyond the one shipped recipe (music_store, transcribed from
-//! data/rooms/music_store.json); any other data recipe is absent, so its room gets no props. The post passes
+//! Not ported here: `RoomRecipes` beyond the one shipped Godot recipe (music_store, transcribed from
+//! data/rooms/music_store.json). The map-concept regions have their own data recipes (data/region_rooms, read by
+//! `region_rooms`); any other data recipe is absent, so its room gets no props. The post passes
 //! (GeometryResolve.push_out, PlacementClearance.clear) are not applied, so a template prop that Godot removes
 //! there is still made here. `interaction_for` checks the seat and bed words only for the template names used in
 //! the goldens (its MusicProps and CarnivalBooths branches are not ported; for those names they never give sit
@@ -30,6 +31,11 @@ use super::props::{self, Mark, Prop, Reserved};
 use crate::world::catalog::Catalog;
 use crate::world::godot_sort;
 use crate::world::rng::Rng;
+
+/// The per-region room and prop tables (data/region_rooms/*.json): the data recipes of the map-concept regions.
+/// Declared here, as a child of this module, so the recipes reach `sp` and `Spec` without a hub file.
+#[path = "region_rooms.rs"]
+pub mod region_rooms;
 
 // ----------------------------------------------------------------------------------------------------------
 // tables and the catalog
@@ -594,7 +600,7 @@ fn template_for(room_type: &str, region: &str) -> Option<String> {
                     || room_type == "pod_room")
             {
                 room_type.into()
-            } else if has_recipe(room_type) {
+            } else if has_recipe(region, room_type) {
                 room_type.into()
             } else {
                 return None;
@@ -691,9 +697,9 @@ pub fn furnished_room_props(world: &str, c: Coord, region: &str, room: &Room, gr
     let mirror: i32 = if rng.next_float() < 0.5 { -1 } else { 1 };
     let mut specs = room_template_specs(&template, region, side_span, depth_span, mirror, &mut rng);
     // 3159-3164: a room with no code recipe takes its data recipe, on its own stream
-    if specs.is_empty() && has_recipe(&room.room_type) {
+    if specs.is_empty() && has_recipe(region, &room.room_type) {
         let mut data = Rng::new(&format!("{world}:ROOMDATA:{room_id}"));
-        specs = recipe_specs(&room.room_type, side_span, depth_span, &mut data);
+        specs = recipe_specs(region, &room.room_type, side_span, depth_span, &mut data);
     }
     // 3165: the VARIETY stream
     let mut variety = Rng::new(&format!("{world}:VARIETY:{tag}:{room_id}"));
@@ -3050,17 +3056,18 @@ fn music_wing_specs(template: &str, half: i32, depth_span: i32, mirror: i32) -> 
     specs
 }
 
-/// Whether `RoomRecipes.has` holds for a room type. Only the shipped recipe (data/rooms/music_store.json) is
-/// ported: the built-in data of the game, with no content packs.
-fn has_recipe(room_type: &str) -> bool {
-    room_type == "music_store"
+/// Whether `RoomRecipes.has` holds for a room type: the shipped Godot recipe (data/rooms/music_store.json) or a data
+/// room of the region's table (data/region_rooms/<region>.json, `template: "data"`).
+fn has_recipe(region: &str, room_type: &str) -> bool {
+    room_type == "music_store" || region_rooms::has_data_recipe(region, room_type)
 }
 
 /// `RoomRecipes.specs(room_type, side_span, depth_span, rng, region_types)` (room_recipes.gd) for the shipped
 /// recipe. One draw for the mirror, then the items in order (music_store.json has no `chance` or `choose`).
-fn recipe_specs(room_type: &str, side_span: i32, depth_span: i32, rng: &mut Rng) -> Vec<Spec> {
+fn recipe_specs(region: &str, room_type: &str, side_span: i32, depth_span: i32, rng: &mut Rng) -> Vec<Spec> {
     if room_type != "music_store" {
-        return Vec::new();
+        // a data room of the region's table; its entrance column stays clear like a code template's
+        return keep_entrance_clear(region_rooms::specs(region, room_type, side_span, depth_span, rng), depth_span);
     }
     // the sizes of the recipe: back 0, front depth - 3, mid depth / 2, half side / 2
     let front = depth_span - 3;
@@ -3213,5 +3220,193 @@ mod tests {
             }
         }
         assert!(beds > 0, "the sampled live chunks place no beds");
+    }
+
+    // ------------------------------------------------------------------------------------------------------
+    // the region room and prop tables (data/region_rooms/*.json) of KT's map concept
+
+    /// The regions of the map concept: the catalogue ids, which are the data file names (data/regions/<id>.json and
+    /// data/region_rooms/<id>.json).
+    const CONCEPT_REGIONS: [&str; 11] =
+        ["apartment", "prison", "maze", "ice", "stalls", "inferno0", "tunnels", "lab", "offices", "utility", "greenhouse"];
+    /// The concept regions that are new files (the other five are the reworked existing ones).
+    const NEW_REGIONS: [&str; 6] = ["ice", "stalls", "inferno0", "tunnels", "offices", "utility"];
+
+    fn region_file(id: &str) -> serde_json::Value {
+        let key = format!("regions/{id}.json");
+        let (_, text) = crate::content::embedded::data_under(&key).next().unwrap_or_else(|| panic!("{key} is embedded"));
+        serde_json::from_str(text).unwrap()
+    }
+
+    fn strings(v: &serde_json::Value) -> Vec<String> {
+        v.as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect()
+    }
+
+    #[test]
+    fn every_concept_region_has_a_room_table_and_a_prop_table() {
+        for id in CONCEPT_REGIONS {
+            let t = region_rooms::table(id).unwrap_or_else(|| panic!("{id} has a room table"));
+            assert!(!t.rooms.is_empty(), "{id}: room table");
+            assert!(!t.props.is_empty(), "{id}: prop table");
+            let file = region_file(id);
+            // the catalogue row and the tables agree: the prop_set is covered by the prop table, the roles by the rooms
+            let props: Vec<&str> = t.props.iter().map(|p| p.prop_type.as_str()).collect();
+            for p in file["prop_set"].as_array().unwrap() {
+                let ty = p["type"].as_str().unwrap();
+                assert!(props.contains(&ty), "{id}: prop_set type {ty} is in the prop table");
+            }
+            let roles: Vec<&str> = t.rooms.iter().map(|r| r.role.as_str()).collect();
+            for r in strings(&file["room_roles"]) {
+                assert!(roles.contains(&r.as_str()) || t.replaces.contains(&r), "{id}: room role {r} is in the room table");
+            }
+            if NEW_REGIONS.contains(&id) {
+                // a new region's catalogue row is exactly the table's weighted role list
+                assert_eq!(strings(&file["room_roles"]), t.role_list(), "{id}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_room_has_a_template_and_every_recipe_prop_a_model_and_a_size() {
+        for id in CONCEPT_REGIONS {
+            let t = region_rooms::table(id).unwrap();
+            for r in &t.rooms {
+                assert!(template_for(&r.role, id).is_some(), "{id}/{}: a code or data template furnishes it", r.role);
+                if r.template == region_rooms::Template::Data {
+                    assert!(has_recipe(id, &r.role), "{id}/{}", r.role);
+                }
+                for ty in r.recipe_types() {
+                    assert!(has_model(ty), "{id}/{}: {ty} has a model", r.role);
+                    assert!(
+                        lookup(TEMPLATE_PROP_SIZES, ty).is_some() || lookup(PROP_COLLIDER_SIZES, ty).is_some(),
+                        "{id}/{}: {ty} has a size",
+                        r.role
+                    );
+                    assert!(t.props.iter().any(|p| p.prop_type == ty), "{id}/{}: {ty} is in the prop table", r.role);
+                }
+            }
+            for rule in &t.tunnel_dressing {
+                assert!(has_model(&rule.prop_type), "{id}: tunnel prop {} has a model", rule.prop_type);
+                assert!(t.props.iter().any(|p| p.prop_type == rule.prop_type), "{id}: tunnel prop in the prop table");
+            }
+        }
+    }
+
+    #[test]
+    fn the_concept_regions_hold_the_rooms_the_map_asks_for() {
+        let has = |id: &str, role: &str| region_rooms::room(id, role).is_some();
+        // apartments: bedrooms, kitchens, living rooms
+        assert!(has("apartment", "bedroom") && has("apartment", "kitchen") && has("apartment", "living_room"));
+        // prison: cell rows and one big mess hall with six tables
+        assert!(has("prison", "prison_cell_row") && has("prison", "prison_mess_hall"));
+        // stalls: many small restrooms (small rooms, several restroom roles)
+        let stalls = region_rooms::table("stalls").unwrap();
+        assert!(stalls.rooms.iter().all(|r| r.max[0] <= 9 && r.max[1] <= 9));
+        assert!(stalls.rooms.len() >= 4);
+        // laboratory: benches, fume hoods, cages
+        let lab: Vec<&str> = region_rooms::room("lab", "fume_lab").unwrap().recipe_types();
+        assert!(lab.contains(&"labBench") && lab.contains(&"fumeHood"));
+        assert!(region_rooms::room("lab", "cage_room").unwrap().recipe_types().contains(&"containmentCell"));
+        // offices: cubicle farms and meeting rooms; greenhouse: planters, beds, sheds
+        assert!(has("offices", "cubicle_farm") && has("offices", "meeting_room"));
+        assert!(has("greenhouse", "plant_beds") && has("greenhouse", "garden_shed"));
+        // the level-0 inferno-like region is rarer than a normal region; the undecided one is flagged
+        assert!(region_rooms::table("inferno0").unwrap().relative_weight < 1.0);
+        assert!(region_rooms::table("utility").unwrap().undecided);
+        // mineshaft tunnels are 3 cells wide and carry supports, carts and lamps
+        let tunnels = region_rooms::table("tunnels").unwrap();
+        assert_eq!(tunnels.tunnel_width, 3);
+        let types: Vec<&str> = tunnels.tunnel_dressing.iter().map(|r| r.prop_type.as_str()).collect();
+        assert!(types.contains(&"basaltPillar") && types.contains(&"wateringCart") && types.contains(&"floorLamp"));
+    }
+
+    /// Whatever the room size and mirror, a data room asks for nothing outside the room's interior.
+    #[test]
+    fn data_room_specs_stay_inside_the_room() {
+        for id in CONCEPT_REGIONS {
+            let t = region_rooms::table(id).unwrap();
+            for r in t.rooms.iter().filter(|r| r.template == region_rooms::Template::Data) {
+                for (side_span, depth_span) in [(r.min[0], r.min[1]), (r.preferred[0], r.preferred[1]), (r.max[0], r.max[1]), (9, 21), (21, 9)] {
+                    let half = (side_span - 3) / 2;
+                    for seed in 0..4 {
+                        let mut rng = Rng::new(&format!("bounds:{id}:{}:{seed}", r.role));
+                        for s in region_rooms::specs(id, &r.role, side_span, depth_span, &mut rng) {
+                            assert!(s.side.abs() <= half, "{id}/{}: side {} of {side_span}", r.role, s.side);
+                            assert!((0..=depth_span - 2).contains(&s.depth), "{id}/{}: depth {} of {depth_span}", r.role, s.depth);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A flat open room with its door in the +x wall, like a generated room (the back wall is the -x side).
+    fn synthetic_room(region: &'static str, role: &str, side_span: i32, depth_span: i32) -> (Room, Grid) {
+        let (x0, y0) = (6, 6);
+        let rect = Rect::new(x0, y0, depth_span, side_span);
+        let mut grid = super::super::layout::solid_grid();
+        for y in (y0 + 1)..(y0 + side_span - 1) {
+            for x in (x0 + 1)..(x0 + depth_span - 1) {
+                grid[y as usize][x as usize] = 0;
+            }
+        }
+        let doorway = V2::new(x0 + depth_span - 1, y0 + side_span / 2);
+        grid[doorway.y as usize][doorway.x as usize] = 0;
+        grid[doorway.y as usize][(doorway.x + 1) as usize] = 0;
+        let room = Room {
+            id: "r0".into(),
+            region,
+            room_type: role.to_string(),
+            rect,
+            doorway: Some(doorway),
+            extra_doorways: None,
+            great_hall: false,
+            preset_room: false,
+            suite_id: None,
+            suite_kind: None,
+            suite_role: None,
+            suite_parent: false,
+        };
+        (room, grid)
+    }
+
+    /// The furniture rule for the data rooms (the bed rule, for every solid prop): placed through the real furnishing
+    /// path, each solid prop's footprint is inside its room, on open floor, and off the doorway clearance. Every data
+    /// room furnishes something at its preferred size.
+    #[test]
+    fn data_room_furniture_stays_inside_its_room() {
+        for id in CONCEPT_REGIONS {
+            let t = region_rooms::table(id).unwrap();
+            for r in t.rooms.iter().filter(|r| r.template == region_rooms::Template::Data) {
+                let mut placed_at_preferred = 0;
+                for [depth_span, side_span] in [r.min, r.preferred, r.max] {
+                    let (room, grid) = synthetic_room(id, &r.role, side_span, depth_span);
+                    let mut reserved = Reserved::new();
+                    let props = furnished_room_props("1426541270", Coord::new(0, 0, 0), id, &room, &grid, &mut reserved);
+                    if (depth_span, side_span) == (r.preferred[0], r.preferred[1]) {
+                        placed_at_preferred = props.len();
+                    }
+                    let clearance = doorway_clearance(&room);
+                    for p in props.iter().filter(|p| p.solid) {
+                        for cell in footprint_cells(p) {
+                            let label = format!("{id}/{} {depth_span}x{side_span} {} cell {},{}", r.role, p.prop_type, cell.x, cell.y);
+                            assert!(rect_has(room.rect, cell), "{label}: leaves its room");
+                            assert!(grid_open(&grid, cell), "{label}: covers a wall cell");
+                            assert!(!clearance.contains(&cell), "{label}: covers the doorway clearance");
+                        }
+                    }
+                }
+                assert!(placed_at_preferred > 0, "{id}/{}: furnishes nothing at its preferred size", r.role);
+            }
+        }
+    }
+
+    #[test]
+    fn the_mess_hall_places_up_to_six_tables_in_a_great_hall() {
+        let (room, grid) = synthetic_room("prison", "prison_mess_hall", 21, 21);
+        let mut reserved = Reserved::new();
+        let props = furnished_room_props("1426541270", Coord::new(0, 0, 0), "prison", &room, &grid, &mut reserved);
+        let tables = props.iter().filter(|p| p.prop_type == "prisonCafeteriaTable").count();
+        assert!((4..=6).contains(&tables), "{tables} tables");
     }
 }

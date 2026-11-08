@@ -687,7 +687,7 @@ pub fn components(cue: &str, pan: f64, intensity: f64) -> Option<Vec<Component>>
                 t(56.0, 0.72, 0.1, 0.12, "sine", 0.0),
             ]
         }
-        _ => return None,
+        _ => return super::extra::components(cue, pan, intensity),
     };
     Some(c)
 }

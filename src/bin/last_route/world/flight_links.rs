@@ -71,12 +71,19 @@ struct SewerInfo {
 
 type SewerKey = (String, i32, i32, i32);
 
+/// The seed as a cache key, tagged with the level-0 region scope (`layout::with_godot_regions`): a chunk laid out from
+/// Godot's region draw and one laid out from the concept map differ, so a parity test must not leave its chunks in
+/// the cache for a test of the played layout (or the other way round).
+fn scoped(seed: &str) -> String {
+    format!("{seed}\u{0}{}", layout::godot_regions())
+}
+
 /// What the flight choice needs of the sewer chunk at (cx, level, cy): its grid and its wells. Memoized (a sewer chunk
 /// is costly to build), keyed (seed, cx, cy, level). `None` where the sewer has no chunk.
 fn sewer_info(seed: &str, cx: i32, level: i32, cy: i32) -> Arc<Option<SewerInfo>> {
     static CACHE: OnceLock<Mutex<HashMap<SewerKey, Arc<Option<SewerInfo>>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let key: SewerKey = (seed.to_string(), cx, cy, level);
+    let key: SewerKey = (scoped(seed), cx, cy, level);
     if let Some(v) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return v.clone();
     }
@@ -222,7 +229,7 @@ struct MazeInfo {
 fn maze_info(seed: &str, cx: i32, cy: i32) -> Arc<Option<MazeInfo>> {
     static CACHE: OnceLock<Mutex<HashMap<SewerKey, Arc<Option<MazeInfo>>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let key: SewerKey = (seed.to_string(), cx, cy, 0);
+    let key: SewerKey = (scoped(seed), cx, cy, 0);
     if let Some(v) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return v.clone();
     }
@@ -316,7 +323,7 @@ pub fn ladder_flight(seed: &str, cx: i32, cy: i32, cell: Cell) -> Flight {
 pub fn bay_flight(seed: &str, cx: i32, cy: i32, upper: i32) -> Option<Flight> {
     static CACHE: OnceLock<Mutex<HashMap<SewerKey, Option<Flight>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let key: SewerKey = (seed.to_string(), cx, cy, upper);
+    let key: SewerKey = (scoped(seed), cx, cy, upper);
     if let Some(v) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return *v;
     }
@@ -503,6 +510,7 @@ mod tests {
 
     #[test]
     fn every_layout_spiral_well_is_a_spiral_anchored_on_the_doorway() {
+        crate::world::route::layout::with_godot_regions(|| {
         let mut spirals = 0;
         for n in 0..60u32 {
             let seed = format!("{}", 1000 + n * 7919);
@@ -566,6 +574,7 @@ mod tests {
             }
         }
         assert!(spirals > 20, "only {spirals} spiral wells in the sweep");
+            });
     }
 
     #[test]

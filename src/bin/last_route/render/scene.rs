@@ -922,6 +922,8 @@ pub fn draw_scene(
                 y: crate::render::stack_actors::actor_dy(r.y, g.fac.level),
                 climbing: edge == Some(crate::hunters::flight_edges::EdgeKind::Ladder),
                 falling: edge == Some(crate::hunters::flight_edges::EdgeKind::Drop),
+                crouch: n.life.crouching,
+                emote: n.life.emote.as_deref().map(|e| (e, n.life.emote_seq)),
             }
         })
         .collect();
@@ -936,6 +938,8 @@ pub fn draw_scene(
         y: 0.0,
         climbing: false,
         falling: false,
+        crouch: n.crouch,
+        emote: Some(n.emote.as_str()).filter(|e| !e.is_empty()).map(|e| (e, n.emote_seq)),
     }));
     runner_figure::draw_bots(a, &bot_views);
     let mut eyes: Option<Builder> = None;

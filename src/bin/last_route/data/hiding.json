@@ -1,0 +1,32 @@
+{
+  "schema": "lr.hiding/1",
+  "note": "Extra hiding kinds besides lockers. capacity = bodies per spot. Rules: the first matching rule wins per room (when both regions and room_types are listed both must match; one list alone matches on it; empty lists match anything). only_if_none rules are the fallback for rooms with no locker. prop_styles turns solid room props into hiding spots of a kind.",
+  "kinds": {
+    "wardrobe": { "capacity": 2, "label": "WARDROBE" },
+    "closet": { "capacity": 1, "label": "CLOSET" },
+    "stall": { "capacity": 1, "label": "STALL" },
+    "underdesk": { "capacity": 1, "label": "UNDER DESK" },
+    "cabinet": { "capacity": 1, "label": "CABINET" },
+    "freezer": { "capacity": 2, "label": "FREEZER" },
+    "planter": { "capacity": 1, "label": "PLANTER" },
+    "bunk": { "capacity": 2, "label": "BUNK" }
+  },
+  "default_spacing": 2.5,
+  "rules": [
+    { "kind": "wardrobe", "regions": ["apartment"], "room_types": ["bedroom"], "min": 1, "max": 2, "min_area": 12 },
+    { "kind": "closet", "regions": ["apartment"], "room_types": [], "min": 1, "max": 1, "min_area": 12 },
+    { "kind": "stall", "regions": ["stalls"], "room_types": [], "min": 1, "max": 3, "min_area": 6, "spacing": 1.5 },
+    { "kind": "underdesk", "regions": ["offices"], "room_types": [], "min": 1, "max": 3, "min_area": 12 },
+    { "kind": "cabinet", "regions": ["lab"], "room_types": [], "min": 1, "max": 2, "min_area": 12 },
+    { "kind": "freezer", "regions": ["cold", "ice"], "room_types": [], "min": 1, "max": 2, "min_area": 12 },
+    { "kind": "planter", "regions": ["greenhouse"], "room_types": [], "min": 1, "max": 3, "min_area": 12 },
+    { "kind": "bunk", "regions": ["prison"], "room_types": [], "min": 1, "max": 3, "min_area": 12 },
+    { "kind": "closet", "regions": [], "room_types": [], "min": 1, "max": 1, "min_area": 20, "only_if_none": true }
+  ],
+  "prop_styles": {
+    "prisonBunk": "bunk",
+    "bunkBed": "bunk",
+    "raisedPlanter": "planter",
+    "mallPlanter": "planter"
+  }
+}

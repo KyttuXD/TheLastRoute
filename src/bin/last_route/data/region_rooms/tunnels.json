@@ -1,0 +1,50 @@
+{
+	"schema": "lr.region_rooms/1",
+	"region": "tunnels",
+	"colour": "7F006E",
+	"note": "mineshaft tunnels, 3 cells wide, connecting the other regions",
+	"tunnel_width": 3,
+	"rooms": [
+		{
+			"role": "mine_chamber",
+			"weight": 3,
+			"template": "data",
+			"size": {"min": [5, 5], "preferred": [7, 7], "max": [9, 9]},
+			"recipe": [
+				{"type": "basaltPillar", "side": "half", "depth": 1, "mirror": true},
+				{"type": "basaltPillar", "side": "-half", "depth": "front-1", "mirror": true},
+				{"type": "wateringCart", "side": "half-1", "depth": "mid", "facing": "center", "mirror": true},
+				{"type": "supplyCrates", "side": "half", "depth": 0, "wall": true, "mirror": true},
+				{"type": "floorLamp", "side": 0, "depth": 0, "wall": true}
+			]
+		},
+		{
+			"role": "mine_junction",
+			"weight": 2,
+			"template": "data",
+			"size": {"min": [7, 7], "preferred": [9, 9], "max": [11, 11]},
+			"recipe": [
+				{"type": "basaltPillar", "side": -2, "depth": "mid-2", "mirror": true},
+				{"type": "basaltPillar", "side": 2, "depth": "mid-2", "mirror": true},
+				{"type": "basaltPillar", "side": -2, "depth": "mid+2", "mirror": true},
+				{"type": "basaltPillar", "side": 2, "depth": "mid+2", "mirror": true},
+				{"type": "wateringCart", "side": 0, "depth": "mid", "facing": "center"},
+				{"type": "floorLamp", "side": "half", "depth": 0, "wall": true, "mirror": true}
+			]
+		}
+	],
+	"props": [
+		{"type": "basaltPillar", "size": [0.54, 1.88, 0.54], "solid": true, "weight": 1},
+		{"type": "wateringCart", "size": [1.54, 1.41, 0.88], "solid": true, "weight": 1},
+		{"type": "supplyCrates", "size": [0.79, 0.94, 0.67], "solid": true, "weight": 1},
+		{"type": "basaltRubble", "size": [1.17, 0.38, 1.17], "solid": false, "weight": 1},
+		{"type": "floorLamp", "size": [0.6, 2.62, 0.6], "solid": true, "weight": 1}
+	],
+	"tunnel_dressing": [
+		{"type": "basaltPillar", "placement": "edge", "every": 6},
+		{"type": "floorLamp", "placement": "edge", "every": 9},
+		{"type": "wateringCart", "placement": "centre", "chance": 0.03},
+		{"type": "supplyCrates", "placement": "edge", "chance": 0.03},
+		{"type": "basaltRubble", "placement": "centre", "chance": 0.05}
+	]
+}

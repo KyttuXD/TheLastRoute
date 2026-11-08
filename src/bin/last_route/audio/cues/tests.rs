@@ -191,10 +191,11 @@ fn every_listed_cue_renders() {
 }
 
 #[test]
-fn ambience_is_silent_on_the_finite_route() {
+fn ambience_renders_a_bed_of_the_asked_length() {
+    // the old finite-route silence is gone: every region plays a bed (see data_tests.rs for the loop and region rules)
     let bed = ambience("hospital", 2.0);
     assert_eq!(bed.len(), 88200);
-    assert!(bed.iter().all(|f| f[0] == 0.0 && f[1] == 0.0));
+    assert!(bed.iter().any(|f| f[0] != 0.0));
 }
 
 #[test]

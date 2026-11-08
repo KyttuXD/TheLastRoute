@@ -26,7 +26,7 @@ pub const MAX_ROOM_SIZE: i32 = 26;
 
 /// The built-in region files, `(file name, text)`. The game embeds the same files from src/bin/last_route/data/regions/ at
 /// build time; a test in `content::regions` keeps the two lists equal.
-pub const BUILTIN_FILES: [(&str, &str); 16] = [
+pub const BUILTIN_FILES: [(&str, &str); 22] = [
     ("regions/apartment.json", include_str!("../bin/last_route/data/regions/apartment.json")),
     ("regions/beach.json", include_str!("../bin/last_route/data/regions/beach.json")),
     ("regions/carnival.json", include_str!("../bin/last_route/data/regions/carnival.json")),
@@ -43,6 +43,12 @@ pub const BUILTIN_FILES: [(&str, &str); 16] = [
     ("regions/sewer.json", include_str!("../bin/last_route/data/regions/sewer.json")),
     ("regions/sewer2.json", include_str!("../bin/last_route/data/regions/sewer2.json")),
     ("regions/sewer_pipes.json", include_str!("../bin/last_route/data/regions/sewer_pipes.json")),
+    ("regions/ice.json", include_str!("../bin/last_route/data/regions/ice.json")),
+    ("regions/stalls.json", include_str!("../bin/last_route/data/regions/stalls.json")),
+    ("regions/inferno0.json", include_str!("../bin/last_route/data/regions/inferno0.json")),
+    ("regions/tunnels.json", include_str!("../bin/last_route/data/regions/tunnels.json")),
+    ("regions/offices.json", include_str!("../bin/last_route/data/regions/offices.json")),
+    ("regions/utility.json", include_str!("../bin/last_route/data/regions/utility.json")),
 ];
 
 /// The only region schema this build reads. A new shape is `lr.region/2`, added in both engines.

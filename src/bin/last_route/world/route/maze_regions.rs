@@ -189,7 +189,16 @@ pub fn maze_variant_for_chunk(world: &str, cx: i32, cz: i32) -> Option<&'static 
 /// the maze, and for a plain-maze pick. This is the one gate the level 0 chunk build, the hunter spawn chance and the
 /// renderer go through, so they agree on a chunk's variant.
 pub fn variant_at(world: &str, cx: i32, cz: i32, level: i32) -> Option<&'static MazeVariant> {
-    if level != 0 || super::regions::region_for(world, cx, cz, 0) != "maze" {
+    if level != 0 {
+        return None;
+    }
+    // the Godot goldens (`layout::with_godot_regions`) read Godot's draw, every other call the concept map
+    let region = if super::layout::godot_regions() {
+        super::regions::godot_region_for(world, cx, cz, 0)
+    } else {
+        super::regions::region_for(world, cx, cz, 0)
+    };
+    if region != "maze" {
         return None;
     }
     maze_variant_for_chunk(world, cx, cz)
@@ -295,14 +304,17 @@ mod tests {
 
     #[test]
     fn a_variant_applies_only_to_level_zero_maze_chunks() {
+        // the level 0 maze is the concept map's white area (and its utility area), so look over several seeds
         let mut seen = 0;
-        for cx in -12..12 {
-            for cz in -12..12 {
-                assert!(variant_at("5", cx, cz, -1).is_none());
-                if let Some(v) = variant_at("5", cx, cz, 0) {
-                    seen += 1;
-                    assert_eq!(super::super::regions::region_for("5", cx, cz, 0), "maze");
-                    assert_eq!(Some(v.id.clone()), maze_variant_for_chunk("5", cx, cz).map(|v| v.id.clone()));
+        for world in ["5", "6", "7", "8", "9", "10", "11", "12"] {
+            for cx in -12..12 {
+                for cz in -12..12 {
+                    assert!(variant_at(world, cx, cz, -1).is_none());
+                    if let Some(v) = variant_at(world, cx, cz, 0) {
+                        seen += 1;
+                        assert_eq!(super::super::regions::region_for(world, cx, cz, 0), "maze");
+                        assert_eq!(Some(v.id.clone()), maze_variant_for_chunk(world, cx, cz).map(|v| v.id.clone()));
+                    }
                 }
             }
         }

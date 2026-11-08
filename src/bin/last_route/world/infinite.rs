@@ -350,6 +350,7 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -
     f.level = k.level;
     f.rebuild_grids();
     let (mut fix, box_cell) = fixtures::place_with_box(&f);
+    fixtures::adopt_extra_hiding(&mut f, &fix.extra_hiding);
     // the floor's music box is a collectable pickup (game/music_box.rs), not a fixture
     f.pickups.extend(box_cell.map(|c| (c, Pickup::MusicBox)));
     fix.coins.extend(sewer_coins);
@@ -422,6 +423,7 @@ fn apply_sewer_dressing(f: &mut Facility, seed: &str, sc: &super::route::sewer::
             room: rooms
                 .iter()
                 .position(|r| x.cell.x >= r.x && x.cell.y >= r.y && x.cell.x < r.x + r.w && x.cell.y < r.y + r.h),
+            kind: String::new(),
         })
         .collect();
     coins
@@ -516,6 +518,7 @@ pub fn window(
     let mut fix = Fixtures {
         vents: vec![],
         coins: vec![],
+        extra_hiding: vec![],
     };
     for dy in -1..=1 {
         for dx in -1..=1 {

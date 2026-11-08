@@ -1,0 +1,23 @@
+{
+	"schema": "lr.concept_settings/1",
+	"scale": 3,
+	"spacing": 2,
+	"tunnel_width": 3,
+	"spawn_pixel": [55, 128],
+	"outside": "mirror",
+	"seed_orient": true,
+	"min_region_share": 0.25,
+	"legend": {
+		"M": { "region": "maze", "label": "THE MAZE" },
+		"A": { "region": "apartment", "label": "APARTMENTS" },
+		"P": { "region": "prison", "label": "PRISON" },
+		"I": { "region": "hospital", "label": "ICE AND COLD" },
+		"S": { "region": "mall", "label": "STALLS" },
+		"F": { "region": "gothic", "label": "LOW INFERNO" },
+		"L": { "region": "lab", "label": "LABORATORY" },
+		"O": { "region": "hotel", "label": "OFFICES AND CUBICLES" },
+		"U": { "region": "maze", "label": "MIXED UTILITY (UNDECIDED)" },
+		"G": { "region": "greenhouse", "label": "GREENHOUSE" },
+		"T": { "region": "maze", "label": "MINESHAFT TUNNELS" }
+	}
+}

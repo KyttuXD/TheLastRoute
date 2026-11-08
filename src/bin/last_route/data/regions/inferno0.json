@@ -1,0 +1,18 @@
+{
+	"schema": "lr.region/1",
+	"id": "inferno0",
+	"hall_floor": ["stone0", "stone1"],
+	"hall_runner": false,
+	"room_default_floor": ["stone0", "stone1"],
+	"room_roles": ["thermal_chamber", "thermal_chamber", "forge", "scorched_hall", "scorched_hall", "scorched_hall", "ember_chamber", "ember_chamber", "burnt_storage"],
+	"prop_set": [
+		{"type": "lavaVent", "size": [0.67, 0.38, 0.67]},
+		{"type": "lavaPipeManifold", "size": [1.92, 1.69, 0.88]},
+		{"type": "infernoChainLantern", "size": [0.42, 1.6, 0.42], "solid": false},
+		{"type": "basaltPillar", "size": [0.54, 1.88, 0.54]},
+		{"type": "emberBrazier", "size": [0.54, 0.88, 0.54]},
+		{"type": "basaltRubble", "size": [1.17, 0.38, 1.17], "solid": false},
+		{"type": "magmaCrystalCluster", "size": [0.54, 1.06, 0.54]},
+		{"type": "charredSupplyCrate", "size": [0.79, 0.62, 0.73]}
+	]
+}

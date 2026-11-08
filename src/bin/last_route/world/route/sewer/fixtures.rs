@@ -258,17 +258,20 @@ mod tests {
     /// The compact extracts: every sewer chunk of levels -1 and -2 on the three seeds, field `fixtures`.
     #[test]
     fn fixtures_match_godot_goldens() {
+        crate::world::route::layout::with_godot_regions(|| {
         if crate::shared::test_support::skip_without_parity() {
             return;
         }
         let seeds: Vec<Seed> = TAGS.iter().map(|tag| load_compact(tag)).collect();
         check_all(&seeds);
+            });
     }
 
     /// The full goldens (PARITY_DIR), all 98 sewer chunks of each seed. Without PARITY_DIR it returns early; the
     /// compact test checks the same field on the same chunks.
     #[test]
     fn fixtures_match_full_goldens() {
+        crate::world::route::layout::with_godot_regions(|| {
         let Ok(dir) = std::env::var("PARITY_DIR") else {
             eprintln!("PARITY_DIR unset: full sewer fixtures golden check skipped");
             return;
@@ -278,5 +281,6 @@ mod tests {
             assert_eq!(seed.goldens.len(), 98, "{}: 98 sewer chunks", seed.tag);
         }
         check_all(&seeds);
+            });
     }
 }

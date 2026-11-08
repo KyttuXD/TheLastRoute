@@ -291,14 +291,25 @@ pub fn prop_hiding_fixtures(c: Coord, region_props: &[Prop], safe: bool) -> Vec<
 
 /// `HIDING_PROP_STYLES.get(type)` (5301-5304): the style of a hideable prop type, or `None`.
 fn hiding_style(prop_type: &str) -> Option<&'static str> {
-    HIDING_PROP_STYLES.iter().find(|(t, _)| *t == prop_type).map(|(_, style)| *style)
+    HIDING_PROP_STYLES
+        .iter()
+        .find(|(t, _)| *t == prop_type)
+        .map(|(_, style)| *style)
+        // the data kinds (data/hiding.json prop_styles): cell bunks, planters. Not under the Godot goldens
+        // (`layout::with_godot_regions`): Godot hides only in its own table, so a Godot bunk bed or mall planter is no spot
+        .or_else(|| if super::layout::godot_regions() { None } else { crate::world::fixtures::hide_rules().prop_style(prop_type) })
 }
 
 /// `PropModelCatalog.hide_capacity` for the hideable types (see `HideSpot::capacity`).
 fn hide_capacity(prop_type: &str) -> i32 {
     match prop_type {
         "bedroomWardrobe" | "gothicWardrobe" => 2,
-        _ => 1,
+        // a data kind takes its capacity from data/hiding.json; the Godot beds stay 1
+        _ if super::layout::godot_regions() => 1,
+        other => {
+            let rules = crate::world::fixtures::hide_rules();
+            rules.prop_style(other).and_then(|s| rules.capacity_of(s)).map_or(1, |c| c as i32)
+        }
     }
 }
 
@@ -405,6 +416,17 @@ mod tests {
         assert_eq!(hiding_style("hospitalBed"), None);
         assert_eq!(hide_capacity("bedroomWardrobe"), 2);
         assert_eq!(hide_capacity("singleBed"), 1);
+    }
+
+    #[test]
+    fn data_prop_kinds_take_style_and_capacity_from_hiding_json() {
+        let rules = crate::world::fixtures::hide_rules();
+        assert_eq!(hiding_style("prisonBunk"), Some("bunk"));
+        assert_eq!(hiding_style("raisedPlanter"), Some("planter"));
+        assert_eq!(hide_capacity("prisonBunk") as usize, rules.capacity_of("bunk").unwrap());
+        assert_eq!(hide_capacity("raisedPlanter") as usize, rules.capacity_of("planter").unwrap());
+        // the Godot-parity entries are untouched
+        assert_eq!(hiding_style("singleBed"), Some("bed"));
     }
 
     #[test]
@@ -588,7 +610,7 @@ mod parity_tests {
             for (c, wanted) in &golden.chunks {
                 chunks += 1;
                 entries += wanted.len();
-                let Some(layout) = chunk_layout(&golden.world, *c) else {
+                let Some(layout) = crate::world::route::layout::chunk_layout_godot(&golden.world, *c) else {
                     no_layout += 1;
                     failures.push(format!("{tag} [{},{},{}]: no layout", c.x, c.y, c.z));
                     continue;
@@ -624,11 +646,13 @@ mod parity_tests {
 
     #[test]
     fn fixtures_match_godot_compact_extracts() {
+        crate::world::route::layout::with_godot_regions(|| {
         if crate::shared::test_support::skip_without_parity() {
             return;
         }
         let _godot = crate::world::route::furnished::godot_layout();
         check(&TAGS, load_compact);
+            });
     }
 
     #[test]

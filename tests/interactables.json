@@ -1,6 +1,6 @@
 {
   "suite": "interactables",
-  "description": "What [E] does: room light switches, lockers, tool pickups, coins, vents and the music box.",
+  "description": "What [E] does: room light switches, lockers, tool pickups, coins, vents and the music box (held interact winds it, overwinding jams it).",
   "ported_from": "tests/validate_light_switches.gd, validate_hiding_props.gd, validate_vents.gd, validate_glyra_music.gd, route_interactable_3d.gd",
   "defaults": { "seed": 12345, "difficulty": "standard", "mode": "finite", "no_target": true },
   "tests": [
@@ -54,14 +54,40 @@
       ]
     },
     {
-      "name": "a music box from the pack winds once for the wind time and is spent",
+      "name": "a music box from the pack winds while interact is held, a click never spends it, and overwinding jams it",
+      "_rule": "data/music_box.json: holding interact winds the box from empty to 100 % (the difficulty's wound_seconds, 45 s on standard) in wind_seconds (4 s); held on past 100 % for overwind_seconds (1.5 s) it jams: the wind is lost and it refuses winding for jam_cooldown_seconds",
       "steps": [
         { "cmd": "step", "frames": 600, "observe": false },
         { "expect": [ { "path": "run.music_box_left", "op": "<", "value": 36 } ] },
         { "cmd": "admin", "name": "give", "item": "music_box" },
-        { "cmd": "act", "act": { "slot": 2, "pulse": ["use"] } },
+        { "cmd": "act", "act": { "slot": 2 } },
+        { "cmd": "step", "frames": 1, "observe": false },
+        { "expect": [ { "path": "hotbar.slots.1.item", "value": "music_box" }, { "path": "focus", "op": "missing" } ] },
+        { "cmd": "act", "act": { "pulse": ["use"] } },
         { "cmd": "step", "frames": 2, "observe": false },
-        { "expect": [ { "path": "run.music_box_left", "op": ">", "value": 44 }, { "any": "events", "where": { "path": "text", "value": "Music box wound. The room settles." } } ] }
+        { "expect": [
+          { "path": "hotbar.slots.1.item", "value": "music_box" },
+          { "path": "run.music_box_left", "op": "<", "value": 36 },
+          { "any": "events", "where": { "path": "text", "value": "HOLD [E] TO WIND THE MUSIC BOX" } } ] },
+        { "cmd": "act", "act": { "hold": { "interact": true } } },
+        { "cmd": "step", "frames": 30, "observe": false },
+        { "expect": [ { "path": "run.music_box_left", "op": ">", "value": 39 }, { "path": "run.music_box_left", "op": "<", "value": 44.9 } ] },
+        { "cmd": "step", "frames": 60, "observe": false },
+        { "cmd": "act", "act": { "hold": { "interact": false } } },
+        { "cmd": "step", "frames": 1, "observe": false },
+        { "expect": [
+          { "path": "run.music_box_left", "op": ">", "value": 44.9 },
+          { "path": "hotbar.slots.1.item", "value": "music_box" },
+          { "none": "events", "where": { "path": "text", "value": "THE MUSIC BOX JAMMED" } } ] },
+        { "cmd": "act", "act": { "hold": { "interact": true } } },
+        { "cmd": "step", "frames": 120, "observe": false },
+        { "expect": [
+          { "path": "run.music_box_left", "value": 0 },
+          { "path": "hotbar.slots.1.item", "value": "music_box" },
+          { "any": "events", "where": { "path": "text", "value": "THE MUSIC BOX JAMMED" } } ] },
+        { "cmd": "step", "frames": 60, "observe": false },
+        { "cmd": "act", "act": { "hold": { "interact": false } } },
+        { "expect": [ { "path": "run.music_box_left", "value": 0 } ] }
       ]
     }
   ]

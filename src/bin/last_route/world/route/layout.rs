@@ -33,7 +33,33 @@ use std::collections::HashSet;
 use serde_json::{json, Value};
 
 use crate::world::rng::Rng;
+use crate::world::route::concept_map::{self, ChunkClass};
 use crate::world::route::{fixtures, grid, hunter_spawns, music_boxes, pickups, props, regions};
+use std::cell::Cell;
+
+thread_local! {
+    /// True while `with_godot_regions` runs: level 0 then uses Godot's region draw instead of the concept map.
+    static GODOT_REGIONS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Runs `f` with level 0 laid out from Godot's region draw, not the concept map (the Godot parity goldens).
+pub fn with_godot_regions<R>(f: impl FnOnce() -> R) -> R {
+    let before = GODOT_REGIONS.with(|g| g.replace(true));
+    let out = f();
+    GODOT_REGIONS.with(|g| g.set(before));
+    out
+}
+
+/// Tests only: lays level 0 out from Godot's region draw for the rest of this test's thread (each test has its own),
+/// for the tests that pin the plain maze (bot sight lines, the Nyxie lineup, hunter walks) and not the map concept.
+#[cfg(test)]
+pub fn godot_regions_for_this_test() {
+    GODOT_REGIONS.with(|g| g.set(true));
+}
+
+pub(crate) fn godot_regions() -> bool {
+    GODOT_REGIONS.with(Cell::get)
+}
 
 /// Cells per chunk side (`CHUNK_SIZE`, streamed_route_generator.gd:15 via StreamedRouteGenerator).
 pub const CHUNK: i32 = 45;
@@ -141,6 +167,12 @@ fn bank_big_types(region: &str) -> &'static [&'static str] {
 /// with a catalogue row (src/bin/last_route/data/regions/<id>.json, `room_roles`) takes its list from the row; the inferno (no row yet)
 /// and any region with no row keep the code lists below.
 pub fn room_type_choices(region: &str) -> Vec<&'static str> {
+    // the map-concept tables (data/region_rooms) own the room lists of their regions; the Godot goldens keep the rows below
+    if !godot_regions() {
+        if let Some(t) = super::furnished::region_rooms::table(region) {
+            return t.role_list();
+        }
+    }
     if let Some(def) = regions::region_def(region) {
         return def.room_roles.iter().map(String::as_str).collect();
     }
@@ -153,6 +185,19 @@ pub fn room_type_choices(region: &str) -> Vec<&'static str> {
 /// `RoomSizeProfiles.PROFILES` min and max (room_size_profiles.gd), generated from that table.
 /// A type with no profile is `None` (`within` is then true).
 fn profile_min_max(room_type: &str) -> Option<((i32, i32), (i32, i32))> {
+    static_profile(room_type).or_else(|| data_profile(room_type))
+}
+
+/// The size band of a data room (data/region_rooms, `min` and `max`), the first table that lists the role. The generated
+/// profile table has no rows for these.
+fn data_profile(room_type: &str) -> Option<((i32, i32), (i32, i32))> {
+    super::furnished::region_rooms::all()
+        .values()
+        .find_map(|t| t.rooms.iter().find(|r| r.role == room_type))
+        .map(|r| ((r.min[0], r.min[1]), (r.max[0], r.max[1])))
+}
+
+fn static_profile(room_type: &str) -> Option<((i32, i32), (i32, i32))> {
     match room_type {
         "music_stage" => Some(((9, 9), (21, 21))),
         "carnival_stage" => Some(((9, 9), (21, 9))),
@@ -1560,7 +1605,15 @@ fn is_dense(region: &str) -> bool {
 impl<'a> Gen<'a> {
     /// `region_for` (line 1210) at the chunk's own level.
     fn region(&self, c: Coord) -> &'static str {
+        if godot_regions() {
+            return regions::godot_region_for(self.world, c.x, c.z, c.y);
+        }
         regions::region_for(self.world, c.x, c.z, c.y)
+    }
+
+    /// A level 0 chunk the concept map leaves as solid rock (only mineshaft tunnels run through it).
+    fn hollow(&self, c: Coord) -> bool {
+        c.y == 0 && !godot_regions() && concept_map::chunk_class(self.world, c.x, c.z) == ChunkClass::Hollow
     }
 
     /// `is_safe_room` (line 1403) on the private route (`public_route` false): a seeded chance scaled by
@@ -1682,7 +1735,7 @@ impl<'a> Gen<'a> {
     /// `edge_openings` (line 1374): the offsets this chunk's side opens onto its neighbour.
     fn edge_openings(&self, c: Coord, dx: i32, dz: i32) -> Vec<i32> {
         let neighbour = c.step(dx, dz);
-        if !allowed(c) || !allowed(neighbour) {
+        if !allowed(c) || !allowed(neighbour) || self.hollow(c) || self.hollow(neighbour) {
             return Vec::new();
         }
         if is_dense(self.region(c)) && is_dense(self.region(neighbour)) && dx != 0 {
@@ -2185,6 +2238,30 @@ impl<'a> Gen<'a> {
     }
 }
 
+/// Cuts the concept map's mineshaft tunnels (data `tunnel_width` cells wide) into the chunk's grid, over the whole
+/// 0..CHUNK square so a tunnel carries on into the next chunk, and marks them as circulation so no prop is dropped in one.
+fn carve_concept_tunnels(grid: &mut Grid, circ: &mut Circ, world: &str, c: Coord, keep: &[Rect]) {
+    let concept = concept_map::concept();
+    let orient = concept.orient_of(world);
+    if !concept.chunk_has_tunnel(orient, c.x, c.z) {
+        return;
+    }
+    for z in 0..CHUNK {
+        for x in 0..CHUNK {
+            let held = keep.iter().any(|r| x >= r.x && x < r.x + r.w && z >= r.y && z < r.y + r.h);
+            if !held && concept.is_tunnel_cell(orient, c.x.saturating_mul(CHUNK).saturating_add(x), c.z.saturating_mul(CHUNK).saturating_add(z)) {
+                grid[z as usize][x as usize] = 0;
+                circ.insert(V2::new(x, z));
+            }
+        }
+    }
+}
+
+/// `chunk_layout` with level 0 laid out from Godot's region draw, not the concept map: the Godot parity goldens.
+pub fn chunk_layout_godot(world: &str, c: Coord) -> Option<ChunkLayout> {
+    with_godot_regions(|| chunk_layout(world, c))
+}
+
 /// The layout of one chunk of the Infinite route at level 0 (the maze). `None` for the levels this
 /// port does not lay out: the sewer levels -1 and -2 (SewerRouteGenerator), the Inferno -3 (no rooms),
 /// and the mezzanine +1 (removed from play).
@@ -2199,7 +2276,11 @@ pub fn chunk_layout(world: &str, c: Coord) -> Option<ChunkLayout> {
     let gen = Gen { world };
     let region = gen.region(c);
     let mut grid = solid_grid();
-    let mut parts = if gen.is_warren(c) {
+    let hollow = gen.hollow(c);
+    let mut parts = if hollow {
+        // solid rock: no rooms, no halls; the tunnels below are the only open cells
+        Parts::default()
+    } else if gen.is_warren(c) {
         gen.warren(c, &mut grid, region)
     } else if is_dense(region) {
         gen.dense(c, region, &mut grid)
@@ -2212,8 +2293,14 @@ pub fn chunk_layout(world: &str, c: Coord) -> Option<ChunkLayout> {
     let dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)];
     let edges: [Vec<i32>; 4] = std::array::from_fn(|i| gen.edge_openings(c, dirs[i].0, dirs[i].1));
     let wide: [bool; 4] = std::array::from_fn(|i| gen.wide_seam(c, dirs[i].0, dirs[i].1));
-    let edge_corridors = carve_edges(&mut grid, &mut parts.circulation, &edges, is_dense(region), &wide);
-    parts.corridors.extend(edge_corridors);
+    if !hollow {
+        let edge_corridors = carve_edges(&mut grid, &mut parts.circulation, &edges, is_dense(region), &wide);
+        parts.corridors.extend(edge_corridors);
+    }
+    // the mineshaft tunnels of the concept map join the regions: cut through whatever the chunk holds
+    if !godot_regions() {
+        carve_concept_tunnels(&mut grid, &mut parts.circulation, world, c, &[]);
+    }
     // the level-0 stairwell (_build_chunk 984): one well down to the sewer, or none
     let mut stairwells = Vec::new();
     if let Some(down) = plan_maze_stairwell(world, c.x, c.z, &grid, &parts) {
@@ -2230,6 +2317,12 @@ pub fn chunk_layout(world: &str, c: Coord) -> Option<ChunkLayout> {
     let region_props = props::region_props(world, c, region, &parts.rooms, &grid, &doors, safe, &parts.circulation);
     // 1016-1022 (grid.rs): the second restore, the authored doorways and the hump pass
     grid::level0_after_props(&mut grid, &parts.rooms, &doors);
+    // the threshold and doorway restores above re-wall room edges a tunnel crossed: cut the tunnels again so they stay
+    // open, but never into a stairwell (its walled box, one cell round it, and its lane), which keeps its own walls
+    if !godot_regions() && !hollow {
+        let keep: Vec<Rect> = stairwells.iter().flat_map(|w| [w.bbox.grow(1), stairwell_lane(w)]).collect();
+        carve_concept_tunnels(&mut grid, &mut parts.circulation, world, c, &keep);
+    }
     // 1024-1028 (props.rs, stage 3b-iv): push_out, scale_surface_mounts and PlacementClearance.clear, on the grid
     // after the hump pass
     let region_props = region_props.map(|props| props::post_passes(&grid, &parts.rooms, props));
@@ -2390,22 +2483,18 @@ mod tests {
         assert_eq!(room_type_choices("mansion"), ["drawing_room", "bedroom", "dining_room", "luxury_bathroom"]);
         assert_eq!(room_type_choices("beach"), ["cove", "beach_hut", "tide_pool", "boardwalk_room"]);
         assert_eq!(room_type_choices("gothic"), ["crypt", "chapel", "mourning_room", "archive"]);
-        assert_eq!(room_type_choices("apartment"), ["bedroom", "kitchen", "living_room", "house_bathroom"]);
+        // apartment, maze, prison, lab and greenhouse have map-concept tables (data/region_rooms): those own the lists
+        for id in ["apartment", "maze", "prison", "lab", "greenhouse"] {
+            let t = crate::world::route::furnished::region_rooms::table(id).expect("a table");
+            assert_eq!(room_type_choices(id), t.role_list(), "{id}");
+            // the Godot goldens keep the catalogue rows
+            let rows = regions::region_def(id).unwrap().room_roles.clone();
+            assert_eq!(with_godot_regions(|| room_type_choices(id)), rows.iter().map(String::as_str).collect::<Vec<_>>(), "{id}");
+        }
+        assert!(room_type_choices("prison").contains(&"prison_mess_hall") && !room_type_choices("prison").contains(&"prison_cafeteria"));
+        assert!(!room_type_choices("ice").is_empty(), "a new concept region has rooms");
         assert_eq!(room_type_choices("carnival"), ["big_top", "midway", "game_stall", "backstage"]);
-        assert_eq!(room_type_choices("maze"), ["restaurant_dining", "arcade_room", "public_restroom", "storage"]);
-        assert_eq!(room_type_choices("prison"), ["prison_cell", "prison_cafeteria", "prison_cell", "prison_cell"]);
         assert_eq!(room_type_choices("hotel"), ["room"]);
-        assert_eq!(
-            room_type_choices("lab"),
-            [
-                "clean_room", "chem_lab", "control_room", "containment", "bio_lab", "decon", "server_hall",
-                "cold_storage", "lab_office",
-            ]
-        );
-        assert_eq!(
-            room_type_choices("greenhouse"),
-            ["glasshouse", "potting_shed", "palm_house", "cactus_room", "irrigation_room", "overgrown_room"]
-        );
         // inferno keeps its code list; a region with no row falls back to "room"
         assert_eq!(room_type_choices("inferno"), ["thermal_chamber", "forge", "altar_room", "lava_gallery"]);
         assert_eq!(room_type_choices("office"), ["room"]);
@@ -2456,7 +2545,7 @@ mod tests {
                         .or_default() += 1;
                     continue;
                 }
-                let Some(layout) = chunk_layout(&world, c) else {
+                let Some(layout) = chunk_layout_godot(&world, c) else {
                     entry.1 += 1;
                     failures.push(format!("{tag} {:?}: no layout for region {}", (c.x, c.y, c.z), chunk["region"]));
                     continue;
@@ -2478,7 +2567,7 @@ mod tests {
                 }
                 if bad.is_empty() {
                     entry.0 += 1;
-                    let branch = if (Gen { world: &world }).is_warren(c) { "warren" } else if is_dense(layout.region) { "banks" } else { "apartment" };
+                    let branch = if with_godot_regions(|| (Gen { world: &world }).is_warren(c)) { "warren" } else if is_dense(layout.region) { "banks" } else { "apartment" };
                     *region_matched.entry(format!("{}/{}", layout.region, branch)).or_default() += 1;
                     totals.0 += chunk["rooms"].as_array().map_or(0, |a| a.len());
                     totals.1 += chunk["corridors"].as_array().map_or(0, |a| a.len());
@@ -2524,5 +2613,103 @@ mod tests {
             failures.len(),
             failures.first().cloned().unwrap_or_default()
         );
+    }
+
+    /// Finds a hollow chunk with a tunnel through it near the spawn.
+    fn hollow_tunnel_chunk(world: &str) -> Option<Coord> {
+        let concept = concept_map::concept();
+        let o = concept.orient_of(world);
+        for cx in -25..25 {
+            for cz in -25..25 {
+                if concept.classify_chunk(o, cx, cz) == ChunkClass::Hollow && concept.chunk_has_tunnel(o, cx, cz) {
+                    return Some(Coord::new(cx, 0, cz));
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn the_spawn_chunk_is_maze() {
+        for world in ["1", "22", "333", "4444"] {
+            let layout = chunk_layout(world, Coord::new(0, 0, 0)).expect("the spawn chunk has a layout");
+            assert_eq!(layout.region, "maze");
+            assert!(!layout.rooms.is_empty() || !layout.corridors.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_hollow_chunk_is_rock_with_only_the_tunnel_cut_through() {
+        let world = "2024";
+        let c = hollow_tunnel_chunk(world).expect("a hollow chunk with a tunnel");
+        let layout = chunk_layout(world, c).expect("a hollow chunk still has a layout");
+        assert_eq!(layout.region, "maze");
+        assert!(layout.rooms.is_empty());
+        let concept = concept_map::concept();
+        let o = concept.orient_of(world);
+        let mut tunnel = 0;
+        for z in 0..CHUNK {
+            for x in 0..CHUNK {
+                if concept.is_tunnel_cell(o, c.x * CHUNK + x, c.z * CHUNK + z) {
+                    tunnel += 1;
+                    assert_ne!(layout.grid[z as usize][x as usize], 1, "tunnel cell ({x}, {z}) is solid");
+                }
+            }
+        }
+        assert!(tunnel > 0, "the chunk has no tunnel cell");
+        // a tunnel is as wide as the data says wherever it is straight: some row or column holds a full run
+        let width = concept.settings.tunnel_width as usize;
+        let run_in_a_line = (0..CHUNK as usize).any(|i| {
+            let row = (0..CHUNK as usize).filter(|x| layout.grid[i][*x] != 1).count();
+            let col = (0..CHUNK as usize).filter(|z| layout.grid[*z][i] != 1).count();
+            row >= width || col >= width
+        });
+        assert!(run_in_a_line);
+    }
+
+    #[test]
+    fn tunnels_reach_a_region_chunk_and_the_same_seed_gives_the_same_chunk() {
+        let world = "2024";
+        let concept = concept_map::concept();
+        let o = concept.orient_of(world);
+        let mut found = None;
+        'outer: for cx in -25..25 {
+            for cz in -25..25 {
+                if let ChunkClass::Region(_) = concept.classify_chunk(o, cx, cz) {
+                    if (cx, cz) != (0, 0) && concept.chunk_has_tunnel(o, cx, cz) {
+                        found = Some(Coord::new(cx, 0, cz));
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        let c = found.expect("a region chunk with a tunnel");
+        let a = chunk_layout(world, c).expect("layout");
+        let b = chunk_layout(world, c).expect("layout");
+        assert_eq!(a.to_json(), b.to_json());
+        assert_eq!(a.grid, b.grid);
+        let mut open_tunnel = 0;
+        for z in 0..CHUNK {
+            for x in 0..CHUNK {
+                if concept.is_tunnel_cell(o, c.x * CHUNK + x, c.z * CHUNK + z) {
+                    open_tunnel += 1;
+                    assert_ne!(a.grid[z as usize][x as usize], 1);
+                }
+            }
+        }
+        assert!(open_tunnel > 0);
+    }
+
+    #[test]
+    fn godot_regions_are_scoped_to_the_call() {
+        let world = "2024";
+        let c = Coord::new(3, 0, 2);
+        let concept_region = chunk_layout(world, c).map(|l| l.region);
+        let godot_region = chunk_layout_godot(world, c).map(|l| l.region);
+        if let Some(r) = godot_region {
+            assert_eq!(r, regions::godot_region_for(world, 3, 2, 0));
+        }
+        // the flag is scoped: a plain call afterwards is the concept layout again
+        assert_eq!(chunk_layout(world, c).map(|l| l.region), concept_region);
     }
 }

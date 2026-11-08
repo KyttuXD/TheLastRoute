@@ -1,0 +1,20 @@
+{
+	"schema": "lr.region/1",
+	"id": "tunnels",
+	"hall_floor": ["stone0", "stone1"],
+	"hall_runner": false,
+	"room_default_floor": ["stone0", "stone1"],
+	"room_roles": ["mine_chamber", "mine_chamber", "mine_chamber", "mine_junction", "mine_junction"],
+	"prop_set": [
+		{"type": "basaltPillar", "size": [0.54, 1.88, 0.54]},
+		{"type": "wateringCart", "size": [1.54, 1.41, 0.88]},
+		{"type": "supplyCrates", "size": [0.79, 0.94, 0.67]},
+		{"type": "basaltRubble", "size": [1.17, 0.38, 1.17], "solid": false},
+		{"type": "floorLamp", "size": [0.6, 2.62, 0.6]}
+	],
+	"geometry": {
+		"wall_height": 3,
+		"room_min": 5,
+		"room_max": 9
+	}
+}

@@ -1,0 +1,82 @@
+{
+	"schema": "lr.cues/1",
+	"note": "Extra one-shot cues the Godot project has no dedicated Sound method for, built from the same tone / thump / noise primitives as sound.gd. Component keys: kind (tone|thump|noise), hz, dur, vol, delay, wave (tone only), rate (noise only). The call intensity multiplies vol. An optional file on a cue names an embedded asset under assets/audio/ (none ship: the Godot project has no sound files). Events say how a game event plays a cue; scaled=true plays it at the caller volume like a hunter step.",
+	"cues": {
+		"locker_open": [
+			{ "kind": "noise", "hz": 900, "dur": 0.12, "vol": 0.06, "delay": 0.0, "rate": 0.8 },
+			{ "kind": "thump", "hz": 150, "dur": 0.1, "vol": 0.08, "delay": 0.02 },
+			{ "kind": "tone", "hz": 520, "dur": 0.05, "vol": 0.03, "delay": 0.06, "wave": "square" }
+		],
+		"locker_close": [
+			{ "kind": "thump", "hz": 110, "dur": 0.14, "vol": 0.12, "delay": 0.0 },
+			{ "kind": "noise", "hz": 600, "dur": 0.08, "vol": 0.05, "delay": 0.0, "rate": 0.7 },
+			{ "kind": "tone", "hz": 300, "dur": 0.04, "vol": 0.04, "delay": 0.1, "wave": "square" }
+		],
+		"relay_pickup": [
+			{ "kind": "tone", "hz": 1175, "dur": 0.1, "vol": 0.06, "delay": 0.0, "wave": "triangle" },
+			{ "kind": "tone", "hz": 1568, "dur": 0.18, "vol": 0.06, "delay": 0.07, "wave": "triangle" },
+			{ "kind": "noise", "hz": 2500, "dur": 0.03, "vol": 0.03, "delay": 0.0, "rate": 1.0 }
+		],
+		"item_pickup": [
+			{ "kind": "tone", "hz": 880, "dur": 0.08, "vol": 0.05, "delay": 0.0, "wave": "triangle" },
+			{ "kind": "thump", "hz": 240, "dur": 0.06, "vol": 0.05, "delay": 0.0 }
+		],
+		"music_box_wind": [
+			{ "kind": "noise", "hz": 2400, "dur": 0.02, "vol": 0.05, "delay": 0.0, "rate": 1.2 },
+			{ "kind": "noise", "hz": 2400, "dur": 0.02, "vol": 0.05, "delay": 0.07, "rate": 1.2 },
+			{ "kind": "noise", "hz": 2400, "dur": 0.02, "vol": 0.05, "delay": 0.14, "rate": 1.2 },
+			{ "kind": "noise", "hz": 2400, "dur": 0.02, "vol": 0.05, "delay": 0.21, "rate": 1.2 },
+			{ "kind": "noise", "hz": 2400, "dur": 0.02, "vol": 0.05, "delay": 0.28, "rate": 1.2 },
+			{ "kind": "tone", "hz": 440, "dur": 0.3, "vol": 0.03, "delay": 0.0, "wave": "saw" },
+			{ "kind": "tone", "hz": 620, "dur": 0.1, "vol": 0.04, "delay": 0.32, "wave": "triangle" }
+		],
+		"music_box_jam": [
+			{ "kind": "tone", "hz": 311, "dur": 0.3, "vol": 0.05, "delay": 0.0, "wave": "saw" },
+			{ "kind": "tone", "hz": 330, "dur": 0.3, "vol": 0.04, "delay": 0.0, "wave": "saw" },
+			{ "kind": "thump", "hz": 70, "dur": 0.2, "vol": 0.08, "delay": 0.05 },
+			{ "kind": "noise", "hz": 1200, "dur": 0.15, "vol": 0.05, "delay": 0.1, "rate": 0.9 }
+		],
+		"vent_open": [
+			{ "kind": "noise", "hz": 700, "dur": 0.3, "vol": 0.07, "delay": 0.0, "rate": 0.6 },
+			{ "kind": "thump", "hz": 95, "dur": 0.2, "vol": 0.1, "delay": 0.05 },
+			{ "kind": "tone", "hz": 180, "dur": 0.25, "vol": 0.03, "delay": 0.05, "wave": "saw" }
+		],
+		"vent_close": [
+			{ "kind": "thump", "hz": 85, "dur": 0.18, "vol": 0.12, "delay": 0.0 },
+			{ "kind": "noise", "hz": 500, "dur": 0.12, "vol": 0.05, "delay": 0.0, "rate": 0.6 },
+			{ "kind": "tone", "hz": 220, "dur": 0.06, "vol": 0.03, "delay": 0.12, "wave": "square" }
+		],
+		"hunter_sniff": [
+			{ "kind": "noise", "hz": 2600, "dur": 0.09, "vol": 0.05, "delay": 0.0, "rate": 1.2 },
+			{ "kind": "noise", "hz": 2400, "dur": 0.1, "vol": 0.05, "delay": 0.14, "rate": 1.2 },
+			{ "kind": "noise", "hz": 2000, "dur": 0.12, "vol": 0.04, "delay": 0.3, "rate": 1.1 }
+		],
+		"hunter_knock": [
+			{ "kind": "thump", "hz": 130, "dur": 0.08, "vol": 0.16, "delay": 0.0 },
+			{ "kind": "thump", "hz": 125, "dur": 0.08, "vol": 0.15, "delay": 0.22 },
+			{ "kind": "thump", "hz": 135, "dur": 0.09, "vol": 0.17, "delay": 0.44 }
+		]
+	},
+	"events": {
+		"locker_open": { "cue": "locker_open" },
+		"locker_close": { "cue": "locker_close" },
+		"relay_pickup": { "cue": "relay_pickup" },
+		"item_pickup": { "cue": "item_pickup" },
+		"battery_pickup": { "cue": "recharge", "intensity": 2.5 },
+		"music_box_wind": { "cue": "music_box_wind" },
+		"music_box_jam": { "cue": "music_box_jam" },
+		"vent_open": { "cue": "vent_open" },
+		"vent_close": { "cue": "vent_close" },
+		"vent_crawl_step": { "cue": "step:crouch:metal:0" },
+		"hunter_sniff": { "cue": "hunter_sniff", "scaled": true },
+		"hunter_knock": { "cue": "hunter_knock", "scaled": true },
+		"hunter_step_carpet": { "cue": "step:hunter:carpet:0", "scaled": true },
+		"hunter_step_wood": { "cue": "step:hunter:wood:0", "scaled": true },
+		"hunter_step_tile": { "cue": "step:hunter:tile:0", "scaled": true },
+		"hunter_step_concrete": { "cue": "step:hunter:concrete:0", "scaled": true },
+		"hunter_step_metal": { "cue": "step:hunter:metal:0", "scaled": true },
+		"hunter_step_stone": { "cue": "step:hunter:stone:0", "scaled": true },
+		"hunter_step_grass": { "cue": "step:hunter:grass:0", "scaled": true },
+		"hunter_step_water": { "cue": "step:hunter:water:0", "scaled": true }
+	}
+}

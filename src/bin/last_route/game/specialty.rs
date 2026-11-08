@@ -431,10 +431,8 @@ impl Specialty {
     pub fn use_selected(&mut self) -> Use {
         let Some(i) = self.selected else { return Use::Nothing };
         match self.items[i] {
-            Some(SpecItem::MusicBox) => {
-                self.items[i] = None;
-                Use::WindBox
-            }
+            // a click never spends the box; holding interact winds it (game/interact.rs)
+            Some(SpecItem::MusicBox) => Use::Nothing,
             Some(SpecItem::Temperature(_)) => self.toggle_temp().map_or(Use::Nothing, Use::Toggled),
             None => Use::Nothing,
         }
@@ -543,6 +541,12 @@ impl Game {
 
     /// The use button while a specialty slot is selected.
     pub(super) fn use_specialty(&mut self) {
+        if let Some(i) = self.specialty.selected {
+            if self.specialty.items.get(i).copied().flatten() == Some(SpecItem::MusicBox) {
+                self.left_click_music_box();
+                return;
+            }
+        }
         match self.specialty.use_selected() {
             Use::Nothing => {}
             Use::WindBox => self.wind_music_box(),
@@ -810,20 +814,21 @@ mod tests {
     }
 
     #[test]
-    fn using_slot_six_winds_the_box_and_spends_it_and_the_pack_stays_untouched() {
+    fn a_click_on_slot_six_keeps_the_box_and_holding_winds_it() {
         let (mut g, content) = sim();
         add(&mut g, &content, "glyra");
         g.sync_specialty();
         g.music_box_left = 0.0;
         g.press_specialty(0);
         g.use_specialty();
+        assert_eq!(g.music_box_left, 0.0, "a click does not wind");
+        assert_eq!(g.specialty.items[0], Some(SpecItem::MusicBox), "a click keeps the box");
+        g.focus = None;
+        g.p.stun = 0.0;
+        g.update_box_wind(crate::game::music_box::rules().wind_seconds * 2.0, true);
         assert_eq!(g.music_box_left, crate::game::music_box::wound_seconds(g.difficulty.id()));
-        assert_eq!(g.specialty.items[0], None, "the wind spends the box");
-        assert_eq!(g.specialty.selected, Some(0), "the empty slot stays shown");
-        // a second use winds nothing more
-        g.music_box_left = 0.0;
-        g.use_specialty();
-        assert_eq!(g.music_box_left, 0.0);
+        assert_eq!(g.specialty.items[0], Some(SpecItem::MusicBox), "winding does not spend it");
+        assert_eq!(g.specialty.selected, Some(0));
     }
 
     #[test]
@@ -840,7 +845,7 @@ mod tests {
         assert_eq!(box_in_pack(&g), 0);
         // once wound, the slot is free again and a floor box goes there, not to the pack
         g.press_specialty(0);
-        g.use_specialty();
+        g.specialty.items[0] = None;
         assert!(g.give(Item::MusicBox, 1));
         assert_eq!(g.specialty.items[0], Some(SpecItem::MusicBox));
         assert_eq!(box_in_pack(&g), 0);
@@ -859,7 +864,7 @@ mod tests {
         assert!(g.message.contains("ALREADY"), "{}", g.message);
         assert!(!g.pickups[a].taken);
         g.press_specialty(0);
-        g.use_specialty();
+        g.specialty.items[0] = None; // the slot is freed
         assert!(g.take_pickup(b, crate::game::interact::Actor::Player));
         assert_eq!(g.specialty.items[0], Some(SpecItem::MusicBox));
         assert_eq!(box_in_pack(&g), 0);
@@ -920,7 +925,11 @@ mod tests {
         let c = crate::game::Controls { use_item: true, ..Default::default() };
         g.music_box_left = 0.0;
         g.update_tools(&c, &Sounds::default());
-        assert!(g.music_box_left > 0.0, "use winds the selected box");
+        assert_eq!(g.music_box_left, 0.0, "a click does not wind the selected box");
+        g.focus = None;
+        g.p.stun = 0.0;
+        g.update_box_wind(crate::game::music_box::rules().wind_seconds * 2.0, true);
+        assert!(g.music_box_left > 0.0, "holding winds the selected box");
         // the drop key cannot throw a specialty item away
         g.specialty.items[0] = Some(SpecItem::MusicBox);
         let c = crate::game::Controls { drop: true, ..Default::default() };

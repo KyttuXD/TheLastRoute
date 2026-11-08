@@ -487,6 +487,36 @@ const SAFE_ROOM_MAX_DT: f32 = 0.25;
 
 /// The centre of the window's middle chunk, where the runner's safe room is: the chunk's centre cell (22) in
 /// window cells, plus the half cell that `Cell::center` adds (Godot `(coord + .5) * CHUNK_SIZE`).
+/// Where a runner entering the window stands: the window's start cell, or (on a sewer level, where the centre is the
+/// channel crossing) the nearest dry cell the walking grid keeps open. The channel's water is fenced by railings, so a
+/// runner put in it could never climb out to the walkways.
+pub(crate) fn dry_start(f: &Facility) -> (f32, f32) {
+    let s = f.start;
+    let ok = |c: Cell| !f.is_water(c) && f.hunter_open(c) && f.body_fits(c.x as f32 + 0.5, c.y as f32 + 0.5, PLAYER_RADIUS);
+    if ok(s) {
+        return s.center();
+    }
+    for r in 1..=12i32 {
+        let mut best: Option<(f32, Cell)> = None;
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs() != r && dy.abs() != r {
+                    continue;
+                }
+                let c = Cell::new(s.x + dx, s.y + dy);
+                let d = ((dx * dx + dy * dy) as f32).sqrt();
+                if ok(c) && best.map_or(true, |b| d < b.0) {
+                    best = Some((d, c));
+                }
+            }
+        }
+        if let Some((_, c)) = best {
+            return c.center();
+        }
+    }
+    s.center()
+}
+
 fn middle_safe_centre() -> (f32, f32) {
     let c = (CHUNK + live::CENTRE) as f32 + 0.5;
     (c, c)
@@ -846,7 +876,7 @@ impl Game {
         // Godot puts the runner on the spawn cell's exact centre (infinite_route_test.gd:282,
         // streamed_facility_view_3d.gd spawn_position). `place` adds the finite floors' one-cell
         // south offset, so the infinite start sets the position after it.
-        let start = self.fac.start.center();
+        let start = dry_start(&self.fac);
         self.p.place(start);
         self.p.pos = start;
         self.reset_hunters(content);
@@ -2543,6 +2573,7 @@ mod tests {
 
     #[test]
     fn level_zero_discovery_is_per_cell_in_negative_chunks_too() {
+        crate::world::route::layout::godot_regions_for_this_test();
         let (mut g, content, catalog) = run();
         g.p.pos.0 -= 2.0 * CHUNK as f32;
         g.stream_window(&content, &catalog);
@@ -4355,16 +4386,22 @@ mod walked_stair_tests {
         #[test]
         fn state_survives_a_change_when_the_hunter_is_on_both_floors() {
             let (mut g, to, content, catalog) = two_floors(&["glyra", "wynelle", "solyth"], &["glyra", "wynelle", "solyth"]);
-            // wind the box (spent), set the temperature item to cold and hold slot 7
+            // wind the box (a hold; the box stays), set the temperature item to cold and hold slot 7
             g.press_specialty(0);
             g.use_specialty();
-            assert_eq!(g.specialty.items[0], None, "the wind spends the box");
+            assert_eq!(g.specialty.items[0], Some(SpecItem::MusicBox), "a click keeps the box");
+            g.focus = None;
+            g.p.stun = 0.0;
+            // from empty: a box held on past 100 % jams (data/music_box.json overwind_seconds), so it starts run down
+            g.music_box_left = 0.0;
+            g.update_box_wind(crate::game::music_box::rules().wind_seconds, true);
+            g.specialty.items[0] = None; // then the slot is cleared by hand so the check below is about floors only
             g.specialty.items[1] = Some(SpecItem::Temperature(Mode::Cold));
             g.press_specialty(1);
             let left = g.music_box_left;
             assert!(left > 0.0);
             assert!(g.relabel(to, &content, &catalog));
-            assert_eq!(g.specialty.items[0], None, "a spent box is not handed out again by a change of floor");
+            assert_eq!(g.specialty.items[0], None, "a cleared slot is not handed out again by a change of floor");
             assert_eq!(g.specialty.temp_mode(), Some(Mode::Cold), "the type the runner set is kept");
             assert_eq!(g.specialty.selected, Some(1), "and so is the slot in hand");
             assert_eq!(g.music_box_left, left, "the wound clock is the runner's, not the floor's");
@@ -4598,4 +4635,22 @@ mod walked_stair_tests {
         }
     }
 
+}
+
+#[cfg(test)]
+mod dry_start_tests {
+    use super::*;
+    use crate::config::Difficulty;
+
+    /// A run entered on the sewer level stands on a dry cell the walking grid keeps open, not in the fenced channel
+    /// at the window's centre (the headless bot's level -1 explore run, seed BRAVO, started there and never got out).
+    #[test]
+    fn a_sewer_level_entry_stands_the_runner_on_a_dry_open_cell() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let g = Game::new_infinite_sim(Difficulty::Standard, 7, "BRAVO", -1, &content, &catalog);
+        let c = Cell::new(g.p.pos.0.floor() as i32, g.p.pos.1.floor() as i32);
+        assert!(!g.fac.is_water(c), "the runner starts out of the water");
+        assert!(g.fac.hunter_open(c), "the runner starts on the walking grid");
+        assert!(pdist(g.p.pos, g.fac.start.center()) <= 12.0 * std::f32::consts::SQRT_2, "near the window's start");
+    }
 }

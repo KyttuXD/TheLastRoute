@@ -34,7 +34,7 @@ The global agent build rules (KT's global CLAUDE.md: edit agents never compile, 
 - The build-and-fix agent runs, in order: `cargo build --bin last_route`, `cargo test --no-run --lib --bin last_route`, `cargo check --target wasm32-unknown-unknown --bin last_route`, `cargo build --bin lr_server --features server`.
 - The test-and-fix agent runs the newest `<target>/debug/deps/last_route-*.exe --test-threads=4`, then `<target>/debug/last_route.exe --headless --test-suite "tests/*.json"`.
 - Off-limits to every agent: `src/bin/lr_story/`, `src/bin/lr_story_server/`, `packaging/story-*`, `Cargo.toml`, `Cargo.lock`, `.gitignore`, `docs/LR_STORY.md` (another agent owns them).
-- Known failures to ignore: `content::npcs::tests::the_bots_tuning_reads_the_embedded_standard_values`, `content::npcs::tests::the_embedded_file_parses_to_the_defaults`, `hunters::brain::wiring_tests::giving_up_leaves_a_chase_a_search_and_a_wander_idle`; headless: the `bot` suite (relays, depth, exploring) and `run_flow` "a capture without a struggle ends the run" (they fail on `7f0ffb8` too).
+- Known failures to ignore: none since 2026-11-08 (the bot suite, the run_flow capture test and the npcs/brain unit tests pass). Timing flakes (`net::http`, `headless::dedicated`, `shared::skins`) pass when rerun alone.
 
 ## Working with KT
 

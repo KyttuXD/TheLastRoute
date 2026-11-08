@@ -622,7 +622,7 @@ mod tests {
                     .iter()
                     .map(|r| r.as_str().expect("grid row").to_string())
                     .collect();
-                let Some(layout) = chunk_layout(&world, coord) else {
+                let Some(layout) = crate::world::route::layout::chunk_layout_godot(&world, coord) else {
                     no_layout += 1;
                     failures.push(format!("{tag} {:?} {region}: no layout", (coord.x, coord.z)));
                     continue;

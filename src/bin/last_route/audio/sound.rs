@@ -275,3 +275,74 @@ pub fn placed_music_boxes(requests: &[crate::game::music_box::TuneRequest]) {
         }
     });
 }
+
+// ---- the rest of the original's Sound methods, and the data-defined events (data/audio/cues.json) ----
+
+/// A game event from data/audio/cues.json by name ("locker_open", "locker_close", "relay_pickup", "item_pickup",
+/// "battery_pickup", "music_box_wind", "music_box_jam", "vent_open", "vent_close", "vent_crawl_step", "hunter_sniff",
+/// "hunter_knock", "hunter_step_<surface>"). `pan` -1..1; `volume` is the loudness of a scaled event (a hunter step's
+/// 0.05 is full gain) and is ignored by the others. An unknown name plays nothing.
+pub fn event(name: &str, pan: f32, volume: f32) {
+    if let Some(p) = super::cues::extra::event(name, pan as f64, volume as f64) {
+        play(p);
+    }
+}
+/// A hunter sniffing the air (an investigating or searching hunter), `volume` from her distance like a hunter step.
+pub fn hunter_sniff(pan: f32, volume: f32) {
+    event("hunter_sniff", pan, volume);
+}
+/// A hunter knocking on a door or locker.
+pub fn hunter_knock(pan: f32, volume: f32) {
+    event("hunter_knock", pan, volume);
+}
+/// A hunter's step on a floor surface (`SURFACES`), for a hunter `world::update` does not step (fakes, remote views).
+pub fn hunter_footstep_on(pan: f32, volume: f32, surface: &str) {
+    with(|e| {
+        let p = e.front.hunter_footstep(pan as f64, volume as f64, surface);
+        e.play(&p);
+    });
+}
+/// Hiding and being searched (main_3d.gd; sound.gd `hide_search`).
+pub fn hide_search(pan: f32, intensity: f32) {
+    play(rules::hide_search(pan as f64, intensity as f64));
+}
+pub fn hunter_snore(pan: f32, intensity: f32) {
+    play(rules::hunter_snore(pan as f64, intensity as f64));
+}
+pub fn spider_bark(pan: f32, intensity: f32) {
+    play(rules::spider_bark(pan as f64, intensity as f64));
+}
+pub fn spider_hiss(pan: f32, intensity: f32) {
+    play(rules::spider_hiss(pan as f64, intensity as f64));
+}
+pub fn spider_skitter(pan: f32, intensity: f32) {
+    play(rules::spider_skitter(pan as f64, intensity as f64));
+}
+/// A body hitting water.
+pub fn splash_big(pan: f32, intensity: f32) {
+    play(rules::splash_big(pan as f64, intensity as f64));
+}
+pub fn water_drip(pan: f32, intensity: f32) {
+    play(rules::water_drip(pan as f64, intensity as f64));
+}
+pub fn inferno_crackle(pan: f32, intensity: f32) {
+    play(rules::inferno_crackle(pan as f64, intensity as f64));
+}
+pub fn pit_rumble(pan: f32, intensity: f32) {
+    play(rules::pit_rumble(pan as f64, intensity as f64));
+}
+/// A stage instrument (`kind` = mic, podium, drums, electric, acoustic, bass, keys, piano).
+pub fn music(kind: &str, pan: f32, intensity: f32) {
+    play(rules::music(kind, pan as f64, intensity as f64));
+}
+pub fn ladder_rung(pan: f32, intensity: f32) {
+    play(rules::ladder_rung(pan as f64, intensity as f64));
+}
+/// A carnival booth sound (`kind` = start, throw, ring_on, ... see table.rs `carnival_*`).
+pub fn carnival(kind: &str, pan: f32, intensity: f32) {
+    play(rules::carnival(kind, pan as f64, intensity as f64));
+}
+/// A co-op teammate's step (remote_players.gd): `volume` as for a hunter step.
+pub fn remote_player_footstep(mode: &str, pan: f32, volume: f32) {
+    play(rules::remote_player_footstep(mode, pan as f64, volume as f64));
+}

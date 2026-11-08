@@ -419,6 +419,7 @@ mod tests {
     /// item). The chunk's own inputs come from `chunk()`, so the seal frame, the breakables and the gates are the port's.
     #[test]
     fn pickups_match_godot_goldens() {
+        crate::world::route::layout::with_godot_regions(|| {
         if crate::shared::test_support::skip_without_parity() {
             return;
         }
@@ -427,12 +428,14 @@ mod tests {
             assert_eq!(seed.goldens.len(), 98, "{}: 98 sewer chunks", seed.tag);
         }
         check_all(&seeds);
+            });
     }
 
     /// The full goldens (PARITY_DIR), all 98 sewer chunks of each seed. Without PARITY_DIR it returns early; the
     /// compact test checks the same field on the same chunks.
     #[test]
     fn pickups_match_full_goldens() {
+        crate::world::route::layout::with_godot_regions(|| {
         let Ok(dir) = std::env::var("PARITY_DIR") else {
             eprintln!("PARITY_DIR unset: full sewer pickups golden check skipped");
             return;
@@ -442,5 +445,6 @@ mod tests {
             assert_eq!(seed.goldens.len(), 98, "{}: 98 sewer chunks", seed.tag);
         }
         check_all(&seeds);
+            });
     }
 }

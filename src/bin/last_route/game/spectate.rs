@@ -328,6 +328,8 @@ mod tests {
     #[test]
     fn a_downed_runner_becomes_a_spectator_and_cycles_on_the_game() {
         let mut g = game();
+        // another runner in the room could revive: the capture downs the runner (game/revive.rs)
+        g.room_teammates = 1;
         g.end_run(0, "caught");
         assert!(g.runner_downed());
         assert!(!g.spectate_enter(&[]), "no other runner: stays downed, not spectating");
@@ -355,6 +357,8 @@ mod tests {
     #[test]
     fn a_spectator_is_never_caught_again() {
         let mut g = game();
+        // another runner in the room: the catch downs the runner, who may then spectate
+        g.room_teammates = 1;
         g.end_run(0, "caught");
         assert!(g.spectate_enter(&[2]));
         assert!(g.spectating());

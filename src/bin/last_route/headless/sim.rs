@@ -493,6 +493,8 @@ impl Sim {
             "relays_total": g.fac.relays.len(),
             "lift_ready": g.fac.has_lift && g.relays_collected >= g.fac.relays.len() as i32,
             "escape": g.escape.as_ref().map(|e| json!({ "remaining": r2(e.remaining), "progress": e.progress, "needed": ESCAPE_PRESSES, "hunter": g.hunters[e.hunter].def.id })),
+            // the runner lies downed (game/revive.rs): seconds left before the timeout, None while standing
+            "downed": g.downed.as_ref().map(|d| json!({ "remaining": r2(d.remaining) })),
             "shop_open": g.shop_open(),
             "message": if g.message_t > 0.0 { Value::from(g.message.clone()) } else { Value::Null },
             "toast": if g.toast_t > 0.0 { Value::from(g.toast.clone()) } else { Value::Null },
@@ -728,6 +730,9 @@ impl Sim {
                             '?'
                         } else if f.is_wall_cell(x, y) {
                             '#'
+                        } else if !f.hunter_open(crate::world::Cell::new(x, y)) {
+                            // floor the walking grid (hunters, the bot's paths) closes
+                            ','
                         } else {
                             '.'
                         }
@@ -793,7 +798,7 @@ impl Sim {
             "cols": f.cols,
             "rows": f.rows,
             "discovered_cells": seen,
-            "legend": "# wall . floor ? unseen P you H hunter R relay B battery L locker (l burnt out) X lift S safe zone > stairs down < stairs up",
+            "legend": "# wall . floor , floor the walking grid closes ? unseen P you H hunter R relay B battery L locker (l burnt out) X lift S safe zone > stairs down < stairs up",
             "rows_text": grid.into_iter().map(|r| r.into_iter().collect::<String>()).collect::<Vec<_>>(),
         })
     }

@@ -1286,6 +1286,35 @@ impl Session {
                         g.fac
                             .nearest_open_or(cell.center().0, cell.center().1, PLAYER_RADIUS);
                 }
+                "door" => {
+                    // beside the prop's cell, as for any object, except for a double door (span 3: the cell is one jamb
+                    // end, and beside it is the opening or the far end of the leaf, outside the crosshair)
+                    let before = g.p.pos;
+                    g.teleport_beside(cell);
+                    if g.p.pos == before {
+                        let (cx, cy) = cell.center();
+                        g.p.pos = g.fac.nearest_open_or(cx, cy, PLAYER_RADIUS);
+                        g.p.yaw = bot::yaw_to(cx - g.p.pos.0, cy - g.p.pos.1);
+                    }
+                    let (prop, c) = g.fac.doors().nth(i).expect("the door was found above");
+                    let off_face = |p: (f32, f32)| g.fac.door_nearest(prop, p).map_or(0.0, |n| crate::game::pdist(n, p));
+                    // a leaf whose middle is off the prop's cell (span 3) is too wide to aim at from beside one end
+                    if crate::game::pdist(c, cell.center()) > 0.3 || off_face(g.p.pos) < 0.3 {
+                        // in front of the leaf's middle instead, a metre off its face, facing it
+                        let spot = [(0.0, 1.0), (0.0, -1.0), (1.0, 0.0), (-1.0, 0.0)]
+                            .into_iter()
+                            .map(|(dx, dy)| (c.0 + dx, c.1 + dy))
+                            .filter(|p| g.fac.body_fits(p.0, p.1, PLAYER_RADIUS))
+                            .map(|p| (p, off_face(p)))
+                            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                            .map(|(p, _)| p);
+                        if let Some(p) = spot {
+                            g.p.pos = p;
+                            g.p.yaw = bot::yaw_to(c.0 - p.0, c.1 - p.1);
+                            g.p.pitch = -0.2;
+                        }
+                    }
+                }
                 "pickup" => {
                     let p = g.pickups[i].pos;
                     g.p.pos = g.fac.nearest_open_or(p.0, p.1 + 1.0, PLAYER_RADIUS);

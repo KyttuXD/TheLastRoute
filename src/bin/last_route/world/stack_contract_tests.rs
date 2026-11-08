@@ -51,7 +51,7 @@ type Key = (String, i32, i32, i32);
 fn built(seed: &str, cx: i32, cy: i32, level: i32) -> Arc<Built> {
     static CACHE: OnceLock<Mutex<HashMap<Key, Arc<Built>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let key: Key = (seed.to_string(), cx, cy, level);
+    let key: Key = (format!("{seed}:godot={}", crate::world::route::layout::godot_regions()), cx, cy, level);
     if let Some(b) = cache.lock().unwrap().get(&key) {
         return b.clone();
     }
@@ -507,6 +507,7 @@ fn the_drop_cells_line_up_between_the_two_levels() {
 /// flight cell have a tread surface that never turns back, a body fits on each, and the landing is reachable.
 #[test]
 fn the_todo_stairwell_at_seed_40490470_chunk_3_2_is_walkable_end_to_end() {
+        crate::world::route::layout::with_godot_regions(|| {
     let (seed, cx, cy) = ("40490470", 3, 2);
     let b = built(seed, cx, cy, 0);
     let mut fails = vec![];
@@ -567,7 +568,8 @@ fn the_todo_stairwell_at_seed_40490470_chunk_3_2_is_walkable_end_to_end() {
         }
     }
     report("seed 40490470 chunk (3,2)", &fails);
-}
+        });
+    }
 
 /// The absolute height of relative height `rel` on `level`.
 fn lvl_abs(level: i32, rel: f32) -> f32 {
@@ -646,6 +648,7 @@ fn both_levels_agree_on_the_lane_dividers() {
 /// this, see docs/OPEN_QUESTIONS.md).
 #[test]
 fn level0_maze_wells_are_sparse_like_godot() {
+        crate::world::route::layout::with_godot_regions(|| {
     use super::route::live::layout_stairwells;
     const SPAN: i32 = 10;
     const MIN_SHARE: f32 = 0.05;
@@ -662,7 +665,8 @@ fn level0_maze_wells_are_sparse_like_godot() {
         let share = wells as f32 / chunks as f32;
         assert!((MIN_SHARE..=MAX_SHARE).contains(&share), "seed {seed}: {wells} wells in {chunks} chunks ({share:.3})");
     }
-}
+        });
+    }
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The way out of a flight (stairs fix, phase 0): a foot that leads nowhere strands the runner
@@ -942,6 +946,7 @@ fn the_lower_levels_well_is_walkable_only_where_the_flight_is() {
 /// into the well open. The runner walks from the middle of each landing-row cell towards the well in 1 cm steps.
 #[test]
 fn a_body_cannot_walk_off_a_guarded_landing_edge_except_at_the_arrival_gap() {
+        crate::world::route::layout::with_godot_regions(|| {
     use super::flight::landing_guards_with;
     let r = 0.23;
     let (mut guarded, mut gaps) = (0, 0);
@@ -984,7 +989,8 @@ fn a_body_cannot_walk_off_a_guarded_landing_edge_except_at_the_arrival_gap() {
         }
     }
     assert!(guarded >= 9 && gaps >= 6, "{guarded} guarded and {gaps} open edges walked: the sweep needs switchbacks on level 0");
-}
+        });
+    }
 
 /// The spiral's guard is the landing row's end on the arc's end side; its start side is floored by the corner slab, so a
 /// body walks out onto it. The same walk, outwards from A's and B's cells.

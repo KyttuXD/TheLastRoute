@@ -1,0 +1,44 @@
+{
+	"schema": "lr.region_rooms/1",
+	"region": "apartment",
+	"colour": "A17FFF",
+	"note": "apartments",
+	"rooms": [
+		{"role": "bedroom", "weight": 3, "template": "code", "size": {"min": [9, 9], "preferred": [11, 9], "max": [13, 13]}, "tables": [0, 1]},
+		{"role": "kitchen", "weight": 2, "template": "code", "size": {"min": [9, 9], "preferred": [11, 11], "max": [13, 13]}, "tables": [0, 1]},
+		{"role": "living_room", "weight": 3, "template": "code", "size": {"min": [9, 9], "preferred": [11, 11], "max": [15, 15]}, "tables": [0, 2]},
+		{"role": "house_bathroom", "weight": 1, "template": "code", "size": {"min": [9, 9], "preferred": [9, 9], "max": [13, 13]}},
+		{
+			"role": "study_nook",
+			"weight": 1,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [9, 11], "max": [11, 11]},
+			"recipe": [
+				{"type": "normalBookcase", "side": ["-half+1", "half-1", 3], "depth": 0, "wall": true},
+				{"type": "woodenTable", "side": 0, "depth": "mid"},
+				{"type": "woodenChair", "side": 0, "depth": "mid-1"},
+				{"type": "woodenChair", "side": 0, "depth": "mid+1", "facing": "back"},
+				{"type": "floorLamp", "side": "half-1", "depth": 1, "facing": "center", "mirror": true},
+				{"type": "ceilingLight", "side": 0, "depth": "mid", "loose": true}
+			]
+		}
+	],
+	"props": [
+		{"type": "normalKitchenFridge", "size": [0.85, 2, 0.75], "solid": true, "weight": 1},
+		{"type": "normalBookcase", "size": [1.25, 1.9, 0.45], "solid": true, "weight": 1},
+		{"type": "loungeCouchWide", "size": [2.6, 1, 0.95], "solid": true, "weight": 1},
+		{"type": "singleBed", "size": [1, 0.75, 2], "solid": true, "weight": 1},
+		{"type": "bunkBed", "size": [1.06, 1.88, 2.1], "solid": true, "weight": 1},
+		{"type": "woodenChair", "size": [0.65, 1, 0.65], "solid": true, "weight": 1},
+		{"type": "apartmentCarpet", "size": [2, 0.03, 1.35], "solid": false, "weight": 1},
+		{"type": "bathroomMirror", "size": [0.85, 1.4, 0.14], "solid": false, "weight": 1},
+		{"type": "normalPictureFrameEmpty", "size": [0.7, 0.9, 0.12], "solid": false, "weight": 1},
+		{"type": "normalPaintingFrameEmpty", "size": [1.2, 1.5, 0.12], "solid": false, "weight": 1},
+		{"type": "normalCoffeeTable", "size": [1.92, 0.75, 1.17], "solid": true, "weight": 1},
+		{"type": "floorLamp", "size": [0.6, 2.62, 0.6], "solid": true, "weight": 1},
+		{"type": "bedroomNightstand", "size": [0.98, 1.03, 0.79], "solid": true, "weight": 1},
+		{"type": "tableLamp", "size": [0.5, 0.65, 0.36], "solid": true, "weight": 1},
+		{"type": "woodenTable", "size": [1.92, 1.12, 1.17], "solid": true, "weight": 1},
+		{"type": "ceilingLight", "size": [0.75, 0.3, 0.75], "solid": false, "weight": 1}
+	]
+}

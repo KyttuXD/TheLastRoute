@@ -354,7 +354,7 @@ mod parity_tests {
                 }
                 chunks += 1;
                 entries += wanted.len();
-                let Some(layout) = chunk_layout(&golden.world, *c) else {
+                let Some(layout) = crate::world::route::layout::chunk_layout_godot(&golden.world, *c) else {
                     failures.push(format!("{tag} [{},{},{}]: no layout", c.x, c.y, c.z));
                     continue;
                 };
@@ -390,11 +390,13 @@ mod parity_tests {
 
     #[test]
     fn hunter_spawns_match_godot_compact_extracts() {
+        crate::world::route::layout::with_godot_regions(|| {
         if crate::shared::test_support::skip_without_parity() {
             return;
         }
         let _godot = crate::world::route::furnished::godot_layout();
         check(&TAGS, load_compact);
+            });
     }
 
     #[test]

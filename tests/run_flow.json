@@ -87,6 +87,24 @@
       ]
     },
     {
+      "name": "with a bot teammate on the run a capture downs the runner instead, and the revive timeout applies",
+      "start_run": { "seed": 1 },
+      "steps": [
+        { "cmd": "teleport", "to": "relay", "index": 0 },
+        { "cmd": "admin", "name": "npc", "count": 1 },
+        { "expect": [ { "path": "last.spawned", "value": 1 } ] },
+        { "cmd": "admin", "name": "wake", "index": 0 },
+        { "cmd": "admin", "name": "hunter_to", "index": 0, "near": 1.2 },
+        { "cmd": "step_until", "expect": [ { "path": "run.escape", "op": "exists" } ], "max_frames": 240 },
+        { "cmd": "step_until", "expect": [ { "path": "run.downed", "op": "exists" } ], "max_frames": 400 },
+        { "expect": [ { "path": "run.ended", "value": false }, { "path": "report.ended", "value": false }, { "path": "run.downed.remaining", "op": ">", "value": 44 } ] },
+        { "cmd": "step", "frames": 1200, "observe": false },
+        { "expect": [ { "path": "run.ended", "value": false }, { "path": "run.downed.remaining", "op": "<", "value": 26 } ] },
+        { "cmd": "step", "frames": 1600, "observe": false },
+        { "expect": [ { "path": "run.downed", "op": "missing" }, { "path": "run.ended", "value": true }, { "path": "report.ended", "value": true }, { "path": "report.cause", "value": "contact" }, { "path": "report.hunter", "value": "kathy" } ] }
+      ]
+    },
+    {
       "name": "admin god and no_target keep the runner safe",
       "start_run": { "seed": 1, "god": true },
       "steps": [

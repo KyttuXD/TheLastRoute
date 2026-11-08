@@ -549,17 +549,20 @@ mod tests {
     /// `behind` cells, with the golden pickup cells as the exclusion input.
     #[test]
     fn hunter_spawns_match_godot_goldens() {
+        crate::world::route::layout::with_godot_regions(|| {
         if crate::shared::test_support::skip_without_parity() {
             return;
         }
         let seeds: Vec<Seed> = TAGS.iter().map(|tag| load_compact(tag)).collect();
         check_all(&seeds);
+            });
     }
 
     /// The full goldens (PARITY_DIR). Without PARITY_DIR it returns early; the compact test checks the same field
     /// on the same chunks.
     #[test]
     fn hunter_spawns_match_full_goldens() {
+        crate::world::route::layout::with_godot_regions(|| {
         let Ok(dir) = std::env::var("PARITY_DIR") else {
             eprintln!("PARITY_DIR unset: full sewer hunter golden check skipped");
             return;
@@ -569,5 +572,6 @@ mod tests {
             assert_eq!(seed.goldens.len(), 98, "{}: 98 sewer chunks", seed.tag);
         }
         check_all(&seeds);
+            });
     }
 }

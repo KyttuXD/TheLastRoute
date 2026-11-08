@@ -1,0 +1,24 @@
+{
+	"schema": "lr.region/1",
+	"id": "ice",
+	"hall_floor": ["stone0", "stone1"],
+	"hall_runner": false,
+	"room_default_floor": ["epoxy0"],
+	"room_roles": ["frosted_storage", "frosted_storage", "frosted_storage", "freezer_room", "freezer_room", "freezer_room", "cold_pantry", "frozen_lounge"],
+	"prop_set": [
+		{"type": "hazardSign", "size": [0.6, 0.62, 0.05], "solid": false},
+		{"type": "ceilingLight", "size": [0.75, 0.3, 0.75], "solid": false},
+		{"type": "coldStorageUnit", "size": [2.1, 3.19, 1.35]},
+		{"type": "supplyCrates", "size": [0.79, 0.94, 0.67]},
+		{"type": "storageBarrel", "size": [0.67, 0.94, 0.67]},
+		{"type": "labCoolingUnit", "size": [1.54, 3.19, 1.35]},
+		{"type": "normalKitchenFridge", "size": [1.35, 2.91, 1.26]},
+		{"type": "normalKitchenSink", "size": [1.92, 1.69, 1.07]},
+		{"type": "woodenTable", "size": [1.92, 1.12, 1.17]},
+		{"type": "woodenChair", "size": [0.79, 1.41, 0.79]},
+		{"type": "loungeCouchWide", "size": [3.7, 1.33, 1.54]},
+		{"type": "normalCoffeeTable", "size": [1.92, 0.75, 1.17]},
+		{"type": "normalBookcase", "size": [1.54, 2.72, 0.7]},
+		{"type": "floorLamp", "size": [0.6, 2.62, 0.6]}
+	]
+}

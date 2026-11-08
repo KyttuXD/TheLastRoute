@@ -749,26 +749,31 @@ mod tests {
     /// `breakable_id`.
     #[test]
     fn breakables_match_godot_goldens() {
+        crate::world::route::layout::with_godot_regions(|| {
         if crate::shared::test_support::skip_without_parity() {
             return;
         }
         let goldens = compact_goldens();
         assert_field(&goldens, "breakables");
         assert_field(&goldens, "pipe_props");
+            });
     }
 
     /// `sealed_cells` of levels -1 and -2 for the three goldens, in z-major order.
     #[test]
     fn sealed_cells_match_godot_goldens() {
+        crate::world::route::layout::with_godot_regions(|| {
         if crate::shared::test_support::skip_without_parity() {
             return;
         }
         assert_field(&compact_goldens(), "sealed_cells");
+            });
     }
 
     /// The full goldens (PARITY_DIR), raw: no flood encoding, no mask rows. Skips with a note when PARITY_DIR is unset.
     #[test]
     fn breakables_and_sealed_match_full_goldens() {
+        crate::world::route::layout::with_godot_regions(|| {
         let Ok(dir) = std::env::var("PARITY_DIR") else {
             eprintln!("PARITY_DIR unset: the full-golden seal check is skipped");
             return;
@@ -780,6 +785,7 @@ mod tests {
         for field in ["breakables", "sealed_cells", "pipe_props"] {
             assert_field(&goldens, field);
         }
+            });
     }
 
     #[test]

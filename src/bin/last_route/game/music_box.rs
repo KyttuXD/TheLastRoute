@@ -31,6 +31,19 @@ pub struct Rules {
     pub placed_tune_rates: Vec<f32>,
     /// A placed box quieter than this per channel is not started. Optional key.
     pub placed_min_gain: f32,
+    /// Hold seconds to wind from empty to 100 %.
+    pub wind_seconds: f32,
+    /// Seconds held past 100 % before the box jams.
+    pub overwind_seconds: f32,
+    /// Seconds a jammed box refuses winding.
+    pub jam_cooldown_seconds: f32,
+    /// The jam's noise burst strength and length (what hunters hear).
+    pub jam_noise: f32,
+    pub jam_noise_seconds: f32,
+    pub prompt_wind: String,
+    pub prompt_jammed: String,
+    pub message_jammed: String,
+    pub message_left_click: String,
 }
 
 /// The rules as the data file gives them. A missing or malformed file is a build defect (the file is embedded), so
@@ -50,6 +63,7 @@ pub fn rules() -> &'static Rules {
 pub fn parse(text: &str) -> Rules {
     let v: Value = serde_json::from_str(text).unwrap_or_else(|e| panic!("data/{FILE}: {e}"));
     let num = |k: &str| v[k].as_f64().unwrap_or_else(|| panic!("data/{FILE}: {k} is not a number")) as f32;
+    let text = |k: &str| v[k].as_str().unwrap_or_else(|| panic!("data/{FILE}: {k} is not text")).to_string();
     let wound_seconds = v["wound_seconds"]
         .as_object()
         .unwrap_or_else(|| panic!("data/{FILE}: wound_seconds is not an object"))
@@ -72,6 +86,71 @@ pub fn parse(text: &str) -> Rules {
             .filter(|a: &Vec<f32>| !a.is_empty())
             .unwrap_or_else(|| vec![1.0]),
         placed_min_gain: v["placed_min_gain"].as_f64().unwrap_or(0.002) as f32,
+        wind_seconds: num("wind_seconds").max(0.1),
+        overwind_seconds: num("overwind_seconds").max(0.0),
+        jam_cooldown_seconds: num("jam_cooldown_seconds").max(0.0),
+        jam_noise: num("jam_noise"),
+        jam_noise_seconds: num("jam_noise_seconds"),
+        prompt_wind: text("prompt_wind"),
+        prompt_jammed: text("prompt_jammed"),
+        message_jammed: text("message_jammed"),
+        message_left_click: text("message_left_click"),
+    }
+}
+
+/// What one frame of winding did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindEvent {
+    Idle,
+    Winding,
+    /// Held while the box is jammed: refused.
+    Refused,
+    /// The overwind ran out this frame: the box stopped and jammed.
+    Jammed,
+}
+
+/// The winding state of the box in hand: the overwind timer and the jam cooldown.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BoxWind {
+    pub over: f32,
+    pub jammed_left: f32,
+}
+
+impl BoxWind {
+    pub fn jammed(&self) -> bool {
+        self.jammed_left > 0.0
+    }
+
+    /// One frame. `left` is the box's wound seconds, `full` its 100 % (the difficulty's wound time). Holding winds
+    /// `full / wind_seconds` per second up to `full`; holding on past it for `overwind_seconds` jams the box (the wind is
+    /// lost and it refuses winding for `jam_cooldown_seconds`). The cooldown runs whether held or not.
+    pub fn step(&mut self, dt: f32, held: bool, left: &mut f32, full: f32) -> WindEvent {
+        let r = rules();
+        if self.jammed_left > 0.0 {
+            self.jammed_left = (self.jammed_left - dt).max(0.0);
+            self.over = 0.0;
+            return if held { WindEvent::Refused } else { WindEvent::Idle };
+        }
+        if !held {
+            self.over = 0.0;
+            return WindEvent::Idle;
+        }
+        // a wound box plays down one second per second (Game::run_music_box), so a held box sits a frame's drain under
+        // 100 % each frame: within that drain (one frame, at most 0.1 s) it counts as full and the hold is overwind (else
+        // it could never jam)
+        if *left < full - dt.min(0.1) * 1.01 {
+            *left = (*left + full / r.wind_seconds * dt).min(full);
+            return WindEvent::Winding;
+        }
+        *left = full;
+        self.over += dt;
+        if self.over >= r.overwind_seconds {
+            self.over = 0.0;
+            *left = 0.0;
+            self.jammed_left = r.jam_cooldown_seconds;
+            return WindEvent::Jammed;
+        }
+        WindEvent::Winding
     }
 }
 
@@ -183,6 +262,66 @@ mod tests {
     }
 
     #[test]
+    fn holding_winds_to_full_over_the_data_time() {
+        let (mut w, mut left, full) = (BoxWind::default(), 0.0, wound_seconds("standard"));
+        let r = rules();
+        assert_eq!(w.step(r.wind_seconds * 0.5, true, &mut left, full), WindEvent::Winding);
+        assert!(left > 0.0 && left < full, "half the time winds part way");
+        assert_eq!(w.step(r.wind_seconds * 0.6, true, &mut left, full), WindEvent::Winding);
+        assert_eq!(left, full, "wound to 100 %");
+        let mut idle = 0.0;
+        assert_eq!(w.step(1.0, false, &mut idle, full), WindEvent::Idle);
+        assert_eq!(idle, 0.0, "not held: nothing winds");
+    }
+
+    #[test]
+    fn overwinding_jams_and_a_jammed_box_refuses_until_the_cooldown_ends() {
+        let (mut w, full) = (BoxWind::default(), wound_seconds("standard"));
+        let mut left = full;
+        let r = rules();
+        assert_eq!(w.step(r.overwind_seconds * 0.5, true, &mut left, full), WindEvent::Winding);
+        assert!(!w.jammed());
+        assert_eq!(w.step(r.overwind_seconds * 0.6, true, &mut left, full), WindEvent::Jammed);
+        assert!(w.jammed());
+        assert_eq!(left, 0.0, "a jammed box stops playing");
+        assert_eq!(w.step(0.1, true, &mut left, full), WindEvent::Refused);
+        assert_eq!(left, 0.0, "refused: no wind");
+        assert_eq!(w.step(r.jam_cooldown_seconds + 1.0, false, &mut left, full), WindEvent::Idle);
+        assert!(!w.jammed(), "the cooldown ran out");
+        assert_eq!(w.step(0.5, true, &mut left, full), WindEvent::Winding);
+        assert!(left > 0.0);
+    }
+
+    #[test]
+    fn a_box_that_plays_down_every_frame_still_jams_when_held_past_full() {
+        let (mut w, full) = (BoxWind::default(), wound_seconds("standard"));
+        let r = rules();
+        let (mut left, dt) = (full, 1.0 / 60.0);
+        let mut jammed_at = None;
+        for f in 0..((r.overwind_seconds * 2.0 / dt) as usize) {
+            // the tune drains the wind each frame, as run_music_box does
+            left -= dt;
+            if w.step(dt, true, &mut left, full) == WindEvent::Jammed {
+                jammed_at = Some(f as f32 * dt);
+                break;
+            }
+        }
+        let t = jammed_at.expect("held past full, the box jams");
+        assert!(t < r.overwind_seconds * 1.2, "it jams near the overwind time, not never ({t} s)");
+    }
+
+    #[test]
+    fn releasing_before_the_overwind_ends_resets_it() {
+        let (mut w, full) = (BoxWind::default(), wound_seconds("standard"));
+        let mut left = full;
+        let r = rules();
+        w.step(r.overwind_seconds * 0.9, true, &mut left, full);
+        w.step(0.1, false, &mut left, full);
+        w.step(r.overwind_seconds * 0.9, true, &mut left, full);
+        assert!(!w.jammed());
+    }
+
+    #[test]
     fn the_shipped_file_parses_with_the_godot_numbers() {
         let r = rules();
         assert_eq!(r.boxes_per_region, 2);
@@ -195,5 +334,8 @@ mod tests {
         assert_eq!(wound_seconds("nightmare"), 25.0);
         // any other id winds like the standard box (the Godot fallback)
         assert_eq!(wound_seconds("relaxed"), 45.0);
+        assert!(r.wind_seconds > 0.0 && r.overwind_seconds > 0.0 && r.jam_cooldown_seconds > 0.0);
+        assert_eq!(r.prompt_wind, "[E] WIND (HOLD)");
+        assert_eq!(r.prompt_jammed, "JAMMED");
     }
 }

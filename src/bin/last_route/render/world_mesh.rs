@@ -2344,6 +2344,7 @@ mod tests {
     /// cells reads the same walls, districts and rooms out to REACH: the part drawn for one window is right for the other.
     #[test]
     fn a_kept_part_reads_the_same_floor_in_both_windows() {
+        crate::world::route::layout::godot_regions_for_this_test();
         use crate::content::loot::LootTables;
         use crate::world::catalog::Catalog;
         use crate::world::infinite::window;
@@ -3247,6 +3248,7 @@ mod sewer_lamp_tests {
     }
 
     fn level_0(seed: &str) -> Facility {
+        crate::world::route::layout::godot_regions_for_this_test();
         let cat = Catalog::load();
         let mut cache = HashMap::new();
         infinite::window(seed, (0, 0), 0, &cat, &LootTables::default(), &mut cache).0

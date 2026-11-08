@@ -1653,6 +1653,30 @@ mod overlay_tests {
     }
 }
 
+/// Every cell a stair bay of this chunk could take (`infinite::bay_candidates`, each shape, either turn), on the links
+/// this level is the upper or the lower end of. The flight's final shape and spot are chosen from the chunk with its
+/// room in it (`flight_links::bay_fits` reads the water), so a room keeps off all of them: a flooded room or a pump
+/// pool in a bay would put water and its rails across the flight's way.
+fn stair_bay_cells(world: &str, coord: Coord) -> Vec<V2> {
+    use crate::world::facility::Cell;
+    use crate::world::flight::{Flight, FlightKind, FlightShape};
+    let mut out = Vec::new();
+    for upper in [coord.y, coord.y + 1] {
+        if upper != LEVEL && upper != LOWER_LEVEL {
+            continue;
+        }
+        for (anchor, run) in crate::world::infinite::bay_candidates(world, coord.x, coord.z, upper) {
+            for shape in [FlightShape::Straight, FlightShape::Switchback, FlightShape::Spiral] {
+                for clockwise in [false, true] {
+                    let f = Flight::new(FlightKind::Stairs, shape, upper, Cell::new(anchor.0, anchor.1), run).with_clockwise(clockwise);
+                    out.extend(crate::world::flight_links::carve_cells(&f).into_iter().map(|c| V2::new(c.x, c.y)));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Put one extra room (pump room, valve hall...) into a free spot of the chunk, after the maze, the region props and
 /// the seal frame, and before the pickups, hunters and fixtures read the chunk. Its props join `region_props`.
 fn place_room(c: &mut SewerChunk, world: &str) {
@@ -1660,6 +1684,7 @@ fn place_room(c: &mut SewerChunk, world: &str) {
     let mut keep_clear: Vec<V2> = c.region_props.iter().map(|p| p.cell).collect();
     keep_clear.extend(c.sealed_cells.iter().copied());
     keep_clear.extend(c.behind.iter().copied());
+    keep_clear.extend(stair_bay_cells(world, c.coord));
     let grid = c.sewer_grid;
     let free = |def: &super::rooms::RoomDef, x: i32, z: i32| super::rooms::spot_is_free(def, &grid, &keep_clear, x, z);
     let Some(placed) = super::rooms::pick(table, world, &chunk_id(c.coord), &free) else { return };
@@ -1669,6 +1694,8 @@ fn place_room(c: &mut SewerChunk, world: &str) {
     }
     placed.stamp(&mut c.sewer_grid);
     let base = c.region_props.len();
+    let has_sluice = placed.props().iter().any(|p| p.kind == "sewerSluiceGate");
+    let room_gate = format!("GATE:{}:{}:{}:ROOM", c.coord.x, c.coord.y, c.coord.z);
     for (i, p) in placed.props().into_iter().enumerate() {
         let mut prop = SewerProp {
             id: format!("{}:PROP:{}", chunk_id(c.coord), base + i),
@@ -1694,7 +1721,19 @@ fn place_room(c: &mut SewerChunk, world: &str) {
             breakable_id: None,
         };
         if p.kind == "sewerValveWheel" {
-            prop.valve_effect = Some("flood");
+            // a room with a sluice gate wires its valves to that gate; otherwise a valve floods
+            if has_sluice {
+                prop.valve_effect = Some("gate");
+                prop.gate = Some(room_gate.clone());
+            } else {
+                prop.valve_effect = Some("flood");
+            }
+        }
+        if p.kind == "sewerSluiceGate" {
+            // as `gate_features`: the gate blocks through its gate cells while closed, not through its own `solid`
+            prop.solid = false;
+            prop.gate = Some(room_gate.clone());
+            prop.gate_cells = Some(vec![p.at]);
         }
         c.region_props.push(prop);
     }
@@ -2432,88 +2471,109 @@ mod tests {
 
     #[test]
     fn sewer_grid_match_godot_goldens() {
+        crate::world::route::layout::with_godot_regions(|| {
         if crate::shared::test_support::skip_without_parity() {
             return;
         }
         check_field("sewer_grid");
+            });
     }
 
     #[test]
     fn rooms_match_godot_goldens() {
+        crate::world::route::layout::with_godot_regions(|| {
         if crate::shared::test_support::skip_without_parity() {
             return;
         }
         check_field("rooms");
+            });
     }
 
     #[test]
     fn links_match_godot_goldens() {
+        crate::world::route::layout::with_godot_regions(|| {
         if crate::shared::test_support::skip_without_parity() {
             return;
         }
         check_field("links");
+            });
     }
 
     #[test]
     fn falls_match_godot_goldens() {
+        crate::world::route::layout::with_godot_regions(|| {
         if crate::shared::test_support::skip_without_parity() {
             return;
         }
         check_field("falls");
+            });
     }
 
     #[test]
     fn ramp_cells_match_godot_goldens() {
+        crate::world::route::layout::with_godot_regions(|| {
         if crate::shared::test_support::skip_without_parity() {
             return;
         }
         check_field("ramp_cells");
+            });
     }
 
     #[test]
     fn crawl_cells_match_godot_goldens() {
+        crate::world::route::layout::with_godot_regions(|| {
         if crate::shared::test_support::skip_without_parity() {
             return;
         }
         check_field("crawl_cells");
+            });
     }
 
     #[test]
     fn gates_match_godot_goldens() {
+        crate::world::route::layout::with_godot_regions(|| {
         if crate::shared::test_support::skip_without_parity() {
             return;
         }
         check_field("gates");
+            });
     }
 
     #[test]
     fn shaft_cells_match_godot_goldens() {
+        crate::world::route::layout::with_godot_regions(|| {
         if crate::shared::test_support::skip_without_parity() {
             return;
         }
         check_field("shaft_cells");
+            });
     }
 
     #[test]
     fn ramps_match_godot_goldens() {
+        crate::world::route::layout::with_godot_regions(|| {
         if crate::shared::test_support::skip_without_parity() {
             return;
         }
         check_field("ramps");
+            });
     }
 
     #[test]
     fn region_props_match_godot_goldens() {
+        crate::world::route::layout::with_godot_regions(|| {
         if crate::shared::test_support::skip_without_parity() {
             return;
         }
         check_field("region_props");
+            });
     }
 
     /// The full goldens (PARITY_DIR), all layout fields. Stays ignored until it passes on every seed.
     #[test]
     #[ignore = "needs PARITY_DIR at the full goldens; un-ignore once every chunk passes"]
     fn sewer_layout_match_full_goldens() {
+        crate::world::route::layout::with_godot_regions(|| {
         let mut goldens = Vec::new();
         for tag in COMPACT_TAGS {
             goldens.extend(load_full(tag));
@@ -2530,6 +2590,7 @@ mod tests {
             eprintln!("MISMATCH {m}");
         }
         assert!(failures.is_empty(), "{} layout mismatches; first: {}", failures.len(), failures.first().cloned().unwrap_or_default());
+            });
     }
 
     // ----- the wired extras: rooms and the second level -----

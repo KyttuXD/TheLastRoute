@@ -1,6 +1,6 @@
 {
   "suite": "specialty",
-  "description": "The hunter specialty bar, slots 6 to 9 (game/specialty.rs, data/ui/specialty_slots.json): slot 6 holds the music box while Glyra is on the floor and winding it spends it, slot 7 is one heat/cold item for Wynelle and Solyth, slots 8 and 9 stay empty.",
+  "description": "The hunter specialty bar, slots 6 to 9 (game/specialty.rs, data/ui/specialty_slots.json): slot 6 holds the music box while Glyra is on the floor and holding interact winds it (a click never spends it), slot 7 is one heat/cold item for Wynelle and Solyth, slots 8 and 9 stay empty.",
   "ported_from": "KT decision 2026-11-06 (no Godot source: the specialty bar is a Rust-port design)",
   "defaults": { "seed": 12345, "difficulty": "standard", "mode": "finite", "no_target": true },
   "tests": [
@@ -24,7 +24,7 @@
       ]
     },
     {
-      "name": "Glyra on the floor shows slot 6 with the music box, and winding it spends the box",
+      "name": "Glyra on the floor shows slot 6 with the music box; a click keeps it and holding interact winds it to 100 %",
       "steps": [
         { "cmd": "admin", "name": "summon", "id": "glyra" },
         { "cmd": "step", "frames": 2, "observe": false },
@@ -40,8 +40,18 @@
         { "cmd": "step", "frames": 1, "observe": false },
         { "expect": [
           { "path": "hotbar.specialty.slots.0.visible", "value": true },
-          { "path": "hotbar.specialty.slots.0.item", "op": "missing" },
-          { "path": "run.music_box_left", "op": ">", "value": 0 }
+          { "path": "hotbar.specialty.slots.0.item", "value": "music_box" },
+          { "any": "events", "where": { "path": "text", "value": "HOLD [E] TO WIND THE MUSIC BOX" } }
+        ] },
+        { "cmd": "step", "frames": 600, "observe": false },
+        { "expect": [ { "path": "run.music_box_left", "op": "<", "value": 36 } ] },
+        { "cmd": "act", "act": { "hold": { "interact": true } } },
+        { "cmd": "step", "frames": 90, "observe": false },
+        { "cmd": "act", "act": { "hold": { "interact": false } } },
+        { "cmd": "step", "frames": 1, "observe": false },
+        { "expect": [
+          { "path": "run.music_box_left", "op": ">", "value": 44.9 },
+          { "path": "hotbar.specialty.slots.0.item", "value": "music_box" }
         ] }
       ]
     },

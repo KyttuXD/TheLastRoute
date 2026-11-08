@@ -35,6 +35,10 @@ pub struct RemoteNpc {
     pub hidden: bool,
     pub fleeing: bool,
     pub downed: bool,
+    /// Crouching, and the emote id playing (empty for none) with its play counter (all optional on the wire).
+    pub crouch: bool,
+    pub emote: String,
+    pub emote_seq: u32,
     seen: Instant,
 }
 
@@ -49,6 +53,9 @@ pub struct RemoteNpcView {
     pub walking: bool,
     pub fleeing: bool,
     pub downed: bool,
+    pub crouch: bool,
+    pub emote: String,
+    pub emote_seq: u32,
 }
 
 #[derive(Default)]
@@ -81,6 +88,9 @@ pub fn wire_state_with(npc: &Npc, origin: (i32, i32), downed: bool) -> Map<Strin
     m.insert("hidden".into(), Value::Bool(npc.hidden.is_some()));
     m.insert("fleeing".into(), Value::Bool(npc.fleeing || npc.flee.goal.is_some()));
     m.insert("downed".into(), Value::Bool(downed));
+    m.insert("crouch".into(), Value::Bool(npc.life.crouching));
+    m.insert("emote".into(), serde_json::json!(npc.life.emote.clone().unwrap_or_default()));
+    m.insert("emote_seq".into(), serde_json::json!(npc.life.emote_seq));
     m
 }
 
@@ -129,6 +139,9 @@ impl NpcSync {
             hidden: flag(state, "hidden"),
             fleeing: flag(state, "fleeing"),
             downed: flag(state, "downed"),
+            crouch: flag(state, "crouch"),
+            emote: state.get("emote").and_then(Value::as_str).unwrap_or("").chars().take(24).collect(),
+            emote_seq: state.get("emote_seq").and_then(Value::as_u64).unwrap_or(0).min(u64::from(u32::MAX)) as u32,
             seen: now,
         });
     }
@@ -146,7 +159,7 @@ impl NpcSync {
             .filter(|n| !n.hidden && now.duration_since(n.seen) <= NPC_STALE)
             .map(|n| {
                 let (x, y) = super::world_sync::to_window((n.x, n.y), origin);
-                RemoteNpcView { name: n.name.clone(), at: (x, y), level: n.level, facing: n.yaw, stride: n.stride, walking: n.walking, fleeing: n.fleeing, downed: n.downed }
+                RemoteNpcView { name: n.name.clone(), at: (x, y), level: n.level, facing: n.yaw, stride: n.stride, walking: n.walking, fleeing: n.fleeing, downed: n.downed, crouch: n.crouch, emote: n.emote.clone(), emote_seq: n.emote_seq }
             })
             .collect()
     }
@@ -229,6 +242,37 @@ mod tests {
         assert_eq!(st.get("hidden"), Some(&Value::Bool(false)));
         assert_eq!(st.get("fleeing"), Some(&Value::Bool(true)));
         assert_eq!(st.get("downed"), Some(&Value::Bool(false)));
+    }
+
+    #[test]
+    fn a_bots_crouch_and_emote_cross_the_wire_and_default_to_none() {
+        let t0 = Instant::now();
+        let mut guest = NpcSync::default();
+        let mut st = state(5.0, 5.0, 0);
+        guest.receive_place(1, &st, t0);
+        let v = guest.views((0, 0), t0);
+        assert!(!v[0].crouch && v[0].emote.is_empty() && v[0].emote_seq == 0, "an old host sends none");
+        st.insert("crouch".into(), Value::Bool(true));
+        st.insert("emote".into(), serde_json::json!("wave"));
+        st.insert("emote_seq".into(), serde_json::json!(3));
+        guest.receive_place(1, &st, t0);
+        let v = guest.views((0, 0), t0);
+        assert!(v[0].crouch && v[0].emote == "wave" && v[0].emote_seq == 3);
+    }
+
+    #[test]
+    fn a_hosts_wire_state_carries_the_bots_emote() {
+        let content = crate::content::Content::load();
+        let catalog = crate::world::catalog::Catalog::load();
+        let mut g = crate::game::Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, "ROOM-NPC-EMOTE", 0, &content, &catalog);
+        let (spot, level) = (g.p.pos, g.runner_level());
+        assert!(g.npc_spawn_at(1, 70, spot, level) >= 1, "the fixture makes a bot");
+        let mut npc = g.npcs[0].clone();
+        npc.life.emote = Some("wave".into());
+        npc.life.emote_seq = 2;
+        let st = wire_state(&npc, (0, 0));
+        assert_eq!(st.get("emote"), Some(&serde_json::json!("wave")));
+        assert_eq!(st.get("emote_seq"), Some(&serde_json::json!(2)));
     }
 
     #[test]

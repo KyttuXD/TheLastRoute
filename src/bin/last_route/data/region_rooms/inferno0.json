@@ -1,0 +1,60 @@
+{
+	"schema": "lr.region_rooms/1",
+	"region": "inferno0",
+	"colour": "503F7F",
+	"note": "like the Inferno but on level 0 and rarer",
+	"relative_weight": 0.4,
+	"rooms": [
+		{"role": "thermal_chamber", "weight": 2, "template": "code", "size": {"min": [9, 9], "preferred": [21, 9], "max": [21, 9]}},
+		{"role": "forge", "weight": 1, "template": "code", "size": {"min": [9, 9], "preferred": [21, 9], "max": [21, 9]}},
+		{
+			"role": "scorched_hall",
+			"weight": 3,
+			"template": "data",
+			"size": {"min": [11, 11], "preferred": [15, 13], "max": [21, 15]},
+			"recipe": [
+				{"type": "basaltPillar", "side": ["-half+1", "half-1", 4], "depth": ["1", "front-2", 4]},
+				{"type": "emberBrazier", "side": 2, "depth": "mid", "mirror": true},
+				{"type": "basaltRubble", "side": ["-half+1", "half-1", 3], "depth": ["2", "front-1", 4], "chance": 0.5},
+				{"type": "infernoChainLantern", "side": 0, "depth": ["2", "front", 5], "loose": true}
+			]
+		},
+		{
+			"role": "ember_chamber",
+			"weight": 2,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [11, 11], "max": [15, 13]},
+			"recipe": [
+				{"type": "magmaCrystalCluster", "side": 0, "depth": "mid", "facing": "center"},
+				{"type": "emberBrazier", "side": -3, "depth": "mid-2", "mirror": true},
+				{"type": "emberBrazier", "side": 3, "depth": "mid-2", "mirror": true},
+				{"type": "emberBrazier", "side": -3, "depth": "mid+2", "mirror": true},
+				{"type": "emberBrazier", "side": 3, "depth": "mid+2", "mirror": true},
+				{"type": "basaltPillar", "side": "half-1", "depth": 0, "wall": true, "mirror": true},
+				{"type": "infernoChainLantern", "side": 0, "depth": "mid", "loose": true}
+			]
+		},
+		{
+			"role": "burnt_storage",
+			"weight": 1,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [11, 9], "max": [13, 11]},
+			"recipe": [
+				{"type": "charredSupplyCrate", "side": ["-half+1", "half-1", 2], "depth": 0, "wall": true},
+				{"type": "charredSupplyCrate", "side": ["-half+1", "half-1", 3], "depth": "mid", "chance": 0.6},
+				{"type": "basaltRubble", "side": ["-half+1", "half-1", 4], "depth": ["2", "front-1", 4], "chance": 0.5},
+				{"type": "infernoChainLantern", "side": 0, "depth": "mid", "loose": true}
+			]
+		}
+	],
+	"props": [
+		{"type": "lavaVent", "size": [0.67, 0.38, 0.67], "solid": true, "weight": 1},
+		{"type": "lavaPipeManifold", "size": [1.92, 1.69, 0.88], "solid": true, "weight": 1},
+		{"type": "infernoChainLantern", "size": [0.42, 1.6, 0.42], "solid": false, "weight": 1},
+		{"type": "basaltPillar", "size": [0.54, 1.88, 0.54], "solid": true, "weight": 1},
+		{"type": "emberBrazier", "size": [0.54, 0.88, 0.54], "solid": true, "weight": 1},
+		{"type": "basaltRubble", "size": [1.17, 0.38, 1.17], "solid": false, "weight": 1},
+		{"type": "magmaCrystalCluster", "size": [0.54, 1.06, 0.54], "solid": true, "weight": 1},
+		{"type": "charredSupplyCrate", "size": [0.79, 0.62, 0.73], "solid": true, "weight": 1}
+	]
+}

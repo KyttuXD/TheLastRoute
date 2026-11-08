@@ -1,4 +1,5 @@
-//! More sewer rooms: pump room, valve hall, junction chamber, overflow chamber and storage alcove.
+//! More sewer rooms: pump room and station, valve hall, junction chamber and hall, overflow chamber and cistern, storage
+//! alcove, maintenance bay, flooded room and worker break room.
 //! Everything tunable (layouts, props, loot, hunter rules, placement chance) is in `src/bin/last_route/data/regions/sewer_rooms.json`
 //! (`lr.sewer_rooms/1`). This module holds behaviour only: parsing, picking a free spot, stamping the layout into a
 //! chunk grid, and rolling the room's loot and hunter spawns. It is not wired into the chunk generator yet (see hooks).
@@ -354,9 +355,21 @@ mod tests {
     }
 
     #[test]
-    fn the_five_rooms_load() {
+    fn the_original_and_new_rooms_load() {
         let ids: Vec<&str> = rooms().rooms.iter().map(|r| r.id.as_str()).collect();
-        for want in ["pump_room", "valve_hall", "junction_chamber", "overflow_chamber", "storage_alcove"] {
+        for want in [
+            "pump_room",
+            "valve_hall",
+            "junction_chamber",
+            "overflow_chamber",
+            "storage_alcove",
+            "pump_station",
+            "maintenance_bay",
+            "overflow_cistern",
+            "junction_hall",
+            "flooded_room",
+            "worker_break_room",
+        ] {
             assert!(ids.contains(&want), "{want} missing");
         }
     }
@@ -408,7 +421,8 @@ mod tests {
             let c = p.def.loot.cells[0];
             assert_eq!(grid[(p.origin.y + c.y) as usize][(p.origin.x + c.x) as usize], DRY);
         }
-        assert!(found > 40 && found < 160, "chance applies: {found}/200");
+        let expect = rs.chance * 200.0;
+        assert!((found as f64 - expect).abs() < 35.0, "chance applies: {found}/200 against {expect}");
     }
 
     #[test]
@@ -481,5 +495,79 @@ mod tests {
         let r = rooms().rooms.iter().find(|r| r.id == "storage_alcove").unwrap();
         assert!(r.hunters.chance_max <= 0.2);
         assert!(r.hunters.avoid.iter().any(|a| a == "kathy"));
+    }
+
+    const NEW_KINDS: [&str; 6] =
+        ["pump_station", "maintenance_bay", "overflow_cistern", "junction_hall", "flooded_room", "worker_break_room"];
+
+    /// A grid of solid rock with one open floor cell next to each of the room's doorways, at the spot (10, 10).
+    fn grid_with_a_neighbour_for(def: &RoomDef) -> [[u8; CHUNK as usize]; CHUNK as usize] {
+        let mut grid = [[SOLID; CHUNK as usize]; CHUNK as usize];
+        for y in 0..def.h {
+            for x in 0..def.w {
+                let edge = x == 0 || y == 0 || x == def.w - 1 || y == def.h - 1;
+                if !edge || def.code_at(x, y) == Some(SOLID) {
+                    continue;
+                }
+                let (dx, dz) = if x == 0 {
+                    (-1, 0)
+                } else if x == def.w - 1 {
+                    (1, 0)
+                } else if y == 0 {
+                    (0, -1)
+                } else {
+                    (0, 1)
+                };
+                grid[(10 + y + dz) as usize][(10 + x + dx) as usize] = DRY;
+            }
+        }
+        grid
+    }
+
+    #[test]
+    fn each_new_room_kind_can_be_placed_and_connects() {
+        let rs = rooms();
+        for id in NEW_KINDS {
+            let def = rs.rooms.iter().find(|r| r.id == id).unwrap_or_else(|| panic!("{id} missing"));
+            let grid = grid_with_a_neighbour_for(def);
+            assert!(spot_is_free(def, &grid, &[], 10, 10), "{id} cannot be placed beside its own doorway");
+            assert!(connects(def, &grid, 10, 10));
+            let sealed = [[SOLID; CHUNK as usize]; CHUNK as usize];
+            assert!(!spot_is_free(def, &sealed, &[], 10, 10), "{id} must not go where no doorway connects");
+        }
+    }
+
+    #[test]
+    fn every_placed_room_connects_over_many_seeds() {
+        let rs = rooms();
+        let mut seen = std::collections::HashSet::new();
+        for n in 0..600 {
+            let chunk = format!("seed{n}");
+            // a floor spine through the middle of the chunk the rooms must reach
+            let mut grid = [[SOLID; CHUNK as usize]; CHUNK as usize];
+            for i in 0..CHUNK as usize {
+                grid[22][i] = DRY;
+                grid[i][22] = DRY;
+            }
+            let free = |d: &RoomDef, x: i32, z: i32| spot_is_free(d, &grid, &[], x, z);
+            if let Some(p) = pick(rs, "W", &chunk, &free) {
+                assert!(connects(p.def, &grid, p.origin.x, p.origin.y), "{} placed without a doorway link", p.def.id);
+                seen.insert(p.def.id.clone());
+            }
+        }
+        for id in NEW_KINDS {
+            assert!(seen.contains(id), "{id} was never placed in 600 seeds");
+        }
+    }
+
+    #[test]
+    fn the_extra_room_chance_in_data_raises_the_counts() {
+        let rs = rooms();
+        let mut before = parse(DATA).unwrap();
+        before.chance = 0.5;
+        let count = |r: &Rooms| (0..400).filter(|n| pick(r, "W", &format!("c{n}"), &all_free).is_some()).count();
+        assert!(rs.chance > 0.5, "the shipped chance is above the old 0.5");
+        assert!(count(rs) > count(&before));
+        assert!(rs.rooms.len() >= 11);
     }
 }

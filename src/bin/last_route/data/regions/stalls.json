@@ -1,0 +1,27 @@
+{
+	"schema": "lr.region/1",
+	"id": "stalls",
+	"hall_floor": ["terrazzo0", "terrazzo1"],
+	"hall_runner": false,
+	"room_default_floor": ["terrazzo0"],
+	"room_roles": ["public_restroom", "public_restroom", "stall_row", "stall_row", "stall_row", "stall_row", "washroom", "washroom", "washroom", "shower_room", "shower_room", "janitor_closet"],
+	"prop_set": [
+		{"type": "publicRestroomToilet", "size": [0.6, 1.22, 1.07]},
+		{"type": "publicSoapDispenser", "size": [0.28, 0.42, 0.18], "solid": false},
+		{"type": "ceilingLight", "size": [0.75, 0.3, 0.75], "solid": false},
+		{"type": "bathroomStall", "size": [1.17, 2.91, 0.98]},
+		{"type": "publicSinkBank", "size": [1.67, 1.31, 0.54]},
+		{"type": "bathroomMirror", "size": [0.75, 1.25, 0.16], "solid": false},
+		{"type": "publicHandDryer", "size": [0.45, 0.55, 0.18], "solid": false},
+		{"type": "publicMensShowerStall", "size": [1.35, 3.28, 1.45]},
+		{"type": "publicShowerBench", "size": [1.92, 0.56, 0.6]},
+		{"type": "shopShelf", "size": [1.92, 2.81, 0.79]},
+		{"type": "filingCabinet", "size": [0.98, 1.88, 1.07]},
+		{"type": "storageBarrel", "size": [0.67, 0.94, 0.67]},
+		{"type": "supplyCrates", "size": [0.79, 0.94, 0.67]}
+	],
+	"geometry": {
+		"room_min": 6,
+		"room_max": 9
+	}
+}

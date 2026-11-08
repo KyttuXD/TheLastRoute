@@ -151,14 +151,21 @@ mod tests {
 
     #[test]
     fn only_pumps_outflows_and_closed_gates_are_solid_and_valves_carry_their_keys() {
+        crate::world::route::layout::with_godot_regions(|| {
         for world in WORLDS {
             for level in [LEVEL, LOWER_LEVEL] {
                 for (cx, cy) in [(0, 0), (1, 0), (0, 1), (-1, -1), (2, 1)] {
                     let f = built(world, cx, cy, level);
                     for p in &f.props {
                         if p.solid {
+                            // the extra rooms' furniture is solid where their data says so (`data/regions/sewer_rooms.json`)
+                            let room_solid = sewer::rooms::rooms()
+                                .rooms
+                                .iter()
+                                .flat_map(|r| r.props.iter())
+                                .any(|rp| rp.solid && rp.kind == p.ptype);
                             assert!(
-                                ["sewerPump", "sewerOutflowPipe", SLUICE_GATE, "barrel", "crate", "locker"].contains(&p.ptype.as_str()),
+                                ["sewerPump", "sewerOutflowPipe", SLUICE_GATE].contains(&p.ptype.as_str()) || room_solid,
                                 "{} is solid",
                                 p.ptype
                             );
@@ -175,6 +182,7 @@ mod tests {
                 }
             }
         }
+            });
     }
 
     /// No Facility prop (its footprint's cell centres) stands on a water or waterfall cell, a gate aside.
@@ -268,6 +276,7 @@ mod tests {
     /// A closed gate is a wall across its channel cells, an open one is floor.
     #[test]
     fn a_gate_closes_its_channel_until_its_valve_opens_it() {
+        crate::world::route::layout::with_godot_regions(|| {
         let mut tested = 0;
         for world in WORLDS {
             for level in [LEVEL, LOWER_LEVEL] {
@@ -290,6 +299,7 @@ mod tests {
             }
         }
         assert!(tested > 0, "no sample chunk has a sluice gate");
+            });
     }
 
     /// Collectables, vents and hunter placements stay off channel water. Pipes, bridges and grates may stand in it.

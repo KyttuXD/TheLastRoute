@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use super::cues::music_box::{RunClock, RunRender};
+use super::cues::AmbienceMixer;
 use super::cues::positional::HUM;
 use super::cues::rules::{self, Bus, HunterStepClock};
 use super::cues::stride::{preferred_clip, HunterGait};
@@ -105,6 +106,81 @@ struct WorldState {
     box_run: Option<RunClock>,
     /// The music box run being rendered a slice a frame (`music_box`).
     box_render: Option<RunRender>,
+    /// The ambience crossfade between regions (`ambience`).
+    ambience: AmbienceMixer,
+    /// The bed each ambience voice really plays (a voice that changes bed is stopped first).
+    ambience_playing: [Option<&'static str>; 2],
+    /// The floor surface under each hunter id (`set_hunter_surface`), for her footsteps. Absent: the heavy step.
+    surfaces: HashMap<String, String>,
+}
+
+/// The two ambience loop voices: a region change fades the new bed in on the idle one while the old one fades out.
+const AMBIENCE_VOICES: [&str; 2] = ["ambience_a", "ambience_b"];
+
+thread_local! {
+    /// The beds already rendered (a bed is a few seconds of synth maths): at most `AMBIENCE_CACHE` are kept.
+    static BEDS: RefCell<Vec<(&'static str, Vec<[f32; 2]>)>> = RefCell::new(Vec::new());
+}
+const AMBIENCE_CACHE: usize = 4;
+
+fn bed_frames(id: &'static str) -> Vec<[f32; 2]> {
+    BEDS.with(|c| {
+        let mut c = c.borrow_mut();
+        if let Some((_, f)) = c.iter().find(|(k, _)| *k == id) {
+            return f.clone();
+        }
+        let frames = super::cues::ambience(id, super::cues::ambience::settings().loop_seconds);
+        if c.len() >= AMBIENCE_CACHE {
+            c.remove(0);
+        }
+        c.push((id, frames.clone()));
+        frames
+    })
+}
+
+/// The region ambience: call once per game frame with the id of the region the runner stands in (`None` in menus or
+/// nowhere), and `duck` 0..1 to turn the beds down (the original's `set_ambience_duck`). The bed for the region is
+/// looked up in data/audio/ambience.json (own bed, alias, else the fallback), crossfaded over `region_fade_seconds`
+/// when it changes, and played on the SFX bus so the sliders reach it.
+pub fn ambience(dt: f32, region: Option<&str>, duck: f32) {
+    WORLD.with(|w| {
+        let w = &mut *w.borrow_mut();
+        with(|e| {
+            if !e.ready {
+                return;
+            }
+            let out = w.ambience.step_ducked(dt, region, duck);
+            for (n, (voice, slot)) in AMBIENCE_VOICES.iter().zip(out.iter()).enumerate() {
+                if w.ambience_playing[n].is_some() && w.ambience_playing[n] != slot.bed {
+                    e.set_loop(*voice, Bus::Sfx, None, Vec::new);
+                }
+                w.ambience_playing[n] = slot.bed;
+                match slot.bed {
+                    Some(id) => e.set_loop(*voice, Bus::Sfx, Some((slot.gain, slot.gain)), || bed_frames(id)),
+                    None => e.set_loop(*voice, Bus::Sfx, None, Vec::new),
+                }
+            }
+        });
+    });
+}
+
+/// The bed a region id plays (`None` when the data has no bed at all): for the debug overlay and the tests.
+pub fn ambience_bed(region: &str) -> Option<&'static str> {
+    Some(super::cues::ambience::bed_for(region)).filter(|b| !b.is_empty())
+}
+
+/// The floor surface a hunter is walking on ("carpet", "wood", "tile", "concrete", "metal", "stone", "grass", "water";
+/// "" clears it): her footsteps then use that surface's step, like `Sound.hunter_footstep(.., surface)`. Call it when
+/// the hunter's floor changes, from the side that simulates the hunters.
+pub fn set_hunter_surface(id: &str, surface: &str) {
+    WORLD.with(|w| {
+        let w = &mut *w.borrow_mut();
+        if surface.is_empty() {
+            w.surfaces.remove(id);
+        } else if w.surfaces.get(id).map(String::as_str) != Some(surface) {
+            w.surfaces.insert(id.to_string(), surface.to_string());
+        }
+    });
 }
 
 /// The voice of the wound music box's tune (one pre-rendered run, see `music_box`).
@@ -263,7 +339,8 @@ pub fn update(dt: f32, l: &Listener, hunters: &[HunterAudio]) {
             if let Some((pan, volume)) =
                 rules::hunter_step_pan_volume(offset, (l.facing.0 as f64, l.facing.1 as f64))
             {
-                let p = e.front.hunter_footstep(pan, volume, "");
+                let surface = w.surfaces.get(h.id).map(String::as_str).unwrap_or("");
+                let p = e.front.hunter_footstep(pan, volume, surface);
                 e.play(&p);
             }
         });

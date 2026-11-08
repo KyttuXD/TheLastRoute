@@ -12,7 +12,10 @@
 //! order, and the first that applies this frame runs. "hide" sends a chased bot into a locker; "flee" runs it from a
 //! chasing hunter; "relay" and "locker" are errands that take a bot to a relay or locker near the runner when nothing
 //! is chasing it and no hunter is searching there; "follow" walks it back to the runner. A hidden bot comes out once
-//! the chase is over. A bot avoids the points hunters searched when it picks an errand spot, and it shuts an open door
+//! the chase is over. The "life" intent (data `life`, before "follow") makes a bot with nothing to do act like a
+//! player: it walks to a hunter point of interest near the runner (room centre, locker, relay, door) or stays put,
+//! looks around, checks a locker or a door, inspects a relay, idles, crouches, sprints a short burst or plays an emote,
+//! pauses, and never goes past `life.range` from the runner (the follow intent walks it back). A bot avoids the points hunters searched when it picks an errand spot, and it shuts an open door
 //! once it has walked clear of it.
 //!
 //! Levels are one continuous space (docs/STAIRS_CONTINUOUS_DESIGN.md, phase 8). A bot has an absolute `y` and a level
@@ -165,6 +168,8 @@ pub struct Tuning {
     pub revive_stand: f32,
     /// The most bots a room holds in all, for owner summons (data `summon.room_cap`).
     pub summon_room_cap: usize,
+    /// What a bot does in its spare time (data `life`).
+    pub life: LifeTuning,
 }
 
 /// The coarse travel of a bot outside the loaded window (data `coarse`). A missing key keeps the default.
@@ -524,6 +529,7 @@ impl Tuning {
             revive_range_factor: num(&v["revive"], "range_factor").unwrap_or(2.0).max(0.0),
             revive_stand: num(&v["revive"], "stand_fraction").unwrap_or(0.6).clamp(0.0, 1.0),
             summon_room_cap: v["summon"]["room_cap"].as_u64().map_or(24, |x| x as usize),
+            life: LifeTuning::parse(&v["life"]),
         })
     }
 
@@ -740,6 +746,8 @@ pub struct Npc {
     pub goal: GoalState,
     /// The flight in progress (the "flee" intent).
     pub flee: FleeState,
+    /// What the bot does in its spare time (the "life" intent).
+    pub life: LifeState,
 }
 
 impl Npc {
@@ -776,6 +784,7 @@ impl Npc {
         self.goal.away = 0.0;
         self.flee.stop();
         self.claim = None;
+        self.life = LifeState::default();
     }
 }
 
@@ -1224,6 +1233,447 @@ fn follow(n: &mut Npc, fac: &Facility, leader: (f32, f32), t: &Tuning, dt: f32, 
     } else {
         n.walking = false;
     }
+}
+
+// ---- the "life" intent: a bot that acts like a player who has stopped to look about -----------------------------------
+
+/// What a bot does at a spot (data `life.poi.*.acts` and `life.durations` name them in lower case).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LifeAct {
+    LookAround,
+    CheckLocker,
+    CheckDoor,
+    InspectRelay,
+    Idle,
+    Crouch,
+    SprintBurst,
+    Emote,
+}
+
+impl LifeAct {
+    pub const ALL: [LifeAct; 8] = [
+        LifeAct::LookAround,
+        LifeAct::CheckLocker,
+        LifeAct::CheckDoor,
+        LifeAct::InspectRelay,
+        LifeAct::Idle,
+        LifeAct::Crouch,
+        LifeAct::SprintBurst,
+        LifeAct::Emote,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            LifeAct::LookAround => "look_around",
+            LifeAct::CheckLocker => "check_locker",
+            LifeAct::CheckDoor => "check_door",
+            LifeAct::InspectRelay => "inspect_relay",
+            LifeAct::Idle => "idle",
+            LifeAct::Crouch => "crouch",
+            LifeAct::SprintBurst => "sprint_burst",
+            LifeAct::Emote => "emote",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<LifeAct> {
+        LifeAct::ALL.into_iter().find(|a| a.name() == s)
+    }
+}
+
+/// One kind of spot a bot may go to (data `life.poi`): `kind` is a hunter points-of-interest id (`PoiKind::id`) or
+/// "here" (stay where it stands), `weight` is its share of the draw, `acts` what it may do there.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LifePoi {
+    pub kind: String,
+    pub weight: f32,
+    pub acts: Vec<(LifeAct, f32)>,
+}
+
+/// The "life" intent's numbers (data `life`). A missing key keeps the default; with no `poi` the intent never acts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LifeTuning {
+    /// Metres from the runner a bot goes to at most. Past it the follow intent walks the bot back.
+    pub range: f32,
+    /// Metres a spot must be from the bot to be picked.
+    pub min_distance: f32,
+    /// Metres from a spot at which the bot is there.
+    pub arrive: f32,
+    /// Seconds after which a walk that has not arrived starts the activity where the bot stands.
+    pub walk_timeout: f32,
+    /// Spots remembered so none is picked twice in a row.
+    pub recent: usize,
+    /// [min, max] seconds of standing between two activities, and before the first one after spawning.
+    pub pause: (f32, f32),
+    pub spawn_pause: (f32, f32),
+    /// The look-around sweep: total degrees and how many times it goes across.
+    pub look_degrees: f32,
+    pub look_sweeps: f32,
+    /// Least seconds between two emotes of one bot.
+    pub emote_gap: f32,
+    /// Emote ids (data/player/emotes.json) and their weights.
+    pub emotes: Vec<(String, f32)>,
+    pub poi: Vec<LifePoi>,
+    /// [min, max] seconds of each activity.
+    pub durations: Vec<(LifeAct, (f32, f32))>,
+}
+
+impl Default for LifeTuning {
+    fn default() -> LifeTuning {
+        LifeTuning {
+            range: 9.0,
+            min_distance: 2.0,
+            arrive: 0.7,
+            walk_timeout: 14.0,
+            recent: 4,
+            pause: (1.5, 5.0),
+            spawn_pause: (0.5, 2.0),
+            look_degrees: 140.0,
+            look_sweeps: 1.5,
+            emote_gap: 20.0,
+            emotes: vec![],
+            poi: vec![],
+            durations: vec![],
+        }
+    }
+}
+
+impl LifeTuning {
+    pub fn parse(v: &Value) -> LifeTuning {
+        let d = LifeTuning::default();
+        let num = |node: &Value, key: &str, d: f32| node[key].as_f64().map_or(d, |x| x as f32).max(0.0);
+        let pair = |node: &Value, d: (f32, f32)| -> (f32, f32) {
+            match (node[0].as_f64(), node[1].as_f64()) {
+                (Some(a), Some(b)) => {
+                    let (a, b) = (a.max(0.0) as f32, b.max(0.0) as f32);
+                    (a.min(b), a.max(b))
+                }
+                _ => d,
+            }
+        };
+        let weights = |node: &Value| -> Vec<(String, f32)> {
+            node.as_object()
+                .map(|m| m.iter().filter_map(|(k, w)| w.as_f64().map(|w| (k.clone(), (w as f32).max(0.0)))).collect())
+                .unwrap_or_default()
+        };
+        LifeTuning {
+            range: num(v, "range", d.range),
+            min_distance: num(v, "min_distance", d.min_distance),
+            arrive: num(v, "arrive", d.arrive),
+            walk_timeout: num(v, "walk_timeout", d.walk_timeout),
+            recent: v["recent"].as_u64().map_or(d.recent, |n| n.min(64) as usize),
+            pause: pair(&v["pause"], d.pause),
+            spawn_pause: pair(&v["spawn_pause"], d.spawn_pause),
+            look_degrees: num(&v["look"], "degrees", d.look_degrees),
+            look_sweeps: num(&v["look"], "sweeps", d.look_sweeps),
+            emote_gap: num(v, "emote_gap", d.emote_gap),
+            emotes: weights(&v["emotes"]),
+            poi: v["poi"]
+                .as_object()
+                .map(|m| {
+                    m.iter()
+                        .map(|(kind, p)| LifePoi {
+                            kind: kind.clone(),
+                            weight: num(p, "weight", 0.0),
+                            acts: weights(&p["acts"])
+                                .into_iter()
+                                .filter_map(|(a, w)| LifeAct::from_name(&a).map(|a| (a, w)))
+                                .collect(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            durations: v["durations"]
+                .as_object()
+                .map(|m| m.iter().filter_map(|(k, p)| LifeAct::from_name(k).map(|a| (a, pair(p, (2.0, 3.5))))).collect())
+                .unwrap_or_default(),
+        }
+    }
+
+    fn duration(&self, a: LifeAct, roll: f32) -> f32 {
+        let (lo, hi) = self.durations.iter().find(|(x, _)| *x == a).map_or((2.0, 3.5), |(_, p)| *p);
+        lo + (hi - lo) * roll.clamp(0.0, 1.0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LifePhase {
+    /// Standing before the next pick.
+    Pause,
+    /// Walking to the spot.
+    Walk,
+    /// Doing the activity.
+    Do,
+}
+
+/// What a bot is doing in its spare time. The wire reads `crouching`, `emote` and `emote_seq`.
+#[derive(Clone, Debug)]
+pub struct LifeState {
+    pub phase: LifePhase,
+    pub act: Option<LifeAct>,
+    pub started: bool,
+    pub target: (f32, f32),
+    pub focus: (f32, f32),
+    /// The facing the activity began with (the look sweep is centred on it).
+    pub base: (f32, f32),
+    /// Seconds left in the phase, and the length of the activity.
+    pub clock: f32,
+    pub total: f32,
+    /// Picks and pauses so far: the seed of every roll.
+    pub count: u32,
+    pub recent: Vec<(i32, i32)>,
+    /// True while the bot is past `life.range` and the follow intent walks it back.
+    pub returning: bool,
+    pub crouching: bool,
+    /// The emote playing now, and how many the bot has started (a repeat of one id is told apart by the count).
+    pub emote: Option<String>,
+    pub emote_seq: u32,
+    pub since_emote: f32,
+    /// The last activities done, newest last (at most `PICKED_KEPT`).
+    pub picked: Vec<LifeAct>,
+}
+
+const PICKED_KEPT: usize = 32;
+
+impl Default for LifeState {
+    fn default() -> LifeState {
+        LifeState {
+            phase: LifePhase::Pause,
+            act: None,
+            started: false,
+            target: (0.0, 0.0),
+            focus: (0.0, 0.0),
+            base: (0.0, 1.0),
+            clock: 0.0,
+            total: 0.0,
+            count: 0,
+            recent: vec![],
+            returning: false,
+            crouching: false,
+            emote: None,
+            emote_seq: 0,
+            since_emote: f32::MAX,
+            picked: vec![],
+        }
+    }
+}
+
+impl LifeState {
+    /// Ends what the bot was doing and stands for `pause` seconds (another intent took over, or the activity ran out).
+    pub fn interrupt(&mut self, pause: f32) {
+        self.phase = LifePhase::Pause;
+        self.act = None;
+        self.crouching = false;
+        self.emote = None;
+        self.clock = pause;
+    }
+}
+
+/// A weighted draw: `roll` in 0..1 picks from `list`. None when every weight is zero.
+fn weighted<T: Copy>(list: &[(T, f32)], roll: f32) -> Option<T> {
+    let total: f32 = list.iter().map(|(_, w)| w.max(0.0)).sum();
+    if total <= 0.0 {
+        return None;
+    }
+    let mut left = roll.clamp(0.0, 0.999_999) * total;
+    for (v, w) in list {
+        let w = w.max(0.0);
+        if left < w {
+            return Some(*v);
+        }
+        left -= w;
+    }
+    list.last().map(|(v, _)| *v)
+}
+
+/// A fresh seeded roll source for the bot's next decision.
+fn life_rng(n: &mut Npc) -> Rng {
+    n.life.count += 1;
+    Rng::new(&format!("{}:life:{}", n.name, n.life.count))
+}
+
+fn between(p: (f32, f32), roll: f32) -> f32 {
+    p.0 + (p.1 - p.0) * roll.clamp(0.0, 1.0)
+}
+
+/// Starts the activity where the bot stands.
+fn life_begin(n: &mut Npc, l: &LifeTuning, rng: &mut Rng) {
+    let act = n.life.act.unwrap_or(LifeAct::Idle);
+    n.life.phase = LifePhase::Do;
+    n.walking = false;
+    n.path.clear();
+    let mut length = l.duration(act, rng.next_f32());
+    match act {
+        LifeAct::Crouch => n.life.crouching = true,
+        LifeAct::Emote => {
+            let set = crate::render::anim::emote_pose::set();
+            let list: Vec<(&str, f32)> = l
+                .emotes
+                .iter()
+                .filter(|(id, _)| set.map_or(false, |s| s.find(id).is_some()))
+                .map(|(id, w)| (id.as_str(), *w))
+                .collect();
+            if let Some(id) = weighted(&list, rng.next_f32()) {
+                length = set.and_then(|s| s.find(id)).map_or(length, |e| e.duration.max(0.1));
+                n.life.emote = Some(id.to_string());
+                n.life.emote_seq += 1;
+                n.life.since_emote = 0.0;
+            }
+        }
+        _ => {}
+    }
+    n.life.clock = length;
+    n.life.total = length;
+    n.life.picked.push(act);
+    if n.life.picked.len() > PICKED_KEPT {
+        n.life.picked.remove(0);
+    }
+}
+
+/// Picks the next spot and activity: a weighted draw over "here" and the hunter points of interest of the bot's level
+/// that lie within `range` of the runner, are far enough from the bot, are not the recent ones and are not near a point
+/// hunters searched.
+fn life_pick(n: &mut Npc, sc: &Scene, t: &Tuning) {
+    use crate::hunters::activities::{dir_to, points_of_interest, Rules};
+    let l = &t.life;
+    let mut rng = life_rng(n);
+    let pois = points_of_interest(sc.fac, Rules::get());
+    let searched = n.searched.clone();
+    let avoid = t.searched_avoid;
+    let blocked = |p: (f32, f32)| sc.searching.iter().chain(searched.iter()).any(|s| pdist(*s, p) < avoid);
+    let kind_of = |k: &str| l.poi.iter().find(|p| p.kind == k);
+    // None is "stay here"
+    let mut cands: Vec<(Option<usize>, f32)> = vec![];
+    if let Some(p) = kind_of("here") {
+        cands.push((None, p.weight));
+    }
+    for (i, poi) in pois.iter().enumerate() {
+        let Some(p) = kind_of(poi.kind.id()) else { continue };
+        let burnt = poi.locker.map_or(false, |k| sc.disabled.get(k).copied().unwrap_or(false));
+        if p.weight <= 0.0
+            || burnt
+            || pdist(poi.stand, sc.leader) > l.range
+            || pdist(poi.stand, n.at) < l.min_distance
+            || n.life.recent.contains(&poi.id())
+            || blocked(poi.stand)
+        {
+            continue;
+        }
+        cands.push((Some(i), p.weight));
+    }
+    let facing_now = (-n.facing.sin(), -n.facing.cos());
+    let Some(choice) = weighted(&cands, rng.next_f32()) else {
+        n.life.interrupt(between(l.pause, rng.next_f32()));
+        return;
+    };
+    let (kind, target, focus) = match choice {
+        None => ("here", n.at, (n.at.0 + facing_now.0, n.at.1 + facing_now.1)),
+        Some(i) => (pois[i].kind.id(), pois[i].stand, pois[i].focus),
+    };
+    let emote_ready = n.life.since_emote >= l.emote_gap
+        && crate::render::anim::emote_pose::set().map_or(false, |s| l.emotes.iter().any(|(id, w)| *w > 0.0 && s.find(id).is_some()));
+    let acts: Vec<(LifeAct, f32)> = kind_of(kind)
+        .map(|p| p.acts.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(a, _)| match a {
+            LifeAct::CheckLocker => choice.map_or(false, |i| pois[i].locker.is_some()),
+            LifeAct::CheckDoor => choice.map_or(false, |i| pois[i].door.is_some()),
+            LifeAct::Emote => emote_ready,
+            _ => true,
+        })
+        .collect();
+    let act = weighted(&acts, rng.next_f32()).unwrap_or(LifeAct::Idle);
+    n.life.act = Some(act);
+    n.life.target = target;
+    n.life.focus = focus;
+    n.life.base = dir_to(target, focus, facing_now);
+    if let Some(i) = choice {
+        n.life.recent.push(pois[i].id());
+        while n.life.recent.len() > l.recent {
+            n.life.recent.remove(0);
+        }
+    }
+    if choice.is_none() || pdist(n.at, target) <= l.arrive {
+        life_begin(n, l, &mut rng);
+    } else {
+        n.life.phase = LifePhase::Walk;
+        n.life.clock = l.walk_timeout;
+        n.path.clear();
+        n.path_age = REPATH;
+    }
+}
+
+/// The "life" intent: a bot with nothing else to do stands, walks to a spot near the runner, does something there and
+/// pauses, like a player. False (so the follow intent runs) when the bot is on another level, when `life.range` is passed
+/// (it is walked back and resumes once in follow range) or when the data lists no spot.
+fn life(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -> bool {
+    use crate::hunters::activities::sweep_facing;
+    let l = &t.life;
+    if l.poi.is_empty() || n.level != sc.runner_level {
+        return false;
+    }
+    let d = pdist(n.at, sc.leader);
+    if n.life.returning {
+        let follow_range = t.follow_radius + slot_radius(n.slot) - SLOT_RADIUS;
+        if d <= follow_range.min(l.range) && n.path.is_empty() {
+            n.life.returning = false;
+        } else {
+            return false;
+        }
+    }
+    if d > l.range {
+        n.life.interrupt(l.pause.0);
+        n.life.returning = true;
+        return false;
+    }
+    n.life.since_emote = (n.life.since_emote + dt).min(f32::MAX / 2.0);
+    if !n.life.started {
+        n.life.started = true;
+        let mut rng = life_rng(n);
+        n.life.clock = between(l.spawn_pause, rng.next_f32());
+    }
+    match n.life.phase {
+        LifePhase::Pause => {
+            n.walking = false;
+            n.life.clock -= dt;
+            if n.life.clock <= 0.0 {
+                life_pick(n, sc, t);
+            }
+        }
+        LifePhase::Walk => {
+            n.life.clock -= dt;
+            let running = n.life.act == Some(LifeAct::SprintBurst);
+            if pdist(n.at, n.life.target) <= l.arrive || n.life.clock <= 0.0 {
+                let mut rng = life_rng(n);
+                life_begin(n, l, &mut rng);
+            } else {
+                let target = n.life.target;
+                walk_toward(n, sc.fac, target, running, t, dt, presses);
+            }
+        }
+        LifePhase::Do => {
+            n.walking = false;
+            n.life.clock -= dt;
+            let progress = if n.life.total > 1e-4 { (1.0 - n.life.clock / n.life.total).clamp(0.0, 1.0) } else { 1.0 };
+            let look = match n.life.act {
+                Some(LifeAct::LookAround) | Some(LifeAct::SprintBurst) => {
+                    Some(sweep_facing(n.life.base, progress, l.look_degrees, l.look_sweeps))
+                }
+                Some(LifeAct::CheckLocker) | Some(LifeAct::CheckDoor) | Some(LifeAct::InspectRelay) => {
+                    Some(crate::hunters::activities::dir_to(n.at, n.life.focus, n.life.base))
+                }
+                _ => None,
+            };
+            if let Some(dir) = look {
+                turn(n, heading_yaw(dir), dt);
+            }
+            if n.life.clock <= 0.0 {
+                let mut rng = life_rng(n);
+                n.life.interrupt(between(l.pause, rng.next_f32()));
+            }
+        }
+    }
+    true
 }
 
 /// True when a hunter of any state is in the bot's view: inside `sight_range` with a clear line and either inside the
@@ -1997,6 +2447,7 @@ fn run_intent(n: &mut Npc, sc: &Scene, intent: &str, t: &Tuning, dt: f32, presse
         "hide" => hide(n, sc, t, dt, presses),
         "relay" => errand(n, sc, false, t, dt, presses),
         "locker" => errand(n, sc, true, t, dt, presses),
+        "life" => life(n, sc, t, dt, presses),
         "follow" if n.level != sc.runner_level => {
             follow_across(n, sc, t, dt, presses);
             true
@@ -2146,7 +2597,7 @@ impl Game {
             deep_cells: Vec::new(),
             fleeing: false,
             heard: None,
-            goal: GoalState::default(), flee: FleeState::default(),
+            goal: GoalState::default(), flee: FleeState::default(), life: LifeState::default(),
         });
         self.npc_next += 1;
         id
@@ -2326,6 +2777,7 @@ impl Game {
                 n.walking = false;
                 n.path.clear();
                 n.walk = None;
+                n.life.interrupt(t.life.pause.0);
                 continue;
             }
             // a bot off the window floor keeps travelling toward the runner a chunk at a time; once its position is on
@@ -2387,6 +2839,7 @@ impl Game {
             note_searched(n, searching, t);
             n.flee.alert = if sees(n, fac, seen, &t.flee) || hears_hunter(n, seen, &t.flee) { t.flee.alert } else { (n.flee.alert - dt).max(0.0) };
             if n.hidden.is_some() {
+                n.life.interrupt(t.life.pause.0);
                 hidden_tick(n, &sc, t, dt);
                 continue;
             }
@@ -2401,6 +2854,10 @@ impl Game {
                     if !matches!(intent.as_str(), "relay" | "locker") {
                         n.errand = None;
                         n.dwell = 0.0;
+                    }
+                    // any intent but life ends what the bot was doing in its spare time
+                    if intent != "life" {
+                        n.life.interrupt(t.life.pause.0);
                     }
                     break;
                 }
@@ -2862,6 +3319,7 @@ mod tests {
     /// A normal Infinite run (the pattern of the endless tests): level 0, seed text fixed. A run no longer makes NPCs
     /// by itself, so the data/npcs.json run NPCs are asked for here, for the tests of that system.
     pub(super) fn run_game(diff: Difficulty, run_seed: u32, text: &str) -> (Game, Content) {
+        crate::world::route::layout::godot_regions_for_this_test();
         let content = Content::load();
         let catalog = Catalog::load();
         let mut g = Game::new_infinite_sim(diff, run_seed, text, 0, &content, &catalog);
@@ -3248,7 +3706,7 @@ mod tests {
             deep_cells: Vec::new(),
             fleeing: false,
             heard: None,
-            goal: GoalState::default(), flee: FleeState::default(),
+            goal: GoalState::default(), flee: FleeState::default(), life: LifeState::default(),
         };
         n.shift((-16.0, 32.0));
         assert_eq!(n.at, (-13.0, 36.0));
@@ -3365,7 +3823,7 @@ mod tests {
         assert_eq!(t.door_think, 0.12, "shorter door think so bots clear doors faster");
         assert_eq!(t.door_think_jitter, 0.08, "door think jitter");
         assert_eq!(t.tasks, vec!["door".to_string()]);
-        let intents: Vec<String> = ["hide", "flee", "revive", "goal", "locker", "follow"].iter().map(|s| s.to_string()).collect();
+        let intents: Vec<String> = ["hide", "flee", "revive", "goal", "locker", "life", "follow"].iter().map(|s| s.to_string()).collect();
         assert_eq!(t.intents, intents, "the order the bots try their intents in");
         assert_eq!(t.hide_chase_range, 14.0, "a chase is seen at the threat range");
         assert_eq!(t.hide_reach, 8.0);
@@ -3967,7 +4425,7 @@ mod water_tests {
             path: vec![], path_age: 0.0, walking: false, stride: 0.0, smart: 50, key: None, joined: true,
             join_radius: 0.0, door: None, hidden: None, errand: None, dwell: 0.0, visited: vec![], clear_time: 0.0,
             claim: None,
-            searched: vec![], last_door: None, deep_cells: vec![], fleeing: false, heard: None, goal: GoalState::default(), flee: FleeState::default(),
+            searched: vec![], last_door: None, deep_cells: vec![], fleeing: false, heard: None, goal: GoalState::default(), flee: FleeState::default(), life: LifeState::default(),
         };
         (fac, n, cells)
     }
@@ -4213,7 +4671,7 @@ mod water_tests {
             path: vec![], path_age: 0.0, walking: false, stride: 0.0, smart: 50, key: None, joined: true,
             join_radius: 0.0, door: None, hidden: None, errand: None, dwell: 0.0, visited: vec![], clear_time: 0.0,
             claim: None,
-            searched: vec![], last_door: None, deep_cells: pool, fleeing: false, heard: None, goal: GoalState::default(), flee: FleeState::default(),
+            searched: vec![], last_door: None, deep_cells: pool, fleeing: false, heard: None, goal: GoalState::default(), flee: FleeState::default(), life: LifeState::default(),
         };
         let t = Tuning::get();
         let mut presses = vec![];
@@ -4252,7 +4710,7 @@ mod water_tests {
             path: vec![], path_age: 0.0, walking: false, stride: 0.0, smart: 50, key: None, joined: true,
             join_radius: 0.0, door: None, hidden: None, errand: None, dwell: 0.0, visited: vec![], clear_time: 0.0,
             claim: None,
-            searched: vec![], last_door: None, deep_cells: vec![mid], fleeing: false, heard: None, goal: GoalState::default(), flee: FleeState::default(),
+            searched: vec![], last_door: None, deep_cells: vec![mid], fleeing: false, heard: None, goal: GoalState::default(), flee: FleeState::default(), life: LifeState::default(),
         };
         plan(&mut n, &fac, b.center());
         assert!(!n.path.contains(&mid), "the planned route keeps out of the deep cell");
@@ -4877,3 +5335,177 @@ mod coarse_tests {
 #[cfg(test)]
 #[path = "rail_npc_tests.rs"]
 mod rail_npc_tests;
+
+#[cfg(test)]
+mod life_tests {
+    use super::*;
+    use crate::config::Difficulty;
+    use crate::content::Content;
+    use crate::world::catalog::Catalog;
+
+    fn game() -> Game {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        Game::new_sim(Difficulty::Standard, 4242, &content, &catalog)
+    }
+
+    /// The embedded data/npcs.json with these intents and one more edit, parsed as the bots read it.
+    fn tuned(intents: &[&str], edit: impl Fn(&mut Value)) -> Tuning {
+        let (_, text) = crate::content::embedded::data_under("npcs.json").next().expect("data/npcs.json is embedded");
+        let mut v: Value = serde_json::from_str(text).expect("data/npcs.json parses");
+        v["intents"] = Value::Array(intents.iter().map(|s| Value::from(*s)).collect());
+        edit(&mut v);
+        Tuning::parse(&v).expect("data/npcs.json still has every key")
+    }
+
+    fn with_bot() -> Game {
+        let mut g = game();
+        let p = g.p.pos;
+        assert_eq!(g.npc_spawn(1, 70, (p.0, 1.6, p.1), (0.0, 1.0, 0.0)), 1);
+        g
+    }
+
+    fn run(g: &mut Game, t: &Tuning, seconds: f32) {
+        for _ in 0..(seconds * 60.0) as usize {
+            g.update_npcs_with(1.0 / 60.0, t);
+        }
+    }
+
+    #[test]
+    fn the_standard_data_lists_life_before_follow() {
+        let t = Tuning::get();
+        let at = |name: &str| t.intents.iter().position(|i| i == name).unwrap();
+        assert!(at("goal") < at("life") && at("life") < at("follow"), "{:?}", t.intents);
+        assert!(!t.life.poi.is_empty(), "the data lists spots");
+        assert!(t.life.range >= t.follow_radius, "the wander range covers the follow range");
+        for p in &t.life.poi {
+            assert!(p.weight > 0.0 && !p.acts.is_empty(), "{}", p.kind);
+            let known = p.kind == "here" || crate::hunters::activities::PoiKind::from_id(&p.kind).is_some();
+            assert!(known, "{} is a hunter point-of-interest kind", p.kind);
+        }
+        for (_, (lo, hi)) in &t.life.durations {
+            assert!(lo <= hi && *lo > 0.0);
+        }
+        for a in LifeAct::ALL {
+            assert_eq!(LifeAct::from_name(a.name()), Some(a));
+        }
+    }
+
+    #[test]
+    fn every_life_emote_exists_in_the_emote_data() {
+        let set = crate::render::anim::emote_pose::set().expect("data/player/emotes.json parses");
+        assert!(!Tuning::get().life.emotes.is_empty());
+        for (id, w) in &Tuning::get().life.emotes {
+            assert!(*w > 0.0 && set.find(id).is_some(), "{id}");
+        }
+    }
+
+    #[test]
+    fn an_idle_bot_picks_activities_over_time() {
+        let mut g = with_bot();
+        let t = tuned(&["life", "follow"], |_| {});
+        run(&mut g, &t, 120.0);
+        let picked = &g.npcs[0].life.picked;
+        assert!(picked.len() >= 4, "{picked:?}");
+        let mut kinds = picked.clone();
+        kinds.dedup();
+        assert!(kinds.len() >= 2, "more than one kind of activity: {picked:?}");
+    }
+
+    #[test]
+    fn a_bot_never_strays_past_its_range() {
+        let mut g = with_bot();
+        let t = tuned(&["life", "follow"], |_| {});
+        let mut far = 0.0f32;
+        for _ in 0..(120 * 60) {
+            g.update_npcs_with(1.0 / 60.0, &t);
+            far = far.max(pdist(g.npcs[0].at, g.p.pos));
+        }
+        // a step can end a body-width past the line before the bot turns back
+        assert!(far <= t.life.range + 2.0, "went {far} m from the runner (range {})", t.life.range);
+    }
+
+    #[test]
+    fn the_data_decides_what_a_bot_does() {
+        let mut g = with_bot();
+        let t = tuned(&["life"], |v| {
+            v["life"]["poi"] = serde_json::json!({ "here": { "weight": 1.0, "acts": { "idle": 1 } } });
+        });
+        let start = g.npcs[0].at;
+        run(&mut g, &t, 30.0);
+        let n = &g.npcs[0];
+        assert!(!n.life.picked.is_empty());
+        assert!(n.life.picked.iter().all(|a| *a == LifeAct::Idle), "{:?}", n.life.picked);
+        assert_eq!(n.at, start, "idling in place moves nothing");
+    }
+
+    #[test]
+    fn a_bot_plays_an_emote_from_the_emote_data() {
+        let mut g = with_bot();
+        let t = tuned(&["life"], |v| {
+            v["life"]["poi"] = serde_json::json!({ "here": { "weight": 1.0, "acts": { "emote": 1 } } });
+            v["life"]["emote_gap"] = Value::from(0.0);
+            v["life"]["pause"] = serde_json::json!([0.2, 0.4]);
+        });
+        let set = crate::render::anim::emote_pose::set().expect("emotes parse");
+        let mut seen = false;
+        for _ in 0..(30 * 60) {
+            g.update_npcs_with(1.0 / 60.0, &t);
+            if let Some(id) = &g.npcs[0].life.emote {
+                assert!(set.find(id).is_some(), "{id}");
+                assert!(!g.npcs[0].walking, "an emote is played standing");
+                seen = true;
+            }
+        }
+        assert!(seen && g.npcs[0].life.emote_seq >= 2, "emotes started: {}", g.npcs[0].life.emote_seq);
+    }
+
+    #[test]
+    fn the_emote_gap_spaces_emotes() {
+        let mut g = with_bot();
+        let t = tuned(&["life"], |v| {
+            v["life"]["poi"] = serde_json::json!({ "here": { "weight": 1.0, "acts": { "emote": 1, "idle": 1 } } });
+            v["life"]["emote_gap"] = Value::from(1000.0);
+        });
+        run(&mut g, &t, 60.0);
+        assert!(g.npcs[0].life.emote_seq <= 1, "one emote at most inside the gap");
+    }
+
+    #[test]
+    fn crouching_ends_with_the_activity_and_with_an_interrupt() {
+        let mut g = with_bot();
+        let t = tuned(&["life"], |v| {
+            v["life"]["poi"] = serde_json::json!({ "here": { "weight": 1.0, "acts": { "crouch": 1 } } });
+        });
+        let mut crouched = false;
+        for _ in 0..(20 * 60) {
+            g.update_npcs_with(1.0 / 60.0, &t);
+            crouched |= g.npcs[0].life.crouching;
+        }
+        assert!(crouched, "the bot crouched");
+        g.npcs[0].life.crouching = true;
+        g.npcs[0].life.interrupt(1.0);
+        assert!(!g.npcs[0].life.crouching && g.npcs[0].life.emote.is_none());
+    }
+
+    #[test]
+    fn a_bot_past_its_range_is_walked_back_by_follow() {
+        let mut g = with_bot();
+        let t = tuned(&["life", "follow"], |_| {});
+        let runner = g.p.pos;
+        let s = Cell::new(runner.0.floor() as i32, runner.1.floor() as i32);
+        let mut reach: Vec<(Cell, i32)> = g.fac.distance_map(s).into_iter().collect();
+        reach.sort_by_key(|(c, _)| (c.x, c.y));
+        let far = reach
+            .into_iter()
+            .filter(|(c, d)| *d >= 12 && *d <= 16 && g.fac.body_fits(c.center().0, c.center().1, NAV_RADIUS))
+            .map(|(c, _)| c.center())
+            .next()
+            .expect("an open cell 12 to 16 steps away");
+        g.npcs[0].at = far;
+        let before = pdist(far, runner);
+        run(&mut g, &t, 40.0);
+        assert!(g.npcs[0].life.returning || pdist(g.npcs[0].at, runner) < before, "the bot closed in");
+        assert!(pdist(g.npcs[0].at, runner) <= t.life.range + 2.0);
+    }
+}

@@ -1325,6 +1325,7 @@ mod beam_tests {
     /// A new run on level 0 with no relay recovered, the runner's lamp `lamp` charged and switched off, and nothing else
     /// touched: the lineup is the one the run starts with.
     fn fresh_level0(diff: Difficulty, lamp: f32) -> (Game, Content, Catalog) {
+        crate::world::route::layout::godot_regions_for_this_test();
         let (content, catalog) = (Content::load(), Catalog::load());
         let mut g = Game::new_infinite_sim(diff, 7, "ROOM-NYXIE-L0", 0, &content, &catalog);
         g.fade = 0.0;

@@ -135,6 +135,9 @@ fn dry_path(f: &crate::world::Facility, from: Cell, depth: usize) -> Vec<Cell> {
 /// In the Inferno it then stands for `inferno_wait` seconds. `None` when the window has no such spiral.
 fn descend(seed: &str, level: i32, idx: usize, gait: Gait, c: &Content, cat: &Catalog) -> Option<(Out, Stair)> {
     let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, seed, level, c, cat);
+    // the hall walk starts from the window's start cell itself: on a sewer level enter_infinite stands the runner on the
+    // nearest dry cell instead (endless.rs `dry_start`), and this walk is about the flight, not about that spot
+    g.p.pos = g.fac.start.center();
     // the first step recentres the window by whole chunks: pick the flight after it
     g.step(FRAME, &Controls::default(), c, cat, &Sounds::default());
     let s = *g

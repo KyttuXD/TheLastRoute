@@ -190,6 +190,8 @@ pub struct Game {
     pub map_open: bool,
     /// Seconds left on the wound music box (Glyra's room effect; the box is an item, game/music_box.rs).
     pub music_box_left: f32,
+    /// Hold-to-wind state of the music box in hand (game/music_box.rs `BoxWind`).
+    pub box_wind: music_box::BoxWind,
     /// The hunter specialty bar, slots 6 to 9 (game/specialty.rs): separate from `slots`.
     pub specialty: specialty::Specialty,
     /// The local runner's emote wheel and playing emote (game/emote.rs).
@@ -220,6 +222,9 @@ pub struct Game {
     pub downed: Option<revive::Downed>,
     /// The id and name of the hunter that downed the runner, kept by identity (the active list re-indexes) for the run card.
     pub downed_hunter: Option<(String, String)>,
+    /// The other living runners in the room (the app sets it each frame from the room roster; 0 solo). With none and no
+    /// NPC bot on the run able to revive, a capture ends the run at once instead of downing the runner (game/revive.rs).
+    pub room_teammates: usize,
     /// The bots that are down, by `Npc::id` (game/revive.rs).
     pub downed_npcs: std::collections::BTreeMap<u32, revive::Downed>,
     /// The spectator state of a downed or dead runner (game/spectate.rs): Some while it watches another runner.
@@ -315,6 +320,7 @@ impl Game {
         };
         let mut fac = Facility::generate(&format!("{run_seed}-D1"), &opt, catalog);
         let (fix, box_cell) = fixtures::place_with_box(&fac);
+        fixtures::adopt_extra_hiding(&mut fac, &fix.extra_hiding);
         // the floor's music box is a collectable on the floor (game/music_box.rs), not a fixture
         fac.pickups.extend(box_cell.map(|c| (c, Pickup::MusicBox)));
         let world = WorldMeshes::default();
@@ -344,6 +350,7 @@ impl Game {
             void_fx: Default::default(),
             map_open: false,
             music_box_left: music_box::wound_seconds(difficulty.id()),
+            box_wind: music_box::BoxWind::default(),
             specialty: specialty::Specialty::default(),
             emote: Default::default(),
             relays_collected: 0,
@@ -372,6 +379,7 @@ impl Game {
             escape: None,
             downed: None,
             downed_hunter: None,
+            room_teammates: 0,
             downed_npcs: std::collections::BTreeMap::new(),
             spectate: None,
             escape_cooldown: 0.0,
@@ -491,6 +499,7 @@ impl Game {
             void_fx: Default::default(),
             map_open: false,
             music_box_left: music_box::wound_seconds(difficulty.id()),
+            box_wind: music_box::BoxWind::default(),
             specialty: specialty::Specialty::default(),
             emote: Default::default(),
             relays_collected: 0,
@@ -519,6 +528,7 @@ impl Game {
             escape: None,
             downed: None,
             downed_hunter: None,
+            room_teammates: 0,
             downed_npcs: std::collections::BTreeMap::new(),
             spectate: None,
             escape_cooldown: 0.0,
@@ -634,10 +644,12 @@ impl Game {
         };
         self.fac = Facility::generate(&seed, &opt, catalog);
         let (fix, box_cell) = fixtures::place_with_box(&self.fac);
+        fixtures::adopt_extra_hiding(&mut self.fac, &fix.extra_hiding);
         self.fix = fix;
         self.fac.pickups.extend(box_cell.map(|c| (c, Pickup::MusicBox)));
         self.adopt_floor(content);
         self.music_box_left = music_box::wound_seconds(self.difficulty.id());
+        self.box_wind = music_box::BoxWind::default();
         self.relays_collected = 0;
         self.p.place(self.fac.start.center());
         self.npc_place_beside_runner();
@@ -970,6 +982,12 @@ impl Game {
                 targets_runner: !h.target_is_bot && !h.shadow,
             }).collect();
             crate::audio::world::update(dt, &listener, &hunters);
+            // the region bed under the runner (rooms carry the region id; corridors fade the bed out)
+            let region_id = self
+                .fac
+                .room_at(self.p.pos.0 as f64, self.p.pos.1 as f64)
+                .map(|i| self.fac.rooms[i].region.clone());
+            crate::audio::world::ambience(dt, region_id.as_deref(), 0.0);
             // the wolf spiders' tell, skitter and lair crackle (audio/creature.rs)
             let creatures: Vec<crate::audio::creature::CreatureAudio> = self
                 .hunters

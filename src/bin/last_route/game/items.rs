@@ -279,8 +279,8 @@ impl Game {
                 self.say("STIM PACK");
             }
             Item::MusicBox => {
-                self.wind_music_box();
-                self.consume_selected(); // a pack box is spent by the wind (slot 6 spends its own, specialty.rs)
+                // a left click never spends the box: holding interact winds it (game/interact.rs `update_box_wind`)
+                self.left_click_music_box();
             }
         }
     }
@@ -561,8 +561,12 @@ mod tests {
         g.select(i);
         g.music_box_left = 0.0;
         g.use_selected(&Sounds::default());
-        assert_eq!(g.music_box_left, 35.0, "Hard winds to 35 s");
-        assert!(g.slots.iter().flatten().all(|s| s.item != Item::MusicBox), "the wind spends the box");
+        assert_eq!(g.music_box_left, 0.0, "a click does not wind");
+        assert!(g.slots.iter().flatten().any(|s| s.item == Item::MusicBox), "a click leaves the box in the pack");
+        g.focus = None;
+        g.p.stun = 0.0;
+        g.update_box_wind(crate::game::music_box::rules().wind_seconds * 2.0, true);
+        assert_eq!(g.music_box_left, 35.0, "holding winds Hard to 35 s");
         assert_eq!(mood_for(g.music_box_left), Mood::Playing);
         // the clock runs for the wind duration: playing, then the last 15 s wind down, then it stops
         g.run_music_box(19.5);
@@ -615,7 +619,11 @@ mod tests {
         g.select(slot);
         g.music_box_left = 0.0;
         g.use_selected(&Sounds::default());
-        assert_eq!(g.music_box_left, 45.0, "standard winds to 45 s");
-        assert!(g.slots.iter().flatten().all(|s| s.item != Item::MusicBox), "the wind spends the box");
+        assert_eq!(g.music_box_left, 0.0, "a click does not wind");
+        g.focus = None;
+        g.p.stun = 0.0;
+        g.update_box_wind(crate::game::music_box::rules().wind_seconds * 2.0, true);
+        assert_eq!(g.music_box_left, 45.0, "holding winds standard to 45 s");
+        assert!(g.slots.iter().flatten().any(|s| s.item == Item::MusicBox), "winding does not spend the box");
     }
 }

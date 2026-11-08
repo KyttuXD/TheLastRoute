@@ -9,13 +9,15 @@
 //! - `rules`: the front end of sound.gd (throttles, gaits, pan and volume rules, buses) as pure functions that return a
 //!   `rules::Play` to render and play. See NOTES.md for every cue's trigger.
 //! - `music_box`: the wound music box's looping tune and its slowing, off-key wind-down.
-//! - `ambience`: the ambient beds, which never play on the finite route (see ambience.rs).
+//! - `ambience`: the per-region ambient beds (data/audio/ambience.json) and the `Mixer` that crossfades them; `extra`: the
+//!   data-defined cues and game events (data/audio/cues.json): lockers, relays, vents, music box wind and jam, sniff, knock.
 //!
 //! std only; no macroquad here, so it can be tested headless. `wav_bytes` turns frames into a file for
 //! `macroquad::audio::load_sound_from_bytes`.
 #![allow(dead_code, unused_imports)]
 
-mod ambience;
+pub mod ambience;
+pub mod extra;
 pub mod music_box;
 mod nw;
 pub mod positional;
@@ -26,7 +28,7 @@ mod surfaces;
 mod table;
 mod wav;
 
-pub use ambience::ambience;
+pub use ambience::{ambience, Mixer as AmbienceMixer};
 pub use render::{cache_key, godot_string_hash, Component, Kind, Wave, SAMPLE_RATE};
 pub use surfaces::{for_floor as surface_for_floor, SURFACES};
 pub use wav::wav_bytes;
@@ -134,6 +136,9 @@ pub fn cue_names() -> &'static [&'static str] {
         for n in nw::NAMES {
             names.push(Box::leak(format!("nw_{}", n).into_boxed_str()));
         }
+        for n in extra::names() {
+            names.push(n);
+        }
         for gait in surfaces::GAITS {
             for surface in surfaces::SURFACES {
                 names.push(Box::leak(
@@ -145,5 +150,7 @@ pub fn cue_names() -> &'static [&'static str] {
     })
 }
 
+#[cfg(test)]
+mod data_tests;
 #[cfg(test)]
 mod tests;

@@ -115,6 +115,7 @@ fn hold(found: &mut Found, label: &str, fac: &Facility, prev: (f32, f32), b: &Br
 /// Wakes `n` hunters in a real window on `level` and sends them after a runner who jumps to a new open cell every
 /// `HOP_SECONDS`, for `seconds` of play at `dt` per frame; holds every hunter's move against the runner's predicate.
 pub fn walk(level: i32, seed: u32, n: usize, seconds: f32, dt: f32, content: &Content, catalog: &Catalog) -> Found {
+    crate::world::route::layout::godot_regions_for_this_test();
     let mut g = Game::new_infinite_sim(Difficulty::Standard, seed, &crate::world::route::room_text(seed), level, content, catalog);
     g.hunters.clear();
     g.admin.god = true;

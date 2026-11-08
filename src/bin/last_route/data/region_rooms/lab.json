@@ -1,0 +1,56 @@
+{
+	"schema": "lr.region_rooms/1",
+	"region": "lab",
+	"colour": "FFB27F",
+	"note": "laboratory",
+	"rooms": [
+		{"role": "clean_room", "weight": 1, "template": "code", "size": {"min": [9, 9], "preferred": [21, 9], "max": [21, 9]}},
+		{"role": "chem_lab", "weight": 1, "template": "code", "size": {"min": [9, 9], "preferred": [21, 9], "max": [21, 9]}},
+		{"role": "control_room", "weight": 1, "template": "code", "size": {"min": [9, 9], "preferred": [21, 9], "max": [21, 9]}},
+		{"role": "containment", "weight": 1, "template": "code", "size": {"min": [9, 9], "preferred": [21, 9], "max": [21, 21]}},
+		{"role": "bio_lab", "weight": 1, "template": "code", "size": {"min": [9, 9], "preferred": [21, 9], "max": [21, 9]}},
+		{"role": "decon", "weight": 1, "template": "code", "size": {"min": [9, 9], "preferred": [11, 9], "max": [13, 13]}},
+		{"role": "server_hall", "weight": 1, "template": "code", "size": {"min": [9, 9], "preferred": [21, 9], "max": [21, 21]}, "tables": [0, 30]},
+		{"role": "cold_storage", "weight": 1, "template": "code", "size": {"min": [9, 9], "preferred": [11, 9], "max": [13, 13]}},
+		{"role": "lab_office", "weight": 1, "template": "code", "size": {"min": [9, 9], "preferred": [11, 9], "max": [13, 13]}},
+		{
+			"role": "fume_lab",
+			"weight": 2,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [11, 11], "max": [15, 13]},
+			"recipe": [
+				{"type": "fumeHood", "side": ["-half+1", "half-1", 3], "depth": 0, "wall": true},
+				{"type": "labBench", "side": ["-half+1", "half-1", 3], "depth": "mid"},
+				{"type": "labStool", "side": ["-half+1", "half-1", 3], "depth": "mid-1"},
+				{"type": "ceilingLight", "side": 0, "depth": ["2", "front-1", 4], "loose": true}
+			]
+		},
+		{
+			"role": "cage_room",
+			"weight": 1,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [11, 11], "max": [15, 13]},
+			"recipe": [
+				{"type": "containmentCell", "side": ["-half+1", "half-1", 3], "depth": 0, "wall": true},
+				{"type": "labBench", "side": 0, "depth": "mid"},
+				{"type": "biohazardBin", "side": "half-1", "depth": "mid", "facing": "left", "mirror": true},
+				{"type": "hazardSign", "side": 0, "depth": 0, "mount": true},
+				{"type": "ceilingLight", "side": 0, "depth": ["2", "front-1", 4], "loose": true}
+			]
+		}
+	],
+	"props": [
+		{"type": "labBench", "size": [2, 1.45, 0.8], "solid": true, "weight": 1},
+		{"type": "specimenTank", "size": [0.95, 2.3, 0.95], "solid": true, "weight": 1},
+		{"type": "gasCylinderRack", "size": [0.95, 1.65, 0.45], "solid": true, "weight": 1},
+		{"type": "biohazardBin", "size": [0.5, 0.82, 0.5], "solid": true, "weight": 1},
+		{"type": "serverRack", "size": [0.8, 2, 0.55], "solid": true, "weight": 1},
+		{"type": "hazardSign", "size": [0.6, 0.62, 0.05], "solid": false, "weight": 1},
+		{"type": "labWhiteboard", "size": [1.8, 1.15, 0.08], "solid": false, "weight": 1},
+		{"type": "fumeHood", "size": [1.84, 2.85, 1.09], "solid": true, "weight": 1},
+		{"type": "labStool", "size": [0.6, 1.12, 0.6], "solid": true, "weight": 1},
+		{"type": "containmentCell", "size": [2.29, 2.62, 1.79], "solid": true, "weight": 1},
+		{"type": "coldStorageUnit", "size": [2.1, 3.19, 1.35], "solid": true, "weight": 1},
+		{"type": "ceilingLight", "size": [0.75, 0.3, 0.75], "solid": false, "weight": 1}
+	]
+}

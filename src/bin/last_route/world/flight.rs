@@ -1190,7 +1190,8 @@ pub struct Guard {
 ///   edge of the 5 x 5 well, which has no surface in its last 2 cm, and the open corner on the arc's end side; the
 ///   doorway edge and the corner slab on the start side are floored, so they are the gap. The slab's own rail is
 ///   [`spiral_slab_rail`].
-/// - A straight flight: every rim edge of the well that borders an open cell, except the one at the landing.
+/// - A straight flight: every stretch of the well's rim where a body is stopped (read like the spiral's), so the head of
+///   the stairs is the gap however wide the flight is.
 pub fn landing_guards_with(rules: &FlightRules, f: &Flight) -> Vec<Guard> {
     if f.kind != FlightKind::Stairs {
         return vec![];
@@ -1207,30 +1208,19 @@ pub fn landing_guards_with(rules: &FlightRules, f: &Flight) -> Vec<Guard> {
         }
         FlightShape::Spiral => spiral_rim_guards(rules, f),
         FlightShape::Straight => {
-            let hole = well_footprint_with(rules, f).upper_hole;
-            let (landing, _) = ends(rules, f);
-            let mut out = Vec::new();
-            for c in &hole {
-                for d in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                    let n = Cell::new(c.x + d.0, c.y + d.1);
-                    if hole.contains(&n) || n == landing {
-                        continue;
-                    }
-                    // the edge of cell c towards n
-                    let (x0, z0) = (c.x as f32, c.y as f32);
-                    let (a, b) = match d {
-                        (1, 0) => ((x0 + 1.0, z0), (x0 + 1.0, z0 + 1.0)),
-                        (-1, 0) => ((x0, z0), (x0, z0 + 1.0)),
-                        (0, 1) => ((x0, z0 + 1.0), (x0 + 1.0, z0 + 1.0)),
-                        _ => ((x0, z0), (x0 + 1.0, z0)),
-                    };
-                    out.push(Guard { seg: Segment { a, b }, outside: n });
-                }
-            }
-            out
+            // read through the collision's own rule like the spiral: a rail only where a body is stopped, so the head of the
+            // stairs (every rim cell whose surface is the upper floor, however wide the flight) stays open, and the
+            // specks a few cm long the fit tolerance leaves at a cell's end are no rail
+            spiral_rim_guards(rules, f)
+                .into_iter()
+                .filter(|g| (g.seg.b.0 - g.seg.a.0).hypot(g.seg.b.1 - g.seg.a.1) >= STRAIGHT_MIN_GUARD)
+                .collect()
         }
     }
 }
+
+/// A straight flight's shortest rail (m): a closed stretch shorter than this is a sliver of the fit tolerance.
+const STRAIGHT_MIN_GUARD: f32 = 0.075;
 
 /// How finely a spiral's rim is read for the guards: samples per cell edge (a metre).
 const RIM_SAMPLES: usize = 20;

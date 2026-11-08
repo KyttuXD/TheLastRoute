@@ -1,0 +1,85 @@
+{
+	"schema": "lr.region_rooms/1",
+	"region": "offices",
+	"colour": "7F3F5B",
+	"note": "offices and cubicles",
+	"rooms": [
+		{"role": "cubicle_room", "weight": 3, "template": "code", "size": {"min": [9, 9], "preferred": [11, 11], "max": [13, 13]}},
+		{"role": "meeting_room", "weight": 2, "template": "code", "size": {"min": [9, 9], "preferred": [11, 11], "max": [13, 13]}},
+		{"role": "office_reception", "weight": 1, "template": "code", "size": {"min": [9, 9], "preferred": [11, 11], "max": [13, 13]}},
+		{"role": "private_office", "weight": 2, "template": "code", "size": {"min": [9, 9], "preferred": [11, 11], "max": [13, 13]}},
+		{"role": "office_job", "weight": 1, "template": "code", "size": {"min": [9, 9], "preferred": [11, 11], "max": [13, 13]}},
+		{
+			"role": "cubicle_farm",
+			"weight": 2,
+			"template": "data",
+			"size": {"min": [13, 13], "preferred": [21, 15], "max": [21, 21]},
+			"recipe": [
+				{"type": "officeDesk", "side": ["-half+1", "half-1", 5], "depth": ["2", "front-3", 4]},
+				{"type": "officeChair", "side": ["-half+1", "half-1", 5], "depth": ["1", "front-4", 4]},
+				{"type": "officeCubiclePartition", "side": ["-half+1", "half-1", 5], "depth": ["0", "front-5", 4], "wall": true},
+				{"type": "officePrinter", "side": "half-1", "depth": 0, "wall": true, "mirror": true},
+				{"type": "officeWaterCooler", "side": "-half+1", "depth": 0, "wall": true, "mirror": true},
+				{"type": "ceilingLight", "side": ["-half+2", "half-2", 5], "depth": ["3", "front-2", 4], "loose": true}
+			]
+		},
+		{
+			"role": "records_room",
+			"weight": 1,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [11, 9], "max": [13, 11]},
+			"recipe": [
+				{"type": "filingCabinet", "side": ["-half+1", "half-1", 2], "depth": 0, "wall": true},
+				{"type": "filingCabinet", "side": ["-half+1", "half-1", 2], "depth": "mid", "facing": "back"},
+				{"type": "officeFileBoxes", "side": ["-half+1", "half-1", 4], "depth": "front-2", "facing": "center"},
+				{"type": "ceilingLight", "side": 0, "depth": ["2", "front-1", 4], "loose": true}
+			]
+		},
+		{
+			"role": "print_room",
+			"weight": 1,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [9, 11], "max": [11, 11]},
+			"recipe": [
+				{"type": "officePhotocopier", "side": ["-half+1", "half-1", 4], "depth": 0, "wall": true},
+				{"type": "officePrinter", "side": ["-half+2", "half-1", 4], "depth": 0, "wall": true},
+				{"type": "officeShredder", "side": "half-1", "depth": "mid", "facing": "left", "mirror": true},
+				{"type": "officeFileBoxes", "side": 0, "depth": "mid"},
+				{"type": "ceilingLight", "side": 0, "depth": "mid", "loose": true}
+			]
+		},
+		{
+			"role": "break_room",
+			"weight": 1,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [11, 9], "max": [13, 11]},
+			"recipe": [
+				{"type": "vendingMachine", "side": ["-half+1", "half-1", 2], "depth": 0, "wall": true},
+				{"type": "normalKitchenFridge", "side": "half-1", "depth": 0, "wall": true, "mirror": true},
+				{"type": "woodenTable", "side": 0, "depth": "mid"},
+				{"type": "woodenChair", "side": -2, "depth": "mid", "facing": "right"},
+				{"type": "woodenChair", "side": 2, "depth": "mid", "facing": "left"},
+				{"type": "officeWaterCooler", "side": "-half+1", "depth": "mid", "facing": "right", "mirror": true},
+				{"type": "ceilingLight", "side": 0, "depth": "mid", "loose": true}
+			]
+		}
+	],
+	"props": [
+		{"type": "officeDesk", "size": [2.48, 1.12, 1.17], "solid": true, "weight": 1},
+		{"type": "officeChair", "size": [0.98, 1.97, 0.98], "solid": true, "weight": 1},
+		{"type": "officeCubiclePartition", "size": [2.17, 1.75, 0.42], "solid": true, "weight": 1},
+		{"type": "filingCabinet", "size": [0.98, 1.88, 1.07], "solid": true, "weight": 1},
+		{"type": "officePrinter", "size": [0.72, 0.68, 0.58], "solid": true, "weight": 1},
+		{"type": "officePhotocopier", "size": [1.54, 1.69, 1.45], "solid": true, "weight": 1},
+		{"type": "officeShredder", "size": [0.54, 1.38, 0.54], "solid": true, "weight": 1},
+		{"type": "officeFileBoxes", "size": [1.1, 0.88, 0.42], "solid": true, "weight": 1},
+		{"type": "officeWaterCooler", "size": [0.54, 1.62, 0.6], "solid": true, "weight": 1},
+		{"type": "receptionDesk", "size": [3.04, 1.69, 1.26], "solid": true, "weight": 1},
+		{"type": "officeCornerWorkstation", "size": [2.85, 1.31, 2.2], "solid": true, "weight": 1},
+		{"type": "vendingMachine", "size": [0.98, 2.72, 1.26], "solid": true, "weight": 1},
+		{"type": "normalKitchenFridge", "size": [1.35, 2.91, 1.26], "solid": true, "weight": 1},
+		{"type": "woodenTable", "size": [1.92, 1.12, 1.17], "solid": true, "weight": 1},
+		{"type": "woodenChair", "size": [0.79, 1.41, 0.79], "solid": true, "weight": 1},
+		{"type": "ceilingLight", "size": [0.75, 0.3, 0.75], "solid": false, "weight": 1}
+	]
+}

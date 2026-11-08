@@ -1,6 +1,8 @@
 //! Downed runners and NPC teammates, with no revive kit (data/revive.json).
 //!
-//! A runner who would die goes down instead ([`Game::go_down`], called from `end_run`). A downed runner lies still: no
+//! A runner who would die goes down instead ([`Game::go_down`], called from `end_run`) when someone could revive it: a
+//! living teammate in the room or a joined NPC bot that is not down ([`Game::runner_has_reviver`]). With nobody, the
+//! capture ends the run at once with a report. A downed runner lies still: no
 //! move, no interact, no ladder, and the hunters that caught it cannot catch it again. A teammate revives it by holding
 //! interact beside it for `hold_seconds`: a bot standing within `reach` on the same floor does it on its own, and the
 //! runner revives a downed bot the same way by holding interact (`Controls::interact_held`). A downed body that nobody
@@ -79,12 +81,24 @@ impl Game {
         self.downed.is_some()
     }
 
-    /// The runner would die: it goes down instead. Returns true when the runner is down after the call (it went down
-    /// now, or it was down already and a further catch does not kill it; only the timeout does).
+    /// True when someone could revive the runner if it went down: another living runner in the room
+    /// (`room_teammates`), or an NPC bot on the run that has joined the runner and is not down itself (a hidden bot
+    /// counts: it can leave its locker). Solo with no such bot, a capture ends the run at once.
+    pub fn runner_has_reviver(&self) -> bool {
+        self.room_teammates > 0 || self.npcs.iter().any(|n| n.joined && !self.downed_npcs.contains_key(&n.id))
+    }
+
+    /// The runner would die: it goes down instead when someone could revive it ([`Game::runner_has_reviver`]). Returns
+    /// true when the runner is down after the call (it went down now, or it was down already and a further catch does
+    /// not kill it; only the timeout does), false when nobody could revive it and the run should end now.
     pub(super) fn go_down(&mut self, hunter: usize) -> bool {
         // a run that already has its report is finished: it is never taken down (and never ended twice)
         if self.downed.is_some() || self.report.is_some() {
             return true;
+        }
+        // nobody could revive the runner: the capture ends the run at once (end_run then writes the report)
+        if !self.runner_has_reviver() {
+            return false;
         }
         let r = rules();
         self.downed = Some(Downed { remaining: r.timeout_seconds, held: 0.0, hunter });
@@ -229,7 +243,50 @@ mod tests {
         if g.npcs.len() < 2 {
             g.npc_spawn(2, 90, (0.0, 1.5, 0.0), (1.0, 0.0, 0.0));
         }
+        // another runner in the room: a capture downs the runner (solo with no joined bot it would end the run)
+        g.room_teammates = 1;
         (g, content)
+    }
+
+    /// The fixture with nobody who could revive the runner: no other runner, and no bot joined.
+    fn solo() -> Game {
+        let (mut g, _) = game();
+        g.room_teammates = 0;
+        for n in g.npcs.iter_mut() {
+            n.joined = false;
+        }
+        g
+    }
+
+    #[test]
+    fn a_solo_capture_with_nobody_to_revive_ends_the_run_at_once() {
+        let mut g = solo();
+        assert!(!g.runner_has_reviver());
+        g.end_run(0, "contact");
+        assert!(!g.runner_downed(), "nobody could revive: the runner is not downed");
+        let rep = g.report.as_ref().expect("the capture ends the run with a report");
+        assert_eq!(rep.cause, "contact");
+    }
+
+    #[test]
+    fn a_joined_bot_or_a_teammate_makes_a_capture_down_the_runner() {
+        // a joined bot on the run
+        let mut g = solo();
+        let id = g.npcs[0].id;
+        g.npcs[0].joined = true;
+        assert!(g.runner_has_reviver());
+        g.end_run(0, "contact");
+        assert!(g.runner_downed() && g.report.is_none(), "a joined bot could revive: the runner goes down");
+        // a joined bot that is down itself revives nobody
+        let mut g = solo();
+        g.npcs[0].joined = true;
+        assert!(g.npc_go_down(id));
+        assert!(!g.runner_has_reviver(), "a downed bot cannot revive the runner");
+        // another runner in the room
+        let mut g = solo();
+        g.room_teammates = 1;
+        g.end_run(0, "contact");
+        assert!(g.runner_downed() && g.report.is_none(), "a teammate in the room could revive: the runner goes down");
     }
 
     /// Puts bot `id` on the runner's floor, beside the runner, joined.

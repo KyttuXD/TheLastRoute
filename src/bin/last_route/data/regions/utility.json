@@ -1,0 +1,22 @@
+{
+	"schema": "lr.region/1",
+	"id": "utility",
+	"hall_floor": ["concrete0", "concrete1"],
+	"hall_runner": false,
+	"room_default_floor": ["concrete0"],
+	"room_roles": ["boiler_room", "boiler_room", "workshop", "workshop", "locker_room", "storeroom", "storeroom", "generator_room"],
+	"prop_set": [
+		{"type": "serverRack", "size": [0.98, 2.91, 1.26]},
+		{"type": "lavaPipeManifold", "size": [1.92, 1.69, 0.88]},
+		{"type": "shopShelf", "size": [1.92, 2.81, 0.79]},
+		{"type": "supplyCrates", "size": [0.79, 0.94, 0.67]},
+		{"type": "storageBarrel", "size": [0.67, 0.94, 0.67]},
+		{"type": "labBench", "size": [2.04, 1.44, 0.79]},
+		{"type": "pottingBench", "size": [1.67, 1.44, 0.79]},
+		{"type": "filingCabinet", "size": [0.98, 1.88, 1.07]},
+		{"type": "mallBench", "size": [2.67, 0.84, 0.98]},
+		{"type": "hazardSign", "size": [0.6, 0.62, 0.05], "solid": false},
+		{"type": "floorLamp", "size": [0.6, 2.62, 0.6]},
+		{"type": "ceilingLight", "size": [0.75, 0.3, 0.75], "solid": false}
+	]
+}

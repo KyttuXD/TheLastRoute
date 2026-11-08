@@ -1302,6 +1302,7 @@ mod tests {
     /// the body fits at every sample of its walk path except inside the other end's cell.
     #[test]
     fn the_body_fits_along_the_walk_path_of_every_flight_in_a_sweep() {
+        crate::world::route::layout::godot_regions_for_this_test();
         let content = Content::load();
         let catalog = Catalog::load();
         let mut seen = std::collections::BTreeMap::new();

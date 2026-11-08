@@ -594,12 +594,15 @@ mod tests {
                 h = h.wrapping_mul(0x100000001b3);
             }
         };
-        let v3b = |v: Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+        // Quantised to 1e-4, never raw bits: sin/cos in the Euler rotations differ in the last bit between the Windows CRT
+        // and Linux libm, so raw f32 bits hashed differently per platform. 1e-4 is far below a pixel.
+        let q = |f: f32| ((f as f64 * 10000.0).round() as i64).to_le_bytes();
+        let v3b = |v: Vec3| [q(v.x), q(v.y), q(v.z)];
         for g in &s.groups {
             put(g.name.as_bytes());
             put(&g.parent.map(|p| p as u64 + 1).unwrap_or(0).to_le_bytes());
             for b in v3b(g.origin) {
-                put(&b.to_le_bytes());
+                put(&b);
             }
         }
         for p in &s.parts {
@@ -608,20 +611,20 @@ mod tests {
             for f in &p.faces {
                 for c in &f.corners {
                     for b in v3b(*c) {
-                        put(&b.to_le_bytes());
+                        put(&b);
                     }
                 }
                 for uv in &f.uv {
-                    put(&uv.x.to_bits().to_le_bytes());
-                    put(&uv.y.to_bits().to_le_bytes());
+                    put(&q(uv.x));
+                    put(&q(uv.y));
                 }
                 for b in v3b(f.normal) {
-                    put(&b.to_le_bytes());
+                    put(&b);
                 }
             }
         }
         for b in v3b(s.min).into_iter().chain(v3b(s.max)) {
-            put(&b.to_le_bytes());
+            put(&b);
         }
         h
     }
@@ -635,34 +638,36 @@ mod tests {
     }
 
     /// Recorded before the loader change, with the legacy rule, from the shipped files: every non-void hunter model.
+    /// (re-recorded on 2026-11-08 with the 1e-4 quantised digest: the quantisation is deliberate, for cross-platform float
+    /// stability (Windows CRT and Linux libm sin/cos differ in the last bit); the models themselves did not change.)
     const GOLDEN: [(&str, u64); 27] = [
-        ("hunters/aki.bbmodel", 0x3a02eff66b76ac46),
-        ("hunters/briselle.bbmodel", 0xb9f9ddf0cef5025e),
-        ("hunters/ceryth.bbmodel", 0x3a02eff66b76ac46),
-        ("hunters/dovelle.bbmodel", 0xdc6dbdd8697eb03a),
-        ("hunters/elise.bbmodel", 0x6d27dce43926a98d),
-        ("hunters/ferryn.bbmodel", 0x3a02eff66b76ac46),
-        ("hunters/glyra.bbmodel", 0x7e6415d208f3fe83),
-        ("hunters/haelith.bbmodel", 0xad28ec7ef1a03de4),
-        ("hunters/ilyra.bbmodel", 0x6d27dce43926a98d),
-        ("hunters/javelle.bbmodel", 0x9f484167bf38a844),
-        ("hunters/kathy.bbmodel", 0x53b4b83d8318c5d9),
-        ("hunters/loxelle.bbmodel", 0x96c19d41173fdd1c),
-        ("hunters/mavrine.bbmodel", 0x8f48a0ff9c358644),
-        ("hunters/nyxie.bbmodel", 0x8e969c28b9ed8b79),
-        ("hunters/opalie.bbmodel", 0x96c19d41173fdd1c),
-        ("hunters/porcelle.bbmodel", 0x6d2dfa23f29c510a),
-        ("hunters/quenelle.bbmodel", 0x0c68b87343b26581),
-        ("hunters/ravelle.bbmodel", 0x3a02eff66b76ac46),
-        ("hunters/solyth.bbmodel", 0xe29d9c1cc1dadcc5),
-        ("hunters/thessine.bbmodel", 0x71a1776845b2c4a6),
-        ("hunters/umbriel.bbmodel", 0xd93bf5123aa13729),
-        ("hunters/verrine.bbmodel", 0x0c68b87343b26581),
-        ("hunters/white_wolf_spider.bbmodel", 0x2078b4d61d9ed20b),
-        ("hunters/wynelle.bbmodel", 0xca98407fc9c7d00e),
-        ("hunters/xivvy.bbmodel", 0xaed63d3ca62d8cba),
-        ("hunters/ysolde.bbmodel", 0x3a02eff66b76ac46),
-        ("hunters/zellia.bbmodel", 0x3a02eff66b76ac46),
+        (("hunters/aki.bbmodel", 0xefb1163bbeb1d519)),
+        (("hunters/briselle.bbmodel", 0xcae6c973b4694b95)),
+        (("hunters/ceryth.bbmodel", 0xefb1163bbeb1d519)),
+        (("hunters/dovelle.bbmodel", 0xf81accf6b9cabb9c)),
+        (("hunters/elise.bbmodel", 0xd5b5ecd1cde876b8)),
+        (("hunters/ferryn.bbmodel", 0xefb1163bbeb1d519)),
+        (("hunters/glyra.bbmodel", 0x7ba0051c423dcedc)),
+        (("hunters/haelith.bbmodel", 0xe3b3d4498207feec)),
+        (("hunters/ilyra.bbmodel", 0xd5b5ecd1cde876b8)),
+        (("hunters/javelle.bbmodel", 0x168303e50197bc2a)),
+        (("hunters/kathy.bbmodel", 0x5965fd5adf0da5c8)),
+        (("hunters/loxelle.bbmodel", 0x6f33379905be38a2)),
+        (("hunters/mavrine.bbmodel", 0x5487ad3f4134dd25)),
+        (("hunters/nyxie.bbmodel", 0x9e51a9cf6c81b08f)),
+        (("hunters/opalie.bbmodel", 0x6f33379905be38a2)),
+        (("hunters/porcelle.bbmodel", 0x8d3e3979e4ba6465)),
+        (("hunters/quenelle.bbmodel", 0xcac658e0c04babc9)),
+        (("hunters/ravelle.bbmodel", 0xefb1163bbeb1d519)),
+        (("hunters/solyth.bbmodel", 0x559c71a52b00d147)),
+        (("hunters/thessine.bbmodel", 0xb843b341c5412441)),
+        (("hunters/umbriel.bbmodel", 0x6afb248092445560)),
+        (("hunters/verrine.bbmodel", 0xcac658e0c04babc9)),
+        (("hunters/white_wolf_spider.bbmodel", 0x8925666e14add7d4)),
+        (("hunters/wynelle.bbmodel", 0xa1ffc8f0ec7c9580)),
+        (("hunters/xivvy.bbmodel", 0xcad52b5942327f5e)),
+        (("hunters/ysolde.bbmodel", 0xefb1163bbeb1d519)),
+        (("hunters/zellia.bbmodel", 0xefb1163bbeb1d519)),
     ];
 
     /// One fold of the digests of every other embedded model that has a decodable texture (props, doors, the player
@@ -673,13 +678,50 @@ mod tests {
     /// (digest moved on 2026-11-07: the six room door models' back faces are UV-mapped across the wood region, not one
     /// flat strip of the atlas, so the back of a door reads as wood. Doors only; no other model changed.)
     /// (684 -> 683 on 2026-11-07: the black wolf spider was removed from the game, so its model left the set; digest recomputed.)
-    const GOLDEN_ALL: (usize, u64) = (683, 0xfb4e4da38ad385cc);
+    /// (digest moved on 2026-11-08: re-recorded with the deliberate 1e-4 quantisation, for cross-platform float stability.)
+    const GOLDEN_ALL: (usize, u64) = (683, 0xa7e3ae4e692a1758);
 
     /// The shape of a model read with the game's UV rule.
     fn shape_now(path: &str, j: &serde_json::Value) -> Option<Shape> {
         let img = texture_image(path, j)?;
         let (w, h) = uv_space(j, img.width() as f32, img.height() as f32);
         shape_with(j, (w, h))
+    }
+
+    /// Prints the golden table in the quantised digest. Run once after changing `digest`:
+    /// `cargo test --bin last_route print_golden_digests -- --ignored --nocapture`, then paste into GOLDEN and GOLDEN_ALL.
+    #[test]
+    #[ignore]
+    fn print_golden_digests() {
+        let models = all_models();
+        for (path, _) in GOLDEN {
+            let (_, j) = models.iter().find(|(p, _)| *p == path).unwrap();
+            println!("(\"{path}\", {:#018x}),", digest(&shape_now(path, j).unwrap()));
+        }
+        let (mut fold, mut n) = (0xcbf29ce484222325u64, 0);
+        for (path, j) in &models {
+            if is_void(path) {
+                continue;
+            }
+            if let Some(s) = shape_now(path, j) {
+                n += 1;
+                fold = (fold ^ digest(&s)).wrapping_mul(0x100000001b3);
+            }
+        }
+        println!("GOLDEN_ALL = ({n}, {fold:#018x})");
+    }
+
+    /// The digest ignores last-bit float noise (the cross-platform fix) but still sees a real move.
+    #[test]
+    fn digest_ignores_last_bit_noise_but_sees_real_moves() {
+        let models = all_models();
+        let (path, j) = models.iter().find(|(p, _)| *p == "hunters/aki.bbmodel").expect("aki embedded");
+        let a = shape_now(path, j).unwrap();
+        let mut b = shape_now(path, j).unwrap();
+        b.min.x = f32::from_bits(b.min.x.to_bits() ^ 1);
+        assert_eq!(digest(&a), digest(&b));
+        b.min.x += 0.01;
+        assert_ne!(digest(&a), digest(&b));
     }
 
     /// The 26 A to Z hunters, the spiders and every prop draw exactly as before the void fix: same corners, same UVs.

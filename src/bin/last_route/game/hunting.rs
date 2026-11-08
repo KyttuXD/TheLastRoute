@@ -402,6 +402,14 @@ impl Game {
                     let at = self.hunters[i].pos;
                     self.fac.toggle_door(cell, &[at]);
                 }
+                if act == crate::hunters::activities::Activity::Knock {
+                    // about 0.05 near the runner, fading with distance like a hunter step
+                    let d = pdist(self.hunters[i].pos, self.p.pos);
+                    let volume = (0.05 * (1.0 - d / 20.0)).max(0.0);
+                    if volume > 0.0 {
+                        crate::audio::sound::hunter_knock(0.0, volume);
+                    }
+                }
             }
             // Verrine's duct thumps and burst raise a noise the other hunters can hear
             let mut thump_at: Vec<(f32, f32)> = vec![];
@@ -1203,6 +1211,7 @@ use std::time::Duration;
     /// host last showed it, and runs them from there.
     #[test]
     fn a_guest_that_becomes_the_host_keeps_the_hunters_of_the_old_hosts_last_frame_and_simulates_them() {
+        crate::world::route::layout::godot_regions_for_this_test();
         let sounds = crate::audio::Sounds::default();
         let (mut host, content, catalog) = run();
         for _ in 0..240 {

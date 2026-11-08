@@ -28,7 +28,7 @@ const INFERNO_LEVEL: i32 = -3;
 
 /// Every region name the Godot generator can return, in a fixed order (the index is the
 /// value Facility::merge stores per cell).
-pub const NAMES: [&str; 14] = [
+pub const NAMES: [&str; 20] = [
     "maze",
     "mansion",
     "hotel",
@@ -43,6 +43,14 @@ pub const NAMES: [&str; 14] = [
     "mall",
     "sewer",
     "inferno",
+    // the map-concept regions (data/region_rooms), appended so the indices above never move; never drawn by Godot's
+    // draw, so BASE_CHOICES (a parity reference) does not list them
+    "ice",
+    "stalls",
+    "inferno0",
+    "tunnels",
+    "offices",
+    "utility",
 ];
 
 /// The level-0 choice list, duplicates kept: they are the weights (streamed_route_generator.gd:1232-1234).
@@ -97,8 +105,19 @@ fn pick(level: i32, choices: &[&'static str], rng: &mut Rng) -> &'static str {
     pool[rng.next_index(pool.len())]
 }
 
-/// The region of chunk (cx, cz) on `level` in the world with seed text `world`.
+/// The region of chunk (cx, cz) on `level` in the world with seed text `world`. Level 0 is read from the concept
+/// map (`concept_map`): the spawn chunk is the maze, every other chunk takes the region of the map under it, and a
+/// chunk of solid rock or tunnel counts as "maze". Every other level keeps Godot's draw (`godot_region_for`).
 pub fn region_for(world: &str, cx: i32, cz: i32, level: i32) -> &'static str {
+    if level == 0 {
+        return super::concept_map::region_of_chunk(world, cx, cz);
+    }
+    godot_region_for(world, cx, cz, level)
+}
+
+/// Godot's `region_for` (the seeded draw per region block), kept as the parity reference. Levels under 0 use it
+/// through `region_for`; level 0 uses it only for the Godot goldens (`layout::chunk_layout_godot`).
+pub fn godot_region_for(world: &str, cx: i32, cz: i32, level: i32) -> &'static str {
     // the sewer layers and the Inferno are whole levels: no draw
     if level == SEWER_LEVEL || level == LOWER_SEWER_LEVEL {
         return "sewer";
@@ -157,7 +176,7 @@ pub fn is_spawn_block(cx: i32, cz: i32, level: i32) -> bool {
     level == 0 && cx.div_euclid(REGION_SIZE_CHUNKS) == 0 && cz.div_euclid(REGION_SIZE_CHUNKS) == 0
 }
 
-/// The region of the spawn chunk (0, 0) on level 0, where the run starts.
+/// The region of the spawn chunk (0, 0) on level 0, where the run starts: always the maze (the concept map).
 pub fn spawn_region(world: &str) -> &'static str {
     region_for(world, 0, 0, 0)
 }
@@ -229,7 +248,7 @@ mod tests {
                     entry.2 += 1;
                     continue;
                 };
-                let rust = region_for(&g.world, x, z, level);
+                let rust = godot_region_for(&g.world, x, z, level);
                 if rust == godot {
                     entry.0 += 1;
                 } else {
@@ -248,13 +267,14 @@ mod tests {
         assert!(failures.is_empty(), "region mismatches:\n{}", failures.join("\n"));
     }
 
+    /// Godot's draw never gives a greenhouse on level 0; the concept map does (its green area), on level 0 only.
     #[test]
     fn greenhouse_is_never_drawn_on_level_zero() {
         for i in 0..200 {
             let world = format!("ROOM-TEST{i:03}-0000{i:04X}");
             for cx in -5..=5 {
                 for cz in -5..=5 {
-                    assert_ne!(region_for(&world, cx, cz, 0), "greenhouse");
+                    assert_ne!(godot_region_for(&world, cx, cz, 0), "greenhouse");
                 }
             }
         }
@@ -291,18 +311,45 @@ mod tests {
 
     #[test]
     fn spawn_block_is_maze_or_a_non_maze_region() {
-        let mut maze = 0;
+        // the concept map makes the spawn chunk the maze for every seed; Godot's draw still gives the old 60/40 mix
+        let mut godot_maze = 0;
         for i in 0..400 {
             let world = format!("ROOM-SPAWN{i:03}-0000{i:04X}");
-            let r = spawn_region(&world);
             assert!(is_spawn_block(0, 0, 0));
-            assert!(NAMES.contains(&r));
-            if r == "maze" {
-                maze += 1;
+            assert_eq!(spawn_region(&world), "maze");
+            let g = godot_region_for(&world, 0, 0, 0);
+            assert!(NAMES.contains(&g));
+            if g == "maze" {
+                godot_maze += 1;
             }
         }
         // SPAWN_MAZE_SHARE is 0.6; the maze also comes from the 40% branch sometimes
-        assert!(maze > 200, "maze share {maze}/400");
+        assert!(godot_maze > 200, "maze share {godot_maze}/400");
+    }
+
+    #[test]
+    fn level_zero_reads_the_concept_map_and_other_levels_keep_the_draw() {
+        use super::super::concept_map::{chunk_class, ChunkClass};
+        let world = "31337";
+        let mut seen = std::collections::BTreeSet::new();
+        for cx in -30..30 {
+            for cz in -30..30 {
+                let r = region_for(world, cx, cz, 0);
+                assert!(NAMES.contains(&r));
+                match chunk_class(world, cx, cz) {
+                    ChunkClass::Region(name) => assert_eq!(r, name),
+                    ChunkClass::Hollow => assert_eq!(r, "maze"),
+                }
+                seen.insert(r);
+                assert_eq!(region_for(world, cx, cz, -1), "sewer");
+                assert_eq!(region_for(world, cx, cz, -3), "inferno");
+            }
+        }
+        assert!(seen.len() >= 6, "level 0 shows only {seen:?}");
+        // below level 0 the answer is Godot's
+        assert_eq!(region_for(world, 5, 6, -4), godot_region_for(world, 5, 6, -4));
+        // same seed, same answer
+        assert_eq!(region_for(world, 11, -7, 0), region_for(world, 11, -7, 0));
     }
 
     #[test]

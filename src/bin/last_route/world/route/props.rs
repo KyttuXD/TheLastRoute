@@ -684,7 +684,7 @@ mod tests {
                 }
                 let entry = by_region.entry(region.clone()).or_default();
                 entry.0 += 1;
-                let Some(layout) = chunk_layout(&world, c) else {
+                let Some(layout) = crate::world::route::layout::chunk_layout_godot(&world, c) else {
                     no_layout += 1;
                     continue;
                 };

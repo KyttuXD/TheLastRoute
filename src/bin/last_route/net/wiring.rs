@@ -41,7 +41,7 @@ pub fn transition_rule(prev: &str, next: &str) -> Option<&'static str> {
 pub fn bot_views(npcs: &[Npc], level: i32) -> Vec<BotView<'_>> {
     npcs.iter()
         .filter(|n| n.level == level)
-        .map(|n| BotView { name: &n.name, at: n.at, facing: n.facing, stride: n.stride, walking: n.walking, y: 0.0, climbing: false, falling: false })
+        .map(|n| BotView { name: &n.name, at: n.at, facing: n.facing, stride: n.stride, walking: n.walking, y: 0.0, climbing: false, falling: false, crouch: n.life.crouching, emote: n.life.emote.as_deref().map(|e| (e, n.life.emote_seq)) })
         .collect()
 }
 

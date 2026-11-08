@@ -1,0 +1,69 @@
+{
+	"schema": "lr.region_rooms/1",
+	"region": "maze",
+	"colour": "FFFFFF",
+	"note": "the normal maze and the spawn",
+	"rooms": [
+		{"role": "restaurant_dining", "weight": 1, "template": "code", "size": {"min": [11, 8], "preferred": [21, 21], "max": [21, 21]}, "tables": [2, 12]},
+		{"role": "arcade_room", "weight": 1, "template": "code", "size": {"min": [9, 8], "preferred": [21, 9], "max": [21, 21]}},
+		{"role": "public_restroom", "weight": 1, "template": "code", "size": {"min": [9, 8], "preferred": [11, 9], "max": [13, 13]}},
+		{"role": "storage", "weight": 1, "template": "code", "size": {"min": [9, 8], "preferred": [11, 9], "max": [21, 21]}},
+		{
+			"role": "vending_nook",
+			"weight": 1,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [9, 11], "max": [11, 11]},
+			"recipe": [
+				{"type": "vendingMachine", "side": ["-half+1", "half-1", 2], "depth": 0, "wall": true},
+				{"type": "mallBench", "side": 0, "depth": "mid"},
+				{"type": "floorLamp", "side": "half-1", "depth": 1, "facing": "center", "mirror": true},
+				{"type": "ceilingLight", "side": 0, "depth": "mid", "loose": true}
+			]
+		},
+		{
+			"role": "server_closet",
+			"weight": 1,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [9, 9], "max": [11, 11]},
+			"recipe": [
+				{"type": "serverRack", "side": ["-half+1", "half-1", 2], "depth": 0, "wall": true},
+				{"type": "serverRack", "side": ["-half+1", "half-1", 2], "depth": "mid", "facing": "back"},
+				{"type": "hazardSign", "side": 0, "depth": 0, "mount": true},
+				{"type": "ceilingLight", "side": 0, "depth": "mid-1", "loose": true}
+			]
+		},
+		{
+			"role": "lounge_alcove",
+			"weight": 1,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [11, 9], "max": [13, 11]},
+			"recipe": [
+				{"type": "loungeCouchWide", "side": 0, "depth": 0, "wall": true},
+				{"type": "normalCoffeeTable", "side": 0, "depth": 3},
+				{"type": "woodenChair", "side": -3, "depth": 3, "facing": "right"},
+				{"type": "woodenChair", "side": 3, "depth": 3, "facing": "left"},
+				{"type": "normalBookcase", "side": "half-1", "depth": 0, "wall": true, "mirror": true},
+				{"type": "floorLamp", "side": "half-1", "depth": 1, "facing": "center", "mirror": true},
+				{"type": "ceilingLight", "side": 0, "depth": "mid", "loose": true}
+			]
+		}
+	],
+	"props": [
+		{"type": "arcadeCabinet", "size": [0.75, 1.85, 0.7], "solid": true, "weight": 1},
+		{"type": "arcadeCabinetCyanMagenta", "size": [0.75, 1.85, 0.7], "solid": true, "weight": 1},
+		{"type": "serverRack", "size": [0.8, 2, 0.55], "solid": true, "weight": 1},
+		{"type": "supplyCrates", "size": [1.4, 1, 0.8], "solid": true, "weight": 1},
+		{"type": "vendingMachine", "size": [0.85, 1.9, 0.6], "solid": true, "weight": 1},
+		{"type": "woodenChair", "size": [0.65, 1, 0.65], "solid": true, "weight": 1},
+		{"type": "loungeCouchWide", "size": [2.6, 1, 0.95], "solid": true, "weight": 1},
+		{"type": "normalPictureFrameEmpty", "size": [0.7, 0.9, 0.12], "solid": false, "weight": 1},
+		{"type": "mallBench", "size": [2.67, 0.84, 0.98], "solid": true, "weight": 1},
+		{"type": "normalCoffeeTable", "size": [1.92, 0.75, 1.17], "solid": true, "weight": 1},
+		{"type": "floorLamp", "size": [0.6, 2.62, 0.6], "solid": true, "weight": 1},
+		{"type": "shopShelf", "size": [1.92, 2.81, 0.79], "solid": true, "weight": 1},
+		{"type": "filingCabinet", "size": [0.98, 1.88, 1.07], "solid": true, "weight": 1},
+		{"type": "hazardSign", "size": [0.6, 0.62, 0.05], "solid": false, "weight": 1},
+		{"type": "ceilingLight", "size": [0.75, 0.3, 0.75], "solid": false, "weight": 1},
+		{"type": "normalBookcase", "size": [1.54, 2.72, 0.7], "solid": true, "weight": 1}
+	]
+}

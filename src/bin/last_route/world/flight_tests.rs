@@ -1048,3 +1048,64 @@ fn the_slope_limit_is_checked_on_each_shapes_walking_line() {
     assert!(inner > rules.max_riser, "the post end is steeper than the limit ({inner}), by design");
     assert!(max_riser_of(rules, FlightShape::Spiral) < rules.max_riser);
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Railing fences on every hard-fall edge
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// A body walking off the open side of a flight, over the landing edge of the well, is stopped, and a railing stands on
+/// every such stretch, for each shape, run and spin, on many seeds' choices of flight.
+#[test]
+fn every_hard_fall_edge_of_every_stair_has_a_railing_and_a_body_is_stopped_there() {
+    let rules = flights();
+    let tol = crate::world::facility::FLIGHT_FIT_TOL;
+    let mut flights_seen = 0;
+    let mut checked = 0;
+    for seed in 0u64..60 {
+        for level in [0, -1, -2] {
+            let cell = Cell::new(20 + (seed % 7) as i32, 20 + (seed % 5) as i32);
+            let run = RUNS[(seed % 4) as usize];
+            let shape = shape_for(seed, level, cell);
+            let f = Flight::new(FlightKind::Stairs, shape, level, cell, run).with_clockwise(spiral_clockwise_for(seed, level, cell));
+            flights_seen += 1;
+            let fp = well_footprint_with(rules, &f);
+            let floor: Vec<Cell> = fp.upper_clear.iter().chain(landing_row_with(rules, &f).iter()).copied().collect();
+            let guards = landing_guards_with(rules, &f);
+            for (p, q, n) in rim_points(rules, &f) {
+                // an edge towards a cell that is no open floor is a wall's, not a fall
+                if !floor.contains(&n) {
+                    continue;
+                }
+                let walks = |x: f32, z: f32| flight_walk_y_with(rules, &f, x, z, false).is_some_and(|y| (y - f.upper_y()).abs() <= tol);
+                let sliver = !walks(q.0, q.1) && [(0.1, 0.0), (-0.1, 0.0), (0.0, 0.1), (0.0, -0.1)].iter().any(|d| walks(q.0 + d.0, q.1 + d.1));
+                if walks(q.0, q.1) || sliver {
+                    continue;
+                }
+                checked += 1;
+                assert!(
+                    guards.iter().any(|g| g.outside == n && on_guard(g, p, 0.12)),
+                    "{shape:?} {run:?} seed {seed}: a hard-fall edge at {p:?} has no railing"
+                );
+            }
+        }
+    }
+    assert!(flights_seen >= 180 && checked > 100, "{checked} fall-edge samples checked on {flights_seen} flights");
+}
+
+/// A straight flight of any width keeps its head open: no railing across a rim cell whose surface is the upper floor.
+#[test]
+fn a_wide_straight_flight_has_no_railing_across_its_head() {
+    let rules = flights();
+    for run in RUNS {
+        let f = stairs(FlightShape::Straight, run, false);
+        let guards = landing_guards_with(rules, &f);
+        assert!(!guards.is_empty());
+        for g in &guards {
+            let mid = ((g.seg.a.0 + g.seg.b.0) * 0.5, (g.seg.a.1 + g.seg.b.1) * 0.5);
+            let (u, _) = to_local(&f, mid.0, mid.1);
+            // a head edge (u = 0) is open for every lane of the flight
+            assert!(u.abs() > 1e-3 || to_local(&f, g.seg.a.0, g.seg.a.1).1 < 0.0, "{run:?}: a railing across the head at {mid:?}");
+            assert!((g.seg.b.0 - g.seg.a.0).hypot(g.seg.b.1 - g.seg.a.1) >= STRAIGHT_MIN_GUARD - 1e-4);
+        }
+    }
+}

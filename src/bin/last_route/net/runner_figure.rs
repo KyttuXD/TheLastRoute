@@ -528,6 +528,7 @@ fn draw_occupants(g: &Game, a: &Assets, remotes: &[RemoteView], active_y: f32) {
             cell: crate::world::facility::Cell::new(cells[ci].0, cells[ci].1),
             facing,
             room: None,
+            kind: String::new(),
         };
         let centre = g.fac.locker_center(&locker);
         locker_occupant::draw(data, style, who.len(), capacity as usize, centre, facing, &mut |slot, p| {
@@ -639,6 +640,9 @@ pub struct BotView<'a> {
     pub y: f32,
     pub climbing: bool,
     pub falling: bool,
+    /// Crouching, and the emote playing (id, play counter); None for no emote.
+    pub crouch: bool,
+    pub emote: Option<(&'a str, u32)>,
 }
 
 /// Draws NPC teammates with the runner mannequin and the same driver, each wearing its skin (see [`bot_skin`]). A bot's
@@ -662,9 +666,10 @@ pub fn draw_bots(a: &Assets, bots: &[BotView]) {
             fig.last_at = Some(b.at);
             speed
         });
-        let state = spec.map(|s| bot_state(&s.bots, speed, b.climbing, b.falling)).unwrap_or_default();
+        let mut state = spec.map(|s| bot_state(&s.bots, speed, b.climbing, b.falling)).unwrap_or_default();
+        state.crouching = b.crouch;
         let tex = pick(&bot_skin(b.name, skins), &|id| a.skin_texture(id).is_some());
-        draw_driven(a, key, vec3(b.at.0, b.y, b.at.1), b.facing, 0.0, &tex, false, &state, None, None, dt, epoch);
+        draw_driven(a, key, vec3(b.at.0, b.y, b.at.1), b.facing, 0.0, &tex, false, &state, None, b.emote, dt, epoch);
     }
     prune(epoch, true);
 }

@@ -1,0 +1,73 @@
+{
+	"schema": "lr.region_rooms/1",
+	"region": "stalls",
+	"colour": "3F7F62",
+	"note": "stalls: many small restrooms",
+	"rooms": [
+		{"role": "public_restroom", "weight": 2, "template": "code", "size": {"min": [7, 7], "preferred": [9, 9], "max": [9, 9]}},
+		{
+			"role": "stall_row",
+			"weight": 4,
+			"template": "data",
+			"size": {"min": [7, 7], "preferred": [7, 7], "max": [9, 9]},
+			"recipe": [
+				{"type": "bathroomStall", "side": ["-half+1", -1, 2], "depth": 0, "wall": true, "mirror": true},
+				{"type": "publicSinkBank", "side": [1, "half", 2], "depth": 0, "wall": true, "mirror": true},
+				{"type": "bathroomMirror", "side": [1, "half", 2], "depth": 0, "mount": true, "mirror": true},
+				{"type": "publicHandDryer", "side": "half", "depth": 0, "mount": true, "mirror": true},
+				{"type": "ceilingLight", "side": 0, "depth": "mid", "loose": true}
+			]
+		},
+		{
+			"role": "washroom",
+			"weight": 3,
+			"template": "data",
+			"size": {"min": [7, 7], "preferred": [7, 7], "max": [9, 9]},
+			"recipe": [
+				{"type": "publicSinkBank", "side": ["-half", "half", 2], "depth": 0, "wall": true},
+				{"type": "bathroomMirror", "side": ["-half", "half", 2], "depth": 0, "mount": true},
+				{"type": "publicSoapDispenser", "side": 0, "depth": 0, "mount": true},
+				{"type": "ceilingLight", "side": 0, "depth": "mid", "loose": true}
+			]
+		},
+		{
+			"role": "shower_room",
+			"weight": 2,
+			"template": "data",
+			"size": {"min": [7, 7], "preferred": [7, 7], "max": [9, 9]},
+			"recipe": [
+				{"type": "publicMensShowerStall", "side": ["-half+1", "half-1", 2], "depth": 0, "wall": true},
+				{"type": "publicShowerBench", "side": 0, "depth": "mid"},
+				{"type": "ceilingLight", "side": 0, "depth": "mid", "loose": true}
+			]
+		},
+		{
+			"role": "janitor_closet",
+			"weight": 1,
+			"template": "data",
+			"size": {"min": [7, 7], "preferred": [7, 7], "max": [9, 9]},
+			"recipe": [
+				{"type": "shopShelf", "side": ["-half", "half", 2], "depth": 0, "wall": true},
+				{"type": "filingCabinet", "side": "half-1", "depth": "mid", "facing": "left", "mirror": true},
+				{"type": "storageBarrel", "side": "half-1", "depth": 2, "facing": "center", "mirror": true},
+				{"type": "supplyCrates", "side": 0, "depth": "mid"},
+				{"type": "ceilingLight", "side": 0, "depth": "mid", "loose": true}
+			]
+		}
+	],
+	"props": [
+		{"type": "publicRestroomToilet", "size": [0.6, 1.22, 1.07], "solid": true, "weight": 1},
+		{"type": "publicSoapDispenser", "size": [0.28, 0.42, 0.18], "solid": false, "weight": 1},
+		{"type": "ceilingLight", "size": [0.75, 0.3, 0.75], "solid": false, "weight": 1},
+		{"type": "bathroomStall", "size": [1.17, 2.91, 0.98], "solid": true, "weight": 1},
+		{"type": "publicSinkBank", "size": [1.67, 1.31, 0.54], "solid": true, "weight": 1},
+		{"type": "bathroomMirror", "size": [0.75, 1.25, 0.16], "solid": false, "weight": 1},
+		{"type": "publicHandDryer", "size": [0.45, 0.55, 0.18], "solid": false, "weight": 1},
+		{"type": "publicMensShowerStall", "size": [1.35, 3.28, 1.45], "solid": true, "weight": 1},
+		{"type": "publicShowerBench", "size": [1.92, 0.56, 0.6], "solid": true, "weight": 1},
+		{"type": "shopShelf", "size": [1.92, 2.81, 0.79], "solid": true, "weight": 1},
+		{"type": "filingCabinet", "size": [0.98, 1.88, 1.07], "solid": true, "weight": 1},
+		{"type": "storageBarrel", "size": [0.67, 0.94, 0.67], "solid": true, "weight": 1},
+		{"type": "supplyCrates", "size": [0.79, 0.94, 0.67], "solid": true, "weight": 1}
+	]
+}

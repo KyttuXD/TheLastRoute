@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::shared::clock::{SystemTime, UNIX_EPOCH};
 
 pub mod clearance;
+pub mod concept_map;
 pub mod danger;
 pub mod fixtures;
 pub mod furnished;

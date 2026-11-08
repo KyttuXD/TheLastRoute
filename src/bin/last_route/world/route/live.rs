@@ -173,6 +173,7 @@ pub fn from_layout(seed: &str, k: ChunkKey, lay: &ChunkLayout, cat: &Catalog) ->
             cell: Cell::new(x.cell.x, x.cell.y),
             facing: (x.open_direction.x, x.open_direction.y),
             room: room_index(&lay.rooms, x.cell),
+            kind: String::new(),
         })
         .collect();
 
@@ -183,6 +184,7 @@ pub fn from_layout(seed: &str, k: ChunkKey, lay: &ChunkLayout, cat: &Catalog) ->
             .map(|x| Cell::new(x.cell.x, x.cell.y))
             .collect(),
         coins,
+        extra_hiding: vec![],
     };
 
     // Each sewer ladder keeps its hatch cell a layout hallway cell (the hole) and gets one clear step cell beside it
@@ -562,6 +564,7 @@ mod tests {
 
     #[test]
     fn walls_rooms_and_pickups_follow_the_layout() {
+        crate::world::route::layout::godot_regions_for_this_test();
         for world in WORLDS {
             for (cx, cz) in CHUNKS {
                 let k = ChunkKey { cx, cy: cz, level: 0 };

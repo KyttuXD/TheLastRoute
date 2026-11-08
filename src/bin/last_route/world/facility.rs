@@ -130,6 +130,8 @@ pub struct Hiding {
     /// From the backing wall into the room: the locker's front.
     pub facing: (i32, i32),
     pub room: Option<usize>,
+    /// Hiding kind from data/hiding.json (wardrobe, stall ...); empty means a locker.
+    pub kind: String,
 }
 
 #[derive(Clone, Debug)]
@@ -2560,6 +2562,7 @@ impl Facility {
                     cell: c,
                     facing: (-wall.0, -wall.1),
                     room: self.room_at(c.x as f64, c.y as f64),
+                    kind: String::new(),
                 }
             })
             .collect();
