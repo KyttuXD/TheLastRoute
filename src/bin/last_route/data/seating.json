@@ -1,0 +1,28 @@
+{
+  "schema": "lr.seating/1",
+  "_note": "Seat anchors per furniture kind. offset = metres from the furniture centre along its facing (positive = forward); height = feet y above the floor while seated; exit = metres in front of the furniture the body is put when it stands up if the old spot is blocked; reach = how close the player must be to use it. pose is sit or lie. Riding (rolling chairs, carts) is not enabled: ride_enabled stays false until it is designed.",
+  "ride_enabled": false,
+  "default_reach": 1.6,
+  "kinds": {
+    "chair":   { "pose": "sit", "offset": 0.0, "height": 0.45, "exit": 0.9, "label": "SIT" },
+    "stool":   { "pose": "sit", "offset": 0.0, "height": 0.55, "exit": 0.8, "label": "SIT" },
+    "bench":   { "pose": "sit", "offset": 0.0, "height": 0.45, "exit": 0.9, "label": "SIT" },
+    "sofa":    { "pose": "sit", "offset": 0.05, "height": 0.42, "exit": 1.0, "label": "SIT" },
+    "couch":   { "pose": "sit", "offset": 0.05, "height": 0.42, "exit": 1.0, "label": "SIT" },
+    "bed":     { "pose": "lie", "offset": 0.0, "height": 0.6, "exit": 1.1, "label": "LIE DOWN" },
+    "bunk":    { "pose": "lie", "offset": 0.0, "height": 0.55, "exit": 1.1, "label": "LIE DOWN" },
+    "gurney":  { "pose": "lie", "offset": 0.0, "height": 0.8, "exit": 1.1, "label": "LIE DOWN" }
+  },
+  "emote_extras": {
+    "doorway_pose": { "id": "doorway", "name": "DOORWAY", "duration": 6.0, "loop": true, "period": 6.0, "keys": [
+      { "t": 0.0, "bones": { "R-Arm": [0, 0, 70], "L-Arm": [0, 0, -70], "Head": [0, 0, 4] } },
+      { "t": 3.0, "bones": { "R-Arm": [0, 0, 74], "L-Arm": [0, 0, -74], "Head": [0, 0, -4] } },
+      { "t": 6.0, "bones": { "R-Arm": [0, 0, 70], "L-Arm": [0, 0, -70], "Head": [0, 0, 4] } }
+    ] },
+    "doorway_idle_seconds": 1.5,
+    "doorway_half_width": 0.7,
+    "doorway_depth": 0.4,
+    "blocky_face": { "enabled": true, "swap_while_emoting": true, "texture": "blocky" },
+    "required_emotes": ["wave", "point", "cheer", "no", "yes", "shrug", "bow", "dance"]
+  }
+}

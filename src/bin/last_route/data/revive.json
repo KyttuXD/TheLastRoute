@@ -5,5 +5,8 @@
 	"hold_seconds": 3.0,
 	"timeout_seconds": 45.0,
 	"hunter_stun_seconds": 2.0,
-	"npc_catch_radius": 1.0
+	"npc_catch_radius": 1.0,
+	"kit_hold_scale": 0.35,
+	"escape_loop_seconds": 0.6,
+	"escape_knockback_seconds": 0.4
 }

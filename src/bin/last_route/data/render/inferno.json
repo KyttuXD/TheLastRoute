@@ -56,6 +56,19 @@
       "glow_strength": 0.6
     }
   },
+  "cages": {
+    "_about": "Hanging iron cages of the cage-pit district (render/inferno_deco.rs place_cages; Godot CAGE_* in inferno_caverns.gd, metres times 1.25). bottoms: [height of the cage bottom above the floor, weight] - high, low enough to walk under, and in the way. lava_clearance: cells around a cage with no lava. Interactions with the cages are not in yet.",
+    "tiers": ["ledge", "slope", "basin"],
+    "chance": 0.03,
+    "min_spacing": 3,
+    "max_per_chunk": 12,
+    "lava_clearance": 1,
+    "height_m": 1.25,
+    "bottoms": [[3.1, 0.4], [2.6, 0.3], [0.94, 0.3]],
+    "sway_chance": 0.5,
+    "open_chance": 0.35,
+    "color": [0.18, 0.16, 0.15]
+  },
   "scene": {
     "glow_cull_m": 36.0,
     "ember_cull_m": 24.0,

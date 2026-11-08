@@ -50,6 +50,11 @@ impl CloudSaves {
         CloudSaves { save_file: save_file.to_path_buf(), cloud_path: api::cloud_path(world_revision) }
     }
 
+    /// A named account slot (`progress`, `dossier`, ...) through the same owed-marker / newest-wins flow (TODO 851, 853).
+    pub fn for_slot(save_file: &Path, slot: &str) -> CloudSaves {
+        CloudSaves { save_file: save_file.to_path_buf(), cloud_path: api::slot_path(slot) }
+    }
+
     fn marker(&self) -> PathBuf {
         let mut name = self.save_file.as_os_str().to_owned();
         name.push(".unsynced");
@@ -177,5 +182,53 @@ mod tests {
         saves.mark(Owed::None);
         assert_eq!(saves.pending(), Owed::None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Which copy a load keeps (TODO 851, 853: local-first merge, the newer copy wins).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Merge {
+    KeepLocal,
+    UseCloud,
+}
+
+/// Local-first: the cloud copy replaces the local one only when it is strictly newer (`saved_at`); a tie, a missing cloud
+/// copy or an empty cloud record keeps the local one. With no local copy the cloud one is used.
+pub fn merge_newer(local: Option<&Json>, cloud: Option<&Json>) -> Merge {
+    match (local, cloud) {
+        (_, None) => Merge::KeepLocal,
+        (None, Some(_)) => Merge::UseCloud,
+        (Some(l), Some(c)) => {
+            if saved_at(c) > saved_at(l) {
+                Merge::UseCloud
+            } else {
+                Merge::KeepLocal
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    fn rec(t: i64) -> Json {
+        serde_json::json!({ "saved_at": t }).as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn merge_prefers_the_newer_copy_and_local_on_a_tie() {
+        assert_eq!(merge_newer(Some(&rec(5)), Some(&rec(9))), Merge::UseCloud);
+        assert_eq!(merge_newer(Some(&rec(9)), Some(&rec(5))), Merge::KeepLocal);
+        assert_eq!(merge_newer(Some(&rec(5)), Some(&rec(5))), Merge::KeepLocal);
+        assert_eq!(merge_newer(None, Some(&rec(1))), Merge::UseCloud);
+        assert_eq!(merge_newer(Some(&rec(1)), None), Merge::KeepLocal);
+        assert_eq!(merge_newer(None, None), Merge::KeepLocal);
+    }
+
+    #[test]
+    fn slot_syncs_use_the_v1_route() {
+        let s = CloudSaves::for_slot(Path::new("progress.json"), "progress");
+        assert_eq!(s.cloud_path, "/api/v1/saves/last-route-rust/progress");
     }
 }

@@ -12,6 +12,7 @@ use crate::app::assets::Assets;
 use crate::app::settings::Settings;
 use crate::content::Content;
 use crate::game::Game;
+use crate::net::chat::Speaker;
 use crate::net::hosted::{self, OwnerAction};
 use crate::net::world_sync::{skin_colour, RosterEntry, RunnerState, QUIET_DISCONNECT};
 use macroquad::prelude::*;
@@ -99,6 +100,100 @@ const ITEM_DOSSIER: usize = 1;
 const ITEM_SKIN: usize = 2;
 const ITEM_SETTINGS: usize = 3;
 const ITEM_ABANDON: usize = 4;
+
+/// How the last save went, for the pause menu's status line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SaveStatus {
+    /// No save has been tried this session.
+    Unknown,
+    Saving,
+    /// Saved this many seconds ago.
+    Saved(f32),
+    Failed,
+}
+
+/// What the pause menu shows beyond the game: the last speakers and the save status. The app sets it each frame with
+/// [`set_info`] and applies the MUTE clicks [`take_mute_clicks`] returns (`ChatFeed::toggle_mute`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PauseInfo {
+    pub speakers: Vec<Speaker>,
+    pub save: SaveStatus,
+}
+
+impl Default for PauseInfo {
+    fn default() -> Self {
+        PauseInfo { speakers: Vec::new(), save: SaveStatus::Unknown }
+    }
+}
+
+thread_local! {
+    static INFO: std::cell::RefCell<PauseInfo> = std::cell::RefCell::new(PauseInfo::default());
+    static MUTE_CLICKS: std::cell::RefCell<Vec<i64>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Replaces what the pause menu shows beyond the game.
+pub fn set_info(info: PauseInfo) {
+    INFO.with(|i| *i.borrow_mut() = info);
+}
+
+/// The speakers whose MUTE button was clicked since the last call.
+pub fn take_mute_clicks() -> Vec<i64> {
+    MUTE_CLICKS.with(|c| std::mem::take(&mut *c.borrow_mut()))
+}
+
+/// The save status line, upper case.
+pub fn save_status_text(save: &SaveStatus) -> String {
+    match save {
+        SaveStatus::Unknown => "NOT SAVED YET".into(),
+        SaveStatus::Saving => "SAVING...".into(),
+        SaveStatus::Failed => "SAVE FAILED".into(),
+        SaveStatus::Saved(ago) if !ago.is_finite() || *ago < 5.0 => "SAVED JUST NOW".into(),
+        SaveStatus::Saved(ago) if *ago < 60.0 => format!("SAVED {}S AGO", ago.round() as i64),
+        SaveStatus::Saved(ago) if *ago < 3600.0 => format!("SAVED {}M AGO", (ago / 60.0).floor() as i64),
+        SaveStatus::Saved(ago) => format!("SAVED {}H AGO", (ago / 3600.0).floor() as i64),
+    }
+}
+
+/// The label of a speaker's button: MUTE, or UNMUTE once muted.
+pub fn mute_label(speaker: &Speaker) -> &'static str {
+    if speaker.muted {
+        "UNMUTE"
+    } else {
+        "MUTE"
+    }
+}
+
+const SAID_ROW_H: f32 = 12.0;
+const SAID_HEAD_H: f32 = 10.0;
+
+/// The PLAYERS page split into the player list and the SAID RECENTLY strip under it (none when nobody spoke): the strip is
+/// a heading and a row per speaker, taken from the bottom of `page`, and never more than half of it.
+pub fn split_players_page(page: Rect, speakers: usize) -> (Rect, Option<Rect>) {
+    if speakers == 0 {
+        return (page, None);
+    }
+    let want = SAID_HEAD_H + SAID_ROW_H * speakers as f32;
+    let h = want.min(page.h * 0.5);
+    (Rect::new(page.x, page.y, page.w, page.h - h), Some(Rect::new(page.x, page.y + page.h - h, page.w, h)))
+}
+
+/// The SAID RECENTLY strip: a heading, then each speaker's name with a MUTE button at the right; a muted name is dimmed.
+fn draw_said_recently(a: &Assets, strip: Rect, speakers: &[Speaker]) {
+    let p = pal();
+    label(a, F::Body, "SAID RECENTLY", strip.x, strip.y, 6.5, p.amber);
+    let rows = (((strip.h - SAID_HEAD_H) / SAID_ROW_H).floor().max(0.0)) as usize;
+    for (i, sp) in speakers.iter().take(rows).enumerate() {
+        let top = strip.y + SAID_HEAD_H + SAID_ROW_H * i as f32;
+        let name = if sp.name.is_empty() { format!("RUNNER {}", sp.peer_id) } else { sp.name.to_uppercase() };
+        let ink = if sp.muted { alpha(p.ink, 0.45) } else { p.ink };
+        label(a, F::Body, &name, strip.x, top + 1.0, 7.0, ink);
+        let w = 52.0;
+        let r = Rect::new(strip.x + strip.w - w, top, w, SAID_ROW_H - 1.0);
+        if button(a, r, mute_label(sp), 6.5, Kind::Secondary, plain()) {
+            MUTE_CLICKS.with(|c| c.borrow_mut().push(sp.peer_id));
+        }
+    }
+}
 
 pub struct Pause {
     pub open: bool,
@@ -354,6 +449,8 @@ pub fn draw_pause(
                 .collect();
             let heights: Vec<f32> = sizes.iter().map(|s| s.y).collect();
             let tops = centred_column(view_r.y, view_r.h, &heights, 8.0);
+            let save = INFO.with(|i| i.borrow().save);
+            label_c(a, F::Body, &save_status_text(&save), cx, view_r.y + view_r.h - lh(F::Body, 6.5), 6.5, alpha(p.ink, 0.7));
             let enter = nav(&mut pz.focus, MAIN_ITEMS.len(), true);
             for (i, (t, _, _, k)) in items.iter().enumerate() {
                 let r = Rect::new(cx - sizes[i].x * 0.5, tops[i], sizes[i].x, sizes[i].y);
@@ -402,8 +499,13 @@ pub fn draw_pause(
         }
         _ => {
             let rows = player_rows(g, username, local_host, roster, owner);
-            if let Some(peer) = menus::player_list(a, view_r, &rows, true) {
+            let info = INFO.with(|i| i.borrow().clone());
+            let (list_r, strip) = split_players_page(view_r, info.speakers.len());
+            if let Some(peer) = menus::player_list(a, list_r, &rows, true) {
                 out = Out::Owner(OwnerAction::Kick(peer));
+            }
+            if let Some(strip) = strip {
+                draw_said_recently(a, strip, &info.speakers);
             }
         }
     }
@@ -820,5 +922,37 @@ mod tests {
         // block = 20 + 10 + 20 = 50, so it starts at 10 + 25
         assert!((tops[0] - 35.0).abs() < EPS);
         assert!((tops[1] - 65.0).abs() < EPS);
+    }
+
+    #[test]
+    fn the_save_status_reads_in_upper_case_and_steps_up_its_unit() {
+        assert_eq!(save_status_text(&SaveStatus::Unknown), "NOT SAVED YET");
+        assert_eq!(save_status_text(&SaveStatus::Saving), "SAVING...");
+        assert_eq!(save_status_text(&SaveStatus::Failed), "SAVE FAILED");
+        assert_eq!(save_status_text(&SaveStatus::Saved(2.0)), "SAVED JUST NOW");
+        assert_eq!(save_status_text(&SaveStatus::Saved(12.0)), "SAVED 12S AGO");
+        assert_eq!(save_status_text(&SaveStatus::Saved(180.0)), "SAVED 3M AGO");
+        assert_eq!(save_status_text(&SaveStatus::Saved(7300.0)), "SAVED 2H AGO");
+    }
+
+    #[test]
+    fn the_players_page_gives_the_speakers_a_strip_no_bigger_than_half() {
+        let page = Rect::new(0.0, 0.0, 300.0, 100.0);
+        assert_eq!(split_players_page(page, 0), (page, None));
+        let (list, strip) = split_players_page(page, 2);
+        let strip = strip.expect("two speakers get a strip");
+        assert!((strip.h - (SAID_HEAD_H + SAID_ROW_H * 2.0)).abs() < 1e-4);
+        assert!((list.h + strip.h - page.h).abs() < 1e-4 && (strip.y - list.h).abs() < 1e-4);
+        let (list, strip) = split_players_page(page, 40);
+        assert_eq!((list.h, strip.expect("a strip").h), (50.0, 50.0));
+    }
+
+    #[test]
+    fn mute_clicks_are_handed_over_once_and_the_label_follows_the_state() {
+        let sp = |muted| Speaker { peer_id: 4, name: "ANN".into(), muted };
+        assert_eq!((mute_label(&sp(false)), mute_label(&sp(true))), ("MUTE", "UNMUTE"));
+        MUTE_CLICKS.with(|c| c.borrow_mut().push(4));
+        assert_eq!(take_mute_clicks(), vec![4]);
+        assert!(take_mute_clicks().is_empty());
     }
 }

@@ -1,0 +1,33 @@
+{
+  "schema": "lr.hunter_idle_life/1",
+  "_note": "Idle life for wandering hunters (hunters/idle_life.rs): per-personality activity weights (the names match personalities in activities.json), fidget / pace / corner peek shapes, the glances in an Idle pause, the head turn before a heard noise is investigated, and how junction goals are found. All tunable.",
+  "params": {
+    "fidget_degrees": 28.0,
+    "fidgets": 2.5,
+    "pace_length": [1.4, 2.6],
+    "pace_min_length": 0.7,
+    "pace_speed": 0.9,
+    "corner_peek_reach": 1.0,
+    "glance_every": [1.4, 3.2],
+    "glance_degrees": 70.0,
+    "head_turn_chance": 0.85,
+    "head_turn_time": [0.45, 1.0],
+    "junction_radius": 22.0,
+    "junction_min_open": 3,
+    "junction_cap": 12
+  },
+  "activity_weights": {
+    "curious": { "sniff": 1.4, "corner_peek": 1.3, "fidget": 1.1 },
+    "steady": {},
+    "prowler": { "pace": 1.4, "listen": 1.3, "fidget": 0.7 },
+    "stalker": { "corner_peek": 2.2, "listen": 1.6, "sniff": 1.4, "pace": 0.3, "fidget": 0.3 },
+    "lingerer": { "fidget": 2.2, "pace": 1.8, "look_around": 1.3, "check_room": 1.3, "corner_peek": 0.6 }
+  },
+  "head_turn_chance_scale": {
+    "curious": 1.0,
+    "steady": 1.0,
+    "prowler": 0.9,
+    "stalker": 1.0,
+    "lingerer": 1.0
+  }
+}

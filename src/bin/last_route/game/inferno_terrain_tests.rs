@@ -152,3 +152,59 @@ fn bots_read_the_same_ground_and_every_walkable_cell_has_headroom() {
     }
     assert!(seen.1 - seen.0 > 0.2);
 }
+
+mod lava_damage {
+    use crate::world::infinite::{ChunkKey, INFERNO_LEVEL};
+    use crate::world::inferno::{InfernoChunk, InfernoRules};
+
+    fn lava_chunks() -> Vec<InfernoChunk> {
+        let mut v = Vec::new();
+        for cx in 0..4 {
+            for cy in 0..4 {
+                let inf = InfernoChunk::carve("LAVA-DMG", ChunkKey { cx, cy, level: INFERNO_LEVEL });
+                if !inf.lava_cells().is_empty() {
+                    v.push(inf);
+                }
+            }
+        }
+        assert!(!v.is_empty(), "the sample has lava");
+        v
+    }
+
+    #[test]
+    fn the_damage_cells_are_exactly_the_carved_lava_cells() {
+        let dps = InfernoRules::builtin().lava.damage_per_second;
+        assert!(dps > 0.0);
+        for inf in lava_chunks() {
+            let marked = inf.lava_damage_cells();
+            assert_eq!(marked.iter().map(|m| m.0).collect::<Vec<_>>(), inf.lava_cells());
+            assert!(marked.iter().all(|m| m.1 == dps));
+            for c in inf.open_cells() {
+                assert!(!marked.iter().any(|m| m.0 == c), "no walkable cell burns");
+            }
+        }
+    }
+
+    #[test]
+    fn standing_in_or_at_the_edge_of_lava_burns_and_open_ground_does_not() {
+        let r = InfernoRules::builtin();
+        for inf in lava_chunks() {
+            let l = inf.lava_cells()[0];
+            assert_eq!(inf.lava_damage_at(l.x as f32 + 0.5, l.y as f32 + 0.5), r.lava.damage_per_second);
+            // a walkable cell with no lava within two cells is safe
+            let safe = inf.open_cells().into_iter().find(|c| (-2..=2).all(|dy| (-2..=2).all(|dx| !inf.is_lava(crate::world::Cell::new(c.x + dx, c.y + dy)))));
+            if let Some(c) = safe {
+                assert_eq!(inf.lava_damage_at(c.x as f32 + 0.5, c.y as f32 + 0.5), 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn the_lava_data_reads_through_the_rules() {
+        let mut text: serde_json::Value = serde_json::from_str(include_str!("../data/inferno.json")).unwrap();
+        text["lava"]["damage_per_second"] = serde_json::json!(5.0);
+        let r = InfernoRules::parse(&text.to_string());
+        assert_eq!(r.lava.damage_per_second, 5.0);
+        assert!(r.lava.glow_radius_m > 0.0 && r.lava.glow_color.iter().all(|c| (0.0..=1.0).contains(c)));
+    }
+}

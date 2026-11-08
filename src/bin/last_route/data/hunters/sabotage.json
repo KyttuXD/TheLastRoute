@@ -5,10 +5,16 @@
     "dwell_s": 5.0,
     "resecure_s": 2.6
   },
+  "systems": {
+    "_note": "Lights, doors and the lift have no Godot sabotage (the Godot build only names relays), so these are this port's own. A hunter within near_cells of one for dwell_s seconds rolls the difficulty's chance (difficulties.*.systems) once; a hit puts it out for seconds. Every difficulty ships with sabotage off (enabled), so the game is unchanged until KT turns it on.",
+    "light": { "near_cells": 3, "dwell_s": 6.0, "seconds": 20.0 },
+    "door": { "near_cells": 2, "dwell_s": 4.0, "seconds": 15.0 },
+    "lift": { "near_cells": 3, "dwell_s": 8.0, "seconds": 30.0 }
+  },
   "difficulties": {
-    "relaxed": { "enabled": false, "target": "relay", "chance": 0.5 },
-    "standard": { "enabled": false, "target": "relay", "chance": 0.5 },
-    "hard": { "enabled": false, "target": "relay", "chance": 0.5 },
-    "nightmare": { "enabled": false, "target": "relay", "chance": 0.5 }
+    "relaxed": { "enabled": false, "target": "relay", "chance": 0.5, "systems": { "light": 0.0, "door": 0.0, "lift": 0.0 } },
+    "standard": { "enabled": false, "target": "relay", "chance": 0.5, "systems": { "light": 0.0, "door": 0.0, "lift": 0.0 } },
+    "hard": { "enabled": false, "target": "relay", "chance": 0.5, "systems": { "light": 0.15, "door": 0.1, "lift": 0.05 } },
+    "nightmare": { "enabled": false, "target": "relay", "chance": 0.5, "systems": { "light": 0.3, "door": 0.25, "lift": 0.15 } }
   }
 }

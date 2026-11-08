@@ -23,9 +23,21 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
+        id: cache
         with:
           key: nw-windows
-      - run: cargo build --release --bin night_watch
+      - name: Build times header
+        shell: bash
+        run: |
+          printf '### Build times (night_watch ${{ runner.os }})\n\n| step | os | cache | elapsed |\n|---|---|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: cargo build --release --bin night_watch
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        run: |
+          t0=$(date +%s); date -u +"start %FT%TZ"
+          trap 'echo "| cargo build --release --bin night_watch | ${{ runner.os }} | cache-hit: ${CACHE_HIT:-n/a} | $(( $(date +%s) - t0 ))s |" >> "$GITHUB_STEP_SUMMARY"; date -u +"end   %FT%TZ"' EXIT
+          cargo build --release --bin night_watch
       - name: Publish to nightly-nw
         shell: bash
         env:
@@ -43,10 +55,22 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
+        id: cache
         with:
           key: nw-linux
       - run: sudo apt-get update && sudo apt-get install -y pkg-config libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev
-      - run: cargo build --release --bin night_watch
+      - name: Build times header
+        shell: bash
+        run: |
+          printf '### Build times (night_watch ${{ runner.os }})\n\n| step | os | cache | elapsed |\n|---|---|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: cargo build --release --bin night_watch
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        run: |
+          t0=$(date +%s); date -u +"start %FT%TZ"
+          trap 'echo "| cargo build --release --bin night_watch | ${{ runner.os }} | cache-hit: ${CACHE_HIT:-n/a} | $(( $(date +%s) - t0 ))s |" >> "$GITHUB_STEP_SUMMARY"; date -u +"end   %FT%TZ"' EXIT
+          cargo build --release --bin night_watch
       - name: Publish to nightly-nw
         env:
           GH_TOKEN: ${{ github.token }}
@@ -70,9 +94,21 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
+        id: cache
         with:
           key: nw-macos-${{ matrix.arch }}
-      - run: cargo build --release --bin night_watch
+      - name: Build times header
+        shell: bash
+        run: |
+          printf '### Build times (night_watch ${{ runner.os }})\n\n| step | os | cache | elapsed |\n|---|---|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: cargo build --release --bin night_watch
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        run: |
+          t0=$(date +%s); date -u +"start %FT%TZ"
+          trap 'echo "| cargo build --release --bin night_watch | ${{ runner.os }} | cache-hit: ${CACHE_HIT:-n/a} | $(( $(date +%s) - t0 ))s |" >> "$GITHUB_STEP_SUMMARY"; date -u +"end   %FT%TZ"' EXIT
+          cargo build --release --bin night_watch
       - name: Publish to nightly-nw
         env:
           GH_TOKEN: ${{ github.token }}

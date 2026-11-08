@@ -32,6 +32,10 @@ pub struct WaterParams {
     /// Prop types that may occupy a water cell (pipes, bridges, grates, sluice gates). Anything else, and every
     /// collectable, must be placed on dry floor.
     pub may_stand_in_water: Vec<String>,
+    /// Depth in metres of a pipe burst's flood on the dry bank (`flood.depth`, 0.6 when absent).
+    pub flood_depth: f32,
+    /// Metres a flood drops each time a flood valve is turned (`flood.valve_drain`, 0.2 when absent).
+    pub valve_drain: f32,
 }
 
 fn num(v: &Value, key: &str) -> Result<f32, String> {
@@ -60,6 +64,8 @@ impl WaterParams {
             deep: rgba(tint, "deep")?,
             deepen_power: num(tint, "deepen_power")?,
             glow_mix: if root.get("glow_mix").is_some() { num(&root, "glow_mix")? } else { 0.0 },
+            flood_depth: root.get("flood").map_or(Ok(0.6), |f| num(f, "depth"))?,
+            valve_drain: root.get("flood").map_or(Ok(0.2), |f| num(f, "valve_drain"))?,
             may_stand_in_water: match root.get("may_stand_in_water") {
                 None => Vec::new(),
                 Some(v) => {
@@ -79,6 +85,9 @@ impl WaterParams {
         }
         if p.channel_depth <= 0.0 || p.water_surface >= 0.0 || p.water_surface <= -p.channel_depth {
             return Err("sewer_water.json: the surface must lie below the floor and above the bed".into());
+        }
+        if p.flood_depth <= 0.0 || p.valve_drain <= 0.0 {
+            return Err("sewer_water.json: flood.depth and flood.valve_drain are above 0".into());
         }
         if !(0.0..=1.0).contains(&p.shore_depth_fraction) || p.deepen_power <= 0.0 {
             return Err("sewer_water.json: shore_depth_fraction is 0..=1 and deepen_power above 0".into());
@@ -169,6 +178,45 @@ pub fn bed_y(floor_y: f32) -> f32 {
     floor_y + params().bed_offset()
 }
 
+/// The standing water of a pipe burst, `FloodState::burst` to `FloodState::turn_valve`. Only the side that simulates the
+/// world (host or single player) changes it: a guest's valve turn is refused and the host's level is mirrored to it by
+/// the sync (`net/world_sync.rs`), so both sides read the same depth. Pure state, numbers from `sewer_water.json`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FloodState {
+    /// Metres of water over the flooded bank right now.
+    pub depth: f32,
+}
+
+impl FloodState {
+    /// A freshly burst pipe: `flood.depth` over the bank.
+    pub fn burst(p: &WaterParams) -> FloodState {
+        FloodState { depth: p.flood_depth }
+    }
+
+    /// A flood valve turned: the level drops by `valve_drain`, never below dry. Only the simulating side (`host`) does it;
+    /// returns whether the level changed.
+    pub fn turn_valve(&mut self, p: &WaterParams, host: bool) -> bool {
+        if !host || self.depth <= 0.0 {
+            return false;
+        }
+        self.depth = (self.depth - p.valve_drain).max(0.0);
+        if self.depth < 1e-4 {
+            self.depth = 0.0; // float dust from repeated subtraction counts as dry
+        }
+        true
+    }
+
+    /// Whether the bank is dry again.
+    pub fn is_drained(&self) -> bool {
+        self.depth <= 0.0
+    }
+
+    /// Valve turns a fresh flood needs to drain.
+    pub fn turns_to_drain(p: &WaterParams) -> u32 {
+        ((p.flood_depth / p.valve_drain) - 1e-3).ceil().max(0.0) as u32
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,5 +298,42 @@ mod tests {
         assert_eq!(water_depth_at_level(&g, 3, 3, LOWER_LEVEL), params().full_depth());
         assert_eq!(water_depth_at_level(&g, 4, 3, LOWER_LEVEL), 0.0);
         assert_eq!(water_depth_at_level(&g, 3, 3, LEVEL), params().full_depth());
+    }
+
+    #[test]
+    fn a_valve_lowers_the_flood_until_it_is_dry() {
+        let p = params();
+        let mut f = FloodState::burst(p);
+        assert!(!f.is_drained());
+        let mut last = f.depth;
+        let mut turns = 0;
+        while f.turn_valve(p, true) {
+            assert!(f.depth < last && f.depth >= 0.0);
+            last = f.depth;
+            turns += 1;
+        }
+        assert!(f.is_drained());
+        assert_eq!(turns, FloodState::turns_to_drain(p));
+        assert!(!f.turn_valve(p, true), "a dry bank has nothing to drain");
+    }
+
+    #[test]
+    fn a_guest_cannot_turn_a_valve() {
+        let p = params();
+        let mut f = FloodState::burst(p);
+        assert!(!f.turn_valve(p, false));
+        assert_eq!(f, FloodState::burst(p));
+    }
+
+    #[test]
+    fn valve_data_changes_the_turn_count() {
+        let text = r#"{"channel_depth":1.0,"water_surface":-0.3,"shore_depth_fraction":0.5,
+            "flood":{"depth":1.0,"valve_drain":0.5},
+            "tint":{"shallow":[1,2,3,4],"deep":[5,6,7,8],"deepen_power":1.0}}"#;
+        let fast = WaterParams::from_text(text).unwrap();
+        assert_eq!(FloodState::turns_to_drain(&fast), 2);
+        assert!(FloodState::turns_to_drain(&fast) < FloodState::turns_to_drain(params()));
+        let bad = text.replace("0.5}", "0.0}");
+        assert!(WaterParams::from_text(&bad).is_err());
     }
 }

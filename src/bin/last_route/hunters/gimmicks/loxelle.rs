@@ -32,6 +32,15 @@ fn approach_cap() -> f32 {
     *T.get_or_init(|| approach_timeout(include_str!("../../data/gimmicks/loxelle.json")))
 }
 
+/// Whether Loxelle may breach a room door in `state` (data/gimmicks/loxelle.json `breach_only_while_chasing`).
+pub fn breach_allowed_in(text: &str, state: State) -> bool {
+    let only_chase = serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| v.get("breach_only_while_chasing").and_then(|x| x.as_bool()))
+        .unwrap_or(true);
+    !only_chase || state == State::Chase
+}
+
 pub struct Loxelle {
     /// Loxelle's own timing (data/hunters/charge.json, hunter "loxelle").
     spec: ChargeSpec,
@@ -67,6 +76,12 @@ impl Loxelle {
     /// (loxelle_gimmick.gd `start_door_breach` / `_update_door_charge`).
     pub fn door_timing(&self) -> &charge::Door {
         &self.spec.door
+    }
+
+    /// True when she may break the room door in her way now: only while she chases (the door hook asks this before it
+    /// starts the breach; any other state walks through doors the normal way).
+    pub fn may_breach_door(&self, state: State) -> bool {
+        breach_allowed_in(include_str!("../../data/gimmicks/loxelle.json"), state)
     }
 
     pub fn holds_position(&self) -> bool {
@@ -251,5 +266,17 @@ mod tests {
         let shipped = approach_timeout(include_str!("../../data/gimmicks/loxelle.json"));
         assert!(shipped > 0.0 && shipped < 60.0);
         assert_eq!(Loxelle::default().approach_time, 0.0);
+    }
+
+    /// Room doors are breached only in a chase (shipped data); the data switch lifts that.
+    #[test]
+    fn doors_are_breached_only_while_chasing() {
+        let l = Loxelle::default();
+        assert!(l.may_breach_door(State::Chase));
+        for s in [State::Wander, State::Idle, State::Investigate, State::Search, State::Peek] {
+            assert!(!l.may_breach_door(s), "no breach outside a chase");
+        }
+        assert!(breach_allowed_in(r#"{"breach_only_while_chasing": false}"#, State::Wander));
+        assert!(!breach_allowed_in("{}", State::Wander), "a missing key keeps chase-only");
     }
 }

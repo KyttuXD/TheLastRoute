@@ -1,0 +1,9 @@
+{
+  "_about": "The ground shadow disc under a flying hunter (Xivvy; render/scene.rs hover_shadow). The disc is radius_m wide and alpha dark with her feet on the floor; both shrink as she rises (gimmicks/xivvy.rs lift), the radius to min_radius_fraction of itself and the alpha to nothing at fade_height_m. segments: the disc's edge points. lift_m: how far the disc lies over the floor.",
+  "radius_m": 0.5,
+  "alpha": 0.45,
+  "fade_height_m": 3.5,
+  "min_radius_fraction": 0.45,
+  "segments": 16,
+  "lift_m": 0.02
+}

@@ -146,6 +146,9 @@ impl Admin {
                 | "show_collision"
                 | "hunter_reveal"
                 | "perf_overlay"
+                | "show_paths"
+                | "show_nav"
+                | "hunter_view"
                 | "fullbright"
                 | "wireframe"
         )
@@ -164,6 +167,9 @@ impl Admin {
             "show_collision" => self.show_collision,
             "hunter_reveal" => self.hunter_reveal,
             "perf_overlay" => self.perf_overlay,
+            "show_paths" => self.show_paths,
+            "show_nav" => self.show_nav,
+            "hunter_view" => self.hv.on,
             "fullbright" => self.view == View::Fullbright,
             "wireframe" => self.view == View::Wireframe,
             _ => false,
@@ -218,6 +224,15 @@ impl Admin {
                 self.hunter_reveal = !self.hunter_reveal;
                 self.prefs.set("hunter_reveal", self.hunter_reveal);
             }
+            "show_paths" => {
+                self.show_paths = !self.show_paths;
+                self.prefs.set("show_paths", self.show_paths);
+            }
+            "show_nav" => {
+                self.show_nav = !self.show_nav;
+                self.prefs.set("show_nav", self.show_nav);
+            }
+            "hunter_view" => self.hv.on = !self.hv.on,
             "perf_overlay" => {
                 self.perf_overlay = !self.perf_overlay;
                 self.prefs.set("perf_overlay", self.perf_overlay);
@@ -277,6 +292,11 @@ impl Admin {
                 let Some((id, name)) = hunters.get(h).cloned() else {
                     return;
                 };
+                if id == super::menu::SPIDER_PAIR {
+                    self.spider_pair(g, content, op);
+                    self.mark_debug();
+                    return;
+                }
                 match op {
                     0 => self.summon(g, content, &[id]),
                     1 => self.remove_hunter(g, &id, &name),
@@ -411,6 +431,11 @@ impl Admin {
         let mut debug = true;
         match key {
             "give_item" => self.give_item(g, i),
+            "hv_step" => {
+                if !self.step_one_tick() {
+                    g.say("STEP NEEDS A PAUSED GAME ON THE HOST");
+                }
+            }
             "teleport" => self.teleport_chunk(g, menu().teleports[i.min(menu().teleports.len() - 1)].0),
             "run_speed" => self.run_speed = menu().run_speeds[i.min(menu().run_speeds.len() - 1)].0,
             "game_speed" => {
@@ -856,6 +881,29 @@ impl Admin {
     }
 
     /// _admin_remove_hunter_authoritative: every brain with that id.
+    /// The WOLF SPIDER PAIR picker entry: SUMMON spawns both spiders and links them (`Game::link_spider_pair`), REMOVE
+    /// takes both out, the toggle does whichever fits; the emote row has nothing for a pair.
+    fn spider_pair(&mut self, g: &mut Game, content: &Content, op: usize) {
+        use crate::hunters::secret_creatures as secret;
+        let both: Vec<String> = secret::IDS.iter().map(|s| s.to_string()).collect();
+        let present = g.hunters.iter().any(|b| secret::is_secret(&b.def.id));
+        let summon = match op {
+            0 => true,
+            1 => false,
+            2 => !present,
+            _ => return,
+        };
+        if summon {
+            self.summon(g, content, &both);
+            g.link_spider_pair();
+        } else {
+            for id in secret::IDS {
+                let name = content.hunter(id).map_or_else(|| id.to_uppercase(), |d| d.name.to_uppercase());
+                self.remove_hunter(g, id, &name);
+            }
+        }
+    }
+
     fn remove_hunter(&mut self, g: &mut Game, id: &str, name: &str) {
         if !self.can_remove(g) {
             return;
@@ -905,7 +953,7 @@ impl Admin {
                 let ids: Vec<String> = super::menu::hunter_list(content)
                     .into_iter()
                     .map(|(id, _)| id)
-                    .filter(|id| !self.summoned.contains(id))
+                    .filter(|id| !self.summoned.contains(id) && id != super::menu::SPIDER_PAIR)
                     // the wolf spider comes with the list only on its home level
                     .filter(|id| {
                         use crate::hunters::secret_creatures as secret;
@@ -1115,6 +1163,18 @@ pub struct RoomStatus {
 }
 
 impl RoomStatus {
+    /// Solo, hosting or joined, for the STATUS line (a hosted room is never shown as offline).
+    pub fn net_state(&self) -> super::hunter_view::NetState {
+        use super::hunter_view::NetState;
+        if self.code.is_empty() {
+            NetState::Solo
+        } else if self.host {
+            NetState::Hosted
+        } else {
+            NetState::Joined
+        }
+    }
+
     /// The STATUS "SERVER" value: the real state of the room, or the plain server for a solo run.
     pub fn server_line(&self, server: &str) -> String {
         if self.code.is_empty() {

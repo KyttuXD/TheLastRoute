@@ -1,10 +1,11 @@
 {
   "schema": "lr.stairs_links/1",
-  "_about": "Level-link numbers. A stair flight is walked and relabelled (game/endless.rs relabel), never interacted with; a sewer ladder is climbed by hand (game/ladder.rs). Read by game/transition.rs. prefetch_distance (the key keeps its historic name) is the residency radius (cells): how close the runner gets to a stair or ladder landing before the storey it leads to is kept resident (Game::keep_stack), so crossing builds nothing. Godot reference: game/world/generation/stairwells.gd, game/infinite_route/infinite_route_test.gd (_update_player_ladder).",
+  "_about": "spiral_clearance (world/vertical.rs spiral_zone) is the widened clear area round every spiral: ring_width cells of open floor round the well, landing_apron cells round the landing or foot, and an approach lane approach_lane_width cells wide and approach_lane_length cells long leading away from the well; props, lockers, vents and furniture keep out. Level-link numbers. A stair flight is walked and relabelled (game/endless.rs relabel), never interacted with; a sewer ladder is climbed by hand (game/ladder.rs). Read by game/transition.rs. prefetch_distance (the key keeps its historic name) is the residency radius (cells): how close the runner gets to a stair or ladder landing before the storey it leads to is kept resident (Game::keep_stack), so crossing builds nothing. Godot reference: game/world/generation/stairwells.gd, game/infinite_route/infinite_route_test.gd (_update_player_ladder).",
   "prefetch_distance": 8,
   "preload_levels_up": 2,
   "preload_levels_down": 2,
   "preload_max_windows": 6,
   "preload_memory_cap_mb": 192,
-  "preload_builds_per_frame": 1
+  "preload_builds_per_frame": 1,
+  "spiral_clearance": { "ring_width": 2, "landing_apron": 2, "approach_lane_width": 3, "approach_lane_length": 4 }
 }

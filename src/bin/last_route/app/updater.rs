@@ -307,8 +307,15 @@ impl UpdaterText {
         self.strings.get(key).and_then(|v| v.as_str()).unwrap_or("")
     }
 
-    /// The line the boot screen shows for a status, or None when it shows nothing.
+    /// The line the boot screen shows for a status, or None when it shows nothing. A finished check (up to date or
+    /// failed) ends with when it ran, in the player's zone (`checked_suffix`, e.g. " // LAST CHECKED: NOV 8, 2026
+    /// 3:42 PM EST").
     pub fn line(&self, status: &UpdateStatus) -> Option<String> {
+        self.line_at(status, last_check())
+    }
+
+    /// `line` with the time of the last check given (None: never checked, no suffix).
+    pub fn line_at(&self, status: &UpdateStatus, checked: Option<i64>) -> Option<String> {
         let fill = |key: &str, build: u64, percent: u32, reason: &str| {
             self.string(key)
                 .replace("{build}", &build.to_string())
@@ -323,6 +330,12 @@ impl UpdaterText {
             UpdateStatus::Installing => fill("installing", 0, 0, ""),
             UpdateStatus::Failed(why) => fill("failed", 0, 0, why),
             UpdateStatus::Updated(b) => fill("updated", *b, 0, ""),
+        };
+        let text = match (status, checked) {
+            (UpdateStatus::UpToDate(_) | UpdateStatus::Failed(_), Some(t)) if !text.is_empty() => {
+                text + &self.string("checked_suffix").replace("{checked}", &checked_line(Some(t)))
+            }
+            _ => text,
         };
         (!text.is_empty()).then_some(text)
     }
@@ -387,7 +400,24 @@ fn started_by_launcher() -> bool {
     std::env::var("LR_LAUNCHER").is_ok_and(|v| v == "1")
 }
 
+/// Unix time (UTC) of the last finished update check this run; 0 = none.
+static LAST_CHECK: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// Stamps a finished check now (kept in UTC; shown in the player's zone).
+fn stamp_check() {
+    LAST_CHECK.store(now_unix(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// When the last update check of this run finished, or None.
+pub fn last_check() -> Option<i64> {
+    let t = LAST_CHECK.load(std::sync::atomic::Ordering::Relaxed);
+    (t > 0).then_some(t)
+}
+
 fn set(handle: &Mutex<UpdateStatus>, status: UpdateStatus) {
+    if UpdaterText::is_final(&status) {
+        stamp_check();
+    }
     if let Ok(mut s) = handle.lock() {
         *s = status;
     }
@@ -400,6 +430,7 @@ fn apply_offer(handle: &Mutex<UpdateStatus>, build: u64, revision: &str, offer: 
         set(handle, UpdateStatus::Downloading { build: offer.build, got: 0, total: 0 });
         return true;
     }
+    stamp_check();
     if let Ok(mut s) = handle.lock() {
         if !matches!(*s, UpdateStatus::Updated(_)) {
             *s = UpdateStatus::UpToDate(build);
@@ -527,6 +558,7 @@ fn github_update(handle: &Mutex<UpdateStatus>) -> Result<bool, String> {
         if let Some(p) = attempts_path() {
             let _ = std::fs::remove_file(p);
         }
+        stamp_check();
         if let Ok(mut s) = handle.lock() {
             if !matches!(*s, UpdateStatus::Updated(_)) {
                 *s = UpdateStatus::UpToDate(BUILD);
@@ -644,6 +676,7 @@ fn site_update(handle: &Mutex<UpdateStatus>) -> SiteOutcome {
         Err(source::Unavailable(why)) => return SiteOutcome::Unavailable(why),
         Ok(source::SiteCheck::UpToDate) => {
             crate::lr_info!("update: the website offers nothing newer than build {BUILD}");
+            stamp_check();
             if let Ok(mut s) = handle.lock() {
                 if !matches!(*s, UpdateStatus::Updated(_)) {
                     *s = UpdateStatus::UpToDate(BUILD);
@@ -713,6 +746,43 @@ fn release_host_allowed(url: &str) -> bool {
     HOSTS.iter().any(|h| url.starts_with(h))
 }
 
+// ---- player-facing times (data/app/time.json): the player's own zone, 12-hour AM/PM, EST/EDT when the zone is unknown
+
+/// The time rules (data/app/time.json), parsed once.
+pub fn time_rules() -> &'static crate::shared::local_time::TimeRules {
+    static RULES: OnceLock<crate::shared::local_time::TimeRules> = OnceLock::new();
+    RULES.get_or_init(|| crate::shared::local_time::TimeRules::parse(include_str!("../data/app/time.json")).expect("time.json parses"))
+}
+
+/// The zone times are shown in, resolved once per run (the computer's zone, else the data's fallback).
+pub fn time_zone() -> &'static crate::shared::local_time::Zone {
+    static ZONE: OnceLock<crate::shared::local_time::Zone> = OnceLock::new();
+    ZONE.get_or_init(|| time_rules().resolve())
+}
+
+/// `NOV 8, 2026 3:42 PM EST` for a Unix time.
+pub fn format_time(unix: i64) -> String {
+    time_rules().format(unix, time_zone())
+}
+
+/// The same for an ISO UTC time such as GitHub's `2026-01-02T03:04:05Z`; None when the text is not one.
+pub fn format_iso(iso: &str) -> Option<String> {
+    crate::shared::local_time::parse_iso_utc(iso).map(format_time)
+}
+
+/// "LAST CHECKED: NOV 8, 2026 3:42 PM EST" for the time of the last update check (None: never checked).
+pub fn checked_line(unix: Option<i64>) -> String {
+    time_rules().checked_line(unix, time_zone())
+}
+
+/// The current time as a Unix time (UTC), for stamping a check.
+pub fn now_unix() -> i64 {
+    crate::shared::clock::SystemTime::now()
+        .duration_since(crate::shared::clock::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -731,6 +801,17 @@ mod tests {
     fn build_number_parses_from_the_build_environment() {
         assert_eq!(parse_build("0"), 0);
         assert_eq!(parse_build("9001"), 9001);
+    }
+
+    #[test]
+    fn update_times_are_twelve_hour_in_a_zone_with_its_name() {
+        let line = format_iso("2026-11-08T20:42:00Z").expect("iso parses");
+        // whatever zone the computer reports, it is a 12-hour AM/PM time and ends with a zone name
+        assert!(line.starts_with("NOV 8, 2026 ") || line.starts_with("NOV 9, 2026 ") || line.starts_with("NOV 7, 2026 "), "{line}");
+        assert!(line.contains(" AM ") || line.contains(" PM "), "{line}");
+        assert!(format_iso("not a time").is_none());
+        assert_eq!(checked_line(None), "LAST CHECKED: NEVER");
+        assert!(checked_line(Some(now_unix())).starts_with("LAST CHECKED: "));
     }
 
     #[test]
@@ -814,7 +895,13 @@ mod tests {
         assert_eq!(t.line(&UpdateStatus::Downloading { build: 8, got: 1, total: 4 }).as_deref(), Some("D 8 25"));
         assert_eq!(t.line(&UpdateStatus::Failed("x".into())).as_deref(), Some("F x"));
         assert_eq!(t.line_fade_ms, 10.0);
+        assert_eq!(t.line_at(&UpdateStatus::UpToDate(3), Some(1_700_000_000)).as_deref(), Some("U3"), "no suffix in the data, none shown");
         let std = UpdaterText::standard();
+        let done = std.line_at(&UpdateStatus::UpToDate(4), Some(1_700_000_000)).unwrap();
+        assert!(done.ends_with(&checked_line(Some(1_700_000_000))), "{done}");
+        assert!(done.contains(" AM ") || done.contains(" PM "), "a 12-hour time: {done}");
+        assert_eq!(std.line_at(&UpdateStatus::UpToDate(4), None).as_deref(), Some("Up to date (build 4)"), "never checked: no time");
+        assert!(!std.line_at(&UpdateStatus::Checking, Some(1_700_000_000)).unwrap().contains("CHECKED"), "only a finished check shows it");
         assert_eq!(std.line(&UpdateStatus::Checking).as_deref(), Some("Checking for updates"));
         assert_eq!(std.line(&UpdateStatus::Updated(9)).as_deref(), Some("Updated to build 9"));
         assert_eq!(

@@ -50,8 +50,38 @@ pub struct InfernoRules {
     pub lava_y: f32,
     /// Floor of a lava pit (Godot BASIN_Y -1.6 x 1.25). Lava cells are closed and never walkable. Drawn by `render::inferno_deco::lava_pit`.
     pub lava_basin_y: f32,
+    /// The lava hazard: damage and glow (data/inferno.json `lava`).
+    pub lava: LavaRules,
     /// The noisy floor and ceiling (`inferno_terrain`).
     pub terrain: super::inferno_terrain::TerrainRules,
+}
+
+/// Damage and glow of a lava cell (data/inferno.json `lava`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LavaRules {
+    /// Health lost per second while the body is within `touch_margin` of a lava cell.
+    pub damage_per_second: f32,
+    /// Metres from a lava cell edge that already burns.
+    pub touch_margin: f32,
+    pub glow_color: [f32; 3],
+    pub glow_radius_m: f32,
+    pub glow_strength: f32,
+}
+
+impl LavaRules {
+    fn parse(v: &serde_json::Value) -> LavaRules {
+        let f = |k: &str| v[k].as_f64().unwrap_or_else(|| panic!("inferno.json: lava.{k} missing")) as f32;
+        let g = &v["glow"];
+        let gf = |k: &str| g[k].as_f64().unwrap_or_else(|| panic!("inferno.json: lava.glow.{k} missing")) as f32;
+        let col = |i: usize| g["color"][i].as_f64().unwrap_or_else(|| panic!("inferno.json: lava.glow.color missing")) as f32;
+        LavaRules {
+            damage_per_second: f("damage_per_second").max(0.0),
+            touch_margin: f("touch_margin").max(0.0),
+            glow_color: [col(0), col(1), col(2)],
+            glow_radius_m: gf("radius_m").max(0.0),
+            glow_strength: gf("strength").max(0.0),
+        }
+    }
 }
 
 impl InfernoRules {
@@ -82,6 +112,7 @@ impl InfernoRules {
             walk_height: f(&v["floor"], "walk_height") as f32,
             lava_y: f(&v["floor"], "lava_y") as f32,
             lava_basin_y: f(&v["floor"], "lava_basin_y") as f32,
+            lava: LavaRules::parse(&v["lava"]),
             terrain: super::inferno_terrain::TerrainRules::parse(&v["terrain"]).unwrap_or_else(|e| panic!("{e}")),
         }
     }
@@ -575,6 +606,34 @@ impl InfernoChunk {
 
     pub fn is_lava(&self, c: Cell) -> bool {
         self.caves.as_ref().is_some_and(|v| v.is_lava(c))
+    }
+
+    /// Every lava cell with the health it takes per second (data `lava.damage_per_second`): the cells marked as damaging.
+    /// Always the same cells as [`InfernoChunk::lava_cells`].
+    pub fn lava_damage_cells(&self) -> Vec<(Cell, f32)> {
+        let dps = self.inferno.rules.lava.damage_per_second;
+        self.lava_cells().into_iter().map(|c| (c, dps)).collect()
+    }
+
+    /// Health per second taken at a point in chunk-local cell units (x, y): the damage rate when it lies within
+    /// `lava.touch_margin` metres of a lava cell (world units are cells), else 0.
+    pub fn lava_damage_at(&self, x: f32, y: f32) -> f32 {
+        let l = &self.inferno.rules.lava;
+        let (cx, cy) = (x.floor() as i32, y.floor() as i32);
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let c = Cell::new(cx + dx, cy + dy);
+                if !self.is_lava(c) {
+                    continue;
+                }
+                let nx = x.clamp(c.x as f32, c.x as f32 + 1.0);
+                let ny = y.clamp(c.y as f32, c.y as f32 + 1.0);
+                if ((x - nx).powi(2) + (y - ny).powi(2)).sqrt() <= l.touch_margin {
+                    return l.damage_per_second;
+                }
+            }
+        }
+        0.0
     }
 
     /// Whether the renderer draws a wall column on cell `c`, given the build's `is_wall` for it: a lava cell is closed to

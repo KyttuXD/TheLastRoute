@@ -289,6 +289,9 @@ thread_local! {
     /// (the draw pass counter, every figure with a running clip)
     static FIGURES: RefCell<(u64, HashMap<FigureKey, Figure>)> = RefCell::new((0, HashMap::new()));
     static SLIM: RefCell<Option<Option<Rc<Model>>>> = const { RefCell::new(None) };
+    /// Where each bot's head looks, by guest name: (yaw offset from the body, + left; pitch, + up), in radians. The host
+    /// sets it from its bot's life state and a guest from the wire (`set_bot_look`); a bot with none looks straight.
+    static BOT_LOOK: RefCell<HashMap<String, (f32, f32)>> = RefCell::new(HashMap::new());
     /// The vertex and index buffers every figure is built into, so a frame allocates none per figure.
     static SCRATCH: RefCell<(Vec<Vertex>, Vec<u16>)> = const { RefCell::new((Vec::new(), Vec::new())) };
 }
@@ -419,9 +422,30 @@ pub fn moving_backward(vel: (f32, f32), yaw: f32) -> bool {
 /// Runs the driver of `key` for this frame and draws the figure. The figure's own ground step since its last frame
 /// says whether a moving state is walking backwards (a remote runner's or a bot's facing is its yaw).
 #[allow(clippy::too_many_arguments)]
+/// Sets where bot `name` looks this frame: the head's yaw offset from the body (+ left) and its pitch (+ up), in radians.
+/// Call before [`draw_bots`] (the host from the bot's life state, a guest from the wire).
+pub fn set_bot_look(name: &str, yaw: f32, pitch: f32) {
+    if !yaw.is_finite() || !pitch.is_finite() {
+        return;
+    }
+    BOT_LOOK.with(|m| {
+        m.borrow_mut().insert(name.to_string(), (yaw, pitch));
+    });
+}
+
+/// The head's yaw once a bot's look offset is added to what the driver eased it to (the lag behind a turn): capped so the
+/// head never turns right round.
+pub fn looked_head(base: f32, look: f32) -> f32 {
+    (base + look).clamp(-LOOK_YAW_CAP, LOOK_YAW_CAP)
+}
+
+/// The most a head may turn from the body with a bot's look added (radians): a safety cap above the data's limit.
+const LOOK_YAW_CAP: f32 = 1.5;
+
 /// Draws one driven figure and returns its held flashlight's lamp point (see [`draw_body`]). `look_pitch` is the runner's
-/// aim (+ up) that tilts its head; a bot or an older peer passes 0.
-fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, look_pitch: f32, pick: &Pick, slim: bool, state: &RunnerState, held: Option<Item>, emote: Option<(&str, u32)>, dt: f32, epoch: u64) -> Option<Vec3> {
+/// aim (+ up) that tilts its head; a bot passes where it looks. `look_yaw` turns the head from the body (+ left); a
+/// runner or an older peer passes 0.
+fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, look_yaw: f32, look_pitch: f32, pick: &Pick, slim: bool, state: &RunnerState, held: Option<Item>, emote: Option<(&str, u32)>, dt: f32, epoch: u64) -> Option<Vec3> {
     let driven = FIGURES.with(|f| {
         let mut f = f.borrow_mut();
         let fig = f.1.entry(key).or_insert_with(|| Figure::new(epoch, slim));
@@ -453,7 +477,13 @@ fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, look_pitch: f32,
             } else {
                 v.aim_head(0.0, 0.0, dt);
             }
+            // a bot's look turns the head from the body; the driver's own easing is kept for the next frame
+            let eased = v.head_yaw;
+            if free {
+                v.head_yaw = looked_head(eased, look_yaw);
+            }
             let mut locals = v.locals();
+            v.head_yaw = eased;
             if let Some((id, _, t)) = &emoting {
                 pose_emote(&v.rig, &mut locals, id, *t);
             }
@@ -591,7 +621,7 @@ pub fn draw_runners(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, rem
         let tex = pick(&r.skin, &|id| a.skin_texture(id).is_some());
         let pos = vec3(r.x, runner_draw_y(r.h, active_y), r.y);
         let held = if r.hide.is_some() { None } else { r.held };
-        let lamp = draw_driven(a, FigureKey::Peer(r.peer), pos, r.yaw, r.look_pitch, &tex, r.slim, &remote_state(r), held, remote_emote(r), dt, epoch);
+        let lamp = draw_driven(a, FigureKey::Peer(r.peer), pos, r.yaw, 0.0, r.look_pitch, &tex, r.slim, &remote_state(r), held, remote_emote(r), dt, epoch);
         // a lit flashlight shows its beam to everyone who sees the runner (render/beam.rs); a hidden runner has none.
         // The beam leaves the lamp in the held flashlight's hand; without one drawn it leaves the usual lamp height.
         if let (Some(pitch), None) = (r.flash_pitch, r.hide) {
@@ -669,8 +699,11 @@ pub fn draw_bots(a: &Assets, bots: &[BotView]) {
         let mut state = spec.map(|s| bot_state(&s.bots, speed, b.climbing, b.falling)).unwrap_or_default();
         state.crouching = b.crouch;
         let tex = pick(&bot_skin(b.name, skins), &|id| a.skin_texture(id).is_some());
-        draw_driven(a, key, vec3(b.at.0, b.y, b.at.1), b.facing, 0.0, &tex, false, &state, None, b.emote, dt, epoch);
+        let (look_yaw, look_pitch) = BOT_LOOK.with(|m| m.borrow().get(b.name).copied()).unwrap_or((0.0, 0.0));
+        draw_driven(a, key, vec3(b.at.0, b.y, b.at.1), b.facing, look_yaw, look_pitch, &tex, false, &state, None, b.emote, dt, epoch);
     }
+    // a bot that was not drawn this pass loses its look
+    BOT_LOOK.with(|m| m.borrow_mut().retain(|name, _| bots.iter().any(|b| b.name == name)));
     prune(epoch, true);
 }
 
@@ -1104,5 +1137,22 @@ mod tests {
         assert!(pose_emote(&rig, &mut posed, id, 0.9));
         let arm = rig.bone("R-Arm").unwrap();
         assert!(posed[arm].r.dot(rest[arm].r).abs() < 0.99, "R-Arm moved");
+    }
+
+    #[test]
+    fn a_bots_look_turns_the_head_from_the_body_and_is_capped() {
+        assert_eq!(looked_head(0.0, 0.0), 0.0);
+        assert!((looked_head(0.1, 0.5) - 0.6).abs() < 1e-6, "the look adds to the driver's own easing");
+        assert!(looked_head(0.1, -0.5) < 0.0, "a look to the right turns the head right");
+        assert_eq!(looked_head(1.0, 5.0), LOOK_YAW_CAP);
+        assert_eq!(looked_head(-1.0, -5.0), -LOOK_YAW_CAP);
+    }
+
+    #[test]
+    fn set_bot_look_keeps_a_finite_look_and_ignores_the_rest() {
+        set_bot_look("R-00001", 0.4, -0.1);
+        assert_eq!(BOT_LOOK.with(|m| m.borrow().get("R-00001").copied()), Some((0.4, -0.1)));
+        set_bot_look("R-00001", f32::NAN, 0.0);
+        assert_eq!(BOT_LOOK.with(|m| m.borrow().get("R-00001").copied()), Some((0.4, -0.1)), "a bad sample leaves the look");
     }
 }

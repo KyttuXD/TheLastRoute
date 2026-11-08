@@ -279,3 +279,91 @@ mod tests {
         assert!(!JoinThrottle::default().try_join(&none, 0));
     }
 }
+
+/// The title menu's PUBLIC ROUTE button (TODO 838, 906): one press starts one join of the public room, never two at
+/// once, and never more than the data's `join_per_minute`. The join itself is `net::world_sync::join_public_room`; this
+/// holds the decision and the line the title shows.
+#[derive(Default, Debug)]
+pub struct TitleJoin {
+    throttle: JoinThrottle,
+    busy: bool,
+    status: String,
+}
+
+/// What a press of the title button asks for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TitlePress {
+    /// Start the join with this code.
+    Join(crate::net::public_route::TitleEntry),
+    /// A join is already under way.
+    Busy,
+    /// Over the per-minute limit.
+    RateLimited,
+}
+
+impl TitleJoin {
+    /// The button was pressed at `now_msec` (any monotonic millisecond clock).
+    pub fn press(&mut self, limits: &PublicLimits, now_msec: u64) -> TitlePress {
+        if self.busy {
+            return TitlePress::Busy;
+        }
+        if !self.throttle.try_join(limits, now_msec) {
+            self.status = crate::net::rejoin::line("public_route_busy", "TOO MANY JOIN REQUESTS", &[]);
+            return TitlePress::RateLimited;
+        }
+        self.busy = true;
+        self.status = crate::net::rejoin::line("public_route_joining", "JOINING THE PUBLIC ROUTE...", &[]);
+        TitlePress::Join(crate::net::public_route::title_entry())
+    }
+
+    /// The join ended: `Ok` joined (or opened) the room, `Err` carries the line to show.
+    pub fn finished(&mut self, result: Result<(), String>) {
+        self.busy = false;
+        self.status = result.err().map(|e| e.to_uppercase()).unwrap_or_default();
+    }
+
+    pub fn busy(&self) -> bool {
+        self.busy
+    }
+
+    /// The line under the button; empty when there is nothing to say.
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    #[test]
+    fn the_title_button_joins_the_public_code_once_at_a_time() {
+        let limits = PublicLimits::default();
+        let mut t = TitleJoin::default();
+        match t.press(&limits, 0) {
+            TitlePress::Join(entry) => assert_eq!(entry.code, crate::net::public_route::rules().code),
+            other => panic!("{other:?}"),
+        }
+        assert!(t.busy() && t.status().contains("JOINING"));
+        assert_eq!(t.press(&limits, 10), TitlePress::Busy);
+        t.finished(Err("could not reach the server".into()));
+        assert!(!t.busy());
+        assert_eq!(t.status(), "COULD NOT REACH THE SERVER");
+        t.finished(Ok(()));
+        assert_eq!(t.status(), "");
+    }
+
+    #[test]
+    fn presses_over_the_limit_are_refused_until_the_minute_passes() {
+        let mut limits = PublicLimits::default();
+        limits.join_per_minute = 2;
+        let mut t = TitleJoin::default();
+        for i in 0..2 {
+            assert!(matches!(t.press(&limits, i * 100), TitlePress::Join(_)));
+            t.finished(Ok(()));
+        }
+        assert_eq!(t.press(&limits, 500), TitlePress::RateLimited);
+        assert!(t.status().contains("TOO MANY"));
+        assert!(matches!(t.press(&limits, 61_000), TitlePress::Join(_)));
+    }
+}

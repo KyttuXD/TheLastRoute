@@ -1,0 +1,29 @@
+{
+  "schema": "lr.startup/1",
+  "min_splash_s": 1.6,
+  "update_check": { "attempts": 3, "retry_delay_s": 2.0, "timeout_s": 5.0 },
+  "admin_skip_hub": true,
+  "update_badge": {
+    "top_margin": 10.0,
+    "width": 360.0,
+    "height": 34.0,
+    "downloading": "DOWNLOADING UPDATE {percent}%",
+    "ready": "UPDATE READY",
+    "restart_now": "RESTART NOW",
+    "later": "LATER",
+    "run_status": "UPDATE {percent}%"
+  },
+  "account_panel": {
+    "name_min": 3,
+    "name_max": 24,
+    "pending_signin": "SIGNING IN...",
+    "pending_create": "CREATING ACCOUNT...",
+    "pending_password": "CHANGING PASSWORD...",
+    "pending_delete": "DELETING ACCOUNT...",
+    "signed_out": "SIGNED OUT",
+    "confirm_delete": "DELETE THIS ACCOUNT FOR GOOD? PRESS CONFIRM",
+    "confirm_password": "CHANGE PASSWORD? PRESS CONFIRM",
+    "password_done": "PASSWORD CHANGED",
+    "deleted": "ACCOUNT DELETED"
+  }
+}

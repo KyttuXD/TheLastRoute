@@ -195,6 +195,8 @@ pub struct PublishedBuild {
     pub build: i64,
     /// The commit the build was made from (the server lists the short hash).
     pub revision: String,
+    /// When the server published it, unix seconds (0 when the answer carries none). Shown through the local time formatter.
+    pub published_at: i64,
 }
 
 /// The update answer. `channel` is empty when the reply names none; `update` is `None` when nothing is
@@ -220,7 +222,7 @@ pub fn update_manifest(platform: &str) -> Result<UpdateManifest, NetError> {
     };
     Ok(UpdateManifest {
         channel: s(&p, "channel"),
-        update: obj(&p, "update").map(|u| PublishedBuild { build: i(&u, "build"), revision: s(&u, "revision") }),
+        update: obj(&p, "update").map(|u| PublishedBuild { build: i(&u, "build"), revision: s(&u, "revision"), published_at: manifest_time_secs(&u) }),
     })
 }
 
@@ -1012,6 +1014,7 @@ fn cloud_request(cfg: &BackendConfig, method: Method, path: &str, token: &str) -
 /// `GET /api/v1/saves/:gameId/:slot` with `X-Session-Token`.
 pub fn cloud_get(cfg: &BackendConfig, path: &str, token: &str) -> Result<CloudRecord, NetError> {
     guard(cfg)?;
+    ensure_v1_save_path(path)?;
     let p = check(cloud_request(cfg, Method::Get, path, token).send()?)?;
     Ok(CloudRecord { data: obj(&p, "data"), updated_at: i(&p, "updatedAt") })
 }
@@ -1027,6 +1030,7 @@ pub enum CloudPut {
 /// `PUT /api/v1/saves/:gameId/:slot {data, updatedAt}` (`data: None` deletes the slot).
 pub fn cloud_put(cfg: &BackendConfig, path: &str, token: &str, data: Option<&Json>, updated_at: i64) -> Result<CloudPut, NetError> {
     guard(cfg)?;
+    ensure_v1_save_path(path)?;
     let data = data.map(|d| Value::Object(d.clone())).unwrap_or(Value::Null);
     let r = cloud_request(cfg, Method::Put, path, token).json_body(&json!({"data": data, "updatedAt": updated_at})).send()?;
     if r.status == 409 {
@@ -1036,7 +1040,7 @@ pub fn cloud_put(cfg: &BackendConfig, path: &str, token: &str, data: Option<&Jso
         }
     }
     let p = check(r)?;
-    Ok(CloudPut::Stored { updated_at: i(&p, "updatedAt") })
+    Ok(put_outcome(updated_at, i(&p, "updatedAt")))
 }
 
 #[cfg(test)]
@@ -1399,5 +1403,442 @@ mod build_mismatch_round_trips {
             register_room(&dir.config(), &request).unwrap();
             assert_eq!(resolve(&dir, code), Resolution::Failed { message: "BUILD MISMATCH // HOST UNVERSIONED // UPDATE".into() }, "{code}");
         }
+    }
+}
+
+// ---- client flow: error texts, account names, save slots, owner tools ---------------------------------------------
+// (TODO 204, 222/843, 227, 229, 420, 421, 193, 857, 415, 878). Tunables live in data/net/errors.json and
+// data/net/saves.json.
+
+const ERRORS_TEXT: &str = include_str!("../data/net/errors.json");
+const SAVES_TEXT: &str = include_str!("../data/net/saves.json");
+
+/// The player-facing words for every failure (`lr.net_errors/1`).
+#[derive(Clone, Debug)]
+pub struct ErrorTexts {
+    v: Value,
+}
+
+impl ErrorTexts {
+    pub fn parse(text: &str) -> Result<ErrorTexts, String> {
+        let v: Value = serde_json::from_str(text).map_err(|e| format!("errors.json: {e}"))?;
+        if v.get("schema").and_then(Value::as_str) != Some("lr.net_errors/1") {
+            return Err("errors.json: key 'schema' must be lr.net_errors/1".into());
+        }
+        for key in ["offline", "timeout", "unreachable", "refused", "protocol", "unsupported", "name_invalid", "server_error"] {
+            if v.get(key).and_then(Value::as_str).map_or(true, str::is_empty) {
+                return Err(format!("errors.json: key '{key}' missing"));
+            }
+        }
+        Ok(ErrorTexts { v })
+    }
+
+    /// A top-level text, empty when the key is unknown.
+    pub fn text(&self, key: &str) -> String {
+        self.v.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    }
+
+    fn mapped(&self, table: &str, key: &str) -> Option<String> {
+        self.v.get(table).and_then(|t| t.get(key)).and_then(Value::as_str).filter(|t| !t.is_empty()).map(str::to_string)
+    }
+
+    /// TODO 204: a refused join, a timeout or an offline server as one upper-case line. Server `code` first, then the
+    /// HTTP status, then the server's own text, scrubbed of addresses.
+    pub fn describe(&self, e: &NetError) -> String {
+        match e {
+            NetError::Offline => self.text("offline"),
+            NetError::Timeout => self.text("timeout"),
+            NetError::Transport(_) => self.text("unreachable"),
+            NetError::Protocol(_) => self.text("protocol"),
+            NetError::Unsupported(m) | NetError::Refused(m) => {
+                if m.trim().is_empty() {
+                    self.text("refused")
+                } else {
+                    super::scrub(m).to_uppercase()
+                }
+            }
+            NetError::Http { status, code, error, .. } => {
+                if let Some(t) = self.mapped("codes", code) {
+                    return t;
+                }
+                if let Some(t) = self.mapped("status", &status.to_string()) {
+                    return t;
+                }
+                if *status >= 500 {
+                    return self.text("server_error");
+                }
+                if !error.trim().is_empty() {
+                    return super::scrub(error).to_uppercase();
+                }
+                self.text("refused")
+            }
+        }
+    }
+}
+
+pub fn error_texts() -> &'static ErrorTexts {
+    static T: std::sync::OnceLock<ErrorTexts> = std::sync::OnceLock::new();
+    T.get_or_init(|| ErrorTexts::parse(ERRORS_TEXT).unwrap_or_else(|e| panic!("{e}")))
+}
+
+/// Shortcut for [`ErrorTexts::describe`] with the embedded texts.
+pub fn describe_error(e: &NetError) -> String {
+    error_texts().describe(e)
+}
+
+/// The account name the server stores: trimmed, upper case.
+pub fn canonical_account_name(raw: &str) -> String {
+    raw.trim().to_uppercase()
+}
+
+pub const ACCOUNT_NAME_MIN: usize = 3;
+pub const ACCOUNT_NAME_MAX: usize = 24;
+
+/// 3-24 characters, A-Z 0-9 and `_` (after upper-casing).
+pub fn valid_account_name(raw: &str) -> bool {
+    let n = canonical_account_name(raw);
+    (ACCOUNT_NAME_MIN..=ACCOUNT_NAME_MAX).contains(&n.chars().count()) && n.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// The canonical name, or the upper-case reason it was refused (nothing is sent).
+pub fn validate_account_name(raw: &str) -> Result<String, NetError> {
+    if valid_account_name(raw) {
+        Ok(canonical_account_name(raw))
+    } else {
+        Err(NetError::Refused(error_texts().text("name_invalid")))
+    }
+}
+
+/// TODO 222: sign in from the ACCOUNT screen (the name rule is checked before anything is sent).
+pub fn sign_in(cfg: &BackendConfig, username: &str, password: &str) -> Result<AccountReply, NetError> {
+    let name = validate_account_name(username)?;
+    if password.is_empty() {
+        return Err(NetError::Refused(error_texts().text("password_empty")));
+    }
+    login(cfg, &name, password)
+}
+
+/// TODO 222: create an account from the ACCOUNT screen.
+pub fn create_account(cfg: &BackendConfig, username: &str, password: &str, admin_proof: &str) -> Result<AccountReply, NetError> {
+    let name = validate_account_name(username)?;
+    if password.is_empty() {
+        return Err(NetError::Refused(error_texts().text("password_empty")));
+    }
+    register(cfg, &name, password, admin_proof)
+}
+
+/// TODO 227: `POST /api/account/delete {sessionToken, password}`. The server route still has to be added (lr_server is out
+/// of this task's scope); until then the answer is a 404 that the panel shows through [`describe_error`].
+pub fn delete_account(cfg: &BackendConfig, token: &str, password: &str) -> Result<(), NetError> {
+    post(cfg, "/api/account/delete", &json!({"sessionToken": token, "password": password})).map(|_| ())
+}
+
+impl AccountReply {
+    /// TODO 415 / 1023: the title shows ADMIN, and the hub is skipped, for an account the SERVER marked admin, not for a
+    /// name typed locally.
+    pub fn grants_admin_ui(&self) -> bool {
+        self.admin && !self.session_token.is_empty()
+    }
+}
+
+/// Unix seconds of a manifest entry's `publishedAt` (seconds or milliseconds in the answer); 0 when absent.
+pub fn manifest_time_secs(entry: &Json) -> i64 {
+    let t = i(entry, "publishedAt").max(i(entry, "published_at"));
+    if t > 100_000_000_000 {
+        t / 1000
+    } else {
+        t.max(0)
+    }
+}
+
+// ---- save slots -------------------------------------------------------------------------------------------------
+
+/// `lr.net_saves/1`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaveRules {
+    /// The website keeps this many `run-world-N` slots per game.
+    pub max_world_slots: usize,
+    pub world_slot_prefix: String,
+    pub progress_slot: String,
+    pub dossier_slot: String,
+    pub legacy_route_allowed: bool,
+}
+
+pub fn parse_save_rules(text: &str) -> Result<SaveRules, String> {
+    let v: Value = serde_json::from_str(text).map_err(|e| format!("saves.json: {e}"))?;
+    if v.get("schema").and_then(Value::as_str) != Some("lr.net_saves/1") {
+        return Err("saves.json: key 'schema' must be lr.net_saves/1".into());
+    }
+    let name = |k: &str| v.get(k).and_then(Value::as_str).filter(|t| !t.is_empty()).map(str::to_string).ok_or_else(|| format!("saves.json: key '{k}' missing"));
+    let max = v.get("max_world_slots").and_then(Value::as_u64).filter(|n| *n >= 1).ok_or("saves.json: key 'max_world_slots' must be at least 1")?;
+    Ok(SaveRules {
+        max_world_slots: max as usize,
+        world_slot_prefix: name("world_slot_prefix")?,
+        progress_slot: name("progress_slot")?,
+        dossier_slot: name("dossier_slot")?,
+        legacy_route_allowed: v.get("legacy_account_save_route_allowed").and_then(Value::as_bool).unwrap_or(false),
+    })
+}
+
+pub fn save_rules() -> &'static SaveRules {
+    static R: std::sync::OnceLock<SaveRules> = std::sync::OnceLock::new();
+    R.get_or_init(|| parse_save_rules(SAVES_TEXT).unwrap_or_else(|e| panic!("{e}")))
+}
+
+/// `/api/v1/saves/last-route-rust/<slot>`.
+pub fn slot_path(slot: &str) -> String {
+    format!("/api/v1/saves/{CLOUD_GAME_ID}/{slot}")
+}
+
+/// TODO 229: cloud saves only go through the v1 slot route, never the legacy `/api/account/save`.
+pub fn ensure_v1_save_path(path: &str) -> Result<(), NetError> {
+    if path.starts_with("/api/v1/saves/") || save_rules().legacy_route_allowed {
+        Ok(())
+    } else {
+        Err(NetError::Refused(error_texts().text("refused")))
+    }
+}
+
+/// `run-world-<N>`.
+pub fn world_slot(revision: i64) -> String {
+    format!("{}{revision}", save_rules().world_slot_prefix)
+}
+
+/// The N of a `run-world-N` slot name.
+pub fn world_revision_of(slot: &str) -> Option<i64> {
+    slot.strip_prefix(save_rules().world_slot_prefix.as_str())?.parse::<i64>().ok().filter(|n| *n >= 0)
+}
+
+/// TODO 421: of the known world revisions keep the newest `max` and return the older ones (oldest first), the slots to
+/// delete when a new revision saves.
+pub fn slots_to_prune(revisions: &[i64], max: usize) -> Vec<i64> {
+    let mut sorted: Vec<i64> = revisions.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let excess = sorted.len().saturating_sub(max);
+    sorted.truncate(excess);
+    sorted
+}
+
+/// TODO 421: deletes the older `run-world-N` slots (`data: null`). Returns `(revision, deleted)`; a slot the account
+/// does not hold, or a newer one (STALE), reports `false`.
+pub fn prune_world_slots(cfg: &BackendConfig, token: &str, known_revisions: &[i64]) -> Vec<(i64, bool)> {
+    let now = super::unix_now();
+    slots_to_prune(known_revisions, save_rules().max_world_slots)
+        .into_iter()
+        .map(|rev| {
+            let done = matches!(cloud_put(cfg, &slot_path(&world_slot(rev)), token, None, now), Ok(CloudPut::Stored { .. }));
+            (rev, done)
+        })
+        .collect()
+}
+
+/// TODO 420: a PUT the server answered. The older server said 409 STALE; the newer one answers 200 with the STORED time.
+/// An answer stamped later than what was sent means the account holds a newer copy: stale (newest wins).
+pub fn put_outcome(sent_updated_at: i64, answered_updated_at: i64) -> CloudPut {
+    if sent_updated_at > 0 && answered_updated_at > sent_updated_at {
+        CloudPut::Stale { stored_updated_at: answered_updated_at }
+    } else {
+        CloudPut::Stored { updated_at: answered_updated_at }
+    }
+}
+
+// ---- room directory and reserved-room owner tools ----------------------------------------------------------------
+
+/// One row of the room list: the room and how full it is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoomListing {
+    pub room: RoomEndpoint,
+    pub capacity: u32,
+}
+
+impl RoomListing {
+    pub fn full(&self) -> bool {
+        self.room.players >= self.capacity as i64
+    }
+}
+
+/// The rooms in a directory answer (`{rooms: [...]}`), sorted by code.
+pub fn parse_room_list(p: &Json) -> Vec<RoomListing> {
+    let mut rooms: Vec<RoomListing> = p
+        .get("rooms")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_object).map(|o| RoomListing { room: RoomEndpoint::from_json(o), capacity: MAX_PLAYERS }).collect())
+        .unwrap_or_default();
+    rooms.retain(|r| !r.room.code.is_empty());
+    rooms.sort_by(|a, b| a.room.code.cmp(&b.room.code));
+    rooms
+}
+
+/// TODO 193: re-reads the open rooms from the directory (HTTP only; the relay is never touched), so the list refreshes
+/// without reconnecting.
+pub fn list_rooms(cfg: &BackendConfig) -> Result<Vec<RoomListing>, NetError> {
+    guard(cfg)?;
+    let r = Request::new(Method::Get, cfg.url("/api/enet/rooms")).header("Accept", "application/json").send()?;
+    Ok(parse_room_list(&check(r)?))
+}
+
+/// TODO 857: queues a `kick` for a reserved room.
+pub fn reserved_kick(cfg: &BackendConfig, token: &str, code: &str, player: &str) -> Result<Json, NetError> {
+    let mut args = Json::new();
+    args.insert("name".into(), Value::String(player.trim().to_uppercase()));
+    reserved_command(cfg, token, code, "kick", &args)
+}
+
+/// TODO 857: renames a reserved room (a `settings` command carrying `title`).
+pub fn reserved_rename(cfg: &BackendConfig, token: &str, code: &str, title: &str) -> Result<Json, NetError> {
+    let mut args = Json::new();
+    args.insert("title".into(), Value::String(title.trim().to_uppercase()));
+    reserved_command(cfg, token, code, "settings", &args)
+}
+
+/// TODO 877: the owner moderation review queue from `POST /api/admin/flags {sessionToken}` (backend/moderation.mjs
+/// `adminList`): one flag per account with an open review, keyed by the account name. Accounts with no open review are
+/// left out; the order is the server's.
+pub fn parse_moderation_flags(reply: &Json) -> Vec<crate::ui::admin::hunter_view::Flag> {
+    let Some(accounts) = reply.get("accounts").and_then(Value::as_array) else { return Vec::new() };
+    accounts
+        .iter()
+        .filter(|a| a.get("reviewOpen").and_then(Value::as_u64).unwrap_or(0) > 0)
+        .filter_map(|a| {
+            let name = a.get("username").and_then(Value::as_str).map(canonical_account_name).filter(|n| !n.is_empty())?;
+            let reason = a.get("reason").and_then(Value::as_str).map(|r| super::scrub(r).to_uppercase()).unwrap_or_default();
+            Some(crate::ui::admin::hunter_view::Flag { id: name.clone(), who: name, reason })
+        })
+        .collect()
+}
+
+/// TODO 877: lists the flags awaiting the owner's decision (full admin owners only; others get 403 ADMIN_OWNER_REQUIRED).
+pub fn moderation_flags(cfg: &BackendConfig, token: &str) -> Result<Vec<crate::ui::admin::hunter_view::Flag>, NetError> {
+    Ok(parse_moderation_flags(&post(cfg, "/api/admin/flags", &json!({"sessionToken": token}))?))
+}
+
+/// The `/api/admin/flags/set` action for a verdict: APPROVE upholds the flag (`extend`, the server's default hours),
+/// DISMISS clears the review (`dismiss`). Either closes the account's open reviews.
+pub fn moderation_action(approve: bool) -> &'static str {
+    if approve {
+        "extend"
+    } else {
+        "dismiss"
+    }
+}
+
+/// TODO 877: posts the owner's verdict on the flag `id` (an account name), as `ModQueue::approve` / `dismiss` return it.
+pub fn moderation_decide(cfg: &BackendConfig, token: &str, id: &str, approve: bool) -> Result<Json, NetError> {
+    let body = json!({"sessionToken": token, "username": canonical_account_name(id), "action": moderation_action(approve)});
+    post(cfg, "/api/admin/flags/set", &body)
+}
+
+#[cfg(test)]
+mod client_flow_tests {
+    use super::*;
+
+    #[test]
+    fn account_names_follow_the_rule() {
+        assert_eq!(validate_account_name("  kyttu_1 ").unwrap(), "KYTTU_1");
+        assert!(valid_account_name("abc"));
+        assert!(valid_account_name(&"a".repeat(ACCOUNT_NAME_MAX)));
+        assert!(!valid_account_name("ab"));
+        assert!(!valid_account_name(&"a".repeat(ACCOUNT_NAME_MAX + 1)));
+        assert!(!valid_account_name("has space"));
+        assert!(!valid_account_name("dash-name"));
+        assert!(matches!(validate_account_name("x"), Err(NetError::Refused(m)) if m == m.to_uppercase() && !m.is_empty()));
+    }
+
+    #[test]
+    fn sign_in_refuses_a_bad_name_before_sending() {
+        let cfg = BackendConfig::loopback(1);
+        assert!(matches!(sign_in(&cfg, "a!", "pw"), Err(NetError::Refused(_))), "no request, so not a transport error");
+    }
+
+    #[test]
+    fn errors_map_to_upper_case_text() {
+        let t = error_texts();
+        assert_eq!(t.describe(&NetError::Offline), t.text("offline"));
+        assert_eq!(t.describe(&NetError::Timeout), t.text("timeout"));
+        assert_eq!(t.describe(&NetError::Transport("connection refused 10.0.0.1:80".into())), t.text("unreachable"));
+        let http = |status: u16, code: &str, error: &str| NetError::Http { status, code: code.into(), error: error.into(), body: Value::Null };
+        assert_eq!(t.describe(&http(403, "ROOM_FULL", "full")), "THE ROOM IS FULL");
+        assert_eq!(t.describe(&http(503, "", "")), t.text("server_error"));
+        assert_eq!(t.describe(&http(418, "", "teapot")), "TEAPOT");
+        assert_eq!(t.describe(&http(418, "", "")), t.text("refused"));
+        for e in [NetError::Offline, NetError::Timeout, NetError::Protocol("x".into()), http(401, "", "")] {
+            let m = t.describe(&e);
+            assert_eq!(m, m.to_uppercase());
+        }
+    }
+
+    #[test]
+    fn world_slots_prune_keeps_the_newest_ten() {
+        assert_eq!(save_rules().max_world_slots, 10);
+        let all: Vec<i64> = (1..=13).rev().collect();
+        let pruned = slots_to_prune(&all, save_rules().max_world_slots);
+        assert_eq!(pruned, vec![1, 2, 3]);
+        assert!(slots_to_prune(&[4, 5], 10).is_empty());
+        assert_eq!(world_slot(7), "run-world-7");
+        assert_eq!(world_revision_of("run-world-7"), Some(7));
+        assert_eq!(world_revision_of("run"), None);
+    }
+
+    #[test]
+    fn only_the_v1_route_is_used() {
+        assert!(ensure_v1_save_path(&cloud_path(1)).is_ok());
+        assert!(ensure_v1_save_path(&slot_path("progress")).is_ok());
+        assert!(ensure_v1_save_path("/api/account/save").is_err());
+        let cfg = BackendConfig::loopback(1);
+        assert!(matches!(cloud_get(&cfg, "/api/account/save", "t"), Err(NetError::Refused(_))));
+    }
+
+    #[test]
+    fn a_stale_put_answered_200_is_newest_wins() {
+        assert_eq!(put_outcome(100, 100), CloudPut::Stored { updated_at: 100 });
+        assert_eq!(put_outcome(100, 250), CloudPut::Stale { stored_updated_at: 250 });
+        assert_eq!(put_outcome(0, 250), CloudPut::Stored { updated_at: 250 }, "no claim sent, nothing to be stale against");
+    }
+
+    #[test]
+    fn room_list_has_capacity_and_sorted_codes() {
+        let p = serde_json::json!({"rooms": [{"code": "BBBBB", "players": 16}, {"code": "AAAAA", "players": 2}, {"players": 1}]});
+        let rooms = parse_room_list(p.as_object().unwrap());
+        assert_eq!(rooms.iter().map(|r| r.room.code.as_str()).collect::<Vec<_>>(), vec!["AAAAA", "BBBBB"]);
+        assert!(!rooms[0].full());
+        assert!(rooms[1].full());
+    }
+
+    #[test]
+    fn manifest_time_reads_seconds_or_milliseconds() {
+        let a = serde_json::json!({"publishedAt": 1_700_000_000}).as_object().unwrap().clone();
+        let b = serde_json::json!({"publishedAt": 1_700_000_000_000i64}).as_object().unwrap().clone();
+        assert_eq!(manifest_time_secs(&a), 1_700_000_000);
+        assert_eq!(manifest_time_secs(&b), 1_700_000_000);
+        assert_eq!(manifest_time_secs(&Json::new()), 0);
+    }
+
+    #[test]
+    fn admin_ui_needs_the_server_flag() {
+        let mut r = AccountReply { username: "KYTTU".into(), session_token: "t".into(), ..Default::default() };
+        assert!(!r.grants_admin_ui(), "the name alone grants nothing");
+        r.admin = true;
+        assert!(r.grants_admin_ui());
+    }
+
+    #[test]
+    fn data_files_parse() {
+        ErrorTexts::parse(ERRORS_TEXT).unwrap();
+        parse_save_rules(SAVES_TEXT).unwrap();
+    }
+
+    #[test]
+    fn moderation_flags_keep_only_open_reviews() {
+        let reply = json!({"ok": true, "accounts": [
+            {"username": "alpha", "reviewOpen": 2, "reason": "speed"},
+            {"username": "BETA", "reviewOpen": 0, "reason": "kick"},
+            {"username": "", "reviewOpen": 1}
+        ]});
+        let flags = parse_moderation_flags(reply.as_object().unwrap());
+        assert_eq!(flags.len(), 1);
+        assert_eq!((flags[0].id.as_str(), flags[0].who.as_str(), flags[0].reason.as_str()), ("ALPHA", "ALPHA", "SPEED"));
+        assert!(parse_moderation_flags(&Json::new()).is_empty());
+        assert_eq!((moderation_action(true), moderation_action(false)), ("extend", "dismiss"));
     }
 }

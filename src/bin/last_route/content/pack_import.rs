@@ -31,17 +31,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// The `Pack.dir` of an imported pack is `web-pack:<id>`: not a folder, a key into the imported packs in memory.
 pub const VIRTUAL_PREFIX: &str = "web-pack:";
 
-/// One file of a pack (`MOD_LIMITS.max_file_bytes` in lr_server).
-pub const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
-/// All files of one pack (`MOD_LIMITS.max_pack_bytes`).
-pub const MAX_PACK_BYTES: usize = 128 * 1024 * 1024;
-/// Files in one pack (`MOD_LIMITS.max_files`).
-pub const MAX_FILES: usize = 512;
-/// Every imported pack together: what this browser keeps. (Held in memory and in IndexedDB.)
-pub const MAX_TOTAL_BYTES: usize = 256 * 1024 * 1024;
-/// Entries read from one zip, and files looked at in one chosen folder.
-pub const MAX_LISTED: usize = 4096;
-/// `MOD_LIMITS.max_text`: a name or author is cut to this.
+/// (The size and count limits are data: data/packs/limits.json, read by `packs::limits()`.) `MOD_LIMITS.max_text`: a name or author is cut to this.
 const MAX_TEXT: usize = 120;
 
 /// `FALLBACK_PACK_KINDS` in lr_server: the folders a pack's JSON may sit in.
@@ -317,7 +307,7 @@ pub fn assemble(files: Vec<(String, Result<Vec<u8>, String>)>) -> Result<Importe
                         format!("{path}: {why}")
                     }
                 })?;
-                if bytes.len() > MAX_FILE_BYTES {
+                if bytes.len() > packs::limits().max_file_bytes {
                     return Err(format!("{path}: the file is over the 16 MB limit (FILE_TOO_LARGE)"));
                 }
                 if !lower.insert(path.to_lowercase()) {
@@ -330,11 +320,11 @@ pub fn assemble(files: Vec<(String, Result<Vec<u8>, String>)>) -> Result<Importe
     let Some(manifest) = kept.get("pack.json") else {
         return Err("pack.json is missing (PACK_JSON_MISSING)".to_string());
     };
-    if kept.len() > MAX_FILES {
-        return Err(format!("{} files; a pack may hold at most {MAX_FILES} (TOO_MANY_FILES)", kept.len()));
+    if kept.len() > packs::limits().max_files {
+        return Err(format!("{} files; a pack may hold at most {} (TOO_MANY_FILES)", kept.len(), packs::limits().max_files));
     }
     let id = check_manifest(manifest)?;
-    if kept.values().map(Vec::len).sum::<usize>() > MAX_PACK_BYTES {
+    if kept.values().map(Vec::len).sum::<usize>() > packs::limits().max_pack_bytes {
         return Err("the pack is over the 128 MB limit (PACK_TOO_LARGE)".to_string());
     }
     for (path, bytes) in &kept {
@@ -512,11 +502,11 @@ pub fn unzip(bytes: &[u8], wanted: &dyn Fn(&str) -> bool) -> Result<Vec<(String,
     if total == 0xFFFF || cd_offset == 0xFFFF_FFFF {
         return Err("zip64 archives are not supported; make a normal .zip".to_string());
     }
-    if total > MAX_LISTED {
-        return Err(format!("the .zip holds {total} entries; at most {MAX_LISTED} are read"));
+    if total > packs::limits().max_listed {
+        return Err(format!("the .zip holds {total} entries; at most {} are read", packs::limits().max_listed));
     }
     let mut pos = cd_offset;
-    let mut budget = MAX_TOTAL_BYTES;
+    let mut budget = packs::limits().max_total_bytes;
     let mut out = Vec::new();
     for _ in 0..total {
         if bytes.get(pos..pos + 4) != Some(&[0x50, 0x4b, 0x01, 0x02]) {
@@ -541,7 +531,7 @@ pub fn unzip(bytes: &[u8], wanted: &dyn Fn(&str) -> bool) -> Result<Vec<(String,
             if flags & 1 != 0 {
                 return Err("the file is password protected".to_string());
             }
-            if usize_ > MAX_FILE_BYTES {
+            if usize_ > packs::limits().max_file_bytes {
                 return Err("the file is too big".to_string());
             }
             if bytes.get(local..local + 4) != Some(&[0x50, 0x4b, 0x03, 0x04]) {
@@ -561,7 +551,7 @@ pub fn unzip(bytes: &[u8], wanted: &dyn Fn(&str) -> bool) -> Result<Vec<(String,
         })();
         if entry.is_ok() {
             if usize_ > budget {
-                return Err(format!("the .zip unpacks to more than {} MB", MAX_TOTAL_BYTES / (1024 * 1024)));
+                return Err(format!("the .zip unpacks to more than {} MB", packs::limits().max_total_bytes / (1024 * 1024)));
             }
             budget -= usize_;
         }
@@ -609,7 +599,7 @@ pub fn decode(bytes: &[u8]) -> Result<ImportedPack, String> {
     let mut pos = MAGIC.len();
     let count = le32(bytes, pos).ok_or_else(bad)?;
     pos += 4;
-    if count > MAX_FILES {
+    if count > packs::limits().max_files {
         return Err(bad());
     }
     let mut files = Vec::with_capacity(count);
@@ -711,10 +701,10 @@ impl Registry {
             }
             let others: Vec<Arc<ImportedPack>> = self.packs.values().filter(|p| p.id != pack.id).cloned().collect();
             let used: usize = others.iter().map(|p| p.total_bytes()).sum();
-            if used + pack.total_bytes() > MAX_TOTAL_BYTES {
+            if used + pack.total_bytes() > packs::limits().max_total_bytes {
                 report.rejected.push((
                     cand.label,
-                    format!("the browser keeps at most {} MB of imported mods; remove one first", MAX_TOTAL_BYTES / (1024 * 1024)),
+                    format!("the browser keeps at most {} MB of imported mods; remove one first", packs::limits().max_total_bytes / (1024 * 1024)),
                 ));
                 continue;
             }
@@ -770,9 +760,9 @@ pub fn loaded_ids(content: &Content) -> Vec<String> {
     content.packs.iter().filter_map(|p| virtual_id(&p.dir).map(str::to_string)).collect()
 }
 
-/// The page-reported byte length of a stored record as an allocation size; None when missing or above `MAX_PACK_BYTES`.
+/// The page-reported byte length of a stored record as an allocation size; None when missing or above `packs::limits().max_pack_bytes`.
 fn checked_stored_size(size: i32) -> Option<usize> {
-    usize::try_from(size).ok().filter(|&n| n <= MAX_PACK_BYTES)
+    usize::try_from(size).ok().filter(|&n| n <= packs::limits().max_pack_bytes)
 }
 
 /// Start-up: reads the stored packs back from the page, remembers them, and loads them into `c` like folder packs.
@@ -1181,16 +1171,16 @@ mod tests {
         assert!(why.contains("assets/big.png") && why.contains("16 MB") && why.contains("FILE_TOO_LARGE"), "{why}");
         // a file over the cap that did arrive
         let mut files = good_folder("p", "neon_pack", "neonling");
-        files.push(PickedFile { name: "p/assets/big.png".into(), bytes: Ok(vec![0; MAX_FILE_BYTES + 1]) });
+        files.push(PickedFile { name: "p/assets/big.png".into(), bytes: Ok(vec![0; packs::limits().max_file_bytes + 1]) });
         assert!(only_reason(&import(files, &mut reg, &mut store)).contains("FILE_TOO_LARGE"));
         // too many files
         let mut files = good_folder("p", "neon_pack", "neonling");
-        files.extend((0..MAX_FILES).map(|i| PickedFile { name: format!("p/assets/f{i}.png"), bytes: Ok(vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]) }));
+        files.extend((0..packs::limits().max_files).map(|i| PickedFile { name: format!("p/assets/f{i}.png"), bytes: Ok(vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]) }));
         let why = only_reason(&import(files, &mut reg, &mut store));
         assert!(why.contains("TOO_MANY_FILES"), "{why}");
         // all imported mods together
         let mut full = ImportedPack { id: "huge_pack".into(), ..Default::default() };
-        full.files.insert("pack.json".into(), vec![0; MAX_TOTAL_BYTES - 10]);
+        full.files.insert("pack.json".into(), vec![0; packs::limits().max_total_bytes - 10]);
         reg.insert(full);
         let why = only_reason(&import(good_folder("p", "neon_pack", "neonling"), &mut reg, &mut store));
         assert!(why.contains("256 MB") && why.contains("remove one first"), "{why}");
@@ -1299,7 +1289,7 @@ mod tests {
         assert_eq!(checked_stored_size(-1), None);
         assert_eq!(checked_stored_size(i32::MAX), None);
         assert_eq!(checked_stored_size(1024), Some(1024));
-        assert_eq!(checked_stored_size(MAX_PACK_BYTES as i32), Some(MAX_PACK_BYTES));
+        assert_eq!(checked_stored_size(packs::limits().max_pack_bytes as i32), Some(packs::limits().max_pack_bytes));
     }
 
     #[test]
@@ -1369,7 +1359,7 @@ mod tests {
         // a declared size over the file limit is refused without inflating
         let mut huge = zip(&[("a.json", &data, false)]);
         let cd = huge.windows(4).position(|w| w == [0x50, 0x4b, 0x01, 0x02]).unwrap();
-        huge[cd + 24..cd + 28].copy_from_slice(&((MAX_FILE_BYTES as u32) + 1).to_le_bytes());
+        huge[cd + 24..cd + 28].copy_from_slice(&((packs::limits().max_file_bytes as u32) + 1).to_le_bytes());
         assert_eq!(unzip(&huge, &all).unwrap()[0].1, Err("the file is too big".to_string()));
         // not a zip, and a zip cut short
         assert!(unzip(b"PK nothing", &all).is_err());
@@ -1394,9 +1384,9 @@ mod tests {
     fn the_limits_and_kinds_match_the_pack_index_in_lr_server() {
         let kinds = PACK_KINDS.iter().map(|k| format!("\"{k}\"")).collect::<Vec<_>>().join(", ");
         assert!(SERVER_SOURCE.contains(&format!("&[{kinds}]")), "PACK_KINDS drifted from FALLBACK_PACK_KINDS in lr_server");
-        assert!(SERVER_SOURCE.contains(&format!("max_file_bytes: {} * 1024 * 1024,", MAX_FILE_BYTES / (1024 * 1024))));
-        assert!(SERVER_SOURCE.contains(&format!("max_pack_bytes: {} * 1024 * 1024,", MAX_PACK_BYTES / (1024 * 1024))));
-        assert!(SERVER_SOURCE.contains(&format!("max_files: {MAX_FILES},")));
+        assert!(SERVER_SOURCE.contains(&format!("max_file_bytes: {} * 1024 * 1024,", packs::limits().max_file_bytes / (1024 * 1024))));
+        assert!(SERVER_SOURCE.contains(&format!("max_pack_bytes: {} * 1024 * 1024,", packs::limits().max_pack_bytes / (1024 * 1024))));
+        assert!(SERVER_SOURCE.contains(&format!("max_files: {},", packs::limits().max_files)));
         assert!(SERVER_SOURCE.contains(&format!("max_text: {MAX_TEXT},")));
         let keys = MANIFEST_KEYS.iter().map(|k| format!("\"{k}\"")).collect::<Vec<_>>().join(", ");
         assert!(SERVER_SOURCE.contains(&format!("[&str; 9] = [{keys}]")), "MANIFEST_KEYS drifted");

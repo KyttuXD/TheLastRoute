@@ -47,19 +47,40 @@ jobs:
         with:
           toolchain: "1.99.1"
 
+      # Server deps split: every job here builds with --features server, which compiles a different crate graph from the
+      # plain game build (build.yml windows, nightly-*.yml), so this key carries "server". Sharing one key between the two
+      # graphs makes each run overwrite the other's cache. build.yml's linux job (it also builds lr_server) uses linux-server.
       - uses: Swatinem/rust-cache@v2
+        id: cache
         with:
-          key: test-${{ matrix.os }}
+          key: test-server-${{ matrix.os }}
+
+      - name: Build times header
+        shell: bash
+        run: |
+          printf '### Build times (test, ${{ matrix.os }})\n\n| step | os | cache | elapsed |\n|---|---|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
 
       # One run over one crate graph. No src or tests file is cfg-gated on the server feature, so
       # the lib and last_route suites run the same tests as before; the feature only adds lr_server.
-      - name: cargo test --profile ci --lib --bin last_route --bin lr_server
-        run: cargo test --locked --profile ci --lib --bin last_route --bin lr_server --features server
+      - name: cargo test --profile ci
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        run: |
+          t0=$(date +%s); date -u +"start %FT%TZ"
+          trap 'echo "| cargo test --profile ci | ${{ runner.os }} | cache-hit: ${CACHE_HIT:-n/a} | $(( $(date +%s) - t0 ))s |" >> "$GITHUB_STEP_SUMMARY"; date -u +"end   %FT%TZ"' EXIT
+          cargo test --locked --profile ci --lib --bin last_route --bin lr_server --features server
 
       # The ci profile is the test profile without full debug info, and it reuses the test build's
       # dependency artifacts. A separate release build was a second full compile of the crate.
-      - name: Build ci binaries
-        run: cargo build --locked --profile ci --bins --features server
+      - name: cargo build --profile ci --bins
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        run: |
+          t0=$(date +%s); date -u +"start %FT%TZ"
+          trap 'echo "| cargo build --profile ci --bins | ${{ runner.os }} | cache-hit: ${CACHE_HIT:-n/a} | $(( $(date +%s) - t0 ))s |" >> "$GITHUB_STEP_SUMMARY"; date -u +"end   %FT%TZ"' EXIT
+          cargo build --locked --profile ci --bins --features server
 
       # Exit 0 pass, 1 fail, 2 nothing ran. The JSON report is kept as an artifact.
       - name: Headless test suites

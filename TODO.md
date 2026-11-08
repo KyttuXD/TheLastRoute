@@ -10,8 +10,8 @@ items rather than left in an ambiguous in-progress state.
 - [ ] Warm pool of Rust room hosts on vps2, off by default and switchable. Why: it cuts room start time, but it needs directory and ticket changes and KT deferred it.
 - [ ] AKIRI always-on room moved to the Rust host. Why: blocked until the Rust host registers reserved codes.
 - [ ] Inferno lava pit is not drawn (see the Inferno item under Godot parity and the Known bugs list). Why: lava regions render as a solid wall mass.
-- [ ] Quality governor parity (see Performance and FPS). Why: there is no frame budget yet, so slow machines cannot step quality down.
-- [ ] Map flat textures: floral, star, parquet, check, runner, safe, terrazzo, seawall, whitewash, tealpanel and skylight have no flat version yet. Why: the flat-texture set is incomplete, so these floors do not match the rest of the world.
+- [x] Quality governor parity (see Performance and FPS). Why: there is no frame budget yet, so slow machines cannot step quality down. (already done: app/quality.rs)
+- [x] Map flat textures: floral, star, parquet, check, runner, safe, terrazzo, seawall, whitewash, tealpanel and skylight have no flat version yet. Why: the flat-texture set is incomplete, so these floors do not match the rest of the world. (already done: render/textures/mod.rs flat painters)
 - [ ] Stair texture rework follow-up, if the first pass needs more. Why: stair looks are a KT priority and one pass may not be enough.
 - [ ] Hunters and NPCs in sewer water: verify no regression after the fix for spawning on water and getting stuck in it. Why: the collision change affects how they enter and leave water and has not been checked in a run.
 - [ ] Client listing poll at 0.5 s, measured on a real device. Why: the interval was chosen without a measurement on device.
@@ -19,11 +19,11 @@ items rather than left in an ambiguous in-progress state.
 - [ ] Confirm the Level -2 water depth (0.7 m, down from 1.4 m) with KT before wading and swim tuning is locked. Why: it is a gameplay change and KT has not signed it off (docs/SEWERS.md).
 - [ ] Add a test that every sewer prop and ceiling fixture fits under the 4.0 m sewer wall height, then look at it in the running game. Why: the height readers are untested at 4.0 m and nothing has been seen on screen.
 - [ ] Check the Mansion doors in a run on KT-MBA (the luxuryRoomDoor models and data are fine). Why: the doors are invisible in game, so the draw path is the suspect.
-- [ ] Fix bed placement in furnished.rs so beds stop sticking out into the hallway. Why: a bed in the hallway blocks the way and breaks the room layout.
+- [x] Fix bed placement in furnished.rs so beds stop sticking out into the hallway. Why: a bed in the hallway blocks the way and breaks the room layout. (already done: furnished.rs:957)
 - [x] Account screen kicker reads "KYTTU - THE LAST ROUTE" (game retitled "KYTTU - The Last Route" on 2026-11-08; the macOS bundle keeps the folder name "KYTTU The Last Route.app" so the updater and installed copies still find it).
 - [ ] Deploy the public route process on vps2 (unit in docs/SERVERS.md), then set `client_host_fallback` to false. Why: the public route has no real host until then; the server change needs KT's approval.
 - [ ] Ship the CREATE ROOM build fix (docs/patches/node-hosted-build.patch and the region agent's Rust host). Why: CREATE ROOM is refused with BUILD MISMATCH on the live site.
-- [ ] Admin STATUS should show the real server state in a hosted room, not always "SERVER OFFLINE (SOLO, NO SERVER)". Why: the status line misleads the admin.
+- [x] Admin STATUS should show the real server state in a hosted room, not always "SERVER OFFLINE (SOLO, NO SERVER)". Why: the status line misleads the admin. (already done: app/mod.rs (RoomStatus from NetSession))
 
 ## GitHub CI and deploy (2026-11-07, repo is public)
 
@@ -32,7 +32,7 @@ items rather than left in an ambiguous in-progress state.
 - [ ] Dry-run check on the first real deploy: watch the deploy-web run, then curl https://lastrouterust.games.kyttuslab.org/version.json.
 - [ ] Remove the stale NIGHTLY_SSH_KEY and NIGHTLY_KNOWN_HOSTS secrets (old vps3 publish, no longer used).
 - [ ] Decide whether the in-game macOS updater should pick the Intel or Apple Silicon zip (nightly now has separate files, no universal zip).
-- [ ] Tests that read tests/parity/ or reference/ need those folders, which are now local-only (git history was rewritten to remove them). They skip or fail on a fresh clone; add a note or skip guard.
+- [x] Tests that read tests/parity/ or reference/ need those folders, which are now local-only (git history was rewritten to remove them). They skip or fail on a fresh clone; add a note or skip guard. (already done: shared/test_support.rs:1-9)
 - [ ] Ask KT before any server change beyond the lr-deploy user (vps2 deploy user created 2026-11-07).
 
 ## Status 2026-11-04
@@ -118,7 +118,7 @@ Today every area is a box with a floor, walls and props. These items give each r
 - [ ] Per-region wall treatments beyond the flat texture: panelling, tiles, partitions, half walls, arches and columns
 - [ ] Area-specific props: a signature prop set for each room role (the mall's shops, the hospital's wards), placed to read at a glance
 - [ ] Floor variety inside a region: rugs, tile patterns, worn or wet patches, drains and grates
-- [ ] Per-area light colour and temperature, so a diner, a ward and a stock room read differently in the dark
+- [ ] Per-area light colour and temperature, so a diner, a ward and a stock room read differently in the dark (2026-11-08: area_lights.json and lookup written; lamp hook left)
 - [ ] Clutter and wear: boxes, stacked chairs, cones, tape and posters placed by rule, not just scattered
 - [ ] Landmark areas in each region that the player can recognise and use as a waypoint
 - [ ] Sound and ambience per area (a hum in the stock room, a radio in the diner), tied to the audio cue system
@@ -184,33 +184,33 @@ Sources: the website game at KyttusLab/games/night-watch (src/modes, docs/ROADMA
 
 ## Multiplayer (Last Route)
 
-- [ ] Nearby-player text to speech comes first (KT, 2026-11-04): a chat line from a player near you is spoken aloud (volume and range by distance, a per-player mute and a speech toggle in Settings, rate and voice in data). Voice chat (capture, IMA ADPCM codec, playback) is a later step and builds on the same range and mute rules. (update 2026-11-04: audio/tts.rs exists but nothing calls it; hook it into chat and add the Settings toggle)
+- [x] Nearby-player text to speech comes first (KT, 2026-11-04): a chat line from a player near you is spoken aloud (volume and range by distance, a per-player mute and a speech toggle in Settings, rate and voice in data). Voice chat (capture, IMA ADPCM codec, playback) is a later step and builds on the same range and mute rules. (update 2026-11-04: audio/tts.rs exists but nothing calls it; hook it into chat and add the Settings toggle) (already done: app/mod.rs:1040-1047)
 - [ ] Two-window room test: one host and one guest on this laptop, room code join, both see each other move (still needs a person at the screen, KT-MBA)
 - [ ] Two-machine test: the Mac on KT-MBA joins a room hosted on this laptop, and the reverse
 - [ ] Nightly server build: deploy the nightly-server Linux build to the VPS (194.156.90.219) after a check on a test port
 - [ ] VPS update procedure: stop the lastroute-rust service, replace /opt/lastroute-rust/current/lr_server, check the SHA-256, start the service
 - [ ] Hunter stats stay hidden from other players in a room (the stats check from the open questions, Q24)
-- [ ] Room directory: list open rooms, show capacity, and refresh without reconnecting
-- [ ] Reconnect: a player who drops can rejoin their room within the reserved window
-- [ ] Host migration or room close when the host leaves, with a clear message to the others
+- [ ] Room directory: list open rooms, show capacity, and refresh without reconnecting (2026-11-08: client logic and tests written (net/api.rs, ui/account_panel.rs etc.), not built; menu/app hooks left)
+- [ ] Reconnect: a player who drops can rejoin their room within the reserved window (2026-11-08: server slot hold and client rejoin.rs written, not built; routes and app hooks left)
+- [ ] Host migration or room close when the host leaves, with a clear message to the others (2026-11-08: room close with HOST LEFT reason written server and client, not built; host migration left)
 - [ ] Co-op revives: downed runners, a revive hold and the window (`game/player/revive_downs.gd`, `_update_revives` at `infinite_route_test.gd` 6901) (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Spectate a downed or ghost runner (the SPECTATE admin button has no handler yet)
-- [ ] Player list shows every connected player, not only the local row
+- [x] Spectate a downed or ghost runner (the SPECTATE admin button has no handler yet) (already done: game/spectate.rs)
+- [ ] Player list shows every connected player, not only the local row (2026-11-08: logic and tests written (net/rejoin, anticheat, host_requests, ui/room_panel), not built; mod.rs and menu/world_sync hooks left)
 - [ ] Runner sync checked at 20 Hz under 100 ms of latency
 - [ ] Hunters and their state are identical on every client in a room (the host simulates; guests display)
 - [ ] NPC teammates visible to other players in the room
-- [ ] Chat: text chat between players in a room
-- [ ] Player and room limits: capacity, kick and ban for the host, with the existing moderation rules
-- [ ] Multiplayer error messages for refused joins, timeouts and a server that is offline
+- [x] Chat: text chat between players in a room (already done: app/mod.rs:1040-1047)
+- [ ] Player and room limits: capacity, kick and ban for the host, with the existing moderation rules (2026-11-08: server rules and tests written in lr_server/rooms, not built; routes.rs hooks still to wire)
+- [ ] Multiplayer error messages for refused joins, timeouts and a server that is offline (2026-11-08: client logic and tests written (net/api.rs, ui/account_panel.rs etc.), not built; menu/app hooks left)
 
 ## Admin custom rooms (2026-11-03)
 
 - [x] lr_server deletes idle admin reservations (RESERVED_ROOM_IDLE_SECONDS, with a keep flag); deployed to VPS3 (done 2026-11-04)
 
-- [ ] Admins can type any room code into the JOIN ROOM code box, even an empty or unused code, and start that room
-- [ ] An empty code entered by an admin creates the room with that code, so a test room can be started from the join screen
-- [ ] Admin-started rooms show an ADMIN tag in the room list and in the room header
-- [ ] Admin rooms keep the admin's chosen settings (seed, mode, difficulty) when the code is entered again later
+- [ ] Admins can type any room code into the JOIN ROOM code box, even an empty or unused code, and start that room (2026-11-08: server rules and tests written in lr_server/rooms, not built; routes.rs hooks still to wire)
+- [ ] An empty code entered by an admin creates the room with that code, so a test room can be started from the join screen (2026-11-08: server rules and tests written in lr_server/rooms, not built; routes.rs hooks still to wire)
+- [ ] Admin-started rooms show an ADMIN tag in the room list and in the room header (2026-11-08: server listing flag written; routes.rs hook and client ADMIN tag left)
+- [ ] Admin rooms keep the admin's chosen settings (seed, mode, difficulty) when the code is entered again later (2026-11-08: server rules and tests written in lr_server/rooms, not built; routes.rs hooks still to wire)
 - [ ] Non-admin players still get the normal refusal for unknown codes, with the same wording as before
 - [ ] Admin room codes follow the existing code rules, and the server refuses a code that is already in use by another room
 - [ ] Check that an admin room started from the join screen works for two windows (see the multiplayer two-window test)
@@ -219,31 +219,31 @@ Sources: the website game at KyttusLab/games/night-watch (src/modes, docs/ROADMA
 
 ### Accounts (Rust client and server)
 
-- [ ] Sign-up and sign-in from the title's ACCOUNT screen, with the username rule 3-24 characters A-Z 0-9 _ (see OPEN_QUESTIONS 11)
-- [ ] Passwords stored only as scrypt hashes on the server, with the same parameters as the Node backend (the scrypt test vector in lr_server is the check)
-- [ ] Sign-out clears the saved session on this PC, and the signed-in name goes back to empty (guest)
-- [ ] Sessions expire on the server, and a session token from one PC is refused on another after sign-out
-- [ ] Saved sessions are per server: the primary server and any local test server keep separate sessions (the account config sections)
-- [ ] Password change and account deletion from ACCOUNT SETTINGS, with a confirmation step
+- [ ] Sign-up and sign-in from the title's ACCOUNT screen, with the username rule 3-24 characters A-Z 0-9 _ (see OPEN_QUESTIONS 11) (2026-11-08: client logic and tests written (net/api.rs, ui/account_panel.rs etc.), not built; menu/app hooks left)
+- [x] Passwords stored only as scrypt hashes on the server, with the same parameters as the Node backend (the scrypt test vector in lr_server is the check) (already done: lr_server/accounts/account_service.rs)
+- [ ] Sign-out clears the saved session on this PC, and the signed-in name goes back to empty (guest) (2026-11-08: client logic and tests written (net/api.rs, ui/account_panel.rs etc.), not built; menu/app hooks left)
+- [x] Sessions expire on the server, and a session token from one PC is refused on another after sign-out (done 2026-11-08)
+- [ ] Saved sessions are per server: the primary server and any local test server keep separate sessions (the account config sections) (2026-11-08: client logic and tests written (net/api.rs, ui/account_panel.rs etc.), not built; menu/app hooks left)
+- [ ] Password change and account deletion from ACCOUNT SETTINGS, with a confirmation step (2026-11-08: server needs currentPassword and two-step delete; client panel written, ACCOUNT screen hook left)
 - [ ] Password reset path for players who lose their password (contact flow or recovery code), decided first in OPEN_QUESTIONS. Done for admins (2026-11-06): `lr_server reset-password`, `POST /api/admin/account/reset-password` and the admin menu's RESET PASSWORD field, see docs/SERVERS.md; a player-facing self-service path is still open
-- [ ] Account saves: each account's run saves go through /api/v1/saves/:gameId/:slot, with the same slot rules as the website
+- [x] Account saves: each account's run saves go through /api/v1/saves/:gameId/:slot, with the same slot rules as the website (done 2026-11-08)
 - [ ] Website and desktop accounts share one account store, so a name signed up on one works on the other
-- [ ] Migration: existing accounts in data/accounts.json load without loss, and the old session format still signs in once
-- [ ] lr_server default data dir is `.data` but AGENTS.md says `data/`: pick one and make the server, the deploy docs and the migration item agree
-- [ ] Admin accounts: the owner's account is the only one with admin tools, and admin status is checked on the server, not only in the client
-- [ ] Rate limits on sign-in and sign-up, with clear messages when they trip
+- [x] Migration: existing accounts in data/accounts.json load without loss, and the old session format still signs in once (done 2026-11-08)
+- [ ] lr_server default data dir is `.data` but AGENTS.md says `data/`: pick one and make the server, the deploy docs and the migration item agree (2026-11-08: .data kept and documented in docs/SERVERS.md; choice left for KT)
+- [x] Admin accounts: the owner's account is the only one with admin tools, and admin status is checked on the server, not only in the client (done 2026-11-08)
+- [x] Rate limits on sign-in and sign-up, with clear messages when they trip (done 2026-11-08)
 
 ### Servers (lr_server, VPS)
 
 - [x] VPS deploy: replace /opt/lastroute-rust/current/lr_server from the nightly-server release, check its SHA-256, restart lastroute-rust.service (done 2026-11-04: lr_server deployed to VPS3)
-- [ ] Health check endpoint and a script that reports whether the service answers on port 8105 (HTTP) and 1105 (relay)
+- [x] Health check endpoint and a script that reports whether the service answers on port 8105 (HTTP) and 1105 (relay) (done 2026-11-08)
 - [ ] Data backups: back up /var/lib/lastroute-rust (accounts, rooms, saves, crash reports) on a schedule, and test a restore
 - [ ] Secrets: /etc/lastroute-rust/lastroute-rust.env stays root-owned 0640 and is never printed or committed; document the rotation steps
-- [ ] Logs: rotate service logs, and make sure no password or session token is logged
-- [ ] Crash reports: uploaded from the client, stored per server, and viewable by the owner only
-- [ ] Mod packs: pack lists and downloads served from the server, with the blocked-pack rules checked on the server
-- [ ] Room directory: public rooms listed with capacity, and rooms cleaned up when they are empty
-- [ ] Server version reporting: the client shows the server build and warns when the client and server builds differ
+- [ ] Logs: rotate service logs, and make sure no password or session token is logged (2026-11-08: log redaction added; VPS log rotation left)
+- [x] Crash reports: uploaded from the client, stored per server, and viewable by the owner only (done 2026-11-08)
+- [x] Mod packs: pack lists and downloads served from the server, with the blocked-pack rules checked on the server (done 2026-11-08)
+- [ ] Room directory: public rooms listed with capacity, and rooms cleaned up when they are empty (2026-11-08: server rules and tests written in lr_server/rooms, not built; routes.rs hooks still to wire)
+- [x] Server version reporting: the client shows the server build and warns when the client and server builds differ (already done: net/api.rs:817)
 - [ ] Staging server: a second service on another port with the nightly-server build, for testing before the VPS update
 - [ ] A rollback step for the VPS: keep the previous lr_server binary and restore it with one command
 
@@ -263,13 +263,13 @@ Target: 100+ FPS on the Intel MacBook Air with vsync off, measured with the F7 o
 - [ ] Metal screenshots: implement `texture_read_pixels` in the vendored miniquad Metal backend and a Metal branch of macroquad's `grab_screen` (it is `unimplemented!()` for non-OpenGL ids), so `--screenshot`, `--self-test` and the F-key capture work without `--gfx gl`
 - [x] The 60-75 FPS cap on macOS was not OpenGL: miniquad's macOS run loop waits on a CVDisplayLink every iteration (75 Hz display here, both backends). With VSYNC off the wait is now skipped, live, through `window::set_frame_pacer` in the vendored miniquad; with vsync on it stays. Verified 2026-11-05 on the M4 with `LR_FRAME_PACER`: OpenGL window, vsync off, pacer on 74.1 FPS, pacer off 264 FPS. The default (VSYNC on, as in Godot) is the refresh rate by design; the Settings text now says so, and FPS LIMIT works above the refresh with vsync off (`--stress-limit` 120 gave 117.7, 200 gave 194.0)
 - [ ] Quality AUTO picks a tier from the GPU and the first second of frames on this Mac, instead of a fixed 50% render scale for every Mac
-- [ ] Quality governor: step the render scale down on slow frames and back up when there is headroom (Godot quality_governor.gd: 40/50/60 targets, four notches)
+- [x] Quality governor: step the render scale down on slow frames and back up when there is headroom (Godot quality_governor.gd: 40/50/60 targets, four notches) (already done: app/quality.rs)
 - [ ] Lamp shader cost: the fragment shader loops over 16 lamps plus the flashlight for every pixel; test 8 lamps and distance culling on Intel
-- [ ] Per-material lamp sort: shader::apply sorts the lamp list for every material each frame; compute it once per frame
+- [x] Per-material lamp sort: shader::apply sorts the lamp list for every material each frame; compute it once per frame (already done: render/shader.rs cached_nearest_lamps)
 - [ ] Draw calls: count meshes per floor and per frame in a run, and merge meshes that share a material
 - [ ] Triangle budget: GLB prop and character models, measured on this Mac; decimate or swap the heaviest ones
 - [ ] Texture sizes and count: check the atlas and floor set sizes against the Intel GPU memory budget
-- [ ] Vsync and frame cap: the window starts with vsync on; with vsync off and no limit the loop runs flat out on macOS (one core, may tear), so check tearing and CPU use on the laptops and consider sleeping while the window is unfocused
+- [ ] Vsync and frame cap: the window starts with vsync on; with vsync off and no limit the loop runs flat out on macOS (one core, may tear), so check tearing and CPU use on the laptops and consider sleeping while the window is unfocused (2026-11-08: bindings, frame cap, cursor owner written, not built; app/mod.rs hooks left)
 - [ ] Release profile: test codegen-units = 1 and lto = "thin" in [profile.release] for speed, with the build time recorded
 - [ ] Startup on Intel: assets and sounds load time on KT-MBA, measured against the boot card
 - [ ] Mesh rebuild on floor change (see Performance and FPS): the Intel frame cost of a chunk recentre, measured here before and after the fix
@@ -283,15 +283,15 @@ Tabs today (src/bin/last_route/ui/admin/mod.rs TABS): STATUS, GENERAL, PLAYER, H
 
 ### Hunter pathfinding and HUNTER VIEW
 
-- [ ] HUNTER VIEW option on the HUNTERS tab: show the selected hunter's current path on the map and in the 3D view
-- [ ] Path overlay: the hunter's planned route as a line, with waypoints and the target cell marked
-- [ ] Path cost readout: path length, cells searched and time for the last path search, from find_path in src/bin/last_route/world/facility.rs
-- [ ] Hunter state readout next to the path: state (patrol, hunt, search, return), target, and the last sighting
-- [ ] Step the hunter one tick at a time while the path shows, to debug turns and stuck cases
-- [ ] Show the hunter's sight cone and hearing radius on the same overlay
-- [ ] Highlight blocked cells and the reason a path failed (no route, door closed, prop collider)
-- [ ] Pick a hunter by clicking it in the 3D view, not only from the list
-- [ ] HUNTER VIEW works on every hunter in the lineup, including those spawned by admin NPC tools
+- [ ] HUNTER VIEW option on the HUNTERS tab: show the selected hunter's current path on the map and in the 3D view (2026-11-08: HUNTER VIEW code and tests written (ui/admin/hunter_view.rs, overlays), not built; brain/render/app hooks left)
+- [ ] Path overlay: the hunter's planned route as a line, with waypoints and the target cell marked (2026-11-08: HUNTER VIEW code and tests written (ui/admin/hunter_view.rs, overlays), not built; brain/render/app hooks left)
+- [ ] Path cost readout: path length, cells searched and time for the last path search, from find_path in src/bin/last_route/world/facility.rs (2026-11-08: HUNTER VIEW code and tests written (ui/admin/hunter_view.rs, overlays), not built; brain/render/app hooks left)
+- [ ] Hunter state readout next to the path: state (patrol, hunt, search, return), target, and the last sighting (2026-11-08: HUNTER VIEW code and tests written (ui/admin/hunter_view.rs, overlays), not built; brain/render/app hooks left)
+- [ ] Step the hunter one tick at a time while the path shows, to debug turns and stuck cases (2026-11-08: HUNTER VIEW code and tests written (ui/admin/hunter_view.rs, overlays), not built; brain/render/app hooks left)
+- [ ] Show the hunter's sight cone and hearing radius on the same overlay (2026-11-08: HUNTER VIEW code and tests written (ui/admin/hunter_view.rs, overlays), not built; brain/render/app hooks left)
+- [ ] Highlight blocked cells and the reason a path failed (no route, door closed, prop collider) (2026-11-08: coarse fail reason only; mid-route blockers and draw hooks left)
+- [ ] Pick a hunter by clicking it in the 3D view, not only from the list (2026-11-08: HUNTER VIEW code and tests written (ui/admin/hunter_view.rs, overlays), not built; brain/render/app hooks left)
+- [ ] HUNTER VIEW works on every hunter in the lineup, including those spawned by admin NPC tools (2026-11-08: HUNTER VIEW code and tests written (ui/admin/hunter_view.rs, overlays), not built; brain/render/app hooks left)
 
 ### More admin menu fixes and parts
 
@@ -300,7 +300,7 @@ Tabs today (src/bin/last_route/ui/admin/mod.rs TABS): STATUS, GENERAL, PLAYER, H
 - [~] Reset button per field and a reset-all on each tab (done 2026-11-04: RESET ALL SETTINGS on GENERAL, PLAYER, VISUAL and DEBUG VIEW resets every switch, speed and field and saves admin.cfg; no per-field reset)
 - [x] Admin actions write one line to the debug log so a run can be audited afterwards
 - [x] Admin panel closes cleanly on ESC without leaving the mouse locked or the pause menu open (done 2026-11-04: Esc is used by the admin first; a gate that drops while the menu is open now closes it, so no invisible menu keeps the mouse free)
-- [ ] DEBUG VIEW tab: toggles for the collider, path and navigation overlays, each saved between runs
+- [ ] DEBUG VIEW tab: toggles for the collider, path and navigation overlays, each saved between runs (2026-11-08: HUNTER VIEW code and tests written (ui/admin/hunter_view.rs, overlays), not built; brain/render/app hooks left)
 - [x] FIELDS tab: list every tunable value with its file and key (config, region data and hunter data)
 - [~] NPCS tab: per-NPC commands (teleport, remove, follow) instead of only spawn and remove all. Teleport and remove are in; follow is a status line until npc.rs has a per-NPC follow flag, and remove should go through an npc.rs helper
 - [x] WORLD tab: regenerate the current floor from its seed and show the seed on screen
@@ -315,10 +315,10 @@ Tabs today (src/bin/last_route/ui/admin/mod.rs TABS): STATUS, GENERAL, PLAYER, H
 - [x] GAME SPEED started on PAUSE while the game ran at 1X (RUN would pause it); the speed rows start on the speed in force
 - [x] Tall pages show a scroll bar and scroll with Up, Down, PgUp, PgDn, Home and End; the footer hint is per tab
 - [x] The NPC spawn count is capped (npc_spawn_max in data/admin/menu.json); admin prefs are in-memory in unit tests so tests no longer touch the real admin.cfg
-- [ ] TELEPORT TO WAYPOINT and CLEAR WAYPOINT now say waypoints are not in this build; waypoints themselves are still open (Teammate waypoints item)
+- [ ] TELEPORT TO WAYPOINT and CLEAR WAYPOINT now say waypoints are not in this build; waypoints themselves are still open (Teammate waypoints item) (2026-11-08: per-player store, sync fields and chevrons written; ground trail, set key and hooks left)
 - [ ] STORY tab rows (play story, stop, reset) only report that there is no story director
 - [ ] ROSTER rows (REFRESH ADMIN ROSTER, ADD / REMOVE LIMITED ADMIN, ROOM MUTE / UNMUTE / KICK) need the primary server; they report that and do nothing offline
-- [ ] STATUS always starts with "SERVER OFFLINE (SOLO, NO SERVER)", even in a hosted room: Admin has no handle on the net session
+- [x] STATUS always starts with "SERVER OFFLINE (SOLO, NO SERVER)", even in a hosted room: Admin has no handle on the net session (already done: app/mod.rs (RoomStatus from NetSession))
 - [ ] In-game and pause settings have no admin extras to fix; the settings panel was left alone (the skin track is editing its skin tab)
 - [ ] Not exercised by hand here: dropdown list positioning at very small windows (under 480x270), mouse-only use with a touch screen
 
@@ -328,20 +328,20 @@ Tabs today (src/bin/last_route/ui/admin/mod.rs TABS): STATUS, GENERAL, PLAYER, H
 - [x] Local build and publish to the VPS (packaging/local/publish-local.sh: Windows here, Linux on KT-T480, macOS arm64, intel and universal on KT-NEO); build 42 is published for windows, linux and macos (done 2026-11-04)
 - [ ] CI is blocked: the GitHub Actions budget is used up and every job fails to start. KT must raise the spending limit (Settings > Billing > Budgets); until then publishing is local (2026-11-04)
 
-- [ ] CI speedup: cut the four separate cargo test invocations in test.yml to one run where the crate graph is shared
+- [x] CI speedup: cut the four separate cargo test invocations in test.yml to one run where the crate graph is shared (already done: .github/workflows/test.yml:57)
 - [x] CI speedup: cache the Windows target directory across runs in build.yml and test.yml (rust-cache keys per job)
 - [x] CI speedup: run the Linux and macOS build jobs in parallel with the Windows build instead of one after another
 - [x] CI speedup: skip the release build in test.yml when only docs or TODO.md changed (paths-ignore)
-- [ ] CI speedup: use prebuilt tools (cargo-binstall) rather than building any CLI tool in CI
-- [ ] Faster GitHub compilations: a dev-profile setting for CI that trims debug info (debug = "line-tables-only")
+- [x] CI speedup: use prebuilt tools (cargo-binstall) rather than building any CLI tool in CI (already done: .github/workflows (no cargo install))
+- [x] Faster GitHub compilations: a dev-profile setting for CI that trims debug info (debug = "line-tables-only") (already done: Cargo.toml:110)
 - [ ] Faster compilations on this PC: measure a cold build with opt-level 1 for dependencies, record the time, then decide (profile.dev sets opt-level 2 for the game and 3 for dependencies)
 - [ ] Faster compilations: split the server-only dependencies from the game build (done with the server feature; check the CI cache keys match)
 - [ ] Faster compilations: check linker speed on Windows (rust-lld) and record the time it saves
-- [ ] CI speedup (2026-11-04): the macOS build compiles two targets in one job (x86_64 then arm64) before lipo. Run one job per target in parallel and combine the binaries in a final job (packaging/macos/universal.sh)
+- [x] CI speedup (2026-11-04): the macOS build compiles two targets in one job (x86_64 then arm64) before lipo. Run one job per target in parallel and combine the binaries in a final job (packaging/macos/universal.sh) (already done: build.yml:105-131)
 - [ ] CI speedup (2026-11-04): share a compile cache between the macOS target jobs and the Windows job with sccache, so the common crates build once per run
-- [ ] CI speedup (2026-11-04): make the nightly publish steps run only after the build artifacts are uploaded, so a failed zip step does not leave a half-published nightly
+- [x] CI speedup (2026-11-04): make the nightly publish steps run only after the build artifacts are uploaded, so a failed zip step does not leave a half-published nightly (already done: build.yml:82)
 - [ ] CI speedup (2026-11-04): record the cold and warm build times for each job in the run summary, so a regression shows up in the run list without reading the logs
-- [ ] CI speedup (2026-11-04): pin the Rust toolchain version in CI (rust-toolchain.toml) so a new stable release does not invalidate every cache at once
+- [x] CI speedup (2026-11-04): pin the Rust toolchain version in CI (rust-toolchain.toml) so a new stable release does not invalidate every cache at once (already done: rust-toolchain.toml)
 
 ## Godot parity: found by discovery (2026-11-03)
 
@@ -350,18 +350,18 @@ Tabs today (src/bin/last_route/ui/admin/mod.rs TABS): STATUS, GENERAL, PLAYER, H
 
 New items from a read-only comparison of the Godot game folders with TODO.md. Effort as marked.
 
-- [ ] Port Porcelle's hunter radar ping on the minimap: a slow ping about every 8 s, an eased ring, and a steady dim dot under reduced motion (effort S; game/hud/radar_ping.gd)
+- [x] Port Porcelle's hunter radar ping on the minimap: a slow ping about every 8 s, an eased ring, and a steady dim dot under reduced motion (effort S; game/hud/radar_ping.gd) (already done: ui/radar_ping.rs)
 - [x] Port the centre reticle, shown only while the view is aimed (hidden with the cursor free, at the desk, under the tablet or in the pause menu) (effort S; game/hud/crosshair.gd)
-- [ ] Port world-space teammate markers: name and distance at each teammate, edge markers off screen, floor offset, dimming when stale, DOWN and CAUGHT labels (effort M; game/hud/teammate_waypoints.gd)
-- [ ] Port quick-chat map pings: a room-chat ping shows on the minimap and full map on the floor where it was posted (effort S; game/hud/hud.gd)
+- [ ] Port world-space teammate markers: name and distance at each teammate, edge markers off screen, floor offset, dimming when stale, DOWN and CAUGHT labels (effort M; game/hud/teammate_waypoints.gd) (2026-11-08: markers, pings, chat, pause and waypoint code written, not built; mod.rs/app/world_sync hooks left)
+- [ ] Port quick-chat map pings: a room-chat ping shows on the minimap and full map on the floor where it was posted (effort S; game/hud/hud.gd) (2026-11-08: markers, pings, chat, pause and waypoint code written, not built; mod.rs/app/world_sync hooks left)
 - [x] Port the QUIT TO DESKTOP confirmation: YES on the left, NO focused by default, Esc or click outside closes; YES saves and closes a hosted room (effort S; game/ui_common/quit_confirm.gd)
-- [ ] Port the top-centre update badge: downloading percentage, then RESTART NOW or LATER, with the status-bar text during a run (effort S; game/menus/update_badge.gd)
-- [ ] Port the games hub ADMIN panel: build info, server health, updates per platform, public route status, notices, debug toggles, skin removal (no tokens shown) (effort M; game/admin/hub_admin_panel.gd)
-- [ ] Port the public route daily lineup: a stable UTC-day featured pair, weighted draw (easy 50%, intermediate 40%, difficult 10%), one extra hunter per two players, capped at 8 (effort M; game/config/public_roster.gd)
-- [ ] Port the admin find-player marker: a beam and two rings through walls at the target for about 6 s, following the live position (effort S; game/admin/admin_pulse.gd)
+- [ ] Port the top-centre update badge: downloading percentage, then RESTART NOW or LATER, with the status-bar text during a run (effort S; game/menus/update_badge.gd) (2026-11-08: client logic and tests written (net/api.rs, ui/account_panel.rs etc.), not built; menu/app hooks left)
+- [ ] Port the games hub ADMIN panel: build info, server health, updates per platform, public route status, notices, debug toggles, skin removal (no tokens shown) (effort M; game/admin/hub_admin_panel.gd) (2026-11-08: existing hub panel covers health, updates, public route; live check left)
+- [x] Port the public route daily lineup: a stable UTC-day featured pair, weighted draw (easy 50%, intermediate 40%, difficult 10%), one extra hunter per two players, capped at 8 (effort M; game/config/public_roster.gd) (already done: content/public_roster.rs:1-12)
+- [ ] Port the admin find-player marker: a beam and two rings through walls at the target for about 6 s, following the live position (effort S; game/admin/admin_pulse.gd) (2026-11-08: pulse marker written; find-player trigger hook left)
 - [ ] Port troll-mode advertisements for a chosen player: gentle and annoying profiles, a per-window cap, never shown while caught or in menus (effort M; game/admin/troll_ads.gd)
 - [x] Port the F2 screenshot: saves the whole game window to a dated PNG from any screen (effort S; game/autoload/screenshot.gd)
-- [ ] Port the single cursor owner: menus register named claims, and any claim frees the cursor so the camera cannot re-grab it under a menu (effort S; game/autoload/mouse_lock.gd)
+- [ ] Port the single cursor owner: menus register named claims, and any claim frees the cursor so the camera cannot re-grab it under a menu (effort S; game/autoload/mouse_lock.gd) (2026-11-08: bindings, frame cap, cursor owner written, not built; app/mod.rs hooks left)
 - [ ] Port phone touch controls: on-screen D-pad, drag-to-look, touch buttons, and the phone and low-memory budgets with --touch and --lowmem (effort L; game/hud/touch_controls.gd)
 - [ ] Port XR (OpenXR headset) mode: comfort and fade, gaze pointer, hand tracking, and the route and menu panels in 3D (effort L; game/xr/xr_comfort.gd)
 
@@ -398,7 +398,7 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 
 - [ ] Window recentre hitch of about 80 ms per recentre: about 55 ms is the full world mesh rebuild (build_world on every floor change in sync_world); build the mesh per chunk instead
 - [ ] Chunk window load of about 23 to 28 ms per recentre (infinite::window generation, residency, sync_in); move it off the frame or build the next window ahead
-- [ ] No quality governor or frame budget. Godot has quality_governor.gd (40/50/60 fps targets, tiers for shadows, prop range and lamp count); add the same tiers
+- [x] No quality governor or frame budget. Godot has quality_governor.gd (40/50/60 fps targets, tiers for shadows, prop range and lamp count); add the same tiers (already done: app/quality.rs)
 - [~] Hunter cost is untested at high counts (bench added: cargo test --release hunter_brain_step_cost -- --ignored --nocapture; not yet run). Godot measured brain.update at 31.8 ms with 38 hunters; bench the Rust brains at 38 (run 2026-11-04 on the dev Mac, release: 38 hunters, 600 steps, 0.11 ms per step before the deck work and 0.09 to 0.11 ms after; the bench has no decks, so it shows only that the layer checks cost nothing on a deck-free floor)
 - [ ] Light sight cost is unknown; MAX_LAMPS is capped at 16 in the shader, so lamp pools can pop in and out
 - [ ] Steady-state render cost is not measured because vsync caps frames at 60; add a capture with vsync off
@@ -412,19 +412,19 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 ## Follow-ups and fixes found 2026-11-03 (late)
 
 ### Accounts and login
-- [ ] Title ADMIN entry still checks the local name; gate it on the server admin flag (title_entries and title_focus need the flag passed in)
-- [ ] Hub ACCOUNT row shows fixed "SCOPES NONE"; pass the signed-in admin flag and scopes to draw_hub
+- [ ] Title ADMIN entry still checks the local name; gate it on the server admin flag (title_entries and title_focus need the flag passed in) (2026-11-08: client logic and tests written (net/api.rs, ui/account_panel.rs etc.), not built; menu/app hooks left)
+- [x] Hub ACCOUNT row shows fixed "SCOPES NONE"; pass the signed-in admin flag and scopes to draw_hub (already done: ui/admin/hub.rs:159-171)
 - [ ] account_exists returns false when lr_server forwards to the website, so admin set-roster 404s; needs a website route for it
 - [~] lr_server holds its state lock for up to 5 s during a forwarded account call; account calls now run outside the lock, but save and moderation routes still hold it
 - [ ] Website savedAt is in milliseconds, the game uses seconds: both sides should agree on one unit
-- [ ] A stale save PUT now answers 200 with the stored time, not 409 STALE; check how the game client reads it, and add a test for the newest-wins branch
-- [ ] Website keeps 10 save slots per game; delete older run-world-N slots when a new revision saves
+- [ ] A stale save PUT now answers 200 with the stored time, not 409 STALE; check how the game client reads it, and add a test for the newest-wins branch (2026-11-08: client logic and tests written (net/api.rs, ui/account_panel.rs etc.), not built; menu/app hooks left)
+- [ ] Website keeps 10 save slots per game; delete older run-world-N slots when a new revision saves (2026-11-08: client logic and tests written (net/api.rs, ui/account_panel.rs etc.), not built; menu/app hooks left)
 - [ ] Deploy the account forwarding: set LASTROUTE_ACCOUNT_UPSTREAM on VPS3 and restart lastroute-rust.service (needs approval)
 - [ ] Hub SERVER row shows the server host to players; the privacy rule says players never see the address, so decide
 
 ### Multiplayer and figures
 - [x] Runner figures stand in one pose; add a moving flag to RemoteView and a walk cycle (done 2026-11-04: RemoteView carries moving, sprinting, crouching and slim; player clips drive runner figures (render/anim/runner.rs))
-- [ ] runner_figure.rs keeps its own KNOWN_SKINS list; make SKINS in world_sync.rs visible and use it, and drop the unused cube colours
+- [x] runner_figure.rs keeps its own KNOWN_SKINS list; make SKINS in world_sync.rs visible and use it, and drop the unused cube colours (already done: net/world_sync.rs (no KNOWN_SKINS))
 - [ ] Check the skin trim placement on the character model in a real run
 - [ ] Guests see other guests' ping as the host-measured round trip; measure it directly if guests ever link to each other
 - [ ] NPC follow is a status line: add a per-NPC follow flag in npc.rs, an npc_remove_at helper, and fix the stale deferred-commands comment at the top of npc.rs
@@ -434,16 +434,16 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [ ] The two Mac Minis (KT-Mini4-1, KT-Mini4-2) have git clones at ~/Developer/LastRoute-Rust with origin set to GitHub; they need a one-time GitHub login (2026-11-04)
 - [ ] KT-PC (G:/Projects/KyttusLab-Rust) has no SSH server, so the copy is pending (2026-11-04)
 - [x] Stress walking runners no longer stall on walls (fixed 2026-11-03)
-- [ ] Stress scenarios: noclip, NPCs, hunters, interactions (tools, breaking barriers) and mixed, chosen with a --stress-scenario flag
-- [ ] --stress-vsync on|off, and the runner runs every scenario in both modes, naming each CSV by scenario and vsync
+- [x] Stress scenarios: noclip, NPCs, hunters, interactions (tools, breaking barriers) and mixed, chosen with a --stress-scenario flag (already done: app/stress.rs:90-126)
+- [x] --stress-vsync on|off, and the runner runs every scenario in both modes, naming each CSV by scenario and vsync (already done: app/stress.rs:1)
 - [ ] Run the stress tests on KT-MBA, KT-MBP, AK-MBA, XR-MBA, JV-MBA, ZL-MBA, KT-NEO, KT-T480, AK-T480 and this PC; keep the CSVs and a summary table in docs/PERF_COMPARISON.md
 - [ ] Command-line tools still to install at XR-MBA, JV-MBA, ZL-MBA; alsa-lib-devel at AK-T480
-- [ ] git archive from this PC writes CRLF into shell scripts (core.autocrlf); copy with -c core.autocrlf=false, or add a .gitattributes entry for *.sh
+- [x] git archive from this PC writes CRLF into shell scripts (core.autocrlf); copy with -c core.autocrlf=false, or add a .gitattributes entry for *.sh (already done: .gitattributes)
 - [ ] Windows laptop: run the stress test on this PC and compare it with the Intel Macs
 
 ### Models
 - [~] bbmodel is the standard: GLB-to-bbmodel converter, the five Godot models the port lacks (door_frame, floor_tile, wall_block, kathy_scythe, sewer_outflow_pipe_broken), the Godot _0/_1/_2 variants, and the 430 GLBs the port still ships. Done so far: converter and 430 bbmodels beside their GLBs. Still open, in order: (1) catwalk fixes first, (2) copy the 220 Godot-only GLBs that prop data references and convert them, (3) switch the prop loader in shared/assets.rs to bbmodel with GLB fallback, (4) move door panels in render/door.rs to bbmodel (session 2026-11-03: props are converted to bbmodel and the runtime is migrated (done); bbmodel in mod packs is in progress; the server pack path rule does not accept .bbmodel files yet)
-- [ ] Make the draw path pick a variant per prop instead of one model for all variants
+- [ ] Make the draw path pick a variant per prop instead of one model for all variants (2026-11-08: VariantCache and pick_variant written; world_mesh.rs hook left)
 
 ### Updates and builds
 - [ ] Confirm the first real in-game update end to end on Windows and a Mac, and read the update lines in the log
@@ -455,7 +455,7 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 
 ### Settings
 - [x] vsync is on by default (as in Godot), so the frame rate stops at the refresh rate; kept, and the VIDEO tab now explains VSYNC against FPS LIMIT (2026-11-05)
-- [ ] Add a reduced motion setting (the radar ping reads a constant for it)
+- [x] Add a reduced motion setting (the radar ping reads a constant for it) (already done: app/settings.rs:45)
 
 ## Movies, trailers and cutscenes (Rust port)
 
@@ -509,12 +509,12 @@ Godot references are `game/...` under the KyttusLabApp folder.
 - [ ] Relabel pop: right after a walked relabel the new active floor holds only the neighbour's scoped parts (within `neighbour_cull_radius` of an opening, `neighbour_max_parts`) until the budgeted rebuild finishes; far parts of the floor appear a few frames late. Fix idea: widen the neighbour build to the full window for the level the runner is about to enter, or keep drawing the previous full meshes until `!has_pending()` (render/world_stack.rs `NeighbourWorlds::relabel`, game/endless.rs `relabel`). Needs a GPU-backed test.
 - [~] Level links other than stairs: ladders, ramps, manholes, grates, elevators and drops (`docs/SEWERS.md`, `game/world/generation/sewer_route_generator.gd`) (status note: [~] in the parity-gaps audit; the less complete status is kept) (update 2026-11-04: ladders and drops are done (data/ladders.json, data/swim/fall.json); manholes, grates, elevators and ramps are not rechecked)
 - [x] Natural stairs and ladders: port the Godot slope system so stairs are walked as slopes and ladders are climbed, and hunters cross stairs between floors (stairs and ladders done in phases 5-6; hunters crossing is phase 8) (commit )
-- [ ] Sewer levels -1 to -3, with the cistern, collector and Inferno maze. `src/bin/last_route/world/infinite.rs` picks regions by level, but no sewer geometry exists and `src/bin/last_route/data/loot/sewer.json` is unused (status note: [~] in the parity-gaps audit; the less complete status is kept)
+- [x] Sewer levels -1 to -3, with the cistern, collector and Inferno maze. `src/bin/last_route/world/infinite.rs` picks regions by level, but no sewer geometry exists and `src/bin/last_route/data/loot/sewer.json` is unused (status note: [~] in the parity-gaps audit; the less complete status is kept) (already done: world/route/sewer/)
 - [x] Hunters persist across chunks and floors and walk the stairs in Godot. Rust rebuilds the lineup on every level change (`reset_hunters` in `endless.rs`) and respawns out-of-window hunters (`stream_window`) (commit )
 - [ ] Safe rooms with breach and checkpoints (`_update_checkpoint`, `_request_breach` in `game/infinite_route/infinite_route_test.gd`). Rust has one rest-only safe zone per floor (`interact.rs` 266-272) (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [~] Autosave on relays, level changes, safe-room checkpoints and quit. Rust saves only on stairs and the lift (`endless.rs` 248, `interact.rs` 284) Note: level changes now autosave once on the label change; safe-room checkpoints and quit still pending as written.
 - [ ] Anti-AFK void pressure on idle parties (`game/player/anti_idle.gd`, `_update_anti_idle_pressure` at `infinite_route_test.gd` 2388) (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Void player powers: Gray's signal route, Orange's outages, Purple's radar static and Pink's false footsteps (`game/player/void_player_effects.gd`). Every `void_*` id maps to `Gimmick::None` (`src/bin/last_route/hunters/gimmicks/mod.rs` 115-142) (status note: [~] in the parity-gaps audit; the less complete status is kept)
+- [x] Void player powers: Gray's signal route, Orange's outages, Purple's radar static and Pink's false footsteps (`game/player/void_player_effects.gd`). Every `void_*` id maps to `Gimmick::None` (`src/bin/last_route/hunters/gimmicks/mod.rs` 115-142) (status note: [~] in the parity-gaps audit; the less complete status is kept) (already done: hunters/gimmicks/mod.rs:94-98)
 - [~] Run statistics on the run card: time, distance, rooms, levels and hunters met (`_update_run_statistics`, `infinite_route_test.gd` 1351). Rust shows depth, score, relays, coins, difficulty and seed (`src/bin/last_route/ui/report.rs` 236-247)
 - [~] Online route sync. The protocol and session code exists under `src/bin/last_route/net/`, but nothing in the run loop calls it (`src/bin/last_route/app/mod.rs` has no `net::` reference)
 
@@ -524,7 +524,7 @@ Godot references are `game/...` under the KyttusLabApp folder.
 - [~] Hide glide: Godot animates into the locker (`enter_hiding` and `_begin_hide_move`, lines 707-870). Rust teleports to the locker centre (`src/bin/last_route/game/interact.rs` 341-344)
 - [ ] Sit, lie and ride on furniture (`use_furniture`, `game/player/player_controller_3d.gd` 489; `docs/SEATING.md`) (effort M)
 - [ ] Sleep and drowsiness, with hunters stirring and jolting the sleeper (`toggle_sleep`, `sleep_disturb`, `_update_sleep`, lines 606-670; `docs/REST_AND_SLEEP.md`) (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [ ] Gamepad: right-stick look, pad bindings and triggers (`docs/CONTROLS.md`). `src/bin/last_route/app/mod.rs` `read_controls` reads only keyboard and mouse
+- [ ] Gamepad: right-stick look, pad bindings and triggers (`docs/CONTROLS.md`). `src/bin/last_route/app/mod.rs` `read_controls` reads only keyboard and mouse (2026-11-08: pad labels only; pad reading needs a dependency)
 - [ ] Flashlight flicker and seize after a plunge splash or a hunter event (`force_flashlight_flicker`, `flashlight_seized`, `player_controller_3d.gd` 873-890)
 - [x] Mutual light sight: hunters see you when they stand in light (`docs/LIGHT_SIGHT.md`). Done: the host feeds `self_exposure` and `target_exposure` from `hunters/light_field.rs` (`game/light_sight.rs`)
 - [~] Quality governor: Godot steps quality down when frame time misses (`game/look/quality_governor.gd`). Rust uses a fixed render scale per setting (`src/bin/last_route/app/mod.rs` 45-52)
@@ -541,16 +541,16 @@ Godot references are `game/...` under the KyttusLabApp folder.
 
 - [ ] Carnival booths and carousel rides (`docs/CARNIVAL_BOOTHS.md`, `_request_booth` and `_request_carousel` in `infinite_route_test.gd` 4676-4835) (effort L)
 - [ ] Flood valves (`_request_valve`, `infinite_route_test.gd` 4924)
-- [ ] Waypoints: one per player, route chevrons and a ground trail (`docs/WAYPOINTS.md`, `_request_waypoint` at 1739). Rust only has an admin label reading "NO WAYPOINT SET" (`src/bin/last_route/ui/admin/actions.rs` 324) (status note: [~] in the parity-gaps audit, [x] in the full audit; the less complete status is kept)
-- [ ] Map: waypoint and teammate pins are missing. Discovery and the full map are ported (`src/bin/last_route/ui/map.rs`) (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
+- [ ] Waypoints: one per player, route chevrons and a ground trail (`docs/WAYPOINTS.md`, `_request_waypoint` at 1739). Rust only has an admin label reading "NO WAYPOINT SET" (`src/bin/last_route/ui/admin/actions.rs` 324) (status note: [~] in the parity-gaps audit, [x] in the full audit; the less complete status is kept) (2026-11-08: per-player store, sync fields and chevrons written; ground trail, set key and hooks left)
+- [ ] Map: waypoint and teammate pins are missing. Discovery and the full map are ported (`src/bin/last_route/ui/map.rs`) (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: markers, pings, chat, pause and waypoint code written, not built; mod.rs/app/world_sync hooks left)
 
 ### Co-op and NPCs
 
-- [ ] Spectating a downed or ghost runner (`enter_spectator`, `set_ghost_follow` in `player_controller_3d.gd` 1619-1700)
+- [x] Spectating a downed or ghost runner (`enter_spectator`, `set_ghost_follow` in `player_controller_3d.gd` 1619-1700) (already done: game/spectate.rs:4-5)
 
 ### Controls, look and presentation
 
-- [ ] Default bindings: Tab inventory, T chat, O player list and the gamepad are missing (`docs/CONTROLS.md`). Movement, E, F, G, Q, 1-5, the wheel, M, F1, F7, F11 and Escape are present (status note: [~] in the full audit; the less complete status is kept)
+- [ ] Default bindings: Tab inventory, T chat, O player list and the gamepad are missing (`docs/CONTROLS.md`). Movement, E, F, G, Q, 1-5, the wheel, M, F1, F7, F11 and Escape are present (status note: [~] in the full audit; the less complete status is kept) (2026-11-08: keyboard defaults in data/controls.json; gamepad left)
 - [~] First-person body, climb hands and held-item grips (`player/first_person_body.gd`, `player/held_item_poses.gd`). The grab view notes the runner's own body and hands are not ported (`src/bin/last_route/render/anim/grab.rs` header) (update 2026-11-04: first-person hands are in)
 - [ ] Emotes, the blocky face, doorway pose and player skins (`player/blocky_emotes.gd`, `player/blocky_face.gd`, `player/doorway_pose.gd`, `player/player_skin.gd`). The Rust SKIN tab says the offline build plays the default runner (update 2026-11-04: skins are validated and the skin menu works; emotes, face and doorway pose still open)
 
@@ -700,12 +700,12 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [x] The 26 A-Z hunters display by their full canonical names again (Aki..Zellia; the letters A..Z of 2026-11-04 were reverted 2026-11-06; map dots still show the first letter)
 - [x] Port Per-floor draw Nightmare weights: only Relaxed, Standard and Hard weights exist. Done 2026-11-03: see the hunter draw pool item above.
 - [ ] Port Per-hunter tuning: numeric values not compared with Godot's roster tuning (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [ ] Port Special hunters Nyxie and Solyth: Nightmare pounce branches absent (status note: [~] in the parity-gaps audit; the less complete status is kept)
+- [x] Port Special hunters Nyxie and Solyth: Nightmare pounce branches absent (status note: [~] in the parity-gaps audit; the less complete status is kept) (already done: hunters/gimmicks/nyxie.rs)
 - [ ] Port Void incursions: void_*.json hunters are never drawn and no incursion chance exists (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Nightmare difficulty scaling: no profile for bigger director teams, peeks, inspections or pounce tables
 - [~] Port Wander, idle, investigate, chase and search state machine: PEEK and INSPECT states absent (status note: [~] in the parity-gaps audit; the less complete status is kept) (session 2026-11-03: hunter hallway peeking is done; INSPECT and a visual confirmation of the peek lean are still open)
 - [~] Port Sight and hearing perception: daylight and LightField exposure missing from the sight limit (status note: [~] in the parity-gaps audit; the less complete status is kept) (LightField exposure now wired, see docs/LIGHT_SIGHT.md; daylight still missing)
-- [ ] Port Light-field exposure sight: no lamp exposure input to hunter sight
+- [x] Port Light-field exposure sight: no lamp exposure input to hunter sight (already done: game/light_sight.rs:1-5)
 - [ ] Port Hunter speed model: hard-ability speed scale and troll scale missing (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Pursuit and route following: sweep and waypoint look-ahead parity not confirmed against Godot (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Stuck detection: centre-steer and wedge snap-back missing (only the no-route give-up exists) (status note: [~] in the parity-gaps audit; the less complete status is kept)
@@ -716,7 +716,7 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [ ] Port Escape struggle: loop and knock-back timing not confirmed against Godot (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Taser stun versus taser-immune slow: Godot's escape and taser stun divergence not revisited (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Crowbar and axe strikes: Rust prints a STUNNED callout that Godot has switched off (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [ ] Port Hunters use ducts on Hard and Nightmare: no vent path or duct model
+- [x] Port Hunters use ducts on Hard and Nightmare: no vent path or duct model (already done: hunters/vent_nav.rs:1-5)
 - [x] Port Hunters take ladders and stairs to other levels: no level roaming in Rust (commit )
 - [ ] Port Hunter navigation on streamed grid windows: only the fixed Facility grid is used (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Director share: flank and cover roles partial and no Nightmare profile (status note: [~] in the parity-gaps audit; the less complete status is kept)
@@ -728,47 +728,47 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [x] Port Corner peek and ambush: no PEEK state in the brain
 - [ ] Port Locker inspection breath: no inspect state in the brain (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Hunters nap in beds and wake on a meter (effort L)
-- [ ] Port Aki exposure: Godot GameConfig values are hard-coded in Rust (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [ ] Port Briselle relay tracker: lock, speed and stun values hard-coded (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [ ] Port Ceryth hiding trap: retreat speed and distance hard-coded (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
+- [x] Port Aki exposure: Godot GameConfig values are hard-coded in Rust (status note: [~] in the parity-gaps audit; the less complete status is kept) (already done: data/hunters/aki.json)
+- [x] Port Briselle relay tracker: lock, speed and stun values hard-coded (status note: [~] in the parity-gaps audit; the less complete status is kept) (already done: data/hunters/briselle.json)
+- [x] Port Ceryth hiding trap: retreat speed and distance hard-coded (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (already done: data/hunters/ceryth.json)
 - [ ] Port Glyra music box: route boxes per region and the peek ambush missing (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Ilyra corner observer: Nightmare zero-second pounce delay absent (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Javelle hiding timeout: reach and stall values hard-coded (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
+- [x] Port Javelle hiding timeout: reach and stall values hard-coded (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (already done: data/hunters/javelle.json)
 - [ ] Port Kathy search beam: affected-summon is unported in both trees (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Loxelle passive incinerator: chase-only room-door breach missing (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [ ] Port Nyxie darkness stalker: Nightmare pounce missing (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
+- [x] Port Nyxie darkness stalker: Nightmare pounce missing (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (already done: hunters/gimmicks/nyxie.rs)
 - [x] Port Quenelle flashlight tracker: Nightmare lock time and speed ramp constant (status note: [~] in the parity-gaps audit; the less complete status is kept). Done 2026-11-03: `Quenelle::for_difficulty` gives a 5 s lock on Nightmare (wired in `hunters/gimmicks/mod.rs`); Standard keeps 8 s and the x1.45 ramp.
-- [ ] Port Ravelle tripwire trapper: wire radius and trap stun hard-coded (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [ ] Port Thessine sound mimic: Rust prints a callout where Godot plays sound only (status note: [~] in the parity-gaps audit; the less complete status is kept)
+- [x] Port Ravelle tripwire trapper: wire radius and trap stun hard-coded (status note: [~] in the parity-gaps audit; the less complete status is kept) (already done: data/hunters/ravelle.json)
+- [x] Port Thessine sound mimic: Rust prints a callout where Godot plays sound only (status note: [~] in the parity-gaps audit; the less complete status is kept) (already done: hunters/gimmicks/thessine.rs)
 - [ ] Port Umbriel shapeshifter: disguise pool hard-coded and Nightmare ability copy absent (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [ ] Port Verrine vent lurker: physical duct crawl and vent events missing (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Wynelle cold materializer: constants hard-coded (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
+- [x] Port Verrine vent lurker: physical duct crawl and vent events missing (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (already done: hunters/vent_nav.rs:1-3)
+- [x] Port Wynelle cold materializer: constants hard-coded (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (already done: data/hunters/wynelle.json)
 - [ ] Port Xivvy chase accelerator: clearance-driven flight and landing missing (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [ ] Port Zellia merchant: sabotaged relay repair branch and Nightmare death chance missing (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [ ] Port Void Black rear stalker: no gimmick, freeze-when-watched and unwatched speed rules
-- [ ] Port Void Blue silent stalker: beam reveal and map exclusion while hidden
-- [ ] Port Void Brown spot jammer: jam hiding spots (event plumbing already exists) (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [ ] Port Void Cyan signal ping: broadcast of runner position to other hunters
+- [x] Port Void Black rear stalker: no gimmick, freeze-when-watched and unwatched speed rules (already done: void/void_black.rs)
+- [x] Port Void Blue silent stalker: beam reveal and map exclusion while hidden (already done: void/void_blue.rs)
+- [x] Port Void Brown spot jammer: jam hiding spots (event plumbing already exists) (status note: [~] in the parity-gaps audit; the less complete status is kept) (already done: void/void_brown.rs)
+- [x] Port Void Cyan signal ping: broadcast of runner position to other hunters (already done: void/void_cyan.rs)
 - [ ] Port Void Gray anti-idle signal route: networked signal route flow missing (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [ ] Port Void Green vent submerge: hidden and uncatchable for two seconds
-- [ ] Port Void Orange system outages: no outage state for the runner's systems (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [ ] Port Void Purple radar corrupter: static and blackout rules missing (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Void Red hall runner: speed multipliers for hallways and rooms missing
-- [ ] Port Void White light-frozen: lit torch freeze rule missing (effort M)
-- [ ] Port Void Yellow map pressure: speed grows while the full map is open
-- [ ] Port White wolf spider lurk, bark, hunt and retreat: no spider brain (status note: [~] in the parity-gaps audit; the less complete status is kept)
+- [x] Port Void Green vent submerge: hidden and uncatchable for two seconds (already done: void/void_green.rs)
+- [x] Port Void Orange system outages: no outage state for the runner's systems (status note: [~] in the parity-gaps audit; the less complete status is kept) (already done: void/void_orange.rs)
+- [x] Port Void Purple radar corrupter: static and blackout rules missing (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (already done: void/void_purple.rs)
+- [x] Port Void Red hall runner: speed multipliers for hallways and rooms missing (already done: void/void_red.rs)
+- [x] Port Void White light-frozen: lit torch freeze rule missing (effort M) (already done: void/void_white.rs)
+- [x] Port Void Yellow map pressure: speed grows while the full map is open (already done: void/void_yellow.rs)
+- [x] Port White wolf spider lurk, bark, hunt and retreat: no spider brain (status note: [~] in the parity-gaps audit; the less complete status is kept) (already done: hunters/gimmicks/wolf_spider.rs)
 - [ ] Port Black wolf spider: harsher faster variant missing
 - [ ] Port Wolf spider pair shared rest and recall: no pair logic
-- [ ] Port Inferno spider spawn on level -3: no Inferno region in Rust (status note: [~] in the parity-gaps audit; the less complete status is kept)
+- [x] Port Inferno spider spawn on level -3: no Inferno region in Rust (status note: [~] in the parity-gaps audit; the less complete status is kept) (already done: game/inferno_secrets.rs:1-5)
 - [ ] Port Grab view and hold: arm stretch, camera clearance and runner's body not ported (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port Dossier descriptions: no text for the Void gimmick chart (status note: [~] in the parity-gaps audit; the less complete status is kept)
 ### World and generation
-- [ ] Port Level stack: sewer (-1), lower sewer (-2) and Inferno (-3) with a depth floor at -3 (partial) (status note: [~] in the parity-gaps audit; the less complete status is kept)
+- [x] Port Level stack: sewer (-1), lower sewer (-2) and Inferno (-3) with a depth floor at -3 (partial) (status note: [~] in the parity-gaps audit; the less complete status is kept) (already done: game/level_stack.rs)
 - [x] Port Stairwells: spiral and switchback flights, placement and access halls; Rust uses straight 4-cell flights (status note: [~] in the parity-gaps audit; the less complete status is kept) (commit )
 - [ ] Port Chunk seams: centre-cross openings and wide hall openings; Rust draws random offsets (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [ ] Port District selection: weighted districts, deeper-level extras and a sewer district (status note: [x] in the full audit 2026-11-01; the less complete status is kept)
 - [~] Port Sewer layer: separate generator, ramps, falls, ladders and floods (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (update 2026-11-04: water, swim, pipes, second sewer, ladders and drops are in; floods and generator parity open)
-- [ ] Port Inferno caverns: cave carving, lava pits, cages and the spider lair (status note: [~] in the parity-gaps audit; the less complete status is kept)
+- [x] Port Inferno caverns: cave carving, lava pits, cages and the spider lair (status note: [~] in the parity-gaps audit; the less complete status is kept) (already done: game/inferno_terrain_tests.rs)
 - [ ] Port Per-level danger profile: hunter speed, count bias and safe-room odds by depth (status note: [~] in the parity-gaps audit; the less complete status is kept)
 - [x] Port Maze warrens: irregular cell layouts for maze and lab chunks
 - [ ] Port Dense bank layout: 11x9 pairs, 21x9 big rooms and hall-centred rows (status note: [x] in the full audit 2026-11-01; the less complete status is kept)
@@ -823,93 +823,93 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [ ] Port Flood valves: valve focus and flood sync (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 
 ### Co-op and NPCs
-- [ ] Port Spectating and ghost follow (effort M)
+- [x] Port Spectating and ghost follow (effort M) (already done: game/spectate.rs:1-5)
 - [ ] Port Host-authoritative route sync: protocol exists but the run loop does not call it (status note: [~] in the parity-gaps audit; the less complete status is kept)
 
 ### HUD and menus
-- [ ] Port Interaction prompt text: prompt wording is fixed to keyboard keys (status note: [~] in the parity-gaps audit; the less complete status is kept)
+- [ ] Port Interaction prompt text: prompt wording is fixed to keyboard keys (status note: [~] in the parity-gaps audit; the less complete status is kept) (2026-11-08: bindings, frame cap, cursor owner written, not built; app/mod.rs hooks left)
 - [ ] Port Device-aware control glyphs: gamepad and rebind-aware prompts (effort M)
 - [ ] Port Full inventory overlay: grid with drag and drop (effort M)
 - [ ] Port Screen-edge danger effects: thermal warning panel and strength curves (effort M/S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [ ] Port Top-centre status bar: test server, admin active and public route segments (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [x] Port Fullscreen map: pan, zoom and recentre
-- [ ] Port Room chat, speech bubbles and subtitles (effort L/M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Player waypoint pin: placement, clear, distance and off-screen arrow (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Title menu: PUBLIC ROUTE button and admin visibility for admin accounts other than KYTTU (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
+- [ ] Port Room chat, speech bubbles and subtitles (effort L/M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: markers, pings, chat, pause and waypoint code written, not built; mod.rs/app/world_sync hooks left)
+- [ ] Port Player waypoint pin: placement, clear, distance and off-screen arrow (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: markers, pings, chat, pause and waypoint code written, not built; mod.rs/app/world_sync hooks left)
+- [ ] Port Title menu: PUBLIC ROUTE button and admin visibility for admin accounts other than KYTTU (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: logic written, not built; title button, admin visibility and menu hooks left)
 - [ ] Port Create an online room: the ONLINE branch is text only
 - [ ] Port Join room: password field and network join (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Room staging: online host controls, chat and route sync (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Connected players list: only the local row is listed (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Account panel: sign-in and account creation are offline only (effort M) (status note: [~] in the parity-gaps audit; the less complete status is kept)
+- [ ] Port Room staging: online host controls, chat and route sync (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: panel logic and typed sync written; menu wiring and live test left)
+- [ ] Port Connected players list: only the local row is listed (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: logic and tests written (net/rejoin, anticheat, host_requests, ui/room_panel), not built; mod.rs and menu/world_sync hooks left)
+- [ ] Port Account panel: sign-in and account creation are offline only (effort M) (status note: [~] in the parity-gaps audit; the less complete status is kept) (2026-11-08: client logic and tests written (net/api.rs, ui/account_panel.rs etc.), not built; menu/app hooks left)
 - [ ] Port Settings audio: voice and subtitle rows have no effect (effort M/S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Settings display: vsync, FPS limit, quality, ADS and focus pause have no effect (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Settings controls: rebinding is not possible, and the CHANGE, + and RESET buttons are disabled (effort M) (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [ ] Port Pause menu: SAID RECENTLY and MUTE block, and the save status line (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
+- [ ] Port Settings display: vsync, FPS limit, quality, ADS and focus pause have no effect (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: frame cap logic written; focus source, ADS reader and hooks left)
+- [ ] Port Settings controls: rebinding is not possible, and the CHANGE, + and RESET buttons are disabled (effort M) (status note: [~] in the parity-gaps audit; the less complete status is kept) (2026-11-08: bindings, frame cap, cursor owner written, not built; app/mod.rs hooks left)
+- [ ] Port Pause menu: SAID RECENTLY and MUTE block, and the save status line (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: markers, pings, chat, pause and waypoint code written, not built; mod.rs/app/world_sync hooks left)
 
 ### Network
-- [ ] Port Account sign-in and saved session: the client code is not compiled (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Account progress and dossier sync: discoveries are kept locally only (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Guest names: the client has no guest name flow (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Cloud copy of the run save: only the local checkpoint is used (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Join a room by code: the UI validates the code, then refuses
-- [ ] Port Shared lobby settings, start and end: guests receive no settings (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Player list: only the local row reaches the panel
+- [x] Port Account sign-in and saved session: the client code is not compiled (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (already done: main.rs:25)
+- [ ] Port Account progress and dossier sync: discoveries are kept locally only (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: client code written, not built; loader hooks and server slot allow-list left)
+- [x] Port Guest names: the client has no guest name flow (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (already done: net/guest_name.rs)
+- [ ] Port Cloud copy of the run save: only the local checkpoint is used (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: client code written, not built; loader hooks and server slot allow-list left)
+- [ ] Port Join a room by code: the UI validates the code, then refuses (2026-11-08: logic and tests written (net/rejoin, anticheat, host_requests, ui/room_panel), not built; mod.rs and menu/world_sync hooks left)
+- [ ] Port Shared lobby settings, start and end: guests receive no settings (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: panel logic and typed sync written; menu wiring and live test left)
+- [ ] Port Player list: only the local row reaches the panel (2026-11-08: logic and tests written (net/rejoin, anticheat, host_requests, ui/room_panel), not built; mod.rs and menu/world_sync hooks left)
 - [ ] Port Reserved private rooms: owner tools have no client code (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Persistent public route client: server side is ported (effort M)
+- [x] Port Persistent public route client: server side is ported (effort M) (already done: net/public_route.rs)
 - [ ] Port Gameplay UDP relay client tunnel: no ENet proxy in the Rust client (effort L) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Co-op message transport: own protocol, not ENet, and not compiled
+- [x] Port Co-op message transport: own protocol, not ENet, and not compiled (already done: main.rs:25)
 - [ ] Port Godot-compatible co-op wire (ENet and SceneMultiplayer RPCs): Rust and Godot cannot share a room (effort L)
-- [ ] Port Typed co-op message catalogue: round-trip tested but unused in the game path (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
+- [ ] Port Typed co-op message catalogue: round-trip tested but unused in the game path (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: logic and tests written (net/rejoin, anticheat, host_requests, ui/room_panel), not built; mod.rs and menu/world_sync hooks left)
 - [x] Port Runner movement sync at 20 Hz
-- [ ] Port Smooth remote movement: snapshot interpolation with 100 ms delay (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
+- [x] Port Smooth remote movement: snapshot interpolation with 100 ms delay (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (already done: net/interp.rs)
 - [x] Port Other players' bodies on screen
-- [ ] Port Host hunter state broadcast (effort L/M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Shared world events and interaction requests (effort L/M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Late-join world snapshot (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Guest waits for the synced world before moving (effort M) (status note: [x] in the full audit 2026-11-01; the less complete status is kept)
-- [ ] Port Same mod packs as the host: pack hash announce and check (effort M)
+- [x] Port Host hunter state broadcast (effort L/M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (already done: net/hunter_events.rs)
+- [x] Port Shared world events and interaction requests (effort L/M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (already done: net/world_sync.rs)
+- [x] Port Late-join world snapshot (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (already done: net/world_sync.rs)
+- [ ] Port Guest waits for the synced world before moving (effort M) (status note: [x] in the full audit 2026-11-01; the less complete status is kept) (2026-11-08: logic and tests written (net/rejoin, anticheat, host_requests, ui/room_panel), not built; mod.rs and menu/world_sync hooks left)
+- [ ] Port Same mod packs as the host: pack hash announce and check (effort M) (2026-11-08: logic and tests written (net/rejoin, anticheat, host_requests, ui/room_panel), not built; mod.rs and menu/world_sync hooks left)
 - [ ] Port Download missing mod packs from the index (effort L/M)
-- [ ] Port Host-side guest anti-cheat: speed, teleport and noclip checks with strikes (effort M)
-- [ ] Port Caught players spectate in co-op (effort M)
-- [ ] Port Text chat (team and nearby) (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
+- [ ] Port Host-side guest anti-cheat: speed, teleport and noclip checks with strikes (effort M) (2026-11-08: logic and tests written (net/rejoin, anticheat, host_requests, ui/room_panel), not built; mod.rs and menu/world_sync hooks left)
+- [x] Port Caught players spectate in co-op (effort M) (already done: net/runner_figure.rs)
+- [ ] Port Text chat (team and nearby) (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: markers, pings, chat, pause and waypoint code written, not built; mod.rs/app/world_sync hooks left)
 - [ ] Port Proximity voice chat: wire messages exist but no capture or playback (effort L) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Voice packet codec (IMA ADPCM) (effort M)
-- [ ] Port Owner moderation review queue and flags (placeholder in the admin hub) (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Server update manifests client flow (server side is ported) (effort M)
+- [x] Port Voice packet codec (IMA ADPCM) (effort M) (already done: net/voice.rs)
+- [ ] Port Owner moderation review queue and flags (placeholder in the admin hub) (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: queue logic written; panel rows and api calls left)
+- [ ] Port Server update manifests client flow (server side is ported) (effort M) (2026-11-08: client logic and tests written (net/api.rs, ui/account_panel.rs etc.), not built; menu/app hooks left)
 
 ### Configuration
 - [x] Port Difficulty profiles: Nightmare profile missing (effort S). Done 2026-11-03: `Difficulty::Nightmare` in `config/difficulty.rs`, lobby row `LOBBY` in `ui/menus.rs`, profile = Godot nightmare block (game_config.gd:50-72).
 - [x] Port Hunter draw pool: Nightmare weights missing (effort S). Done 2026-11-03: `tier_weights_for("nightmare")` returns .175/.525/.30 and Nightmare is in `LOBBY`.
-- [ ] Port Movement, camera and look tuning: pitch clamp, FOV maximum and bob rates differ from Godot (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
+- [ ] Port Movement, camera and look tuning: pitch clamp, FOV maximum and bob rates differ from Godot (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: bob rates moved to data; Godot re-check left)
 - [ ] Port Stamina and tool tuning: overheat multiplier applied to sprint, and the troll drain missing (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Rebindable controls: fixed labels, no rebinding or saved bindings (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
+- [ ] Port Rebindable controls: fixed labels, no rebinding or saved bindings (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: bindings, frame cap, cursor owner written, not built; app/mod.rs hooks left)
 - [ ] Port Prop collision boxes: solidity is cell-based, with no oriented boxes (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [ ] Port Room catalogue sizes: room size profiles missing (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [ ] Port Region definitions: embedded JSON is never read
 - [ ] Port Loot tables: the sewer loot table is embedded but unused
-- [ ] Port Surface themes: surfaces are painted in code, with no theme data (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
+- [ ] Port Surface themes: surfaces are painted in code, with no theme data (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: theme data and surfaces.rs table written; scene.rs hook left)
 - [ ] Port NPC teammate lines: no dialogue data (effort M)
 - [ ] Port Hunter emotes and personalities: no emote catalogue (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Hunter grab animations: 16 Godot grab files have no Rust copy (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Hunter dossier still shows names: the selected entry's title and description leak the name of an undiscovered hunter. Show a black square in place of the name for every undiscovered dossier, in the list and in the detail panel
-- [ ] Port Death lines: secret spider lines are absent (effort S) (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [ ] Port Hide server address from players: no scrub of host or port text (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Public route featured hunters: featured pair and weighted lineup missing (effort M)
+- [x] Port Hunter grab animations: 16 Godot grab files have no Rust copy (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (already done: assets/hunters/grabs/)
+- [x] Port Hunter dossier still shows names: the selected entry's title and description leak the name of an undiscovered hunter. Show a black square in place of the name for every undiscovered dossier, in the list and in the detail panel (already done: ui/menus.rs:1965)
+- [x] Port Death lines: secret spider lines are absent (effort S) (status note: [~] in the parity-gaps audit; the less complete status is kept) (already done: assets/ui/death_lines.json)
+- [x] Port Hide server address from players: no scrub of host or port text (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (already done: net/mod.rs:156)
+- [x] Port Public route featured hunters: featured pair and weighted lineup missing (effort M) (already done: content/public_roster.rs)
 - [ ] Port Data-driven base content loader: regions, rooms and other kinds not loaded (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [~] Port Night Watch content: no data in Rust (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (session 2026-11-03: modes are data-driven now)
 ### Autoload
-- [ ] Port Field of view and sensitivity: FOV maximum 110 in Rust vs 105 in Godot (effort S) (status note: [~] in the parity-gaps audit; the less complete status is kept)
-- [ ] Port Reduced motion option: no setting exists (effort S)
+- [x] Port Field of view and sensitivity: FOV maximum 110 in Rust vs 105 in Godot (effort S) (status note: [~] in the parity-gaps audit; the less complete status is kept) (already done: config/mod.rs:38)
+- [x] Port Reduced motion option: no setting exists (effort S) (already done: app/settings.rs)
 - [ ] Port Automatic run save: no temp file or backup, no pause-quit or pickup saves, no position saved (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Online backend client: code exists under net/ but is not compiled
-- [ ] Port Online room session and relay: client code exists but is not compiled
-- [ ] Port Public route join from the title screen: client not in the build (effort M)
+- [x] Port Online backend client: code exists under net/ but is not compiled (already done: main.rs:25)
+- [x] Port Online room session and relay: client code exists but is not compiled (already done: net/session.rs)
+- [ ] Port Public route join from the title screen: client not in the build (effort M) (2026-11-08: logic written, not built; title button, admin visibility and menu hooks left)
 - [ ] Port Moderation client: online only (effort M)
 - [~] Port Auto-updater: no download, verify or apply code (version parsing only) (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (update 2026-11-04: download and apply run; every outcome is logged)
 - [ ] Port Voice, spoken chat and text-to-speech: no speech code (effort L) (status note: [~] in the parity-gaps audit; the less complete status is kept)
 
 ### Boot, mods and story
-- [ ] Port Startup gate and update check: no check, retry or minimum splash (effort M) (status note: [~] in the parity-gaps audit; the less complete status is kept)
+- [ ] Port Startup gate and update check: no check, retry or minimum splash (effort M) (status note: [~] in the parity-gaps audit; the less complete status is kept) (2026-11-08: client logic and tests written (net/api.rs, ui/account_panel.rs etc.), not built; menu/app hooks left)
 - [x] Port Update-in-progress screen (effort M) (done 2026-11-04: the boot screen shows download progress)
 - [ ] Port Mod pack loader: only hunters, props and route loot load; no size limits or sha256 checks (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 
@@ -927,10 +927,10 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [ ] Port Positional emitters: waterfall, flood and lava loops missing (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 
 ### Doc-derived features
-- [ ] Port Spectators and ghost runners: no ghost state (effort M)
-- [ ] Port Personal waypoint pin: placement, clear, drawing and guidance (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
+- [x] Port Spectators and ghost runners: no ghost state (effort M) (already done: net/runner_figure.rs)
+- [x] Port Personal waypoint pin: placement, clear, drawing and guidance (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (already done: ui/map.rs)
 - [ ] Port Spoken chat through OS text to speech: no speech output (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Host-side guest anti-cheat: server moderation only, no guest validator (effort L/M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
+- [ ] Port Host-side guest anti-cheat: server moderation only, no guest validator (effort L/M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: logic and tests written (net/rejoin, anticheat, host_requests, ui/room_panel), not built; mod.rs and menu/world_sync hooks left)
 - [~] Port Night Watch game shell, mode registry and save progress: placeholder binary only (effort L) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (session 2026-11-03: a window, a data-driven mode registry and Classic are in; save progress is open)
 - [~] Port Night Watch nine modes: none ported (effort L) (session 2026-11-03: Classic is playable; the other eight modes are not)
 - [ ] Port Desktop self-update: version parsing only (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
@@ -995,9 +995,9 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 Source: `LastRoute Godot\KyttusLabApp` (re-synced from the other computer) compared with this port. Status words: missing, partial, out of date (Godot changed since the port was written).
 
 ### Hunters and void powers
-- [ ] Void hunter powers: all 12 missing (void_black, void_blue, void_brown, void_cyan, void_gray, void_green, void_orange, void_pink, void_purple, void_red, void_white, void_yellow). Godot: `game/hunters/gimmicks/void_*_gimmick.gd`, chart `void_hunter_gimmicks/void_hunter_gimmick_chart.gd`. Rust: `hunters/gimmicks/mod.rs` `Gimmick::for_id` has no void arms. void_orange and void_purple also need the player-side outage and HUD overlay.
+- [x] Void hunter powers: all 12 missing (void_black, void_blue, void_brown, void_cyan, void_gray, void_green, void_orange, void_pink, void_purple, void_red, void_white, void_yellow). Godot: `game/hunters/gimmicks/void_*_gimmick.gd`, chart `void_hunter_gimmicks/void_hunter_gimmick_chart.gd`. Rust: `hunters/gimmicks/mod.rs` `Gimmick::for_id` has no void arms. void_orange and void_purple also need the player-side outage and HUD overlay. (already done: hunters/gimmicks/void/)
 - [~] Hunter callouts off: Godot sets `ANNOUNCE_HUNTER_EVENTS = false` (`hunter_brain.gd:78-95`, `emit_world_event` strips message and alert). Done in `hunters/gimmicks/mod.rs` (`ANNOUNCE_HUNTER_EVENTS`, `silence_callouts`, unit test `hunter_callouts_are_silent_like_godot`). Open: `game/hunting.rs` `Event::Mimic` still shows "...did you hear that?" (Godot plays the cue only; see the Thessine item above).
-- [ ] Void Pink: Godot now uses a fake-footsteps event (`void_pink_gimmick.gd:1-50`); Rust has neither the text callout nor this.
+- [x] Void Pink: Godot now uses a fake-footsteps event (`void_pink_gimmick.gd:1-50`); Rust has neither the text callout nor this. (already done: hunters/gimmicks/mod.rs:98-99)
 - [ ] Xivvy flight: Godot checks headroom, hovers, lands before doors, floats and casts a shadow (`game/hunters/view/xivvy_flight.gd:9-131`). Rust uses a fixed 0.48 lift (`render/scene.rs:476-482`) and flies for 0.65 s regardless of geometry (`hunters/gimmicks/xivvy.rs:15-37`).
 - [ ] Verrine duct chase (VentNav, VentCrawl, exit bursts, thumps), `verrine_gimmick.gd:27-155`. Rust is the legacy grate-to-grate path (`hunters/gimmicks/verrine.rs:1-34`).
 - [x] Taser slow: done. Per-hunter `taser_slow_factor` / `taser_slow_seconds` read in `content/hunters.rs` and used in `game/items.rs`; `hunters/brain.rs` `apply_slow` keeps the stronger slow and the longer time, and `tick_slow` resets the factor on expiry (Godot `hunter_brain.gd` apply_slow / _tick_slow). Unit tests in `hunters/brain.rs`; headless suite 54/54.
@@ -1013,21 +1013,21 @@ Source: `LastRoute Godot\KyttusLabApp` (re-synced from the other computer) compa
 - [ ] Hunters target or ignore NPCs (`npc_teammates.gd:119-165`, `remote_players.gd:1387-1444`). Rust has no NPC pool in `game/hunting.rs`.
 - [ ] NPC count: Godot is unlimited with a lobby default of 0 (`npc_teammates.gd:15`, `infinite_route_test.gd:318-319`). Rust auto-spawns 1 to 4 per run (`data/npcs.json`). This is a Rust-only rule; confirm it.
 - [ ] NPC names changed to the R-4821 format (`game/config/guest_names.gd:1-38`). Rust `npc.rs:125-138` still emits K-04821, and the module doc at `npc.rs:66` is stale.
-- [ ] Minimap: off-view border pointers, other-floor dimmed marks, stale dimming, downed and caught rings (`game/hud/facility_map.gd:1357-1576`, `remote_players.gd:1482-1500`). Rust `ui/map.rs:263-307` has none; `net/world_sync.rs:146-153` has no age, state or floor, and `world_sync.rs:487` drops other floors.
+- [ ] Minimap: off-view border pointers, other-floor dimmed marks, stale dimming, downed and caught rings (`game/hud/facility_map.gd:1357-1576`, `remote_players.gd:1482-1500`). Rust `ui/map.rs:263-307` has none; `net/world_sync.rs:146-153` has no age, state or floor, and `world_sync.rs:487` drops other floors. (2026-11-08: markers, pings, chat, pause and waypoint code written, not built; mod.rs/app/world_sync hooks left)
 - [x] Player list: ALIVE, CAUGHT, SPECTATING, DISCONNECTED, IN LOBBY; host first, then name; floor and ping text (`game/network/room_player_list.gd:14-67`). Done in `ui/pause.rs` (`status_of`, `order`, `floor_text`, `ping_text`, `player_rows`) with `RunnerState` and the sample's `spectating`, `game_over`, `escape_active` flags in `net/world_sync.rs`. Open: Rust has no spectator mode, so SPECTATING is never sent; IN LOBBY has no caller (the list only opens in a run); the talking and pulse columns are not ported; the floor now shows `-depth` as the Godot list does, which changes the sign shown on Rust routes (confirm with KT).
-- [ ] Teammate waypoints: the setting is stored but nothing reads it (`app/settings.rs:35, 64, 107`, `ui/settings_panel.rs:400-404`). Godot: `game/hud/teammate_waypoints.gd:10-159`. The admin TELEPORT TO WAYPOINT and CLEAR WAYPOINT rows are inert (`ui/admin/menu.rs:122-123`).
+- [ ] Teammate waypoints: the setting is stored but nothing reads it (`app/settings.rs:35, 64, 107`, `ui/settings_panel.rs:400-404`). Godot: `game/hud/teammate_waypoints.gd:10-159`. The admin TELEPORT TO WAYPOINT and CLEAR WAYPOINT rows are inert (`ui/admin/menu.rs:122-123`). (2026-11-08: overlay honours the setting; admin rows hook left)
 
 ### Rooms, guests and hub
 - [x] Room-owner RESTART ROUTE and END ROUTE: Godot applies and acks (`game/autoload/room_state.gd:580-630`). Done 2026-11-03: `net/world_sync.rs` reads the heartbeat reply reserved commands (`RouteCommand`, `OwnerCursor`), acks them through commandSince/commandAck, sends the host End to guests (`Message::End`); `app/mod.rs` applies restart and end. Not done: kick, settings and transfer are named as not in this build (`net/api.rs:406-440` parse is unchanged); Godot mode, scale and daytime settings are not applied; nightmare difficulty (index 3) maps to STANDARD.
-- [ ] Guest-to-host requests (route_command, room_chat, hunter_emote, toggle_hunter, NPC ops): Godot whitelists actions and clamps fields (`remote_players.gd:1670-1800`). Rust has the message types only (`net/protocol.rs:144, 207, 268`), no host handler.
-- [ ] Hub skipping (`game/config/game_registry.gd:42`, SKIP_HUB = true) and admin visibility for any verified admin with permissions (`main_menu.gd:616-643`). Rust shows ADMIN only for KYTTU (`ui/menus.rs:84-85`).
+- [ ] Guest-to-host requests (route_command, room_chat, hunter_emote, toggle_hunter, NPC ops): Godot whitelists actions and clamps fields (`remote_players.gd:1670-1800`). Rust has the message types only (`net/protocol.rs:144, 207, 268`), no host handler. (2026-11-08: logic and tests written (net/rejoin, anticheat, host_requests, ui/room_panel), not built; mod.rs and menu/world_sync hooks left)
+- [ ] Hub skipping (`game/config/game_registry.gd:42`, SKIP_HUB = true) and admin visibility for any verified admin with permissions (`main_menu.gd:616-643`). Rust shows ADMIN only for KYTTU (`ui/menus.rs:84-85`). (2026-11-08: client logic and tests written (net/api.rs, ui/account_panel.rs etc.), not built; menu/app hooks left)
 - [ ] Hub, accounts and deploy area: comparison was cut off after item 12, re-run before treating as final.
 
 ### Parity docs that need updating
 - [ ] `docs/GODOT_FEATURE_AUDIT.md` lines 505-513, 549-551, 637 and 845 call NPC teammates and waypoints missing. Out of date for the offline parts.
 - [ ] `docs/WAYPOINTS.md` lines 25-27 and 57 describe B, V and R3 in-world placement. Godot's `tests/validate_waypoints.gd:136-147` is map-only; the Godot doc is stale too.
 - [ ] Any Rust doc citing Godot `docs/VENTS.md` (deleted in the working tree).
-- [ ] Remove the dead helper `crosshair_waypoint` (`game/endless.rs:1636`).
+- [ ] Remove the dead helper `crosshair_waypoint` (`game/endless.rs:1636`). (2026-11-08: removal is a hook, not applied)
 
 ## Community integrations
 
@@ -1074,9 +1074,9 @@ Source: the 2026-11-04 repo audit. Items that need a design decision are in `doc
 ### Security
 - [ ] Move the primary and test origins in `src/bin/last_route/net/config.rs` (lines 21-23) from http to https, and refuse http for non-loopback hosts; reconcile with the https refusal in `net/http.rs` line 134
 - [ ] Mod-pack downloads: verify every file against the manifest sha256 and size on the client before writing or loading it (`lr_server/packs/mod_packs.rs` line 4 promises it; no client check was found)
-- [ ] Replace the unwraps in `src/bin/lr_server/server/routes.rs` (`reserved.as_mut().unwrap()` at 466, 530, 867, 923 and `state.lock().unwrap()` at 161, 199, 298, 307) with error replies and poisoned-lock handling
-- [ ] Validate save `game_id` and `slot` in `lr_server/saves/game_saves.rs` line 31: allow only [A-Za-z0-9_-]{1,64}
-- [ ] Route-table test: every POST route in `routes.rs` has a body limit
+- [x] Replace the unwraps in `src/bin/lr_server/server/routes.rs` (`reserved.as_mut().unwrap()` at 466, 530, 867, 923 and `state.lock().unwrap()` at 161, 199, 298, 307) with error replies and poisoned-lock handling (already done: lr_server/server/routes.rs)
+- [x] Validate save `game_id` and `slot` in `lr_server/saves/game_saves.rs` line 31: allow only [A-Za-z0-9_-]{1,64} (already done: lr_server/saves/game_saves.rs:35-37)
+- [x] Route-table test: every POST route in `routes.rs` has a body limit (done 2026-11-08)
 
 ### Godot gaps (with Godot file and line)
 - [x] Waterfall plunge and swim (`player_controller_3d.gd` 1154-1229, swim speed 1.5 at 357) into `game/player.rs` (done, phase 7: physical free fall, data/swim/fall.json)
@@ -1095,7 +1095,7 @@ Source: the 2026-11-04 repo audit. Items that need a design decision are in `doc
 - [ ] Shared HardAbilities: burst, intercept, slam (`hunters/ai/hard_abilities.gd` 55, 60, 65, 179); confirm the Nyxie data file matches 15-19, 51-53
 - [ ] Check hunter constants against Godot: brain stuck/centre/give-up (`hunter_brain.gd` 30-43), hearing and sight (`hunter_seats.gd` 14-16), void sight 2.5 (`void_cyan_gimmick.gd` 7), relay rush 7 and delay (`hunter_director.gd` 10-13, 39)
 - [ ] NPC teammates: storey crossing (`npc_teammates.gd` 34, 396-567), chat with 30 s cooldown (52, 637), down and revive (235, 261), remaining command ops (47-51), 12 Hz sync (35) (update 2026-11-04: storey crossing is done (bots cross flights and ladders); chat, down and revive, command ops and sync are open)
-- [ ] Teammate waypoint overlay (`hud/teammate_waypoints.gd`, `hud/waypoint_overlay.gd`); the setting is saved and does nothing
+- [ ] Teammate waypoint overlay (`hud/teammate_waypoints.gd`, `hud/waypoint_overlay.gd`); the setting is saved and does nothing (2026-11-08: markers, pings, chat, pause and waypoint code written, not built; mod.rs/app/world_sync hooks left)
 - [ ] Interactable diff: vent, lift against `assets/interactables/`
 - [ ] Remove the "did you hear that?" line (`game/hunting.rs` 253) and the STUNNED messages (`game/items.rs` 156, 196)
 

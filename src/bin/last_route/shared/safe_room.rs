@@ -156,6 +156,183 @@ impl SafeRooms {
     }
 }
 
+impl SafeRooms {
+    /// Walking into an intact safe room records its checkpoint (TODO "Safe rooms with breach and checkpoints"). Returns
+    /// the checkpoint id only when it changed, so the caller saves once per entry, not every step.
+    pub fn enter(&mut self, room: &SafeRoom) -> Option<String> {
+        if self.active_checkpoint == room.checkpoint_id {
+            return None;
+        }
+        if self.activate(room) {
+            Some(room.checkpoint_id.clone())
+        } else {
+            None
+        }
+    }
+}
+
+/// The safe-room generation and breach rules (`data/safe_room.json`, `lr.safe_room/1`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Rules {
+    pub interval: i32,
+    pub offset: i32,
+    pub first_depth: i32,
+    pub max_integrity: i32,
+    pub breach_warmup_s: f32,
+    pub breach_seconds: f32,
+    /// Breach pressure scale: relaxed, standard, hard, nightmare.
+    pub pressure_scale: [f32; 4],
+    pub checkpoint_on_entry: bool,
+}
+
+const RULES_TEXT: &str = include_str!("../data/safe_room.json");
+
+pub fn parse_rules(text: &str) -> Result<Rules, String> {
+    let v: Value = serde_json::from_str(text).map_err(|e| format!("safe_room.json: {e}"))?;
+    if v["schema"].as_str() != Some("lr.safe_room/1") {
+        return Err("safe_room.json: 'schema' must be lr.safe_room/1".into());
+    }
+    let i = |k: &str| v[k].as_i64().ok_or_else(|| format!("safe_room.json: '{k}' missing or not a whole number")).map(|n| n as i32);
+    let f = |x: &Value, k: &str| {
+        x[k].as_f64().filter(|n| n.is_finite() && *n >= 0.0).map(|n| n as f32).ok_or_else(|| format!("safe_room.json: '{k}' missing or negative"))
+    };
+    let p = &v["breach_pressure_scale"];
+    let r = Rules {
+        interval: i("interval")?,
+        offset: i("offset")?,
+        first_depth: i("first_depth")?,
+        max_integrity: i("max_integrity")?,
+        breach_warmup_s: f(&v, "breach_warmup_s")?,
+        breach_seconds: f(&v, "breach_seconds")?,
+        pressure_scale: [f(p, "relaxed")?, f(p, "standard")?, f(p, "hard")?, f(p, "nightmare")?],
+        checkpoint_on_entry: v["checkpoint_on_entry"].as_bool().unwrap_or(true),
+    };
+    if r.interval < 1 || r.first_depth < 1 || r.max_integrity < 1 || r.breach_seconds <= 0.0 {
+        return Err("safe_room.json: interval, first_depth, max_integrity and breach_seconds must be above 0".into());
+    }
+    Ok(r)
+}
+
+pub fn rules() -> &'static Rules {
+    static R: std::sync::OnceLock<Rules> = std::sync::OnceLock::new();
+    R.get_or_init(|| parse_rules(RULES_TEXT).unwrap_or_else(|e| panic!("{e}")))
+}
+
+impl Rules {
+    /// Whether the Infinite route level `level` (0 is the start, negative is down) gets a safe room: never level 0,
+    /// then every `interval` levels from `first_depth`.
+    pub fn level_has_safe_room(&self, level: i32) -> bool {
+        let depth = level.abs();
+        level != 0 && depth >= self.first_depth && (depth - self.first_depth + self.offset).rem_euclid(self.interval) == 0
+    }
+
+    pub fn pressure_for(&self, d: crate::config::Difficulty) -> f32 {
+        use crate::config::Difficulty::*;
+        self.pressure_scale[match d {
+            Relaxed => 0,
+            Standard => 1,
+            Hard => 2,
+            Nightmare => 3,
+        }]
+    }
+}
+
+/// The host-only breach timer of one room: a hunter must stand at the door for `breach_warmup_s`, then the room breaks
+/// `breach_seconds` later. A guest never advances it (it applies the host `stream_safe_room` event instead).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BreachTimer {
+    at_door: f32,
+    breaking: f32,
+}
+
+impl BreachTimer {
+    /// Returns true on the step the room breaks.
+    pub fn step(&mut self, dt: f32, is_host: bool, hunter_at_door: bool, pressure: f32, r: &Rules) -> bool {
+        if !is_host {
+            return false;
+        }
+        let dt = dt.max(0.0);
+        if !hunter_at_door {
+            *self = BreachTimer::default();
+            return false;
+        }
+        self.at_door += dt;
+        if self.at_door < r.breach_warmup_s {
+            return false;
+        }
+        self.breaking += dt * pressure.max(0.0);
+        self.breaking >= r.breach_seconds
+    }
+
+    pub fn progress(&self, r: &Rules) -> f32 {
+        (self.breaking / r.breach_seconds.max(1e-6)).clamp(0.0, 1.0)
+    }
+}
+
+#[cfg(test)]
+mod rest_tests {
+    use super::*;
+    use crate::config::Difficulty;
+
+    fn spec(id: &str) -> SafeRoom {
+        SafeRoom { id: format!("{id}:SAFE"), checkpoint_id: format!("{id}:CHECKPOINT"), max_integrity: 100, breachable: true, repairable: true, breach_pressure: 1.0 }
+    }
+
+    #[test]
+    fn rules_parse_and_level_zero_never_has_one() {
+        let r = rules();
+        assert_eq!(&parse_rules(RULES_TEXT).unwrap(), r);
+        assert!(!r.level_has_safe_room(0));
+        assert!(r.level_has_safe_room(-r.first_depth));
+        assert!(r.level_has_safe_room(-(r.first_depth + r.interval)));
+        assert!(!r.level_has_safe_room(-(r.first_depth + 1)) || r.interval == 1);
+        assert!(parse_rules("{}").is_err());
+    }
+
+    #[test]
+    fn a_changed_interval_changes_which_levels_get_one() {
+        let two = parse_rules(&RULES_TEXT.replace("\"interval\": 4", "\"interval\": 2")).unwrap();
+        let count = |r: &Rules| (-40..=40).filter(|l| r.level_has_safe_room(*l)).count();
+        assert!(count(&two) > count(rules()));
+    }
+
+    #[test]
+    fn entering_an_intact_room_records_the_checkpoint_once() {
+        let mut s = SafeRooms::default();
+        let room = spec("1:0:-2");
+        assert_eq!(s.enter(&room), Some(room.checkpoint_id.clone()));
+        assert_eq!(s.active_checkpoint(), room.checkpoint_id);
+        assert_eq!(s.enter(&room), None, "already recorded");
+        let other = spec("2:0:-6");
+        s.damage(&other, 1000);
+        assert_eq!(s.enter(&other), None, "a breached room records nothing");
+        assert_eq!(s.active_checkpoint(), room.checkpoint_id);
+    }
+
+    #[test]
+    fn the_breach_timer_runs_on_the_host_only_after_the_warmup() {
+        let r = rules();
+        let mut host = BreachTimer::default();
+        let mut guest = BreachTimer::default();
+        let (mut host_broke, mut guest_broke) = (false, false);
+        let mut t = 0.0;
+        while t < r.breach_warmup_s + r.breach_seconds + 2.0 {
+            host_broke |= host.step(0.1, true, true, 1.0, r);
+            guest_broke |= guest.step(0.1, false, true, 1.0, r);
+            if t < r.breach_warmup_s - 0.2 {
+                assert_eq!(host.progress(r), 0.0, "warming up");
+            }
+            t += 0.1;
+        }
+        assert!(host_broke && !guest_broke);
+        assert_eq!(guest, BreachTimer::default());
+        // leaving the door resets it
+        host.step(0.1, true, false, 1.0, r);
+        assert_eq!(host, BreachTimer::default());
+        assert!(r.pressure_for(Difficulty::Nightmare) > r.pressure_for(Difficulty::Relaxed));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

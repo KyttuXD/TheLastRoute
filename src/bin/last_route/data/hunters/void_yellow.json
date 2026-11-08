@@ -12,5 +12,6 @@
 	"spawn": 15,
 	"chase_style": "reach2",
 	"taser_immune": true,
-	"melee_immune": false
+	"melee_immune": false,
+	"dossier": "THIS HUNTER GAINS 6% MOVEMENT SPEED FOR EVERY SECOND THE FULL-SCREEN MAP REMAINS OPEN, UP TO 70% FASTER. THE INCREASE LASTS FOR THE RUN. USE THE MAP ONLY IN SHORT CHECKS."
 }

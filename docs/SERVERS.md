@@ -304,7 +304,60 @@ request body, the creator's wait ends at the first check with the new line, a no
 `net::protocol` (`fingerprint_derivation_is_pinned_and_depends_on_nothing_else`: FNV-1a over `rust;wire<N>;<rpc>=<sender>/<channel>...`
 pinned on a fixed table), and the Node tests inside the patch.
 
+## Accounts, sessions and the rest of the lr_server API (2026-11-08)
+
+All of this is `lr_server` (vps3); with `LASTROUTE_ACCOUNT_UPSTREAM` set the website answers the account routes instead and the
+server only forwards them. Tunables are environment variables, read once at start.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `LASTROUTE_SESSION_TTL_HOURS` | 720 (30 days) | How long a session token lives. Sign-out removes the token at once, on every request that follows. |
+| `LASTROUTE_AUTH_RATE_LIMIT` | 10 | Sign-in, sign-up, password change and account deletion per address per window. The 429 says `TOO MANY SIGN-IN ATTEMPTS. TRY AGAIN IN N SECONDS.` |
+| `LASTROUTE_ACCOUNT_RATE_LIMIT` | 30 | The other account and admin routes, per address per window. |
+| `LASTROUTE_API_RATE_LIMIT`, `LASTROUTE_MOD_RATE_LIMIT` | 600, 120 | Everything else, and `/api/mods/*`. |
+| `LASTROUTE_RATE_LIMIT_WINDOW_SECONDS` | 60 | The window of all of the above. |
+
+- **Password change** `POST /api/account/password {sessionToken, currentPassword, password}`: the current password is required (a stolen
+  token alone cannot change it). Every other session of the account ends; the one that asked stays.
+- **Account deletion** `POST /api/account/delete {sessionToken, currentPassword[, confirmToken]}`: the first call checks the password
+  and answers a one-time `confirmToken` (valid 5 minutes); the second call with that token deletes the account, its sessions and its
+  cloud saves. The built-in owner accounts (`KYTTU`, `AYTTU`) cannot be deleted this way. The client screens are TODO.md (account settings).
+- **Saves** `GET`/`PUT /api/v1/saves/:gameId/:slot`: only the game and slot pairs listed in `ALLOWED_SAVES` (`saves/game_saves.rs`)
+  exist; anything else is 404 `UNKNOWN_SAVE` before a session is even looked at. The website's own slot list was not available to
+  compare, so these are the pairs the clients use today (`run`, `run-world-1`, `progress`).
+- **Admin**: every `/api/admin/*` route is refused with 403 `ADMIN_OWNER_REQUIRED` unless the session behind the token is one of the
+  built-in owners; the roster and password-reset routes also check inside the account service (401 without a session).
+- **Crash reports** (owner only): `POST /api/admin/crash-reports {sessionToken[, since, limit]}` lists, `POST /api/admin/crash-reports/view
+  {sessionToken, id}` reads one. Clients upload with `POST /api/v1/crash-reports` (rate limited per address and device).
+- **Mod packs**: `GET /api/mods/packs`, `GET /api/mods/packs/<id>[?version=]`, and `GET /api/mods/packs/<id>/download[?version=]`, which
+  answers 403 `PACK_BLOCKED` (with the owner's reason and no file list) for a blocked pack and 503 when no download base is set.
+- **Migration**: an `accounts.json` written by the Node server loads as it is. Names become canonical UPPER CASE; a session stored
+  in the old plaintext layout (`token`) still works and is rewritten as a hash when the file loads. Pinned by `accounts/account_tests.rs`
+  and `accounts/testdata/node_accounts.json`.
+- **Logs**: the audit line of an account event holds the time, the event, a cleaned account name, the outcome and the address, never
+  the request body. `redact_log_line` (`server/support.rs`) scrubs passwords, tokens and keys from it once more. Log rotation on the
+  VPS is not set up from this repo (see Open).
+- **Body limits**: `POST_ROUTES` in `server/routes.rs` lists every POST route with its own limit; `server/route_tests.rs` fails when a
+  route is added without an entry.
+
+### Data directory: `.data`
+
+`lr_server` keeps `accounts.json`, `saves/`, `skins/` and the public route in `.data` beside where it starts, unless
+`LASTROUTE_DATA_DIR` (or `KYTTU_DATA_DIR`) names another folder. The Node server used `data/`. Decision for now: **keep `.data`**
+(it is already what the code and the tests use, and it stays out of the repo listing). To move an existing Node install, point
+`LASTROUTE_DATA_DIR` at its `data/` folder; nothing is copied or renamed automatically. This is KT's call and stays open (Open below).
+
+### Health check
+
+`scripts/health-check.sh [host] [http_port] [relay_port]` (defaults `127.0.0.1 8105 1105`; `HEALTH_HOST`, `HEALTH_HTTP_PORT`,
+`HEALTH_RELAY_PORT` also work) asks `GET /api/health` and prints one line for HTTP and one for the ENet relay. The relay is UDP, so the
+server's own report (`relay.listening`) decides, and `nc -u -z` is only a hint when installed. Exit code 0 = both fine, 1 = HTTP
+down, 2 = HTTP fine but the relay is off. It sends and prints no secrets. It has not been run against any server from this repo's checks.
+
 ## Open
 
 - What `vps1` is for.
 - Whether `lr_server` should sit behind Caddy, and the account forwarding variable `LASTROUTE_ACCOUNT_UPSTREAM` (TODO.md).
+- Default data folder: `.data` (kept) or the old Node `data/`. Stays open for KT (see "Data directory" above).
+- Log rotation for the `lr_server` service log on the VPS (journald or logrotate) is a server change and is not done from this repo.
+- The website's slot list for `/api/v1/saves` could not be compared; `ALLOWED_SAVES` is the Rust side's list.

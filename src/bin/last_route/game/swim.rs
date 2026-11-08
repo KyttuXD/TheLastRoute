@@ -20,6 +20,9 @@ use std::sync::OnceLock;
 pub struct WadeRules {
     pub deep_depth: f32,
     pub speed_scale: f32,
+    /// Water at or under this many metres (ankle deep) does not slow the runner; the slowdown then grows to `speed_scale`
+    /// at `deep_depth`. 0 is Godot (the slowdown starts at the first drop of water).
+    pub ankle_depth: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -29,7 +32,7 @@ pub struct SwimRules {
 
 impl Default for SwimRules {
     fn default() -> Self {
-        SwimRules { wade: WadeRules { deep_depth: 0.9, speed_scale: 0.45 } }
+        SwimRules { wade: WadeRules { deep_depth: 0.9, speed_scale: 0.45, ankle_depth: 0.0 } }
     }
 }
 
@@ -67,6 +70,7 @@ impl SwimRules {
             wade: WadeRules {
                 deep_depth: pos(w, "deep_depth", d.wade.deep_depth),
                 speed_scale: nn(w, "speed_scale", d.wade.speed_scale).min(1.0),
+                ankle_depth: nn(w, "ankle_depth", d.wade.ankle_depth),
             },
         }
     }
@@ -388,7 +392,9 @@ pub fn wade_speed_scale(rules: &WadeRules, depth: f32) -> f32 {
     if !(depth > 0.0) {
         return 1.0;
     }
-    lerp(1.0, rules.speed_scale, (depth / rules.deep_depth).clamp(0.0, 1.0))
+    // an ankle depth at or past the deep depth would divide by nothing: the slowdown is then all at the deep depth
+    let ankle = rules.ankle_depth.min(rules.deep_depth - 1e-3).max(0.0);
+    lerp(1.0, rules.speed_scale, ((depth - ankle) / (rules.deep_depth - ankle)).clamp(0.0, 1.0))
 }
 
 /// An absolute cell split into its chunk (x, z) and the cell inside that chunk (floor division, so negative cells work).
@@ -693,7 +699,7 @@ mod tests {
         let (_, text) = crate::content::embedded::data_under("swim/movement.json").next().unwrap();
         let v: Value = serde_json::from_str(text).unwrap();
         let keys = |o: &Value| -> Vec<String> { o.as_object().unwrap().keys().cloned().collect() };
-        assert!(keys(&v["wade"]).iter().all(|k| k == "deep_depth" || k == "speed_scale"));
+        assert!(keys(&v["wade"]).iter().all(|k| k == "deep_depth" || k == "speed_scale" || k == "ankle_depth"));
         assert!(v.get("plunge").is_none(), "plunge numbers live in fall.json and effects.json");
     }
 
@@ -701,5 +707,29 @@ mod tests {
     fn wade_stamina_noise_and_soak_come_from_effects_json() {
         let c = crate::game::swim_effects::SwimConfig::default();
         assert!(c.wade_stamina_drain > 0.0 && c.wade_noise > 0.0 && c.soaked_seconds > 0.0);
+    }
+
+    #[test]
+    fn ankle_deep_water_does_not_slow_the_runner() {
+        let v = serde_json::json!({ "wade": { "ankle_depth": 0.2 } });
+        let r = SwimRules::parse(&v).wade;
+        assert_eq!(wade_speed_scale(&r, 0.1), 1.0);
+        assert_eq!(wade_speed_scale(&r, 0.2), 1.0);
+        let shin = wade_speed_scale(&r, 0.5);
+        assert!(shin < 1.0 && shin > r.speed_scale);
+        assert!((wade_speed_scale(&r, 0.9) - r.speed_scale).abs() < 1e-5);
+        // the shipped data keeps Godot: the slowdown starts at once
+        assert_eq!(rules().wade.ankle_depth, 0.0);
+        assert!(wade_speed_scale(&rules().wade, 0.1) < 1.0);
+    }
+
+    #[test]
+    fn wading_depth_rules_never_speed_the_runner_up_or_stall_it() {
+        let v = serde_json::json!({ "wade": { "ankle_depth": 5.0 } });
+        let r = SwimRules::parse(&v).wade;
+        for d in [0.0f32, 0.1, 0.5, 0.9, 1.5, 9.0] {
+            let s = wade_speed_scale(&r, d);
+            assert!(s.is_finite() && s >= r.speed_scale && s <= 1.0, "{d} -> {s}");
+        }
     }
 }

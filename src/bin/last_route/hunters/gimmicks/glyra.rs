@@ -4,6 +4,7 @@
 //! The port ticks the box clock every frame, which the original's finite floor intended.
 
 use super::Ctx;
+use crate::config::Difficulty;
 use crate::hunters::brain::{dist, Brain, State, Target};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -13,7 +14,72 @@ pub enum Mood {
     Stopped,
 }
 
+/// Her tunables (data/gimmicks/glyra.json; game_config.gd GLYRA_*). A missing or bad key keeps the Godot value.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tuning {
+    pub calm_speed_scale: f32,
+    pub hunt_speed_scale: Vec<(String, f32)>,
+    pub hunt_hearing_scale: f32,
+    pub calm_sight: f32,
+    pub calm_leash: f32,
+    pub calm_after_wind: f32,
+    pub home_radius: f32,
+    pub peek_ambush: bool,
+    pub peek_chance_scale: f32,
+}
+
+impl Tuning {
+    pub fn parse(text: &str) -> Tuning {
+        let v: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+        let num = |k: &str, d: f32| match v.get(k).and_then(|x| x.as_f64()) {
+            Some(n) if n > 0.0 && n.is_finite() => n as f32,
+            _ => d,
+        };
+        let mut hunt: Vec<(String, f32)> = v
+            .get("hunt_speed_scale")
+            .and_then(|x| x.as_object())
+            .map(|o| o.iter().filter_map(|(k, x)| x.as_f64().filter(|n| *n > 0.0).map(|n| (k.clone(), n as f32))).collect())
+            .unwrap_or_default();
+        if !hunt.iter().any(|(k, _)| k == "standard") {
+            hunt.push(("standard".to_string(), 1.3));
+        }
+        Tuning {
+            calm_speed_scale: num("calm_speed_scale", 0.6),
+            hunt_speed_scale: hunt,
+            hunt_hearing_scale: num("hunt_hearing_scale", 1.5),
+            calm_sight: num("calm_sight", 4.0),
+            calm_leash: num("calm_leash", 8.0),
+            calm_after_wind: num("calm_after_wind", 3.0),
+            home_radius: num("home_radius", 2.5),
+            peek_ambush: v.get("peek_ambush").and_then(|x| x.as_bool()).unwrap_or(true),
+            peek_chance_scale: v.get("peek_chance_scale").and_then(|x| x.as_f64()).filter(|n| *n >= 0.0 && n.is_finite()).map_or(1.0, |n| n as f32),
+        }
+    }
+
+    /// The hunt speed scale on `diff` (an absent difficulty uses standard).
+    pub fn hunt_speed(&self, diff: Difficulty) -> f32 {
+        let find = |id: &str| self.hunt_speed_scale.iter().find(|(k, _)| k == id).map(|(_, n)| *n);
+        find(diff.id()).or_else(|| find("standard")).unwrap_or(1.3)
+    }
+
+    /// The peek chance she gets from the hunter's base chance: none while her tune plays, else base x scale
+    /// (zero if the data switches the ambush off).
+    pub fn peek_chance(&self, mood: Mood, base: f32) -> f32 {
+        if mood == Mood::Playing || !self.peek_ambush {
+            0.0
+        } else {
+            base * self.peek_chance_scale
+        }
+    }
+}
+
+fn tuning() -> &'static Tuning {
+    static T: std::sync::OnceLock<Tuning> = std::sync::OnceLock::new();
+    T.get_or_init(|| Tuning::parse(include_str!("../../data/gimmicks/glyra.json")))
+}
+
 pub struct Glyra {
+    diff: Difficulty,
     pub mood: Mood,
     settle_left: f32,
     base_hearing: f32,
@@ -33,7 +99,13 @@ pub fn mood_of(left: f32) -> Mood {
 
 impl Glyra {
     pub fn new() -> Glyra {
+        Glyra::with_difficulty(Difficulty::Standard)
+    }
+
+    /// Glyra on `diff`: the hunt speed once the tune stops is per difficulty (Nightmare x1.5).
+    pub fn with_difficulty(diff: Difficulty) -> Glyra {
         Glyra {
+            diff,
             mood: Mood::Playing,
             settle_left: 0.0,
             base_hearing: -1.0,
@@ -60,7 +132,7 @@ impl Glyra {
             .min_by(|a, z| dist(*a, b.pos).total_cmp(&dist(*z, b.pos)));
         self.mood = mood_of(c.music_box_left);
         if self.mood == Mood::Playing && self.was_mood != Mood::Playing {
-            self.settle_left = 3.0;
+            self.settle_left = tuning().calm_after_wind;
             self.was_hunting = true;
             // the box was wound: she takes it up again and her shoulders drop
             b.raise_cue("music_box_settle");
@@ -77,7 +149,7 @@ impl Glyra {
             b.investigate(t.pos);
         }
         self.was_mood = self.mood;
-        b.hearing_scale = self.base_hearing * if self.mood == Mood::Stopped { 1.5 } else { 1.0 };
+        b.hearing_scale = self.base_hearing * if self.mood == Mood::Stopped { tuning().hunt_hearing_scale } else { 1.0 };
         if self.mood == Mood::WindingDown && b.state == State::Idle {
             b.idle_timer = b.idle_timer.min(0.15);
         }
@@ -88,7 +160,7 @@ impl Glyra {
         if self.settle_left > 0.0 {
             return;
         }
-        let close = !t.hidden && dist(b.pos, t.pos) <= 4.0;
+        let close = !t.hidden && dist(b.pos, t.pos) <= tuning().calm_sight;
         if b.state == State::Chase && b.direct_visible && self.was_hunting {
             return;
         }
@@ -96,14 +168,14 @@ impl Glyra {
         if let Some(box_pos) = guard {
             let drift = match b.state {
                 State::Chase | State::Investigate | State::Search | State::Peek => !close,
-                State::Wander | State::Idle => dist(b.pos, box_pos) > 8.0,
+                State::Wander | State::Idle => dist(b.pos, box_pos) > tuning().calm_leash,
             };
             if drift {
                 b.state = State::Wander;
                 b.direct_visible = false;
                 b.last_known = None;
                 if b.wander_target
-                    .map(|w| dist(w, box_pos) > 2.5)
+                    .map(|w| dist(w, box_pos) > tuning().home_radius)
                     .unwrap_or(true)
                 {
                     b.wander_target = Some((box_pos.0 + 1.2, box_pos.1));
@@ -118,10 +190,15 @@ impl Glyra {
         (self.mood == Mood::Playing && b.state != State::Chase).then_some("music_box_hold")
     }
 
+    /// Her peek chance from the hunter's `base` (GlyraGimmick.peek_chance): none while the tune plays.
+    pub fn peek_chance(&self, base: f32) -> f32 {
+        tuning().peek_chance(self.mood, base)
+    }
+
     pub fn speed_scale(&self) -> f32 {
         match self.mood {
-            Mood::Playing => 0.6,
-            Mood::Stopped => 1.3,
+            Mood::Playing => tuning().calm_speed_scale,
+            Mood::Stopped => tuning().hunt_speed(self.diff),
             Mood::WindingDown => 1.0,
         }
     }
@@ -166,6 +243,49 @@ mod tests {
     /// A runner hidden far away, so only the box leash decides where Glyra goes.
     fn hidden_runner() -> Target {
         Target { pos: (60.0, 60.0), hidden: true, ..Default::default() }
+    }
+
+    /// The shipped data keeps the Godot numbers; Nightmare hunts at x1.5.
+    #[test]
+    fn shipped_data_matches_godot_and_nightmare_hunts_faster() {
+        let g = Glyra::new();
+        assert_eq!(g.speed_scale(), 0.6, "playing is the calm scale");
+        let mut s = Glyra::new();
+        s.mood = Mood::Stopped;
+        assert_eq!(s.speed_scale(), 1.3);
+        let mut n = Glyra::with_difficulty(Difficulty::Nightmare);
+        n.mood = Mood::Stopped;
+        assert_eq!(n.speed_scale(), 1.5);
+        let mut d = Glyra::with_difficulty(Difficulty::Relaxed);
+        d.mood = Mood::Stopped;
+        assert_eq!(d.speed_scale(), 1.3, "a difficulty with no entry uses standard");
+        n.mood = Mood::WindingDown;
+        assert_eq!(n.speed_scale(), 1.0);
+    }
+
+    /// Peek ambush: none while the tune plays, the base chance once it winds down or stops, and a data switch.
+    #[test]
+    fn she_peeks_only_when_the_tune_is_not_playing() {
+        let mut g = Glyra::new();
+        assert_eq!(g.peek_chance(0.4), 0.0);
+        g.mood = Mood::WindingDown;
+        assert_eq!(g.peek_chance(0.4), 0.4);
+        g.mood = Mood::Stopped;
+        assert_eq!(g.peek_chance(0.4), 0.4);
+        let off = Tuning::parse(r#"{"peek_ambush": false}"#);
+        assert_eq!(off.peek_chance(Mood::Stopped, 0.4), 0.0);
+        let half = Tuning::parse(r#"{"peek_chance_scale": 0.5}"#);
+        assert_eq!(half.peek_chance(Mood::Stopped, 0.4), 0.2);
+    }
+
+    /// A data edit moves the calm numbers; a bad value keeps the Godot one.
+    #[test]
+    fn data_edits_change_the_calm_numbers() {
+        let t = Tuning::parse(r#"{"calm_leash": 3, "calm_sight": -2, "hunt_speed_scale": {"hard": 2.0}}"#);
+        assert_eq!(t.calm_leash, 3.0);
+        assert_eq!(t.calm_sight, 4.0);
+        assert_eq!(t.hunt_speed(Difficulty::Hard), 2.0);
+        assert_eq!(t.hunt_speed(Difficulty::Nightmare), 1.3);
     }
 
     #[test]

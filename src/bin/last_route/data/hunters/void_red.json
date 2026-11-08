@@ -12,5 +12,6 @@
 	"spawn": 14,
 	"chase_style": "reach2",
 	"taser_immune": true,
-	"melee_immune": false
+	"melee_immune": false,
+	"dossier": "THIS SPEEDSTER MOVES AT 155% SPEED IN CORRIDORS AND 78% SPEED INSIDE ROOMS. LEAVE LONG HALLWAYS AND CUT THROUGH ROOMS WHENEVER SHE BEGINS CHASING."
 }

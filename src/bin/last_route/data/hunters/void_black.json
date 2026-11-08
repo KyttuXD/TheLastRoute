@@ -12,5 +12,6 @@
 	"spawn": 15,
 	"chase_style": "lope",
 	"taser_immune": true,
-	"melee_immune": false
+	"melee_immune": false,
+	"dossier": "THIS STALKER MOVES 50% FASTER WHILE YOU ARE NOT WATCHING HER. FACING HER WITHIN 11 CELLS AND WITH A CLEAR LINE OF SIGHT STOPS HER COMPLETELY. CHECK BEHIND YOU REGULARLY, THEN USE THE PAUSE TO CREATE DISTANCE."
 }

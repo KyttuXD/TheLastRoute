@@ -253,7 +253,8 @@ impl ActivityRead for Brain {
         use crate::hunters::activities::Activity as A;
         self.activity_view().map(|(a, _)| match a {
             A::InspectLocker => "locker_inspect",
-            A::LookAround | A::CheckRoom => "look_around",
+            A::LookAround | A::CheckRoom | A::Fidget | A::Pace => "look_around",
+            A::CornerPeek => "corner_peek_left",
             A::Sniff => "sniff",
             A::Listen => "listen",
             A::Knock => "door_knock",

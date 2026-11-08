@@ -47,6 +47,16 @@ pub(crate) fn zones_of(f: &Facility, s: &Stair) -> Zones {
             }
         }
     }
+    if s.shape == FlightShape::Spiral && !crate::world::route::layout::godot_regions() {
+        // the widened ring, apron and lane (data) are part of the way on and off, outside the Godot parity scope
+        // (vertical::spiral_keepout), which keeps Godot's cells
+        let end = if s.dir < 0 { fp.landing } else { fp.foot };
+        for c in super::vertical::spiral_zone(&fp.upper_hole, end) {
+            if !f.is_wall_cell(c.x, c.y) && !ring.contains(&c) {
+                ring.push(c);
+            }
+        }
+    }
     ring.sort();
     Zones { zone, ring }
 }
@@ -121,6 +131,65 @@ fn a_body_walks_from_the_margin_to_the_landing_and_from_the_foot_out_for_every_s
     }
     assert!(walked >= 40, "only {walked} spirals were checked");
     assert!(bad.is_empty(), "{} spirals have no clear way on or off, first ones:\n{}", bad.len(), bad.iter().take(12).cloned().collect::<Vec<_>>().join("\n"));
+}
+
+/// The widened zone of one spiral on its level (data: `vertical::spiral_clearance`): open floor cells only.
+fn wide_zone(f: &Facility, s: &Stair) -> Vec<Cell> {
+    let fp = well_footprint(&s.flight(f.level).expect("a stair has a flight"));
+    let end = if s.dir < 0 { fp.landing } else { fp.foot };
+    let mut z = super::vertical::spiral_zone(&fp.upper_hole, end);
+    z.retain(|c| !f.is_wall_cell(c.x, c.y));
+    z
+}
+
+/// Needs the hooks (props, hiding and fixtures reading `vertical::spiral_zone`): nothing solid and no locker stands in the
+/// widened zone of any spiral, and the ring is at least the data width wherever the level has floor.
+#[test]
+fn nothing_solid_stands_in_the_widened_spiral_zone() {
+    // the live (concept-map) scope: the Godot parity scope keeps Godot's cells (vertical::spiral_keepout)
+    {
+        let width = super::vertical::spiral_clearance().ring_width;
+        let (mut spirals, mut bad) = (0, vec![]);
+        for level in LEVELS {
+            each_window(level, 40, |seed, f| {
+                for s in f.stairs.iter().filter(|s| matches!(s.kind, LinkKind::Stairs) && s.shape == FlightShape::Spiral) {
+                    spirals += 1;
+                    let fp = well_footprint(&s.flight(f.level).unwrap());
+                    let zone = wide_zone(f, s);
+                    // every open cell within the data width of the well is in the zone
+                    for h in &fp.upper_hole {
+                        for dy in -width..=width {
+                            for dx in -width..=width {
+                                let c = Cell::new(h.x + dx, h.y + dy);
+                                if !fp.upper_hole.contains(&c) && !f.is_wall_cell(c.x, c.y) {
+                                    assert!(zone.contains(&c), "{seed}: ring cell {c:?} missing from the zone");
+                                }
+                            }
+                        }
+                    }
+                    for c in &zone {
+                        if f.props.iter().any(|p| p.solid && p.door.is_none() && prop_hits(p, *c)) {
+                            bad.push(format!("L{level} {seed}: a solid prop in widened cell {c:?}"));
+                        }
+                        if f.hiding.iter().any(|h| h.cell == *c) {
+                            bad.push(format!("L{level} {seed}: a locker in widened cell {c:?}"));
+                        }
+                    }
+                }
+            });
+        }
+        assert!(spirals >= 20, "only {spirals} spirals were checked");
+        assert!(bad.is_empty(), "{} blocked cells, first ones:\n{}", bad.len(), bad.iter().take(12).cloned().collect::<Vec<_>>().join("\n"));
+    }
+}
+
+/// The Godot parity scope keeps the old spiral cells: no widened keep-out there, the full zone outside it.
+#[test]
+fn spiral_keepout_is_empty_in_the_godot_parity_scope() {
+    let hole: Vec<Cell> = (0..5).flat_map(|y| (0..5).map(move |x| Cell::new(20 + x, 20 + y))).collect();
+    let (landing, foot) = (Cell::new(21, 25), Cell::new(23, 25));
+    assert!(!super::vertical::spiral_keepout(&hole, landing, foot).is_empty());
+    assert!(crate::world::route::layout::with_godot_regions(|| super::vertical::spiral_keepout(&hole, landing, foot)).is_empty());
 }
 
 /// Breadth-first over the 0.25 m lattice of the zone and ring cells: whether a body gets from the centre of `a` to the

@@ -277,6 +277,13 @@ pub struct ChatRules {
     pub cooldown_seconds: f32,
     /// Sender name colours (r, g, b in 0..1), picked by peer id.
     pub name_colors: Vec<[f32; 3]>,
+    /// How long a quick-chat map ping lasts (it fades over all of it), seconds.
+    pub ping_seconds: f32,
+    /// How long a speaker's bubble stays over its head, seconds, and the most characters it shows.
+    pub bubble_seconds: f32,
+    pub bubble_max_chars: usize,
+    /// How many names the pause menu's SAID RECENTLY list shows.
+    pub said_recently_max: usize,
 }
 
 impl Default for ChatRules {
@@ -295,6 +302,10 @@ impl Default for ChatRules {
             rate_window_seconds: 10.0,
             cooldown_seconds: 5.0,
             name_colors: vec![[0.55, 0.85, 1.0], [1.0, 0.75, 0.4], [0.6, 1.0, 0.6], [1.0, 0.6, 0.8], [0.85, 0.7, 1.0], [1.0, 1.0, 0.55]],
+            ping_seconds: 4.0,
+            bubble_seconds: 5.0,
+            bubble_max_chars: 40,
+            said_recently_max: 6,
         }
     }
 }
@@ -327,6 +338,10 @@ impl ChatRules {
                 .map(|a| a.iter().filter_map(|c| vec_of::<3>(Some(c)).map(|x| [x[0] as f32, x[1] as f32, x[2] as f32])).collect::<Vec<_>>())
                 .filter(|c| !c.is_empty())
                 .unwrap_or(d.name_colors),
+            ping_seconds: v.get("ping_seconds").and_then(Value::as_f64).filter(|s| *s > 0.0).map(|s| s as f32).unwrap_or(d.ping_seconds),
+            bubble_seconds: v.get("bubble_seconds").and_then(Value::as_f64).filter(|s| *s > 0.0).map(|s| s as f32).unwrap_or(d.bubble_seconds),
+            bubble_max_chars: v.get("bubble_max_chars").and_then(Value::as_u64).map(|n| (n as usize).clamp(4, MAX_CHAT_LENGTH)).unwrap_or(d.bubble_max_chars),
+            said_recently_max: v.get("said_recently_max").and_then(Value::as_u64).map(|n| (n as usize).clamp(1, 20)).unwrap_or(d.said_recently_max),
         }
     }
 
@@ -347,6 +362,46 @@ impl ChatRules {
 #[derive(Default)]
 pub struct ChatFeed {
     lines: Vec<(ChatLine, f32)>,
+    /// Speakers this listener muted: their lines are not added, shown, bubbled or pinged (this client only).
+    muted: HashSet<i64>,
+}
+
+/// A speaker in the SAID RECENTLY list of the pause menu.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Speaker {
+    pub peer_id: i64,
+    pub name: String,
+    pub muted: bool,
+}
+
+/// A speech bubble over a speaker: who, the (cut) text and its opacity.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bubble {
+    pub peer_id: i64,
+    pub text: String,
+    pub alpha: f32,
+}
+
+/// A quick-chat ping to show on the maps: the poster's map position and floor, and how far through its life it is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PingMark {
+    pub peer_id: i64,
+    pub at: [f64; 2],
+    pub depth: i64,
+    pub age: f32,
+    /// 1 when it just landed, down to 0 when it is over.
+    pub alpha: f32,
+}
+
+/// `text` cut to `max` characters, with "..." in place of the cut end.
+pub fn bubble_text(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let keep = max.saturating_sub(3).max(1);
+    let mut out: String = text.chars().take(keep).collect();
+    out.push_str("...");
+    out
 }
 
 impl ChatFeed {
@@ -354,6 +409,9 @@ impl ChatFeed {
     pub fn push(&mut self, new: Vec<ChatLine>, listener_world: [f64; 3], listener_depth: i64) {
         let rules = ChatRules::load();
         for line in new {
+            if !line.system && self.muted.contains(&line.peer_id) {
+                continue;
+            }
             if line.audible_from(listener_world, listener_depth, rules.nearby_radius) {
                 self.lines.push((line, 0.0));
             }
@@ -381,7 +439,7 @@ impl ChatFeed {
         let live: Vec<(&ChatLine, f32)> = self
             .lines
             .iter()
-            .filter(|(_, age)| *age < rules.line_seconds)
+            .filter(|(l, age)| *age < rules.line_seconds && self.shown(l))
             .map(|(l, age)| (l, fade_alpha(*age, rules.line_seconds, rules.fade_seconds)))
             .collect();
         let skip = live.len().saturating_sub(rules.max_lines);
@@ -390,8 +448,81 @@ impl ChatFeed {
 
     /// The newest `open_lines` remembered lines, oldest first: what the open box shows.
     pub fn recent(&self) -> Vec<&ChatLine> {
-        let skip = self.lines.len().saturating_sub(ChatRules::load().open_lines);
-        self.lines.iter().skip(skip).map(|(l, _)| l).collect()
+        let all: Vec<&ChatLine> = self.lines.iter().filter(|(l, _)| self.shown(l)).map(|(l, _)| l).collect();
+        let skip = all.len().saturating_sub(ChatRules::load().open_lines);
+        all.into_iter().skip(skip).collect()
+    }
+
+    /// A line shows unless its speaker is muted (system lines always show).
+    fn shown(&self, line: &ChatLine) -> bool {
+        line.system || !self.muted.contains(&line.peer_id)
+    }
+
+    /// Mutes or unmutes a speaker for this listener; true when it is muted now.
+    pub fn toggle_mute(&mut self, peer_id: i64) -> bool {
+        if !self.muted.remove(&peer_id) {
+            self.muted.insert(peer_id);
+            return true;
+        }
+        false
+    }
+
+    pub fn is_muted(&self, peer_id: i64) -> bool {
+        self.muted.contains(&peer_id)
+    }
+
+    /// The pause menu's SAID RECENTLY list: the last speakers, newest first, each once (system lines left out), at most
+    /// `said_recently_max`. A muted speaker is listed too (marked), so it can be unmuted.
+    pub fn said_recently(&self) -> Vec<Speaker> {
+        let max = ChatRules::load().said_recently_max;
+        let mut out: Vec<Speaker> = Vec::new();
+        for (l, _) in self.lines.iter().rev() {
+            if l.system || l.peer_id == 0 || out.iter().any(|s| s.peer_id == l.peer_id) {
+                continue;
+            }
+            out.push(Speaker { peer_id: l.peer_id, name: l.display_name.clone(), muted: self.muted.contains(&l.peer_id) });
+            if out.len() >= max {
+                break;
+            }
+        }
+        out
+    }
+
+    /// The speech bubbles to draw this frame: each speaker's newest line while it is younger than `bubble_seconds`,
+    /// cut to `bubble_max_chars`, fading over the last `fade_seconds`. Muted speakers and system lines have none.
+    pub fn bubbles(&self) -> Vec<Bubble> {
+        let rules = ChatRules::load();
+        let mut out: Vec<Bubble> = Vec::new();
+        for (l, age) in self.lines.iter().rev() {
+            if l.system || l.ping || *age >= rules.bubble_seconds || !self.shown(l) || out.iter().any(|b| b.peer_id == l.peer_id) {
+                continue;
+            }
+            out.push(Bubble {
+                peer_id: l.peer_id,
+                text: bubble_text(&l.text, rules.bubble_max_chars),
+                alpha: fade_alpha(*age, rules.bubble_seconds, rules.fade_seconds),
+            });
+        }
+        out
+    }
+
+    /// The quick-chat pings still alive (younger than `ping_seconds`), oldest first.
+    pub fn pings(&self) -> Vec<PingMark> {
+        let life = ChatRules::load().ping_seconds;
+        self.lines
+            .iter()
+            .filter(|(l, age)| l.ping && *age < life && self.shown(l))
+            .map(|(l, age)| PingMark { peer_id: l.peer_id, at: l.at, depth: l.depth, age: *age, alpha: ping_alpha(*age, life) })
+            .collect()
+    }
+}
+
+/// A ping's opacity: 1 when it lands, down to 0 over its whole `life`.
+pub fn ping_alpha(age: f32, life: f32) -> f32 {
+    if life <= 0.0 || age >= life {
+        0.0
+    } else {
+        (1.0 - age.max(0.0) / life).clamp(0.0, 1.0)
     }
 }
 
@@ -544,4 +675,94 @@ mod tests {
         assert_eq!(fade_alpha(11.9, 12.0, 0.0), 1.0, "no fade: full until it expires");
     }
 
+    fn said(peer: i64, name: &str, text: &str, channel: &str, ping: bool, at: [f64; 3]) -> ChatLine {
+        let mut p = Map::new();
+        p.insert("text".into(), json!(text));
+        p.insert("channel".into(), json!(channel));
+        p.insert("ping".into(), json!(ping));
+        p.insert("world".into(), json!(at));
+        p.insert("at".into(), json!([at[0], at[2]]));
+        p.insert("depth".into(), json!(-1));
+        ChatLine::sanitize(peer, name, &p, false)
+    }
+
+    #[test]
+    fn the_nearby_filter_follows_the_distance_in_the_data() {
+        let rules = ChatRules::load();
+        let mut feed = ChatFeed::default();
+        let near = said(1, "A", "close", "nearby", false, [rules.nearby_radius * 0.5, 0.0, 0.0]);
+        let far = said(2, "B", "far", "nearby", false, [rules.nearby_radius * 2.0, 0.0, 0.0]);
+        let team = said(3, "C", "everyone", "team", false, [rules.nearby_radius * 9.0, 0.0, 0.0]);
+        let mut near = near;
+        let mut far = far;
+        near.depth = 0;
+        far.depth = 0;
+        feed.push(vec![near, far, team], [0.0; 3], 0);
+        let texts: Vec<&str> = feed.visible().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, vec!["close", "everyone"], "team lines carry any distance, nearby ones only within the radius");
+    }
+
+    #[test]
+    fn a_muted_speaker_is_hidden_and_unmuting_shows_the_kept_lines_again() {
+        let mut feed = ChatFeed::default();
+        feed.push(vec![said(5, "A", "hello", "team", false, [0.0; 3]), said(6, "B", "hi", "team", false, [0.0; 3])], [0.0; 3], -1);
+        assert!(feed.toggle_mute(5));
+        assert!(feed.is_muted(5));
+        assert_eq!(feed.visible().map(|l| l.peer_id).collect::<Vec<_>>(), vec![6], "the old line of a muted speaker is hidden");
+        assert!(feed.bubbles().iter().all(|b| b.peer_id != 5));
+        feed.push(vec![said(5, "A", "again", "team", false, [0.0; 3])], [0.0; 3], -1);
+        assert_eq!(feed.recent().len(), 1, "a muted speaker's new lines are not kept");
+        assert!(!feed.toggle_mute(5));
+        assert_eq!(feed.visible().count(), 2, "unmuting shows the kept lines again");
+    }
+
+    #[test]
+    fn said_recently_lists_each_speaker_once_newest_first_and_marks_the_muted() {
+        let mut feed = ChatFeed::default();
+        feed.push(
+            vec![
+                said(1, "A", "one", "team", false, [0.0; 3]),
+                said(2, "B", "two", "team", false, [0.0; 3]),
+                said(1, "A", "three", "team", false, [0.0; 3]),
+            ],
+            [0.0; 3],
+            -1,
+        );
+        feed.toggle_mute(2);
+        let list = feed.said_recently();
+        assert_eq!(list.iter().map(|s| s.peer_id).collect::<Vec<_>>(), vec![1, 2]);
+        assert!(!list[0].muted && list[1].muted);
+    }
+
+    #[test]
+    fn a_bubble_shows_the_newest_line_cut_short_and_ends_with_the_data_time() {
+        let rules = ChatRules::load();
+        let mut feed = ChatFeed::default();
+        // varied letters: a run of one letter is collapsed by the sanitiser
+        let long: String = (0..70).map(|i| (b'a' + (i % 26) as u8) as char).collect();
+        feed.push(vec![said(4, "D", "old", "team", false, [0.0; 3]), said(4, "D", &long, "team", false, [0.0; 3])], [0.0; 3], -1);
+        let b = feed.bubbles();
+        assert_eq!(b.len(), 1, "one bubble per speaker");
+        assert_eq!(b[0].text.chars().count(), rules.bubble_max_chars);
+        assert!(b[0].text.ends_with("..."));
+        assert_eq!(b[0].alpha, 1.0);
+        feed.tick(rules.bubble_seconds + 0.1);
+        assert!(feed.bubbles().is_empty());
+        assert_eq!(bubble_text("short", 40), "short");
+    }
+
+    #[test]
+    fn a_ping_carries_the_posters_floor_and_place_and_fades_out() {
+        let rules = ChatRules::load();
+        let mut feed = ChatFeed::default();
+        feed.push(vec![said(8, "E", "HERE", "team", true, [12.0, 0.0, 34.0]), said(8, "E", "chat", "team", false, [0.0; 3])], [0.0; 3], -1);
+        let p = feed.pings();
+        assert_eq!(p.len(), 1, "only the quick-chat ping");
+        assert_eq!((p[0].at, p[0].depth, p[0].alpha), ([12.0, 34.0], -1, 1.0));
+        feed.tick(rules.ping_seconds * 0.5);
+        assert!((feed.pings()[0].alpha - 0.5).abs() < 1e-4);
+        feed.tick(rules.ping_seconds);
+        assert!(feed.pings().is_empty());
+        assert_eq!(ping_alpha(1.0, 0.0), 0.0);
+    }
 }

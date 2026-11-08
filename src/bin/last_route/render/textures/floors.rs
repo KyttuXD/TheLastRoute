@@ -4,25 +4,26 @@
 
 use super::canvas::*;
 use super::rng::GodotRng;
+use crate::render::surfaces::{palette_col, surface_themes};
 use std::f64::consts::TAU;
 
 /// RefLook palette entries the painters use.
 pub fn metal() -> Col {
-    hex(0x2a2627)
+    palette_col(surface_themes().metal)
 }
 pub fn stone() -> Col {
-    hex(0x3a3532)
+    palette_col(surface_themes().stone)
 }
 pub fn wood() -> Col {
-    hex(0x3a2418)
+    palette_col(surface_themes().wood)
 }
 
 /// Flat style tones of the steel family: the dark seam band and the lit edge band.
 fn flat_seam() -> Col {
-    hex(0x141012)
+    palette_col(surface_themes().flat_seam)
 }
 fn flat_edge() -> Col {
-    hex(0x564e50)
+    palette_col(surface_themes().flat_edge)
 }
 
 /// Bevelled riveted plate; variant 3 has a drain grille. Flat: the bevel is two bands (lit top/left, dark seam

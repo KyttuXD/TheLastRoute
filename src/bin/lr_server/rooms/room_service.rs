@@ -89,12 +89,12 @@ fn js_math_round(f: f64) -> f64 {
     }
 }
 
-fn clean_room(value: Option<&Value>) -> String {
+pub(crate) fn clean_room(value: Option<&Value>) -> String {
     let upper = str_or_empty(value).to_uppercase();
     upper.chars().filter(|c| c.is_ascii_uppercase() || c.is_ascii_digit()).take(8).collect()
 }
 
-fn clean_player_id(value: Option<&Value>) -> String {
+pub(crate) fn clean_player_id(value: Option<&Value>) -> String {
     match value {
         Some(Value::String(s)) => s
             .chars()
@@ -105,7 +105,7 @@ fn clean_player_id(value: Option<&Value>) -> String {
     }
 }
 
-fn clean_name(value: Option<&Value>) -> String {
+pub(crate) fn clean_name(value: Option<&Value>) -> String {
     let kept: String = str_or_empty(value)
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == ' ' || *c == '_' || *c == '-')
@@ -145,7 +145,7 @@ fn clean_appearance(value: Option<&Value>, fallback: &str) -> String {
     }
 }
 
-fn error(status: u16, code: &str, message: &str) -> Reply {
+pub(crate) fn error(status: u16, code: &str, message: &str) -> Reply {
     (status, json!({ "code": code, "error": message }))
 }
 
@@ -234,9 +234,39 @@ pub struct Player {
     pub last_seen: i64,
 }
 
+/// A dropped peer's slot, kept until `until` and claimed only with the same peer (session) token.
+#[derive(Clone, Debug)]
+pub struct Held {
+    pub player: Player,
+    pub until: i64,
+}
+
+/// Why a room was closed by its host (shown to the guests that are still polling).
+pub const HOST_LEFT_REASON: &str = "HOST LEFT - ROOM CLOSED";
+/// Defaults of the tunables below; each can be overridden by an environment variable (see `env_ms`).
+pub const DEFAULT_RECONNECT_RESERVE_MS: i64 = 30_000;
+pub const DEFAULT_CLOSE_NOTICE_MS: i64 = 60_000;
+pub const MAX_BANS_PER_ROOM: usize = 64;
+
+pub(crate) fn env_ms(name: &str, fallback: i64) -> i64 {
+    std::env::var(name).ok().and_then(|v| v.trim().parse::<i64>().ok()).filter(|v| *v >= 0).unwrap_or(fallback)
+}
+
+/// Room capacity: `LASTROUTE_ROOM_CAPACITY` clamped to 2..=MAX_PLAYERS (default MAX_PLAYERS).
+pub(crate) fn default_capacity() -> usize {
+    (env_ms("LASTROUTE_ROOM_CAPACITY", MAX_PLAYERS as i64) as usize).clamp(2, MAX_PLAYERS)
+}
+
 #[derive(Clone, Debug)]
 pub struct Room {
     pub code: String,
+    pub capacity: usize,
+    pub admin: bool,
+    pub held: Vec<Held>,
+    /// Banned player ids and `name:NAME` keys.
+    pub bans: HashSet<String>,
+    /// Player id -> error code (`KICKED` / `BANNED`), so a removed player's next call says why.
+    pub removed: HashMap<String, String>,
     pub world_seed: String,
     pub host_player_id: String,
     pub settings: Map<String, Value>,
@@ -258,9 +288,14 @@ pub struct Room {
 }
 
 impl Room {
-    fn new(code: &str, timestamp: i64) -> Room {
+    pub(crate) fn new(code: &str, timestamp: i64) -> Room {
         Room {
             code: code.to_string(),
+            capacity: default_capacity(),
+            admin: false,
+            held: Vec::new(),
+            bans: HashSet::new(),
+            removed: HashMap::new(),
             world_seed: format!("ROOM-{code}-{}", hex(&random_bytes(10)).to_uppercase()),
             host_player_id: String::new(),
             settings: default_room_settings(),
@@ -286,7 +321,7 @@ impl Room {
         self.players.iter().position(|player| player.id == id)
     }
 
-    fn reconcile(&mut self) {
+    pub(super) fn reconcile(&mut self) {
         if !self.players.iter().any(|player| player.id == self.host_player_id) {
             let mut sorted: Vec<&Player> = self.players.iter().collect();
             sorted.sort_by_key(|player| player.spawn_index);
@@ -408,7 +443,7 @@ impl Room {
     }
 }
 
-fn clean_settings(patch: Option<&Value>, current: &Map<String, Value>) -> Option<Map<String, Value>> {
+pub(crate) fn clean_settings(patch: Option<&Value>, current: &Map<String, Value>) -> Option<Map<String, Value>> {
     let patch = match patch {
         Some(Value::Object(map)) => map,
         _ => return None,
@@ -625,14 +660,28 @@ impl Default for RoomServiceOptions {
 
 pub struct RoomService {
     pub rooms: HashMap<String, Room>,
-    now: Clock,
-    player_ttl_ms: i64,
-    room_ttl_ms: i64,
+    pub(crate) now: Clock,
+    pub(crate) player_ttl_ms: i64,
+    pub(crate) room_ttl_ms: i64,
+    /// How long a dropped peer's slot is held (`LASTROUTE_RECONNECT_RESERVE_MS`, 0 turns holding off).
+    pub(crate) reserve_ms: i64,
+    /// How long guests of a host-closed room keep hearing the reason (`LASTROUTE_ROOM_CLOSE_NOTICE_MS`).
+    pub(crate) close_notice_ms: i64,
+    /// Room code -> (reason, shown until), for rooms the host closed.
+    pub(crate) closed: HashMap<String, (String, i64)>,
 }
 
 impl RoomService {
     pub fn new(opts: RoomServiceOptions) -> RoomService {
-        RoomService { rooms: HashMap::new(), now: opts.now, player_ttl_ms: opts.player_ttl_ms, room_ttl_ms: opts.room_ttl_ms }
+        RoomService {
+            rooms: HashMap::new(),
+            now: opts.now,
+            player_ttl_ms: opts.player_ttl_ms,
+            room_ttl_ms: opts.room_ttl_ms,
+            reserve_ms: env_ms("LASTROUTE_RECONNECT_RESERVE_MS", DEFAULT_RECONNECT_RESERVE_MS),
+            close_notice_ms: env_ms("LASTROUTE_ROOM_CLOSE_NOTICE_MS", DEFAULT_CLOSE_NOTICE_MS),
+            closed: HashMap::new(),
+        }
     }
 
     /// `roomService.rooms.size`.
@@ -640,17 +689,18 @@ impl RoomService {
         self.rooms.len()
     }
 
-    fn now(&self) -> i64 {
+    pub(crate) fn now(&self) -> i64 {
         (self.now)()
     }
 
     /// `pruneRoom`: true when the room survives.
-    fn prune_room(&mut self, code: &str, timestamp: i64) -> bool {
+    pub(crate) fn prune_room(&mut self, code: &str, timestamp: i64) -> bool {
         let (player_ttl, room_ttl) = (self.player_ttl_ms, self.room_ttl_ms);
         let Some(room) = self.rooms.get_mut(code) else { return false };
         room.players.retain(|player| timestamp - player.last_seen <= player_ttl);
+        room.held.retain(|held| held.until > timestamp);
         room.reconcile();
-        if room.players.is_empty() || timestamp - room.last_active_at > room_ttl {
+        if (room.players.is_empty() && room.held.is_empty()) || timestamp - room.last_active_at > room_ttl {
             self.rooms.remove(code);
             return false;
         }
@@ -666,7 +716,7 @@ impl RoomService {
     }
 
     /// `load(code)`: true when the room exists after pruning.
-    fn load(&mut self, code: &str) -> bool {
+    pub(crate) fn load(&mut self, code: &str) -> bool {
         if !self.rooms.contains_key(code) {
             return false;
         }
@@ -675,15 +725,24 @@ impl RoomService {
     }
 
     /// `authenticate(body, { host })`: the room code and the requesting player's index.
-    fn authenticate(&mut self, body: &Value, host: bool) -> Result<(String, usize), Reply> {
+    pub(crate) fn authenticate(&mut self, body: &Value, host: bool) -> Result<(String, usize), Reply> {
         let code = clean_room(field(body, "room"));
         let id = clean_player_id(field(body, "playerId"));
         let exists = self.load(&code);
         if !exists || id.is_empty() {
+            let timestamp = self.now();
+            self.closed.retain(|_, (_, until)| *until > timestamp);
+            if let Some((reason, _)) = self.closed.get(&code) {
+                return Err(error(410, "ROOM_CLOSED", reason));
+            }
             return Err(error(404, "ROOM_NOT_FOUND", "Room not found"));
         }
         let room = &self.rooms[&code];
         let Some(index) = room.player_index(&id) else {
+            if let Some(why) = room.removed.get(&id) {
+                let text = if why == "BANNED" { "BANNED FROM THIS ROOM" } else { "KICKED FROM THIS ROOM" };
+                return Err(error(403, why, text));
+            }
             return Err(error(404, "PLAYER_NOT_JOINED", "Player not joined"));
         };
         let player = &room.players[index];
@@ -697,9 +756,22 @@ impl RoomService {
     }
 
     pub fn join_room(&mut self, body: &Value) -> Reply {
-        let code = clean_room(field(body, "room"));
+        self.join_with(body, &super::admin_rooms::JoinContext::plain())
+    }
+
+    /// `join_room` with the caller's verified standing (admin flag, saved admin-room settings, codes taken elsewhere).
+    pub fn join_with(&mut self, body: &Value, ctx: &super::admin_rooms::JoinContext) -> Reply {
+        let mut code = clean_room(field(body, "room"));
         let id = clean_player_id(field(body, "playerId"));
         let name = clean_name(field(body, "name"));
+        let join_only = truthy(field(body, "joinOnly"));
+        let typed_nothing = str_or_empty(field(body, "room")).trim().is_empty();
+        let mut admin_create = false;
+        if typed_nothing && ctx.admin && !id.is_empty() {
+            // An admin who types no code gets a fresh room under a free code.
+            code = self.free_code(ctx);
+            admin_create = true;
+        }
         if code.len() < 5 || id.is_empty() {
             return error(400, "INVALID_ROOM", "Room codes must be 5-8 characters");
         }
@@ -709,12 +781,38 @@ impl RoomService {
         let timestamp = self.now();
         if !self.load(&code) {
             self.cleanup();
+            if join_only && !ctx.admin {
+                return error(404, "ROOM_NOT_FOUND", "Room not found");
+            }
+            if ctx.admin && join_only && !typed_nothing {
+                if let Err(reply) = super::admin_rooms::validate_admin_code(&str_or_empty(field(body, "room")), &|c| ctx.taken(c)) {
+                    return reply;
+                }
+                admin_create = true;
+            }
             if self.rooms.len() >= MAX_ROOMS {
                 return error(503, "SERVER_BUSY", "Too many active rooms");
             }
-            self.rooms.insert(code.clone(), Room::new(&code, timestamp));
+            let mut fresh = Room::new(&code, timestamp);
+            if admin_create {
+                super::admin_rooms::make_admin_room(&mut fresh, ctx.saved.as_ref());
+            }
+            self.closed.remove(&code);
+            self.rooms.insert(code.clone(), fresh);
         }
         let room = self.rooms.get_mut(&code).expect("room exists");
+        if room.bans.contains(&id) || room.bans.contains(&format!("name:{name}")) {
+            return error(403, "BANNED", "BANNED FROM THIS ROOM");
+        }
+        // A dropped peer comes back to its held slot with the same peer (session) token.
+        if let Some(position) = room.held.iter().position(|held| held.player.id == id) {
+            if !safe_equal_values(field(body, "sessionToken"), &room.held[position].player.session_token) {
+                return error(403, "INVALID_SESSION", "Room session expired; leave and rejoin");
+            }
+            let mut held = room.held.remove(position);
+            held.player.last_seen = timestamp;
+            room.players.push(held.player);
+        }
         let existing_index = room.player_index(&id);
         if let Some(index) = existing_index {
             if !safe_equal_values(field(body, "sessionToken"), &room.players[index].session_token) {
@@ -722,11 +820,11 @@ impl RoomService {
             }
         }
         let lower = name.to_lowercase();
-        if room.players.iter().any(|player| player.id != id && player.name.to_lowercase() == lower) {
+        if room.players.iter().chain(room.held.iter().map(|held| &held.player)).any(|player| player.id != id && player.name.to_lowercase() == lower) {
             return error(409, "NAME_TAKEN", "That name is already in use in this room");
         }
-        if existing_index.is_none() && room.players.len() >= MAX_PLAYERS {
-            return error(409, "ROOM_FULL", &format!("Room capacity is {MAX_PLAYERS} players"));
+        if existing_index.is_none() && room.players.len() + room.held.len() >= room.capacity {
+            return error(409, "ROOM_FULL", &format!("Room capacity is {} players", room.capacity));
         }
         let player = match existing_index {
             Some(index) => {
@@ -736,7 +834,8 @@ impl RoomService {
                 player
             }
             None => {
-                let occupied: HashSet<i64> = room.players.iter().map(|player| player.spawn_index).collect();
+                let occupied: HashSet<i64> =
+                    room.players.iter().chain(room.held.iter().map(|held| &held.player)).map(|player| player.spawn_index).collect();
                 let spawn_index = (0..MAX_PLAYERS as i64).find(|index| !occupied.contains(index)).unwrap_or(-1);
                 Player {
                     id: id.clone(),
@@ -1059,11 +1158,28 @@ impl RoomService {
         if !safe_equal_values(field(body, "sessionToken"), &room.players[index].session_token) {
             return error(403, "INVALID_SESSION", "Room session expired; leave and rejoin");
         }
+        let now = timestamp_source();
+        let dropped = truthy(field(body, "dropped"));
+        if dropped && self.reserve_ms > 0 {
+            // The connection broke: keep the slot for the reserved window, claimable with the same session token.
+            let player = room.players.remove(index);
+            room.held.push(Held { player, until: now + self.reserve_ms });
+            room.last_active_at = now;
+            room.reconcile();
+            return (200, json!({ "ok": true, "held": true, "reservedMs": self.reserve_ms }));
+        }
+        let was_host = room.players[index].id == room.host_player_id;
         room.players.remove(index);
-        if room.players.is_empty() {
+        if was_host && (!room.players.is_empty() || !room.held.is_empty()) {
+            // Host migration stays open: when the host leaves for good the room closes with a reason.
+            self.rooms.remove(&code);
+            self.closed.insert(code, (HOST_LEFT_REASON.to_string(), now + self.close_notice_ms));
+            return (200, json!({ "ok": true, "closed": true, "reason": HOST_LEFT_REASON }));
+        }
+        if room.players.is_empty() && room.held.is_empty() {
             self.rooms.remove(&code);
         } else {
-            room.last_active_at = timestamp_source();
+            room.last_active_at = now;
             room.reconcile();
         }
         (200, json!({ "ok": true }))
@@ -1427,15 +1543,16 @@ mod tests {
             s.leave_room(&json!({ "room": "LEAVE1", "playerId": "host", "sessionToken": "nope" })).1["code"],
             "INVALID_SESSION"
         );
+        // A guest leaving does not move the host; the room stays.
         assert_eq!(
-            s.leave_room(&json!({ "room": "LEAVE1", "playerId": "host", "sessionToken": token(&host) })).1["ok"],
+            s.leave_room(&json!({ "room": "LEAVE1", "playerId": "guest", "sessionToken": token(&guest) })).1["ok"],
             true
         );
-        let remaining = s.update_room(&json!({ "room": "LEAVE1", "playerId": "guest", "sessionToken": token(&guest) }));
+        let remaining = s.update_room(&json!({ "room": "LEAVE1", "playerId": "host", "sessionToken": token(&host) }));
         assert_eq!(remaining.0, 200);
         assert_eq!(remaining.1["isHost"], true);
         assert_eq!(remaining.1["roomSize"], 1);
-        s.leave_room(&json!({ "room": "LEAVE1", "playerId": "guest", "sessionToken": token(&guest) }));
+        s.leave_room(&json!({ "room": "LEAVE1", "playerId": "host", "sessionToken": token(&host) }));
         assert!(!s.rooms.contains_key("LEAVE1"));
 
         let fresh = join(s, json!({ "room": "LEAVE1", "playerId": "host", "name": "Ann" }));

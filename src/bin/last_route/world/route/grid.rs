@@ -27,6 +27,7 @@ use std::collections::HashSet;
 
 use super::djb2;
 use super::layout::{Grid, Room, Rect, CHUNK, V2};
+use crate::world::rng::Rng;
 
 /// The chunk side in cells (`CHUNK_SIZE`).
 const SIZE: i32 = CHUNK;
@@ -548,6 +549,190 @@ pub fn remove_wall_humps(grid: &mut Grid, rooms: &[Room], doors: &[DoorProp]) {
     }
 }
 
+// --- Hall shapes beyond straight corridors (data/world/hall_shapes.json) ---
+
+/// How a region's halls are shaped beyond the straight Godot corridors. Off by default (`enabled` false in the data), so
+/// the Godot parity layouts are untouched until the owner switches it on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HallShape {
+    /// Chance per candidate wall spot of carving an alcove (a dead-end niche off the hall).
+    pub alcove_chance: f64,
+    /// Cells the alcove reaches into the wall.
+    pub alcove_depth: i32,
+    /// Cells wide along the hall.
+    pub alcove_width: i32,
+    /// Chebyshev distance two alcoves keep from each other.
+    pub alcove_spacing: i32,
+    /// Most alcoves one chunk gets.
+    pub max_alcoves: usize,
+    /// Whether a junction (a hall cell with three or four open sides) opens its diagonal corners too.
+    pub widen_junctions: bool,
+}
+
+/// `hall_shapes.json`: the on/off switch, the default shape and the per-region overrides.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HallShapes {
+    pub enabled: bool,
+    default: HallShape,
+    regions: std::collections::HashMap<String, HallShape>,
+}
+
+impl HallShapes {
+    pub fn from_text(text: &str) -> Result<HallShapes, String> {
+        let v: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("hall_shapes.json: {e}"))?;
+        let read = |o: &serde_json::Value, base: HallShape| -> Result<HallShape, String> {
+            let int = |k: &str, d: i32, lo: i32, hi: i32| -> Result<i32, String> {
+                match o.get(k) {
+                    None => Ok(d),
+                    Some(x) => x
+                        .as_i64()
+                        .filter(|n| (lo as i64..=hi as i64).contains(n))
+                        .map(|n| n as i32)
+                        .ok_or_else(|| format!("hall_shapes.json: {k} is a whole number {lo}..={hi}")),
+                }
+            };
+            let chance = match o.get("alcove_chance") {
+                None => base.alcove_chance,
+                Some(x) => x
+                    .as_f64()
+                    .filter(|c| (0.0..=1.0).contains(c))
+                    .ok_or("hall_shapes.json: alcove_chance is 0..=1")?,
+            };
+            Ok(HallShape {
+                alcove_chance: chance,
+                alcove_depth: int("alcove_depth", base.alcove_depth, 1, 6)?,
+                alcove_width: int("alcove_width", base.alcove_width, 1, 7)?,
+                alcove_spacing: int("alcove_spacing", base.alcove_spacing, 0, 20)?,
+                max_alcoves: int("max_alcoves", base.max_alcoves as i32, 0, 64)? as usize,
+                widen_junctions: match o.get("widen_junctions") {
+                    None => base.widen_junctions,
+                    Some(x) => x.as_bool().ok_or("hall_shapes.json: widen_junctions is true or false")?,
+                },
+            })
+        };
+        let none = HallShape { alcove_chance: 0.0, alcove_depth: 2, alcove_width: 3, alcove_spacing: 6, max_alcoves: 0, widen_junctions: false };
+        let default = read(v.get("default").unwrap_or(&serde_json::Value::Null), none)?;
+        let mut regions = std::collections::HashMap::new();
+        if let Some(map) = v.get("regions").and_then(serde_json::Value::as_object) {
+            for (name, o) in map {
+                regions.insert(name.clone(), read(o, default).map_err(|e| format!("{e} (region {name})"))?);
+            }
+        }
+        Ok(HallShapes { enabled: v.get("enabled").and_then(serde_json::Value::as_bool).unwrap_or(false), default, regions })
+    }
+
+    /// The shape a region's halls take, or `None` when hall shapes are off.
+    pub fn shape_for(&self, region: &str) -> Option<HallShape> {
+        self.enabled.then(|| self.regions.get(region).copied().unwrap_or(self.default))
+    }
+}
+
+/// The shipped hall shapes (`data/world/hall_shapes.json`), read once.
+pub fn hall_shapes() -> &'static HallShapes {
+    static SHAPES: std::sync::OnceLock<HallShapes> = std::sync::OnceLock::new();
+    SHAPES.get_or_init(|| {
+        let (_, text) = crate::content::embedded::data_under("world/hall_shapes.json")
+            .next()
+            .expect("world/hall_shapes.json is embedded");
+        HallShapes::from_text(text).unwrap_or_else(|e| panic!("{e}"))
+    })
+}
+
+/// The middle of a junction: all eight neighbours open and at least three halls running off it (open for the next three
+/// cells), which in a 3-wide hall is the centre cell of a T or a cross, never a cell of a straight run.
+fn is_hub(grid: &Grid, c: V2) -> bool {
+    let around = (-1..=1).flat_map(|dz| (-1..=1).map(move |dx| V2::new(dx, dz)));
+    if !around.into_iter().all(|d| is_open(grid, add(c, d))) {
+        return false;
+    }
+    let arms = [V2::new(1, 0), V2::new(-1, 0), V2::new(0, 1), V2::new(0, -1)]
+        .iter()
+        .filter(|d| (1..=3).all(|k| is_open(grid, add(c, scale(**d, k)))))
+        .count();
+    arms >= 3
+}
+
+/// Carves the region's hall shapes into a level-0 chunk grid and returns the cells opened: alcoves off straight hall walls
+/// and, where asked, opened corners at junctions. Every opened cell touches an open cell, so no pair of connected cells
+/// is split and no island appears; nothing is carved within 3 cells of the chunk edge (the neighbour chunk joins there) or
+/// within 2 cells of a room. `seed` names the draw stream (`<world>:HALL-SHAPES:<chunk tag>`); the draws are in raster order.
+/// Call it after the grid passes and before props, pickups and spawns read the grid.
+pub fn carve_hall_shapes(grid: &mut Grid, rooms: &[Room], region: &str, seed: &str, shapes: &HallShapes) -> usize {
+    let Some(shape) = shapes.shape_for(region) else { return 0 };
+    if shape.alcove_chance <= 0.0 && !shape.widen_junctions {
+        return 0;
+    }
+    let keep: Vec<Rect> = rooms.iter().map(|r| Rect::new(r.rect.x - 2, r.rect.y - 2, r.rect.w + 4, r.rect.h + 4)).collect();
+    let free = |x: i32, z: i32| (3..SIZE - 3).contains(&x) && (3..SIZE - 3).contains(&z) && !keep.iter().any(|r| has_point(*r, V2::new(x, z)));
+    let dirs = [V2::new(1, 0), V2::new(-1, 0), V2::new(0, 1), V2::new(0, -1)];
+    let mut carved = 0;
+    if shape.widen_junctions {
+        let hubs: Vec<V2> = (3..SIZE - 3)
+            .flat_map(|z| (3..SIZE - 3).map(move |x| V2::new(x, z)))
+            .filter(|c| is_hub(grid, *c))
+            .collect();
+        for hub in hubs {
+            for corner in [V2::new(2, 2), V2::new(2, -2), V2::new(-2, 2), V2::new(-2, -2)] {
+                let c = add(hub, corner);
+                let touches = dirs.iter().any(|d| is_open(grid, add(c, *d)));
+                if free(c.x, c.y) && is_solid(grid, c.x, c.y) && touches {
+                    put(grid, c, 0);
+                    carved += 1;
+                }
+            }
+        }
+    }
+    if shape.alcove_chance > 0.0 && shape.max_alcoves > 0 {
+        let mut rng = Rng::new(seed);
+        let mut placed: Vec<V2> = Vec::new();
+        let lo = -(shape.alcove_width / 2);
+        let hi = lo + shape.alcove_width - 1;
+        'cells: for z in 3..SIZE - 3 {
+            for x in 3..SIZE - 3 {
+                let here = V2::new(x, z);
+                if !is_open(grid, here) {
+                    continue;
+                }
+                for d in dirs {
+                    if placed.len() >= shape.max_alcoves {
+                        break 'cells;
+                    }
+                    let run = V2::new(d.y.abs(), d.x.abs());
+                    // the niche cell at (along a, depth k): the wall beside the hall, k = 0 touching it
+                    let at = |a: i32, k: i32| add(add(here, scale(d, k + 1)), scale(run, a));
+                    let mut fits = true;
+                    for a in lo - 1..=hi + 1 {
+                        for k in 0..=shape.alcove_depth {
+                            let c = at(a, k);
+                            if !free(c.x, c.y) || !is_solid(grid, c.x, c.y) {
+                                fits = false;
+                            }
+                        }
+                    }
+                    if !fits || placed.iter().any(|p| (p.x - x).abs().max((p.y - z).abs()) <= shape.alcove_spacing) {
+                        continue;
+                    }
+                    if rng.next_float() >= shape.alcove_chance {
+                        continue;
+                    }
+                    for a in lo..=hi {
+                        for k in 0..shape.alcove_depth {
+                            put(grid, at(a, k), 0);
+                            carved += 1;
+                        }
+                    }
+                    placed.push(here);
+                }
+            }
+        }
+    }
+    carved
+}
+
+#[cfg(test)]
+#[path = "coplanar_tests.rs"]
+mod coplanar_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -656,5 +841,176 @@ mod tests {
             failures.len(),
             failures.first().cloned().unwrap_or_default()
         );
+    }
+
+    // --- hall shapes ---
+
+    fn shapes_on(extra: &str) -> HallShapes {
+        let text = format!(
+            r#"{{"enabled":true,"default":{{"alcove_chance":0.6,"alcove_depth":2,"alcove_width":3,"alcove_spacing":4,"max_alcoves":12,"widen_junctions":true}}{extra}}}"#
+        );
+        HallShapes::from_text(&text).unwrap()
+    }
+
+    /// A cross of 3-wide halls, the shape of a level-0 chunk's corridors.
+    fn cross_grid() -> Grid {
+        let mut g = crate::world::route::layout::solid_grid();
+        for a in 0..45usize {
+            for b in 21..24usize {
+                g[b][a] = 0;
+                g[a][b] = 0;
+            }
+        }
+        g
+    }
+
+    /// The number of connected open regions.
+    fn components(g: &Grid) -> usize {
+        let mut seen = [[false; 45]; 45];
+        let mut count = 0;
+        for z in 0..45 {
+            for x in 0..45 {
+                if g[z][x] != 0 || seen[z][x] {
+                    continue;
+                }
+                count += 1;
+                let mut stack = vec![(x, z)];
+                seen[z][x] = true;
+                while let Some((cx, cz)) = stack.pop() {
+                    for (dx, dz) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+                        let (nx, nz) = (cx as i32 + dx, cz as i32 + dz);
+                        if nx < 0 || nz < 0 || nx >= 45 || nz >= 45 {
+                            continue;
+                        }
+                        let (nx, nz) = (nx as usize, nz as usize);
+                        if g[nz][nx] == 0 && !seen[nz][nx] {
+                            seen[nz][nx] = true;
+                            stack.push((nx, nz));
+                        }
+                    }
+                }
+            }
+        }
+        count
+    }
+
+    fn open_count(g: &Grid) -> usize {
+        g.iter().flatten().filter(|c| **c == 0).count()
+    }
+
+    #[test]
+    fn hall_shapes_are_off_in_the_shipped_data() {
+        assert!(!hall_shapes().enabled, "Godot parity layouts stay as they are until the owner turns this on");
+        for region in ["maze", "hotel", "mansion"] {
+            let mut g = cross_grid();
+            let before = g;
+            assert_eq!(carve_hall_shapes(&mut g, &[], region, "seed", hall_shapes()), 0);
+            assert_eq!(g, before);
+        }
+    }
+
+    #[test]
+    fn enabled_hall_shapes_carve_alcoves_and_corners() {
+        let shapes = shapes_on("");
+        let mut g = cross_grid();
+        let before = open_count(&g);
+        let carved = carve_hall_shapes(&mut g, &[], "maze", "w:HALL-SHAPES:0:0:0", &shapes);
+        assert!(carved > 0);
+        assert_eq!(open_count(&g), before + carved, "every carved cell was solid");
+        // the centre junction is widened: its corner is open
+        assert_eq!(g[20][20], 0);
+    }
+
+    #[test]
+    fn alcove_carving_keeps_connectivity_across_many_seeds() {
+        let shapes = shapes_on("");
+        let alcoves_only = HallShapes::from_text(
+            r#"{"enabled":true,"default":{"alcove_chance":0.7,"alcove_spacing":3,"max_alcoves":20,"widen_junctions":false}}"#,
+        )
+        .unwrap();
+        for seed in 0..60 {
+            for (name, s) in [("both", &shapes), ("alcoves", &alcoves_only)] {
+                let mut g = cross_grid();
+                assert_eq!(components(&g), 1);
+                carve_hall_shapes(&mut g, &[], "maze", &format!("seed-{seed}"), s);
+                assert_eq!(components(&g), 1, "{name} seed {seed} split or orphaned part of the hall");
+            }
+        }
+    }
+
+    #[test]
+    fn carving_is_deterministic_and_seed_dependent() {
+        let shapes = shapes_on("");
+        let run = |seed: &str| {
+            let mut g = cross_grid();
+            carve_hall_shapes(&mut g, &[], "maze", seed, &shapes);
+            g
+        };
+        assert_eq!(run("same"), run("same"));
+        assert!((0..20).any(|i| run(&format!("a{i}")) != run("a-base")), "the seed moves the alcoves");
+    }
+
+    #[test]
+    fn carving_stays_off_the_chunk_edge_and_away_from_rooms() {
+        let shapes = shapes_on("");
+        let room = Room {
+            id: "r".into(),
+            region: "maze",
+            room_type: "office".into(),
+            rect: Rect::new(24, 5, 6, 6),
+            doorway: None,
+            extra_doorways: None,
+            great_hall: false,
+            preset_room: false,
+            suite_id: None,
+            suite_kind: None,
+            suite_role: None,
+            suite_parent: false,
+        };
+        for seed in 0..30 {
+            let mut g = cross_grid();
+            let plain = g;
+            carve_hall_shapes(&mut g, &[room.clone()], "maze", &format!("edge-{seed}"), &shapes);
+            for z in 0..45usize {
+                for x in 0..45usize {
+                    if g[z][x] == plain[z][x] {
+                        continue;
+                    }
+                    assert!((3..42).contains(&x) && (3..42).contains(&z), "({x}, {z}) is on the chunk edge");
+                    let near = (22..32).contains(&(x as i32)) && (3..13).contains(&(z as i32));
+                    assert!(!near, "({x}, {z}) is inside a room's margin");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn data_changes_what_is_carved() {
+        let none = shapes_on(r#","regions":{"mall":{"alcove_chance":0.0,"widen_junctions":false}}"#);
+        let mut g = cross_grid();
+        assert_eq!(carve_hall_shapes(&mut g, &[], "mall", "x", &none), 0, "a region can opt out");
+        let mut h = cross_grid();
+        assert!(carve_hall_shapes(&mut h, &[], "maze", "x", &none) > 0, "the default still applies elsewhere");
+        let deep = shapes_on(r#","regions":{"gothic":{"alcove_depth":4,"widen_junctions":false}}"#);
+        let (mut a, mut b) = (cross_grid(), cross_grid());
+        let shallow = HallShapes::from_text(
+            r#"{"enabled":true,"default":{"alcove_chance":1.0,"alcove_depth":1,"alcove_spacing":6,"max_alcoves":4}}"#,
+        )
+        .unwrap();
+        let deeper = HallShapes::from_text(
+            r#"{"enabled":true,"default":{"alcove_chance":1.0,"alcove_depth":3,"alcove_spacing":6,"max_alcoves":4}}"#,
+        )
+        .unwrap();
+        assert!(carve_hall_shapes(&mut a, &[], "maze", "x", &shallow) < carve_hall_shapes(&mut b, &[], "maze", "x", &deeper));
+        assert!(deep.shape_for("gothic").unwrap().alcove_depth == 4 && !deep.shape_for("gothic").unwrap().widen_junctions);
+        assert_eq!(deep.shape_for("maze").unwrap().alcove_depth, 2);
+    }
+
+    #[test]
+    fn bad_hall_shape_data_is_refused() {
+        assert!(HallShapes::from_text("{").is_err());
+        assert!(HallShapes::from_text(r#"{"default":{"alcove_chance":2.0}}"#).is_err());
+        assert!(HallShapes::from_text(r#"{"default":{"alcove_depth":0}}"#).is_err());
+        assert!(HallShapes::from_text(r#"{"regions":{"maze":{"alcove_width":"x"}}}"#).is_err());
     }
 }

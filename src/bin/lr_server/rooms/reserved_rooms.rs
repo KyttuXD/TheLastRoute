@@ -80,6 +80,16 @@ fn normalize_code_str(code: &str) -> String {
     normalize_reserved_code(Some(&Value::String(code.to_string())))
 }
 
+/// An admin room code: 5-8 upper-case letters or digits (reserved codes are exactly 5), else empty.
+fn admin_code(code: &str) -> String {
+    let code = code.trim().to_uppercase();
+    if (5..=8).contains(&code.len()) && code.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()) {
+        code
+    } else {
+        String::new()
+    }
+}
+
 fn scrypt_bytes(password: &str, salt: &[u8], len: usize) -> Vec<u8> {
     let params = scrypt::Params::new(14, 8, 1, len.max(1)).expect("scrypt params");
     let mut out = vec![0u8; len.max(1)];
@@ -194,6 +204,9 @@ pub struct ReservedRooms {
     store_path: PathBuf,
     now: Clock,
     rooms: Map<String, Value>,
+    /// Admin rooms (web rooms an admin created by typing a code): code -> { owner, seed, settings, updatedAt }.
+    /// Written to the store as "adminRooms" only when there is one, so older stores keep their layout.
+    admin_rooms: Map<String, Value>,
     /// code -> (ticket hex -> expiresAt), insertion ordered; memory only.
     tickets: HashMap<String, Vec<(String, i64)>>,
     idle_ttl_ms: i64,
@@ -205,6 +218,7 @@ pub struct ReservedRooms {
 impl ReservedRooms {
     pub fn new(opts: ReservedRoomsOptions) -> ReservedRooms {
         let mut rooms = Map::new();
+        let mut admin_rooms = Map::new();
         if opts.store_path.exists() {
             match std::fs::read_to_string(&opts.store_path).map_err(|e| e.to_string()).and_then(|text| {
                 serde_json::from_str::<Value>(&text).map_err(|e| e.to_string())
@@ -212,6 +226,9 @@ impl ReservedRooms {
                 Ok(parsed) => {
                     if let Some(Value::Object(stored)) = parsed.get("rooms") {
                         rooms = stored.clone();
+                    }
+                    if let Some(Value::Object(stored)) = parsed.get("adminRooms") {
+                        admin_rooms = stored.clone();
                     }
                 }
                 Err(error) => log_error(&format!(
@@ -224,6 +241,7 @@ impl ReservedRooms {
             store_path: opts.store_path,
             now: opts.now,
             rooms,
+            admin_rooms,
             tickets: HashMap::new(),
             idle_ttl_ms: opts.idle_ttl_ms,
             active: HashMap::new(),
@@ -263,7 +281,10 @@ impl ReservedRooms {
     }
 
     fn save(&self) {
-        let value = json!({ "rooms": Value::Object(self.rooms.clone()) });
+        let mut value = json!({ "rooms": Value::Object(self.rooms.clone()) });
+        if !self.admin_rooms.is_empty() {
+            value["adminRooms"] = Value::Object(self.admin_rooms.clone());
+        }
         let mut out = Vec::new();
         let formatter = serde_json::ser::PrettyFormatter::with_indent(b" ");
         let mut serializer = serde_json::Serializer::with_formatter(&mut out, formatter);
@@ -279,6 +300,48 @@ impl ReservedRooms {
             "code": code, "settings": settings, "invites": [], "passwordHash": "", "commands": [],
             "commandSeq": 0, "createdBy": created_by, "updatedAt": self.now_iso(), "fromEnvironment": from_environment,
         })
+    }
+
+    /// The saved seed and settings of an admin room (`{ seed, settings }`), if the code has any.
+    pub fn admin_room(&self, code: &str) -> Option<Value> {
+        self.admin_rooms.get(&admin_code(code)).cloned()
+    }
+
+    /// Remembers an admin room's seed and settings under its code (`RoomService::admin_snapshot` is the input).
+    /// The newest rooms win once `RESERVED_LIMITS.rooms` is reached.
+    pub fn remember_admin_room(&mut self, code: &str, owner: &str, snapshot: &Value) {
+        let code = admin_code(code);
+        if code.is_empty() {
+            return;
+        }
+        let mut record = match super::admin_rooms::clean_snapshot(snapshot) {
+            Value::Object(map) => map,
+            _ => Map::new(),
+        };
+        record.insert("owner".into(), Value::String(owner.to_string()));
+        record.insert("updatedAt".into(), Value::String(self.now_iso()));
+        self.admin_rooms.insert(code, Value::Object(record));
+        while self.admin_rooms.len() > RESERVED_LIMITS.rooms {
+            let oldest = self
+                .admin_rooms
+                .iter()
+                .min_by_key(|(_, v)| str_or_empty(v.get("updatedAt")))
+                .map(|(k, _)| k.clone());
+            match oldest {
+                Some(key) => {
+                    self.admin_rooms.remove(&key);
+                }
+                None => break,
+            }
+        }
+        self.save();
+    }
+
+    /// Forgets an admin room's saved settings.
+    pub fn forget_admin_room(&mut self, code: &str) {
+        if self.admin_rooms.remove(&admin_code(code)).is_some() {
+            self.save();
+        }
     }
 
     pub fn is_reserved(&self, code: &str) -> bool {

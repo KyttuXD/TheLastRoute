@@ -907,5 +907,7 @@ pub fn item_id(i: crate::game::Item) -> &'static str {
         Battery => "battery",
         Stim => "stim",
         MusicBox => "music_box",
+        Lockpick => "lockpick",
+        ReviveKit => "revive_kit",
     }
 }

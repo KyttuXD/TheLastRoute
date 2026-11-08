@@ -17,6 +17,10 @@ pub enum Item {
     Stim,
     /// The music box: wound from the pack, then spent (game/music_box.rs).
     MusicBox,
+    /// Opens a locked cache (data/items.json `lockpick_seconds`).
+    Lockpick,
+    /// Shortens a revive, or stands the runner up by itself (data/items.json).
+    ReviveKit,
 }
 
 impl Item {
@@ -29,6 +33,8 @@ impl Item {
             Item::Battery => "FLASHLIGHT BATTERY",
             Item::Stim => "STIM PACK",
             Item::MusicBox => "MUSIC BOX",
+            Item::Lockpick => "LOCKPICK SET",
+            Item::ReviveKit => "REVIVE KIT",
         }
     }
 
@@ -178,7 +184,6 @@ impl Game {
                 } else {
                     let stun = taser_stun(&prof);
                     self.hunters[h].apply_stun(stun, false);
-                    self.say(&format!("STUNNED {:.1}s", stun));
                 }
             }
             None => self.say("TASER // NO TARGET"),
@@ -242,6 +247,26 @@ impl Game {
         }
     }
 
+    /// Spends a revive kit to stand the downed runner up at once (data/items.json `kit_self_revive`). False when the
+    /// runner is not down, has no kit, or the data forbids a self-revive.
+    pub fn use_revive_kit(&mut self) -> bool {
+        if self.downed.is_none() || !crate::ui::inventory::rules().kit_self_revive {
+            return false;
+        }
+        let Some(i) = self.slot_of(Item::ReviveKit) else {
+            return false;
+        };
+        self.slots[i] = None;
+        self.downed = None;
+        self.say("YOU ARE BACK UP");
+        true
+    }
+
+    /// A lockpick set in the pack opens a locked cache after `lockpick_seconds`; None without one.
+    pub fn lockpick_seconds(&self) -> Option<f32> {
+        self.slot_of(Item::Lockpick).map(|_| crate::ui::inventory::rules().lockpick_seconds)
+    }
+
     fn consume_selected(&mut self) {
         if let Some(s) = self.slots[self.selected].as_mut() {
             s.n -= 1;
@@ -277,6 +302,12 @@ impl Game {
                 crate::audio::sound::menu_blip(); // the injection starts (player_controller_3d.gd 3326)
                 self.consume_selected();
                 self.say("STIM PACK");
+            }
+            Item::Lockpick => self.say("LOCKPICK // USE ON A LOCKED CACHE"),
+            Item::ReviveKit => {
+                if !self.use_revive_kit() {
+                    self.say("REVIVE KIT // HOLD NEAR A DOWNED TEAMMATE");
+                }
             }
             Item::MusicBox => {
                 // a left click never spends the box: holding interact winds it (game/interact.rs `update_box_wind`)
@@ -520,13 +551,48 @@ mod tests {
     }
 
     #[test]
-    fn the_taser_stuns_for_the_taser_time_and_says_so() {
+    fn the_taser_stuns_for_the_taser_time_and_prints_no_stunned_message() {
         let Some((mut g, t)) = face_a_hunter() else { return };
         let want = taser_stun(&g.prof());
         g.taser_cd = 0.0;
         g.fire_taser(&Sounds::default());
         assert!((g.hunters[t].stun - want).abs() < 1e-4, "stun {} want {want}", g.hunters[t].stun);
-        assert_eq!(g.toast, format!("STUNNED {:.1}s", want));
+        assert!(!g.toast.contains("STUNNED"), "toast was {:?}", g.toast);
+    }
+
+    #[test]
+    fn a_taser_immune_hunter_is_slowed_not_stunned() {
+        let Some((mut g, t)) = face_a_hunter() else { return };
+        g.hunters[t].def.taser_immune = true;
+        g.taser_cd = 0.0;
+        g.fire_taser(&Sounds::default());
+        assert!(g.hunters[t].stun <= 0.0, "no stun on an immune hunter");
+        assert!(!g.toast.contains("STUNNED"));
+    }
+
+    #[test]
+    fn a_seized_beam_ignores_the_switch_for_the_flicker() {
+        let mut g = game_with_stack(Item::Battery, 1);
+        g.give(Item::Flashlight, 1);
+        assert!(g.force_flashlight_flicker(1.0));
+        let before = g.p.flashlight_on;
+        g.toggle_flashlight(&Sounds::default());
+        assert_eq!(g.p.flashlight_on, before, "seized: [F] does nothing");
+        assert!(g.p.flashlight_seized());
+    }
+
+    #[test]
+    fn a_kit_stands_a_downed_runner_up_and_is_spent_and_a_lockpick_has_a_time() {
+        let mut g = game_with_stack(Item::Battery, 1);
+        assert!(g.lockpick_seconds().is_none());
+        g.give(Item::Lockpick, 1);
+        assert!(g.lockpick_seconds().unwrap() > 0.0);
+        assert!(!g.use_revive_kit(), "not down");
+        g.give(Item::ReviveKit, 1);
+        g.downed = Some(super::super::revive::Downed { remaining: 10.0, held: 0.0, hunter: 0 });
+        assert!(g.use_revive_kit());
+        assert!(g.downed.is_none());
+        assert!(g.slots.iter().flatten().all(|s| s.item != Item::ReviveKit));
     }
 
     #[test]

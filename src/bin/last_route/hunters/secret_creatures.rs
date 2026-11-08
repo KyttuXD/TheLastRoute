@@ -1,4 +1,4 @@
-//! The Inferno's secret creature, the white wolf spider (docs/SECRET_WOLF_SPIDER.md): its id, the numbers of its behaviour and
+//! The Inferno's secret creatures, the white and the harsher black wolf spider (docs/SECRET_WOLF_SPIDER.md): its id, the numbers of its behaviour and
 //! presentation, and the difficulty knobs that tune it (config/secret_creatures.gd).
 //!
 //! It is a hunter (data/hunters/white_wolf_spider.json, category "secret") but stays out of every list that shows or draws the
@@ -10,7 +10,8 @@ use serde_json::Value;
 use std::sync::OnceLock;
 
 pub const WHITE: &str = "white_wolf_spider";
-pub const IDS: [&str; 1] = [WHITE];
+pub const BLACK: &str = "black_wolf_spider";
+pub const IDS: [&str; 2] = [WHITE, BLACK];
 /// The data file (content/mod.rs skips it when it reads hunter definitions).
 pub const SECRET_PATH: &str = "hunters/secret_creatures.json";
 pub const SCHEMA: &str = "lr.secret_creatures/1";
@@ -25,7 +26,7 @@ pub fn stays_home(id: &str) -> bool {
     is_secret(id)
 }
 
-/// The creature's behaviour numbers (`behaviour.white`).
+/// A creature's behaviour numbers (`behaviour.white` or `behaviour.black`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Variant {
     /// Cells: a runner this close that it can see is marked.
@@ -58,6 +59,32 @@ impl Default for Knobs {
     fn default() -> Knobs {
         Knobs { notice: 1.0, chase: 1.0, rest: 1.0, alert: 1.0 }
     }
+}
+
+/// How a difficulty picks who comes (config/secret_creatures.gd DIFFICULTY): solo or a pair.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlanRow {
+    /// "white_solo", "solo_or_pair", "pair_likely" or "pair_always".
+    pub mode: String,
+    /// Chance of the pair (modes solo_or_pair and pair_likely).
+    pub pair: f32,
+    /// Chance that a solo creature is the black one.
+    pub black_solo: f32,
+    /// Seconds after the first spawn that the second joins (pair_likely).
+    pub join_delay: f32,
+    /// Seconds between the white tell and the black one's.
+    pub stagger: f32,
+}
+
+/// Who comes on a route: the creatures in spawn order, when the second one joins, and the difficulty's knobs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Plan {
+    pub ids: Vec<&'static str>,
+    /// Seconds after the first creature that the second spawns (0 = together).
+    pub second_delay: f32,
+    /// The pair comes from opposite sides (hard and nightmare).
+    pub flank: bool,
+    pub knobs: Knobs,
 }
 
 /// Presentation numbers (creature_view.gd).
@@ -95,8 +122,14 @@ pub struct Rules {
     pub lair_radius: f32,
     pub sense_every: f32,
     pub white: Variant,
+    pub black: Variant,
+    /// A pair never starts closer together than this many cells (`pair.min_gap`).
+    pub pair_min_gap: f32,
+    /// A flanking pair starts at least this many degrees apart as seen from the runner (`pair.flank_degrees`).
+    pub pair_flank_degrees: f32,
     pub view: ViewRules,
     pub difficulty: Vec<(String, Knobs)>,
+    pub plans: Vec<(String, PlanRow)>,
     pub dossier: Vec<(String, String)>,
 }
 
@@ -126,6 +159,12 @@ fn knobs(v: &Value) -> Result<Knobs, String> {
     Ok(Knobs { notice: num(v, "notice")?, chase: num(v, "chase")?, rest: num(v, "rest")?, alert: num(v, "alert")? })
 }
 
+fn plan_row(v: &Value) -> Result<PlanRow, String> {
+    let mode = v["mode"].as_str().filter(|m| ["white_solo", "solo_or_pair", "pair_likely", "pair_always"].contains(m)).ok_or("secret creatures: plan.mode must be white_solo, solo_or_pair, pair_likely or pair_always")?;
+    let chance = |k: &str| num(v, k).and_then(|x| if (0.0..=1.0).contains(&x) { Ok(x) } else { Err(format!("secret creatures: plan.{k} must be 0 to 1")) });
+    Ok(PlanRow { mode: mode.to_string(), pair: chance("pair")?, black_solo: chance("black_solo")?, join_delay: num(v, "join_delay")?.max(0.0), stagger: num(v, "stagger")?.max(0.0) })
+}
+
 impl Rules {
     pub fn parse(v: &Value) -> Result<Rules, String> {
         if v["schema"].as_str() != Some(SCHEMA) {
@@ -143,6 +182,10 @@ impl Rules {
         }
         if !difficulty.iter().any(|(id, _)| id == "standard") {
             return Err("secret creatures: difficulty needs a `standard` row (the fallback)".into());
+        }
+        let mut plans = vec![];
+        for (id, row) in v["difficulty"].as_object().into_iter().flatten() {
+            plans.push((id.clone(), plan_row(&row["plan"])?));
         }
         let dossier = v["dossier"]
             .as_object()
@@ -167,6 +210,9 @@ impl Rules {
             lair_radius: num(&v["behaviour"], "lair_radius")?,
             sense_every: num(&v["behaviour"], "sense_every")?,
             white: variant(v, "white")?,
+            black: variant(v, "black")?,
+            pair_min_gap: num(&v["pair"], "min_gap")?,
+            pair_flank_degrees: num(&v["pair"], "flank_degrees")?,
             view: ViewRules {
                 attack_range: num(view, "attack_range")?,
                 attack_cooldown: num(view, "attack_cooldown")?,
@@ -179,6 +225,7 @@ impl Rules {
                 crackle_every: (bound(0)?, bound(1)?),
             },
             difficulty,
+            plans,
             dossier,
         })
     }
@@ -197,6 +244,32 @@ impl Rules {
     pub fn knobs_for(&self, difficulty_id: &str) -> Knobs {
         let find = |want: &str| self.difficulty.iter().find(|(id, _)| id == want).map(|(_, k)| *k);
         find(difficulty_id).or_else(|| find("standard")).expect("the standard row exists")
+    }
+
+    /// A creature's behaviour numbers; an id that is not a secret creature reads as the white one.
+    pub fn variant_of(&self, id: &str) -> &Variant {
+        if id == BLACK {
+            &self.black
+        } else {
+            &self.white
+        }
+    }
+
+    /// Who comes on a route, deterministic from the route seed and the difficulty (config/secret_creatures.gd plan_for).
+    pub fn plan_for(&self, difficulty_id: &str, seed: &str) -> Plan {
+        // an unknown difficulty reads as standard in every part of the plan, the dice included
+        let difficulty_id = if self.plans.iter().any(|(id, _)| id == difficulty_id) { difficulty_id } else { "standard" };
+        let row = self.plans.iter().find(|(id, _)| id == difficulty_id).map(|(_, r)| r).expect("the standard row exists");
+        let mut rng = crate::world::rng::Rng::new(&format!("{seed}:SECRET-PLAN:{difficulty_id}"));
+        let (roll_pair, roll_black) = (rng.next_float() as f32, rng.next_float() as f32);
+        let knobs = self.knobs_for(difficulty_id);
+        let chancy = row.mode == "solo_or_pair" || row.mode == "pair_likely";
+        if row.mode == "pair_always" || (chancy && roll_pair < row.pair) {
+            let after_bark = row.mode == "pair_likely";
+            return Plan { ids: vec![WHITE, BLACK], second_delay: if after_bark { row.join_delay } else { row.stagger }, flank: after_bark || row.mode == "pair_always", knobs };
+        }
+        let black = chancy && roll_black < row.black_solo;
+        Plan { ids: vec![if black { BLACK } else { WHITE }], second_delay: 0.0, flank: false, knobs }
     }
 
     /// The dossier line of a creature, shown only once it has been met.
@@ -241,6 +314,49 @@ mod tests {
     }
 
     #[test]
+    fn the_black_variant_is_harsher_than_the_white_one() {
+        let r = Rules::get();
+        let (w, b) = (&r.white, &r.black);
+        assert!(b.alert_radius > w.alert_radius && b.hunt_seconds > w.hunt_seconds && b.cooldown_seconds > w.cooldown_seconds);
+        assert!(b.hunt_speed_scale >= w.hunt_speed_scale && b.bark_seconds <= w.bark_seconds);
+        assert!(b.flash_hold.is_none() && w.flash_hold.is_some(), "the black one ignores the flashlight");
+        assert!(b.hiss && !w.hiss);
+        assert_eq!(r.variant_of(BLACK), b);
+        assert_eq!(r.variant_of(WHITE), w);
+        let content = crate::content::Content::load();
+        let (cw, cb) = (content.hunter(WHITE).unwrap(), content.hunter(BLACK).unwrap());
+        assert!(cb.chase > cw.chase && cb.sight > cw.sight && cb.hearing > cw.hearing, "the black hunter file is faster and senses more");
+        assert_eq!(cb.category, "secret");
+    }
+
+    #[test]
+    fn the_plan_follows_the_difficulty_and_is_deterministic() {
+        let r = Rules::get();
+        for seed in ["A", "B", "C", "D", "E", "F", "G", "H"] {
+            assert_eq!(r.plan_for("standard", seed), r.plan_for("standard", seed));
+            assert_eq!(r.plan_for("relaxed", seed).ids, vec![WHITE], "relaxed is the white one alone");
+            let n = r.plan_for("nightmare", seed);
+            assert_eq!(n.ids, vec![WHITE, BLACK]);
+            assert!(n.flank && n.second_delay == r.plans.iter().find(|p| p.0 == "nightmare").unwrap().1.stagger);
+            assert_eq!(n.knobs, r.knobs_for("nightmare"));
+        }
+        assert_eq!(r.plan_for("nope", "A").ids, r.plan_for("standard", "A").ids, "an unknown id reads as standard");
+    }
+
+    #[test]
+    fn standard_brings_a_pair_about_one_route_in_ten_and_hard_most_of_the_time() {
+        let r = Rules::get();
+        let pairs = |d: &str| (0..400).filter(|i| r.plan_for(d, &format!("SEED-{i}")).ids.len() == 2).count();
+        let (std, hard) = (pairs("standard"), pairs("hard"));
+        assert!((15..=70).contains(&std), "standard pairs: {std} of 400");
+        assert!(hard > std * 3 && hard > 200, "hard pairs: {hard} of 400");
+        let blacks = (0..400).filter(|i| r.plan_for("standard", &format!("SEED-{i}")).ids == vec![BLACK]).count();
+        assert!(blacks > 0, "a solo black one happens on standard");
+        let hard_plan = (0..400).map(|i| r.plan_for("hard", &format!("SEED-{i}"))).find(|p| p.ids.len() == 2).unwrap();
+        assert!(hard_plan.flank && hard_plan.second_delay == 3.0, "on hard the black one joins after the white one has marked the runner");
+    }
+
+    #[test]
     fn a_bad_file_is_refused() {
         let good: Value = serde_json::from_str(embedded::data_under(SECRET_PATH).next().unwrap().1).unwrap();
         let mut v = good.clone();
@@ -249,14 +365,17 @@ mod tests {
         let mut v = good.clone();
         v["behaviour"]["white"]["tell"] = Value::from("roar");
         assert!(Rules::parse(&v).is_err());
+        let mut v = good.clone();
+        v["difficulty"]["standard"]["plan"]["mode"] = Value::from("always");
+        assert!(Rules::parse(&v).is_err());
         let mut v = good;
         v["schema"] = Value::from("lr.other/1");
         assert!(Rules::parse(&v).is_err());
     }
 
     #[test]
-    fn only_the_white_creature_is_secret() {
-        assert!(is_secret(WHITE) && !is_secret("black_wolf_spider") && !is_secret("aki"));
+    fn only_the_two_wolf_spiders_are_secret() {
+        assert!(is_secret(WHITE) && is_secret(BLACK) && !is_secret("aki"));
         assert!(stays_home(WHITE) && !stays_home("nyxie"));
     }
 }

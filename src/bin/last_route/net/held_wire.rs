@@ -2,8 +2,8 @@
 //! puts the item's model on the mannequin's right hand.
 //!
 //! Wire: `"held": "<id>"` with the stable Godot ids (`flashlight`, `taser`, `crowbar`, `rescue_axe`, `battery`,
-//! `stim_pack`, `music_box`). The key is absent when nothing is held. An older peer never sends it and ignores it; an id this build
-//! does not know (a newer peer's, or Godot's lockpick and revive kit) reads as no item, never as a bad sample.
+//! `stim_pack`, `music_box`, `lockpick`, `revive_kit`). The key is absent when nothing is held. An older peer never sends it and ignores it; an id this build
+//! does not know (a newer peer's) reads as no item, never as a bad sample.
 //!
 //! Pose: `data/render/remote_held.json` (Godot `HeldItemPoses.THIRD_PERSON` and `REMOTE_HELD_SCALES`). The item hangs on
 //! the `R-Hand` bone, so it follows every clip. Swing replication is not done (the held item stays in its rest pose).
@@ -20,6 +20,8 @@ pub fn wire(item: Item) -> &'static str {
     match item {
         Item::Flashlight => "flashlight",
         Item::Taser => "taser",
+        Item::Lockpick => "lockpick",
+        Item::ReviveKit => "revive_kit",
         Item::Crowbar => "crowbar",
         Item::Axe => "rescue_axe",
         Item::Battery => "battery",
@@ -30,7 +32,7 @@ pub fn wire(item: Item) -> &'static str {
 
 /// The item a wire id names; None for an id this build does not know.
 pub fn from_wire(id: &str) -> Option<Item> {
-    [Item::Flashlight, Item::Taser, Item::Crowbar, Item::Axe, Item::Battery, Item::Stim, Item::MusicBox]
+    [Item::Flashlight, Item::Taser, Item::Crowbar, Item::Axe, Item::Battery, Item::Stim, Item::MusicBox, Item::Lockpick, Item::ReviveKit]
         .into_iter()
         .find(|i| wire(*i) == id)
 }
@@ -80,7 +82,7 @@ impl HeldData {
         };
         let bone = a["bone"].as_str().ok_or("anchor.bone is missing or not a string")?.to_string();
         let mut items = vec![];
-        for item in [Item::Flashlight, Item::Taser, Item::Crowbar, Item::Axe, Item::Battery, Item::Stim, Item::MusicBox] {
+        for item in [Item::Flashlight, Item::Taser, Item::Crowbar, Item::Axe, Item::Battery, Item::Stim, Item::MusicBox, Item::Lockpick, Item::ReviveKit] {
             let o = &v["items"][wire(item)];
             let e = |m: String| format!("items.{}: {m}", wire(item));
             items.push((
@@ -168,10 +170,12 @@ mod tests {
 
     #[test]
     fn every_item_has_a_wire_id_that_reads_back() {
-        for i in [Item::Flashlight, Item::Taser, Item::Crowbar, Item::Axe, Item::Battery, Item::Stim, Item::MusicBox] {
+        for i in [Item::Flashlight, Item::Taser, Item::Crowbar, Item::Axe, Item::Battery, Item::Stim, Item::MusicBox, Item::Lockpick, Item::ReviveKit] {
             assert_eq!(from_wire(wire(i)), Some(i));
         }
-        assert_eq!(from_wire("lockpick"), None, "a Godot-only item is no item");
+        assert_eq!(from_wire("not_an_item_id"), None, "an unknown id is no item");
+        assert_eq!(from_wire("lockpick"), Some(Item::Lockpick));
+        assert_eq!(from_wire("revive_kit"), Some(Item::ReviveKit));
         assert_eq!(from_wire(""), None);
     }
 

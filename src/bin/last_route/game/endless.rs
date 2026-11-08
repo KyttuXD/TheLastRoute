@@ -596,8 +596,8 @@ fn chunk_ids(layout: Option<&Vec<live::LayoutPickup>>, live: bool, k: ChunkKey, 
 }
 
 /// The floor item a window pickup becomes, with its count. The live `Item` enum holds the flashlight
-/// tools, the battery and the stim pack; a lockpick, revive kit or backpack has no `Item` yet, so it
-/// is not on the floor (see docs/PARITY.md, "Live level 0").
+/// tools, the lockpick, the battery, the stim pack and the revive kit; a backpack has no `Item` yet, so it
+/// is not on the floor (see docs/PARITY.md, "Live level 0"). Taking one goes through `grant` (game/interact.rs).
 fn floor_item(k: &Pickup) -> Option<(Item, i32)> {
     Some(match k {
         Pickup::Taser => (Item::Taser, 1),
@@ -605,6 +605,8 @@ fn floor_item(k: &Pickup) -> Option<(Item, i32)> {
         Pickup::Axe => (Item::Axe, AXE_DURABILITY),
         Pickup::Battery => (Item::Battery, 1),
         Pickup::Stim => (Item::Stim, 1),
+        Pickup::Lockpick => (Item::Lockpick, 1),
+        Pickup::ReviveKit => (Item::ReviveKit, 1),
         Pickup::MusicBox => (Item::MusicBox, 1),
         _ => return None,
     })
@@ -1565,11 +1567,14 @@ impl Game {
             self.residency_at(content, wake);
             return;
         }
-        let want = population(self.difficulty, self.relays_collected);
+        // the level's danger adds hunters deeper down (data/danger.json `depth`)
+        let want = population(self.difficulty, self.relays_collected) + self.difficulty.danger(self.depth).extra_hunters.max(0);
         let have = self
             .hunters
             .iter()
-            .filter(|h| !matches!(h.def.id.as_str(), "nyxie" | "solyth") && h.def.category != "secret")
+            .filter(|h| {
+                !matches!(h.def.id.as_str(), "nyxie" | "solyth") && h.def.category != "secret" && !h.def.id.starts_with("void_")
+            })
             .count() as i32;
         let seed = self.level_seed();
         for n in have..want {
@@ -1593,6 +1598,86 @@ impl Game {
             b.activate_at(at);
             self.settle_new_brain(&mut b);
             self.hunters.push(b);
+        }
+        self.void_incursion(content);
+    }
+
+    /// The Void incursion (hunter_roster.gd `has_void_incursion`, data/hunters/draw_pool.json `incursion`): a floor deep
+    /// enough may bring one void hunter beside its lineup, rolled once on the floor's own stream so the same floor always
+    /// rolls the same. Host or solo only (`ensure_hunters_at` returns first on a guest).
+    fn void_incursion(&mut self, content: &Content) {
+        if self.hunters.iter().any(|h| h.def.id.starts_with("void_")) {
+            return;
+        }
+        let seed = self.level_seed();
+        let depth = self.depth.max(0) as u32;
+        let roll = Rng::new(&format!("{seed}:VOID-INCURSION:D{depth}")).next_float();
+        if !crate::content::hunters::incursion().brings_void(depth, roll as f32) {
+            return;
+        }
+        self.spawn_void_hunter(content, &format!("{seed}:VOID-IDENTITY:D{depth}"), None);
+    }
+
+    /// Adds one void hunter (an id starting `void_`) picked on the `tag` stream, awake at the runner: at a spawn spot of
+    /// the floor, or with `near = Some((at, dist))` at the open point nearest one `dist` cells from `at`. Host or solo
+    /// only: a guest's hunters come from the host's frames. Returns whether one was added.
+    pub(super) fn spawn_void_hunter(&mut self, content: &Content, tag: &str, near: Option<((f32, f32), f32)>) -> bool {
+        if super::guest_gate::is_display_only(self) {
+            return false;
+        }
+        let voids: Vec<usize> = (0..content.hunters.len()).filter(|i| content.hunters[*i].id.starts_with("void_")).collect();
+        if voids.is_empty() {
+            return false;
+        }
+        let mut rng = Rng::new(tag);
+        let pick = voids[rng.next_index(voids.len())];
+        let spot = match near {
+            Some((at, dist)) => {
+                let a = rng.next_float() as f32 * std::f32::consts::TAU;
+                self.fac.nearest_open(at.0 + a.cos() * dist, at.1 + a.sin() * dist, 0.3)
+            }
+            None => self.spawn_spot(&mut rng),
+        };
+        let Some(p) = spot else { return false };
+        let mut b = Brain::new(content.hunters[pick].clone(), p, &format!("{tag}:HUNTER"), self.difficulty);
+        b.activate_at(self.p.pos);
+        self.settle_new_brain(&mut b);
+        self.hunters.push(b);
+        // the residency ids run parallel to the hunter list, and the director's ids index it
+        if let Some(inf) = self.inf.as_mut() {
+            inf.loaded.resize(self.hunters.len(), String::new());
+        }
+        self.reset_director();
+        true
+    }
+
+    /// Anti-AFK void pressure (anti_idle.gd, data/anti_idle.json): a party that stands still past its grace builds
+    /// pressure; past `steer_pressure` the void hunters are sent to it, and at `spawn_pressure` one is spawned
+    /// `spawn_distance` cells away. The party is the local runner (a hidden runner counts as still). Host or solo only:
+    /// a guest passes `is_host = false` and nothing changes; a dedicated room (no local runner) does not run it.
+    pub(super) fn step_anti_idle(&mut self, dt: f32, content: &Content) {
+        if self.no_local_runner || self.report.is_some() {
+            return;
+        }
+        let is_host = !super::guest_gate::is_display_only(self);
+        let speed = if self.p.hidden.is_some() { 0.0 } else { self.p.move_vel.0.hypot(self.p.move_vel.1) };
+        let voids = self.hunters.iter().filter(|h| h.active && h.def.id.starts_with("void_")).count();
+        let cfg = super::anti_idle::cfg();
+        match self.anti_idle.step(dt, is_host, speed, voids, self.difficulty, cfg) {
+            super::anti_idle::Action::Spawn => {
+                let tag = format!("{}:ANTI-IDLE:{}", self.level_seed(), self.time.to_bits());
+                self.spawn_void_hunter(content, &tag, Some((self.p.pos, cfg.spawn_distance)));
+            }
+            super::anti_idle::Action::Steer => {
+                let at = self.p.pos;
+                for h in self.hunters.iter_mut().filter(|h| h.active && h.def.id.starts_with("void_")) {
+                    if h.state != State::Chase {
+                        h.state = State::Investigate;
+                        h.last_known = Some(at);
+                    }
+                }
+            }
+            super::anti_idle::Action::None => {}
         }
     }
 
@@ -1865,7 +1950,19 @@ impl Game {
     }
 
     pub fn save_checkpoint(&self) {
-        crate::shared::checkpoint::save(&crate::shared::checkpoint::Checkpoint {
+        crate::shared::checkpoint::save(&self.checkpoint_record());
+    }
+
+    /// `save_checkpoint` plus the body's position (`checkpoint::save_with_position`): absolute cells x and z (the
+    /// window origin added, so it means the same place after a reload) and the feet height.
+    pub fn save_checkpoint_with_position(&self) {
+        let (ox, oz) = self.window_origin();
+        let pos = [self.p.pos.0 + ox as f32, self.p.y(), self.p.pos.1 + oz as f32];
+        crate::shared::checkpoint::save_with_position(&self.checkpoint_record(), pos);
+    }
+
+    fn checkpoint_record(&self) -> crate::shared::checkpoint::Checkpoint {
+        crate::shared::checkpoint::Checkpoint {
             run_seed: self.run_seed,
             room_text: self.room_text.clone(),
             depth: self.inf.as_ref().map(|i| i.level).unwrap_or(self.depth),
@@ -1874,7 +1971,7 @@ impl Game {
             coins: self.coins,
             difficulty: self.difficulty,
             infinite: self.inf.is_some(),
-        });
+        }
     }
 
     pub fn chunks_visited(&self) -> usize {
@@ -2288,37 +2385,6 @@ impl Game {
     /// Feed for the drawing code: the PATH-guidance chevrons along the next `WAYPOINT_TRAIL_METRES` of the route.
     pub fn waypoint_chevrons(&self) -> Vec<Chevron> {
         chevrons(&self.waypoint_route())
-    }
-
-    /// Godot `_crosshair_waypoint_target` (infinite_route_test.gd:1981): where a view ray from `eye` along `dir` lands on the
-    /// floor, marched over the live window's floor in steps of a quarter cell out to `WAYPOINT_PLACE_RANGE`. `floor_y` is the
-    /// floor's height. Returns a window position (XZ), or `None` when nothing in range is open.
-    pub fn crosshair_waypoint(
-        &self,
-        eye: (f32, f32, f32),
-        dir: (f32, f32, f32),
-        floor_y: f32,
-    ) -> Option<(f32, f32)> {
-        let mut last_open = None;
-        let mut d = 0.0f32;
-        while d <= WAYPOINT_PLACE_RANGE {
-            let p = (eye.0 + dir.0 * d, eye.1 + dir.1 * d, eye.2 + dir.2 * d);
-            let open = self
-                .fac
-                .hunter_open(Cell::new(p.0.floor() as i32, p.2.floor() as i32));
-            if p.1 <= floor_y + 0.05 {
-                if open {
-                    return Some((p.0, p.2));
-                }
-                break;
-            }
-            if !open {
-                break;
-            }
-            last_open = Some((p.0, p.2));
-            d += 0.25;
-        }
-        last_open
     }
 }
 
@@ -3502,14 +3568,6 @@ mod waypoint_tests {
         let origin = inf.origin();
         assert!(inf.floor.is_open((spawn.0 + origin.0, spawn.1 + origin.1)));
         assert!(!inf.floor.is_open((origin.0 + 3 * CHUNK + 5, origin.1 + 5)));
-    }
-
-    #[test]
-    fn a_crosshair_at_the_floor_lands_on_the_cell_below() {
-        let (g, _, _) = run();
-        let s = (CHUNK + live::CENTRE) as f32 + 0.5;
-        let hit = g.crosshair_waypoint((s, 1.0, s), (0.0, -1.0, 0.0), 0.0);
-        assert_eq!(hit, Some((s, s)));
     }
 
     #[test]

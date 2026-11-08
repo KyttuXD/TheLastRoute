@@ -169,6 +169,49 @@ pub fn parse(v: &Value, base: Option<&HunterDef>, pack: &str) -> Result<HunterDe
     Ok(def)
 }
 
+/// The Void incursion knobs of data/hunters/draw_pool.json `incursion` (hunter_roster.gd has_void_incursion).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Incursion {
+    pub min_depth: u32,
+    pub base_chance: f32,
+    pub per_depth: f32,
+    pub max_chance: f32,
+}
+
+impl Incursion {
+    /// Parse the draw pool text; a missing or bad key keeps the Godot value (2, 0.08, 0.025, 0.40).
+    pub fn parse(text: &str) -> Incursion {
+        let v: Value = serde_json::from_str(text).unwrap_or_default();
+        let o = v.get("incursion").cloned().unwrap_or_default();
+        let num = |k: &str, d: f64| o.get(k).and_then(|x| x.as_f64()).filter(|n| *n >= 0.0 && n.is_finite()).unwrap_or(d);
+        Incursion {
+            min_depth: num("min_depth", 2.0) as u32,
+            base_chance: num("base_chance", 0.08).min(1.0) as f32,
+            per_depth: num("per_depth", 0.025) as f32,
+            max_chance: num("max_chance", 0.40).min(1.0) as f32,
+        }
+    }
+
+    /// The chance a floor at `depth` brings a Void: 0 before min_depth, then rising per floor up to the cap.
+    pub fn chance(&self, depth: u32) -> f32 {
+        if depth < self.min_depth {
+            return 0.0;
+        }
+        (self.base_chance + (depth - self.min_depth) as f32 * self.per_depth).min(self.max_chance)
+    }
+
+    /// True when a roll in [0, 1) from the floor's seeded stream brings a Void.
+    pub fn brings_void(&self, depth: u32, roll: f32) -> bool {
+        roll < self.chance(depth)
+    }
+}
+
+/// The shipped incursion knobs, parsed once.
+pub fn incursion() -> Incursion {
+    static I: std::sync::OnceLock<Incursion> = std::sync::OnceLock::new();
+    *I.get_or_init(|| Incursion::parse(include_str!("../data/hunters/draw_pool.json")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,5 +317,30 @@ mod tests {
         let bad = json!({ "schema": "lr.hunter/1", "id": "Bad Id" });
         assert!(parse(&bad, None, "dossier_test").is_err());
         assert!(parse(&bad, None, "").is_err());
+    }
+
+    /// Void incursions: none on floor 1, 8 percent at depth 2 rising 2.5 points a floor to a 40 percent cap, and the
+    /// roll against that chance decides (a seeded stream supplies it).
+    #[test]
+    fn the_incursion_chance_follows_the_shipped_data() {
+        let i = incursion();
+        assert_eq!(i.chance(1), 0.0);
+        assert!((i.chance(2) - 0.08).abs() < 1e-6);
+        assert!(i.chance(6) > i.chance(3));
+        assert_eq!(i.chance(500), 0.40);
+        assert!(i.brings_void(2, 0.07) && !i.brings_void(2, 0.09));
+        assert!(!i.brings_void(1, 0.0), "no void on the first floor");
+    }
+
+    /// Over many rolls the draw rate matches the chance, and a data edit moves it.
+    #[test]
+    fn the_incursion_draw_rate_matches_the_chance_and_follows_edits() {
+        let i = incursion();
+        let n = 10_000;
+        let hits = (0..n).filter(|k| i.brings_void(10, *k as f32 / n as f32)).count() as f32 / n as f32;
+        assert!((hits - i.chance(10)).abs() < 0.01, "rate {hits} vs chance {}", i.chance(10));
+        let off = Incursion::parse(r#"{"incursion": {"max_chance": 0, "base_chance": 0}}"#);
+        assert_eq!(off.chance(50), 0.0);
+        assert_eq!(Incursion::parse("nope"), Incursion::parse("{}"));
     }
 }

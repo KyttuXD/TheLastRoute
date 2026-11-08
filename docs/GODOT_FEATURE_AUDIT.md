@@ -503,14 +503,14 @@ Night Watch is a separate executable (`src/bin/night_watch/main.rs`) that is onl
 | Feature | Status | Priority | Godot file |
 |---|---|---|---|
 | Minimap and full map | partial | important | `game/infinite_route/infinite_route_test.gd` |
-| Waypoints and route trail | missing | important | `docs/WAYPOINTS.md` |
+| Waypoints and route trail | partial | important | `docs/WAYPOINTS.md` |
 
 ## coop (4)
 
 | Feature | Status | Priority | Godot file |
 |---|---|---|---|
 | Co-op revives | missing | important | `game/player/revive_downs.gd` |
-| NPC teammates | missing | important | `game/player/npc_teammates.gd` |
+| NPC teammates | partial | important | `game/player/npc_teammates.gd` |
 | Spectating and ghost follow | missing | important | `game/player/player_controller_3d.gd` |
 | Host-authoritative route sync | partial | important | `game/infinite_route/infinite_route_test.gd` |
 
@@ -546,9 +546,9 @@ Night Watch is a separate executable (`src/bin/night_watch/main.rs`) that is onl
 | Room chat, speech bubbles and subtitles | missing | important | `game/menus/room_chat.gd` |
 | Quick chat radial | missing | polish | `game/menus/room_chat.gd` |
 | Spectating banner and ghost follow | missing | important | `game/hud/spectator_banner.gd` |
-| Teammate waypoint markers | missing | polish | `game/hud/teammate_waypoints.gd` |
-| Player waypoint pin (one per player) | missing | important | `game/hud/waypoint_overlay.gd` |
-| Waypoint guidance, distance and chime settings | missing | polish | `game/menus/settings_panel.gd` |
+| Teammate waypoint markers | partial | polish | `game/hud/teammate_waypoints.gd` |
+| Player waypoint pin (one per player) | partial | important | `game/hud/waypoint_overlay.gd` |
+| Waypoint guidance, distance and chime settings | partial | polish | `game/menus/settings_panel.gd` |
 | Touch controls overlay (phone and Quest) | n/a | skip | `game/hud/touch_controls.gd` |
 | Performance overlay | ported | polish | `game/hud/perf_overlay.gd` |
 | City zone name and no-minimap HUD mode | missing | skip | `game/hud/hud.gd` |
@@ -592,7 +592,7 @@ Night Watch is a separate executable (`src/bin/night_watch/main.rs`) that is onl
 | Audio settings rows | partial | important | `game/menus/settings_panel.gd` |
 | Display settings rows | partial | important | `game/menus/settings_panel.gd` |
 | Controls tab with rebinding | partial | important | `game/menus/settings_panel.gd` |
-| Skin tab | missing | polish | `game/menus/skin_panel.gd` |
+| Skin tab | ported | polish | `game/menus/skin_panel.gd` |
 | Voice tab (room voice history and mutes) | missing | polish | `game/menus/voice_panel.gd` |
 | Mods tab (installed packs) | partial | polish | `game/menus/mods_panel.gd` |
 
@@ -842,7 +842,7 @@ These features come from the Godot `docs/` folder. Their area field varies, so t
 | Feature | Status | Priority | Godot file |
 |---|---|---|---|
 | Spectators and ghost runners | missing | important | `docs/SPECTATORS.md` |
-| Personal waypoint pin with floor line and edge arrow | missing | important | `docs/WAYPOINTS.md` |
+| Personal waypoint pin with floor line and edge arrow | partial | important | `docs/WAYPOINTS.md` |
 | Proximity voice chat | partial | important | `docs/VOICE_CHAT.md` |
 | Spoken chat through OS text to speech | partial | important | `docs/VOICE_CHAT.md` |
 | Quick chat radial and map pings | partial | polish | `docs/HUD_LAYOUT.md` |
@@ -905,12 +905,12 @@ Verification
 - Not verified: the Night Watch pose JSON (`assets/hunters_blocky/night_watch_poses.json`), `data/night_watch/` scares, Godot golden fixtures, and the Rust golden audio tests in `src/bin/last_route/audio/cues/tests.rs`.
 
 Stale or inconsistent docs
-- `docs/PARITY.md` items 2 and 3 (keyboard look sensitivity and diagonal) are already implemented in `src/bin/last_route/app/mod.rs` lines 124-127. Item 1 (mouse vertical sign) needs an in-game check.
+- `docs/PARITY.md` items 2 and 3 (keyboard look sensitivity and diagonal) are implemented in `src/bin/last_route/app/mod.rs` (`keyboard_look`, lines 188-192) and `docs/PARITY.md` now marks them done (2026-11-08). Item 1 (mouse vertical sign) needs an in-game check.
 - `docs/GIMMICKS.md` describes hard abilities and peek as portable, but the source does not implement them.
 - Godot `docs/HUNTER_PARITY.md` says the Ceryth gimmick file is missing; it exists, and `hunter_director.gd` exists too.
 
 Conflicts to resolve
-- TODO.md marks four items done that the code contradicts: the auto-updater from GitHub releases (no download code), the game hub carousel (no hub screen, only the skip rule), Night Watch mode (placeholder binary), and the round-1 "server system ... and its client" (`src/bin/last_route/net/` is not compiled; `main.rs` declares only app, headless and ui). Text-to-speech chat is marked in progress with no speech code.
+- TODO.md marks four items done that the code contradicts: the auto-updater from GitHub releases (no download code; out of date, see "Updates since 2026-11-01" below: download code now exists), the game hub carousel (no hub screen, only the skip rule), Night Watch mode (placeholder binary), and the round-1 "server system ... and its client" (`src/bin/last_route/net/` is not compiled; `main.rs` declares only app, headless and ui). Text-to-speech chat is marked in progress with no speech code.
 - Admin tools are enabled when the player name is `KYTTU` (`src/bin/last_route/app/mod.rs` line 517). Godot's `admin_menu.gd` says a display name is never proof of admin. This is security-relevant before any public build.
 - FULLBRIGHT key: F7 in Godot (`game/admin/debug_view.gd` line 11), F6 in Rust (`src/bin/last_route/ui/admin/mod.rs` line 291 and `hub.rs` line 69).
 - FOV maximum: 105 in Godot's settings, 110 in Rust's `src/bin/last_route/config/mod.rs`.
@@ -919,6 +919,33 @@ Conflicts to resolve
 - Godot's mod downloader is described as built in `docs/DATA_DRIVEN_CONTENT.md` (line 397), but the Godot code assigns no download provider outside tests.
 - Night Watch Classic uses Godot's RandomNumberGenerator, not the mulberry streams (`night_watch_classic.gd` lines 26 and 42), so Classic will not be bit-exact with the 2D game even when the other modes are.
 - Overlap: the earlier TODO section "Godot feature audit (2026-11-01): Infinite route, player and main loop" covers some of the same features (for example crouch, hide glide and revives). The rows were not de-duplicated.
+
+## Updates since 2026-11-01 (2026-11-08)
+
+Read-only static re-check; nothing was built or run. The tables above keep their original counts; the rows below changed.
+
+Rows changed above:
+- NPC teammates: missing to partial. `src/bin/last_route/game/npc.rs` is the offline core (spawn, follow, the walk and turn spring, door use, hide, flee, relay and locker errands, the life intent); down, grace and the hunters targeting NPCs are still open (see TODO.md "NPC teammates, player list, minimap, waypoints").
+- Waypoints and route trail, Teammate waypoint markers, Player waypoint pin, Waypoint guidance settings and Personal waypoint pin: missing to partial. The runner's own waypoint and route are in `game/endless.rs`, every player's waypoint in `game/waypoint.rs`, the chevrons and edge arrows in `ui/teammate_markers.rs`, the pins in `ui/map.rs`, and the TEAMMATE WAYPOINTS setting is read from `app/settings.rs`. Still open: the sample hook in `net/world_sync.rs` (waypoints do not reach other clients yet), the floor line, and the distance and chime settings. `docs/WAYPOINTS.md` describes the Rust side.
+- Skin tab: missing to ported. `ui/skin_tab.rs` lays out the Godot skin panel (preview, PICK A PNG and APPLY, DEFAULT, FROM URL, COPY SKIN, catalogue, OTHERS MAY COPY, ARMS) and `ui/settings_panel.rs` draws it (the SKIN tab, line 463) from the title screen and from the pause menu. Player skins over the network (upload, fetch, apply to others) stay in the network rows.
+- The section line numbers the TODO cited (505-513, 549-551, 637, 845) have moved with the tables; the rows are found by name above.
+
+### Hub, accounts and deploy comparison (re-run past item 12)
+
+The 2026-11-01 comparison stopped after item 12 of this area. Re-read against the Godot files named in each row:
+
+| Area | Godot | Rust now | Status |
+|---|---|---|---|
+| Game hub carousel | `game/menus/game_hub.gd`, `game/config/game_registry.gd:42` (SKIP_HUB = true) | No hub screen; the title screen is the landing (`ui/menus.rs`). Godot skips its own hub by default. | n/a, skip |
+| ADMIN entry | `main_menu.gd:616-643`: any verified admin with permissions | `ui/menus.rs` `title_entries`: ADMIN is offered for the name KYTTU (test at line 2537). | partial; still name-based |
+| Account panel | `game/menus/account_panel.gd` | `ui/account_panel.rs` (state machine: sign-up, sign-in, sign-out, password change, account deletion with a confirm step) over `net/api.rs` | partial |
+| Saved sessions and sign-in | `game/autoload/backend_client.gd` | `net/session_store.rs` (one session per server origin, sign-out clears disk and memory) | partial |
+| Run saves in the cloud | `game/autoload/run_saves.gd` | `net/saves.rs` (`cloud_sync`, push or pull when newer, `.unsynced` marker) | ported |
+| Update check, badge and screen | `update_badge.gd`, `boot/update_progress.gd` | `ui/update_badge.rs` (download percentage, RESTART NOW or LATER), `ui/update_screen.rs` (web UPDATING screen, `app/web_update.rs`) | partial (was missing) |
+| Auto-updater (download, verify, stage, replace) | `game/autoload/update_manager.gd` | `app/updater.rs` (update on start) with `app/updater_site.rs` (signed native builds from the website, ed25519 and sha256; the vps3 update API is the fallback) | partial (was missing) |
+| Release and deploy | `backend/github_release_sync.mjs`, `docs/DISTRIBUTION.md` | `.github/workflows/build.yml` (rolling "nightly" and "nightly-server" releases), `deploy-web.yml`, `packaging/nightly.sh`, `packaging/publish-vps.sh`, `packaging/update-manifest.mjs` | n/a (deployment tooling) |
+
+The "TODO.md marks four items done that the code contradicts" conflict above is out of date for the auto-updater: download code now exists in `app/updater.rs` and `app/updater_site.rs`. The hub carousel stays a skip rule, by design.
 
 ## How to re-run
 

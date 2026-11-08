@@ -35,6 +35,10 @@ pub struct DirectorProfile {
     pub flank: f32,
     /// Chance a team member after the first covers the nearest relay exit.
     pub cover: f32,
+    /// Distance (cells) from the sighting to a flank point (data `flank_dist`, default 4).
+    pub flank_dist: f32,
+    /// Radians a flank point is turned from the runner's heading, alternating sides per team slot (data `flank_turn`, default 1.2).
+    pub flank_turn: f32,
     /// Crowding distance (cells): idle hunters closer than this walk apart (scatter).
     pub gap: f32,
     /// Seconds between director passes.
@@ -97,6 +101,8 @@ fn profile_from(m: &serde_json::Map<String, serde_json::Value>) -> Option<Direct
         team: num("team")? as i32,
         flank: num("flank")?,
         cover: num("cover")?,
+        flank_dist: num("flank_dist").unwrap_or(4.0),
+        flank_turn: num("flank_turn").unwrap_or(1.2),
         gap: num("gap")?,
         interval: num("interval")?,
         rushers: num("rushers")? as i32,
@@ -142,6 +148,8 @@ pub fn builtin_profile(d: Difficulty) -> DirectorProfile {
             team: 1,
             flank: 0.0,
             cover: 0.0,
+            flank_dist: 4.0,
+            flank_turn: 1.2,
             gap: 7.0,
             interval: 2.0,
             rushers: 1,
@@ -160,6 +168,8 @@ pub fn builtin_profile(d: Difficulty) -> DirectorProfile {
             team: 2,
             flank: 0.1,
             cover: 0.25,
+            flank_dist: 4.0,
+            flank_turn: 1.2,
             gap: 8.0,
             interval: 1.5,
             rushers: 2,
@@ -178,6 +188,8 @@ pub fn builtin_profile(d: Difficulty) -> DirectorProfile {
             team: 2,
             flank: 0.6,
             cover: 0.5,
+            flank_dist: 4.0,
+            flank_turn: 1.2,
             gap: 9.0,
             interval: 1.0,
             rushers: 2,
@@ -196,6 +208,8 @@ pub fn builtin_profile(d: Difficulty) -> DirectorProfile {
             team: 2,
             flank: 0.6,
             cover: 0.5,
+            flank_dist: 4.0,
+            flank_turn: 1.2,
             gap: 9.0,
             interval: 1.0,
             rushers: 2,
@@ -325,6 +339,19 @@ fn open_near(fac: &Facility, point: (f32, f32), from: (f32, f32)) -> Option<(f32
 pub fn split_point(seen_at: (f32, f32), toward: (f32, f32), slot: i32, dist: f32, turn: f32) -> (f32, f32) {
     let d = rotated(toward, slot as f32 * turn);
     (seen_at.0 + d.0 * dist, seen_at.1 + d.1 * dist)
+}
+
+/// A flank point: `dist` cells from the sighting, turned `turn` radians off the runner's heading, on alternating sides
+/// per team slot (even slots left, odd right). It is never the chase target (the sighting) while `dist` > 0.
+pub fn flank_point(seen_at: (f32, f32), toward: (f32, f32), slot: i32, dist: f32, turn: f32) -> (f32, f32) {
+    let side = if slot % 2 == 0 { -1.0 } else { 1.0 };
+    let d = rotated(toward, side * turn);
+    (seen_at.0 + d.0 * dist, seen_at.1 + d.1 * dist)
+}
+
+/// The cover point for a team slot: the relay exit nearest the sighting (`exit_point`), or straight ahead of it.
+pub fn cover_point(relays: &[Cell], seen_at: (f32, f32), toward: (f32, f32)) -> (f32, f32) {
+    exit_point(relays, seen_at, toward)
 }
 
 /// Marks a cleared search point for the squad. A point within 1 cell of one already marked is not added again.
@@ -495,9 +522,7 @@ impl Director {
                 };
                 if sent > 0 && self.rng.next_f32() < p.flank {
                     role = 1;
-                    let side = if sent % 2 == 0 { -1.0 } else { 1.0 };
-                    let d = rotated(toward, side * 1.2);
-                    point = (seen_at.0 + d.0 * 4.0, seen_at.1 + d.1 * 4.0);
+                    point = flank_point(seen_at, toward, sent, p.flank_dist, p.flank_turn);
                 } else if sent > 0 && self.rng.next_f32() < p.cover {
                     role = 2;
                     point = exit_point(relays, seen_at, toward);
@@ -791,6 +816,48 @@ pub fn separate(dt: f32, hunters: &mut [Brain], fac: &Facility) -> i32 {
         pushed += 1;
     }
     pushed
+}
+
+#[cfg(test)]
+mod role_tests {
+    use super::*;
+
+    #[test]
+    fn flank_points_leave_the_chase_target_and_alternate_sides() {
+        let seen = (10.0, 10.0);
+        let p = profile(Difficulty::Nightmare);
+        let a = flank_point(seen, (1.0, 0.0), 2, p.flank_dist, p.flank_turn);
+        let b = flank_point(seen, (1.0, 0.0), 1, p.flank_dist, p.flank_turn);
+        assert!(dist(a, seen) > 1.0 && dist(b, seen) > 1.0, "a flank point is off the sighting");
+        assert!(a.1 != b.1, "odd and even slots take opposite sides");
+        assert!((dist(a, seen) - p.flank_dist).abs() < 0.01);
+    }
+
+    #[test]
+    fn cover_point_differs_from_the_chase_target() {
+        let seen = (10.0, 10.0);
+        let relays = [Cell { x: 20, y: 10 }];
+        assert!(dist(cover_point(&relays, seen, (1.0, 0.0)), seen) > 1.0);
+        assert!(dist(cover_point(&[], seen, (1.0, 0.0)), seen) > 1.0, "with no relay it still stands off the sighting");
+    }
+
+    #[test]
+    fn flank_geometry_is_data_and_matches_the_built_in_numbers() {
+        let text = r#"{"schema":"lr.hunter_director/1","difficulty":{"x":{"share_radius":1,"share_chance":1,"cap":1,"team":1,"flank":1,"cover":0,"flank_dist":9.5,"flank_turn":0.7,"gap":1,"interval":1,"rushers":1,"hear_radius":0,"hear_flank":0,"split":0,"split_dist":1,"split_turn":1,"clear_radius":0,"clear_memory":0}}}"#;
+        let r = parse_rules(text).expect("parses");
+        let p = r.by_difficulty.get("x").unwrap();
+        assert_eq!((p.flank_dist, p.flank_turn), (9.5, 0.7));
+        for d in [Difficulty::Relaxed, Difficulty::Standard, Difficulty::Hard, Difficulty::Nightmare] {
+            assert_eq!(profile(d), builtin_profile(d), "data and built-in agree for {}", d.id());
+        }
+    }
+
+    /// Relay rush timings match Godot hunter_director.gd 39-40 (RELAY_RUSH_COUNT 7, RELAY_RUSH_DELAY 45).
+    #[test]
+    fn relay_rush_timings_match_godot() {
+        assert_eq!(relay_rush_count(), 7);
+        assert_eq!(relay_rush_delay(), 45.0);
+    }
 }
 
 #[cfg(test)]

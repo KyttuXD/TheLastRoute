@@ -16,38 +16,83 @@ use crate::config::WALL_HEIGHT;
 use crate::hunters::brain::{cell_of, dist, Brain, State, Target};
 use crate::world::facility::Facility;
 
-/// HunterRoster.MODEL_SCALE (hunter_roster.gd:185): humanoid hunters are drawn 1.5x their authored size.
-const MODEL_SCALE: f32 = 1.5;
-/// Her drawn height: the model's 1.78 m rig at the roster scale (xivvy_flight.gd:17).
-const BODY_HEIGHT: f32 = 1.78 * MODEL_SCALE;
-/// xivvy_flight.gd:18.
-const CEILING_GAP: f32 = 0.14;
-/// Her hover: feet this high above the floor wherever the ceiling allows it (xivvy_flight.gd:20).
-const HOVER_HEIGHT: f32 = 1.2;
-/// The float (view only): a bob and a sway, both at FLOAT_HZ (xivvy_flight.gd:22-23).
-const FLOAT_AMPLITUDE: f32 = 0.05;
-const FLOAT_HZ: f32 = 0.7;
-/// Headroom she needs to take off / must keep to stay up (xivvy_flight.gd:26-27).
-const FLY_ENTER_HEADROOM: f32 = 3.6;
-const FLY_EXIT_HEADROOM: f32 = 3.2;
-/// The way must be clear this long before she lifts off (xivvy_flight.gd:28).
-const ENTER_DWELL: f32 = 0.45;
-/// A gap this narrow on both sides (metres to the wall, left and right) is a doorway (xivvy_flight.gd:30).
-const GAP_HALF_WIDTH: f32 = 1.0;
-/// Her swoop to a grab (xivvy_flight.gd:31-33).
-const SWOOP_RANGE: f32 = 6.0;
-const GRAB_RANGE: f32 = 1.4;
-const SWOOP_ALTITUDE: f32 = 0.30;
-/// m/s ceiling on how fast she climbs or settles (xivvy_flight.gd:36).
-const RISE_RATE: f32 = 3.4;
-/// hunter_view_3d.gd SURVEY_INTERVAL, SURVEY_DISTANCES, SURVEY_FOOTPRINT (lines 115-121).
-const SURVEY_INTERVAL: f32 = 0.1;
-const SURVEY_DISTANCES: [f32; 8] = [0.0, 1.5, 3.0, 4.5, 6.0, 8.0, 10.0, 12.0];
-const SURVEY_FOOTPRINT: f32 = 0.45;
-/// The near reading (her cruise headroom) covers the first 3 m of the route (hunter_view_3d.gd:99).
-const NEAR_REACH: f32 = 3.0;
-/// The chase takeoff clock (game_config.gd:305, XIVVY_TAKEOFF_SECONDS).
-const TAKEOFF_SECONDS: f32 = 0.65;
+/// Xivvy's flight tunables (data/gimmicks/xivvy.json; xivvy_flight.gd, hunter_view_3d.gd survey). A missing or
+/// bad key keeps the Godot value.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Flight {
+    pub takeoff_seconds: f32,
+    pub body_height: f32,
+    pub ceiling_gap: f32,
+    pub hover_height: f32,
+    pub float_amplitude: f32,
+    pub float_hz: f32,
+    pub fly_enter_headroom: f32,
+    pub fly_exit_headroom: f32,
+    pub enter_dwell: f32,
+    pub gap_half_width: f32,
+    pub swoop_range: f32,
+    pub grab_range: f32,
+    pub swoop_altitude: f32,
+    pub rise_rate: f32,
+    pub survey_interval: f32,
+    pub survey_distances: Vec<f32>,
+    pub survey_footprint: f32,
+    pub near_reach: f32,
+}
+
+impl Flight {
+    pub fn parse(text: &str) -> Flight {
+        let v: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+        let num = |k: &str, d: f32| match v.get(k).and_then(|x| x.as_f64()) {
+            Some(n) if n >= 0.0 && n.is_finite() => n as f32,
+            _ => d,
+        };
+        let pos = |k: &str, d: f32| {
+            let n = num(k, d);
+            if n > 0.0 {
+                n
+            } else {
+                d
+            }
+        };
+        let mut distances: Vec<f32> = v
+            .get("survey_distances")
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|n| n.as_f64()).filter(|n| *n >= 0.0 && n.is_finite()).map(|n| n as f32).collect())
+            .unwrap_or_default();
+        if distances.is_empty() {
+            distances = vec![0.0, 1.5, 3.0, 4.5, 6.0, 8.0, 10.0, 12.0];
+        }
+        let enter = pos("fly_enter_headroom", 3.6);
+        Flight {
+            takeoff_seconds: num("takeoff_seconds", 0.65),
+            body_height: pos("body_rig_height", 1.78) * pos("model_scale", 1.5),
+            ceiling_gap: num("ceiling_gap", 0.14),
+            hover_height: num("hover_height", 1.2),
+            float_amplitude: num("float_amplitude", 0.05),
+            float_hz: pos("float_hz", 0.7),
+            fly_enter_headroom: enter,
+            // she never lands above the height she needs to lift off
+            fly_exit_headroom: pos("fly_exit_headroom", 3.2).min(enter),
+            enter_dwell: num("enter_dwell", 0.45),
+            gap_half_width: pos("gap_half_width", 1.0),
+            swoop_range: pos("swoop_range", 6.0),
+            grab_range: pos("grab_range", 1.4),
+            swoop_altitude: num("swoop_altitude", 0.30),
+            rise_rate: pos("rise_rate", 3.4),
+            survey_interval: pos("survey_interval", 0.1),
+            survey_distances: distances,
+            survey_footprint: num("survey_footprint", 0.45),
+            near_reach: num("near_reach", 3.0),
+        }
+    }
+}
+
+/// The shipped flight tunables, parsed once.
+pub fn k() -> &'static Flight {
+    static F: std::sync::OnceLock<Flight> = std::sync::OnceLock::new();
+    F.get_or_init(|| Flight::parse(include_str!("../../data/gimmicks/xivvy.json")))
+}
 
 /// What the route survey reads (hunter_view_3d.gd `_survey_route`): the lowest headroom over the stretch
 /// ahead (`far`), the lowest near her (`near`, the cruise height), and whether a doorway is on the way.
@@ -61,7 +106,7 @@ pub struct Survey {
 pub struct Xivvy {
     chase_elapsed: f32,
     pub speed_scale: f32,
-    /// The chase takeoff (xivvy_gimmick.gd `flying`): the chase has run TAKEOFF_SECONDS.
+    /// The chase takeoff (xivvy_gimmick.gd `flying`): the chase has run takeoff_seconds.
     pub flying: bool,
     /// Clearance mode (xivvy_flight.gd `fly_ok`): false = she walks (a doorway or a low stretch ahead).
     pub fly_ok: bool,
@@ -107,7 +152,7 @@ impl Xivvy {
         } else {
             0.0
         };
-        self.flying = self.chase_elapsed >= TAKEOFF_SECONDS;
+        self.flying = self.chase_elapsed >= k().takeoff_seconds;
         self.speed_scale = (1.0 + self.chase_elapsed * 0.035).min(1.8);
         self.fly_step(b, dt, c.fac);
     }
@@ -143,10 +188,10 @@ impl Xivvy {
         };
         self.survey_timer -= dt;
         if self.survey_timer <= 0.0 && (chasing || self.altitude > 0.0) {
-            self.survey_timer = SURVEY_INTERVAL;
+            self.survey_timer = k().survey_interval;
             let s = survey(fac, b.pos, b.facing, &|d| b.path_look_ahead(d));
             self.cruise_headroom = s.near;
-            self.update_mode(SURVEY_INTERVAL, s.far, s.gap);
+            self.update_mode(k().survey_interval, s.far, s.gap);
         } else if !chasing && self.altitude <= 0.0 {
             self.fly_ok = true;
         }
@@ -154,14 +199,14 @@ impl Xivvy {
     }
 
     /// Walk or fly (XivvyFlight.update_mode). Landing is immediate (she must be down before the door); taking off
-    /// needs the way clear for ENTER_DWELL. `headroom` is the lowest ceiling over the stretch ahead.
+    /// needs the way clear for enter_dwell. `headroom` is the lowest ceiling over the stretch ahead.
     pub fn update_mode(&mut self, dt: f32, headroom: f32, gap: bool) {
-        if gap || headroom < FLY_EXIT_HEADROOM {
+        if gap || headroom < k().fly_exit_headroom {
             self.fly_ok = false;
             self.enter_timer = 0.0;
-        } else if !self.fly_ok && headroom >= FLY_ENTER_HEADROOM {
+        } else if !self.fly_ok && headroom >= k().fly_enter_headroom {
             self.enter_timer += dt;
-            if self.enter_timer >= ENTER_DWELL {
+            if self.enter_timer >= k().enter_dwell {
                 self.fly_ok = true;
             }
         } else {
@@ -169,10 +214,10 @@ impl Xivvy {
         }
     }
 
-    /// Her hover under a ceiling (XivvyFlight.cruise_altitude): HOVER_HEIGHT in the open, lower where the
+    /// Her hover under a ceiling (XivvyFlight.cruise_altitude): hover_height in the open, lower where the
     /// ceiling would reach her head.
     pub fn cruise_altitude(headroom: f32) -> f32 {
-        clampf(headroom - BODY_HEIGHT - CEILING_GAP, 0.0, HOVER_HEIGHT)
+        clampf(headroom - k().body_height - k().ceiling_gap, 0.0, k().hover_height)
     }
 
     /// Where she wants her feet (XivvyFlight.target_altitude): the cruise height in the air, swooping toward the
@@ -182,11 +227,11 @@ impl Xivvy {
             return 0.0;
         }
         let cruise = Self::cruise_altitude(headroom);
-        if runner_distance >= SWOOP_RANGE {
+        if runner_distance >= k().swoop_range {
             return cruise;
         }
-        let closeness = clampf((SWOOP_RANGE - runner_distance) / (SWOOP_RANGE - GRAB_RANGE), 0.0, 1.0);
-        lerpf(cruise, cruise.min(SWOOP_ALTITUDE), closeness * closeness)
+        let closeness = clampf((k().swoop_range - runner_distance) / (k().swoop_range - k().grab_range), 0.0, 1.0);
+        lerpf(cruise, cruise.min(k().swoop_altitude), closeness * closeness)
     }
 
     /// The altitude and the float for one frame (XivvyFlight.update, without the bank, pitch and wing cues).
@@ -199,20 +244,20 @@ impl Xivvy {
             wanted,
             1.0 - (-(if wanted > self.altitude { 4.2 } else { 5.0 }) * frame).exp(),
         );
-        self.altitude = move_toward(self.altitude, eased, RISE_RATE * frame);
+        self.altitude = move_toward(self.altitude, eased, k().rise_rate * frame);
         self.altitude = move_toward(self.altitude, wanted, 0.5 * frame);
         if self.altitude < 0.004 && wanted == 0.0 {
             self.altitude = 0.0;
         }
         // the float (view only): a bob and a sway that fade in with the lift. The bob stays inside the clearance above
         // her feet (never her head into the ceiling) and never takes her below the floor.
-        self.float_time = (self.float_time + frame) % (1.0 / FLOAT_HZ);
+        self.float_time = (self.float_time + frame) % (1.0 / k().float_hz);
         let lift = (self.altitude / 0.25).clamp(0.0, 1.0);
-        let clearance = headroom - BODY_HEIGHT - CEILING_GAP;
-        let phase = std::f32::consts::TAU * FLOAT_HZ * self.float_time;
-        self.float_bob = (phase.sin() * FLOAT_AMPLITUDE * lift)
+        let clearance = headroom - k().body_height - k().ceiling_gap;
+        let phase = std::f32::consts::TAU * k().float_hz * self.float_time;
+        self.float_bob = (phase.sin() * k().float_amplitude * lift)
             .clamp(-self.altitude, (clearance - self.altitude).max(0.0));
-        self.float_sway = phase.cos() * FLOAT_AMPLITUDE * lift;
+        self.float_sway = phase.cos() * k().float_amplitude * lift;
     }
 }
 
@@ -257,7 +302,7 @@ pub fn survey(
     } else {
         (facing.0 / len, facing.1 / len)
     };
-    for &distance in SURVEY_DISTANCES.iter() {
+    for &distance in k().survey_distances.iter() {
         let point = if distance > 0.0 {
             look_ahead(distance).unwrap_or((
                 pos.0 + heading.0 * distance,
@@ -270,19 +315,19 @@ pub fn survey(
         if distance <= 0.0 {
             // B3: her footprint, not only her centre
             for side in [
-                (SURVEY_FOOTPRINT, 0.0),
-                (-SURVEY_FOOTPRINT, 0.0),
-                (0.0, SURVEY_FOOTPRINT),
-                (0.0, -SURVEY_FOOTPRINT),
+                (k().survey_footprint, 0.0),
+                (-k().survey_footprint, 0.0),
+                (0.0, k().survey_footprint),
+                (0.0, -k().survey_footprint),
             ] {
                 headroom = headroom.min(headroom_at(fac, (point.0 + side.0, point.1 + side.1)));
             }
         }
         far = far.min(headroom);
-        if distance <= NEAR_REACH {
+        if distance <= k().near_reach {
             near = near.min(headroom);
         }
-        // a doorway: walls within GAP_HALF_WIDTH on both sides at this point
+        // a doorway: walls within k().gap_half_width on both sides at this point
         let along = match (distance > 0.0, look_ahead(distance + 1.0)) {
             (true, Some(next)) => (next.0 - point.0, next.1 - point.1),
             _ => heading,
@@ -301,11 +346,11 @@ pub fn survey(
     Survey { far, near, gap }
 }
 
-/// True where a ray from `from` along `dir` meets a wall cell within GAP_HALF_WIDTH (the grid form of the
+/// True where a ray from `from` along `dir` meets a wall cell within gap_half_width (the grid form of the
 /// chest-height rays in hunter_view_3d.gd `_survey_route`).
 fn wall_within(fac: &Facility, from: (f32, f32), dir: (f32, f32)) -> bool {
     let mut d = 0.0;
-    while d <= GAP_HALF_WIDTH {
+    while d <= k().gap_half_width {
         let x = from.0 + dir.0 * d;
         let y = from.1 + dir.1 * d;
         if fac.is_wall_cell(x.floor() as i32, y.floor() as i32) {
@@ -345,8 +390,8 @@ mod tests {
 
     #[test]
     fn hover_is_the_full_height_in_the_open_and_drops_under_a_low_ceiling() {
-        assert!((Xivvy::cruise_altitude(f32::INFINITY) - HOVER_HEIGHT).abs() < 1e-6, "open ground hovers at 1.2 m");
-        assert!((Xivvy::cruise_altitude(5.0) - HOVER_HEIGHT).abs() < 1e-6, "a 5 m hall still hovers at 1.2 m");
+        assert!((Xivvy::cruise_altitude(f32::INFINITY) - k().hover_height).abs() < 1e-6, "open ground hovers at 1.2 m");
+        assert!((Xivvy::cruise_altitude(5.0) - k().hover_height).abs() < 1e-6, "a 5 m hall still hovers at 1.2 m");
         // 4 m: 4 - 2.67 - 0.14 = 1.19 m, just under the hover
         assert!((near_ceiling(4.0) - 1.19).abs() < 1e-3, "4 m hall: {}", near_ceiling(4.0));
         // at the fly threshold she has no room to hover
@@ -358,16 +403,16 @@ mod tests {
     fn the_mode_lands_at_once_and_takes_off_only_after_the_dwell() {
         let mut x = Xivvy::default();
         // a doorway ahead lands her this tick, even in a tall hall
-        x.update_mode(SURVEY_INTERVAL, 5.0, true);
+        x.update_mode(k().survey_interval, 5.0, true);
         assert!(!x.fly_ok, "a doorway lands her at once");
         // a low stretch (under the exit height) also lands her at once
         x.fly_ok = true;
-        x.update_mode(SURVEY_INTERVAL, FLY_EXIT_HEADROOM - 0.01, false);
+        x.update_mode(k().survey_interval, k().fly_exit_headroom - 0.01, false);
         assert!(!x.fly_ok, "under 3.2 m she walks");
-        // back in the air only after ENTER_DWELL of clear headroom
-        let ticks = (ENTER_DWELL / SURVEY_INTERVAL).ceil() as usize;
+        // back in the air only after k().enter_dwell of clear headroom
+        let ticks = (k().enter_dwell / k().survey_interval).ceil() as usize;
         for i in 0..ticks {
-            x.update_mode(SURVEY_INTERVAL, 4.0, false);
+            x.update_mode(k().survey_interval, 4.0, false);
             if i + 1 < ticks {
                 assert!(!x.fly_ok, "still dwelling after {} ticks", i + 1);
             }
@@ -380,17 +425,17 @@ mod tests {
         let mut x = Xivvy::default();
         x.fly_ok = false;
         for _ in 0..30 {
-            x.update_mode(SURVEY_INTERVAL, 3.0, false);
+            x.update_mode(k().survey_interval, 3.0, false);
         }
         assert!(!x.fly_ok, "a 3 m room never lifts her");
         // inside the band (3.2 to 3.6) she neither takes off nor lands
         for _ in 0..30 {
-            x.update_mode(SURVEY_INTERVAL, 3.4, false);
+            x.update_mode(k().survey_interval, 3.4, false);
         }
         assert!(!x.fly_ok, "between the thresholds a walker stays on foot");
         x.fly_ok = true;
         for _ in 0..30 {
-            x.update_mode(SURVEY_INTERVAL, 3.4, false);
+            x.update_mode(k().survey_interval, 3.4, false);
         }
         assert!(x.fly_ok, "between the thresholds a flier stays up");
     }
@@ -403,21 +448,21 @@ mod tests {
             x.cruise_headroom = 5.0;
             x.update_altitude(1.0 / 60.0, true, f32::INFINITY);
         }
-        assert!((x.altitude - HOVER_HEIGHT).abs() < 1e-3, "airborne: {}", x.altitude);
+        assert!((x.altitude - k().hover_height).abs() < 1e-3, "airborne: {}", x.altitude);
         for _ in 0..600 {
             x.update_altitude(1.0 / 60.0, false, f32::INFINITY);
         }
         assert_eq!(x.altitude, 0.0, "landed");
-        assert!(x.lift() <= FLOAT_AMPLITUDE + 1e-6, "no float on the ground");
+        assert!(x.lift() <= k().float_amplitude + 1e-6, "no float on the ground");
     }
 
     #[test]
     fn she_swoops_to_a_grab_near_the_runner_and_climbs_back_when_the_runner_is_far() {
         let cruise = Xivvy::cruise_altitude(5.0);
-        assert_eq!(Xivvy::target_altitude(true, 5.0, SWOOP_RANGE), cruise, "at the swoop range she cruises");
-        let grab = Xivvy::target_altitude(true, 5.0, GRAB_RANGE);
-        assert!((grab - SWOOP_ALTITUDE).abs() < 1e-6, "at the grab range she is at the swoop height: {grab}");
-        assert_eq!(Xivvy::target_altitude(false, 5.0, GRAB_RANGE), 0.0, "on foot she never lifts");
+        assert_eq!(Xivvy::target_altitude(true, 5.0, k().swoop_range), cruise, "at the swoop range she cruises");
+        let grab = Xivvy::target_altitude(true, 5.0, k().grab_range);
+        assert!((grab - k().swoop_altitude).abs() < 1e-6, "at the grab range she is at the swoop height: {grab}");
+        assert_eq!(Xivvy::target_altitude(false, 5.0, k().grab_range), 0.0, "on foot she never lifts");
     }
 
     #[test]
@@ -427,11 +472,11 @@ mod tests {
         x.cruise_headroom = 3.9;
         for _ in 0..600 {
             x.update_altitude(1.0 / 60.0, true, f32::INFINITY);
-            let clearance = 3.9 - BODY_HEIGHT - CEILING_GAP;
+            let clearance = 3.9 - k().body_height - k().ceiling_gap;
             assert!(x.float_bob <= (clearance - x.altitude).max(0.0) + 1e-6, "bob {} past clearance", x.float_bob);
             assert!(x.lift() >= 0.0, "never below the floor: {}", x.lift());
         }
-        assert!(x.float_sway.abs() <= FLOAT_AMPLITUDE + 1e-6);
+        assert!(x.float_sway.abs() <= k().float_amplitude + 1e-6);
     }
 
     #[test]
@@ -479,5 +524,67 @@ mod tests {
         let h = headroom_at(&f, cell.center());
         assert!((h - ceiling_of(&f, c)).abs() < 1e-6);
         assert!(h > 0.0, "a floor cell has headroom: {h}");
+    }
+
+    /// The shipped data keeps the Godot flight numbers (xivvy_flight.gd, game_config.gd XIVVY_TAKEOFF_SECONDS).
+    #[test]
+    fn the_shipped_flight_data_keeps_the_godot_numbers() {
+        let f = k();
+        assert_eq!(f.takeoff_seconds, 0.65);
+        assert!((f.body_height - 1.78 * 1.5).abs() < 1e-5);
+        assert_eq!((f.hover_height, f.ceiling_gap), (1.2, 0.14));
+        assert_eq!((f.fly_enter_headroom, f.fly_exit_headroom, f.enter_dwell), (3.6, 3.2, 0.45));
+        assert_eq!(f.survey_distances.len(), 8);
+        assert!(f.fly_exit_headroom <= f.fly_enter_headroom, "hysteresis band points the right way");
+    }
+
+    /// A data edit changes the flight; a bad value keeps the default and the exit never passes the entry.
+    #[test]
+    fn a_data_edit_changes_the_hover_and_bad_values_keep_the_default() {
+        let f = Flight::parse(r#"{"hover_height": 0.5, "fly_enter_headroom": 3.0, "fly_exit_headroom": 4.0, "rise_rate": -1, "survey_distances": []}"#);
+        assert_eq!(f.hover_height, 0.5);
+        assert_eq!(f.fly_exit_headroom, 3.0, "exit is clamped to the entry");
+        assert_eq!(f.rise_rate, 3.4, "a negative rate keeps the default");
+        assert_eq!(f.survey_distances.len(), 8, "an empty list keeps the default");
+        assert_eq!(Flight::parse("nope"), Flight::parse("{}"));
+    }
+
+    /// A 4.0 m ceiling (the sewer wall height, world/sewer_height_tests.rs) leaves her room to hover with her head
+    /// under it, and the bob never lifts her head into it; she cannot take off there (under the 3.6 m entry it
+    /// could, 4.0 is above it) but must never clip.
+    #[test]
+    fn xivvy_fits_a_four_metre_sewer_ceiling() {
+        let sewer = crate::content::regions::table().def("sewer").and_then(|d| d.geometry).map_or(WALL_HEIGHT, |g| g.wall_height);
+        assert_eq!(sewer, 4.0, "the sewer ceiling the test reads");
+        let hover = Xivvy::cruise_altitude(sewer);
+        assert!(hover > 0.0 && hover <= k().hover_height);
+        assert!(hover + k().body_height + k().ceiling_gap <= sewer + 1e-4, "head clear of the ceiling: hover {hover}");
+        let mut x = Xivvy::default();
+        x.cruise_headroom = sewer;
+        for _ in 0..600 {
+            x.update_altitude(1.0 / 60.0, true, f32::INFINITY);
+            assert!(x.lift() + k().body_height <= sewer + 1e-3, "head at {} under a {sewer} m ceiling", x.lift() + k().body_height);
+        }
+    }
+
+    /// She is on the ground before a doorway: one survey tick that sees a gap ends the flight mode, and the
+    /// altitude then eases back to the floor without a dwell.
+    #[test]
+    fn she_lands_before_the_door() {
+        let mut x = Xivvy::default();
+        x.flying = true;
+        x.cruise_headroom = 5.0;
+        for _ in 0..240 {
+            x.survey_timer = 1.0;
+            x.update_altitude(1.0 / 60.0, x.airborne(), f32::INFINITY);
+        }
+        assert!(x.lift() > 0.5, "up in a tall hall");
+        x.update_mode(k().survey_interval, 5.0, true);
+        assert!(!x.airborne(), "the doorway grounds her at once");
+        for _ in 0..600 {
+            x.survey_timer = 1.0;
+            x.update_altitude(1.0 / 60.0, x.airborne(), f32::INFINITY);
+        }
+        assert_eq!(x.altitude, 0.0, "down on the floor");
     }
 }

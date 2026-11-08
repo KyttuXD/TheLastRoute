@@ -219,6 +219,22 @@ impl GameSaves {
         (self.now)()
     }
 
+    /// Removes every cloud save of a deleted account. True when a file was removed. With an upstream the website owns the
+    /// saves and deletes them with the account, so nothing happens here.
+    pub fn delete_account(&mut self, username: &str) -> bool {
+        if !self.enabled || self.upstream.is_some() || !username_file(username) {
+            return false;
+        }
+        self.writes.remove(username);
+        std::fs::remove_file(self.path(username)).is_ok()
+    }
+
+    #[allow(dead_code)]
+    /// The slots a game's saves may use (the website's slot list for that game); empty for an unknown game.
+    pub fn slots_of(&self, game_id: &str) -> Vec<String> {
+        self.allowed.iter().find(|(game, _)| game == game_id).map(|(_, slots)| slots.clone()).unwrap_or_default()
+    }
+
     fn slot_allowed(&self, game_id: &str, slot: &str) -> bool {
         save_segment_valid(game_id)
             && save_segment_valid(slot)
@@ -475,6 +491,21 @@ mod tests {
 
     fn run(level: i64) -> Value {
         json!({ "format": 2, "saved_at": 100, "place": format!("LEVEL {level}"), "payload": { "seed_text": "S", "level": level } })
+    }
+
+    #[test]
+    fn deleting_an_account_removes_its_cloud_saves_and_the_slot_list_is_the_website_one() {
+        let mut server = fixture();
+        let kt = server.sign_up("GONE_SAVER");
+        assert_eq!(server.put(PATH, &kt, json!({ "data": run(-1), "updatedAt": 100 })).0, 200);
+        let file = server.root.join("saves").join("GONE_SAVER.json");
+        assert!(file.exists());
+        assert!(server.saves.delete_account("GONE_SAVER"));
+        assert!(!file.exists(), "the account's saves are gone");
+        assert!(!server.saves.delete_account("GONE_SAVER"), "nothing left to delete");
+        assert!(!server.saves.delete_account("../ESCAPE"), "a name that is not an account file is never touched");
+        assert_eq!(server.saves.slots_of("last-route-rust"), vec!["run".to_string(), "run-world-1".to_string()]);
+        assert!(server.saves.slots_of("not-a-game").is_empty());
     }
 
     #[test]

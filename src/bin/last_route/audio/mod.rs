@@ -13,8 +13,10 @@
 //! `Sounds` and `play` are the old fixed bank, kept only so call sites not migrated yet still build.
 #![allow(dead_code)] // ported API kept ahead of its callers (these items were the lib's pub API); prune as the port settles
 
+pub mod ambient;
 pub mod creature;
 pub mod cues;
+pub mod emitters;
 mod engine;
 pub mod falls;
 pub mod sound;

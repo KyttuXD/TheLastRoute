@@ -1,0 +1,15 @@
+{
+  "id": "example_shot",
+  "stage": "infinite_level_0",
+  "seed": 20261101,
+  "duration": 8.0,
+  "actors": [
+    {"id": "hunter_a", "kind": "hunter", "x": 12.0, "y": 8.0},
+    {"id": "bot_a", "kind": "npc", "x": 6.0, "y": 8.0}
+  ],
+  "camera": [
+    {"t": 0.0, "x": 0.0, "y": 1.6, "z": 0.0, "yaw": 0.0, "pitch": 0.0},
+    {"t": 4.0, "x": 6.0, "y": 1.8, "z": 2.0, "yaw": 0.5, "pitch": -0.1},
+    {"t": 8.0, "x": 12.0, "y": 1.6, "z": 6.0, "yaw": 1.0, "pitch": 0.0}
+  ]
+}

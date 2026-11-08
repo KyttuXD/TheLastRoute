@@ -1,0 +1,20 @@
+{
+  "schema": "lr.sleep/1",
+  "_note": "Drowsiness 0..100. It rises while awake and resting-still, falls fast while sleeping. A hunter inside disturb_radius jolts a sleeper awake and costs jolt_penalty drowsiness (the sleeper wakes shaken). Falling asleep by drowsiness alone happens at pass_out.",
+  "max": 100.0,
+  "awake_rise_per_s": 0.35,
+  "moving_rise_scale": 1.0,
+  "still_rise_scale": 2.0,
+  "sleep_fall_per_s": 6.0,
+  "pass_out": 100.0,
+  "may_sleep_below": 100.0,
+  "wake_at": 5.0,
+  "disturb_radius": 14.0,
+  "disturb_radius_sprinting": 22.0,
+  "disturb_chase_always": true,
+  "jolt_seconds": 1.2,
+  "jolt_exposure": 25.0,
+  "jolt_noise": 20.0,
+  "slow_below": 70.0,
+  "slow_scale_at_max": 0.8
+}

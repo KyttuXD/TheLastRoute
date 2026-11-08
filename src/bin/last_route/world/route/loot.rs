@@ -7,8 +7,8 @@
 //! GDScript floats as f64. The test `tables_match_data_loot_files` reads both JSON files and checks the constants, so
 //! a data change that is not copied here fails the suite.
 //!
-//! Packs are not read: the Godot `LootTables.table_for` takes a pack table that names the region first. No pack
-//! loads in this port, so only the built-in tables are used.
+//! Packs: as the Godot `LootTables.table_for`, an active pack table that names the region comes first
+//! (`content::packs::region_loot`); with no pack loaded only the built-in tables are used.
 //!
 //! RNG: every chance is one `next_float` in file order, and every `next_index` is one draw (`next_index(0)` too).
 //! `roll` and `roll_aid` do not short-circuit. `pick_tool` draws its roll before it checks for an empty list.
@@ -89,14 +89,48 @@ pub const SEWER: Table = Table {
     aid: &[],
 };
 
-/// `LootTables.table_for` with the built-in tables: a region named `sewer` has the sewer table, every other region the
-/// route table (the `route` default, loot_tables.gd).
+/// `LootTables.table_for`: an active pack's table for the region first (`content::packs::region_loot`), else the
+/// built-in tables: a region named `sewer` has the sewer table, every other region the route table (the `route`
+/// default, loot_tables.gd). With no pack loaded only the built-in tables are used, so the parity draws do not move.
 pub fn table_for(region: &str) -> &'static Table {
+    if let Some(l) = crate::content::packs::region_loot(region) {
+        return pack_table(region, &l);
+    }
     if region == "sewer" {
         &SEWER
     } else {
         &ROUTE
     }
+}
+
+/// A pack's region table as a `Table`. The tables are `'static`, so each distinct pack table is built once and kept
+/// (keyed by region and the table's contents); a pack reload with the same table reuses it.
+fn pack_table(region: &str, l: &crate::content::loot::Loot) -> &'static Table {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<(String, String), &'static Table>>> = OnceLock::new();
+    let key = (region.to_string(), format!("{l:?}"));
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut g = match cache.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    if let Some(t) = g.get(&key) {
+        return *t;
+    }
+    fn leak(s: &str) -> &'static str {
+        Box::leak(s.to_string().into_boxed_str())
+    }
+    let t: &'static Table = Box::leak(Box::new(Table {
+        id: leak(&l.id),
+        base: Box::leak(l.base.iter().map(|s| leak(s)).collect::<Vec<_>>().into_boxed_slice()),
+        rolls: Box::leak(l.rolls.iter().map(|(k, c)| Roll { kind: leak(k), chance: *c as f64 }).collect::<Vec<_>>().into_boxed_slice()),
+        tools: Box::leak(l.tools.iter().map(|(k, w)| Tool { item: leak(k), weight: *w as f64 }).collect::<Vec<_>>().into_boxed_slice()),
+        backpacks: Box::leak(l.backpacks.iter().map(|s| leak(s)).collect::<Vec<_>>().into_boxed_slice()),
+        aid: Box::leak(l.aid.iter().map(|(k, c)| Aid { item: leak(k), chance: *c as f64, chance_coop: None }).collect::<Vec<_>>().into_boxed_slice()),
+    }));
+    g.insert(key, t);
+    t
 }
 
 /// `LootTables.roll` (loot_tables.gd): one `next_float` per entry in file order, and the kinds that came up.

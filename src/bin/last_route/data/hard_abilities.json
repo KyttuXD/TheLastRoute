@@ -1,0 +1,52 @@
+{
+  "schema": "lr.hard_abilities/1",
+  "_note": "Hard abilities (hunters/hard_abilities.rs), ported from Godot game/hunters/ai/hard_abilities.gd. frequency is an on/off gate (0 = every ability off, as Relaxed); budget is the party-wide seconds between two uses of one ability; roster lists the hunters that have each ability per difficulty; pounce / burst / intercept / slam hold the per-difficulty numbers (pounce rate is per eligible second, the others are chance per event); leap is shared. Nightmare pounce for the special hunters lives in hunters/nightmare_pounce.json.",
+  "frequency": { "relaxed": 0.0, "standard": 0.12, "hard": 1.0, "nightmare": 1.6 },
+  "budget": { "standard": 360.0, "hard": 45.0, "nightmare": 25.0 },
+  "pounce_runner_guard": 10.0,
+  "roster": {
+    "pounce": {
+      "standard": ["haelith", "void_red"],
+      "hard": ["haelith", "solyth", "xivvy", "void_red"],
+      "nightmare": ["haelith", "solyth", "xivvy", "void_red", "void_black", "nyxie"]
+    },
+    "slam": {
+      "standard": ["elise"],
+      "hard": ["elise", "javelle", "solyth"],
+      "nightmare": ["elise", "javelle", "solyth"]
+    },
+    "burst": {
+      "standard": ["quenelle"],
+      "hard": ["quenelle", "ferryn", "umbriel"],
+      "nightmare": ["quenelle", "ferryn", "umbriel"]
+    },
+    "intercept": {
+      "standard": ["mavrine"],
+      "hard": ["mavrine", "kathy", "quenelle"],
+      "nightmare": ["mavrine", "kathy", "quenelle"]
+    }
+  },
+  "pounce": {
+    "standard": { "min": 2.2, "max": 3.5, "rate": 0.35, "cooldown": 120.0, "per_chase": 1, "stumble": 1.6, "seconds": 0.45 },
+    "hard": { "min": 2.2, "max": 4.5, "rate": 0.35, "cooldown": 28.0, "per_chase": 2, "stumble": 1.1, "seconds": 0.5 },
+    "nightmare": { "min": 2.2, "max": 5.5, "rate": 0.56, "cooldown": 18.0, "per_chase": 2, "stumble": 0.8, "seconds": 0.5 }
+  },
+  "leap": { "speed": 7.2, "lead_seconds": 0.15, "bonk_stun": 0.8, "stumble_speed": 0.3, "link_clearance": 1.5 },
+  "burst": {
+    "standard": { "chance": 0.12, "scale": 1.12, "seconds": 1.0, "cooldown": 90.0 },
+    "hard": { "chance": 0.6, "scale": 1.25, "seconds": 1.6, "cooldown": 25.0 },
+    "nightmare": { "chance": 1.0, "scale": 1.40, "seconds": 2.2, "cooldown": 25.0 }
+  },
+  "intercept": {
+    "standard": { "chance": 0.30, "lead": 0.4 },
+    "hard": { "chance": 1.0, "lead": 1.0 },
+    "nightmare": { "chance": 1.0, "lead": 1.8 }
+  },
+  "slam": {
+    "standard": { "chance": 0.10, "seconds": 8.0 },
+    "hard": { "chance": 1.0, "seconds": 20.0 },
+    "nightmare": { "chance": 1.0, "seconds": 35.0 }
+  },
+  "gates": { "nyxie_requires_dark": true, "solyth_min_temperature": 60.0, "void_black_unwatched_seconds": 3.0 },
+  "velocity_smoothing": 8.0
+}

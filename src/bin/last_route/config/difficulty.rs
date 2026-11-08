@@ -412,3 +412,192 @@ mod draw_pool_tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Scaling profile and per-level danger (data/danger.json, `lr.danger/1`). Host-side numbers only.
+
+/// Path of the danger data inside the embedded data.
+const DANGER_PATH: &str = "danger.json";
+
+/// What a difficulty adds on top of its `Profile`: bigger director teams, peek and inspect odds, the pounce table.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Scaling {
+    /// Extra hunters a director call may send (added to data/hunters/director.json `team`).
+    pub team_bonus: i32,
+    /// Scale on the peek odds (the `chance` of data/peek.json `difficulty`).
+    pub peek_chance: f32,
+    /// Scale on the odds a hunter inspects a spot (a locker, a hiding place).
+    pub inspect_chance: f32,
+    /// Id of the pounce row in data/hard_abilities.json; empty when the difficulty has no hard pounce.
+    pub pounce_table: String,
+}
+
+/// Danger at one level number of a run.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Danger {
+    /// Multiplier on the hunter's speed.
+    pub speed_scale: f32,
+    /// Hunters added to the floor's lineup.
+    pub extra_hunters: i32,
+    /// Chance a floor offers a safe room, 0..=1.
+    pub safe_room_odds: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct DepthRow {
+    speed_per_level: f32,
+    speed_cap: f32,
+    extra_every: i32,
+    max_extra: i32,
+    safe_room_base: f32,
+    safe_room_per_level: f32,
+    safe_room_min: f32,
+}
+
+#[derive(Default)]
+struct DangerData {
+    scaling: HashMap<String, Scaling>,
+    depth: HashMap<String, DepthRow>,
+}
+
+fn parse_danger(text: &str) -> Result<DangerData, String> {
+    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    if v["schema"].as_str() != Some("lr.danger/1") {
+        return Err("schema must be lr.danger/1".into());
+    }
+    let mut data = DangerData::default();
+    for (id, r) in v["scaling"].as_object().ok_or("missing scaling")? {
+        let f = |k: &str| r[k].as_f64().ok_or_else(|| format!("scaling.{id}.{k}: must be a number"));
+        data.scaling.insert(
+            id.clone(),
+            Scaling {
+                team_bonus: f("team_bonus")?.max(0.0) as i32,
+                peek_chance: 0.0,
+                inspect_chance: f("inspect_chance")?.max(0.0) as f32,
+                pounce_table: r["pounce_table"].as_str().unwrap_or("").to_string(),
+            },
+        );
+    }
+    for (id, r) in v["depth"].as_object().ok_or("missing depth")? {
+        let f = |k: &str| r[k].as_f64().ok_or_else(|| format!("depth.{id}.{k}: must be a number"));
+        data.depth.insert(
+            id.clone(),
+            DepthRow {
+                speed_per_level: f("speed_per_level")? as f32,
+                speed_cap: f("speed_cap")? as f32,
+                extra_every: f("extra_every")?.max(0.0) as i32,
+                max_extra: f("max_extra")?.max(0.0) as i32,
+                safe_room_base: f("safe_room_base")? as f32,
+                safe_room_per_level: f("safe_room_per_level")? as f32,
+                safe_room_min: f("safe_room_min")? as f32,
+            },
+        );
+    }
+    Ok(data)
+}
+
+fn danger_data() -> &'static DangerData {
+    static DATA: OnceLock<DangerData> = OnceLock::new();
+    DATA.get_or_init(|| {
+        let text = embedded::data_under(DANGER_PATH).next().map(|(_, t)| t).unwrap_or("");
+        parse_danger(text).unwrap_or_else(|e| {
+            eprintln!("{DANGER_PATH}: {e}");
+            DangerData::default()
+        })
+    })
+}
+
+fn danger_at(row: &DepthRow, depth: i32) -> Danger {
+    let levels = (depth - 1).max(0) as f32;
+    let speed_scale = (1.0 + row.speed_per_level * levels).min(row.speed_cap.max(1.0));
+    let extra_hunters = if row.extra_every > 0 { ((depth - 1).max(0) / row.extra_every).min(row.max_extra) } else { 0 };
+    let safe_room_odds = (row.safe_room_base + row.safe_room_per_level * levels).max(row.safe_room_min).clamp(0.0, 1.0);
+    Danger { speed_scale, extra_hunters, safe_room_odds }
+}
+
+impl Difficulty {
+    /// Team size, peek and inspect odds and the pounce table for this difficulty (data/danger.json; peek odds from data/peek.json).
+    pub fn scaling(self) -> Scaling {
+        let mut s = danger_data().scaling.get(self.id()).cloned().unwrap_or(Scaling {
+            team_bonus: 0,
+            peek_chance: 1.0,
+            inspect_chance: 1.0,
+            pounce_table: String::new(),
+        });
+        s.peek_chance = crate::hunters::peek::rules().scale(self).chance;
+        s
+    }
+
+    /// The danger at a level number (1 = the first level, which is the unscaled base). A difficulty with no data row is flat.
+    pub fn danger(self, depth: i32) -> Danger {
+        danger_data()
+            .depth
+            .get(self.id())
+            .map_or(Danger { speed_scale: 1.0, extra_hunters: 0, safe_room_odds: 0.0 }, |r| danger_at(r, depth))
+    }
+}
+
+#[cfg(test)]
+mod danger_tests {
+    use super::*;
+
+    #[test]
+    fn the_shipped_file_has_every_difficulty() {
+        assert!(!danger_data().scaling.is_empty() && !danger_data().depth.is_empty(), "danger.json loads");
+        for d in LOBBY {
+            assert!(danger_data().scaling.contains_key(d.id()), "scaling.{}", d.id());
+            assert!(danger_data().depth.contains_key(d.id()), "depth.{}", d.id());
+        }
+    }
+
+    /// Nightmare scales team size, peek and inspect odds above Standard and names its pounce table.
+    #[test]
+    fn nightmare_profile_scales_above_standard() {
+        let (n, s) = (Difficulty::Nightmare.scaling(), Difficulty::Standard.scaling());
+        assert!(n.team_bonus > s.team_bonus);
+        assert!(n.peek_chance > s.peek_chance);
+        assert!(n.inspect_chance > s.inspect_chance);
+        assert_eq!(n.pounce_table, "nightmare");
+        assert_eq!(Difficulty::Relaxed.scaling().pounce_table, "");
+        assert_eq!(s.team_bonus, 0, "Standard keeps the shipped director teams");
+    }
+
+    #[test]
+    fn danger_grows_with_depth_and_is_flat_on_level_one() {
+        for d in LOBBY {
+            let base = d.danger(1);
+            assert_eq!((base.speed_scale, base.extra_hunters), (1.0, 0), "{}", d.id());
+            let deep = d.danger(40);
+            assert!(deep.speed_scale >= base.speed_scale && deep.safe_room_odds <= base.safe_room_odds, "{}", d.id());
+        }
+        assert!(Difficulty::Nightmare.danger(20).speed_scale > Difficulty::Standard.danger(20).speed_scale);
+        assert_eq!(Difficulty::Relaxed.danger(30).speed_scale, 1.0);
+    }
+
+    /// Standard plays as before at every depth: no speed-up, no extra hunters, the shipped safe-room odds.
+    #[test]
+    fn standard_is_flat_at_every_depth() {
+        for depth in [1, 2, 9, 17, 40, 200] {
+            let d = Difficulty::Standard.danger(depth);
+            assert_eq!((d.speed_scale, d.extra_hunters), (1.0, 0), "depth {depth}");
+            assert!((f64::from(d.safe_room_odds) - crate::world::route::danger::SAFE_ROOM_BASE_CHANCE).abs() < 1e-6, "depth {depth}");
+        }
+    }
+
+    #[test]
+    fn danger_is_capped_and_odds_stay_in_range() {
+        let row = DepthRow { speed_per_level: 0.1, speed_cap: 1.2, extra_every: 2, max_extra: 3, safe_room_base: 0.5, safe_room_per_level: -0.2, safe_room_min: 0.05 };
+        let d = danger_at(&row, 500);
+        assert_eq!(d.speed_scale, 1.2);
+        assert_eq!(d.extra_hunters, 3);
+        assert_eq!(d.safe_room_odds, 0.05);
+    }
+
+    #[test]
+    fn a_changed_data_value_changes_the_danger() {
+        let text = r#"{"schema":"lr.danger/1","scaling":{},"depth":{"standard":{"speed_per_level":0.5,"speed_cap":2.0,"extra_every":0,"max_extra":0,"safe_room_base":0.4,"safe_room_per_level":0.0,"safe_room_min":0.0}}}"#;
+        let data = parse_danger(text).unwrap();
+        assert_eq!(danger_at(&data.depth["standard"], 3).speed_scale, 2.0);
+        assert!(parse_danger(r#"{"schema":"x"}"#).is_err());
+    }
+}

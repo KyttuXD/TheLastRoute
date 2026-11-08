@@ -11,6 +11,8 @@ mod light_sight;
 mod hunter_pipes;
 mod resident_hunters;
 mod guest_gate;
+#[cfg(test)]
+mod capture_immunity_tests;
 mod guest_apply;
 pub mod remote_targets;
 mod interact;
@@ -18,6 +20,8 @@ pub mod ladder;
 pub mod level_stack;
 pub mod pipes;
 pub mod swim;
+pub mod waypoint;
+pub mod cinema;
 #[cfg(test)]
 mod ladder_tests;
 #[cfg(test)]
@@ -33,6 +37,9 @@ mod rail_tests;
 mod inferno_terrain_tests;
 mod items;
 pub mod meters;
+pub mod seating;
+pub mod sleep;
+pub mod anti_idle;
 pub mod music_box;
 pub mod specialty;
 pub mod stamina;
@@ -294,6 +301,15 @@ pub struct Game {
     /// Metres of pipe flood at the runner's feet, set each frame by the endless update (task 2: game/endless.rs, from
     /// `self.pipes.depth_at_step(..)`); wading uses the deeper of this and the sewer water.
     pub flood_depth: f32,
+    /// Guest: whether the host's first snapshot has been applied (app::run_gate::WorldWait). Until it is, the world here
+    /// is a stand-in and the runner's interact and item use do not reach it (game/guest_gate.rs `input_blocked`). The
+    /// app sets it each frame; a host or solo game is never blocked whatever it holds.
+    pub world_in: bool,
+    /// Anti-AFK void pressure of the party (game/anti_idle.rs): host or solo only, stepped in `step_anti_idle`.
+    pub anti_idle: anti_idle::AntiIdle,
+    /// `time` at the last automatic save (game/interact.rs `autosave`), for the `min_interval_s` of data/progression.json
+    /// `autosave` (`autosave_on`).
+    pub last_save_time: f32,
     // preload.rs is pure (preload::preload() config, keep_levels, to_build, to_evict): the held windows live in
     // `InfState::stack`, so no preload cache field is needed here.
 }
@@ -430,6 +446,9 @@ impl Game {
             swim_cfg: swim_effects::SwimConfig::load(),
             water_cache: None,
             flood_depth: 0.0,
+            world_in: true,
+            anti_idle: anti_idle::AntiIdle::default(),
+            last_save_time: f32::NEG_INFINITY,
             fac,
             fix,
             world,
@@ -580,6 +599,9 @@ impl Game {
             swim_cfg: swim_effects::SwimConfig::load(),
             water_cache: None,
             flood_depth: 0.0,
+            world_in: true,
+            anti_idle: anti_idle::AntiIdle::default(),
+            last_save_time: f32::NEG_INFINITY,
             world: WorldMeshes::default(),
             world_dirty: true,
             world_nb: Default::default(),
@@ -1122,11 +1144,13 @@ impl Game {
                 crate::audio::sound::light_switch(); // the flashlight runs dead (player_controller_3d.gd 2419)
                 self.say("FLASHLIGHT DEAD");
             }
-            if self.p.stun <= 0.0 {
+            // a guest whose world is not in yet is standing in a stand-in: no item use and no interact reaches it
+            let blocked = guest_gate::input_blocked(self, self.world_in);
+            if self.p.stun <= 0.0 && !blocked {
                 self.update_tools(c, sounds);
             }
             self.focus = self.find_focus();
-            if c.interact && self.p.stun <= 0.0 {
+            if c.interact && self.p.stun <= 0.0 && !blocked {
                 // an open Void Gray signal route takes the E press first (void_gray.rs press_route)
                 if !self.press_signal_route() {
                     if let Some(f) = self.focus {
@@ -1157,6 +1181,8 @@ impl Game {
         // level 0 has no Nyxie in its lineup: a dead flashlight there makes the one that comes for it (endless.rs)
         self.keep_level0_nyxie(content);
         self.update_hunters(dt, &prof, sounds);
+        // anti-AFK void pressure (game/anti_idle.rs): host or solo only
+        self.step_anti_idle(dt, content);
         // the hunters on the shelves live on coarsely (data/hunters/offscreen.json)
         self.simulate_offscreen(dt);
         // the window may have stored or loaded a hunter and a hunter may have crossed to the floor beside: the bar the frame is

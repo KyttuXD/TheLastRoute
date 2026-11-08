@@ -13,14 +13,18 @@
 
 pub mod support;
 mod routes;
+pub mod rate_limit;
 #[cfg(test)]
 pub(crate) use routes::body_limit;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod route_tests;
 
 pub use support::*;
 
 use crate::account_service::{AccountService, AccountServiceOptions};
+use rate_limit::RateLimiter;
 use crate::crash_reports::{CrashReports, CrashReportsOptions};
 use crate::enet_relay::{self, EnetRelay, EnetRelayOptions, RelayDriver, RelayEvent, RelayRoom, RelayRooms};
 use crate::game_saves::{GameSaves, GameSavesOptions};
@@ -62,7 +66,8 @@ pub const RESERVED_TAKEOVER_MS: i64 = 30_000;
 pub const WS_PATH: &str = "/api/ws";
 /// The biggest skin PNG: 64 KB, the one number of `skins/skins.rs` (and of the game's validator).
 pub const SKIN_MAX_BYTES: usize = crate::skins::skins::SKIN_MAX_BYTES;
-pub const ACCOUNT_RATE_LIMIT_PATHS: [&str; 18] = [
+pub const ACCOUNT_RATE_LIMIT_PATHS: [&str; 19] = [
+    "/api/account/delete",
     "/api/guest/name",
     "/api/account/register",
     "/api/account/login",
@@ -469,6 +474,10 @@ pub struct ServerOptions {
     pub api_rate_limit_max: u32,
     pub mod_rate_limit_max: u32,
     pub account_rate_limit_max: u32,
+    /// Sign-in, sign-up, password change and deletion per address per window; 0 uses `account_rate_limit_max`.
+    pub auth_rate_limit_max: u32,
+    /// How long a session lives (`LASTROUTE_SESSION_TTL_HOURS`).
+    pub session_ttl_ms: i64,
     pub dev_token_ttl_ms: i64,
     /// `LASTROUTE_INSTANCE` (shown in /api/health).
     pub instance: String,
@@ -514,6 +523,8 @@ impl Default for ServerOptions {
             api_rate_limit_max: 600,
             mod_rate_limit_max: 120,
             account_rate_limit_max: 30,
+            auth_rate_limit_max: 0,
+            session_ttl_ms: crate::account_service::DEFAULT_SESSION_TTL_MS,
             dev_token_ttl_ms: DEFAULT_DEV_TOKEN_TTL_MS,
             instance: "production".into(),
             now: system_clock(),
@@ -540,6 +551,7 @@ pub(crate) struct Config {
     pub api_rate_limit_max: u32,
     pub mod_rate_limit_max: u32,
     pub account_rate_limit_max: u32,
+    pub auth_rate_limit_max: u32,
     pub dev_token_ttl_ms: i64,
     pub instance: String,
 }
@@ -558,7 +570,7 @@ pub struct State {
     pub(crate) game_saves: Arc<Mutex<GameSaves>>,
     pub(crate) skins: Skins,
     pub(crate) dev_tokens: HashMap<String, i64>,
-    pub(crate) request_rates: HashMap<String, (u32, i64)>,
+    pub(crate) request_rates: RateLimiter,
     pub(crate) reload_id: i64,
 }
 
@@ -599,6 +611,7 @@ impl LastRouteServer {
             AccountService::new(AccountServiceOptions {
                 store_path: opts.account_store_path.clone(),
                 now: now.clone(),
+                session_ttl_ms: opts.session_ttl_ms,
                 upstream: opts.account_upstream.clone(),
                 service_token: opts.account_service_token.clone(),
                 ..Default::default()
@@ -659,7 +672,7 @@ impl LastRouteServer {
             }))),
             skins: Skins::new(SkinsOptions { directory: opts.skin_directory.clone(), upstream: opts.account_upstream.clone(), now: now.clone(), grace_ms: opts.skin_grace_ms }),
             dev_tokens: HashMap::new(),
-            request_rates: HashMap::new(),
+            request_rates: RateLimiter::new(),
             reload_id: 0,
         };
         let instance: String =
@@ -685,6 +698,7 @@ impl LastRouteServer {
                 api_rate_limit_max: opts.api_rate_limit_max,
                 mod_rate_limit_max: opts.mod_rate_limit_max,
                 account_rate_limit_max: opts.account_rate_limit_max,
+                auth_rate_limit_max: opts.auth_rate_limit_max,
                 dev_token_ttl_ms: opts.dev_token_ttl_ms,
                 instance: if instance.is_empty() { "production".into() } else { instance },
             },
@@ -778,7 +792,7 @@ impl LastRouteServer {
         let mut state = self.state.lock().unwrap();
         state.dir.prune();
         state.room_service.cleanup();
-        state.request_rates.retain(|_, (_, reset)| timestamp < *reset);
+        state.request_rates.prune(timestamp);
         for (_, route) in state.dir.public_routes.iter_mut() {
             route.tick();
         }
@@ -1002,6 +1016,8 @@ pub fn options_from_environment(env: &HashMap<String, String>, cwd: &Path) -> Re
         rate_limit_window_ms: (number("LASTROUTE_RATE_LIMIT_WINDOW_SECONDS", 60.0).max(1.0) * 1000.0) as i64,
         api_rate_limit_max: number("LASTROUTE_API_RATE_LIMIT", 600.0).max(1.0) as u32,
         account_rate_limit_max: number("LASTROUTE_ACCOUNT_RATE_LIMIT", 30.0).max(1.0) as u32,
+        auth_rate_limit_max: number("LASTROUTE_AUTH_RATE_LIMIT", 10.0).max(1.0) as u32,
+        session_ttl_ms: (number("LASTROUTE_SESSION_TTL_HOURS", 720.0).max(1.0) * 3_600_000.0) as i64,
         mod_rate_limit_max: number("LASTROUTE_MOD_RATE_LIMIT", 120.0).max(1.0) as u32,
         instance: env.get("LASTROUTE_INSTANCE").cloned().unwrap_or_else(|| "production".into()),
         ..ServerOptions::default()

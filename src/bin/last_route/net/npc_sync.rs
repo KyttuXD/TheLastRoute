@@ -39,6 +39,8 @@ pub struct RemoteNpc {
     pub crouch: bool,
     pub emote: String,
     pub emote_seq: u32,
+    /// Where the bot's head looks: yaw offset from the body (+ left) and pitch (+ up), radians (optional, 0 when missing).
+    pub look: (f32, f32),
     seen: Instant,
 }
 
@@ -56,6 +58,8 @@ pub struct RemoteNpcView {
     pub crouch: bool,
     pub emote: String,
     pub emote_seq: u32,
+    /// The head's look (yaw offset, pitch), radians.
+    pub look: (f32, f32),
 }
 
 #[derive(Default)]
@@ -91,7 +95,15 @@ pub fn wire_state_with(npc: &Npc, origin: (i32, i32), downed: bool) -> Map<Strin
     m.insert("crouch".into(), Value::Bool(npc.life.crouching));
     m.insert("emote".into(), serde_json::json!(npc.life.emote.clone().unwrap_or_default()));
     m.insert("emote_seq".into(), serde_json::json!(npc.life.emote_seq));
+    m.insert("look".into(), serde_json::json!([npc.life.head_yaw, npc.life.head_pitch]));
     m
+}
+
+/// The `look` pair `[yaw, pitch]` from a bot's state; a missing or bad one reads as straight ahead.
+fn look(state: &Map<String, Value>) -> (f32, f32) {
+    let Some(a) = state.get("look").and_then(Value::as_array) else { return (0.0, 0.0) };
+    let at = |i: usize| a.get(i).and_then(Value::as_f64).map(|v| v as f32).filter(|v| v.is_finite()).unwrap_or(0.0);
+    (at(0), at(1))
 }
 
 fn finite(state: &Map<String, Value>, key: &str) -> Option<f32> {
@@ -142,6 +154,7 @@ impl NpcSync {
             crouch: flag(state, "crouch"),
             emote: state.get("emote").and_then(Value::as_str).unwrap_or("").chars().take(24).collect(),
             emote_seq: state.get("emote_seq").and_then(Value::as_u64).unwrap_or(0).min(u64::from(u32::MAX)) as u32,
+            look: look(state),
             seen: now,
         });
     }
@@ -151,7 +164,8 @@ impl NpcSync {
         self.remote.remove(&id);
     }
 
-    /// Guest: the NPCs heard of in the last [`NPC_STALE`], in this viewer's window (`origin`), for the figure code.
+    /// Guest: the NPCs heard of in the last [`NPC_STALE`], in this viewer's window (`origin`), for the figure code. Each
+    /// view's head look is handed to the figure code (`runner_figure::set_bot_look`) here, before `draw_bots` runs.
     pub fn views(&self, origin: (i32, i32), now: Instant) -> Vec<RemoteNpcView> {
         self.remote
             .values()
@@ -159,7 +173,8 @@ impl NpcSync {
             .filter(|n| !n.hidden && now.duration_since(n.seen) <= NPC_STALE)
             .map(|n| {
                 let (x, y) = super::world_sync::to_window((n.x, n.y), origin);
-                RemoteNpcView { name: n.name.clone(), at: (x, y), level: n.level, facing: n.yaw, stride: n.stride, walking: n.walking, fleeing: n.fleeing, downed: n.downed, crouch: n.crouch, emote: n.emote.clone(), emote_seq: n.emote_seq }
+                super::runner_figure::set_bot_look(&n.name, n.look.0, n.look.1);
+                RemoteNpcView { name: n.name.clone(), at: (x, y), level: n.level, facing: n.yaw, stride: n.stride, walking: n.walking, fleeing: n.fleeing, downed: n.downed, crouch: n.crouch, emote: n.emote.clone(), emote_seq: n.emote_seq, look: n.look }
             })
             .collect()
     }
@@ -258,6 +273,11 @@ mod tests {
         guest.receive_place(1, &st, t0);
         let v = guest.views((0, 0), t0);
         assert!(v[0].crouch && v[0].emote == "wave" && v[0].emote_seq == 3);
+        assert_eq!(v[0].look, (0.0, 0.0), "no look on the wire reads as straight ahead");
+        st.insert("look".into(), serde_json::json!([0.4, -0.2]));
+        guest.receive_place(1, &st, t0);
+        let v = guest.views((0, 0), t0);
+        assert_eq!(v[0].look, (0.4, -0.2));
     }
 
     #[test]

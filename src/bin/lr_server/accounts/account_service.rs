@@ -25,6 +25,8 @@ pub const MAX_PASSWORD_LENGTH: usize = 200;
 pub const MAX_PROGRESS_BYTES: usize = 32 * 1024;
 const SCRYPT_KEY_LENGTH: usize = 64;
 pub const DEFAULT_SESSION_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+/// How long the confirm token of an account deletion stays valid (`AccountServiceOptions::delete_confirm_ttl_ms`).
+pub const DEFAULT_DELETE_CONFIRM_TTL_MS: i64 = 5 * 60 * 1000;
 const DECOY_SALT: &str = "last-route-decoy-salt";
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -224,6 +226,8 @@ pub struct AccountServiceOptions {
     pub store_path: Option<PathBuf>,
     pub now: Clock,
     pub session_ttl_ms: i64,
+    /// How long the confirm token of an account deletion (`POST /api/account/delete`) stays valid.
+    pub delete_confirm_ttl_ms: i64,
     /// `LASTROUTE_ACCOUNT_UPSTREAM`: the website that owns the accounts. When set, `store_path` is neither read nor written.
     pub upstream: Option<Upstream>,
     /// `LASTROUTE_SERVICE_TOKEN` (already checked to be 32+ characters): sent as `serviceToken` on the forwarded
@@ -237,6 +241,7 @@ impl Default for AccountServiceOptions {
             store_path: None,
             now: util::system_clock(),
             session_ttl_ms: DEFAULT_SESSION_TTL_MS,
+            delete_confirm_ttl_ms: DEFAULT_DELETE_CONFIRM_TTL_MS,
             upstream: None,
             service_token: None,
         }
@@ -249,8 +254,17 @@ struct Session {
     expires_at: f64,
 }
 
+/// A deletion that was asked for and waits for its confirm token.
+#[derive(Clone, Debug)]
+struct PendingDeletion {
+    username: String,
+    expires_at: f64,
+}
+
 #[derive(Default)]
 struct State {
+    /// sha256(confirm token) -> the deletion it confirms
+    deletions: OrderedMap<PendingDeletion>,
     /// username -> the stored account object (kept as JSON so unknown fields and key order survive a round trip)
     accounts: OrderedMap<Map<String, Value>>,
     /// sha256(token) -> session
@@ -261,6 +275,7 @@ pub struct AccountService {
     store_path: Option<PathBuf>,
     now: Clock,
     session_ttl_ms: i64,
+    delete_confirm_ttl_ms: i64,
     upstream: Option<Upstream>,
     service_token: Option<String>,
     state: Mutex<State>,
@@ -274,32 +289,43 @@ impl AccountService {
         let store_path = if opts.upstream.is_some() { None } else { opts.store_path };
         let mut state = State::default();
         let mut load_warning = None;
+        let mut migrated = false;
         if let Some(path) = &store_path {
             match std::fs::read_to_string(path) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => load_warning = Some(format!("Account store was not loaded: {error}")),
                 Ok(text) => match serde_json::from_str::<Value>(&text) {
                     Err(error) => load_warning = Some(format!("Account store was not loaded: {error}")),
-                    Ok(parsed) => Self::load(&mut state, &parsed, (opts.now)()),
+                    Ok(parsed) => migrated = Self::load(&mut state, &parsed, (opts.now)()),
                 },
             }
         }
         if let Some(message) = &load_warning {
             util::log_warn(message);
         }
-        AccountService {
+        let service = AccountService {
             store_path,
             now: opts.now,
-            session_ttl_ms: opts.session_ttl_ms,
+            session_ttl_ms: opts.session_ttl_ms.max(1000),
+            delete_confirm_ttl_ms: opts.delete_confirm_ttl_ms.max(1000),
             upstream: opts.upstream,
             service_token: opts.service_token,
             state: Mutex::new(state),
             #[cfg(test)]
             load_warning,
+        };
+        if migrated {
+            // Sessions of the old plaintext layout are rewritten as hashes right away, so no token stays readable on disk.
+            let state = service.lock();
+            service.persist(&state);
         }
+        service
     }
 
-    fn load(state: &mut State, parsed: &Value, now: i64) {
+    /// Loads the Node `accounts.json`. Returns true when a session of the old layout (`token` in plain text instead of
+    /// `tokenHash`) was converted, so the caller rewrites the file.
+    fn load(state: &mut State, parsed: &Value, now: i64) -> bool {
+        let mut migrated = false;
         if let Some(Value::Array(accounts)) = field(parsed, "accounts") {
             for value in accounts {
                 let username = username_of(field(value, "username"));
@@ -314,7 +340,14 @@ impl AccountService {
         }
         if let Some(Value::Array(sessions)) = field(parsed, "sessions") {
             for value in sessions {
-                let token_hash = str_or_empty(field(value, "tokenHash"));
+                let mut token_hash = str_or_empty(field(value, "tokenHash"));
+                if token_hash.is_empty() {
+                    let plain = str_or_empty(field(value, "token"));
+                    if !plain.is_empty() {
+                        token_hash = session_hash(&plain);
+                        migrated = true;
+                    }
+                }
                 let username = username_of(field(value, "username"));
                 let expires_at = util::number_or(field(value, "expiresAt"), 0.0);
                 let well_formed =
@@ -324,6 +357,7 @@ impl AccountService {
                 }
             }
         }
+        migrated
     }
 
     /// The warning logged while loading the store (None when it loaded or did not exist). For tests and diagnostics.
@@ -607,6 +641,19 @@ impl AccountService {
         let Some(username) = self.session_username(&token) else {
             return fail(401, "NO_SESSION", "Sign in to change your password");
         };
+        // The current password is asked for first: a stolen session token alone cannot take the account over.
+        if !truthy(field(body, "currentPassword")) {
+            return fail(400, "CURRENT_PASSWORD_REQUIRED", "ENTER YOUR CURRENT PASSWORD");
+        }
+        let stored = self.lock().accounts.get(&username).cloned();
+        let current = js_string_any(field(body, "currentPassword"));
+        let current_ok = match &stored {
+            Some(account) => password_matches(&current, account.get("salt"), account.get("hash")),
+            None => false,
+        };
+        if !current_ok {
+            return fail(403, "WRONG_PASSWORD", "YOUR CURRENT PASSWORD IS INCORRECT");
+        }
         let password = field(body, "password");
         if !Self::valid_password(password) {
             return weak_password();
@@ -623,6 +670,57 @@ impl AccountService {
         state.sessions.retain(|token_hash, session| !(session.username == username && token_hash != current_session_hash));
         self.persist(&state);
         (200, json!({ "ok": true, "username": username }))
+    }
+
+    /// POST /api/account/delete `{sessionToken, currentPassword, confirmToken?}`. Two steps: without `confirmToken` the
+    /// reply carries a one-time `confirmToken` (valid `delete_confirm_ttl_ms`); sending it back with the password deletes
+    /// the account, its sessions and its admin entry. The built-in owner accounts cannot be deleted this way.
+    pub fn delete_account(&self, body: &Value) -> Reply {
+        if let Some(reply) = self.forward("/api/account/delete", body) {
+            return reply;
+        }
+        let token = str_or_empty(field(body, "sessionToken"));
+        let Some(username) = self.session_username(&token) else {
+            return fail(401, "NO_SESSION", "SIGN IN TO DELETE YOUR ACCOUNT");
+        };
+        if is_admin_owner_username(&username) {
+            return fail(403, "OWNER_PROTECTED", "OWNER ACCOUNTS CANNOT BE DELETED HERE");
+        }
+        let stored = self.lock().accounts.get(&username).cloned();
+        let current = js_string_any(field(body, "currentPassword"));
+        let password_ok = match &stored {
+            Some(account) => {
+                truthy(field(body, "currentPassword")) && password_matches(&current, account.get("salt"), account.get("hash"))
+            }
+            None => false,
+        };
+        if !password_ok {
+            return fail(403, "WRONG_PASSWORD", "YOUR CURRENT PASSWORD IS INCORRECT");
+        }
+        let confirm = str_or_empty(field(body, "confirmToken"));
+        let now = self.now() as f64;
+        let mut state = self.lock();
+        state.deletions.retain(|_, pending| pending.expires_at > now);
+        if confirm.is_empty() {
+            let confirm_token = hex(&random_bytes(16));
+            let expires_at = now + self.delete_confirm_ttl_ms as f64;
+            state.deletions.retain(|_, pending| pending.username != username);
+            state.deletions.insert(session_hash(&confirm_token), PendingDeletion { username: username.clone(), expires_at });
+            return (
+                200,
+                json!({ "ok": true, "confirmRequired": true, "username": username, "confirmToken": confirm_token,
+                    "expiresInSeconds": self.delete_confirm_ttl_ms / 1000 }),
+            );
+        }
+        let confirmed = state.deletions.get(&session_hash(&confirm)).is_some_and(|pending| pending.username == username);
+        if !confirmed {
+            return fail(400, "BAD_CONFIRM_TOKEN", "THE CONFIRMATION EXPIRED OR IS WRONG. START THE DELETION AGAIN.");
+        }
+        state.deletions.retain(|_, pending| pending.username != username);
+        state.sessions.retain(|_, session| session.username != username);
+        state.accounts.remove(&username);
+        self.persist(&state);
+        (200, json!({ "ok": true, "deleted": true, "username": username }))
     }
 
     /// POST /api/account/rename. `allow_developer_names` = server.mjs `developerRequest(body)`.
@@ -973,13 +1071,13 @@ mod tests {
         let (again_status, again) = a.login(&json!({ "username": "ADA", "password": PASSWORD }));
         assert_eq!(again_status, 200);
         assert_eq!(again["progress"]["floor"], 2);
-        let changed = a.change_password(&json!({ "sessionToken": created_token, "password": "new-secret" }));
+        let changed = a.change_password(&json!({ "sessionToken": created_token, "currentPassword": PASSWORD, "password": "new-secret" }));
         assert_eq!(changed.0, 200);
         assert_eq!(a.current_session(&json!({ "sessionToken": created_token })).0, 200, "the caller keeps its session");
         assert_eq!(a.current_session(&json!({ "sessionToken": token(&again) })).0, 401, "other sessions are dropped");
         assert_eq!(a.login(&json!({ "username": "ADA", "password": PASSWORD })).0, 401);
         assert_eq!(a.login(&json!({ "username": "ADA", "password": "new-secret" })).0, 200);
-        assert_eq!(a.change_password(&json!({ "sessionToken": created_token, "password": "short" })).0, 400);
+        assert_eq!(a.change_password(&json!({ "sessionToken": created_token, "currentPassword": "new-secret", "password": "short" })).0, 400);
     }
 
     #[test]

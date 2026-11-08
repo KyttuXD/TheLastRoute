@@ -118,6 +118,35 @@ pub struct SewerKeys {
 
 /// How a room door is drawn: the doorway's width in cells (`door_span`) and the offset of the doorway's centre
 /// from the threshold `cell`, which is `placement_offset` for a double door (door.rs).
+/// Why a route was not found (admin HUNTER VIEW).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathFail {
+    NoRoute,
+    DoorClosed,
+    PropCollider,
+}
+
+impl PathFail {
+    /// The upper-case label the readout shows.
+    pub fn label(self) -> &'static str {
+        match self {
+            PathFail::NoRoute => "NO ROUTE",
+            PathFail::DoorClosed => "DOOR CLOSED",
+            PathFail::PropCollider => "PROP COLLIDER",
+        }
+    }
+}
+
+/// find_path_stats' readout.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PathStats {
+    pub length: usize,
+    pub cost: f32,
+    pub nodes_searched: usize,
+    pub elapsed_us: u64,
+    pub fail: Option<PathFail>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DoorDraw {
     pub span: i32,
@@ -443,11 +472,17 @@ impl Stair {
     /// Every cell the flight needs kept clear: the well, both ends and their margins (sorted, no repeats).
     pub fn carve_cells(&self) -> Vec<Cell> {
         let Some(fp) = self.footprint() else { return vec![self.cell] };
+        let hole = fp.upper_hole.clone();
         let mut v = fp.upper_hole;
         v.push(fp.landing);
         v.push(fp.foot);
         v.extend(fp.upper_clear);
         v.extend(fp.lower_clear);
+        if self.shape == FlightShape::Spiral {
+            // both ends' lanes, so the upper and the lower level carve the same cells (as flight_links::carve_cells does)
+            // (none in the Godot parity scope: vertical::spiral_keepout)
+            v.extend(crate::world::vertical::spiral_keepout(&hole, fp.landing, fp.foot));
+        }
         v.sort();
         v.dedup();
         v
@@ -2801,9 +2836,44 @@ impl Facility {
     /// 8-way A* with an octile heuristic and no corner cutting (AStarGrid2D,
     /// DIAGONAL_MODE_ONLY_IF_NO_OBSTACLES).
     pub fn find_path(&self, from: Cell, to: Cell) -> Vec<Cell> {
-        if !self.hunter_open(from) || !self.hunter_open(to) {
-            return vec![];
+        self.find_path_inner(from, to).0
+    }
+
+    /// find_path plus its cost readout for the admin HUNTER VIEW: path length in cells, travel cost, nodes expanded,
+    /// elapsed microseconds, and on failure the reason.
+    pub fn find_path_stats(&self, from: Cell, to: Cell) -> PathStats {
+        let t = std::time::Instant::now();
+        let (path, nodes) = self.find_path_inner(from, to);
+        let elapsed_us = t.elapsed().as_micros() as u64;
+        let cost = path
+            .windows(2)
+            .map(|w| if w[0].x != w[1].x && w[0].y != w[1].y { std::f32::consts::SQRT_2 } else { 1.0 })
+            .sum();
+        let fail = if path.is_empty() { Some(self.path_fail_reason(from, to)) } else { None };
+        PathStats { length: path.len(), cost, nodes_searched: nodes, elapsed_us, fail }
+    }
+
+    /// Why there is no route: a blocked end cell is a prop collider or a closed door when one stands there, else no route.
+    pub fn path_fail_reason(&self, from: Cell, to: Cell) -> PathFail {
+        for c in [to, from] {
+            if !self.hunter_open(c) {
+                if self.props.iter().any(|p| p.cell == c) {
+                    return PathFail::PropCollider;
+                }
+                if self.door_state.get(&c).is_some_and(|d| d.open < 0.5) {
+                    return PathFail::DoorClosed;
+                }
+                return PathFail::NoRoute;
+            }
         }
+        PathFail::NoRoute
+    }
+
+    fn find_path_inner(&self, from: Cell, to: Cell) -> (Vec<Cell>, usize) {
+        if !self.hunter_open(from) || !self.hunter_open(to) {
+            return (vec![], 0);
+        }
+        let mut expanded = 0usize;
         #[derive(PartialEq)]
         struct Node(f32, u32);
         impl Eq for Node {}
@@ -2833,6 +2903,7 @@ impl Facility {
         open.push(Node(h(from), idx(from) as u32));
         while let Some(Node(_, ci)) = open.pop() {
             let c = Cell::new(ci as i32 % w, ci as i32 / w);
+            expanded += 1;
             if c == to {
                 let mut path = vec![c];
                 let mut i = ci;
@@ -2841,7 +2912,7 @@ impl Facility {
                     path.push(Cell::new(i as i32 % w, i as i32 / w));
                 }
                 path.reverse();
-                return path;
+                return (path, expanded);
             }
             let gc = g[ci as usize];
             for dy in -1..=1 {
@@ -2874,7 +2945,7 @@ impl Facility {
                 }
             }
         }
-        vec![]
+        (vec![], expanded)
     }
 
     /// has_line_of_sight: samples the segment at ceil(distance*6) points; walls only.
@@ -3622,5 +3693,25 @@ mod tests {
         assert!(f.rail_edges().is_empty());
         assert_eq!(f.rail_sides(Cell::new(10, 10)), 0);
         assert_eq!(f.clear_toward((9.5, 10.5), (9.5, 14.5), 0.33), (9.5, 14.5));
+    }
+
+    #[test]
+    fn find_path_stats_reports_length_nodes_and_cost() {
+        let f = Facility::open_test_level(0);
+        let s = f.find_path_stats(Cell::new(5, 5), Cell::new(12, 5));
+        assert_eq!(s.length, f.find_path(Cell::new(5, 5), Cell::new(12, 5)).len());
+        assert!(s.length >= 8 && s.nodes_searched >= s.length && s.fail.is_none());
+        assert!((s.cost - 7.0).abs() < 1e-3, "a straight run costs one per step");
+    }
+
+    #[test]
+    fn find_path_stats_gives_a_reason_when_there_is_no_route() {
+        let mut f = Facility::open_test_level(0);
+        f.wall[10][10] = true;
+        f.rebuild_grids();
+        let s = f.find_path_stats(Cell::new(5, 5), Cell::new(10, 10));
+        assert_eq!(s.length, 0);
+        assert_eq!(s.fail, Some(PathFail::NoRoute));
+        assert_eq!(s.fail.unwrap().label(), "NO ROUTE");
     }
 }

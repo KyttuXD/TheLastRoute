@@ -127,6 +127,10 @@ pub fn carve_cells(f: &Flight) -> Vec<Cell> {
     out.extend(fp.lower_clear.iter().copied());
     out.push(fp.landing);
     out.push(fp.foot);
+    if f.shape == FlightShape::Spiral {
+        // the widened zone round both ends; none in the Godot parity scope (vertical::spiral_keepout)
+        out.extend(crate::world::vertical::spiral_keepout(&fp.upper_hole, fp.landing, fp.foot));
+    }
     out.sort();
     out.dedup();
     out

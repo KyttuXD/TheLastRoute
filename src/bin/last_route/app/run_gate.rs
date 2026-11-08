@@ -115,6 +115,103 @@ pub fn held_only(c: &Controls) -> Controls {
     }
 }
 
+/// A guest waits for the host's world (TODO 869): until the first snapshot is applied the guest's own world is a blank
+/// stand-in, so its input is blocked and the WAITING FOR HOST overlay shows. A host or a solo run never waits.
+/// Time comes in as `dt`; the slow-host line after `wait_for_world_seconds` (data/net/rejoin.json) is the only timing.
+#[derive(Clone, Debug, Default)]
+pub struct WorldWait {
+    applied: bool,
+    waited: f64,
+}
+
+impl WorldWait {
+    /// A new guest link: wait again for a snapshot.
+    pub fn reset(&mut self) {
+        *self = WorldWait::default();
+    }
+
+    /// The first snapshot of the host's world was applied.
+    pub fn snapshot_applied(&mut self) {
+        self.applied = true;
+    }
+
+    /// Frame time spent waiting (nothing once the world is in).
+    pub fn tick(&mut self, dt: f64) {
+        if !self.applied && dt.is_finite() && dt > 0.0 {
+            self.waited += dt;
+        }
+    }
+
+    /// True while a guest must not act: the world is not in yet.
+    pub fn blocked(&self, guest: bool) -> bool {
+        guest && !self.applied
+    }
+
+    /// The overlay line while blocked; None otherwise. After the data's wait it says the host is slow.
+    pub fn overlay(&self, guest: bool) -> Option<String> {
+        if !self.blocked(guest) {
+            return None;
+        }
+        let rules = crate::net::rejoin::rules();
+        Some(if self.waited >= rules.wait_for_world_seconds {
+            crate::net::rejoin::line("waiting_for_host_slow", "WAITING FOR HOST", &[])
+        } else {
+            crate::net::rejoin::line("waiting_for_host", "WAITING FOR HOST", &[])
+        })
+    }
+}
+
+/// [`controls_for`] for a client that may still be waiting for the host's world: a waiting guest stands with blank
+/// controls (nothing pressed reaches the stand-in world), whatever the pause state.
+pub fn controls_for_guest(paused: bool, online: bool, wait: &WorldWait, guest: bool, c: &Controls) -> Option<Controls> {
+    if wait.blocked(guest) {
+        return Some(Controls::default());
+    }
+    controls_for(paused, online, c)
+}
+
+#[cfg(test)]
+mod world_wait_tests {
+    use super::*;
+
+    fn pressed() -> Controls {
+        Controls { fwd: 1.0, sprint: true, ..Controls::default() }
+    }
+
+    #[test]
+    fn a_guest_has_no_input_until_the_first_snapshot_is_applied() {
+        let mut wait = WorldWait::default();
+        let c = controls_for_guest(false, true, &wait, true, &pressed()).unwrap();
+        assert_eq!((c.fwd, c.sprint), (0.0, false));
+        assert_eq!(wait.overlay(true).as_deref(), Some("WAITING FOR HOST"));
+        wait.snapshot_applied();
+        let c = controls_for_guest(false, true, &wait, true, &pressed()).unwrap();
+        assert_eq!((c.fwd, c.sprint), (1.0, true));
+        assert!(wait.overlay(true).is_none());
+    }
+
+    #[test]
+    fn a_host_or_solo_run_never_waits() {
+        let wait = WorldWait::default();
+        assert!(!wait.blocked(false));
+        assert!(wait.overlay(false).is_none());
+        let c = controls_for_guest(false, false, &wait, false, &pressed()).unwrap();
+        assert_eq!(c.fwd, 1.0);
+    }
+
+    #[test]
+    fn a_slow_host_changes_the_line_and_a_new_link_waits_again() {
+        let mut wait = WorldWait::default();
+        wait.tick(crate::net::rejoin::rules().wait_for_world_seconds + 1.0);
+        assert!(wait.overlay(true).unwrap().contains("HAS NOT SENT"));
+        wait.snapshot_applied();
+        wait.tick(5.0);
+        wait.reset();
+        assert!(wait.blocked(true));
+        assert_eq!(wait.overlay(true).as_deref(), Some("WAITING FOR HOST"));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -12,5 +12,6 @@
 	"spawn": 16,
 	"chase_style": "lope",
 	"taser_immune": true,
-	"melee_immune": false
+	"melee_immune": false,
+	"dossier": "EVERY 21 SECONDS, THIS ENTITY ADDS RADAR STATIC FOR EIGHT SECONDS. EACH CORRUPTION HAS A 35% CHANCE TO MAKE THE RADAR COMPLETELY BLACK FOR 11 SECONDS. RADAR RETURNS AUTOMATICALLY; USE THE GAME VIEW UNTIL IT DOES."
 }

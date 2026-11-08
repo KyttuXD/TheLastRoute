@@ -18,6 +18,31 @@ pub(super) fn is_display_only(game: &Game) -> bool {
     game.remote_hunters
 }
 
+/// True while a guest has not applied the host's first snapshot (TODO 869): the world it stands in is a stand-in, so
+/// the player's actions (move, interact, use items) must not reach it. A host or solo game is never blocked. The app
+/// keeps the flag in `app::run_gate::WorldWait` and passes it in as `world_in`.
+pub(super) fn input_blocked(game: &Game, world_in: bool) -> bool {
+    is_display_only(game) && !world_in
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+    use crate::content::Content;
+    use crate::world::catalog::Catalog;
+
+    #[test]
+    fn a_guest_is_blocked_until_the_world_is_in_and_a_host_never() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let mut g = Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, "ROOM-GATE-8", 0, &content, &catalog);
+        assert!(!input_blocked(&g, false), "a host or solo game is not blocked");
+        g.remote_hunters = true;
+        assert!(input_blocked(&g, false));
+        assert!(!input_blocked(&g, true));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

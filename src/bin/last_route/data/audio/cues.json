@@ -63,6 +63,18 @@
 			{ "kind": "thump", "hz": 135, "dur": 0.09, "vol": 0.17, "delay": 0.44 }
 		]
 	},
+	"subtitle_seconds": 2.0,
+	"subtitles": {
+		"hunter_sniff": "*SNIFFING*",
+		"hunter_knock": "*KNOCKING*",
+		"locker_open": "*LOCKER OPENS*",
+		"locker_close": "*LOCKER CLOSES*",
+		"vent_open": "*VENT OPENS*",
+		"vent_close": "*VENT CLOSES*",
+		"music_box_wind": "*MUSIC BOX WINDING*",
+		"music_box_jam": "*MUSIC BOX JAMS*",
+		"chase_start": "*FOOTSTEPS CLOSE IN*"
+	},
 	"events": {
 		"locker_open": { "cue": "locker_open" },
 		"locker_close": { "cue": "locker_close" },

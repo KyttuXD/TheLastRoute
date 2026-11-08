@@ -13,8 +13,8 @@
 //!   view at the catch (CATCH_EASE).
 //! * release: ease_out_grab -- her model and bones ease back to what her clips do over GRAB_EASE_SECONDS (smoothstep).
 //!
-//! Not ported: the arm stretch (arm_stretch 1.6, a non-uniform bone scale), the camera's wall/collider clearance and the
-//! FOV widen, the carry's walk clip, the runner's own first-person body and hands.
+//! Ported since: the arm stretch (arm_stretch, a non-uniform bone scale) and the camera clearance and FOV widen maths
+//! (GrabCamera; the render hook calls pull_in and fov_widen). Not ported: the carry's walk clip, the runner's own first-person body and hands.
 
 use super::clip::{gd_slerp, Rig};
 use super::hunter::{model_space_stretched, HunterView, Output};
@@ -1175,6 +1175,77 @@ pub fn usable_camera((eye, target, up): (Vec3, Vec3, Vec3)) -> bool {
         && up.cross(look).length_squared() > 1.0e-8
 }
 
+/// The grab camera's clearance and FOV widen (`camera` in data/render/grab.json): the Godot view keeps the eye off walls
+/// and colliders and widens while the stretched arms are in front of it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GrabCamera {
+    /// Metres kept between the eye and a wall.
+    pub wall_clearance: f32,
+    /// The eye never comes closer than this to the target (her face).
+    pub min_distance: f32,
+    pub fov_widen_deg: f32,
+    /// The widen is scaled by `1 + (stretch - 1) * this`.
+    pub fov_widen_per_stretch: f32,
+    /// Metres a stretched hand stays clear of the camera ray.
+    pub arm_clearance: f32,
+}
+
+impl Default for GrabCamera {
+    fn default() -> Self {
+        GrabCamera { wall_clearance: 0.3, min_distance: 0.35, fov_widen_deg: 10.0, fov_widen_per_stretch: 1.0, arm_clearance: 0.12 }
+    }
+}
+
+impl GrabCamera {
+    pub fn parse(text: &str) -> Result<GrabCamera, String> {
+        let v: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let c = &v["camera"];
+        let num = |k: &str| {
+            c[k].as_f64().filter(|n| n.is_finite() && *n >= 0.0).map(|n| n as f32).ok_or_else(|| format!("camera.{k} is missing or negative"))
+        };
+        Ok(GrabCamera {
+            wall_clearance: num("wall_clearance")?,
+            min_distance: num("min_distance")?,
+            fov_widen_deg: num("fov_widen_deg")?,
+            fov_widen_per_stretch: num("fov_widen_per_stretch")?,
+            arm_clearance: num("arm_clearance")?,
+        })
+    }
+
+    /// The eye distance from the target when `free` metres of clear space lie along the ray: pulled in by the wall
+    /// clearance, never closer than `min_distance`, never further than `wanted`.
+    pub fn clear_distance(&self, wanted: f32, free: f32) -> f32 {
+        (free - self.wall_clearance).max(self.min_distance).min(wanted.max(self.min_distance))
+    }
+
+    /// Extra vertical FOV (degrees) for a view held through arms stretched `stretch` times (1 = not stretched, 0 widen).
+    pub fn fov_widen(&self, stretch: f32) -> f32 {
+        if stretch <= 1.0 {
+            return 0.0;
+        }
+        self.fov_widen_deg * (1.0 + (stretch - 1.0) * self.fov_widen_per_stretch) / (1.0 + (style_table().arm_stretch - 1.0) * self.fov_widen_per_stretch).max(1.0)
+    }
+
+    /// The eye moved along its ray to the target so it keeps clear of `free` metres of room; the target is unchanged.
+    pub fn pull_in(&self, eye: Vec3, target: Vec3, free: f32) -> Vec3 {
+        let ray = eye - target;
+        let wanted = ray.length();
+        if wanted < 1e-5 {
+            return eye;
+        }
+        target + ray / wanted * self.clear_distance(wanted, free)
+    }
+}
+
+/// The compiled-in grab camera settings; Standard when the table is broken.
+pub fn grab_camera() -> &'static GrabCamera {
+    static C: std::sync::OnceLock<GrabCamera> = std::sync::OnceLock::new();
+    C.get_or_init(|| {
+        let text = embedded::data_under(GRAB_TIMING_PATH).next().map(|(_, t)| t).unwrap_or("{}");
+        GrabCamera::parse(text).unwrap_or_default()
+    })
+}
+
 /// Drops the running grab and its release ease: the held hunter was not drawn this frame (culled, hidden or without a
 /// model), so its camera would be stale. The grab starts again when she is drawn.
 pub fn abandon() {
@@ -1455,5 +1526,37 @@ mod tests {
         let room = Room { ceiling: 99.0, back: 3.5, hunter_back: 99.0 };
         assert_eq!(pick_with(&table, pool.clone(), 0.3, &room), "tackle");
         assert_eq!(pick_with(&table, pool, 0.9, &room), "wrap");
+    }
+}
+
+#[cfg(test)]
+mod camera_clearance_tests {
+    use super::*;
+
+    #[test]
+    fn the_shipped_camera_data_matches_standard() {
+        let text = include_str!("../../data/render/grab.json");
+        assert_eq!(GrabCamera::parse(text).unwrap(), GrabCamera::default());
+        assert_eq!(grab_camera(), &GrabCamera::default());
+        assert!(GrabCamera::parse("{}").is_err());
+    }
+
+    #[test]
+    fn a_wall_close_behind_pulls_the_eye_in_but_never_into_her_face() {
+        let c = GrabCamera::default();
+        assert_eq!(c.clear_distance(1.0, 5.0), 1.0, "plenty of room keeps the wanted distance");
+        assert!((c.clear_distance(1.0, 0.8) - 0.5).abs() < 1e-6);
+        assert_eq!(c.clear_distance(1.0, 0.0), c.min_distance);
+        let eye = c.pull_in(vec3(0.0, 1.6, 2.0), vec3(0.0, 1.6, 0.0), 1.0);
+        assert!((eye.z - 0.7).abs() < 1e-5 && eye.y == 1.6);
+    }
+
+    #[test]
+    fn the_fov_widens_with_the_arm_stretch_and_a_data_change_matters() {
+        let c = GrabCamera::default();
+        assert_eq!(c.fov_widen(1.0), 0.0);
+        assert!(c.fov_widen(1.3) > 0.0 && c.fov_widen(1.3) < c.fov_widen(style_table().arm_stretch));
+        let wider = GrabCamera { fov_widen_deg: 20.0, ..c };
+        assert!(wider.fov_widen(1.3) > c.fov_widen(1.3));
     }
 }

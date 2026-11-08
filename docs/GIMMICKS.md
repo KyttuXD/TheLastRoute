@@ -6,7 +6,7 @@ Main files: `game/hunters/gimmicks/*.gd`, `game/hunters/ai/hunter_brain.gd`, `ga
 `game/player/player_meters.gd`, `game/main_3d.gd` (the finite floor scene, the one the port copies).
 
 Units: grid cells (1 cell = 1 m), seconds. "GC.X" means `GameConfig.X`. Difficulty ids are `relaxed`, `standard`, `hard`
-(plus `nightmare`, which the port does not need; nightmare values are listed only where the code branches on them).
+(plus `nightmare`, which is ported: `Difficulty::Nightmare` in `src/bin/last_route/config/difficulty.rs`, in the lobby row; its values are listed where the code branches on them, with the Rust data or module that holds each).
 
 Tags used below:
 - **[observed]**: read directly in the code.
@@ -338,7 +338,7 @@ Progress only accumulates while she is active (the hook does not run while inact
 **Hooks:** `after_perception`, `speed_scale`, `peek_chance`, `immune_to_capture`. Also `humming()` (presentation) and `wind()` (an interaction).
 
 **MusicBoxes clock:**
-- `left[id]` defaults to `wound_seconds()` = `MUSIC_BOX_WOUND_SECONDS[diff]`: standard **45**, hard **35**, nightmare 25. Relaxed has no key and falls back to **45**.
+- `left[id]` defaults to `wound_seconds()` = `MUSIC_BOX_WOUND_SECONDS[diff]`: standard **45**, hard **35**, nightmare 25 (ported: `data/music_box.json`). Relaxed has no key and falls back to **45**.
 - `mood(left)`: `left <= 0` is STOPPED; `left <= MUSIC_BOX_WINDDOWN_SECONDS (15)` is WINDING_DOWN; otherwise PLAYING.
 - `wind(id)` sets `left = wound_seconds`. `tick(dt)` subtracts `dt` from every box (floored at 0).
 - Winding is a hold of `MUSIC_BOX_WIND_HOLD 1.5` s on the interactable ("HOLD INTERACT // WIND MUSIC BOX").
@@ -365,7 +365,7 @@ Progress only accumulates while she is active (the hook does not run while inact
 
 `drift_home`: `state = WANDER`, `direct_chase_visible = false`, `has_last_known = false`. If there is no wander target, or it is more than 2.5 from the box: `wander_target = box_position + (1.2, 0).rotated((abs(hash(box_id)) % 628) / 100)`, then clear the path.
 
-**speed_scale:** PLAYING `GLYRA_CALM_SPEED_SCALE 0.6`; STOPPED `GLYRA_HUNT_SPEED_SCALE[diff]` (standard 1.3, hard 1.3, nightmare 1.5; relaxed falls back to 1.3); WINDING_DOWN 1.0.
+**speed_scale:** PLAYING `GLYRA_CALM_SPEED_SCALE 0.6`; STOPPED `GLYRA_HUNT_SPEED_SCALE[diff]` (standard 1.3, hard 1.3, nightmare 1.5; relaxed falls back to 1.3; nightmare ported in `hunters/gimmicks/glyra.rs`, `hunt_speed`); WINDING_DOWN 1.0.
 **peek_chance:** 0 while PLAYING, else base (.8 ambush).
 **immune_to_capture:** `mood == PLAYING`.
 **humming():** `mood == PLAYING` (HunterView3D plays a hum loop).
@@ -416,7 +416,7 @@ Consequences:
 4. `sees = brain.direct_chase_visible || shares_room(target)`.
    `shares_room`: the target is not hidden, not in the safe zone, and `room_at(her).id == room_at(player).id`, with her room non-empty. Corridors never count.
 5. If `sees`: `saw_player = true`.
-   Else if `saw_player && !tagged`: `tagged = true`, `pounce_remaining = (nightmare ? 0 : ILYRA_POUNCE_DELAY 15.0)`, `saw_player = false`.
+   Else if `saw_player && !tagged`: `tagged = true`, `pounce_remaining = (nightmare ? 0 : ILYRA_POUNCE_DELAY 15.0)` (nightmare ported: `hunters/gimmicks/ilyra.rs`, `delay_for`, tested by `shipped_data_pounces_at_once_on_nightmare_only`), `saw_player = false`.
 6. If `tagged`: `pounce_remaining -= dt`. If `<= 0`: emit `{"what":"stun","seconds":ILYRA_STUN_SECONDS (5.0)}`. main_3d sets the player `stun_timer = max(..., 5.0)` **wherever the player is**. Then `tagged = false` and `respawn_corner()` (a new random room and corner).
 
 Her state machine still runs (she may "CHASE" in place), but she never moves. Sight is x1.8, so 8.7 x 1.8 = 15.66 base before the light and difficulty factors.

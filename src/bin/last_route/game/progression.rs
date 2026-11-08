@@ -236,6 +236,98 @@ impl Progression {
     }
 }
 
+
+/// When the run saves itself (`autosave` in data/progression.json). `triggers` lists the events that save at all,
+/// `always` the ones that ignore `min_interval_s` (a pickup burst is rate limited, a quit never is).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Autosave {
+    pub triggers: Vec<String>,
+    pub always: Vec<String>,
+    pub keep_backup: bool,
+    pub store_position: bool,
+    pub min_interval_s: f32,
+}
+
+impl Default for Autosave {
+    fn default() -> Autosave {
+        let s = |a: &[&str]| a.iter().map(|x| x.to_string()).collect();
+        Autosave {
+            triggers: s(&["boundary", "pause_quit", "pickup", "safe_room"]),
+            always: s(&["boundary", "pause_quit", "safe_room"]),
+            keep_backup: true,
+            store_position: true,
+            min_interval_s: 5.0,
+        }
+    }
+}
+
+impl Autosave {
+    /// Reads the root of progression.json; a missing section keeps the defaults.
+    pub fn parse(root: &Value) -> Autosave {
+        let d = Autosave::default();
+        let a = &root["autosave"];
+        let list = |k: &str, dv: Vec<String>| {
+            a[k].as_array().map(|x| x.iter().filter_map(|s| s.as_str().map(String::from)).collect()).unwrap_or(dv)
+        };
+        Autosave {
+            triggers: list("triggers", d.triggers),
+            always: list("always", d.always),
+            keep_backup: a["keep_backup"].as_bool().unwrap_or(d.keep_backup),
+            store_position: a["store_position"].as_bool().unwrap_or(d.store_position),
+            min_interval_s: a["min_interval_s"].as_f64().filter(|n| n.is_finite() && *n >= 0.0).map(|n| n as f32).unwrap_or(d.min_interval_s),
+        }
+    }
+
+    pub fn load() -> &'static Autosave {
+        static A: OnceLock<Autosave> = OnceLock::new();
+        A.get_or_init(|| {
+            crate::content::embedded::data_under("progression.json")
+                .next()
+                .and_then(|(_, text)| serde_json::from_str::<Value>(text).ok())
+                .map(|v| Autosave::parse(&v))
+                .unwrap_or_default()
+        })
+    }
+
+    /// Whether `trigger` saves now, given the seconds since the last save.
+    pub fn due(&self, trigger: &str, since_last_s: f32) -> bool {
+        if !self.triggers.iter().any(|t| t == trigger) {
+            return false;
+        }
+        self.always.iter().any(|t| t == trigger) || since_last_s >= self.min_interval_s
+    }
+}
+
+#[cfg(test)]
+mod autosave_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn the_embedded_autosave_matches_the_defaults() {
+        let (_, text) = crate::content::embedded::data_under("progression.json").next().unwrap();
+        let v: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(Autosave::parse(&v), Autosave::default());
+        assert_eq!(Autosave::load(), &Autosave::default());
+    }
+
+    #[test]
+    fn pickups_are_rate_limited_but_quit_and_boundary_always_save() {
+        let a = Autosave::load();
+        assert!(!a.due("pickup", 0.5));
+        assert!(a.due("pickup", a.min_interval_s));
+        assert!(a.due("pause_quit", 0.0) && a.due("boundary", 0.0));
+        assert!(!a.due("unknown", 100.0));
+    }
+
+    #[test]
+    fn changed_data_changes_behaviour() {
+        let a = Autosave::parse(&json!({"autosave": {"triggers": ["pickup"], "always": [], "min_interval_s": 30.0}}));
+        assert!(!a.due("pause_quit", 100.0));
+        assert!(!a.due("pickup", 29.0) && a.due("pickup", 30.0));
+        assert_eq!(Autosave::parse(&json!({})), Autosave::default());
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

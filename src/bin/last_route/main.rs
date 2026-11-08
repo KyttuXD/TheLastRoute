@@ -117,6 +117,32 @@ fn stress_config() -> Option<app::stress::Config> {
     Some(app::stress::Config { seconds, log, scenario, vsync, fps_limit })
 }
 
+/// `--capture DIR [--capture-fps N]` (app/capture.rs, docs/FLYTHROUGH.md): one PNG per frame at a fixed 1/N s step.
+/// Exits the process on a bad value, before any window exists.
+fn capture_config() -> Option<app::capture::Capture> {
+    if !std::env::args().any(|a| a == "--capture") {
+        return None;
+    }
+    let dir = match arg("--capture").filter(|d| !d.starts_with("--")) {
+        Some(d) => d,
+        None => {
+            eprintln!("--capture needs a folder to write the frames to");
+            std::process::exit(2);
+        }
+    };
+    let fps = match arg("--capture-fps") {
+        None => None,
+        Some(v) => match v.parse::<u32>() {
+            Ok(n) if n > 0 => Some(n),
+            _ => {
+                eprintln!("--capture-fps needs a whole number of frames per second, not {v}");
+                std::process::exit(2);
+            }
+        },
+    };
+    Some(app::capture::Capture::new(&dir, fps))
+}
+
 /// What `#[macroquad::main(window_conf)]` expanded to, with the windowless modes picked first
 /// (they never create a window, a GPU context or an audio device).
 fn main() {
@@ -127,27 +153,40 @@ fn main() {
         app::platform::attach_console();
     }
     app::log::init();
+    // `--validate-pack DIR`: load a pack folder the way the game does and print every problem; no window opens
+    if std::env::args().any(|a| a == "--validate-pack") {
+        let code = match arg("--validate-pack").filter(|d| !d.starts_with("--")) {
+            Some(dir) => content::packs::validate_cli(&dir),
+            None => {
+                println!("usage: last_route --validate-pack <pack folder>");
+                2
+            }
+        };
+        app::log::flush();
+        std::process::exit(code);
+    }
     if let Some(code) = headless::dispatch() {
         app::log::flush();
         std::process::exit(code);
     }
     let stress = stress_config();
+    let capture = capture_config();
     if headless::wants_agent_window() {
         macroquad::Window::from_config(window_conf(None), headless::window::run());
         return;
     }
-    macroquad::Window::from_config(window_conf(stress.as_ref().map(|c| c.vsync)), amain(stress));
+    macroquad::Window::from_config(window_conf(stress.as_ref().map(|c| c.vsync)), amain(stress, capture));
 }
 
-async fn amain(stress: Option<app::stress::Config>) {
+async fn amain(stress: Option<app::stress::Config>, capture: Option<app::capture::Capture>) {
     if let Some(path) = arg("--self-test") {
         app::selftest::run(&path).await;
         return;
     }
-    // a stress run never looks for an update, so nothing downloads or prompts while it measures
+    // a stress run or a movie capture never looks for an update, so nothing downloads or prompts while it runs
     let mut update = None;
-    if arg("--screenshot").is_none() && stress.is_none() {
+    if arg("--screenshot").is_none() && stress.is_none() && capture.is_none() {
         update = Some(app::updater::start_check());
     }
-    app::run(arg("--screenshot"), stress, update).await;
+    app::run(arg("--screenshot"), stress, update, capture).await;
 }

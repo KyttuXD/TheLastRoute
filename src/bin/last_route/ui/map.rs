@@ -17,6 +17,7 @@
 //! (`hunter_mark`): the capital letter of an A to Z hunter, the colour of a void hunter.
 
 mod hunter_mark;
+mod hunter_view;
 pub mod look;
 
 use super::style::*;
@@ -24,7 +25,8 @@ use crate::app::assets::Assets;
 use crate::game::endless::{FullMapFeed, MapChunk};
 use crate::game::Game;
 use crate::hunters::brain::Brain;
-use super::markers::{self, Marker};
+use super::markers::Marker;
+use super::{radar_ping, teammate_markers};
 use crate::world::infinite::CHUNK;
 use macroquad::prelude::*;
 
@@ -226,6 +228,12 @@ fn draw_floor(g: &Game, a: &Assets, xf: Xf, cells: (i32, i32, i32, i32), full: b
     let placed = hunter_marks(g, |h| inside(h.pos).then(|| xf.at(h.pos)), radius);
     hunter_mark::draw(a, &placed, full);
     porcelle_rings(g, |h| inside(h.pos).then(|| xf.at(h.pos)), radius, cell);
+    // admin HUNTER VIEW: the followed hunter's route, sight cone and hearing circle (published by the admin each frame)
+    crate::ui::admin::hunter_view::with_frame(|hv| {
+        if let Some(s) = hv.view.as_ref() {
+            hunter_view::draw(s, |p| inside(p).then(|| xf.at(p)), cell, hv.paths);
+        }
+    });
     draw_runner_pins(xf, cells, (0, 0), marks, g.fac.level, full);
     let q = xf.at(g.p.pos);
     runner_wedge(g, vec2(q.0, q.1), cell, full);
@@ -311,9 +319,9 @@ pub fn runner_pin_at(xf: Xf, origin: (i32, i32), at: (f32, f32)) -> (f32, f32) {
 
 /// Draws the players and bots as arrows on a map (Godot `_draw_remote_player`): each along its facing, ringed in ink, in its
 /// own colour. Radius is the larger of 3.4 (the full map) or 3.0 (the minimap) and half a cell, as Godot takes it. `marks`
-/// are the markers from [`markers::remote_markers`] and [`markers::bot_markers`], `origin` moves them into the frame of `xf`
+/// are the markers from [`super::markers::remote_markers`] and [`super::markers::bot_markers`], `origin` moves them into the frame of `xf`
 /// and `cells` (x, y, w, h) is what is shown, in that same frame. A marker on `shown_level` is drawn whole; one on another
-/// level is dimmed on the full map and left off the minimap ([`markers::pin_alpha`]). A marker outside `cells` is not drawn;
+/// level is dimmed on both maps (never dropped) ([`teammate_markers::pin_strength`], also dimmed by the sample's age; a downed teammate's pin is ringed). A marker outside `cells` is not drawn;
 /// Godot's border arrows are not ported yet.
 pub fn draw_runner_pins(
     xf: Xf,
@@ -329,8 +337,9 @@ pub fn draw_runner_pins(
     let radius = floor.max(cell * 0.5);
     let len = radius * 1.55;
     let half = radius * 1.05;
+    let tm = teammate_markers::rules();
     for r in marks {
-        let Some(alpha_k) = markers::pin_alpha(r.level, shown_level, full) else { continue };
+        let Some(alpha_k) = teammate_markers::pin_strength(r.level, shown_level, full, r.age_s, tm) else { continue };
         let c = runner_cell(origin, (r.x, r.y));
         let inside = c.0 >= vx as f32
             && c.1 >= vy as f32
@@ -356,7 +365,92 @@ pub fn draw_runner_pins(
         };
         arrow(1.1, alpha(TEAMMATE_INK, TEAMMATE_INK.a * alpha_k));
         arrow(0.0, alpha(r.colour, r.colour.a * alpha_k));
+        if r.downed {
+            // a downed teammate's pin pulses a ring (data/hud/teammate_markers.json down_ring_*)
+            let (ring_r, ring_a) = teammate_markers::down_ring(get_time() as f32, false, tm);
+            ring_in_design((at.x, at.y), ring_r.max(radius), ring_a * alpha_k, (cell * 0.10).max(1.0), Color::new(1.0, 0.35, 0.3, 1.0));
+        }
     }
+    draw_map_extras(xf, cells, origin, shown_level, full);
+}
+
+/// A ring given in design units, drawn through the pixel-space ring of the radar ping.
+fn ring_in_design(at: (f32, f32), radius: f32, alpha: f32, thickness: f32, colour: Color) {
+    let u = unit();
+    let ring = radar_ping::Ring { radius: radius * u, alpha, thickness: thickness * u };
+    radar_ping::draw_ring((at.0 * u, at.1 * u), &ring, colour);
+}
+
+/// A fading quick-chat ping on the maps: where the poster stood, its floor and the seconds since it was sent.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MapPing {
+    pub at: (f32, f32),
+    pub level: i32,
+    pub age_s: f32,
+    pub colour: Color,
+}
+
+/// A player's waypoint pin on the maps (the runner's own is drawn by `draw_floor`; these are the teammates').
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MapPin {
+    pub at: (f32, f32),
+    pub level: i32,
+    pub colour: Color,
+}
+
+/// What the maps draw beyond the pins of [`draw_runner_pins`]. The app sets it each frame with [`set_extras`], in the same
+/// frame as the markers' x and y (the window), and the pin pass draws it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MapExtras {
+    pub pings: Vec<MapPing>,
+    pub waypoints: Vec<MapPin>,
+}
+
+thread_local! {
+    static EXTRAS: std::cell::RefCell<MapExtras> = std::cell::RefCell::new(MapExtras::default());
+}
+
+/// Replaces the pings and waypoint pins the maps draw this frame.
+pub fn set_extras(extras: MapExtras) {
+    EXTRAS.with(|e| *e.borrow_mut() = extras);
+}
+
+/// The ring a ping of `age_s` seconds draws: radius (cells) growing from half to full over its life, and an alpha that
+/// fades to zero; None once it is over (`ping_seconds` in the data).
+pub fn ping_look(age_s: f32, r: &teammate_markers::Rules) -> Option<(f32, f32)> {
+    if !age_s.is_finite() || age_s < 0.0 || r.ping_seconds <= 0.0 || age_s >= r.ping_seconds {
+        return None;
+    }
+    let k = age_s / r.ping_seconds;
+    Some((r.ping_radius * (0.5 + 0.5 * k), 1.0 - k))
+}
+
+fn draw_map_extras(xf: Xf, cells: (i32, i32, i32, i32), origin: (i32, i32), shown_level: i32, full: bool) {
+    let (vx, vy, vw, vh) = cells;
+    let inside = |c: (f32, f32)| c.0 >= vx as f32 && c.1 >= vy as f32 && c.0 < (vx + vw) as f32 && c.1 < (vy + vh) as f32;
+    let tm = teammate_markers::rules();
+    EXTRAS.with(|e| {
+        let e = e.borrow();
+        for w in &e.waypoints {
+            let c = runner_cell(origin, w.at);
+            let Some(k) = teammate_markers::pin_strength(w.level, shown_level, full, 0.0, tm) else { continue };
+            if !inside(c) {
+                continue;
+            }
+            let p = xf.at(c);
+            circle(vec2(p.0, p.1), (xf.cell * 0.5).max(1.5), alpha(w.colour, w.colour.a * k * tm.waypoint.pin_alpha));
+        }
+        for ping in &e.pings {
+            let c = runner_cell(origin, ping.at);
+            let Some(k) = teammate_markers::pin_strength(ping.level, shown_level, full, 0.0, tm) else { continue };
+            let Some((cells_r, a)) = ping_look(ping.age_s, tm) else { continue };
+            if !inside(c) {
+                continue;
+            }
+            let p = xf.at(c);
+            ring_in_design(p, (cells_r * xf.cell).max(3.0), a * k, (xf.cell * 0.12).max(1.0), ping.colour);
+        }
+    });
 }
 
 /// The fit of the discovered chunks on a plan: the discovered area in absolute cells, the size of one cell in the plan, and
@@ -1205,5 +1299,23 @@ mod tests {
         assert_ne!(water, panel);
         assert!(water.b > water.r && water.b > panel.b, "bluer than the floor: {water:?}");
         assert_eq!(water.a, panel.a);
+    }
+
+    #[test]
+    fn a_chat_ping_grows_and_fades_then_ends() {
+        let r = teammate_markers::Rules::default();
+        let (r0, a0) = ping_look(0.0, &r).expect("alive at once");
+        let (r1, a1) = ping_look(r.ping_seconds * 0.5, &r).expect("alive halfway");
+        assert!(r1 > r0 && a1 < a0);
+        assert_eq!(ping_look(r.ping_seconds, &r), None);
+        assert_eq!(ping_look(-1.0, &r), None);
+    }
+
+    #[test]
+    fn the_extras_are_replaced_each_frame() {
+        set_extras(MapExtras { pings: vec![MapPing { at: (1.0, 2.0), level: 0, age_s: 0.0, colour: WHITE }], waypoints: vec![] });
+        assert_eq!(EXTRAS.with(|e| e.borrow().pings.len()), 1);
+        set_extras(MapExtras::default());
+        assert_eq!(EXTRAS.with(|e| e.borrow().pings.len()), 0);
     }
 }

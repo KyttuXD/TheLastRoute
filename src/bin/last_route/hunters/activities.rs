@@ -25,10 +25,12 @@ pub enum PoiKind {
     SafeZone,
     LitProp,
     NoiseSpot,
+    /// A corridor cell with three or more open sides (hunters/idle_life.rs builds these near a hunter).
+    Junction,
 }
 
 impl PoiKind {
-    pub const ALL: [PoiKind; 8] = [
+    pub const ALL: [PoiKind; 9] = [
         PoiKind::RoomCentre,
         PoiKind::Locker,
         PoiKind::Relay,
@@ -37,6 +39,7 @@ impl PoiKind {
         PoiKind::SafeZone,
         PoiKind::LitProp,
         PoiKind::NoiseSpot,
+        PoiKind::Junction,
     ];
 
     pub fn id(self) -> &'static str {
@@ -49,6 +52,7 @@ impl PoiKind {
             PoiKind::SafeZone => "safe_zone",
             PoiKind::LitProp => "lit_prop",
             PoiKind::NoiseSpot => "noise_spot",
+            PoiKind::Junction => "junction",
         }
     }
 
@@ -67,10 +71,14 @@ pub enum Activity {
     Listen,
     Knock,
     Push,
+    /// Idle life (hunters/idle_life.rs). Appended last so the wire indices of the older ones stay.
+    Fidget,
+    Pace,
+    CornerPeek,
 }
 
 impl Activity {
-    pub const ALL: [Activity; 7] = [
+    pub const ALL: [Activity; 10] = [
         Activity::InspectLocker,
         Activity::LookAround,
         Activity::Sniff,
@@ -78,6 +86,9 @@ impl Activity {
         Activity::Listen,
         Activity::Knock,
         Activity::Push,
+        Activity::Fidget,
+        Activity::Pace,
+        Activity::CornerPeek,
     ];
 
     /// The wire / data name (upper case, as the other state names are).
@@ -90,6 +101,9 @@ impl Activity {
             Activity::Listen => "LISTEN",
             Activity::Knock => "KNOCK",
             Activity::Push => "PUSH",
+            Activity::Fidget => "FIDGET",
+            Activity::Pace => "PACE",
+            Activity::CornerPeek => "CORNER_PEEK",
         }
     }
 
@@ -369,13 +383,18 @@ impl Rules {
     /// The activity done at `poi`: a weighted draw among the kind's list that can happen here (a locker needs a
     /// locker, a knock or a push needs a shut door).
     pub fn pick_activity(&self, poi: &Poi, door_shut: bool, roll: f64) -> Activity {
+        self.pick_activity_scaled(poi, door_shut, roll, |_| 1.0)
+    }
+
+    /// `pick_activity` with each activity's weight scaled (the hunter's personality, hunters/idle_life.rs).
+    pub fn pick_activity_scaled(&self, poi: &Poi, door_shut: bool, roll: f64, scale: impl Fn(Activity) -> f32) -> Activity {
         let Some(k) = self.kinds.get(&poi.kind) else { return Activity::LookAround };
         let ok = |a: Activity| match a {
             Activity::InspectLocker => poi.locker.is_some(),
             Activity::Knock | Activity::Push => poi.door.is_some() && door_shut,
             _ => true,
         };
-        let list: Vec<(Activity, f32)> = k.activities.iter().copied().filter(|(a, w)| *w > 0.0 && ok(*a)).collect();
+        let list: Vec<(Activity, f32)> = k.activities.iter().map(|(a, w)| (*a, *w * scale(*a))).filter(|(a, w)| *w > 0.0 && ok(*a)).collect();
         let total: f32 = list.iter().map(|(_, w)| *w).sum();
         if list.is_empty() || total <= 0.0 {
             return Activity::LookAround;
@@ -403,7 +422,7 @@ impl Rules {
     }
 }
 
-fn region_of(fac: &Facility, p: (f32, f32), room: Option<usize>) -> String {
+pub(super) fn region_of(fac: &Facility, p: (f32, f32), room: Option<usize>) -> String {
     if let Some(r) = room.and_then(|i| fac.rooms.get(i)) {
         if !r.region.is_empty() {
             return r.region.clone();
@@ -680,6 +699,21 @@ mod tests {
         assert_eq!(r.pick_activity(&l, true, 0.0), Activity::LookAround);
         l.locker = Some(0);
         assert_eq!(r.pick_activity(&l, true, 0.0), Activity::InspectLocker);
+    }
+
+    #[test]
+    fn scaled_picks_follow_the_scale_and_the_new_activities_have_wire_indices_after_the_old() {
+        let mut r = Rules::default();
+        r.kinds.insert(
+            PoiKind::RoomCentre,
+            KindRule { weight: 1.0, activities: vec![(Activity::LookAround, 1.0), (Activity::Fidget, 1.0)] },
+        );
+        let p = poi(PoiKind::RoomCentre, 5.5);
+        assert_eq!(r.pick_activity_scaled(&p, false, 0.9, |a| if a == Activity::Fidget { 0.0 } else { 1.0 }), Activity::LookAround);
+        assert_eq!(r.pick_activity_scaled(&p, false, 0.1, |a| if a == Activity::LookAround { 0.0 } else { 1.0 }), Activity::Fidget);
+        assert_eq!(Activity::Push.index(), 6);
+        assert!(Activity::Fidget.index() > Activity::Push.index());
+        assert_eq!(Activity::from_name("corner_peek"), Some(Activity::CornerPeek));
     }
 
     #[test]

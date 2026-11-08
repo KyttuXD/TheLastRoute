@@ -1,5 +1,5 @@
 //! F2 saves the game window as it is on screen, from any screen (screenshot.gd): a PNG named for the
-//! local date and time in the user folder's `screenshots` directory (`KYTTU_YYYY-MM-DD_HH-MM-SS.png`; a
+//! UTC date and time in the user folder's `screenshots` directory (`KYTTU_YYYY-MM-DD_HH-MM-SS.png`; a
 //! second press in the same second gets `_2`, `_3` ...). A short line under the bottom-left corner names
 //! the file once it is saved. The loop draws that line after the capture, so a picture never shows it.
 
@@ -101,7 +101,7 @@ fn unused_path(dir: &Path, stem: &str) -> PathBuf {
     }
 }
 
-/// A local date and time, as the file name is written.
+/// A UTC date and time, as the file name is written.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Stamp {
     year: u16,
@@ -119,28 +119,7 @@ fn file_stem(s: Stamp) -> String {
     )
 }
 
-/// The local time (GetLocalTime).
-#[cfg(windows)]
-fn stamp_now() -> Stamp {
-    // SYSTEMTIME: wYear, wMonth, wDayOfWeek, wDay, wHour, wMinute, wSecond, wMilliseconds
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn GetLocalTime(time: *mut [u16; 8]);
-    }
-    let mut t = [0u16; 8];
-    unsafe { GetLocalTime(&mut t) };
-    Stamp {
-        year: t[0],
-        month: t[1],
-        day: t[3],
-        hour: t[4],
-        minute: t[5],
-        second: t[6],
-    }
-}
-
-/// The UTC time: the standard library has no time zone, and this build runs on Windows.
-#[cfg(not(windows))]
+/// The UTC time, on every platform: screenshot file names stay UTC and never follow the player's time zone.
 fn stamp_now() -> Stamp {
     let secs = crate::shared::clock::SystemTime::now()
         .duration_since(crate::shared::clock::UNIX_EPOCH)
@@ -150,7 +129,6 @@ fn stamp_now() -> Stamp {
 }
 
 /// The UTC date and time of a Unix time (days to civil dates, Howard Hinnant's algorithm).
-#[cfg(any(test, not(windows)))]
 fn stamp_from_unix(secs: i64) -> Stamp {
     let z = secs.div_euclid(86_400) + 719_468;
     let era = z.div_euclid(146_097);

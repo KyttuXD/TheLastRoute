@@ -1,0 +1,20 @@
+{
+	"schema": "lr.hall_shapes/1",
+	"_note": "Hall shapes beyond straight corridors. Off by default so the Godot parity layouts stay exact. When enabled, alcoves (dead-end niches) and widened junction corners are carved into level-0 hall walls (world/route/grid.rs carve_hall_shapes). A region entry overrides single keys of default.",
+	"enabled": false,
+	"default": {
+		"alcove_chance": 0.12,
+		"alcove_depth": 2,
+		"alcove_width": 3,
+		"alcove_spacing": 6,
+		"max_alcoves": 6,
+		"widen_junctions": true
+	},
+	"regions": {
+		"maze": {"alcove_chance": 0.08},
+		"mansion": {"alcove_chance": 0.2, "alcove_depth": 3},
+		"gothic": {"alcove_chance": 0.2, "alcove_depth": 3, "alcove_width": 3},
+		"mall": {"alcove_chance": 0.05, "widen_junctions": true},
+		"hotel": {"alcove_chance": 0.1}
+	}
+}

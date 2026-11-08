@@ -1,0 +1,8 @@
+{
+	"schema": "lr.pack_limits/1",
+	"max_files": 512,
+	"max_file_bytes": 16777216,
+	"max_pack_bytes": 134217728,
+	"max_total_bytes": 268435456,
+	"max_listed": 4096
+}

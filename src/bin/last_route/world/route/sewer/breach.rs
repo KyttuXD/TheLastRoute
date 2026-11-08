@@ -137,3 +137,68 @@ fn cell_json(c: V2) -> Value {
 fn cells_json(cells: &[V2]) -> Value {
     Value::Array(cells.iter().map(|c| cell_json(*c)).collect())
 }
+
+#[cfg(test)]
+mod flood_tests {
+    use super::*;
+    use crate::world::route::sewer::core::{chunk_base, Grid, Inputs, DRY, N, SOLID};
+    use crate::world::route::sewer::seals::{flood_cells, FLOOD_MAX_CELLS, FLOOD_REACH};
+
+    /// Godot sewer_route_generator.gd:910-911.
+    #[test]
+    fn flood_reach_is_twelve_and_the_cap_is_one_hundred_sixty() {
+        assert_eq!(FLOOD_REACH, 12);
+        assert_eq!(FLOOD_MAX_CELLS, 160);
+    }
+
+    /// A one-cell-wide corridor stops at the reach, one cell per step, nearest first.
+    #[test]
+    fn a_corridor_floods_exactly_the_reach() {
+        let mut g: Grid = [[SOLID; N]; N];
+        for x in 0..N {
+            g[5][x] = DRY;
+        }
+        let (cells, steps) = flood_cells(&g, &[V2::new(0, 5)]);
+        assert_eq!(cells.len(), FLOOD_REACH as usize + 1);
+        assert_eq!(steps.iter().copied().max(), Some(FLOOD_REACH));
+        assert_eq!(cells.last().copied(), Some(V2::new(FLOOD_REACH, 5)));
+        assert!(steps.windows(2).all(|w| w[0] <= w[1]));
+    }
+
+    /// An open floor holds more than the cap inside the reach, so the cap is what stops the flood.
+    #[test]
+    fn an_open_floor_floods_exactly_the_cap() {
+        let g: Grid = [[DRY; N]; N];
+        let (cells, steps) = flood_cells(&g, &[V2::new(22, 22)]);
+        assert_eq!(cells.len(), FLOOD_MAX_CELLS);
+        assert_eq!(steps.len(), cells.len());
+        assert!(steps.iter().all(|s| *s <= FLOOD_REACH));
+        assert!(steps.windows(2).all(|w| w[0] <= w[1]), "nearest first");
+        let unique: std::collections::HashSet<_> = cells.iter().collect();
+        assert_eq!(unique.len(), cells.len());
+    }
+
+    /// Every pipe of generated sewer chunks respects both limits.
+    #[test]
+    fn generated_pipe_floods_stay_inside_reach_and_cap() {
+        let mut pipes = 0;
+        for world in ["flood-a", "flood-b"] {
+            for level in [-1, -2] {
+                for x in -6..6 {
+                    for z in -6..6 {
+                        let Some(c) = chunk_base(Coord::new(x, level, z), &Inputs { world }) else { continue };
+                        for spec in &c.breakables {
+                            let Extras::Pipe(p) = &spec.extras else { continue };
+                            pipes += 1;
+                            assert!(p.flood_cells.len() <= FLOOD_MAX_CELLS, "{}", spec.id);
+                            assert_eq!(p.flood_cells.len(), p.flood_steps.len(), "{}", spec.id);
+                            assert!(p.flood_steps.iter().all(|s| (0..=FLOOD_REACH).contains(s)), "{}", spec.id);
+                            assert!(p.flood_steps.windows(2).all(|w| w[0] <= w[1]), "{}", spec.id);
+                        }
+                    }
+                }
+            }
+        }
+        assert!(pipes > 0, "no pipe in the scanned chunks");
+    }
+}

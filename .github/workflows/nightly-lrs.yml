@@ -23,9 +23,21 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
+        id: cache
         with:
           key: lrs-windows
-      - run: cargo build --release --bin lr_story
+      - name: Build times header
+        shell: bash
+        run: |
+          printf '### Build times (lr_story ${{ runner.os }})\n\n| step | os | cache | elapsed |\n|---|---|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: cargo build --release --bin lr_story
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        run: |
+          t0=$(date +%s); date -u +"start %FT%TZ"
+          trap 'echo "| cargo build --release --bin lr_story | ${{ runner.os }} | cache-hit: ${CACHE_HIT:-n/a} | $(( $(date +%s) - t0 ))s |" >> "$GITHUB_STEP_SUMMARY"; date -u +"end   %FT%TZ"' EXIT
+          cargo build --release --bin lr_story
       - name: Publish to nightly-lrs
         shell: bash
         env:
@@ -43,10 +55,22 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
+        id: cache
         with:
           key: lrs-linux
       - run: sudo apt-get update && sudo apt-get install -y pkg-config libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev
-      - run: cargo build --release --bin lr_story
+      - name: Build times header
+        shell: bash
+        run: |
+          printf '### Build times (lr_story ${{ runner.os }})\n\n| step | os | cache | elapsed |\n|---|---|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: cargo build --release --bin lr_story
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        run: |
+          t0=$(date +%s); date -u +"start %FT%TZ"
+          trap 'echo "| cargo build --release --bin lr_story | ${{ runner.os }} | cache-hit: ${CACHE_HIT:-n/a} | $(( $(date +%s) - t0 ))s |" >> "$GITHUB_STEP_SUMMARY"; date -u +"end   %FT%TZ"' EXIT
+          cargo build --release --bin lr_story
       - name: Publish to nightly-lrs
         env:
           GH_TOKEN: ${{ github.token }}
@@ -70,9 +94,21 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
+        id: cache
         with:
           key: lrs-macos-${{ matrix.arch }}
-      - run: cargo build --release --bin lr_story
+      - name: Build times header
+        shell: bash
+        run: |
+          printf '### Build times (lr_story ${{ runner.os }})\n\n| step | os | cache | elapsed |\n|---|---|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: cargo build --release --bin lr_story
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        run: |
+          t0=$(date +%s); date -u +"start %FT%TZ"
+          trap 'echo "| cargo build --release --bin lr_story | ${{ runner.os }} | cache-hit: ${CACHE_HIT:-n/a} | $(( $(date +%s) - t0 ))s |" >> "$GITHUB_STEP_SUMMARY"; date -u +"end   %FT%TZ"' EXIT
+          cargo build --release --bin lr_story
       - name: Publish to nightly-lrs
         env:
           GH_TOKEN: ${{ github.token }}

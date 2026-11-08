@@ -1,0 +1,24 @@
+{
+  "schema": "lr.area_lights/1",
+  "default": { "color": "ffffff", "energy": 1.0 },
+  "roles": {
+    "restaurant_dining": { "color": "ffc88a", "energy": 1.0 },
+    "family_dining": { "color": "ffd2a0", "energy": 1.0 },
+    "dining_room": { "color": "ffd2a0", "energy": 1.0 },
+    "kitchen": { "color": "f4f0e0", "energy": 1.1 },
+    "waiting_room": { "color": "dcf0ee", "energy": 1.0 },
+    "operating_theatre": { "color": "e6f6ff", "energy": 1.15 },
+    "morgue": { "color": "c4dcec", "energy": 0.9 },
+    "decon": { "color": "d6ecf4", "energy": 1.0 },
+    "storage": { "color": "e8dcc0", "energy": 0.85 },
+    "supply_closet": { "color": "e8dcc0", "energy": 0.85 },
+    "cold_storage": { "color": "bcd8f0", "energy": 0.9 },
+    "server_hall": { "color": "a8c4ff", "energy": 0.9 },
+    "bedroom": { "color": "ffcf9a", "energy": 0.9 },
+    "guest_room": { "color": "ffd6a8", "energy": 0.95 },
+    "chapel": { "color": "ffb878", "energy": 0.85 },
+    "crypt": { "color": "9cb0d8", "energy": 0.75 },
+    "forge": { "color": "ff9a5a", "energy": 1.1 },
+    "thermal_chamber": { "color": "ff8f50", "energy": 1.05 }
+  }
+}

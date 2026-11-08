@@ -447,4 +447,53 @@ mod tests {
         check_all(&seeds);
             });
     }
+
+    /// Godot sewer_route_generator.gd:27: `SEWER_EXTRA_RELAY_CHANCE := .55`.
+    #[test]
+    fn extra_relay_chance_is_godots_point_five_five() {
+        assert_eq!(SEWER_EXTRA_RELAY_CHANCE, 0.55);
+    }
+
+    /// The sewer pickup roll uses `data/loot/sewer.json` (Godot line 662): only relays, batteries and the table's tools
+    /// come up, never a coin, backpack or aid item, and every tool is one the sewer table lists.
+    #[test]
+    fn sewer_pickups_roll_the_sewer_table() {
+        use crate::world::route::layout::Coord;
+        use crate::world::route::sewer::core::{chunk as played, Inputs};
+        assert_eq!(loot::table_for("sewer").id, "sewer");
+        let (mut tools, mut seen) = (0, 0);
+        for x in -6..6 {
+            for z in -6..6 {
+                for level in [-1, -2] {
+                    let Some(c) = played(Coord::new(x, level, z), &Inputs { world: "sewer-table" }) else { continue };
+                    for p in chunk_pickups("sewer-table", &c, true) {
+                        seen += 1;
+                        assert!(["relay", "battery", "tool"].contains(&p.kind), "{} rolled {}", p.id, p.kind);
+                        if p.kind == "tool" {
+                            tools += 1;
+                            assert!(
+                                loot::SEWER.tools.iter().any(|t| t.item == p.item) || ROOM_TOOLS.contains(&p.item),
+                                "{} holds {}",
+                                p.id,
+                                p.item
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(seen > 50 && tools > 0, "scanned {seen} pickups, {tools} tools");
+    }
+
+    /// A table with other rolls changes the plan: the draw follows the table, not a constant in this file.
+    #[test]
+    fn a_table_with_a_sure_tool_roll_always_plans_a_tool() {
+        use crate::world::rng::Rng;
+        let sure = loot::Table { rolls: &[loot::Roll { kind: "tool", chance: 2.0 }], ..loot::SEWER };
+        let none = loot::Table { rolls: &[], ..loot::SEWER };
+        for seed in 0..20 {
+            assert_eq!(loot::roll(&sure, &mut Rng::new(&format!("s{seed}"))), vec!["tool"]);
+            assert!(loot::roll(&none, &mut Rng::new(&format!("s{seed}"))).is_empty());
+        }
+    }
 }

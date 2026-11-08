@@ -12,5 +12,6 @@
 	"spawn": 16,
 	"chase_style": "reach2",
 	"taser_immune": true,
-	"melee_immune": false
+	"melee_immune": false,
+	"dossier": "SHE NEVER ATTACKS AND CANNOT CATCH YOU. EVERY 11 SECONDS SHE HAS A 60% CHANCE TO MAKE A FEW FAINT FOOTSTEPS SOUND SOMEWHERE CLOSE. THEY ARE ONLY A SOUND: LISTEN, THEN KEEP GOING."
 }

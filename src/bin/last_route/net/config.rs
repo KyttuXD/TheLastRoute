@@ -174,6 +174,19 @@ impl BackendConfig {
         !self.offline && (self.account_transport_is_protected(debug_build) || self.is_primary())
     }
 
+    /// TODO 1075: the origin may be used at all. `https://` always; plain `http://` only for loopback with an exact host
+    /// boundary, or the TEST instance in a debug build. A release build refuses every other http origin.
+    pub fn origin_transport_ok(&self, debug_build: bool) -> bool {
+        let origin = self.origin();
+        if origin.starts_with("https://") {
+            return true;
+        }
+        let loopback = ["http://127.0.0.1", "http://localhost", "http://[::1]"]
+            .iter()
+            .any(|p| origin == *p || origin.strip_prefix(p).is_some_and(|rest| rest.starts_with(':')));
+        loopback || (debug_build && TEST_BASE_URLS.contains(&origin.as_str()))
+    }
+
     /// `account_transport_warning`.
     pub fn account_transport_warning(&self, debug_build: bool) -> &'static str {
         if self.accounts_available(debug_build) {
@@ -247,5 +260,25 @@ mod tests {
         assert!(c.offline);
         assert_eq!(c.profile, "abc");
         assert_eq!(c.profile_file("last_route_account.cfg"), "last_route_account_abc.cfg");
+    }
+}
+
+#[cfg(test)]
+mod transport_policy_tests {
+    use super::*;
+
+    #[test]
+    fn release_refuses_http_off_loopback() {
+        let mut c = BackendConfig::primary();
+        assert!(c.origin_transport_ok(false), "the primary origin is https");
+        c.base_url = "http://10.0.0.5:8105".into();
+        assert!(!c.origin_transport_ok(false));
+        assert!(!c.origin_transport_ok(true));
+        c.base_url = "http://localhost.example:1".into();
+        assert!(!c.origin_transport_ok(true), "exact host boundary");
+        assert!(BackendConfig::loopback(81).origin_transport_ok(false));
+        c.base_url = TEST_BASE_URLS[0].into();
+        assert!(!c.origin_transport_ok(false), "release refuses the http TEST instance");
+        assert!(c.origin_transport_ok(true), "debug build exception");
     }
 }

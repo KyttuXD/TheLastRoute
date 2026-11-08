@@ -414,3 +414,12 @@ pub fn deployment_ports(env: &HashMap<String, String>) -> (u16, u16) {
     let relay = if valid("LASTROUTE_RELAY_PORT") != 0 { valid("LASTROUTE_RELAY_PORT") } else { 1105 };
     (http, relay)
 }
+
+/// A log line with every credential-shaped value replaced (passwords, session tokens, dev tokens, bearer headers, long
+/// hex keys). Every line that carries request data goes through this before it is written; nothing logs a body.
+pub fn redact_log_line(line: &str) -> String {
+    let scrubbed = crate::crash_reports::scrub_secrets(line);
+    // the server's own request fields, which the crash-report patterns do not name
+    let fields = regex!(r#"(?i)(dev_?token|admin_?proof|confirm_?token|current_?password|new_?password|x-session-token|x-download-key)([[:space:]]*["']?[[:space:]]*[:=][[:space:]]*["']?)[^[:space:]"',;&}]{3,}"#);
+    fields.replace_all(&scrubbed, "$1$2[redacted]").into_owned()
+}

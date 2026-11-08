@@ -37,8 +37,24 @@ pub fn transition_rule(prev: &str, next: &str) -> Option<&'static str> {
     }
 }
 
-/// The NPCs on `level` as the views `draw_bots` takes (the old scene.rs path drew them with `body.build`).
+/// The notice for a room link that ended (TODO 195, client part): the server's close reason when the host left or the
+/// room closed reads `HOST LEFT - ROOM CLOSED`; any other reason shows as sent. Wording and the matched reasons are in
+/// data/net/rejoin.json.
+pub fn room_closed_text(reason: &str) -> String {
+    super::rejoin::closed_notice(super::rejoin::rules(), reason)
+}
+
+/// Host: hands each bot's head look (its life state) to the figure code; call once per frame before `draw_bots`.
+pub fn set_bot_looks(npcs: &[Npc]) {
+    for n in npcs {
+        super::runner_figure::set_bot_look(&n.name, n.life.head_yaw, n.life.head_pitch);
+    }
+}
+
+/// The NPCs on `level` as the views `draw_bots` takes (the old scene.rs path drew them with `body.build`). Each bot's
+/// head look goes to the figure code too ([`set_bot_looks`]).
 pub fn bot_views(npcs: &[Npc], level: i32) -> Vec<BotView<'_>> {
+    set_bot_looks(npcs);
     npcs.iter()
         .filter(|n| n.level == level)
         .map(|n| BotView { name: &n.name, at: n.at, facing: n.facing, stride: n.stride, walking: n.walking, y: 0.0, climbing: false, falling: false, crouch: n.life.crouching, emote: n.life.emote.as_deref().map(|e| (e, n.life.emote_seq)) })
@@ -98,6 +114,13 @@ mod tests {
         let mut anon = Map::new();
         place_guest_event(&mut anon, &[remote(2)]);
         assert!(anon.is_empty());
+    }
+
+    #[test]
+    fn the_server_close_reason_reads_host_left_room_closed() {
+        assert_eq!(room_closed_text("THE HOST LEFT THE ROOM"), "HOST LEFT - ROOM CLOSED");
+        assert_eq!(room_closed_text("THE ROOM CLOSED"), "HOST LEFT - ROOM CLOSED");
+        assert_eq!(room_closed_text("YOU WERE REMOVED FROM THE ROOM"), "YOU WERE REMOVED FROM THE ROOM");
     }
 
     #[test]

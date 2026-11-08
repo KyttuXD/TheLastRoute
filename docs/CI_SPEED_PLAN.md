@@ -3,7 +3,7 @@
 Goal: a reasonable compile time on every platform, macOS and Windows first. Source: the CI audit
 (last 40 runs, job-level data only; step-level timings were not pulled, so the split between cold
 compile, link and test run is inferred). Workflows: `.github/workflows/test.yml` and `build.yml`.
-This file is a plan; it changes no workflow.
+This file is a plan. The "Already done" table lists what has landed; the rest is open.
 
 ## Where we are
 
@@ -19,7 +19,7 @@ Overall failure rate: test about 21%, build about 15%. No job has `timeout-minut
 workflow has `contents: write` at workflow level. Actions artifact storage is full (uploads are
 `continue-on-error`, so this is silent).
 
-Main cause of slow Windows tests (inferred): `test.yml` (cache key `test-<os>`, `ci` profile) and
+Main cause of slow Windows tests (inferred): `test.yml` (cache key `test-server-<os>`, `ci` profile) and
 `build.yml` (cache key `windows`, `release` profile) each compile the crate in separate caches.
 
 ## Already done
@@ -32,6 +32,9 @@ Main cause of slow Windows tests (inferred): `test.yml` (cache key `test-<os>`, 
 | macOS | `split-debuginfo=unpacked` in `.cargo/config.toml` | Faster links |
 | Release | `debug = 0` for release, line tables only for `ci` | Smaller objects, faster link |
 | Local | `fast` profile (see COMPILE_SPEED.md) | Local iteration only |
+| All | Separate cache key for the `--features server` crate graph: `test-server-<os>` in test.yml, `linux-server` in build.yml (its Linux packaging also builds `lr_server`); plain game builds keep `windows`, `macos-*` and the `nw-*` and `lrs-*` keys | A run no longer overwrites the cache of a different dependency graph |
+| All | Build steps stamp start and end (UTC) and append `step, os, cache-hit, elapsed seconds` to the run summary (`GITHUB_STEP_SUMMARY`), even when the step fails; build.yml, test.yml, nightly-lrs.yml and nightly-nw.yml | The "Measure first" table below can be filled from run summaries instead of `gh run view` |
+| All | One job per target (Windows, Linux, macOS Intel, macOS Apple Silicon in build.yml; a matrix or separate jobs in test.yml and the nightlies), the same pinned toolchain in every workflow, `Swatinem/rust-cache` in every job, and no new crate dependency | Targets build in parallel; wall time is the slowest target |
 
 ## Next, per platform
 
@@ -92,6 +95,9 @@ The jobs are already fast (1-2 min); failures cost more than speed here.
 
 Record for each job before and after a change: cold and warm total, compile step, link step,
 test step, cache size. Keep the table in this file so a change that does not help can be reverted.
+
+The workflows now write the compile step's elapsed seconds and the cache-hit flag to each run's summary page
+("Build times"). Copying those numbers into the table below, over several runs, is still open; the table is empty.
 
 | Job | Cold before | Warm before | Cold after | Warm after |
 |---|---|---|---|---|

@@ -5,7 +5,7 @@
 //! is `WALL_HEIGHT` (5 m, `config/mod.rs`), so every Godot distance here is scaled by `GODOT_TO_OURS` = 5/4.
 
 use crate::config::WALL_HEIGHT;
-use crate::world::facility::Stair;
+use crate::world::facility::{Cell, Stair};
 
 /// Godot's storey height in metres (`streamed_facility_view_3d.gd:18`, LEVEL_HEIGHT).
 pub const GODOT_STOREY: f32 = 4.0;
@@ -81,6 +81,107 @@ pub fn level_from_height(y: f32, current: i32) -> i32 {
         return current;
     }
     (y / STOREY).round() as i32
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Spiral clearance (data/stairs_links.json, `spiral_clearance`)
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// How wide the clear area round a spiral staircase is, in cells (all data).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpiralClearance {
+    /// Cells of clear floor round the well.
+    pub ring_width: i32,
+    /// Cells of clear floor round the landing (upper level) or foot (lower level).
+    pub landing_apron: i32,
+    /// Width of the approach lane leading away from the end cell.
+    pub approach_lane_width: i32,
+    /// Length of the approach lane beyond the end cell.
+    pub approach_lane_length: i32,
+}
+
+/// Reads the clearance numbers from the JSON text of stairs_links.json.
+pub fn parse_spiral_clearance(text: &str) -> Result<SpiralClearance, String> {
+    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let o = v.get("spiral_clearance").ok_or("spiral_clearance: missing")?;
+    let get = |k: &str| -> Result<i32, String> {
+        let n = o.get(k).and_then(|x| x.as_i64()).ok_or_else(|| format!("spiral_clearance.{k}: an integer is needed"))?;
+        if !(0..=8).contains(&n) {
+            return Err(format!("spiral_clearance.{k}: {n} is outside 0..=8"));
+        }
+        Ok(n as i32)
+    };
+    Ok(SpiralClearance {
+        ring_width: get("ring_width")?,
+        landing_apron: get("landing_apron")?,
+        approach_lane_width: get("approach_lane_width")?,
+        approach_lane_length: get("approach_lane_length")?,
+    })
+}
+
+/// The spiral clearance numbers, loaded once from the embedded data/stairs_links.json.
+pub fn spiral_clearance() -> SpiralClearance {
+    static C: std::sync::OnceLock<SpiralClearance> = std::sync::OnceLock::new();
+    *C.get_or_init(|| {
+        let text = crate::content::embedded::data_under("")
+            .find(|(p, _)| *p == "stairs_links.json")
+            .map(|(_, t)| t)
+            .expect("data/stairs_links.json is embedded by build.rs");
+        parse_spiral_clearance(text).expect("data/stairs_links.json spiral_clearance is valid")
+    })
+}
+
+/// The widened clear zone of a spiral on one level, from the well `hole`, the level's own `end` cell (landing above,
+/// foot below) and the numbers `c`: the ring round the well, the apron round the end and the approach lane leading
+/// away from the well. Sorted, no repeats, without the hole itself. Walls are not removed here; the caller drops them.
+pub fn spiral_zone_with(c: SpiralClearance, hole: &[Cell], end: Cell) -> Vec<Cell> {
+    let mut out: Vec<Cell> = vec![];
+    for h in hole {
+        for dy in -c.ring_width..=c.ring_width {
+            for dx in -c.ring_width..=c.ring_width {
+                out.push(Cell::new(h.x + dx, h.y + dy));
+            }
+        }
+    }
+    for dy in -c.landing_apron..=c.landing_apron {
+        for dx in -c.landing_apron..=c.landing_apron {
+            out.push(Cell::new(end.x + dx, end.y + dy));
+        }
+    }
+    // the lane leaves the well through the end cell, along the axis from the well's centre to it
+    let n = hole.len().max(1) as f32;
+    let (cx, cy) = (hole.iter().map(|h| h.x as f32).sum::<f32>() / n, hole.iter().map(|h| h.y as f32).sum::<f32>() / n);
+    let (ox, oy) = (end.x as f32 - cx, end.y as f32 - cy);
+    let dir: (i32, i32) = if ox.abs() >= oy.abs() { (if ox >= 0.0 { 1 } else { -1 }, 0) } else { (0, if oy >= 0.0 { 1 } else { -1 }) };
+    let side = (dir.1.abs(), dir.0.abs());
+    let half = c.approach_lane_width / 2;
+    for along in 0..=c.approach_lane_length {
+        for w in -half..(c.approach_lane_width - half) {
+            out.push(Cell::new(end.x + dir.0 * along + side.0 * w, end.y + dir.1 * along + side.1 * w));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out.retain(|x| !hole.contains(x));
+    out
+}
+
+/// `spiral_zone_with` with the data numbers.
+pub fn spiral_zone(hole: &[Cell], end: Cell) -> Vec<Cell> {
+    spiral_zone_with(spiral_clearance(), hole, end)
+}
+
+/// The widened keep-out of a spiral on both levels (the zone round its landing and round its foot), or nothing in the
+/// Godot parity scope (`route::layout::godot_regions`, the `chunk_layout_godot` goldens), which keeps Godot's cells.
+/// The one helper `Stair::carve_cells` and `flight_links::carve_cells` read, so props, hiding, fixtures, furnished
+/// placement and vents all keep out of the same cells.
+pub fn spiral_keepout(hole: &[Cell], landing: Cell, foot: Cell) -> Vec<Cell> {
+    if crate::world::route::layout::godot_regions() {
+        return vec![];
+    }
+    let mut v = spiral_zone(hole, landing);
+    v.extend(spiral_zone(hole, foot));
+    v
 }
 
 #[cfg(test)]
@@ -250,6 +351,28 @@ mod tests {
         let s = upper.shifted(3, -2);
         assert_eq!(s.cell, Cell::new(33, 28));
         assert_eq!((s.dir, s.run, s.shape, s.clockwise), (upper.dir, upper.run, upper.shape, upper.clockwise));
+    }
+
+    #[test]
+    fn spiral_zone_follows_the_data_widths() {
+        let hole: Vec<Cell> = (0..5).flat_map(|y| (0..5).map(move |x| Cell::new(40 + x, 40 + y))).collect();
+        let end = Cell::new(42, 45);
+        let c = SpiralClearance { ring_width: 2, landing_apron: 1, approach_lane_width: 3, approach_lane_length: 4 };
+        let z = spiral_zone_with(c, &hole, end);
+        assert!(!z.iter().any(|x| hole.contains(x)), "the well itself is not in the zone");
+        assert!(z.contains(&Cell::new(38, 38)) && z.contains(&Cell::new(46, 46)), "the ring is ring_width wide");
+        assert!(z.contains(&Cell::new(42, 49)), "the lane runs lane_length beyond the end");
+        let wider = spiral_zone_with(SpiralClearance { ring_width: 3, ..c }, &hole, end);
+        assert!(wider.len() > z.len(), "a larger data width gives a larger zone");
+        let narrow = spiral_zone_with(SpiralClearance { ring_width: 1, ..c }, &hole, end);
+        assert!(narrow.len() < z.len());
+    }
+
+    #[test]
+    fn spiral_clearance_data_is_wider_than_one_cell() {
+        let c = spiral_clearance();
+        assert!(c.ring_width >= 2 && c.landing_apron >= 1 && c.approach_lane_width >= 3);
+        assert!(parse_spiral_clearance("{}").is_err());
     }
 
     #[test]

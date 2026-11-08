@@ -11,5 +11,12 @@
   "waist_bend": 1.2,
   "squat_bend": 1.45,
   "head_turn_rate": 7.0,
-  "look_away_seconds": 0.4
+  "look_away_seconds": 0.4,
+  "camera": {
+    "wall_clearance": 0.3,
+    "min_distance": 0.35,
+    "fov_widen_deg": 10.0,
+    "fov_widen_per_stretch": 1.0,
+    "arm_clearance": 0.12
+  }
 }

@@ -221,6 +221,86 @@ pub fn apply(locals: &mut [Local], rig: &Rig, set: &EmoteSet, id: &str, t: f32) 
     any
 }
 
+/// The doorway pose (a leaning stance with the arms braced on the frame), authored in `data/seating.json`
+/// `emote_extras.doorway_pose` in the same shape as an emote. None if the data is broken.
+pub fn doorway_pose() -> Option<&'static Emote> {
+    static P: OnceLock<Option<Emote>> = OnceLock::new();
+    P.get_or_init(|| parse_emote(&crate::game::seating::emote_extras().doorway_pose).ok()).as_ref()
+}
+
+/// Whether a body at `pos` (grid x, z) stands in a door frame: `door` is the frame centre and `axis` the unit direction
+/// the door leads through. Inside means within `doorway_half_width` across the opening and `doorway_depth` along it.
+pub fn in_door_frame(pos: (f32, f32), door: (f32, f32), axis: (f32, f32)) -> bool {
+    let x = crate::game::seating::emote_extras();
+    let n = (axis.0 * axis.0 + axis.1 * axis.1).sqrt();
+    if n < 1e-6 || !pos.0.is_finite() || !pos.1.is_finite() {
+        return false;
+    }
+    let (ax, az) = (axis.0 / n, axis.1 / n);
+    let (dx, dz) = (pos.0 - door.0, pos.1 - door.1);
+    let along = dx * ax + dz * az;
+    let across = -dx * az + dz * ax;
+    across.abs() <= x.doorway_half_width && along.abs() <= x.doorway_depth
+}
+
+/// The emote id to play on an idle body: the doorway pose after `doorway_idle_seconds` standing still in a door frame,
+/// otherwise nothing (an emote the player chose always wins, the caller checks that first).
+pub fn idle_pose_id(in_doorway: bool, idle_seconds: f32) -> Option<&'static str> {
+    let x = crate::game::seating::emote_extras();
+    if in_doorway && idle_seconds >= x.doorway_idle_seconds {
+        doorway_pose().map(|p| p.id.as_str())
+    } else {
+        None
+    }
+}
+
+/// The face texture name to draw while emoting: the blocky face replaces the skin face during an emote when
+/// `blocky_face.enabled` and `swap_while_emoting` are on; None keeps the normal face.
+pub fn face_texture(emoting: bool) -> Option<&'static str> {
+    let x = crate::game::seating::emote_extras();
+    (x.blocky_enabled && x.blocky_while_emoting && emoting).then_some(x.blocky_texture.as_str())
+}
+
+/// Ids in `required` (data/seating.json `required_emotes`) that the set does not define: the coverage check.
+pub fn missing_emotes<'a>(set: &EmoteSet, required: &'a [String]) -> Vec<&'a str> {
+    required.iter().filter(|id| set.find(id).is_none()).map(String::as_str).collect()
+}
+
+#[cfg(test)]
+mod rest_pose_tests {
+    use super::*;
+
+    #[test]
+    fn every_required_emote_exists_in_the_shipped_set() {
+        let set = set().expect("emotes.json parses");
+        let req = &crate::game::seating::emote_extras().required_emotes;
+        assert!(missing_emotes(set, req).is_empty(), "missing: {:?}", missing_emotes(set, req));
+        assert_eq!(missing_emotes(set, &["nonexistent".to_string()]), vec!["nonexistent"]);
+    }
+
+    #[test]
+    fn the_doorway_pose_is_chosen_only_in_a_door_frame_after_standing_still() {
+        let pose = doorway_pose().expect("doorway pose parses");
+        assert!(pose.looping && !pose.keys.is_empty());
+        let (door, axis) = ((10.0, 5.0), (1.0, 0.0));
+        let inside = in_door_frame((10.1, 5.2), door, axis);
+        let outside = in_door_frame((13.0, 5.0), door, axis);
+        assert!(inside && !outside);
+        assert_eq!(idle_pose_id(inside, 5.0), Some("doorway"));
+        assert_eq!(idle_pose_id(inside, 0.1), None, "not yet");
+        assert_eq!(idle_pose_id(outside, 5.0), None, "not in a frame");
+        assert!(!in_door_frame((10.0, 5.0), door, (0.0, 0.0)), "no axis, no frame");
+        // across the opening is limited by the half width
+        assert!(!in_door_frame((10.0, 5.0 + crate::game::seating::emote_extras().doorway_half_width + 0.5), door, axis));
+    }
+
+    #[test]
+    fn the_blocky_face_swaps_in_only_while_emoting() {
+        assert_eq!(face_texture(false), None);
+        assert_eq!(face_texture(true), Some(crate::game::seating::emote_extras().blocky_texture.as_str()));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

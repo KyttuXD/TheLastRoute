@@ -155,6 +155,17 @@ pub fn footstep(mode: &str, surface: &str, speed_mps: f32) {
         }
     });
 }
+/// The runner's step on a floor kind (a RefTextures kind such as "parquet0"; "" or unknown: concrete). The finite
+/// route calls this with the cell's floor kind.
+pub fn footstep_on_floor(mode: &str, floor_kind: &str, speed_mps: f32) {
+    footstep(mode, surface_of_floor(floor_kind), speed_mps);
+}
+
+/// The surface a floor kind steps like.
+pub fn surface_of_floor(floor_kind: &str) -> &'static str {
+    super::cues::surface_for_floor(floor_kind)
+}
+
 /// `Sound.hunter_footstep(pan, volume)`: a hunter's heavy step, scaled (gain `volume / .05`, 0.1-2). `world::update`
 /// plays the real hunter steps; this is for the fakes (Pink's, `rules::fake_step_volume`; the troll step).
 pub fn hunter_footstep(pan: f32, volume: f32) {
@@ -285,6 +296,8 @@ pub fn placed_music_boxes(requests: &[crate::game::music_box::TuneRequest]) {
 pub fn event(name: &str, pan: f32, volume: f32) {
     if let Some(p) = super::cues::extra::event(name, pan as f64, volume as f64) {
         play(p);
+        // a cue with a subtitle shows it on the HUD (audio/tts.rs, data/audio/cues.json "subtitles")
+        super::tts::note_cue(name);
     }
 }
 /// A hunter sniffing the air (an investigating or searching hunter), `volume` from her distance like a hunter step.
@@ -345,4 +358,17 @@ pub fn carnival(kind: &str, pan: f32, intensity: f32) {
 /// A co-op teammate's step (remote_players.gd): `volume` as for a hunter step.
 pub fn remote_player_footstep(mode: &str, pan: f32, volume: f32) {
     play(rules::remote_player_footstep(mode, pan as f64, volume as f64));
+}
+
+#[cfg(test)]
+mod floor_tests {
+    use super::*;
+
+    #[test]
+    fn a_floor_kind_picks_its_surface() {
+        assert_eq!(surface_of_floor("parquet0"), "wood");
+        assert_eq!(surface_of_floor("check1"), "tile");
+        assert_eq!(surface_of_floor(""), "concrete");
+        assert_ne!(surface_of_floor("parquet0"), surface_of_floor("metal0"));
+    }
 }

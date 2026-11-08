@@ -8,5 +8,17 @@
     "duration_s": 1.2,
     "amplitude": 0.03,
     "rate_hz": 18
+  },
+  "_prop_views": "Camera for hiding in a Kind::Hide prop (data/hiding.json kinds, plus bed): eye = camera height above the floor, forward = metres along the spot facing from its centre. A kind not listed falls back to the style table of data/player/hiding_view.json.",
+  "prop_views": {
+    "bed":      { "eye": 0.16, "forward": 0.0 },
+    "bunk":     { "eye": 0.34, "forward": 0.0 },
+    "wardrobe": { "eye": 1.2,  "forward": 0.05 },
+    "closet":   { "eye": 1.25, "forward": 0.08 },
+    "stall":    { "eye": 1.35, "forward": 0.1 },
+    "underdesk": { "eye": 0.42, "forward": 0.12 },
+    "cabinet":  { "eye": 1.1,  "forward": 0.08 },
+    "freezer":  { "eye": 1.15, "forward": 0.06 },
+    "planter":  { "eye": 0.85, "forward": 0.1 }
   }
 }

@@ -12,5 +12,6 @@
 	"spawn": 17,
 	"chase_style": "glide",
 	"taser_immune": true,
-	"melee_immune": false
+	"melee_immune": false,
+	"dossier": "THIS HUNTER MOVES 35% FASTER UNLESS YOUR FLASHLIGHT BEAM IS DIRECTLY HITTING HER. A BEAM WITHIN 10 CELLS STOPS HER COMPLETELY. HOLD THE BEAM LONG ENOUGH TO CREATE DISTANCE, BUT WATCH YOUR REMAINING BATTERY CHARGE."
 }

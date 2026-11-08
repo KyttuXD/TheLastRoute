@@ -600,6 +600,28 @@ impl Moderation {
         (200, json!({ "ok": true, "flagged": flagged, "status": status }))
     }
 
+    /// Accounts a room host may never KICK or BAN: owners.
+    pub fn is_protected(host_ctx: &dyn ModerationHost, name: &str) -> bool {
+        let name = username_of_str(name);
+        username_pattern().is_match(&name) && host_ctx.is_owner(&name)
+    }
+
+    /// A host's room KICK or BAN as a moderation report: the same kick log and review rules as `report_kick`
+    /// (a ban is logged as a kick whose reason starts with BAN). `action` is "kick" or "ban".
+    pub fn report_room_action(&mut self, host_ctx: &dyn ModerationHost, action: &str, body: &Value, room: &str, host: &str) -> Reply {
+        if action != "kick" && action != "ban" {
+            return (400, json!({ "ok": false, "code": "INVALID_KIND", "error": "action must be kick or ban" }));
+        }
+        let mut report = body.clone();
+        let reason = text(body.get("reason"), 70);
+        let reason = if reason.is_empty() { action.to_uppercase() } else { format!("{}: {reason}", action.to_uppercase()) };
+        if let Value::Object(map) = &mut report {
+            map.insert("kind".into(), json!("kick"));
+            map.insert("reason".into(), json!(reason));
+        }
+        self.report_kick(host_ctx, &report, room, host)
+    }
+
     pub fn peers(&self, body: &Value) -> Reply {
         let mut players = Map::new();
         if let Some(Value::Array(names)) = body.get("usernames") {

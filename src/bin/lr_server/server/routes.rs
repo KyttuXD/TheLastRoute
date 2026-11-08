@@ -8,6 +8,7 @@ use crate::lr_regex as regex;
 use crate::moderation::Who;
 use crate::skins::skins::{SkinAction, SKIN_JSON_BODY_BYTES};
 use crate::public_route::JoinOptions;
+use crate::rooms::admin_rooms::JoinContext;
 use crate::util::{hex, iso_time, js_number, log_info, log_warn, str_nullish, str_or_empty, timing_safe_equal, truthy, Reply};
 
 fn not_owner() -> Response {
@@ -30,15 +31,86 @@ fn skin_read_id(method: &str, path: &str) -> Option<String> {
         .map(|caps| caps[1].to_string())
 }
 
-/// The biggest request body each POST route reads (`readJson(request, maxBytes)`): the default is `MAX_BODY_BYTES`;
-/// the mod registration, the crash reports and the skin upload (the base64 of a full-size skin) have their own.
+/// Every POST route and the biggest body it reads (`readJson(request, maxBytes)`). No POST route relies on a hidden
+/// default: each one is listed here with its own limit (`MAX_BODY_BYTES` for most; the mod registration, the crash reports
+/// and the skin upload, the base64 of a full-size skin, have their own). `route_tests` checks this table against the
+/// route source, so a new POST route that is missing here fails a test.
+pub(crate) const POST_ROUTES: &[(&str, usize)] = &[
+    ("/api/account/delete", MAX_BODY_BYTES),
+    ("/api/account/guest", MAX_BODY_BYTES),
+    ("/api/account/load", MAX_BODY_BYTES),
+    ("/api/account/login", MAX_BODY_BYTES),
+    ("/api/account/logout", MAX_BODY_BYTES),
+    ("/api/account/password", MAX_BODY_BYTES),
+    ("/api/account/register", MAX_BODY_BYTES),
+    ("/api/account/rename", MAX_BODY_BYTES),
+    ("/api/account/save", MAX_BODY_BYTES),
+    ("/api/account/session", MAX_BODY_BYTES),
+    ("/api/admin/account/reset-password", MAX_BODY_BYTES),
+    ("/api/admin/builds/add", MAX_BODY_BYTES),
+    ("/api/admin/builds/remove", MAX_BODY_BYTES),
+    ("/api/admin/crash-reports", MAX_BODY_BYTES),
+    ("/api/admin/crash-reports/view", MAX_BODY_BYTES),
+    ("/api/admin/flags", MAX_BODY_BYTES),
+    ("/api/admin/flags/set", MAX_BODY_BYTES),
+    ("/api/admin/mods/block", MAX_BODY_BYTES),
+    ("/api/admin/mods/register", MOD_REGISTER_MAX_BODY_BYTES),
+    ("/api/admin/mods/unblock", MAX_BODY_BYTES),
+    ("/api/admin/regions", MAX_BODY_BYTES),
+    ("/api/admin/reserved-rooms", MAX_BODY_BYTES),
+    ("/api/admin/roster", MAX_BODY_BYTES),
+    ("/api/admin/roster/remove", MAX_BODY_BYTES),
+    ("/api/admin/roster/set", MAX_BODY_BYTES),
+    ("/api/city-maps/list", MAX_BODY_BYTES),
+    ("/api/city-maps/ticket", MAX_BODY_BYTES),
+    ("/api/dev/login", MAX_BODY_BYTES),
+    ("/api/dev/reload", MAX_BODY_BYTES),
+    ("/api/enet/admin-tickets/issue", MAX_BODY_BYTES),
+    ("/api/enet/admin-tickets/verify", MAX_BODY_BYTES),
+    ("/api/enet/rooms/heartbeat", MAX_BODY_BYTES),
+    ("/api/enet/rooms/register", MAX_BODY_BYTES),
+    ("/api/enet/rooms/release-host", MAX_BODY_BYTES),
+    ("/api/enet/rooms/unregister", MAX_BODY_BYTES),
+    ("/api/guest/name", MAX_BODY_BYTES),
+    ("/api/moderation/integrity", MAX_BODY_BYTES),
+    ("/api/moderation/peers", MAX_BODY_BYTES),
+    ("/api/moderation/report", MAX_BODY_BYTES),
+    ("/api/moderation/status", MAX_BODY_BYTES),
+    ("/api/public/join", MAX_BODY_BYTES),
+    ("/api/public/leave", MAX_BODY_BYTES),
+    ("/api/public/state", MAX_BODY_BYTES),
+    ("/api/regions/report", MAX_BODY_BYTES),
+    ("/api/rooms/abandon", MAX_BODY_BYTES),
+    ("/api/rooms/custom-map", MAX_BODY_BYTES),
+    ("/api/rooms/default-start", MAX_BODY_BYTES),
+    ("/api/rooms/dialog-advance", MAX_BODY_BYTES),
+    ("/api/rooms/dialog-start", MAX_BODY_BYTES),
+    ("/api/rooms/join", MAX_BODY_BYTES),
+    ("/api/rooms/leave", MAX_BODY_BYTES),
+    ("/api/rooms/moderate", MAX_BODY_BYTES),
+    ("/api/rooms/reserved/resolve", MAX_BODY_BYTES),
+    ("/api/rooms/settings", MAX_BODY_BYTES),
+    ("/api/rooms/start", MAX_BODY_BYTES),
+    ("/api/rooms/state", MAX_BODY_BYTES),
+    ("/api/skins/clear", MAX_BODY_BYTES),
+    ("/api/skins/mine", MAX_BODY_BYTES),
+    ("/api/skins/remove", MAX_BODY_BYTES),
+    ("/api/skins/upload", SKIN_MAX_BYTES),
+    ("/api/v1/crash-reports", CRASH_MAX_BODY_BYTES),
+    ("/api/v1/skins", SKIN_JSON_BODY_BYTES),
+    ("/api/v1/skins/clear", MAX_BODY_BYTES),
+    ("/api/v1/skins/mine", MAX_BODY_BYTES),
+    ("/api/v1/skins/remove", MAX_BODY_BYTES),
+];
+
+/// Admin routes whose handler answers a missing or dead session itself (401 `NO_SESSION`) and a non-owner with 403.
+const ADMIN_SELF_CHECKED: [&str; 4] =
+    ["/api/admin/roster", "/api/admin/roster/set", "/api/admin/roster/remove", "/api/admin/account/reset-password"];
+
+/// The biggest request body a POST route reads: its entry in `POST_ROUTES`; an unlisted path (which answers 404 anyway)
+/// gets `MAX_BODY_BYTES`.
 pub(crate) fn body_limit(path: &str) -> usize {
-    match path {
-        "/api/admin/mods/register" => MOD_REGISTER_MAX_BODY_BYTES,
-        "/api/v1/crash-reports" => CRASH_MAX_BODY_BYTES,
-        "/api/v1/skins" => SKIN_JSON_BODY_BYTES,
-        _ => MAX_BODY_BYTES,
-    }
+    POST_ROUTES.iter().find(|(route, _)| *route == path).map(|(_, limit)| *limit).unwrap_or(MAX_BODY_BYTES)
 }
 
 /// A stored skin: the PNG bytes, cached for good (the id is the hash of the bytes, so it never changes). It is served
@@ -71,6 +143,8 @@ fn or_default(text: String, fallback: &str) -> String {
 /// the tokens are never logged.
 fn log_account_event(now: i64, path: &str, body: &Value, result: &Reply, address: &str, actor: &str) {
     if let Some((ok, line)) = account_event_line(now, path, body, result, address, actor) {
+        // Belt and braces: the line is built from a cleaned name and an outcome only, and is scrubbed once more.
+        let line = redact_log_line(&line);
         if ok {
             log_info(&line);
         } else {
@@ -99,6 +173,7 @@ pub(super) fn account_event_line(now: i64, path: &str, body: &Value, result: &Re
         "/api/account/logout" => "logout",
         "/api/account/password" => "password",
         "/api/account/rename" => "rename",
+        "/api/account/delete" => "delete",
         "/api/admin/account/reset-password" => "admin-reset-password",
         _ => return None,
     };
@@ -153,30 +228,29 @@ const BUILD_REVISION: Option<&str> = option_env!("LASTROUTE_BUILD_REVISION");
 
 impl LastRouteServer {
     fn rate_limit(&self, state: &mut State, request: &Request, pathname: &str) -> i64 {
+        let auth = rate_limit::is_auth_path(pathname);
         let sensitive = ACCOUNT_RATE_LIMIT_PATHS.contains(&pathname);
         let mods = !sensitive && pathname.starts_with("/api/mods/");
-        let maximum = if sensitive {
+        let maximum = if auth && self.config.auth_rate_limit_max > 0 {
+            self.config.auth_rate_limit_max
+        } else if sensitive {
             self.config.account_rate_limit_max
         } else if mods {
             self.config.mod_rate_limit_max
         } else {
             self.config.api_rate_limit_max
-        }
-        .max(1);
-        let window = self.config.rate_limit_window_ms.max(1000);
-        let timestamp = self.now();
+        };
         let address = or_default(requester_address(request, self.config.trust_proxy), "unknown");
-        let key = format!("{}|{address}", if sensitive { "account" } else if mods { "mods" } else { "api" });
-        let rate = state.request_rates.entry(key).or_insert((0, timestamp + window));
-        if timestamp >= rate.1 {
-            *rate = (0, timestamp + window);
-        }
-        rate.0 += 1;
-        if rate.0 <= maximum {
-            0
+        let bucket = if auth && self.config.auth_rate_limit_max > 0 {
+            "auth"
+        } else if sensitive {
+            "account"
+        } else if mods {
+            "mods"
         } else {
-            (((rate.1 - timestamp) as f64) / 1000.0).ceil().max(1.0) as i64
-        }
+            "api"
+        };
+        state.request_rates.hit(&format!("{bucket}|{address}"), maximum, self.config.rate_limit_window_ms, self.now())
     }
 
     /// `developerRequest(body)`: a live dev token, the setup password as `adminProof`, or an owner session.
@@ -250,7 +324,7 @@ impl LastRouteServer {
         if retry_after > 0 {
             return json_response(
                 429,
-                &json!({ "ok": false, "code": "RATE_LIMITED", "error": "Too many requests; try again shortly" }),
+                &json!({ "ok": false, "code": "RATE_LIMITED", "error": rate_limit::limited_message(rate_limit::is_auth_path(path), retry_after), "retryAfterSeconds": retry_after }),
                 &[("retry-after", retry_after.to_string())],
             );
         }
@@ -353,6 +427,11 @@ impl LastRouteServer {
         // Admin and moderation routes resolve the caller's session with the state lock released, then retake it.
         let scoped = resolves_caller_first(path);
         let (caller, mut guard) = if scoped { self.resolve_caller(guard, &body) } else { (Caller::default(), guard) };
+        // Admin status is decided here, on the server, for every admin route: anything under /api/admin/ is refused
+        // unless the session behind the token is a built-in full-admin owner. The routes below check again.
+        if path.starts_with("/api/admin/") && caller.owner.is_none() && !ADMIN_SELF_CHECKED.contains(&path) {
+            return not_owner();
+        }
         let state = &mut *guard;
         if let Some(response) = self.route_posts(state, request, &body, &caller) {
             return response;
@@ -417,6 +496,10 @@ impl LastRouteServer {
             return Some(json_response(result.0, &result.1, &[("cache-control", "public, max-age=60".into())]));
         }
         if method == "GET" {
+            if let Some(caps) = regex!(r"^/api/mods/packs/([a-z0-9][a-z0-9_]{2,31})/download$").captures(path) {
+                let result = state.mod_packs.download(&caps[1], request.query_param("version").as_deref());
+                return Some(json_response(result.0, &result.1, &[("cache-control", "no-store".into())]));
+            }
             if let Some(caps) = regex!(r"^/api/mods/packs/([a-z0-9][a-z0-9_]{2,31})$").captures(path) {
                 let result = state.mod_packs.get(&caps[1], request.query_param("version").as_deref());
                 return Some(json_response(result.0, &result.1, &[("cache-control", "public, max-age=60".into())]));
@@ -463,6 +546,10 @@ impl LastRouteServer {
             if path == "/api/regions" {
                 return Some(json_response(200, &json!({ "ok": true, "regions": state.regions.public_list() }), &[]));
             }
+            // the web room browser: every live room (after a sweep) with its capacity, held slots and ADMIN flag
+            if path == "/api/rooms/list" {
+                return Some(json_response(200, &json!({ "ok": true, "rooms": state.room_service.list_rooms() }), &[]));
+            }
             if path == "/api/public/status" {
                 let game = public_game_id(request.query_param("game").as_deref());
                 return Some(json_response(200, &state.dir.route_mut(&game).status(), &[]));
@@ -484,6 +571,15 @@ impl LastRouteServer {
             let device: String = str_or_empty(body.get("device_id")).chars().take(64).collect();
             let client = format!("{}|{device}", or_default(address.clone(), "unknown"));
             return Some(reply(crash.submit(body, &client)));
+        }
+        if path == "/api/admin/crash-reports/view" {
+            if caller.owner.is_none() {
+                return Some(not_owner());
+            }
+            return Some(match state.crash_reports.as_ref() {
+                None => reply(unknown_endpoint()),
+                Some(crash) => reply(crash.get(&str_or_empty(body.get("id")))),
+            });
         }
         if path == "/api/admin/crash-reports" {
             if caller.owner.is_none() {
@@ -825,10 +921,69 @@ impl LastRouteServer {
     /// forwarded to the website, so they run with the state lock released and take it again only for the state they touch.
     fn route_accounts<'a>(&'a self, guard: MutexGuard<'a, State>, body: &Value, path: &str) -> Reply {
         let mut guard = guard;
+        // Admin rooms: whether the caller is a full-admin owner is decided from the account session (`accountToken`, or
+        // `sessionToken` when that is an account session), never from the body. The lookup runs without the state lock.
+        let admin_name: Option<String> = if matches!(path, "/api/rooms/join" | "/api/rooms/settings") {
+            let token = match str_or_empty(body.get("accountToken")) {
+                t if t.is_empty() => str_or_empty(body.get("sessionToken")),
+                t => t,
+            };
+            if token.is_empty() {
+                None
+            } else {
+                let (owner, g) = self.with_accounts(guard, |accounts| accounts.session_username(&token).filter(|name| accounts.is_admin_owner(name)));
+                guard = g;
+                owner
+            }
+        } else {
+            None
+        };
         let mut result: Reply = match path {
-            "/api/rooms/join" => guard.room_service.join_room(body),
+            "/api/rooms/join" => {
+                let state = &mut *guard;
+                if admin_name.is_some() {
+                    let saved = state.dir.reserved.as_ref().and_then(|r| r.admin_room(&str_or_empty(body.get("room"))));
+                    let dir = &state.dir;
+                    let taken = |c: &str| dir.reserved.as_ref().map(|r| r.is_reserved(c)).unwrap_or(false) || dir.enet_rooms.contains_key(c);
+                    state.room_service.join_with(body, &JoinContext::admin(saved, Some(&taken)))
+                } else {
+                    state.room_service.join_room(body)
+                }
+            }
             "/api/rooms/state" => guard.room_service.update_room(body),
-            "/api/rooms/settings" => guard.room_service.update_room_settings(body),
+            "/api/rooms/settings" => {
+                let r = guard.room_service.update_room_settings(body);
+                if r.0 == 200 {
+                    // an admin room keeps its seed and settings under its code for the next time it is made
+                    let room = str_or_empty(body.get("room"));
+                    if let Some(snapshot) = guard.room_service.admin_snapshot(&room) {
+                        let owner = admin_name.clone().unwrap_or_else(|| "HOST".to_string());
+                        if let Some(reserved) = guard.dir.reserved.as_mut() {
+                            reserved.remember_admin_room(&room, &owner, &snapshot);
+                        }
+                    }
+                }
+                r
+            }
+            "/api/rooms/moderate" => {
+                // host KICK / BAN; owners are protected, and each removal goes into the kick log and review rules
+                let state = &mut *guard;
+                let ctx = ModCtx { accounts: &state.accounts, updates: self.current_updates() };
+                let r = state.room_service.moderate_player(body, &|n| crate::moderation::Moderation::is_protected(&ctx, n));
+                if r.0 == 200 {
+                    let room = str_or_empty(body.get("room")).trim().to_uppercase();
+                    let action = str_or_empty(r.1.get("action"));
+                    let mut report = body.clone();
+                    if let Value::Object(map) = &mut report {
+                        if !map.contains_key("username") {
+                            map.insert("username".into(), r.1.get("target").cloned().unwrap_or(Value::Null));
+                        }
+                    }
+                    let host = format!("room:{room}");
+                    let _ = state.moderation.report_room_action(&ctx, &action, &report, &room, &host);
+                }
+                r
+            }
             "/api/rooms/start" => guard.room_service.start_room_round(body),
             "/api/rooms/default-start" => guard.room_service.start_default_route(body),
             "/api/rooms/abandon" => guard.room_service.abandon_route(body),
@@ -864,6 +1019,20 @@ impl LastRouteServer {
             "/api/account/password" => {
                 let (r, g) = self.with_accounts(guard, |accounts| accounts.change_password(body));
                 guard = g;
+                r
+            }
+            "/api/account/delete" => {
+                let (r, g) = self.with_accounts(guard, |accounts| accounts.delete_account(body));
+                guard = g;
+                if r.1.get("deleted") == Some(&json!(true)) {
+                    let name = str_nullish(r.1.get("username"));
+                    // the account is gone: its cloud saves and any room admin ticket it held go with it
+                    let saves = guard.game_saves.clone();
+                    if let Ok(mut store) = saves.lock() {
+                        store.delete_account(&name);
+                    }
+                    guard.dir.admin_tickets.retain(|_, proof| proof.username != name);
+                }
                 r
             }
             "/api/account/rename" => {

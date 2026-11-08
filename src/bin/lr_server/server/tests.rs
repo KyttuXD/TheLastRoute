@@ -1230,3 +1230,20 @@ fn when_the_public_routes_relay_host_goes_its_guests_are_told_and_the_code_is_fr
     assert_eq!(get(&server, "/api/enet/rooms/PUBLC").0, 200);
     server.close();
 }
+
+#[test]
+fn a_non_admin_typing_an_unknown_room_code_gets_the_normal_refusal_and_no_room_is_made() {
+    let server = app(|_| {});
+    let (status, refused) = post(&server, "/api/rooms/join", json!({ "room": "NOSUCH", "name": "RUNNER", "playerId": "player-9", "joinOnly": true }));
+    assert_eq!(status, 404, "{refused}");
+    assert_eq!(refused["code"], json!("ROOM_NOT_FOUND"));
+    assert_eq!(refused["error"], json!("Room not found"));
+    // Claiming to be an admin in the body changes nothing: the admin standing is checked by the server.
+    let (status, still) = post(&server, "/api/rooms/join", json!({ "room": "NOSUCH", "name": "RUNNER", "playerId": "player-9", "joinOnly": true, "admin": true }));
+    assert_eq!((status, still["code"].clone()), (404, json!("ROOM_NOT_FOUND")));
+    // The plain host flow (no joinOnly) still opens a room on a new code.
+    let (status, hosted) = post(&server, "/api/rooms/join", json!({ "room": "NOSUCH", "name": "RUNNER", "playerId": "player-9" }));
+    assert_eq!(status, 200, "{hosted}");
+    let (status, joined) = post(&server, "/api/rooms/join", json!({ "room": "NOSUCH", "name": "OTHER", "playerId": "player-8", "joinOnly": true }));
+    assert_eq!(status, 200, "{joined}");
+}

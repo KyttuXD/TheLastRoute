@@ -83,6 +83,13 @@ pub fn place_with_box(f: &Facility) -> (Fixtures, Option<Cell>) {
 
     // no vent grate in a door's way (world::door_clearance)
     let door_clear = door_clearance::Clearance::of(f);
+    // no vent grate in a spiral flight's widened well, landing apron or lane (world::vertical::spiral_keepout, read by Stair::carve_cells)
+    let spiral_keep: HashSet<Cell> = f
+        .stairs
+        .iter()
+        .filter(|s| s.shape == super::flight::FlightShape::Spiral)
+        .flat_map(|s| s.carve_cells())
+        .collect();
     let mut vents = vec![];
     let mut rng = Rng::new(&format!("{}:VENT-NETWORK", f.seed_text));
     let mut rooms: Vec<usize> = (0..f.rooms.len())
@@ -98,7 +105,7 @@ pub fn place_with_box(f: &Facility) -> (Fixtures, Option<Cell>) {
                 let backed = [(1, 0), (-1, 0), (0, 1), (0, -1)]
                     .iter()
                     .any(|(dx, dy)| f.is_wall_cell(x + dx, y + dy));
-                if backed && !t.contains(&c) && !f.is_water(c) && !door_clear.blocks(door_clearance::Kind::Vent, c) && f.can_occupy(x as f64 + 0.5, y as f64 + 0.5, 0.23) {
+                if backed && !t.contains(&c) && !spiral_keep.contains(&c) && !f.is_water(c) && !door_clear.blocks(door_clearance::Kind::Vent, c) && f.can_occupy(x as f64 + 0.5, y as f64 + 0.5, 0.23) {
                     cells.push(c);
                 }
             }

@@ -408,10 +408,12 @@ pub fn draw_title(a: &Assets, ui: &mut Ui, username: &str, active: bool) -> Acti
     let account = account_label(username);
     // ADMIN shows for the admin's account only (GameHub.admin_entry_visible)
     let entries = title_entries(username);
+    // the PUBLIC ROUTE label is data (net/public_route.rs title_entry, the rejoin strings)
+    let public_label = crate::net::public_route::title_entry().label;
     let items: Vec<(&str, f32, Kind)> = entries
         .iter()
         .map(|e| match e {
-            TitleEntry::PublicRoute => ("PUBLIC ROUTE", menu_size(6.0, 1.0), Kind::Primary),
+            TitleEntry::PublicRoute => (public_label.as_str(), menu_size(6.0, 1.0), Kind::Primary),
             TitleEntry::Create => ("CREATE ROOM", menu_size(6.0, 1.0), Kind::Primary),
             TitleEntry::Join => ("JOIN ROOM", menu_size(6.0, 1.0), Kind::Primary),
             TitleEntry::Settings => ("SETTINGS", 6.0, Kind::Secondary),

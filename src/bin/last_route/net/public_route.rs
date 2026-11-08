@@ -175,6 +175,19 @@ pub fn rules() -> &'static Rules {
 /// Text the owner controls answer with on the public route: it has no owner.
 pub const NO_OWNER_TEXT: &str = "THE PUBLIC ROUTE HAS NO OWNER // NO ROUTE COMMANDS";
 
+/// What the title menu's PUBLIC ROUTE entry joins (TODO 838, 906): the room code the title routes into
+/// `world_sync::join_public_room`, and the button's label (data/net/rejoin.json).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TitleEntry {
+    pub code: String,
+    pub label: String,
+}
+
+/// The title entry for the public route: its code is the data's, never typed by the player.
+pub fn title_entry() -> TitleEntry {
+    TitleEntry { code: rules().code.clone(), label: super::rejoin::line("public_route_label", "PUBLIC ROUTE", &[]) }
+}
+
 /// Whether a reason a room link ended is a removal by the room (a kick or a moderation removal) rather than the host
 /// going away: a removed runner goes to the title and does not rejoin.
 pub fn is_removal(reason: &str) -> bool {

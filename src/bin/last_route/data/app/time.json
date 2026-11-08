@@ -1,0 +1,18 @@
+{
+  "zone": "local",
+  "fallback": "America/New_York",
+  "clock": "12h",
+  "months": ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"],
+  "am": "AM",
+  "pm": "PM",
+  "format": "{month} {day}, {year} {time} {zone}",
+  "checked": "LAST CHECKED: {time}",
+  "never": "NEVER",
+  "zones": {
+    "America/New_York": "EST5EDT,M3.2.0,M11.1.0",
+    "America/Chicago": "CST6CDT,M3.2.0,M11.1.0",
+    "America/Denver": "MST7MDT,M3.2.0,M11.1.0",
+    "America/Los_Angeles": "PST8PDT,M3.2.0,M11.1.0",
+    "UTC": "UTC0"
+  }
+}

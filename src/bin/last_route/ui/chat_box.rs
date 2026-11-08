@@ -20,6 +20,8 @@ const SAFE: f32 = 8.0;
 #[derive(Default, Debug, PartialEq)]
 pub struct ChatBox {
     text: Option<String>,
+    /// The line goes to NEARBY (Tab flips it) instead of TEAM.
+    nearby: bool,
     /// How long Backspace has been held (it repeats, data/ui/key_repeat.json).
     backspace_hold: HoldTimer,
 }
@@ -51,6 +53,28 @@ pub fn name_color(peer_id: i64, palette: &[[f32; 3]]) -> Color {
 
 impl ChatBox {
     /// The box is open: the game takes no movement or action keys (`app` reads this).
+    /// The channel the typed line is sent on: "team" or "nearby" (Tab while typing flips it).
+    pub fn channel(&self) -> &'static str {
+        if self.nearby {
+            "nearby"
+        } else {
+            "team"
+        }
+    }
+
+    /// The word the open box shows for its channel.
+    pub fn channel_label(&self) -> &'static str {
+        if self.nearby {
+            "NEARBY"
+        } else {
+            "TEAM"
+        }
+    }
+
+    pub fn toggle_channel(&mut self) {
+        self.nearby = !self.nearby;
+    }
+
     pub fn typing(&self) -> bool {
         self.text.is_some()
     }
@@ -122,6 +146,9 @@ impl ChatBox {
         for _ in 0..self.backspace_hold.step(is_key_pressed(KeyCode::Backspace), is_key_down(KeyCode::Backspace), get_frame_time(), &cfg) {
             self.backspace();
         }
+        if is_key_pressed(KeyCode::Tab) {
+            self.toggle_channel();
+        }
         if is_key_pressed(KeyCode::Escape) {
             self.close();
             return None;
@@ -147,7 +174,7 @@ fn draw_line(a: &Assets, line: &ChatLine, x: f32, top: f32, size: f32, alpha: f3
     }
     let mut name_col = name_color(line.peer_id, palette);
     name_col.a = alpha;
-    let name = format!("{}:", line.display_name);
+    let name = if line.channel == "nearby" { format!("(NEARBY) {}:", line.display_name) } else { format!("{}:", line.display_name) };
     shadowed(a, &name, x, top, size, name_col);
     shadowed(a, &line.text, x + tw(a, F::Body, &name, size) + size * 0.6, top, size, body);
 }
@@ -174,7 +201,36 @@ pub fn draw_chat(a: &Assets, feed: &ChatFeed, chat: &ChatBox) {
         let row = Rect::new(SAFE - 2.0, v.y - SAFE - 40.0 - 2.0, (v.x * 0.5).max(120.0), size + 4.0);
         fill(row, rgba(0.0, 0.0, 0.0, 0.6));
         let caret = if (get_time() * 2.0) as i64 % 2 == 0 { "_" } else { " " };
-        shadowed(a, &format!("> {text}{caret}"), SAFE, v.y - SAFE - 40.0, size, rgba(1.0, 1.0, 1.0, 1.0));
+        shadowed(a, &format!("[{}] > {text}{caret}", chat.channel_label()), SAFE, v.y - SAFE - 40.0, size, rgba(1.0, 1.0, 1.0, 1.0));
+    }
+}
+
+/// The speech bubbles: each recent speaker's line, cut short, above its nametag in the world (call after the nametag
+/// pass, on the default camera). A speaker with no marker on the drawn level gets none.
+pub fn draw_bubbles(g: &crate::game::Game, a: &Assets, rt: &RenderTarget, feed: &ChatFeed, marks: &[super::markers::Marker]) {
+    use macroquad::camera::Camera as _;
+    let bubbles = feed.bubbles();
+    if bubbles.is_empty() {
+        return;
+    }
+    let cam = crate::render::scene::camera(g, rt);
+    let vp = cam.matrix();
+    let screen = (screen_width(), screen_height());
+    let r = super::markers::rules();
+    let rules = ChatRules::load();
+    let u = unit();
+    let size = r.font_size;
+    for b in bubbles {
+        let Some(m) = marks.iter().find(|m| m.id == super::markers::MarkerId::Peer(b.peer_id.max(0) as u32)) else { continue };
+        let probe = super::markers::Marker { name: "-".into(), ..m.clone() };
+        let Some(tag) = super::markers::tag_for(&probe, g.fac.level, cam.position, vp, screen, r) else { continue };
+        let text = b.text.to_uppercase();
+        let w = tw(a, F::Body, &text, size);
+        let x = tag.at.0 / u - w * 0.5;
+        let top = tag.at.1 / u - lh(F::Body, size) * 2.6;
+        let col = name_color(b.peer_id, &rules.name_colors);
+        fill(Rect::new(x - 2.0, top - 1.0, w + 4.0, lh(F::Body, size) + 2.0), rgba(0.0, 0.0, 0.0, 0.55 * b.alpha * tag.alpha));
+        shadowed(a, &text, x, top, size, Color::new(col.r, col.g, col.b, b.alpha * tag.alpha));
     }
 }
 
@@ -187,6 +243,16 @@ mod tests {
         b.open();
         b.insert_str(s);
         b
+    }
+
+    #[test]
+    fn the_channel_starts_on_team_and_tab_flips_it_to_nearby() {
+        let mut b = typed("x");
+        assert_eq!((b.channel(), b.channel_label()), ("team", "TEAM"));
+        b.toggle_channel();
+        assert_eq!((b.channel(), b.channel_label()), ("nearby", "NEARBY"));
+        b.toggle_channel();
+        assert_eq!(b.channel(), "team");
     }
 
     #[test]

@@ -1,5 +1,5 @@
 {
-  "_note": "Co-op chat on screen. max_lines = lines shown at once; line_seconds = how long a line stays; fade_seconds = the last seconds of that it fades over; nearby_radius = world units a 'nearby' line carries; inbox_max = lines the net layer keeps until the app takes them; open_key = the letter that opens the input box; input_max = characters the box takes (80 at most); history_max = lines remembered, open_lines = lines shown while the box is open; rate_lines per rate_window_seconds is the host's limit for one guest, then cooldown_seconds of silence; name_colors = sender name colours (r, g, b), picked by peer id.",
+  "_note": "Co-op chat on screen. max_lines = lines shown at once; line_seconds = how long a line stays; fade_seconds = the last seconds of that it fades over; nearby_radius = world units a 'nearby' line carries; inbox_max = lines the net layer keeps until the app takes them; open_key = the letter that opens the input box; input_max = characters the box takes (80 at most); history_max = lines remembered, open_lines = lines shown while the box is open; rate_lines per rate_window_seconds is the host's limit for one guest, then cooldown_seconds of silence; name_colors = sender name colours (r, g, b), picked by peer id; ping_seconds = how long a quick-chat map ping lasts (it fades over all of it); bubble_seconds and bubble_max_chars = how long and how long a line the speech bubble over a speaker shows; said_recently_max = names in the pause menu SAID RECENTLY list.",
   "max_lines": 6,
   "line_seconds": 12.0,
   "fade_seconds": 2.0,
@@ -12,6 +12,10 @@
   "rate_lines": 3,
   "rate_window_seconds": 10.0,
   "cooldown_seconds": 5.0,
+  "ping_seconds": 4.0,
+  "bubble_seconds": 5.0,
+  "bubble_max_chars": 40,
+  "said_recently_max": 6,
   "name_colors": [
     [0.55, 0.85, 1.0],
     [1.0, 0.75, 0.4],

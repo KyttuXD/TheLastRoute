@@ -375,6 +375,19 @@ fn is_public_v6(a: Ipv6Addr) -> bool {
 }
 
 /// True for `localhost` and the loopback addresses: the only place plain http may be used for a redirect.
+/// Whether a plain `http://` request to `url` may be sent: loopback hosts always (a developer's own server, the tests);
+/// the TEST instance in `config::TEST_BASE_URLS` only in a debug build (the documented exception, until it moves to
+/// https); every other host needs https. Release builds refuse the rest.
+pub fn plain_http_allowed(url: &Url, debug_build: bool) -> bool {
+    if is_loopback_host(&url.host) {
+        return true;
+    }
+    debug_build
+        && super::config::TEST_BASE_URLS
+            .iter()
+            .any(|t| parse_url(t).is_ok_and(|u| !u.https && u.host.eq_ignore_ascii_case(&url.host) && u.port == url.port))
+}
+
 fn is_loopback_host(host: &str) -> bool {
     let host = host.trim_matches(['[', ']']);
     host.eq_ignore_ascii_case("localhost") || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
@@ -475,6 +488,10 @@ enum Stream {
 impl Stream {
     fn open(tcp: TcpStream, url: &Url, tls: &Arc<Tls>) -> Result<Stream, NetError> {
         if !url.https {
+            // TODO 1075: a release build speaks plain http only to a loopback host (a debug build also to the TEST instance)
+            if !plain_http_allowed(url, cfg!(debug_assertions)) {
+                return Err(NetError::Unsupported(super::api::error_texts().text("http_insecure")));
+            }
             return Ok(Stream::Plain(tcp));
         }
         #[cfg(target_arch = "wasm32")]
@@ -1243,5 +1260,22 @@ mod tests {
             eprintln!("{url} -> {:?}", r.as_ref().map(|r| (r.status, r.body.len())));
             assert!(r.is_ok(), "{url}: {r:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod plain_http_policy_tests {
+    use super::*;
+
+    #[test]
+    fn release_refuses_plain_http_off_loopback() {
+        let url = |s: &str| parse_url(s).unwrap();
+        assert!(plain_http_allowed(&url("http://127.0.0.1:81/x"), false));
+        assert!(plain_http_allowed(&url("http://localhost:81/x"), false));
+        assert!(!plain_http_allowed(&url("http://example.org/x"), false));
+        assert!(!plain_http_allowed(&url("http://example.org/x"), true), "a debug build still refuses arbitrary hosts");
+        let test = url(super::super::config::TEST_BASE_URLS[0]);
+        assert!(!plain_http_allowed(&test, false), "release refuses the TEST instance over http");
+        assert!(plain_http_allowed(&test, true), "debug allows the TEST instance");
     }
 }

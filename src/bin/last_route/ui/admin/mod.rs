@@ -19,6 +19,7 @@ mod actions;
 pub use actions::RoomStatus;
 mod effects;
 mod hub;
+pub mod hunter_view;
 mod look;
 mod menu;
 mod menu_data;
@@ -183,6 +184,11 @@ pub struct Admin {
     show_collision: bool,
     hunter_reveal: bool,
     perf_overlay: bool,
+    /// DEBUG VIEW: PATHS and NAV (COLLIDERS is `show_collision`); saved in admin.cfg.
+    show_paths: bool,
+    show_nav: bool,
+    /// HUNTER VIEW (HUNTERS tab): the toggle and the selected hunter.
+    hv: hunter_view::HunterView,
     view: View,
 
     /// GameState.debug_run: any tool used this run (nothing from it should be recorded).
@@ -246,6 +252,9 @@ impl Admin {
             show_collision: false,
             hunter_reveal: false,
             perf_overlay: prefs.get("perf_overlay"),
+            show_paths: prefs.get("show_paths"),
+            show_nav: prefs.get("show_nav"),
+            hv: Default::default(),
             view: View::Off,
             debug_run: false,
             summoned: vec![],
@@ -286,6 +295,9 @@ impl Admin {
         self.region_map = false;
         self.show_collision = false;
         self.perf_overlay = false;
+        self.show_paths = false;
+        self.show_nav = false;
+        self.hv = Default::default();
         self.show_traps = false;
         self.light_sight = true;
         self.run_speed = 1.0;
@@ -509,6 +521,63 @@ impl Admin {
         dt * self.game_speed
     }
 
+    /// STEP (HUNTERS tab): while the game is paused, the next `game_dt` call runs exactly one 60 Hz tick, then the
+    /// pause holds again. Host and solo only: a guest never simulates hunters, so it gets false and nothing happens.
+    pub fn step_one_tick(&mut self) -> bool {
+        if self.in_room || self.game_speed != 0.0 {
+            return false;
+        }
+        self.step_frames = 1;
+        true
+    }
+
+    /// HUNTER VIEW is on (admin signed in and the toggle set).
+    pub fn hunter_view_on(&self) -> bool {
+        self.enabled && self.hv.on
+    }
+
+    /// DEBUG VIEW toggles for the renderer: COLLIDERS, PATHS, NAV.
+    pub fn debug_colliders(&self) -> bool {
+        self.enabled && self.show_collision
+    }
+
+    pub fn debug_paths(&self) -> bool {
+        self.enabled && self.show_paths
+    }
+
+    pub fn debug_nav(&self) -> bool {
+        self.enabled && self.show_nav
+    }
+
+    /// The hunter HUNTER VIEW follows, as read from the live list (None when off or none picked).
+    pub fn hunter_view_snapshot(&self, g: &Game) -> Option<hunter_view::HunterSnapshot> {
+        if !self.hunter_view_on() {
+            return None;
+        }
+        let i = self.hv.selected?;
+        let b = g.hunters.get(i)?;
+        Some(hunter_view::HunterSnapshot::from_brain(i, b, b.path_cells(), self.summoned.contains(&b.def.id)))
+    }
+
+    /// A click in the 3D view while HUNTER VIEW is on: picks the hunter nearest the ray (`origin`, `dir`).
+    pub fn pick_hunter(&mut self, origin: [f32; 3], dir: [f32; 3], g: &Game) -> bool {
+        if !self.hunter_view_on() {
+            return false;
+        }
+        // each hunter's body centre in the view's frame: her feet on her own storey (stack_actors::actor_dy), half her height up
+        let centres: Vec<(usize, [f32; 3])> = g
+            .hunters
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (i, [b.pos.0, crate::render::stack_actors::actor_dy(b.y, g.fac.level) + crate::config::HUNTER_HEIGHT * 0.5, b.pos.1]))
+            .collect();
+        let hit = self.hv.pick(origin, dir, &centres);
+        if let Some(i) = self.hv.selected.filter(|_| hit) {
+            self.sel.insert("hv_hunter", i);
+        }
+        hit
+    }
+
     /// A new run (or a restart) applies the persisted admin preferences, as
     /// `_apply_persisted_admin_preferences` does when the route starts.
     fn track_run(&mut self, g: &mut Game) {
@@ -528,6 +597,8 @@ impl Admin {
         self.region_map = self.prefs.get("region_map");
         self.show_collision = self.prefs.get("show_collision");
         self.perf_overlay = self.prefs.get("perf_overlay");
+        self.show_paths = self.prefs.get("show_paths");
+        self.show_nav = self.prefs.get("show_nav");
         self.run_speed = 1.0;
         self.game_speed = 1.0;
         self.step_frames = 0;
@@ -576,6 +647,8 @@ impl Admin {
     /// Call right after `Game::update` with the frame's controls (zeroed while the menu is
     /// open) and the dt the run was stepped with.
     pub fn after_update(&mut self, g: &mut Game, c: &Controls, content: &Content, dt: f32) {
+        // HUNTER VIEW for the maps and the 3D pass, read after the step so the route matches the drawn hunter
+        hunter_view::set_frame(hunter_view::Frame { view: self.hunter_view_snapshot(g), paths: self.debug_paths(), nav: self.debug_nav() });
         if !self.enabled || !self.pre.valid {
             return;
         }

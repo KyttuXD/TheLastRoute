@@ -6,6 +6,7 @@
 //! one ACTION dropdown for the section's plain actions, the hunter picker, the NPC panel and the
 //! FIELDS line edits. Clicks become `Cmd`s that `actions.rs` runs on the Game.
 
+use super::hunter_view;
 use super::look::*;
 use super::actions::{npc_button, NpcButton};
 use super::menu_data::menu;
@@ -68,8 +69,16 @@ pub(super) fn hunter_list(content: &Content) -> Vec<(String, String)> {
     az.sort();
     rest.sort();
     az.extend(rest);
+    // both wolf spiders at once, linked as one pair (Game::link_spider_pair), when the content has both
+    use crate::hunters::secret_creatures as secret;
+    if secret::IDS.iter().all(|id| content.hunter(id).is_some()) {
+        az.push((SPIDER_PAIR.to_string(), "WOLF SPIDER PAIR".to_string()));
+    }
     az
 }
+
+/// The picker's pseudo id of the wolf spider pair entry (not a hunter definition).
+pub(super) const SPIDER_PAIR: &str = "wolf_spider_pair";
 
 /// `text` cut with "..." so that it is no wider than `width` (the one hint line has no room to wrap).
 fn fit(ui: &Ui, text: &str, size: f32, width: f32) -> String {
@@ -358,6 +367,7 @@ impl Admin {
             }
             3 => {
                 self.hunter_tool(&mut ui, &mut col, &mut cmds, &hunters);
+                self.hunter_view_panel(&mut ui, &mut col, &mut cmds, g);
                 self.dd_row(
                     &mut ui,
                     &mut col,
@@ -472,6 +482,9 @@ impl Admin {
             8 => {
                 self.toggle_row(&mut ui, &mut col, &mut cmds, "fullbright", "FULLBRIGHT");
                 self.toggle_row(&mut ui, &mut col, &mut cmds, "wireframe", "WIREFRAME");
+                self.toggle_row(&mut ui, &mut col, &mut cmds, "show_collision", "COLLIDERS");
+                self.toggle_row(&mut ui, &mut col, &mut cmds, "show_paths", "PATHS");
+                self.toggle_row(&mut ui, &mut col, &mut cmds, "show_nav", "NAV");
                 self.reset_row(&mut ui, &mut col, g);
             }
             _ => self.fields_page(&mut ui, &mut col, &mut cmds, content),
@@ -650,6 +663,46 @@ impl Admin {
                 self.sel_of("hunter_do"),
                 self.sel_of("emote"),
             ));
+        }
+    }
+
+    /// HUNTER VIEW: the toggle, the viewed-hunter dropdown (rebuilt from the live hunters, admin-spawned ones
+    /// included), STEP while paused, and the state / target / last sighting / path cost readout.
+    fn hunter_view_panel(&mut self, ui: &mut Ui, col: &mut Col, cmds: &mut Vec<Cmd>, g: &Game) {
+        let u = col.u;
+        self.toggle_row(ui, col, cmds, "hunter_view", "HUNTER VIEW");
+        let live = hunter_view::live_list(g, &self.summoned);
+        let entries = hunter_view::dropdown_entries(&live);
+        self.hv.clamp(live.len());
+        let c = col.take(line_h(7.0), 4.0);
+        if ui.visible(c) {
+            ui.text("VIEWED HUNTER", c.x, c.y, 7.0, AMBER);
+        }
+        if entries.is_empty() {
+            let r = col.take(line_h(6.0), 4.0);
+            if ui.visible(r) {
+                ui.text("NO LIVE HUNTERS", r.x, r.y, 6.0, MUTED);
+            }
+            self.hv.selected = None;
+            return;
+        }
+        let r = col.take(18.0, 4.0);
+        let dd = Rect::new(r.x, r.y, r.w - 50.0 * u, r.h);
+        let step = Rect::new(r.x + r.w - 46.0 * u, r.y, 46.0 * u, r.h);
+        self.dropdown(ui, dd, "hv_hunter", entries.into_iter().map(|(_, l)| l).collect(), 5.0);
+        self.hv.selected = Some(self.sel_of("hv_hunter").min(live.len() - 1));
+        if ui.button(step, "STEP", 8.0, true, self.focus.as_deref() == Some("hv_step")) {
+            self.focus = Some("hv_step".into());
+            cmds.push(Cmd::Run("hv_step", 0));
+        }
+        if let Some(snap) = self.hunter_view_snapshot(g) {
+            let stats = hunter_view::stats_for(&g.fac, &snap);
+            for line in hunter_view::readout_lines(&snap, stats.as_ref()) {
+                let r = col.take(line_h(6.0), 2.0);
+                if ui.visible(r) {
+                    ui.text(&line, r.x, r.y, 6.0, MUTED);
+                }
+            }
         }
     }
 

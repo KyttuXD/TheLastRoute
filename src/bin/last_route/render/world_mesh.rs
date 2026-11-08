@@ -14,7 +14,7 @@ use super::surfaces;
 use super::textures::{self, TexRef, TextureChoice};
 use crate::shared::assets::Assets;
 use crate::config::WALL_HEIGHT;
-use crate::content::props::{stable_index, visual_y};
+use crate::content::props::visual_y;
 use crate::content::regions::{RegionDef, RegionSafeLight};
 use crate::content::Content;
 use crate::world::facility::{Cell, DoorDraw, Prop, Stair};
@@ -959,6 +959,8 @@ fn lamps_with(f: &Facility, lights_on: &[bool], content: &Content, dark: &[bool]
         if lights_on.get(i).copied().unwrap_or(true) {
             let (x, z) = l.center.center();
             let tint = f.rooms.get(l.room).map_or(Tint::NONE, |r| table.room_tint(&r.region, &r.rtype));
+            // the room role's own light colour and strength (data/render/area_lights.json); no room: the neutral default
+            let area = crate::render::surfaces::area_light(f.rooms.get(l.room).map_or("", |r| r.rtype.as_str()));
             let pos = vec3(x, fixture_ceiling(f, l.center) - 0.34, z);
             let (hz, depth) = f
                 .rooms
@@ -968,8 +970,8 @@ fn lamps_with(f: &Facility, lights_on: &[bool], content: &Content, dark: &[bool]
             out.push(Lamp {
                 pos,
                 range: l.range * 1.4,
-                color: tinted(l.color, tint),
-                energy: l.energy * tint.energy,
+                color: area_tinted(l.color, tint, area),
+                energy: l.energy * tint.energy * area.energy,
                 flicker: lamp_flicker::make(hz, depth, world_place(f, pos)),
             });
         }
@@ -1006,6 +1008,7 @@ fn lamps_with(f: &Facility, lights_on: &[bool], content: &Content, dark: &[bool]
             Some(i) => table.room_tint(&f.rooms[i].region, &f.rooms[i].rtype),
             None => table.room_tint(f.region_at(p.cell.x, p.cell.y), ""),
         };
+        let area = crate::render::surfaces::area_light(room.map_or("", |i| f.rooms[i].rtype.as_str()));
         let (cx, cz) = p.cell.center();
         let (x, z) = (cx + p.offset.0, cz + p.offset.1);
         let yaw = p.rotation as f32 * std::f32::consts::FRAC_PI_2;
@@ -1015,9 +1018,9 @@ fn lamps_with(f: &Facility, lights_on: &[bool], content: &Content, dark: &[bool]
         out.push(Lamp {
             pos,
             range: light.range,
-            color: tinted(light.color, tint),
+            color: area_tinted(light.color, tint, area),
             // Godot's omni energy reads brighter than this shader's linear falloff; doubled to match
-            energy: light.energy * 2.0 * tint.energy,
+            energy: light.energy * 2.0 * tint.energy * area.energy,
             flicker: lamp_flicker::make(light.flicker_hz, light.flicker_depth, world_place(f, pos)),
         });
     }
@@ -1027,6 +1030,11 @@ fn lamps_with(f: &Facility, lights_on: &[bool], content: &Content, dark: &[bool]
 /// A lamp colour under a room tint.
 fn tinted(c: (f32, f32, f32), t: Tint) -> Color {
     Color::new(c.0 * t.color[0], c.1 * t.color[1], c.2 * t.color[2], 1.0)
+}
+
+/// A lamp colour under a room tint and its room role's area light (render/surfaces.rs `area_light`).
+fn area_tinted(c: (f32, f32, f32), t: Tint, area: crate::render::surfaces::AreaLight) -> Color {
+    tinted((c.0 * area.color[0], c.1 * area.color[1], c.2 * area.color[2]), t)
 }
 
 /// Per room: whether it starts dark. Only the rooms of a level 0 Infinite window (no service lift) can; the lobby never.
@@ -1253,12 +1261,8 @@ fn variant_key(f: &Facility, room: usize, prop_id: &str) -> String {
 /// The model a prop is drawn with: the variant its room picks, else the first one that is loaded.
 fn prop_model_key<'c>(f: &Facility, p: &Prop, assets: &Assets, content: &'c Content) -> Option<&'c String> {
     let models = content.props.get(&p.ptype).map(|d| d.models.as_slice()).filter(|m| !m.is_empty())?;
-    let picked = &models[stable_index(&variant_key(f, p.room, &p.id), models.len())];
-    if assets.models.contains_key(picked) {
-        Some(picked)
-    } else {
-        models.iter().find(|m| assets.models.contains_key(*m))
-    }
+    let i = crate::render::prop_model::pick_variant(models, &variant_key(f, p.room, &p.id), |m| assets.models.contains_key(m))?;
+    Some(&models[i])
 }
 
 /// Where a room door stands: raised to the hunter's opening and widened to its doorway, on its doorway's centre.
@@ -1356,6 +1360,14 @@ pub struct DecorCfg {
     pub crack_lift_m: f32,
     /// Shader mode of a crack (2 = unlit, so it glows).
     pub crack_unlit_mode: f32,
+    /// A hanging cage's square width, the thickness of its bars and of the chain to the ceiling, in metres, and the gap
+    /// it keeps under the ceiling (its bottom is raised no higher than that).
+    pub cage_width_m: f32,
+    pub cage_bar_m: f32,
+    pub cage_chain_m: f32,
+    pub cage_ceiling_gap_m: f32,
+    /// How far an open cage's door stands ajar, in degrees.
+    pub cage_door_ajar_deg: f32,
 }
 
 impl DecorCfg {
@@ -1368,6 +1380,8 @@ impl DecorCfg {
                 .filter(|x| x.is_finite() && *x >= 0.0)
                 .ok_or_else(|| format!("world_decor.json: \"{k}\" must be a number of zero or more"))
         };
+        // the cage numbers came later: a file without them keeps the shipped values
+        let opt = |k: &str, default: f32| -> Result<f32, String> { if v.get(k).is_some() { num(k) } else { Ok(default) } };
         let sides = num("cone_sides")?;
         if sides < 3.0 {
             return Err("world_decor.json: \"cone_sides\" must be at least 3".to_string());
@@ -1380,6 +1394,11 @@ impl DecorCfg {
             crack_length_fraction: num("crack_length_fraction")?,
             crack_lift_m: num("crack_lift_m")?,
             crack_unlit_mode: num("crack_unlit_mode")?,
+            cage_width_m: opt("cage_width_m", 0.9)?,
+            cage_bar_m: opt("cage_bar_m", 0.035)?,
+            cage_chain_m: opt("cage_chain_m", 0.03)?,
+            cage_ceiling_gap_m: opt("cage_ceiling_gap_m", 0.15)?,
+            cage_door_ajar_deg: opt("cage_door_ajar_deg", 55.0)?,
         })
     }
 }
@@ -1401,6 +1420,11 @@ pub fn decor_cfg() -> &'static DecorCfg {
                 crack_length_fraction: 1.0,
                 crack_lift_m: 0.012,
                 crack_unlit_mode: 2.0,
+                cage_width_m: 0.9,
+                cage_bar_m: 0.035,
+                cage_chain_m: 0.03,
+                cage_ceiling_gap_m: 0.15,
+                cage_door_ajar_deg: 55.0,
             }
         })
     })
@@ -1474,6 +1498,52 @@ fn add_deco(
             );
         }
         DecoKind::LavaGlow | DecoKind::Ember => {}
+    }
+}
+
+/// One hanging cage at (`x`, `z`): a floor and a roof plate, a bar at each corner and one mid bar on each side, and a chain
+/// from the roof to `ceiling_y`. The bottom hangs `cage.bottom_m` over `floor_y`, lowered when that would put the roof
+/// into the ceiling. An open cage's front mid bar is its door, swung out on the corner bar.
+fn add_cage(plain: &mut Builder, cage: &crate::render::inferno_deco::Cage, (x, z): (f32, f32), floor_y: f32, ceiling_y: f32, cfg: &DecorCfg) {
+    let (w, bar, h) = (cfg.cage_width_m, cfg.cage_bar_m, cage.height_m);
+    if w <= 0.0 || h <= 0.0 || bar <= 0.0 {
+        return;
+    }
+    let top_limit = ceiling_y - cfg.cage_ceiling_gap_m;
+    let bottom = (floor_y + cage.bottom_m).min(top_limit - h).max(floor_y);
+    let top = bottom + h;
+    let col = rgb(cage.color);
+    let rot = Mat3::from_rotation_y(cage.yaw);
+    let at = |u: f32, y: f32, v: f32| vec3(x, 0.0, z) + rot * vec3(u, 0.0, v) + vec3(0.0, y, 0.0);
+    let half = w * 0.5;
+    let mid_y = bottom + h * 0.5;
+    // floor and roof plates
+    plain.cube(at(0.0, bottom + bar * 0.5, 0.0), vec3(w, bar, w), cage.yaw, col, 0.0);
+    plain.cube(at(0.0, top - bar * 0.5, 0.0), vec3(w, bar, w), cage.yaw, col, 0.0);
+    // corner bars
+    for (su, sv) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+        plain.cube(at(su * (half - bar * 0.5), mid_y, sv * (half - bar * 0.5)), vec3(bar, h, bar), cage.yaw, col, 0.0);
+    }
+    // one mid bar on each side; the front one (+v) is the door
+    for (u, v) in [(0.0, -1.0), (1.0, 0.0), (-1.0, 0.0)] {
+        plain.cube(at(u * (half - bar * 0.5), mid_y, v * (half - bar * 0.5)), vec3(bar, h, bar), cage.yaw, col, 0.0);
+    }
+    let door_v = half - bar * 0.5;
+    if cage.open {
+        // the door swings out on the (-u, +v) corner: its free edge lands half a width along the swung direction
+        let a = cfg.cage_door_ajar_deg.to_radians();
+        let (s, c) = a.sin_cos();
+        let free = (-half + c * half, door_v + s * half);
+        plain.cube(at(free.0, mid_y, free.1), vec3(bar, h, bar), cage.yaw, col, 0.0);
+        let mid = ((-half + free.0) * 0.5, (door_v + free.1) * 0.5);
+        plain.cube(at(mid.0, top - bar * 1.5, mid.1), vec3(half, bar, bar), cage.yaw - a, col, 0.0);
+    } else {
+        plain.cube(at(0.0, mid_y, door_v), vec3(bar, h, bar), cage.yaw, col, 0.0);
+    }
+    // the chain up to the ceiling
+    if ceiling_y > top {
+        let chain = cfg.cage_chain_m.max(0.005);
+        plain.cube(at(0.0, (top + ceiling_y) * 0.5, 0.0), vec3(chain, ceiling_y - top, chain), cage.yaw, col, 0.0);
     }
 }
 
@@ -1860,6 +1930,15 @@ fn build_meshes(
                     let (px, pz) = (cell.0 as f32 + 0.5 + d.offset[0], cell.1 as f32 + 0.5 + d.offset[1]);
                     d.floor_y = terrain.floor_at(px, pz);
                     add_deco(&mut plain, &mut glow, &d, at, terrain.ceiling_at(px, pz), cfg);
+                }
+            }
+            // the hanging iron cages of the cage-pit district (render/inferno_deco.rs place_cages), each on a chain to the
+            // ceiling over it; sway and phase are for an animated draw, this static mesh hangs them still
+            for cage in crate::render::inferno_deco::inferno_deco().place_cages(&seed, ChunkKey { cx: key.0, cy: key.1, level: INFERNO_LEVEL }, carved) {
+                let cell = (at.0 + cage.cell.x, at.1 + cage.cell.y);
+                if owned.contains(&cell) {
+                    let (px, pz) = (cell.0 as f32 + 0.5 + cage.offset[0], cell.1 as f32 + 0.5 + cage.offset[1]);
+                    add_cage(&mut plain, &cage, (px, pz), terrain.floor_at(px, pz), terrain.ceiling_at(px, pz), cfg);
                 }
             }
         }

@@ -194,3 +194,28 @@ fn sewer_room_lights_sit_under_the_wall() {
         }
     }
 }
+
+/// The limit the fit tests use is the sewer region file's own `geometry.wall_height`, not a number in a test: reading the
+/// raw JSON gives the same 4.0 m, so a data change moves both the wall and the check.
+#[test]
+fn the_fit_limit_is_read_from_the_region_data() {
+    for (region, file) in [("sewer", "regions/sewer.json"), ("sewer2", "regions/sewer2.json")] {
+        let (_, text) = embedded::data_under(file).next().unwrap_or_else(|| panic!("{file} is embedded"));
+        let v: serde_json::Value = serde_json::from_str(text).unwrap();
+        let raw = v["geometry"]["wall_height"].as_f64().expect("geometry.wall_height") as f32;
+        assert_eq!(wall_of(region), seams::wall_top(raw), "{region}");
+    }
+}
+
+/// Every mounted sewer feature kind hangs under the wall at its own mount height (the lamp, the valve wheel, the pipes):
+/// the mount itself leaves room for a model of 5 cm or more.
+#[test]
+fn every_sewer_mount_height_is_under_the_wall() {
+    let wall = wall_of("sewer");
+    for ptype in content().props.keys().filter(|t| t.starts_with("sewer")) {
+        if let Some(mount) = feature_mount_y(ptype) {
+            assert!(mount as f32 + 0.05 <= wall, "{ptype} mounts at {mount} m under a {wall} m wall");
+        }
+    }
+    assert!(crawl_pipe_mount_y() as f32 + 0.05 <= wall);
+}

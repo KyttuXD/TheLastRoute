@@ -508,6 +508,14 @@ mod tests {
         assert!(failures.is_empty(), "{} mismatches; first: {}", failures.len(), failures.first().cloned().unwrap_or_default());
     }
 
+    /// hunter_roster.gd:199-200, written out so a slip in the constants shows.
+    #[test]
+    fn affinity_lists_are_godots_literally() {
+        assert_eq!(SEWER_PREFER, ["verrine", "umbriel", "wynelle", "glyra", "loxelle", "ravelle"]);
+        assert_eq!(SEWER_AVOID, ["kathy", "ferryn", "solyth", "porcelle"]);
+        assert!(SEWER_PREFER.iter().all(|id| !SEWER_AVOID.contains(id)), "no hunter both prefers and avoids");
+    }
+
     #[test]
     fn sewer_affinity_follows_the_roster_lists() {
         for id in SEWER_PREFER {

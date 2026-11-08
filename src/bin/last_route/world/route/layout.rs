@@ -2313,6 +2313,11 @@ pub fn chunk_layout(world: &str, c: Coord) -> Option<ChunkLayout> {
     // writes the grid that the furniture reads (stage 3a).
     let safe = gen.is_safe_room(c);
     let doors = grid::level0_before_props(&mut grid, &parts.rooms, region, safe);
+    // the region's hall shapes (data/world/hall_shapes.json): alcoves and opened junctions, carved before the props,
+    // pickups and spawns read the grid. Never on the Godot parity layout, which keeps Godot's halls exactly.
+    if !godot_regions() && !hollow {
+        grid::carve_hall_shapes(&mut grid, &parts.rooms, region, &format!("{world}:HALL-SHAPES:{}", props::chunk_tag(c)), grid::hall_shapes());
+    }
     // 1007: _region_props (props.rs, stage 3b-ii)
     let region_props = props::region_props(world, c, region, &parts.rooms, &grid, &doors, safe, &parts.circulation);
     // 1016-1022 (grid.rs): the second restore, the authored doorways and the hump pass

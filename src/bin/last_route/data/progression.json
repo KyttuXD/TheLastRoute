@@ -17,6 +17,13 @@
   "chase_speed_scale": { "relaxed": 1.06, "standard": 1.06, "hard": 1.0, "nightmare": 1.09 },
   "chase_speed_scale_skip": ["secret"],
   "relay_rush": { "relays": 7, "delay_seconds": 45.0, "include_searching": true, "search_clear": 12.0 },
+  "autosave": {
+    "triggers": ["boundary", "pause_quit", "pickup", "safe_room"],
+    "always": ["boundary", "pause_quit", "safe_room"],
+    "keep_backup": true,
+    "store_position": true,
+    "min_interval_s": 5.0
+  },
   "milestones": [
     { "relays": 5, "unlocks": ["service_lift"] },
     { "relays": 7, "unlocks": ["relay_rush"] }

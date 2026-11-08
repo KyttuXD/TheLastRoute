@@ -12,5 +12,6 @@
 	"spawn": 14,
 	"chase_style": "reach2",
 	"taser_immune": true,
-	"melee_immune": false
+	"melee_immune": false,
+	"dossier": "EVERY 26 SECONDS, THIS SABOTEUR DISABLES EITHER THE FLASHLIGHT, CLIMATE CONTROLS, OR RADAR FOR NINE SECONDS. THE SELECTED SYSTEM RETURNS AUTOMATICALLY. MOVE TO A SAFE POSITION AND WAIT FOR THE OUTAGE TO END."
 }

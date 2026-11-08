@@ -52,6 +52,40 @@ pub struct KindRule {
 #[derive(Clone, Debug)]
 pub struct InfernoDeco {
     pub rules: Vec<(DecoKind, KindRule)>,
+    /// The hanging cages of the cage-pit district (`cages` block); None when the table has none.
+    pub cages: Option<CageRules>,
+}
+
+/// Where the iron cages hang and how (the `cages` block of data/render/inferno.json; Godot CAGE_* in inferno_caverns.gd).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CageRules {
+    pub tiers: Vec<Tier>,
+    pub chance: f32,
+    /// Cells (Chebyshev) kept clear between two cages.
+    pub min_spacing: i32,
+    pub max_per_chunk: usize,
+    /// Cells around a cage that hold no lava (a cage hangs over ground, not over the pit).
+    pub lava_clearance: i32,
+    pub height_m: f32,
+    /// (bottom height above the floor in metres, weight) the cage hangs at.
+    pub bottoms: Vec<(f32, f32)>,
+    pub sway_chance: f32,
+    pub open_chance: f32,
+    pub color: [f32; 3],
+}
+
+/// One placed cage. `cell` is chunk-local.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cage {
+    pub cell: Cell,
+    pub offset: [f32; 2],
+    pub bottom_m: f32,
+    pub height_m: f32,
+    pub sway: bool,
+    pub open: bool,
+    pub yaw: f32,
+    pub phase: f32,
+    pub color: [f32; 3],
 }
 
 /// One placed piece. `cell` is chunk-local.
@@ -82,7 +116,59 @@ impl InfernoDeco {
             let v = kinds.get(name).ok_or_else(|| format!("{name}: missing"))?;
             rules.push((kind, parse_rule(name, v)?));
         }
-        Ok(InfernoDeco { rules })
+        let cages = match root.get("cages") {
+            Some(c) => Some(parse_cages(c)?),
+            None => None,
+        };
+        Ok(InfernoDeco { rules, cages })
+    }
+
+    /// Places the chunk's hanging cages. Deterministic from `seed` and `key`; never on a closed cell, in the stair bay or beside lava.
+    pub fn place_cages(&self, seed: &str, key: ChunkKey, inf: &InfernoChunk) -> Vec<Cage> {
+        let Some(rule) = &self.cages else { return Vec::new() };
+        let total: f32 = rule.bottoms.iter().map(|b| b.1).sum();
+        let mut out: Vec<Cage> = Vec::new();
+        for c in inf.open_cells() {
+            if out.len() >= rule.max_per_chunk {
+                break;
+            }
+            if inf.in_bay(c) || !rule.tiers.contains(&inf.tier_at(c)) {
+                continue;
+            }
+            let h = hash(seed, key, c, CAGE_HASH);
+            if unit(h, 0) >= rule.chance {
+                continue;
+            }
+            if out.iter().any(|k| (k.cell.x - c.x).abs().max((k.cell.y - c.y).abs()) < rule.min_spacing) {
+                continue;
+            }
+            let near_lava = (-rule.lava_clearance..=rule.lava_clearance)
+                .any(|dy| (-rule.lava_clearance..=rule.lava_clearance).any(|dx| inf.is_lava(Cell::new(c.x + dx, c.y + dy))));
+            if near_lava {
+                continue;
+            }
+            let mut pick = unit(h, 6) * total;
+            let mut bottom = rule.bottoms[0].0;
+            for (b, w) in &rule.bottoms {
+                bottom = *b;
+                if pick < *w {
+                    break;
+                }
+                pick -= w;
+            }
+            out.push(Cage {
+                cell: c,
+                offset: [unit(h, 1) - 0.5, unit(h, 2) - 0.5],
+                bottom_m: bottom,
+                height_m: rule.height_m,
+                sway: unit(h, 7) < rule.sway_chance,
+                open: unit(h, 8) < rule.open_chance,
+                yaw: unit(h, 4) * std::f32::consts::TAU,
+                phase: unit(h, 5),
+                color: rule.color,
+            });
+        }
+        out
     }
 
     pub fn rule(&self, kind: DecoKind) -> Option<&KindRule> {
@@ -128,6 +214,61 @@ impl InfernoDeco {
         }
         out
     }
+}
+
+/// The kind id mixed into a cage's hash (apart from every `DecoKind`).
+const CAGE_HASH: i32 = 100;
+
+fn parse_cages(v: &serde_json::Value) -> Result<CageRules, String> {
+    let num = |k: &str| v.get(k).and_then(|x| x.as_f64()).filter(|n| *n >= 0.0).map(|n| n as f32).ok_or_else(|| format!("cages.{k}: expected a number, zero or more"));
+    let prob = |k: &str| num(k).and_then(|n| if n <= 1.0 { Ok(n) } else { Err(format!("cages.{k}: expected 0 to 1")) });
+    let tiers = v
+        .get("tiers")
+        .and_then(|t| t.as_array())
+        .ok_or("cages.tiers: missing")?
+        .iter()
+        .map(|t| match t.as_str() {
+            Some("ledge") => Ok(Tier::Ledge),
+            Some("slope") => Ok(Tier::Slope),
+            Some("basin") => Ok(Tier::Basin),
+            _ => Err("cages.tiers: expected ledge, slope or basin".to_string()),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let bottoms = v
+        .get("bottoms")
+        .and_then(|b| b.as_array())
+        .filter(|b| !b.is_empty())
+        .ok_or("cages.bottoms: expected a list of [bottom_m, weight]")?
+        .iter()
+        .map(|row| {
+            let a = row.as_array().filter(|a| a.len() == 2);
+            match a.map(|a| (a[0].as_f64(), a[1].as_f64())) {
+                Some((Some(b), Some(w))) if b >= 0.0 && w > 0.0 => Ok((b as f32, w as f32)),
+                _ => Err("cages.bottoms: expected [bottom_m >= 0, weight > 0]".to_string()),
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let color = v
+        .get("color")
+        .and_then(|c| c.as_array())
+        .filter(|c| c.len() == 3)
+        .and_then(|c| {
+            let ch: Vec<f32> = c.iter().filter_map(|x| x.as_f64().filter(|n| (0.0..=1.0).contains(n)).map(|n| n as f32)).collect();
+            (ch.len() == 3).then(|| [ch[0], ch[1], ch[2]])
+        })
+        .ok_or("cages.color: expected [r, g, b], each 0 to 1")?;
+    Ok(CageRules {
+        tiers,
+        chance: prob("chance")?,
+        min_spacing: num("min_spacing")? as i32,
+        max_per_chunk: num("max_per_chunk")? as usize,
+        lava_clearance: num("lava_clearance")? as i32,
+        height_m: num("height_m")?,
+        bottoms,
+        sway_chance: prob("sway_chance")?,
+        open_chance: prob("open_chance")?,
+        color,
+    })
 }
 
 fn parse_rule(name: &str, v: &serde_json::Value) -> Result<KindRule, String> {
@@ -207,7 +348,7 @@ pub fn inferno_deco() -> &'static InfernoDeco {
         let text = crate::content::embedded::data_under(PATH).next().map(|(_, t)| t).unwrap_or("{}");
         InfernoDeco::parse(text).unwrap_or_else(|e| {
             eprintln!("{PATH}: {e}");
-            InfernoDeco { rules: Vec::new() }
+            InfernoDeco { rules: Vec::new(), cages: None }
         })
     })
 }
@@ -433,6 +574,31 @@ pub fn window_decos(deco: &InfernoDeco, seed: &str, center: (i32, i32)) -> Vec<P
     out
 }
 
+/// A placed cage in window metres: `pos` is (x, floor height, z); the cage bottom hangs `cage.bottom_m` above `pos[1]`.
+#[derive(Clone, Copy, Debug)]
+pub struct PlacedCage {
+    pub cage: Cage,
+    pub pos: [f32; 3],
+}
+
+/// Every cage of the 3x3 window around `center`, placed like [`window_decos`].
+pub fn window_cages(deco: &InfernoDeco, seed: &str, center: (i32, i32)) -> Vec<PlacedCage> {
+    let mut out = Vec::new();
+    let terrain = crate::world::inferno_terrain::Terrain::new(seed, ((center.0 - 1) * CHUNK, (center.1 - 1) * CHUNK), 3);
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            let key = ChunkKey { cx: center.0 + dx, cy: center.1 + dy, level: crate::world::infinite::INFERNO_LEVEL };
+            let inf = InfernoChunk::carve(seed, key);
+            let (ox, oy) = (((dx + 1) * CHUNK) as f32, ((dy + 1) * CHUNK) as f32);
+            for cage in deco.place_cages(seed, key, &inf) {
+                let (px, pz) = (ox + cage.cell.x as f32 + 0.5 + cage.offset[0], oy + cage.cell.y as f32 + 0.5 + cage.offset[1]);
+                out.push(PlacedCage { cage, pos: [px, terrain.floor_at(px, pz), pz] });
+            }
+        }
+    }
+    out
+}
+
 type WindowKey = (String, (i32, i32));
 
 thread_local! {
@@ -541,6 +707,69 @@ mod tests {
             }
         }
         panic!("no lava in the sample");
+    }
+
+    fn chunks() -> Vec<(ChunkKey, InfernoChunk)> {
+        let mut v = Vec::new();
+        for cx in 0..4 {
+            for cy in 0..4 {
+                let key = ChunkKey { cx, cy, level: INFERNO_LEVEL };
+                v.push((key, InfernoChunk::carve(SEED, key)));
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn cages_are_placed_deterministically_per_seed_on_open_ground() {
+        let deco = inferno_deco();
+        let rule = deco.cages.as_ref().expect("the shipped table has cages");
+        let mut total = 0;
+        for (key, inf) in chunks() {
+            let a = deco.place_cages(SEED, key, &inf);
+            assert_eq!(a, deco.place_cages(SEED, key, &inf), "same seed, same cages");
+            assert!(a.len() <= rule.max_per_chunk);
+            total += a.len();
+            for c in &a {
+                assert!(inf.open_cells().contains(&c.cell) && !inf.is_lava(c.cell) && !inf.in_bay(c.cell));
+                assert!(rule.bottoms.iter().any(|b| b.0 == c.bottom_m));
+                for l in inf.lava_cells() {
+                    assert!((l.x - c.cell.x).abs().max((l.y - c.cell.y).abs()) > rule.lava_clearance, "a cage hangs over ground");
+                }
+            }
+            for (i, a1) in a.iter().enumerate() {
+                for b in &a[i + 1..] {
+                    assert!((a1.cell.x - b.cell.x).abs().max((a1.cell.y - b.cell.y).abs()) >= rule.min_spacing);
+                }
+            }
+        }
+        assert!(total > 0, "the sample has cages");
+        let other: usize = chunks().iter().map(|(k, i)| deco.place_cages("another-seed", *k, i).len()).sum();
+        let first: Vec<_> = chunks().iter().flat_map(|(k, i)| deco.place_cages(SEED, *k, i)).map(|c| c.cell).collect();
+        let second: Vec<_> = chunks().iter().flat_map(|(k, i)| deco.place_cages("another-seed", *k, i)).map(|c| c.cell).collect();
+        assert!(other > 0 && first != second, "another seed hangs them elsewhere");
+    }
+
+    #[test]
+    fn cage_data_changes_the_placement_and_a_bad_block_is_refused() {
+        let text = crate::content::embedded::data_under(PATH).next().unwrap().1;
+        let mut v: serde_json::Value = serde_json::from_str(text).unwrap();
+        v["cages"]["chance"] = serde_json::json!(0.0);
+        let none = InfernoDeco::parse(&v.to_string()).unwrap();
+        assert!(chunks().iter().all(|(k, i)| none.place_cages(SEED, *k, i).is_empty()));
+        v["cages"]["bottoms"] = serde_json::json!([]);
+        assert!(InfernoDeco::parse(&v.to_string()).is_err());
+        let mut v: serde_json::Value = serde_json::from_str(text).unwrap();
+        v.as_object_mut().unwrap().remove("cages");
+        assert!(InfernoDeco::parse(&v.to_string()).unwrap().cages.is_none());
+    }
+
+    #[test]
+    fn window_cages_stand_inside_the_window() {
+        let cages = window_cages(inferno_deco(), SEED, (1, 1));
+        for c in &cages {
+            assert!(c.pos[0] >= 0.0 && c.pos[0] < (3 * CHUNK) as f32 && c.pos[2] >= 0.0 && c.pos[2] < (3 * CHUNK) as f32);
+        }
     }
 
     #[test]

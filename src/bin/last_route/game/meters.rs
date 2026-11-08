@@ -9,6 +9,8 @@ pub struct Meters {
     pub temperature: f32,
     pub ambient: f32,
     pub heat_locked: bool,
+    /// 0..100, rises awake and falls asleep (data/sleep.json, game/sleep.rs).
+    pub drowsiness: f32,
     noise_input: f32,
     rise_timer: f32,
 }
@@ -31,6 +33,7 @@ impl Default for Meters {
             temperature: 60.0,
             ambient: 60.0,
             heat_locked: false,
+            drowsiness: 0.0,
             noise_input: 0.0,
             rise_timer: 0.0,
         }
@@ -51,6 +54,16 @@ impl Meters {
         if self.temperature >= 100.0 {
             self.heat_locked = true;
         }
+    }
+
+    /// One step of drowsiness (data/sleep.json): rises awake (faster standing still), falls while `sleeping`.
+    pub fn update_drowsiness(&mut self, dt: f32, moving: bool, sleeping: bool, c: &super::sleep::SleepCfg) {
+        self.drowsiness = c.step_drowsiness(self.drowsiness, dt, moving, sleeping);
+    }
+
+    /// Movement multiplier from tiredness (1 when rested); multiply with `movement_scale`.
+    pub fn tired_scale(&self, c: &super::sleep::SleepCfg) -> f32 {
+        c.tired_scale(self.drowsiness)
     }
 
     pub fn overheating(&self) -> bool {
@@ -131,5 +144,28 @@ impl Meters {
         if self.heat_locked {
             self.temperature = self.temperature.max(90.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod drowsiness_tests {
+    use super::*;
+    use crate::game::sleep::sleep_cfg;
+
+    #[test]
+    fn drowsiness_rises_awake_faster_when_still_and_falls_asleep() {
+        let c = sleep_cfg();
+        let (mut still, mut moving) = (Meters::default(), Meters::default());
+        for _ in 0..600 {
+            still.update_drowsiness(0.1, false, false, c);
+            moving.update_drowsiness(0.1, true, false, c);
+        }
+        assert!(still.drowsiness > moving.drowsiness && moving.drowsiness > 0.0);
+        assert!(still.drowsiness <= c.max);
+        let before = still.drowsiness;
+        still.update_drowsiness(1.0, false, true, c);
+        assert!(still.drowsiness < before);
+        assert!(still.tired_scale(c) <= 1.0);
+        assert_eq!(Meters::default().tired_scale(c), 1.0);
     }
 }

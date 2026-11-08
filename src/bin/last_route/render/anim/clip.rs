@@ -315,14 +315,25 @@ thread_local! {
     static RIGS: RefCell<HashMap<String, Option<Rc<Rig>>>> = RefCell::new(HashMap::new());
 }
 
+/// Hunters drawn with another hunter's rig when their own rig file is missing (same model): (id, rig id).
+const RIG_ALIASES: &[(&str, &str)] = &[("black_wolf_spider", "white_wolf_spider")];
+
 /// The rig of a hunter model (assets/hunters/anim/<id>.json), loaded once.
 pub fn rig(id: &str) -> Option<Rc<Rig>> {
     RIGS.with(|r| {
         r.borrow_mut()
             .entry(id.to_string())
             .or_insert_with(|| {
-                let bytes = embedded::asset(&format!("hunters/anim/{id}.json")).or_else(|| embedded::asset(&format!("player/anim/{id}.json")))?;
-                Rig::parse(id, std::str::from_utf8(bytes).ok()?).map(Rc::new)
+                let load = |src: &str| embedded::asset(&format!("hunters/anim/{src}.json")).or_else(|| embedded::asset(&format!("player/anim/{src}.json")));
+                // a hunter with no rig file of its own that wears another's model animates with that rig
+                let (src, bytes) = match load(id) {
+                    Some(b) => (id, b),
+                    None => {
+                        let to = RIG_ALIASES.iter().find(|(a, _)| *a == id).map(|(_, to)| *to)?;
+                        (to, load(to)?)
+                    }
+                };
+                Rig::parse(src, std::str::from_utf8(bytes).ok()?).map(Rc::new)
             })
             .clone()
     })

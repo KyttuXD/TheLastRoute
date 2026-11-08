@@ -1,0 +1,7 @@
+{
+	"_note": "Umbriel (umbriel_gimmick.gd, game_config.gd UMBRIEL_*). interval_seconds is how long she wears one body; excluded ids are never worn (Kathy); pool is the bodies she may wear (HunterRoster.disguise_ids: every profile id but umbriel, nyxie and solyth). copy_abilities_on lists the difficulty ids on which she also runs the worn hunter's ability (Godot nightmareCopiesAbilities); on the others the disguise is only a look.",
+	"interval_seconds": 30,
+	"excluded": ["kathy"],
+	"copy_abilities_on": ["nightmare"],
+	"pool": ["aki", "briselle", "ceryth", "dovelle", "elise", "ferryn", "glyra", "haelith", "ilyra", "javelle", "kathy", "loxelle", "mavrine", "opalie", "porcelle", "quenelle", "ravelle", "thessine", "verrine", "void_black", "void_blue", "void_brown", "void_cyan", "void_gray", "void_green", "void_orange", "void_pink", "void_purple", "void_red", "void_white", "void_yellow", "wynelle", "xivvy", "ysolde", "zellia"]
+}

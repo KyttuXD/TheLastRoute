@@ -3,6 +3,7 @@
 #![allow(dead_code)] // ported API kept ahead of its callers (these items were the lib's pub API); prune as the port settles
 
 pub use last_route_core::shared::paths;
+pub use last_route_core::shared::local_time;
 pub use last_route_core::shared::skin_validate;
 
 pub mod admin_flags;

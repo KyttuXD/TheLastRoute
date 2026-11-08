@@ -52,6 +52,47 @@ pub struct Rule {
     pub near_cells: i32,
     /// Seconds for a runner to resecure a sabotaged relay.
     pub resecure: f32,
+    /// Lights, doors and the lift: timings and this difficulty's chance for each.
+    pub systems: [SystemRule; 3],
+}
+
+/// The other systems a hunter can knock out (host only). Light, door and lift have this port's own timings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum System {
+    Light,
+    Door,
+    Lift,
+}
+
+impl System {
+    pub const ALL: [System; 3] = [System::Light, System::Door, System::Lift];
+    fn key(self) -> &'static str {
+        match self {
+            System::Light => "light",
+            System::Door => "door",
+            System::Lift => "lift",
+        }
+    }
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// One system's rule: how close and how long a hunter lingers, how long it stays out, and the chance per dwell.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SystemRule {
+    pub near_cells: i32,
+    pub dwell: f32,
+    pub seconds: f32,
+    pub chance: f64,
+}
+
+/// Where the sabotageable systems of a floor are.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Sites<'a> {
+    pub lights: &'a [Cell],
+    pub doors: &'a [Cell],
+    pub lift: Option<Cell>,
 }
 
 /// The parsed `lr.hunter_sabotage/1` file: one rule per difficulty id.
@@ -64,6 +105,8 @@ pub struct Rules {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Outcome {
     RelaySabotaged { cell: Cell, resecure: f32 },
+    /// A light, door or the lift is out for `seconds`.
+    SystemSabotaged { system: System, cell: Cell, seconds: f32 },
 }
 
 fn cheb(a: Cell, b: Cell) -> i32 {
@@ -71,7 +114,8 @@ fn cheb(a: Cell, b: Cell) -> i32 {
 }
 
 const RELAY_KEYS: [&str; 3] = ["near_cells", "dwell_s", "resecure_s"];
-const DIFFICULTY_KEYS: [&str; 3] = ["enabled", "target", "chance"];
+const DIFFICULTY_KEYS: [&str; 4] = ["enabled", "target", "chance", "systems"];
+const SYSTEM_KEYS: [&str; 3] = ["near_cells", "dwell_s", "seconds"];
 
 impl Rules {
     /// Parse and check the data file. Every key must be known and every value in range.
@@ -82,7 +126,26 @@ impl Rules {
         if schema != SCHEMA {
             return Err(format!("unknown schema {schema:?}"));
         }
-        check_keys(obj.keys().map(|k| k.as_str()), &["schema", "relay", "difficulties"])?;
+        check_keys(obj.keys().map(|k| k.as_str()), &["schema", "relay", "systems", "difficulties"])?;
+        // shared timings of lights, doors and the lift; a file without the block leaves them out of play (chance 0)
+        let mut timings = [SystemRule { near_cells: 0, dwell: 0.0, seconds: 0.0, chance: 0.0 }; 3];
+        if let Some(block) = obj.get("systems") {
+            let block = block.as_object().ok_or("systems must be an object")?;
+            for s in System::ALL {
+                let Some(row) = block.get(s.key()).and_then(|r| r.as_object()) else { continue };
+                check_keys(row.keys().map(|k| k.as_str()), &SYSTEM_KEYS)?;
+                let t = SystemRule {
+                    near_cells: int(row, "near_cells")?,
+                    dwell: num(row, "dwell_s")? as f32,
+                    seconds: num(row, "seconds")? as f32,
+                    chance: 0.0,
+                };
+                if t.near_cells < 0 || t.dwell < 0.0 || t.seconds < 0.0 {
+                    return Err(format!("systems.{}: timings must not be negative", s.key()));
+                }
+                timings[s.index()] = t;
+            }
+        }
 
         let relay = obj
             .get("relay")
@@ -118,9 +181,21 @@ impl Rules {
             if !(0.0..=1.0).contains(&chance) {
                 return Err(format!("{id}: chance must be between 0 and 1"));
             }
+            let mut systems = timings;
+            if let Some(chances) = body.get("systems") {
+                let chances = chances.as_object().ok_or_else(|| format!("{id}: systems must be an object"))?;
+                check_keys(chances.keys().map(|k| k.as_str()), &["light", "door", "lift"])?;
+                for s in System::ALL {
+                    let c = chances.get(s.key()).and_then(|x| x.as_f64()).unwrap_or(0.0);
+                    if !(0.0..=1.0).contains(&c) {
+                        return Err(format!("{id}: systems.{} chance must be between 0 and 1", s.key()));
+                    }
+                    systems[s.index()].chance = c;
+                }
+            }
             by_difficulty.insert(
                 id.clone(),
-                Rule { enabled, target, chance, dwell, near_cells, resecure },
+                Rule { enabled, target, chance, dwell, near_cells, resecure, systems },
             );
         }
         Ok(Rules { by_difficulty })
@@ -175,6 +250,10 @@ pub struct Tracker {
     last: Option<Outcome>,
     /// Relays offline from a sabotage, each with the seconds left before it is resecured.
     blocked: Vec<(Cell, f32)>,
+    /// Lights, doors and the lift that are out, each with the seconds left.
+    systems_out: Vec<(System, Cell, f32)>,
+    /// Dwell clock per system.
+    system_dwell: [f32; 3],
 }
 
 impl Tracker {
@@ -207,7 +286,74 @@ impl Tracker {
             dwell: 0.0,
             last: None,
             blocked: Vec::new(),
+            systems_out: Vec::new(),
+            system_dwell: [0.0; 3],
         }
+    }
+
+    /// Only the side that simulates the hunters sabotages anything: a guest's tracker never rolls (guests see the
+    /// outcome through the host's state). Call with `false` on a guest.
+    pub fn for_host(mut self, is_host: bool) -> Tracker {
+        if !is_host {
+            self.rule = None;
+        }
+        self
+    }
+
+    /// Whether a light, door or the lift at `cell` is out from a sabotage.
+    pub fn is_out(&self, system: System, cell: Cell) -> bool {
+        self.systems_out.iter().any(|(s, c, _)| *s == system && *c == cell)
+    }
+
+    /// The systems out now, each with the seconds left.
+    pub fn systems_out(&self) -> &[(System, Cell, f32)] {
+        &self.systems_out
+    }
+
+    /// Advance the lights, doors and lift. A hunter within `near_cells` of a standing site builds that system's dwell;
+    /// each full dwell rolls the system's chance once (against the nearest site) and starts again. Systems that are
+    /// already out count down and come back by themselves. Returns every outcome of this frame.
+    pub fn tick_systems(&mut self, dt: f32, hunters: &[(f32, f32)], sites: &Sites) -> Vec<Outcome> {
+        let Some(rule) = self.rule.clone() else { return Vec::new() };
+        self.systems_out.retain_mut(|(_, _, left)| {
+            *left -= dt;
+            *left > 0.0
+        });
+        let mut out = Vec::new();
+        for s in System::ALL {
+            let r = rule.systems[s.index()];
+            if r.chance <= 0.0 {
+                self.system_dwell[s.index()] = 0.0;
+                continue;
+            }
+            let lift: Vec<Cell> = sites.lift.into_iter().collect();
+            let list: &[Cell] = match s {
+                System::Light => sites.lights,
+                System::Door => sites.doors,
+                System::Lift => &lift,
+            };
+            let standing: Vec<Cell> = list.iter().copied().filter(|c| !self.is_out(s, *c)).collect();
+            let hit = hunters.iter().find_map(|p| {
+                let c = crate::hunters::brain::cell_of(*p);
+                standing.iter().copied().filter(|r2| cheb(c, *r2) <= r.near_cells).min_by_key(|r2| cheb(c, *r2))
+            });
+            let Some(cell) = hit else {
+                self.system_dwell[s.index()] = 0.0;
+                continue;
+            };
+            self.system_dwell[s.index()] += dt;
+            if self.system_dwell[s.index()] < r.dwell {
+                continue;
+            }
+            self.system_dwell[s.index()] = 0.0;
+            if self.rng.next_float() < r.chance {
+                self.systems_out.push((s, cell, r.seconds));
+                let o = Outcome::SystemSabotaged { system: s, cell, seconds: r.seconds };
+                self.last = Some(o);
+                out.push(o);
+            }
+        }
+        out
     }
 
     /// Whether this relay is offline from a sabotage that has not been resecured yet.
@@ -476,6 +622,87 @@ mod tests {
         assert!(Rules::parse(&v.to_string()).is_err());
         let mut v: Value = serde_json::from_str(include_str!("../data/hunters/sabotage.json")).unwrap();
         v["relay"]["dwel_s"] = Value::from(1.0);
+        assert!(Rules::parse(&v.to_string()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod system_tests {
+    use super::*;
+
+    fn on(id: &str, chance: f64) -> Rules {
+        let mut v: Value = serde_json::from_str(include_str!("../data/hunters/sabotage.json")).unwrap();
+        v["difficulties"][id]["enabled"] = Value::Bool(true);
+        for k in ["light", "door", "lift"] {
+            v["difficulties"][id]["systems"][k] = Value::from(chance);
+        }
+        Rules::parse(&v.to_string()).unwrap()
+    }
+
+    const LIGHT: Cell = Cell { x: 10, y: 10 };
+
+    fn run(t: &mut Tracker, frames: usize) -> usize {
+        let sites = Sites { lights: &[LIGHT], doors: &[Cell { x: 30, y: 30 }], lift: Some(Cell { x: 50, y: 50 }) };
+        let hunters = [(10.5, 10.5)];
+        (0..frames).map(|_| t.tick_systems(0.5, &hunters, &sites).len()).sum()
+    }
+
+    #[test]
+    fn the_shipped_file_loads_with_system_timings_and_ships_off() {
+        let r = Rules::parse(include_str!("../data/hunters/sabotage.json")).unwrap();
+        for id in ["relaxed", "standard", "hard", "nightmare"] {
+            assert!(!r.for_difficulty(id).unwrap().enabled, "{id} ships off");
+        }
+        let n = r.for_difficulty("nightmare").unwrap();
+        assert!(n.systems[System::Light.index()].dwell > 0.0 && n.systems[System::Lift.index()].seconds > 0.0);
+        assert_eq!(r.for_difficulty("standard").unwrap().systems[0].chance, 0.0);
+    }
+
+    #[test]
+    fn a_dwelling_hunter_puts_the_light_out_then_it_comes_back() {
+        let r = on("standard", 1.0);
+        let mut t = Tracker::with_rules(&r, 1, "standard");
+        assert_eq!(run(&mut t, 20), 1, "one sabotage, then the light is out and not hit again");
+        assert!(t.is_out(System::Light, LIGHT));
+        let secs = r.for_difficulty("standard").unwrap().systems[0].seconds;
+        let sites = Sites { lights: &[LIGHT], ..Sites::default() };
+        for _ in 0..((secs / 0.5) as usize + 2) {
+            t.tick_systems(0.5, &[(90.0, 90.0)], &sites);
+        }
+        assert!(!t.is_out(System::Light, LIGHT), "back after its seconds");
+    }
+
+    #[test]
+    fn chance_zero_never_sabotages_and_chance_follows_data() {
+        let mut off = Tracker::with_rules(&on("standard", 0.0), 1, "standard");
+        assert_eq!(run(&mut off, 400), 0);
+        let mut always = Tracker::with_rules(&on("standard", 1.0), 1, "standard");
+        assert!(run(&mut always, 400) >= 1);
+    }
+
+    #[test]
+    fn only_the_host_sabotages() {
+        let r = on("standard", 1.0);
+        let mut guest = Tracker::with_rules(&r, 1, "standard").for_host(false);
+        assert_eq!(run(&mut guest, 200), 0);
+        let mut host = Tracker::with_rules(&r, 1, "standard").for_host(true);
+        assert!(run(&mut host, 200) >= 1);
+    }
+
+    #[test]
+    fn a_disabled_difficulty_does_nothing_even_with_chances() {
+        let r = Rules::parse(include_str!("../data/hunters/sabotage.json")).unwrap();
+        let mut t = Tracker::with_rules(&r, 1, "nightmare");
+        assert_eq!(run(&mut t, 400), 0, "enabled is false in the shipped data");
+    }
+
+    #[test]
+    fn bad_system_data_is_refused() {
+        let mut v: Value = serde_json::from_str(include_str!("../data/hunters/sabotage.json")).unwrap();
+        v["difficulties"]["hard"]["systems"]["light"] = Value::from(2.0);
+        assert!(Rules::parse(&v.to_string()).is_err());
+        let mut v: Value = serde_json::from_str(include_str!("../data/hunters/sabotage.json")).unwrap();
+        v["difficulties"]["hard"]["systems"]["moon"] = Value::from(0.1);
         assert!(Rules::parse(&v.to_string()).is_err());
     }
 }

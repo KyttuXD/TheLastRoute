@@ -173,6 +173,17 @@
   },
   "npc_smarts": [30, 50, 70, 90],
   "npc_spawn_max": 32,
+  "hunter_view": {
+    "pick_radius": 1.2,
+    "hearing_base": 10.0,
+    "sight_half_angle_deg": 35.0,
+    "arc_points": 12,
+    "blocked_radius": 6,
+    "pulse_secs": 6.0,
+    "pulse_ring_max": 4.0,
+    "pulse_beam_height": 30.0,
+    "queue_max": 50
+  },
   "fields": [
     { "label": "SAFE TELEPORT", "placeholder": "X,Z or X,Z,LEVEL" },
     { "label": "ADD / UPDATE LIMITED ADMIN", "placeholder": "USERNAME:player,world,hunters,visual,inventory" },

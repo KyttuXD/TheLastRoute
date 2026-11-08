@@ -93,9 +93,8 @@ pub fn load() -> Option<Checkpoint> {
     if !super::paths::WRITES_TO_DISK {
         return None;
     }
-    let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(path()?).ok()?).ok()?;
-    from_json(&v)
+    let p = path()?;
+    read_checkpoint(&p).or_else(|| read_checkpoint(&backup_path(&p)))
 }
 
 /// The checkpoint a saved file holds (schema 1, kind last_route). A save from before the room
@@ -145,6 +144,56 @@ pub fn save(c: &Checkpoint) {
     let _ = write_atomic(&p, &to_json(c).to_string());
 }
 
+/// Saves the checkpoint with the body's position (data/progression.json `autosave.store_position`): the same file plus
+/// `pos_x`, `pos_y`, `pos_z`, read back by [`load_position`]. The hook for pause-quit and pickup autosaves.
+pub fn save_with_position(c: &Checkpoint, pos: [f32; 3]) {
+    if !enabled() {
+        return;
+    }
+    let Some(p) = path() else { return };
+    let _ = std::fs::create_dir_all(p.parent().unwrap());
+    let _ = write_atomic(&p, &to_json_with_position(c, pos).to_string());
+}
+
+fn to_json_with_position(c: &Checkpoint, pos: [f32; 3]) -> serde_json::Value {
+    let mut v = to_json(c);
+    if crate::game::progression::Autosave::load().store_position && pos.iter().all(|n| n.is_finite()) {
+        v["pos_x"] = serde_json::json!(pos[0]);
+        v["pos_y"] = serde_json::json!(pos[1]);
+        v["pos_z"] = serde_json::json!(pos[2]);
+    }
+    v
+}
+
+fn position_of(v: &serde_json::Value) -> Option<[f32; 3]> {
+    let g = |k: &str| v[k].as_f64().filter(|n| n.is_finite()).map(|n| n as f32);
+    Some([g("pos_x")?, g("pos_y")?, g("pos_z")?])
+}
+
+/// The stored body position of the saved run, when the save has one.
+pub fn load_position() -> Option<[f32; 3]> {
+    if !super::paths::WRITES_TO_DISK {
+        return None;
+    }
+    let p = path()?;
+    [p.clone(), backup_path(&p)].iter().find_map(|f| {
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(f).ok()?).ok()?;
+        position_of(&v)
+    })
+}
+
+/// The `.bak` beside a checkpoint file: the previous good save.
+fn backup_path(p: &std::path::Path) -> PathBuf {
+    let mut b = p.as_os_str().to_owned();
+    b.push(".bak");
+    PathBuf::from(b)
+}
+
+fn read_checkpoint(p: &std::path::Path) -> Option<Checkpoint> {
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()?;
+    from_json(&v)
+}
+
 /// Writes `text` to a sibling temp file, then renames it over `p`, so an interrupted write never leaves a truncated checkpoint.
 fn write_atomic(p: &std::path::Path, text: &str) -> std::io::Result<()> {
     use std::io::Write;
@@ -155,6 +204,10 @@ fn write_atomic(p: &std::path::Path, text: &str) -> std::io::Result<()> {
     f.write_all(text.as_bytes())?;
     let _ = f.sync_all();
     drop(f);
+    // keep the previous good save as `.bak`, so a bad write or a corrupted file still has a run to continue
+    if crate::game::progression::Autosave::load().keep_backup && p.exists() {
+        let _ = std::fs::copy(p, backup_path(p));
+    }
     std::fs::rename(&tmp, p).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         e
@@ -179,6 +232,8 @@ pub fn clear() {
         return;
     }
     if let Some(p) = path() {
+        // the .bak goes too, or a cleared run would come back from it
+        let _ = std::fs::remove_file(backup_path(&p));
         let _ = std::fs::remove_file(p);
     }
 }
@@ -333,5 +388,42 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "{\"a\":1}");
         assert!(!dir.join("checkpoint.json.tmp").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_atomic_write_over_a_save_leaves_the_previous_one_as_bak() {
+        let dir = std::env::temp_dir().join(format!("lr_cp_bak_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("checkpoint.json");
+        write_atomic(&p, "first").unwrap();
+        assert!(!backup_path(&p).exists(), "nothing to back up on the first write");
+        write_atomic(&p, "second").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "second");
+        assert_eq!(std::fs::read_to_string(backup_path(&p)).unwrap(), "first");
+        assert!(!dir.join("checkpoint.json.tmp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_corrupt_save_falls_back_to_the_bak() {
+        let dir = std::env::temp_dir().join(format!("lr_cp_fallback_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("checkpoint.json");
+        write_atomic(&p, &to_json(&cp(-1, true, None)).to_string()).unwrap();
+        write_atomic(&p, "{ broken").unwrap();
+        assert!(read_checkpoint(&p).is_none());
+        let c = read_checkpoint(&p).or_else(|| read_checkpoint(&backup_path(&p))).expect("the bak loads");
+        assert_eq!(c.depth, -1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_stored_position_round_trips_and_a_bad_one_is_dropped() {
+        let v = to_json_with_position(&cp(-2, true, None), [1.5, 2.0, -3.25]);
+        assert_eq!(position_of(&v), Some([1.5, 2.0, -3.25]));
+        assert!(from_json(&v).is_some(), "the position does not disturb the checkpoint");
+        let bad = to_json_with_position(&cp(-2, true, None), [f32::NAN, 0.0, 0.0]);
+        assert_eq!(position_of(&bad), None);
+        assert_eq!(position_of(&to_json(&cp(1, false, None))), None);
     }
 }

@@ -1,9 +1,13 @@
-//! The white wolf spider (white_wolf_spider_gimmick.gd): a fast ambusher.
+//! The white and black wolf spiders (white_wolf_spider_gimmick.gd, black_wolf_spider_gimmick.gd): fast ambushers.
 //! It lurks motionless at its lair, barks ONCE to mark a runner it has seen or heard (the telegraph), bursts after them for a
 //! limited time, then gives up and goes home. Survivable on purpose: the bark gives a head start, the burst is limited by its own
 //! stamina, a shelter ends the chase, and a flashlight beam held on it for a moment drives it off.
 //!
 //!   LURK -> BARK (holds, bark clip + cue) -> HUNT (<= hunt seconds) -> RETREAT (to the lair) -> LURK (cooldown)
+//!
+//! The black variant is the same machine with harsher numbers (data `behaviour.black`): it hisses, sees further, hunts longer, rests
+//! longer and ignores the flashlight. A PAIR shares a [`Pack`] (spider_pack.gd): one rest clock, so the two never chain-hunt a runner,
+//! and a recall, so when one gives up the other goes home with it.
 //!
 //! Host-simulated like every hunter; a guest only needs `phase` and `bark_seq` (the hunter frame) to play the bark. The numbers are
 //! in data/hunters/secret_creatures.json. Specs: docs/SECRET_WOLF_SPIDER.md.
@@ -11,6 +15,35 @@
 use crate::hunters::brain::{Brain, State, Target};
 use crate::hunters::secret_creatures::{Knobs, Rules};
 use crate::world::Facility;
+use std::sync::{Arc, Mutex};
+
+/// The state a wolf-spider pair shares (host only, never networked): the first member is the clock, so a pair does not tick twice
+/// per frame.
+#[derive(Default, Debug)]
+pub struct PackState {
+    elapsed: f32,
+    rest_until: f32,
+    recall_seq: u32,
+    members: u8,
+}
+
+impl PackState {
+    /// The pair is resting: neither marks a runner until the shared rest is over.
+    pub fn resting(&self) -> bool {
+        self.elapsed < self.rest_until
+    }
+
+    pub fn recall_seq(&self) -> u32 {
+        self.recall_seq
+    }
+}
+
+/// A handle on a pair's shared state.
+pub type Pack = Arc<Mutex<PackState>>;
+
+fn lock(p: &Pack) -> std::sync::MutexGuard<'_, PackState> {
+    p.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -54,11 +87,28 @@ pub struct WolfSpider {
     sense_left: f32,
     spawn_barks: bool,
     rest_scale: f32,
+    /// The pair this creature belongs to, and its place in it (0 = the clock).
+    pack: Option<Pack>,
+    pack_slot: u8,
+    seen_recall: u32,
 }
 
 impl WolfSpider {
     pub fn new() -> WolfSpider {
-        let v = &Rules::get().white;
+        WolfSpider::of(&Rules::get().white)
+    }
+
+    /// The black variant: the harsher numbers of `behaviour.black`.
+    pub fn black() -> WolfSpider {
+        WolfSpider::of(&Rules::get().black)
+    }
+
+    /// The variant of a hunter id (the black one for `black_wolf_spider`, else the white one).
+    pub fn for_id(id: &str) -> WolfSpider {
+        WolfSpider::of(Rules::get().variant_of(id))
+    }
+
+    fn of(v: &crate::hunters::secret_creatures::Variant) -> WolfSpider {
         WolfSpider {
             alert_radius: v.alert_radius,
             bark_seconds: v.bark_seconds,
@@ -76,7 +126,47 @@ impl WolfSpider {
             sense_left: 0.0,
             spawn_barks: false,
             rest_scale: 1.0,
+            pack: None,
+            pack_slot: 0,
+            seen_recall: 0,
         }
+    }
+
+    /// The shared state of the pair this creature leads (made on the first call); hand it to the other with `join_pack`.
+    pub fn pack_handle(&mut self) -> Pack {
+        if let Some(p) = &self.pack {
+            return p.clone();
+        }
+        let p: Pack = Arc::new(Mutex::new(PackState { members: 1, ..Default::default() }));
+        self.pack = Some(p.clone());
+        self.pack_slot = 0;
+        self.seen_recall = 0;
+        p
+    }
+
+    /// Joins the pair sharing `pack` (rest and recall).
+    pub fn join_pack(&mut self, pack: Pack) {
+        let mut g = lock(&pack);
+        self.pack_slot = g.members;
+        g.members = g.members.saturating_add(1);
+        self.seen_recall = g.recall_seq;
+        drop(g);
+        self.pack = Some(pack);
+    }
+
+    pub fn in_pack(&self) -> bool {
+        self.pack.is_some()
+    }
+
+    /// Whether the pair is in its shared rest (false alone).
+    pub fn pack_resting(&self) -> bool {
+        self.pack.as_ref().is_some_and(|p| lock(p).resting())
+    }
+
+    /// Links two creatures into one pair (the admin picker and the spawner call it with the two gimmicks).
+    pub fn link(a: &mut WolfSpider, b: &mut WolfSpider) {
+        let p = a.pack_handle();
+        b.join_pack(p);
     }
 
     pub fn lair(&self) -> Option<(f32, f32)> {
@@ -126,13 +216,29 @@ impl WolfSpider {
             }
         };
         self.cooldown = (self.cooldown - dt).max(0.0);
+        // the pair: the first member is the clock; a recall from the other sends this one home too
+        let (mut pack_rest, mut recalled) = (false, false);
+        if let Some(pack) = &self.pack {
+            let mut g = lock(pack);
+            if self.pack_slot == 0 {
+                g.elapsed += dt;
+            }
+            pack_rest = g.resting();
+            if g.recall_seq != self.seen_recall {
+                self.seen_recall = g.recall_seq;
+                recalled = true;
+            }
+        }
+        if recalled && matches!(self.phase, Phase::Bark | Phase::Hunt) {
+            self.begin_retreat(b, lair);
+        }
         let tp = t.pos;
         // a runner on another level is out of reach: the spider never leaves its own
         let exposed = !t.hidden && !t.in_safe_zone && t.cross.is_none();
         match self.phase {
             Phase::Lurk => {
                 self.sense_left -= dt;
-                if self.cooldown <= 0.0 && exposed && self.sense_left <= 0.0 {
+                if self.cooldown <= 0.0 && !pack_rest && exposed && self.sense_left <= 0.0 {
                     self.sense_left = Rules::get().sense_every;
                     if self.notices(b, c.fac, t) {
                         self.begin_bark(b, tp);
@@ -153,7 +259,7 @@ impl WolfSpider {
                 self.beam_time = if b.beam_alerted { self.beam_time + dt } else { 0.0 };
                 let driven_off = b.beam_alerted && self.flash_hold.is_some_and(|hold| self.beam_time > hold);
                 if !exposed || b.winded || self.timer <= 0.0 || driven_off {
-                    self.begin_retreat(b, lair);
+                    self.give_up(b, lair);
                 } else {
                     // it does not lose a runner it has marked: it follows sound and light
                     b.chase(tp);
@@ -208,6 +314,18 @@ impl WolfSpider {
         self.bark_seq += 1;
         b.state = State::Idle;
         face(b, at);
+    }
+
+    /// This creature ends its hunt: the pair rests together and the other is called home.
+    fn give_up(&mut self, b: &mut Brain, lair: (f32, f32)) {
+        if let Some(pack) = &self.pack {
+            let mut g = lock(pack);
+            let until = g.elapsed + self.cooldown_seconds * self.rest_scale;
+            g.rest_until = g.rest_until.max(until);
+            g.recall_seq += 1;
+            self.seen_recall = g.recall_seq;
+        }
+        self.begin_retreat(b, lair);
     }
 
     fn begin_retreat(&mut self, b: &mut Brain, lair: (f32, f32)) {
@@ -334,6 +452,86 @@ mod tests {
                 return;
             }
         }
+    }
+
+    #[test]
+    fn the_black_one_is_the_same_machine_with_harsher_numbers() {
+        let w = WolfSpider::new();
+        let b = WolfSpider::black();
+        assert!(b.alert_radius > w.alert_radius && b.hunt_seconds > w.hunt_seconds && b.cooldown_seconds > w.cooldown_seconds);
+        assert!(b.flash_hold.is_none() && b.hiss && !w.hiss);
+        assert_eq!(WolfSpider::for_id(secret_creatures::BLACK).alert_radius, b.alert_radius);
+        assert_eq!(WolfSpider::for_id("anything_else").alert_radius, w.alert_radius);
+    }
+
+    /// A brain with the given spider gimmick (the black hunter is wired to its gimmick by gimmicks/mod.rs).
+    fn with_gimmick(id: &str, at: (f32, f32), g: WolfSpider) -> Brain {
+        let mut b = spider(id, at);
+        b.gimmick = Gimmick::WolfSpider(g);
+        b
+    }
+
+    /// Two creatures in a pair, both mid-hunt, away from their shared lair; the third value is the runner spot.
+    fn hunting_pair(fac: &Facility) -> (Brain, Brain, (f32, f32)) {
+        let (lair, away) = sight_pair(fac);
+        let (mut x, mut y) = (WolfSpider::new(), WolfSpider::black());
+        for g in [&mut x, &mut y] {
+            g.lair = Some(lair);
+            g.phase = Phase::Hunt;
+            g.timer = 100.0;
+        }
+        WolfSpider::link(&mut x, &mut y);
+        (with_gimmick(secret_creatures::WHITE, away, x), with_gimmick(secret_creatures::BLACK, away, y), away)
+    }
+
+    #[test]
+    fn a_pair_recall_sends_both_home_and_they_rest_together() {
+        let fac = facility();
+        let (mut a, mut b, runner_pos) = hunting_pair(&fac);
+        // the runner reaches a shelter: the first to notice gives up, and the other is recalled in the same frame
+        let safe = Target { pos: runner_pos, in_safe_zone: true, ..Default::default() };
+        step(&mut a, &fac, &safe, DT);
+        step(&mut b, &fac, &safe, DT);
+        assert_eq!(gim(&a).phase, Phase::Retreat);
+        assert_eq!(gim(&b).phase, Phase::Retreat, "the recall returns both");
+        assert!(gim(&a).pack_resting() && gim(&b).pack_resting(), "the pair shares one rest");
+    }
+
+    #[test]
+    fn a_recall_calls_home_a_partner_that_is_still_hunting_a_reachable_runner() {
+        let fac = facility();
+        let (mut a, mut b, runner_pos) = hunting_pair(&fac);
+        // only the first member sees a shelter; the second would have gone on hunting alone
+        let exposed = runner(runner_pos);
+        let safe = Target { pos: runner_pos, in_safe_zone: true, ..Default::default() };
+        step(&mut a, &fac, &safe, DT);
+        assert_eq!(gim(&a).phase, Phase::Retreat);
+        step(&mut b, &fac, &exposed, DT);
+        assert_eq!(gim(&b).phase, Phase::Retreat, "the partner was recalled although its own runner is exposed");
+    }
+
+    #[test]
+    fn the_shared_rest_keeps_a_resting_pair_from_marking_a_runner_and_ends_with_its_clock() {
+        let fac = facility();
+        let (lair, near) = sight_pair(&fac);
+        let (mut x, mut y) = (WolfSpider::new(), WolfSpider::black());
+        WolfSpider::link(&mut x, &mut y);
+        let p = x.pack.clone().unwrap();
+        lock(&p).rest_until = 5.0; // resting for the next five seconds of the pair clock
+        let (mut a, mut b) = (with_gimmick(secret_creatures::WHITE, lair, x), with_gimmick(secret_creatures::BLACK, lair, y));
+        let see = runner(near);
+        for _ in 0..(3.0 / DT) as usize {
+            step(&mut a, &fac, &see, DT);
+            step(&mut b, &fac, &see, DT);
+        }
+        assert!(gim(&a).phase == Phase::Lurk && gim(&b).phase == Phase::Lurk, "no mark during the shared rest");
+        for _ in 0..(4.0 / DT) as usize {
+            step(&mut a, &fac, &see, DT);
+            step(&mut b, &fac, &see, DT);
+        }
+        assert!(gim(&a).phase != Phase::Lurk || gim(&b).phase != Phase::Lurk, "once the rest is over one of them marks the runner");
+        let clock = lock(gim(&a).pack.as_ref().unwrap()).elapsed;
+        assert!((clock - 7.0).abs() < 0.2, "only the first member advances the clock: {clock}");
     }
 
     #[test]

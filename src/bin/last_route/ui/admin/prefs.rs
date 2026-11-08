@@ -2,7 +2,7 @@
 //! debug toggles the hub ADMIN panel edits and a run's admin menu applies at start and keeps in
 //! sync. Stored as `key=true|false` lines in the user folder's admin.cfg.
 
-pub const KEYS: [(&str, bool); 8] = [
+pub const KEYS: [(&str, bool); 10] = [
     ("no_target", false),
     ("god_mode", false),
     ("noclip", false),
@@ -11,6 +11,8 @@ pub const KEYS: [(&str, bool); 8] = [
     ("show_collision", false),
     ("hunter_reveal", false),
     ("perf_overlay", false),
+    ("show_paths", false),
+    ("show_nav", false),
 ];
 
 #[derive(Clone)]
@@ -142,6 +144,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(f.parent().unwrap());
     }
 
+
+    #[test]
+    fn the_debug_view_toggles_round_trip_through_the_file() {
+        let f = temp_file("debugview");
+        let mut p = Prefs::load_from(Some(f.clone()));
+        p.set("show_collision", true);
+        p.set("show_paths", true);
+        p.set("show_nav", true);
+        let again = Prefs::load_from(Some(f.clone()));
+        assert!(again.get("show_collision") && again.get("show_paths") && again.get("show_nav"));
+        let _ = std::fs::remove_dir_all(f.parent().unwrap());
+    }
     #[test]
     fn a_memory_only_prefs_never_touches_disk() {
         let mut p = Prefs::load_from(None);

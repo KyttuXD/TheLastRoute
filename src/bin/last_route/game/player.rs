@@ -549,7 +549,8 @@ impl Player {
             };
             // Native 0x14008a600: frame delta is multiplied by the profile/stim
             // drain scale, then the meter is clamped at zero.
-            let native_sprint_drain = super::stamina::rules().sprint_drain() * scale * meters.drain_scale();
+            // overheating burns the tools (the lamp) faster, never the sprint bar (TODO 884)
+            let native_sprint_drain = super::stamina::rules().sprint_drain() * scale;
             self.stamina = (self.stamina - native_sprint_drain * dt).max(0.0);
             if self.stamina <= 0.0 {
                 self.exhausted = true;
@@ -561,7 +562,8 @@ impl Player {
             // Native 0x140067e40/0x14008a600: idle drain plus the sprint
             // surcharge, all applied once per frame and clamped at zero.
             let mut native_lamp_drain = LAMP_IDLE_DRAIN * prof.lamp_drain;
-            if sprinting {
+            // in a vent the lamp is pinned to its idle drain: crawling is not a sprint (TODO 1008)
+            if sprinting && !self.in_vent {
                 native_lamp_drain += LAMP_SPRINT_DRAIN * prof.sprint_drain;
             }
             self.lamp = (self.lamp - native_lamp_drain * meters.drain_scale() * dt).max(0.0);
@@ -1151,13 +1153,13 @@ mod tests {
     }
 
     #[test]
-    fn the_stim_and_overheating_still_scale_the_longer_drain() {
+    fn the_stim_still_scales_the_drain_and_overheating_does_not() {
         let (mut g, s) = flight_game();
         let (off, yaw_off) = (off_stair(s), yaw_along((-(s.run.0 as f32), -(s.run.1 as f32))));
         g.meters.temperature = 95.0;
         assert!(g.meters.overheating());
         let hot = seconds_to_empty(&mut g, off, yaw_off);
-        assert!((hot - 4.6875 / 1.35).abs() < 0.06, "overheating: {hot}");
+        assert!((hot - 4.6875).abs() < 0.06, "overheating leaves the sprint bar alone: {hot}");
         g.meters.temperature = 50.0;
         // the stim halves the drain while its boost lasts
         g.p.pos = off;

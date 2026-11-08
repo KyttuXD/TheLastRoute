@@ -12,5 +12,6 @@
 	"spawn": 16,
 	"chase_style": "glide",
 	"taser_immune": true,
-	"melee_immune": false
+	"melee_immune": false,
+	"dossier": "IF THIS HUNTER KEEPS CLEAR LINE OF SIGHT TO YOU FOR 2.5 SECONDS, SHE SENDS YOUR EXACT POSITION TO EVERY OTHER ACTIVE HUNTER. AFTER A SUCCESSFUL PING SHE HAS A 30-SECOND COOLDOWN. BREAK SIGHT BEFORE THE LOCK COMPLETES."
 }

@@ -1,0 +1,6 @@
+{
+	"_note": "Zellia the merchant (game_config.gd ZELLIA_DEATH_CHANCE, line 383). death_chance is the odds per completed trade by difficulty id; a difficulty with no entry uses death_chance_default. The REPAIR offer mends a sabotaged relay when one exists (zellia_gimmick.gd line 107), otherwise the lamp; repair_mends_relay switches that branch off.",
+	"death_chance": { "relaxed": 0.02, "standard": 0.05, "hard": 0.075, "nightmare": 0.12 },
+	"death_chance_default": 0.05,
+	"repair_mends_relay": true
+}

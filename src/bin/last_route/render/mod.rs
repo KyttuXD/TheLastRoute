@@ -3,6 +3,8 @@
 #![allow(dead_code)] // ported API kept ahead of its callers (these items were the lib's pub API); prune as the port settles
 
 pub mod ambient;
+pub mod admin_pulse;
+pub mod hunter_view_overlay;
 pub mod anim;
 pub mod bbmodel;
 pub mod beam;

@@ -189,7 +189,7 @@ impl Gimmick {
             "ceryth" => Gimmick::Ceryth(Default::default()),
             "elise" => Gimmick::Elise(Default::default()),
             "ferryn" => Gimmick::Ferryn(Default::default()),
-            "glyra" => Gimmick::Glyra(Glyra::new()),
+            "glyra" => Gimmick::Glyra(Glyra::with_difficulty(diff)),
             "haelith" => Gimmick::Haelith,
             "ilyra" => Gimmick::Ilyra(Default::default()),
             "javelle" => Gimmick::Javelle(Default::default()),
@@ -203,9 +203,9 @@ impl Gimmick {
             "ravelle" => Gimmick::Ravelle(Default::default()),
             "solyth" => Gimmick::Solyth(Default::default()),
             "thessine" => Gimmick::Thessine(thessine::Thessine::new()),
-            "umbriel" => Gimmick::Umbriel(umbriel::Umbriel::new()),
+            "umbriel" => Gimmick::Umbriel(umbriel::Umbriel::with_difficulty(diff)),
             "verrine" => Gimmick::Verrine(Default::default()),
-            "white_wolf_spider" => Gimmick::WolfSpider(wolf_spider::WolfSpider::new()),
+            "white_wolf_spider" | "black_wolf_spider" => Gimmick::WolfSpider(wolf_spider::WolfSpider::for_id(id)),
             "wynelle" => Gimmick::Wynelle(Default::default()),
             "xivvy" => Gimmick::Xivvy(Default::default()),
             "ysolde" => Gimmick::Ysolde(Default::default()),
@@ -424,7 +424,8 @@ impl Gimmick {
     pub fn peek_chance(&self, base: f32) -> f32 {
         match self {
             // calm she never peeks while her music plays (GlyraGimmick.peek_chance)
-            Gimmick::Glyra(g) if g.playing() => 0.0,
+            // and the data scales her peek ambush otherwise (data/gimmicks/glyra.json)
+            Gimmick::Glyra(g) => g.peek_chance(base),
             _ => base,
         }
     }
@@ -491,6 +492,8 @@ impl Gimmick {
 /// One-paragraph dossier text for each hunter (written from the gimmick rules above).
 pub fn describe(id: &str) -> &'static str {
     match id {
+        // the upper-case dossier text in each void hunter's data file wins over the built-in lines below
+        id if id.starts_with("void_") && void::dossier(id).is_some() => void::dossier(id).unwrap_or(""),
         "aki" => "Hold your light on her and a fuse starts: ten seconds later she floods you with exposure three times, five seconds apart.",
         "briselle" => "Every relay you recover after she wakes draws her straight to it, a quarter faster. A held beam breaks her lock and stuns her.",
         "ceryth" => "Waits beside a locker with red or blue eyes. Red wants your light off, blue wants it on. Guess right and she runs; guess wrong and the door holds you for 30 seconds.",

@@ -585,6 +585,26 @@ impl ModPacks {
         }
     }
 
+    /// `GET /api/mods/packs/<id>/download[?version=]`: what a client needs to fetch a pack (the file list, hashes and the
+    /// download base). A blocked pack is refused here on the server (403 `PACK_BLOCKED` with the reason), whatever the
+    /// client does with the list; an unknown pack is 404 and a server with no download base answers 503.
+    pub fn download(&self, id: &str, version: Option<&str>) -> Reply {
+        let version = version.filter(|v| !v.is_empty());
+        let Some(record) = self.packs.get(id) else { return not_found() };
+        if util::truthy(util::field(record, "blocked")) {
+            let reason = util::str_or_empty(util::field(record, "blockedReason"));
+            return (
+                403,
+                json!({ "ok": false, "code": "PACK_BLOCKED", "error": "THIS MOD PACK IS BLOCKED ON THIS SERVER", "reason": reason }),
+            );
+        }
+        let Some(view) = self.public_view(record, version) else { return not_found() };
+        if self.base.is_empty() {
+            return (503, json!({ "ok": false, "code": "DOWNLOADS_NOT_CONFIGURED", "error": "MOD PACK DOWNLOADS ARE NOT SET UP ON THIS SERVER" }));
+        }
+        (200, json!({ "ok": true, "pack": view }))
+    }
+
     /// `POST /api/admin/mods/register {pack, replace?}` (owner already checked by the router).
     pub fn register(&mut self, body: &Value, owner: &str) -> Reply {
         let pack = match validate_pack_manifest(util::field(body, "pack").unwrap_or(&Value::Null), &self.limits) {
@@ -864,6 +884,9 @@ mod tests {
         let blocked = packs.block(&json!({ "id": "neon_halls", "reason": "crashes hosts" }), "KYTTU");
         assert_eq!(blocked.1["pack"]["blocked"], json!(true));
         assert_eq!(blocked.1["pack"]["blockedReason"], json!("crashes hosts"));
+        assert_eq!(packs.download("neon_halls", None).0, 403, "a blocked pack is not served");
+        assert_eq!(packs.download("neon_halls", None).1["code"], json!("PACK_BLOCKED"));
+        assert_eq!(packs.download("neon_halls", None).1["reason"], json!("crashes hosts"));
         assert_eq!(packs.block(&json!({ "id": "nope_pack" }), "KYTTU").0, 404);
 
         let mut packs = index(&store, clock);
@@ -873,6 +896,10 @@ mod tests {
         let unblocked = packs.unblock(&json!({ "id": "neon_halls" }), "KYTTU");
         assert_eq!(unblocked.1["pack"]["blocked"], json!(false));
         assert_eq!(unblocked.1["pack"]["blockedReason"], json!(""));
+        let served = packs.download("neon_halls", Some("1.0.0"));
+        assert_eq!(served.0, 200, "an unblocked pack is served again");
+        assert_eq!(served.1["pack"]["version"], json!("1.0.0"));
+        assert_eq!(packs.download("nope_pack", None).0, 404);
         assert_eq!(packs.size(), 1);
         let _ = std::fs::remove_dir_all(store.parent().unwrap());
     }

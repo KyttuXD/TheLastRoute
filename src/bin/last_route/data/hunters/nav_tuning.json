@@ -1,0 +1,7 @@
+{
+  "schema": "lr.nav_tuning/1",
+  "_note": "Hunter route following and stuck handling (Godot hunter_brain.gd WAYPOINT_DISTANCE, PATH_LOOKAHEAD_NODES, SWEEP_STEP, STUCK_*, CENTER_STEER_SECONDS, PATROL_RADIUS). Standard values are the Godot constants.",
+  "pursuit": { "waypoint_distance": 0.18, "path_lookahead_nodes": 4, "sweep_step": 0.15, "arrival_distance": 0.65 },
+  "stuck": { "progress_ratio": 0.35, "min_wanted": 0.0001, "center_after": 0.25, "repath_after": 0.7, "center_steer_seconds": 0.8 },
+  "patrol": { "radius": 30.0, "fallback_radius_scale": 2.0, "live_runner_anchor": true }
+}

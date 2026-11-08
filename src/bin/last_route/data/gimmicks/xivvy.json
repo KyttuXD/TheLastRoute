@@ -1,0 +1,22 @@
+{
+	"_note": "Xivvy's flight (xivvy_flight.gd, hunter_view_3d.gd survey, game_config.gd XIVVY_TAKEOFF_SECONDS). Heights are metres, times seconds. body_rig_height x model_scale is her drawn height. hover_height is how high her feet float where the ceiling allows; ceiling_gap is the air she keeps over her head. She lifts off only where the headroom is at least fly_enter_headroom for enter_dwell, and lands at once under fly_exit_headroom or at a doorway (a gap with walls within gap_half_width on both sides), so she is down before the door. The facility ceiling is the region wall height (the sewer is 4.0 m, a 3 m room is walk-only). swoop_* bring her down to a grab near the runner. survey_* is how the route ahead is read.",
+	"takeoff_seconds": 0.65,
+	"body_rig_height": 1.78,
+	"model_scale": 1.5,
+	"ceiling_gap": 0.14,
+	"hover_height": 1.2,
+	"float_amplitude": 0.05,
+	"float_hz": 0.7,
+	"fly_enter_headroom": 3.6,
+	"fly_exit_headroom": 3.2,
+	"enter_dwell": 0.45,
+	"gap_half_width": 1.0,
+	"swoop_range": 6.0,
+	"grab_range": 1.4,
+	"swoop_altitude": 0.30,
+	"rise_rate": 3.4,
+	"survey_interval": 0.1,
+	"survey_distances": [0.0, 1.5, 3.0, 4.5, 6.0, 8.0, 10.0, 12.0],
+	"survey_footprint": 0.45,
+	"near_reach": 3.0
+}

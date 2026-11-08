@@ -109,6 +109,21 @@ impl Game {
         self.save_checkpoint();
         self.last_autosave = reason;
         self.autosave_count = self.autosave_count.wrapping_add(1);
+        self.last_save_time = self.time;
+        true
+    }
+
+    /// The data-driven autosave triggers (data/progression.json `autosave`: "boundary", "pause_quit", "pickup",
+    /// "safe_room"): saves with the body's position when `trigger` is listed and due (an `always` trigger, or
+    /// `min_interval_s` since the last save). True when it saved.
+    pub fn autosave_on(&mut self, trigger: &'static str) -> bool {
+        if self.report.is_some() || !crate::game::progression::Autosave::load().due(trigger, self.time - self.last_save_time) {
+            return false;
+        }
+        self.save_checkpoint_with_position();
+        self.last_autosave = trigger;
+        self.autosave_count = self.autosave_count.wrapping_add(1);
+        self.last_save_time = self.time;
         true
     }
 
@@ -536,6 +551,7 @@ impl Game {
             self.pickups[i].taken = true;
             crate::audio::sound::event("item_pickup", 0.0, 0.0);
             self.notice_taken(actor, item.label());
+            self.autosave_on("pickup");
             true
         } else if item == Item::MusicBox && self.specialty.box_slot_visible() {
             // slot 6 already holds the box: a second is refused, not put in the pack

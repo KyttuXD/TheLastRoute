@@ -1,0 +1,12 @@
+{
+	"_note": "Glyra and the music box (game_config.gd GLYRA_*, lines 546-551). calm_speed_scale applies while the tune plays; hunt_speed_scale is by difficulty id once it stops (a difficulty with no entry uses standard); hunt_hearing_scale sharpens her hearing then. calm_sight: calm, she only chases a runner this close. calm_leash: calm, she walks back toward her box beyond this. calm_after_wind: a rewind settles her within this many seconds. home_radius: how far her wander target may sit from the box before it is re-aimed. While the tune plays she never peeks; winding down or stopped she peeks round corners as the ambusher (peek_ambush), at the hunter's normal chance times peek_chance_scale.",
+	"calm_speed_scale": 0.6,
+	"hunt_speed_scale": { "standard": 1.3, "hard": 1.3, "nightmare": 1.5 },
+	"hunt_hearing_scale": 1.5,
+	"calm_sight": 4.0,
+	"calm_leash": 8.0,
+	"calm_after_wind": 3.0,
+	"home_radius": 2.5,
+	"peek_ambush": true,
+	"peek_chance_scale": 1.0
+}

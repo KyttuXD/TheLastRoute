@@ -322,6 +322,22 @@ impl CrashReports {
         }
         (200, json!({ "ok": true, "reports": reports, "total": self.files().len() }))
     }
+
+    /// `get(id)`: one stored report for the owner view. 400 for an id that is not a report id (so no path can be built
+    /// from it), 404 when none is stored under it.
+    pub fn get(&self, id: &str) -> Reply {
+        let id = id.trim();
+        if !report_id_pattern().is_match(id) {
+            return (400, json!({ "ok": false, "code": "BAD_REPORT_ID", "error": "NOT A REPORT ID" }));
+        }
+        let stored = std::fs::read_to_string(self.directory.join(format!("{id}.json")))
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+        match stored {
+            Some(report) => (200, json!({ "ok": true, "report": report })),
+            None => (404, json!({ "ok": false, "code": "REPORT_NOT_FOUND", "error": "REPORT NOT FOUND" })),
+        }
+    }
 }
 
 #[cfg(test)]

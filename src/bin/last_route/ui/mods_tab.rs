@@ -64,19 +64,19 @@ pub fn gather_with(
     size: &dyn Fn(usize) -> Option<usize>,
     read: &dyn Fn(usize, usize) -> Result<Vec<u8>, String>,
 ) -> Result<Vec<PickedFile>, String> {
-    if count > pack_import::MAX_LISTED {
+    if count > crate::content::packs::limits().max_listed {
         return Err(format!(
             "{count} files were chosen and at most {} are looked at. Choose the pack folder itself, not a folder of folders.",
-            pack_import::MAX_LISTED
+            crate::content::packs::limits().max_listed
         ));
     }
     let wanted: Vec<(usize, String)> = (0..count).map(|i| (i, name(i))).filter(|(_, n)| pack_import::is_wanted_name(n)).collect();
     let total: usize = wanted.iter().map(|(i, _)| size(*i).unwrap_or(0)).sum();
-    if total > pack_import::MAX_TOTAL_BYTES {
+    if total > crate::content::packs::limits().max_total_bytes {
         return Err(format!(
             "the chosen files add up to {} MB and at most {} MB are taken. Choose just the pack folder.",
             total / (1024 * 1024),
-            pack_import::MAX_TOTAL_BYTES / (1024 * 1024)
+            crate::content::packs::limits().max_total_bytes / (1024 * 1024)
         ));
     }
     if wanted.is_empty() {
@@ -85,7 +85,7 @@ pub fn gather_with(
     Ok(wanted
         .into_iter()
         .map(|(i, n)| {
-            let cap = if n.to_ascii_lowercase().ends_with(".zip") { pack_import::MAX_PACK_BYTES } else { pack_import::MAX_FILE_BYTES };
+            let cap = if n.to_ascii_lowercase().ends_with(".zip") { crate::content::packs::limits().max_pack_bytes } else { crate::content::packs::limits().max_file_bytes };
             let bytes = match size(i) {
                 Some(s) if s > cap => Err("the file is too big".to_string()),
                 _ => read(i, cap),
@@ -529,7 +529,7 @@ mod tests {
     #[test]
     fn only_files_a_pack_holds_are_read_from_a_chosen_folder() {
         let names = ["p/pack.json", "p/README.md", "p/movie.mp4", "p/hunters/a.json", "p/.DS_Store", "p/assets/big.png"];
-        let sizes = [10usize, 5, 900_000_000, 20, 1, pack_import::MAX_FILE_BYTES + 1];
+        let sizes = [10usize, 5, 900_000_000, 20, 1, crate::content::packs::limits().max_file_bytes + 1];
         let read_count = std::cell::Cell::new(0);
         let files = gather_with(
             names.len(),
@@ -554,9 +554,9 @@ mod tests {
             reads.set(reads.get() + 1);
             Ok(vec![])
         };
-        let err = gather_with(1, &|_| "p/a.json".into(), &|_| Some(pack_import::MAX_TOTAL_BYTES + 1), &read).unwrap_err();
+        let err = gather_with(1, &|_| "p/a.json".into(), &|_| Some(crate::content::packs::limits().max_total_bytes + 1), &read).unwrap_err();
         assert!(err.contains("add up to 256 MB") || err.contains("at most 256 MB"), "{err}");
-        let err = gather_with(pack_import::MAX_LISTED + 1, &|_| "p/a.json".into(), &|_| Some(1), &read).unwrap_err();
+        let err = gather_with(crate::content::packs::limits().max_listed + 1, &|_| "p/a.json".into(), &|_| Some(1), &read).unwrap_err();
         assert!(err.contains("Choose the pack folder itself"), "{err}");
         let err = gather_with(2, &|i| ["notes.txt", "photo.jpg"][i].into(), &|_| Some(1), &read).unwrap_err();
         assert!(err.contains("none of the chosen files"), "{err}");
@@ -565,7 +565,7 @@ mod tests {
         let files = gather_with(
             2,
             &|i| ["a.zip", "assets/b.png"][i].into(),
-            &|i| Some([pack_import::MAX_FILE_BYTES + 5, pack_import::MAX_FILE_BYTES + 5][i]),
+            &|i| Some([crate::content::packs::limits().max_file_bytes + 5, crate::content::packs::limits().max_file_bytes + 5][i]),
             &|_, _| Ok(vec![1]),
         )
         .unwrap();

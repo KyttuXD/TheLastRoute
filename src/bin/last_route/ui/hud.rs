@@ -397,8 +397,14 @@ pub fn draw_hud_with_runners(
     }
 
     let c = (v * 0.5).round();
+    // the subtitle of the cue that just played (audio/tts.rs current_subtitle; off with the SUBTITLES setting)
+    if let Some(sub) = crate::audio::tts::current_subtitle() {
+        let size = fs(7.0);
+        shadowed(a, &sub, c.x - tw(a, F::Body, &sub, size) * 0.5, v.y * 0.78, size, p.body);
+    }
     if g.p.hidden.is_none() && g.escape.is_none() {
         if let Some(pr) = g.focus_prompt() {
+            let pr = with_interact_key(&pr);
             let size = fs(10.0);
             let x = c.x - tw(a, F::Body, &pr, size) * 0.5;
             // a ladder prompt rides high, so it does not cover the rungs the crosshair is on
@@ -429,7 +435,7 @@ pub fn draw_hud_with_runners(
         let t = if g.p.hide_lock > 0.0 {
             format!("LOCKED IN // {:.0}s", g.p.hide_lock.ceil())
         } else {
-            "[E] LEAVE".into()
+            with_interact_key("[E] LEAVE")
         };
         shadowed(
             a,
@@ -441,7 +447,8 @@ pub fn draw_hud_with_runners(
         );
     }
     if g.p.in_vent {
-        let t = "IN THE VENTS // [E] AT A GRATE TO MOVE ON";
+        let t = with_interact_key("IN THE VENTS // [E] AT A GRATE TO MOVE ON");
+        let t = t.as_str();
         shadowed(
             a,
             t,
@@ -514,6 +521,8 @@ pub fn draw_hud_with_runners(
                 Item::Battery => 4,
                 Item::Stim => 5,
                 Item::MusicBox => 6,
+                Item::Lockpick => 2,
+                Item::ReviveKit => 5,
             }];
             let (iw, ih) = (icon.width().max(1.0), icon.height().max(1.0));
             let k = (r.w / iw).min(22.0 / ih);
@@ -641,6 +650,48 @@ pub fn draw_chat_feed(a: &Assets, feed: &crate::net::chat::ChatFeed) {
     super::chat_box::draw_chat(a, feed, &super::chat_box::ChatBox::default());
 }
 
+thread_local! {
+    static INTERACT_KEY: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// The key the interact prompts name, as the bindings show it (`Bindings::prompt_key("interact")`, e.g. "E" or "MOUSE 2").
+/// The app sets it when the bindings load or change; empty keeps the prompts' own [E].
+pub fn set_interact_key(key: &str) {
+    INTERACT_KEY.with(|k| *k.borrow_mut() = key.trim().to_uppercase());
+}
+
+/// `text` with its [E] naming the bound interact key (game/interact.rs writes its prompts with [E]).
+pub fn with_interact_key(text: &str) -> String {
+    INTERACT_KEY.with(|k| interact_key_text(text, &k.borrow()))
+}
+
+fn interact_key_text(text: &str, key: &str) -> String {
+    if key.is_empty() || key == "E" {
+        text.to_string()
+    } else {
+        text.replace("[E]", &format!("[{key}]"))
+    }
+}
+
+/// The TEAMMATE WAYPOINTS setting (`Settings::teammate_waypoints`) decides whether the world overlay of the teammates is
+/// drawn: their name and distance markers, the edge arrows, and the waypoints with their chevrons. Off draws nothing.
+pub fn teammate_overlay_enabled(setting: bool, in_run: bool, paused: bool) -> bool {
+    setting && in_run && !paused
+}
+
+/// The teammate overlay pass: markers for the teammates and chevrons toward each waypoint. Call it after the nametag pass
+/// when [`teammate_overlay_enabled`] is true, on the default camera, with the scene target the figures were drawn through.
+pub fn draw_teammate_overlay(
+    g: &Game,
+    a: &Assets,
+    rt: &RenderTarget,
+    marks: &[Marker],
+    waypoints: &[super::teammate_markers::WaypointDraw],
+) {
+    super::teammate_markers::draw_world(g, a, rt, marks);
+    super::teammate_markers::draw_waypoints(g, a, rt, waypoints);
+}
+
 pub fn draw_crosshair(g: &Game, aimed: bool) {
     if !aimed || g.p.hidden.is_some() || g.escape.is_some() {
         return;
@@ -746,4 +797,19 @@ mod tests {
         assert_eq!(chat_line_text(&ChatLine::sanitize(2, "R-1", &p, true)), "run");
     }
 
+    #[test]
+    fn interact_prompts_name_the_bound_key() {
+        assert_eq!(interact_key_text("[E] TAKE COIN", ""), "[E] TAKE COIN");
+        assert_eq!(interact_key_text("[E] TAKE COIN", "E"), "[E] TAKE COIN");
+        assert_eq!(interact_key_text("[E] HIDE // LOCKER", "MOUSE 2"), "[MOUSE 2] HIDE // LOCKER");
+        assert_eq!(interact_key_text("LOCKED IN // 3s", "R"), "LOCKED IN // 3s");
+    }
+
+    #[test]
+    fn the_teammate_overlay_follows_the_setting_and_only_draws_in_a_running_game() {
+        assert!(teammate_overlay_enabled(true, true, false));
+        assert!(!teammate_overlay_enabled(false, true, false), "the setting off draws nothing");
+        assert!(!teammate_overlay_enabled(true, false, false));
+        assert!(!teammate_overlay_enabled(true, true, true));
+    }
 }

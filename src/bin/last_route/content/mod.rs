@@ -40,6 +40,8 @@ impl Content {
         packs::load_all(&mut c);
         c.regions = regions::load(&c.packs, &mut c.warnings);
         regions::install(c.regions.clone());
+        // the loaded packs' content hashes, for the room's pack check (net/world_sync.rs)
+        *loaded_digests() = c.packs.iter().map(|p| (p.id.clone(), pack_digest(p))).collect();
         c
     }
 
@@ -67,10 +69,14 @@ impl Content {
         }
         for (path, text) in embedded::data_under("hunters/").filter(|(p, _)| !p.ends_with("sabotage.json") && !p.ends_with("nightmare_pounce.json") && !p.ends_with("nyxie_wake.json") && *p != "hunters/targets.json" && *p != "hunters/emotes.json" && *p != "hunters/offscreen.json" && *p != "hunters/pathing.json") {
             // hunters/search.json is the search rules (hunters/brain.rs), not a hunter definition
-            if path == "hunters/search.json" {
+            if path == "hunters/search.json" || path == crate::hunters::navigation::TUNING_PATH || path == crate::hunters::navigation::SEARCH_DIFFICULTY_PATH {
                 continue;
             }
             // hunters/director.json is the squad rules (hunters/director.rs), not a hunter definition
+            // hunters/draw_pool.json, activities_idle.json and knock_sound.json are rule tables too
+            if matches!(path, "hunters/draw_pool.json" | "hunters/activities_idle.json" | "hunters/knock_sound.json") {
+                continue;
+            }
             if path == "hunters/director.json" {
                 continue;
             }
@@ -152,5 +158,80 @@ impl Content {
             }
         }
         out
+    }
+}
+
+fn loaded_digests() -> std::sync::MutexGuard<'static, Vec<(String, String)>> {
+    static D: std::sync::OnceLock<std::sync::Mutex<Vec<(String, String)>>> = std::sync::OnceLock::new();
+    D.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Each mod pack the last `Content::load` loaded, as (pack id, hex hash of its content). The hash covers every file of
+/// the pack in path order, each by its pack-relative path and its bytes, so two players with the same packs get the same
+/// list. Empty before the first load and with no packs.
+pub fn loaded_pack_digests() -> Vec<(String, String)> {
+    loaded_digests().clone()
+}
+
+/// The content hash of one pack: the sha256 of its files' lines `<relative path> <sha256 of the bytes>`, in path order.
+pub fn pack_digest(pack: &Pack) -> String {
+    let files: Vec<(String, String)> = match pack_import::virtual_id(&pack.dir) {
+        // an imported pack (browser build) is hashed from the memory it is served from
+        Some(id) => pack_import::with_registry(|r| r.get(id))
+            .map(|p| p.files.iter().map(|(rel, bytes)| (rel.clone(), crate::shared::skins::sha256_hex(bytes))).collect())
+            .unwrap_or_default(),
+        None => {
+            let mut out = Vec::new();
+            hash_tree(&pack.dir, "", &mut out);
+            out
+        }
+    };
+    digest_lines(files)
+}
+
+fn digest_lines(mut files: Vec<(String, String)>) -> String {
+    files.sort();
+    let mut text = String::new();
+    for (rel, hash) in &files {
+        text.push_str(rel);
+        text.push(' ');
+        text.push_str(hash);
+        text.push('\n');
+    }
+    crate::shared::skins::sha256_hex(text.as_bytes())
+}
+
+/// The files under `dir` as (path relative to the pack, sha256), skipping the macOS metadata files the server also removes.
+fn hash_tree(dir: &std::path::Path, prefix: &str, out: &mut Vec<(String, String)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if name == ".DS_Store" || name.starts_with("._") {
+            continue;
+        }
+        let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+        let Ok(kind) = e.file_type() else { continue };
+        if kind.is_dir() {
+            hash_tree(&e.path(), &rel, out);
+        } else if kind.is_file() {
+            if let Ok(bytes) = std::fs::read(e.path()) {
+                out.push((rel, crate::shared::skins::sha256_hex(&bytes)));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod digest_tests {
+    use super::*;
+
+    #[test]
+    fn a_pack_digest_follows_the_files_not_their_order() {
+        let a = digest_lines(vec![("pack.json".into(), "aa".into()), ("hunters/x.json".into(), "bb".into())]);
+        let b = digest_lines(vec![("hunters/x.json".into(), "bb".into()), ("pack.json".into(), "aa".into())]);
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 64);
+        assert_ne!(a, digest_lines(vec![("pack.json".into(), "aa".into()), ("hunters/x.json".into(), "bc".into())]));
+        assert_ne!(a, digest_lines(vec![("pack.json".into(), "aa".into())]));
     }
 }

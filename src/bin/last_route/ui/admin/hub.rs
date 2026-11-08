@@ -246,9 +246,9 @@ fn nightly_probe(release: &Probe, files: Vec<(&'static str, &'static str)>) -> P
         .iter()
         .filter_map(|(label, name)| {
             let asset = assets.iter().find(|a| a.get("name").and_then(|n| n.as_str()) == Some(*name))?;
-            let when = asset.get("updated_at").and_then(|t| t.as_str()).unwrap_or("").replace('T', " ");
-            let when: String = when.chars().take(16).collect();
-            Some(format!("{label} {when} UTC"))
+            let iso = asset.get("updated_at").and_then(|t| t.as_str()).unwrap_or("");
+            let when = crate::app::updater::format_iso(iso).unwrap_or_else(|| iso.replace('T', " ").chars().take(16).collect::<String>() + " UTC");
+            Some(format!("{label} {when}"))
         })
         .collect();
     let mut out = Json::new();
@@ -592,7 +592,7 @@ mod tests {
         let limited = answered(403, json!({}));
         assert_eq!(nightly_probe(&limited, nightly_files("windows")), limited);
         let release = answered(200, json!({"assets": [{"name": "last_route-windows-x86_64.exe", "updated_at": "2026-01-02T03:04:05Z"}]}));
-        assert_eq!(update_line("windows", &nightly_probe(&release, nightly_files("windows"))), "WINDOWS: EXE 2026-01-02 03:04 UTC");
+        assert_eq!(update_line("windows", &nightly_probe(&release, nightly_files("windows"))), format!("WINDOWS: EXE {}", crate::app::updater::format_iso("2026-01-02T03:04:00Z").unwrap()));
         assert_eq!(update_line("linux", &nightly_probe(&release, nightly_files("linux"))), "LINUX: NONE PUBLISHED");
         assert_eq!(update_line("phone", &nightly_probe(&limited, nightly_files("phone"))), "PHONE: NONE PUBLISHED");
     }

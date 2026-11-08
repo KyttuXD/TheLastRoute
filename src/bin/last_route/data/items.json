@@ -1,0 +1,11 @@
+{
+	"schema": "lr.items/1",
+	"_about": "Pack rules (ui/inventory.rs, game/items.rs). Backpacks add slots on top of the base hotbar. Times are seconds.",
+	"base_slots": 5,
+	"backpacks": [
+		{ "id": "small", "extra_slots": 2 },
+		{ "id": "large", "extra_slots": 4 }
+	],
+	"lockpick_seconds": 3.5,
+	"kit_self_revive": true
+}

@@ -1,0 +1,13 @@
+{
+  "schema": "lr.safe_room/1",
+  "_note": "Infinite safe rooms: one every interval levels (levels below 0 count by depth), never on level 0. Checkpoint is recorded on entering an intact room. Breach: after warmup_s of a hunter at the door the room's breach timer runs; breach_seconds later it breaks (host only).",
+  "interval": 4,
+  "offset": 0,
+  "first_depth": 2,
+  "every_floor_in_finite": false,
+  "max_integrity": 100,
+  "breach_warmup_s": 3.0,
+  "breach_seconds": 20.0,
+  "breach_pressure_scale": { "relaxed": 0.6, "standard": 1.0, "hard": 1.3, "nightmare": 1.6 },
+  "checkpoint_on_entry": true
+}

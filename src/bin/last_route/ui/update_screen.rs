@@ -117,12 +117,15 @@ pub enum Choice {
 pub struct Overlay {
     rules: &'static Rules,
     state: UpdateScreen,
+    /// When the new version was found (Unix seconds, UTC), shown as "LAST CHECKED: NOV 8, 2026 3:42 PM EST" in the
+    /// player's zone (app/updater.rs `checked_line`).
+    found_at: Option<i64>,
 }
 
 impl Overlay {
     pub fn new() -> Overlay {
         let rules = rules();
-        Overlay { rules, state: UpdateScreen::new(rules.timing) }
+        Overlay { rules, state: UpdateScreen::new(rules.timing), found_at: None }
     }
 
     /// Whether the screen was up on the last frame: the rest of the game then takes no input.
@@ -138,6 +141,9 @@ impl Overlay {
     /// The end-of-frame hook: tick with the frame's time, act on the events, and draw the screen last when it is up.
     pub fn frame(&mut self, a: &Assets, dt: f32, update_available: bool, in_run: bool) {
         let events = self.state.tick(dt, update_available, in_run);
+        if events.contains(&Event::Shown) {
+            self.found_at = Some(crate::app::updater::now_unix());
+        }
         if events.contains(&Event::Shown) || (self.state.is_shown() && web_pointer::locked()) {
             // let go of the mouse so the buttons can be clicked; a lock the browser grants late is released again
             set_cursor_grab(false);
@@ -151,7 +157,8 @@ impl Overlay {
         if !self.state.is_shown() {
             return;
         }
-        match draw(a, self.rules, &self.state) {
+        let checked = crate::app::updater::checked_line(self.found_at);
+        match draw(a, self.rules, &self.state, &checked) {
             Choice::UpdateNow => {
                 if let Some(Event::Reload) = self.state.update_now() {
                     web_update::reload();
@@ -165,8 +172,9 @@ impl Overlay {
     }
 }
 
-/// Draws the screen over whatever is behind it and returns the player's choice.
-pub fn draw(a: &Assets, rules: &Rules, screen: &UpdateScreen) -> Choice {
+/// Draws the screen over whatever is behind it and returns the player's choice. `checked` is the "LAST CHECKED" line
+/// (local zone, 12-hour clock), drawn under the notice.
+pub fn draw(a: &Assets, rules: &Rules, screen: &UpdateScreen, checked: &str) -> Choice {
     let _scope = MenuScope::enter();
     let p = pal();
     let v = view();
@@ -192,13 +200,14 @@ pub fn draw(a: &Assets, rules: &Rules, screen: &UpdateScreen) -> Choice {
     let inner_w = tw(a, F::Title, &rules.title, heading)
         .max(tw(a, F::Body, &kicker, 6.0))
         .max(tw(a, F::Body, &countdown_text(rules, 88), 9.0))
+        .max(tw(a, F::Body, checked, 6.0))
         .max(now_w + later_w + 5.0)
         .max(196.0);
     let note_lines = wrap(a, F::Body, note, inner_w, 6.0);
     let kicker_h = lh(F::Body, 6.0);
     let head_h = lh(F::Title, heading);
     let line_h = lh(F::Body, 9.0);
-    let note_h = note_lines.len() as f32 * lh(F::Body, 6.0);
+    let note_h = (note_lines.len() + 1) as f32 * lh(F::Body, 6.0);
     let bar_h = 3.0;
     let h = 24.0 + kicker_h + 5.0 + head_h + 8.0 + line_h + 5.0 + bar_h + 6.0 + note_h + 10.0 + btn_h;
     let panel = centered(inner_w + 24.0, h);
@@ -223,6 +232,7 @@ pub fn draw(a: &Assets, rules: &Rules, screen: &UpdateScreen) -> Choice {
         label(a, F::Body, l, inner.x, y, 6.0, p.muted);
         y += lh(F::Body, 6.0);
     }
+    label(a, F::Body, checked, inner.x, y, 6.0, p.muted);
 
     let mut choice = Choice::None;
     // Enter always means UPDATE NOW, so that button is drawn as the focused one
@@ -291,5 +301,14 @@ mod tests {
         let o = Overlay::new();
         assert!(!o.is_shown());
         assert_eq!(o.rules.timing, rules().timing);
+        assert_eq!(o.found_at, None, "nothing found yet");
+    }
+
+    #[test]
+    fn the_found_time_reads_in_the_local_zone_on_a_twelve_hour_clock() {
+        let line = crate::app::updater::checked_line(Some(1_762_634_520));
+        assert!(line.starts_with("LAST CHECKED: NOV "), "{line}");
+        assert!(line.contains(" AM ") || line.contains(" PM "), "{line}");
+        assert!(!line.contains("UTC") || line.ends_with(" UTC"), "a zone name, never an ISO stamp: {line}");
     }
 }

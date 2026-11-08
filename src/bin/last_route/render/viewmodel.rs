@@ -26,6 +26,8 @@ fn held_id(item: Item) -> HeldId {
         Item::Battery => HeldId::Battery,
         Item::Stim => HeldId::StimPack,
         Item::MusicBox => HeldId::MusicBox,
+        Item::Lockpick => HeldId::Crowbar,
+        Item::ReviveKit => HeldId::StimPack,
     }
 }
 

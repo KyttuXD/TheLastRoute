@@ -1,0 +1,51 @@
+{
+  "max_keys_per_action": 3,
+  "capture_cancel_key": "Escape",
+  "reserved_keys": ["Escape", "F11"],
+  "sections": ["MOVEMENT", "ACTIONS", "SYSTEM"],
+  "actions": [
+    { "id": "move_up", "label": "MOVE UP", "section": "MOVEMENT", "keys": ["W"], "pad": ["L-STICK"] },
+    { "id": "move_down", "label": "MOVE DOWN", "section": "MOVEMENT", "keys": ["S"], "pad": ["L-STICK"] },
+    { "id": "move_left", "label": "MOVE LEFT", "section": "MOVEMENT", "keys": ["A"], "pad": ["L-STICK"] },
+    { "id": "move_right", "label": "MOVE RIGHT", "section": "MOVEMENT", "keys": ["D"], "pad": ["L-STICK"] },
+    { "id": "look_up", "label": "LOOK UP", "section": "MOVEMENT", "keys": ["I", "Up"], "pad": ["R-STICK"] },
+    { "id": "look_down", "label": "LOOK DOWN", "section": "MOVEMENT", "keys": ["K", "Down"], "pad": ["R-STICK"] },
+    { "id": "look_left", "label": "LOOK LEFT", "section": "MOVEMENT", "keys": ["J", "Left"], "pad": ["R-STICK"] },
+    { "id": "look_right", "label": "LOOK RIGHT", "section": "MOVEMENT", "keys": ["L", "Right"], "pad": ["R-STICK"] },
+    { "id": "sprint", "label": "SPRINT", "section": "MOVEMENT", "keys": ["LeftShift", "RightShift"], "pad": ["PAD L3"] },
+    { "id": "crouch", "label": "CROUCH", "section": "MOVEMENT", "keys": ["C"], "pad": ["PAD B"] },
+    { "id": "jump", "label": "JUMP / HOP", "section": "MOVEMENT", "keys": ["Space"], "pad": ["PAD A"] },
+
+    { "id": "interact", "label": "INTERACT", "section": "ACTIONS", "keys": ["E", "MouseRight"], "pad": ["PAD X"] },
+    { "id": "flashlight", "label": "FLASHLIGHT", "section": "ACTIONS", "keys": ["F"], "pad": ["PAD RB"] },
+    { "id": "taser", "label": "TASER", "section": "ACTIONS", "keys": ["G"], "pad": ["PAD LB"] },
+    { "id": "use_item", "label": "USE HELD TOOL", "section": "ACTIONS", "keys": ["MouseLeft"], "pad": ["RT"] },
+    { "id": "inventory", "label": "INVENTORY", "section": "ACTIONS", "keys": ["Tab"], "pad": ["PAD Y"] },
+    { "id": "hotbar", "label": "HOTBAR", "section": "ACTIONS", "keys": ["Key1"], "pad": ["WHEEL"], "fixed": true, "shown": "1-5 / WHEEL" },
+    { "id": "drop", "label": "DROP HELD ITEM", "section": "ACTIONS", "keys": ["Q"], "pad": ["DPAD DOWN"] },
+    { "id": "chat", "label": "CHAT", "section": "ACTIONS", "keys": ["T", "Slash"], "pad": [] },
+    { "id": "push_to_talk", "label": "PUSH TO TALK", "section": "ACTIONS", "keys": ["X"], "pad": ["R-STICK"] },
+    { "id": "quick_chat", "label": "QUICK CHAT", "section": "ACTIONS", "keys": ["GraveAccent"], "pad": ["DPAD UP"] },
+    { "id": "map", "label": "TOGGLE MAP", "section": "ACTIONS", "keys": ["M"], "pad": ["PAD BACK"] },
+    { "id": "player_list", "label": "PLAYER LIST", "section": "ACTIONS", "keys": ["O"], "pad": [] },
+    { "id": "hide_hud", "label": "HIDE HUD", "section": "ACTIONS", "keys": ["F1"], "pad": [] },
+
+    { "id": "pause", "label": "PAUSE", "section": "SYSTEM", "keys": ["Escape"], "pad": ["PAD START"], "fixed": true },
+    { "id": "fullscreen", "label": "FULLSCREEN", "section": "SYSTEM", "keys": ["F11"], "pad": [], "fixed": true }
+  ],
+  "pad": {
+    "enabled": false,
+    "stick_deadzone": 0.2,
+    "note": "Pad names are labels and a binding table only; reading a pad needs a dependency, so nothing polls one yet."
+  },
+  "frame": {
+    "unfocused_fps": 15,
+    "unfocused_sleep_ms": 66,
+    "min_cap_fps": 30
+  },
+  "camera": {
+    "bob_walk": 0.024,
+    "bob_sprint": 0.038,
+    "bob_crouch": 0.012
+  }
+}

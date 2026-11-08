@@ -577,6 +577,49 @@ impl<K: Hash + Eq + Clone, V> StaticCache<K, V> {
     }
 }
 
+/// The variant of a prop type a placement draws: `stable_index(key)` into `models`, else the first one `loaded` accepts
+/// (a variant whose file did not load). `None` when no variant is loaded. The key is the room's variant key plus the
+/// prop id, so one instance always gets the same variant.
+pub fn pick_variant(models: &[String], key: &str, loaded: impl Fn(&str) -> bool) -> Option<usize> {
+    if models.is_empty() {
+        return None;
+    }
+    let at = crate::content::props::stable_index(key, models.len());
+    if loaded(&models[at]) {
+        return Some(at);
+    }
+    models.iter().position(|m| loaded(m))
+}
+
+/// Models by (kind, variant): each variant is loaded once, the first time an instance asks for it, and every instance
+/// of that variant shares it. Draw code asks with the variant `pick_variant` chose per instance, so two props of one
+/// kind can show different models without one load per prop.
+pub struct VariantCache<M> {
+    models: HashMap<(String, usize), M>,
+    loads: usize,
+}
+
+impl<M> Default for VariantCache<M> {
+    fn default() -> Self {
+        VariantCache { models: HashMap::new(), loads: 0 }
+    }
+}
+
+impl<M> VariantCache<M> {
+    pub fn get_or_load(&mut self, kind: &str, variant: usize, load: impl FnOnce() -> M) -> &M {
+        let loads = &mut self.loads;
+        self.models.entry((kind.to_string(), variant)).or_insert_with(|| {
+            *loads += 1;
+            load()
+        })
+    }
+
+    /// How many models were loaded so far (one per distinct (kind, variant) asked for).
+    pub fn loads(&self) -> usize {
+        self.loads
+    }
+}
+
 fn add_parts(parts: &[Part], builders: &mut HashMap<usize, Builder>, xf: Mat4, tint: Color, pre: impl Fn(Vec3) -> Vec3) {
     let nm = Mat3::from_mat4(xf).inverse().transpose();
     for p in parts {
@@ -984,5 +1027,51 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod variant_tests {
+    use super::*;
+
+    fn names(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("props/maze/locker_{i}.bbmodel")).collect()
+    }
+
+    #[test]
+    fn each_instance_gets_the_variant_its_key_names_and_keeps_it() {
+        let models = names(3);
+        let all = |_: &str| true;
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..60 {
+            let key = format!("room{i}:prop{i}");
+            let a = pick_variant(&models, &key, all).unwrap();
+            assert_eq!(a, crate::content::props::stable_index(&key, 3));
+            assert_eq!(Some(a), pick_variant(&models, &key, all), "stable for one instance");
+            seen.insert(a);
+        }
+        assert_eq!(seen.len(), 3, "different instances spread over the variants");
+    }
+
+    #[test]
+    fn a_variant_that_did_not_load_falls_back_to_one_that_did() {
+        let models = names(3);
+        let only_last = |m: &str| m == models[2];
+        for i in 0..20 {
+            assert_eq!(pick_variant(&models, &format!("k{i}"), only_last), Some(2));
+        }
+        assert_eq!(pick_variant(&models, "k", |_| false), None);
+        assert_eq!(pick_variant(&[], "k", |_| true), None);
+    }
+
+    #[test]
+    fn the_cache_loads_each_kind_and_variant_once() {
+        let mut cache: VariantCache<String> = VariantCache::default();
+        for _ in 0..5 {
+            assert_eq!(cache.get_or_load("locker", 0, || "a".into()), "a");
+            assert_eq!(cache.get_or_load("locker", 1, || "b".into()), "b");
+            assert_eq!(cache.get_or_load("lamp", 0, || "c".into()), "c");
+        }
+        assert_eq!(cache.loads(), 3);
     }
 }

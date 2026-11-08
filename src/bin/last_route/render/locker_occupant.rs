@@ -153,6 +153,111 @@ pub fn draw(
     }
 }
 
+// -- the hunter checking a locker against the occupant (TODO 374) --------------------------------------------------------
+//
+// Simulating side only: the brain's locker check runs `LockerCheck` and the scene draws the result for everyone (a guest
+// gets the phase and progress through the hunter's frame). Timings are data/hiding.json `hunter_anim`.
+
+/// The steps of a hunter checking a locker, in order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckPhase {
+    /// The search tell: the hunter stops and listens at the door.
+    Tell,
+    /// The door is opened.
+    Open,
+    /// The arm reaches in toward the occupant.
+    ReachIn,
+    /// The occupant is pulled out (only when someone is inside).
+    PullOut,
+    /// Done.
+    Finished,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CheckTiming {
+    pub tell: f32,
+    pub open: f32,
+    pub reach_in: f32,
+    pub pull_out: f32,
+    /// How high the hand goes on the occupant, metres.
+    pub reach_height: f32,
+    /// How far the occupant is dragged out, metres.
+    pub pull_distance: f32,
+}
+
+impl CheckTiming {
+    pub const STANDARD: CheckTiming =
+        CheckTiming { tell: 0.6, open: 0.5, reach_in: 0.6, pull_out: 0.8, reach_height: 1.1, pull_distance: 1.2 };
+
+    /// Parses data/hiding.json's `hunter_anim` object; a missing value keeps the Standard one.
+    pub fn parse(text: &str) -> CheckTiming {
+        let mut t = CheckTiming::STANDARD;
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else { return t };
+        let a = &v["hunter_anim"];
+        let f = |k: &str, into: &mut f32| {
+            if let Some(x) = a[k].as_f64().filter(|x| *x >= 0.0 && *x < 60.0) {
+                *into = x as f32;
+            }
+        };
+        f("tell", &mut t.tell);
+        f("open", &mut t.open);
+        f("reach_in", &mut t.reach_in);
+        f("pull_out", &mut t.pull_out);
+        f("reach_height", &mut t.reach_height);
+        f("pull_distance", &mut t.pull_distance);
+        t
+    }
+
+    /// Seconds to the end of the check; the pull-out only counts when someone is inside.
+    pub fn total(&self, occupied: bool) -> f32 {
+        self.tell + self.open + self.reach_in + if occupied { self.pull_out } else { 0.0 }
+    }
+}
+
+/// The embedded timing.
+pub fn check_timing() -> &'static CheckTiming {
+    static T: OnceLock<CheckTiming> = OnceLock::new();
+    T.get_or_init(|| CheckTiming::parse(include_str!("../data/hiding.json")))
+}
+
+/// The phase `t` seconds into a check and its progress 0..1. An empty locker has no pull-out: it finishes after the reach.
+pub fn check_phase(timing: &CheckTiming, t: f32, occupied: bool) -> (CheckPhase, f32) {
+    let steps = [
+        (CheckPhase::Tell, timing.tell),
+        (CheckPhase::Open, timing.open),
+        (CheckPhase::ReachIn, timing.reach_in),
+        (CheckPhase::PullOut, if occupied { timing.pull_out } else { 0.0 }),
+    ];
+    let mut left = t.max(0.0);
+    for (phase, len) in steps {
+        if left < len {
+            return (phase, if len > 0.0 { left / len } else { 1.0 });
+        }
+        left -= len;
+    }
+    (CheckPhase::Finished, 1.0)
+}
+
+/// Where the reaching hand goes: the occupant's chest (their feet plus the reach height). None for an empty slot.
+pub fn reach_target(timing: &CheckTiming, pose: Option<&OccupantPose>) -> Option<[f32; 3]> {
+    let p = pose?;
+    let h = if p.state == BodyState::Lying { timing.reach_height * 0.4 } else { timing.reach_height };
+    Some([p.pos[0], p.pos[1] + h, p.pos[2]])
+}
+
+/// The occupant's position while being pulled out: from its slot along the locker's facing by `progress` of the pull
+/// distance. The yaw turns toward the hunter by the same share (a half turn at the end).
+pub fn pulled_pose(timing: &CheckTiming, pose: &OccupantPose, facing: (i32, i32), progress: f32) -> OccupantPose {
+    let (fx, fz) = (facing.0 as f32, facing.1 as f32);
+    let len = (fx * fx + fz * fz).sqrt().max(1e-6);
+    let s = progress.clamp(0.0, 1.0);
+    let mut out = *pose;
+    out.pos[0] += fx / len * timing.pull_distance * s;
+    out.pos[2] += fz / len * timing.pull_distance * s;
+    out.yaw += std::f32::consts::PI * s;
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,5 +310,45 @@ mod tests {
     fn missing_key_reports_its_name() {
         let e = OccupantData::parse(r#"{"occupant":{"hide_size_x":0.8}}"#).unwrap_err();
         assert!(e.contains("slot_shift_factor"), "{e}");
+    }
+
+    #[test]
+    fn the_hunter_check_steps_run_tell_open_reach_pull() {
+        let t = CheckTiming::parse(include_str!("../data/hiding.json"));
+        assert_eq!(t, CheckTiming::STANDARD);
+        assert_eq!(check_phase(&t, 0.0, true).0, CheckPhase::Tell);
+        assert_eq!(check_phase(&t, t.tell + 0.01, true).0, CheckPhase::Open);
+        assert_eq!(check_phase(&t, t.tell + t.open + 0.01, true).0, CheckPhase::ReachIn);
+        assert_eq!(check_phase(&t, t.tell + t.open + t.reach_in + 0.01, true).0, CheckPhase::PullOut);
+        assert_eq!(check_phase(&t, t.total(true) + 0.01, true).0, CheckPhase::Finished);
+        let (_, p) = check_phase(&t, t.tell / 2.0, true);
+        assert!((p - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn an_empty_locker_has_no_pull_out() {
+        let t = CheckTiming::STANDARD;
+        assert!(t.total(false) < t.total(true));
+        assert_eq!(check_phase(&t, t.tell + t.open + t.reach_in + 0.01, false).0, CheckPhase::Finished);
+    }
+
+    #[test]
+    fn the_hand_reaches_the_occupant_and_the_pull_moves_them_out_of_the_door() {
+        let d = d();
+        let t = CheckTiming::STANDARD;
+        let pose = occupant_pose(&d, "wardrobe", 0, 1, 1, (3.0, 4.0), (0, 1)).unwrap();
+        let hand = reach_target(&t, Some(&pose)).unwrap();
+        assert!((hand[0] - pose.pos[0]).abs() < 1e-5 && (hand[2] - pose.pos[2]).abs() < 1e-5);
+        assert!((hand[1] - (pose.pos[1] + t.reach_height)).abs() < 1e-5);
+        assert_eq!(reach_target(&t, None), None, "nobody inside: nothing to reach for");
+        let bed = occupant_pose(&d, "bed", 0, 1, 1, (0.0, 0.0), (0, 1)).unwrap();
+        assert!(reach_target(&t, Some(&bed)).unwrap()[1] < hand[1] + bed.pos[1], "a lying body is reached lower");
+        let out = pulled_pose(&t, &pose, (0, 1), 1.0);
+        assert!((out.pos[2] - pose.pos[2] - t.pull_distance).abs() < 1e-4, "dragged out along the facing");
+        assert_eq!(pulled_pose(&t, &pose, (0, 1), 0.0), pose);
+        let fast = CheckTiming::parse(r#"{"hunter_anim":{"pull_distance":2.0,"tell":0.1}}"#);
+        assert_eq!(fast.pull_distance, 2.0);
+        assert_eq!(fast.tell, 0.1);
+        assert_eq!(fast.open, t.open);
     }
 }

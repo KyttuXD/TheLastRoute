@@ -3,6 +3,7 @@
   "_note": "Wading speed only. Wade and swim noise, stamina drain and the soak timer live in data/swim/effects.json; the fall and landing rules in data/swim/fall.json.",
   "wade": {
     "deep_depth": 0.9,
-    "speed_scale": 0.45
+    "speed_scale": 0.45,
+    "ankle_depth": 0.0
   }
 }

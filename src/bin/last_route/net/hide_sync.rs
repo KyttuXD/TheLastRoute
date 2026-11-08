@@ -22,10 +22,34 @@ pub struct Config {
     pub tell_duration_s: f32,
     pub tell_amplitude: f32,
     pub tell_rate_hz: f32,
+    /// Camera per hiding-prop kind (`prop_views`): (kind, eye height, forward metres).
+    pub prop_views: Vec<(String, PropView)>,
+}
+
+/// The camera of one kind of hiding prop.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PropView {
+    pub eye: f32,
+    pub forward: f32,
 }
 
 fn num(v: &Value, key: &str, path: &str) -> Result<f64, String> {
     v.get(key).and_then(Value::as_f64).ok_or_else(|| format!("hide_sync.json: key '{path}' missing or not a number"))
+}
+
+fn parse_prop_views(v: &Value) -> Result<Vec<(String, PropView)>, String> {
+    let mut out = vec![];
+    if let Some(o) = v.get("prop_views").and_then(Value::as_object) {
+        for (kind, p) in o {
+            let eye = num(p, "eye", &format!("prop_views.{kind}.eye"))? as f32;
+            let forward = num(p, "forward", &format!("prop_views.{kind}.forward"))? as f32;
+            if !eye.is_finite() || !forward.is_finite() || eye <= 0.0 {
+                return Err(format!("hide_sync.json: prop_views.{kind} needs a finite eye above 0"));
+            }
+            out.push((kind.clone(), PropView { eye, forward }));
+        }
+    }
+    Ok(out)
 }
 
 pub fn parse(text: &str) -> Result<Config, String> {
@@ -47,6 +71,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
         tell_duration_s: num(tell, "duration_s", "search_tell.duration_s")? as f32,
         tell_amplitude: num(tell, "amplitude", "search_tell.amplitude")? as f32,
         tell_rate_hz: num(tell, "rate_hz", "search_tell.rate_hz")? as f32,
+        prop_views: parse_prop_views(&v)?,
     };
     if cfg.max_capacity < 1 {
         return Err("hide_sync.json: key 'max_capacity' must be at least 1".into());
@@ -256,5 +281,37 @@ mod tests {
         assert!(e.contains("amplitude"), "{e}");
         let e = parse(&TEXT.replace("\"max_capacity\": 2", "\"max_capacity\": 0")).unwrap_err();
         assert!(e.contains("max_capacity"), "{e}");
+    }
+}
+
+impl Config {
+    /// The camera of a hiding-prop kind (`Kind::Hide` props such as a bunk or wardrobe), None for an unlisted kind.
+    pub fn prop_view(&self, kind: &str) -> Option<PropView> {
+        self.prop_views.iter().find(|(k, _)| k == kind).map(|(_, v)| *v)
+    }
+}
+
+#[cfg(test)]
+mod prop_view_tests {
+    use super::*;
+
+    #[test]
+    fn hide_prop_offsets_come_from_data() {
+        let c = config();
+        let bunk = c.prop_view("bunk").expect("bunk is listed");
+        assert!(bunk.eye < c.prop_view("wardrobe").unwrap().eye, "a bunk lies lower than a wardrobe");
+        assert!(c.prop_view("lava").is_none());
+        let moved = parse(&TEXT.replace("\"bunk\":     { \"eye\": 0.34", "\"bunk\":     { \"eye\": 0.5")).unwrap();
+        assert_eq!(moved.prop_view("bunk").unwrap().eye, 0.5);
+        assert!(parse(&TEXT.replace("\"eye\": 0.34", "\"eye\": 0")).is_err());
+    }
+
+    #[test]
+    fn every_hiding_kind_has_a_camera() {
+        let (_, text) = crate::content::embedded::data_under("hiding.json").next().expect("hiding.json embedded");
+        let v: Value = serde_json::from_str(text).unwrap();
+        for kind in v["kinds"].as_object().unwrap().keys() {
+            assert!(config().prop_view(kind).is_some(), "no prop view for hiding kind {kind}");
+        }
     }
 }

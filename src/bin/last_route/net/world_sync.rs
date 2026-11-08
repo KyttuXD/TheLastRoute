@@ -569,8 +569,14 @@ impl RouteCommand {
     }
 }
 
+/// Most lobby events a guest keeps for the room panel before the oldest is dropped (a memory bound, not a tunable).
+const LOBBY_INBOX_MAX: usize = 32;
+/// Most accepted guest asks the host keeps between two takes by the app (a memory bound, not a tunable).
+const GUEST_REQUESTS_MAX: usize = 256;
+
 /// A settings difficulty index as Godot's `_selectable_difficulty_or_standard` reads it: 0 RELAXED, 1 STANDARD, 2 HARD.
-/// Nightmare (3) has no port in this build, so it, and any other value, is STANDARD.
+/// The index reads only those three (`ALL`), so 3 and any other value is STANDARD; Nightmare crosses the wire by its name
+/// (`difficulty_from_name`, which reads the lobby row).
 fn difficulty_from_index(v: &Value) -> Difficulty {
     v.as_f64()
         .map(|f| f as i64)
@@ -759,6 +765,14 @@ pub struct NetSession {
     send_clock: SendClock,
     /// The NPC teammates the host runs: the host's sends, and a guest's copy of them ([`super::npc_sync`]).
     npcs: super::npc_sync::NpcSync,
+    /// This runner's own waypoint, sent in its samples (`wp`/`wl`) while it has one; set by the app.
+    own_waypoint: Option<crate::game::waypoint::PeerWaypoint>,
+    /// The other runners' waypoints, from their samples (each player's own client alone changes its waypoint).
+    waypoints: crate::game::waypoint::Waypoints,
+    /// Host: guest asks (`SubmitEvent`) that passed `host_requests::handle`, with the sender, for the app to act on.
+    guest_requests: Vec<(u32, super::host_requests::Request)>,
+    /// Guest: the lobby events the host sent, typed, for the room panel (`RoomPanel::apply`).
+    lobby_inbox: Vec<protocol::LobbyEvent>,
     last_sent: Option<(f64, Sample)>,
     next_heartbeat: Instant,
     heartbeat: Option<Pending<api::HeartbeatReply>>,
@@ -1149,6 +1163,10 @@ impl NetSession {
             seq: 0,
             send_clock: SendClock::default(),
             npcs: Default::default(),
+            own_waypoint: None,
+            waypoints: Default::default(),
+            guest_requests: Vec::new(),
+            lobby_inbox: Vec::new(),
             last_sent: None,
             next_heartbeat: now + first_beat,
             heartbeat: None,
@@ -1953,6 +1971,33 @@ impl NetSession {
         self.remotes_where(origin, |_| true)
     }
 
+    /// Seconds since each other runner's last sample, by peer, for the map pins and markers (`ui::markers::with_ages`).
+    pub fn remote_ages(&self) -> Vec<(u32, f32)> {
+        let now = Instant::now();
+        self.remotes.iter().map(|(p, r)| (*p, now.duration_since(r.last_seen).as_secs_f32())).collect()
+    }
+
+    /// Sets this runner's own waypoint (absolute cells and height, and its level), or None when it has none. It goes
+    /// out in every sample from now on (`crate::game::waypoint::PeerWaypoint::to_wire`).
+    pub fn set_own_waypoint(&mut self, wp: Option<crate::game::waypoint::PeerWaypoint>) {
+        self.own_waypoint = wp;
+    }
+
+    /// The other runners' waypoints, by peer id (absolute cells), for the teammate markers and the map pins.
+    pub fn peer_waypoints(&self) -> &crate::game::waypoint::Waypoints {
+        &self.waypoints
+    }
+
+    /// Host: the guest asks accepted since the last call, each with its sender (`host_requests::handle` passed them).
+    pub fn take_guest_requests(&mut self) -> Vec<(u32, super::host_requests::Request)> {
+        std::mem::take(&mut self.guest_requests)
+    }
+
+    /// Guest: the lobby events received since the last call, for `RoomPanel::apply`.
+    pub fn take_lobby_events(&mut self) -> Vec<protocol::LobbyEvent> {
+        std::mem::take(&mut self.lobby_inbox)
+    }
+
     fn remotes_where(&self, origin: (i32, i32), keep: impl Fn(&Remote) -> bool) -> Vec<RemoteView> {
         let now = Instant::now();
         let mut out: Vec<RemoteView> = self
@@ -2092,6 +2137,16 @@ impl NetSession {
     }
 
     fn on_message(&mut self, from: u32, message: Message, now: Instant, out: &mut Vec<NetEvent>) {
+        // a guest keeps the host's lobby traffic, typed, for the room panel (the arms below still act on it)
+        if !self.is_host() {
+            if let Some(ev) = protocol::LobbyEvent::from_message(&message) {
+                // bounded: an app that never takes them cannot grow the inbox without end
+                if self.lobby_inbox.len() >= LOBBY_INBOX_MAX {
+                    self.lobby_inbox.remove(0);
+                }
+                self.lobby_inbox.push(ev);
+            }
+        }
         match message {
             Message::RegisterPeer { requested_name } if self.is_host() => {
                 // two guests of one room never share a guest name: the later one is given a free number
@@ -2186,9 +2241,25 @@ impl NetSession {
                 if !self.store_remote(from, sample, now) {
                     return;
                 }
+                if let Some(m) = packet.as_object() {
+                    self.waypoints.apply_sample(from, m);
+                }
                 let others: Vec<u32> = self.coop.peers().into_iter().filter(|p| *p != from).collect();
                 for peer in others {
                     self.coop.send(peer, &Message::PeerPlace { peer_id: from as i64, packet: packet.clone() });
+                }
+            }
+            // a guest's ask (route command, chat, emote, toggle, NPC op, pack hash): checked and clamped against
+            // data/net/anticheat.json "requests"; only an accepted ask reaches the app, anything else is dropped. A guest is
+            // never the owner here: owner asks from a guest go through the ticketed OwnerCommand.
+            Message::SubmitEvent { event } if self.is_host() => {
+                if let Some(guest) = self.guests.get_mut(&from) {
+                    guest.last_seen = now;
+                }
+                if let Ok(req) = super::host_requests::handle(super::host_requests::rules(), &event, false) {
+                    if self.guest_requests.len() < GUEST_REQUESTS_MAX {
+                        self.guest_requests.push((from, req));
+                    }
                 }
             }
             // a guest's taser, escape or capture report (Godot `_submit_hunter_event`): the host alone resolves it
@@ -2275,7 +2346,11 @@ impl NetSession {
                     return;
                 }
                 if let Some(sample) = Sample::from_json(&packet) {
-                    self.store_remote(peer, sample, now);
+                    if self.store_remote(peer, sample, now) {
+                        if let Some(m) = packet.as_object() {
+                            self.waypoints.apply_sample(peer, m);
+                        }
+                    }
                 }
             }
             _ => {}
@@ -2368,6 +2443,8 @@ impl NetSession {
     fn prune(&mut self, now: Instant, out: &mut Vec<NetEvent>) {
         // a stale runner is not drawn (remotes_at checks the timeout) but its state stays for the PLAYERS list
         self.remotes.retain(|_, r| now.duration_since(r.last_seen) < ROSTER_KEEP);
+        let present: Vec<u32> = self.remotes.keys().copied().collect();
+        self.waypoints.retain_peers(&present);
         if self.is_host() {
             let gone: Vec<u32> = self
                 .guests
@@ -2430,7 +2507,11 @@ impl NetSession {
             Some(mut s) => {
                 s.seq = self.seq;
                 self.last_sent = Some((t, s));
-                s.to_json()
+                let mut p = s.to_json();
+                if let (Some(wp), Some(m)) = (self.own_waypoint, p.as_object_mut()) {
+                    wp.to_wire(m);
+                }
+                p
             }
             None => {
                 self.last_sent = None;
@@ -2659,14 +2740,14 @@ mod tests {
 
     #[test]
     fn a_held_item_rides_the_sample_and_an_unknown_one_is_none() {
-        for item in [Item::Flashlight, Item::Taser, Item::Crowbar, Item::Axe, Item::Battery, Item::Stim, Item::MusicBox] {
+        for item in [Item::Flashlight, Item::Taser, Item::Crowbar, Item::Axe, Item::Battery, Item::Stim, Item::MusicBox, Item::Lockpick, Item::ReviveKit] {
             let s = sample(2, 1.0, 2.0).with_held(Some(item));
             assert_eq!(Sample::from_json(&s.to_json()), Some(s), "{item:?} round trips");
         }
         let none = sample(2, 1.0, 2.0).to_json();
         assert!(none.get("held").is_none(), "nothing held sends no key, so an older peer sees the old packet");
         let mut v = sample(3, 1.0, 2.0).to_json();
-        v["held"] = json!("lockpick");
+        v["held"] = json!("not_an_item_id");
         let s = Sample::from_json(&v).expect("an unknown item never refuses the sample");
         assert_eq!((s.held, s.x), (None, 1.0));
         v["held"] = json!(7);

@@ -9,6 +9,12 @@
 		"lava_y": -0.875,
 		"lava_basin_y": -2.0
 	},
+	"lava": {
+		"_about": "Lava pit hazard and glow (world/inferno.rs). damage_per_second: health lost each second the body is within touch_margin metres of a lava cell (the pit is closed to walking, so this is the edge and a fall). glow: the light a lava cell gives, colour 0..1, range in metres, strength. The surface look is data/render/inferno.json lava_surface.",
+		"damage_per_second": 35.0,
+		"touch_margin": 0.3,
+		"glow": { "color": [1.0, 0.42, 0.08], "radius_m": 6.0, "strength": 1.4 }
+	},
 	"cavern": {
 		"width": [22, 30],
 		"height": [22, 30],

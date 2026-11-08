@@ -13,6 +13,10 @@
     "sewerSluiceGate"
   ],
   "shore_depth_fraction": 0.35,
+  "flood": {
+    "depth": 0.6,
+    "valve_drain": 0.2
+  },
   "tint": {
     "shallow": [74, 112, 96, 150],
     "deep": [14, 34, 38, 235],

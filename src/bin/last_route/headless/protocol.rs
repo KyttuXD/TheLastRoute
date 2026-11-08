@@ -181,6 +181,8 @@ fn parse_item(s: &str) -> Option<Item> {
         "battery" => Item::Battery,
         "stim" | "stim_pack" => Item::Stim,
         "music_box" => Item::MusicBox,
+        "lockpick" | "lockpick_set" => Item::Lockpick,
+        "revive_kit" => Item::ReviveKit,
         _ => return None,
     })
 }

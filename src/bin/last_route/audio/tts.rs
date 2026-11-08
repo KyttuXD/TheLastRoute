@@ -72,6 +72,65 @@ pub fn config() -> &'static Config {
     C.get_or_init(|| parse(TEXT).expect("tts.json"))
 }
 
+const CUES_TEXT: &str = include_str!("../data/audio/cues.json");
+
+/// The subtitle text of a cue (data/audio/cues.json "subtitles"), only when the SUBTITLES setting is on. ui/hud.rs
+/// draws what this returns when a cue plays.
+pub fn subtitle_for(cue: &str, subtitles_on: bool) -> Option<String> {
+    if !subtitles_on {
+        return None;
+    }
+    static S: OnceLock<std::collections::HashMap<String, String>> = OnceLock::new();
+    let m = S.get_or_init(|| {
+        let v: Value = serde_json::from_str(CUES_TEXT).unwrap_or(Value::Null);
+        v.get("subtitles")
+            .and_then(Value::as_object)
+            .map(|o| o.iter().filter_map(|(k, x)| x.as_str().map(|s| (k.clone(), s.to_string()))).collect())
+            .unwrap_or_default()
+    });
+    m.get(cue).cloned()
+}
+
+/// The SUBTITLES setting as the cue path reads it: the app sets it from `Settings::subtitles` (on until it does, as the
+/// setting's default is).
+static SUBTITLES_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_subtitles(on: bool) {
+    SUBTITLES_ON.store(on, Ordering::Relaxed);
+}
+
+/// How long a cue's subtitle stays on the HUD (data/audio/cues.json "subtitle_seconds", 2 s when missing).
+pub fn subtitle_seconds() -> f32 {
+    static S: OnceLock<f32> = OnceLock::new();
+    *S.get_or_init(|| {
+        serde_json::from_str::<Value>(CUES_TEXT)
+            .ok()
+            .and_then(|v| v.get("subtitle_seconds").and_then(Value::as_f64))
+            .filter(|s| s.is_finite() && *s > 0.0)
+            .map_or(2.0, |s| s as f32)
+    })
+}
+
+thread_local! {
+    static SHOWN: std::cell::RefCell<Option<(String, crate::shared::clock::Instant)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A cue just played (`sound::event`): its subtitle, if it has one and SUBTITLES is on, becomes the one the HUD shows.
+pub fn note_cue(cue: &str) {
+    if let Some(text) = subtitle_for(cue, SUBTITLES_ON.load(Ordering::Relaxed)) {
+        SHOWN.with(|s| *s.borrow_mut() = Some((text, crate::shared::clock::Instant::now())));
+    }
+}
+
+/// The subtitle the HUD draws now: the last noted cue's, for `subtitle_seconds` after it played.
+pub fn current_subtitle() -> Option<String> {
+    SHOWN.with(|s| {
+        let s = s.borrow();
+        let (text, at) = s.as_ref()?;
+        (at.elapsed().as_secs_f32() < subtitle_seconds()).then(|| text.clone())
+    })
+}
+
 /// Settings the caller owns (HOOK: `speech_enabled` in app/settings.rs).
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {
@@ -506,6 +565,21 @@ mod tests {
         }
         assert_eq!(q.len(), 2);
         assert_eq!(q.pop().unwrap().0, "b");
+    }
+
+    #[test]
+    fn voice_volume_scales_the_voice_gain() {
+        let loud = speech_volume(0.0, 10.0, 0.0, 1.0, 100.0);
+        let half = speech_volume(0.0, 10.0, 0.0, 1.0, 50.0);
+        assert!(loud > 0.0 && (half - loud * 0.5).abs() < 1e-9);
+        assert_eq!(speech_volume(0.0, 10.0, 0.0, 1.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn subtitle_text_only_when_the_setting_is_on() {
+        assert!(subtitle_for("hunter_knock", true).is_some());
+        assert!(subtitle_for("hunter_knock", false).is_none());
+        assert!(subtitle_for("no_such_cue", true).is_none());
     }
 
     #[test]

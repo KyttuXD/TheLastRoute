@@ -47,6 +47,7 @@
 		"inferno0": "inferno_zero",
 		"inferno_level_0": "inferno_zero"
 	},
+	"layer_beds": { "sewer": "sewer", "sewers": "sewer", "inferno": "inferno", "inferno_zero": "inferno_zero", "inferno0": "inferno_zero" },
 	"regions": ["apartments", "prison", "maze", "ice", "stalls", "inferno_zero", "tunnels", "lab", "offices", "utility", "greenhouse", "sewer", "inferno"],
 	"beds": {
 		"apartments": {

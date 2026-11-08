@@ -1,0 +1,29 @@
+{
+  "schema": "lr.teammate_markers/1",
+  "_note": "World-space teammate markers, teammate waypoints and map pins. stale_after_seconds = a teammate's last sample older than this starts to dim; stale_full_seconds = the age at which it is as dim as it gets (stale_min_alpha); gone_seconds = older than this and the marker is dropped. show_distance = metres a distance is written under the name; max_distance = past this no marker is drawn. edge_margin = pixels between the screen edge and an edge arrow; edge_arrow_size = arrow half-length in design units. font_size and outline in design units. down_label and caught_label are the words shown instead of the distance (upper case). other_floor_alpha_* = how strongly a pin on another floor is drawn on the minimap and the full map (never dropped). down_ring_hz = pulses a second of the ring round a downed teammate's pin; down_ring_radius = ring radius in cells (at least the pin's radius). ping_seconds = how long a quick-chat map ping lasts (fades out over the whole time); ping_radius = its biggest ring in cells. waypoint = the per-player waypoint: chevron_spacing and chevron_count are the world-space chevrons drawn from a teammate's marker toward its waypoint; max_range = metres the waypoint may be set from; label = the word above it; pin_alpha = map pin strength.",
+  "stale_after_seconds": 2.0,
+  "stale_full_seconds": 8.0,
+  "stale_min_alpha": 0.35,
+  "gone_seconds": 20.0,
+  "show_distance": true,
+  "max_distance": 400.0,
+  "edge_margin": 28.0,
+  "edge_arrow_size": 5.0,
+  "font_size": 6.5,
+  "outline": 1.4,
+  "down_label": "DOWN",
+  "caught_label": "CAUGHT",
+  "other_floor_alpha_minimap": 0.3,
+  "other_floor_alpha_full": 0.35,
+  "down_ring_hz": 1.2,
+  "down_ring_radius": 4.5,
+  "ping_seconds": 4.0,
+  "ping_radius": 6.0,
+  "waypoint": {
+    "chevron_spacing": 1.6,
+    "chevron_count": 8,
+    "max_range": 90.0,
+    "label": "WAYPOINT",
+    "pin_alpha": 1.0
+  }
+}

@@ -27,6 +27,9 @@
 
 pub use crate::shared::{assets, checkpoint, paths, skins};
 pub mod gfx;
+pub mod bindings;
+pub mod frame_cap;
+pub mod mouse_lock;
 pub mod log;
 pub mod pacing;
 pub mod perf;
@@ -36,10 +39,12 @@ pub mod run_gate;
 pub mod public_route;
 pub mod quality;
 pub mod screenshot;
+pub mod capture;
 pub mod selftest;
 pub mod settings;
 pub mod stress;
 pub mod updater;
+pub mod startup;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod updater_site;
 pub mod web_pointer;
@@ -199,33 +204,35 @@ fn read_controls(
     sens: f32,
     shop: bool,
     dt: f32,
+    bind: &bindings::Bindings,
 ) -> Controls {
     let mut c = Controls::default();
-    if is_key_down(KeyCode::W) {
+    // every key below is the player's binding (data/controls.json defaults, CONTROLS tab changes)
+    if bind.down("move_up") {
         c.fwd += 1.0;
     }
-    if is_key_down(KeyCode::S) {
+    if bind.down("move_down") {
         c.fwd -= 1.0;
     }
-    if is_key_down(KeyCode::D) {
+    if bind.down("move_right") {
         c.strafe += 1.0;
     }
-    if is_key_down(KeyCode::A) {
+    if bind.down("move_left") {
         c.strafe -= 1.0;
     }
-    c.sprint = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
-    c.crouch = is_key_down(KeyCode::C);
-    c.jump = is_key_pressed(KeyCode::Space);
-    c.interact = is_key_pressed(KeyCode::E) || is_mouse_button_pressed(MouseButton::Right);
-    c.interact_held = is_key_down(KeyCode::E) || is_mouse_button_down(MouseButton::Right);
-    c.use_item = grabbed && is_mouse_button_pressed(MouseButton::Left);
-    c.flashlight = is_key_pressed(KeyCode::F);
-    c.taser = is_key_pressed(KeyCode::G);
-    c.drop = is_key_pressed(KeyCode::Q);
+    c.sprint = bind.down("sprint");
+    c.crouch = bind.down("crouch");
+    c.jump = bind.pressed("jump");
+    c.interact = bind.pressed("interact");
+    c.interact_held = bind.down("interact");
+    c.use_item = grabbed && bind.pressed("use_item");
+    c.flashlight = bind.pressed("flashlight");
+    c.taser = bind.pressed("taser");
+    c.drop = bind.pressed("drop");
     // how long Q has been held: a hold past data/player/drop.json drops the whole stack (the count restarts when it is up)
     thread_local!(static DROP_HELD: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) });
     c.drop_held_for = DROP_HELD.with(|h| {
-        let v = if is_key_down(KeyCode::Q) { h.get() + dt } else { 0.0 };
+        let v = if bind.down("drop") { h.get() + dt } else { 0.0 };
         h.set(v);
         v
     });
@@ -283,16 +290,16 @@ fn read_controls(
         *mouse_last = None;
     }
     let mut stick = Vec2::ZERO;
-    if is_key_down(KeyCode::J) || is_key_down(KeyCode::Left) {
+    if bind.down("look_left") {
         stick.x -= 1.0;
     }
-    if is_key_down(KeyCode::L) || is_key_down(KeyCode::Right) {
+    if bind.down("look_right") {
         stick.x += 1.0;
     }
-    if is_key_down(KeyCode::I) || is_key_down(KeyCode::Up) {
+    if bind.down("look_up") {
         stick.y -= 1.0;
     }
-    if is_key_down(KeyCode::K) || is_key_down(KeyCode::Down) {
+    if bind.down("look_down") {
         stick.y += 1.0;
     }
     c.look += keyboard_look(stick, dt, sens);
@@ -551,7 +558,12 @@ fn shot_screen(name: &str) -> Option<Screen> {
     })
 }
 
-pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>, update: Option<updater::UpdateHandle>) {
+pub async fn run(
+    screenshot: Option<String>,
+    stress_cfg: Option<stress::Config>,
+    update: Option<updater::UpdateHandle>,
+    mut capture: Option<capture::Capture>,
+) {
     // a stress run (`--stress`) opens its log before the load, so a bad --stress-log path fails at once
     let stress_on = stress_cfg.is_some();
     let stress_vsync = stress_cfg.as_ref().map(|c| c.vsync);
@@ -624,6 +636,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
     let mut death: Option<Death> = None;
     let mut last_save: Option<checkpoint::Checkpoint> = None;
     let mut seen_autosaves = 0u32;
+    // when the last autosave of this session landed (get_time), for the pause menu's save line
+    let mut last_save_at: Option<f64> = None;
     let mut mouse_last: Option<Vec2> = None;
     // the look filter: a short settle after a re-lock while the cursor moves to the capture point, then spike rejection
     let mut look_filter = LookFilter::default();
@@ -690,6 +704,10 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
     let mut public_joins = crate::app::public_route::JoinThrottle::default();
     // PUBLIC ROUTE: the way back into the room after its host left (net/public_reform.rs). The runner keeps playing meanwhile.
     let mut reform: Option<PublicReform> = None;
+    // a private-room guest whose link dropped: the room code and token, kept for a short window of rejoin tries
+    // (net/rejoin.rs; timing and lines in data/net/rejoin.json). The runner keeps playing meanwhile.
+    let mut rejoin = crate::net::rejoin::Rejoin::new(crate::net::rejoin::rules().clone());
+    let mut rejoin_code = String::new();
     // CREATE ROOM (online): the server's answer, then the wait for the room to be listed and the guest join
     let mut hosted_create: Option<Pending<hosted::Created>> = None;
     let mut hosted_join: Option<hosted::HostedJoin> = None;
@@ -729,7 +747,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 std::process::exit(0);
             }
         }
-        let raw_dt = get_frame_time();
+        // a movie capture (--capture) steps the game a fixed 1/fps per frame, whatever the real frame took
+        let raw_dt = capture.as_ref().map_or_else(get_frame_time, |c| c.dt());
         let dt = raw_dt.min(run_gate::MAX_FRAME_DT);
         if update_screen.is_shown() {
             update_screen.swallow_input();
@@ -871,6 +890,15 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     let public = intent != NetIntent::Join;
                     // a runner that is playing when the handover finishes keeps its game and its world
                     let resumed = intent == NetIntent::Reform && (playing.is_some() || loading.is_some());
+                    // a rejoin try that got back into the room while the runner kept playing (net/rejoin.rs)
+                    let rejoined = intent == NetIntent::Join
+                        && !session.is_host()
+                        && rejoin.within_window(get_time())
+                        && (playing.is_some() || loading.is_some());
+                    if intent == NetIntent::Join && !session.is_host() {
+                        rejoin.remember(&code, &backend.account.session_token);
+                        rejoin_code = code.clone();
+                    }
                     if public {
                         // nobody on the public route chooses its difficulty
                         diff = net_public::rules().difficulty;
@@ -892,6 +920,9 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                             flash(&mut ui, "THE ROUTE CONTINUES // THE PUBLIC ROOM IS OPEN AGAIN");
                         }
                         false if resumed => flash(&mut ui, "THE ROUTE CONTINUES // BACK IN THE PUBLIC ROOM"),
+                        false if rejoined => {
+                            flash(&mut ui, &crate::net::rejoin::line("rejoined", "BACK IN ROOM {code}", &[("code", code.as_str())]))
+                        }
                         true => {
                             // Reform without a local world still must not invent a seed if the session already has one
                             // (DirectoryOps::open mints a placeholder); only a fresh public open rolls a new room.
@@ -924,7 +955,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     net = Some(session);
                 }
                 Err(e) => {
-                    let text = e.message_or("ROOM REQUEST FAILED");
+                    // the server's refusal, or the data's line for the failure (net/api.rs describe_error)
+                    let text = crate::net::api::describe_error(&e);
                     match intent {
                         NetIntent::Public | NetIntent::Reform => flash(&mut ui, &text),
                         NetIntent::Join if ui.screen == Screen::Join => ui.join_status = text,
@@ -1196,6 +1228,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             }
         }
         let mut room_closed: Option<String> = None;
+        // the link of a private-room guest dropped and may be rejoined (net/rejoin.rs)
+        let mut rejoin_opened = false;
         for event in room_events {
             match event {
                 NetEvent::Start { seed, difficulty } => {
@@ -1249,7 +1283,16 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                         show_room_notice(playing.as_mut(), &mut ui, &format!("YOU ARE {name}"));
                     }
                 }
-                NetEvent::HostLeft(reason) => room_closed = Some(reason),
+                NetEvent::HostLeft(reason) => {
+                    // the public route keeps the raw reason (its handover below reads it); a private room shows the
+                    // data's notice (HOST LEFT - ROOM CLOSED), and a guest whose link merely dropped tries to rejoin
+                    let session = net.as_ref().map(|n| (n.is_host(), n.is_public_route()));
+                    match session {
+                        Some((_, true)) => room_closed = Some(reason),
+                        Some((false, false)) if rejoin.dropped(&reason, get_time()) => rejoin_opened = true,
+                        _ => room_closed = Some(crate::net::wiring::room_closed_text(&reason)),
+                    }
+                }
                 NetEvent::Problem(text) => show_room_notice(playing.as_mut(), &mut ui, &text),
                 NetEvent::OwnerRefused(reason) => {
                     // the room refused this owner's command: the reason shows where the owner is looking
@@ -1373,6 +1416,35 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
         }
         if ui.screen == Screen::Title {
             reform = None;
+            // back on the title on purpose: no rejoin of the old room
+            if !rejoin_opened {
+                rejoin.forget();
+            }
+        }
+        // a dropped private-room guest: the dead link goes, the runner keeps playing, and the same room is tried again
+        // every retry_seconds until the window or the tries run out (then it is a closed room after all)
+        if rejoin_opened && room_closed.is_none() {
+            net = None;
+            if let Some(line) = rejoin.status_line(get_time()) {
+                show_room_notice(playing.as_mut(), &mut ui, &line);
+            }
+        }
+        if net.is_none() && net_pending.is_none() && room_closed.is_none() {
+            let now = get_time();
+            if rejoin.due(now) {
+                if let Some(a) = rejoin.attempt(now).cloned() {
+                    let name = world_sync::clean_name(&backend.room_name(&settings.username));
+                    let skin = worn.get().hash;
+                    net_pending = Some((NetIntent::Join, world_sync::join_room(net_cfg.clone(), a.code, name, skin, a.token, false)));
+                    rejoin.tried(now);
+                    if let Some(line) = rejoin.status_line(now) {
+                        show_room_notice(playing.as_mut(), &mut ui, &line);
+                    }
+                }
+            } else if rejoin.expired(now) {
+                room_closed = Some(crate::net::rejoin::line("reconnect_failed", "COULD NOT REJOIN ROOM {code}", &[("code", rejoin_code.as_str())]));
+                rejoin.forget();
+            }
         }
         if let Some(reason) = room_closed {
             // the host closed the room (or the handover ran out of time): this guest goes back to the title with the reason
@@ -1442,6 +1514,23 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             }
             g.sync_other_hiders(&remotes);
             let marks = crate::ui::markers::all_markers(g, &remotes);
+            // the quick-chat pings of this route depth, as the maps draw them (ui/map.rs MapExtras). Peer waypoints are not
+            // carried by the room yet, so the maps get none.
+            {
+                let (ox, oy) = g.window_origin();
+                let pings = chat_feed
+                    .pings()
+                    .into_iter()
+                    .filter(|p| p.depth == g.depth as i64)
+                    .map(|p| map::MapPing {
+                        at: (p.at[0] as f32 - ox as f32, p.at[1] as f32 - oy as f32),
+                        level: g.fac.level,
+                        age_s: p.age,
+                        colour: map::teammate_colour(p.peer_id as u32),
+                    })
+                    .collect();
+                map::set_extras(map::MapExtras { pings, waypoints: Vec::new() });
+            }
             // the admin tools follow the server's admin flag for the signed-in account, never the local name
             admin.enabled = (backend.admin || (screenshot.is_some() && env("LR_SHOT_ADMIN").is_some())) && !stress_on;
             // a hunter holding this runner in an open room: the struggle needs the keys, so the pause menu (the world keeps
@@ -1489,13 +1578,13 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     pz.show();
                 }
             }
-            if is_key_pressed(KeyCode::M) && !pz.open && !in_report && !stress_on {
+            if settings.bindings.pressed("map") && !pz.open && !in_report && !stress_on {
                 map_open = !map_open;
                 if map_open {
                     map_view.recentre();
                 }
             }
-            if is_key_pressed(KeyCode::F1) {
+            if settings.bindings.pressed("hide_hud") {
                 hud_hidden = !hud_hidden;
             }
             let mut want_grab = cursor_grab_wanted(
@@ -1576,6 +1665,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     settings.sensitivity,
                     g.shop_open(),
                     dt,
+                    &settings.bindings,
                 ),
             };
             if pz.open || map_open || admin.is_open() || update_screen.is_shown() || chat_box.typing() {
@@ -1622,6 +1712,14 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             // the click that took the pointer lock back after a hand-back is a gesture, not a use of the held item
             if relock_click {
                 c.use_item = false;
+            }
+            // HUNTER VIEW (admin): a left click in the run picks the hunter nearest the view ray (within the data's
+            // pick_radius, ui/admin/hunter_view.rs); a click that picks one is not a use of the held item
+            if admin.hunter_view_on() && !admin.is_open() && !pz.open && !map_open && !in_report && is_mouse_button_pressed(MouseButton::Left) {
+                let (eye, fwd, _, _) = scene::view(g);
+                if admin.pick_hunter(eye.to_array(), fwd.to_array(), g) {
+                    c.use_item = false;
+                }
             }
             // the open map takes the mouse and the keys (pan, zoom, waypoints) while the run itself is still
             if map_open && !pz.open && !in_report && !admin.is_open() {
@@ -1677,6 +1775,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             // refreshed on every save (Game::autosave bumps autosave_count), so a save just before death survives the clear
             if save_needs_reload(seen_autosaves, g.autosave_count, g.report.is_some()) {
                 seen_autosaves = g.autosave_count;
+                last_save_at = Some(get_time());
                 if let Some(cp) = checkpoint::load() {
                     last_save = Some(cp);
                 }
@@ -1804,6 +1903,14 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                         let _t = perf::section("render 3d");
                         render_play_with(g, &w.assets, &w.mat, &tg, &remotes, &npcs);
                     }
+                    // the teammate overlay (TEAMMATE WAYPOINTS setting) and the chat bubbles over the 3D view, after the
+                    // nametags; no peer waypoints are on the wire yet, so the overlay draws the teammate markers only
+                    if !hud_hidden {
+                        if hud::teammate_overlay_enabled(settings.teammate_waypoints, net.is_some(), pz.open) {
+                            hud::draw_teammate_overlay(g, &w.assets, &tg.scene, &marks, &[]);
+                        }
+                        crate::ui::chat_box::draw_bubbles(g, &w.assets, &tg.scene, &chat_feed, &marks);
+                    }
                     if !hud_hidden || g.escape.is_some() {
                         let _t = perf::section("hud");
                         hud::draw_hud_with_runners(g, &w.assets, fps, s, &marks);
@@ -1820,7 +1927,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                         let (ox, oy) = g.window_origin();
                         let (ax, az) = (g.p.pos.0 as f64 + ox as f64, g.p.pos.1 as f64 + oy as f64);
                         if let Some(n) = net.as_mut() {
-                            n.send_chat(&sent, "team", [ax, az], [ax, g.p.y() as f64, az], g.depth as i64);
+                            n.send_chat(&sent, chat_box.channel(), [ax, az], [ax, g.p.y() as f64, az], g.depth as i64);
                         }
                     }
                     if chat_allowed {
@@ -1862,7 +1969,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                         hud::draw_crosshair(g, grabbed);
                     }
                     // Hold O: player list overlay (Godot player_list; Tab/T are labels until inventory/chat UI land).
-                    if !stress_on && !pz.open && !in_report && is_key_down(KeyCode::O) {
+                    if !stress_on && !pz.open && !in_report && settings.bindings.down("player_list") {
                         let roster = net.as_ref().map(|n| n.roster()).unwrap_or_default();
                         let listed = list_name(net.is_some(), &settings.username, &backend);
                         let local_host = net.as_ref().map_or(reform.is_none(), |n| n.host_controls());
@@ -1928,6 +2035,14 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                         None => {}
                     }
                     if pz.open {
+                        // SAID RECENTLY (with MUTE) and the save line; the MUTE clicks of the last frame are applied here
+                        pause::set_info(pause::PauseInfo {
+                            speakers: chat_feed.said_recently(),
+                            save: last_save_at.map_or(pause::SaveStatus::Unknown, |t| pause::SaveStatus::Saved((get_time() - t) as f32)),
+                        });
+                        for peer in pause::take_mute_clicks() {
+                            chat_feed.toggle_mute(peer);
+                        }
                         let name = list_name(net.is_some(), &settings.username, &backend);
                         let roster = net.as_ref().map(|n| n.roster()).unwrap_or_default();
                         let local_host = net.as_ref().map_or(reform.is_none(), |n| n.host_controls());
@@ -2310,9 +2425,28 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             shots.capture();
         }
         shots.draw(&w.assets, dt);
+        // --capture: the finished frame goes to the next frame_NNNNNN.png (save_screen makes the folder)
+        if let Some(c) = capture.as_mut() {
+            let path = c.next_path();
+            if let Some(p) = path.to_str() {
+                save_screen(p);
+            }
+        }
         // the FPS LIMIT row would cap the numbers a stress run measures, so a stress run is paced only by
         // --stress-limit (none by default)
-        pacer.wait(if stress_on { stress_cap } else { settings.frame_cap_fps() });
+        // an unfocused window with PAUSE ON FOCUS LOSS on is held to data/controls.json frame.unfocused_fps (app/frame_cap.rs)
+        let focused = frame_cap::focused();
+        pacer.wait(if stress_on {
+            stress_cap
+        } else {
+            frame_cap::effective_cap(settings.frame_cap_fps(), focused, settings.pause_on_focus_loss, &bindings::rules().frame)
+        });
+        if !stress_on && !cfg!(target_arch = "wasm32") {
+            let nap = frame_cap::unfocused_sleep(focused, settings.pause_on_focus_loss, &bindings::rules().frame);
+            if !nap.is_zero() {
+                std::thread::sleep(nap);
+            }
+        }
         next_frame().await;
     }
     // quitting the game closes an open room, so the guests get HOST_LEFT now and not after the directory's TTL

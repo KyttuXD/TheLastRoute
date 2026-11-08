@@ -10,6 +10,7 @@
     "up_to_date": "Up to date (build {build})",
     "updated": "Updated to build {build}",
     "failed": "Update failed: {reason}",
-    "no_key": ""
+    "no_key": "",
+    "checked_suffix": " // {checked}"
   }
 }

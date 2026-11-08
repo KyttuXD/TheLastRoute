@@ -690,3 +690,138 @@ fn reset_all_does_not_touch_a_reset_in_flight_and_clears_the_typed_name() {
     assert!(a.fields.iter().all(|f| f.is_empty()));
     assert!(a.reset.request.is_some(), "RESET ALL SETTINGS is about switches, not a request already made");
 }
+
+// ---- HUNTER VIEW and the debug helpers (hunter_view.rs) ----
+
+#[test]
+fn the_hunter_view_data_loads_and_is_positive() {
+    let c = hunter_view::cfg();
+    assert!(c.pick_radius > 0.0 && c.pulse_secs > 0.0 && c.arc_points >= 2 && c.queue_max > 0);
+}
+
+#[test]
+fn the_hunter_view_dropdown_includes_an_admin_spawned_hunter() {
+    let (mut g, content) = game();
+    let mut a = Admin::new();
+    let before = g.hunters.len();
+    a.run_row_for_test("hunter", 0, &mut g, &content);
+    assert_eq!(g.hunters.len(), before + 1, "the summon added a hunter");
+    let live = hunter_view::live_list(&g, &a.summoned);
+    let rows = hunter_view::dropdown_entries(&live);
+    assert_eq!(rows.len(), g.hunters.len(), "every live hunter has a row");
+    assert!(rows.iter().any(|(_, l)| l.contains("(ADMIN)")), "{rows:?}");
+    assert!(rows.iter().all(|(_, l)| *l == l.to_uppercase()));
+}
+
+#[test]
+fn the_hunter_view_selection_follows_a_shrinking_list() {
+    let mut v = hunter_view::HunterView { on: true, selected: Some(5) };
+    v.clamp(3);
+    assert_eq!(v.selected, Some(2));
+    v.clamp(0);
+    assert_eq!(v.selected, None);
+}
+
+#[test]
+fn debug_view_toggles_are_saved_and_read_back() {
+    let (mut g, content) = game();
+    let mut a = Admin::new();
+    for id in ["show_collision", "show_paths", "show_nav"] {
+        assert!(prefs::KEYS.iter().any(|(k, _)| *k == id), "{id} is a saved preference");
+        a.run_row_for_test(Box::leak(id.to_string().into_boxed_str()), 0, &mut g, &content);
+        assert!(a.state_of(id) && a.prefs.get(id), "{id} is on and saved");
+    }
+    a.enabled = true;
+    assert!(a.debug_colliders() && a.debug_paths() && a.debug_nav());
+}
+
+#[test]
+fn step_runs_exactly_one_tick_while_paused() {
+    let mut a = Admin::new();
+    assert!(!a.step_one_tick(), "not paused: nothing to step");
+    a.game_speed = 0.0;
+    assert_eq!(a.game_dt(0.5), 0.0);
+    assert!(a.step_one_tick());
+    assert!((a.game_dt(0.5) - 1.0 / 60.0).abs() < 1e-6, "one 60 Hz tick");
+    assert_eq!(a.game_dt(0.5), 0.0, "paused again");
+    a.in_room = true;
+    assert!(!a.step_one_tick(), "a guest does not step hunters");
+}
+
+#[test]
+fn a_click_ray_picks_the_nearest_hunter_within_the_radius() {
+    let r = hunter_view::cfg().pick_radius;
+    let hunters = [(0, [10.0, 1.0, 0.0]), (1, [5.0, 1.0, 0.5 * r]), (2, [5.0, 1.0, 3.0 * r])];
+    // ray along +x at height 1: hunter 0 on the line, 1 off it by half the radius, 2 outside the radius
+    assert_eq!(hunter_view::pick_nearest([0.0, 1.0, 0.0], [1.0, 0.0, 0.0], &hunters, r), Some(0));
+    assert_eq!(hunter_view::pick_nearest([0.0, 1.0, 0.0], [1.0, 0.0, 0.0], &hunters[1..], r), Some(1));
+    assert_eq!(hunter_view::pick_nearest([0.0, 1.0, 0.0], [1.0, 0.0, 0.0], &hunters[2..], r), None);
+    assert_eq!(hunter_view::pick_nearest([0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], &hunters, r), None, "behind the camera");
+}
+
+#[test]
+fn net_status_text_per_state_is_upper_case_and_never_offline_when_hosting() {
+    use hunter_view::{net_status_text, NetState};
+    assert!(net_status_text(NetState::Solo, "").contains("SOLO"));
+    let h = net_status_text(NetState::Hosted, "abc1");
+    assert!(h.contains("HOSTING") && h.contains("ABC1") && !h.contains("OFFLINE"));
+    assert!(net_status_text(NetState::Joined, "abc1").contains("JOINED ROOM ABC1"));
+    let room = RoomStatus { code: "x".into(), host: true, ..Default::default() };
+    assert_eq!(room.net_state(), NetState::Hosted);
+    assert_eq!(RoomStatus::default().net_state(), NetState::Solo);
+    assert_eq!(RoomStatus { code: "x".into(), ..Default::default() }.net_state(), NetState::Joined);
+}
+
+#[test]
+fn the_readout_shows_path_cost_or_the_fail_reason() {
+    use crate::world::facility::{PathFail, PathStats};
+    let s = hunter_view::HunterSnapshot {
+        index: 0,
+        id: "aki".into(),
+        name: "AKI".into(),
+        pos: (5.5, 5.5),
+        facing: (1.0, 0.0),
+        state: "CHASE".into(),
+        target: Some((9.5, 5.5)),
+        last_sighting: None,
+        path: vec![],
+        sight: 8.0,
+        hearing: 10.0,
+        admin_spawned: false,
+    };
+    let ok = PathStats { length: 5, cost: 4.0, nodes_searched: 9, elapsed_us: 120, fail: None };
+    let lines = hunter_view::readout_lines(&s, Some(&ok));
+    assert!(lines[0].contains("CHASE") && lines[2].contains("NONE") && lines[3].contains("5 CELLS") && lines[3].contains("NODES 9"));
+    let bad = PathStats { length: 0, cost: 0.0, nodes_searched: 0, elapsed_us: 1, fail: Some(PathFail::DoorClosed) };
+    assert!(hunter_view::readout_lines(&s, Some(&bad))[3].contains("DOOR CLOSED"));
+}
+
+#[test]
+fn the_sight_cone_and_hearing_circle_stay_within_range() {
+    let cone = hunter_view::sight_cone((0.0, 0.0), (1.0, 0.0), 8.0);
+    assert_eq!(cone.len(), hunter_view::cfg().arc_points + 1);
+    assert!(cone[1..].iter().all(|p| ((p.0 * p.0 + p.1 * p.1).sqrt() - 8.0).abs() < 1e-3 && p.0 > 0.0));
+    assert!(hunter_view::hearing_circle((2.0, 2.0), 5.0).iter().all(|p| (((p.0 - 2.0).powi(2) + (p.1 - 2.0).powi(2)).sqrt() - 5.0).abs() < 1e-3));
+}
+
+#[test]
+fn blocked_cells_near_a_wall_are_reported() {
+    let mut f = crate::world::facility::Facility::open_test_level(0);
+    f.wall[10][10] = true;
+    f.rebuild_grids();
+    let cells = hunter_view::blocked_cells(&f, crate::world::facility::Cell::new(9, 9));
+    assert!(cells.contains(&crate::world::facility::Cell::new(10, 10)));
+}
+
+#[test]
+fn the_moderation_queue_approves_and_dismisses_flags() {
+    use hunter_view::{Flag, ModQueue, Verdict};
+    let flag = |id: &str| Flag { id: id.into(), who: "runner".into(), reason: "spam".into() };
+    let mut q = ModQueue::default();
+    q.set(vec![flag("a"), flag("b"), flag("c")]);
+    assert_eq!(q.approve("a"), Some(Verdict::Approve("a".into())));
+    assert_eq!(q.dismiss("c"), Some(Verdict::Dismiss("c".into())));
+    assert_eq!(q.dismiss("zzz"), None);
+    assert_eq!(q.flags.len(), 1);
+    assert_eq!(ModQueue::row(&q.flags[0]), "RUNNER // SPAM // B");
+}

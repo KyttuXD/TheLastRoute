@@ -6,12 +6,17 @@
 //! there and keeps what it has when the runner goes back up); "off" = nothing ever spawns by itself, only the admin picker can summon
 //! it. The creature comes once per run, with the difficulty's knobs. It appears out of reach, already telegraphing (bark): the warning
 //! comes first. It then lurks and hunts on -3 only, its lair on the widest open ground (its legs sprawl 3.5 m).
+//!
+//! Who comes is the plan of the difficulty (`Rules::plan_for`, data `difficulty.<id>.plan`): the white one alone, the black one alone
+//! or a PAIR. A pair starts from two lairs at least `pair.min_gap` cells apart (on opposite sides of the runner when it flanks); the
+//! second creature spawns `second_delay` seconds after the first (the stagger, or the join delay on hard) and the two share a rest
+//! and a recall (`WolfSpider::link`).
 
 use super::resident_hunters::hunter_def;
 use super::Game;
 use crate::hunters::brain::Brain;
 use crate::hunters::gimmicks::Gimmick;
-use crate::hunters::secret_creatures::{self as secret, Knobs, Rules, WHITE};
+use crate::hunters::secret_creatures::{self as secret, Knobs, Rules};
 use crate::world::rng::Rng;
 use crate::world::{Cell, Facility};
 use std::f32::consts::TAU;
@@ -23,12 +28,28 @@ pub struct InfernoSecrets {
     /// Seconds the runner has spent on the home level.
     pub dwell: f32,
     spawned: Vec<&'static str>,
+    /// The second creature of a pair, waiting for its turn.
+    pending: Option<PendingSecret>,
     /// Test hooks: a trigger or difficulty without touching the shipped data.
     pub trigger_override: Option<String>,
     pub difficulty_override: Option<String>,
 }
 
+/// A creature that spawns after a delay (the second of a pair).
+#[derive(Clone, Debug)]
+pub struct PendingSecret {
+    pub id: &'static str,
+    pub left: f32,
+    pub at: (f32, f32),
+    pub knobs: Knobs,
+}
+
 impl InfernoSecrets {
+    /// The creature waiting to join, if any (tests read it).
+    pub fn pending(&self) -> Option<&PendingSecret> {
+        self.pending.as_ref()
+    }
+
     fn trigger(&self) -> &str {
         self.trigger_override.as_deref().unwrap_or(&Rules::get().trigger)
     }
@@ -51,6 +72,33 @@ pub fn clearance(fac: &Facility, cell: Cell, radius: i32) -> f32 {
 /// A deterministic open cell `spawn_min..spawn_max` cells from the runner, reachable from the runner, on the widest ground around
 /// (seeded by the route seed and the creature). None while no such cell exists (yet).
 pub fn pick_lair(fac: &Facility, rules: &Rules, seed: &str, runner: (f32, f32), id: &str) -> Option<(f32, f32)> {
+    pick_lair_where(fac, rules, seed, runner, id, &|_| true)
+}
+
+/// The angle in degrees (0..=180) between the directions of `a` and `b` as seen from `from`.
+pub fn angle_between(from: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
+    let (va, vb) = ((a.0 - from.0, a.1 - from.1), (b.0 - from.0, b.1 - from.1));
+    let (la, lb) = ((va.0 * va.0 + va.1 * va.1).sqrt(), (vb.0 * vb.0 + vb.1 * vb.1).sqrt());
+    if la < 1e-3 || lb < 1e-3 {
+        return 0.0;
+    }
+    ((va.0 * vb.0 + va.1 * vb.1) / (la * lb)).clamp(-1.0, 1.0).acos().to_degrees()
+}
+
+/// The lair of the second creature of a pair: like [`pick_lair`] but at least `pair_min_gap` cells from `first`, and when
+/// `flank` at least `pair_flank_degrees` away from it around the runner. Falls back to the gap alone when no cell flanks.
+pub fn pick_second_lair(fac: &Facility, rules: &Rules, seed: &str, runner: (f32, f32), id: &str, first: (f32, f32), flank: bool) -> Option<(f32, f32)> {
+    let far = |at: (f32, f32)| ((at.0 - first.0).powi(2) + (at.1 - first.1).powi(2)).sqrt() >= rules.pair_min_gap;
+    if flank {
+        let found = pick_lair_where(fac, rules, seed, runner, id, &|at| far(at) && angle_between(runner, first, at) >= rules.pair_flank_degrees);
+        if found.is_some() {
+            return found;
+        }
+    }
+    pick_lair_where(fac, rules, seed, runner, id, &far)
+}
+
+fn pick_lair_where(fac: &Facility, rules: &Rules, seed: &str, runner: (f32, f32), id: &str, accept: &dyn Fn((f32, f32)) -> bool) -> Option<(f32, f32)> {
     let mut rng = Rng::new(&format!("{seed}:SECRET-LAIR:{id}"));
     let here = Cell::new(runner.0.floor() as i32, runner.1.floor() as i32);
     let (mut wide, mut roomy, mut any): (Vec<(f32, f32)>, Vec<(f32, f32)>, Vec<(f32, f32)>) = (vec![], vec![], vec![]);
@@ -62,6 +110,9 @@ pub fn pick_lair(fac: &Facility, rules: &Rules, seed: &str, runner: (f32, f32), 
             continue;
         }
         let world = cell.center();
+        if !accept(world) {
+            continue;
+        }
         let open = clearance(fac, cell, rules.clearance_radius);
         if open >= rules.wide_clearance {
             wide.push(world);
@@ -114,6 +165,7 @@ impl Game {
         if self.inferno_secrets.trigger() == "off" || self.report.is_some() || self.runner_level() != rules.home_level || self.fac.level != rules.home_level {
             return;
         }
+        self.tick_pending_secret(dt);
         if self.secrets_finished() {
             return;
         }
@@ -127,13 +179,49 @@ impl Game {
         let rules = Rules::get();
         let runner = self.p.pos;
         let seed = self.secret_seed();
-        let knobs = rules.knobs_for(&self.secret_difficulty());
-        let spawned = pick_lair(&self.fac, rules, &seed, runner, WHITE).is_some_and(|at| self.spawn_secret(WHITE, at, runner, knobs));
+        let plan = rules.plan_for(&self.secret_difficulty(), &seed);
+        let first = plan.ids[0];
+        let lair = pick_lair(&self.fac, rules, &seed, runner, first);
+        let spawned = lair.is_some_and(|at| self.spawn_secret(first, at, runner, plan.knobs));
         if !spawned {
             self.inferno_secrets.dwell = rules.dwell_seconds * 0.9; // nowhere open yet (the floor is still streaming in): try again soon
             return;
         }
         self.inferno_secrets.dwell = 0.0;
+        // a pair: the second lair is picked now (the first is known), the creature comes after its delay; with no room for it the
+        // first one comes alone
+        if let (Some(&second), Some(first_at)) = (plan.ids.get(1), lair) {
+            if let Some(at) = pick_second_lair(&self.fac, rules, &seed, runner, second, first_at, plan.flank) {
+                self.inferno_secrets.pending = Some(PendingSecret { id: second, left: plan.second_delay, at, knobs: plan.knobs });
+            }
+        }
+    }
+
+    /// Counts down the second creature of a pair and spawns it, marking the runner, then links the two.
+    fn tick_pending_secret(&mut self, dt: f32) {
+        let Some(p) = self.inferno_secrets.pending.as_mut() else { return };
+        p.left -= dt;
+        if p.left > 0.0 {
+            return;
+        }
+        let Some(p) = self.inferno_secrets.pending.take() else { return };
+        if self.spawn_secret(p.id, p.at, self.p.pos, p.knobs) {
+            self.link_spider_pair();
+        }
+    }
+
+    /// Puts every secret creature of the route into one pair: they share a rest and a recall.
+    pub fn link_spider_pair(&mut self) {
+        let mut pack = None;
+        for h in self.hunters.iter_mut().filter(|h| secret::is_secret(&h.def.id)) {
+            if let Gimmick::WolfSpider(s) = &mut h.gimmick {
+                match &pack {
+                    None => pack = Some(s.pack_handle()),
+                    Some(p) if !s.in_pack() => s.join_pack(p.clone()),
+                    Some(_) => {}
+                }
+            }
+        }
     }
 
     /// Puts creature `id` on the home level at `at`, already marking `target` (its tell comes first). False when the runner is not
@@ -175,6 +263,7 @@ mod tests {
     use crate::config::Difficulty;
     use crate::content::Content;
     use crate::game::Controls;
+    use crate::hunters::secret_creatures::{BLACK, WHITE};
     use crate::world::catalog::Catalog;
     use crate::world::infinite::INFERNO_LEVEL;
 
@@ -244,15 +333,67 @@ mod tests {
     }
 
     #[test]
-    fn nightmare_brings_the_one_creature_with_the_harder_knobs() {
+    fn nightmare_brings_the_pair_with_the_harder_knobs_the_white_one_first() {
         let (content, catalog) = (Content::load(), Catalog::load());
         let mut g = inferno(Difficulty::Nightmare, 3, &content, &catalog);
         dwell_out(&mut g);
         let found = spiders(&g);
-        assert_eq!(found.len(), 1, "one creature per run");
+        assert_eq!(found.len(), 1, "the white one tells first");
         assert_eq!(found[0].def.id, WHITE);
         let base = content.hunter(WHITE).unwrap().chase;
         assert!((found[0].def.chase - base * Rules::get().knobs_for("nightmare").chase).abs() < 1e-4, "nightmare chases faster");
+        let wait = g.inferno_secrets.pending().expect("the black one waits for its turn");
+        assert_eq!(wait.id, BLACK);
+        let delay = Rules::get().plan_for("nightmare", "x").second_delay;
+        g.update_inferno_secrets(delay * 0.5);
+        assert_eq!(spiders(&g).len(), 1, "not before the stagger is over");
+        g.update_inferno_secrets(delay);
+        let found = spiders(&g);
+        assert_eq!(found.len(), 2, "then the second joins");
+        assert!(g.inferno_secrets.pending().is_none());
+        assert_eq!(found.iter().filter(|h| h.def.id == BLACK).count(), 1);
+        let gap = dist(found[0].pos, found[1].pos);
+        assert!(gap >= Rules::get().pair_min_gap - 1.5, "the pair starts {gap} cells apart");
+        // they share a pack: one rest and a recall (needs black_wolf_spider wired to the wolf spider gimmick in gimmicks/mod.rs)
+        for h in found {
+            match &h.gimmick {
+                Gimmick::WolfSpider(s) => assert!(s.in_pack(), "{} is in the pair", h.def.id),
+                _ => panic!("{} has no wolf spider gimmick", h.def.id),
+            }
+        }
+        for _ in 0..80 {
+            g.update_inferno_secrets(1.0);
+        }
+        assert_eq!(spiders(&g).len(), 2, "never a third");
+    }
+
+    #[test]
+    fn the_second_lair_keeps_its_distance_and_the_angle_is_measured_around_the_runner() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let g = inferno(Difficulty::Standard, 8, &content, &catalog);
+        let (rules, runner) = (Rules::get(), g.p.pos);
+        let first = pick_lair(&g.fac, rules, "PAIR-SEED", runner, WHITE).expect("a first lair");
+        for flank in [false, true] {
+            let second = pick_second_lair(&g.fac, rules, "PAIR-SEED", runner, BLACK, first, flank).expect("a second lair");
+            assert!(dist(first, second) >= rules.pair_min_gap, "flank {flank}: {} apart", dist(first, second));
+            assert_eq!(second, pick_second_lair(&g.fac, rules, "PAIR-SEED", runner, BLACK, first, flank).unwrap(), "deterministic");
+        }
+        assert!((angle_between((0.0, 0.0), (1.0, 0.0), (-1.0, 0.0)) - 180.0).abs() < 1e-3);
+        assert!((angle_between((0.0, 0.0), (1.0, 0.0), (0.0, 2.0)) - 90.0).abs() < 1e-3);
+        assert_eq!(angle_between((0.0, 0.0), (1.0, 0.0), (3.0, 0.0)), 0.0);
+    }
+
+    #[test]
+    fn a_solo_plan_spawns_the_creature_the_plan_names() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        // the relaxed difficulty is always the white one alone, whatever the seed
+        for n in [11, 12] {
+            let mut g = inferno(Difficulty::Relaxed, n, &content, &catalog);
+            dwell_out(&mut g);
+            assert!(g.inferno_secrets.pending().is_none());
+            let found = spiders(&g);
+            assert_eq!((found.len(), found[0].def.id.as_str()), (1, WHITE));
+        }
     }
 
     #[test]

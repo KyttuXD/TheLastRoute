@@ -1152,3 +1152,65 @@ mod tests {
         assert_eq!(c.render_scale(Tier::High, 99), c.render_scale(Tier::High, c.max_notch()));
     }
 }
+
+#[cfg(test)]
+mod governor_boundary_tests {
+    use super::*;
+
+    fn feed_for(g: &mut Governor, ms: f32, seconds: f64) -> i32 {
+        let mut t = 0.0;
+        let mut moves = 0;
+        while t < seconds {
+            moves += g.feed(ms).abs();
+            t += f64::from(ms) / 1000.0;
+        }
+        moves
+    }
+
+    #[test]
+    fn a_steady_frame_time_on_either_boundary_never_moves_the_notch() {
+        let r = config().governor;
+        let target = 1000.0 / r.target_fps;
+        for factor in [r.miss_factor, r.ok_factor, (r.miss_factor + r.ok_factor) / 2.0] {
+            let mut g = Governor::new(r, config().max_notch(), target);
+            assert_eq!(feed_for(&mut g, target * factor * 0.999, 600.0), 0, "factor {factor}");
+            assert_eq!(g.notch, 0);
+        }
+    }
+
+    #[test]
+    fn it_does_not_oscillate_when_a_notch_leaves_frames_just_under_the_miss_line() {
+        let r = config().governor;
+        let target = 1000.0 / r.target_fps;
+        let mut g = Governor::new(r, config().max_notch(), target);
+        let mut steps = 0;
+        let mut t = 0.0;
+        while t < 1200.0 {
+            let ms = if g.notch == 0 { target * 1.3 } else { target * r.miss_factor * 0.999 };
+            steps += g.feed(ms).abs();
+            t += f64::from(ms) / 1000.0;
+        }
+        assert_eq!(steps, 1, "one step down and then it stays");
+        assert_eq!(g.notch, 1);
+    }
+
+    #[test]
+    fn the_targets_follow_the_fps_limit_at_40_50_and_60() {
+        let r = config().governor;
+        assert_eq!(target_ms(r.target_fps, 0.0), 1000.0 / r.target_fps);
+        for limit in [40.0f32, 50.0, 60.0] {
+            assert_eq!(target_ms(r.target_fps, limit), 1000.0 / limit.min(r.target_fps));
+        }
+    }
+
+    #[test]
+    fn the_tiers_and_notches_come_from_the_data_file() {
+        let c = config();
+        let v: serde_json::Value = serde_json::from_str(include_str!("../data/app/quality.json")).unwrap();
+        for tier in [Tier::Low, Tier::Medium, Tier::High] {
+            let want = v["tiers"][tier.name()]["render_scale"].as_f64().unwrap() as f32;
+            assert!((c.render_scale(tier, 0) - want).abs() < 1e-6);
+        }
+        assert_eq!(c.max_notch() + 1, v["notches"].as_array().unwrap().len());
+    }
+}

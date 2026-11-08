@@ -5,5 +5,10 @@
   "field_min_sharers": 3,
   "field_cache_entries": 4,
   "queue_keep_frames": 2,
-  "resident_searches_per_frame": 2
+  "resident_searches_per_frame": 2,
+  "speed": {
+    "_note": "Hunter speed model (hunters/hard_abilities.rs speed_multiplier). ability_scale_max caps the product of the burst and stumble scales; hunter_scale is a per-hunter multiplier on top (default for any id not listed). Read by the brain through the hook listed with TODO 709.",
+    "ability_scale_max": 2.0,
+    "hunter_scale": { "default": 1.0 }
+  }
 }

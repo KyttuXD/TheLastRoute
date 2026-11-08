@@ -42,6 +42,10 @@ pub struct Marker {
     pub is_bot: bool,
     /// Hiding in a locker or lying down: on the map, but no nametag.
     pub concealed: bool,
+    /// Lying down (caught): the maps ring the pin and the world marker says DOWN.
+    pub downed: bool,
+    /// Seconds since the last sample of this body (0 for a bot and for a fresh sample): the pin and marker dim with it.
+    pub age_s: f32,
 }
 
 /// What the nametag file sets.
@@ -141,8 +145,22 @@ pub fn remote_markers(remotes: &[RemoteView]) -> Vec<Marker> {
             colour: super::map::teammate_colour(r.peer),
             is_bot: false,
             concealed: hidden_for_good(r) || r.clip == Some(Pose::Down),
+            downed: r.clip == Some(Pose::Down),
+            age_s: 0.0,
         })
         .collect()
+}
+
+/// Sets the sample age of the peer markers from `(peer, seconds since its last sample)` pairs (the net layer's
+/// `remote_ages`), so the pins and world markers dim as a teammate goes quiet. A peer not listed keeps its age.
+pub fn with_ages(marks: &mut [Marker], ages: &[(u32, f32)]) {
+    for m in marks.iter_mut() {
+        if let MarkerId::Peer(p) = m.id {
+            if let Some((_, age)) = ages.iter().find(|(peer, _)| *peer == p) {
+                m.age_s = if age.is_finite() { age.max(0.0) } else { 0.0 };
+            }
+        }
+    }
 }
 
 /// The map direction a body at `yaw` faces on the floor: `Player::forward2`, (-sin, -cos).
@@ -163,6 +181,8 @@ pub fn bot_marker(id: u32, name: &str, at: (f32, f32), abs_y: f32, level: i32, y
         colour,
         is_bot: true,
         concealed: hidden,
+        downed: false,
+        age_s: 0.0,
     }
 }
 
@@ -179,15 +199,10 @@ pub fn all_markers(g: &Game, remotes: &[RemoteView]) -> Vec<Marker> {
     out
 }
 
-/// How strongly a map pin is drawn: whole on the shown level, else the rule's strength for the minimap or the full map;
-/// None when that is zero (the pin is left off).
+/// How strongly a map pin is drawn: whole on the shown level, else the strength the data sets for the minimap or the full
+/// map (`data/hud/teammate_markers.json`, dimmed and never dropped); None only when the data sets it to zero.
 pub fn pin_alpha(level: i32, shown_level: i32, full: bool) -> Option<f32> {
-    if level == shown_level {
-        return Some(1.0);
-    }
-    let r = rules();
-    let a = if full { r.other_level_alpha_full } else { r.other_level_alpha_minimap };
-    (a > 0.0).then_some(a)
+    super::teammate_markers::pin_strength(level, shown_level, full, 0.0, super::teammate_markers::rules())
 }
 
 /// The strength of a nametag `dist` metres from the eye: 1 up to the start of the fade, 0 at its end.
@@ -399,11 +414,28 @@ mod tests {
     }
 
     #[test]
-    fn a_pin_on_another_level_is_off_the_minimap_and_dim_on_the_full_map() {
+    fn a_pin_on_another_level_is_dim_on_both_maps_not_dropped() {
         assert_eq!(pin_alpha(0, 0, false), Some(1.0));
-        assert_eq!(pin_alpha(-1, 0, false), None);
+        let mini = pin_alpha(-1, 0, false).expect("dimmed on the minimap, not dropped");
+        assert!(mini > 0.0 && mini < 1.0);
         let full = pin_alpha(-1, 0, true).expect("dimmed, not hidden");
         assert!(full > 0.0 && full < 1.0);
+    }
+
+    #[test]
+    fn ages_reach_the_peer_markers_only() {
+        let mut ms = remote_markers(&[peer_view(1, "ANN"), peer_view(2, "BEA")]);
+        ms.push(marker_at(0.0, 0.0));
+        with_ages(&mut ms, &[(2, 6.5), (9, 1.0)]);
+        assert_eq!((ms[0].age_s, ms[1].age_s, ms[2].age_s), (0.0, 6.5, 0.0));
+    }
+
+    #[test]
+    fn a_downed_remote_is_marked_downed_for_the_ring() {
+        let mut down = peer_view(2, "Bea");
+        down.clip = Some(Pose::Down);
+        let ms = remote_markers(&[peer_view(1, "ANN"), down]);
+        assert!(!ms[0].downed && ms[1].downed);
     }
 
     #[test]

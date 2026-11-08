@@ -1,0 +1,16 @@
+{
+  "schema": "lr.danger/1",
+  "_note": "Difficulty scaling (config/difficulty.rs). scaling: per difficulty, extra director team members, the inspect-odds scale (peek odds come from data/peek.json) and the pounce table id of data/hard_abilities.json ('' = none). depth: per difficulty, the danger by level number (level 1 is the base): hunter speed grows speed_per_level per level up to speed_cap, one extra hunter every extra_every levels up to max_extra, and the safe-room odds fall from safe_room_base by safe_room_per_level down to safe_room_min. Standard is flat (speed 1.0, no extra hunters, the shipped safe-room base 0.055 of world/route/danger.rs SAFE_ROOM_BASE_CHANCE), so Standard plays as before.",
+  "scaling": {
+    "relaxed": { "team_bonus": 0, "inspect_chance": 0.6, "pounce_table": "" },
+    "standard": { "team_bonus": 0, "inspect_chance": 1.0, "pounce_table": "standard" },
+    "hard": { "team_bonus": 0, "inspect_chance": 1.2, "pounce_table": "hard" },
+    "nightmare": { "team_bonus": 1, "inspect_chance": 1.5, "pounce_table": "nightmare" }
+  },
+  "depth": {
+    "relaxed": { "speed_per_level": 0.0, "speed_cap": 1.0, "extra_every": 0, "max_extra": 0, "safe_room_base": 0.6, "safe_room_per_level": -0.01, "safe_room_min": 0.3 },
+    "standard": { "speed_per_level": 0.0, "speed_cap": 1.0, "extra_every": 0, "max_extra": 0, "safe_room_base": 0.055, "safe_room_per_level": 0.0, "safe_room_min": 0.055 },
+    "hard": { "speed_per_level": 0.008, "speed_cap": 1.15, "extra_every": 6, "max_extra": 2, "safe_room_base": 0.25, "safe_room_per_level": -0.01, "safe_room_min": 0.08 },
+    "nightmare": { "speed_per_level": 0.012, "speed_cap": 1.25, "extra_every": 4, "max_extra": 3, "safe_room_base": 0.12, "safe_room_per_level": -0.01, "safe_room_min": 0.0 }
+  }
+}

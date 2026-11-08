@@ -32,6 +32,12 @@ pub struct Rules {
     pub hunter_stun_seconds: f32,
     /// Metres within which a chasing hunter puts a joined bot down.
     pub npc_catch_radius: f32,
+    /// Share of `hold_seconds` a revive takes for a runner holding a revive kit (0..=1).
+    pub kit_hold_scale: f32,
+    /// Seconds of one escape-struggle loop (the hunters' hold-and-shake cycle), ported from Godot into data.
+    pub escape_loop_seconds: f32,
+    /// Seconds a hunter is knocked back after a struggle is won.
+    pub escape_knockback_seconds: f32,
 }
 
 impl Rules {
@@ -50,7 +56,19 @@ impl Rules {
             timeout_seconds: num("timeout_seconds")?,
             hunter_stun_seconds: num("hunter_stun_seconds")?,
             npc_catch_radius: num("npc_catch_radius")?,
+            kit_hold_scale: num("kit_hold_scale").unwrap_or(0.35).min(1.0),
+            escape_loop_seconds: num("escape_loop_seconds").unwrap_or(0.6),
+            escape_knockback_seconds: num("escape_knockback_seconds").unwrap_or(0.4),
         })
+    }
+
+    /// Seconds of holding that revive a body: shorter for a helper with a revive kit.
+    pub fn hold_needed(&self, kit: bool) -> f32 {
+        if kit {
+            self.hold_seconds * self.kit_hold_scale
+        } else {
+            self.hold_seconds
+        }
     }
 }
 
@@ -199,6 +217,7 @@ impl Game {
 
         // the runner holds a revive on a downed bot by holding interact beside it (not while it is down itself)
         let runner_helps = self.downed.is_none() && c.interact_held;
+        let has_kit = self.slots.iter().flatten().any(|s| s.item == super::items::Item::ReviveKit);
         let ids: Vec<u32> = self.downed_npcs.keys().copied().collect();
         for id in ids {
             let Some(npc) = self.npcs.iter().find(|n| n.id == id) else {
@@ -213,7 +232,7 @@ impl Game {
             };
             d.held = if helped { d.held + dt } else { 0.0 };
             d.remaining -= dt;
-            if d.held >= r.hold_seconds {
+            if d.held >= r.hold_needed(runner_helps && has_kit) {
                 self.downed_npcs.remove(&id);
                 self.say(&format!("{name} IS BACK UP"));
             } else if d.remaining <= 0.0 {
@@ -230,6 +249,20 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_kit_shortens_the_hold_but_never_below_nothing() {
+        let r = rules();
+        assert_eq!(r.hold_needed(false), r.hold_seconds);
+        assert!(r.hold_needed(true) < r.hold_needed(false) && r.hold_needed(true) > 0.0);
+        let fast = Rules::parse(
+            r#"{"reach":1,"hold_seconds":4,"timeout_seconds":9,"hunter_stun_seconds":1,"npc_catch_radius":1,"kit_hold_scale":0.5}"#,
+        )
+        .unwrap();
+        assert_eq!(fast.hold_needed(true), 2.0);
+        assert!(r.timeout_seconds > r.hold_seconds, "the window outlasts one hold");
+        assert!(r.escape_loop_seconds > 0.0 && r.escape_knockback_seconds >= 0.0);
+    }
     use crate::config::Difficulty;
     use crate::content::Content;
     use crate::world::catalog::Catalog;

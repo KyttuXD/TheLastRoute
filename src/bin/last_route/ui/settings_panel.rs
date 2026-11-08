@@ -34,7 +34,7 @@ const TAB_KEYS: [&[&str]; 7] = [
         "speech_enabled",
     ],
     &["fullscreen", "ads", "vsync", "quality", "adaptive_quality", "fps_limit", "fov", "graphics_api"],
-    &["sensitivity"],
+    &["sensitivity", "bindings"],
     &["arms", "skin_copy"],
     &[],
     &[],
@@ -75,48 +75,30 @@ fn video_note(a: &Assets, text: &str, x: f32, top: f32, col: Color) {
     label_vc(a, F::Body, text, x, top, 12.0, size, col);
 }
 
-/// MOVEMENT / ACTIONS / SYSTEM (ControlsRegistry.LAST_ROUTE_TABS) with Godot/web defaults
-/// (project.godot [input] + LAST_ROUTE_TABS). Labels only — rebinding stays disabled.
-const SECTIONS: [(&str, &[(&str, &str)]); 3] = [
-    (
-        "MOVEMENT",
-        &[
-            ("MOVE UP", "W / L-STICK"),
-            ("MOVE DOWN", "S / L-STICK"),
-            ("MOVE LEFT", "A / L-STICK"),
-            ("MOVE RIGHT", "D / L-STICK"),
-            ("LOOK UP", "I / UP / R-STICK"),
-            ("LOOK DOWN", "K / DOWN / R-STICK"),
-            ("LOOK LEFT", "J / LEFT / R-STICK"),
-            ("LOOK RIGHT", "L / RIGHT / R-STICK"),
-            ("SPRINT", "SHIFT / PAD L3"),
-            ("CROUCH", "C / PAD B"),
-            ("JUMP / HOP", "SPACE / PAD A"),
-        ],
-    ),
-    (
-        "ACTIONS",
-        &[
-            ("INTERACT", "E / MOUSE 2 / PAD X"),
-            ("FLASHLIGHT", "F / PAD RB"),
-            ("TASER", "G / PAD LB"),
-            ("USE HELD TOOL", "MOUSE 1 / RT"),
-            ("INVENTORY", "TAB / PAD Y"),
-            ("HOTBAR", "1-5 / WHEEL"),
-            ("DROP HELD ITEM", "Q / DPAD DOWN"),
-            ("CHAT", "T / /"),
-            ("PUSH TO TALK", "X / R-STICK"),
-            ("QUICK CHAT", "` / DPAD UP"),
-            ("TOGGLE MAP", "M / PAD BACK"),
-            ("PLAYER LIST", "O"),
-            ("HIDE HUD", "F1"),
-        ],
-    ),
-    (
-        "SYSTEM",
-        &[("PAUSE", "ESCAPE / PAD START"), ("FULLSCREEN", "F11")],
-    ),
-];
+/// The CONTROLS tab rows come from data/controls.json (MOVEMENT / ACTIONS / SYSTEM with the Godot/web defaults) and the
+/// player's rebinds (`Settings::bindings`): CHANGE then a key, + adds a key, RESET restores the default.
+fn section_actions(section: usize) -> Vec<&'static crate::app::bindings::ActionDef> {
+    let r = crate::app::bindings::rules();
+    let name = r.sections.get(section).map(String::as_str).unwrap_or("");
+    r.actions.iter().filter(|a| a.section == name).collect()
+}
+
+/// The CONTROLS tab hint line.
+const HINT: &str = "PRESS CHANGE OR +, THEN A KEY  //  ESC CANCELS A REBIND IN PROGRESS";
+
+thread_local!(static NOTE: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) });
+
+/// The line a refused rebind leaves under the title (upper case).
+fn refusal_note(e: &crate::app::bindings::BindError) -> String {
+    use crate::app::bindings::BindError::*;
+    match e {
+        Reserved => "THAT KEY IS RESERVED".into(),
+        TooMany => "NO ROOM FOR ANOTHER KEY, RESET FIRST".into(),
+        Conflict(other) => format!("THAT KEY IS THE ONLY ONE FOR {}", other.replace('_', " ").to_uppercase()),
+        Fixed => "THAT CONTROL CANNOT BE CHANGED".into(),
+        UnknownKey | UnknownAction => "THAT KEY CANNOT BE USED".into(),
+    }
+}
 
 const VOICE_TEXT: &str = "VOICE CHAT RUNS IN ONLINE ROOMS. THIS OFFLINE BUILD HAS NO ROOM SERVER.";
 
@@ -398,15 +380,12 @@ pub fn draw_settings(
     );
     // the rebind hint belongs to the CONTROLS tab only; the SKIN tab has its own status line
     if ui.settings_tab == 3 {
-        label_c(
-            a,
-            F::Body,
-            "PRESS REBIND, THEN A KEY  //  ESC CANCELS A REBIND IN PROGRESS",
-            ox + 220.0,
-            oy + 25.0,
-            7.0,
-            p.muted,
-        );
+        let note = NOTE.with(|n| n.borrow().clone());
+        let text = if note.is_empty() { HINT.to_string() } else { note };
+        label_c(a, F::Body, &text, ox + 220.0, oy + 25.0, 7.0, p.muted);
+    } else {
+        // a rebind waiting for a key does not outlive the CONTROLS tab
+        crate::app::bindings::cancel_capture();
     }
     let mut pos = ui.settings_tab.min(TABS.len() - 1);
     if let Some(i) = tab_bar(
@@ -775,11 +754,16 @@ pub fn draw_settings(
             }
             let area = Rect::new(x, oy + 88.0, 400.0, 140.0);
             let tab_h = F::Body.height() * 8.0 + 8.0;
-            let names: Vec<&str> = SECTIONS.iter().map(|s| s.0).collect();
+            let names: Vec<&str> = crate::app::bindings::rules().sections.iter().map(String::as_str).collect();
+            match crate::app::bindings::poll_capture(&mut st.bindings) {
+                crate::app::bindings::CaptureResult::Bound => changed = true,
+                crate::app::bindings::CaptureResult::Refused(e) => NOTE.with(|n| *n.borrow_mut() = refusal_note(&e)),
+                _ => {}
+            }
             if hovered(area) {
                 ui.scroll -= wheel_notch(mouse_wheel().1, 20.0);
             }
-            let rows = SECTIONS[ui.controls_tab.min(2)].1;
+            let rows = section_actions(ui.controls_tab.min(2));
             let row_h = button_min(a, "X", 8.0, false).y;
             let total = tab_h + 3.0 + rows.len() as f32 * (row_h + 3.0);
             ui.scroll = ui.scroll.clamp(0.0, (total - area.h).max(0.0));
@@ -796,29 +780,41 @@ pub fn draw_settings(
                 ui.scroll = 0.0;
             }
             y += tab_h + 3.0;
-            for (name, key) in rows {
-                label_vc(a, F::Body, name, x, y, row_h, setting_label_u(), p.body);
+            let max_keys = crate::app::bindings::rules().max_keys;
+            let capturing = crate::app::bindings::capture();
+            for act in rows.iter() {
+                let waiting = capturing.as_ref().is_some_and(|c| c.action == act.id);
+                label_vc(a, F::Body, &act.label, x, y, row_h, setting_label_u(), p.body);
+                let key = if waiting { "PRESS A KEY".to_string() } else { st.bindings.label(&act.id) };
+                let size = setting_label_u().min(setting_label_u() * 92.0 / tw(a, F::Body, &key, setting_label_u()).max(1.0));
                 label_vc(
                     a,
                     F::Body,
-                    key,
-                    x + 118.0 + (92.0 - tw(a, F::Body, key, setting_label_u())) * 0.5,
+                    &key,
+                    x + 118.0 + (92.0 - tw(a, F::Body, &key, size)) * 0.5,
                     y,
                     row_h,
-                    setting_label_u(),
-                    p.amber,
+                    size,
+                    if waiting { p.ink } else { p.amber },
                 );
                 let mut bx = x + 118.0 + 92.0 + 6.0;
                 for (t, w) in [("CHANGE", 60.0f32), ("+", 28.0), ("RESET", 48.0)] {
                     let w = w.max(button_min(a, t, 8.0, false).x);
-                    button(
-                        a,
-                        Rect::new(bx, y, w, row_h),
-                        t,
-                        8.0,
-                        Kind::Secondary,
-                        disabled(),
-                    );
+                    let off = act.fixed
+                        || (t == "+" && st.bindings.keys(&act.id).len() >= max_keys)
+                        || (t == "RESET" && st.bindings.is_default(&act.id));
+                    if button(a, Rect::new(bx, y, w, row_h), t, 8.0, Kind::Secondary, if off { disabled() } else { plain() }) {
+                        match t {
+                            "RESET" => {
+                                st.bindings.reset(&act.id);
+                                changed = true;
+                            }
+                            _ => {
+                                crate::app::bindings::begin_capture(&act.id, t == "+");
+                                NOTE.with(|n| n.borrow_mut().clear());
+                            }
+                        }
+                    }
                     bx += w + 6.0;
                 }
                 y += row_h + 3.0;
@@ -917,21 +913,24 @@ mod tests {
 
     #[test]
     fn default_bindings_match_godot_defaults() {
-        let actions = SECTIONS.iter().find(|(n, _)| *n == "ACTIONS").unwrap().1;
-        let get = |name: &str| {
-            actions
-                .iter()
-                .find(|(n, _)| *n == name)
-                .map(|(_, b)| *b)
-                .unwrap_or("")
-        };
-        assert!(get("INVENTORY").contains("TAB"), "inventory default is Tab: {}", get("INVENTORY"));
-        assert!(get("INVENTORY").contains("PAD Y"), "inventory gamepad Y: {}", get("INVENTORY"));
-        assert!(get("CHAT").contains('T'), "chat default is T: {}", get("CHAT"));
-        assert!(get("PLAYER LIST").contains('O'), "player list default is O: {}", get("PLAYER LIST"));
-        let movement = SECTIONS.iter().find(|(n, _)| *n == "MOVEMENT").unwrap().1;
-        let jump = movement.iter().find(|(n, _)| *n == "JUMP / HOP").unwrap().1;
-        assert!(jump.contains("PAD A"), "jump gamepad: {jump}");
+        let b = Settings::default().bindings;
+        let get = |id: &str| b.label(id);
+        assert!(get("inventory").contains("TAB") && get("inventory").contains("PAD Y"), "{}", get("inventory"));
+        assert!(get("chat").starts_with('T'), "chat default is T: {}", get("chat"));
+        assert!(get("player_list").contains('O'), "player list default is O: {}", get("player_list"));
+        assert!(get("jump").contains("PAD A"), "jump gamepad: {}", get("jump"));
+    }
+
+    #[test]
+    fn the_controls_rows_come_from_the_data_and_follow_a_rebind() {
+        let rows: Vec<usize> = (0..3).map(|s| section_actions(s).len()).collect();
+        assert!(rows.iter().all(|n| *n > 0), "{rows:?}");
+        assert_eq!(rows.iter().sum::<usize>(), crate::app::bindings::rules().actions.len());
+        let mut st = Settings::default();
+        st.bindings.set("chat", "Y").unwrap();
+        assert!(st.bindings.label("chat").starts_with('Y'));
+        assert!(refusal_note(&crate::app::bindings::BindError::Reserved).chars().all(|c| !c.is_lowercase()));
+        assert_eq!(HINT.to_uppercase(), HINT);
     }
 
     #[test]

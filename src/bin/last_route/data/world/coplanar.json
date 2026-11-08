@@ -1,0 +1,11 @@
+{
+	"schema": "lr.coplanar/1",
+	"_note": "Z-fight scan settings (Godot game/look/coplanar_scan.gd). Lengths in metres, areas in square metres.",
+	"tolerance": 0.002,
+	"min_overlap": 0.0004,
+	"axis_epsilon": 0.0005,
+	"slab_period": 4.0,
+	"slab_tolerance": 0.004,
+	"additive_decor": ["Ref_pool", "Ref_streak", "Ref_halo", "Ref_petal"],
+	"skipped_owners": ["LockerSeal"]
+}

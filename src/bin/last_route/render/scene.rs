@@ -151,7 +151,13 @@ pub fn view(g: &Game) -> (Vec3, Vec3, Vec3, Vec3) {
     };
     let centre = g.fac.locker_center(l);
     let facing = (l.facing.0 as f32, l.facing.1 as f32);
-    super::hiding_cam::view_from(eye, h.weight, (g.p.yaw, g.p.pitch), centre, facing, "locker")
+    // `hiding_cam::view_from`, with the eye of a hide prop's own kind (bunk, wardrobe ...: data/net/hide_sync.json
+    // prop_views); a locker or a kind with no entry keeps the locker eye
+    use super::hiding_cam as cam;
+    let inside = cam::eye_position_for_prop(centre, facing, &l.kind, "locker");
+    let (yaw, pitch) = cam::clamp_look(g.p.yaw, g.p.pitch, cam::facing_yaw(facing));
+    let (f, r, u) = cam::basis(yaw, pitch);
+    (cam::glide_eye(eye, inside, h.weight), f, r, u)
 }
 
 pub fn camera(g: &Game, rt: &RenderTarget) -> Camera3D {
@@ -161,21 +167,52 @@ pub fn camera(g: &Game, rt: &RenderTarget) -> Camera3D {
 /// [`camera`] for a `view(g)` the caller already has (one frame reads it once and shares it).
 pub fn camera_from_view(g: &Game, rt: &RenderTarget, (eye, fwd, _, _): (Vec3, Vec3, Vec3, Vec3)) -> Camera3D {
     // held by a hunter: the view rides the grabbed body's eyes and looks at her face (HunterGrab._solve_camera)
-    let (position, target, up) = match (g.escape.as_ref(), grab::camera()) {
-        (Some(_), Some(c)) => c,
-        _ => (eye, eye + fwd, vec3(0.0, 1.0, 0.0)),
+    // the eye keeps clear of the walls behind it, and the view widens while her stretched arms hold it (data/render/grab.json
+    // camera; HunterGrab's camera clearance and FOV widen)
+    let (position, target, up, widen_deg) = match (g.escape.as_ref(), grab::camera()) {
+        (Some(_), Some((eye, target, up))) => {
+            let cam = grab::grab_camera();
+            let back = eye - target;
+            let free = free_run(&g.fac, target, back, back.length() + cam.wall_clearance);
+            let widen = grab::GRAB.with(|t| {
+                t.borrow().grab.as_ref().map_or(0.0, |x| {
+                    let t = (g.time - x.start).max(0.0);
+                    cam.fov_widen(grab::stretch_for(&x.style, t.min(grab::duration(&x.style))))
+                })
+            });
+            (cam.pull_in(eye, target, free), target, up, widen)
+        }
+        _ => (eye, eye + fwd, vec3(0.0, 1.0, 0.0), 0.0),
     };
     Camera3D {
         position,
         target,
         up,
-        fovy: g.fov_deg.to_radians(),
+        fovy: (g.fov_deg + widen_deg).to_radians(),
         aspect: Some(rt.texture.width() / rt.texture.height()),
         render_target: Some(rt.clone()),
         z_near: seams::seams().camera_near,
         z_far: seams::seams().camera_far,
         ..Default::default()
     }
+}
+
+/// Metres of open floor plan from `from` along `dir` before a wall cell, up to `max` (the grab camera's clearance ray).
+fn free_run(fac: &crate::world::facility::Facility, from: Vec3, dir: Vec3, max: f32) -> f32 {
+    let dir = dir.normalize_or_zero();
+    if dir == Vec3::ZERO || !max.is_finite() {
+        return max.max(0.0);
+    }
+    const STEP: f32 = 0.05;
+    let mut d = 0.0;
+    while d < max {
+        let p = from + dir * d;
+        if fac.is_wall_cell(p.x.floor() as i32, p.z.floor() as i32) {
+            return d;
+        }
+        d += STEP;
+    }
+    max
 }
 
 thread_local! {
@@ -271,6 +308,8 @@ pub fn item_file(item: Item) -> &'static str {
         Item::Battery => "battery",
         Item::Stim => "stim_pack",
         Item::MusicBox => "music_box",
+        Item::Lockpick => "crowbar",
+        Item::ReviveKit => "stim_pack",
     }
 }
 
@@ -696,6 +735,17 @@ pub fn draw_scene(
             if faded && !is_held && !matches!(h.gimmick, Gimmick::Ilyra(_)) {
                 continue;
             }
+            // Xivvy's ground shadow: smaller and fainter the higher she floats (data/render/hover_shadow.json), see-through
+            // like the beams, so it joins them after the solid hunters
+            if let Gimmick::Xivvy(x) = &h.gimmick {
+                if !is_held && !faded {
+                    let sway = x.sway_offset(h.facing);
+                    if let Some(mut disc) = hover_shadow(hover_shadow_cfg(), vec3(h.pos.0 + sway.0, dy, h.pos.1 + sway.1), x.lift()) {
+                        disc.texture = Some(a.white.clone());
+                        beams.push(disc);
+                    }
+                }
+            }
             let id = hunter_art_id(a, h);
             let Some(model) = a.hunter_model(id) else {
                 continue;
@@ -941,6 +991,8 @@ pub fn draw_scene(
         crouch: n.crouch,
         emote: Some(n.emote.as_str()).filter(|e| !e.is_empty()).map(|e| (e, n.emote_seq)),
     }));
+    // the host's own bots hand their head look to the figure code (a guest's synced looks were set by npc_sync::views)
+    crate::net::wiring::set_bot_looks(&g.npcs);
     runner_figure::draw_bots(a, &bot_views);
     let mut eyes: Option<Builder> = None;
     for h in g.hunters.iter().filter(|h| h.active) {
@@ -972,6 +1024,15 @@ pub fn draw_scene(
     super::draw_stats::set_section(super::draw_stats::Section::Effects);
     draw_level_fx(g, a, &fx, light.eye);
     drop(world);
+    // admin HUNTER VIEW in 3D (lines with the depth test off, on the default material): the followed hunter's route, sight
+    // cone and hearing circle, and with DEBUG VIEW NAV the blocked cells around it
+    crate::ui::admin::hunter_view::with_frame(|hv| {
+        if let Some(s) = hv.view.as_ref() {
+            let floor_y = g.hunters.get(s.index).map_or(0.0, |h| crate::render::stack_actors::actor_dy(h.y, g.fac.level));
+            let stats = crate::ui::admin::hunter_view::stats_for(&g.fac, s);
+            super::hunter_view_overlay::draw(&g.fac, s, stats.as_ref(), hv.paths, hv.nav, floor_y);
+        }
+    });
 }
 
 /// Whether a storey's falls and inferno glow are in this frame, found once per frame.
@@ -1086,6 +1147,89 @@ fn draw_level_fx(g: &Game, a: &Assets, fx: &LevelFx, eye: Vec3) {
         }
     }
     b.draw_and_clear();
+}
+
+/// The ground shadow under a flying hunter (data/render/hover_shadow.json).
+#[derive(Clone, Debug, PartialEq)]
+pub struct HoverShadow {
+    pub radius_m: f32,
+    pub alpha: f32,
+    pub fade_height_m: f32,
+    pub min_radius_fraction: f32,
+    pub segments: usize,
+    pub lift_m: f32,
+}
+
+impl HoverShadow {
+    pub const BUILTIN: HoverShadow =
+        HoverShadow { radius_m: 0.5, alpha: 0.45, fade_height_m: 3.5, min_radius_fraction: 0.45, segments: 16, lift_m: 0.02 };
+
+    pub fn parse(text: &str) -> Result<HoverShadow, String> {
+        let v: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let num = |k: &str| {
+            v.get(k)
+                .and_then(|x| x.as_f64())
+                .map(|x| x as f32)
+                .filter(|x| x.is_finite() && *x >= 0.0)
+                .ok_or_else(|| format!("{k}: expected a number, zero or more"))
+        };
+        let out = HoverShadow {
+            radius_m: num("radius_m")?,
+            alpha: num("alpha")?.min(1.0),
+            fade_height_m: num("fade_height_m")?,
+            min_radius_fraction: num("min_radius_fraction")?.min(1.0),
+            segments: num("segments")? as usize,
+            lift_m: num("lift_m")?,
+        };
+        if out.segments < 3 {
+            return Err("segments: expected at least 3".into());
+        }
+        Ok(out)
+    }
+
+    /// The disc's radius and alpha at a height of `lift` metres; None once it has faded out.
+    pub fn look(&self, lift: f32) -> Option<(f32, f32)> {
+        let k = if self.fade_height_m > 0.0 { (1.0 - lift.max(0.0) / self.fade_height_m).clamp(0.0, 1.0) } else { 1.0 };
+        let alpha = self.alpha * k;
+        if alpha <= 0.0 || self.radius_m <= 0.0 {
+            return None;
+        }
+        let r = self.radius_m * (self.min_radius_fraction + (1.0 - self.min_radius_fraction) * k);
+        Some((r, alpha))
+    }
+}
+
+fn hover_shadow_cfg() -> &'static HoverShadow {
+    static CFG: OnceLock<HoverShadow> = OnceLock::new();
+    CFG.get_or_init(|| {
+        let path = "render/hover_shadow.json";
+        let text = crate::content::embedded::data_under(path).next().map(|(_, t)| t).unwrap_or("{}");
+        HoverShadow::parse(text).unwrap_or_else(|e| {
+            eprintln!("{path}: {e}");
+            HoverShadow::BUILTIN
+        })
+    })
+}
+
+/// A dark see-through disc on the floor at `feet` (drawn in the beam's unlit mode), or None when `lift` has faded it out.
+fn hover_shadow(cfg: &HoverShadow, feet: Vec3, lift: f32) -> Option<Mesh> {
+    let (r, alpha) = cfg.look(lift)?;
+    let normal = vec4(0.0, 1.0, 0.0, super::beam::BEAM_MODE);
+    let centre: [u8; 4] = Color::new(0.0, 0.0, 0.0, alpha).into();
+    let rim: [u8; 4] = Color::new(0.0, 0.0, 0.0, 0.0).into();
+    let y = feet.y + cfg.lift_m;
+    let mut vertices = Vec::with_capacity(cfg.segments + 1);
+    vertices.push(Vertex { position: vec3(feet.x, y, feet.z), uv: Vec2::ZERO, color: centre, normal });
+    for k in 0..cfg.segments {
+        let a = std::f32::consts::TAU * k as f32 / cfg.segments as f32;
+        vertices.push(Vertex { position: vec3(feet.x + a.cos() * r, y, feet.z + a.sin() * r), uv: Vec2::ZERO, color: rim, normal });
+    }
+    let n = cfg.segments as u16;
+    let mut indices = Vec::with_capacity(cfg.segments * 3);
+    for k in 0..n {
+        indices.extend_from_slice(&[0, 1 + (k + 1) % n, 1 + k]);
+    }
+    Some(Mesh { vertices, indices, texture: None })
 }
 
 /// The scene's own tunables, under data/ (compiled in by build.rs).
@@ -1609,6 +1753,17 @@ mod tests {
         assert!(s.translucent_mode > 1.5);
         assert!(SceneLights::parse("{}").is_err());
         assert!(SceneLights::parse(&text.replacen("3.0", "1.0", 1)).is_err(), "a lit mode cannot be translucent");
+    }
+
+    #[test]
+    fn xivvys_shadow_shrinks_and_fades_as_she_rises() {
+        let cfg = HoverShadow::parse(include_str!("../data/render/hover_shadow.json")).unwrap();
+        assert_eq!(&cfg, hover_shadow_cfg());
+        let (r0, a0) = cfg.look(0.0).expect("a shadow on the floor");
+        let (r1, a1) = cfg.look(cfg.fade_height_m * 0.5).expect("a shadow halfway up");
+        assert!(r1 < r0 && a1 < a0);
+        assert_eq!(cfg.look(cfg.fade_height_m), None, "faded out at the top");
+        assert!(HoverShadow::parse("{}").is_err());
     }
 
     #[test]

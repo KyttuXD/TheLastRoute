@@ -5,5 +5,10 @@
   "crack_width_fraction": 0.12,
   "crack_length_fraction": 1.0,
   "crack_lift_m": 0.012,
-  "crack_unlit_mode": 2.0
+  "crack_unlit_mode": 2.0,
+  "cage_width_m": 0.9,
+  "cage_bar_m": 0.035,
+  "cage_chain_m": 0.03,
+  "cage_ceiling_gap_m": 0.15,
+  "cage_door_ajar_deg": 55.0
 }

@@ -364,6 +364,164 @@ impl Message {
     }
 }
 
+/// The lobby settings the host sends with `_receive_room` / `_receive_start` (TODO 855, 862): the room, its route seed,
+/// the mode and scale, and every other setting in `rest`.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct RoomSettings {
+    pub code: String,
+    pub seed: String,
+    pub mode: i64,
+    pub scale: i64,
+    pub rest: Map<String, Value>,
+}
+
+/// The lobby traffic as one typed catalogue (TODO 862): what the host broadcasts to its guests and what a guest turns
+/// back into a [`Message`]. The game path builds and matches these instead of loose `Message` variants.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LobbyEvent {
+    /// The lobby settings changed.
+    Settings(RoomSettings),
+    /// The host started the route.
+    Start(RoomSettings),
+    /// The host ended the route; the room stays open.
+    End { reason: String },
+    /// The room is closed.
+    Closed { reason: String },
+    Daytime(bool),
+    Packs(PackAnnounce),
+}
+
+impl LobbyEvent {
+    /// The message the host sends for it.
+    pub fn message(&self) -> Message {
+        match self {
+            LobbyEvent::Settings(s) => Message::Room { code: s.code.clone(), seed: s.seed.clone(), mode: s.mode, scale: s.scale, rest: s.rest.clone() },
+            LobbyEvent::Start(s) => Message::Start { code: s.code.clone(), seed: s.seed.clone(), mode: s.mode, scale: s.scale, rest: s.rest.clone() },
+            LobbyEvent::End { reason } => Message::End { reason: reason.clone() },
+            LobbyEvent::Closed { reason } => Message::RoomClosed { reason: reason.clone() },
+            LobbyEvent::Daytime(daytime) => Message::Daytime { daytime: *daytime },
+            LobbyEvent::Packs(p) => Message::Packs { packs: p.to_map() },
+        }
+    }
+
+    /// The lobby event a received message is; None for any other message.
+    pub fn from_message(m: &Message) -> Option<LobbyEvent> {
+        Some(match m {
+            Message::Room { code, seed, mode, scale, rest } => LobbyEvent::Settings(RoomSettings { code: code.clone(), seed: seed.clone(), mode: *mode, scale: *scale, rest: rest.clone() }),
+            Message::Start { code, seed, mode, scale, rest } => LobbyEvent::Start(RoomSettings { code: code.clone(), seed: seed.clone(), mode: *mode, scale: *scale, rest: rest.clone() }),
+            Message::End { reason } => LobbyEvent::End { reason: reason.clone() },
+            Message::RoomClosed { reason } => LobbyEvent::Closed { reason: reason.clone() },
+            Message::Daytime { daytime } => LobbyEvent::Daytime(*daytime),
+            Message::Packs { packs } => LobbyEvent::Packs(PackAnnounce::from_map(packs)),
+            _ => return None,
+        })
+    }
+}
+
+/// The mod packs a room runs, announced by the host (and by a guest in its join): the ids, a hash of the loaded pack
+/// contents per id and one hash over all of them (TODO 870).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct PackAnnounce {
+    pub ids: Vec<String>,
+    /// Hex hash over every (id, content hash); empty from a host that does not announce one.
+    pub hash: String,
+    pub hashes: std::collections::BTreeMap<String, String>,
+}
+
+/// FNV-1a 64 over the sorted `id=hash;` list, 16 hex digits. Order does not matter; any change to an id or a pack's
+/// content hash does.
+pub fn pack_digest(packs: &[(String, String)]) -> String {
+    let mut sorted: Vec<&(String, String)> = packs.iter().collect();
+    sorted.sort();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for (id, content) in sorted {
+        for byte in format!("{id}={content};").bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    format!("{hash:016x}")
+}
+
+impl PackAnnounce {
+    /// The announce for loaded packs given as (id, content hash).
+    pub fn new(packs: &[(String, String)]) -> PackAnnounce {
+        let mut ids: Vec<String> = packs.iter().map(|(id, _)| id.clone()).collect();
+        ids.sort();
+        ids.dedup();
+        PackAnnounce { ids, hash: pack_digest(packs), hashes: packs.iter().cloned().collect() }
+    }
+
+    /// The `_receive_packs` argument: `{ids, hash, hashes}`.
+    pub fn to_map(&self) -> Map<String, Value> {
+        let mut o = Map::new();
+        o.insert("ids".into(), json!(self.ids));
+        if !self.hash.is_empty() {
+            o.insert("hash".into(), json!(self.hash));
+        }
+        if !self.hashes.is_empty() {
+            o.insert("hashes".into(), json!(self.hashes));
+        }
+        o
+    }
+
+    /// Reads it back; a host that sends only `ids` (an older build) gives an announce with no hash.
+    pub fn from_map(o: &Map<String, Value>) -> PackAnnounce {
+        let ids = o.get("ids").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+        let hashes = o
+            .get("hashes")
+            .and_then(Value::as_object)
+            .map(|h| h.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect())
+            .unwrap_or_default();
+        PackAnnounce { ids, hash: s(o, "hash"), hashes }
+    }
+}
+
+/// What a guest finds when it compares its loaded packs with the host's announce.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PackCheck {
+    Match,
+    /// The host announced no hash: nothing to compare.
+    Unannounced,
+    /// The packs differ: ids the guest lacks, ids only the guest has, and ids on both sides with different contents.
+    Mismatch { missing: Vec<String>, extra: Vec<String>, differing: Vec<String> },
+}
+
+impl PackCheck {
+    /// Every pack id that differs, once each, for the warning line.
+    pub fn names(&self) -> Vec<String> {
+        match self {
+            PackCheck::Mismatch { missing, extra, differing } => {
+                let mut all: Vec<String> = missing.iter().chain(extra).chain(differing).cloned().collect();
+                all.sort();
+                all.dedup();
+                all
+            }
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// Compares the packs this guest loaded (`local`, id and content hash) with the host's announce.
+pub fn check_packs(local: &[(String, String)], host: &PackAnnounce) -> PackCheck {
+    if host.hash.is_empty() {
+        return PackCheck::Unannounced;
+    }
+    if pack_digest(local) == host.hash {
+        return PackCheck::Match;
+    }
+    let mine: std::collections::BTreeMap<&str, &str> = local.iter().map(|(i, h)| (i.as_str(), h.as_str())).collect();
+    let missing = host.ids.iter().filter(|id| !mine.contains_key(id.as_str())).cloned().collect();
+    let extra = mine.keys().filter(|id| !host.ids.iter().any(|h| h == **id)).map(|id| id.to_string()).collect();
+    let differing = host
+        .hashes
+        .iter()
+        .filter(|(id, h)| mine.get(id.as_str()).map_or(false, |m| *m != h.as_str()))
+        .map(|(id, _)| id.clone())
+        .collect();
+    PackCheck::Mismatch { missing, extra, differing }
+}
+
 /// The wire version of this port's co-op session (`session.rs` framing + this message table).
 pub const RUST_WIRE_VERSION: u32 = 1;
 
@@ -431,6 +589,64 @@ mod tests {
         assert!(Message::OwnerRefused { reason: String::new() }.host_only());
         assert_eq!(command.to_json()["t"], json!("_owner_command"));
         assert_eq!(RPC_TABLE.len(), 42);
+    }
+
+    fn pack(id: &str, hash: &str) -> (String, String) {
+        (id.to_string(), hash.to_string())
+    }
+
+    #[test]
+    fn every_lobby_event_round_trips_through_its_message() {
+        let mut rest = Map::new();
+        rest.insert("difficulty".into(), json!("HARD"));
+        let settings = RoomSettings { code: "ABCDE".into(), seed: "S1".into(), mode: 2, scale: 1, rest };
+        let events = vec![
+            LobbyEvent::Settings(settings.clone()),
+            LobbyEvent::Start(settings),
+            LobbyEvent::End { reason: "THE OWNER ENDED THE ROUTE".into() },
+            LobbyEvent::Closed { reason: "HOST LEFT".into() },
+            LobbyEvent::Daytime(true),
+            LobbyEvent::Packs(PackAnnounce::new(&[pack("neon_halls", "aa11"), pack("blue_wing", "bb22")])),
+        ];
+        for ev in events {
+            let message = ev.message();
+            assert!(message.host_only(), "{}: only the host sends lobby traffic", message.name());
+            let wire = Message::decode(&message.encode()).expect("decodes");
+            assert_eq!(LobbyEvent::from_message(&wire), Some(ev.clone()), "{}", message.name());
+        }
+        assert_eq!(LobbyEvent::from_message(&Message::HostBeat), None);
+    }
+
+    #[test]
+    fn the_pack_digest_ignores_order_and_follows_content() {
+        let a = [pack("neon_halls", "aa11"), pack("blue_wing", "bb22")];
+        let b = [pack("blue_wing", "bb22"), pack("neon_halls", "aa11")];
+        assert_eq!(pack_digest(&a), pack_digest(&b));
+        assert_eq!(pack_digest(&a).len(), 16);
+        assert_ne!(pack_digest(&a), pack_digest(&[pack("neon_halls", "aa12"), pack("blue_wing", "bb22")]));
+        assert_ne!(pack_digest(&a), pack_digest(&a[..1]));
+    }
+
+    #[test]
+    fn matching_packs_pass_and_a_mismatch_names_the_packs() {
+        let host = PackAnnounce::new(&[pack("neon_halls", "aa11"), pack("blue_wing", "bb22")]);
+        assert_eq!(check_packs(&[pack("blue_wing", "bb22"), pack("neon_halls", "aa11")], &host), PackCheck::Match);
+
+        let check = check_packs(&[pack("neon_halls", "ZZ99"), pack("extra_pack", "cc33")], &host);
+        match &check {
+            PackCheck::Mismatch { missing, extra, differing } => {
+                assert_eq!(missing, &["blue_wing".to_string()]);
+                assert_eq!(extra, &["extra_pack".to_string()]);
+                assert_eq!(differing, &["neon_halls".to_string()]);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(check.names(), ["blue_wing", "extra_pack", "neon_halls"]);
+
+        // an older host that sends only ids announces no hash: nothing is compared
+        let mut old = Map::new();
+        old.insert("ids".into(), json!(["neon_halls"]));
+        assert_eq!(check_packs(&[], &PackAnnounce::from_map(&old)), PackCheck::Unannounced);
     }
 
     #[test]

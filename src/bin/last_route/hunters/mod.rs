@@ -2,14 +2,18 @@
 #![allow(dead_code)] // ported API kept ahead of its callers (these items were the lib's pub API); prune as the port settles
 
 pub mod activities;
+pub mod idle_life;
 pub mod brain;
 pub mod director;
 pub mod emotes;
 pub mod flight_edges;
 pub mod gimmicks;
+pub mod hard_abilities;
 pub mod light_field;
 pub mod mechanics;
 pub mod navigation;
+pub mod locker_inspect;
+pub mod patrol_anchor;
 pub mod noise_events;
 pub mod path_scheduler;
 pub mod peek;

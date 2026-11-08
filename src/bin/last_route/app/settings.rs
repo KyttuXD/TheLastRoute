@@ -61,6 +61,8 @@ pub struct Settings {
     pub speech_enabled: bool,
     /// Peers whose chat is never spoken. Session only; not saved.
     pub muted_peers: std::collections::HashSet<i64>,
+    /// Rebound controls (only actions changed from data/controls.json; see app/bindings.rs).
+    pub bindings: super::bindings::Bindings,
 }
 
 impl Default for Settings {
@@ -93,6 +95,7 @@ impl Default for Settings {
             arms: "auto".into(),
             speech_enabled: true,
             muted_peers: Default::default(),
+            bindings: Default::default(),
         }
     }
 }
@@ -183,6 +186,7 @@ impl Settings {
             s.arms = a.id().into();
         }
         s.speech_enabled = b("speech_enabled", true);
+        s.bindings = super::bindings::Bindings::from_json(&v["bindings"]);
         if let Some(u) = v["username"].as_str() {
             s.username = u
                 .chars()
@@ -204,7 +208,7 @@ impl Settings {
             "quality": self.quality, "adaptive_quality": self.adaptive_quality, "ads": self.ads, "graphics_api": self.graphics_api, "pause_on_focus_loss": self.pause_on_focus_loss,
             "teammate_waypoints": self.teammate_waypoints, "reduced_motion": self.reduced_motion, "username": self.username, "scheme": self.scheme,
             "skin": self.skin, "skin_slim": self.skin_slim, "skin_copy": self.skin_copy,
-            "arms": self.arms, "speech_enabled": self.speech_enabled,
+            "arms": self.arms, "speech_enabled": self.speech_enabled, "bindings": self.bindings.to_json(),
         })
     }
 
@@ -325,6 +329,7 @@ mod tests {
             "skin_copy",
             "arms",
             "speech_enabled",
+            "bindings",
         ]
         .iter()
         .map(|k| k.to_string())
@@ -362,6 +367,7 @@ mod tests {
             arms: "slim".into(),
             speech_enabled: false,
             muted_peers: Default::default(),
+            bindings: { let mut b = super::super::bindings::Bindings::default(); b.set("flashlight", "H").unwrap(); b },
         };
         let json = saved.to_json();
         let back = Settings::from_json(&json);
@@ -377,6 +383,8 @@ mod tests {
         assert_eq!(Settings::from_json(&serde_json::json!({"skin": ""})).skin, "DEFAULT");
         assert!(!back.vsync && back.fullscreen);
         assert!(back.reduced_motion);
+        assert_eq!(back.bindings.keys("flashlight"), ["H"], "a rebind is saved and comes back");
+        assert_eq!(Settings::from_json(&serde_json::json!({"bindings": "junk"})).bindings.keys("flashlight"), ["F"]);
     }
 
     #[test]

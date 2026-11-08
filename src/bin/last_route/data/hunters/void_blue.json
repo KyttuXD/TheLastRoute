@@ -12,5 +12,6 @@
 	"spawn": 15,
 	"chase_style": "glide",
 	"taser_immune": true,
-	"melee_immune": false
+	"melee_immune": false,
+	"dossier": "THIS ANOMALY IS NEARLY INVISIBLE AND HIDDEN ON RADAR. HITTING HER WITH THE FLASHLIGHT BEAM FULLY REVEALS HER FOR 3.5 SECONDS AND PUSHES HER ABOUT SIX CELLS AWAY. FLASH LIKELY APPROACH ROUTES FREQUENTLY."
 }

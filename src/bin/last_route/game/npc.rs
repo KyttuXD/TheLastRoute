@@ -18,6 +18,12 @@
 //! pauses, and never goes past `life.range` from the runner (the follow intent walks it back). A bot avoids the points hunters searched when it picks an errand spot, and it shuts an open door
 //! once it has walked clear of it.
 //!
+//! Bots are lively (data `lively`): each has a personality (cautious, bold, curious) that tilts its activities, its
+//! pauses and how far from the runner it stands; its head turns to sounds, hunters it sees, the runner and the
+//! teammate it chats with, and fidgets when idle; a walking bot stops now and then to chat; it answers an emote of the
+//! runner or a teammate with one of its own; a door check may be a crouched peek. The head look is host-only life state
+//! (`LifeState::head_yaw` / `head_pitch`); a guest draws what the wire sends.
+//!
 //! Levels are one continuous space (docs/STAIRS_CONTINUOUS_DESIGN.md, phase 8). A bot has an absolute `y` and a level
 //! derived from it (`level_at`). Every resident level keeps simulating its bots: a bot that is not on the runner's level
 //! asks `StackNav::next_hop` for the flight or ladder to take, walks to its entrance, and walks the edge at the bot's
@@ -170,6 +176,8 @@ pub struct Tuning {
     pub summon_room_cap: usize,
     /// What a bot does in its spare time (data `life`).
     pub life: LifeTuning,
+    /// How lively a bot looks and acts (data `lively`).
+    pub lively: Lively,
 }
 
 /// The coarse travel of a bot outside the loaded window (data `coarse`). A missing key keeps the default.
@@ -530,6 +538,7 @@ impl Tuning {
             revive_stand: num(&v["revive"], "stand_fraction").unwrap_or(0.6).clamp(0.0, 1.0),
             summon_room_cap: v["summon"]["room_cap"].as_u64().map_or(24, |x| x as usize),
             life: LifeTuning::parse(&v["life"]),
+            lively: Lively::parse(&v["lively"]),
         })
     }
 
@@ -1226,13 +1235,491 @@ fn walk_toward(n: &mut Npc, fac: &Facility, goal: (f32, f32), running: bool, t: 
 /// Godot `_think` for phase one, same-level only: follow the runner to the NPC's slot when it has
 /// drifted past `follow_radius + ring - SLOT_RADIUS` (or is mid-walk), else stand still.
 fn follow(n: &mut Npc, fac: &Facility, leader: (f32, f32), t: &Tuning, dt: f32, presses: &mut Vec<Cell>) {
-    let ring = slot_radius(n.slot);
-    if pdist(n.at, leader) > t.follow_radius + ring - SLOT_RADIUS || !n.path.is_empty() {
+    if pdist(n.at, leader) > follow_range(n, t) || !n.path.is_empty() {
+        // each walk back aims for a fresh distance (data `lively.follow`), always inside the follow range
+        if n.life.ring_fresh {
+            n.life.ring_fresh = false;
+            n.life.ring_var = between(t.lively.ring_scale, roll_of(n, "ring"));
+        }
+        let ring = follow_ring(n, t);
         let goal = slot_point(leader, n.slot, ring);
         walk_toward(n, fac, goal, false, t, dt, presses);
     } else {
+        n.life.ring_fresh = true;
         n.walking = false;
     }
+}
+
+/// Metres from the runner past which a bot walks back: the follow radius widened by its slot's ring.
+fn follow_range(n: &Npc, t: &Tuning) -> f32 {
+    t.follow_radius + slot_radius(n.slot) - SLOT_RADIUS
+}
+
+/// The distance from the runner a bot walking back aims for: its slot's radius times its walk's scale and its
+/// personality's follow scale, never closer than `lively.follow.min_ring` nor past the follow range.
+pub fn follow_ring(n: &mut Npc, t: &Tuning) -> f32 {
+    let range = follow_range(n, t);
+    let lo = t.lively.min_ring.min(range);
+    let hi = (range - t.lively.ring_margin).max(lo);
+    let scale = n.life.ring_var * personality_of(n, &t.lively).follow_scale;
+    (slot_radius(n.slot) * scale).clamp(lo, hi)
+}
+
+// ---- liveliness: personalities, head look, glances, fidgets, chatter stops and emote answers --------------------------
+// Every number is in data/npcs.json `lively`. Host-only: a guest only draws what the wire sends.
+
+/// One kind of bot (data `lively.personalities.*`). `acts` multiplies the weight of a life act the bot may pick; it never
+/// adds an act the spot does not offer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Personality {
+    pub name: String,
+    /// Share of the draw at spawn.
+    pub weight: f32,
+    pub acts: Vec<(LifeAct, f32)>,
+    /// Scales the glance rate at hunters.
+    pub glance_scale: f32,
+    /// Scales the follow ring a bot walks back to.
+    pub follow_scale: f32,
+    /// Scales the pause between two activities.
+    pub pause_scale: f32,
+    /// Scales the idle fidget rate.
+    pub fidget_scale: f32,
+    /// The chance a door check is done crouched, peeking.
+    pub peek_chance: f32,
+    /// Scales the rate of chatter stops while walking.
+    pub stop_scale: f32,
+    /// Scales the chance of answering an emote.
+    pub emote_scale: f32,
+}
+
+impl Personality {
+    /// The personality of data with none listed: every scale 1, no peek.
+    pub fn neutral() -> Personality {
+        Personality {
+            name: "neutral".into(),
+            weight: 1.0,
+            acts: vec![],
+            glance_scale: 1.0,
+            follow_scale: 1.0,
+            pause_scale: 1.0,
+            fidget_scale: 1.0,
+            peek_chance: 0.0,
+            stop_scale: 1.0,
+            emote_scale: 1.0,
+        }
+    }
+
+    /// The factor on the weight of `act` (1 when the data does not name it).
+    pub fn act_factor(&self, act: LifeAct) -> f32 {
+        self.acts.iter().find(|(a, _)| *a == act).map_or(1.0, |(_, f)| *f)
+    }
+}
+
+/// How lively the bots look and act (data `lively`). The default is inert: no head look, no glances, no stops, a fixed ring.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Lively {
+    pub personalities: Vec<Personality>,
+    /// Head limits (radians) and how fast it turns (per second); the body turns once the head would pass `body_over`.
+    pub max_yaw: f32,
+    pub max_pitch: f32,
+    pub rate: f32,
+    pub body_over: f32,
+    pub nod_rate: f32,
+    pub nod_amount: f32,
+    pub glance_range: f32,
+    pub glance_hold: (f32, f32),
+    pub glance_gap: (f32, f32),
+    pub glance_chance: f32,
+    pub runner_range: f32,
+    pub runner_hold: (f32, f32),
+    pub runner_gap: (f32, f32),
+    pub fidget_gap: (f32, f32),
+    pub fidget_hold: (f32, f32),
+    pub fidget_yaw: f32,
+    pub fidget_pitch: f32,
+    pub ring_scale: (f32, f32),
+    pub min_ring: f32,
+    pub ring_margin: f32,
+    pub stop_gap: (f32, f32),
+    pub stop_hold: (f32, f32),
+    pub chat_range: f32,
+    pub react_range: f32,
+    pub react_delay: (f32, f32),
+    pub react_chance: f32,
+    pub react_cool: f32,
+    pub replies: Vec<(String, f32)>,
+}
+
+impl Default for Lively {
+    fn default() -> Lively {
+        Lively {
+            personalities: vec![],
+            max_yaw: 0.0,
+            max_pitch: 0.0,
+            rate: 7.0,
+            body_over: PI,
+            nod_rate: 5.0,
+            nod_amount: 0.0,
+            glance_range: 0.0,
+            glance_hold: (1.0, 1.0),
+            glance_gap: (1e9, 1e9),
+            glance_chance: 0.0,
+            runner_range: 0.0,
+            runner_hold: (1.0, 1.0),
+            runner_gap: (1e9, 1e9),
+            fidget_gap: (1e9, 1e9),
+            fidget_hold: (1.0, 1.0),
+            fidget_yaw: 0.0,
+            fidget_pitch: 0.0,
+            ring_scale: (1.0, 1.0),
+            min_ring: 0.0,
+            ring_margin: 0.0,
+            stop_gap: (1e9, 1e9),
+            stop_hold: (0.0, 0.0),
+            chat_range: 0.0,
+            react_range: 0.0,
+            react_delay: (1.0, 1.0),
+            react_chance: 0.0,
+            react_cool: 8.0,
+            replies: vec![],
+        }
+    }
+}
+
+fn lnum(node: &Value, key: &str, d: f32) -> f32 {
+    node[key].as_f64().map_or(d, |x| x as f32).max(0.0)
+}
+
+fn lpair(node: &Value, key: &str, d: (f32, f32)) -> (f32, f32) {
+    match (node[key][0].as_f64(), node[key][1].as_f64()) {
+        (Some(a), Some(b)) => {
+            let (a, b) = (a.max(0.0) as f32, b.max(0.0) as f32);
+            (a.min(b), a.max(b))
+        }
+        _ => d,
+    }
+}
+
+impl Lively {
+    pub fn parse(v: &Value) -> Lively {
+        let d = Lively::default();
+        let (head, glance, runner, fidget, follow, stop, react) =
+            (&v["head"], &v["glance"], &v["runner_look"], &v["fidget"], &v["follow"], &v["walk_stop"], &v["react"]);
+        // angles are degrees in the data, radians in the struct
+        let rad = |node: &Value, key: &str, d: f32| lnum(node, key, d.to_degrees()).to_radians();
+        Lively {
+            personalities: v["personalities"]
+                .as_object()
+                .map(|m| {
+                    m.iter()
+                        .map(|(name, p)| Personality {
+                            name: name.clone(),
+                            weight: lnum(p, "weight", 1.0),
+                            acts: p["acts"]
+                                .as_object()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|(k, f)| Some((LifeAct::from_name(k)?, (f.as_f64()? as f32).max(0.0))))
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                            glance_scale: lnum(p, "glance_scale", 1.0),
+                            follow_scale: lnum(p, "follow_scale", 1.0),
+                            pause_scale: lnum(p, "pause_scale", 1.0),
+                            fidget_scale: lnum(p, "fidget_scale", 1.0),
+                            peek_chance: lnum(p, "peek_chance", 0.0).min(1.0),
+                            stop_scale: lnum(p, "stop_scale", 1.0),
+                            emote_scale: lnum(p, "emote_scale", 1.0),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            max_yaw: rad(head, "max_yaw", d.max_yaw),
+            max_pitch: rad(head, "max_pitch", d.max_pitch),
+            rate: lnum(head, "rate", d.rate),
+            body_over: rad(head, "body_over", d.body_over),
+            nod_rate: lnum(head, "nod_rate", d.nod_rate),
+            nod_amount: rad(head, "nod_amount", d.nod_amount),
+            glance_range: lnum(glance, "range", d.glance_range),
+            glance_hold: lpair(glance, "hold", d.glance_hold),
+            glance_gap: lpair(glance, "gap", d.glance_gap),
+            glance_chance: lnum(glance, "chance", d.glance_chance).min(1.0),
+            runner_range: lnum(runner, "range", d.runner_range),
+            runner_hold: lpair(runner, "hold", d.runner_hold),
+            runner_gap: lpair(runner, "gap", d.runner_gap),
+            fidget_gap: lpair(fidget, "gap", d.fidget_gap),
+            fidget_hold: lpair(fidget, "hold", d.fidget_hold),
+            fidget_yaw: rad(fidget, "yaw", d.fidget_yaw),
+            fidget_pitch: rad(fidget, "pitch", d.fidget_pitch),
+            ring_scale: lpair(follow, "ring_scale", d.ring_scale),
+            min_ring: lnum(follow, "min_ring", d.min_ring),
+            ring_margin: lnum(follow, "margin", d.ring_margin),
+            stop_gap: lpair(stop, "gap", d.stop_gap),
+            stop_hold: lpair(stop, "hold", d.stop_hold),
+            chat_range: lnum(stop, "chat_range", d.chat_range),
+            react_range: lnum(react, "range", d.react_range),
+            react_delay: lpair(react, "delay", d.react_delay),
+            react_chance: lnum(react, "chance", d.react_chance).min(1.0),
+            react_cool: lnum(react, "cool", d.react_cool),
+            replies: react["replies"]
+                .as_object()
+                .map(|m| m.iter().filter_map(|(k, w)| w.as_f64().map(|w| (k.clone(), (w as f32).max(0.0)))).collect())
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// The personality a bot named `name` in `slot` gets: a weighted draw seeded by both, so a rebuild keeps it.
+pub fn pick_personality(l: &Lively, name: &str, slot: u32) -> usize {
+    let list: Vec<(usize, f32)> = l.personalities.iter().enumerate().map(|(i, p)| (i, p.weight)).collect();
+    let mut rng = Rng::new(&format!("{name}:{slot}:personality"));
+    weighted(&list, rng.next_f32()).unwrap_or(0)
+}
+
+/// The bot's personality (drawn on first use and kept in its life state); the neutral one when the data lists none.
+pub fn personality_of<'a>(n: &mut Npc, l: &'a Lively) -> &'a Personality {
+    static NEUTRAL: OnceLock<Personality> = OnceLock::new();
+    if l.personalities.is_empty() {
+        return NEUTRAL.get_or_init(Personality::neutral);
+    }
+    let i = match n.life.personality {
+        Some(i) if i < l.personalities.len() => i,
+        _ => {
+            let i = pick_personality(l, &n.name, n.slot);
+            n.life.personality = Some(i);
+            i
+        }
+    };
+    &l.personalities[i]
+}
+
+/// The act weights of a spot with a personality's factors applied (an act the spot lacks stays absent).
+pub fn scale_acts(acts: &[(LifeAct, f32)], p: &Personality) -> Vec<(LifeAct, f32)> {
+    acts.iter().map(|(a, w)| (*a, w * p.act_factor(*a))).collect()
+}
+
+/// A fresh seeded roll in 0..1 for the bot's lively choices.
+fn roll_of(n: &mut Npc, salt: &str) -> f32 {
+    n.life.rolls = n.life.rolls.wrapping_add(1);
+    Rng::new(&format!("{}:{}:{}:{}", n.name, n.slot, salt, n.life.rolls)).next_f32()
+}
+
+/// A walking bot's chatter stop: counts down to the next one and starts it. True the frame a stop is due.
+fn stop_due(n: &mut Npc, lv: &Lively, dt: f32) -> bool {
+    if lv.stop_hold.1 <= 0.0 {
+        return false;
+    }
+    if n.life.stop_cool < 0.0 {
+        n.life.stop_cool = between(lv.stop_gap, roll_of(n, "stop_first"));
+    }
+    n.life.stop_cool -= dt;
+    if n.life.stop_cool > 0.0 {
+        return false;
+    }
+    let scale = personality_of(n, lv).stop_scale.max(0.1);
+    n.life.hold = between(lv.stop_hold, roll_of(n, "stop_hold"));
+    n.life.stop_cool = between(lv.stop_gap, roll_of(n, "stop_gap")) / scale;
+    n.life.stops += 1;
+    true
+}
+
+/// Another bot as a bot sees it for chats and emote answers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Peer {
+    pub id: u32,
+    pub at: (f32, f32),
+    pub level: i32,
+    pub emoting: bool,
+}
+
+/// What a bot can look at this frame.
+struct Around<'a> {
+    fac: &'a Facility,
+    leader: (f32, f32),
+    runner_level: i32,
+    runner_emoting: bool,
+    peers: &'a [Peer],
+    seen: &'a [Seen],
+}
+
+fn nearest_visible(n: &Npc, ar: &Around, range: f32) -> Option<(f32, f32)> {
+    ar.seen
+        .iter()
+        .map(|&(c, _)| c)
+        .filter(|c| pdist(n.at, *c) <= range && ar.fac.has_line_of_sight(n.at, *c))
+        .min_by(|a, b| pdist(n.at, *a).total_cmp(&pdist(n.at, *b)))
+}
+
+/// Who a bot that has stopped to chat faces: the runner, else the nearest teammate, within `chat_range`.
+fn chat_target(n: &Npc, ar: &Around, lv: &Lively) -> Option<(f32, f32)> {
+    if n.level == ar.runner_level && pdist(n.at, ar.leader) <= lv.chat_range {
+        return Some(ar.leader);
+    }
+    ar.peers
+        .iter()
+        .filter(|q| q.id != n.id && q.level == n.level && pdist(n.at, q.at) <= lv.chat_range)
+        .min_by(|a, b| pdist(n.at, a.at).total_cmp(&pdist(n.at, b.at)))
+        .map(|q| q.at)
+}
+
+/// Plays an answering emote (data `lively.react.replies`) where the bot stands. False when none can play.
+fn start_reply(n: &mut Npc, lv: &Lively) -> bool {
+    let Some(set) = crate::render::anim::emote_pose::set() else { return false };
+    let list: Vec<(&str, f32)> = lv.replies.iter().filter(|(id, _)| set.find(id).is_some()).map(|(id, w)| (id.as_str(), *w)).collect();
+    let roll = roll_of(n, "reply");
+    let Some(id) = weighted(&list, roll) else { return false };
+    let len = set.find(id).map_or(2.0, |e| e.duration.max(0.1));
+    n.walking = false;
+    n.path.clear();
+    n.life.act = Some(LifeAct::Emote);
+    n.life.phase = LifePhase::Do;
+    n.life.emote = Some(id.to_string());
+    n.life.emote_seq += 1;
+    n.life.since_emote = 0.0;
+    n.life.clock = len;
+    n.life.total = len;
+    n.life.picked.push(LifeAct::Emote);
+    if n.life.picked.len() > PICKED_KEPT {
+        n.life.picked.remove(0);
+    }
+    n.life.replies += 1;
+    true
+}
+
+/// The head, glances, fidgets and emote answers of one bot for one frame, run after its intents. `life_ran` is true when
+/// the "life" intent acted (the bot is idle in the spare-time sense).
+fn liven(n: &mut Npc, ar: &Around, life_ran: bool, t: &Tuning, dt: f32) {
+    let lv = &t.lively;
+    if lv.max_yaw <= 0.0 && lv.max_pitch <= 0.0 {
+        return;
+    }
+    let p = personality_of(n, lv);
+    let at = n.at;
+    let same = n.level == ar.runner_level;
+    {
+        let s = &mut n.life;
+        s.glance_cool -= dt;
+        s.runner_cool -= dt;
+        s.fidget_cool -= dt;
+        s.react_cool -= dt;
+        s.nod_clock += dt;
+        if s.fidget_left > 0.0 {
+            s.fidget_left -= dt;
+        }
+        if s.gaze_left > 0.0 {
+            s.gaze_left -= dt;
+            if s.gaze_left <= 0.0 {
+                s.gaze = None;
+            }
+        }
+    }
+    // an emote to answer: a standing bot near the runner or a teammate who emotes may answer after a short delay
+    if !life_ran {
+        n.life.react = None;
+    } else if n.life.react.is_none()
+        && n.life.react_cool <= 0.0
+        && lv.react_chance > 0.0
+        && n.life.phase == LifePhase::Pause
+        && n.life.act.is_none()
+        && !n.life.returning
+        && !n.life.follow_only
+        && n.life.since_emote >= t.life.emote_gap
+    {
+        let emoter = if ar.runner_emoting && same && pdist(at, ar.leader) <= lv.react_range {
+            Some(ar.leader)
+        } else {
+            ar.peers.iter().find(|q| q.emoting && q.id != n.id && q.level == n.level && pdist(at, q.at) <= lv.react_range).map(|q| q.at)
+        };
+        if let Some(e) = emoter {
+            n.life.react_cool = lv.react_cool;
+            if roll_of(n, "react") < lv.react_chance * p.emote_scale {
+                let delay = between(lv.react_delay, roll_of(n, "delay"));
+                n.life.react = Some((delay, e));
+            }
+        }
+    }
+    if let Some((left, e)) = n.life.react {
+        if left - dt <= 0.0 {
+            n.life.react = None;
+            if n.life.phase == LifePhase::Pause && n.life.act.is_none() {
+                start_reply(n, lv);
+            }
+        } else {
+            n.life.react = Some((left - dt, e));
+        }
+    }
+    // what the head is on
+    let mut want: Option<((f32, f32), Gaze)> = None;
+    if let Some((s, _)) = n.heard {
+        want = Some((s, Gaze::Sound));
+        n.life.gaze_left = n.life.gaze_left.max(0.4);
+    } else if let Some((_, e)) = n.life.react {
+        want = Some((e, Gaze::Peer));
+        n.life.gaze_left = 0.3;
+    } else if n.life.hold > 0.0 {
+        want = chat_target(n, ar, lv).map(|c| (c, Gaze::Chat));
+        n.life.gaze_left = 0.3;
+    } else if let Some((c, k)) = n.life.gaze {
+        want = match k {
+            Gaze::Hunter => nearest_visible(n, ar, lv.glance_range).map(|c| (c, k)),
+            Gaze::Runner => Some((ar.leader, k)),
+            Gaze::Chat => None,
+            _ => Some((c, k)),
+        };
+    }
+    if want.is_none() {
+        if lv.glance_chance > 0.0 && n.life.glance_cool <= 0.0 {
+            if let Some(c) = nearest_visible(n, ar, lv.glance_range) {
+                let scale = p.glance_scale.max(0.1);
+                n.life.glance_cool = between(lv.glance_gap, roll_of(n, "glance_gap")) / scale;
+                if roll_of(n, "glance") < (lv.glance_chance * scale).min(1.0) {
+                    want = Some((c, Gaze::Hunter));
+                    n.life.gaze_left = between(lv.glance_hold, roll_of(n, "glance_hold"));
+                    n.life.glances += 1;
+                }
+            }
+        }
+        if want.is_none() && same && n.life.runner_cool <= 0.0 && lv.runner_range > 0.0 && pdist(at, ar.leader) <= lv.runner_range {
+            n.life.runner_cool = between(lv.runner_gap, roll_of(n, "runner_gap"));
+            n.life.gaze_left = between(lv.runner_hold, roll_of(n, "runner_hold"));
+            n.life.runner_looks += 1;
+            want = Some((ar.leader, Gaze::Runner));
+        }
+    }
+    n.life.gaze = want;
+    if want.is_none() {
+        n.life.gaze_left = 0.0;
+    }
+    let standing = !n.walking;
+    // an idle fidget: the head wanders a little while nothing holds it
+    let (mut gy, mut gp) = (0.0, 0.0);
+    if want.is_none() && standing && lv.fidget_yaw > 0.0 {
+        if n.life.fidget_left <= 0.0 && n.life.fidget_cool <= 0.0 {
+            let (a, b, h, g) = (roll_of(n, "fy"), roll_of(n, "fp"), roll_of(n, "fh"), roll_of(n, "fg"));
+            n.life.fidget = ((a * 2.0 - 1.0) * lv.fidget_yaw, (b * 2.0 - 1.0) * lv.fidget_pitch);
+            n.life.fidget_left = between(lv.fidget_hold, h);
+            n.life.fidget_cool = between(lv.fidget_gap, g) / p.fidget_scale.max(0.1);
+            n.life.fidgets += 1;
+        }
+        if n.life.fidget_left > 0.0 {
+            (gy, gp) = n.life.fidget;
+        }
+    }
+    if let Some((c, k)) = want {
+        let d = (c.0 - at.0, c.1 - at.1);
+        let to = if d.0.abs() + d.1.abs() < 0.05 { n.facing } else { heading_yaw(d) };
+        let raw = wrapf(to - n.facing, -PI, PI);
+        gy = raw.clamp(-lv.max_yaw, lv.max_yaw);
+        gp = if k == Gaze::Chat { lv.nod_amount * (n.life.nod_clock * lv.nod_rate).sin() } else { 0.0 };
+        // a standing bot turns its body to a teammate it answers or chats with, and to what the head cannot reach
+        if standing && (matches!(k, Gaze::Peer | Gaze::Chat) || raw.abs() > lv.body_over) {
+            turn(n, to, dt);
+        }
+    }
+    let gp = gp.clamp(-lv.max_pitch, lv.max_pitch);
+    let k = 1.0 - (-lv.rate * dt).exp();
+    n.life.head_yaw += (gy - n.life.head_yaw) * k;
+    n.life.head_pitch += (gp - n.life.head_pitch) * k;
 }
 
 // ---- the "life" intent: a bot that acts like a player who has stopped to look about -----------------------------------
@@ -1449,6 +1936,55 @@ pub struct LifeState {
     pub since_emote: f32,
     /// The last activities done, newest last (at most `PICKED_KEPT`).
     pub picked: Vec<LifeAct>,
+    /// The bot's personality (an index into `lively.personalities`), drawn once from its name and slot.
+    pub personality: Option<usize>,
+    /// Where the head looks: the offset from the body's facing (radians, + left) and the pitch (+ up). Host-only life
+    /// state: a guest draws what the wire sends (net/npc_sync.rs `look`).
+    pub head_yaw: f32,
+    pub head_pitch: f32,
+    /// What the bot looks at, and the seconds it still does.
+    pub gaze: Option<((f32, f32), Gaze)>,
+    pub gaze_left: f32,
+    /// Seconds until the next glance at a hunter, look at the runner, fidget, and answer to an emote.
+    pub glance_cool: f32,
+    pub runner_cool: f32,
+    pub fidget_cool: f32,
+    pub react_cool: f32,
+    /// The idle fidget in progress: seconds left, and its head offset (yaw, pitch).
+    pub fidget_left: f32,
+    pub fidget: (f32, f32),
+    /// A chatter stop in progress (seconds left), and seconds until the next one (negative: not drawn yet).
+    pub hold: f32,
+    pub stop_cool: f32,
+    /// An emote answer pending: seconds left, and where the emoter stands.
+    pub react: Option<(f32, (f32, f32))>,
+    /// The follow ring's scale for the current walk back, and whether the next walk back draws a fresh one.
+    pub ring_var: f32,
+    pub ring_fresh: bool,
+    /// Draws made for the lively rolls, and the head nod clock.
+    pub rolls: u32,
+    pub nod_clock: f32,
+    /// Counts of what the bot has done, for the tests and the logs.
+    pub glances: u32,
+    pub runner_looks: u32,
+    pub fidgets: u32,
+    pub stops: u32,
+    pub replies: u32,
+}
+
+/// What a bot's head is turned to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gaze {
+    /// A noise it heard.
+    Sound,
+    /// A hunter it sees.
+    Hunter,
+    /// The runner.
+    Runner,
+    /// A teammate (or the runner) that is emoting.
+    Peer,
+    /// The runner or a teammate it has stopped to chat with.
+    Chat,
 }
 
 const PICKED_KEPT: usize = 32;
@@ -1476,6 +2012,29 @@ impl Default for LifeState {
             emote_seq: 0,
             since_emote: f32::MAX,
             picked: vec![],
+            personality: None,
+            head_yaw: 0.0,
+            head_pitch: 0.0,
+            gaze: None,
+            gaze_left: 0.0,
+            glance_cool: 0.0,
+            runner_cool: 0.0,
+            fidget_cool: 0.0,
+            react_cool: 0.0,
+            fidget_left: 0.0,
+            fidget: (0.0, 0.0),
+            hold: 0.0,
+            stop_cool: -1.0,
+            react: None,
+            ring_var: 1.0,
+            ring_fresh: true,
+            rolls: 0,
+            nod_clock: 0.0,
+            glances: 0,
+            runner_looks: 0,
+            fidgets: 0,
+            stops: 0,
+            replies: 0,
         }
     }
 }
@@ -1487,6 +2046,7 @@ impl LifeState {
         self.act = None;
         self.crouching = false;
         self.emote = None;
+        self.hold = 0.0;
         self.clock = pause;
     }
 }
@@ -1519,14 +2079,17 @@ fn between(p: (f32, f32), roll: f32) -> f32 {
 }
 
 /// Starts the activity where the bot stands.
-fn life_begin(n: &mut Npc, l: &LifeTuning, rng: &mut Rng) {
+fn life_begin(n: &mut Npc, l: &LifeTuning, lv: &Lively, rng: &mut Rng) {
     let act = n.life.act.unwrap_or(LifeAct::Idle);
     n.life.phase = LifePhase::Do;
+    n.life.hold = 0.0;
     n.walking = false;
     n.path.clear();
     let mut length = l.duration(act, rng.next_f32());
     match act {
         LifeAct::Crouch => n.life.crouching = true,
+        // a door check may be a crouch-peek round the corner
+        LifeAct::CheckDoor => n.life.crouching = rng.next_f32() < personality_of(n, lv).peek_chance,
         LifeAct::Emote => {
             let set = crate::render::anim::emote_pose::set();
             let list: Vec<(&str, f32)> = l
@@ -1605,6 +2168,7 @@ fn life_pick(n: &mut Npc, sc: &Scene, t: &Tuning) {
             _ => true,
         })
         .collect();
+    let acts = scale_acts(&acts, personality_of(n, &t.lively));
     let act = weighted(&acts, rng.next_f32()).unwrap_or(LifeAct::Idle);
     n.life.act = Some(act);
     n.life.target = target;
@@ -1617,7 +2181,7 @@ fn life_pick(n: &mut Npc, sc: &Scene, t: &Tuning) {
         }
     }
     if choice.is_none() || pdist(n.at, target) <= l.arrive {
-        life_begin(n, l, &mut rng);
+        life_begin(n, l, &t.lively, &mut rng);
     } else {
         n.life.phase = LifePhase::Walk;
         n.life.clock = l.walk_timeout;
@@ -1660,7 +2224,7 @@ fn life(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -
         }
     }
     if n.life.returning {
-        let follow_range = t.follow_radius + slot_radius(n.slot) - SLOT_RADIUS;
+        let follow_range = follow_range(n, t);
         n.life.return_clock += dt;
         if d <= follow_range.min(l.return_distance).min(l.range) && n.path.is_empty() {
             n.life.returning = false;
@@ -1702,10 +2266,18 @@ fn life(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -
             let running = n.life.act == Some(LifeAct::SprintBurst);
             if pdist(n.at, n.life.target) <= l.arrive || n.life.clock <= 0.0 {
                 let mut rng = life_rng(n);
-                life_begin(n, l, &mut rng);
+                life_begin(n, l, &t.lively, &mut rng);
+            } else if n.life.hold > 0.0 {
+                // a chatter stop: the bot stands a moment, looking at the runner or a teammate
+                n.life.hold -= dt;
+                n.walking = false;
             } else {
-                let target = n.life.target;
-                walk_toward(n, sc.fac, target, running, t, dt, presses);
+                if !running && stop_due(n, &t.lively, dt) {
+                    n.walking = false;
+                } else {
+                    let target = n.life.target;
+                    walk_toward(n, sc.fac, target, running, t, dt, presses);
+                }
             }
         }
         LifePhase::Do => {
@@ -1726,7 +2298,8 @@ fn life(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -
             }
             if n.life.clock <= 0.0 {
                 let mut rng = life_rng(n);
-                n.life.interrupt(between(l.pause, rng.next_f32()));
+                let scale = personality_of(n, &t.lively).pause_scale;
+                n.life.interrupt(between(l.pause, rng.next_f32()) * scale);
             }
         }
     }
@@ -2830,6 +3403,9 @@ impl Game {
         for n in self.npcs.iter().filter(|n| self.downed_npcs.contains_key(&n.id)) {
             downed.push((n.level, n.at, Some(n.id)));
         }
+        // the teammates a bot may look at or answer, and whether the runner is emoting
+        let peers: Vec<Peer> = self.npcs.iter().map(|q| Peer { id: q.id, at: q.at, level: q.level, emoting: q.life.emote.is_some() }).collect();
+        let runner_emoting = self.emote.active().is_some();
         for n in self.npcs.iter_mut() {
             // a downed bot lies still until it is revived or leaves the floor
             if self.downed_npcs.contains_key(&n.id) {
@@ -2837,6 +3413,8 @@ impl Game {
                 n.path.clear();
                 n.walk = None;
                 n.life.interrupt(t.life.pause.0);
+                n.life.head_yaw = 0.0;
+                n.life.head_pitch = 0.0;
                 continue;
             }
             // a bot off the window floor keeps travelling toward the runner a chunk at a time; once its position is on
@@ -2899,6 +3477,8 @@ impl Game {
             n.flee.alert = if sees(n, fac, seen, &t.flee) || hears_hunter(n, seen, &t.flee) { t.flee.alert } else { (n.flee.alert - dt).max(0.0) };
             if n.hidden.is_some() {
                 n.life.interrupt(t.life.pause.0);
+                n.life.head_yaw = 0.0;
+                n.life.head_pitch = 0.0;
                 hidden_tick(n, &sc, t, dt);
                 continue;
             }
@@ -2906,9 +3486,11 @@ impl Game {
                 n.joined = true;
             }
             let mut ran = false;
+            let mut life_ran = false;
             for intent in &t.intents {
                 ran = run_intent(n, &sc, intent, t, dt, door_presses);
                 if ran {
+                    life_ran = intent == "life";
                     // any intent but an errand ends the errand: the bot hid, ran or followed instead
                     if !matches!(intent.as_str(), "relay" | "locker") {
                         n.errand = None;
@@ -2936,6 +3518,8 @@ impl Game {
                     }
                 }
             }
+            let around = Around { fac: sc.fac, leader, runner_level: level, runner_emoting, peers: &peers, seen };
+            liven(n, &around, life_ran, t, dt);
             // a bot clear of the door it last passed shuts it (the runner's press refuses a shut leaf on a body)
             if let Some(d) = n.last_door {
                 let clear = sc.fac.door_centre(d).map_or(true, |c| pdist(n.at, c) >= t.close_clear);
@@ -5665,5 +6249,259 @@ mod life_tests {
         run(&mut g, t, 0.5);
         let host = (g.npcs[0].at, g.npcs[0].life.returning, g.npcs[0].life.return_clock, g.npcs[0].life.follow_only, g.npcs[0].path.len());
         assert_ne!(before, host, "the host steps the bot");
+    }
+
+    // ---- liveliness (data/npcs.json `lively`) ----
+
+    /// Steps the first bot for `seconds` and returns the most left and most right its head turned (radians).
+    fn peak(g: &mut Game, t: &Tuning, seconds: f32) -> (f32, f32) {
+        let (mut hi, mut lo) = (0.0f32, 0.0f32);
+        for _ in 0..(seconds * 60.0) as usize {
+            g.update_npcs_with(1.0 / 60.0, t);
+            hi = hi.max(g.npcs[0].life.head_yaw);
+            lo = lo.min(g.npcs[0].life.head_yaw);
+        }
+        (hi, lo)
+    }
+
+    #[test]
+    fn the_lively_data_lists_personalities_and_sane_limits() {
+        let lv = &Tuning::get().lively;
+        let names: Vec<&str> = lv.personalities.iter().map(|p| p.name.as_str()).collect();
+        for want in ["cautious", "bold", "curious"] {
+            assert!(names.contains(&want), "{want} is in the data: {names:?}");
+        }
+        assert!(lv.personalities.iter().all(|p| p.weight > 0.0 && !p.acts.is_empty()));
+        assert!(lv.max_yaw > 0.0 && lv.max_yaw < PI && lv.max_pitch > 0.0, "the head turns, but never right round");
+        assert!(lv.ring_scale.0 > 0.0 && lv.ring_scale.0 < lv.ring_scale.1, "the follow distance varies");
+        assert!(lv.glance_range > 0.0 && lv.runner_range > 0.0 && lv.fidget_yaw > 0.0 && lv.stop_hold.1 > 0.0);
+        let set = crate::render::anim::emote_pose::set().expect("emotes parse");
+        assert!(!lv.replies.is_empty());
+        for (id, w) in &lv.replies {
+            assert!(*w > 0.0 && set.find(id).is_some(), "{id} is an emote");
+        }
+    }
+
+    #[test]
+    fn an_idle_bot_shows_varied_activities() {
+        let mut g = with_bot();
+        let t = tuned(&["life", "follow"], |_| {});
+        let (hi, lo) = peak(&mut g, &t, 150.0);
+        let n = &g.npcs[0];
+        let mut kinds = n.life.picked.clone();
+        kinds.sort_by_key(|a| a.name());
+        kinds.dedup();
+        assert!(kinds.len() >= 2, "more than one activity: {:?}", n.life.picked);
+        assert!(n.life.runner_looks + n.life.fidgets + n.life.glances >= 3, "looks {} fidgets {}", n.life.runner_looks, n.life.fidgets);
+        assert!(hi > 0.05 || lo < -0.05, "the head moved: {hi} {lo}");
+        assert!(hi <= t.lively.max_yaw + 1e-3 && lo >= -t.lively.max_yaw - 1e-3, "inside the head limit");
+    }
+
+    #[test]
+    fn personalities_change_the_mix_of_activities() {
+        let lv = &Tuning::get().lively;
+        let by = |name: &str| lv.personalities.iter().find(|p| p.name == name).expect("personality in the data");
+        let base = vec![
+            (LifeAct::LookAround, 1.0),
+            (LifeAct::Crouch, 1.0),
+            (LifeAct::SprintBurst, 1.0),
+            (LifeAct::Emote, 1.0),
+            (LifeAct::Idle, 1.0),
+        ];
+        let share = |p: &Personality, act: LifeAct| -> f32 {
+            let acts = scale_acts(&base, p);
+            let hits = (0..1000).filter(|i| weighted(&acts, *i as f32 / 1000.0) == Some(act)).count();
+            hits as f32 / 1000.0
+        };
+        let (cautious, bold) = (by("cautious"), by("bold"));
+        assert!(share(cautious, LifeAct::Crouch) > share(bold, LifeAct::Crouch) + 0.05, "the cautious crouch more");
+        assert!(share(bold, LifeAct::SprintBurst) > share(cautious, LifeAct::SprintBurst) + 0.05, "the bold sprint more");
+        assert!(share(bold, LifeAct::Emote) > share(cautious, LifeAct::Emote), "the bold emote more");
+        // a personality never adds an act the spot does not offer
+        let only = scale_acts(&[(LifeAct::Idle, 1.0)], bold);
+        assert_eq!(only.len(), 1);
+        assert_eq!(only[0].0, LifeAct::Idle);
+    }
+
+    #[test]
+    fn a_bots_personality_comes_from_its_name_and_slot() {
+        let lv = &Tuning::get().lively;
+        let drawn: Vec<usize> = (1..=60u32).map(|slot| pick_personality(lv, &guest_name_from_seed(slot as u64), slot)).collect();
+        for i in 0..lv.personalities.len() {
+            assert!(drawn.contains(&i), "personality {i} is drawn by some bot: {drawn:?}");
+        }
+        assert_eq!(pick_personality(lv, "R-00007", 3), pick_personality(lv, "R-00007", 3), "a rebuild keeps it");
+        let mut g = with_bot();
+        let first = personality_of(&mut g.npcs[0], lv).name.clone();
+        assert_eq!(personality_of(&mut g.npcs[0], lv).name, first, "kept in the life state");
+        let neutral = personality_of(&mut g.npcs[0], &Lively::default()).name.clone();
+        assert_eq!(neutral, "neutral", "data with none listed gives the neutral one");
+    }
+
+    #[test]
+    fn follow_distances_vary_but_stay_inside_the_follow_range() {
+        let t = Tuning::get();
+        let mut g = with_bot();
+        let mut slot_one: Vec<f32> = vec![];
+        for slot in 1..=40u32 {
+            for p in 0..t.lively.personalities.len() {
+                for var in [t.lively.ring_scale.0, 1.0, t.lively.ring_scale.1] {
+                    let n = &mut g.npcs[0];
+                    n.slot = slot;
+                    n.life.personality = Some(p);
+                    n.life.ring_var = var;
+                    let ring = follow_ring(n, t);
+                    let range = follow_range(n, t);
+                    assert!(ring <= range + 1e-4, "slot {slot} personality {p} var {var}: ring {ring} past range {range}");
+                    assert!(ring >= t.lively.min_ring.min(range) - 1e-4, "ring {ring} too close");
+                    if slot == 1 {
+                        slot_one.push(ring);
+                    }
+                }
+            }
+        }
+        slot_one.sort_by(f32::total_cmp);
+        assert!(slot_one.last().unwrap() - slot_one.first().unwrap() > 0.5, "slot 1 aims for different distances: {slot_one:?}");
+    }
+
+    #[test]
+    fn a_following_bot_never_strays_past_its_follow_range() {
+        let t = tuned(&["follow"], |_| {});
+        let mut g = with_bot();
+        // put the bot at the edge of its life range, then let it walk back and settle
+        let runner = g.p.pos;
+        let far = g
+            .fac
+            .floor_cells()
+            .into_iter()
+            .map(|c| c.center())
+            .find(|c| {
+                let d = pdist(*c, runner);
+                d > 7.0 && d < 9.0 && g.fac.body_fits(c.0, c.1, NAV_RADIUS)
+            });
+        let Some(far) = far else { return };
+        g.npcs[0].at = far;
+        run(&mut g, &t, 40.0);
+        let range = follow_range(&g.npcs[0], &t);
+        let mut worst = 0.0f32;
+        for _ in 0..(60 * 20) {
+            g.update_npcs_with(1.0 / 60.0, &t);
+            worst = worst.max(pdist(g.npcs[0].at, g.p.pos));
+        }
+        assert!(worst <= range + 0.5, "settled bot went {worst} m from the runner (range {range})");
+    }
+
+    #[test]
+    fn a_bots_head_turns_toward_a_sound() {
+        let t = tuned(&["follow"], |_| {});
+        for (dx, left) in [(-6.0f32, true), (6.0, false)] {
+            let mut g = with_bot();
+            g.npcs[0].facing = 0.0;
+            g.npcs[0].turn_v = 0.0;
+            let at = g.npcs[0].at;
+            g.npcs[0].heard = Some(((at.0 + dx, at.1), 5.0));
+            let (hi, lo) = peak(&mut g, &t, 1.0);
+            if left {
+                assert!(hi > 0.5, "a sound to the left turns the head left: {hi}");
+            } else {
+                assert!(lo < -0.5, "a sound to the right turns the head right: {lo}");
+            }
+            assert_eq!(g.npcs[0].life.gaze.map(|g| g.1), Some(Gaze::Sound));
+        }
+    }
+
+    #[test]
+    fn the_data_decides_how_lively_a_bot_is() {
+        let lively = tuned(&["follow"], |_| {});
+        let still = tuned(&["follow"], |v| {
+            v["lively"]["runner_look"]["range"] = Value::from(0.0);
+            v["lively"]["fidget"]["yaw"] = Value::from(0.0);
+        });
+        let mut a = with_bot();
+        run(&mut a, &lively, 60.0);
+        let mut b = with_bot();
+        run(&mut b, &still, 60.0);
+        assert!(a.npcs[0].life.runner_looks > 0, "the bot looks at the runner");
+        assert_eq!(b.npcs[0].life.runner_looks, 0, "range 0 turns it off");
+        assert_eq!(b.npcs[0].life.fidgets, 0, "yaw 0 turns the fidget off");
+        // no head limit at all is the old, stiff bot
+        let stiff = tuned(&["follow"], |v| {
+            v["lively"]["head"]["max_yaw"] = Value::from(0.0);
+            v["lively"]["head"]["max_pitch"] = Value::from(0.0);
+        });
+        let mut c = with_bot();
+        let (hi, lo) = peak(&mut c, &stiff, 30.0);
+        assert!(hi == 0.0 && lo == 0.0, "no head limit, no head look");
+    }
+
+    #[test]
+    fn a_bot_answers_the_runners_emote() {
+        let t = tuned(&["life", "follow"], |v| {
+            v["lively"]["react"]["chance"] = Value::from(1.0);
+            v["lively"]["react"]["delay"] = serde_json::json!([0.1, 0.2]);
+            v["lively"]["react"]["cool"] = Value::from(0.0);
+            if let Some(m) = v["lively"]["personalities"].as_object_mut() {
+                for p in m.values_mut() {
+                    p["emote_scale"] = Value::from(5.0);
+                }
+            }
+        });
+        let mut g = with_bot();
+        let set = crate::render::anim::emote_pose::set().expect("emotes parse");
+        assert!(g.emote.play(set, "wave", g.time));
+        run(&mut g, &t, 8.0);
+        let n = &g.npcs[0];
+        assert!(n.life.replies >= 1 && n.life.emote_seq >= 1, "the bot answered: {} replies", n.life.replies);
+        // with no emote from the runner it stays quiet
+        let mut quiet = with_bot();
+        run(&mut quiet, &t, 8.0);
+        assert_eq!(quiet.npcs[0].life.replies, 0);
+    }
+
+    #[test]
+    fn a_walking_bot_stops_now_and_then_to_chat() {
+        let lv = Lively::parse(&serde_json::json!({
+            "walk_stop": { "gap": [0.5, 0.5], "hold": [1.0, 1.0], "chat_range": 8.0 }
+        }));
+        let mut g = with_bot();
+        let n = &mut g.npcs[0];
+        let mut stops = 0;
+        for _ in 0..200 {
+            n.life.hold = 0.0;
+            if stop_due(n, &lv, 0.1) {
+                stops += 1;
+                assert!(n.life.hold >= 1.0 - 1e-4, "a stop holds the bot for its hold seconds");
+            }
+        }
+        assert!(stops >= 5, "stops: {stops}");
+        let none = Lively::parse(&serde_json::json!({ "walk_stop": { "hold": [0.0, 0.0] } }));
+        assert!(!stop_due(n, &none, 100.0), "a zero hold turns chatter stops off");
+    }
+
+    #[test]
+    fn a_cautious_bot_checks_a_door_crouched_and_a_bold_one_does_not() {
+        let mk = |chance: f64| Lively::parse(&serde_json::json!({ "personalities": { "p": { "peek_chance": chance } } }));
+        let l = Tuning::get().life.clone();
+        let mut g = with_bot();
+        let n = &mut g.npcs[0];
+        n.life.act = Some(LifeAct::CheckDoor);
+        life_begin(n, &l, &mk(1.0), &mut Rng::new("peek"));
+        assert!(n.life.crouching, "peek chance 1 crouches");
+        n.life.interrupt(1.0);
+        n.life.act = Some(LifeAct::CheckDoor);
+        life_begin(n, &l, &mk(0.0), &mut Rng::new("peek"));
+        assert!(!n.life.crouching, "peek chance 0 stands");
+    }
+
+    #[test]
+    fn a_guest_never_moves_a_bots_head() {
+        let t = Tuning::get();
+        let mut g = with_bot();
+        g.remote_hunters = true;
+        let at = g.npcs[0].at;
+        g.npcs[0].heard = Some(((at.0 - 6.0, at.1), 5.0));
+        run(&mut g, t, 2.0);
+        assert_eq!(g.npcs[0].life.head_yaw, 0.0, "a guest draws the host's look");
+        assert_eq!(g.npcs[0].life.gaze, None);
     }
 }

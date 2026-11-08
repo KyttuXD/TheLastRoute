@@ -1,0 +1,13 @@
+{
+  "schema": "lr.anti_idle/1",
+  "_note": "Port of anti_idle.gd. A party that does not move rises in void pressure after grace_seconds; pressure (0..1) eases down when anyone moves. At spawn_pressure a void hunter is spawned near the party, above steer_pressure an existing void hunter is steered to it. Host only.",
+  "idle_speed": 0.15,
+  "grace_seconds": { "relaxed": 120.0, "standard": 75.0, "hard": 50.0, "nightmare": 35.0 },
+  "rise_per_s": 0.02,
+  "fall_per_s": 0.08,
+  "steer_pressure": 0.4,
+  "spawn_pressure": 0.9,
+  "spawn_cooldown_s": 90.0,
+  "max_void_hunters": 1,
+  "spawn_distance": 18.0
+}

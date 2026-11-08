@@ -114,6 +114,18 @@ pub fn eye_position(centre: (f32, f32), facing: (f32, f32), style: &str) -> Vec3
     eye_position_with(centre, facing, style, cfg())
 }
 
+/// The camera inside a `Kind::Hide` prop of `kind` (bunk, wardrobe, under a desk ...): the eye height and forward offset
+/// from `data/net/hide_sync.json` `prop_views`. A kind with no entry uses the style table (`eye_position_with`).
+pub fn eye_position_for_prop(centre: (f32, f32), facing: (f32, f32), kind: &str, style: &str) -> Vec3 {
+    match crate::net::hide_sync::config().prop_view(kind) {
+        Some(v) => {
+            let n = (facing.0 * facing.0 + facing.1 * facing.1).sqrt().max(1e-6);
+            vec3(centre.0 + facing.0 / n * v.forward, v.eye, centre.1 + facing.1 / n * v.forward)
+        }
+        None => eye_position(centre, facing, style),
+    }
+}
+
 fn wrap(a: f32) -> f32 {
     let pi = std::f32::consts::PI;
     (a + pi).rem_euclid(std::f32::consts::TAU) - pi
@@ -192,6 +204,17 @@ pub fn view_from(
 mod tests {
     use super::*;
     const FACINGS: [(f32, f32); 4] = [(0.0, 1.0), (0.0, -1.0), (1.0, 0.0), (-1.0, 0.0)];
+
+    #[test]
+    fn a_hide_prop_camera_uses_its_data_offsets_and_unknown_kinds_fall_back() {
+        let v = crate::net::hide_sync::config().prop_view("bunk").unwrap();
+        let e = eye_position_for_prop((4.0, 2.0), (0.0, 1.0), "bunk", "bed");
+        assert!((e.y - v.eye).abs() < 1e-6 && (e.z - (2.0 + v.forward)).abs() < 1e-6 && (e.x - 4.0).abs() < 1e-6);
+        let low = eye_position_for_prop((0.0, 0.0), (1.0, 0.0), "bunk", "bed").y;
+        let high = eye_position_for_prop((0.0, 0.0), (1.0, 0.0), "wardrobe", "wardrobe").y;
+        assert!(low < high);
+        assert_eq!(eye_position_for_prop((1.0, 1.0), (0.0, 1.0), "lava", "bed"), eye_position((1.0, 1.0), (0.0, 1.0), "bed"));
+    }
 
     #[test]
     fn eye_height_is_the_band_centre() {

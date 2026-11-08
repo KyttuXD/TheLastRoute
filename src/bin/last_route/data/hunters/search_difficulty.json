@@ -1,0 +1,11 @@
+{
+  "schema": "lr.search_difficulty/1",
+  "_note": "Smarter searches by difficulty. Each search step after the first: roll under locker_check_rate checks the hiding spot nearest the last sighting; else roll under unchecked_room_rate heads for a room or dead end not yet searched this chase; else a plain offset around the last sighting. last_seen_first makes the first step the last-seen spot. Standard keeps the Godot behaviour (no locker checks).",
+  "default": { "locker_check_rate": 0.0, "unchecked_room_rate": 0.0, "last_seen_first": false },
+  "difficulty": {
+    "relaxed": {},
+    "standard": {},
+    "hard": { "locker_check_rate": 0.25, "unchecked_room_rate": 0.5, "last_seen_first": true },
+    "nightmare": { "locker_check_rate": 0.45, "unchecked_room_rate": 0.8, "last_seen_first": true }
+  }
+}

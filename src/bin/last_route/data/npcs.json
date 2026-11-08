@@ -116,8 +116,8 @@
       "here": { "weight": 3.0, "acts": { "look_around": 4, "idle": 4, "crouch": 1, "emote": 2 } },
       "room_centre": { "weight": 2.0, "acts": { "look_around": 3, "idle": 2, "crouch": 1, "sprint_burst": 1, "emote": 1 } },
       "locker": { "weight": 2.0, "acts": { "check_locker": 1 } },
-      "door": { "weight": 2.0, "acts": { "check_door": 1 } },
-      "relay": { "weight": 1.5, "acts": { "inspect_relay": 1 } }
+      "door": { "weight": 2.0, "acts": { "check_door": 1, "sprint_burst": 0.5 } },
+      "relay": { "weight": 1.5, "acts": { "inspect_relay": 1, "sprint_burst": 0.5 } }
     },
     "durations": {
       "look_around": [2.0, 4.0],
@@ -131,6 +131,33 @@
     },
     "_source": "Rust-only figures: when no hunter is near and no errand or goal applies, a bot acts like a player who has stopped to look about. It picks a point from the hunter points of interest (hunters/activities.rs: room centres, lockers, relays, doors) or stays where it is, walks there (sprint_burst runs), does an activity for a few seconds (look around, check a locker or a door, inspect a relay, idle, crouch, play an emote from data/player/emotes.json), then pauses. range is the farthest it goes from the runner; past it the follow intent walks it back and it resumes once it is back in follow range. Weights are relative; durations and pauses are [min, max] seconds.",
     "_return_note": "return_distance 6.0 m and return_timeout 8 s are KT-pass picks (2026-11-08), not Godot figures: a bot past range walks back until it is within return_distance (and the follow range), and after return_timeout it follows plainly (follow_only) until it is back inside range. follow_only_timeout 10 s is also a KT-pass pick: a plain follow that has not closed in by goals.stuck.progress metres for that long is dropped with a fresh route, so follow_only never holds a bot that cannot route (bots have no teleport-to-runner rule)"
+  },
+  "lively": {
+    "personalities": {
+      "cautious": {
+        "weight": 1.0,
+        "acts": { "look_around": 1.8, "crouch": 1.8, "sprint_burst": 0.3, "emote": 0.5, "idle": 0.8, "check_door": 1.3, "check_locker": 1.2, "inspect_relay": 0.9 },
+        "glance_scale": 1.6, "follow_scale": 0.75, "pause_scale": 1.2, "fidget_scale": 1.5, "peek_chance": 0.7, "stop_scale": 1.4, "emote_scale": 0.6
+      },
+      "bold": {
+        "weight": 1.0,
+        "acts": { "look_around": 0.6, "crouch": 0.4, "sprint_burst": 2.2, "emote": 1.8, "idle": 0.8, "check_door": 0.8, "check_locker": 0.7, "inspect_relay": 1.0 },
+        "glance_scale": 0.6, "follow_scale": 1.25, "pause_scale": 0.7, "fidget_scale": 0.7, "peek_chance": 0.1, "stop_scale": 0.6, "emote_scale": 1.6
+      },
+      "curious": {
+        "weight": 1.0,
+        "acts": { "look_around": 1.5, "crouch": 1.0, "sprint_burst": 0.8, "emote": 1.2, "idle": 0.6, "check_door": 1.8, "check_locker": 2.0, "inspect_relay": 2.0 },
+        "glance_scale": 1.0, "follow_scale": 1.0, "pause_scale": 1.0, "fidget_scale": 1.2, "peek_chance": 0.4, "stop_scale": 1.5, "emote_scale": 1.0
+      }
+    },
+    "head": { "max_yaw": 75.0, "max_pitch": 25.0, "rate": 7.0, "body_over": 60.0, "nod_rate": 5.0, "nod_amount": 8.0 },
+    "glance": { "range": 18.0, "hold": [0.8, 1.8], "gap": [1.5, 4.0], "chance": 0.7 },
+    "runner_look": { "range": 10.0, "hold": [1.0, 2.5], "gap": [3.0, 9.0] },
+    "fidget": { "gap": [1.5, 4.5], "hold": [0.6, 1.4], "yaw": 35.0, "pitch": 14.0 },
+    "follow": { "ring_scale": [0.6, 1.5], "min_ring": 1.2, "margin": 0.5 },
+    "walk_stop": { "gap": [4.0, 10.0], "hold": [0.6, 1.6], "chat_range": 8.0 },
+    "react": { "range": 8.0, "delay": [0.6, 2.0], "chance": 0.6, "cool": 8.0, "replies": { "wave": 3, "cheer": 1, "yes": 1, "point": 1, "bow": 1 } },
+    "_source": "Rust-only figures (KT pass 2026-11-08): bots act like players. Each bot gets one personality at spawn from the weights (a hash of its name and slot, so a rebuild keeps it); acts multiplies the weight of the life acts the bot may pick (never adds one), the *_scale numbers scale the glance rate, the follow ring, the pause between activities, the idle fidget rate, the walk stops and the chance of a reply emote, and peek_chance is the chance a door check is done crouched. head: the head turns up to max_yaw degrees either side and max_pitch up or down at rate per second; a standing bot turns its body when the head would have to turn past body_over degrees; nod_* is the head nod while it chats. glance: a bot looks at a hunter it sees within range (clear line) for hold seconds, then waits gap seconds (shorter for a larger glance_scale), taking it with this chance. runner_look: a bot near its runner looks at it now and then. fidget: a standing bot with nothing to look at turns its head by up to yaw and pitch degrees for hold seconds every gap seconds. follow: a bot that walks back to the runner aims for a ring of its slot's radius times a fresh scale in ring_scale (and its follow_scale), at least min_ring, at most margin inside the follow range. walk_stop: a walking bot stops for hold seconds every gap seconds to chat, looking at the runner or a bot within chat_range. react: a standing bot within range of the runner or a bot that emotes answers after delay seconds with this chance (then waits cool seconds), with an emote from replies (ids in data/player/emotes.json)."
   },
   "tasks": ["door"]
 }

@@ -254,7 +254,8 @@ pub fn wall_v(y: f32, room_floor: f32, room_height: f32) -> f32 {
 /// Surface response the original gives a kind (MaterialLook.floor_response / RefTextures.params):
 /// (roughness, metallic, emission share of the texel).
 pub fn surface_params(group: &str, kind: &str) -> (f32, f32, f32) {
-    let mut rough = 0.92;
+    let r = &crate::render::surfaces::surface_themes().response;
+    let mut rough = r.rough_default;
     let mut metal = 0.0;
     let mut emit = 0.0;
     if group == "floor" {
@@ -263,16 +264,16 @@ pub fn surface_params(group: &str, kind: &str) -> (f32, f32, f32) {
             || kind == "grate"
             || kind.starts_with("safe")
         {
-            rough = 0.62;
-            metal = 0.18;
+            rough = r.metal_rough;
+            metal = r.metal_metallic;
         } else if kind.starts_with("stone")
             || kind.starts_with("parquet")
             || kind.starts_with("check")
         {
-            rough = 0.82;
+            rough = r.stone_rough;
         }
     } else if group == "ceiling" && kind == "vault" {
-        emit = 0.16;
+        emit = r.vault_emit;
     }
     let beach = match group {
         "floor" => ["sand0", "sand1", "wetsand0", "driftwood0", "driftwood1"].contains(&kind),
@@ -288,10 +289,10 @@ pub fn surface_params(group: &str, kind: &str) -> (f32, f32, f32) {
         _ => false,
     };
     if beach {
-        emit = 0.6;
+        emit = r.beach_emit;
     }
     if group == "ceiling" && kind == "skylight0" {
-        emit = 0.9;
+        emit = r.skylight_emit;
     }
     (rough, metal, emit)
 }
@@ -376,6 +377,30 @@ mod tests {
             assert!((3..=6).contains(&colours), "{group}/{kind}: {colours} colours");
             assert!((2..=3).contains(&bands), "{group}/{kind}: {bands} tone bands");
         }
+    }
+
+    #[test]
+    fn every_listed_missing_flat_floor_family_has_a_flat_variant() {
+        // TODO 14: floral, star, parquet, check, runner, safe, terrazzo, seawall, whitewash, tealpanel, skylight
+        let families = ["floral", "star", "parquet", "check", "runner", "safe", "terrazzo", "seawall", "whitewash", "tealpanel", "skylight"];
+        for family in families {
+            let found = ["floor", "wall", "ceiling"].iter().any(|g| {
+                kinds(g).iter().any(|k| k.starts_with(family) && {
+                    let flat = paint_flat(g, k, 0).unwrap();
+                    (3..=6).contains(&flat_colours_and_bands(&flat.2).0) && paint(g, k, 0).unwrap().2 != flat.2
+                })
+            });
+            assert!(found, "{family}: no flat variant");
+        }
+    }
+
+    #[test]
+    fn surface_params_follow_the_theme_data() {
+        let r = &crate::render::surfaces::surface_themes().response;
+        assert_eq!(surface_params("floor", "metal0"), (r.metal_rough, r.metal_metallic, 0.0));
+        assert_eq!(surface_params("floor", "stone0").0, r.stone_rough);
+        assert_eq!(surface_params("wall", "seawall0").2, r.beach_emit);
+        assert_eq!(surface_params("floor", "nope").0, r.rough_default);
     }
 
     #[test]

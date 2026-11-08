@@ -29,9 +29,21 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
+        id: cache
         with:
           key: windows
-      - run: cargo build --release --bin last_route
+      - name: Build times header
+        shell: bash
+        run: |
+          printf '### Build times (windows)\n\n| step | os | cache | elapsed |\n|---|---|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: cargo build --release
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        run: |
+          t0=$(date +%s); date -u +"start %FT%TZ"
+          trap 'echo "| cargo build --release | ${{ runner.os }} | cache-hit: ${CACHE_HIT:-n/a} | $(( $(date +%s) - t0 ))s |" >> "$GITHUB_STEP_SUMMARY"; date -u +"end   %FT%TZ"' EXIT
+          cargo build --release --bin last_route
       - name: Collect the Windows builds
         shell: bash
         run: |
@@ -52,11 +64,25 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
+      # packaging/linux/build.sh also builds lr_server with --features server (a different crate graph from the plain game
+      # build), so this cache is keyed "linux-server", apart from the plain builds (windows, macos, nightly-*.yml).
       - uses: Swatinem/rust-cache@v2
+        id: cache
         with:
-          key: linux
+          key: linux-server
       - run: sudo apt-get update && sudo apt-get install -y pkg-config libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev
-      - run: sh packaging/linux/build.sh
+      - name: Build times header
+        shell: bash
+        run: |
+          printf '### Build times (linux)\n\n| step | os | cache | elapsed |\n|---|---|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: packaging/linux/build.sh
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        run: |
+          t0=$(date +%s); date -u +"start %FT%TZ"
+          trap 'echo "| packaging/linux/build.sh | ${{ runner.os }} | cache-hit: ${CACHE_HIT:-n/a} | $(( $(date +%s) - t0 ))s |" >> "$GITHUB_STEP_SUMMARY"; date -u +"end   %FT%TZ"' EXIT
+          sh packaging/linux/build.sh
       - name: Publish to nightly
         if: github.ref == 'refs/heads/main'
         env:
@@ -101,12 +127,22 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
+        id: cache
         with:
           key: macos-intel
+      - name: Build times header
+        shell: bash
+        run: |
+          printf '### Build times (macos intel)\n\n| step | os | cache | elapsed |\n|---|---|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
       - name: Build the Intel app
+        shell: bash
         env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
           ARCHS: x86_64-apple-darwin
-        run: sh packaging/macos/build_app.sh
+        run: |
+          t0=$(date +%s); date -u +"start %FT%TZ"
+          trap 'echo "| Build the Intel app | macOS Intel | cache-hit: ${CACHE_HIT:-n/a} | $(( $(date +%s) - t0 ))s |" >> "$GITHUB_STEP_SUMMARY"; date -u +"end   %FT%TZ"' EXIT
+          sh packaging/macos/build_app.sh
       - name: Zip the Intel app
         run: (cd dist/intel && zip -qry ../last_route-macos-x86_64.zip "KYTTU The Last Route.app")
       - name: Publish to nightly
@@ -124,12 +160,22 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
+        id: cache
         with:
           key: macos-arm64
+      - name: Build times header
+        shell: bash
+        run: |
+          printf '### Build times (macos arm64)\n\n| step | os | cache | elapsed |\n|---|---|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
       - name: Build the Apple Silicon app
+        shell: bash
         env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
           ARCHS: aarch64-apple-darwin
-        run: sh packaging/macos/build_app.sh
+        run: |
+          t0=$(date +%s); date -u +"start %FT%TZ"
+          trap 'echo "| Build the Apple Silicon app | macOS arm64 | cache-hit: ${CACHE_HIT:-n/a} | $(( $(date +%s) - t0 ))s |" >> "$GITHUB_STEP_SUMMARY"; date -u +"end   %FT%TZ"' EXIT
+          sh packaging/macos/build_app.sh
       - name: Zip the Apple Silicon app
         run: (cd dist/arm64 && zip -qry ../last_route-macos-arm64.zip "KYTTU The Last Route.app")
       - name: Publish to nightly

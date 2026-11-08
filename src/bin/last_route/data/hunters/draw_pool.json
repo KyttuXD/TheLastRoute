@@ -6,5 +6,12 @@
     "standard": { "easy": 0.35, "intermediate": 0.50, "difficult": 0.15 },
     "hard": { "easy": 0.2625, "intermediate": 0.5125, "difficult": 0.225 },
     "nightmare": { "easy": 0.175, "intermediate": 0.525, "difficult": 0.30 }
+  },
+  "incursion": {
+    "note": "A Void hunter joins a floor as an extra, never a replacement (hunter_roster.gd has_void_incursion, line 298): none before depth min_depth, then base_chance plus per_depth for every floor past min_depth, capped at max_chance.",
+    "min_depth": 2,
+    "base_chance": 0.08,
+    "per_depth": 0.025,
+    "max_chance": 0.40
   }
 }

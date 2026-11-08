@@ -200,7 +200,7 @@ fn the_posed_creature_stands_on_the_ground_at_its_size() {
         // the model-space root bone sits at the origin and the whole body is finite
         assert!(out.bones.iter().all(|m| m.to_cols_array().iter().all(|v| v.is_finite())), "{id}");
         let top = r.bones.iter().enumerate().map(|(k, _)| out.root.transform_point3(out.bones[k].w_axis.truncate()).y).fold(f32::MIN, f32::max);
-        assert!(top > 1.0 && top < 3.0, "{id}: the highest joint is {top} m up (about 2 m at the head)");
+        assert!(top > 1.0 && top < 3.2, "{id}: the highest joint is {top} m up (about 2 m at the head, the black one a little taller)");
         let low = r.bones.iter().enumerate().map(|(k, _)| out.root.transform_point3(out.bones[k].w_axis.truncate()).y).fold(f32::MAX, f32::min);
         assert!(low > -0.5, "{id}: the lowest joint is {low} m");
     }

@@ -1,0 +1,48 @@
+{
+  "version": 2,
+  "accounts": [
+    {
+      "username": "ada",
+      "salt": "00112233445566778899aabbccddeeff",
+      "hash": "f07f72e1d5566f1486a1d9cb9e702673e1987d9fd2a5dbc7852f1bc38d86d99e9a45f30ec142364890563c92a9fd1a5779b6635b4e9bd35af5f7608b4b68824c",
+      "progress": {
+        "floor": 3,
+        "note": "saved by the Node server"
+      },
+      "savedAt": 1699999000000,
+      "adminPermissions": []
+    },
+    {
+      "username": "BOB_RUNNER",
+      "salt": "ffeeddccbbaa99887766554433221100",
+      "hash": "c3b755ee0eb8b9c215303e3a2583750310a30a891b6776f4f9edb1c098c74033278b510ef5b623483865644b8af4797b148271cf47ae88f1286315b39cb02455",
+      "progress": null,
+      "savedAt": 0,
+      "adminPermissions": [
+        "world"
+      ]
+    }
+  ],
+  "sessions": [
+    {
+      "token": "legacy-plain-session-for-ada",
+      "username": "ada",
+      "expiresAt": 4102444800000
+    },
+    {
+      "tokenHash": "fd93ff5255a185df89f127952e52ebf4b6aec3a880e6422ae7c72c6abb80a10a",
+      "username": "BOB_RUNNER",
+      "expiresAt": 4102444800000
+    },
+    {
+      "tokenHash": "99d06d36b6596dc945b81d361541f5960a1f7e0d895d87914ad69913d7dfd66d",
+      "username": "BOB_RUNNER",
+      "expiresAt": 1000
+    },
+    {
+      "token": "orphan-session-token",
+      "username": "NOBODY_HERE",
+      "expiresAt": 4102444800000
+    }
+  ]
+}

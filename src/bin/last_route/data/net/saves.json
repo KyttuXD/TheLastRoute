@@ -1,0 +1,8 @@
+{
+  "schema": "lr.net_saves/1",
+  "max_world_slots": 10,
+  "world_slot_prefix": "run-world-",
+  "progress_slot": "progress",
+  "dossier_slot": "dossier",
+  "legacy_account_save_route_allowed": false
+}

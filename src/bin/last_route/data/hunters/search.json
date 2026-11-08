@@ -1,6 +1,7 @@
 {
   "schema": "lr.search/1",
   "_note": "Hunter search (game/hunters/ai/hunter_brain.gd _pick_search_target_search). Standard values are the Godot DIFFICULTY_PROFILES hide_random values (game_config.gd 25-55). hiding_spot_chance: chance a search point is a hiding spot near the last sighting (checked before the random offsets). last_seen_spot_first: always check that spot first when one is in reach. unchecked_first: among reachable offsets, pick the one farthest from the points this hunter already searched in this chase (covers unchecked rooms and dead ends).",
+  "_see": "data/hunters/search_difficulty.json holds the locker-check and unchecked-room rates by difficulty.",
   "reach": 8.0,
   "memory": 12,
   "unreachable_give_up": 1.6,

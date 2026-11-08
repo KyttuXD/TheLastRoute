@@ -679,7 +679,7 @@ mod tests {
     /// flat strip of the atlas, so the back of a door reads as wood. Doors only; no other model changed.)
     /// (684 -> 683 on 2026-11-07: the black wolf spider was removed from the game, so its model left the set; digest recomputed.)
     /// (digest moved on 2026-11-08: re-recorded with the deliberate 1e-4 quantisation, for cross-platform float stability.)
-    const GOLDEN_ALL: (usize, u64) = (683, 0xa7e3ae4e692a1758);
+    const GOLDEN_ALL: (usize, u64) = (684, 0x53bf3aaefcdf9a54);
 
     /// The shape of a model read with the game's UV rule.
     fn shape_now(path: &str, j: &serde_json::Value) -> Option<Shape> {

@@ -1,0 +1,12 @@
+{
+	"schema": "lr.emitters/1",
+	"note": "Looping positional emitters at map features. 'bed' names an existing ambience bed (data/audio/ambience.json) whose synth is the loop, so no new sound asset ships. Distances are in cells; metres = cells * cell_metres. Attenuation is the AudioStreamPlayer3D fit in cues/positional.rs. 'features' maps a terrain/feature id to its emitter kind.",
+	"cell_metres": 2.0,
+	"loudest_count": 2,
+	"kinds": {
+		"waterfall": { "bed": "sewer", "unit_size": 4.0, "max_distance": 16.0, "volume_db": 0.0, "max_db": 3.0, "height": 1.0, "gain": 0.8 },
+		"flood": { "bed": "stalls", "unit_size": 4.0, "max_distance": 12.0, "volume_db": -3.0, "max_db": 3.0, "height": 0.2, "gain": 0.6 },
+		"lava": { "bed": "inferno", "unit_size": 4.0, "max_distance": 14.0, "volume_db": 0.0, "max_db": 3.0, "height": 0.2, "gain": 0.7 }
+	},
+	"features": { "waterfall": "waterfall", "flood": "flood", "flood_water": "flood", "lava": "lava", "lava_cell": "lava" }
+}

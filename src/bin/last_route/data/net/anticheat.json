@@ -1,0 +1,29 @@
+{
+  "schema": "lr.net_anticheat/1",
+  "_about": "Host-side checks on what a guest sends. guard: each guest runner sample is compared with the last one the host accepted. A speed over max_speed_mps * speed_slack (metres per second, from the two sample times), a jump over teleport_distance_m in one sample on the same floor, or a sample inside solid ground (noclip) is a strike; at most one strike per strike_cooldown_seconds; a strike is forgiven after strike_decay_seconds of clean samples; kick_strikes strikes ask the host to remove the guest. min_dt_seconds floors the time between two samples so a burst cannot divide by zero. requests: the guest-to-host asks (SubmitEvent with a 'what' field) the host acts on; anything not in allowed is dropped. owner_only asks need the room owner. Text and ids are clamped to the limits here. packs: refuse_on_mismatch makes a guest leave a room whose mod packs differ; off, it only warns.",
+  "guard": {
+    "max_speed_mps": 12.5,
+    "speed_slack": 1.6,
+    "teleport_distance_m": 7.0,
+    "min_dt_seconds": 0.02,
+    "strike_cooldown_seconds": 0.5,
+    "strike_decay_seconds": 20,
+    "kick_strikes": 5,
+    "noclip_enabled": true
+  },
+  "requests": {
+    "allowed": ["route_command", "room_chat", "hunter_emote", "toggle_hunter", "npc_spawn", "npc_remove", "pack_hash"],
+    "owner_only": ["route_command", "toggle_hunter", "npc_spawn", "npc_remove"],
+    "route_actions": ["start", "end", "restart"],
+    "chat_max": 80,
+    "name_max": 24,
+    "emote_max": 24,
+    "id_max": 100000,
+    "coord_limit": 100000,
+    "hash_max": 16,
+    "pack_ids_max": 16
+  },
+  "packs": {
+    "refuse_on_mismatch": false
+  }
+}
